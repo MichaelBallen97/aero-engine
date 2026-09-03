@@ -160,6 +160,10 @@ scene_render::AssetBindingTable* ViewportPanel::sceneAssetBindings() noexcept {
 // ---- task 3.6.3 ----------------------------------------------------------------------------------
 const render::PostProcess* ViewportPanel::postProcess() const noexcept { return post ? &*post : nullptr; }
 
+// ---- task E.1.1 ----------------------------------------------------------------------------------
+render::DebugDraw* ViewportPanel::debugDraw() noexcept { return debugDrawer ? &*debugDrawer : nullptr; }
+const render::DebugDraw* ViewportPanel::debugDraw() const noexcept { return debugDrawer ? &*debugDrawer : nullptr; }
+
 // THE ARM-TIME DECISION, and it is a GEOMETRIC test on purpose -- see the header for the regression
 // this replaces. Reads the rect the LAST DRAWN FRAME recorded (step 9b), which is what makes it
 // answerable at step 8b, before this frame's strip has been submitted.
@@ -267,6 +271,20 @@ void ViewportPanel::ensureInitialized([[maybe_unused]] rhi::Extent2D firstExtent
         unavailableReason = "scene renderer creation failed (are res://scene.vert/.frag cooked?)";
         return;
     }
+    // task E.1.1: the debug batch and its four pipelines, built against the SAME HDR pair the
+    // SceneRenderer was, so a line records into the scene pass with matching formats and is
+    // depth-tested against the geometry that pass just drew. ALL-OR-NOTHING with the three above:
+    // one attempt, latched, and a failure resets everything already made.
+    debugDrawer = render::DebugDraw::create(
+        *device, shaderVfs, {.colorFormat = post->sceneColorFormat(), .depthFormat = post->sceneDepthFormat()});
+    if (!debugDrawer) {
+        sceneRenderer.reset();
+        target.reset();
+        post.reset();
+        status = Status::Unavailable;
+        unavailableReason = "debug draw creation failed (are res://debug_line.* / res://debug_billboard.* cooked?)";
+        return;
+    }
     status = Status::Ready;
 #else  // -DAERO_SHADER_TOOLS=OFF (D12)
     status = Status::Unavailable;
@@ -293,7 +311,7 @@ void ViewportPanel::onDraw(PanelContext& context) {
 
     // Step 4. The `!target` half is defensive (status == Ready is set only alongside a live target
     // in ensureInitialized) and is what lets every access below be a CHECKED optional access.
-    if (status != Status::Ready || !target || !post) {
+    if (status != Status::Ready || !target || !post || !debugDrawer) {
         drawUnavailableMessage(unavailableReason != nullptr ? unavailableReason : "Viewport unavailable");
         return;
     }
@@ -875,7 +893,7 @@ void ViewportPanel::renderScene(World& world) {
     const bool requested = std::exchange(renderRequested, false);
     // The `!target`/`!sceneRenderer` half is defensive, same reasoning as onDraw's step 4 — it is
     // what lets both accesses below be CHECKED optional accesses.
-    if (!requested || status != Status::Ready || !target || !sceneRenderer || !post) {
+    if (!requested || status != Status::Ready || !target || !sceneRenderer || !post || !debugDrawer) {
         return;
     }
     // INV-3: no ImGui call, no World mutation -- and, from task 2.3.1, no CAMERA mutation either. The
@@ -900,7 +918,14 @@ void ViewportPanel::renderScene(World& world) {
     // buildRenderView + latched WARNs (suppressed for the camera pair, D3) + ForwardRenderer::draw.
     // This is the ONE place in the tree that names render::CameraView, and it is src-private (D2).
     sceneRenderer->render(world, *sceneFrame, &cameraView);
-    post->endScene(std::move(*sceneFrame));  // submits command buffer A
+    // task E.1.1: THE SLOT. AFTER the forward pass, so a Tested line is depth-tested against this
+    // frame's geometry; BEFORE endScene, so it records into the still-open HDR pass and goes through
+    // the resolve -- and therefore the tonemap -- with everything else. The flush submits its OWN
+    // upload command buffer here, which is strictly before endScene submits A, which is what orders
+    // the copy ahead of the draws that read it. Empty most frames until E.1.2 and E.2.3 fill it, and
+    // an empty flush acquires nothing, uploads nothing and draws nothing.
+    debugDrawer->flush(*sceneFrame, cameraView);
+    post->endScene(std::move(*sceneFrame));  // submits command buffer A -- AFTER the upload's submit
 
     std::optional<render::Frame> outFrame = target->beginFrame(VIEWPORT_CLEAR_COLOR);
     if (!outFrame) {

@@ -10,9 +10,9 @@ Two platform matrices, never to be conflated: the **editor** runs on macOS/Windo
 
 ## Current state — read this first
 
-**PHASE E (Editor Experience) IS PLANNED AND OPEN — it executes between Phase 3 and Phase 4.**
-It is **planning only so far: no Phase E code exists.** Six epics, 24 tasks, in
-`docs/tasks/phase-E.md`. It is **lettered, not fractioned**, because `3.5` and `3.5.1`/`3.5.2` are
+**PHASE E (Editor Experience) IS OPEN — it executes between Phase 3 and Phase 4.**
+**E.1.1 (Debug line renderer) is CLOSED IN CODE, its PR open and not yet merged; the other 23 tasks are planning only.** Six epics, 24
+tasks, in `docs/tasks/phase-E.md`. It is **lettered, not fractioned**, because `3.5` and `3.5.1`/`3.5.2` are
 already Phase 3's Skeletal-animation epic and its tasks — a "Phase 3.5" would collide with referenced
 numbers, and numbering is append-only. In Notion its `Phase #` is `3.5`, a sort key, not an
 identifier. Four facts it was built on were **measured in the tree, and each contradicts a plausible
@@ -22,9 +22,9 @@ bug, because nothing draws the direction and nothing says which of two direction
 picked; (2) `buildRenderView`'s **primitive arm never assigns `instance.material`**
 (`scene_renderer.cpp:99-107`), so a material dropped on a primitive is written to the component
 through the undoable command and then silently discarded at draw time — a confirmed defect, owned by
-**E.5.1**; (3) **nothing in the tree has ever drawn a world-space line** — `rhi::PrimitiveType::LineList`
-and `FillMode::Line` exist since 0.4.1 and no pipeline has ever requested one, which is why the grid
-and the light gizmos need **E.1.1** first; (4) `openSceneFile`/`saveSceneFile` perform **zero**
+**E.5.1**; (3) `rhi::PrimitiveType::LineList` and `FillMode::Line` existed since 0.4.1 with **no consumer at
+all** until **E.1.1**, which is now the tree's first and only `LineList` pipeline set — `FillMode::Line`
+is still unexercised and named as such in a comment, and wireframe-of-meshes remains an unowned handoff; (4) `openSceneFile`/`saveSceneFile` perform **zero**
 containment validation against the project root, so a scene from another project loads while the
 AssetDatabase still resolves GUIDs against the open one. **`SpotLight` (E.2.2) and `Environment`
 (E.2.1) take the built-in component count from 8 to 10** — the five-generation-site rule and the
@@ -47,6 +47,41 @@ Epics **3.1** (AssetDatabase), **3.2** (Importers), **3.3** (Cooker v0), **3.4**
 > summary of *where the position is* and of the rules that still govern new work. It is **rewritten**
 > as the position moves, never grown: it reached 207 k characters once and that is what this note
 > exists to prevent.
+
+### E.1.1 — Debug line renderer (closed in code) — the first Phase E task
+
+**The engine can draw a world-space line, which it never could**, and **the tree now asserts
+pixels**. Six commits: two additive RHI calls, a pure `render::DebugDrawBatch`, a
+`render::DebugDraw` owning four pipelines from two shader pairs, four HLSL stages, the viewport slot,
+and `samples/phase-E-debug-draw`. Full detail — every trap, every rejected alternative, the handoff
+table — is in `docs/10`; what belongs here is what governs new work.
+
+**The two RHI calls, and the sentence that matters about each.**
+`Device::recordBufferUpload(cmd, buffer, data)` is the streaming path `device.hpp`'s D14 comment
+deferred: it records on a **caller-supplied** command buffer and returns **without waiting**, it
+**REPLACES THE WHOLE BUFFER** (bytes past `data.size()` are undefined, which is why it takes no
+`dstOffset`), and it refuses a `cmd` with **a render pass open in every configuration** because SDL
+only checks that under `debug_mode`. `Device::readbackTexture(texture, mip, out)` is **blocking**, a
+test-and-tooling path, never per frame — and **its fence wait is what PERFORMS the copy on D3D12**
+(`D3D12_DownloadFromTexture` caches the download; `D3D12_WaitForFences` →
+`D3D12_INTERNAL_CleanCommandBuffer` does the realignment copy). Mapping before waiting reads garbage
+on that backend **and only that backend**. Never "optimise" the wait away.
+
+**THE TREE NOW ASSERTS PIXELS, on all three lanes, on every push.** `RU5` is the first; `DG5`–`DG16`
+and `I108`–`I111` are the rest. **A later visual task that settles for "no backend error" is
+CHOOSING to, not forced to.** The mechanism is `readbackTexture` plus a `RenderTarget` under an
+identity camera, so world coordinates are NDC and a row/column is arithmetic.
+
+**And `k * fl(1/255)` is NOT `fl(k / 255)`** — measured, not reasoned: the reciprocal form is
+bit-unequal for **126 of the 256** byte values, first at k = 3, and it looks identical to six
+significant digits. `unpackDebugColor` divides. Any packer/unpacker pair in this tree that wants an
+exact round trip must too.
+
+**The editor gained the slot and draws NOTHING new.** `ViewportPanel::debugDraw()` is the seam E.1.2
+and E.2.3 write into; the flush sits between `sceneRenderer->render` and `post->endScene`, and
+**that ordering is pinned as SOURCE TEXT (`I110`) because it is invisible at runtime** — a flush
+moved after `endScene` records into a closed pass, which is a logged no-op, so `I109` stays green
+while the picture silently loses every line.
 
 ### 3.7.3 — Audio-boundary CI guard (MERGED, PR #91 `0530cff`) — CLOSED Epic 3.7
 
@@ -196,7 +231,7 @@ miniaudio; `A38` is covered only by validation row 9. Full detail in `docs/10`.
 | **Phase 2** — Editor | **COMPLETE, gate met 2026-08-02.** All six epics closed and macOS-validated; Windows/Linux rows pending for every task (`editor/VALIDATION.md`). Gate artifact: `samples/phase-2-editor-scene/` — data, deliberately not `add_subdirectory`'d. |
 | **Phase 3** — Asset Pipeline & 3D Content | **OPEN.** **All seven epics CLOSED in code** — 3.1–3.6, and 3.7 with 3.7.1 + 3.7.2 merged and macOS-validated and **3.7.3 merged (PR #91)**. What is left is the gate below and the validation debt. Per-task detail in `docs/10`. |
 | **Phase 3 gate** | Drop a rigged glTF/FBX in → PBR materials + shadows + a playing animation + **an audible sound**. The audible half exists in code as of 3.7.2 and **has not been validated on any platform** — 3.7.2's macOS pass ticked 47 of 53 records and left the 6 that need ears open. |
-| **Phase E** — Editor Experience | **OPEN — PLANNED, NO CODE.** Inserted between 3 and 4; six epics, 24 tasks in `docs/tasks/phase-E.md`. Viewport legibility (E.1), lighting & environment (E.2), inspector & context routing (E.3), project/scene/asset management (E.4), content-creation UX (E.5), shell identity (E.6). Nothing is implemented; nothing is validated. |
+| **Phase E** — Editor Experience | **OPEN. E.1.1 closed in code, PR open; 23 tasks remain, planning only.** Inserted between 3 and 4; six epics, 24 tasks in `docs/tasks/phase-E.md`. Viewport legibility (E.1), lighting & environment (E.2), inspector & context routing (E.3), project/scene/asset management (E.4), content-creation UX (E.5), shell identity (E.6). **Nothing in the phase is validated on any platform**: E.1.1's page is written and not run. |
 | **Phase E gate** | Open a project and land in the scene you were last editing, on a lit grid floor under a sky; create a Cube from the menu, drop a material on it and see it shade; aim a spot light with a visible gizmo; rename, move and delete assets without leaving the editor. Gate artifact: `samples/phase-E-editor/`. |
 
 ### Engine layers, in dependency order
@@ -223,6 +258,24 @@ miniaudio; `A38` is covered only by validation row 9. Full detail in `docs/10`.
   rule.
 
 ### Standing invariants that govern new work
+
+**THE RHI GREW EXACTLY TWO CALLS AT E.1.1, AND EACH HAS ONE SENTENCE THAT VOIDS SILENTLY.**
+`Device::recordBufferUpload` **replaces the WHOLE buffer** — everything past `data.size()` is
+undefined afterwards, because the destination is cycled, which is why there is no `dstOffset` and why
+a partial write cannot merge with last frame's contents. It refuses a command buffer with **a render
+pass open, in every configuration**: that refusal is OURS, not SDL's, which only checks under
+`debug_mode`. `Device::readbackTexture` is **BLOCKING and a test-and-tooling path** — and **its
+`SDL_WaitForGPUFences` call is what performs the copy on D3D12**, where the download is deferred into
+`D3D12_INTERNAL_CleanCommandBuffer`. Map before the wait and you read garbage **on Windows alone**.
+Release the fence **after** the wait, never before.
+
+**THE TREE ASSERTS PIXELS NOW.** `RU5` was the first; `DG5`–`DG16` and `I108`–`I111` followed, on
+Metal, WARP and lavapipe, on every push. **A later visual task that settles for "no backend error" is
+choosing to, not forced to** — `readbackTexture` plus a `RenderTarget` under an identity camera makes
+"which pixel" arithmetic rather than judgement. And a test-local `operator<<` is not optional there:
+`CHECK((a == b))` prints `CHECK( true )` on a FAILURE as well as a pass, which makes the assertion
+carrying the deliverable unreadable at exactly the wrong moment. An `operator<<` on the test's own
+comparison type, never a `toString` (that is the ADL trap that hard-errors inside `doctest.h`).
 
 **THE `find_package` BOUNDARY.** `aero_assets`, `aero_audio` and `aero_scene_audio` link **no vcpkg
 package at all**, which makes their `PRIVATE` links a **real compile-time boundary** rather than
@@ -314,8 +367,13 @@ Read totals from **doctest's own `filters:` line**, never from a `grep -c` of ca
 count on its own page goes stale, and adding one task's delta to another task's baseline is exactly the
 arithmetic that produces a confident wrong number.
 
-At 3.7.3's gate: **`ctest -N` 172 / 80 / 93** across tools-ON, both-tools-OFF and reflect-tools-OFF;
-doctest across **seven** binaries **1169 / 1746 / 143 / 34 / 29 / 7 / 28**. Both reduced configurations
+At E.1.1's gate: **`ctest -N` 172** (tools-ON, measured on both presets; the two reduced
+configurations were **not** re-measured for this task and their 80 / 93 remain 3.7.3's numbers);
+doctest across **seven** binaries **1223 / 1746 / 147 / 34 / 29 / 7 / 28**. **E.1.1 is the exact
+INVERSE of 3.7.3's signature: the doctest totals MOVE while `ctest -N` does NOT** — `aero_tests`
+1169 → 1223 and `aero_editor_imgui_test` 143 → 147, because three new TUs ride existing binaries and
+a sample registers no ctest entry. A moved `ctest -N` on a task like that means a CMakeLists copied
+from the wrong template. Both reduced configurations
 must be configured **FRESH with `-G Ninja`** — and, since 3.7.3, **with
 `-DCMAKE_EXPORT_COMPILE_COMMANDS=ON`**: only the presets set it, so a raw `cmake -S . -B …` writes no
 `compile_commands.json` and `boundary-probes.probe_compile_line` skips. It reports that skip honestly
@@ -382,13 +440,27 @@ log in `docs/10`. **Its own residual is Windows**: both e2e cases are `NOT WIN32
 that runs the two scripts is ubuntu-only, so nothing about the guards' behaviour is exercised under an
 MSYS userland at all. Coverage of the *invariant* is unaffected — the guards run on every push.
 
+**E.1.1 adds a full page and it is NOT RUN on any platform.**
+`editor/validation/E.1.1-debug-line-renderer.md` is written (gitignored, so it enters no commit) with
+eleven numbered steps, seven of them carrying measurement blanks. Its shape is unlike every prior
+render task's: **rows 1–3 are already automated on all three lanes** by `DG5`–`DG10` and `DG16`,
+because the tree now reads pixels back. What stays hardware-only is legibility on a HiDPI display
+(a 1-pixel line has no width control on any backend), the editor's picture being unchanged against a
+build at the branch point, the cost A/B, Tracy's zone and plots, and the declared seeds — **`S11`
+(depth write on the Tested pipelines) and `S21`'s picture half (a mirrored atlas cell whose centre
+still reads the right colour) have their ONLY coverage anywhere in that page's row 6.**
+
 ### Next
 
-**Phase E is the open front, and its first task is E.1.1.** Nothing in Phase E is implemented — the
-phase file is the plan of record and no code has been written against it. The dependency spine to
-respect: **E.1.1 (debug line renderer) blocks E.1.2 and E.2.3**, and **E.2.1 (`Environment`) blocks
-E.2.2, E.2.4 and E.4.5** — so the two enabling tasks come first and the rest fan out. **E.5.1 is an
-S-sized fix for a confirmed defect and is independent of everything**, so it can land at any point.
+**Phase E is the open front, and E.1.2 (grid floor + world axes) is the next task.** E.1.1 is
+closed in code, so the mechanism the grid needs exists: `ViewportPanel::debugDraw()->batch()` is the seam,
+and the flush already runs in the HDR scene pass every frame with an empty batch. E.1.2 also owns
+the question E.1.1 deliberately left open — **a depth-bias field on the debug pipelines**, because
+`LessOrEqual` wins on a bit-identical depth but an interpolated one across a large polygon can still
+shimmer, and building the knob before its consumer existed is the abstraction 3.6.3 refused. The
+rest of the spine: **E.2.1 (`Environment`) blocks E.2.2, E.2.4 and E.4.5**, and **E.2.3 (light
+gizmos) is now unblocked** alongside E.1.2. **E.5.1 is an S-sized fix for a confirmed defect and is
+independent of everything**, so it can land at any point.
 
 **Phase 3 remains OPEN behind it, on its gate and its validation debt, and Phase E does not close
 either.** 3.7.1 (PR #88 `4892e65`) and 3.7.2 (PR #89 `b398d17`) are merged and macOS-validated;

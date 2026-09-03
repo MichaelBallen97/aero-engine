@@ -12699,3 +12699,259 @@ on arrival with zero edits. Runtime-purity (5.2.2) remains the other half of `do
 and nothing here pre-builds it. And **CLAUDE.md's FIVE-GREPS block is now FOUR**: the `find_package`
 reading over the three directories is `check-audio-boundary.sh`'s self-test 2, with those very
 prohibition comments as its anti-vacuity canaries.
+
+---
+
+## Phase E — Editor Experience
+
+### E.1.1 — Debug line renderer — the first Phase E task
+
+**What shipped, in six commits.** Two additive RHI calls, a pure batch, four pipelines, four
+shaders, one editor slot and the tenth sample.
+
+* **`rhi::Device::recordBufferUpload(cmd, buffer, data)`** — the streaming path `device.hpp`'s own
+  D14 comment deferred to a Phase 3 that closed without it. It records a copy on a **caller-supplied**
+  command buffer and returns **without waiting**, cycling both the Device's own transfer buffer and
+  the destination. It **replaces the whole buffer** — bytes past `data.size()` are undefined
+  afterwards, because a cycled destination has undefined contents until written, which is exactly why
+  the call takes no `dstOffset`. It refuses a `cmd` with a **render pass open, in every
+  configuration**: `SDL_BeginGPUCopyPass` only checks that under `debug_mode`, so a Release build
+  with the debug layer off would walk into driver-defined behaviour. The transfer buffer is the
+  Device's own, singular, created lazily at the first call, **grown and never shrunk**, released in
+  `~Impl` after `SDL_WaitForGPUIdle`. Nothing pays for it until something streams.
+* **`rhi::Device::readbackTexture(texture, mipLevel, out)`** — `uploadTexture` run backwards: the
+  same block-rounded pitch fields, the same `textureLevelByteSize` rule, the same fence round trip.
+  **Blocking, a test-and-tooling path, never per frame.** Row 0 is the top of the image; any
+  non-depth texture the Device created is readable whether or not it has `Sampler` usage.
+* **`render::DebugDrawBatch`** — pure: no rhi type, no logging, no GPU, and **no allocation after
+  construction**. Two depth buckets sharing one budget, refusal at **push** time, and two kinds of
+  refusal that are never conflated: `dropped*` (the budget was full — the push was legal) and
+  `rejected*` (the input was not finite — the push was never legal). `line`, `lines(span)`,
+  `wireBox`, `wireCircle`, `wireSphere`, `billboard`, all through the same gate one segment at a
+  time, so a `wireSphere` that straddles the budget is drawn up to the segment the budget ended on.
+* **`render::DebugDraw`** — four pipelines from two shader pairs (line × {Tested, Overlay},
+  billboard × {Tested, Overlay}), two vertex buffers sized once at `create`, a built-in 1×1 white
+  texture and sampler so the fragment stage never has an unbound slot, and a `flush` that stages both
+  buckets contiguously, uploads on its **own** command buffer submitted before the frame's, and
+  records up to four draws into the caller's **already-open** pass. Tested before Overlay, per
+  primitive, so overlay content wins where the two coincide.
+* **Four HLSL stages** — `debug_line.{vert,frag}`, `debug_billboard.{vert,frag}`. The tree's first
+  `LineList` pipeline, its first `VertexFormat::UByte4Norm` attribute and its first blend-enabled
+  engine pipelines.
+* **The editor slot** — `ViewportPanel` owns one, built against the same HDR pair the `SceneRenderer`
+  was, and drains it between `sceneRenderer->render` and `post->endScene`. `debugDraw()` joins the
+  panel's other seams. **The editor pushes nothing into it**, which is the claim rather than an
+  omission: E.1.2's grid and E.2.3's gizmos are the content.
+* **`samples/phase-E-debug-draw`** — the tenth sample, with `--tonemap=`, `--exposure=`, `--raw`,
+  `--overflow` and `--no-lines`.
+
+**What it deliberately did NOT ship, each with its reason.**
+
+* **Thick or anti-aliased lines.** SDL_GPU exposes no line width at all — the Vulkan backend
+  hardcodes `lineWidth = 1.0f` and D3D12 sets `AntialiasedLineEnable = FALSE`. Thick lines are quad
+  expansion: a different vertex format and a different pipeline. Recorded as an unowned handoff whose
+  trigger is a legibility complaint on a HiDPI display.
+* **A depth-bias knob.** One `RasterizerState` field, and building the knob before its consumer
+  exists is the abstraction 3.6.3 refused. E.1.2's grid is the consumer and owns the answer.
+* **Instancing for billboards.** The cleanest shape, and rejected *for this task specifically*: it
+  would have been the tree's first instance-rate attribute **and** its first `SV_VertexID`-derived
+  corner, on top of its first `LineList`. `SV_InstanceID`'s base-instance semantics differ between
+  D3D and Vulkan, which is precisely the cross-backend divergence class this project measures before
+  it trusts. **A first-use task should add one first, not three.** The trigger for revisiting it is a
+  consumer with tens of thousands of sprites.
+* **`FillMode::Line`.** Named in a comment and deliberately unexercised: it is triangle wireframe,
+  whose edges are the mesh's triangulation rather than a shape anyone chose, and Metal's
+  `triangleFillMode = lines` has its own rasterisation semantics. Wireframe-of-meshes is an unowned
+  handoff, not this pipeline's business.
+* **Picking, per-line transforms, buffer readback, MSAA, and any runtime or script surface.**
+
+**THE MEASUREMENT THAT OUTLIVES THE TASK: on D3D12 the fence wait is what MOVES THE BYTES.**
+`D3D12_DownloadFromTexture` does not perform the copy — its own comment says so: *"Since this is an
+async download we have to do all these fixups after the command is finished, so we'll cache the
+metadata and map and copy it when the command buffer is cleaned."* The 256-byte-row realignment copy
+runs in `D3D12_INTERNAL_CleanCommandBuffer` ("Perform deferred texture data copies"), which
+`D3D12_WaitForFences` calls for every submitted buffer whose fence has signalled. So in
+`readbackTexture` the map **must** come after `SDL_WaitForGPUFences`, and `SDL_ReleaseGPUFence` must
+come after it too. Mapping before waiting reads garbage **on that backend and only that backend** —
+the exact shape of a Windows-only defect that no macOS or Linux run would ever show. Anyone
+"optimising" the wait away breaks Windows alone. The reason is written into the implementation
+comment where the wait is, not only here.
+
+**THE OTHER MEASUREMENT: `k * fl(1/255)` IS NOT `fl(k / 255)`.** `unpackDebugColor` was written with
+a precomputed `constexpr float INV = 1.0F / 255.0F`, which is the obvious spelling and the wrong one:
+multiplying by the rounded reciprocal rounds **twice** and is bit-unequal to dividing for **126 of
+the 256** byte values, the first at **k = 3**. `DD4` reddened with 504 failed assertions whose printed
+values looked identical to six significant digits (`0.0117647 == 0.0117647`). Measured with a
+standalone probe rather than reasoned about, then fixed by dividing — and the measurement is in the
+implementation comment so the reciprocal "optimisation" cannot come back.
+
+**The transfer buffer's release semantics, precisely.** The **handle** dies the moment it is
+released: Vulkan's `VULKAN_INTERNAL_ReleaseBufferContainer` frees the container synchronously
+(*"Containers are just client handles, so we can free immediately"*) and D3D12 does the same. The
+**memory** behind it is deferred until `referenceCount == 0` on all three backends. That is what
+makes the grow-and-never-shrink policy safe: the old pointer is overwritten in the same statement
+group that releases it and is never touched again. And the growth **failure** path releases
+**nothing** — if `SDL_CreateGPUTransferBuffer` fails, the old buffer is still ours and still usable,
+so a transient allocation failure does not become a permanent one.
+
+**Predicted-GREEN seeds, recorded before the pass rather than discovered during it.** `S27` (the
+upload submitted after the draws are recorded) is behaviour-preserving by the queue-ordering
+guarantee and is kept in the matrix so the guarantee gets re-read. `S11` (depth write on for the
+Tested pipelines) has no automated observable, because with the write off a Tested line never affects
+what draws after it. `S5` (`pixels_per_row = 0` in the readback) is **measured, not hedged**: all
+three backends treat 0 as packed — Vulkan by spec (`bufferRowLength = 0`), D3D12 and Metal by
+explicit substitution of the region extent — so a zeroed pitch is a no-op rather than a defect, and
+it is recorded so nobody "hardens" a non-problem.
+
+**Two sabotage results worth keeping.** Deleting the one `std::memcpy` in `readbackTexture` reddened
+**seven of twelve** `RU` cases with `CHECK( 171 == 0 )` — `0xAB`, the sentinel — which is what makes
+the pixel tier's greenness evidence rather than decoration. And **the misordered flush is invisible
+to the runtime case**: moving `debugDrawer->flush` after `post->endScene` leaves `I109` **green**
+(recording into a closed pass is a logged no-op, so `resolveCount` still moves and the batch is still
+drained) while `I110`'s source-text pin reddens with `CHECK( 927 < 926 )`. That is why the ordering is
+pinned as text and the runtime case is the corroborating witness, not the primary one.
+
+**The `#if` rule, stated precisely for the next task that needs it.** A case whose subject exists in
+**both** configurations goes **above** any file-level gate, with its own per-case `#if`/`#else` arms
+and **both arms asserting**. A case that loads a cooked shader goes **behind** a file-level gate with
+a banner naming why. `DD1`–`DD26` are ungated; `DG1`–`DG16` sit behind one file-level gate;
+`I108`–`I111` were inserted **immediately after `I107`'s closing brace**, above
+`imgui_layer_test.cpp`'s own file-level gate, because four cases appended at the end of that file
+would have landed **inside** 3.1.5's gate and their tools-OFF arms would silently never run — which
+is exactly what happened to 3.6.3's `I105`. The measurement that keeps it honest is counting cases in
+the **reduced** configuration, not running the suite.
+
+**A test-local `operator<<` is worth more than it looks.** The plan wrote every pixel comparison as
+`CHECK((a == b))`, whose double parentheses collapse the operands to a bool: doctest prints
+`CHECK( true )` — on a **failure** as well as on a pass. The four cases carrying the whole deliverable
+would have been unreadable at exactly the moment someone needed to read them. A four-line
+`operator<<` for the test-local `Rgba` and single parentheses turn every one of them into
+`CHECK( rgba(0, 255, 0, 255) == rgba(0, 255, 0, 255) )`. It is an `operator<<`, **not** a `toString`:
+an engine-side `toString` on a public header is the ADL trap that hard-errors inside `doctest.h`.
+
+**Three clang-tidy findings the plan's code would have shipped.** `bugprone-exception-escape` on the
+private `DebugDraw` constructor, which was declared `noexcept` while `DebugDrawBatch`'s constructor
+reserves and can throw — `noexcept` there converts an allocation failure into `std::terminate`, so it
+was dropped. `bugprone-implicit-widening-of-multiplication-result` twice on the vertex-buffer sizes
+(`maxLines * 2U * sizeof(...)` in 32 bits), now widened before narrowing with the ceilings' arithmetic
+spelled out. And `bugprone-unchecked-optional-access` in the sample, where the analysis loses the
+`Frame` optional's state across the dolly branch and the instance loop; binding a reference right
+after the single check is what the code meant anyway.
+
+**Build & dependency impact: none.** No dependency lands, `vcpkg.json` and `/vcpkg` are untouched, no
+`find_package`, no submodule move, and **no link line moves anywhere** — `debug_draw.cpp` needs
+`rhi::loadShader`, `rhi::Device` and `VirtualFileSystem`, all already on `aero_render`'s line through
+`PUBLIC aero::rhi`. One source line in `engine/render/CMakeLists.txt`, one include in `render.hpp`,
+four entries in `shaders/CMakeLists.txt`, one `add_subdirectory`, two source lines in
+`tests/CMakeLists.txt`. `tests/rhi_boundary_probe.cpp` and its link line are byte-unchanged, and so
+is every RHI header except `device.hpp`.
+
+**Handoffs, each with an owner and a trigger.**
+
+| Handoff | Trigger | Owner |
+|---|---|---|
+| Thick / anti-aliased lines (quad expansion) | a legibility complaint on a HiDPI display | unowned |
+| A depth-bias field on the debug pipelines | E.1.2's grid needs one | E.1.2 |
+| Instanced billboards (`VertexInputRate::Instance`) | a consumer with tens of thousands of sprites | unowned |
+| The copy pass on the **frame's own** command buffer | `Frame` grows a pre-pass seam | unowned; `RU11` keeps the path from rotting |
+| Wireframe-of-meshes (`FillMode::Line`) | someone wants triangulation edges | unowned |
+| `readbackTexture`'s second consumer | E.1.4's silhouette mask | E.1.4 |
+
+**The gate, as measured on macOS.** Both presets build; `AERO_REQUIRE_GPU=1 ctest` green on both,
+**172/172** each. **`ctest -N` is UNMOVED at 172 while the doctest totals MOVE** — which is the exact
+inverse of 3.7.3's signature and worth stating: `aero_tests` **1169 → 1223** (`RU1`–`RU12`,
+`DD1`–`DD26`, `DG1`–`DG16`) and `aero_editor_imgui_test` **143 → 147** (`I108`–`I111`), while the
+other five binaries are unmoved at 1746 / 34 / 29 / 7 / 28. A sample registers no ctest entry and the
+three new TUs ride existing binaries, so the count cannot move; a moved `ctest -N` here would have
+meant a CMakeLists copied from the wrong template. Eight guards exit 0 throughout, with
+`check-math-boundary.sh` **450 → 456** (four new C-family files plus the pack header and the sample),
+`check-rhi-boundary.sh` **144 → 147**, `check-golden-rule.sh` **146 → 149**,
+`check-platform-boundary.sh` **83 → 84** and `check-scene-boundary.sh` **83 → 84**;
+`check-project-no-delete.sh` is unmoved at A = 6 / B = 75, because this task adds no
+`editor/src/*.cpp`. clang-format and clang-tidy clean **by exit code** on every touched file. The
+sample's own run confirms the design end to end: 904 lines and 7 billboards in 4 draw calls at the
+default, `lines 32768 (dropped 1000)` **steadily** under `--overflow` with **exactly one** budget
+WARN across 577 frames, `0 flushes, 0 upload command buffers acquired` under `--no-lines`, and a
+startup table reading `1.00000 → raw 255 · none 255 · reinh 188 · aces 232`.
+
+**What is NOT validated.** `editor/validation/E.1.1-debug-line-renderer.md` is written and **not
+run** on any platform; it is gitignored and enters no commit. Rows 1–3 are already automated on all
+three lanes by `DG5`–`DG10` and `DG16`, which is more than any prior render task could say, but
+legibility, the editor's unchanged picture, cost, Tracy and the declared seeds are hardware-only.
+
+**The sabotage matrix, as run: 32 seeds and 5 assertion mutants, and it moved four facts.** Every
+seed was applied to a committed tree, **grep-confirmed present before any verdict was trusted**,
+built with only the affected target, run against its witness, then restored and re-verified. Twenty-
+seven of the 32 reddened their predicted witness; several reddened more (`S6` took 20 of 28 RU+DG
+cases, `S9` and `S16` took nine each). The five pixel cases were then mutated at the **assertion**
+rather than at the code — one expected byte each in `RU5`, `DG5`, `DG6`, `DG7`, `DG8` — and all five
+went red, which is what makes their greenness evidence rather than decoration.
+
+**THE DECLARED CLASS IS FIVE, MEASURED, against a predicted three or four.** `S5`, `S11` and `S27`
+landed green exactly as predicted above. **`S1` and `S2` join them**: both cycling seeds
+(`cycle = false` on the destination, and on the transfer-buffer map) leave all 28 RU+DG cases green
+on Metal, because the driver never lets frame *k* observe frame *k−1*'s backing store. They are
+**timing-dependent, not closed** — the contract rests on SDL's documented cycling model, and
+`RU12`/`DG13` observe it rather than prove it. A backend that overlaps frames more aggressively may
+well discriminate them; this machine does not.
+
+**`DG6`'s crossing arm does NOT discriminate `S11`.** The plan asked for that to be recorded either
+way, so: both lines in that arm sit at the same depth outside the cube, so a depth write from the
+Tested line changes nothing the Overlay line then reads. Validation row 6 therefore stays the **only**
+cover anywhere for `S11` and for `S21`'s picture half.
+
+**Three gaps, two closed in this commit and one recorded because it cannot be closed here.**
+
+* **`S32` — `DD23` was VACUOUS, and that is worse than having no test.** Deleting
+  `#include <aero/render/debug_draw.hpp>` from `render.hpp` **built clean**: the TU reaches
+  `debug_draw.hpp` through `"../engine/render/src/debug_draw_pack.hpp"`, which includes it directly
+  for `DD20`/`DD21`'s sake. The naming arm could therefore never fail. Closed by giving the case a
+  **real source-text arm** — it reads `render.hpp`'s own comment-stripped text through
+  `AERO_SHADERS_SRC_DIR`, the route `DD26` already uses, with **no new compile definition**. That is
+  strictly stronger than the compile failure would have been, because a commented-out include does
+  not satisfy it either. The naming arm stays, with its comment now saying precisely that it is not a
+  compile failure here and naming `debug_draw_pack.hpp` as the reason — `TM28`'s "a PARTIAL pin
+  rather than claimed as a full one" posture, with the partial half now backed by a full one.
+  **Re-seeded against the fix: the build still succeeds and `DD23` reddens** on `CHECK( false )`.
+* **`S7` — `RU6` did not cover the input the `blockBytes == 0` guard actually protects.** Its depth
+  subcase passes a 64-byte `out`, which the SIZE rule refuses first (`out.size() (64) != expected (0)
+  for 4x4 D32Float`), so the guard is never reached and deleting it changed nothing. The guard is
+  load-bearing for exactly one input: `out.size() == 0`, where the size rule AGREES and execution
+  reaches `((mipWidth + pitchBlockW - 1) / pitchBlockW)` with `texelBlockWidth(D32Float) == 0`.
+  Closed by one subcase. **Re-seeded against the fix: `RU6` SIGABRTs with the guard deleted and
+  passes with it present.**
+* **`S18` — `DD3` cannot discriminate the deleted non-finite arm, and the plan's prediction was
+  wrong.** The plan expected a **UBSan abort**. There is none, and the reason is worth writing down:
+  `std::lround(NaN)` is a **library call with an unspecified return value**, not an instrumented
+  float-to-int cast, so UBSan has no hook — the build genuinely is
+  `-fsanitize=address,undefined` and says nothing. On arm64 the returned value's low byte is 0, so
+  `channel(NaN)` yields 0 anyway and every NaN assertion passes; the two infinity arms are covered by
+  `std::clamp` regardless of the deleted arm. Measured under the seed: `CHECK( 0 == 0 )` ×4 and
+  `CHECK( 255 == 255 )`. **No better assertion closes this on this platform** — the discriminating
+  machine is one whose `lround(NaN)` has a non-zero low byte. The arm stays: its value is defined
+  behaviour and portability, not the value it happens to produce here.
+
+**Two more predictions the run corrected.**
+
+* **`S31` did NOT abort on Metal.** The plan predicted that building the viewport's `DebugDraw` from
+  the 8-bit OUTPUT format would create fine and then abort at the first flush with a format
+  mismatch. It did not: `I109` pushed a line, drew through an RGBA8-built pipeline into an
+  RGBA16Float pass, and stayed **green**, as did `I108` and `I111`. **`I110`'s create pin is the only
+  witness for the format wiring on this backend**, which strengthens the case for the textual pin
+  rather than weakening it — but nobody should expect a runtime failure there.
+* **`S3` and `S4` redden as PROCESS-LEVEL WEDGES, not as named assertions.** Deleting
+  `recordBufferUpload`'s pass-open refusal trips SDL's own
+  `'!"Cannot begin copy pass during another pass!"'` (`SDL_gpu.c:2750`) and the process hangs;
+  making the record blocking trips `'!"Command buffer already submitted!"'` (`SDL_gpu.c:3371`) the
+  same way. Both are loud, but **a CI lane would see a timeout rather than a failing case name** —
+  that is SDL's assert-and-hang behaviour, not a choice either test made. Anyone debugging a hung
+  lane on this path should start here.
+
+**And the run found a defect in its own harness, which is the trap worth remembering.** The restore
+step used `shutil.copy2`, which **preserves mtime** — so a restored file looked OLDER than its object
+file and ninja skipped the rebuild, leaving a "restored" tree running seeded code. It surfaced
+because one result was self-contradictory rather than because anything failed. No seed verdict was
+contaminated (every seed edit stamps a fresh mtime, so every seed build did recompile), but the
+lesson generalises past this task: **a revert-with-rebuild is only a rebuild if the revert changes
+the timestamp.** `shutil.copy` plus an explicit `os.utime` is the fix; `git checkout --` would have
+been correct here too, and is only forbidden while the fix under test is uncommitted.

@@ -11,6 +11,7 @@
 #include <aero/editor/panel.hpp>
 #include <aero/editor/scene_bounds.hpp>       // task 3.1.5: MeshBoundsLookup, borrowed by the three consumers
 #include <aero/editor/selection_overlay.hpp>  // task 2.3.2: OverlaySegment, for the scratch member
+#include <aero/render/debug_draw.hpp>         // task E.1.1: the panel's own world-space line renderer
 #include <aero/render/post_process.hpp>       // task 3.6.3: the owned HDR target + the fullscreen resolve
 #include <aero/render/render_target.hpp>
 #include <aero/scene_render/scene_renderer.hpp>
@@ -80,6 +81,17 @@ public:
     // This panel's PostProcess, joining sceneForwardRenderer() / sceneAssetBindings() as a test seam.
     // NULL when the panel is Unavailable.
     [[nodiscard]] const render::PostProcess* postProcess() const noexcept;
+
+    // ---- task E.1.1 -----------------------------------------------------------------------------
+    // This panel's DebugDraw, and the seam E.1.2 (the grid) and E.2.3 (light gizmos and icons) write
+    // into: `debugDraw()->batch().line(...)` from onDraw or from tick() before renderScene, which
+    // DRAINS it. A push that lands AFTER renderScene in a tick draws NEXT frame -- stated rather
+    // than defended: it is how every immediate-mode debug-draw API behaves. A CPU vector push is not
+    // a GPU create and not a World mutation, so the draw-walk rule does not forbid it.
+    // NULL when the panel is Unavailable, joining sceneForwardRenderer() / sceneAssetBindings() /
+    // postProcess() / outputTarget(). THIS TASK PUSHES NOTHING INTO IT FROM THE EDITOR.
+    [[nodiscard]] render::DebugDraw* debugDraw() noexcept;
+    [[nodiscard]] const render::DebugDraw* debugDraw() const noexcept;
 
     // ---- the overlay strip's claim on a click -----------------------------------------------------
     // Does the interactive overlay row own a press at `pressPoints` (screen-space POINTS, the space
@@ -174,6 +186,12 @@ private:
     std::optional<render::PostProcess> post;
     std::optional<render::RenderTarget> target;
     std::optional<scene_render::SceneRenderer> sceneRenderer;
+    // task E.1.1: the panel's DebugDraw, built against the SAME HDR pair the SceneRenderer was, so a
+    // line records into the scene pass with matching formats. Member/accessor collision rule: the
+    // MEMBER is debugDrawer, the accessor debugDraw() (the tonemapParamsValue/tonemapParams()
+    // precedent one member down). DECLARED AFTER sceneRenderer and therefore DESTROYED BEFORE it and
+    // before `post`, which is the order its pipelines' formats came from.
+    std::optional<render::DebugDraw> debugDrawer;
     // task 3.6.3: session state -- never written to project.aero, never to imgui.ini, never persisted
     // anywhere. Default-constructed and SANITIZED on every write, so it is valid even when the panel
     // never initialises. Member/accessor names differ by the house collision rule.

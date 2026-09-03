@@ -16,6 +16,7 @@ add_library(aero_render STATIC
     src/shadow.cpp            # task 3.6.2 -- the directional shadow fit: corners, sphere, basis, snap
     src/tonemap.cpp           # task 3.6.3 -- the transfer chain: exposure, curve, sRGB OETF
     src/post_process.cpp      # task 3.6.3 -- the owned HDR target and the fullscreen resolve
+    src/debug_draw.cpp        # task E.1.1 -- the pure batch, four pipelines, the flush
 )
 add_library(aero::render ALIAS aero_render)
 

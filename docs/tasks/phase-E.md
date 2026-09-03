@@ -25,6 +25,15 @@ first use of a non-triangle topology. `rhi::PrimitiveType::LineList`/`LineStrip`
 `FillMode::Line` have existed since 0.4.1 and are translated in the SDL_GPU backend, and **no
 pipeline in the tree has ever requested one** — so this task is where that path gets exercised,
 tested and proven on all three backends for the first time.)_
+
+_(**Sized M in the roadmap and landed L**, recorded before implementation and confirmed after — the
+3.6.3 / 3.7.3 precedent. The batch, four small shaders and the editor slot are M; what pushed it to L
+is two things the subtask list names without owning. "Batch buffer" means per-frame vertex data and
+the RHI had no per-frame upload path — `device.hpp`'s own comment deferred it to a Phase 3 that
+closed without it, and the portable push-uniform ceiling of 4096 bytes is 128 lines — so
+`Device::recordBufferUpload` landed here. And "the three-backend proof" is worth nothing if it means
+"no error was logged", so `Device::readbackTexture` landed here too, and the GPU tier asserts bytes:
+`RU5` is the first pixel-level assertion in this tree.)_
 **Goal:** give the renderer a way to draw a world-space line, which it has never had — every overlay
 in the editor today is 2D `ImDrawList` work in screen space, which cannot be occluded by geometry and
 cannot describe a shape in the scene.
