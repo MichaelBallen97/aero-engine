@@ -28,16 +28,18 @@
 #include <aero/render/lighting.hpp>
 #include <aero/render/material.hpp>
 #include <aero/render/mesh.hpp>
-#include <aero/render/renderer.hpp>  // Frame
-#include <aero/render/skinning.hpp>  // task 3.5.1 — MAX_SKINNING_JOINTS (the palette scratch's size)
-#include <aero/rhi/descriptors.hpp>  // rhi::SamplerDesc
-#include <aero/rhi/format.hpp>       // rhi::TextureFormat
-#include <aero/rhi/types.hpp>        // rhi::IndexType
+#include <aero/render/renderer.hpp>           // Frame
+#include <aero/render/selection_outline.hpp>  // task E.1.4 -- SelectionMaskView, SELECTION_MASK_*
+#include <aero/render/skinning.hpp>           // task 3.5.1 — MAX_SKINNING_JOINTS (the palette scratch's size)
+#include <aero/rhi/descriptors.hpp>           // rhi::SamplerDesc
+#include <aero/rhi/format.hpp>                // rhi::TextureFormat
+#include <aero/rhi/types.hpp>                 // rhi::IndexType
 
 #include <array>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <span>  // task E.1.4 -- renderSelectionMask's two instance spans
 #include <string_view>
 #include <utility>
 #include <vector>
@@ -82,6 +84,17 @@ struct ForwardRendererConfig {
     std::string_view shadowVertexShaderPath = "res://shadow.vert";
     std::string_view shadowSkinnedVertexShaderPath = "res://shadow_skinned.vert";
     std::string_view shadowFragmentShaderPath = "res://shadow.frag";
+    // task E.1.4 -- the SELECTION MASK pass. false skips the four pipelines entirely and makes
+    // renderSelectionMask a silent no-op returning an invalid view: the shadowMapResolution == 0
+    // escape hatch, in bool form.
+    //
+    // DEFAULT TRUE. The mask pipelines cost four pipeline objects at create() and NO TEXTURE until
+    // the first renderSelectionMask, so a sample that never selects anything pays only the creation.
+    // A MISSING selection_mask.frag FAILS create() loudly while this is true, exactly as a missing
+    // shadow shader has since 3.6.2: all four stages ship in shaders/CMakeLists.txt, so a missing one
+    // means a broken build rather than a configuration the engine should paper over.
+    bool selectionMask = true;
+    std::string_view selectionMaskFragmentShaderPath = "res://selection_mask.frag";
 };
 
 // Move-only RAII; owns the lit pipeline and a procedural primitive-mesh catalog (cube/sphere/plane).
@@ -128,6 +141,47 @@ public:
     // its intensity is 0, when shadowMapResolution() is 0, or when the fit is invalid. Only the last
     // of those warns, and it latches.
     [[nodiscard]] ShadowView renderShadowMap(const RenderView& view);
+
+    // task E.1.4 -- the SELECTION MASK pass. Records every instance in `secondary`, then every
+    // instance in `primary`, into a RENDERER-OWNED R8Unorm texture, DEPTH-TESTED against `sceneDepth`
+    // with CompareOp::LessOrEqual and depth write OFF.
+    //
+    //     const SelectionMaskView mask = forward.renderSelectionMask(
+    //         post.sceneDepthTexture(), post.sceneTextureExtent(), post.sceneDrawExtent(),
+    //         set.secondary, set.primary);
+    //     outline.composite(outFrame, mask, params);
+    //
+    // IT TAKES NO Frame AND TOUCHES NONE, for renderShadowMap's reason: a Frame carries an
+    // already-open pass and SDL refuses a second pass on a command buffer that has one open. It
+    // acquires its OWN command buffer, records, and SUBMITS -- so it MUST be called AFTER
+    // PostProcess::endScene has submitted the pass that wrote `sceneDepth`, and BEFORE the frame that
+    // composites. Commands in an earlier submit begin before any command in a later one, so no
+    // explicit barrier exists and none is needed.
+    //
+    // `sceneDepth` MUST have been written by a pass that STORED it (RenderTargetConfig::depthStore /
+    // PostProcessConfig::sceneDepthStore). Reading a DontCare'd depth attachment is undefined, and is
+    // GARBAGE on a tile-based deferred renderer -- every Apple Silicon Mac. NOTHING HERE CAN DETECT
+    // THAT, which is why the two flags exist and why this sentence is here.
+    //
+    // `textureExtent` is the ALLOCATION of the depth texture, and the mask is (re)allocated to match
+    // it EXACTLY -- never sized independently (D4: SDL requires every attachment in a pass to agree on
+    // dimensions, and a second sizing policy would diverge the first time the two were created or
+    // resized in a different order). `drawExtent` is the rendered sub-rect and is what viewport and
+    // scissor are set to -- NOT OPTIONAL, and invisible in every test whose drawExtent equals its
+    // textureExtent (D10).
+    //
+    // Returns an INVALID view -- acquiring nothing and submitting nothing -- when the pipelines were
+    // not built, when both spans are empty, when either extent is degenerate, when drawExtent exceeds
+    // textureExtent on either axis, or on any acquire / pass / allocation failure.
+    [[nodiscard]] SelectionMaskView renderSelectionMask(rhi::TextureHandle sceneDepth, rhi::Extent2D textureExtent,
+                                                        rhi::Extent2D drawExtent,
+                                                        std::span<const MeshInstance> secondary,
+                                                        std::span<const MeshInstance> primary);
+
+    [[nodiscard]] std::size_t selectionMaskPassCount() const noexcept;       // command buffers ACQUIRED, lifetime
+    [[nodiscard]] std::size_t lastFrameSelectionMaskDrawn() const noexcept;  // instances that issued a draw
+    [[nodiscard]] bool hasWarnedSelectionMaskCaster() const noexcept;        // D6's Mask/Blend latch
+    [[nodiscard]] bool hasWarnedSelectionMaskUnavailable() const noexcept;   // pipelines unbuilt / alloc failed
 
     // --- materials (task 3.4.1) -----------------------------------------------------------------
     // Registry semantics: generational handles, so a stale one is a logged no-op (update returns
@@ -351,6 +405,14 @@ private:
     // renderer exists, so a half-built set unwinds through the destructor with no bookkeeping.
     [[nodiscard]] bool createShadowResources(const VirtualFileSystem& shaderVfs, const ForwardRendererConfig& config);
 
+    // task E.1.4 -- the mask pass's four pipelines. Called by create() beside createShadowResources,
+    // AFTER the renderer exists, so a half-built set unwinds through the destructor with no
+    // bookkeeping. IT LOADS ITS OWN THREE SHADERS: create() destroys vs/vsSkinned/fs BEFORE the
+    // ForwardRenderer object is constructed, so the handles it built the forward pipelines from are
+    // already dead by the time this runs. createShadowResources does exactly the same for its three.
+    [[nodiscard]] bool createSelectionMaskResources(const VirtualFileSystem& shaderVfs,
+                                                    const ForwardRendererConfig& config);
+
     rhi::Device* device = nullptr;                   // non-owning; outlives the ForwardRenderer (contract)
     rhi::GraphicsPipelineHandle pipeline{};          // CullMode::Back — the engine convention
     rhi::GraphicsPipelineHandle pipelineCullNone{};  // the doubleSided twin, same two shaders
@@ -409,6 +471,18 @@ private:
     std::size_t shadowPasses = 0;         // command buffers acquired for a depth pass, lifetime
     bool warnedShadowFit = false;         // the fit failed at least once, latched
     bool warnedShadowMaskCaster = false;  // a Mask/Blend material cast an opaque silhouette (D13)
+    // task E.1.4 -- the SELECTION MASK pass's own resources. The texture is created LAZILY on the
+    // first pass, because its extent is not known until the caller names one.
+    rhi::GraphicsPipelineHandle selectionMaskPipeline{};                 // static,  CullMode::Back
+    rhi::GraphicsPipelineHandle selectionMaskPipelineCullNone{};         // static,  CullMode::None
+    rhi::GraphicsPipelineHandle selectionMaskPipelineSkinned{};          // skinned, CullMode::Back
+    rhi::GraphicsPipelineHandle selectionMaskPipelineSkinnedCullNone{};  // skinned, CullMode::None
+    rhi::TextureHandle selectionMaskTexture{};                           // R8Unorm; created LAZILY on the first pass
+    rhi::Extent2D selectionMaskAllocExtent{};                            // == the extent it was last told about (INV-2)
+    std::size_t selectionMaskPasses = 0;                                 // command buffers acquired, renderer lifetime
+    std::size_t lastSelectionMaskDrawn = 0;       // PER-FRAME; reset at the top of renderSelectionMask
+    bool warnedSelectionMaskCaster = false;       // a Mask/Blend material masked as a solid quad (D6)
+    bool warnedSelectionMaskUnavailable = false;  // pipelines unbuilt or the texture could not be made
 };
 
 }  // namespace engine::render
