@@ -150,7 +150,7 @@ std::optional<SelectionOutline> SelectionOutline::create(rhi::Device& device, co
     const rhi::SamplerDesc samplerDesc{
         // A sampled value is then EXACTLY a texel value, which is what makes the composite's
         // `mn < mx` an exact comparison rather than an epsilon one and what makes the band an exact
-        // 2r+1 integer. Linear would smear the three mask levels into each other and make both the
+        // 2r integer. Linear would smear the three mask levels into each other and make both the
         // band width and the role classification fractional.
         .minFilter = rhi::Filter::Nearest,         .magFilter = rhi::Filter::Nearest,
         .mipmapMode = rhi::MipmapMode::Nearest,  // one level; it must never be filtered across one
@@ -251,7 +251,7 @@ void SelectionOutline::composite(Frame& output, const SelectionMaskView& mask, c
     //    the outline's source sub-rect cannot disagree with the colour image's.
     const SelectionOutlineParams sane = sanitizeSelectionOutlineParams(params);
     const Vec2 uvMax = tonemapSourceUvMax(mask.drawExtent, mask.textureExtent);
-    // EXACT texel multiples, which is what makes the band an exact 2r+1 integer.
+    // EXACT texel multiples, which is what makes the band an exact 2r integer.
     const Vec2 texelStep{static_cast<float>(sane.radiusPixels) / static_cast<float>(mask.textureExtent.width),
                          static_cast<float>(sane.radiusPixels) / static_cast<float>(mask.textureExtent.height)};
 

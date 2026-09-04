@@ -18,10 +18,14 @@
 //
 // THE EDGE RULE, and it is the whole of what this draws. For each output pixel: sample self and the
 // eight box neighbours at exactly +/- radiusPixels texels; outline iff `mn < mx`, coloured from mx.
-// Across an axis-aligned edge the band is EXACTLY 2*radius + 1 pixels -- an exact integer, because
-// the sampler is Nearest on both filters, so a sampled value IS a texel value. Across a 45-degree
-// edge the box neighbourhood reaches radius*sqrt(2) and the band is wider there: the standard
-// behaviour of a box neighbourhood, documented rather than corrected.
+// Across an axis-aligned edge the band is EXACTLY 2*radius pixels -- an exact integer, because the
+// sampler is Nearest on both filters, so a sampled value IS a texel value. The number is 2*radius
+// and not 2*radius + 1, and it is worth the arithmetic: the neighbourhood in x is exactly
+// {c - r, c, c + r}, so with a mask transition between texels k and k + 1 the pixels satisfying
+// mn < mx are exactly k + 1 - r .. k + r -- r INSIDE the silhouette and r outside. MEASURED at
+// radius 1, 2, 4 and 8 by OG3, not reasoned from. Across a 45-degree edge the box neighbourhood
+// reaches radius*sqrt(2) and the band is wider there: the standard behaviour of a box
+// neighbourhood, documented rather than corrected.
 //
 // LIFETIME CONTRACTS (post_process.hpp's, verbatim): the rhi::Device passed to create() MUST outlive
 // the SelectionOutline. Move-only with USER-DEFINED noexcept moves -- a defaulted move would
@@ -92,7 +96,8 @@ struct SelectionMaskView {
 inline constexpr Vec4 SELECTION_OUTLINE_PRIMARY_DEFAULT{1.0F, 0.690196F, 0.250980F, 1.0F};         // 255,176,64,255
 inline constexpr Vec4 SELECTION_OUTLINE_SECONDARY_DEFAULT{1.0F, 0.580392F, 0.125490F, 0.745098F};  // 255,148,32,190
 
-// The band across an axis-aligned edge is EXACTLY 2*radius + 1 pixels. 8 is not a performance ceiling
+// The band across an axis-aligned edge is EXACTLY 2*radius pixels (see the header comment's
+// arithmetic). 8 is not a performance ceiling
 // -- it is the point past which the band stops reading as an outline and starts reading as a glow,
 // and a bounded radius is what makes the tap loop unrollable.
 inline constexpr std::uint32_t SELECTION_OUTLINE_MIN_RADIUS = 1;

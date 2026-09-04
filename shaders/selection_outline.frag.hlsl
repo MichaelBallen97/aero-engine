@@ -25,8 +25,10 @@ float4 main(float2 uv : TEXCOORD0) : SV_Target0 {
     float mn = c;
     float mx = c;
     // The eight box neighbours at EXACTLY +/- one step. Across an axis-aligned edge this makes the
-    // band exactly 2*radius + 1 pixels wide; across a 45-degree edge the box reaches radius*sqrt(2),
-    // which is the standard behaviour of a box neighbourhood and is documented, not corrected.
+    // band exactly 2*radius pixels wide -- radius INSIDE the silhouette and radius outside, MEASURED
+    // at radius 1, 2, 4 and 8 rather than reasoned. Across a 45-degree edge the box reaches
+    // radius*sqrt(2), which is the standard behaviour of a box neighbourhood and is documented,
+    // not corrected.
     const float2 OFFSETS[8] = {
         float2(-1.0, -1.0), float2( 0.0, -1.0), float2( 1.0, -1.0),
         float2(-1.0,  0.0),                     float2( 1.0,  0.0),
