@@ -456,9 +456,11 @@ log in `docs/10`. **Its own residual is Windows**: both e2e cases are `NOT WIN32
 that runs the two scripts is ubuntu-only, so nothing about the guards' behaviour is exercised under an
 MSYS userland at all. Coverage of the *invariant* is unaffected — the guards run on every push.
 
-**E.1.1 adds a full page and it is NOT RUN on any platform.**
-`editor/validation/E.1.1-debug-line-renderer.md` is written (gitignored, so it enters no commit) with
-eleven numbered steps, seven of them carrying measurement blanks. Its shape is unlike every prior
+**E.1.1's page IS macOS-validated — 8 of 10 rows PASS on 2026-09-03, 2 partial for structural
+reasons.** (This paragraph said "NOT RUN on any platform" until E.1.2's pass; the phase table above
+had been updated at E.1.1's pass and this had not, so the block contradicted itself.)
+`editor/validation/E.1.1-debug-line-renderer.md` is gitignored, so it enters no commit, and carries
+eleven numbered steps, seven of them with measurement blanks. Its shape is unlike every prior
 render task's: **rows 1–3 are already automated on all three lanes** by `DG5`–`DG10` and `DG16`,
 because the tree now reads pixels back. What stays hardware-only is legibility on a HiDPI display
 (a 1-pixel line has no width control on any backend), the editor's picture being unchanged against a
@@ -486,9 +488,10 @@ binary is `aero_sample_phaseE_debug_draw`** — `phaseE`, no underscore before t
 
 ### Next
 
-**Phase E is the open front. E.1.2 is merged and its validation page is written and UNRUN on every
-platform** — the first Phase E task whose CI passed on all three lanes from the first push, Windows
-and Linux included. The epic's remaining tasks are **E.1.3**
+**Phase E is the open front. E.1.2 is merged AND macOS-validated** (8 PASS / 2 PARTIAL / 1 NOT
+EXECUTABLE, 2026-09-04) — the first Phase E task whose CI passed on all three lanes from the first
+push, Windows and Linux included. **Windows and Linux validation remain outstanding**, as everywhere.
+The epic's remaining tasks are **E.1.3**
 (view-axis gizmo — it owns "which way is up", which E.1.2 deliberately does not answer), **E.1.4**
 and **E.1.5** (the gizmo restyle, which adopts `AXIS_{X,Y,Z}` from the palette E.1.2 created).
 
