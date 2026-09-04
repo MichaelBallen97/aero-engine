@@ -13393,3 +13393,140 @@ reads as "the guard missed the new files" — stage first, then measure. And the
 as `aero_sample_phase_E_debug_draw` in every gate command and in validation row 11. A wrong binary
 name in a validation row makes the row unrunnable at exactly the moment someone is trying to follow
 it.
+
+### E.1.4 — Silhouette selection outline — the box is gone
+
+**The selection highlight stops being a box.** The selected instances are drawn again, with the
+**same vertex shaders** the forward pass used and the **same per-instance cull mode**, into an
+`R8Unorm` mask that is **depth-tested with `CompareOp::LessOrEqual` against the depth the forward
+pass just wrote** — so the mask is exactly the pixels you can see. A fullscreen nine-tap edge detect
+then composites a band over the **already-resolved LDR image**, after the tonemap, in sRGB display
+bytes. Three levels: `0.0` nothing, `0.5` secondary, `1.0` primary.
+
+**Nine commits. 7 new files; 16 edited source/header files, plus 4 CMakeLists and 4 docs.**
+(The plan predicted "7 new / 13 edited"; 16 is the measured number, from
+`git diff --name-status` against the branch point.) Two new HLSL fragment stages and **zero** new vertex
+stages; four defaulted growths across `render_target.hpp` / `post_process.hpp`; a new public
+`render::SelectionOutline` plus its private packer; four pipelines and one lazily-allocated `R8Unorm`
+texture on `ForwardRenderer`; a new pure `buildSelectionMaskSet` in `scene_renderer.cpp`; the editor
+rewire; and the deletion of `BoxEdge`, `BOX_EDGES` and `appendBoxEdges` from `editor/`. **L, as
+estimated.** No new dependency, no `find_package`, no submodule move, no vcpkg baseline change, no
+link-line change anywhere, no new `editor/src/*.cpp`, no sample, no component, no scene-format
+change, no cooker-version bump. **`ctest -N` unmoved at 172**; `aero_tests` 1250 → 1292 (+42),
+`aero_editor_imgui_test` 149 → 153 (+4), `aero_editor_shell_test` **1748 → 1748**, which is a
+measurement rather than an arithmetic coincidence worth trusting: four cases left and four arrived.
+
+**INV-7: this task added NO producer to `render::DebugDraw`.** E.1.2's shared-batch wall does not
+apply, `I108`–`I112` are green with byte-unchanged assertions, and **E.2.3 still inherits that wall
+against `I112`**.
+
+#### The traps, each with its measurement
+
+**`stencilLoadOp` LEFT AT ITS DEFAULT HANGS THE PROCESS, AND THE DEPTH FORMAT MAKES THE FIX LOOK
+POINTLESS.** The rhi's cycle rule is *cycle iff ANY load op is not `Load`*
+(`sdl_gpu_backend.cpp:2263-2265`), and `DepthStencilAttachment::stencilLoadOp` defaults to
+`DontCare` — so a mask pass that spells only `depthLoadOp = Load` asks SDL to **cycle** a depth
+target it is also being told to **load**. `SDL_BeginGPURenderPass` asserts on exactly that
+("Cannot cycle depth target when load op or stencil load op is LOAD!") and the process **hangs**
+rather than failing: the first `OG` run sat for ten minutes with one assertion line in its log. The
+auto-picked scene depth format carries no stencil at all, so `stencilLoadOp = rhi::LoadOp::Load`
+changes nothing about the attachment and everything about the cycle decision. **Any future pass
+attaching an existing depth attachment with `LoadOp::Load` must spell BOTH load ops.**
+
+**THE BAND IS `2 * radius` PIXELS WIDE, NOT `2 * radius + 1`.** The spec and the plan both said
+`2r + 1`; it is `2r`, measured at radius 1, 2, 4 and 8 by `OG3` and derivable in one line: the tap
+neighbourhood in x is exactly `{c - r, c, c + r}`, so with a mask transition between texels `k` and
+`k + 1` the pixels satisfying `mn < mx` are exactly `k + 1 - r … k + r` — **r inside the silhouette
+and r outside**. Three comments this task had already written were corrected in the commit that
+measured it. The **shader is unchanged**: the arithmetic was right and the sentence describing it was
+not.
+
+**`MaterialParams{}` IS NOT THE RENDERER'S DEFAULT MATERIAL, AND THE DIFFERENCE IS INVISIBLE.** The
+struct defaults `metallicFactor` to glTF's `1.0`; `DEFAULT_MATERIAL_PARAMS` is
+`{.metallicFactor = 0.0F}` because *a metal with no environment to reflect renders near-black under
+analytic lights*. A GPU case that builds a material with `createMaterial({.doubleSided = true}, {})`
+therefore draws a quad that **is** on screen and is byte-for-byte the background — so a colour
+assertion over it passes for the wrong reason. `OG10` reddened on exactly that and now starts from
+`DEFAULT_MATERIAL_PARAMS`.
+
+**`create()` DESTROYS ITS THREE SHADER HANDLES BEFORE THE `ForwardRenderer` OBJECT EXISTS.**
+`forward_renderer.cpp:536-538` destroys `vs`/`vsSkinned`/`fs`; the object is constructed at `:555`
+and `createShadowResources` runs at `:598`. So `createSelectionMaskResources`, which is a member and
+runs beside it, **loads its own three** — which is what `createShadowResources` already does, not a
+new pattern. The spec's "from shaders `create()` has already loaded" was impossible as written.
+
+**A `depthLoadOp` LEFT AT ITS `Clear` DEFAULT SILENTLY CLEARS THE SCENE DEPTH** and turns every mask
+into a full un-occluded silhouette — the exact defect D1 exists to prevent, produced by a defaulted
+field rather than by a wrong one. And **`LessOrEqual`, never `Less`**: the mask re-rasterises
+geometry whose depth is already in the buffer, so `Less` rejects every fragment and the mask comes
+out empty.
+
+**`Zero`/`One` ON THE ALPHA CHANNEL, OR THE VIEWPORT GOES SEE-THROUGH.**
+`SrcAlpha`/`OneMinusSrcAlpha` on alpha would write 0 wherever the composite outputs a transparent
+fragment — **most of the image** — and the editor's `ImGui::Image` alpha-blends this texture over the
+panel background. `OG9` scans the whole buffer rather than a sample.
+
+**VIEWPORT AND SCISSOR ON THE MASK PASS ARE NOT OPTIONAL, AND ARE INVISIBLE IN EVERY `quantum = 1`
+TEST.** `renderShadowMap` sets neither, correctly, because its texture has no margin; the mask
+texture's does. With the default full-target viewport the mask maps across the **allocation** while
+the resolve maps across the **drawn rect**, so the outline is silently rescaled and slides as the
+panel is resized. `OG7` is the only case that can see it: a 200×140 draw inside a 256×192 allocation,
+compared against a real `quantum = 1` render at the same drawn size.
+
+**TWO TEST-ORDER FINDINGS, AND BOTH LOOK LIKE PASSING TESTS.** `buildRenderView` walks the World
+through `each<Transform, MeshRenderer>`, whose order is **EnTT's storage order**, while
+`buildSelectionMaskSet` walks the **selection**. A positional comparison of the two builders' output
+is asserting that two unrelated orders happen to agree — `SQ2` and `SQ12` both reddened on it, and
+both now match by `(model, submesh)` with `REQUIRE(matches == 1)` making the key's uniqueness a
+checked property rather than an assumption. And **96 rounds UP to 128 at `quantum = 64`**, so
+`OG16`'s small step allocates 128×128 rather than 128×96.
+
+**`rhi::Extent2D` CARRIES NO `operator<<`,** so a whole-struct `CHECK(a == b)` prints `{?} == {?}` on
+the one run that matters. Every extent assertion in the new GPU tier compares the two axes
+separately.
+
+**A `-ts=` FILTER SELECTS TEST SUITES, NOT TEST-CASE NAMES.** This tree uses no doctest test suites,
+so `-ts="*selection outline*"` selected **zero** cases and reported `Status: SUCCESS!` — the plan's
+own gate commands are written with `-ts=`. Use `-tc=`, and read the `test cases:` line either way.
+
+#### What was deliberately left out
+
+D20's eight non-goals hold: no alpha-tested cutout, no faint hidden portion, no preview or thumbnail
+outline, no viewport toggle, no thickness or colour UI, no icons for lights, no anti-aliasing, no
+instanced or indirect mask draws. **Two handoffs this task creates by name:**
+
+* **The faint hidden portion** (approach C, the Unreal-like double mask). The encoding has room — 3
+  of 256 levels are used — and it was rejected for now rather than dismissed: it doubles the mask
+  geometry and needs its own rule for the seam where an object crosses behind an occluder, which is a
+  design question this task should not answer in passing.
+* **The alpha-tested mask cutout** (D6). The mask stage has no UVs and must not discard, so a
+  `MaterialAlpha::Mask` instance is masked as a **solid quad** and the outline traces the quad. It
+  latches one WARN per renderer, exactly as `renderShadowMap` does for casters. **8.2.1 owns
+  alpha-tested passes and should take this too.**
+
+Also deliberately absent: the mask pass does **no frustum culling** (the set is capped at 256, and
+every cull predicate is one more thing that can disagree with `draw()`'s), fires **no
+`strayPalette`/`SkinningCap` WARN** (`draw()` owns every one of those latches and fires them from
+there only), binds **no material texture** and pushes **no material block** (the stage has neither),
+and does **not** increment `pipelineBinds` (that counter is `draw()`'s 3.4.1 observable and moving it
+would break existing assertions).
+
+#### Two procedural notes
+
+**The id survey needs all three spellings, and the obvious repair is worse than the bug.**
+`imgui_layer_test.cpp` writes its ids as `TEST_CASE("editor: … (task E.1.3, I114)")` — preceded by
+`, ` and followed by `)"`, a **third** spelling both documented greps miss. A `\bI[0-9]+\b` sweep
+looks like the fix and **degrades to a literal `b` under BSD/macOS userland**, matching nothing and
+exiting 0: a survey that cannot fail. The working form is
+`grep -oE 'I[0-9]+\)"' … | grep -oE 'I[0-9]+' | sort -u -V | tail`, and it must be run against **every
+open branch head**, not just `origin/main` — E.1.3's ceiling was `I119` when this task branched, and
+E.1.3 merged to `main` while this task was being built.
+
+**The "the box is gone" gate grep must be scoped AND comment-stripped.**
+`engine/render/src/debug_draw.cpp` carries its own unrelated anonymous-namespace `BoxEdge`/
+`BOX_EDGES` for a wire-box helper, so the grep must be scoped to `editor tests`. And even scoped it
+finds three hits on a correct tree — the migration prose this task was required to write, in
+`scene_bounds.hpp`'s corrected comment and `selection_overlay_test.cpp`'s header, both of which
+**must** name the deleted symbol to say where its property went. The gate that means what it says is
+a comment-stripped sweep over `editor` and `tests`, with `debug_draw.cpp` as its anti-vacuity
+control.

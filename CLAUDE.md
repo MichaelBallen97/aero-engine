@@ -11,9 +11,11 @@ Two platform matrices, never to be conflated: the **editor** runs on macOS/Windo
 ## Current state — read this first
 
 **PHASE E (Editor Experience) IS OPEN — it executes between Phase 3 and Phase 4.**
-**E.1.1 (Debug line renderer) is MERGED (PR #92, merge commit `15bf58b`) and E.1.2 (Grid floor +
-world axes) is MERGED (PR #93, merge commit `d91eab1`, ten commits, all six CI jobs green with
-`headSha == HEAD` asserted); the other 22 tasks are planning only.** Six epics, 24
+**E.1.1 (Debug line renderer) is MERGED (PR #92, `15bf58b`), E.1.2 (Grid floor + world axes) is
+MERGED (PR #93, `d91eab1`), E.1.3 (View-axis gizmo) is MERGED (PR #94) and E.1.4 (Silhouette
+selection outline) is COMPLETE IN CODE on `feat/E.1.4-silhouette-selection-outline` (nine commits,
+full local gate green on both presets and both reduced configurations) and NOT YET MERGED; the
+other 20 tasks are planning only.** Six epics, 24
 tasks, in `docs/tasks/phase-E.md`. It is **lettered, not fractioned**, because `3.5` and `3.5.1`/`3.5.2` are
 already Phase 3's Skeletal-animation epic and its tasks — a "Phase 3.5" would collide with referenced
 numbers, and numbering is append-only. In Notion its `Phase #` is `3.5`, a sort key, not an
@@ -51,6 +53,76 @@ Epics **3.1** (AssetDatabase), **3.2** (Importers), **3.3** (Cooker v0), **3.4**
 > summary of *where the position is* and of the rules that still govern new work. It is **rewritten**
 > as the position moves, never grown: it reached 207 k characters once and that is what this note
 > exists to prevent.
+
+### E.1.4 — Silhouette selection outline (COMPLETE IN CODE, not merged) — the box is gone
+
+**The selection highlight stops being a box.** The selected instances are drawn again — same vertex
+shaders, same per-instance cull mode — into an `R8Unorm` mask depth-tested `LessOrEqual` against the
+depth the forward pass just wrote, and a nine-tap edge detect composites a band over the
+already-resolved image, after the tonemap, in sRGB display bytes. Nine commits, 7 new files and 16
+edited source/header files, no new dependency, no link-line change, no component, no scene-format
+change. **`ctest -N`
+unmoved at 172.** Full detail in `docs/10`; the four sentences that govern new work are below.
+
+**1. `RenderTarget` CAN NOW STORE ITS DEPTH, OPT-IN, AND `PostProcess` FORWARDS IT.** Two flags,
+`RenderTargetConfig::depthStore` and `PostProcessConfig::sceneDepthStore`, both defaulting to today's
+behaviour (`Clear` → `DontCare`). **An unstored depth read by a later pass is GARBAGE on a tiler —
+every Apple Silicon Mac — not stale**, so the failure shape is an EMPTY result on Metal and a CORRECT
+one on D3D12/Vulkan, which is the worst there is. Any future pass reading a `RenderTarget`'s depth
+must set the flag, and **nothing in the API can detect that it did not**.
+
+**AND BOTH LOAD OPS MUST BE SPELLED, WHICH THE DEPTH FORMAT MAKES LOOK POINTLESS.** The rhi cycles a
+depth target iff **ANY** load op is not `Load`, and `DepthStencilAttachment::stencilLoadOp` defaults
+to `DontCare` — so a pass that spells only `depthLoadOp = Load` asks SDL to cycle a target it is also
+loading, which trips `SDL_BeginGPURenderPass`'s own assertion and **HANGS the process rather than
+failing it**. The scene depth format carries no stencil at all, so the fix changes nothing about the
+attachment and everything about the cycle decision. Separately, a `depthLoadOp` left at its `Clear`
+default silently **clears the scene depth** and turns every mask into a full un-occluded silhouette.
+
+**2. THE MASK PASS REUSES `scene.vert` / `scene_skinned.vert` VERBATIM, AND THAT IS WHAT MAKES
+`LessOrEqual` EXACT.** No graphics API guarantees position invariance across two different vertex
+shaders; the failure mode is a **speckled mask that reads as a depth-bias bug** and is maddening to
+attribute. Any future pass that re-rasterises geometry and compares against an existing depth must
+pair with the **same** vertex stage, not an equivalent one. And `LessOrEqual`, never `Less`: `Less`
+rejects every fragment and the mask comes out empty.
+
+**3. `ForwardRenderer` NOW HAS TWO SELF-SUBMITTING PASSES** — `renderShadowMap` and
+`renderSelectionMask` — and both take no `Frame` for the same reason: `Frame`'s constructor is
+private with exactly two friends and `renderer.hpp` is frozen. **A third maker of `Frame`s is never
+the answer.** `renderSelectionMask` additionally sets **viewport and scissor** to the drawn sub-rect,
+which `renderShadowMap` correctly does not: its texture has no margin and the mask's has, and with
+the default full-target viewport the mask is silently rescaled — **invisible in every test whose
+`drawExtent` equals its `textureExtent`**, which is every `quantum = 1` target.
+
+**4. THE SELECTION'S "HAS GEOMETRY" QUESTION HAS ONE ANSWER, `buildSelectionMaskSet`**, consumed
+twice per tick — by the mask and by the point marker. `buildSelectionOverlay` no longer resolves
+bounds and no longer takes a `MeshBoundsLookup*`; `localBoundsFor` keeps its **two** consumers
+(`pickEntity`, the bounds walk). **`BoxEdge`, `BOX_EDGES` and `appendBoxEdges` are gone from
+`editor/`** — `engine/render/src/debug_draw.cpp` has its own unrelated copy and it stays, which is
+why the "the box is gone" gate grep must be **scoped to `editor tests` AND comment-stripped**: the
+migration prose in `scene_bounds.hpp` and `selection_overlay_test.cpp` legitimately names the deleted
+symbol.
+
+**THE BAND IS `2 * radius` PIXELS WIDE, NOT `2r + 1`** — the spec and the plan both said `2r + 1`.
+The tap neighbourhood in x is exactly `{c − r, c, c + r}`, so across a transition between texels `k`
+and `k + 1` the band is `k + 1 − r … k + r`: **r inside the silhouette and r outside**. Measured at
+radius 1, 2, 4 and 8 by `OG3`.
+
+**AND `MaterialParams{}` IS NOT THE RENDERER'S DEFAULT MATERIAL.** The struct defaults
+`metallicFactor` to glTF's `1.0`, and *a metal with no environment to reflect renders near-black
+under analytic lights* — so a test quad built from `MaterialParams{}` **is** drawn and is
+byte-identical to the background, which makes any colour assertion over it vacuous. Start from
+`DEFAULT_MATERIAL_PARAMS`.
+
+**TWO TEST-TIER TRAPS, BOTH OF WHICH LOOK LIKE PASSING TESTS.** `buildRenderView` walks
+`each<Transform, MeshRenderer>` in **EnTT's storage order** while `buildSelectionMaskSet` walks the
+**selection**, so comparing the two builders' output BY POSITION asserts that two unrelated orders
+agree — match by a key and `REQUIRE` its uniqueness. And **a `-ts=` filter selects TEST SUITES**,
+which this tree has none of: `-ts="*selection outline*"` selects zero cases and reports
+`Status: SUCCESS!`. Use `-tc=`, and read the `test cases:` line either way.
+
+**INV-7: THIS TASK ADDED NO `DebugDraw` PRODUCER**, so E.1.2's shared-batch wall is **still**
+E.2.3's to hit against `I112`.
 
 ### E.1.2 — Grid floor + world axes (MERGED, PR #93 `d91eab1`) — and a MEASURED NEGATIVE RESULT
 
@@ -202,7 +274,7 @@ miniaudio; `A38` is covered only by validation row 9. Full detail in `docs/10`.
 | **Phase 2** — Editor | **COMPLETE, gate met 2026-08-02.** All six epics closed and macOS-validated; Windows/Linux rows pending for every task (`editor/VALIDATION.md`). Gate artifact: `samples/phase-2-editor-scene/` — data, deliberately not `add_subdirectory`'d. |
 | **Phase 3** — Asset Pipeline & 3D Content | **OPEN.** **All seven epics CLOSED in code** — 3.1–3.6, and 3.7 with 3.7.1 + 3.7.2 merged and macOS-validated and **3.7.3 merged (PR #91)**. What is left is the gate below and the validation debt. Per-task detail in `docs/10`. |
 | **Phase 3 gate** | Drop a rigged glTF/FBX in → PBR materials + shadows + a playing animation + **an audible sound**. The audible half exists in code as of 3.7.2 and **has not been validated on any platform** — 3.7.2's macOS pass ticked 47 of 53 records and left the 6 that need ears open. |
-| **Phase E** — Editor Experience | **OPEN. E.1.1 merged (PR #92 `15bf58b`) and E.1.2 merged (PR #93 `d91eab1`); 22 tasks remain, planning only.** Inserted between 3 and 4; six epics, 24 tasks in `docs/tasks/phase-E.md`. Viewport legibility (E.1), lighting & environment (E.2), inspector & context routing (E.3), project/scene/asset management (E.4), content-creation UX (E.5), shell identity (E.6). **E.1.1 is macOS-validated** — 8 of 10 rows PASS on 2026-09-03, 2 partial for structural reasons (the sample installs no billboard atlas, so `S21`'s picture half is not executable with it; Tracy's CLI exports zones but not plots). **E.1.2 is macOS-validated** — 8 PASS / 2 PARTIAL / 1 NOT EXECUTABLE on 2026-09-04. Windows and Linux unvalidated, as everywhere. |
+| **Phase E** — Editor Experience | **OPEN. E.1.1 merged (PR #92 `15bf58b`), E.1.2 merged (PR #93 `d91eab1`), E.1.3 merged (PR #94), E.1.4 COMPLETE IN CODE and unmerged on `feat/E.1.4-silhouette-selection-outline`; 20 tasks remain, planning only.** Inserted between 3 and 4; six epics, 24 tasks in `docs/tasks/phase-E.md`. Viewport legibility (E.1), lighting & environment (E.2), inspector & context routing (E.3), project/scene/asset management (E.4), content-creation UX (E.5), shell identity (E.6). **E.1.1 is macOS-validated** — 8 of 10 rows PASS on 2026-09-03, 2 partial for structural reasons (the sample installs no billboard atlas, so `S21`'s picture half is not executable with it; Tracy's CLI exports zones but not plots). **E.1.2 is macOS-validated** — 8 PASS / 2 PARTIAL / 1 NOT EXECUTABLE on 2026-09-04. **E.1.4 has a validation page written and NOT YET RUN on any platform.** Windows and Linux unvalidated, as everywhere. |
 | **Phase E gate** | Open a project and land in the scene you were last editing, on a lit grid floor under a sky; create a Cube from the menu, drop a material on it and see it shade; aim a spot light with a visible gizmo; rename, move and delete assets without leaving the editor. Gate artifact: `samples/phase-E-editor/`. |
 
 ### Engine layers, in dependency order
@@ -224,11 +296,37 @@ miniaudio; `A38` is covered only by validation row 9. Full detail in `docs/10`.
   `PRIVATE aero::profiling`, and **never `aero::scene_internal`** (which carries `EnTT::EnTT`
   INTERFACE by design). Folding its walk into `engine/audio` would put **EnTT on the link line of every
   binary that links audio**, including the Phase 5 runtime.
-* **`/editor`** is **26 `.hpp`/`.cpp` pairs**; `/tools` links `aero::assets` and `aero::editor_core`
+* **`/editor`** is **27 `.hpp`/`.cpp` pairs** since E.1.3's `view_axis_gizmo` (E.1.4 adds none); `/tools` links `aero::assets` and `aero::editor_core`
   through `aero_cooker`, which is legal because `tools/` is enumerated by neither half of the golden
   rule.
 
 ### Standing invariants that govern new work
+
+**A RENDER TARGET'S DEPTH IS ONLY READABLE IF IT WAS STORED, AND NOTHING CAN DETECT THAT IT WAS NOT.**
+E.1.4 added `RenderTargetConfig::depthStore` and `PostProcessConfig::sceneDepthStore`, both defaulting
+to today's `Clear` → `DontCare`. On a tile-based deferred renderer — **every Apple Silicon Mac** —
+`DontCare` means the tile's depth is never written back, so a later `LoadOp::Load` reads **GARBAGE,
+not stale-but-plausible values**: an EMPTY result on Metal and a CORRECT one on D3D12/Vulkan, which is
+the worst failure shape there is. **And a pass attaching an existing depth with `LoadOp::Load` must
+spell BOTH load ops**: the rhi cycles a depth target iff ANY load op is not `Load`, `stencilLoadOp`
+defaults to `DontCare`, and the combination trips `SDL_BeginGPURenderPass`'s own assertion and **HANGS
+the process** rather than failing it.
+
+**A PASS THAT RE-RASTERISES GEOMETRY AND COMPARES AGAINST AN EXISTING DEPTH MUST PAIR WITH THE SAME
+VERTEX STAGE, NOT AN EQUIVALENT ONE.** No graphics API guarantees position invariance across two
+different vertex shaders; the failure mode is a **speckled mask that reads as a depth-bias bug**.
+E.1.4's mask pass therefore reuses `scene.vert` / `scene_skinned.vert` verbatim and pays
+`GpuPerObject`'s 208 bytes rather than a `Mat4`. It also uses `CompareOp::LessOrEqual`, never `Less`:
+`Less` rejects every fragment of geometry whose depth is already in the buffer, and the mask comes out
+empty.
+
+**A PASS WHOSE TARGET HAS MARGIN MUST SET VIEWPORT AND SCISSOR, AND NO `quantum = 1` TEST CAN SEE
+THAT IT DID NOT.** `renderShadowMap` sets neither, correctly, because its texture has no margin.
+`renderSelectionMask`'s does: with `beginRenderPass`'s default full-target viewport the mask maps
+across the ALLOCATION while the resolve maps across the DRAWN rect, so the result is silently rescaled
+and slides as the panel is resized. Every convenient test target is `quantum = 1`, where
+`drawExtent == textureExtent` and the bug is invisible; `OG7` uses a 200x140 draw inside a 256x192
+allocation and is the only case that can catch it.
 
 **THE RHI GREW EXACTLY TWO CALLS AT E.1.1, AND EACH HAS ONE SENTENCE THAT VOIDS SILENTLY.**
 `Device::recordBufferUpload` **replaces the WHOLE buffer** — everything past `data.size()` is
@@ -378,15 +476,19 @@ Read totals from **doctest's own `filters:` line**, never from a `grep -c` of ca
 count on its own page goes stale, and adding one task's delta to another task's baseline is exactly the
 arithmetic that produces a confident wrong number.
 
-At E.1.2's gate: **`ctest -N` 172** (tools-ON, measured on both presets; the two reduced
-configurations' 80 / 93 remain 3.7.3's numbers and were re-measured at neither E.1.1 nor E.1.2);
-doctest across **seven** binaries **1250 / 1748 / 149 / 34 / 29 / 7 / 28**. **E.1.2 repeats E.1.1's
+At E.1.4's gate, measured on both presets: **`ctest -N` 172, UNMOVED**; doctest across **seven**
+binaries **1292 / 1748 / 153 / 34 / 29 / 7 / 28** (`aero_tests`, `aero_editor_shell_test`,
+`aero_editor_imgui_test`, `aero_scene_serialize_test`, `aero_editor_inspector_test`,
+`aero_reflect_meta_test`, `aero_reflect_json_test`). **E.1.4 repeats E.1.1's, E.1.2's and E.1.3's
 signature and it is the INVERSE of 3.7.3's: the doctest totals MOVE while `ctest -N` does NOT** —
-`aero_tests` 1223 → 1250 (`GR1`–`GR26` + `DG18`), `aero_editor_shell_test` 1746 → 1748 (`AX1`, `AX2`)
-and `aero_editor_imgui_test` 147 → 149 (`I112`, `I113`; `I110` gained a subcase, which moves no
-total), because new TUs ride existing binaries and a sample registers no ctest entry. The eight guard
-counts at that gate: math **461**, platform **85**, rhi **149**, scene **85**, golden-rule **151**,
-project-no-delete **A=6/B=75**, audio **11/3/55**, probes **6/57**. **`check-math-boundary.sh` counts
+`aero_tests` 1250 → 1292 (+42: `SO1`–`SO13`, `OG1`–`OG17`, `SQ1`–`SQ12`) and
+`aero_editor_imgui_test` 149 → 153 (+4: `I120`–`I123`), while **`aero_editor_shell_test` stayed at
+1748 because four cases left and four arrived** — a MEASUREMENT, and exactly the kind of delta that
+must never be predicted arithmetically, because `SUBCASE` structure makes the sum a guess. The eight
+guard counts at that gate: math **466**, platform **86**, rhi **152**, scene **86**, golden-rule
+**154**, project-no-delete **A=6/B=75**, audio **11/3/55**, probes **6/57**. **The two reduced
+configurations read `159` (shader-tools-OFF) and `93` (reflect-tools-OFF)**, with all **70 `cooker.*`
+entries present in all three** — compare the entry SETS, not the totals. **`check-math-boundary.sh` counts
 `git ls-files`, so it reads a STALE number until new files are `git add`ed** — stage first, then
 measure. A moved `ctest -N` on a task like that means a CMakeLists copied
 from the wrong template. Both reduced configurations
@@ -448,6 +550,20 @@ spatializer, the mixer, the system and the bridge **are** cross-lane covered —
 sound**, because CI opens the null backend only. **LSan runs on the Linux Debug lane alone**, which
 makes that page's Linux row matter more than most.
 
+**E.1.4'S PAGE IS WRITTEN AND HAS NOT BEEN RUN ON ANY PLATFORM.** Its eleven rows are the whole of
+its remaining risk, and several are the ONLY cover their seed has anywhere: **row 1** (a REAL asset
+with a fat cooked AABB — the deliverable's headline claim, judged against something other than a
+`Sphere`), **row 3** (the palette and the primary/secondary read at a glance — sabotage row 20 is a
+deliberate NON-finding, because restating the two colours as `IM_COL32` literals one byte off is
+invisible to every automated tier), **row 4** (HiDPI legibility, and the FIRST time E.1.1's
+thick-line handoff can be answered at all, because an edge-detect band is the first overlay in the
+tree that can control its own apparent thickness), **row 6** (the depth store-out's cost) and **row
+9** (whether the band slides on a quantum-boundary resize, which `OG7` bounds to +/-1 but cannot
+judge). Everything else this task claims is CI-covered on all three lanes, **including pixels**:
+`OG1`–`OG17` read back band width to the exact integer, both colours to the exact byte, occlusion,
+the box-corners-bare proof, D10's margined target, the alpha rule, cull mirroring, the skinned arm
+and per-frame clearing.
+
 **3.7.3 adds NO validation page and that is the deliberate 2.1.2 precedent** — 2.1.2 and 2.5.2, the
 two page-less tasks, are both pure test/guard infrastructure, and nothing in a guard task needs ears,
 eyes, hardware or an OS-specific behaviour a row could measure. Its standing evidence is the hermetic
@@ -488,20 +604,26 @@ binary is `aero_sample_phaseE_debug_draw`** — `phaseE`, no underscore before t
 
 ### Next
 
-**Phase E is the open front. E.1.2 is merged AND macOS-validated** (8 PASS / 2 PARTIAL / 1 NOT
-EXECUTABLE, 2026-09-04) — the first Phase E task whose CI passed on all three lanes from the first
-push, Windows and Linux included. **Windows and Linux validation remain outstanding**, as everywhere.
-The epic's remaining tasks are **E.1.3**
-(view-axis gizmo — it owns "which way is up", which E.1.2 deliberately does not answer), **E.1.4**
-and **E.1.5** (the gizmo restyle, which adopts `AXIS_{X,Y,Z}` from the palette E.1.2 created).
+**Phase E is the open front. E.1.4 is COMPLETE IN CODE on `feat/E.1.4-silhouette-selection-outline`
+and NOT MERGED** — nine commits, the full local gate green on both presets and both reduced
+configurations, and a validation page written but **NOT RUN on any platform**. It awaits the sabotage
+matrix, a review round and a PR. E.1.1 and E.1.2 are merged AND macOS-validated; E.1.3 is merged.
+**Windows and Linux validation remain outstanding**, as everywhere. The epic's one remaining task is
+**E.1.5** (the gizmo restyle, which adopts `AXIS_{X,Y,Z}` from the palette E.1.2 created and must not
+touch `ImGuizmo::Style` before it starts), and **E.1.4 closes the epic's viewport-legibility spine**.
 
-**The spine, unchanged except where E.1.2 moved it:** **E.2.1 (`Environment`) blocks E.2.2, E.2.4 and
-E.4.5**; **E.2.3 (light gizmos) is unblocked** — and it now inherits two things by name, the
-**shared-batch empty-assertion wall** against `I112`, and a **billboard-pipeline depth bias**, which
-is the only topology where a bias actually works. **E.3.1** adopts the axis palette on its `Vec3`
-rows. **E.5.1 is an S-sized fix for a confirmed defect and is independent of everything**, so it can
-land at any point. **E.5.2 now owns the coplanar-geometry problem** — it creates the first `Plane` at
-`y = 0`, and E.1.2 established that a rasterizer bias cannot be the answer for lines.
+**The spine, unchanged except where E.1.2, E.1.3 and E.1.4 moved it:** **E.2.1 (`Environment`) blocks
+E.2.2, E.2.4 and E.4.5**; **E.2.3 (light gizmos) is unblocked** — and it inherits two things by name,
+the **shared-batch empty-assertion wall** against `I112` (E.1.4 added NO `DebugDraw` producer, so
+that wall is untouched), and a **billboard-pipeline depth bias**, which is the only topology where a
+bias actually works. **E.3.1** adopts the axis palette on its `Vec3` rows. **E.5.1 is an S-sized fix
+for a confirmed defect and is independent of everything**, so it can land at any point — and E.1.4
+deliberately reproduced that defect rather than fixing it in passing, because a mask that disagreed
+with the picture is the one direction INV-1 forbids. **E.5.2 owns the coplanar-geometry problem** —
+it creates the first `Plane` at `y = 0`, and E.1.2 established that a rasterizer bias cannot be the
+answer for lines. **8.2.1 inherits the alpha-tested mask cutout** from E.1.4's D6, on the same terms
+it already inherits the alpha-tested shadow caster: the mask stage has no UVs and cannot discard, so
+a `MaterialAlpha::Mask` instance outlines as a solid quad and latches one WARN.
 
 **Phase 3 remains OPEN behind it, on its gate and its validation debt, and Phase E does not close
 either.** 3.7.1 (PR #88 `4892e65`) and 3.7.2 (PR #89 `b398d17`) are merged and macOS-validated;
