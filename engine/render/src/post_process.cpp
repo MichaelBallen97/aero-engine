@@ -80,6 +80,7 @@ std::optional<PostProcess> PostProcess::create(rhi::Device& device, const Virtua
     std::optional<RenderTarget> scene = RenderTarget::create(device, requested,
                                                              {.colorFormat = config.sceneColorFormat,
                                                               .depth = config.sceneDepth,
+                                                              .depthStore = config.sceneDepthStore,
                                                               .quantum = config.quantum,
                                                               .maxExtent = config.maxExtent});
     if (!scene) {
@@ -319,6 +320,10 @@ rhi::Extent2D PostProcess::sceneDrawExtent() const noexcept { return scene ? sce
 
 rhi::Extent2D PostProcess::sceneTextureExtent() const noexcept {
     return scene ? scene->textureExtent() : rhi::Extent2D{};
+}
+
+rhi::TextureHandle PostProcess::sceneDepthTexture() const noexcept {
+    return scene ? scene->depthTexture() : rhi::TextureHandle{};
 }
 
 std::size_t PostProcess::resolveCount() const noexcept { return resolves; }

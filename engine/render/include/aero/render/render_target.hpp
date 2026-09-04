@@ -43,6 +43,22 @@ struct RenderTargetConfig {
     rhi::TextureFormat colorFormat = rhi::TextureFormat::RGBA8Unorm;
     // Auto-picked D32Float -> D24Unorm -> D16Unorm, exactly as RendererConfig::depth does (D9).
     bool depth = true;
+    // task E.1.4 -- APPENDED AND DEFAULTED to today's behaviour, so every existing caller (both
+    // editor owners, the material preview, the thumbnail renderer, four samples and every existing
+    // test) compiles and behaves BYTE-IDENTICALLY.
+    //
+    // false -> the pass's depth attachment is Clear -> StoreOp::DontCare, which is SDL's own guidance
+    // and what this target has always done. true -> StoreOp::Store, so a LATER command buffer may
+    // attach the same texture with LoadOp::Load and read what this pass wrote.
+    //
+    // IT IS NOT COSMETIC AND IT IS NOT A HINT. On a tile-based deferred renderer -- every Apple
+    // Silicon Mac -- DontCare means the tile's depth is never written back to memory, so a later Load
+    // reads GARBAGE, not stale-but-plausible values. Reading an unstored depth produces an EMPTY
+    // result on Metal and a CORRECT one on D3D12/Vulkan, which is the worst failure shape there is.
+    // Making the store unconditional was rejected: it charges bandwidth to every consumer that never
+    // reads depth, and it makes "does this target's depth outlive its pass" unanswerable from a call
+    // site.
+    bool depthStore = false;
     // Allocation granularity in pixels. 1 == exact (the default: textureExtent() == drawExtent()).
     // A consumer that resizes continuously (the editor viewport) sets this to bound reallocation.
     std::uint32_t quantum = 1;
@@ -92,6 +108,12 @@ public:
     // The sampleable colour texture. Sampler|ColorTarget. Invalid on a not-renderable target.
     // STABLE between reallocations only — re-read it after any resize() (E7).
     [[nodiscard]] rhi::TextureHandle colorTexture() const noexcept;
+    // task E.1.4 -- the depth attachment, for a LATER pass that attaches it with LoadOp::Load.
+    // INVALID when config.depth was false or the target is not renderable. Its CONTENTS are defined
+    // only if config.depthStore was true; nothing here can detect that, which is why the flag exists
+    // and why this sentence is here. STABLE between reallocations only -- re-read it after any
+    // resize(), exactly as colorTexture()'s E7 note requires.
+    [[nodiscard]] rhi::TextureHandle depthTexture() const noexcept;
     [[nodiscard]] rhi::TextureFormat colorFormat() const noexcept;
     [[nodiscard]] rhi::TextureFormat depthFormat() const noexcept;  // Invalid when config.depth was false
 

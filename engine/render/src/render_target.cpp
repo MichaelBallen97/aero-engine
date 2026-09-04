@@ -247,7 +247,12 @@ std::optional<Frame> RenderTarget::beginFrame(const rhi::Color& clearColor) {
     const rhi::ColorAttachment colorAttachment{.texture = color, .clearColor = clearColor};  // Clear -> Store (default)
     rhi::RenderPassDesc desc{.colorAttachments = {&colorAttachment, 1}};
     if (depth.valid()) {
-        desc.depthStencil = rhi::DepthStencilAttachment{.texture = depth};  // Clear -> DontCare, clearDepth 1.0
+        // task E.1.4: Clear -> Store when cfg.depthStore, else Clear -> DontCare (the default, and
+        // this target's behaviour since 2.2.3). Store exists so a LATER command buffer can attach
+        // this texture with LoadOp::Load -- ForwardRenderer::renderSelectionMask is the first.
+        // depthLoadOp and clearDepth keep their defaults (Clear, 1.0F).
+        desc.depthStencil = rhi::DepthStencilAttachment{
+            .texture = depth, .depthStoreOp = cfg.depthStore ? rhi::StoreOp::Store : rhi::StoreOp::DontCare};
     }
 
     const rhi::RenderPassHandle pass = device->beginRenderPass(cmd, desc);
@@ -280,6 +285,7 @@ bool RenderTarget::endFrame(Frame frame) {
 }
 
 rhi::TextureHandle RenderTarget::colorTexture() const noexcept { return color; }
+rhi::TextureHandle RenderTarget::depthTexture() const noexcept { return depth; }
 rhi::TextureFormat RenderTarget::colorFormat() const noexcept { return cfg.colorFormat; }
 rhi::TextureFormat RenderTarget::depthFormat() const noexcept { return depthFormatValue; }
 rhi::Extent2D RenderTarget::drawExtent() const noexcept { return drawRect; }
