@@ -8629,7 +8629,10 @@ TEST_CASE("editor: the tonemap wiring's three source-text invariants hold (task 
 
         // The decision is a named member asking a RECT, and the arm condition consults it.
         const std::size_t decisionAt = soleLineContaining(viewportCode, "bool ViewportPanel::overlayOwnsPress(");
-        const std::size_t armAt = soleLineContaining(viewportCode, "!overlayOwnsPress(pressPos)");
+        // task E.1.3 widened the call to `!overlayOwnsPress(pressPos, imageOrigin, avail)` -- the
+        // widget's rect is now ORed in -- so the pin matches the call PREFIX rather than the whole
+        // argument list, which would go stale again at the next parameter.
+        const std::size_t armAt = soleLineContaining(viewportCode, "!overlayOwnsPress(pressPos");
         CHECK(decisionAt != armAt);
         // ...and the arm term sits in the SAME condition as the fresh-press test, not in a later
         // statement that could run after the arm was already set.
@@ -8690,6 +8693,16 @@ TEST_CASE("editor: the overlay claims its own strip and NOTHING else (task 3.6.3
     auto* const viewport = dynamic_cast<engine::editor::ViewportPanel*>(app->panels().find("Viewport"));
     REQUIRE(viewport != nullptr);
 
+    // task E.1.3: overlayOwnsPress now ORs a SECOND rect -- the view-axis widget's -- computed from
+    // the image rect it is handed. THIS CASE IS ABOUT THE ROW, so it passes a ZERO-SIZED image rect,
+    // which viewAxisRect answers with a degenerate rect that owns nothing. Every assertion below is
+    // therefore byte-unchanged in meaning: it still says exactly what it said before the widget
+    // existed. The widget's own arm is I116's, driven with the real image rect.
+    // (This is E.1.2's "fix it with the producer's own seam, never by restating the magnitude" rule,
+    // applied to a rect instead of to a batch count.)
+    constexpr engine::Vec2 NO_WIDGET_ORIGIN{};
+    constexpr engine::Vec2 NO_WIDGET_SIZE{};
+
 #if AERO_SHADER_TOOLS_ENABLED
     const engine::Vec2 rowMin = viewport->overlayRowMin();
     const engine::Vec2 rowMax = viewport->overlayRowMax();
@@ -8704,30 +8717,36 @@ TEST_CASE("editor: the overlay claims its own strip and NOTHING else (task 3.6.3
 
     // (1) THE STRIP OWNS ITS OWN CLICKS. Its centre, and a point just inside each corner.
     const engine::Vec2 centre{(rowMin.x + rowMax.x) * 0.5F, (rowMin.y + rowMax.y) * 0.5F};
-    CHECK(viewport->overlayOwnsPress(centre));
-    CHECK(viewport->overlayOwnsPress(rowMin));  // half-open at min: the top-left corner IS inside
-    CHECK(viewport->overlayOwnsPress(engine::Vec2{rowMax.x - 1.0F, rowMax.y - 1.0F}));
+    CHECK(viewport->overlayOwnsPress(centre, NO_WIDGET_ORIGIN, NO_WIDGET_SIZE));
+    CHECK(viewport->overlayOwnsPress(rowMin, NO_WIDGET_ORIGIN,
+                                     NO_WIDGET_SIZE));  // half-open at min: the top-left corner IS inside
+    CHECK(viewport->overlayOwnsPress(engine::Vec2{rowMax.x - 1.0F, rowMax.y - 1.0F}, NO_WIDGET_ORIGIN, NO_WIDGET_SIZE));
 
     // (2) AND NOTHING ELSE -- the half the shipped regression got wrong. A press below the strip, to
     // its right, and above it must all fall through to the scene pick. `rowMax` itself is OUTSIDE:
     // the test is half-open at max, matching the FIRE step's own image-rect test.
-    CHECK_FALSE(viewport->overlayOwnsPress(rowMax));
-    CHECK_FALSE(viewport->overlayOwnsPress(engine::Vec2{centre.x, rowMax.y + 200.0F}));
-    CHECK_FALSE(viewport->overlayOwnsPress(engine::Vec2{rowMax.x + 200.0F, centre.y}));
-    CHECK_FALSE(viewport->overlayOwnsPress(engine::Vec2{centre.x, rowMin.y - 200.0F}));
-    CHECK_FALSE(viewport->overlayOwnsPress(engine::Vec2{rowMin.x - 200.0F, centre.y}));
+    CHECK_FALSE(viewport->overlayOwnsPress(rowMax, NO_WIDGET_ORIGIN, NO_WIDGET_SIZE));
+    CHECK_FALSE(
+        viewport->overlayOwnsPress(engine::Vec2{centre.x, rowMax.y + 200.0F}, NO_WIDGET_ORIGIN, NO_WIDGET_SIZE));
+    CHECK_FALSE(
+        viewport->overlayOwnsPress(engine::Vec2{rowMax.x + 200.0F, centre.y}, NO_WIDGET_ORIGIN, NO_WIDGET_SIZE));
+    CHECK_FALSE(
+        viewport->overlayOwnsPress(engine::Vec2{centre.x, rowMin.y - 200.0F}, NO_WIDGET_ORIGIN, NO_WIDGET_SIZE));
+    CHECK_FALSE(
+        viewport->overlayOwnsPress(engine::Vec2{rowMin.x - 200.0F, centre.y}, NO_WIDGET_ORIGIN, NO_WIDGET_SIZE));
 
     // (3) THE ORDINARY PICK, which is what actually broke. The viewport is CENTER-docked in a 900x600
     // window, so a point well below and right of the strip is inside the image and is exactly where a
     // user clicks empty space to clear a selection. Under the shipped guard this press was refused;
     // it must be admitted.
-    CHECK_FALSE(viewport->overlayOwnsPress(engine::Vec2{rowMin.x + 300.0F, rowMin.y + 300.0F}));
+    CHECK_FALSE(viewport->overlayOwnsPress(engine::Vec2{rowMin.x + 300.0F, rowMin.y + 300.0F}, NO_WIDGET_ORIGIN,
+                                           NO_WIDGET_SIZE));
 
     // (4) TOTAL and NaN-safe: a non-finite press is owned by nothing rather than crashing or
     // answering true (the negated `>` idiom this file's step 1 already uses).
     const float nan = std::numeric_limits<float>::quiet_NaN();
-    CHECK_FALSE(viewport->overlayOwnsPress(engine::Vec2{nan, nan}));
-    CHECK_FALSE(viewport->overlayOwnsPress(engine::Vec2{centre.x, nan}));
+    CHECK_FALSE(viewport->overlayOwnsPress(engine::Vec2{nan, nan}, NO_WIDGET_ORIGIN, NO_WIDGET_SIZE));
+    CHECK_FALSE(viewport->overlayOwnsPress(engine::Vec2{centre.x, nan}, NO_WIDGET_ORIGIN, NO_WIDGET_SIZE));
 #else
     // -DAERO_SHADER_TOOLS=OFF: the viewport latches Unavailable and onDraw returns at step 4, so
     // step 9b never runs and the rect stays EMPTY. Asserted rather than skipped (the 3.4.2 near-miss
@@ -8735,8 +8754,8 @@ TEST_CASE("editor: the overlay claims its own strip and NOTHING else (task 3.6.3
     // than to "every press is refused".
     CHECK(viewport->overlayRowMin() == engine::Vec2{});
     CHECK(viewport->overlayRowMax() == engine::Vec2{});
-    CHECK_FALSE(viewport->overlayOwnsPress(engine::Vec2{10.0F, 10.0F}));
-    CHECK_FALSE(viewport->overlayOwnsPress(engine::Vec2{}));
+    CHECK_FALSE(viewport->overlayOwnsPress(engine::Vec2{10.0F, 10.0F}, NO_WIDGET_ORIGIN, NO_WIDGET_SIZE));
+    CHECK_FALSE(viewport->overlayOwnsPress(engine::Vec2{}, NO_WIDGET_ORIGIN, NO_WIDGET_SIZE));
 #endif
 }
 
