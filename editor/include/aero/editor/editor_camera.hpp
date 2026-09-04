@@ -93,7 +93,17 @@ inline constexpr float DEFAULT_FAR = 1000.0F;                    // >> Camera's 
 inline constexpr float DEFAULT_FLY_SPEED = 5.0F;                 // world units / second
 inline constexpr float MIN_DISTANCE = 0.05F;
 inline constexpr float MAX_DISTANCE = 10000.0F;
-inline constexpr float MAX_PITCH = HALF_PI - 0.01F;       // +-89.43 degrees
+// EXACTLY HALF_PI since task E.1.3, and the retune is deliberate. The Top and Bottom views route
+// through setPitch, so with any headroom here a "top" view is off vertical by that headroom -- at
+// the old HALF_PI - 0.01F that is 0.572957 degrees, which turns a 10-unit vertical pillar into a
+// 0.10-unit lateral streak, about 1.1% of a top view's framed height at distance 8. The headroom's
+// stated purpose ("so the basis never degenerates") does not apply to THIS camera: the composition
+// is yaw-outer / pitch-inner, so right() = qYaw * {1,0,0} is INDEPENDENT of pitch (see
+// editor_camera.cpp's rotation() comment), viewMatrix() is inverse(compose(...)) with no lookAt and
+// no up vector, and nothing in the file divides by cos(pitch). The one behaviour that changes is
+// orbiting AT the pole, where a horizontal drag spins the image about the view axis -- which it
+// already did within the old 0.57-degree cone.
+inline constexpr float MAX_PITCH = HALF_PI;               // exactly +-90 degrees (task E.1.3)
 inline constexpr float ORBIT_RADIANS_PER_POINT = 0.005F;  // ~0.29deg/pt; a 300-pt drag sweeps ~86deg
 // D16, DERIVED: +yaw turns the view LEFT and +pitch looks UP, while ImGui's +y is screen-DOWN --
 // hence both signs are -1. Named so a post-human-pass flip is one character with a reddening test.

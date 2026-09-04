@@ -82,8 +82,63 @@ void viewAxisRect(Vec2 imageOriginPoints, Vec2 imageSizePoints, Vec2& outMin, Ve
 // non-finite point, for an invisible layout, and for a point inside the rect but on no target.
 [[nodiscard]] ViewAxisPick viewAxisPickAt(const ViewAxisLayout& layout, Vec2 mousePoints) noexcept;
 
+// ---- the canonical poses ------------------------------------------------------------------------
+
+struct ViewPose {
+    float yaw = 0.0F;
+    float pitch = 0.0F;
+};
+
+// The pose whose forward() is -axis, i.e. the eye ON that axis looking back at the pivot (D4).
+// Returned UNCLAMPED and in the camera's own yaw representation ((-PI, PI], so Back is +PI, never
+// -PI): the caller applies it through the setters, which clamp. At the POLES yaw is a free parameter
+// and snaps to the nearest multiple of HALF_PI -- a top view whose world axes are not square on
+// screen is not a canonical view.
+[[nodiscard]] ViewPose viewAxisPose(ViewAxis axis, float currentYaw) noexcept;
+
+// setYaw + setPitch, in that order, both clamped. Shared by the panel and the tests so "apply a pose"
+// has ONE implementation.
+void applyViewPose(EditorCamera& camera, ViewPose pose) noexcept;
+
 [[nodiscard]] char viewAxisLabel(ViewAxis axis) noexcept;       // 'X' | 'Y' | 'Z'
 [[nodiscard]] Axis viewAxisPaletteKey(ViewAxis axis) noexcept;  // for axisColorSrgbBytes
 [[nodiscard]] bool viewAxisIsPositive(ViewAxis axis) noexcept;
+
+// ---- the animation ------------------------------------------------------------------------------
+
+inline constexpr float VIEW_SNAP_SECONDS = 0.25F;
+inline constexpr float VIEW_SNAP_EPSILON_RADIANS = 1.0e-4F;  // below this: instant, no animation (D7)
+
+// The signed shortest arc from `from` to `to`, in [-PI, PI]. EXACTLY +PI for a 180-degree flip:
+// std::remainder rounds the quotient half-to-even and PI/(2PI) == 0.5 rounds to 0, so a Front<->Back
+// snap always turns the SAME way and a test can assert the sign. Returns 0 for any non-finite input.
+[[nodiscard]] float shortestAngleDelta(float from, float to) noexcept;
+
+// A running view snap. Holds the START pose and two SIGNED DELTAS -- never the endpoints, because
+// lerping endpoints takes the 340-degree way round from 170 to -170 (D6, seed S4).
+class ViewSnapAnimation {
+public:
+    // Retargets from (fromYaw, fromPitch). Leaves active() FALSE when both deltas are under
+    // VIEW_SNAP_EPSILON_RADIANS, or when any input is non-finite -- the caller then applies the
+    // target directly.
+    void start(float fromYaw, float fromPitch, ViewPose target) noexcept;
+    void cancel() noexcept;
+    [[nodiscard]] bool active() const noexcept;
+
+    // Advances and returns the pose to apply THIS frame. `deltaSeconds` is clamped into
+    // [0, VIEW_SNAP_SECONDS]; a NON-FINITE delta FINISHES the animation rather than being treated as
+    // zero, because a wedged animation would rewrite yaw and pitch every frame forever (D7). The
+    // final call clamps t to exactly 1, so the pose lands EXACTLY on the target and active() goes
+    // false in the same call. Calling it while !active() returns the target pose and changes nothing.
+    [[nodiscard]] ViewPose advance(float deltaSeconds) noexcept;
+
+private:
+    float startYawValue = 0.0F;
+    float startPitchValue = 0.0F;
+    float yawDelta = 0.0F;
+    float pitchDelta = 0.0F;
+    float elapsedSeconds = 0.0F;
+    bool running = false;
+};
 
 }  // namespace engine::editor

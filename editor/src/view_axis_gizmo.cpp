@@ -55,6 +55,26 @@ namespace {
     return Vec3{1.0F, 0.0F, 0.0F};
 }
 
+// Round-half-away-from-zero to the nearest multiple of HALF_PI, then wrapped into (-PI, PI] exactly
+// as clampState does -- so -PI lands on +PI and the "am I already there?" epsilon test in start()
+// cannot be defeated by a full turn.
+//
+// VERIFIED BY HAND against the engine's own constants, not assumed: HALF_PI is 0.5f * PI and 0.5 is a
+// power of two, so PI / HALF_PI is exactly 2 and 2 * HALF_PI is exactly PI; and remainder(PI, TWO_PI)
+// is exactly PI, because the quotient is exactly 0.5 and remainder rounds half TO EVEN, giving 0.
+// That is what makes a PI input round-trip to PI rather than to -PI.
+[[nodiscard]] float nearestCardinalYaw(float yaw) noexcept {
+    if (!std::isfinite(yaw)) {
+        return 0.0F;
+    }
+    float snapped = std::round(yaw / HALF_PI) * HALF_PI;
+    snapped = std::remainder(snapped, TWO_PI);
+    return (snapped <= -PI) ? PI : snapped;
+}
+
+// Zero velocity at both ends. The whole easing policy, in one line.
+[[nodiscard]] float smoothstep(float t) noexcept { return t * t * (3.0F - (2.0F * t)); }
+
 }  // namespace
 
 ViewAxisLayout viewAxisLayout(const EditorCamera& camera, Vec2 imageOriginPoints, Vec2 imageSizePoints) noexcept {
@@ -197,6 +217,104 @@ bool viewAxisIsPositive(ViewAxis axis) noexcept {
             return false;
     }
     return true;
+}
+
+ViewPose viewAxisPose(ViewAxis axis, float currentYaw) noexcept {
+    switch (axis) {  // NO default: -- a seventh enumerator must be a -Wswitch error, never silent
+        case ViewAxis::PosX:
+            return ViewPose{.yaw = HALF_PI, .pitch = 0.0F};
+        case ViewAxis::NegX:
+            return ViewPose{.yaw = -HALF_PI, .pitch = 0.0F};
+        case ViewAxis::PosZ:
+            return ViewPose{.yaw = 0.0F, .pitch = 0.0F};
+        case ViewAxis::NegZ:
+            // +PI, NEVER -PI. clampState maps -PI to +PI (editor_camera.cpp:193-195), so +PI is the
+            // value the camera will STORE. This is representation hygiene rather than correctness:
+            // shortestAngleDelta is invariant to adding 2PI to `to`, so both spellings produce the
+            // identical path and the identical final pose. What +PI buys is that VA10 can assert the
+            // returned VALUE directly, which gives the -PI seed a discriminator instead of a gap.
+            return ViewPose{.yaw = PI, .pitch = 0.0F};
+        case ViewAxis::PosY:
+            // At the poles yaw is a FREE parameter -- every yaw gives the same forward() -- so it
+            // snaps to the nearest cardinal. A top view whose world axes are not square on screen is
+            // not a canonical view.
+            return ViewPose{.yaw = nearestCardinalYaw(currentYaw), .pitch = -HALF_PI};
+        case ViewAxis::NegY:
+            return ViewPose{.yaw = nearestCardinalYaw(currentYaw), .pitch = HALF_PI};
+    }
+    return ViewPose{};
+}
+
+void applyViewPose(EditorCamera& camera, ViewPose pose) noexcept {
+    // ONE implementation, shared by the panel and the tests, so "apply a pose" cannot mean two
+    // things. Both setters clamp through the same clampState the gestures use, so INV-5 holds after
+    // this call exactly as it does after a drag.
+    camera.setYaw(pose.yaw);
+    camera.setPitch(pose.pitch);
+}
+
+float shortestAngleDelta(float from, float to) noexcept {
+    if (!std::isfinite(from) || !std::isfinite(to)) {
+        return 0.0F;  // remainder(inf, x) is NaN -- guard first, exactly as clampState does for yaw
+    }
+    return std::remainder(to - from, TWO_PI);
+}
+
+void ViewSnapAnimation::start(float fromYaw, float fromPitch, ViewPose target) noexcept {
+    running = false;
+    elapsedSeconds = 0.0F;
+    if (!std::isfinite(fromYaw) || !std::isfinite(fromPitch) || !std::isfinite(target.yaw) ||
+        !std::isfinite(target.pitch)) {
+        return;  // D7: the caller applies the target directly; nothing animates from a poisoned pose
+    }
+    startYawValue = fromYaw;
+    startPitchValue = fromPitch;
+    // SIGNED DELTAS, never the endpoints. Lerping endpoints is the 170 -> -170 bug that takes the
+    // 340-degree way round; holding the delta is what structurally prevents it (D6, seed S4).
+    yawDelta = shortestAngleDelta(fromYaw, target.yaw);
+    pitchDelta = target.pitch - fromPitch;
+    if (std::abs(yawDelta) < VIEW_SNAP_EPSILON_RADIANS && std::abs(pitchDelta) < VIEW_SNAP_EPSILON_RADIANS) {
+        return;  // already there: the caller applies the target instantly, with no 0.25 s lockout
+    }
+    running = true;
+}
+
+void ViewSnapAnimation::cancel() noexcept {
+    running = false;
+    elapsedSeconds = 0.0F;
+}
+
+bool ViewSnapAnimation::active() const noexcept { return running; }
+
+ViewPose ViewSnapAnimation::advance(float deltaSeconds) noexcept {
+    // The TARGET, which is also what this returns once the animation is over or was never running.
+    const ViewPose target{.yaw = startYawValue + yawDelta, .pitch = startPitchValue + pitchDelta};
+    if (!running) {
+        return target;
+    }
+    // FINITENESS FIRST, never a clamp alone: std::clamp(NaN, lo, hi) returns NaN on libc++ (measured
+    // at 3.7.2). And a non-finite delta FINISHES the animation rather than being treated as zero,
+    // because a wedged animation would rewrite yaw and pitch every frame forever (D7).
+    if (!std::isfinite(deltaSeconds)) {
+        running = false;
+        elapsedSeconds = VIEW_SNAP_SECONDS;
+        return target;
+    }
+    elapsedSeconds += std::clamp(deltaSeconds, 0.0F, VIEW_SNAP_SECONDS);
+    if (!(elapsedSeconds < VIEW_SNAP_SECONDS)) {
+        // The final call lands EXACTLY on the target -- computed from the endpoints above rather than
+        // from an eased t, so no rounding can leave the pose a hair off -- and active() goes false in
+        // this same call.
+        running = false;
+        elapsedSeconds = VIEW_SNAP_SECONDS;
+        return target;
+    }
+    const float s = smoothstep(elapsedSeconds / VIEW_SNAP_SECONDS);
+    // Recomputed from the START pose every frame; the camera is NEVER read back. setYaw's clampState
+    // wraps into (-PI, PI], so a snap that passes 180 degrees leaves the CAMERA at a negative yaw
+    // while this walks a monotone path through 190 -- feeding the wrapped value back in is the second
+    // way to produce the long-way bug, and the one-way data flow is what prevents it.
+    return ViewPose{.yaw = startYawValue + (yawDelta * s), .pitch = startPitchValue + (pitchDelta * s)};
 }
 
 }  // namespace engine::editor

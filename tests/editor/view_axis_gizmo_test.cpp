@@ -19,6 +19,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <vector>
 
 using engine::Vec2;
 using engine::Vec3;
@@ -40,7 +41,9 @@ using engine::editor::viewAxisLayout;
 using engine::editor::viewAxisPaletteKey;
 using engine::editor::ViewAxisPick;
 using engine::editor::viewAxisPickAt;
+using engine::editor::viewAxisPose;
 using engine::editor::viewAxisRect;
+using engine::editor::ViewPose;
 
 namespace {
 
@@ -424,5 +427,379 @@ TEST_CASE("editor view-axis gizmo: label, palette key and sign are total and agr
         CHECK(viewAxisLabel(outOfRange) == 'X');
         CHECK((viewAxisPaletteKey(outOfRange) == engine::editor::Axis::X));
         CHECK(viewAxisIsPositive(outOfRange));
+    }
+}
+
+TEST_CASE("editor view-axis gizmo: viewAxisPose's four equatorial VALUES, exactly (VA10)") {
+    // THE VALUE assertion, separate from VA11's BEHAVIOUR assertion, and the split is the point: a
+    // NegZ that returned -PI instead of +PI produces an IDENTICAL camera (setYaw(-PI) wraps to +PI),
+    // so only a direct read of the returned value can discriminate it. EXACT ==, no epsilon -- every
+    // one of these is a constant or its negation, so the arithmetic really is exact.
+    CHECK(viewAxisPose(ViewAxis::PosX, 0.0F).yaw == engine::HALF_PI);
+    CHECK(viewAxisPose(ViewAxis::PosX, 0.0F).pitch == 0.0F);
+    CHECK(viewAxisPose(ViewAxis::NegX, 0.0F).yaw == -engine::HALF_PI);
+    CHECK(viewAxisPose(ViewAxis::NegX, 0.0F).pitch == 0.0F);
+    CHECK(viewAxisPose(ViewAxis::PosZ, 0.0F).yaw == 0.0F);
+    CHECK(viewAxisPose(ViewAxis::PosZ, 0.0F).pitch == 0.0F);
+    // +PI, NEVER -PI: clampState maps -PI to +PI, so +PI is the value the camera will STORE, and a
+    // test that reads the pose back off the camera can compare it without a wrap.
+    CHECK(viewAxisPose(ViewAxis::NegZ, 0.0F).yaw == engine::PI);
+    CHECK(viewAxisPose(ViewAxis::NegZ, 0.0F).pitch == 0.0F);
+
+    SUBCASE("the four equatorial poses ignore currentYaw entirely") {
+        // Only the two POLE poses read it (yaw is a free parameter only there). Driving a few very
+        // different current yaws is what says so.
+        for (const float current : {0.0F, 1.0F, -2.5F, engine::PI, NAN_F}) {
+            CAPTURE(current);
+            CHECK(viewAxisPose(ViewAxis::PosX, current).yaw == engine::HALF_PI);
+            CHECK(viewAxisPose(ViewAxis::NegZ, current).yaw == engine::PI);
+        }
+    }
+    SUBCASE("an out-of-range cast is DEFINED") {
+        const ViewPose pose = viewAxisPose(static_cast<ViewAxis>(11), 0.0F);
+        CHECK(pose.yaw == 0.0F);
+        CHECK(pose.pitch == 0.0F);
+    }
+}
+
+TEST_CASE("editor view-axis gizmo: each pose puts the eye ON its own axis, read off the CAMERA (VA11)") {
+    // THE E.1.2 GR8 RULE: the expected value is NOT recomputed from viewAxisPose's own formula. The
+    // pose goes in through applyViewPose and forward() comes back OFF THE CAMERA, so the two sides
+    // of the identity have different sources and the case cannot be satisfied by a tautology.
+    struct Row {
+        const char* name;
+        ViewAxis axis;
+        Vec3 expectedForward;  // forward() == -axis: the eye is ON the axis, looking back at the pivot
+    };
+    const std::array<Row, 6> rows{{
+        {"+X", ViewAxis::PosX, Vec3{-1.0F, 0.0F, 0.0F}},
+        {"-X", ViewAxis::NegX, Vec3{1.0F, 0.0F, 0.0F}},
+        {"+Y", ViewAxis::PosY, Vec3{0.0F, -1.0F, 0.0F}},
+        {"-Y", ViewAxis::NegY, Vec3{0.0F, 1.0F, 0.0F}},
+        {"+Z", ViewAxis::PosZ, Vec3{0.0F, 0.0F, -1.0F}},
+        {"-Z", ViewAxis::NegZ, Vec3{0.0F, 0.0F, 1.0F}},
+    }};
+    for (const Row& row : rows) {
+        CAPTURE(row.name);
+        EditorCamera camera = cameraAt(engine::radians(30.0F), engine::radians(-20.0F));
+        const Vec3 pivotBefore = camera.pivot();
+        const float distanceBefore = camera.distance();
+
+        applyViewPose(camera, viewAxisPose(row.axis, camera.yaw()));
+
+        const Vec3 forward = camera.forward();
+        // 1e-6 with the epsilon INSIDE the assertion: the pole residual on this tree is 2.384e-07,
+        // measured over 1441 yaw samples at both poles before this case was written, so this bound
+        // carries about 4x headroom rather than being fitted to a green run.
+        CHECK(std::abs(forward.x - row.expectedForward.x) < 1.0e-6F);
+        CHECK(std::abs(forward.y - row.expectedForward.y) < 1.0e-6F);
+        CHECK(std::abs(forward.z - row.expectedForward.z) < 1.0e-6F);
+        // INV-2 survives every pose, including both poles -- the house form (editor_camera_test:261).
+        CHECK(std::abs(camera.right().y) < engine::EPSILON);
+        // A snap is a ROTATION about the pivot: neither the pivot nor the distance moves (AC-3).
+        CHECK(camera.pivot() == pivotBefore);
+        CHECK(camera.distance() == distanceBefore);
+    }
+}
+
+TEST_CASE("editor view-axis gizmo: Top and Bottom are EXACTLY vertical -- the MAX_PITCH retune (VA12)") {
+    // THE RETUNE'S PIN. At the old MAX_PITCH (HALF_PI - 0.01F) a "top" view is off vertical by
+    // 0.572957 degrees, which turns a 10-unit vertical pillar into a 0.10-unit lateral streak. This
+    // case is what makes reverting the constant a red test rather than a picture nobody measures.
+    CHECK(engine::editor::MAX_PITCH == engine::HALF_PI);
+
+    CHECK(viewAxisPose(ViewAxis::PosY, 0.0F).pitch == -engine::HALF_PI);
+    CHECK(viewAxisPose(ViewAxis::NegY, 0.0F).pitch == engine::HALF_PI);
+
+    SUBCASE("applied through the camera, the pitch lands on the constant EXACTLY") {
+        EditorCamera top = cameraAt(engine::radians(30.0F), engine::radians(-20.0F));
+        applyViewPose(top, viewAxisPose(ViewAxis::PosY, top.yaw()));
+        CHECK(top.pitch() == -engine::editor::MAX_PITCH);  // exact: the clamp's own boundary
+
+        EditorCamera bottom = cameraAt(engine::radians(30.0F), engine::radians(-20.0F));
+        applyViewPose(bottom, viewAxisPose(ViewAxis::NegY, bottom.yaw()));
+        CHECK(bottom.pitch() == engine::editor::MAX_PITCH);
+    }
+    SUBCASE("...and forward() is vertical to within the MEASURED pole residual") {
+        // 1e-6 is not a guess: the worst component error over 1441 yaw samples at both poles is
+        // 2.384e-07 on this tree, re-measured on the branch point before this tolerance was chosen.
+        // At the old MAX_PITCH the error would be 1.0e-2, four orders of magnitude over this bound.
+        for (const float startYaw : {0.0F, engine::radians(30.0F), engine::radians(-137.0F), engine::PI}) {
+            CAPTURE(startYaw);
+            EditorCamera camera = cameraAt(startYaw, 0.0F);
+            applyViewPose(camera, viewAxisPose(ViewAxis::PosY, camera.yaw()));
+            const Vec3 forward = camera.forward();
+            CHECK(std::abs(forward.x - 0.0F) < 1.0e-6F);
+            CHECK(std::abs(forward.y - (-1.0F)) < 1.0e-6F);
+            CHECK(std::abs(forward.z - 0.0F) < 1.0e-6F);
+        }
+    }
+}
+
+TEST_CASE("editor view-axis gizmo: the pole's free yaw snaps to a cardinal (VA13)") {
+    // nearestCardinalYaw is file-local, so it is driven through viewAxisPose(PosY, ...), which is its
+    // only caller and the only place its behaviour matters.
+    struct Row {
+        const char* name;
+        float input;
+        float expected;
+    };
+    const std::array<Row, 8> rows{{
+        {"0", 0.0F, 0.0F},
+        {"44 deg rounds DOWN to 0", engine::radians(44.0F), 0.0F},
+        {"46 deg rounds UP to +90", engine::radians(46.0F), engine::HALF_PI},
+        {"89 deg -> +90", engine::radians(89.0F), engine::HALF_PI},
+        {"91 deg -> +90", engine::radians(91.0F), engine::HALF_PI},
+        {"-179 deg -> +180 (the (-PI, PI] wrap)", engine::radians(-179.0F), engine::PI},
+        {"179 deg -> +180", engine::radians(179.0F), engine::PI},
+        // ROUND-HALF-AWAY-FROM-ZERO, asserted rather than left to chance: std::round takes the tie
+        // away from zero, so PI/4 resolves UP to +PI/2, not down to 0.
+        {"exactly PI/4 -> +90 (half away from zero)", engine::PI / 4.0F, engine::HALF_PI},
+    }};
+    for (const Row& row : rows) {
+        CAPTURE(row.name);
+        const ViewPose pose = viewAxisPose(ViewAxis::PosY, row.input);
+        CHECK(pose.yaw == row.expected);
+    }
+
+    SUBCASE("the result is ALWAYS a multiple of HALF_PI inside (-PI, PI], over a dense sweep") {
+        // A RELATIONSHIP over 721 samples rather than a table of magnitudes, and it is what catches a
+        // snap that simply returns its input.
+        constexpr int SAMPLES = 721;
+        for (int i = 0; i < SAMPLES; ++i) {
+            const float t = static_cast<float>(i) / static_cast<float>(SAMPLES - 1);
+            const float yaw = -engine::PI + (t * engine::TWO_PI);
+            CAPTURE(yaw);
+            const float snapped = viewAxisPose(ViewAxis::PosY, yaw).yaw;
+            CHECK(snapped > -engine::PI - 1.0e-5F);
+            CHECK(snapped <= engine::PI + 1.0e-5F);
+            // A multiple of HALF_PI: dividing by it must land on a whole number.
+            const float quotient = snapped / engine::HALF_PI;
+            CHECK(std::abs(quotient - std::round(quotient)) < 1.0e-5F);
+            // ...and never further than 45 degrees from the input, modulo a turn.
+            CHECK(std::abs(engine::editor::shortestAngleDelta(yaw, snapped)) <= (engine::HALF_PI * 0.5F) + 1.0e-5F);
+        }
+    }
+    SUBCASE("a NON-FINITE current yaw gives 0, never a NaN pose") {
+        for (const float bad :
+             {NAN_F, std::numeric_limits<float>::infinity(), -std::numeric_limits<float>::infinity()}) {
+            CAPTURE(bad);
+            CHECK(viewAxisPose(ViewAxis::PosY, bad).yaw == 0.0F);
+            CHECK(viewAxisPose(ViewAxis::NegY, bad).yaw == 0.0F);
+        }
+    }
+}
+
+TEST_CASE("editor view-axis gizmo: shortestAngleDelta takes the SHORT way, with a signed answer (VA14)") {
+    constexpr float DEG = engine::PI / 180.0F;
+
+    SUBCASE("170 -> -170 is +20 degrees, not -340") {
+        // THE PROPERTY THE WHOLE ANIMATION RESTS ON. The SIGN is what is asserted; a |delta| test
+        // would be satisfied by the 340-degree answer as easily as by the 20-degree one.
+        const float delta = engine::editor::shortestAngleDelta(170.0F * DEG, -170.0F * DEG);
+        CHECK(delta > 0.0F);
+        CHECK(std::abs(delta - (20.0F * DEG)) < 1.0e-5F);
+    }
+    SUBCASE("-170 -> 170 is -20 degrees") {
+        const float delta = engine::editor::shortestAngleDelta(-170.0F * DEG, 170.0F * DEG);
+        CHECK(delta < 0.0F);
+        CHECK(std::abs(delta - (-20.0F * DEG)) < 1.0e-5F);
+    }
+    SUBCASE("x -> x is exactly zero, for several x") {
+        for (const float x : {0.0F, 1.0F, -2.5F, engine::PI, engine::HALF_PI}) {
+            CAPTURE(x);
+            CHECK(engine::editor::shortestAngleDelta(x, x) == 0.0F);
+        }
+    }
+    SUBCASE("0 -> 180 is exactly +PI -- the tie, broken by remainder's round-half-to-EVEN") {
+        // The quotient PI/(2PI) is exactly 0.5 and remainder rounds it to 0, so the answer is +PI
+        // rather than -PI. That is what makes a Front<->Back snap always turn the SAME way, which is
+        // a property a person notices and a test can assert.
+        CHECK(engine::editor::shortestAngleDelta(0.0F, engine::PI) == engine::PI);
+    }
+    SUBCASE("a non-finite input on either side gives 0, never a NaN") {
+        // remainder(inf, x) is NaN, so the guard has to come FIRST -- the same guard clampState
+        // already carries for yaw.
+        const float inf = std::numeric_limits<float>::infinity();
+        CHECK(engine::editor::shortestAngleDelta(NAN_F, 1.0F) == 0.0F);
+        CHECK(engine::editor::shortestAngleDelta(1.0F, NAN_F) == 0.0F);
+        CHECK(engine::editor::shortestAngleDelta(inf, 1.0F) == 0.0F);
+        CHECK(engine::editor::shortestAngleDelta(1.0F, -inf) == 0.0F);
+    }
+}
+
+TEST_CASE("editor view-axis gizmo: the snap animation's SHAPE (VA15)") {
+    using engine::editor::ViewSnapAnimation;
+    constexpr float SNAP = engine::editor::VIEW_SNAP_SECONDS;
+
+    SUBCASE("start then advance(0) returns the START pose") {
+        ViewSnapAnimation anim;
+        anim.start(0.0F, 0.0F, ViewPose{.yaw = 1.0F, .pitch = 0.5F});
+        REQUIRE(anim.active());
+        const ViewPose at0 = anim.advance(0.0F);
+        CHECK(at0.yaw == 0.0F);
+        CHECK(at0.pitch == 0.0F);
+        CHECK(anim.active());  // a zero-length step does not finish it
+    }
+    SUBCASE("advance(VIEW_SNAP_SECONDS) lands EXACTLY on the target and clears active() in ONE call") {
+        ViewSnapAnimation anim;
+        anim.start(0.0F, 0.0F, ViewPose{.yaw = 1.0F, .pitch = 0.5F});
+        REQUIRE(anim.active());
+        const ViewPose end = anim.advance(SNAP);
+        // EXACT: the final pose is computed from the endpoints, never from an eased t, so no rounding
+        // can leave it a hair off the target.
+        CHECK(end.yaw == 1.0F);
+        CHECK(end.pitch == 0.5F);
+        CHECK_FALSE(anim.active());  // ...in the SAME call, not on the next one
+    }
+    SUBCASE("cancel() clears it mid-flight") {
+        ViewSnapAnimation anim;
+        anim.start(0.0F, 0.0F, ViewPose{.yaw = 1.0F, .pitch = 0.5F});
+        (void)anim.advance(SNAP * 0.5F);
+        REQUIRE(anim.active());
+        anim.cancel();
+        CHECK_FALSE(anim.active());
+    }
+    SUBCASE("a SUB-EPSILON target never starts -- D7's instant path") {
+        ViewSnapAnimation anim;
+        const float tiny = engine::editor::VIEW_SNAP_EPSILON_RADIANS * 0.5F;
+        anim.start(0.0F, 0.0F, ViewPose{.yaw = tiny, .pitch = tiny});
+        CHECK_FALSE(anim.active());
+        // ...and a target just OVER the epsilon in ONE component alone does start: anti-vacuity, and
+        // the check that the two components are tested independently.
+        ViewSnapAnimation yawOnly;
+        yawOnly.start(0.0F, 0.0F, ViewPose{.yaw = engine::editor::VIEW_SNAP_EPSILON_RADIANS * 4.0F, .pitch = 0.0F});
+        CHECK(yawOnly.active());
+        ViewSnapAnimation pitchOnly;
+        pitchOnly.start(0.0F, 0.0F, ViewPose{.yaw = 0.0F, .pitch = engine::editor::VIEW_SNAP_EPSILON_RADIANS * 4.0F});
+        CHECK(pitchOnly.active());
+    }
+    SUBCASE("a NON-FINITE start pose never starts") {
+        ViewSnapAnimation anim;
+        anim.start(NAN_F, 0.0F, ViewPose{.yaw = 1.0F, .pitch = 0.5F});
+        CHECK_FALSE(anim.active());
+        anim.start(0.0F, 0.0F, ViewPose{.yaw = NAN_F, .pitch = 0.5F});
+        CHECK_FALSE(anim.active());
+    }
+    SUBCASE("advance() while !active() returns the target and changes nothing") {
+        ViewSnapAnimation anim;
+        anim.start(0.0F, 0.0F, ViewPose{.yaw = 1.0F, .pitch = 0.5F});
+        (void)anim.advance(SNAP);
+        REQUIRE_FALSE(anim.active());
+        const ViewPose again = anim.advance(SNAP);
+        CHECK(again.yaw == 1.0F);
+        CHECK(again.pitch == 0.5F);
+        CHECK_FALSE(anim.active());
+    }
+}
+
+TEST_CASE("editor view-axis gizmo: the snap animation is TOTAL (VA16)") {
+    using engine::editor::ViewSnapAnimation;
+    constexpr float INF = std::numeric_limits<float>::infinity();
+
+    SUBCASE("a NON-FINITE delta FINISHES it -- never treated as zero") {
+        // D7's reasoning, and the reason this is not merely "ignore the bad value": a wedged
+        // animation would rewrite yaw and pitch every frame forever, and the camera would be stuck.
+        for (const float bad : {NAN_F, INF, -INF}) {
+            CAPTURE(bad);
+            ViewSnapAnimation anim;
+            anim.start(0.0F, 0.0F, ViewPose{.yaw = 1.0F, .pitch = 0.5F});
+            REQUIRE(anim.active());
+            const ViewPose pose = anim.advance(bad);
+            CHECK_FALSE(anim.active());  // FINISHED, in one call
+            CHECK(pose.yaw == 1.0F);     // ...on the target
+            CHECK(pose.pitch == 0.5F);
+        }
+    }
+    SUBCASE("a negative, huge or infinite finite delta leaves a FINITE pose and never overshoots") {
+        for (const float delta : {-1.0F, 1.0e30F, 0.0F, 1.0e-9F}) {
+            CAPTURE(delta);
+            ViewSnapAnimation anim;
+            anim.start(0.0F, 0.0F, ViewPose{.yaw = 1.0F, .pitch = 0.5F});
+            const ViewPose pose = anim.advance(delta);
+            CHECK(std::isfinite(pose.yaw));
+            CHECK(std::isfinite(pose.pitch));
+            // Never past the target, in either component -- both deltas are positive here.
+            CHECK(pose.yaw >= 0.0F);
+            CHECK(pose.yaw <= 1.0F);
+            CHECK(pose.pitch >= 0.0F);
+            CHECK(pose.pitch <= 0.5F);
+        }
+    }
+    SUBCASE("it TERMINATES under a stream of small steps") {
+        ViewSnapAnimation anim;
+        anim.start(0.0F, 0.0F, ViewPose{.yaw = 1.0F, .pitch = 0.5F});
+        int steps = 0;
+        while (anim.active() && steps < 1000) {
+            (void)anim.advance(1.0F / 60.0F);
+            ++steps;
+        }
+        CHECK_FALSE(anim.active());
+        CHECK(steps < 1000);  // it really stopped, rather than running out the bound
+    }
+}
+
+TEST_CASE("editor view-axis gizmo: a 170 -> -170 snap NEVER passes through 0 (VA17)") {
+    // THE LONG-WAY DISCRIMINATOR. An animation that lerps the ENDPOINTS walks 170 -> 0 -> -170, the
+    // 340-degree way round; one that holds a SIGNED DELTA walks 170 -> 180 -> 190, which is the same
+    // 20-degree arc a person expects. Nothing about the START or the END distinguishes the two --
+    // only the intermediate frames do, which is why this case samples them.
+    using engine::editor::ViewSnapAnimation;
+    constexpr float DEG = engine::PI / 180.0F;
+
+    ViewSnapAnimation anim;
+    anim.start(170.0F * DEG, 0.0F, ViewPose{.yaw = -170.0F * DEG, .pitch = 0.0F});
+    REQUIRE(anim.active());
+
+    int samples = 0;
+    for (int i = 0; i < 25 && anim.active(); ++i) {
+        const ViewPose pose = anim.advance(0.01F);
+        ++samples;
+        CAPTURE(i);
+        CAPTURE(pose.yaw / DEG);
+        // The MONOTONE path stays inside [170, 190] degrees the whole way -- the animation walks
+        // through 180 rather than through 0. The long-way path leaves this window on its FIRST step.
+        CHECK(pose.yaw >= (170.0F * DEG) - 1.0e-5F);
+        CHECK(pose.yaw <= (190.0F * DEG) + 1.0e-5F);
+    }
+    CHECK(samples > 1);  // anti-vacuity: intermediate frames really were sampled
+}
+
+TEST_CASE("editor view-axis gizmo: the easing is monotone with zero velocity at both ends (VA18)") {
+    // RELATIONSHIPS ONLY: retuning VIEW_SNAP_SECONDS or swapping smoothstep for another curve with
+    // the same two end properties reddens nothing here (AC-21).
+    using engine::editor::ViewSnapAnimation;
+    constexpr float SNAP = engine::editor::VIEW_SNAP_SECONDS;
+    constexpr int STEPS = 20;
+    const float dt = SNAP / static_cast<float>(STEPS);
+
+    ViewSnapAnimation anim;
+    anim.start(0.0F, 0.0F, ViewPose{.yaw = 1.0F, .pitch = 0.0F});
+    REQUIRE(anim.active());
+
+    std::vector<float> yaws;
+    yaws.push_back(0.0F);
+    for (int i = 0; i < STEPS && anim.active(); ++i) {
+        yaws.push_back(anim.advance(dt).yaw);
+    }
+    REQUIRE(yaws.size() >= 6U);
+
+    SUBCASE("monotone non-decreasing in t") {
+        for (std::size_t i = 1; i < yaws.size(); ++i) {
+            CAPTURE(i);
+            CHECK(yaws[i] >= yaws[i - 1U]);
+        }
+    }
+    SUBCASE("the FIRST and LAST steps move strictly less than a MIDDLE one -- zero end velocity") {
+        const float firstStep = yaws[1] - yaws[0];
+        const float middleStep = yaws[yaws.size() / 2U] - yaws[(yaws.size() / 2U) - 1U];
+        // The last MOVING step, skipping the final call, which snaps exactly onto the target and can
+        // therefore be larger than the eased step before it.
+        const float lastStep = yaws[yaws.size() - 2U] - yaws[yaws.size() - 3U];
+        CAPTURE(firstStep);
+        CAPTURE(middleStep);
+        CAPTURE(lastStep);
+        CHECK(firstStep < middleStep);
+        CHECK(lastStep < middleStep);
     }
 }
