@@ -12,9 +12,9 @@ Two platform matrices, never to be conflated: the **editor** runs on macOS/Windo
 
 **PHASE E (Editor Experience) IS OPEN — it executes between Phase 3 and Phase 4.**
 **E.1.1 (Debug line renderer) is MERGED (PR #92, `15bf58b`), E.1.2 (Grid floor + world axes) is
-MERGED (PR #93, `d91eab1`) and E.1.3 (View-axis gizmo) is COMPLETE IN CODE on
-`feat/E.1.3-view-axis-gizmo` (eight commits, full local gate green, sabotage matrix run) and NOT YET
-MERGED; the other 21 tasks are planning only.** Six epics, 24
+MERGED (PR #93, `d91eab1`) and E.1.3 (View-axis gizmo) is MERGED (PR #94, merge commit `6fb323c`,
+thirteen commits — eight, then five closing a review round — all six CI jobs green with
+`headSha == HEAD` asserted); the other 21 tasks are planning only.** Six epics, 24
 tasks, in `docs/tasks/phase-E.md`. It is **lettered, not fractioned**, because `3.5` and `3.5.1`/`3.5.2` are
 already Phase 3's Skeletal-animation epic and its tasks — a "Phase 3.5" would collide with referenced
 numbers, and numbering is append-only. In Notion its `Phase #` is `3.5`, a sort key, not an
@@ -55,7 +55,7 @@ Epics **3.1** (AssetDatabase), **3.2** (Importers), **3.3** (Cooker v0), **3.4**
 > as the position moves, never grown: it reached 207 k characters once and that is what this note
 > exists to prevent.
 
-### E.1.3 — View-axis gizmo (COMPLETE IN CODE, not merged) — the compass, and a projection mode
+### E.1.3 — View-axis gizmo (MERGED, PR #94 `6fb323c`) — the compass, and a projection mode
 
 **The viewport has a corner compass and an orthographic lens.** Six depth-sorted labelled balls on a
 ring, a 0.25 s two-angle smoothstep snap about the unchanged pivot, and a centre badge that toggles
@@ -278,7 +278,7 @@ miniaudio; `A38` is covered only by validation row 9. Full detail in `docs/10`.
 | **Phase 2** — Editor | **COMPLETE, gate met 2026-08-02.** All six epics closed and macOS-validated; Windows/Linux rows pending for every task (`editor/VALIDATION.md`). Gate artifact: `samples/phase-2-editor-scene/` — data, deliberately not `add_subdirectory`'d. |
 | **Phase 3** — Asset Pipeline & 3D Content | **OPEN.** **All seven epics CLOSED in code** — 3.1–3.6, and 3.7 with 3.7.1 + 3.7.2 merged and macOS-validated and **3.7.3 merged (PR #91)**. What is left is the gate below and the validation debt. Per-task detail in `docs/10`. |
 | **Phase 3 gate** | Drop a rigged glTF/FBX in → PBR materials + shadows + a playing animation + **an audible sound**. The audible half exists in code as of 3.7.2 and **has not been validated on any platform** — 3.7.2's macOS pass ticked 47 of 53 records and left the 6 that need ears open. |
-| **Phase E** — Editor Experience | **OPEN. E.1.1 merged (PR #92 `15bf58b`), E.1.2 merged (PR #93 `d91eab1`), E.1.3 COMPLETE IN CODE and unmerged on `feat/E.1.3-view-axis-gizmo`; 21 tasks remain, planning only.** Inserted between 3 and 4; six epics, 24 tasks in `docs/tasks/phase-E.md`. Viewport legibility (E.1), lighting & environment (E.2), inspector & context routing (E.3), project/scene/asset management (E.4), content-creation UX (E.5), shell identity (E.6). **E.1.1 is macOS-validated** — 8 of 10 rows PASS on 2026-09-03, 2 partial for structural reasons (the sample installs no billboard atlas, so `S21`'s picture half is not executable with it; Tracy's CLI exports zones but not plots). **E.1.2 is macOS-validated** — 8 PASS / 2 PARTIAL / 1 NOT EXECUTABLE on 2026-09-04. **E.1.3 has a validation page written and NOT YET RUN on any platform.** Windows and Linux unvalidated, as everywhere. |
+| **Phase E** — Editor Experience | **OPEN. E.1.1 merged (PR #92 `15bf58b`), E.1.2 merged (PR #93 `d91eab1`), E.1.3 merged (PR #94 `6fb323c`); 21 tasks remain, planning only.** Inserted between 3 and 4; six epics, 24 tasks in `docs/tasks/phase-E.md`. Viewport legibility (E.1), lighting & environment (E.2), inspector & context routing (E.3), project/scene/asset management (E.4), content-creation UX (E.5), shell identity (E.6). **E.1.1 is macOS-validated** — 8 of 10 rows PASS on 2026-09-03, 2 partial for structural reasons (the sample installs no billboard atlas, so `S21`'s picture half is not executable with it; Tracy's CLI exports zones but not plots). **E.1.2 is macOS-validated** — 8 PASS / 2 PARTIAL / 1 NOT EXECUTABLE on 2026-09-04. **E.1.3 has a sixteen-row validation page written and NOT YET RUN on any platform.** Windows and Linux unvalidated, as everywhere. |
 | **Phase E gate** | Open a project and land in the scene you were last editing, on a lit grid floor under a sky; create a Cube from the menu, drop a material on it and see it shade; aim a spot light with a visible gizmo; rename, move and delete assets without leaving the editor. Gate artifact: `samples/phase-E-editor/`. |
 
 ### Engine layers, in dependency order
@@ -564,12 +564,18 @@ build at the branch point, the cost A/B, Tracy's zone and plots, and the declare
 (depth write on the Tested pipelines) and `S21`'s picture half (a mirrored atlas cell whose centre
 still reads the right colour) have their ONLY coverage anywhere in that page's row 6.**
 
-**E.1.3'S PAGE IS WRITTEN AND HAS NOT BEEN RUN ON ANY PLATFORM.** Its fourteen rows are the whole of
-its remaining risk, and three of them are the ONLY cover their seed has anywhere: **row 6** (the
+**E.1.3'S PAGE IS WRITTEN AND HAS NOT BEEN RUN ON ANY PLATFORM.** Its **sixteen** rows are the whole
+of its remaining risk, and five of them are the ONLY cover their seed has anywhere: **row 6** (the
 rotate ring in ortho — seed `S8`, which no runtime tier can see because nothing here reads ImGuizmo's
 global state), **row 10** (the widget's press claim at its boundary — seed `S13`, because **nothing in
-`tests/` can inject a camera gesture**, measured, and seed `S18`'s one-point edge), and **row 1**
-(HiDPI legibility). Everything else this task claims is CI-covered on all three lanes, which is the
+`tests/` can inject a camera gesture**, measured, and seed `S18`'s one-point edge), **row 1**
+(HiDPI legibility, **NOT EXECUTABLE on 1x hardware**), and the two rows the review round added —
+**row 15** (a press the widget owns must not reach ImGuizmo, and the other direction: a drag begun on
+a handle and released over the widget must still commit once) and **row 16** (both snap cancels, and
+that a wheel-dolly does *not* cancel). **Rows 15 and 16 exist because NOTHING in `tests/` can
+synthesise a click or press a key** — the backend rewrites `io.MousePos` every `NewFrame`, and
+ImGuizmo exports no getter for `mbEnable`, so `I118` and `I115` are source-text pins that say so in
+their own comments. Everything else this task claims is CI-covered on all three lanes, which is the
 direct consequence of the pure/ImGui split.
 
 **E.1.2 IS macOS-VALIDATED — 8 PASS / 2 PARTIAL / 1 NOT EXECUTABLE, 2026-09-04.** The render with
@@ -592,10 +598,10 @@ binary is `aero_sample_phaseE_debug_draw`** — `phaseE`, no underscore before t
 
 ### Next
 
-**Phase E is the open front. E.1.3 is COMPLETE IN CODE on `feat/E.1.3-view-axis-gizmo` and NOT
-MERGED** — eight commits, the full local gate green on both presets and both reduced configurations,
-the 18-seed sabotage matrix run, and a validation page written but **NOT RUN on any platform**. It is
-awaiting a review round and a PR. E.1.2 is merged AND macOS-validated (8 PASS / 2 PARTIAL / 1 NOT
+**Phase E is the open front. E.1.3 is MERGED (PR #94, `6fb323c`)** — thirteen commits, the full
+local gate green on both presets and both reduced configurations, the 18-seed sabotage matrix run,
+a review round closed (one blocking finding: the widget's press reached ImGuizmo), and a validation
+page written but **NOT RUN on any platform**. E.1.2 is merged AND macOS-validated (8 PASS / 2 PARTIAL / 1 NOT
 EXECUTABLE, 2026-09-04). **Windows and Linux validation remain outstanding**, as everywhere. The
 epic's remaining tasks are **E.1.4** and **E.1.5** (the gizmo restyle), and E.1.3 answered "which way
 is up", which E.1.2 deliberately did not.
