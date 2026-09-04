@@ -54,6 +54,15 @@ using engine::editor::GizmoWriteStatus;
 using engine::editor::nextGizmoMode;
 
 namespace {
+
+// task E.1.3: the PERSPECTIVE mode, spelled once. buildSelectionOverlay / projectToViewport /
+// clipSegmentToNearPlane / gizmoOriginBehindCamera all took a NON-DEFAULTED ProjectionMode at that
+// task, and every pre-existing site below is a PERSPECTIVE site whose behaviour must be byte-identical
+// (AC-8). A file-local alias keeps each of those lines 7 characters longer instead of 40, which is
+// what keeps them under the column limit -- clang-format-18's Homebrew and Ubuntu builds disagree on
+// ~120-column chains, and this is the file with the most such edits.
+constexpr auto PERSP = engine::editor::ProjectionMode::Perspective;
+
 constexpr std::array<GizmoOperation, 3> ALL_OPERATIONS = {GizmoOperation::Translate, GizmoOperation::Rotate,
                                                           GizmoOperation::Scale};
 constexpr std::array<GizmoSpace, 2> ALL_SPACES = {GizmoSpace::Local, GizmoSpace::World};
@@ -453,29 +462,29 @@ TEST_CASE("gizmo: gizmoOriginBehindCamera (G15)") {
 
     SUBCASE("in front of the eye is false") {
         const Mat4 model = translation(Vec3::zero());
-        CHECK_FALSE(gizmoOriginBehindCamera(viewProj, model, viewportSize));
+        CHECK_FALSE(gizmoOriginBehindCamera(viewProj, PERSP, model, viewportSize));
     }
 
     SUBCASE("positive control: a DIFFERENT origin, also in front, is also false") {
         // Guards against a case that would pass vacuously regardless of the model's origin.
         const Mat4 model = translation(Vec3{1.0F, 1.0F, 0.0F});
-        CHECK_FALSE(gizmoOriginBehindCamera(viewProj, model, viewportSize));
+        CHECK_FALSE(gizmoOriginBehindCamera(viewProj, PERSP, model, viewportSize));
     }
 
     SUBCASE("exactly at the eye is true") {
         const Mat4 model = translation(Vec3{0.0F, 0.0F, 5.0F});
-        CHECK(gizmoOriginBehindCamera(viewProj, model, viewportSize));
+        CHECK(gizmoOriginBehindCamera(viewProj, PERSP, model, viewportSize));
     }
 
     SUBCASE("behind the eye is true") {
         const Mat4 model = translation(Vec3{0.0F, 0.0F, 10.0F});
-        CHECK(gizmoOriginBehindCamera(viewProj, model, viewportSize));
+        CHECK(gizmoOriginBehindCamera(viewProj, PERSP, model, viewportSize));
     }
 
     SUBCASE("a non-finite model fails closed (true)") {
         Mat4 model = Mat4::identity();
         model.columns[3] = Vec4{std::numeric_limits<float>::quiet_NaN(), 0.0F, 0.0F, 1.0F};
-        CHECK(gizmoOriginBehindCamera(viewProj, model, viewportSize));
+        CHECK(gizmoOriginBehindCamera(viewProj, PERSP, model, viewportSize));
     }
 
     SUBCASE("the w/z disagreement band -- code-review finding, 2026-07-29") {
@@ -486,7 +495,7 @@ TEST_CASE("gizmo: gizmoOriginBehindCamera (G15)") {
         // camera. Pins the fix: the widened predicate must say "behind" here, closing the band
         // Manipulate's own leaking early return (F5) would otherwise be reachable through.
         const Mat4 model = translation(Vec3{0.0F, 0.0F, 4.95F});
-        CHECK(gizmoOriginBehindCamera(viewProj, model, viewportSize));
+        CHECK(gizmoOriginBehindCamera(viewProj, PERSP, model, viewportSize));
     }
 }
 
@@ -556,4 +565,49 @@ TEST_CASE("gizmo: enum totality (G17)") {
     CHECK(edgeSeen[1]);
     CHECK(edgeSeen[2]);
     CHECK(edgeSeen[3]);
+}
+
+TEST_CASE("gizmo: gizmoOriginBehindCamera under an ORTHOGRAPHIC projection (task E.1.3, G18)") {
+    // Seed S6 puts the vacuous `w` test in projectToViewport's ortho arm; test 1 of this predicate is
+    // that very function, so this case is one of its three discriminators. G15 above re-runs every
+    // pre-existing assertion with the explicit PERSP and is unchanged (AC-8) -- that is the other
+    // half of what this pair proves.
+    const Mat4 view = engine::lookAt(Vec3{0.0F, 0.0F, 5.0F}, Vec3::zero(), Vec3::unitY());
+    // The same eye, through a parallel lens: half-height 2, half-width 2 * 16/9, near 0.1, far 100.
+    const Mat4 orthoProj = engine::ortho(-2.0F * 16.0F / 9.0F, 2.0F * 16.0F / 9.0F, -2.0F, 2.0F, 0.1F, 100.0F);
+    const Mat4 viewProj = orthoProj * view;
+    const Vec2 viewportSize{800.0F, 600.0F};
+    constexpr auto ORTHO = engine::editor::ProjectionMode::Orthographic;
+
+    SUBCASE("in front of the eye is false") {
+        CHECK_FALSE(gizmoOriginBehindCamera(viewProj, ORTHO, translation(Vec3::zero()), viewportSize));
+    }
+    SUBCASE("positive control: a DIFFERENT origin, also in front, is also false") {
+        // Off-axis, so a predicate that only ever answered "in front" for the exact centre is caught.
+        CHECK_FALSE(gizmoOriginBehindCamera(viewProj, ORTHO, translation(Vec3{1.0F, 1.0F, 0.0F}), viewportSize));
+    }
+    SUBCASE("behind the eye is true") {
+        CHECK(gizmoOriginBehindCamera(viewProj, ORTHO, translation(Vec3{0.0F, 0.0F, 10.0F}), viewportSize));
+    }
+    SUBCASE("exactly at the eye is true") {
+        CHECK(gizmoOriginBehindCamera(viewProj, ORTHO, translation(Vec3{0.0F, 0.0F, 5.0F}), viewportSize));
+    }
+    SUBCASE("a non-finite model fails closed (true)") {
+        Mat4 model = Mat4::identity();
+        model.columns[3] = Vec4{std::numeric_limits<float>::quiet_NaN(), 0.0F, 0.0F, 1.0F};
+        CHECK(gizmoOriginBehindCamera(viewProj, ORTHO, model, viewportSize));
+    }
+    SUBCASE("the SECOND test still fires in ortho, as a stricter near-plane cut of our own") {
+        // In ortho ImGuizmo's own `!mIsOrthographic && camSpacePosition.z < 0.001f` guard cannot fire
+        // at all, so test 2 stops MIRRORING anything -- but it is kept, and it is not dead. With this
+        // camera (eye at z = 5, near 0.1, far 100) an origin at world z = 4.95 is 0.05 in front of the
+        // eye and therefore BEHIND the near plane, so test 1 already refuses it. An origin at
+        // z = 4.85 is 0.15 in front -- past the near plane, so test 1 accepts -- while its raw clip.z
+        // is (0.15 - 0.1)/99.9 = 5.0e-4, under test 2's 0.001, so test 2 refuses. That band is what
+        // this arm pins, and it is why the test is unconditional rather than gated on the mode.
+        CHECK(gizmoOriginBehindCamera(viewProj, ORTHO, translation(Vec3{0.0F, 0.0F, 4.95F}), viewportSize));
+        CHECK(gizmoOriginBehindCamera(viewProj, ORTHO, translation(Vec3{0.0F, 0.0F, 4.85F}), viewportSize));
+        // ...and just past the band it is accepted, so the arm above is not vacuous.
+        CHECK_FALSE(gizmoOriginBehindCamera(viewProj, ORTHO, translation(Vec3{0.0F, 0.0F, 4.0F}), viewportSize));
+    }
 }

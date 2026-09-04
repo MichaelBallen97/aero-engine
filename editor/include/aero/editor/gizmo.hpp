@@ -12,6 +12,7 @@
 // compile outright (the picking.hpp / editor_camera.hpp precedent).
 
 #include <aero/core/math.hpp>
+#include <aero/editor/editor_camera.hpp>  // task E.1.3: ProjectionMode -- this header must NAME the type
 #include <aero/scene/entity.hpp>
 #include <aero/scene/transform.hpp>
 
@@ -95,14 +96,21 @@ inline constexpr float GIZMO_SNAP_SCALE = 0.1F;            // scale factor
 // Is the gizmo origin at or behind the near plane? TWO tests, either of which fails closed:
 //   1. picking.hpp's projectToViewport, false for w <= CLIP_W_EPSILON or any non-finite result --
 //      so pick, highlight and gizmo share ONE definition of "behind the camera" for this half (D9).
-//   2. ImGuizmo's OWN behind-camera test, mirrored exactly (ImGuizmo.cpp:2696-2698): RAW clip-space
+//   2. ImGuizmo's OWN behind-camera test, mirrored (ImGuizmo.cpp:2696-2698): RAW clip-space
 //      z < 0.001, no perspective divide. Code-review finding (2026-07-29): test 1 alone leaves a
 //      reachable band where OUR test says "in front" but ImGuizmo's own test would have refused,
 //      so Manipulate gets called and leaks an unmatched PushClipRect (F5). Test 2 closes it.
+//      TASK E.1.3: in ORTHOGRAPHIC that refusal does not exist -- ImGuizmo's guard reads
+//      `!gContext.mIsOrthographic && camSpacePosition.z < 0.001f`, so the first term is false and the
+//      test never fires -- and test 2 therefore stops MIRRORING anything. It is kept UNCONDITIONAL
+//      anyway: it is strictly stricter than the ortho `z > CLIP_Z_EPSILON` gate test 1 now applies,
+//      and a stricter near-plane cut is safe. It is not dead code; see gizmo.cpp for the detail.
 // FAILS CLOSED throughout: a non-finite model, or a non-finite clip.z, returns true.
 // `viewportSizePoints` only scales the (discarded) screen point test 1 computes; any positive size
 // gives the same answer, and the panel passes the real one.
-[[nodiscard]] bool gizmoOriginBehindCamera(const Mat4& viewProj, const Mat4& model, Vec2 viewportSizePoints) noexcept;
+// `mode` is NON-DEFAULTED (task E.1.3 D12), like the two picking predicates it composes.
+[[nodiscard]] bool gizmoOriginBehindCamera(const Mat4& viewProj, ProjectionMode mode, const Mat4& model,
+                                           Vec2 viewportSizePoints) noexcept;
 
 // ---- the write ----------------------------------------------------------------------------------
 

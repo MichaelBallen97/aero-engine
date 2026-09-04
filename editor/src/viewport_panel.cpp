@@ -646,7 +646,7 @@ void ViewportPanel::updateGizmo(PanelContext& context, Vec2 imageOrigin, Vec2 av
 
     // 4. The behind-camera skip (D9/F5).
     const Mat4 viewProj = editorCamera.projectionMatrix(lastAspect) * editorCamera.viewMatrix();
-    if (gizmoOriginBehindCamera(viewProj, *model, avail) && !ImGuizmo::IsUsing()) {
+    if (gizmoOriginBehindCamera(viewProj, editorCamera.projectionMode(), *model, avail) && !ImGuizmo::IsUsing()) {
         // E19 -- every early return clears BOTH latches, not just the one above. Reaching this
         // return means IsUsing() is false, so if the previous frame was mid-drag the End edge
         // happens HERE. Reading IsUsing() here is deliberate and is NOT the F8 mistake: F8 forbids
@@ -662,7 +662,13 @@ void ViewportPanel::updateGizmo(PanelContext& context, Vec2 imageOrigin, Vec2 av
     // 5. Per-frame setup. SetDrawlist is FIRST and EVERY frame, because BeginFrame() reassigns
     // gContext.mDrawList to the "gizmo" window's list (ImGuizmo.cpp:1017).
     ImGuizmo::SetDrawlist(ImGui::GetWindowDrawList());
-    ImGuizmo::SetOrthographic(false);                                   // EditorCamera is perspective-only
+    // task E.1.3: driven from the camera's own mode, never a literal. MEASURED at the pinned port's
+    // source: mIsOrthographic reaches exactly FOUR lines (:772 the member, :984 this setter, :1298 the
+    // ROTATION RING's view direction, :1336 the ring's start angle, :2696 the behind-camera early
+    // return) -- and mScreenFactor (:1128) and ComputeCameraRay (:842-861) are projection-agnostic, so
+    // handle SIZING and handle HIT-TESTING were already correct in ortho. What this flag buys is the
+    // rotate ring's orientation and the behind-camera skip.
+    ImGuizmo::SetOrthographic(editorCamera.projectionMode() == ProjectionMode::Orthographic);
     ImGuizmo::SetRect(imageOrigin.x, imageOrigin.y, avail.x, avail.y);  // POINTS (D18), never drawExtent
 
     // A4/E6-corrected (approved at plan review): a drag ImGuizmo never saw RELEASED (panel hidden,
@@ -898,8 +904,9 @@ void ViewportPanel::drawSelectionOverlay(PanelContext& context, Vec2 imageOrigin
     // drawExtent, and renderScene derives the identical number from frame->extent() with no resize in
     // between) -- so the box lands on the pixels it belongs to, never one frame behind them.
     const Mat4 viewProj = editorCamera.projectionMatrix(lastAspect) * editorCamera.viewMatrix();
-    buildSelectionOverlay(context.world, context.selection.entities(), context.selection.primary(), viewProj, avail,
-                          overlayScratch, meshBounds);  // task 3.1.5 -- the third of INV-D6's three
+    buildSelectionOverlay(context.world, context.selection.entities(), context.selection.primary(), viewProj,
+                          editorCamera.projectionMode(), avail, overlayScratch,
+                          meshBounds);  // task 3.1.5 -- the third of INV-D6's three
     if (overlayScratch.empty()) {
         return;  // E1: no PushClipRect at all, so there is no pair left unbalanced
     }

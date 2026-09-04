@@ -52,6 +52,25 @@ inline constexpr float POINT_PICK_RADIUS_POINTS = 8.0F;
 // near plane is z_clip = 0 and the in-front test is w > 0 -- NOT z > -w. Do not flip Y for Vulkan.
 inline constexpr float CLIP_W_EPSILON = 1.0e-4F;
 
+// "In front of the eye" in ORTHOGRAPHIC (task E.1.3). An ortho proj's bottom row is (0,0,0,1) and the
+// view matrix is affine, so clip.w does not depend on the world point at all and the w test above is
+// VACUOUS. Under ADR-005's [0,1] clip volume the near plane IS z_clip == 0, so this is the correct
+// gate: glm::orthoRH_ZO gives clip.z = -(z_view + zNear) / (zFar - zNear).
+//
+// THE TWO GATES ARE NOT EQUIVALENT, AND THE DIFFERENCE IS ACCEPTED. Perspective's `w > 0` means
+// "in front of the EYE" and admits a point closer than nearPlane; ortho's `z > 0` means "beyond the
+// NEAR PLANE" and rejects it. So an entity 0.05 units in front of the eye draws its selection box in
+// perspective and does not in ortho. Making the perspective gate z-based too is strictly more correct
+// and is 2.3.2's contract to change, not this task's -- it is recorded as an unowned handoff, and
+// PK14 asserts BOTH arms so the asymmetry is recorded rather than discovered.
+//
+// THE MAGNITUDE IS A NORMALISED-DEPTH EPSILON, NOT A WORLD ONE, and is not derived from anything.
+// Its world scale follows the depth range: 1e-6 * (farPlane - nearPlane), so about 1 mm at the
+// shipped defaults and about 10 cm at farPlane = 100000. That is acceptable because this is a
+// STRICTNESS KNOB on a "behind the eye" refusal rather than a correctness threshold -- PK14 asserts
+// the two ARMS and never the value, so a later retune reddens nothing.
+inline constexpr float CLIP_Z_EPSILON = 1.0e-6F;
+
 // ---- the viewport's screen <-> world mapping ----------------------------------------------------
 
 // Mouse position -> NDC, y UP. All three arguments in POINTS (D18). Returns {0,0} -- the CENTRE, and
@@ -66,16 +85,22 @@ inline constexpr float CLIP_W_EPSILON = 1.0e-4F;
 [[nodiscard]] Vec2 ndcToViewportPoints(Vec2 ndc, Vec2 viewportSizePoints) noexcept;
 
 // World point -> viewport-local POINTS. False when the point is at or behind the eye
-// (w <= CLIP_W_EPSILON) or when any result is non-finite (E4) -- ImDrawList would happily consume a
-// NaN and corrupt the whole frame's vertex buffer.
-[[nodiscard]] bool projectToViewport(const Mat4& viewProj, Vec3 worldPoint, Vec2 viewportSizePoints,
-                                     Vec2& outPoints) noexcept;
+// (perspective: w <= CLIP_W_EPSILON; orthographic: z <= CLIP_Z_EPSILON) or when any result is
+// non-finite (E4) -- ImDrawList would happily consume a NaN and corrupt the whole frame's vertex
+// buffer.
+//
+// `mode` is NON-DEFAULTED on purpose (task E.1.3 D12): a default would let a future call site silently
+// take the perspective arm under an orthographic camera, which is a wrong picture with no error, and
+// there is no answer that is right in both modes. Every existing call site was converted explicitly.
+[[nodiscard]] bool projectToViewport(const Mat4& viewProj, ProjectionMode mode, Vec3 worldPoint,
+                                     Vec2 viewportSizePoints, Vec2& outPoints) noexcept;
 
-// Clips a CLIP-SPACE segment to w > CLIP_W_EPSILON, interpolating IN CLIP SPACE, BEFORE the
+// Clips a CLIP-SPACE segment to the mode's own in-front test, interpolating IN CLIP SPACE, BEFORE the
 // perspective divide (D14) -- lerping the DIVIDED endpoints is the classic bug that bends straight
 // lines. Returns false when the whole segment is behind. Mutates its arguments in place; the endpoint
-// that was already in front is left untouched.
-[[nodiscard]] bool clipSegmentToNearPlane(Vec4& a, Vec4& b) noexcept;
+// that was already in front is left untouched. `mode` is non-defaulted for the reason above, and
+// trails the two mutated arguments because those read best adjacent.
+[[nodiscard]] bool clipSegmentToNearPlane(Vec4& a, Vec4& b, ProjectionMode mode) noexcept;
 
 // The D4 basis construction:
 //     dir = forward() + right()*(ndc.x*aspect*tanHalf) + up()*(ndc.y*tanHalf)
@@ -83,6 +108,14 @@ inline constexpr float CLIP_W_EPSILON = 1.0e-4F;
 // closed forms at the centre and the four corners. `aspect` is width/height (UNITLESS -- the ONE
 // number that comes from PIXELS, D18). Returns a ZERO direction, never an assert, for non-finite
 // inputs: engine::normalize ASSERTS on a zero-length vector, so normalizeOrZero is used instead.
+//
+// Task E.1.3: it reads `camera.projectionMode()` itself rather than taking the mode as a parameter,
+// because it already takes the whole camera -- so a PARALLEL arm is the ortho answer, with the ORIGIN
+// varying across the image plane and the DIRECTION constant:
+//     origin = position() + right()*(ndc.x*halfW) + up()*(ndc.y*halfH)   dir = forward()
+// The origin therefore sits on the eye PLANE rather than at the eye POINT, which is exactly why
+// rayLocalBoxHit's entry-hits-only rule (tMin > 0) makes ortho picking correct with no change: a box
+// behind that plane yields t < 0 and is correctly missed.
 [[nodiscard]] Ray viewportRay(const EditorCamera& camera, Vec2 ndc, float aspect) noexcept;
 
 // Where a dropped asset lands, given the drop ray (task 3.1.5). A TOTAL function: every input yields a
