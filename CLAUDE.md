@@ -12,8 +12,8 @@ Two platform matrices, never to be conflated: the **editor** runs on macOS/Windo
 
 **PHASE E (Editor Experience) IS OPEN — it executes between Phase 3 and Phase 4.**
 **E.1.1 (Debug line renderer) is MERGED (PR #92, merge commit `15bf58b`) and E.1.2 (Grid floor +
-world axes) is COMPLETE IN CODE on `feat/E.1.2-grid-floor-world-axes` — six commits, the full local
-gate green on both macOS presets; the other 22 tasks are planning only.** Six epics, 24
+world axes) is MERGED (PR #93, merge commit `d91eab1`, ten commits, all six CI jobs green with
+`headSha == HEAD` asserted); the other 22 tasks are planning only.** Six epics, 24
 tasks, in `docs/tasks/phase-E.md`. It is **lettered, not fractioned**, because `3.5` and `3.5.1`/`3.5.2` are
 already Phase 3's Skeletal-animation epic and its tasks — a "Phase 3.5" would collide with referenced
 numbers, and numbering is append-only. In Notion its `Phase #` is `3.5`, a sort key, not an
@@ -52,7 +52,7 @@ Epics **3.1** (AssetDatabase), **3.2** (Importers), **3.3** (Cooker v0), **3.4**
 > as the position moves, never grown: it reached 207 k characters once and that is what this note
 > exists to prevent.
 
-### E.1.2 — Grid floor + world axes (complete in code) — and a MEASURED NEGATIVE RESULT
+### E.1.2 — Grid floor + world axes (MERGED, PR #93 `d91eab1`) — and a MEASURED NEGATIVE RESULT
 
 **The viewport has a floor.** A pure `render::emitDebugGrid` turns a camera pose into world-space
 lines for a ground grid on the XZ plane, drawn through E.1.1's batch behind a `Grid` checkbox that
@@ -202,7 +202,7 @@ miniaudio; `A38` is covered only by validation row 9. Full detail in `docs/10`.
 | **Phase 2** — Editor | **COMPLETE, gate met 2026-08-02.** All six epics closed and macOS-validated; Windows/Linux rows pending for every task (`editor/VALIDATION.md`). Gate artifact: `samples/phase-2-editor-scene/` — data, deliberately not `add_subdirectory`'d. |
 | **Phase 3** — Asset Pipeline & 3D Content | **OPEN.** **All seven epics CLOSED in code** — 3.1–3.6, and 3.7 with 3.7.1 + 3.7.2 merged and macOS-validated and **3.7.3 merged (PR #91)**. What is left is the gate below and the validation debt. Per-task detail in `docs/10`. |
 | **Phase 3 gate** | Drop a rigged glTF/FBX in → PBR materials + shadows + a playing animation + **an audible sound**. The audible half exists in code as of 3.7.2 and **has not been validated on any platform** — 3.7.2's macOS pass ticked 47 of 53 records and left the 6 that need ears open. |
-| **Phase E** — Editor Experience | **OPEN. E.1.1 merged (PR #92 `15bf58b`); E.1.2 complete in code, PR pending; 22 tasks remain, planning only.** Inserted between 3 and 4; six epics, 24 tasks in `docs/tasks/phase-E.md`. Viewport legibility (E.1), lighting & environment (E.2), inspector & context routing (E.3), project/scene/asset management (E.4), content-creation UX (E.5), shell identity (E.6). **E.1.1 is macOS-validated** — 8 of 10 rows PASS on 2026-09-03, 2 partial for structural reasons (the sample installs no billboard atlas, so `S21`'s picture half is not executable with it; Tracy's CLI exports zones but not plots). **E.1.2's page is written and NOT RUN on any platform.** Windows and Linux unvalidated, as everywhere. |
+| **Phase E** — Editor Experience | **OPEN. E.1.1 merged (PR #92 `15bf58b`) and E.1.2 merged (PR #93 `d91eab1`); 22 tasks remain, planning only.** Inserted between 3 and 4; six epics, 24 tasks in `docs/tasks/phase-E.md`. Viewport legibility (E.1), lighting & environment (E.2), inspector & context routing (E.3), project/scene/asset management (E.4), content-creation UX (E.5), shell identity (E.6). **E.1.1 is macOS-validated** — 8 of 10 rows PASS on 2026-09-03, 2 partial for structural reasons (the sample installs no billboard atlas, so `S21`'s picture half is not executable with it; Tracy's CLI exports zones but not plots). **E.1.2's page is written and NOT RUN on any platform.** Windows and Linux unvalidated, as everywhere. |
 | **Phase E gate** | Open a project and land in the scene you were last editing, on a lit grid floor under a sky; create a Cube from the menu, drop a material on it and see it shade; aim a spot light with a visible gizmo; rename, move and delete assets without leaving the editor. Gate artifact: `samples/phase-E-editor/`. |
 
 ### Engine layers, in dependency order
@@ -479,8 +479,9 @@ no underscore before the E.
 
 ### Next
 
-**Phase E is the open front. E.1.2 is complete in code and its PR is the immediate next step**; its
-macOS validation page is written and unrun. After it, the epic's remaining tasks are **E.1.3**
+**Phase E is the open front. E.1.2 is merged and its validation page is written and UNRUN on every
+platform** — the first Phase E task whose CI passed on all three lanes from the first push, Windows
+and Linux included. The epic's remaining tasks are **E.1.3**
 (view-axis gizmo — it owns "which way is up", which E.1.2 deliberately does not answer), **E.1.4**
 and **E.1.5** (the gizmo restyle, which adopts `AXIS_{X,Y,Z}` from the palette E.1.2 created).
 
