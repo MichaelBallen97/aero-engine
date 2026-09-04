@@ -60,15 +60,21 @@ void warnOnce(bool& latch, const char* message) {
 // The count fires ONCE PER EMITTED SUBMESH, not once per entity: it answers "how many draws could not
 // use the material they were asked for", which is the number a diagnostic reader wants — an
 // entity-level count would understate a seven-submesh model by a factor of seven.
+//
+// task E.1.4: the last parameter is the COUNTER rather than the RenderView, so buildSelectionMaskSet
+// -- which has no RenderView -- reaches the identical three-arm decision instead of carrying a copy
+// that could drift. Nothing else about it moves, and SQ12 plus the untouched
+// scene_render_bindings_test.cpp battery are what make that a claim rather than an assertion.
 [[nodiscard]] render::MaterialHandle resolveMaterial(const MeshRenderer& meshRenderer, const MeshBindingSubmesh& sub,
-                                                     const AssetBindingTable* bindings, render::RenderView& view) {
+                                                     const AssetBindingTable* bindings,
+                                                     std::uint32_t& unresolvedMaterials) {
     if (meshRenderer.material.valid()) {
         const render::MaterialHandle overrideHandle =
             bindings != nullptr ? bindings->findMaterial(meshRenderer.material) : render::MaterialHandle{};
         if (overrideHandle.valid()) {
             return overrideHandle;
         }
-        ++view.unresolvedMaterials;
+        ++unresolvedMaterials;
     }
     return sub.material;
 }
@@ -134,7 +140,7 @@ render::RenderView buildRenderView(World& world, RenderViewScratch& scratch, rhi
             instance.model = model;
             instance.normalMatrix = normalMatrix;
             instance.color = meshRenderer.color;
-            instance.material = resolveMaterial(meshRenderer, sub, bindings, view);
+            instance.material = resolveMaterial(meshRenderer, sub, bindings, view.unresolvedMaterials);
             scratch.instances.push_back(instance);  // mvp filled below, once the camera is known
             ++emitted;
         }
@@ -217,6 +223,112 @@ render::RenderView buildRenderView(World& world, RenderViewScratch& scratch, rhi
     view.instances = scratch.instances;
     view.points = scratch.points;
     return view;
+}
+
+SelectionMaskSet buildSelectionMaskSet(World& world, std::span<const Entity> selected, Entity primary,
+                                       const render::CameraView& camera, SelectionMaskScratch& scratch,
+                                       const AssetBindingTable* bindings, std::size_t entityCap) {
+    AERO_PROFILE_ZONE;
+    scratch.secondary.clear();
+    scratch.primary.clear();
+    scratch.withoutGeometry.clear();
+    SelectionMaskSet set;
+    const Mat4 viewProj = camera.proj * camera.view;  // ONE composition, reused per instance
+    std::size_t processed = 0;
+
+    for (const Entity entity : selected) {
+        // THE DEAD-HANDLE TEST COMES FIRST, and the order is not cosmetic. 2.3.2's A7 rule verbatim:
+        // dead and null handles are skipped SILENTLY and do NOT advance the counter -- a stale handle
+        // must not consume another entity's budget. buildSelectionOverlay tests its cap first only
+        // because it BREAKS; here the cap arm counts and continues, so a run of dead handles at the
+        // front would exhaust the budget and a dead handle past position 256 would be counted as
+        // over-cap.
+        if (!world.alive(entity)) {
+            continue;
+        }
+        if (processed >= entityCap) {
+            ++set.skippedOverCap;  // neither outlined nor markered, and COUNTED so it is not silent
+            continue;
+        }
+        ++processed;
+        // The ONLY place `primary` is consulted. A primary handle NOT in `selected` contributes
+        // nothing and is not an error -- Selection guarantees the pairing, and this takes a span plus
+        // a handle rather than a const Selection& so a tier-0 case can drive it from a plain array.
+        //
+        // CHOSEN BEFORE THE ARMS, so an entity that lands in withoutGeometry still costs its cap slot
+        // -- which is buildSelectionOverlay's existing behaviour, where a marker entity consumes
+        // budget exactly as a boxed one does.
+        std::vector<render::MeshInstance>& bucket = (entity == primary) ? scratch.primary : scratch.secondary;
+
+        // THE Transform CLAUSE IS NOT DEFENSIVE: buildRenderView walks each<Transform, MeshRenderer>,
+        // so an entity without one is NOT DRAWN by the forward pass at all and must get a marker
+        // rather than an outline that can never appear.
+        if (!world.has<Transform>(entity) || !world.has<MeshRenderer>(entity)) {
+            scratch.withoutGeometry.push_back(entity);
+            continue;
+        }
+        const MeshRenderer& meshRenderer = *world.get<MeshRenderer>(entity);
+        const Mat4 model = worldMatrix(world, entity);
+        const Mat4 normalMatrix = embed(transpose(inverse(toMat3(model))));
+
+        // --- arm 1: no reference -> ONE primitive instance, buildRenderView's own arm.
+        if (!meshRenderer.mesh.valid()) {
+            render::MeshInstance instance;
+            instance.primitive = clampPrimitive(meshRenderer.primitive);
+            instance.model = model;
+            instance.normalMatrix = normalMatrix;
+            instance.color = meshRenderer.color;
+            // COMPOSED PER INSTANCE as viewProj * model, never accumulated and never read back off
+            // another instance -- SQ8 recomputes it independently and would be vacuous otherwise.
+            instance.mvp = viewProj * model;
+            // instance.material is left DEFAULT here, exactly as buildRenderView leaves it. That is
+            // E.5.1's confirmed defect and E.5.1's to fix: changing it here would make the mask
+            // disagree with the picture in the one direction INV-1 forbids.
+            bucket.push_back(instance);
+            continue;
+        }
+
+        // --- arm 2: a reference with nothing to resolve it -> the marker list.
+        const MeshBinding* binding = bindings != nullptr ? bindings->findMesh(meshRenderer.mesh) : nullptr;
+        if (binding == nullptr) {
+            ++set.unresolvedMeshes;
+            scratch.withoutGeometry.push_back(entity);
+            continue;
+        }
+
+        // --- arm 3: resolved -> ONE INSTANCE PER MATCHING SUBMESH. Instances are NOT capped: one
+        // entity with seven submeshes emits seven, because the forward pass has no instance cap
+        // either and inventing one here would make the mask disagree with the picture for exactly the
+        // models most likely to be selected.
+        std::uint32_t emitted = 0;
+        for (const MeshBindingSubmesh& sub : binding->submeshes) {
+            if (sub.sourceMeshIndex != meshRenderer.meshIndex) {
+                continue;
+            }
+            render::MeshInstance instance;
+            instance.primitive = clampPrimitive(meshRenderer.primitive);  // IGNORED while `mesh` is valid
+            instance.mesh = binding->mesh;
+            instance.submesh = sub.submesh;
+            instance.model = model;
+            instance.normalMatrix = normalMatrix;
+            instance.color = meshRenderer.color;
+            instance.material = resolveMaterial(meshRenderer, sub, bindings, set.unresolvedMaterials);
+            instance.mvp = viewProj * model;
+            bucket.push_back(instance);
+            ++emitted;
+        }
+        if (emitted == 0) {
+            // A STALE meshIndex: the same observable as arm 2, a different cause, and the editor's
+            // ledger is where the cause is nameable.
+            ++set.unresolvedMeshes;
+            scratch.withoutGeometry.push_back(entity);
+        }
+    }
+
+    set.secondary = scratch.secondary;
+    set.primary = scratch.primary;
+    set.withoutGeometry = scratch.withoutGeometry;
+    return set;
 }
 
 SceneRenderer::SceneRenderer(render::ForwardRenderer&& fwd) noexcept : forward(std::move(fwd)) {}
