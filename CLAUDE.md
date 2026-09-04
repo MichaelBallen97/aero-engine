@@ -75,12 +75,30 @@ spelling, or the lines cross the 120-column CI skew.** `overlayOwnsPress` had 15
 `imgui_layer_test.cpp` plus a source-text pin naming its argument list: **a caller survey must include
 the GPU tier and the pins.**
 
+**A CHROME WIDGET THAT SUBMITS NO ImGui ITEM IS INVISIBLE TO ImGuizmo'S OWN PROTECTION.** The
+code-review round's blocking finding. `CanActivate()` is
+`IsMouseClicked(0) && !IsAnyItemHovered() && !IsAnyItemActive()`, so the interactive overlay row is
+protected only **incidentally** (its Checkbox/Combo/Slider are real items) while the view-axis widget
+is not — a click on a ball that the translate arrows crossed both snapped the view **and** committed a
+`TransformCommand`. The fix widens the D20 `ImGuizmo::Enable` term (never an early return, which would
+hide the handles; never `!IsOver()` in the widget's guard, which reads `gContext` before this frame's
+`Manipulate`), guarded by `!IsUsing()` so an in-flight drag survives. **Any future viewport chrome
+drawn with `ImDrawList` alone inherits this and must claim its own presses.** No tier can read
+`mbEnable` — there is no getter — so `I118` pins it as source text.
+
+**AND A `REQUIRE` ON A MID-FLIGHT ANIMATION AFTER ONE REAL FRAME IS A CROSS-LANE FLAKE.**
+`PanelContext::deltaSeconds` caps at **0.25 s, exactly `VIEW_SNAP_SECONDS`**, so one slow frame
+completes the whole snap. Drive a mid-flight property at the pure tier where the delta is a parameter
+(`VA19`), never through the GPU fixture.
+
 **THE TWO GATES ARE NOT EQUIVALENT AND THE ASYMMETRY IS SHIPPED.** Perspective's `w > 0` means "in
 front of the EYE" and admits a point closer than `nearPlane`; ortho's `z > 0` means "beyond the NEAR
 PLANE" and rejects it. `PK14` asserts both arms. **A universal `z`-based gate is 2.3.2's contract to
 change and is an unowned handoff.**
 
-**IMGUIZMO'S `mIsOrthographic` REACHES FOUR LINES AND NONE IS THE SCREEN-SCALING PATH** — `:1298` and
+**IMGUIZMO'S `mIsOrthographic` REACHES FIVE LINES AND NONE IS THE SCREEN-SCALING PATH** (`grep -c` on
+the pinned port reads **5**: `:772`, `:984`, `:1298`, `:1336`, `:2696` — this said FOUR and listed five
+until the code-review round) — `:1298` and
 `:1336` are the **rotation ring**, `:2696` the behind-camera early return; `mScreenFactor` and
 `ComputeCameraRay` are projection-agnostic, so handle sizing and hit-testing were already correct.
 **A consequence with teeth: `gizmoOriginBehindCamera`'s mirrored second test MASKS a broken first
@@ -453,9 +471,10 @@ count on its own page goes stale, and adding one task's delta to another task's 
 arithmetic that produces a confident wrong number.
 
 At E.1.3's gate: **`ctest -N` 172** (tools-ON, both presets, **unmoved** since E.1.2); doctest across
-**seven** binaries **1250 / 1779 / 153 / 34 / 29 / 7 / 28**. **E.1.3 repeats E.1.1's and E.1.2's
+**seven** binaries **1250 / 1780 / 155 / 34 / 29 / 7 / 28** (the code-review round added `VA19`,
+`I118` and `I119`). **E.1.3 repeats E.1.1's and E.1.2's
 signature and it is the INVERSE of 3.7.3's: the doctest totals MOVE while `ctest -N` does NOT** —
-`aero_editor_shell_test` 1748 → 1779 (+31) and `aero_editor_imgui_test` 149 → 153 (+4), while
+`aero_editor_shell_test` 1748 → 1780 (+32) and `aero_editor_imgui_test` 149 → 155 (+6), while
 **`aero_tests` is UNMOVED at 1250, which is the check that no engine file was touched**. The eight
 guard counts at that gate: math **464**, platform **85**, rhi **149**, scene **85**, golden-rule
 **151**, project-no-delete **A=6/B=76**, audio **11/3/55**, probes **6/57**. **The two reduced

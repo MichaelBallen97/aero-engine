@@ -758,9 +758,11 @@ void ViewportPanel::updateGizmo(PanelContext& context, Vec2 imageOrigin, Vec2 av
     // gContext.mDrawList to the "gizmo" window's list (ImGuizmo.cpp:1017).
     ImGuizmo::SetDrawlist(ImGui::GetWindowDrawList());
     // task E.1.3: driven from the camera's own mode, never a literal. MEASURED at the pinned port's
-    // source: mIsOrthographic reaches exactly FOUR lines (:772 the member, :984 this setter, :1298 the
-    // ROTATION RING's view direction, :1336 the ring's start angle, :2696 the behind-camera early
-    // return) -- and mScreenFactor (:1128) and ComputeCameraRay (:842-861) are projection-agnostic, so
+    // source, `grep -c mIsOrthographic ImGuizmo.cpp` == 5: the flag reaches exactly FIVE lines (:772
+    // the member, :984 this setter, :1298 the ROTATION RING's view direction, :1336 the ring's start
+    // angle, :2696 the behind-camera early return) -- the count said FOUR here and then listed five
+    // until the code-review round, which is why the command is written out beside it now.
+    // mScreenFactor (:1128) and ComputeCameraRay (:842-861) are projection-agnostic, so
     // handle SIZING and handle HIT-TESTING were already correct in ortho. What this flag buys is the
     // rotate ring's orientation and the behind-camera skip.
     ImGuizmo::SetOrthographic(editorCamera.projectionMode() == ProjectionMode::Orthographic);

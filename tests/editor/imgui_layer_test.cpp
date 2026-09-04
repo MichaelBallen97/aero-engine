@@ -10441,8 +10441,9 @@ TEST_CASE("editor: what cancels a running view snap, and what does NOT (task E.1
     // AddKeyEvent anywhere in the tree -- and neither focusSelection nor viewSnap.cancel() is
     // reachable: both are private, and focusSelection additionally needs the PanelContext EditorApp
     // owns. Its mechanical cover is the `cancels[1] < focusAt` pair in the first subcase below; its
-    // behavioural cover is validation row 8. The last subcase drives what the fixture genuinely CAN
-    // drive -- the panel really advancing a snap -- and is named for that, not for the cancel.
+    // behavioural cover is validation row 16, which the code-review round added because neither
+    // cancel had one. The last subcase drives what the fixture genuinely CAN drive -- the panel
+    // really advancing a snap -- and is named for that, not for the cancel.
     const std::vector<std::string> code = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/viewport_panel.cpp");
     REQUIRE_FALSE(code.empty());
 
@@ -10765,7 +10766,7 @@ TEST_CASE("editor: a press the view-axis widget owns never reaches ImGuizmo (tas
     // tests/ can synthesise a mouse click: there is no AddMouseButtonEvent, no AddKeyEvent and no
     // io.MouseDown write anywhere in the tree, and the backend rewrites io.MousePos at every
     // NewFrame, so the cursor cannot be parked on the widget either. The BEHAVIOURAL cover is
-    // validation row 11 -- orbit until the translate arrows cross the widget's box, click a ball, and
+    // validation row 15 -- orbit until the translate arrows cross the widget's box, click a ball, and
     // check the entity did not move and the undo stack did not grow.
     //
     // THE DEFECT THIS PINS, so a later reader knows what it is protecting. ImGuizmo's CanActivate()

@@ -13412,8 +13412,10 @@ so E.1.2's shared-batch wall does not apply and no existing counter assertion mo
 
 #### The measured facts that outlive the task
 
-**IMGUIZMO'S `mIsOrthographic` REACHES FOUR LINES, AND NONE OF THEM IS THE SCREEN-SCALING PATH.**
-Read at the pinned port's own source: `:772` the member, `:984` `SetOrthographic`'s assignment,
+**IMGUIZMO'S `mIsOrthographic` REACHES FIVE LINES, AND NONE OF THEM IS THE SCREEN-SCALING PATH.**
+Read at the pinned port's own source, where `grep -c mIsOrthographic ImGuizmo.cpp` reads **5** — this
+paragraph, `CLAUDE.md` and the comment at the call site all said FOUR and then listed five, corrected
+in the code-review round: `:772` the member, `:984` `SetOrthographic`'s assignment,
 `:1298` the **rotation ring's** view direction, `:1336` the ring's start angle, and `:2696` the
 behind-camera early return (`!mIsOrthographic && camSpacePosition.z < 0.001f && !mbUsing`).
 `mScreenFactor` (`:1128`) is computed through the real MVP and `ComputeCameraRay` (`:842-861`)
@@ -13542,9 +13544,10 @@ the same property that made the change atomic, doing double duty.
 
 Both macOS presets build; `AERO_REQUIRE_GPU=1 ctest` is **172/172** on both, **unmoved** from the
 branch point. Doctest totals: `aero_tests` **1250 → 1250 (unmoved — the check that no engine file was
-touched)**, `aero_editor_shell_test` **1748 → 1779** (+31: `AX3`, `VA1`–`VA18`, `PM1`–`PM5`,
-`PK13`–`PK16`, `VP5`/`VP6`, `G18`), `aero_editor_imgui_test` **149 → 153** (+4), and the other four
-unmoved at 34 / 29 / 7 / 28. Guards: math **461 → 464**, project-no-delete B **75 → 76**, and
+touched)**, `aero_editor_shell_test` **1748 → 1780** (+32: `AX3`, `VA1`–`VA19`, `PM1`–`PM5`,
+`PK13`–`PK16`, `VP5`/`VP6`, `G18`), `aero_editor_imgui_test` **149 → 155** (+6: `I114`–`I119`), and
+the other four unmoved at 34 / 29 / 7 / 28. The `+1`/`+2` over the pre-review figures are `VA19`,
+`I118` and `I119`, all three added by the code-review round below. Guards: math **461 → 464**, project-no-delete B **75 → 76**, and
 platform 85 / rhi 149 / scene 85 / **golden-rule 151** / audio 11/3/55 / probes 6/57 all **unmoved** —
 the golden-rule count *cannot* move, because this task adds nothing under `engine/` or `runtime/`.
 The determinism manifest's blob SHA is byte-identical and still 20 hash lines.
@@ -13587,8 +13590,74 @@ invisible branch never runs there.
 
 Q3 was **answered by measurement and the answer is no**: nothing in `tests/` can inject a camera
 gesture — no `AddMouseButtonEvent`, no `AddKeyEvent`, no `io.MouseDown` write anywhere in the tree,
-and `ViewportPanel` exposes no gesture seam. `I115`'s gesture-cancel half is therefore a **source-text
-pin and says so in its own comment**, and seed `S13`'s only behavioural cover is validation row 10.
+and `ViewportPanel` exposes no gesture seam. **BOTH of `I115`'s cancels are therefore source-text
+pins**, and the case says so in its own comment. That sentence used to read "the gesture-cancel half",
+implying the F half was behavioural; the code-review round found it was not, and could not be — the
+same missing `AddKeyEvent` blocks the key, and neither `focusSelection` nor `viewSnap.cancel()` is
+reachable, both being private with `focusSelection` additionally needing the `PanelContext` `EditorApp`
+owns. Seed `S13`'s only behavioural cover is validation row 10; the F cancel had none at all until
+this round added **row 16**, which drives both cancels and the wheel-dolly non-cancel.
 The other declared gaps are `S8` (row 6, the rotate ring in ortho), `S18`'s boundary point (row 10),
 HiDPI legibility (row 1) and the rotate ring's orientation (row 6). Windows and Linux are unvalidated,
 as everywhere.
+
+#### The code-review round — six findings, and what each one changed
+
+**A CHROME WIDGET THAT SUBMITS NO ImGui ITEM IS INVISIBLE TO ImGuizmo'S OWN PROTECTION.** The
+blocking finding, and the one worth carrying forward. `CanActivate()` is
+`IsMouseClicked(0) && !IsAnyItemHovered() && !IsAnyItemActive()` and `GetMoveType` gates only on
+"the cursor is over this window", so the interactive overlay row is protected **incidentally** — its
+`Checkbox`/`Combo`/`SliderFloat` are real items — while the view-axis widget, which deliberately
+submits none, is not. A click on a ball whose box the translate arrows happened to cross started the
+snap **and** latched a drag against a plane captured in the pre-snap view; the camera then rotated
+every frame and the release wrote a real, undoable `TransformCommand`. Fixed by widening the D20
+`ImGuizmo::Enable` term rather than by an early return (which would make the handles vanish for every
+frame the cursor is parked in the corner) or by an `!ImGuizmo::IsOver()` term in the widget's own
+guard (which would let the scene win over chrome drawn on top of it, and would read `gContext` state
+before this frame's `Manipulate` — the F8 mistake). `!ImGuizmo::IsUsing()` protects an in-flight drag,
+mirroring `ImGuizmo.cpp:2697` exactly as the behind-camera early return above it already does. The
+claim is one predicate, `viewAxisOwnsPoint`, with two consumers — the pick and ImGuizmo. **`I118` pins
+it as source text and says why: ImGuizmo exposes `IsOver`/`IsUsing`/`IsUsingAny` and NO getter for
+`mbEnable`, so "the gizmo was disabled this frame" is unreadable from every tier here.** Behavioural
+cover is validation **row 15**, which this round added — including the other direction, that a drag
+started on a handle and released over the widget still commits exactly one edit.
+
+**A `REQUIRE` ON A MID-FLIGHT ANIMATION AFTER EXACTLY ONE REAL FRAME IS A CROSS-LANE FLAKE.**
+`PanelContext::deltaSeconds` is `FrameClock`'s spike-clamped delta capped at **0.25 s — exactly
+`VIEW_SNAP_SECONDS`** — and `advance` finishes on `!(elapsed < 0.25)`, so **one** frame at or above
+the clamp completes the entire animation. A >250 ms frame right after window and `Device` creation is
+plausible on WARP and lavapipe, and a `REQUIRE` aborts rather than failing soft. Two such assertions
+existed. The mid-flight property moved to the pure tier as **`VA19`**, where the delta is a parameter;
+the GPU cases now issue both requests in the same frame (where "active" is arithmetic) and walk a
+bounded loop that holds whether it takes one frame or twenty.
+
+**AND ITS SIBLING: A SUBCASE CAN BE NAMED FOR A PROPERTY ITS BODY NEVER TOUCHES.** `I115`'s last
+subcase was called "F cancels the snap — BEHAVIOURAL" and cancelled nothing; its own inline comment
+two screens below admitted the key could not be pressed, contradicting the case comment above it.
+Renamed for what it drives, with the case comment corrected. The lesson is narrower than "read your
+tests": the false claim was in a **name and a header comment**, which no assertion can contradict.
+
+**A DEAD CALL THAT WOULD ALSO HAVE ANSWERED WRONGLY.** `drawViewAxisGizmo` called `viewAxisRect` into
+two locals nothing read, passing a synthetic image rect of `2 × VIEW_AXIS_HALF_EXTENT_POINTS` — **76,
+under `VIEW_AXIS_MIN_IMAGE_POINTS`'s 140** — so it answered "invisible" and wrote `{0,0}`/`{0,0}`. A
+later edit reusing "the rect that is already there" would have collapsed the clip rect onto the screen
+origin. Deleted; the clip rect stays derived from the layout's own centre, which is the value
+`viewAxisRect` derives its corners from anyway.
+
+**AC-16'S DRAW HALF WAS UNPINNED, AND THE ORDERING IS INVISIBLE AT RUNTIME.** Deleting
+`drawViewAxisGizmo()` or moving it above `drawSelectionOverlay` reddened nothing: every one of those
+calls submits into the same `ImDrawList`, and nothing here reads back a viewport pixel through ImGui's
+draw data. **`I119`** is the `I110` precedent applied a second time — the call exists exactly once,
+after step 9b's rect record, before step 10's request, and after both the selection overlay and
+`updateGizmo`'s call site.
+
+**A TEST THAT MIXES TWO COORDINATE SPACES CAN PASS ON A COINCIDENCE.** `viewAxisRectMin/Max` report
+**image-relative** points (no image origin is latched anywhere, and the accessors say so) while
+`overlayRowMin/Max` report the last drawn frame's **screen** points, and `overlayOwnsPress` ORs the
+two arms. Production is consistent — `updatePick` hands it the real origin, so both arms are screen
+space — but `I116` drives the widget half in image space on purpose, and its two `CHECK_FALSE` arms
+held only because the two rects happen not to overlap at 900×600. **The production asymmetry is kept
+deliberately**: latching an image origin to make the accessors screen-space would give the widget's
+reported rect a staleness argument, which is precisely what D9 avoided by making it pure. The test
+now **asserts** the disjointness instead of relying on it. **A later task that adds a third rect to
+`overlayOwnsPress` inherits this trap.**
