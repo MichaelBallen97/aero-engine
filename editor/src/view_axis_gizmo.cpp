@@ -273,6 +273,9 @@ void ViewSnapAnimation::start(float fromYaw, float fromPitch, ViewPose target) n
     // 340-degree way round; holding the delta is what structurally prevents it (D6, seed S4).
     yawDelta = shortestAngleDelta(fromYaw, target.yaw);
     pitchDelta = target.pitch - fromPitch;
+    // See the header: the monotone yaw endpoint, and the requested pitch verbatim.
+    targetYawValue = fromYaw + yawDelta;
+    targetPitchValue = target.pitch;
     if (std::abs(yawDelta) < VIEW_SNAP_EPSILON_RADIANS && std::abs(pitchDelta) < VIEW_SNAP_EPSILON_RADIANS) {
         return;  // already there: the caller applies the target instantly, with no 0.25 s lockout
     }
@@ -288,7 +291,9 @@ bool ViewSnapAnimation::active() const noexcept { return running; }
 
 ViewPose ViewSnapAnimation::advance(float deltaSeconds) noexcept {
     // The TARGET, which is also what this returns once the animation is over or was never running.
-    const ViewPose target{.yaw = startYawValue + yawDelta, .pitch = startPitchValue + pitchDelta};
+    // Read from the stored landing pose rather than recomputed as start + delta, because those two
+    // are not bit-equal in float and pitch's endpoint is a clamp boundary callers compare with ==.
+    const ViewPose target{.yaw = targetYawValue, .pitch = targetPitchValue};
     if (!running) {
         return target;
     }

@@ -1178,6 +1178,38 @@ TEST_CASE("picking: ortho picking, and the ray-origin depth fix (PK15)") {
         CHECK(hit.entity == offset);
         CHECK(hit.entity != centre);
     }
+    SUBCASE("the ray-origin depth CHANGES A PICK OUTCOME in ortho -- seed S9's discriminator") {
+        // ADDED BY THE SABOTAGE MATRIX: the first draft of this case asserted the change was a no-op
+        // in perspective and never built a scene where it mattered in ortho, so seeding
+        // camera.position() back in reddened NOTHING. The `distance` field is read in exactly one
+        // place -- pickEntity's point-vs-mesh depth arbitration, `point.distance <= mesh.distance` --
+        // so a discriminator needs a POINT candidate and a MESH candidate competing for one click.
+        //
+        // In ortho the ray origin is offset laterally to the click, so for an OFF-AXIS entity the two
+        // spellings differ by the whole lateral offset:
+        //   correct: |(6,0,0) - (6,0,10)| = 10.0     -- the point is IN FRONT of the mesh, and wins
+        //   seeded : |(6,0,0) - (0,0,10)| = 11.66    -- now further than the mesh at ~11.5, and loses
+        // The user clicks a light sitting clearly in front of a wall and selects the wall.
+        World world;
+        const Entity light = makePoint(world, Vec3{6.0F, 0.0F, 0.0F});
+        const Entity wall = makeMesh(world, Vec3{6.0F, 0.0F, -2.0F});
+        const Vec2 ndc = ndcOf(camera, ASPECT, Vec3{6.0F, 0.0F, 0.0F});
+        const PickResult hit =
+            pickEntity(world, camera, PickRequest{.ndc = ndc, .aspect = ASPECT, .viewportSizePoints = VIEWPORT_POINTS});
+        REQUIRE(hit.hit());
+        CHECK(hit.entity == light);  // the NEARER candidate, measured from the ray's own origin
+        CHECK(hit.isPoint);
+        CHECK(hit.entity != wall);
+        // Anti-vacuity: the mesh really was a competing candidate rather than a miss.
+        World meshOnly;
+        const Entity onlyWall = makeMesh(meshOnly, Vec3{6.0F, 0.0F, -2.0F});
+        const PickResult meshHit = pickEntity(
+            meshOnly, camera, PickRequest{.ndc = ndc, .aspect = ASPECT, .viewportSizePoints = VIEWPORT_POINTS});
+        REQUIRE(meshHit.hit());
+        CHECK(meshHit.entity == onlyWall);
+        // ...and the two distances really do straddle, which is what makes the seed flip the verdict.
+        CHECK(hit.distance < meshHit.distance);
+    }
     SUBCASE("the eye -> ray.origin change is a PROVABLE NO-OP in perspective") {
         // Seed S9 puts camera.position() back in the point-pick depth. In perspective viewportRay
         // returns .origin = camera.position() on EVERY path, so the two spellings are the same value

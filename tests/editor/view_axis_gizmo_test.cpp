@@ -652,6 +652,37 @@ TEST_CASE("editor view-axis gizmo: the snap animation's SHAPE (VA15)") {
         CHECK(end.pitch == 0.5F);
         CHECK_FALSE(anim.active());  // ...in the SAME call, not on the next one
     }
+    SUBCASE("it lands EXACTLY on the target from an ARBITRARY start pose, not just from zero") {
+        // FOUND BY I114 AND FIXED HERE. An earlier draft recomputed the final pose as
+        // `start + delta`, which is NOT bit-equal to the endpoint in float -- a + (b - a) != b in
+        // general -- and it passed the arm above only because a start of 0 makes 0 + (x - 0) == x
+        // exactly. The pitch endpoint is a CLAMP BOUNDARY (+-MAX_PITCH) that callers compare with ==,
+        // so an ulp of drift there is a "top" view that is not quite square. Driven from off-lattice
+        // start poses, which is what makes the arm non-vacuous.
+        const std::array<ViewPose, 4> starts{{
+            {0.37F, -0.21F},
+            {-2.9F, 1.13F},
+            {engine::radians(30.0F), engine::radians(-20.0F)},
+            {1.0e-3F, -1.0e-3F},
+        }};
+        for (const ViewPose& from : starts) {
+            CAPTURE(from.yaw);
+            CAPTURE(from.pitch);
+            const ViewPose target{.yaw = engine::HALF_PI, .pitch = -engine::HALF_PI};
+            ViewSnapAnimation anim;
+            anim.start(from.yaw, from.pitch, target);
+            REQUIRE(anim.active());
+            const ViewPose end = anim.advance(SNAP);
+            CHECK_FALSE(anim.active());
+            // PITCH: exactly the requested value, because pitch never wraps.
+            CHECK(end.pitch == target.pitch);
+            // YAW: the MONOTONE endpoint, which is congruent to the requested yaw modulo a full turn
+            // -- and setYaw wraps it, so the camera stores the same thing either way. Asserted as a
+            // congruence rather than as equality, because storing the raw target would make the final
+            // frame jump backwards across the wrap.
+            CHECK(std::abs(engine::editor::shortestAngleDelta(end.yaw, target.yaw)) < 1.0e-6F);
+        }
+    }
     SUBCASE("cancel() clears it mid-flight") {
         ViewSnapAnimation anim;
         anim.start(0.0F, 0.0F, ViewPose{.yaw = 1.0F, .pitch = 0.5F});

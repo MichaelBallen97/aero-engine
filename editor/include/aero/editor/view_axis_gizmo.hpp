@@ -137,6 +137,21 @@ private:
     float startPitchValue = 0.0F;
     float yawDelta = 0.0F;
     float pitchDelta = 0.0F;
+    // THE LANDING POSE, held so the final call is EXACT. `start + delta` is not bit-equal to the
+    // endpoint in float -- a + (b - a) != b in general -- and pitch's endpoint is a CLAMP BOUNDARY
+    // (+-MAX_PITCH) that callers compare with ==, so an ulp of drift there is a red test and a
+    // "top" view that is not quite square. THE TWO ARE COMPUTED DIFFERENTLY, ON PURPOSE:
+    //   targetYawValue   = startYaw + yawDelta -- the MONOTONE endpoint of the path, which is
+    //                      congruent to the requested yaw modulo a full turn and which setYaw wraps
+    //                      anyway. Storing the requested yaw instead would make the final frame jump
+    //                      from 190 degrees to -170, which is the very discontinuity the signed-delta
+    //                      design exists to avoid.
+    //   targetPitchValue = the requested pitch, VERBATIM. Pitch never wraps, so there is no monotone
+    //                      endpoint to preserve and the exact value is strictly better.
+    // Holding these does NOT reintroduce the endpoint-lerp bug: every INTERMEDIATE frame is still
+    // startYaw + yawDelta * s, and only the final call reads them.
+    float targetYawValue = 0.0F;
+    float targetPitchValue = 0.0F;
     float elapsedSeconds = 0.0F;
     bool running = false;
 };
