@@ -10434,39 +10434,48 @@ TEST_CASE("editor: the selection-outline wiring's three source-text invariants h
     }
 }
 
-TEST_CASE("editor: the selection mask set is cleared after renderScene, both paths (task E.1.4, I123)") {
+TEST_CASE("editor: the selection mask set is cleared on EVERY renderScene exit (task E.1.4, I123)") {
     // D12: built ONCE per tick and consumed TWICE, then dropped -- so a tick whose onDraw returned
     // early can never draw last tick's selection.
     //
-    // THE SUCCESS PATH IS DRIVEN; THE EARLY-RETURN PATH IS PINNED AS SOURCE TEXT, and the case says
-    // so rather than degrading silently. `selectionMaskSet` is a PRIVATE member with no accessor, and
+    // THE SUCCESS PATH IS DRIVEN; THE TWO EARLY-RETURN PATHS ARE PINNED AS SOURCE TEXT, and the case
+    // says so rather than degrading silently. `selectionMaskSet` is a PRIVATE member with no accessor, and
     // making `target` not renderable from a test would mean forcing a texture allocation failure on a
     // live device, which nothing in this tree can do -- so the drivable half asserts the OBSERVABLE
     // consequence (a second renderScene with no intervening onDraw records nothing) and the
-    // undrivable half asserts that the clear is present on both paths, with I122's discipline.
+    // undrivable half asserts that the clear is present on every exit, with I122's discipline.
     const std::vector<std::string> code = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/viewport_panel.cpp");
     REQUIRE_FALSE(code.empty());
 
-    SUBCASE("the clear appears TWICE, once on each path, and both are inside renderScene") {
+    SUBCASE("the clear appears on ALL THREE exits past the guard chain, inside renderScene") {
+        // THREE exits, three clears. The count is the claim: renderScene can leave past its guard
+        // chain through the !sceneFrame early return, the !outFrame early return or the bottom, and a
+        // set left populated on any of them is drawn again on a later tick whose onDraw never built
+        // one. Only the last two were cleared when this case was written, which is why it asserts a
+        // count rather than "the clear exists".
         std::vector<std::size_t> clearLines;
         for (std::size_t i = 0; i < code.size(); ++i) {
             if (code[i].find("selectionMaskSet = {}") != std::string::npos) {
                 clearLines.push_back(i);
             }
         }
-        REQUIRE(clearLines.size() == 2U);  // anti-vacuity AND the claim: exactly two, no more
+        REQUIRE(clearLines.size() == 3U);  // anti-vacuity AND the claim: exactly three, no more
         const std::size_t maskAt = soleLineContaining(code, "renderSelectionMask(");
         const std::size_t endFrameAt = soleLineContaining(code, "target->endFrame(std::move(*outFrame))");
-        // The first clear is the EARLY-RETURN path's, between the mask call and the endFrame; the
-        // second is the success path's, after the endFrame.
-        CHECK(clearLines[0] > maskAt);
-        CHECK(clearLines[0] < endFrameAt);
-        CHECK(clearLines[1] > endFrameAt);
-        // ...and the early-return clear really is inside the !outFrame block rather than merely near
-        // it: the `return;` it guards is the next code line but one.
-        const std::size_t guardAt = soleLineContaining(code, "if (!outFrame) {");
-        CHECK(guardAt < clearLines[0]);
-        CHECK(clearLines[0] - guardAt <= 2U);
+        // The first clear is the !sceneFrame path's, ABOVE the mask call; the second is the !outFrame
+        // path's, between the mask call and the endFrame; the third is the success path's, after it.
+        CHECK(clearLines[0] < maskAt);
+        CHECK(clearLines[1] > maskAt);
+        CHECK(clearLines[1] < endFrameAt);
+        CHECK(clearLines[2] > endFrameAt);
+        // ...and each early-return clear really is inside its own guarded block rather than merely
+        // near it: the `return;` it guards is the next code line but one.
+        const std::size_t sceneGuardAt = soleLineContaining(code, "if (!sceneFrame) {");
+        CHECK(sceneGuardAt < clearLines[0]);
+        CHECK(clearLines[0] - sceneGuardAt <= 2U);
+        const std::size_t outGuardAt = soleLineContaining(code, "if (!outFrame) {");
+        CHECK(outGuardAt < clearLines[1]);
+        CHECK(clearLines[1] - outGuardAt <= 2U);
     }
 
     SUBCASE("driven: a second renderScene with no intervening onDraw records NOTHING") {

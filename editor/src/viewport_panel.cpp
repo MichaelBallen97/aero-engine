@@ -999,6 +999,7 @@ void ViewportPanel::renderScene(World& world) {
     // (the resolve) is acquired, so the queue-ordering guarantee applies with no interleaving at all.
     std::optional<render::Frame> sceneFrame = post->beginScene(VIEWPORT_CLEAR_COLOR);
     if (!sceneFrame) {
+        selectionMaskSet = {};  // D12: cleared on EVERY exit past the guard chain, never left stale
         return;
     }
     // Still the DRAWN sub-rect, and still the correct aspect source with quantum = 64 -- unchanged
@@ -1049,7 +1050,7 @@ void ViewportPanel::renderScene(World& world) {
 
     std::optional<render::Frame> outFrame = target->beginFrame(VIEWPORT_CLEAR_COLOR);
     if (!outFrame) {
-        selectionMaskSet = {};  // D12: cleared on the early-return path too, never left stale
+        selectionMaskSet = {};  // D12: this early-return path too -- three exits, three clears
         return;
     }
     post->resolve(*outFrame, tonemapParamsValue);
