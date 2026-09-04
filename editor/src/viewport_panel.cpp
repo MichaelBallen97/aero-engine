@@ -10,7 +10,8 @@
 #include <aero/core/math.hpp>
 #include <aero/core/profiler.hpp>
 #include <aero/core/vfs.hpp>
-#include <aero/editor/asset_drag.hpp>  // task 3.1.5: the payload, the decode and the routing matrix
+#include <aero/editor/asset_drag.hpp>    // task 3.1.5: the payload, the decode and the routing matrix
+#include <aero/editor/axis_palette.hpp>  // task E.1.2: AXIS_X_LINEAR / AXIS_Z_LINEAR
 #include <aero/editor/command_stack.hpp>
 #include <aero/editor/gizmo.hpp>
 #include <aero/editor/picking.hpp>
@@ -52,6 +53,25 @@ constexpr float OVERLAY_INSET = 4.0F;
 // cosmetic finding for the validation pass, not a correctness one.
 constexpr float OPTIONS_COMBO_WIDTH = 92.0F;
 constexpr float OPTIONS_SLIDER_WIDTH = 130.0F;
+
+// task E.1.2: the grid's look. The GREYS are file-local (they are chosen against
+// VIEWPORT_CLEAR_COLOR, which is also file-local); the AXIS colours are NOT -- E.3.1's Inspector
+// rows and E.1.5's gizmo read the same two constants, which is what "sharing E.3.1's axis palette"
+// means. E.6.1's EditorTheme is where all of them eventually live.
+//
+// NO DEPTH BIAS ACCOMPANIES THIS, and that is a measured result rather than an omission: a
+// rasterizer depth bias does not apply to line primitives at all (D3D12 excludes points and lines
+// outright, Metal says it influences triangles only, Vulkan permits it for lines but never
+// guarantees it), and a sweep of 13 line depths x 5 magnitudes against a depth-writing quad moved
+// nothing on any of them. So the grid cannot be pulled toward the camera by that knob, and a
+// coplanar surface at y = 0 will z-fight it -- handed to E.5.2, which creates the first such
+// surface. ensureInitialized's debug-draw creation call below is unchanged for the same reason.
+[[nodiscard]] render::DebugGridStyle viewportGridStyle() noexcept {
+    render::DebugGridStyle style{};
+    style.axisXColor = AXIS_X_LINEAR;
+    style.axisZColor = AXIS_Z_LINEAR;
+    return style;
+}
 
 // NUL-terminated, because ImGui needs NUL-terminated text and render::tonemapOperatorLabel
 // returns a std::string_view whose data() carries no such guarantee -- passing that straight to
@@ -817,6 +837,23 @@ void ViewportPanel::drawViewOptions() {
     // selected would be a defect. Called on the same LINE, in a different scope.
     ImGui::PushID("viewoptions");  // 1:1 with PopID below -- INV-6
 
+    // FIRST IN THE ROW, DELIBERATELY. onDraw's step 9b records
+    // `rowEnd = ImGui::GetItemRectMax()` right after this function returns, and its comment names
+    // the exposure slider as the row's last and rightmost item. A checkbox appended at the END would
+    // make that comment false and silently move the rect overlayOwnsPress() reads -- which decides
+    // whether a click on the strip deselects the scene entity behind it. At the front, 2.3.2's
+    // contract, its comment and its rect are all untouched. E.2.4 moves this whole row into a
+    // popover and takes the checkbox with it.
+    //
+    // ONE toggle covers the grid AND the axes: they are one piece of chrome, and a second checkbox
+    // for two lines is not worth a row of the strip. `drawAxes` stays a parameter of the emitter so
+    // a test and the sample can drive both arms.
+    bool gridChecked = gridEnabledValue;
+    if (ImGui::Checkbox("Grid", &gridChecked)) {
+        gridEnabledValue = gridChecked;
+    }
+    ImGui::SameLine();
+
     render::TonemapParams edited = tonemapParamsValue;
     bool changed = false;
 
@@ -924,6 +961,24 @@ void ViewportPanel::renderScene(World& world) {
     // upload command buffer here, which is strictly before endScene submits A, which is what orders
     // the copy ahead of the draws that read it. Empty most frames until E.1.2 and E.2.3 fill it, and
     // an empty flush acquires nothing, uploads nothing and draws nothing.
+
+    // task E.1.2: THE GRID -- the first content in the batch E.1.1 left empty. HERE rather than in
+    // onDraw for three reasons: this is BELOW renderScene's own guard chain, so a push can never
+    // survive a frame that does not flush and draw two grids next frame; the camera here is the one
+    // being RENDERED, not last frame's lastAspect; and it is one place. Pushed FIRST in the frame,
+    // into the Tested bucket, which is the right end of both orders -- E.1.1 records Tested before
+    // Overlay, so E.2.3's gizmos win over the grid with no coordination between the two tasks.
+    //
+    // farPlane() is read, not trusted: EditorCamera::clampState() guarantees far > near > 0 but
+    // NOT finiteness (its own comment says so -- a directly-poisoned NaN survives until the next
+    // update() sweeps it). emitDebugGrid's totality gate is what makes that safe: a non-finite
+    // camera emits nothing, rejects nothing, and leaves the batch untouched.
+    if (gridEnabledValue) {
+        (void)render::emitDebugGrid(debugDrawer->batch(), {.eye = editorCamera.position(),
+                                                           .focus = editorCamera.pivot(),
+                                                           .farPlane = editorCamera.farPlane(),
+                                                           .style = viewportGridStyle()});
+    }
     debugDrawer->flush(*sceneFrame, cameraView);
     post->endScene(std::move(*sceneFrame));  // submits command buffer A -- AFTER the upload's submit
 

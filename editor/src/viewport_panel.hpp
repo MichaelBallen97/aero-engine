@@ -93,6 +93,20 @@ public:
     [[nodiscard]] render::DebugDraw* debugDraw() noexcept;
     [[nodiscard]] const render::DebugDraw* debugDraw() const noexcept;
 
+    // ---- task E.1.2 -------------------------------------------------------------------------------
+    // The grid toggle. SESSION STATE, default ON, and PERSISTED NOWHERE -- not to project.json, not
+    // to imgui.ini, not anywhere. E.4.1 owns per-project editor state and its scope is the last
+    // scene; a viewport DISPLAY preference is not project state, and inventing a second store for
+    // one boolean is the abstraction this project refuses. Handed off in docs/10 to whichever task
+    // introduces a per-user preferences file.
+    [[nodiscard]] bool gridEnabled() const noexcept { return gridEnabledValue; }
+
+    // Records exactly what drawViewOptions' checkbox records. It exists because NO TIER IN THIS TREE
+    // CAN CLICK AN ImGui CHECKBOX, so without it the toggle is undrivable and its effect
+    // unassertable -- the requestViewMode / requestSearchQuery / requestKindFilter /
+    // requestSelectEntry / requestTonemapParams family's sixth application. I112 is what it buys.
+    void requestGridEnabled(bool enabled) noexcept { gridEnabledValue = enabled; }
+
     // ---- the overlay strip's claim on a click -----------------------------------------------------
     // Does the interactive overlay row own a press at `pressPoints` (screen-space POINTS, the space
     // io.MousePos is in)? updatePick's ARM step asks exactly this, and so can a test -- which is the
@@ -196,6 +210,9 @@ private:
     // anywhere. Default-constructed and SANITIZED on every write, so it is valid even when the panel
     // never initialises. Member/accessor names differ by the house collision rule.
     render::TonemapParams tonemapParamsValue{};
+    // Member/accessor collision rule: the MEMBER takes the distinct name (budgetValue/budget(),
+    // tonemapParamsValue/tonemapParams(), the RenderTarget precedent).
+    bool gridEnabledValue = true;
     Status status = Status::Uninitialized;
     const char* unavailableReason = nullptr;  // string literal; shown in-panel when Unavailable
     bool renderRequested = false;             // set by onDraw, consumed by renderScene

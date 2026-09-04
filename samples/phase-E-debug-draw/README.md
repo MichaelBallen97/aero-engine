@@ -51,6 +51,46 @@ five discs is asking them to judge two things at once.
 | `--raw` | off | **bypasses `PostProcess` entirely** — the batch draws straight into the swapchain frame, which carries depth. The A/B control. |
 | `--overflow` | off | pushes exactly **1000 segments past the budget every frame**, so the drop count is steady and the budget WARN fires **once** |
 | `--no-lines` | off | **skips `flush()` entirely.** Not "push an empty batch": an empty flush is already free, so that would measure nothing. This is the cost A/B. |
+| `--grid` | off | **replaces the rotating content with the ground grid** (task E.1.2). Nothing else is drawn, so the grid is the only thing in the frame being judged. |
+
+## --grid, and what to look for
+
+The camera dollies between 6 and 14 units, which crosses the `level = -1 → 0` boundary at 10 — so
+the crossfade is **visible in one cycle of the dolly the sample already performs**. What to watch:
+
+* **No pop.** As the dolly crosses 10, no line changes brightness in one frame. Every world spacing
+  keeps its exact alpha across the boundary by construction; a visible step means the weight rule was
+  changed.
+* **The printed cadence line**, which appears only when the decade changes. It names the view scale,
+  the level, all three spacings, all three weights, all three radii, the emitted line count and the
+  cap. **The count must stay under the cap.** Here it takes exactly two values, because within a
+  decade the radii are a function of the spacings alone and the grid is centred on the fixed origin:
+
+  | Level | View scale | Spacings | Radii | Emitted lines |
+  |---|---|---|---|---|
+  | `0` | above 10 | 1 / 10 / 100 | 24 / 90 / 90 | **1008** |
+  | `-1` | below 10 | 0.1 / 1 / 10 | 2.4 / 24 / 90 | **1744** |
+
+  against `DEBUG_GRID_MAX_LINES` = **2368**. Both are accountable rather than merely observed: with
+  `R/s` an exact integer in every row above, a cadence of spacing `s` and radius `R` contributes
+  `4 × (R/s − 1)` lines of 8 segments each — two families, a line every `s` out to the rim in each
+  direction, minus the one at the origin the axes replace and the two at the rim whose length inside
+  the disc is zero — plus 16 segments for the two axes. So level `0` is `736 + 256 + 0 + 16` and
+  level `-1` is `736 + 736 + 256 + 16`.
+
+  Both counts are *this sample's*, not the editor's: `Z_FAR` here is 100, so every radius is clamped
+  to 0.9 × 100 = 90. That costs the coarsest cadence 480 segments at level `-1`, and at level `0` it
+  empties that cadence outright — no multiple of 100 other than the origin falls inside a 90-unit
+  disc, and the origin is where the axes go. The emitter's own reference figures — 2224 lines at the
+  editor's default pose and 2304 at the worst pose over an adversarial sweep — are against the same
+  bound, and are quoted in `debug_grid.hpp` beside the derivation of the cap.
+* **The axes.** A red +X and a blue +Z through the origin, replacing the grid's own lines there
+  rather than sitting on top of them.
+* **The rim.** The grid fades out; it never ends at a visible edge. Every radius is clamped to
+  0.9 × the far plane and the fade completes inside that, so there is no hard edge at the frustum.
+* **Aliasing.** The lines are one pixel wide with no partial coverage, exactly like every other debug
+  line in the tree — SDL_GPU exposes no line width on any backend. Shimmer at grazing angles is
+  **expected**, not a defect; thick/AA lines remain E.1.1's standing unowned handoff.
 
 ## The startup table
 
@@ -73,6 +113,7 @@ cmake --build --preset macos-release -j3
 ./build/macos-release/samples/phase-E-debug-draw/aero_sample_phaseE_debug_draw --raw
 ./build/macos-release/samples/phase-E-debug-draw/aero_sample_phaseE_debug_draw --overflow
 ./build/macos-release/samples/phase-E-debug-draw/aero_sample_phaseE_debug_draw --no-lines
+./build/macos-release/samples/phase-E-debug-draw/aero_sample_phaseE_debug_draw --grid
 ```
 
 Escape or the window close button exits. The per-frame line reports frame time, fps, the accepted

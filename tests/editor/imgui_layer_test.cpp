@@ -8765,11 +8765,20 @@ TEST_CASE("editor: the viewport owns a DebugDraw, runs the slot, and it costs NO
                                            .restoreLastProject = false,
                                            .recentProjectsPath = uniqueRecentsFile()});
     REQUIRE(app.has_value());
-    REQUIRE(app->tick());  // the viewport initialises on its FIRST DRAW
-    REQUIRE(app->tick());  // ...and renderScene runs on the second
 
     auto* const viewport = dynamic_cast<engine::editor::ViewportPanel*>(app->panels().find("Viewport"));
     REQUIRE(viewport != nullptr);
+    // task E.1.2: THE GRID OFF, AND BEFORE THE FIRST TICK. What this case measures is the cost of
+    // E.1.1's SLOT with an EMPTY batch -- no upload, no draw call, no line -- and E.1.2 fills that
+    // batch on every frame renderScene runs. uploadCount() is a LIFETIME counter, so a warm-up tick
+    // with the grid on would already have spent it and no later toggle could undo that. Driving the
+    // panel's own seam is what keeps E.1.1's claim spelled exactly as E.1.1 wrote it, instead of
+    // restating it as a grid line count. The panel registry is populated by EditorApp::create, so
+    // the panel is reachable before the first draw even though it INITIALISES on that draw.
+    viewport->requestGridEnabled(false);
+
+    REQUIRE(app->tick());  // the viewport initialises on its FIRST DRAW
+    REQUIRE(app->tick());  // ...and renderScene runs on the second
 
 #if AERO_SHADER_TOOLS_ENABLED
     const engine::render::DebugDraw* const draw = viewport->debugDraw();
@@ -8820,11 +8829,15 @@ TEST_CASE("editor: a pushed line and billboard are drawn and DRAINED by renderSc
                                            .restoreLastProject = false,
                                            .recentProjectsPath = uniqueRecentsFile()});
     REQUIRE(app.has_value());
-    REQUIRE(app->tick());
-    REQUIRE(app->tick());
 
     auto* const viewport = dynamic_cast<engine::editor::ViewportPanel*>(app->panels().find("Viewport"));
     REQUIRE(viewport != nullptr);
+    // task E.1.2: the grid OFF before the first tick, for I108's reason -- this case counts ONE
+    // pushed line and ONE pushed billboard exactly, and uploadCount() is a lifetime counter.
+    viewport->requestGridEnabled(false);
+
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
 
 #if AERO_SHADER_TOOLS_ENABLED
     engine::render::DebugDraw* const draw = viewport->debugDraw();
@@ -8938,6 +8951,56 @@ TEST_CASE("editor: the DebugDraw wiring's three source-text invariants hold (tas
         CHECK(viewportNamesIt);  // anti-vacuity: the reader really finds the token where it IS
         CHECK(namingFiles == 1U);
     }
+    SUBCASE("EXACTLY ONE emitDebugGrid call, in viewport_panel.cpp, between the render and the flush") {
+        // task E.1.2's D9: "the grid never appears in a game or exported view" is a CALL-SITE
+        // property, not a file-path one -- the emitter is a free function that mutates a batch it is
+        // handed, with no global state and nothing registered, so it is reachable only by being
+        // called. There being exactly one caller IS the claim.
+        const std::size_t emitAt = soleLineContaining(code, "render::emitDebugGrid(");
+        const std::size_t renderAt = soleLineContaining(code, "sceneRenderer->render(world, *sceneFrame, &cameraView)");
+        const std::size_t flushAt = soleLineContaining(code, "debugDrawer->flush(");
+        CHECK(renderAt < emitAt);  // AFTER the geometry: the batch is filled once the depth is there
+        CHECK(emitAt < flushAt);   // BEFORE the drain, so it is drawn THIS frame rather than next
+
+        // ...and it is GUARDED. A push outside the toggle would draw the grid with the box
+        // unchecked, which I112's disabled arm also sees -- pinned here as well because this is the
+        // subcase a reader consults when they change the guard.
+        const std::size_t guardAt = soleLineContaining(code, "if (gridEnabledValue) {");
+        CHECK(guardAt < emitAt);
+        CHECK(emitAt - guardAt <= 6U);  // the guard is the emit's OWN block, not a distant one
+
+        // THE WALK: exactly one editor .cpp names emitDebugGrid, and it is this one. Same
+        // directory_iterator, same two anti-vacuity checks as the subcase above.
+        std::size_t scanned = 0;
+        std::size_t namingFiles = 0;
+        bool viewportNamesIt = false;
+        for (const std::filesystem::directory_entry& entry : std::filesystem::directory_iterator{AERO_EDITOR_SRC_DIR}) {
+            if (!entry.is_regular_file() || entry.path().extension() != ".cpp") {
+                continue;
+            }
+            ++scanned;
+            const std::string path = entry.path().string();
+            const std::vector<std::string> lines = editorSourceCodeLines(path);
+            bool namesIt = false;
+            for (const std::string& line : lines) {
+                if (line.find("emitDebugGrid") != std::string::npos) {
+                    namesIt = true;
+                    break;
+                }
+            }
+            if (!namesIt) {
+                continue;
+            }
+            ++namingFiles;
+            const bool isViewportPanel = entry.path().filename() == "viewport_panel.cpp";
+            CAPTURE(path);
+            CHECK(isViewportPanel);
+            viewportNamesIt = viewportNamesIt || isViewportPanel;
+        }
+        CHECK(scanned >= 50U);   // anti-vacuity: the walk really read the directory
+        CHECK(viewportNamesIt);  // anti-vacuity: the reader really finds the token where it IS
+        CHECK(namingFiles == 1U);
+    }
 }
 
 TEST_CASE("editor: overflow in the viewport drops, counts and warns EXACTLY ONCE (task E.1.1, I111)") {
@@ -8963,11 +9026,16 @@ TEST_CASE("editor: overflow in the viewport drops, counts and warns EXACTLY ONCE
                                            .restoreLastProject = false,
                                            .recentProjectsPath = uniqueRecentsFile()});
     REQUIRE(app.has_value());
-    REQUIRE(app->tick());
-    REQUIRE(app->tick());
 
     auto* const viewport = dynamic_cast<engine::editor::ViewportPanel*>(app->panels().find("Viewport"));
     REQUIRE(viewport != nullptr);
+    // task E.1.2: the grid OFF before the first tick, for I108's reason -- the drop count asserted
+    // below is EXACTLY the five lines this case pushed over budget, and a grid pushed into an
+    // already-full batch would be dropped too and counted in the same number.
+    viewport->requestGridEnabled(false);
+
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
 
 #if AERO_SHADER_TOOLS_ENABLED
     engine::render::DebugDraw* const draw = viewport->debugDraw();
@@ -9017,6 +9085,152 @@ TEST_CASE("editor: overflow in the viewport drops, counts and warns EXACTLY ONCE
     CHECK(budgetWarnings == 1U);                 // ...and NOT warned again
 #else
     CHECK(viewport->debugDraw() == nullptr);
+#endif
+}
+
+TEST_CASE("editor: the grid toggle really controls what the batch carries (task E.1.2, I112)") {
+    // THE RUNTIME HALF of D9 and D12 both, and it is possible only because E.1.1 shipped the
+    // per-frame counters. I110's fourth subcase pins the call site as TEXT; this pins the EFFECT.
+    //
+    // FIXTURE: I111's preamble -- platform::Context, a window, a Device, createProject into
+    // uniqueProjectLocation(), EditorApp::create with persistLayout = false and
+    // restoreLastProject = false, two warm-up ticks, then the dynamic_cast to ViewportPanel.
+    // ViewportPanel's constructor is `explicit ViewportPanel(rhi::Device&)`, so there is no
+    // device-free way to build one, and inventing a second fixture would put this case out of step
+    // with I108-I111.
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "debug grid i112", .width = 900, .height = 600});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = created.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+
+    auto* const viewport = dynamic_cast<engine::editor::ViewportPanel*>(app->panels().find("Viewport"));
+    REQUIRE(viewport != nullptr);
+
+#if AERO_SHADER_TOOLS_ENABLED
+    // `status` and `Status` are PRIVATE with no accessor, so "the panel is Ready" is observed
+    // through the seams instead -- which is what I109 does and what makes the tools-OFF arm below a
+    // real claim rather than a different question.
+    REQUIRE(viewport->debugDraw() != nullptr);
+    REQUIRE(viewport->postProcess() != nullptr);
+
+    SUBCASE("enabled (the default): one tick leaves a real grid in the frame's counters") {
+        CHECK(viewport->gridEnabled());  // the default, asserted where it is used
+        REQUIRE(app->tick());
+        CHECK(viewport->debugDraw()->lastFrameLines() > 0U);
+        CHECK(viewport->debugDraw()->lastFrameDroppedLines() == 0U);
+        CHECK(viewport->debugDraw()->lastFrameRejectedLines() == 0U);
+        CHECK(viewport->debugDraw()->lastFrameDrawCalls() == 1U);  // ONE bucket: Tested only
+        CHECK(viewport->debugDraw()->lastFrameBillboards() == 0U);
+        // ...and it is under the cap, on the real editor camera, through the real panel.
+        CHECK(viewport->debugDraw()->lastFrameLines() <= engine::render::DEBUG_GRID_MAX_LINES);
+    }
+    SUBCASE("disabled: the counters go to ZERO and no draw call is recorded") {
+        viewport->requestGridEnabled(false);
+        CHECK_FALSE(viewport->gridEnabled());
+        // TWO ticks: the first drains whatever the previous frame left, the second is the clean one.
+        REQUIRE(app->tick());
+        REQUIRE(app->tick());
+        CHECK(viewport->debugDraw()->lastFrameLines() == 0U);
+        CHECK(viewport->debugDraw()->lastFrameDrawCalls() == 0U);
+        CHECK(viewport->debugDraw()->batch().empty());
+    }
+    SUBCASE("re-enabling brings it back -- the toggle is not one-way") {
+        viewport->requestGridEnabled(false);
+        REQUIRE(app->tick());
+        REQUIRE(app->tick());
+        REQUIRE(viewport->debugDraw()->lastFrameLines() == 0U);
+        viewport->requestGridEnabled(true);
+        REQUIRE(app->tick());
+        CHECK(viewport->debugDraw()->lastFrameLines() > 0U);
+    }
+#else
+    // The tools-OFF arm: the panel is Unavailable, the seam is null, the guarded emit is
+    // unreachable, and ticking is still safe. I113 covers the accessor half without a device.
+    CHECK(viewport->debugDraw() == nullptr);
+    REQUIRE(app->tick());
+#endif
+}
+
+TEST_CASE("editor: the grid toggle defaults ON, round-trips, and is safe when Unavailable (I113)") {
+    // The accessor pair is plain state on the panel, but ViewportPanel's constructor is
+    // `explicit ViewportPanel(rhi::Device&)` -- there is no device-free way to build one -- so this
+    // uses I111's fixture like every other case in this file rather than inventing a bare one.
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "debug grid i113", .width = 900, .height = 600});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = created.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+
+    auto* const viewport = dynamic_cast<engine::editor::ViewportPanel*>(app->panels().find("Viewport"));
+    REQUIRE(viewport != nullptr);
+
+    // UNGATED, and deliberately ABOVE the #if: the toggle is plain state, so its contract holds in
+    // BOTH configurations and asserting it in only one would be the 3.6.3 mistake (four cases inside
+    // a file-level #if with the one arm that mattered never running).
+    CHECK(viewport->gridEnabled());  // DEFAULT ON -- the deliverable says so
+    viewport->requestGridEnabled(false);
+    CHECK_FALSE(viewport->gridEnabled());
+    viewport->requestGridEnabled(true);
+    CHECK(viewport->gridEnabled());
+    viewport->requestGridEnabled(false);
+    viewport->requestGridEnabled(false);  // IDEMPOTENT: a setter, not a toggle
+    CHECK_FALSE(viewport->gridEnabled());
+    viewport->requestGridEnabled(true);
+
+#if AERO_SHADER_TOOLS_ENABLED
+    REQUIRE(viewport->debugDraw() != nullptr);
+    // Enabled + a tick is safe and does something -- the positive control for the arm below.
+    REQUIRE(app->tick());
+    CHECK(viewport->debugDraw()->lastFrameLines() > 0U);
+#else
+    // THE TOOLS-OFF CLAIM. The guarded emit dereferences debugDrawer->batch(), so "grid enabled" on
+    // an Unavailable panel must not be a null dereference -- renderScene's guard chain
+    // (!post || !debugDrawer) is what stops it, and this is the case that says so out loud.
+    CHECK(viewport->debugDraw() == nullptr);
+    CHECK(viewport->gridEnabled());  // enabled, on a panel that never initialised
+    REQUIRE(app->tick());            // ...and ticking is still safe
+    REQUIRE(app->tick());
+    CHECK(viewport->debugDraw() == nullptr);
+    CHECK(viewport->postProcess() == nullptr);
 #endif
 }
 

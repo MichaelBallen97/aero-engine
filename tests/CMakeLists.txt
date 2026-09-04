@@ -72,6 +72,7 @@ add_executable(aero_tests
     render_tonemap_test.cpp # task 3.6.3 — tier-0 transfer chain/packers/UV rule/shader pin + GPU-gated PostProcess
     rhi_upload_test.cpp    # task E.1.1 — tier-1 recordBufferUpload/readbackTexture + the first pixel assertions
     render_debug_draw_test.cpp # task E.1.1 — tier-0 vocabulary/batch/packers/shader pin + GPU-gated DebugDraw
+    render_debug_grid_test.cpp # task E.1.2 — tier-0 cadence/continuity/lattice/cap; NO GPU, no gate
 )
 
 # AC-9(i) (task 0.2.2): aero::core is linked; glm::glm deliberately IS NOT — that is intentional
@@ -452,7 +453,8 @@ add_executable(aero_editor_shell_test editor/shell_test.cpp editor/hierarchy_tes
                editor/asset_commands_test.cpp
                editor/material_from_import_test.cpp
                editor/scene_asset_ledger_test.cpp
-               editor/audio_decode_test.cpp)
+               editor/audio_decode_test.cpp
+               editor/axis_palette_test.cpp)   # task E.1.2 — the axis palette's two spellings
 target_link_libraries(aero_editor_shell_test PRIVATE
     doctest::doctest aero::editor_core aero::scene aero::scene_internal aero::core Threads::Threads)
 add_test(NAME aero_editor_shell_test COMMAND aero_editor_shell_test)

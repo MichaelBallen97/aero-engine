@@ -48,6 +48,20 @@ Subtasks:
 - Budget, overflow policy and Tracy counters; the three-backend proof (Metal / D3D12 / Vulkan)
 
 ### E.1.2 Grid floor + world axes · P0 · M · depends: E.1.1
+_(**Sized M in the roadmap and landed M**, recorded before implementation and confirmed after. It
+landed in **six** commits rather than the seven planned, and the reason is a measured negative
+result rather than a saving: the planned first commit put a sanitized depth bias on the debug
+`Tested` pipelines, taking the knob E.1.1 handed this task by name — and **a rasterizer depth bias
+does not apply to line primitives**. D3D12 states it outright ("Bias is not applied to any point or
+line primitives, except for lines drawn in wireframe mode"), Metal states it outright (bias "only
+influences triangle primitives"), and Vulkan permits it for lines without guaranteeing it. Measured
+before it was dropped: a sweep of 13 line depths x 5 bias magnitudes moved a line at no gap down to
+`1e-5`, while the identical sweep with a `TriangleList` billboard moved predictably and bracketed
+Metal's bias unit at `2^-24` for a `D32Float` target. So the answer to E.1.1's handoff is that the
+mechanism does not exist for this primitive type; the coplanar-geometry problem passes to **E.5.2**,
+which is the task that first creates a `Plane` at `y = 0`, and a bias for the billboard pipeline —
+where it demonstrably works — passes to **E.2.3**. `DebugDrawConfig` is unchanged and
+`debug_draw.{hpp,cpp}` are byte-identical after this task.)_
 **Goal:** replace the featureless void with the ground plane every 3D tool has, so translation,
 scale and camera distance are readable at a glance.
 **Deliverable:** a distance-faded grid with a major/minor cadence that stays legible at every zoom,

@@ -33,6 +33,8 @@
 //   --no-lines                     skip the flush entirely. Not "push an empty batch" -- an empty
 //                                  flush is already free, so that would measure nothing. This is the
 //                                  cost A/B: the whole mechanism against none of it.
+//   --grid                         REPLACE everything above with E.1.2's ground grid, and print the
+//                                  selected cadence whenever the DECADE changes.
 //
 // CI builds this on three OSes (compile-proof only -- no display there); run it locally for the
 // visual pass and record the result in editor/validation/E.1.1-debug-line-renderer.md. Requires
@@ -118,6 +120,7 @@ struct Options {
     bool usePass = true;    // false == --raw
     bool overflow = false;  // --overflow
     bool drawLines = true;  // false == --no-lines
+    bool grid = false;      // --grid: replace the rotating content with the ground grid
 };
 
 [[nodiscard]] std::optional<render::TonemapOperator> parseOperator(std::string_view name) {
@@ -143,6 +146,8 @@ struct Options {
             options.overflow = true;
         } else if (arg == "--no-lines") {
             options.drawLines = false;
+        } else if (arg == "--grid") {
+            options.grid = true;
         } else if (arg.starts_with("--tonemap=")) {
             const std::string_view name = arg.substr(std::string_view("--tonemap=").size());
             if (const std::optional<render::TonemapOperator> op = parseOperator(name)) {
@@ -233,7 +238,16 @@ void buildLattice(std::vector<render::DebugLineVertex>& out) {
 
 // Rebuilt EVERY FRAME, because a debug batch is immediate-mode -- that is the API's whole shape, and
 // flush() drains it. Nothing here is cached between frames.
-void buildBatch(render::DebugDrawBatch& batch, const std::vector<render::DebugLineVertex>& lattice, bool overflow) {
+void buildBatch(render::DebugDrawBatch& batch, const std::vector<render::DebugLineVertex>& lattice, bool overflow,
+                bool grid, Vec3 eye) {
+    // --grid REPLACES the rotating content rather than adding to it: the point of the flag is to
+    // look at the grid on Metal, D3D12 and Vulkan with nothing else in the frame competing for
+    // attention, and the wire box and billboards would sit on top of exactly the part being judged.
+    if (grid) {
+        (void)render::emitDebugGrid(batch, {.eye = eye, .focus = Vec3{}, .farPlane = Z_FAR});
+        return;
+    }
+
     constexpr Vec4 YELLOW{1.0F, 0.85F, 0.1F, 1.0F};
     constexpr Vec4 MAGENTA{1.0F, 0.0F, 1.0F, 1.0F};
     constexpr Vec4 WHITE{1.0F, 1.0F, 1.0F, 1.0F};
@@ -386,9 +400,18 @@ int runSample(int argc, char** argv) {
     if (!options.drawLines) {
         AERO_LOG_INFO("phase-E-debug-draw: --no-lines -- flush() is NEVER CALLED this run (the cost A/B)");
     }
+    if (options.grid) {
+        AERO_LOG_INFO(
+            "phase-E-debug-draw: --grid -- the ground grid REPLACES the rotating content. The cadence "
+            "line below prints whenever the decade changes; the count must stay under {}.",
+            render::DEBUG_GRID_MAX_LINES);
+    }
 
     FrameClock clock;
     double lastTitleAt = 0.0;
+    // --grid: the decade the last printed cadence line reported. It starts OUTSIDE the ladder's
+    // range so the first frame always prints.
+    int lastGridLevel = render::DEBUG_GRID_MIN_LEVEL - 1;
     bool running = true;
     while (running) {
         ctx.newFrame();
@@ -445,8 +468,30 @@ int runSample(int argc, char** argv) {
         // THE SLOT, and it is the editor's own: AFTER the geometry so a Tested line is depth-tested
         // against it, BEFORE the pass closes so the lines go through the resolve.
         if (options.drawLines) {
-            buildBatch(debugDraw->batch(), lattice, options.overflow);
+            buildBatch(debugDraw->batch(), lattice, options.overflow, options.grid, eye);
             debugDraw->flush(frame, view.camera);
+        }
+
+        // --grid: print the selected cadence whenever the DECADE changes. The dolly sweeps
+        // EYE_NEAR_DISTANCE..EYE_FAR_DISTANCE, which crosses a decade boundary, so this is what makes
+        // the crossfade a thing you can read rather than a thing you have to believe. The cadence is
+        // read back through the public accessor the emitter is built on, so this line reports the
+        // decision that was actually drawn rather than a second copy of the rule.
+        if (options.grid) {
+            const render::DebugGridCadence cadence =
+                render::debugGridCadence({.eye = eye, .focus = Vec3{}, .farPlane = Z_FAR});
+            if (cadence.valid && cadence.level != lastGridLevel) {
+                lastGridLevel = cadence.level;
+                AERO_LOG_INFO(
+                    "phase-E-debug-draw: grid cadence -> viewScale {:.3f}  level {}  spacing {:g}/{:g}/{:g}  "
+                    "weights {:.3f}/{:.3f}/{:.3f}  radii {:g}/{:g}/{:g}  lines {} (cap {})",
+                    static_cast<double>(cadence.viewScale), cadence.level, static_cast<double>(cadence.spacing[0]),
+                    static_cast<double>(cadence.spacing[1]), static_cast<double>(cadence.spacing[2]),
+                    static_cast<double>(cadence.weight[0]), static_cast<double>(cadence.weight[1]),
+                    static_cast<double>(cadence.weight[2]), static_cast<double>(cadence.radius[0]),
+                    static_cast<double>(cadence.radius[1]), static_cast<double>(cadence.radius[2]),
+                    debugDraw->lastFrameLines(), render::DEBUG_GRID_MAX_LINES);
+            }
         }
 
         bool presented = false;
