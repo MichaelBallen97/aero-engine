@@ -954,14 +954,16 @@ void ViewportPanel::drawViewAxisGizmo() const {
         return;  // D16: nothing draws, and no PushClipRect is left unbalanced
     }
     ImDrawList* const drawList = ImGui::GetWindowDrawList();
-    Vec2 rectMin{};
-    Vec2 rectMax{};
-    viewAxisRect(Vec2{axisLayout.centerPoints.x - VIEW_AXIS_HALF_EXTENT_POINTS,
-                      axisLayout.centerPoints.y - VIEW_AXIS_HALF_EXTENT_POINTS},
-                 Vec2{2.0F * VIEW_AXIS_HALF_EXTENT_POINTS, 2.0F * VIEW_AXIS_HALF_EXTENT_POINTS}, rectMin, rectMax);
     // 1:1 with PopClipRect, like every ImGui pair -- an unbalanced pair is an IM_ASSERT ABORT in
     // Debug, not a visual glitch. `true` INTERSECTS with the window's own clip rect rather than
     // replacing it. Padded by one ball radius so a hovered ball's grown outline is not shaved.
+    //
+    // Derived from the LAYOUT'S OWN CENTRE, not from viewAxisRect: this step has no image rect to
+    // hand it (drawViewAxisGizmo takes nothing, by the drawGizmoBar precedent), and the centre here
+    // IS the value viewAxisRect would derive its corners from -- viewAxisLayout and viewAxisRect both
+    // go through viewAxisCenter. A code-review round removed a call that passed a SYNTHETIC image
+    // rect of 2 * VIEW_AXIS_HALF_EXTENT_POINTS instead: that is below VIEW_AXIS_MIN_IMAGE_POINTS, so
+    // the widget read as invisible and the call wrote {0,0}/{0,0} into two locals nothing then read.
     constexpr float PAD = VIEW_AXIS_BALL_RADIUS_POINTS;
     drawList->PushClipRect(ImVec2(axisLayout.centerPoints.x - VIEW_AXIS_HALF_EXTENT_POINTS - PAD,
                                   axisLayout.centerPoints.y - VIEW_AXIS_HALF_EXTENT_POINTS - PAD),
