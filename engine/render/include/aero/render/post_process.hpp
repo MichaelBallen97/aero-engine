@@ -82,6 +82,12 @@ struct PostProcessConfig {
     // Invalid depthFormat outright). Not to be confused with outputDepthFormat above -- both editor
     // consumers keep this TRUE and make their OUTPUT target depth-free.
     bool sceneDepth = true;
+    // task E.1.4 -- forwarded verbatim into the owned scene target's RenderTargetConfig::depthStore.
+    // DEFAULTED FALSE, so every existing caller behaves byte-identically. The editor viewport is the
+    // one caller that sets it true, and it pays one depth store-out per frame on the HDR target so
+    // ForwardRenderer::renderSelectionMask can attach that depth with LoadOp::Load. See
+    // render_target.hpp's depthStore for why an unstored depth is GARBAGE rather than stale on a tiler.
+    bool sceneDepthStore = false;
     std::uint32_t quantum = 1;
     std::uint32_t maxExtent = RENDER_TARGET_MAX_EXTENT;
     // Extension-less res:// VFS paths, resolved through the caller-supplied VirtualFileSystem.
@@ -125,6 +131,10 @@ public:
     [[nodiscard]] rhi::TextureFormat sceneDepthFormat() const noexcept;
     [[nodiscard]] rhi::Extent2D sceneDrawExtent() const noexcept;
     [[nodiscard]] rhi::Extent2D sceneTextureExtent() const noexcept;
+    // task E.1.4 -- the owned scene target's depth attachment; INVALID on a moved-from or
+    // not-renderable pass, or when sceneDepth was false. Its CONTENTS are defined only if
+    // sceneDepthStore was true.
+    [[nodiscard]] rhi::TextureHandle sceneDepthTexture() const noexcept;
 
     // --- diagnostics (the 3.4.1 / 3.5.1 / 3.6.1 posture: they REPORT, they never change behaviour)
     // Resolves that actually issued a draw, pass lifetime. A refused resolve does NOT move it, which

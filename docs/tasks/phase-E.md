@@ -108,6 +108,14 @@ Subtasks:
 - Retire the AABB path, keeping the point marker for geometry-less entities until E.2.3 lands icons
 - Prove the box is gone: an entity whose AABB is much larger than its mesh outlines the mesh
 
+_Outcome: **L, as estimated.** Nine commits, 7 new files and 16 edited source/header files (plus 4
+CMakeLists and 4 docs) — two HLSL fragment stages and
+zero new vertex stages, four defaulted growths across `render_target.hpp` / `post_process.hpp`, a new
+public `render::SelectionOutline`, four pipelines and one lazily-allocated `R8Unorm` texture on
+`ForwardRenderer`, a pure `buildSelectionMaskSet` in `scene_renderer.cpp`, the editor rewire, and the
+deletion of `BoxEdge`/`BOX_EDGES`/`appendBoxEdges`. No new dependency and no link-line change
+anywhere; `ctest -N` unmoved at 172. Full detail in `docs/10-engineering-log.md`._
+
 ### E.1.5 Transform-gizmo restyle · P1 · M · depends: 2.3.3, E.1.4
 **Goal:** the manipulation handles should read like Unity's or Unreal's — visible against any
 background, obviously grabbable, and the same apparent size wherever the object is.

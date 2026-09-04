@@ -96,11 +96,27 @@ constexpr float OPTIONS_SLIDER_WIDTH = 130.0F;
 
 // D6: colour lives HERE, never in the public header -- an ImU32 there would break the ImGui-free
 // rule, which is exactly why buildSelectionOverlay tags a ROLE and the panel maps role -> style.
-// These four are TUNING values, judged by the human pass (editor/VALIDATION.md).
-// IM_COL32 is a pure shift/or over its four arguments (imgui.h:3096), so constexpr is valid here --
-// verified against the pinned 1.92.8 header, not assumed.
-constexpr ImU32 SELECTION_COLOR = IM_COL32(255, 148, 32, 190);          // amber, dimmed
-constexpr ImU32 SELECTION_PRIMARY_COLOR = IM_COL32(255, 176, 64, 255);  // brighter + opaque = primary
+// The two THICKNESSES are tuning values, settled on a manual validation pass (editor/VALIDATION.md).
+//
+// task E.1.4: the two COLOURS are no longer stated here at all. They live in engine/render as
+// SELECTION_OUTLINE_PRIMARY_DEFAULT / _SECONDARY_DEFAULT, because the GPU silhouette and the point
+// marker must be the same amber and a second statement of it is a drift surface no test can see
+// (D18). The multiply below is by 255.0F and the round is std::lround -- NEVER a reciprocal, because
+// k * fl(1/255) is bit-unequal to fl(k/255) for 126 of the 256 byte values (E.1.1, measured) and this
+// is a round trip. std::lround is not constexpr, so these cannot be namespace-scope constexpr ImU32
+// the way the two literals they replace were; the conversion happens at the ONE call site below.
+[[nodiscard]] ImU32 selectionImU32(Vec4 srgb) noexcept {
+    const auto ch = [](float v) { return static_cast<int>(std::lround(std::clamp(v, 0.0F, 1.0F) * 255.0F)); };
+    return IM_COL32(ch(srgb.x), ch(srgb.y), ch(srgb.z), ch(srgb.w));
+}
+
+// task E.1.4: the band's authored thickness, in POINTS. Resolved to an integer pixel radius so the
+// band width is an exact integer and the shader's tap offsets are exact texel multiples. A 1x display
+// gets a 2-pixel band and a 2x display a 4-pixel one, rather than a band that halves in apparent
+// size. This is the FIRST overlay in the tree that can control its own apparent thickness: E.1.1's
+// handoff table lists thick lines as unowned precisely because a LineList primitive has no width
+// control on any backend. An edge-detect band does.
+constexpr float SELECTION_OUTLINE_RADIUS_POINTS = 1.0F;
 constexpr float SELECTION_THICKNESS = 1.0F;
 constexpr float SELECTION_PRIMARY_THICKNESS = 2.0F;
 
@@ -325,6 +341,10 @@ void ViewportPanel::ensureInitialized([[maybe_unused]] rhi::Extent2D firstExtent
     post = render::PostProcess::create(*device, shaderVfs, firstExtent,
                                        {.outputColorFormat = rhi::TextureFormat::RGBA8Unorm,
                                         .outputDepthFormat = rhi::TextureFormat::Invalid,
+                                        // task E.1.4: the mask pass reads this depth with
+                                        // LoadOp::Load, and an unstored depth is GARBAGE on a tiler
+                                        // rather than stale (D2).
+                                        .sceneDepthStore = true,
                                         .quantum = VIEWPORT_EXTENT_QUANTUM});
     if (!post) {
         status = Status::Unavailable;
@@ -368,6 +388,22 @@ void ViewportPanel::ensureInitialized([[maybe_unused]] rhi::Extent2D firstExtent
         unavailableReason = "debug draw creation failed (are res://debug_line.* / res://debug_billboard.* cooked?)";
         return;
     }
+    // task E.1.4: built against the OUTPUT target's formats, NOT the HDR pair -- this is the one GPU
+    // object in the panel built against `target`, and the asymmetry is the point of this comment: the
+    // outline composites into the already-tonemapped image, so it is editor chrome rather than scene
+    // content. ALL-OR-NOTHING with the four above it, and the reset order is the reverse of creation.
+    selectionOutline = render::SelectionOutline::create(
+        *device, shaderVfs,
+        {.outputColorFormat = target->colorFormat(), .outputDepthFormat = rhi::TextureFormat::Invalid});
+    if (!selectionOutline) {
+        debugDrawer.reset();
+        sceneRenderer.reset();
+        target.reset();
+        post.reset();
+        status = Status::Unavailable;
+        unavailableReason = "selection outline creation failed (is res://selection_outline.frag cooked?)";
+        return;
+    }
     status = Status::Ready;
 #else  // -DAERO_SHADER_TOOLS=OFF (D12)
     status = Status::Unavailable;
@@ -388,13 +424,16 @@ void ViewportPanel::onDraw(PanelContext& context) {
     const ImGuiIO& io = ImGui::GetIO();
     const rhi::Extent2D pixels{toPixels(avail.x, io.DisplayFramebufferScale.x),
                                toPixels(avail.y, io.DisplayFramebufferScale.y)};
+    // task E.1.4: captured HERE and read in renderScene, because renderScene must not call ImGui
+    // (2.2.3 INV-3). The same value toPixels already reads, stored rather than recomputed.
+    lastFramebufferScale = io.DisplayFramebufferScale.x;
 
     // Step 3 (D11): lazy, latched, one-attempt initialisation.
     ensureInitialized(pixels);
 
     // Step 4. The `!target` half is defensive (status == Ready is set only alongside a live target
     // in ensureInitialized) and is what lets every access below be a CHECKED optional access.
-    if (status != Status::Ready || !target || !post || !debugDrawer) {
+    if (status != Status::Ready || !target || !post || !debugDrawer || !selectionOutline) {
         drawUnavailableMessage(unavailableReason != nullptr ? unavailableReason : "Viewport unavailable");
         return;
     }
@@ -619,9 +658,11 @@ void ViewportPanel::onDraw(PanelContext& context) {
 }
 
 void ViewportPanel::focusSelection(PanelContext& context) {
-    // task 3.1.5: `meshBounds` reaches ALL THREE consumers -- this one, updatePick's PickRequest and
-    // drawSelectionOverlay's buildSelectionOverlay -- or none of them (INV-D6). The pick box, the
-    // frame box and the highlight box are the same box, structurally rather than by review.
+    // task 3.1.5, corrected by E.1.4: `meshBounds` reaches BOTH remaining consumers -- this one and
+    // updatePick's PickRequest -- or neither of them (INV-D6). The pick box and the frame box are the
+    // same box, structurally rather than by review. THE HIGHLIGHT NO LONGER RESOLVES A BOX AT ALL: it
+    // draws a GPU silhouette for everything with geometry and a point marker for everything without,
+    // and which of the two an entity gets is decided once by scene_render::buildSelectionMaskSet.
     const Aabb bounds = context.selection.empty()
                             ? sceneBounds(context.world, meshBounds)
                             : selectionBounds(context.world, context.selection.entities(), meshBounds);
@@ -1152,11 +1193,26 @@ void ViewportPanel::drawViewOptions() {
 void ViewportPanel::drawSelectionOverlay(PanelContext& context, Vec2 imageOrigin, Vec2 avail) {
     // The SAME view-projection renderScene will submit this tick (INV-2/F7: lastAspect comes from
     // drawExtent, and renderScene derives the identical number from frame->extent() with no resize in
-    // between) -- so the box lands on the pixels it belongs to, never one frame behind them.
-    const Mat4 viewProj = editorCamera.projectionMatrix(lastAspect) * editorCamera.viewMatrix();
-    buildSelectionOverlay(context.world, context.selection.entities(), context.selection.primary(), viewProj,
-                          editorCamera.projectionMode(), avail, overlayScratch,
-                          meshBounds);  // task 3.1.5 -- the third of INV-D6's three
+    // between) -- so the markers land on the pixels they belong to, never one frame behind them.
+    const Mat4 view = editorCamera.viewMatrix();
+    const Mat4 proj = editorCamera.projectionMatrix(lastAspect);
+    const Mat4 viewProj = proj * view;
+    // task E.1.4: built ONCE per tick and consumed TWICE -- here for the markers, and in renderScene
+    // for the mask (D12). Building it twice would be cheap and would be TWO SOURCES OF TRUTH, which
+    // is the defect D11 exists to remove, one layer up. `sceneRenderer` is a CHECKED optional at this
+    // point: onDraw's step-4 guard dominates this call.
+    selectionMaskSet = scene_render::buildSelectionMaskSet(
+        context.world, context.selection.entities(), context.selection.primary(),
+        {.view = view, .proj = proj, .eyePosition = editorCamera.position()}, selectionMaskScratch,
+        sceneRenderer ? &sceneRenderer->bindings() : nullptr, MAX_HIGHLIGHTED_ENTITIES);
+
+    // task E.1.4: the marker list comes from the SAME resolution the mask uses, so an entity can
+    // never be both un-outlined and un-markered (D11/INV-6). The MeshBoundsLookup argument is
+    // deliberately OMITTED -- this call no longer resolves a box. The projection mode is E.1.3's
+    // NON-DEFAULTED one, and it is the SAME one updatePick and the gizmo take: a marker under an
+    // orthographic camera must take the ortho clip gate, or it silently vanishes behind the eye plane.
+    buildSelectionOverlay(context.world, selectionMaskSet.withoutGeometry, context.selection.primary(), viewProj,
+                          editorCamera.projectionMode(), avail, overlayScratch);
     if (overlayScratch.empty()) {
         return;  // E1: no PushClipRect at all, so there is no pair left unbalanced
     }
@@ -1175,7 +1231,8 @@ void ViewportPanel::drawSelectionOverlay(PanelContext& context, Vec2 imageOrigin
         // defined nowhere) -- component-wise, always.
         drawList->AddLine(ImVec2(imageOrigin.x + segment.a.x, imageOrigin.y + segment.a.y),
                           ImVec2(imageOrigin.x + segment.b.x, imageOrigin.y + segment.b.y),
-                          isPrimary ? SELECTION_PRIMARY_COLOR : SELECTION_COLOR,
+                          selectionImU32(isPrimary ? render::SELECTION_OUTLINE_PRIMARY_DEFAULT
+                                                   : render::SELECTION_OUTLINE_SECONDARY_DEFAULT),
                           isPrimary ? SELECTION_PRIMARY_THICKNESS : SELECTION_THICKNESS);
     }
     drawList->PopClipRect();
@@ -1187,7 +1244,8 @@ void ViewportPanel::renderScene(World& world) {
     const bool requested = std::exchange(renderRequested, false);
     // The `!target`/`!sceneRenderer` half is defensive, same reasoning as onDraw's step 4 — it is
     // what lets both accesses below be CHECKED optional accesses.
-    if (!requested || status != Status::Ready || !target || !sceneRenderer || !post || !debugDrawer) {
+    if (!requested || status != Status::Ready || !target || !sceneRenderer || !post || !debugDrawer ||
+        !selectionOutline) {
         return;
     }
     // INV-3: no ImGui call, no World mutation -- and, from task 2.3.1, no CAMERA mutation either. The
@@ -1199,6 +1257,7 @@ void ViewportPanel::renderScene(World& world) {
     // (the resolve) is acquired, so the queue-ordering guarantee applies with no interleaving at all.
     std::optional<render::Frame> sceneFrame = post->beginScene(VIEWPORT_CLEAR_COLOR);
     if (!sceneFrame) {
+        selectionMaskSet = {};  // D12: cleared on EVERY exit past the guard chain, never left stale
         return;
     }
     // Still the DRAWN sub-rect, and still the correct aspect source with quantum = 64 -- unchanged
@@ -1239,12 +1298,41 @@ void ViewportPanel::renderScene(World& world) {
     debugDrawer->flush(*sceneFrame, cameraView);
     post->endScene(std::move(*sceneFrame));  // submits command buffer A -- AFTER the upload's submit
 
+    // task E.1.4: the mask, on its OWN command buffer, STRICTLY BETWEEN A and B. It reads the depth A
+    // just wrote, which is why PostProcessConfig::sceneDepthStore is true in ensureInitialized -- a
+    // DontCare'd depth attachment is GARBAGE on a tiler, not stale. Earlier than this and it attaches
+    // a depth texture whose pass is still open; later and it writes a mask nothing reads.
+    const render::SelectionMaskView maskView = sceneRenderer->renderer().renderSelectionMask(
+        post->sceneDepthTexture(), post->sceneTextureExtent(), post->sceneDrawExtent(), selectionMaskSet.secondary,
+        selectionMaskSet.primary);
+
     std::optional<render::Frame> outFrame = target->beginFrame(VIEWPORT_CLEAR_COLOR);
     if (!outFrame) {
+        selectionMaskSet = {};  // D12: this early-return path too -- three exits, three clears
         return;
     }
     post->resolve(*outFrame, tonemapParamsValue);
-    target->endFrame(std::move(*outFrame));  // submits B, strictly after A
+    // AFTER the resolve, into the SAME open pass: the outline is editor chrome and must not go
+    // through the tone curve (D7). An invalid maskView -- which is what an empty selection returns --
+    // records nothing at all and does not move compositeCount().
+    selectionOutline->composite(*outFrame, maskView, selectionOutlineParams());
+    target->endFrame(std::move(*outFrame));  // submits B, strictly after A and the mask
+    selectionMaskSet = {};                   // D12: never drawn twice, never drawn stale
+}
+
+// task E.1.4: the two colours are the ENGINE defaults, so the outline and the point marker cannot
+// drift apart (D18). The radius is derived from the framebuffer scale captured in onDraw --
+// renderScene must not call ImGui (2.2.3 INV-3). The 1L/8L literals mirror
+// SELECTION_OUTLINE_MIN_RADIUS / _MAX_RADIUS; the sanitize call is what makes the pair authoritative
+// even if they ever drift, which is why it is not redundant.
+render::SelectionOutlineParams ViewportPanel::selectionOutlineParams() const noexcept {
+    const auto radius = static_cast<std::uint32_t>(
+        std::clamp(std::lround(SELECTION_OUTLINE_RADIUS_POINTS * lastFramebufferScale), 1L, 8L));
+    return render::sanitizeSelectionOutlineParams({.radiusPixels = radius});
+}
+
+const render::SelectionOutline* ViewportPanel::selectionOutlinePass() const noexcept {
+    return selectionOutline ? &*selectionOutline : nullptr;
 }
 
 }  // namespace engine::editor

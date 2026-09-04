@@ -283,6 +283,8 @@ ForwardRenderer::ForwardRenderer(ForwardRenderer&& other) noexcept
       lastCulled(other.lastCulled),
       materialBinds(other.materialBinds),
       warnedDegenerateFrustum(other.warnedDegenerateFrustum),
+      lastViewFrustum(other.lastViewFrustum),  // task E.1.4 -- the mask's mirror of draw()'s cull
+      lastViewCulling(other.lastViewCulling),
       shadowTexture(other.shadowTexture),
       shadowSampler(other.shadowSampler),
       shadowPipeline(other.shadowPipeline),
@@ -293,7 +295,20 @@ ForwardRenderer::ForwardRenderer(ForwardRenderer&& other) noexcept
       lastShadowCulled(other.lastShadowCulled),
       shadowPasses(other.shadowPasses),
       warnedShadowFit(other.warnedShadowFit),
-      warnedShadowMaskCaster(other.warnedShadowMaskCaster) {
+      warnedShadowMaskCaster(other.warnedShadowMaskCaster),
+      // task E.1.4 -- the mask pass's ten. Every one of them must also appear in operator= and in
+      // reset() below: these are three HAND-WRITTEN member lists, and a forgotten entry is a
+      // use-after-move or a double free with NOTHING red (3.6.2's own note, one block up).
+      selectionMaskPipeline(other.selectionMaskPipeline),
+      selectionMaskPipelineCullNone(other.selectionMaskPipelineCullNone),
+      selectionMaskPipelineSkinned(other.selectionMaskPipelineSkinned),
+      selectionMaskPipelineSkinnedCullNone(other.selectionMaskPipelineSkinnedCullNone),
+      selectionMaskTexture(other.selectionMaskTexture),
+      selectionMaskAllocExtent(other.selectionMaskAllocExtent),
+      selectionMaskPasses(other.selectionMaskPasses),
+      lastSelectionMaskDrawn(other.lastSelectionMaskDrawn),
+      warnedSelectionMaskCaster(other.warnedSelectionMaskCaster),
+      warnedSelectionMaskUnavailable(other.warnedSelectionMaskUnavailable) {
     other.reset();
 }
 
@@ -325,6 +340,8 @@ ForwardRenderer& ForwardRenderer::operator=(ForwardRenderer&& other) noexcept {
         lastCulled = other.lastCulled;
         materialBinds = other.materialBinds;
         warnedDegenerateFrustum = other.warnedDegenerateFrustum;
+        lastViewFrustum = other.lastViewFrustum;  // task E.1.4 -- the mask's mirror of draw()'s cull
+        lastViewCulling = other.lastViewCulling;
         shadowTexture = other.shadowTexture;
         shadowSampler = other.shadowSampler;
         shadowPipeline = other.shadowPipeline;
@@ -336,6 +353,16 @@ ForwardRenderer& ForwardRenderer::operator=(ForwardRenderer&& other) noexcept {
         shadowPasses = other.shadowPasses;
         warnedShadowFit = other.warnedShadowFit;
         warnedShadowMaskCaster = other.warnedShadowMaskCaster;
+        selectionMaskPipeline = other.selectionMaskPipeline;  // task E.1.4 -- see the move constructor
+        selectionMaskPipelineCullNone = other.selectionMaskPipelineCullNone;
+        selectionMaskPipelineSkinned = other.selectionMaskPipelineSkinned;
+        selectionMaskPipelineSkinnedCullNone = other.selectionMaskPipelineSkinnedCullNone;
+        selectionMaskTexture = other.selectionMaskTexture;
+        selectionMaskAllocExtent = other.selectionMaskAllocExtent;
+        selectionMaskPasses = other.selectionMaskPasses;
+        lastSelectionMaskDrawn = other.lastSelectionMaskDrawn;
+        warnedSelectionMaskCaster = other.warnedSelectionMaskCaster;
+        warnedSelectionMaskUnavailable = other.warnedSelectionMaskUnavailable;
         other.reset();
     }
     return *this;
@@ -372,6 +399,8 @@ void ForwardRenderer::reset() noexcept {
     lastCulled = 0;
     materialBinds = 0;
     warnedDegenerateFrustum = false;
+    lastViewFrustum = {};  // task E.1.4 -- see the move constructor
+    lastViewCulling = false;
     shadowTexture = {};
     shadowSampler = {};
     shadowPipeline = {};
@@ -383,6 +412,16 @@ void ForwardRenderer::reset() noexcept {
     shadowPasses = 0;
     warnedShadowFit = false;
     warnedShadowMaskCaster = false;
+    selectionMaskPipeline = {};  // task E.1.4 -- see the move constructor
+    selectionMaskPipelineCullNone = {};
+    selectionMaskPipelineSkinned = {};
+    selectionMaskPipelineSkinnedCullNone = {};
+    selectionMaskTexture = {};
+    selectionMaskAllocExtent = {};
+    selectionMaskPasses = 0;
+    lastSelectionMaskDrawn = 0;
+    warnedSelectionMaskCaster = false;
+    warnedSelectionMaskUnavailable = false;
 }
 
 void ForwardRenderer::destroyAll() noexcept {
@@ -441,6 +480,18 @@ void ForwardRenderer::destroyAll() noexcept {
     }
     if (shadowTexture.valid()) {
         device->destroyTexture(shadowTexture);
+    }
+    // task E.1.4 -- the mask pass's own resources. Released here and nowhere else, so create()'s
+    // failure path, the destructor and move-assign all go through one list.
+    for (const rhi::GraphicsPipelineHandle handle :
+         {selectionMaskPipeline, selectionMaskPipelineCullNone, selectionMaskPipelineSkinned,
+          selectionMaskPipelineSkinnedCullNone}) {
+        if (handle.valid()) {
+            device->destroyGraphicsPipeline(handle);
+        }
+    }
+    if (selectionMaskTexture.valid()) {
+        device->destroyTexture(selectionMaskTexture);
     }
     reset();
 }
@@ -596,6 +647,11 @@ std::optional<ForwardRenderer> ForwardRenderer::create(rhi::Device& device, cons
     // failure path, so a half-built shadow set unwinds with no bookkeeping (the same reason
     // createDefaults sits here).
     if (!renderer.createShadowResources(shaderVfs, config)) {
+        return std::nullopt;
+    }
+    // task E.1.4 -- the mask pass's four pipelines, in exactly that position and for exactly that
+    // reason: the renderer already exists, so a half-built set unwinds through its destructor.
+    if (!renderer.createSelectionMaskResources(shaderVfs, config)) {
         return std::nullopt;
     }
     // Never fails: a material owns no GPU resource of its own, and createDefaults has already proven
@@ -772,6 +828,113 @@ bool ForwardRenderer::createShadowResources(const VirtualFileSystem& shaderVfs, 
         AERO_LOG_ERROR("ForwardRenderer::create: shadow pipeline creation failed");
         return false;
     }
+    return true;
+}
+
+bool ForwardRenderer::createSelectionMaskResources(const VirtualFileSystem& shaderVfs,
+                                                   const ForwardRendererConfig& config) {
+    // 1. The escape hatch, in bool form -- shadowMapResolution == 0's twin. No pipelines, no texture,
+    //    no ERROR; renderSelectionMask then latches hasWarnedSelectionMaskUnavailable() on its first
+    //    call.
+    if (!config.selectionMask) {
+        return true;
+    }
+
+    // 2. Format support, queried ONCE.
+    if (!device->supportsTextureFormat(SELECTION_MASK_FORMAT,
+                                       rhi::TextureUsage::Sampler | rhi::TextureUsage::ColorTarget)) {
+        // ONE ERROR, pipelines left unbuilt, and create() does NOT fail: a device that cannot do R8
+        // should still give you an editor, without a selection outline. SDL 3.4.12 lists R8_UNORM on
+        // BOTH the universally-supported SAMPLER list and the COLOR_TARGET list, so this is a stated
+        // non-risk rather than an untested hope -- but querying it is what turns an exotic device into
+        // a clean refusal instead of a wrong picture.
+        AERO_LOG_ERROR(
+            "ForwardRenderer::create: R8Unorm does not support Sampler|ColorTarget on this device - "
+            "the selection mask pass is disabled");
+        return true;
+    }
+
+    // 3. THREE shader loads, FOUR pipelines -- createShadowResources' shape verbatim, and it loads its
+    //    OWN three because create() destroys vs/vsSkinned/fs BEFORE the ForwardRenderer object exists.
+    const rhi::ShaderHandle vs = rhi::loadShader(*device, shaderVfs, config.vertexShaderPath);
+    const rhi::ShaderHandle vsSkinned = rhi::loadShader(*device, shaderVfs, config.skinnedVertexShaderPath);
+    const rhi::ShaderHandle fs = rhi::loadShader(*device, shaderVfs, config.selectionMaskFragmentShaderPath);
+    const bool loaded = vs.valid() && vsSkinned.valid() && fs.valid();
+    if (loaded) {
+        // The SAME vertex layouts create() built for the forward pipelines -- a 48-byte stream 0 at
+        // slot 0 and, for the skinned pair, a 32-byte stream 1 at slot 1 -- so the same buffers bind
+        // unchanged and this pass needs no second binding path. They are function locals there, and
+        // createShadowResources already carries its own copies for exactly this reason.
+        const rhi::VertexBufferLayout vbLayout{.slot = 0, .pitch = sizeof(MeshVertex)};
+        const std::array<rhi::VertexAttribute, 4> attrs{{
+            {.location = 0, .bufferSlot = 0, .format = rhi::VertexFormat::Float3, .offset = 0},
+            {.location = 1, .bufferSlot = 0, .format = rhi::VertexFormat::Float3, .offset = 12},
+            {.location = 2, .bufferSlot = 0, .format = rhi::VertexFormat::Float4, .offset = 24},
+            {.location = 3, .bufferSlot = 0, .format = rhi::VertexFormat::Float2, .offset = 40},
+        }};
+        const rhi::ColorTargetDesc maskTarget{.format = SELECTION_MASK_FORMAT};  // blend OFF: write replaces
+        // LessOrEqual, NOT Less, and this is the whole of D3: the mask re-rasterises geometry whose
+        // depth is ALREADY in the buffer, so Less rejects EVERY fragment and the mask comes out EMPTY.
+        // It is exact only because the vertex stage is the SAME SHADER the forward pass used, with the
+        // same 208-byte PerObject block -- no API guarantees position invariance across two different
+        // vertex shaders, and the failure mode is a speckled mask that reads as a depth-bias bug.
+        // Depth WRITE is off: the mask must not perturb the depth its own comparison rests on.
+        const rhi::DepthStencilState maskDepth{
+            .enableDepthTest = true, .enableDepthWrite = false, .compareOp = rhi::CompareOp::LessOrEqual};
+        // `rasterizer` is left at its default, which is CullMode::Back -- the engine convention and the
+        // forward pipelines' own. The two cull-none twins come from the same two-field copy idiom
+        // create() uses, applied twice.
+        const rhi::GraphicsPipelineDesc maskDesc{
+            .vertexShader = vs,
+            .fragmentShader = fs,
+            .vertexBuffers = std::span{&vbLayout, 1},
+            .vertexAttributes = attrs,
+            .depthStencil = maskDepth,
+            .colorTargets = std::span{&maskTarget, 1},
+            .depthStencilFormat = config.depthFormat,
+        };
+        selectionMaskPipeline = device->createGraphicsPipeline(maskDesc);
+        rhi::GraphicsPipelineDesc cullNoneDesc = maskDesc;
+        cullNoneDesc.rasterizer.cullMode = rhi::CullMode::None;
+        selectionMaskPipelineCullNone = device->createGraphicsPipeline(cullNoneDesc);
+
+        const std::array<rhi::VertexBufferLayout, 2> skinnedLayouts{{
+            {.slot = 0, .pitch = sizeof(MeshVertex)},
+            {.slot = 1, .pitch = sizeof(detail::SkinVertex)},
+        }};
+        const std::array<rhi::VertexAttribute, 6> skinnedAttrs{{
+            {.location = 0, .bufferSlot = 0, .format = rhi::VertexFormat::Float3, .offset = 0},
+            {.location = 1, .bufferSlot = 0, .format = rhi::VertexFormat::Float3, .offset = 12},
+            {.location = 2, .bufferSlot = 0, .format = rhi::VertexFormat::Float4, .offset = 24},
+            {.location = 3, .bufferSlot = 0, .format = rhi::VertexFormat::Float2, .offset = 40},
+            {.location = 4, .bufferSlot = 1, .format = rhi::VertexFormat::Uint4, .offset = 0},
+            {.location = 5, .bufferSlot = 1, .format = rhi::VertexFormat::Float4, .offset = 16},
+        }};
+        rhi::GraphicsPipelineDesc skinnedDesc = maskDesc;
+        skinnedDesc.vertexShader = vsSkinned;
+        skinnedDesc.vertexBuffers = skinnedLayouts;
+        skinnedDesc.vertexAttributes = skinnedAttrs;
+        selectionMaskPipelineSkinned = device->createGraphicsPipeline(skinnedDesc);
+        rhi::GraphicsPipelineDesc skinnedCullNoneDesc = skinnedDesc;
+        skinnedCullNoneDesc.rasterizer.cullMode = rhi::CullMode::None;
+        selectionMaskPipelineSkinnedCullNone = device->createGraphicsPipeline(skinnedCullNoneDesc);
+    }
+    for (const rhi::ShaderHandle handle : {vs, vsSkinned, fs}) {
+        if (handle.valid()) {
+            device->destroyShader(handle);  // safe after pipeline creation (device.hpp)
+        }
+    }
+    if (!loaded) {
+        AERO_LOG_ERROR("ForwardRenderer::create: selection mask shader load failed");
+        return false;
+    }
+    if (!selectionMaskPipeline.valid() || !selectionMaskPipelineCullNone.valid() ||
+        !selectionMaskPipelineSkinned.valid() || !selectionMaskPipelineSkinnedCullNone.valid()) {
+        AERO_LOG_ERROR("ForwardRenderer::create: selection mask pipeline creation failed");
+        return false;
+    }
+    // 4. NOTHING ELSE IS BUILT HERE, deliberately: no sampler (the mask is sampled by
+    //    SelectionOutline's own) and no texture (its extent is not known until the first pass).
     return true;
 }
 
@@ -1087,6 +1250,11 @@ void ForwardRenderer::draw(Frame& frame, const RenderView& view) {
     // nothing, and must read 0/0 rather than the previous frame's numbers.
     lastDrawn = 0;
     lastCulled = 0;
+    // task E.1.4 -- reset with them, and reset to OFF: renderSelectionMask reads this pair to mirror
+    // the cull below, and a view that returns early (no camera) must leave the mask culling NOTHING
+    // rather than culling against the previous frame's frustum.
+    lastViewFrustum = {};
+    lastViewCulling = false;
     // task 3.6.1 (AC-23) -- ONE definition of the two plot names, called on EVERY exit including the
     // no-camera one. The counters reset above the early return precisely so a camera-less frame reads
     // 0/0; a plot that skipped that frame would hold the PREVIOUS frame's value while the accessors
@@ -1143,6 +1311,12 @@ void ForwardRenderer::draw(Frame& frame, const RenderView& view) {
             culling = false;
         }
     }
+    // task E.1.4 -- PUBLISHED HERE, after the degenerate-projection disable, so what
+    // renderSelectionMask mirrors is the pair this loop actually used and not an argument about it.
+    // The mask pass has no camera of its own and could not extract a second frustum without being
+    // handed one, and a second gate would be a second source of truth for the same decision.
+    lastViewFrustum = frustum;
+    lastViewCulling = culling;
 
     // Which of the FOUR pipelines is bound is now a function of TWO booleans, so it moved out of the
     // material-change block and into the per-instance path — the (skinned, cullNone) pair is compared
@@ -1542,6 +1716,260 @@ ShadowView ForwardRenderer::renderShadowMap(const RenderView& view) {
                       .normalBias = view.directional.shadowNormalBias,
                       .valid = true};
 }
+
+SelectionMaskView ForwardRenderer::renderSelectionMask(rhi::TextureHandle sceneDepth, rhi::Extent2D textureExtent,
+                                                       rhi::Extent2D drawExtent,
+                                                       std::span<const MeshInstance> secondary,
+                                                       std::span<const MeshInstance> primary) {
+    AERO_PROFILE_ZONE;
+    // 1. BEFORE every early return, deliberately: a frame that drew no mask must read 0 rather than
+    //    the previous frame's number. 3.6.1's CD5 lesson, applied a third time.
+    lastSelectionMaskDrawn = 0;
+
+    // 2. The refusals. Only the FIRST and the LAST latch -- "nothing is selected" is not a diagnostic,
+    //    and the empty-selection path costs exactly one comparison.
+    const auto latchUnavailable = [this](const char* reason) {
+        if (!warnedSelectionMaskUnavailable) {
+            warnedSelectionMaskUnavailable = true;
+            AERO_LOG_WARN(
+                "ForwardRenderer::renderSelectionMask: {} - no selection mask this frame; this warning "
+                "latches once per renderer",
+                reason);
+        }
+    };
+    if (!selectionMaskPipeline.valid() || !selectionMaskPipelineCullNone.valid() ||
+        !selectionMaskPipelineSkinned.valid() || !selectionMaskPipelineSkinnedCullNone.valid()) {
+        latchUnavailable("the mask pipelines were not built (selectionMask == false, or R8Unorm is unsupported)");
+        return {};
+    }
+    if (secondary.empty() && primary.empty()) {
+        return {};  // SILENTLY: nothing is selected, and that is not a diagnostic
+    }
+    if (!sceneDepth.valid() || textureExtent.width == 0 || textureExtent.height == 0 || drawExtent.width == 0 ||
+        drawExtent.height == 0 || drawExtent.width > textureExtent.width || drawExtent.height > textureExtent.height) {
+        latchUnavailable("the scene depth handle or the extents are unusable");
+        return {};
+    }
+
+    // 3. The texture, SLAVED to the extent it was told about (D4/INV-2). SDL requires every attachment
+    //    in a pass to agree on dimensions, and the depth attachment's allocation is not ours to
+    //    choose -- so "equal to the one it is told about" makes the invariant hold by construction and
+    //    costs one comparison per frame.
+    if (selectionMaskAllocExtent != textureExtent) {
+        if (selectionMaskTexture.valid()) {
+            device->destroyTexture(selectionMaskTexture);
+            selectionMaskTexture = {};
+        }
+        selectionMaskTexture =
+            device->createTexture({.format = SELECTION_MASK_FORMAT,
+                                   .usage = rhi::TextureUsage::Sampler | rhi::TextureUsage::ColorTarget,
+                                   .width = textureExtent.width,
+                                   .height = textureExtent.height});
+        if (!selectionMaskTexture.valid()) {
+            selectionMaskAllocExtent = {};  // stays not-allocated, so the next call retries cleanly
+            latchUnavailable("the mask texture could not be created");
+            return {};
+        }
+        device->setDebugName(selectionMaskTexture, "aero.selectionmask.color");
+        selectionMaskAllocExtent = textureExtent;
+    }
+
+    // 4. Its OWN command buffer -- renderShadowMap's reason: a Frame carries an already-open pass and
+    //    SDL refuses a second pass on a command buffer that has one open.
+    const rhi::CommandBufferHandle cmd = device->acquireCommandBuffer();
+    if (!cmd.valid()) {
+        AERO_LOG_ERROR("ForwardRenderer::renderSelectionMask - acquireCommandBuffer failed");
+        return {};
+    }
+    // 5. Counted BELOW the validity check and at exactly one site, so the counter means "acquired",
+    //    not "tried to acquire" -- shadowPassCount()'s own distinction.
+    ++selectionMaskPasses;
+
+    // 6. Clear -> Store on the COLOUR attachment is what makes the mask THIS FRAME'S: without it a
+    //    reused texture accumulates every selection the renderer has ever drawn.
+    const rhi::ColorAttachment colorAttachment{.texture = selectionMaskTexture,
+                                               .loadOp = rhi::LoadOp::Clear,
+                                               .storeOp = rhi::StoreOp::Store,
+                                               .clearColor = {0.0F, 0.0F, 0.0F, 0.0F}};
+    // LOAD, not the Clear default, and this is not a preference: a defaulted depthLoadOp CLEARS the
+    // scene depth and turns every mask into a full un-occluded silhouette. DontCare on the way out
+    // because this pass writes no depth and nothing downstream reads it again.
+    //
+    // AND stencilLoadOp MUST BE SPELLED Load TOO, which the depth format makes look pointless and is
+    // not. The rhi's cycle rule is `cycle iff ANY load op is not LOAD`, and stencilLoadOp DEFAULTS to
+    // DontCare -- so leaving it defaulted asks SDL to CYCLE a depth target it is also being told to
+    // LOAD, which trips SDL_BeginGPURenderPass's own assertion ("Cannot cycle depth target when load
+    // op or stencil load op is LOAD!") and HANGS the process rather than failing it. The auto-picked
+    // scene depth format carries no stencil at all, so this line changes nothing about the attachment
+    // and everything about the cycle decision.
+    const rhi::DepthStencilAttachment depthAttachment{.texture = sceneDepth,
+                                                      .depthLoadOp = rhi::LoadOp::Load,
+                                                      .depthStoreOp = rhi::StoreOp::DontCare,
+                                                      .stencilLoadOp = rhi::LoadOp::Load,
+                                                      .stencilStoreOp = rhi::StoreOp::DontCare};
+    const rhi::RenderPassHandle pass =
+        device->beginRenderPass(cmd, {.colorAttachments = {&colorAttachment, 1}, .depthStencil = depthAttachment});
+    if (!pass.valid()) {
+        // Without this the loop below runs against an invalid pass and every bind, push and draw logs
+        // its own ERROR, and the function still returns a VALID view -- so the composite samples a
+        // mask nothing wrote. `cancel` is legal here: nothing was acquired from a swapchain.
+        AERO_LOG_ERROR("ForwardRenderer::renderSelectionMask - beginRenderPass failed");
+        device->cancel(cmd);
+        return {};
+    }
+
+    // 7. D10 -- NOT OPTIONAL, and invisible in every test whose drawExtent equals its textureExtent.
+    //    renderShadowMap sets neither because its texture has no margin; this one's does, and with the
+    //    default full-target viewport the mask is silently RESCALED against the colour image.
+    device->setViewport(pass, {.x = 0.0F,
+                               .y = 0.0F,
+                               .width = static_cast<float>(drawExtent.width),
+                               .height = static_cast<float>(drawExtent.height),
+                               .minDepth = 0.0F,
+                               .maxDepth = 1.0F});
+    device->setScissor(pass, {.x = 0, .y = 0, .width = drawExtent.width, .height = drawExtent.height});
+
+    // The (skinned, cullNone) pair, initialised to "nothing bound", so a homogeneous selection issues
+    // one bind per bucket. IT MUST NOT INCREMENT pipelineBinds -- that counter is draw()'s 3.4.1
+    // observable and moving it here would break existing assertions.
+    bool boundAny = false;
+    bool boundSkinned = false;
+    bool boundCullNone = false;
+    const auto bindPipelineFor = [&](bool skinned, bool cullNone) {
+        if (boundAny && skinned == boundSkinned && cullNone == boundCullNone) {
+            return;
+        }
+        rhi::GraphicsPipelineHandle wanted = selectionMaskPipeline;
+        if (skinned) {
+            wanted = cullNone ? selectionMaskPipelineSkinnedCullNone : selectionMaskPipelineSkinned;
+        } else if (cullNone) {
+            wanted = selectionMaskPipelineCullNone;
+        }
+        device->bindGraphicsPipeline(pass, wanted);
+        boundAny = true;
+        boundSkinned = skinned;
+        boundCullNone = cullNone;
+    };
+
+    const auto drawBucket = [&](std::span<const MeshInstance> instances, float maskValue) {
+        if (instances.empty()) {
+            return;  // no push, no bind
+        }
+        // ONCE PER BUCKET, not per draw: pushed uniforms are per-COMMAND BUFFER (device.hpp), so the
+        // slot survives every pipeline rebind below.
+        const std::array<float, 4> maskBlock{maskValue, 0.0F, 0.0F, 0.0F};
+        device->pushFragmentUniforms(cmd, 0, std::as_bytes(std::span{maskBlock}));
+
+        for (const MeshInstance& instance : instances) {
+            // INV-1: the mask is the set of pixels the forward pass SHADED, so draw()'s frustum cull
+            // is MIRRORED here -- with draw()'s own resolved frustum and gate, published above, never
+            // a second extraction. An off-screen instance writing to no texel is NOT the argument
+            // this needs: draw() culls on the COOKED AABB, and an instance whose bounds are invalid
+            // or smaller than its triangles is dropped from the picture while still projecting on
+            // screen. Unmirrored, the mask draws it, its depth test passes against the clear value,
+            // and the editor outlines an object that is not in the picture -- a second undocumented
+            // deviation from INV-1 beside D6's alpha-masked materials.
+            //
+            // THE PREDICATE IS draw()'s, clause for clause: skinned instances are EXEMPT (their
+            // vertices move under a palette this renderer never sees), the bounds resolution is the
+            // shared silent one, and an invalid box propagates through transformAabb and comes back
+            // out of isVisible as false rather than being tested twice. It errs in the safe
+            // direction -- an instance the forward pass drops is dropped here too -- and costs one
+            // predicate call per instance on a set capped at 256. lastCulled is draw()'s 3.6.1
+            // observable and is deliberately NOT touched.
+            if (lastViewCulling && instance.palette.empty()) {
+                if (const std::optional<Aabb> local = instanceBounds(instance)) {
+                    if (!isVisible(lastViewFrustum, transformAabb(instance.model, *local))) {
+                        continue;
+                    }
+                }
+            }
+            const ResolvedInstanceDraw resolvedDraw = resolveInstanceDraw(instance);
+            if (resolvedDraw.status != InstanceDrawStatus::Primitive &&
+                resolvedDraw.status != InstanceDrawStatus::Mesh) {
+                // Dropped by the shared resolver. SILENT here -- draw() owns every one of those
+                // latches (strayPalette, SkinningCap, StaleMesh, SubmeshRange) and fires them from
+                // there only, so a scene rendered through SceneRenderer::render still reports each
+                // exactly once.
+                continue;
+            }
+
+            // D6's latch: a Mask or Blend material is masked as a SOLID quad, because this stage has
+            // no material bind and must not discard -- renderShadowMap's own gap, one pass over. The
+            // lookup below is PER-INSTANCE and unconditional, because bindPipelineFor needs this
+            // instance's doubleSided to mirror draw()'s cull mode (D5); only the WARN is latched, so
+            // a scene that has already warned still pays the lookup and pays nothing else. Moving the
+            // lookup behind the latch would silently stop mirroring the cull.
+            const MaterialHandle material =
+                materials.contains(instance.material) ? instance.material : defaultMaterialHandle;
+            const MaterialSlot* const slot = materials.get(material);
+            if (!warnedSelectionMaskCaster && slot != nullptr && slot->params.alpha != MaterialAlpha::Opaque) {
+                AERO_LOG_WARN(
+                    "ForwardRenderer::renderSelectionMask: a Mask or Blend material is masked as a SOLID "
+                    "quad - the mask stage has no UVs and cannot discard (8.2.1 owns alpha-tested passes); "
+                    "this warning latches once per renderer");
+                warnedSelectionMaskCaster = true;
+            }
+            // D5, and INV-1's whole point: the mask is the set of pixels the forward pass SHADED for
+            // these instances. A mask drawn CullMode::None would cover a single-sided plane the
+            // forward pass culled, and outline an object that is not on screen.
+            bindPipelineFor(resolvedDraw.skinned, slot != nullptr && slot->params.doubleSided);
+
+            // D3/F8: the SAME 208-byte block draw() built for exactly these instances on exactly this
+            // frame, pushed to the SAME vertex stage -- which is what makes LessOrEqual exact.
+            const GpuPerObject perObject{instance.mvp, instance.model, instance.normalMatrix, instance.color, 0.0F};
+            device->pushVertexUniforms(cmd, 0, std::as_bytes(std::span{&perObject, 1}));
+
+            if (resolvedDraw.skinned) {
+                // ALWAYS the full 4080-byte block from a ZEROED scratch (INV-S5), byte for byte what
+                // draw() pushes, so a masked silhouette cannot disagree with the drawn one.
+                paletteScratch.fill(Vec4{});
+                detail::packJointPaletteRows(instance.palette,
+                                             std::span{paletteScratch}.first(3 * instance.palette.size()));
+                device->pushVertexUniforms(cmd, 1, std::as_bytes(std::span{paletteScratch}));
+            }
+
+            // NO material texture bind and NO material uniform push: the mask stage has no sampler and
+            // no material block, so binding one would be state the pipeline cannot consume.
+            if (resolvedDraw.status == InstanceDrawStatus::Primitive) {
+                const PrimitiveMesh& mesh = primitives[clampPrimitiveIndex(instance.primitive)];
+                device->bindVertexBuffer(pass, 0, mesh.vbuf);
+                device->bindIndexBuffer(pass, mesh.ibuf, rhi::IndexType::Uint16);
+                device->drawIndexed(pass, mesh.indexCount);
+                ++lastSelectionMaskDrawn;
+                continue;
+            }
+            device->bindVertexBuffer(pass, 0, resolvedDraw.entry->vertexBuffer,
+                                     resolvedDraw.section->stream0ByteOffset);
+            if (resolvedDraw.skinned) {
+                device->bindVertexBuffer(pass, 1, resolvedDraw.entry->skinBuffer,
+                                         resolvedDraw.section->stream1ByteOffset);
+            }
+            device->bindIndexBuffer(pass, resolvedDraw.entry->indexBuffer, resolvedDraw.entry->indexType);
+            device->drawIndexed(pass, resolvedDraw.submesh->indexCount, 1, resolvedDraw.submesh->firstIndex, 0, 0);
+            ++lastSelectionMaskDrawn;
+        }
+    };
+
+    // 8. PRIMARY LAST: it must win the overlap, so the composite reads mx == 1.0 along a shared edge.
+    drawBucket(secondary, SELECTION_MASK_SECONDARY);
+    drawBucket(primary, SELECTION_MASK_PRIMARY);
+
+    // 9. Ordered BEFORE the frame that composites, which is what lets it sample the mask with no
+    //    explicit barrier.
+    device->endRenderPass(pass);
+    device->submit(cmd);
+
+    // 10. DESIGNATED, never positional -- a fifth SelectionMaskView field appended later would compile
+    //     clean at its default here, with every case green, if these were positional.
+    return SelectionMaskView{
+        .texture = selectionMaskTexture, .textureExtent = textureExtent, .drawExtent = drawExtent, .valid = true};
+}
+
+std::size_t ForwardRenderer::selectionMaskPassCount() const noexcept { return selectionMaskPasses; }
+std::size_t ForwardRenderer::lastFrameSelectionMaskDrawn() const noexcept { return lastSelectionMaskDrawn; }
+bool ForwardRenderer::hasWarnedSelectionMaskCaster() const noexcept { return warnedSelectionMaskCaster; }
+bool ForwardRenderer::hasWarnedSelectionMaskUnavailable() const noexcept { return warnedSelectionMaskUnavailable; }
 
 std::size_t ForwardRenderer::lastFrameShadowDrawn() const noexcept { return lastShadowDrawn; }
 std::size_t ForwardRenderer::lastFrameShadowCulled() const noexcept { return lastShadowCulled; }

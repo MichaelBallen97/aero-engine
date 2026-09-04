@@ -1447,16 +1447,34 @@ a **human mouse/keyboard pass** recorded per OS in `editor/VALIDATION.md`.
   Hierarchy's drop: that panel's `applyPending` cannot finish the job (instantiation needs the database,
   the importer and the ledger), and appending an enumerator `applyPending` must then refuse to handle is
   worse than not appending one.
-- **The pick box, the frame box and the highlight box are ONE box, produced by `localBoundsFor`.** A
-  `nullopt` -- loading, failed or missing -- is treated by every consumer exactly as an entity with **no**
-  `MeshRenderer` already was: a point for bounds, the screen-space disc for picking, the diamond for the
-  overlay. **No new fallback code exists anywhere**, and `MeshBoundsLookup` is threaded as a **defaulted,
-  last** parameter on all four bounds entry points so every pre-existing caller compiles and behaves
-  identically. `LOCAL_MESH_HALF_EXTENT` is **gone**; 2.3.2's deliberately fat plane box went with it, and
-  the flat plane needs **no epsilon** -- only a precondition of `box.valid()` (`min <= max`, never
-  `min < max`).
-- **`aabbCorner` is the single corner enumeration.** `BOX_EDGES` is derived from it, so the bounds walk,
-  the pick and the highlight cannot drift; this task deleted the overlay's own second copy.
+- **The pick box and the frame box are ONE box, produced by `localBoundsFor`** -- TWO consumers since
+  E.1.4, not three. A `nullopt` -- loading, failed or missing -- is treated by both exactly as an entity
+  with **no** `MeshRenderer` already was: a point for bounds, the screen-space disc for picking. **No new
+  fallback code exists anywhere**, and `MeshBoundsLookup` is threaded as a **defaulted, last** parameter
+  on the bounds entry points so every pre-existing caller compiles and behaves identically.
+  `LOCAL_MESH_HALF_EXTENT` is **gone**; 2.3.2's deliberately fat plane box went with it, and the flat
+  plane needs **no epsilon** -- only a precondition of `box.valid()` (`min <= max`, never `min < max`).
+  **THE HIGHLIGHT NO LONGER RESOLVES A BOX AT ALL** (E.1.4): `buildSelectionOverlay` has lost its
+  `MeshBoundsLookup*` parameter, and it draws a point marker for the entities
+  `scene_render::buildSelectionMaskSet` reports as having no geometry while everything else gets a GPU
+  silhouette from the mask pass. The rule this bullet protects -- one box, no drift between the pick and
+  the bounds walk -- is unchanged for its two remaining consumers.
+- **`aabbCorner` is the single corner enumeration**, and it still is: `pickEntity` and the bounds walk
+  read it and cannot drift. E.1.4 deleted `BOX_EDGES`, the table that used to be derived from it, when it
+  retired the AABB highlight. *(`engine/render/src/debug_draw.cpp` carries an unrelated file-local
+  `BOX_EDGES` for its wire-box helper; it is not this rule's subject and must not be touched.)*
+- **3.4.2's resize-before-read rule has a STRUCTURAL exemption, and `renderSelectionMask` is the first.**
+  The rule exists because ImGui *records* an `ImTextureID` during the draw walk and *binds* it inside
+  `ImGuiLayer::endFrame`, which runs **after** `tick()`'s post-draw slot, while SDL's Vulkan and D3D12
+  backends `SDL_free` a destroyed texture container **immediately** -- so a reallocation between the
+  record and the bind is a use-after-free on two backends and **benign on the one with a validation
+  pass**. `ForwardRenderer::renderSelectionMask` destroys and recreates its mask texture inside
+  `renderScene`, which **is** in that slot, and it is nevertheless safe **structurally**: the mask texture
+  is never handed to ImGui. The only handle the Viewport records is `target->colorTexture()`, and `target`
+  is resized in `onDraw` where the rule requires. This is 3.1.5's `SceneAssetLedger` position verbatim.
+  **`I122`'s clause (c) is what keeps it true** -- it pins as source text that no `ImGui::Image` call in
+  `viewport_panel.cpp` names anything but `target->colorTexture()`, because the defect it prevents is
+  invisible to every pass this project can run locally.
 
 Full history: `docs/10-engineering-log.md`, Epic 2.1 / 2.2 / 2.5 / 2.6 entries, and tasks 3.1.1, 3.1.2,
 3.1.3, 3.1.4, 3.1.5, 3.2.1, 3.2.2, 3.2.3, 3.2.4, 3.2.5 and 3.4.2's entries under Phase 3.

@@ -12,9 +12,13 @@ Two platform matrices, never to be conflated: the **editor** runs on macOS/Windo
 
 **PHASE E (Editor Experience) IS OPEN — it executes between Phase 3 and Phase 4.**
 **E.1.1 (Debug line renderer) is MERGED (PR #92, `15bf58b`), E.1.2 (Grid floor + world axes) is
-MERGED (PR #93, `d91eab1`) and E.1.3 (View-axis gizmo) is MERGED (PR #94, merge commit `6fb323c`,
+MERGED (PR #93, `d91eab1`), E.1.3 (View-axis gizmo) is MERGED (PR #94, merge commit `6fb323c`,
 thirteen commits — eight, then five closing a review round — all six CI jobs green with
-`headSha == HEAD` asserted); the other 21 tasks are planning only.** Six epics, 24
+`headSha == HEAD` asserted) **and macOS-validated, with the one defect that pass found already fixed
+on `main` (PR #95, `0ab204d`)**, and E.1.4 (Silhouette selection outline) is COMPLETE IN CODE on
+`feat/E.1.4-silhouette-selection-outline` (fifteen commits, the code-review round closed and the
+22-seed sabotage matrix run, full local gate green on both presets and both reduced configurations,
+`origin/main` merged in) and NOT YET MERGED; the other 20 tasks are planning only.** Six epics, 24
 tasks, in `docs/tasks/phase-E.md`. It is **lettered, not fractioned**, because `3.5` and `3.5.1`/`3.5.2` are
 already Phase 3's Skeletal-animation epic and its tasks — a "Phase 3.5" would collide with referenced
 numbers, and numbering is append-only. In Notion its `Phase #` is `3.5`, a sort key, not an
@@ -55,7 +59,113 @@ Epics **3.1** (AssetDatabase), **3.2** (Importers), **3.3** (Cooker v0), **3.4**
 > as the position moves, never grown: it reached 207 k characters once and that is what this note
 > exists to prevent.
 
-### E.1.3 — View-axis gizmo (MERGED, PR #94 `6fb323c`) — the compass, and a projection mode
+### E.1.4 — Silhouette selection outline (COMPLETE IN CODE, not merged) — the box is gone
+
+**The selection highlight stops being a box.** The selected instances are drawn again — same vertex
+shaders, same per-instance cull mode — into an `R8Unorm` mask depth-tested `LessOrEqual` against the
+depth the forward pass just wrote, and a nine-tap edge detect composites a band over the
+already-resolved image, after the tonemap, in sRGB display bytes. Fifteen commits — nine for the
+task, six closing the code-review round — 7 new files and 16 edited source/header files, no new
+dependency, no link-line change, no component, no scene-format change. **`ctest -N`
+unmoved at 172.** Full detail in `docs/10`; the sentences that govern new work are below.
+
+**1. `RenderTarget` CAN NOW STORE ITS DEPTH, OPT-IN, AND `PostProcess` FORWARDS IT.** Two flags,
+`RenderTargetConfig::depthStore` and `PostProcessConfig::sceneDepthStore`, both defaulting to today's
+behaviour (`Clear` → `DontCare`). **An unstored depth read by a later pass is GARBAGE on a tiler —
+every Apple Silicon Mac — not stale**, so the failure shape is an EMPTY result on Metal and a CORRECT
+one on D3D12/Vulkan, which is the worst there is. Any future pass reading a `RenderTarget`'s depth
+must set the flag, and **nothing in the API can detect that it did not**.
+
+**AND BOTH LOAD OPS MUST BE SPELLED, WHICH THE DEPTH FORMAT MAKES LOOK POINTLESS.** The rhi cycles a
+depth target iff **ANY** load op is not `Load`, and `DepthStencilAttachment::stencilLoadOp` defaults
+to `DontCare` — so a pass that spells only `depthLoadOp = Load` asks SDL to cycle a target it is also
+loading, which trips `SDL_BeginGPURenderPass`'s own assertion and **HANGS the process rather than
+failing it**. The scene depth format carries no stencil at all, so the fix changes nothing about the
+attachment and everything about the cycle decision. Separately, a `depthLoadOp` left at its `Clear`
+default silently **clears the scene depth** and turns every mask into a full un-occluded silhouette.
+
+**2. THE MASK PASS REUSES `scene.vert` / `scene_skinned.vert` VERBATIM, AND THAT IS WHAT MAKES
+`LessOrEqual` EXACT.** No graphics API guarantees position invariance across two different vertex
+shaders; the failure mode is a **speckled mask that reads as a depth-bias bug** and is maddening to
+attribute. Any future pass that re-rasterises geometry and compares against an existing depth must
+pair with the **same** vertex stage, not an equivalent one. And `LessOrEqual`, never `Less`: `Less`
+rejects every fragment and the mask comes out empty.
+
+**3. `ForwardRenderer` NOW HAS TWO SELF-SUBMITTING PASSES** — `renderShadowMap` and
+`renderSelectionMask` — and both take no `Frame` for the same reason: `Frame`'s constructor is
+private with exactly two friends and `renderer.hpp` is frozen. **A third maker of `Frame`s is never
+the answer.** `renderSelectionMask` additionally sets **viewport and scissor** to the drawn sub-rect,
+which `renderShadowMap` correctly does not: its texture has no margin and the mask's has, and with
+the default full-target viewport the mask is silently rescaled — **invisible in every test whose
+`drawExtent` equals its `textureExtent`**, which is every `quantum = 1` target.
+
+**4. THE SELECTION'S "HAS GEOMETRY" QUESTION HAS ONE ANSWER, `buildSelectionMaskSet`**, consumed
+twice per tick — by the mask and by the point marker. `buildSelectionOverlay` no longer resolves
+bounds and no longer takes a `MeshBoundsLookup*`; `localBoundsFor` keeps its **two** consumers
+(`pickEntity`, the bounds walk). **`BoxEdge`, `BOX_EDGES` and `appendBoxEdges` are gone from
+`editor/`** — `engine/render/src/debug_draw.cpp` has its own unrelated copy and it stays, which is
+why the "the box is gone" gate grep must be **scoped to `editor tests` AND comment-stripped**: the
+migration prose in `scene_bounds.hpp` and `selection_overlay_test.cpp` legitimately names the deleted
+symbol.
+
+**THE BAND IS `2 * radius` PIXELS WIDE, NOT `2r + 1`** — the spec and the plan both said `2r + 1`.
+The tap neighbourhood in x is exactly `{c − r, c, c + r}`, so across a transition between texels `k`
+and `k + 1` the band is `k + 1 − r … k + r`: **r inside the silhouette and r outside**. Measured at
+radius 1, 2, 4 and 8 by `OG3`.
+
+**AND `MaterialParams{}` IS NOT THE RENDERER'S DEFAULT MATERIAL.** The struct defaults
+`metallicFactor` to glTF's `1.0`, and *a metal with no environment to reflect renders near-black
+under analytic lights* — so a test quad built from `MaterialParams{}` **is** drawn and is
+byte-identical to the background, which makes any colour assertion over it vacuous. Start from
+`DEFAULT_MATERIAL_PARAMS`.
+
+**TWO TEST-TIER TRAPS, BOTH OF WHICH LOOK LIKE PASSING TESTS.** `buildRenderView` walks
+`each<Transform, MeshRenderer>` in **EnTT's storage order** while `buildSelectionMaskSet` walks the
+**selection**, so comparing the two builders' output BY POSITION asserts that two unrelated orders
+agree — match by a key and `REQUIRE` its uniqueness. And **a `-ts=` filter selects TEST SUITES**,
+which this tree has none of: `-ts="*selection outline*"` selects zero cases and reports
+`Status: SUCCESS!`. Use `-tc=`, and read the `test cases:` line either way.
+
+**INV-7: THIS TASK ADDED NO `DebugDraw` PRODUCER**, so E.1.2's shared-batch wall is **still**
+E.2.3's to hit against `I112`.
+
+**A UV THAT ADDRESSES A SUB-RECT NEEDS TWO DIFFERENT FAR BOUNDS, AND CONFUSING THEM DRAWS A BAND
+ALONG THE FRAME EDGE.** `tonemapSourceUvMax` returns the drawn rect's **exclusive** far edge, which
+is right for a fullscreen triangle's far corner and **wrong as a clamp**: under Nearest filtering the
+texel a uv names is `floor(uv · extent)`, and `floor((drawW / texW) · texW) == drawW` is the **first
+cleared MARGIN texel**. The review round found the outline clamping there, reading 0 against a
+silhouette of 1 and lighting the right and bottom edges — 140 of 140 rows and 200 of 200 columns on
+the editor's own 200x140-in-256x192, **0 of each at `quantum = 1`**. A clamp bound must be the last
+drawn texel's **centre**, `(drawExtent − 0.5) / textureExtent`
+(`detail::selectionOutlineClampUvMax`), and it is a DISTINCT quantity from the vertex stage's, with
+its own name in the HLSL (`uUvClampMax`) so the two cannot be respelled into one. **And the case that
+guards it must run on a MARGINED target**: `drawExtent == textureExtent` makes the bound
+unobservable, because the hardware's own `ClampToEdge` answers correctly there — the same blindness
+D10 names for the viewport, one function over.
+
+**THE MASK MIRRORS `draw()`'s FRUSTUM CULL, WITH `draw()`'s OWN RESOLVED FRUSTUM.** "An off-screen
+instance writes to no texel" is FALSE as a reason to skip it: `RenderView::cullingEnabled` defaults
+**true**, `buildRenderView` never clears it, and `draw()` culls on the **cooked AABB**, so an
+instance whose bounds are invalid or smaller than its triangles is dropped from the picture while
+still projecting on screen. `draw()` publishes its resolved `(frustum, culling)` pair and
+`renderSelectionMask` reads it — a mirror, never a second extraction, because the mask pass has no
+camera and a second gate would be a second source of truth. **Any future pass that re-draws a subset
+of the forward pass's instances inherits this**, and it errs safe: an instance `draw()` drops is
+dropped there too.
+
+**THE SABOTAGE MATRIX LEFT FOUR HOLES, EACH MEASURED AND EACH STILL OPEN.** (1) Drawing `primary`
+BEFORE `secondary` reddens nothing — `OG4`'s overlap subcase uses two **adjacent** quads, not two
+covering one texel, so nothing in the tree covers "primary last". (2) Flipping the outline sampler to
+`Linear` reddens nothing, because every tap lands on a texel **centre** by construction, where
+bilinear weights are 1 and 0 — the band's exactness rests on where the taps land, not on the filter.
+(3) Pairing `selection_mask.frag` with `shadow.vert` reddens nothing **on Metal**: `shadow.vert`'s
+cbuffer is one `float4x4` deliberately shaped like `scene.vert`'s `uMvp` and sits at offset 0 of the
+same pushed block, and the mask stage reads none of its five inputs. (4) Deleting
+`selectionMaskTexture` from `ForwardRenderer`'s move constructor is invisible to the **whole** binary,
+because the texture is allocated lazily on the first pass and every move in the tree happens at
+construction — a case that moves a renderer AFTER a mask pass would close it.
+
+### E.1.3 — View-axis gizmo (MERGED, PR #94 `6fb323c`, + PR #95 `0ab204d`) — the compass, and a projection mode
 
 **The viewport has a corner compass and an orthographic lens.** Six depth-sorted labelled balls on a
 ring, a 0.25 s two-angle smoothstep snap about the unchanged pivot, and a centre badge that toggles
@@ -102,8 +212,12 @@ until the code-review round) — `:1298` and
 `:1336` are the **rotation ring**, `:2696` the behind-camera early return; `mScreenFactor` and
 `ComputeCameraRay` are projection-agnostic, so handle sizing and hit-testing were already correct.
 **A consequence with teeth: `gizmoOriginBehindCamera`'s mirrored second test MASKS a broken first
-one** — seed `S6` reddens `PK14` and `VP5` and leaves `G18` green, structurally. Keep the second test
-unconditional; in ortho it is a stricter near-plane cut of our own, not dead code.
+one** — seed `S6` reddens `PK14` and `VP5` and leaves `G18` green, structurally. **That second test is
+now GATED ON `Perspective` (PR #95), which is the OPPOSITE of what this block said until the manual
+validation pass ran**: E.1.3 shipped it unconditional, calling ortho "a stricter near-plane cut of our
+own"; `0.001` is calibrated against a VIEW-SPACE depth and ortho's `clip.z` is a NORMALISED one, so
+the same constant reached ~1.0 world units there and suppressed the gizmo outright. The full account
+is under the validation debt below.
 
 **`a + (b − a)` IS NOT `b`, AND AN ANIMATION THAT MUST LAND ON A BOUNDARY MUST HOLD ITS ENDPOINT.**
 The snap recomputed its landing pose as `start + delta` and landed an ulp off `−MAX_PITCH`; the
@@ -278,7 +392,7 @@ miniaudio; `A38` is covered only by validation row 9. Full detail in `docs/10`.
 | **Phase 2** — Editor | **COMPLETE, gate met 2026-08-02.** All six epics closed and macOS-validated; Windows/Linux rows pending for every task (`editor/VALIDATION.md`). Gate artifact: `samples/phase-2-editor-scene/` — data, deliberately not `add_subdirectory`'d. |
 | **Phase 3** — Asset Pipeline & 3D Content | **OPEN.** **All seven epics CLOSED in code** — 3.1–3.6, and 3.7 with 3.7.1 + 3.7.2 merged and macOS-validated and **3.7.3 merged (PR #91)**. What is left is the gate below and the validation debt. Per-task detail in `docs/10`. |
 | **Phase 3 gate** | Drop a rigged glTF/FBX in → PBR materials + shadows + a playing animation + **an audible sound**. The audible half exists in code as of 3.7.2 and **has not been validated on any platform** — 3.7.2's macOS pass ticked 47 of 53 records and left the 6 that need ears open. |
-| **Phase E** — Editor Experience | **OPEN. E.1.1 merged (PR #92 `15bf58b`), E.1.2 merged (PR #93 `d91eab1`), E.1.3 merged (PR #94 `6fb323c`); 21 tasks remain, planning only.** Inserted between 3 and 4; six epics, 24 tasks in `docs/tasks/phase-E.md`. Viewport legibility (E.1), lighting & environment (E.2), inspector & context routing (E.3), project/scene/asset management (E.4), content-creation UX (E.5), shell identity (E.6). **E.1.1 is macOS-validated** — 8 of 10 rows PASS on 2026-09-03, 2 partial for structural reasons (the sample installs no billboard atlas, so `S21`'s picture half is not executable with it; Tracy's CLI exports zones but not plots). **E.1.2 is macOS-validated** — 8 PASS / 2 PARTIAL / 1 NOT EXECUTABLE on 2026-09-04. **E.1.3 is macOS-validated** — 11 PASS / 1 PARTIAL / 2 NOT EXECUTABLE / 1 NOT RUN on 2026-09-05; the pass found the ortho gizmo-suppression defect, fixed in PR #94's follow-up (PR #95, `0ab204d`). Windows and Linux unvalidated, as everywhere. |
+| **Phase E** — Editor Experience | **OPEN. E.1.1 merged (PR #92 `15bf58b`), E.1.2 merged (PR #93 `d91eab1`), E.1.3 merged (PR #94 `6fb323c`, + PR #95 `0ab204d`), E.1.4 COMPLETE IN CODE and unmerged on `feat/E.1.4-silhouette-selection-outline`; 20 tasks remain, planning only.** Inserted between 3 and 4; six epics, 24 tasks in `docs/tasks/phase-E.md`. Viewport legibility (E.1), lighting & environment (E.2), inspector & context routing (E.3), project/scene/asset management (E.4), content-creation UX (E.5), shell identity (E.6). **E.1.1 is macOS-validated** — 8 of 10 rows PASS on 2026-09-03, 2 partial for structural reasons (the sample installs no billboard atlas, so `S21`'s picture half is not executable with it; Tracy's CLI exports zones but not plots). **E.1.2 is macOS-validated** — 8 PASS / 2 PARTIAL / 1 NOT EXECUTABLE on 2026-09-04. **E.1.3 is macOS-validated** — 11 PASS / 1 PARTIAL / 2 NOT EXECUTABLE / 1 NOT RUN on 2026-09-05; the pass found the ortho gizmo-suppression defect, fixed in PR #94's follow-up (PR #95, `0ab204d`). **E.1.4 has a validation page written and NOT YET RUN on any platform.** Windows and Linux unvalidated, as everywhere. |
 | **Phase E gate** | Open a project and land in the scene you were last editing, on a lit grid floor under a sky; create a Cube from the menu, drop a material on it and see it shade; aim a spot light with a visible gizmo; rename, move and delete assets without leaving the editor. Gate artifact: `samples/phase-E-editor/`. |
 
 ### Engine layers, in dependency order
@@ -300,11 +414,37 @@ miniaudio; `A38` is covered only by validation row 9. Full detail in `docs/10`.
   `PRIVATE aero::profiling`, and **never `aero::scene_internal`** (which carries `EnTT::EnTT`
   INTERFACE by design). Folding its walk into `engine/audio` would put **EnTT on the link line of every
   binary that links audio**, including the Phase 5 runtime.
-* **`/editor`** is **27 `.hpp`/`.cpp` pairs** since E.1.3's `view_axis_gizmo`; `/tools` links `aero::assets` and `aero::editor_core`
+* **`/editor`** is **27 `.hpp`/`.cpp` pairs** since E.1.3's `view_axis_gizmo` (E.1.4 adds none); `/tools` links `aero::assets` and `aero::editor_core`
   through `aero_cooker`, which is legal because `tools/` is enumerated by neither half of the golden
   rule.
 
 ### Standing invariants that govern new work
+
+**A RENDER TARGET'S DEPTH IS ONLY READABLE IF IT WAS STORED, AND NOTHING CAN DETECT THAT IT WAS NOT.**
+E.1.4 added `RenderTargetConfig::depthStore` and `PostProcessConfig::sceneDepthStore`, both defaulting
+to today's `Clear` → `DontCare`. On a tile-based deferred renderer — **every Apple Silicon Mac** —
+`DontCare` means the tile's depth is never written back, so a later `LoadOp::Load` reads **GARBAGE,
+not stale-but-plausible values**: an EMPTY result on Metal and a CORRECT one on D3D12/Vulkan, which is
+the worst failure shape there is. **And a pass attaching an existing depth with `LoadOp::Load` must
+spell BOTH load ops**: the rhi cycles a depth target iff ANY load op is not `Load`, `stencilLoadOp`
+defaults to `DontCare`, and the combination trips `SDL_BeginGPURenderPass`'s own assertion and **HANGS
+the process** rather than failing it.
+
+**A PASS THAT RE-RASTERISES GEOMETRY AND COMPARES AGAINST AN EXISTING DEPTH MUST PAIR WITH THE SAME
+VERTEX STAGE, NOT AN EQUIVALENT ONE.** No graphics API guarantees position invariance across two
+different vertex shaders; the failure mode is a **speckled mask that reads as a depth-bias bug**.
+E.1.4's mask pass therefore reuses `scene.vert` / `scene_skinned.vert` verbatim and pays
+`GpuPerObject`'s 208 bytes rather than a `Mat4`. It also uses `CompareOp::LessOrEqual`, never `Less`:
+`Less` rejects every fragment of geometry whose depth is already in the buffer, and the mask comes out
+empty.
+
+**A PASS WHOSE TARGET HAS MARGIN MUST SET VIEWPORT AND SCISSOR, AND NO `quantum = 1` TEST CAN SEE
+THAT IT DID NOT.** `renderShadowMap` sets neither, correctly, because its texture has no margin.
+`renderSelectionMask`'s does: with `beginRenderPass`'s default full-target viewport the mask maps
+across the ALLOCATION while the resolve maps across the DRAWN rect, so the result is silently rescaled
+and slides as the panel is resized. Every convenient test target is `quantum = 1`, where
+`drawExtent == textureExtent` and the bug is invisible; `OG7` uses a 200x140 draw inside a 256x192
+allocation and is the only case that can catch it.
 
 **THE RHI GREW EXACTLY TWO CALLS AT E.1.1, AND EACH HAS ONE SENTENCE THAT VOIDS SILENTLY.**
 `Device::recordBufferUpload` **replaces the WHOLE buffer** — everything past `data.size()` is
@@ -470,23 +610,38 @@ Read totals from **doctest's own `filters:` line**, never from a `grep -c` of ca
 count on its own page goes stale, and adding one task's delta to another task's baseline is exactly the
 arithmetic that produces a confident wrong number.
 
-At E.1.3's gate: **`ctest -N` 172** (tools-ON, both presets, **unmoved** since E.1.2); doctest across
-**seven** binaries **1250 / 1780 / 155 / 34 / 29 / 7 / 28** (the code-review round added `VA19`,
-`I118` and `I119`). **E.1.3 repeats E.1.1's and E.1.2's
-signature and it is the INVERSE of 3.7.3's: the doctest totals MOVE while `ctest -N` does NOT** —
-`aero_editor_shell_test` 1748 → 1780 (+32) and `aero_editor_imgui_test` 149 → 155 (+6), while
-**`aero_tests` is UNMOVED at 1250, which is the check that no engine file was touched**. The eight
-guard counts at that gate: math **464**, platform **85**, rhi **149**, scene **85**, golden-rule
-**151**, project-no-delete **A=6/B=76**, audio **11/3/55**, probes **6/57**. **The two reduced
-configurations were re-measured at E.1.3 and 3.7.3's remembered `80 / 93` is HALF WRONG: they read
-`159` (shader-tools-OFF) and `93` (reflect-tools-OFF).** Compare the entry **SETS**, not the totals —
-shader-tools-OFF removes exactly the 13 `shaderc.*` entries, reflect-tools-OFF exactly the 79
+At E.1.4's gate, measured on both presets **on the merged tree** (E.1.3 is in): **`ctest -N` 172,
+UNMOVED**; doctest across **seven** binaries **1294 / 1781 / 159 / 34 / 29 / 7 / 28** (`aero_tests`,
+`aero_editor_shell_test`, `aero_editor_imgui_test`, `aero_scene_serialize_test`,
+`aero_editor_inspector_test`, `aero_reflect_meta_test`, `aero_reflect_json_test`). **E.1.4 repeats
+E.1.1's, E.1.2's and E.1.3's signature and it is the INVERSE of 3.7.3's: the doctest totals MOVE while
+`ctest -N` does NOT** — `aero_tests` 1250 → 1294 (+44: `SO1`–`SO14`, `OG1`–`OG18`, `SQ1`–`SQ12`, the
+last of each added by the review round), `aero_editor_imgui_test` 149 → 159 (+4 `I120`–`I123` from
+E.1.4, +6 `I114`–`I119` from E.1.3) and `aero_editor_shell_test` 1748 → 1781 (+33 from E.1.3, while
+**E.1.4's own contribution to that binary is ZERO because four cases left and four arrived**) — a
+MEASUREMENT, and exactly the kind of delta that must never be predicted arithmetically, because
+`SUBCASE` structure makes the sum a guess.
+
+**AND `origin/main`'S OWN RECORDED SHELL TOTAL WAS ONE STALE, WHICH IS THE POINT OF THE PARAGRAPH
+ABOVE.** It said `1780`, measured at PR #94's gate; **PR #95 then added `G19`** and nobody re-measured,
+so the tree at `a048f14` was already **1781**. Read the binary, never the block.
+
+The eight guard counts on the merged tree: math **469**, platform **86**, rhi **152**, scene **86**,
+golden-rule **154**, project-no-delete **A=6/B=76**, audio **11/3/55**, probes **6/57**. **The two
+reduced configurations read `159` (shader-tools-OFF) and `93` (reflect-tools-OFF)** — the same numbers
+E.1.3 re-measured, and 3.7.3's remembered `80 / 93` is HALF WRONG. Compare the entry **SETS**, not the
+totals — shader-tools-OFF removes exactly the 13 `shaderc.*` entries, reflect-tools-OFF exactly the 79
 `reflect-gen.*` plus four doctest binaries, **nothing is added in either**, and all **70 `cooker.*`
-entries are present in all three**, which is the property that check is actually about. **`check-math-boundary.sh` counts
+entries are present in all three**, which is the property that check is actually about.
+**`check-math-boundary.sh` counts
 `git ls-files`, so it reads a STALE number until new files are `git add`ed** — stage first, then
 measure. A moved `ctest -N` on a task like that means a CMakeLists copied
 from the wrong template. Both reduced configurations
-must be configured **FRESH with `-G Ninja`** — and, since 3.7.3, **with
+must be configured **FRESH with `-G Ninja`**, **with an explicit
+`-DCMAKE_TOOLCHAIN_FILE=<src>/vcpkg/scripts/buildsystems/vcpkg.cmake`** — the `base` preset supplies it
+and a raw `cmake -S . -B …` does not, which fails at `find_package(spdlog)` in
+`engine/core/CMakeLists.txt:16` before it reaches anything this configuration is about — and, since
+3.7.3, **with
 `-DCMAKE_EXPORT_COMPILE_COMMANDS=ON`**: only the presets set it, so a raw `cmake -S . -B …` writes no
 `compile_commands.json` and `boundary-probes.probe_compile_line` skips. It reports that skip honestly
 (exit 77 → ctest "Skipped") rather than passing, but a skipped case measures nothing — `CMAKE_GENERATOR` enters the shadercross bootstrap's
@@ -543,6 +698,20 @@ CI genuinely compiles and runs every `SP`/`MX`/`SY`/`SA`/`DV` case on all three 
 spatializer, the mixer, the system and the bridge **are** cross-lane covered — and **no lane produces a
 sound**, because CI opens the null backend only. **LSan runs on the Linux Debug lane alone**, which
 makes that page's Linux row matter more than most.
+
+**E.1.4'S PAGE IS WRITTEN AND HAS NOT BEEN RUN ON ANY PLATFORM.** Its eleven rows are the whole of
+its remaining risk, and several are the ONLY cover their seed has anywhere: **row 1** (a REAL asset
+with a fat cooked AABB — the deliverable's headline claim, judged against something other than a
+`Sphere`), **row 3** (the palette and the primary/secondary read at a glance — sabotage row 20 is a
+deliberate NON-finding, because restating the two colours as `IM_COL32` literals one byte off is
+invisible to every automated tier), **row 4** (HiDPI legibility, and the FIRST time E.1.1's
+thick-line handoff can be answered at all, because an edge-detect band is the first overlay in the
+tree that can control its own apparent thickness), **row 6** (the depth store-out's cost) and **row
+9** (whether the band slides on a quantum-boundary resize, which `OG7` bounds to +/-1 but cannot
+judge). Everything else this task claims is CI-covered on all three lanes, **including pixels**:
+`OG1`–`OG17` read back band width to the exact integer, both colours to the exact byte, occlusion,
+the box-corners-bare proof, D10's margined target, the alpha rule, cull mirroring, the skinned arm
+and per-frame clearing.
 
 **3.7.3 adds NO validation page and that is the deliberate 2.1.2 precedent** — 2.1.2 and 2.5.2, the
 two page-less tasks, are both pure test/guard infrastructure, and nothing in a guard task needs ears,
@@ -626,25 +795,33 @@ binary is `aero_sample_phaseE_debug_draw`** — `phaseE`, no underscore before t
 
 ### Next
 
-**Phase E is the open front. E.1.3 is MERGED (PR #94, `6fb323c`) AND macOS-VALIDATED, with one
-defect found by that pass and fixed (PR #95, `0ab204d`)** — thirteen commits, the full
-local gate green on both presets and both reduced configurations, the 18-seed sabotage matrix run,
-a review round closed (one blocking finding: the widget's press reached ImGuizmo), and a validation
-page written but **NOT RUN on any platform**. E.1.2 is merged AND macOS-validated (8 PASS / 2 PARTIAL / 1 NOT
-EXECUTABLE, 2026-09-04). **Windows and Linux validation remain outstanding**, as everywhere. The
-epic's remaining tasks are **E.1.4** and **E.1.5** (the gizmo restyle), and E.1.3 answered "which way
-is up", which E.1.2 deliberately did not.
+**Phase E is the open front. E.1.4 is COMPLETE IN CODE on `feat/E.1.4-silhouette-selection-outline`
+and NOT MERGED** — fifteen commits plus the `origin/main` merge, the code-review round closed, the
+22-seed sabotage matrix run, the full local gate green on both presets and both reduced
+configurations, and a validation page written but **NOT RUN on any platform**. It awaits a PR.
+**E.1.3 is MERGED (PR #94, `6fb323c`) AND macOS-VALIDATED, with one defect that pass found already
+fixed (PR #95, `0ab204d`)** — thirteen commits, an 18-seed sabotage matrix, a review round closed
+(one blocking finding: the widget's press reached ImGuizmo), and **three records on its page still
+open**. E.1.1 and E.1.2 are merged AND macOS-validated (E.1.2: 8 PASS / 2 PARTIAL / 1 NOT EXECUTABLE,
+2026-09-04). **Windows and Linux validation remain outstanding**, as everywhere. The epic's one
+remaining task is **E.1.5** (the gizmo restyle), and **E.1.4 closes the epic's viewport-legibility
+spine**.
 
-**The spine, unchanged except where E.1.2 and E.1.3 moved it:** **E.2.1 (`Environment`) blocks E.2.2,
-E.2.4 and E.4.5**; **E.2.3 (light gizmos) is unblocked** — and it inherits two things by name, the
-**shared-batch empty-assertion wall** against `I112`, and a **billboard-pipeline depth bias**, which
-is the only topology where a bias actually works. **E.1.5 now inherits the palette's KEY as well as
-its colours** (`Axis`, `AXIS_COUNT`, `axisColorSrgbBytes`) and must not touch `ImGuizmo::Style` before
-it starts; **E.3.1** inherits the same for its `Vec3`/`Quat` rows. **E.5.1 is an S-sized fix for a
-confirmed defect and is independent of everything**, so it can land at any point. **E.5.2 owns the
-coplanar-geometry problem** — it creates the first `Plane` at `y = 0`, and E.1.2 established that a
-rasterizer bias cannot be the answer for lines. **E.2.x inherits ortho specular**:
-`CameraView::eyePosition` is wrong under a parallel projection, as it is in Unity.
+**The spine, unchanged except where E.1.2, E.1.3 and E.1.4 moved it:** **E.2.1 (`Environment`) blocks
+E.2.2, E.2.4 and E.4.5**; **E.2.3 (light gizmos) is unblocked** — and it inherits two things by name,
+the **shared-batch empty-assertion wall** against `I112` (neither E.1.3 nor E.1.4 added a
+`DebugDraw` producer, so that wall is untouched), and a **billboard-pipeline depth bias**, which is
+the only topology where a bias actually works. **E.1.5 now inherits the palette's KEY as well as its
+colours** (`Axis`, `AXIS_COUNT`, `axisColorSrgbBytes`) and must not touch `ImGuizmo::Style` before it
+starts; **E.3.1** inherits the same for its `Vec3`/`Quat` rows. **E.5.1 is an S-sized fix for a
+confirmed defect and is independent of everything**, so it can land at any point — and E.1.4
+deliberately reproduced that defect rather than fixing it in passing, because a mask that disagreed
+with the picture is the one direction INV-1 forbids. **E.5.2 owns the coplanar-geometry problem** —
+it creates the first `Plane` at `y = 0`, and E.1.2 established that a rasterizer bias cannot be the
+answer for lines. **E.2.x inherits ortho specular**: `CameraView::eyePosition` is wrong under a
+parallel projection, as it is in Unity. **8.2.1 inherits the alpha-tested mask cutout** from E.1.4's
+D6, on the same terms it already inherits the alpha-tested shadow caster: the mask stage has no UVs
+and cannot discard, so a `MaterialAlpha::Mask` instance outlines as a solid quad and latches one WARN.
 
 **Phase 3 remains OPEN behind it, on its gate and its validation debt, and Phase E does not close
 either.** 3.7.1 (PR #88 `4892e65`) and 3.7.2 (PR #89 `b398d17`) are merged and macOS-validated;

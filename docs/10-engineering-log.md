@@ -13661,3 +13661,307 @@ deliberately**: latching an image origin to make the accessors screen-space woul
 reported rect a staleness argument, which is precisely what D9 avoided by making it pure. The test
 now **asserts** the disjointness instead of relying on it. **A later task that adds a third rect to
 `overlayOwnsPress` inherits this trap.**
+
+### E.1.4 — Silhouette selection outline — the box is gone
+
+**The selection highlight stops being a box.** The selected instances are drawn again, with the
+**same vertex shaders** the forward pass used and the **same per-instance cull mode**, into an
+`R8Unorm` mask that is **depth-tested with `CompareOp::LessOrEqual` against the depth the forward
+pass just wrote** — so the mask is exactly the pixels you can see. A fullscreen nine-tap edge detect
+then composites a band over the **already-resolved LDR image**, after the tonemap, in sRGB display
+bytes. Three levels: `0.0` nothing, `0.5` secondary, `1.0` primary.
+
+**Nine commits. 7 new files; 16 edited source/header files, plus 4 CMakeLists and 4 docs.**
+(The plan predicted "7 new / 13 edited"; 16 is the measured number, from
+`git diff --name-status` against the branch point.) Two new HLSL fragment stages and **zero** new vertex
+stages; four defaulted growths across `render_target.hpp` / `post_process.hpp`; a new public
+`render::SelectionOutline` plus its private packer; four pipelines and one lazily-allocated `R8Unorm`
+texture on `ForwardRenderer`; a new pure `buildSelectionMaskSet` in `scene_renderer.cpp`; the editor
+rewire; and the deletion of `BoxEdge`, `BOX_EDGES` and `appendBoxEdges` from `editor/`. **L, as
+estimated.** No new dependency, no `find_package`, no submodule move, no vcpkg baseline change, no
+link-line change anywhere, no new `editor/src/*.cpp`, no sample, no component, no scene-format
+change, no cooker-version bump. **`ctest -N` unmoved at 172**; `aero_tests` 1250 → 1292 (+42),
+`aero_editor_imgui_test` 149 → 153 (+4), `aero_editor_shell_test` **1748 → 1748**, which is a
+measurement rather than an arithmetic coincidence worth trusting: four cases left and four arrived.
+
+**INV-7: this task added NO producer to `render::DebugDraw`.** E.1.2's shared-batch wall does not
+apply, `I108`–`I112` are green with byte-unchanged assertions, and **E.2.3 still inherits that wall
+against `I112`**.
+
+#### The traps, each with its measurement
+
+**`stencilLoadOp` LEFT AT ITS DEFAULT HANGS THE PROCESS, AND THE DEPTH FORMAT MAKES THE FIX LOOK
+POINTLESS.** The rhi's cycle rule is *cycle iff ANY load op is not `Load`*
+(`sdl_gpu_backend.cpp:2263-2265`), and `DepthStencilAttachment::stencilLoadOp` defaults to
+`DontCare` — so a mask pass that spells only `depthLoadOp = Load` asks SDL to **cycle** a depth
+target it is also being told to **load**. `SDL_BeginGPURenderPass` asserts on exactly that
+("Cannot cycle depth target when load op or stencil load op is LOAD!") and the process **hangs**
+rather than failing: the first `OG` run sat for ten minutes with one assertion line in its log. The
+auto-picked scene depth format carries no stencil at all, so `stencilLoadOp = rhi::LoadOp::Load`
+changes nothing about the attachment and everything about the cycle decision. **Any future pass
+attaching an existing depth attachment with `LoadOp::Load` must spell BOTH load ops.**
+
+**THE BAND IS `2 * radius` PIXELS WIDE, NOT `2 * radius + 1`.** The spec and the plan both said
+`2r + 1`; it is `2r`, measured at radius 1, 2, 4 and 8 by `OG3` and derivable in one line: the tap
+neighbourhood in x is exactly `{c - r, c, c + r}`, so with a mask transition between texels `k` and
+`k + 1` the pixels satisfying `mn < mx` are exactly `k + 1 - r … k + r` — **r inside the silhouette
+and r outside**. Three comments this task had already written were corrected in the commit that
+measured it. The **shader is unchanged**: the arithmetic was right and the sentence describing it was
+not.
+
+**`MaterialParams{}` IS NOT THE RENDERER'S DEFAULT MATERIAL, AND THE DIFFERENCE IS INVISIBLE.** The
+struct defaults `metallicFactor` to glTF's `1.0`; `DEFAULT_MATERIAL_PARAMS` is
+`{.metallicFactor = 0.0F}` because *a metal with no environment to reflect renders near-black under
+analytic lights*. A GPU case that builds a material with `createMaterial({.doubleSided = true}, {})`
+therefore draws a quad that **is** on screen and is byte-for-byte the background — so a colour
+assertion over it passes for the wrong reason. `OG10` reddened on exactly that and now starts from
+`DEFAULT_MATERIAL_PARAMS`.
+
+**`create()` DESTROYS ITS THREE SHADER HANDLES BEFORE THE `ForwardRenderer` OBJECT EXISTS.**
+`forward_renderer.cpp:536-538` destroys `vs`/`vsSkinned`/`fs`; the object is constructed at `:555`
+and `createShadowResources` runs at `:598`. So `createSelectionMaskResources`, which is a member and
+runs beside it, **loads its own three** — which is what `createShadowResources` already does, not a
+new pattern. The spec's "from shaders `create()` has already loaded" was impossible as written.
+
+**A `depthLoadOp` LEFT AT ITS `Clear` DEFAULT SILENTLY CLEARS THE SCENE DEPTH** and turns every mask
+into a full un-occluded silhouette — the exact defect D1 exists to prevent, produced by a defaulted
+field rather than by a wrong one. And **`LessOrEqual`, never `Less`**: the mask re-rasterises
+geometry whose depth is already in the buffer, so `Less` rejects every fragment and the mask comes
+out empty.
+
+**`Zero`/`One` ON THE ALPHA CHANNEL, OR THE VIEWPORT GOES SEE-THROUGH.**
+`SrcAlpha`/`OneMinusSrcAlpha` on alpha would write 0 wherever the composite outputs a transparent
+fragment — **most of the image** — and the editor's `ImGui::Image` alpha-blends this texture over the
+panel background. `OG9` scans the whole buffer rather than a sample.
+
+**VIEWPORT AND SCISSOR ON THE MASK PASS ARE NOT OPTIONAL, AND ARE INVISIBLE IN EVERY `quantum = 1`
+TEST.** `renderShadowMap` sets neither, correctly, because its texture has no margin; the mask
+texture's does. With the default full-target viewport the mask maps across the **allocation** while
+the resolve maps across the **drawn rect**, so the outline is silently rescaled and slides as the
+panel is resized. `OG7` is the only case that can see it: a 200×140 draw inside a 256×192 allocation,
+compared against a real `quantum = 1` render at the same drawn size.
+
+**TWO TEST-ORDER FINDINGS, AND BOTH LOOK LIKE PASSING TESTS.** `buildRenderView` walks the World
+through `each<Transform, MeshRenderer>`, whose order is **EnTT's storage order**, while
+`buildSelectionMaskSet` walks the **selection**. A positional comparison of the two builders' output
+is asserting that two unrelated orders happen to agree — `SQ2` and `SQ12` both reddened on it, and
+both now match by `(model, submesh)` with `REQUIRE(matches == 1)` making the key's uniqueness a
+checked property rather than an assumption. And **96 rounds UP to 128 at `quantum = 64`**, so
+`OG16`'s small step allocates 128×128 rather than 128×96.
+
+**`rhi::Extent2D` CARRIES NO `operator<<`,** so a whole-struct `CHECK(a == b)` prints `{?} == {?}` on
+the one run that matters. Every extent assertion in the new GPU tier compares the two axes
+separately.
+
+**A `-ts=` FILTER SELECTS TEST SUITES, NOT TEST-CASE NAMES.** This tree uses no doctest test suites,
+so `-ts="*selection outline*"` selected **zero** cases and reported `Status: SUCCESS!` — the plan's
+own gate commands are written with `-ts=`. Use `-tc=`, and read the `test cases:` line either way.
+
+#### What was deliberately left out
+
+D20's eight non-goals hold: no alpha-tested cutout, no faint hidden portion, no preview or thumbnail
+outline, no viewport toggle, no thickness or colour UI, no icons for lights, no anti-aliasing, no
+instanced or indirect mask draws. **Two handoffs this task creates by name:**
+
+* **The faint hidden portion** (approach C, the Unreal-like double mask). The encoding has room — 3
+  of 256 levels are used — and it was rejected for now rather than dismissed: it doubles the mask
+  geometry and needs its own rule for the seam where an object crosses behind an occluder, which is a
+  design question this task should not answer in passing.
+* **The alpha-tested mask cutout** (D6). The mask stage has no UVs and must not discard, so a
+  `MaterialAlpha::Mask` instance is masked as a **solid quad** and the outline traces the quad. It
+  latches one WARN per renderer, exactly as `renderShadowMap` does for casters. **8.2.1 owns
+  alpha-tested passes and should take this too.**
+
+Also deliberately absent: the mask pass does **no frustum culling** (the set is capped at 256, and
+every cull predicate is one more thing that can disagree with `draw()`'s), fires **no
+`strayPalette`/`SkinningCap` WARN** (`draw()` owns every one of those latches and fires them from
+there only), binds **no material texture** and pushes **no material block** (the stage has neither),
+and does **not** increment `pipelineBinds` (that counter is `draw()`'s 3.4.1 observable and moving it
+would break existing assertions).
+
+#### Two procedural notes
+
+**The id survey needs all three spellings, and the obvious repair is worse than the bug.**
+`imgui_layer_test.cpp` writes its ids as `TEST_CASE("editor: … (task E.1.3, I114)")` — preceded by
+`, ` and followed by `)"`, a **third** spelling both documented greps miss. A `\bI[0-9]+\b` sweep
+looks like the fix and **degrades to a literal `b` under BSD/macOS userland**, matching nothing and
+exiting 0: a survey that cannot fail. The working form is
+`grep -oE 'I[0-9]+\)"' … | grep -oE 'I[0-9]+' | sort -u -V | tail`, and it must be run against **every
+open branch head**, not just `origin/main` — E.1.3's ceiling was `I119` when this task branched, and
+E.1.3 merged to `main` while this task was being built.
+
+**The "the box is gone" gate grep must be scoped AND comment-stripped.**
+`engine/render/src/debug_draw.cpp` carries its own unrelated anonymous-namespace `BoxEdge`/
+`BOX_EDGES` for a wire-box helper, so the grep must be scoped to `editor tests`. And even scoped it
+finds three hits on a correct tree — the migration prose this task was required to write, in
+`scene_bounds.hpp`'s corrected comment and `selection_overlay_test.cpp`'s header, both of which
+**must** name the deleted symbol to say where its property went. The gate that means what it says is
+a comment-stripped sweep over `editor` and `tests`, with `debug_draw.cpp` as its anti-vacuity
+control.
+
+#### The code-review round — six findings, six commits, and one of them was drawing a false band
+
+**The round found a BLOCKING defect the whole GPU tier was structurally blind to.** Six findings,
+closed in five commits (findings 3 and 4 share one, and finding 1's fix and its witness are split)
+plus this record, on top of the task's nine — so the branch is **fifteen commits**.
+
+**1. THE CLAMP BOUND WAS OFF BY HALF A TEXEL, AND IT DREW A BAND ALONG THE FRAME EDGE ON THE
+EDITOR'S OWN GEOMETRY.** `tap()` clamped every sample to `tonemapSourceUvMax(drawExtent,
+textureExtent)` — the drawn sub-rect's **exclusive** far edge. Under Nearest filtering the texel a uv
+names is `floor(uv · extent)`, and `floor((drawW / texW) · texW) == drawW`: **the first cleared
+margin texel**, not the last drawn one at `drawW − 1`. A clamped tap therefore read `0` against a
+silhouette of `1`, `mn < mx` held, and the frame edge lit up — the exact picture D9 says cannot
+happen (AC-5). It is **asymmetric**, because the low bound clamps to `0`, which *is* a drawn texel,
+so only the right and bottom edges show it. Measured on the editor's own pair (200x140 drawn in
+256x192): **140 of 140 rows band on the right edge and 200 of 200 columns on the bottom, 676 band
+texels in all — against 0 of each at `quantum = 1`.**
+
+`detail::selectionOutlineClampUvMax` is now a **distinct quantity** from the vertex stage's
+`uUvScale`, which keeps the exclusive form because that is what the fullscreen triangle's far corner
+interpolates to: the bound is `(drawExtent − 0.5) / textureExtent`, which names texel
+`drawExtent − 1`. It **replaces** the packer's `uvMax` field rather than sitting beside it — the
+fragment stage has exactly one use for a far-corner uv, and a second field it never reads would be a
+drift surface with no consumer — so the block stays 48 bytes at the offsets `SO5` pins, and the HLSL
+field is renamed `uUvClampMax` so the two can never be respelled into one. The degenerate arms are
+`tonemapSourceUvMax`'s own: a zero `textureExtent` answers `1.0` rather than dividing by zero, and a
+`drawExtent` past the allocation is clamped to the allocation first.
+
+**2. `OG8` COULD NOT SEE IT, AND THE REASON IS D10's OWN LESSON ONE FUNCTION OVER.** `OG8` ran on
+`AERO_OG_PREAMBLE`'s `quantum = 1` pair, where `drawExtent == textureExtent` — so the clamp is
+unobservable: the hardware's own `ClampToEdge` returns the last drawn texel there and the case passed
+for a reason unrelated to the line under test. **D9 exists BECAUSE the mask texture has a cleared
+margin one texel past the drawn rect**, which is exactly what `VIEWPORT_EXTENT_QUANTUM = 64` gives
+the editor on every frame. `OG7` had applied that lesson to the viewport; `OG8` had not applied it to
+the clamp. The unmargined arm survives as subcase (a) — it covers the hardware clamp — and subcase
+(b) renders a slab covering the whole drawn rect and overhanging all four sides, so every drawn mask
+texel is `1` and **the only thing that can produce a band is a tap reading the margin**. It counts
+band texels over the whole drawn rect and over each edge separately, reads the mask-draw and
+composite counters **first** so a zero means "no band was drawn" rather than "nothing happened", and
+carries a control render whose edges are inside the frame. Seeded against the old bound it reddens at
+676 / 140 / 200 while subcase (a) stays green — which is the measurement the re-pointing exists to
+make.
+
+**3. THE MASK DID NOT MIRROR THE FORWARD PASS'S FRUSTUM CULL, AND THE COMMENT SAYING WHY WAS FALSE.**
+The loop's justification was *"an off-screen instance writes to no texel by definition"*.
+`RenderView::cullingEnabled` **defaults true**, `buildRenderView` never clears it, and `draw()` culls
+on the **cooked AABB**, not on projection — so an instance whose bounds are invalid or smaller than
+its triangles is dropped from the picture while still projecting on screen, the mask draws it, its
+depth test passes against the clear value, and the editor outlines an object that **is not in the
+picture**. That was a second, undocumented deviation from INV-1 beside D6's alpha-masked materials.
+The cull is now mirrored with **`draw()`'s own resolved frustum and gate**, published where `draw()`
+finishes resolving them (after the degenerate-projection disable) and reset to OFF at the top of
+every `draw()`. A mirror rather than a second extraction, deliberately: `renderSelectionMask` has no
+camera of its own, and a second gate would be a second source of truth for one decision — the same
+argument `resolveInstanceDraw` settles for the resolution arms. It errs in the safe direction (an
+instance the forward pass drops is dropped here too), costs one predicate call per instance on a set
+capped at 256, and does not touch `lastCulled`, which is `draw()`'s 3.6.1 observable. **`OG18`**
+asserts it: an instance whose `model` (what the cull reads) and `mvp` (what the vertex stage reads)
+name different places is culled by `draw()` and produces **zero** outline pixels, with the composite
+counter read first; flipping `cullingEnabled` off is the anti-vacuity control and outlines the same
+instance. Against the unmirrored loop it reddens at **1120 band texels**.
+
+**4. A COMMENT STATED THE OPPOSITE OF WHAT THE CODE DOES.** D6's latch block claimed *"the lookup is
+skipped entirely once the latch has fired"*. The material lookup is **unconditional, and correctly
+so** — `bindPipelineFor` needs this instance's `doubleSided` per instance to mirror `draw()`'s cull
+mode (D5); only the WARN is latched. Acting on the comment would have silently stopped the cull
+mirroring. Corrected in place; the code is unchanged.
+
+**5. `renderScene` HAS THREE EXITS PAST ITS GUARD CHAIN AND ONLY TWO CLEARED THE SET.** The
+`!sceneFrame` early return left `selectionMaskSet` populated. Not reachable as a defect today — that
+tick also leaves `renderRequested` false, so the next `renderScene` returns at the guard chain — but
+D12's claim is "built once per tick, consumed, dropped", and `I123`'s source-text half asserted *"the
+clear appears TWICE, once on each path"* **against three exits**, so it could not see the gap. It now
+counts three and places each against its own guard.
+
+**6. `OG6`'s BOX CORNERS WERE A LITERAL, AND AC-24 ASKED FOR THE CATALOG'S BOUNDS.** `BOX_MIN`/
+`BOX_MAX = ±0.5` tracks `makeSphere`'s `RADIUS` only by coincidence: change that constant and `OG6`
+probes the wrong pixels, finds no band there, and **passes**. `aabbCorner` and `primitiveLocalBounds`
+live in `editor/`, which `aero_tests` does not link — but the catalog's own generator does not.
+`engine/render/src/primitives.hpp` is private to `engine/render` and reachable by a relative include,
+exactly as this file already reaches `selection_outline_pack.hpp` and as `render_material_test.cpp`
+already reaches `primitives.hpp` itself, so the box is now **folded over the vertices `makeSphere()`
+actually returns** — the same fold `ForwardRenderer::create` does to build `PrimitiveMesh::bounds`.
+No literal, no link-line change.
+
+**A BUILD TRAP THAT COST A FALSE VERDICT, AND IT IS NOT `git checkout`'s.** Reverting a seeded file
+with `mv file.bak file` **preserves the backup's mtime**, which is older than the `.o` ninja already
+built — so the build reports success and **recompiles nothing**, and the next run is still the seeded
+binary. It read as "the fix does not work". `git checkout -- <file>` writes a fresh file and is safe;
+`mv` and `cp -p` are not. **Read the build log's step count, not its exit code.** Related and
+separate: building the `aero_tests` target alone does **not** rebuild `aero_shaders`, so any seed that
+edits an `.hlsl` needs the shader target built first.
+
+#### The sabotage matrix — 22 seeds, 4 assertion mutants, the `OG2` control
+
+Every seed applied to the committed tree, **read back off the file** before its verdict was trusted,
+built, run against the whole `*selection*` battery (44 cases, under a second on this machine), then
+reverted and re-verified. **Eighteen of the 22 reddened. Four did not, and those four are the
+matrix's product.**
+
+| # | Seed | Predicted | Measured |
+|---|---|---|---|
+| 1 | drop `setViewport`/`setScissor` from the mask pass | `OG7` alone | **`OG7`, `OG8`(b), `OG16`** — the prediction was already wrong at the plan's own tree: `OG16` resizes a `quantum = 64` pair, so it was a second margined case all along, and `OG8`(b) is now a third |
+| 2 | `LessOrEqual` → `Less` | `OG3` `OG4` `OG5` `OG6` | **13 cases** — every case that asserts a band. The mask goes empty |
+| 3 | `LessOrEqual` → `Always` | `OG5` alone | **`OG5` alone**, 4 assertions |
+| 4 | `sceneDepthStore` → `false` in both places | `OG5` on Metal | **`OG5` alone, 4 assertions — and the shape is "occlusion lost", not "mask empty"**: this Apple GPU hands back a `DontCare`d depth that reads as far, so the mask draws UN-occluded. **The editor half is a HOLE**: `I120`–`I123` stay green (153/153) because nothing asserts the editor's picture — the editor's own `sceneDepthStore = true` is covered by the validation page alone |
+| 5 | swap the two `drawBucket` mask values | `OG4` | **`OG4` alone**, 6 assertions |
+| 6 | `radiusPixels + 1` in the texel step | `OG3` | **`OG3` alone** — the band reads `2r + 2` |
+| 7 | drop the `clamp` in `tap()` | `OG8` | **`OG8`(b) and `SO9`** — 676 / 140 / 200, the direct witness for findings 1 and 2. **Before the re-pointing this row was green** |
+| 8 | `srcAlphaFactor`/`dstAlphaFactor` → `SrcAlpha`/`OneMinusSrcAlpha` | `OG9` | **`OG9` alone** — 1680 transparent texels of 49 152 |
+| 9 | all four mask pipelines `CullMode::None` | `OG10` | **`OG10` alone** |
+| 10 | drop the `has<Transform>` clause | `SQ3` | **`SQ3` alone** |
+| 11 | advance the cap counter for dead handles | `SQ6` | **`SQ6` alone** |
+| 12 | draw `primary` before `secondary` | `OG4`'s overlap subcase | **NOTHING — A HOLE.** `OG4`'s overlap subcase uses two **adjacent** quads sharing a texel boundary, not two that cover the same texel, so the draw order never decides a value. **No test in the tree covers "primary last"** |
+| 13 | sampler `Nearest` → `Linear` | `OG3` | **NOTHING — A HOLE, and the reason is worth keeping.** Every tap lands on a texel CENTRE by construction (`uv = (c + 0.5)/extent`, offsets are exact texel multiples), where bilinear weights are 1 and 0. The band's exactness rests on **where the taps land**, not on the filter; `selection_outline.hpp`'s "EXACT because the sampler is Nearest" overstates it. Not corrected in prose, because a device with coarser sub-texel precision could still bleed |
+| 14 | `mn >= mx` → `mn > mx` | `OG6` | **10 cases** — every interior pixel becomes a band pixel (`bandRunAt` reads 256) |
+| 15 | leave `palette` unpushed for skinned instances | `OG11` | **`OG11` alone** |
+| 16 | skip the mask reallocation on an extent change | `OG16` | **`OG16` and `OG7`** — both drive one renderer against targets of two sizes |
+| 17 | mask colour `LoadOp::Clear` → `Load` | `OG13` | **13 cases** — an uninitialised R8 target reads as garbage on Metal |
+| 18 | `++composites` before the `mask.valid` test | `OG2` | **6 cases** |
+| 19 | pair `selection_mask.frag` with `shadow.vert` | creation failure **or** `OG3` | **NEITHER — the pipelines build and the mask is CORRECT.** The answer is per-backend and this is macOS/Metal's: `shadow.vert`'s `PerObject` cbuffer is a single `float4x4 uLightMvp` *deliberately shaped like `scene.vert`'s `uMvp`*, and it sits at offset 0 of the 208-byte block the mask pass pushes — so it computes the identical expression from the identical bytes; and `selection_mask.frag` **reads none of its five inputs**, so undefined interpolants change no output. D3's argument is sound and simply not observable here. **A HOLE on this lane** |
+| 20 | restate `SELECTION_COLOR` as an `IM_COL32` literal one byte off | **NOTHING** | **NOTHING**, confirmed across all three binaries (`aero_editor_imgui_test` 153/153, `aero_editor_shell_test` 1748/1748, `SO4` green). The deliberate non-finding: D18's derivation is the only defence |
+| 21 | mask `depthLoadOp` `Load` → `Clear` | `OG5` | **THE PROCESS HANGS.** `SDL_BeginGPURenderPass` asserts *"Cannot cycle depth target when load op or stencil load op is LOAD!"* and waits forever; killed by a 120 s alarm. Not a redden — the trap the code's own comment documents, confirmed |
+| 22 | delete `selectionMaskTexture` from the move constructor | ASan or a `~Device` leak WARN | **NOTHING — A HOLE, confirmed against the WHOLE binary**: 1294/1294 green and the leak profile **byte-identical** to the baseline (6 pre-existing leak lines either way). The mask texture is created **lazily on the first pass**, and every `ForwardRenderer` move in the tree happens at construction, before any pass has run — so the member is always invalid when a move occurs. A case that moves a renderer **after** a mask pass would close it |
+
+**The four assertion mutants, plus one extra that is worth its line.** `OG3`'s expected width `2r` →
+`2r + 1` reddens (2 vs 3, 4 vs 5, 8 vs 9, 16 vs 17). `OG5`'s occluder moved from depth `[0.1, 0.2]` to
+`[0.8, 0.9]` — behind the selected quad rather than in front, since "one unit further" would clip it
+out of `[0, 1]` entirely — reddens the covered-half arm. `SQ8`'s expected `mvp` perturbed by **one
+ulp** in `columns[0].x` reddens, which is what proves it recomputes the expectation rather than
+reading it back off the instance the builder wrote (it prints `{?} == {?}`, because `Mat4` carries no
+`operator<<`; the values are not needed to read the verdict). **`OG6` needed two mutants, and the
+first one's green is not a hole:** moving the corners by **one pixel** leaves it green *by design* —
+the probe is a 5x5 neighbourhood precisely because a single-pixel probe on generated geometry is a
+coin flip (E.1.2's `DG18` lesson) — while scaling the corners by `1/sqrt(2)`, which puts them on the
+sphere's limb, reddens **192 assertions**. The expectation genuinely drives the probes.
+
+**The `OG2` vacuity control, with its numbers.** With the outline shader replaced by an unconditional
+`float4(1, 0, 1, 1)`, `OG2`'s control arm reports **103 168 differing bytes of 196 608** against the
+baseline's **1 664** — so the byte comparison that carries the bit-identity claim demonstrably
+reports a large non-zero difference. **What the control also shows is that arm (b) is unfalsifiable
+by a shader edit alone**: with nothing selected the mask view is invalid and `composite()` returns
+before it records anything, so no magenta reaches the image. That is the property arm (a) asserts,
+not a gap in (b).
+
+**The gate after the round.** Both presets built clean (zero compiler warnings; the only `warning:`
+lines are `ld`'s pre-existing "ignoring duplicate libraries"), `AERO_REQUIRE_GPU=1 ctest` **172/172
+green on both**, `ctest -N` **still 172 on both**, and no `~Device` leak WARN anywhere in the Debug
+ctest log. Doctest: `aero_tests` **1292 → 1294** (`SO14` and `OG18`), `aero_editor_shell_test`
+**1748**, `aero_editor_imgui_test` **153**, and the other four unmoved at 34 / 29 / 7 / 28. The eight
+guards are unchanged from the task's own gate — math **466**, platform **86**, rhi **152**, scene
+**86**, golden-rule **154**, project-no-delete **A=6/B=75**, audio **11/3/55**, probes **6/57** — and
+so are the byte-identity list, the manifest at 20 hash lines, the vcpkg pin and the "no link-line
+change" sweep. Both reduced configurations were reconfigured **fresh** with `-G Ninja` and
+`-DCMAKE_EXPORT_COMPILE_COMMANDS=ON`: shader-tools-OFF reads **159** entries (`cooker.*` 70,
+`shaderc.*` 0) with `aero_tests` 1190 green — **14 `SO` and 12 `SQ` present, 0 `OG`** — plus
+`aero_editor_shell_test` 1748, `aero_editor_imgui_test` 139 (`I120`–`I123` all four present and
+asserting) and `aero_cooker` built; reflect-tools-OFF reads **93** (`cooker.*` 70, `reflect-gen.*` 0)
+with `aero_tests` 1294, `aero_editor_shell_test` 1724, `aero_editor_imgui_test` 153 and `aero_cooker`
+built.
+
+**One lint note.** The plan's step-5 command derives its file list from `git diff --name-only
+origin/main`. That was correct when `origin/main` was this branch's base and is **wrong now that
+E.1.3 has merged**: the diff then names E.1.3's files, which do not exist here, and `clang-format`
+exits 1 on "No such file or directory" — a lint failure that is not a lint finding. Derive the list
+from the **branch point** (`b7576dd`) and filter it through `[ -f "$f" ]`. So derived, clang-format
+and clang-tidy are both **exit 0** over all 21 changed `.cpp`/`.hpp` files.

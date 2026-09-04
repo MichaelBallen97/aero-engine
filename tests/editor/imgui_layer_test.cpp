@@ -10873,3 +10873,276 @@ TEST_CASE("editor: the view-axis widget draws LAST, over everything (task E.1.3,
         CHECK(layoutAt < drawAt);
     }
 }
+
+TEST_CASE("editor: an EMPTY selection issues no mask pass and no composite (task E.1.4, I120)") {
+    // THE ZERO-COST PATH, at the editor level: an empty selection must acquire NO command buffer and
+    // record NO composite, and the two counters are what say so. I111's fixture, like every other
+    // case in this file.
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "selection outline i120", .width = 900, .height = 600});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = created.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+
+    auto* const viewport = dynamic_cast<engine::editor::ViewportPanel*>(app->panels().find("Viewport"));
+    REQUIRE(viewport != nullptr);
+
+#if AERO_SHADER_TOOLS_ENABLED
+    REQUIRE(viewport->selectionOutlinePass() != nullptr);
+    REQUIRE(viewport->sceneForwardRenderer() != nullptr);
+    app->selection().clear();
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+    CHECK(viewport->sceneForwardRenderer()->selectionMaskPassCount() == 0U);
+    CHECK(viewport->selectionOutlinePass()->compositeCount() == 0U);
+    CHECK(viewport->sceneForwardRenderer()->lastFrameSelectionMaskDrawn() == 0U);
+    // An empty selection is NOT a diagnostic: the "unavailable" latch must stay clear.
+    CHECK_FALSE(viewport->sceneForwardRenderer()->hasWarnedSelectionMaskUnavailable());
+#else
+    // THE TOOLS-OFF ARM ASSERTS RATHER THAN SKIPS (the I88-I92 precedent): with no cooked shaders the
+    // panel latches Unavailable in ensureInitialized, so there is no SelectionOutline at all -- and
+    // ticking is still safe, which is the other half of the claim.
+    CHECK(viewport->selectionOutlinePass() == nullptr);
+    CHECK(viewport->sceneForwardRenderer() == nullptr);
+    REQUIRE(app->tick());
+#endif
+}
+
+TEST_CASE("editor: one selected mesh entity issues ONE mask pass and ONE composite (task E.1.4, I121)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "selection outline i121", .width = 900, .height = 600});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = created.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+
+    auto* const viewport = dynamic_cast<engine::editor::ViewportPanel*>(app->panels().find("Viewport"));
+    REQUIRE(viewport != nullptr);
+
+#if AERO_SHADER_TOOLS_ENABLED
+    REQUIRE(viewport->selectionOutlinePass() != nullptr);
+    REQUIRE(viewport->sceneForwardRenderer() != nullptr);
+
+    // A mesh entity of our own, so the case does not depend on what the default scene happens to
+    // contain: a Transform plus a MeshRenderer is exactly what buildSelectionMaskSet's primitive arm
+    // needs, and buildRenderView draws it for the same two components.
+    const engine::Entity cube = app->world().create();
+    REQUIRE(app->world().add<engine::Transform>(cube, engine::Transform{}) != nullptr);
+    REQUIRE(app->world().add<engine::MeshRenderer>(cube, engine::MeshRenderer{}) != nullptr);
+    app->selection().clear();
+    app->selection().add(cube);
+    REQUIRE(app->selection().primary() == cube);
+
+    const std::size_t passesBefore = viewport->sceneForwardRenderer()->selectionMaskPassCount();
+    const std::size_t compositesBefore = viewport->selectionOutlinePass()->compositeCount();
+    REQUIRE(app->tick());
+    // EXACTLY ONE of each per tick -- a second acquire or a second composite would be a duplicated
+    // call site, which is precisely what D12's build-once/consume-twice shape exists to prevent.
+    CHECK(viewport->sceneForwardRenderer()->selectionMaskPassCount() == passesBefore + 1U);
+    CHECK(viewport->selectionOutlinePass()->compositeCount() == compositesBefore + 1U);
+    // ...and the ONE instance the entity emits really issued a draw.
+    CHECK(viewport->sceneForwardRenderer()->lastFrameSelectionMaskDrawn() == 1U);
+    CHECK_FALSE(viewport->sceneForwardRenderer()->hasWarnedSelectionMaskUnavailable());
+    CHECK_FALSE(viewport->selectionOutlinePass()->hasWarnedInvalidMask());
+    CHECK_FALSE(viewport->selectionOutlinePass()->hasWarnedNotRenderable());
+
+    SUBCASE("deselecting stops both again, on the very next tick") {
+        app->selection().clear();
+        const std::size_t passes = viewport->sceneForwardRenderer()->selectionMaskPassCount();
+        const std::size_t composites = viewport->selectionOutlinePass()->compositeCount();
+        REQUIRE(app->tick());
+        CHECK(viewport->sceneForwardRenderer()->selectionMaskPassCount() == passes);
+        CHECK(viewport->selectionOutlinePass()->compositeCount() == composites);
+        CHECK(viewport->sceneForwardRenderer()->lastFrameSelectionMaskDrawn() == 0U);
+    }
+#else
+    CHECK(viewport->selectionOutlinePass() == nullptr);
+    CHECK(viewport->sceneForwardRenderer() == nullptr);
+    REQUIRE(app->tick());
+#endif
+}
+
+TEST_CASE("editor: the selection-outline wiring's three source-text invariants hold (task E.1.4, I122)") {
+    // I110'S PATTERN, and the same reason: NEITHER ordering is a runtime observable. A composite
+    // recorded BEFORE the resolve is simply painted over -- indistinguishable from "the outline is
+    // disabled". A mask pass recorded BEFORE endScene attaches a depth texture whose pass is still
+    // open, which SDL logs and force-ends rather than refusing. UNGATED: the source exists whether or
+    // not AERO_SHADER_TOOLS built anything.
+    //
+    // 3.4.2's I96 lesson applies throughout: encode the PROPERTY, not a proxy for it -- compare the
+    // call tokens' POSITIONS rather than asserting that some line matches a regex that is true today.
+    const std::vector<std::string> code = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/viewport_panel.cpp");
+    REQUIRE_FALSE(code.empty());
+
+    SUBCASE("(a) the mask pass sits between endScene and beginFrame") {
+        const std::size_t maskAt = soleLineContaining(code, "renderSelectionMask(");
+        const std::size_t endSceneAt = soleLineContaining(code, "post->endScene(std::move(*sceneFrame))");
+        const std::size_t beginFrameAt = soleLineContaining(code, "target->beginFrame(VIEWPORT_CLEAR_COLOR)");
+        // ANTI-VACUITY: soleLineContaining REQUIREs exactly one hit, so all three tokens were found.
+        CHECK(endSceneAt < maskAt);    // AFTER A submits, so the depth it reads has been written
+        CHECK(maskAt < beginFrameAt);  // BEFORE B is acquired, so nothing has a pass open
+    }
+    SUBCASE("(b) the composite sits between the resolve and endFrame") {
+        const std::size_t compositeAt = soleLineContaining(code, "selectionOutline->composite(");
+        const std::size_t resolveAt = soleLineContaining(code, "post->resolve(*outFrame, tonemapParamsValue)");
+        const std::size_t endFrameAt = soleLineContaining(code, "target->endFrame(std::move(*outFrame))");
+        CHECK(resolveAt < compositeAt);   // AFTER the tonemap, so the band is in DISPLAY bytes
+        CHECK(compositeAt < endFrameAt);  // BEFORE the pass closes, so the draw lands in an OPEN pass
+    }
+    SUBCASE("(c) no ImGui::Image call names anything but target->colorTexture()") {
+        // PINNED AS TEXT because the defect it prevents is a use-after-free that is BENIGN ON METAL
+        // and therefore invisible to every pass this project can run locally: ImGui RECORDS an
+        // ImTextureID during the draw walk and BINDS it inside ImGuiLayer::endFrame, after tick()'s
+        // post-draw slot, while SDL's Vulkan and D3D12 backends SDL_free a destroyed texture
+        // container immediately. renderSelectionMask destroys and recreates its mask texture inside
+        // renderScene, which IS in that slot -- and it is safe STRUCTURALLY, because the mask texture
+        // is never handed to ImGui. THIS is what keeps that true.
+        std::size_t imageCalls = 0;
+        for (const std::string& line : code) {
+            if (line.find("ImGui::Image(") == std::string::npos) {
+                continue;
+            }
+            ++imageCalls;
+            CAPTURE(line);
+            CHECK(line.find("texId") != std::string::npos);
+            CHECK(line.find("selectionMask") == std::string::npos);
+            CHECK(line.find("sceneDepthTexture") == std::string::npos);
+        }
+        CHECK(imageCalls == 1U);  // anti-vacuity: the reader really found the call
+        // ...and `texId` is derived from target->colorTexture() and from nothing else.
+        const std::size_t nativeAt = soleLineContaining(code, "NativeDeviceAccessor::texture(*device,");
+        CHECK(code[nativeAt].find("target->colorTexture()") != std::string::npos);
+    }
+}
+
+TEST_CASE("editor: the selection mask set is cleared on EVERY renderScene exit (task E.1.4, I123)") {
+    // D12: built ONCE per tick and consumed TWICE, then dropped -- so a tick whose onDraw returned
+    // early can never draw last tick's selection.
+    //
+    // THE SUCCESS PATH IS DRIVEN; THE TWO EARLY-RETURN PATHS ARE PINNED AS SOURCE TEXT, and the case
+    // says so rather than degrading silently. `selectionMaskSet` is a PRIVATE member with no accessor, and
+    // making `target` not renderable from a test would mean forcing a texture allocation failure on a
+    // live device, which nothing in this tree can do -- so the drivable half asserts the OBSERVABLE
+    // consequence (a second renderScene with no intervening onDraw records nothing) and the
+    // undrivable half asserts that the clear is present on every exit, with I122's discipline.
+    const std::vector<std::string> code = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/viewport_panel.cpp");
+    REQUIRE_FALSE(code.empty());
+
+    SUBCASE("the clear appears on ALL THREE exits past the guard chain, inside renderScene") {
+        // THREE exits, three clears. The count is the claim: renderScene can leave past its guard
+        // chain through the !sceneFrame early return, the !outFrame early return or the bottom, and a
+        // set left populated on any of them is drawn again on a later tick whose onDraw never built
+        // one. Only the last two were cleared when this case was written, which is why it asserts a
+        // count rather than "the clear exists".
+        std::vector<std::size_t> clearLines;
+        for (std::size_t i = 0; i < code.size(); ++i) {
+            if (code[i].find("selectionMaskSet = {}") != std::string::npos) {
+                clearLines.push_back(i);
+            }
+        }
+        REQUIRE(clearLines.size() == 3U);  // anti-vacuity AND the claim: exactly three, no more
+        const std::size_t maskAt = soleLineContaining(code, "renderSelectionMask(");
+        const std::size_t endFrameAt = soleLineContaining(code, "target->endFrame(std::move(*outFrame))");
+        // The first clear is the !sceneFrame path's, ABOVE the mask call; the second is the !outFrame
+        // path's, between the mask call and the endFrame; the third is the success path's, after it.
+        CHECK(clearLines[0] < maskAt);
+        CHECK(clearLines[1] > maskAt);
+        CHECK(clearLines[1] < endFrameAt);
+        CHECK(clearLines[2] > endFrameAt);
+        // ...and each early-return clear really is inside its own guarded block rather than merely
+        // near it: the `return;` it guards is the next code line but one.
+        const std::size_t sceneGuardAt = soleLineContaining(code, "if (!sceneFrame) {");
+        CHECK(sceneGuardAt < clearLines[0]);
+        CHECK(clearLines[0] - sceneGuardAt <= 2U);
+        const std::size_t outGuardAt = soleLineContaining(code, "if (!outFrame) {");
+        CHECK(outGuardAt < clearLines[1]);
+        CHECK(clearLines[1] - outGuardAt <= 2U);
+    }
+
+    SUBCASE("driven: a second renderScene with no intervening onDraw records NOTHING") {
+        engine::platform::Context ctx;
+        if (!ctx.valid()) {
+            AERO_SKIP_OR_FAIL("no platform context");
+        }
+        std::optional<engine::platform::Window> window =
+            ctx.createWindow({.title = "selection outline i123", .width = 900, .height = 600});
+        REQUIRE(window.has_value());
+        std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+        if (!device) {
+            AERO_SKIP_OR_FAIL("no GPU device");
+        }
+        const std::string location = uniqueProjectLocation();
+        const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+        REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+        std::optional<engine::editor::EditorApp> app =
+            engine::editor::EditorApp::create(*device, *window, ctx,
+                                              {.persistLayout = false,
+                                               .unfocusedFrameCapHz = 0.0F,
+                                               .projectPath = created.root,
+                                               .restoreLastProject = false,
+                                               .recentProjectsPath = uniqueRecentsFile()});
+        REQUIRE(app.has_value());
+        REQUIRE(app->tick());
+        REQUIRE(app->tick());
+        auto* const viewport = dynamic_cast<engine::editor::ViewportPanel*>(app->panels().find("Viewport"));
+        REQUIRE(viewport != nullptr);
+
+#if AERO_SHADER_TOOLS_ENABLED
+        REQUIRE(viewport->selectionOutlinePass() != nullptr);
+        const engine::Entity cube = app->world().create();
+        REQUIRE(app->world().add<engine::Transform>(cube, engine::Transform{}) != nullptr);
+        REQUIRE(app->world().add<engine::MeshRenderer>(cube, engine::MeshRenderer{}) != nullptr);
+        app->selection().clear();
+        app->selection().add(cube);
+        REQUIRE(app->tick());
+        const std::size_t passes = viewport->sceneForwardRenderer()->selectionMaskPassCount();
+        CHECK(passes > 0U);  // the tick really rendered with a selection
+
+        // renderScene consumes `renderRequested` UNCONDITIONALLY and returns before its status check,
+        // so a bare second call records nothing -- and the set was cleared, so there is nothing stale
+        // for it to draw even if that guard ever moved.
+        viewport->renderScene(app->world());
+        CHECK(viewport->sceneForwardRenderer()->selectionMaskPassCount() == passes);
+#else
+        CHECK(viewport->selectionOutlinePass() == nullptr);
+        viewport->renderScene(app->world());  // safe when Unavailable, which is the other half
+#endif
+    }
+}

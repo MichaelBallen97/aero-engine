@@ -1,10 +1,20 @@
 // tests/editor/selection_overlay_test.cpp — task 2.3.2: the selection turned into screen-space
 // segments. Tier-0 and UNGATED. EIGHTH TU of aero_editor_shell_test (no
 // DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN here -- shell_test.cpp supplies main()).
+//
+// task E.1.4 RETIRED THE AABB HIGHLIGHT, and four cases went with it. Where each one's property now
+// lives, so the migration is visible rather than silently lost:
+//   * "BOX_EDGES is the 12-edge table DERIVED from F3b's bit assignment" -- the table is gone.
+//     aabbCorner's enumeration stays covered by scene_bounds_test.cpp and picking_test.cpp.
+//   * VP1 (a PRIMITIVE's highlight draws the bounds walk's box)  -> SQ2's primitive arm + OG6
+//   * VP2 (a RESOLVED reference draws the referenced box)        -> SQ2's resolved arm + OG6
+//   * VP4 (the FLAT plane still draws 12 edges)                  -> OG10
+// VP3 is RE-POINTED: an entity in the marker list draws a diamond, and its *unresolved-reference*
+// half moved to SQ10. Every remaining case keeps its id and its intent; only the magnitudes change,
+// from 12 box edges per entity to 4 marker segments.
 #include <aero/core/guid.hpp>
 #include <aero/editor/editor_camera.hpp>
 #include <aero/editor/picking.hpp>
-#include <aero/editor/scene_bounds.hpp>
 #include <aero/editor/selection_overlay.hpp>
 #include <aero/scene/scene.hpp>
 
@@ -28,20 +38,13 @@ using engine::Vec2;
 using engine::Vec3;
 using engine::Vec4;
 using engine::World;
-using engine::editor::aabbCorner;
-using engine::editor::BOX_EDGES;
-using engine::editor::BoxEdge;
 using engine::editor::buildSelectionOverlay;
 using engine::editor::CLIP_W_EPSILON;
 using engine::editor::clipSegmentToNearPlane;
 using engine::editor::EditorCamera;
-using engine::editor::entityBounds;
 using engine::editor::MAX_HIGHLIGHTED_ENTITIES;
-using engine::editor::MeshBoundsKey;
-using engine::editor::MeshBoundsLookup;
 using engine::editor::OverlayRole;
 using engine::editor::OverlaySegment;
-using engine::editor::primitiveLocalBounds;
 
 namespace {
 
@@ -106,56 +109,30 @@ constexpr Vec2 VIEWPORT_POINTS{800.0F, 600.0F};
 
 }  // namespace
 
-TEST_CASE("selection_overlay: BOX_EDGES is the 12-edge table DERIVED from F3b's bit assignment") {
-    CHECK(BOX_EDGES.size() == 12);
-    std::array<int, 8> degree{};
-    std::array<bool, 64> seen{};
-    std::array<int, 3> perAxis{};  // how many edges differ in bit 0 / bit 1 / bit 2
-    for (const BoxEdge edge : BOX_EDGES) {
-        REQUIRE(edge.a < 8);
-        REQUIRE(edge.b < 8);
-        REQUIRE(edge.a != edge.b);
-        const auto diff = static_cast<unsigned>(edge.a ^ edge.b);
-        // Adjacent iff they differ in EXACTLY one bit: a power of two, and only bits 0..2 exist.
-        CHECK((diff == 1U || diff == 2U || diff == 4U));
-        perAxis[diff == 1U ? 0 : (diff == 2U ? 1 : 2)] += 1;
-        const std::size_t lo = std::min(edge.a, edge.b);
-        const std::size_t hi = std::max(edge.a, edge.b);
-        const std::size_t key = (lo * 8U) + hi;
-        CHECK_FALSE(seen[key]);  // no duplicates
-        seen[key] = true;
-        degree[edge.a] += 1;
-        degree[edge.b] += 1;
-    }
-    for (const int d : degree) {
-        CHECK(d == 3);  // every corner is in exactly three edges
-    }
-    for (const int n : perAxis) {
-        CHECK(n == 4);  // four edges per axis
-    }
-}
-
 TEST_CASE("selection_overlay: segment counts per entity kind (AC-13)") {
+    // task E.1.4: the count is 4 per entity REGARDLESS of kind, because `entities` IS the marker list
+    // and this builder no longer decides what has geometry. A mesh entity reaches this list only when
+    // buildSelectionMaskSet found no instance for it, which is exactly SQ3's and SQ10's subject.
     World w;
     const EditorCamera camera = testCamera();
     const Mat4 viewProj = testViewProj(camera);
     std::vector<OverlaySegment> scratch;
 
-    SUBCASE("one selected mesh entity -> 12 segments") {
+    SUBCASE("one selected mesh entity -> 4 segments") {
         const Entity cube = makeMesh(w, Vec3::zero());
         buildSelectionOverlay(w, std::array<Entity, 1>{cube}, cube, viewProj, PERSP, VIEWPORT_POINTS, scratch);
-        CHECK(scratch.size() == 12);
+        CHECK(scratch.size() == 4);
     }
-    SUBCASE("one selected non-mesh entity -> 4 segments") {
+    SUBCASE("one selected non-mesh entity -> 4 segments, the SAME count") {
         const Entity light = makePoint(w, Vec3::zero());
         buildSelectionOverlay(w, std::array<Entity, 1>{light}, light, viewProj, PERSP, VIEWPORT_POINTS, scratch);
         CHECK(scratch.size() == 4);
     }
-    SUBCASE("two mesh entities -> 24 segments") {
+    SUBCASE("two entities -> 8 segments") {
         const Entity a = makeMesh(w, Vec3{1.0F, 0.0F, 0.0F});
         const Entity b = makeMesh(w, Vec3{-1.0F, 0.0F, 0.0F});
         buildSelectionOverlay(w, std::array<Entity, 2>{a, b}, a, viewProj, PERSP, VIEWPORT_POINTS, scratch);
-        CHECK(scratch.size() == 24);
+        CHECK(scratch.size() == 8);
     }
     SUBCASE("an empty span -> 0 segments, scratch stays empty (E1)") {
         buildSelectionOverlay(w, {}, Entity{}, viewProj, PERSP, VIEWPORT_POINTS, scratch);
@@ -180,8 +157,8 @@ TEST_CASE("selection_overlay: primary vs selected roles (AC-14)") {
                                                 [](const OverlaySegment& s) { return s.role == OverlayRole::Primary; });
         const auto selectedCount = std::count_if(
             scratch.begin(), scratch.end(), [](const OverlaySegment& s) { return s.role == OverlayRole::Selected; });
-        CHECK(primaryCount == 12);
-        CHECK(selectedCount == 24);
+        CHECK(primaryCount == 4);
+        CHECK(selectedCount == 8);
     }
     SUBCASE("no primary -> zero Primary segments") {
         buildSelectionOverlay(w, selected, Entity{}, viewProj, PERSP, VIEWPORT_POINTS, scratch);
@@ -190,7 +167,11 @@ TEST_CASE("selection_overlay: primary vs selected roles (AC-14)") {
     }
 }
 
-TEST_CASE("selection_overlay: the box tracks the entity's transform (AC-15)") {
+TEST_CASE("selection_overlay: the marker tracks the entity's transform (AC-15)") {
+    // task E.1.4: the diamond's CENTRE follows the world origin, and its SIZE and ORIENTATION are
+    // screen-space constants -- which is what a marker is for. The two subcases below that used to
+    // assert a box growing with scale and turning with rotation now assert exactly the opposite,
+    // because that is what the marker actually does and asserting the effect is the rule.
     const EditorCamera camera = testCamera();
     const Mat4 viewProj = testViewProj(camera);
 
@@ -215,7 +196,7 @@ TEST_CASE("selection_overlay: the box tracks the entity's transform (AC-15)") {
             CHECK(std::abs(movedScratch[i].b.y - originScratch[i].b.y) < EPS);
         }
     }
-    SUBCASE("scale roughly doubles the screen extent") {
+    SUBCASE("scale does NOT change the marker: it is a screen-space constant") {
         World unscaledWorld;
         const Entity unscaled = makeMesh(unscaledWorld, Vec3::zero());
         std::vector<OverlaySegment> unscaledScratch;
@@ -241,9 +222,12 @@ TEST_CASE("selection_overlay: the box tracks the entity's transform (AC-15)") {
         };
         const float extentUnscaled = extentX(unscaledPoints);
         const float extentScaled = extentX(scaledPoints);
-        CHECK(extentScaled > 1.8F * extentUnscaled);
+        // IDENTICAL, not merely close: both diamonds are POINT_MARKER_HALF_POINTS about the same
+        // projected origin, and the projection of that origin does not depend on the entity's scale.
+        CHECK(std::abs(extentScaled - extentUnscaled) < EPS);
+        CHECK(extentUnscaled > 0.0F);  // anti-vacuity: the marker has a real width to compare
     }
-    SUBCASE("rotation is the OBB-vs-AABB discriminator (S6)") {
+    SUBCASE("rotation about the entity's OWN origin does not move the marker") {
         World rotatedWorld;
         const Entity rotated =
             makeMesh(rotatedWorld, Vec3::zero(), engine::fromAxisAngle(Vec3::unitY(), engine::radians(45.0F)));
@@ -259,16 +243,20 @@ TEST_CASE("selection_overlay: the box tracks the entity's transform (AC-15)") {
 
         const std::vector<Vec2> rotatedPoints = endpointsOf(rotatedScratch);
         const std::vector<Vec2> uprightPoints = endpointsOf(uprightScratch);
-        const float centreX = VIEWPORT_POINTS.x * 0.5F;
-        const auto onCentreLine = [centreX](Vec2 p) { return std::abs(p.x - centreX) < 1.0F; };
-        // rotated 45 deg about Y -> at least one projected corner lands on the centre line
-        CHECK(std::any_of(rotatedPoints.begin(), rotatedPoints.end(), onCentreLine));
-        // the SAME cube unrotated -> none does. This pair is what makes the assertion discriminating.
-        CHECK_FALSE(std::any_of(uprightPoints.begin(), uprightPoints.end(), onCentreLine));
+        // The marker's centre is transformPoint(model, Vec3::zero()), which a rotation ABOUT that
+        // origin leaves exactly where it was -- so the two diamonds coincide, point for point. This
+        // is the property that USED to be the OBB-vs-AABB discriminator; retiring the box retired the
+        // question, and the honest replacement is the marker's own invariance.
+        REQUIRE(rotatedPoints.size() == uprightPoints.size());
+        REQUIRE(rotatedPoints.size() == 8U);
+        for (std::size_t i = 0; i < rotatedPoints.size(); ++i) {
+            CHECK(std::abs(rotatedPoints[i].x - uprightPoints[i].x) < EPS);
+            CHECK(std::abs(rotatedPoints[i].y - uprightPoints[i].y) < EPS);
+        }
     }
 }
 
-TEST_CASE("selection_overlay: parenting -- the entity's OWN box, never the subtree's (AC-15/D7)") {
+TEST_CASE("selection_overlay: parenting -- the entity's OWN origin, never the subtree's (AC-15/D7)") {
     World w;
     const EditorCamera camera = testCamera();
     const Mat4 viewProj = testViewProj(camera);
@@ -295,7 +283,7 @@ TEST_CASE("selection_overlay: parenting -- the entity's OWN box, never the subtr
 
     std::vector<OverlaySegment> parentScratch;
     buildSelectionOverlay(w, std::array<Entity, 1>{parent}, parent, viewProj, PERSP, VIEWPORT_POINTS, parentScratch);
-    CHECK(parentScratch.size() == 12);  // D7: the PARENT's box only, never the subtree's
+    CHECK(parentScratch.size() == 4);  // D7: the PARENT's own origin only, never the subtree's
 }
 
 TEST_CASE("selection_overlay: clipSegmentToNearPlane interpolates in clip space, before the divide (D14)") {
@@ -350,13 +338,25 @@ TEST_CASE("selection_overlay: behind the camera and straddling the near plane (A
         buildSelectionOverlay(w, std::array<Entity, 1>{behind}, behind, viewProj, PERSP, VIEWPORT_POINTS, scratch);
         CHECK(scratch.empty());
     }
-    SUBCASE("straddling the eye -> exactly 8 segments, every coordinate finite") {
+    SUBCASE("AT the eye -> 0 segments: the marker's own origin fails projectToViewport") {
+        // task E.1.4: the 12-edge box could STRADDLE the near plane and emit the surviving edges; a
+        // marker is a single projected point, so it is all-or-nothing. An entity whose origin sits at
+        // or behind the eye contributes NOTHING, silently, whatever its scale.
         World w;
         const Entity straddling = makeMesh(w, Vec3{0.0F, 0.0F, 10.0F}, Quat::identity(), Vec3{4.0F, 4.0F, 4.0F});
         std::vector<OverlaySegment> scratch;
         buildSelectionOverlay(w, std::array<Entity, 1>{straddling}, straddling, viewProj, PERSP, VIEWPORT_POINTS,
                               scratch);
-        CHECK(scratch.size() == 8);
+        CHECK(scratch.empty());
+    }
+    SUBCASE("just IN FRONT of the eye -> the full 4 segments, every coordinate finite") {
+        // ANTI-VACUITY for the two arms above: the same fixture one unit nearer DOES draw, so
+        // "0 segments" is a decision rather than a builder that never emits anything here.
+        World w;
+        const Entity ahead = makeMesh(w, Vec3{0.0F, 0.0F, 9.0F}, Quat::identity(), Vec3{4.0F, 4.0F, 4.0F});
+        std::vector<OverlaySegment> scratch;
+        buildSelectionOverlay(w, std::array<Entity, 1>{ahead}, ahead, viewProj, PERSP, VIEWPORT_POINTS, scratch);
+        CHECK(scratch.size() == 4);
         CHECK(allFinite(scratch));
     }
 }
@@ -365,21 +365,35 @@ TEST_CASE("selection_overlay: a HUGE FINITE transform never emits a non-finite c
     World w;
     const EditorCamera camera = testCamera();
     const Mat4 viewProj = testViewProj(camera);
-    // The hostile-input case below uses position.x = INF, which makes EVERY clip w NaN, so all twelve
-    // edges are dropped by clipSegmentToNearPlane BEFORE the finiteness guard is ever reached -- an
-    // allFinite() over an empty scratch is vacuous. A huge-but-FINITE scale straddling the eye is what
-    // actually reaches the guard: the four Z edges each have one endpoint in front and one behind, so
-    // they survive clipping, and the clipped endpoint's x/w then overflows inside ndcToViewportPoints.
-    const Entity huge = makeMesh(w, Vec3::zero(), Quat::identity(), Vec3{1.0e34F, 1.0e34F, 1.0e34F});
-    std::vector<OverlaySegment> scratch;
-    buildSelectionOverlay(w, std::array<Entity, 1>{huge}, huge, viewProj, PERSP, VIEWPORT_POINTS, scratch);
+    // task E.1.4: a marker is projected from the entity's ORIGIN, so a huge SCALE cannot move it at
+    // all -- the coordinate that can overflow is the POSITION. Both are driven here, and both must
+    // reach the output finite or not at all: projectToViewport's own finiteness contract is what
+    // appendPointMarker relies on, which is why this builder no longer carries a guard of its own.
+    const Entity hugeScale = makeMesh(w, Vec3::zero(), Quat::identity(), Vec3{1.0e34F, 1.0e34F, 1.0e34F});
+    std::vector<OverlaySegment> scaleScratch;
+    buildSelectionOverlay(w, std::array<Entity, 1>{hugeScale}, hugeScale, viewProj, PERSP, VIEWPORT_POINTS,
+                          scaleScratch);
+    CHECK(allFinite(scaleScratch));
+    // ANTI-VACUITY: the scratch is NOT empty, so allFinite above has something to be true of -- and
+    // the marker is exactly where an UNSCALED entity at the same origin would put it.
+    REQUIRE(scaleScratch.size() == 4);
+    World plainWorld;
+    const Entity plain = makeMesh(plainWorld, Vec3::zero());
+    std::vector<OverlaySegment> plainScratch;
+    buildSelectionOverlay(plainWorld, std::array<Entity, 1>{plain}, plain, viewProj, PERSP, VIEWPORT_POINTS,
+                          plainScratch);
+    REQUIRE(plainScratch.size() == 4);
+    for (std::size_t i = 0; i < scaleScratch.size(); ++i) {
+        CHECK(std::abs(scaleScratch[i].a.x - plainScratch[i].a.x) < EPS);
+        CHECK(std::abs(scaleScratch[i].a.y - plainScratch[i].a.y) < EPS);
+    }
 
-    CHECK(allFinite(scratch));
-    // ANTI-VACUITY, and the whole point of the case: the scratch is NOT empty, so allFinite above has
-    // something to be true of. Four edges lie wholly in front of the eye and survive; four lie wholly
-    // behind and are dropped by clipSegmentToNearPlane; the four straddling Z edges survive clipping
-    // and are dropped HERE, by the finiteness guard. Dropping that guard emits all eight.
-    CHECK(scratch.size() == 4);
+    // A huge POSITION: whatever survives must be finite, and nothing here may emit a NaN.
+    const Entity hugePosition = makeMesh(w, Vec3{1.0e34F, 1.0e34F, -1.0e34F});
+    std::vector<OverlaySegment> positionScratch;
+    buildSelectionOverlay(w, std::array<Entity, 1>{hugePosition}, hugePosition, viewProj, PERSP, VIEWPORT_POINTS,
+                          positionScratch);
+    CHECK(allFinite(positionScratch));
 }
 
 TEST_CASE("selection_overlay: the cap bounds both segment count and Primary role (AC-18/E13/D15)") {
@@ -395,23 +409,23 @@ TEST_CASE("selection_overlay: the cap bounds both segment count and Primary role
 
     std::vector<OverlaySegment> scratch;
     buildSelectionOverlay(w, all, Entity{}, viewProj, PERSP, VIEWPORT_POINTS, scratch);
-    CHECK(scratch.size() == 12U * MAX_HIGHLIGHTED_ENTITIES);  // exactly 3072
+    CHECK(scratch.size() == 4U * MAX_HIGHLIGHTED_ENTITIES);  // exactly 1024
 
     // the 300th is BEYOND the cap: making it the primary must draw NO Primary segments (E13)
     buildSelectionOverlay(w, all, all.back(), viewProj, PERSP, VIEWPORT_POINTS, scratch);
     CHECK(std::none_of(scratch.begin(), scratch.end(),
                        [](const OverlaySegment& s) { return s.role == OverlayRole::Primary; }));
 
-    // ...while a primary INSIDE the cap does get its 12
+    // ...while a primary INSIDE the cap does get its 4
     buildSelectionOverlay(w, all, all.front(), viewProj, PERSP, VIEWPORT_POINTS, scratch);
     CHECK(std::count_if(scratch.begin(), scratch.end(),
-                        [](const OverlaySegment& s) { return s.role == OverlayRole::Primary; }) == 12);
+                        [](const OverlaySegment& s) { return s.role == OverlayRole::Primary; }) == 4);
 }
 
 // A7 is a claim about the CAP: a dead handle is skipped BEFORE the counter advances, so stale handles
 // never consume another entity's budget. Discriminating it needs MORE than MAX_HIGHLIGHTED_ENTITIES
 // live entities with dead handles among them -- the cap case above has 300 live entities and no dead
-// ones, and the hostile-input case below builds one live entity alone, which draws its 12 segments
+// ones, and the hostile-input case below builds one live entity alone, which draws its 4 segments
 // wherever ++drawn sits.
 TEST_CASE("selection_overlay: dead handles do NOT consume cap budget (A7/AC-17/AC-18)") {
     World w;
@@ -458,12 +472,12 @@ TEST_CASE("selection_overlay: dead handles do NOT consume cap budget (A7/AC-17/A
 
     std::vector<OverlaySegment> scratch;
     buildSelectionOverlay(w, span, Entity{}, viewProj, PERSP, VIEWPORT_POINTS, scratch);
-    CHECK(scratch.size() == 12U * MAX_HIGHLIGHTED_ENTITIES);  // still exactly 3072, not 12 fewer boxes
+    CHECK(scratch.size() == 4U * MAX_HIGHLIGHTED_ENTITIES);  // still exactly 1024, not 12 fewer markers
 
     // Sharper than the count: the 256th LIVE entity is the LAST one inside the cap...
     buildSelectionOverlay(w, span, live[MAX_HIGHLIGHTED_ENTITIES - 1], viewProj, PERSP, VIEWPORT_POINTS, scratch);
     CHECK(std::count_if(scratch.begin(), scratch.end(),
-                        [](const OverlaySegment& s) { return s.role == OverlayRole::Primary; }) == 12);
+                        [](const OverlaySegment& s) { return s.role == OverlayRole::Primary; }) == 4);
     // ...and the 257th is the FIRST one outside it. Counting dead handles against the budget would
     // push the boundary earlier and redden both of these.
     buildSelectionOverlay(w, span, live[MAX_HIGHLIGHTED_ENTITIES], viewProj, PERSP, VIEWPORT_POINTS, scratch);
@@ -495,27 +509,27 @@ TEST_CASE("selection_overlay: hostile input never crashes, never emits non-finit
     CHECK(w.componentCount<MeshRenderer>() == meshCountBefore);
     CHECK(mixed.size() == 6);
 
-    // the zero-scaled entity STILL contributes 12 segments, all collapsed onto one point (E5's
-    // deliberate asymmetry with pickEntity: you cannot CLICK a zero-volume object, but you must still
-    // SEE what you selected).
+    // the zero-scaled entity STILL contributes its 4 segments (E5's deliberate asymmetry with
+    // pickEntity: you cannot CLICK a zero-volume object, but you must still SEE what you selected).
+    // task E.1.4: they no longer COLLAPSE onto a point -- a marker's size is a screen-space constant,
+    // so the diamond is full size, which is strictly more useful and is the whole reason E5 has no
+    // determinant guard.
     std::vector<OverlaySegment> zeroOnlyScratch;
     buildSelectionOverlay(w, std::array<Entity, 1>{zeroScaled}, zeroScaled, viewProj, PERSP, VIEWPORT_POINTS,
                           zeroOnlyScratch);
-    CHECK(zeroOnlyScratch.size() == 12);
-    const Vec2 first = zeroOnlyScratch.front().a;
+    CHECK(zeroOnlyScratch.size() == 4);
+    Vec2 zeroOrigin{};
+    REQUIRE(engine::editor::projectToViewport(viewProj, PERSP, Vec3::zero(), VIEWPORT_POINTS, zeroOrigin));
     for (const OverlaySegment& s : zeroOnlyScratch) {
-        CHECK(std::abs(s.a.x - first.x) < EPS);
-        CHECK(std::abs(s.a.y - first.y) < EPS);
-        CHECK(std::abs(s.b.x - first.x) < EPS);
-        CHECK(std::abs(s.b.y - first.y) < EPS);
+        CHECK(std::abs(engine::length(s.a - zeroOrigin) - engine::editor::POINT_MARKER_HALF_POINTS) < EPS);
     }
 
     // the dead handle does NOT consume cap budget (A7): the live entity trailing it in the span still
-    // draws its full 12 segments on its own.
+    // draws its full 4 segments on its own.
     std::vector<OverlaySegment> trailingOnlyScratch;
     buildSelectionOverlay(w, std::array<Entity, 1>{trailingLive}, trailingLive, viewProj, PERSP, VIEWPORT_POINTS,
                           trailingOnlyScratch);
-    CHECK(trailingOnlyScratch.size() == 12);
+    CHECK(trailingOnlyScratch.size() == 4);
 }
 
 TEST_CASE("selection_overlay: scratch is cleared on entry and reused when warm (AC-18)") {
@@ -529,108 +543,30 @@ TEST_CASE("selection_overlay: scratch is cleared on entry and reused when warm (
 
     std::vector<OverlaySegment> scratch;
     buildSelectionOverlay(w, two, a, viewProj, PERSP, VIEWPORT_POINTS, scratch);
-    CHECK(scratch.size() == 24);
+    CHECK(scratch.size() == 8);
     buildSelectionOverlay(w, one, a, viewProj, PERSP, VIEWPORT_POINTS, scratch);
-    CHECK(scratch.size() == 12);  // CLEARED on entry, not appended to
+    CHECK(scratch.size() == 4);  // CLEARED on entry, not appended to
     const std::size_t warmCapacity = scratch.capacity();
     buildSelectionOverlay(w, one, a, viewProj, PERSP, VIEWPORT_POINTS, scratch);
     CHECK(scratch.capacity() == warmCapacity);  // warm: an identical second call does not grow
 }
 
 // ================================================================================================
-// task 3.1.5 (VP1-VP4): the highlight resolves its box through the SAME localBoundsFor the frame walk
-// and the pick use (INV-D6), and an unresolved reference draws the non-mesh marker.
+// task E.1.4 (VP3, VP7-VP10): `entities` IS THE MARKER LIST. This builder no longer resolves a box,
+// no longer takes a MeshBoundsLookup and no longer decides what has geometry -- that decision is
+// scene_render::buildSelectionMaskSet's, made once per tick and consumed twice, and SQ3/SQ10 are
+// where it is asserted.
 // ================================================================================================
 
 namespace {
 [[nodiscard]] engine::Guid overlayMeshGuid(std::uint64_t ordinal) { return engine::Guid{ordinal, 0xDEEDULL}; }
-
-// The 8 projected corners of `box` under `model`, computed with aabbCorner and projectToViewport --
-// the same two functions the overlay uses, from the OTHER side. A case comparing these against the
-// overlay's own endpoints proves the overlay drew THAT box and no other.
-[[nodiscard]] std::vector<Vec2> projectedCornersOf(const Mat4& viewProj, const Mat4& model,
-                                                   const engine::editor::Aabb& box) {
-    std::vector<Vec2> out;
-    for (std::size_t i = 0; i < 8; ++i) {
-        Vec2 point{};
-        REQUIRE(engine::editor::projectToViewport(viewProj, PERSP, engine::transformPoint(model, aabbCorner(box, i)),
-                                                  VIEWPORT_POINTS, point));
-        out.push_back(point);
-    }
-    return out;
-}
-
-[[nodiscard]] bool containsPoint(const std::vector<Vec2>& haystack, Vec2 needle) {
-    return std::any_of(haystack.begin(), haystack.end(), [needle](Vec2 candidate) {
-        return std::abs(candidate.x - needle.x) < EPS && std::abs(candidate.y - needle.y) < EPS;
-    });
-}
 }  // namespace
 
-TEST_CASE("selection_overlay: a PRIMITIVE's highlight draws exactly the bounds walk's box (VP1)") {
-    const EditorCamera camera = testCamera();
-    const Mat4 viewProj = testViewProj(camera);
-    World w;
-    const Entity e = makeMesh(w, Vec3{0.5F, 0.0F, 0.0F}, Quat::identity(), Vec3{2.0F, 1.0F, 1.0F});
-    const std::array<Entity, 1> selected{e};
-
-    std::vector<OverlaySegment> segments;
-    buildSelectionOverlay(w, selected, e, viewProj, PERSP, VIEWPORT_POINTS, segments);
-    REQUIRE(segments.size() == 12);
-
-    const engine::editor::Aabb local = primitiveLocalBounds(0);
-    const std::vector<Vec2> corners = projectedCornersOf(viewProj, engine::worldMatrix(w, e), local);
-    for (const Vec2 endpoint : endpointsOf(segments)) {
-        CHECK(containsPoint(corners, endpoint));
-    }
-    // ...and the WORLD box the frame walk builds is the same eight points' extent -- both halves of
-    // INV-D6 asserted against one another rather than each against its own implementation.
-    const engine::editor::Aabb framed = entityBounds(w, e, /*includeDescendants=*/false);
-    engine::editor::Aabb rebuilt = engine::editor::Aabb::empty();
-    for (std::size_t i = 0; i < 8; ++i) {
-        rebuilt.expand(engine::transformPoint(engine::worldMatrix(w, e), aabbCorner(local, i)));
-    }
-    CHECK(engine::approxEquals(framed.min, rebuilt.min));
-    CHECK(engine::approxEquals(framed.max, rebuilt.max));
-}
-
-TEST_CASE("selection_overlay: a RESOLVED reference's highlight draws the referenced box (VP2)") {
-    // S32's witness: an overlay that used primitiveLocalBounds for a reference entity draws a unit
-    // cube here instead of the 3 x 1 x 2 box the lookup published.
-    const EditorCamera camera = testCamera();
-    const Mat4 viewProj = testViewProj(camera);
-    World w;
-    const Entity e = w.create();
-    REQUIRE(w.add<Transform>(e, Transform{.position = Vec3::zero()}) != nullptr);
-    REQUIRE(w.add<MeshRenderer>(e, MeshRenderer{.mesh = overlayMeshGuid(1), .meshIndex = 0}) != nullptr);
-    const std::array<Entity, 1> selected{e};
-
-    const engine::editor::Aabb local{Vec3{-3.0F, -1.0F, -2.0F}, Vec3{3.0F, 1.0F, 2.0F}};
-    MeshBoundsLookup lookup;
-    lookup.set(MeshBoundsKey{overlayMeshGuid(1), 0}, local);
-
-    std::vector<OverlaySegment> segments;
-    buildSelectionOverlay(w, selected, e, viewProj, PERSP, VIEWPORT_POINTS, segments, &lookup);
-    REQUIRE(segments.size() == 12);
-    CHECK(allFinite(segments));
-
-    const std::vector<Vec2> corners = projectedCornersOf(viewProj, engine::worldMatrix(w, e), local);
-    for (const Vec2 endpoint : endpointsOf(segments)) {
-        CHECK(containsPoint(corners, endpoint));
-    }
-    // The control: the CUBE's corners are a strictly narrower cloud, so a box drawn from
-    // primitiveLocalBounds cannot satisfy the loop above.
-    const std::vector<Vec2> cubeCorners =
-        projectedCornersOf(viewProj, engine::worldMatrix(w, e), primitiveLocalBounds(0));
-    CHECK_FALSE(containsPoint(cubeCorners, corners[0]));
-
-    // And the frame walk agrees, entity for entity.
-    const engine::editor::Aabb framed = entityBounds(w, e, false, &lookup);
-    CHECK(engine::approxEquals(framed.min, local.min));
-    CHECK(engine::approxEquals(framed.max, local.max));
-}
-
-TEST_CASE("selection_overlay: an UNRESOLVED reference draws the DIAMOND, not a box (VP3)") {
+TEST_CASE("selection_overlay: an entity IN THE MARKER LIST draws the diamond (VP3)") {
+    // RE-POINTED by task E.1.4. This case used to be about an UNRESOLVED mesh reference falling
+    // through to the marker; that half is SQ10's now, because deciding "unresolved" is
+    // buildSelectionMaskSet's job and not this builder's. What survives here -- and what this builder
+    // still owns entirely -- is the SHAPE of the marker it draws for whatever it is handed.
     const EditorCamera camera = testCamera();
     const Mat4 viewProj = testViewProj(camera);
     World w;
@@ -640,16 +576,18 @@ TEST_CASE("selection_overlay: an UNRESOLVED reference draws the DIAMOND, not a b
     const std::array<Entity, 1> selected{e};
     std::vector<OverlaySegment> segments;
 
-    SUBCASE("no lookup published yet") {
+    SUBCASE("four segments, whatever the entity carries") {
         buildSelectionOverlay(w, selected, e, viewProj, PERSP, VIEWPORT_POINTS, segments);
-        CHECK(segments.size() == 4);  // the 4-segment marker, never the 12-edge box
+        CHECK(segments.size() == 4);
         CHECK(allFinite(segments));
     }
-    SUBCASE("a lookup that does not hold this key") {
-        MeshBoundsLookup lookup;
-        lookup.set(MeshBoundsKey{overlayMeshGuid(2), 0},
-                   engine::editor::Aabb{Vec3{-1.0F, -1.0F, -1.0F}, Vec3{1.0F, 1.0F, 1.0F}});
-        buildSelectionOverlay(w, selected, e, viewProj, PERSP, VIEWPORT_POINTS, segments, &lookup);
+    SUBCASE("...and a MeshRenderer with a NIL mesh is treated no differently") {
+        // The builder does not look at MeshRenderer at all any more, and this is what says so: an
+        // entity that WOULD have drawn a primitive box gets the same four segments.
+        World plainWorld;
+        const Entity plain = makeMesh(plainWorld, Vec3{1.0F, 0.0F, 0.0F});
+        buildSelectionOverlay(plainWorld, std::array<Entity, 1>{plain}, plain, viewProj, PERSP, VIEWPORT_POINTS,
+                              segments);
         CHECK(segments.size() == 4);
     }
     SUBCASE("the marker is a CLOSED diamond around the entity's projected origin") {
@@ -662,39 +600,121 @@ TEST_CASE("selection_overlay: an UNRESOLVED reference draws the DIAMOND, not a b
         }
         CHECK(segments[3].b == segments[0].a);  // closed
     }
-    SUBCASE("once resolved, the SAME entity draws 12 edges") {
-        MeshBoundsLookup lookup;
-        lookup.set(MeshBoundsKey{overlayMeshGuid(1), 0},
-                   engine::editor::Aabb{Vec3{-1.0F, -1.0F, -1.0F}, Vec3{1.0F, 1.0F, 1.0F}});
-        buildSelectionOverlay(w, selected, e, viewProj, PERSP, VIEWPORT_POINTS, segments, &lookup);
-        CHECK(segments.size() == 12);
-    }
 }
 
-TEST_CASE("selection_overlay: the FLAT plane still draws 12 edges, 4 of them degenerate (VP4)") {
-    // A zero-thickness box has 12 edges like any other; the four Y edges collapse to points on screen.
-    // They must still be EMITTED (so the edge count is a constant a reader can rely on) and FINITE (so
-    // ImDrawList never sees a NaN).
+TEST_CASE("selection_overlay: N marker entities produce exactly 4N segments (VP7)") {
     const EditorCamera camera = testCamera();
     const Mat4 viewProj = testViewProj(camera);
     World w;
-    const Entity e = w.create();
-    REQUIRE(w.add<Transform>(e, Transform{.position = Vec3::zero()}) != nullptr);
-    REQUIRE(w.add<MeshRenderer>(e, MeshRenderer{.primitive = 2}) != nullptr);
-    const std::array<Entity, 1> selected{e};
-
-    std::vector<OverlaySegment> segments;
-    buildSelectionOverlay(w, selected, e, viewProj, PERSP, VIEWPORT_POINTS, segments);
-    REQUIRE(segments.size() == 12);
-    CHECK(allFinite(segments));
-
-    std::size_t degenerate = 0;
-    for (const OverlaySegment& s : segments) {
-        if (engine::length(s.a - s.b) < EPS) {
-            ++degenerate;
-        }
+    std::vector<Entity> all;
+    all.reserve(MAX_HIGHLIGHTED_ENTITIES);
+    for (std::size_t i = 0; i < MAX_HIGHLIGHTED_ENTITIES; ++i) {
+        all.push_back(makePoint(w, Vec3{static_cast<float>(i) * 0.001F, 0.0F, 0.0F}));
     }
-    CHECK(degenerate == 4);  // the four Y edges of a zero-thickness box, and only those
+    std::vector<OverlaySegment> scratch;
+    for (const std::size_t n : {std::size_t{0}, std::size_t{1}, std::size_t{5}, MAX_HIGHLIGHTED_ENTITIES}) {
+        INFO("N = ", n);
+        buildSelectionOverlay(w, std::span<const Entity>{all.data(), n}, Entity{}, viewProj, PERSP, VIEWPORT_POINTS,
+                              scratch);
+        CHECK(scratch.size() == 4U * n);
+        CHECK(allFinite(scratch));
+    }
+}
+
+TEST_CASE("selection_overlay: the primary's four segments carry Primary, the rest Selected (VP8)") {
+    const EditorCamera camera = testCamera();
+    const Mat4 viewProj = testViewProj(camera);
+    World w;
+    const Entity a = makePoint(w, Vec3{1.0F, 0.0F, 0.0F});
+    const Entity b = makePoint(w, Vec3::zero());
+    const Entity c = makePoint(w, Vec3{-1.0F, 0.0F, 0.0F});
+    const std::array<Entity, 3> selected{a, b, c};
+    std::vector<OverlaySegment> scratch;
+
+    buildSelectionOverlay(w, selected, b, viewProj, PERSP, VIEWPORT_POINTS, scratch);
+    REQUIRE(scratch.size() == 12);
+    const auto primaryCount = std::count_if(scratch.begin(), scratch.end(),
+                                            [](const OverlaySegment& s) { return s.role == OverlayRole::Primary; });
+    CHECK(primaryCount == 4);
+    // ...and the four are CONTIGUOUS and are the SECOND entity's, so the role follows the handle
+    // rather than landing on whichever four happened to be emitted first.
+    for (std::size_t i = 0; i < scratch.size(); ++i) {
+        const bool expectPrimary = i >= 4U && i < 8U;
+        INFO("segment ", i);
+        CHECK((scratch[i].role == OverlayRole::Primary) == expectPrimary);
+    }
+
+    SUBCASE("a primary handle ABSENT from the list produces no Primary segment at all") {
+        const Entity elsewhere = makePoint(w, Vec3{0.0F, 5.0F, 0.0F});
+        buildSelectionOverlay(w, selected, elsewhere, viewProj, PERSP, VIEWPORT_POINTS, scratch);
+        CHECK(scratch.size() == 12);
+        CHECK(std::none_of(scratch.begin(), scratch.end(),
+                           [](const OverlaySegment& s) { return s.role == OverlayRole::Primary; }));
+    }
+}
+
+TEST_CASE("selection_overlay: behind the eye or non-finite contributes NOTHING, silently (VP9)") {
+    const EditorCamera camera = testCamera();
+    const Mat4 viewProj = testViewProj(camera);
+    World w;
+    const Entity before = makePoint(w, Vec3{-2.0F, 0.0F, 0.0F});
+    const Entity behindEye = makePoint(w, Vec3{0.0F, 0.0F, 20.0F});
+    const Entity nonFinite = makePoint(w, Vec3{INF_F, 0.0F, 0.0F});
+    const Entity after = makePoint(w, Vec3{2.0F, 0.0F, 0.0F});
+    const std::array<Entity, 4> selected{before, behindEye, nonFinite, after};
+
+    std::vector<OverlaySegment> scratch;
+    buildSelectionOverlay(w, selected, Entity{}, viewProj, PERSP, VIEWPORT_POINTS, scratch);
+    // TWO entities drew, not four -- and the SURROUNDING two are unaffected, which is the claim that
+    // a builder bailing out of the whole walk on the first bad entity would fail.
+    CHECK(scratch.size() == 8);
+    CHECK(allFinite(scratch));
+
+    // ...and each of the two survivors is exactly where it would be on its own.
+    std::vector<OverlaySegment> aloneScratch;
+    buildSelectionOverlay(w, std::array<Entity, 1>{before}, Entity{}, viewProj, PERSP, VIEWPORT_POINTS, aloneScratch);
+    REQUIRE(aloneScratch.size() == 4);
+    for (std::size_t i = 0; i < aloneScratch.size(); ++i) {
+        CHECK(std::abs(scratch[i].a.x - aloneScratch[i].a.x) < EPS);
+        CHECK(std::abs(scratch[i].a.y - aloneScratch[i].a.y) < EPS);
+    }
+    std::vector<OverlaySegment> trailingScratch;
+    buildSelectionOverlay(w, std::array<Entity, 1>{after}, Entity{}, viewProj, PERSP, VIEWPORT_POINTS, trailingScratch);
+    REQUIRE(trailingScratch.size() == 4);
+    for (std::size_t i = 0; i < trailingScratch.size(); ++i) {
+        CHECK(std::abs(scratch[i + 4U].a.x - trailingScratch[i].a.x) < EPS);
+        CHECK(std::abs(scratch[i + 4U].a.y - trailingScratch[i].a.y) < EPS);
+    }
+}
+
+TEST_CASE("selection_overlay: the builder clears its scratch and mutates NOTHING (VP10)") {
+    const EditorCamera camera = testCamera();
+    const Mat4 viewProj = testViewProj(camera);
+    World w;
+    const Entity a = makePoint(w, Vec3{1.0F, 0.0F, 0.0F});
+    const Entity mesh = makeMesh(w, Vec3{-1.0F, 0.0F, 0.0F});
+    const std::array<Entity, 2> selected{a, mesh};
+
+    // A PRE-FILLED scratch, with a sentinel a caller could recognise: it must be gone.
+    std::vector<OverlaySegment> scratch;
+    scratch.push_back(OverlaySegment{.a = Vec2{-999.0F, -999.0F}, .b = Vec2{-998.0F, -998.0F}});
+    scratch.push_back(OverlaySegment{.a = Vec2{-997.0F, -997.0F}, .b = Vec2{-996.0F, -996.0F}});
+
+    const std::size_t entitiesBefore = w.entityCount();
+    const std::size_t transformsBefore = w.componentCount<Transform>();
+    const std::size_t meshesBefore = w.componentCount<MeshRenderer>();
+
+    buildSelectionOverlay(w, selected, a, viewProj, PERSP, VIEWPORT_POINTS, scratch);
+
+    CHECK(scratch.size() == 8);  // CLEARED on entry, not appended to
+    CHECK(std::none_of(scratch.begin(), scratch.end(), [](const OverlaySegment& s) { return s.a.x < -900.0F; }));
+    // ...and the World is untouched: no entity created or destroyed, no component added or removed.
+    // The builder specifically does NOT prune -- that is 2.2.1's job, done by the Hierarchy.
+    CHECK(w.entityCount() == entitiesBefore);
+    CHECK(w.componentCount<Transform>() == transformsBefore);
+    CHECK(w.componentCount<MeshRenderer>() == meshesBefore);
+    CHECK(w.alive(a));
+    CHECK(w.alive(mesh));
 }
 
 // ---- task E.1.3: the orthographic arms ----------------------------------------------------------
@@ -713,19 +733,23 @@ constexpr auto ORTHO = engine::editor::ProjectionMode::Orthographic;
 
 TEST_CASE("selection overlay: the ORTHO clip gate refuses what is behind the eye (VP5)") {
     // Seed S6 puts the vacuous `w` test in the ortho arm, where clip.w does not depend on the world
-    // point at all -- so a box 40 units BEHIND the eye would draw a full twelve-edge highlight. The
-    // in-front arm is what makes this a real discriminator rather than "nothing ever draws".
+    // point at all -- so an entity 40 units BEHIND the eye would draw a full marker. The in-front arm
+    // is what makes this a real discriminator rather than "nothing ever draws".
+    //
+    // task E.1.4 retired the box, so the count is 4 marker segments rather than 12 box edges, and the
+    // MeshRenderer / no-MeshRenderer pair below now asserts a SECOND property this case did not have
+    // before: the builder no longer forks on the component at all, so both kinds take the same gate.
     const EditorCamera camera = orthoCamera();
     const Mat4 viewProj = testViewProj(camera);
     std::vector<OverlaySegment> scratch;
 
-    SUBCASE("a box IN FRONT draws twelve edges") {
+    SUBCASE("an entity WITH a MeshRenderer, IN FRONT, draws four segments") {
         World world;
         const Entity cube = makeMesh(world, Vec3::zero());
         buildSelectionOverlay(world, std::array<Entity, 1>{cube}, cube, viewProj, ORTHO, VIEWPORT_POINTS, scratch);
-        CHECK(scratch.size() == 12);
+        CHECK(scratch.size() == 4);
     }
-    SUBCASE("a box BEHIND the eye draws NOTHING") {
+    SUBCASE("...and the same entity BEHIND the eye draws NOTHING") {
         // The eye is at z = +10 looking down -Z, so z = +50 is well behind it.
         World world;
         const Entity behind = makeMesh(world, Vec3{0.0F, 0.0F, 50.0F});

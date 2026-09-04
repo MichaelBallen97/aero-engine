@@ -15,6 +15,7 @@
 #include <aero/render/debug_draw.hpp>         // task E.1.1: the panel's own world-space line renderer
 #include <aero/render/post_process.hpp>       // task 3.6.3: the owned HDR target + the fullscreen resolve
 #include <aero/render/render_target.hpp>
+#include <aero/render/selection_outline.hpp>  // task E.1.4: the composite + SelectionOutlineParams
 #include <aero/scene_render/scene_renderer.hpp>
 
 #include <cstdint>
@@ -93,6 +94,12 @@ public:
     // postProcess() / outputTarget(). THIS TASK PUSHES NOTHING INTO IT FROM THE EDITOR.
     [[nodiscard]] render::DebugDraw* debugDraw() noexcept;
     [[nodiscard]] const render::DebugDraw* debugDraw() const noexcept;
+
+    // ---- task E.1.4 -----------------------------------------------------------------------------
+    // This panel's SelectionOutline, joining the other five as a test seam. NULL when the panel is
+    // Unavailable -- which is what I120/I121 read in the shader-tools-OFF configuration, where they
+    // ASSERT that arm rather than skipping it.
+    [[nodiscard]] const render::SelectionOutline* selectionOutlinePass() const noexcept;
 
     // ---- task E.1.2 -------------------------------------------------------------------------------
     // The grid toggle. SESSION STATE, default ON, and PERSISTED NOWHERE -- not to project.json, not
@@ -200,6 +207,10 @@ private:
     void updatePick(PanelContext& context, Vec2 imageOrigin, Vec2 avail, bool hovered);
     void drawSelectionOverlay(PanelContext& context, Vec2 imageOrigin, Vec2 avail);
 
+    // task E.1.4: the composite's params, derived from lastFramebufferScale. SANITIZED on the way
+    // out, so no caller can hand the composite an out-of-range radius.
+    [[nodiscard]] render::SelectionOutlineParams selectionOutlineParams() const noexcept;
+
     // Task 2.3.3. Both take POINTS (D18) as engine Vec2, never ImVec2: this header is deliberately
     // ImGui-free -- every ImGui value is converted at the ONE call site in onDraw (the 2.3.2
     // precedent). updateGizmo is a member because it needs lastAspect, editorCamera and `gesture`.
@@ -243,6 +254,21 @@ private:
     // precedent one member down). DECLARED AFTER sceneRenderer and therefore DESTROYED BEFORE it and
     // before `post`, which is the order its pipelines' formats came from.
     std::optional<render::DebugDraw> debugDrawer;
+    // task E.1.4: the edge-detect composite, built against the OUTPUT target's formats -- NOT the HDR
+    // pair the other four GPU objects use. That asymmetry IS the point: the outline is editor chrome
+    // and composites into the already-tonemapped image, so its pipeline's colour format is
+    // target->colorFormat() and its depth format is Invalid. DECLARED AFTER debugDrawer and therefore
+    // DESTROYED BEFORE it, `target` and `post`, which is the order its formats came from.
+    std::optional<render::SelectionOutline> selectionOutline;
+    // task E.1.4: built ONCE per tick at the top of drawSelectionOverlay and consumed TWICE -- for
+    // the markers here and for the mask in renderScene (D12). Cleared at the end of renderScene, so a
+    // second renderScene on one tick (which cannot happen today) would draw nothing rather than last
+    // tick's selection.
+    scene_render::SelectionMaskScratch selectionMaskScratch;
+    scene_render::SelectionMaskSet selectionMaskSet;
+    // task E.1.4: io.DisplayFramebufferScale.x, captured in onDraw beside the existing toPixels
+    // calls, because renderScene MUST NOT call ImGui (2.2.3 INV-3, still in force).
+    float lastFramebufferScale = 1.0F;
     // task 3.6.3: session state -- never written to project.aero, never to imgui.ini, never persisted
     // anywhere. Default-constructed and SANITIZED on every write, so it is valid even when the panel
     // never initialises. Member/accessor names differ by the house collision rule.
