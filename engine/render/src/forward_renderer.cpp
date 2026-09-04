@@ -283,6 +283,8 @@ ForwardRenderer::ForwardRenderer(ForwardRenderer&& other) noexcept
       lastCulled(other.lastCulled),
       materialBinds(other.materialBinds),
       warnedDegenerateFrustum(other.warnedDegenerateFrustum),
+      lastViewFrustum(other.lastViewFrustum),  // task E.1.4 -- the mask's mirror of draw()'s cull
+      lastViewCulling(other.lastViewCulling),
       shadowTexture(other.shadowTexture),
       shadowSampler(other.shadowSampler),
       shadowPipeline(other.shadowPipeline),
@@ -338,6 +340,8 @@ ForwardRenderer& ForwardRenderer::operator=(ForwardRenderer&& other) noexcept {
         lastCulled = other.lastCulled;
         materialBinds = other.materialBinds;
         warnedDegenerateFrustum = other.warnedDegenerateFrustum;
+        lastViewFrustum = other.lastViewFrustum;  // task E.1.4 -- the mask's mirror of draw()'s cull
+        lastViewCulling = other.lastViewCulling;
         shadowTexture = other.shadowTexture;
         shadowSampler = other.shadowSampler;
         shadowPipeline = other.shadowPipeline;
@@ -395,6 +399,8 @@ void ForwardRenderer::reset() noexcept {
     lastCulled = 0;
     materialBinds = 0;
     warnedDegenerateFrustum = false;
+    lastViewFrustum = {};  // task E.1.4 -- see the move constructor
+    lastViewCulling = false;
     shadowTexture = {};
     shadowSampler = {};
     shadowPipeline = {};
@@ -1244,6 +1250,11 @@ void ForwardRenderer::draw(Frame& frame, const RenderView& view) {
     // nothing, and must read 0/0 rather than the previous frame's numbers.
     lastDrawn = 0;
     lastCulled = 0;
+    // task E.1.4 -- reset with them, and reset to OFF: renderSelectionMask reads this pair to mirror
+    // the cull below, and a view that returns early (no camera) must leave the mask culling NOTHING
+    // rather than culling against the previous frame's frustum.
+    lastViewFrustum = {};
+    lastViewCulling = false;
     // task 3.6.1 (AC-23) -- ONE definition of the two plot names, called on EVERY exit including the
     // no-camera one. The counters reset above the early return precisely so a camera-less frame reads
     // 0/0; a plot that skipped that frame would hold the PREVIOUS frame's value while the accessors
@@ -1300,6 +1311,12 @@ void ForwardRenderer::draw(Frame& frame, const RenderView& view) {
             culling = false;
         }
     }
+    // task E.1.4 -- PUBLISHED HERE, after the degenerate-projection disable, so what
+    // renderSelectionMask mirrors is the pair this loop actually used and not an argument about it.
+    // The mask pass has no camera of its own and could not extract a second frustum without being
+    // handed one, and a second gate would be a second source of truth for the same decision.
+    lastViewFrustum = frustum;
+    lastViewCulling = culling;
 
     // Which of the FOUR pipelines is bound is now a function of TWO booleans, so it moved out of the
     // material-change block and into the per-instance path — the (skinned, cullNone) pair is compared
@@ -1844,9 +1861,29 @@ SelectionMaskView ForwardRenderer::renderSelectionMask(rhi::TextureHandle sceneD
         device->pushFragmentUniforms(cmd, 0, std::as_bytes(std::span{maskBlock}));
 
         for (const MeshInstance& instance : instances) {
-            // NO FRUSTUM CULLING, deliberately: the set is capped at 256 entities, culling is a pure
-            // optimisation here, and every cull predicate is one more thing that can disagree with
-            // draw()'s. An off-screen instance writes to no texel by definition.
+            // INV-1: the mask is the set of pixels the forward pass SHADED, so draw()'s frustum cull
+            // is MIRRORED here -- with draw()'s own resolved frustum and gate, published above, never
+            // a second extraction. An off-screen instance writing to no texel is NOT the argument
+            // this needs: draw() culls on the COOKED AABB, and an instance whose bounds are invalid
+            // or smaller than its triangles is dropped from the picture while still projecting on
+            // screen. Unmirrored, the mask draws it, its depth test passes against the clear value,
+            // and the editor outlines an object that is not in the picture -- a second undocumented
+            // deviation from INV-1 beside D6's alpha-masked materials.
+            //
+            // THE PREDICATE IS draw()'s, clause for clause: skinned instances are EXEMPT (their
+            // vertices move under a palette this renderer never sees), the bounds resolution is the
+            // shared silent one, and an invalid box propagates through transformAabb and comes back
+            // out of isVisible as false rather than being tested twice. It errs in the safe
+            // direction -- an instance the forward pass drops is dropped here too -- and costs one
+            // predicate call per instance on a set capped at 256. lastCulled is draw()'s 3.6.1
+            // observable and is deliberately NOT touched.
+            if (lastViewCulling && instance.palette.empty()) {
+                if (const std::optional<Aabb> local = instanceBounds(instance)) {
+                    if (!isVisible(lastViewFrustum, transformAabb(instance.model, *local))) {
+                        continue;
+                    }
+                }
+            }
             const ResolvedInstanceDraw resolvedDraw = resolveInstanceDraw(instance);
             if (resolvedDraw.status != InstanceDrawStatus::Primitive &&
                 resolvedDraw.status != InstanceDrawStatus::Mesh) {
@@ -1859,8 +1896,10 @@ SelectionMaskView ForwardRenderer::renderSelectionMask(rhi::TextureHandle sceneD
 
             // D6's latch: a Mask or Blend material is masked as a SOLID quad, because this stage has
             // no material bind and must not discard -- renderShadowMap's own gap, one pass over. The
-            // lookup is skipped entirely once the latch has fired, so a scene that has already warned
-            // pays nothing.
+            // lookup below is PER-INSTANCE and unconditional, because bindPipelineFor needs this
+            // instance's doubleSided to mirror draw()'s cull mode (D5); only the WARN is latched, so
+            // a scene that has already warned still pays the lookup and pays nothing else. Moving the
+            // lookup behind the latch would silently stop mirroring the cull.
             const MaterialHandle material =
                 materials.contains(instance.material) ? instance.material : defaultMaterialHandle;
             const MaterialSlot* const slot = materials.get(material);

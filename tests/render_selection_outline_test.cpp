@@ -1590,4 +1590,62 @@ TEST_CASE("render selection outline: the two depth accessors report what they ow
     }
 }
 
+TEST_CASE("render selection outline: an instance the FORWARD PASS culls produces NO outline (OG18)") {
+    AERO_OG_PREAMBLE();
+    // INV-1: the mask is the set of pixels the forward pass SHADED for these instances, and D6's
+    // alpha-masked materials are its ONE stated deviation. RenderView::cullingEnabled DEFAULTS TRUE
+    // and buildRenderView never clears it, so draw() culls on the COOKED AABB -- an instance whose
+    // bounds do not contain its triangles is dropped from the PICTURE while still projecting on
+    // screen, the mask draws it, its depth test passes against the clear value, and the editor
+    // outlines an object that is not there. The mask therefore mirrors the cull, with draw()'s OWN
+    // resolved frustum and gate rather than a second extraction that could disagree with it.
+    //
+    // THE DISAGREEMENT IS BUILT THE WAY THE DEFECT REALLY OCCURS: `model` (what the cull reads) and
+    // `mvp` (what the vertex stage reads) name different places. lighting.hpp's own contract says
+    // mvp == proj * view * model and that a caller who breaks it "gets a wrong cull rather than a
+    // wrong picture" -- which is exactly the instance this case needs, and it is also what a cooked
+    // box smaller than its triangles produces.
+    const engine::render::MeshInstance onScreen = slab(0.0F, 0.0F, 0.25F, 0.4F, 0.4F, 0.5F, Vec3{0.0F, 1.0F, 0.0F});
+    engine::render::MeshInstance stray = onScreen;
+    stray.model = engine::translation(Vec3{4.0F, 0.0F, 0.5F});  // the CULL's box: four units off screen
+    const std::array<engine::render::MeshInstance, 1> scene{stray};
+    const engine::render::SelectionOutlineParams params{
+        .primaryColorSrgb = OG_PRIMARY_SRGB, .secondaryColorSrgb = OG_SECONDARY_SRGB, .radiusPixels = 2U};
+
+    // ARM 1 -- CULLING ON, which is what every RenderView this tree builds carries by default. The
+    // identity camera's frustum is the box [-1,1]x[-1,1]x[0,1] in WORLD units (lighting.hpp says so),
+    // and the stray box sits at x in [3.5, 4.5], so draw() culls it.
+    engine::render::RenderView culledView = flatView(scene);
+    culledView.cullingEnabled = true;
+    const std::vector<std::byte> culled =
+        renderOnce(*device, *post, *target, *forward, *outline, culledView, {}, scene, params);
+    REQUIRE(forward->lastFrameDrawn() == 0U);            // the forward pass really dropped it...
+    REQUIRE(forward->lastFrameCulled() == 1U);           // ...through the CULL, not through a resolver arm
+    CHECK_FALSE(forward->hasWarnedDegenerateFrustum());  // ...against a frustum it accepted
+    CHECK(forward->lastFrameSelectionMaskDrawn() == 0U);
+    CHECK(outline->compositeCount() == 1U);  // the composite RAN: a zero below is "no band was drawn"
+    int culledBand = 0;
+    for (std::uint32_t row = 0; row < OG_H; ++row) {
+        culledBand += countBandTexels(culled, OG_W, row, 0U, OG_W - 1U);
+    }
+    CHECK(culledBand == 0);
+
+    // ARM 2 -- THE ANTI-VACUITY CONTROL, and the only thing that moves is the gate: with culling off
+    // the same instance is drawn at the same mvp, masked and outlined. Without this the zero above
+    // would also be satisfied by a mask pass that had simply stopped working.
+    engine::render::RenderView drawnView = flatView(scene);
+    drawnView.cullingEnabled = false;
+    const std::vector<std::byte> drawn =
+        renderOnce(*device, *post, *target, *forward, *outline, drawnView, {}, scene, params);
+    REQUIRE(forward->lastFrameDrawn() == 1U);
+    REQUIRE(forward->lastFrameCulled() == 0U);
+    CHECK(forward->lastFrameSelectionMaskDrawn() == 1U);
+    CHECK(outline->compositeCount() == 2U);
+    int drawnBand = 0;
+    for (std::uint32_t row = 0; row < OG_H; ++row) {
+        drawnBand += countBandTexels(drawn, OG_W, row, 0U, OG_W - 1U);
+    }
+    CHECK(drawnBand > 0);
+}
+
 #endif  // AERO_SHADER_TOOLS_ENABLED

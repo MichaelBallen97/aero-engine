@@ -457,6 +457,14 @@ private:
     bool warnedSkinningCap = false;        // a palette longer than MAX_SKINNING_JOINTS was refused
     bool warnedStrayPalette = false;       // a palette on a mesh section that carries no skin stream
     bool warnedDegenerateFrustum = false;  // task 3.6.1 -- a viewProj with no usable frustum, latched once
+    // task E.1.4 -- draw()'s OWN resolved cull pair, carried to renderSelectionMask so the mask
+    // mirrors the forward pass's frustum decision with the SAME frustum and the SAME gate rather than
+    // a second extraction that would be free to disagree with it. PER-FRAME, reset at the top of
+    // draw() and written where draw() finishes resolving them (after the degenerate-projection
+    // disable), so a view with no camera -- which draws nothing and culls nothing -- leaves culling
+    // OFF here. That is the SAFE direction: the mask can never drop an instance the forward pass drew.
+    Frustum lastViewFrustum{};
+    bool lastViewCulling = false;
     // task 3.6.2 — the depth pass's own resources. The texture ALWAYS exists (a 1x1 depth
     // placeholder when shadowResolution == 0), because SPIRV-Cross emits depth2d<float> for the
     // comparison slot and binding an RGBA8 default there is a Metal type mismatch.
