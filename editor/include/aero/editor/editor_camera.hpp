@@ -21,6 +21,9 @@
 
 namespace engine::editor {
 
+// Task E.1.3. The EDITOR's eye only -- engine::Camera stays perspective-only by its own D2.
+enum class ProjectionMode : std::uint8_t { Perspective = 0, Orthographic };
+
 // Which continuous navigation gesture owns the camera right now (D5). Explicit uint8_t:
 // performance-enum-size, like every enum in this tree.
 enum class CameraGesture : std::uint8_t { None = 0, Orbit, Pan, Dolly, Fly };
@@ -162,6 +165,19 @@ public:
     [[nodiscard]] Mat4 viewMatrix() const;         // inverse(compose({position, rotation, one}))
     [[nodiscard]] Mat4 projectionMatrix(float aspect) const;
 
+    // ---- task E.1.3: the projection mode -------------------------------------------------------
+    // The EDITOR's own lens, session state, persisted nowhere (E.4.x owns per-user preferences).
+    // reset() restores Perspective, because a mode surviving the D8 default pose would be a state
+    // the defaults do not describe.
+    [[nodiscard]] ProjectionMode projectionMode() const noexcept;
+    void setProjectionMode(ProjectionMode value) noexcept;
+
+    // The orthographic half-height: distance * tan(fovY/2), which is the world height the
+    // perspective frustum covers AT THE PIVOT'S DEPTH. Writing it this way is what makes the toggle
+    // visually continuous -- everything on the plane through the pivot keeps its screen position,
+    // and only depth-dependent parallax changes. THE ONE PLACE THAT FORMULA IS WRITTEN.
+    [[nodiscard]] float orthoHalfHeight() const noexcept;
+
     [[nodiscard]] Vec3 pivot() const noexcept;
     [[nodiscard]] float distance() const noexcept;
     [[nodiscard]] float yaw() const noexcept;
@@ -199,6 +215,9 @@ private:  // C3: members renamed so they never collide with the accessors above
     float nearPlaneValue = DEFAULT_NEAR;
     float farPlaneValue = DEFAULT_FAR;
     float flySpeedValue = DEFAULT_FLY_SPEED;
+    // C3 again: the MEMBER takes the distinct name on an accessor collision (the
+    // tonemapParamsValue / gridEnabledValue precedent one layer up).
+    ProjectionMode projectionModeValue = ProjectionMode::Perspective;
 };
 
 }  // namespace engine::editor
