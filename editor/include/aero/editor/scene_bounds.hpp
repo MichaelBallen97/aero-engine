@@ -64,10 +64,15 @@ struct Aabb {
 // change" as this one. Out-of-range clamps to the CUBE box, exactly as clampPrimitive clamps to Cube.
 [[nodiscard]] Aabb primitiveLocalBounds(std::uint32_t primitive) noexcept;
 
-// Corner i of `box`: bit 0 selects X, bit 1 Y, bit 2 Z -- min when 0, max when 1. BOX_EDGES
-// (selection_overlay.hpp) is DERIVED from exactly this assignment, so the bounds walk and the highlight
-// agree BY CONSTRUCTION rather than by two matching comments. An index past 7 reads the low three bits
-// and is therefore total; engine code only ever iterates 0..7.
+// Corner i of `box`: bit 0 selects X, bit 1 Y, bit 2 Z -- min when 0, max when 1. THE SINGLE CORNER
+// ENUMERATION, and it has TWO consumers since task E.1.4: pickEntity and the bounds walk. They agree
+// BY CONSTRUCTION rather than by two matching comments, which is the rule this line protects and
+// which is unchanged. (It had a third: selection_overlay.hpp's BOX_EDGES table was derived from this
+// assignment. E.1.4 deleted it -- the highlight no longer resolves a box at all, it draws a GPU
+// silhouette for everything with geometry and a point marker for everything without. Note that
+// engine/render/src/debug_draw.cpp has its own unrelated file-local BOX_EDGES for a wire-box helper;
+// it is not this rule's subject.) An index past 7 reads the low three bits and is therefore total;
+// engine code only ever iterates 0..7.
 [[nodiscard]] Vec3 aabbCorner(const Aabb& box, std::size_t i) noexcept;
 
 // The key a resolved mesh reference is looked up by: the asset GUID plus WHICH mesh of it -- the same

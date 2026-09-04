@@ -21,7 +21,6 @@
 #include <aero/editor/picking.hpp>
 #include <aero/scene/entity.hpp>
 
-#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <span>
@@ -53,58 +52,30 @@ inline constexpr std::size_t MAX_HIGHLIGHTED_ENTITIES = 256;
 // The D8 diamond's half-diagonal, in POINTS.
 inline constexpr float POINT_MARKER_HALF_POINTS = 6.0F;
 
-// The 12 edges of the local box, as index pairs into the 8-corner enumeration this file SHARES with
-// scene_bounds.hpp's aabbCorner (F3b): corner i takes max on an axis when that axis's bit is set, so
-// bit 0 is X, bit 1 is Y and bit 2 is Z. Task 3.1.5 deleted this file's own second copy of that
-// enumeration -- there is now exactly ONE function producing a corner, and the bounds walk, the pick
-// and the highlight can no longer drift. Two corners are adjacent iff they differ in EXACTLY ONE bit, which
-// makes the table DERIVED rather than transcribed: the edges are (i, i^1) for the four i with bit 0
-// clear, (i, i^2) for the four with bit 1 clear, and (i, i^4) for the four with bit 2 clear.
-// PUBLIC so that derivation is testable at all -- the same call D15 makes for the cap above.
-struct BoxEdge {
-    std::uint8_t a = 0;
-    std::uint8_t b = 0;
-};
-inline constexpr std::array<BoxEdge, 12> BOX_EDGES{{
-    {0, 1},
-    {2, 3},
-    {4, 5},
-    {6, 7},  // X edges: (i, i^1) for i in {0,2,4,6}
-    {0, 2},
-    {1, 3},
-    {4, 6},
-    {5, 7},  // Y edges: (i, i^2) for i in {0,1,4,5}
-    {0, 4},
-    {1, 5},
-    {2, 6},
-    {3, 7},  // Z edges: (i, i^4) for i in {0,1,2,3}
-}};
-
 // The builder. CALLER-OWNED SCRATCH (the walkForest / RenderViewScratch precedent): CLEARED ON ENTRY,
 // reused across frames, never allocating once warm.
 //
-// Per entity, in SELECTION order, capped at MAX_HIGHLIGHTED_ENTITIES:
-//   * WITH a MeshRenderer whose local box RESOLVES -> that box's 12 edges through worldMatrix(e) (D7)
-//   * WITHOUT one, or with an UNRESOLVED reference -> a 4-segment screen-space diamond at its world
-//     origin (D5/D8) -- the same non-mesh path, reached by one more condition, never by new code
-//   * dead / null / behind the eye / non-finite -> NOTHING, silently                   (E2/E4/E7)
+// task E.1.4: `entities` IS THE MARKER LIST -- the selected entities that produced NO instance at
+// all, as decided by scene_render::buildSelectionMaskSet. THIS BUILDER NO LONGER DECIDES WHAT HAS
+// GEOMETRY; it draws a diamond for everything it is given, and everything else in the selection gets
+// a GPU silhouette from the mask pass instead.
 //
-// D7: the entity's OWN oriented box, never its subtree's AABB. Selecting a parent draws the parent's
-// box only. This deliberately differs from F-focus, which frames the whole subtree: the highlight
-// says WHAT IS SELECTED, focus says WHAT YOU WANT TO SEE -- and a subtree union would force it back
-// to a world AABB (an OBB union is not an OBB), reintroducing exactly the rotated-object mismatch D2
-// removes.
+// WHY THAT IS ONE DECISION RATHER THAN TWO. The mask pass answers "has geometry" from the
+// AssetBindingTable; this builder used to answer it from a MeshBoundsLookup. Any frame in which the
+// two disagreed produced an entity with NO OUTLINE AND NO MARKER -- visually unselected, with every
+// automated observable green. There is now exactly one answer, made once per tick and consumed
+// twice.
+//
+// Per entity, in SELECTION order, capped at MAX_HIGHLIGHTED_ENTITIES:
+//   * a 4-segment screen-space diamond at its world origin                             (D5/D8)
+//   * dead / null / behind the eye / non-finite -> NOTHING, silently                   (E2/E4/E7)
 //
 // Mutates NEITHER the World NOR the Selection (AC-17) -- and specifically does NOT call
 // Selection::prune: mutating the selection during a draw walk is forbidden, and pruning is 2.2.1's
 // job, done by the Hierarchy at the top of ITS onDraw (F34). Dead handles are skipped here instead.
 // Takes a span + a primary handle rather than a const Selection& so a tier-0 test can drive it from a
 // plain array, and so it cannot even be TEMPTED to mutate the selection.
-//
-// `lookup` (task 3.1.5) is DEFAULTED AND LAST, like entityBounds'/selectionBounds'/sceneBounds': a null
-// lookup resolves only primitives, which is exactly what this builder saw before references existed.
 void buildSelectionOverlay(const World& world, std::span<const Entity> entities, Entity primary, const Mat4& viewProj,
-                           Vec2 viewportSizePoints, std::vector<OverlaySegment>& scratch,
-                           const MeshBoundsLookup* lookup = nullptr);
+                           Vec2 viewportSizePoints, std::vector<OverlaySegment>& scratch);
 
 }  // namespace engine::editor
