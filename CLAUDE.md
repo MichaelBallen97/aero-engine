@@ -15,10 +15,9 @@ Two platform matrices, never to be conflated: the **editor** runs on macOS/Windo
 MERGED (PR #93, `d91eab1`), E.1.3 (View-axis gizmo) is MERGED (PR #94, merge commit `6fb323c`,
 thirteen commits — eight, then five closing a review round — all six CI jobs green with
 `headSha == HEAD` asserted) **and macOS-validated, with the one defect that pass found already fixed
-on `main` (PR #95, `0ab204d`)**, and E.1.4 (Silhouette selection outline) is COMPLETE IN CODE on
-`feat/E.1.4-silhouette-selection-outline` (fifteen commits, the code-review round closed and the
-22-seed sabotage matrix run, full local gate green on both presets and both reduced configurations,
-`origin/main` merged in) and NOT YET MERGED; the other 20 tasks are planning only.** Six epics, 24
+on `main` (PR #95, `0ab204d`)**, and E.1.4 (Silhouette selection outline) is MERGED (PR #96, merge commit
+`3aadffb`, fifteen commits plus the `origin/main` merge, the code-review round closed and the
+22-seed sabotage matrix run); the other 20 tasks are planning only.** Six epics, 24
 tasks, in `docs/tasks/phase-E.md`. It is **lettered, not fractioned**, because `3.5` and `3.5.1`/`3.5.2` are
 already Phase 3's Skeletal-animation epic and its tasks — a "Phase 3.5" would collide with referenced
 numbers, and numbering is append-only. In Notion its `Phase #` is `3.5`, a sort key, not an
@@ -59,7 +58,7 @@ Epics **3.1** (AssetDatabase), **3.2** (Importers), **3.3** (Cooker v0), **3.4**
 > as the position moves, never grown: it reached 207 k characters once and that is what this note
 > exists to prevent.
 
-### E.1.4 — Silhouette selection outline (COMPLETE IN CODE, not merged) — the box is gone
+### E.1.4 — Silhouette selection outline (MERGED, PR #96 `3aadffb`) — the box is gone
 
 **The selection highlight stops being a box.** The selected instances are drawn again — same vertex
 shaders, same per-instance cull mode — into an `R8Unorm` mask depth-tested `LessOrEqual` against the
@@ -392,7 +391,7 @@ miniaudio; `A38` is covered only by validation row 9. Full detail in `docs/10`.
 | **Phase 2** — Editor | **COMPLETE, gate met 2026-08-02.** All six epics closed and macOS-validated; Windows/Linux rows pending for every task (`editor/VALIDATION.md`). Gate artifact: `samples/phase-2-editor-scene/` — data, deliberately not `add_subdirectory`'d. |
 | **Phase 3** — Asset Pipeline & 3D Content | **OPEN.** **All seven epics CLOSED in code** — 3.1–3.6, and 3.7 with 3.7.1 + 3.7.2 merged and macOS-validated and **3.7.3 merged (PR #91)**. What is left is the gate below and the validation debt. Per-task detail in `docs/10`. |
 | **Phase 3 gate** | Drop a rigged glTF/FBX in → PBR materials + shadows + a playing animation + **an audible sound**. The audible half exists in code as of 3.7.2 and **has not been validated on any platform** — 3.7.2's macOS pass ticked 47 of 53 records and left the 6 that need ears open. |
-| **Phase E** — Editor Experience | **OPEN. E.1.1 merged (PR #92 `15bf58b`), E.1.2 merged (PR #93 `d91eab1`), E.1.3 merged (PR #94 `6fb323c`, + PR #95 `0ab204d`), E.1.4 COMPLETE IN CODE and unmerged on `feat/E.1.4-silhouette-selection-outline`; 20 tasks remain, planning only.** Inserted between 3 and 4; six epics, 24 tasks in `docs/tasks/phase-E.md`. Viewport legibility (E.1), lighting & environment (E.2), inspector & context routing (E.3), project/scene/asset management (E.4), content-creation UX (E.5), shell identity (E.6). **E.1.1 is macOS-validated** — 8 of 10 rows PASS on 2026-09-03, 2 partial for structural reasons (the sample installs no billboard atlas, so `S21`'s picture half is not executable with it; Tracy's CLI exports zones but not plots). **E.1.2 is macOS-validated** — 8 PASS / 2 PARTIAL / 1 NOT EXECUTABLE on 2026-09-04. **E.1.3 is macOS-validated** — 11 PASS / 1 PARTIAL / 2 NOT EXECUTABLE / 1 NOT RUN on 2026-09-05; the pass found the ortho gizmo-suppression defect, fixed in PR #94's follow-up (PR #95, `0ab204d`). **E.1.4 has a validation page written and NOT YET RUN on any platform.** Windows and Linux unvalidated, as everywhere. |
+| **Phase E** — Editor Experience | **OPEN. E.1.1 merged (PR #92 `15bf58b`), E.1.2 merged (PR #93 `d91eab1`), E.1.3 merged (PR #94 `6fb323c`, + PR #95 `0ab204d`), E.1.4 merged (PR #96 `3aadffb`); 20 tasks remain, planning only.** Inserted between 3 and 4; six epics, 24 tasks in `docs/tasks/phase-E.md`. Viewport legibility (E.1), lighting & environment (E.2), inspector & context routing (E.3), project/scene/asset management (E.4), content-creation UX (E.5), shell identity (E.6). **E.1.1 is macOS-validated** — 8 of 10 rows PASS on 2026-09-03, 2 partial for structural reasons (the sample installs no billboard atlas, so `S21`'s picture half is not executable with it; Tracy's CLI exports zones but not plots). **E.1.2 is macOS-validated** — 8 PASS / 2 PARTIAL / 1 NOT EXECUTABLE on 2026-09-04. **E.1.3 is macOS-validated** — 11 PASS / 1 PARTIAL / 2 NOT EXECUTABLE / 1 NOT RUN on 2026-09-05; the pass found the ortho gizmo-suppression defect, fixed in PR #94's follow-up (PR #95, `0ab204d`). **E.1.4 has a validation page written and NOT YET RUN on any platform.** Windows and Linux unvalidated, as everywhere. |
 | **Phase E gate** | Open a project and land in the scene you were last editing, on a lit grid floor under a sky; create a Cube from the menu, drop a material on it and see it shade; aim a spot light with a visible gizmo; rename, move and delete assets without leaving the editor. Gate artifact: `samples/phase-E-editor/`. |
 
 ### Engine layers, in dependency order
@@ -795,10 +794,10 @@ binary is `aero_sample_phaseE_debug_draw`** — `phaseE`, no underscore before t
 
 ### Next
 
-**Phase E is the open front. E.1.4 is COMPLETE IN CODE on `feat/E.1.4-silhouette-selection-outline`
-and NOT MERGED** — fifteen commits plus the `origin/main` merge, the code-review round closed, the
-22-seed sabotage matrix run, the full local gate green on both presets and both reduced
-configurations, and a validation page written but **NOT RUN on any platform**. It awaits a PR.
+**Phase E is the open front. E.1.4 is MERGED (PR #96, `3aadffb`)** — fifteen commits plus the
+`origin/main` merge, the code-review round closed, the 22-seed sabotage matrix run, the full local
+gate green on both presets and both reduced configurations, and a validation page written but
+**NOT RUN on any platform**, which is its whole remaining risk.
 **E.1.3 is MERGED (PR #94, `6fb323c`) AND macOS-VALIDATED, with one defect that pass found already
 fixed (PR #95, `0ab204d`)** — thirteen commits, an 18-seed sabotage matrix, a review round closed
 (one blocking finding: the widget's press reached ImGuizmo), and **three records on its page still

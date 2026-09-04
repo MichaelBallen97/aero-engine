@@ -13662,6 +13662,58 @@ reported rect a staleness argument, which is precisely what D9 avoided by making
 now **asserts** the disjointness instead of relying on it. **A later task that adds a third rect to
 `overlayOwnsPress` inherits this trap.**
 
+**macOS-VALIDATED 2026-09-05 — 11 PASS / 1 PARTIAL / 2 NOT EXECUTABLE / 1 NOT RUN — AND THE PASS
+FOUND A REAL DEFECT, FIXED IN PR #95 (merge commit `0ab204d`).** The numbers worth carrying: the
+pivot sits at the **identical pixel** across a projection toggle (dx = dy = 0.00, same 34-px
+footprint) while **55 113 of 204 800** viewport pixels change — D11's pivot-*plane* continuity with
+its own anti-vacuity control; the widget's hide threshold is **exactly 140** (width 139 reads 9 px of
+`+Y` green, 140 reads 128), confirming the predicate is `>=` and not `>`; a 10-unit pillar snapped to
+Top shows **0 px** of lateral streak at ~96 px per world unit, where the old `MAX_PITCH` would have
+smeared it ~9.6 px; all four corners pick in ortho with a 90-px-off probe selecting nothing; and a
+drag released **inside** the widget commits **exactly one** undoable edit — one Undo restored the
+baseline exactly — without snapping the view.
+
+**THE DEFECT: A THRESHOLD CALIBRATED IN ONE PROJECTION'S DEPTH UNITS MEANS SOMETHING ELSE ENTIRELY IN
+THE OTHER.** In orthographic the transform gizmo vanished for any entity within **~1 world unit of
+the near plane** — `F` to frame a small entity, switch to ortho, no gizmo; perspective at the
+identical pose drew one. `gizmoOriginBehindCamera` kept ImGuizmo's perspective-only mirror
+(`ImGuizmo.cpp:2696`) **unconditional**, and this entry's own text above argued that in ortho it was
+"a slightly stricter near-plane cut of our own ... a narrower band on the same normalised axis". It
+is numerically narrower and that is not the same as safe: `0.001` was calibrated against ImGuizmo's
+**view-space** `camSpacePosition.z`, while ortho's `clip.z` is `(-z_view - zNear)/(zFar - zNear)`, a
+**normalised** depth — so the constant spans `0.001 * (zFar - zNear)`, about **1.0 world unit** at the
+shipped `DEFAULT_NEAR` 0.1 / `DEFAULT_FAR` 1000 and ~10 at `zFar = 10000`, against the 0.0002-0.11
+band this same file measured for perspective. `focusOn` frames a small entity at exactly that
+distance, so the failure was one gesture away.
+
+**AND THE PERSPECTIVE BAND IS ON THE OPPOSITE SIDE OF THE NEAR PLANE FROM ORTHO'S** — a first draft of
+the fix's test probed the wrong one and failed. Solving `clip.z < 0.001` for `perspectiveRH_ZO` gives
+a view depth under ~0.101, i.e. essentially everything **between the eye and the near plane**, which
+test 1 accepts there because it gates on `clip.w` and not on the near plane at all. That is N7's
+accepted gate asymmetry seen from the other end, and it is now written into `G19`.
+
+**WHY THREE GATES ALL PASSED IT.** `G18` carried a subcase **pinning the old behaviour**, so this was
+a decision whose consequence was never evaluated rather than an oversight — and `G18` is structurally
+blind to that second test anyway, which the code-review round had already established for seed `S6`
+(the mirrored test refuses every behind-the-eye probe regardless of the first test, so no probe
+discriminates it). The sabotage matrix's `S6` does not reach it either. **Only driving the real editor
+in orthographic, close to an entity, could see it.** The fix gates test 2 on `Perspective`, where it
+is load-bearing; in ortho test 1 — `projectToViewport`'s ortho arm, refusing at `CLIP_Z_EPSILON` — is
+the near plane and therefore the whole predicate. `G18`'s subcase now asserts the new behaviour (that
+flipped assertion is what reddens the pre-fix code) and gains a perspective arm; `G19` pins the band's
+**world size** at the shipped depth range, because `G18`'s own `far = 100` makes it ten times smaller
+and easy to read as harmless, which is how it shipped. Redden-proof: seeding the gate back out takes
+2 of 4 cases and 5 assertions red. `aero_editor_shell_test` 1780 -> 1781; every other count unmoved.
+
+**THREE VALIDATION ROWS REMAIN OPEN, each for a stated reason rather than a blank tick:** row 6's
+translate/scale-in-ortho arm was blocked by the defect above and is re-runnable now; **row 7 is NOT
+EXECUTABLE** because `samples/phase-2-editor-scene` has no shadow-RECEIVING surface — its only floor
+is E.1.2's debug **line** grid — so an ortho directional shadow cannot be judged until **E.5.2**
+creates a solid plane; and row 13's cost A/B needs a second build at the branch point. Row 1 is NOT
+EXECUTABLE on 1x hardware, so **E.1.1's thick-line handoff stays UNFIRED rather than cleared**, the
+same distinction E.1.2's pass drew.
+
+
 ### E.1.4 — Silhouette selection outline — the box is gone
 
 **The selection highlight stops being a box.** The selected instances are drawn again, with the
