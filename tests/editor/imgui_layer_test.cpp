@@ -10766,3 +10766,44 @@ TEST_CASE("editor: a press the view-axis widget owns never reaches ImGuizmo (tas
         CHECK(asksHovered);
     }
 }
+
+TEST_CASE("editor: the view-axis widget draws LAST, over everything (task E.1.3, I119)") {
+    // A SOURCE-TEXT PIN, and the I110 precedent by name: the ordering is INVISIBLE AT RUNTIME. Every
+    // one of these calls submits into the SAME ImDrawList, so moving the draw earlier changes only
+    // which commands are appended first -- no seam reports it, no assertion about the panel's state
+    // moves, and nothing in this tree reads back a viewport pixel through ImGui's own draw data. The
+    // consequence is entirely visual: the widget would be painted UNDER the selection overlay's
+    // segments and under ImGuizmo's handles, which is exactly the picture AC-16's draw half exists to
+    // guarantee against. Deleting the call outright is likewise invisible to every runtime tier.
+    const std::vector<std::string> code = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/viewport_panel.cpp");
+    REQUIRE_FALSE(code.empty());
+
+    // The CALL, not the definition: `drawViewAxisGizmo() const {` does not contain the trailing
+    // semicolon, which is the drawGizmoBar(); / drawViewOptions(); idiom I106 already uses.
+    const std::size_t drawAt = soleLineContaining(code, "drawViewAxisGizmo();");
+
+    SUBCASE("it runs AFTER step 9b's rect record and BEFORE step 10") {
+        // step 9b records the interactive row's rect; step 10 records the render request LAST, after
+        // everything succeeded. The widget sits between them, which is what makes it the last thing
+        // submitted in the frame.
+        const std::size_t recordAt = soleLineContaining(code, "overlayRowBottomRight = Vec2{");
+        const std::size_t requestAt = soleLineContaining(code, "renderRequested = true;");
+        CHECK(recordAt < drawAt);
+        CHECK(drawAt < requestAt);
+    }
+
+    SUBCASE("it runs AFTER the selection overlay and AFTER ImGuizmo's own submission") {
+        // The two things it must paint OVER. updateGizmo is where Manipulate submits the handles, so
+        // comparing against its CALL site is comparing against the frame position the handles are
+        // appended at -- the definition sits far below in the file and would prove nothing.
+        const std::size_t overlayAt = soleLineContaining(code, "drawSelectionOverlay(context,");
+        const std::size_t gizmoAt = soleLineContaining(code, "updateGizmo(context, Vec2{imageOrigin.x");
+        CHECK(overlayAt < drawAt);
+        CHECK(gizmoAt < drawAt);
+    }
+
+    SUBCASE("it draws the SAME layout step 8b'''' hit-tested -- computed once, read once (AC-16)") {
+        const std::size_t layoutAt = soleLineContaining(code, "updateViewAxisGizmo(Vec2{imageOrigin.x");
+        CHECK(layoutAt < drawAt);
+    }
+}
