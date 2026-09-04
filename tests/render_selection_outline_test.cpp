@@ -21,6 +21,7 @@
 
 #include <doctest/doctest.h>
 
+#include <algorithm>  // std::clamp / std::min / std::max -- the byte round trip and OG6's fold
 #include <array>
 #include <cmath>
 #include <cstddef>
@@ -435,6 +436,10 @@ TEST_CASE("render selection outline: the tap clamp names the LAST DRAWN TEXEL, n
     #include <aero/platform/platform.hpp>
     #include <aero/rhi/rhi.hpp>
 
+    // PRIVATE to engine/render (src/, never installed), reached by a relative include exactly as
+    // selection_outline_pack.hpp is above and as render_material_test.cpp reaches this same header.
+    // It is what lets OG6 FOLD the catalog's box out of the geometry instead of restating 0.5.
+    #include "../engine/render/src/primitives.hpp"
     #include "rhi_test_support.hpp"
 
     #include <memory>
@@ -924,14 +929,28 @@ TEST_CASE("render selection outline: a SPHERE outlines its silhouette, not its b
 
     // THE EXPECTATION IS COMPUTED FROM THE CATALOG'S BOX THROUGH THE CORNER ENUMERATION, a quantity
     // NO PART of the mask path touches: the mask rasterises the sphere's TRIANGLES and never sees a
-    // box at all. engine/render/src/primitives.cpp makes the sphere with RADIUS 0.5, which
-    // scene_bounds.hpp's own comment restates; the bit rule is that one -- bit 0 selects X, bit 1 Y,
-    // bit 2 Z, min when 0 and max when 1.
-    constexpr Vec3 BOX_MIN{-0.5F, -0.5F, -0.5F};
-    constexpr Vec3 BOX_MAX{0.5F, 0.5F, 0.5F};
+    // box at all. The box is FOLDED over the vertices makeSphere() actually returns -- the same fold
+    // ForwardRenderer::create does to build PrimitiveMesh::bounds, and the reason there is no second
+    // copy of 0.5 anywhere to drift out of step with primitives.cpp's RADIUS. A literal here would
+    // make this case probe the wrong pixels, and pass, the day that constant changed. The bit rule is
+    // scene_bounds.hpp's -- bit 0 selects X, bit 1 Y, bit 2 Z, min when 0 and max when 1.
+    const engine::render::detail::PrimitiveGeometry sphereGeometry = engine::render::detail::makeSphere();
+    REQUIRE(sphereGeometry.vertices.size() > 8U);  // anti-vacuity: the catalog really produced geometry
+    Vec3 boxMin = sphereGeometry.vertices.front().position;
+    Vec3 boxMax = boxMin;
+    for (const engine::render::MeshVertex& vertex : sphereGeometry.vertices) {
+        boxMin = Vec3{std::min(boxMin.x, vertex.position.x), std::min(boxMin.y, vertex.position.y),
+                      std::min(boxMin.z, vertex.position.z)};
+        boxMax = Vec3{std::max(boxMax.x, vertex.position.x), std::max(boxMax.y, vertex.position.y),
+                      std::max(boxMax.z, vertex.position.z)};
+    }
+    // ...and the fold really produced the origin-centred box this case reasons about, so a degenerate
+    // one cannot silently put all eight corners on top of each other at the screen centre.
+    REQUIRE(boxMax.x - boxMin.x > 0.9F);
+    REQUIRE(boxMax.y - boxMin.y > 0.9F);
     const auto corner = [&](std::size_t i) {
-        return Vec3{((i & 1U) != 0U) ? BOX_MAX.x : BOX_MIN.x, ((i & 2U) != 0U) ? BOX_MAX.y : BOX_MIN.y,
-                    ((i & 4U) != 0U) ? BOX_MAX.z : BOX_MIN.z};
+        return Vec3{((i & 1U) != 0U) ? boxMax.x : boxMin.x, ((i & 2U) != 0U) ? boxMax.y : boxMin.y,
+                    ((i & 4U) != 0U) ? boxMax.z : boxMin.z};
     };
     int cornersChecked = 0;
     for (std::size_t i = 0; i < 8U; ++i) {
