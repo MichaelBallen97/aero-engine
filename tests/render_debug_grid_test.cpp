@@ -941,6 +941,80 @@ TEST_CASE("render debug grid: the emitter reaches NO libm function but sqrt/floo
     CHECK_FALSE(contains(source, "std::this_is_not_a_function"));
 }
 
+TEST_CASE("render debug grid: the disc CENTRE is the focus, unsnapped, and it moves CONTINUOUSLY (GR26)") {
+    // THE INVARIANT debug_grid.hpp STATES AND NOTHING ELSE IN THIS FILE ASSERTED: "nothing translates
+    // as the camera moves -- lines enter and leave at the rim, where their alpha is already exactly
+    // zero." A camera-following grid can be built two ways, and the OTHER way -- snap a centre to the
+    // cadence and generate relative to it -- was MEASURED to pass this entire battery: 65 cases and
+    // 13.3 million assertions, green, while the grid's bright region jumped TEN WORLD UNITS for a
+    // 0.2-unit camera pan. GR12 cannot see it (snapping moves the DISC, not the LATTICE -- every line
+    // is still at k * spacing under both) and GR6 arm 2 cannot see it (its focus is the origin, and
+    // round(0 / s) * s == 0, so the seed is a no-op on every pose that arm visits).
+    //
+    // The observable is the SPAN MIDPOINT. Each line runs from centreSpan - halfChord to
+    // centreSpan + halfChord, so its middle ring vertex sits at centreSpan exactly -- which IS the
+    // disc centre, which IS the focus. Snapping moves it to a multiple of the coarsest spacing.
+    constexpr std::size_t STRIDE = std::size_t{2} * rd::DEBUG_GRID_FADE_SEGMENTS;
+    constexpr std::size_t MIDPOINT = STRIDE / 2U;  // ring[SEGMENTS/2], the t == 0.5 vertex
+
+    // DELIBERATELY OFF THE LATTICE, and asserted to be: a focus that happens to sit ON a multiple of
+    // any spacing makes snapping a no-op and this whole case vacuous. That is not a hypothetical --
+    // it is exactly why GR6 arm 2 is blind here.
+    const Vec3 focus{0.317F, 0.0F, -0.581F};
+    const rd::DebugGridParams params = poseAtScale(8.0F, focus);
+    const rd::DebugGridCadence cadence = rd::debugGridCadence(params);
+    REQUIRE(cadence.valid);
+    for (std::uint32_t c = 0; c < rd::DEBUG_GRID_CADENCES; ++c) {
+        CAPTURE(c);
+        CHECK(std::round(focus.x / cadence.spacing[c]) * cadence.spacing[c] != focus.x);
+        CHECK(std::round(focus.z / cadence.spacing[c]) * cadence.spacing[c] != focus.z);
+    }
+
+    rd::DebugDrawBatch batch = roomyBatch();
+    REQUIRE(rd::emitDebugGrid(batch, params) > 0U);
+    const std::vector<rd::DebugLineVertex> vertices = testedVertices(batch);
+    REQUIRE(vertices.size() % STRIDE == 0U);
+
+    // The tolerance is the chord arithmetic's own rounding, not slack: a snapped centre is wrong by
+    // up to half the COARSEST spacing (5.0 at this pose), which is five orders of magnitude larger.
+    const float tolerance = 1.0e-3F * cadence.spacing[0];
+    CAPTURE(tolerance);
+    std::size_t checkedLines = 0;
+    for (std::size_t base = 0; base + STRIDE <= vertices.size(); base += STRIDE) {
+        const bool constantX = vertices[base].position.x == vertices[base + 1U].position.x;
+        const float midpointSpan =
+            constantX ? vertices[base + MIDPOINT].position.z : vertices[base + MIDPOINT].position.x;
+        const float expected = constantX ? focus.z : focus.x;
+        CAPTURE(base);
+        CAPTURE(midpointSpan);
+        CAPTURE(expected);
+        CHECK(std::fabs(midpointSpan - expected) <= tolerance);
+        ++checkedLines;
+    }
+    CHECK(checkedLines > 100U);  // anti-vacuity: the walk really read a grid (measured: 2224 / 16)
+
+    // AND IT MOVES CONTINUOUSLY. A nudge far smaller than the FINEST spacing must move the centre by
+    // exactly that nudge -- not by zero (a snapped centre is frozen between jumps) and not by a
+    // spacing (which is what the jump looks like when it finally comes).
+    const float nudge = 0.25F * cadence.spacing[0];
+    const rd::DebugGridParams moved = poseAtScale(8.0F, Vec3{focus.x + nudge, 0.0F, focus.z});
+    rd::DebugDrawBatch movedBatch = roomyBatch();
+    REQUIRE(rd::emitDebugGrid(movedBatch, moved) > 0U);
+    const std::vector<rd::DebugLineVertex> movedVertices = testedVertices(movedBatch);
+    REQUIRE(movedVertices.size() >= STRIDE);
+
+    // Family A comes first (lines parallel to X, constant z), so vertex 0's line spans x and its
+    // midpoint is the centre's x. Both emissions are at the same cadence, so the same line leads.
+    REQUIRE(vertices[0].position.x != vertices[1].position.x);  // it really is family A
+    REQUIRE(movedVertices[0].position.x != movedVertices[1].position.x);
+    const float before = vertices[MIDPOINT].position.x;
+    const float after = movedVertices[MIDPOINT].position.x;
+    CAPTURE(before);
+    CAPTURE(after);
+    CAPTURE(nudge);
+    CHECK(std::fabs((after - before) - nudge) <= tolerance);
+}
+
 TEST_CASE("render debug grid: viewScale is the MAX of two arms, and each arm is discriminated (GR23)") {
     // THREE PROBES, each of which fails under a DIFFERENT one-line regression. A single probe would
     // pass under both `distance only` and `height only` for half the poses anyone tries.

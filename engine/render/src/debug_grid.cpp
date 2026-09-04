@@ -77,10 +77,15 @@ namespace {
     //      in terms of `<` -- so a cast to uint32_t below would be UB that UBSan traps.
     //  (2) AN EMPTY RANGE, written `!(kMinF <= kMaxF)` rather than `kMaxF < kMinF` so a NaN that
     //      slipped past (1) still takes this exit.
-    //  (3) THE COUNT. kMin and kMax come from two INDEPENDENT divisions, each rounding; at
-    //      |centreAlong / spacing| ~ 1e7 half an ulp is 0.6, enough to move ceil at one end and
-    //      floor at the other and produce 50 or 51 lines where 49 is the bound
-    //      DEBUG_GRID_MAX_LINES is derived from. The clamp makes the bound STRUCTURAL.
+    //  (3) THE ITERATION COUNT. kMin and kMax come from two INDEPENDENT divisions, each rounding;
+    //      at |centreAlong / spacing| ~ 1e7 half an ulp is 0.6, enough to move ceil at one end and
+    //      floor at the other. MEASURED: 660 poses in a wide sweep produce a span above 48, worst 64.
+    //      The clamp bounds the LOOP -- and NOT, despite an earlier comment here saying so, the
+    //      emitted COUNT. That bound comes from the disc clip below: radius <= RADIUS_CELLS * spacing,
+    //      so at most 2*RADIUS_CELLS + 1 lattice coordinates can lie inside the disc whatever the
+    //      loop does. Removing this clamp was seeded and left the battery green with an IDENTICAL
+    //      assertion count, worst emitted 2320 against a cap of 2368 -- which is the measurement that
+    //      corrected the attribution.
     if (!std::isfinite(kMinF) || !std::isfinite(kMaxF) || !(kMinF <= kMaxF)) {
         return 0;
     }
