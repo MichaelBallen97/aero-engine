@@ -427,16 +427,31 @@ TEST_CASE("render debug grid: the weights are CONTINUOUS across a decade boundar
     REQUIRE(next.level == low.level + 1);
     REQUIRE(next.fraction == 0.0F);
 
-    // THE SHIFT. Each world spacing keeps its alpha: s1 becomes the new s0 (weight a) and s2 becomes
-    // the new s1 (weight b). Written at f == 1 exactly, computed from the rule with the SAME a and b
-    // the emitter used, so this asserts the identity rather than re-deriving the numbers.
-    const float w0AtOne = a * (1.0F - 1.0F);
-    const float w1AtOne = (b * (1.0F - 1.0F)) + (a * 1.0F);
-    const float w2AtOne = b * 1.0F;
-    CHECK(w0AtOne == 0.0F);            // the finest cadence LEAVES at exactly zero alpha
-    CHECK(w1AtOne == next.weight[0]);  // s1 -> the new s0, at alpha a, EXACTLY
-    CHECK(w2AtOne == next.weight[1]);  // s2 -> the new s1, at alpha b, EXACTLY
-    CHECK(next.weight[2] == 0.0F);     // the new coarsest ENTERS at exactly zero alpha
+    // THE RULE ITSELF, READ BACK OFF THE EMITTER AT ITS OWN FRACTION. This is the arm that pins w1's
+    // `+ a*f` term, and it is here because NOTHING ELSE IN THIS FILE DOES: every other weight
+    // assertion sits at f == 0, where b(1-f) and b(1-f) + a*f are the SAME NUMBER. Dropping the term
+    // -- the naive two-set crossfade, which is precisely the regression D3 exists to prevent -- was
+    // MEASURED to pass the entire 13.3-million-assertion battery undetected before this arm existed.
+    // Exact, not toleranced: the same three multiplies in the same order as the emitter, so the only
+    // way to redden it is to change the RULE.
+    CHECK(high.fraction > 0.0F);  // anti-vacuity: a zero fraction would make the three lines below
+                                  // agree under the broken rule as well as the correct one
+    CHECK(high.weight[0] == a * (1.0F - high.fraction));
+    CHECK(high.weight[1] == (b * (1.0F - high.fraction)) + (a * high.fraction));
+    CHECK(high.weight[2] == b * high.fraction);
+
+    // THE SHIFT, with BOTH SIDES read off the emitter. f cannot reach exactly 1 -- the level flips
+    // first -- so the identity is asserted as a limit, with the epsilon carried INSIDE the assertion
+    // and tied to the actual distance from the boundary. At f = 1 - e the triple is (ae, b*e + a(1-e),
+    // b(1-e)), so each term is within (a + b)*e of its limit.
+    const float e = 1.0F - high.fraction;
+    const float tolerance = (a + b) * e;
+    CAPTURE(high.fraction);
+    CAPTURE(tolerance);
+    CHECK(high.weight[0] <= tolerance);                              // the finest cadence LEAVES at ~0
+    CHECK(std::fabs(high.weight[1] - next.weight[0]) <= tolerance);  // s1 -> the new s0, at alpha a
+    CHECK(std::fabs(high.weight[2] - next.weight[1]) <= tolerance);  // s2 -> the new s1, at alpha b
+    CHECK(next.weight[2] == 0.0F);                                   // the new coarsest ENTERS at 0
 
     // AND THE EXTENT IS CONTINUOUS FOR THE SAME REASON: R is a function of the SPACING alone, so the
     // disc a given world spacing is drawn over is unchanged across the boundary. This is INV-3, and
