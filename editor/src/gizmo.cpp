@@ -148,13 +148,14 @@ Mat4 gizmoParentMatrix(const World& world, Entity entity) {
     return allFinite(result) ? result : Mat4::identity();  // never hand a non-finite parent to inverse
 }
 
-bool gizmoOriginBehindCamera(const Mat4& viewProj, const Mat4& model, Vec2 viewportSizePoints) noexcept {
+bool gizmoOriginBehindCamera(const Mat4& viewProj, ProjectionMode mode, const Mat4& model,
+                             Vec2 viewportSizePoints) noexcept {
     const Vec3 origin{model.columns[3].x, model.columns[3].y, model.columns[3].z};
     Vec2 scratch{};
     // D9: projectToViewport already fails closed for w <= CLIP_W_EPSILON AND any non-finite result
     // (2.3.2 E4) -- reusing it is what gives pick, highlight and gizmo ONE shared "behind the camera"
     // definition for the w-based half of this test.
-    if (!projectToViewport(viewProj, origin, viewportSizePoints, scratch)) {
+    if (!projectToViewport(viewProj, mode, origin, viewportSizePoints, scratch)) {
         return true;
     }
     // Code-review finding (2026-07-29): our w-based test and ImGuizmo's OWN behind-camera test
@@ -167,6 +168,18 @@ bool gizmoOriginBehindCamera(const Mat4& viewProj, const Mat4& model, Vec2 viewp
     // the only one is at `:2728`). Mirroring ImGuizmo's own z-test here, from the SAME
     // viewProj*origin, closes the band completely: nothing can reach Manipulate that ImGuizmo itself
     // would have refused.
+    //
+    // TASK E.1.3 -- THIS TEST STOPS MIRRORING IN ORTHOGRAPHIC, AND IT IS KEPT ANYWAY. ImGuizmo's own
+    // guard at ImGuizmo.cpp:2696 reads `!gContext.mIsOrthographic && camSpacePosition.z < 0.001f &&
+    // !gContext.mbUsing`, so with SetOrthographic(true) the FIRST term is false and the early return
+    // -- and therefore the PushClipRect leak -- cannot happen at all. There is consequently nothing
+    // to mirror in that mode. The test stays UNCONDITIONAL rather than gaining a `mode ==
+    // Perspective` arm, because in ortho it is simply a slightly stricter near-plane cut of our own:
+    // test 1 above now refuses at clip.z <= CLIP_Z_EPSILON (1e-6) and this refuses at clip.z < 0.001,
+    // which is a narrower band on the same normalised axis and is safe. Do not delete it as dead
+    // code -- it is live and load-bearing in perspective, which is the mode this editor is in by
+    // default.
+    //
     // `!(clip.z >= 0.001F)`, not `clip.z < 0.001F`: the negated form fails CLOSED on a non-finite
     // clip.z (every direct `<`/`>=` comparison with NaN is false, so the negated form is true) --
     // the same NaN-safety idiom this codebase uses throughout (2.3.1/2.3.2).

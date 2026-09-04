@@ -61,11 +61,31 @@ Vec2 ndcToViewportPoints(Vec2 ndc, Vec2 viewportSizePoints) noexcept {
     return Vec2{(ndc.x + 1.0F) * 0.5F * viewportSizePoints.x, (1.0F - ndc.y) * 0.5F * viewportSizePoints.y};
 }
 
-bool projectToViewport(const Mat4& viewProj, Vec3 worldPoint, Vec2 viewportSizePoints, Vec2& outPoints) noexcept {
+namespace {
+
+// task E.1.3: the ONE place the mode picks a clip-space component and its threshold, so the two
+// predicates below cannot disagree about what "in front of the eye" means.
+[[nodiscard]] float inFrontComponent(const Vec4& clip, ProjectionMode mode) noexcept {
+    return (mode == ProjectionMode::Orthographic) ? clip.z : clip.w;
+}
+[[nodiscard]] constexpr float inFrontEpsilon(ProjectionMode mode) noexcept {
+    return (mode == ProjectionMode::Orthographic) ? CLIP_Z_EPSILON : CLIP_W_EPSILON;
+}
+
+}  // namespace
+
+bool projectToViewport(const Mat4& viewProj, ProjectionMode mode, Vec3 worldPoint, Vec2 viewportSizePoints,
+                       Vec2& outPoints) noexcept {
     const Vec4 clip = viewProj * toVec4(worldPoint, 1.0F);
-    // F13: w > 0 means "in front of the eye" under this engine's RH / -Z / clip-Z-in-[0,1] convention.
-    // The near plane is z_clip = 0, NOT z_clip = -w, so this is the correct and sufficient test.
-    if (!(clip.w > CLIP_W_EPSILON)) {
+    // PERSPECTIVE (F13, unchanged and byte-identical in behaviour): w > 0 means "in front of the eye"
+    // under this engine's RH / -Z / clip-Z-in-[0,1] convention. The near plane is z_clip = 0, NOT
+    // z_clip = -w, so this is the correct and sufficient test.
+    // ORTHOGRAPHIC (task E.1.3): clip.w does not depend on the world point at all -- an ortho proj's
+    // bottom row is (0,0,0,1) and the view matrix is affine -- so the w test is VACUOUS, and
+    // z_clip == 0 IS the near plane. Two arms, because a single test correct in both would change the
+    // perspective behaviour this task has no business changing (D12). The negated `>` keeps the
+    // NaN-safety of the original in both arms.
+    if (!(inFrontComponent(clip, mode) > inFrontEpsilon(mode))) {
         return false;
     }
     const Vec2 points = ndcToViewportPoints(Vec2{clip.x / clip.w, clip.y / clip.w}, viewportSizePoints);
@@ -76,9 +96,10 @@ bool projectToViewport(const Mat4& viewProj, Vec3 worldPoint, Vec2 viewportSizeP
     return true;
 }
 
-bool clipSegmentToNearPlane(Vec4& a, Vec4& b) noexcept {
-    const bool aInFront = a.w > CLIP_W_EPSILON;
-    const bool bInFront = b.w > CLIP_W_EPSILON;
+bool clipSegmentToNearPlane(Vec4& a, Vec4& b, ProjectionMode mode) noexcept {
+    const float epsilon = inFrontEpsilon(mode);
+    const bool aInFront = inFrontComponent(a, mode) > epsilon;
+    const bool bInFront = inFrontComponent(b, mode) > epsilon;
     if (aInFront && bInFront) {
         return true;
     }
@@ -87,14 +108,15 @@ bool clipSegmentToNearPlane(Vec4& a, Vec4& b) noexcept {
     }
     Vec4& behind = aInFront ? b : a;
     const Vec4& front = aInFront ? a : b;
-    const float denominator = front.w - behind.w;
+    const float denominator = inFrontComponent(front, mode) - inFrontComponent(behind, mode);
     if (!(denominator > 0.0F)) {
         return false;  // unreachable given aInFront != bInFront; NaN-safe and total anyway
     }
     // D14: interpolate IN CLIP SPACE, BEFORE the perspective divide. The clipped endpoint lands on
-    // w == CLIP_W_EPSILON exactly and stays on the original clip-space line -- which is what keeps
-    // the drawn edge straight. S8 seeds the post-divide lerp; this is what catches it.
-    const float t = (CLIP_W_EPSILON - behind.w) / denominator;
+    // the mode's own threshold exactly -- w == CLIP_W_EPSILON in perspective, z == CLIP_Z_EPSILON in
+    // ortho -- and stays on the original clip-space line, which is what keeps the drawn edge
+    // straight. S8 seeds the post-divide lerp; this is what catches it.
+    const float t = (epsilon - inFrontComponent(behind, mode)) / denominator;
     behind = behind + ((front - behind) * t);
     return std::isfinite(behind.x) && std::isfinite(behind.y) && std::isfinite(behind.z) && std::isfinite(behind.w);
 }
@@ -105,6 +127,29 @@ Ray viewportRay(const EditorCamera& camera, Vec2 ndc, float aspect) noexcept {
     const Ray unbuildable{.origin = camera.position(), .direction = Vec3::zero()};
     if (!allFinite(ndc) || !std::isfinite(aspect) || !(aspect > 0.0F)) {
         return unbuildable;
+    }
+    if (camera.projectionMode() == ProjectionMode::Orthographic) {
+        // task E.1.3: the PARALLEL arm. The direction is constant and the ORIGIN varies across the
+        // image plane -- the exact inverse of the perspective arm below.
+        const float halfHeight = camera.orthoHalfHeight();
+        // GUARD 1, for F2's reason: orthoHalfHeight is distance * tan(fovY/2), and clampState
+        // deliberately leaves a directly-set NaN in fovYValue for stateIsFinite() to sweep on the next
+        // update() -- so tan(NaN/2) is NaN here. The perspective arm already does this for tanHalf.
+        if (!std::isfinite(halfHeight)) {
+            return unbuildable;
+        }
+        const float halfWidth = halfHeight * aspect;
+        const Vec3 origin =
+            camera.position() + (camera.right() * (ndc.x * halfWidth)) + (camera.up() * (ndc.y * halfHeight));
+        const Vec3 direction = camera.forward();
+        // GUARDS 2 AND 3. The DIRECTION needs one too, not only the origin: forward() is NaN whenever
+        // yaw or pitch is poisoned, and normalizeOrZero returns NaN -- NOT zero -- for a NaN input
+        // (vec3.hpp: `lenSq <= eps*eps` is false for NaN), so the test must happen HERE, before it.
+        if (!allFinite(origin) || !allFinite(direction)) {
+            return unbuildable;
+        }
+        // normalizeOrZero, never normalize: the latter ASSERTS on a zero-length vector (vec3.hpp D15).
+        return Ray{.origin = origin, .direction = normalizeOrZero(direction)};
     }
     const float tanHalf = std::tan(camera.fovYRadians() * 0.5F);
     if (!std::isfinite(tanHalf)) {
@@ -217,7 +262,13 @@ PickResult pickEntity(const World& world, const EditorCamera& camera, const Pick
     const Mat4 viewProj = camera.projectionMatrix(request.aspect) * camera.viewMatrix();
     // A11: loop-invariant, so hoisted out of the walk below.
     const Vec2 clickPoints = ndcToViewportPoints(request.ndc, request.viewportSizePoints);
-    const Vec3 eye = camera.position();
+    // task E.1.3: the RAY's origin, not the camera's position. Under perspective viewportRay returns
+    // `.origin = camera.position()` on every path (including the unbuildable one), so this is provably
+    // a NO-OP in that mode -- and in orthographic it is the fix: the origin there sits on the eye
+    // PLANE, offset across the image, so measuring a point candidate's depth from the eye POINT would
+    // rank two entities at the same true depth differently depending on where they are on screen.
+    // PK15 is its witness, in both directions.
+    const Vec3 rayOrigin = ray.origin;
 
     PickResult mesh{};
     PickResult point{};
@@ -268,7 +319,8 @@ PickResult pickEntity(const World& world, const EditorCamera& camera, const Pick
             return;
         }
         Vec2 screen{};
-        if (!projectToViewport(viewProj, bounds.center(), request.viewportSizePoints, screen)) {
+        if (!projectToViewport(viewProj, camera.projectionMode(), bounds.center(), request.viewportSizePoints,
+                               screen)) {
             return;  // at or behind the eye
         }
         const float screenDistance = length(screen - clickPoints);
@@ -282,7 +334,7 @@ PickResult pickEntity(const World& world, const EditorCamera& camera, const Pick
         if (screenDistance < bestScreenDistance ||
             (!(screenDistance > bestScreenDistance) && e.index < point.entity.index)) {
             bestScreenDistance = screenDistance;
-            point = PickResult{.entity = e, .distance = length(bounds.center() - eye), .isPoint = true};
+            point = PickResult{.entity = e, .distance = length(bounds.center() - rayOrigin), .isPoint = true};
         }
     });
 

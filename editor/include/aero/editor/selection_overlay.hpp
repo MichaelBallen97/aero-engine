@@ -103,8 +103,13 @@ inline constexpr std::array<BoxEdge, 12> BOX_EDGES{{
 //
 // `lookup` (task 3.1.5) is DEFAULTED AND LAST, like entityBounds'/selectionBounds'/sceneBounds': a null
 // lookup resolves only primitives, which is exactly what this builder saw before references existed.
+//
+// `mode` (task E.1.3) is NON-DEFAULTED and sits immediately after `viewProj`, because the two describe
+// the same matrix -- and it keeps the defaulted `lookup` last. A default would let a call site
+// silently take the perspective clip gate under an orthographic camera, which draws no box at all for
+// anything behind the eye plane and reports nothing.
 void buildSelectionOverlay(const World& world, std::span<const Entity> entities, Entity primary, const Mat4& viewProj,
-                           Vec2 viewportSizePoints, std::vector<OverlaySegment>& scratch,
+                           ProjectionMode mode, Vec2 viewportSizePoints, std::vector<OverlaySegment>& scratch,
                            const MeshBoundsLookup* lookup = nullptr);
 
 }  // namespace engine::editor

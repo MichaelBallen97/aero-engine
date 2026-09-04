@@ -23,6 +23,7 @@
 #include <aero/scene/mesh_renderer.hpp>  // task 3.1.5: the Material arm asks the LIVE World
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <imgui.h>
@@ -103,6 +104,18 @@ constexpr ImU32 SELECTION_PRIMARY_COLOR = IM_COL32(255, 176, 64, 255);  // brigh
 constexpr float SELECTION_THICKNESS = 1.0F;
 constexpr float SELECTION_PRIMARY_THICKNESS = 2.0F;
 
+// task E.1.3: the view-axis widget's look. ALL TUNING VALUES, judged by the manual validation pass,
+// each named so a retune is one line -- and no tier-0 case asserts any of them (AC-21). The AXIS
+// colours are NOT here: they come from axis_palette.hpp through axisColorSrgbBytes, and this file is
+// the ONLY place they become an ImU32, which is the whole point of keeping ViewAxisBall style-free.
+// IM_COL32 is a pure shift/or over its four arguments, so constexpr is valid -- verified against the
+// pinned 1.92.8 header at :99-100 above, not assumed.
+constexpr ImU32 VIEW_AXIS_LABEL_COLOR = IM_COL32(16, 16, 20, 255);  // dark, for legibility on a filled ball
+constexpr ImU32 VIEW_AXIS_HOVER_OUTLINE_COLOR = IM_COL32(255, 255, 255, 255);
+constexpr ImU32 VIEW_AXIS_CENTER_FILL_COLOR = IM_COL32(210, 210, 215, 230);
+constexpr float VIEW_AXIS_NEGATIVE_FILL_ALPHA_SCALE = 0.22F;  // a NEGATIVE ball is a ring, faintly filled
+constexpr float VIEW_AXIS_RING_THICKNESS = 1.5F;
+
 // D7/E9: GetContentRegionAvail() is in LOGICAL units; allocation must be sized in PIXELS. A
 // non-finite or non-positive scale falls back to 1.0 (the framePaceSleepMs NaN-safe idiom,
 // editor_app.cpp:29) -- spelled with the negated `>` so NaN takes the fallback branch.
@@ -110,6 +123,18 @@ constexpr float SELECTION_PRIMARY_THICKNESS = 2.0F;
     const float safeScale = (scale > 0.0F) ? scale : 1.0F;
     const long rounded = std::lround(static_cast<double>(logical) * static_cast<double>(safeScale));
     return rounded < 1 ? 1U : static_cast<std::uint32_t>(rounded);
+}
+
+// task E.1.3: the half-open containment rule, lifted VERBATIM from the four comparisons that were
+// inline in overlayOwnsPress -- including the degenerate-rect guard that makes an empty rect own
+// nothing. Extracting it is what stops the widget's rect acquiring a subtly different rule from the
+// overlay row's. `min.x <= p.x < max.x`, and the negated `>` is the file's NaN-safe idiom: a
+// non-finite extent takes the "owns nothing" branch.
+[[nodiscard]] bool containsHalfOpen(Vec2 point, Vec2 rectMin, Vec2 rectMax) noexcept {
+    if (!(rectMax.x > rectMin.x) || !(rectMax.y > rectMin.y)) {
+        return false;
+    }
+    return point.x >= rectMin.x && point.x < rectMax.x && point.y >= rectMin.y && point.y < rectMax.y;
 }
 
 // The shared "nothing to show" path (D11/D12): a centred one-line message, no image, no request.
@@ -191,12 +216,50 @@ const render::DebugDraw* ViewportPanel::debugDraw() const noexcept { return debu
 // An EMPTY rect owns nothing: that is the first frame, and any frame that returned before step 9b.
 // The negated `>` is the file's own NaN-safe idiom (a non-finite extent takes the "owns nothing"
 // branch), and the half-open `< max` matches the FIRE step's own image-rect test one screen below.
-bool ViewportPanel::overlayOwnsPress(Vec2 pressPoints) const noexcept {
-    if (!(overlayRowBottomRight.x > overlayRowTopLeft.x) || !(overlayRowBottomRight.y > overlayRowTopLeft.y)) {
-        return false;
+bool ViewportPanel::overlayOwnsPress(Vec2 pressPoints, Vec2 imageOrigin, Vec2 imageSize) const noexcept {
+    if (containsHalfOpen(pressPoints, overlayRowTopLeft, overlayRowBottomRight)) {
+        return true;
     }
-    return pressPoints.x >= overlayRowTopLeft.x && pressPoints.x < overlayRowBottomRight.x &&
-           pressPoints.y >= overlayRowTopLeft.y && pressPoints.y < overlayRowBottomRight.y;
+    return viewAxisOwnsPoint(pressPoints, imageOrigin, imageSize);
+}
+
+// task E.1.3 (code-review round): the view-axis widget's rect, computed from THIS frame's image rect.
+// viewAxisRect is PURE, so unlike the row's latched rect there is no staleness argument to make at
+// all -- and it returns a DEGENERATE rect when the widget is not visible, which containsHalfOpen's own
+// guard turns into "owns nothing" with no second predicate. The widget hiding and the widget owning
+// nothing are therefore the SAME fact (D16), not two that have to be kept in step.
+//
+// The claim is on the whole RECT, not on the balls: a press on the widget's empty space -- inside the
+// square, on no ball and not on the badge -- is still chrome and must not deselect the scene entity
+// behind it. A press one point outside the rect picks normally.
+//
+// TWO CONSUMERS, ONE RECT: overlayOwnsPress above (the scene pick) and updateGizmo's ImGuizmo::Enable
+// term (the transform handles). Both presses belong to the widget, and a rule written twice is a rule
+// that eventually disagrees with itself.
+bool ViewportPanel::viewAxisOwnsPoint(Vec2 pointPoints, Vec2 imageOrigin, Vec2 imageSize) const noexcept {
+    Vec2 axisMin{};
+    Vec2 axisMax{};
+    viewAxisRect(imageOrigin, imageSize, axisMin, axisMax);
+    return containsHalfOpen(pointPoints, axisMin, axisMax);
+}
+
+// task E.1.3: the widget's rect as THIS frame's last drawn image implies it. Reported through
+// lastImageSizePoints -- the same latched value pickAt already uses -- because a test asks between
+// frames, when there is no live ImGui image rect to read. `imageOrigin` is not latched anywhere, so
+// these report the rect in IMAGE-RELATIVE points with the origin at {0,0}; a caller comparing against
+// a screen position adds the origin itself, exactly as the overlay's own draw loop does.
+Vec2 ViewportPanel::viewAxisRectMin() const noexcept {
+    Vec2 rectMin{};
+    Vec2 rectMax{};
+    viewAxisRect(Vec2::zero(), lastImageSizePoints, rectMin, rectMax);
+    return rectMin;
+}
+
+Vec2 ViewportPanel::viewAxisRectMax() const noexcept {
+    Vec2 rectMin{};
+    Vec2 rectMax{};
+    viewAxisRect(Vec2::zero(), lastImageSizePoints, rectMin, rectMax);
+    return rectMax;
 }
 
 const render::RenderTarget* ViewportPanel::outputTarget() const noexcept { return target ? &*target : nullptr; }
@@ -460,6 +523,21 @@ void ViewportPanel::onDraw(PanelContext& context) {
     lastAspect =
         drawExtent.height != 0 ? static_cast<float>(drawExtent.width) / static_cast<float>(drawExtent.height) : 1.0F;
 
+    // --- 8b''. the view snap (task E.1.3). AFTER nextGesture, so a gesture that STARTED this frame
+    // takes the camera over immediately; AFTER editorCamera.update, so the animation writes LAST and
+    // wins; and BEFORE everything downstream, so the gizmo, the pick, the overlay and renderScene all
+    // see ONE camera. The same reasoning updateGizmo's own position comment makes, one step earlier.
+    if (gesture.gesture != CameraGesture::None) {
+        viewSnap.cancel();
+    }
+    if (viewSnap.active()) {
+        applyViewPose(editorCamera, viewSnap.advance(context.deltaSeconds));
+    }
+
+    // --- 8b''''. the widget's layout and its click. ONE layout, computed here and drawn at step 9x,
+    // so the picture and the hit test can never disagree (AC-16).
+    updateViewAxisGizmo(Vec2{imageOrigin.x, imageOrigin.y}, Vec2{avail.x, avail.y}, inputHovered);
+
     // --- 8b'. transform gizmos (task 2.3.3). BETWEEN the camera and picking, and that position is
     // load-bearing in BOTH directions (D4):
     //   AFTER the camera  -- Manipulate must see THIS frame's view/projection, or the handles land
@@ -484,6 +562,10 @@ void ViewportPanel::onDraw(PanelContext& context) {
     // has NO "route to hovered" flag, so Shortcut() cannot express it. io.WantTextInput preserves the
     // rule's real intent (AC-15); repeat=false frames once per press, not every frame.
     if (inputHovered && !io.WantTextInput && ImGui::IsKeyPressed(ImGuiKey_F, false)) {
+        viewSnap.cancel();  // task E.1.3: F and a running snap must never fight over yaw/pitch. The
+                            // snap writes both every frame; focusOn writes pivot and distance and
+                            // leaves yaw/pitch alone -- so without this the camera would frame the
+                            // selection while still rotating toward a canonical view.
         focusSelection(context);
     }
 
@@ -499,6 +581,13 @@ void ViewportPanel::onDraw(PanelContext& context) {
     ImGui::TextColored(OVERLAY_COLOR, "%ux%u", drawExtent.width, drawExtent.height);
     if (gesture.gesture == CameraGesture::Fly) {
         ImGui::TextColored(OVERLAY_COLOR, "fly %.1f u/s", static_cast<double>(editorCamera.flySpeed()));
+    }
+    // task E.1.3 (D15): the mode is readable in TWO places -- here, and on the widget's centre badge.
+    // A badge letter alone is a glyph 6 points across on a widget the eye is not looking at; a person
+    // who wonders "why does nothing get smaller when I fly forward" needs a word, in the place they
+    // already read the resolution.
+    if (editorCamera.projectionMode() == ProjectionMode::Orthographic) {
+        ImGui::TextColored(OVERLAY_COLOR, "ortho");
     }
     // Step 9b: RECORD THE INTERACTIVE STRIP'S RECT, in the same screen-space POINTS io.MousePos uses,
     // so updatePick's ARM step can refuse a press the strip owns. `rowStart` is captured BEFORE the
@@ -518,6 +607,12 @@ void ViewportPanel::onDraw(PanelContext& context) {
     const ImVec2 rowEnd = ImGui::GetItemRectMax();
     overlayRowTopLeft = Vec2{rowStart.x, rowStart.y};
     overlayRowBottomRight = Vec2{rowEnd.x, rowEnd.y};
+
+    // Step 9x (task E.1.3): the widget draws LAST, over everything -- the image, the selection
+    // overlay, the interactive row and ImGuizmo's own handles, which were submitted at step 8b'. It
+    // reads the SAME axisLayout/axisHover step 8b'''' computed, so what is drawn is exactly what was
+    // hit-tested.
+    drawViewAxisGizmo();
 
     // Step 10: record the request, LAST, after everything succeeded.
     renderRequested = true;
@@ -558,7 +653,7 @@ void ViewportPanel::updatePick(PanelContext& context, Vec2 imageOrigin, Vec2 ava
     // fired on exactly the frames a pick was being attempted -- disabling scene picking outright.
     const Vec2 pressPos{io.MousePos.x, io.MousePos.y};
     if (hovered && !gizmoActive && gesture.gesture == CameraGesture::None &&
-        ImGui::IsMouseClicked(ImGuiMouseButton_Left) && !overlayOwnsPress(pressPos)) {
+        ImGui::IsMouseClicked(ImGuiMouseButton_Left) && !overlayOwnsPress(pressPos, imageOrigin, avail)) {
         pickArmed = true;
         pickPressPos = pressPos;
     }
@@ -646,7 +741,7 @@ void ViewportPanel::updateGizmo(PanelContext& context, Vec2 imageOrigin, Vec2 av
 
     // 4. The behind-camera skip (D9/F5).
     const Mat4 viewProj = editorCamera.projectionMatrix(lastAspect) * editorCamera.viewMatrix();
-    if (gizmoOriginBehindCamera(viewProj, *model, avail) && !ImGuizmo::IsUsing()) {
+    if (gizmoOriginBehindCamera(viewProj, editorCamera.projectionMode(), *model, avail) && !ImGuizmo::IsUsing()) {
         // E19 -- every early return clears BOTH latches, not just the one above. Reaching this
         // return means IsUsing() is false, so if the previous frame was mid-drag the End edge
         // happens HERE. Reading IsUsing() here is deliberate and is NOT the F8 mistake: F8 forbids
@@ -662,7 +757,15 @@ void ViewportPanel::updateGizmo(PanelContext& context, Vec2 imageOrigin, Vec2 av
     // 5. Per-frame setup. SetDrawlist is FIRST and EVERY frame, because BeginFrame() reassigns
     // gContext.mDrawList to the "gizmo" window's list (ImGuizmo.cpp:1017).
     ImGuizmo::SetDrawlist(ImGui::GetWindowDrawList());
-    ImGuizmo::SetOrthographic(false);                                   // EditorCamera is perspective-only
+    // task E.1.3: driven from the camera's own mode, never a literal. MEASURED at the pinned port's
+    // source, `grep -c mIsOrthographic ImGuizmo.cpp` == 5: the flag reaches exactly FIVE lines (:772
+    // the member, :984 this setter, :1298 the ROTATION RING's view direction, :1336 the ring's start
+    // angle, :2696 the behind-camera early return) -- the count said FOUR here and then listed five
+    // until the code-review round, which is why the command is written out beside it now.
+    // mScreenFactor (:1128) and ComputeCameraRay (:842-861) are projection-agnostic, so
+    // handle SIZING and handle HIT-TESTING were already correct in ortho. What this flag buys is the
+    // rotate ring's orientation and the behind-camera skip.
+    ImGuizmo::SetOrthographic(editorCamera.projectionMode() == ProjectionMode::Orthographic);
     ImGuizmo::SetRect(imageOrigin.x, imageOrigin.y, avail.x, avail.y);  // POINTS (D18), never drawExtent
 
     // A4/E6-corrected (approved at plan review): a drag ImGuizmo never saw RELEASED (panel hidden,
@@ -676,8 +779,37 @@ void ViewportPanel::updateGizmo(PanelContext& context, Vec2 imageOrigin, Vec2 av
     if (gizmoWasUsing && !ImGui::IsMouseDown(ImGuiMouseButton_Left) && !ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
         ImGuizmo::Enable(false);
     }
-    ImGuizmo::Enable(gesture.gesture == CameraGesture::None);  // D20: an RMB-fly begun mid-drag ends
-                                                               // the drag cleanly at its current value
+    // task E.1.3 (code-review round): THE VIEW-AXIS WIDGET OWNS ITS OWN PRESSES, AND ImGuizmo HAS TO
+    // BE TOLD. ImGuizmo's CanActivate() is `IsMouseClicked(0) && !IsAnyItemHovered() &&
+    // !IsAnyItemActive()` (ImGuizmo.cpp:1670-1677) and GetMoveType gates only on mbMouseOver, i.e.
+    // "the cursor is over this window" (:2108-2113). The interactive overlay row is protected from
+    // that only INCIDENTALLY -- its Checkbox/Combo/SliderFloat are real ImGui items, so
+    // IsAnyItemHovered() is true over them -- while the widget deliberately submits NO item at all,
+    // which makes it invisible to exactly that protection. So a click on a ball whose box the
+    // translate arrows happened to cross BOTH started the snap and latched a drag against a plane
+    // captured in the PRE-snap view; the camera then rotated every frame and the release translated
+    // the entity, through TransformCommand, as a real undoable scene edit.
+    //
+    // WHY Enable() RATHER THAN AN EARLY RETURN OR AN IsOver() TEST IN THE WIDGET'S OWN GUARD. This is
+    // the arbitration this file already uses: the D20 term in the same call says exactly the same
+    // thing about a camera gesture -- "someone else owns this press, do not activate". Enable(false)
+    // skips only HandleTranslation/Scale/Rotation (ImGuizmo.cpp:2704) and leaves the Draw*Gizmo calls
+    // running, so the handles stay on screen (greyed, as they already do mid-gesture) rather than
+    // vanishing for every frame the cursor is parked in the corner, which is what an early return
+    // here would do. An `!ImGuizmo::IsOver()` term in the widget's click guard was rejected twice
+    // over: it would let the SCENE win over chrome that draws on top of it (step 9x draws the widget
+    // over ImGuizmo's handles), and it would read gContext state BEFORE this frame's Manipulate,
+    // which is the F8 mistake by name.
+    //
+    // `!IsUsing()` MIRRORS ImGuizmo.cpp:2697's OWN reasoning, the same way item 4 above does: a drag
+    // that STARTED elsewhere and wandered over the widget must not be cut off, and Enable(false)
+    // force-clears mbUsing (:1070-1077), which would drop it at its current value. `hovered` keeps
+    // the claim to frames where the cursor is really on this image, and viewAxisOwnsPoint answers
+    // with a DEGENERATE rect -- owning nothing -- whenever the widget is not visible.
+    const bool widgetOwnsCursor =
+        hovered && !ImGuizmo::IsUsing() && viewAxisOwnsPoint(Vec2{io.MousePos.x, io.MousePos.y}, imageOrigin, avail);
+    // D20: an RMB-fly begun mid-drag ends the drag cleanly at its current value.
+    ImGuizmo::Enable(gesture.gesture == CameraGesture::None && !widgetOwnsCursor);
 
     // 6. Arguments.
     const GizmoSpace space = effectiveSpace(gizmoMode.operation, gizmoMode.space);
@@ -772,6 +904,130 @@ void ViewportPanel::updateGizmo(PanelContext& context, Vec2 imageOrigin, Vec2 av
     // drag that has already finished.
     if (edge == GizmoDragEdge::End) {
         context.commands.breakMergeChain();
+    }
+}
+
+// ---- task E.1.3: the view-axis gizmo ------------------------------------------------------------
+
+void ViewportPanel::beginViewSnap(ViewAxis axis) noexcept {
+    // THE ONE PATH. requestViewSnap and the real click both come here, so the seam and a click are
+    // indistinguishable downstream (the pickAt / drop-drain precedent).
+    const ViewPose target = viewAxisPose(axis, editorCamera.yaw());
+    viewSnap.start(editorCamera.yaw(), editorCamera.pitch(), target);
+    if (!viewSnap.active()) {
+        // D7's instant path: already within the epsilon of the target, so apply it directly rather
+        // than locking the camera out for 0.25 s to travel nowhere. Clicking the view you are already
+        // in is the common case, and an animation there reads as a stutter (AC-5).
+        applyViewPose(editorCamera, target);
+    }
+}
+
+void ViewportPanel::updateViewAxisGizmo(Vec2 imageOrigin, Vec2 avail, bool inputHovered) {
+    axisLayout = viewAxisLayout(editorCamera, imageOrigin, avail);
+    const ImGuiIO& io = ImGui::GetIO();
+    axisHover = inputHovered ? viewAxisPickAt(axisLayout, Vec2{io.MousePos.x, io.MousePos.y}) : ViewAxisPick{};
+
+    // The widget acts ONLY on a plain fresh LMB that nextGesture did not claim (D9). Every camera
+    // modifier combination -- Alt+LMB, Ctrl/Cmd+Alt+LMB, MMB, RMB, Alt+RMB -- has ALREADY been
+    // classified into `gesture` by this point, so there is no modifier list here to drift out of sync
+    // with editor_camera.hpp's rule 3. `hovered` is deliberately NOT suppressed over the widget: it
+    // also gates the wheel and F, so parking the cursor in the corner would silently disable zoom and
+    // framing.
+    if (!inputHovered || gesture.gesture != CameraGesture::None || !ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+        return;
+    }
+    switch (axisHover.kind) {  // NO default: -- a fourth ViewAxisHit must be a -Wswitch error
+        case ViewAxisHit::Axis:
+            beginViewSnap(axisHover.axis);
+            break;
+        case ViewAxisHit::Center:
+            editorCamera.setProjectionMode(editorCamera.projectionMode() == ProjectionMode::Orthographic
+                                               ? ProjectionMode::Perspective
+                                               : ProjectionMode::Orthographic);
+            break;
+        case ViewAxisHit::None:
+            break;  // a press on the widget's empty space is chrome, and is swallowed by
+                    // overlayOwnsPress at step 8d -- not here
+    }
+}
+
+void ViewportPanel::drawViewAxisGizmo() const {
+    if (!axisLayout.visible) {
+        return;  // D16: nothing draws, and no PushClipRect is left unbalanced
+    }
+    ImDrawList* const drawList = ImGui::GetWindowDrawList();
+    // 1:1 with PopClipRect, like every ImGui pair -- an unbalanced pair is an IM_ASSERT ABORT in
+    // Debug, not a visual glitch. `true` INTERSECTS with the window's own clip rect rather than
+    // replacing it. Padded by one ball radius so a hovered ball's grown outline is not shaved.
+    //
+    // Derived from the LAYOUT'S OWN CENTRE, not from viewAxisRect: this step has no image rect to
+    // hand it (drawViewAxisGizmo takes nothing, by the drawGizmoBar precedent), and the centre here
+    // IS the value viewAxisRect would derive its corners from -- viewAxisLayout and viewAxisRect both
+    // go through viewAxisCenter. A code-review round removed a call that passed a SYNTHETIC image
+    // rect of 2 * VIEW_AXIS_HALF_EXTENT_POINTS instead: that is below VIEW_AXIS_MIN_IMAGE_POINTS, so
+    // the widget read as invisible and the call wrote {0,0}/{0,0} into two locals nothing then read.
+    constexpr float PAD = VIEW_AXIS_BALL_RADIUS_POINTS;
+    drawList->PushClipRect(ImVec2(axisLayout.centerPoints.x - VIEW_AXIS_HALF_EXTENT_POINTS - PAD,
+                                  axisLayout.centerPoints.y - VIEW_AXIS_HALF_EXTENT_POINTS - PAD),
+                           ImVec2(axisLayout.centerPoints.x + VIEW_AXIS_HALF_EXTENT_POINTS + PAD,
+                                  axisLayout.centerPoints.y + VIEW_AXIS_HALF_EXTENT_POINTS + PAD),
+                           true);
+
+    // FAR -> NEAR, so a near ball paints over a far one. THE THREE CHANNELS ARE INDEPENDENT (D3):
+    // SIGN is fill-vs-ring, DEPTH is alpha, HOVER is growth plus a white outline plus a forced letter.
+    // A reader must be able to tell "this axis points away from me" from "this is the negative axis".
+    for (const std::uint8_t index : axisLayout.drawOrder) {
+        const ViewAxisBall& ball = axisLayout.balls[index];
+        const bool hot = axisHover.kind == ViewAxisHit::Axis && axisHover.axis == ball.axis;
+        const std::array<std::uint8_t, 3> rgb = axisColorSrgbBytes(viewAxisPaletteKey(ball.axis));
+        // depth > 0 is the BACK hemisphere (larger == farther), and it dims rather than hides.
+        const float alpha = (ball.depth > 0.0F) ? VIEW_AXIS_BACK_ALPHA : 1.0F;
+        const float radius = VIEW_AXIS_BALL_RADIUS_POINTS * (hot ? VIEW_AXIS_HOVER_GROWTH : 1.0F);
+        // F18: ImVec2 + ImVec2 does not compile here (IMGUI_DEFINE_MATH_OPERATORS is defined
+        // nowhere) -- component-wise, always.
+        const ImVec2 center(axisLayout.centerPoints.x + ball.offsetPoints.x,
+                            axisLayout.centerPoints.y + ball.offsetPoints.y);
+        const auto colorAt = [&rgb](float a) { return IM_COL32(rgb[0], rgb[1], rgb[2], static_cast<int>(a * 255.0F)); };
+        if (ball.positive) {
+            drawList->AddCircleFilled(center, radius, colorAt(alpha));
+        } else {
+            drawList->AddCircleFilled(center, radius, colorAt(alpha * VIEW_AXIS_NEGATIVE_FILL_ALPHA_SCALE));
+            drawList->AddCircle(center, radius, colorAt(alpha), 0, VIEW_AXIS_RING_THICKNESS);
+        }
+        if (hot) {
+            drawList->AddCircle(center, radius + 1.0F, VIEW_AXIS_HOVER_OUTLINE_COLOR, 0, VIEW_AXIS_RING_THICKNESS);
+        }
+        // A POSITIVE ball is always lettered; a negative one only while hovered, so the ring reads as
+        // "the other end of that axis" rather than as a sixth, differently-labelled direction.
+        if (ball.positive || hot) {
+            const std::array<char, 2> label{viewAxisLabel(ball.axis), '\0'};
+            const ImVec2 textSize = ImGui::CalcTextSize(label.data());
+            drawList->AddText(ImVec2(center.x - (textSize.x * 0.5F), center.y - (textSize.y * 0.5F)),
+                              VIEW_AXIS_LABEL_COLOR, label.data());
+        }
+    }
+
+    // The centre badge: the projection toggle, and the SECOND place the mode is readable (D15).
+    const ImVec2 badgeCenter(axisLayout.centerPoints.x, axisLayout.centerPoints.y);
+    const bool centerHot = axisHover.kind == ViewAxisHit::Center;
+    drawList->AddCircleFilled(badgeCenter, VIEW_AXIS_CENTER_RADIUS_POINTS, VIEW_AXIS_CENTER_FILL_COLOR);
+    if (centerHot) {
+        drawList->AddCircle(badgeCenter, VIEW_AXIS_CENTER_RADIUS_POINTS + 1.0F, VIEW_AXIS_HOVER_OUTLINE_COLOR, 0,
+                            VIEW_AXIS_RING_THICKNESS);
+    }
+    const std::array<char, 2> badge{editorCamera.projectionMode() == ProjectionMode::Orthographic ? 'O' : 'P', '\0'};
+    const ImVec2 badgeTextSize = ImGui::CalcTextSize(badge.data());
+    drawList->AddText(ImVec2(badgeCenter.x - (badgeTextSize.x * 0.5F), badgeCenter.y - (badgeTextSize.y * 0.5F)),
+                      VIEW_AXIS_LABEL_COLOR, badge.data());
+
+    drawList->PopClipRect();  // 1:1 with the PushClipRect above -- INV-6
+
+    // NO PushID/PopID: this widget submits no ImGui ITEM, only draw-list commands and one tooltip, so
+    // there is no id to scope. SetTooltip needs no item either -- it opens a tooltip window directly.
+    if (centerHot) {
+        ImGui::SetTooltip("%s -- click to switch", editorCamera.projectionMode() == ProjectionMode::Orthographic
+                                                       ? "Orthographic"
+                                                       : "Perspective");
     }
 }
 
@@ -898,8 +1154,9 @@ void ViewportPanel::drawSelectionOverlay(PanelContext& context, Vec2 imageOrigin
     // drawExtent, and renderScene derives the identical number from frame->extent() with no resize in
     // between) -- so the box lands on the pixels it belongs to, never one frame behind them.
     const Mat4 viewProj = editorCamera.projectionMatrix(lastAspect) * editorCamera.viewMatrix();
-    buildSelectionOverlay(context.world, context.selection.entities(), context.selection.primary(), viewProj, avail,
-                          overlayScratch, meshBounds);  // task 3.1.5 -- the third of INV-D6's three
+    buildSelectionOverlay(context.world, context.selection.entities(), context.selection.primary(), viewProj,
+                          editorCamera.projectionMode(), avail, overlayScratch,
+                          meshBounds);  // task 3.1.5 -- the third of INV-D6's three
     if (overlayScratch.empty()) {
         return;  // E1: no PushClipRect at all, so there is no pair left unbalanced
     }

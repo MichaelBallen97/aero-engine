@@ -28,7 +28,7 @@ namespace {
 // The corners come from scene_bounds.hpp's aabbCorner (task 3.1.5), which DELETED this file's own copy
 // of the bit-order enumeration: BOX_EDGES is derived from that one assignment, so the bounds walk, the
 // pick and the highlight agree by construction rather than by three matching comments.
-void appendBoxEdges(const Mat4& mvp, const Aabb& box, Vec2 viewportSizePoints, OverlayRole role,
+void appendBoxEdges(const Mat4& mvp, ProjectionMode mode, const Aabb& box, Vec2 viewportSizePoints, OverlayRole role,
                     std::vector<OverlaySegment>& out) {
     std::array<Vec4, 8> clip{};
     for (std::size_t i = 0; i < clip.size(); ++i) {
@@ -37,7 +37,7 @@ void appendBoxEdges(const Mat4& mvp, const Aabb& box, Vec2 viewportSizePoints, O
     for (const BoxEdge edge : BOX_EDGES) {
         Vec4 a = clip[edge.a];
         Vec4 b = clip[edge.b];
-        if (!clipSegmentToNearPlane(a, b)) {
+        if (!clipSegmentToNearPlane(a, b, mode)) {
             continue;  // both endpoints at or behind the eye: this edge does not exist on screen
         }
         const Vec2 pa = ndcToViewportPoints(Vec2{a.x / a.w, a.y / a.w}, viewportSizePoints);
@@ -53,10 +53,10 @@ void appendBoxEdges(const Mat4& mvp, const Aabb& box, Vec2 viewportSizePoints, O
 // for a SELECTED non-mesh entity. The recorded trade-off is real -- the pick target for a light is
 // INVISIBLE until you hit it -- and the always-on alternative is really the first step of a
 // gizmo-icon system, which is not this task's deliverable (Handoffs).
-void appendPointMarker(const Mat4& viewProj, Vec3 worldPoint, Vec2 viewportSizePoints, OverlayRole role,
-                       std::vector<OverlaySegment>& out) {
+void appendPointMarker(const Mat4& viewProj, ProjectionMode mode, Vec3 worldPoint, Vec2 viewportSizePoints,
+                       OverlayRole role, std::vector<OverlaySegment>& out) {
     Vec2 center{};
-    if (!projectToViewport(viewProj, worldPoint, viewportSizePoints, center)) {
+    if (!projectToViewport(viewProj, mode, worldPoint, viewportSizePoints, center)) {
         return;  // at or behind the eye, or non-finite (E4/E7)
     }
     constexpr float H = POINT_MARKER_HALF_POINTS;
@@ -73,7 +73,7 @@ void appendPointMarker(const Mat4& viewProj, Vec3 worldPoint, Vec2 viewportSizeP
 }  // namespace
 
 void buildSelectionOverlay(const World& world, std::span<const Entity> entities, Entity primary, const Mat4& viewProj,
-                           Vec2 viewportSizePoints, std::vector<OverlaySegment>& scratch,
+                           ProjectionMode mode, Vec2 viewportSizePoints, std::vector<OverlaySegment>& scratch,
                            const MeshBoundsLookup* lookup) {
     scratch.clear();  // CALLER-OWNED SCRATCH: cleared on entry, reused across frames (D6/AC-18)
     std::size_t drawn = 0;
@@ -97,7 +97,7 @@ void buildSelectionOverlay(const World& world, std::span<const Entity> entities,
             // path, reached by one more condition rather than by new code.
             const std::optional<Aabb> local = localBoundsFor(*world.get<MeshRenderer>(entity), lookup);
             if (local.has_value()) {
-                appendBoxEdges(viewProj * model, *local, viewportSizePoints, role, scratch);
+                appendBoxEdges(viewProj * model, mode, *local, viewportSizePoints, role, scratch);
                 continue;
             }
         }
@@ -105,7 +105,7 @@ void buildSelectionOverlay(const World& world, std::span<const Entity> entities,
         // point on screen, which is finite, informative, and exactly what a user who typed scale = 0
         // should see. You cannot CLICK a zero-volume object, but you should still SEE what you
         // selected -- so there is no determinant guard here.
-        appendPointMarker(viewProj, transformPoint(model, Vec3::zero()), viewportSizePoints, role, scratch);
+        appendPointMarker(viewProj, mode, transformPoint(model, Vec3::zero()), viewportSizePoints, role, scratch);
     }
 }
 

@@ -99,6 +99,7 @@ add_library(aero_editor_core STATIC
     src/picking.cpp             # task 2.3.2 -- screen ray + ray-vs-box + the world pick (ImGui-free)
     src/selection_overlay.cpp   # task 2.3.2 -- selection -> screen-space segments (ImGui-free)
     src/gizmo.cpp                # task 2.3.3 -- the pure gizmo model (ImGui-free AND ImGuizmo-free)
+    src/view_axis_gizmo.cpp     # task E.1.3 -- the corner widget's layout, hit test, poses and snap
     src/transform_ops.cpp       # task 2.3.3 -- the Transform write seam 2.4.2 wraps
     src/command_stack.cpp       # task 2.4.1 -- Command + the bounded CommandStack (ImGui-free, entt-free)
     src/transform_command.cpp   # task 2.4.1 -- the undoable Transform write wrapping transform_ops
