@@ -13,8 +13,9 @@ Two platform matrices, never to be conflated: the **editor** runs on macOS/Windo
 **PHASE E (Editor Experience) IS OPEN — it executes between Phase 3 and Phase 4.**
 **E.1.1 (Debug line renderer) is MERGED (PR #92, `15bf58b`), E.1.2 (Grid floor + world axes) is
 MERGED (PR #93, `d91eab1`), E.1.3 (View-axis gizmo) is MERGED (PR #94) and E.1.4 (Silhouette
-selection outline) is COMPLETE IN CODE on `feat/E.1.4-silhouette-selection-outline` (nine commits,
-full local gate green on both presets and both reduced configurations) and NOT YET MERGED; the
+selection outline) is COMPLETE IN CODE on `feat/E.1.4-silhouette-selection-outline` (fifteen
+commits, the code-review round closed and the 22-seed sabotage matrix run, full local gate green on
+both presets and both reduced configurations) and NOT YET MERGED; the
 other 20 tasks are planning only.** Six epics, 24
 tasks, in `docs/tasks/phase-E.md`. It is **lettered, not fractioned**, because `3.5` and `3.5.1`/`3.5.2` are
 already Phase 3's Skeletal-animation epic and its tasks — a "Phase 3.5" would collide with referenced
@@ -59,10 +60,10 @@ Epics **3.1** (AssetDatabase), **3.2** (Importers), **3.3** (Cooker v0), **3.4**
 **The selection highlight stops being a box.** The selected instances are drawn again — same vertex
 shaders, same per-instance cull mode — into an `R8Unorm` mask depth-tested `LessOrEqual` against the
 depth the forward pass just wrote, and a nine-tap edge detect composites a band over the
-already-resolved image, after the tonemap, in sRGB display bytes. Nine commits, 7 new files and 16
-edited source/header files, no new dependency, no link-line change, no component, no scene-format
-change. **`ctest -N`
-unmoved at 172.** Full detail in `docs/10`; the four sentences that govern new work are below.
+already-resolved image, after the tonemap, in sRGB display bytes. Fifteen commits — nine for the
+task, six closing the code-review round — 7 new files and 16 edited source/header files, no new
+dependency, no link-line change, no component, no scene-format change. **`ctest -N`
+unmoved at 172.** Full detail in `docs/10`; the sentences that govern new work are below.
 
 **1. `RenderTarget` CAN NOW STORE ITS DEPTH, OPT-IN, AND `PostProcess` FORWARDS IT.** Two flags,
 `RenderTargetConfig::depthStore` and `PostProcessConfig::sceneDepthStore`, both defaulting to today's
@@ -123,6 +124,42 @@ which this tree has none of: `-ts="*selection outline*"` selects zero cases and 
 
 **INV-7: THIS TASK ADDED NO `DebugDraw` PRODUCER**, so E.1.2's shared-batch wall is **still**
 E.2.3's to hit against `I112`.
+
+**A UV THAT ADDRESSES A SUB-RECT NEEDS TWO DIFFERENT FAR BOUNDS, AND CONFUSING THEM DRAWS A BAND
+ALONG THE FRAME EDGE.** `tonemapSourceUvMax` returns the drawn rect's **exclusive** far edge, which
+is right for a fullscreen triangle's far corner and **wrong as a clamp**: under Nearest filtering the
+texel a uv names is `floor(uv · extent)`, and `floor((drawW / texW) · texW) == drawW` is the **first
+cleared MARGIN texel**. The review round found the outline clamping there, reading 0 against a
+silhouette of 1 and lighting the right and bottom edges — 140 of 140 rows and 200 of 200 columns on
+the editor's own 200x140-in-256x192, **0 of each at `quantum = 1`**. A clamp bound must be the last
+drawn texel's **centre**, `(drawExtent − 0.5) / textureExtent`
+(`detail::selectionOutlineClampUvMax`), and it is a DISTINCT quantity from the vertex stage's, with
+its own name in the HLSL (`uUvClampMax`) so the two cannot be respelled into one. **And the case that
+guards it must run on a MARGINED target**: `drawExtent == textureExtent` makes the bound
+unobservable, because the hardware's own `ClampToEdge` answers correctly there — the same blindness
+D10 names for the viewport, one function over.
+
+**THE MASK MIRRORS `draw()`'s FRUSTUM CULL, WITH `draw()`'s OWN RESOLVED FRUSTUM.** "An off-screen
+instance writes to no texel" is FALSE as a reason to skip it: `RenderView::cullingEnabled` defaults
+**true**, `buildRenderView` never clears it, and `draw()` culls on the **cooked AABB**, so an
+instance whose bounds are invalid or smaller than its triangles is dropped from the picture while
+still projecting on screen. `draw()` publishes its resolved `(frustum, culling)` pair and
+`renderSelectionMask` reads it — a mirror, never a second extraction, because the mask pass has no
+camera and a second gate would be a second source of truth. **Any future pass that re-draws a subset
+of the forward pass's instances inherits this**, and it errs safe: an instance `draw()` drops is
+dropped there too.
+
+**THE SABOTAGE MATRIX LEFT FOUR HOLES, EACH MEASURED AND EACH STILL OPEN.** (1) Drawing `primary`
+BEFORE `secondary` reddens nothing — `OG4`'s overlap subcase uses two **adjacent** quads, not two
+covering one texel, so nothing in the tree covers "primary last". (2) Flipping the outline sampler to
+`Linear` reddens nothing, because every tap lands on a texel **centre** by construction, where
+bilinear weights are 1 and 0 — the band's exactness rests on where the taps land, not on the filter.
+(3) Pairing `selection_mask.frag` with `shadow.vert` reddens nothing **on Metal**: `shadow.vert`'s
+cbuffer is one `float4x4` deliberately shaped like `scene.vert`'s `uMvp` and sits at offset 0 of the
+same pushed block, and the mask stage reads none of its five inputs. (4) Deleting
+`selectionMaskTexture` from `ForwardRenderer`'s move constructor is invisible to the **whole** binary,
+because the texture is allocated lazily on the first pass and every move in the tree happens at
+construction — a case that moves a renderer AFTER a mask pass would close it.
 
 ### E.1.2 — Grid floor + world axes (MERGED, PR #93 `d91eab1`) — and a MEASURED NEGATIVE RESULT
 
@@ -477,11 +514,12 @@ count on its own page goes stale, and adding one task's delta to another task's 
 arithmetic that produces a confident wrong number.
 
 At E.1.4's gate, measured on both presets: **`ctest -N` 172, UNMOVED**; doctest across **seven**
-binaries **1292 / 1748 / 153 / 34 / 29 / 7 / 28** (`aero_tests`, `aero_editor_shell_test`,
+binaries **1294 / 1748 / 153 / 34 / 29 / 7 / 28** (`aero_tests`, `aero_editor_shell_test`,
 `aero_editor_imgui_test`, `aero_scene_serialize_test`, `aero_editor_inspector_test`,
 `aero_reflect_meta_test`, `aero_reflect_json_test`). **E.1.4 repeats E.1.1's, E.1.2's and E.1.3's
 signature and it is the INVERSE of 3.7.3's: the doctest totals MOVE while `ctest -N` does NOT** —
-`aero_tests` 1250 → 1292 (+42: `SO1`–`SO13`, `OG1`–`OG17`, `SQ1`–`SQ12`) and
+`aero_tests` 1250 → 1294 (+44: `SO1`–`SO14`, `OG1`–`OG18`, `SQ1`–`SQ12`, the last of each added by
+the review round) and
 `aero_editor_imgui_test` 149 → 153 (+4: `I120`–`I123`), while **`aero_editor_shell_test` stayed at
 1748 because four cases left and four arrived** — a MEASUREMENT, and exactly the kind of delta that
 must never be predicted arithmetically, because `SUBCASE` structure makes the sum a guess. The eight
@@ -605,9 +643,10 @@ binary is `aero_sample_phaseE_debug_draw`** — `phaseE`, no underscore before t
 ### Next
 
 **Phase E is the open front. E.1.4 is COMPLETE IN CODE on `feat/E.1.4-silhouette-selection-outline`
-and NOT MERGED** — nine commits, the full local gate green on both presets and both reduced
-configurations, and a validation page written but **NOT RUN on any platform**. It awaits the sabotage
-matrix, a review round and a PR. E.1.1 and E.1.2 are merged AND macOS-validated; E.1.3 is merged.
+and NOT MERGED** — fifteen commits, the code-review round closed, the 22-seed sabotage matrix run,
+the full local gate green on both presets and both reduced configurations, and a validation page
+written but **NOT RUN on any platform**. It awaits `origin/main` (E.1.3 has merged since it branched)
+and a PR. E.1.1 and E.1.2 are merged AND macOS-validated; E.1.3 is merged.
 **Windows and Linux validation remain outstanding**, as everywhere. The epic's one remaining task is
 **E.1.5** (the gizmo restyle, which adopts `AXIS_{X,Y,Z}` from the palette E.1.2 created and must not
 touch `ImGuizmo::Style` before it starts), and **E.1.4 closes the epic's viewport-legibility spine**.
