@@ -263,6 +263,25 @@ bias field, and adding one for lines would be inert on two of three backends.** 
 consumers are triangle topologies: the shadow pass (`forward_renderer.cpp`, the tree's only live
 consumer) and, when it wants one, E.2.3's billboard icons.
 
+**A TEST THAT COMPARES TWO VALUES FROM THE SAME SOURCE ASSERTS NOTHING, AND READING IT WILL NOT TELL
+YOU.** E.1.2's sabotage matrix found **two** such cases, each green on a seeded regression that is
+plainly visible in the product. `GR8` was named for the cadence crossfade's continuity and computed
+its own `f → 1` side from the emitter's formula, then compared it against the emitter's `f == 0`
+side — both halves from one source; the naive two-set crossfade passed **13.3 million assertions**.
+`GR12`/`GR6` missed a snapped disc centre that **jumps ten world units for a 0.2-unit pan**. **The
+code review read both and approved both**, correctly: the flaw is invisible to reading, because such
+a test looks exactly like one that works. **Only mutating the code and watching the test not care
+exposes it.** Two rules follow: read back the value under test **off the thing under test**, on both
+sides of any identity; and remember **a case is only as strong as the pose it samples** — `GR6`'s arm
+was blind because its focus defaults to the origin and `round(0/s)*s == 0`, so an invariant about
+following the camera has to be asserted at a focus deliberately OFF the lattice, with an
+anti-vacuity arm proving it is.
+
+**AND A CLAMP THAT BOUNDS A LOOP DOES NOT NECESSARILY BOUND A COUNT.** `debug_grid.cpp` claimed its
+span clamp made `DEBUG_GRID_MAX_LINES` structural; removing the clamp leaves the battery green with
+an identical assertion count. The count is bounded by the **disc clip**, not the clamp. Two readings
+passed over that sentence before a seed disproved it.
+
 **THE DEBUG BATCH IS SHARED, SO "THE BATCH IS EMPTY" IS A WHOLE-EDITOR CLAIM.** Any task that adds a
 producer to `render::DebugDraw` reddens every case that counts the batch exactly — E.1.2's grid took
 `I108`/`I109`/`I111` red at `2224 == 0`, `2225 == 1`, `2229 == 5`. **Fix it with the producer's own
@@ -361,9 +380,9 @@ arithmetic that produces a confident wrong number.
 
 At E.1.2's gate: **`ctest -N` 172** (tools-ON, measured on both presets; the two reduced
 configurations' 80 / 93 remain 3.7.3's numbers and were re-measured at neither E.1.1 nor E.1.2);
-doctest across **seven** binaries **1249 / 1748 / 149 / 34 / 29 / 7 / 28**. **E.1.2 repeats E.1.1's
+doctest across **seven** binaries **1250 / 1748 / 149 / 34 / 29 / 7 / 28**. **E.1.2 repeats E.1.1's
 signature and it is the INVERSE of 3.7.3's: the doctest totals MOVE while `ctest -N` does NOT** —
-`aero_tests` 1223 → 1249 (`GR1`–`GR25` + `DG18`), `aero_editor_shell_test` 1746 → 1748 (`AX1`, `AX2`)
+`aero_tests` 1223 → 1250 (`GR1`–`GR26` + `DG18`), `aero_editor_shell_test` 1746 → 1748 (`AX1`, `AX2`)
 and `aero_editor_imgui_test` 147 → 149 (`I112`, `I113`; `I110` gained a subcase, which moves no
 total), because new TUs ride existing binaries and a sample registers no ctest entry. The eight guard
 counts at that gate: math **461**, platform **85**, rhi **149**, scene **85**, golden-rule **151**,

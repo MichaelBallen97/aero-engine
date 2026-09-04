@@ -13270,7 +13270,7 @@ compile definition (`AERO_SHADERS_SRC_DIR` was already target-wide).
 
 **The gate, as measured on macOS.** Both presets build; `AERO_REQUIRE_GPU=1 ctest` green on both,
 **172/172** each. **`ctest -N` is UNMOVED at 172 on both presets while the doctest totals MOVE** —
-`aero_tests` **1223 → 1249** (`GR1`–`GR25` + `DG18`), `aero_editor_shell_test` **1746 → 1748**
+`aero_tests` **1223 → 1250** (`GR1`–`GR26` + `DG18`; `GR26` closed the `S6` gap the matrix found), `aero_editor_shell_test` **1746 → 1748**
 (`AX1`, `AX2`) and `aero_editor_imgui_test` **147 → 149** (`I112`, `I113`; `I110` gained a subcase,
 which moves no total), with the other four unmoved at **34 / 29 / 7 / 28**. That repeats E.1.1's
 signature and is the exact inverse of 3.7.3's: two new TUs ride existing binaries, a sample registers
@@ -13293,17 +13293,69 @@ cost (row 7), the strip's click ownership after a widget was inserted at its fro
 only cover), the unchanged picture against a branch-point build (row 9), and the axes agreeing with
 ImGuizmo (row 10, which E.1.5 inherits).
 
-**The sabotage matrix is NOT run as a batch, and that is stated rather than implied.** §7 of the plan
-declares **27 seeds** (31 drafted, less `S20`–`S23`, which named the struck depth-bias code) and
-**7 assertion mutants** (8 drafted, less `M7`, which named `DG17`). What *was* run, one at a time and
-recorded above where each belongs, is: the 13 × 5 depth-bias sweep in both primitive topologies;
-`M6`'s faithful equivalent — the plan's wording does not match the shipped test, because the `AxisPair`
-table references `ed::AXIS_X_SRGB` rather than spelling literal bytes, so there is no local byte
-literal to mutate, and replacing the whole table entry with `{227U, 65U, 73U}` took `AX1` **red**;
-`GR24` proved red under a swapped family order **and** under a reversed cadence order; `GR6` arm 1's
-band measured per decade at six mantissas each; and the seven `I108`/`I109`/`I111` failures above,
-which were discovered rather than seeded. **The remaining seeds and mutants are open work before the
-PR**, along with the two reduced configurations and the sample run for row 11.
+**THE SABOTAGE MATRIX WAS RUN IN FULL, AND IT FOUND TWO TESTS THAT ASSERTED NOTHING. That is the
+most valuable thing this task produced, and neither was visible to reading.** §7 declares **27 seeds**
+(31 drafted, less `S20`–`S23`, which named the struck depth-bias code) and **7 assertion mutants**
+(8 drafted, less `M7`, which named `DG17`). All were run, one at a time, each grep-confirmed present
+before its verdict was trusted and each reverted and re-verified after. Both predicted-green seeds
+(`S12`, `S26`) were green for their stated reasons. All six mutants reddened **only their own case** —
+no collateral, which is what proves each assertion does its own work rather than riding a neighbour's.
+
+**`S1` — the naive two-set crossfade — passed 65 cases and 13.3 million assertions.** `GR8` was named
+for continuity and did not assert it: its `f → 1` side was computed *inside the test* from the same
+formula the emitter uses and compared against the emitter's `f == 0` side, so both halves of the
+comparison came from the same source. The one cadence it read back near `f → 1` was used only for
+`spacing` and `radius`; its **weights were never asserted at all**. And every other weight assertion
+in the file sits at `f == 0`, where `b(1−f)` and `b(1−f) + a·f` are **the same number** — so the
+middle weight's `+ a·f` term was unpinned at every fraction where it means anything. Under the seed
+the triple at `f → 1` becomes `(0, 0, b)` instead of `(0, a, b)`: the middle cadence vanishes as the
+camera dollies through a decade, which is the visible pop the whole three-cadence design exists to
+prevent. Closed by two arms, both redden-proved — the rule read back off the emitter at the emitter's
+own fraction, with an anti-vacuity check that the fraction is non-zero, and the cross-boundary
+identity with **both sides** read off the emitter, as a limit rather than an equality because `f` can
+never reach exactly 1 (the level flips first), its epsilon inside the assertion and derived from the
+measured distance to the boundary.
+
+**`S6` — a snapped disc centre — also passed the whole battery, and its failure is visible in the
+product.** Measured: the grid's bright region **jumps ten world units for a 0.2-unit camera pan**,
+directly contradicting `debug_grid.hpp`'s own banner (*"nothing translates as the camera moves"*).
+Neither predicted witness could fire, and the second reason is the transferable one. **`GR12` is
+structurally blind** — it asserts each line lies on the world lattice, and snapping moves the *disc*,
+not the *lattice*, so every line is still at `k · spacing` under both. **`GR6`'s self-similarity arm
+is blind BY POSE** — its focus defaults to the origin, and `round(0 / s) · s == 0`, so the seed is a
+no-op on every pose that arm visits. **A case is only as strong as the pose it samples**, and an
+invariant about following the camera has to be asserted at a focus deliberately *off* the lattice.
+`GR26` asserts that it is, before asserting anything else. Its observable is the span midpoint: each
+line runs `centreSpan ± halfChord`, so its middle ring vertex *is* the disc centre.
+
+**`S30` corrected a sentence in the source that two readings had passed over.** The span clamp bounds
+the **loop**, not the emitted **count**: removing it leaves the battery green with an *identical*
+assertion count and a worst emitted 2320 against the 2368 cap. The count is bounded by the **disc
+clip** — `radius ≤ RADIUS_CELLS · spacing`, so at most `2·RADIUS_CELLS + 1` lattice coordinates can
+fall inside the disc whatever the loop does. The clamp still earns its place (660 poses in a sweep
+exceed a span of 48, worst 64) but for **termination**, not for the bound. `S29` — deleting the
+finiteness arm it guards — produces a real UBSan trap (`nan is outside the range of representable
+values of type 'unsigned int'`), which is what that arm is for.
+
+**Eight further rows are PREDICTION errors in the plan rather than coverage gaps**, and are recorded
+so §7 is corrected rather than trusted: `S3`'s `GR6` arm 1 is blind (`24 · viewScale` is homogeneous
+under a ×10 pose exactly as `24 · spacing` is) but `GR17`'s premise arm and `GR8`'s extent arm both
+fire; `S5`'s `GR12` does not fire on this lane (macOS `powf` agrees bit-for-bit at the exponents it
+visits) but `GR6` **arm 3** does, failing at `n = −4` and `n = −3` with `CHECK( 0.001 == 0.001 )` —
+printing identically while bit-unequal, which is exactly what that arm exists for; `S10`'s `GR16`
+cannot fire because shrinking the axis radius makes the axes *more* absent and a one-directional
+absence claim is unfalsifiable by it; `S13`'s `GR4` modulo arm is a tautology (`emitted % 1 == 0`);
+`S16` produces no UBSan trap because `emitFamily`'s own finiteness arm absorbs the path downstream;
+`S17`'s `I112` cannot see a bucket swap because `lastFrameDrawCalls()` is a **bucket-agnostic total**
+and one non-empty bucket is still one draw — `GR5` pins the bucket at the emitter tier, so the
+property is covered and only the prediction was wrong; `S18` reddens `GR11`'s **ends** arm rather
+than its interior-lit arm (the unfaded `line()` form makes the two extreme ends non-zero, so the
+interior arm is *more* satisfied, not less); and `S24`'s `I112` **enabled** subcase is blind to a
+one-frame lag — only the **re-enabling** subcase, which drains the batch first, catches it.
+
+**The two reduced configurations were measured** (`GR`=25 and `AX`=2 present in both, `DG18` correctly
+behind the shader gate, `cooker.*` **70 / 70 / 70** identical, `reflect-gen.*` **75 / 75 / 0**), and
+the sample was run for row 11.
 
 **Two procedure notes that cost time here.** `check-math-boundary.sh` counts `git ls-files`, i.e.
 **tracked** files only, so running a per-commit guard step before `git add` shows an unmoved count and
