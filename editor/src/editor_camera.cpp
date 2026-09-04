@@ -86,11 +86,28 @@ Vec3 EditorCamera::position() const noexcept { return pivotPoint - forward() * o
 
 Mat4 EditorCamera::viewMatrix() const { return inverse(compose({.translation = position(), .rotation = rotation()})); }
 
+// task E.1.3: the ONE place `distance * tan(fovY/2)` is written. It is the world half-height the
+// perspective frustum covers at the PIVOT'S depth -- which is what makes the mode toggle visually
+// continuous for everything on the plane through the pivot (D11).
+float EditorCamera::orthoHalfHeight() const noexcept { return orbitDistance * std::tan(0.5F * fovYValue); }
+
 Mat4 EditorCamera::projectionMatrix(float aspect) const {
     const float safeAspect = (allFinite(aspect) && aspect > 0.0F) ? aspect : 1.0F;  // C4
+    if (projectionModeValue == ProjectionMode::Orthographic) {
+        // THE GUARD THE PERSPECTIVE ARM DOES NOT NEED. ortho() asserts right > left and top > bottom,
+        // and BOTH extents carry fovY -- which clampState deliberately leaves NaN for stateIsFinite()
+        // to sweep on the next update(). perspective()'s asserts read aspect (sanitized above), zNear
+        // and zFar, NEVER fovY, so a poisoned fov merely produces a garbage matrix there and would
+        // ABORT a Debug build here. 1.0 is an arbitrary finite fallback for a state the next update()
+        // resets anyway.
+        const float rawHalfHeight = orthoHalfHeight();
+        const float halfHeight = (std::isfinite(rawHalfHeight) && rawHalfHeight > 0.0F) ? rawHalfHeight : 1.0F;
+        const float halfWidth = halfHeight * safeAspect;
+        return ortho(-halfWidth, halfWidth, -halfHeight, halfHeight, nearPlaneValue, farPlaneValue);
+    }
     return perspective(fovYValue, safeAspect, nearPlaneValue, farPlaneValue);
     // Do NOT flip Y for Vulkan -- math/transform.hpp's own warning: SDL converts behind the scenes and
-    // a proj[1][1] *= -1 here would double-flip the image.
+    // a proj[1][1] *= -1 here would double-flip the image. It applies to BOTH arms.
 }
 
 Vec3 EditorCamera::pivot() const noexcept { return pivotPoint; }
@@ -101,6 +118,12 @@ float EditorCamera::fovYRadians() const noexcept { return fovYValue; }
 float EditorCamera::nearPlane() const noexcept { return nearPlaneValue; }
 float EditorCamera::farPlane() const noexcept { return farPlaneValue; }
 float EditorCamera::flySpeed() const noexcept { return flySpeedValue; }
+ProjectionMode EditorCamera::projectionMode() const noexcept { return projectionModeValue; }
+
+// DELIBERATELY does NOT call clampState(), unlike every setter below it: the mode is not a clamped
+// quantity and calling it here would imply otherwise. Nothing else on the camera changes either --
+// pivot, distance, yaw, pitch, fov, near, far and flySpeed are all untouched (PM1 asserts it).
+void EditorCamera::setProjectionMode(ProjectionMode value) noexcept { projectionModeValue = value; }
 
 // Setters are deliberately private-state mutators with a public face, not friends: a poisoned value
 // routes through the SAME clampState() the gestures use, so INV-5 holds after every public call --
@@ -227,6 +250,9 @@ void EditorCamera::reset() noexcept {
     nearPlaneValue = DEFAULT_NEAR;
     farPlaneValue = DEFAULT_FAR;
     flySpeedValue = DEFAULT_FLY_SPEED;
+    projectionModeValue = ProjectionMode::Perspective;  // task E.1.3: reset() IS the D8 default pose,
+                                                        // and a mode surviving it would be a state the
+                                                        // defaults do not describe
 }
 
 void EditorCamera::update(const CameraInput& in, float deltaSeconds) noexcept {

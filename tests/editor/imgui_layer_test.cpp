@@ -8629,7 +8629,10 @@ TEST_CASE("editor: the tonemap wiring's three source-text invariants hold (task 
 
         // The decision is a named member asking a RECT, and the arm condition consults it.
         const std::size_t decisionAt = soleLineContaining(viewportCode, "bool ViewportPanel::overlayOwnsPress(");
-        const std::size_t armAt = soleLineContaining(viewportCode, "!overlayOwnsPress(pressPos)");
+        // task E.1.3 widened the call to `!overlayOwnsPress(pressPos, imageOrigin, avail)` -- the
+        // widget's rect is now ORed in -- so the pin matches the call PREFIX rather than the whole
+        // argument list, which would go stale again at the next parameter.
+        const std::size_t armAt = soleLineContaining(viewportCode, "!overlayOwnsPress(pressPos");
         CHECK(decisionAt != armAt);
         // ...and the arm term sits in the SAME condition as the fresh-press test, not in a later
         // statement that could run after the arm was already set.
@@ -8690,6 +8693,16 @@ TEST_CASE("editor: the overlay claims its own strip and NOTHING else (task 3.6.3
     auto* const viewport = dynamic_cast<engine::editor::ViewportPanel*>(app->panels().find("Viewport"));
     REQUIRE(viewport != nullptr);
 
+    // task E.1.3: overlayOwnsPress now ORs a SECOND rect -- the view-axis widget's -- computed from
+    // the image rect it is handed. THIS CASE IS ABOUT THE ROW, so it passes a ZERO-SIZED image rect,
+    // which viewAxisRect answers with a degenerate rect that owns nothing. Every assertion below is
+    // therefore byte-unchanged in meaning: it still says exactly what it said before the widget
+    // existed. The widget's own arm is I116's, driven with the real image rect.
+    // (This is E.1.2's "fix it with the producer's own seam, never by restating the magnitude" rule,
+    // applied to a rect instead of to a batch count.)
+    constexpr engine::Vec2 NO_WIDGET_ORIGIN{};
+    constexpr engine::Vec2 NO_WIDGET_SIZE{};
+
 #if AERO_SHADER_TOOLS_ENABLED
     const engine::Vec2 rowMin = viewport->overlayRowMin();
     const engine::Vec2 rowMax = viewport->overlayRowMax();
@@ -8704,30 +8717,36 @@ TEST_CASE("editor: the overlay claims its own strip and NOTHING else (task 3.6.3
 
     // (1) THE STRIP OWNS ITS OWN CLICKS. Its centre, and a point just inside each corner.
     const engine::Vec2 centre{(rowMin.x + rowMax.x) * 0.5F, (rowMin.y + rowMax.y) * 0.5F};
-    CHECK(viewport->overlayOwnsPress(centre));
-    CHECK(viewport->overlayOwnsPress(rowMin));  // half-open at min: the top-left corner IS inside
-    CHECK(viewport->overlayOwnsPress(engine::Vec2{rowMax.x - 1.0F, rowMax.y - 1.0F}));
+    CHECK(viewport->overlayOwnsPress(centre, NO_WIDGET_ORIGIN, NO_WIDGET_SIZE));
+    CHECK(viewport->overlayOwnsPress(rowMin, NO_WIDGET_ORIGIN,
+                                     NO_WIDGET_SIZE));  // half-open at min: the top-left corner IS inside
+    CHECK(viewport->overlayOwnsPress(engine::Vec2{rowMax.x - 1.0F, rowMax.y - 1.0F}, NO_WIDGET_ORIGIN, NO_WIDGET_SIZE));
 
     // (2) AND NOTHING ELSE -- the half the shipped regression got wrong. A press below the strip, to
     // its right, and above it must all fall through to the scene pick. `rowMax` itself is OUTSIDE:
     // the test is half-open at max, matching the FIRE step's own image-rect test.
-    CHECK_FALSE(viewport->overlayOwnsPress(rowMax));
-    CHECK_FALSE(viewport->overlayOwnsPress(engine::Vec2{centre.x, rowMax.y + 200.0F}));
-    CHECK_FALSE(viewport->overlayOwnsPress(engine::Vec2{rowMax.x + 200.0F, centre.y}));
-    CHECK_FALSE(viewport->overlayOwnsPress(engine::Vec2{centre.x, rowMin.y - 200.0F}));
-    CHECK_FALSE(viewport->overlayOwnsPress(engine::Vec2{rowMin.x - 200.0F, centre.y}));
+    CHECK_FALSE(viewport->overlayOwnsPress(rowMax, NO_WIDGET_ORIGIN, NO_WIDGET_SIZE));
+    CHECK_FALSE(
+        viewport->overlayOwnsPress(engine::Vec2{centre.x, rowMax.y + 200.0F}, NO_WIDGET_ORIGIN, NO_WIDGET_SIZE));
+    CHECK_FALSE(
+        viewport->overlayOwnsPress(engine::Vec2{rowMax.x + 200.0F, centre.y}, NO_WIDGET_ORIGIN, NO_WIDGET_SIZE));
+    CHECK_FALSE(
+        viewport->overlayOwnsPress(engine::Vec2{centre.x, rowMin.y - 200.0F}, NO_WIDGET_ORIGIN, NO_WIDGET_SIZE));
+    CHECK_FALSE(
+        viewport->overlayOwnsPress(engine::Vec2{rowMin.x - 200.0F, centre.y}, NO_WIDGET_ORIGIN, NO_WIDGET_SIZE));
 
     // (3) THE ORDINARY PICK, which is what actually broke. The viewport is CENTER-docked in a 900x600
     // window, so a point well below and right of the strip is inside the image and is exactly where a
     // user clicks empty space to clear a selection. Under the shipped guard this press was refused;
     // it must be admitted.
-    CHECK_FALSE(viewport->overlayOwnsPress(engine::Vec2{rowMin.x + 300.0F, rowMin.y + 300.0F}));
+    CHECK_FALSE(viewport->overlayOwnsPress(engine::Vec2{rowMin.x + 300.0F, rowMin.y + 300.0F}, NO_WIDGET_ORIGIN,
+                                           NO_WIDGET_SIZE));
 
     // (4) TOTAL and NaN-safe: a non-finite press is owned by nothing rather than crashing or
     // answering true (the negated `>` idiom this file's step 1 already uses).
     const float nan = std::numeric_limits<float>::quiet_NaN();
-    CHECK_FALSE(viewport->overlayOwnsPress(engine::Vec2{nan, nan}));
-    CHECK_FALSE(viewport->overlayOwnsPress(engine::Vec2{centre.x, nan}));
+    CHECK_FALSE(viewport->overlayOwnsPress(engine::Vec2{nan, nan}, NO_WIDGET_ORIGIN, NO_WIDGET_SIZE));
+    CHECK_FALSE(viewport->overlayOwnsPress(engine::Vec2{centre.x, nan}, NO_WIDGET_ORIGIN, NO_WIDGET_SIZE));
 #else
     // -DAERO_SHADER_TOOLS=OFF: the viewport latches Unavailable and onDraw returns at step 4, so
     // step 9b never runs and the rect stays EMPTY. Asserted rather than skipped (the 3.4.2 near-miss
@@ -8735,8 +8754,8 @@ TEST_CASE("editor: the overlay claims its own strip and NOTHING else (task 3.6.3
     // than to "every press is refused".
     CHECK(viewport->overlayRowMin() == engine::Vec2{});
     CHECK(viewport->overlayRowMax() == engine::Vec2{});
-    CHECK_FALSE(viewport->overlayOwnsPress(engine::Vec2{10.0F, 10.0F}));
-    CHECK_FALSE(viewport->overlayOwnsPress(engine::Vec2{}));
+    CHECK_FALSE(viewport->overlayOwnsPress(engine::Vec2{10.0F, 10.0F}, NO_WIDGET_ORIGIN, NO_WIDGET_SIZE));
+    CHECK_FALSE(viewport->overlayOwnsPress(engine::Vec2{}, NO_WIDGET_ORIGIN, NO_WIDGET_SIZE));
 #endif
 }
 
@@ -10255,6 +10274,605 @@ TEST_CASE("editor: the drop is not a PendingAction and never mutates in a draw w
 }
 
 #endif  // AERO_SHADER_TOOLS_ENABLED
+
+// ---- task E.1.3: the view-axis gizmo, through the real panel -------------------------------------
+
+TEST_CASE("editor: a view snap lands on the canonical pose about an UNCHANGED pivot (task E.1.3, I114)") {
+    // FIXTURE: I112's preamble -- platform::Context, a window, a Device, createProject into
+    // uniqueProjectLocation(), EditorApp::create with persistLayout = false and
+    // restoreLastProject = false, two warm-up ticks, then the dynamic_cast to ViewportPanel.
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "view axis i114", .width = 900, .height = 600});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = created.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+
+    auto* const viewport = dynamic_cast<engine::editor::ViewportPanel*>(app->panels().find("Viewport"));
+    REQUIRE(viewport != nullptr);
+
+#if AERO_SHADER_TOOLS_ENABLED
+    SUBCASE("a Top snap lands EXACTLY vertical, and the pivot and distance never move") {
+        const engine::Vec3 pivotBefore = viewport->camera().pivot();
+        const float distanceBefore = viewport->camera().distance();
+
+        viewport->requestViewSnap(engine::editor::ViewAxis::PosY);
+        // BOUNDED: 0.25 s at any plausible frame rate is far under 60 ticks, and a snap that never
+        // finishes must fail this case rather than hang it.
+        int ticks = 0;
+        while (viewport->viewSnapActive() && ticks < 60) {
+            REQUIRE(app->tick());
+            ++ticks;
+            // The pivot and the distance are checked on EVERY frame of the animation, not only at the
+            // end -- a snap that dollied out and back would pass an endpoints-only check.
+            CHECK(viewport->camera().pivot() == pivotBefore);
+            CHECK(viewport->camera().distance() == distanceBefore);
+        }
+        CHECK_FALSE(viewport->viewSnapActive());
+        CHECK(ticks > 0);   // anti-vacuity: it really animated rather than snapping instantly
+        CHECK(ticks < 60);  // ...and it really terminated
+
+        // EXACTLY -MAX_PITCH: the retune's whole point, read back off the camera.
+        CHECK(viewport->camera().pitch() == -engine::editor::MAX_PITCH);
+        const engine::Vec3 forward = viewport->camera().forward();
+        CHECK(std::abs(forward.x - 0.0F) < 1.0e-5F);
+        CHECK(std::abs(forward.y - (-1.0F)) < 1.0e-5F);
+        CHECK(std::abs(forward.z - 0.0F) < 1.0e-5F);
+    }
+    SUBCASE("snapping to the view you are ALREADY in is INSTANT -- no 0.25 s lockout (AC-5)") {
+        // D7's instant path. Get to Front first, then ask for it again: the second request must leave
+        // viewSnapActive() false on the very first observation, not merely finish quickly.
+        viewport->requestViewSnap(engine::editor::ViewAxis::PosZ);
+        int ticks = 0;
+        while (viewport->viewSnapActive() && ticks < 60) {
+            REQUIRE(app->tick());
+            ++ticks;
+        }
+        REQUIRE_FALSE(viewport->viewSnapActive());
+        const float yawAfter = viewport->camera().yaw();
+        const float pitchAfter = viewport->camera().pitch();
+
+        viewport->requestViewSnap(engine::editor::ViewAxis::PosZ);
+        CHECK_FALSE(viewport->viewSnapActive());  // never started at all
+        CHECK(viewport->camera().yaw() == yawAfter);
+        CHECK(viewport->camera().pitch() == pitchAfter);
+    }
+    SUBCASE("a SECOND request while one is ACTIVE lands on the second target, never the first") {
+        // NO TICK BETWEEN THE TWO REQUESTS, DELIBERATELY. An earlier draft ticked once and then
+        // REQUIREd viewSnapActive(), which is a cross-lane flake rather than a property:
+        // PanelContext::deltaSeconds is FrameClock's spike-clamped delta capped at 0.25 s -- EXACTLY
+        // VIEW_SNAP_SECONDS -- so ONE frame at or above that clamp finishes the whole animation, and
+        // a >250 ms frame right after window and Device creation is plausible on WARP and lavapipe.
+        // A REQUIRE would have ABORTED the case there rather than failing it softly.
+        //
+        // Requesting both in the same frame needs no delta at all: the first request leaves the
+        // animation active by arithmetic (the default pose is nowhere near Top), and the retarget
+        // therefore really does arrive while one is in flight. THE MID-FLIGHT HALF -- that the new
+        // walk begins at the LIVE pose rather than at either endpoint -- is VA19's, at the pure tier
+        // where the delta is a parameter and "half way" means half way.
+        viewport->requestViewSnap(engine::editor::ViewAxis::PosY);
+        REQUIRE(viewport->viewSnapActive());
+        viewport->requestViewSnap(engine::editor::ViewAxis::PosX);
+        REQUIRE(viewport->viewSnapActive());
+        int ticks = 0;
+        while (viewport->viewSnapActive() && ticks < 60) {
+            REQUIRE(app->tick());
+            ++ticks;
+        }
+        CHECK_FALSE(viewport->viewSnapActive());
+        // It ended at the SECOND target (+X: the eye on +X looking back, forward == -X), not the first.
+        const engine::Vec3 forward = viewport->camera().forward();
+        CHECK(std::abs(forward.x - (-1.0F)) < 1.0e-5F);
+        CHECK(std::abs(forward.y - 0.0F) < 1.0e-5F);
+    }
+#else
+    // -DAERO_SHADER_TOOLS=OFF: the panel latches Unavailable and onDraw RETURNS AT STEP 4, so step
+    // 8b'' -- where the snap advances -- never runs, exactly as editorCamera.update() never runs.
+    // A snap therefore STARTS and never progresses, which is correct for a panel that draws nothing.
+    // ASSERTED RATHER THAN SKIPPED (the 3.4.2 I88-I92 rule): both arms must say something, and what
+    // this one says is that requesting a snap on a dead panel is SAFE and INERT rather than a crash
+    // or a camera that moves without ever being rendered.
+    SUBCASE("a snap on an Unavailable panel starts, never advances, and moves nothing") {
+        const float yawBefore = viewport->camera().yaw();
+        const float pitchBefore = viewport->camera().pitch();
+        const engine::Vec3 pivotBefore = viewport->camera().pivot();
+
+        viewport->requestViewSnap(engine::editor::ViewAxis::PosY);
+        CHECK(viewport->viewSnapActive());  // it really started -- the pure half is unaffected
+
+        for (int i = 0; i < 5; ++i) {
+            REQUIRE(app->tick());  // ticking is SAFE
+        }
+        CHECK(viewport->viewSnapActive());  // ...and still pending, because onDraw returns at step 4
+        CHECK(viewport->camera().yaw() == yawBefore);
+        CHECK(viewport->camera().pitch() == pitchBefore);
+        CHECK(viewport->camera().pivot() == pivotBefore);
+    }
+    SUBCASE("the INSTANT path still applies the pose directly, with no panel involvement at all") {
+        // beginViewSnap's sub-epsilon branch writes through applyViewPose immediately, so this half
+        // works even when the panel never draws -- the one piece of snap behaviour that does.
+        viewport->requestViewSnap(engine::editor::ViewAxis::PosZ);
+        // Front from the default pose is a real rotation, so it animates; cancel it and ask again
+        // from the pose it is already in.
+        while (viewport->viewSnapActive()) {
+            viewport->camera().setYaw(0.0F);
+            viewport->camera().setPitch(0.0F);
+            viewport->requestViewSnap(engine::editor::ViewAxis::PosZ);
+            break;
+        }
+        CHECK_FALSE(viewport->viewSnapActive());
+        CHECK(viewport->camera().yaw() == 0.0F);
+        CHECK(viewport->camera().pitch() == 0.0F);
+    }
+#endif
+}
+
+TEST_CASE("editor: what cancels a running view snap, and what does NOT (task E.1.3, I115)") {
+    // Q3, ANSWERED BY MEASUREMENT RATHER THAN GUESSED, AND THE ANSWER IS NO. Nothing in tests/ can
+    // inject a camera gesture: there is no AddMouseButtonEvent, no AddKeyEvent, no io.MouseDown write
+    // anywhere in the tree, and ViewportPanel exposes no gesture seam -- `gesture` is a private member
+    // with no accessor and no request... function. The only way to make gesture.gesture != None is
+    // real ImGui mouse-button state plus Alt, which no tier here can synthesize.
+    //
+    // SO BOTH CANCELS BELOW ARE SOURCE-TEXT PINS, NOT BEHAVIOURAL COVERAGE, AND THIS COMMENT SAYS SO
+    // RATHER THAN LETTING A GREEN RUN IMPLY MORE. Seed S13 (dropping the `gesture == None` term from
+    // the click guard) has its ONLY cover in validation row 10.
+    //
+    // THE F CANCEL IS A PIN TOO, and an earlier version of this comment said otherwise. F cannot be
+    // pressed from here for exactly the same reason a gesture cannot be injected -- there is no
+    // AddKeyEvent anywhere in the tree -- and neither focusSelection nor viewSnap.cancel() is
+    // reachable: both are private, and focusSelection additionally needs the PanelContext EditorApp
+    // owns. Its mechanical cover is the `cancels[1] < focusAt` pair in the first subcase below; its
+    // behavioural cover is validation row 16, which the code-review round added because neither
+    // cancel had one. The last subcase drives what the fixture genuinely CAN drive -- the panel
+    // really advancing a snap -- and is named for that, not for the cancel.
+    const std::vector<std::string> code = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/viewport_panel.cpp");
+    REQUIRE_FALSE(code.empty());
+
+    SUBCASE("there are EXACTLY TWO cancels, and each sits where its reason requires") {
+        // soleLineContaining is deliberately NOT used here: there are legitimately two call sites --
+        // step 8b'' (a camera gesture took over) and step 8e (F is about to reframe) -- and a pin that
+        // required one would be pinning the absence of the other.
+        std::vector<std::size_t> cancels;
+        for (std::size_t i = 0; i < code.size(); ++i) {
+            if (code[i].find("viewSnap.cancel();") != std::string::npos) {
+                cancels.push_back(i);
+            }
+        }
+        REQUIRE(cancels.size() == 2U);
+
+        const std::size_t nextGestureAt = soleLineContaining(code, "gesture = nextGesture(gesture, gestureInput);");
+        // The CALL, not the definition -- the bare name matches both.
+        const std::size_t layoutAt = soleLineContaining(code, "updateViewAxisGizmo(Vec2{imageOrigin.x");
+        const std::size_t focusAt = soleLineContaining(code, "focusSelection(context);");
+
+        // THE GESTURE CANCEL, step 8b''. AFTER nextGesture, so a gesture classified THIS frame cancels
+        // THIS frame's snap; BEFORE the layout/click block, so a click cannot start a snap in the same
+        // frame a gesture claimed the camera.
+        CHECK(nextGestureAt < cancels[0]);
+        CHECK(cancels[0] < layoutAt);
+        // ...and it really is inside the gesture test rather than unconditional, which would cancel
+        // every snap on its first frame and make the whole animation unreachable.
+        bool guardedByGesture = false;
+        for (std::size_t i = cancels[0] > 2U ? cancels[0] - 2U : 0U; i < cancels[0]; ++i) {
+            guardedByGesture =
+                guardedByGesture || code[i].find("gesture.gesture != CameraGesture::None") != std::string::npos;
+        }
+        CHECK(guardedByGesture);
+
+        // THE F CANCEL, step 8e: immediately BEFORE focusSelection, so the two never fight over
+        // yaw/pitch -- the snap writes both every frame, focusOn writes pivot and distance.
+        CHECK(cancels[1] < focusAt);
+        CHECK(focusAt - cancels[1] <= 6U);  // the same statement group, not a distant one
+    }
+    SUBCASE("the snap advance runs AFTER editorCamera.update, so it writes last and wins") {
+        const std::size_t updateAt =
+            soleLineContaining(code, "editorCamera.update(cameraInput, context.deltaSeconds);");
+        const std::size_t advanceAt = soleLineContaining(code, "viewSnap.advance(context.deltaSeconds)");
+        CHECK(updateAt < advanceAt);
+    }
+    SUBCASE("the click guard really carries the `gesture == None` term -- seed S13's ONLY mechanical pin") {
+        const std::size_t guardAt = soleLineContaining(code, "ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {");
+        bool namesGestureNone = false;
+        for (std::size_t i = guardAt > 2U ? guardAt - 2U : 0U; i <= guardAt; ++i) {
+            namesGestureNone =
+                namesGestureNone || code[i].find("gesture.gesture != CameraGesture::None") != std::string::npos;
+        }
+        CHECK(namesGestureNone);
+    }
+    SUBCASE("the panel really ADVANCES a snap, monotonically and without overshoot") {
+        engine::platform::Context ctx;
+        if (!ctx.valid()) {
+            AERO_SKIP_OR_FAIL("no platform context");
+        }
+        std::optional<engine::platform::Window> window =
+            ctx.createWindow({.title = "view axis i115", .width = 900, .height = 600});
+        REQUIRE(window.has_value());
+        std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+        if (!device) {
+            AERO_SKIP_OR_FAIL("no GPU device");
+        }
+        const std::string location = uniqueProjectLocation();
+        const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+        REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+        std::optional<engine::editor::EditorApp> app =
+            engine::editor::EditorApp::create(*device, *window, ctx,
+                                              {.persistLayout = false,
+                                               .unfocusedFrameCapHz = 0.0F,
+                                               .projectPath = created.root,
+                                               .restoreLastProject = false,
+                                               .recentProjectsPath = uniqueRecentsFile()});
+        REQUIRE(app.has_value());
+        REQUIRE(app->tick());
+        REQUIRE(app->tick());
+        auto* const viewport = dynamic_cast<engine::editor::ViewportPanel*>(app->panels().find("Viewport"));
+        REQUIRE(viewport != nullptr);
+
+        // WHAT THIS CAN AND CANNOT DRIVE. It cannot press F and it cannot cancel -- see the case
+        // comment. What it CAN do is drive real frames through step 8b'' and watch the camera the
+        // panel is actually writing, which is the half no pure case covers: applyViewPose goes
+        // through setPitch, whose clampState the pure animation never sees.
+        //
+        // NOTHING HERE REQUIRES A MID-FLIGHT FRAME. A single frame at or above PanelContext's 0.25 s
+        // spike clamp -- which equals VIEW_SNAP_SECONDS exactly -- completes the entire animation, so
+        // a REQUIRE(viewSnapActive()) after one tick would ABORT this case on a slow first frame.
+        // The walk below is bounded and holds whether it takes one frame or twenty.
+        viewport->requestViewSnap(engine::editor::ViewAxis::PosY);
+        REQUIRE(viewport->viewSnapActive());  // no tick yet: it really started
+#if AERO_SHADER_TOOLS_ENABLED
+        float previousPitch = viewport->camera().pitch();
+        REQUIRE(previousPitch > -engine::editor::MAX_PITCH);  // anti-vacuity: there is somewhere to go
+        int ticks = 0;
+        while (viewport->viewSnapActive() && ticks < 60) {
+            REQUIRE(app->tick());
+            ++ticks;
+            const float pitchNow = viewport->camera().pitch();
+            // MONOTONE toward Top, and never past it. The epsilon is one-sided and tiny: it admits a
+            // frame that made no progress (a zero delta) and refuses one that went backwards.
+            CHECK(pitchNow <= previousPitch + 1.0e-6F);
+            CHECK(pitchNow >= -engine::editor::MAX_PITCH);
+            previousPitch = pitchNow;
+        }
+        CHECK_FALSE(viewport->viewSnapActive());
+        CHECK(ticks >= 1);
+        CHECK(ticks < 60);
+        // ...and it really moved, rather than being monotone by standing still.
+        CHECK(viewport->camera().pitch() == -engine::editor::MAX_PITCH);
+        CHECK(viewport->camera().pitch() < engine::radians(-20.0F));
+#else
+        // tools-OFF: the panel returns at step 4, so the snap never advances -- asserted rather than
+        // skipped. Real frames are driven anyway, which is what makes this an assertion about the
+        // panel rather than about a pose nothing ever touched; the retarget is still safe and still
+        // starts from the unmoved pose.
+        for (int i = 0; i < 5; ++i) {
+            REQUIRE(app->tick());
+        }
+        CHECK(viewport->viewSnapActive());
+        CHECK(viewport->camera().pitch() == engine::editor::DEFAULT_PITCH_RADIANS);
+        viewport->requestViewSnap(engine::editor::ViewAxis::PosY);
+        CHECK(viewport->viewSnapActive());
+#endif
+    }
+}
+
+TEST_CASE("editor: the widget's press claim and the SetOrthographic call site (task E.1.3, I116)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "view axis i116", .width = 900, .height = 600});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = created.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+    auto* const viewport = dynamic_cast<engine::editor::ViewportPanel*>(app->panels().find("Viewport"));
+    REQUIRE(viewport != nullptr);
+
+#if AERO_SHADER_TOOLS_ENABLED
+    const engine::Vec2 rectMin = viewport->viewAxisRectMin();
+    const engine::Vec2 rectMax = viewport->viewAxisRectMax();
+
+    SUBCASE("the rect is a REAL, non-degenerate SQUARE inside the image") {
+        // Anti-vacuity first, for I107's reason: an empty rect owns nothing, so every "does not own"
+        // assertion below would pass on a panel that never laid the widget out.
+        CHECK(rectMax.x > rectMin.x);
+        CHECK(rectMax.y > rectMin.y);
+        CHECK(rectMax.x - rectMin.x == 2.0F * engine::editor::VIEW_AXIS_HALF_EXTENT_POINTS);
+        CHECK(rectMax.y - rectMin.y == 2.0F * engine::editor::VIEW_AXIS_HALF_EXTENT_POINTS);
+        // Reported image-relative, so it sits inside a 900x600 viewport's own bounds.
+        CHECK(rectMin.x >= 0.0F);
+        CHECK(rectMin.y >= 0.0F);
+    }
+    SUBCASE("the widget OWNS a press anywhere on its rect -- including its empty space (AC-9)") {
+        // The image origin the panel actually laid out against is {0,0} for these accessors, so the
+        // same convention is used here.
+        const engine::Vec2 origin{};
+        // The image rect that PRODUCES this widget rect: the widget is inset by MARGIN from the
+        // image's right edge, so the image's width is rectMax.x + MARGIN. Reconstructed rather than
+        // hard-coded, so retuning MARGIN reddens nothing here (AC-21).
+        const engine::Vec2 size{rectMax.x + engine::editor::VIEW_AXIS_MARGIN_POINTS, 600.0F};
+        const engine::Vec2 centre{(rectMin.x + rectMax.x) * 0.5F, (rectMin.y + rectMax.y) * 0.5F};
+        CHECK(viewport->overlayOwnsPress(centre, origin, size));
+        // The rect's own top-left CORNER: inside the square, but on no ball and not on the badge --
+        // the ring's radius is a whole ball radius short of the half-extent. This is the "empty space
+        // is still chrome" claim, which is the half a ball-shaped claim would miss.
+        CHECK(viewport->overlayOwnsPress(engine::Vec2{rectMin.x + 0.5F, rectMin.y + 0.5F}, origin, size));
+        CHECK(viewport->overlayOwnsPress(rectMin, origin, size));  // half-open at min
+    }
+    SUBCASE("...and NOT one point outside its left edge") {
+        const engine::Vec2 origin{};
+        const engine::Vec2 size{rectMax.x + engine::editor::VIEW_AXIS_MARGIN_POINTS, 600.0F};
+        const engine::Vec2 centreY{0.0F, (rectMin.y + rectMax.y) * 0.5F};
+        const engine::Vec2 justOutside{rectMin.x - 1.0F, centreY.y};
+
+        // THE TWO ARMS OF overlayOwnsPress REPORT IN DIFFERENT SPACES HERE, AND THAT IS WHY THIS
+        // GUARD EXISTS. viewAxisRectMin/Max are IMAGE-RELATIVE (the accessors say so: no image origin
+        // is latched anywhere, so they answer with the origin at {0,0}), while overlayRowMin/Max are
+        // the LAST DRAWN FRAME'S SCREEN points. In production both arms are screen-space, because
+        // updatePick hands overlayOwnsPress the real image origin; here the widget half is driven in
+        // image space on purpose, so the row half is being asked about a point in the other space.
+        //
+        // A CHECK_FALSE that passes because the two rects happen not to overlap at 900x600 is
+        // asserting nothing about the widget. So the disjointness is ASSERTED rather than relied on:
+        // if a future layout ever put the row under these points, this fails loudly instead of
+        // turning the two arms below into a coincidence.
+        const engine::Vec2 rowMin = viewport->overlayRowMin();
+        const engine::Vec2 rowMax = viewport->overlayRowMax();
+        CHECK(rowMax.x > rowMin.x);  // anti-vacuity: an empty row rect owns nothing and proves nothing
+        CHECK(rowMax.y > rowMin.y);
+        const auto outsideRow = [rowMin, rowMax](engine::Vec2 point) {
+            return point.x < rowMin.x || point.x >= rowMax.x || point.y < rowMin.y || point.y >= rowMax.y;
+        };
+        CHECK(outsideRow(justOutside));
+        CHECK(outsideRow(rectMax));
+
+        CHECK_FALSE(viewport->overlayOwnsPress(justOutside, origin, size));
+        CHECK_FALSE(viewport->overlayOwnsPress(rectMax, origin, size));  // half-open at max
+    }
+#else
+    // -DAERO_SHADER_TOOLS=OFF: the viewport latches Unavailable at step 4, so no image was ever laid
+    // out and lastImageSizePoints stays zero. Asserted rather than skipped (the 3.4.2 rule): a
+    // degenerate rect must own NOTHING, so picking degrades to its pre-widget behaviour.
+    CHECK(viewport->viewAxisRectMin() == engine::Vec2{});
+    CHECK(viewport->viewAxisRectMax() == engine::Vec2{});
+    CHECK_FALSE(viewport->overlayOwnsPress(engine::Vec2{10.0F, 10.0F}, engine::Vec2{}, engine::Vec2{}));
+    REQUIRE(app->tick());
+#endif
+
+    SUBCASE("THE SOURCE-TEXT HALF: SetOrthographic is driven from the mode, never a literal") {
+        // NO RUNTIME TIER IN THIS TREE CAN READ ImGuizmo's GLOBAL STATE -- that is I30's and I110's
+        // standing reason, and it is why this is a pin on THIS FILE'S CURRENT TEXT rather than a
+        // structural guarantee. Seed S8 (SetOrthographic(false) unconditionally) reddens HERE AND
+        // NOWHERE ELSE: the two behaviours the flag changes are a rotate ring's pixels and an early
+        // return, and validation row 6 is its only other cover.
+        const std::vector<std::string> code = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/viewport_panel.cpp");
+        REQUIRE_FALSE(code.empty());
+        const std::size_t callAt = soleLineContaining(code, "ImGuizmo::SetOrthographic(");
+        CHECK(code[callAt].find("projectionMode()") != std::string::npos);
+        CHECK(code[callAt].find("false") == std::string::npos);
+        CHECK(code[callAt].find("true") == std::string::npos);
+    }
+}
+
+TEST_CASE("editor: the projection toggle reaches the real matrix and the panel keeps rendering (task E.1.3, I117)") {
+    using engine::editor::ProjectionMode;
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "view axis i117", .width = 900, .height = 600});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = created.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+    auto* const viewport = dynamic_cast<engine::editor::ViewportPanel*>(app->panels().find("Viewport"));
+    REQUIRE(viewport != nullptr);
+
+    CHECK((viewport->camera().projectionMode() == ProjectionMode::Perspective));  // the default
+
+    SUBCASE("the toggle changes the projection matrix's bottom row, and it round-trips") {
+        const engine::Mat4 perspectiveProj = viewport->camera().projectionMatrix(1.0F);
+        CHECK(perspectiveProj.columns[2].w != 0.0F);  // the perspective divide is really there
+
+        viewport->requestProjectionMode(ProjectionMode::Orthographic);
+        CHECK((viewport->camera().projectionMode() == ProjectionMode::Orthographic));
+        const engine::Mat4 orthoProj = viewport->camera().projectionMatrix(1.0F);
+        CHECK(orthoProj.columns[0].w == 0.0F);
+        CHECK(orthoProj.columns[1].w == 0.0F);
+        CHECK(orthoProj.columns[2].w == 0.0F);
+        CHECK(orthoProj.columns[3].w == 1.0F);
+
+        viewport->requestProjectionMode(ProjectionMode::Perspective);
+        CHECK((viewport->camera().projectionMode() == ProjectionMode::Perspective));
+        CHECK(viewport->camera().projectionMatrix(1.0F).columns[2].w == perspectiveProj.columns[2].w);
+    }
+    SUBCASE("the panel still renders a full frame in ORTHOGRAPHIC") {
+        viewport->requestProjectionMode(ProjectionMode::Orthographic);
+        REQUIRE(app->tick());
+        REQUIRE(app->tick());
+#if AERO_SHADER_TOOLS_ENABLED
+        // The seams stay live: the scene pass really ran through the ortho matrix rather than
+        // bailing out somewhere with a latched Unavailable.
+        CHECK(viewport->postProcess() != nullptr);
+        CHECK(viewport->outputTarget() != nullptr);
+        CHECK(viewport->debugDraw() != nullptr);
+        // ...and E.1.2's grid still draws, through the parallel projection.
+        CHECK(viewport->debugDraw()->lastFrameLines() > 0U);
+        CHECK(viewport->debugDraw()->lastFrameDroppedLines() == 0U);
+#else
+        // tools-OFF: the panel is Unavailable, the seams are null, and ticking is still safe with the
+        // mode set. Asserted rather than skipped (the 3.4.2 rule).
+        CHECK(viewport->postProcess() == nullptr);
+        CHECK(viewport->debugDraw() == nullptr);
+        CHECK((viewport->camera().projectionMode() == ProjectionMode::Orthographic));
+        REQUIRE(app->tick());
+#endif
+    }
+}
+
+TEST_CASE("editor: a press the view-axis widget owns never reaches ImGuizmo (task E.1.3, I118)") {
+    // A SOURCE-TEXT PIN, AND IT SAYS SO RATHER THAN IMPLYING BEHAVIOURAL COVERAGE. Two independent
+    // measurements make this the only tier available. (1) ImGuizmo exposes IsOver(), IsUsing() and
+    // IsUsingAny() and NO getter for mbEnable at all, so "the gizmo was disabled this frame" is not
+    // readable from any tier here -- I30's and I110's standing reason, one flag over. (2) Nothing in
+    // tests/ can synthesise a mouse click: there is no AddMouseButtonEvent, no AddKeyEvent and no
+    // io.MouseDown write anywhere in the tree, and the backend rewrites io.MousePos at every
+    // NewFrame, so the cursor cannot be parked on the widget either. The BEHAVIOURAL cover is
+    // validation row 15 -- orbit until the translate arrows cross the widget's box, click a ball, and
+    // check the entity did not move and the undo stack did not grow.
+    //
+    // THE DEFECT THIS PINS, so a later reader knows what it is protecting. ImGuizmo's CanActivate()
+    // is `IsMouseClicked(0) && !IsAnyItemHovered() && !IsAnyItemActive()` and its GetMoveType gates
+    // only on "the cursor is over this window". The interactive overlay row is protected from that
+    // only INCIDENTALLY -- its Checkbox/Combo/SliderFloat are real ImGui items -- while the view-axis
+    // widget submits NO item at all, so a click on a ball whose box the translate arrows happened to
+    // cross both started the snap AND latched a drag against a plane captured in the pre-snap view.
+    // The camera then rotated every frame and the release wrote a real, undoable TransformCommand.
+    const std::vector<std::string> code = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/viewport_panel.cpp");
+    REQUIRE_FALSE(code.empty());
+
+    SUBCASE("ONE rect, TWO consumers: the pick's claim and ImGuizmo's are the same predicate") {
+        // Three CODE lines: the definition and its two calls. The file mentions the name a fourth
+        // time in a comment, so this is also the check that comments really are being stripped -- a
+        // count of four here would mean every other assertion in this case is reading prose.
+        std::size_t mentions = 0;
+        for (const std::string& line : code) {
+            if (line.find("viewAxisOwnsPoint") != std::string::npos) {
+                ++mentions;
+            }
+        }
+        CHECK(mentions == 3U);
+        const std::size_t definedAt = soleLineContaining(code, "bool ViewportPanel::viewAxisOwnsPoint(");
+        const std::size_t pickAt = soleLineContaining(code, "return viewAxisOwnsPoint(pressPoints");
+        CHECK(definedAt != pickAt);
+    }
+
+    SUBCASE("the widget's claim reaches ImGuizmo::Enable, and does it BEFORE Manipulate") {
+        const std::size_t claimAt = soleLineContaining(code, "const bool widgetOwnsCursor =");
+        const std::size_t enableAt = soleLineContaining(code, "ImGuizmo::Enable(gesture.gesture");
+        const std::size_t manipulateAt = soleLineContaining(code, "ImGuizmo::Manipulate(");
+
+        // The claim is computed from the widget's OWN rect, not from a second hand-written test.
+        bool asksTheRect = false;
+        for (std::size_t i = claimAt; i < code.size() && i <= claimAt + 2U; ++i) {
+            asksTheRect = asksTheRect || code[i].find("viewAxisOwnsPoint(") != std::string::npos;
+        }
+        CHECK(asksTheRect);
+
+        // ...and it reaches the enable term, which is what actually stops HandleTranslation running.
+        CHECK(code[enableAt].find("!widgetOwnsCursor") != std::string::npos);
+        // ORDER, and it is the whole point: a claim computed AFTER Manipulate would arrive one call
+        // too late to prevent the latch it exists to prevent.
+        CHECK(claimAt < enableAt);
+        CHECK(enableAt < manipulateAt);
+    }
+
+    SUBCASE("an IN-FLIGHT drag is NOT cut off -- the `!IsUsing()` term, pinned as its own token") {
+        // ImGuizmo::Enable(false) force-clears mbUsing, so a claim without this term would drop a
+        // drag that started on a handle and wandered over the widget, at its current value. This
+        // mirrors ImGuizmo's own `&& !gContext.mbUsing`, the same way updateGizmo's behind-camera
+        // early return already does. The TOKEN is pinned rather than the statement's general shape:
+        // a careless edit deletes this one term and leaves everything else reading correctly.
+        const std::size_t claimAt = soleLineContaining(code, "const bool widgetOwnsCursor =");
+        bool guardsInFlight = false;
+        bool asksHovered = false;
+        for (std::size_t i = claimAt; i < code.size() && i <= claimAt + 2U; ++i) {
+            guardsInFlight = guardsInFlight || code[i].find("!ImGuizmo::IsUsing()") != std::string::npos;
+            asksHovered = asksHovered || code[i].find("hovered") != std::string::npos;
+        }
+        CHECK(guardsInFlight);
+        CHECK(asksHovered);
+    }
+}
+
+TEST_CASE("editor: the view-axis widget draws LAST, over everything (task E.1.3, I119)") {
+    // A SOURCE-TEXT PIN, and the I110 precedent by name: the ordering is INVISIBLE AT RUNTIME. Every
+    // one of these calls submits into the SAME ImDrawList, so moving the draw earlier changes only
+    // which commands are appended first -- no seam reports it, no assertion about the panel's state
+    // moves, and nothing in this tree reads back a viewport pixel through ImGui's own draw data. The
+    // consequence is entirely visual: the widget would be painted UNDER the selection overlay's
+    // segments and under ImGuizmo's handles, which is exactly the picture AC-16's draw half exists to
+    // guarantee against. Deleting the call outright is likewise invisible to every runtime tier.
+    const std::vector<std::string> code = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/viewport_panel.cpp");
+    REQUIRE_FALSE(code.empty());
+
+    // The CALL, not the definition: `drawViewAxisGizmo() const {` does not contain the trailing
+    // semicolon, which is the drawGizmoBar(); / drawViewOptions(); idiom I106 already uses.
+    const std::size_t drawAt = soleLineContaining(code, "drawViewAxisGizmo();");
+
+    SUBCASE("it runs AFTER step 9b's rect record and BEFORE step 10") {
+        // step 9b records the interactive row's rect; step 10 records the render request LAST, after
+        // everything succeeded. The widget sits between them, which is what makes it the last thing
+        // submitted in the frame.
+        const std::size_t recordAt = soleLineContaining(code, "overlayRowBottomRight = Vec2{");
+        const std::size_t requestAt = soleLineContaining(code, "renderRequested = true;");
+        CHECK(recordAt < drawAt);
+        CHECK(drawAt < requestAt);
+    }
+
+    SUBCASE("it runs AFTER the selection overlay and AFTER ImGuizmo's own submission") {
+        // The two things it must paint OVER. updateGizmo is where Manipulate submits the handles, so
+        // comparing against its CALL site is comparing against the frame position the handles are
+        // appended at -- the definition sits far below in the file and would prove nothing.
+        const std::size_t overlayAt = soleLineContaining(code, "drawSelectionOverlay(context,");
+        const std::size_t gizmoAt = soleLineContaining(code, "updateGizmo(context, Vec2{imageOrigin.x");
+        CHECK(overlayAt < drawAt);
+        CHECK(gizmoAt < drawAt);
+    }
+
+    SUBCASE("it draws the SAME layout step 8b'''' hit-tested -- computed once, read once (AC-16)") {
+        const std::size_t layoutAt = soleLineContaining(code, "updateViewAxisGizmo(Vec2{imageOrigin.x");
+        CHECK(layoutAt < drawAt);
+    }
+}
 
 TEST_CASE("editor: an EMPTY selection issues no mask pass and no composite (task E.1.4, I120)") {
     // THE ZERO-COST PATH, at the editor level: an empty selection must acquire NO command buffer and

@@ -48,6 +48,14 @@ using engine::editor::OverlaySegment;
 
 namespace {
 
+// task E.1.3: the PERSPECTIVE mode, spelled once. buildSelectionOverlay / projectToViewport /
+// clipSegmentToNearPlane / gizmoOriginBehindCamera all took a NON-DEFAULTED ProjectionMode at that
+// task, and every pre-existing site below is a PERSPECTIVE site whose behaviour must be byte-identical
+// (AC-8). A file-local alias keeps each of those lines 7 characters longer instead of 40, which is
+// what keeps them under the column limit -- clang-format-18's Homebrew and Ubuntu builds disagree on
+// ~120-column chains, and this is the file with the most such edits.
+constexpr auto PERSP = engine::editor::ProjectionMode::Perspective;
+
 constexpr float EPS = 1.0e-4F;
 constexpr float INF_F = std::numeric_limits<float>::infinity();
 constexpr Vec2 VIEWPORT_POINTS{800.0F, 600.0F};
@@ -112,22 +120,22 @@ TEST_CASE("selection_overlay: segment counts per entity kind (AC-13)") {
 
     SUBCASE("one selected mesh entity -> 4 segments") {
         const Entity cube = makeMesh(w, Vec3::zero());
-        buildSelectionOverlay(w, std::array<Entity, 1>{cube}, cube, viewProj, VIEWPORT_POINTS, scratch);
+        buildSelectionOverlay(w, std::array<Entity, 1>{cube}, cube, viewProj, PERSP, VIEWPORT_POINTS, scratch);
         CHECK(scratch.size() == 4);
     }
     SUBCASE("one selected non-mesh entity -> 4 segments, the SAME count") {
         const Entity light = makePoint(w, Vec3::zero());
-        buildSelectionOverlay(w, std::array<Entity, 1>{light}, light, viewProj, VIEWPORT_POINTS, scratch);
+        buildSelectionOverlay(w, std::array<Entity, 1>{light}, light, viewProj, PERSP, VIEWPORT_POINTS, scratch);
         CHECK(scratch.size() == 4);
     }
     SUBCASE("two entities -> 8 segments") {
         const Entity a = makeMesh(w, Vec3{1.0F, 0.0F, 0.0F});
         const Entity b = makeMesh(w, Vec3{-1.0F, 0.0F, 0.0F});
-        buildSelectionOverlay(w, std::array<Entity, 2>{a, b}, a, viewProj, VIEWPORT_POINTS, scratch);
+        buildSelectionOverlay(w, std::array<Entity, 2>{a, b}, a, viewProj, PERSP, VIEWPORT_POINTS, scratch);
         CHECK(scratch.size() == 8);
     }
     SUBCASE("an empty span -> 0 segments, scratch stays empty (E1)") {
-        buildSelectionOverlay(w, {}, Entity{}, viewProj, VIEWPORT_POINTS, scratch);
+        buildSelectionOverlay(w, {}, Entity{}, viewProj, PERSP, VIEWPORT_POINTS, scratch);
         CHECK(scratch.empty());
     }
 }
@@ -144,7 +152,7 @@ TEST_CASE("selection_overlay: primary vs selected roles (AC-14)") {
     const std::array<Entity, 3> selected{a, b, c};
 
     SUBCASE("the second entity is primary") {
-        buildSelectionOverlay(w, selected, b, viewProj, VIEWPORT_POINTS, scratch);
+        buildSelectionOverlay(w, selected, b, viewProj, PERSP, VIEWPORT_POINTS, scratch);
         const auto primaryCount = std::count_if(scratch.begin(), scratch.end(),
                                                 [](const OverlaySegment& s) { return s.role == OverlayRole::Primary; });
         const auto selectedCount = std::count_if(
@@ -153,7 +161,7 @@ TEST_CASE("selection_overlay: primary vs selected roles (AC-14)") {
         CHECK(selectedCount == 8);
     }
     SUBCASE("no primary -> zero Primary segments") {
-        buildSelectionOverlay(w, selected, Entity{}, viewProj, VIEWPORT_POINTS, scratch);
+        buildSelectionOverlay(w, selected, Entity{}, viewProj, PERSP, VIEWPORT_POINTS, scratch);
         CHECK(std::none_of(scratch.begin(), scratch.end(),
                            [](const OverlaySegment& s) { return s.role == OverlayRole::Primary; }));
     }
@@ -171,13 +179,14 @@ TEST_CASE("selection_overlay: the marker tracks the entity's transform (AC-15)")
         World originWorld;
         const Entity origin = makeMesh(originWorld, Vec3::zero());
         std::vector<OverlaySegment> originScratch;
-        buildSelectionOverlay(originWorld, std::array<Entity, 1>{origin}, origin, viewProj, VIEWPORT_POINTS,
+        buildSelectionOverlay(originWorld, std::array<Entity, 1>{origin}, origin, viewProj, PERSP, VIEWPORT_POINTS,
                               originScratch);
 
         World movedWorld;
         const Entity moved = makeMesh(movedWorld, Vec3{1.0F, 0.0F, 0.0F});
         std::vector<OverlaySegment> movedScratch;
-        buildSelectionOverlay(movedWorld, std::array<Entity, 1>{moved}, moved, viewProj, VIEWPORT_POINTS, movedScratch);
+        buildSelectionOverlay(movedWorld, std::array<Entity, 1>{moved}, moved, viewProj, PERSP, VIEWPORT_POINTS,
+                              movedScratch);
 
         REQUIRE(originScratch.size() == movedScratch.size());
         for (std::size_t i = 0; i < originScratch.size(); ++i) {
@@ -191,13 +200,13 @@ TEST_CASE("selection_overlay: the marker tracks the entity's transform (AC-15)")
         World unscaledWorld;
         const Entity unscaled = makeMesh(unscaledWorld, Vec3::zero());
         std::vector<OverlaySegment> unscaledScratch;
-        buildSelectionOverlay(unscaledWorld, std::array<Entity, 1>{unscaled}, unscaled, viewProj, VIEWPORT_POINTS,
-                              unscaledScratch);
+        buildSelectionOverlay(unscaledWorld, std::array<Entity, 1>{unscaled}, unscaled, viewProj, PERSP,
+                              VIEWPORT_POINTS, unscaledScratch);
 
         World scaledWorld;
         const Entity scaled = makeMesh(scaledWorld, Vec3::zero(), Quat::identity(), Vec3{2.0F, 2.0F, 2.0F});
         std::vector<OverlaySegment> scaledScratch;
-        buildSelectionOverlay(scaledWorld, std::array<Entity, 1>{scaled}, scaled, viewProj, VIEWPORT_POINTS,
+        buildSelectionOverlay(scaledWorld, std::array<Entity, 1>{scaled}, scaled, viewProj, PERSP, VIEWPORT_POINTS,
                               scaledScratch);
 
         const std::vector<Vec2> unscaledPoints = endpointsOf(unscaledScratch);
@@ -223,13 +232,13 @@ TEST_CASE("selection_overlay: the marker tracks the entity's transform (AC-15)")
         const Entity rotated =
             makeMesh(rotatedWorld, Vec3::zero(), engine::fromAxisAngle(Vec3::unitY(), engine::radians(45.0F)));
         std::vector<OverlaySegment> rotatedScratch;
-        buildSelectionOverlay(rotatedWorld, std::array<Entity, 1>{rotated}, rotated, viewProj, VIEWPORT_POINTS,
+        buildSelectionOverlay(rotatedWorld, std::array<Entity, 1>{rotated}, rotated, viewProj, PERSP, VIEWPORT_POINTS,
                               rotatedScratch);
 
         World uprightWorld;
         const Entity upright = makeMesh(uprightWorld, Vec3::zero());
         std::vector<OverlaySegment> uprightScratch;
-        buildSelectionOverlay(uprightWorld, std::array<Entity, 1>{upright}, upright, viewProj, VIEWPORT_POINTS,
+        buildSelectionOverlay(uprightWorld, std::array<Entity, 1>{upright}, upright, viewProj, PERSP, VIEWPORT_POINTS,
                               uprightScratch);
 
         const std::vector<Vec2> rotatedPoints = endpointsOf(rotatedScratch);
@@ -256,13 +265,13 @@ TEST_CASE("selection_overlay: parenting -- the entity's OWN origin, never the su
     REQUIRE(w.setParent(child, parent));
 
     std::vector<OverlaySegment> childScratch;
-    buildSelectionOverlay(w, std::array<Entity, 1>{child}, child, viewProj, VIEWPORT_POINTS, childScratch);
+    buildSelectionOverlay(w, std::array<Entity, 1>{child}, child, viewProj, PERSP, VIEWPORT_POINTS, childScratch);
 
     World standaloneWorld;
     const Entity standalone = makeMesh(standaloneWorld, Vec3{5.0F, 1.0F, 0.0F});
     std::vector<OverlaySegment> standaloneScratch;
-    buildSelectionOverlay(standaloneWorld, std::array<Entity, 1>{standalone}, standalone, viewProj, VIEWPORT_POINTS,
-                          standaloneScratch);
+    buildSelectionOverlay(standaloneWorld, std::array<Entity, 1>{standalone}, standalone, viewProj, PERSP,
+                          VIEWPORT_POINTS, standaloneScratch);
 
     REQUIRE(childScratch.size() == standaloneScratch.size());
     for (std::size_t i = 0; i < childScratch.size(); ++i) {
@@ -273,7 +282,7 @@ TEST_CASE("selection_overlay: parenting -- the entity's OWN origin, never the su
     }
 
     std::vector<OverlaySegment> parentScratch;
-    buildSelectionOverlay(w, std::array<Entity, 1>{parent}, parent, viewProj, VIEWPORT_POINTS, parentScratch);
+    buildSelectionOverlay(w, std::array<Entity, 1>{parent}, parent, viewProj, PERSP, VIEWPORT_POINTS, parentScratch);
     CHECK(parentScratch.size() == 4);  // D7: the PARENT's own origin only, never the subtree's
 }
 
@@ -283,14 +292,14 @@ TEST_CASE("selection_overlay: clipSegmentToNearPlane interpolates in clip space,
         Vec4 b{-1.0F, 0.5F, 2.0F, 1.0F};
         const Vec4 a0 = a;
         const Vec4 b0 = b;
-        CHECK(clipSegmentToNearPlane(a, b));
+        CHECK(clipSegmentToNearPlane(a, b, PERSP));
         CHECK(a == a0);
         CHECK(b == b0);
     }
     SUBCASE("both behind: returns false") {
         Vec4 a{1.0F, 1.0F, 1.0F, -1.0F};
         Vec4 b{2.0F, 2.0F, 2.0F, -3.0F};
-        CHECK_FALSE(clipSegmentToNearPlane(a, b));
+        CHECK_FALSE(clipSegmentToNearPlane(a, b, PERSP));
     }
     SUBCASE("straddling: the front endpoint survives untouched, the other lands ON w == CLIP_W_EPSILON") {
         // Chosen so the CLIP-space answer and the POST-DIVIDE answer differ enormously (S8):
@@ -300,7 +309,7 @@ TEST_CASE("selection_overlay: clipSegmentToNearPlane interpolates in clip space,
         Vec4 b{1.0F, 0.0F, 0.0F, 1.0F};    // in front
         const Vec4 a0 = a;
         const Vec4 b0 = b;
-        REQUIRE(clipSegmentToNearPlane(a, b));
+        REQUIRE(clipSegmentToNearPlane(a, b, PERSP));
         CHECK(b == b0);
         CHECK(std::abs(a.w - CLIP_W_EPSILON) < 1.0e-6F);
         // It lies ON the original clip-space line: the SAME t reproduces every component. That IS
@@ -314,7 +323,7 @@ TEST_CASE("selection_overlay: clipSegmentToNearPlane interpolates in clip space,
     SUBCASE("a NaN endpoint is treated as behind, never propagated") {
         Vec4 a{0.0F, 0.0F, 0.0F, std::numeric_limits<float>::quiet_NaN()};
         Vec4 b{1.0F, 0.0F, 0.0F, 1.0F};
-        CHECK_FALSE(clipSegmentToNearPlane(a, b));
+        CHECK_FALSE(clipSegmentToNearPlane(a, b, PERSP));
     }
 }
 
@@ -326,7 +335,7 @@ TEST_CASE("selection_overlay: behind the camera and straddling the near plane (A
         World w;
         const Entity behind = makeMesh(w, Vec3{0.0F, 0.0F, 20.0F});
         std::vector<OverlaySegment> scratch;
-        buildSelectionOverlay(w, std::array<Entity, 1>{behind}, behind, viewProj, VIEWPORT_POINTS, scratch);
+        buildSelectionOverlay(w, std::array<Entity, 1>{behind}, behind, viewProj, PERSP, VIEWPORT_POINTS, scratch);
         CHECK(scratch.empty());
     }
     SUBCASE("AT the eye -> 0 segments: the marker's own origin fails projectToViewport") {
@@ -336,7 +345,8 @@ TEST_CASE("selection_overlay: behind the camera and straddling the near plane (A
         World w;
         const Entity straddling = makeMesh(w, Vec3{0.0F, 0.0F, 10.0F}, Quat::identity(), Vec3{4.0F, 4.0F, 4.0F});
         std::vector<OverlaySegment> scratch;
-        buildSelectionOverlay(w, std::array<Entity, 1>{straddling}, straddling, viewProj, VIEWPORT_POINTS, scratch);
+        buildSelectionOverlay(w, std::array<Entity, 1>{straddling}, straddling, viewProj, PERSP, VIEWPORT_POINTS,
+                              scratch);
         CHECK(scratch.empty());
     }
     SUBCASE("just IN FRONT of the eye -> the full 4 segments, every coordinate finite") {
@@ -345,7 +355,7 @@ TEST_CASE("selection_overlay: behind the camera and straddling the near plane (A
         World w;
         const Entity ahead = makeMesh(w, Vec3{0.0F, 0.0F, 9.0F}, Quat::identity(), Vec3{4.0F, 4.0F, 4.0F});
         std::vector<OverlaySegment> scratch;
-        buildSelectionOverlay(w, std::array<Entity, 1>{ahead}, ahead, viewProj, VIEWPORT_POINTS, scratch);
+        buildSelectionOverlay(w, std::array<Entity, 1>{ahead}, ahead, viewProj, PERSP, VIEWPORT_POINTS, scratch);
         CHECK(scratch.size() == 4);
         CHECK(allFinite(scratch));
     }
@@ -361,7 +371,8 @@ TEST_CASE("selection_overlay: a HUGE FINITE transform never emits a non-finite c
     // appendPointMarker relies on, which is why this builder no longer carries a guard of its own.
     const Entity hugeScale = makeMesh(w, Vec3::zero(), Quat::identity(), Vec3{1.0e34F, 1.0e34F, 1.0e34F});
     std::vector<OverlaySegment> scaleScratch;
-    buildSelectionOverlay(w, std::array<Entity, 1>{hugeScale}, hugeScale, viewProj, VIEWPORT_POINTS, scaleScratch);
+    buildSelectionOverlay(w, std::array<Entity, 1>{hugeScale}, hugeScale, viewProj, PERSP, VIEWPORT_POINTS,
+                          scaleScratch);
     CHECK(allFinite(scaleScratch));
     // ANTI-VACUITY: the scratch is NOT empty, so allFinite above has something to be true of -- and
     // the marker is exactly where an UNSCALED entity at the same origin would put it.
@@ -369,7 +380,8 @@ TEST_CASE("selection_overlay: a HUGE FINITE transform never emits a non-finite c
     World plainWorld;
     const Entity plain = makeMesh(plainWorld, Vec3::zero());
     std::vector<OverlaySegment> plainScratch;
-    buildSelectionOverlay(plainWorld, std::array<Entity, 1>{plain}, plain, viewProj, VIEWPORT_POINTS, plainScratch);
+    buildSelectionOverlay(plainWorld, std::array<Entity, 1>{plain}, plain, viewProj, PERSP, VIEWPORT_POINTS,
+                          plainScratch);
     REQUIRE(plainScratch.size() == 4);
     for (std::size_t i = 0; i < scaleScratch.size(); ++i) {
         CHECK(std::abs(scaleScratch[i].a.x - plainScratch[i].a.x) < EPS);
@@ -379,7 +391,7 @@ TEST_CASE("selection_overlay: a HUGE FINITE transform never emits a non-finite c
     // A huge POSITION: whatever survives must be finite, and nothing here may emit a NaN.
     const Entity hugePosition = makeMesh(w, Vec3{1.0e34F, 1.0e34F, -1.0e34F});
     std::vector<OverlaySegment> positionScratch;
-    buildSelectionOverlay(w, std::array<Entity, 1>{hugePosition}, hugePosition, viewProj, VIEWPORT_POINTS,
+    buildSelectionOverlay(w, std::array<Entity, 1>{hugePosition}, hugePosition, viewProj, PERSP, VIEWPORT_POINTS,
                           positionScratch);
     CHECK(allFinite(positionScratch));
 }
@@ -396,16 +408,16 @@ TEST_CASE("selection_overlay: the cap bounds both segment count and Primary role
     }
 
     std::vector<OverlaySegment> scratch;
-    buildSelectionOverlay(w, all, Entity{}, viewProj, VIEWPORT_POINTS, scratch);
+    buildSelectionOverlay(w, all, Entity{}, viewProj, PERSP, VIEWPORT_POINTS, scratch);
     CHECK(scratch.size() == 4U * MAX_HIGHLIGHTED_ENTITIES);  // exactly 1024
 
     // the 300th is BEYOND the cap: making it the primary must draw NO Primary segments (E13)
-    buildSelectionOverlay(w, all, all.back(), viewProj, VIEWPORT_POINTS, scratch);
+    buildSelectionOverlay(w, all, all.back(), viewProj, PERSP, VIEWPORT_POINTS, scratch);
     CHECK(std::none_of(scratch.begin(), scratch.end(),
                        [](const OverlaySegment& s) { return s.role == OverlayRole::Primary; }));
 
     // ...while a primary INSIDE the cap does get its 4
-    buildSelectionOverlay(w, all, all.front(), viewProj, VIEWPORT_POINTS, scratch);
+    buildSelectionOverlay(w, all, all.front(), viewProj, PERSP, VIEWPORT_POINTS, scratch);
     CHECK(std::count_if(scratch.begin(), scratch.end(),
                         [](const OverlaySegment& s) { return s.role == OverlayRole::Primary; }) == 4);
 }
@@ -459,16 +471,16 @@ TEST_CASE("selection_overlay: dead handles do NOT consume cap budget (A7/AC-17/A
     REQUIRE(span.size() == live.size() + dead.size());
 
     std::vector<OverlaySegment> scratch;
-    buildSelectionOverlay(w, span, Entity{}, viewProj, VIEWPORT_POINTS, scratch);
+    buildSelectionOverlay(w, span, Entity{}, viewProj, PERSP, VIEWPORT_POINTS, scratch);
     CHECK(scratch.size() == 4U * MAX_HIGHLIGHTED_ENTITIES);  // still exactly 1024, not 12 fewer markers
 
     // Sharper than the count: the 256th LIVE entity is the LAST one inside the cap...
-    buildSelectionOverlay(w, span, live[MAX_HIGHLIGHTED_ENTITIES - 1], viewProj, VIEWPORT_POINTS, scratch);
+    buildSelectionOverlay(w, span, live[MAX_HIGHLIGHTED_ENTITIES - 1], viewProj, PERSP, VIEWPORT_POINTS, scratch);
     CHECK(std::count_if(scratch.begin(), scratch.end(),
                         [](const OverlaySegment& s) { return s.role == OverlayRole::Primary; }) == 4);
     // ...and the 257th is the FIRST one outside it. Counting dead handles against the budget would
     // push the boundary earlier and redden both of these.
-    buildSelectionOverlay(w, span, live[MAX_HIGHLIGHTED_ENTITIES], viewProj, VIEWPORT_POINTS, scratch);
+    buildSelectionOverlay(w, span, live[MAX_HIGHLIGHTED_ENTITIES], viewProj, PERSP, VIEWPORT_POINTS, scratch);
     CHECK(std::none_of(scratch.begin(), scratch.end(),
                        [](const OverlaySegment& s) { return s.role == OverlayRole::Primary; }));
 }
@@ -490,7 +502,7 @@ TEST_CASE("selection_overlay: hostile input never crashes, never emits non-finit
     const std::size_t meshCountBefore = w.componentCount<MeshRenderer>();
 
     std::vector<OverlaySegment> scratch;
-    buildSelectionOverlay(w, mixed, Entity{}, viewProj, VIEWPORT_POINTS, scratch);
+    buildSelectionOverlay(w, mixed, Entity{}, viewProj, PERSP, VIEWPORT_POINTS, scratch);
 
     CHECK(allFinite(scratch));  // no crash; not one non-finite coordinate reaches the output
     CHECK(w.entityCount() == entityCountBefore);
@@ -503,10 +515,11 @@ TEST_CASE("selection_overlay: hostile input never crashes, never emits non-finit
     // so the diamond is full size, which is strictly more useful and is the whole reason E5 has no
     // determinant guard.
     std::vector<OverlaySegment> zeroOnlyScratch;
-    buildSelectionOverlay(w, std::array<Entity, 1>{zeroScaled}, zeroScaled, viewProj, VIEWPORT_POINTS, zeroOnlyScratch);
+    buildSelectionOverlay(w, std::array<Entity, 1>{zeroScaled}, zeroScaled, viewProj, PERSP, VIEWPORT_POINTS,
+                          zeroOnlyScratch);
     CHECK(zeroOnlyScratch.size() == 4);
     Vec2 zeroOrigin{};
-    REQUIRE(engine::editor::projectToViewport(viewProj, Vec3::zero(), VIEWPORT_POINTS, zeroOrigin));
+    REQUIRE(engine::editor::projectToViewport(viewProj, PERSP, Vec3::zero(), VIEWPORT_POINTS, zeroOrigin));
     for (const OverlaySegment& s : zeroOnlyScratch) {
         CHECK(std::abs(engine::length(s.a - zeroOrigin) - engine::editor::POINT_MARKER_HALF_POINTS) < EPS);
     }
@@ -514,7 +527,7 @@ TEST_CASE("selection_overlay: hostile input never crashes, never emits non-finit
     // the dead handle does NOT consume cap budget (A7): the live entity trailing it in the span still
     // draws its full 4 segments on its own.
     std::vector<OverlaySegment> trailingOnlyScratch;
-    buildSelectionOverlay(w, std::array<Entity, 1>{trailingLive}, trailingLive, viewProj, VIEWPORT_POINTS,
+    buildSelectionOverlay(w, std::array<Entity, 1>{trailingLive}, trailingLive, viewProj, PERSP, VIEWPORT_POINTS,
                           trailingOnlyScratch);
     CHECK(trailingOnlyScratch.size() == 4);
 }
@@ -529,12 +542,12 @@ TEST_CASE("selection_overlay: scratch is cleared on entry and reused when warm (
     const std::array<Entity, 1> one{a};
 
     std::vector<OverlaySegment> scratch;
-    buildSelectionOverlay(w, two, a, viewProj, VIEWPORT_POINTS, scratch);
+    buildSelectionOverlay(w, two, a, viewProj, PERSP, VIEWPORT_POINTS, scratch);
     CHECK(scratch.size() == 8);
-    buildSelectionOverlay(w, one, a, viewProj, VIEWPORT_POINTS, scratch);
+    buildSelectionOverlay(w, one, a, viewProj, PERSP, VIEWPORT_POINTS, scratch);
     CHECK(scratch.size() == 4);  // CLEARED on entry, not appended to
     const std::size_t warmCapacity = scratch.capacity();
-    buildSelectionOverlay(w, one, a, viewProj, VIEWPORT_POINTS, scratch);
+    buildSelectionOverlay(w, one, a, viewProj, PERSP, VIEWPORT_POINTS, scratch);
     CHECK(scratch.capacity() == warmCapacity);  // warm: an identical second call does not grow
 }
 
@@ -564,7 +577,7 @@ TEST_CASE("selection_overlay: an entity IN THE MARKER LIST draws the diamond (VP
     std::vector<OverlaySegment> segments;
 
     SUBCASE("four segments, whatever the entity carries") {
-        buildSelectionOverlay(w, selected, e, viewProj, VIEWPORT_POINTS, segments);
+        buildSelectionOverlay(w, selected, e, viewProj, PERSP, VIEWPORT_POINTS, segments);
         CHECK(segments.size() == 4);
         CHECK(allFinite(segments));
     }
@@ -573,14 +586,15 @@ TEST_CASE("selection_overlay: an entity IN THE MARKER LIST draws the diamond (VP
         // entity that WOULD have drawn a primitive box gets the same four segments.
         World plainWorld;
         const Entity plain = makeMesh(plainWorld, Vec3{1.0F, 0.0F, 0.0F});
-        buildSelectionOverlay(plainWorld, std::array<Entity, 1>{plain}, plain, viewProj, VIEWPORT_POINTS, segments);
+        buildSelectionOverlay(plainWorld, std::array<Entity, 1>{plain}, plain, viewProj, PERSP, VIEWPORT_POINTS,
+                              segments);
         CHECK(segments.size() == 4);
     }
     SUBCASE("the marker is a CLOSED diamond around the entity's projected origin") {
-        buildSelectionOverlay(w, selected, e, viewProj, VIEWPORT_POINTS, segments);
+        buildSelectionOverlay(w, selected, e, viewProj, PERSP, VIEWPORT_POINTS, segments);
         REQUIRE(segments.size() == 4);
         Vec2 origin{};
-        REQUIRE(engine::editor::projectToViewport(viewProj, Vec3{1.0F, 0.0F, 0.0F}, VIEWPORT_POINTS, origin));
+        REQUIRE(engine::editor::projectToViewport(viewProj, PERSP, Vec3{1.0F, 0.0F, 0.0F}, VIEWPORT_POINTS, origin));
         for (const OverlaySegment& s : segments) {
             CHECK(std::abs(engine::length(s.a - origin) - engine::editor::POINT_MARKER_HALF_POINTS) < EPS);
         }
@@ -600,7 +614,8 @@ TEST_CASE("selection_overlay: N marker entities produce exactly 4N segments (VP7
     std::vector<OverlaySegment> scratch;
     for (const std::size_t n : {std::size_t{0}, std::size_t{1}, std::size_t{5}, MAX_HIGHLIGHTED_ENTITIES}) {
         INFO("N = ", n);
-        buildSelectionOverlay(w, std::span<const Entity>{all.data(), n}, Entity{}, viewProj, VIEWPORT_POINTS, scratch);
+        buildSelectionOverlay(w, std::span<const Entity>{all.data(), n}, Entity{}, viewProj, PERSP, VIEWPORT_POINTS,
+                              scratch);
         CHECK(scratch.size() == 4U * n);
         CHECK(allFinite(scratch));
     }
@@ -616,7 +631,7 @@ TEST_CASE("selection_overlay: the primary's four segments carry Primary, the res
     const std::array<Entity, 3> selected{a, b, c};
     std::vector<OverlaySegment> scratch;
 
-    buildSelectionOverlay(w, selected, b, viewProj, VIEWPORT_POINTS, scratch);
+    buildSelectionOverlay(w, selected, b, viewProj, PERSP, VIEWPORT_POINTS, scratch);
     REQUIRE(scratch.size() == 12);
     const auto primaryCount = std::count_if(scratch.begin(), scratch.end(),
                                             [](const OverlaySegment& s) { return s.role == OverlayRole::Primary; });
@@ -631,7 +646,7 @@ TEST_CASE("selection_overlay: the primary's four segments carry Primary, the res
 
     SUBCASE("a primary handle ABSENT from the list produces no Primary segment at all") {
         const Entity elsewhere = makePoint(w, Vec3{0.0F, 5.0F, 0.0F});
-        buildSelectionOverlay(w, selected, elsewhere, viewProj, VIEWPORT_POINTS, scratch);
+        buildSelectionOverlay(w, selected, elsewhere, viewProj, PERSP, VIEWPORT_POINTS, scratch);
         CHECK(scratch.size() == 12);
         CHECK(std::none_of(scratch.begin(), scratch.end(),
                            [](const OverlaySegment& s) { return s.role == OverlayRole::Primary; }));
@@ -649,7 +664,7 @@ TEST_CASE("selection_overlay: behind the eye or non-finite contributes NOTHING, 
     const std::array<Entity, 4> selected{before, behindEye, nonFinite, after};
 
     std::vector<OverlaySegment> scratch;
-    buildSelectionOverlay(w, selected, Entity{}, viewProj, VIEWPORT_POINTS, scratch);
+    buildSelectionOverlay(w, selected, Entity{}, viewProj, PERSP, VIEWPORT_POINTS, scratch);
     // TWO entities drew, not four -- and the SURROUNDING two are unaffected, which is the claim that
     // a builder bailing out of the whole walk on the first bad entity would fail.
     CHECK(scratch.size() == 8);
@@ -657,14 +672,14 @@ TEST_CASE("selection_overlay: behind the eye or non-finite contributes NOTHING, 
 
     // ...and each of the two survivors is exactly where it would be on its own.
     std::vector<OverlaySegment> aloneScratch;
-    buildSelectionOverlay(w, std::array<Entity, 1>{before}, Entity{}, viewProj, VIEWPORT_POINTS, aloneScratch);
+    buildSelectionOverlay(w, std::array<Entity, 1>{before}, Entity{}, viewProj, PERSP, VIEWPORT_POINTS, aloneScratch);
     REQUIRE(aloneScratch.size() == 4);
     for (std::size_t i = 0; i < aloneScratch.size(); ++i) {
         CHECK(std::abs(scratch[i].a.x - aloneScratch[i].a.x) < EPS);
         CHECK(std::abs(scratch[i].a.y - aloneScratch[i].a.y) < EPS);
     }
     std::vector<OverlaySegment> trailingScratch;
-    buildSelectionOverlay(w, std::array<Entity, 1>{after}, Entity{}, viewProj, VIEWPORT_POINTS, trailingScratch);
+    buildSelectionOverlay(w, std::array<Entity, 1>{after}, Entity{}, viewProj, PERSP, VIEWPORT_POINTS, trailingScratch);
     REQUIRE(trailingScratch.size() == 4);
     for (std::size_t i = 0; i < trailingScratch.size(); ++i) {
         CHECK(std::abs(scratch[i + 4U].a.x - trailingScratch[i].a.x) < EPS);
@@ -689,7 +704,7 @@ TEST_CASE("selection_overlay: the builder clears its scratch and mutates NOTHING
     const std::size_t transformsBefore = w.componentCount<Transform>();
     const std::size_t meshesBefore = w.componentCount<MeshRenderer>();
 
-    buildSelectionOverlay(w, selected, a, viewProj, VIEWPORT_POINTS, scratch);
+    buildSelectionOverlay(w, selected, a, viewProj, PERSP, VIEWPORT_POINTS, scratch);
 
     CHECK(scratch.size() == 8);  // CLEARED on entry, not appended to
     CHECK(std::none_of(scratch.begin(), scratch.end(), [](const OverlaySegment& s) { return s.a.x < -900.0F; }));
@@ -700,4 +715,94 @@ TEST_CASE("selection_overlay: the builder clears its scratch and mutates NOTHING
     CHECK(w.componentCount<MeshRenderer>() == meshesBefore);
     CHECK(w.alive(a));
     CHECK(w.alive(mesh));
+}
+
+// ---- task E.1.3: the orthographic arms ----------------------------------------------------------
+
+namespace {
+
+constexpr auto ORTHO = engine::editor::ProjectionMode::Orthographic;
+
+[[nodiscard]] EditorCamera orthoCamera() {
+    EditorCamera camera = testCamera();
+    camera.setProjectionMode(ORTHO);
+    return camera;
+}
+
+}  // namespace
+
+TEST_CASE("selection overlay: the ORTHO clip gate refuses what is behind the eye (VP5)") {
+    // Seed S6 puts the vacuous `w` test in the ortho arm, where clip.w does not depend on the world
+    // point at all -- so an entity 40 units BEHIND the eye would draw a full marker. The in-front arm
+    // is what makes this a real discriminator rather than "nothing ever draws".
+    //
+    // task E.1.4 retired the box, so the count is 4 marker segments rather than 12 box edges, and the
+    // MeshRenderer / no-MeshRenderer pair below now asserts a SECOND property this case did not have
+    // before: the builder no longer forks on the component at all, so both kinds take the same gate.
+    const EditorCamera camera = orthoCamera();
+    const Mat4 viewProj = testViewProj(camera);
+    std::vector<OverlaySegment> scratch;
+
+    SUBCASE("an entity WITH a MeshRenderer, IN FRONT, draws four segments") {
+        World world;
+        const Entity cube = makeMesh(world, Vec3::zero());
+        buildSelectionOverlay(world, std::array<Entity, 1>{cube}, cube, viewProj, ORTHO, VIEWPORT_POINTS, scratch);
+        CHECK(scratch.size() == 4);
+    }
+    SUBCASE("...and the same entity BEHIND the eye draws NOTHING") {
+        // The eye is at z = +10 looking down -Z, so z = +50 is well behind it.
+        World world;
+        const Entity behind = makeMesh(world, Vec3{0.0F, 0.0F, 50.0F});
+        buildSelectionOverlay(world, std::array<Entity, 1>{behind}, behind, viewProj, ORTHO, VIEWPORT_POINTS, scratch);
+        CHECK(scratch.empty());
+    }
+    SUBCASE("a POINT MARKER behind the eye draws nothing, and one in front draws four") {
+        World world;
+        const Entity front = makePoint(world, Vec3::zero());
+        buildSelectionOverlay(world, std::array<Entity, 1>{front}, front, viewProj, ORTHO, VIEWPORT_POINTS, scratch);
+        CHECK(scratch.size() == 4);
+
+        World behindWorld;
+        const Entity behind = makePoint(behindWorld, Vec3{0.0F, 0.0F, 50.0F});
+        buildSelectionOverlay(behindWorld, std::array<Entity, 1>{behind}, behind, viewProj, ORTHO, VIEWPORT_POINTS,
+                              scratch);
+        CHECK(scratch.empty());
+    }
+}
+
+TEST_CASE("selection overlay: the ortho arm interpolates IN CLIP SPACE (VP6)") {
+    // 2.3.2's D14 property, restated for the second arm: the clipped endpoint lands on the mode's own
+    // threshold EXACTLY and stays on the original clip-space line -- which is what keeps a drawn edge
+    // straight instead of bent. A post-divide lerp satisfies neither half.
+    const EditorCamera camera = orthoCamera();
+    const Mat4 viewProj = testViewProj(camera);
+    constexpr float CLIP_Z_EPS = engine::editor::CLIP_Z_EPSILON;
+
+    // One endpoint well in front of the near plane, one well behind the eye.
+    Vec4 front = viewProj * engine::toVec4(Vec3{1.0F, 2.0F, 0.0F}, 1.0F);
+    Vec4 behind = viewProj * engine::toVec4(Vec3{-1.0F, -2.0F, 50.0F}, 1.0F);
+    const Vec4 frontBefore = front;
+    const Vec4 behindBefore = behind;
+    REQUIRE(frontBefore.z > CLIP_Z_EPS);  // anti-vacuity: the endpoints really straddle
+    REQUIRE(behindBefore.z < 0.0F);
+
+    REQUIRE(clipSegmentToNearPlane(front, behind, ORTHO));
+
+    SUBCASE("the endpoint that was already in front is left UNTOUCHED") {
+        CHECK(front.x == frontBefore.x);
+        CHECK(front.y == frontBefore.y);
+        CHECK(front.z == frontBefore.z);
+        CHECK(front.w == frontBefore.w);
+    }
+    SUBCASE("the clipped endpoint lands ON the threshold") { CHECK(std::abs(behind.z - CLIP_Z_EPS) < 1.0e-6F); }
+    SUBCASE("...and it stays ON the original clip-space line") {
+        // Recover t from the z component (the one that was solved for) and require the OTHER three
+        // components to agree with the same t. A post-divide lerp fails this in x and y.
+        const float t = (behind.z - behindBefore.z) / (frontBefore.z - behindBefore.z);
+        CHECK(t >= 0.0F);
+        CHECK(t <= 1.0F);
+        CHECK(std::abs(behind.x - (behindBefore.x + ((frontBefore.x - behindBefore.x) * t))) < 1.0e-4F);
+        CHECK(std::abs(behind.y - (behindBefore.y + ((frontBefore.y - behindBefore.y) * t))) < 1.0e-4F);
+        CHECK(std::abs(behind.w - (behindBefore.w + ((frontBefore.w - behindBefore.w) * t))) < 1.0e-4F);
+    }
 }

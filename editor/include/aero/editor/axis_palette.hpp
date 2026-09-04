@@ -26,6 +26,7 @@
 #include <aero/core/math.hpp>
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 
 namespace engine::editor {
@@ -41,5 +42,31 @@ inline constexpr Vec4 AXIS_Z_LINEAR{0.0395F, 0.2346F, 0.7605F, 1.0F};  // sRGB  
 inline constexpr std::array<std::uint8_t, 3> AXIS_X_SRGB{226U, 65U, 73U};
 inline constexpr std::array<std::uint8_t, 3> AXIS_Y_SRGB{125U, 199U, 61U};
 inline constexpr std::array<std::uint8_t, 3> AXIS_Z_SRGB{56U, 133U, 226U};
+
+// The palette's KEY, added at task E.1.3 because the view-axis gizmo needs to say "this ball's
+// colour" without a switch of its own. E.1.5 (ImGuizmo's style config) and E.3.1 (the Inspector's
+// Vec3/Quat rows) are the other two consumers named above and inherit it.
+enum class Axis : std::uint8_t { X = 0, Y, Z };
+inline constexpr std::size_t AXIS_COUNT = 3;
+
+// TOTAL: no `default:`, so a fourth enumerator is a -Wswitch error rather than a silent fallthrough,
+// and an out-of-range cast returns X's bytes rather than reading past an array (culling.cpp's
+// Frustum::plane precedent). constexpr, like everything else in this header.
+//
+// THERE IS DELIBERATELY NO LINEAR ACCESSOR. Its only consumers are viewport_panel.cpp's
+// viewportGridStyle(), which names AXIS_X_LINEAR / AXIS_Z_LINEAR directly and belongs to E.1.2 --
+// so an accessor here would have no caller, which is the abstraction this project refuses. Add it
+// with its first caller, not before.
+[[nodiscard]] constexpr std::array<std::uint8_t, 3> axisColorSrgbBytes(Axis axis) noexcept {
+    switch (axis) {
+        case Axis::X:
+            return AXIS_X_SRGB;
+        case Axis::Y:
+            return AXIS_Y_SRGB;
+        case Axis::Z:
+            return AXIS_Z_SRGB;
+    }
+    return AXIS_X_SRGB;
+}
 
 }  // namespace engine::editor

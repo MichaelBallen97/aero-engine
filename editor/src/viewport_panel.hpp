@@ -11,6 +11,7 @@
 #include <aero/editor/panel.hpp>
 #include <aero/editor/scene_bounds.hpp>       // task 3.1.5: MeshBoundsLookup, borrowed by the three consumers
 #include <aero/editor/selection_overlay.hpp>  // task 2.3.2: OverlaySegment, for the scratch member
+#include <aero/editor/view_axis_gizmo.hpp>    // task E.1.3: the corner widget's layout, poses and snap
 #include <aero/render/debug_draw.hpp>         // task E.1.1: the panel's own world-space line renderer
 #include <aero/render/post_process.hpp>       // task 3.6.3: the owned HDR target + the fullscreen resolve
 #include <aero/render/render_target.hpp>
@@ -114,6 +115,22 @@ public:
     // requestSelectEntry / requestTonemapParams family's sixth application. I112 is what it buys.
     void requestGridEnabled(bool enabled) noexcept { gridEnabledValue = enabled; }
 
+    // ---- task E.1.3: the view-axis gizmo's seams --------------------------------------------------
+    // The requestTonemapParams / requestGridEnabled family's eighth and ninth applications. No tier in
+    // this tree can click an ImDrawList circle, so without these the widget's whole behaviour is
+    // undrivable. requestViewSnap routes through beginViewSnap -- the SAME three-line member the real
+    // click uses -- so the seam and a click are indistinguishable downstream (the pickAt / drop-drain
+    // precedent above).
+    void requestViewSnap(ViewAxis axis) noexcept { beginViewSnap(axis); }
+    void requestProjectionMode(ProjectionMode mode) noexcept { editorCamera.setProjectionMode(mode); }
+    [[nodiscard]] bool viewSnapActive() const noexcept { return viewSnap.active(); }
+
+    // The widget's screen rect, as THIS frame's image rect implies it -- a PURE function, unlike
+    // overlayRowMin/Max below, which report what the LAST DRAWN frame recorded. Exposed so a test can
+    // check it is a real, non-degenerate square inside the image rather than trusting it was computed.
+    [[nodiscard]] Vec2 viewAxisRectMin() const noexcept;
+    [[nodiscard]] Vec2 viewAxisRectMax() const noexcept;
+
     // ---- the overlay strip's claim on a click -----------------------------------------------------
     // Does the interactive overlay row own a press at `pressPoints` (screen-space POINTS, the space
     // io.MousePos is in)? updatePick's ARM step asks exactly this, and so can a test -- which is the
@@ -131,7 +148,13 @@ public:
     //
     // A rect is deterministic and answers the question actually being asked -- "is this press on the
     // strip" -- rather than a global that conflates a widget with the window background.
-    [[nodiscard]] bool overlayOwnsPress(Vec2 pressPoints) const noexcept;
+    //
+    // task E.1.3: it now ORs a SECOND rect -- the view-axis widget's, through viewAxisOwnsPoint below
+    // -- and takes the image rect to compute it. That rect is PURE (viewAxisRect), so unlike the
+    // row's it describes THIS frame and needs no staleness argument at all. Both arms go through one
+    // containsHalfOpen helper, which is what stops the second rect acquiring a subtly different
+    // containment rule. Its one production caller is updatePick, which already has both values.
+    [[nodiscard]] bool overlayOwnsPress(Vec2 pressPoints, Vec2 imageOrigin, Vec2 imageSize) const noexcept;
 
     // The rect that decision reads, as the LAST DRAWN FRAME recorded it. Exposed so a test can check
     // it is a REAL, non-degenerate rect inside the image rather than trusting that it was recorded --
@@ -193,6 +216,20 @@ private:
     // precedent). updateGizmo is a member because it needs lastAspect, editorCamera and `gesture`.
     void updateGizmo(PanelContext& context, Vec2 imageOrigin, Vec2 avail, bool hovered);
     void drawGizmoBar();  // takes nothing: everything it needs is a member (A13)
+
+    // Task E.1.3, mirroring the updateGizmo / drawGizmoBar pairing. updateViewAxisGizmo computes the
+    // layout ONCE per frame at step 8b'''' and routes the click; drawViewAxisGizmo reads that same
+    // layout at step 9x, so the picture and the hit test cannot disagree (AC-16). beginViewSnap is
+    // the one path both the click and requestViewSnap take.
+    void beginViewSnap(ViewAxis axis) noexcept;
+    void updateViewAxisGizmo(Vec2 imageOrigin, Vec2 avail, bool inputHovered);
+    void drawViewAxisGizmo() const;
+
+    // Task E.1.3, code-review round: ONE definition of "the view-axis widget owns this point", with
+    // TWO consumers -- overlayOwnsPress (which keeps the press off the scene pick) and updateGizmo
+    // (which keeps the same press out of ImGuizmo). They must never disagree about the rect, which is
+    // exactly what a second hand-written comparison would eventually do.
+    [[nodiscard]] bool viewAxisOwnsPoint(Vec2 pointPoints, Vec2 imageOrigin, Vec2 imageSize) const noexcept;
 
     // task 3.6.3: the operator combo + the exposure slider. Called on the SAME LINE as
     // drawGizmoBar() but OUTSIDE its BeginDisabled(!gizmoHasTarget) scope, so the tonemap
@@ -274,6 +311,14 @@ private:
     // frame that reaches step 9b, and an empty rect owns nothing.
     Vec2 overlayRowTopLeft{};
     Vec2 overlayRowBottomRight{};
+
+    // Task E.1.3. UNLIKE overlayRowTopLeft/BottomRight above, these two are written at step 8b'''' and
+    // read at step 9x IN THE SAME FRAME -- there is no staleness argument to make, because the layout
+    // the click was tested against IS the layout that draws. `viewSnap` is the only state here that
+    // spans frames, and a camera gesture, an F-focus or a retarget all cancel it.
+    ViewSnapAnimation viewSnap;
+    ViewAxisLayout axisLayout{};
+    ViewAxisPick axisHover{};
 
     // Task 3.1.5.
     const MeshBoundsLookup* meshBounds = nullptr;       // published by EditorApp, borrowed, never owned

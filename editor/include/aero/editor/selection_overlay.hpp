@@ -75,7 +75,11 @@ inline constexpr float POINT_MARKER_HALF_POINTS = 6.0F;
 // job, done by the Hierarchy at the top of ITS onDraw (F34). Dead handles are skipped here instead.
 // Takes a span + a primary handle rather than a const Selection& so a tier-0 test can drive it from a
 // plain array, and so it cannot even be TEMPTED to mutate the selection.
+//
+// `mode` (task E.1.3) is NON-DEFAULTED and sits immediately after `viewProj`, because the two describe
+// the same matrix. A default would let a call site silently take the perspective clip gate under an
+// orthographic camera, which drops the marker for anything behind the eye plane and reports nothing.
 void buildSelectionOverlay(const World& world, std::span<const Entity> entities, Entity primary, const Mat4& viewProj,
-                           Vec2 viewportSizePoints, std::vector<OverlaySegment>& scratch);
+                           ProjectionMode mode, Vec2 viewportSizePoints, std::vector<OverlaySegment>& scratch);
 
 }  // namespace engine::editor

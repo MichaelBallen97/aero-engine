@@ -1024,3 +1024,263 @@ TEST_CASE("editor camera: case 12 -- no log output across a focusSelection-shape
     scope.sink()->take(out);
     CHECK(out.empty());
 }
+
+// ---- task E.1.3: the projection mode ------------------------------------------------------------
+
+TEST_CASE("editor camera: case 13 -- the projection mode round-trips and changes NOTHING else (PM1)") {
+    using engine::editor::ProjectionMode;
+    static_assert(sizeof(ProjectionMode) == 1);  // performance-enum-size
+
+    EditorCamera camera;
+    CHECK((camera.projectionMode() == ProjectionMode::Perspective));  // the default
+
+    SUBCASE("it round-trips both ways") {
+        camera.setProjectionMode(ProjectionMode::Orthographic);
+        CHECK((camera.projectionMode() == ProjectionMode::Orthographic));
+        camera.setProjectionMode(ProjectionMode::Perspective);
+        CHECK((camera.projectionMode() == ProjectionMode::Perspective));
+    }
+    SUBCASE("reset() restores Perspective") {
+        // reset() IS the D8 default pose, so a mode surviving it would be a state the defaults do not
+        // describe -- and the F-focus fallback path calls reset() for a user who flew into the void.
+        camera.setProjectionMode(ProjectionMode::Orthographic);
+        camera.reset();
+        CHECK((camera.projectionMode() == ProjectionMode::Perspective));
+    }
+    SUBCASE("setProjectionMode changes NOTHING else -- the whole pose is byte-equal across the call") {
+        // It does not call clampState(), because it clamps no quantity; this is what says so. Started
+        // from an OFF-DEFAULT pose so "unchanged" is distinguishable from "reset to the defaults".
+        camera.setPivot(Vec3{3.0F, -2.0F, 7.0F});
+        camera.setDistance(21.5F);
+        camera.setYaw(0.75F);
+        camera.setPitch(-0.4F);
+        camera.setFovYRadians(engine::radians(42.0F));
+        camera.setNearPlane(0.25F);
+        camera.setFarPlane(555.0F);
+        camera.setFlySpeed(3.5F);
+
+        const Vec3 pivot = camera.pivot();
+        const float distance = camera.distance();
+        const float yaw = camera.yaw();
+        const float pitch = camera.pitch();
+        const float fov = camera.fovYRadians();
+        const float nearPlane = camera.nearPlane();
+        const float farPlane = camera.farPlane();
+        const float flySpeed = camera.flySpeed();
+
+        camera.setProjectionMode(ProjectionMode::Orthographic);
+
+        CHECK(camera.pivot() == pivot);
+        CHECK(camera.distance() == distance);
+        CHECK(camera.yaw() == yaw);
+        CHECK(camera.pitch() == pitch);
+        CHECK(camera.fovYRadians() == fov);
+        CHECK(camera.nearPlane() == nearPlane);
+        CHECK(camera.farPlane() == farPlane);
+        CHECK(camera.flySpeed() == flySpeed);
+    }
+}
+
+TEST_CASE("editor camera: case 14 -- orthoHalfHeight is distance * tan(fovY/2) (PM2)") {
+    EditorCamera camera;
+
+    SUBCASE("computed independently, EXACTLY equal") {
+        // Exact ==: the same two reads, the same two operations, in the same order. A tolerance here
+        // would let a different-but-close formula through, which is the whole thing being pinned.
+        const float expected = camera.distance() * std::tan(0.5F * camera.fovYRadians());
+        CHECK(camera.orthoHalfHeight() == expected);
+    }
+    SUBCASE("it scales LINEARLY with distance") {
+        // A relationship rather than a magnitude: this is what makes a dolly change the ortho zoom,
+        // and it is why the toggle stays continuous as the camera moves.
+        const float atEight = camera.orthoHalfHeight();
+        camera.setDistance(camera.distance() * 2.0F);
+        CHECK(camera.orthoHalfHeight() == doctest::Approx(atEight * 2.0F).epsilon(1.0e-6));
+        camera.setDistance(camera.distance() * 0.25F);
+        CHECK(camera.orthoHalfHeight() == doctest::Approx(atEight * 0.5F).epsilon(1.0e-6));
+    }
+    SUBCASE("it is unaffected by aspect -- aspect widens the WIDTH, never the height") {
+        const float half = camera.orthoHalfHeight();
+        const Mat4 wide = camera.projectionMatrix(3.0F);
+        const Mat4 narrow = camera.projectionMatrix(0.4F);
+        (void)wide;
+        (void)narrow;
+        CHECK(camera.orthoHalfHeight() == half);
+    }
+}
+
+TEST_CASE("editor camera: case 15 -- the two projections are STRUCTURALLY distinct (PM3)") {
+    using engine::editor::ProjectionMode;
+    EditorCamera camera;
+    constexpr float ASPECT = 16.0F / 9.0F;
+
+    const Mat4 perspectiveProj = camera.projectionMatrix(ASPECT);
+    camera.setProjectionMode(ProjectionMode::Orthographic);
+    const Mat4 orthoProj = camera.projectionMatrix(ASPECT);
+
+    SUBCASE("the ortho bottom row is EXACTLY (0,0,0,1) and the perspective one is not") {
+        // Mat4 is COLUMN-major, so the bottom row is the .w of each of the four columns.
+        CHECK(orthoProj.columns[0].w == 0.0F);
+        CHECK(orthoProj.columns[1].w == 0.0F);
+        CHECK(orthoProj.columns[2].w == 0.0F);
+        CHECK(orthoProj.columns[3].w == 1.0F);
+        // The perspective one puts -1 in columns[2].w: that is the whole divide.
+        CHECK(perspectiveProj.columns[2].w != 0.0F);
+    }
+    SUBCASE("clip.w is INDEPENDENT OF THE POINT in ortho -- F3, and that is what makes the gate vacuous") {
+        // THE REASON FOUR "in front of the eye" GATES GO VACUOUS, stated as the property that is
+        // actually exact on this tree. `w == 1` is NOT: EditorCamera::viewMatrix() is
+        // inverse(compose(...)), a GENERAL cofactor inverse rather than an affine one, so its
+        // bottom-right entry comes back one ulp low -- MEASURED at 0.99999994 for the default pose,
+        // constant across every point. What IS exact, and what the vacuity rests on, is that the
+        // composed bottom row's x/y/z are exactly zero, so w does not depend on the world point at
+        // all and `w > CLIP_W_EPSILON` therefore answers the same thing everywhere.
+        const Mat4 orthoViewProj = orthoProj * camera.viewMatrix();
+        const Mat4 perspViewProj = perspectiveProj * camera.viewMatrix();
+        CHECK(orthoViewProj.columns[0].w == 0.0F);
+        CHECK(orthoViewProj.columns[1].w == 0.0F);
+        CHECK(orthoViewProj.columns[2].w == 0.0F);
+
+        const std::vector<Vec3> points{
+            Vec3::zero(),
+            Vec3{1.0F, 2.0F, 3.0F},
+            Vec3{-40.0F, 12.0F, 900.0F},
+            Vec3{0.0F, 0.0F, -5.0F},
+            Vec3{100.0F, -100.0F, -1000.0F},
+            Vec3{1.0e6F, 1.0e6F, 1.0e6F},
+        };
+        const float referenceW = (orthoViewProj * Vec4{0.0F, 0.0F, 0.0F, 1.0F}).w;
+        CHECK(std::abs(referenceW - 1.0F) < 1.0e-6F);  // one ulp low, not a different number
+        bool anyPerspectiveWDiffers = false;
+        for (const Vec3& point : points) {
+            CAPTURE(point.x);
+            CAPTURE(point.y);
+            CAPTURE(point.z);
+            const Vec4 orthoClip = orthoViewProj * Vec4{point.x, point.y, point.z, 1.0F};
+            CHECK(orthoClip.w == referenceW);  // EXACT, and the point ranges over 1e6 in every axis
+            const Vec4 perspClip = perspViewProj * Vec4{point.x, point.y, point.z, 1.0F};
+            anyPerspectiveWDiffers = anyPerspectiveWDiffers || (perspClip.w != referenceW);
+        }
+        CHECK(anyPerspectiveWDiffers);  // anti-vacuity: w really varies with the point in the OTHER mode
+    }
+}
+
+TEST_CASE("editor camera: case 16 -- the mode toggle is continuous on the PIVOT PLANE (PM4)") {
+    using engine::editor::ProjectionMode;
+    // D11, in its corrected form. It is NOT the pivot POINT that is invariant -- it is the whole
+    // PLANE at view-space depth -distance, off-axis points included, because
+    // halfHeight == distance * tan(fovY/2) makes the two mappings algebraically identical there.
+    // Only ndc.z differs. Writing the negative arm as "an off-axis point moves" would have compared
+    // two values that are equal by algebra and called the equality a bug.
+    EditorCamera camera;
+    camera.setYaw(engine::radians(37.0F));
+    camera.setPitch(engine::radians(-11.0F));
+    camera.setPivot(Vec3{2.0F, 1.0F, -3.0F});
+    constexpr float ASPECT = 16.0F / 9.0F;
+
+    const Mat4 perspViewProj = camera.projectionMatrix(ASPECT) * camera.viewMatrix();
+    camera.setProjectionMode(ProjectionMode::Orthographic);
+    const Mat4 orthoViewProj = camera.projectionMatrix(ASPECT) * camera.viewMatrix();
+
+    const Vec3 pivot = camera.pivot();
+    const Vec3 right = camera.right();
+    const Vec3 up = camera.up();
+    const Vec3 forward = camera.forward();
+
+    // Both NDCs come from the MATRICES, never from the extent formula -- so the two sides of the
+    // identity have genuinely different sources (E.1.2's GR8 rule).
+    const auto ndcOf = [](const Mat4& viewProj, Vec3 point) {
+        const Vec4 clip = viewProj * Vec4{point.x, point.y, point.z, 1.0F};
+        return Vec3{clip.x / clip.w, clip.y / clip.w, clip.z / clip.w};
+    };
+
+    SUBCASE("five points ON the pivot plane agree in x/y and DISAGREE in z") {
+        const std::vector<Vec3> onPlane{
+            pivot,
+            pivot + (right * 1.5F) + (up * 0.75F),
+            pivot - (right * 2.25F) + (up * 1.1F),
+            pivot + (right * 0.3F) - (up * 2.0F),
+            pivot - (right * 1.0F) - (up * 1.0F),
+        };
+        for (const Vec3& point : onPlane) {
+            CAPTURE(point.x);
+            CAPTURE(point.y);
+            CAPTURE(point.z);
+            const Vec3 persp = ndcOf(perspViewProj, point);
+            const Vec3 ortho = ndcOf(orthoViewProj, point);
+            CHECK(std::abs(persp.x - ortho.x) < 1.0e-5F);
+            CHECK(std::abs(persp.y - ortho.y) < 1.0e-5F);
+            // ...and ndc.z is the one thing that DOES move: perspective's depth is nonlinear.
+            CHECK(std::abs(persp.z - ortho.z) > 1.0e-3F);
+        }
+    }
+    SUBCASE("a point off-axis AND at a different depth genuinely MOVES") {
+        // The honest negative arm. `forward * c` with c != 0 takes it off the invariant plane, which
+        // is the only thing that makes the two projections disagree in x/y at all.
+        const Vec3 offPlane = pivot + (right * 1.5F) + (up * 0.75F) + (forward * 3.0F);
+        const Vec3 persp = ndcOf(perspViewProj, offPlane);
+        const Vec3 ortho = ndcOf(orthoViewProj, offPlane);
+        const float moved = std::max(std::abs(persp.x - ortho.x), std::abs(persp.y - ortho.y));
+        CHECK(moved > 1.0e-2F);
+    }
+    SUBCASE("the near and far planes map to ndc.z 0 and 1 in ortho") {
+        // ADR-005's [0,1] clip volume, which is what makes `clip.z > 0` the correct ortho near-plane
+        // gate the picking predicates adopt.
+        const Vec3 eye = camera.position();
+        const Vec3 atNear = eye + (forward * camera.nearPlane());
+        const Vec3 atFar = eye + (forward * camera.farPlane());
+        CHECK(std::abs(ndcOf(orthoViewProj, atNear).z - 0.0F) < 1.0e-4F);
+        CHECK(std::abs(ndcOf(orthoViewProj, atFar).z - 1.0F) < 1.0e-4F);
+    }
+}
+
+TEST_CASE("editor camera: case 17 -- the ortho arm is TOTAL, and focusOn frames in BOTH modes (PM5)") {
+    using engine::editor::ProjectionMode;
+
+    SUBCASE("a POISONED fov yields a finite matrix instead of a Debug abort") {
+        // THE GUARD THE PERSPECTIVE ARM DOES NOT NEED. clampState leaves a directly-set NaN in
+        // fovYValue for stateIsFinite() to sweep on the NEXT update(), and ortho() asserts
+        // right > left / top > bottom -- both of which carry fovY. Without the finiteness guard this
+        // is a SIGABRT in the Debug lanes, not a wrong number.
+        EditorCamera camera;
+        camera.setProjectionMode(ProjectionMode::Orthographic);
+        camera.setFovYRadians(std::numeric_limits<float>::quiet_NaN());
+        REQUIRE_FALSE(std::isfinite(camera.fovYRadians()));  // anti-vacuity: the poison really landed
+        const Mat4 proj = camera.projectionMatrix(1.0F);
+        for (const Vec4& column : proj.columns) {
+            CHECK(std::isfinite(column.x));
+            CHECK(std::isfinite(column.y));
+            CHECK(std::isfinite(column.z));
+            CHECK(std::isfinite(column.w));
+        }
+    }
+    SUBCASE("focusOn frames the box inside the clip volume in BOTH modes") {
+        // Case 9's independent framing check, wrapped in a two-mode loop. focusOn fits the TIGHTER
+        // axis from the fov, and orthoHalfHeight is built from the same fov and the distance focusOn
+        // just chose -- so the fit survives the substitution rather than needing its own formula.
+        const Aabb box{Vec3{-0.5F, -0.5F, -0.5F}, Vec3{0.5F, 0.5F, 0.5F}};
+        for (const ProjectionMode mode : {ProjectionMode::Perspective, ProjectionMode::Orthographic}) {
+            for (const float aspect : {0.5F, 1.0F, 2.0F}) {
+                CAPTURE(static_cast<int>(mode));
+                CAPTURE(aspect);
+                EditorCamera camera;
+                camera.setProjectionMode(mode);
+                camera.focusOn(box, aspect);
+                const Mat4 viewProj = camera.projectionMatrix(aspect) * camera.viewMatrix();
+                for (int corner = 0; corner < 8; ++corner) {
+                    CAPTURE(corner);
+                    const Vec3 point{(corner & 1) != 0 ? box.max.x : box.min.x,
+                                     (corner & 2) != 0 ? box.max.y : box.min.y,
+                                     (corner & 4) != 0 ? box.max.z : box.min.z};
+                    const Vec4 clip = viewProj * Vec4{point.x, point.y, point.z, 1.0F};
+                    REQUIRE(clip.w > 0.0F);
+                    const Vec3 ndc{clip.x / clip.w, clip.y / clip.w, clip.z / clip.w};
+                    CHECK(std::abs(ndc.x) <= 1.0F);
+                    CHECK(std::abs(ndc.y) <= 1.0F);
+                    CHECK(ndc.z >= 0.0F);
+                    CHECK(ndc.z <= 1.0F);
+                }
+            }
+        }
+    }
+}

@@ -17,10 +17,10 @@ namespace {
 // for a SELECTED non-mesh entity. The recorded trade-off is real -- the pick target for a light is
 // INVISIBLE until you hit it -- and the always-on alternative is really the first step of a
 // gizmo-icon system, which is not this task's deliverable (Handoffs).
-void appendPointMarker(const Mat4& viewProj, Vec3 worldPoint, Vec2 viewportSizePoints, OverlayRole role,
-                       std::vector<OverlaySegment>& out) {
+void appendPointMarker(const Mat4& viewProj, ProjectionMode mode, Vec3 worldPoint, Vec2 viewportSizePoints,
+                       OverlayRole role, std::vector<OverlaySegment>& out) {
     Vec2 center{};
-    if (!projectToViewport(viewProj, worldPoint, viewportSizePoints, center)) {
+    if (!projectToViewport(viewProj, mode, worldPoint, viewportSizePoints, center)) {
         return;  // at or behind the eye, or non-finite (E4/E7)
     }
     constexpr float H = POINT_MARKER_HALF_POINTS;
@@ -37,7 +37,7 @@ void appendPointMarker(const Mat4& viewProj, Vec3 worldPoint, Vec2 viewportSizeP
 }  // namespace
 
 void buildSelectionOverlay(const World& world, std::span<const Entity> entities, Entity primary, const Mat4& viewProj,
-                           Vec2 viewportSizePoints, std::vector<OverlaySegment>& scratch) {
+                           ProjectionMode mode, Vec2 viewportSizePoints, std::vector<OverlaySegment>& scratch) {
     scratch.clear();  // CALLER-OWNED SCRATCH: cleared on entry, reused across frames (D6/AC-18)
     std::size_t drawn = 0;
     for (const Entity entity : entities) {
@@ -62,7 +62,7 @@ void buildSelectionOverlay(const World& world, std::span<const Entity> entities,
         // finite point, which is informative and exactly what a user who typed scale = 0 should see.
         // You cannot CLICK a zero-volume object, but you should still SEE what you selected -- so
         // there is no determinant guard here.
-        appendPointMarker(viewProj, transformPoint(model, Vec3::zero()), viewportSizePoints, role, scratch);
+        appendPointMarker(viewProj, mode, transformPoint(model, Vec3::zero()), viewportSizePoints, role, scratch);
     }
 }
 

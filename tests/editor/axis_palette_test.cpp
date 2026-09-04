@@ -108,3 +108,37 @@ TEST_CASE("editor axis palette: the three colours are distinct, opaque, in range
         CHECK(ed::AXIS_Z_LINEAR.z > CLEAR_MAX);
     }
 }
+
+TEST_CASE("editor axis palette: axisColorSrgbBytes is TOTAL and agrees with the constants (task E.1.3, AX3)") {
+    // The KEY the view-axis gizmo needs so it can say "this ball's colour" without a switch of its
+    // own. Almost all of this is compile-time, because the accessor is constexpr -- a static_assert
+    // is the strongest form available and costs nothing at run time. The out-of-range arm is the one
+    // exception: a static_assert on a cast-out-of-range enumerator is not something to write, so it
+    // is a runtime CHECK.
+    static_assert(ed::AXIS_COUNT == 3);
+    static_assert(sizeof(ed::Axis) == 1);  // performance-enum-size: the : std::uint8_t is real
+
+    SUBCASE("each key returns its OWN array") {
+        static_assert(ed::axisColorSrgbBytes(ed::Axis::X) == ed::AXIS_X_SRGB);
+        static_assert(ed::axisColorSrgbBytes(ed::Axis::Y) == ed::AXIS_Y_SRGB);
+        static_assert(ed::axisColorSrgbBytes(ed::Axis::Z) == ed::AXIS_Z_SRGB);
+        // ...and not somebody else's -- anti-vacuity for the three above, which a function returning
+        // one shared array would otherwise satisfy only if the constants happened to be equal.
+        CHECK((ed::axisColorSrgbBytes(ed::Axis::X) == ed::AXIS_X_SRGB));
+        CHECK((ed::axisColorSrgbBytes(ed::Axis::Y) == ed::AXIS_Y_SRGB));
+        CHECK((ed::axisColorSrgbBytes(ed::Axis::Z) == ed::AXIS_Z_SRGB));
+    }
+    SUBCASE("the three results are pairwise distinct") {
+        static_assert(ed::axisColorSrgbBytes(ed::Axis::X) != ed::axisColorSrgbBytes(ed::Axis::Y));
+        static_assert(ed::axisColorSrgbBytes(ed::Axis::Y) != ed::axisColorSrgbBytes(ed::Axis::Z));
+        static_assert(ed::axisColorSrgbBytes(ed::Axis::X) != ed::axisColorSrgbBytes(ed::Axis::Z));
+        CHECK((ed::axisColorSrgbBytes(ed::Axis::X) != ed::axisColorSrgbBytes(ed::Axis::Z)));
+    }
+    SUBCASE("an out-of-range cast is DEFINED -- X's bytes, never a read past the array") {
+        // The switch is total with no `default:`, so a fourth enumerator would be a -Wswitch error;
+        // the trailing return is what makes a bad cast defined rather than UB. This is the arm that
+        // distinguishes the switch form from an `std::array` indexed by the enumerator's value.
+        const auto outOfRange = static_cast<ed::Axis>(7);
+        CHECK((ed::axisColorSrgbBytes(outOfRange) == ed::AXIS_X_SRGB));
+    }
+}

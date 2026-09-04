@@ -148,13 +148,14 @@ Mat4 gizmoParentMatrix(const World& world, Entity entity) {
     return allFinite(result) ? result : Mat4::identity();  // never hand a non-finite parent to inverse
 }
 
-bool gizmoOriginBehindCamera(const Mat4& viewProj, const Mat4& model, Vec2 viewportSizePoints) noexcept {
+bool gizmoOriginBehindCamera(const Mat4& viewProj, ProjectionMode mode, const Mat4& model,
+                             Vec2 viewportSizePoints) noexcept {
     const Vec3 origin{model.columns[3].x, model.columns[3].y, model.columns[3].z};
     Vec2 scratch{};
     // D9: projectToViewport already fails closed for w <= CLIP_W_EPSILON AND any non-finite result
     // (2.3.2 E4) -- reusing it is what gives pick, highlight and gizmo ONE shared "behind the camera"
     // definition for the w-based half of this test.
-    if (!projectToViewport(viewProj, origin, viewportSizePoints, scratch)) {
+    if (!projectToViewport(viewProj, mode, origin, viewportSizePoints, scratch)) {
         return true;
     }
     // Code-review finding (2026-07-29): our w-based test and ImGuizmo's OWN behind-camera test
@@ -167,6 +168,33 @@ bool gizmoOriginBehindCamera(const Mat4& viewProj, const Mat4& model, Vec2 viewp
     // the only one is at `:2728`). Mirroring ImGuizmo's own z-test here, from the SAME
     // viewProj*origin, closes the band completely: nothing can reach Manipulate that ImGuizmo itself
     // would have refused.
+    //
+    // TASK E.1.3 -- THIS TEST STOPS MIRRORING IN ORTHOGRAPHIC, SO IT IS NOW GATED ON THE MODE.
+    // ImGuizmo's own guard at ImGuizmo.cpp:2696 reads `!gContext.mIsOrthographic &&
+    // camSpacePosition.z < 0.001f && !gContext.mbUsing`, so with SetOrthographic(true) the FIRST term
+    // is false and the early return -- and therefore the PushClipRect leak this mirror exists to
+    // avoid -- cannot happen at all. There is nothing to mirror in that mode.
+    //
+    // E.1.3 ORIGINALLY KEPT IT UNCONDITIONAL, reasoning that in ortho it was "a narrower band on the
+    // same normalised axis and is safe". THE FIRST HALF IS TRUE AND THE SECOND IS NOT, and a manual
+    // validation pass found it: 0.001 was calibrated against ImGuizmo's VIEW-SPACE
+    // `camSpacePosition.z`, but ortho's clip.z is `(-z_view - zNear) / (zFar - zNear)` -- a
+    // NORMALISED depth -- so the same constant means `0.001 * (zFar - zNear)` in world units. At the
+    // shipped EditorCamera defaults (near 0.1, far 1000) that is a dead band of **~1.0 world units in
+    // front of the near plane**, and it scales with zFar: ~10 units at zFar = 10000. In perspective
+    // the identical constant spans the ~0.0002-0.11 world band measured above, because perspective
+    // clip.z is heavily compressed near the eye. Same number, ~10x the world reach.
+    //
+    // The consequence was reachable in one gesture: `focusOn` (the F key) frames a small entity at
+    // roughly that distance, so F-then-orthographic silently suppressed the transform gizmo for the
+    // entity the user had just framed. "Stricter" is safe against the PushClipRect leak; it is NOT
+    // safe against refusing a gizmo that ImGuizmo would have drawn perfectly well.
+    //
+    // In ORTHO, test 1 above is the whole predicate: projectToViewport's ortho arm already refuses at
+    // clip.z <= CLIP_Z_EPSILON, which IS the near plane on that axis.
+    if (mode != ProjectionMode::Perspective) {
+        return false;
+    }
     // `!(clip.z >= 0.001F)`, not `clip.z < 0.001F`: the negated form fails CLOSED on a non-finite
     // clip.z (every direct `<`/`>=` comparison with NaN is false, so the negated form is true) --
     // the same NaN-safety idiom this codebase uses throughout (2.3.1/2.3.2).

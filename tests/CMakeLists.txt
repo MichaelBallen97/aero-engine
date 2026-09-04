@@ -456,7 +456,8 @@ add_executable(aero_editor_shell_test editor/shell_test.cpp editor/hierarchy_tes
                editor/material_from_import_test.cpp
                editor/scene_asset_ledger_test.cpp
                editor/audio_decode_test.cpp
-               editor/axis_palette_test.cpp)   # task E.1.2 — the axis palette's two spellings
+               editor/axis_palette_test.cpp    # task E.1.2 — the axis palette's two spellings
+               editor/view_axis_gizmo_test.cpp)   # task E.1.3 — the pure corner widget
 target_link_libraries(aero_editor_shell_test PRIVATE
     doctest::doctest aero::editor_core aero::scene aero::scene_internal aero::core Threads::Threads)
 add_test(NAME aero_editor_shell_test COMMAND aero_editor_shell_test)

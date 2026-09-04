@@ -58,6 +58,11 @@ using engine::editor::viewportRay;
 
 namespace {
 
+// task E.1.3: the PERSPECTIVE mode, spelled once. projectToViewport took a NON-DEFAULTED
+// ProjectionMode at that task, and both pre-existing sites below are PERSPECTIVE sites whose
+// behaviour must be byte-identical (AC-8).
+constexpr auto PERSP = engine::editor::ProjectionMode::Perspective;
+
 constexpr float EPS = 1.0e-4F;
 constexpr float INF_F = std::numeric_limits<float>::infinity();
 // NEVER spell this `NAN` -- <cmath> defines NAN as a macro.
@@ -214,7 +219,7 @@ TEST_CASE("picking: the round trip NDC -> ray -> project -> NDC holds off-axis (
             CHECK(std::abs((clip.x / clip.w) - ndc.x) < 1.0e-3F);
             CHECK(std::abs((clip.y / clip.w) - ndc.y) < 1.0e-3F);
             Vec2 points{};
-            REQUIRE(projectToViewport(viewProj, world, VIEWPORT_POINTS, points));
+            REQUIRE(projectToViewport(viewProj, PERSP, world, VIEWPORT_POINTS, points));
             CHECK(engine::approxEquals(viewportNdc(points, Vec2::zero(), VIEWPORT_POINTS), ndc, 1.0e-3F));
         }
     }
@@ -240,7 +245,7 @@ TEST_CASE("picking: projectToViewport rejects a FINITE point whose viewport mapp
     REQUIRE(std::isfinite(clip.x / clip.w));
 
     Vec2 out{12345.0F, 54321.0F};
-    CHECK_FALSE(projectToViewport(viewProj, worldPoint, VIEWPORT_POINTS, out));
+    CHECK_FALSE(projectToViewport(viewProj, PERSP, worldPoint, VIEWPORT_POINTS, out));
     CHECK(out.x == 12345.0F);  // left UNTOUCHED on a rejection, like rayLocalBoxHit's outT
     CHECK(out.y == 54321.0F);
 }
@@ -1030,6 +1035,243 @@ TEST_CASE("picking: dropPlacementPoint's four arms, and it is TOTAL (PK12)") {
             CHECK(std::isfinite(point.x));
             CHECK(std::isfinite(point.y));
             CHECK(std::isfinite(point.z));
+        }
+    }
+}
+
+// ---- task E.1.3: the orthographic arms ----------------------------------------------------------
+
+namespace {
+
+constexpr auto ORTHO = engine::editor::ProjectionMode::Orthographic;
+
+// testCamera(), switched to the parallel lens. Same closed-form pose: position {0,0,10},
+// forward {0,0,-1}, right {1,0,0}, up {0,1,0}.
+[[nodiscard]] EditorCamera orthoCamera() {
+    EditorCamera camera = testCamera();
+    camera.setProjectionMode(ORTHO);
+    return camera;
+}
+
+}  // namespace
+
+TEST_CASE("picking: an ORTHO ray is PARALLEL -- one direction, many origins (PK13)") {
+    // The defining property of the parallel arm, and the exact inverse of the perspective one, where
+    // the origin is shared and the direction varies. Seed S7 drops the arm entirely; this is what
+    // catches it, because the perspective ray's directions genuinely differ between these two ndc.
+    const EditorCamera camera = orthoCamera();
+    constexpr float ASPECT = 4.0F / 3.0F;
+    const Ray centre = viewportRay(camera, Vec2{0.0F, 0.0F}, ASPECT);
+    const Ray corner = viewportRay(camera, Vec2{0.8F, -0.6F}, ASPECT);
+
+    SUBCASE("the DIRECTIONS are equal, and both are forward()") {
+        CHECK(std::abs(centre.direction.x - corner.direction.x) < 1.0e-6F);
+        CHECK(std::abs(centre.direction.y - corner.direction.y) < 1.0e-6F);
+        CHECK(std::abs(centre.direction.z - corner.direction.z) < 1.0e-6F);
+        CHECK(std::abs(centre.direction.z - (-1.0F)) < 1.0e-6F);
+    }
+    SUBCASE("the ORIGINS differ, by exactly right*(ndc.x*halfW) + up*(ndc.y*halfH)") {
+        // Read off the CAMERA, not recomputed from viewportRay's own formula -- the GR8 rule.
+        const float halfH = camera.orthoHalfHeight();
+        const float halfW = halfH * ASPECT;
+        const Vec3 expected = camera.position() + (camera.right() * (0.8F * halfW)) + (camera.up() * (-0.6F * halfH));
+        CHECK(std::abs(corner.origin.x - expected.x) < 1.0e-4F);
+        CHECK(std::abs(corner.origin.y - expected.y) < 1.0e-4F);
+        CHECK(std::abs(corner.origin.z - expected.z) < 1.0e-4F);
+        // ...and they really are different origins, which is the half a shared-origin ray would fail.
+        CHECK(engine::length(corner.origin - centre.origin) > 1.0F);
+        // The CENTRE ray still starts at the eye, in both modes.
+        CHECK(engine::length(centre.origin - camera.position()) < 1.0e-4F);
+    }
+    SUBCASE("anti-vacuity: under PERSPECTIVE the SAME two ndc give DIFFERENT directions") {
+        const EditorCamera persp = testCamera();
+        const Ray pCentre = viewportRay(persp, Vec2{0.0F, 0.0F}, ASPECT);
+        const Ray pCorner = viewportRay(persp, Vec2{0.8F, -0.6F}, ASPECT);
+        CHECK(engine::length(pCorner.direction - pCentre.direction) > 0.1F);
+        CHECK(engine::length(pCorner.origin - pCentre.origin) < 1.0e-6F);  // ...and ONE origin
+    }
+}
+
+TEST_CASE("picking: the ortho clip gate, and the ACCEPTED asymmetry with perspective (PK14)") {
+    // Seed S6 puts the perspective `w` test in the ortho arm, where it is vacuous -- so it would
+    // accept a point behind the eye. The first two arms catch that; the third RECORDS the one-sided
+    // difference the two gates genuinely have, so it is a documented property rather than a surprise.
+    const EditorCamera camera = orthoCamera();
+    constexpr float ASPECT = 1.0F;
+    const Mat4 orthoViewProj = camera.projectionMatrix(ASPECT) * camera.viewMatrix();
+    const EditorCamera persp = testCamera();
+    const Mat4 perspViewProj = persp.projectionMatrix(ASPECT) * persp.viewMatrix();
+
+    SUBCASE("a point IN FRONT is accepted, and lands near the image centre") {
+        Vec2 out{};
+        CHECK(projectToViewport(orthoViewProj, ORTHO, Vec3::zero(), VIEWPORT_POINTS, out));
+        CHECK(std::abs(out.x - (VIEWPORT_POINTS.x * 0.5F)) < 1.0F);
+        CHECK(std::abs(out.y - (VIEWPORT_POINTS.y * 0.5F)) < 1.0F);
+    }
+    SUBCASE("a point BEHIND the eye is REFUSED, and out is left untouched") {
+        // The eye is at z = +10 looking down -Z, so z = +50 is well behind it.
+        Vec2 out{12345.0F, 54321.0F};
+        CHECK_FALSE(projectToViewport(orthoViewProj, ORTHO, Vec3{0.0F, 0.0F, 50.0F}, VIEWPORT_POINTS, out));
+        CHECK(out.x == 12345.0F);
+        CHECK(out.y == 54321.0F);
+    }
+    SUBCASE("THE ASYMMETRY: a point between the eye and nearPlane is accepted in PERSPECTIVE and refused in ORTHO") {
+        // Perspective's `w > 0` means "in front of the EYE"; ortho's `z > 0` means "beyond the NEAR
+        // PLANE". Both are correct for their own mode and they are NOT equivalent. This is recorded
+        // rather than fixed: making the perspective gate z-based too is 2.3.2's contract to change.
+        // nearPlane is 0.1 by default, so 0.05 in front of the eye is inside the band.
+        const Vec3 tooClose{0.0F, 0.0F, camera.position().z - 0.05F};
+        Vec2 orthoOut{};
+        Vec2 perspOut{};
+        CHECK(projectToViewport(perspViewProj, PERSP, tooClose, VIEWPORT_POINTS, perspOut));
+        CHECK_FALSE(projectToViewport(orthoViewProj, ORTHO, tooClose, VIEWPORT_POINTS, orthoOut));
+    }
+    SUBCASE("clipSegmentToNearPlane's ortho arm agrees with the same gate") {
+        // Both endpoints behind -> the whole segment is refused; both in front -> untouched.
+        Vec4 behindA = orthoViewProj * engine::toVec4(Vec3{0.0F, 0.0F, 50.0F}, 1.0F);
+        Vec4 behindB = orthoViewProj * engine::toVec4(Vec3{1.0F, 0.0F, 40.0F}, 1.0F);
+        CHECK_FALSE(clipSegmentToNearPlane(behindA, behindB, ORTHO));
+
+        Vec4 frontA = orthoViewProj * engine::toVec4(Vec3{0.0F, 0.0F, 0.0F}, 1.0F);
+        Vec4 frontB = orthoViewProj * engine::toVec4(Vec3{1.0F, 0.0F, -1.0F}, 1.0F);
+        const Vec4 frontACopy = frontA;
+        CHECK(clipSegmentToNearPlane(frontA, frontB, ORTHO));
+        CHECK(frontA.x == frontACopy.x);  // an endpoint already in front is left UNTOUCHED
+        CHECK(frontA.z == frontACopy.z);
+    }
+}
+
+TEST_CASE("picking: ortho picking, and the ray-origin depth fix (PK15)") {
+    const EditorCamera camera = orthoCamera();
+    constexpr float ASPECT = 1.0F;
+
+    SUBCASE("a centre click hits a box AT THE PIVOT in ortho") {
+        World world;
+        const Entity cube = makeMesh(world, Vec3::zero());
+        const PickResult hit =
+            pickEntity(world, camera,
+                       PickRequest{.ndc = Vec2{0.0F, 0.0F}, .aspect = ASPECT, .viewportSizePoints = VIEWPORT_POINTS});
+        CHECK(hit.hit());
+        CHECK(hit.entity == cube);
+        CHECK_FALSE(hit.isPoint);
+    }
+    SUBCASE("a box BEHIND the eye is NOT picked -- the entry-hits-only rule does it, unchanged") {
+        // t is measured from the eye PLANE rather than the eye POINT in ortho, so geometry behind it
+        // yields t < 0 and rayLocalBoxHit's `tMin > 0` correctly misses. No change was needed there.
+        World world;
+        (void)makeMesh(world, Vec3{0.0F, 0.0F, 50.0F});
+        const PickResult hit =
+            pickEntity(world, camera,
+                       PickRequest{.ndc = Vec2{0.0F, 0.0F}, .aspect = ASPECT, .viewportSizePoints = VIEWPORT_POINTS});
+        CHECK_FALSE(hit.hit());
+    }
+    SUBCASE("an OFF-CENTRE click hits the box under IT, not the one at the pivot") {
+        // The property that only a parallel ray has: in ortho, what is under the cursor is decided by
+        // the ORIGIN offset, not by a spreading direction.
+        World world;
+        const Entity centre = makeMesh(world, Vec3::zero());
+        const Entity offset = makeMesh(world, Vec3{2.0F, 0.0F, 0.0F});
+        const Vec2 ndc = ndcOf(camera, ASPECT, Vec3{2.0F, 0.0F, 0.0F});
+        const PickResult hit =
+            pickEntity(world, camera, PickRequest{.ndc = ndc, .aspect = ASPECT, .viewportSizePoints = VIEWPORT_POINTS});
+        CHECK(hit.hit());
+        CHECK(hit.entity == offset);
+        CHECK(hit.entity != centre);
+    }
+    SUBCASE("the ray-origin depth CHANGES A PICK OUTCOME in ortho -- seed S9's discriminator") {
+        // ADDED BY THE SABOTAGE MATRIX: the first draft of this case asserted the change was a no-op
+        // in perspective and never built a scene where it mattered in ortho, so seeding
+        // camera.position() back in reddened NOTHING. The `distance` field is read in exactly one
+        // place -- pickEntity's point-vs-mesh depth arbitration, `point.distance <= mesh.distance` --
+        // so a discriminator needs a POINT candidate and a MESH candidate competing for one click.
+        //
+        // In ortho the ray origin is offset laterally to the click, so for an OFF-AXIS entity the two
+        // spellings differ by the whole lateral offset:
+        //   correct: |(6,0,0) - (6,0,10)| = 10.0     -- the point is IN FRONT of the mesh, and wins
+        //   seeded : |(6,0,0) - (0,0,10)| = 11.66    -- now further than the mesh at ~11.5, and loses
+        // The user clicks a light sitting clearly in front of a wall and selects the wall.
+        World world;
+        const Entity light = makePoint(world, Vec3{6.0F, 0.0F, 0.0F});
+        const Entity wall = makeMesh(world, Vec3{6.0F, 0.0F, -2.0F});
+        const Vec2 ndc = ndcOf(camera, ASPECT, Vec3{6.0F, 0.0F, 0.0F});
+        const PickResult hit =
+            pickEntity(world, camera, PickRequest{.ndc = ndc, .aspect = ASPECT, .viewportSizePoints = VIEWPORT_POINTS});
+        REQUIRE(hit.hit());
+        CHECK(hit.entity == light);  // the NEARER candidate, measured from the ray's own origin
+        CHECK(hit.isPoint);
+        CHECK(hit.entity != wall);
+        // Anti-vacuity: the mesh really was a competing candidate rather than a miss.
+        World meshOnly;
+        const Entity onlyWall = makeMesh(meshOnly, Vec3{6.0F, 0.0F, -2.0F});
+        const PickResult meshHit = pickEntity(
+            meshOnly, camera, PickRequest{.ndc = ndc, .aspect = ASPECT, .viewportSizePoints = VIEWPORT_POINTS});
+        REQUIRE(meshHit.hit());
+        CHECK(meshHit.entity == onlyWall);
+        // ...and the two distances really do straddle, which is what makes the seed flip the verdict.
+        CHECK(hit.distance < meshHit.distance);
+    }
+    SUBCASE("the eye -> ray.origin change is a PROVABLE NO-OP in perspective") {
+        // Seed S9 puts camera.position() back in the point-pick depth. In perspective viewportRay
+        // returns .origin = camera.position() on EVERY path, so the two spellings are the same value
+        // -- asserted here directly, over several ndc including the unbuildable one, so the seed's
+        // "green in perspective" half is recorded rather than assumed.
+        const EditorCamera persp = testCamera();
+        for (const Vec2 ndc : {Vec2{0.0F, 0.0F}, Vec2{0.9F, -0.9F}, Vec2{-0.4F, 0.7F}, Vec2{QUIET_NAN, 0.0F}}) {
+            CAPTURE(ndc.x);
+            CAPTURE(ndc.y);
+            const Ray ray = viewportRay(persp, ndc, 1.0F);
+            CHECK(ray.origin.x == persp.position().x);
+            CHECK(ray.origin.y == persp.position().y);
+            CHECK(ray.origin.z == persp.position().z);
+        }
+        // ...and in ORTHO it is genuinely different, which is why the change had to be made.
+        const Ray orthoRay = viewportRay(camera, Vec2{0.9F, -0.9F}, 1.0F);
+        CHECK(engine::length(orthoRay.origin - camera.position()) > 1.0F);
+    }
+}
+
+TEST_CASE("picking: viewportRay's ortho arm has THREE finiteness guards (PK16)") {
+    // Every one returns the documented unbuildable ray -- a ZERO direction with the origin at the eye
+    // -- rather than a NaN ray a consumer would carry into a box test.
+    const Ray reference = viewportRay(orthoCamera(), Vec2{0.0F, 0.0F}, 1.0F);
+    REQUIRE(engine::lengthSquared(reference.direction) > 0.0F);  // anti-vacuity: the good case builds
+
+    SUBCASE("GUARD 1 -- a NaN fov poisons orthoHalfHeight (distance * tan(fovY/2))") {
+        // clampState deliberately leaves a directly-set NaN in fovYValue for stateIsFinite() to sweep
+        // on the NEXT update(), so this state is reachable between a setFovYRadians and a frame.
+        EditorCamera camera = orthoCamera();
+        camera.setFovYRadians(QUIET_NAN);
+        REQUIRE_FALSE(std::isfinite(camera.orthoHalfHeight()));  // the poison really landed
+        const Ray ray = viewportRay(camera, Vec2{0.5F, 0.5F}, 1.0F);
+        CHECK(engine::lengthSquared(ray.direction) == 0.0F);
+    }
+    SUBCASE("GUARDS 2 AND 3 -- a NaN yaw poisons BOTH the origin and forward()") {
+        // normalizeOrZero returns NaN, NOT zero, for a NaN input, so the DIRECTION needs its own test
+        // before it -- not only the origin.
+        EditorCamera camera = orthoCamera();
+        camera.setYaw(QUIET_NAN);
+        REQUIRE_FALSE(std::isfinite(camera.forward().x));
+        const Ray ray = viewportRay(camera, Vec2{0.5F, 0.5F}, 1.0F);
+        CHECK(engine::lengthSquared(ray.direction) == 0.0F);
+        // EXACTLY zero, component by component -- not merely "not the right answer". Without the
+        // direction guard normalizeOrZero would hand back NaN, whose lengthSquared is also not > 0,
+        // so the assertion above alone does NOT distinguish the two.
+        CHECK(ray.direction.x == 0.0F);
+        CHECK(ray.direction.y == 0.0F);
+        CHECK(ray.direction.z == 0.0F);
+    }
+    SUBCASE("the SHARED guard above the branch -- a non-finite ndc or aspect") {
+        const EditorCamera camera = orthoCamera();
+        for (const Vec2 ndc : {Vec2{QUIET_NAN, 0.0F}, Vec2{0.0F, INF_F}}) {
+            CAPTURE(ndc.x);
+            CAPTURE(ndc.y);
+            const Ray ray = viewportRay(camera, ndc, 1.0F);
+            CHECK(engine::lengthSquared(ray.direction) == 0.0F);
+            CHECK(ray.origin.z == camera.position().z);  // the origin is still the eye
+        }
+        for (const float aspect : {QUIET_NAN, INF_F, 0.0F, -1.0F}) {
+            CAPTURE(aspect);
+            CHECK(engine::lengthSquared(viewportRay(camera, Vec2{0.0F, 0.0F}, aspect).direction) == 0.0F);
         }
     }
 }
