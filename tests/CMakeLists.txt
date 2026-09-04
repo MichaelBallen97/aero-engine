@@ -73,6 +73,7 @@ add_executable(aero_tests
     rhi_upload_test.cpp    # task E.1.1 — tier-1 recordBufferUpload/readbackTexture + the first pixel assertions
     render_debug_draw_test.cpp # task E.1.1 — tier-0 vocabulary/batch/packers/shader pin + GPU-gated DebugDraw
     render_debug_grid_test.cpp # task E.1.2 — tier-0 cadence/continuity/lattice/cap; NO GPU, no gate
+    render_selection_outline_test.cpp # task E.1.4 — tier-0 params/packers/levels/shader pin + GPU-gated mask & outline
 )
 
 # AC-9(i) (task 0.2.2): aero::core is linked; glm::glm deliberately IS NOT — that is intentional
