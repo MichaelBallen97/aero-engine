@@ -220,18 +220,27 @@ bool ViewportPanel::overlayOwnsPress(Vec2 pressPoints, Vec2 imageOrigin, Vec2 im
     if (containsHalfOpen(pressPoints, overlayRowTopLeft, overlayRowBottomRight)) {
         return true;
     }
-    // task E.1.3: the view-axis widget's rect, computed from THIS frame's image rect. viewAxisRect is
-    // PURE, so unlike the row's latched rect there is no staleness argument to make at all -- and it
-    // returns a DEGENERATE rect when the widget is not visible, which containsHalfOpen's own guard
-    // turns into "owns nothing" with no second predicate.
-    //
-    // The claim is on the whole RECT, not on the balls: a press on the widget's empty space -- inside
-    // the square, on no ball and not on the badge -- is still chrome and must not deselect the scene
-    // entity behind it. A press one point outside the rect picks normally.
+    return viewAxisOwnsPoint(pressPoints, imageOrigin, imageSize);
+}
+
+// task E.1.3 (code-review round): the view-axis widget's rect, computed from THIS frame's image rect.
+// viewAxisRect is PURE, so unlike the row's latched rect there is no staleness argument to make at
+// all -- and it returns a DEGENERATE rect when the widget is not visible, which containsHalfOpen's own
+// guard turns into "owns nothing" with no second predicate. The widget hiding and the widget owning
+// nothing are therefore the SAME fact (D16), not two that have to be kept in step.
+//
+// The claim is on the whole RECT, not on the balls: a press on the widget's empty space -- inside the
+// square, on no ball and not on the badge -- is still chrome and must not deselect the scene entity
+// behind it. A press one point outside the rect picks normally.
+//
+// TWO CONSUMERS, ONE RECT: overlayOwnsPress above (the scene pick) and updateGizmo's ImGuizmo::Enable
+// term (the transform handles). Both presses belong to the widget, and a rule written twice is a rule
+// that eventually disagrees with itself.
+bool ViewportPanel::viewAxisOwnsPoint(Vec2 pointPoints, Vec2 imageOrigin, Vec2 imageSize) const noexcept {
     Vec2 axisMin{};
     Vec2 axisMax{};
     viewAxisRect(imageOrigin, imageSize, axisMin, axisMax);
-    return containsHalfOpen(pressPoints, axisMin, axisMax);
+    return containsHalfOpen(pointPoints, axisMin, axisMax);
 }
 
 // task E.1.3: the widget's rect as THIS frame's last drawn image implies it. Reported through
@@ -768,8 +777,37 @@ void ViewportPanel::updateGizmo(PanelContext& context, Vec2 imageOrigin, Vec2 av
     if (gizmoWasUsing && !ImGui::IsMouseDown(ImGuiMouseButton_Left) && !ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
         ImGuizmo::Enable(false);
     }
-    ImGuizmo::Enable(gesture.gesture == CameraGesture::None);  // D20: an RMB-fly begun mid-drag ends
-                                                               // the drag cleanly at its current value
+    // task E.1.3 (code-review round): THE VIEW-AXIS WIDGET OWNS ITS OWN PRESSES, AND ImGuizmo HAS TO
+    // BE TOLD. ImGuizmo's CanActivate() is `IsMouseClicked(0) && !IsAnyItemHovered() &&
+    // !IsAnyItemActive()` (ImGuizmo.cpp:1670-1677) and GetMoveType gates only on mbMouseOver, i.e.
+    // "the cursor is over this window" (:2108-2113). The interactive overlay row is protected from
+    // that only INCIDENTALLY -- its Checkbox/Combo/SliderFloat are real ImGui items, so
+    // IsAnyItemHovered() is true over them -- while the widget deliberately submits NO item at all,
+    // which makes it invisible to exactly that protection. So a click on a ball whose box the
+    // translate arrows happened to cross BOTH started the snap and latched a drag against a plane
+    // captured in the PRE-snap view; the camera then rotated every frame and the release translated
+    // the entity, through TransformCommand, as a real undoable scene edit.
+    //
+    // WHY Enable() RATHER THAN AN EARLY RETURN OR AN IsOver() TEST IN THE WIDGET'S OWN GUARD. This is
+    // the arbitration this file already uses: the D20 term in the same call says exactly the same
+    // thing about a camera gesture -- "someone else owns this press, do not activate". Enable(false)
+    // skips only HandleTranslation/Scale/Rotation (ImGuizmo.cpp:2704) and leaves the Draw*Gizmo calls
+    // running, so the handles stay on screen (greyed, as they already do mid-gesture) rather than
+    // vanishing for every frame the cursor is parked in the corner, which is what an early return
+    // here would do. An `!ImGuizmo::IsOver()` term in the widget's click guard was rejected twice
+    // over: it would let the SCENE win over chrome that draws on top of it (step 9x draws the widget
+    // over ImGuizmo's handles), and it would read gContext state BEFORE this frame's Manipulate,
+    // which is the F8 mistake by name.
+    //
+    // `!IsUsing()` MIRRORS ImGuizmo.cpp:2697's OWN reasoning, the same way item 4 above does: a drag
+    // that STARTED elsewhere and wandered over the widget must not be cut off, and Enable(false)
+    // force-clears mbUsing (:1070-1077), which would drop it at its current value. `hovered` keeps
+    // the claim to frames where the cursor is really on this image, and viewAxisOwnsPoint answers
+    // with a DEGENERATE rect -- owning nothing -- whenever the widget is not visible.
+    const bool widgetOwnsCursor =
+        hovered && !ImGuizmo::IsUsing() && viewAxisOwnsPoint(Vec2{io.MousePos.x, io.MousePos.y}, imageOrigin, avail);
+    // D20: an RMB-fly begun mid-drag ends the drag cleanly at its current value.
+    ImGuizmo::Enable(gesture.gesture == CameraGesture::None && !widgetOwnsCursor);
 
     // 6. Arguments.
     const GizmoSpace space = effectiveSpace(gizmoMode.operation, gizmoMode.space);

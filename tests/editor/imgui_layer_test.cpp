@@ -10691,3 +10691,78 @@ TEST_CASE("editor: the projection toggle reaches the real matrix and the panel k
 #endif
     }
 }
+
+TEST_CASE("editor: a press the view-axis widget owns never reaches ImGuizmo (task E.1.3, I118)") {
+    // A SOURCE-TEXT PIN, AND IT SAYS SO RATHER THAN IMPLYING BEHAVIOURAL COVERAGE. Two independent
+    // measurements make this the only tier available. (1) ImGuizmo exposes IsOver(), IsUsing() and
+    // IsUsingAny() and NO getter for mbEnable at all, so "the gizmo was disabled this frame" is not
+    // readable from any tier here -- I30's and I110's standing reason, one flag over. (2) Nothing in
+    // tests/ can synthesise a mouse click: there is no AddMouseButtonEvent, no AddKeyEvent and no
+    // io.MouseDown write anywhere in the tree, and the backend rewrites io.MousePos at every
+    // NewFrame, so the cursor cannot be parked on the widget either. The BEHAVIOURAL cover is
+    // validation row 11 -- orbit until the translate arrows cross the widget's box, click a ball, and
+    // check the entity did not move and the undo stack did not grow.
+    //
+    // THE DEFECT THIS PINS, so a later reader knows what it is protecting. ImGuizmo's CanActivate()
+    // is `IsMouseClicked(0) && !IsAnyItemHovered() && !IsAnyItemActive()` and its GetMoveType gates
+    // only on "the cursor is over this window". The interactive overlay row is protected from that
+    // only INCIDENTALLY -- its Checkbox/Combo/SliderFloat are real ImGui items -- while the view-axis
+    // widget submits NO item at all, so a click on a ball whose box the translate arrows happened to
+    // cross both started the snap AND latched a drag against a plane captured in the pre-snap view.
+    // The camera then rotated every frame and the release wrote a real, undoable TransformCommand.
+    const std::vector<std::string> code = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/viewport_panel.cpp");
+    REQUIRE_FALSE(code.empty());
+
+    SUBCASE("ONE rect, TWO consumers: the pick's claim and ImGuizmo's are the same predicate") {
+        // Three CODE lines: the definition and its two calls. The file mentions the name a fourth
+        // time in a comment, so this is also the check that comments really are being stripped -- a
+        // count of four here would mean every other assertion in this case is reading prose.
+        std::size_t mentions = 0;
+        for (const std::string& line : code) {
+            if (line.find("viewAxisOwnsPoint") != std::string::npos) {
+                ++mentions;
+            }
+        }
+        CHECK(mentions == 3U);
+        const std::size_t definedAt = soleLineContaining(code, "bool ViewportPanel::viewAxisOwnsPoint(");
+        const std::size_t pickAt = soleLineContaining(code, "return viewAxisOwnsPoint(pressPoints");
+        CHECK(definedAt != pickAt);
+    }
+
+    SUBCASE("the widget's claim reaches ImGuizmo::Enable, and does it BEFORE Manipulate") {
+        const std::size_t claimAt = soleLineContaining(code, "const bool widgetOwnsCursor =");
+        const std::size_t enableAt = soleLineContaining(code, "ImGuizmo::Enable(gesture.gesture");
+        const std::size_t manipulateAt = soleLineContaining(code, "ImGuizmo::Manipulate(");
+
+        // The claim is computed from the widget's OWN rect, not from a second hand-written test.
+        bool asksTheRect = false;
+        for (std::size_t i = claimAt; i < code.size() && i <= claimAt + 2U; ++i) {
+            asksTheRect = asksTheRect || code[i].find("viewAxisOwnsPoint(") != std::string::npos;
+        }
+        CHECK(asksTheRect);
+
+        // ...and it reaches the enable term, which is what actually stops HandleTranslation running.
+        CHECK(code[enableAt].find("!widgetOwnsCursor") != std::string::npos);
+        // ORDER, and it is the whole point: a claim computed AFTER Manipulate would arrive one call
+        // too late to prevent the latch it exists to prevent.
+        CHECK(claimAt < enableAt);
+        CHECK(enableAt < manipulateAt);
+    }
+
+    SUBCASE("an IN-FLIGHT drag is NOT cut off -- the `!IsUsing()` term, pinned as its own token") {
+        // ImGuizmo::Enable(false) force-clears mbUsing, so a claim without this term would drop a
+        // drag that started on a handle and wandered over the widget, at its current value. This
+        // mirrors ImGuizmo's own `&& !gContext.mbUsing`, the same way updateGizmo's behind-camera
+        // early return already does. The TOKEN is pinned rather than the statement's general shape:
+        // a careless edit deletes this one term and leaves everything else reading correctly.
+        const std::size_t claimAt = soleLineContaining(code, "const bool widgetOwnsCursor =");
+        bool guardsInFlight = false;
+        bool asksHovered = false;
+        for (std::size_t i = claimAt; i < code.size() && i <= claimAt + 2U; ++i) {
+            guardsInFlight = guardsInFlight || code[i].find("!ImGuizmo::IsUsing()") != std::string::npos;
+            asksHovered = asksHovered || code[i].find("hovered") != std::string::npos;
+        }
+        CHECK(guardsInFlight);
+        CHECK(asksHovered);
+    }
+}

@@ -142,11 +142,11 @@ public:
     // A rect is deterministic and answers the question actually being asked -- "is this press on the
     // strip" -- rather than a global that conflates a widget with the window background.
     //
-    // task E.1.3: it now ORs a SECOND rect -- the view-axis widget's -- and takes the image rect to
-    // compute it. That rect is PURE (viewAxisRect), so unlike the row's it describes THIS frame and
-    // needs no staleness argument at all. Both arms go through one containsHalfOpen helper, which is
-    // what stops the second rect acquiring a subtly different containment rule. Its one production
-    // caller is updatePick, which already has both values.
+    // task E.1.3: it now ORs a SECOND rect -- the view-axis widget's, through viewAxisOwnsPoint below
+    // -- and takes the image rect to compute it. That rect is PURE (viewAxisRect), so unlike the
+    // row's it describes THIS frame and needs no staleness argument at all. Both arms go through one
+    // containsHalfOpen helper, which is what stops the second rect acquiring a subtly different
+    // containment rule. Its one production caller is updatePick, which already has both values.
     [[nodiscard]] bool overlayOwnsPress(Vec2 pressPoints, Vec2 imageOrigin, Vec2 imageSize) const noexcept;
 
     // The rect that decision reads, as the LAST DRAWN FRAME recorded it. Exposed so a test can check
@@ -213,6 +213,12 @@ private:
     void beginViewSnap(ViewAxis axis) noexcept;
     void updateViewAxisGizmo(Vec2 imageOrigin, Vec2 avail, bool inputHovered);
     void drawViewAxisGizmo() const;
+
+    // Task E.1.3, code-review round: ONE definition of "the view-axis widget owns this point", with
+    // TWO consumers -- overlayOwnsPress (which keeps the press off the scene pick) and updateGizmo
+    // (which keeps the same press out of ImGuizmo). They must never disagree about the rect, which is
+    // exactly what a second hand-written comparison would eventually do.
+    [[nodiscard]] bool viewAxisOwnsPoint(Vec2 pointPoints, Vec2 imageOrigin, Vec2 imageSize) const noexcept;
 
     // task 3.6.3: the operator combo + the exposure slider. Called on the SAME LINE as
     // drawGizmoBar() but OUTSIDE its BeginDisabled(!gizmoHasTarget) scope, so the tonemap
