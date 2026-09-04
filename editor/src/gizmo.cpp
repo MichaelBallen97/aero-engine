@@ -169,17 +169,32 @@ bool gizmoOriginBehindCamera(const Mat4& viewProj, ProjectionMode mode, const Ma
     // viewProj*origin, closes the band completely: nothing can reach Manipulate that ImGuizmo itself
     // would have refused.
     //
-    // TASK E.1.3 -- THIS TEST STOPS MIRRORING IN ORTHOGRAPHIC, AND IT IS KEPT ANYWAY. ImGuizmo's own
-    // guard at ImGuizmo.cpp:2696 reads `!gContext.mIsOrthographic && camSpacePosition.z < 0.001f &&
-    // !gContext.mbUsing`, so with SetOrthographic(true) the FIRST term is false and the early return
-    // -- and therefore the PushClipRect leak -- cannot happen at all. There is consequently nothing
-    // to mirror in that mode. The test stays UNCONDITIONAL rather than gaining a `mode ==
-    // Perspective` arm, because in ortho it is simply a slightly stricter near-plane cut of our own:
-    // test 1 above now refuses at clip.z <= CLIP_Z_EPSILON (1e-6) and this refuses at clip.z < 0.001,
-    // which is a narrower band on the same normalised axis and is safe. Do not delete it as dead
-    // code -- it is live and load-bearing in perspective, which is the mode this editor is in by
-    // default.
+    // TASK E.1.3 -- THIS TEST STOPS MIRRORING IN ORTHOGRAPHIC, SO IT IS NOW GATED ON THE MODE.
+    // ImGuizmo's own guard at ImGuizmo.cpp:2696 reads `!gContext.mIsOrthographic &&
+    // camSpacePosition.z < 0.001f && !gContext.mbUsing`, so with SetOrthographic(true) the FIRST term
+    // is false and the early return -- and therefore the PushClipRect leak this mirror exists to
+    // avoid -- cannot happen at all. There is nothing to mirror in that mode.
     //
+    // E.1.3 ORIGINALLY KEPT IT UNCONDITIONAL, reasoning that in ortho it was "a narrower band on the
+    // same normalised axis and is safe". THE FIRST HALF IS TRUE AND THE SECOND IS NOT, and a manual
+    // validation pass found it: 0.001 was calibrated against ImGuizmo's VIEW-SPACE
+    // `camSpacePosition.z`, but ortho's clip.z is `(-z_view - zNear) / (zFar - zNear)` -- a
+    // NORMALISED depth -- so the same constant means `0.001 * (zFar - zNear)` in world units. At the
+    // shipped EditorCamera defaults (near 0.1, far 1000) that is a dead band of **~1.0 world units in
+    // front of the near plane**, and it scales with zFar: ~10 units at zFar = 10000. In perspective
+    // the identical constant spans the ~0.0002-0.11 world band measured above, because perspective
+    // clip.z is heavily compressed near the eye. Same number, ~10x the world reach.
+    //
+    // The consequence was reachable in one gesture: `focusOn` (the F key) frames a small entity at
+    // roughly that distance, so F-then-orthographic silently suppressed the transform gizmo for the
+    // entity the user had just framed. "Stricter" is safe against the PushClipRect leak; it is NOT
+    // safe against refusing a gizmo that ImGuizmo would have drawn perfectly well.
+    //
+    // In ORTHO, test 1 above is the whole predicate: projectToViewport's ortho arm already refuses at
+    // clip.z <= CLIP_Z_EPSILON, which IS the near plane on that axis.
+    if (mode != ProjectionMode::Perspective) {
+        return false;
+    }
     // `!(clip.z >= 0.001F)`, not `clip.z < 0.001F`: the negated form fails CLOSED on a non-finite
     // clip.z (every direct `<`/`>=` comparison with NaN is false, so the negated form is true) --
     // the same NaN-safety idiom this codebase uses throughout (2.3.1/2.3.2).
