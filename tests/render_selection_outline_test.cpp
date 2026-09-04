@@ -168,14 +168,17 @@ TEST_CASE("render selection outline: packSelectionOutlineFragment writes twelve 
     // NOT sanitized on the way in: the packer does not sanitize, and the contract being the CALLER's
     // is what this pins (composite() is the one production caller and it does sanitize).
     const Vec2 step{0.011718F, 0.015625F};
-    const Vec2 uvMax{0.78125F, 0.729166F};
-    const auto block = rs::detail::packSelectionOutlineFragment(params, step, uvMax);
+    // The LAST DRAWN TEXEL'S CENTRE for the editor's own pair (200x140 drawn in 256x192), spelled as
+    // exactly-representable literals: 199.5/256 and 139.5/192. NOT the exclusive drawExtent/
+    // textureExtent -- that is the VERTEX stage's quantity and SO6 pins it there.
+    const Vec2 clampUvMax{0.779296875F, 0.7265625F};
+    const auto block = rs::detail::packSelectionOutlineFragment(params, step, clampUvMax);
     CHECK(block.size() == 48U);
 
     // A FULLY SPECIFIED expectation, so a padding byte cannot be indeterminate and a swapped pair
     // cannot hide: build the 48 bytes independently and compare the whole array.
-    const std::array<float, 12> expected{0.125F, 0.25F, 0.375F, 0.5F,   0.625F,  0.75F,
-                                         0.875F, 1.0F,  step.x, step.y, uvMax.x, uvMax.y};
+    const std::array<float, 12> expected{0.125F, 0.25F, 0.375F, 0.5F,   0.625F,       0.75F,
+                                         0.875F, 1.0F,  step.x, step.y, clampUvMax.x, clampUvMax.y};
     std::array<std::byte, 48> want{};
     for (std::size_t i = 0; i < expected.size(); ++i) {
         std::memcpy(want.data() + (i * 4U), &expected[i], sizeof(float));
@@ -194,8 +197,8 @@ TEST_CASE("render selection outline: packSelectionOutlineFragment writes twelve 
     CHECK(floatAt(28) == 1.0F);
     CHECK(floatAt(32) == step.x);
     CHECK(floatAt(36) == step.y);
-    CHECK(floatAt(40) == uvMax.x);
-    CHECK(floatAt(44) == uvMax.y);
+    CHECK(floatAt(40) == clampUvMax.x);
+    CHECK(floatAt(44) == clampUvMax.y);
 }
 
 TEST_CASE("render selection outline: the VERTEX block IS packTonemapVertex, reused not respelled (SO6)") {
@@ -285,7 +288,10 @@ TEST_CASE("render selection outline: the two HLSL stages transcribe this header 
     // THE WHOLE RULE, in its refusing form, and the drawn-rect clamp beside it.
     CHECK(outline.find("mn >= mx") != std::string::npos);
     CHECK(outline.find("clamp(") != std::string::npos);
-    CHECK(outline.find("uUvMax") != std::string::npos);
+    // uUvClampMax, NOT uUvMax: the fragment stage's bound is the last drawn texel's CENTRE, half a
+    // texel short of the vertex stage's exclusive far edge, and the distinct name is what stops the
+    // two from being respelled into one.
+    CHECK(outline.find("uUvClampMax") != std::string::npos);
     // The binding law (0.4.3 F8), which no runtime tier in this tree can read back.
     CHECK(outline.find("register(t0, space2)") != std::string::npos);
     CHECK(outline.find("register(s0, space2)") != std::string::npos);
@@ -353,6 +359,53 @@ TEST_CASE("render selection outline: SelectionOutlineConfig's four defaults (SO1
     CHECK((cfg.outputDepthFormat == engine::rhi::TextureFormat::Invalid));
     CHECK(cfg.vertexShaderPath == "res://fullscreen.vert");
     CHECK(cfg.fragmentShaderPath == "res://selection_outline.frag");
+}
+
+TEST_CASE("render selection outline: the tap clamp names the LAST DRAWN TEXEL, not the margin (SO14)") {
+    // THE DEFECT THIS FUNCTION EXISTS FOR, asserted as the arithmetic that produces it rather than as
+    // a picture. Under Nearest filtering the texel a uv names is floor(uv * extent). The drawn
+    // sub-rect's EXCLUSIVE far edge, drawExtent / textureExtent, therefore names texel drawExtent --
+    // the FIRST CLEARED MARGIN texel -- so a tap clamped there reads 0 against a silhouette of 1,
+    // mn < mx holds, and a band is drawn along the frame edge. The bound must be the last drawn
+    // texel's CENTRE, which names drawExtent - 1.
+    const auto texelIndex = [](float uv, std::uint32_t extent) {
+        return static_cast<int>(std::floor(uv * static_cast<float>(extent)));
+    };
+    // The editor's own pair: 200x140 drawn inside a 256x192 allocation (VIEWPORT_EXTENT_QUANTUM = 64).
+    const Vec2 clamped = rs::detail::selectionOutlineClampUvMax({200U, 140U}, {256U, 192U});
+    const Vec2 exclusive = rs::tonemapSourceUvMax({200U, 140U}, {256U, 192U});
+    CHECK(texelIndex(clamped.x, 256U) == 199);  // the LAST DRAWN texel
+    CHECK(texelIndex(clamped.y, 192U) == 139);
+    // ...and the CONTRAST, which is the whole finding: the exclusive edge names the first margin one.
+    CHECK(texelIndex(exclusive.x, 256U) == 200);
+    CHECK(texelIndex(exclusive.y, 192U) == 140);
+    // Both denominators are powers of two, so the two values are exact rather than approximately so.
+    CHECK(clamped.x == 199.5F / 256.0F);
+    CHECK(clamped.y == 139.5F / 192.0F);
+
+    // AN EXACT TARGET (quantum = 1) IS WHERE THE DEFECT HIDES, and the bound still differs there --
+    // which is why no test whose drawExtent equals its textureExtent can see the difference in a
+    // picture (the hardware's own ClampToEdge returns the last drawn texel for it anyway).
+    const Vec2 exact = rs::detail::selectionOutlineClampUvMax({256U, 192U}, {256U, 192U});
+    CHECK(texelIndex(exact.x, 256U) == 255);
+    CHECK(texelIndex(exact.y, 192U) == 191);
+    CHECK(exact.x < 1.0F);
+    CHECK(rs::tonemapSourceUvMax({256U, 192U}, {256U, 192U}).x == 1.0F);
+
+    // THE THREE DEGENERATE ARMS, tonemapSourceUvMax's own answers for its own reasons.
+    const Vec2 noTexture = rs::detail::selectionOutlineClampUvMax({200U, 140U}, {0U, 0U});
+    CHECK(noTexture.x == 1.0F);  // not renderable: 1.0 rather than a division by zero
+    CHECK(noTexture.y == 1.0F);
+    const Vec2 noDraw = rs::detail::selectionOutlineClampUvMax({0U, 0U}, {256U, 192U});
+    CHECK(noDraw.x == 0.0F);  // nothing drawn: every tap collapses onto texel 0
+    CHECK(noDraw.y == 0.0F);
+    const Vec2 overDraw = rs::detail::selectionOutlineClampUvMax({300U, 300U}, {256U, 192U});
+    CHECK(overDraw.x == 255.5F / 256.0F);  // clamped to the allocation FIRST, so it never leaves it
+    CHECK(overDraw.y == 191.5F / 192.0F);
+    // ...and one axis at a time, so a both-axes clamp cannot hide a single-axis one.
+    const Vec2 mixed = rs::detail::selectionOutlineClampUvMax({300U, 140U}, {256U, 192U});
+    CHECK(mixed.x == 255.5F / 256.0F);
+    CHECK(mixed.y == 139.5F / 192.0F);
 }
 
 // ================================================================================================

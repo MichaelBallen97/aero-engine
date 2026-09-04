@@ -10,15 +10,21 @@ cbuffer SelectionOutlineParams : register(b0, space3) {
     float4 uPrimaryColor;    // sRGB DISPLAY colour
     float4 uSecondaryColor;
     float2 uTexelStep;       // radiusPixels / textureExtent, per axis -- exact texel multiples
-    float2 uUvMax;           // drawExtent / textureExtent -- the drawn sub-rect's far corner
+    float2 uUvClampMax;      // (drawExtent - 0.5) / textureExtent -- the LAST DRAWN TEXEL'S CENTRE
 };
 Texture2D    uMaskTex : register(t0, space2);
 SamplerState uMaskSmp : register(s0, space2);   // NEAREST, ClampToEdge -- a sample IS a texel
 
-// D9: a tap that would leave the DRAWN rect reads the edge texel instead of the cleared margin, so an
-// object continuing past the frame edge produces no false border there. A BEHAVIOURAL property, not a
-// defensive clamp.
-float tap(float2 uv) { return uMaskTex.Sample(uMaskSmp, clamp(uv, float2(0.0, 0.0), uUvMax)).r; }
+// D9: a tap that would leave the DRAWN rect reads the LAST DRAWN texel instead of the cleared margin,
+// so an object continuing past the frame edge produces no false border there. A BEHAVIOURAL property,
+// not a defensive clamp.
+//
+// THE BOUND IS A TEXEL CENTRE, NOT THE SUB-RECT'S FAR EDGE, and the difference is half a texel and a
+// false band: floor((drawW / texW) * texW) == drawW is the FIRST CLEARED MARGIN texel, so clamping to
+// the exclusive edge reads 0, mn < mx holds and the frame edge lights up. uUvClampMax is
+// selectionOutlineClampUvMax's answer and NOT tonemapSourceUvMax's -- the vertex stage's uUvScale
+// keeps the exclusive form, which is correct there.
+float tap(float2 uv) { return uMaskTex.Sample(uMaskSmp, clamp(uv, float2(0.0, 0.0), uUvClampMax)).r; }
 
 float4 main(float2 uv : TEXCOORD0) : SV_Target0 {
     float c = tap(uv);

@@ -251,6 +251,11 @@ void SelectionOutline::composite(Frame& output, const SelectionMaskView& mask, c
     //    the outline's source sub-rect cannot disagree with the colour image's.
     const SelectionOutlineParams sane = sanitizeSelectionOutlineParams(params);
     const Vec2 uvMax = tonemapSourceUvMax(mask.drawExtent, mask.textureExtent);
+    // ...and the FRAGMENT stage's clamp bound is a DIFFERENT QUANTITY, half a texel short of it: the
+    //    last drawn texel's CENTRE. The exclusive edge above names the first cleared MARGIN texel
+    //    under Nearest filtering, so clamping a tap to it draws the frame-edge band D9 forbids --
+    //    invisible at quantum = 1 and 140 of 140 rows wide on the editor's own 200x140-in-256x192.
+    const Vec2 clampUvMax = detail::selectionOutlineClampUvMax(mask.drawExtent, mask.textureExtent);
     // EXACT texel multiples, which is what makes the band an exact 2r integer.
     const Vec2 texelStep{static_cast<float>(sane.radiusPixels) / static_cast<float>(mask.textureExtent.width),
                          static_cast<float>(sane.radiusPixels) / static_cast<float>(mask.textureExtent.height)};
@@ -276,7 +281,7 @@ void SelectionOutline::composite(Frame& output, const SelectionMaskView& mask, c
     // 7. The vertex block is detail::packTonemapVertex, REUSED, never respelled -- fullscreen.vert's
     //    FullscreenParams has exactly one packer in this tree (SO6 pins it).
     const auto vertexBlock = detail::packTonemapVertex(uvMax);
-    const auto fragmentBlock = detail::packSelectionOutlineFragment(sane, texelStep, uvMax);
+    const auto fragmentBlock = detail::packSelectionOutlineFragment(sane, texelStep, clampUvMax);
     device->pushVertexUniforms(output.commandBuffer(), 0, vertexBlock);
     device->pushFragmentUniforms(output.commandBuffer(), 0, fragmentBlock);
 
