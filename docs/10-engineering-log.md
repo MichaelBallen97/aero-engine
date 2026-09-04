@@ -13357,6 +13357,35 @@ one-frame lag — only the **re-enabling** subcase, which drains the batch first
 behind the shader gate, `cooker.*` **70 / 70 / 70** identical, `reflect-gen.*` **75 / 75 / 0**), and
 the sample was run for row 11.
 
+**THE macOS VALIDATION PASS (2026-09-04) PRODUCED ONE NUMBER THAT OUTLIVES THE TASK, AND IT BELONGS
+TO E.5.2.** Row 6 was written to measure the coplanar problem rather than pass or fail the grid, and
+the measurement is better than a shimmer report. At the editor's camera — near `0.1`, far `1000`,
+depth `[0,1]` with **0 = near (NOT reversed-Z**, per ADR-005), compare `LessOrEqual`, depth write off
+— the world distance corresponding to one depth-buffer ulp is:
+
+| view distance | world gap per ulp |
+|---|---|
+| 1 m | 0.6 um |
+| 10 m | 60 um |
+| 50 m | 1.5 mm |
+| 200 m | 2.4 cm |
+| **900 m** (the far-clamped grid rim) | **48 cm** |
+
+**The degradation is quadratic and comes from the 1:10000 near:far ratio, not from anything this task
+did.** Near the camera a coplanar surface and the grid are separated by far more than the depth
+buffer's resolution; at the rim, half a metre of world depth collapses into a single ulp, so which
+one wins is arbitrary per pixel. **E.5.2 must not reach for a depth bias** — it cannot work on line
+primitives at all. The mechanisms that would are a nearer far plane, a further near plane, or
+reversed-Z.
+
+**What the pass could NOT establish, stated so it is not mistaken for coverage:** HiDPI legibility
+(the only display available is 1x, so **E.1.1's thick-line handoff is UNFIRED, not cleared**); the
+crossfade's *pacing* under a slow continuous dolly, which leaves **`S12` only partially covered**;
+and the below-plane half of occlusion, because the editor starts a default scene rather than opening
+one from disk — E.4.1's job. Everything else passed, including a **bit-identical** render against the
+branch point with the grid off (0 differing pixels of 319 620, anti-vacuity control 42 440 with the
+grid on) and a **free** frame budget (16.63 ms on vs 16.68 ms off, both vsync-pinned).
+
 **Two procedure notes that cost time here.** `check-math-boundary.sh` counts `git ls-files`, i.e.
 **tracked** files only, so running a per-commit guard step before `git add` shows an unmoved count and
 reads as "the guard missed the new files" — stage first, then measure. And the sample's real target is

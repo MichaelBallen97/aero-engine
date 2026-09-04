@@ -202,7 +202,7 @@ miniaudio; `A38` is covered only by validation row 9. Full detail in `docs/10`.
 | **Phase 2** — Editor | **COMPLETE, gate met 2026-08-02.** All six epics closed and macOS-validated; Windows/Linux rows pending for every task (`editor/VALIDATION.md`). Gate artifact: `samples/phase-2-editor-scene/` — data, deliberately not `add_subdirectory`'d. |
 | **Phase 3** — Asset Pipeline & 3D Content | **OPEN.** **All seven epics CLOSED in code** — 3.1–3.6, and 3.7 with 3.7.1 + 3.7.2 merged and macOS-validated and **3.7.3 merged (PR #91)**. What is left is the gate below and the validation debt. Per-task detail in `docs/10`. |
 | **Phase 3 gate** | Drop a rigged glTF/FBX in → PBR materials + shadows + a playing animation + **an audible sound**. The audible half exists in code as of 3.7.2 and **has not been validated on any platform** — 3.7.2's macOS pass ticked 47 of 53 records and left the 6 that need ears open. |
-| **Phase E** — Editor Experience | **OPEN. E.1.1 merged (PR #92 `15bf58b`) and E.1.2 merged (PR #93 `d91eab1`); 22 tasks remain, planning only.** Inserted between 3 and 4; six epics, 24 tasks in `docs/tasks/phase-E.md`. Viewport legibility (E.1), lighting & environment (E.2), inspector & context routing (E.3), project/scene/asset management (E.4), content-creation UX (E.5), shell identity (E.6). **E.1.1 is macOS-validated** — 8 of 10 rows PASS on 2026-09-03, 2 partial for structural reasons (the sample installs no billboard atlas, so `S21`'s picture half is not executable with it; Tracy's CLI exports zones but not plots). **E.1.2's page is written and NOT RUN on any platform.** Windows and Linux unvalidated, as everywhere. |
+| **Phase E** — Editor Experience | **OPEN. E.1.1 merged (PR #92 `15bf58b`) and E.1.2 merged (PR #93 `d91eab1`); 22 tasks remain, planning only.** Inserted between 3 and 4; six epics, 24 tasks in `docs/tasks/phase-E.md`. Viewport legibility (E.1), lighting & environment (E.2), inspector & context routing (E.3), project/scene/asset management (E.4), content-creation UX (E.5), shell identity (E.6). **E.1.1 is macOS-validated** — 8 of 10 rows PASS on 2026-09-03, 2 partial for structural reasons (the sample installs no billboard atlas, so `S21`'s picture half is not executable with it; Tracy's CLI exports zones but not plots). **E.1.2 is macOS-validated** — 8 PASS / 2 PARTIAL / 1 NOT EXECUTABLE on 2026-09-04. Windows and Linux unvalidated, as everywhere. |
 | **Phase E gate** | Open a project and land in the scene you were last editing, on a lit grid floor under a sky; create a Cube from the menu, drop a material on it and see it shade; aim a spot light with a visible gizmo; rename, move and delete assets without leaving the editor. Gate artifact: `samples/phase-E-editor/`. |
 
 ### Engine layers, in dependency order
@@ -466,16 +466,23 @@ build at the branch point, the cost A/B, Tracy's zone and plots, and the declare
 (depth write on the Tested pipelines) and `S21`'s picture half (a mirrored atlas cell whose centre
 still reads the right colour) have their ONLY coverage anywhere in that page's row 6.**
 
-**E.1.2 adds a full page and it is NOT RUN on any platform.**
-`editor/validation/E.1.2-grid-floor-world-axes.md` — twelve numbered steps, nine measurement blanks,
-gitignored. **Rows 1, 3 and 5 are partly automated** by `GR7`, `GR17`, `DG18` and `I112`; what stays
-hardware-only is HiDPI legibility (still one-pixel lines — E.1.1's thick-line handoff and this is its
-stated trigger), whether the crossfade *paces* well with a linear fraction, the cost A/B in Tracy, the
-picture being unchanged against a branch-point build, and that the grid axes agree with ImGuizmo's
-handles. **Row 6 is deliberately a MEASUREMENT, not a pass/fail**: no `Plane` primitive exists until
-E.5.2, and a shimmer where geometry is coplanar with the grid is **expected**, because debug lines
-carry no depth bias and cannot. **The sample binary is `aero_sample_phaseE_debug_draw`** — `phaseE`,
-no underscore before the E.
+**E.1.2 IS macOS-VALIDATED — 8 PASS / 2 PARTIAL / 1 NOT EXECUTABLE, 2026-09-04.** The render with
+the grid off is **bit-identical** to the branch point (0 differing pixels of 319 620, with an
+anti-vacuity control showing 42 440 when the grid is on); the grid is **free** at 60 Hz (16.63 ms on
+vs 16.68 ms off, both vsync-pinned, `dropped 0` over 464 frames); the axes agree with ImGuizmo to
+within **4 degrees**; and unchecking Grid takes the viewport from 599 red / 398 blue pixels to
+**exactly zero of each** while leaving a selected entity selected — `S26`'s only cover anywhere.
+
+**THE THREE THAT ARE NOT A CLEAN PASS ARE ALL ENVIRONMENTAL, AND NONE IS A CODE DEFECT.** (1) **HiDPI
+legibility is NOT EXECUTABLE here** — the only display is 1x, so **E.1.1's thick-line handoff remains
+UNFIRED rather than cleared**, and that distinction matters. (2) **The crossfade's *pacing* is not
+judged** — the measurable half is clean (no brightness step; largest single-frame delta 4.6% over
+eight frames across a decade boundary) but "does it feel evenly paced" needs a slow continuous dolly,
+so **`S12` stays only PARTIALLY covered**. (3) **Row 5's below-plane half is not executed** — the
+editor starts a default scene rather than opening one from disk, which is E.4.1's job.
+
+**AND ROW 6 PRODUCED THE NUMBER E.5.2 NEEDS.** See the depth-margin table in `docs/10`. **The sample
+binary is `aero_sample_phaseE_debug_draw`** — `phaseE`, no underscore before the E.
 
 ### Next
 
