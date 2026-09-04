@@ -1047,21 +1047,99 @@ TEST_CASE("render selection outline: an object leaving the frame draws NO border
     // D9, and it is a BEHAVIOURAL property rather than a defensive clamp: without the tap clamp a
     // selected object continuing past the right edge draws a bright frame around the picture, which
     // looks like a bug and is not one.
-    const engine::render::MeshInstance overhang =
-        slab(0.9F, 0.0F, 1.0F, 0.4F, 0.4F, 0.5F, Vec3{0.0F, 1.0F, 0.0F});  // x from -0.1 to +1.9
-    const std::array<engine::render::MeshInstance, 1> scene{overhang};
-    const engine::render::RenderView view = flatView(scene);
+    //
+    // TWO TARGETS, AND THE MARGINED ONE IS THE CASE. D10's lesson applies to the clamp exactly as it
+    // applies to the viewport: an exact target (drawExtent == textureExtent) CANNOT observe the bound,
+    // because the hardware's own ClampToEdge already returns the last drawn texel there and the case
+    // passes for a reason unrelated to the line under test. D9 only exists BECAUSE the mask texture
+    // has a cleared margin one texel past the drawn rect -- which is what the editor's
+    // VIEWPORT_EXTENT_QUANTUM = 64 gives it on every frame.
     const engine::render::SelectionOutlineParams params{
         .primaryColorSrgb = OG_PRIMARY_SRGB, .secondaryColorSrgb = OG_SECONDARY_SRGB, .radiusPixels = 2U};
-    const std::vector<std::byte> pixels =
-        renderOnce(*device, *post, *target, *forward, *outline, view, {}, scene, params);
 
-    constexpr std::uint32_t ROW = 96U;
-    // NO band column at the frame's own right edge...
-    CHECK_FALSE(isBandTexel(texelAt(pixels, OG_W, ROW, OG_W - 1U)));
-    CHECK(countBandTexels(pixels, OG_W, ROW, OG_W - 4U, OG_W - 1U) == 0);
-    // ...and the ANTI-VACUITY arm: the quad's LEFT edge, which is inside the frame, does have one.
-    CHECK(countBandTexels(pixels, OG_W, ROW, columnForNdcX(-0.1F, OG_W) - 4U, columnForNdcX(-0.1F, OG_W) + 4U) > 0);
+    SUBCASE("(a) an EXACT target: the hardware's own edge clamp agrees") {
+        const engine::render::MeshInstance overhang =
+            slab(0.9F, 0.0F, 1.0F, 0.4F, 0.4F, 0.5F, Vec3{0.0F, 1.0F, 0.0F});  // x from -0.1 to +1.9
+        const std::array<engine::render::MeshInstance, 1> scene{overhang};
+        const engine::render::RenderView view = flatView(scene);
+        const std::vector<std::byte> pixels =
+            renderOnce(*device, *post, *target, *forward, *outline, view, {}, scene, params);
+
+        constexpr std::uint32_t ROW = 96U;
+        // NO band column at the frame's own right edge...
+        CHECK_FALSE(isBandTexel(texelAt(pixels, OG_W, ROW, OG_W - 1U)));
+        CHECK(countBandTexels(pixels, OG_W, ROW, OG_W - 4U, OG_W - 1U) == 0);
+        // ...and the ANTI-VACUITY arm: the quad's LEFT edge, which is inside the frame, does have one.
+        const std::uint32_t leftEdge = columnForNdcX(-0.1F, OG_W);
+        CHECK(countBandTexels(pixels, OG_W, ROW, leftEdge - 4U, leftEdge + 4U) > 0);
+    }
+
+    SUBCASE("(b) a MARGINED target: the bound is the last DRAWN texel, never the first margin one") {
+        // THE EDITOR'S OWN SHAPE. Under Nearest filtering the texel a uv names is floor(uv * extent),
+        // so the drawn rect's EXCLUSIVE far edge (drawExtent / textureExtent) names texel drawExtent --
+        // the first CLEARED margin texel. Clamping a tap there reads 0 against a silhouette of 1, and
+        // the frame's right and bottom edges light up. The low bound clamps to 0, which IS a drawn
+        // texel, so the defect is asymmetric and the left and top edges stay clean either way.
+        constexpr std::uint32_t DRAW_W = 200;
+        constexpr std::uint32_t DRAW_H = 140;
+        auto marginedPost =
+            engine::render::PostProcess::create(*device, vfs, {DRAW_W, DRAW_H},
+                                                {.outputColorFormat = engine::rhi::TextureFormat::RGBA8Unorm,
+                                                 .outputDepthFormat = engine::rhi::TextureFormat::Invalid,
+                                                 .sceneDepthStore = true,
+                                                 .quantum = 64});
+        REQUIRE(marginedPost.has_value());
+        auto marginedTarget = engine::render::RenderTarget::create(
+            *device, {DRAW_W, DRAW_H},
+            {.colorFormat = engine::rhi::TextureFormat::RGBA8Unorm, .depth = false, .quantum = 64});
+        REQUIRE(marginedTarget.has_value());
+        // THE MARGIN IS REAL, asserted rather than assumed -- without it this subcase is OG8(a) again.
+        REQUIRE(marginedPost->sceneDrawExtent().width == DRAW_W);
+        REQUIRE(marginedPost->sceneTextureExtent().width == 256U);
+        REQUIRE(marginedPost->sceneDrawExtent().height == DRAW_H);
+        REQUIRE(marginedPost->sceneTextureExtent().height == 192U);
+        constexpr std::uint32_t STRIDE = 256U;
+
+        // A slab covering the WHOLE drawn rect and overhanging all four sides: every drawn texel of
+        // the mask is 1, so the ONLY thing that can produce a band is a tap reading the margin.
+        const engine::render::MeshInstance everywhere =
+            slab(0.0F, 0.0F, 2.0F, 2.0F, 0.4F, 0.5F, Vec3{0.0F, 1.0F, 0.0F});
+        const std::array<engine::render::MeshInstance, 1> fullScene{everywhere};
+        const engine::render::RenderView fullView = flatView(fullScene);
+        const std::vector<std::byte> full =
+            renderOnce(*device, *marginedPost, *marginedTarget, *forward, *outline, fullView, {}, fullScene, params);
+        // ANTI-VACUITY FIRST: the instance really was masked and the composite really ran, so a zero
+        // below is "no band was drawn" and not "nothing happened".
+        REQUIRE(forward->lastFrameSelectionMaskDrawn() == 1U);
+        REQUIRE(outline->compositeCount() == 1U);
+        // THE WHOLE DRAWN RECT, not a sample: this is the count the defect makes non-zero (measured
+        // 140 of 140 rows on the right edge and 200 of 200 columns on the bottom).
+        int bandTexels = 0;
+        for (std::uint32_t row = 0; row < DRAW_H; ++row) {
+            bandTexels += countBandTexels(full, STRIDE, row, 0U, DRAW_W - 1U);
+        }
+        CHECK(bandTexels == 0);
+        // ...and the two edges the defect lights up, counted on their own so a failure names WHICH.
+        int rightEdge = 0;
+        for (std::uint32_t row = 0; row < DRAW_H; ++row) {
+            rightEdge += isBandTexel(texelAt(full, STRIDE, row, DRAW_W - 1U)) ? 1 : 0;
+        }
+        CHECK(rightEdge == 0);
+        CHECK(countBandTexels(full, STRIDE, DRAW_H - 1U, 0U, DRAW_W - 1U) == 0);
+
+        // THE CONTROL, on the SAME margined pair: an object whose edges are INSIDE the drawn rect does
+        // band, so the zeros above are a property of the frame edge and not of this target.
+        const engine::render::MeshInstance inside =
+            slab(0.0F, 0.0F, 0.25F, 0.4F, 0.4F, 0.5F, Vec3{0.0F, 1.0F, 0.0F});  // x in [-0.25, 0.25]
+        const std::array<engine::render::MeshInstance, 1> insideScene{inside};
+        const engine::render::RenderView insideView = flatView(insideScene);
+        const std::vector<std::byte> control = renderOnce(*device, *marginedPost, *marginedTarget, *forward, *outline,
+                                                          insideView, {}, insideScene, params);
+        constexpr std::uint32_t ROW = DRAW_H / 2U;
+        const std::uint32_t rightEdgeColumn = columnForNdcX(0.25F, DRAW_W);
+        CHECK(countBandTexels(control, STRIDE, ROW, rightEdgeColumn - 4U, rightEdgeColumn + 4U) > 0);
+        CHECK(countBandTexels(control, STRIDE, ROW, DRAW_W - 4U, DRAW_W - 1U) == 0);
+    }
 }
 
 TEST_CASE("render selection outline: OUTPUT ALPHA IS 255 EVERYWHERE, band or no band (OG9)") {
