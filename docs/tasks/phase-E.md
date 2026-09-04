@@ -73,6 +73,13 @@ Subtasks:
 - Viewport toggle; the grid never appears in a game/exported view (it is editor chrome, not scene content)
 
 ### E.1.3 View-axis gizmo · P0 · M · depends: 2.2.3, 2.3.1
+_(Sized M in the roadmap and landing L, recorded here rather than discovered mid-task: the
+perspective/orthographic toggle is one line in `projectionMatrix` and five correctness sites
+everywhere else — the pick ray, both clip-space predicates and their four readers, and ImGuizmo's
+own flag — because every "in front of the eye" test in the editor is vacuous under a projection
+whose clip `w` does not depend on the world point. The non-defaulted `ProjectionMode` that makes
+those sites a compile error rather than a silent wrong picture costs 57 mechanical call-site edits,
+37 of them in one test file.)_
 **Goal:** the corner orientation widget every 3D application has — you can always name which way the
 camera is pointing, and you can get back to a canonical view in one click.
 **Deliverable:** a viewport-corner widget with labelled X/Y/Z balls tracking the camera orientation;

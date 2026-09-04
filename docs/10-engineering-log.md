@@ -13393,3 +13393,202 @@ reads as "the guard missed the new files" — stage first, then measure. And the
 as `aero_sample_phase_E_debug_draw` in every gate command and in validation row 11. A wrong binary
 name in a validation row makes the row unrunnable at exactly the moment someone is trying to follow
 it.
+
+---
+
+### E.1.3 — View-axis gizmo — the compass, and the projection mode nobody had asked for
+
+**What shipped, in eight commits.** A key type on E.1.2's `axis_palette.hpp` (`enum class Axis`,
+`AXIS_COUNT`, `axisColorSrgbBytes`, and deliberately no linear accessor); a pure
+`view_axis_gizmo.{hpp,cpp}` carrying the corner widget's layout, depth order, hit test, the six
+canonical poses, a shortest-arc helper and a two-angle smoothstep snap; `MAX_PITCH` retuned to
+exactly `HALF_PI`; a `ProjectionMode` on `EditorCamera` with an orthographic branch in
+`projectionMatrix`; a **non-defaulted** `ProjectionMode` threaded through `projectToViewport`,
+`clipSegmentToNearPlane`, `buildSelectionOverlay` and `gizmoOriginBehindCamera` plus a parallel arm
+in `viewportRay`; and the ImGui half in `viewport_panel.cpp`. No engine file, no shader, no
+dependency, no CI job, no new guard, no scene-format change, no determinism-manifest move; the
+`renderScene` function is byte-identical and this task pushes **nothing** into `render::DebugDraw`,
+so E.1.2's shared-batch wall does not apply and no existing counter assertion moved.
+
+#### The measured facts that outlive the task
+
+**IMGUIZMO'S `mIsOrthographic` REACHES FOUR LINES, AND NONE OF THEM IS THE SCREEN-SCALING PATH.**
+Read at the pinned port's own source: `:772` the member, `:984` `SetOrthographic`'s assignment,
+`:1298` the **rotation ring's** view direction, `:1336` the ring's start angle, and `:2696` the
+behind-camera early return (`!mIsOrthographic && camSpacePosition.z < 0.001f && !mbUsing`).
+`mScreenFactor` (`:1128`) is computed through the real MVP and `ComputeCameraRay` (`:842-861`)
+unprojects through `inverse(view*proj)` — **both are projection-agnostic**, so handle sizing and
+handle hit-testing were already correct in orthographic before this task. What the flag buys is the
+rotate ring's orientation and that early return. A validation pass that only drags a translate arrow
+proves nothing about it.
+
+**AND THAT MAKES `gizmoOriginBehindCamera`'S SECOND TEST STOP MIRRORING.** It exists to refuse
+anything ImGuizmo itself would refuse, closing the `PushClipRect` leak at `:2682`. In orthographic
+ImGuizmo's guard cannot fire at all, so there is nothing to mirror; the test is kept **unconditional**
+anyway, because it is then simply a stricter near-plane cut of our own (`clip.z < 0.001` against the
+gate's `clip.z > 1e-6`), and its comment now says exactly that so the next reader does not delete it
+as dead code. **Measured consequence, found by the sabotage matrix: that second test MASKS a broken
+first one.** Seed `S6` (the vacuous `w` gate in the ortho arm) reddens `PK14` and `VP5` and leaves
+`G18` **green**, because every behind-the-eye probe it could use is refused by test 2 regardless. No
+arm of `G18` can discriminate `S6`; that is structural, not a weak case.
+
+**D11's CONTINUITY IS A PLANE, NOT A POINT.** With `halfHeight = distance · tan(fovY/2)`, for any
+point whose view-space depth is exactly `−distance` the two projections are **algebraically
+identical** in `ndc.x` and `ndc.y` — off-axis points included — and differ only in `ndc.z`. So the
+honest negative arm is a point off-axis **and at a different depth**; asserting that an off-axis point
+at the pivot's depth moves would have compared two values equal by algebra and called the equality a
+bug.
+
+**CLIP `w` IS NOT EXACTLY 1 IN ORTHOGRAPHIC ON THIS TREE, AND THE VACUITY ARGUMENT DOES NOT NEED IT
+TO BE.** `EditorCamera::viewMatrix()` is `inverse(compose(...))`, a **general** cofactor inverse
+rather than an affine one, so its bottom-right entry comes back one ulp low — **measured at
+0.99999994** for the default pose, constant across every point tried out to 1e6 in every axis. What
+**is** exact, and what actually makes the four "in front of the eye" gates vacuous, is that the
+composed bottom row's x/y/z are exactly zero, so `w` does not depend on the world point at all.
+`PM3` asserts that instead.
+
+**THE TWO CLIP GATES ARE NOT EQUIVALENT, AND THE ASYMMETRY IS SHIPPED.** `glm::orthoRH_ZO` gives
+`clip.z = −(z_view + zNear) / (zFar − zNear)`, so `clip.z == 0` is exactly the near plane. Perspective's
+`w > 0` means "in front of the **eye**" and admits a point closer than `nearPlane`; ortho's `z > 0`
+means "beyond the **near plane**" and rejects it. An entity 0.05 units in front of the eye therefore
+draws its selection box in perspective and does not in ortho. `PK14` asserts both arms so the
+difference is recorded rather than discovered. **Making the perspective gate `z`-based too is
+strictly more correct and is 2.3.2's contract to change — it stays an unowned handoff.**
+
+**`viewportRay`'S ORTHO ARM NEEDS THREE FINITENESS GUARDS, NOT TWO.** `orthoHalfHeight` is
+`distance · tan(fovY/2)` and `clampState` deliberately leaves a directly-set NaN in `fovYValue` for
+`stateIsFinite()` to sweep on the next `update()`, so it must be checked **before use**. And the
+**direction** needs one as well as the origin: `forward()` is NaN whenever yaw or pitch is poisoned,
+and `normalizeOrZero` returns **NaN, not zero**, for a NaN input.
+
+**`a + (b − a)` IS NOT `b`, AND IT COST A REAL DEFECT.** The snap animation's final call originally
+recomputed its landing pose as `start + delta`, which is not bit-equal to the endpoint in float — so a
+Top snap landed an ulp off `−MAX_PITCH` and the clamp did not always recover it. `VA15`'s original arm
+could not see it, because a start of 0 makes `0 + (x − 0) == x` **exactly**; only `I114`, driven from
+the editor's real default pose, caught it. The animation now **holds** its landing pose, and the two
+components are stored differently on purpose: **yaw as the monotone endpoint** (congruent to the
+request modulo a full turn, which `setYaw` wraps anyway, and which stops the final frame jumping
+backwards across the wrap) and **pitch as the requested value verbatim**. `VA15` gained an arm driven
+from four off-lattice start poses. **Any animation in this tree that must land exactly on a boundary
+has to hold its endpoint, not re-derive it.**
+
+**THE `MAX_PITCH` RETUNE, AND WHY IT IS SAFE HERE.** `HALF_PI − 0.01F` puts a "top" view 0.572957
+degrees off vertical, which turns a 10-unit vertical pillar into a 0.10-unit lateral streak. The
+headroom's stated purpose does not apply to **this** camera: the composition is yaw-outer /
+pitch-inner, so `right() = qYaw · {1,0,0}` is independent of pitch, `viewMatrix()` is
+`inverse(compose(...))` with no `lookAt` and no up vector, and nothing divides by `cos(pitch)`. All
+four existing `MAX_PITCH` assertions compare against the **constant**, so the retune reddened none.
+**The pole residual, re-measured on this tree rather than adopted: worst component error 2.384e-07
+over 1441 yaw samples at both poles, and `right().y` is exactly 0 there.** That is what `VA11`/`VA12`'s
+`1e-6` tolerance has about 4x headroom against.
+
+**A NON-DEFAULTED PARAMETER COSTS 57 CALL-SITE EDITS AND IS WORTH IT.** `buildSelectionOverlay` has
+38 call sites, **37 of them in `selection_overlay_test.cpp`**; `projectToViewport` 7,
+`clipSegmentToNearPlane` 5, `gizmoOriginBehindCamera` 7. A default would let a future site silently
+take the perspective gate under an orthographic camera — a wrong picture with no error and no failing
+test. Non-defaulted makes every unconverted site a compile error, which is what made the change atomic.
+**Pass a file-local alias (`constexpr auto PERSP = …`), not the full enum spelling**: it grows each
+line by 7 characters instead of 40, which matters because `clang-format-18`'s Homebrew and Ubuntu
+builds disagree on ~120-column chains and this was the file with the most edits.
+**And `overlayOwnsPress` had test callers the call-site survey missed** — 15 of them in
+`imgui_layer_test.cpp`, plus a source-text pin naming its full argument list, which the widened
+signature made stale. A survey of a function's callers has to include the GPU tier and the pins.
+
+**A MECHANICAL CALL-SITE REWRITE MUST NOT COUNT COMMAS AT BRACKET DEPTH.** `std::array<Entity, 1>{cube}`
+carries a comma inside a template argument list, which `(`/`[`/`{` depth tracking does not see, so a
+"insert after the 4th top-level comma" pass put the new argument one slot early on **17 of 37** sites.
+The compiler caught every one, because the parameter is non-defaulted and the types differ — which is
+the same property that made the change atomic, doing double duty.
+
+#### Traps and dead ends
+
+* **`doctest::Approx(x).epsilon(0.0)` NEVER MATCHES.** Its comparison is
+  `|lhs − rhs| < epsilon · (scale + max(|lhs|,|rhs|))`, so a zero epsilon is `< 0`, which is false for
+  identical values. It prints `1 == 1` and fails. Where the arithmetic is exact, write a plain `==`.
+* **`CHECK(a && b)` is a hard compile error** — "Expression Too Complex Please Rewrite As Binary
+  Comparison". Split it.
+* **A doctest `-tc=` filter is a GLOB, not a regex.** `-tc="*PK1[35]*"` matched **zero** cases and the
+  binary exited 0 — a sabotage verdict of "reverted cleanly, nothing red" on a tree where the seed was
+  live. Always read the `test cases:` line, never the exit code alone.
+* **`git checkout -- <file>` REVERTS TO HEAD, and it ate a fix here exactly as `CLAUDE.md` warns.**
+  A `PK15` strengthening written *during* the matrix was discarded by mutant `M5`'s revert of the same
+  file. Commit the fix, then seed it — and the revert's own verification only proves the *anchor* is
+  back, not that your uncommitted work survived.
+* **A local `const Vec2` named in SCREAMING_SNAKE is a clang-tidy `readability-identifier-naming`
+  error**; `constexpr` is what makes that spelling legal.
+* **The tools-OFF configuration is a real second behaviour, not a formality.** With
+  `-DAERO_SHADER_TOOLS=OFF` the viewport latches `Unavailable` and `onDraw` **returns at step 4**, so
+  step 8b'' never runs: a snap starts and stays pending forever, and `editorCamera.update()` does not
+  run either. Two of this task's GPU cases asserted a landing pose and went red there while both full
+  presets were green. Both arms now assert (the 3.4.2 `I88`–`I92` rule).
+
+#### What was deliberately NOT built, with owners
+
+| Not built | Trigger | Owner |
+|---|---|---|
+| Stems from the widget centre to the front balls | the manual pass asks for it | unowned; two lines |
+| A widget visibility toggle | E.2.4 moves the view options into a popover | **E.2.4** |
+| Persisting the projection mode across sessions | a per-user preferences store exists | **E.4.x** |
+| Making `projectToViewport`'s **perspective** gate `z`-based too | someone wants one rule in both modes | unowned; 2.3.2's contract |
+| A parallel view vector for ortho specular (`CameraView::eyePosition` is wrong in ortho, as it is in Unity) | an ortho specular defect is filed | **E.2.x** |
+| Numpad `1`/`3`/`7` view shortcuts | a keymap/preferences surface exists | unowned |
+| Drag-the-widget-to-orbit; a view *cube* | — | unowned |
+| A scene `OrthographicCamera` component | — | `docs/06` non-goal |
+| Adopt `Axis`/`axisColorSrgbBytes` on ImGuizmo's style config | E.1.5 starts | **E.1.5** |
+| Adopt the same on the Inspector's `Vec3`/`Quat` rows | E.3.1 starts | **E.3.1** |
+| A linear accessor beside `axisColorSrgbBytes` | a second linear consumer appears | unowned |
+
+#### The measured gate
+
+Both macOS presets build; `AERO_REQUIRE_GPU=1 ctest` is **172/172** on both, **unmoved** from the
+branch point. Doctest totals: `aero_tests` **1250 → 1250 (unmoved — the check that no engine file was
+touched)**, `aero_editor_shell_test` **1748 → 1779** (+31: `AX3`, `VA1`–`VA18`, `PM1`–`PM5`,
+`PK13`–`PK16`, `VP5`/`VP6`, `G18`), `aero_editor_imgui_test` **149 → 153** (+4), and the other four
+unmoved at 34 / 29 / 7 / 28. Guards: math **461 → 464**, project-no-delete B **75 → 76**, and
+platform 85 / rhi 149 / scene 85 / **golden-rule 151** / audio 11/3/55 / probes 6/57 all **unmoved** —
+the golden-rule count *cannot* move, because this task adds nothing under `engine/` or `runtime/`.
+The determinism manifest's blob SHA is byte-identical and still 20 hash lines.
+
+**Both reduced configurations were configured FRESH with `-G Ninja` and
+`-DCMAKE_EXPORT_COMPILE_COMMANDS=ON`, built, and run**, each building and running `aero_tests`,
+`aero_editor_shell_test`, `aero_editor_imgui_test` and `aero_cooker`: `AERO_SHADER_TOOLS=OFF` is
+**159/159** and `AERO_REFLECT_TOOLS=OFF` is **93/93**. Rather than compare absolute totals against a
+stale figure, the entry **sets** were diffed against the full preset: shader-tools-OFF removes exactly
+the 13 `shaderc.*` entries, reflect-tools-OFF exactly the 79 `reflect-gen.*` plus four doctest
+binaries, **zero entries are added in either**, and all **70 `cooker.*` entries are present in all
+three** — which is the property the "did the cooker block accidentally grow a gate?" check is actually
+about.
+
+#### The sabotage matrix, recorded honestly
+
+Eighteen seeds and five assertion mutants, each applied alone to a committed tree, grep-confirmed
+present, rebuilt, run against its named discriminator, reverted and re-verified. **Fifteen of the
+eighteen behaved as predicted.** The three that did not:
+
+* **`S6` reddens `PK14` and `VP5` but NOT `G18`** — the mirrored second test masks the broken gate, as
+  above. Structural, and recorded rather than papered over.
+* **`S9` reddened NOTHING as first written.** `PickResult::distance` is read in exactly one place —
+  `pickEntity`'s point-vs-mesh arbitration — so a discriminator needs both candidate kinds competing
+  for one click. `PK15` gained that subcase: a light at `(6,0,0)` in front of a wall at `(6,0,−2)`,
+  clicked off-axis in ortho, where the correct origin measures 10.0 and the seeded one 11.66 against
+  the wall's 11.5 — the seeded editor selects the wall.
+* **`S18` was predicted to redden nothing and reddens two cases** (`I107` and `I116`), because both
+  assert the half-open rule at `max`.
+
+`S8` reddens `I116`'s source-text half **and no runtime case**, exactly as predicted — no tier here can
+read ImGuizmo's global state. `S13` likewise reddens only a source-text pin. `S11` reddens `VA10`'s
+value assertion while `VA11`'s behaviour assertion stays **green**, which is precisely why the two are
+separate cases: `setYaw(−π)` wraps to `+π` and the resulting `forward()` is identical. `S14` is a
+`SIGABRT` (exit 134) rather than a failing `CHECK`, as a Debug `assert` in `ortho()` should be. `S12`
+reddens `VA5` and, measured, **not** `I116` — the GPU fixture's panel is always visible, so the
+invisible branch never runs there.
+
+#### What is NOT validated
+
+Q3 was **answered by measurement and the answer is no**: nothing in `tests/` can inject a camera
+gesture — no `AddMouseButtonEvent`, no `AddKeyEvent`, no `io.MouseDown` write anywhere in the tree,
+and `ViewportPanel` exposes no gesture seam. `I115`'s gesture-cancel half is therefore a **source-text
+pin and says so in its own comment**, and seed `S13`'s only behavioural cover is validation row 10.
+The other declared gaps are `S8` (row 6, the rotate ring in ortho), `S18`'s boundary point (row 10),
+HiDPI legibility (row 1) and the rotate ring's orientation (row 6). Windows and Linux are unvalidated,
+as everywhere.

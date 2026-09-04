@@ -11,9 +11,10 @@ Two platform matrices, never to be conflated: the **editor** runs on macOS/Windo
 ## Current state — read this first
 
 **PHASE E (Editor Experience) IS OPEN — it executes between Phase 3 and Phase 4.**
-**E.1.1 (Debug line renderer) is MERGED (PR #92, merge commit `15bf58b`) and E.1.2 (Grid floor +
-world axes) is MERGED (PR #93, merge commit `d91eab1`, ten commits, all six CI jobs green with
-`headSha == HEAD` asserted); the other 22 tasks are planning only.** Six epics, 24
+**E.1.1 (Debug line renderer) is MERGED (PR #92, `15bf58b`), E.1.2 (Grid floor + world axes) is
+MERGED (PR #93, `d91eab1`) and E.1.3 (View-axis gizmo) is COMPLETE IN CODE on
+`feat/E.1.3-view-axis-gizmo` (eight commits, full local gate green, sabotage matrix run) and NOT YET
+MERGED; the other 21 tasks are planning only.** Six epics, 24
 tasks, in `docs/tasks/phase-E.md`. It is **lettered, not fractioned**, because `3.5` and `3.5.1`/`3.5.2` are
 already Phase 3's Skeletal-animation epic and its tasks — a "Phase 3.5" would collide with referenced
 numbers, and numbering is append-only. In Notion its `Phase #` is `3.5`, a sort key, not an
@@ -32,7 +33,9 @@ depth bias does not reach a line primitive at all (see below); (4) `openSceneFil
 containment validation against the project root, so a scene from another project loads while the
 AssetDatabase still resolves GUIDs against the open one. **`SpotLight` (E.2.2) and `Environment`
 (E.2.1) take the built-in component count from 8 to 10** — the five-generation-site rule and the
-component-count-literal sweep below both apply in full to each.
+component-count-literal sweep below both apply in full to each. **E.1.3 answered (4) for its own
+half and left the rest**: it made every clip-space predicate projection-aware, and containment
+validation against the project root is still absent.
 
 **Phase 3 (Asset Pipeline & 3D Content) is OPEN, and ALL SEVEN of its epics are now CLOSED IN CODE.**
 Epic 3.7 (Audio playback v0 · audio) closes with 3.7.1 MERGED (PR #88, `4892e65`, macOS-validated
@@ -51,6 +54,61 @@ Epics **3.1** (AssetDatabase), **3.2** (Importers), **3.3** (Cooker v0), **3.4**
 > summary of *where the position is* and of the rules that still govern new work. It is **rewritten**
 > as the position moves, never grown: it reached 207 k characters once and that is what this note
 > exists to prevent.
+
+### E.1.3 — View-axis gizmo (COMPLETE IN CODE, not merged) — the compass, and a projection mode
+
+**The viewport has a corner compass and an orthographic lens.** Six depth-sorted labelled balls on a
+ring, a 0.25 s two-angle smoothstep snap about the unchanged pivot, and a centre badge that toggles
+perspective/orthographic. Eight commits, no engine file, no shader, no dependency, no new guard, no
+scene-format change; `renderScene` is byte-identical and **nothing is pushed into
+`render::DebugDraw`**, so E.1.2's shared-batch wall did not apply and no counter assertion moved.
+Full detail in `docs/10`; what governs new work is below.
+
+**EVERY "IN FRONT OF THE EYE" TEST IN THE EDITOR WAS VACUOUS UNDER AN ORTHOGRAPHIC PROJECTION.** An
+ortho proj's bottom row is `(0,0,0,1)` and the view matrix is affine, so `clip.w` **does not depend on
+the world point at all** — and `projectToViewport`, `clipSegmentToNearPlane`,
+`gizmoOriginBehindCamera` and `viewportRay` all tested it. All four now take a **NON-DEFAULTED**
+`ProjectionMode` (`CLIP_Z_EPSILON = 1e-6` on `clip.z` in ortho), which is what makes an unconverted
+site a compile error rather than a silent wrong picture. **Cost: 57 call-site edits, 37 of them in
+`selection_overlay_test.cpp` — pass a file-local `constexpr auto PERSP = …` alias, never the full enum
+spelling, or the lines cross the 120-column CI skew.** `overlayOwnsPress` had 15 more callers in
+`imgui_layer_test.cpp` plus a source-text pin naming its argument list: **a caller survey must include
+the GPU tier and the pins.**
+
+**THE TWO GATES ARE NOT EQUIVALENT AND THE ASYMMETRY IS SHIPPED.** Perspective's `w > 0` means "in
+front of the EYE" and admits a point closer than `nearPlane`; ortho's `z > 0` means "beyond the NEAR
+PLANE" and rejects it. `PK14` asserts both arms. **A universal `z`-based gate is 2.3.2's contract to
+change and is an unowned handoff.**
+
+**IMGUIZMO'S `mIsOrthographic` REACHES FOUR LINES AND NONE IS THE SCREEN-SCALING PATH** — `:1298` and
+`:1336` are the **rotation ring**, `:2696` the behind-camera early return; `mScreenFactor` and
+`ComputeCameraRay` are projection-agnostic, so handle sizing and hit-testing were already correct.
+**A consequence with teeth: `gizmoOriginBehindCamera`'s mirrored second test MASKS a broken first
+one** — seed `S6` reddens `PK14` and `VP5` and leaves `G18` green, structurally. Keep the second test
+unconditional; in ortho it is a stricter near-plane cut of our own, not dead code.
+
+**`a + (b − a)` IS NOT `b`, AND AN ANIMATION THAT MUST LAND ON A BOUNDARY MUST HOLD ITS ENDPOINT.**
+The snap recomputed its landing pose as `start + delta` and landed an ulp off `−MAX_PITCH`; the
+zero-start test could not see it (`0 + (x − 0) == x` exactly) and only the editor's real default pose
+did. It now stores the endpoint — **yaw as the monotone value, pitch as the requested one verbatim**.
+
+**`MAX_PITCH` IS NOW EXACTLY `HALF_PI`.** The old `HALF_PI − 0.01F` put a top view 0.573 degrees off
+vertical. Safe here because the composition is yaw-outer / pitch-inner, so `right()` is independent of
+pitch, `viewMatrix()` has no `lookAt` and no up vector, and nothing divides by `cos(pitch)`. **Measured
+pole residual on this tree: worst component error 2.384e-07 over 1441 yaw samples at both poles, and
+`right().y` is exactly 0 there.**
+
+**AND `clip.w` IS NOT EXACTLY 1 IN ORTHO** — `viewMatrix()` is a general cofactor inverse, so its
+bottom-right entry reads **0.99999994**. The exact property, and the one the vacuity rests on, is that
+the composed bottom row's x/y/z are **exactly zero**, so `w` is independent of the point.
+
+**FOUR TEST-TIER TRAPS, EACH MEASURED HERE.** `doctest::Approx(x).epsilon(0.0)` **never matches** (its
+comparison is `< 0`) and prints `1 == 1` on failure. `CHECK(a && b)` is a hard compile error
+("Expression Too Complex"). **A `-tc=` filter is a GLOB, not a regex** — `*PK1[35]*` matched zero cases
+and exited 0, which reads as a clean sabotage verdict on a seeded tree; read the `test cases:` line,
+never the exit code. And **the tools-OFF configuration is a real second behaviour**: `onDraw` returns
+at step 4, so the snap never advances and `editorCamera.update()` never runs — two GPU cases went red
+there while both full presets were green.
 
 ### E.1.2 — Grid floor + world axes (MERGED, PR #93 `d91eab1`) — and a MEASURED NEGATIVE RESULT
 
@@ -202,7 +260,7 @@ miniaudio; `A38` is covered only by validation row 9. Full detail in `docs/10`.
 | **Phase 2** — Editor | **COMPLETE, gate met 2026-08-02.** All six epics closed and macOS-validated; Windows/Linux rows pending for every task (`editor/VALIDATION.md`). Gate artifact: `samples/phase-2-editor-scene/` — data, deliberately not `add_subdirectory`'d. |
 | **Phase 3** — Asset Pipeline & 3D Content | **OPEN.** **All seven epics CLOSED in code** — 3.1–3.6, and 3.7 with 3.7.1 + 3.7.2 merged and macOS-validated and **3.7.3 merged (PR #91)**. What is left is the gate below and the validation debt. Per-task detail in `docs/10`. |
 | **Phase 3 gate** | Drop a rigged glTF/FBX in → PBR materials + shadows + a playing animation + **an audible sound**. The audible half exists in code as of 3.7.2 and **has not been validated on any platform** — 3.7.2's macOS pass ticked 47 of 53 records and left the 6 that need ears open. |
-| **Phase E** — Editor Experience | **OPEN. E.1.1 merged (PR #92 `15bf58b`) and E.1.2 merged (PR #93 `d91eab1`); 22 tasks remain, planning only.** Inserted between 3 and 4; six epics, 24 tasks in `docs/tasks/phase-E.md`. Viewport legibility (E.1), lighting & environment (E.2), inspector & context routing (E.3), project/scene/asset management (E.4), content-creation UX (E.5), shell identity (E.6). **E.1.1 is macOS-validated** — 8 of 10 rows PASS on 2026-09-03, 2 partial for structural reasons (the sample installs no billboard atlas, so `S21`'s picture half is not executable with it; Tracy's CLI exports zones but not plots). **E.1.2 is macOS-validated** — 8 PASS / 2 PARTIAL / 1 NOT EXECUTABLE on 2026-09-04. Windows and Linux unvalidated, as everywhere. |
+| **Phase E** — Editor Experience | **OPEN. E.1.1 merged (PR #92 `15bf58b`), E.1.2 merged (PR #93 `d91eab1`), E.1.3 COMPLETE IN CODE and unmerged on `feat/E.1.3-view-axis-gizmo`; 21 tasks remain, planning only.** Inserted between 3 and 4; six epics, 24 tasks in `docs/tasks/phase-E.md`. Viewport legibility (E.1), lighting & environment (E.2), inspector & context routing (E.3), project/scene/asset management (E.4), content-creation UX (E.5), shell identity (E.6). **E.1.1 is macOS-validated** — 8 of 10 rows PASS on 2026-09-03, 2 partial for structural reasons (the sample installs no billboard atlas, so `S21`'s picture half is not executable with it; Tracy's CLI exports zones but not plots). **E.1.2 is macOS-validated** — 8 PASS / 2 PARTIAL / 1 NOT EXECUTABLE on 2026-09-04. **E.1.3 has a validation page written and NOT YET RUN on any platform.** Windows and Linux unvalidated, as everywhere. |
 | **Phase E gate** | Open a project and land in the scene you were last editing, on a lit grid floor under a sky; create a Cube from the menu, drop a material on it and see it shade; aim a spot light with a visible gizmo; rename, move and delete assets without leaving the editor. Gate artifact: `samples/phase-E-editor/`. |
 
 ### Engine layers, in dependency order
@@ -224,7 +282,7 @@ miniaudio; `A38` is covered only by validation row 9. Full detail in `docs/10`.
   `PRIVATE aero::profiling`, and **never `aero::scene_internal`** (which carries `EnTT::EnTT`
   INTERFACE by design). Folding its walk into `engine/audio` would put **EnTT on the link line of every
   binary that links audio**, including the Phase 5 runtime.
-* **`/editor`** is **26 `.hpp`/`.cpp` pairs**; `/tools` links `aero::assets` and `aero::editor_core`
+* **`/editor`** is **27 `.hpp`/`.cpp` pairs** since E.1.3's `view_axis_gizmo`; `/tools` links `aero::assets` and `aero::editor_core`
   through `aero_cooker`, which is legal because `tools/` is enumerated by neither half of the golden
   rule.
 
@@ -281,6 +339,22 @@ anti-vacuity arm proving it is.
 span clamp made `DEBUG_GRID_MAX_LINES` structural; removing the clamp leaves the battery green with
 an identical assertion count. The count is bounded by the **disc clip**, not the clamp. Two readings
 passed over that sentence before a seed disproved it.
+
+**A NON-DEFAULTED PARAMETER ON A WIDELY-CALLED EDITOR FUNCTION IS A 57-LINE EDIT, AND IT IS STILL THE
+RIGHT CALL.** `buildSelectionOverlay` has **38 call sites, 37 of them in
+`selection_overlay_test.cpp`**; `projectToViewport` has 7, `clipSegmentToNearPlane` 5,
+`gizmoOriginBehindCamera` 7, and `overlayOwnsPress` 16. A default lets a future site silently take
+the wrong arm — a wrong picture with no error and no failing test; non-defaulted makes every
+unconverted site a compile error, which is what makes such a change atomic. **Pass a file-local
+`constexpr auto` alias, never the full enum spelling**: seven characters per line instead of forty,
+which is what keeps them under the 120-column CI skew. **And a mechanical rewrite must not count
+commas at bracket depth** — `std::array<Entity, 1>{cube}` hides one inside a template argument list,
+which put the new argument one slot early on 17 of 37 sites at E.1.3.
+
+**A `-tc=` FILTER IS A GLOB, NOT A REGEX, AND A FILTER THAT MATCHES NOTHING EXITS 0.** `*PK1[35]*`
+selected **zero** cases and the binary reported success — which reads as "the seed reverted cleanly"
+during a sabotage run on a tree where the seed was still live. **Read doctest's own `test cases:` line,
+never the exit code alone**; same species as the vacuous-grep trap below.
 
 **THE DEBUG BATCH IS SHARED, SO "THE BATCH IS EMPTY" IS A WHOLE-EDITOR CLAIM.** Any task that adds a
 producer to `render::DebugDraw` reddens every case that counts the batch exactly — E.1.2's grid took
@@ -378,15 +452,18 @@ Read totals from **doctest's own `filters:` line**, never from a `grep -c` of ca
 count on its own page goes stale, and adding one task's delta to another task's baseline is exactly the
 arithmetic that produces a confident wrong number.
 
-At E.1.2's gate: **`ctest -N` 172** (tools-ON, measured on both presets; the two reduced
-configurations' 80 / 93 remain 3.7.3's numbers and were re-measured at neither E.1.1 nor E.1.2);
-doctest across **seven** binaries **1250 / 1748 / 149 / 34 / 29 / 7 / 28**. **E.1.2 repeats E.1.1's
+At E.1.3's gate: **`ctest -N` 172** (tools-ON, both presets, **unmoved** since E.1.2); doctest across
+**seven** binaries **1250 / 1779 / 153 / 34 / 29 / 7 / 28**. **E.1.3 repeats E.1.1's and E.1.2's
 signature and it is the INVERSE of 3.7.3's: the doctest totals MOVE while `ctest -N` does NOT** —
-`aero_tests` 1223 → 1250 (`GR1`–`GR26` + `DG18`), `aero_editor_shell_test` 1746 → 1748 (`AX1`, `AX2`)
-and `aero_editor_imgui_test` 147 → 149 (`I112`, `I113`; `I110` gained a subcase, which moves no
-total), because new TUs ride existing binaries and a sample registers no ctest entry. The eight guard
-counts at that gate: math **461**, platform **85**, rhi **149**, scene **85**, golden-rule **151**,
-project-no-delete **A=6/B=75**, audio **11/3/55**, probes **6/57**. **`check-math-boundary.sh` counts
+`aero_editor_shell_test` 1748 → 1779 (+31) and `aero_editor_imgui_test` 149 → 153 (+4), while
+**`aero_tests` is UNMOVED at 1250, which is the check that no engine file was touched**. The eight
+guard counts at that gate: math **464**, platform **85**, rhi **149**, scene **85**, golden-rule
+**151**, project-no-delete **A=6/B=76**, audio **11/3/55**, probes **6/57**. **The two reduced
+configurations were re-measured at E.1.3 and 3.7.3's remembered `80 / 93` is HALF WRONG: they read
+`159` (shader-tools-OFF) and `93` (reflect-tools-OFF).** Compare the entry **SETS**, not the totals —
+shader-tools-OFF removes exactly the 13 `shaderc.*` entries, reflect-tools-OFF exactly the 79
+`reflect-gen.*` plus four doctest binaries, **nothing is added in either**, and all **70 `cooker.*`
+entries are present in all three**, which is the property that check is actually about. **`check-math-boundary.sh` counts
 `git ls-files`, so it reads a STALE number until new files are `git add`ed** — stage first, then
 measure. A moved `ctest -N` on a task like that means a CMakeLists copied
 from the wrong template. Both reduced configurations
@@ -468,6 +545,14 @@ build at the branch point, the cost A/B, Tracy's zone and plots, and the declare
 (depth write on the Tested pipelines) and `S21`'s picture half (a mirrored atlas cell whose centre
 still reads the right colour) have their ONLY coverage anywhere in that page's row 6.**
 
+**E.1.3'S PAGE IS WRITTEN AND HAS NOT BEEN RUN ON ANY PLATFORM.** Its fourteen rows are the whole of
+its remaining risk, and three of them are the ONLY cover their seed has anywhere: **row 6** (the
+rotate ring in ortho — seed `S8`, which no runtime tier can see because nothing here reads ImGuizmo's
+global state), **row 10** (the widget's press claim at its boundary — seed `S13`, because **nothing in
+`tests/` can inject a camera gesture**, measured, and seed `S18`'s one-point edge), and **row 1**
+(HiDPI legibility). Everything else this task claims is CI-covered on all three lanes, which is the
+direct consequence of the pure/ImGui split.
+
 **E.1.2 IS macOS-VALIDATED — 8 PASS / 2 PARTIAL / 1 NOT EXECUTABLE, 2026-09-04.** The render with
 the grid off is **bit-identical** to the branch point (0 differing pixels of 319 620, with an
 anti-vacuity control showing 42 440 when the grid is on); the grid is **free** at 60 Hz (16.63 ms on
@@ -488,20 +573,24 @@ binary is `aero_sample_phaseE_debug_draw`** — `phaseE`, no underscore before t
 
 ### Next
 
-**Phase E is the open front. E.1.2 is merged AND macOS-validated** (8 PASS / 2 PARTIAL / 1 NOT
-EXECUTABLE, 2026-09-04) — the first Phase E task whose CI passed on all three lanes from the first
-push, Windows and Linux included. **Windows and Linux validation remain outstanding**, as everywhere.
-The epic's remaining tasks are **E.1.3**
-(view-axis gizmo — it owns "which way is up", which E.1.2 deliberately does not answer), **E.1.4**
-and **E.1.5** (the gizmo restyle, which adopts `AXIS_{X,Y,Z}` from the palette E.1.2 created).
+**Phase E is the open front. E.1.3 is COMPLETE IN CODE on `feat/E.1.3-view-axis-gizmo` and NOT
+MERGED** — eight commits, the full local gate green on both presets and both reduced configurations,
+the 18-seed sabotage matrix run, and a validation page written but **NOT RUN on any platform**. It is
+awaiting a review round and a PR. E.1.2 is merged AND macOS-validated (8 PASS / 2 PARTIAL / 1 NOT
+EXECUTABLE, 2026-09-04). **Windows and Linux validation remain outstanding**, as everywhere. The
+epic's remaining tasks are **E.1.4** and **E.1.5** (the gizmo restyle), and E.1.3 answered "which way
+is up", which E.1.2 deliberately did not.
 
-**The spine, unchanged except where E.1.2 moved it:** **E.2.1 (`Environment`) blocks E.2.2, E.2.4 and
-E.4.5**; **E.2.3 (light gizmos) is unblocked** — and it now inherits two things by name, the
+**The spine, unchanged except where E.1.2 and E.1.3 moved it:** **E.2.1 (`Environment`) blocks E.2.2,
+E.2.4 and E.4.5**; **E.2.3 (light gizmos) is unblocked** — and it inherits two things by name, the
 **shared-batch empty-assertion wall** against `I112`, and a **billboard-pipeline depth bias**, which
-is the only topology where a bias actually works. **E.3.1** adopts the axis palette on its `Vec3`
-rows. **E.5.1 is an S-sized fix for a confirmed defect and is independent of everything**, so it can
-land at any point. **E.5.2 now owns the coplanar-geometry problem** — it creates the first `Plane` at
-`y = 0`, and E.1.2 established that a rasterizer bias cannot be the answer for lines.
+is the only topology where a bias actually works. **E.1.5 now inherits the palette's KEY as well as
+its colours** (`Axis`, `AXIS_COUNT`, `axisColorSrgbBytes`) and must not touch `ImGuizmo::Style` before
+it starts; **E.3.1** inherits the same for its `Vec3`/`Quat` rows. **E.5.1 is an S-sized fix for a
+confirmed defect and is independent of everything**, so it can land at any point. **E.5.2 owns the
+coplanar-geometry problem** — it creates the first `Plane` at `y = 0`, and E.1.2 established that a
+rasterizer bias cannot be the answer for lines. **E.2.x inherits ortho specular**:
+`CameraView::eyePosition` is wrong under a parallel projection, as it is in Unity.
 
 **Phase 3 remains OPEN behind it, on its gate and its validation debt, and Phase E does not close
 either.** 3.7.1 (PR #88 `4892e65`) and 3.7.2 (PR #89 `b398d17`) are merged and macOS-validated;
