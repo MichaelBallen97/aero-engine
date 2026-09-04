@@ -278,7 +278,7 @@ miniaudio; `A38` is covered only by validation row 9. Full detail in `docs/10`.
 | **Phase 2** — Editor | **COMPLETE, gate met 2026-08-02.** All six epics closed and macOS-validated; Windows/Linux rows pending for every task (`editor/VALIDATION.md`). Gate artifact: `samples/phase-2-editor-scene/` — data, deliberately not `add_subdirectory`'d. |
 | **Phase 3** — Asset Pipeline & 3D Content | **OPEN.** **All seven epics CLOSED in code** — 3.1–3.6, and 3.7 with 3.7.1 + 3.7.2 merged and macOS-validated and **3.7.3 merged (PR #91)**. What is left is the gate below and the validation debt. Per-task detail in `docs/10`. |
 | **Phase 3 gate** | Drop a rigged glTF/FBX in → PBR materials + shadows + a playing animation + **an audible sound**. The audible half exists in code as of 3.7.2 and **has not been validated on any platform** — 3.7.2's macOS pass ticked 47 of 53 records and left the 6 that need ears open. |
-| **Phase E** — Editor Experience | **OPEN. E.1.1 merged (PR #92 `15bf58b`), E.1.2 merged (PR #93 `d91eab1`), E.1.3 merged (PR #94 `6fb323c`); 21 tasks remain, planning only.** Inserted between 3 and 4; six epics, 24 tasks in `docs/tasks/phase-E.md`. Viewport legibility (E.1), lighting & environment (E.2), inspector & context routing (E.3), project/scene/asset management (E.4), content-creation UX (E.5), shell identity (E.6). **E.1.1 is macOS-validated** — 8 of 10 rows PASS on 2026-09-03, 2 partial for structural reasons (the sample installs no billboard atlas, so `S21`'s picture half is not executable with it; Tracy's CLI exports zones but not plots). **E.1.2 is macOS-validated** — 8 PASS / 2 PARTIAL / 1 NOT EXECUTABLE on 2026-09-04. **E.1.3 has a sixteen-row validation page written and NOT YET RUN on any platform.** Windows and Linux unvalidated, as everywhere. |
+| **Phase E** — Editor Experience | **OPEN. E.1.1 merged (PR #92 `15bf58b`), E.1.2 merged (PR #93 `d91eab1`), E.1.3 merged (PR #94 `6fb323c`); 21 tasks remain, planning only.** Inserted between 3 and 4; six epics, 24 tasks in `docs/tasks/phase-E.md`. Viewport legibility (E.1), lighting & environment (E.2), inspector & context routing (E.3), project/scene/asset management (E.4), content-creation UX (E.5), shell identity (E.6). **E.1.1 is macOS-validated** — 8 of 10 rows PASS on 2026-09-03, 2 partial for structural reasons (the sample installs no billboard atlas, so `S21`'s picture half is not executable with it; Tracy's CLI exports zones but not plots). **E.1.2 is macOS-validated** — 8 PASS / 2 PARTIAL / 1 NOT EXECUTABLE on 2026-09-04. **E.1.3 is macOS-validated** — 11 PASS / 1 PARTIAL / 2 NOT EXECUTABLE / 1 NOT RUN on 2026-09-05; the pass found the ortho gizmo-suppression defect, fixed in PR #94's follow-up (PR #95, `0ab204d`). Windows and Linux unvalidated, as everywhere. |
 | **Phase E gate** | Open a project and land in the scene you were last editing, on a lit grid floor under a sky; create a Cube from the menu, drop a material on it and see it shade; aim a spot light with a visible gizmo; rename, move and delete assets without leaving the editor. Gate artifact: `samples/phase-E-editor/`. |
 
 ### Engine layers, in dependency order
@@ -564,8 +564,36 @@ build at the branch point, the cost A/B, Tracy's zone and plots, and the declare
 (depth write on the Tested pipelines) and `S21`'s picture half (a mirrored atlas cell whose centre
 still reads the right colour) have their ONLY coverage anywhere in that page's row 6.**
 
-**E.1.3'S PAGE IS WRITTEN AND HAS NOT BEEN RUN ON ANY PLATFORM.** Its **sixteen** rows are the whole
-of its remaining risk, and five of them are the ONLY cover their seed has anywhere: **row 6** (the
+**E.1.3 IS macOS-VALIDATED — 11 PASS / 1 PARTIAL / 2 NOT EXECUTABLE / 1 NOT RUN, 2026-09-05, AND THE
+PASS FOUND A DEFECT THAT IS NOW FIXED (PR #95, merge commit `0ab204d`).** The measurements worth
+carrying: the pivot sits at the **IDENTICAL pixel** across a projection toggle (dx = dy = 0.00, same
+34-px footprint) while **55 113 of 204 800** viewport pixels change — D11's pivot-*plane* continuity
+with its own anti-vacuity control; the widget's hide threshold is **exactly 140** (width 139 -> 9 px,
+140 -> 128 px, so the predicate is `>=`); a 10-unit pillar snapped to Top shows **0 px** of lateral
+streak at ~96 px/world-unit, where the old `MAX_PITCH` would have smeared it ~9.6 px; all four
+corners pick in ortho with a 90-px-off probe selecting nothing; and a drag released **inside** the
+widget commits **exactly one** undoable edit without snapping the view.
+
+**THE DEFECT, AND WHY NO TIER COULD SEE IT.** `gizmoOriginBehindCamera` kept ImGuizmo's
+perspective-only near-band mirror **unconditional**, reasoning it was "a narrower band on the same
+normalised axis and is safe". `0.001` was calibrated against ImGuizmo's **view-space**
+`camSpacePosition.z`; ortho's `clip.z` is `(-z_view - zNear)/(zFar - zNear)`, a **normalised** depth,
+so the same constant spans `0.001 * (zFar - zNear)` — **~1.0 world unit** at the shipped defaults and
+~10 at `zFar = 10000`, against the ~0.0002-0.11 the code itself measured for perspective. `focusOn`
+frames a small entity at exactly that distance, so **F then orthographic drew no transform gizmo at
+all**. `G18` had a subcase **pinning the old behaviour**, so this was a decision whose consequence was
+never evaluated, not an oversight — and `G18` is structurally blind to that second test anyway, which
+is the same blind spot the code-review round already recorded for seed `S6`. **The lesson that
+outlives it: a threshold calibrated in one projection's depth units means something else entirely in
+the other, and "stricter" is only safe against the failure it was written for.** The perspective band
+sits on the OPPOSITE side of the near plane from ortho's — `clip.z < 0.001` under `perspectiveRH_ZO`
+solves to a view depth under ~0.101, i.e. between the eye and the near plane, which test 1 accepts
+there because it gates on `clip.w` and not on the near plane at all.
+
+**Its page still has three open records** : row 6's translate/scale-in-ortho arm (blocked by the defect above,
+re-runnable now), row 7 (NOT EXECUTABLE — this scene's only floor is E.1.2's debug LINE grid, which
+receives no shadow; a solid plane is **E.5.2's**) and row 13 (the cost A/B, which needs a second build
+at the branch point). Five of its sixteen rows are the ONLY cover their seed has anywhere: **row 6** (the
 rotate ring in ortho — seed `S8`, which no runtime tier can see because nothing here reads ImGuizmo's
 global state), **row 10** (the widget's press claim at its boundary — seed `S13`, because **nothing in
 `tests/` can inject a camera gesture**, measured, and seed `S18`'s one-point edge), **row 1**
@@ -598,7 +626,8 @@ binary is `aero_sample_phaseE_debug_draw`** — `phaseE`, no underscore before t
 
 ### Next
 
-**Phase E is the open front. E.1.3 is MERGED (PR #94, `6fb323c`)** — thirteen commits, the full
+**Phase E is the open front. E.1.3 is MERGED (PR #94, `6fb323c`) AND macOS-VALIDATED, with one
+defect found by that pass and fixed (PR #95, `0ab204d`)** — thirteen commits, the full
 local gate green on both presets and both reduced configurations, the 18-seed sabotage matrix run,
 a review round closed (one blocking finding: the widget's press reached ImGuizmo), and a validation
 page written but **NOT RUN on any platform**. E.1.2 is merged AND macOS-validated (8 PASS / 2 PARTIAL / 1 NOT
