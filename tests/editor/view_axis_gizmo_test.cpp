@@ -834,3 +834,51 @@ TEST_CASE("editor view-axis gizmo: the easing is monotone with zero velocity at 
         CHECK(lastStep < middleStep);
     }
 }
+
+TEST_CASE("editor view-axis gizmo: a second request RETARGETS from the live pose (VA19)") {
+    // THE MID-FLIGHT PROPERTY, ASSERTED WHERE THE DELTA IS A PARAMETER. I114's third subcase used to
+    // REQUIRE a mid-flight state after exactly one real frame, which is a cross-lane flake:
+    // PanelContext::deltaSeconds is FrameClock's spike-clamped delta capped at 0.25 s -- EXACTLY
+    // VIEW_SNAP_SECONDS -- so ONE frame at or above that clamp finishes the entire animation, which
+    // is plausible on a cold WARP or lavapipe first frame right after window and Device creation.
+    // A REQUIRE aborts rather than failing soft, so the case would have died there. Here the delta is
+    // chosen, so "half way" means half way.
+    using engine::editor::ViewSnapAnimation;
+    constexpr float SNAP = engine::editor::VIEW_SNAP_SECONDS;
+
+    ViewSnapAnimation anim;
+    const ViewPose first{.yaw = 1.0F, .pitch = -0.4F};
+    anim.start(0.0F, 0.0F, first);
+    REQUIRE(anim.active());
+    const ViewPose midFlight = anim.advance(SNAP * 0.5F);
+    REQUIRE(anim.active());
+    // ANTI-VACUITY, and the whole case rests on it: the live pose is really BETWEEN the endpoints,
+    // so "starts from the live pose" cannot be satisfied by either endpoint.
+    CHECK(midFlight.yaw > 0.0F);
+    CHECK(midFlight.yaw < first.yaw);
+    CHECK(midFlight.pitch < 0.0F);
+    CHECK(midFlight.pitch > first.pitch);
+
+    // THE RETARGET: a second start() from the LIVE pose -- exactly what ViewportPanel::beginViewSnap
+    // does, which reads camera().yaw()/pitch() at the moment of the click.
+    const ViewPose second{.yaw = -1.2F, .pitch = 0.3F};
+    anim.start(midFlight.yaw, midFlight.pitch, second);
+    REQUIRE(anim.active());
+
+    SUBCASE("the new walk BEGINS at the live pose, not at the old start and not at the old target") {
+        // advance(0) returns the START pose (VA15's first arm), so this reads the retarget's own
+        // origin off the animation rather than recomputing it -- and it is the assertion that tells a
+        // retarget apart from a queue, which would still be walking toward `first`.
+        const ViewPose restart = anim.advance(0.0F);
+        CHECK(restart.yaw == midFlight.yaw);
+        CHECK(restart.pitch == midFlight.pitch);
+        CHECK(restart.yaw != 0.0F);
+        CHECK(restart.yaw != first.yaw);
+    }
+    SUBCASE("...and it lands on the SECOND target in ONE snap duration, never two") {
+        const ViewPose end = anim.advance(SNAP);
+        CHECK_FALSE(anim.active());
+        CHECK(end.pitch == second.pitch);
+        CHECK(std::abs(engine::editor::shortestAngleDelta(end.yaw, second.yaw)) < 1.0e-6F);
+    }
+}

@@ -10355,11 +10355,23 @@ TEST_CASE("editor: a view snap lands on the canonical pose about an UNCHANGED pi
         CHECK(viewport->camera().yaw() == yawAfter);
         CHECK(viewport->camera().pitch() == pitchAfter);
     }
-    SUBCASE("a SECOND request retargets from the live pose rather than queueing") {
+    SUBCASE("a SECOND request while one is ACTIVE lands on the second target, never the first") {
+        // NO TICK BETWEEN THE TWO REQUESTS, DELIBERATELY. An earlier draft ticked once and then
+        // REQUIREd viewSnapActive(), which is a cross-lane flake rather than a property:
+        // PanelContext::deltaSeconds is FrameClock's spike-clamped delta capped at 0.25 s -- EXACTLY
+        // VIEW_SNAP_SECONDS -- so ONE frame at or above that clamp finishes the whole animation, and
+        // a >250 ms frame right after window and Device creation is plausible on WARP and lavapipe.
+        // A REQUIRE would have ABORTED the case there rather than failing it softly.
+        //
+        // Requesting both in the same frame needs no delta at all: the first request leaves the
+        // animation active by arithmetic (the default pose is nowhere near Top), and the retarget
+        // therefore really does arrive while one is in flight. THE MID-FLIGHT HALF -- that the new
+        // walk begins at the LIVE pose rather than at either endpoint -- is VA19's, at the pure tier
+        // where the delta is a parameter and "half way" means half way.
         viewport->requestViewSnap(engine::editor::ViewAxis::PosY);
-        REQUIRE(app->tick());
         REQUIRE(viewport->viewSnapActive());
         viewport->requestViewSnap(engine::editor::ViewAxis::PosX);
+        REQUIRE(viewport->viewSnapActive());
         int ticks = 0;
         while (viewport->viewSnapActive() && ticks < 60) {
             REQUIRE(app->tick());
@@ -10420,11 +10432,17 @@ TEST_CASE("editor: what cancels a running view snap, and what does NOT (task E.1
     // with no accessor and no request... function. The only way to make gesture.gesture != None is
     // real ImGui mouse-button state plus Alt, which no tier here can synthesize.
     //
-    // SO THE GESTURE-CANCEL HALF BELOW IS A SOURCE-TEXT PIN, NOT BEHAVIOURAL COVERAGE, AND THIS
-    // COMMENT SAYS SO RATHER THAN LETTING A GREEN RUN IMPLY MORE. Seed S13 (dropping the
-    // `gesture == None` term from the click guard) has its ONLY cover in validation row 10.
-    // The F-cancel half IS behavioural, because F routes through focusSelection, which the fixture
-    // can reach through the camera's own state.
+    // SO BOTH CANCELS BELOW ARE SOURCE-TEXT PINS, NOT BEHAVIOURAL COVERAGE, AND THIS COMMENT SAYS SO
+    // RATHER THAN LETTING A GREEN RUN IMPLY MORE. Seed S13 (dropping the `gesture == None` term from
+    // the click guard) has its ONLY cover in validation row 10.
+    //
+    // THE F CANCEL IS A PIN TOO, and an earlier version of this comment said otherwise. F cannot be
+    // pressed from here for exactly the same reason a gesture cannot be injected -- there is no
+    // AddKeyEvent anywhere in the tree -- and neither focusSelection nor viewSnap.cancel() is
+    // reachable: both are private, and focusSelection additionally needs the PanelContext EditorApp
+    // owns. Its mechanical cover is the `cancels[1] < focusAt` pair in the first subcase below; its
+    // behavioural cover is validation row 8. The last subcase drives what the fixture genuinely CAN
+    // drive -- the panel really advancing a snap -- and is named for that, not for the cancel.
     const std::vector<std::string> code = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/viewport_panel.cpp");
     REQUIRE_FALSE(code.empty());
 
@@ -10479,7 +10497,7 @@ TEST_CASE("editor: what cancels a running view snap, and what does NOT (task E.1
         }
         CHECK(namesGestureNone);
     }
-    SUBCASE("F cancels the snap -- BEHAVIOURAL, through the real panel") {
+    SUBCASE("the panel really ADVANCES a snap, monotonically and without overshoot") {
         engine::platform::Context ctx;
         if (!ctx.valid()) {
             AERO_SKIP_OR_FAIL("no platform context");
@@ -10507,21 +10525,45 @@ TEST_CASE("editor: what cancels a running view snap, and what does NOT (task E.1
         auto* const viewport = dynamic_cast<engine::editor::ViewportPanel*>(app->panels().find("Viewport"));
         REQUIRE(viewport != nullptr);
 
-        // The F key itself cannot be pressed from here either, so this drives the SEAM the F handler
-        // is one line above: a running snap, then a retarget, then the pose it walks from.
+        // WHAT THIS CAN AND CANNOT DRIVE. It cannot press F and it cannot cancel -- see the case
+        // comment. What it CAN do is drive real frames through step 8b'' and watch the camera the
+        // panel is actually writing, which is the half no pure case covers: applyViewPose goes
+        // through setPitch, whose clampState the pure animation never sees.
+        //
+        // NOTHING HERE REQUIRES A MID-FLIGHT FRAME. A single frame at or above PanelContext's 0.25 s
+        // spike clamp -- which equals VIEW_SNAP_SECONDS exactly -- completes the entire animation, so
+        // a REQUIRE(viewSnapActive()) after one tick would ABORT this case on a slow first frame.
+        // The walk below is bounded and holds whether it takes one frame or twenty.
         viewport->requestViewSnap(engine::editor::ViewAxis::PosY);
-        REQUIRE(viewport->viewSnapActive());
-        REQUIRE(app->tick());
+        REQUIRE(viewport->viewSnapActive());  // no tick yet: it really started
 #if AERO_SHADER_TOOLS_ENABLED
-        REQUIRE(viewport->viewSnapActive());  // still mid-flight
-        const float pitchMidFlight = viewport->camera().pitch();
-        // The animation ADVANCED: the pitch moved off the default -20 degrees toward -90.
-        CHECK(pitchMidFlight < engine::radians(-20.0F));
-        viewport->requestViewSnap(engine::editor::ViewAxis::PosY);  // retarget from the LIVE pose
-        CHECK(viewport->viewSnapActive());
+        float previousPitch = viewport->camera().pitch();
+        REQUIRE(previousPitch > -engine::editor::MAX_PITCH);  // anti-vacuity: there is somewhere to go
+        int ticks = 0;
+        while (viewport->viewSnapActive() && ticks < 60) {
+            REQUIRE(app->tick());
+            ++ticks;
+            const float pitchNow = viewport->camera().pitch();
+            // MONOTONE toward Top, and never past it. The epsilon is one-sided and tiny: it admits a
+            // frame that made no progress (a zero delta) and refuses one that went backwards.
+            CHECK(pitchNow <= previousPitch + 1.0e-6F);
+            CHECK(pitchNow >= -engine::editor::MAX_PITCH);
+            previousPitch = pitchNow;
+        }
+        CHECK_FALSE(viewport->viewSnapActive());
+        CHECK(ticks >= 1);
+        CHECK(ticks < 60);
+        // ...and it really moved, rather than being monotone by standing still.
+        CHECK(viewport->camera().pitch() == -engine::editor::MAX_PITCH);
+        CHECK(viewport->camera().pitch() < engine::radians(-20.0F));
 #else
         // tools-OFF: the panel returns at step 4, so the snap never advances -- asserted rather than
-        // skipped. The retarget is still safe and still starts from the unmoved pose.
+        // skipped. Real frames are driven anyway, which is what makes this an assertion about the
+        // panel rather than about a pose nothing ever touched; the retarget is still safe and still
+        // starts from the unmoved pose.
+        for (int i = 0; i < 5; ++i) {
+            REQUIRE(app->tick());
+        }
         CHECK(viewport->viewSnapActive());
         CHECK(viewport->camera().pitch() == engine::editor::DEFAULT_PITCH_RADIANS);
         viewport->requestViewSnap(engine::editor::ViewAxis::PosY);
@@ -10593,7 +10635,30 @@ TEST_CASE("editor: the widget's press claim and the SetOrthographic call site (t
         const engine::Vec2 origin{};
         const engine::Vec2 size{rectMax.x + engine::editor::VIEW_AXIS_MARGIN_POINTS, 600.0F};
         const engine::Vec2 centreY{0.0F, (rectMin.y + rectMax.y) * 0.5F};
-        CHECK_FALSE(viewport->overlayOwnsPress(engine::Vec2{rectMin.x - 1.0F, centreY.y}, origin, size));
+        const engine::Vec2 justOutside{rectMin.x - 1.0F, centreY.y};
+
+        // THE TWO ARMS OF overlayOwnsPress REPORT IN DIFFERENT SPACES HERE, AND THAT IS WHY THIS
+        // GUARD EXISTS. viewAxisRectMin/Max are IMAGE-RELATIVE (the accessors say so: no image origin
+        // is latched anywhere, so they answer with the origin at {0,0}), while overlayRowMin/Max are
+        // the LAST DRAWN FRAME'S SCREEN points. In production both arms are screen-space, because
+        // updatePick hands overlayOwnsPress the real image origin; here the widget half is driven in
+        // image space on purpose, so the row half is being asked about a point in the other space.
+        //
+        // A CHECK_FALSE that passes because the two rects happen not to overlap at 900x600 is
+        // asserting nothing about the widget. So the disjointness is ASSERTED rather than relied on:
+        // if a future layout ever put the row under these points, this fails loudly instead of
+        // turning the two arms below into a coincidence.
+        const engine::Vec2 rowMin = viewport->overlayRowMin();
+        const engine::Vec2 rowMax = viewport->overlayRowMax();
+        CHECK(rowMax.x > rowMin.x);  // anti-vacuity: an empty row rect owns nothing and proves nothing
+        CHECK(rowMax.y > rowMin.y);
+        const auto outsideRow = [rowMin, rowMax](engine::Vec2 point) {
+            return point.x < rowMin.x || point.x >= rowMax.x || point.y < rowMin.y || point.y >= rowMax.y;
+        };
+        CHECK(outsideRow(justOutside));
+        CHECK(outsideRow(rectMax));
+
+        CHECK_FALSE(viewport->overlayOwnsPress(justOutside, origin, size));
         CHECK_FALSE(viewport->overlayOwnsPress(rectMax, origin, size));  // half-open at max
     }
 #else
