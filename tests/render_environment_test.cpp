@@ -157,18 +157,26 @@ struct AmbientProbe {
 }  // namespace
 
 TEST_CASE("render environment: the umbrella header carries environment.hpp (HE1)") {
-    // TWO ARMS, and the SOURCE-TEXT one is the durable half. The NAMING arm below is a compile
-    // failure only while nothing else this TU includes reaches environment.hpp -- which is true
-    // today and is exactly the kind of thing a later task makes silently false by adding the include
-    // to a sibling public header. The source-text arm does not weaken that way, and it additionally
-    // refuses a COMMENTED-OUT include, which no compile can distinguish from a present one.
+    // TWO ARMS, AND THE SOURCE-TEXT ONE IS THE ONLY COVER -- the naming arm below is ALREADY
+    // vacuous, and it was already vacuous the day it was written. It is a compile failure only while
+    // nothing else this TU includes reaches environment.hpp, and lighting.hpp includes it directly
+    // (it needs EnvironmentData for RenderView::environment, which is legitimate and must NOT be
+    // undone) while render.hpp includes lighting.hpp -- as it also does forward_renderer.hpp,
+    // shadow.hpp and sky_pass.hpp, each of which reaches lighting.hpp in turn. Delete render.hpp's
+    // OWN environment include and all ten declarations below still compile. That is exactly the way
+    // a naming arm weakens -- silently, from a sibling header, with no test moving -- and it is why
+    // the source-text arm carries the claim: it reads render.hpp's own bytes, it does not weaken
+    // that way, and it additionally refuses a COMMENTED-OUT include, which no compile can
+    // distinguish from a present one. The naming arm stays as a smoke test of the vocabulary's
+    // spelling, which is all it can be.
     const std::string umbrella = strippedSourceAt(RENDER_UMBRELLA_PATH);
     REQUIRE_FALSE(umbrella.empty());  // non-vacuity: the path resolved and the file was read
     CHECK(contains(umbrella, "#include <aero/render/environment.hpp>"));
     // ...and the search can say NO, so a reader that matched everything could not fake the line above.
     CHECK_FALSE(contains(umbrella, "#include <aero/render/does_not_exist.hpp>"));
 
-    // The naming arm: <aero/render/render.hpp> ALONE has to provide the whole vocabulary.
+    // The naming arm: <aero/render/render.hpp> alone provides the whole vocabulary -- TRANSITIVELY,
+    // which is the whole of what it can say. It still catches a RENAME or a signature change.
     [[maybe_unused]] const rd::EnvironmentData environment{};
     [[maybe_unused]] const rd::SkyGradient gradient{};
     [[maybe_unused]] const rd::HemisphereAmbient ambient{};
