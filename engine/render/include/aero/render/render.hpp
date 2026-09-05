@@ -9,6 +9,7 @@
 #include <aero/render/culling.hpp>           // task 3.6.1
 #include <aero/render/debug_draw.hpp>        // task E.1.1
 #include <aero/render/debug_grid.hpp>        // task E.1.2
+#include <aero/render/environment.hpp>       // task E.2.1
 #include <aero/render/forward_renderer.hpp>  // task 1.4.1
 #include <aero/render/lighting.hpp>          // task 1.4.1
 #include <aero/render/material.hpp>          // task 3.4.1

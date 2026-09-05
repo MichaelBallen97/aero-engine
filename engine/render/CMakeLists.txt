@@ -19,6 +19,8 @@ add_library(aero_render STATIC
     src/debug_draw.cpp        # task E.1.1 -- the pure batch, four pipelines, the flush
     src/debug_grid.cpp        # task E.1.2 -- the pure ground-grid emitter and its cadence
     src/selection_outline.cpp # task E.1.4 -- the fullscreen edge-detect composite
+    src/environment.cpp       # task E.2.1 -- the pure environment vocabulary: modes, resolvers, the
+                              #               gradient's reference evaluator
 )
 add_library(aero::render ALIAS aero_render)
 
