@@ -14488,3 +14488,147 @@ and nothing else; the new source adds `<algorithm>` and `<cmath>`. `aero::render
 already reached `aero_editor_shell_test` through the `PUBLIC aero::render` edge on
 `aero_editor_core`, which is the basis `axis_palette_test.cpp`'s `AX1` already stands on, so `GS2`'s
 reach into `<aero/render/selection_outline.hpp>` costs no new link edge.
+
+---
+
+### E.2.1 — `Environment` component + sky pass — the ninth built-in, and a sweep whose counts were wrong in both directions
+
+**Merged as PR #98, merge commit `28deab0`, off `709d25e`. Fifteen commits, all six CI checks green on
+`50df9d1` with `headSha == HEAD` asserted before the merge.** Sized L in the roadmap and landed L.
+
+**What shipped.** `engine::Environment` — eight reflected fields (three sky colours, a background mode
+with a solid colour, an ambient mode with a flat colour, an intensity), 72 bytes, no `.cpp` — as the
+**ninth** built-in. `render::SkyPass`, one fullscreen triangle with zero vertex buffers, depth test and
+write both off, recorded between the shadow pass and the forward pass into the caller's open HDR pass.
+And a **hemispheric** PBR ambient: `GpuLightBlock` grew 400 → 416 with one appended `float3`,
+`uAmbient` → `uAmbientMid` keeping offset 0 and `offsetof(ambientHalfDelta) == 400` joining 3.6.2's two
+pins. Twelve new files, 43 edited. `ctest -N` **172 → 173** in tools-ON and shader-tools-OFF, **0** in
+reflect-tools-OFF; doctest `aero_tests` 1294 → **1342**, imgui 162 → **163**, scene_serialize 34 → **37**,
+inspector 29 → **30**, shell/reflect_meta/reflect_json unmoved. Guards on the merged tree: math **481**,
+platform **89**, rhi **158**, scene **89**, golden-rule **160**, the other three unmoved.
+
+**THE COUNT LISTS WERE WRONG IN BOTH DIRECTIONS, AND THAT IS THE RULE TO CARRY.** CLAUDE.md already
+warns that a component-count literal hides in tests that are not about components — a grep
+**under**-matches. This task measured the **other** direction too. `entityCount() == 3` returns 20 hits
+of which **five are look-alikes that must stay at 3** (`scene_test.cpp:224` and `:1175` are
+create/destroy and generation counts; `scene_serialize_test.cpp:596`'s `names.size() == 6` is the
+fixture's entity-name roster; `hierarchy_test.cpp:468` is `destroyEntities` arithmetic;
+`scene_io_test.cpp:281` is a hand-written three-entity chain). Meanwhile the built-in literals came to
+**21**, not the 18 the spec listed: `scene_serialize_test.cpp:1034` and `:1068` and
+`inspector_test.cpp:531` were reachable by **no** grep at all — `:1068`'s literal is a component
+*tally*, `:531`'s sits on the line *after* the `componentTypeCount()` call, and `PB13`'s **test-case
+name** literally contains `400-byte Lights block` with its arithmetic in prose beneath it. **A count is
+only as good as the grep behind it: re-run every one, and classify each hit as a real pin or a
+look-alike by reading its comment, never by its shape.**
+
+**`createEntity` ALWAYS ADDS A `Transform`** (`entity_ops.cpp:68`), so the spec's own seed snippet
+produced the exact opposite of its own sentence. The seeded "Environment" entity is built with
+`world.create()` + `setName` directly, never `createEntity` + `remove<Transform>` — which would churn
+the component store for nothing. **Any future task wanting a Transform-less seeded entity inherits
+this.**
+
+**AND THE UNIVERSAL LOOP THAT WAS TRUE BY ACCIDENT.** `hierarchy_test.cpp`'s
+`for (root) CHECK(w.has<Transform>(e))` — *"every seeded entity is placeable"* — held only because
+every seed had happened to go through `createEntity`. It is now four per-entity statements with
+`CHECK_FALSE` on the fourth plus `componentCount<Transform>() == 3`, and that is the **only** form that
+catches the seed "add the entity WITH a Transform" (matrix row 29, measured red on exactly those two
+new lines). **A universal that is true by accident hides the seed that falsifies it.**
+
+**THE DELTA-PACKING DECISION, AND ITS VERIFICATION.** The modes live only on the CPU: the resolvers
+pack `{horizon, sky − horizon, ground − horizon}` and `{mid, halfDelta}`, so the shaders carry no mode,
+no branch and no selector, and a zero delta makes `x + 0·w` exact on every backend. **Verified against
+the Khronos registry rather than assumed: `GLSL.std.450`'s `FMix` is specified as `x(1−a) + ya`, and
+DXC maps `lerp` to it (`docs/SPIR-V.rst:2595`)** — so a `lerp` form differs from `x` by an ulp when
+`x == y` and would break the exactness the whole design rests on. **E.2.2 must not re-derive this.**
+The one edge the spec omitted: `−0.0 + 0.0·w` is `+0.0` — numerically equal, bit-different.
+
+**THE SABOTAGE MATRIX FOUND TWO HOLES, AND ONE OF THEM WAS NEARLY THE WHOLE CONTRACT.** All 31 rows
+were run. **(1) The sky's depth/ordering contract was almost unfalsifiable.** `SB9` and `SB16`'s
+"the centre is not the sky" arms were **bit** comparisons against a value their own sibling arms only
+claim to `TOLERANCE_HALF_ULPS = 2`. With the sky genuinely rejecting the cube the centre texel *was*
+the sky — one half-ulp on r and g, byte-identical on b and a — and **both reported SUCCESS**; only
+`SB16`'s Solid subcase caught it, and only because a Solid sky is bit-exact by construction. Both arms
+now assert a distance **greater than** the tolerance (healthy margin `6200 > 2` against a seeded `1`).
+`SB9` additionally orders its own two passes in its own body and is **structurally incapable** of
+seeing a `SceneRenderer`-side reordering; that is now written into the case. **(2) `packSkyCamera`'s
+sixteen-element check had no witness** — reduced to column-0-only the entire suite stayed green,
+because `SB3`'s two refusals make *all four* columns non-finite. The guarded failure is reachable from
+a **finite** `CameraView` (`view[3][0] = 1e38` → columns 0,1 finite, 2,3 not; 51 142 of 200 000 sampled
+extreme matrices hit it). `SB3` gained a subcase whose anti-vacuity arm asserts
+`inverse(proj*view).columns[0]` **is** all-finite — the clause that makes it a statement about the
+*subset*. Under the column-0 seed it is the sole failing assertion of 14 021 039. **Both share one
+rule: an assertion is only as strong as the tolerance it is written at, and a refusal case proves
+nothing about WHICH inputs are refused unless something pins an input the narrower check would accept.**
+
+**THE CODE-REVIEW ROUND'S OWN FINDING, EARLIER AND OF THE SAME SPECIES: the hemispheric ambient had NO
+pixel-tier cover anywhere in the tree.** `DG6` and the `OG` battery run `AmbientMode::Flat` at intensity
+1, where `halfDelta` is exactly zero — blind **by construction**, which is commit 3's neutrality witness
+working as designed — and `SB16` read the cube's **+Z front quad**, where `N.y == 0` and the term
+collapses to `mid`. `SB17` closes it with an up-facing read, a **down**-facing read and a Flat control.
+**And the reason all three arms are needed is worth keeping: at `N.y = +1` the mid/half-delta swap is
+INVISIBLE, because `mid + halfDelta·1` and `halfDelta + mid·1` are the same sum. A symmetric property
+needs an asymmetric sample.**
+
+**DECLARED HOLES, ALL FIVE CONFIRMED ACCURATE** (matrix rows 4, 7, 8, 19, 22): the Flat arm dropping
+`* I` is `HE7` only; a `lerp` form in `scene.frag.hlsl` and `geoN.y` for `N.y` are each `HE16` only —
+a source-text pin is their only witness anywhere; a full-target viewport is `SB6`'s **margin** arm only
+(the `OG7` lesson — only a margined target can see it); and depth-test-on-write-off catches **nothing**,
+correctly. **Row 24's "measure it either way" now has its answer: the fullscreen triangle IS back-facing
+under SDL_GPU's normalised convention, so `CullMode::None` on that pipeline is load-bearing, not
+stylistic — `CullMode::Back` deletes the sky entirely (9 cases, 100 assertions).** And **row 23's seed
+is INERT on all three backends by API rule**: SDL Metal computes `depthWriteEnabled = enable_depth_write
+&& enable_depth_test` (`SDL_gpu_metal.m:1183`), Vulkan's spec skips the depth-attachment update when
+`depthTestEnable` is false, and D3D12 maps `enable_depth_test == false` to `DepthEnable = FALSE`.
+
+**Two deliberate NON-changes, so the next sweep does not think they were missed.**
+`scene_serialize.cpp:2-4`'s banner comment list is **left stale** — three entries have been wrong since
+3.5.2, both prior sweeps declined it, and it duplicates a roster eleven lines below. And
+`scene_test.cpp`'s "componentTypeAt walks the registration table in order" case still pins indices 0–5
+only; `EV4` pins index **8 and 7** instead, so an insertion before `AudioListener` cannot pass.
+
+**`docs/09` §2.7's fixture row was stale in BOTH halves**, not the one the spec flagged: it read
+*"8 entities, 10 components: all five built-in component types"* while the test pinned 13. Corrected to
+14 components and nine types.
+
+**A C++ trap worth carrying: `static_assert(!requires(T v) { v.member; })` on a NON-dependent type is a
+hard compile error, not `false`.** A requires-expression only substitutes when the type it names is
+dependent; a member access on a concrete type is not in the immediate context of any substitution.
+`HE17` routes `RenderView` through a file-local concept so the type arrives as a template parameter,
+and carries an `AmbientProbe` positive control — without which a mis-spelled detector would make the
+negative assertion vacuously true for **every type in the language**.
+
+**AND A MEASURED NON-FINDING: the Y flip in `sky.vert.hlsl` is self-cancelling.** Dropping it leaves the
+whole suite green, and that is correct rather than a hole — `ndc` drives both `SV_Position` and the ray,
+so flipping it moves the vertex and its ray together and the screen-position → ray mapping is unchanged.
+A sign flip on the **ray alone** reddens five cases across 82 assertions. Unlike `fullscreen.vert.hlsl`,
+where the varying addresses a texture, there is nothing here for the sign to be wrong *relative to*.
+
+**HANDOFFS.** **E.2.2** inherits the built-in sweep at **nine → ten**, and should start from this task's
+corrected line lists — re-measured, never copied. **E.2.4** inherits the material preview's Flat rig by
+name (`material_preview.cpp` takes Flat at `PREVIEW_AMBIENT`, intensity 1, and creates no `SkyPass`, so
+its picture is byte-identical by construction). **E.3** inherits the enum-aware Inspector row: the two
+modes render as bare numeric 0/1 drag fields because reflect-gen cannot reflect an enum, and that is
+recorded as a gap, not a defect. **8.2** inherits IBL/HDRI and the after-opaque sky variant (§5-C), with
+`SB9`/`SB16` already in place to catch a wrong ordering. **E.5.2** still owns the coplanar-geometry
+problem and now has a **ground colour** to sit its plane against. **E.2.3** remains blocked on E.2.2, not
+on this task, and still inherits the shared-`DebugDraw`-batch wall against `I112` — **untouched for a
+fourth consecutive task.**
+
+**Build & dependency impact: none.** No dependency, no `find_package`, no rhi change, no cooked format,
+no determinism-manifest change, no scene-format version bump (additive keys never bump — `docs/09` §3),
+no link-line change. `engine/render/CMakeLists.txt` gains two source lines, `shaders/CMakeLists.txt`
+two, `tests/CMakeLists.txt` three sources plus one reflect-gen case.
+`tests/editor/imgui_layer_test.cpp` gained `AERO_EDITOR_INCLUDE_DIR` — a path, not a flag — because
+`I127`'s sweep covers `editor/include` and only `AERO_EDITOR_SRC_DIR` existed.
+
+**What is still uncovered: the validation page.** `editor/validation/E.2.1-environment-sky-pass.md`
+exists and is **PARTIAL on macOS, unrun on Windows and Linux**. Five rows pass with measurements taken
+through the real `SceneRenderer` → `SkyPass` → `PostProcess` chain with a framebuffer readback — every
+sky oracle difference **0**, the unlit cube's top face `(85,117,162)` against `(73,91,124)` on its side,
+ortho exactly **one** colour, and a world with no `Environment` **bit-identical** to one with a default
+component (0 of 921 600, with a 20 694-pixel anti-vacuity control). Three are partial and five are
+blocked on a driveable editor. **Two things have no automated cover anywhere and need a person at the
+keyboard: row 4's normal-mapped arm — the only witness for the `geoN.y`-for-`N.y` seed — and row 9's
+judgement of the Inspector's two bare 0/1 mode fields.** HiDPI is deliberately **not** a row: a
+fullscreen gradient has no size-dependent feature, so E.1.1's thick-line handoff stays unfired for a
+sixth task rather than being recorded as cleared.

@@ -11,12 +11,12 @@ Two platform matrices, never to be conflated: the **editor** runs on macOS/Windo
 ## Current state — read this first
 
 **PHASE E (Editor Experience) IS OPEN — it executes between Phase 3 and Phase 4.**
-**EPIC E.1 (Viewport legibility) IS CLOSED IN CODE — all five tasks merged.** E.1.1 (Debug line
+**EPIC E.1 (Viewport legibility) IS CLOSED IN CODE — all five tasks merged — AND EPIC E.2 IS OPEN: E.2.1 (`Environment` + sky pass) IS MERGED (PR #98, merge commit `28deab0`), taking the built-in component count to NINE.** E.1.1 (Debug line
 renderer, PR #92 `15bf58b`), E.1.2 (Grid floor + world axes, PR #93 `d91eab1`), E.1.3 (View-axis
 gizmo, PR #94 `6fb323c`, plus the follow-up PR #95 `0ab204d`) and E.1.4 (Silhouette selection
 outline, PR #96 `3aadffb`) are all merged **and macOS-validated**; **E.1.5 (Transform-gizmo restyle)
 is merged** — five commits, the full local gate green on both presets and both reduced
-configurations. **The other 19 tasks are planning only.** Six epics, 24
+configurations. **The other 18 tasks are planning only.** Six epics, 24
 tasks, in `docs/tasks/phase-E.md`. It is **lettered, not fractioned**, because `3.5` and `3.5.1`/`3.5.2` are
 already Phase 3's Skeletal-animation epic and its tasks — a "Phase 3.5" would collide with referenced
 numbers, and numbering is append-only. In Notion its `Phase #` is `3.5`, a sort key, not an
@@ -58,95 +58,65 @@ Epics **3.1** (AssetDatabase), **3.2** (Importers), **3.3** (Cooker v0), **3.4**
 > as the position moves, never grown: it reached 207 k characters once and that is what this note
 > exists to prevent.
 
-### E.1.5 — Transform-gizmo restyle (MERGED) — Epic E.1 closes in code
+### E.2.1 — `Environment` component + sky pass (MERGED, PR #98 `28deab0`) — Epic E.2 opens
 
-**ImGuizmo stops being at its factory defaults.** A pure value model in a new **public** editor
-header (`gizmo_style.hpp`) becomes an `ImGuizmo::Style` in the one TU that names ImGuizmo, written to
-the library's **process-wide global once per submitted frame** together with a screen size resolved
-from that frame's viewport extent. Five commits, 3 new files / 4 edited source or header files, no
-new dependency, no shader, no pipeline, no RHI call, no component, no scene-format change, no
-`add_test`. **`ctest -N` unmoved at 172**; `aero_editor_shell_test` **1781 → 1793**,
-`aero_editor_imgui_test` **159 → 162**, the other five unmoved. **Six commits after the code-review
-round, whose one blocking finding is invariant 0 below.** Full detail in `docs/10`; the
-sentences that govern new work are below.
+**A scene now has an authored environment.** `engine::Environment` is the **ninth** built-in — eight
+reflected fields, 72 bytes, no `.cpp`; `render::SkyPass` draws a fullscreen gradient before the opaque
+pass into the open HDR target; and the PBR ambient is **hemispheric** through a light block grown
+400 -> 416. Fifteen commits, `ctest -N` **172 -> 173**, doctest `aero_tests` **1294 -> 1342**. Full
+detail in `docs/10`; the sentences that govern new work are below.
 
-**0. A TABLE INDEXED BY BOTH THE WRITER AND THE READER CANCELS, AND A ROUND TRIP THROUGH IT ASSERTS
-NOTHING.** The review round's blocking finding, and the one worth carrying out of this task.
-`applyGizmoStyle` wrote `Colors[IMGUIZMO_COLOR_SLOT[i]]` and `imGuizmoStyleReadback` read
-`Colors[IMGUIZMO_COLOR_SLOT[i]]`, so the composition was the identity for **any injective permutation
-of the table** — and `I124` passed **80 of 80 assertions** with `DIRECTION_X` and `DIRECTION_Z`
-swapped, while the X arrow rendered blue. MEASURED, before the fix. It is E.1.2's "both sides from one
-source" species wearing a **real round trip through ImGui's own packer** as a disguise, which is why
-both a plan review and a first code reading passed over it. **The fix is a `static_assert` that the
-table is the IDENTITY** — a compile error beats a red test, and it additionally catches an upstream
-`ImGuizmo::COLOR` reorder that leaves `COUNT` unchanged, which **no runtime tier could ever see**
-because the read-back would follow the reorder too. **Any future write/read pair that shares one
-mapping table inherits this**: assert the mapping, do not test through it.
+**0. THE MODES LIVE ONLY ON THE CPU, AND THE GPU RECEIVES DIFFERENCES — NEVER ENDPOINTS, NEVER A
+`lerp`.** `resolveSkyGradient` packs `{horizon, sky - horizon, ground - horizon}` and `resolveAmbient`
+packs `{mid, halfDelta}`, so **the shaders carry no mode, no branch and no selector** and a zero delta
+makes `x + 0*w` exact on every backend. **Verified against the Khronos registry, not assumed:
+`GLSL.std.450`'s `FMix` is specified `x(1-a) + ya` and DXC maps `lerp` to it** (`docs/SPIR-V.rst:2595`),
+so a `lerp` form differs from `x` by an ulp when `x == y` and would destroy the exactness. That
+exactness is what lets Solid + Flat reproduce a clear and a constant **bit for bit**, and it is why
+`DG6` and the `OG` battery survived the change with **unedited** expectations. **Do not "simplify" the
+resolvers back to endpoints.** (`-0.0 + 0.0*w` is `+0.0` — equal, bit-different.)
 
-**1. IMGUIZMO'S TWO VISIBILITY SETTERS ARE CROSSED, AND THE HEADER'S OWN COMMENTS SAY THE OPPOSITE.**
-`SetPlaneLimit` feeds `mPlaneLimit`, which `ImGuizmo.cpp:1230` compares against the **AXIS's**
-projected clip LENGTH; `SetAxisLimit` feeds `mAxisLimit`, which `:1229` compares against the
-**PLANE's** projected clip AREA. The setters are at `:2657-2660` and `:2667-2670`; the header's
-comments (`ImGuizmo.h:268`, `:272`) describe the **names**, not the code, and the `below…` flags are
-additionally inverted in sense (`true` means *visible*). **The crossing is spelled in exactly ONE
-place** — `viewport_panel.cpp`'s `applyGizmoStyle`, with the citation beside it — and the pure model
-names both thresholds by MEANING (`axisHideClipLength`, `planeHideClipArea`) so nothing else has to
-know. **No runtime tier can read either value; there is no getter.** `I125(c)` pins each line to the
-member it must name, and **a port bump that
-un-crosses them leaves `I125(c)` green. RE-READ `:1229-1230` AT EVERY PORT BUMP** — but it does NOT
-invert the picture silently, and that correction is worth more than the warning was.
-**THE OBSERVABLE IS BINARY, NOT AN ORDERING.** `GetParallelogram` returns the parallelogram of the
-two FULL axis vectors, so a plane's face-on area is `size²` while `axisHideClipLength` is
-`0.2 · size`. Swapped, a plane's hide threshold (`0.2 · size`) EXCEEDS its own maximum possible area
-(`size²`) for every `size < 0.2` — which is every viewport this resolver produces — so **the plane
-quads can never be drawn AT ALL.** MEASURED in the product at E.1.5's validation: correct wiring
-44 / 109 fill px for `PLANE_X` / `PLANE_Z`, swapped **0 / 0**, reverted 44 / 109 exactly, with every
-axis arrow unchanged. **Check it in one screenshot on the default startup pose — no oblique rotation,
-no angle measurement** — counting the alpha-115 blends `(140,67,75)` and `(63,98,144)`.
+**1. `createEntity` ALWAYS ADDS A `Transform`** (`entity_ops.cpp:68`). A seeded entity that must not
+carry one is built with `world.create()` + `setName` directly — never `createEntity` +
+`remove<Transform>`, which churns the component store for nothing. E.2.1's "Environment" seed is the
+precedent. **And the placeability assertion it broke is the lesson:** `hierarchy_test`'s
+`for (root) CHECK(has<Transform>)` was true only *by accident*, and is now four per-entity statements
+with `CHECK_FALSE` on the fourth. **A universal that is true by accident hides the seed that falsifies
+it.**
 
-**2. THE GIZMO STYLE IS A PROCESS-WIDE GLOBAL WRITTEN EVERY SUBMITTED FRAME, AND THAT WRITE IS
-SELF-HEALING.** `ImGuizmo::GetStyle()` returns `gContext.mStyle` by reference and `BeginFrame()` does
-not touch it. Whatever a future writer does to the global — E.6.1's theme is the obvious one — the
-viewport restores its own style on its next frame, **which also means a task that wants a different
-gizmo style must change `defaultGizmoStyle()`, never write the global from a second site.**
-`I125(e)` asserts `ImGuizmo::GetStyle()` appears **exactly twice** in `viewport_panel.cpp`; a third
-is an undeclared second writer. It also runs whether or not the gizmo is *enabled*: `Enable(false)`
-skips only the `Handle*` block, so the greyed handles during a camera gesture or over the corner
-widget are drawn with **this** style's thicknesses and `GIZMO_INACTIVE_SRGB`.
+**2. AN ASSERTION IS ONLY AS STRONG AS THE TOLERANCE IT IS WRITTEN AT.** The sabotage pass found the
+sky's whole depth/ordering contract nearly unfalsifiable: `SB9` and `SB16` compared the centre texel
+**bit-exactly** against a gradient oracle their own sibling arms only claim to 2 half-ulps, so when the
+sky genuinely covered the cube the texels were **one half-ulp apart and both arms reported SUCCESS**.
+Both now assert a distance **greater than** the tolerance. **And a refusal case proves nothing about
+WHICH inputs are refused unless something pins an input the narrower check would accept** —
+`packSkyCamera`'s sixteen-element loop reduced to column-0-only left the whole suite green, because
+`SB3`'s refusals make *all four* columns non-finite; the new subcase's anti-vacuity arm asserts
+`inverse(proj*view).columns[0]` **is** finite, which is what makes it a statement about the subset.
 
-**3. `mGizmoSizeClipSpace` IS 5 % OF THE *LARGER* VIEWPORT DIMENSION, AND THE AXES NO LONGER FLIP.**
-One screen point is `2 / max(w, h)` of that unit in **both** orientations —
-`GetSegmentLengthClipSpace`'s two arms collapse to it — so `resolveGizmoScreenSize` inverts it to a
-**points-constant 90 with a knee at a 600-point smaller dimension**, and derives both hide thresholds
-from the size using the library's own ratios. `AllowAxisFlip(false)` every frame makes
-`DrawHatchedAxis` **unreachable by construction**, so `GIZMO_HATCHED_AXIS_SRGB` and
-`GIZMO_HATCHED_AXIS_THICKNESS_POINTS` are **dead slots no tier and no validation row can observe** —
-a task that re-enables flip must pick a thickness deliberately rather than inherit a stale zero.
-**A portrait wrinkle is recorded and deliberately NOT fixed**: `GetParallelogram` divides `y` by
-`mDisplayRatio` unconditionally while `GetSegmentLengthClipSpace` branches on it, so planes hide at a
-different relative angle in portrait. That is the library's behaviour under its own defaults too.
+**3. A CASE THAT RUNS THE RIGHT CONFIGURATION STILL ASSERTS NOTHING IF THE SAMPLE POINT IS INSENSITIVE.**
+The hemispheric ambient had **no pixel cover anywhere** until `SB17`: `DG6` and `OG` run Flat at
+intensity 1, where `halfDelta` is exactly zero — blind **by construction** — and `SB16` read a face with
+`N.y == 0`, where the term collapses to `mid`. **And at `N.y = +1` the mid/half-delta swap is INVISIBLE**
+(`mid + halfDelta*1` and `halfDelta + mid*1` are the same sum), so `SB17` needs an up-facing read, a
+**down**-facing read and a Flat control. **A symmetric property needs an asymmetric sample.**
 
-**4. THE GIZMO'S COLOURS ARE DERIVED FROM `axis_palette.hpp`, NEVER RESTATED**, so the gizmo, the
-grid and the corner widget are the same three bytes — and the hot handle is an **opaque** yellow
-`(255, 232, 64)` chosen to stand off E.1.4's amber `(255, 176, 64)` by a **tested** 32-per-channel
-floor (measured gap: 56). `viewport_panel.cpp` states no gizmo colour literal at all. **A restated
-`IM_COL32` literal one byte off is invisible to every automated tier** — E.1.4's sabotage row 20,
-unchanged — which is why the derivation is structural and why validation row 1 reads three consumers
-off one screenshot.
+**4. `static_assert(!requires(T v) { v.member; })` ON A NON-DEPENDENT TYPE IS A HARD COMPILE ERROR**, not
+`false` — a requires-expression only substitutes when the type is dependent. `HE17` routes `RenderView`
+through a file-local concept and carries an `AmbientProbe` **positive control**, without which a
+mis-spelled detector makes the negative assertion vacuously true for every type in the language.
 
-**AND FOUR EPSILONS WERE MEASURED RATHER THAN CHOSEN.** `resolveGizmoScreenSize({1800, 900})` is
-**bit-exactly `0.1F`**; both hide thresholds land **1 ulp** from the library's constants there;
-`GS4`'s inverse property is worst **1 ulp over 300 000** seeded viewports; and **`GS11`'s bound is
-tight with equality at a square viewport**, so it is written `2.0F * GIZMO_AXIS_MAX_VIEWPORT_FRACTION`
-and **never as `0.3F`**. The seeded sweeps derive their floats arithmetically from `std::mt19937`'s
-raw output — **`std::uniform_real_distribution` is not portable across standard libraries**, so
-otherwise the three lanes sample different viewports.
+**5. THE FULLSCREEN TRIANGLE IS BACK-FACING** under SDL_GPU's normalised convention, measured:
+`CullMode::Back` on `SkyPass` deletes the sky entirely (9 cases, 100 assertions). `CullMode::None` there
+is load-bearing, not stylistic. **And a depth-write-with-test-off seed is INERT on all three backends by
+API rule** — SDL Metal computes `depthWriteEnabled = write && test` (`SDL_gpu_metal.m:1183`), Vulkan
+skips the depth update when `depthTestEnable` is false, D3D12 maps test-off to `DepthEnable = FALSE`.
 
-**TWO `static_assert`s, NEITHER SUFFICIENT ALONE, AND A THIRD CASE NEITHER SEES.** The header's
-catches an enumerator added there and forgotten at the apply site; the apply site's, naming
-`ImGuizmo::COLOR::COUNT`, catches one added upstream. **A port bump that adds a `Style` FLOAT is seen
-by neither** — the new field keeps the library's default and `I124` still passes. Documented, not
-covered.
+**6. THE SKY'S RAY COMES FROM `far - near`, NEVER FROM THE EYE**, so both projections are one path and
+`CameraView::eyePosition` — wrong under a parallel projection — is never read. `SV_Position.w` is 1 at
+all three vertices, so perspective-correct interpolation reduces to linear. **The Y flip in
+`sky.vert.hlsl` is self-cancelling and unobservable**: `ndc` drives both the position and the ray, so
+flipping it moves them together. Only a **ray-only** flip is visible (5 cases, 82 assertions).
 
 ### Epic E.1 — what E.1.1 through E.1.4 left behind that still governs new work
 
@@ -290,7 +260,7 @@ miniaudio; `A38` is covered only by validation row 9. Full detail in `docs/10`.
 | **Phase 2** — Editor | **COMPLETE, gate met 2026-08-02.** All six epics closed and macOS-validated; Windows/Linux rows pending for every task (`editor/VALIDATION.md`). Gate artifact: `samples/phase-2-editor-scene/` — data, deliberately not `add_subdirectory`'d. |
 | **Phase 3** — Asset Pipeline & 3D Content | **OPEN.** **All seven epics CLOSED in code** — 3.1–3.6, and 3.7 with 3.7.1 + 3.7.2 merged and macOS-validated and **3.7.3 merged (PR #91)**. What is left is the gate below and the validation debt. Per-task detail in `docs/10`. |
 | **Phase 3 gate** | Drop a rigged glTF/FBX in → PBR materials + shadows + a playing animation + **an audible sound**. The audible half exists in code as of 3.7.2 and **has not been validated on any platform** — 3.7.2's macOS pass ticked 47 of 53 records and left the 6 that need ears open. |
-| **Phase E** — Editor Experience | **OPEN. EPIC E.1 (Viewport legibility) IS CLOSED IN CODE — all five tasks merged**: E.1.1 (PR #92 `15bf58b`), E.1.2 (PR #93 `d91eab1`), E.1.3 (PR #94 `6fb323c`, + PR #95 `0ab204d`), E.1.4 (PR #96 `3aadffb`) and **E.1.5**. **19 tasks remain, planning only.** Inserted between 3 and 4; six epics, 24 tasks in `docs/tasks/phase-E.md`. Viewport legibility (E.1), lighting & environment (E.2), inspector & context routing (E.3), project/scene/asset management (E.4), content-creation UX (E.5), shell identity (E.6). **E.1.1 is macOS-validated** — 8 of 10 rows PASS on 2026-09-03, 2 partial for structural reasons (the sample installs no billboard atlas, so `S21`'s picture half is not executable with it; Tracy's CLI exports zones but not plots). **E.1.2 is macOS-validated** — 8 PASS / 2 PARTIAL / 1 NOT EXECUTABLE on 2026-09-04. **E.1.3 is macOS-validated** — 11 PASS / 1 PARTIAL / 2 NOT EXECUTABLE / 1 NOT RUN on 2026-09-05; the pass found the ortho gizmo-suppression defect, fixed in PR #94's follow-up (PR #95, `0ab204d`). **E.1.4 is macOS-validated** — 10 PASS / 1 NOT EXECUTABLE on 2026-09-05, with two of the ten carrying a stated shortfall (row 5's mid-import transition not observed; row 6's 256-entity figure extrapolated from eleven, not measured). **E.1.5 is macOS-validated — 11 PASS / 1 NOT EXECUTABLE on 2026-09-05, every row that this hardware can run.** Confirmed on screen: the gizmo and the corner widget carry the palette bytes EXACTLY, a screen-parallel axis measures 99 px across three dolly distances (target 90 pt + the 10-pt head), the knee is live at both ends (45 pt in an 835x300 dock, 90 pt in 1655x848), the axes REVERSE between opposite views with no hatched stub, the plane quad is 28x27 px (`0.3 x L`), and one drag is one undo restoring the picture to **0 differing pixels**. **Seed 6 gained a product-level cover the plan did not anticipate** — see `docs/10`. Also measured: the fly camera greys every handle (palette 250/292/211 -> 0/0/0 -> 250/292/211 on release); the arrow byte is a SINGLE value across backgrounds spanning luminance 10s-150s plus the grid line; with nothing selected the viewport is **bit-identical to a branch-point build (0 of 212 670)** with a 1 995-px control; and the feature is **free** (CPU 4.42 vs 4.41 CPU-s per 15 wall-s). **Only row 7 remains, NOT EXECUTABLE because neither attached display is 2x — E.1.1's thick-line handoff stays UNFIRED for a fifth task.** **A branch-point A/B must be built at the PRIMARY binary path** (`git checkout <base> -- editor/`, rebuild, stash the binary, restore): a binary built in a worktree is a distinct application identity to macOS and receives no window at all. Windows and Linux unvalidated, as everywhere. |
+| **Phase E** — Editor Experience | **OPEN. EPIC E.1 CLOSED IN CODE (five tasks, all macOS-validated); EPIC E.2 IS OPEN — E.2.1 MERGED (PR #98, merge commit `28deab0`).** 18 tasks remain, planning only. Inserted between 3 and 4; six epics, 24 tasks in `docs/tasks/phase-E.md`. Viewport legibility (E.1), lighting & environment (E.2), inspector & context routing (E.3), project/scene/asset management (E.4), content-creation UX (E.5), shell identity (E.6). **E.1.1** 8/10 PASS 2026-09-03 · **E.1.2** 8 PASS / 2 PARTIAL / 1 NOT EXECUTABLE 2026-09-04 · **E.1.3** 11 PASS / 1 PARTIAL / 2 NOT EXECUTABLE / 1 NOT RUN 2026-09-05, and that pass found the ortho gizmo-suppression defect fixed in PR #95 · **E.1.4** 10 PASS / 1 NOT EXECUTABLE 2026-09-05 · **E.1.5** 11 PASS / 1 NOT EXECUTABLE 2026-09-05. **E.2.1 is macOS-PARTIAL — 5 PASS / 3 PARTIAL / 5 BLOCKED, 2026-09-06.** Its render rows were measured head­lessly through the real `SceneRenderer` -> `SkyPass` -> `PostProcess` chain with a framebuffer readback (no ICC round trip, so the bytes are exact): **every sky oracle difference is 0**; the unlit cube reads `(85,117,162)` on its top face against `(73,91,124)` on its side — dim, not black; ortho is exactly **one** colour; and **a world with no `Environment` is bit-identical to one with a default component, 0 of 921 600, with a 20 694-px anti-vacuity control**. **Five rows are BLOCKED on a driveable editor** — this machine's automation session has Screen Recording but NOT Accessibility, and a binary launched from it receives no window at all. **Row 4's normal-mapped arm and row 9's Inspector judgement have no automated cover anywhere.** **HiDPI is deliberately NOT a row here** (a fullscreen gradient has no size-dependent feature), so E.1.1's thick-line handoff stays UNFIRED for a sixth task. **A branch-point A/B must be built at the PRIMARY binary path**: a binary elsewhere is a distinct application identity to macOS and receives no window. Windows and Linux unvalidated, as everywhere. |
 | **Phase E gate** | Open a project and land in the scene you were last editing, on a lit grid floor under a sky; create a Cube from the menu, drop a material on it and see it shade; aim a spot light with a visible gizmo; rename, move and delete assets without leaving the editor. Gate artifact: `samples/phase-E-editor/`. |
 
 ### Engine layers, in dependency order
@@ -486,13 +456,28 @@ to the editor's list and not the serializer's is registered, inspectable, editab
 with every test green. **The site the variable does not reach is the one that matters**:
 `engine/scene_serialize/src/scene_serialize.cpp`'s hand-written dispatch table, plus
 `builtin_serializers.hpp`'s declarations. All five move together or the result is a link failure or,
-far worse, green and wrong. **There are eight built-ins**: `Transform`, `Camera`, `DirectionalLight`,
-`PointLight`, `MeshRenderer`, `AnimationPlayer`, **`AudioSource`, `AudioListener`**.
+far worse, green and wrong. **There are NINE built-ins**: `Transform`, `Camera`, `DirectionalLight`,
+`PointLight`, `MeshRenderer`, `AnimationPlayer`, `AudioSource`, `AudioListener`, **`Environment`**
+(E.2.1). **`createEntity` (`entity_ops.cpp:68`) ALWAYS adds a `Transform`**, so a seeded entity that
+must not carry one is built with `world.create()` + `setName` directly — E.2.1's "Environment" seed is
+the precedent, and its `hierarchy_test` placeability block is four per-entity statements with
+`CHECK_FALSE` on the fourth, never a universal loop.
 
 **A COMPONENT-COUNT LITERAL IS NOT CONFINED TO THE TESTS THAT ARE ABOUT COMPONENTS.** 3.7.2 found them
 in `tests/scene_test.cpp`, `tests/transform_test.cpp`, `tests/editor/hierarchy_test.cpp`,
 `tests/editor/inspector_test.cpp` and `tests/scene_serialize_test.cpp` — **every one found by a red
 test, none by a grep.** Adding a built-in means finding all of them.
+
+**AND E.2.1 MEASURED THE OTHER DIRECTION TOO: THE GREP ALSO OVER-MATCHES.** Its sweep came to **21**
+built-in literals (not the 18 planned) and **19** default-scene pins, against **five look-alikes that
+had to stay unchanged** — `scene_test.cpp:224`/`:1175` (create/destroy and generation counts),
+`scene_serialize_test.cpp:596` (the fixture's entity-name roster), `hierarchy_test.cpp:468`
+(`destroyEntities` arithmetic) and `scene_io_test.cpp:281` (a hand-written three-entity chain). Three
+of the 21 are reachable by **no grep at all**: a component *tally* rather than a type count, a literal
+on the line *after* its `componentTypeCount()` call, and **`PB13`'s TEST-CASE NAME**, which carried
+`400-byte Lights block` with its arithmetic in prose beneath it. **A count is only as good as the grep
+behind it — re-run every one, and classify each hit as a real pin or a look-alike by READING ITS
+COMMENT, never by its shape.**
 
 **THE DETERMINISM MANIFEST IS FROZEN** at **20 hash lines across FIVE arms / 40 cross-lane
 comparisons**. A red manifest case is `docs/09` §9.11's `cookerVersion` sentence firing; the five
@@ -526,21 +511,23 @@ Read totals from **doctest's own `filters:` line**, never from a `grep -c` of ca
 count on its own page goes stale, and adding one task's delta to another task's baseline is exactly the
 arithmetic that produces a confident wrong number.
 
-At E.1.5's gate, measured on both presets: **`ctest -N` 172, UNMOVED**; doctest across **seven**
-binaries **1294 / 1793 / 162 / 34 / 29 / 7 / 28** (`aero_tests`, `aero_editor_shell_test`,
+At **E.2.1's** gate, measured on both presets: **`ctest -N` 173** (172 -> 173, the one new entry being
+`reflect-gen.components_engine_environment`); doctest across **seven** binaries
+**1342 / 1793 / 163 / 37 / 30 / 7 / 28** (`aero_tests`, `aero_editor_shell_test`,
 `aero_editor_imgui_test`, `aero_scene_serialize_test`, `aero_editor_inspector_test`,
-`aero_reflect_meta_test`, `aero_reflect_json_test`). **E.1.5 repeats E.1.1's, E.1.2's, E.1.3's and
-E.1.4's signature and it is the INVERSE of 3.7.3's: the doctest totals MOVE while `ctest -N` does
-NOT** — `aero_editor_shell_test` 1781 → 1793 (+12, `GS1`–`GS12`) and `aero_editor_imgui_test`
-159 → 162 (+3, `I124`–`I126`), both MEASUREMENTS off the `filters:` line, and exactly the kind of
-delta that must never be predicted arithmetically because `SUBCASE` structure makes the sum a guess.
+`aero_reflect_meta_test`, `aero_reflect_json_test`). **E.2.1 moves BOTH**, unlike every E.1 task —
+`ctest -N` because it adds a per-header reflect-gen case, and five of the seven doctest totals. The two
+that must **not** move are `aero_reflect_meta_test` (7) and `aero_reflect_json_test` (28): they
+generate from a fixture aggregator, not the built-in list. **A `SUBCASE` is not a `TEST_CASE`** — E.2.1's
+last two commits added 21 assertions and moved no total at all, so never predict a delta
+arithmetically.
 
 **AND A RECORDED TOTAL GOES STALE SILENTLY: `origin/main`'s own shell total was ONE stale at E.1.4's
 gate** — it said `1780`, measured at PR #94's gate, and PR #95 then added `G19` while nobody
 re-measured. Read the binary, never the block.
 
-The eight guard counts at E.1.5's gate: math **472**, platform **86**, rhi **152**, scene **86**,
-golden-rule **154**, project-no-delete **A=6/B=77**, audio **11/3/55**, probes **6/57**. **The two
+The eight guard counts at **E.2.1's** gate: math **481**, platform **89**, rhi **158**, scene **89**,
+golden-rule **160**, project-no-delete **A=6/B=77**, audio **11/3/55**, probes **6/57**. **The two
 reduced configurations read `159` (shader-tools-OFF) and `93` (reflect-tools-OFF)**, unmoved, and
 3.7.3's remembered `80 / 93` is HALF WRONG. Compare the entry **SETS**, not the totals — measured at
 E.1.5's gate by comparing entry NAMES with the ctest numbering stripped, because a raw `diff` of
@@ -603,22 +590,24 @@ is what is left. **No Windows or Linux validation pass exists for
 any task in any phase**: Phase 0's gate, Phase 1's render rows, all thirteen Phase 2 tasks, and every
 Phase 3 task.
 
-**E.1.5's PAGE IS NOT YET RUN, AND IT IS THE ONLY JUDGEMENT ITS MAGNITUDES HAVE.** Every value the
-task writes is a *tuning constant*, and `gizmo.hpp:66-67`'s rule forbids a tier-0 case from pinning
-one — so `GS1`–`GS12` and `I124`–`I126` assert **relationships** (a derivation, a gap floor, an
-inverse property, an ordering) and **nothing at all** about whether 90 points is the right length,
-whether a 20 x 20-point triangle reads as a cone, whether the opaque yellow stands off the palette's
-green on a real display, or whether the plane-hide angle feels right. Four things are additionally
-unreadable by ANY tier because ImGuizmo exposes no getter for them: the gizmo size, the flip flag and
-the two hide thresholds. **Row 7 (HiDPI) will be NOT EXECUTABLE on 1x hardware** — record it as such
-rather than skipping it, the way E.1.2's row 4, E.1.3's row 1 and E.1.4's row 4 all were, because the
-distinction between "unfired" and "cleared" is the one this project keeps making. **The sabotage
-matrix has not been run either**; its two declared holes are already known — `GIZMO_HATCHED_AXIS_SRGB`
-and `GIZMO_HATCHED_AXIS_THICKNESS_POINTS` are unobservable by anything at all while flip is off, and
-the apply site's `static_assert` has no witness until a port bump. Separately, **seven ticked rows across four tasks were signed off with their measurement
-blanks empty** (3.2.5 rows 3, 8, 9, 11, 13; 3.2.2 row 9; 3.2.4 row 12) — the behaviour passed, the
-evidence is absent. Every page from Epic 3.3 onward is written so a blank tick is impossible, which is
-the pattern the older four should be brought up to.
+**E.2.1's PAGE IS macOS-PARTIAL — 5 PASS / 3 PARTIAL / 5 BLOCKED, 2026-09-06 — AND THE FIVE BLOCKED
+ROWS ARE AN ENVIRONMENT LIMIT, NOT A CODE ONE.** The render rows were measured through the real
+`SceneRenderer` -> `SkyPass` -> `PostProcess` chain with a framebuffer readback rather than a
+screenshot, so the bytes carry **no ICC round trip** and are exact rather than ±1: every sky oracle
+difference is **0**; the unlit cube reads `(85,117,162)` on its top face against `(73,91,124)` on its
+side (dim, not black — the deliverable's headline claim); Flat mode removes the blue cast entirely;
+`ambientIntensity = 0` renders exactly `(0,0,0)`; ortho is exactly **one** colour; and **a world with
+no `Environment` is bit-identical to one carrying a default component — 0 of 921 600, with a 20 694-px
+anti-vacuity control**, which is D1's promise measured rather than asserted. A genuine pre-E.2.1
+project opened with **zero WARN and zero ERROR**. **What is blocked and why:** rows 5, 6, 9, 10, 11 and
+12 need the editor **on screen and driveable**; this machine's automation session holds Screen
+Recording but **not** Accessibility, and a binary launched from it receives **no window at all**. **Two
+things have no automated cover anywhere and need a person at the keyboard: row 4's normal-mapped arm —
+the only witness for the `geoN.y`-for-`N.y` seed — and row 9's judgement of the Inspector's two bare
+0/1 mode fields.** **HiDPI is deliberately NOT a row** (a fullscreen gradient has no size-dependent
+feature), so E.1.1's thick-line handoff stays **UNFIRED for a sixth task** rather than recorded as
+cleared. **The sabotage matrix WAS run in full — all 31 rows** — and found two holes, both closed
+before the merge; its five declared holes were each confirmed accurate.
 
 **Outstanding macOS passes: 3.5.1's twelve rows, 3.5.2's twelve rows, and 3.7.2's twelve rows.** Each is
 the only cover its task's declared seeds have anywhere. **3.4.2's `S26` remains uncovered by any pass
@@ -744,48 +733,33 @@ binary is `aero_sample_phaseE_debug_draw`** — `phaseE`, no underscore before t
 
 ### Next
 
-**Phase E is the open front, and EPIC E.1 IS CLOSED IN CODE — all five tasks merged.** E.1.5
-(transform-gizmo restyle) is the last of them: five commits, the full local gate green on both
-presets and both reduced configurations, `ctest -N` unmoved at 172 and the two editor doctest totals
-moved by their own measured deltas. **Its validation page has not been run on any platform, and that
-is where its whole remaining risk sits** — every value it writes is a tuning constant no tier-0 case
-may pin, and four of ImGuizmo's knobs have no getter at all. E.1.1, E.1.2, E.1.3 and E.1.4 are all
-merged AND macOS-validated; **three records on E.1.3's page and three shortfalls on E.1.4's remain
-open** (E.1.4: row 4 needs a 2x display, row 5's mid-import transition was never observable, row 6's
-256-entity figure is extrapolated, plus four recorded sabotage holes). **Windows and Linux validation
-remain outstanding**, as everywhere.
+**Phase E is the open front. EPIC E.1 IS CLOSED and EPIC E.2 IS OPEN — E.2.1 is merged** (PR #98,
+merge commit `28deab0`; all six CI checks green on `50df9d1` with `headSha == HEAD` asserted). Its
+validation page is **macOS-PARTIAL: 5 PASS / 3 PARTIAL / 5 BLOCKED**, and the blocked five need a
+**driveable** editor — Accessibility permission, which this machine's automation session lacks.
 
-**The spine, unchanged except where E.1.2, E.1.3, E.1.4 and E.1.5 moved it:** **E.2.1
-(`Environment`) blocks E.2.2, E.2.4 and E.4.5**; **E.2.3 (light gizmos) is unblocked** — and it
-inherits two things by name, the **shared-batch empty-assertion wall** against `I112` (E.1.3, E.1.4
-and E.1.5 each added no `DebugDraw` producer, so that wall is untouched for the third consecutive
-task), and a **billboard-pipeline depth bias**, which is the only topology where a bias actually
-works. **E.3.1** inherits the palette's KEY (`Axis`, `AXIS_COUNT`, `axisColorSrgbBytes`) for its
-`Vec3`/`Quat` rows, unchanged. **E.6.1 now inherits `gizmo_style.hpp`'s constants as well as the
-palette trio, and owns the DPI story E.1.5 deferred**: nothing in the viewport reads
-`SDL_GetWindowDisplayScale`, so every points-authored viewport constant is correct on macOS and
-`1/scale` smaller relative to the scaled UI on a Windows or Linux desktop above 100 %. **E.5.1 is an
-S-sized fix for a confirmed defect and is independent of everything**, so it can land at any point —
-and E.1.4 deliberately reproduced that defect rather than fixing it in passing, because a mask that
-disagreed with the picture is the one direction INV-1 forbids. **E.5.2 owns the coplanar-geometry
-problem** — it creates the first `Plane` at `y = 0`, and E.1.2 established that a rasterizer bias
-cannot be the answer for lines. **E.2.x inherits ortho specular**: `CameraView::eyePosition` is wrong
-under a parallel projection, as it is in Unity. **8.2.1 inherits the alpha-tested mask cutout** from
-E.1.4's D6, on the same terms it already inherits the alpha-tested shadow caster: the mask stage has
-no UVs and cannot discard, so a `MaterialAlpha::Mask` instance outlines as a solid quad and latches
-one WARN. **A first-party gizmo cone overlay is recorded as its own task**, triggered only by E.1.5's
-validation row 2, never as a follow-up commit.
+**The spine, as E.2.1 leaves it.** **E.2.2 (`SpotLight` + point falloff) is UNBLOCKED and is next**;
+it inherits the built-in sweep at **nine -> ten** and should start from E.2.1's corrected line lists,
+**re-measured, never copied** — the counts were wrong in both directions there (21 built-in literals
+against 5 look-alikes that had to stay). **E.2.4 (material-preview parity) and E.4.5 (thumbnails) are
+unblocked**; E.2.4 inherits the preview's Flat rig by name, which is why its picture is byte-identical
+today. **E.2.3 (light gizmos) remains blocked on E.2.2, not on this task**, and still inherits the
+shared-`DebugDraw`-batch empty-assertion wall against `I112` — **untouched for a FOURTH consecutive
+task** — and the billboard-pipeline depth bias, the only topology where a bias works. **E.3 inherits
+the enum-aware Inspector row**: `Environment`'s two modes render as bare numeric 0/1 drag fields
+because reflect-gen cannot reflect an enum, and that is a recorded gap, not a defect. **E.3.1** still
+inherits the palette key. **E.5.1 is an S-sized fix for a confirmed defect and is independent of
+everything** — E.1.4 and E.2.1 both reproduced it rather than fixing it in passing. **E.5.2 owns the
+coplanar-geometry problem and now has a GROUND COLOUR to sit its plane against.** **8.2 inherits
+IBL/HDRI and the after-opaque sky variant**, with `SB9`/`SB16` already in place to catch a wrong
+ordering. **E.6.1 owns the DPI story** E.1.5 deferred.
 
 **Phase 3 remains OPEN behind it, on its gate and its validation debt, and Phase E does not close
-either.** 3.7.1 (PR #88 `4892e65`) and 3.7.2 (PR #89 `b398d17`) are merged and macOS-validated;
-3.7.3 is merged (PR #91 `0530cff`), its six CI jobs green on the merged SHA. What remains for that
-phase is **its deliverable gate** — a rigged glTF/FBX in, producing PBR materials, shadows, a playing
-animation and **an audible sound** — and **the validation debt above**. The audible half has never
-been heard on any platform: 3.7.2's macOS pass ticked 47 of 53 records and left open exactly the 6
-that need ears or the editor. **Windows and Linux rows are outstanding for every task in every
-phase, and 3.7.2's Linux row matters more than most**: LSan runs on that lane alone, so the macOS
-row-11 zero proves the teardown is *clean*, not that a leak is *absent*, and unlike 3.7.1 everything
-that task allocates is first-party. See `docs/tasks/phase-3.md` and `docs/tasks/phase-E.md`.
+either.** What remains for Phase 3 is its deliverable gate — a rigged glTF/FBX in, producing PBR
+materials, shadows, a playing animation and **an audible sound** — and the validation debt below. The
+audible half has never been heard on any platform. **Windows and Linux rows are outstanding for every
+task in every phase**, and 3.7.2's Linux row matters more than most: LSan runs on that lane alone. See
+`docs/tasks/phase-3.md` and `docs/tasks/phase-E.md`.
 
 > **Before touching a subsystem, read its entry in `docs/10-engineering-log.md`.** That file is the full per-task history: what shipped, what was deliberately left out, the traps found, and the dead ends that must never be retried (the lavapipe LSan leak, `LD_PRELOAD`, vcpkg's `sdl3-shadercross` on macOS, …). It is deliberately *not* auto-loaded — grep it before re-deriving anything.
 

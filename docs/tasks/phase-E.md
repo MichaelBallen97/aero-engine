@@ -182,7 +182,12 @@ display is 2x — so E.1.1's thick-line handoff stays unfired for a fifth task. 
 **Goal:** the light types behave like their equivalents in Unity/Godot/Blender, are *visible* in the viewport, and light a scene that is not a black void. The components are already correct — a directional light does aim down its entity's −Z axis (1.4.1's D6) — but nothing draws that direction, nothing says which of two directional lights won, there is no cone light for a lamp, and the only ambient in the engine is a hardcoded 3 % constant with no component behind it.
 **Definition of Done:** a scene with no lights at all is legibly lit by its environment; every light type has a gizmo and a defensible falloff; the material preview and the viewport agree.
 
-### E.2.1 `Environment` component + sky pass · P0 · L · depends: 1.3.3, 3.4.1, 3.6.3
+### E.2.1 `Environment` component + sky pass · P0 · L · depends: 1.3.3, 3.4.1, 3.6.3 — **MERGED**
+**Sized L, landed L** (PR #98, merge commit `28deab0`, fifteen commits). The sweep was the expensive
+half exactly as sized, and it was **larger than planned**: 21 built-in count literals against 5
+look-alikes that had to stay unchanged, plus 19 default-scene pins, a test-case title and two name
+rosters. `ctest -N` **172 -> 173**; doctest `aero_tests` **1294 -> 1342**, imgui **162 -> 163**,
+scene_serialize **34 -> 37**, inspector **29 -> 30**, the other three unmoved.
 _(Sized L, recorded before implementation. It is a reflected component, a new background pass, a
 growth of the fragment light block with its pinned offsets, and the built-in-component sweep — and
 that last part is the expensive half, not the shader.)_
