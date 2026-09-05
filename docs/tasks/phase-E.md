@@ -142,7 +142,9 @@ Subtasks:
 - Hover and active states; the axis colour palette shared with the Inspector and the grid
 - Confirm the write path is untouched — the restyle must not disturb 2.4.1's merge-chain edges
 
-_Outcome: **S, as recorded before implementation (D0).** Five commits — one new public
+_Outcome: **S, as recorded before implementation (D0).** Merged 2026-09-05 as PR #97, merge commit
+`cdc81ce` — seven commits (five implementing the plan, one closing a code-review round, one docs),
+all six CI jobs green with `headSha == HEAD` asserted. One new public
 header/source pair (`gizmo_style.{hpp,cpp}`), one new tier-0 TU, `viewport_panel.{hpp,cpp}` edited,
 two CMakeLists each +1 source line: **3 new files / 4 edited source or header files**. No new
 dependency, no `find_package`, no link-line change, no shader, no pipeline, no RHI call, no
@@ -153,8 +155,25 @@ other six unmoved. The `/editor` pair count moves **27 → 28** and Epic E.1 clo
 **The finding worth carrying: ImGuizmo's two visibility setters are CROSSED, and the header's own
 comments say the opposite.** `SetPlaneLimit` hides **axes** and `SetAxisLimit` hides **planes**
 (`ImGuizmo.cpp:1229-1230` against the setters at `:2657-2670`); neither value has a getter, so a
-port bump that un-crosses them leaves `I125(c)` green and inverts the picture silently. Full detail
-in `docs/10-engineering-log.md`._
+port bump that un-crosses them leaves `I125(c)` green — but it does NOT invert the picture silently,
+which the validation pass corrected: the observable is BINARY, because a plane's face-on
+parallelogram area is `size²` while the swapped threshold is `0.2 · size`, larger than that area for
+every viewport this resolver produces, so **the plane quads simply never draw**. Measured in the
+product, correct 44 / 109 fill px against swapped **0 / 0**, reverted 44 / 109 exactly.
+**The code-review round's blocking finding is the other half worth carrying: `I124` was
+structurally blind to a permuted colour-slot table**, because `applyGizmoStyle` and the read-back
+both index that one table, so it cancels — measured at **80 of 80 assertions passing** with two
+slots swapped while the X arrow rendered blue. Closed with a `static_assert` that the table is the
+IDENTITY, which is a compile error rather than a red test and additionally catches an upstream
+`ImGuizmo::COLOR` reorder that no runtime tier could see.
+**macOS-validated 2026-09-05: 11 PASS / 1 NOT EXECUTABLE** — the palette byte-exact on the gizmo and
+the corner widget, a screen-parallel axis at 99 px across three dolly distances, the knee live at
+both ends (45 pt in an 835x300 dock, 90 pt in 1655x848), axes reversing between opposite views with
+no hatched stub, one drag one undo restoring the picture to **0 differing pixels**, the viewport
+bit-identical to a branch-point build with nothing selected (**0 of 212 670**, control 1 995), and
+the feature **free** (4.42 vs 4.41 CPU-s per 15 wall-s). Row 7 is NOT EXECUTABLE — neither attached
+display is 2x — so E.1.1's thick-line handoff stays unfired for a fifth task. Full detail in
+`docs/10-engineering-log.md`._
 
 ---
 
