@@ -166,8 +166,19 @@ TEST_CASE("environment: the two selectors are PLAIN DATA -- the component never 
     CHECK(got->ambientMode == std::numeric_limits<std::uint32_t>::max());
 
     // And a negative intensity is stored unchanged too: nothing sanitises an HDR knob, exactly as
-    // DirectionalLight::intensity already does not.
-    Environment dark{};
-    dark.ambientIntensity = -1.0F;
-    CHECK(dark.ambientIntensity == -1.0F);
+    // DirectionalLight::intensity already does not. THROUGH THE WORLD, like the two selectors above
+    // and for the same reason: asserted on a local aggregate, this arm would run nothing at all
+    // between the write and the read and would say only that assigning a float and reading it back
+    // yields the same float. The SAVE path's half of the claim is covered where it belongs, by
+    // scene_serialize's Environment round trip.
+    const Entity dark = w.create();
+    REQUIRE(w.add<Environment>(dark, Environment{.ambientIntensity = -1.0F}) != nullptr);
+    const Environment* stored = w.get<Environment>(dark);
+    REQUIRE(stored != nullptr);
+    CHECK(stored->ambientIntensity == -1.0F);
+    // ...and the entity that carries it is not the one above, so neither reading can be the other's.
+    // Re-fetched rather than read through `got`, which the add above may have invalidated.
+    const Environment* untouched = w.get<Environment>(e);
+    REQUIRE(untouched != nullptr);
+    CHECK(untouched->ambientIntensity == Environment{}.ambientIntensity);
 }
