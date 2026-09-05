@@ -14381,7 +14381,7 @@ reading it.
 | 3 | `GIZMO_PLANE_FILL_ALPHA = 255` | `GS1` | `GS1`, `GS3` |
 | 4 | highlight becomes E.1.4's amber | `GS2` | `GS2` |
 | 5 | delete `AllowAxisFlip(false)` | `I125(b)` only | as declared — pin only |
-| 6 | swap the two limit-setter arguments | `I125(c)` only | as declared — pin only |
+| 6 | swap the two limit-setter arguments | `I125(c)` only | `I125(c)` — **and, added after the validation pass, a PRODUCT-LEVEL proof: the plane quads VANISH ENTIRELY.** See below |
 | 7 | move the apply after `Manipulate` | `I125(a)`; `I124` green | exactly that |
 | 8 | resolver uses `w` for `larger` | `GS7`, `GS4` portrait | `GS4`, `GS7`, `GS8`, `GS11` |
 | 9 | resolver drops the knee | `GS5`, `GS6`, `GS11` | all three — **`GS6` only after its new arm** |
@@ -14396,6 +14396,36 @@ reading it.
 | 18 | `GIZMO_AXIS_HIDE_FRACTION = 0` | `GS8` | `GS8`, `GS11` |
 | 19 | `toImVec4` multiplies by `1.0F/255.0F` | `I124` | **GREEN — the prediction was wrong** |
 | 20 | delete the `COUNT` `static_assert` | nothing | nothing — declared |
+
+**ROW 6 IS NO LONGER PIN-ONLY, AND THE OBSERVABLE IS BINARY RATHER THAN AN ORDERING.** The plan, the
+spec and this entry all recorded the crossed setters as covered by `I125(c)` plus a validation row
+that would watch *which hides first* as the view goes edge-on — a narrow, fiddly, few-degree window.
+That framing was harder than it needed to be, and the arithmetic says so: `GetParallelogram` returns
+the parallelogram of the two full axis vectors, so a plane's face-on area is `size²`, while
+`axisHideClipLength` is `0.2 · size`. At the shipped constants and a real viewport
+(1655x848 -> `size = 0.1088`): the correct wiring hides a plane below **0.00296** against a face-on
+**0.01183**, so it is visible; the SWAPPED wiring hides it below **0.02175**, which is **LARGER THAN
+THE MAXIMUM POSSIBLE AREA** — so with the arguments swapped **the plane quads can never be drawn at
+all, at any angle, in any viewport.**
+
+**Measured in the product, three states, with the revert as its own anti-vacuity control** (E.1.4's
+project fixture, gizmo origin identical at (674,220) in all three, captures converted to sRGB before
+reading):
+
+| | PLANE_X fill | PLANE_Z fill | X arrow | Y arrow | Z arrow |
+|---|---|---|---|---|---|
+| correct (merged `main`) | 44 px | 109 px | 250 | 292 | 211 |
+| **arguments swapped** | **0 px** | **0 px** | 248 | 292 | 210 |
+| reverted | 44 px | 109 px | 250 | 292 | 211 |
+
+The quads vanish completely while every arrow is unchanged to within antialiasing, and the revert
+lands **exactly** on the reference. **So seed 6 has a behavioural cover after all, and it is far
+stronger than the ordering row that was planned for it** — a binary presence test on the default
+startup pose, needing no oblique rotation and no angle measurement. The fill colours to count are the
+alpha-115 blends over the viewport background, `(140,67,75)` for `PLANE_X` and `(63,98,144)` for
+`PLANE_Z`, which are what the constants predict and are distinct from both the opaque axis bytes and
+the tonemapped grid line. **A future port bump that un-crosses the setters upstream is caught the same
+way, in one screenshot.**
 
 **Row 19's correction, because the plan told a future reader to act on a green run.** It said a green
 row would mean *"the read-back is not going through ImGui's real packer and `I125(e)` has a hole"* —
