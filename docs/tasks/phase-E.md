@@ -126,6 +126,12 @@ point marker reads the same amber byte for byte. Row 4 is NOT EXECUTABLE on 1x h
 thick-line handoff stays unfired rather than cleared**. Full detail in `docs/10-engineering-log.md`._
 
 ### E.1.5 Transform-gizmo restyle · P1 · M · depends: 2.3.3, E.1.4
+_(**Sized M in the roadmap and landed S**, recorded before implementation and confirmed after — the
+3.6.3 / 3.7.3 / E.1.1 precedent. Three of the five things the deliverable names as if they were to be
+built — plane handles, hover/active highlighting, a screen-constant size — already exist in ImGuizmo
+and need only values; the two it names that the library cannot provide — a cone tip and a
+plane-handle size knob — are recorded as measured limits rather than built around. What is left is a
+value model, a size resolver, one apply function, one read-back seam and their tests.)_
 **Goal:** the manipulation handles should read like Unity's or Unreal's — visible against any
 background, obviously grabbable, and the same apparent size wherever the object is.
 **Deliverable:** ImGuizmo style configuration and drawing options giving cone-tipped translate
@@ -135,6 +141,20 @@ Subtasks:
 - Style config: thickness, arrow/cone geometry, plane-handle size, screen-constant scaling
 - Hover and active states; the axis colour palette shared with the Inspector and the grid
 - Confirm the write path is untouched — the restyle must not disturb 2.4.1's merge-chain edges
+
+_Outcome: **S, as recorded before implementation (D0).** Five commits — one new public
+header/source pair (`gizmo_style.{hpp,cpp}`), one new tier-0 TU, `viewport_panel.{hpp,cpp}` edited,
+two CMakeLists each +1 source line: **3 new files / 4 edited source or header files**. No new
+dependency, no `find_package`, no link-line change, no shader, no pipeline, no RHI call, no
+component, no serialized field, no `add_test`. `ctest -N` **unmoved at 172**;
+`aero_editor_shell_test` **1781 → 1793 (+12)** and `aero_editor_imgui_test` **159 → 162 (+3)**, both
+measured; the other five unmoved. Guards: math **469 → 472**, project-no-delete **B 76 → 77**, the
+other six unmoved. The `/editor` pair count moves **27 → 28** and Epic E.1 closes in code.
+**The finding worth carrying: ImGuizmo's two visibility setters are CROSSED, and the header's own
+comments say the opposite.** `SetPlaneLimit` hides **axes** and `SetAxisLimit` hides **planes**
+(`ImGuizmo.cpp:1229-1230` against the setters at `:2657-2670`); neither value has a getter, so a
+port bump that un-crosses them leaves `I125(c)` green and inverts the picture silently. Full detail
+in `docs/10-engineering-log.md`._
 
 ---
 

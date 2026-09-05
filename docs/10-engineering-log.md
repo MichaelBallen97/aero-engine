@@ -14086,3 +14086,273 @@ capture to its launched process's PID fixes it, and **it was row 7's own anti-va
 exposed the contradiction** — the 0 and the 42 amber pixels could not both be true. A picture
 comparison without a control that makes it fail is not evidence, and this is the second time in this
 task that a check which could not fail looked exactly like one that worked (`OG8` was the first).
+
+---
+
+### E.1.5 — Transform-gizmo restyle — the last task in Epic E.1, and every value it writes was already a knob
+
+**ImGuizmo stops being at its factory defaults.** A pure value model in a new **public** editor
+header becomes an `ImGuizmo::Style` in the one translation unit that names ImGuizmo, applied to the
+library's **process-wide global once per submitted frame**, together with a screen size resolved
+from that frame's viewport extent. The axis colours are **derived** from `axis_palette.hpp` rather
+than restated, the hot handle becomes an **opaque** yellow, the axes **stop flipping**, and a
+screen-parallel axis becomes points-constant instead of 5 % of the larger viewport dimension.
+
+**Five commits. 3 new files; 4 edited source/header files, plus 2 CMakeLists and 3 docs.**
+One public header/source pair (`gizmo_style.{hpp,cpp}`), one new tier-0 TU
+(`tests/editor/gizmo_style_test.cpp`), `viewport_panel.{hpp,cpp}` edited, two CMakeLists each +1
+source line. **S, as recorded before implementation (D0)** — because three of the five things the
+deliverable names as if they were to be built already existed in the library and needed only values.
+No new dependency, no `find_package`, no submodule move, no vcpkg baseline change, no link-line
+change anywhere, no new shader, no new pipeline, no new RHI call, no component, no serialized field,
+no `add_test`, no sample, no cooker-version bump, `docs/09` untouched and the determinism manifest
+unmoved at 20 hash lines. The `/editor` `.hpp`/`.cpp` pair count moves **27 → 28**.
+
+**`ctest -N` unmoved at 172** on both presets; `aero_editor_shell_test` **1781 → 1793 (+12)** and
+`aero_editor_imgui_test` **159 → 162 (+3)**, both **measured off doctest's own `filters:` line**, and
+the other five totals unmoved. The reduced configurations are unmoved at **159** (shader-tools-OFF)
+and **93** (reflect-tools-OFF). Guards: math **469 → 472**, project-no-delete **B 76 → 77**, the
+other six unmoved — **golden-rule unmoved at 154**, which is the check that nothing landed under
+`engine/`.
+
+**INV-7: this task added NO producer to `render::DebugDraw`.** E.1.2's shared-batch wall does not
+apply, `I108`–`I113` are green with byte-unchanged assertions, and **E.2.3 still inherits that wall
+against `I112`** — for the third consecutive task.
+
+#### What it deliberately did not build
+
+No shaded 3D cone (the library's arrowhead is one `AddTriangleFilled`; `TranslationLineArrowSize` at
+10 gives a 20 × 20-point head, which is the profile a cone cap projects to). No scale cubes. No
+plane-handle placement knob — `quadMin`/`quadMax` are `static const` in the library, so the quad's
+size is met **through** the gizmo size at `0.3 · L`, 27 points at `L = 90`. No `SetAxisMask` call, no
+axis-flip toggle, no persistence, no style UI, no change to the gizmo bar, no display-scale factor,
+no widening of the centre hit square, no outlined handles, and no second `Manipulate` for
+multi-selection. A first-party cone overlay was considered and rejected **for this task**: placing
+one needs `mScreenFactor`, the orthonormalised model and the axis-hide predicate recomputed from the
+library's private state — a second source of truth for the handle's position — and it would draw
+outside the library's own 12-point hit test. If the manual pass asks for it, it is **its own task**.
+
+#### The traps, each with its measurement
+
+**`SetAxisLimit` HIDES PLANES AND `SetPlaneLimit` HIDES AXES, AND THE HEADER'S OWN COMMENTS SAY THE
+OPPOSITE.** Read at the pinned port's source: `ImGuizmo.cpp:1229` is
+`belowPlaneLimit = (paraSurf > gContext.mAxisLimit) && …` — `paraSurf` is the **plane's**
+parallelogram area — and `:1230` is `belowAxisLimit = (axisLengthInClipSpace > gContext.mPlaneLimit)
+&& …`. `SetAxisLimit` (`:2657-2660`) writes `mAxisLimit` and `SetPlaneLimit` (`:2667-2670`) writes
+`mPlaneLimit`. The header's comments at `ImGuizmo.h:268` (*"Configure the limit where axis are
+hidden"*) and `:272` (*"Configure the limit where planes are hiden"*) describe the **names**, not the
+code, and the `below…` flags are additionally inverted in sense — `true` means *visible*. The pure
+model therefore names the two thresholds by **meaning** (`axisHideClipLength`, `planeHideClipArea`)
+so nothing outside the apply site has to know, and the crossing is spelled in exactly **one** place
+with the `:1229-1230` citation on the line above it. **No runtime tier in this tree can read either
+value — there is no getter — so `I125(c)` pins each line to the member it must name and validation
+row 5 is the whole behavioural cover. RE-READ `:1229-1230` AT EVERY PORT BUMP**: a bump that
+un-crosses the setters leaves `I125(c)` green and inverts the picture silently.
+
+**`mGizmoSizeClipSpace = 0.1f` IS 5 % OF THE *LARGER* VIEWPORT DIMENSION, NOT OF THE VIEWPORT.**
+Derived rather than quoted. `GetSegmentLengthClipSpace` (`:863-887`) applies exactly one of two
+corrections before taking the 2-D length: `if (mDisplayRatio < 1.0) x *= ratio; else y /= ratio;`
+(`:880-884`), with `mDisplayRatio = width / height` (`:979`). NDC x spans `[-1, 1]` over `w` points
+and NDC y over `h`, so a displacement of `p` points is `2p/w` in x and `2p/h` in y — and substituting
+gives `2p / max(w, h)` in **both** orientations. So a screen-parallel unit axis draws to
+`L = size · max(w, h) / 2` points, and `resolveGizmoScreenSize` inverts it:
+`L = min(90, 0.15 · min(w, h))`, `size = 2L / max(w, h)`. **The knee is the one deliberate departure
+from Unity**, whose handle is unconditionally constant and does overflow a tiny scene view: the
+rotation rings are `1.2 · L` in **radius** (`:52`), a 216-point diameter at `L = 90`, which does not
+fit a 300-point dock. Both arms evaluate to 90 at the knee, so the function is continuous there by
+construction. `GS7` asserts `resolved(w, h) == resolved(h, w)` exactly, which is the direct witness
+for the `max` and the reason the formula does not use `w`.
+
+**THE TWO HIDE THRESHOLDS HAD TO FOLLOW THE SIZE, AND THE LIBRARY'S OWN DEFAULTS ARE WHERE THE RATIOS
+CAME FROM.** `mPlaneLimit = 0.02` is `0.2 · 0.1` (an axis hides below 20 % of its face-on length) and
+`mAxisLimit = 0.0025` is `0.25 · 0.1²` (a plane hides below 25 % of its face-on **area**, which is
+quadratic in the size). With the size now varying per viewport a *constant* threshold would hide axes
+at a different foreshortening in every dock, so the model derives both as fractions. At the one
+viewport where the resolved size is exactly `0.1` the behaviour is the library's **to within one
+ulp** — measured, not asserted from the algebra.
+
+**A PORTRAIT WRINKLE, RECORDED AND DELIBERATELY NOT FIXED.** `GetParallelogram` (`:889-909`) divides
+`y` by `mDisplayRatio` **unconditionally** (`:902-903`) while `GetSegmentLengthClipSpace` branches on
+it. In a portrait rect the plane's area is therefore measured in different units from the axis's
+length, so planes hide at a different relative angle than in landscape. **This is the library's
+behaviour under its own defaults too. It is not ours to fix**, and validation row 5 measures in
+landscape.
+
+**THE FOUR FLOAT EPSILONS WERE MEASURED, NOT CHOSEN**, and every one was re-measured in a standalone
+probe before the battery was written, so the cases were green on their first run rather than fitted
+afterwards. `resolveGizmoScreenSize({1800, 900}).clipSpaceSize` is **bit-exactly `0.1F`**, so `GS8`'s
+reference point is an equality rather than a tolerance. Both hide thresholds land **1 ulp** from the
+library's constants there. `GS4`'s inverse property — `size · max(w, h) / 2` recovers `L` — is worst
+**1 ulp over 300 000 seeded viewports**, so the assertion's bound is two. And **`GS11`'s bound is
+tight, with equality at a square viewport**: the worst value is `0.30000001192092896`, bit-**equal**
+to `float(2 · 0.15F)`, so the bound must be written as `2.0F * GIZMO_AXIS_MAX_VIEWPORT_FRACTION` and
+**never as a `0.3F` literal**, which would turn an exact equality into a failure. `GS5`'s ratio is
+bit-exactly `0.15F` at all four sampled dock sizes — recorded here and deliberately **not** asserted,
+because nothing guarantees it and the epsilon belongs in the assertion.
+
+**`std::uniform_real_distribution` IS NOT PORTABLE ACROSS STANDARD LIBRARIES**, so both seeded sweeps
+derive their floats arithmetically from `std::mt19937`'s raw 32-bit output (`std::mt19937` itself
+*is* specified by the standard). Otherwise the three lanes sample different viewports and a
+lane-specific failure is unreproducible.
+
+**`soleLineContaining` COULD NOT BE USED FOR `ImGuizmo::GetStyle()`.** After this task it appears
+**twice** in `viewport_panel.cpp` — the apply site and the read-back — and that helper `REQUIRE`s
+exactly one match, so the obvious spelling of `I125(e)` would have failed on a **correct** tree.
+The clause bounds the read-back's body by the first line whose whole content is `}` instead, with a
+`REQUIRE` that the brace was found as its own anti-vacuity, and additionally asserts the count is
+**exactly two** — a third occurrence would be a second writer of a process-wide global appearing
+without a decision.
+
+**THE `#if AERO_SHADER_TOOLS_ENABLED` BLOCK COUNT IN `imgui_layer_test.cpp` WAS 32, NOT 33.**
+Measured line-anchored at the branch point; the spec's 33 was an over-count. It is 33 after `I124`.
+
+**A `-tc=` FILTER IS A GLOB IN BOTH DIRECTIONS, AND THIS TASK HIT BOTH.** `-tc="*GS*"` selects **86**
+cases in `aero_editor_shell_test`, not 12: `GS` is a substring of `SETTINGS`, `flags` and others, so
+a green run under it says nothing about the new battery. And the character class in `-tc="*I12[456]*"`
+is **not** glob syntax here — it selects **zero** cases and reports `SUCCESS!`. Both were caught by
+reading doctest's own `test cases:` line. The filter that isolates a task's own cases on this tree is
+its id string: `-tc="*task E.1.5*"` selects exactly 12 and exactly 3.
+
+**TWO GATE GREPS IN THE PLAN WERE VACUOUSLY IMPOSSIBLE, AND BOTH ARE THE "FOUR GREPS ARE NOT LITERALLY
+ZERO" RULE AGAIN.** `git grep 'ImGuizmo\|imgui\|ImGui\|entt' -- <the two new files>` cannot be empty:
+the header's own prose legitimately cites `ImGuizmo::COLOR`, `ImGuizmo::Style` and the line numbers
+this entry quotes. And `git grep 'ImGuizmo' -- tests` was **never** zero on this tree — `I110` and
+`I118` have named `ImGuizmo::SetOrthographic(` and `ImGuizmo::Enable(gesture.gesture` as string
+literals since E.1.1 and E.1.3. The properties those two greps mean are the **comment-stripped** token
+sweep (zero, with a working anti-vacuity control) and the **include** sweep
+(`^\s*#\s*include\s*[<"](imgui|ImGuizmo|imgui_internal)` over `tests`, zero, INV-7/AC-21). Both were
+run in that form. Same species, one file over: a `toString` grep over the new tier-0 TU hits its own
+**prohibition comment**, and is zero comment-stripped.
+
+#### The decisions worth keeping
+
+**THE APPLY RUNS EVERY SUBMITTED FRAME, NOT ONCE AT ATTACH, AND THE WRITE IS SELF-HEALING.** The size
+depends on the viewport's extent, which changes; the style is one process-wide global
+(`GetStyle()` returns `gContext.mStyle`, `:815-818`) with an obvious future second writer in E.6.1's
+theme; and `BeginFrame()` does not touch `mStyle` (`:1000-1021` sets `mDrawList` and
+`mbOverGizmoHotspot` and nothing else), which is what `I124`'s "the global persists across a frame
+with nothing selected" subcase rests on. Whatever another site does to the global, the viewport
+restores its own style on its next frame — **which also means a task that wants a different gizmo
+style must change `defaultGizmoStyle()`, never write the global from a second site.**
+
+**IT RUNS WHETHER OR NOT THE GIZMO IS *ENABLED*.** `Enable(false)` skips only the `Handle*` block
+(`:2704`); the four `Draw*Gizmo` calls still run (`:2722-2725`). So the greyed handles drawn during a
+camera gesture or while the cursor is parked on E.1.3's corner widget are drawn with **this** style's
+thicknesses and `GIZMO_INACTIVE_SRGB`, not the library's.
+
+**THE PLACEMENT IS AFTER `SetRect` AND BEFORE `Enable`/`Manipulate`, AND ONE HALF OF THAT IS
+INVISIBLE AT RUNTIME.** `SetRect` writes `mDisplayRatio`, the ratio the resolver's `max(w, h)` is the
+transcription of, so the two can never drift apart; `mScreenFactor` is computed inside
+`ComputeContext`, which `Manipulate` calls (`:1128`), so the size must be set first. **Applying after
+`Manipulate` is one frame late on every resize and invisible otherwise** — `I124` reads after the
+tick and would stay **green** — which is exactly why `I125(a)` pins the ordering as source text.
+
+**THE PALETTE IS ADOPTED THROUGH ITS KEY AND NO COLOUR IS STATED TWICE.** `defaultGizmoStyle()` fills
+the three axis slots from `axisColorSrgbBytes(Axis::X/Y/Z)` at alpha 255 and the three plane slots
+from **the same bytes** at `GIZMO_PLANE_FILL_ALPHA`; `viewport_panel.cpp` states no gizmo colour
+literal at all. That is the handoff E.1.2's and E.1.3's specs wrote for this task by name, and it is
+what makes the gizmo's X arrow, the grid's X line and the corner widget's `+X` ball the **same three
+bytes**. The derivation is **structural** rather than reviewed for a measured reason: **a restated
+literal one byte off is invisible to every automated tier** — that is E.1.4's sabotage row 20 — so
+there is one statement of each axis colour in the tree and this header derives from it. `GS1` reads
+each plane's bytes **off the style**, not off the palette a second time, so a plane that took some
+other colour's bytes at the right alpha is red.
+
+**THE HIGHLIGHT IS OPAQUE, AND DELIBERATELY NOT E.1.4's AMBER.** A 54 %-alpha handle is a *different
+colour on each side of an edge*, and that is not a prediction: E.1.4's own validation pass recorded
+ImGuizmo's Y arrow at `rgb(237,137,48)` on one side and `rgb(156,87,28)` on the other **in one
+frame**. `GIZMO_HIGHLIGHT_SRGB = (255, 232, 64, 255)` is not
+`SELECTION_OUTLINE_PRIMARY_DEFAULT`'s `(255, 176, 64)` because the gizmo's origin sits **inside** the
+selected object and the two overlap constantly. `GS2` asserts a per-channel **gap floor of 32**
+against all three axis colours and against the amber read from `render::`'s own constant through
+E.1.4's own conversion — measured tightest at **56** — so a one-byte "distinct" cannot satisfy it,
+and a retune of the outline's colour is caught here rather than silently narrowing the gap.
+
+**AXIS FLIP IS OFF, AND THREE CONSEQUENCES ARE STATED SO NONE IS FILED AS A DEFECT LATER.**
+`AllowAxisFlip(false)` every frame. (a) An axis aimed at the camera shrinks and **hides** at the
+threshold, exactly as in Unity. (b) The hatched stub becomes **unreachable by construction** —
+`DrawHatchedAxis` is called only under `if (gContext.mAxisFactor[i] < 0.f)` (`:1623`, `:1458`) and
+with `allowFlip` false `mulAxis` is `1.f` unconditionally (`:1216-1222`) — which is why
+`GIZMO_HATCHED_AXIS_THICKNESS_POINTS` is **`0`**: the library early-returns on `<= 0` (`:1389`), so
+the value *documents* that no negative axis is ever drawn, and a task that re-enables flip must pick
+a thickness deliberately rather than inherit a stale zero. **`GIZMO_HATCHED_AXIS_SRGB` and that
+thickness are therefore dead slots that no tier and no validation row can observe.** (c) The plane
+quads always sit in the **positive** quadrant between their two axes, which is where Unity puts them.
+During a drag the library reuses its **stored** factors and visibility (`:1191-1201`), so nothing
+flips or hides mid-gesture.
+
+**THE READ-BACK SEAM GOES THROUGH ImGui's OWN PACKER, WHICH IS WHAT MAKES `I124` AN EFFECT
+ASSERTION.** `Style` *does* have a getter, unlike E.1.3's `mbEnable` — but a test TU cannot call it
+without `#include <imgui.h>` and `<ImGuizmo.h>`, and `aero_editor_imgui_test` is **ImGui-free at
+source** by design. `static GizmoStyle ViewportPanel::imGuizmoStyleReadback() noexcept` is the first
+`static` member of that seam family, because it reads a process-wide global rather than a panel
+member, and it converts each `ImVec4` back through `ImGui::ColorConvertFloat4ToU32` and the
+`IM_COL32_*_SHIFT` macros — **the exact packing the draw list will use** — so `I124` asserts a real
+round trip rather than resting on an argument. The shifts rather than a byte cast because
+`IMGUI_USE_BGRA_PACKED_COLOR` is defined nowhere in this tree today and a build that ever defined it
+would otherwise silently swap R and B in a read-back `I124` would then have to be "fixed" to match.
+`toImVec4` **divides** by 255 and never multiplies by a reciprocal — `k * fl(1/255)` is bit-unequal
+to `fl(k/255)` for 126 of the 256 byte values, measured at E.1.1 — and the round trip is exact
+because `IM_F32_TO_INT8_SAT(b / 255.0F) == b` for every byte.
+
+**THE VACUITY CONTROL WAS RUN, AND IT REDDENS.** A read-back that returned `defaultGizmoStyle()`
+instead of reading the global would make `I124` pass for nothing and no reading of `I124` would show
+it. Two things close that: `I125(e)` pins that the read-back's body names both `ImGuizmo::GetStyle()`
+and `ColorConvertFloat4ToU32`, and the non-mutant control — commenting out the one `applyGizmoStyle`
+call, rebuilding, and requiring `I124` to go red — was run at commit 4's gate. **It failed 46 of 80
+assertions**, first at `i := 11, channel := 3` printing `128 == 96` (the rotate sector's fill alpha),
+then the totality catch, then the persist subcase. Reverted and re-verified green.
+
+**TWO `static_assert`s, NEITHER SUFFICIENT ALONE.** `gizmo_style.hpp` carries
+`static_cast<std::size_t>(GizmoColor::TextShadow) + 1U == GIZMO_COLOR_COUNT`, which catches an
+enumerator added here and forgotten at the apply site; `viewport_panel.cpp` carries
+`static_cast<std::size_t>(ImGuizmo::COLOR::COUNT) == GIZMO_COLOR_COUNT`, which catches an enumerator
+added **upstream**. A port bump that grows `ImGuizmo::COLOR` is a compile error at the slot table
+rather than a slot silently left at the library default. **A port bump that adds a `Style` FLOAT is
+seen by neither** — the new field keeps the library's default and `I124` still passes. Documented,
+not covered; `struct Style` is a re-read item beside the colour one.
+
+#### What it could not build a defence for
+
+`mGizmoSizeClipSpace`, `mAllowAxisFlip`, `mAxisLimit` and `mPlaneLimit` have **no getters at all** —
+they are private members of a translation-unit-local context — so no runtime tier in this tree can
+read any of them. Each is pinned as source text in `I125` and judged on validation rows 3, 4 and 5;
+the resolver that *produces* the first and the last two is fully covered at tier 0 by `GS4`–`GS9` and
+`GS11`. A GPU case driving the size across a real viewport resize was considered and rejected: it
+could only assert that the resolver was called, which `I125(a)(d)` already pins, and no tier here can
+resize the panel deterministically. **Adding a case that silently degrades to a weaker claim is worse
+than not adding one.**
+
+**And `I126` says in its own first paragraph what a count pin is worth.** It cannot see a
+*reordering* that preserves counts and it cannot see a semantic change inside a `breakMergeChain`
+site; the real cover for "the write path is byte-identical" is the gate's own diff against the merge
+base and validation row 8. What it buys is that a **deletion** is red in CI on every lane, on every
+push, forever, which no diff against a merge base can be once the branch is gone. The byte-identity
+claim itself was verified three ways at the gate: `git diff main` over `viewport_panel.cpp` produces
+**five hunks** — the include block, the anonymous namespace, the seam cluster, step 5's comment and
+step 5's one call — and none touches the branch point's `:855`–`:949`; the 95-line window from
+`// 6. Arguments.` to `updateGizmo`'s closing brace diffs **clean** against the merge base with a
+one-line-shifted control proving the comparison can fail; and the comment-stripped counts read
+**4 / 1 / 1 / 1**, unmoved.
+
+#### The handoffs this task creates
+
+**E.6.1** inherits every constant in `gizmo_style.hpp` — the eight thicknesses, the seven standalone
+colours, the two alphas, the axis length and the viewport fraction — as well as the palette trio it
+already inherited, and **owns the DPI story this task deferred**: `imgui_layer.cpp:86-88` scales
+ImGui's own style by `SDL_GetWindowDisplayScale` at context creation, **nothing in the viewport reads
+that factor**, and every points-authored viewport constant (`VIEW_AXIS_BALL_RADIUS_POINTS`,
+`OVERLAY_INSET`, and now these) has the same asymmetry: correct on macOS, where ImGui's unit is the
+point, and `1/scale` smaller relative to the scaled UI on a Windows or Linux desktop above 100 %.
+Because every hit tolerance in the library is a literal in the same unit, drawn size and grabbable
+size scale together wherever the constants land. **E.3.1** inherits the palette key, unchanged.
+**A first-party cone overlay** is recorded as its own task, triggered only by validation row 2's cone
+judgement, never as a follow-up commit on this branch.
+
+**Build & dependency impact: none.** No dependency lands, `vcpkg.json` and `/vcpkg` are untouched, no
+`find_package` is added anywhere, and no target's link line changes. Two CMakeLists gain one source
+line each. The new public header includes `<aero/core/math.hpp>` and `<aero/editor/axis_palette.hpp>`
+and nothing else; the new source adds `<algorithm>` and `<cmath>`. `aero::render`'s include path
+already reached `aero_editor_shell_test` through the `PUBLIC aero::render` edge on
+`aero_editor_core`, which is the basis `axis_palette_test.cpp`'s `AX1` already stands on, so `GS2`'s
+reach into `<aero/render/selection_outline.hpp>` costs no new link edge.
