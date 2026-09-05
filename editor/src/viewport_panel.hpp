@@ -7,7 +7,8 @@
 #include <aero/core/vfs.hpp>
 #include <aero/editor/asset_drag.hpp>  // task 3.1.5: AssetDragPayload, ViewportAssetDrop
 #include <aero/editor/editor_camera.hpp>
-#include <aero/editor/gizmo.hpp>  // task 2.3.3: GizmoMode, for the latched mode member
+#include <aero/editor/gizmo.hpp>        // task 2.3.3: GizmoMode, for the latched mode member
+#include <aero/editor/gizmo_style.hpp>  // task E.1.5: GizmoStyle, for the read-back seam
 #include <aero/editor/panel.hpp>
 #include <aero/editor/scene_bounds.hpp>       // task 3.1.5: MeshBoundsLookup, borrowed by the three consumers
 #include <aero/editor/selection_overlay.hpp>  // task 2.3.2: OverlaySegment, for the scratch member
@@ -100,6 +101,17 @@ public:
     // Unavailable -- which is what I120/I121 read in the shader-tools-OFF configuration, where they
     // ASSERT that arm rather than skipping it.
     [[nodiscard]] const render::SelectionOutline* selectionOutlinePass() const noexcept;
+
+    // ---- task E.1.5 -----------------------------------------------------------------------------
+    // A TEST SEAM, and the first STATIC one, because it reads a PROCESS-WIDE GLOBAL rather than a
+    // panel member: ImGuizmo's live Style, converted back to a GizmoStyle through ImGui's OWN
+    // ColorConvertFloat4ToU32 (the exact packing the draw list uses), so I124 can assert what the
+    // library HOLDS rather than what the panel SENT. That is what keeps aero_editor_imgui_test
+    // ImGui-free at source: the alternative is #include <ImGuizmo.h> in a test TU, which ends the
+    // property for one assertion this provides equally well.
+    // Cheap and allocation-free; meant for the test, after tick(), on the thread that owns the ImGui
+    // context -- which is the test's main thread.
+    [[nodiscard]] static GizmoStyle imGuizmoStyleReadback() noexcept;
 
     // ---- task E.1.2 -------------------------------------------------------------------------------
     // The grid toggle. SESSION STATE, default ON, and PERSISTED NOWHERE -- not to project.json, not

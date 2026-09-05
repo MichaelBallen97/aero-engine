@@ -11146,3 +11146,261 @@ TEST_CASE("editor: the selection mask set is cleared on EVERY renderScene exit (
 #endif
     }
 }
+
+// ---- I124-I126: task E.1.5's helpers --------------------------------------------------------------
+namespace {
+
+// Per-channel ints, so a failure prints the numbers rather than `{?}`. AX1's idiom, not a comparison
+// struct: GizmoStyle's own operator== is asserted separately at the end of I124, and a struct here
+// would need an operator<< that ADL cannot reach for std::array anyway.
+[[nodiscard]] int channelOf(const engine::editor::GizmoStyle& style, engine::editor::GizmoColor slot,
+                            std::size_t channel) noexcept {
+    return static_cast<int>(style.colors[static_cast<std::size_t>(slot)][channel]);
+}
+
+// soleLineContaining REQUIREs exactly one match; I126 asserts counts that are deliberately NOT one,
+// so it needs a plain counter beside it rather than a variant of that helper.
+[[nodiscard]] std::size_t countLinesContaining(const std::vector<std::string>& code, std::string_view needle) {
+    std::size_t hits = 0;
+    for (const std::string& line : code) {
+        if (line.find(needle) != std::string::npos) {
+            ++hits;
+        }
+    }
+    return hits;
+}
+
+}  // namespace
+
+TEST_CASE(
+    "editor: the gizmo style reaches ImGuizmo -- the read-back equals the default style byte for byte "
+    "(task E.1.5, I124)") {
+    // THE EFFECT, NOT THE INTENTION. imGuizmoStyleReadback() reads ImGuizmo's OWN process-wide Style
+    // and converts each ImVec4 back through ImGui's OWN ColorConvertFloat4ToU32 -- the exact packing
+    // the draw list performs -- so this is a real round trip through toImVec4's divide, ImGuizmo's
+    // storage and ImGui's saturating quantiser, not a restatement of what the panel sent.
+    //
+    // The one way it could be hollow -- a read-back returning defaultGizmoStyle() instead of reading
+    // the global -- is closed twice over: I125(e) pins that the read-back's body names both
+    // ImGuizmo::GetStyle() and ColorConvertFloat4ToU32, and the vacuity control run at this commit's
+    // gate comments out the applyGizmoStyle call and requires THIS case to go red.
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "gizmo style", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = engine::editor::EditorApp::create(
+        *device, *window, ctx,
+        {.persistLayout = false, .seedDefaultScene = true, .unfocusedFrameCapHz = 0.0F, .restoreLastProject = false});
+    REQUIRE(app.has_value());
+
+    engine::World& world = app->world();
+    engine::Entity cube{};
+    world.eachEntity([&](engine::Entity e) {
+        if (world.name(e) == "Cube") {
+            cube = e;
+        }
+    });
+    REQUIRE(cube.valid());
+    app->selection().set(cube);
+    for (int i = 0; i < 3; ++i) {
+        REQUIRE(app->tick());
+    }
+
+    auto* const viewport = dynamic_cast<engine::editor::ViewportPanel*>(app->panels().find("Viewport"));
+    REQUIRE(viewport != nullptr);
+
+    const engine::editor::GizmoStyle expected = engine::editor::defaultGizmoStyle();
+    const engine::editor::GizmoStyle actual = engine::editor::ViewportPanel::imGuizmoStyleReadback();
+
+#if AERO_SHADER_TOOLS_ENABLED
+    // THE STYLE ARRIVED. The outline pass is the panel's own proof that this really is the arm where
+    // onDraw runs to completion and updateGizmo is reached at all.
+    REQUIRE(viewport->selectionOutlinePass() != nullptr);
+
+    // The eight thicknesses are stored and read VERBATIM -- there is no arithmetic anywhere on that
+    // path -- so Approx would only hide a bug.
+    CHECK(actual.translationLineThicknessPoints == expected.translationLineThicknessPoints);
+    CHECK(actual.translationArrowSizePoints == expected.translationArrowSizePoints);
+    CHECK(actual.rotationLineThicknessPoints == expected.rotationLineThicknessPoints);
+    CHECK(actual.rotationScreenRingThicknessPoints == expected.rotationScreenRingThicknessPoints);
+    CHECK(actual.scaleLineThicknessPoints == expected.scaleLineThicknessPoints);
+    CHECK(actual.scaleDiscRadiusPoints == expected.scaleDiscRadiusPoints);
+    CHECK(actual.hatchedAxisThicknessPoints == expected.hatchedAxisThicknessPoints);
+    CHECK(actual.centerDiscRadiusPoints == expected.centerDiscRadiusPoints);
+
+    // THE ASSERTION THAT CARRIES THE COMMIT: fifteen colours, four channels each, as ints. A one-byte
+    // discrepancy anywhere in the apply table -- a wrong constant, a reciprocal in toImVec4, a swapped
+    // R and B in the read-back's shifts -- is red HERE rather than only on screen.
+    //
+    // WHAT THIS LOOP CANNOT SEE, and the reason the identity static_assert beside IMGUIZMO_COLOR_SLOT
+    // exists: a PERMUTED slot table. applyGizmoStyle writes Colors[SLOT[i]] and the read-back reads
+    // Colors[SLOT[i]], so the table cancels and this comparison holds for ANY injective permutation --
+    // MEASURED: with DIRECTION_X and DIRECTION_Z swapped this case passed 80 of 80 while the X arrow
+    // rendered blue. That is E.1.2's "both sides from one source" species wearing a real round trip as
+    // a disguise. It is closed at COMPILE time, not here; do not add a second indexing expression to
+    // this loop hoping to catch it.
+    for (std::size_t i = 0; i < engine::editor::GIZMO_COLOR_COUNT; ++i) {
+        CAPTURE(i);
+        const auto slot = static_cast<engine::editor::GizmoColor>(i);
+        for (std::size_t channel = 0; channel < 4U; ++channel) {
+            CAPTURE(channel);
+            CHECK(channelOf(actual, slot, channel) == channelOf(expected, slot, channel));
+        }
+    }
+
+    // The totality catch: double parentheses because it prints `CHECK( true )` on a failure either
+    // way, which is acceptable ONLY because the loop above has already printed the culprit. Its job
+    // is to catch a field added to GizmoStyle later and forgotten by the loop.
+    CHECK((actual == expected));
+
+    SUBCASE("the global persists across a frame with nothing selected") {
+        // A frame that submits NO gizmo applies nothing and undoes nothing -- which matters the day
+        // E.6.1's theme becomes a second writer of the same process-wide global.
+        app->selection().clear();
+        REQUIRE(app->tick());
+        const engine::editor::GizmoStyle afterEmptyFrame = engine::editor::ViewportPanel::imGuizmoStyleReadback();
+        CHECK((afterEmptyFrame == expected));
+    }
+#else
+    // THE STYLE NEVER ARRIVED, and this arm ASSERTS that rather than skipping (the 3.4.2 I88-I92
+    // rule): the viewport latched Unavailable, so onDraw returns before updateGizmo and the global is
+    // still the library's. That is what proves "equal" above is a fact about the frame rather than a
+    // property of the read-back function.
+    CHECK(viewport->selectionOutlinePass() == nullptr);
+    // ImGuizmo's own DIRECTION_X is (0.666, 0, 0, 1) -- 170 through ImGui's quantiser -- against the
+    // palette's 226.
+    CHECK(channelOf(actual, engine::editor::GizmoColor::AxisX, 0) !=
+          channelOf(expected, engine::editor::GizmoColor::AxisX, 0));
+    // ...and the library's own 3.0f translation-line thickness against ours.
+    CHECK(actual.translationLineThicknessPoints != engine::editor::GIZMO_TRANSLATION_LINE_THICKNESS_POINTS);
+    // The "identical behaviour" half: the editor still ticks.
+    REQUIRE(app->tick());
+#endif
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: the gizmo style's five source-text invariants hold (task E.1.5, I125)") {
+    // THE I110/I118 PATTERN. Four of ImGuizmo's five knobs have NO GETTER AT ALL -- mGizmoSizeClipSpace,
+    // mAllowAxisFlip, mAxisLimit and mPlaneLimit are private members of a translation-unit-local
+    // context -- so no runtime tier in this tree can read any of them, and source text is not a weaker
+    // tier here, it is the only one. Each clause below says which seed reddens it. UNGATED: the source
+    // exists whether or not AERO_SHADER_TOOLS built anything.
+    const std::vector<std::string> code = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/viewport_panel.cpp");
+    REQUIRE_FALSE(code.empty());
+
+    SUBCASE("(a) the apply sits AFTER SetRect and BEFORE both Enable and Manipulate") {
+        // Applying AFTER Manipulate is one frame late on every resize and INVISIBLE otherwise --
+        // I124 reads after the tick and stays GREEN under it, which is precisely why this pin exists.
+        const std::size_t applyAt = soleLineContaining(code, "applyGizmoStyle(GIZMO_STYLE");
+        const std::size_t setRectAt = soleLineContaining(code, "ImGuizmo::SetRect(");
+        const std::size_t enableAt = soleLineContaining(code, "ImGuizmo::Enable(gesture.gesture");
+        const std::size_t manipulateAt = soleLineContaining(code, "ImGuizmo::Manipulate(");
+        CHECK(setRectAt < applyAt);  // SetRect writes mDisplayRatio, the ratio the resolver mirrors
+        CHECK(applyAt < enableAt);
+        CHECK(applyAt < manipulateAt);  // ComputeContext reads the size INSIDE Manipulate
+    }
+
+    SUBCASE("(b) axis flip is turned OFF, exactly once, and never back on") {
+        // mAllowAxisFlip has no getter. Deleting the call reddens nothing else anywhere; the picture
+        // flips again and validation row 4 is the whole behavioural cover.
+        CHECK(countLinesContaining(code, "ImGuizmo::AllowAxisFlip(false)") == 1U);
+        CHECK(countLinesContaining(code, "ImGuizmo::AllowAxisFlip(true)") == 0U);
+    }
+
+    SUBCASE("(c) the two limit setters are CROSSED, each naming the member it must") {
+        // ImGuizmo.cpp:1229-1230 against the setters at :2657-2670: SetPlaneLimit's value is compared
+        // against the AXIS's clip length and SetAxisLimit's against the PLANE's clip area. Swapping
+        // the two arguments reddens ONLY this -- axes then hide on an area threshold and planes on a
+        // length one, which validation row 5 sees and no automated tier can.
+        const std::size_t planeLimitAt = soleLineContaining(code, "ImGuizmo::SetPlaneLimit(");
+        const std::size_t axisLimitAt = soleLineContaining(code, "ImGuizmo::SetAxisLimit(");
+        CHECK(code[planeLimitAt].find("axisHideClipLength") != std::string::npos);
+        CHECK(code[axisLimitAt].find("planeHideClipArea") != std::string::npos);
+        // ...and neither line names the other's member, so a line carrying both cannot pass.
+        CHECK(code[planeLimitAt].find("planeHideClipArea") == std::string::npos);
+        CHECK(code[axisLimitAt].find("axisHideClipLength") == std::string::npos);
+    }
+
+    SUBCASE("(d) the resolved size is the value handed over") {
+        // mGizmoSizeClipSpace has no getter. The resolver that PRODUCES the value is fully covered at
+        // tier 0 by GS4-GS9 and GS11; that it is the value handed to the library is only checkable here.
+        const std::size_t sizeAt = soleLineContaining(code, "ImGuizmo::SetGizmoSizeClipSpace(");
+        CHECK(code[sizeAt].find("clipSpaceSize") != std::string::npos);
+    }
+
+    SUBCASE("(e) the read-back really reads the library, and nothing else writes the global") {
+        // soleLineContaining CANNOT be used for ImGuizmo::GetStyle() -- it appears TWICE after this
+        // task (the apply site and the read-back) and that helper REQUIREs exactly one. Bound the
+        // read-back's body by the first line whose whole content is `}` instead.
+        const std::size_t readbackAt = soleLineContaining(code, "ViewportPanel::imGuizmoStyleReadback()");
+        std::size_t bodyEnd = code.size();
+        for (std::size_t i = readbackAt + 1U; i < code.size(); ++i) {
+            if (code[i] == "}") {
+                bodyEnd = i;
+                break;
+            }
+        }
+        // The clause's own anti-vacuity: an unfound brace would make every "inside the window" test
+        // below trivially true or trivially false depending on how it was written.
+        REQUIRE(bodyEnd < code.size());
+        REQUIRE(bodyEnd > readbackAt);
+
+        // A claim in its own right: a THIRD occurrence would be a second writer of a process-wide
+        // global appearing without a decision.
+        CHECK(countLinesContaining(code, "ImGuizmo::GetStyle()") == 2U);
+        std::size_t getStyleInsideBody = 0;
+        for (std::size_t i = readbackAt + 1U; i < bodyEnd; ++i) {
+            if (code[i].find("ImGuizmo::GetStyle()") != std::string::npos) {
+                ++getStyleInsideBody;
+            }
+        }
+        CHECK(getStyleInsideBody == 1U);
+
+        // ImGui's OWN packer, not a hand-written one -- which is what makes I124 a real round trip
+        // rather than a comparison of defaultGizmoStyle() against itself.
+        const std::size_t convertAt = soleLineContaining(code, "ColorConvertFloat4ToU32(");
+        CHECK(convertAt > readbackAt);
+        CHECK(convertAt < bodyEnd);
+    }
+}
+
+TEST_CASE(
+    "editor: the gizmo write path is untouched -- the merge-chain sites and the one push are where they were "
+    "(task E.1.5, I126)") {
+    // WHAT THIS CASE IS WORTH, said out loud. A count pin is the weakest tier there is: it cannot see
+    // a REORDERING that preserves counts, and it cannot see a semantic change inside a breakMergeChain
+    // site. The real cover for "the write path is byte-identical" is the gate's own `git diff` against
+    // the merge base and validation row 8. What this buys is that a DELETION -- someone removing the
+    // End-edge breakMergeChain() -- is red in CI on every lane, on every push, forever, which no diff
+    // against a merge base can be once the branch is gone.
+    //
+    // Every count below was re-measured at this task's branch point rather than remembered, and every
+    // one of the seven lines involved is a CODE line, so the comment-stripped read sees them all.
+    const std::vector<std::string> code = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/viewport_panel.cpp");
+    REQUIRE_FALSE(code.empty());
+
+    SUBCASE("2.4.1's merge-chain edges and the one undoable write keep their counts") {
+        CHECK(countLinesContaining(code, "breakMergeChain(") == 4U);
+        CHECK(countLinesContaining(code, "context.commands.push(") == 1U);
+        CHECK(countLinesContaining(code, "gizmoWriteFromWorld(") == 1U);
+        CHECK(countLinesContaining(code, "std::make_unique<TransformCommand>") == 1U);
+    }
+
+    SUBCASE("the one push still happens AFTER Manipulate, and after the restyle's own call") {
+        const std::size_t pushAt = soleLineContaining(code, "context.commands.push(");
+        const std::size_t manipulateAt = soleLineContaining(code, "ImGuizmo::Manipulate(");
+        const std::size_t applyAt = soleLineContaining(code, "applyGizmoStyle(GIZMO_STYLE");
+        CHECK(manipulateAt < pushAt);
+        CHECK(applyAt < pushAt);
+    }
+}

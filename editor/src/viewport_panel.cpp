@@ -14,6 +14,7 @@
 #include <aero/editor/axis_palette.hpp>  // task E.1.2: AXIS_X_LINEAR / AXIS_Z_LINEAR
 #include <aero/editor/command_stack.hpp>
 #include <aero/editor/gizmo.hpp>
+#include <aero/editor/gizmo_style.hpp>  // task E.1.5: the pure style + screen-size model
 #include <aero/editor/picking.hpp>
 #include <aero/editor/scene_bounds.hpp>
 #include <aero/editor/selection.hpp>
@@ -196,6 +197,95 @@ void drawUnavailableMessage(const char* reason) {
     return result;
 }
 
+// task E.1.5 -- THE ONLY PLACE A GizmoStyle BECOMES AN ImGuizmo::Style, and the only table that maps
+// GizmoColor to ImGuizmo::COLOR. Total over GizmoColor by construction (one entry per enumerator, in
+// order), and the static_assert below is the teeth: a port bump that grows ImGuizmo::COLOR fails to
+// compile HERE rather than leaving a slot at the library default. ImGuizmo::COLOR is an UNSCOPED enum
+// (ImGuizmo.h:277), so the enumerators are spelled bare, exactly as toImGuizmoOperation does.
+constexpr std::array<ImGuizmo::COLOR, GIZMO_COLOR_COUNT> IMGUIZMO_COLOR_SLOT{ImGuizmo::DIRECTION_X,
+                                                                             ImGuizmo::DIRECTION_Y,
+                                                                             ImGuizmo::DIRECTION_Z,
+                                                                             ImGuizmo::PLANE_X,
+                                                                             ImGuizmo::PLANE_Y,
+                                                                             ImGuizmo::PLANE_Z,
+                                                                             ImGuizmo::SELECTION,
+                                                                             ImGuizmo::INACTIVE,
+                                                                             ImGuizmo::TRANSLATION_LINE,
+                                                                             ImGuizmo::SCALE_LINE,
+                                                                             ImGuizmo::ROTATION_USING_BORDER,
+                                                                             ImGuizmo::ROTATION_USING_FILL,
+                                                                             ImGuizmo::HATCHED_AXIS_LINES,
+                                                                             ImGuizmo::TEXT,
+                                                                             ImGuizmo::TEXT_SHADOW};
+static_assert(static_cast<std::size_t>(ImGuizmo::COLOR::COUNT) == GIZMO_COLOR_COUNT);
+// AND THE TABLE MUST BE THE IDENTITY, which is a SECOND claim and breaks independently of the count.
+// GizmoColor mirrors ImGuizmo::COLOR in order (ImGuizmo.h:277-295), so slot i must be enumerator i.
+// WITHOUT THIS, A PERMUTED TABLE IS INVISIBLE TO EVERY TIER: applyGizmoStyle writes Colors[SLOT[i]]
+// and imGuizmoStyleReadback reads Colors[SLOT[i]], so the table CANCELS and the round trip is the
+// identity for ANY injective permutation. MEASURED, not reasoned -- swapping DIRECTION_X and
+// DIRECTION_Z here left I124 passing 80 of 80 assertions while the X arrow rendered BLUE on screen.
+// It is the "both sides computed from one source" species E.1.2 recorded, wearing a real round trip
+// as a disguise, and a compile error is a stronger witness than a red test: it also catches an
+// UPSTREAM REORDER of ImGuizmo::COLOR that leaves COUNT unchanged, which no test could ever see.
+static_assert([] {
+    for (std::size_t i = 0; i < GIZMO_COLOR_COUNT; ++i) {
+        if (IMGUIZMO_COLOR_SLOT[i] != static_cast<ImGuizmo::COLOR>(i)) {
+            return false;
+        }
+    }
+    return true;
+}());
+
+// DIVIDE by 255, never multiply by a reciprocal: k * fl(1/255) is bit-unequal to fl(k/255) for 126 of
+// the 256 byte values (E.1.1, MEASURED -- and it looks identical to six significant digits), and I124
+// asserts this is an exact round trip through ImGui's own IM_F32_TO_INT8_SAT.
+[[nodiscard]] ImVec4 toImVec4(Rgba8 color) noexcept {
+    return ImVec4(static_cast<float>(color[0]) / 255.0F, static_cast<float>(color[1]) / 255.0F,
+                  static_cast<float>(color[2]) / 255.0F, static_cast<float>(color[3]) / 255.0F);
+}
+
+// EVERY knob, EVERY submitted frame, BEFORE Manipulate: mScreenFactor is computed inside Manipulate's
+// ComputeContext (ImGuizmo.cpp:1128), the style is ONE process-wide global (GetStyle() returns
+// gContext.mStyle, :815-818) with exactly one consumer today, and a per-frame write is idempotent and
+// self-healing against any future writer -- E.6.1's theme is the obvious one. Runs whether or not the
+// gizmo is ENABLED this frame: Enable(false) skips the Handle* block only (:2704) and the four Draw*
+// calls still run (:2722-2725), so the greyed handles during a camera gesture or over the corner
+// widget are drawn with THIS style's thicknesses and INACTIVE colour, not the library's.
+void applyGizmoStyle(const GizmoStyle& style, const GizmoScreenSize& size) {
+    ImGuizmo::Style& target = ImGuizmo::GetStyle();
+    target.TranslationLineThickness = style.translationLineThicknessPoints;
+    target.TranslationLineArrowSize = style.translationArrowSizePoints;
+    target.RotationLineThickness = style.rotationLineThicknessPoints;
+    target.RotationOuterLineThickness = style.rotationScreenRingThicknessPoints;
+    target.ScaleLineThickness = style.scaleLineThicknessPoints;
+    target.ScaleLineCircleSize = style.scaleDiscRadiusPoints;
+    target.HatchedAxisLineThickness = style.hatchedAxisThicknessPoints;
+    target.CenterCircleSize = style.centerDiscRadiusPoints;
+    for (std::size_t i = 0; i < GIZMO_COLOR_COUNT; ++i) {
+        target.Colors[IMGUIZMO_COLOR_SLOT[i]] = toImVec4(style.colors[i]);
+    }
+    ImGuizmo::SetGizmoSizeClipSpace(size.clipSpaceSize);
+    // +X is +X from every side. Unity, Unreal, Blender and Godot never flip; a foreshortened axis
+    // hides at the threshold below instead. With this false, mAxisFactor is 1.f unconditionally
+    // (ImGuizmo.cpp:1217-1219) and the hatched stub (:1623, :1458) can never draw -- which is why the
+    // style's hatched thickness is 0, and why GIZMO_HATCHED_AXIS_SRGB is unobservable by any tier.
+    ImGuizmo::AllowAxisFlip(false);
+    // CROSSED, AND THE NAMES ARE THE LIBRARY'S. Verified at ImGuizmo.cpp:1229-1230 against the setters
+    // at :2657-2660 and :2667-2670: SetPlaneLimit feeds mPlaneLimit, which :1230 compares against the
+    // AXIS's projected clip LENGTH; SetAxisLimit feeds mAxisLimit, which :1229 compares against the
+    // PLANE's projected clip AREA. The header's comments (ImGuizmo.h:268, :272) describe the NAMES,
+    // not the code. I125 pins each line to the member it must name; NO runtime tier can read either
+    // value -- there is no getter -- so validation row 5 is the whole behavioural cover, and a port
+    // bump that un-crosses these leaves I125 green and inverts the picture silently. RE-READ
+    // :1229-1230 AT EVERY PORT BUMP.
+    ImGuizmo::SetPlaneLimit(size.axisHideClipLength);
+    ImGuizmo::SetAxisLimit(size.planeHideClipArea);
+}
+
+// THE style, built once at namespace scope from the constexpr derivation. Not a member: it depends on
+// nothing the panel owns, and a second panel would use the identical value.
+constexpr GizmoStyle GIZMO_STYLE = defaultGizmoStyle();
+
 }  // namespace
 
 ViewportPanel::ViewportPanel(rhi::Device& deviceIn) noexcept : device(&deviceIn) {}
@@ -224,6 +314,39 @@ const render::PostProcess* ViewportPanel::postProcess() const noexcept { return 
 // ---- task E.1.1 ----------------------------------------------------------------------------------
 render::DebugDraw* ViewportPanel::debugDraw() noexcept { return debugDrawer ? &*debugDrawer : nullptr; }
 const render::DebugDraw* ViewportPanel::debugDraw() const noexcept { return debugDrawer ? &*debugDrawer : nullptr; }
+
+// task E.1.5: the read-back seam. ImGui's OWN packer, not a hand-written one -- the whole point is
+// that I124 asserts the REAL round trip the draw list will perform (imgui.cpp:2906,
+// IM_F32_TO_INT8_SAT at imgui_internal.h:293), so a swapped R and B in the shifts below is a byte off
+// HERE rather than only on screen.
+//
+// WHAT I124 CANNOT SEE, stated because an earlier version of this comment claimed otherwise: a
+// PERMUTED IMGUIZMO_COLOR_SLOT. This loop and applyGizmoStyle's both index through that one table, so
+// it cancels and the round trip is the identity for any injective permutation -- measured, I124
+// passed 80 of 80 with DIRECTION_X and DIRECTION_Z swapped. The identity static_assert beside the
+// table is what actually closes that, at COMPILE time. Do not index this loop by a second,
+// independent expression to "fix" it: the assert is stronger, and two spellings of one mapping is
+// exactly the drift the single table exists to prevent.
+GizmoStyle ViewportPanel::imGuizmoStyleReadback() noexcept {
+    const ImGuizmo::Style& source = ImGuizmo::GetStyle();
+    GizmoStyle out{};
+    out.translationLineThicknessPoints = source.TranslationLineThickness;
+    out.translationArrowSizePoints = source.TranslationLineArrowSize;
+    out.rotationLineThicknessPoints = source.RotationLineThickness;
+    out.rotationScreenRingThicknessPoints = source.RotationOuterLineThickness;
+    out.scaleLineThicknessPoints = source.ScaleLineThickness;
+    out.scaleDiscRadiusPoints = source.ScaleLineCircleSize;
+    out.hatchedAxisThicknessPoints = source.HatchedAxisLineThickness;
+    out.centerDiscRadiusPoints = source.CenterCircleSize;
+    for (std::size_t i = 0; i < GIZMO_COLOR_COUNT; ++i) {
+        const ImU32 packed = ImGui::ColorConvertFloat4ToU32(source.Colors[IMGUIZMO_COLOR_SLOT[i]]);
+        out.colors[i] = Rgba8{static_cast<std::uint8_t>((packed >> IM_COL32_R_SHIFT) & 0xFFU),
+                              static_cast<std::uint8_t>((packed >> IM_COL32_G_SHIFT) & 0xFFU),
+                              static_cast<std::uint8_t>((packed >> IM_COL32_B_SHIFT) & 0xFFU),
+                              static_cast<std::uint8_t>((packed >> IM_COL32_A_SHIFT) & 0xFFU)};
+    }
+    return out;
+}
 
 // THE ARM-TIME DECISION, and it is a GEOMETRIC test on purpose -- see the header for the regression
 // this replaces. Reads the rect the LAST DRAWN FRAME recorded (step 9b), which is what makes it
@@ -796,7 +919,8 @@ void ViewportPanel::updateGizmo(PanelContext& context, Vec2 imageOrigin, Vec2 av
     }
 
     // 5. Per-frame setup. SetDrawlist is FIRST and EVERY frame, because BeginFrame() reassigns
-    // gContext.mDrawList to the "gizmo" window's list (ImGuizmo.cpp:1017).
+    // gContext.mDrawList to the "gizmo" window's list (ImGuizmo.cpp:1017). task E.1.5 adds the style
+    // and the size here, between SetRect and the Enable arbitration, for the reasons on the call.
     ImGuizmo::SetDrawlist(ImGui::GetWindowDrawList());
     // task E.1.3: driven from the camera's own mode, never a literal. MEASURED at the pinned port's
     // source, `grep -c mIsOrthographic ImGuizmo.cpp` == 5: the flag reaches exactly FIVE lines (:772
@@ -808,6 +932,13 @@ void ViewportPanel::updateGizmo(PanelContext& context, Vec2 imageOrigin, Vec2 av
     // rotate ring's orientation and the behind-camera skip.
     ImGuizmo::SetOrthographic(editorCamera.projectionMode() == ProjectionMode::Orthographic);
     ImGuizmo::SetRect(imageOrigin.x, imageOrigin.y, avail.x, avail.y);  // POINTS (D18), never drawExtent
+    // task E.1.5: the style and the size, EVERY frame, AFTER SetRect (which supplies mDisplayRatio,
+    // ImGuizmo.cpp:979 -- the resolver's aspect handling mirrors GetSegmentLengthClipSpace's,
+    // :880-884) and BEFORE Manipulate (whose ComputeContext reads the size, :1128). Applying it after
+    // Manipulate is ONE FRAME LATE on every resize and INVISIBLE otherwise, which is why I125 pins the
+    // ordering as source text. See applyGizmoStyle above for the four decisions it carries. `avail` is
+    // the same rect SetRect was just given, in points.
+    applyGizmoStyle(GIZMO_STYLE, resolveGizmoScreenSize(avail));
 
     // A4/E6-corrected (approved at plan review): a drag ImGuizmo never saw RELEASED (panel hidden,
     // window minimized or the target destroyed while LMB was down) leaves mbUsing latched -- and the
