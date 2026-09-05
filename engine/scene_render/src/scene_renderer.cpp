@@ -354,7 +354,8 @@ SelectionMaskSet buildSelectionMaskSet(World& world, std::span<const Entity> sel
     return set;
 }
 
-SceneRenderer::SceneRenderer(render::ForwardRenderer&& fwd) noexcept : forward(std::move(fwd)) {}
+SceneRenderer::SceneRenderer(render::ForwardRenderer&& fwd, render::SkyPass&& skyPassValue) noexcept
+    : forward(std::move(fwd)), sky(std::move(skyPassValue)) {}
 
 std::optional<SceneRenderer> SceneRenderer::create(rhi::Device& device, const VirtualFileSystem& shaderVfs,
                                                    rhi::TextureFormat colorFormat, rhi::TextureFormat depthFormat,
@@ -367,11 +368,22 @@ std::optional<SceneRenderer> SceneRenderer::create(rhi::Device& device, const Vi
         // which already logged the ERROR — nothing to add here.
         return std::nullopt;
     }
-    return SceneRenderer{std::move(*fwd)};
+    // task E.2.1: from the SAME two formats as the ForwardRenderer, because the sky records into the
+    // SAME pass. Ordered AFTER it deliberately: a sky failure destroys the already-built
+    // ForwardRenderer through its own destructor on the way out, with no leak and no second ERROR --
+    // SkyPass::create has already logged the cause.
+    std::optional<render::SkyPass> skyPassValue =
+        render::SkyPass::create(device, shaderVfs, {.colorFormat = colorFormat, .depthFormat = depthFormat});
+    if (!skyPassValue.has_value()) {
+        return std::nullopt;
+    }
+    return SceneRenderer{std::move(*fwd), std::move(*skyPassValue)};
 }
 
 render::ForwardRenderer& SceneRenderer::renderer() noexcept { return forward; }
 const render::ForwardRenderer& SceneRenderer::renderer() const noexcept { return forward; }
+render::SkyPass& SceneRenderer::skyPass() noexcept { return sky; }
+const render::SkyPass& SceneRenderer::skyPass() const noexcept { return sky; }
 AssetBindingTable& SceneRenderer::bindings() noexcept { return bindingTable; }
 const AssetBindingTable& SceneRenderer::bindings() const noexcept { return bindingTable; }
 std::uint32_t SceneRenderer::lastUnresolvedMeshes() const noexcept { return lastUnresolvedMeshesValue; }
@@ -415,6 +427,12 @@ void SceneRenderer::render(World& world, render::Frame& frame, const render::Cam
     // inside the caller's open frame because the two passes are on different command buffers and
     // SDL's pass-in-progress guard is per command buffer.
     view.shadow = forward.renderShadowMap(view);
+    // task E.2.1: THE SKY, BEFORE OPAQUE, into the caller's OPEN pass. Depth test and depth write are
+    // both OFF on its pipeline, so geometry overdraws it and E.1.1's Tested debug lines still
+    // depth-test against a CLEARED 1.0 wherever only sky was drawn -- which is what keeps E.1.2's grid
+    // visible over the ground half. It no-ops when !view.hasCamera, exactly as draw() does, and it
+    // sets no viewport and no scissor, exactly as draw() does not.
+    sky.draw(frame, view);
     forward.draw(frame, view);  // no-ops when !view.hasCamera
 }
 

@@ -175,6 +175,12 @@ TEST_CASE("render sky: packSkyCamera inverts proj * view, and refuses a non-fini
     #include <aero/core/vfs.hpp>
     #include <aero/platform/platform.hpp>
     #include <aero/rhi/rhi.hpp>
+    // SB16 alone reaches the bridge: it is the ONE case here that drives the pass through the object
+    // that owns it in production rather than through a hand-built RenderView. aero_tests already
+    // links aero::scene and aero::scene_render (scene_render_test.cpp rides this same binary), so no
+    // link edge moves for it.
+    #include <aero/scene/scene.hpp>
+    #include <aero/scene_render/scene_renderer.hpp>
 
     #include "rhi_test_support.hpp"
 
@@ -947,6 +953,125 @@ TEST_CASE("render sky: a moved-from pass is a logged no-op and the move frees ex
     const bool leaked = std::any_of(warnings.begin(), warnings.end(),
                                     [](const std::string& line) { return line.find("leaked") != std::string::npos; });
     CHECK_FALSE(leaked);
+}
+
+TEST_CASE("render sky: the environment reaches the picture end to end through SceneRenderer (SB16)") {
+    AERO_SKY_TIER1_PREAMBLE();
+    constexpr std::uint32_t SIZE = 64;
+    auto target = engine::render::RenderTarget::create(
+        *device, {SIZE, SIZE}, {.colorFormat = engine::rhi::TextureFormat::RGBA16Float, .depth = true, .quantum = 1});
+    REQUIRE(target.has_value());
+    auto sceneRenderer =
+        engine::scene_render::SceneRenderer::create(*device, vfs, target->colorFormat(), target->depthFormat());
+    REQUIRE(sceneRenderer.has_value());
+
+    // A camera looking at the origin, a cube ON the origin, and one directional light. NO Environment
+    // -- the ordinary state of every scene authored before this task.
+    engine::World world;
+    const engine::Entity cameraEntity = world.create();
+    REQUIRE(world.add<engine::Transform>(
+                cameraEntity, engine::Transform{Vec3{0.0F, 0.0F, 5.0F}, engine::Quat::identity(), Vec3::one()}) !=
+            nullptr);
+    REQUIRE(world.add<engine::Camera>(cameraEntity, engine::Camera{}) != nullptr);
+
+    const engine::Entity cubeEntity = world.create();
+    REQUIRE(world.add<engine::Transform>(cubeEntity, engine::Transform{Vec3::zero(), engine::Quat::identity(),
+                                                                       Vec3{2.0F, 2.0F, 2.0F}}) != nullptr);
+    REQUIRE(world.add<engine::MeshRenderer>(
+                cubeEntity, engine::MeshRenderer{static_cast<std::uint32_t>(engine::render::PrimitiveId::Cube),
+                                                 Vec3{1.0F, 0.0F, 0.0F}}) != nullptr);
+
+    const engine::Entity lightEntity = world.create();
+    REQUIRE(world.add<engine::Transform>(lightEntity) != nullptr);  // identity -> the -Z world axis
+    REQUIRE(world.add<engine::DirectionalLight>(lightEntity, engine::DirectionalLight{Vec3::one(), 3.0F}) != nullptr);
+
+    // A clear UNEQUAL to every colour compared against below, so "the corners are the sky" cannot be
+    // satisfied by a frame in which nothing was shaded at all.
+    const engine::rhi::Color clear{0.9F, 0.1F, 0.9F, 1.0F};
+    const auto renderOnce = [&]() {
+        std::optional<engine::render::Frame> frame = target->beginFrame(clear);
+        REQUIRE(frame.has_value());
+        CHECK((frame->extent() == engine::rhi::Extent2D{SIZE, SIZE}));  // the aspect the oracle assumes
+        sceneRenderer->render(world, *frame);
+        REQUIRE(target->endFrame(std::move(*frame)));
+        std::vector<std::byte> pixels(static_cast<std::size_t>(SIZE) * SIZE * 8U, std::byte{0xAB});
+        REQUIRE(device->readbackTexture(target->colorTexture(), 0, pixels));
+        return pixels;
+    };
+
+    // THE ORACLE'S CAMERA comes from the bridge's own resolver, on the SAME viewport render() uses --
+    // the shared input, exactly as SB8/SB9 share theirs. THE ORACLE'S ENVIRONMENT DOES NOT: it is
+    // stated here as a DEFAULT-CONSTRUCTED EnvironmentData, which is what makes "a World with no
+    // Environment renders the default sky" an assertion rather than a tautology.
+    engine::scene_render::RenderViewScratch scratch;
+    const engine::render::RenderView resolved = engine::scene_render::buildRenderView(world, scratch, {SIZE, SIZE});
+    REQUIRE(resolved.hasCamera);
+    CHECK(resolved.environmentCount == 0U);
+    const Mat4 invViewProj = engine::inverse(resolved.camera.proj * resolved.camera.view);
+    const engine::render::SkyGradient defaultGradient =
+        engine::render::resolveSkyGradient(engine::render::EnvironmentData{});
+
+    constexpr std::uint32_t TOLERANCE_HALF_ULPS = 2;
+    const std::array<std::pair<std::uint32_t, std::uint32_t>, 4> corners{
+        std::pair{1U, 1U}, std::pair{1U, SIZE - 2U}, std::pair{SIZE - 2U, 1U}, std::pair{SIZE - 2U, SIZE - 2U}};
+
+    SUBCASE("no Environment -> the DEFAULT sky in the corners, the cube in the centre") {
+        const std::vector<std::byte> pixels = renderOnce();
+        for (const auto& [row, column] : corners) {
+            CAPTURE(row);
+            CAPTURE(column);
+            const Half4 got = halfAt(pixels, SIZE, row, column);
+            const Half4 want = encodeHalf4(
+                engine::render::skyRadiance(defaultGradient, rayAtPixel(invViewProj, SIZE, SIZE, row, column)), 1.0F);
+            INFO("got ", got, " want ", want);
+            CHECK(halfUlpDistance(got.r, want.r) <= TOLERANCE_HALF_ULPS);
+            CHECK(halfUlpDistance(got.g, want.g) <= TOLERANCE_HALF_ULPS);
+            CHECK(halfUlpDistance(got.b, want.b) <= TOLERANCE_HALF_ULPS);
+            // ...and NOT the clear, which is the anti-vacuity arm for the whole subcase.
+            CHECK_FALSE(got == encodeHalf4(Vec3{clear.r, clear.g, clear.b}, clear.a));
+        }
+        // THE CENTRE IS THE CUBE. A sky recorded AFTER the forward pass makes this the sky oracle
+        // instead, with no error anywhere -- SB9's claim, restated where SceneRenderer owns the order.
+        const Half4 centre = halfAt(pixels, SIZE, SIZE / 2U, SIZE / 2U);
+        const Half4 skyAtCentre = encodeHalf4(
+            engine::render::skyRadiance(defaultGradient, rayAtPixel(invViewProj, SIZE, SIZE, SIZE / 2U, SIZE / 2U)),
+            1.0F);
+        INFO("centre ", centre, " sky oracle there ", skyAtCentre);
+        CHECK_FALSE(centre == skyAtCentre);
+    }
+
+    SUBCASE("a Solid Environment -> the corners are EXACTLY its colour, byte for byte") {
+        const Vec3 solid{0.125F, 0.375F, 0.875F};
+        const engine::Entity environmentEntity = world.create();
+        REQUIRE(world.add<engine::Environment>(
+                    environmentEntity, engine::Environment{.backgroundMode = 1U, .solidColor = solid}) != nullptr);
+
+        const std::vector<std::byte> pixels = renderOnce();
+
+        // A frame that ONLY cleared to the same colour: no sky pass, no geometry, nothing recorded.
+        // The two must agree BYTE FOR BYTE, which is the whole point of packing a Solid sky as two
+        // exactly-zero deltas -- `x + 0 * w` is exact on every IEEE backend.
+        std::optional<engine::render::Frame> clearOnly = target->beginFrame({solid.x, solid.y, solid.z, 1.0F});
+        REQUIRE(clearOnly.has_value());
+        REQUIRE(target->endFrame(std::move(*clearOnly)));
+        std::vector<std::byte> cleared(static_cast<std::size_t>(SIZE) * SIZE * 8U, std::byte{0xAB});
+        REQUIRE(device->readbackTexture(target->colorTexture(), 0, cleared));
+
+        const Half4 expected = encodeHalf4(solid, 1.0F);
+        for (const auto& [row, column] : corners) {
+            CAPTURE(row);
+            CAPTURE(column);
+            const Half4 got = halfAt(pixels, SIZE, row, column);
+            INFO("got ", got, " want ", expected);
+            CHECK(got == expected);
+            CHECK(got == halfAt(cleared, SIZE, row, column));
+        }
+        // ANTI-VACUITY: the clear used for the sky frame was NOT this colour, so the agreement above
+        // is the shader's arithmetic and not a frame nobody drew into.
+        CHECK_FALSE(expected == encodeHalf4(Vec3{clear.r, clear.g, clear.b}, clear.a));
+        // ...and the centre is still the cube, so "Solid" did not simply overwrite everything.
+        CHECK_FALSE(halfAt(pixels, SIZE, SIZE / 2U, SIZE / 2U) == expected);
+    }
 }
 
 #endif  // AERO_SHADER_TOOLS_ENABLED

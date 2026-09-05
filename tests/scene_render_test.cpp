@@ -564,6 +564,32 @@ struct WarnCapture {
                        [&](const std::string& m) { return m.find(needle) != std::string::npos; });
 }
 
+// task E.2.1: the INVERSE of render_sky_test.cpp's SingleShaderPrefixBackend -- it admits every
+// cooked shader EXCEPT the ones under one prefix. That asymmetry is the whole case: the
+// ForwardRenderer must SUCCEED and the SkyPass must then FAIL, which is the only route a caller has
+// to SkyPass::create's half-loaded path through SceneRenderer.
+class ExcludingPrefixBackend final : public engine::FileSystemBackend {
+public:
+    ExcludingPrefixBackend(std::string_view rootDirectory, std::string_view refusedPrefix)
+        : inner(rootDirectory), prefix(refusedPrefix) {}
+
+    [[nodiscard]] bool exists(std::string_view relPath) const override {
+        return admits(relPath) && inner.exists(relPath);
+    }
+    [[nodiscard]] std::optional<std::uint64_t> fileSize(std::string_view relPath) const override {
+        return admits(relPath) ? inner.fileSize(relPath) : std::nullopt;
+    }
+    [[nodiscard]] std::optional<engine::ByteBuffer> readFile(std::string_view relPath) const override {
+        return admits(relPath) ? inner.readFile(relPath) : std::nullopt;
+    }
+
+private:
+    [[nodiscard]] bool admits(std::string_view relPath) const { return !relPath.starts_with(prefix); }
+
+    engine::DirectoryBackend inner;
+    std::string prefix;
+};
+
 // RAII, so a REQUIRE-failure mid-case cannot leak the callback into a later TEST_CASE (the
 // QuietTraceLogging precedent, imgui_layer_test.cpp).
 struct WarnCaptureScope {
@@ -793,6 +819,104 @@ TEST_CASE("scene_render: SceneRenderer::create fails on a non-depth Renderer (D1
     auto sceneRenderer =
         engine::scene_render::SceneRenderer::create(*device, vfs, renderer->colorFormat(), renderer->depthFormat());
     CHECK_FALSE(sceneRenderer.has_value());
+}
+
+TEST_CASE(
+    "scene_render: SceneRenderer::create fails when the sky's shaders are missing, and leaks "
+    "nothing (task E.2.1)") {
+    const engine::platform::Context ctx{{.headless = false}};
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no real video driver available");
+    }
+    auto device = engine::rhi::Device::create();
+    if (!device.has_value()) {
+        AERO_SKIP_OR_FAIL("no GPU device available");
+    }
+    auto target = engine::render::RenderTarget::create(
+        *device, {64, 64}, {.colorFormat = engine::rhi::TextureFormat::RGBA16Float, .depth = true, .quantum = 1});
+    if (!target.has_value()) {
+        AERO_SKIP_OR_FAIL("no RGBA16Float color target available");
+    }
+
+    WarnCapture cap;
+    {
+        const WarnCaptureScope scope{cap};
+        {
+            // EVERY engine shader except sky.frag. The ForwardRenderer therefore succeeds and the
+            // SkyPass then fails -- and it is that ORDER which makes the leak arm meaningful: a
+            // FULLY built ForwardRenderer is destroyed through its own destructor on the way out.
+            engine::VirtualFileSystem partialVfs;
+            partialVfs.mount(std::make_unique<ExcludingPrefixBackend>(AERO_SHADERS_DIR, "sky.frag"));
+            CHECK(partialVfs.exists("res://scene.vert.json"));  // the ForwardRenderer's half resolves
+            CHECK(partialVfs.exists("res://sky.vert.json"));    // ...and so does the sky's VERTEX half
+            CHECK_FALSE(partialVfs.exists("res://sky.frag.json"));
+            CHECK_FALSE(engine::scene_render::SceneRenderer::create(*device, partialVfs, target->colorFormat(),
+                                                                    target->depthFormat())
+                            .has_value());
+        }
+        // The target holds a Device* and must die FIRST; then ~Device is what would report a leak.
+        target.reset();
+        device.reset();
+    }
+    // ~Device RELEASES a leaked shader or pipeline (so ASan sees no process leak) and merely WARNs
+    // about it, which is why this claim can only be read off the log.
+    CHECK_FALSE(contains(cap.messages, "leaked"));
+    // ANTI-VACUITY: the capture is live at all. ~Device is silent on a clean teardown, so this asserts
+    // the CALLBACK ran rather than that a particular line appeared -- the refused create() above logs
+    // its own ERROR through the same sink.
+    CHECK_FALSE(cap.messages.empty());
+}
+
+TEST_CASE(
+    "scene_render: render() issues exactly one sky draw per call, and none without a camera "
+    "(task E.2.1)") {
+    const engine::platform::Context ctx{{.headless = false}};
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no real video driver available");
+    }
+    auto device = engine::rhi::Device::create();
+    if (!device.has_value()) {
+        AERO_SKIP_OR_FAIL("no GPU device available");
+    }
+    auto target = engine::render::RenderTarget::create(
+        *device, {64, 64}, {.colorFormat = engine::rhi::TextureFormat::RGBA16Float, .depth = true, .quantum = 1});
+    if (!target.has_value()) {
+        AERO_SKIP_OR_FAIL("no RGBA16Float color target available");
+    }
+    engine::VirtualFileSystem vfs;
+    vfs.mount(std::make_unique<engine::DirectoryBackend>(AERO_SHADERS_DIR));
+    auto sceneRenderer =
+        engine::scene_render::SceneRenderer::create(*device, vfs, target->colorFormat(), target->depthFormat());
+    REQUIRE(sceneRenderer.has_value());
+    CHECK(sceneRenderer->skyPass().drawCount() == 0U);
+
+    const auto renderOnce = [&](World& w) {
+        std::optional<engine::render::Frame> frame = target->beginFrame({0.0F, 0.0F, 0.0F, 1.0F});
+        REQUIRE(frame.has_value());
+        sceneRenderer->render(w, *frame);
+        REQUIRE(target->endFrame(std::move(*frame)));
+    };
+
+    World world;
+    const Entity cam = world.create();
+    REQUIRE(world.add<Transform>(cam, Transform{Vec3{0.0F, 0.0F, 5.0F}, Quat::identity(), Vec3::one()}) != nullptr);
+    REQUIRE(world.add<Camera>(cam, Camera{}) != nullptr);
+    for (int i = 0; i < 3; ++i) {
+        renderOnce(world);
+    }
+    // ONE per render(), not one per frame the pass was merely bound in.
+    CHECK(sceneRenderer->skyPass().drawCount() == 3U);
+
+    // ...and a World with NO camera moves it not at all -- the sky's 0-camera rule is the forward
+    // pass's, and a missing camera is NOT a degenerate one, so nothing latches either.
+    World cameraless;
+    const Entity cube = cameraless.create();
+    REQUIRE(cameraless.add<Transform>(cube) != nullptr);
+    REQUIRE(cameraless.add<MeshRenderer>(
+                cube, MeshRenderer{static_cast<std::uint32_t>(PrimitiveId::Cube), Vec3::one()}) != nullptr);
+    renderOnce(cameraless);
+    CHECK(sceneRenderer->skyPass().drawCount() == 3U);
+    CHECK_FALSE(sceneRenderer->skyPass().hasWarnedDegenerateCamera());
 }
 
 #endif  // AERO_SHADER_TOOLS_ENABLED
