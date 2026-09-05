@@ -159,6 +159,36 @@
           },
           "intensity": 1,
           "range": 12
+        },
+        "engine::Environment": {
+          "backgroundMode": 1,
+          "skyColor": {
+            "x": 0.2,
+            "y": 0.3,
+            "z": 0.6
+          },
+          "horizonColor": {
+            "x": 0.7,
+            "y": 0.75,
+            "z": 0.8
+          },
+          "groundColor": {
+            "x": 0.12,
+            "y": 0.1,
+            "z": 0.08
+          },
+          "solidColor": {
+            "x": 0.05,
+            "y": 0.05,
+            "z": 0.06
+          },
+          "ambientMode": 1,
+          "ambientColor": {
+            "x": 0.04,
+            "y": 0.04,
+            "z": 0.05
+          },
+          "ambientIntensity": 0.75
         }
       }
     },

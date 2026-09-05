@@ -4,7 +4,7 @@
 // include.
 //
 // The CPU mirrors of the TWO `space3` cbuffers in shaders/scene.frag.hlsl, and the two functions that
-// fill them: `cbuffer Lights : register(b0, space3)` (400 bytes since task 3.6.2, pushed once per
+// fill them: `cbuffer Lights : register(b0, space3)` (416 bytes since task E.2.1, pushed once per
 // view) and
 // `cbuffer MaterialParams : register(b1, space3)` (48 bytes, pushed on material change). Both live in
 // a header rather than forward_renderer.cpp's anonymous namespace for exactly one reason: A FILE-LOCAL
@@ -15,7 +15,8 @@
 // Anything a packer decides belongs here; the renderer keeps the device calls.
 
 #include <aero/core/math.hpp>
-#include <aero/render/lighting.hpp>  // RenderView, CameraView, MAX_POINT_LIGHTS
+#include <aero/render/environment.hpp>  // task E.2.1 -- HemisphereAmbient, resolveAmbient
+#include <aero/render/lighting.hpp>     // RenderView, CameraView, MAX_POINT_LIGHTS
 #include <aero/render/material.hpp>
 
 #include <algorithm>
@@ -45,7 +46,9 @@ struct GpuPointLight {
 static_assert(sizeof(GpuPointLight) == 32);
 
 struct GpuLightBlock {
-    Vec3 ambient;
+    // task E.2.1 -- RENAMED from `ambient`, and it keeps the SAME slot (offset 0): the block now
+    // carries a hemisphere as a mid and a half-delta, and `mid` is what the pre-E.2.1 constant was.
+    Vec3 ambientMid;
     std::uint32_t pointCount = 0;
     GpuDirLight dir;
     std::array<GpuPointLight, MAX_POINT_LIGHTS> points{};
@@ -60,8 +63,13 @@ struct GpuLightBlock {
     // invisible to anything that does not read the tail.
     Mat4 lightViewProj;  // shadowViewProj(fit); identity when the view carries no valid ShadowView
     Vec4 shadowParams;   // x texelSize (1/resolution), y constantBias, z normalBias, w enabled?1:0
+    // task E.2.1 -- APPENDED after shadowParams exactly as the shadow pair was appended after
+    // eyePosition at 3.6.2, and eyePosition after `points` at 3.4.1: every pre-E.2.1 field keeps its
+    // offset, so the growth is invisible to anything that does not read the tail.
+    Vec3 ambientHalfDelta;
+    float pad1 = 0.0F;
 };
-static_assert(sizeof(GpuLightBlock) == 16 + 32 + (32 * 8) + 16 + 64 + 16);  // 400 (was 320)
+static_assert(sizeof(GpuLightBlock) == 16 + 32 + (32 * 8) + 16 + 64 + 16 + 16);  // 416 (was 400)
 static_assert(std::is_trivially_copyable_v<GpuLightBlock>);
 // task 3.6.2 (INV-5) -- the layout is PINNED, not merely SIZED. Swapping the two appended fields
 // keeps sizeof at 400 and keeps every earlier field's offset, so nothing that reads the block could
@@ -70,13 +78,22 @@ static_assert(std::is_trivially_copyable_v<GpuLightBlock>);
 // submit"). These two lines are the closure.
 static_assert(offsetof(GpuLightBlock, lightViewProj) == 320);
 static_assert(offsetof(GpuLightBlock, shadowParams) == 384);
+// task E.2.1 -- INV-5's THIRD pin. Swapping ambientHalfDelta ahead of shadowParams keeps sizeof at
+// 416 and would be invisible to everything except the HLSL, which would then read the shadow row as
+// the ambient delta and shade a plausible, WRONG picture with every test green.
+static_assert(offsetof(GpuLightBlock, ambientHalfDelta) == 400);
 
 // THE one place a RenderView becomes the bytes b0 receives. Zero-initialized first, so the unused tail
 // of `points` is deterministic rather than whatever the stack held, and the point count is CLAMPED
 // here as well as at the bridge — draw() must not read past the array for a view assembled by hand.
 [[nodiscard]] inline GpuLightBlock packLights(const RenderView& view) noexcept {
     GpuLightBlock block{};
-    block.ambient = view.ambient;
+    // task E.2.1: the hemisphere pair, resolved from the view's environment. The modes live on the
+    // CPU and the GPU receives a mid and a HALF-DELTA, so a Flat resolution writes a zero delta and
+    // the shader's `mid + halfDelta * N.y` is EXACTLY `mid` on every normal.
+    const HemisphereAmbient hemi = resolveAmbient(view.environment);
+    block.ambientMid = hemi.mid;
+    block.ambientHalfDelta = hemi.halfDelta;
     block.dir = {view.directional.direction, view.directional.intensity, view.directional.color, 0.0F};
     const std::size_t count = std::min<std::size_t>(view.points.size(), MAX_POINT_LIGHTS);
     for (std::size_t i = 0; i < count; ++i) {

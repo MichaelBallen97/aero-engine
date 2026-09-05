@@ -31,6 +31,7 @@
 using engine::Camera;
 using engine::DirectionalLight;
 using engine::Entity;
+using engine::Environment;  // task E.2.1 -- the fourth seed entity's one component
 using engine::MeshRenderer;
 using engine::Transform;
 using engine::World;
@@ -599,7 +600,7 @@ TEST_CASE("editor: duplicateEntities deep-copies subtree, name, components and o
 TEST_CASE("editor: duplicateEntities copies a component the editor has never heard of (AC-13/E12, the D4 proof)") {
     World w;
     REQUIRE(registerComponent<Marker>(w, "test::Marker").valid());  // AFTER the five built-ins
-    CHECK(w.componentTypeCount() == 9);  // task 3.7.2: 8 built-ins + the editor-unknown fixture type
+    CHECK(w.componentTypeCount() == 10);  // task E.2.1: 9 built-ins + the editor-unknown fixture type
 
     const Entity source = w.create();
     REQUIRE(w.setName(source, "Marked"));
@@ -947,24 +948,33 @@ TEST_CASE("editor: walkForest is a no-op over an empty forest") {
 
 // ---- seedDefaultScene ---------------------------------------------------------------------------
 
-TEST_CASE("editor: seedDefaultScene builds the documented three entities (AC-18/D9/E32)") {
+TEST_CASE("editor: seedDefaultScene builds the documented four entities (AC-18/D9/E32)") {
     using engine::editor::seedDefaultScene;
     World w;
     seedDefaultScene(w);
-    CHECK(w.entityCount() == 3);
+    CHECK(w.entityCount() == 4);
 
     std::vector<std::string> names;
     w.eachEntity([&](Entity e) { names.emplace_back(w.name(e)); });
-    REQUIRE(names.size() == 3);
+    REQUIRE(names.size() == 4);
     CHECK(names[0] == "Main Camera");
     CHECK(names[1] == "Directional Light");
     CHECK(names[2] == "Cube");
+    CHECK(names[3] == "Environment");
 
     const std::vector<Entity> roots = rootsOf(w);
-    REQUIRE(roots.size() == 3);
-    for (const Entity e : roots) {
-        CHECK(w.has<Transform>(e));  // every seeded entity is placeable
-    }
+    REQUIRE(roots.size() == 4);
+    // task E.2.1: the first THREE are placeable; "Environment" deliberately is NOT. This was a
+    // universal ("every seeded entity is placeable") only because every seeded entity happened to go
+    // through createEntity, which always adds a Transform. Environment does not, because the component
+    // stores no position -- so this is now a PER-ENTITY statement, and the fourth line is what makes
+    // "the absence is deliberate" assertable rather than merely true.
+    CHECK(w.has<Transform>(roots[0]));        // Main Camera
+    CHECK(w.has<Transform>(roots[1]));        // Directional Light
+    CHECK(w.has<Transform>(roots[2]));        // Cube
+    CHECK_FALSE(w.has<Transform>(roots[3]));  // Environment -- no position to place
+    CHECK(w.componentCount<Transform>() == 3);
+    CHECK(w.componentCount<Environment>() == 1);
     CHECK(w.componentCount<Camera>() == 1);
     CHECK(w.componentCount<DirectionalLight>() == 1);
     CHECK(w.componentCount<MeshRenderer>() == 1);
@@ -972,5 +982,5 @@ TEST_CASE("editor: seedDefaultScene builds the documented three entities (AC-18/
     CHECK(w.get<MeshRenderer>(roots[2])->primitive == 0);  // 0 == Cube (F23)
 
     seedDefaultScene(w);  // E32: it APPENDS, it does not reset
-    CHECK(w.entityCount() == 6);
+    CHECK(w.entityCount() == 8);
 }

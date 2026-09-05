@@ -14,6 +14,7 @@
 using engine::Camera;
 using engine::DirectionalLight;
 using engine::Entity;
+using engine::Environment;
 using engine::Mat3;
 using engine::Mat4;
 using engine::MeshRenderer;
@@ -23,6 +24,9 @@ using engine::Transform;
 using engine::Vec3;
 using engine::Vec4;
 using engine::World;
+using engine::render::AmbientMode;
+using engine::render::BackgroundMode;
+using engine::render::EnvironmentData;
 using engine::render::MeshInstance;
 using engine::render::PrimitiveId;
 using engine::render::RenderView;
@@ -339,6 +343,122 @@ TEST_CASE("scene_render: lights are unaffected by an override (task 2.3.1, AC-4)
     CHECK(nullView.pointsTruncated == overrideView.pointsTruncated);
 }
 
+TEST_CASE("scene_render: buildRenderView picks the lowest-index Environment and counts them all (task E.2.1)") {
+    World w;
+    RenderViewScratch scratch;
+    const Entity cam = w.create();
+    REQUIRE(w.add<Transform>(cam) != nullptr);
+    REQUIRE(w.add<Camera>(cam) != nullptr);
+
+    // Three entities, created in index order; the COMPONENTS are added in an order that is NOT index
+    // order, so a walk that took "the first one seen" instead of "the lowest index" would pick envC.
+    const Entity envA = w.create();
+    const Entity envB = w.create();
+    const Entity envC = w.create();
+    REQUIRE(envA.index < envB.index);
+    REQUIRE(envB.index < envC.index);
+    REQUIRE(w.add<Environment>(envC, Environment{.skyColor = Vec3{0.30F, 0.31F, 0.32F}}) != nullptr);
+    REQUIRE(w.add<Environment>(envA, Environment{.skyColor = Vec3{0.10F, 0.11F, 0.12F}}) != nullptr);
+    REQUIRE(w.add<Environment>(envB, Environment{.skyColor = Vec3{0.20F, 0.21F, 0.22F}}) != nullptr);
+
+    const RenderView view = buildRenderView(w, scratch, VIEWPORT);
+    CHECK(view.environmentCount == 3);  // every instance is COUNTED, not just the winner
+    CHECK(view.environment.skyColor == Vec3{0.10F, 0.11F, 0.12F});
+    // Anti-vacuity: the two losers are demonstrably NOT what landed.
+    CHECK_FALSE(view.environment.skyColor == Vec3{0.20F, 0.21F, 0.22F});
+    CHECK_FALSE(view.environment.skyColor == Vec3{0.30F, 0.31F, 0.32F});
+}
+
+TEST_CASE("scene_render: no Environment leaves the render view's defaults untouched (task E.2.1)") {
+    World w;
+    RenderViewScratch scratch;
+    const Entity cam = w.create();
+    REQUIRE(w.add<Transform>(cam) != nullptr);
+    REQUIRE(w.add<Camera>(cam) != nullptr);
+
+    const RenderView view = buildRenderView(w, scratch, VIEWPORT);
+    CHECK(view.environmentCount == 0);
+    CHECK(view.environment == EnvironmentData{});  // whole-struct: nothing was written at all
+}
+
+// THE CROSS-BOUNDARY WITNESS. engine::Environment and engine::render::EnvironmentData duplicate one
+// set of eight defaults across a layer boundary NEITHER header can cross -- `render` never learns
+// about `scene`, and `scene` never learns about `render` -- so this bridge case is the ONLY thing
+// anywhere that catches the two sets drifting apart. FIELD BY FIELD, not by operator== alone, so a
+// failure names the field that moved.
+TEST_CASE("scene_render: a default Environment resolves field-for-field to a default EnvironmentData (task E.2.1)") {
+    World w;
+    RenderViewScratch scratch;
+    const Entity cam = w.create();
+    REQUIRE(w.add<Transform>(cam) != nullptr);
+    REQUIRE(w.add<Camera>(cam) != nullptr);
+    const Entity env = w.create();
+    REQUIRE(w.add<Environment>(env, Environment{}) != nullptr);  // ALL DEFAULTS, spelled as such
+
+    const RenderView view = buildRenderView(w, scratch, VIEWPORT);
+    REQUIRE(view.environmentCount == 1);
+    const EnvironmentData expected{};
+    CHECK((view.environment.backgroundMode == expected.backgroundMode));
+    CHECK(view.environment.skyColor == expected.skyColor);
+    CHECK(view.environment.horizonColor == expected.horizonColor);
+    CHECK(view.environment.groundColor == expected.groundColor);
+    CHECK(view.environment.solidColor == expected.solidColor);
+    CHECK((view.environment.ambientMode == expected.ambientMode));
+    CHECK(view.environment.ambientColor == expected.ambientColor);
+    CHECK(view.environment.ambientIntensity == expected.ambientIntensity);
+}
+
+TEST_CASE("scene_render: out-of-range Environment selectors clamp to their default modes (task E.2.1)") {
+    World w;
+    RenderViewScratch scratch;
+    const Entity cam = w.create();
+    REQUIRE(w.add<Transform>(cam) != nullptr);
+    REQUIRE(w.add<Camera>(cam) != nullptr);
+    const Entity env = w.create();
+    auto* stored = w.add<Environment>(env, Environment{});
+    REQUIRE(stored != nullptr);
+
+    SUBCASE("out of range -> the default enumerator on both selectors") {
+        stored->backgroundMode = 7U;
+        stored->ambientMode = 300U;
+        const RenderView view = buildRenderView(w, scratch, VIEWPORT);
+        CHECK((view.environment.backgroundMode == BackgroundMode::Sky));
+        CHECK((view.environment.ambientMode == AmbientMode::Hemisphere));
+    }
+
+    // THE ANTI-VACUITY ARM: without it a clamp that always returned 0 would pass the arm above.
+    SUBCASE("in range -> the value asked for") {
+        stored->backgroundMode = 1U;
+        stored->ambientMode = 1U;
+        const RenderView view = buildRenderView(w, scratch, VIEWPORT);
+        CHECK((view.environment.backgroundMode == BackgroundMode::Solid));
+        CHECK((view.environment.ambientMode == AmbientMode::Flat));
+    }
+}
+
+TEST_CASE("scene_render: the 0-camera early return leaves the environment untouched (task E.2.1, INV-4)") {
+    World w;
+    RenderViewScratch scratch;
+    for (int i = 0; i < 3; ++i) {
+        const Entity e = w.create();
+        REQUIRE(w.add<Environment>(e, Environment{.skyColor = Vec3{1.0F, 0.0F, 0.0F}}) != nullptr);
+    }
+
+    SUBCASE("no camera, no override: the walk never runs") {
+        const RenderView view = buildRenderView(w, scratch, VIEWPORT);
+        CHECK_FALSE(view.hasCamera);
+        CHECK(view.environmentCount == 0);  // exactly as directionalCount stays 0 here
+        CHECK(view.environment == EnvironmentData{});
+    }
+
+    SUBCASE("an override reaches the light block, so the walk runs normally") {
+        const RenderView view = buildRenderView(w, scratch, VIEWPORT, &distinctiveOverride);
+        CHECK(view.hasCamera);
+        CHECK(view.environmentCount == 3);
+        CHECK(view.environment.skyColor == Vec3{1.0F, 0.0F, 0.0F});
+    }
+}
+
 #if AERO_SHADER_TOOLS_ENABLED
 
     #include <aero/core/log.hpp>
@@ -443,6 +563,32 @@ struct WarnCapture {
     return std::any_of(messages.begin(), messages.end(),
                        [&](const std::string& m) { return m.find(needle) != std::string::npos; });
 }
+
+// task E.2.1: the INVERSE of render_sky_test.cpp's SingleShaderPrefixBackend -- it admits every
+// cooked shader EXCEPT the ones under one prefix. That asymmetry is the whole case: the
+// ForwardRenderer must SUCCEED and the SkyPass must then FAIL, which is the only route a caller has
+// to SkyPass::create's half-loaded path through SceneRenderer.
+class ExcludingPrefixBackend final : public engine::FileSystemBackend {
+public:
+    ExcludingPrefixBackend(std::string_view rootDirectory, std::string_view refusedPrefix)
+        : inner(rootDirectory), prefix(refusedPrefix) {}
+
+    [[nodiscard]] bool exists(std::string_view relPath) const override {
+        return admits(relPath) && inner.exists(relPath);
+    }
+    [[nodiscard]] std::optional<std::uint64_t> fileSize(std::string_view relPath) const override {
+        return admits(relPath) ? inner.fileSize(relPath) : std::nullopt;
+    }
+    [[nodiscard]] std::optional<engine::ByteBuffer> readFile(std::string_view relPath) const override {
+        return admits(relPath) ? inner.readFile(relPath) : std::nullopt;
+    }
+
+private:
+    [[nodiscard]] bool admits(std::string_view relPath) const { return !relPath.starts_with(prefix); }
+
+    engine::DirectoryBackend inner;
+    std::string prefix;
+};
 
 // RAII, so a REQUIRE-failure mid-case cannot leak the callback into a later TEST_CASE (the
 // QuietTraceLogging precedent, imgui_layer_test.cpp).
@@ -565,6 +711,91 @@ TEST_CASE("scene_render: cameraOverride suppresses the two CAMERA WARNs; light W
     }
 }
 
+TEST_CASE("scene_render: the multiple-Environment WARN latches once, and one Environment is silent (task E.2.1)") {
+    engine::platform::Context ctx{{.headless = false}};
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no real video driver available");
+    }
+    auto device = engine::rhi::Device::create();
+    if (!device.has_value()) {
+        AERO_SKIP_OR_FAIL("no GPU device available");
+    }
+    auto window = ctx.createWindow({.title = "aero scene-render env test", .width = 320, .height = 180});
+    if (!window.has_value()) {
+        AERO_SKIP_OR_FAIL("no real window available");
+    }
+    auto renderer = engine::render::Renderer::create(*device, *window, {.depth = true});
+    REQUIRE(renderer.has_value());
+
+    engine::VirtualFileSystem vfs;
+    vfs.mount(std::make_unique<engine::DirectoryBackend>(AERO_SHADERS_DIR));
+
+    WarnCapture cap;
+    const WarnCaptureScope logScope(cap);
+
+    const engine::rhi::Color sky{0.05F, 0.07F, 0.10F, 1.0F};
+    const std::string expected = "SceneRenderer: multiple Environments; using lowest entity index";
+
+    // Arm a: TWO Environments, THREE renders -> exactly ONE message. Latched per SceneRenderer
+    // lifetime, never per frame -- the AC-4 case's shape.
+    {
+        World w;
+        const Entity cam = w.create();
+        REQUIRE(w.add<Transform>(cam) != nullptr);
+        REQUIRE(w.add<Camera>(cam) != nullptr);
+        for (int i = 0; i < 2; ++i) {
+            REQUIRE(w.add<Environment>(w.create()) != nullptr);
+        }
+        auto sceneRenderer =
+            engine::scene_render::SceneRenderer::create(*device, vfs, renderer->colorFormat(), renderer->depthFormat());
+        REQUIRE(sceneRenderer.has_value());
+        for (int frameIndex = 0; frameIndex < 3; ++frameIndex) {
+            std::optional<engine::render::Frame> f = renderer->beginFrame(sky);
+            REQUIRE(f.has_value());
+            sceneRenderer->render(w, *f);
+            CHECK(renderer->endFrame(std::move(*f)));
+        }
+        CHECK(std::count(cap.messages.begin(), cap.messages.end(), expected) == 1);
+    }
+
+    // Arm b: ONE Environment -> nothing at all. Zero is NOT a diagnostic either, and the case above
+    // would pass a renderer that warned on every count, so this arm is what makes it a claim.
+    cap.messages.clear();
+    {
+        World w;
+        const Entity cam = w.create();
+        REQUIRE(w.add<Transform>(cam) != nullptr);
+        REQUIRE(w.add<Camera>(cam) != nullptr);
+        REQUIRE(w.add<Environment>(w.create()) != nullptr);
+        auto sceneRenderer =
+            engine::scene_render::SceneRenderer::create(*device, vfs, renderer->colorFormat(), renderer->depthFormat());
+        REQUIRE(sceneRenderer.has_value());
+        std::optional<engine::render::Frame> f = renderer->beginFrame(sky);
+        REQUIRE(f.has_value());
+        sceneRenderer->render(w, *f);
+        CHECK(renderer->endFrame(std::move(*f)));
+        CHECK_FALSE(contains(cap.messages, "multiple Environments"));
+    }
+
+    // Arm c: ZERO Environments -> still nothing. The absence of a component is the ordinary state of
+    // every scene authored before this task and must stay silent.
+    cap.messages.clear();
+    {
+        World w;
+        const Entity cam = w.create();
+        REQUIRE(w.add<Transform>(cam) != nullptr);
+        REQUIRE(w.add<Camera>(cam) != nullptr);
+        auto sceneRenderer =
+            engine::scene_render::SceneRenderer::create(*device, vfs, renderer->colorFormat(), renderer->depthFormat());
+        REQUIRE(sceneRenderer.has_value());
+        std::optional<engine::render::Frame> f = renderer->beginFrame(sky);
+        REQUIRE(f.has_value());
+        sceneRenderer->render(w, *f);
+        CHECK(renderer->endFrame(std::move(*f)));
+        CHECK_FALSE(contains(cap.messages, "Environment"));
+    }
+}
+
 TEST_CASE("scene_render: SceneRenderer::create fails on a non-depth Renderer (D11/AC-12)") {
     engine::platform::Context ctx{{.headless = false}};
     if (!ctx.valid()) {
@@ -588,6 +819,104 @@ TEST_CASE("scene_render: SceneRenderer::create fails on a non-depth Renderer (D1
     auto sceneRenderer =
         engine::scene_render::SceneRenderer::create(*device, vfs, renderer->colorFormat(), renderer->depthFormat());
     CHECK_FALSE(sceneRenderer.has_value());
+}
+
+TEST_CASE(
+    "scene_render: SceneRenderer::create fails when the sky's shaders are missing, and leaks "
+    "nothing (task E.2.1)") {
+    const engine::platform::Context ctx{{.headless = false}};
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no real video driver available");
+    }
+    auto device = engine::rhi::Device::create();
+    if (!device.has_value()) {
+        AERO_SKIP_OR_FAIL("no GPU device available");
+    }
+    auto target = engine::render::RenderTarget::create(
+        *device, {64, 64}, {.colorFormat = engine::rhi::TextureFormat::RGBA16Float, .depth = true, .quantum = 1});
+    if (!target.has_value()) {
+        AERO_SKIP_OR_FAIL("no RGBA16Float color target available");
+    }
+
+    WarnCapture cap;
+    {
+        const WarnCaptureScope scope{cap};
+        {
+            // EVERY engine shader except sky.frag. The ForwardRenderer therefore succeeds and the
+            // SkyPass then fails -- and it is that ORDER which makes the leak arm meaningful: a
+            // FULLY built ForwardRenderer is destroyed through its own destructor on the way out.
+            engine::VirtualFileSystem partialVfs;
+            partialVfs.mount(std::make_unique<ExcludingPrefixBackend>(AERO_SHADERS_DIR, "sky.frag"));
+            CHECK(partialVfs.exists("res://scene.vert.json"));  // the ForwardRenderer's half resolves
+            CHECK(partialVfs.exists("res://sky.vert.json"));    // ...and so does the sky's VERTEX half
+            CHECK_FALSE(partialVfs.exists("res://sky.frag.json"));
+            CHECK_FALSE(engine::scene_render::SceneRenderer::create(*device, partialVfs, target->colorFormat(),
+                                                                    target->depthFormat())
+                            .has_value());
+        }
+        // The target holds a Device* and must die FIRST; then ~Device is what would report a leak.
+        target.reset();
+        device.reset();
+    }
+    // ~Device RELEASES a leaked shader or pipeline (so ASan sees no process leak) and merely WARNs
+    // about it, which is why this claim can only be read off the log.
+    CHECK_FALSE(contains(cap.messages, "leaked"));
+    // ANTI-VACUITY: the capture is live at all. ~Device is silent on a clean teardown, so this asserts
+    // the CALLBACK ran rather than that a particular line appeared -- the refused create() above logs
+    // its own ERROR through the same sink.
+    CHECK_FALSE(cap.messages.empty());
+}
+
+TEST_CASE(
+    "scene_render: render() issues exactly one sky draw per call, and none without a camera "
+    "(task E.2.1)") {
+    const engine::platform::Context ctx{{.headless = false}};
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no real video driver available");
+    }
+    auto device = engine::rhi::Device::create();
+    if (!device.has_value()) {
+        AERO_SKIP_OR_FAIL("no GPU device available");
+    }
+    auto target = engine::render::RenderTarget::create(
+        *device, {64, 64}, {.colorFormat = engine::rhi::TextureFormat::RGBA16Float, .depth = true, .quantum = 1});
+    if (!target.has_value()) {
+        AERO_SKIP_OR_FAIL("no RGBA16Float color target available");
+    }
+    engine::VirtualFileSystem vfs;
+    vfs.mount(std::make_unique<engine::DirectoryBackend>(AERO_SHADERS_DIR));
+    auto sceneRenderer =
+        engine::scene_render::SceneRenderer::create(*device, vfs, target->colorFormat(), target->depthFormat());
+    REQUIRE(sceneRenderer.has_value());
+    CHECK(sceneRenderer->skyPass().drawCount() == 0U);
+
+    const auto renderOnce = [&](World& w) {
+        std::optional<engine::render::Frame> frame = target->beginFrame({0.0F, 0.0F, 0.0F, 1.0F});
+        REQUIRE(frame.has_value());
+        sceneRenderer->render(w, *frame);
+        REQUIRE(target->endFrame(std::move(*frame)));
+    };
+
+    World world;
+    const Entity cam = world.create();
+    REQUIRE(world.add<Transform>(cam, Transform{Vec3{0.0F, 0.0F, 5.0F}, Quat::identity(), Vec3::one()}) != nullptr);
+    REQUIRE(world.add<Camera>(cam, Camera{}) != nullptr);
+    for (int i = 0; i < 3; ++i) {
+        renderOnce(world);
+    }
+    // ONE per render(), not one per frame the pass was merely bound in.
+    CHECK(sceneRenderer->skyPass().drawCount() == 3U);
+
+    // ...and a World with NO camera moves it not at all -- the sky's 0-camera rule is the forward
+    // pass's, and a missing camera is NOT a degenerate one, so nothing latches either.
+    World cameraless;
+    const Entity cube = cameraless.create();
+    REQUIRE(cameraless.add<Transform>(cube) != nullptr);
+    REQUIRE(cameraless.add<MeshRenderer>(
+                cube, MeshRenderer{static_cast<std::uint32_t>(PrimitiveId::Cube), Vec3::one()}) != nullptr);
+    renderOnce(cameraless);
+    CHECK(sceneRenderer->skyPass().drawCount() == 3U);
+    CHECK_FALSE(sceneRenderer->skyPass().hasWarnedDegenerateCamera());
 }
 
 #endif  // AERO_SHADER_TOOLS_ENABLED

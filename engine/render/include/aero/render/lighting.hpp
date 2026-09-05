@@ -5,6 +5,7 @@
 // include (D2) — render stays scene-free.
 
 #include <aero/core/math.hpp>
+#include <aero/render/environment.hpp>  // task E.2.1 -- EnvironmentData
 #include <aero/render/mesh.hpp>
 
 #include <cstdint>
@@ -69,7 +70,14 @@ struct RenderView {
     CameraView camera;
     DirectionalLightData directional;        // intensity 0 == "no directional"
     std::span<const PointLightData> points;  // <= MAX_POINT_LIGHTS
-    Vec3 ambient = Vec3{0.03F, 0.03F, 0.03F};
+    // task E.2.1: the resolved environment -- the sky the background pass draws AND the hemisphere
+    // the fragment stage shades with. REPLACES `Vec3 ambient`, REMOVED rather than kept beside this
+    // so a hand-built view cannot silently take the old constant (the E.1.3 non-defaulted-parameter
+    // argument, applied to a field). A default-constructed value is the engine's default sky and
+    // shade; a caller that wants a FLAT ambient sets
+    //     {.ambientMode = AmbientMode::Flat, .ambientColor = X, .ambientIntensity = 1.0F}
+    // which reproduces `ambient = X` EXACTLY -- environment.hpp's delta rule, not an approximation.
+    EnvironmentData environment{};
     std::span<const MeshInstance> instances;
     bool hasCamera = true;  // false => draw() no-ops (D5's 0-camera case); camera/instances unset then
 
@@ -78,6 +86,9 @@ struct RenderView {
     // 0.2.4 deferral).
     std::uint32_t cameraCount = 0;
     std::uint32_t directionalCount = 0;
+    // task E.2.1: informational, exactly like directionalCount -- filled by the LIGHT BLOCK of
+    // buildRenderView, therefore ZERO on the 0-camera early return (2.3.1's INV-4, unchanged).
+    std::uint32_t environmentCount = 0;
     bool pointsTruncated = false;
     // task 3.1.5: how many referencing MeshRenderers this view could NOT resolve. Both are TRANSIENT
     // BY DESIGN — every frame between a drop and the ledger's upload legitimately counts nonzero —

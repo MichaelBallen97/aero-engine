@@ -11,6 +11,7 @@
 #include <aero/scene/audio_listener.hpp>
 #include <aero/scene/audio_source.hpp>
 #include <aero/scene/camera.hpp>
+#include <aero/scene/environment.hpp>  // task E.2.1
 #include <aero/scene/light.hpp>
 #include <aero/scene/mesh_renderer.hpp>
 #include <aero/scene/transform.hpp>
@@ -32,4 +33,6 @@ void aeroWriteJson(engine::JsonWriter&, const AudioSource&);  // task 3.7.2
 bool aeroReadJson(const engine::JsonValue&, AudioSource&);
 void aeroWriteJson(engine::JsonWriter&, const AudioListener&);  // task 3.7.2
 bool aeroReadJson(const engine::JsonValue&, AudioListener&);
+void aeroWriteJson(engine::JsonWriter&, const Environment&);  // task E.2.1
+bool aeroReadJson(const engine::JsonValue&, Environment&);
 }  // namespace engine

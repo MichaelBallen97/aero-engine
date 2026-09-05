@@ -9,6 +9,7 @@
 #include <aero/render/culling.hpp>           // task 3.6.1
 #include <aero/render/debug_draw.hpp>        // task E.1.1
 #include <aero/render/debug_grid.hpp>        // task E.1.2
+#include <aero/render/environment.hpp>       // task E.2.1
 #include <aero/render/forward_renderer.hpp>  // task 1.4.1
 #include <aero/render/lighting.hpp>          // task 1.4.1
 #include <aero/render/material.hpp>          // task 3.4.1
@@ -19,5 +20,6 @@
 #include <aero/render/selection_outline.hpp>  // task E.1.4
 #include <aero/render/shadow.hpp>             // task 3.6.2
 #include <aero/render/skinning.hpp>           // task 3.5.1
+#include <aero/render/sky_pass.hpp>           // task E.2.1
 #include <aero/render/texture_upload.hpp>     // task 3.4.1
 #include <aero/render/tonemap.hpp>            // task 3.6.3

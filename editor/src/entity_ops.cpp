@@ -1,6 +1,7 @@
 #include <aero/core/math.hpp>
 #include <aero/editor/entity_ops.hpp>
 #include <aero/scene/camera.hpp>
+#include <aero/scene/environment.hpp>  // task E.2.1 -- the fourth seed entity's one component
 #include <aero/scene/light.hpp>
 #include <aero/scene/mesh_renderer.hpp>
 #include <aero/scene/transform.hpp>
@@ -252,6 +253,22 @@ void seedDefaultScene(World& world) {
     const Entity cube = createEntity(world, {}, "Cube");
     if (cube.valid()) {
         world.add<MeshRenderer>(cube, MeshRenderer{});  // primitive = 0 == Cube (F23)
+    }
+    // task E.2.1: the sky and the shade, visible and editable in the Hierarchy and the Inspector from
+    // the first frame.
+    //
+    // NOT createEntity, and that is DELIBERATE: createEntity ALWAYS adds a Transform (its own body,
+    // unconditionally), and this entity must have NONE -- the component stores no position and never
+    // consults one (aero/scene/environment.hpp), so a transform gizmo on it would be an affordance
+    // that does nothing. A Transform-less entity is already legal and already exercised:
+    // full.scene.json's "lights" entity is one, and the editor loads it. Selecting this one draws
+    // E.1.4's marker at the origin and no gizmo, which is buildSelectionOverlay's existing
+    // Transform-less arm. Stripped of the Transform and of parenting, createEntity's remaining value
+    // is world.create() plus an invalid-handle guard -- which is exactly the two lines below.
+    const Entity environment = world.create();
+    if (environment.valid()) {
+        world.setName(environment, "Environment");
+        world.add<Environment>(environment, Environment{});
     }
 }
 

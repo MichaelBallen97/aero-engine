@@ -350,7 +350,9 @@ int runSample(int argc, char** argv) {
         // ROW A's reduction depends on ALL THREE of these being zero: with any ambient, any
         // directional intensity or any point light, the patches stop being exactly their own value.
         view.directional = {.direction = normalize(Vec3{-0.4F, -0.5F, -1.0F}), .color = Vec3::one(), .intensity = 0.0F};
-        view.ambient = Vec3{};
+        // task E.2.1: EXACTLY zero, and it stays exactly zero -- Flat x 1.0 is a single multiply by
+        // one, so row A's reduction and README.md:10's `ambient = 0` sentence both still hold.
+        view.environment = {.ambientMode = render::AmbientMode::Flat, .ambientColor = Vec3{}, .ambientIntensity = 1.0F};
         const Mat4 viewProj = view.camera.proj * view.camera.view;
         for (render::MeshInstance& instance : instances) {
             instance.mvp = viewProj * instance.model;
@@ -366,7 +368,10 @@ int runSample(int argc, char** argv) {
 
         render::RenderView litView = view;
         litView.directional.intensity = 3.0F;
-        litView.ambient = Vec3{0.03F, 0.03F, 0.035F};
+        // task E.2.1: Flat at this view's own constant -- deliberately DISTINCT from row A's zero.
+        litView.environment = {.ambientMode = render::AmbientMode::Flat,
+                               .ambientColor = Vec3{0.03F, 0.03F, 0.035F},
+                               .ambientIntensity = 1.0F};
         litView.instances = std::span{instances}.subspan(PATCH_VALUES.size());
         forward->draw(*sceneFrame, litView);
 

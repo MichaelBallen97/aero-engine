@@ -6,6 +6,7 @@
 #include <aero/core/log.hpp>
 #include <aero/core/profiler.hpp>
 #include <aero/scene/camera.hpp>
+#include <aero/scene/environment.hpp>  // task E.2.1 -- a .cpp include: the public header names no component
 #include <aero/scene/light.hpp>
 #include <aero/scene/mesh_renderer.hpp>
 #include <aero/scene/transform.hpp>
@@ -87,7 +88,6 @@ render::RenderView buildRenderView(World& world, RenderViewScratch& scratch, rhi
     scratch.instances.clear();
     scratch.points.clear();
     render::RenderView view;
-    view.ambient = {0.03F, 0.03F, 0.03F};
 
     // --- renderable instances: each<Transform, MeshRenderer> (AC-6/AC-8 — no Transform => excluded) ---
     // The scene walk ALWAYS runs first, unchanged, so view.cameraCount stays filled on every path
@@ -212,6 +212,29 @@ render::RenderView buildRenderView(World& world, RenderViewScratch& scratch, rhi
                                 .shadowDistance = dl.shadowDistance};
         }
     });
+    // --- environment (task E.2.1): lowest entity index wins -- D5's rule, verbatim, as for the
+    // camera, the directional light and the listener. NONE resolves to the defaults `view.environment`
+    // already holds and is NOT a diagnostic, because a world without one is the ordinary state of
+    // every scene authored before this task. It sits HERE, in the light block, so the 0-camera early
+    // return above leaves environmentCount at 0 -- 2.3.1's INV-4, unchanged.
+    Entity envEntity{};
+    world.each<Environment>([&](Entity ee, Environment& env) {
+        ++view.environmentCount;
+        if (!envEntity.valid() || ee.index < envEntity.index) {
+            envEntity = ee;
+            // DESIGNATED, not positional (3.6.2's rule): an appended field must be a compile error
+            // here, never a silent default. The two SELECTORS are CLAMPED -- the clampPrimitive rule,
+            // so a hand-edited 7 renders mode 0 rather than reinterpreting a byte.
+            view.environment = {.backgroundMode = render::clampBackgroundMode(env.backgroundMode),
+                                .skyColor = env.skyColor,
+                                .horizonColor = env.horizonColor,
+                                .groundColor = env.groundColor,
+                                .solidColor = env.solidColor,
+                                .ambientMode = render::clampAmbientMode(env.ambientMode),
+                                .ambientColor = env.ambientColor,
+                                .ambientIntensity = env.ambientIntensity};
+        }
+    });
     world.each<PointLight>([&](Entity le, PointLight& pl) {
         if (scratch.points.size() >= render::MAX_POINT_LIGHTS) {
             view.pointsTruncated = true;
@@ -331,7 +354,8 @@ SelectionMaskSet buildSelectionMaskSet(World& world, std::span<const Entity> sel
     return set;
 }
 
-SceneRenderer::SceneRenderer(render::ForwardRenderer&& fwd) noexcept : forward(std::move(fwd)) {}
+SceneRenderer::SceneRenderer(render::ForwardRenderer&& fwd, render::SkyPass&& skyPassValue) noexcept
+    : forward(std::move(fwd)), sky(std::move(skyPassValue)) {}
 
 std::optional<SceneRenderer> SceneRenderer::create(rhi::Device& device, const VirtualFileSystem& shaderVfs,
                                                    rhi::TextureFormat colorFormat, rhi::TextureFormat depthFormat,
@@ -344,11 +368,22 @@ std::optional<SceneRenderer> SceneRenderer::create(rhi::Device& device, const Vi
         // which already logged the ERROR — nothing to add here.
         return std::nullopt;
     }
-    return SceneRenderer{std::move(*fwd)};
+    // task E.2.1: from the SAME two formats as the ForwardRenderer, because the sky records into the
+    // SAME pass. Ordered AFTER it deliberately: a sky failure destroys the already-built
+    // ForwardRenderer through its own destructor on the way out, with no leak and no second ERROR --
+    // SkyPass::create has already logged the cause.
+    std::optional<render::SkyPass> skyPassValue =
+        render::SkyPass::create(device, shaderVfs, {.colorFormat = colorFormat, .depthFormat = depthFormat});
+    if (!skyPassValue.has_value()) {
+        return std::nullopt;
+    }
+    return SceneRenderer{std::move(*fwd), std::move(*skyPassValue)};
 }
 
 render::ForwardRenderer& SceneRenderer::renderer() noexcept { return forward; }
 const render::ForwardRenderer& SceneRenderer::renderer() const noexcept { return forward; }
+render::SkyPass& SceneRenderer::skyPass() noexcept { return sky; }
+const render::SkyPass& SceneRenderer::skyPass() const noexcept { return sky; }
 AssetBindingTable& SceneRenderer::bindings() noexcept { return bindingTable; }
 const AssetBindingTable& SceneRenderer::bindings() const noexcept { return bindingTable; }
 std::uint32_t SceneRenderer::lastUnresolvedMeshes() const noexcept { return lastUnresolvedMeshesValue; }
@@ -373,6 +408,11 @@ void SceneRenderer::render(World& world, render::Frame& frame, const render::Cam
     if (view.pointsTruncated) {
         warnOnce(pointTruncWarned, "SceneRenderer: >MAX_POINT_LIGHTS PointLights; extras dropped");
     }
+    // task E.2.1: ZERO Environments is NOT a diagnostic -- it is the ordinary state of every scene
+    // authored before this task, and it renders with EnvironmentData's own defaults.
+    if (view.environmentCount > 1) {
+        warnOnce(multiEnvironmentWarned, "SceneRenderer: multiple Environments; using lowest entity index");
+    }
     // task 3.1.5 (D7): the two new diagnostics are LATCHED, not WARNed. Unresolved is transient BY
     // DESIGN — every frame between a drop and the ledger's upload legitimately counts nonzero — so a
     // latched WARN would fire once per session on correct behaviour and teach readers to ignore the
@@ -387,6 +427,12 @@ void SceneRenderer::render(World& world, render::Frame& frame, const render::Cam
     // inside the caller's open frame because the two passes are on different command buffers and
     // SDL's pass-in-progress guard is per command buffer.
     view.shadow = forward.renderShadowMap(view);
+    // task E.2.1: THE SKY, BEFORE OPAQUE, into the caller's OPEN pass. Depth test and depth write are
+    // both OFF on its pipeline, so geometry overdraws it and E.1.1's Tested debug lines still
+    // depth-test against a CLEARED 1.0 wherever only sky was drawn -- which is what keeps E.1.2's grid
+    // visible over the ground half. It no-ops when !view.hasCamera, exactly as draw() does, and it
+    // sets no viewport and no scissor, exactly as draw() does not.
+    sky.draw(frame, view);
     forward.draw(frame, view);  // no-ops when !view.hasCamera
 }
 

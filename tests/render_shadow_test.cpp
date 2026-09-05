@@ -1111,7 +1111,7 @@ TEST_CASE("render shadow: the light block mirrors ShadowView, and an invalid one
     CHECK(unlit.shadowParams.w == 0.0F);
     // ...and nothing ahead of the tail moved, which is what "appended" means.
     CHECK(unlit.eyePosition == lit.eyePosition);
-    CHECK(unlit.ambient == lit.ambient);
+    CHECK(unlit.ambientMid == lit.ambientMid);
 }
 
 TEST_CASE("render shadow: every caster inside the light frustum is drawn into the map (SM7)") {

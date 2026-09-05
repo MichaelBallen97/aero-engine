@@ -403,7 +403,7 @@ TEST_CASE("render material: which built-in default each slot falls back to, and 
           engine::render::defaultTextureTexelForKind(MaterialDefaultTextureKind::WhiteLinear).texel);
 }
 
-TEST_CASE("render material: packLights mirrors the whole view into the 400-byte Lights block (PB13)") {
+TEST_CASE("render material: packLights mirrors the whole view into the 416-byte Lights block (PB13)") {
     // The light block is the second thing a file-local packer hid, and its 3.4.1 addition is the one
     // that matters: eyePosition is the GGX view vector's ORIGIN. Zero it and the image is still lit,
     // the frame still submits, every registry and bridge case still passes — only the specular
@@ -429,17 +429,27 @@ TEST_CASE("render material: packLights mirrors the whole view into the 400-byte 
     engine::render::RenderView view;
     view.camera = {engine::lookAt(eye, Vec3{}, Vec3{0.0F, 1.0F, 0.0F}),
                    engine::perspective(engine::radians(60.0F), 1.0F, 0.1F, 100.0F), eye};
-    view.ambient = ambient;
+    view.environment = {
+        .ambientMode = engine::render::AmbientMode::Flat, .ambientColor = ambient, .ambientIntensity = 1.0F};
     view.directional = {.direction = Vec3{-0.5F, -0.75F, 0.25F}, .color = Vec3{0.9F, 0.8F, 0.7F}, .intensity = 2.5F};
     view.points = POINT_LIGHTS;
 
     // The size the HLSL cbuffer declares, as a literal beside the static_assert rather than instead of
-    // it: 16 (ambient + count) + 32 (dir) + 8*32 (points) + 16 (eye + pad) + 64 (float4x4) + 16 (float4).
-    CHECK(sizeof(engine::render::detail::GpuLightBlock) == 400);  // 320 + 64 (float4x4) + 16 (float4)
+    // it: 16 (ambientMid + count) + 32 (dir) + 8*32 (points) + 16 (eye + pad) + 64 (float4x4) +
+    // 16 (float4) + 16 (ambient half-delta + pad).
+    // task E.2.1: the block is 416 bytes and the appended pair is the LAST 16 of them.
+    CHECK(sizeof(engine::render::detail::GpuLightBlock) == 416);  // 400 + 16 (ambient half-delta + pad)
+    CHECK(offsetof(engine::render::detail::GpuLightBlock, ambientHalfDelta) == 400U);
 
     const engine::render::detail::GpuLightBlock block = engine::render::detail::packLights(view);
     CHECK(block.eyePosition == eye);  // THE field; zeroing it reddens here and nowhere else
-    CHECK(block.ambient == ambient);
+    // task E.2.1: the block carries resolveAmbient(view.environment), not a raw field. THIS view is
+    // Flat, so the delta is EXACTLY zero -- which is what keeps every pre-E.2.1 pixel expectation in
+    // this tree true without editing one of them. The literal comparison is the one that says so:
+    // Flat at colour X, intensity 1, lands X in the block BIT for BIT.
+    CHECK(block.ambientMid == ambient);
+    CHECK(block.ambientMid == engine::render::resolveAmbient(view.environment).mid);
+    CHECK(block.ambientHalfDelta == engine::Vec3{});
     CHECK(block.pointCount == 3);
     CHECK(block.dir.direction == Vec3{-0.5F, -0.75F, 0.25F});
     CHECK(block.dir.intensity == 2.5F);
@@ -470,6 +480,19 @@ TEST_CASE("render material: packLights mirrors the whole view into the 400-byte 
     // so a packer that dropped the `valid` guard would put a stale or garbage matrix here.
     CHECK(block.lightViewProj == engine::Mat4::identity());
     CHECK(block.shadowParams == Vec4{});
+
+    // task E.2.1 -- ...and a HEMISPHERE view writes a NON-ZERO delta. Without this arm, a packLights
+    // that left ambientHalfDelta zero would be GREEN, because every other view in this case is Flat.
+    engine::render::RenderView hemiView = view;
+    hemiView.environment = {.skyColor = Vec3{0.5F, 0.25F, 0.125F},
+                            .groundColor = Vec3{0.0625F, 0.03125F, 0.015625F},
+                            .ambientMode = engine::render::AmbientMode::Hemisphere,
+                            .ambientIntensity = 1.0F};
+    const engine::render::detail::GpuLightBlock hemiBlock = engine::render::detail::packLights(hemiView);
+    // Dyadic literals, so the halving and the differences are EXACT and the assertion can be `==`.
+    CHECK(hemiBlock.ambientMid == Vec3{0.28125F, 0.140625F, 0.0703125F});
+    CHECK(hemiBlock.ambientHalfDelta == Vec3{0.21875F, 0.109375F, 0.0546875F});
+    CHECK_FALSE(hemiBlock.ambientHalfDelta == Vec3{});  // the anti-vacuity arm
 
     // The clamp: MAX_POINT_LIGHTS is the array's size, so a view carrying more (assembled by hand, as
     // the sample does — buildRenderView is not the only producer) must truncate rather than overrun.
@@ -894,7 +917,10 @@ TEST_CASE("render material: a five-slot draw pushes BOTH fragment uniform blocks
 
     engine::render::RenderView view;
     view.camera = camera;
-    view.ambient = Vec3{1.0F, 0.0F, 0.0F};  // distinguishable from the material block's green
+    // distinguishable from the material block's green; Flat x 1.0 reproduces the pre-E.2.1 constant
+    view.environment = {.ambientMode = engine::render::AmbientMode::Flat,
+                        .ambientColor = Vec3{1.0F, 0.0F, 0.0F},
+                        .ambientIntensity = 1.0F};
     view.directional = {.direction = Vec3{-0.5F, -1.0F, -0.3F}, .color = Vec3::one(), .intensity = 2.0F};
     view.instances = instances;
 

@@ -398,7 +398,10 @@ int runSample(int argc, char** argv) {
                                 .castsShadows = true,
                                 .shadowDistance = options.distance};
             view.points = pointLights;
-            view.ambient = Vec3{0.06F, 0.07F, 0.09F};
+            // task E.2.1: Flat at the sample's own constant, intensity 1 -- byte-identical shade.
+            view.environment = {.ambientMode = render::AmbientMode::Flat,
+                                .ambientColor = Vec3{0.06F, 0.07F, 0.09F},
+                                .ambientIntensity = 1.0F};
             view.shadowsEnabled = options.shadows;
 
             const Mat4 viewProj = view.camera.proj * view.camera.view;

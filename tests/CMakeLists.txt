@@ -59,6 +59,7 @@ add_executable(aero_tests
     transform_test.cpp    # task 1.3.2 — engine::Transform, the World-owned forest, world matrices
     camera_test.cpp       # task 1.3.3 — engine::Camera: defaults/layout/projection/view/registration
     light_test.cpp        # task 1.3.3 — engine::DirectionalLight + PointLight
+    environment_test.cpp  # task E.2.1 — engine::Environment: layout, defaults, registration, selectors
     animation_player_test.cpp # task 3.5.2 — engine::AnimationPlayer: layout, defaults, the clock's six steps
     scene_render_test.cpp # task 1.4.1 — buildRenderView (tier-0) + gated SceneRenderer GPU draw-smoke
     asset_bindings_test.cpp # task 3.1.5 — AssetBindingTable: sorted-vector set/find/remove, nil refusal
@@ -73,6 +74,8 @@ add_executable(aero_tests
     rhi_upload_test.cpp    # task E.1.1 — tier-1 recordBufferUpload/readbackTexture + the first pixel assertions
     render_debug_draw_test.cpp # task E.1.1 — tier-0 vocabulary/batch/packers/shader pin + GPU-gated DebugDraw
     render_debug_grid_test.cpp # task E.1.2 — tier-0 cadence/continuity/lattice/cap; NO GPU, no gate
+    render_environment_test.cpp # task E.2.1 — tier-0 modes/clamps/resolvers/curves/exactness; NO GPU, no gate
+    render_sky_test.cpp           # task E.2.1 -- the sky's two packers (tier 0) and the pass's pixels
     render_selection_outline_test.cpp # task E.1.4 — tier-0 params/packers/levels/shader pin + GPU-gated mask & outline
     scene_render_selection_test.cpp # task E.1.4 — buildSelectionMaskSet: arms, bucketing, cap, purity
 )
@@ -189,8 +192,14 @@ target_include_directories(aero_editor_imgui_test PRIVATE ${CMAKE_CURRENT_SOURCE
 # see the definition site further down for the value, the TO_CMAKE_PATH normalisation and why the plan's
 # "shell target only" wording is deviated from.
 file(TO_CMAKE_PATH "${CMAKE_COMMAND}" AERO_IMGUI_TEST_CMAKE_COMMAND_VALUE)
+# task E.2.1: the editor's PUBLIC header root, beside the src root this target has read since I30.
+# I127(b) sweeps BOTH -- "no file under editor/ names SkyPass" is a claim about the whole editor, and
+# a sweep over src alone would leave every public header a silent blind spot. A PATH, NOT A FLAG (the
+# AERO_PROJECT_FIXTURES_DIR rule): a mistyped root is a REQUIRE failure on a non-empty scanned set
+# rather than a vacuous pass.
 target_compile_definitions(aero_editor_imgui_test PRIVATE
     AERO_EDITOR_SRC_DIR="${CMAKE_SOURCE_DIR}/editor/src"
+    AERO_EDITOR_INCLUDE_DIR="${CMAKE_SOURCE_DIR}/editor/include"
     AERO_TEST_CMAKE_COMMAND="${AERO_IMGUI_TEST_CMAKE_COMMAND_VALUE}")
 
 # task 3.4.2 (AC-32): the five preview cases (I88-I92) must assert a DIFFERENT contract in a build with
@@ -732,6 +741,7 @@ if(AERO_REFLECT_TOOLS)
         components_engine_camera      # task 1.3.3
         components_engine_light       # task 1.3.3
         components_engine_mesh_renderer   # task 1.4.1
+        components_engine_environment     # task E.2.1
         # task 2.2.2: field annotations (AERO_RANGE/AERO_COLOR) and the std::string category
         annotations_components annotations_meta annotations_malformed annotations_nonfinite
         annotations_misapplied annotations_unknown annotations_determinism

@@ -90,7 +90,7 @@ std::vector<Entity> collectChildren(const World& world, Entity parent) {
 
 TEST_CASE("transform: every World seeds engine::Transform by construction") {
     World w;
-    CHECK(w.componentTypeCount() == 8);  // the eight built-ins, Transform first (1.3.2 .. 3.7.2)
+    CHECK(w.componentTypeCount() == 9);  // the nine built-ins, Transform first (1.3.2 .. E.2.1)
     CHECK(w.findComponentType("engine::Transform") == engine::componentTypeId<Transform>());
     CHECK(w.componentTypeName(engine::componentTypeId<Transform>()) == std::string_view{"engine::Transform"});
     CHECK(w.registered(engine::componentTypeId<Transform>()));
@@ -120,8 +120,8 @@ TEST_CASE("transform: every World seeds engine::Transform by construction") {
     // Two independent Worlds: each seeds its OWN table and storage.
     World a;
     const World b;
-    CHECK(a.componentTypeCount() == 8);  // the eight built-ins, Transform first (1.3.2 .. 3.7.2)
-    CHECK(b.componentTypeCount() == 8);  // the eight built-ins, Transform first (1.3.2 .. 3.7.2)
+    CHECK(a.componentTypeCount() == 9);  // the nine built-ins, Transform first (1.3.2 .. E.2.1)
+    CHECK(b.componentTypeCount() == 9);  // the nine built-ins, Transform first (1.3.2 .. E.2.1)
     const Entity ea = a.create();
     REQUIRE(a.add<Transform>(ea) != nullptr);
     CHECK(b.componentCount<Transform>() == 0);
@@ -141,7 +141,7 @@ TEST_CASE("transform: move semantics do not re-seed or lose the table") {
     REQUIRE(w->add<Transform>(e, Transform{Vec3{4.0F, 5.0F, 6.0F}, Quat::identity(), Vec3::one()}) != nullptr);
 
     World moved = std::move(*w);
-    CHECK(moved.componentTypeCount() == 8);  // the eight built-ins, Transform first (1.3.2 .. 3.7.2)
+    CHECK(moved.componentTypeCount() == 9);  // the nine built-ins, Transform first (1.3.2 .. E.2.1)
     CHECK(moved.findComponentType("engine::Transform").valid());
     const Transform* got = moved.get<Transform>(e);
     REQUIRE(got != nullptr);

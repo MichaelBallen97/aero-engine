@@ -91,6 +91,9 @@ bytes passed through, and from task 3.1.5 a 32-hex-digit string for `engine::Gui
 write, any case on read, nil legal as 32 zeros — the component layer emits one key per supported
 field unconditionally, so nil is this field's none state rather than an omission); purely additive
 to scene v1 (envelope unchanged, every existing scene byte still reads and re-emits identically).
+And from task E.2.1 the ninth built-in, `engine::Environment`, whose payload is eight keys in
+declaration order — two `uint32` selectors, five `{x,y,z}` colours and one float — again purely
+additive to scene v1, with no version bump (section 3).
 The field-level tolerance policy those generated readers apply, restated here for convenience:
 
 | Field condition (at load) | Behavior |
@@ -251,7 +254,7 @@ Three scene files under `tests/fixtures/scenes/` are **content pins** for this f
 | File | Pins |
 |---|---|
 | `empty.scene.json` | the degenerate document — an empty `entities` array |
-| `full.scene.json` | 8 entities, 10 components: all five built-in component types, a **forward** `parent` reference, a three-level chain, an entity with no `name` key, an entity with no `components` key, and two entities sharing one name |
+| `full.scene.json` | 8 entities, 14 components: all nine built-in component types, a **forward** `parent` reference, a three-level chain, an entity with no `name` key, an entity with no `components` key, and two entities sharing one name |
 | `edge.scene.json` | 4 entities, 3 components: the lexical corners — `-0`, two `null` payloads, both exponent signs, a full-precision decimal, all five string-escape classes, and 2-, 3- and 4-byte raw UTF-8 |
 
 Each is an exact fixpoint of the writer — `saveWorldText(load(bytes)) == bytes`, and again on a

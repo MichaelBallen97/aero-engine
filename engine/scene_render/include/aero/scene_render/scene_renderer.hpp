@@ -4,11 +4,14 @@
 // what keeps `render` scene-free and `scene` GPU-free (D1). Two pieces:
 //   * buildRenderView — a PURE, GPU-free free function (D7) that walks a World and resolves it into a
 //     render::RenderView: instances from each<Transform, MeshRenderer>, one camera (lowest entity
-//     index, D5), one directional + up to MAX_POINT_LIGHTS point lights (D6), a small fixed ambient.
+//     index, D5), one directional + up to MAX_POINT_LIGHTS point lights (D6), and the scene's
+//     Environment (task E.2.1: lowest index, defaults when absent) -- which replaced the small fixed
+//     ambient this line used to describe.
 //     Tier-0 unit-testable with no GPU.
-//   * SceneRenderer — the facade: owns a render::ForwardRenderer + reused scratch storage; one call
-//     per frame (render(World&, Frame&)) builds the view and draws it, turning buildRenderView's
-//     diagnostic counts into latched WARNs (once per SceneRenderer lifetime, never per frame).
+//   * SceneRenderer — the facade: owns a render::ForwardRenderer, a render::SkyPass (task E.2.1) and
+//     reused scratch storage; one call per frame (render(World&, Frame&)) builds the view and draws
+//     it -- sky first, then the geometry over it -- turning buildRenderView's diagnostic counts into
+//     latched WARNs (once per SceneRenderer lifetime, never per frame).
 //
 // The component headers (Transform/Camera/Light/MeshRenderer) are .cpp includes only — this public
 // header names just World + render types (spec 3.5). rhi::Device is forward-declared, exactly as
@@ -139,9 +142,9 @@ inline constexpr std::size_t DEFAULT_SELECTION_MASK_ENTITY_CAP = 256;
 // Room for future knobs (ambient override, max lights, ...); v0 uses defaults.
 struct SceneRendererConfig {};
 
-// The facade: owns a render::ForwardRenderer + reused scratch. One call per frame draws the whole
-// World. Move-only (its only non-trivial member, ForwardRenderer, has user-defined noexcept moves);
-// copies deleted transitively.
+// The facade: owns a render::ForwardRenderer + a render::SkyPass + reused scratch. One call per frame
+// draws the whole World. Move-only (its two non-trivial members, ForwardRenderer and SkyPass, both
+// have user-defined noexcept moves); copies deleted transitively.
 class SceneRenderer {
 public:
     // colorFormat/depthFormat must equal the target Renderer's renderer.colorFormat()/depthFormat() —
@@ -153,7 +156,9 @@ public:
                                                              const SceneRendererConfig& config = {});
 
     ~SceneRenderer() = default;
-    SceneRenderer(SceneRenderer&&) noexcept = default;  // ForwardRenderer's own moves do the transfer
+    // task E.2.1: still DEFAULTED -- SkyPass, like ForwardRenderer, has USER-DEFINED noexcept moves,
+    // so the two members' own moves do the transfer.
+    SceneRenderer(SceneRenderer&&) noexcept = default;
     SceneRenderer& operator=(SceneRenderer&&) noexcept = default;
     SceneRenderer(const SceneRenderer&) = delete;
     SceneRenderer& operator=(const SceneRenderer&) = delete;
@@ -172,6 +177,12 @@ public:
     // SceneRenderer.
     [[nodiscard]] render::ForwardRenderer& renderer() noexcept;
     [[nodiscard]] const render::ForwardRenderer& renderer() const noexcept;
+    // ---- task E.2.1 -----------------------------------------------------------------------------
+    // The owned SkyPass. It exists for the same reason renderer() does -- the pass's drawCount() and
+    // its degenerate-camera latch are the only observables a test has for a pass that records into
+    // someone else's frame, and SB16 reads both through here.
+    [[nodiscard]] render::SkyPass& skyPass() noexcept;
+    [[nodiscard]] const render::SkyPass& skyPass() const noexcept;
     // The resolution table render() threads into buildRenderView. Filled from outside; never cleared
     // here.
     [[nodiscard]] AssetBindingTable& bindings() noexcept;
@@ -183,9 +194,15 @@ public:
     [[nodiscard]] std::uint32_t lastUnresolvedMaterials() const noexcept;
 
 private:
-    explicit SceneRenderer(render::ForwardRenderer&& fwd) noexcept;  // private — create() move-constructs
+    // task E.2.1: BOTH by rvalue -- SkyPass has no default constructor, only create(), which is what
+    // makes "a SceneRenderer without a sky pass" unrepresentable rather than merely untested. Private:
+    // create() move-constructs.
+    SceneRenderer(render::ForwardRenderer&& fwd, render::SkyPass&& skyPassValue) noexcept;
 
     render::ForwardRenderer forward;
+    // task E.2.1 -- drawn between the shadow pass and the forward pass. The member name differs from
+    // the accessor's for the same reason bindingTable's does (the note below).
+    render::SkyPass sky;
     RenderViewScratch scratch;
     // The member names differ from the accessor names on purpose -- the house rule for an
     // accessor/member collision (AssetDatabase::records()/recordList, RenderTarget::depthFormat()/
@@ -197,6 +214,7 @@ private:
     bool multiCameraWarned = false;
     bool multiDirWarned = false;
     bool pointTruncWarned = false;
+    bool multiEnvironmentWarned = false;  // task E.2.1 -- >1 Environment; ZERO is deliberately silent
 };
 
 }  // namespace engine::scene_render

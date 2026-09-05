@@ -422,7 +422,11 @@ void MaterialPreview::renderFrame(float deltaSeconds, const render::TonemapParam
                    perspective(radians(PREVIEW_FOV_DEGREES), aspect, PREVIEW_NEAR, PREVIEW_FAR), eye};
     view.directional = {
         .direction = normalize(PREVIEW_LIGHT_DIRECTION), .color = Vec3::one(), .intensity = PREVIEW_LIGHT_INTENSITY};
-    view.ambient = PREVIEW_AMBIENT;
+    // task E.2.1: Flat at the rig's constant, intensity 1 -- EXACTLY the pre-E.2.1 ambient (the delta
+    // rule), and NO SkyPass, so the preview's picture is byte-identical. Lighting it from the open
+    // scene's `Environment` is E.2.4's deliverable.
+    view.environment = {
+        .ambientMode = render::AmbientMode::Flat, .ambientColor = PREVIEW_AMBIENT, .ambientIntensity = 1.0F};
     sphere.mvp = view.camera.proj * view.camera.view * sphere.model;
     view.instances = instances;  // BORROWED: `instances` is a member and outlives this call (F6)
 

@@ -109,8 +109,8 @@ TEST_CASE("scene_io: seed -> text -> load into a SECOND World round-trips names,
     CommandContext ctx{loaded, selection, roots};
     const engine::editor::SceneOpenOutcome outcome = openSceneText(ctx, commands, *text);
     REQUIRE(outcome.ok);
-    CHECK(outcome.entities == 3);
-    CHECK(loaded.entityCount() == 3);
+    CHECK(outcome.entities == 4);
+    CHECK(loaded.entityCount() == 4);
 
     std::vector<std::string> originalNames;
     original.eachEntity([&](engine::Entity e) { originalNames.emplace_back(original.name(e)); });
@@ -120,7 +120,7 @@ TEST_CASE("scene_io: seed -> text -> load into a SECOND World round-trips names,
     std::sort(loadedNames.begin(), loadedNames.end());
     CHECK(originalNames == loadedNames);
 
-    // All three are roots in both Worlds (F8's seed contents parent nothing).
+    // All four are roots in both Worlds (F8's seed contents parent nothing).
     engine::Entity cube{};
     loaded.eachEntity([&](engine::Entity e) {
         if (loaded.name(e) == "Cube") {
@@ -357,10 +357,10 @@ TEST_CASE("scene_io: save -> open round trip through the flow (IO11/AC-10/AC-15/
     // as far as this test cares -- the point is that Open discards it regardless of the clean flag.
     const engine::Entity extra = engine::editor::createEntity(world, {}, "Extra");
     REQUIRE(extra.valid());
-    REQUIRE(world.entityCount() == 4);
+    REQUIRE(world.entityCount() == 5);
 
     REQUIRE(openSceneFile(ctx, commands, session, path));
-    CHECK(world.entityCount() == 3);  // the mutation is gone
+    CHECK(world.entityCount() == 4);  // the mutation is gone
     CHECK(commands.isClean());
     CHECK(commands.count() == 0);
 }
