@@ -4,7 +4,9 @@
 // what keeps `render` scene-free and `scene` GPU-free (D1). Two pieces:
 //   * buildRenderView — a PURE, GPU-free free function (D7) that walks a World and resolves it into a
 //     render::RenderView: instances from each<Transform, MeshRenderer>, one camera (lowest entity
-//     index, D5), one directional + up to MAX_POINT_LIGHTS point lights (D6), a small fixed ambient.
+//     index, D5), one directional + up to MAX_POINT_LIGHTS point lights (D6), and the scene's
+//     Environment (task E.2.1: lowest index, defaults when absent) -- which replaced the small fixed
+//     ambient this line used to describe.
 //     Tier-0 unit-testable with no GPU.
 //   * SceneRenderer — the facade: owns a render::ForwardRenderer + reused scratch storage; one call
 //     per frame (render(World&, Frame&)) builds the view and draws it, turning buildRenderView's
@@ -197,6 +199,7 @@ private:
     bool multiCameraWarned = false;
     bool multiDirWarned = false;
     bool pointTruncWarned = false;
+    bool multiEnvironmentWarned = false;  // task E.2.1 -- >1 Environment; ZERO is deliberately silent
 };
 
 }  // namespace engine::scene_render

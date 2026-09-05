@@ -6,6 +6,7 @@
 #include <aero/core/log.hpp>
 #include <aero/core/profiler.hpp>
 #include <aero/scene/camera.hpp>
+#include <aero/scene/environment.hpp>  // task E.2.1 -- a .cpp include: the public header names no component
 #include <aero/scene/light.hpp>
 #include <aero/scene/mesh_renderer.hpp>
 #include <aero/scene/transform.hpp>
@@ -87,9 +88,6 @@ render::RenderView buildRenderView(World& world, RenderViewScratch& scratch, rhi
     scratch.instances.clear();
     scratch.points.clear();
     render::RenderView view;
-    // task E.2.1: no ambient constant here any more. view.environment stays DEFAULT-CONSTRUCTED --
-    // the engine's default sky and hemisphere -- until the scene walk fills it from the Environment
-    // component. That default is a HEMISPHERE, so this bridge's picture deliberately moves.
 
     // --- renderable instances: each<Transform, MeshRenderer> (AC-6/AC-8 — no Transform => excluded) ---
     // The scene walk ALWAYS runs first, unchanged, so view.cameraCount stays filled on every path
@@ -212,6 +210,29 @@ render::RenderView buildRenderView(World& world, RenderViewScratch& scratch, rhi
                                 .shadowBias = dl.shadowBias,
                                 .shadowNormalBias = dl.shadowNormalBias,
                                 .shadowDistance = dl.shadowDistance};
+        }
+    });
+    // --- environment (task E.2.1): lowest entity index wins -- D5's rule, verbatim, as for the
+    // camera, the directional light and the listener. NONE resolves to the defaults `view.environment`
+    // already holds and is NOT a diagnostic, because a world without one is the ordinary state of
+    // every scene authored before this task. It sits HERE, in the light block, so the 0-camera early
+    // return above leaves environmentCount at 0 -- 2.3.1's INV-4, unchanged.
+    Entity envEntity{};
+    world.each<Environment>([&](Entity ee, Environment& env) {
+        ++view.environmentCount;
+        if (!envEntity.valid() || ee.index < envEntity.index) {
+            envEntity = ee;
+            // DESIGNATED, not positional (3.6.2's rule): an appended field must be a compile error
+            // here, never a silent default. The two SELECTORS are CLAMPED -- the clampPrimitive rule,
+            // so a hand-edited 7 renders mode 0 rather than reinterpreting a byte.
+            view.environment = {.backgroundMode = render::clampBackgroundMode(env.backgroundMode),
+                                .skyColor = env.skyColor,
+                                .horizonColor = env.horizonColor,
+                                .groundColor = env.groundColor,
+                                .solidColor = env.solidColor,
+                                .ambientMode = render::clampAmbientMode(env.ambientMode),
+                                .ambientColor = env.ambientColor,
+                                .ambientIntensity = env.ambientIntensity};
         }
     });
     world.each<PointLight>([&](Entity le, PointLight& pl) {
@@ -374,6 +395,11 @@ void SceneRenderer::render(World& world, render::Frame& frame, const render::Cam
     }
     if (view.pointsTruncated) {
         warnOnce(pointTruncWarned, "SceneRenderer: >MAX_POINT_LIGHTS PointLights; extras dropped");
+    }
+    // task E.2.1: ZERO Environments is NOT a diagnostic -- it is the ordinary state of every scene
+    // authored before this task, and it renders with EnvironmentData's own defaults.
+    if (view.environmentCount > 1) {
+        warnOnce(multiEnvironmentWarned, "SceneRenderer: multiple Environments; using lowest entity index");
     }
     // task 3.1.5 (D7): the two new diagnostics are LATCHED, not WARNed. Unresolved is transient BY
     // DESIGN — every frame between a drop and the ledger's upload legitimately counts nonzero — so a
