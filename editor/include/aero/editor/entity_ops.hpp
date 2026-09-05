@@ -89,6 +89,10 @@ bool reparentEntity(World& world, Entity child, Entity parent);
 //   "Main Camera"       Transform{position {0, 1, 5}} + Camera{}
 //   "Directional Light" Transform{rotation: -50 deg about X} + DirectionalLight{}
 //   "Cube"              Transform{} + MeshRenderer{primitive = 0}
+//   "Environment"       Environment{}                      -- task E.2.1: NO Transform, deliberately.
+//                                                             The component stores no position, so
+//                                                             this is the one seed entity that does
+//                                                             not go through createEntity.
 void seedDefaultScene(World& world);
 
 // ---- root ordering (D10) ----------------------------------------------------------------------

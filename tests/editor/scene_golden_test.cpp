@@ -268,7 +268,7 @@ TEST_CASE("scene_golden/editor: a New Scene between two opens leaves no residue 
     REQUIRE(ed.world.entityCount() == 8);
 
     engine::editor::newScene(ed.context, ed.commands);
-    CHECK(ed.world.entityCount() == 3);  // the three seed entities, and nothing from `full`
+    CHECK(ed.world.entityCount() == 4);  // the four seed entities, and nothing from `full`
 
     REQUIRE(openSceneFile(ed.context, ed.commands, ed.session, GOLDEN_FULL));
     CHECK(ed.world.entityCount() == 8);  // 8, never 11

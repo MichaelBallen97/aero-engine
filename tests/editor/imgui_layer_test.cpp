@@ -171,7 +171,7 @@ constexpr std::string_view CORRUPT_PNG_BYTES = "this is not a png file, just asc
 
 // task 2.6.1 (D15): EVERY EditorAppConfig literal below opts OUT of restoring the last project. The
 // field defaults to TRUE -- the shipping behaviour -- so without the opt-out every case here would
-// open whatever project the developer last used, swapping the World and seeding three entities. It
+// open whatever project the developer last used, swapping the World and seeding four entities. It
 // would PASS on a CI runner (which has no recents file) and FAIL on a developer machine, which is
 // the worst possible shape for a bug. The ONE case that must exercise the restore path (I23)
 // enables it AND points `recentProjectsPath` at a TempDir file, so no test ever READS the real
@@ -278,8 +278,8 @@ TEST_CASE("editor: the Hierarchy panel draws a seeded scene and survives edits (
         *device, *window, ctx, {.persistLayout = false, .unfocusedFrameCapHz = 0.0F, .restoreLastProject = false});
     REQUIRE(app.has_value());
 
-    // AC-18: the default config seeds three entities.
-    CHECK(app->world().entityCount() == 3);
+    // AC-18: the default config seeds four entities (task E.2.1 added "Environment").
+    CHECK(app->world().entityCount() == 4);
     CHECK(app->panels().count() == 8);
     CHECK(app->selection().empty());
 
@@ -362,7 +362,7 @@ TEST_CASE("editor: the Inspector panel draws a seeded scene and survives structu
     REQUIRE(app.has_value());
 
     engine::World& world = app->world();
-    CHECK(world.entityCount() == 3);
+    CHECK(world.entityCount() == 4);
 
     // Find the seeded "Cube" entity (Transform + MeshRenderer) -- exercises every widget path:
     // Vec3, Quat (via Transform), a ranged uint32 selector and a colour Vec3 (via MeshRenderer).
@@ -425,7 +425,7 @@ TEST_CASE("editor: the Viewport panel drives resize, hide/show and no-camera wit
         *device, *window, ctx,
         {.persistLayout = false, .seedDefaultScene = true, .unfocusedFrameCapHz = 0.0F, .restoreLastProject = false});
     REQUIRE(app.has_value());
-    CHECK(app->world().entityCount() == 3);
+    CHECK(app->world().entityCount() == 4);
 
     // 1. Three plain ticks -- proves the offscreen pass, the submit ordering and ImGui's sample of
     // the texture all survive on real Metal/D3D12-WARP/lavapipe. An unbalanced ImGui call would
@@ -1866,7 +1866,8 @@ TEST_CASE(
     REQUIRE(app->tick());
     CHECK(app->presentedLastFrame());
     const std::vector<engine::Entity> rootsBefore(app->roots().entities().begin(), app->roots().entities().end());
-    REQUIRE(rootsBefore.size() == 3);  // Main Camera, Directional Light, Cube -- all three are roots
+    // Main Camera, Directional Light, Cube, Environment -- all four are roots
+    REQUIRE(rootsBefore.size() == 4);
 
     engine::editor::CommandContext cmd{app->world(), app->selection(), app->roots()};
     REQUIRE(app->commands().push(cmd, std::make_unique<engine::editor::DeleteEntitiesCommand>(
@@ -2059,17 +2060,17 @@ TEST_CASE("editor: requestNewScene on a clean app produces the seed contents thr
     // discard.
     const engine::Entity probe = engine::editor::createEntity(app->world(), {}, "Probe");
     REQUIRE(probe.valid());
-    REQUIRE(app->world().entityCount() == 4);
+    REQUIRE(app->world().entityCount() == 5);
 
     app->requestNewScene();  // clean at create() -- nothing pushed to the stack yet
     REQUIRE(app->tick());
     CHECK(app->presentedLastFrame());
 
-    CHECK(app->world().entityCount() == 3);  // NOT 4 -- "Probe" is gone; discriminates the no-op
+    CHECK(app->world().entityCount() == 4);  // NOT 5 -- "Probe" is gone; discriminates the no-op
     std::vector<std::string> names;
     app->world().eachEntity([&](engine::Entity e) { names.emplace_back(app->world().name(e)); });
     std::sort(names.begin(), names.end());
-    CHECK(names == std::vector<std::string>{"Cube", "Directional Light", "Main Camera"});
+    CHECK(names == std::vector<std::string>{"Cube", "Directional Light", "Environment", "Main Camera"});
     CHECK(app->selection().empty());
     CHECK(app->commands().count() == 0);
     CHECK(app->commands().isClean());
@@ -2432,7 +2433,7 @@ TEST_CASE(
 
     CHECK(app->projectIsOpen());
     CHECK(app->projectName() == "MyGame");
-    CHECK(app->world().entityCount() == 3);  // the fresh default scene (AC-18)
+    CHECK(app->world().entityCount() == 4);  // the fresh default scene (AC-18)
     CHECK_FALSE(app->sceneDirty());
     CHECK(app->scenePath().empty());
     CHECK(app->commands().count() == 0);
@@ -11402,5 +11403,86 @@ TEST_CASE(
         const std::size_t applyAt = soleLineContaining(code, "applyGizmoStyle(GIZMO_STYLE");
         CHECK(manipulateAt < pushAt);
         CHECK(applyAt < pushAt);
+    }
+}
+
+// ---- I127: task E.2.1's source-text pins ----------------------------------------------------------
+
+TEST_CASE(
+    "editor imgui: the environment reaches the viewport through SceneRenderer, and the editor "
+    "owns no sky pass (task E.2.1, I127)") {
+    // THREE SOURCE-TEXT PINS. None of them can be a behavioural assertion: nothing in tests/ can
+    // observe which OBJECT drew a pixel, and D12's real closure is the empty
+    // `git diff <branch-point> -- editor/src/viewport_panel.cpp` at the gate. These pins are the form
+    // that survives into CI on every push. UNGATED: the source exists whether or not
+    // AERO_SHADER_TOOLS built anything.
+
+    SUBCASE("(a) the material preview takes Flat mode ONCE and names the removed field never") {
+        // D13's byte-identity claim, as source text: the preview lights its sphere from a rig of its
+        // own at EXACTLY the pre-E.2.1 ambient, so its picture did not move. A SECOND
+        // AmbientMode::Flat here would be a second rig, and `view.ambient` is the field this task
+        // REMOVED -- naming it at all would not compile, which is why the count that matters is the
+        // first one.
+        const std::vector<std::string> preview = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/material_preview.cpp");
+        REQUIRE_FALSE(preview.empty());  // non-vacuity: the path resolved
+        CHECK(countLinesContaining(preview, "AmbientMode::Flat") == 1U);
+        CHECK(countLinesContaining(preview, "view.ambient") == 0U);
+        // ...and the search can say NO, so a reader that matched everything could not fake the two
+        // above.
+        CHECK(countLinesContaining(preview, "AmbientMode::DoesNotExist") == 0U);
+    }
+
+    SUBCASE("(b) NO file under editor/src or editor/include names SkyPass") {
+        // The editor does not own the pass; SceneRenderer does, and the editor already owns a
+        // SceneRenderer. A sweep, not a roster, so a file added later is covered the day it lands.
+        // THE NON-EMPTY CHECK IS NOT OPTIONAL: a sweep over a mistyped root reads zero files and
+        // passes, which is the vacuous-grep class this tree has recorded three times.
+        std::size_t scanned = 0;
+        std::size_t namingSceneRenderer = 0;
+        std::string offenders;
+        const std::array<std::string_view, 2> roots{AERO_EDITOR_SRC_DIR, AERO_EDITOR_INCLUDE_DIR};
+        for (const std::string_view root : roots) {
+            CAPTURE(root);
+            std::error_code ec;
+            const std::filesystem::recursive_directory_iterator walk(std::filesystem::path(root), ec);
+            REQUIRE_FALSE(ec);
+            for (const std::filesystem::directory_entry& entry : walk) {
+                if (!entry.is_regular_file()) {
+                    continue;
+                }
+                const std::string extension = entry.path().extension().string();
+                if (extension != ".cpp" && extension != ".hpp") {
+                    continue;
+                }
+                ++scanned;
+                for (const std::string& line : editorSourceCodeLines(entry.path().string())) {
+                    if (line.find("SkyPass") != std::string::npos) {
+                        offenders += entry.path().filename().string();
+                        offenders += ' ';
+                    }
+                    if (line.find("SceneRenderer") != std::string::npos) {
+                        ++namingSceneRenderer;
+                    }
+                }
+            }
+        }
+        INFO("files naming SkyPass: ", offenders);
+        CHECK(offenders.empty());
+        // BOTH roots really were traversed, and the sweep really can find a render type: the editor
+        // names SceneRenderer in several places, so a zero here would mean the reader is broken
+        // rather than that the tree is clean.
+        CHECK(scanned > 50U);
+        CHECK(namingSceneRenderer > 0U);
+    }
+
+    SUBCASE("(c) viewport_panel.cpp names neither SkyPass nor EnvironmentData") {
+        // D12: the viewport panel is byte-unchanged by this task. It draws the scene through
+        // SceneRenderer::render exactly as before, and the sky arrives inside that call.
+        const std::vector<std::string> viewport = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/viewport_panel.cpp");
+        REQUIRE_FALSE(viewport.empty());
+        CHECK(countLinesContaining(viewport, "SkyPass") == 0U);
+        CHECK(countLinesContaining(viewport, "EnvironmentData") == 0U);
+        // Anti-vacuity for both: the file DOES name the object that owns the pass.
+        CHECK(countLinesContaining(viewport, "SceneRenderer") > 0U);
     }
 }

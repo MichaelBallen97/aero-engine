@@ -192,8 +192,14 @@ target_include_directories(aero_editor_imgui_test PRIVATE ${CMAKE_CURRENT_SOURCE
 # see the definition site further down for the value, the TO_CMAKE_PATH normalisation and why the plan's
 # "shell target only" wording is deviated from.
 file(TO_CMAKE_PATH "${CMAKE_COMMAND}" AERO_IMGUI_TEST_CMAKE_COMMAND_VALUE)
+# task E.2.1: the editor's PUBLIC header root, beside the src root this target has read since I30.
+# I127(b) sweeps BOTH -- "no file under editor/ names SkyPass" is a claim about the whole editor, and
+# a sweep over src alone would leave every public header a silent blind spot. A PATH, NOT A FLAG (the
+# AERO_PROJECT_FIXTURES_DIR rule): a mistyped root is a REQUIRE failure on a non-empty scanned set
+# rather than a vacuous pass.
 target_compile_definitions(aero_editor_imgui_test PRIVATE
     AERO_EDITOR_SRC_DIR="${CMAKE_SOURCE_DIR}/editor/src"
+    AERO_EDITOR_INCLUDE_DIR="${CMAKE_SOURCE_DIR}/editor/include"
     AERO_TEST_CMAKE_COMMAND="${AERO_IMGUI_TEST_CMAKE_COMMAND_VALUE}")
 
 # task 3.4.2 (AC-32): the five preview cases (I88-I92) must assert a DIFFERENT contract in a build with

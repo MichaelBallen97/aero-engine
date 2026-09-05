@@ -284,18 +284,18 @@ TEST_CASE("scene_session: newScene contents (SS12/F8)") {
 
     engine::editor::newScene(ctx, commands);
 
-    CHECK(world.entityCount() == 3);
+    CHECK(world.entityCount() == 4);
     std::vector<std::string> names;
     world.eachEntity([&](engine::Entity e) { names.emplace_back(world.name(e)); });
     std::sort(names.begin(), names.end());
-    const std::vector<std::string> expected = {"Cube", "Directional Light", "Main Camera"};
+    const std::vector<std::string> expected = {"Cube", "Directional Light", "Environment", "Main Camera"};
     CHECK(names == expected);
 
     CHECK(commands.count() == 0);
     CHECK(commands.isClean());
 
     roots.reconcile(world);
-    CHECK(roots.entities().size() == 3);  // a fresh forest -- three roots, no parenting
+    CHECK(roots.entities().size() == 4);  // a fresh forest -- four roots, no parenting
 }
 
 TEST_CASE("scene_session: newScene is idempotent (SS13/S5)") {
@@ -308,7 +308,7 @@ TEST_CASE("scene_session: newScene is idempotent (SS13/S5)") {
     engine::editor::newScene(ctx, commands);
     engine::editor::newScene(ctx, commands);
 
-    CHECK(world.entityCount() == 3);  // NOT 6 -- S5's discriminator (seed before clear, not after)
+    CHECK(world.entityCount() == 4);  // NOT 8 -- S5's discriminator (seed before clear, not after)
 }
 
 TEST_CASE("scene_session: dirty tracking follows history arithmetic (SS14/D3)") {
@@ -475,14 +475,14 @@ struct FlowFixture {
 
 }  // namespace
 
-TEST_CASE("scene_session: New performs immediately when clean, and produces three entities (SS21)") {
+TEST_CASE("scene_session: New performs immediately when clean, and produces four entities (SS21)") {
     FlowFixture f;
     SceneSession session;
     f.flow.requested = FileAction::NewScene;
 
     applyFileRequests(f.ctx, f.commands, session, f.flow, f.host, f.project);
 
-    CHECK(f.world.entityCount() == 3);
+    CHECK(f.world.entityCount() == 4);
     CHECK(f.flow.requested == FileAction::None);
     CHECK(f.flow.pending == FileAction::None);
     CHECK_FALSE(f.flow.confirmOpen);
@@ -549,7 +549,7 @@ TEST_CASE("scene_session: Don't Save performs immediately (SS25)") {
     f.flow.choice = ConfirmChoice::Discard;
     applyFileRequests(f.ctx, f.commands, session, f.flow, f.host, f.project);
 
-    CHECK(f.world.entityCount() == 3);  // the new scene
+    CHECK(f.world.entityCount() == 4);  // the new scene
     CHECK(f.commands.count() == 0);
     CHECK(f.commands.isClean());
     CHECK_FALSE(f.flow.confirmOpen);
@@ -652,7 +652,7 @@ TEST_CASE("scene_session: a modal answer beats a new request carried in the same
     f.flow.requested = FileAction::NewScene;
     applyFileRequests(f.ctx, f.commands, session, f.flow, f.host, f.project);
 
-    CHECK(f.world.entityCount() == 3);  // the pending New performed, then the fresh New performed too
+    CHECK(f.world.entityCount() == 4);  // the pending New performed, then the fresh New performed too
     CHECK(f.flow.requested == FileAction::None);
     CHECK_FALSE(f.flow.choice.has_value());
     CHECK(f.flow.pending == FileAction::None);

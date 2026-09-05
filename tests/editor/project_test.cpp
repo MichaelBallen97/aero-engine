@@ -1263,7 +1263,7 @@ TEST_CASE("project: openProjectPath opens, resets the scene and promotes the rec
     const bool ok = openProjectPath(f.ctx, f.commands, session, f.project, created.root);
 
     CHECK(ok);
-    CHECK(f.world.entityCount() == 3);  // the fresh default scene (AC-18)
+    CHECK(f.world.entityCount() == 4);  // the fresh default scene (AC-18)
     CHECK(f.commands.isClean());
     CHECK(f.commands.count() == 0);
     CHECK(session.path().empty());
@@ -1327,7 +1327,7 @@ TEST_CASE("project: createAndOpenProject scaffolds and adopts in one operation (
     CHECK(directoryExists(dir.join("MyGame/assets")));
     CHECK(directoryExists(dir.join("MyGame/scenes")));
     CHECK(f.projectSession.isOpen());
-    CHECK(f.world.entityCount() == 3);
+    CHECK(f.world.entityCount() == 4);
     CHECK(f.commands.isClean());
 
     scope.sink()->take(records);
