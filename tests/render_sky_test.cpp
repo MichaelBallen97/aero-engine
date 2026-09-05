@@ -1257,6 +1257,12 @@ TEST_CASE("render sky: the hemisphere shades an up-facing face apart from a down
     // 0.375/0.1875/0.09375, three dyadic values a half carries without rounding, so this is a bit
     // comparison and needs no tolerance at all. A packer that swapped the mid and the delta writes
     // zero into the mid slot here and fails both of these.
+    //
+    // THE FIXTURE IS DYADIC ON PURPOSE, AND THAT IS WHAT MAKES A BIT COMPARISON SAFE ACROSS LANES:
+    // each expected value sits a full half-ulp from either neighbour (a relative 2.4e-4 here), so it
+    // absorbs any sub-ulp difference in the backend's sRGB decode of the default white base colour --
+    // the one input this arm cannot compute for itself, and the reason the (a) arms above, whose
+    // expectations are NOT representable, state a tolerance instead.
     CHECK(flatUp == encodeHalf4(flatResolved.mid, 1.0F));
     // ANTI-VACUITY: the Flat fixture is not the Hemisphere one, so (c) is not (a) restated.
     CHECK_FALSE(flatUp == up);
