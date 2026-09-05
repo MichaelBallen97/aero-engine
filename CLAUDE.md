@@ -391,7 +391,7 @@ miniaudio; `A38` is covered only by validation row 9. Full detail in `docs/10`.
 | **Phase 2** — Editor | **COMPLETE, gate met 2026-08-02.** All six epics closed and macOS-validated; Windows/Linux rows pending for every task (`editor/VALIDATION.md`). Gate artifact: `samples/phase-2-editor-scene/` — data, deliberately not `add_subdirectory`'d. |
 | **Phase 3** — Asset Pipeline & 3D Content | **OPEN.** **All seven epics CLOSED in code** — 3.1–3.6, and 3.7 with 3.7.1 + 3.7.2 merged and macOS-validated and **3.7.3 merged (PR #91)**. What is left is the gate below and the validation debt. Per-task detail in `docs/10`. |
 | **Phase 3 gate** | Drop a rigged glTF/FBX in → PBR materials + shadows + a playing animation + **an audible sound**. The audible half exists in code as of 3.7.2 and **has not been validated on any platform** — 3.7.2's macOS pass ticked 47 of 53 records and left the 6 that need ears open. |
-| **Phase E** — Editor Experience | **OPEN. E.1.1 merged (PR #92 `15bf58b`), E.1.2 merged (PR #93 `d91eab1`), E.1.3 merged (PR #94 `6fb323c`, + PR #95 `0ab204d`), E.1.4 merged (PR #96 `3aadffb`); 20 tasks remain, planning only.** Inserted between 3 and 4; six epics, 24 tasks in `docs/tasks/phase-E.md`. Viewport legibility (E.1), lighting & environment (E.2), inspector & context routing (E.3), project/scene/asset management (E.4), content-creation UX (E.5), shell identity (E.6). **E.1.1 is macOS-validated** — 8 of 10 rows PASS on 2026-09-03, 2 partial for structural reasons (the sample installs no billboard atlas, so `S21`'s picture half is not executable with it; Tracy's CLI exports zones but not plots). **E.1.2 is macOS-validated** — 8 PASS / 2 PARTIAL / 1 NOT EXECUTABLE on 2026-09-04. **E.1.3 is macOS-validated** — 11 PASS / 1 PARTIAL / 2 NOT EXECUTABLE / 1 NOT RUN on 2026-09-05; the pass found the ortho gizmo-suppression defect, fixed in PR #94's follow-up (PR #95, `0ab204d`). **E.1.4 has a validation page written and NOT YET RUN on any platform.** Windows and Linux unvalidated, as everywhere. |
+| **Phase E** — Editor Experience | **OPEN. E.1.1 merged (PR #92 `15bf58b`), E.1.2 merged (PR #93 `d91eab1`), E.1.3 merged (PR #94 `6fb323c`, + PR #95 `0ab204d`), E.1.4 merged (PR #96 `3aadffb`); 20 tasks remain, planning only.** Inserted between 3 and 4; six epics, 24 tasks in `docs/tasks/phase-E.md`. Viewport legibility (E.1), lighting & environment (E.2), inspector & context routing (E.3), project/scene/asset management (E.4), content-creation UX (E.5), shell identity (E.6). **E.1.1 is macOS-validated** — 8 of 10 rows PASS on 2026-09-03, 2 partial for structural reasons (the sample installs no billboard atlas, so `S21`'s picture half is not executable with it; Tracy's CLI exports zones but not plots). **E.1.2 is macOS-validated** — 8 PASS / 2 PARTIAL / 1 NOT EXECUTABLE on 2026-09-04. **E.1.3 is macOS-validated** — 11 PASS / 1 PARTIAL / 2 NOT EXECUTABLE / 1 NOT RUN on 2026-09-05; the pass found the ortho gizmo-suppression defect, fixed in PR #94's follow-up (PR #95, `0ab204d`). **E.1.4 is macOS-validated** — 10 PASS / 1 NOT EXECUTABLE on 2026-09-05, with two of the ten carrying a stated shortfall (row 5's mid-import transition not observed; row 6's 256-entity figure extrapolated from eleven, not measured). Windows and Linux unvalidated, as everywhere. |
 | **Phase E gate** | Open a project and land in the scene you were last editing, on a lit grid floor under a sky; create a Cube from the menu, drop a material on it and see it shade; aim a spot light with a visible gizmo; rename, move and delete assets without leaving the editor. Gate artifact: `samples/phase-E-editor/`. |
 
 ### Engine layers, in dependency order
@@ -698,8 +698,25 @@ spatializer, the mixer, the system and the bridge **are** cross-lane covered —
 sound**, because CI opens the null backend only. **LSan runs on the Linux Debug lane alone**, which
 makes that page's Linux row matter more than most.
 
-**E.1.4'S PAGE IS WRITTEN AND HAS NOT BEEN RUN ON ANY PLATFORM.** Its eleven rows are the whole of
-its remaining risk, and several are the ONLY cover their seed has anywhere: **row 1** (a REAL asset
+**E.1.4 IS macOS-VALIDATED — 10 PASS / 1 NOT EXECUTABLE, 2026-09-05.** The deliverable holds on a
+REAL asset: a glTF whose cooked AABB is a 2 x 2 box outlines its narrow diagonal band, with **0 amber
+pixels of 3600 in each off-diagonal corner** and 428/400 in the two the geometry occupies. The band
+measures **exactly 2 px** and **`rgb(255,176,64)` byte-exact** on screen — which is `2*radius`, not
+`2r+1`, and is display-space colour, so D7's after-the-tonemap composite is confirmed from the
+product side. **The marker and the outline are the same amber byte for byte**, which is the ONLY
+defence the two declared colour seeds have anywhere. A fully occluded selection draws **0 outline
+pixels**; a partly occluded one stops dead at the occluder. The picture with nothing selected is
+**bit-identical (0 of 296 378)** to a build with this task absent, with a working anti-vacuity control
+at 1580. Across an actual **768 -> 832** allocation change the band stays 2 px and flush against the
+silhouette. **The feature is free at 60 Hz**: four conditions all mean 16.665-16.672 ms, vsync-bound.
+**Row 4 is NOT EXECUTABLE — both attached displays are 1x — so E.1.1's thick-line handoff stays
+UNFIRED rather than cleared.** Two rows carry a stated shortfall: row 5's mid-import transition was
+never observable (the import completes inside one frame) and row 6's 256-entity figure is
+**extrapolated from eleven, not measured**, because the editor has no Select All and no Hierarchy
+range-select. **A METHOD TRAP WORTH KEEPING: two live `aero_editor` processes made a window lookup
+capture the STALE one, and three comparisons reported a false '0 differing' — including one that
+provably contained an outline. Bind every capture to its launched PID, and let an anti-vacuity
+control be what catches it.** The rows that were its only seed cover: **row 1** (a REAL asset
 with a fat cooked AABB — the deliverable's headline claim, judged against something other than a
 `Sphere`), **row 3** (the palette and the primary/secondary read at a glance — sabotage row 20 is a
 deliberate NON-finding, because restating the two colours as `IM_COL32` literals one byte off is
@@ -794,10 +811,14 @@ binary is `aero_sample_phaseE_debug_draw`** — `phaseE`, no underscore before t
 
 ### Next
 
-**Phase E is the open front. E.1.4 is MERGED (PR #96, `3aadffb`)** — fifteen commits plus the
-`origin/main` merge, the code-review round closed, the 22-seed sabotage matrix run, the full local
-gate green on both presets and both reduced configurations, and a validation page written but
-**NOT RUN on any platform**, which is its whole remaining risk.
+**Phase E is the open front. E.1.4 is MERGED (PR #96, `3aadffb`) AND macOS-VALIDATED** — fifteen
+commits plus the `origin/main` merge, the code-review round closed (one blocking finding: the
+edge-clamp bound was half a texel wrong and painted a false band down the viewport's right and
+bottom edges, invisible to every test because the only case covering it used an unmargined target),
+the 22-seed sabotage matrix run with four holes recorded, the full local gate green on both presets
+and both reduced configurations, and a **macOS pass of 10 PASS / 1 NOT EXECUTABLE on 2026-09-05**.
+Its remaining risk is row 4 (needs a 2x display), row 5's unobserved mid-import transition, row 6's
+extrapolated 256-entity figure, and the four sabotage holes.
 **E.1.3 is MERGED (PR #94, `6fb323c`) AND macOS-VALIDATED, with one defect that pass found already
 fixed (PR #95, `0ab204d`)** — thirteen commits, an 18-seed sabotage matrix, a review round closed
 (one blocking finding: the widget's press reached ImGuizmo), and **three records on its page still
