@@ -59,6 +59,7 @@ add_executable(aero_tests
     transform_test.cpp    # task 1.3.2 — engine::Transform, the World-owned forest, world matrices
     camera_test.cpp       # task 1.3.3 — engine::Camera: defaults/layout/projection/view/registration
     light_test.cpp        # task 1.3.3 — engine::DirectionalLight + PointLight
+    environment_test.cpp  # task E.2.1 — engine::Environment: layout, defaults, registration, selectors
     animation_player_test.cpp # task 3.5.2 — engine::AnimationPlayer: layout, defaults, the clock's six steps
     scene_render_test.cpp # task 1.4.1 — buildRenderView (tier-0) + gated SceneRenderer GPU draw-smoke
     asset_bindings_test.cpp # task 3.1.5 — AssetBindingTable: sorted-vector set/find/remove, nil refusal
@@ -733,6 +734,7 @@ if(AERO_REFLECT_TOOLS)
         components_engine_camera      # task 1.3.3
         components_engine_light       # task 1.3.3
         components_engine_mesh_renderer   # task 1.4.1
+        components_engine_environment     # task E.2.1
         # task 2.2.2: field annotations (AERO_RANGE/AERO_COLOR) and the std::string category
         annotations_components annotations_meta annotations_malformed annotations_nonfinite
         annotations_misapplied annotations_unknown annotations_determinism

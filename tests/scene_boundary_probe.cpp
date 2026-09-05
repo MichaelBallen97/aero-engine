@@ -174,3 +174,15 @@ static_assert(std::is_trivially_copyable_v<engine::AudioListener>);
 static_assert(std::is_standard_layout_v<engine::AudioListener>);
 static_assert(std::is_aggregate_v<engine::AudioListener>);
 static_assert(sizeof(engine::AudioListener) == sizeof(float));  // one field, no padding
+
+// ---- task E.2.1 ----------------------------------------------------------------------------------
+// The ninth built-in, reached THROUGH <aero/scene/scene.hpp> (the only include this file has) on a
+// link line that is still exactly `aero::scene`. That is what makes these a statement about the
+// PUBLIC scene surface: this TU cannot see engine/render at all, so nothing about a mode enum, a sky
+// gradient or a pipeline can have leaked into the component.
+static_assert(std::is_trivially_copyable_v<engine::Environment>);
+static_assert(std::is_standard_layout_v<engine::Environment>);
+static_assert(std::is_aggregate_v<engine::Environment>);
+// 2 * 4 (selectors) + 5 * 12 (Vec3) + 4 (intensity) = 72; every member 4-aligned, no padding.
+static_assert(sizeof(engine::Environment) == 72);
+static_assert(alignof(engine::Environment) == 4);

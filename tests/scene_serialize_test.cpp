@@ -13,6 +13,7 @@
 #include <aero/scene/audio_listener.hpp>  // task 3.7.2
 #include <aero/scene/audio_source.hpp>    // task 3.7.2
 #include <aero/scene/camera.hpp>
+#include <aero/scene/environment.hpp>  // task E.2.1
 #include <aero/scene/light.hpp>
 #include <aero/scene/mesh_renderer.hpp>
 #include <aero/scene/transform.hpp>
@@ -614,7 +615,7 @@ TEST_CASE("scene_serialize: the committed samples/phase-1-scene/scene.json (AC-6
 TEST_CASE("scene_serialize: dispatch/registration parity (AC-3/D8)") {
     const World world;
     const std::span<const std::string_view> names = builtinComponentNames();
-    CHECK(names.size() == 8);  // task 3.7.2: AudioSource and AudioListener are the 7th and 8th
+    CHECK(names.size() == 9);  // task E.2.1: Environment is the 9th, after the 3.7.2 audio pair
     CHECK(names.size() == world.componentTypeCount());
     for (const std::string_view name : names) {
         CHECK(world.findComponentType(name).valid());
@@ -713,7 +714,7 @@ TEST_CASE("scene_golden: full.scene.json is a byte-exact fixpoint (G2/AC-1/AC-2/
     World world;
     const SceneLoadReport report = loadScene(world, doc);
     CHECK(report.entitiesCreated == 8);
-    CHECK(report.componentsAttached == 13);  // task 3.7.2: entity 8 gained AudioSource + AudioListener
+    CHECK(report.componentsAttached == 14);  // task E.2.1: entity 6 gained Environment (3.7.2: 13)
     CHECK(report.componentsSkipped == 0);    // non-zero here means the fixture named a type this build
     CHECK(report.componentsFailed == 0);     // cannot resolve -- i.e. the fixture degraded (E2)
 
@@ -844,16 +845,16 @@ TEST_CASE("scene_golden: full.scene.json still contains everything it is for (G5
     CHECK(emptyName == 1);         // id 5, the bare entity -- emits exactly `{ "id": 5 }`
     CHECK(emptyComponents == 2);   // id 5, and id 7 (a name-and-parent-only record)
     CHECK(forwardParent == 1);     // id 7 -> 8, the only forward reference in the tree's fixtures
-    CHECK(twoComponents == 5);     // ids 1, 2, 3, 4, 6
+    CHECK(twoComponents == 4);     // ids 1, 2, 3, 4 -- id 6 gained a THIRD component at E.2.1
     CHECK(grandParented == 1);     // id 4 -> 3 -> 2, the three-level chain
     CHECK(namedProp == 2);         // duplicate names are legal, unvalidated and preserved (E4)
-    CHECK(totalComponents == 13);  // task 3.7.2: entity 8 gained AudioSource and AudioListener
+    CHECK(totalComponents == 14);  // task E.2.1: entity 6 gained Environment (3.7.2: 13)
 
     // EVERY built-in type name appears somewhere in the file. A new built-in arriving later reddens
     // G8, not this -- deliberately: this asks "did the fixture lose one?", G8 asks "did the registry
     // change?".
     const std::span<const std::string_view> builtins = builtinComponentNames();
-    REQUIRE(builtins.size() == 8);
+    REQUIRE(builtins.size() == 9);
     for (const std::string_view name : builtins) {
         INFO(std::string{name});
         CHECK(std::find(typeNames.begin(), typeNames.end(), std::string{name}) != typeNames.end());
@@ -1031,7 +1032,7 @@ TEST_CASE("scene_golden: registry order is pinned, and the fixture obeys it (G8/
     // order must be a SUBSEQUENCE of the registry order. A writer that sorted alphabetically, or a
     // BUILTINS table reordered, breaks one or both halves.
     const std::span<const std::string_view> builtins = builtinComponentNames();
-    REQUIRE(builtins.size() == 8);
+    REQUIRE(builtins.size() == 9);
     CHECK(builtins[0] == "engine::Transform");
     CHECK(builtins[1] == "engine::Camera");
     CHECK(builtins[2] == "engine::DirectionalLight");
@@ -1040,6 +1041,7 @@ TEST_CASE("scene_golden: registry order is pinned, and the fixture obeys it (G8/
     CHECK(builtins[5] == "engine::AnimationPlayer");
     CHECK(builtins[6] == "engine::AudioSource");    // task 3.7.2
     CHECK(builtins[7] == "engine::AudioListener");  // task 3.7.2
+    CHECK(builtins[8] == "engine::Environment");    // task E.2.1
     // A new built-in reddens exactly here, by design (E12). The correct response is to regenerate
     // full.scene.json to exercise the new type and update this list in the SAME pull request -- not
     // to relax the assertion. Task 3.7.2 followed it to the letter, twice over.
@@ -1065,7 +1067,7 @@ TEST_CASE("scene_golden: registry order is pinned, and the fixture obeys it (G8/
         }
     }
     CHECK_MESSAGE(offenders.empty(), offenders);
-    CHECK(seen == 13);  // ANTI-VACUITY: the loop above must actually have inspected thirteen components
+    CHECK(seen == 14);  // ANTI-VACUITY: the loop above must actually have inspected fourteen components
 }
 
 TEST_CASE("scene_golden: the committed sample scene is still canonical (G9/AC-13/D9)") {
@@ -1512,5 +1514,195 @@ TEST_CASE("scene_serialize: section 2.3's tolerance rules on the AudioListener p
         REQUIRE(listener != nullptr);
         CHECK(listener->volume == 0.5F);
         CHECK(saveWorldText(world).find("\"position\"") == std::string::npos);
+    }
+}
+
+TEST_CASE("scene_serialize: Environment round-trips all eight fields at NON-default values (task E.2.1)") {
+    // The NINTH built-in, through the real saveWorldText/loadSceneText pair rather than through the
+    // generated serializer alone: a component that reads and writes perfectly but is missing from
+    // BUILTINS passes every reflect-gen case and fails exactly here. That is the "registered,
+    // inspectable, editable and NOT SAVED" failure mode, and it is why this task's sweep is ONE
+    // commit.
+    //
+    // Every value is distinct from its default AND from every other value in the struct, so a
+    // serializer that crossed two keys (skyColor written into horizonColor, say) cannot pass by
+    // coincidence. Both selectors are 1, so the NON-default arm of each is what travels.
+    World world;
+    const Entity e = world.create();
+    const Environment authored{.backgroundMode = 1U,
+                               .skyColor = Vec3{0.11F, 0.12F, 0.13F},
+                               .horizonColor = Vec3{0.21F, 0.22F, 0.23F},
+                               .groundColor = Vec3{0.31F, 0.32F, 0.33F},
+                               .solidColor = Vec3{0.41F, 0.42F, 0.43F},
+                               .ambientMode = 1U,
+                               .ambientColor = Vec3{0.51F, 0.52F, 0.53F},
+                               .ambientIntensity = 1.75F};
+    world.add<Environment>(e, authored);
+
+    const std::string text = saveWorldText(world);
+    // All eight keys are emitted. A field that silently vanished would still round-trip through a
+    // reader that leaves missing keys untouched, so THE BYTES are asserted too.
+    CHECK(text.find("\"engine::Environment\"") != std::string::npos);
+    CHECK(text.find("\"backgroundMode\": 1") != std::string::npos);
+    CHECK(text.find("\"skyColor\"") != std::string::npos);
+    CHECK(text.find("\"horizonColor\"") != std::string::npos);
+    CHECK(text.find("\"groundColor\"") != std::string::npos);
+    CHECK(text.find("\"solidColor\"") != std::string::npos);
+    CHECK(text.find("\"ambientMode\": 1") != std::string::npos);
+    CHECK(text.find("\"ambientColor\"") != std::string::npos);
+    CHECK(text.find("\"ambientIntensity\": 1.75") != std::string::npos);
+
+    World reloaded;
+    const SceneLoadResult result = loadSceneText(reloaded, text);
+    REQUIRE_FALSE(result.error.has_value());
+    CHECK(result.report.componentsAttached == 1);
+    CHECK(result.report.componentsSkipped == 0);
+    CHECK(result.report.componentsFailed == 0);
+
+    const std::vector<Entity> entities = collectEntities(reloaded);
+    REQUIRE(entities.size() == 1);
+    const Environment* env = reloaded.get<Environment>(entities[0]);
+    REQUIRE(env != nullptr);
+    // FIELD BY FIELD before the whole-struct equality, so a failure names the field rather than
+    // printing two opaque structs.
+    CHECK(env->backgroundMode == 1U);
+    CHECK(env->skyColor == Vec3{0.11F, 0.12F, 0.13F});
+    CHECK(env->horizonColor == Vec3{0.21F, 0.22F, 0.23F});
+    CHECK(env->groundColor == Vec3{0.31F, 0.32F, 0.33F});
+    CHECK(env->solidColor == Vec3{0.41F, 0.42F, 0.43F});
+    CHECK(env->ambientMode == 1U);
+    CHECK(env->ambientColor == Vec3{0.51F, 0.52F, 0.53F});
+    CHECK(env->ambientIntensity == 1.75F);
+    CHECK(*env == authored);
+
+    CHECK(saveWorldText(reloaded) == text);  // canonical fixpoint
+}
+
+TEST_CASE("scene_serialize: Environment emits LAST, in REGISTRATION order (task E.2.1)") {
+    // The dispatch-order pin, extended to nine: save emission order is BUILTINS' declaration order,
+    // so Transform (0) precedes AudioListener (7), which precedes Environment (8) -- a SUBSEQUENCE
+    // of the registry order, asserted by index-of, never by insertion order and never alphabetically
+    // (which would put Environment second).
+    World world;
+    const Entity e = world.create();
+    world.add<Environment>(e, Environment{});  // ADDED FIRST, deliberately
+    world.add<AudioListener>(e, AudioListener{});
+    world.add<Transform>(e, Transform{});
+
+    const std::string text = saveWorldText(world);
+    const std::size_t transformAt = text.find("\"engine::Transform\"");
+    const std::size_t listenerAt = text.find("\"engine::AudioListener\"");
+    const std::size_t environmentAt = text.find("\"engine::Environment\"");
+    REQUIRE(transformAt != std::string::npos);
+    REQUIRE(listenerAt != std::string::npos);
+    REQUIRE(environmentAt != std::string::npos);
+    CHECK(transformAt < listenerAt);
+    CHECK(listenerAt < environmentAt);
+}
+
+TEST_CASE("scene_serialize: section 2.3's tolerance rules on the Environment payload (task E.2.1)") {
+    SUBCASE("an EMPTY object attaches the component with all eight defaults") {
+        constexpr std::string_view TEXT = R"({
+  "version": 1,
+  "entities": [
+    {
+      "id": 1,
+      "components": {
+        "engine::Environment": {}
+      }
+    }
+  ]
+}
+)";
+        World world;
+        const SceneLoadResult result = loadSceneText(world, TEXT);
+        REQUIRE_FALSE(result.error.has_value());
+        CHECK(result.report.componentsAttached == 1);
+        CHECK(result.report.componentsFailed == 0);  // every key MISSING is silent, never a failure
+
+        const std::vector<Entity> entities = collectEntities(world);
+        REQUIRE(entities.size() == 1);
+        const Environment* env = world.get<Environment>(entities[0]);
+        REQUIRE(env != nullptr);
+        CHECK(*env == Environment{});  // all eight, at their struct defaults
+    }
+
+    SUBCASE("a WRONG-KIND key leaves THAT field alone and applies the other seven") {
+        // The arm that proves the reader is PER-FIELD rather than all-or-nothing: `backgroundMode`
+        // is a string, so it fails and stays at its default 0, while every other key -- including
+        // the seven that come AFTER the bad one -- still applies.
+        constexpr std::string_view TEXT = R"({
+  "version": 1,
+  "entities": [
+    {
+      "id": 1,
+      "components": {
+        "engine::Environment": {
+          "backgroundMode": "sky",
+          "skyColor": { "x": 0.11, "y": 0.12, "z": 0.13 },
+          "horizonColor": { "x": 0.21, "y": 0.22, "z": 0.23 },
+          "groundColor": { "x": 0.31, "y": 0.32, "z": 0.33 },
+          "solidColor": { "x": 0.41, "y": 0.42, "z": 0.43 },
+          "ambientMode": 1,
+          "ambientColor": { "x": 0.51, "y": 0.52, "z": 0.53 },
+          "ambientIntensity": 1.75
+        }
+      }
+    }
+  ]
+}
+)";
+        World world;
+        const SceneLoadResult result = loadSceneText(world, TEXT);
+        REQUIRE_FALSE(result.error.has_value());
+        CHECK(result.report.componentsAttached == 1);
+        CHECK(result.report.componentsFailed == 1);  // the WARN's observable
+
+        const std::vector<Entity> entities = collectEntities(world);
+        REQUIRE(entities.size() == 1);
+        const Environment* env = world.get<Environment>(entities[0]);
+        REQUIRE(env != nullptr);
+        CHECK(env->backgroundMode == 0U);  // left at its default -- never "helpfully" anything else
+        CHECK(env->skyColor == Vec3{0.11F, 0.12F, 0.13F});
+        CHECK(env->horizonColor == Vec3{0.21F, 0.22F, 0.23F});
+        CHECK(env->groundColor == Vec3{0.31F, 0.32F, 0.33F});
+        CHECK(env->solidColor == Vec3{0.41F, 0.42F, 0.43F});
+        CHECK(env->ambientMode == 1U);
+        CHECK(env->ambientColor == Vec3{0.51F, 0.52F, 0.53F});
+        CHECK(env->ambientIntensity == 1.75F);
+    }
+
+    SUBCASE("an UNKNOWN key is dropped rather than carried, and never fails the component") {
+        constexpr std::string_view TEXT = R"({
+  "version": 1,
+  "entities": [
+    {
+      "id": 1,
+      "components": {
+        "engine::Environment": {
+          "ambientIntensity": 0.25,
+          "skyboxTexture": "not-a-field-yet"
+        }
+      }
+    }
+  ]
+}
+)";
+        World world;
+        const SceneLoadResult result = loadSceneText(world, TEXT);
+        REQUIRE_FALSE(result.error.has_value());
+        CHECK(result.report.componentsAttached == 1);
+        CHECK(result.report.componentsFailed == 0);  // an unknown key WARNs; it never FAILS a field
+
+        const std::vector<Entity> entities = collectEntities(world);
+        REQUIRE(entities.size() == 1);
+        const Environment* env = world.get<Environment>(entities[0]);
+        REQUIRE(env != nullptr);
+        CHECK(env->ambientIntensity == 0.25F);
+        CHECK(env->skyColor == Environment{}.skyColor);  // the seven absent keys kept their defaults
+
+        const std::string resaved = saveWorldText(world);
+        CHECK(resaved.find("\"skyboxTexture\"") == std::string::npos);
+        CHECK(resaved.find("\"ambientIntensity\": 0.25") != std::string::npos);
     }
 }

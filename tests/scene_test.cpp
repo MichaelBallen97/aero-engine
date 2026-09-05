@@ -627,11 +627,11 @@ TEST_CASE("scene: registration table") {
     CHECK(w.registered(id));
     CHECK(w.componentTypeName(id) == std::string_view{"test::Position"});
     CHECK(w.findComponentType("test::Position") == id);
-    CHECK(w.componentTypeCount() == 9);  // 9: 8 builtins (incl. the 3.7.2 audio pair) + Position
+    CHECK(w.componentTypeCount() == 10);  // 10: 9 builtins (incl. E.2.1's Environment) + Position
 
     const ComponentTypeId again = registerComponent<Position>(w, "test::Position");
     CHECK(again == id);
-    CHECK(w.componentTypeCount() == 9);  // still 9 — re-registration is idempotent
+    CHECK(w.componentTypeCount() == 10);  // still 10 — re-registration is idempotent
 
     const Entity e = w.create();
     REQUIRE(w.add<Position>(e) != nullptr);
@@ -639,7 +639,7 @@ TEST_CASE("scene: registration table") {
     CHECK(w.componentCount<Position>() == 1);  // storage untouched by re-registration
 
     const ComponentTypeId velId = registerComponent<Velocity>(w, "test::Velocity");
-    CHECK(w.componentTypeCount() == 10);  // 8 builtins + Position + Velocity
+    CHECK(w.componentTypeCount() == 11);  // 9 builtins + Position + Velocity
     CHECK(w.findComponentType("test::Position") == id);
     CHECK(w.findComponentType("test::Velocity") == velId);
 
@@ -671,7 +671,7 @@ TEST_CASE("scene: registration table") {
     const ComponentTypeId velRenamed = registerComponent<Velocity>(w, "test::Position");
     CHECK(velRenamed == velId);
     CHECK(w.componentTypeName(velId) == std::string_view{"test::Velocity"});
-    CHECK(w.componentTypeCount() == 10);  // unchanged by the existing-id WARN branch
+    CHECK(w.componentTypeCount() == 11);  // unchanged by the existing-id WARN branch
     CHECK(w.findComponentType("test::Position") == id);
     CHECK(w.findComponentType("test::Velocity") == velId);
 
@@ -684,7 +684,7 @@ TEST_CASE("scene: registration table") {
     CHECK(bigId == componentTypeId<Big>());
     CHECK(!(bigId == id));
     CHECK(w.registered(bigId));
-    CHECK(w.componentTypeCount() == 11);  // + Big, appended under a duplicate name
+    CHECK(w.componentTypeCount() == 12);  // + Big, appended under a duplicate name
     CHECK(w.componentTypeName(bigId) == std::string_view{"test::Position"});
     CHECK(w.findComponentType("test::Position") == id);
     CHECK(w.findComponentType("test::Velocity") == velId);
@@ -878,11 +878,12 @@ TEST_CASE("scene: names at scale, with no cross-talk (2.2.1 AC-1)") {
 
 TEST_CASE("scene: names do not enter the component-type registry (2.2.1 AC-6/I8)") {
     World w;
-    CHECK(w.componentTypeCount() == 8);  // Transform, Camera, DirectionalLight, PointLight,
-                                         // MeshRenderer, AnimationPlayer, AudioSource, AudioListener
+    CHECK(w.componentTypeCount() == 9);  // Transform, Camera, DirectionalLight, PointLight,
+                                         // MeshRenderer, AnimationPlayer, AudioSource, AudioListener,
+                                         // Environment
     const Entity e = w.create();
     REQUIRE(w.setName(e, "named"));
-    CHECK(w.componentTypeCount() == 8);  // unchanged -- D1/F12
+    CHECK(w.componentTypeCount() == 9);  // unchanged -- D1/F12
     CHECK(!w.findComponentType("engine::EntityName").valid());
     CHECK(!w.findComponentType("EntityName").valid());
 }

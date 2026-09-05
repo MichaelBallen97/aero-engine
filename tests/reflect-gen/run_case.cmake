@@ -32,6 +32,7 @@ set(TRANSFORM_HPP "${SCENE_INCLUDE}/aero/scene/transform.hpp")  # task 1.3.2
 set(CAMERA_HPP "${SCENE_INCLUDE}/aero/scene/camera.hpp")  # task 1.3.3
 set(LIGHT_HPP "${SCENE_INCLUDE}/aero/scene/light.hpp")    # task 1.3.3
 set(MESH_RENDERER_HPP "${SCENE_INCLUDE}/aero/scene/mesh_renderer.hpp")  # task 1.4.1
+set(ENVIRONMENT_HPP "${SCENE_INCLUDE}/aero/scene/environment.hpp")     # task E.2.1
 set(ANNOTATIONS_HPP "${FIXTURES_DIR}/component_annotations.hpp")  # task 2.2.2
 set(TEXT_HPP "${FIXTURES_DIR}/component_text.hpp")                # task 2.2.2
 set(GUID_HPP "${FIXTURES_DIR}/component_guid.hpp")                # task 3.1.5
@@ -960,6 +961,77 @@ elseif(CASE STREQUAL "components_engine_mesh_renderer")
     string(FIND "${err}" "error:" _idx_err)
     if(NOT _idx_err EQUAL -1)
         message(FATAL_ERROR "case 'components_engine_mesh_renderer': error-severity diagnostic:\n${err}")
+    endif()
+
+elseif(CASE STREQUAL "components_engine_environment")
+    # Task E.2.1: the REAL tool over the REAL engine::Environment header. ONE component, EIGHT
+    # fields, all inside the reflectable subset, so zero unsupported / zero warnings / zero errors is
+    # the assertion, not an accident. The printed type spelling is the AS-WRITTEN one
+    # (clang_getTypeSpelling), so `std::uint32_t` and bare `Vec3` -- the same rule
+    # components_engine_mesh_renderer already records. These lines were COPIED from the real tool's
+    # output on the first run rather than derived; if a tag ever differs, the TOOL is right.
+    aero_run_tool(ARGS --components "${ENVIRONMENT_HPP}" -- ${CLANG_ARGS}
+        -I "${ENGINE_INCLUDE}" -I "${SCENE_INCLUDE}" -I "${REFLECT_INCLUDE}"
+        OUT_RESULT result OUT_STDOUT out OUT_STDERR err)
+    aero_expect_exit_or_dump("${result}" 0 "${err}")
+    aero_expect_stdout_contains("${out}" "component engine::Environment")
+    aero_expect_stdout_contains("${out}" "field backgroundMode : std::uint32_t [primitive] [range 0:1]")
+    aero_expect_stdout_contains("${out}" "field skyColor : Vec3 [vec3] [color]")
+    aero_expect_stdout_contains("${out}" "field horizonColor : Vec3 [vec3] [color]")
+    aero_expect_stdout_contains("${out}" "field groundColor : Vec3 [vec3] [color]")
+    aero_expect_stdout_contains("${out}" "field solidColor : Vec3 [vec3] [color]")
+    aero_expect_stdout_contains("${out}" "field ambientMode : std::uint32_t [primitive] [range 0:1]")
+    aero_expect_stdout_contains("${out}" "field ambientColor : Vec3 [vec3] [color]")
+    aero_expect_stdout_contains("${out}" "field ambientIntensity : float [primitive]")
+    # ...and ambientIntensity carries NO [range]: 1.3.3's D19. Asserted as an ABSENCE, because the
+    # `contains` above would pass on a line that also carried one.
+    string(FIND "${out}" "field ambientIntensity : float [primitive] [range" _idx_bad_range)
+    if(NOT _idx_bad_range EQUAL -1)
+        message(FATAL_ERROR "case 'components_engine_environment': ambientIntensity must carry NO "
+                            "range -- 1.3.3's D19: an HDR multiplier has no defensible upper bound:\n${out}")
+    endif()
+
+    # DECLARATION ORDER -- backgroundMode -> skyColor -> horizonColor -> groundColor -> solidColor ->
+    # ambientMode -> ambientColor -> ambientIntensity. It IS the JSON key order and the Inspector row
+    # order, so a reorder is a format change. components_engine_light skipped this check only because
+    # its two components share field names; this component has eight distinct ones.
+    #
+    # The three `ambient*` needles are each spelled in FULL: "field ambient" alone prefixes all three,
+    # which is components_engine_mesh_renderer's "field mesh :" lesson in its second instance.
+    string(FIND "${out}" "field backgroundMode"   _f1)
+    string(FIND "${out}" "field skyColor"         _f2)
+    string(FIND "${out}" "field horizonColor"     _f3)
+    string(FIND "${out}" "field groundColor"      _f4)
+    string(FIND "${out}" "field solidColor"       _f5)
+    string(FIND "${out}" "field ambientMode"      _f6)
+    string(FIND "${out}" "field ambientColor"     _f7)
+    string(FIND "${out}" "field ambientIntensity" _f8)
+    if(NOT (_f1 LESS _f2 AND _f2 LESS _f3 AND _f3 LESS _f4 AND _f4 LESS _f5
+            AND _f5 LESS _f6 AND _f6 LESS _f7 AND _f7 LESS _f8))
+        message(FATAL_ERROR "case 'components_engine_environment': fields not in declaration order:\n${out}")
+    endif()
+
+    # exactly ONE component (the header declares no other type)
+    string(FIND "${out}" "component " _first)
+    math(EXPR _after "${_first} + 1")
+    string(SUBSTRING "${out}" ${_after} -1 _rest)
+    string(FIND "${_rest}" "component " _second)
+    if(NOT _second EQUAL -1)
+        message(FATAL_ERROR "case 'components_engine_environment': expected exactly ONE component:\n${out}")
+    endif()
+
+    # anti-drift: no unsupported field, warning-free, error-free (the same three checks as camera)
+    string(FIND "${out}" "[unsupported]" _idx_unsupported)
+    if(NOT _idx_unsupported EQUAL -1)
+        message(FATAL_ERROR "case 'components_engine_environment': must have NO unsupported field:\n${out}")
+    endif()
+    string(FIND "${err}" "aero_reflect_gen: warning:" _idx_warn)
+    if(NOT _idx_warn EQUAL -1)
+        message(FATAL_ERROR "case 'components_engine_environment': expected a warning-free parse:\n${err}")
+    endif()
+    string(FIND "${err}" "error:" _idx_err)
+    if(NOT _idx_err EQUAL -1)
+        message(FATAL_ERROR "case 'components_engine_environment': error-severity diagnostic:\n${err}")
     endif()
 
 elseif(CASE STREQUAL "annotations_components")

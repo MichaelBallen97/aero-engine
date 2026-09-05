@@ -599,7 +599,7 @@ TEST_CASE("editor: duplicateEntities deep-copies subtree, name, components and o
 TEST_CASE("editor: duplicateEntities copies a component the editor has never heard of (AC-13/E12, the D4 proof)") {
     World w;
     REQUIRE(registerComponent<Marker>(w, "test::Marker").valid());  // AFTER the five built-ins
-    CHECK(w.componentTypeCount() == 9);  // task 3.7.2: 8 built-ins + the editor-unknown fixture type
+    CHECK(w.componentTypeCount() == 10);  // task E.2.1: 9 built-ins + the editor-unknown fixture type
 
     const Entity source = w.create();
     REQUIRE(w.setName(source, "Marked"));

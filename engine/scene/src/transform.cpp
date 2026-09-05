@@ -13,6 +13,7 @@
 #include <aero/scene/audio_listener.hpp>  // task 3.7.2
 #include <aero/scene/audio_source.hpp>    // task 3.7.2
 #include <aero/scene/camera.hpp>          // task 1.3.3
+#include <aero/scene/environment.hpp>     // task E.2.1
 #include <aero/scene/internal/world_access.hpp>
 #include <aero/scene/light.hpp>          // task 1.3.3
 #include <aero/scene/mesh_renderer.hpp>  // task 1.4.1
@@ -58,6 +59,7 @@ void registerBuiltinComponents(World& world) {
     scene::internal::registerComponent<AnimationPlayer>(world, "engine::AnimationPlayer");    // 3.5.2
     scene::internal::registerComponent<AudioSource>(world, "engine::AudioSource");            // 3.7.2
     scene::internal::registerComponent<AudioListener>(world, "engine::AudioListener");        // 3.7.2
+    scene::internal::registerComponent<Environment>(world, "engine::Environment");            // E.2.1
 }
 
 }  // namespace scene::detail

@@ -110,7 +110,7 @@ TEST_CASE("inspector: model lists present components in registration order, fiel
     aero_reflect_register_all_aero_editor_inspector_test();
     const ComponentTypeId probeId = registerProbe(world);
     REQUIRE(probeId.valid());
-    CHECK(world.componentTypeCount() == 9);  // 8 built-ins (3.7.2) + InspectorProbe
+    CHECK(world.componentTypeCount() == 10);  // 9 built-ins (E.2.1) + InspectorProbe
 
     const Entity e = world.create();
     world.add<engine::Transform>(e, engine::Transform{});
@@ -528,7 +528,7 @@ TEST_CASE("inspector: AC-12 drift pin -- every registered built-in component has
     World world;
     const Entity e = world.create();
     const std::size_t count = world.componentTypeCount();
-    REQUIRE(count == 8);  // the 8 built-ins (3.7.2) -- no InspectorProbe registered on THIS World
+    REQUIRE(count == 9);  // the 9 built-ins (E.2.1) -- no InspectorProbe registered on THIS World
     for (std::size_t i = 0; i < count; ++i) {
         const ComponentTypeId id = world.componentTypeAt(i);
         world.addRaw(id, e, nullptr);
@@ -853,4 +853,75 @@ TEST_CASE("inspector: engine::AudioListener's one reflected field resolves (task
     CHECK(entry.fields[0].rangeMin == doctest::Approx(0.0));
     CHECK(entry.fields[0].rangeMax == doctest::Approx(1.0));
     CHECK_FALSE(entry.fields[0].color);
+}
+
+TEST_CASE("inspector: engine::Environment's eight reflected fields all resolve (task E.2.1)") {
+    // See the note in the AudioSource case above: without this call the assertions ride whichever
+    // neighbouring case registered the meta first, and read 0 fields when run alone.
+    engine::editor::registerEditorReflection();
+
+    World world;
+    const ComponentTypeId id = world.findComponentType("engine::Environment");
+    REQUIRE(id.valid());
+
+    const Entity e = world.create();
+    REQUIRE(world.addRaw(id, e, nullptr) != nullptr);
+
+    InspectorModel model;
+    buildInspectorModel(world, e, model);
+    REQUIRE(model.components.size() == 1);
+    const engine::editor::ComponentEntry& entry = model.components[0];
+    CHECK(entry.name == "engine::Environment");
+    CHECK(entry.typeId == id);
+    CHECK(entry.hasFields);
+
+    REQUIRE(entry.fields.size() == 8);
+    CHECK(entry.fields[0].name == "backgroundMode");  // declaration order IS inspector row order
+    CHECK(entry.fields[1].name == "skyColor");
+    CHECK(entry.fields[2].name == "horizonColor");
+    CHECK(entry.fields[3].name == "groundColor");
+    CHECK(entry.fields[4].name == "solidColor");
+    CHECK(entry.fields[5].name == "ambientMode");
+    CHECK(entry.fields[6].name == "ambientColor");
+    CHECK(entry.fields[7].name == "ambientIntensity");
+
+    CHECK((entry.fields[0].kind == FieldKind::UInt));
+    CHECK((entry.fields[1].kind == FieldKind::Vec3));
+    CHECK((entry.fields[2].kind == FieldKind::Vec3));
+    CHECK((entry.fields[3].kind == FieldKind::Vec3));
+    CHECK((entry.fields[4].kind == FieldKind::Vec3));
+    CHECK((entry.fields[5].kind == FieldKind::UInt));
+    CHECK((entry.fields[6].kind == FieldKind::Vec3));
+    CHECK((entry.fields[7].kind == FieldKind::Float));
+
+    // The two selectors carry the AERO_RANGE that makes the inspector clamp them (0..1, the two
+    // modes each has today).
+    CHECK(entry.fields[0].hasRange);
+    CHECK(entry.fields[0].rangeMin == doctest::Approx(0.0));
+    CHECK(entry.fields[0].rangeMax == doctest::Approx(1.0));
+    CHECK(entry.fields[5].hasRange);
+    CHECK(entry.fields[5].rangeMin == doctest::Approx(0.0));
+    CHECK(entry.fields[5].rangeMax == doctest::Approx(1.0));
+
+    // The five colours carry AERO_COLOR, so each renders a picker rather than three drag fields.
+    CHECK(entry.fields[1].color);
+    CHECK(entry.fields[2].color);
+    CHECK(entry.fields[3].color);
+    CHECK(entry.fields[4].color);
+    CHECK(entry.fields[6].color);
+
+    // ambientIntensity carries NEITHER -- 1.3.3's D19: an HDR multiplier has no defensible upper
+    // bound. BOTH directions, because an absent flag asserted only one way is half a statement.
+    CHECK_FALSE(entry.fields[7].hasRange);
+    CHECK_FALSE(entry.fields[7].color);
+
+    // ...and the two selectors are NOT colours, which is the other half of the same statement.
+    CHECK_FALSE(entry.fields[0].color);
+    CHECK_FALSE(entry.fields[5].color);
+    // ...nor do the five colours carry a range.
+    CHECK_FALSE(entry.fields[1].hasRange);
+    CHECK_FALSE(entry.fields[2].hasRange);
+    CHECK_FALSE(entry.fields[3].hasRange);
+    CHECK_FALSE(entry.fields[4].hasRange);
+    CHECK_FALSE(entry.fields[6].hasRange);
 }
