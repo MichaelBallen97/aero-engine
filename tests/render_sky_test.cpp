@@ -1,7 +1,9 @@
-// tests/render_sky_test.cpp — task E.2.1: the sky's two packers (tier 0) and the pass's PIXELS
-// (tier 1). Split at the ONE sanctioned `#if AERO_SHADER_TOOLS_ENABLED` this tree allows in a test
-// file: SB1-SB3 need no device at all, SB4 onwards load two cooked shaders from build/<preset>/shaders
-// and read texels back.
+// tests/render_sky_test.cpp — task E.2.1: the sky's two packers (tier 0) and the ENVIRONMENT's
+// PIXELS (tier 1) -- both halves of it, the background the sky pass draws AND the hemispheric
+// ambient the forward pass shades with (SB17, which records no sky pass at all and is here because
+// this is the task's only tier-1 file). Split at the ONE sanctioned `#if AERO_SHADER_TOOLS_ENABLED`
+// this tree allows in a test file: SB1-SB3 need no device at all, SB4 onwards load cooked shaders
+// from build/<preset>/shaders and read texels back.
 //
 // THIS FILE REACHES THE src-PRIVATE PACKER by a relative include -- the tonemap_pack.hpp precedent --
 // which is exactly why HE1's umbrella claim lives in render_environment_test.cpp instead: the
@@ -359,6 +361,50 @@ struct LogCallbackGuard {
     return engine::render::CameraView{.view = engine::lookAt(eye, Vec3::zero(), Vec3{0.0F, 1.0F, 0.0F}),
                                       .proj = engine::perspective(engine::radians(60.0F), 1.0F, 0.1F, 100.0F),
                                       .eyePosition = eye};
+}
+
+// SB17's camera: on one axis, looking at the origin. `up` must not be parallel to the view direction
+// -- lookAt's cross product is degenerate there and yields a non-finite matrix (scene/camera.hpp:57's
+// note), which is why the two vertical cameras below are handed a Z up rather than the usual Y.
+[[nodiscard]] engine::render::CameraView axisCamera(Vec3 eye, Vec3 up) {
+    return engine::render::CameraView{.view = engine::lookAt(eye, Vec3::zero(), up),
+                                      .proj = engine::perspective(engine::radians(60.0F), 1.0F, 0.1F, 100.0F),
+                                      .eyePosition = eye};
+}
+
+// SB17: the centre BLOCK of the drawn face, never a single texel. A 9x9 block at the image centre,
+// where the face the camera faces covers about 87% of the image at that camera's distance, so every
+// texel read is interior and no fill-rule ambiguity at the silhouette can reach it (E.1.2's DG18
+// rule, applied to a face rather than to a line).
+//
+// THE TOLERANCE IS A PARAMETER BECAUSE THE TWO AMBIENT MODES DIFFER IN KIND. A Flat resolution
+// admits EXACTLY ZERO -- `mid + 0 * N.y` is `mid` whatever the interpolated normal did, on every
+// backend -- while a hemispheric one rides N.y, which arrives through perspective-correct
+// interpolation's reciprocal and can therefore move the last bit from texel to texel.
+[[nodiscard]] Half4 centreBlockTexel(const std::vector<std::byte>& pixels, std::uint32_t size,
+                                     std::uint32_t toleranceHalfUlps) {
+    constexpr std::uint32_t RADIUS = 4;
+    const std::uint32_t centre = size / 2U;
+    const Half4 first = halfAt(pixels, size, centre - RADIUS, centre - RADIUS);
+    std::size_t disagreeing = 0;
+    Half4 firstDisagreement{};
+    for (std::uint32_t row = centre - RADIUS; row <= centre + RADIUS; ++row) {
+        for (std::uint32_t column = centre - RADIUS; column <= centre + RADIUS; ++column) {
+            const Half4 texel = halfAt(pixels, size, row, column);
+            const bool agrees = halfUlpDistance(texel.r, first.r) <= toleranceHalfUlps &&
+                                halfUlpDistance(texel.g, first.g) <= toleranceHalfUlps &&
+                                halfUlpDistance(texel.b, first.b) <= toleranceHalfUlps && texel.a == first.a;
+            if (!agrees) {
+                if (disagreeing == 0) {
+                    firstDisagreement = texel;
+                }
+                ++disagreeing;
+            }
+        }
+    }
+    INFO("block first ", first, " first disagreement ", firstDisagreement);
+    CHECK(disagreeing == 0);
+    return first;
 }
 
 }  // namespace
@@ -1072,6 +1118,149 @@ TEST_CASE("render sky: the environment reaches the picture end to end through Sc
         // ...and the centre is still the cube, so "Solid" did not simply overwrite everything.
         CHECK_FALSE(halfAt(pixels, SIZE, SIZE / 2U, SIZE / 2U) == expected);
     }
+}
+
+TEST_CASE("render sky: the hemisphere shades an up-facing face apart from a down-facing one (SB17)") {
+    // THE AMBIENT HALF OF THE ENVIRONMENT, AT THE PIXEL TIER. Every other GPU case in this tree that
+    // draws geometry resolves ambient FLAT at intensity 1 (DG16 and the whole OG battery, by design),
+    // where halfDelta is exactly zero -- and SB9's and SB16's cube shows its +Z-facing quad, whose
+    // N.y is 0, so `mid + halfDelta * N.y` is arithmetically insensitive to the delta there. Nothing
+    // read a texel whose value depends on the hemisphere until this case, and ambientIrradiance -- a
+    // public CPU mirror of scene.frag.hlsl's own term -- had never been compared against one, unlike
+    // its twin skyRadiance. It lives in this file rather than in render_environment_test.cpp because
+    // this is the task's only tier-1 file and SB9 already draws a lit cube through ForwardRenderer;
+    // the sky pass is deliberately NOT recorded here, so nothing but the forward pass can write the
+    // texels read below.
+    AERO_SKY_TIER1_PREAMBLE();
+    constexpr std::uint32_t SIZE = 64;
+    auto target = engine::render::RenderTarget::create(
+        *device, {SIZE, SIZE}, {.colorFormat = engine::rhi::TextureFormat::RGBA16Float, .depth = true, .quantum = 1});
+    REQUIRE(target.has_value());
+    auto forward = engine::render::ForwardRenderer::create(
+        *device, vfs, {.colorFormat = target->colorFormat(), .depthFormat = target->depthFormat()});
+    REQUIRE(forward.has_value());
+
+    // A clear unequal to every colour compared against below, so no arm can be satisfied by a frame
+    // in which nothing was shaded at all.
+    const engine::rhi::Color clear{0.9F, 0.1F, 0.9F, 1.0F};
+
+    // ONE WHITE CUBE at the origin on the DEFAULT material (an invalid MeshInstance::material
+    // resolves to DEFAULT_MATERIAL_PARAMS, metallic 0 -- never MaterialParams{}, whose glTF metallic
+    // of 1 renders near-black with no environment to reflect). White instance colour, white base
+    // colour, occlusion 1 and emissive 0 make diffuseColor and occlusion EXACTLY one, so the shaded
+    // texel IS the ambient term rather than a fraction of it.
+    const auto shadeFace = [&](const engine::render::CameraView& camera,
+                               const engine::render::EnvironmentData& environment, std::uint32_t tolerance) {
+        engine::render::MeshInstance cube;
+        cube.primitive = engine::render::PrimitiveId::Cube;
+        cube.model = engine::scaling(Vec3{2.0F, 2.0F, 2.0F});
+        cube.normalMatrix = Mat4::identity();
+        cube.mvp = camera.proj * camera.view * cube.model;
+        cube.color = Vec3::one();
+        const std::array<engine::render::MeshInstance, 1> instances{cube};
+
+        engine::render::RenderView view = skyView(camera, environment);
+        view.instances = instances;
+        // A REAL direction at intensity ZERO -- lighting.hpp's "intensity 0 means no directional
+        // light". The direction still has to be a unit vector rather than the default zero one:
+        // normalize(0,0,0) is a NaN L inside the BRDF and NaN * 0 is NaN, not zero, so a zero
+        // direction would poison every texel this case reads with no light in the scene at all.
+        view.directional = {.direction = Vec3{0.0F, 0.0F, -1.0F}, .color = Vec3::one(), .intensity = 0.0F};
+
+        std::optional<engine::render::Frame> frame = target->beginFrame(clear);
+        REQUIRE(frame.has_value());
+        forward->draw(*frame, view);
+        REQUIRE(target->endFrame(std::move(*frame)));
+        std::vector<std::byte> pixels(static_cast<std::size_t>(SIZE) * SIZE * 8U, std::byte{0xAB});
+        REQUIRE(device->readbackTexture(target->colorTexture(), 0, pixels));
+        return centreBlockTexel(pixels, SIZE, tolerance);
+    };
+
+    // Straight down and straight up: the face at the image centre is then the cube's +Y quad
+    // (world normal (0, 1, 0)) and its -Y quad ((0, -1, 0)). Those two are the only faces whose
+    // tangent frame leaves N.y untouched by the flat default normal map -- both T and B have a zero
+    // y component there -- which is what lets the arms below be exact about N.y rather than about a
+    // normal perturbed by a fifth of a percent.
+    const engine::render::CameraView fromAbove = axisCamera(Vec3{0.0F, 3.0F, 0.0F}, Vec3{0.0F, 0.0F, -1.0F});
+    const engine::render::CameraView fromBelow = axisCamera(Vec3{0.0F, -3.0F, 0.0F}, Vec3{0.0F, 0.0F, 1.0F});
+    constexpr std::uint32_t TOLERANCE_HALF_ULPS = 2;
+
+    const engine::render::EnvironmentData hemisphere{};  // the DEFAULT environment: Hemisphere, I = 0.5
+    const engine::render::HemisphereAmbient resolved = engine::render::resolveAmbient(hemisphere);
+    // ANTI-VACUITY ON THE FIXTURE: the default environment really does carry a non-zero half-delta on
+    // every channel, so "the two texels differ" below is a claim about the shading rather than about
+    // two numbers that happen not to match.
+    REQUIRE(resolved.halfDelta.x > 0.0F);
+    REQUIRE(resolved.halfDelta.y > 0.0F);
+    REQUIRE(resolved.halfDelta.z > 0.0F);
+
+    const Half4 up = shadeFace(fromAbove, hemisphere, TOLERANCE_HALF_ULPS);
+    const Half4 down = shadeFace(fromBelow, hemisphere, TOLERANCE_HALF_ULPS);
+
+    // (a) EACH texel IS ambientIrradiance's value at that face's normal, to within two half-ulps --
+    //     the same bound SB8, SB9 and SB16 state for the sky. This is the arm that ties the CPU
+    //     mirror to the picture; without it the case could only say the two differ, and a packer that
+    //     scaled both by the same wrong factor would pass.
+    const Vec3 upNormal{0.0F, 1.0F, 0.0F};
+    const Vec3 downNormal{0.0F, -1.0F, 0.0F};
+    const Half4 wantUp = encodeHalf4(engine::render::ambientIrradiance(resolved, upNormal), 1.0F);
+    const Half4 wantDown = encodeHalf4(engine::render::ambientIrradiance(resolved, downNormal), 1.0F);
+    INFO("up ", up, " want ", wantUp, " -- down ", down, " want ", wantDown);
+    CHECK(halfUlpDistance(up.r, wantUp.r) <= TOLERANCE_HALF_ULPS);
+    CHECK(halfUlpDistance(up.g, wantUp.g) <= TOLERANCE_HALF_ULPS);
+    CHECK(halfUlpDistance(up.b, wantUp.b) <= TOLERANCE_HALF_ULPS);
+    CHECK(up.a == encodeHalf(1.0F));
+    CHECK(halfUlpDistance(down.r, wantDown.r) <= TOLERANCE_HALF_ULPS);
+    CHECK(halfUlpDistance(down.g, wantDown.g) <= TOLERANCE_HALF_ULPS);
+    CHECK(halfUlpDistance(down.b, wantDown.b) <= TOLERANCE_HALF_ULPS);
+    CHECK(down.a == encodeHalf(1.0F));
+    // ...and neither is the clear, which is the anti-vacuity arm for both readings.
+    CHECK_FALSE(up == encodeHalf4(Vec3{clear.r, clear.g, clear.b}, clear.a));
+    CHECK_FALSE(down == encodeHalf4(Vec3{clear.r, clear.g, clear.b}, clear.a));
+
+    // (b) ...AND THEY DIFFER BY FAR MORE THAN THAT TOLERANCE, on every channel. THIS IS THE PROPERTY
+    //     NO ZERO HALF-DELTA CAN PRODUCE: with the delta zero the two faces read the same mid and
+    //     every distance below is 0.
+    CHECK(halfUlpDistance(up.r, down.r) > TOLERANCE_HALF_ULPS);
+    CHECK(halfUlpDistance(up.g, down.g) > TOLERANCE_HALF_ULPS);
+    CHECK(halfUlpDistance(up.b, down.b) > TOLERANCE_HALF_ULPS);
+    // AND THE DIRECTION OF THE DIFFERENCE, not merely its size: the default sky is brighter than the
+    // default ground on every channel, so the up-facing face is the brighter one. Read as unsigned
+    // integers, two NON-NEGATIVE finite halves compare in the same order as their values -- so the
+    // sign bits are pinned clear first, and a NEGATIVE ground term (which is exactly what writing the
+    // mid into the delta slot produces at N.y = -1) cannot masquerade as a large one.
+    constexpr std::uint32_t HALF_SIGN_BIT = 0x8000U;
+    CHECK((up.r & HALF_SIGN_BIT) == 0U);
+    CHECK((up.g & HALF_SIGN_BIT) == 0U);
+    CHECK((up.b & HALF_SIGN_BIT) == 0U);
+    CHECK((down.r & HALF_SIGN_BIT) == 0U);
+    CHECK((down.g & HALF_SIGN_BIT) == 0U);
+    CHECK((down.b & HALF_SIGN_BIT) == 0U);
+    CHECK(up.r > down.r);
+    CHECK(up.g > down.g);
+    CHECK(up.b > down.b);
+
+    // (c) THE CONTROL, on the same geometry and the same two cameras: a FLAT ambient carries an
+    //     exactly zero half-delta, so the two faces must come back BIT-IDENTICAL and the block itself
+    //     admits a zero tolerance. It is what attributes (b)'s difference to the half-delta rather
+    //     than to anything else the two views do not share -- and it is HE8's claim at the GPU tier,
+    //     where the delta packing was chosen precisely so a Flat resolution is exact on every backend.
+    const engine::render::EnvironmentData flat{.ambientMode = engine::render::AmbientMode::Flat,
+                                               .ambientColor = Vec3{0.5F, 0.25F, 0.125F},
+                                               .ambientIntensity = 0.75F};
+    const engine::render::HemisphereAmbient flatResolved = engine::render::resolveAmbient(flat);
+    const Half4 flatUp = shadeFace(fromAbove, flat, 0U);
+    const Half4 flatDown = shadeFace(fromBelow, flat, 0U);
+    INFO("flat up ", flatUp, " flat down ", flatDown);
+    CHECK(flatUp == flatDown);
+    // ...and it is the resolved mid EXACTLY, not merely a constant: 0.5/0.25/0.125 at I = 0.75 is
+    // 0.375/0.1875/0.09375, three dyadic values a half carries without rounding, so this is a bit
+    // comparison and needs no tolerance at all. A packer that swapped the mid and the delta writes
+    // zero into the mid slot here and fails both of these.
+    CHECK(flatUp == encodeHalf4(flatResolved.mid, 1.0F));
+    // ANTI-VACUITY: the Flat fixture is not the Hemisphere one, so (c) is not (a) restated.
+    CHECK_FALSE(flatUp == up);
+    CHECK_FALSE(flatUp == encodeHalf4(Vec3{clear.r, clear.g, clear.b}, clear.a));
 }
 
 #endif  // AERO_SHADER_TOOLS_ENABLED
