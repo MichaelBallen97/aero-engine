@@ -157,9 +157,49 @@ TEST_CASE("render sky: packSkyCamera inverts proj * view, and refuses a non-fini
         CHECK_FALSE(rd::detail::packSkyCamera(camera).has_value());
     }
 
+    SUBCASE("a FINITE camera whose inverse is only PARTLY non-finite refuses") {
+        // THE ARM THE SIXTEEN-ELEMENT LOOP EXISTS FOR, AND THE ONLY ONE THAT CAN SEE IT. Both
+        // refusals above drive the DETERMINANT non-finite, so all four columns come back non-finite
+        // and a packer checking one element -- or one column -- satisfies them just as well.
+        // MEASURED during the sabotage pass: with packSkyCamera reduced to a column-0-only check the
+        // whole suite stayed green, 1342 cases and 14 021 018 assertions, and this subcase is what
+        // that reduction now fails.
+        //
+        // Nothing here is degenerate. The view is the identity with a huge but FINITE translation,
+        // proj * view is finite in all sixteen elements, and the inverse comes back finite in columns
+        // 0 and 1 and infinite in 2 and 3 -- exactly the shape sky_pack.hpp:60-61 describes, and it is
+        // not a knife-edge: a sweep of 200 000 extreme-magnitude matrices produced 51 142 partially
+        // non-finite inverses.
+        Mat4 farTranslation = Mat4::identity();
+        farTranslation.columns[3].x = 1e38F;
+        const Mat4 farProj = engine::perspective(engine::radians(60.0F), 1.0F, 0.1F, 100.0F);
+        const rd::CameraView camera{.view = farTranslation, .proj = farProj, .eyePosition = Vec3::zero()};
+
+        // (a) THE INPUT IS FINITE, asserted rather than assumed -- this is not the NaN arm restated.
+        const Mat4 viewProj = farProj * farTranslation;
+        for (std::size_t column = 0; column < 4; ++column) {
+            CAPTURE(column);
+            CHECK(std::isfinite(viewProj.columns[column].x));
+            CHECK(std::isfinite(viewProj.columns[column].y));
+            CHECK(std::isfinite(viewProj.columns[column].z));
+            CHECK(std::isfinite(viewProj.columns[column].w));
+        }
+        // (b) AND THE SUBSET A NARROWER PACKER WOULD READ IS ITSELF CLEAN. This is what makes the
+        //     subcase a statement about the SUBSET rather than about non-finiteness in general:
+        //     without it, a column-0-only check passes here too and the hole stays open.
+        const Mat4 inverted = engine::inverse(viewProj);
+        const Vec4& firstColumn = inverted.columns[0];
+        CHECK(std::isfinite(firstColumn.x));
+        CHECK(std::isfinite(firstColumn.y));
+        CHECK(std::isfinite(firstColumn.z));
+        CHECK(std::isfinite(firstColumn.w));
+        // (c) ...and the packer refuses regardless, because it reads all sixteen.
+        CHECK_FALSE(rd::detail::packSkyCamera(camera).has_value());
+    }
+
     SUBCASE("an identity camera is accepted -- the refusals above are not universal") {
-        // ANTI-VACUITY for the two refusals: a packSkyCamera that returned nullopt unconditionally
-        // would satisfy both of them.
+        // ANTI-VACUITY for the three refusals: a packSkyCamera that returned nullopt unconditionally
+        // would satisfy every one of them.
         const rd::CameraView camera{.view = Mat4::identity(), .proj = Mat4::identity(), .eyePosition = Vec3::zero()};
         CHECK(rd::detail::packSkyCamera(camera).has_value());
     }
