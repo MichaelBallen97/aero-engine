@@ -708,13 +708,29 @@ TEST_CASE("render sky: geometry OVERDRAWS the sky when the forward pass follows 
 
     // THE CENTRE IS THE CUBE. A wrong pass ORDER -- sky recorded after the geometry -- makes this the
     // sky oracle instead, with no error anywhere.
+    //
+    // AT THE CORNER ARM'S OWN TOLERANCE, AND THAT IS THE WHOLE OF THE ASSERTION. A bare `!=` against
+    // the oracle is very nearly unfalsifiable here: the corners below claim GPU/CPU agreement only to
+    // within TOLERANCE_HALF_ULPS, so a centre that genuinely BECAME the sky still differs from the CPU
+    // oracle in its last bit and a bit comparison reports SUCCESS. Measured with the depth-write seed
+    // applied, where the sky really did reject the cube:
+    //   CHECK_FALSE( half4(0x37d9, 0x385d, 0x391b, 0x3c00) == half4(0x37da, 0x385e, 0x391b, 0x3c00) )
+    // -- one half-ulp apart on r and g, identical on b and a, and GREEN. "Not the sky" therefore has
+    // to mean FURTHER THAN THE TOLERANCE on at least one channel, which is what this asserts.
+    //
+    // AND THIS CASE ORDERS ITS OWN TWO PASSES, IN ITS OWN BODY, a few lines above: no arm of it can
+    // ever see a SceneRenderer-side ordering change. That half of the contract is SB16's alone.
+    constexpr std::uint32_t TOLERANCE_HALF_ULPS = 2;
     const Half4 centre = halfAt(pixels, SIZE, SIZE / 2U, SIZE / 2U);
-    INFO("centre ", centre, " sky oracle there ", skyOracleAt(SIZE / 2U, SIZE / 2U));
-    CHECK_FALSE(centre == skyOracleAt(SIZE / 2U, SIZE / 2U));
+    const Half4 skyAtCentre = skyOracleAt(SIZE / 2U, SIZE / 2U);
+    const std::uint32_t centreDistance =
+        std::max({halfUlpDistance(centre.r, skyAtCentre.r), halfUlpDistance(centre.g, skyAtCentre.g),
+                  halfUlpDistance(centre.b, skyAtCentre.b)});
+    INFO("centre ", centre, " sky oracle there ", skyAtCentre);
+    CHECK(centreDistance > TOLERANCE_HALF_ULPS);
 
     // ...AND THE FOUR CORNERS ARE STILL THE SKY, which is what says the geometry overdrew rather than
     // the sky failing to draw at all.
-    constexpr std::uint32_t TOLERANCE_HALF_ULPS = 2;
     const std::array<std::pair<std::uint32_t, std::uint32_t>, 4> corners{
         std::pair{1U, 1U}, std::pair{1U, SIZE - 2U}, std::pair{SIZE - 2U, 1U}, std::pair{SIZE - 2U, SIZE - 2U}};
     for (const auto& [row, column] : corners) {
@@ -1077,13 +1093,23 @@ TEST_CASE("render sky: the environment reaches the picture end to end through Sc
             CHECK_FALSE(got == encodeHalf4(Vec3{clear.r, clear.g, clear.b}, clear.a));
         }
         // THE CENTRE IS THE CUBE. A sky recorded AFTER the forward pass makes this the sky oracle
-        // instead, with no error anywhere -- SB9's claim, restated where SceneRenderer owns the order.
+        // instead, with no error anywhere -- SB9's claim, restated where SceneRenderer owns the order,
+        // and THIS IS THE ONLY PLACE THAT HALF OF THE CONTRACT IS ASSERTED. SB9 orders its own two
+        // passes in its own body and is structurally blind to a bridge-side reordering.
+        //
+        // AT THE CORNER ARMS' OWN TOLERANCE, for SB9's reason verbatim: those arms claim GPU/CPU
+        // agreement only to within TOLERANCE_HALF_ULPS, so a centre that genuinely BECAME the sky is
+        // still one half-ulp from the CPU oracle on r and g and a bit comparison reports SUCCESS --
+        // measured against a real reordering, not reasoned.
         const Half4 centre = halfAt(pixels, SIZE, SIZE / 2U, SIZE / 2U);
         const Half4 skyAtCentre = encodeHalf4(
             engine::render::skyRadiance(defaultGradient, rayAtPixel(invViewProj, SIZE, SIZE, SIZE / 2U, SIZE / 2U)),
             1.0F);
+        const std::uint32_t centreDistance =
+            std::max({halfUlpDistance(centre.r, skyAtCentre.r), halfUlpDistance(centre.g, skyAtCentre.g),
+                      halfUlpDistance(centre.b, skyAtCentre.b)});
         INFO("centre ", centre, " sky oracle there ", skyAtCentre);
-        CHECK_FALSE(centre == skyAtCentre);
+        CHECK(centreDistance > TOLERANCE_HALF_ULPS);
     }
 
     SUBCASE("a Solid Environment -> the corners are EXACTLY its colour, byte for byte") {
@@ -1115,7 +1141,11 @@ TEST_CASE("render sky: the environment reaches the picture end to end through Sc
         // ANTI-VACUITY: the clear used for the sky frame was NOT this colour, so the agreement above
         // is the shader's arithmetic and not a frame nobody drew into.
         CHECK_FALSE(expected == encodeHalf4(Vec3{clear.r, clear.g, clear.b}, clear.a));
-        // ...and the centre is still the cube, so "Solid" did not simply overwrite everything.
+        // ...and the centre is still the cube, so "Solid" did not simply overwrite everything. A BIT
+        // comparison is legitimate HERE and nowhere else in this case: the corner arms just proved a
+        // Solid sky lands on `expected` EXACTLY (`x + 0 * w`, exact on every IEEE backend), so a centre
+        // that became the sky would be bit-EQUAL to it rather than a half-ulp away. That is precisely
+        // what the two gradient arms cannot say, and why they state a tolerance instead.
         CHECK_FALSE(halfAt(pixels, SIZE, SIZE / 2U, SIZE / 2U) == expected);
     }
 }
