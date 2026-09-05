@@ -87,7 +87,9 @@ render::RenderView buildRenderView(World& world, RenderViewScratch& scratch, rhi
     scratch.instances.clear();
     scratch.points.clear();
     render::RenderView view;
-    view.ambient = {0.03F, 0.03F, 0.03F};
+    // task E.2.1: no ambient constant here any more. view.environment stays DEFAULT-CONSTRUCTED --
+    // the engine's default sky and hemisphere -- until the scene walk fills it from the Environment
+    // component. That default is a HEMISPHERE, so this bridge's picture deliberately moves.
 
     // --- renderable instances: each<Transform, MeshRenderer> (AC-6/AC-8 — no Transform => excluded) ---
     // The scene walk ALWAYS runs first, unchanged, so view.cameraCount stays filled on every path

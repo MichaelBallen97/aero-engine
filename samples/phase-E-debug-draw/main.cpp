@@ -457,7 +457,10 @@ int runSample(int argc, char** argv) {
                        perspective(radians(FOV_Y_DEGREES), aspect, Z_NEAR, Z_FAR), eye};
         view.directional = {
             .direction = normalize(Vec3{-0.4F, -0.7F, -0.55F}), .color = Vec3::one(), .intensity = 2.6F};
-        view.ambient = Vec3{0.06F, 0.06F, 0.07F};
+        // task E.2.1: Flat at the sample's own constant, intensity 1 -- byte-identical shade.
+        view.environment = {.ambientMode = render::AmbientMode::Flat,
+                            .ambientColor = Vec3{0.06F, 0.06F, 0.07F},
+                            .ambientIntensity = 1.0F};
         const Mat4 viewProj = view.camera.proj * view.camera.view;
         for (render::MeshInstance& instance : instances) {
             instance.mvp = viewProj * instance.model;

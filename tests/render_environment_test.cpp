@@ -129,6 +129,20 @@ constexpr std::string_view RENDER_UMBRELLA_PATH =
     return rd::skyRadiance(probe, Vec3{unitCircleX(below), -below, 0.0F}).x;
 }
 
+// task E.2.1 (HE17): "does this type have a member named `ambient`?", answered at COMPILE time.
+// A requires-expression only SUBSTITUTES -- and therefore only yields `false` instead of a hard
+// error -- when the type it names is DEPENDENT. Written inline as `requires(rd::RenderView v) {
+// v.ambient; }` it is a hard compile error ("no member named 'ambient' in
+// 'engine::render::RenderView'"), MEASURED, because a member access on a non-dependent type is not
+// in the immediate context of any substitution. Hence the concept, and hence the positive control
+// beside HE17's assertion: a concept that detects NOTHING would make that assertion vacuously true.
+template <typename T>
+concept HasAmbientMember = requires(T v) { v.ambient; };
+
+struct AmbientProbe {
+    int ambient = 0;
+};
+
 }  // namespace
 
 TEST_CASE("render environment: the umbrella header carries environment.hpp (HE1)") {
@@ -602,4 +616,21 @@ TEST_CASE("render environment: the two curve powers are the numbers the shader t
     CHECK(rd::SKY_CURVE_POWER == 4.0F);
     CHECK(rd::GROUND_CURVE_POWER == 8.0F);
     CHECK(rd::GROUND_CURVE_POWER > rd::SKY_CURVE_POWER);
+}
+
+TEST_CASE("render environment: RenderView carries an EnvironmentData and no ambient (HE17)") {
+    // The DEFAULT view is the engine's default sky and shade -- which is what makes "a scene without
+    // an Environment looks like a scene with a fresh one" a property of the VIEW, not of the bridge.
+    const rd::RenderView view;
+    CHECK(view.environment == rd::EnvironmentData{});
+    CHECK(view.environmentCount == 0U);
+    // ...and `ambient` is GONE, asserted at COMPILE time rather than by grep: a requires-expression
+    // naming the member is false iff the member is absent, so this static_assert is D9's closure. A
+    // field re-added "for compatibility" fails HERE, in every configuration, on every lane.
+    static_assert(!HasAmbientMember<rd::RenderView>,
+                  "task E.2.1: RenderView::ambient was REMOVED, not deprecated -- a hand-built view "
+                  "must not be able to silently take the old constant (D9).");
+    // ANTI-VACUITY: the detector really does detect. Without this, a mis-spelled member in the
+    // concept above would make the assertion hold for every type in the language.
+    static_assert(HasAmbientMember<AmbientProbe>, "the HE17 detector must be able to see a member");
 }

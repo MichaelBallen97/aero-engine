@@ -15,7 +15,8 @@
 // Anything a packer decides belongs here; the renderer keeps the device calls.
 
 #include <aero/core/math.hpp>
-#include <aero/render/lighting.hpp>  // RenderView, CameraView, MAX_POINT_LIGHTS
+#include <aero/render/environment.hpp>  // task E.2.1 -- HemisphereAmbient, resolveAmbient
+#include <aero/render/lighting.hpp>     // RenderView, CameraView, MAX_POINT_LIGHTS
 #include <aero/render/material.hpp>
 
 #include <algorithm>
@@ -87,11 +88,12 @@ static_assert(offsetof(GpuLightBlock, ambientHalfDelta) == 400);
 // here as well as at the bridge — draw() must not read past the array for a view assembled by hand.
 [[nodiscard]] inline GpuLightBlock packLights(const RenderView& view) noexcept {
     GpuLightBlock block{};
-    // task E.2.1: the block carries the hemisphere pair. THIS COMMIT writes a ZERO delta from the
-    // pre-E.2.1 constant, so `mid + 0 * N.y` is EXACTLY `mid` on every normal and the picture does
-    // not move; the next commit swaps the source to resolveAmbient(view.environment).
-    block.ambientMid = view.ambient;
-    block.ambientHalfDelta = Vec3{};
+    // task E.2.1: the hemisphere pair, resolved from the view's environment. The modes live on the
+    // CPU and the GPU receives a mid and a HALF-DELTA, so a Flat resolution writes a zero delta and
+    // the shader's `mid + halfDelta * N.y` is EXACTLY `mid` on every normal.
+    const HemisphereAmbient hemi = resolveAmbient(view.environment);
+    block.ambientMid = hemi.mid;
+    block.ambientHalfDelta = hemi.halfDelta;
     block.dir = {view.directional.direction, view.directional.intensity, view.directional.color, 0.0F};
     const std::size_t count = std::min<std::size_t>(view.points.size(), MAX_POINT_LIGHTS);
     for (std::size_t i = 0; i < count; ++i) {

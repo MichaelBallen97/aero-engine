@@ -1161,8 +1161,10 @@ TEST_CASE("render debug draw: a Tested line is hidden by geometry and an Overlay
     // ONE Cube primitive, flat red, under the identity camera. Everything that could vary is pinned
     // OFF so the cube's colour is a constant this case can assert EXACTLY: shadows off, culling off,
     // directional intensity 0 (with a UNIT direction, so nothing normalizes a zero vector),
-    // ambient = {1,1,1}, the default material (white dielectric, metallic 0, emissive black). The
-    // fragment then reduces to ambient * baseColor * instanceColor = (1, 0, 0).
+    // a FLAT ambient of {1,1,1} at intensity 1 (task E.2.1: Flat resolves to a ZERO half-delta, so
+    // `mid + 0 * N.y` is exactly {1,1,1} on every normal -- the reduction below is unchanged), the
+    // default material (white dielectric, metallic 0, emissive black). The fragment then reduces to
+    // ambient * baseColor * instanceColor = (1, 0, 0).
     //
     // model puts the cube at x, y in [-0.5, +0.5] and z in [0, 0.9]. The DEPTH span is what matters
     // and why 0.9 rather than 1: whichever of the two z-facing quads survives back-face culling
@@ -1180,7 +1182,8 @@ TEST_CASE("render debug draw: a Tested line is hidden by geometry and an Overlay
     engine::render::RenderView view;
     view.camera = camera;
     view.instances = std::span{&instance, 1};
-    view.ambient = Vec3::one();
+    view.environment = {
+        .ambientMode = engine::render::AmbientMode::Flat, .ambientColor = Vec3::one(), .ambientIntensity = 1.0F};
     view.directional = {.direction = Vec3{0.0F, -1.0F, 0.0F}, .color = Vec3::one(), .intensity = 0.0F};
     view.cullingEnabled = false;
     view.shadowsEnabled = false;

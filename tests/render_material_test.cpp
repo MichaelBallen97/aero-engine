@@ -429,7 +429,8 @@ TEST_CASE("render material: packLights mirrors the whole view into the 416-byte 
     engine::render::RenderView view;
     view.camera = {engine::lookAt(eye, Vec3{}, Vec3{0.0F, 1.0F, 0.0F}),
                    engine::perspective(engine::radians(60.0F), 1.0F, 0.1F, 100.0F), eye};
-    view.ambient = ambient;
+    view.environment = {
+        .ambientMode = engine::render::AmbientMode::Flat, .ambientColor = ambient, .ambientIntensity = 1.0F};
     view.directional = {.direction = Vec3{-0.5F, -0.75F, 0.25F}, .color = Vec3{0.9F, 0.8F, 0.7F}, .intensity = 2.5F};
     view.points = POINT_LIGHTS;
 
@@ -442,9 +443,12 @@ TEST_CASE("render material: packLights mirrors the whole view into the 416-byte 
 
     const engine::render::detail::GpuLightBlock block = engine::render::detail::packLights(view);
     CHECK(block.eyePosition == eye);  // THE field; zeroing it reddens here and nowhere else
+    // task E.2.1: the block carries resolveAmbient(view.environment), not a raw field. THIS view is
+    // Flat, so the delta is EXACTLY zero -- which is what keeps every pre-E.2.1 pixel expectation in
+    // this tree true without editing one of them. The literal comparison is the one that says so:
+    // Flat at colour X, intensity 1, lands X in the block BIT for BIT.
     CHECK(block.ambientMid == ambient);
-    // ...and THIS commit writes a zero delta, so the block reproduces the pre-E.2.1 shade exactly.
-    // The next commit rewrites this line to read resolveAmbient(view.environment) -- expected.
+    CHECK(block.ambientMid == engine::render::resolveAmbient(view.environment).mid);
     CHECK(block.ambientHalfDelta == engine::Vec3{});
     CHECK(block.pointCount == 3);
     CHECK(block.dir.direction == Vec3{-0.5F, -0.75F, 0.25F});
@@ -476,6 +480,19 @@ TEST_CASE("render material: packLights mirrors the whole view into the 416-byte 
     // so a packer that dropped the `valid` guard would put a stale or garbage matrix here.
     CHECK(block.lightViewProj == engine::Mat4::identity());
     CHECK(block.shadowParams == Vec4{});
+
+    // task E.2.1 -- ...and a HEMISPHERE view writes a NON-ZERO delta. Without this arm, a packLights
+    // that left ambientHalfDelta zero would be GREEN, because every other view in this case is Flat.
+    engine::render::RenderView hemiView = view;
+    hemiView.environment = {.skyColor = Vec3{0.5F, 0.25F, 0.125F},
+                            .groundColor = Vec3{0.0625F, 0.03125F, 0.015625F},
+                            .ambientMode = engine::render::AmbientMode::Hemisphere,
+                            .ambientIntensity = 1.0F};
+    const engine::render::detail::GpuLightBlock hemiBlock = engine::render::detail::packLights(hemiView);
+    // Dyadic literals, so the halving and the differences are EXACT and the assertion can be `==`.
+    CHECK(hemiBlock.ambientMid == Vec3{0.28125F, 0.140625F, 0.0703125F});
+    CHECK(hemiBlock.ambientHalfDelta == Vec3{0.21875F, 0.109375F, 0.0546875F});
+    CHECK_FALSE(hemiBlock.ambientHalfDelta == Vec3{});  // the anti-vacuity arm
 
     // The clamp: MAX_POINT_LIGHTS is the array's size, so a view carrying more (assembled by hand, as
     // the sample does — buildRenderView is not the only producer) must truncate rather than overrun.
@@ -900,7 +917,10 @@ TEST_CASE("render material: a five-slot draw pushes BOTH fragment uniform blocks
 
     engine::render::RenderView view;
     view.camera = camera;
-    view.ambient = Vec3{1.0F, 0.0F, 0.0F};  // distinguishable from the material block's green
+    // distinguishable from the material block's green; Flat x 1.0 reproduces the pre-E.2.1 constant
+    view.environment = {.ambientMode = engine::render::AmbientMode::Flat,
+                        .ambientColor = Vec3{1.0F, 0.0F, 0.0F},
+                        .ambientIntensity = 1.0F};
     view.directional = {.direction = Vec3{-0.5F, -1.0F, -0.3F}, .color = Vec3::one(), .intensity = 2.0F};
     view.instances = instances;
 

@@ -252,7 +252,10 @@ int runSample(int argc, char** argv) {
                            perspective(radians(FOV_Y_DEGREES), aspect, Z_NEAR, Z_FAR), eye};
             view.directional = {
                 .direction = normalize(Vec3{-0.5F, -1.0F, -0.3F}), .color = Vec3::one(), .intensity = 3.0F};
-            view.ambient = Vec3{0.05F, 0.05F, 0.06F};
+            // task E.2.1: Flat at the sample's own constant, intensity 1 -- byte-identical shade.
+            view.environment = {.ambientMode = render::AmbientMode::Flat,
+                                .ambientColor = Vec3{0.05F, 0.05F, 0.06F},
+                                .ambientIntensity = 1.0F};
             view.cullingEnabled = options.cull;
 
             // THE CONTRACT the cull rests on, honoured explicitly: mvp == viewProj * model for every

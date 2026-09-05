@@ -561,13 +561,15 @@ std::ostream& operator<<(std::ostream& out, const Rgba& value) {
 
 // Everything that could vary is pinned OFF so a drawn pixel's colour is a constant: shadows off,
 // culling off, directional intensity 0 (with a UNIT direction, so nothing normalizes a zero
-// vector), ambient = {1,1,1}, the default material. The fragment then reduces to
-// ambient * baseColor * instanceColor -- DG6's own construction.
+// vector), a FLAT ambient of {1,1,1} at intensity 1 (task E.2.1: Flat resolves to a ZERO half-delta,
+// so `mid + 0 * N.y` is exactly {1,1,1} on every normal), the default material. The fragment then
+// reduces to ambient * baseColor * instanceColor -- DG6's own construction.
 [[nodiscard]] engine::render::RenderView flatView(std::span<const engine::render::MeshInstance> instances) {
     engine::render::RenderView view;
     view.camera = identityCamera();
     view.instances = instances;
-    view.ambient = Vec3::one();
+    view.environment = {
+        .ambientMode = engine::render::AmbientMode::Flat, .ambientColor = Vec3::one(), .ambientIntensity = 1.0F};
     view.directional = {.direction = Vec3{0.0F, -1.0F, 0.0F}, .color = Vec3::one(), .intensity = 0.0F};
     view.cullingEnabled = false;
     view.shadowsEnabled = false;
