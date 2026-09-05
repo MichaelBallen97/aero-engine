@@ -22,8 +22,8 @@ struct PointLight {
     float3 color;
     float  intensity;
 };
-cbuffer Lights : register(b0, space3) {           // 400 bytes (grew the shadow pair, task 3.6.2)
-    float3     uAmbient;
+cbuffer Lights : register(b0, space3) {           // 416 bytes (grew the ambient half-delta, task E.2.1)
+    float3     uAmbientMid;      // task E.2.1: the hemisphere's mid term, at the slot uAmbient held
     uint       uPointCount;
     DirLight   uDir;
     PointLight uPoints[MAX_POINT_LIGHTS];
@@ -31,6 +31,8 @@ cbuffer Lights : register(b0, space3) {           // 400 bytes (grew the shadow 
     float      _pad1;
     float4x4   uLightViewProj;   // task 3.6.2 — shadowViewProj(fit); identity when disabled
     float4     uShadowParams;    // x texelSize, y constantBias, z normalBias, w enabled ? 1 : 0
+    float3     uAmbientHalfDelta;  // task E.2.1: APPENDED; ZERO in Flat mode, so the term below is
+    float      _pad2;              // then EXACTLY uAmbientMid on every normal
 };
 cbuffer MaterialParams : register(b1, space3) {   // 48 bytes, pushed on material change
     float4 uBaseColorFactor;
@@ -160,7 +162,13 @@ float4 main(float3 worldPos : TEXCOORD0, float3 worldNormal : TEXCOORD1,
     float3 diffuseColor = baseColor.rgb * (1.0 - metallic);
 
     // --- lights: the exact 1.4.1 set, falloff byte-for-byte (AC-36) ----------------------------
-    float3 lit = uAmbient * diffuseColor * occlusion;    // ambient*AO, diffuse only (D8)
+    // task E.2.1: hemispheric ambient. mid + halfDelta * N.y IS lerp(ground, sky, N.y * 0.5 + 0.5)
+    // with the endpoints pre-combined on the CPU (aero/render/environment.hpp), written as ONE scaled
+    // delta so a Flat resolution (halfDelta == 0) is EXACT rather than one ulp off -- DXC maps `lerp`
+    // to SPIR-V's FMix, which is specified as x*(1-a) + y*a and is NOT x when x == y.
+    // N, not geoN: bump detail shows in the shade, as it does in every hemisphere or SH ambient.
+    float3 hemi = uAmbientMid + uAmbientHalfDelta * N.y;
+    float3 lit = hemi * diffuseColor * occlusion;       // ambient*AO, diffuse only (D8), unchanged
     lit += shadeOneLight(uDir.color * uDir.intensity, N, V, normalize(-uDir.direction),
                          diffuseColor, f0, alpha) * directionalShadow(worldPos, geoN);
     for (uint k = 0; k < uPointCount; ++k) {

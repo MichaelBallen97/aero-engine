@@ -403,7 +403,7 @@ TEST_CASE("render material: which built-in default each slot falls back to, and 
           engine::render::defaultTextureTexelForKind(MaterialDefaultTextureKind::WhiteLinear).texel);
 }
 
-TEST_CASE("render material: packLights mirrors the whole view into the 400-byte Lights block (PB13)") {
+TEST_CASE("render material: packLights mirrors the whole view into the 416-byte Lights block (PB13)") {
     // The light block is the second thing a file-local packer hid, and its 3.4.1 addition is the one
     // that matters: eyePosition is the GGX view vector's ORIGIN. Zero it and the image is still lit,
     // the frame still submits, every registry and bridge case still passes — only the specular
@@ -434,12 +434,18 @@ TEST_CASE("render material: packLights mirrors the whole view into the 400-byte 
     view.points = POINT_LIGHTS;
 
     // The size the HLSL cbuffer declares, as a literal beside the static_assert rather than instead of
-    // it: 16 (ambient + count) + 32 (dir) + 8*32 (points) + 16 (eye + pad) + 64 (float4x4) + 16 (float4).
-    CHECK(sizeof(engine::render::detail::GpuLightBlock) == 400);  // 320 + 64 (float4x4) + 16 (float4)
+    // it: 16 (ambientMid + count) + 32 (dir) + 8*32 (points) + 16 (eye + pad) + 64 (float4x4) +
+    // 16 (float4) + 16 (ambient half-delta + pad).
+    // task E.2.1: the block is 416 bytes and the appended pair is the LAST 16 of them.
+    CHECK(sizeof(engine::render::detail::GpuLightBlock) == 416);  // 400 + 16 (ambient half-delta + pad)
+    CHECK(offsetof(engine::render::detail::GpuLightBlock, ambientHalfDelta) == 400U);
 
     const engine::render::detail::GpuLightBlock block = engine::render::detail::packLights(view);
     CHECK(block.eyePosition == eye);  // THE field; zeroing it reddens here and nowhere else
-    CHECK(block.ambient == ambient);
+    CHECK(block.ambientMid == ambient);
+    // ...and THIS commit writes a zero delta, so the block reproduces the pre-E.2.1 shade exactly.
+    // The next commit rewrites this line to read resolveAmbient(view.environment) -- expected.
+    CHECK(block.ambientHalfDelta == engine::Vec3{});
     CHECK(block.pointCount == 3);
     CHECK(block.dir.direction == Vec3{-0.5F, -0.75F, 0.25F});
     CHECK(block.dir.intensity == 2.5F);
