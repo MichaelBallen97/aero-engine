@@ -395,6 +395,18 @@ TEST_CASE(
     // A resolver that JUMPED at the knee shows a step far larger than the per-point fraction.
     CAPTURE(largestStep);
     CHECK(largestStep <= ed::GIZMO_AXIS_MAX_VIEWPORT_FRACTION + 1e-5F);
+
+    // ANTI-VACUITY, and it is not optional: EVERY clause above is satisfied by a resolver that
+    // returns a CONSTANT GIZMO_AXIS_LENGTH_POINTS -- a constant is monotone, is not over the cap, is
+    // flat above the knee, and has a largest step of zero. Without this arm the case is green against
+    // the very seed it is credited with catching (dropping the knee). The two ends of the sweep must
+    // DIFFER, and the low end must be strictly under the cap.
+    const float atLowEnd = resolved(50.0F, LARGER_SIDE).axisLengthPoints;
+    const float atHighEnd = resolved(2000.0F, LARGER_SIDE).axisLengthPoints;
+    CAPTURE(atLowEnd);
+    CAPTURE(atHighEnd);
+    CHECK(atLowEnd < atHighEnd);
+    CHECK(atLowEnd < ed::GIZMO_AXIS_LENGTH_POINTS);
 }
 
 TEST_CASE("editor gizmo style: the resolver is aspect-independent (task E.1.5, GS7)") {

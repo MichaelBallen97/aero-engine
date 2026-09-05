@@ -218,6 +218,23 @@ constexpr std::array<ImGuizmo::COLOR, GIZMO_COLOR_COUNT> IMGUIZMO_COLOR_SLOT{ImG
                                                                              ImGuizmo::TEXT,
                                                                              ImGuizmo::TEXT_SHADOW};
 static_assert(static_cast<std::size_t>(ImGuizmo::COLOR::COUNT) == GIZMO_COLOR_COUNT);
+// AND THE TABLE MUST BE THE IDENTITY, which is a SECOND claim and breaks independently of the count.
+// GizmoColor mirrors ImGuizmo::COLOR in order (ImGuizmo.h:277-295), so slot i must be enumerator i.
+// WITHOUT THIS, A PERMUTED TABLE IS INVISIBLE TO EVERY TIER: applyGizmoStyle writes Colors[SLOT[i]]
+// and imGuizmoStyleReadback reads Colors[SLOT[i]], so the table CANCELS and the round trip is the
+// identity for ANY injective permutation. MEASURED, not reasoned -- swapping DIRECTION_X and
+// DIRECTION_Z here left I124 passing 80 of 80 assertions while the X arrow rendered BLUE on screen.
+// It is the "both sides computed from one source" species E.1.2 recorded, wearing a real round trip
+// as a disguise, and a compile error is a stronger witness than a red test: it also catches an
+// UPSTREAM REORDER of ImGuizmo::COLOR that leaves COUNT unchanged, which no test could ever see.
+static_assert([] {
+    for (std::size_t i = 0; i < GIZMO_COLOR_COUNT; ++i) {
+        if (IMGUIZMO_COLOR_SLOT[i] != static_cast<ImGuizmo::COLOR>(i)) {
+            return false;
+        }
+    }
+    return true;
+}());
 
 // DIVIDE by 255, never multiply by a reciprocal: k * fl(1/255) is bit-unequal to fl(k/255) for 126 of
 // the 256 byte values (E.1.1, MEASURED -- and it looks identical to six significant digits), and I124
@@ -300,8 +317,16 @@ const render::DebugDraw* ViewportPanel::debugDraw() const noexcept { return debu
 
 // task E.1.5: the read-back seam. ImGui's OWN packer, not a hand-written one -- the whole point is
 // that I124 asserts the REAL round trip the draw list will perform (imgui.cpp:2906,
-// IM_F32_TO_INT8_SAT at imgui_internal.h:293), so a reciprocal in toImVec4 above, or a permuted slot
-// table, is a byte off HERE rather than only on screen.
+// IM_F32_TO_INT8_SAT at imgui_internal.h:293), so a swapped R and B in the shifts below is a byte off
+// HERE rather than only on screen.
+//
+// WHAT I124 CANNOT SEE, stated because an earlier version of this comment claimed otherwise: a
+// PERMUTED IMGUIZMO_COLOR_SLOT. This loop and applyGizmoStyle's both index through that one table, so
+// it cancels and the round trip is the identity for any injective permutation -- measured, I124
+// passed 80 of 80 with DIRECTION_X and DIRECTION_Z swapped. The identity static_assert beside the
+// table is what actually closes that, at COMPILE time. Do not index this loop by a second,
+// independent expression to "fix" it: the assert is stronger, and two spellings of one mapping is
+// exactly the drift the single table exists to prevent.
 GizmoStyle ViewportPanel::imGuizmoStyleReadback() noexcept {
     const ImGuizmo::Style& source = ImGuizmo::GetStyle();
     GizmoStyle out{};

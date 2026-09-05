@@ -11236,8 +11236,16 @@ TEST_CASE(
     CHECK(actual.centerDiscRadiusPoints == expected.centerDiscRadiusPoints);
 
     // THE ASSERTION THAT CARRIES THE COMMIT: fifteen colours, four channels each, as ints. A one-byte
-    // discrepancy anywhere in the apply table -- a permuted slot, a reciprocal in toImVec4, a swapped
+    // discrepancy anywhere in the apply table -- a wrong constant, a reciprocal in toImVec4, a swapped
     // R and B in the read-back's shifts -- is red HERE rather than only on screen.
+    //
+    // WHAT THIS LOOP CANNOT SEE, and the reason the identity static_assert beside IMGUIZMO_COLOR_SLOT
+    // exists: a PERMUTED slot table. applyGizmoStyle writes Colors[SLOT[i]] and the read-back reads
+    // Colors[SLOT[i]], so the table cancels and this comparison holds for ANY injective permutation --
+    // MEASURED: with DIRECTION_X and DIRECTION_Z swapped this case passed 80 of 80 while the X arrow
+    // rendered blue. That is E.1.2's "both sides from one source" species wearing a real round trip as
+    // a disguise. It is closed at COMPILE time, not here; do not add a second indexing expression to
+    // this loop hoping to catch it.
     for (std::size_t i = 0; i < engine::editor::GIZMO_COLOR_COUNT; ++i) {
         CAPTURE(i);
         const auto slot = static_cast<engine::editor::GizmoColor>(i);
