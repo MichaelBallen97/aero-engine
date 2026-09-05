@@ -66,8 +66,22 @@ the library's **process-wide global once per submitted frame** together with a s
 from that frame's viewport extent. Five commits, 3 new files / 4 edited source or header files, no
 new dependency, no shader, no pipeline, no RHI call, no component, no scene-format change, no
 `add_test`. **`ctest -N` unmoved at 172**; `aero_editor_shell_test` **1781 → 1793**,
-`aero_editor_imgui_test` **159 → 162**, the other five unmoved. Full detail in `docs/10`; the
+`aero_editor_imgui_test` **159 → 162**, the other five unmoved. **Six commits after the code-review
+round, whose one blocking finding is invariant 0 below.** Full detail in `docs/10`; the
 sentences that govern new work are below.
+
+**0. A TABLE INDEXED BY BOTH THE WRITER AND THE READER CANCELS, AND A ROUND TRIP THROUGH IT ASSERTS
+NOTHING.** The review round's blocking finding, and the one worth carrying out of this task.
+`applyGizmoStyle` wrote `Colors[IMGUIZMO_COLOR_SLOT[i]]` and `imGuizmoStyleReadback` read
+`Colors[IMGUIZMO_COLOR_SLOT[i]]`, so the composition was the identity for **any injective permutation
+of the table** — and `I124` passed **80 of 80 assertions** with `DIRECTION_X` and `DIRECTION_Z`
+swapped, while the X arrow rendered blue. MEASURED, before the fix. It is E.1.2's "both sides from one
+source" species wearing a **real round trip through ImGui's own packer** as a disguise, which is why
+both a plan review and a first code reading passed over it. **The fix is a `static_assert` that the
+table is the IDENTITY** — a compile error beats a red test, and it additionally catches an upstream
+`ImGuizmo::COLOR` reorder that leaves `COUNT` unchanged, which **no runtime tier could ever see**
+because the read-back would follow the reorder too. **Any future write/read pair that shares one
+mapping table inherits this**: assert the mapping, do not test through it.
 
 **1. IMGUIZMO'S TWO VISIBILITY SETTERS ARE CROSSED, AND THE HEADER'S OWN COMMENTS SAY THE OPPOSITE.**
 `SetPlaneLimit` feeds `mPlaneLimit`, which `ImGuizmo.cpp:1230` compares against the **AXIS's**

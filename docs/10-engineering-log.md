@@ -14185,8 +14185,15 @@ reference point is an equality rather than a tolerance. Both hide thresholds lan
 library's constants there. `GS4`'s inverse property — `size · max(w, h) / 2` recovers `L` — is worst
 **1 ulp over 300 000 seeded viewports**, so the assertion's bound is two. And **`GS11`'s bound is
 tight, with equality at a square viewport**: the worst value is `0.30000001192092896`, bit-**equal**
-to `float(2 · 0.15F)`, so the bound must be written as `2.0F * GIZMO_AXIS_MAX_VIEWPORT_FRACTION` and
-**never as a `0.3F` literal**, which would turn an exact equality into a failure. `GS5`'s ratio is
+to `float(2 · 0.15F)`, reached at a 500x500 dock. The bound is written as
+`2.0F * GIZMO_AXIS_MAX_VIEWPORT_FRACTION` because that tracks the constant through a retune —
+**but the claim this paragraph made until the sabotage pass, that a `0.3F` literal "would turn an
+exact equality into a failure", is FALSE and was corrected by measurement.** Mutant `M5` replaced the
+expression with the literal and `GS11` stayed **green**: multiplication by two is exact and the float
+grid at 0.3 is exactly twice the grid at 0.15, so `2.0F * 0.15F` and `0.3F` are the **same float**,
+`0x3E99999A`, verified by a bit-level probe. The tightness is real; the conclusion drawn from it was
+not. **A retune of `GIZMO_AXIS_MAX_VIEWPORT_FRACTION` is what the expression form actually buys**, and
+that is the reason to keep it. `GS5`'s ratio is
 bit-exactly `0.15F` at all four sampled dock sizes — recorded here and deliberately **not** asserted,
 because nothing guarantees it and the epsilon belongs in the assertion.
 
@@ -14334,6 +14341,101 @@ step 5's one call — and none touches the branch point's `:855`–`:949`; the 9
 `// 6. Arguments.` to `updateGizmo`'s closing brace diffs **clean** against the merge base with a
 one-line-shifted control proving the comparison can fail; and the comment-stripped counts read
 **4 / 1 / 1 / 1**, unmoved.
+
+#### The code-review round — one BLOCKING finding, and it was invisible to reading
+
+**`I124` WAS STRUCTURALLY BLIND TO THE ONE DEFECT IT WAS DOCUMENTED TO CATCH, AND THREE SHIPPED
+SENTENCES CLAIMED OTHERWISE.** `applyGizmoStyle` writes `Colors[IMGUIZMO_COLOR_SLOT[i]]` and
+`imGuizmoStyleReadback` reads `Colors[IMGUIZMO_COLOR_SLOT[i]]`, so the composition is
+`unpack(pack(style.colors[i]))` for **any injective permutation of the table** — the table cancels.
+**Measured before the fix: with `DIRECTION_X` and `DIRECTION_Z` swapped, `I124` passed 80 of 80
+assertions** while `ComputeColors` (`ImGuizmo.cpp:1149`) painted the X shaft blue and the Z shaft red.
+This is E.1.2's *"a test that compares two values from the same source asserts nothing, and reading it
+will not tell you"* — wearing a **real round trip through ImGui's own packer** as a disguise, which is
+what made it survive both a plan review and a first reading of the code.
+
+**The fix is a compile-time identity assertion, not a stronger test.** A second `static_assert` beside
+the table requires `IMGUIZMO_COLOR_SLOT[i] == static_cast<ImGuizmo::COLOR>(i)` for all `i` — a
+distinct claim from the existing `COUNT` assert, breaking independently of it. A permutation is now a
+**compile error**, verified in both directions. It is strictly stronger than a red test because it
+also catches an **upstream reorder of `ImGuizmo::COLOR` that leaves `COUNT` unchanged** — which no
+runtime tier could ever see, since the read-back would follow the reorder too. *Indexing the read-back
+by a second, independent expression was considered and rejected: two spellings of one mapping is the
+drift the single table exists to prevent, and it is the weaker witness.*
+
+**`GS6` HAD NO ANTI-VACUITY ARM AND WAS GREEN AGAINST THE SEED IT WAS CREDITED WITH CATCHING.** All
+four of its clauses — monotone, capped, flat above the knee, bounded step — are satisfied by a
+resolver returning a **constant** 90. Sabotage row 9 (drop the knee) was expected to redden it and did
+not. It now asserts the two ends of the sweep differ and the low end is strictly under the cap; with
+that arm, row 9 reddens it.
+
+#### The sabotage matrix — 22 seeds and 6 mutants, every verdict measured
+
+**Five rows disagreed with the plan's predictions.** That is the return on running it rather than
+reading it.
+
+| # | Seed | Predicted | **Measured** |
+|---|---|---|---|
+| 1 | `applyGizmoStyle` writes a local `Style` copy | `I124` | `I124` **and** `I125` |
+| 2 | permute `DIRECTION_X`/`DIRECTION_Z` in the slot table | `I124` | **GREEN, 80/80 — the blocking defect. Now a COMPILE ERROR** |
+| 3 | `GIZMO_PLANE_FILL_ALPHA = 255` | `GS1` | `GS1`, `GS3` |
+| 4 | highlight becomes E.1.4's amber | `GS2` | `GS2` |
+| 5 | delete `AllowAxisFlip(false)` | `I125(b)` only | as declared — pin only |
+| 6 | swap the two limit-setter arguments | `I125(c)` only | as declared — pin only |
+| 7 | move the apply after `Manipulate` | `I125(a)`; `I124` green | exactly that |
+| 8 | resolver uses `w` for `larger` | `GS7`, `GS4` portrait | `GS4`, `GS7`, `GS8`, `GS11` |
+| 9 | resolver drops the knee | `GS5`, `GS6`, `GS11` | all three — **`GS6` only after its new arm** |
+| 10 | resolver drops the factor of 2 | `GS4` | `GS4`, `GS8`, `GS11` |
+| 11 | size from the uncapped length | `GS4`'s inverse | `GS4`, `GS11` |
+| 12 | thresholds returned as library constants | `GS8` | `GS8` (its **proportionality** arm) |
+| 13 | delete the `isfinite` arm | `GS9`'s two `inf` rows, `GS11` | **`GS9` ONLY** — `GS11` samples finite viewports, and only `+inf` needs `isfinite`; `-inf` is caught by `!(h > 0)` |
+| 14 | `GIZMO_HATCHED_AXIS_SRGB` to bright red | nothing | **nothing, both tiers** — declared hole confirmed |
+| 15 | read-back body replaced by `defaultGizmoStyle()` | `I125(e)` | `I125` |
+| 16 | delete the End-edge `breakMergeChain()` | `I126` | `I126` |
+| 17 | `GIZMO_CENTER_DISC_RADIUS_POINTS = 12` | `GS3` | `GS3` |
+| 18 | `GIZMO_AXIS_HIDE_FRACTION = 0` | `GS8` | `GS8`, `GS11` |
+| 19 | `toImVec4` multiplies by `1.0F/255.0F` | `I124` | **GREEN — the prediction was wrong** |
+| 20 | delete the `COUNT` `static_assert` | nothing | nothing — declared |
+
+**Row 19's correction, because the plan told a future reader to act on a green run.** It said a green
+row would mean *"the read-back is not going through ImGui's real packer and `I125(e)` has a hole"* —
+which would send someone hunting a bug that does not exist. `IM_F32_TO_INT8_SAT` is
+`(int)(ImSaturate(v) * 255.0f + 0.5f)`; a 1-ulp difference in the float is at most ~1.5e-5 after the
+`* 255`, and the `+ 0.5` truncation swallows it, so both spellings round-trip to the same byte. **The
+divide is still the right call** — `k * fl(1/255)` really is bit-unequal to `fl(k/255)` for 126 of the
+256 byte values — it simply is not what `I124` discriminates.
+
+**The mutants, and two of them failed as written.**
+
+| Mutant | Predicted | **Measured** |
+|---|---|---|
+| `GS4` — one dyadic expected value off by 1 ulp | red | red — the table really is compared against **literals** |
+| `GS2` — gap floor to 0, then re-run seed 4 | seed 4 passes | passes — **the floor is load-bearing, not the `!=`** |
+| `I124` — one expected byte off | red | red — the loop reaches every channel |
+| `GS8` — reference constants to the resolver's own output, then re-run seed 12 | seed 12 passes | **seed 12 still reddens** — `GS8`'s *proportionality* arm catches it independently |
+| `GS11` — `2.0F * FRACTION` to a `0.3F` literal | red at a square viewport | **GREEN** — the two are the same float (see the epsilon paragraph above) |
+
+**The `GS8` mutant was re-run correctly and the arm IS load-bearing.** Seed 12 is the wrong probe for
+it: making the thresholds constant breaks proportionality, which is a different arm. The probe that
+isolates the reference point is **seed 18** (`GIZMO_AXIS_HIDE_FRACTION = 0`), which proportionality is
+structurally blind to — *zero is proportional*. With both reference comparisons neutered, `GS8` goes
+**green** under seed 18. That is the proof the plan intended and did not obtain.
+
+**TWO HOLES FOUND THAT THE PLAN DID NOT LIST.**
+
+**1. `I125(e)` is defeated by an early return, because a source-text pin checks PRESENCE, not
+REACHABILITY.** The plan's row 15 replaces the read-back's body and reddens correctly. But inserting
+`return defaultGizmoStyle();` **above** the existing body leaves `ImGuizmo::GetStyle()` and
+`ColorConvertFloat4ToU32` in the window as dead code — the pin still matches, and **`I124` and `I125`
+both stay green** while the read-back reports a value it never read. The realistic accident (rewriting
+the function) is caught; a deliberate early return is not. Recorded rather than closed: a pin that
+proved reachability would need to be a different tier than source text.
+
+**2. `git checkout -- <file>` reverted an uncommitted FIX along with the seed, during this very
+matrix.** The rule is already in `CLAUDE.md` — it ate two closures during 3.7.2 — and it still bit,
+because the fix under test was written minutes earlier and not yet committed. Caught by re-grepping
+for the assertion afterwards; the fix was re-applied and **committed before seeding resumed**. The
+lesson is unchanged and now has a third instance: **commit the fix, then seed it.**
 
 #### The handoffs this task creates
 
