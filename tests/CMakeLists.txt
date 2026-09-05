@@ -75,6 +75,7 @@ add_executable(aero_tests
     render_debug_draw_test.cpp # task E.1.1 — tier-0 vocabulary/batch/packers/shader pin + GPU-gated DebugDraw
     render_debug_grid_test.cpp # task E.1.2 — tier-0 cadence/continuity/lattice/cap; NO GPU, no gate
     render_environment_test.cpp # task E.2.1 — tier-0 modes/clamps/resolvers/curves/exactness; NO GPU, no gate
+    render_sky_test.cpp           # task E.2.1 -- the sky's two packers (tier 0) and the pass's pixels
     render_selection_outline_test.cpp # task E.1.4 — tier-0 params/packers/levels/shader pin + GPU-gated mask & outline
     scene_render_selection_test.cpp # task E.1.4 — buildSelectionMaskSet: arms, bucketing, cap, purity
 )

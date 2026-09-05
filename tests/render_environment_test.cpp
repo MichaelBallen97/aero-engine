@@ -68,6 +68,17 @@ constexpr std::string_view RENDER_UMBRELLA_PATH =
     return haystack.find(needle) != std::string::npos;
 }
 
+// task E.2.1 (HE16): "exactly once", not merely "present". A second copy of a transcribed constant
+// is the same defect as a missing one -- a reader who edits the first and not the second leaves the
+// two lanes disagreeing -- and `contains` alone cannot tell the two apart.
+[[nodiscard]] std::size_t countOccurrences(const std::string& haystack, std::string_view needle) {
+    std::size_t count = 0;
+    for (std::size_t at = haystack.find(needle); at != std::string::npos; at = haystack.find(needle, at + 1)) {
+        ++count;
+    }
+    return count;
+}
+
 // The float's bit pattern, for the arms that say BIT-exact rather than equal: `==` alone cannot tell
 // +0.0 from -0.0, and "Solid reproduces a clear bit for bit" is precisely a claim about bits.
 [[nodiscard]] std::uint32_t bitsOf(float value) {
@@ -616,6 +627,56 @@ TEST_CASE("render environment: the two curve powers are the numbers the shader t
     CHECK(rd::SKY_CURVE_POWER == 4.0F);
     CHECK(rd::GROUND_CURVE_POWER == 8.0F);
     CHECK(rd::GROUND_CURVE_POWER > rd::SKY_CURVE_POWER);
+}
+
+TEST_CASE("render environment: the three shaders transcribe this header, and carry no mode (HE16)") {
+    // The TM29 / SO9 shape: the HLSL is a SECOND COPY of arithmetic no case in this file can execute,
+    // so the pin reads the source with comments stripped and asserts needles PRESENT *and* needles
+    // ABSENT. The absent half is what makes it non-decorative: a `lerp` that happens to agree on
+    // this hardware, a mode selector that reintroduces a branch, or an eye-relative ray would each
+    // leave every present-needle arm green.
+    const std::string skyFrag = strippedSourceAt(AERO_SHADERS_SRC_DIR "/sky.frag.hlsl");
+    const std::string skyVert = strippedSourceAt(AERO_SHADERS_SRC_DIR "/sky.vert.hlsl");
+    const std::string sceneFrag = strippedSourceAt(AERO_SHADERS_SRC_DIR "/scene.frag.hlsl");
+    // ANTI-VACUITY FIRST: a mistyped path yields an empty string from which every "absent" arm below
+    // passes and every "present" arm fails in a way that reads as a shader edit.
+    REQUIRE(skyFrag.size() > 200);
+    REQUIRE(skyVert.size() > 200);
+    REQUIRE(sceneFrag.size() > 200);
+
+    SUBCASE("sky.frag.hlsl transcribes the two curve powers, once each") {
+        // The bare literals HE15 pins on the C++ side. `4.0` and `8.0` are spelled INSIDE the pow so
+        // a stray 4.0 elsewhere in the file cannot satisfy the arm.
+        CHECK(countOccurrences(skyFrag, "pow(1.0 - t, 4.0)") == 1);
+        CHECK(countOccurrences(skyFrag, "pow(1.0 - b, 8.0)") == 1);
+        CHECK(countOccurrences(skyFrag, "uHorizon + uSkyDelta * wSky + uGroundDelta * wGround") == 1);
+    }
+
+    SUBCASE("sky.frag.hlsl has NO lerp, NO mode and NO branch (INV-1)") {
+        // THE WHOLE REASON THE PIN EXISTS. DXC maps HLSL `lerp` to SPIR-V's FMix, specified as
+        // x*(1-a) + y*a -- a different number from x when x == y, which would break the Solid
+        // bit-exactness the entire design rests on.
+        CHECK_FALSE(contains(skyFrag, "lerp("));
+        // The modes live on the CPU. A selector here means a second source for the mode decision and
+        // a branch the GPU has to predict; there is no variant key and nothing to keep in sync.
+        CHECK_FALSE(contains(skyFrag, "Mode"));
+        CHECK_FALSE(contains(skyFrag, "if ("));
+    }
+
+    SUBCASE("sky.vert.hlsl builds the ray from far - near, and never from the eye") {
+        CHECK(countOccurrences(skyVert, "farP.xyz / farP.w - nearP.xyz / nearP.w") == 1);
+        // CameraView::eyePosition is WRONG under a parallel projection (as it is in Unity), so the
+        // ray must never be eye-relative. The light block's own uEyePosition is a fragment-stage
+        // field of a different cbuffer entirely; naming it here would be the defect.
+        CHECK_FALSE(contains(skyVert, "uEyePosition"));
+    }
+
+    SUBCASE("scene.frag.hlsl shades with the hemisphere pair and no scaled constant") {
+        CHECK(countOccurrences(sceneFrag, "uAmbientMid + uAmbientHalfDelta * N.y") == 1);
+        // The pre-E.2.1 term was `uAmbient * <something>`. Its absence is what says the hemisphere
+        // REPLACED it rather than being added beside it.
+        CHECK_FALSE(contains(sceneFrag, "uAmbient *"));
+    }
 }
 
 TEST_CASE("render environment: RenderView carries an EnvironmentData and no ambient (HE17)") {

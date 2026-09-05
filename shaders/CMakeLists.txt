@@ -23,4 +23,6 @@ aero_add_shaders(aero_shaders
         debug_billboard.frag.hlsl # task E.1.1 -- one sampler; the default is a 1x1 white texel
         selection_mask.frag.hlsl    # task E.1.4 -- pairs with scene{,_skinned}.vert UNCHANGED
         selection_outline.frag.hlsl # task E.1.4 -- the 9-tap edge detect over the R8 mask
+        sky.vert.hlsl               # task E.2.1 -- the fullscreen triangle, varying a world-space ray
+        sky.frag.hlsl               # task E.2.1 -- the three-colour gradient; no mode, no branch
 )

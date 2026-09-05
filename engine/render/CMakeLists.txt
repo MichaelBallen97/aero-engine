@@ -21,6 +21,8 @@ add_library(aero_render STATIC
     src/selection_outline.cpp # task E.1.4 -- the fullscreen edge-detect composite
     src/environment.cpp       # task E.2.1 -- the pure environment vocabulary: modes, resolvers, the
                               #               gradient's reference evaluator
+    src/sky_pass.cpp          # task E.2.1 -- the fullscreen gradient sky, before opaque, into the
+                              #               caller's open HDR pass
 )
 add_library(aero::render ALIAS aero_render)
 
