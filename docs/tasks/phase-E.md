@@ -108,13 +108,22 @@ Subtasks:
 - Retire the AABB path, keeping the point marker for geometry-less entities until E.2.3 lands icons
 - Prove the box is gone: an entity whose AABB is much larger than its mesh outlines the mesh
 
-_Outcome: **L, as estimated.** Nine commits, 7 new files and 16 edited source/header files (plus 4
-CMakeLists and 4 docs) — two HLSL fragment stages and
-zero new vertex stages, four defaulted growths across `render_target.hpp` / `post_process.hpp`, a new
-public `render::SelectionOutline`, four pipelines and one lazily-allocated `R8Unorm` texture on
-`ForwardRenderer`, a pure `buildSelectionMaskSet` in `scene_renderer.cpp`, the editor rewire, and the
-deletion of `BoxEdge`/`BOX_EDGES`/`appendBoxEdges`. No new dependency and no link-line change
-anywhere; `ctest -N` unmoved at 172. Full detail in `docs/10-engineering-log.md`._
+_Outcome: **L, as estimated.** Merged 2026-09-05 as PR #96, merge commit `3aadffb` — sixteen commits
+(nine implementing the plan, five closing a code-review round, one docs, one merge of `origin/main`),
+all six CI jobs green with `headSha == HEAD` asserted. 7 new files and 16 edited source/header files
+(plus 4 CMakeLists and 4 docs) — two HLSL fragment stages and zero new vertex stages, four defaulted
+growths across `render_target.hpp` / `post_process.hpp`, a new public `render::SelectionOutline`, four
+pipelines and one lazily-allocated `R8Unorm` texture on `ForwardRenderer`, a pure
+`buildSelectionMaskSet` in `scene_renderer.cpp`, the editor rewire, and the deletion of
+`BoxEdge`/`BOX_EDGES`/`appendBoxEdges`. No new dependency and no link-line change anywhere;
+`ctest -N` unmoved at 172.
+**The review round found a defect that would have shipped**: the edge-clamp bound was half a texel
+wrong, so a selected object reaching the viewport's right or bottom edge painted a false band there —
+invisible to every test because `OG8`, the only case covering that rule, ran on an unmargined target
+where it cannot be wrong. **macOS-validated 2026-09-05: 10 PASS / 1 NOT EXECUTABLE**; the band
+measures exactly 2 px (`2·radius`, not `2r+1`) and `rgb(255,176,64)` byte-exact on screen, and the
+point marker reads the same amber byte for byte. Row 4 is NOT EXECUTABLE on 1x hardware, so **E.1.1's
+thick-line handoff stays unfired rather than cleared**. Full detail in `docs/10-engineering-log.md`._
 
 ### E.1.5 Transform-gizmo restyle · P1 · M · depends: 2.3.3, E.1.4
 **Goal:** the manipulation handles should read like Unity's or Unreal's — visible against any

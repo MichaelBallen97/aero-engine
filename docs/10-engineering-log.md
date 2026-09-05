@@ -14017,3 +14017,72 @@ E.1.3 has merged**: the diff then names E.1.3's files, which do not exist here, 
 exits 1 on "No such file or directory" — a lint failure that is not a lint finding. Derive the list
 from the **branch point** (`b7576dd`) and filter it through `[ -f "$f" ]`. So derived, clang-format
 and clang-tidy are both **exit 0** over all 21 changed `.cpp`/`.hpp` files.
+
+#### The macOS validation pass — 10 PASS / 1 NOT EXECUTABLE, 2026-09-05
+
+**THE DELIVERABLE HOLDS ON A REAL ASSET, WHICH IS THE ONE CLAIM NO AUTOMATED TIER MAKES.** `OG6`
+proves the box-corners-bare property on a `Sphere` primitive; row 1 proves it on an imported glTF.
+A fixture authored for the pass (`sliver.gltf` — a 2 x 2 x 0 cooked AABB whose geometry is a narrow
+diagonal band) was dragged in through 3.1.5's drag-into-scene and selected: **0 amber pixels of 3600
+in EACH of the two off-diagonal corner regions**, against 428 and 400 in the two the geometry
+actually occupies. The imported root node, which carries a `Transform` and no `MeshRenderer`, took
+the **point marker** while its mesh child took the outline — D11's fork exercised on a real import
+rather than a contrived world.
+
+**TWO DESIGN DECISIONS ARE NOW CONFIRMED FROM THE PRODUCT SIDE, NOT ONLY FROM A READBACK.** The band
+measures **exactly 2 px** on screen, which is `2*radius` and not the `2r + 1` the spec, the plan and
+three comments all claimed before the implementation measured it. And it measures
+**`rgb(255,176,64)` byte-exact** — the literal value of `SELECTION_OUTLINE_PRIMARY_DEFAULT` — which
+is D7 working: the composite runs after the tonemap and the colour never enters the ACES curve. A
+line pushed through `DebugDraw` at `(1,1,1,1)` would have read `232/255` there.
+
+**THE MARKER AND THE OUTLINE ARE THE SAME AMBER BYTE FOR BYTE, AND THAT IS THE ONLY DEFENCE THE TWO
+COLOUR SEEDS HAVE ANYWHERE.** Both read `rgb(255,176,64)`. Sabotage row 20 is a deliberate
+non-finding — restating the editor's two `IM_COL32` constants as literals one byte off reddens
+nothing in any tier — so D18's *derivation* from the engine defaults is the whole mechanism, and this
+row is where it is checked. The secondary measures `rgb(208,128,43)` / `rgb(200,120,34)` depending on
+what is behind it; `SELECTION_OUTLINE_SECONDARY_DEFAULT` composited at `alpha = 190/255` over the
+viewport background `rgb(68,68,77)` predicts `rgb(207,128,43)`, and the prediction sits between the
+two measurements, the spread being the local background.
+
+**THE PICTURE WITH NOTHING SELECTED IS BIT-IDENTICAL, AND THE CONTROL IS `a048f14`, NOT `b7576dd`.**
+The page as written names the branch point, but `b7576dd` predates **E.1.3** as well, so comparing
+against it would attribute E.1.3's view-axis gizmo and orthographic lens to this task. Against
+`a048f14` — `main` with E.1.3 and PR #95 merged and E.1.4 absent — the viewport differs by **0 pixels
+of 296 378**, with the anti-vacuity control reporting **1580** when one entity is selected.
+
+**THE FEATURE IS FREE AT 60 Hz, AND THE COST IS PASS SETUP RATHER THAN GEOMETRY.** Four conditions,
+each 1795-3908 frames, all mean **16.665-16.672 ms** — within 0.007 ms of one another and vsync-bound,
+with `acquireSwapchainTexture` blocking ~15.74 ms of every frame. The zero-cost path really is
+near-zero: `renderSelectionMask` 265 ns + `composite` 206 ns + `buildSelectionMaskSet` 233 ns
+= **0.0007 ms** with nothing selected, against **0.049 ms** at one entity and **0.061 ms** at eleven.
+1 -> 11 entities adds only 0.012 ms, so the per-entity slope is ~975 ns and 256 entities extrapolates
+to ~0.29 ms. **That last number is an extrapolation and the row's 256 blank is NOT ANSWERED**: the
+editor has no Select All and no Hierarchy range-select, so a 256-entity selection cannot be built by
+clicking at all.
+
+**D10's TRAP JUDGED BY EYE, ACROSS AN ACTUAL ALLOCATION CHANGE.** Sweeping the window width moved the
+viewport's draw width 725 -> 805 in 8-px steps, crossing **768** and stepping the allocation to 832.
+The outline's bounding box measured **exactly 72 x 62 px at every one of the seven widths** and its
+centre moved linearly with no discontinuity. Sampling across the silhouette's left edge: at draw 765
+the background ends at x=468, the band occupies **469-470**, the body starts at 471; at draw 773 the
+same three read 472, **473-474**, 475. The band stays 2 px and stays flush against the geometry — the
+whole pattern simply translates with the projection.
+
+**WHAT IS STILL NOT VALIDATED, AND WHY EACH.** **Row 4 (HiDPI) is NOT EXECUTABLE** — both attached
+displays report `backingScaleFactor` 1.0, confirmed three ways, so **E.1.1's thick-line handoff stays
+UNFIRED rather than cleared**. This task built the first overlay in the tree that can control its own
+apparent thickness, and whether `SELECTION_OUTLINE_RADIUS_POINTS = 1.0F` is *right* still needs a 2x
+display. **Row 5's mid-import transition was never observable** — the import completed inside a single
+frame, so the diamond-to-outline hand-off never became visible; nothing was seen to be *neither*, but
+that is an absence of evidence. And **row 6's 256-entity figure is extrapolated**, as above.
+
+**A METHOD TRAP THAT PRODUCED A FALSE PASS BEFORE IT WAS CAUGHT, AND IT IS THE VACUOUS-COMPARISON
+LESSON IN A NEW COSTUME.** Two `aero_editor` processes were alive at once. The window lookup returned
+the **first** match — the stale one — so three separate captures came back byte-identical and row 7
+reported "0 differing" for the control build, the test build, and a capture that *provably contained
+an outline*. Nothing about the comparison looked wrong; it simply could not fail. Binding every
+capture to its launched process's PID fixes it, and **it was row 7's own anti-vacuity control that
+exposed the contradiction** — the 0 and the 42 amber pixels could not both be true. A picture
+comparison without a control that makes it fail is not evidence, and this is the second time in this
+task that a check which could not fail looked exactly like one that worked (`OG8` was the first).
