@@ -9,6 +9,7 @@
 #include <aero/scene/environment.hpp>  // task E.2.1 -- a .cpp include: the public header names no component
 #include <aero/scene/light.hpp>
 #include <aero/scene/mesh_renderer.hpp>
+#include <aero/scene/spot_light.hpp>  // task E.2.2
 #include <aero/scene/transform.hpp>
 #include <aero/scene/world.hpp>
 #include <aero/scene_render/scene_renderer.hpp>
@@ -87,6 +88,7 @@ render::RenderView buildRenderView(World& world, RenderViewScratch& scratch, rhi
     AERO_PROFILE_ZONE;
     scratch.instances.clear();
     scratch.points.clear();
+    scratch.spots.clear();  // task E.2.2
     render::RenderView view;
 
     // --- renderable instances: each<Transform, MeshRenderer> (AC-6/AC-8 — no Transform => excluded) ---
@@ -176,6 +178,7 @@ render::RenderView buildRenderView(World& world, RenderViewScratch& scratch, rhi
         view.hasCamera = false;
         view.instances = scratch.instances;
         view.points = scratch.points;
+        view.spots = scratch.spots;  // task E.2.2: EMPTY -- the walk below has not run (INV-4)
         return view;
     } else {
         const float aspect =
@@ -242,9 +245,32 @@ render::RenderView buildRenderView(World& world, RenderViewScratch& scratch, rhi
         }
         scratch.points.push_back({translationOf(worldMatrix(world, le)), pl.color, pl.intensity, pl.range});
     });
+    // --- spot lights (task E.2.2): <= MAX_SPOT_LIGHTS in iteration order -- the point walk's rule
+    // verbatim, with its OWN budget and flag. Position from the world translation (PointLight's
+    // rule) and direction from the entity's -Z world axis (DirectionalLight's rule above): ONE rule
+    // for every directional thing, and a Transform-less entity resolves to the origin, -Z. A
+    // zero-scale entity asserts inside normalize in Debug and yields NaN in Release, exactly as the
+    // directional light does -- inherited, out of contract, recorded in docs/10.
+    world.each<SpotLight>([&](Entity le, SpotLight& sl) {
+        if (scratch.spots.size() >= render::MAX_SPOT_LIGHTS) {
+            view.spotsTruncated = true;
+            return;
+        }
+        const Mat4 lightWorld = worldMatrix(world, le);
+        // DESIGNATED, not positional (3.6.2's rule): an appended field is a compile error here,
+        // never a silent default. The angles travel as RADIANS; packLights resolves the cone.
+        scratch.spots.push_back({.position = translationOf(lightWorld),
+                                 .direction = normalize(transformDirection(lightWorld, {0.0F, 0.0F, -1.0F})),
+                                 .color = sl.color,
+                                 .intensity = sl.intensity,
+                                 .range = sl.range,
+                                 .innerConeRadians = sl.innerConeRadians,
+                                 .outerConeRadians = sl.outerConeRadians});
+    });
 
     view.instances = scratch.instances;
     view.points = scratch.points;
+    view.spots = scratch.spots;  // task E.2.2
     return view;
 }
 
@@ -407,6 +433,9 @@ void SceneRenderer::render(World& world, render::Frame& frame, const render::Cam
     }
     if (view.pointsTruncated) {
         warnOnce(pointTruncWarned, "SceneRenderer: >MAX_POINT_LIGHTS PointLights; extras dropped");
+    }
+    if (view.spotsTruncated) {
+        warnOnce(spotTruncWarned, "SceneRenderer: >MAX_SPOT_LIGHTS SpotLights; extras dropped");
     }
     // task E.2.1: ZERO Environments is NOT a diagnostic -- it is the ordinary state of every scene
     // authored before this task, and it renders with EnvironmentData's own defaults.

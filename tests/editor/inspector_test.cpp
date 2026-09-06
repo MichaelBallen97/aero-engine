@@ -110,7 +110,7 @@ TEST_CASE("inspector: model lists present components in registration order, fiel
     aero_reflect_register_all_aero_editor_inspector_test();
     const ComponentTypeId probeId = registerProbe(world);
     REQUIRE(probeId.valid());
-    CHECK(world.componentTypeCount() == 10);  // 9 built-ins (E.2.1) + InspectorProbe
+    CHECK(world.componentTypeCount() == 11);  // 10 built-ins (E.2.2) + InspectorProbe
 
     const Entity e = world.create();
     world.add<engine::Transform>(e, engine::Transform{});
@@ -528,7 +528,7 @@ TEST_CASE("inspector: AC-12 drift pin -- every registered built-in component has
     World world;
     const Entity e = world.create();
     const std::size_t count = world.componentTypeCount();
-    REQUIRE(count == 9);  // the 9 built-ins (E.2.1) -- no InspectorProbe registered on THIS World
+    REQUIRE(count == 10);  // the 10 built-ins (E.2.2) -- no InspectorProbe registered on THIS World
     for (std::size_t i = 0; i < count; ++i) {
         const ComponentTypeId id = world.componentTypeAt(i);
         world.addRaw(id, e, nullptr);
@@ -924,4 +924,62 @@ TEST_CASE("inspector: engine::Environment's eight reflected fields all resolve (
     CHECK_FALSE(entry.fields[3].hasRange);
     CHECK_FALSE(entry.fields[4].hasRange);
     CHECK_FALSE(entry.fields[6].hasRange);
+}
+
+TEST_CASE("inspector: engine::SpotLight's five reflected fields all resolve (task E.2.2)") {
+    // See the note in the AudioSource case above: without this call the assertions ride whichever
+    // neighbouring case registered the meta first, and read 0 fields when run alone.
+    engine::editor::registerEditorReflection();
+
+    World world;
+    const ComponentTypeId id = world.findComponentType("engine::SpotLight");
+    REQUIRE(id.valid());
+
+    const Entity e = world.create();
+    REQUIRE(world.addRaw(id, e, nullptr) != nullptr);
+
+    InspectorModel model;
+    buildInspectorModel(world, e, model);
+    REQUIRE(model.components.size() == 1);
+    const engine::editor::ComponentEntry& entry = model.components[0];
+    CHECK(entry.name == "engine::SpotLight");
+    CHECK(entry.typeId == id);
+    CHECK(entry.hasFields);
+
+    REQUIRE(entry.fields.size() == 5);
+    CHECK(entry.fields[0].name == "color");  // declaration order IS inspector row order
+    CHECK(entry.fields[1].name == "intensity");
+    CHECK(entry.fields[2].name == "range");
+    CHECK(entry.fields[3].name == "innerConeRadians");
+    CHECK(entry.fields[4].name == "outerConeRadians");
+
+    CHECK((entry.fields[0].kind == FieldKind::Vec3));
+    CHECK((entry.fields[1].kind == FieldKind::Float));
+    CHECK((entry.fields[2].kind == FieldKind::Float));
+    CHECK((entry.fields[3].kind == FieldKind::Float));
+    CHECK((entry.fields[4].kind == FieldKind::Float));
+
+    // The colour carries AERO_COLOR, so it renders a picker rather than three drag fields.
+    CHECK(entry.fields[0].color);
+
+    // The two cone angles carry the AERO_RANGE that clamps them to [0, pi/2] -- a hemisphere at
+    // most. 1.5707964 is the float nearest pi/2, bit for bit engine::HALF_PI.
+    CHECK(entry.fields[3].hasRange);
+    CHECK(entry.fields[3].rangeMin == doctest::Approx(0.0));
+    CHECK(entry.fields[3].rangeMax == doctest::Approx(1.5707964));
+    CHECK(entry.fields[4].hasRange);
+    CHECK(entry.fields[4].rangeMin == doctest::Approx(0.0));
+    CHECK(entry.fields[4].rangeMax == doctest::Approx(1.5707964));
+
+    // intensity and range carry NEITHER a range nor a colour -- 1.3.3's D19. BOTH directions on
+    // each, because an absent flag asserted only one way is half a statement.
+    CHECK_FALSE(entry.fields[1].hasRange);
+    CHECK_FALSE(entry.fields[1].color);
+    CHECK_FALSE(entry.fields[2].hasRange);
+    CHECK_FALSE(entry.fields[2].color);
+
+    // ...and the colour carries no range, nor do the two cone angles render as pickers.
+    CHECK_FALSE(entry.fields[0].hasRange);
+    CHECK_FALSE(entry.fields[3].color);
+    CHECK_FALSE(entry.fields[4].color);
 }

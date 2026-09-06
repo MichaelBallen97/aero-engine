@@ -23,6 +23,8 @@ add_library(aero_render STATIC
                               #               gradient's reference evaluator
     src/sky_pass.cpp          # task E.2.1 -- the fullscreen gradient sky, before opaque, into the
                               #               caller's open HDR pass
+    src/light_falloff.cpp     # task E.2.2 -- the punctual-light falloff: the distance window, the
+                              #               cone resolver, the CPU oracles the pixel tier compares to
 )
 add_library(aero::render ALIAS aero_render)
 

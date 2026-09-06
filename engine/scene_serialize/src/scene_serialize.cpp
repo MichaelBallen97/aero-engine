@@ -65,14 +65,14 @@ struct BuiltinComponent {
 // Single source of names — builtinComponentNames() returns a span over this, so the public query and
 // the dispatch table can never disagree with each other. MUST match transform.cpp's registration
 // order+names (pinned by a test, D8).
-constexpr std::array<std::string_view, 9> BUILTIN_COMPONENT_NAMES{
-    "engine::Transform",   "engine::Camera",        "engine::DirectionalLight",
-    "engine::PointLight",  "engine::MeshRenderer",  "engine::AnimationPlayer",
-    "engine::AudioSource", "engine::AudioListener", "engine::Environment",
+constexpr std::array<std::string_view, 10> BUILTIN_COMPONENT_NAMES{
+    "engine::Transform",    "engine::Camera",          "engine::DirectionalLight", "engine::PointLight",
+    "engine::MeshRenderer", "engine::AnimationPlayer", "engine::AudioSource",      "engine::AudioListener",
+    "engine::Environment",  "engine::SpotLight",
 };
 
 // Declaration order == save emission order.
-constexpr std::array<BuiltinComponent, 9> BUILTINS{{
+constexpr std::array<BuiltinComponent, 10> BUILTINS{{
     {BUILTIN_COMPONENT_NAMES[0], &loadComponent<Transform>, &saveComponent<Transform>},
     {BUILTIN_COMPONENT_NAMES[1], &loadComponent<Camera>, &saveComponent<Camera>},
     {BUILTIN_COMPONENT_NAMES[2], &loadComponent<DirectionalLight>, &saveComponent<DirectionalLight>},
@@ -82,6 +82,7 @@ constexpr std::array<BuiltinComponent, 9> BUILTINS{{
     {BUILTIN_COMPONENT_NAMES[6], &loadComponent<AudioSource>, &saveComponent<AudioSource>},          // 3.7.2
     {BUILTIN_COMPONENT_NAMES[7], &loadComponent<AudioListener>, &saveComponent<AudioListener>},      // 3.7.2
     {BUILTIN_COMPONENT_NAMES[8], &loadComponent<Environment>, &saveComponent<Environment>},          // E.2.1
+    {BUILTIN_COMPONENT_NAMES[9], &loadComponent<SpotLight>, &saveComponent<SpotLight>},              // E.2.2
 }};
 
 [[nodiscard]] const BuiltinComponent* findBuiltin(std::string_view name) {

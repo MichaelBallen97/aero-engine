@@ -24,6 +24,14 @@ visible anywhere the sky covers, which is everywhere the camera looks: the sky w
 the geometry that follows overdraws it. If you want the pre-E.2.1 picture back for a comparison,
 there is deliberately no flag for it — build the branch point instead.
 
+## Since task E.2.2: the lamp falls off by the inverse square
+
+This sample's own code and its `scene.json` did not change. Its "lamp" (`intensity 1, range 12` at
+`(0, 2.5, 2)`) now falls off as `1 / d²` under a smooth window to its range rather than as a squared
+linear ramp, because `intensity` now means *the irradiance at one world unit* — so the pool on the
+ground is dimmer and tighter than it was, by design. If you want the old picture for a comparison,
+there is deliberately no flag for it — build the branch point instead.
+
 ## Running it
 
 Needs **both** `AERO_REFLECT_TOOLS` (the generated component serializers) and `AERO_SHADER_TOOLS`

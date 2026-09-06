@@ -4,7 +4,8 @@
 // what keeps `render` scene-free and `scene` GPU-free (D1). Two pieces:
 //   * buildRenderView — a PURE, GPU-free free function (D7) that walks a World and resolves it into a
 //     render::RenderView: instances from each<Transform, MeshRenderer>, one camera (lowest entity
-//     index, D5), one directional + up to MAX_POINT_LIGHTS point lights (D6), and the scene's
+//     index, D5), one directional + up to MAX_POINT_LIGHTS point lights + up to MAX_SPOT_LIGHTS
+//     spot lights (D6; task E.2.2 for the spots), and the scene's
 //     Environment (task E.2.1: lowest index, defaults when absent) -- which replaced the small fixed
 //     ambient this line used to describe.
 //     Tier-0 unit-testable with no GPU.
@@ -42,6 +43,7 @@ namespace engine::scene_render {
 struct RenderViewScratch {
     std::vector<render::MeshInstance> instances;
     std::vector<render::PointLightData> points;
+    std::vector<render::SpotLightData> spots;  // task E.2.2 -- its own vector, its own budget
 };
 
 // PURE, GPU-free (D7): walks `world`, resolves the camera + lights + renderable instances into
@@ -51,9 +53,11 @@ struct RenderViewScratch {
 // is non-const (it only reads the bound components in practice). `viewport` (typically
 // Frame::extent()) supplies the projection aspect ratio. Camera/light policy: D5/D6 — 0 cameras
 // yields !hasCamera (nothing drawn, the clear still shows); >1 camera/directional picks the lowest
-// entity index; point lights beyond MAX_POINT_LIGHTS are dropped, in iteration order. The diagnostic
-// counts (cameraCount/directionalCount/pointsTruncated) are always filled — SceneRenderer::render
-// turns them into latched WARNs; tier-0 tests assert them directly.
+// entity index; point lights beyond MAX_POINT_LIGHTS are dropped, in iteration order, and spot lights
+// beyond MAX_SPOT_LIGHTS are dropped in iteration order with their OWN flag (spotsTruncated, task
+// E.2.2) -- the two budgets are independent. The diagnostic counts
+// (cameraCount/directionalCount/pointsTruncated/spotsTruncated) are always filled —
+// SceneRenderer::render turns them into latched WARNs; tier-0 tests assert them directly.
 //
 // `cameraOverride` (task 2.3.1): when non-null, it REPLACES the World's camera entirely — view, proj
 // AND eyePosition, all three fields, by whole-struct assignment — and every MeshInstance::mvp is
@@ -167,7 +171,7 @@ public:
     // WARNs + forward.draw (a no-op when the resolved view has no camera). `world` is non-const for
     // the same reason buildRenderView's is. Task 2.3.1: when `cameraOverride` is non-null, the two
     // CAMERA WARNs ("no Camera in world" / "multiple Cameras") are SUPPRESSED — the override makes
-    // both moot — while the directional and point-light WARNs are UNAFFECTED.
+    // both moot — while the directional, point-light and spot-light WARNs are UNAFFECTED.
     void render(World& world, render::Frame& frame, const render::CameraView* cameraOverride = nullptr);
 
     // ---- task 3.1.5 -----------------------------------------------------------------------------
@@ -214,6 +218,7 @@ private:
     bool multiCameraWarned = false;
     bool multiDirWarned = false;
     bool pointTruncWarned = false;
+    bool spotTruncWarned = false;         // task E.2.2 -- >MAX_SPOT_LIGHTS SpotLights; a separate latch
     bool multiEnvironmentWarned = false;  // task E.2.1 -- >1 Environment; ZERO is deliberately silent
 };
 

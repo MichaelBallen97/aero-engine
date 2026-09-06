@@ -33,6 +33,7 @@ set(CAMERA_HPP "${SCENE_INCLUDE}/aero/scene/camera.hpp")  # task 1.3.3
 set(LIGHT_HPP "${SCENE_INCLUDE}/aero/scene/light.hpp")    # task 1.3.3
 set(MESH_RENDERER_HPP "${SCENE_INCLUDE}/aero/scene/mesh_renderer.hpp")  # task 1.4.1
 set(ENVIRONMENT_HPP "${SCENE_INCLUDE}/aero/scene/environment.hpp")     # task E.2.1
+set(SPOT_LIGHT_HPP "${SCENE_INCLUDE}/aero/scene/spot_light.hpp")       # task E.2.2
 set(ANNOTATIONS_HPP "${FIXTURES_DIR}/component_annotations.hpp")  # task 2.2.2
 set(TEXT_HPP "${FIXTURES_DIR}/component_text.hpp")                # task 2.2.2
 set(GUID_HPP "${FIXTURES_DIR}/component_guid.hpp")                # task 3.1.5
@@ -1032,6 +1033,67 @@ elseif(CASE STREQUAL "components_engine_environment")
     string(FIND "${err}" "error:" _idx_err)
     if(NOT _idx_err EQUAL -1)
         message(FATAL_ERROR "case 'components_engine_environment': error-severity diagnostic:\n${err}")
+    endif()
+
+elseif(CASE STREQUAL "components_engine_spot_light")
+    # Task E.2.2: the REAL tool over the REAL engine::SpotLight header. ONE component, FIVE fields,
+    # all inside the reflectable subset. The two [range ...] spellings are the LITERAL TEXT the tool
+    # prints after stripping the f suffix (parseRangeToken): 0.0f -> 0.0, 1.5707964f -> 1.5707964,
+    # the components_engine_camera precedent. Copied from the tool's first run; if a tag differs,
+    # the TOOL is right.
+    aero_run_tool(ARGS --components "${SPOT_LIGHT_HPP}" -- ${CLANG_ARGS}
+        -I "${ENGINE_INCLUDE}" -I "${SCENE_INCLUDE}" -I "${REFLECT_INCLUDE}"
+        OUT_RESULT result OUT_STDOUT out OUT_STDERR err)
+    aero_expect_exit_or_dump("${result}" 0 "${err}")
+    aero_expect_stdout_contains("${out}" "component engine::SpotLight")
+    aero_expect_stdout_contains("${out}" "field color : Vec3 [vec3] [color]")
+    aero_expect_stdout_contains("${out}" "field intensity : float [primitive]")
+    aero_expect_stdout_contains("${out}" "field range : float [primitive]")
+    aero_expect_stdout_contains("${out}" "field innerConeRadians : float [primitive] [range 0.0:1.5707964]")
+    aero_expect_stdout_contains("${out}" "field outerConeRadians : float [primitive] [range 0.0:1.5707964]")
+    # ...and intensity / range carry NO [range]: 1.3.3's D19. Asserted as ABSENCES, because the
+    # `contains` above would pass on a line that also carried one.
+    string(FIND "${out}" "field intensity : float [primitive] [range" _idx_bad_intensity)
+    string(FIND "${out}" "field range : float [primitive] [range" _idx_bad_range)
+    if(NOT _idx_bad_intensity EQUAL -1 OR NOT _idx_bad_range EQUAL -1)
+        message(FATAL_ERROR "case 'components_engine_spot_light': intensity and range must carry NO "
+                            "range -- 1.3.3's D19:\n${out}")
+    endif()
+
+    # DECLARATION ORDER -- color -> intensity -> range -> innerConeRadians -> outerConeRadians. It IS
+    # the JSON key order and the Inspector row order, so a reorder is a format change. Each needle is
+    # spelled in full (the "field mesh :" / "field ambient" lesson): "field range" prefixes nothing
+    # else here, but the habit is E.2.1's.
+    string(FIND "${out}" "field color"            _f1)
+    string(FIND "${out}" "field intensity"        _f2)
+    string(FIND "${out}" "field range"            _f3)
+    string(FIND "${out}" "field innerConeRadians" _f4)
+    string(FIND "${out}" "field outerConeRadians" _f5)
+    if(NOT (_f1 LESS _f2 AND _f2 LESS _f3 AND _f3 LESS _f4 AND _f4 LESS _f5))
+        message(FATAL_ERROR "case 'components_engine_spot_light': fields not in declaration order:\n${out}")
+    endif()
+
+    # exactly ONE component (the header declares no other type)
+    string(FIND "${out}" "component " _first)
+    math(EXPR _after "${_first} + 1")
+    string(SUBSTRING "${out}" ${_after} -1 _rest)
+    string(FIND "${_rest}" "component " _second)
+    if(NOT _second EQUAL -1)
+        message(FATAL_ERROR "case 'components_engine_spot_light': expected exactly ONE component:\n${out}")
+    endif()
+
+    # anti-drift: no unsupported field, warning-free, error-free (the same three checks as camera)
+    string(FIND "${out}" "[unsupported]" _idx_unsupported)
+    if(NOT _idx_unsupported EQUAL -1)
+        message(FATAL_ERROR "case 'components_engine_spot_light': must have NO unsupported field:\n${out}")
+    endif()
+    string(FIND "${err}" "aero_reflect_gen: warning:" _idx_warn)
+    if(NOT _idx_warn EQUAL -1)
+        message(FATAL_ERROR "case 'components_engine_spot_light': expected a warning-free parse:\n${err}")
+    endif()
+    string(FIND "${err}" "error:" _idx_err)
+    if(NOT _idx_err EQUAL -1)
+        message(FATAL_ERROR "case 'components_engine_spot_light': error-severity diagnostic:\n${err}")
     endif()
 
 elseif(CASE STREQUAL "annotations_components")

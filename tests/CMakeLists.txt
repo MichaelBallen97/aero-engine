@@ -60,6 +60,7 @@ add_executable(aero_tests
     camera_test.cpp       # task 1.3.3 — engine::Camera: defaults/layout/projection/view/registration
     light_test.cpp        # task 1.3.3 — engine::DirectionalLight + PointLight
     environment_test.cpp  # task E.2.1 — engine::Environment: layout, defaults, registration, selectors
+    spot_light_test.cpp   # task E.2.2 — engine::SpotLight: layout, defaults, registration tenth, plain data
     animation_player_test.cpp # task 3.5.2 — engine::AnimationPlayer: layout, defaults, the clock's six steps
     scene_render_test.cpp # task 1.4.1 — buildRenderView (tier-0) + gated SceneRenderer GPU draw-smoke
     asset_bindings_test.cpp # task 3.1.5 — AssetBindingTable: sorted-vector set/find/remove, nil refusal
@@ -76,6 +77,8 @@ add_executable(aero_tests
     render_debug_grid_test.cpp # task E.1.2 — tier-0 cadence/continuity/lattice/cap; NO GPU, no gate
     render_environment_test.cpp # task E.2.1 — tier-0 modes/clamps/resolvers/curves/exactness; NO GPU, no gate
     render_sky_test.cpp           # task E.2.1 -- the sky's two packers (tier 0) and the pass's pixels
+    render_light_falloff_test.cpp # task E.2.2 -- tier-0 window/cone oracles, totality, the spot view shape; NO GPU, no gate
+    render_punctual_test.cpp      # task E.2.2 -- the falloff's HLSL pin (tier 0) and the point/spot PIXELS
     render_selection_outline_test.cpp # task E.1.4 — tier-0 params/packers/levels/shader pin + GPU-gated mask & outline
     scene_render_selection_test.cpp # task E.1.4 — buildSelectionMaskSet: arms, bucketing, cap, purity
 )
@@ -742,6 +745,7 @@ if(AERO_REFLECT_TOOLS)
         components_engine_light       # task 1.3.3
         components_engine_mesh_renderer   # task 1.4.1
         components_engine_environment     # task E.2.1
+        components_engine_spot_light      # task E.2.2
         # task 2.2.2: field annotations (AERO_RANGE/AERO_COLOR) and the std::string category
         annotations_components annotations_meta annotations_malformed annotations_nonfinite
         annotations_misapplied annotations_unknown annotations_determinism

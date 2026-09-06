@@ -14,6 +14,7 @@
 #include <aero/scene/environment.hpp>  // task E.2.1
 #include <aero/scene/light.hpp>
 #include <aero/scene/mesh_renderer.hpp>
+#include <aero/scene/spot_light.hpp>  // task E.2.2
 #include <aero/scene/transform.hpp>
 
 namespace engine {
@@ -35,4 +36,6 @@ void aeroWriteJson(engine::JsonWriter&, const AudioListener&);  // task 3.7.2
 bool aeroReadJson(const engine::JsonValue&, AudioListener&);
 void aeroWriteJson(engine::JsonWriter&, const Environment&);  // task E.2.1
 bool aeroReadJson(const engine::JsonValue&, Environment&);
+void aeroWriteJson(engine::JsonWriter&, const SpotLight&);  // task E.2.2
+bool aeroReadJson(const engine::JsonValue&, SpotLight&);
 }  // namespace engine
