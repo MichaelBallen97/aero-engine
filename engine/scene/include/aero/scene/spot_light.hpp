@@ -12,9 +12,10 @@
 // Camera::fovYRadians established (constants.hpp's D6: radians everywhere in the public API; the
 // Inspector edits the radian value raw, camera.hpp's D17). The bound 1.5707964f is the float nearest
 // pi/2 -- bit for bit HALF_PI -- so the Inspector clamps to a hemisphere at most. NOTHING VALIDATES
-// inner <= outer: the render side folds inner >= outer into a hard-edged cone
-// (aero/render/light_falloff.hpp), and an outer cone of 0 lights nothing, which is what a cone with
-// no interior means.
+// inner <= outer: the render layer's punctual-falloff vocabulary folds inner >= outer into a
+// hard-edged cone, and an outer cone of 0 lights nothing, which is what a cone with no interior
+// means. (The layer is named rather than its header path, so that "no scene header mentions the
+// render layer's files" stays greppable in both directions -- light.hpp's own posture.)
 //
 // intensity IS THE IRRADIANCE THE LIGHT DELIVERS ON ITS AXIS AT ONE WORLD UNIT -- task E.2.2's
 // inverse-square falloff, shared with PointLight -- in the same units as DirectionalLight::intensity.
