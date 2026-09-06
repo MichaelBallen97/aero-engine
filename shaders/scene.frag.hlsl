@@ -1,5 +1,6 @@
 // Task 3.4.1 — Cook-Torrance GGX metallic-roughness fragment stage (D8): height-correlated Smith
-// visibility, Schlick Fresnel, Lambert diffuse, the 1.4.1 light set with its falloff UNCHANGED,
+// visibility, Schlick Fresnel, Lambert diffuse, the 1.4.1 light set, its point falloff rewritten at
+// task E.2.2 to inverse-square under a window, a spot arm beside it,
 // ambient*AO diffuse-only, emissive added last, raw linear output (3.6.3 owns tonemap/gamma).
 // Binding law (0.4.3 F8): fragment textures/samplers -> space2, fragment uniform buffers ->
 // space3. TWO fragment UBOs is a tree first: Lights stays b0 (pushed once per view), the material
@@ -142,6 +143,24 @@ float3 shadeOneLight(float3 lightColorIntensity, float3 N, float3 V, float3 L,
     return (diffuse + specular) * lightColorIntensity * NdotL;
 }
 
+// Task E.2.2 -- THIS IS A TRANSCRIPTION OF engine/render/light_falloff.hpp, operation for operation:
+// the C++ is where the reasoning lives and LP1's source-text pin is what keeps the two in step.
+// Inverse-square under the Karis/Frostbite window: 1 at the light, exactly 0 from `range` out, a
+// fade rather than a ring between. The two 1e-4 floors are a 1 cm light and the 1.4.1 range floor.
+float punctualDistanceAttenuation(float distSq, float range) {
+    float r = max(range, 1e-4);
+    float f = distSq / (r * r);
+    float window = saturate(1.0 - f * f);
+    return window * window / max(distSq, 1e-4);
+}
+// One saturated FMA and one square; the pair was resolved on the CPU from the two half-angles, so
+// there is no angle and no trigonometry here. 1 inside the inner cone, 0 outside the outer, the
+// square of a linear blend in cosine space between.
+float spotConeAttenuation(float cosAngle, float angleScale, float angleOffset) {
+    float t = saturate(cosAngle * angleScale + angleOffset);
+    return t * t;
+}
+
 float4 main(float3 worldPos : TEXCOORD0, float3 worldNormal : TEXCOORD1,
             float4 worldTangent : TEXCOORD2, float2 uv : TEXCOORD3,
             float3 color : TEXCOORD4) : SV_Target0 {
@@ -176,7 +195,8 @@ float4 main(float3 worldPos : TEXCOORD0, float3 worldNormal : TEXCOORD1,
     float3 f0 = lerp(float3(0.04, 0.04, 0.04), baseColor.rgb, metallic);
     float3 diffuseColor = baseColor.rgb * (1.0 - metallic);
 
-    // --- lights: the exact 1.4.1 set, falloff byte-for-byte (AC-36) ----------------------------
+    // --- lights (task E.2.2): the directional term unchanged; point and spot share ONE distance
+    // helper, and a spot on its axis is a point light BIT FOR BIT (its cone term is exactly 1).
     // task E.2.1: hemispheric ambient. mid + halfDelta * N.y IS lerp(ground, sky, N.y * 0.5 + 0.5)
     // with the endpoints pre-combined on the CPU (aero/render/environment.hpp), written as ONE scaled
     // delta so a Flat resolution (halfDelta == 0) is EXACT rather than one ulp off -- DXC maps `lerp`
@@ -188,11 +208,21 @@ float4 main(float3 worldPos : TEXCOORD0, float3 worldNormal : TEXCOORD1,
                          diffuseColor, f0, alpha) * directionalShadow(worldPos, geoN);
     for (uint k = 0; k < uPointCount; ++k) {
         float3 toLight = uPoints[k].position - worldPos;
-        float  dist = length(toLight);
-        float  atten = saturate(1.0 - dist / max(uPoints[k].range, 1e-4));
-        atten *= atten;
+        float  distSq = dot(toLight, toLight);
+        float  dist = sqrt(distSq);
+        float  atten = punctualDistanceAttenuation(distSq, uPoints[k].range);
         lit += shadeOneLight(uPoints[k].color * uPoints[k].intensity * atten, N, V,
                              toLight / max(dist, 1e-4), diffuseColor, f0, alpha);
+    }
+    for (uint s = 0; s < uSpotCount; ++s) {
+        float3 toLight = uSpots[s].position - worldPos;
+        float  distSq = dot(toLight, toLight);
+        float  dist = sqrt(distSq);
+        float3 L = toLight / max(dist, 1e-4);
+        float  atten = punctualDistanceAttenuation(distSq, uSpots[s].range)
+                     * spotConeAttenuation(dot(uSpots[s].direction, -L), uSpots[s].angleScale,
+                                           uSpots[s].angleOffset);
+        lit += shadeOneLight(uSpots[s].color * uSpots[s].intensity * atten, N, V, L, diffuseColor, f0, alpha);
     }
     lit += emissive;                                      // last, unbounded (HDR-legal)
     return float4(lit, 1.0);                              // raw linear; the unorm target clamps
