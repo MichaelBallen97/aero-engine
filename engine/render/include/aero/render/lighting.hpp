@@ -14,6 +14,7 @@
 namespace engine::render {
 
 inline constexpr std::uint32_t MAX_POINT_LIGHTS = 8;
+inline constexpr std::uint32_t MAX_SPOT_LIGHTS = 8;  // task E.2.2; transcribed into scene.frag.hlsl
 
 // A resolved camera: view/proj matrices and the eye's world position (for future specular/fresnel
 // terms; unused by v0's Lambert-only shading but part of the resolved shape).
@@ -46,6 +47,23 @@ struct PointLightData {
     float range = 10.0F;
 };
 
+// A resolved spot light (task E.2.2). Position and direction are WORLD-space, resolved by the bridge
+// from the entity's Transform: the translation, and the -Z world axis as a unit vector
+// (DirectionalLightData's rule). The two cone angles travel as RADIANS and are resolved into the
+// shader's {scale, offset} pair by packLights, never here. THE DEFAULTS MIRROR engine::SpotLight's,
+// and neither header can include the other, so scene_render_test's witness case asserts the
+// agreement. `direction` defaults to -Z rather than zero so a hand-built view that never assigns it
+// aims somewhere instead of handing the shader a zero vector to normalise (SB17's NaN lesson).
+struct SpotLightData {
+    Vec3 position;
+    Vec3 direction{0.0F, 0.0F, -1.0F};
+    Vec3 color = Vec3::one();
+    float intensity = 1.0F;
+    float range = 10.0F;
+    float innerConeRadians = radians(20.0F);
+    float outerConeRadians = radians(30.0F);
+};
+
 // The flat bundle ForwardRenderer::draw() consumes — a render-queue snapshot with zero scene types
 // (D2). instances/points are BORROWED spans (typically into a scene_render::RenderViewScratch) valid
 // only while the backing storage lives and is not re-used (see buildRenderView's own contract).
@@ -70,6 +88,8 @@ struct RenderView {
     CameraView camera;
     DirectionalLightData directional;        // intensity 0 == "no directional"
     std::span<const PointLightData> points;  // <= MAX_POINT_LIGHTS
+    std::span<const SpotLightData> spots;    // <= MAX_SPOT_LIGHTS (task E.2.2); empty by default, so
+                                             // every hand-built view compiles and draws unchanged
     // task E.2.1: the resolved environment -- the sky the background pass draws AND the hemisphere
     // the fragment stage shades with. REPLACES `Vec3 ambient`, REMOVED rather than kept beside this
     // so a hand-built view cannot silently take the old constant (the E.1.3 non-defaulted-parameter
@@ -90,6 +110,8 @@ struct RenderView {
     // buildRenderView, therefore ZERO on the 0-camera early return (2.3.1's INV-4, unchanged).
     std::uint32_t environmentCount = 0;
     bool pointsTruncated = false;
+    bool spotsTruncated = false;  // task E.2.2: its own budget -- nine points and one spot truncate
+                                  // the points and not the spot, and the reverse
     // task 3.1.5: how many referencing MeshRenderers this view could NOT resolve. Both are TRANSIENT
     // BY DESIGN — every frame between a drop and the ledger's upload legitimately counts nonzero —
     // which is why SceneRenderer::render deliberately does NOT turn them into latched WARNs, unlike
