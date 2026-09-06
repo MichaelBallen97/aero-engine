@@ -4,7 +4,7 @@
 // include.
 //
 // The CPU mirrors of the TWO `space3` cbuffers in shaders/scene.frag.hlsl, and the two functions that
-// fill them: `cbuffer Lights : register(b0, space3)` (416 bytes since task E.2.1, pushed once per
+// fill them: `cbuffer Lights : register(b0, space3)` (928 bytes since task E.2.2, pushed once per
 // view) and
 // `cbuffer MaterialParams : register(b1, space3)` (48 bytes, pushed on material change). Both live in
 // a header rather than forward_renderer.cpp's anonymous namespace for exactly one reason: A FILE-LOCAL
@@ -15,8 +15,9 @@
 // Anything a packer decides belongs here; the renderer keeps the device calls.
 
 #include <aero/core/math.hpp>
-#include <aero/render/environment.hpp>  // task E.2.1 -- HemisphereAmbient, resolveAmbient
-#include <aero/render/lighting.hpp>     // RenderView, CameraView, MAX_POINT_LIGHTS
+#include <aero/render/environment.hpp>    // task E.2.1 -- HemisphereAmbient, resolveAmbient
+#include <aero/render/light_falloff.hpp>  // task E.2.2 -- SpotCone, resolveSpotCone
+#include <aero/render/lighting.hpp>       // RenderView, CameraView, MAX_POINT_LIGHTS
 #include <aero/render/material.hpp>
 
 #include <algorithm>
@@ -45,6 +46,26 @@ struct GpuPointLight {
 };
 static_assert(sizeof(GpuPointLight) == 32);
 
+// task E.2.2 -- 64 bytes, four registers, and THE FIRST 32 BYTES ARE A GpuPointLight: the shader's
+// distance helper reads the same two rows for both kinds (PB15 asserts the prefix as BYTES). FIELD
+// ORDER MUST MATCH THE HLSL EXACTLY.
+struct GpuSpotLight {
+    Vec3 position;
+    float range = 0.0F;
+    Vec3 color;
+    float intensity = 0.0F;
+    Vec3 direction;
+    float angleScale = 0.0F;  // resolveSpotCone(innerConeRadians, outerConeRadians)
+    float angleOffset = 0.0F;
+    float pad0 = 0.0F;
+    float pad1 = 0.0F;
+    float pad2 = 0.0F;
+};
+static_assert(sizeof(GpuSpotLight) == 64);
+static_assert(offsetof(GpuSpotLight, direction) == 32);
+static_assert(offsetof(GpuSpotLight, angleScale) == 44);
+static_assert(offsetof(GpuSpotLight, angleOffset) == 48);
+
 struct GpuLightBlock {
     // task E.2.1 -- RENAMED from `ambient`, and it keeps the SAME slot (offset 0): the block now
     // carries a hemisphere as a mid and a half-delta, and `mid` is what the pre-E.2.1 constant was.
@@ -67,9 +88,14 @@ struct GpuLightBlock {
     // eyePosition at 3.6.2, and eyePosition after `points` at 3.4.1: every pre-E.2.1 field keeps its
     // offset, so the growth is invisible to anything that does not read the tail.
     Vec3 ambientHalfDelta;
-    float pad1 = 0.0F;
+    // task E.2.2 -- the count takes the slot E.2.1 padded, mirroring {uAmbientMid, uPointCount} at
+    // the head of the block; the array is APPENDED, so every pre-E.2.2 field keeps its offset and
+    // the growth is invisible to anything that does not read the tail (the 3.4.1 / 3.6.2 / E.2.1
+    // rule, fourth application).
+    std::uint32_t spotCount = 0;
+    std::array<GpuSpotLight, MAX_SPOT_LIGHTS> spots{};
 };
-static_assert(sizeof(GpuLightBlock) == 16 + 32 + (32 * 8) + 16 + 64 + 16 + 16);  // 416 (was 400)
+static_assert(sizeof(GpuLightBlock) == 16 + 32 + (32 * 8) + 16 + 64 + 16 + 16 + (64 * 8));  // 928 (was 416)
 static_assert(std::is_trivially_copyable_v<GpuLightBlock>);
 // task 3.6.2 (INV-5) -- the layout is PINNED, not merely SIZED. Swapping the two appended fields
 // keeps sizeof at 400 and keeps every earlier field's offset, so nothing that reads the block could
@@ -82,6 +108,10 @@ static_assert(offsetof(GpuLightBlock, shadowParams) == 384);
 // 416 and would be invisible to everything except the HLSL, which would then read the shadow row as
 // the ambient delta and shade a plausible, WRONG picture with every test green.
 static_assert(offsetof(GpuLightBlock, ambientHalfDelta) == 400);
+// task E.2.2 -- INV-5's FOURTH and FIFTH pins. spotCount swapped with a pad, or the array placed
+// ahead of the ambient row, keeps sizeof at 928 and is invisible to everything except the HLSL.
+static_assert(offsetof(GpuLightBlock, spotCount) == 412);
+static_assert(offsetof(GpuLightBlock, spots) == 416);
 
 // THE one place a RenderView becomes the bytes b0 receives. Zero-initialized first, so the unused tail
 // of `points` is deterministic rather than whatever the stack held, and the point count is CLAMPED
@@ -101,6 +131,23 @@ static_assert(offsetof(GpuLightBlock, ambientHalfDelta) == 400);
         block.points[i] = {src.position, src.range, src.color, src.intensity};
     }
     block.pointCount = static_cast<std::uint32_t>(count);
+    // task E.2.2: the spot array, clamped here as well as at the bridge (the point rule), with the
+    // cone RESOLVED here -- the block carries {scale, offset}, never an angle. DESIGNATED init: an
+    // appended field is a compile error here, never a silent default; the three pads keep their
+    // zero NSDMIs, and PB14 reads them back as bits.
+    const std::size_t spotCount = std::min<std::size_t>(view.spots.size(), MAX_SPOT_LIGHTS);
+    for (std::size_t i = 0; i < spotCount; ++i) {
+        const SpotLightData& src = view.spots[i];
+        const SpotCone cone = resolveSpotCone(src.innerConeRadians, src.outerConeRadians);
+        block.spots[i] = {.position = src.position,
+                          .range = src.range,
+                          .color = src.color,
+                          .intensity = src.intensity,
+                          .direction = src.direction,
+                          .angleScale = cone.angleScale,
+                          .angleOffset = cone.angleOffset};
+    }
+    block.spotCount = static_cast<std::uint32_t>(spotCount);
     block.eyePosition = view.camera.eyePosition;  // task 3.4.1 — the BRDF's view vector origin
     // task 3.6.2 (D5) — straight off the VIEW, never off a renderer member. An unassigned or
     // invalid ShadowView writes an identity matrix and w == 0, which the shader reads as "shade

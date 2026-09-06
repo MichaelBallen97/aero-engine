@@ -39,6 +39,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <optional>
 #include <ostream>
 #include <span>
@@ -53,6 +54,14 @@ using engine::render::MeshVertex;
 using engine::rhi::TextureFormat;
 
 namespace {
+
+// task E.2.2 -- the float's bit pattern, for the arms that say ZERO BITS rather than `== 0.0F`:
+// `==` alone cannot tell +0.0 from -0.0, and "the tail is zeroed" is a claim about bits.
+[[nodiscard]] std::uint32_t bitsOfFloat(float value) {
+    std::uint32_t bits = 0;
+    std::memcpy(&bits, &value, sizeof(bits));
+    return bits;
+}
 
 // The generator invariants a broken tangent frame must trip (task 3.4.1, R6). Tolerances are loose
 // enough for float trig at 17 sphere rings and tight enough that a WRONG axis (the S21 seed: sphere
@@ -403,7 +412,7 @@ TEST_CASE("render material: which built-in default each slot falls back to, and 
           engine::render::defaultTextureTexelForKind(MaterialDefaultTextureKind::WhiteLinear).texel);
 }
 
-TEST_CASE("render material: packLights mirrors the whole view into the 416-byte Lights block (PB13)") {
+TEST_CASE("render material: packLights mirrors the whole view into the 928-byte Lights block (PB13)") {
     // The light block is the second thing a file-local packer hid, and its 3.4.1 addition is the one
     // that matters: eyePosition is the GGX view vector's ORIGIN. Zero it and the image is still lit,
     // the frame still submits, every registry and bridge case still passes — only the specular
@@ -434,12 +443,38 @@ TEST_CASE("render material: packLights mirrors the whole view into the 416-byte 
     view.directional = {.direction = Vec3{-0.5F, -0.75F, 0.25F}, .color = Vec3{0.9F, 0.8F, 0.7F}, .intensity = 2.5F};
     view.points = POINT_LIGHTS;
 
+    // task E.2.2: two spot lights beside the three points, with values MUTUALLY DISTINCT from every
+    // scalar above -- no colour, position, intensity or range is shared with a point light, with the
+    // eye or with the other spot, and `direction` is the only vector besides the eye with a negative
+    // component. SpotLightData orders position/direction/color/intensity/range and the GPU record
+    // orders position/range/color/intensity/direction, so a packer carrying them across in struct
+    // order rather than in HLSL order reddens.
+    constexpr std::array SPOT_LIGHTS{
+        engine::render::SpotLightData{.position = Vec3{41.0F, 42.0F, 43.0F},
+                                      .direction = Vec3{-0.6F, 0.0F, -0.8F},
+                                      .color = Vec3{0.15F, 0.35F, 0.45F},
+                                      .intensity = 7.5F,
+                                      .range = 50.0F,
+                                      .innerConeRadians = 0.2F,
+                                      .outerConeRadians = 0.4F},
+        engine::render::SpotLightData{.position = Vec3{51.0F, 52.0F, 53.0F},
+                                      .direction = Vec3{0.0F, -0.28F, -0.96F},
+                                      .color = Vec3{0.05F, 0.85F, 0.95F},
+                                      .intensity = 8.5F,
+                                      .range = 60.0F,
+                                      .innerConeRadians = 0.3F,
+                                      .outerConeRadians = 0.7F},
+    };
+    view.spots = SPOT_LIGHTS;
+
     // The size the HLSL cbuffer declares, as a literal beside the static_assert rather than instead of
     // it: 16 (ambientMid + count) + 32 (dir) + 8*32 (points) + 16 (eye + pad) + 64 (float4x4) +
-    // 16 (float4) + 16 (ambient half-delta + pad).
-    // task E.2.1: the block is 416 bytes and the appended pair is the LAST 16 of them.
-    CHECK(sizeof(engine::render::detail::GpuLightBlock) == 416);  // 400 + 16 (ambient half-delta + pad)
+    // 16 (float4) + 16 (ambient half-delta + SPOT COUNT) + 8*64 (spots).
+    // task E.2.2: the block is 928 bytes and the spot array is the LAST 512 of them.
+    CHECK(sizeof(engine::render::detail::GpuLightBlock) == 928);  // 416 + 8*64 (the spot array)
     CHECK(offsetof(engine::render::detail::GpuLightBlock, ambientHalfDelta) == 400U);
+    CHECK(offsetof(engine::render::detail::GpuLightBlock, spotCount) == 412U);
+    CHECK(offsetof(engine::render::detail::GpuLightBlock, spots) == 416U);
 
     const engine::render::detail::GpuLightBlock block = engine::render::detail::packLights(view);
     CHECK(block.eyePosition == eye);  // THE field; zeroing it reddens here and nowhere else
@@ -475,6 +510,17 @@ TEST_CASE("render material: packLights mirrors the whole view into the 416-byte 
     CHECK(block.points[3].range == 0.0F);
     CHECK(block.pad0 == 0.0F);
 
+    // task E.2.2 -- the two spot records, field by field, in the HLSL's order.
+    CHECK(block.spotCount == 2);
+    for (std::size_t i = 0; i < SPOT_LIGHTS.size(); ++i) {
+        INFO("spot light: ", i);
+        CHECK(block.spots[i].position == SPOT_LIGHTS[i].position);
+        CHECK(block.spots[i].color == SPOT_LIGHTS[i].color);
+        CHECK(block.spots[i].intensity == SPOT_LIGHTS[i].intensity);
+        CHECK(block.spots[i].range == SPOT_LIGHTS[i].range);
+        CHECK(block.spots[i].direction == SPOT_LIGHTS[i].direction);
+    }
+
     // task 3.6.2 — the appended tail on a view with NO ShadowView, which is what every pre-3.6.2
     // caller produces. An identity matrix and w == 0 is what the shader reads as "shade unshadowed",
     // so a packer that dropped the `valid` guard would put a stale or garbage matrix here.
@@ -507,6 +553,130 @@ TEST_CASE("render material: packLights mirrors the whole view into the 416-byte 
     CHECK(clamped.pointCount == 8);
     CHECK(clamped.points[7].intensity == 7.0F);  // the first 8 in order, not the last 8
     CHECK(clamped.eyePosition == eye);
+    // task E.2.2 -- the budgets are INDEPENDENT at the packer too: the ten-point view still carries
+    // the two spots, untruncated.
+    CHECK(clamped.spotCount == 2);
+}
+
+TEST_CASE("render material: the spot record carries the resolved cone, and its tail is zero bits (PB14)") {
+    // task E.2.2. THE ANGLES NEVER REACH THE GPU: packLights calls resolveSpotCone and the block
+    // carries {scale, offset}. A packer that copied the two radians across instead would produce a
+    // cone term of ~0.26 on the axis rather than 1 -- a plausible, dimmer, WRONG picture, which is
+    // exactly the class this file's own opening rule is about.
+    CHECK(sizeof(engine::render::detail::GpuSpotLight) == 64U);
+    CHECK(offsetof(engine::render::detail::GpuSpotLight, direction) == 32U);
+    CHECK(offsetof(engine::render::detail::GpuSpotLight, angleScale) == 44U);
+    CHECK(offsetof(engine::render::detail::GpuSpotLight, angleOffset) == 48U);
+
+    constexpr std::array SPOT_LIGHTS{
+        engine::render::SpotLightData{.position = Vec3{41.0F, 42.0F, 43.0F},
+                                      .direction = Vec3{-0.6F, 0.0F, -0.8F},
+                                      .color = Vec3{0.15F, 0.35F, 0.45F},
+                                      .intensity = 7.5F,
+                                      .range = 50.0F,
+                                      .innerConeRadians = 0.2F,
+                                      .outerConeRadians = 0.4F},
+        engine::render::SpotLightData{.position = Vec3{51.0F, 52.0F, 53.0F},
+                                      .direction = Vec3{0.0F, -0.28F, -0.96F},
+                                      .color = Vec3{0.05F, 0.85F, 0.95F},
+                                      .intensity = 8.5F,
+                                      .range = 60.0F,
+                                      .innerConeRadians = 0.3F,
+                                      .outerConeRadians = 0.7F},
+    };
+    engine::render::RenderView view;
+    view.spots = SPOT_LIGHTS;
+    const engine::render::detail::GpuLightBlock block = engine::render::detail::packLights(view);
+    CHECK(block.spotCount == 2);
+
+    // BIT FOR BIT: the packer calls the same function on the same floats, so this is `==`, not a
+    // tolerance.
+    const engine::render::SpotCone cone0 = engine::render::resolveSpotCone(0.2F, 0.4F);
+    const engine::render::SpotCone cone1 = engine::render::resolveSpotCone(0.3F, 0.7F);
+    CHECK(block.spots[0].angleScale == cone0.angleScale);
+    CHECK(block.spots[0].angleOffset == cone0.angleOffset);
+    CHECK(block.spots[1].angleScale == cone1.angleScale);
+    CHECK(block.spots[1].angleOffset == cone1.angleOffset);
+    // THE ANTI-VACUITY ARM: the angles were RESOLVED, not copied. Without these four the case above
+    // would stay green under a packer that wrote src.innerConeRadians into angleScale, because the
+    // oracle would then be compared against the same wrong number only if it too were wrong -- it is
+    // not, but the arm is what makes the claim testable WITHOUT a GPU.
+    CHECK(block.spots[0].angleScale != 0.2F);
+    CHECK(block.spots[0].angleOffset != 0.4F);
+    CHECK(block.spots[1].angleScale != 0.3F);
+    CHECK(block.spots[1].angleOffset != 0.7F);
+
+    // Everything past spotCount is ZEROED, not left holding whatever the stack had -- the bytes
+    // travel whole and a garbage tail is a garbage upload. `GpuLightBlock block{}` at the top of
+    // packLights is the one line this rests on.
+    CHECK(block.spots[2].position == Vec3{});
+    CHECK(block.spots[2].color == Vec3{});
+    CHECK(block.spots[2].direction == Vec3{});
+    CHECK(block.spots[2].intensity == 0.0F);
+    CHECK(block.spots[2].range == 0.0F);
+    CHECK(block.spots[2].angleScale == 0.0F);
+    CHECK(block.spots[2].angleOffset == 0.0F);
+    // The three pads, on a WRITTEN record and on an untouched one, as BITS: `== 0.0F` alone cannot
+    // tell +0.0 from -0.0, and "zeroed" is a claim about bits.
+    CHECK(bitsOfFloat(block.spots[0].pad0) == 0U);
+    CHECK(bitsOfFloat(block.spots[0].pad1) == 0U);
+    CHECK(bitsOfFloat(block.spots[0].pad2) == 0U);
+    CHECK(bitsOfFloat(block.spots[2].pad0) == 0U);
+    CHECK(bitsOfFloat(block.spots[2].pad1) == 0U);
+    CHECK(bitsOfFloat(block.spots[2].pad2) == 0U);
+
+    // The clamp: MAX_SPOT_LIGHTS is the array's size, so a view carrying more must truncate rather
+    // than overrun -- the point rule, on its own budget.
+    std::array<engine::render::SpotLightData, 10> tooMany{};
+    for (std::size_t i = 0; i < tooMany.size(); ++i) {
+        tooMany[i].position = Vec3{static_cast<float>(i), 0.0F, 0.0F};
+        tooMany[i].intensity = static_cast<float>(i);
+    }
+    engine::render::RenderView manyView;
+    manyView.spots = tooMany;
+    const engine::render::detail::GpuLightBlock clamped = engine::render::detail::packLights(manyView);
+    CHECK(clamped.spotCount == engine::render::MAX_SPOT_LIGHTS);
+    CHECK(clamped.spotCount == 8);
+    CHECK(clamped.spots[7].intensity == 7.0F);  // the first 8 in order, not the last 8
+
+    // ...and a view with NO spots assigned at all -- which is every pre-E.2.2 caller -- writes a
+    // zero count and a zero array, so the growth is invisible to it.
+    const engine::render::RenderView empty;
+    const engine::render::detail::GpuLightBlock emptyBlock = engine::render::detail::packLights(empty);
+    CHECK(emptyBlock.spotCount == 0);
+    CHECK(emptyBlock.spots[0].intensity == 0.0F);
+}
+
+TEST_CASE("render material: a spot record BEGINS with a point record, byte for byte (PB15)") {
+    // task E.2.2. The shader's distance helper reads the same two rows for both light kinds, so the
+    // first 32 bytes of a GpuSpotLight ARE a GpuPointLight -- asserted as BYTES rather than field by
+    // field, because a padding or ordering difference between the two records is exactly what a
+    // field-by-field comparison would not see.
+    constexpr std::array POINT_LIGHTS{engine::render::PointLightData{
+        .position = Vec3{1.25F, 2.5F, 3.75F}, .color = Vec3{0.125F, 0.25F, 0.5F}, .intensity = 6.0F, .range = 30.0F}};
+    constexpr std::array SPOT_LIGHTS{engine::render::SpotLightData{.position = Vec3{1.25F, 2.5F, 3.75F},
+                                                                   .direction = Vec3{0.0F, 0.0F, -1.0F},
+                                                                   .color = Vec3{0.125F, 0.25F, 0.5F},
+                                                                   .intensity = 6.0F,
+                                                                   .range = 30.0F}};
+    engine::render::RenderView view;
+    view.points = POINT_LIGHTS;
+    view.spots = SPOT_LIGHTS;
+    const engine::render::detail::GpuLightBlock block = engine::render::detail::packLights(view);
+    REQUIRE(block.pointCount == 1);
+    REQUIRE(block.spotCount == 1);
+
+    // Through const std::byte*, not through the two record types: the comparison is DELIBERATELY of
+    // object representations, and clang-tidy's bugprone-suspicious-memory-comparison rejects a
+    // memcmp over a float-carrying type -- correctly, in general, and not here, where "byte for
+    // byte" IS the claim. std::byte has a unique object representation, so the intent is spelled
+    // rather than suppressed.
+    const auto* pointBytes = reinterpret_cast<const std::byte*>(&block.points[0]);
+    const auto* spotBytes = reinterpret_cast<const std::byte*>(&block.spots[0]);
+    CHECK(std::memcmp(pointBytes, spotBytes, sizeof(engine::render::detail::GpuPointLight)) == 0);
+    // ANTI-VACUITY: the WHOLE 64 bytes differ, because the direction row and the cone pair follow.
+    // Without this arm a memcmp over a length that had silently become 0 would pass.
+    CHECK(std::memcmp(pointBytes, spotBytes, sizeof(engine::render::detail::GpuSpotLight)) != 0);
 }
 
 // ================================================================================================

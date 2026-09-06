@@ -7,6 +7,7 @@
 // verified against the cooked scene.frag.json (samplerCount 5, uniformBufferCount 2) before any
 // visual judgment (the 1.4.1 space3 VERIFY, re-run for b1).
 #define MAX_POINT_LIGHTS 8
+#define MAX_SPOT_LIGHTS 8              // task E.2.2 -- render::MAX_SPOT_LIGHTS, transcribed
 static const float PI_ = 3.14159265359;
 static const float ROUGHNESS_FLOOR = 0.045;  // alpha^2 degeneracy guard (D8, stated, standard)
 
@@ -22,7 +23,19 @@ struct PointLight {
     float3 color;
     float  intensity;
 };
-cbuffer Lights : register(b0, space3) {           // 416 bytes (grew the ambient half-delta, task E.2.1)
+struct SpotLight {                     // task E.2.2 -- 64 bytes; the first two rows ARE a PointLight
+    float3 position;
+    float  range;
+    float3 color;
+    float  intensity;
+    float3 direction;                  // the entity's -Z world axis, unit length, light -> scene
+    float  angleScale;                 // resolveSpotCone (aero/render/light_falloff.hpp)
+    float  angleOffset;
+    float  _pad0;
+    float  _pad1;
+    float  _pad2;
+};
+cbuffer Lights : register(b0, space3) {           // 928 bytes (grew the spot array, task E.2.2)
     float3     uAmbientMid;      // task E.2.1: the hemisphere's mid term, at the slot uAmbient held
     uint       uPointCount;
     DirLight   uDir;
@@ -32,7 +45,9 @@ cbuffer Lights : register(b0, space3) {           // 416 bytes (grew the ambient
     float4x4   uLightViewProj;   // task 3.6.2 — shadowViewProj(fit); identity when disabled
     float4     uShadowParams;    // x texelSize, y constantBias, z normalBias, w enabled ? 1 : 0
     float3     uAmbientHalfDelta;  // task E.2.1: APPENDED; ZERO in Flat mode, so the term below is
-    float      _pad2;              // then EXACTLY uAmbientMid on every normal
+    uint       uSpotCount;         // then EXACTLY uAmbientMid on every normal. task E.2.2: the count
+                                   // takes E.2.1's pad slot, offset 412
+    SpotLight  uSpots[MAX_SPOT_LIGHTS];   // task E.2.2: APPENDED at 416, 64-byte stride
 };
 cbuffer MaterialParams : register(b1, space3) {   // 48 bytes, pushed on material change
     float4 uBaseColorFactor;
