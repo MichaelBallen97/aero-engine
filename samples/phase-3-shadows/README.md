@@ -20,7 +20,10 @@ The built-in primitive arm ignores a palette entirely, so a marked cube would wi
 Two more things exist for exactly one validation row each and are **not** decoration: one **point
 light** near the casters (row 5 — the shadowed region must stay lit by it), and a **procedural
 normal map** on the ground (row 6 — with the built-in 1×1 flat normal default, comparing the
-geometric normal against the mapped one is a no-op).
+geometric normal against the mapped one is a no-op). Since task E.2.2 the point light's falloff is
+inverse-square under a window and its intensity is **56** rather than 8, chosen to preserve the
+irradiance at `CUBE_L`; the light now falls off visibly across the plane, which is the new behaviour
+and not a regression.
 
 ## Running it
 

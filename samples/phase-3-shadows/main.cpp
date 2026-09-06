@@ -327,9 +327,11 @@ int runSample(int argc, char** argv) {
 
     // ONE point light, warm and moderate, near the casters. Row 5's only reason to exist: the
     // shadowed region must stay lit by it, which is what says the shadow term multiplies ONLY the
-    // directional contribution.
+    // directional contribution. task E.2.2: intensity 8 -> 56 -- the falloff became inverse-square
+    // under a window, and 56 preserves the irradiance at CUBE_L's centre (d = 3.5, range 14:
+    // 8 * 0.5625 / 0.0810) within 1 %, so row 5 still judges the same picture. Recorded in the README.
     const std::array<render::PointLightData, 1> pointLights{render::PointLightData{
-        .position = Vec3{-2.0F, 2.5F, 3.0F}, .color = Vec3{1.0F, 0.85F, 0.65F}, .intensity = 8.0F, .range = 14.0F}};
+        .position = Vec3{-2.0F, 2.5F, 3.0F}, .color = Vec3{1.0F, 0.85F, 0.65F}, .intensity = 56.0F, .range = 14.0F}};
 
     AERO_LOG_INFO("phase-3-shadows: shadows {}, map requested {} -> allocated {}, shadowDistance {:.1f}",
                   options.shadows ? "ON" : "OFF (--no-shadows)", options.resolution, forward->shadowMapResolution(),
