@@ -138,7 +138,10 @@ TEST_CASE("spot light: the five fields are PLAIN DATA -- the component never cla
     // a scene file the editor merely opened.
     World w;
     const Entity e = w.create();
-    const SpotLight wild{.range = -1.0F, .intensity = -2.0F, .innerConeRadians = 1.2F, .outerConeRadians = 0.3F};
+    // DESIGNATORS IN DECLARATION ORDER (colour, intensity, range, inner, outer). Out-of-order
+    // designated initialisers are ill-formed in C++20: clang merely warns, GCC and MSVC REJECT,
+    // so the wrong order compiles here and breaks the Linux and Windows lanes alone.
+    const SpotLight wild{.intensity = -2.0F, .range = -1.0F, .innerConeRadians = 1.2F, .outerConeRadians = 0.3F};
     REQUIRE(w.add<SpotLight>(e, wild) != nullptr);
 
     const SpotLight* got = w.get<SpotLight>(e);
