@@ -11,7 +11,7 @@ Two platform matrices, never to be conflated: the **editor** runs on macOS/Windo
 ## Current state — read this first
 
 **PHASE E (Editor Experience) IS OPEN — it executes between Phase 3 and Phase 4.**
-**EPIC E.1 (Viewport legibility) IS CLOSED IN CODE — all five tasks merged — AND EPIC E.2 IS OPEN: E.2.1 (`Environment` + sky pass) IS MERGED (PR #98, merge commit `28deab0`), taking the built-in component count to NINE.** E.1.1 (Debug line
+**EPIC E.1 (Viewport legibility) IS CLOSED IN CODE — all five tasks merged — AND EPIC E.2 IS OPEN, TWO OF ITS FOUR TASKS LANDED: E.2.1 (`Environment` + sky pass, PR #98, merge commit `28deab0`) and E.2.2 (point falloff + `SpotLight`, PR #99, merge commit `bf363e4`) ARE BOTH MERGED, taking the built-in component count to TEN.** E.1.1 (Debug line
 renderer, PR #92 `15bf58b`), E.1.2 (Grid floor + world axes, PR #93 `d91eab1`), E.1.3 (View-axis
 gizmo, PR #94 `6fb323c`, plus the follow-up PR #95 `0ab204d`) and E.1.4 (Silhouette selection
 outline, PR #96 `3aadffb`) are all merged **and macOS-validated**; **E.1.5 (Transform-gizmo restyle)
@@ -33,9 +33,10 @@ is still unexercised and named as such in a comment, and wireframe-of-meshes rem
 **E.1.2 is the first CONTENT in that pipeline set**, and it is what established that a rasterizer
 depth bias does not reach a line primitive at all (see below); (4) `openSceneFile`/`saveSceneFile` perform **zero**
 containment validation against the project root, so a scene from another project loads while the
-AssetDatabase still resolves GUIDs against the open one. **`SpotLight` (E.2.2) and `Environment`
-(E.2.1) take the built-in component count from 8 to 10** — the five-generation-site rule and the
-component-count-literal sweep below both apply in full to each. **E.1.3 answered (4) for its own
+AssetDatabase still resolves GUIDs against the open one. **`Environment` (E.2.1) and `SpotLight` (E.2.2)
+took the built-in component count from 8 to TEN, and both sweeps are done** — the
+five-generation-site rule and the component-count-literal sweep below still apply in full to the
+next built-in, whenever one arrives. **E.1.3 answered (4) for its own
 half and left the rest**: it made every clip-space predicate projection-aware, and containment
 validation against the project root is still absent. **(2) is still open and still E.5.1's**, and
 E.1.4 deliberately reproduced it rather than fixing it in passing.
@@ -58,13 +59,62 @@ Epics **3.1** (AssetDatabase), **3.2** (Importers), **3.3** (Cooker v0), **3.4**
 > as the position moves, never grown: it reached 207 k characters once and that is what this note
 > exists to prevent.
 
+### E.2.2 — Point falloff + `SpotLight` (MERGED, PR #99 `bf363e4`) — the tenth built-in
+
+**A lamp is possible, and every point light falls off like light.** The point falloff is now
+inverse-square under the Karis/Frostbite window — `saturate(1 - (d^2/r^2)^2)^2 / max(d^2, 1e-4)`,
+`r = max(range, 1e-4)` — so `intensity` means **the irradiance delivered at one world unit** and the
+cutoff is a fade, not a ring. `engine::SpotLight` is the **tenth** built-in: five reflected fields,
+28 bytes, no `.cpp`, placed at its entity's world translation like `PointLight` and aimed down its
+-Z world axis like `DirectionalLight`. Ten commits, `ctest -N` **173 -> 174**, doctest `aero_tests`
+**1342 -> 1377**. Full detail in `docs/10`; the sentences that govern new work are below.
+
+**1. A FLOOR DOES NOT MAKE A FUNCTION TOTAL WHEN THE NaN IS IN THE *DIFFERENCE*.** The spec's
+`resolveSpotCone`, its header comment and the test that pinned it all agreed with one another and all
+three were wrong: a NaN inner angle makes `cos(inner) - cos(outer)` NaN, the NaN takes the delta
+floor, and the result is a finite **hard-edged cone at full intensity on the axis** — a plausible
+wrong picture. The resolver tests `std::isfinite` on both cosines **FIRST** and returns `{0, 0}`,
+which makes `saturate(cosAngle*0 + 0)^2` exactly `+0.0` for every cosine, NaN included, on every
+backend. `std::cos(+-inf)` is NaN, so infinite angles land there too. **The generalisation: re-run
+every FORMULA in the precision it will execute in, exactly as E.2.1's lesson was to re-run every
+GREP.** A spec's own code is a claim, not a proof.
+
+**2. AN `operator<<` IN A TEST'S ANONYMOUS NAMESPACE IS INVISIBLE TO doctest WHEN THE TYPE IS NOT.**
+doctest's streamability trait calls an **unqualified** `operator<<` from inside `doctest::detail`, so
+only namespaces **associated with the arguments** are searched — `engine::render` for a
+`render::SpotCone`, never the test file's anonymous namespace. **The sibling helpers that work are
+not evidence that a new one will**: `Half4`, `Rgba` and `Size4` each stream a type declared in the
+same anonymous namespace, which is what makes them reachable. A printer for an **engine** type must
+live in that type's own namespace, and nothing warns when it does not.
+
+**3. AN OUT-OF-ORDER DESIGNATED INITIALISER COMPILES ON macOS AND FAILS THE OTHER TWO LANES.**
+Designators must follow declaration order in C++20; clang accepts a wrong order with
+`-Wreorder-init-list`, a *warning*, while GCC and MSVC **reject**. The local gate was green and both
+other lanes would have failed to compile. **Found by reading the build log rather than its exit
+code — and only after forcing a recompile of every changed file**, because an incremental build
+re-emits no warning for a TU it does not rebuild, so a warning sweep on a warm tree measures nothing.
+
+**4. `fl(1e-4) * fl(1e-4)` IS NOT `fl(1e-8)`** — one ulp below. A test arm claiming to evaluate "the
+same expression the implementation evaluates" while spelling the squared constant as a literal is a
+**different** computation that agrees only by rounding. Spell the constant squared. (E.1.4's
+`k * fl(1/255)` measurement is the same species.)
+
+**5. ENTT'S `each` WALKS IN REVERSE CREATION ORDER.** A truncation test that seeds nine entities and
+expects the first eight **by creation order** reads the wrong ones. Collect the World's own walk into
+a vector and compare element for element — never a second `buildRenderView` (the `GR8` species).
+
+**AND THE COUNT SWEEP, RE-MEASURED AGAIN: the default-scene pins are SEVENTEEN `entityCount() == 4`
+lines, not the ten the spec claimed** — sixteen real pins plus `hierarchy_test.cpp:635`, which is
+duplicate-entity arithmetic. Carry the LIST: "unchanged from ten" is a different claim from
+"unchanged from seventeen". The built-in literals were the same **21** E.2.1 left, plus `PB13`'s
+test-case NAME and its prose arithmetic, neither reachable by any count grep.
+
 ### E.2.1 — `Environment` component + sky pass (MERGED, PR #98 `28deab0`) — Epic E.2 opens
 
-**A scene now has an authored environment.** `engine::Environment` is the **ninth** built-in — eight
+**A scene has an authored environment.** `engine::Environment` is the **ninth** built-in — eight
 reflected fields, 72 bytes, no `.cpp`; `render::SkyPass` draws a fullscreen gradient before the opaque
 pass into the open HDR target; and the PBR ambient is **hemispheric** through a light block grown
-400 -> 416. Fifteen commits, `ctest -N` **172 -> 173**, doctest `aero_tests` **1294 -> 1342**. Full
-detail in `docs/10`; the sentences that govern new work are below.
+400 -> 416 (and 416 -> 928 at E.2.2). Full detail in `docs/10`; the sentences below still govern.
 
 **0. THE MODES LIVE ONLY ON THE CPU, AND THE GPU RECEIVES DIFFERENCES — NEVER ENDPOINTS, NEVER A
 `lerp`.** `resolveSkyGradient` packs `{horizon, sky - horizon, ground - horizon}` and `resolveAmbient`
@@ -260,7 +310,7 @@ miniaudio; `A38` is covered only by validation row 9. Full detail in `docs/10`.
 | **Phase 2** — Editor | **COMPLETE, gate met 2026-08-02.** All six epics closed and macOS-validated; Windows/Linux rows pending for every task (`editor/VALIDATION.md`). Gate artifact: `samples/phase-2-editor-scene/` — data, deliberately not `add_subdirectory`'d. |
 | **Phase 3** — Asset Pipeline & 3D Content | **OPEN.** **All seven epics CLOSED in code** — 3.1–3.6, and 3.7 with 3.7.1 + 3.7.2 merged and macOS-validated and **3.7.3 merged (PR #91)**. What is left is the gate below and the validation debt. Per-task detail in `docs/10`. |
 | **Phase 3 gate** | Drop a rigged glTF/FBX in → PBR materials + shadows + a playing animation + **an audible sound**. The audible half exists in code as of 3.7.2 and **has not been validated on any platform** — 3.7.2's macOS pass ticked 47 of 53 records and left the 6 that need ears open. |
-| **Phase E** — Editor Experience | **OPEN. EPIC E.1 CLOSED IN CODE (five tasks, all macOS-validated); EPIC E.2 IS OPEN — E.2.1 MERGED (PR #98, merge commit `28deab0`).** 18 tasks remain, planning only. Inserted between 3 and 4; six epics, 24 tasks in `docs/tasks/phase-E.md`. Viewport legibility (E.1), lighting & environment (E.2), inspector & context routing (E.3), project/scene/asset management (E.4), content-creation UX (E.5), shell identity (E.6). **E.1.1** 8/10 PASS 2026-09-03 · **E.1.2** 8 PASS / 2 PARTIAL / 1 NOT EXECUTABLE 2026-09-04 · **E.1.3** 11 PASS / 1 PARTIAL / 2 NOT EXECUTABLE / 1 NOT RUN 2026-09-05, and that pass found the ortho gizmo-suppression defect fixed in PR #95 · **E.1.4** 10 PASS / 1 NOT EXECUTABLE 2026-09-05 · **E.1.5** 11 PASS / 1 NOT EXECUTABLE 2026-09-05. **E.2.1 is macOS-validated — 10 PASS / 3 open, 2026-09-06.** Its render rows were measured head­lessly through the real `SceneRenderer` -> `SkyPass` -> `PostProcess` chain with a framebuffer readback (no ICC round trip, so the bytes are exact): **every sky oracle difference is 0**; the unlit cube reads `(85,117,162)` on its top face against `(73,91,124)` on its side — dim, not black; ortho is exactly **one** colour; and **a world with no `Environment` is bit-identical to one with a default component, 0 of 921 600, with a 20 694-px anti-vacuity control**. Confirmed **in the editor**: New Scene seeds **four** entities with `Environment` ninth in Add Component, its eight fields at exact defaults, **no Transform**, E.1.4's marker at the origin and **no gizmo**; the grid stays legible over the ground (**Δlum 52.1**); each field edit is **exactly one** named undo entry and two undos restore the viewport to **0 differing pixels of 1 795 500**; the multi-Environment WARN fires **once and latches**, the loser's edit moves **0** sky pixels and the winner's **302 820**; and **Solid + Flat + intensity 1 is bit-identical to the branch-point build — 0 of 1 795 500, with a 1 792 032-pixel control**. Cost is **below the ~0.7 CPU-s noise floor**. `phase-1-scene`, a pre-task sample, renders under the default sky at 85 fps with zero WARN. **Three rows remain open**: row 4's normal-mapped arm is **GATED ON E.5.1** (a material on a *primitive* is silently discarded, so the default Cube cannot carry one — a dependency nobody had recorded), row 7's `Save Scene` produced no write under synthetic input while every other menu action worked (**possibly a real defect, unresolved**), row 10 has no material asset and row 12's release editor never connected to `tracy-capture`. **THE GUI WAS REACHED BY WRAPPING THE BINARY IN A MINIMAL `.app` BUNDLE**: a bare binary launched from an automation session gets **no window**, but `open`ing an `.app` gives it a Foreground LaunchServices identity, after which window geometry, `CGEvent` input and PID-bound capture all work. **`System Events`' own `click at` does not drive ImGui.** **HiDPI is deliberately NOT a row here** (a fullscreen gradient has no size-dependent feature), so E.1.1's thick-line handoff stays UNFIRED for a sixth task. **A branch-point A/B must be built at the PRIMARY binary path**: a binary elsewhere is a distinct application identity to macOS and receives no window. Windows and Linux unvalidated, as everywhere. |
+| **Phase E** — Editor Experience | **OPEN. EPIC E.1 CLOSED IN CODE (five tasks, all macOS-validated); EPIC E.2 IS OPEN, TWO OF FOUR LANDED — E.2.1 MERGED (PR #98, `28deab0`) and E.2.2 MERGED (PR #99, `bf363e4`, ten commits, all six CI checks green on `b0d44a2` with `headSha == HEAD` asserted; its validation page is written and UNRUN on every platform).** 17 tasks remain, planning only. Inserted between 3 and 4; six epics, 24 tasks in `docs/tasks/phase-E.md`. Viewport legibility (E.1), lighting & environment (E.2), inspector & context routing (E.3), project/scene/asset management (E.4), content-creation UX (E.5), shell identity (E.6). **E.1.1** 8/10 PASS 2026-09-03 · **E.1.2** 8 PASS / 2 PARTIAL / 1 NOT EXECUTABLE 2026-09-04 · **E.1.3** 11 PASS / 1 PARTIAL / 2 NOT EXECUTABLE / 1 NOT RUN 2026-09-05, and that pass found the ortho gizmo-suppression defect fixed in PR #95 · **E.1.4** 10 PASS / 1 NOT EXECUTABLE 2026-09-05 · **E.1.5** 11 PASS / 1 NOT EXECUTABLE 2026-09-05. **E.2.1 is macOS-validated — 10 PASS / 3 open, 2026-09-06.** Its render rows were measured head­lessly through the real `SceneRenderer` -> `SkyPass` -> `PostProcess` chain with a framebuffer readback (no ICC round trip, so the bytes are exact): **every sky oracle difference is 0**; the unlit cube reads `(85,117,162)` on its top face against `(73,91,124)` on its side — dim, not black; ortho is exactly **one** colour; and **a world with no `Environment` is bit-identical to one with a default component, 0 of 921 600, with a 20 694-px anti-vacuity control**. Confirmed **in the editor**: New Scene seeds **four** entities with `Environment` ninth in Add Component, its eight fields at exact defaults, **no Transform**, E.1.4's marker at the origin and **no gizmo**; the grid stays legible over the ground (**Δlum 52.1**); each field edit is **exactly one** named undo entry and two undos restore the viewport to **0 differing pixels of 1 795 500**; the multi-Environment WARN fires **once and latches**, the loser's edit moves **0** sky pixels and the winner's **302 820**; and **Solid + Flat + intensity 1 is bit-identical to the branch-point build — 0 of 1 795 500, with a 1 792 032-pixel control**. Cost is **below the ~0.7 CPU-s noise floor**. `phase-1-scene`, a pre-task sample, renders under the default sky at 85 fps with zero WARN. **Three rows remain open**: row 4's normal-mapped arm is **GATED ON E.5.1** (a material on a *primitive* is silently discarded, so the default Cube cannot carry one — a dependency nobody had recorded), row 7's `Save Scene` produced no write under synthetic input while every other menu action worked (**possibly a real defect, unresolved**), row 10 has no material asset and row 12's release editor never connected to `tracy-capture`. **THE GUI WAS REACHED BY WRAPPING THE BINARY IN A MINIMAL `.app` BUNDLE**: a bare binary launched from an automation session gets **no window**, but `open`ing an `.app` gives it a Foreground LaunchServices identity, after which window geometry, `CGEvent` input and PID-bound capture all work. **`System Events`' own `click at` does not drive ImGui.** **HiDPI is deliberately NOT a row here** (a fullscreen gradient has no size-dependent feature), so E.1.1's thick-line handoff stays UNFIRED for a sixth task. **A branch-point A/B must be built at the PRIMARY binary path**: a binary elsewhere is a distinct application identity to macOS and receives no window. Windows and Linux unvalidated, as everywhere. |
 | **Phase E gate** | Open a project and land in the scene you were last editing, on a lit grid floor under a sky; create a Cube from the menu, drop a material on it and see it shade; aim a spot light with a visible gizmo; rename, move and delete assets without leaving the editor. Gate artifact: `samples/phase-E-editor/`. |
 
 ### Engine layers, in dependency order
@@ -456,9 +506,9 @@ to the editor's list and not the serializer's is registered, inspectable, editab
 with every test green. **The site the variable does not reach is the one that matters**:
 `engine/scene_serialize/src/scene_serialize.cpp`'s hand-written dispatch table, plus
 `builtin_serializers.hpp`'s declarations. All five move together or the result is a link failure or,
-far worse, green and wrong. **There are NINE built-ins**: `Transform`, `Camera`, `DirectionalLight`,
-`PointLight`, `MeshRenderer`, `AnimationPlayer`, `AudioSource`, `AudioListener`, **`Environment`**
-(E.2.1). **`createEntity` (`entity_ops.cpp:68`) ALWAYS adds a `Transform`**, so a seeded entity that
+far worse, green and wrong. **There are TEN built-ins**: `Transform`, `Camera`, `DirectionalLight`,
+`PointLight`, `MeshRenderer`, `AnimationPlayer`, `AudioSource`, `AudioListener`, `Environment`
+(E.2.1), **`SpotLight`** (E.2.2). **`createEntity` (`entity_ops.cpp:68`) ALWAYS adds a `Transform`**, so a seeded entity that
 must not carry one is built with `world.create()` + `setName` directly — E.2.1's "Environment" seed is
 the precedent, and its `hierarchy_test` placeability block is four per-entity statements with
 `CHECK_FALSE` on the fourth, never a universal loop.
@@ -511,25 +561,31 @@ Read totals from **doctest's own `filters:` line**, never from a `grep -c` of ca
 count on its own page goes stale, and adding one task's delta to another task's baseline is exactly the
 arithmetic that produces a confident wrong number.
 
-At **E.2.1's** gate, measured on both presets: **`ctest -N` 173** (172 -> 173, the one new entry being
-`reflect-gen.components_engine_environment`); doctest across **seven** binaries
-**1342 / 1793 / 163 / 37 / 30 / 7 / 28** (`aero_tests`, `aero_editor_shell_test`,
+At **E.2.2's** gate, measured on both presets: **`ctest -N` 174** (173 -> 174, the one new entry being
+`reflect-gen.components_engine_spot_light`); doctest across **seven** binaries
+**1377 / 1793 / 163 / 40 / 31 / 7 / 28** (`aero_tests`, `aero_editor_shell_test`,
 `aero_editor_imgui_test`, `aero_scene_serialize_test`, `aero_editor_inspector_test`,
-`aero_reflect_meta_test`, `aero_reflect_json_test`). **E.2.1 moves BOTH**, unlike every E.1 task —
-`ctest -N` because it adds a per-header reflect-gen case, and five of the seven doctest totals. The two
-that must **not** move are `aero_reflect_meta_test` (7) and `aero_reflect_json_test` (28): they
-generate from a fixture aggregator, not the built-in list. **A `SUBCASE` is not a `TEST_CASE`** — E.2.1's
-last two commits added 21 assertions and moved no total at all, so never predict a delta
-arithmetically.
+`aero_reflect_meta_test`, `aero_reflect_json_test`). A task that adds a built-in moves BOTH, unlike
+every E.1 task — `ctest -N` because it adds a per-header reflect-gen case, and three of the seven
+doctest totals. The four that must **not** move are `aero_editor_shell_test` (1793),
+`aero_editor_imgui_test` (163), `aero_reflect_meta_test` (7) and `aero_reflect_json_test` (28): the
+last two generate from a fixture aggregator, not the built-in list. **A `SUBCASE` is not a
+`TEST_CASE`** — E.2.1's last two commits added 21 assertions and moved no total at all, and E.2.2's
+three review-round commits added assertions to four files and moved no total either, so never predict
+a delta arithmetically.
 
 **AND A RECORDED TOTAL GOES STALE SILENTLY: `origin/main`'s own shell total was ONE stale at E.1.4's
 gate** — it said `1780`, measured at PR #94's gate, and PR #95 then added `G19` while nobody
 re-measured. Read the binary, never the block.
 
-The eight guard counts at **E.2.1's** gate: math **481**, platform **89**, rhi **158**, scene **89**,
-golden-rule **160**, project-no-delete **A=6/B=77**, audio **11/3/55**, probes **6/57**. **The two
-reduced configurations read `159` (shader-tools-OFF) and `93` (reflect-tools-OFF)**, unmoved, and
-3.7.3's remembered `80 / 93` is HALF WRONG. Compare the entry **SETS**, not the totals — measured at
+The eight guard counts at **E.2.2's** gate: math **487**, platform **91**, rhi **161**, scene **91**,
+golden-rule **163**, project-no-delete **A=6/B=77**, audio **11/3/55**, probes **6/57**. **The two
+reduced configurations read `161` (shader-tools-OFF) and `93` (reflect-tools-OFF)**. **THE
+`159` RECORDED HERE UNTIL E.2.2 WAS STALE, AND THE ARITHMETIC SAYS SO**: shader-tools-OFF removes
+exactly the 13 `shaderc.*` entries and adds nothing, so it was `173 - 13 = 160` at E.2.1's gate and
+is `174 - 13 = 161` now — the number should have moved when E.2.1 added a `reflect-gen.*` entry,
+which is `AERO_REFLECT_TOOLS`-gated and therefore present in this configuration. 3.7.3's remembered
+`80 / 93` is HALF WRONG for the same species of reason. Compare the entry **SETS**, not the totals — measured at
 E.1.5's gate by comparing entry NAMES with the ctest numbering stripped, because a raw `diff` of
 `ctest -N` output is dominated by the renumbering and shows every later entry as changed:
 shader-tools-OFF removes exactly the **13 `shaderc.*`** entries; reflect-tools-OFF removes exactly the
@@ -585,8 +641,10 @@ enters the determinism manifest**, and the README says so.
 
 ### The validation debt — the whole of the remaining risk
 
-**macOS is otherwise green EXCEPT FOR E.1.5**, whose page has not been run on any platform, so this
-is what is left. **No Windows or Linux validation pass exists for
+**macOS is otherwise green EXCEPT FOR E.1.5 AND E.2.2**, whose pages have not been run on any
+platform, so that is what is left. **E.2.2's twelve rows are the only cover its declared seeds have
+anywhere**: seed 5's 1 cm divisor floor (row 7), seed 28's shadows-sample retune (row 11), the two
+cone defaults and the new `intensity` meaning (rows 1, 2), and the raw-radian Inspector rows (row 4). **No Windows or Linux validation pass exists for
 any task in any phase**: Phase 0's gate, Phase 1's render rows, all thirteen Phase 2 tasks, and every
 Phase 3 task.
 
@@ -735,29 +793,32 @@ binary is `aero_sample_phaseE_debug_draw`** — `phaseE`, no underscore before t
 
 ### Next
 
-**Phase E is the open front. EPIC E.1 IS CLOSED and EPIC E.2 IS OPEN — E.2.1 is merged** (PR #98,
-merge commit `28deab0`; all six CI checks green on `50df9d1` with `headSha == HEAD` asserted). Its
-validation page is **macOS-validated: 10 PASS / 3 open**. The three open rows are row 4's
-normal-mapped arm (**gated on E.5.1** — a material on a primitive is silently discarded, so the
-default Cube cannot carry one), row 7's `Save Scene` (**no write under synthetic input while every
-other menu action worked — possibly a real defect, unresolved**), row 10 (no material asset) and
-row 12 (the release editor never connected to `tracy-capture`).
+**Phase E is the open front. EPIC E.1 IS CLOSED and EPIC E.2 IS HALF LANDED — E.2.1 and E.2.2 are
+both merged** (PR #98, `28deab0`; PR #99, `bf363e4`, all six CI checks green on `b0d44a2` with
+`headSha == HEAD` asserted). E.2.1's page is **macOS-validated: 10 PASS / 3 open**; **E.2.2's page is
+written and UNRUN on every platform.**
 
-**The spine, as E.2.1 leaves it.** **E.2.2 (`SpotLight` + point falloff) is UNBLOCKED and is next**;
-it inherits the built-in sweep at **nine -> ten** and should start from E.2.1's corrected line lists,
-**re-measured, never copied** — the counts were wrong in both directions there (21 built-in literals
-against 5 look-alikes that had to stay). **E.2.4 (material-preview parity) and E.4.5 (thumbnails) are
-unblocked**; E.2.4 inherits the preview's Flat rig by name, which is why its picture is byte-identical
-today. **E.2.3 (light gizmos) remains blocked on E.2.2, not on this task**, and still inherits the
-shared-`DebugDraw`-batch empty-assertion wall against `I112` — **untouched for a FOURTH consecutive
-task** — and the billboard-pipeline depth bias, the only topology where a bias works. **E.3 inherits
-the enum-aware Inspector row**: `Environment`'s two modes render as bare numeric 0/1 drag fields
-because reflect-gen cannot reflect an enum, and that is a recorded gap, not a defect. **E.3.1** still
-inherits the palette key. **E.5.1 is an S-sized fix for a confirmed defect and is independent of
-everything** — E.1.4 and E.2.1 both reproduced it rather than fixing it in passing. **E.5.2 owns the
-coplanar-geometry problem and now has a GROUND COLOUR to sit its plane against.** **8.2 inherits
-IBL/HDRI and the after-opaque sky variant**, with `SB9`/`SB16` already in place to catch a wrong
-ordering. **E.6.1 owns the DPI story** E.1.5 deferred.
+**The spine, as E.2.2 leaves it.** **E.2.3 (light gizmos) is UNBLOCKED and is next** — it inherits
+the fields it draws (the cone from `innerConeRadians`/`outerConeRadians`, the range sphere from
+`range`), the billboard-pipeline depth bias (the only topology where a bias works), and the
+shared-`DebugDraw`-batch empty-assertion wall against `I112`, **untouched for a FIFTH consecutive
+task**. **E.2.4 (material-preview parity) and E.4.5 (thumbnails) remain unblocked**; E.2.4 inherits
+the preview's Flat rig by name, and its picture is byte-identical through both E.2 tasks (the preview
+rig carries no punctual light at all). **E.3 now inherits TWO Inspector-row gaps**: E.2.1's
+enum-aware row (`Environment`'s two modes are bare 0/1 drag fields because reflect-gen cannot reflect
+an enum) and E.2.2's unit-aware row (`SpotLight`'s two cone angles are raw radians clamped to
+`[0, 1.5708]`, exactly as the camera's field of view is today). Both are recorded gaps, not defects.
+**E.3.1** still inherits the palette key. **E.5.1 is an S-sized fix for a confirmed defect and is
+independent of everything** — E.1.4, E.2.1 and E.2.2 have now all reproduced it rather than fixing it
+in passing. **E.5.2 owns the coplanar-geometry problem, has a GROUND COLOUR to sit its plane against,
+and owns the Create menu's Light entries** (Directional / Point / Spot) — the default scene is
+deliberately unchanged by E.2.2. **8.2 inherits IBL/HDRI and the after-opaque sky variant**, with
+`SB9`/`SB16` in place to catch a wrong ordering, plus physical light units, IES profiles and area
+lights. **E.6.1 owns the DPI story** E.1.5 deferred.
+
+**AND SPOT/POINT SHADOWS ARE AN UNOWNED HANDOFF.** The shadow pass is directional-only (3.6.2),
+Phase E's non-goals name cascaded/soft shadows as 8.2.1's, and no roadmap item owns omni or spot
+shadow maps at all. E.2.2 recorded it rather than building it.
 
 **Phase 3 remains OPEN behind it, on its gate and its validation debt, and Phase E does not close
 either.** What remains for Phase 3 is its deliverable gate — a rigged glTF/FBX in, producing PBR

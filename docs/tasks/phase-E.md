@@ -204,7 +204,15 @@ Subtasks:
 - **The built-in sweep**: `AERO_BUILTIN_COMPONENT_HEADERS` plus `scene_serialize.cpp`'s hand-written dispatch table and `builtin_serializers.hpp` move together; every component-count literal across the scene, transform, hierarchy, inspector and serialize tests is found and updated
 - `docs/09` §2.3 gains the component's payload; a scene authored before this task still loads
 
-### E.2.2 Point falloff + `SpotLight` · P0 · L · depends: E.2.1
+### E.2.2 Point falloff + `SpotLight` · P0 · L · depends: E.2.1 — **MERGED**
+**Sized L, landed L** (PR #99, merge commit `bf363e4`, ten commits — seven planned plus three closing
+the code-review round). The sweep was the expensive half again, exactly as sized: the same 21
+built-in count literals E.2.1 met, plus `PB13`'s test-case name and its prose arithmetic, neither
+reachable by any count grep, and **seventeen** default-scene pins rather than the ten the spec
+claimed. `ctest -N` **173 -> 174**; doctest `aero_tests` **1342 -> 1377**, scene_serialize
+**37 -> 40**, inspector **30 -> 31**, the other four unmoved. Guards math **481 -> 487**, platform
+**89 -> 91**, rhi **158 -> 161**, scene **89 -> 91**, golden-rule **160 -> 163**. The validation page
+is written and **unrun on every platform**.
 _(Sized L for the same reason as E.2.1 — a third light type is a component, a shader arm, a growth
 of the GPU light block, five generation sites and a second built-in-count sweep.)_
 **Goal:** make a lamp possible. A point light is correctly omni today and correctly ignores rotation;

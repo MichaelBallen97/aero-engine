@@ -14632,3 +14632,141 @@ keyboard: row 4's normal-mapped arm — the only witness for the `geoN.y`-for-`N
 judgement of the Inspector's two bare 0/1 mode fields.** HiDPI is deliberately **not** a row: a
 fullscreen gradient has no size-dependent feature, so E.1.1's thick-line handoff stays unfired for a
 sixth task rather than being recorded as cleared.
+
+---
+
+### E.2.2 — Point falloff + `SpotLight` — the tenth built-in, and three ways a green test can be lying
+
+**MERGED 2026-09-07, PR #99, merge commit `bf363e4`. Ten commits** — the plan's seven, plus three
+closing the code-review round. Sized **L**, landed **L**. All six CI checks green on `b0d44a2` with
+`headSha == HEAD` asserted before the merge. `ctest -N` **173 -> 174**; doctest `aero_tests`
+**1342 -> 1377**, `aero_scene_serialize_test` **37 -> 40**, `aero_editor_inspector_test` **30 -> 31**;
+the other four binaries unmoved, as predicted.
+
+**What shipped.** Every `PointLight`'s falloff is now the inverse-square law under the
+Karis/Frostbite window — `saturate(1 - (d^2/r^2)^2)^2 / max(d^2, 1e-4)` with
+`r = max(range, 1e-4)` — so `intensity` means *the irradiance delivered at one world unit* and the
+range cutoff is a fade with a vanishing derivative rather than a ring. `engine::SpotLight` is the
+**tenth** built-in: five reflected fields (colour, intensity, range, two cone half-angles in
+radians), 28 bytes, no `.cpp`, positioned at its entity's world translation exactly as `PointLight`
+is and aimed down its entity's -Z world axis exactly as `DirectionalLight` is. The bridge gathers up
+to eight beside the points with an independent budget, an independent flag and its own latched WARN;
+the light block grew **416 -> 928** with `spotCount` in E.2.1's pad slot at 412 and `spots[8]`
+appended at 416; and the cone is resolved on the CPU into the `{scale, offset}` pair the shader
+evaluates as one saturated FMA squared, so the fragment stage carries no angle, no trigonometry and
+no branch on light kind. The arithmetic lives once in `engine/render/light_falloff.hpp`, which the
+HLSL transcribes and which the pixel tier uses as its oracle.
+
+#### The four sentences that govern new work
+
+**1. A FLOOR DOES NOT MAKE A FUNCTION TOTAL WHEN THE NaN IS IN THE *DIFFERENCE*.** The spec wrote
+`resolveSpotCone` with the same comparison-chain floor every other clamp in this tree uses, described
+it in the header as "a NaN angle yields 0", and wrote the test that pinned that description. All
+three agreed with each other and **all three were wrong**: a NaN inner angle makes `cos(inner) -
+cos(outer)` NaN, the NaN takes the delta floor, and the result is a perfectly finite hard-edged cone
+at `outer` reading attenuation **1.0 on the axis** — a plausible wrong picture, not an obvious
+failure. The resolver now tests `std::isfinite` on both cosines **first** and returns `{0, 0}`, which
+makes `saturate(cosAngle*0 + 0)^2` exactly `+0.0` for every cosine including NaN, on the CPU and on
+every backend, without depending on how a backend treats a NaN in `max`. `std::cos(+-inf)` is NaN,
+so infinite angles land in the same arm. This is CLAUDE.md's 3.7.2 rule in its fourth instance, and
+**the generalisation is the one worth keeping: re-run every FORMULA in the precision it will execute
+in, exactly as E.2.1's lesson was to re-run every GREP.** A spec's own code is a claim, not a proof.
+
+**2. AN `operator<<` IN A TEST'S ANONYMOUS NAMESPACE IS INVISIBLE TO doctest WHEN THE TYPE IS NOT.**
+doctest's `has_insertion_operator` trait calls an **unqualified** `operator<<` from inside
+`doctest::detail`, so the only namespaces searched are those **associated with the arguments**. For
+`engine::render::SpotCone` that is `engine::render`; the test file's anonymous namespace is
+associated with nothing, so the printer sat there unreachable and every `SpotCone` assertion would
+have printed `{?} == {?}` on the one run that matters. **The sibling helpers that work are not
+evidence that a new one will**: `Half4`, `Rgba` and `Size4` all stream a type declared in the *same*
+anonymous namespace, which is itself the associated namespace. A printer for an **engine** type must
+be defined in that type's own namespace, and nothing warns when it is not.
+
+**3. `fl(1e-4) * fl(1e-4)` IS NOT `fl(1e-8)`** — it is one ulp below, `0x3DCCCCCE` against
+`0x3DCCCCCD` after the division. A test arm that claims to evaluate "the same expression the
+implementation evaluates" and spells the squared constant as a literal is a **different**
+computation that happens to agree because both values round to the same window. Spell the constant
+squared. Same species as E.1.4's `k * fl(1/255)` measurement.
+
+**4. AN OUT-OF-ORDER DESIGNATED INITIALISER COMPILES ON macOS AND FAILS THE OTHER TWO LANES.**
+`SpotLight{.range = ..., .intensity = ...}` against a declaration order of colour/intensity/range is
+**ill-formed in C++20**; clang accepts it with `-Wreorder-init-list`, which is a *warning*, while GCC
+and MSVC reject it outright. The local gate was green and the Linux and Windows lanes would both have
+failed to compile. **It was found by reading the build log rather than its exit code**, and only
+after forcing a recompile of every changed file — an incremental build re-emits no warning for a TU
+it does not rebuild, so a warning sweep on a warm tree measures nothing.
+
+#### What the sabotage pass and the review round actually found
+
+**The 29 seeds ran with every assertion mutant.** The two declared holes held: seed 5 (the 1 cm
+divisor floor) reddens `LP1` and nothing else, because no pixel case places a surface within a
+centimetre of a light; seed 28 (the shadows-sample retune omitted) is green everywhere and is
+validation row 11's alone. **Seed 6's declared hole did NOT materialise** — `LP5`'s widened-outer
+anti-vacuity subcase catches an inner/outer swap after all, which is better than the plan predicted
+and is recorded so the next reader does not re-derive it. **Seed 18 behaved as declared**: a
+`MAX_SPOT_LIGHTS` mismatch between the HLSL and the C++ is backend-defined, so `LP1` is the reliable
+witness and `LP8` stayed green on Metal. **And one mutant prediction was simply wrong**: `PB14` stays
+red without its anti-vacuity arms, because its primary bit-for-bit arms against `resolveSpotCone`
+already catch seed 14. The arms are kept anyway — they cost nothing and they pin the claim
+independently of how the oracle is computed.
+
+**The code-review round closed four weakened claims** (the unreachable printer, the not-quite-same
+expression, `LP1` asserting the no-angle rule only over comment-stripped source while the gate greps
+the raw file, and a `memcmp` anti-vacuity arm that read 64 bytes out of a 32-byte record and walked
+into the next array element) **and one portability defect** (rule 4 above). None changed shipped
+behaviour; all four weakened an assertion the suite is supposed to carry.
+
+#### Measurements and corrections that outlive the task
+
+**THE RECORDED `shader-tools-OFF` COUNT WAS STALE AND IS NOW 161.** It read `159` in CLAUDE.md; the
+branch point measures **160** and the merged tree **161**. The configuration removes exactly the 13
+`shaderc.*` entries and adds nothing, so `173 - 13 = 160` — the number should have moved at E.2.1's
+gate, when `reflect-gen.components_engine_environment` was added, because that entry is
+`AERO_REFLECT_TOOLS`-gated and therefore present here. `reflect-tools-OFF` is **93**, unmoved: it
+removes the 77 `reflect-gen.*` entries plus four doctest binaries, 81 removals.
+
+**ENTT'S `each` WALKS IN REVERSE CREATION ORDER, AND THE TRUNCATION TEST HAD TO BE REWRITTEN.** The
+plan asserted `spots[7].intensity == 7.0F` after seeding nine entities with intensities 0..8; the
+tree returns the *eight most recently created*, so the case read 1. It now collects the World's own
+`each<SpotLight>` order into a vector and compares element for element, which is immune to the walk
+direction and still catches a clamp that kept the wrong eight. The expected side is the World's walk,
+never a second `buildRenderView` — the `GR8` species, avoided deliberately.
+
+**THE COUNT SWEEP, RE-MEASURED.** Twenty-one built-in literals across five test files, exactly as
+E.2.1 left them, plus `PB13`'s **test-case name** (`416-byte` -> `928-byte`) and its prose arithmetic
+at `render_material_test.cpp:438-439`, neither reachable by any count grep. **The default-scene pins
+are SEVENTEEN lines, not the ten the spec claimed** — sixteen real pins plus
+`hierarchy_test.cpp:635`, which is duplicate-entity arithmetic and not about the seed at all. The
+list is the thing to carry forward, because "unchanged from ten" is a different claim from "unchanged
+from seventeen".
+
+**Two deliberate non-changes**, both recorded rather than swept: `scene_serialize.cpp:2-4`'s banner
+list stays stale for the third consecutive sweep, and `scene.frag.hlsl:7`'s "samplerCount 5" has been
+wrong since 3.6.2 added the shadow sampler (the cooked sidecar reads **6**) and is not this task's to
+fix — the gate step that reads the sidecar is what actually guards the number.
+
+#### Handoffs this task creates or leaves
+
+* **Spot and point shadows are an UNOWNED HANDOFF.** The shadow pass is directional-only (3.6.2),
+  Phase E's non-goals name cascaded/soft shadows as 8.2.1's, and no roadmap item owns omni or spot
+  shadow maps at all. Recorded here rather than built.
+* **A zero-scale spot entity asserts inside `normalize` in Debug and yields NaN in Release** —
+  inherited from the directional light (`scene_renderer.cpp:206`, `vec3.hpp:71`), out of contract,
+  and deliberately not patched for one light type.
+* **E.2.3 is UNBLOCKED** and inherits the fields it draws (the cone from the two half-angles, the
+  range sphere from `range`), the billboard topology (the only one where a depth bias works), and the
+  shared-`DebugDraw`-batch empty-assertion wall against `I112` — **untouched for a fifth consecutive
+  task**. **E.5.2** inherits the Create menu's Light entries; the default scene is unchanged and its
+  seventeen `entityCount() == 4` lines are byte-identical.
+* **E.3 inherits a second unit-aware Inspector row** beside E.2.1's enum-aware one: the two cone
+  angles render as raw radians in a drag field clamped to `[0, 1.5708]`, exactly as the camera's field
+  of view does. A recorded gap, not a defect.
+* **E.5.1's primitive-material defect was reproduced, not fixed**, for the third task running: every
+  pixel case here draws on the default material, so none of them meets it.
+
+**The validation page exists and is UNRUN on every platform.** Twelve rows,
+`editor/validation/E.2.2-point-falloff-spot-light.md`, gitignored. Rows 1, 8 and 9 need a
+branch-point build at the primary binary path; row 4 judges the raw-radian cone rows; row 6
+re-encounters E.2.1's unresolved `Save Scene` observation. **HiDPI is deliberately not a row** — a
+falloff and a cone have no size-dependent feature — so E.1.1's thick-line handoff stays unfired for a
+**seventh** task rather than being recorded as cleared.
