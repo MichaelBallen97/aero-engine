@@ -17,6 +17,7 @@
 #include <aero/scene/internal/world_access.hpp>
 #include <aero/scene/light.hpp>          // task 1.3.3
 #include <aero/scene/mesh_renderer.hpp>  // task 1.4.1
+#include <aero/scene/spot_light.hpp>     // task E.2.2
 #include <aero/scene/transform.hpp>
 #include <aero/scene/world.hpp>
 
@@ -60,6 +61,7 @@ void registerBuiltinComponents(World& world) {
     scene::internal::registerComponent<AudioSource>(world, "engine::AudioSource");            // 3.7.2
     scene::internal::registerComponent<AudioListener>(world, "engine::AudioListener");        // 3.7.2
     scene::internal::registerComponent<Environment>(world, "engine::Environment");            // E.2.1
+    scene::internal::registerComponent<SpotLight>(world, "engine::SpotLight");                // E.2.2
 }
 
 }  // namespace scene::detail

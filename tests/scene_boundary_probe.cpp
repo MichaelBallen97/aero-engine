@@ -186,3 +186,15 @@ static_assert(std::is_aggregate_v<engine::Environment>);
 // 2 * 4 (selectors) + 5 * 12 (Vec3) + 4 (intensity) = 72; every member 4-aligned, no padding.
 static_assert(sizeof(engine::Environment) == 72);
 static_assert(alignof(engine::Environment) == 4);
+
+// ---- task E.2.2 ----------------------------------------------------------------------------------
+// The tenth built-in, reached THROUGH <aero/scene/scene.hpp> (the only include this file has) on a
+// link line that is still exactly `aero::scene`. That is what makes these a statement about the
+// PUBLIC scene surface: this TU cannot see engine/render at all, so nothing about a cone resolver, a
+// falloff window or a resolved direction can have leaked into the component.
+static_assert(std::is_trivially_copyable_v<engine::SpotLight>);
+static_assert(std::is_standard_layout_v<engine::SpotLight>);
+static_assert(std::is_aggregate_v<engine::SpotLight>);
+// 12 (Vec3 colour) + 4 * 4 (four floats) = 28; every member 4-aligned, no padding.
+static_assert(sizeof(engine::SpotLight) == 28);
+static_assert(alignof(engine::SpotLight) == 4);

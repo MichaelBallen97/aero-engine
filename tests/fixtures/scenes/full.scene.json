@@ -189,6 +189,17 @@
             "z": 0.05
           },
           "ambientIntensity": 0.75
+        },
+        "engine::SpotLight": {
+          "color": {
+            "x": 0.95,
+            "y": 0.9,
+            "z": 0.7
+          },
+          "intensity": 4,
+          "range": 9,
+          "innerConeRadians": 0.25,
+          "outerConeRadians": 0.5
         }
       }
     },
