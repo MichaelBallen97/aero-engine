@@ -59,16 +59,26 @@ constexpr std::string_view RENDER_UMBRELLA_PATH =
 }
 constexpr std::uint32_t POSITIVE_ZERO_BITS = 0x00000000U;
 
+}  // namespace
+
 // doctest decomposes and prints BOTH sides; without this every SpotCone assertion prints {?} == {?}
-// on the one run that matters. An operator<<, NEVER a toString -- DOCTEST_STRINGIFY expands to an
-// UNQUALIFIED toString(...), which ADL finds and which then hard-errors inside doctest.h. At
-// namespace scope, not inside a case: [class.friend]/6 forbids defining a friend in a local class.
-std::ostream& operator<<(std::ostream& out, const rd::SpotCone& cone) {
+// on the one run that matters. IT MUST LIVE IN engine::render, NOT IN THE ANONYMOUS NAMESPACE ABOVE:
+// doctest's has_insertion_operator trait calls an UNQUALIFIED operator<< from inside
+// doctest::detail, so the only namespaces searched are those ASSOCIATED WITH THE ARGUMENTS --
+// engine::render for SpotCone and std for the stream. An operator in this file's anonymous namespace
+// is associated with nothing here and is never found, which is why the sibling helpers that DO work
+// (Half4, Rgba, Size4) all stream a type declared in the same anonymous namespace as themselves.
+// An operator<<, NEVER a toString -- DOCTEST_STRINGIFY expands to an unqualified toString(...), which
+// ADL finds and which then hard-errors inside doctest.h. At namespace scope, not inside a case:
+// [class.friend]/6 forbids defining a friend in a local class.
+namespace engine::render {
+
+std::ostream& operator<<(std::ostream& out, const SpotCone& cone) {
     out << "SpotCone{scale " << cone.angleScale << ", offset " << cone.angleOffset << '}';
     return out;
 }
 
-}  // namespace
+}  // namespace engine::render
 
 TEST_CASE("render light falloff: the umbrella header alone carries the punctual vocabulary (PF1)") {
     // THE NAMING ARM IS A SMOKE TEST OF SPELLING, not of the include: everything below is
@@ -204,13 +214,17 @@ TEST_CASE("render light falloff: the distance term is total on every input (PF7)
     // THE ANTI-VACUITY OF THE SENTENCE ABOVE: below d^2 = 1e-8 the floor is a FLOOR, not a switch --
     // the window is still a window and the divisor is floored, so the result is large, finite and
     // positive. Compared against the .cpp's own expression rather than a decimal (it is 9801.001).
-    const float f = 1e-9F / 1e-8F;
+    // THE DIVISOR IS SPELLED AS THE CONSTANT SQUARED, NEVER AS 1e-8F: fl(1e-4) * fl(1e-4) is ONE ULP
+    // BELOW fl(1e-8) (0x3DCCCCCE against 0x3DCCCCCD after the division), so a literal 1e-8F here is a
+    // DIFFERENT expression from the one light_falloff.cpp evaluates and this arm would rest on the
+    // two rounding to the same window rather than on the identity it claims.
+    const float f = 1e-9F / (rd::PUNCTUAL_MIN_RANGE * rd::PUNCTUAL_MIN_RANGE);
     const float raw = 1.0F - (f * f);
     const float window = (raw > 0.0F) ? ((raw < 1.0F) ? raw : 1.0F) : 0.0F;
     const float floored = rd::punctualDistanceAttenuation(1e-9F, 0.0F);
     CHECK(std::isfinite(floored));
     CHECK(floored > 0.0F);
-    CHECK(floored == (window * window) / 1e-4F);
+    CHECK(floored == (window * window) / rd::PUNCTUAL_MIN_DISTANCE_SQ);
 }
 
 TEST_CASE("render light falloff: the cone pair is the resolver's formula, bit for bit (PF8)") {

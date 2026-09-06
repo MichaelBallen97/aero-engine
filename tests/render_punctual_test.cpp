@@ -45,6 +45,19 @@ constexpr std::string_view SCENE_FRAG_PATH = AERO_SHADERS_SRC_DIR "/scene.frag.h
     return out;
 }
 
+// The file AS WRITTEN, comments included. INV-1 forbids the token `Radians` even in a comment -- the
+// gate greps the raw file -- so the arm that pins it must read the raw file too.
+[[nodiscard]] std::string rawSourceAt(std::string_view absolutePath) {
+    std::ifstream file{std::string{absolutePath}};
+    std::string out;
+    std::string line;
+    while (std::getline(file, line)) {
+        out += line;
+        out += '\n';
+    }
+    return out;
+}
+
 [[nodiscard]] std::size_t countOccurrences(const std::string& haystack, std::string_view needle) {
     std::size_t count = 0;
     for (std::size_t at = haystack.find(needle); at != std::string::npos; at = haystack.find(needle, at + 1)) {
@@ -87,6 +100,13 @@ TEST_CASE("render punctual: scene.frag.hlsl transcribes light_falloff.hpp, and n
     // multiplies and never interprets an angle.
     CHECK(countOccurrences(source, "cos(") == 0);
     CHECK(countOccurrences(source, "acos(") == 0);
+    // ...AND NO ANGLE EVEN IN PROSE (AC-9 / INV-1). The gate's own grep reads the file WITH its
+    // comments, so this arm reads the raw file: a comment that reintroduced the token would pass a
+    // stripped-source check and fail the gate, which is the wrong way round for a CI-covered claim.
+    const std::string raw = rawSourceAt(SCENE_FRAG_PATH);
+    REQUIRE(raw.size() > source.size());  // anti-vacuity: the raw read really did keep the comments
+    CHECK(countOccurrences(raw, "Radians") == 0);
+    CHECK(countOccurrences(raw, "acos(") == 0);
 
     // EXACTLY ONE `lerp(` -- the PRE-EXISTING Fresnel base `f0 = lerp(float3(0.04, ...), ...)`, which
     // is 3.4.1's and legitimate. An "absent" arm here would be RED on the healthy tree; `== 1` is

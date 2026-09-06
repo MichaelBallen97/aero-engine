@@ -674,9 +674,16 @@ TEST_CASE("render material: a spot record BEGINS with a point record, byte for b
     const auto* pointBytes = reinterpret_cast<const std::byte*>(&block.points[0]);
     const auto* spotBytes = reinterpret_cast<const std::byte*>(&block.spots[0]);
     CHECK(std::memcmp(pointBytes, spotBytes, sizeof(engine::render::detail::GpuPointLight)) == 0);
-    // ANTI-VACUITY: the WHOLE 64 bytes differ, because the direction row and the cone pair follow.
-    // Without this arm a memcmp over a length that had silently become 0 would pass.
-    CHECK(std::memcmp(pointBytes, spotBytes, sizeof(engine::render::detail::GpuSpotLight)) != 0);
+    // ANTI-VACUITY, AND IT STAYS INSIDE ONE RECORD. A memcmp over a length that had silently become
+    // zero would make the arm above pass, so the length is pinned by value; and the claim is a PREFIX
+    // claim, so the two records must genuinely diverge after it -- the direction row and the cone
+    // pair follow. Reading 64 bytes from &points[0] would walk past that record into points[1],
+    // which is pointer arithmetic past the end of the pointed-to object even where it happens to
+    // land inside the array's storage.
+    CHECK(sizeof(engine::render::detail::GpuPointLight) == 32U);
+    CHECK(block.spots[0].direction != Vec3{});
+    CHECK(block.spots[0].angleScale != 0.0F);
+    CHECK(block.spots[0].angleOffset != 0.0F);
 }
 
 // ================================================================================================
