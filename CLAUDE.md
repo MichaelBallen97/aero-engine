@@ -260,7 +260,7 @@ miniaudio; `A38` is covered only by validation row 9. Full detail in `docs/10`.
 | **Phase 2** — Editor | **COMPLETE, gate met 2026-08-02.** All six epics closed and macOS-validated; Windows/Linux rows pending for every task (`editor/VALIDATION.md`). Gate artifact: `samples/phase-2-editor-scene/` — data, deliberately not `add_subdirectory`'d. |
 | **Phase 3** — Asset Pipeline & 3D Content | **OPEN.** **All seven epics CLOSED in code** — 3.1–3.6, and 3.7 with 3.7.1 + 3.7.2 merged and macOS-validated and **3.7.3 merged (PR #91)**. What is left is the gate below and the validation debt. Per-task detail in `docs/10`. |
 | **Phase 3 gate** | Drop a rigged glTF/FBX in → PBR materials + shadows + a playing animation + **an audible sound**. The audible half exists in code as of 3.7.2 and **has not been validated on any platform** — 3.7.2's macOS pass ticked 47 of 53 records and left the 6 that need ears open. |
-| **Phase E** — Editor Experience | **OPEN. EPIC E.1 CLOSED IN CODE (five tasks, all macOS-validated); EPIC E.2 IS OPEN — E.2.1 MERGED (PR #98, merge commit `28deab0`).** 18 tasks remain, planning only. Inserted between 3 and 4; six epics, 24 tasks in `docs/tasks/phase-E.md`. Viewport legibility (E.1), lighting & environment (E.2), inspector & context routing (E.3), project/scene/asset management (E.4), content-creation UX (E.5), shell identity (E.6). **E.1.1** 8/10 PASS 2026-09-03 · **E.1.2** 8 PASS / 2 PARTIAL / 1 NOT EXECUTABLE 2026-09-04 · **E.1.3** 11 PASS / 1 PARTIAL / 2 NOT EXECUTABLE / 1 NOT RUN 2026-09-05, and that pass found the ortho gizmo-suppression defect fixed in PR #95 · **E.1.4** 10 PASS / 1 NOT EXECUTABLE 2026-09-05 · **E.1.5** 11 PASS / 1 NOT EXECUTABLE 2026-09-05. **E.2.1 is macOS-PARTIAL — 5 PASS / 3 PARTIAL / 5 BLOCKED, 2026-09-06.** Its render rows were measured head­lessly through the real `SceneRenderer` -> `SkyPass` -> `PostProcess` chain with a framebuffer readback (no ICC round trip, so the bytes are exact): **every sky oracle difference is 0**; the unlit cube reads `(85,117,162)` on its top face against `(73,91,124)` on its side — dim, not black; ortho is exactly **one** colour; and **a world with no `Environment` is bit-identical to one with a default component, 0 of 921 600, with a 20 694-px anti-vacuity control**. **Five rows are BLOCKED on a driveable editor** — this machine's automation session has Screen Recording but NOT Accessibility, and a binary launched from it receives no window at all. **Row 4's normal-mapped arm and row 9's Inspector judgement have no automated cover anywhere.** **HiDPI is deliberately NOT a row here** (a fullscreen gradient has no size-dependent feature), so E.1.1's thick-line handoff stays UNFIRED for a sixth task. **A branch-point A/B must be built at the PRIMARY binary path**: a binary elsewhere is a distinct application identity to macOS and receives no window. Windows and Linux unvalidated, as everywhere. |
+| **Phase E** — Editor Experience | **OPEN. EPIC E.1 CLOSED IN CODE (five tasks, all macOS-validated); EPIC E.2 IS OPEN — E.2.1 MERGED (PR #98, merge commit `28deab0`).** 18 tasks remain, planning only. Inserted between 3 and 4; six epics, 24 tasks in `docs/tasks/phase-E.md`. Viewport legibility (E.1), lighting & environment (E.2), inspector & context routing (E.3), project/scene/asset management (E.4), content-creation UX (E.5), shell identity (E.6). **E.1.1** 8/10 PASS 2026-09-03 · **E.1.2** 8 PASS / 2 PARTIAL / 1 NOT EXECUTABLE 2026-09-04 · **E.1.3** 11 PASS / 1 PARTIAL / 2 NOT EXECUTABLE / 1 NOT RUN 2026-09-05, and that pass found the ortho gizmo-suppression defect fixed in PR #95 · **E.1.4** 10 PASS / 1 NOT EXECUTABLE 2026-09-05 · **E.1.5** 11 PASS / 1 NOT EXECUTABLE 2026-09-05. **E.2.1 is macOS-validated — 10 PASS / 3 open, 2026-09-06.** Its render rows were measured head­lessly through the real `SceneRenderer` -> `SkyPass` -> `PostProcess` chain with a framebuffer readback (no ICC round trip, so the bytes are exact): **every sky oracle difference is 0**; the unlit cube reads `(85,117,162)` on its top face against `(73,91,124)` on its side — dim, not black; ortho is exactly **one** colour; and **a world with no `Environment` is bit-identical to one with a default component, 0 of 921 600, with a 20 694-px anti-vacuity control**. Confirmed **in the editor**: New Scene seeds **four** entities with `Environment` ninth in Add Component, its eight fields at exact defaults, **no Transform**, E.1.4's marker at the origin and **no gizmo**; the grid stays legible over the ground (**Δlum 52.1**); each field edit is **exactly one** named undo entry and two undos restore the viewport to **0 differing pixels of 1 795 500**; the multi-Environment WARN fires **once and latches**, the loser's edit moves **0** sky pixels and the winner's **302 820**; and **Solid + Flat + intensity 1 is bit-identical to the branch-point build — 0 of 1 795 500, with a 1 792 032-pixel control**. Cost is **below the ~0.7 CPU-s noise floor**. `phase-1-scene`, a pre-task sample, renders under the default sky at 85 fps with zero WARN. **Three rows remain open**: row 4's normal-mapped arm is **GATED ON E.5.1** (a material on a *primitive* is silently discarded, so the default Cube cannot carry one — a dependency nobody had recorded), row 7's `Save Scene` produced no write under synthetic input while every other menu action worked (**possibly a real defect, unresolved**), row 10 has no material asset and row 12's release editor never connected to `tracy-capture`. **THE GUI WAS REACHED BY WRAPPING THE BINARY IN A MINIMAL `.app` BUNDLE**: a bare binary launched from an automation session gets **no window**, but `open`ing an `.app` gives it a Foreground LaunchServices identity, after which window geometry, `CGEvent` input and PID-bound capture all work. **`System Events`' own `click at` does not drive ImGui.** **HiDPI is deliberately NOT a row here** (a fullscreen gradient has no size-dependent feature), so E.1.1's thick-line handoff stays UNFIRED for a sixth task. **A branch-point A/B must be built at the PRIMARY binary path**: a binary elsewhere is a distinct application identity to macOS and receives no window. Windows and Linux unvalidated, as everywhere. |
 | **Phase E gate** | Open a project and land in the scene you were last editing, on a lit grid floor under a sky; create a Cube from the menu, drop a material on it and see it shade; aim a spot light with a visible gizmo; rename, move and delete assets without leaving the editor. Gate artifact: `samples/phase-E-editor/`. |
 
 ### Engine layers, in dependency order
@@ -590,24 +590,26 @@ is what is left. **No Windows or Linux validation pass exists for
 any task in any phase**: Phase 0's gate, Phase 1's render rows, all thirteen Phase 2 tasks, and every
 Phase 3 task.
 
-**E.2.1's PAGE IS macOS-PARTIAL — 5 PASS / 3 PARTIAL / 5 BLOCKED, 2026-09-06 — AND THE FIVE BLOCKED
-ROWS ARE AN ENVIRONMENT LIMIT, NOT A CODE ONE.** The render rows were measured through the real
-`SceneRenderer` -> `SkyPass` -> `PostProcess` chain with a framebuffer readback rather than a
-screenshot, so the bytes carry **no ICC round trip** and are exact rather than ±1: every sky oracle
-difference is **0**; the unlit cube reads `(85,117,162)` on its top face against `(73,91,124)` on its
-side (dim, not black — the deliverable's headline claim); Flat mode removes the blue cast entirely;
-`ambientIntensity = 0` renders exactly `(0,0,0)`; ortho is exactly **one** colour; and **a world with
-no `Environment` is bit-identical to one carrying a default component — 0 of 921 600, with a 20 694-px
-anti-vacuity control**, which is D1's promise measured rather than asserted. A genuine pre-E.2.1
-project opened with **zero WARN and zero ERROR**. **What is blocked and why:** rows 5, 6, 9, 10, 11 and
-12 need the editor **on screen and driveable**; this machine's automation session holds Screen
-Recording but **not** Accessibility, and a binary launched from it receives **no window at all**. **Two
-things have no automated cover anywhere and need a person at the keyboard: row 4's normal-mapped arm —
-the only witness for the `geoN.y`-for-`N.y` seed — and row 9's judgement of the Inspector's two bare
-0/1 mode fields.** **HiDPI is deliberately NOT a row** (a fullscreen gradient has no size-dependent
-feature), so E.1.1's thick-line handoff stays **UNFIRED for a sixth task** rather than recorded as
-cleared. **The sabotage matrix WAS run in full — all 31 rows** — and found two holes, both closed
-before the merge; its five declared holes were each confirmed accurate.
+**E.2.1's PAGE IS macOS-VALIDATED — 10 PASS / 3 open, 2026-09-06.** Measured with two instruments: a
+headless harness through the real `SceneRenderer` -> `SkyPass` -> `PostProcess` chain (exact bytes, no
+ICC round trip) and **the editor driven for real**. Every sky oracle difference is **0**; the unlit
+cube reads `(85,117,162)` top against `(73,91,124)` side — dim, not black; ortho is exactly **one**
+colour; the grid clears the ground by **52.1** luminance levels; each Inspector edit is **exactly one
+named undo entry** and two undos restore **0 differing pixels of 1 795 500**; the multi-Environment
+WARN **latches** and the lowest-index rule is confirmed in both directions (loser 0 px, winner
+302 820); **Solid + Flat + intensity 1 is bit-identical to the branch-point build, 0 of 1 795 500,
+with a 1 792 032-px control**; the feature costs **less than the ~0.7 CPU-s noise floor**; and a
+pre-task sample renders under the default sky with zero WARN. **D1's promise is measured too**: a
+world with no `Environment` is bit-identical to one with a default component, 0 of 921 600.
+**THREE ROWS REMAIN OPEN, each for a stated reason.** Row 4's normal-mapped arm — the only cover
+sabotage seed 8 has anywhere — is **GATED ON E.5.1**, because a material dropped on a *primitive* is
+silently discarded by `buildRenderView`, so the default Cube cannot carry one; **that dependency was
+not recorded anywhere before this pass**. Row 7's `Save Scene` produced **no write and no log line**
+under synthetic input while New Scene, Reset Layout and Undo all worked from the same input path —
+**possibly a real defect and explicitly unresolved**. Row 10 has no material asset in the test
+project; row 12's release editor never connected to `tracy-capture`. **HiDPI is deliberately NOT a
+row**, so E.1.1's thick-line handoff stays **UNFIRED for a sixth task**. **The sabotage matrix was run
+in full — all 31 rows** — and found two holes, both closed before the merge.
 
 **Outstanding macOS passes: 3.5.1's twelve rows, 3.5.2's twelve rows, and 3.7.2's twelve rows.** Each is
 the only cover its task's declared seeds have anywhere. **3.4.2's `S26` remains uncovered by any pass
@@ -735,8 +737,11 @@ binary is `aero_sample_phaseE_debug_draw`** — `phaseE`, no underscore before t
 
 **Phase E is the open front. EPIC E.1 IS CLOSED and EPIC E.2 IS OPEN — E.2.1 is merged** (PR #98,
 merge commit `28deab0`; all six CI checks green on `50df9d1` with `headSha == HEAD` asserted). Its
-validation page is **macOS-PARTIAL: 5 PASS / 3 PARTIAL / 5 BLOCKED**, and the blocked five need a
-**driveable** editor — Accessibility permission, which this machine's automation session lacks.
+validation page is **macOS-validated: 10 PASS / 3 open**. The three open rows are row 4's
+normal-mapped arm (**gated on E.5.1** — a material on a primitive is silently discarded, so the
+default Cube cannot carry one), row 7's `Save Scene` (**no write under synthetic input while every
+other menu action worked — possibly a real defect, unresolved**), row 10 (no material asset) and
+row 12 (the release editor never connected to `tracy-capture`).
 
 **The spine, as E.2.1 leaves it.** **E.2.2 (`SpotLight` + point falloff) is UNBLOCKED and is next**;
 it inherits the built-in sweep at **nine -> ten** and should start from E.2.1's corrected line lists,
