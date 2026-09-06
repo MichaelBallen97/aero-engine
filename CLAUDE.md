@@ -641,10 +641,12 @@ enters the determinism manifest**, and the README says so.
 
 ### The validation debt — the whole of the remaining risk
 
-**macOS is otherwise green EXCEPT FOR E.1.5 AND E.2.2**, whose pages have not been run on any
-platform, so that is what is left. **E.2.2's twelve rows are the only cover its declared seeds have
-anywhere**: seed 5's 1 cm divisor floor (row 7), seed 28's shadows-sample retune (row 11), the two
-cone defaults and the new `intensity` meaning (rows 1, 2), and the raw-radian Inspector rows (row 4). **No Windows or Linux validation pass exists for
+**macOS is otherwise green EXCEPT FOR E.1.5**, whose page has not been run on any platform, so that
+is what is left. **E.2.2 is macOS-validated (9 PASS / 2 PARTIAL / 1 BLOCKED, 2026-09-07)** — seed 28's
+shadows-sample retune (row 11) and seed 5's declared hole are both settled or stated, and the two cone
+defaults, the new `intensity` meaning and the raw-radian Inspector rows were all judged. **Its three
+unfinished rows are named on the page**: row 8 blocked for want of a material asset in the validation
+project (the same gap as E.2.1's row 10), row 6's reload, and row 9's sixteen-light branch-point A/B. **No Windows or Linux validation pass exists for
 any task in any phase**: Phase 0's gate, Phase 1's render rows, all thirteen Phase 2 tasks, and every
 Phase 3 task.
 
