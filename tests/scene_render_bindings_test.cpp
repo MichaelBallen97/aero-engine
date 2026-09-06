@@ -35,6 +35,7 @@ using engine::Mat4;
 using engine::MeshRenderer;
 using engine::PointLight;
 using engine::Quat;
+using engine::SpotLight;
 using engine::Transform;
 using engine::Vec3;
 using engine::World;
@@ -141,6 +142,13 @@ TEST_CASE("scene_render bindings: a defaulted call and an explicit null table ag
                 nullptr);
         REQUIRE(world.add<PointLight>(point, PointLight{Vec3::one(), 2.0F, 9.0F}) != nullptr);
     }
+    {
+        // task E.2.2 -- a spot beside the point, so the two calls' agreement covers the spot span too.
+        const Entity spot = world.create();
+        REQUIRE(world.add<Transform>(spot, Transform{Vec3{4.0F, 4.0F, 4.0F}, Quat::identity(), Vec3::one()}) !=
+                nullptr);
+        REQUIRE(world.add<SpotLight>(spot, SpotLight{Vec3::one(), 2.0F, 9.0F, 0.2F, 0.4F}) != nullptr);
+    }
 
     RenderViewScratch defaultedScratch;
     RenderViewScratch explicitScratch;
@@ -157,6 +165,9 @@ TEST_CASE("scene_render bindings: a defaulted call and an explicit null table ag
     CHECK(defaulted.directionalCount == explicitNull.directionalCount);
     CHECK(defaulted.pointsTruncated == explicitNull.pointsTruncated);
     CHECK(defaulted.points.size() == explicitNull.points.size());
+    CHECK(defaulted.spotsTruncated == explicitNull.spotsTruncated);  // task E.2.2
+    CHECK(defaulted.spots.size() == explicitNull.spots.size());
+    CHECK(defaulted.spots.size() == 1);  // anti-vacuity: the spot entity above was resolved at all
     // The two new counts stay 0 on every pre-3.1.5 input, on BOTH calls.
     CHECK(defaulted.unresolvedMeshes == 0);
     CHECK(defaulted.unresolvedMaterials == 0);

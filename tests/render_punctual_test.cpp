@@ -270,6 +270,61 @@ constexpr float CLEAR_B = 0.9F;
     return faceDistance / std::sqrt((x * x) + (y * y) + (faceDistance * faceDistance));
 }
 
+// scene_render_test.cpp's own WARN scaffolding, copied rather than shared: a test header carrying a
+// log callback between two suites is a second place for a lifetime bug to live.
+struct WarnCapture {
+    std::vector<std::string> messages;
+};
+
+[[nodiscard]] bool contains(const std::vector<std::string>& messages, std::string_view needle) {
+    return std::any_of(messages.begin(), messages.end(),
+                       [&](const std::string& m) { return m.find(needle) != std::string::npos; });
+}
+
+struct WarnCaptureScope {
+    explicit WarnCaptureScope(WarnCapture& capture) {
+        engine::initLogging(engine::LogConfig{.level = engine::LogLevel::Trace, .console = false});
+        engine::setLogCallback([&capture](const engine::LogRecord& r) {
+            if (r.level >= engine::LogLevel::Warn) {
+                capture.messages.emplace_back(r.message);
+            }
+        });
+    }
+    ~WarnCaptureScope() {
+        engine::setLogCallback({});
+        engine::initLogging();
+    }
+    WarnCaptureScope(const WarnCaptureScope&) = delete;
+    WarnCaptureScope& operator=(const WarnCaptureScope&) = delete;
+    WarnCaptureScope(WarnCaptureScope&&) = delete;
+    WarnCaptureScope& operator=(WarnCaptureScope&&) = delete;
+};
+
+// LP7 / LP8's World: the camera at (0, 0, 5) with Camera{}'s own defaults -- which ARE axisCamera's
+// projection -- the white cube at the origin scaled to +-1, a REAL directional direction at
+// intensity zero, and a Flat environment of EXACTLY zero. The caller adds the spot entities.
+void seedPunctualWorld(engine::World& world) {
+    const engine::Entity cam = world.create();
+    REQUIRE(world.add<engine::Transform>(
+                cam, engine::Transform{Vec3{0.0F, 0.0F, 5.0F}, engine::Quat::identity(), Vec3::one()}) != nullptr);
+    REQUIRE(world.add<engine::Camera>(cam, engine::Camera{}) != nullptr);
+
+    const engine::Entity cube = world.create();
+    REQUIRE(world.add<engine::Transform>(
+                cube, engine::Transform{Vec3::zero(), engine::Quat::identity(), Vec3{2.0F, 2.0F, 2.0F}}) != nullptr);
+    REQUIRE(world.add<engine::MeshRenderer>(cube, engine::MeshRenderer{.primitive = 0, .color = Vec3::one()}) !=
+            nullptr);
+
+    const engine::Entity sun = world.create();
+    REQUIRE(world.add<engine::Transform>(sun) != nullptr);
+    REQUIRE(world.add<engine::DirectionalLight>(sun, engine::DirectionalLight{.intensity = 0.0F}) != nullptr);
+
+    const engine::Entity env = world.create();
+    REQUIRE(world.add<engine::Environment>(
+                env, engine::Environment{.ambientMode = 1U, .ambientColor = Vec3{}, .ambientIntensity = 1.0F}) !=
+            nullptr);
+}
+
 }  // namespace
 
     // The tier-1 preamble, written out per case exactly as render_sky_test.cpp does it:
@@ -647,6 +702,212 @@ TEST_CASE("render punctual: the cone's blend matches the CPU oracle across the f
         }
         CAPTURE(insideBand);
         CHECK(insideBand >= 8);
+    }
+}
+
+TEST_CASE("render punctual: a SpotLight is aimed and placed by its Transform, end to end (LP7)") {
+    AERO_PUNCTUAL_TIER1_PREAMBLE();
+    constexpr std::uint32_t SIZE = 64;
+    auto target = rd::RenderTarget::create(
+        *device, {SIZE, SIZE}, {.colorFormat = engine::rhi::TextureFormat::RGBA16Float, .depth = true, .quantum = 1});
+    REQUIRE(target.has_value());
+    auto sceneRenderer =
+        engine::scene_render::SceneRenderer::create(*device, vfs, target->colorFormat(), target->depthFormat());
+    REQUIRE(sceneRenderer.has_value());
+
+    const engine::rhi::Color clear{CLEAR_R, CLEAR_G, CLEAR_B, 1.0F};
+    engine::World world;
+    seedPunctualWorld(world);
+
+    const auto renderWorld = [&]() {
+        std::optional<rd::Frame> frame = target->beginFrame(clear);
+        REQUIRE(frame.has_value());
+        sceneRenderer->render(world, *frame);
+        REQUIRE(target->endFrame(std::move(*frame)));
+        std::vector<std::byte> pixels(static_cast<std::size_t>(SIZE) * SIZE * 8U, std::byte{0xAB});
+        REQUIRE(device->readbackTexture(target->colorTexture(), 0, pixels));
+        return halfAt(pixels, SIZE, SIZE / 2U, SIZE / 2U);
+    };
+
+    // THE HAND-BUILT VIEW IS BRIDGE-RESOLVED EXCEPT FOR THE SPOT. `SceneRenderer` resolves the camera
+    // through inverse(worldMatrix) and every mvp through viewProj * model; a view typed by hand
+    // through lookAt and scaling is MATHEMATICALLY the same and BIT-WISE not guaranteed to be. So the
+    // oracle frame is built from the bridge's OWN resolver on the same World BEFORE any spot entity
+    // exists, and only the spot is typed by hand -- every other input is byte-identical by
+    // construction, and the literal is the oracle rather than a second call to the thing under test.
+    engine::scene_render::RenderViewScratch scratch;
+    rd::RenderView hand = engine::scene_render::buildRenderView(world, scratch, {SIZE, SIZE});
+    REQUIRE(hand.hasCamera);
+    REQUIRE(hand.spots.empty());
+    const std::array<rd::SpotLightData, 1> literalSpot{rd::SpotLightData{.position = Vec3{0.0F, 0.0F, 5.0F},
+                                                                         .direction = Vec3{0.0F, 0.0F, -1.0F},
+                                                                         .color = Vec3::one(),
+                                                                         .intensity = 16.0F,
+                                                                         .range = 100.0F,
+                                                                         .innerConeRadians = engine::radians(5.0F),
+                                                                         .outerConeRadians = engine::radians(10.0F)}};
+    hand.spots = literalSpot;
+    // `scratch` stays alive and NO second buildRenderView touches it. Drawn through the renderer
+    // alone: the centre texel is the cube's +Z face, which the sky cannot reach.
+    std::optional<rd::Frame> handFrame = target->beginFrame(clear);
+    REQUIRE(handFrame.has_value());
+    sceneRenderer->renderer().draw(*handFrame, hand);
+    REQUIRE(target->endFrame(std::move(*handFrame)));
+    std::vector<std::byte> handPixels(static_cast<std::size_t>(SIZE) * SIZE * 8U, std::byte{0xAB});
+    REQUIRE(device->readbackTexture(target->colorTexture(), 0, handPixels));
+    const Half4 handCentre = halfAt(handPixels, SIZE, SIZE / 2U, SIZE / 2U);
+    REQUIRE_FALSE(handCentre == UNLIT);
+    REQUIRE_FALSE(handCentre == encodeHalf4(Vec3{CLEAR_R, CLEAR_G, CLEAR_B}, 1.0F));
+
+    // The unlit frame through the BRIDGE, measured rather than assumed.
+    REQUIRE(renderWorld() == UNLIT);
+
+    const engine::Entity spot = world.create();
+    REQUIRE(world.add<engine::Transform>(
+                spot, engine::Transform{Vec3{0.0F, 0.0F, 5.0F}, engine::Quat::identity(), Vec3::one()}) != nullptr);
+    REQUIRE(world.add<engine::SpotLight>(spot, engine::SpotLight{.intensity = 16.0F,
+                                                                 .range = 100.0F,
+                                                                 .innerConeRadians = engine::radians(5.0F),
+                                                                 .outerConeRadians = engine::radians(10.0F)}) !=
+            nullptr);
+    auto* spotTransform = world.get<engine::Transform>(spot);
+    REQUIRE(spotTransform != nullptr);
+
+    SUBCASE("aimed down -Z at the cube: the bridge's frame IS the hand-built one, bit for bit") {
+        const Half4 lit = renderWorld();
+        CHECK_FALSE(lit == UNLIT);
+        CHECK_FALSE(lit == encodeHalf4(Vec3{CLEAR_R, CLEAR_G, CLEAR_B}, 1.0F));
+        CHECK(lit == handCentre);
+    }
+
+    SUBCASE("turned 180 degrees about Y, it aims AWAY: the centre is unlit bit for bit") {
+        // R_y(180) sends -Z to +Z, so cos(theta) at the face is about -1 and the cone term is
+        // saturate(a large negative) = +0.
+        spotTransform->rotation = engine::fromAxisAngle(Vec3::unitY(), engine::radians(180.0F));
+        CHECK(renderWorld() == UNLIT);
+    }
+
+    SUBCASE("turned 45 degrees about Y with a 10-degree outer cone, it misses the face") {
+        spotTransform->rotation = engine::fromAxisAngle(Vec3::unitY(), engine::radians(45.0F));
+        CHECK(renderWorld() == UNLIT);
+    }
+
+    SUBCASE("the direction is WORLD-space: a parent turned 180 degrees turns the child's aim too") {
+        const engine::Entity rig = world.create();
+        REQUIRE(world.add<engine::Transform>(
+                    rig, engine::Transform{Vec3::zero(), engine::fromAxisAngle(Vec3::unitY(), engine::radians(180.0F)),
+                                           Vec3::one()}) != nullptr);
+        REQUIRE(world.setParent(spot, rig));
+        CHECK(renderWorld() == UNLIT);
+    }
+}
+
+TEST_CASE("render punctual: all eight spots are consumed, and the ninth WARNs exactly once (LP8)") {
+    AERO_PUNCTUAL_TIER1_PREAMBLE();
+    constexpr std::uint32_t SIZE = 64;
+    auto target = rd::RenderTarget::create(
+        *device, {SIZE, SIZE}, {.colorFormat = engine::rhi::TextureFormat::RGBA16Float, .depth = true, .quantum = 1});
+    REQUIRE(target.has_value());
+    const engine::rhi::Color clear{CLEAR_R, CLEAR_G, CLEAR_B, 1.0F};
+
+    const auto addSpot = [](engine::World& world, float intensity) {
+        const engine::Entity spot = world.create();
+        REQUIRE(world.add<engine::Transform>(
+                    spot, engine::Transform{Vec3{0.0F, 0.0F, 5.0F}, engine::Quat::identity(), Vec3::one()}) != nullptr);
+        REQUIRE(world.add<engine::SpotLight>(spot, engine::SpotLight{.intensity = intensity,
+                                                                     .range = 100.0F,
+                                                                     .innerConeRadians = engine::radians(5.0F),
+                                                                     .outerConeRadians = engine::radians(10.0F)}) !=
+                nullptr);
+    };
+
+    SUBCASE("eight spots at intensity 2 sum to one spot at intensity 16") {
+        // A MAX_SPOT_LIGHTS mismatch between the HLSL and the C++ halves the sum, which is what this
+        // arm is for. The comparison is a RATIO at 3 %, not a bit identity: eight additions in a
+        // different order need not round to the same half as one multiplication.
+        const auto litCentre = [&](engine::World& world) {
+            auto sceneRenderer =
+                engine::scene_render::SceneRenderer::create(*device, vfs, target->colorFormat(), target->depthFormat());
+            REQUIRE(sceneRenderer.has_value());
+            std::optional<rd::Frame> frame = target->beginFrame(clear);
+            REQUIRE(frame.has_value());
+            sceneRenderer->render(world, *frame);
+            REQUIRE(target->endFrame(std::move(*frame)));
+            std::vector<std::byte> pixels(static_cast<std::size_t>(SIZE) * SIZE * 8U, std::byte{0xAB});
+            REQUIRE(device->readbackTexture(target->colorTexture(), 0, pixels));
+            return halfAt(pixels, SIZE, SIZE / 2U, SIZE / 2U);
+        };
+
+        engine::World eight;
+        seedPunctualWorld(eight);
+        for (int i = 0; i < 8; ++i) {
+            addSpot(eight, 2.0F);
+        }
+        engine::World one;
+        seedPunctualWorld(one);
+        addSpot(one, 16.0F);
+
+        const Half4 eightTexel = litCentre(eight);
+        const Half4 oneTexel = litCentre(one);
+        CHECK_FALSE(eightTexel == UNLIT);
+        CHECK_FALSE(eightTexel == encodeHalf4(Vec3{CLEAR_R, CLEAR_G, CLEAR_B}, 1.0F));
+        const std::array<std::pair<std::uint16_t, std::uint16_t>, 3> channels{std::pair{eightTexel.r, oneTexel.r},
+                                                                              std::pair{eightTexel.g, oneTexel.g},
+                                                                              std::pair{eightTexel.b, oneTexel.b}};
+        for (const auto& [many, single] : channels) {
+            const float ratio = decodeHalf(many) / decodeHalf(single);
+            CAPTURE(ratio);
+            CHECK(std::fabs(ratio - 1.0F) < 0.03F);
+        }
+    }
+
+    SUBCASE("a ninth spot WARNs ONCE per SceneRenderer lifetime, and names SpotLights") {
+        WarnCapture capture;
+        {
+            const WarnCaptureScope scope{capture};
+            engine::World world;
+            seedPunctualWorld(world);
+            for (int i = 0; i < 9; ++i) {
+                addSpot(world, 1.0F);
+            }
+            auto sceneRenderer =
+                engine::scene_render::SceneRenderer::create(*device, vfs, target->colorFormat(), target->depthFormat());
+            REQUIRE(sceneRenderer.has_value());
+            for (int frameIndex = 0; frameIndex < 3; ++frameIndex) {
+                std::optional<rd::Frame> frame = target->beginFrame(clear);
+                REQUIRE(frame.has_value());
+                sceneRenderer->render(world, *frame);
+                REQUIRE(target->endFrame(std::move(*frame)));
+            }
+        }
+        // THE EXACT MESSAGE, counted: a WARN that named PointLights would be indistinguishable from
+        // the point budget's own, which is why the absence below is asserted too.
+        const std::size_t warnCount =
+            static_cast<std::size_t>(std::count(capture.messages.begin(), capture.messages.end(),
+                                                std::string{"SceneRenderer: >MAX_SPOT_LIGHTS SpotLights; "
+                                                            "extras dropped"}));
+        CHECK(warnCount == 1);
+        CHECK_FALSE(contains(capture.messages, "PointLights"));
+    }
+
+    SUBCASE("EIGHT spots WARN about nothing at all") {
+        WarnCapture capture;
+        {
+            const WarnCaptureScope scope{capture};
+            engine::World world;
+            seedPunctualWorld(world);
+            for (int i = 0; i < 8; ++i) {
+                addSpot(world, 1.0F);
+            }
+            auto sceneRenderer =
+                engine::scene_render::SceneRenderer::create(*device, vfs, target->colorFormat(), target->depthFormat());
+            REQUIRE(sceneRenderer.has_value());
+            std::optional<rd::Frame> frame = target->beginFrame(clear);
+            REQUIRE(frame.has_value());
+            sceneRenderer->render(world, *frame);
+            REQUIRE(target->endFrame(std::move(*frame)));
+        }
+        CHECK_FALSE(contains(capture.messages, "SpotLights"));
     }
 }
 

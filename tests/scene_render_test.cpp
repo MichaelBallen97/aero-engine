@@ -9,7 +9,10 @@
 
 #include <doctest/doctest.h>
 
+#include <algorithm>
+#include <cstddef>
 #include <cstdint>
+#include <vector>
 
 using engine::Camera;
 using engine::DirectionalLight;
@@ -20,6 +23,7 @@ using engine::Mat4;
 using engine::MeshRenderer;
 using engine::PointLight;
 using engine::Quat;
+using engine::SpotLight;
 using engine::Transform;
 using engine::Vec3;
 using engine::Vec4;
@@ -459,6 +463,217 @@ TEST_CASE("scene_render: the 0-camera early return leaves the environment untouc
     }
 }
 
+// ---- task E.2.2: the SpotLight walk -------------------------------------------------------------
+// Every case here adds the camera the light block needs: the walk sits AFTER the 0-camera early
+// return, exactly as the point walk and the environment walk do.
+
+TEST_CASE("scene_render: a SpotLight takes its position and its aim from the Transform (task E.2.2)") {
+    World w;
+    RenderViewScratch scratch;
+    const Entity cam = w.create();
+    REQUIRE(w.add<Transform>(cam) != nullptr);
+    REQUIRE(w.add<Camera>(cam) != nullptr);
+
+    const Entity e = w.create();
+    const Quat rotateXBy90 = engine::fromAxisAngle(Vec3::unitX(), engine::radians(90.0F));
+    REQUIRE(w.add<Transform>(e, Transform{Vec3{2.0F, 3.0F, 4.0F}, rotateXBy90, Vec3::one()}) != nullptr);
+    // NON-DEFAULT on all five, because the bridge's assignment is a brace-init and a version that
+    // appended without naming the new fields would leave them at their defaults and still compile.
+    REQUIRE(w.add<SpotLight>(e, SpotLight{.color = Vec3{0.5F, 0.6F, 0.7F},
+                                          .intensity = 2.5F,
+                                          .range = 33.0F,
+                                          .innerConeRadians = 0.11F,
+                                          .outerConeRadians = 0.22F}) != nullptr);
+
+    const RenderView view = buildRenderView(w, scratch, VIEWPORT);
+    REQUIRE(view.spots.size() == 1);
+    // EXACTLY: the translation column is COPIED out of the world matrix, never computed.
+    CHECK(view.spots[0].position == Vec3{2.0F, 3.0F, 4.0F});
+    // Ground truth via the same primitive buildRenderView itself uses, proving the WIRING...
+    const Vec3 expectedDirection =
+        engine::normalize(engine::transformDirection(engine::worldMatrix(w, e), Vec3{0.0F, 0.0F, -1.0F}));
+    CHECK(engine::approxEquals(view.spots[0].direction, expectedDirection));
+    // ...and the LITERAL, which is what says WHICH way the convention turns: a right-handed +90 deg
+    // turn about X sends -Z to +Y (y' = y cos t - z sin t). MEASURED on this tree's own
+    // fromAxisAngle: (0, 1, -5.96e-08).
+    CHECK(engine::approxEquals(view.spots[0].direction, Vec3{0.0F, 1.0F, 0.0F}));
+    CHECK(view.spots[0].color == Vec3{0.5F, 0.6F, 0.7F});
+    CHECK(view.spots[0].intensity == 2.5F);
+    CHECK(view.spots[0].range == 33.0F);
+    CHECK(view.spots[0].innerConeRadians == 0.11F);
+    CHECK(view.spots[0].outerConeRadians == 0.22F);
+    CHECK_FALSE(view.spotsTruncated);
+}
+
+TEST_CASE("scene_render: a PARENTED SpotLight resolves in WORLD space (task E.2.2)") {
+    World w;
+    RenderViewScratch scratch;
+    const Entity cam = w.create();
+    REQUIRE(w.add<Transform>(cam) != nullptr);
+    REQUIRE(w.add<Camera>(cam) != nullptr);
+
+    // Parent at (1, 2, 3) turned +90 deg about Y; child two units down its own -Z. R_y(90) maps
+    // (0, 0, -2) to (-2, 0, 0), so the child lands at (-1, 2, 3), and it maps -Z to -X. The two
+    // literals ARE the oracle -- a bridge reading the LOCAL translation would report (0, 0, -2).
+    const Entity parent = w.create();
+    REQUIRE(w.add<Transform>(
+                parent, Transform{Vec3{1.0F, 2.0F, 3.0F}, engine::fromAxisAngle(Vec3::unitY(), engine::radians(90.0F)),
+                                  Vec3::one()}) != nullptr);
+    const Entity child = w.create();
+    REQUIRE(w.add<Transform>(child, Transform{Vec3{0.0F, 0.0F, -2.0F}, Quat::identity(), Vec3::one()}) != nullptr);
+    REQUIRE(w.add<SpotLight>(child, SpotLight{}) != nullptr);
+    REQUIRE(w.setParent(child, parent));
+
+    const RenderView view = buildRenderView(w, scratch, VIEWPORT);
+    REQUIRE(view.spots.size() == 1);
+    CHECK(engine::approxEquals(view.spots[0].position, Vec3{-1.0F, 2.0F, 3.0F}));
+    CHECK(engine::approxEquals(view.spots[0].direction, Vec3{-1.0F, 0.0F, 0.0F}));
+}
+
+TEST_CASE("scene_render: nine SpotLights truncate in iteration order, and the points do not (task E.2.2)") {
+    World w;
+    RenderViewScratch scratch;
+    const Entity cam = w.create();
+    REQUIRE(w.add<Transform>(cam) != nullptr);
+    REQUIRE(w.add<Camera>(cam) != nullptr);
+
+    for (int i = 0; i < 9; ++i) {
+        const Entity e = w.create();
+        REQUIRE(w.add<Transform>(e) != nullptr);
+        REQUIRE(w.add<SpotLight>(e, SpotLight{.intensity = static_cast<float>(i)}) != nullptr);
+    }
+    const Entity bulb = w.create();
+    REQUIRE(w.add<Transform>(bulb) != nullptr);
+    REQUIRE(w.add<PointLight>(bulb) != nullptr);
+
+    // THE ORACLE IS THE WORLD'S OWN WALK, not a predicted literal: EnTT's storage order is NOT
+    // creation order (measured -- it visits the nine above back to front), and this case is about the
+    // BRIDGE'S CLAMP, not about EnTT's direction. Collecting the walk here and comparing element for
+    // element says exactly "the FIRST EIGHT the walk visits, in that order", which is the contract,
+    // and it catches a clamp that kept the LAST eight instead.
+    std::vector<float> walkOrder;
+    w.each<SpotLight>([&](Entity, SpotLight& sl) { walkOrder.push_back(sl.intensity); });
+    REQUIRE(walkOrder.size() == 9);
+
+    const RenderView view = buildRenderView(w, scratch, VIEWPORT);
+    REQUIRE(view.spots.size() == engine::render::MAX_SPOT_LIGHTS);
+    for (std::size_t i = 0; i < view.spots.size(); ++i) {
+        CAPTURE(i);
+        CHECK(view.spots[i].intensity == walkOrder[i]);
+    }
+    // ...and the NINTH the walk visits is absent, which is what "dropped" means.
+    CHECK(std::none_of(view.spots.begin(), view.spots.end(),
+                       [&](const engine::render::SpotLightData& s) { return s.intensity == walkOrder[8]; }));
+    CHECK(view.spotsTruncated);
+    // THE INDEPENDENCE, one half of it: the spot walk must not touch the point budget.
+    CHECK(view.points.size() == 1);
+    CHECK_FALSE(view.pointsTruncated);
+}
+
+TEST_CASE("scene_render: nine PointLights and one SpotLight -- the reverse direction (task E.2.2)") {
+    World w;
+    RenderViewScratch scratch;
+    const Entity cam = w.create();
+    REQUIRE(w.add<Transform>(cam) != nullptr);
+    REQUIRE(w.add<Camera>(cam) != nullptr);
+
+    for (int i = 0; i < 9; ++i) {
+        const Entity e = w.create();
+        REQUIRE(w.add<Transform>(e) != nullptr);
+        REQUIRE(w.add<PointLight>(e) != nullptr);
+    }
+    const Entity lamp = w.create();
+    REQUIRE(w.add<Transform>(lamp) != nullptr);
+    REQUIRE(w.add<SpotLight>(lamp) != nullptr);
+
+    const RenderView view = buildRenderView(w, scratch, VIEWPORT);
+    CHECK(view.points.size() == engine::render::MAX_POINT_LIGHTS);
+    CHECK(view.pointsTruncated);
+    CHECK(view.spots.size() == 1);
+    CHECK_FALSE(view.spotsTruncated);  // the other half of INV-7
+}
+
+// THE CROSS-BOUNDARY WITNESS. engine::SpotLight and engine::render::SpotLightData duplicate one set
+// of five defaults across a layer boundary NEITHER header can cross -- `render` never learns about
+// `scene`, and `scene` never learns about `render` -- so this bridge case is the ONLY thing anywhere
+// that catches the two sets drifting apart. The expected side is a LITERAL SpotLightData{}, never a
+// second buildRenderView on the same World: a test that reads both sides off the thing under test
+// asserts nothing at all (E.1.2's GR8).
+TEST_CASE("scene_render: a default SpotLight resolves field-for-field to a default SpotLightData (task E.2.2)") {
+    World w;
+    RenderViewScratch scratch;
+    const Entity cam = w.create();
+    REQUIRE(w.add<Transform>(cam) != nullptr);
+    REQUIRE(w.add<Camera>(cam) != nullptr);
+    const Entity lamp = w.create();
+    REQUIRE(w.add<Transform>(lamp) != nullptr);               // IDENTITY, so the resolved values are the defaults
+    REQUIRE(w.add<SpotLight>(lamp, SpotLight{}) != nullptr);  // ALL DEFAULTS, spelled as such
+
+    // The relocated PF12 arm: RenderViewScratch is engine::scene_render's, so it cannot be named
+    // from a render-only TU.
+    CHECK(RenderViewScratch{}.spots.empty());
+
+    const RenderView view = buildRenderView(w, scratch, VIEWPORT);
+    REQUIRE(view.spots.size() == 1);
+    CHECK(scratch.spots.size() == 1);  // the span really does view the scratch
+    const engine::render::SpotLightData expected{};
+    CHECK(view.spots[0].position == expected.position);
+    CHECK(engine::approxEquals(view.spots[0].direction, expected.direction, 1e-6F));
+    CHECK(view.spots[0].color == expected.color);
+    CHECK(view.spots[0].intensity == expected.intensity);
+    CHECK(view.spots[0].range == expected.range);
+    CHECK(view.spots[0].innerConeRadians == expected.innerConeRadians);
+    CHECK(view.spots[0].outerConeRadians == expected.outerConeRadians);
+    // ...and BY NUMBER, so a swap or a drift on EITHER side reddens with a readable value.
+    CHECK(view.spots[0].intensity == 1.0F);
+    CHECK(view.spots[0].range == 10.0F);
+    CHECK(view.spots[0].innerConeRadians == engine::radians(20.0F));
+    CHECK(view.spots[0].outerConeRadians == engine::radians(30.0F));
+}
+
+TEST_CASE("scene_render: a SpotLight with NO Transform sits at the origin pointing -Z (task E.2.2)") {
+    World w;
+    RenderViewScratch scratch;
+    const Entity cam = w.create();
+    REQUIRE(w.add<Transform>(cam) != nullptr);
+    REQUIRE(w.add<Camera>(cam) != nullptr);
+    // createEntity would ALWAYS add a Transform; world.create() does not, which is the whole point.
+    const Entity lamp = w.create();
+    REQUIRE(w.add<SpotLight>(lamp, SpotLight{}) != nullptr);
+    REQUIRE_FALSE(w.has<Transform>(lamp));
+
+    const RenderView view = buildRenderView(w, scratch, VIEWPORT);
+    REQUIRE(view.spots.size() == 1);
+    // EXACTLY, not approximately: worldMatrix's identity contribution makes the translation column
+    // literally zero and normalize({0, 0, -1}) divides by 1.0F.
+    CHECK(view.spots[0].position == Vec3{});
+    CHECK(view.spots[0].direction == Vec3{0.0F, 0.0F, -1.0F});
+}
+
+TEST_CASE("scene_render: the 0-camera early return leaves the spots empty (task E.2.2, INV-4)") {
+    World w;
+    RenderViewScratch scratch;
+    for (int i = 0; i < 9; ++i) {
+        const Entity e = w.create();
+        REQUIRE(w.add<Transform>(e) != nullptr);
+        REQUIRE(w.add<SpotLight>(e) != nullptr);
+    }
+
+    SUBCASE("no camera, no override: the walk never runs") {
+        const RenderView view = buildRenderView(w, scratch, VIEWPORT);
+        CHECK_FALSE(view.hasCamera);
+        CHECK(view.spots.empty());
+        CHECK_FALSE(view.spotsTruncated);
+    }
+
+    SUBCASE("an override reaches the light block, so the walk runs normally") {
+        const RenderView view = buildRenderView(w, scratch, VIEWPORT, &distinctiveOverride);
+        CHECK(view.hasCamera);
+        CHECK(view.spots.size() == engine::render::MAX_SPOT_LIGHTS);
+        CHECK(view.spotsTruncated);
+    }
+}
+
 #if AERO_SHADER_TOOLS_ENABLED
 
     #include <aero/core/log.hpp>
@@ -469,14 +684,14 @@ TEST_CASE("scene_render: the 0-camera early return leaves the environment untouc
     #include "rhi_test_support.hpp"
 
     // <ostream> is load-bearing on MSVC for string_view/enum CHECKs (see render_cube_test.cpp's note).
-    #include <algorithm>
+    // <algorithm> and <vector> are NOT repeated here: task E.2.2's tier-0 truncation case needs both
+    // unconditionally, so they are included at the top of the file.
     #include <memory>
     #include <optional>
     #include <ostream>
     #include <string>
     #include <string_view>
     #include <utility>
-    #include <vector>
 
 TEST_CASE("scene_render: GPU draw smoke — SceneRenderer draws a world for >=3 frames incl. a resize (AC-9)") {
     engine::platform::Context ctx{{.headless = false}};
