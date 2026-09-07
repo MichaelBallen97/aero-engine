@@ -1955,4 +1955,203 @@ TEST_CASE("render debug grid: the two axes land on the pixels the projection nam
     }
 }
 
+// ------------------------------------------------------------------------------------------------
+// Task E.2.3. The light gizmos' pixels. They live HERE rather than in tests/render_light_gizmo_test.cpp
+// for E.1.2's own reason: the harness they need -- AERO_DG_PREAMBLE, identityCamera, the readback
+// helpers and a ForwardRenderer occluder -- already exists in this file, and DG6 is DG20's scenario
+// almost verbatim. That keeps the new tier-0 file free of the sanctioned #if pair entirely.
+// ------------------------------------------------------------------------------------------------
+
+TEST_CASE("render light gizmo: the spot cone lands on the columns the projection names (DG19)") {
+    AERO_DG_PREAMBLE();
+    auto draw = engine::render::DebugDraw::create(
+        *device, vfs, {.colorFormat = target->colorFormat(), .depthFormat = target->depthFormat()});
+    REQUIRE(draw.has_value());
+
+    // Under the identity camera world coordinates ARE NDC. The apex sits at NDC y = 0.1 rather than
+    // at 0 DELIBERATELY: y = 0 is the boundary between rows 95 and 96, and this file's own frame-of-
+    // reference comment names a line on a pixel BOUNDARY as the one input the diamond-exit and
+    // Bresenham rules disagree about. Aimed along +Z with range 0.4, the whole shape stays inside the
+    // [0, 1] clip range in depth and inside the frame in x and y.
+    const Vec3 apex{0.0F, 0.1F, 0.5F};
+    const Vec3 direction{0.0F, 0.0F, 1.0F};
+    constexpr float RANGE = 0.4F;
+    const float outer = engine::radians(45.0F);
+    const engine::render::CameraView camera = identityCamera();
+
+    const std::uint32_t emitted = engine::render::emitSpotLightGizmo(
+        draw->batch(),
+        {.apex = apex,
+         .direction = direction,
+         .range = RANGE,
+         .outerConeRadians = outer,
+         .style = {.color = Vec4{0.0F, 1.0F, 0.0F, 1.0F}, .depth = engine::render::DebugDepth::Overlay}});
+    // The inner angle defaults to 0, so its cap has radius range*sin(0) == 0 and emits no circle:
+    // one outer circle and its four rim rays.
+    REQUIRE(emitted == engine::render::LIGHT_GIZMO_CIRCLE_SEGMENTS + engine::render::LIGHT_GIZMO_SPOT_RIM_RAYS);
+
+    // WHERE THE PROJECTION SAYS THE SHAPE IS, measured off the vertices the emitter actually pushed
+    // and through the SAME viewProj the flush is about to use (DG8's idiom, DG18's reading). Read
+    // BEFORE the flush, which clears the batch.
+    std::uint32_t minColumn = DG_W;
+    std::uint32_t maxColumn = 0;
+    for (const rd::DebugLineVertex& v : draw->batch().lineVertices(rd::DebugDepth::Overlay)) {
+        const PixelAt at = projectToPixel(camera, v.position);
+        minColumn = at.column < minColumn ? at.column : minColumn;
+        maxColumn = at.column > maxColumn ? at.column : maxColumn;
+    }
+    const PixelAt apexAt = projectToPixel(camera, apex);
+    CAPTURE(minColumn);
+    CAPTURE(maxColumn);
+    CAPTURE(apexAt.row);
+
+    const std::vector<std::byte> pixels = flushAndRead(*device, *target, *draw, camera);
+    CHECK(draw->lastFrameLines() == emitted);
+    CHECK(draw->lastFrameDrawCalls() == 1U);  // ONE bucket: Overlay lines only
+
+    // Scan the apex's own row. The two horizontal rim rays run from the apex out to the circle's left
+    // and right extremes, and the circle meets that row at exactly those two points, so the lit
+    // texels form ONE contiguous run whose ends are where the projection put the extreme vertices.
+    std::uint32_t runs = 0;
+    std::uint32_t litColumns = 0;
+    std::uint32_t firstLitColumn = DG_W;
+    std::uint32_t lastLitColumn = 0;
+    bool inRun = false;
+    for (std::uint32_t column = 0; column < DG_W; ++column) {
+        const bool on = litAt(pixels, apexAt.row, column);
+        if (on) {
+            ++litColumns;
+            firstLitColumn = column < firstLitColumn ? column : firstLitColumn;
+            lastLitColumn = column;
+            CHECK(texelAt(pixels, apexAt.row, column) == Rgba{0U, 255U, 0U, 255U});
+        }
+        if (on && !inRun) {
+            ++runs;
+        }
+        inRun = on;
+    }
+    CAPTURE(firstLitColumn);
+    CAPTURE(lastLitColumn);
+    CHECK(runs == 1U);
+    CHECK(litColumns > 40U);  // the run really spans the cone rather than a stray texel
+
+    // WITHIN ONE COLUMN, never on the nose -- DG18's own bound and DG18's own reason: a generated
+    // line can land on a pixel boundary, where which of two neighbours a backend lights is its
+    // rasteriser's tie-break rather than a property of the emitter.
+    const int firstDelta = static_cast<int>(firstLitColumn) - static_cast<int>(minColumn);
+    const int lastDelta = static_cast<int>(lastLitColumn) - static_cast<int>(maxColumn);
+    CHECK(firstDelta >= -1);
+    CHECK(firstDelta <= 1);
+    CHECK(lastDelta >= -1);
+    CHECK(lastDelta <= 1);
+
+    SUBCASE("anti-vacuity: a row far from the cone is entirely unlit") {
+        // Without this, "the run starts where the projection said" would be satisfiable by a frame
+        // whose every texel is lit.
+        std::uint32_t strayColumns = 0;
+        for (std::uint32_t column = 0; column < DG_W; ++column) {
+            if (litAt(pixels, 10U, column)) {
+                ++strayColumns;
+            }
+        }
+        CHECK(strayColumns == 0U);
+    }
+}
+
+TEST_CASE("render light gizmo: a Tested cone is hidden by geometry and an Overlay one is not (DG20)") {
+    AERO_DG_PREAMBLE();
+    auto draw = engine::render::DebugDraw::create(
+        *device, vfs, {.colorFormat = target->colorFormat(), .depthFormat = target->depthFormat()});
+    REQUIRE(draw.has_value());
+    auto forward = engine::render::ForwardRenderer::create(
+        *device, vfs,
+        {.colorFormat = target->colorFormat(), .depthFormat = target->depthFormat(), .shadowMapResolution = 0});
+    REQUIRE(forward.has_value());
+
+    // DG6's occluder, verbatim: one Cube primitive, flat red, everything that could vary pinned off,
+    // so the fragment reduces to (1, 0, 0). model puts it at x, y in [-0.5, +0.5] and z in [0, 0.9].
+    const Mat4 model = engine::translation(Vec3{0.0F, 0.0F, 0.45F}) * engine::scaling(Vec3{1.0F, 1.0F, 0.9F});
+    engine::render::MeshInstance instance{};
+    instance.primitive = engine::render::PrimitiveId::Cube;
+    instance.model = model;
+    instance.mvp = model;  // viewProj is the identity, so mvp == model
+    instance.normalMatrix = Mat4::identity();
+    instance.color = Vec3{1.0F, 0.0F, 0.0F};
+
+    const engine::render::CameraView camera = identityCamera();
+    engine::render::RenderView view;
+    view.camera = camera;
+    view.instances = std::span{&instance, 1};
+    view.environment = {
+        .ambientMode = engine::render::AmbientMode::Flat, .ambientColor = Vec3::one(), .ambientIntensity = 1.0F};
+    view.directional = {.direction = Vec3{0.0F, -1.0F, 0.0F}, .color = Vec3::one(), .intensity = 0.0F};
+    view.cullingEnabled = false;
+    view.shadowsEnabled = false;
+
+    // The cone lives entirely BEHIND the cube (every vertex at z > 0.9) and entirely INSIDE its
+    // footprint on screen (|x|, |y| well under 0.5), so the whole shape is either hidden or not --
+    // there is no half-outside arm to confuse the counts.
+    const Vec3 apex{0.0F, 0.1F, 0.905F};
+    constexpr float RANGE = 0.09F;
+    const float outer = engine::radians(85.0F);
+
+    const auto renderOnce = [&](engine::render::DebugDepth depth, bool withCube) {
+        const std::uint32_t emitted = engine::render::emitSpotLightGizmo(
+            draw->batch(), {.apex = apex,
+                            .direction = Vec3{0.0F, 0.0F, 1.0F},
+                            .range = RANGE,
+                            .outerConeRadians = outer,
+                            .style = {.color = Vec4{0.0F, 1.0F, 0.0F, 1.0F}, .depth = depth}});
+        const std::uint32_t expected =
+            engine::render::LIGHT_GIZMO_CIRCLE_SEGMENTS + engine::render::LIGHT_GIZMO_SPOT_RIM_RAYS;
+        REQUIRE(emitted == expected);
+        std::optional<engine::render::Frame> frame = target->beginFrame({0.0F, 0.0F, 0.0F, 1.0F});
+        REQUIRE(frame.has_value());
+        if (withCube) {
+            forward->draw(*frame, view);
+        }
+        draw->flush(*frame, camera);
+        REQUIRE(target->endFrame(std::move(*frame)));
+        std::vector<std::byte> pixels(static_cast<std::size_t>(DG_W) * DG_H * 4U, std::byte{0xAB});
+        REQUIRE(device->readbackTexture(target->colorTexture(), 0, pixels));
+        return pixels;
+    };
+
+    // Strictly inside the cube's projected footprint (columns 64..192, rows 48..144).
+    const auto countGizmoTexels = [](const std::vector<std::byte>& pixels) {
+        int green = 0;
+        for (std::uint32_t row = 54; row < 138; ++row) {
+            for (std::uint32_t column = 70; column < 186; ++column) {
+                if (texelAt(pixels, row, column).g != 0U) {
+                    ++green;
+                }
+            }
+        }
+        return green;
+    };
+
+    const std::vector<std::byte> tested = renderOnce(engine::render::DebugDepth::Tested, true);
+    const std::vector<std::byte> overlay = renderOnce(engine::render::DebugDepth::Overlay, true);
+    const std::vector<std::byte> unoccluded = renderOnce(engine::render::DebugDepth::Tested, false);
+
+    const int testedGreen = countGizmoTexels(tested);
+    const int overlayGreen = countGizmoTexels(overlay);
+    const int unoccludedGreen = countGizmoTexels(unoccluded);
+    CAPTURE(testedGreen);
+    CAPTURE(overlayGreen);
+    CAPTURE(unoccludedGreen);
+
+    // THE THREE COUNTS ARE ASSERTED AGAINST EACH OTHER, so no arm is vacuous -- E.2.1's SB9/SB16
+    // lesson. The third render is what makes "Tested draws nothing" a statement about OCCLUSION
+    // rather than about an emitter that pushed nothing: the identical cone, identical depth mode,
+    // with the cube absent, is plainly visible.
+    CHECK(testedGreen == 0);
+    CHECK(overlayGreen > 40);
+    CHECK(unoccludedGreen > 40);
+    CHECK(overlayGreen > testedGreen);
+    CHECK(unoccludedGreen > testedGreen);
+    // ...and the occluder really is there in the arm that draws nothing.
+    CHECK(texelAt(tested, 96U, 128U) == Rgba{255U, 0U, 0U, 255U});
+}
+
 #endif  // AERO_SHADER_TOOLS_ENABLED
