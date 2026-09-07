@@ -15,6 +15,7 @@
 #include <aero/scene/world.hpp>
 
 #include <algorithm>
+#include <cmath>  // std::isfinite, for the icon arm's own totality gate
 #include <cstddef>
 #include <optional>
 
@@ -36,6 +37,11 @@ constexpr auto ICON_DEPTH = render::DebugDepth::Overlay;
 [[nodiscard]] Vec3 aimOf(const Mat4& model) noexcept {
     return normalizeOrZero(transformDirection(model, Vec3{0.0F, 0.0F, -1.0F}));
 }
+
+// light_gizmo.cpp's own `finite`, restated for the same reason it restated debug_draw.cpp's: both are
+// in an anonymous namespace in another translation unit and neither is reachable. Three isfinite
+// calls, nothing else.
+[[nodiscard]] bool finite(Vec3 v) noexcept { return std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z); }
 
 }  // namespace
 
@@ -133,6 +139,15 @@ ViewportGizmoCounts emitViewportGizmos(const World& world, const ViewportGizmoPa
         }
         const ViewportIconUv uv = viewportIconUv(*kind);
         const Vec3 center = originOf(worldMatrix(world, e));
+        // THE ICON ARM'S OWN TOTALITY GATE, matching every emitter in light_gizmo.cpp field for field.
+        // A Transform carrying a NaN or an infinity makes this centre non-finite, and
+        // DebugDrawBatch::billboard would then take its REJECTION branch -- ++rejectedBillboardCount,
+        // return false -- which AC-12 forbids for a degenerate input ("never a NaN, a rejection or a
+        // log record") and which would additionally be counted here as though the budget were full.
+        // Skipped silently and counted NOWHERE, exactly as an emitter returning 0 lines is.
+        if (!finite(center)) {
+            return;
+        }
         if (batch.billboard(center, params.iconSizePixels, tint, uv.uvMin, uv.uvMax, ICON_DEPTH)) {
             ++counts.icons;
         } else {

@@ -595,3 +595,51 @@ TEST_CASE("viewport gizmos: the scratch is reused without growth and never leaks
         }
     }
 }
+
+TEST_CASE("viewport gizmos: a non-finite world origin draws nothing and is NOT a rejection (VG17)") {
+    // AC-12 IN THE ICON HALF. Every emitter in light_gizmo.cpp refuses a non-finite input with zero
+    // lines and ZERO rejections -- GZ5, GZ11 and GZ13 each assert rejectedLines() == 0 -- while the
+    // icon arm used to hand a non-finite centre straight to DebugDrawBatch::billboard, which takes its
+    // REJECTION branch (++rejectedBillboardCount, return false) and was then counted here as
+    // `iconsDropped`, whose own doc comment says the billboard budget was full. VG12 cannot see it:
+    // it asserts iconsDropped == 2 in a scenario with no rejections at all, so it does not
+    // discriminate the two ways the batch can answer false.
+    float bad = std::numeric_limits<float>::quiet_NaN();
+    SUBCASE("a NaN position") { bad = std::numeric_limits<float>::quiet_NaN(); }
+    SUBCASE("an infinite position") { bad = std::numeric_limits<float>::infinity(); }
+
+    World world;
+    const Entity broken = seedLight(world, Vec3{bad, 0.0F, 0.0F});
+    world.add<PointLight>(broken, PointLight{});
+    // A finite sibling of a DIFFERENT kind, so iconFor stays unambiguous and every arm below is a
+    // statement about WHICH entity was skipped rather than about how many billboards happen to exist.
+    const Entity camera = seedLight(world, Vec3{2.0F, 0.0F, 0.0F});
+    world.add<Camera>(camera, Camera{});
+
+    rd::DebugDrawBatch batch = roomyBatch();
+    ed::ViewportGizmoScratch scratch;
+    const std::array<Entity, 1> selection{broken};
+    const ed::ViewportGizmoCounts counts =
+        ed::emitViewportGizmos(world, {.selected = selection, .primary = broken}, scratch, batch);
+
+    // THE ICON HALF: skipped, and counted NOWHERE -- neither as an icon nor as a drop.
+    CHECK(iconFor(batch, ed::ViewportIconKind::PointLight) == nullptr);
+    CHECK(counts.iconsDropped == 0U);
+    CHECK(batch.rejectedBillboards() == 0U);
+    CHECK(batch.droppedBillboards() == 0U);
+
+    // THE GIZMO HALF, already total before this case existed -- asserted here because this is the one
+    // place both halves run over the same degenerate entity.
+    CHECK(counts.gizmoLines == 0U);
+    CHECK(counts.gizmoEntities == 0U);
+    CHECK(batch.rejectedLines() == 0U);
+    CHECK(batch.lineCount() == 0U);
+
+    // THE ANTI-VACUITY ARM: the walk really ran and the batch really was reachable, so "nothing was
+    // rejected" is a statement about the refusal rather than about an emitter that never fired.
+    const rd::DebugBillboard* const icon = iconFor(batch, ed::ViewportIconKind::Camera);
+    REQUIRE(icon != nullptr);
+    CHECK(icon->center == Vec3{2.0F, 0.0F, 0.0F});
+    CHECK(counts.icons == 1U);
+    CHECK(batch.billboardCount() == 1U);
+}

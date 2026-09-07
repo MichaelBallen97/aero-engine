@@ -73,8 +73,13 @@ struct ViewportGizmoParams {
 };
 
 struct ViewportGizmoCounts {
-    std::uint32_t icons = 0;           // billboards the batch ACCEPTED
-    std::uint32_t iconsDropped = 0;    // the batch refused them: the billboard budget was full
+    std::uint32_t icons = 0;  // billboards the batch ACCEPTED
+    // THE BUDGET, AND NOTHING ELSE. A non-finite world origin never reaches the batch at all -- the
+    // walk's own finiteness gate skips it -- so it is counted NOWHERE, neither here nor in `icons`,
+    // exactly as an emitter that returns 0 lines is counted nowhere (AC-12). The only other route
+    // into billboard()'s rejection branch from here is a CALLER handing over a non-finite or
+    // non-positive iconSizePixels, which is a broken caller rather than a degenerate world.
+    std::uint32_t iconsDropped = 0;
     std::uint32_t gizmoLines = 0;      // lines the batch ACCEPTED
     std::uint32_t gizmoEntities = 0;   // selected entities that emitted a gizmo
     std::uint32_t skippedOverCap = 0;  // selected entities past entityCap
