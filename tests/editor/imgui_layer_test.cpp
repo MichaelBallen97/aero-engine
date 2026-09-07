@@ -11885,21 +11885,6 @@ TEST_CASE("editor: the icon atlas is released -- no leaked texture or sampler at
     std::size_t leakedTextureWarnings = 0;
     std::size_t leakedSamplerWarnings = 0;
     std::size_t anyLeakWarnings = 0;
-    const LogCallbackGuard detachOnExit;
-    engine::setLogCallback([&](const engine::LogRecord& record) {
-        if (record.level < engine::LogLevel::Warn) {
-            return;
-        }
-        if (record.message.find("leaked texture") != std::string_view::npos) {
-            ++leakedTextureWarnings;
-        }
-        if (record.message.find("leaked sampler") != std::string_view::npos) {
-            ++leakedSamplerWarnings;
-        }
-        if (record.message.find("leaked") != std::string_view::npos) {
-            ++anyLeakWarnings;
-        }
-    });
 
     engine::platform::Context ctx;
     if (!ctx.valid()) {
@@ -11933,6 +11918,26 @@ TEST_CASE("editor: the icon atlas is released -- no leaked texture or sampler at
             REQUIRE(app->tick());
             app.reset();  // ~EditorApp -> ~PanelRegistry -> ~ViewportPanel, all before ~Device
         }
+        // THE CALLBACK IS INSTALLED HERE, AFTER THE LAST EditorApp IS GONE, AND THAT IS LOAD-BEARING:
+        // setLogCallback is a SINGLE GLOBAL SLOT and EditorApp claims it for the Console panel's own
+        // sink at create() and clears it at teardown -- so a callback installed before the loop is
+        // displaced by the first app and simply absent by the time ~Device runs. Measured: the WARNs
+        // below really are emitted, and an earlier installation counted zero of them.
+        const LogCallbackGuard detachOnExit;
+        engine::setLogCallback([&](const engine::LogRecord& record) {
+            if (record.level < engine::LogLevel::Warn) {
+                return;
+            }
+            if (record.message.find("leaked texture") != std::string_view::npos) {
+                ++leakedTextureWarnings;
+            }
+            if (record.message.find("leaked sampler") != std::string_view::npos) {
+                ++leakedSamplerWarnings;
+            }
+            if (record.message.find("leaked") != std::string_view::npos) {
+                ++anyLeakWarnings;
+            }
+        });
         device.reset();  // ~Device HERE, while the callback above is still installed
     }
     engine::setLogCallback({});
