@@ -12,6 +12,7 @@
 #include <aero/render/environment.hpp>       // task E.2.1
 #include <aero/render/forward_renderer.hpp>  // task 1.4.1
 #include <aero/render/light_falloff.hpp>     // task E.2.2
+#include <aero/render/light_gizmo.hpp>       // task E.2.3
 #include <aero/render/lighting.hpp>          // task 1.4.1
 #include <aero/render/material.hpp>          // task 3.4.1
 #include <aero/render/mesh.hpp>              // task 1.4.1

@@ -20,6 +20,8 @@
 #include <aero/editor/selection.hpp>
 #include <aero/editor/transform_command.hpp>
 #include <aero/editor/transform_ops.hpp>
+#include <aero/rhi/descriptors.hpp>  // task E.2.3: TextureDesc/SamplerDesc for the icon atlas
+#include <aero/rhi/device.hpp>       // task E.2.3: the atlas's create/upload/destroy calls
 #include <aero/rhi/internal/native_device.hpp>
 #include <aero/scene/mesh_renderer.hpp>  // task 3.1.5: the Material arm asks the LIVE World
 
@@ -31,7 +33,9 @@
 #include <imgui_internal.h>  // task 3.1.5: ImRect + BeginDragDropTargetCustom (shell_ui.cpp's precedent)
 #include <memory>
 #include <optional>
+#include <span>
 #include <utility>
+#include <vector>
 
 // <ImGuizmo.h> deliberately follows <imgui.h> and lives in its own trailing include block: it does
 // NOT include imgui.h (it forward-declares ImGuiWindow, then names ImDrawList / ImVec2 / ImU32 /
@@ -290,6 +294,27 @@ constexpr GizmoStyle GIZMO_STYLE = defaultGizmoStyle();
 
 ViewportPanel::ViewportPanel(rhi::Device& deviceIn) noexcept : device(&deviceIn) {}
 
+// task E.2.3: the panel's first user-declared destructor. See the header for why it suppresses
+// nothing and why the Device is guaranteed to outlive it.
+ViewportPanel::~ViewportPanel() { destroyIconAtlas(); }
+
+void ViewportPanel::destroyIconAtlas() noexcept {
+    if (device == nullptr) {
+        return;
+    }
+    // Reverse creation order, and IDEMPOTENT: both handles are zeroed, so a second call and a call on
+    // a panel that never initialised are both no-ops. destroySampler/destroyTexture are themselves
+    // no-ops on an invalid handle; the guards are here so the members cannot be left dangling.
+    if (iconAtlasSampler.valid()) {
+        device->destroySampler(iconAtlasSampler);
+        iconAtlasSampler = {};
+    }
+    if (iconAtlasTexture.valid()) {
+        device->destroyTexture(iconAtlasTexture);
+        iconAtlasTexture = {};
+    }
+}
+
 const char* ViewportPanel::id() const noexcept { return "Viewport"; }
 DockSlot ViewportPanel::defaultDockSlot() const noexcept { return DockSlot::Center; }
 PanelOptions ViewportPanel::options() const noexcept {
@@ -416,8 +441,14 @@ Entity ViewportPanel::pickAt(const World& world, Vec2 ndc) const {
     // so a drop that was offered and a drop that is applied can never disagree about which entity was
     // under the cursor. `lastImageSizePoints` is the last DRAWN image rect; a panel that has never
     // drawn has a zero size, which pickEntity handles as any degenerate viewport (no point hit).
-    const PickRequest request{
-        .ndc = ndc, .aspect = lastAspect, .viewportSizePoints = lastImageSizePoints, .meshBounds = meshBounds};
+    // task E.2.3: `.iconRadiusPoints` BEFORE `.meshBounds` -- a designated initialiser must follow
+    // declaration order in C++20, and clang only WARNS about a wrong one. Zero when the toggle is off:
+    // no icon is drawn, so no icon is clickable.
+    const PickRequest request{.ndc = ndc,
+                              .aspect = lastAspect,
+                              .viewportSizePoints = lastImageSizePoints,
+                              .iconRadiusPoints = gizmosEnabledValue ? VIEWPORT_ICON_HALF_POINTS : 0.0F,
+                              .meshBounds = meshBounds};
     return pickEntity(world, editorCamera, request).entity;
 }
 
@@ -511,6 +542,47 @@ void ViewportPanel::ensureInitialized([[maybe_unused]] rhi::Extent2D firstExtent
         unavailableReason = "debug draw creation failed (are res://debug_line.* / res://debug_billboard.* cooked?)";
         return;
     }
+    // task E.2.3: the icon atlas. DELIBERATELY NOT ALL-OR-NOTHING with the five objects above it: on
+    // any failure both handles stay invalid, DebugDraw independently falls back to its own 1x1 white
+    // texel and default sampler (proven by DG9), and every icon renders as a SOLID TINTED SQUARE.
+    // Degraded and obvious, never a crash and never an invisible feature -- and a viewport that
+    // refuses to exist because a 64 KiB upload failed would be strictly worse.
+    // hasBillboardTexture() is what a test reads to tell the two states apart (I130).
+    {
+        std::vector<std::uint8_t> atlas(VIEWPORT_ICON_ATLAS_BYTES);
+        if (!buildViewportIconAtlas(atlas)) {
+            AERO_LOG_ERROR("editor: viewport icon atlas could not be rasterised - icons will draw as solid squares");
+        } else {
+            const rhi::TextureDesc desc{.format = rhi::TextureFormat::RGBA8Unorm,
+                                        .usage = rhi::TextureUsage::Sampler,
+                                        .width = VIEWPORT_ICON_ATLAS_WIDTH,
+                                        .height = VIEWPORT_ICON_ATLAS_HEIGHT};
+            iconAtlasTexture = device->createTexture(desc);
+            if (iconAtlasTexture.valid()) {
+                device->setDebugName(iconAtlasTexture, "viewport-icons");
+            }
+            const std::span<const std::uint8_t> atlasBytes{atlas};
+            if (!iconAtlasTexture.valid() || !device->uploadTexture(iconAtlasTexture, 0, std::as_bytes(atlasBytes))) {
+                AERO_LOG_ERROR("editor: viewport icon atlas upload failed - icons will draw as solid squares");
+                destroyIconAtlas();
+            } else {
+                iconAtlasSampler = device->createSampler({.minFilter = rhi::Filter::Linear,
+                                                          .magFilter = rhi::Filter::Linear,
+                                                          .mipmapMode = rhi::MipmapMode::Nearest,
+                                                          .addressU = rhi::AddressMode::ClampToEdge,
+                                                          .addressV = rhi::AddressMode::ClampToEdge,
+                                                          .addressW = rhi::AddressMode::ClampToEdge});
+                if (!iconAtlasSampler.valid()) {
+                    AERO_LOG_ERROR("editor: viewport icon sampler creation failed - icons will draw as squares");
+                    destroyIconAtlas();
+                }
+            }
+        }
+        // UNCONDITIONAL, with whatever pair survived: an invalid handle in either position
+        // independently selects that position's built-in default, which is the contract
+        // debug_draw.hpp states and DG9 proves.
+        debugDrawer->setBillboardTexture(iconAtlasTexture, iconAtlasSampler);
+    }
     // task E.1.4: built against the OUTPUT target's formats, NOT the HDR pair -- this is the one GPU
     // object in the panel built against `target`, and the asymmetry is the point of this comment: the
     // outline composites into the already-tonemapped image, so it is editor chrome rather than scene
@@ -519,6 +591,7 @@ void ViewportPanel::ensureInitialized([[maybe_unused]] rhi::Extent2D firstExtent
         *device, shaderVfs,
         {.outputColorFormat = target->colorFormat(), .outputDepthFormat = rhi::TextureFormat::Invalid});
     if (!selectionOutline) {
+        destroyIconAtlas();  // task E.2.3: released BEFORE the DebugDraw that borrows it
         debugDrawer.reset();
         sceneRenderer.reset();
         target.reset();
@@ -859,6 +932,10 @@ void ViewportPanel::updatePick(PanelContext& context, Vec2 imageOrigin, Vec2 ava
     const PickRequest request{.ndc = viewportNdc(pos, imageOrigin, avail),
                               .aspect = lastAspect,
                               .viewportSizePoints = avail,
+                              // task E.2.3, BEFORE .meshBounds (the declaration-order rule): the
+                              // panel's only expression of "the picture and the pick agree about
+                              // what is visible".
+                              .iconRadiusPoints = gizmosEnabledValue ? VIEWPORT_ICON_HALF_POINTS : 0.0F,
                               .meshBounds = meshBounds};  // task 3.1.5 -- one of INV-D6's three
     const PickResult result = pickEntity(context.world, editorCamera, request);
     // F30: io.KeyCtrl ALONE is ALREADY "Ctrl on Windows/Linux, Cmd on macOS". Writing
@@ -1282,6 +1359,21 @@ void ViewportPanel::drawViewOptions() {
     }
     ImGui::SameLine();
 
+    // task E.2.3: SECOND IN THE ROW, DELIBERATELY, for the SAME reason Grid is first: onDraw's step 9b
+    // records `rowEnd = ImGui::GetItemRectMax()` right after this function returns, and its comment
+    // names the exposure slider as the row's last and rightmost item. A checkbox appended at the END
+    // would make that comment false and silently move the rect overlayOwnsPress() reads. Second keeps
+    // every word of it true; the row simply gets wider, which I107's lower bounds already tolerate.
+    //
+    // ONE toggle covers the ICONS and the GIZMOS: they are one piece of chrome, and two checkboxes for
+    // one concept is not worth a row of the strip. E.2.4 moves this whole row into a popover and takes
+    // BOTH checkboxes with it.
+    bool gizmosChecked = gizmosEnabledValue;
+    if (ImGui::Checkbox("Gizmos", &gizmosChecked)) {
+        gizmosEnabledValue = gizmosChecked;
+    }
+    ImGui::SameLine();
+
     render::TonemapParams edited = tonemapParamsValue;
     bool changed = false;
 
@@ -1342,7 +1434,28 @@ void ViewportPanel::drawSelectionOverlay(PanelContext& context, Vec2 imageOrigin
     // deliberately OMITTED -- this call no longer resolves a box. The projection mode is E.1.3's
     // NON-DEFAULTED one, and it is the SAME one updatePick and the gizmo take: a marker under an
     // orthographic camera must take the ortho clip gate, or it silently vanishes behind the eye plane.
-    buildSelectionOverlay(context.world, selectionMaskSet.withoutGeometry, context.selection.primary(), viewProj,
+    // task E.2.3: the panel narrows the span, and buildSelectionOverlay is NOT touched -- its
+    // `entities` parameter is documented as "entities IS the marker list", and a caller handing it a
+    // SHORTER list keeps that sentence true. An entity that now draws an icon no longer draws the
+    // diamond: two amber marks at the same projected point, one of them a shape with no meaning, is
+    // noise. An entity with NO geometry and NO icon -- a bare Transform-only empty, the default
+    // scene's Environment -- keeps it exactly as today.
+    //
+    // THE `gizmosEnabledValue &&` TERM IS NOT A NICETY: with the toggle off no icon is drawn, and
+    // without it a selected light would have NO viewport indication at all. I133 is its witness.
+    markerScratch.clear();
+    for (const Entity e : selectionMaskSet.withoutGeometry) {
+        if (gizmosEnabledValue && viewportIconFor(context.world, e).has_value()) {
+            continue;
+        }
+        markerScratch.push_back(e);
+    }
+    // task E.2.3: renderScene takes a World& and cannot see the Selection, so it is snapshotted here,
+    // in the one place that holds a PanelContext.
+    selectionSnapshot.assign(context.selection.entities().begin(), context.selection.entities().end());
+    selectionPrimary = context.selection.primary();
+
+    buildSelectionOverlay(context.world, markerScratch, context.selection.primary(), viewProj,
                           editorCamera.projectionMode(), avail, overlayScratch);
     if (overlayScratch.empty()) {
         return;  // E1: no PushClipRect at all, so there is no pair left unbalanced
@@ -1388,7 +1501,9 @@ void ViewportPanel::renderScene(World& world) {
     // (the resolve) is acquired, so the queue-ordering guarantee applies with no interleaving at all.
     std::optional<render::Frame> sceneFrame = post->beginScene(VIEWPORT_CLEAR_COLOR);
     if (!sceneFrame) {
-        selectionMaskSet = {};  // D12: cleared on EVERY exit past the guard chain, never left stale
+        selectionMaskSet = {};      // D12: cleared on EVERY exit past the guard chain, never left stale
+        selectionSnapshot.clear();  // task E.2.3: the same discipline, one exit at a time
+        selectionPrimary = {};
         return;
     }
     // Still the DRAWN sub-rect, and still the correct aspect source with quantum = 64 -- unchanged
@@ -1426,6 +1541,19 @@ void ViewportPanel::renderScene(World& world) {
                                                            .farPlane = editorCamera.farPlane(),
                                                            .style = viewportGridStyle()});
     }
+    // task E.2.3: the icons and the selected lights' gizmos, into the OVERLAY buckets -- so an icon is
+    // over its own gizmo with no coordination (flush records Overlay billboards LAST of four), and a
+    // gizmo is over the grid for the same reason E.1.2's comment above already anticipated.
+    // activeDirectionalLight is resolved HERE, once, and its answer arrives in the params as a plain
+    // Entity: viewport_gizmos.hpp may not name a scene_render type, and this TU already does.
+    if (gizmosEnabledValue) {
+        (void)emitViewportGizmos(world,
+                                 {.selected = selectionSnapshot,
+                                  .primary = selectionPrimary,
+                                  .activeDirectional = scene_render::activeDirectionalLight(world),
+                                  .iconSizePixels = VIEWPORT_ICON_SIZE_POINTS * lastFramebufferScale},
+                                 gizmoScratch, debugDrawer->batch());
+    }
     debugDrawer->flush(*sceneFrame, cameraView);
     post->endScene(std::move(*sceneFrame));  // submits command buffer A -- AFTER the upload's submit
 
@@ -1440,6 +1568,8 @@ void ViewportPanel::renderScene(World& world) {
     std::optional<render::Frame> outFrame = target->beginFrame(VIEWPORT_CLEAR_COLOR);
     if (!outFrame) {
         selectionMaskSet = {};  // D12: this early-return path too -- three exits, three clears
+        selectionSnapshot.clear();
+        selectionPrimary = {};
         return;
     }
     post->resolve(*outFrame, tonemapParamsValue);
@@ -1449,6 +1579,8 @@ void ViewportPanel::renderScene(World& world) {
     selectionOutline->composite(*outFrame, maskView, selectionOutlineParams());
     target->endFrame(std::move(*outFrame));  // submits B, strictly after A and the mask
     selectionMaskSet = {};                   // D12: never drawn twice, never drawn stale
+    selectionSnapshot.clear();               // task E.2.3: markerScratch needs no clear here -- it is
+    selectionPrimary = {};                   // filled and consumed inside drawSelectionOverlay alone
 }
 
 // task E.1.4: the two colours are the ENGINE defaults, so the outline and the point marker cannot

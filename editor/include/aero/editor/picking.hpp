@@ -22,6 +22,7 @@
 #include <aero/editor/editor_camera.hpp>
 #include <aero/editor/scene_bounds.hpp>
 #include <aero/editor/selection.hpp>
+#include <aero/editor/viewport_icons.hpp>  // task E.2.3: viewportIconFor + VIEWPORT_ICON_HALF_POINTS
 #include <aero/scene/entity.hpp>
 
 #include <cstdint>
@@ -48,6 +49,14 @@ inline constexpr float PICK_CLICK_SLOP_POINTS = 4.0F;
 // A non-mesh entity's clickable disc: a light has no geometry and would otherwise be unclickable
 // forever (D5). Small and precise, in the same units as the mouse (D18).
 inline constexpr float POINT_PICK_RADIUS_POINTS = 8.0F;
+
+// task E.2.3. An icon is a BIGGER target than the invisible marker it replaces, and that inequality
+// is what makes the icon arm strictly dominate the point arm for an icon-carrying entity: any click
+// inside the point radius is also inside the icon radius, so an icon entity can never lose the icon
+// arm and then displace a DIFFERENT entity's point candidacy through the shared bestScreenDistance.
+// If this assertion is ever inverted, that reasoning silently stops holding.
+static_assert(VIEWPORT_ICON_HALF_POINTS > POINT_PICK_RADIUS_POINTS);
+
 // "In front of the eye" (D14). This engine is RH / -Z forward with clip Z in [0,1] (ADR-005), so the
 // near plane is z_clip = 0 and the in-front test is w > 0 -- NOT z > -w. Do not flip Y for Vulkan.
 inline constexpr float CLIP_W_EPSILON = 1.0e-4F;
@@ -151,6 +160,20 @@ struct PickRequest {
     float aspect = 1.0F;        // width/height, derived from drawExtent in PIXELS -- UNITLESS (D18)
     Vec2 viewportSizePoints{};  // the image rect's size, POINTS -- for the screen-space radius (D5)
     float pointRadiusPoints = POINT_PICK_RADIUS_POINTS;
+    // task E.2.3. The screen radius, IN POINTS, of an entity that draws a viewport icon -- the
+    // INSCRIBED DISC of the icon's drawn square, not the square: the glyphs are inset by a
+    // transparent gutter, so the corners are not part of what is drawn.
+    //
+    // <= 0 (and NaN, through the negated form in the walk) DISABLES THE ARM ENTIRELY, which is how
+    // the panel expresses "the Gizmos toggle is off": no icon is drawn, so no icon is clickable, and
+    // D9's whole justification -- that you can SEE what you are clicking -- goes away with the
+    // picture.
+    //
+    // DECLARED BEFORE meshBounds ON PURPOSE. A designated initialiser must follow declaration order
+    // in C++20; clang accepts a wrong order with -Wreorder-init-list, a WARNING, while GCC and MSVC
+    // REJECT. Here, every pre-existing site names .meshBounds last and still compiles, and every new
+    // site must name .iconRadiusPoints BEFORE it.
+    float iconRadiusPoints = VIEWPORT_ICON_HALF_POINTS;
     // task 3.1.5: the resolved local boxes of referenced meshes. A DEFAULTED MEMBER on an aggregate, so
     // every existing PickRequest{...} designated initializer still compiles. Null means "primitives
     // only", which is exactly what this walk saw before references existed.

@@ -1,9 +1,13 @@
 // tests/render_debug_draw_test.cpp — task E.1.1: the debug-draw vocabulary, the pure batch, the
-// packers, the shader source pin (DD1-DD26, every configuration), and the GPU DebugDraw (DG1-DG16
+// packers, the shader source pin (DD1-DD28, every configuration), and the GPU DebugDraw (DG1-DG16
 // and DG18, gated). E.1.2 added DG18, the ground grid's own pixel case, at the bottom of that same
 // gate. DG17 IS SKIPPED DELIBERATELY, not missed: it was to be the depth-bias case, and the bias
 // was struck once a rasterizer depth bias turned out not to apply to line primitives at all on
 // Metal or D3D12 and to be merely optional on Vulkan -- so the id is never allocated.
+//
+// Task E.2.3 added DD27/DD28 for debugCircleBasis, and DG19/DG20 for the light gizmos, at the bottom
+// of the same gate. DG19 was NAMED in E.1.2's struck depth-bias plan and never shipped, so the id was
+// free; DG17 remains the one deliberate hole, for the reason above.
 //
 // The whole DD battery runs with NO device and NO shader toolchain -- that is the point of the pure
 // split: everything assertable without a GPU is asserted without one.
@@ -81,6 +85,34 @@ constexpr std::string_view RENDER_UMBRELLA_PATH =
 
 [[nodiscard]] bool contains(const std::string& haystack, std::string_view needle) {
     return haystack.find(needle) != std::string::npos;
+}
+
+// A Vec3 as its three RAW bit patterns (task E.2.3, DD28). BIT equality, not float equality: `==`
+// on floats calls +0.0F and -0.0F equal, and the whole point of DD28 is that the emitter's first
+// vertex and debugCircleBasis' own answer are the SAME COMPUTATION rather than two that agree.
+//
+// It lives HERE, at file scope, and not inside the case, for the reason Half4 already records: a
+// friend may not be DEFINED inside a local class ([class.friend]/6), so a type declared in a case
+// body cannot carry the operator<< below -- and without it CHECK(a == b) prints `CHECK( true )` on
+// a FAILURE as well as a pass, which makes the assertion carrying the claim unreadable.
+struct Bits3 {
+    std::uint32_t x = 0;
+    std::uint32_t y = 0;
+    std::uint32_t z = 0;
+    [[nodiscard]] bool operator==(const Bits3&) const = default;
+};
+
+std::ostream& operator<<(std::ostream& out, const Bits3& value) {
+    out << "bits3(0x" << std::hex << value.x << ", 0x" << value.y << ", 0x" << value.z << ")" << std::dec;
+    return out;
+}
+
+[[nodiscard]] Bits3 bitsOf(Vec3 v) {
+    Bits3 bits{};
+    std::memcpy(&bits.x, &v.x, sizeof(float));
+    std::memcpy(&bits.y, &v.y, sizeof(float));
+    std::memcpy(&bits.z, &v.z, sizeof(float));
+    return bits;
 }
 
 }  // namespace
@@ -747,6 +779,131 @@ TEST_CASE("render debug draw: the HLSL transcribes the C++ contract, pinned as s
         // The vertex colour MULTIPLIES the sample -- a stage returning the sample alone would make
         // every untextured billboard white and every colour argument silently inert.
         CHECK(contains(billboardFrag, "* color"));
+    }
+}
+
+// ------------------------------------------------------------------------------------------------
+// Task E.2.3. debugCircleBasis is wireCircle's own plane basis, promoted to the header so a consumer
+// can land its own geometry on the circle's emitted VERTICES rather than merely on the circle.
+// ------------------------------------------------------------------------------------------------
+
+TEST_CASE("render debug draw: debugCircleBasis is orthonormal, total, and refuses cleanly (DD27)") {
+    // TOLERANCE STATED WITH THE ASSERTION (DD13's rule): normalizeOrZero reaches sqrt and a cross
+    // product accumulates three products, so 1e-6 on a unit-length quantity is the epsilon and it is
+    // part of the claim. NOT doctest::Approx(x).epsilon(0.0), which never matches.
+    constexpr float EPS = 1e-6F;
+    const std::array<Vec3, 7> normals{{
+        Vec3{1.0F, 0.0F, 0.0F},
+        Vec3{0.0F, 1.0F, 0.0F},
+        Vec3{0.0F, 0.0F, 1.0F},
+        Vec3{1.0F, 1.0F, 1.0F},
+        // BOTH SIDES of the |axis.y| < 0.9F helper-axis switch. Each is very nearly unit length, so
+        // normalizing moves y by well under the 1e-4 that separates them.
+        Vec3{0.0F, 0.8999F, 0.4359F},
+        Vec3{0.0F, 0.9001F, 0.4358F},
+        Vec3{-0.3F, 0.5F, -0.81F},
+    }};
+    for (const Vec3 normal : normals) {
+        CAPTURE(normal.x);
+        CAPTURE(normal.y);
+        CAPTURE(normal.z);
+        const rd::DebugCircleBasis basis = rd::debugCircleBasis(normal);
+        REQUIRE(basis.valid);
+        const Vec3 axis = engine::normalize(normal);
+        CHECK(std::abs(engine::length(basis.u) - 1.0F) <= EPS);
+        CHECK(std::abs(engine::length(basis.v) - 1.0F) <= EPS);
+        CHECK(std::abs(engine::dot(basis.u, axis)) <= EPS);
+        CHECK(std::abs(engine::dot(basis.v, axis)) <= EPS);
+        CHECK(std::abs(engine::dot(basis.u, basis.v)) <= EPS);
+    }
+
+    SUBCASE("the switch point is not vacuous: the two sides pick DIFFERENT helper axes") {
+        // Without this a seed that hardcodes one helper axis passes every orthonormality check above
+        // -- both answers are perfectly orthonormal bases, just different ones.
+        const rd::DebugCircleBasis below = rd::debugCircleBasis(Vec3{0.0F, 0.8999F, 0.4359F});
+        const rd::DebugCircleBasis above = rd::debugCircleBasis(Vec3{0.0F, 0.9001F, 0.4358F});
+        REQUIRE(below.valid);
+        REQUIRE(above.valid);
+        CHECK(engine::length(below.u - above.u) > 0.5F);  // not "different by an ulp": a DIFFERENT axis
+    }
+
+    SUBCASE("an unnormalised normal gives its normalized twin's basis") {
+        // (2, 3, 6) has length EXACTLY 7, so the twin below is the same direction with no rounding
+        // beyond the division itself.
+        const rd::DebugCircleBasis longer = rd::debugCircleBasis(Vec3{2.0F, 3.0F, 6.0F});
+        const rd::DebugCircleBasis unit = rd::debugCircleBasis(Vec3{2.0F / 7.0F, 3.0F / 7.0F, 6.0F / 7.0F});
+        REQUIRE(longer.valid);
+        REQUIRE(unit.valid);
+        CHECK(engine::length(longer.u - unit.u) <= EPS);
+        CHECK(engine::length(longer.v - unit.v) <= EPS);
+    }
+
+    SUBCASE("a zero, NaN or infinite normal is valid == false with BOTH vectors exactly zero") {
+        // "Emitted nothing" and "emitted a half-filled basis" are different claims, and only the
+        // second one propagates a NaN into a consumer's own arithmetic. normalizeOrZero does NOT map
+        // a non-finite vector to zero on its own, which is why this arm is a real pin.
+        // The last one is FINITE but too short for normalizeOrZero's own epsilon.
+        const std::array<Vec3, 6> bad{{
+            Vec3::zero(),
+            Vec3{NAN_F, 0.0F, 0.0F},
+            Vec3{0.0F, NAN_F, 0.0F},
+            Vec3{INF_F, 0.0F, 0.0F},
+            Vec3{0.0F, 0.0F, -INF_F},
+            Vec3{1e-9F, 0.0F, 0.0F},
+        }};
+        for (const Vec3 normal : bad) {
+            const rd::DebugCircleBasis basis = rd::debugCircleBasis(normal);
+            CHECK_FALSE(basis.valid);
+            CHECK(basis.u == Vec3{});
+            CHECK(basis.v == Vec3{});
+        }
+    }
+
+    SUBCASE("the exposed segment clamp is what wireCircle applies") {
+        // The two constants are PUBLIC so a consumer can reproduce wireCircle's own n. DD13's own
+        // clamp subcase is the behavioural half; this is the vocabulary half.
+        CHECK(rd::MIN_CIRCLE_SEGMENTS == 3U);
+        CHECK(rd::MAX_CIRCLE_SEGMENTS == 256U);
+        rd::DebugDrawBatch low{{}};
+        low.wireCircle(Vec3{}, Vec3::unitY(), 1.0F, Vec4{1, 1, 1, 1}, rd::MIN_CIRCLE_SEGMENTS - 1U);
+        CHECK(low.lineCount() == rd::MIN_CIRCLE_SEGMENTS);
+        rd::DebugDrawBatch high{{}};
+        high.wireCircle(Vec3{}, Vec3::unitY(), 1.0F, Vec4{1, 1, 1, 1}, rd::MAX_CIRCLE_SEGMENTS + 1U);
+        CHECK(high.lineCount() == rd::MAX_CIRCLE_SEGMENTS);
+    }
+}
+
+TEST_CASE("render debug draw: debugCircleBasis IS wireCircle's basis, bit for bit (DD28)") {
+    // THE PROOF THE COMMIT-1 REFACTOR IS BEHAVIOUR-FREE, and the reason a consumer may build its own
+    // geometry on this basis and expect it to land ON the circle's vertices. wireCircle emits its
+    // FIRST vertex as `center + (u * radius)` and this recomputes that expression from the exposed
+    // helper -- so the two sides are ONE computation, not two that agree by rounding.
+    //
+    // A GENERIC centre, deliberately: no zero and no -0.0F component, because adding a signed zero
+    // is exact but +0.0 + -0.0 is +0.0, which is equal-but-bit-different.
+    const Vec3 center{1.25F, -3.5F, 0.75F};
+    const Vec3 normal{0.3F, 0.7F, -0.2F};
+    constexpr float RADIUS = 2.5F;
+    rd::DebugDrawBatch batch{{.maxLines = 64U}};
+    batch.wireCircle(center, normal, RADIUS, Vec4{1.0F, 1.0F, 1.0F, 1.0F}, 8U, rd::DebugDepth::Tested);
+    REQUIRE(batch.lineCount() == 8U);
+    const std::span<const rd::DebugLineVertex> v = batch.lineVertices(rd::DebugDepth::Tested);
+    REQUIRE(v.size() == 16U);
+
+    const rd::DebugCircleBasis basis = rd::debugCircleBasis(normal);
+    REQUIRE(basis.valid);
+    CHECK(bitsOf(v[0].position) == bitsOf(center + (basis.u * RADIUS)));
+
+    // ANTI-VACUITY: the same comparison against the OTHER basis vector must FAIL, so a reader that
+    // matched everything could not fake the line above.
+    CHECK_FALSE(bitsOf(v[0].position) == bitsOf(center + (basis.v * RADIUS)));
+
+    SUBCASE("and the CLOSING vertex is not vertex 0") {
+        // At i == n the angle is TWO_PI exactly, and std::sin(TWO_PI_f) is about -1.75e-7 rather
+        // than zero -- so a consumer matching a k == 0 ray against "the last vertex" would be
+        // matching the wrong one. Stated here so nothing has to re-derive it.
+        CHECK_FALSE(bitsOf(v[15].position) == bitsOf(v[0].position));
+        CHECK(engine::length(v[15].position - v[0].position) < 1e-5F);  // ...but only just
     }
 }
 
@@ -1796,6 +1953,205 @@ TEST_CASE("render debug grid: the two axes land on the pixels the projection nam
         CHECK(runs > 3U);  // the grid is visible: many lines cross this column now
         CHECK(sawRed);     // ...and the X axis is STILL pure red -- nothing overpainted it
     }
+}
+
+// ------------------------------------------------------------------------------------------------
+// Task E.2.3. The light gizmos' pixels. They live HERE rather than in tests/render_light_gizmo_test.cpp
+// for E.1.2's own reason: the harness they need -- AERO_DG_PREAMBLE, identityCamera, the readback
+// helpers and a ForwardRenderer occluder -- already exists in this file, and DG6 is DG20's scenario
+// almost verbatim. That keeps the new tier-0 file free of the sanctioned #if pair entirely.
+// ------------------------------------------------------------------------------------------------
+
+TEST_CASE("render light gizmo: the spot cone lands on the columns the projection names (DG19)") {
+    AERO_DG_PREAMBLE();
+    auto draw = engine::render::DebugDraw::create(
+        *device, vfs, {.colorFormat = target->colorFormat(), .depthFormat = target->depthFormat()});
+    REQUIRE(draw.has_value());
+
+    // Under the identity camera world coordinates ARE NDC. The apex sits at NDC y = 0.1 rather than
+    // at 0 DELIBERATELY: y = 0 is the boundary between rows 95 and 96, and this file's own frame-of-
+    // reference comment names a line on a pixel BOUNDARY as the one input the diamond-exit and
+    // Bresenham rules disagree about. Aimed along +Z with range 0.4, the whole shape stays inside the
+    // [0, 1] clip range in depth and inside the frame in x and y.
+    const Vec3 apex{0.0F, 0.1F, 0.5F};
+    const Vec3 direction{0.0F, 0.0F, 1.0F};
+    constexpr float RANGE = 0.4F;
+    const float outer = engine::radians(45.0F);
+    const engine::render::CameraView camera = identityCamera();
+
+    const std::uint32_t emitted = engine::render::emitSpotLightGizmo(
+        draw->batch(),
+        {.apex = apex,
+         .direction = direction,
+         .range = RANGE,
+         .outerConeRadians = outer,
+         .style = {.color = Vec4{0.0F, 1.0F, 0.0F, 1.0F}, .depth = engine::render::DebugDepth::Overlay}});
+    // The inner angle defaults to 0, so its cap has radius range*sin(0) == 0 and emits no circle:
+    // one outer circle and its four rim rays.
+    REQUIRE(emitted == engine::render::LIGHT_GIZMO_CIRCLE_SEGMENTS + engine::render::LIGHT_GIZMO_SPOT_RIM_RAYS);
+
+    // WHERE THE PROJECTION SAYS THE SHAPE IS, measured off the vertices the emitter actually pushed
+    // and through the SAME viewProj the flush is about to use (DG8's idiom, DG18's reading). Read
+    // BEFORE the flush, which clears the batch.
+    std::uint32_t minColumn = DG_W;
+    std::uint32_t maxColumn = 0;
+    for (const rd::DebugLineVertex& v : draw->batch().lineVertices(rd::DebugDepth::Overlay)) {
+        const PixelAt at = projectToPixel(camera, v.position);
+        minColumn = at.column < minColumn ? at.column : minColumn;
+        maxColumn = at.column > maxColumn ? at.column : maxColumn;
+    }
+    const PixelAt apexAt = projectToPixel(camera, apex);
+    CAPTURE(minColumn);
+    CAPTURE(maxColumn);
+    CAPTURE(apexAt.row);
+
+    const std::vector<std::byte> pixels = flushAndRead(*device, *target, *draw, camera);
+    CHECK(draw->lastFrameLines() == emitted);
+    CHECK(draw->lastFrameDrawCalls() == 1U);  // ONE bucket: Overlay lines only
+
+    // Scan the apex's own row. The two horizontal rim rays run from the apex out to the circle's left
+    // and right extremes, and the circle meets that row at exactly those two points, so the lit
+    // texels form ONE contiguous run whose ends are where the projection put the extreme vertices.
+    std::uint32_t runs = 0;
+    std::uint32_t litColumns = 0;
+    std::uint32_t firstLitColumn = DG_W;
+    std::uint32_t lastLitColumn = 0;
+    bool inRun = false;
+    for (std::uint32_t column = 0; column < DG_W; ++column) {
+        const bool on = litAt(pixels, apexAt.row, column);
+        if (on) {
+            ++litColumns;
+            firstLitColumn = column < firstLitColumn ? column : firstLitColumn;
+            lastLitColumn = column;
+            CHECK(texelAt(pixels, apexAt.row, column) == Rgba{0U, 255U, 0U, 255U});
+        }
+        if (on && !inRun) {
+            ++runs;
+        }
+        inRun = on;
+    }
+    CAPTURE(firstLitColumn);
+    CAPTURE(lastLitColumn);
+    CHECK(runs == 1U);
+    CHECK(litColumns > 40U);  // the run really spans the cone rather than a stray texel
+
+    // WITHIN ONE COLUMN, never on the nose -- DG18's own bound and DG18's own reason: a generated
+    // line can land on a pixel boundary, where which of two neighbours a backend lights is its
+    // rasteriser's tie-break rather than a property of the emitter.
+    const int firstDelta = static_cast<int>(firstLitColumn) - static_cast<int>(minColumn);
+    const int lastDelta = static_cast<int>(lastLitColumn) - static_cast<int>(maxColumn);
+    CHECK(firstDelta >= -1);
+    CHECK(firstDelta <= 1);
+    CHECK(lastDelta >= -1);
+    CHECK(lastDelta <= 1);
+
+    SUBCASE("anti-vacuity: a row far from the cone is entirely unlit") {
+        // Without this, "the run starts where the projection said" would be satisfiable by a frame
+        // whose every texel is lit.
+        std::uint32_t strayColumns = 0;
+        for (std::uint32_t column = 0; column < DG_W; ++column) {
+            if (litAt(pixels, 10U, column)) {
+                ++strayColumns;
+            }
+        }
+        CHECK(strayColumns == 0U);
+    }
+}
+
+TEST_CASE("render light gizmo: a Tested cone is hidden by geometry and an Overlay one is not (DG20)") {
+    AERO_DG_PREAMBLE();
+    auto draw = engine::render::DebugDraw::create(
+        *device, vfs, {.colorFormat = target->colorFormat(), .depthFormat = target->depthFormat()});
+    REQUIRE(draw.has_value());
+    auto forward = engine::render::ForwardRenderer::create(
+        *device, vfs,
+        {.colorFormat = target->colorFormat(), .depthFormat = target->depthFormat(), .shadowMapResolution = 0});
+    REQUIRE(forward.has_value());
+
+    // DG6's occluder, verbatim: one Cube primitive, flat red, everything that could vary pinned off,
+    // so the fragment reduces to (1, 0, 0). model puts it at x, y in [-0.5, +0.5] and z in [0, 0.9].
+    const Mat4 model = engine::translation(Vec3{0.0F, 0.0F, 0.45F}) * engine::scaling(Vec3{1.0F, 1.0F, 0.9F});
+    engine::render::MeshInstance instance{};
+    instance.primitive = engine::render::PrimitiveId::Cube;
+    instance.model = model;
+    instance.mvp = model;  // viewProj is the identity, so mvp == model
+    instance.normalMatrix = Mat4::identity();
+    instance.color = Vec3{1.0F, 0.0F, 0.0F};
+
+    const engine::render::CameraView camera = identityCamera();
+    engine::render::RenderView view;
+    view.camera = camera;
+    view.instances = std::span{&instance, 1};
+    view.environment = {
+        .ambientMode = engine::render::AmbientMode::Flat, .ambientColor = Vec3::one(), .ambientIntensity = 1.0F};
+    view.directional = {.direction = Vec3{0.0F, -1.0F, 0.0F}, .color = Vec3::one(), .intensity = 0.0F};
+    view.cullingEnabled = false;
+    view.shadowsEnabled = false;
+
+    // The cone lives entirely BEHIND the cube (every vertex at z > 0.9) and entirely INSIDE its
+    // footprint on screen (|x|, |y| well under 0.5), so the whole shape is either hidden or not --
+    // there is no half-outside arm to confuse the counts.
+    const Vec3 apex{0.0F, 0.1F, 0.905F};
+    constexpr float RANGE = 0.09F;
+    const float outer = engine::radians(85.0F);
+
+    const auto renderOnce = [&](engine::render::DebugDepth depth, bool withCube) {
+        const std::uint32_t emitted = engine::render::emitSpotLightGizmo(
+            draw->batch(), {.apex = apex,
+                            .direction = Vec3{0.0F, 0.0F, 1.0F},
+                            .range = RANGE,
+                            .outerConeRadians = outer,
+                            .style = {.color = Vec4{0.0F, 1.0F, 0.0F, 1.0F}, .depth = depth}});
+        const std::uint32_t expected =
+            engine::render::LIGHT_GIZMO_CIRCLE_SEGMENTS + engine::render::LIGHT_GIZMO_SPOT_RIM_RAYS;
+        REQUIRE(emitted == expected);
+        std::optional<engine::render::Frame> frame = target->beginFrame({0.0F, 0.0F, 0.0F, 1.0F});
+        REQUIRE(frame.has_value());
+        if (withCube) {
+            forward->draw(*frame, view);
+        }
+        draw->flush(*frame, camera);
+        REQUIRE(target->endFrame(std::move(*frame)));
+        std::vector<std::byte> pixels(static_cast<std::size_t>(DG_W) * DG_H * 4U, std::byte{0xAB});
+        REQUIRE(device->readbackTexture(target->colorTexture(), 0, pixels));
+        return pixels;
+    };
+
+    // Strictly inside the cube's projected footprint (columns 64..192, rows 48..144).
+    const auto countGizmoTexels = [](const std::vector<std::byte>& pixels) {
+        int green = 0;
+        for (std::uint32_t row = 54; row < 138; ++row) {
+            for (std::uint32_t column = 70; column < 186; ++column) {
+                if (texelAt(pixels, row, column).g != 0U) {
+                    ++green;
+                }
+            }
+        }
+        return green;
+    };
+
+    const std::vector<std::byte> tested = renderOnce(engine::render::DebugDepth::Tested, true);
+    const std::vector<std::byte> overlay = renderOnce(engine::render::DebugDepth::Overlay, true);
+    const std::vector<std::byte> unoccluded = renderOnce(engine::render::DebugDepth::Tested, false);
+
+    const int testedGreen = countGizmoTexels(tested);
+    const int overlayGreen = countGizmoTexels(overlay);
+    const int unoccludedGreen = countGizmoTexels(unoccluded);
+    CAPTURE(testedGreen);
+    CAPTURE(overlayGreen);
+    CAPTURE(unoccludedGreen);
+
+    // THE THREE COUNTS ARE ASSERTED AGAINST EACH OTHER, so no arm is vacuous -- E.2.1's SB9/SB16
+    // lesson. The third render is what makes "Tested draws nothing" a statement about OCCLUSION
+    // rather than about an emitter that pushed nothing: the identical cone, identical depth mode,
+    // with the cube absent, is plainly visible.
+    CHECK(testedGreen == 0);
+    CHECK(overlayGreen > 40);
+    CHECK(unoccludedGreen > 40);
+    CHECK(overlayGreen > testedGreen);
+    CHECK(unoccludedGreen > testedGreen);
+    // ...and the occluder really is there in the arm that draws nothing.
+    CHECK(texelAt(tested, 96U, 128U) == Rgba{255U, 0U, 0U, 255U});
 }
 
 #endif  // AERO_SHADER_TOOLS_ENABLED

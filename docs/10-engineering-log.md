@@ -14770,3 +14770,286 @@ branch-point build at the primary binary path; row 4 judges the raw-radian cone 
 re-encounters E.2.1's unresolved `Save Scene` observation. **HiDPI is deliberately not a row** — a
 falloff and a cone have no size-dependent feature — so E.1.1's thick-line handoff stays unfired for a
 **seventh** task rather than being recorded as cleared.
+
+---
+
+### E.2.3 — Light gizmos & viewport icons — the billboard half's first production consumer, and a sabotage pass that found two real holes
+
+**Branch `feat/E.2.3-light-gizmos-viewport-icons`, SIXTEEN commits** — the plan's ten, two the
+sabotage pass forced, and four from the code-review round (the last subsection below). Sized **M** in
+the roadmap, recorded **L** before the first commit and landed **L**. *(PR number and merge commit are
+filled in at merge.)*
+
+`ctest -N` **174 -> 174**, and the entry SET is byte-identical to the branch point's — this task adds
+no component, no target and no ctest entry. doctest: `aero_tests` **1377 -> 1400**,
+`aero_editor_shell_test` **1793 -> 1827** at the sabotage gate and **1829** after the code-review
+round's two cases, `aero_editor_imgui_test` **163 -> 170**; the other four
+binaries unmoved, as predicted, because none of them generates from the built-in list. Guards: math
+**487 -> 496**, platform **91 -> 92**, rhi **161 -> 163**, scene **91 -> 92**, golden-rule
+**163 -> 165**, project-no-delete **A=6/B=77 -> A=6/B=79**; audio **11/3/55** and boundary-probes
+**6/57** unmoved. Both reduced configurations re-measured fresh: shader-tools-OFF **161** (exactly the
+13 `shaderc.*` entries removed, nothing added, all 70 `cooker.*` present) and reflect-tools-OFF
+**93** — and that second one **corrects a stale note in CLAUDE.md**: the removal is **77**
+`reflect-gen.*` entries plus four doctest binaries, **81** in total, not the 75 + 4 = 79 recorded
+there, because E.2.1 and E.2.2 each added a per-header `reflect-gen.components_*` entry since that
+sentence was written.
+
+**Nine new tracked files, sixteen edited source/test/CMake files plus three docs** — exactly the
+inventory the plan predicted, with no file added or dropped.
+
+**What shipped.** Every entity carrying a `DirectionalLight`, `SpotLight`, `PointLight` or `Camera`
+draws one always-visible, screen-constant billboard icon, through E.1.1's `Overlay` billboard bucket,
+from a 256x64 RGBA8 atlas rasterised on the CPU at panel init. A selected light additionally draws a
+wire gizmo: a rayed disc along -Z for directional, a `wireSphere` at `range` for point, and for spot
+a two-circle cone whose rim sits **on the range sphere** so every rim ray is exactly `range` long and
+the shape stays finite at the `HALF_PI` bound the component clamps to. A visible icon **wins a click
+at any depth**; the active directional light is resolved **once**, by a new
+`scene_render::activeDirectionalLight` that `buildRenderView` itself calls; E.1.4's diamond marker is
+retired for icon-carrying entities by the panel narrowing the span it hands `buildSelectionOverlay`;
+and one `Gizmos` checkbox, second in the view-options row, covers all of it.
+
+#### The sentences that govern new work
+
+**1. A "NEGATED" COMPARISON IS ONLY NaN-SAFE IN THE DIRECTION IT WAS WRITTEN FOR, AND TRANSLATING IT
+FROM A REFUSAL INTO AN ACCEPTANCE INVERTS IT.** 2.3.2's A10 rule is a *refusal*:
+`if (!(screenDistance <= radius)) return;` — a NaN distance makes the inner comparison false and the
+refusal fires, which is correct. The icon arm *accepts* rather than refuses, and the same rule there
+is `d <= radius`; `!(d > radius)`, which reads like the same thing and was what shipped in commit 8,
+is its **opposite** — a NaN `d` makes `d > radius` false and the negation accepts it. The comment
+beside it claimed exactly the safety it did not have. It is unreachable through `pickEntity` today
+(`projectToViewport` refuses a non-finite projection, so the screen point is finite whenever the gate
+runs), which is precisely why nothing could catch it and why it had to be right by construction. Found
+by seeding the "wrong" spelling and watching nothing redden.
+
+**2. A REDUNDANT ARM MAKES ITS OWN SEED UNOBSERVABLE, AND SO DOES A SEED THAT IS SEMANTICALLY A
+NO-OP.** Three seeds came back green for this reason and none of them is a defect. `viewportIconFor`'s
+`alive()` guard is redundant with `World::has<T>`, which is itself documented as "true iff `entity` is
+alive and currently holds a T" — so removing the guard changes nothing observable and `VI8`'s dead and
+null arms pass either way. Passing `style.segments` to `wireCircle` **unclamped** changes nothing
+because `wireCircle` applies the identical `std::clamp(segments, MIN, MAX)` itself; only the RAYS
+clamping differently from the circle is a real drift, and that one reddens `GZ17` immediately. And a
+"locally rebuilt basis" that reproduces `debugCircleBasis`'s formula faithfully is **bit-identical** —
+the exposure exists to prevent DRIFT, not to fix a defect, which is why the seed that catches it must
+change the rule (a flipped cross order reddens `GZ7`, and nothing else).
+
+**3. THE LOG CALLBACK IS ONE GLOBAL SLOT AND `EditorApp` CLAIMS IT.** `I134` reads `~Device`'s own
+leak diagnostics — "releasing N leaked texture(s)" / "sampler(s)" — to prove the icon atlas is
+released, and it was written with the callback installed at the top of the case. It counted zero of
+them, while the seeded build printed both lines to the console: `EditorApp::create` installs the
+Console panel's sink over the top and clears the slot at teardown, so a callback installed before the
+apps is displaced by the first one and simply absent by the time the Device is destroyed. Installed
+**after the last `app.reset()`**, inside the scope that still owns the device, the case reads what it
+was written for and the "destructor omitted" seed reddens all three of its assertions. **Any future
+case that wants to observe a log record around an `EditorApp` lifetime inherits this.**
+
+**4. A CLAUSE-ORDER SEED IS INVISIBLE UNLESS THE LOSING CLAUSE WOULD HAVE WON.** Moving
+`if (icon.hit()) return icon;` below D5's depth rule changed no answer in `PK17`, because that rule
+*refuses* a point candidate behind the mesh and the fall-through reached the icon clause anyway. The
+order is observable only in a scene where the point rule would win — a Transform-only empty NEARER
+than the mesh — which is the arm `PK17` gained. **The general form: a precedence test needs a case
+where the lower-precedence rule produces a DIFFERENT answer, not merely a case where both rules are
+reachable.**
+
+**5. THE EMPTY-BATCH WALL WAS FOUR CASES, AND THE FOURTH IS INVISIBLE TO THE COUNTER GREP.** §0.2
+predicted `I108`, `I109` and `I112` and was right about all three — `I111` reads only LINE quantities
+and icons are billboards, and `I113` uses a `>` bound. What it missed is `I110`'s roster subcase,
+which walks `editor/src/*.cpp` and asserts that **exactly one** file names `DebugDraw`: it goes red
+the moment `viewport_gizmos.cpp` lands, four commits before the producer exists. Its own comment had
+predicted this task would have to update it. **The counter-accessor grep cannot find it, because it
+is a source-text claim about which files exist** — sweep for the TYPE NAME as well as for the
+accessors when adding a producer.
+
+**6. A FLOAT COLOUR CONSTANT CAN COLLIDE WITH `std::numbers`.** `176/255` decoded through the sRGB
+EOTF is `0.43415`, which sits 9.4e-05 from `std::numbers::log10e` and trips
+`modernize-use-std-numbers` — and **every accurate spelling of that colour does**, since the check's
+threshold is wider than the constant's own precision. It carries the tree's fourth `NOLINTNEXTLINE`,
+with the reason beside it.
+
+**AND THE PLAN'S TINT LITERAL WAS WRONG, EXACTLY WHERE §0.14.2 SAID TO CHECK.** It gave
+`secondarySelected.z = 0.0176F` for sRGB byte 32; the sRGB EOTF of `32/255` is **0.014444**, and
+`0.0176` re-encodes to **36**. `VG13` is what says so, and §0.14.2's own instruction — "write the
+value, run `VG13`, and if any byte comes back wrong, MEASURE it" — is what caught it on the first run.
+The shipped value is `0.0144F`, and all six colour channels plus both alphas round-trip exactly.
+
+#### What was deliberately left out
+
+* **A camera FRUSTUM gizmo.** The camera draws an icon and no gizmo. Unowned; a natural fit for 4.7,
+  the first task where a scene camera's framing matters.
+* **Muting truncated point and spot lights.** D12: the bridge drops past its budget in EnTT's storage
+  order, which is not creation order, and the editor walks with `eachEntity` — reproducing it would be
+  a second resolution with a different mechanism. It becomes safe the day `RenderView` can report
+  *which* lights survived.
+* **A mip chain for the atlas.** The 64-texel cell is minified **2.91x** at `VIEWPORT_ICON_SIZE_POINTS`
+  on a 1x display and 1.45x at 2x. Mitigated by construction — every glyph feature is at least
+  `VIEWPORT_ICON_MIN_FEATURE_TEXELS` thick and `VI5`'s run-length arm enforces it — but not
+  eliminated. `Device::uploadTexture` already takes a mip level, so adding a chain later is a
+  downsampler and three lines. A handoff, and validation rows 2 and 4 decide.
+* **Shrinking the cell to 32 texels**, which would make the ratio 1.45x/0.73x and is the cheaper
+  answer, was rejected: it throws away the source resolution the moment row 2 asks for a larger icon.
+* **A light-colour tint on the icon.** `PointLight::color` is unclamped linear HDR and can be black; a
+  black icon on a dark viewport is no handle at all.
+* **E.1.2's billboard depth-bias handoff, DECLINED.** Every billboard this task pushes is
+  `DebugDepth::Overlay`, whose pipeline does not test depth at all, so there is nothing for a bias to
+  correct. `DebugDrawConfig` is byte-identical. **The handoff is re-issued** to whichever task first
+  wants a depth-*tested* billboard.
+* **An icon hover highlight or tooltip** (E.3 / E.6.1), a new sample, and any default-scene change
+  (E.5.2's).
+
+#### The declared holes, each with what covers it instead
+
+* **S19 — the bridge stops CALLING `activeDirectionalLight` and re-derives the winner.** Nothing
+  reddens, because the two agree today; that is the whole point of D8 and also why no runtime case can
+  see the coupling break. `git grep -n activeDirectionalLight -- engine` is its only witness and reads
+  **four** lines (the declaration, the definition, one comment naming it, and the single call inside
+  `buildRenderView`) — read the OUTPUT, not the count.
+* **S23 — the radius gate's spelling.** Fixed (lesson 1 above), and still unobservable at runtime: a
+  NaN screen distance is unreachable through `pickEntity`. Held by construction and by the comment.
+* **S25b — `entityBounds(world, e, false).center()` WITHOUT the lookup** is bit-equal to
+  `transformPoint(model, Vec3::zero())` for every entity in the suite, because a primitive's box is
+  centred on its own origin and an unresolvable reference takes the point branch. Only the
+  lookup-passing spelling (S25a) differs, and `PK22` catches that one.
+* **S24a — removing `picking.hpp`'s `static_assert` alone** changes no behaviour; `VI11` asserts the
+  same relationship at runtime, so one is redundant with the other by design. Halving the size (S24b)
+  reddens both `VI11` and `PK19`.
+* **S28 — the sampler left at `AddressMode::Repeat`.** No automated tier can see it: the failure is a
+  faint ghost of the neighbouring glyph on a cell edge. **Validation row 3 is its only cover anywhere.**
+* **S29 — `iconSizePixels` passed in points.** `lastFramebufferScale` is 1.0 on 1x hardware, so the
+  seed is a literal no-op here. **Validation row 4, on a 2x display, is its only cover** — and this
+  project has not had one for eight tasks.
+* **S35 — `selectionSnapshot` left uncleared on `renderScene`'s success exit.** Unobservable: the only
+  path that could draw a stale snapshot is a `renderScene` with no preceding `onDraw`, and the guard
+  chain's `renderRequested` check returns before the emit on exactly that path. Held by the same D12
+  discipline `I123` pins for `selectionMaskSet`.
+* **S31 — the emit moved after `flush`** reddens `I131(b)` but **not** `I132`: the batch is drained by
+  the flush, so the lines simply draw one frame late and a case that ticks twice before reading sees
+  the same count. The source-text ordering pin is the real witness.
+
+#### Corrections this task makes to earlier entries
+
+* **E.1.2's struck depth-bias plan named `DG19`**, which never shipped. This task allocates that id
+  for the spot cone's pixel case, and `render_debug_draw_test.cpp`'s header comment now records it.
+  `DG17` remains the one deliberate hole, with its own recorded reason.
+* **CLAUDE.md's reflect-tools-OFF removal figure** was 75 + 4 = 79; measured now it is 77 + 4 = 81, for
+  93 entries. The total was right; the breakdown had gone stale by two `reflect-gen.components_*`
+  entries.
+
+#### Handoffs this task creates or leaves
+
+| Handed to | What |
+|---|---|
+| **unowned** | The camera **frustum** gizmo — a natural fit for 4.7 |
+| **unowned** | Muting point/spot lights past the bridge's truncation budget |
+| **unowned** | Spot and point **shadows** — recorded by E.2.2, unchanged here |
+| **unowned, re-issued** | E.1.2's **billboard depth bias**, declined here because every billboard this task pushes is `Overlay` |
+| **unowned, new** | A **mip chain for the icon atlas**, if the manual pass finds the glyphs crawl |
+| **E.2.4** | The view-options row now carries **two** checkboxes; both move into the popover together |
+| **E.3.1** | Unchanged: the palette key is still E.3.1's, and this task adds no axis colour |
+| **E.5.1** | The primitive-material defect is reproduced, not fixed, for the **fourth** task running |
+| **E.5.2** | Create ▸ Light ▸ Directional / Point / Spot now lands something **visible** the moment it is created |
+| **E.6.1** | The four tints are candidates for `EditorTheme`, exactly as `axis_palette.hpp` already is |
+
+**Two pre-existing warnings surfaced and were left alone.** Forcing a recompile of every changed file
+for the warning sweep rebuilt `tests/render_sky_test.cpp` (it includes the umbrella this task edits),
+which emits two `-Wunused-result` warnings at `:1023` and `:1038` — E.2.1's, in a file this branch
+does not touch. A third, in `tests/editor/picking_test.cpp:893`, IS in a file this task edits and was
+silenced in passing. **The general point is CLAUDE.md's own: an incremental build re-emits no warning
+for a TU it does not rebuild, so a warm-tree warning sweep measures nothing.**
+
+**The validation page exists and is UNRUN on every platform.** Twelve rows,
+`editor/validation/E.2.3-light-gizmos-viewport-icons.md`, gitignored. Rows 3 and 4 are the only cover
+seeds S28 and S29 have anywhere; rows 2 and 7 are the only judgement on D14's magnitudes
+(`VIEWPORT_ICON_SIZE_POINTS` and `mutedDirectional` have no tier-0 case pinned to their values); row 6
+covers the half of `I133` that no seam can observe; and **row 4 is the first row in eight tasks that
+can answer E.1.1's thick-line handoff at all** — a billboard controls its own apparent size, so the
+question there is whether the gizmo LINES are legible. On 1x hardware it records NOT EXECUTABLE and
+the handoff stays **UNFIRED**, not cleared.
+
+#### The code-review round — four findings closed, three of them with seed proofs
+
+**Four more commits, SIXTEEN on the branch.** No merge blockers: three "should fix" items plus one
+wrong comment, each its own independently gated commit. `ctest -N` stays **174**; doctest
+`aero_editor_shell_test` **1827 -> 1829**, `aero_editor_imgui_test` **170 -> 170** (a probe is not a
+`TEST_CASE`), the other five binaries unmoved. Only one of the four touched shipped code, and it was
+a five-line gate.
+
+**1. NOTHING DISTINGUISHED THE FOUR ATLAS GLYPHS, AND EVERY TIER WAS BLIND TO IT.** `glyphAlpha`
+(`viewport_icons.cpp:181-193`) is a total switch mapping a `ViewportIconKind` to one of four
+rasteriser functions. Pointing one arm at a sibling — `case SpotLight: return pointAlpha(px, py);` —
+was **measured, not predicted**: with the seed applied, exactly **one case of 1828 failed**, and it
+was the new one. Every pre-existing case reads a BAND that all four glyphs satisfy — `VI3` (RGB
+exactly 255), `VI4` (gutter transparent), `VI5` (ink present, not a filled square, one run
+>= `VIEWPORT_ICON_MIN_FEATURE_TEXELS`), `VI6` (determinism), `VI7` (source text) — `VG2` matches an
+icon by its **UV rect**, never by its pixels, and no `DG` case reads an icon texel. The user would
+have seen a point glyph on every spot light. `viewport_icons.hpp` states the enum's order is three
+things at once (cell order, priority order, switch order) and **`viewportIconCell` and `glyphAlpha`
+are two separate total switches over it**: `VI1` pinned the first and nothing pinned the second.
+**`VI12`** extracts each cell's 64x64 alpha plane and asserts all six pairs differ, with a **positive
+control that each cell equals ITSELF read out of an INDEPENDENTLY built atlas** — without which the
+six inequalities are vacuous, since an extractor returning fresh garbage per call, or reading past the
+cell it was asked for, satisfies every one of them.
+
+**THE RULE THAT OUTLIVES IT: A TOTAL SWITCH DISPATCHING TO N SIBLING FUNCTIONS NEEDS A CASE ASSERTING
+THE N RESULTS DIFFER.** Every other property of a generated image is a band, and a band cannot see two
+arms pointing at one function. The dual — a case pinning WHICH cell a kind occupies — already existed
+and proves nothing about WHAT is drawn there.
+
+**2. `I134` WAS GREEN WHETHER OR NOT IT COULD OBSERVE ANYTHING.** The case installs `setLogCallback`
+after the last `app.reset()`, destroys the `Device`, and asserts three counters are `0` — but when
+nothing leaks `~Device` emits **no WARN at all** (`sdl_gpu_backend.cpp:812-832` logs only for a
+container that is non-empty), so all three assertions are satisfied identically by "the atlas was
+released" and by "the callback was never invoked". Commit `e71c428` exists **because the second state
+was the shipped one**, and the case still contained nothing that would notice if that recurred. It now
+emits one distinctive `AERO_LOG_WARN` after installing the callback and before `device.reset()`,
+counts the records carrying that token, and `REQUIRE`s exactly one arrived; the text carries no
+`leaked` token, so the probe cannot disturb the three counters it exists to make meaningful. Seed
+proof: displacing the installation back above the loop reddens it at `REQUIRE( 0 == 1 )` — **and the
+spdlog console still printed the WARN while the callback counted none**, which is precisely the state
+the three `== 0` assertions cannot tell from success.
+
+**THE RULE: A CASE THAT ASSERTS AN OBSERVER SAW NOTHING MUST FIRST PROVE THE OBSERVER IS LISTENING.**
+An absence assertion over a channel that can be silently unplugged is an assertion about the plug.
+
+**3. THE ICON HALF OF `emitViewportGizmos` WAS NOT TOTAL WHILE THE GIZMO HALF WAS SCRUPULOUSLY SO.**
+Every emitter in `light_gizmo.cpp` refuses a non-finite position, direction, range or angle with zero
+lines and **zero rejections** — `GZ5`, `GZ11` and `GZ13` each assert `rejectedLines() == 0`. The icon
+arm handed `originOf(worldMatrix(world, e))` straight to `DebugDrawBatch::billboard`, which for a
+non-finite centre takes its **rejection** branch (`++rejectedBillboardCount`, `return false`) — so
+**AC-12** ("every degenerate input emits a stated picture or nothing at all, and never a NaN, **a
+rejection** or a log record") was broken for that input class, and `iconsDropped`'s doc comment ("the
+batch refused them: the billboard budget was full") was false whenever it fired. The walk now gates
+the push on `finite(center)`, matching every emitter field for field: **skipped silently and counted
+NOWHERE**, neither as an icon nor as a drop, exactly as an emitter returning 0 lines is counted
+nowhere.
+
+**THE COUNTER IS NOT SPLIT, and the gate alone is what makes the doc comment true again**: with a
+non-finite centre unable to reach the batch, the budget is the only route into `billboard()`'s false
+answer **for any world this walk can be handed**. The one remaining route is a CALLER passing a
+non-finite or non-positive `iconSizePixels` — a broken caller rather than a degenerate world — and the
+comment now says so rather than implying it cannot happen. `VG12` is untouched and stays meaningful:
+its scenario has no rejections at all, which is exactly why it could not discriminate the two ways the
+batch answers false. **`VG17`** is the new arm — a NaN and an infinite `Transform` position, each
+asserting `rejectedBillboards() == 0` beside `iconsDropped == 0`, with a finite sibling **of a
+different kind** as the anti-vacuity control so `iconFor`'s UV match stays unambiguous. Seed proof:
+removing the gate reddens `VG17` in **both** subcases at `1 == 0` on both counters, and **nothing else
+in the 1829-case binary notices**.
+
+**4. AN INVERTED DESTRUCTION-ORDER COMMENT** (`viewport_panel.hpp`). It claimed the atlas members are
+"DECLARED BEFORE `debugDrawer` and therefore DESTROYED AFTER it". `~ViewportPanel`'s **body** runs
+before any member destructor and it calls `destroyIconAtlas()`, so the atlas is released **before**
+`~DebugDraw` — and the declaration order is irrelevant either way, because `rhi::TextureHandle` and
+`rhi::SamplerHandle` are not RAII types and their member destructors release nothing at all. Harmless
+in fact; the reasoning a future reader would rely on was backwards. The comment now states the two
+real reasons, both about the **borrow** rather than the order: nothing flushes in between (the
+destructor's body is that one call, and the only other call site is followed immediately by
+`debugDrawer.reset()`), and `DebugDraw` neither destroys nor reads a borrowed handle at teardown —
+`setBillboardTexture` stores it verbatim ("BORROWED, both: never destroyed here, never adopted") and
+`flush()` is its only reader, falling back to the owned 1x1 white texel on an invalid handle. Comment
+only; no code moved and no member reordered.
+
+**AND ONE MEASUREMENT WORTH NOT RE-DERIVING: `aero_editor_imgui_test`'s ASSERTION COUNT IS
+RUN-TO-RUN NONDETERMINISTIC.** Three runs read **28966 / 28961 / 28945**, two of them from a
+byte-identical binary — the GPU-tier cases that tick to quiescence assert inside loops whose length
+depends on timing and on the filesystem. **The `test cases:` count is the stable instrument** (170,
+unmoved through all four commits); an assertion delta from that binary is not evidence of anything.
+CLAUDE.md's "read doctest's own `filters:` line" already says which number to take — this says why the
+other one moves on its own.

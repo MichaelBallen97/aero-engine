@@ -230,7 +230,25 @@ Subtasks:
 - Shader arm: cone attenuation with inner/outer smoothing, composed with the existing falloff
 - **The built-in sweep** again, as in E.2.1; `docs/09` §2.3 gains the component
 
-### E.2.3 Light gizmos & viewport icons · P0 · M · depends: E.1.1, E.2.2
+### E.2.3 Light gizmos & viewport icons · P0 · M · depends: E.1.1, E.2.2 — **CODE COMPLETE**
+**Sized M in this roadmap, recorded L before the first commit, landed L** (branch
+`feat/E.2.3-light-gizmos-viewport-icons`, twelve commits — the plan's ten plus two the sabotage pass
+forced). **Nine new tracked files, sixteen edited source/test/CMake files plus three docs**, exactly
+the inventory the plan predicted. **`ctest -N` 174 -> 174 and its entry SET byte-identical to the
+branch point**: no component, no target, no ctest entry, and the built-in count stays **TEN**. doctest
+`aero_tests` **1377 -> 1400**, `aero_editor_shell_test` **1793 -> 1827**, `aero_editor_imgui_test`
+**163 -> 170**; the other four unmoved. Guards math **487 -> 496**, platform **91 -> 92**, rhi
+**161 -> 163**, scene **91 -> 92**, golden-rule **163 -> 165**, project-no-delete B **77 -> 79**;
+audio and boundary-probes unmoved. Reduced configurations re-measured fresh: **161** and **93**. The
+sabotage matrix found **two real holes** — a radius gate whose "NaN-safe" spelling was inverted by
+being translated from a refusal into an acceptance, and an `I134` whose log callback was displaced by
+`EditorApp`'s own Console sink — and both are fixed in their own commits. The validation page is
+written and **unrun on every platform**.
+_(Sized L for what the roadmap's M does not name: a CPU rasteriser and its GPU lifetime, including
+the panel's first user-declared destructor; a picking-rule change in the tree's most carefully
+reasoned pure function, whose existing comment argues FOR the rule being changed; the first
+production exercise of E.1.1's billboard half; a shared-batch assertion wall that fires on the
+DEFAULT scene; and four test batteries plus a GPU pixel tier.)_
 **Goal:** close the debt `selection_overlay.cpp` already records in its own comment — *"the pick
 target for a light is INVISIBLE until you hit it"* — and make a light's aim, reach and cone
 something you can see and therefore something you can aim.
@@ -243,6 +261,25 @@ Subtasks:
 - Wire gizmos: directional ray bundle, point range sphere, spot cone (inner and outer)
 - Selected vs unselected styling; the active-directional-light indicator
 - Editor chrome only — icons and gizmos never appear in a scene render outside the editor viewport
+
+_Outcome:_ `render::emitLightGizmo{Directional,Point,Spot}` are pure emitters beside `emitDebugGrid`,
+with `debugCircleBasis` promoted out of `debug_draw.cpp`'s anonymous namespace so a ray lands on an
+emitted **vertex** bit for bit rather than merely on the circle. **The spot's rim sits on the range
+sphere, never at `range * tan(outer)`** — the component clamps `outerConeRadians` to exactly
+`HALF_PI` and `tan(HALF_PI)` is infinite there. `editor::viewportIconFor` is the ONE predicate three
+readers share (the emitter, the picker, and the panel's marker filter); the 256x64 atlas is rasterised
+on the CPU from signed distances with RGB pinned at 255 so one glyph set tints four ways exactly, and
+it reaches only `std::sqrt` and `std::lround` from libm so the image is bit-identical on every lane.
+**A visible icon wins a click at any depth** — 2.3.2's D5 depth rule justified itself entirely by the
+marker being invisible, and that premise is what this task removes. `scene_render::activeDirectionalLight`
+resolves the active sun **once** and `buildRenderView` calls it, so the bridge and the editor cannot
+disagree by construction. Handoffs: the camera **frustum** gizmo, muting truncated point/spot lights
+and spot/point **shadows** stay unowned; E.1.2's billboard depth bias is **declined and re-issued**
+(every billboard here is `Overlay`, which does not test depth); a **mip chain for the atlas** is a new
+unowned handoff, since a 64-texel cell at 22 points is a 2.91x minification; **E.2.4** inherits a
+view-options row with two checkboxes; **E.5.1**'s primitive-material defect is reproduced for the
+fourth task running; **E.5.2** now lands something visible the moment a light is created; **E.6.1**
+inherits four more theme candidates.
 
 ### E.2.4 Material-preview parity + exposure relocation · P1 · M · depends: 3.4.2, E.2.1
 **Goal:** the material preview should predict what the material will look like in the scene. Today it

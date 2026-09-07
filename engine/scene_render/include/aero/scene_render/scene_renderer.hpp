@@ -143,6 +143,21 @@ inline constexpr std::size_t DEFAULT_SELECTION_MASK_ENTITY_CAP = 256;
                                                      const AssetBindingTable* bindings = nullptr,
                                                      std::size_t entityCap = DEFAULT_SELECTION_MASK_ENTITY_CAP);
 
+// The scene's ACTIVE directional light: the lowest entity index carrying a DirectionalLight, which is
+// the one buildRenderView lights the scene with (D6's rule, unchanged since 1.4.1). An INVALID Entity
+// means the scene has none.
+//
+// IT EXISTS BECAUSE THE EDITOR CANNOT ASK RenderView. render::RenderView is scene-free by the golden
+// rule and can never carry an engine::Entity, so the viewport's "which directional light did the
+// bridge ignore?" question had no answer that was not a SECOND resolution -- and a second walk with a
+// different iteration mechanism (each<T> here, eachEntity in the editor) is exactly how
+// buildSelectionMaskSet's D11 says a tie-break drifts. buildRenderView CALLS THIS, so the two cannot
+// disagree BY CONSTRUCTION rather than by review.
+//
+// Non-const World& for World::each<>'s sake, like buildRenderView. Emits NO log record on any path,
+// and does NOT touch RenderView::directionalCount -- that diagnostic is per-WALK, not per-winner.
+[[nodiscard]] Entity activeDirectionalLight(World& world);
+
 // Room for future knobs (ambient override, max lights, ...); v0 uses defaults.
 struct SceneRendererConfig {};
 

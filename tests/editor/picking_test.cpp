@@ -49,10 +49,12 @@ using engine::editor::pickEntity;
 using engine::editor::PickRequest;
 using engine::editor::PickResult;
 using engine::editor::pickSelectionAction;
+using engine::editor::POINT_PICK_RADIUS_POINTS;
 using engine::editor::projectToViewport;
 using engine::editor::Ray;
 using engine::editor::rayLocalBoxHit;
 using engine::editor::Selection;
+using engine::editor::VIEWPORT_ICON_HALF_POINTS;
 using engine::editor::viewportNdc;
 using engine::editor::viewportRay;
 
@@ -890,7 +892,7 @@ TEST_CASE("picking: a LARGE mesh is picked where the old half-unit box missed (P
     SUBCASE("the SAME click against the cube's box would be a mesh miss") {
         // The control: the identical entity as a PRIMITIVE, whose box really is [-0.5, 0.5]^3.
         World primitiveWorld;
-        makeMesh(primitiveWorld, Vec3::zero());
+        (void)makeMesh(primitiveWorld, Vec3::zero());
         const PickResult result = pickEntity(primitiveWorld, camera, request);
         CHECK_FALSE(result.hit());
     }
@@ -1273,5 +1275,269 @@ TEST_CASE("picking: viewportRay's ortho arm has THREE finiteness guards (PK16)")
             CAPTURE(aspect);
             CHECK(engine::lengthSquared(viewportRay(camera, Vec2{0.0F, 0.0F}, aspect).direction) == 0.0F);
         }
+    }
+}
+
+// ---- task E.2.3: the icon arm ---------------------------------------------------------------
+
+namespace {
+
+// A light at `position`: a Transform plus one light component, so viewportIconFor answers for it and
+// the pick's icon arm makes it a candidate.
+[[nodiscard]] Entity makePointLight(World& world, Vec3 position) {
+    const Entity e = world.create();
+    world.add<Transform>(e, Transform{.position = position});
+    world.add<engine::PointLight>(e, engine::PointLight{});
+    return e;
+}
+
+// A cube four world units across, so a click 15 points off its centre is still comfortably on it
+// while being well outside the icon's 11-point disc.
+[[nodiscard]] Entity makeBigCube(World& world, Vec3 position) {
+    return makeMesh(world, position, Quat::identity(), Vec3{4.0F, 4.0F, 4.0F});
+}
+
+}  // namespace
+
+TEST_CASE("picking: a visible icon wins a click even with a NEARER mesh under it (PK17)") {
+    // THE HEADLINE D9 CLAIM. 2.3.2's D5 depth rule justified itself entirely by the marker being
+    // INVISIBLE; this task draws the icon, so the premise is gone and the icon wins outright.
+    const EditorCamera camera = testCamera();
+    constexpr float ASPECT = 1.0F;
+    World world;
+    const Entity cube = makeBigCube(world, Vec3::zero());                 // spans z in [-2, 2]
+    const Entity light = makePointLight(world, Vec3{0.0F, 0.0F, -5.0F});  // BEHIND it
+
+    const Vec2 centre = ndcOf(camera, ASPECT, Vec3{0.0F, 0.0F, -5.0F});
+
+    SUBCASE("the click on the icon selects the LIGHT, not the cube in front of it") {
+        const PickResult result = pickEntity(world, camera, requestAt(centre));
+        REQUIRE(result.hit());
+        CHECK(result.entity == light);
+        CHECK(result.isPoint);
+    }
+    SUBCASE("anti-vacuity 1: a click OFF the icon still selects the cube") {
+        const Vec2 offIcon = offsetNdcByPoints(centre, Vec2{15.0F, 0.0F}, VIEWPORT_POINTS);
+        const PickResult result = pickEntity(world, camera, requestAt(offIcon));
+        REQUIRE(result.hit());
+        CHECK(result.entity == cube);
+        CHECK_FALSE(result.isPoint);
+    }
+    SUBCASE("anti-vacuity 2: the SAME click with the arm disabled selects the cube") {
+        PickRequest request = requestAt(centre);
+        request.iconRadiusPoints = 0.0F;
+        const PickResult result = pickEntity(world, camera, request);
+        REQUIRE(result.hit());
+        CHECK(result.entity == cube);
+        CHECK_FALSE(result.isPoint);
+    }
+    SUBCASE("the icon clause is FIRST: it beats a NEARER point candidate, not only a nearer mesh") {
+        // ADDED BY THE SABOTAGE PASS, and the reason is worth keeping: with only the two arms above,
+        // moving `if (icon.hit()) return icon;` BELOW D5's point rule changed nothing, because that
+        // rule refuses a point candidate that is BEHIND the mesh and the fall-through then reached
+        // the icon clause anyway. The order is only observable when the point rule would WIN.
+        //
+        // So: a Transform-only empty NEARER than the cube (which D5 elects over the cube), plus the
+        // light behind it. Created FIRST so it takes the lower index and therefore wins the point
+        // arm's own tie-break -- both candidates project to the same screen point.
+        World ordered;
+        const Entity empty = makePoint(ordered, Vec3{0.0F, 0.0F, 5.0F});
+        const Entity cubeBehind = makeBigCube(ordered, Vec3::zero());
+        const Entity lightBehind = makePointLight(ordered, Vec3{0.0F, 0.0F, -5.0F});
+        const PickResult result = pickEntity(ordered, camera, requestAt(centre));
+        REQUIRE(result.hit());
+        CHECK(result.entity == lightBehind);
+        CHECK_FALSE(result.entity == empty);
+        CHECK_FALSE(result.entity == cubeBehind);
+        // ...and the control: with the arm disabled, D5's rule really does elect the NEARER empty,
+        // which is what makes the assertion above a statement about the clause ORDER.
+        PickRequest disabled = requestAt(centre);
+        disabled.iconRadiusPoints = 0.0F;
+        const PickResult fallback = pickEntity(ordered, camera, disabled);
+        REQUIRE(fallback.hit());
+        CHECK(fallback.entity == empty);
+    }
+}
+
+TEST_CASE("picking: the new rule is ICON-ONLY -- D5's depth rule is unchanged otherwise (PK18)") {
+    // The seed this catches: "the icon clause was written above the point clause for EVERYTHING".
+    // A Transform-only empty draws no icon, so it must still lose to the wall in front of it.
+    const EditorCamera camera = testCamera();
+    constexpr float ASPECT = 1.0F;
+    World world;
+    const Entity cube = makeBigCube(world, Vec3::zero());
+    const Entity empty = makePoint(world, Vec3{0.0F, 0.0F, -5.0F});
+
+    const Vec2 centre = ndcOf(camera, ASPECT, Vec3{0.0F, 0.0F, -5.0F});
+    const PickResult result = pickEntity(world, camera, requestAt(centre));
+    REQUIRE(result.hit());
+    CHECK(result.entity == cube);
+    CHECK_FALSE(result.isPoint);
+    CHECK_FALSE(result.entity == empty);
+}
+
+TEST_CASE("picking: the icon's radius is honoured, and it is WIDER than the point disc (PK19)") {
+    const EditorCamera camera = testCamera();
+    constexpr float ASPECT = 1.0F;
+    World world;
+    const Entity light = makePointLight(world, Vec3::zero());
+    const Vec2 centre = ndcOf(camera, ASPECT, Vec3::zero());
+
+    const auto hitAt = [&](float offsetPoints) {
+        return pickEntity(world, camera,
+                          requestAt(offsetNdcByPoints(centre, Vec2{offsetPoints, 0.0F}, VIEWPORT_POINTS)));
+    };
+
+    constexpr float EPSILON_POINTS = 0.25F;
+    SUBCASE("just inside the icon radius: a hit") {
+        const PickResult result = hitAt(VIEWPORT_ICON_HALF_POINTS - EPSILON_POINTS);
+        REQUIRE(result.hit());
+        CHECK(result.entity == light);
+    }
+    SUBCASE("just outside it: a miss") { CHECK_FALSE(hitAt(VIEWPORT_ICON_HALF_POINTS + EPSILON_POINTS).hit()); }
+    SUBCASE("past the POINT radius but inside the ICON radius: still a hit") {
+        // The inequality VI11 and picking.hpp's own static_assert are about: the point arm has already
+        // given up here, and the icon arm has not.
+        const PickResult result = hitAt(POINT_PICK_RADIUS_POINTS + EPSILON_POINTS);
+        REQUIRE(result.hit());
+        CHECK(result.entity == light);
+        // ...and with the icon arm disabled the SAME click is a miss, which is what makes the arm
+        // above the discriminator rather than the point disc.
+        PickRequest disabled = requestAt(
+            offsetNdcByPoints(centre, Vec2{POINT_PICK_RADIUS_POINTS + EPSILON_POINTS, 0.0F}, VIEWPORT_POINTS));
+        disabled.iconRadiusPoints = 0.0F;
+        CHECK_FALSE(pickEntity(world, camera, disabled).hit());
+    }
+}
+
+TEST_CASE("picking: iconRadiusPoints of 0, -1 and NaN each disable the arm entirely (PK20)") {
+    // The NaN arm is about a NaN RADIUS, and the OUTER `iconRadiusPoints > 0.0F` gate is what refuses
+    // it: NaN > 0 is false, so the whole arm is skipped. A NaN DISTANCE is a different question and is
+    // UNREACHABLE through pickEntity -- projectToViewport refuses a non-finite projection, so the
+    // screen point is finite whenever the gate runs -- which is why that half is held by the gate's
+    // SPELLING (`d <= radius`, the point arm's own form) rather than by a case here.
+    const EditorCamera camera = testCamera();
+    constexpr float ASPECT = 1.0F;
+    World world;
+    const Entity cube = makeBigCube(world, Vec3::zero());
+    const Entity light = makePointLight(world, Vec3{0.0F, 0.0F, -5.0F});
+    const Vec2 centre = ndcOf(camera, ASPECT, Vec3{0.0F, 0.0F, -5.0F});
+
+    // Enabled, the light wins -- the control that makes the three refusals below mean something.
+    CHECK(pickEntity(world, camera, requestAt(centre)).entity == light);
+
+    for (const float radius : {0.0F, -1.0F, QUIET_NAN}) {
+        CAPTURE(radius);
+        PickRequest request = requestAt(centre);
+        request.iconRadiusPoints = radius;
+        const PickResult result = pickEntity(world, camera, request);
+        REQUIRE(result.hit());
+        CHECK(result.entity == cube);  // byte-identical to 2.3.2's own answer
+        CHECK_FALSE(result.isPoint);
+    }
+}
+
+TEST_CASE("picking: two overlapping icons -- nearest in SCREEN distance, then lowest index (PK21)") {
+    const EditorCamera camera = testCamera();
+    constexpr float ASPECT = 1.0F;
+
+    SUBCASE("the nearer icon wins, in BOTH creation orders") {
+        // The click sits on the origin light; the other is one world unit to the right. Creating them
+        // in opposite orders is what makes this a statement about screen distance rather than about
+        // which entity the walk happened to reach first.
+        World first;
+        const Entity firstNear = makePointLight(first, Vec3::zero());
+        (void)makePointLight(first, Vec3{1.0F, 0.0F, 0.0F});
+        World second;
+        (void)makePointLight(second, Vec3{1.0F, 0.0F, 0.0F});
+        const Entity secondNear = makePointLight(second, Vec3::zero());
+
+        const Vec2 centre = ndcOf(camera, ASPECT, Vec3::zero());
+        CHECK(pickEntity(first, camera, requestAt(centre)).entity == firstNear);
+        CHECK(pickEntity(second, camera, requestAt(centre)).entity == secondNear);
+    }
+    SUBCASE("at a BIT-EQUAL screen distance the LOWEST index wins") {
+        World world;
+        const Entity low = makePointLight(world, Vec3::zero());
+        const Entity high = makePointLight(world, Vec3::zero());
+        REQUIRE(low.index < high.index);
+        const Vec2 centre = ndcOf(camera, ASPECT, Vec3::zero());
+        CHECK(pickEntity(world, camera, requestAt(centre)).entity == low);
+
+        // ANTI-VACUITY: the other one really is a candidate -- removing the winner elects it.
+        REQUIRE(world.destroy(low));
+        CHECK(pickEntity(world, camera, requestAt(centre)).entity == high);
+    }
+}
+
+TEST_CASE("picking: a mesh-carrying light is pickable by its ICON and by its BODY (PK22)") {
+    // What running the icon arm BEFORE the mesh/point split buys, and the case that reddens if the
+    // arm is moved below the mesh arm's early return, folded into the point arm, or made to read
+    // entityBounds(..., lookup).center() -- the body is DELIBERATELY offset from the entity origin,
+    // so "where the icon is drawn" and "where the geometry is" are different points.
+    //
+    // Note the mesh arm RETURNS on a resolved box whether it hits or misses, so without the icon arm
+    // this entity is completely unpickable at its own origin.
+    const EditorCamera camera = testCamera();
+    constexpr float ASPECT = 1.0F;
+    World world;
+    const Entity e = makeReferenced(world, Vec3::zero(), pickMeshGuid(7), 0);
+    world.add<engine::PointLight>(e, engine::PointLight{});
+    MeshBoundsLookup lookup;
+    lookup.set(MeshBoundsKey{pickMeshGuid(7), 0}, Aabb{Vec3{2.0F, -1.0F, -1.0F}, Vec3{4.0F, 1.0F, 1.0F}});
+
+    const auto requestFor = [&lookup](Vec2 ndc) {
+        return PickRequest{.ndc = ndc,
+                           .aspect = ASPECT,
+                           .viewportSizePoints = VIEWPORT_POINTS,
+                           .iconRadiusPoints = VIEWPORT_ICON_HALF_POINTS,
+                           .meshBounds = &lookup};
+    };
+
+    SUBCASE("its ICON, at the entity ORIGIN") {
+        const PickResult result = pickEntity(world, camera, requestFor(ndcOf(camera, ASPECT, Vec3::zero())));
+        REQUIRE(result.hit());
+        CHECK(result.entity == e);
+        CHECK(result.isPoint);
+        // ANTI-VACUITY: with the arm disabled the origin is a complete miss, because the mesh arm
+        // returns on its resolved box and the point arm is never reached for a mesh entity.
+        PickRequest disabled = requestFor(ndcOf(camera, ASPECT, Vec3::zero()));
+        disabled.iconRadiusPoints = 0.0F;
+        CHECK_FALSE(pickEntity(world, camera, disabled).hit());
+    }
+    SUBCASE("its BODY, three units away from that origin") {
+        const Vec2 body = ndcOf(camera, ASPECT, Vec3{3.0F, 0.0F, 0.0F});
+        const PickResult result = pickEntity(world, camera, requestFor(body));
+        REQUIRE(result.hit());
+        CHECK(result.entity == e);
+        CHECK_FALSE(result.isPoint);  // the MESH arm answered, so the two coexist
+    }
+}
+
+TEST_CASE("picking: the icon arm is projection-aware, and inherits E.1.3's asymmetry (PK23)") {
+    // projectToViewport's ProjectionMode is NON-DEFAULTED (E.1.3 D12), so the new call site had to
+    // choose. It reads camera.projectionMode(), which is what makes both arms below true.
+    constexpr float ASPECT = 1.0F;
+
+    SUBCASE("an icon is clickable under an ORTHOGRAPHIC camera") {
+        const EditorCamera camera = orthoCamera();
+        World world;
+        const Entity light = makePointLight(world, Vec3::zero());
+        const PickRequest request{.ndc = Vec2{0.0F, 0.0F}, .aspect = ASPECT, .viewportSizePoints = VIEWPORT_POINTS};
+        const PickResult result = pickEntity(world, camera, request);
+        REQUIRE(result.hit());
+        CHECK(result.entity == light);
+        CHECK(result.isPoint);
+    }
+    SUBCASE("a light between the eye and the near plane is REFUSED in ortho and ACCEPTED in perspective") {
+        // PK14's shipped asymmetry, re-asserted at the new call site: perspective's `w > 0` means
+        // "in front of the EYE" and ortho's `z > 0` means "beyond the NEAR PLANE".
+        const EditorCamera ortho = orthoCamera();
+        const EditorCamera persp = testCamera();
+        World world;
+        const Entity light = makePointLight(world, Vec3{0.0F, 0.0F, persp.position().z - 0.05F});
+        const PickRequest request{.ndc = Vec2{0.0F, 0.0F}, .aspect = ASPECT, .viewportSizePoints = VIEWPORT_POINTS};
+        CHECK_FALSE(pickEntity(world, ortho, request).hit());
+        CHECK(pickEntity(world, persp, request).entity == light);
     }
 }
