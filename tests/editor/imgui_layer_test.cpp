@@ -8930,20 +8930,25 @@ TEST_CASE("editor: the DebugDraw wiring's three source-text invariants hold (tas
         CHECK(namesSceneColor);
         CHECK(namesSceneDepth);
     }
-    SUBCASE("NO OTHER editor source names DebugDraw at all") {
-        // THIS TASK PUSHES NOTHING FROM THE EDITOR, and the walk is what says so. E.1.2 and E.2.3
-        // will legitimately add names here and will have to update this case when they do -- which is
-        // the point: the next task to touch it has to say so out loud.
+    SUBCASE("ONLY the two ROSTERED editor sources name DebugDraw at all") {
+        // A ROSTER, and every entry has to earn its place out loud. E.1.1 shipped this as "no other
+        // editor source names DebugDraw at all" and predicted, in this very comment, that E.1.2 and
+        // E.2.3 would legitimately add names and would have to update it. E.1.2 did not (the grid's
+        // emitter is a render:: free function called from viewport_panel.cpp, which was already the
+        // sole entry); task E.2.3 does, because viewport_gizmos.cpp takes a render::DebugDrawBatch&
+        // and fills it. That is the ONLY name it adds, and it adds no second CALL SITE -- the emit
+        // still happens once, in viewport_panel.cpp, which the emitViewportGizmos subcase pins.
         //
         // A REAL DIRECTORY WALK rather than a snapshot list: a hand-written roster of 75 files goes
         // stale the moment a file is added, and it goes stale SILENTLY (a new file naming DebugDraw
-        // would simply not be looked at). The two anti-vacuity checks below are what make the walk
-        // trustworthy -- it must find a plausible number of files, and it must find the ONE file that
-        // really does name the type. Headers are not walked; viewport_panel.hpp names it too, by
-        // design, and that is the seam's declaration.
+        // would simply not be looked at). The three anti-vacuity checks below are what make the walk
+        // trustworthy -- it must find a plausible number of files, and it must find BOTH files that
+        // really do name the type. Headers are not walked; viewport_panel.hpp and
+        // viewport_gizmos.hpp name it too, by design, and those are the seams' declarations.
         std::size_t scanned = 0;
         std::size_t namingFiles = 0;
         bool viewportNamesIt = false;
+        bool gizmosNameIt = false;
         for (const std::filesystem::directory_entry& entry : std::filesystem::directory_iterator{AERO_EDITOR_SRC_DIR}) {
             if (!entry.is_regular_file() || entry.path().extension() != ".cpp") {
                 continue;
@@ -8963,13 +8968,16 @@ TEST_CASE("editor: the DebugDraw wiring's three source-text invariants hold (tas
             }
             ++namingFiles;
             const bool isViewportPanel = entry.path().filename() == "viewport_panel.cpp";
+            const bool isViewportGizmos = entry.path().filename() == "viewport_gizmos.cpp";
             CAPTURE(path);
-            CHECK(isViewportPanel);
+            CHECK((isViewportPanel || isViewportGizmos));
             viewportNamesIt = viewportNamesIt || isViewportPanel;
+            gizmosNameIt = gizmosNameIt || isViewportGizmos;
         }
         CHECK(scanned >= 50U);   // anti-vacuity: the walk really read the directory
         CHECK(viewportNamesIt);  // anti-vacuity: the reader really finds the token where it IS
-        CHECK(namingFiles == 1U);
+        CHECK(gizmosNameIt);     // ...and in the second rostered file too
+        CHECK(namingFiles == 2U);
     }
     SUBCASE("EXACTLY ONE emitDebugGrid call, in viewport_panel.cpp, between the render and the flush") {
         // task E.1.2's D9: "the grid never appears in a game or exported view" is a CALL-SITE

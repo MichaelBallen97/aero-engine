@@ -101,6 +101,7 @@ add_library(aero_editor_core STATIC
     src/gizmo.cpp                # task 2.3.3 -- the pure gizmo model (ImGui-free AND ImGuizmo-free)
     src/gizmo_style.cpp         # task E.1.5 -- the pure ImGuizmo style + screen-size model (ImGuizmo-free)
     src/viewport_icons.cpp      # task E.2.3 -- the icon vocabulary, the one predicate, the atlas
+    src/viewport_gizmos.cpp     # task E.2.3 -- the World walk that fills the debug batch
     src/view_axis_gizmo.cpp     # task E.1.3 -- the corner widget's layout, hit test, poses and snap
     src/transform_ops.cpp       # task 2.3.3 -- the Transform write seam 2.4.2 wraps
     src/command_stack.cpp       # task 2.4.1 -- Command + the bounded CommandStack (ImGui-free, entt-free)
