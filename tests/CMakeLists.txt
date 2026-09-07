@@ -471,7 +471,8 @@ add_executable(aero_editor_shell_test editor/shell_test.cpp editor/hierarchy_tes
                editor/audio_decode_test.cpp
                editor/axis_palette_test.cpp    # task E.1.2 — the axis palette's two spellings
                editor/view_axis_gizmo_test.cpp    # task E.1.3 — the pure corner widget
-               editor/gizmo_style_test.cpp)       # task E.1.5 — the pure ImGuizmo style + size model
+               editor/gizmo_style_test.cpp        # task E.1.5 — the pure ImGuizmo style + size model
+               editor/viewport_icons_test.cpp)    # task E.2.3 — the icon vocabulary and its atlas
 target_link_libraries(aero_editor_shell_test PRIVATE
     doctest::doctest aero::editor_core aero::scene aero::scene_internal aero::core Threads::Threads)
 add_test(NAME aero_editor_shell_test COMMAND aero_editor_shell_test)
