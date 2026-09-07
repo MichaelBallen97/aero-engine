@@ -282,8 +282,18 @@ private:
     std::optional<render::RenderTarget> target;
     std::optional<scene_render::SceneRenderer> sceneRenderer;
     // task E.2.3: the icon atlas, OWNED. 256x64 RGBA8Unorm, built once in ensureInitialized and handed
-    // to debugDrawer->setBillboardTexture, which BORROWS both. DECLARED BEFORE debugDrawer and
-    // therefore DESTROYED AFTER it, so the batch can never flush against a destroyed texture.
+    // to debugDrawer->setBillboardTexture, which BORROWS both.
+    //
+    // IT IS RELEASED BEFORE ~DebugDraw, NOT AFTER, and the declaration order below has nothing to do
+    // with it: rhi::TextureHandle and rhi::SamplerHandle are not RAII types, so their member
+    // destructors release nothing, and ~ViewportPanel's BODY -- which calls destroyIconAtlas() -- runs
+    // before any member destructor at all. Safe for two reasons that are about the borrow, not the
+    // order. (1) Nothing flushes in between: the destructor's body is that one call, and the only
+    // other call site (ensureInitialized's failure path) is followed immediately by
+    // debugDrawer.reset(). (2) DebugDraw neither destroys nor reads a borrowed handle at teardown --
+    // setBillboardTexture stores it verbatim ("BORROWED, both: never destroyed here, never adopted",
+    // debug_draw.cpp) and flush() is its only reader, falling back to DebugDraw's own 1x1 white texel
+    // whenever the handle is invalid.
     rhi::TextureHandle iconAtlasTexture{};
     // OWNED. Linear/Linear, MipmapMode::Nearest, ClampToEdge on U, V AND W -- SamplerDesc DEFAULTS TO
     // Repeat, which would wrap a boundary sample to the FAR SIDE of the atlas and put the camera glyph
