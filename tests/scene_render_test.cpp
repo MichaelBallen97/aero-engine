@@ -674,6 +674,89 @@ TEST_CASE("scene_render: the 0-camera early return leaves the spots empty (task 
     }
 }
 
+TEST_CASE("scene_render: activeDirectionalLight is buildRenderView's own winner (task E.2.3)") {
+    // THE SEAM, ASSERTED ACROSS IT rather than inside one side. render::RenderView is scene-free by
+    // the golden rule and can never carry an Entity, so the editor's "which directional light did the
+    // bridge ignore?" had no answer that was not a SECOND resolution -- and a second walk with a
+    // different iteration mechanism is exactly how buildSelectionMaskSet's D11 says a tie-break
+    // drifts. buildRenderView calls this function, so the two agree BY CONSTRUCTION; this is the arm
+    // that reddens if either walk ever changes its tie-break alone.
+    World w;
+    RenderViewScratch scratch;
+    const Entity cam = w.create();
+    REQUIRE(w.add<Transform>(cam) != nullptr);
+    REQUIRE(w.add<Camera>(cam) != nullptr);
+
+    // THREE lights with DISTINCT colour and intensity, created in a SHUFFLED order relative to the
+    // one the tie-break picks, so "the winner's own values reached the view" is a claim about the
+    // rule and not about creation order.
+    const auto seedDirectional = [&w](Vec3 color, float intensity) {
+        const Entity e = w.create();
+        REQUIRE(w.add<Transform>(e) != nullptr);
+        const DirectionalLight light{.color = color, .intensity = intensity};
+        REQUIRE(w.add<DirectionalLight>(e, light) != nullptr);
+        return e;
+    };
+    const Entity first = seedDirectional(Vec3{0.9F, 0.1F, 0.2F}, 3.0F);
+    const Entity second = seedDirectional(Vec3{0.1F, 0.8F, 0.3F}, 5.0F);
+    const Entity third = seedDirectional(Vec3{0.2F, 0.3F, 0.7F}, 7.0F);
+
+    const Entity active = engine::scene_render::activeDirectionalLight(w);
+    REQUIRE(active.valid());
+    CHECK(active == first);  // lowest entity index (D6), whatever order the store walks in
+
+    const DirectionalLight* winner = w.get<DirectionalLight>(active);
+    REQUIRE(winner != nullptr);
+    const RenderView view = buildRenderView(w, scratch, VIEWPORT);
+    CHECK(view.directional.color == winner->color);
+    CHECK(view.directional.intensity == winner->intensity);
+    // ...and the diagnostic still counts EVERY light rather than describing the winner.
+    CHECK(view.directionalCount == 3);
+
+    SUBCASE("anti-vacuity: the two lights the bridge ignored have DIFFERENT values") {
+        // Without this the assertions above would hold on a world whose three lights are identical,
+        // which would say nothing about which one won.
+        const DirectionalLight* secondLight = w.get<DirectionalLight>(second);
+        const DirectionalLight* thirdLight = w.get<DirectionalLight>(third);
+        REQUIRE(secondLight != nullptr);
+        REQUIRE(thirdLight != nullptr);
+        CHECK_FALSE(view.directional.intensity == secondLight->intensity);
+        CHECK_FALSE(view.directional.intensity == thirdLight->intensity);
+    }
+}
+
+TEST_CASE("scene_render: activeDirectionalLight is invalid with no directional light (task E.2.3)") {
+    // An INVALID handle means "the scene has none", which is what lets the editor's tint table mute
+    // NOTHING rather than everything when the caller forgot to resolve it.
+    SUBCASE("an empty world") {
+        World w;
+        CHECK_FALSE(engine::scene_render::activeDirectionalLight(w).valid());
+    }
+
+    SUBCASE("a world with every other light kind, and a camera") {
+        World w;
+        const Entity cam = w.create();
+        REQUIRE(w.add<Transform>(cam) != nullptr);
+        REQUIRE(w.add<Camera>(cam) != nullptr);
+        const Entity point = w.create();
+        REQUIRE(w.add<Transform>(point) != nullptr);
+        REQUIRE(w.add<PointLight>(point) != nullptr);
+        const Entity spot = w.create();
+        REQUIRE(w.add<Transform>(spot) != nullptr);
+        REQUIRE(w.add<SpotLight>(spot) != nullptr);
+        CHECK_FALSE(engine::scene_render::activeDirectionalLight(w).valid());
+
+        // ...and adding ONE directional light makes it valid, so the arm above is a statement about
+        // the absence rather than about a resolver that always answers invalid.
+        const Entity directional = w.create();
+        REQUIRE(w.add<Transform>(directional) != nullptr);
+        REQUIRE(w.add<DirectionalLight>(directional) != nullptr);
+        const Entity active = engine::scene_render::activeDirectionalLight(w);
+        CHECK(active.valid());
+        CHECK(active == directional);
+    }
+}
+
 #if AERO_SHADER_TOOLS_ENABLED
 
     #include <aero/core/log.hpp>

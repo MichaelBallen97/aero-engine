@@ -83,6 +83,19 @@ void warnOnce(bool& latch, const char* message) {
 
 }  // namespace
 
+// Declared beside buildSelectionMaskSet and defined HERE, immediately above its one engine-side
+// caller, so a reader meets the resolution before the walk that uses it. D6's rule, unchanged since
+// 1.4.1: lowest entity index wins.
+Entity activeDirectionalLight(World& world) {
+    Entity winner{};
+    world.each<DirectionalLight>([&winner](Entity le, DirectionalLight&) {
+        if (!winner.valid() || le.index < winner.index) {
+            winner = le;
+        }
+    });
+    return winner;
+}
+
 render::RenderView buildRenderView(World& world, RenderViewScratch& scratch, rhi::Extent2D viewport,
                                    const render::CameraView* cameraOverride, const AssetBindingTable* bindings) {
     AERO_PROFILE_ZONE;
@@ -196,24 +209,29 @@ render::RenderView buildRenderView(World& world, RenderViewScratch& scratch, rhi
     }
 
     // --- lights (D6): one directional (lowest index), <= MAX_POINT_LIGHTS point lights ---
-    Entity dirEntity{};
+    // task E.2.3: the winner is resolved by activeDirectionalLight above, which the EDITOR also
+    // calls -- ONE resolution, two readers, so the viewport's "which directional light did the bridge
+    // ignore?" cannot disagree with the answer the bridge used. This walk keeps its own
+    // ++view.directionalCount, because that diagnostic counts every directional light in the scene
+    // rather than describing the winner, and it must still run for EVERY light.
+    const Entity dirEntity = activeDirectionalLight(world);
     world.each<DirectionalLight>([&](Entity le, DirectionalLight& dl) {
         ++view.directionalCount;
-        if (!dirEntity.valid() || le.index < dirEntity.index) {
-            dirEntity = le;
-            // task 3.6.2: DESIGNATED, not positional. The old form was a three-value brace-init, and
-            // appending four fields to DirectionalLightData would have left it compiling while the
-            // four new ones silently took their DEFAULTS -- a shadow toggle that never reflects the
-            // light, with every test green. Naming every field makes a future append a compile
-            // error here instead of a silent one.
-            view.directional = {.direction = normalize(transformDirection(worldMatrix(world, le), {0.0F, 0.0F, -1.0F})),
-                                .color = dl.color,
-                                .intensity = dl.intensity,
-                                .castsShadows = dl.castsShadows,
-                                .shadowBias = dl.shadowBias,
-                                .shadowNormalBias = dl.shadowNormalBias,
-                                .shadowDistance = dl.shadowDistance};
+        if (le != dirEntity) {
+            return;
         }
+        // task 3.6.2: DESIGNATED, not positional. The old form was a three-value brace-init, and
+        // appending four fields to DirectionalLightData would have left it compiling while the
+        // four new ones silently took their DEFAULTS -- a shadow toggle that never reflects the
+        // light, with every test green. Naming every field makes a future append a compile
+        // error here instead of a silent one.
+        view.directional = {.direction = normalize(transformDirection(worldMatrix(world, le), {0.0F, 0.0F, -1.0F})),
+                            .color = dl.color,
+                            .intensity = dl.intensity,
+                            .castsShadows = dl.castsShadows,
+                            .shadowBias = dl.shadowBias,
+                            .shadowNormalBias = dl.shadowNormalBias,
+                            .shadowDistance = dl.shadowDistance};
     });
     // --- environment (task E.2.1): lowest entity index wins -- D5's rule, verbatim, as for the
     // camera, the directional light and the listener. NONE resolves to the defaults `view.environment`
