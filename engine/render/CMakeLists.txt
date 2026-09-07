@@ -25,6 +25,7 @@ add_library(aero_render STATIC
                               #               caller's open HDR pass
     src/light_falloff.cpp     # task E.2.2 -- the punctual-light falloff: the distance window, the
                               #               cone resolver, the CPU oracles the pixel tier compares to
+    src/light_gizmo.cpp       # task E.2.3 -- the three light gizmos as world-space lines (pure)
 )
 add_library(aero::render ALIAS aero_render)
 
