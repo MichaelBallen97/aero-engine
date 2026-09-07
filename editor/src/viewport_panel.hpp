@@ -13,6 +13,7 @@
 #include <aero/editor/scene_bounds.hpp>       // task 3.1.5: MeshBoundsLookup, borrowed by the three consumers
 #include <aero/editor/selection_overlay.hpp>  // task 2.3.2: OverlaySegment, for the scratch member
 #include <aero/editor/view_axis_gizmo.hpp>    // task E.1.3: the corner widget's layout, poses and snap
+#include <aero/editor/viewport_gizmos.hpp>    // task E.2.3: the icon/gizmo walk (carries viewport_icons.hpp)
 #include <aero/render/debug_draw.hpp>         // task E.1.1: the panel's own world-space line renderer
 #include <aero/render/post_process.hpp>       // task 3.6.3: the owned HDR target + the fullscreen resolve
 #include <aero/render/render_target.hpp>
@@ -33,6 +34,14 @@ namespace engine::editor {
 class ViewportPanel final : public Panel {
 public:
     explicit ViewportPanel(rhi::Device& device) noexcept;
+    // task E.2.3: the panel's FIRST user-declared destructor, and it exists for the icon atlas alone
+    // -- rhi::TextureHandle and rhi::SamplerHandle are not RAII types. Safe because Panel declares
+    // `virtual ~Panel() = default` (panel.hpp) so PanelRegistry's unique_ptr<Panel> destroys this
+    // correctly, and because the Device outlives the panel: ~ViewportPanel runs inside ~PanelRegistry
+    // inside ~EditorApp, which precedes ~Device (this file's own banner, viewport_panel.cpp's).
+    // It suppresses nothing: Panel DELETES both copy and both move operations, so this class has
+    // never been copyable or movable and there is no implicit operation to lose.
+    ~ViewportPanel() override;
 
     [[nodiscard]] const char* id() const noexcept override;            // "Viewport" — D16, FROZEN
     [[nodiscard]] DockSlot defaultDockSlot() const noexcept override;  // Center
@@ -127,6 +136,17 @@ public:
     // requestSelectEntry / requestTonemapParams family's sixth application. I112 is what it buys.
     void requestGridEnabled(bool enabled) noexcept { gridEnabledValue = enabled; }
 
+    // ---- task E.2.3 -------------------------------------------------------------------------------
+    // The gizmo toggle: ONE checkbox covering the light/camera ICONS and the selected light's GIZMO,
+    // exactly as Grid covers the grid AND the axes. Session state, default ON, persisted NOWHERE --
+    // the grid toggle's own rule, handed off to whichever task introduces a per-user preferences file.
+    [[nodiscard]] bool gizmosEnabled() const noexcept { return gizmosEnabledValue; }
+
+    // Records exactly what drawViewOptions' checkbox records. It exists because NO TIER IN THIS TREE
+    // CAN CLICK AN ImGui CHECKBOX -- the requestGridEnabled family's tenth application. I128 is what
+    // it buys, and it is ALSO what keeps I108/I109/I112's magnitudes unrestated.
+    void requestGizmosEnabled(bool enabled) noexcept { gizmosEnabledValue = enabled; }
+
     // ---- task E.1.3: the view-axis gizmo's seams --------------------------------------------------
     // The requestTonemapParams / requestGridEnabled family's eighth and ninth applications. No tier in
     // this tree can click an ImDrawList circle, so without these the widget's whole behaviour is
@@ -211,6 +231,7 @@ private:
     enum class Status : std::uint8_t { Uninitialized, Ready, Unavailable };
 
     void ensureInitialized(rhi::Extent2D firstExtent);  // D11: one attempt, latched
+    void destroyIconAtlas() noexcept;                   // task E.2.3. IDEMPOTENT: safe twice, safe on invalid handles
     void focusSelection(PanelContext& context);         // F: frame the selection, or the scene, or reset
 
     // Task 2.3.2. Both take POINTS (D18) as engine Vec2, never ImVec2: this header is deliberately
@@ -260,6 +281,15 @@ private:
     std::optional<render::PostProcess> post;
     std::optional<render::RenderTarget> target;
     std::optional<scene_render::SceneRenderer> sceneRenderer;
+    // task E.2.3: the icon atlas, OWNED. 256x64 RGBA8Unorm, built once in ensureInitialized and handed
+    // to debugDrawer->setBillboardTexture, which BORROWS both. DECLARED BEFORE debugDrawer and
+    // therefore DESTROYED AFTER it, so the batch can never flush against a destroyed texture.
+    rhi::TextureHandle iconAtlasTexture{};
+    // OWNED. Linear/Linear, MipmapMode::Nearest, ClampToEdge on U, V AND W -- SamplerDesc DEFAULTS TO
+    // Repeat, which would wrap a boundary sample to the FAR SIDE of the atlas and put the camera glyph
+    // on the sun's left edge. This mirrors DebugDraw's own default sampler field for field, so the
+    // atlas path and the fallback path filter alike.
+    rhi::SamplerHandle iconAtlasSampler{};
     // task E.1.1: the panel's DebugDraw, built against the SAME HDR pair the SceneRenderer was, so a
     // line records into the scene pass with matching formats. Member/accessor collision rule: the
     // MEMBER is debugDrawer, the accessor debugDraw() (the tonemapParamsValue/tonemapParams()
@@ -278,6 +308,18 @@ private:
     // tick's selection.
     scene_render::SelectionMaskScratch selectionMaskScratch;
     scene_render::SelectionMaskSet selectionMaskSet;
+    // task E.2.3: written in drawSelectionOverlay (the only place with a PanelContext) and read in
+    // renderScene, which takes a World& and CANNOT see the Selection. Both are cleared on EVERY
+    // renderScene exit past the guard chain -- E.1.4's D12 discipline, three exits and three clears --
+    // because a frame that returned early would otherwise draw last tick's selection's gizmos.
+    std::vector<Entity> selectionSnapshot;
+    Entity selectionPrimary{};
+    // task E.2.3: withoutGeometry, minus the entities that now draw an icon (D10). Filtered through
+    // the SAME viewportIconFor the emitter and the picker read, so all three agree by construction.
+    // It needs no clear in renderScene: it is filled and consumed entirely inside drawSelectionOverlay
+    // and is cleared at that function's own top, which is the asymmetry with the two above.
+    std::vector<Entity> markerScratch;
+    ViewportGizmoScratch gizmoScratch;
     // task E.1.4: io.DisplayFramebufferScale.x, captured in onDraw beside the existing toPixels
     // calls, because renderScene MUST NOT call ImGui (2.2.3 INV-3, still in force).
     float lastFramebufferScale = 1.0F;
@@ -288,6 +330,7 @@ private:
     // Member/accessor collision rule: the MEMBER takes the distinct name (budgetValue/budget(),
     // tonemapParamsValue/tonemapParams(), the RenderTarget precedent).
     bool gridEnabledValue = true;
+    bool gizmosEnabledValue = true;  // task E.2.3, the same session-state rule
     Status status = Status::Uninitialized;
     const char* unavailableReason = nullptr;  // string literal; shown in-panel when Unavailable
     bool renderRequested = false;             // set by onDraw, consumed by renderScene

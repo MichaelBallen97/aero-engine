@@ -8795,7 +8795,13 @@ TEST_CASE("editor: the viewport owns a DebugDraw, runs the slot, and it costs NO
     // panel's own seam is what keeps E.1.1's claim spelled exactly as E.1.1 wrote it, instead of
     // restating it as a grid line count. The panel registry is populated by EditorApp::create, so
     // the panel is reachable before the first draw even though it INITIALISES on that draw.
+    // task E.2.3: and the GIZMOS off, for the identical reason and on the identical line. The default
+    // scene seeds a Camera and a DirectionalLight, so the icon producer fills the batch on every
+    // renderScene -- two Overlay billboards, one upload, one draw call -- and uploadCount() is a
+    // LIFETIME counter, so this must precede the first tick too. Driving the panel's own toggle seam
+    // is what keeps E.1.1's magnitudes below spelled exactly as E.1.1 wrote them.
     viewport->requestGridEnabled(false);
+    viewport->requestGizmosEnabled(false);
 
     REQUIRE(app->tick());  // the viewport initialises on its FIRST DRAW
     REQUIRE(app->tick());  // ...and renderScene runs on the second
@@ -8854,7 +8860,10 @@ TEST_CASE("editor: a pushed line and billboard are drawn and DRAINED by renderSc
     REQUIRE(viewport != nullptr);
     // task E.1.2: the grid OFF before the first tick, for I108's reason -- this case counts ONE
     // pushed line and ONE pushed billboard exactly, and uploadCount() is a lifetime counter.
+    // task E.2.3: the gizmos off beside it, for the same reason: the default scene's Camera and
+    // DirectionalLight would otherwise add two Overlay billboards to that exact count.
     viewport->requestGridEnabled(false);
+    viewport->requestGizmosEnabled(false);
 
     REQUIRE(app->tick());
     REQUIRE(app->tick());
@@ -9153,6 +9162,12 @@ TEST_CASE("editor: the grid toggle really controls what the batch carries (task 
 
     auto* const viewport = dynamic_cast<engine::editor::ViewportPanel*>(app->panels().find("Viewport"));
     REQUIRE(viewport != nullptr);
+    // task E.2.3: THE GIZMOS OFF, so this case still measures the GRID alone. It sits ABOVE the three
+    // SUBCASEs on purpose -- doctest re-runs the whole case body once per subcase, so a statement here
+    // runs for each of them. Unlike I108/I109 it may sit AFTER the two warm-up ticks, because every
+    // counter this case reads is PER-FRAME rather than lifetime. E.1.2 isolated this case from
+    // E.1.1's slot the same way; this is the next producer taking the same seam.
+    viewport->requestGizmosEnabled(false);
 
 #if AERO_SHADER_TOOLS_ENABLED
     // `status` and `Status` are PRIVATE with no accessor, so "the panel is Ready" is observed
@@ -11493,4 +11508,435 @@ TEST_CASE(
         // Anti-vacuity for both: the file DOES name the object that owns the pass.
         CHECK(countLinesContaining(viewport, "SceneRenderer") > 0U);
     }
+}
+
+// ---- task E.2.3: the icons and gizmos, through the real panel -------------------------------
+// Every case below uses I111's preamble VERBATIM rather than through a shared helper, which is this
+// file's own convention for the eleven GPU cases before them: each needs ctx, window, device and app
+// as NAMED locals, and the four AERO_SKIP_OR_FAIL sites cannot live inside a function that returns a
+// bundle.
+
+TEST_CASE("editor: the Gizmos toggle really controls what the batch carries (task E.2.3, I128)") {
+    // I112's shape for the NEW producer, with the GRID OFF so the two are isolated: everything read
+    // below is a BILLBOARD quantity, and the grid pushes only lines, so a grid left on would make the
+    // draw-call assertion a statement about two producers at once.
+    //
+    // The default scene seeds a Camera and a Directional Light (seedDefaultScene), so "> 0" here is a
+    // claim about the REAL scene the editor opens with, not about a fixture.
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "viewport gizmos i128", .width = 900, .height = 600});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = created.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+
+    auto* const viewport = dynamic_cast<engine::editor::ViewportPanel*>(app->panels().find("Viewport"));
+    REQUIRE(viewport != nullptr);
+    viewport->requestGridEnabled(false);
+
+#if AERO_SHADER_TOOLS_ENABLED
+    REQUIRE(viewport->debugDraw() != nullptr);
+    REQUIRE(viewport->postProcess() != nullptr);
+
+    SUBCASE("enabled (the default): the default scene's two icons reach the frame's counters") {
+        CHECK(viewport->gizmosEnabled());  // the default, asserted where it is used
+        REQUIRE(app->tick());
+        REQUIRE(app->tick());
+        CHECK(viewport->debugDraw()->lastFrameBillboards() > 0U);
+        CHECK(viewport->debugDraw()->lastFrameDrawCalls() >= 1U);
+        CHECK(viewport->debugDraw()->lastFrameDroppedBillboards() == 0U);
+        CHECK(viewport->debugDraw()->lastFrameRejectedBillboards() == 0U);
+    }
+    SUBCASE("disabled: the counters go to ZERO and the batch is empty") {
+        viewport->requestGizmosEnabled(false);
+        CHECK_FALSE(viewport->gizmosEnabled());
+        // TWO ticks: the first drains whatever the previous frame left, the second is the clean one.
+        REQUIRE(app->tick());
+        REQUIRE(app->tick());
+        CHECK(viewport->debugDraw()->lastFrameBillboards() == 0U);
+        CHECK(viewport->debugDraw()->lastFrameDrawCalls() == 0U);
+        CHECK(viewport->debugDraw()->batch().empty());
+    }
+    SUBCASE("re-enabling brings it back -- the toggle is not one-way") {
+        viewport->requestGizmosEnabled(false);
+        REQUIRE(app->tick());
+        REQUIRE(app->tick());
+        REQUIRE(viewport->debugDraw()->lastFrameBillboards() == 0U);
+        viewport->requestGizmosEnabled(true);
+        REQUIRE(app->tick());
+        REQUIRE(app->tick());
+        CHECK(viewport->debugDraw()->lastFrameBillboards() > 0U);
+    }
+#else
+    CHECK(viewport->debugDraw() == nullptr);
+    REQUIRE(app->tick());
+#endif
+}
+
+TEST_CASE("editor: the Gizmos toggle defaults ON, round-trips, and is safe when Unavailable (I129)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "viewport gizmos i129", .width = 900, .height = 600});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = created.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+
+    auto* const viewport = dynamic_cast<engine::editor::ViewportPanel*>(app->panels().find("Viewport"));
+    REQUIRE(viewport != nullptr);
+
+    // UNGATED, and deliberately ABOVE the #if: the toggle is plain state, so its contract holds in
+    // BOTH configurations and asserting it in only one would be the 3.6.3 mistake.
+    CHECK(viewport->gizmosEnabled());  // DEFAULT ON -- the deliverable says so
+    viewport->requestGizmosEnabled(false);
+    CHECK_FALSE(viewport->gizmosEnabled());
+    viewport->requestGizmosEnabled(true);
+    CHECK(viewport->gizmosEnabled());
+    viewport->requestGizmosEnabled(false);
+    viewport->requestGizmosEnabled(false);  // IDEMPOTENT: a setter, not a toggle
+    CHECK_FALSE(viewport->gizmosEnabled());
+    viewport->requestGizmosEnabled(true);
+    // ...and the two toggles are INDEPENDENT: neither setter touches the other's state.
+    viewport->requestGridEnabled(false);
+    CHECK(viewport->gizmosEnabled());
+    viewport->requestGizmosEnabled(false);
+    viewport->requestGridEnabled(true);
+    CHECK_FALSE(viewport->gizmosEnabled());
+    viewport->requestGizmosEnabled(true);
+
+#if AERO_SHADER_TOOLS_ENABLED
+    REQUIRE(viewport->debugDraw() != nullptr);
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+    CHECK(viewport->debugDraw()->lastFrameBillboards() > 0U);  // the positive control for the arm below
+#else
+    // THE TOOLS-OFF CLAIM, ASSERTED rather than skipped: the guarded emit dereferences
+    // debugDrawer->batch(), so "gizmos enabled" on an Unavailable panel must not be a null
+    // dereference -- renderScene's guard chain is what stops it.
+    CHECK(viewport->debugDraw() == nullptr);
+    CHECK(viewport->gizmosEnabled());  // enabled, on a panel that never initialised
+    REQUIRE(app->tick());              // ...and ticking is still safe
+    REQUIRE(app->tick());
+    CHECK(viewport->debugDraw() == nullptr);
+#endif
+}
+
+TEST_CASE("editor: the icon atlas really reached the GPU (task E.2.3, I130)") {
+    // The difference between "icons drawn FROM THE ATLAS" and "icons drawn as solid tinted squares
+    // off DebugDraw's own fallback 1x1 white texel". Both are legal pictures -- the atlas path is
+    // deliberately NOT all-or-nothing with the panel's five other GPU objects -- so this is the only
+    // observable that tells them apart, and DG9 is what already proves the fallback itself works.
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "viewport gizmos i130", .width = 900, .height = 600});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = created.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+
+    auto* const viewport = dynamic_cast<engine::editor::ViewportPanel*>(app->panels().find("Viewport"));
+    REQUIRE(viewport != nullptr);
+
+#if AERO_SHADER_TOOLS_ENABLED
+    REQUIRE(viewport->debugDraw() != nullptr);
+    CHECK(viewport->debugDraw()->hasBillboardTexture());
+#else
+    CHECK(viewport->debugDraw() == nullptr);
+#endif
+}
+
+TEST_CASE("editor: the gizmo emit's four source-text invariants hold (task E.2.3, I131)") {
+    // I110's form for the second producer. UNGATED: the source exists whether or not
+    // AERO_SHADER_TOOLS built anything.
+    const std::vector<std::string> code = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/viewport_panel.cpp");
+    REQUIRE_FALSE(code.empty());
+
+    SUBCASE("(a) EXACTLY ONE emitViewportGizmos call, in this file, nowhere else under editor/") {
+        // The emitter is a free function that mutates a batch it is handed, with no global state and
+        // nothing registered, so it is reachable ONLY by being called. There being exactly one caller
+        // IS the claim "the icons never appear in a game or an exported view".
+        (void)soleLineContaining(code, "emitViewportGizmos(");  // REQUIREs there is exactly one here
+        std::vector<std::string> callers;
+        for (const std::filesystem::directory_entry& entry : std::filesystem::directory_iterator{AERO_EDITOR_SRC_DIR}) {
+            if (!entry.is_regular_file() || entry.path().extension() != ".cpp") {
+                continue;
+            }
+            if (entry.path().filename() == "viewport_gizmos.cpp") {
+                continue;  // its own DEFINITION, not a call
+            }
+            const std::vector<std::string> lines = editorSourceCodeLines(entry.path().string());
+            for (const std::string& line : lines) {
+                if (line.find("emitViewportGizmos(") != std::string::npos) {
+                    callers.push_back(entry.path().filename().string());
+                    break;
+                }
+            }
+        }
+        REQUIRE(callers.size() == 1U);
+        CHECK(callers.front() == "viewport_panel.cpp");
+    }
+    SUBCASE("(b) it sits AFTER the grid emit and BEFORE the flush") {
+        const std::size_t emitAt = soleLineContaining(code, "emitViewportGizmos(");
+        const std::size_t gridAt = soleLineContaining(code, "render::emitDebugGrid(");
+        const std::size_t flushAt = soleLineContaining(code, "debugDrawer->flush(");
+        CHECK(gridAt < emitAt);   // the grid fills Tested first; the gizmos fill Overlay after
+        CHECK(emitAt < flushAt);  // BEFORE the drain, so it is drawn THIS frame rather than next
+    }
+    SUBCASE("(c) it is GUARDED by the toggle, and by its OWN guard") {
+        const std::size_t emitAt = soleLineContaining(code, "emitViewportGizmos(");
+        const std::size_t guardAt = soleLineContaining(code, "if (gizmosEnabledValue) {");
+        CHECK(guardAt < emitAt);
+        CHECK(emitAt - guardAt <= 2U);  // the emit's OWN guard, not one several statements above it
+    }
+    SUBCASE("(d) the panel states NO icon size, tint or UV literal of its own") {
+        // Every magnitude lives in viewport_icons.hpp and viewport_gizmos.hpp, where D14's "no tier
+        // asserts a value" rule applies to it. A literal restated here is invisible to every other
+        // tier, which is exactly E.1.4's sabotage row 20.
+        CHECK(countLinesContaining(code, "22.0F") == 0U);
+        CHECK(countLinesContaining(code, "11.0F") == 0U);
+        CHECK(countLinesContaining(code, "0.4342F") == 0U);
+        CHECK(countLinesContaining(code, "0.2961F") == 0U);
+        // Anti-vacuity: the file DOES name the two constants it is allowed to name.
+        CHECK(countLinesContaining(code, "VIEWPORT_ICON_SIZE_POINTS") > 0U);
+        CHECK(countLinesContaining(code, "VIEWPORT_ICON_HALF_POINTS") > 0U);
+    }
+}
+
+TEST_CASE("editor: selecting a light draws its gizmo through the real panel (task E.2.3, I132)") {
+    // The runtime half of the deliverable, with the GRID OFF so every line in the frame belongs to
+    // this task. The magnitudes come from LIGHT_GIZMO_CIRCLE_SEGMENTS and
+    // LIGHT_GIZMO_MAX_LINES_PER_ENTITY, never restated: a point light's gizmo is a wireSphere, which
+    // is three circles.
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "viewport gizmos i132", .width = 900, .height = 600});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = created.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+
+    auto* const viewport = dynamic_cast<engine::editor::ViewportPanel*>(app->panels().find("Viewport"));
+    REQUIRE(viewport != nullptr);
+    viewport->requestGridEnabled(false);
+
+#if AERO_SHADER_TOOLS_ENABLED
+    REQUIRE(viewport->debugDraw() != nullptr);
+
+    // A PointLight in the REAL World the panel renders, seeded BETWEEN ticks and never during one.
+    engine::World& world = app->world();
+    const engine::Entity light = world.create();
+    world.add<engine::Transform>(light, engine::Transform{});
+    world.add<engine::PointLight>(light, engine::PointLight{});
+
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+    const std::uint32_t unselectedLines = viewport->debugDraw()->lastFrameLines();
+    CHECK(unselectedLines == 0U);  // grid off, nothing selected: no line producer at all
+
+    app->selection().set(light);
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+    const std::uint32_t selectedLines = viewport->debugDraw()->lastFrameLines();
+    CHECK(selectedLines >= unselectedLines + (3U * engine::render::LIGHT_GIZMO_CIRCLE_SEGMENTS));
+    CHECK(viewport->debugDraw()->lastFrameDroppedLines() == 0U);
+    CHECK(viewport->debugDraw()->lastFrameRejectedLines() == 0U);
+    // ...and it is bounded by the DERIVED per-entity cap, so a runaway emitter is caught here too.
+    CHECK(selectedLines <= engine::render::LIGHT_GIZMO_MAX_LINES_PER_ENTITY);
+
+    app->selection().clear();
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+    CHECK(viewport->debugDraw()->lastFrameLines() == unselectedLines);
+#else
+    CHECK(viewport->debugDraw() == nullptr);
+#endif
+}
+
+TEST_CASE("editor: the diamond marker is filtered by the SAME predicate the emitter reads (I133)") {
+    // NARROWED, AND THE NARROWING IS THE POINT. `overlayScratch` is a PRIVATE member with no
+    // accessor, and adding one that exists only for a test is what this file's own rules forbid
+    // (I111's precedent). So the FILTER is pinned as source text -- including the `gizmosEnabledValue
+    // &&` term, whose absence is a real defect with no other witness -- and the PREDICATE is driven
+    // against the REAL default scene, which is what makes it a statement about the picture the editor
+    // actually opens with rather than about a hand-built world.
+    //
+    // WHAT THIS CASE CANNOT SEE: that the diamond is absent on screen for the light and present for
+    // the Environment entity, and that unchecking Gizmos brings it back. That is VALIDATION ROW 6,
+    // named here so the page knows what it is the only cover for.
+    SUBCASE("source-text: the filter is present, gated on the toggle, and feeds buildSelectionOverlay") {
+        const std::vector<std::string> code = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/viewport_panel.cpp");
+        REQUIRE_FALSE(code.empty());
+        const std::size_t clearAt = soleLineContaining(code, "markerScratch.clear()");
+        const std::size_t filterAt = soleLineContaining(code, "if (gizmosEnabledValue && viewportIconFor(");
+        const std::size_t pushAt = soleLineContaining(code, "markerScratch.push_back(e)");
+        const std::size_t overlayAt = soleLineContaining(code, "buildSelectionOverlay(context.world, markerScratch,");
+        CHECK(clearAt < filterAt);
+        CHECK(filterAt < pushAt);
+        CHECK(pushAt < overlayAt);
+        // ...and the OLD span is no longer handed to the builder anywhere.
+        CHECK(countLinesContaining(code, "buildSelectionOverlay(context.world, selectionMaskSet") == 0U);
+    }
+    SUBCASE("driven: the predicate answers correctly for every entity of the REAL default scene") {
+        engine::World world;
+        engine::editor::seedDefaultScene(world);
+        std::size_t withIcon = 0;
+        std::size_t withoutIcon = 0;
+        world.eachEntity([&](engine::Entity e) {
+            if (engine::editor::viewportIconFor(world, e).has_value()) {
+                ++withIcon;
+            } else {
+                ++withoutIcon;
+            }
+        });
+        // Anti-vacuity: the walk really saw the whole default scene.
+        REQUIRE(withIcon + withoutIcon == 4U);
+        // Main Camera and Directional Light draw icons; Cube and Environment do not.
+        CHECK(withIcon == 2U);
+        CHECK(withoutIcon == 2U);
+    }
+}
+
+TEST_CASE("editor: the icon atlas is released -- no leaked texture or sampler at ~Device (I134)") {
+    // WHICH OF THE TWO THIS IS, stated out loud: rhi::Device exposes NO live-object accounting, so
+    // this case cannot count handles. What it CAN read is ~Device's own leak diagnostics, which name
+    // the counts of "leaked texture(s)" and "leaked sampler(s)" it had to release -- so the log
+    // callback has to OUTLIVE the Device, which is why the guard is declared first and the device
+    // lives in an inner scope.
+    //
+    // That is what makes "~ViewportPanel omitted" a REDDENING seed rather than a declared hole: the
+    // atlas is one texture and one sampler per panel, and a panel is created and destroyed twice here.
+    struct LogCallbackGuard {
+        ~LogCallbackGuard() { engine::setLogCallback({}); }
+        LogCallbackGuard() = default;
+        LogCallbackGuard(const LogCallbackGuard&) = delete;
+        LogCallbackGuard& operator=(const LogCallbackGuard&) = delete;
+        LogCallbackGuard(LogCallbackGuard&&) = delete;
+        LogCallbackGuard& operator=(LogCallbackGuard&&) = delete;
+    };
+    std::size_t leakedTextureWarnings = 0;
+    std::size_t leakedSamplerWarnings = 0;
+    std::size_t anyLeakWarnings = 0;
+    const LogCallbackGuard detachOnExit;
+    engine::setLogCallback([&](const engine::LogRecord& record) {
+        if (record.level < engine::LogLevel::Warn) {
+            return;
+        }
+        if (record.message.find("leaked texture") != std::string_view::npos) {
+            ++leakedTextureWarnings;
+        }
+        if (record.message.find("leaked sampler") != std::string_view::npos) {
+            ++leakedSamplerWarnings;
+        }
+        if (record.message.find("leaked") != std::string_view::npos) {
+            ++anyLeakWarnings;
+        }
+    });
+
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    {
+        std::optional<engine::platform::Window> window =
+            ctx.createWindow({.title = "viewport gizmos i134", .width = 900, .height = 600});
+        REQUIRE(window.has_value());
+        std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+        if (!device) {
+            AERO_SKIP_OR_FAIL("no GPU device");
+        }
+        // TWICE, on ONE device: each EditorApp builds and destroys its own ViewportPanel, so a
+        // destructor that released nothing would leave two textures and two samplers behind.
+        for (int round = 0; round < 2; ++round) {
+            CAPTURE(round);
+            const std::string location = uniqueProjectLocation();
+            const engine::editor::ProjectCreateOutcome created =
+                engine::editor::createProject(location, "MyGame", "0.1.0");
+            REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+            std::optional<engine::editor::EditorApp> app =
+                engine::editor::EditorApp::create(*device, *window, ctx,
+                                                  {.persistLayout = false,
+                                                   .unfocusedFrameCapHz = 0.0F,
+                                                   .projectPath = created.root,
+                                                   .restoreLastProject = false,
+                                                   .recentProjectsPath = uniqueRecentsFile()});
+            REQUIRE(app.has_value());
+            REQUIRE(app->tick());
+            REQUIRE(app->tick());
+            app.reset();  // ~EditorApp -> ~PanelRegistry -> ~ViewportPanel, all before ~Device
+        }
+        device.reset();  // ~Device HERE, while the callback above is still installed
+    }
+    engine::setLogCallback({});
+    CHECK(leakedTextureWarnings == 0U);
+    CHECK(leakedSamplerWarnings == 0U);
+    CHECK(anyLeakWarnings == 0U);
 }
