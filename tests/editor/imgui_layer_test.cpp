@@ -11885,6 +11885,11 @@ TEST_CASE("editor: the icon atlas is released -- no leaked texture or sampler at
     std::size_t leakedTextureWarnings = 0;
     std::size_t leakedSamplerWarnings = 0;
     std::size_t anyLeakWarnings = 0;
+    // THE CALLBACK'S OWN LIVENESS, counted separately: when nothing leaks, ~Device emits NO WARN at
+    // all (sdl_gpu_backend.cpp logs only for a NON-EMPTY container), so all three counters above read
+    // zero identically for "the atlas was released" and for "the callback was never invoked" -- the
+    // state commit e71c428 exists because it was the shipped one. This is what tells them apart.
+    std::size_t probeRecords = 0;
 
     engine::platform::Context ctx;
     if (!ctx.valid()) {
@@ -11937,7 +11942,14 @@ TEST_CASE("editor: the icon atlas is released -- no leaked texture or sampler at
             if (record.message.find("leaked") != std::string_view::npos) {
                 ++anyLeakWarnings;
             }
+            if (record.message.find("i134 liveness probe") != std::string_view::npos) {
+                ++probeRecords;
+            }
         });
+        // NO `leaked` TOKEN in the text, deliberately: this probe must not disturb the three counters
+        // it exists to make meaningful. It arrives only if the slot really is ours at this point.
+        AERO_LOG_WARN("i134 liveness probe -- the log callback is installed and receiving");
+        REQUIRE(probeRecords == 1U);
         device.reset();  // ~Device HERE, while the callback above is still installed
     }
     engine::setLogCallback({});
