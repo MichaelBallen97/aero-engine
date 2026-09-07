@@ -1331,6 +1331,32 @@ TEST_CASE("picking: a visible icon wins a click even with a NEARER mesh under it
         CHECK(result.entity == cube);
         CHECK_FALSE(result.isPoint);
     }
+    SUBCASE("the icon clause is FIRST: it beats a NEARER point candidate, not only a nearer mesh") {
+        // ADDED BY THE SABOTAGE PASS, and the reason is worth keeping: with only the two arms above,
+        // moving `if (icon.hit()) return icon;` BELOW D5's point rule changed nothing, because that
+        // rule refuses a point candidate that is BEHIND the mesh and the fall-through then reached
+        // the icon clause anyway. The order is only observable when the point rule would WIN.
+        //
+        // So: a Transform-only empty NEARER than the cube (which D5 elects over the cube), plus the
+        // light behind it. Created FIRST so it takes the lower index and therefore wins the point
+        // arm's own tie-break -- both candidates project to the same screen point.
+        World ordered;
+        const Entity empty = makePoint(ordered, Vec3{0.0F, 0.0F, 5.0F});
+        const Entity cubeBehind = makeBigCube(ordered, Vec3::zero());
+        const Entity lightBehind = makePointLight(ordered, Vec3{0.0F, 0.0F, -5.0F});
+        const PickResult result = pickEntity(ordered, camera, requestAt(centre));
+        REQUIRE(result.hit());
+        CHECK(result.entity == lightBehind);
+        CHECK_FALSE(result.entity == empty);
+        CHECK_FALSE(result.entity == cubeBehind);
+        // ...and the control: with the arm disabled, D5's rule really does elect the NEARER empty,
+        // which is what makes the assertion above a statement about the clause ORDER.
+        PickRequest disabled = requestAt(centre);
+        disabled.iconRadiusPoints = 0.0F;
+        const PickResult fallback = pickEntity(ordered, camera, disabled);
+        REQUIRE(fallback.hit());
+        CHECK(fallback.entity == empty);
+    }
 }
 
 TEST_CASE("picking: the new rule is ICON-ONLY -- D5's depth rule is unchanged otherwise (PK18)") {
@@ -1385,8 +1411,11 @@ TEST_CASE("picking: the icon's radius is honoured, and it is WIDER than the poin
 }
 
 TEST_CASE("picking: iconRadiusPoints of 0, -1 and NaN each disable the arm entirely (PK20)") {
-    // The NaN arm is the one that matters: the walk's gate is the NEGATED `!(d > r)`, so a POSITIVE
-    // `d > r` form would ACCEPT a NaN distance and let a light with a poisoned transform win a click.
+    // The NaN arm is about a NaN RADIUS, and the OUTER `iconRadiusPoints > 0.0F` gate is what refuses
+    // it: NaN > 0 is false, so the whole arm is skipped. A NaN DISTANCE is a different question and is
+    // UNREACHABLE through pickEntity -- projectToViewport refuses a non-finite projection, so the
+    // screen point is finite whenever the gate runs -- which is why that half is held by the gate's
+    // SPELLING (`d <= radius`, the point arm's own form) rather than by a case here.
     const EditorCamera camera = testCamera();
     constexpr float ASPECT = 1.0F;
     World world;

@@ -299,8 +299,16 @@ PickResult pickEntity(const World& world, const EditorCamera& camera, const Pick
                 if (projectToViewport(viewProj, camera.projectionMode(), iconWorld, request.viewportSizePoints,
                                       iconScreen)) {
                     const float d = length(iconScreen - clickPoints);
-                    // A10's NaN-safe NEGATED form: the positive `> radius` accepts a NaN distance.
-                    if (!(d > request.iconRadiusPoints) &&
+                    // A10's NaN-safe form, SPELLED AS THE POINT ARM SPELLS IT. The point arm below
+                    // REFUSES with `!(screenDistance <= radius)`; this arm ACCEPTS, so the same rule
+                    // reads `d <= radius` -- and `!(d > radius)`, which looks like the same thing,
+                    // is its opposite: a NaN d makes `d > radius` false and the negation ACCEPTS it.
+                    // Unreachable through pickEntity today (projectToViewport refuses a non-finite
+                    // projection, so iconScreen is finite whenever this line runs), which is exactly
+                    // why it has to be right by construction rather than by a case. The tie-break's
+                    // own `!(d > best)` is D16's, and it is safe because the gate to its left has
+                    // already refused every non-finite d.
+                    if (d <= request.iconRadiusPoints &&
                         (d < bestIconScreenDistance ||
                          (!(d > bestIconScreenDistance) && e.index < icon.entity.index))) {
                         bestIconScreenDistance = d;
