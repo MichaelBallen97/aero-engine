@@ -1,9 +1,13 @@
 // tests/render_debug_draw_test.cpp — task E.1.1: the debug-draw vocabulary, the pure batch, the
-// packers, the shader source pin (DD1-DD26, every configuration), and the GPU DebugDraw (DG1-DG16
+// packers, the shader source pin (DD1-DD28, every configuration), and the GPU DebugDraw (DG1-DG16
 // and DG18, gated). E.1.2 added DG18, the ground grid's own pixel case, at the bottom of that same
 // gate. DG17 IS SKIPPED DELIBERATELY, not missed: it was to be the depth-bias case, and the bias
 // was struck once a rasterizer depth bias turned out not to apply to line primitives at all on
 // Metal or D3D12 and to be merely optional on Vulkan -- so the id is never allocated.
+//
+// Task E.2.3 added DD27/DD28 for debugCircleBasis, and DG19/DG20 for the light gizmos, at the bottom
+// of the same gate. DG19 was NAMED in E.1.2's struck depth-bias plan and never shipped, so the id was
+// free; DG17 remains the one deliberate hole, for the reason above.
 //
 // The whole DD battery runs with NO device and NO shader toolchain -- that is the point of the pure
 // split: everything assertable without a GPU is asserted without one.
@@ -81,6 +85,34 @@ constexpr std::string_view RENDER_UMBRELLA_PATH =
 
 [[nodiscard]] bool contains(const std::string& haystack, std::string_view needle) {
     return haystack.find(needle) != std::string::npos;
+}
+
+// A Vec3 as its three RAW bit patterns (task E.2.3, DD28). BIT equality, not float equality: `==`
+// on floats calls +0.0F and -0.0F equal, and the whole point of DD28 is that the emitter's first
+// vertex and debugCircleBasis' own answer are the SAME COMPUTATION rather than two that agree.
+//
+// It lives HERE, at file scope, and not inside the case, for the reason Half4 already records: a
+// friend may not be DEFINED inside a local class ([class.friend]/6), so a type declared in a case
+// body cannot carry the operator<< below -- and without it CHECK(a == b) prints `CHECK( true )` on
+// a FAILURE as well as a pass, which makes the assertion carrying the claim unreadable.
+struct Bits3 {
+    std::uint32_t x = 0;
+    std::uint32_t y = 0;
+    std::uint32_t z = 0;
+    [[nodiscard]] bool operator==(const Bits3&) const = default;
+};
+
+std::ostream& operator<<(std::ostream& out, const Bits3& value) {
+    out << "bits3(0x" << std::hex << value.x << ", 0x" << value.y << ", 0x" << value.z << ")" << std::dec;
+    return out;
+}
+
+[[nodiscard]] Bits3 bitsOf(Vec3 v) {
+    Bits3 bits{};
+    std::memcpy(&bits.x, &v.x, sizeof(float));
+    std::memcpy(&bits.y, &v.y, sizeof(float));
+    std::memcpy(&bits.z, &v.z, sizeof(float));
+    return bits;
 }
 
 }  // namespace
@@ -747,6 +779,131 @@ TEST_CASE("render debug draw: the HLSL transcribes the C++ contract, pinned as s
         // The vertex colour MULTIPLIES the sample -- a stage returning the sample alone would make
         // every untextured billboard white and every colour argument silently inert.
         CHECK(contains(billboardFrag, "* color"));
+    }
+}
+
+// ------------------------------------------------------------------------------------------------
+// Task E.2.3. debugCircleBasis is wireCircle's own plane basis, promoted to the header so a consumer
+// can land its own geometry on the circle's emitted VERTICES rather than merely on the circle.
+// ------------------------------------------------------------------------------------------------
+
+TEST_CASE("render debug draw: debugCircleBasis is orthonormal, total, and refuses cleanly (DD27)") {
+    // TOLERANCE STATED WITH THE ASSERTION (DD13's rule): normalizeOrZero reaches sqrt and a cross
+    // product accumulates three products, so 1e-6 on a unit-length quantity is the epsilon and it is
+    // part of the claim. NOT doctest::Approx(x).epsilon(0.0), which never matches.
+    constexpr float EPS = 1e-6F;
+    const std::array<Vec3, 7> normals{{
+        Vec3{1.0F, 0.0F, 0.0F},
+        Vec3{0.0F, 1.0F, 0.0F},
+        Vec3{0.0F, 0.0F, 1.0F},
+        Vec3{1.0F, 1.0F, 1.0F},
+        // BOTH SIDES of the |axis.y| < 0.9F helper-axis switch. Each is very nearly unit length, so
+        // normalizing moves y by well under the 1e-4 that separates them.
+        Vec3{0.0F, 0.8999F, 0.4359F},
+        Vec3{0.0F, 0.9001F, 0.4358F},
+        Vec3{-0.3F, 0.5F, -0.81F},
+    }};
+    for (const Vec3 normal : normals) {
+        CAPTURE(normal.x);
+        CAPTURE(normal.y);
+        CAPTURE(normal.z);
+        const rd::DebugCircleBasis basis = rd::debugCircleBasis(normal);
+        REQUIRE(basis.valid);
+        const Vec3 axis = engine::normalize(normal);
+        CHECK(std::abs(engine::length(basis.u) - 1.0F) <= EPS);
+        CHECK(std::abs(engine::length(basis.v) - 1.0F) <= EPS);
+        CHECK(std::abs(engine::dot(basis.u, axis)) <= EPS);
+        CHECK(std::abs(engine::dot(basis.v, axis)) <= EPS);
+        CHECK(std::abs(engine::dot(basis.u, basis.v)) <= EPS);
+    }
+
+    SUBCASE("the switch point is not vacuous: the two sides pick DIFFERENT helper axes") {
+        // Without this a seed that hardcodes one helper axis passes every orthonormality check above
+        // -- both answers are perfectly orthonormal bases, just different ones.
+        const rd::DebugCircleBasis below = rd::debugCircleBasis(Vec3{0.0F, 0.8999F, 0.4359F});
+        const rd::DebugCircleBasis above = rd::debugCircleBasis(Vec3{0.0F, 0.9001F, 0.4358F});
+        REQUIRE(below.valid);
+        REQUIRE(above.valid);
+        CHECK(engine::length(below.u - above.u) > 0.5F);  // not "different by an ulp": a DIFFERENT axis
+    }
+
+    SUBCASE("an unnormalised normal gives its normalized twin's basis") {
+        // (2, 3, 6) has length EXACTLY 7, so the twin below is the same direction with no rounding
+        // beyond the division itself.
+        const rd::DebugCircleBasis longer = rd::debugCircleBasis(Vec3{2.0F, 3.0F, 6.0F});
+        const rd::DebugCircleBasis unit = rd::debugCircleBasis(Vec3{2.0F / 7.0F, 3.0F / 7.0F, 6.0F / 7.0F});
+        REQUIRE(longer.valid);
+        REQUIRE(unit.valid);
+        CHECK(engine::length(longer.u - unit.u) <= EPS);
+        CHECK(engine::length(longer.v - unit.v) <= EPS);
+    }
+
+    SUBCASE("a zero, NaN or infinite normal is valid == false with BOTH vectors exactly zero") {
+        // "Emitted nothing" and "emitted a half-filled basis" are different claims, and only the
+        // second one propagates a NaN into a consumer's own arithmetic. normalizeOrZero does NOT map
+        // a non-finite vector to zero on its own, which is why this arm is a real pin.
+        // The last one is FINITE but too short for normalizeOrZero's own epsilon.
+        const std::array<Vec3, 6> bad{{
+            Vec3::zero(),
+            Vec3{NAN_F, 0.0F, 0.0F},
+            Vec3{0.0F, NAN_F, 0.0F},
+            Vec3{INF_F, 0.0F, 0.0F},
+            Vec3{0.0F, 0.0F, -INF_F},
+            Vec3{1e-9F, 0.0F, 0.0F},
+        }};
+        for (const Vec3 normal : bad) {
+            const rd::DebugCircleBasis basis = rd::debugCircleBasis(normal);
+            CHECK_FALSE(basis.valid);
+            CHECK(basis.u == Vec3{});
+            CHECK(basis.v == Vec3{});
+        }
+    }
+
+    SUBCASE("the exposed segment clamp is what wireCircle applies") {
+        // The two constants are PUBLIC so a consumer can reproduce wireCircle's own n. DD13's own
+        // clamp subcase is the behavioural half; this is the vocabulary half.
+        CHECK(rd::MIN_CIRCLE_SEGMENTS == 3U);
+        CHECK(rd::MAX_CIRCLE_SEGMENTS == 256U);
+        rd::DebugDrawBatch low{{}};
+        low.wireCircle(Vec3{}, Vec3::unitY(), 1.0F, Vec4{1, 1, 1, 1}, rd::MIN_CIRCLE_SEGMENTS - 1U);
+        CHECK(low.lineCount() == rd::MIN_CIRCLE_SEGMENTS);
+        rd::DebugDrawBatch high{{}};
+        high.wireCircle(Vec3{}, Vec3::unitY(), 1.0F, Vec4{1, 1, 1, 1}, rd::MAX_CIRCLE_SEGMENTS + 1U);
+        CHECK(high.lineCount() == rd::MAX_CIRCLE_SEGMENTS);
+    }
+}
+
+TEST_CASE("render debug draw: debugCircleBasis IS wireCircle's basis, bit for bit (DD28)") {
+    // THE PROOF THE COMMIT-1 REFACTOR IS BEHAVIOUR-FREE, and the reason a consumer may build its own
+    // geometry on this basis and expect it to land ON the circle's vertices. wireCircle emits its
+    // FIRST vertex as `center + (u * radius)` and this recomputes that expression from the exposed
+    // helper -- so the two sides are ONE computation, not two that agree by rounding.
+    //
+    // A GENERIC centre, deliberately: no zero and no -0.0F component, because adding a signed zero
+    // is exact but +0.0 + -0.0 is +0.0, which is equal-but-bit-different.
+    const Vec3 center{1.25F, -3.5F, 0.75F};
+    const Vec3 normal{0.3F, 0.7F, -0.2F};
+    constexpr float RADIUS = 2.5F;
+    rd::DebugDrawBatch batch{{.maxLines = 64U}};
+    batch.wireCircle(center, normal, RADIUS, Vec4{1.0F, 1.0F, 1.0F, 1.0F}, 8U, rd::DebugDepth::Tested);
+    REQUIRE(batch.lineCount() == 8U);
+    const std::span<const rd::DebugLineVertex> v = batch.lineVertices(rd::DebugDepth::Tested);
+    REQUIRE(v.size() == 16U);
+
+    const rd::DebugCircleBasis basis = rd::debugCircleBasis(normal);
+    REQUIRE(basis.valid);
+    CHECK(bitsOf(v[0].position) == bitsOf(center + (basis.u * RADIUS)));
+
+    // ANTI-VACUITY: the same comparison against the OTHER basis vector must FAIL, so a reader that
+    // matched everything could not fake the line above.
+    CHECK_FALSE(bitsOf(v[0].position) == bitsOf(center + (basis.v * RADIUS)));
+
+    SUBCASE("and the CLOSING vertex is not vertex 0") {
+        // At i == n the angle is TWO_PI exactly, and std::sin(TWO_PI_f) is about -1.75e-7 rather
+        // than zero -- so a consumer matching a k == 0 ray against "the last vertex" would be
+        // matching the wrong one. Stated here so nothing has to re-derive it.
+        CHECK_FALSE(bitsOf(v[15].position) == bitsOf(v[0].position));
+        CHECK(engine::length(v[15].position - v[0].position) < 1e-5F);  // ...but only just
     }
 }
 

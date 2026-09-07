@@ -66,8 +66,10 @@ constexpr std::array<BoxEdge, 12> BOX_EDGES{{
     return raw < DEBUG_DEPTH_COUNT ? raw : DEBUG_DEPTH_COUNT - 1U;
 }
 
-constexpr std::uint32_t MIN_CIRCLE_SEGMENTS = 3;
-constexpr std::uint32_t MAX_CIRCLE_SEGMENTS = 256;
+// MIN_CIRCLE_SEGMENTS and MAX_CIRCLE_SEGMENTS lived HERE until task E.2.3 and were MOVED to
+// debug_draw.hpp -- not copied. Leaving a second pair in this anonymous namespace would make the
+// unqualified uses below ambiguous, which is the good failure, but two spellings of one clamp is
+// exactly the drift the move exists to remove.
 
 // A SCOPE-OWNED shader handle, copied verbatim from post_process.cpp's own, comment included,
 // because the reason it exists is a sabotage finding rather than taste. create() has several exits
@@ -255,26 +257,43 @@ void DebugDrawBatch::wireBox(const Mat4& model, Vec3 localMin, Vec3 localMax, Ve
     }
 }
 
+DebugCircleBasis debugCircleBasis(Vec3 normal) noexcept {
+    // The shadowUpAxis idiom, MOVED here from wireCircle's body at task E.2.3 -- byte-identical
+    // arithmetic for every input wireCircle can reach it with, so DD1-DD26 and DG1-DG18 are green
+    // UNEDITED and that is the proof it is behaviour-free.
+    if (!finite(normal)) {
+        // normalizeOrZero does NOT map a non-finite vector to zero, so without this a NaN normal
+        // would return valid == true carrying two NaN vectors. wireCircle's own first gate already
+        // refuses one, so this arm is unreachable from there and exists for the direct caller.
+        return {};
+    }
+    const Vec3 axis = normalizeOrZero(normal);  // never normalize(): it ASSERTS on a zero vector
+    if (lengthSquared(axis) <= 0.0F) {
+        return {};  // both vectors zero, valid == false -- never a half-filled basis
+    }
+    const Vec3 helper = std::abs(axis.y) < 0.9F ? Vec3::unitY() : Vec3::unitX();
+    const Vec3 u = normalizeOrZero(cross(helper, axis));
+    return DebugCircleBasis{.u = u, .v = cross(axis, u), .valid = true};
+}
+
 void DebugDrawBatch::wireCircle(Vec3 center, Vec3 normal, float radius, Vec4 color, std::uint32_t segments,
                                 DebugDepth depth) {
     if (!finite(center) || !finite(normal) || !std::isfinite(radius) || radius <= 0.0F) {
         ++rejectedLineCount;
         return;
     }
-    const Vec3 axis = normalizeOrZero(normal);  // never normalize(): it ASSERTS on a zero vector
-    if (lengthSquared(axis) <= 0.0F) {
+    // TWO GATES, KEPT: folding the zero-normal refusal into the first would change which inputs
+    // count one rejection versus none, and DD14 already pins that.
+    const DebugCircleBasis basis = debugCircleBasis(normal);
+    if (!basis.valid) {
         ++rejectedLineCount;
         return;
     }
-    // The shadowUpAxis idiom: pick the world axis LEAST parallel to `axis`, then two cross products.
-    const Vec3 helper = std::abs(axis.y) < 0.9F ? Vec3::unitY() : Vec3::unitX();
-    const Vec3 u = normalizeOrZero(cross(helper, axis));
-    const Vec3 v = cross(axis, u);
     const std::uint32_t n = std::clamp(segments, MIN_CIRCLE_SEGMENTS, MAX_CIRCLE_SEGMENTS);
-    Vec3 previous = center + (u * radius);
+    Vec3 previous = center + (basis.u * radius);
     for (std::uint32_t i = 1; i <= n; ++i) {
         const float t = TWO_PI * static_cast<float>(i) / static_cast<float>(n);
-        const Vec3 next = center + (u * (std::cos(t) * radius)) + (v * (std::sin(t) * radius));
+        const Vec3 next = center + (basis.u * (std::cos(t) * radius)) + (basis.v * (std::sin(t) * radius));
         line(previous, next, color, depth);  // closed: the last chord returns to the first point
         previous = next;
     }

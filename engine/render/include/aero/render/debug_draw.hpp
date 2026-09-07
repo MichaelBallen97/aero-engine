@@ -136,6 +136,40 @@ inline constexpr std::uint32_t DEBUG_DRAW_MAX_BILLBOARDS_CEILING = 65'536;
 // numbers, and budget() then reports what was allocated.
 [[nodiscard]] DebugDrawBudget clampDebugDrawBudget(DebugDrawBudget requested) noexcept;
 
+// ---- the circle helpers (task E.2.3) ---------------------------------------------------------
+
+// The clamp wireCircle applies to `segments`. PUBLIC since task E.2.3, because a consumer that must
+// land its own geometry on wireCircle's emitted VERTICES has to reproduce the SAME n. They were
+// file-local constants in debug_draw.cpp until this task and are MOVED here, not copied -- two
+// spellings of one clamp is exactly the drift debugCircleBasis below exists to remove.
+inline constexpr std::uint32_t MIN_CIRCLE_SEGMENTS = 3;
+inline constexpr std::uint32_t MAX_CIRCLE_SEGMENTS = 256;
+
+// The plane basis wireCircle builds, EXPOSED (task E.2.3) so a consumer's own segments can terminate
+// on the circle's own VERTICES rather than merely on the circle. wireCircle is implemented on top of
+// this, so there is ONE basis rule in the tree -- the debugGridCadence posture, one layer down.
+//
+// `valid == false` means the normal did not normalize (zero, TOO SHORT to normalize, or non-finite)
+// and BOTH vectors are ZERO -- never a partially-filled basis. The helper axis is the world axis
+// LEAST parallel to `normal` (|normal.y| < 0.9F ? unitY : unitX), and that 0.9F is the reason this is
+// exposed rather than restated: retuning it in one place must retune it in both.
+//
+// THE FINITENESS TEST IS FIRST AND IS LOAD-BEARING, not defensive. normalizeOrZero does NOT map a
+// non-finite vector to zero -- `NaN <= epsilon*epsilon` is false, so it divides and propagates -- and
+// an infinite component normalizes to NaN through inf/inf. Without the test a NaN normal would come
+// back `valid == true` carrying two NaN vectors, which is the partially-filled basis the sentence
+// above promises never to return. wireCircle never reaches it with a non-finite normal (its own
+// first gate refuses one), so this changes nothing there and everything for a direct caller.
+//
+// TOTAL and noexcept. It reaches sqrt (through normalizeOrZero) and nothing else from libm.
+struct DebugCircleBasis {
+    Vec3 u{};  // the direction of the circle's FIRST vertex: vertex 0 is center + u * radius
+    Vec3 v{};
+    bool valid = false;
+    bool operator==(const DebugCircleBasis&) const = default;
+};
+[[nodiscard]] DebugCircleBasis debugCircleBasis(Vec3 normal) noexcept;
+
 // ---- the batch -------------------------------------------------------------------------------
 
 // PURE: no rhi type, no logging, no GPU. ALLOCATES AT CONSTRUCTION AND NEVER AGAIN (the
