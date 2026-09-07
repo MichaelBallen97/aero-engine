@@ -97,6 +97,35 @@ std::ostream& operator<<(std::ostream& out, const TexelIndex& index) {
     return atlas[(texel * 4U) + 3U];
 }
 
+// ONE CELL'S 64x64 ALPHA PLANE, row-major. A cell is a sub-rect of a 256-wide atlas, so a plain byte
+// range would straddle all four glyphs -- this is what makes "are two glyphs the same picture?" a
+// question that can be asked at all (VI12).
+[[nodiscard]] std::vector<std::uint8_t> alphaPlaneOf(const std::vector<std::uint8_t>& atlas,
+                                                     ed::ViewportIconKind kind) {
+    const std::uint32_t base = ed::viewportIconCell(kind) * ed::VIEWPORT_ICON_CELL_TEXELS;
+    std::vector<std::uint8_t> plane;
+    plane.reserve(static_cast<std::size_t>(ed::VIEWPORT_ICON_CELL_TEXELS) * ed::VIEWPORT_ICON_CELL_TEXELS);
+    for (std::uint32_t y = 0; y < ed::VIEWPORT_ICON_CELL_TEXELS; ++y) {
+        for (std::uint32_t x = 0; x < ed::VIEWPORT_ICON_CELL_TEXELS; ++x) {
+            plane.push_back(alphaAt(atlas, base + x, y));
+        }
+    }
+    return plane;
+}
+
+// Counted rather than compared, so a failure prints HOW MANY texels differ instead of {?} == {?} --
+// doctest cannot stringify a vector<uint8_t>, and 4096 bytes would be unreadable if it could.
+[[nodiscard]] std::size_t differingTexels(const std::vector<std::uint8_t>& a, const std::vector<std::uint8_t>& b) {
+    REQUIRE(a.size() == b.size());
+    std::size_t differing = 0;
+    for (std::size_t i = 0; i < a.size(); ++i) {
+        if (a[i] != b[i]) {
+            ++differing;
+        }
+    }
+    return differing;
+}
+
 struct LogFixture {
     LogFixture() { engine::initLogging(engine::LogConfig{.level = engine::LogLevel::Trace, .console = false}); }
     ~LogFixture() { engine::shutdownLogging(); }
@@ -387,4 +416,41 @@ TEST_CASE("viewport icons: the drawn size's three relationships, never its value
     // What picking.hpp's static_assert and D10's "an upgrade, not a trade" both rest on.
     CHECK(ed::VIEWPORT_ICON_HALF_POINTS > ed::POINT_PICK_RADIUS_POINTS);
     CHECK(ed::VIEWPORT_ICON_HALF_POINTS > ed::POINT_MARKER_HALF_POINTS);
+}
+
+TEST_CASE("viewport icons: the four glyphs are four DIFFERENT pictures (VI12)") {
+    // THE ONLY TIER THAT CAN SEE A COPY-PASTED RASTERISER ARM. glyphAlpha is a total switch over the
+    // same enum viewportIconCell is total over, and VI1 pins that one; nothing pinned this one. Every
+    // other case reads a BAND -- ink present (VI5), gutter clear (VI4), RGB 255 (VI3), deterministic
+    // (VI6) -- and all four glyphs satisfy every band, so pointing two arms at one rasteriser left the
+    // whole file green while the user saw a point glyph on every spot light.
+    const std::vector<std::uint8_t> atlas = builtAtlas();
+    const std::size_t cellArea =
+        static_cast<std::size_t>(ed::VIEWPORT_ICON_CELL_TEXELS) * ed::VIEWPORT_ICON_CELL_TEXELS;
+
+    std::array<std::vector<std::uint8_t>, ed::VIEWPORT_ICON_COUNT> planes;
+    for (std::size_t k = 0; k < ed::VIEWPORT_ICON_COUNT; ++k) {
+        CAPTURE(k);
+        planes[k] = alphaPlaneOf(atlas, ALL_KINDS[k]);
+        REQUIRE(planes[k].size() == cellArea);
+    }
+
+    SUBCASE("THE POSITIVE CONTROL: each cell equals itself, read out of an INDEPENDENTLY built atlas") {
+        // Without this the six inequalities below are vacuous: an extractor returning a fresh block of
+        // garbage per call, or reading past the cell it was asked for, would satisfy every one of them.
+        const std::vector<std::uint8_t> second = builtAtlas();
+        for (std::size_t k = 0; k < ed::VIEWPORT_ICON_COUNT; ++k) {
+            CAPTURE(k);
+            CHECK(differingTexels(planes[k], alphaPlaneOf(second, ALL_KINDS[k])) == 0U);
+        }
+    }
+    SUBCASE("all six pairs of glyphs differ") {
+        for (std::size_t i = 0; i < ed::VIEWPORT_ICON_COUNT; ++i) {
+            for (std::size_t j = i + 1; j < ed::VIEWPORT_ICON_COUNT; ++j) {
+                CAPTURE(i);
+                CAPTURE(j);
+                CHECK(differingTexels(planes[i], planes[j]) > 0U);
+            }
+        }
+    }
 }
