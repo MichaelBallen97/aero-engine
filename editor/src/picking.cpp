@@ -272,7 +272,11 @@ PickResult pickEntity(const World& world, const EditorCamera& camera, const Pick
 
     PickResult mesh{};
     PickResult point{};
+    // task E.2.3: the THIRD accumulator, with its OWN best-distance, because an icon candidate never
+    // competes with a point candidate -- it wins outright in the reconciliation below.
+    PickResult icon{};
     float bestScreenDistance = INF;
+    float bestIconScreenDistance = INF;
 
     // eachEntity + has/get, NEVER a typed query walk -- see the header. This is also why the
     // signature can take a const World& at all (F15/F17).
@@ -281,7 +285,31 @@ PickResult pickEntity(const World& world, const EditorCamera& camera, const Pick
             return;
         }
         const Mat4 model = worldMatrix(world, e);  // silent identity when untransformed (F16/E3)
-        if (world.has<MeshRenderer>(e)) {          // silent for an unregistered type (F15)
+        // task E.2.3: THE ICON ARM. It runs BEFORE the mesh/point split so an entity carrying both a
+        // MeshRenderer and a light is a candidate for both -- PK22. It reuses `model` above rather
+        // than resolving a second world matrix, and it uses transformPoint(model, zero) rather than
+        // entityBounds(...).center(), because that is where emitViewportGizmos DRAWS the icon: for a
+        // mesh-carrying light the bounds centre is somewhere else entirely.
+        //
+        // It never RETURNS -- the entity must still be considered by the mesh and point arms.
+        if (request.iconRadiusPoints > 0.0F) {
+            if (const std::optional<ViewportIconKind> kind = viewportIconFor(world, e); kind.has_value()) {
+                const Vec3 iconWorld = transformPoint(model, Vec3::zero());
+                Vec2 iconScreen{};
+                if (projectToViewport(viewProj, camera.projectionMode(), iconWorld, request.viewportSizePoints,
+                                      iconScreen)) {
+                    const float d = length(iconScreen - clickPoints);
+                    // A10's NaN-safe NEGATED form: the positive `> radius` accepts a NaN distance.
+                    if (!(d > request.iconRadiusPoints) &&
+                        (d < bestIconScreenDistance ||
+                         (!(d > bestIconScreenDistance) && e.index < icon.entity.index))) {
+                        bestIconScreenDistance = d;
+                        icon = PickResult{.entity = e, .distance = length(iconWorld - rayOrigin), .isPoint = true};
+                    }
+                }
+            }
+        }
+        if (world.has<MeshRenderer>(e)) {  // silent for an unregistered type (F15)
             // task 3.1.5: ONE function decides the local box, shared with the frame walk and the
             // highlight (INV-D6). nullopt means the entity has a reference the editor cannot resolve
             // yet, and it FALLS THROUGH to the point/disc candidate below rather than returning --
@@ -338,6 +366,16 @@ PickResult pickEntity(const World& world, const EditorCamera& camera, const Pick
         }
     });
 
+    // task E.2.3: A VISIBLE ICON WINS OUTRIGHT, at any depth. The D5 rule below justified itself
+    // entirely by the marker being INVISIBLE ("a light hidden behind a wall stealing every click on
+    // the wall would be inexplicable to the user") -- and that premise is exactly what this task
+    // removes. Clicking a glyph you are looking at and selecting the wall behind it is the
+    // inexplicable behaviour now. The rule below is UNCHANGED for every entity that draws no icon,
+    // and `iconRadiusPoints <= 0` (the Gizmos toggle off) makes `icon` unreachable, which restores
+    // 2.3.2's behaviour byte for byte.
+    if (icon.hit()) {
+        return icon;
+    }
     // D5's depth rule, and it is NOT optional: markers are invisible until selected (D8), so a light
     // hidden behind a wall stealing every click on the wall would be inexplicable to the user. A point
     // candidate wins iff there is no mesh hit, or it is not BEHIND the one there is. No bias constant,
