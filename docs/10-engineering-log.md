@@ -14775,13 +14775,15 @@ falloff and a cone have no size-dependent feature — so E.1.1's thick-line hand
 
 ### E.2.3 — Light gizmos & viewport icons — the billboard half's first production consumer, and a sabotage pass that found two real holes
 
-**Branch `feat/E.2.3-light-gizmos-viewport-icons`, TWELVE commits** — the plan's ten plus two the
-sabotage pass forced. Sized **M** in the roadmap, recorded **L** before the first commit and landed
-**L**. *(PR number and merge commit are filled in at merge.)*
+**Branch `feat/E.2.3-light-gizmos-viewport-icons`, SIXTEEN commits** — the plan's ten, two the
+sabotage pass forced, and four from the code-review round (the last subsection below). Sized **M** in
+the roadmap, recorded **L** before the first commit and landed **L**. *(PR number and merge commit are
+filled in at merge.)*
 
 `ctest -N` **174 -> 174**, and the entry SET is byte-identical to the branch point's — this task adds
 no component, no target and no ctest entry. doctest: `aero_tests` **1377 -> 1400**,
-`aero_editor_shell_test` **1793 -> 1827**, `aero_editor_imgui_test` **163 -> 170**; the other four
+`aero_editor_shell_test` **1793 -> 1827** at the sabotage gate and **1829** after the code-review
+round's two cases, `aero_editor_imgui_test` **163 -> 170**; the other four
 binaries unmoved, as predicted, because none of them generates from the built-in list. Guards: math
 **487 -> 496**, platform **91 -> 92**, rhi **161 -> 163**, scene **91 -> 92**, golden-rule
 **163 -> 165**, project-no-delete **A=6/B=77 -> A=6/B=79**; audio **11/3/55** and boundary-probes
@@ -14961,3 +14963,93 @@ covers the half of `I133` that no seam can observe; and **row 4 is the first row
 can answer E.1.1's thick-line handoff at all** — a billboard controls its own apparent size, so the
 question there is whether the gizmo LINES are legible. On 1x hardware it records NOT EXECUTABLE and
 the handoff stays **UNFIRED**, not cleared.
+
+#### The code-review round — four findings closed, three of them with seed proofs
+
+**Four more commits, SIXTEEN on the branch.** No merge blockers: three "should fix" items plus one
+wrong comment, each its own independently gated commit. `ctest -N` stays **174**; doctest
+`aero_editor_shell_test` **1827 -> 1829**, `aero_editor_imgui_test` **170 -> 170** (a probe is not a
+`TEST_CASE`), the other five binaries unmoved. Only one of the four touched shipped code, and it was
+a five-line gate.
+
+**1. NOTHING DISTINGUISHED THE FOUR ATLAS GLYPHS, AND EVERY TIER WAS BLIND TO IT.** `glyphAlpha`
+(`viewport_icons.cpp:181-193`) is a total switch mapping a `ViewportIconKind` to one of four
+rasteriser functions. Pointing one arm at a sibling — `case SpotLight: return pointAlpha(px, py);` —
+was **measured, not predicted**: with the seed applied, exactly **one case of 1828 failed**, and it
+was the new one. Every pre-existing case reads a BAND that all four glyphs satisfy — `VI3` (RGB
+exactly 255), `VI4` (gutter transparent), `VI5` (ink present, not a filled square, one run
+>= `VIEWPORT_ICON_MIN_FEATURE_TEXELS`), `VI6` (determinism), `VI7` (source text) — `VG2` matches an
+icon by its **UV rect**, never by its pixels, and no `DG` case reads an icon texel. The user would
+have seen a point glyph on every spot light. `viewport_icons.hpp` states the enum's order is three
+things at once (cell order, priority order, switch order) and **`viewportIconCell` and `glyphAlpha`
+are two separate total switches over it**: `VI1` pinned the first and nothing pinned the second.
+**`VI12`** extracts each cell's 64x64 alpha plane and asserts all six pairs differ, with a **positive
+control that each cell equals ITSELF read out of an INDEPENDENTLY built atlas** — without which the
+six inequalities are vacuous, since an extractor returning fresh garbage per call, or reading past the
+cell it was asked for, satisfies every one of them.
+
+**THE RULE THAT OUTLIVES IT: A TOTAL SWITCH DISPATCHING TO N SIBLING FUNCTIONS NEEDS A CASE ASSERTING
+THE N RESULTS DIFFER.** Every other property of a generated image is a band, and a band cannot see two
+arms pointing at one function. The dual — a case pinning WHICH cell a kind occupies — already existed
+and proves nothing about WHAT is drawn there.
+
+**2. `I134` WAS GREEN WHETHER OR NOT IT COULD OBSERVE ANYTHING.** The case installs `setLogCallback`
+after the last `app.reset()`, destroys the `Device`, and asserts three counters are `0` — but when
+nothing leaks `~Device` emits **no WARN at all** (`sdl_gpu_backend.cpp:812-832` logs only for a
+container that is non-empty), so all three assertions are satisfied identically by "the atlas was
+released" and by "the callback was never invoked". Commit `e71c428` exists **because the second state
+was the shipped one**, and the case still contained nothing that would notice if that recurred. It now
+emits one distinctive `AERO_LOG_WARN` after installing the callback and before `device.reset()`,
+counts the records carrying that token, and `REQUIRE`s exactly one arrived; the text carries no
+`leaked` token, so the probe cannot disturb the three counters it exists to make meaningful. Seed
+proof: displacing the installation back above the loop reddens it at `REQUIRE( 0 == 1 )` — **and the
+spdlog console still printed the WARN while the callback counted none**, which is precisely the state
+the three `== 0` assertions cannot tell from success.
+
+**THE RULE: A CASE THAT ASSERTS AN OBSERVER SAW NOTHING MUST FIRST PROVE THE OBSERVER IS LISTENING.**
+An absence assertion over a channel that can be silently unplugged is an assertion about the plug.
+
+**3. THE ICON HALF OF `emitViewportGizmos` WAS NOT TOTAL WHILE THE GIZMO HALF WAS SCRUPULOUSLY SO.**
+Every emitter in `light_gizmo.cpp` refuses a non-finite position, direction, range or angle with zero
+lines and **zero rejections** — `GZ5`, `GZ11` and `GZ13` each assert `rejectedLines() == 0`. The icon
+arm handed `originOf(worldMatrix(world, e))` straight to `DebugDrawBatch::billboard`, which for a
+non-finite centre takes its **rejection** branch (`++rejectedBillboardCount`, `return false`) — so
+**AC-12** ("every degenerate input emits a stated picture or nothing at all, and never a NaN, **a
+rejection** or a log record") was broken for that input class, and `iconsDropped`'s doc comment ("the
+batch refused them: the billboard budget was full") was false whenever it fired. The walk now gates
+the push on `finite(center)`, matching every emitter field for field: **skipped silently and counted
+NOWHERE**, neither as an icon nor as a drop, exactly as an emitter returning 0 lines is counted
+nowhere.
+
+**THE COUNTER IS NOT SPLIT, and the gate alone is what makes the doc comment true again**: with a
+non-finite centre unable to reach the batch, the budget is the only route into `billboard()`'s false
+answer **for any world this walk can be handed**. The one remaining route is a CALLER passing a
+non-finite or non-positive `iconSizePixels` — a broken caller rather than a degenerate world — and the
+comment now says so rather than implying it cannot happen. `VG12` is untouched and stays meaningful:
+its scenario has no rejections at all, which is exactly why it could not discriminate the two ways the
+batch answers false. **`VG17`** is the new arm — a NaN and an infinite `Transform` position, each
+asserting `rejectedBillboards() == 0` beside `iconsDropped == 0`, with a finite sibling **of a
+different kind** as the anti-vacuity control so `iconFor`'s UV match stays unambiguous. Seed proof:
+removing the gate reddens `VG17` in **both** subcases at `1 == 0` on both counters, and **nothing else
+in the 1829-case binary notices**.
+
+**4. AN INVERTED DESTRUCTION-ORDER COMMENT** (`viewport_panel.hpp`). It claimed the atlas members are
+"DECLARED BEFORE `debugDrawer` and therefore DESTROYED AFTER it". `~ViewportPanel`'s **body** runs
+before any member destructor and it calls `destroyIconAtlas()`, so the atlas is released **before**
+`~DebugDraw` — and the declaration order is irrelevant either way, because `rhi::TextureHandle` and
+`rhi::SamplerHandle` are not RAII types and their member destructors release nothing at all. Harmless
+in fact; the reasoning a future reader would rely on was backwards. The comment now states the two
+real reasons, both about the **borrow** rather than the order: nothing flushes in between (the
+destructor's body is that one call, and the only other call site is followed immediately by
+`debugDrawer.reset()`), and `DebugDraw` neither destroys nor reads a borrowed handle at teardown —
+`setBillboardTexture` stores it verbatim ("BORROWED, both: never destroyed here, never adopted") and
+`flush()` is its only reader, falling back to the owned 1x1 white texel on an invalid handle. Comment
+only; no code moved and no member reordered.
+
+**AND ONE MEASUREMENT WORTH NOT RE-DERIVING: `aero_editor_imgui_test`'s ASSERTION COUNT IS
+RUN-TO-RUN NONDETERMINISTIC.** Three runs read **28966 / 28961 / 28945**, two of them from a
+byte-identical binary — the GPU-tier cases that tick to quiescence assert inside loops whose length
+depends on timing and on the filesystem. **The `test cases:` count is the stable instrument** (170,
+unmoved through all four commits); an assertion delta from that binary is not evidence of anything.
+CLAUDE.md's "read doctest's own `filters:` line" already says which number to take — this says why the
+other one moves on its own.
