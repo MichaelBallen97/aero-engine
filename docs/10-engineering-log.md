@@ -15053,3 +15053,83 @@ depends on timing and on the filesystem. **The `test cases:` count is the stable
 unmoved through all four commits); an assertion delta from that binary is not evidence of anything.
 CLAUDE.md's "read doctest's own `filters:` line" already says which number to take — this says why the
 other one moves on its own.
+
+#### E.2.3's macOS validation pass — 12 of 12, 2026-09-08, and it fired a handoff eight tasks old
+
+Run on the merge commit `00e4c7b`. **No blockers, no partials, no row left open.** Instruments: the
+debug and release editors wrapped in signed `.app` bundles at the primary binary path;
+`screencapture -l<windowid> -o` for exact window bytes; PIL for pixel work; the branch point
+(`0b40a7d`) built and snapshotted with its own cooked shaders; `tracy-capture` + `tracy-csvexport`
+against `macos-release`. Every capture was bound to the launched PID, with exactly one editor
+instance alive throughout — E.1.4's stale-window trap was designed around from the start.
+
+**ROW 4 CHANGED ITS ANSWER MID-PASS, AND THAT IS THE HEADLINE.** It opened NOT EXECUTABLE, and with a
+stronger measurement than earlier passes had recorded: both attached externals are 1x and **neither
+exposes a single HiDPI mode** — 56 modes enumerated on the 3440x1440 and 87 on the 1080x1920, zero
+with a backing scale above 1 — so it was not a setting anyone could toggle. Those monitors were then
+disconnected, leaving the built-in **3024x1964 Retina** panel, and the row became executable for the
+first time in eight tasks. The result splits cleanly in two. **The icons are correct**: 28x19 and
+40x40 px of ink at 2x against 14x9 and 19x20 at 1x — exactly 2x, inside a quad that is 44 px at 2x,
+so the apparent size stays **22 points**, not 11 and not 44. **The lines are not**: across 441 sampled
+horizontal runs of the directional gizmo, **387 (88 %) are one device pixel**, 31 are two and 23 are
+three or more. One device pixel at 2x is **0.5 points** — half the apparent weight the same line
+carries at 1x. **E.1.1's thick-line handoff is therefore FIRED rather than deferred, and it is not
+E.2.3's alone**: `DebugDraw` lines have no width control on any backend, so the grid and the world
+axes are drawn at half weight on a Retina display too. The icons are exempt only because they are
+quads sized in points.
+
+**TWO ROWS CAME OUT STRONGER THAN THE PAGE ASKED FOR.** Row 9 is not "0 differing" within a
+tolerance: `ImageChops.difference().getbbox()` returns **None** over 1 552 000 viewport pixels, so not
+one pixel differs between HEAD-with-Gizmos-off and the branch point, with a working 267-pixel control
+(the two icons) when Gizmos is on. And row 12 needed no cross-build frame match at all, which is what
+E.2.2's equivalent row required: `material_preview.cpp` is **absent from E.2.3's changed-file set**
+and **includes nothing from `aero/render` or `aero/scene_render`**, so it cannot see `DebugDraw`,
+`debugCircleBasis` or `SceneRenderer::activeDirectionalLight` — the only two engine files this task
+touched. Byte-identical **by construction**, which is a compile-level proof rather than an empirical
+one. The sample half is the same species: `emitViewportGizmos` has exactly **one** non-test call site
+in the tree, both new files live only under `editor/`, and no sample links an editor target — a
+sample drawing an icon is a link-level impossibility, not an observation.
+
+**ROW 10 IS HONEST ABOUT WHAT IT COULD NOT RESOLVE, AND THE METHOD LIMIT IS THE DURABLE PART.** "No
+new Tracy zone" is rigorous and holds in both configurations, diffed against E.2.2's own 32-zone
+capture. The frame-cost delta is not: with a scene grown to **25 entities / 22 DirectionalLights + 1
+Camera = 23 icons**, saved to disk so both runs load byte-identical content, **two independent A/B
+pairs produced deltas of opposite sign** — `draw` 23.96 us ON vs 18.55 us OFF in one pair, and 15.38
+us ON vs 19.05 us OFF in the other. A feature cannot make rendering faster, so the spread is
+cross-run variance and the cost is below it. **Tracy accepts one server per client run**, so a second
+`tracy-capture` against a live editor is refused outright and a paired within-session A/B is
+impossible; every capture also carries the client's whole history, including any pre-toggle period.
+A future cost row that needs a resolved number wants an in-process frame counter, or an A/B selected
+by a command-line flag so each run is pure from its first frame.
+
+**SEVEN METHOD FACTS, EACH OF WHICH PRODUCED A WRONG ANSWER BEFORE IT WAS UNDERSTOOD.**
+1. **A pending macOS permission prompt stalls the editor to ~2 frames per 3 minutes** while it still
+   logs "shell ready (8 panels, 4 entities)". Tracy's port-8086 listener triggers the **local
+   network** prompt. This presented first as a black window and later as no window at all, and is
+   indistinguishable from a hang without enumerating `UserNotificationCenter`'s windows.
+2. **Local-network prompts accept synthetic clicks; file-access (TCC) prompts do not** — the Desktop
+   prompt rejects both `CGEvent` and the accessibility API by design and cannot be dismissed
+   programmatically at all — it must be answered interactively.
+3. **Replacing the executable inside an `.app` invalidates its signature, and macOS then grants the
+   process no window, silently.** Make `Contents/MacOS/<exe>` a real file and
+   `codesign --force --sign -` after each swap; a symlinked executable cannot be signed at all
+   ("the main executable or Info.plist must be a regular file"). Re-signing makes a new TCC identity,
+   so the prompts come back.
+4. **A bundle identity that has been in full screen can relaunch onto an inactive Space** —
+   `CGWindowList` reports the window with `onscreen=false` while accessibility reports zero windows.
+   A fresh bundle identifier clears it; `open -F` does not.
+5. **Synthetic input requires the target app to be frontmost.** Otherwise clicks land nowhere and a
+   working control reads as dead — this cost two wrong readings of the `Gizmos` checkbox.
+6. **A synthetic Escape keystroke goes to whatever app is frontmost — including the terminal running
+   the session, which it interrupts.** Close ImGui menus by clicking, never by posting a key, unless
+   the editor is confirmed frontmost. This one interrupted the pass three times before it was found.
+7. **ImGuizmo's centre handle claims a press over a coincident icon**, which is correct behaviour: a
+   picking row on entities that share a position must move the gizmo away first, or it is testing
+   ImGuizmo rather than the icon arm. Related: **undo of a delete does not restore the original
+   entity index**, so the active-directional winner can move after an undo — the lowest-index rule is
+   behaving exactly as specified.
+
+**AND A FLAW IN THE PASS'S OWN METHOD, CAUGHT AND CORRECTED.** Row 11's first scan grepped for
+`\[warn\]`, which cannot match spdlog's actual `[warning]` spelling — a guard that could not have
+failed. Re-run with the right pattern and verified in the other direction against an E.2.2-era log
+captured the same way, which returns 2 warnings. The zero is a measurement; the first one was not.
