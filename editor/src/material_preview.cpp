@@ -34,15 +34,11 @@ namespace {
 // ALPHA 1.0 IS LOAD-BEARING, exactly as it is for the viewport (2.2.3's E4): ImGui's pipeline
 // alpha-blends, so a 0-alpha clear would let the panel's chrome show THROUGH the preview wherever no
 // geometry drew. A shade darker than the viewport's so the two are distinguishable side by side.
+// task E.2.4: ITS RGB IS NOW UNOBSERVABLE. The sky pass covers the whole frame before the sphere is
+// drawn, on every frame that has a camera -- which this preview always does -- so only the ALPHA
+// still matters. Kept for that alpha, and because a frame whose beginScene failed must still clear to
+// something.
 constexpr rhi::Color PREVIEW_CLEAR_COLOR{0.05F, 0.05F, 0.06F, 1.0F};
-
-// The sample's own light, copied verbatim (§0.5) so validation row 3 can compare the two pictures.
-constexpr Vec3 PREVIEW_LIGHT_DIRECTION{-0.5F, -1.0F, -0.3F};
-constexpr float PREVIEW_LIGHT_INTENSITY = 3.0F;
-constexpr Vec3 PREVIEW_AMBIENT{0.03F, 0.03F, 0.03F};
-constexpr float PREVIEW_FOV_DEGREES = 60.0F;
-constexpr float PREVIEW_NEAR = 0.1F;
-constexpr float PREVIEW_FAR = 100.0F;
 
 }  // namespace
 
@@ -67,8 +63,9 @@ MaterialPreview::MaterialPreview(rhi::Device* deviceIn) noexcept : device(device
 
 MaterialPreview::~MaterialPreview() {
     // THE EXPLICIT TEARDOWN ORDER (INV-5/AC-31), spelled out rather than left to member declaration
-    // order: the TEXTURE CACHE first, then the material, then the renderer, then the target -- all
-    // before ~Device, which EditorApp destroys after the panel registry. I88 runs this whole chain
+    // order: the TEXTURE CACHE first, then the material, then the renderer, then the SKY PASS, then
+    // the post-process, then the target -- all before ~Device, which EditorApp destroys after the
+    // panel registry. I88 runs this whole chain
     // under ASan. The textures are OURS to release even though the material referenced them: the
     // registry BORROWS a slot's texture and destroyMaterial never touches one (material.hpp).
     if (device != nullptr) {
@@ -84,6 +81,9 @@ MaterialPreview::~MaterialPreview() {
     }
     material = render::MaterialHandle{};
     renderer.reset();
+    sky.reset();   // task E.2.4: after the renderer, before post -- it holds only a pipeline handle,
+                   // and releasing it here keeps the whole order in ONE place rather than half here
+                   // and half in member-destruction order.
     post.reset();  // task 3.6.3: after the renderer, before the target -- it owns the HDR pair
     target.reset();
 }
@@ -104,7 +104,7 @@ bool MaterialPreview::prepareFrame(rhi::Extent2D pixels) {
 
     requestedExtent = pixels;
     drewLastFrame = true;
-    if (status != Status::Ready || !target || !post) {
+    if (status != Status::Ready || !target || !post || !sky) {
         // Nothing is allocated yet (creation is lazy and happens in the service pass, A-9) or the
         // status has latched. Either way there is no texture to hand out and no resize to apply.
         // task 3.6.3: `post` is created inside ensureInitialized BEFORE `target`, so the two are
@@ -198,6 +198,23 @@ void MaterialPreview::ensureInitialized([[maybe_unused]] rhi::Extent2D firstExte
         post.reset();
         status = Status::Unavailable;
         reason = "Preview unavailable -- renderer creation failed (are res://scene.vert/.frag cooked?).";
+        return;
+    }
+    // task E.2.4: the scene's sky, drawn before the sphere -- SceneRenderer::render's own order.
+    // Built against the SAME HDR pair the renderer was, never against the OUTPUT target, whose
+    // depthFormat is Invalid here.
+    // ALL-OR-NOTHING with the three above (D6): a preview without its sky is a preview whose parity
+    // claim broke SILENTLY, and E.2.1's own precedent is that a SceneRenderer without a sky pass is
+    // unrepresentable. E.2.3's atlas took the OPPOSITE posture for a reason that does not apply here:
+    // a missing atlas degrades an icon to a tinted square, a missing sky CHANGES THE SHADE.
+    sky = render::SkyPass::create(*device, shaderVfs,
+                                  {.colorFormat = post->sceneColorFormat(), .depthFormat = post->sceneDepthFormat()});
+    if (!sky) {
+        renderer.reset();
+        target.reset();
+        post.reset();
+        status = Status::Unavailable;
+        reason = "Preview unavailable -- sky pass creation failed (are res://sky.vert / res://sky.frag cooked?).";
         return;
     }
     status = Status::Ready;
@@ -382,10 +399,13 @@ void MaterialPreview::pushMaterial(const MaterialDocument& document) {
     (void)renderer->updateMaterial(material, params, slots);
 }
 
-void MaterialPreview::renderFrame(float deltaSeconds, const render::TonemapParams& tonemap) {
+void MaterialPreview::renderFrame(float deltaSeconds, const render::TonemapParams& tonemap,
+                                  const MaterialPreviewLighting& lighting) {
     AERO_PROFILE_ZONE;
-    if (!target || !renderer || !post) {
-        return;  // defensive, for pushMaterial's reason exactly
+    if (!target || !renderer || !post || !sky) {
+        return;  // defensive, for pushMaterial's reason exactly -- and E.2.4's: the four are engaged
+                 // together or none of them is, so a test that reaches here with three of four has
+                 // found a hole in ensureInitialized's all-or-nothing rule.
     }
     // NO resize() HERE, DELIBERATELY -- and that now covers BOTH targets (task 3.6.3). The allocation
     // was settled by prepareFrame, inside the draw walk, before the handle ImGui is about to bind was
@@ -395,15 +415,12 @@ void MaterialPreview::renderFrame(float deltaSeconds, const render::TonemapParam
     if (!frame) {
         return;  // a transient command-buffer miss; the next service pass tries again
     }
-    orbitAngle += deltaSeconds * PREVIEW_ORBIT_SPEED;
-    if (orbitAngle >= TWO_PI) {
-        orbitAngle -= TWO_PI;  // bounded, so a long-running editor never loses angular precision
-    }
+    // task E.2.4: the orbit advances through the rig's own TOTAL function -- a NaN or negative delta
+    // leaves the angle where it was rather than turning the eye into a NaN.
+    orbitAngle = advanceMaterialPreviewOrbit(orbitAngle, deltaSeconds, DEFAULT_MATERIAL_PREVIEW_RIG);
     const rhi::Extent2D extent = frame->extent();
     const float aspect =
         extent.height != 0 ? static_cast<float>(extent.width) / static_cast<float>(extent.height) : 1.0F;
-    const Vec3 eye{PREVIEW_ORBIT_RADIUS * std::cos(orbitAngle), PREVIEW_ORBIT_HEIGHT,
-                   PREVIEW_ORBIT_RADIUS * std::sin(orbitAngle)};
 
     instances.resize(1);
     render::MeshInstance& sphere = instances[0];
@@ -417,19 +434,16 @@ void MaterialPreview::renderFrame(float deltaSeconds, const render::TonemapParam
                                  // MATERIAL's picture, so it contributes nothing
     sphere.material = material;
 
-    render::RenderView view;
-    view.camera = {lookAt(eye, Vec3{}, Vec3{0.0F, 1.0F, 0.0F}),
-                   perspective(radians(PREVIEW_FOV_DEGREES), aspect, PREVIEW_NEAR, PREVIEW_FAR), eye};
-    view.directional = {
-        .direction = normalize(PREVIEW_LIGHT_DIRECTION), .color = Vec3::one(), .intensity = PREVIEW_LIGHT_INTENSITY};
-    // task E.2.1: Flat at the rig's constant, intensity 1 -- EXACTLY the pre-E.2.1 ambient (the delta
-    // rule), and NO SkyPass, so the preview's picture is byte-identical. Lighting it from the open
-    // scene's `Environment` is E.2.4's deliverable.
-    view.environment = {
-        .ambientMode = render::AmbientMode::Flat, .ambientColor = PREVIEW_AMBIENT, .ambientIntensity = 1.0F};
-    sphere.mvp = view.camera.proj * view.camera.view * sphere.model;
-    view.instances = instances;  // BORROWED: `instances` is a member and outlives this call (F6)
+    // task E.2.4: the camera is the RIG's and the lighting is the SCENE's -- this function states
+    // neither. materialPreviewView fills sphere.mvp as (proj * view) * model, the association
+    // buildRenderView uses, which is what makes PX's byte-identity possible. `instances` is BORROWED:
+    // it is a member and outlives this call (F6).
+    const render::CameraView camera = materialPreviewCamera(DEFAULT_MATERIAL_PREVIEW_RIG, orbitAngle, aspect);
+    const render::RenderView view = materialPreviewView(camera, lighting, instances);
 
+    // BEFORE the geometry -- SceneRenderer::render's own order. The sky pipeline neither tests nor
+    // writes depth, so the sphere overdraws it wherever it covers.
+    sky->draw(*frame, view);
     renderer->draw(*frame, view);
     post->endScene(std::move(*frame));  // submits command buffer A
 
@@ -446,8 +460,8 @@ void MaterialPreview::renderFrame(float deltaSeconds, const render::TonemapParam
 }
 
 void MaterialPreview::service(const MaterialDocument* document, bool documentChanged, const AssetDatabase* database,
-                              std::string_view assetsRootAbs, float deltaSeconds,
-                              const render::TonemapParams& tonemap) {
+                              std::string_view assetsRootAbs, float deltaSeconds, const render::TonemapParams& tonemap,
+                              const MaterialPreviewLighting& lighting) {
     // Consumed UNCONDITIONALLY and FIRST, before any early return -- ViewportPanel::renderScene's E2/S6
     // rule: a latch left set by a frame that returned early makes a hidden panel render one stale frame.
     const bool drew = std::exchange(drewLastFrame, false);
@@ -464,7 +478,7 @@ void MaterialPreview::service(const MaterialDocument* document, bool documentCha
     }
     // task 3.6.3: `|| !post` -- creation is lazy, so this guard runs before ensureInitialized has
     // engaged anything on early frames, and every access below must be a CHECKED optional access.
-    if (status != Status::Ready || !target || !renderer || !post) {
+    if (status != Status::Ready || !target || !renderer || !post || !sky) {
         return;
     }
     // 1. the desired slot set, then the document -> MaterialParams push (D-4 step 1). rebuildSlots
@@ -487,7 +501,7 @@ void MaterialPreview::service(const MaterialDocument* document, bool documentCha
     if (!drew || document == nullptr || !material.valid()) {
         return;
     }
-    renderFrame(deltaSeconds, tonemap);
+    renderFrame(deltaSeconds, tonemap, lighting);
 }
 
 bool MaterialPreview::available() const noexcept { return status == Status::Ready; }
@@ -509,6 +523,12 @@ rhi::Extent2D MaterialPreview::textureExtent() const noexcept {
 }
 
 std::size_t MaterialPreview::frameCount() const noexcept { return frames; }
+
+std::size_t MaterialPreview::skyDrawCount() const noexcept { return sky ? sky->drawCount() : 0; }
+
+const render::RenderTarget* MaterialPreview::outputTarget() const noexcept {
+    return status == Status::Ready && target ? &*target : nullptr;
+}
 
 PreviewTextureState MaterialPreview::slotTextureState(std::size_t slotIndex) const noexcept {
     if (slotIndex >= slotKeys.size()) {

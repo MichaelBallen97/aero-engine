@@ -102,8 +102,11 @@ public:
     // forwards; every GPU create, destroy and submit happens inside MaterialPreview::service.
     // task 3.6.3: `tonemap` is APPENDED LAST, so no existing argument moves. It is forwarded verbatim
     // to MaterialPreview::service; this panel neither owns nor edits it -- the VIEWPORT does.
+    // task E.2.4: `lighting` is APPENDED LAST for `tonemap`'s reason. It is the bridge's resolution,
+    // handed in by EditorApp::tick; this panel neither resolves nor edits it.
     void servicePreview(MaterialSession& session, const AssetDatabase& database, std::string_view assetsRootAbs,
-                        float deltaSeconds, const render::TonemapParams& tonemap);
+                        float deltaSeconds, const render::TonemapParams& tonemap,
+                        const MaterialPreviewLighting& lighting);
 
     // Black-box reads for EditorApp's accessors (the modelImportState() family's shape).
     [[nodiscard]] bool previewAvailable() const noexcept { return preview.available(); }
@@ -116,6 +119,11 @@ public:
     [[nodiscard]] std::size_t previewUvSetWarnCount() const noexcept { return preview.uvSetWarnCount(); }
     [[nodiscard]] std::uint32_t previewTextureWidth() const noexcept { return preview.textureExtent().width; }
     [[nodiscard]] std::uint32_t previewTextureHeight() const noexcept { return preview.textureExtent().height; }
+    [[nodiscard]] std::size_t previewSkyDrawCount() const noexcept { return preview.skyDrawCount(); }
+    // The LATCH, not a live read: written by the service pass, read by the NEXT draw walk. One frame
+    // late and invisible -- the lastImageSizePoints posture of reading a latched value between phases.
+    [[nodiscard]] bool previewHasSun() const noexcept { return previewHasSunValue; }
+    [[nodiscard]] const render::RenderTarget* previewOutputTarget() const noexcept { return preview.outputTarget(); }
 
 private:
     void drawPreview();  // the preview strip: an ImGui::Image, or ONE line saying why not (AC-32)
@@ -136,6 +144,9 @@ private:
     // on every frame the widget is not active -- which is also how a retarget reaches it.
     std::string nameDraft;
     bool nameEditing = false;
+    // task E.2.4: the RESOLUTION's answer, latched in the service pass. NOT `sun.intensity != 0` --
+    // a sun the user set to 0 is a sun they switched off, and the notice must not claim there is none.
+    bool previewHasSunValue = false;
     std::array<std::string, SLOT_COUNT> slotSearch;  // one picker search line per slot
     std::string labelScratch;                        // per-frame scratch, NOT model state (the 2.2.1 idiom)
     MaterialPreview preview;                         // OWNED; the only GPU state anywhere in this panel

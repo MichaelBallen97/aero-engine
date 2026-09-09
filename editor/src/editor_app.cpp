@@ -9,6 +9,7 @@
 #include <aero/editor/component_ops.hpp>         // task 3.1.5: readComponentField, for the assignment's before
 #include <aero/editor/instantiate_plan.hpp>      // task 3.1.5: buildInstantiatePlan + its refusal enum
 #include <aero/editor/material_from_import.hpp>  // task 3.1.5: reached through the loader; named for clarity
+#include <aero/editor/material_preview_rig.hpp>  // task E.2.4: MaterialPreviewLighting
 #include <aero/editor/picking.hpp>               // task 3.1.5: viewportRay + dropPlacementPoint
 #include <aero/editor/text_file.hpp>             // task 3.1.5: readFileBytes, for the drop's own import
                                                  // reconcile block's third one-shot drain
@@ -28,6 +29,7 @@
 #include <aero/platform/window.hpp>                  // task 2.5.1: window->setTitle() (F14)
 #include <aero/render/tonemap.hpp>                   // task 3.6.3: render::TonemapParams{} -- the null-viewport arm
 #include <aero/rhi/device.hpp>                       // task 3.1.5: destroyTexture on a retired handle
+#include <aero/scene_render/scene_renderer.hpp>      // task E.2.4 -- the two resolvers
 
 #include "asset_browser_panel.hpp"
 #include "console_panel.hpp"
@@ -1023,9 +1025,21 @@ bool EditorApp::tick() {
     // from the registry and is legally null in a test that registers only the Material panel, and
     // render::TonemapParams{} is {1.0F, AcesApprox} -- already sanitized by construction.
     if (materialPanel != nullptr) {
+        // task E.2.4 (D2/D8): the preview's lighting is the BRIDGE's resolution -- the same two
+        // functions buildRenderView calls -- run over the World the viewport just rendered THIS frame,
+        // post-undo (drawShellUi applied undo/redo above renderScene). Resolved HERE and handed down
+        // as a VALUE, so the panel and the preview stay World-free: resolving inside the service pass
+        // would hand a non-const World to code that has been scene-free since 3.4.2, to save one
+        // struct. Neither resolver logs on any path; the viewport's SceneRenderer owns the latched
+        // "multiple Environments" / "multiple DirectionalLights" WARNs, so this second resolution per
+        // frame produces no second WARN.
+        const scene_render::ResolvedEnvironment environment = scene_render::resolveEnvironment(sceneWorld);
+        const scene_render::ResolvedDirectionalLight sun = scene_render::resolveDirectionalLight(sceneWorld);
+        const MaterialPreviewLighting lighting{
+            .environment = environment.data, .sun = sun.data, .hasSun = sun.entity.valid()};
         materialPanel->servicePreview(
             materialSession, assetDatabase, assetDatabase.root(), frameClock.deltaSeconds(),
-            viewportPanel != nullptr ? viewportPanel->tonemapParams() : render::TonemapParams{});
+            viewportPanel != nullptr ? viewportPanel->tonemapParams() : render::TonemapParams{}, lighting);
     }
     // task 3.1.5 (D8/D12): the FIFTH occupant of this slot -- renderScene, serviceThumbnails, the
     // import session, the material preview, and now the scene-asset ledger. OUTSIDE the ImGui draw walk
@@ -1225,6 +1239,12 @@ std::uint32_t EditorApp::materialPreviewTextureWidth() const noexcept {
 }
 std::uint32_t EditorApp::materialPreviewTextureHeight() const noexcept {
     return materialPanel != nullptr ? materialPanel->previewTextureHeight() : 0;
+}
+std::size_t EditorApp::materialPreviewSkyDrawCount() const noexcept {
+    return materialPanel != nullptr ? materialPanel->previewSkyDrawCount() : 0;
+}
+bool EditorApp::materialPreviewHasSun() const noexcept {
+    return materialPanel != nullptr && materialPanel->previewHasSun();
 }
 
 // ---- task 3.1.5: the three request hooks (the EIGHTH application of the request shape) ------------

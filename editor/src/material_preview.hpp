@@ -21,6 +21,16 @@
 // ITS OWN ForwardRenderer IS NOT A PREFERENCE: a MaterialHandle is per-ForwardRenderer, and the
 // viewport's renderer is private to its SceneRenderer, so there is no handle the two could share.
 //
+// task E.2.4: THE PICTURE IS THE SCENE'S. This preview draws a unit sphere at the WORLD ORIGIN under
+// the open scene's Environment and its ACTIVE DirectionalLight -- both resolved by the bridge
+// (scene_render::resolveEnvironment / resolveDirectionalLight) in EditorApp::tick and handed in as a
+// MaterialPreviewLighting value, so this class never sees a World. NOTHING HERE STATES A LIGHT, an
+// ambient, a field of view or a clip plane: the camera is MaterialPreviewRig's and the lighting is the
+// scene's. It owns a render::SkyPass so the scene's background is behind the sphere, ALL-OR-NOTHING
+// with post/target/renderer -- a preview without its sky is a preview whose parity claim broke
+// silently. No point light, no spot light and no shadow reaches it (a lamp lights a sphere at the
+// origin by where the lamp happens to SIT, which predicts nothing about the material).
+//
 // LAZY AND LATCHED (A-9/R2): nothing is created until the panel has actually DRAWN a frame with a
 // material targeted, so a user who never opens a material pays nothing at all. The one creation
 // attempt is ViewportPanel::ensureInitialized's rule verbatim, including the
@@ -29,12 +39,14 @@
 #include <aero/core/content_hash.hpp>
 #include <aero/core/guid.hpp>
 #include <aero/core/vfs.hpp>
+#include <aero/editor/material_preview_rig.hpp>  // task E.2.4 -- the rig + MaterialPreviewLighting
 #include <aero/reflect/material_format.hpp>
 #include <aero/render/forward_renderer.hpp>
 #include <aero/render/material.hpp>
 #include <aero/render/mesh.hpp>
 #include <aero/render/post_process.hpp>  // task 3.6.3: the owned HDR target + the fullscreen resolve
 #include <aero/render/render_target.hpp>
+#include <aero/render/sky_pass.hpp>  // task E.2.4 -- the preview draws the scene's sky
 #include <aero/rhi/handles.hpp>
 #include <aero/rhi/types.hpp>
 
@@ -54,14 +66,9 @@ namespace engine::editor {
 
 class AssetDatabase;  // task 3.4.2 step 7 resolves slot GUIDs through it, BY PARAMETER (INV-4)
 
-// The framing, COPIED from samples/phase-3-materials/main.cpp rather than re-derived (§0.5):
-// validation row 3 judges this preview against the sample's known-good look, and two different
-// framings would make that comparison meaningless.
-inline constexpr float PREVIEW_ORBIT_RADIUS = 3.0F;  // one unit sphere, comfortably framed
-inline constexpr float PREVIEW_ORBIT_HEIGHT = 1.2F;
-inline constexpr float PREVIEW_ORBIT_SPEED = 0.35F;          // rad/s -- the sample's own value and its recorded
-                                                             // reason: slow enough that GGX highlights are
-                                                             // judgeable by eye
+// task E.2.4: the three PREVIEW_ORBIT_* constants that used to sit here are MaterialPreviewRig's --
+// public, pure and tier-0 testable. The two below stay: they are GPU-shaped and have nothing to do
+// with the framing.
 inline constexpr std::uint32_t PREVIEW_EXTENT_QUANTUM = 64;  // the viewport's own quantum posture
 inline constexpr std::uint32_t PREVIEW_MAX_EXTENT = 512;     // §6.4's cap on the larger axis
 
@@ -108,8 +115,12 @@ public:
     // task 3.6.3: `tonemap` is APPENDED LAST, so no existing argument moves. It comes from the
     // VIEWPORT, which owns the UI that mutates it, so the viewport and the preview can never grade the
     // same material differently.
+    // task E.2.4: `lighting` is APPENDED LAST for the same reason `tonemap` was. It is the BRIDGE's
+    // resolution, handed down by EditorApp::tick; this class neither resolves it nor edits it, and
+    // never sees a World.
     void service(const MaterialDocument* document, bool documentChanged, const AssetDatabase* database,
-                 std::string_view assetsRootAbs, float deltaSeconds, const render::TonemapParams& tonemap);
+                 std::string_view assetsRootAbs, float deltaSeconds, const render::TonemapParams& tonemap,
+                 const MaterialPreviewLighting& lighting);
 
     // ---- reads -------------------------------------------------------------------------------------
     [[nodiscard]] bool available() const noexcept;                 // status == Ready
@@ -130,6 +141,14 @@ public:
     // AC-22's latched WARN, as a count rather than a bool, so "latched" is assertable: an unlatched
     // implementation climbs past 1 as edits re-push.
     [[nodiscard]] std::size_t uvSetWarnCount() const noexcept;
+    // task E.2.4: the sky pass's OWN count, so "the preview draws the scene's sky" is a RUNTIME fact
+    // (I135) rather than a source-text claim. 0 until Ready, and 0 forever if the pass never engaged.
+    [[nodiscard]] std::size_t skyDrawCount() const noexcept;
+    // The ImGui-visible OUTPUT target as a READ-ONLY seam -- ViewportPanel::outputTarget()'s twin, for
+    // the same reason: a PIXEL READ is the only way to assert that the scene's Environment reached
+    // this picture (I136), and no accessor here can otherwise tell "the sky drew" from "the sky drew
+    // the RIGHT colour". NULL when not Ready.
+    [[nodiscard]] const render::RenderTarget* outputTarget() const noexcept;
 
     // ---- the texture cache, as the panel and the GPU tier see it (task 3.4.2 step 7, D7) ----------
     [[nodiscard]] PreviewTextureState slotTextureState(std::size_t slotIndex) const noexcept;
@@ -164,7 +183,7 @@ private:
 
     void ensureInitialized(rhi::Extent2D firstExtent);  // ONE attempt, latched (A-9)
     void pushMaterial(const MaterialDocument& document);
-    void renderFrame(float deltaSeconds, const render::TonemapParams& tonemap);
+    void renderFrame(float deltaSeconds, const render::TonemapParams& tonemap, const MaterialPreviewLighting& lighting);
     // Recomputes the five desired keys from the document + the database, creating a Loading entry for
     // each key not already cached. Returns true when the desired set MOVED, which is what tells
     // service() to re-push. A null document clears every slot, so untargeting orphans the whole cache.
@@ -190,6 +209,10 @@ private:
     std::optional<render::PostProcess> post;
     std::optional<render::RenderTarget> target;
     std::optional<render::ForwardRenderer> renderer;
+    // task E.2.4: the scene's sky, drawn BEFORE the sphere. ALL-OR-NOTHING with the three above --
+    // ensureInitialized releases all of them if this one fails. Its position in this list does not
+    // decide its teardown either: the destructor spells FIVE members in order.
+    std::optional<render::SkyPass> sky;
     render::MaterialHandle material{};  // created on first push, then updated in place
     // The upload cache. A LINEAR-SCANNED vector, not a map: the desired set is at most five entries
     // plus whatever one frame's edit orphaned, so a binary search would be slower than the scan and a
