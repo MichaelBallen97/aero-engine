@@ -177,6 +177,10 @@ add_test(NAME aero_tests COMMAND aero_tests)
 # give the lavapipe LSan pin on the Linux Debug lane (F9), like every GPU-drawing test.
 add_executable(aero_editor_imgui_test
     editor/imgui_layer_test.cpp
+    # task E.2.4 -- the preview/viewport byte-identity A/B (PX), GPU-gated. It is HERE because this is
+    # the ONE editor test target that links aero::scene_render, which side B needs for
+    # SceneRenderer::create and the two resolvers (the SL1-SL10 precedent below).
+    editor/material_preview_parity_test.cpp
     vulkan_stack_pin.cpp)
 # task 3.1.5 (SL1-SL10): aero::scene_render joins the link line so this TU can include
 # editor/src/scene_asset_loader.hpp, whose ModelLoadResult names scene_render::MeshBinding. The ARCHIVE
