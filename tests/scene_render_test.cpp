@@ -39,6 +39,20 @@ using engine::scene_render::RenderViewScratch;
 
 namespace {
 constexpr engine::rhi::Extent2D VIEWPORT{1920U, 1080U};
+
+// task E.2.4: field-for-field, with the field NAMED in the failure -- the :393 / :602 shape.
+// DirectionalLightData has no operator== (lighting.hpp) and adding one for a test would be an engine
+// API change made from the test tier.
+void checkDirectionalEqual(const engine::render::DirectionalLightData& got,
+                           const engine::render::DirectionalLightData& want) {
+    CHECK(got.direction == want.direction);
+    CHECK(got.color == want.color);
+    CHECK(got.intensity == want.intensity);
+    CHECK(got.castsShadows == want.castsShadows);
+    CHECK(got.shadowBias == want.shadowBias);
+    CHECK(got.shadowNormalBias == want.shadowNormalBias);
+    CHECK(got.shadowDistance == want.shadowDistance);
+}
 }  // namespace
 
 TEST_CASE("scene_render: buildRenderView picks the lowest-index camera (D5)") {
@@ -754,6 +768,202 @@ TEST_CASE("scene_render: activeDirectionalLight is invalid with no directional l
         const Entity active = engine::scene_render::activeDirectionalLight(w);
         CHECK(active.valid());
         CHECK(active == directional);
+    }
+}
+
+TEST_CASE("scene_render: resolveDirectionalLight IS buildRenderView's sun, direction included (task E.2.4)") {
+    // THE NOVELTY HERE IS THE TIE, NOT THE DIRECTION. The case at the top of this file ("directional
+    // light direction resolves from the entity's -Z world axis (D6)") already asserts buildRenderView's
+    // own direction on a non-identity Transform; what nothing asserted before this task is that
+    // resolveDirectionalLight's answer IS the answer buildRenderView writes.
+    World w;
+    RenderViewScratch scratch;
+    const Entity cam = w.create();
+    REQUIRE(w.add<Transform>(cam) != nullptr);
+    REQUIRE(w.add<Camera>(cam) != nullptr);
+
+    // THREE lights, created in index order, with their COMPONENTS added in an order that is NOT index
+    // order -- so a resolver that took "the first one seen" would pick the last-created one. Distinct
+    // colours, distinct intensities AND distinct rotations, so the two directions that lose are
+    // different from the winner's and from each other.
+    const Entity first = w.create();
+    const Entity second = w.create();
+    const Entity third = w.create();
+    REQUIRE(first.index < second.index);
+    REQUIRE(second.index < third.index);
+    const Quat rotateXByMinus50 = engine::fromAxisAngle(Vec3::unitX(), engine::radians(-50.0F));
+    const Quat rotateYBy90 = engine::fromAxisAngle(Vec3::unitY(), engine::radians(90.0F));
+    REQUIRE(w.add<Transform>(third, Transform{Vec3::zero(), Quat::identity(), Vec3::one()}) != nullptr);
+    REQUIRE(w.add<DirectionalLight>(third, DirectionalLight{.color = Vec3{0.2F, 0.3F, 0.7F}, .intensity = 7.0F}) !=
+            nullptr);
+    REQUIRE(w.add<Transform>(first, Transform{Vec3::zero(), rotateXByMinus50, Vec3::one()}) != nullptr);
+    REQUIRE(w.add<DirectionalLight>(first, DirectionalLight{.color = Vec3{0.9F, 0.1F, 0.2F},
+                                                            .intensity = 3.0F,
+                                                            .castsShadows = false,
+                                                            .shadowBias = 0.004F,
+                                                            .shadowNormalBias = 0.07F,
+                                                            .shadowDistance = 33.0F}) != nullptr);
+    REQUIRE(w.add<Transform>(second, Transform{Vec3::zero(), rotateYBy90, Vec3::one()}) != nullptr);
+    REQUIRE(w.add<DirectionalLight>(second, DirectionalLight{.color = Vec3{0.1F, 0.8F, 0.3F}, .intensity = 5.0F}) !=
+            nullptr);
+
+    const engine::scene_render::ResolvedDirectionalLight resolved = engine::scene_render::resolveDirectionalLight(w);
+    CHECK(resolved.entity == first);  // lowest entity index (D6), whatever order the store walks in
+    CHECK(resolved.count == 3);       // every light COUNTED, not just the winner
+
+    SUBCASE("the WIRING arm: buildRenderView reads the resolver") {
+        // After the extraction both sides are ONE computation, so this asserts that buildRenderView
+        // reads the resolver -- the wiring -- and says NOTHING about the arithmetic. The oracle arm
+        // below is what says the arithmetic is right. (E.1.2's GR8 lesson, stated where it applies
+        // rather than tripped over.)
+        const RenderView view = buildRenderView(w, scratch, VIEWPORT);
+        checkDirectionalEqual(resolved.data, view.directional);
+        CHECK(view.directionalCount == resolved.count);
+    }
+
+    SUBCASE("the ORACLE arm: the direction is the entity's -Z world axis, independently derived") {
+        const Vec3 expected =
+            engine::normalize(engine::transformDirection(engine::worldMatrix(w, first), Vec3{0.0F, 0.0F, -1.0F}));
+        CHECK(engine::approxEquals(resolved.data.direction, expected, 1e-6F));
+        // Anti-vacuity, three ways. Without these a resolver that returned the DEFAULT direction on
+        // an identity-rotated seed would satisfy both arms.
+        CHECK_FALSE(engine::approxEquals(resolved.data.direction, Vec3{0.0F, 0.0F, -1.0F}, 1e-4F));
+        const Vec3 secondDirection =
+            engine::normalize(engine::transformDirection(engine::worldMatrix(w, second), Vec3{0.0F, 0.0F, -1.0F}));
+        const Vec3 thirdDirection =
+            engine::normalize(engine::transformDirection(engine::worldMatrix(w, third), Vec3{0.0F, 0.0F, -1.0F}));
+        CHECK_FALSE(engine::approxEquals(resolved.data.direction, secondDirection, 1e-4F));
+        CHECK_FALSE(engine::approxEquals(resolved.data.direction, thirdDirection, 1e-4F));
+    }
+
+    SUBCASE("the winner's own colour, intensity and four shadow fields land") {
+        const DirectionalLight* winner = w.get<DirectionalLight>(first);
+        REQUIRE(winner != nullptr);
+        CHECK(resolved.data.color == winner->color);
+        CHECK(resolved.data.intensity == winner->intensity);
+        CHECK(resolved.data.castsShadows == winner->castsShadows);
+        CHECK(resolved.data.shadowBias == winner->shadowBias);
+        CHECK(resolved.data.shadowNormalBias == winner->shadowNormalBias);
+        CHECK(resolved.data.shadowDistance == winner->shadowDistance);
+        // Anti-vacuity: the two losers carry different intensities, so "the winner's own values
+        // landed" is a claim about the tie-break rather than about three identical lights.
+        CHECK_FALSE(resolved.data.intensity == 5.0F);
+        CHECK_FALSE(resolved.data.intensity == 7.0F);
+    }
+}
+
+TEST_CASE("scene_render: resolveDirectionalLight with no sun encodes 'none' exactly as the view does (task E.2.4)") {
+    SUBCASE("an empty world") {
+        World w;
+        const engine::scene_render::ResolvedDirectionalLight resolved =
+            engine::scene_render::resolveDirectionalLight(w);
+        CHECK_FALSE(resolved.entity.valid());
+        CHECK(resolved.count == 0);
+        // The "none" encoding, spelled out: intensity 0 is what the shader reads as "no sun".
+        checkDirectionalEqual(resolved.data, engine::render::DirectionalLightData{});
+        CHECK(resolved.data.intensity == 0.0F);
+    }
+
+    SUBCASE("a camera, a PointLight and a SpotLight, and no directional at all") {
+        World w;
+        RenderViewScratch scratch;
+        const Entity cam = w.create();
+        REQUIRE(w.add<Transform>(cam) != nullptr);
+        REQUIRE(w.add<Camera>(cam) != nullptr);
+        const Entity point = w.create();
+        REQUIRE(w.add<Transform>(point) != nullptr);
+        REQUIRE(w.add<PointLight>(point) != nullptr);
+        const Entity spot = w.create();
+        REQUIRE(w.add<Transform>(spot) != nullptr);
+        REQUIRE(w.add<SpotLight>(spot) != nullptr);
+
+        const engine::scene_render::ResolvedDirectionalLight resolved =
+            engine::scene_render::resolveDirectionalLight(w);
+        CHECK_FALSE(resolved.entity.valid());
+        CHECK(resolved.count == 0);
+        checkDirectionalEqual(resolved.data, engine::render::DirectionalLightData{});
+        // THE TWO "NONE" ENCODINGS ARE ONE ENCODING: the view's own default and the resolver's.
+        const RenderView view = buildRenderView(w, scratch, VIEWPORT);
+        checkDirectionalEqual(view.directional, engine::render::DirectionalLightData{});
+        checkDirectionalEqual(resolved.data, view.directional);
+
+        // ...and adding ONE DirectionalLight flips all three, without which an implementation that
+        // always returned the default would pass every line above.
+        const Entity sun = w.create();
+        REQUIRE(w.add<Transform>(sun) != nullptr);
+        REQUIRE(w.add<DirectionalLight>(sun, DirectionalLight{.intensity = 2.0F}) != nullptr);
+        const engine::scene_render::ResolvedDirectionalLight lit = engine::scene_render::resolveDirectionalLight(w);
+        CHECK(lit.entity.valid());
+        CHECK(lit.count == 1);
+        CHECK(lit.data.intensity != 0.0F);
+    }
+}
+
+TEST_CASE("scene_render: resolveEnvironment IS buildRenderView's environment (task E.2.4)") {
+    World w;
+    RenderViewScratch scratch;
+    const Entity cam = w.create();
+    REQUIRE(w.add<Transform>(cam) != nullptr);
+    REQUIRE(w.add<Camera>(cam) != nullptr);
+
+    // Three entities in index order with their COMPONENTS added out of index order, the LOWEST index
+    // carrying OUT-OF-RANGE selectors, so both the tie-break and both clamps are exercised at once.
+    const Entity envA = w.create();
+    const Entity envB = w.create();
+    const Entity envC = w.create();
+    REQUIRE(envA.index < envB.index);
+    REQUIRE(envB.index < envC.index);
+    const Environment outOfRange{.backgroundMode = 7U, .skyColor = Vec3{0.10F, 0.11F, 0.12F}, .ambientMode = 300U};
+    REQUIRE(w.add<Environment>(envC, Environment{.skyColor = Vec3{0.30F, 0.31F, 0.32F}}) != nullptr);
+    REQUIRE(w.add<Environment>(envA, outOfRange) != nullptr);
+    REQUIRE(w.add<Environment>(envB, Environment{.skyColor = Vec3{0.20F, 0.21F, 0.22F}}) != nullptr);
+
+    const engine::scene_render::ResolvedEnvironment resolved = engine::scene_render::resolveEnvironment(w);
+    CHECK(resolved.entity == envA);
+    CHECK(resolved.count == 3);
+    // Field for field against the bridge's own answer -- the :393 shape, with the two enum
+    // comparisons in DOUBLE parentheses.
+    const RenderView view = buildRenderView(w, scratch, VIEWPORT);
+    CHECK((resolved.data.backgroundMode == view.environment.backgroundMode));
+    CHECK(resolved.data.skyColor == view.environment.skyColor);
+    CHECK(resolved.data.horizonColor == view.environment.horizonColor);
+    CHECK(resolved.data.groundColor == view.environment.groundColor);
+    CHECK(resolved.data.solidColor == view.environment.solidColor);
+    CHECK((resolved.data.ambientMode == view.environment.ambientMode));
+    CHECK(resolved.data.ambientColor == view.environment.ambientColor);
+    CHECK(resolved.data.ambientIntensity == view.environment.ambientIntensity);
+    CHECK(view.environmentCount == resolved.count);
+    // Both out-of-range selectors CLAMP to their defaults (the clampPrimitive rule).
+    CHECK((resolved.data.backgroundMode == BackgroundMode::Sky));
+    CHECK((resolved.data.ambientMode == AmbientMode::Hemisphere));
+    CHECK(resolved.data.skyColor == Vec3{0.10F, 0.11F, 0.12F});
+
+    SUBCASE("in-range selectors are NOT clamped away") {
+        // The anti-vacuity arm: without it a clamp that returned the default for EVERY input passes.
+        World inRange;
+        const Entity env = inRange.create();
+        REQUIRE(inRange.add<Environment>(env, Environment{.backgroundMode = 1U, .ambientMode = 1U}) != nullptr);
+        const engine::scene_render::ResolvedEnvironment solid = engine::scene_render::resolveEnvironment(inRange);
+        CHECK((solid.data.backgroundMode == BackgroundMode::Solid));
+        CHECK((solid.data.ambientMode == AmbientMode::Flat));
+    }
+
+    SUBCASE("no Environment at all: 'none' is the render view's own default") {
+        World empty;
+        const engine::scene_render::ResolvedEnvironment none = engine::scene_render::resolveEnvironment(empty);
+        CHECK_FALSE(none.entity.valid());
+        CHECK(none.count == 0);
+        // Field for field for the readable failure, matching :393, even though EnvironmentData does
+        // carry a defaulted operator==.
+        const EnvironmentData want{};
+        CHECK((none.data.backgroundMode == want.backgroundMode));
+        CHECK(none.data.skyColor == want.skyColor);
+        CHECK(none.data.horizonColor == want.horizonColor);
+        CHECK(none.data.groundColor == want.groundColor);
+        CHECK(none.data.solidColor == want.solidColor);
+        CHECK((none.data.ambientMode == want.ambientMode));
+        CHECK(none.data.ambientColor == want.ambientColor);
+        CHECK(none.data.ambientIntensity == want.ambientIntensity);
     }
 }
 
