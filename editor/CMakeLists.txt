@@ -142,6 +142,7 @@ add_library(aero_editor_core STATIC
     src/material_session.cpp     # task 3.4.2 -- the target/dirty/apply machine; the ONE .aeromat write
     src/material_panel.cpp       # task 3.4.2 -- the only new ImGui TU
     src/material_preview.cpp     # task 3.4.2 -- the only new GPU TU: target, renderer, texture cache
+    src/material_preview_rig.cpp # task E.2.4 -- the preview's camera rig and view builder; PURE, no GPU
     src/skeleton_cook_source.cpp # task 3.5.1 -- the ImportedModel -> skeleton cook adapter; PURE
     src/animation_cook_source.cpp # task 3.5.2 -- the ImportedModel -> animation cook adapter; PURE
     src/audio_cook_source.cpp    # task 3.7.1 -- the audio source-name predicates; PURE, no third party
