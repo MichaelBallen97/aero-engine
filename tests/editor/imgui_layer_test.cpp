@@ -12357,4 +12357,306 @@ TEST_CASE(
         // ...and the search can say NO.
         CHECK(countLinesContaining(code, "AmbientMode::DoesNotExist") == 0U);
     }
+
+    SUBCASE("(c) the View popover's own source text, and the strip's emptiness") {
+        // NOTHING IN tests/ CAN CLICK A BUTTON OR PRESS A KEY, so the popup's anchor, its Escape
+        // binding and the ImGuizmo term it must carry have no runtime witness anywhere. They are
+        // pinned here and judged on the validation page (rows 7 and 8).
+        const std::vector<std::string> code = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/viewport_panel.cpp");
+        REQUIRE_FALSE(code.empty());
+        // The body, delimited exactly as I106(b) delimits it: from the signature to the next column-0
+        // closing brace.
+        const std::size_t bodyStart = soleLineContaining(code, "void ViewportPanel::drawViewOptions()");
+        std::size_t bodyEnd = code.size();
+        for (std::size_t i = bodyStart + 1U; i < code.size(); ++i) {
+            if (code[i].starts_with('}')) {
+                bodyEnd = i;
+                break;
+            }
+        }
+        REQUIRE(bodyEnd > bodyStart);
+        REQUIRE(bodyEnd < code.size());
+        const std::vector<std::string> body(code.begin() + static_cast<std::ptrdiff_t>(bodyStart),
+                                            code.begin() + static_cast<std::ptrdiff_t>(bodyEnd));
+
+        const std::array<std::string_view, 14> needles{"SmallButton(\"View\")",
+                                                       "OpenPopup(\"##viewoptions\")",
+                                                       "SetNextWindowPos(",
+                                                       "BeginPopup(\"##viewoptions\")",
+                                                       "EndPopup()",
+                                                       "IsKeyPressed(ImGuiKey_Escape",
+                                                       "CloseCurrentPopup()",
+                                                       "RadioButton(\"Perspective\"",
+                                                       "RadioButton(\"Orthographic\"",
+                                                       "Checkbox(\"Grid\"",
+                                                       "Checkbox(\"Gizmos\"",
+                                                       "Checkbox(\"View axis\"",
+                                                       "BeginCombo(",
+                                                       "SliderFloat(\"Exposure\""};
+        for (const std::string_view needle : needles) {
+            CAPTURE(needle);
+            CHECK(countLinesContaining(body, needle) > 0U);
+        }
+        // ...and the search can say NO, so a body that matched everything could not fake the fourteen.
+        CHECK(countLinesContaining(body, "Checkbox(\"DoesNotExist\"") == 0U);
+
+        // THE ROW RECT IS CAPTURED BEFORE THE POPUP. Reversed, an open popover moves the rect
+        // overlayOwnsPress reads -- seed S20's shape, and I138's runtime arm.
+        const std::size_t captureAt = soleLineContaining(body, "viewOptionsButtonMax = Vec2{");
+        const std::size_t popupAt = soleLineContaining(body, "BeginPopup(\"##viewoptions\")");
+        CHECK(captureAt < popupAt);
+
+        // THE ImGuizmo TERM. The dismissing click lands on the image with ImGui's hover inhibition
+        // active, so ImGuizmo's own CanActivate cannot see the popup; this is what tells it.
+        const std::size_t enableAt = soleLineContaining(code, "ImGuizmo::Enable(gesture.gesture");
+        CHECK(code[enableAt].find("viewOptionsOpenValue") != std::string::npos);
+
+        // THE STRIP KEEPS ONLY MODE CONTROLS, as source text: neither the Grid checkbox nor the
+        // Exposure slider is submitted anywhere in this file OUTSIDE the popup body.
+        CHECK(countLinesContaining(code, "Checkbox(\"Grid\"") == countLinesContaining(body, "Checkbox(\"Grid\""));
+        CHECK(countLinesContaining(code, "SliderFloat(\"Exposure\"") ==
+              countLinesContaining(body, "SliderFloat(\"Exposure\""));
+    }
+}
+
+TEST_CASE("editor: the View popover opens, closes, and MOVES NO RECT (task E.2.4, I138)") {
+    // The seam exists because NO TIER IN THIS TREE CAN CLICK A BUTTON. What it buys is the one claim
+    // that matters structurally: the recorded interactive-row rect -- the rect overlayOwnsPress reads,
+    // which decides whether a click on the strip deselects the scene entity behind it -- is IDENTICAL
+    // whether the popover is open or closed. That is the whole reason viewOptionsButtonMax exists
+    // instead of a second GetItemRectMax() call in step 9b.
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "view options i138", .width = 900, .height = 600});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = created.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());  // two warm-up ticks so step 9b has run at least once
+    auto* const viewport = dynamic_cast<engine::editor::ViewportPanel*>(app->panels().find("Viewport"));
+    REQUIRE(viewport != nullptr);
+
+#if AERO_SHADER_TOOLS_ENABLED
+    const engine::Vec2 closedMin = viewport->overlayRowMin();
+    const engine::Vec2 closedMax = viewport->overlayRowMax();
+    // Anti-vacuity, for I107's reason: an EMPTY rect would make every equality below vacuous.
+    REQUIRE(closedMax.x > closedMin.x);
+    REQUIRE(closedMax.y > closedMin.y);
+    CHECK_FALSE(viewport->viewOptionsOpen());  // closed by default
+
+    viewport->requestViewOptionsOpen(true);
+    REQUIRE(app->tick());
+    CHECK(viewport->viewOptionsOpen());
+    // THE CLAIM: EXACTLY equal, not approximately. The rect comes from the BUTTON's own rect max,
+    // captured before the popup is touched, so an open popup cannot move it by a single point.
+    CHECK(viewport->overlayRowMin() == closedMin);
+    CHECK(viewport->overlayRowMax() == closedMax);
+
+    viewport->requestViewOptionsOpen(false);
+    REQUIRE(app->tick());
+    // STILL OPEN ON THIS FRAME, and that is the DESIGN rather than a lag -- MEASURED, and it is the
+    // property the whole ImGuizmo term rests on. CloseCurrentPopup runs INSIDE the popup's body, so
+    // the popup DID draw this frame and BeginPopup's own answer for the frame that just drew is
+    // `true`. It is the same one-frame shape ImGui itself has for a click outside, which closes the
+    // popup in UpdateMouseMovingWindowEndFrame -- at EndFrame, AFTER the whole draw walk. That is
+    // exactly why updateGizmo reading this latch one step earlier NEXT frame is reading the RIGHT
+    // frame: on the dismissing click's frame the latch still says open, which is when ImGuizmo must
+    // be told.
+    CHECK(viewport->viewOptionsOpen());
+    CHECK(viewport->overlayRowMin() == closedMin);
+    CHECK(viewport->overlayRowMax() == closedMax);
+
+    REQUIRE(app->tick());
+    CHECK_FALSE(viewport->viewOptionsOpen());
+    CHECK(viewport->overlayRowMin() == closedMin);
+    CHECK(viewport->overlayRowMax() == closedMax);
+
+    // The request is a ONE-SHOT: consumed whichever arm ran, so a stale one cannot fire later.
+    REQUIRE(app->tick());
+    CHECK_FALSE(viewport->viewOptionsOpen());
+#else
+    // -DAERO_SHADER_TOOLS=OFF: the viewport latches Unavailable and onDraw returns before step 9b, so
+    // nothing writes the row rect and nothing draws the button. ASSERTED rather than skipped.
+    CHECK_FALSE(viewport->viewOptionsOpen());
+    CHECK(viewport->overlayRowMin() == engine::Vec2{});
+    CHECK(viewport->overlayRowMax() == engine::Vec2{});
+    viewport->requestViewOptionsOpen(true);
+    REQUIRE(app->tick());
+    CHECK_FALSE(viewport->viewOptionsOpen());
+#endif
+}
+
+TEST_CASE("editor: hiding the view-axis widget hides its PRESS CLAIM too (task E.2.4, I139)") {
+    // E.1.3's handoff, taken. OFF is ONE fact, not four: the layout is never computed, nothing draws,
+    // no snap can begin, viewAxisOwnsPoint answers false and viewAxisRectMin/Max answer the DEGENERATE
+    // rect -- which is exactly what viewAxisRect already returns when the widget hides for being too
+    // small, so containsHalfOpen's own guard turns it into "owns nothing" with no second predicate.
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "view axis i139", .width = 900, .height = 600});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = created.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+    auto* const viewport = dynamic_cast<engine::editor::ViewportPanel*>(app->panels().find("Viewport"));
+    REQUIRE(viewport != nullptr);
+    CHECK(viewport->viewAxisEnabled());  // default ON, like the grid and the gizmos
+
+#if AERO_SHADER_TOOLS_ENABLED
+    const engine::Vec2 shownMin = viewport->viewAxisRectMin();
+    const engine::Vec2 shownMax = viewport->viewAxisRectMax();
+    REQUIRE(shownMax.x > shownMin.x);  // a REAL rect, or every arm below is vacuous
+    REQUIRE(shownMax.y > shownMin.y);
+
+    // I116's exact shape, with the real image rect reconstructed from the widget's own margin.
+    const engine::Vec2 origin{};
+    const engine::Vec2 size{shownMax.x + engine::editor::VIEW_AXIS_MARGIN_POINTS, 600.0F};
+    const engine::Vec2 centre{(shownMin.x + shownMax.x) * 0.5F, (shownMin.y + shownMax.y) * 0.5F};
+    CHECK(viewport->overlayOwnsPress(centre, origin, size));
+
+    SUBCASE("OFF: the rect is degenerate and the same press falls through to the scene") {
+        viewport->requestViewAxisEnabled(false);
+        REQUIRE(app->tick());
+        CHECK_FALSE(viewport->viewAxisEnabled());
+        CHECK(viewport->viewAxisRectMin() == viewport->viewAxisRectMax());
+        CHECK(viewport->viewAxisRectMin() == engine::Vec2{});
+        CHECK_FALSE(viewport->overlayOwnsPress(centre, origin, size));
+
+        // ...and BACK, so the arm above is a statement about the toggle rather than about a widget
+        // that stopped working.
+        viewport->requestViewAxisEnabled(true);
+        REQUIRE(app->tick());
+        CHECK(viewport->viewAxisRectMin() == shownMin);
+        CHECK(viewport->viewAxisRectMax() == shownMax);
+        CHECK(viewport->overlayOwnsPress(centre, origin, size));
+    }
+
+    SUBCASE("a snap ALREADY IN FLIGHT completes -- it is the camera's animation, not the widget's") {
+        viewport->requestViewSnap(engine::editor::ViewAxis::PosX);
+        REQUIRE(viewport->viewSnapActive());
+        const engine::editor::EditorCamera* camera = app->viewportCamera();
+        REQUIRE(camera != nullptr);
+        const float yawBefore = camera->yaw();
+        const float pitchBefore = camera->pitch();
+
+        viewport->requestViewAxisEnabled(false);
+        REQUIRE(app->tick());
+        // STILL RUNNING, with the widget hidden -- and the camera really moved between the two ticks,
+        // which is what tells "the snap survived" from "the snap was cancelled and the flag is stale".
+        CHECK(viewport->viewSnapActive());
+        CHECK_FALSE(viewport->viewAxisEnabled());
+        const bool moved = camera->yaw() != yawBefore || camera->pitch() != pitchBefore;
+        CHECK(moved);
+
+        // ...and it COMPLETES. PanelContext::deltaSeconds caps at VIEW_SNAP_SECONDS, so a handful of
+        // ticks is more than enough; the loop bounds it rather than assuming a count.
+        for (int i = 0; i < 240 && viewport->viewSnapActive(); ++i) {
+            REQUIRE(app->tick());
+        }
+        CHECK_FALSE(viewport->viewSnapActive());
+    }
+#else
+    // -DAERO_SHADER_TOOLS=OFF: the panel is Unavailable, so the rect is degenerate in BOTH toggle
+    // states. ASSERTED rather than skipped, so "hidden owns nothing" is tested in the one
+    // configuration where it is trivially true as well as in the one where it is not.
+    CHECK(viewport->viewAxisRectMin() == viewport->viewAxisRectMax());
+    viewport->requestViewAxisEnabled(false);
+    REQUIRE(app->tick());
+    CHECK_FALSE(viewport->viewAxisEnabled());
+    CHECK(viewport->viewAxisRectMin() == viewport->viewAxisRectMax());
+    CHECK_FALSE(viewport->overlayOwnsPress(engine::Vec2{10.0F, 10.0F}, engine::Vec2{}, engine::Vec2{900.0F, 600.0F}));
+#endif
+}
+
+TEST_CASE("editor: the viewport strip carries only MODE controls (task E.2.4, I141)") {
+    // I107 bounds the recorded row from BELOW (>= 40 points) and its comment names the PRE-E.2.4 row,
+    // "T R S Local + a combo + a slider". The row is now `T R S | Local | View`, so I107's assertions
+    // all still hold and only its comment went stale -- it is left BYTE-IDENTICAL on purpose, because
+    // "green unedited" is a stronger gate step as a hard diff than as "unedited except a comment".
+    //
+    // THIS case bounds it from ABOVE, which is the direction a regression that put the 130-point
+    // exposure slider and the 92-point combo back on the strip would break.
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "view options i141", .width = 900, .height = 600});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = created.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+    auto* const viewport = dynamic_cast<engine::editor::ViewportPanel*>(app->panels().find("Viewport"));
+    REQUIRE(viewport != nullptr);
+
+#if AERO_SHADER_TOOLS_ENABLED
+    const engine::Vec2 rowMin = viewport->overlayRowMin();
+    const engine::Vec2 rowMax = viewport->overlayRowMax();
+    const float width = rowMax.x - rowMin.x;
+    const float height = rowMax.y - rowMin.y;
+    MESSAGE("I141 recorded strip row: " << width << " x " << height << " points");
+    // I107's own lower bounds, restated so this case is readable on its own.
+    CHECK(width >= 40.0F);
+    CHECK(height >= 8.0F);
+    // THE UPPER BOUND, DERIVED FROM A MEASUREMENT rather than chosen. Measured on this row when the
+    // case was written: 156 x 13 points for `T R S | Local | View` at the default font (the MESSAGE
+    // above prints it on every run of every lane, so the next reader does not have to re-derive it).
+    // The bound is TWICE that width, rounded up to a round number -- loose enough that a font or
+    // padding change does not redden it, tight enough that putting the 92-point combo and the
+    // 130-point exposure slider back on the strip (~240 more points with their spacings) does.
+    CHECK(width < 320.0F);
+    // ONE ROW HIGH. A second row of widgets would push this past the bound while leaving the width
+    // alone, which is the other shape the regression can take.
+    CHECK(height <= 40.0F);
+#else
+    CHECK(viewport->overlayRowMin() == engine::Vec2{});
+    CHECK(viewport->overlayRowMax() == engine::Vec2{});
+#endif
 }

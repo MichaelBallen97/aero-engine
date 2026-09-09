@@ -147,6 +147,32 @@ public:
     // it buys, and it is ALSO what keeps I108/I109/I112's magnitudes unrestated.
     void requestGizmosEnabled(bool enabled) noexcept { gizmosEnabledValue = enabled; }
 
+    // ---- task E.2.4 -------------------------------------------------------------------------------
+    // The view-options popover: ONE button on the strip, `View`, opening a popup that holds every
+    // control the row used to carry (Grid, Gizmos, the tonemap combo, the exposure slider) plus the two
+    // this task adds (Projection, View axis). `viewOptionsOpen()` reads the latch drawViewOptions
+    // writes from BeginPopup's OWN answer -- so it reports the LAST DRAWN frame, exactly as
+    // overlayRowMin/Max do. updateGizmo reads the same latch one step EARLIER next frame, which is the
+    // RIGHT frame: ImGui closes a popup at EndFrame, AFTER the draw walk, so on the dismissing click's
+    // frame the latch still says open -- which is exactly when ImGuizmo must be told.
+    // `requestViewOptionsOpen` opens (OpenPopup at the button site) or closes (CloseCurrentPopup inside
+    // the body) on the NEXT draw walk. It exists because NO TIER IN THIS TREE CAN CLICK A BUTTON --
+    // the requestTonemapParams / requestGridEnabled / requestGizmosEnabled family's ELEVENTH
+    // application. I138 is what it buys.
+    [[nodiscard]] bool viewOptionsOpen() const noexcept { return viewOptionsOpenValue; }
+    void requestViewOptionsOpen(bool open) noexcept { pendingViewOptionsOpen = open; }
+
+    // The view-axis widget's visibility toggle -- E.1.3's own handoff, by name. Session state, default
+    // ON, persisted NOWHERE: the grid toggle's rule, handed off unchanged to whichever task introduces
+    // a per-user preferences file.
+    // OFF means, in ONE fact rather than four: the layout is never computed, so nothing draws, no snap
+    // can begin, viewAxisOwnsPoint answers false and viewAxisRectMin/Max answer the DEGENERATE rect --
+    // which is exactly what viewAxisRect already returns when the widget hides for being too small
+    // (E.1.3's D16). A snap ALREADY IN FLIGHT is the camera's animation, not the widget's, and
+    // continues. The family's TWELFTH application; I139 is what it buys.
+    [[nodiscard]] bool viewAxisEnabled() const noexcept { return viewAxisEnabledValue; }
+    void requestViewAxisEnabled(bool enabled) noexcept { viewAxisEnabledValue = enabled; }
+
     // ---- task E.1.3: the view-axis gizmo's seams --------------------------------------------------
     // The requestTonemapParams / requestGridEnabled family's eighth and ninth applications. No tier in
     // this tree can click an ImDrawList circle, so without these the widget's whole behaviour is
@@ -264,9 +290,10 @@ private:
     // exactly what a second hand-written comparison would eventually do.
     [[nodiscard]] bool viewAxisOwnsPoint(Vec2 pointPoints, Vec2 imageOrigin, Vec2 imageSize) const noexcept;
 
-    // task 3.6.3: the operator combo + the exposure slider. Called on the SAME LINE as
-    // drawGizmoBar() but OUTSIDE its BeginDisabled(!gizmoHasTarget) scope, so the tonemap
-    // controls stay live with nothing selected.
+    // task E.2.4: the `View` button and its popup. The BUTTON's rect max is what step 9b records; the
+    // popup's contents are D10's two groups -- Display (Projection, Tonemap, Exposure) above Overlays
+    // (Grid, Gizmos, View axis). Called on the SAME LINE as drawGizmoBar() but OUTSIDE its
+    // BeginDisabled(!gizmoHasTarget) scope, so every control stays live with nothing selected.
     void drawViewOptions();
 
     // task 3.1.5: the custom drop target's whole body, a member so the ImGui glue stays in one place.
@@ -340,7 +367,13 @@ private:
     // Member/accessor collision rule: the MEMBER takes the distinct name (budgetValue/budget(),
     // tonemapParamsValue/tonemapParams(), the RenderTarget precedent).
     bool gridEnabledValue = true;
-    bool gizmosEnabledValue = true;  // task E.2.3, the same session-state rule
+    bool gizmosEnabledValue = true;     // task E.2.3, the same session-state rule
+    bool viewAxisEnabledValue = true;   // task E.2.4, the grid toggle's session-state rule
+    bool viewOptionsOpenValue = false;  // LAST DRAWN frame's BeginPopup answer
+    // The seam's channel: THREE states -- no request / open / close -- in one member, consumed
+    // unconditionally after the popup so a stale request cannot fire on a later frame. Two bools would
+    // make "both set" representable and would need a documented precedence.
+    std::optional<bool> pendingViewOptionsOpen;
     Status status = Status::Uninitialized;
     const char* unavailableReason = nullptr;  // string literal; shown in-panel when Unavailable
     bool renderRequested = false;             // set by onDraw, consumed by renderScene
@@ -376,6 +409,11 @@ private:
     // frame that reaches step 9b, and an empty rect owns nothing.
     Vec2 overlayRowTopLeft{};
     Vec2 overlayRowBottomRight{};
+    // task E.2.4: the `View` BUTTON's screen rect max, captured BEFORE the popup. Step 9b records the
+    // interactive row from THIS, never from GetItemRectMax(), which after an open BeginPopup/EndPopup
+    // pair names the POPUP's last item -- so the recorded row would jump the moment the popover opened,
+    // moving the rect overlayOwnsPress reads. I138 asserts the rect is identical open and closed.
+    Vec2 viewOptionsButtonMax{};
 
     // Task E.1.3. UNLIKE overlayRowTopLeft/BottomRight above, these two are written at step 8b'''' and
     // read at step 9x IN THE SAME FRAME -- there is no staleness argument to make, because the layout
