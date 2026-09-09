@@ -237,7 +237,9 @@ void seedParityWorld(engine::World& world, const ArmEnvironment& environment, bo
                                    engine::Vec3::one()});
         // castsShadows = false is THE HARNESS'S OWN PRECONDITION, not a convenience: side A's view sets
         // shadowsEnabled = false, and side B's SceneRenderer would otherwise run a shadow pass side A
-        // cannot. Seed S28 exists to keep a future edit from "fixing" this by weakening an assertion.
+        // cannot. Seed S28 exists to keep a future edit from "fixing" this by weakening an assertion,
+        // and MEASURED, it reddens PX4 ALONE of the four: at angle 0.7 the shadow changes no texel of
+        // this sphere, and only PX4's second angle exposes it. Deleting PX4 would make S28 invisible.
         world.add<engine::DirectionalLight>(sun, engine::DirectionalLight{.castsShadows = false});
     }
 
@@ -552,7 +554,10 @@ TEST_CASE("editor: with NO directional light both paths agree and the sphere is 
 
     // ...AND THE SPHERE IS DARKER, stated as a DISTANCE GREATER THAN THE AGREEMENT TOLERANCE rather
     // than as `!=` (E.2.1's SB9/SB16 lesson: "different" at a tolerance the siblings need is not a
-    // finding). Two half-ulps is the tolerance the sky battery states for its own oracles.
+    // finding). Two half-ulps is the tolerance the sky battery states for its own oracles, and the
+    // MEASURED headroom is enormous: 1969 / 1584 / 1095 half-ulps on r/g/b. So the `> 2` form and a
+    // bare `!=` agree on THIS picture -- the tolerance is the right thing to ship, and its own
+    // mutant is unobservable here, which is a fact about the headroom rather than about the arm.
     const Half4 litCentre = halfAt(lit.bytesA, EXTENT, EXTENT / 2U, EXTENT / 2U);
     const Half4 unlitCentre = halfAt(unlit.bytesA, EXTENT, EXTENT / 2U, EXTENT / 2U);
     INFO("lit centre ", litCentre, " unlit centre ", unlitCentre);

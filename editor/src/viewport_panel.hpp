@@ -410,9 +410,10 @@ private:
     Vec2 overlayRowTopLeft{};
     Vec2 overlayRowBottomRight{};
     // task E.2.4: the `View` BUTTON's screen rect max, captured BEFORE the popup. Step 9b records the
-    // interactive row from THIS, never from GetItemRectMax(), which after an open BeginPopup/EndPopup
-    // pair names the POPUP's last item -- so the recorded row would jump the moment the popover opened,
-    // moving the rect overlayOwnsPress reads. I138 asserts the rect is identical open and closed.
+    // interactive row from THIS rather than from ImGui's last-item rect, so the recorded row cannot
+    // move when the popover opens -- and it does not rest on ImGui restoring the parent's last item at
+    // EndPopup, which the pinned tree does do (imgui.cpp:8848). Step 9b's comment carries the
+    // measurement; I138 pins the rect equal open and closed as a regression guard.
     Vec2 viewOptionsButtonMax{};
 
     // Task E.1.3. UNLIKE overlayRowTopLeft/BottomRight above, these two are written at step 8b'''' and

@@ -12423,8 +12423,15 @@ TEST_CASE("editor: the View popover opens, closes, and MOVES NO RECT (task E.2.4
     // The seam exists because NO TIER IN THIS TREE CAN CLICK A BUTTON. What it buys is the one claim
     // that matters structurally: the recorded interactive-row rect -- the rect overlayOwnsPress reads,
     // which decides whether a click on the strip deselects the scene entity behind it -- is IDENTICAL
-    // whether the popover is open or closed. That is the whole reason viewOptionsButtonMax exists
-    // instead of a second GetItemRectMax() call in step 9b.
+    // whether the popover is open or closed.
+    //
+    // WHAT THIS ARM IS AND IS NOT, MEASURED. It is a REGRESSION GUARD, not a witness for today's
+    // code: ImGui::End() restores the parent window's last-item data at EndPopup (imgui.cpp:8848 in
+    // the pinned tree), so reading the last-item rect in step 9b would name the SAME button and the
+    // two spellings are indistinguishable here -- sabotage seed S20 is green for exactly that reason,
+    // and is recorded as a redundancy rather than a hole. What the arm still catches is the day that
+    // stops being true (an ImGui bump, or a stray item submitted between the popup and step 9b),
+    // which is silent everywhere else.
     engine::platform::Context ctx;
     if (!ctx.valid()) {
         AERO_SKIP_OR_FAIL("no platform context");

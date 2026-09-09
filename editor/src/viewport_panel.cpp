@@ -841,12 +841,21 @@ void ViewportPanel::onDraw(PanelContext& context) {
     // gizmo bar; the row ENDS at the `View` button, whose rect max drawViewOptions captured before it
     // touched the popup.
     //
-    // task E.2.4: NOT the last item's rect. After a BeginPopup/EndPopup pair, ImGui's last-item rect
-    // names the POPUP's last item on every frame the popup is open, so the recorded row would jump the
-    // moment the popover opened -- silently moving the rect overlayOwnsPress() reads, which decides
-    // whether a click on the strip deselects the scene entity behind it. I138 asserts the two rects
-    // are equal open and closed. (Spelled without the accessor's own name so the gate grep for it
-    // reads exactly ONE line, the capture inside drawViewOptions.)
+    // task E.2.4: the BUTTON's own rect, captured inside drawViewOptions before it touches the popup
+    // -- NOT ImGui's last-item rect read here.
+    //
+    // MEASURED, AND NOT WHAT THIS TASK ASSUMED. Reading the last-item rect here would ALSO name the
+    // button today: ImGui::End() restores `g.LastItemData = window_stack_data.ParentLastItemDataBackup`
+    // (imgui.cpp:8848 in the pinned 1.92.8-docking tree), so EndPopup hands the parent window's own
+    // last item back and the popup's contents never leak out. Sabotage seed S20 -- putting the
+    // last-item read back -- is therefore GREEN, and no assertion in this tree can distinguish the two
+    // spellings. The capture is kept anyway, and the reason is that it does not DEPEND on that
+    // restore: an ImGui bump that stopped restoring, or a stray item submitted between the popup and
+    // this line, would silently move the rect overlayOwnsPress() reads -- which decides whether a
+    // click on the strip deselects the scene entity behind it. I138 pins that the two rects are equal
+    // open and closed, as a REGRESSION GUARD for that day rather than as a witness for today.
+    // (Spelled without the accessor's own name so the gate grep for it reads exactly ONE line, the
+    // capture inside drawViewOptions.)
     //
     // ONLY THE INTERACTIVE ROW. The size readout and the fly line above it are TextColored, which
     // submits nothing clickable, so a press there has always fallen through to the scene pick and
@@ -1399,7 +1408,9 @@ void ViewportPanel::drawViewOptions() {
     const ImVec2 buttonMin = ImGui::GetItemRectMin();
     const ImVec2 buttonMax = ImGui::GetItemRectMax();
     // THE ROW ENDS HERE, and this capture is what step 9b reads. Taken BEFORE the popup so the
-    // recorded rect is identical whether the popup is open or closed (I138).
+    // recorded rect is identical whether the popup is open or closed (I138) WITHOUT depending on
+    // ImGui restoring the parent's last item at EndPopup -- which, measured, it does today
+    // (imgui.cpp:8848). Step 9b's own comment carries the full reading.
     viewOptionsButtonMax = Vec2{buttonMax.x, buttonMax.y};
 
     if (pendingViewOptionsOpen == true) {  // the seam's OPEN arm; no tier here can click a button
