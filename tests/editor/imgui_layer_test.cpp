@@ -12667,3 +12667,130 @@ TEST_CASE("editor: the viewport strip carries only MODE controls (task E.2.4, I1
     CHECK(viewport->overlayRowMax() == engine::Vec2{});
 #endif
 }
+
+// ---- I142, I145, I146: task E.3.1's two-column inspector rows -------------------------------------
+
+TEST_CASE("editor: the Inspector draws every field kind inside a table without aborting (task E.3.1, I142)") {
+    // A SMOKE TEST WEARING A STRONG HAT, and the hat is real: BeginTable/EndTable imbalance,
+    // PushID/PopID imbalance and BeginPopupContextItem(nullptr) on an id-0 item are all IM_ASSERT
+    // ABORTS in the Debug build, so "the frame completed" is a genuine assertion here. In a RELEASE
+    // lane it asserts almost nothing, and this comment is the honest statement of that.
+    //
+    // DECLARED LIMIT: six of the eight FieldKind arms draw here. No built-in component carries a
+    // signed integer or a std::string field, and this target runs no aero_reflect_generate, so it
+    // cannot register a fixture that does -- FieldKind::Int and FieldKind::String are unreachable
+    // from this tier AND from the shipping editor. Their structural safety comes from sharing the row
+    // preamble (one TableNextRow, one label cell, one value cell) with the six that are covered; each
+    // submits exactly one item inside it.
+    //
+    // 2.2.2's own Inspector case above is left BYTE-IDENTICAL: it is about structural-edit survival
+    // on the default Cube, which is a different claim from this one.
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "inspector table i142", .width = 640, .height = 480});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = engine::editor::EditorApp::create(
+        *device, *window, ctx, {.persistLayout = false, .unfocusedFrameCapHz = 0.0F, .restoreLastProject = false});
+    REQUIRE(app.has_value());
+
+    engine::World& world = app->world();
+    engine::Entity cube{};
+    world.eachEntity([&](engine::Entity e) {
+        if (world.name(e) == "Cube") {
+            cube = e;
+        }
+    });
+    REQUIRE(cube.valid());
+
+    // EVERY built-in on ONE entity, so the widest possible set of field kinds draws in one frame:
+    // Bool, UInt, Float, a non-colour Vec3 (Transform::position/scale), a colour Vec3
+    // (MeshRenderer::color and four more), Quat (Transform::rotation) and Guid (AudioSource::clip).
+    const std::size_t typeCount = world.componentTypeCount();
+    REQUIRE(typeCount == 10);
+    std::size_t added = 0;
+    for (std::size_t i = 0; i < typeCount; ++i) {
+        const engine::ComponentTypeId id = world.componentTypeAt(i);
+        if (!world.hasRaw(id, cube)) {
+            CHECK(engine::editor::addComponent(world, cube, id));
+            ++added;
+        }
+    }
+    CHECK(added > 0);  // anti-vacuity: the loop really did widen the set of drawn kinds
+
+    app->selection().set(cube);
+    for (int i = 0; i < 3; ++i) {
+        REQUIRE(app->tick());
+        CHECK(app->presentedLastFrame());
+    }
+
+    // ...and every OTHER seeded entity in turn, so the label column is re-measured against a
+    // different longest field name each time and a component with no fields still draws.
+    std::vector<engine::Entity> all;
+    world.eachEntity([&](engine::Entity e) { all.push_back(e); });
+    CHECK(all.size() >= 2);
+    for (const engine::Entity e : all) {
+        app->selection().set(e);
+        REQUIRE(app->tick());
+        CHECK(app->presentedLastFrame());
+    }
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: the Inspector's label column is NOT user-resizable (task E.3.1, I145)") {
+    // SOURCE PIN, and the only cover sabotage seed S9 has anywhere. The ABSENCE of
+    // ImGuiTableFlags_Resizable is what makes imgui_tables.cpp re-apply our requested width every
+    // frame (:809-810 -> :934-938 -> :988-989); adding it silently freezes the column at whatever the
+    // user last dragged it to and no runtime tier in this tree can see the difference.
+    const std::vector<std::string> code = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/inspector_panel.cpp");
+    REQUIRE(code.size() > 100);  // the read really traversed the file
+    std::size_t resizable = 0;
+    for (const std::string& line : code) {
+        if (line.find("ImGuiTableFlags_Resizable") != std::string::npos) {
+            ++resizable;
+        }
+    }
+    CHECK(resizable == 0);
+
+    // ANTI-VACUITY: the scan can find the flags line that IS there, so "zero" is a statement about
+    // this file rather than about a reader that found nothing at all.
+    (void)soleLineContaining(code, "ImGuiTableFlags_SizingFixedFit");
+}
+
+TEST_CASE("editor: the Inspector's row rhythm is ONE table per component (task E.3.1, I146)") {
+    // SOURCE PIN. One table per component, never one per field arm and never a third column appearing
+    // silently -- and the 120-point SameLine that used to set the label column is gone for good.
+    const std::vector<std::string> code = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/inspector_panel.cpp");
+    REQUIRE(code.size() > 100);
+
+    std::size_t sameLine120 = 0;
+    std::size_t beginTable = 0;
+    std::size_t setupColumn = 0;
+    for (const std::string& line : code) {
+        if (line.find("ImGui::SameLine(120") != std::string::npos) {
+            ++sameLine120;
+        }
+        if (line.find("BeginTable(") != std::string::npos) {
+            ++beginTable;
+        }
+        if (line.find("TableSetupColumn(") != std::string::npos) {
+            ++setupColumn;
+        }
+    }
+    CHECK(sameLine120 == 0);
+    CHECK(beginTable == 1);
+    CHECK(setupColumn == 2);
+
+    // EndTable is called exactly once too, and the pair is asymmetric by API: an unbalanced call is an
+    // IM_ASSERT abort in Debug, which is what I142 exists to catch at runtime.
+    (void)soleLineContaining(code, "ImGui::EndTable()");
+}

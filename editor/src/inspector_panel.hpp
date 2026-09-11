@@ -11,12 +11,18 @@
 //                 into `pending`, never applied here
 //   4. apply      one switch over `pending` -- the ONLY place a component is added or removed
 // No walk here is recursive (F22) -- the model is two flat vectors, never a tree.
+//
+// task E.3.1: phase 3 measures ONE label-column width over the WHOLE model before the component loop
+// and hands it to every component's two-column table, so the panel reads as one column rather than as
+// N. Every field kind draws inside that table; nothing draws with SameLine arithmetic any more.
 #include <aero/editor/component_ops.hpp>
 #include <aero/editor/inspector_model.hpp>
 #include <aero/editor/panel.hpp>
 #include <aero/scene/entity.hpp>
 
+#include <array>
 #include <cstdint>
+#include <optional>
 #include <string>
 
 namespace engine::editor {
@@ -61,7 +67,7 @@ private:
         std::string buffer;
     };
 
-    void drawComponent(PanelContext& context, Entity primary, const ComponentEntry& entry);
+    void drawComponent(PanelContext& context, Entity primary, const ComponentEntry& entry, float labelWidth);
     void drawField(PanelContext& context, Entity primary, const ComponentEntry& entry, const FieldEntry& field);
     void applyPending(PanelContext& context, Entity primary);
 
