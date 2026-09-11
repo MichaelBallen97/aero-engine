@@ -278,3 +278,64 @@ TEST_CASE("editor: defaultEditorPrefsPath names ITS OWN file, beside its two sib
 
     CHECK(engine::editor::defaultEditorPrefsPath() == prefs);  // deterministic within a process
 }
+
+TEST_CASE("editor: a file that EXISTS and cannot be READ is corrupt, not 'missing' (EP13)") {
+    // THE CODE-REVIEW ROUND'S FINDING. readTextFile disengages its `text` for a MISSING file, a
+    // DIRECTORY and an UNREADABLE file alike, so before fileExists() joined the arm a root-owned or
+    // ACL-blocked editor_prefs.json silently produced defaults with corrupt = false and NO warning --
+    // the user's preference reset to ON with nothing to read in the log. The header says those two
+    // states must never be conflated; this is the case that holds it.
+    //
+    // A DIRECTORY named editor_prefs.json is the portable way to make an existing-but-unreadable path:
+    // it needs no permission bit, no privileged user and no umask assumption, so it behaves identically
+    // on all three lanes. std::filesystem::create_directories with the error_code overload never
+    // throws, and the REQUIRE below is what makes a lane where it somehow failed a loud failure rather
+    // than a vacuous pass.
+    const TempDir tmp;
+    const std::string path = tmp.join("editor_prefs.json");
+    std::error_code ec;
+    std::filesystem::create_directories(std::filesystem::path(path), ec);
+    REQUIRE_FALSE(ec);
+    REQUIRE(std::filesystem::is_directory(std::filesystem::path(path), ec));
+    // MEASURED, not assumed: fileExists is std::filesystem::exists (text_file.cpp:103-106), so it is
+    // TRUE for a directory. That is exactly the property this arm needs -- the path EXISTS and cannot
+    // be read -- and it is why a directory is a legitimate stand-in for a permission-refused file.
+    REQUIRE(engine::editor::fileExists(path));
+    REQUIRE_FALSE(engine::editor::readTextFile(path).text.has_value());  // ...and it does not read
+
+    bool corrupt = false;
+    const EditorPrefs prefs = readEditorPrefs(path, corrupt);
+    CHECK(prefs.focusFollowsSelection);  // defaults...
+    CHECK(corrupt);                      // ...PLUS the out-flag that becomes the one WARN
+
+    SUBCASE("a REGULAR file the OS refuses reads as corrupt") {
+        // The arm the finding is actually about. chmod 000 is skipped when it does not take effect --
+        // running as root, or on a filesystem that ignores the mode -- rather than asserting something
+        // the platform did not do. The DIRECTORY arm above is the unconditional half.
+        const TempDir refusedDir;
+        const std::string refused = refusedDir.join("editor_prefs.json");
+        REQUIRE(engine::editor::writeTextFileAtomic(refused, writeEditorPrefsText(EditorPrefs{})).empty());
+        REQUIRE(engine::editor::fileExists(refused));
+        std::error_code permEc;
+        std::filesystem::permissions(std::filesystem::path(refused), std::filesystem::perms::none,
+                                     std::filesystem::perm_options::replace, permEc);
+        const engine::editor::FileReadResult probe = engine::editor::readTextFile(refused);
+        if (!permEc && !probe.text.has_value()) {
+            bool refusedCorrupt = false;
+            const EditorPrefs refusedPrefs = readEditorPrefs(refused, refusedCorrupt);
+            CHECK(refusedPrefs.focusFollowsSelection);
+            CHECK(refusedCorrupt);  // EXISTS and unreadable -> the one WARN
+        } else {
+            MESSAGE("EP13: chmod 000 did not make the file unreadable here; the directory arm stands");
+        }
+        std::filesystem::permissions(std::filesystem::path(refused), std::filesystem::perms::owner_all,
+                                     std::filesystem::perm_options::replace, permEc);
+    }
+
+    // ANTI-VACUITY, and the arm that fails if fileExists() is dropped again: a path that does NOT
+    // exist at all, in the same directory, on the same run, is SILENT.
+    bool missingCorrupt = true;
+    const EditorPrefs missing = readEditorPrefs(tmp.join("not-here.json"), missingCorrupt);
+    CHECK(missing.focusFollowsSelection);
+    CHECK_FALSE(missingCorrupt);
+}

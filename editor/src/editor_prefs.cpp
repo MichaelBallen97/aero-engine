@@ -100,7 +100,14 @@ EditorPrefs readEditorPrefs(std::string_view pathUtf8, bool& corrupt) {
     }
     const FileReadResult read = readTextFile(pathUtf8);
     if (!read.text.has_value()) {
-        return {};  // a MISSING file is defaults, SILENTLY -- the normal state on a fresh machine
+        // readTextFile disengages `text` for a MISSING file, a DIRECTORY and an UNREADABLE file alike,
+        // so the read alone cannot tell "the normal state on a fresh machine" from "this file exists
+        // and the OS refused it" -- and the header above says those two must never be conflated. A
+        // root-owned or ACL-blocked editor_prefs.json would otherwise reset the user's preference to
+        // ON with no diagnostic at all. fileExists is the discriminator, and it is the one the caller
+        // needs: absent -> silent, present-but-unreadable -> the one WARN.
+        corrupt = fileExists(pathUtf8);
+        return {};
     }
     const std::optional<EditorPrefs> parsed = parseEditorPrefs(*read.text);
     if (!parsed.has_value()) {

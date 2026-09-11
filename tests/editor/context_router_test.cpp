@@ -377,7 +377,13 @@ TEST_CASE("editor: material beats importable in one tick, in either order (RT23)
     }
 }
 
-TEST_CASE("editor: OFF empties the latch and makes every observation inert (RT24)") {
+TEST_CASE("editor: OFF latches nothing, and re-enabling resurrects NOTHING the user did while off (RT24)") {
+    // THE CASE THE CODE-REVIEW ROUND REWROTE, because the version before it pinned a real defect while
+    // calling it correct. Gating the observe* EARLY RETURN on `enabled` leaves a STALE baseline behind,
+    // so the first observation after the preference comes back on compares against a value from before
+    // it went off, sees a "change", and raises a panel for an act minutes old -- a focus steal
+    // triggered by ticking a menu item. The contract is: while off, an observation is SEEN and
+    // FORGOTTEN. The BASELINE advances; only the LATCH is gated.
     ContextRouter router;
     router.observeEntitySelection(1, true);
     REQUIRE((router.pending() == RouteSource::EntitySelection));
@@ -387,8 +393,7 @@ TEST_CASE("editor: OFF empties the latch and makes every observation inert (RT24
     CHECK((router.pending() == RouteSource::None));  // OFF DROPS a pending route immediately
     const std::size_t latchesWhenDisabled = router.latchCount();
 
-    // Every observe* is inert while off -- AND NO BASELINE MOVES, which is the half that matters:
-    // turning the preference back on must not fire a route for something done while it was off.
+    // Three real acts, performed while the preference is off. None may latch...
     router.observeEntitySelection(2, true);
     router.observeMaterialTarget("materials/brick.aeromat");
     router.observeImportTarget("models/a.gltf", true, true);
@@ -397,14 +402,47 @@ TEST_CASE("editor: OFF empties the latch and makes every observation inert (RT24
 
     router.setEnabled(true);
     CHECK(router.enabled());
-    CHECK((router.pending() == RouteSource::None));  // nothing is resurrected
+    CHECK((router.pending() == RouteSource::None));  // nothing is resurrected by the switch itself
     CHECK(router.latchCount() == latchesWhenDisabled);
 
-    // ANTI-VACUITY: the router is not simply broken -- a fresh act after re-enabling DOES latch.
-    // (revision 2 is a change against the baseline of 1, which never moved while it was off.)
+    // ...AND THE HALF THE OLD CASE HAD BACKWARDS. Re-observing the SAME three values -- which is
+    // exactly what the reconcile block does on the very next tick, because nothing else changed -- is
+    // not a change against a baseline that ADVANCED while off, so it latches NOTHING. This is the
+    // assertion that goes red if the gate moves back into the early return.
     router.observeEntitySelection(2, true);
-    CHECK((router.pending() == RouteSource::EntitySelection));
-    CHECK(router.latchCount() == latchesWhenDisabled + 1U);
+    router.observeMaterialTarget("materials/brick.aeromat");
+    router.observeImportTarget("models/a.gltf", true, true);
+    CHECK((router.pending() == RouteSource::None));
+    CHECK(router.latchCount() == latchesWhenDisabled);
+
+    SUBCASE("ANTI-VACUITY: a genuinely FRESH act after re-enabling does latch, on every arm") {
+        router.observeEntitySelection(3, true);  // revision 3 -- 2 was performed while off
+        CHECK((router.pending() == RouteSource::EntitySelection));
+        CHECK(router.latchCount() == latchesWhenDisabled + 1U);
+        router.clearPending();
+
+        router.observeMaterialTarget("materials/stone.aeromat");  // a DIFFERENT material
+        CHECK((router.pending() == RouteSource::MaterialAsset));
+        CHECK(router.latchCount() == latchesWhenDisabled + 2U);
+        router.clearPending();
+
+        router.observeImportTarget("models/b.gltf", true, true);  // a DIFFERENT model
+        CHECK((router.pending() == RouteSource::ImportableAsset));
+        CHECK(router.latchCount() == latchesWhenDisabled + 3U);
+    }
+
+    SUBCASE("the import arm's UNSETTLED rule is independent of the preference and survives it") {
+        // D4 is about the SESSION's state machine, so `!settled` stays in the early return while
+        // `enabled` moved out of it. An unsettled observation made while OFF must still leave the
+        // baseline alone, or the settled tick that follows has nothing left to see.
+        ContextRouter fresh;
+        fresh.setEnabled(false);
+        fresh.observeImportTarget("models/c.gltf", /*settled=*/false, /*claimed=*/true);
+        fresh.setEnabled(true);
+        fresh.observeImportTarget("models/c.gltf", /*settled=*/true, /*claimed=*/true);
+        CHECK((fresh.pending() == RouteSource::ImportableAsset));
+        CHECK(fresh.latchCount() == 1U);
+    }
 }
 
 TEST_CASE("editor: clearPending returns to None and leaves every baseline intact (RT25)") {

@@ -52,6 +52,11 @@ struct EditorPrefs {
 // carries a wrong version, is defaults PLUS corrupt = true. The two must never be conflated, or every
 // machine that has never set a preference gets a warning on every launch (readBlenderEnv's own rule,
 // blender_service.cpp:112-118). An EMPTY path reads nothing and sets corrupt = false.
+//
+// A file that EXISTS and cannot be READ -- a directory, or one the OS refuses -- is corrupt = true
+// too, and that is a DISTINCT arm rather than a shade of "missing": readTextFile disengages its text
+// for all three, so without a fileExists() discriminator an unreadable preferences file would silently
+// reset the preference to its default with no diagnostic (EP13).
 [[nodiscard]] EditorPrefs readEditorPrefs(std::string_view pathUtf8, bool& corrupt);
 
 // "" on success, the OS reason otherwise. ONE writeTextFileAtomic call, with the path as a NAMED LOCAL

@@ -71,35 +71,48 @@ void ContextRouter::latch(RouteSource source) noexcept {
     ++latches;
 }
 
+// ---- THE BASELINE ADVANCES WHILE DISABLED; ONLY THE LATCH IS GATED. ------------------------------
+// `enabledValue` appears in the LATCH condition of all three, and in the early return of NONE of them,
+// and that asymmetry is the whole contract. Gating the early return instead leaves a STALE baseline
+// behind, so the first observation after the preference is turned back on compares this tick's value
+// against one from before it was turned off, sees a "change", and raises a panel for something the
+// user did minutes ago -- a focus steal triggered by ticking a menu item, which is the exact behaviour
+// this task exists to remove. Reachable in three clicks: routing off, click an entity, tick
+// View > Focus Follows Selection back on.
+//
+// An observation made while disabled is therefore SEEN and FORGOTTEN, never SKIPPED. RT24 drives it.
+
 void ContextRouter::observeEntitySelection(std::uint64_t revision, bool nonEmpty) {
-    if (!enabledValue || revision == lastRevision) {
+    if (revision == lastRevision) {
         return;
     }
     lastRevision = revision;
-    if (nonEmpty) {
+    if (enabledValue && nonEmpty) {
         latch(RouteSource::EntitySelection);
     }
 }
 
 void ContextRouter::observeMaterialTarget(std::string_view targetPath) {
-    if (!enabledValue || targetPath == lastMaterialTarget) {
+    if (targetPath == lastMaterialTarget) {
         return;
     }
     lastMaterialTarget = targetPath;
-    if (!targetPath.empty()) {
+    if (enabledValue && !targetPath.empty()) {
         latch(RouteSource::MaterialAsset);
     }
 }
 
 void ContextRouter::observeImportTarget(std::string_view targetPath, bool settled, bool claimed) {
-    // NOT `settled || ...` and NOT `!settled && ...`: an UNSETTLED tick must leave the BASELINE alone
-    // too, or the change is consumed by setTarget()'s Idle frame and never seen again (D4). The whole
-    // gate is one early return, before lastImportTarget is touched.
-    if (!enabledValue || !settled || targetPath == lastImportTarget) {
+    // `!settled` STAYS IN THE EARLY RETURN, and it is the one place the rule above does not apply: an
+    // UNSETTLED tick must leave the BASELINE alone too, or the change is consumed by setTarget()'s Idle
+    // frame and never seen again (D4). That rule is about the SESSION's state machine and is wholly
+    // independent of the user preference, so `enabledValue` must not join it here -- RT18 and I155 are
+    // what hold that line.
+    if (!settled || targetPath == lastImportTarget) {
         return;
     }
     lastImportTarget = targetPath;
-    if (!targetPath.empty() && claimed) {
+    if (enabledValue && !targetPath.empty() && claimed) {
         latch(RouteSource::ImportableAsset);
     }
 }
