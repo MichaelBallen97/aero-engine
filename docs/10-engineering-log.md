@@ -15462,3 +15462,165 @@ from the mouse. `S19` remains uncovered and unreachable, as the page states.
 **Incidental findings, neither this task's:** `DirectionalLight::intensity` has **no lower clamp** (a
 left drag took it to −18.799997); and the editor's window was observed to render black with only a
 title bar whenever a permission prompt was pending, at ~0.2 % CPU.
+
+### E.3.1 — Axis-labelled vector fields — OPENS Epic E.3, and four assertions that could not fail
+
+**Branch `feat/E.3.1-axis-labelled-vector-fields`, SIX commits** — the plan's five, plus one closing
+the code-review round. Sized **M at the low end** in the plan, recorded before the first commit, and
+landed there. *(PR number and merge commit are filled in at merge.)*
+
+`ctest -N` **174 -> 174**, entry set byte-identical to the branch point's on both presets — no
+component, no target, no `add_test`, in any of the three configurations. doctest:
+`aero_editor_inspector_test` **31 -> 53**, `aero_editor_imgui_test` **181 -> 188**; the other five
+unmoved, including `aero_scene_serialize_test` at **40**, which is the pin that says no component
+crept in. All eight guards unmoved — math **500**, platform **92**, rhi **163**, scene **92**,
+golden-rule **165**, project-no-delete **A=6/B=80**, audio **11/3/55**, probes **6/57** — because the
+task adds no tracked file at all. Both reduced configurations configured fresh with `-G Ninja`, an
+explicit toolchain file and `-DCMAKE_EXPORT_COMPILE_COMMANDS=ON`: shader-tools-OFF **161** (removes
+exactly the 13 `shaderc.*` entries), reflect-tools-OFF **93** (removes 77 `reflect-gen.*` entries
+plus the four doctest binaries, `aero_editor_inspector_test` among them, so the whole `VF`/`FD`
+battery is absent there by design); **nothing added in either**, and all **70** `cooker.*` entries
+present in all three. Binaries built and run in each: `aero_tests`, `aero_editor_shell_test`,
+`aero_editor_imgui_test`, `aero_cooker`, plus `aero_editor_inspector_test` in the shader-tools-OFF
+configuration where it exists.
+
+**NO new file. NO CMake line. NO new dependency, no `find_package`, no link-line change, no shader,
+no pipeline, no RHI call, no component, no serialized field.** Five existing sources edited —
+`editor/include/aero/editor/inspector_model.hpp`, `editor/src/inspector_model.cpp`,
+`editor/include/aero/editor/component_ops.hpp`, `editor/src/component_ops.cpp`,
+`editor/src/inspector_panel.{hpp,cpp}` — plus `tests/editor/inspector_test.cpp` and
+`tests/editor/imgui_layer_test.cpp`. `git ls-files 'editor/src/*.cpp'` stays **80** and
+`git ls-files 'editor/include/aero/editor/*.hpp'` stays **58**, which is why the math and
+project-no-delete guards, both of which count `git ls-files`, did not move.
+
+**What shipped.** Nine pure declarations on `inspector_model.hpp` —
+`AXIS_ROW_COMPONENTS`, `isAxisRow`, `axisRowLabel`, `axisRowColor`, `axisRowValues`,
+`axisRowFieldValue`, `AxisResetAction`, `axisResetAction`, `inspectorLabelColumnWidth` — carry every
+decision the Vec3/Quat rows make, as values a tier-0 case can assert with no ImGui context at all;
+that is `guidFieldRow`'s own shape, one kind over. `defaultComponentField(const World&,
+ComponentTypeId, std::string_view)` is `readComponentField`'s body with one structural difference,
+`metaType.construct()` in place of `from_void(getRaw(...))`, plus the not-default-constructible
+rejection arm. `inspector_panel.cpp` draws each component in a two-column table whose label width is
+measured once per frame over the WHOLE model; `DragFloat3` is gone from the file; and every field —
+all eight kinds — carries a right-click reset menu, with per-axis entries on the two vector kinds.
+
+**Each commit is green on its own and the four halves bisect independently**: the pure surface
+(nothing calls it), the defaults seam (nothing calls it), the table (no axis treatment yet), the axis
+row (no reset menu yet), the reset menu.
+
+#### Measured before a line was written, and each contradicted a plausible guess
+
+* **EnTT installs a `default_constructor` for any default-constructible type at `resolve<Type>()`**
+  (`entt/meta/node.hpp`'s `if constexpr (std::is_default_constructible_v<Type>)`), and
+  `meta_type::construct()` with zero arguments falls through to it (`entt/meta/meta.hpp`). **So no
+  reflect-gen change was needed at all**, which is the opposite of what "read a component's default"
+  sounds like it should cost. A probe against the shipping aggregator printed `engine::Transform`'s
+  `scale` as `(1,1,1)` off a `construct()`, at a cost of **one heap allocation** per call, with
+  `sizeof(meta_any)` 64 against `sizeof(Transform)` 40 — which is why the panel calls it **from inside
+  an open popup only**, never once per field per frame.
+* **`ImGuiDataType_Float`'s `PrintFmt` is `"%.3f"`** (`imgui_widgets.cpp:2277`) and `DragScalar` falls
+  back to it when `format` is null (`:2743`), so hand-rolling `DragScalarN` with three `nullptr`s
+  reproduces `DragFloat3`'s display **byte for byte**. `std::format`'s `{:.3f}` is specified as
+  printf's `%.3f` ([charconv.to.chars]), so the number in the reset menu is the number in the box
+  beside it, by specification rather than by luck.
+* **The chain that re-applies a non-resizable column's width every frame is FOUR lines, not three.**
+  `imgui_tables.cpp:809-810` stamps `NoResize` on every column when `ImGuiTableFlags_Resizable` is
+  absent; `:1692` assigns `InitStretchWeightOrWidth` unconditionally, one line **above** the
+  `IsInitializing` gate; `:934-938` copies it into `WidthAuto`. **The line that actually sizes the
+  column is `:988-989`**, `column->WidthRequest = width_auto`, and without it the whole mechanism is
+  inert with every test still green. Its third condition, `IsRequestOutput`, is structurally true for
+  column 0 (`:1239-1242` forces it on `LeftMostEnabledColumn`), and a table's first frame takes the
+  `:987` arm instead, so both branches are covered.
+
+#### The sentences that govern new work
+
+**1. THE LETTER BEFORE ITS BOX IS LOAD-BEARING, NOT COSMETIC.** `ImGui::ItemAdd` ends with
+`g.NextItemData.HasFlags = ImGuiNextItemDataFlags_None`, so a pending `SetNextItemWidth` is consumed
+or cleared by the **first `ItemAdd` that follows**. On the axis path that is the `X` letter's
+`TextUnformatted`, not the first `DragScalar` — which is exactly what keeps `drawField`'s shared
+`SetNextItemWidth(-1.0F)` from making the first box full-cell width. Reversing letter and box would
+break the layout silently. The `SetNextItemWidth` stays in the shared preamble because it is still
+doing real work for the other six arms and for `ColorEdit3`.
+
+**2. NEVER CALL `BeginPopupContextItem(nullptr)` AFTER `EndGroup()`.** A group's own `ItemAdd` uses
+id 0 and only overwrites `LastItemData.ID` when the group contains the active or deactivated id, so
+that call is an `IM_ASSERT` **abort** on any frame nothing inside the group is active. The per-axis
+menu passes `nullptr` safely because it sits **inside** the loop, against the axis's own non-zero drag
+id; the label-cell menu passes an explicit `"##fieldmenu"` because a `Text` item's id is 0. Seeded
+directly: the label-cell call with `nullptr` aborts the Debug binary, caught by `I142` alone as well
+as by 2.2.2's own Inspector case.
+
+**3. THE WHOLE-FIELD MENU HANGS OFF THE LABEL CELL BECAUSE OF THE `String` ARM.** `FieldKind::String`
+keeps an uncommitted buffer whose release is keyed on `ImGui::IsItemActive()`, so a popup opening over
+the value widget steals `ActiveId` and silently discards in-progress typing. `I148` pins the
+placement; the behavioural half is a validation row, because nothing in `tests/` can synthesise a
+right-click.
+
+**4. `IsItemHovered`'s `id == 0` ARM IS NARROWER THAN IT READS.** `imgui.cpp:4961`'s
+`if (g.ActiveId == window->MoveId && (id == 0 || g.ActiveIdDisabledId == id)) cancel_is_hovered =
+false;` rescues **only** the window-move case. With some other non-zero `ActiveId` live, an id-0 label
+is not hovered and its context menu does not open; with nothing active the `ActiveId` check
+short-circuits and the ordinary right-click works. That is an unreachable gesture in practice and it
+has its own validation row rather than a blanket claim in a comment.
+
+**5. A REJECTION ARM THAT NEEDS A NON-DEFAULT-CONSTRUCTIBLE TYPE IS UNREACHABLE THROUGH AN ORDINARY
+REGISTRATION**, because `World::addRaw` default-constructs. `FD9` reaches it by registering
+`entt::meta` for a non-default-constructible type under the **same registration name** a
+default-constructible type carries on the `World` — `resolveComponentMeta` joins the two registries by
+NAME, so `construct()` then returns an invalid `meta_any`. The same trick is available to any future
+case that needs a meta type the World cannot itself produce.
+
+#### Four assertions that could not fail, all four found by the sabotage matrix and all four closed
+
+The matrix ran in full — 25 rows, 31 seeded builds, each verified present in the file before its
+verdict was read. Twenty-one reddened exactly the named cases. Two are declared no-cover rows the plan
+predicted (S17, the box-width arithmetic; S23, a per-component label width), both layout facts no tier
+in this tree can reach and both carrying their own validation row. **Four came back green that should
+not have.**
+
+* **`VF6`'s length check cannot see a dropped `normalize()`.** GLM's euler constructor is already unit
+  to **5.96e-08** — measured, and the case now prints `length(raw) - 1.0F` on every run — which
+  `Approx(1.0F).epsilon(1e-6)` admits with room to spare. The discriminator is **bitwise**: the result
+  equals `normalize(raw)`, and it differs from `raw`. The anti-vacuity arm is the second half: if a
+  future toolchain returned an exactly unit quaternion the case reddens and the `MESSAGE` says why,
+  which is a loud failure in place of a silently vacuous pass.
+* **`VF12` could not tell `==` from `approxEquals`.** This one is worth stating carefully, because the
+  plan predicted the `-0.0F` arm would catch it and the plan was wrong: **both comparators call NaN
+  unequal to everything, and both call `-0.0F` equal to `+0.0F`**, so neither existing arm can see the
+  swap at all. The input that separates them is a component nudged by **half an EPSILON**, with
+  `approxEquals`' own verdict asserted beside it so the arm is a statement about the comparator rather
+  than about arithmetic.
+* **`I144` could not see the `Quat` cache's `IsItemActive()` moving before `EndGroup`.** Read there it
+  reports the **last axis's** state rather than the group's, so an X or Y drag would never latch the
+  cache and the row would fight the user's own numbers every frame. The seed is awkward to write —
+  `EndGroup()` lives inside `drawAxisRow`, so it needs the flag computed there and handed out — and it
+  reddened nothing until clause (d) pinned the call's position, bounded to the `Quat` arm because the
+  `String` arm has an `IsItemActive()` of its own.
+* **`I143`'S BYTE SCAN WAS DEFEATED BY AN INTEGER-LITERAL SUFFIX, AND THE SUFFIX IS THE SPELLING MOST
+  LIKELY TO BE WRITTEN.** `226U` reads as three digits followed by an identifier character, so a
+  standalone-token scan rejects the match and the restated colour is invisible — and `226U` is exactly
+  how `axis_palette.hpp` spells its own bytes, so anyone copying a colour out of it copies the one
+  spelling the scan could not see. The scan now skips a trailing `u/U/l/L/f/F` run before testing the
+  boundary. **Proved in both directions**, the `I127(b)` precedent: the same seed reddens with the skip
+  and goes invisible without it.
+
+**And one row's prediction was off in a way worth recording.** S7 ("`enabled` hardcoded `true`") was
+expected to redden `VF9` and `VF10`. Written at the natural place — the final assignment — it cannot
+reach `VF9` at all, because the no-default path returns **before** that line. Seeding the early return
+as well is what reddens `VF9`. Two seeds, not one; the matrix row should say so.
+
+#### Smaller things, each of which cost time
+
+* **`git checkout -- <file>` reverted an UNCOMMITTED fix mid-matrix**, exactly as the standing rule
+  says it does. The step-6 fix to `imgui_layer_test.cpp` was written, then a later seed's revert took
+  it with it, and only `git status` showed the loss. **Commit the fix, then seed it** — and when a
+  matrix and a fix overlap, commit between them.
+* **A default-precision `MESSAGE` of `length(raw)` prints `1`.** The first version of `VF6`'s
+  measurement line printed "1" for 0.99999994 and read as evidence of the opposite of what it
+  measures. Print the **difference**, not the value.
+* **`misc-unused-parameters` is in clang-tidy's `misc-*` group and CI runs `--warnings-as-errors`**, so
+  a method written at step 4 with the four parameters its step-5 body will need does not compile clean.
+  `drawAxisRow` therefore took `(shown, speed)` at step 4 and widened to the full signature at step 5,
+  which is also the honest shape for each commit read on its own.
+* **A `static const bool` initialised by a lambda is true by construction**, so `CHECK`ing it is an
+  assertion that cannot fail. It is a `(void)` cast with its reason beside it.
