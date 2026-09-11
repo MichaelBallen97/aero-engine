@@ -1506,6 +1506,19 @@ a popup is open — all end on a mouse-up, a click-away or an Escape. Never reor
 a hidden target is a **Drop**, not a Hold. The explicit path may `setVisible(true)`; the automatic one
 may not. Closing a panel is the user's second, coarser off switch.
 
+**A preference that suppresses an EFFECT must not suppress the OBSERVATION that feeds it.** The three
+`observe*` functions gate the **latch**, never the early return: a baseline advances every tick whatever
+the preference says, so an act performed while routing is off is seen and forgotten rather than skipped.
+Gating the early return leaves the baseline stale, and the first observation after the preference comes
+back on raises a panel for a minutes-old act. **`observeImportTarget` keeps `!settled` in its early
+return** — that rule is the session's and is independent of the preference.
+
+**`readEditorPrefs` must distinguish "missing" from "exists and cannot be read".** `readTextFile`
+disengages its `text` for a missing file, a directory and a permission-refused file alike, so the read
+alone cannot tell the normal state on a fresh machine from a file the OS refused. `fileExists` is the
+discriminator — and it is `std::filesystem::exists`, so it is **true for a directory**, which is what
+makes a directory the portable stand-in for an unreadable file in a test.
+
 **`Selection::prune` must never bump `Selection::revision`.** `HierarchyPanel::onDraw` prunes every
 frame, so a bumping prune is a permanent focus storm. And **`set`, `toggle` and `setAll` delegate to
 two private, non-counting helpers**, not to `add`/`remove`: the counter counts public CALLS, so

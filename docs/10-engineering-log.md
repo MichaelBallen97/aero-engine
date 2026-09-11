@@ -15465,14 +15465,14 @@ title bar whenever a permission prompt was pending, at ~0.2 % CPU.
 
 ### E.3.2 — Selection-follows-focus router — the contract the spec asked for was arithmetically impossible in the tree it was written against
 
-**Branch `feat/E.3.2-selection-follows-focus-router`, ELEVEN commits** — the plan's eight, one per
-step, plus three the sabotage pass forced. Sized **M** in the
+**Branch `feat/E.3.2-selection-follows-focus-router`, THIRTEEN commits** — the plan's eight, one per
+step, plus three the sabotage pass forced and two the code-review round forced. Sized **M** in the
 roadmap, recorded **M-at-the-M/L-boundary** before the first commit and landed **M/L**. *(PR number and
 merge commit are filled in at merge.)*
 
 `ctest -N` **174 -> 174**, entry set byte-identical to the branch point's in both presets — no
 component, no target, no ctest entry, no shader, no engine file, no link-line change. doctest:
-`aero_editor_shell_test` **1842 -> 1885**, `aero_editor_imgui_test` **181 -> 192**; `aero_tests`
+`aero_editor_shell_test` **1842 -> 1886**, `aero_editor_imgui_test` **181 -> 194**; `aero_tests`
 **1404**, `aero_scene_serialize_test` **40**, `aero_editor_inspector_test` **31**,
 `aero_reflect_meta_test` **7** and `aero_reflect_json_test` **28** all unmoved. Guards: math
 **500 -> 506**, project-no-delete **A=6/B=80 -> A=6/B=82**; platform **92**, rhi **163**, scene **92**,
@@ -15481,7 +15481,8 @@ re-measured fresh, with byte-identical entry sets: shader-tools-OFF **161** (exa
 entries removed, nothing added) and reflect-tools-OFF **93** (77 `reflect-gen.*` plus four doctest
 binaries removed, nothing added); all **70 `cooker.*`** entries present in all three.
 `git ls-files 'editor/src/*.cpp'` **80 -> 82** and `git ls-files 'editor/include/aero/editor/*.hpp'`
-**58 -> 60**.
+**58 -> 60**. Both reduced configurations carry all **13** E.3.2 GPU cases and all **40** `RT`+`EP`
+cases and run them green.
 
 **What shipped.** Four panels share the Right dock node and exactly one of them is on screen, decided
 by whichever tab won the first frame — so clicking a `.aeromat` reloaded a material *behind a tab you
@@ -15571,6 +15572,15 @@ Right node — and all 181 pre-existing cases passed unedited at step 6's gate, 
    are: three different names under one shared parent. **A design that keeps tests off a machine-wide
    file also keeps them off the code that names it.**
 
+9. **A PREFERENCE THAT SUPPRESSES AN EFFECT MUST NOT SUPPRESS THE OBSERVATION THAT FEEDS IT.** Found
+   by the code-review round, not by the 32-seed matrix: gating the three `observe*` EARLY RETURNS on
+   `enabled` left every baseline stale, so turning the preference back on raised a panel for an act
+   performed minutes earlier. **The gate belongs in the LATCH condition.** The general shape: when a
+   switch turns a *reaction* off, the state that decides "is this new?" must keep advancing, or the
+   switch becomes a delay line. And the case that was supposed to catch it, `RT24`, **pinned the
+   defect while calling it correct** — it re-observed the value produced while disabled and named that
+   "a fresh act". **A case written from the same sentence as the code cannot falsify that sentence.**
+
 #### Corrections the plan needed, each measured
 
 * **`JsonValue`, `JsonParseResult`, `JsonWriter` and `parseJson` live in `engine`, not
@@ -15609,19 +15619,84 @@ doctest's own `test cases:` line, and reverted. **Three reddened nothing and wer
 `RT2` strengthened, `S30` -> `EP2` strengthened, `S32` -> `EP12` added). **One is re-specified**
 (`S16`, §6 above). **Six are inert or declared holes:**
 
-* **`S17` — `sourceStillValid` hard-coded true.** Nothing in `tests/` can load a scene between the
-  reconcile block and the focus slot inside one tick; the whole suite stays green. **Manual row 2**'s
-  scene-load arm is the nearest cover.
+* **`S17` — `sourceStillValid` hard-coded true. NOT A HOLE — the code-review round retired it.** The
+  claim that "nothing in `tests/` can load a scene between the reconcile block and the focus slot
+  inside one tick" is **false**: `requestNewScene()` on a CLEAN command stack takes `FileStep::Perform`
+  immediately, inside `applyFileRequests` at `shell_ui.cpp:552`, which is 38 lines ABOVE the focus slot
+  in the same tick, and `resetSceneState` clears the selection. `I160` drives it and the seed reddens
+  it. **Manual row 2 is no longer the only cover.**
 * **`S18`'s behavioural half.** `I159(b)` pins the flag spelling as source text; only **manual row 7**
   can see that a raise does not close an open menu.
 * **`S22` — `RouteOutcome routeOutcome = RouteOutcome::Hold;` as the default.** INERT by construction:
   `drawShellUi` assigns the field on every frame, so the default is unreachable. The field's own
   comment already says it is a fail-safe for a caller that does not exist.
-* **`S23` — adopting `routeEnabled` without the `routeToggleRequested` gate.** Harmless today because
-  nothing else writes the field; a defensive gate with no reachable seed.
-* **`S24` — clearing the latch on `Hold`.** The real cover would be a case driving a live text field,
-  and **no tier in this tree can type**. **Manual rows 5 and 6** are the only cover.
+* **`S23` — adopting `routeEnabled` without the `routeToggleRequested` gate. NOT A HOLE EITHER.** It
+  was called harmless because nothing else writes the field — true of the *value*, and irrelevant to
+  the *effect*: the same edit sets `editorPrefsDirty` on **every frame**, so a persisting instance
+  rewrites `editor_prefs.json` on every frame, which is the per-frame I/O `docs/09` §8.5 forbids.
+  `I158` missed it because its second app ticked **once** before capturing the modification time; it
+  now ticks **ten** times with no toggle and asserts the mtime is unmoved, and the seed reddens it.
+* **`S24` — clearing the latch on `Hold`. NARROWED: the `popupOpen` arm is covered; only
+  `textInputActive` is not.** `Hold` had no coverage above the pure function at all, which was the
+  code-review round's riskiest finding — `focusRouteHoldCount()` was referenced by nothing but its own
+  definition. `I161` drives it: a DIRTY command stack makes `requestNewScene()` raise the
+  unsaved-changes modal, whose popup opens **before** the focus slot, so the route Holds. What stays
+  uncovered is **typing** (no tier in this tree can) and the **Hold -> Apply** transition at the GPU
+  tier, because `FileFlow::choice` has no public accessor and this TU cannot answer a modal
+  (`imgui_layer_test.cpp:2445` records that for another task). **Manual rows 5 and 6** still own the
+  text-field arm.
 * **`S27` — the flush dropping its `!editorPrefsPath.empty()` guard.** INERT: `writeEditorPrefs` itself
   refuses an empty path and returns success, so the outer guard is redundant with the inner one.
 * **`S31` — an inline path instead of a named local.** A greppability invariant; **§V6** is its only
   cover, read by eye.
+
+#### The code-review round — six findings, two of them code
+
+Six gaps, closed in two commits, each proved by seeding the defect and watching the named case redden.
+**The two code-level ones are real defects that every automated tier was green against.**
+
+**G1 (BLOCKING) — the router SKIPPED what it observed while off, instead of FORGETTING it.** All three
+`observe*` functions gated their **early return** on `enabledValue`, so every baseline went stale while
+routing was off. The first observation after the preference came back on compared this tick's value
+against one from *before* it went off, saw a "change", and raised a panel for an act performed minutes
+earlier — **a focus steal triggered by ticking a menu item**, reachable in three clicks (routing off →
+click an entity → tick View ▸ Focus Follows Selection back on). The header already stated the correct
+contract in so many words; the code did the opposite of it, and the header's own "so" was what made the
+inversion read as a justification. **The gate belongs in the LATCH condition, never in the early
+return**: a baseline always advances, and only the raise is suppressed. `observeImportTarget` keeps
+`!settled` in its early return, because that rule is about the SESSION's state machine and is
+independent of the preference — `RT18` and `I155` hold that line.
+**`RT24` pinned the defect while calling it correct**: it re-observed revision 2 — *the same act
+performed while disabled* — and its own comment called that "a fresh act after re-enabling". A fresh
+act is revision **3**. The lesson is the general one: **a case written from the same sentence as the
+code cannot falsify that sentence.**
+
+**G6 — `readEditorPrefs` conflated "missing" with "exists and cannot be read".** `readTextFile`
+disengages its `text` for a missing file, a directory and an unreadable file alike, so a root-owned or
+ACL-blocked `editor_prefs.json` silently produced defaults with `corrupt = false` and **no WARN** — the
+user's preference reset to ON with nothing in the log. The header said those two must never be
+conflated. `fileExists` is the discriminator, and it was already declared in the header this TU
+includes. **Measured, not assumed: `fileExists` is `std::filesystem::exists` (`text_file.cpp:103-106`),
+so it is TRUE for a directory** — which is what makes a directory the portable stand-in for a
+permission-refused file, needing no privileged user and no umask assumption. `EP13` carries both arms,
+with the chmod-000 one skipped **loudly** if the platform ignores the mode.
+
+**G2, G3, G4 and G5 — four coverage gaps on stated acceptance criteria.** `I160` drives guard 3 and
+retires `S17`. `I161` is the only coverage `Hold` has above the pure function — and **the modal comes
+up ONE TICK AFTER the request**, measured: `drawUnsavedChangesModal` runs at `shell_ui.cpp:540` and
+`applyFileRequests`, which is what *sets* `confirmOpen`, at `:552`, so a route latched on the tick that
+carried the request **applies** before any popup exists. The case raises the modal first and latches
+afterwards, with the identical gesture run beforehand as a no-modal **control** that applies — nothing
+here can read `IsPopupOpen`, so the contrast is the proof. `I159(f)` pins the View checkbox as source
+text, because **dropping the `&` from
+`MenuItem("Focus Follows Selection", nullptr, &state.routeEnabled)` COMPILES** — both overloads are
+viable — and turns the item into a no-op that reaches neither the router nor the file, with the whole
+suite green and `I153` still passing. `I158` now ticks its second app ten times with no toggle and
+asserts the modification time is unmoved: one tick could not tell "written only on change" from
+"written every frame".
+
+**The six seeds, each reverted after its verdict:** G1 (restore the `!enabledValue ||` early return) →
+`RT24`; G2 (`sourceStillValid = true`) → `I160`; G3 (`popupOpen = false`) → `I161` **and** `I159`;
+G4 (drop the `&`) → `I159`, with `I153` staying green, which is the finding restated as a measurement;
+G5 (drop the `routeToggleRequested` gate) → `I158`; G6 (drop the `fileExists` discriminator) → `EP13`,
+with `EP8`'s missing-file arm staying green, which is what makes it a statement about the *distinction*.
