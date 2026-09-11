@@ -12956,3 +12956,98 @@ TEST_CASE("editor: the axis row's gate is read AFTER the group closes (task E.3.
         }
     }
 }
+
+// ---- I147, I148: the reset's merge-chain discipline and its placement -----------------------------
+namespace {
+
+// The index of the line closing the function that opens at `from`: the first line at or below it
+// whose first character is '}' at column 0. Every function body in editor/src is indented, so this is
+// exact rather than heuristic -- and it is what lets an assertion be about ONE function's body rather
+// than about the whole file.
+[[nodiscard]] std::size_t functionBodyEnd(const std::vector<std::string>& code, std::size_t from) {
+    for (std::size_t i = from + 1U; i < code.size(); ++i) {
+        if (!code[i].empty() && code[i][0] == '}') {
+            return i;
+        }
+    }
+    return code.size();
+}
+
+[[nodiscard]] std::size_t countInRange(const std::vector<std::string>& code, std::string_view needle, std::size_t from,
+                                       std::size_t to) {
+    std::size_t hits = 0;
+    for (std::size_t i = from; i < to && i < code.size(); ++i) {
+        if (code[i].find(needle) != std::string::npos) {
+            ++hits;
+        }
+    }
+    return hits;
+}
+
+}  // namespace
+
+TEST_CASE("editor: a reset breaks the merge chain on BOTH sides and drops both caches (task E.3.1, I147)") {
+    // SOURCE PIN, and the only cover sabotage seeds S14 and S18 have anywhere: nothing in tests/ can
+    // synthesise a right-click, so "the reset is one undo entry and never merges with the drag before
+    // it" is judged on hardware. What CAN be stated mechanically is the shape of the function.
+    const std::vector<std::string> code = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/inspector_panel.cpp");
+    REQUIRE(code.size() > 100);
+
+    const std::size_t bodyStart = soleLineContaining(code, "void InspectorPanel::resetField(");
+    const std::size_t bodyEnd = functionBodyEnd(code, bodyStart);
+    REQUIRE(bodyEnd > bodyStart + 2U);  // a real body, not an empty one
+
+    const std::size_t pushAt = firstLineContaining(code, "pushFieldEdit(", bodyStart);
+    REQUIRE(pushAt < bodyEnd);
+    CHECK(countInRange(code, "pushFieldEdit(", bodyStart, bodyEnd) == 1);
+
+    // TWO breaks, one on each side of the push. Deleting EITHER is the careless edit this pins --
+    // dropping the one before lets the reset merge into a drag released a moment earlier, and
+    // dropping the one after lets the NEXT drag merge into the reset.
+    CHECK(countInRange(code, "breakMergeChain()", bodyStart, bodyEnd) == 2);
+    CHECK(countInRange(code, "breakMergeChain()", bodyStart, pushAt) == 1);
+    CHECK(countInRange(code, "breakMergeChain()", pushAt + 1U, bodyEnd) == 1);
+
+    // Both caches are dropped, and AFTER the push -- the push reads this frame's model value, and the
+    // Quat row would otherwise keep displaying the pre-reset euler triple until the pointer moved.
+    CHECK(countInRange(code, "quatCache = {}", bodyStart, bodyEnd) == 1);
+    CHECK(countInRange(code, "stringCache = {}", bodyStart, bodyEnd) == 1);
+    CHECK(countInRange(code, "quatCache = {}", pushAt + 1U, bodyEnd) == 1);
+    CHECK(countInRange(code, "stringCache = {}", pushAt + 1U, bodyEnd) == 1);
+
+    // A reset is a VALUE edit: it must never be routed through `pending`, which is for Add/Remove.
+    CHECK(countInRange(code, "pending", bodyStart, bodyEnd) == 0);
+}
+
+TEST_CASE("editor: the whole-field reset menu hangs off the LABEL cell (task E.3.1, I148)") {
+    // SOURCE PIN, and the only cover sabotage seed S22's placement half has. D6's reason:
+    // FieldKind::String keeps an uncommitted buffer whose release is keyed on ImGui::IsItemActive(),
+    // so a popup opening over the value widget steals ActiveId and SILENTLY DISCARDS in-progress
+    // typing. The behavioural half -- type into a field, right-click, the typing survives -- is a
+    // validation row, because nothing in tests/ can synthesise a right-click.
+    const std::vector<std::string> code = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/inspector_panel.cpp");
+    REQUIRE(code.size() > 100);
+
+    const std::size_t bodyStart = soleLineContaining(code, "void InspectorPanel::drawField(");
+    const std::size_t bodyEnd = functionBodyEnd(code, bodyStart);
+    REQUIRE(bodyEnd > bodyStart + 2U);
+
+    CHECK(countInRange(code, "drawFieldResetMenu(", bodyStart, bodyEnd) == 1);
+    const std::size_t menuAt = firstLineContaining(code, "drawFieldResetMenu(", bodyStart);
+    REQUIRE(menuAt < bodyEnd);
+
+    // Exactly two cells per row, and the menu is submitted between them -- i.e. against the LABEL
+    // cell's last item, never against the value widget.
+    REQUIRE(countInRange(code, "TableNextColumn()", bodyStart, bodyEnd) == 2);
+    const std::size_t firstColumnAt = firstLineContaining(code, "TableNextColumn()", bodyStart);
+    const std::size_t secondColumnAt = firstLineContaining(code, "TableNextColumn()", firstColumnAt + 1U);
+    REQUIRE(secondColumnAt < bodyEnd);
+    CHECK(menuAt > firstColumnAt);
+    CHECK(menuAt < secondColumnAt);
+
+    // ...and it carries an EXPLICIT str_id, because a Text item's own id is 0 and
+    // BeginPopupContextItem IM_ASSERTs on an id of 0 -- which is an abort in the Debug build, not a
+    // glitch, and is what I142 exercises at runtime.
+    CHECK(code[menuAt].find("nullptr") == std::string::npos);
+    CHECK(code[menuAt].find("\"##fieldmenu\"") != std::string::npos);
+}

@@ -248,7 +248,57 @@ void InspectorPanel::drawComponent(PanelContext& context, Entity primary, const 
     ImGui::PopID();
 }
 
-bool InspectorPanel::drawAxisRow(std::array<float, 3>& shown, float speed) {
+void InspectorPanel::drawFieldResetMenu(PanelContext& context, Entity primary, const ComponentEntry& entry,
+                                        const FieldEntry& field, std::optional<std::size_t> axis, const char* strId) {
+    if (!ImGui::BeginPopupContextItem(strId)) {
+        return;  // ASYMMETRIC: EndPopup ONLY when BeginPopupContextItem returned true
+    }
+
+    // THE DEFAULT IS RESOLVED HERE, INSIDE THE OPEN POPUP -- once per frame while a menu is open,
+    // never in the per-frame walk. It costs one heap allocation (measured), which is cheap for
+    // something only a person looking at a menu pays for and would not be cheap per field per frame.
+    const std::optional<FieldValue> defaultValue = defaultComponentField(context.world, entry.typeId, field.name);
+
+    if (axis.has_value() && isAxisRow(field.kind, field.color)) {
+        const AxisResetAction one = axisResetAction(axis, field.kind, field.value, defaultValue);
+        // BeginDisabled rather than MenuItem's own `enabled` argument: both work, and this is the
+        // spelling the Guid arm already uses for the identical decision.
+        ImGui::BeginDisabled(!one.enabled);
+        if (ImGui::MenuItem(one.label.c_str())) {
+            resetField(context, primary, entry, field, one.result);
+        }
+        ImGui::EndDisabled();  // 1:1 with BeginDisabled
+        ImGui::Separator();
+    }
+
+    const AxisResetAction all = axisResetAction(std::nullopt, field.kind, field.value, defaultValue);
+    ImGui::BeginDisabled(!all.enabled);
+    if (ImGui::MenuItem(all.label.c_str())) {
+        resetField(context, primary, entry, field, all.result);
+    }
+    ImGui::EndDisabled();
+
+    ImGui::EndPopup();
+}
+
+void InspectorPanel::resetField(PanelContext& context, Entity primary, const ComponentEntry& entry,
+                                const FieldEntry& field, FieldValue after) {
+    // BOTH SIDES, EXPLICITLY. A reset is a discrete edit, so it must never merge with a drag that was
+    // released on the same field a moment earlier -- and a MenuItem inside a per-axis popup claims
+    // ActiveId, which EndGroup then forwards, so gateForLastItem() would break the chain on the click
+    // frame by accident. Arriving at the right behaviour by accident is not the same as stating it.
+    context.commands.breakMergeChain();  // BEFORE the push
+    pushFieldEdit(context, primary, entry, field, std::move(after));
+    context.commands.breakMergeChain();  // AFTER the push
+    // BOTH caches, unconditionally. At most one is live, so clearing both is two lines with no
+    // predicate for a future edit to get wrong -- and without this the Quat row would keep DISPLAYING
+    // the pre-reset euler triple until the pointer moved off the box.
+    quatCache = {};
+    stringCache = {};
+}
+
+bool InspectorPanel::drawAxisRow(PanelContext& context, Entity primary, const ComponentEntry& entry,
+                                 const FieldEntry& field, std::array<float, 3>& shown, float speed) {
     // WHAT DragScalarN DOES INTERNALLY (imgui_widgets.cpp:2814), opened up: BeginGroup, then per
     // component PushID(i) / SameLine(0, ItemInnerSpacing.x) / DragScalar / PopID, then EndGroup. The
     // reason to hand-roll it is that each axis needs its OWN item to carry a label, a colour and (from
@@ -296,6 +346,12 @@ bool InspectorPanel::drawAxisRow(std::array<float, 3>& shown, float speed) {
         edited = ImGui::DragScalar("##a", ImGuiDataType_Float, &shown[i], speed, nullptr, nullptr, nullptr,
                                    ImGuiSliderFlags_None) ||
                  edited;
+        // NO str_id: DragScalar reads mouse button 0 only, so right-click is unclaimed, and the axis's
+        // own drag id is non-zero and makes a perfectly good popup id. NEVER call this with nullptr
+        // after EndGroup() -- a group's ItemAdd uses id 0 and only overwrites LastItemData.ID when the
+        // group contains the active or deactivated id, so that call is an IM_ASSERT abort on any frame
+        // nothing inside the group is active.
+        drawFieldResetMenu(context, primary, entry, field, i, /*strId=*/nullptr);
         ImGui::PopID();
     }
     ImGui::EndGroup();
@@ -312,6 +368,13 @@ void InspectorPanel::drawField(PanelContext& context, Entity primary, const Comp
     ImGui::TableNextColumn();
     ImGui::AlignTextToFramePadding();
     ImGui::TextUnformatted(field.name.c_str());
+    // THE WHOLE-FIELD MENU HANGS OFF THE LABEL CELL, never off a value widget (D6): FieldKind::String
+    // keeps an uncommitted buffer whose release is keyed on ImGui::IsItemActive(), so a popup opening
+    // over it steals ActiveId and silently discards whatever the user was typing. An explicit str_id
+    // because a Text item's own id is 0, which BeginPopupContextItem asserts on. IsItemHovered's
+    // `id == 0` arm covers the window-move case; with nothing active its ActiveId check
+    // short-circuits, so the ordinary right-click works.
+    drawFieldResetMenu(context, primary, entry, field, /*axis=*/std::nullopt, /*strId=*/"##fieldmenu");
     ImGui::TableNextColumn();
     // -1.0F inside a cell means the CELL's width, which is what every non-axis arm wants.
     ImGui::SetNextItemWidth(-1.0F);
@@ -404,7 +467,7 @@ void InspectorPanel::drawField(PanelContext& context, Entity primary, const Comp
                 // isAxisRow(Vec3, color=true) answers false to.
                 edited = ImGui::ColorEdit3("##v", shown.data(), ImGuiColorEditFlags_Float | ImGuiColorEditFlags_HDR);
             } else {
-                edited = drawAxisRow(shown, 0.1F);
+                edited = drawAxisRow(context, primary, entry, field, shown, 0.1F);
             }
             // ColorEdit3 wraps itself in BeginGroup/EndGroup and so does drawAxisRow, and EndGroup
             // forwards the active/deactivated id to LastItemData, so the gate below sees the WHOLE
@@ -428,7 +491,7 @@ void InspectorPanel::drawField(PanelContext& context, Entity primary, const Comp
             const bool cacheHit = quatCache.active && quatCache.matches(primary, entry.typeId, field.name);
             std::array<float, 3> shown =
                 cacheHit ? toArray(quatCache.eulerDegrees) : axisRowValues(field.value, FieldKind::Quat);
-            const bool edited = drawAxisRow(shown, 1.0F);
+            const bool edited = drawAxisRow(context, primary, entry, field, shown, 1.0F);
             // The gate refers to this same last-submitted item; read it here, immediately after the
             // widget call and before the cache block below (which submits no ImGui item of its own).
             const EditGate gate = gateForLastItem();

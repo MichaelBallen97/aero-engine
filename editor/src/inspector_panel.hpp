@@ -72,7 +72,17 @@ private:
     // task E.3.1: what DragScalarN does internally, opened up -- three DragScalars with a coloured
     // axis letter before each, inside ONE BeginGroup/EndGroup so a single gateForLastItem() read
     // after it sees the WHOLE triplet's edges, exactly as it did after DragFloat3.
-    bool drawAxisRow(std::array<float, 3>& shown, float speed);
+    bool drawAxisRow(PanelContext& context, Entity primary, const ComponentEntry& entry, const FieldEntry& field,
+                     std::array<float, 3>& shown, float speed);
+    void drawFieldResetMenu(PanelContext& context, Entity primary,
+                            const ComponentEntry& entry,      // the component the row belongs to
+                            const FieldEntry& field,          // the row, by kind, colour flag and value
+                            std::optional<std::size_t> axis,  // nullopt == the whole field (label cell)
+                            const char* strId);               // nullptr on an axis: the drag's own id
+    // A reset is a VALUE edit, so it writes through the seam inline like every other arm -- it must
+    // NOT go through `pending`, which is for Add/Remove only (see the four-phase note above).
+    void resetField(PanelContext& context, Entity primary, const ComponentEntry& entry, const FieldEntry& field,
+                    FieldValue after);
     void applyPending(PanelContext& context, Entity primary);
 
     InspectorModel model;  // D15 scratch, rebuilt every frame
