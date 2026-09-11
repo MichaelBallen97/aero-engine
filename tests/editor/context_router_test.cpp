@@ -55,6 +55,20 @@ TEST_CASE("editor: routedPanelId returns a STATIC-lifetime pointer, twice the sa
     // ...and three DIFFERENT sources are three different addresses, so the check above is not
     // satisfied by everything returning one shared empty literal.
     CHECK(routedPanelId(RouteSource::EntitySelection) != routedPanelId(RouteSource::MaterialAsset));
+
+    // SABOTAGE-FORCED. The four address comparisons above are BLIND to a
+    // `return std::string("Inspector").c_str();` implementation, measured: the temporary is SSO, so it
+    // lives in routedPanelId's own frame, and two calls from this same caller put that frame at the
+    // same address -- the pointers compare EQUAL while both dangle. ASan does not help either, because
+    // detect_stack_use_after_return is OFF by default on this lane. STATIC LIFETIME means the bytes
+    // survive arbitrary intervening work, so that is what is asserted: hold the pointer, spend the
+    // stack, then read it. (The seed reddens RT1 and RT13 too -- this is the case that should SAY so.)
+    const char* const held = routedPanelId(RouteSource::EntitySelection);
+    for (int i = 0; i < 32; ++i) {
+        (void)routeOutcome(RouteSource::MaterialAsset, RouteGuards{.enabled = (i % 2) == 0});
+        (void)routedPanelId(RouteSource::ImportableAsset);
+    }
+    CHECK(std::string_view(held) == INSPECTOR_ID);
 }
 
 TEST_CASE("editor: a None source is ALWAYS Drop, whatever the guards say (RT3)") {
