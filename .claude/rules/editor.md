@@ -1478,3 +1478,69 @@ a **human mouse/keyboard pass** recorded per OS in `editor/VALIDATION.md`.
 
 Full history: `docs/10-engineering-log.md`, Epic 2.1 / 2.2 / 2.5 / 2.6 entries, and tasks 3.1.1, 3.1.2,
 3.1.3, 3.1.4, 3.1.5, 3.2.1, 3.2.2, 3.2.3, 3.2.4, 3.2.5 and 3.4.2's entries under Phase 3.
+
+## Context routing (task E.3.2)
+
+**The editor has ONE focus slot**, in `shell_ui.cpp`, immediately before `DockSpaceOverViewport` —
+dock nodes update inside it, so the focus lands with no one-frame lag. Both paths resolve there: an
+explicit `requestPanelFocus` first, then the pending context route. `ImGui::SetWindowFocus` is called
+**at most once per frame** from that block, and `I159` pins that exactly one file names it and calls
+it exactly three times. **A fourth caller elsewhere is a second focus policy with no way to order it
+against the first.**
+
+**`ImGui::SetWindowFocus` is not free and not idempotent.** `FocusWindow` closes every popup above the
+focused window (`imgui.cpp:13740`) and **steals the active widget** (`imgui.cpp:13754-13756`), with
+ImGui's own comment at `:13751` naming exactly our slot: *"Focus a window while an InputText in
+another window is active, if focus happens before the old InputText can run."* The edit is **lost**,
+not interrupted — `MaterialPanel`'s name field commits only on `IsItemDeactivatedAfterEdit()`, and the
+panel that lost the tab never draws to observe the edge. **Re-read `:13740` and `:13754` at every ImGui
+bump**, beside the existing `ImGuizmo.cpp:1229-1230` and `imgui.cpp:8848` rules.
+
+**Drops are tested before Holds, and the order is the contract.** The five terminal conditions —
+nothing pending, the preference off, the source gone, the target hidden or unregistered, an explicit
+focus this frame — can each persist indefinitely, so holding on one would hold forever. The four
+transient ones — a text field has the keyboard, a drag payload is live, an ImGuizmo drag is in flight,
+a popup is open — all end on a mouse-up, a click-away or an Escape. Never reorder a Drop below a Hold.
+
+**A route never re-opens a panel the user closed.** `targetAvailable` is *registered AND visible*, and
+a hidden target is a **Drop**, not a Hold. The explicit path may `setVisible(true)`; the automatic one
+may not. Closing a panel is the user's second, coarser off switch.
+
+**A preference that suppresses an EFFECT must not suppress the OBSERVATION that feeds it.** The three
+`observe*` functions gate the **latch**, never the early return: a baseline advances every tick whatever
+the preference says, so an act performed while routing is off is seen and forgotten rather than skipped.
+Gating the early return leaves the baseline stale, and the first observation after the preference comes
+back on raises a panel for a minutes-old act. **`observeImportTarget` keeps `!settled` in its early
+return** — that rule is the session's and is independent of the preference.
+
+**`readEditorPrefs` must distinguish "missing" from "exists and cannot be read".** `readTextFile`
+disengages its `text` for a missing file, a directory and a permission-refused file alike, so the read
+alone cannot tell the normal state on a fresh machine from a file the OS refused. `fileExists` is the
+discriminator — and it is `std::filesystem::exists`, so it is **true for a directory**, which is what
+makes a directory the portable stand-in for an unreadable file in a test.
+
+**`Selection::prune` must never bump `Selection::revision`.** `HierarchyPanel::onDraw` prunes every
+frame, so a bumping prune is a permanent focus storm. And **`set`, `toggle` and `setAll` delegate to
+two private, non-counting helpers**, not to `add`/`remove`: the counter counts public CALLS, so
+routing them through the public mutators would make `set` bump twice and `setAll(n)` bump n+1 times.
+
+**The router derives nothing.** It never spells `isImportableModelName` or `isBlendFileName`; it reads
+the `SessionState` the import session itself wrote, which costs one extra tick and buys a router with
+no second copy of a predicate. If the import route ever has to be one tick, the fix is a settled-state
+signal on the session, published before `ShellUiState` is built — never a predicate here.
+
+**`RouteSource` gets no `toString`** (doctest's `DOCTEST_STRINGIFY` expands to an unqualified
+`toString`, which ADL would find), and its **numeric order IS its priority**, so a new source is
+**inserted at its position**, never appended.
+
+**`editor_prefs.json` is where a per-user editor taste goes** — not `project.json` (committed and
+shared) and not `editor_tools.json` (written whole from a fresh struct by `setOverridePath`, so a
+second key there is clobbered by every `Locate…`). An absent key is its default, so appending one is a
+key and a line with no version bump. Its path resolves **only when `persistLayout` is true**; an empty
+path means read nothing and write nothing.
+
+**Two measurements any GPU-tier routing case inherits.** `Material` is the Right dock node's **default
+front tab**, so `panelDrawnCount("Material") > before` is satisfied with or without a route — put
+something else in front with an explicit request first, and `REQUIRE` that the target is not drawing.
+And **every Right-node panel draws once on the very first frame**, before the dock node has selected a
+tab, so take every baseline **after** the two settle ticks.

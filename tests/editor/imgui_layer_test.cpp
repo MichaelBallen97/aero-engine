@@ -77,6 +77,7 @@
 #include <string_view>   // I30: AERO_EDITOR_SRC_DIR's literal-concatenation target
 #include <system_error>  // std::error_code -- the non-throwing filesystem::remove overload
 #include <type_traits>   // task 2.4.2, I11: std::is_nothrow_move_constructible_v/assignable_v
+#include <utility>       // task E.3.2, I159(d): std::pair over the header/literal roster
 #include <vector>
 
 namespace {
@@ -131,6 +132,19 @@ struct QuietTraceLogging {
     static int counter = 0;
     const std::filesystem::path file =
         std::filesystem::temp_directory_path() / ("aero_imgui_layer_recents_" + std::to_string(++counter) + ".json");
+    const std::u8string bytes = file.u8string();
+    return {reinterpret_cast<const char*>(bytes.data()), bytes.size()};
+}
+
+// task E.3.2: a fresh, never-yet-existing editor-preferences PATH -- the file itself is written by
+// the app under test, never here. The persistLayout gate (EditorAppConfig::editorPrefsPath) means an
+// app that does NOT set this and does NOT set persistLayout writes nothing at all; every case that
+// sets persistLayout = true MUST point this somewhere scratch, or it writes the developer's real
+// editor_prefs.json -- the recentProjectsPath/layoutIniPath rule in a fourth costume.
+[[nodiscard]] std::string uniqueEditorPrefsFile() {
+    static int counter = 0;
+    const std::filesystem::path file =
+        std::filesystem::temp_directory_path() / ("aero_imgui_layer_prefs_" + std::to_string(++counter) + ".json");
     const std::u8string bytes = file.u8string();
     return {reinterpret_cast<const char*>(bytes.data()), bytes.size()};
 }
@@ -1427,7 +1441,15 @@ TEST_CASE(
 
     std::optional<engine::editor::EditorApp> app = engine::editor::EditorApp::create(
         *device, *window, ctx,
-        {.persistLayout = true, .seedDefaultScene = true, .unfocusedFrameCapHz = 0.0F, .restoreLastProject = false});
+        // task E.3.2: persistLayout TRUE now also resolves editorPrefsPath. This case deliberately
+        // leaves layoutIniPath unset -- the real, exe-relative aero_editor.ini IS what it asserts on
+        // -- so the preferences path must be pointed somewhere scratch explicitly, or the case reads
+        // and rewrites the developer's real editor_prefs.json.
+        {.persistLayout = true,
+         .seedDefaultScene = true,
+         .unfocusedFrameCapHz = 0.0F,
+         .restoreLastProject = false,
+         .editorPrefsPath = uniqueEditorPrefsFile()});
     REQUIRE(app.has_value());
     const std::size_t panelCountBefore = app->panels().count();
 
@@ -2784,7 +2806,9 @@ TEST_CASE("editor: a registered panel that is not DOCKED in a restored layout ge
                                                .unfocusedFrameCapHz = 0.0F,
                                                .restoreLastProject = false,
                                                .recentProjectsPath = uniqueRecentsFile(),
-                                               .layoutIniPath = iniPath});
+                                               .layoutIniPath = iniPath,
+                                               // task E.3.2: the same rule as layoutIniPath above.
+                                               .editorPrefsPath = uniqueEditorPrefsFile()});
         REQUIRE(app.has_value());
         CHECK(app->panels().count() == 8);
 
@@ -12666,4 +12690,1104 @@ TEST_CASE("editor: the viewport strip carries only MODE controls (task E.2.4, I1
     CHECK(viewport->overlayRowMin() == engine::Vec2{});
     CHECK(viewport->overlayRowMax() == engine::Vec2{});
 #endif
+}
+
+// ---- I149-I159: task E.3.2's context routing, end to end ------------------------------------------
+//
+// EVERY routing claim below is a DELTA on PanelRegistry's drawn-frame counter, taken across the ONE
+// tick the route applies on, with an anti-vacuity arm showing the OTHER panel's count standing still.
+// Absolute values are meaningless here: the warm-up tick count differs per case and the first two
+// ticks are spent settling the default dock layout.
+//
+// THE TICK LEDGER, measured rather than predicted, and the reason every case below counts ticks the
+// way it does. After `requestAssetBrowserSelectEntry(p)`:
+//   tick A -- the Assets panel's onDraw drains the pending SelectEntry. The reconcile block runs
+//             BEFORE the draw walk, so it saw the OLD selection: nothing is retargeted, nothing is
+//             latched.
+//   tick B -- the reconcile block reads the panel's selection. MaterialSession::reconcile is
+//             SYNCHRONOUS, so a .aeromat is targeted and latched here and applied in this same tick.
+//             ModelImportSession::setTarget is NOT: it sets Idle synchronously and classifies in the
+//             POST-DRAW slot, so an importable file latches NOTHING on this tick (D4).
+//   tick C -- the import arm's state is settled now, so it latches and applies here.
+// `persistLayout` stays FALSE in ten of the eleven cases, so editorPrefsPath resolves to "" and none
+// of them reads or writes a preferences file. I158 is the one exception and sets both explicitly.
+// `Inspector` is NOT hidden anywhere in this block: it is the panel every other case hides to get out
+// of the way, and here it is half the deliverable.
+
+TEST_CASE("editor: selecting a material raises the Material panel (task E.3.2, I149, AC-2)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "route i149", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/brick.aeromat", MINIMAL_AEROMAT_TEXT).empty());
+
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = created.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    app->panels().setVisible("Console", false);  // so Assets draws and SelectEntry drains
+
+    REQUIRE(app->tick());  // 1
+    REQUIRE(app->tick());  // 2: let the default dock layout settle before any focus lands (I39/I56)
+    CHECK(app->focusRoutingEnabled());
+    CHECK(app->focusRouteApplyCount() == 0U);
+
+    // ESTABLISH THE STARTING TAB, AND PROVE IT. Material is the Right node's default front tab, so
+    // without this the claim below ("Material came forward") is satisfied by a panel that was already
+    // drawing and asserts nothing. The explicit request puts the Inspector in front; the REQUIRE two
+    // lines down is what turns that from an intention into a measurement.
+    app->requestPanelFocus("Inspector");
+    REQUIRE(app->tick());  // 3: the explicit focus lands
+    const std::uint64_t materialIdle = app->panelDrawnCount("Material");
+    REQUIRE(app->tick());                                       // 4
+    REQUIRE(app->panelDrawnCount("Material") == materialIdle);  // Material is NOT drawing
+
+    app->requestAssetBrowserSelectEntry("brick.aeromat");
+    REQUIRE(app->tick());  // tick A: the panel drains SelectEntry; the reconcile above it saw nothing
+    CHECK(app->focusRouteApplyCount() == 0U);
+    CHECK(app->pendingFocusRoute() == 0);
+    CHECK(app->panelDrawnCount("Material") == materialIdle);  // ...and it is STILL not drawing
+
+    // Captured IMMEDIATELY before the applying tick, which is what makes both arms below a delta
+    // across ONE frame rather than across the whole run.
+    const std::uint64_t materialBefore = app->panelDrawnCount("Material");
+    const std::uint64_t inspectorBefore = app->panelDrawnCount("Inspector");
+
+    REQUIRE(app->tick());  // tick B: reconcile -> setTarget (synchronous) -> latch -> the focus slot
+    CHECK(app->materialTargetPath() == "brick.aeromat");
+    CHECK(app->focusRouteApplyCount() == 1U);
+    CHECK(app->lastRoutedPanelId() == "Material");
+    CHECK(app->panelDrawnCount("Material") > materialBefore);     // THE CLAIM
+    CHECK(app->panelDrawnCount("Inspector") == inspectorBefore);  // THE ANTI-VACUITY ARM
+    CHECK(app->pendingFocusRoute() == 0);                         // Apply is terminal: the latch cleared
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: selecting an importable model raises Import Details (task E.3.2, I150, AC-3)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "route i150", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    // The CONTENTS need not import: SessionState becomes Failed, which is settled AND claimed, and the
+    // router reads the session's own classification rather than the file (D1).
+    REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/a.gltf", "not a gltf").empty());
+
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = created.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    app->panels().setVisible("Console", false);
+
+    REQUIRE(app->tick());  // 1
+    REQUIRE(app->tick());  // 2: settle
+
+    // The same arrangement I149 establishes, and for the same reason: Import Details shares the Right
+    // node with the Inspector, and a claim about a panel coming forward needs it not to be there yet.
+    app->requestPanelFocus("Inspector");
+    REQUIRE(app->tick());  // 3: the explicit focus lands
+    const std::uint64_t importIdle = app->panelDrawnCount("Import Details");
+    REQUIRE(app->tick());                                           // 4
+    REQUIRE(app->panelDrawnCount("Import Details") == importIdle);  // it is NOT drawing
+
+    app->requestAssetBrowserSelectEntry("a.gltf");
+    REQUIRE(app->tick());  // tick A: drains SelectEntry
+    REQUIRE(app->tick());  // tick B: setTarget -> Idle; the post-draw service() then classifies
+    CHECK(app->panelDrawnCount("Import Details") == importIdle);  // still not drawing: D4's extra tick
+    CHECK(app->modelImportState() != static_cast<int>(engine::editor::SessionState::Idle));
+    CHECK(app->modelImportState() != static_cast<int>(engine::editor::SessionState::NotImportable));
+
+    const std::uint64_t importBefore = app->panelDrawnCount("Import Details");
+    const std::uint64_t inspectorBefore = app->panelDrawnCount("Inspector");
+
+    REQUIRE(app->tick());  // tick C: settled now -> latch -> the focus slot applies
+    CHECK(app->lastRoutedPanelId() == "Import Details");
+    CHECK(app->focusRouteApplyCount() == 1U);
+    CHECK(app->panelDrawnCount("Import Details") > importBefore);
+    CHECK(app->panelDrawnCount("Inspector") == inspectorBefore);
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: a file no importer claims routes nothing (task E.3.2, I151, AC-3)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "route i151", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/a.png", "png?").empty());
+    REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/a.gltf", "not a gltf").empty());
+
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = created.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    app->panels().setVisible("Console", false);
+
+    REQUIRE(app->tick());  // 1
+    REQUIRE(app->tick());  // 2: settle
+
+    const std::uint64_t importBefore = app->panelDrawnCount("Import Details");
+    app->requestAssetBrowserSelectEntry("a.png");
+    // Recorded PER TICK, then checked: a route that latched and applied inside one tick would be
+    // invisible to a single check taken at the end.
+    std::vector<int> pendingPerTick;
+    for (int i = 0; i < 3; ++i) {
+        REQUIRE(app->tick());
+        pendingPerTick.push_back(app->pendingFocusRoute());
+    }
+    REQUIRE(pendingPerTick.size() == 3U);
+    for (const int pending : pendingPerTick) {
+        CHECK(pending == 0);
+    }
+    CHECK(app->modelImportState() == static_cast<int>(engine::editor::SessionState::NotImportable));
+    CHECK(app->focusRouteApplyCount() == 0U);
+    CHECK(app->panelDrawnCount("Import Details") == importBefore);  // it never came forward
+
+    // ANTI-VACUITY: the same app, the same panel, a file an importer DOES claim -- which is what makes
+    // the silence above a statement about `claimed` rather than about a broken route.
+    app->requestAssetBrowserSelectEntry("a.gltf");
+    for (int i = 0; i < 3; ++i) {
+        REQUIRE(app->tick());
+    }
+    CHECK(app->focusRouteApplyCount() == 1U);
+    CHECK(app->lastRoutedPanelId() == "Import Details");
+    CHECK(app->panelDrawnCount("Import Details") > importBefore);
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE(
+    "editor: selecting an entity raises the Inspector, and re-selecting the SAME one raises it again "
+    "(task E.3.2, I152, AC-1/AC-9)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "route i152", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/brick.aeromat", MINIMAL_AEROMAT_TEXT).empty());
+
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = created.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    app->panels().setVisible("Console", false);
+
+    REQUIRE(app->tick());  // 1
+    REQUIRE(app->tick());  // 2: settle
+
+    // Put MATERIAL in front first, so "the Inspector came forward" is a real tab change rather than
+    // the tab it already had.
+    app->requestAssetBrowserSelectEntry("brick.aeromat");
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+    REQUIRE(app->lastRoutedPanelId() == "Material");
+
+    const engine::Entity probe = app->world().create();
+    REQUIRE(probe.valid());
+
+    const std::size_t appliesBeforeFirst = app->focusRouteApplyCount();
+    std::uint64_t inspectorBefore = app->panelDrawnCount("Inspector");
+    std::uint64_t materialBefore = app->panelDrawnCount("Material");
+    app->selection().set(probe);
+    REQUIRE(app->tick());  // the reconcile observes the revision bump and the focus slot applies
+    CHECK(app->focusRouteApplyCount() == appliesBeforeFirst + 1U);
+    CHECK(app->lastRoutedPanelId() == "Inspector");
+    CHECK(app->panelDrawnCount("Inspector") > inspectorBefore);
+    CHECK(app->panelDrawnCount("Material") == materialBefore);
+
+    // ...and back to Material, so the SECOND selection of the SAME entity is again a real tab change.
+    app->requestPanelFocus("Material");
+    REQUIRE(app->tick());
+    REQUIRE(app->panels().visible("Material"));
+
+    const std::size_t appliesBeforeSecond = app->focusRouteApplyCount();
+    inspectorBefore = app->panelDrawnCount("Inspector");
+    materialBefore = app->panelDrawnCount("Material");
+    app->selection().set(probe);  // the SAME entity: the SET does not change, the ACT does (D2)
+    REQUIRE(app->tick());
+    CHECK(app->focusRouteApplyCount() == appliesBeforeSecond + 1U);
+    CHECK(app->lastRoutedPanelId() == "Inspector");
+    CHECK(app->panelDrawnCount("Inspector") > inspectorBefore);
+    CHECK(app->panelDrawnCount("Material") == materialBefore);
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: with the preference off nothing latches at all (task E.3.2, I153, AC-5)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "route i153", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/brick.aeromat", MINIMAL_AEROMAT_TEXT).empty());
+
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = created.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    app->panels().setVisible("Console", false);
+    app->setFocusRoutingEnabled(false);  // BEFORE the first tick
+    CHECK_FALSE(app->focusRoutingEnabled());
+
+    REQUIRE(app->tick());  // 1
+    REQUIRE(app->tick());  // 2: settle. MEASURED: every Right-node panel draws once on the very first
+                           // frame, before the dock node has selected a tab, so the Inspector's
+                           // baseline is taken AFTER the layout has stabilised or the delta below
+                           // would be reading a layout artefact rather than a route.
+    const std::uint64_t inspectorBefore = app->panelDrawnCount("Inspector");
+    const engine::Entity probe = app->world().create();
+    REQUIRE(probe.valid());
+
+    std::vector<int> pendingPerTick;
+    app->requestAssetBrowserSelectEntry("brick.aeromat");
+    for (int i = 0; i < 3; ++i) {
+        REQUIRE(app->tick());
+        pendingPerTick.push_back(app->pendingFocusRoute());
+    }
+    app->selection().set(probe);
+    for (int i = 0; i < 3; ++i) {
+        REQUIRE(app->tick());
+        pendingPerTick.push_back(app->pendingFocusRoute());
+    }
+    REQUIRE(pendingPerTick.size() == 6U);
+    for (const int pending : pendingPerTick) {
+        CHECK(pending == 0);
+    }
+    CHECK(app->focusRouteApplyCount() == 0U);
+    CHECK(app->lastRoutedPanelId().empty());
+    // The material session still retargeted -- the preference gates ROUTING, not the sessions.
+    CHECK(app->materialTargetPath() == "brick.aeromat");
+    // ...and the Inspector never came forward across ANY of those six ticks, which is what makes the
+    // delta below a statement about the one re-enabled tick.
+    const std::uint64_t inspectorAfterOff = app->panelDrawnCount("Inspector");
+    CHECK(inspectorAfterOff == inspectorBefore);
+
+    // ANTI-VACUITY: re-enable and perform a GENUINELY FRESH act. Re-enabling on its own resurrects
+    // nothing -- every baseline ADVANCED while the preference was off, so the material selected above
+    // is not a change any more (RT24). It is the new revision below that latches, and the entity arm
+    // wins on priority in any case.
+    app->setFocusRoutingEnabled(true);
+    CHECK(app->focusRoutingEnabled());
+    app->selection().set(probe);
+    REQUIRE(app->tick());
+    CHECK(app->focusRouteApplyCount() == 1U);
+    CHECK(app->lastRoutedPanelId() == "Inspector");
+    CHECK(app->panelDrawnCount("Inspector") > inspectorBefore);
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: a hidden target panel DROPS the route and stays hidden (task E.3.2, I154, AC-4/AC-7)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "route i154", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/brick.aeromat", MINIMAL_AEROMAT_TEXT).empty());
+
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = created.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    app->panels().setVisible("Console", false);
+    // REGISTERED but NOT VISIBLE -- the find()-first rule drawnCount's own contract names, because 0
+    // for an unknown id and 0 for a registered panel that never drew are deliberately the same value.
+    REQUIRE(app->panels().find("Material") != nullptr);
+    app->panels().setVisible("Material", false);
+
+    REQUIRE(app->tick());  // 1
+    REQUIRE(app->tick());  // 2: settle
+
+    const std::size_t dropsBefore = app->focusRouteDropCount();
+    const std::uint64_t materialBefore = app->panelDrawnCount("Material");
+    app->requestAssetBrowserSelectEntry("brick.aeromat");
+    for (int i = 0; i < 3; ++i) {
+        REQUIRE(app->tick());
+        CHECK(app->panelDrawnCount("Material") == materialBefore);  // EVERY tick, not just the last
+    }
+    CHECK(app->materialTargetPath() == "brick.aeromat");  // the session DID retarget
+    CHECK(app->focusRouteDropCount() == dropsBefore + 1U);
+    CHECK(app->focusRouteApplyCount() == 0U);
+    CHECK_FALSE(app->panels().visible("Material"));  // a route NEVER re-opens what the user closed
+    CHECK(app->pendingFocusRoute() == 0);            // Drop is terminal: the latch cleared
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE(
+    "editor: the import route settles over TWO ticks, and the Idle tick latches nothing "
+    "(task E.3.2, I155, D4)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "route i155", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/a.gltf", "not a gltf").empty());
+
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = created.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    app->panels().setVisible("Console", false);
+
+    REQUIRE(app->tick());  // 1
+    REQUIRE(app->tick());  // 2: settle
+
+    app->requestAssetBrowserSelectEntry("a.gltf");
+    std::vector<int> statePerTick;
+    std::vector<int> pendingPerTick;
+    std::vector<std::size_t> appliesPerTick;
+    for (int i = 0; i < 3; ++i) {
+        REQUIRE(app->tick());
+        statePerTick.push_back(app->modelImportState());
+        pendingPerTick.push_back(app->pendingFocusRoute());
+        appliesPerTick.push_back(app->focusRouteApplyCount());
+    }
+    REQUIRE(statePerTick.size() == 3U);
+
+    // tick A -- the SelectEntry drain. The session has not been retargeted yet.
+    CHECK(statePerTick[0] == static_cast<int>(engine::editor::SessionState::Idle));
+    CHECK(pendingPerTick[0] == 0);
+    CHECK(appliesPerTick[0] == 0U);
+
+    // tick B -- THE D4 GATE. setTarget ran in the reconcile block and set Idle SYNCHRONOUSLY, so the
+    // router's observation on this tick was UNSETTLED and did nothing at all -- not even advance its
+    // baseline. service() then classified in the post-draw slot, which is why the state read below is
+    // already settled while the route is still not pending. An implementation that advanced the
+    // baseline on this tick would consume the change here and never latch at all.
+    CHECK(statePerTick[1] != static_cast<int>(engine::editor::SessionState::Idle));
+    CHECK(statePerTick[1] != static_cast<int>(engine::editor::SessionState::NotImportable));
+    CHECK(pendingPerTick[1] == 0);
+    CHECK(appliesPerTick[1] == 0U);
+
+    // tick C -- settled, so the observation latches, and the focus slot in the SAME tick applies it.
+    // Asserted as the disjunction the plan names, so a one-tick implementation cannot pass by racing,
+    // AND as the exact pair this implementation produces.
+    CHECK(appliesPerTick[2] + static_cast<std::size_t>(pendingPerTick[2] != 0) >= 1U);
+    CHECK(appliesPerTick[2] == 1U);
+    CHECK(pendingPerTick[2] == 0);
+    CHECK(app->lastRoutedPanelId() == "Import Details");
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: the material session's stickiness is OBSERVED, not restated (task E.3.2, I156, AC-2)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "route i156", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/brick.aeromat", MINIMAL_AEROMAT_TEXT).empty());
+    REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/a.png", "png?").empty());
+
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = created.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    app->panels().setVisible("Console", false);
+
+    REQUIRE(app->tick());  // 1
+    REQUIRE(app->tick());  // 2: settle
+
+    app->requestAssetBrowserSelectEntry("brick.aeromat");
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+    REQUIRE(app->materialTargetPath() == "brick.aeromat");
+    const std::size_t appliesAfterMaterial = app->focusRouteApplyCount();
+    REQUIRE(appliesAfterMaterial == 1U);
+
+    // A .png is not a material, so MaterialSession's own sticky rule keeps the last one. The router
+    // asks the session and therefore latches nothing -- it states no material predicate of its own.
+    app->requestAssetBrowserSelectEntry("a.png");
+    for (int i = 0; i < 3; ++i) {
+        REQUIRE(app->tick());
+    }
+    CHECK(app->materialTargetPath() == "brick.aeromat");  // UNCHANGED: the session is sticky
+    CHECK(app->focusRouteApplyCount() == appliesAfterMaterial);
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE(
+    "editor: an explicit requestPanelFocus wins, and the route is dropped rather than queued "
+    "(task E.3.2, I157, AC-4/AC-7)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "route i157", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/brick.aeromat", MINIMAL_AEROMAT_TEXT).empty());
+
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = created.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    app->panels().setVisible("Console", false);  // the EXPLICIT path may re-show it; a route may not
+
+    REQUIRE(app->tick());  // 1
+    REQUIRE(app->tick());  // 2: settle
+
+    // Material is the Right node's default front tab, so "Material did not come forward" means
+    // nothing until something else is in front of it. Establish that, and PROVE it.
+    app->requestPanelFocus("Inspector");
+    REQUIRE(app->tick());  // 3: the explicit focus lands
+    const std::uint64_t materialIdle = app->panelDrawnCount("Material");
+    REQUIRE(app->tick());                                       // 4
+    REQUIRE(app->panelDrawnCount("Material") == materialIdle);  // Material is NOT drawing
+
+    app->requestAssetBrowserSelectEntry("brick.aeromat");
+    REQUIRE(app->tick());  // tick A: drains SelectEntry. The route latches on the NEXT tick.
+
+    const std::size_t dropsBefore = app->focusRouteDropCount();
+    const std::uint64_t consoleBefore = app->panelDrawnCount("Console");
+    const std::uint64_t materialBefore = app->panelDrawnCount("Material");
+    // Queued for tick B -- the SAME tick the reconcile block latches the material route on.
+    app->requestPanelFocus("Console");
+    REQUIRE(app->tick());  // tick B: the explicit request wins, and the route is DROPPED
+
+    CHECK(app->focusRouteDropCount() == dropsBefore + 1U);
+    CHECK(app->focusRouteApplyCount() == 0U);
+    CHECK(app->panels().visible("Console"));  // the explicit path re-showed it
+    CHECK(app->panelDrawnCount("Console") > consoleBefore);
+    CHECK(app->panelDrawnCount("Material") == materialBefore);  // the route did NOT raise it
+    CHECK(app->pendingFocusRoute() == 0);                       // dropped, NOT queued for the next tick
+    CHECK(app->lastRoutedPanelId().empty());
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE(
+    "editor: the preference survives a relaunch, and a non-persisting app writes nothing "
+    "(task E.3.2, I158, AC-5, D14)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "route i158", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string prefsFile = uniqueEditorPrefsFile();
+    const std::string iniPath = prefsFile + ".ini";  // scratch too: persistLayout TRUE writes a layout
+    std::error_code ec;
+    std::filesystem::remove(std::filesystem::path(prefsFile), ec);
+    std::filesystem::remove(std::filesystem::path(iniPath), ec);
+    REQUIRE_FALSE(std::filesystem::exists(std::filesystem::path(prefsFile)));
+
+    // ---- app 1: persists, and turns the preference OFF ------------------------------------------
+    {
+        std::optional<engine::editor::EditorApp> app =
+            engine::editor::EditorApp::create(*device, *window, ctx,
+                                              {.persistLayout = true,
+                                               .unfocusedFrameCapHz = 0.0F,
+                                               .restoreLastProject = false,
+                                               .recentProjectsPath = uniqueRecentsFile(),
+                                               .layoutIniPath = iniPath,
+                                               .editorPrefsPath = prefsFile});
+        REQUIRE(app.has_value());
+        CHECK(app->focusRoutingEnabled());  // a missing file is defaults, and the default is ON
+        REQUIRE(app->tick());
+        REQUIRE(app->tick());
+        app->setFocusRoutingEnabled(false);
+        REQUIRE(app->tick());  // the flush runs at the top of the NEXT tick
+        app->requestQuit();
+        CHECK(app->tick() == false);
+    }
+    REQUIRE(std::filesystem::exists(std::filesystem::path(prefsFile)));
+    const engine::editor::FileReadResult written = engine::editor::readTextFile(prefsFile);
+    REQUIRE(written.text.has_value());
+    CHECK(written.text->find("\"focusFollowsSelection\"") != std::string::npos);
+
+    // ---- app 2: the SAME file -- the preference survives the relaunch ---------------------------
+    std::filesystem::file_time_type afterAppTwo{};
+    {
+        std::optional<engine::editor::EditorApp> app =
+            engine::editor::EditorApp::create(*device, *window, ctx,
+                                              {.persistLayout = true,
+                                               .unfocusedFrameCapHz = 0.0F,
+                                               .restoreLastProject = false,
+                                               .recentProjectsPath = uniqueRecentsFile(),
+                                               .layoutIniPath = iniPath,
+                                               .editorPrefsPath = prefsFile});
+        REQUIRE(app.has_value());
+        CHECK_FALSE(app->focusRoutingEnabled());  // BEFORE any tick: read in create()
+
+        // "WRITTEN ONLY WHEN THE VALUE CHANGES" (docs/09 section 8.5), and the code-review round's
+        // finding: a single tick cannot tell that apart from "written every frame". TEN ticks with no
+        // toggle at all must leave the file's modification time exactly where app 1 left it -- dropping
+        // the routeToggleRequested gate sets editorPrefsDirty on every frame, and a persisting instance
+        // then rewrites the file on every frame, which is the per-frame I/O the format forbids.
+        const std::filesystem::file_time_type beforeIdleTicks =
+            std::filesystem::last_write_time(std::filesystem::path(prefsFile), ec);
+        REQUIRE_FALSE(ec);
+        for (int i = 0; i < 10; ++i) {
+            REQUIRE(app->tick());
+        }
+        const std::filesystem::file_time_type afterIdleTicks =
+            std::filesystem::last_write_time(std::filesystem::path(prefsFile), ec);
+        REQUIRE_FALSE(ec);
+        CHECK(afterIdleTicks == beforeIdleTicks);
+        CHECK_FALSE(app->focusRoutingEnabled());  // and the value it read is still the one it holds
+
+        app->requestQuit();
+        CHECK(app->tick() == false);
+        afterAppTwo = std::filesystem::last_write_time(std::filesystem::path(prefsFile), ec);
+        REQUIRE_FALSE(ec);
+        CHECK(afterAppTwo == beforeIdleTicks);  // ...and the teardown wrote nothing either
+    }
+
+    // ---- app 3: persistLayout FALSE and NO editorPrefsPath -- it must write NOTHING --------------
+    // The real machine-wide file is captured on BOTH sides, because the failure this arm exists for is
+    // a missing persistLayout gate resolving defaultEditorPrefsPath() here and rewriting it.
+    const std::string realPrefs = engine::editor::defaultEditorPrefsPath();
+    const bool realExistedBefore = std::filesystem::exists(std::filesystem::path(realPrefs), ec);
+    std::filesystem::file_time_type realBefore{};
+    if (realExistedBefore) {
+        realBefore = std::filesystem::last_write_time(std::filesystem::path(realPrefs), ec);
+    }
+    {
+        std::optional<engine::editor::EditorApp> app = engine::editor::EditorApp::create(
+            *device, *window, ctx, {.persistLayout = false, .unfocusedFrameCapHz = 0.0F, .restoreLastProject = false});
+        REQUIRE(app.has_value());
+        CHECK(app->focusRoutingEnabled());  // it read nothing, so it starts at the default
+        app->setFocusRoutingEnabled(false);
+        CHECK_FALSE(app->focusRoutingEnabled());  // the SEAM works -- so the absence of a write below
+                                                  // is about the empty path, not about a dead seam
+        REQUIRE(app->tick());
+        REQUIRE(app->tick());
+        app->requestQuit();
+        CHECK(app->tick() == false);
+    }
+    const std::filesystem::file_time_type afterAppThree =
+        std::filesystem::last_write_time(std::filesystem::path(prefsFile), ec);
+    REQUIRE_FALSE(ec);
+    CHECK(afterAppThree == afterAppTwo);  // app 3 did not touch the scratch file...
+    const bool realExistsAfter = std::filesystem::exists(std::filesystem::path(realPrefs), ec);
+    CHECK(realExistsAfter == realExistedBefore);  // ...and it did not create the real one either
+    if (realExistedBefore && realExistsAfter) {
+        const std::filesystem::file_time_type realAfter =
+            std::filesystem::last_write_time(std::filesystem::path(realPrefs), ec);
+        CHECK(realAfter == realBefore);  // ...nor rewrite it
+    }
+
+    std::filesystem::remove(std::filesystem::path(prefsFile), ec);
+    std::filesystem::remove(std::filesystem::path(iniPath), ec);
+}
+
+TEST_CASE("editor imgui: the editor has ONE focus policy, and it is spelled once (task E.3.2, I159)") {
+    // FIVE SOURCE-TEXT PINS, none of which any runtime tier in this tree can assert. Nothing here can
+    // see WHICH call raised a window, nothing can count ImGui calls, and nothing can read a string
+    // literal's identity across two headers -- so these are pinned as TEXT, the I110/I127 precedent.
+    // editorSourceCodeLines STRIPS COMMENTS, which is what makes every claim below about CODE: the
+    // comment mentions of SetWindowFocus in editor_app.hpp, shell_ui.hpp and shell_ui.cpp are
+    // invisible to it. UNGATED: the source exists whether or not AERO_SHADER_TOOLS built anything.
+
+    SUBCASE("(a) EXACTLY ONE file names ImGui::SetWindowFocus, and it calls it EXACTLY THREE times") {
+        // TWO claims, and neither subsumes the other. The SET claim catches a FOURTH CALLER IN A NEW
+        // FILE -- a second focus policy with no way to order it against the first -- which a count
+        // taken inside shell_ui.cpp structurally cannot see. The COUNT claim catches the focus slot
+        // firing on BOTH paths in one frame, which the set claim structurally cannot see. A
+        // de-duplicated SORTED vector, because directory iteration order is unspecified and a file
+        // naming the symbol on three lines must contribute its name once (E.2.4's I127(b) lesson).
+        std::size_t scanned = 0;
+        std::size_t namingImGui = 0;
+        std::vector<std::string> naming;  // FILENAMES, de-duplicated
+        const std::array<std::string_view, 2> roots{AERO_EDITOR_SRC_DIR, AERO_EDITOR_INCLUDE_DIR};
+        for (const std::string_view root : roots) {
+            CAPTURE(root);
+            std::error_code ec;
+            const std::filesystem::recursive_directory_iterator walk(std::filesystem::path(root), ec);
+            REQUIRE_FALSE(ec);
+            for (const std::filesystem::directory_entry& entry : walk) {
+                if (!entry.is_regular_file()) {
+                    continue;
+                }
+                const std::string extension = entry.path().extension().string();
+                if (extension != ".cpp" && extension != ".hpp") {
+                    continue;
+                }
+                ++scanned;
+                bool namesFocus = false;
+                for (const std::string& line : editorSourceCodeLines(entry.path().string())) {
+                    namesFocus = namesFocus || line.find("SetWindowFocus") != std::string::npos;
+                    if (line.find("ImGui::") != std::string::npos) {
+                        ++namingImGui;
+                    }
+                }
+                if (namesFocus) {
+                    const std::string filename = entry.path().filename().string();
+                    if (std::find(naming.begin(), naming.end(), filename) == naming.end()) {
+                        naming.push_back(filename);
+                    }
+                }
+            }
+        }
+        std::sort(naming.begin(), naming.end());
+        const std::vector<std::string> expected{"shell_ui.cpp"};
+        INFO("files calling SetWindowFocus: ", naming.size());
+        CHECK(naming == expected);
+        CHECK(scanned > 50U);     // anti-vacuity: the walk really read both roots
+        CHECK(namingImGui > 0U);  // anti-vacuity: the reader really finds ImGui tokens where they ARE
+
+        // ...and the COUNT within that one file. THREE: the Project Settings menu item, the explicit
+        // focus path, and the route's Apply arm. A fourth is a second focus write in one frame.
+        const std::vector<std::string> shell = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/shell_ui.cpp");
+        REQUIRE_FALSE(shell.empty());
+        CHECK(countLinesContaining(shell, "ImGui::SetWindowFocus(") == 3U);
+    }
+
+    SUBCASE("(b) the focus slot reads all four ImGui guards, each exactly once") {
+        const std::vector<std::string> shell = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/shell_ui.cpp");
+        REQUIRE_FALSE(shell.empty());
+        const std::size_t outcomeAt = soleLineContaining(shell, "routeOutcome(state.routeSource, guards)");
+        // Each guard is read ONCE, in this file, on a line ABOVE the decision that consumes them.
+        CHECK(soleLineContaining(shell, "io.WantTextInput") < outcomeAt);
+        CHECK(soleLineContaining(shell, "ImGui::GetDragDropPayload() != nullptr") < outcomeAt);
+        CHECK(soleLineContaining(shell, "ImGuizmo::IsUsing()") < outcomeAt);
+        // The FLAG SPELLING is the pin, not just the call: IsPopupOpen with a real string id and
+        // AnyPopupLevel IM_ASSERTs (imgui.cpp:12889) and would abort both Debug lanes. Seed S18.
+        CHECK(soleLineContaining(shell, "ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopup)") < outcomeAt);
+        CHECK(countLinesContaining(shell, "ImGuiPopupFlags_AnyPopupId") == 0U);
+        CHECK(countLinesContaining(shell, "ImGuiPopupFlags_AnyPopupLevel") == 0U);
+        // ...and the guard is what the APPLY arm is gated on, below the decision.
+        CHECK(soleLineContaining(shell, "state.routeOutcome == RouteOutcome::Apply") > outcomeAt);
+    }
+
+    SUBCASE("(c) editor_app.cpp names NO ImGui or ImGuizmo symbol -- unchanged and re-pinned") {
+        // 2.1.3 D1, restated at shell_ui.cpp:505. E.3.2 puts the router IN editor_app.cpp and the
+        // guards in shell_ui.cpp precisely so this stays true, so it is pinned here rather than
+        // assumed.
+        const std::vector<std::string> app = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/editor_app.cpp");
+        REQUIRE_FALSE(app.empty());
+        CHECK(countLinesContaining(app, "ImGui::") == 0U);
+        CHECK(countLinesContaining(app, "ImGuizmo::") == 0U);
+        CHECK(countLinesContaining(app, "imgui.h") == 0U);
+        // ANTI-VACUITY: it DOES name the router, so the reader is reading the right file.
+        CHECK(countLinesContaining(app, "contextRouter.observe") > 0U);
+    }
+
+    SUBCASE("(d) routedPanelId's three literals are BYTE-IDENTICAL to the three panels' own id()") {
+        // The ids are FROZEN -- each is the ImGui window name AND the imgui.ini settings key
+        // (panel.hpp:46-48) -- and routedPanelId restates them as literals rather than including three
+        // src-private panel headers for three strings. This is what keeps the restatement honest, and
+        // it is the ONLY tier that can: nothing at runtime compares two string literals' origins.
+        const std::vector<std::string> router = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/context_router.cpp");
+        REQUIRE_FALSE(router.empty());
+        const std::array<std::pair<std::string_view, std::string_view>, 3> pairs{
+            std::pair{std::string_view{"/inspector_panel.hpp"}, std::string_view{"return \"Inspector\";"}},
+            std::pair{std::string_view{"/material_panel.hpp"}, std::string_view{"return \"Material\";"}},
+            std::pair{std::string_view{"/import_details_panel.hpp"}, std::string_view{"return \"Import Details\";"}}};
+        for (const auto& [header, literal] : pairs) {
+            CAPTURE(header);
+            CAPTURE(literal);
+            std::string path = AERO_EDITOR_SRC_DIR;
+            path += header;
+            const std::vector<std::string> panel = editorSourceCodeLines(path);
+            REQUIRE_FALSE(panel.empty());
+            CHECK(countLinesContaining(panel, literal) == 1U);   // the panel says it
+            CHECK(countLinesContaining(router, literal) == 1U);  // ...and the router says the same bytes
+        }
+    }
+
+    SUBCASE("(f) the View-menu checkbox writes THROUGH the shell state, and arms the read-back") {
+        // THE CODE-REVIEW ROUND'S FINDING, and it is invisible to every runtime tier in this tree:
+        // dropping the `&` -- `MenuItem("Focus Follows Selection", nullptr, state.routeEnabled)` --
+        // COMPILES, because the bool and bool* overloads are both viable, and turns the item into a
+        // no-op that never reaches ContextRouter and never reaches the preferences file, with the
+        // whole suite green. Nothing here can click a menu, so the ADDRESS-OF is pinned as text.
+        const std::vector<std::string> shell = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/shell_ui.cpp");
+        REQUIRE_FALSE(shell.empty());
+        const std::size_t itemAt =
+            soleLineContaining(shell, "ImGui::MenuItem(\"Focus Follows Selection\", nullptr, &state.routeEnabled)");
+        // The in/out write is what makes an un-tick take effect in the SAME frame (D12); the one-shot
+        // below it is what makes EditorApp adopt the value and mark the file dirty.
+        CHECK(soleLineContaining(shell, "state.routeToggleRequested = true;") > itemAt);
+        // ANTI-VACUITY: the reader really is finding MenuItem lines in this file, so a rename that
+        // made the pin above unfindable would be a REQUIRE failure rather than a silent pass.
+        CHECK(countLinesContaining(shell, "ImGui::MenuItem(") > 5U);
+    }
+
+    SUBCASE("(e) Selection::prune's body contains no revision bump") {
+        // D2's load-bearing half: HierarchyPanel::onDraw prunes every frame, so a bumping prune is a
+        // permanent focus storm. The tier-0 case in hierarchy_test.cpp asserts the EFFECT; this
+        // asserts the TEXT, because a prune that bumped and then un-bumped would satisfy the effect.
+        const std::vector<std::string> selection = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/selection.cpp");
+        REQUIRE_FALSE(selection.empty());
+        const std::size_t pruneAt = soleLineContaining(selection, "std::size_t Selection::prune(const World& world)");
+        std::size_t depth = 0;
+        bool entered = false;
+        for (std::size_t i = pruneAt; i < selection.size(); ++i) {
+            depth += static_cast<std::size_t>(std::count(selection[i].begin(), selection[i].end(), '{'));
+            if (depth > 0U) {
+                entered = true;
+                CHECK(selection[i].find("revisionValue") == std::string::npos);
+            }
+            const std::size_t closes =
+                static_cast<std::size_t>(std::count(selection[i].begin(), selection[i].end(), '}'));
+            depth -= std::min(depth, closes);
+            if (entered && depth == 0U) {
+                break;
+            }
+        }
+        CHECK(entered);  // anti-vacuity: the scan really entered a body
+        // ...and the file DOES bump elsewhere, so the absence above is about prune and not about the
+        // reader failing to find the token at all. SIX public mutators, six bumps -- an exact count,
+        // and the one assertion here that a SEVENTH mutator will legitimately move.
+        CHECK(countLinesContaining(selection, "++revisionValue;") == 6U);
+    }
+}
+
+// ---- I160-I161: the code-review round's two wiring gaps ------------------------------------------
+// Guard 3 (`sourceStillValid`) and the `Hold` outcome were both reachable from this tier all along and
+// neither was driven. The route to both is the FILE FLOW, which runs INSIDE drawShellUi and therefore
+// inside the same tick as the focus slot: `applyFileRequests` at shell_ui.cpp:552 is 38 lines ABOVE the
+// slot, and `drawUnsavedChangesModal` at :540 is 15 above that.
+
+TEST_CASE(
+    "editor: a scene load between the reconcile and the focus slot DROPS the entity route "
+    "(task E.3.2, I160, AC-4, seed S17)") {
+    // GUARD 3, end to end, and the case that turns the plan's declared hole S17 into covered ground.
+    // requestNewScene() on a CLEAN command stack takes FileStep::Perform immediately -- no modal -- and
+    // resetSceneState clears the selection (scene_session.cpp:154). So within ONE tick: the reconcile
+    // block latches EntitySelection from the revision bump, applyFileRequests empties the selection,
+    // and the focus slot 38 lines later reads `sourceStillValid == false` and DROPS. The Inspector must
+    // not be raised onto an empty selection.
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "route i160", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    std::optional<engine::editor::EditorApp> app = engine::editor::EditorApp::create(
+        *device, *window, ctx, {.persistLayout = false, .unfocusedFrameCapHz = 0.0F, .restoreLastProject = false});
+    REQUIRE(app.has_value());
+
+    REQUIRE(app->tick());  // 1
+    REQUIRE(app->tick());  // 2: settle
+
+    // Put the Inspector where it can be SEEN not to move: something else in front, proven.
+    app->requestPanelFocus("Material");
+    REQUIRE(app->tick());  // 3
+    const std::uint64_t inspectorIdle = app->panelDrawnCount("Inspector");
+    REQUIRE(app->tick());                                         // 4
+    REQUIRE(app->panelDrawnCount("Inspector") == inspectorIdle);  // the Inspector is NOT drawing
+
+    const engine::Entity probe = app->world().create();
+    REQUIRE(probe.valid());
+    app->selection().set(probe);
+    REQUIRE_FALSE(app->selection().empty());
+    REQUIRE(app->commands().isClean());  // clean => Perform, not the modal (I12's own precondition)
+
+    const std::size_t dropsBefore = app->focusRouteDropCount();
+    const std::size_t appliesBefore = app->focusRouteApplyCount();
+    app->requestNewScene();
+    REQUIRE(app->tick());  // the reconcile latches; applyFileRequests clears; the focus slot drops
+
+    CHECK(app->selection().empty());  // the scene really was swapped, in this tick
+    CHECK(app->focusRouteDropCount() == dropsBefore + 1U);
+    CHECK(app->focusRouteApplyCount() == appliesBefore);
+    CHECK(app->panelDrawnCount("Inspector") == inspectorIdle);  // it never came forward
+    CHECK(app->pendingFocusRoute() == 0);                       // Drop is terminal: the latch cleared
+    CHECK(app->lastRoutedPanelId().empty());
+
+    // ANTI-VACUITY: the very same gesture on a selection that SURVIVES the tick does apply, so the
+    // drop above is about guard 3 and not about entity routes being broken in this configuration.
+    const engine::Entity survivor = app->world().create();
+    REQUIRE(survivor.valid());
+    app->selection().set(survivor);
+    REQUIRE(app->tick());
+    CHECK(app->focusRouteApplyCount() == appliesBefore + 1U);
+    CHECK(app->lastRoutedPanelId() == "Inspector");
+    CHECK(app->panelDrawnCount("Inspector") > inspectorIdle);
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE(
+    "editor: an open modal HOLDS the route across ticks, and the latch survives "
+    "(task E.3.2, I161, AC-4, seed S24's popup arm)") {
+    // THE ONLY COVERAGE `Hold` HAS ABOVE THE PURE FUNCTION. A DIRTY command stack makes
+    // requestNewScene() take the guarded path, so applyFileRequests sets flow.confirmOpen and
+    // drawUnsavedChangesModal (shell_ui.cpp:272) opens a REAL popup, which makes
+    // ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopup) true at the focus slot and the outcome Hold
+    // rather than Apply.
+    //
+    // THE MODAL COMES UP ONE TICK AFTER THE REQUEST, measured: drawUnsavedChangesModal runs at
+    // shell_ui.cpp:540 and applyFileRequests -- which is what SETS confirmOpen -- at :552, so the tick
+    // that carries the request still has no popup and a route latched on it APPLIES. The modal must
+    // therefore be standing BEFORE the route is latched, which is why the sequence below raises it
+    // first and selects the second material afterwards.
+    //
+    // NOT CIRCULAR: nothing here can read IsPopupOpen, so the first material selection is run as a
+    // CONTROL with no modal up and asserted to APPLY. The second is the identical gesture with the
+    // modal standing, and it Holds.
+    //
+    // WHAT THIS CASE CANNOT DO, stated rather than discovered: it cannot ANSWER the modal. FileFlow's
+    // `choice` has no public EditorApp accessor and this TU is ImGui-free at source, which
+    // imgui_layer_test.cpp:2445 already records for another task. So the Hold -> APPLY transition is
+    // not reachable here; what is reachable, and asserted below, is that the latch SURVIVES every held
+    // tick and is STILL BEING RE-EVALUATED -- proved by flipping a different guard and watching the
+    // same latch resolve. RT8/RT9/RT10 own Hold -> Apply at tier 0; manual row 7 owns it behaviourally.
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "route i161", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/brick.aeromat", MINIMAL_AEROMAT_TEXT).empty());
+    REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/stone.aeromat", SECOND_AEROMAT_TEXT).empty());
+
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = created.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    app->panels().setVisible("Console", false);
+
+    REQUIRE(app->tick());  // 1
+    REQUIRE(app->tick());  // 2: settle
+
+    // ---- THE CONTROL: the same gesture, with NO modal, APPLIES. ----------------------------------
+    app->requestPanelFocus("Inspector");
+    REQUIRE(app->tick());
+    std::uint64_t materialIdle = app->panelDrawnCount("Material");
+    REQUIRE(app->tick());
+    REQUIRE(app->panelDrawnCount("Material") == materialIdle);  // Material is NOT drawing
+    app->requestAssetBrowserSelectEntry("brick.aeromat");
+    REQUIRE(app->tick());  // drain
+    REQUIRE(app->tick());  // reconcile -> latch -> APPLY
+    REQUIRE(app->focusRouteApplyCount() == 1U);
+    REQUIRE(app->lastRoutedPanelId() == "Material");
+    REQUIRE(app->panelDrawnCount("Material") > materialIdle);
+
+    // ---- NOW RAISE THE MODAL, and put Material out of the way again. -----------------------------
+    app->requestPanelFocus("Inspector");
+    REQUIRE(app->tick());
+    materialIdle = app->panelDrawnCount("Material");
+    REQUIRE(app->tick());
+    REQUIRE(app->panelDrawnCount("Material") == materialIdle);
+
+    // DIRTY the document through a REAL command, so requestNewScene() raises the modal instead of
+    // performing. A direct World mutation would leave the stack clean and take I160's path instead.
+    const engine::Entity subject = engine::editor::createEntity(app->world(), {}, "Subject");
+    REQUIRE(subject.valid());
+    const std::optional<engine::Transform> before = engine::editor::readTransform(app->world(), subject);
+    REQUIRE(before.has_value());
+    engine::Transform after = *before;
+    after.position = before->position + engine::Vec3{1.0F, 2.0F, 3.0F};
+    engine::editor::CommandContext cmd{app->world(), app->selection(), app->roots()};
+    REQUIRE(app->commands().push(cmd, std::make_unique<engine::editor::TransformCommand>(subject, *before, after)));
+    REQUIRE_FALSE(app->commands().isClean());
+    app->selection().clear();  // an empty selection cannot latch an entity route over the material one
+
+    app->requestNewScene();
+    REQUIRE(app->tick());                     // applyFileRequests sets confirmOpen; no popup on THIS tick
+    REQUIRE(app->tick());                     // drawUnsavedChangesModal opens it -- the popup now stands
+    REQUIRE(app->world().entityCount() > 4);  // the swap is GUARDED, not performed: the modal is up
+
+    // ---- THE HELD ROUTE. -------------------------------------------------------------------------
+    const std::size_t holdsBefore = app->focusRouteHoldCount();
+    const std::size_t appliesBefore = app->focusRouteApplyCount();
+    const std::size_t dropsBefore = app->focusRouteDropCount();
+    materialIdle = app->panelDrawnCount("Material");
+    app->requestAssetBrowserSelectEntry("stone.aeromat");
+    REQUIRE(app->tick());  // drain -- still nothing latched
+    CHECK(app->focusRouteHoldCount() == holdsBefore);
+
+    // Three held ticks. Each one: the popup is up, so the outcome is Hold -- the count rises, the
+    // latch is KEPT (Hold is the only non-terminal outcome), and the target never comes forward.
+    for (int i = 0; i < 3; ++i) {
+        CAPTURE(i);
+        REQUIRE(app->tick());
+        CHECK(app->focusRouteHoldCount() == holdsBefore + static_cast<std::size_t>(i) + 1U);
+        CHECK(app->pendingFocusRoute() == static_cast<int>(engine::editor::RouteSource::MaterialAsset));
+        CHECK(app->focusRouteApplyCount() == appliesBefore);
+        CHECK(app->panelDrawnCount("Material") == materialIdle);
+    }
+    CHECK(app->focusRouteDropCount() == dropsBefore);  // a Hold is NOT a Drop
+    CHECK(app->materialTargetPath() == "stone.aeromat");
+
+    // ...AND THE LATCH IS STILL LIVE, not merely stored: flip a DIFFERENT guard and the very same
+    // pending route resolves on the next tick. This is the reachable half of "Hold keeps it".
+    app->setFocusRoutingEnabled(false);  // guard 2 -- and setEnabled empties the latch itself
+    REQUIRE(app->tick());
+    CHECK(app->pendingFocusRoute() == 0);
+    CHECK(app->focusRouteApplyCount() == appliesBefore);
+    CHECK(app->panelDrawnCount("Material") == materialIdle);
+    CHECK(app->focusRouteHoldCount() == holdsBefore + 3U);  // no further holds once it is gone
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
 }

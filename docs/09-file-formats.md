@@ -835,6 +835,10 @@ with **no deletion anywhere in the task**.
 
 > Enforced in code by `editor/src/blender_tool.cpp` (`parseToolPrefs` / `writeToolPrefsText`, task
 > 3.2.4); `tests/editor/blender_tool_test.cpp` is its machine-checkable form.
+>
+> Task E.3.2 adds a second, independent machine-local envelope beside this one: **§8.5**, the editor
+> UI preferences (`editor_prefs.json`). It is a different file with its own version, exactly as §4.9's
+> recent-projects envelope is a different file from §4's project manifest.
 
 ### 8.1 Nature
 
@@ -866,6 +870,43 @@ Written **only** when the user picks a path with `Locate…`, or clears it with 
 ### 8.4 Canonicalization
 
 `writeTextFileAtomic`, fixed key order, exactly one trailing `\n`; re-parses equal.
+
+### 8.5 The editor UI preferences envelope
+
+**Nature.** Machine-local, per-user, derived from a taste, disposable. **One file per MACHINE**, not
+per project, at `SDL_GetPrefPath("AeroEngine", "AeroEditor") + "editor_prefs.json"` — beside
+`recent_projects.json` (§4.9) and `editor_tools.json` (§8.1), and for the identical reason: a UI
+preference is a property of a person at a machine, not of a project. Putting it in `project.json`
+would hand every teammate a taste. It is a **separate file from `editor_tools.json`** rather than a
+second key in it, because `BlenderService::setOverridePath` writes that file whole from a fresh
+struct, so any second key there is reset to its default by every `Locate…` and every `Re-detect`.
+
+**Envelope.** Two root keys, in this exact order on save.
+
+| Key | Kind | Required | Rule |
+|---|---|---|---|
+| `version` | number, integral | yes | must equal `1`; validated first |
+| `focusFollowsSelection` | bool | no | absent means `true` — the shipping behaviour. A non-bool is a parse failure, never a coerced value |
+
+A **missing file** is default preferences, **silently** — the normal state on a machine where the
+user has never opened the View menu. A file that **exists but does not parse**, or carries a wrong
+`version`, is default preferences **plus one warning**, emitted from `editor_app.cpp` and nowhere
+else. An **absent key** is its default and is not a failure, which is what makes appending a key to
+this file a non-breaking change with no version bump: E.6.1's editor theme and the standing
+"persist the viewport toggles per user" handoff both land here as one key each.
+
+**A file is only read and written by an editor instance that owns the user's persisted UI state** —
+`EditorAppConfig::persistLayout`. With `persistLayout` false the path resolves to `""`, and an empty
+path reads nothing and writes nothing: the preference is session-only and starts at its default.
+
+**Identity vs content.** There is no identity here at all: the file is a bag of tastes. Losing it
+costs one re-tick of a checkbox. Written **only when a value changes** — never per frame, and never
+on a tick that merely read it. It is in no project, is never touched by the asset scan, and never
+appears in a repository.
+
+**Canonicalization.** `writeTextFileAtomic`, `JsonWriter`'s default configuration (pretty, 2-space),
+fixed key order with `version` first, exactly one trailing `\n`; re-parses equal. Two writes of the
+same value produce byte-identical files.
 
 ---
 

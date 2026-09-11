@@ -4,6 +4,7 @@
 #include <aero/editor/panel_registry.hpp>
 
 #include <cassert>
+#include <cstdint>  // task E.3.2: the drawn-frame counter's type
 #include <string_view>
 #include <utility>
 
@@ -71,6 +72,23 @@ const Panel* PanelRegistry::find(const char* id) const noexcept {
 bool PanelRegistry::visible(const char* id) const noexcept {
     const std::size_t index = indexOf(id);
     return index < entries.size() && entries[index].visible;
+}
+
+void PanelRegistry::noteDrawn(std::size_t index) noexcept {
+    assert(index < entries.size());
+    ++entries[index].drawn;
+}
+
+std::uint64_t PanelRegistry::drawnCountAt(std::size_t index) const noexcept {
+    assert(index < entries.size());
+    return entries[index].drawn;
+}
+
+std::uint64_t PanelRegistry::drawnCount(const char* id) const noexcept {
+    // indexOf() handles a null id through idsEqual's own null guard (C6), so a null here is 0 rather
+    // than UB -- the same posture find()/visible() already take.
+    const std::size_t index = indexOf(id);
+    return index < entries.size() ? entries[index].drawn : 0U;
 }
 
 Panel* PanelRegistry::add(std::unique_ptr<Panel> panel) {
