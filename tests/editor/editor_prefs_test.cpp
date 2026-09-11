@@ -79,6 +79,16 @@ TEST_CASE("editor: writeEditorPrefsText is deterministic, version-first, one tra
         CHECK(text.back() == '\n');
         CHECK(text[text.size() - 2U] != '\n');  // exactly ONE
 
+        // SABOTAGE-FORCED: THE CANONICAL FORM ITSELF. docs/09 section 8.5 says "JsonWriter's default
+        // configuration (pretty, 2-space)", and nothing asserted it -- seeding a compact, 4-space
+        // config left EP2, EP11 and the whole tier-0 suite green, because determinism, key order, the
+        // trailing newline and the round trip all survive a different config. This is the one arm that
+        // can tell the shipped form from a restated one, and it is deliberately spelled as the exact
+        // bytes rather than as "contains a newline": a second spelling is a second truth.
+        CHECK(text.rfind("{\n  \"version\": ", 0) == 0U);  // starts-with, so no hand-counted length
+        CHECK(text.find("\n  \"focusFollowsSelection\": ") != std::string::npos);
+        CHECK(text.find("\n}\n") != std::string::npos);
+
         // ...and it re-parses EQUAL, which is the only thing "canonical" means here.
         const std::optional<EditorPrefs> reparsed = parseEditorPrefs(text);
         REQUIRE(reparsed.has_value());
