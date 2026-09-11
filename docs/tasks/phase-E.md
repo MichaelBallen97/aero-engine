@@ -183,8 +183,9 @@ display is 2x — so E.1.1's thick-line handoff stays unfired for a fifth task. 
 **Definition of Done:** a scene with no lights at all is legibly lit by its environment; every light type has a gizmo and a defensible falloff; the material preview and the viewport agree.
 **CLOSED IN CODE with E.2.4** — all four tasks merged. The last clause of the Definition of Done is the
 only one that became a *measurement* rather than a judgement: the preview's path and the viewport's
-path write identical bytes into identical HDR targets, asserted on four configurations. E.2.1, E.2.2
-and E.2.3 are macOS-validated (10/3-open, 12/12 and 12/12); **E.2.4 is not validated on any platform**.
+path write identical bytes into identical HDR targets, asserted on four configurations. **ALL FOUR ARE
+macOS-VALIDATED** — E.2.1 10 PASS / 3 open, E.2.2 12/12, E.2.3 12/12, **E.2.4 12/12 (2026-09-11, no
+blockers, no partials)** — so the epic is closed in code *and* on hardware for this OS.
 
 ### E.2.1 `Environment` component + sky pass · P0 · L · depends: 1.3.3, 3.4.1, 3.6.3 — **MERGED**
 **Sized L, landed L** (PR #98, merge commit `28deab0`, fifteen commits). The sweep was the expensive
@@ -285,7 +286,7 @@ view-options row with two checkboxes; **E.5.1**'s primitive-material defect is r
 fourth task running; **E.5.2** now lands something visible the moment a light is created; **E.6.1**
 inherits four more theme candidates.
 
-### E.2.4 Material-preview parity + exposure relocation · P1 · M · depends: 3.4.2, E.2.1 — **CODE COMPLETE**
+### E.2.4 Material-preview parity + exposure relocation · P1 · M · depends: 3.4.2, E.2.1 — **MERGED + macOS-VALIDATED**
 **Goal:** the material preview should predict what the material will look like in the scene. Today it
 cannot: it hardcodes its own light — a fixed direction at intensity **3.0**, white, no point lights,
 no shadows — against a scene whose default directional light is intensity **1.0**.
@@ -319,8 +320,17 @@ anchored popover in two labelled groups. Measured: `ctest -N` **174 -> 174** wit
 entry set, doctest **1404 / 1842 / 181 / 40 / 31 / 7 / 28**, guards math **496 -> 500** and
 project-no-delete **B 79 -> 80** with the other six unmoved, both reduced configurations **161** and
 **93**, `editor/src/*.cpp` **79 -> 80** and `editor/include/aero/editor/*.hpp` **57 -> 58**.
-**NOT VALIDATED ON ANY PLATFORM** — its twelve-step page is written and unrun, and six declared
-sabotage seeds have their only cover in rows 5, 7 and 8. Handoffs: **E.1.2's and E.2.3's
+**macOS-VALIDATED — 12 PASS / 12, 2026-09-11, no blockers and no partials**, and the pass closed
+**all six** declared sabotage seeds. The deliverable is a measurement: the preview's and the
+viewport's peak sphere luminance are **byte-identical at (192,198,209), delta 0.0 levels**, and under
+Solid mode preview, viewport and an independent ACES+sRGB oracle all read **(206,93,95)** exactly.
+The **viewport below the strip row is bit-identical to `990ee2b`** — 0 of 1 064 924 px, against a
+5391-of-27 092 control on the strip row. The preview's deliberate change: sphere peak
+**230.0 -> 212.4** but picture mean **64.1 -> 134.6** — a dark void became the scene's sky, so it
+reads as RIGHT and **E.5.2 needs no light retune on this evidence**. Only `S19` stays uncovered, and
+it is unreachable at runtime. Tracy: **no new zone** in either of two A/B pairs; the preview's
+`renderFrame` mean rises **+26.97 us** and **+11.42 us** against a **15.54 us** within-build spread,
+so **+0.01 to +0.03 ms is a bound, not a measurement**. Handoffs: **E.1.2's and E.2.3's
 "E.2.4 moves this whole row into a popover" and E.1.3's view-axis visibility toggle are all
 DISCHARGED**; **E.1.1's thick-line handoff stays FIRED and unmoved** (no line, no icon, HiDPI
 deliberately not a row); **E.4.5** inherits `material_preview_rig.hpp` by name; **E.6.2** takes the
