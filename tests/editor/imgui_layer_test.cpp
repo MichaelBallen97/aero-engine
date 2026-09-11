@@ -13043,8 +13043,10 @@ TEST_CASE("editor: with the preference off nothing latches at all (task E.3.2, I
     const std::uint64_t inspectorAfterOff = app->panelDrawnCount("Inspector");
     CHECK(inspectorAfterOff == inspectorBefore);
 
-    // ANTI-VACUITY: re-enable and act once. The entity arm wins (RouteSource's numeric order IS its
-    // priority) even though the material baseline is also stale, because a single tick latches once.
+    // ANTI-VACUITY: re-enable and perform a GENUINELY FRESH act. Re-enabling on its own resurrects
+    // nothing -- every baseline ADVANCED while the preference was off, so the material selected above
+    // is not a change any more (RT24). It is the new revision below that latches, and the entity arm
+    // wins on priority in any case.
     app->setFocusRoutingEnabled(true);
     CHECK(app->focusRoutingEnabled());
     app->selection().set(probe);
@@ -13360,11 +13362,29 @@ TEST_CASE(
                                                .editorPrefsPath = prefsFile});
         REQUIRE(app.has_value());
         CHECK_FALSE(app->focusRoutingEnabled());  // BEFORE any tick: read in create()
-        REQUIRE(app->tick());
+
+        // "WRITTEN ONLY WHEN THE VALUE CHANGES" (docs/09 section 8.5), and the code-review round's
+        // finding: a single tick cannot tell that apart from "written every frame". TEN ticks with no
+        // toggle at all must leave the file's modification time exactly where app 1 left it -- dropping
+        // the routeToggleRequested gate sets editorPrefsDirty on every frame, and a persisting instance
+        // then rewrites the file on every frame, which is the per-frame I/O the format forbids.
+        const std::filesystem::file_time_type beforeIdleTicks =
+            std::filesystem::last_write_time(std::filesystem::path(prefsFile), ec);
+        REQUIRE_FALSE(ec);
+        for (int i = 0; i < 10; ++i) {
+            REQUIRE(app->tick());
+        }
+        const std::filesystem::file_time_type afterIdleTicks =
+            std::filesystem::last_write_time(std::filesystem::path(prefsFile), ec);
+        REQUIRE_FALSE(ec);
+        CHECK(afterIdleTicks == beforeIdleTicks);
+        CHECK_FALSE(app->focusRoutingEnabled());  // and the value it read is still the one it holds
+
         app->requestQuit();
         CHECK(app->tick() == false);
         afterAppTwo = std::filesystem::last_write_time(std::filesystem::path(prefsFile), ec);
         REQUIRE_FALSE(ec);
+        CHECK(afterAppTwo == beforeIdleTicks);  // ...and the teardown wrote nothing either
     }
 
     // ---- app 3: persistLayout FALSE and NO editorPrefsPath -- it must write NOTHING --------------
@@ -13520,6 +13540,24 @@ TEST_CASE("editor imgui: the editor has ONE focus policy, and it is spelled once
         }
     }
 
+    SUBCASE("(f) the View-menu checkbox writes THROUGH the shell state, and arms the read-back") {
+        // THE CODE-REVIEW ROUND'S FINDING, and it is invisible to every runtime tier in this tree:
+        // dropping the `&` -- `MenuItem("Focus Follows Selection", nullptr, state.routeEnabled)` --
+        // COMPILES, because the bool and bool* overloads are both viable, and turns the item into a
+        // no-op that never reaches ContextRouter and never reaches the preferences file, with the
+        // whole suite green. Nothing here can click a menu, so the ADDRESS-OF is pinned as text.
+        const std::vector<std::string> shell = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/shell_ui.cpp");
+        REQUIRE_FALSE(shell.empty());
+        const std::size_t itemAt =
+            soleLineContaining(shell, "ImGui::MenuItem(\"Focus Follows Selection\", nullptr, &state.routeEnabled)");
+        // The in/out write is what makes an un-tick take effect in the SAME frame (D12); the one-shot
+        // below it is what makes EditorApp adopt the value and mark the file dirty.
+        CHECK(soleLineContaining(shell, "state.routeToggleRequested = true;") > itemAt);
+        // ANTI-VACUITY: the reader really is finding MenuItem lines in this file, so a rename that
+        // made the pin above unfindable would be a REQUIRE failure rather than a silent pass.
+        CHECK(countLinesContaining(shell, "ImGui::MenuItem(") > 5U);
+    }
+
     SUBCASE("(e) Selection::prune's body contains no revision bump") {
         // D2's load-bearing half: HierarchyPanel::onDraw prunes every frame, so a bumping prune is a
         // permanent focus storm. The tier-0 case in hierarchy_test.cpp asserts the EFFECT; this
@@ -13548,4 +13586,208 @@ TEST_CASE("editor imgui: the editor has ONE focus policy, and it is spelled once
         // and the one assertion here that a SEVENTH mutator will legitimately move.
         CHECK(countLinesContaining(selection, "++revisionValue;") == 6U);
     }
+}
+
+// ---- I160-I161: the code-review round's two wiring gaps ------------------------------------------
+// Guard 3 (`sourceStillValid`) and the `Hold` outcome were both reachable from this tier all along and
+// neither was driven. The route to both is the FILE FLOW, which runs INSIDE drawShellUi and therefore
+// inside the same tick as the focus slot: `applyFileRequests` at shell_ui.cpp:552 is 38 lines ABOVE the
+// slot, and `drawUnsavedChangesModal` at :540 is 15 above that.
+
+TEST_CASE(
+    "editor: a scene load between the reconcile and the focus slot DROPS the entity route "
+    "(task E.3.2, I160, AC-4, seed S17)") {
+    // GUARD 3, end to end, and the case that turns the plan's declared hole S17 into covered ground.
+    // requestNewScene() on a CLEAN command stack takes FileStep::Perform immediately -- no modal -- and
+    // resetSceneState clears the selection (scene_session.cpp:154). So within ONE tick: the reconcile
+    // block latches EntitySelection from the revision bump, applyFileRequests empties the selection,
+    // and the focus slot 38 lines later reads `sourceStillValid == false` and DROPS. The Inspector must
+    // not be raised onto an empty selection.
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "route i160", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    std::optional<engine::editor::EditorApp> app = engine::editor::EditorApp::create(
+        *device, *window, ctx, {.persistLayout = false, .unfocusedFrameCapHz = 0.0F, .restoreLastProject = false});
+    REQUIRE(app.has_value());
+
+    REQUIRE(app->tick());  // 1
+    REQUIRE(app->tick());  // 2: settle
+
+    // Put the Inspector where it can be SEEN not to move: something else in front, proven.
+    app->requestPanelFocus("Material");
+    REQUIRE(app->tick());  // 3
+    const std::uint64_t inspectorIdle = app->panelDrawnCount("Inspector");
+    REQUIRE(app->tick());                                         // 4
+    REQUIRE(app->panelDrawnCount("Inspector") == inspectorIdle);  // the Inspector is NOT drawing
+
+    const engine::Entity probe = app->world().create();
+    REQUIRE(probe.valid());
+    app->selection().set(probe);
+    REQUIRE_FALSE(app->selection().empty());
+    REQUIRE(app->commands().isClean());  // clean => Perform, not the modal (I12's own precondition)
+
+    const std::size_t dropsBefore = app->focusRouteDropCount();
+    const std::size_t appliesBefore = app->focusRouteApplyCount();
+    app->requestNewScene();
+    REQUIRE(app->tick());  // the reconcile latches; applyFileRequests clears; the focus slot drops
+
+    CHECK(app->selection().empty());  // the scene really was swapped, in this tick
+    CHECK(app->focusRouteDropCount() == dropsBefore + 1U);
+    CHECK(app->focusRouteApplyCount() == appliesBefore);
+    CHECK(app->panelDrawnCount("Inspector") == inspectorIdle);  // it never came forward
+    CHECK(app->pendingFocusRoute() == 0);                       // Drop is terminal: the latch cleared
+    CHECK(app->lastRoutedPanelId().empty());
+
+    // ANTI-VACUITY: the very same gesture on a selection that SURVIVES the tick does apply, so the
+    // drop above is about guard 3 and not about entity routes being broken in this configuration.
+    const engine::Entity survivor = app->world().create();
+    REQUIRE(survivor.valid());
+    app->selection().set(survivor);
+    REQUIRE(app->tick());
+    CHECK(app->focusRouteApplyCount() == appliesBefore + 1U);
+    CHECK(app->lastRoutedPanelId() == "Inspector");
+    CHECK(app->panelDrawnCount("Inspector") > inspectorIdle);
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE(
+    "editor: an open modal HOLDS the route across ticks, and the latch survives "
+    "(task E.3.2, I161, AC-4, seed S24's popup arm)") {
+    // THE ONLY COVERAGE `Hold` HAS ABOVE THE PURE FUNCTION. A DIRTY command stack makes
+    // requestNewScene() take the guarded path, so applyFileRequests sets flow.confirmOpen and
+    // drawUnsavedChangesModal (shell_ui.cpp:272) opens a REAL popup, which makes
+    // ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopup) true at the focus slot and the outcome Hold
+    // rather than Apply.
+    //
+    // THE MODAL COMES UP ONE TICK AFTER THE REQUEST, measured: drawUnsavedChangesModal runs at
+    // shell_ui.cpp:540 and applyFileRequests -- which is what SETS confirmOpen -- at :552, so the tick
+    // that carries the request still has no popup and a route latched on it APPLIES. The modal must
+    // therefore be standing BEFORE the route is latched, which is why the sequence below raises it
+    // first and selects the second material afterwards.
+    //
+    // NOT CIRCULAR: nothing here can read IsPopupOpen, so the first material selection is run as a
+    // CONTROL with no modal up and asserted to APPLY. The second is the identical gesture with the
+    // modal standing, and it Holds.
+    //
+    // WHAT THIS CASE CANNOT DO, stated rather than discovered: it cannot ANSWER the modal. FileFlow's
+    // `choice` has no public EditorApp accessor and this TU is ImGui-free at source, which
+    // imgui_layer_test.cpp:2445 already records for another task. So the Hold -> APPLY transition is
+    // not reachable here; what is reachable, and asserted below, is that the latch SURVIVES every held
+    // tick and is STILL BEING RE-EVALUATED -- proved by flipping a different guard and watching the
+    // same latch resolve. RT8/RT9/RT10 own Hold -> Apply at tier 0; manual row 7 owns it behaviourally.
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "route i161", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/brick.aeromat", MINIMAL_AEROMAT_TEXT).empty());
+    REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/stone.aeromat", SECOND_AEROMAT_TEXT).empty());
+
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = created.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    app->panels().setVisible("Console", false);
+
+    REQUIRE(app->tick());  // 1
+    REQUIRE(app->tick());  // 2: settle
+
+    // ---- THE CONTROL: the same gesture, with NO modal, APPLIES. ----------------------------------
+    app->requestPanelFocus("Inspector");
+    REQUIRE(app->tick());
+    std::uint64_t materialIdle = app->panelDrawnCount("Material");
+    REQUIRE(app->tick());
+    REQUIRE(app->panelDrawnCount("Material") == materialIdle);  // Material is NOT drawing
+    app->requestAssetBrowserSelectEntry("brick.aeromat");
+    REQUIRE(app->tick());  // drain
+    REQUIRE(app->tick());  // reconcile -> latch -> APPLY
+    REQUIRE(app->focusRouteApplyCount() == 1U);
+    REQUIRE(app->lastRoutedPanelId() == "Material");
+    REQUIRE(app->panelDrawnCount("Material") > materialIdle);
+
+    // ---- NOW RAISE THE MODAL, and put Material out of the way again. -----------------------------
+    app->requestPanelFocus("Inspector");
+    REQUIRE(app->tick());
+    materialIdle = app->panelDrawnCount("Material");
+    REQUIRE(app->tick());
+    REQUIRE(app->panelDrawnCount("Material") == materialIdle);
+
+    // DIRTY the document through a REAL command, so requestNewScene() raises the modal instead of
+    // performing. A direct World mutation would leave the stack clean and take I160's path instead.
+    const engine::Entity subject = engine::editor::createEntity(app->world(), {}, "Subject");
+    REQUIRE(subject.valid());
+    const std::optional<engine::Transform> before = engine::editor::readTransform(app->world(), subject);
+    REQUIRE(before.has_value());
+    engine::Transform after = *before;
+    after.position = before->position + engine::Vec3{1.0F, 2.0F, 3.0F};
+    engine::editor::CommandContext cmd{app->world(), app->selection(), app->roots()};
+    REQUIRE(app->commands().push(cmd, std::make_unique<engine::editor::TransformCommand>(subject, *before, after)));
+    REQUIRE_FALSE(app->commands().isClean());
+    app->selection().clear();  // an empty selection cannot latch an entity route over the material one
+
+    app->requestNewScene();
+    REQUIRE(app->tick());                     // applyFileRequests sets confirmOpen; no popup on THIS tick
+    REQUIRE(app->tick());                     // drawUnsavedChangesModal opens it -- the popup now stands
+    REQUIRE(app->world().entityCount() > 4);  // the swap is GUARDED, not performed: the modal is up
+
+    // ---- THE HELD ROUTE. -------------------------------------------------------------------------
+    const std::size_t holdsBefore = app->focusRouteHoldCount();
+    const std::size_t appliesBefore = app->focusRouteApplyCount();
+    const std::size_t dropsBefore = app->focusRouteDropCount();
+    materialIdle = app->panelDrawnCount("Material");
+    app->requestAssetBrowserSelectEntry("stone.aeromat");
+    REQUIRE(app->tick());  // drain -- still nothing latched
+    CHECK(app->focusRouteHoldCount() == holdsBefore);
+
+    // Three held ticks. Each one: the popup is up, so the outcome is Hold -- the count rises, the
+    // latch is KEPT (Hold is the only non-terminal outcome), and the target never comes forward.
+    for (int i = 0; i < 3; ++i) {
+        CAPTURE(i);
+        REQUIRE(app->tick());
+        CHECK(app->focusRouteHoldCount() == holdsBefore + static_cast<std::size_t>(i) + 1U);
+        CHECK(app->pendingFocusRoute() == static_cast<int>(engine::editor::RouteSource::MaterialAsset));
+        CHECK(app->focusRouteApplyCount() == appliesBefore);
+        CHECK(app->panelDrawnCount("Material") == materialIdle);
+    }
+    CHECK(app->focusRouteDropCount() == dropsBefore);  // a Hold is NOT a Drop
+    CHECK(app->materialTargetPath() == "stone.aeromat");
+
+    // ...AND THE LATCH IS STILL LIVE, not merely stored: flip a DIFFERENT guard and the very same
+    // pending route resolves on the next tick. This is the reachable half of "Hold keeps it".
+    app->setFocusRoutingEnabled(false);  // guard 2 -- and setEnabled empties the latch itself
+    REQUIRE(app->tick());
+    CHECK(app->pendingFocusRoute() == 0);
+    CHECK(app->focusRouteApplyCount() == appliesBefore);
+    CHECK(app->panelDrawnCount("Material") == materialIdle);
+    CHECK(app->focusRouteHoldCount() == holdsBefore + 3U);  // no further holds once it is gone
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
 }
