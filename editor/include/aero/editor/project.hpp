@@ -194,6 +194,12 @@ struct ProjectCreateOutcome {
 // MACHINE, not of a project, which is why it lives here beside the recents list and never in
 // project.json.
 [[nodiscard]] std::string defaultToolPrefsPath();  // D13: pref -> base -> CWD
+// task E.3.2. The THIRD sibling, and here for the same reason as the second: this TU owns the
+// pref-path -> base-path -> CWD chain and its free/do-not-free asymmetry, and is the one file
+// permitted a single WARN on the CWD fallback. editor_prefs.cpp must stay log-free, so it takes the
+// resolved path rather than resolving it. A UI taste is a property of a MACHINE and of a USER, not of
+// a project, which is why it lives here beside the recents list and never in project.json.
+[[nodiscard]] std::string defaultEditorPrefsPath();  // E.3.2: pref -> base -> CWD
 [[nodiscard]] RecentProjects readRecentProjects(std::string_view pathUtf8);
 void writeRecentProjects(std::string_view pathUtf8, const RecentProjects& recents);
 
