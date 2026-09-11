@@ -155,6 +155,7 @@ add_library(aero_editor_core STATIC
     src/scene_asset_ledger.cpp   # task 3.1.5 -- the decision core; PURE, no GPU, no disk, no UI
     src/scene_asset_loader.cpp   # task 3.1.5 -- the only new GPU TU: executes ONE ledger directive
     src/editor_prefs.cpp         # task E.3.2 -- the machine-local editor preference file; PURE, no SDL
+    src/context_router.cpp       # task E.3.2 -- the pure routing decision and the one-slot latch
 )
 add_library(aero::editor_core ALIAS aero_editor_core)
 target_include_directories(aero_editor_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)

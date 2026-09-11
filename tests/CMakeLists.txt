@@ -479,7 +479,8 @@ add_executable(aero_editor_shell_test editor/shell_test.cpp editor/hierarchy_tes
                editor/viewport_icons_test.cpp     # task E.2.3 — the icon vocabulary and its atlas
                editor/viewport_gizmos_test.cpp    # task E.2.3 — the icon/gizmo world walk
                editor/material_preview_rig_test.cpp   # task E.2.4 — the pure preview rig (PV)
-               editor/editor_prefs_test.cpp)          # task E.3.2 — the preference envelope (EP)
+               editor/editor_prefs_test.cpp           # task E.3.2 — the preference envelope (EP)
+               editor/context_router_test.cpp)        # task E.3.2 — the pure router (RT)
 target_link_libraries(aero_editor_shell_test PRIVATE
     doctest::doctest aero::editor_core aero::scene aero::scene_internal aero::core Threads::Threads)
 add_test(NAME aero_editor_shell_test COMMAND aero_editor_shell_test)
