@@ -1427,4 +1427,57 @@ TEST_CASE(
     CHECK_FALSE(sceneRenderer->skyPass().hasWarnedDegenerateCamera());
 }
 
+
+// task E.2.4 (code-review round): AC-11 requires both resolvers to be "pure, GPU-free and LOG-FREE
+// on every path", and nothing asserted the log-free half. The existing WARN cases here read
+// `contains(...)` -- presence, never a COUNT -- so a record a resolver started emitting would be
+// invisible to every one of them, and the only thing behind AC-11 was a source grep run once by hand
+// at the gate rather than by CI.
+//
+// THE REGRESSION THIS CATCHES IS NOT HYPOTHETICAL. EditorApp::tick calls BOTH resolvers every frame,
+// OUTSIDE SceneRenderer::render's latch. A `count > 1` WARN added inside resolveDirectionalLight
+// would therefore spam the Console at frame rate in any scene with two directional lights -- and the
+// latched WARN this file already tests would still fire exactly once, so every existing case stays
+// green. The latch belongs to render(); the resolvers must stay silent.
+//
+// APPEND-ONLY: not one byte of any pre-existing case is touched, which is what AC-12's behaviour-free
+// proof rests on. AC-12 forbids EDITING the cases that stand as that proof, not adding to the file.
+TEST_CASE("scene_render: the resolvers emit NO log record on any path (task E.2.4)") {
+    World w;
+    // Three of each, which is the shape that makes a count-based WARN fire if one were ever added.
+    for (int i = 0; i < 3; ++i) {
+        const Entity le = w.create();
+        REQUIRE(w.add<Transform>(le) != nullptr);
+        REQUIRE(w.add<DirectionalLight>(le) != nullptr);
+        const Entity ee = w.create();
+        REQUIRE(w.add<Environment>(ee) != nullptr);
+    }
+
+    WarnCapture cap;
+    {
+        const WarnCaptureScope scope{cap};
+        const engine::scene_render::ResolvedDirectionalLight sun =
+            engine::scene_render::resolveDirectionalLight(w);
+        const engine::scene_render::ResolvedEnvironment env = engine::scene_render::resolveEnvironment(w);
+        // Anti-vacuity for the RESOLUTION: the walks really did see all three of each, so "silent"
+        // is a claim about a path that ran rather than about one that returned early.
+        CHECK(sun.count == 3U);
+        CHECK(env.count == 3U);
+        CHECK(sun.entity.valid());
+        CHECK(env.entity.valid());
+    }
+    CHECK(cap.messages.empty());
+
+    // ANTI-VACUITY FOR THE CAPTURE ITSELF, without which `messages.empty()` passes for a capture that
+    // was never armed -- the single most repeated failure shape in this tree's review rounds.
+    WarnCapture control;
+    {
+        const WarnCaptureScope scope{control};
+        // FORMAT-STYLE, like scene_renderer.cpp:49 -- AERO_LOG_WARN(...) forwards to a formatter, so
+        // a two-string call logs the FIRST string and silently drops the second.
+        AERO_LOG_WARN("{}", "resolver log-free control");
+    }
+    CHECK(contains(control.messages, "resolver log-free control"));
+}
+
 #endif  // AERO_SHADER_TOOLS_ENABLED

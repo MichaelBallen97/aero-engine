@@ -1060,8 +1060,10 @@ void ViewportPanel::updateGizmo(PanelContext& context, Vec2 imageOrigin, Vec2 av
     // BE TOLD. ImGuizmo's CanActivate() is `IsMouseClicked(0) && !IsAnyItemHovered() &&
     // !IsAnyItemActive()` (ImGuizmo.cpp:1670-1677) and GetMoveType gates only on mbMouseOver, i.e.
     // "the cursor is over this window" (:2108-2113). The interactive overlay row is protected from
-    // that only INCIDENTALLY -- its Checkbox/Combo/SliderFloat are real ImGui items, so
-    // IsAnyItemHovered() is true over them -- while the widget deliberately submits NO item at all,
+    // that only INCIDENTALLY -- its SmallButtons (T/R/S, Local/World and, since task E.2.4, View) are
+    // real ImGui items, so IsAnyItemHovered() is true over them; E.2.4 moved the row's Checkbox,
+    // Combo and SliderFloat into the View popover, and the incidental protection survived the move
+    // unchanged because a SmallButton is an item too -- while the widget deliberately submits NO item at all,
     // which makes it invisible to exactly that protection. So a click on a ball whose box the
     // translate arrows happened to cross BOTH started the snap and latched a drag against a plane
     // captured in the PRE-snap view; the camera then rotated every frame and the release translated

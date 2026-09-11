@@ -228,6 +228,51 @@ TEST_CASE("editor: the preview view carries the scene's sun VERBATIM, non-unit d
     CHECK(view.spots.empty());
 }
 
+// task E.2.4 (code-review round): AC-10 names FOUR degenerate inputs -- a NaN delta, a negative
+// delta, a non-positive or non-finite aspect, and A NON-FINITE SCENE COLOUR. PV11 covers the first
+// two and PV4 the third; nothing covered the fourth, because every other arm here and every PX arm
+// seeds a FINITE colour. The claim is the same one PV5 and PV6 make for finite values -- the rig
+// copies the bridge's numbers and does not touch them -- but it has to be made where a future
+// "defensive" sanitiser would bite, which is precisely the non-finite case.
+//
+// WHY IT MATTERS THAT THIS IS TESTED HERE AND NOT BY PX: a sanitiser added inside
+// materialPreviewView would leave every PX arm green, because side A IS the rig and would sanitise
+// while side B -- SceneRenderer over the same World -- would pass the number through untouched. The
+// byte-identity would break in the one direction PX structurally cannot see.
+TEST_CASE("editor: the preview view carries a NON-FINITE scene colour verbatim too (PV13)") {
+    MaterialPreviewLighting lighting{.environment = nonDefaultEnvironment(), .sun = nonDefaultSun()};
+    lighting.environment.skyColor.x = NAN_F;
+    lighting.environment.ambientColor.y = INF_F;
+    lighting.sun.color.z = -INF_F;
+    lighting.sun.direction.x = NAN_F;
+
+    std::array<MeshInstance, 1> instances{};
+    const RenderView view =
+        materialPreviewView(materialPreviewCamera(DEFAULT_MATERIAL_PREVIEW_RIG, 0.7F, 1.0F), lighting, instances);
+
+    // Asserted with std::isnan / std::isinf, never with ==, which is false for every NaN (PV11's own
+    // rule). A NaN that ARRIVED is not a NaN the rig MANUFACTURED -- that is the distinction AC-10
+    // draws, and it is the reason this asserts propagation rather than refusal.
+    CHECK(std::isnan(view.environment.skyColor.x));
+    CHECK(std::isinf(view.environment.ambientColor.y));
+    CHECK(view.environment.ambientColor.y > 0.0F);
+    CHECK(std::isinf(view.directional.color.z));
+    CHECK(view.directional.color.z < 0.0F);
+    CHECK(std::isnan(view.directional.direction.x));
+
+    // Anti-vacuity: the FINITE fields beside them are untouched, so this is a statement about the
+    // non-finite components and not about a view that was wholesale discarded.
+    CHECK(view.environment.skyColor.y == nonDefaultEnvironment().skyColor.y);
+    CHECK(view.directional.intensity == nonDefaultSun().intensity);
+
+    // And the rig still manufactures nothing of its own: the CAMERA is finite even though the
+    // lighting is not, because the two share no arithmetic.
+    CHECK(std::isfinite(view.camera.eyePosition.x));
+    CHECK(std::isfinite(view.camera.eyePosition.y));
+    CHECK(std::isfinite(view.camera.eyePosition.z));
+    CHECK(std::isfinite(view.instances[0].mvp.columns[0].x));
+}
+
 TEST_CASE("editor: every mvp is (proj * view) * model, bit for bit (PV7)") {
     const CameraView camera = materialPreviewCamera(DEFAULT_MATERIAL_PREVIEW_RIG, 0.7F, 1.6F);
     std::array<MeshInstance, 3> instances{};
@@ -361,9 +406,15 @@ TEST_CASE("editor: the unit sphere is inside the frustum on the REAL matrices (P
     // a positive w.
     //
     // THE SAMPLE IS THE SPHERE, NOT ITS BOUNDING BOX, and the distinction is measured rather than
-    // stylistic: the box's corners sit at sqrt(3) from the origin and subtend an angular radius of
-    // asin(sqrt(3)/d) = 32.4 degrees from this eye, against a 30-degree half field of view, so four of
-    // the eight are legitimately off-screen. The preview draws a sphere, PV1's relationship is
+    // stylistic: the box's corners sit at sqrt(3) from the origin, an angular radius of
+    // asin(sqrt(3)/d) = 32.4 degrees from this eye against a 30-degree half field of view, so the box
+    // is NOT framed. Projected through these very matrices at angle 0.7, corner (+1,-1,+1) lands at
+    // |clip.y/clip.w| = 1.096 and is off-screen -- ONE of the eight, the next-nearest being
+    // (+1,+1,-1) at |clip.x/clip.w| = 0.888. One is enough: the plan's "every box corner is inside"
+    // assertion is false, which is why this samples the sphere instead. (The 32.4-degree figure is the
+    // worst case over the whole sphere of radius sqrt(3); it does not say how many CORNERS miss, and
+    // an earlier draft of this comment wrongly inferred four from it.)
+    // The preview draws a sphere, PV1's relationship is
     // 2*asin(1/d) < fovY (18.0 degrees against 30), and this is that relationship on the real
     // matrices. Asserting the box would assert something the rig never promised.
     const std::array<Vec3, 6> poles{Vec3::unitX(),  -Vec3::unitX(), Vec3::unitY(),
