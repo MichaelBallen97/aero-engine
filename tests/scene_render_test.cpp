@@ -1427,7 +1427,6 @@ TEST_CASE(
     CHECK_FALSE(sceneRenderer->skyPass().hasWarnedDegenerateCamera());
 }
 
-
 // task E.2.4 (code-review round): AC-11 requires both resolvers to be "pure, GPU-free and LOG-FREE
 // on every path", and nothing asserted the log-free half. The existing WARN cases here read
 // `contains(...)` -- presence, never a COUNT -- so a record a resolver started emitting would be
@@ -1456,8 +1455,7 @@ TEST_CASE("scene_render: the resolvers emit NO log record on any path (task E.2.
     WarnCapture cap;
     {
         const WarnCaptureScope scope{cap};
-        const engine::scene_render::ResolvedDirectionalLight sun =
-            engine::scene_render::resolveDirectionalLight(w);
+        const engine::scene_render::ResolvedDirectionalLight sun = engine::scene_render::resolveDirectionalLight(w);
         const engine::scene_render::ResolvedEnvironment env = engine::scene_render::resolveEnvironment(w);
         // Anti-vacuity for the RESOLUTION: the walks really did see all three of each, so "silent"
         // is a claim about a path that ran rather than about one that returned early.
