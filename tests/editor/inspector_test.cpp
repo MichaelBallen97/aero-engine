@@ -1303,13 +1303,30 @@ TEST_CASE("inspector: `enabled` compares with ==, so NaN stays live and -0.0 doe
     // `==` from approxEquals. Neither arm above can: both comparators call NaN unequal to everything
     // and both call -0.0F equal to +0.0F. Measured -- a sabotage seed swapping the comparator for
     // approxEquals reddened nothing until this arm existed.
+    //
+    // THE WHOLE-FIELD CALL IS THE ONE THAT CARRIES THAT CLAIM, and after the code-review round it is
+    // the only one that can: the whole-field entry is the one still deciding on `==` over the whole
+    // FieldValue. The per-axis entry decides at the row's own DISPLAYED precision instead, so it is
+    // outside this case's subject and is asserted below for what it now is.
     const engine::Vec3 unitDefault{1.0F, 1.0F, 1.0F};
     const std::optional<FieldValue> unitDefaultValue{FieldValue{unitDefault}};
     const engine::Vec3 nudged{1.0F + (engine::EPSILON * 0.5F), 1.0F, 1.0F};
     REQUIRE(nudged.x != unitDefault.x);                  // the nudge really moved the bits
     REQUIRE(engine::approxEquals(nudged, unitDefault));  // ...and approxEquals calls the two EQUAL
     CHECK(axisResetAction(std::nullopt, FieldKind::Vec3, FieldValue{nudged}, unitDefaultValue).enabled);
-    CHECK(axisResetAction(std::size_t{0}, FieldKind::Vec3, FieldValue{nudged}, unitDefaultValue).enabled);
+
+    // THE ONE DELIBERATE BEHAVIOUR CHANGE, PINNED RATHER THAN LEFT IMPLICIT. 5e-06 is four orders of
+    // magnitude below the 0.0005 the third decimal can show, so the box reads "1.000" and the menu
+    // reads "Reset X to 1.000": two identical numbers, and an entry that would cost an undo entry
+    // for an edit nobody can see or type. Disabled. This assertion reddens on the pre-review
+    // behaviour, where the per-axis entry compared the whole recomposed value.
+    CHECK_FALSE(axisResetAction(std::size_t{0}, FieldKind::Vec3, FieldValue{nudged}, unitDefaultValue).enabled);
+
+    // ANTI-VACUITY for that arm: a difference the third decimal DOES show is still live, so the rule
+    // is "below the displayed precision", never "per-axis is always disabled". 0.002 is four times
+    // the rounding threshold and displays as "1.002".
+    const engine::Vec3 visiblyOff{1.002F, 1.0F, 1.0F};
+    CHECK(axisResetAction(std::size_t{0}, FieldKind::Vec3, FieldValue{visiblyOff}, unitDefaultValue).enabled);
 }
 
 TEST_CASE("inspector: a non-axis kind resets as a WHOLE FIELD, with or without an axis (task E.3.1, VF13)") {
@@ -1431,6 +1448,71 @@ TEST_CASE("inspector: the label column's width is clamped, and the clamp cannot 
 
     SUBCASE("(e) the floor scales with the font, so it is a font-relative rule rather than a constant") {
         CHECK(inspectorLabelColumnWidth(4.0F, PADDING, 26.0F, 4000.0F) == doctest::Approx(130.0F).epsilon(1e-6));
+    }
+}
+
+TEST_CASE("inspector: a per-axis Quat reset CONVERGES and then goes quiet (task E.3.1, VF16)") {
+    // THE COVER VF10 COULD NOT PROVIDE, and the reason it could not is worth stating: every one of
+    // VF10's assertions is a Vec3, where a per-axis reset is a verbatim component copy and the
+    // arithmetic is exact. VF8 covers only the WHOLE-FIELD Quat. VF14 drives per-axis Quat resets but
+    // always from a pose where all three axes are genuinely off, so it only ever asserts `enabled`
+    // TRUE. Nothing anywhere asserted `enabled` for a per-axis Quat reset whose axis was already AT
+    // its default -- and that is exactly the case a whole-value comparison gets wrong.
+    //
+    // The poses are built through axisRowFieldValue, which is the expression the panel itself writes
+    // back, so these are rotations the editor can really be holding.
+    const std::optional<FieldValue> identity{FieldValue{engine::Quat::identity()}};
+
+    SUBCASE("(a) an axis already at the default is DISABLED, even though the whole value differs") {
+        // Y = 20 degrees, X and Z at zero. MEASURED: axisRowValues reports X as EXACTLY 0.0F here,
+        // and the entry reads "Reset X to 0.000" beside a box reading "0.000" -- two identical
+        // numbers. A whole-value comparison left this live, because recomposing perturbs Y.
+        const FieldValue yawOnly = axisRowFieldValue({0.0F, 20.0F, 0.0F}, FieldKind::Quat);
+        const AxisResetAction x = axisResetAction(std::size_t{0}, FieldKind::Quat, yawOnly, identity);
+        CHECK(x.label == "Reset X to 0.000");
+        CHECK_FALSE(x.enabled);
+        // ...and the field as a whole DOES differ from identity, so this is not a case about a
+        // rotation that happens to already be the default.
+        CHECK(axisResetAction(std::nullopt, FieldKind::Quat, yawOnly, identity).enabled);
+        CHECK(axisResetAction(std::size_t{1}, FieldKind::Quat, yawOnly, identity).enabled);
+        CHECK_FALSE(axisResetAction(std::size_t{2}, FieldKind::Quat, yawOnly, identity).enabled);
+    }
+
+    SUBCASE("(b) the pose that never converged: (0, 20, 40) degrees") {
+        // MEASURED on the pre-review behaviour: five successive X resets from here gave
+        // -2.403e-07 -> -3.600e-07 -> +5.676e-07 -> -1.832e-07 -> -7.762e-07 and the entry stayed
+        // ENABLED forever, because each recomposition moved Y and Z by ~1e-7 and the comparison was
+        // over the whole quaternion. Identity was the only exact fixpoint in the whole space, which
+        // is why nothing caught it.
+        const FieldValue pose = axisRowFieldValue({0.0F, 20.0F, 40.0F}, FieldKind::Quat);
+        const std::array<float, 3> shown = axisRowValues(pose, FieldKind::Quat);
+        MESSAGE("VF16 (0,20,40) pose reads back as X=" << shown[0] << " Y=" << shown[1] << " Z=" << shown[2]);
+        CHECK_FALSE(axisResetAction(std::size_t{0}, FieldKind::Quat, pose, identity).enabled);
+    }
+
+    SUBCASE("(c) ANTI-VACUITY: an axis genuinely off IS enabled, and ONE click settles it") {
+        // 15 degrees on X. Without this arm every assertion above is satisfied by `enabled = false`.
+        const FieldValue tilted = axisRowFieldValue({15.0F, 20.0F, 40.0F}, FieldKind::Quat);
+        const AxisResetAction first = axisResetAction(std::size_t{0}, FieldKind::Quat, tilted, identity);
+        CHECK(first.enabled);
+        CHECK(first.label == "Reset X to 0.000");
+
+        // CONVERGENCE IS THE DELIVERABLE: the entry the click produced is quiet on the next frame.
+        const AxisResetAction second = axisResetAction(std::size_t{0}, FieldKind::Quat, first.result, identity);
+        CHECK_FALSE(second.enabled);
+        // ...and it settled WITHOUT disturbing what the other two axes display.
+        const std::array<float, 3> after = axisRowValues(first.result, FieldKind::Quat);
+        CHECK(after[1] == doctest::Approx(20.0F).epsilon(1e-4));
+        CHECK(after[2] == doctest::Approx(40.0F).epsilon(1e-4));
+    }
+
+    SUBCASE("(d) a non-identity default converges too, so the rule is not 'zero is special'") {
+        const std::optional<FieldValue> tiltedDefault{axisRowFieldValue({5.0F, -7.0F, 11.0F}, FieldKind::Quat)};
+        const FieldValue pose = axisRowFieldValue({30.0F, 20.0F, 40.0F}, FieldKind::Quat);
+        const AxisResetAction first = axisResetAction(std::size_t{1}, FieldKind::Quat, pose, tiltedDefault);
+        CHECK(first.enabled);
+        CHECK(first.label == "Reset Y to -7.000");
+        CHECK_FALSE(axisResetAction(std::size_t{1}, FieldKind::Quat, first.result, tiltedDefault).enabled);
     }
 }
 

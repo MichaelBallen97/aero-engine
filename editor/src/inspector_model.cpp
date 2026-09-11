@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>  // task E.3.1: std::round, the row's display precision
 #include <cstddef>
 #include <cstdint>
 #include <format>
@@ -198,6 +199,18 @@ constexpr std::array<std::uint8_t, 3> AXIS_ROW_NEUTRAL_SRGB{140U, 140U, 140U};
 Vec3 vecDegrees(Vec3 v) { return Vec3{degrees(v.x), degrees(v.y), degrees(v.z)}; }
 Vec3 vecRadians(Vec3 v) { return Vec3{radians(v.x), radians(v.y), radians(v.z)}; }
 
+// THE ROW'S OWN DISPLAY PRECISION, AS A NUMBER. ImGuiDataType_Float's PrintFmt is "%.3f"
+// (imgui_widgets.cpp:2277) and DragScalar falls back to it when `format` is null (:2743), so three
+// decimals is exactly what the drag box shows -- and `{:.3f}`, specified as printf's `%.3f`, is what
+// axisResetAction writes into the menu label. Rounding here compares the two numbers a person
+// actually reads.
+//
+// AS FLOATS, NEVER AS FORMATTED STRINGS: "-0.000" and "0.000" are different strings and must compare
+// EQUAL. TOTAL, with both tails deliberate -- round(NaN) is NaN and compares unequal to everything,
+// so a NaN axis keeps its reset LIVE (VF12's rescue); +/-inf * 1000 is +/-inf and compares equal to
+// itself, so an infinite axis sitting on an infinite default is correctly quiet.
+[[nodiscard]] float roundedToRowPrecision(float value) noexcept { return std::round(value * 1000.0F) / 1000.0F; }
+
 }  // namespace
 
 bool isAxisRow(FieldKind kind, bool color) noexcept {
@@ -307,19 +320,43 @@ AxisResetAction axisResetAction(std::optional<std::size_t> axis, FieldKind kind,
     }
 
     if (perAxis) {
-        std::array<float, 3> shown = axisRowValues(current, kind);
-        shown[*axis] = axisRowValues(*defaultValue, kind)[*axis];
+        const std::array<float, 3> currentShown = axisRowValues(current, kind);
+        const std::array<float, 3> defaultShown = axisRowValues(*defaultValue, kind);
+        std::array<float, 3> shown = currentShown;
+        shown[*axis] = defaultShown[*axis];
         action.result = axisRowFieldValue(shown, kind);
+
+        // THE PER-AXIS QUESTION IS "DOES THIS CHANGE THE AXIS IT NAMES, AT THE PRECISION THE ROW
+        // DISPLAYS?" -- never "is the recomposed value different". The entry reads "Reset X to
+        // 0.000" and the box beside it reads "0.000"; if those are the same number the action
+        // changes nothing the user can see or type, so it must not cost an undo entry. That is
+        // guidFieldRow's own rule ("clearing nothing would push an undo entry that changes no
+        // byte"), applied at the precision this row actually shows.
+        //
+        // COMPARING THE WHOLE RECOMPOSED VALUE IS WRONG HERE, and measurably so: a Quat's per-axis
+        // reset goes out through euler and comes back through fromEulerAngles + normalize, which
+        // perturbs the OTHER TWO axes by ~1e-7 every time. From a (0, 20, 40)-degree pose, resetting
+        // X leaves X at -2.4e-07, then -3.6e-07, then +5.7e-07 -- it never converges, so a
+        // whole-value comparison leaves the entry live FOREVER and every click pushes another undo
+        // entry. From a (0, 20, 0) pose X is EXACTLY 0.0 and the entry was still live. Identity was
+        // the only exact fixpoint, which is why nothing caught it.
+        //
+        // ONE BEHAVIOUR CHANGE, DELIBERATE AND STATED: a Vec3 axis differing from its default by
+        // less than 0.0005 is DISABLED rather than enabled, because the box shows three decimals and
+        // the user is looking at two identical numbers.
+        action.enabled = roundedToRowPrecision(currentShown[*axis]) != roundedToRowPrecision(defaultShown[*axis]);
     } else {
         // VERBATIM, never round-tripped through euler -- see the header note: a Quat that came back
         // through eulerAngles is approxEquals to the default but not == to it, which would leave
         // `enabled` true forever and make the entry unclickable-but-live.
         action.result = *defaultValue;
+        // `==` on the variant, never approxEquals: a sign-bit-only write (-0.0 against +0.0) compares
+        // EQUAL and so costs no undo entry, while a NaN component compares UNEQUAL to everything and so
+        // leaves the reset LIVE -- which is exactly the rescue a user with a NaN in a field wants.
+        // BITWISE is right HERE and only here: the whole-field write lands the default byte for byte,
+        // so the comparison is exact by construction and VF8 pins it.
+        action.enabled = action.result != current;
     }
-    // `==` on the variant, never approxEquals: a sign-bit-only write (-0.0 against +0.0) compares
-    // EQUAL and so costs no undo entry, while a NaN component compares UNEQUAL to everything and so
-    // leaves the reset LIVE -- which is exactly the rescue a user with a NaN in a field wants.
-    action.enabled = action.result != current;
     return action;
 }
 

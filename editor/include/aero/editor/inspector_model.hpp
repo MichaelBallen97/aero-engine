@@ -118,6 +118,15 @@ inline constexpr std::size_t AXIS_ROW_COMPONENTS = 3;
 // One entry of the right-click reset menu: its exact text, whether it is live, and what it writes.
 // `enabled` is false when there is no default to reset TO, and equally when the reset would change
 // nothing -- a menu entry that writes an identical value would cost a real undo entry for no edit.
+//
+// "CHANGE NOTHING" IS ASKED DIFFERENTLY OF THE TWO ENTRIES, and the asymmetry is the point:
+//   * WHOLE FIELD -- the write lands the default BITWISE, so the comparison is `==` on the whole
+//     FieldValue. Exact by construction.
+//   * ONE AXIS -- the comparison is the axis's own shown component against the default's, ROUNDED
+//     to the three decimals the drag box displays. A per-axis Quat reset recomposes through euler
+//     and perturbs the other two axes by ~1e-7 every time, so comparing the whole recomposed value
+//     never converges; and "Reset X to 0.000" beside a box reading "0.000" must not be live.
+//     Consequence, deliberate: an axis differing from its default by less than 0.0005 is disabled.
 struct AxisResetAction {
     std::string label;  // "Reset X to 1.000" per axis, "Reset to default" for the whole field
     bool enabled = false;
