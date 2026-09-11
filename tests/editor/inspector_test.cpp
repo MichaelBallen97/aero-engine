@@ -1156,6 +1156,30 @@ TEST_CASE("inspector: axisRowFieldValue rebuilds a Vec3 exactly and a Quat NORMA
     REQUIRE(std::holds_alternative<engine::Quat>(rotation));
     CHECK(engine::length(std::get<engine::Quat>(rotation)) == doctest::Approx(1.0F).epsilon(1e-6));
 
+    // THE LENGTH CHECK ABOVE CANNOT DISCRIMINATE, and saying so is the point rather than a caveat:
+    // GLM's euler constructor is already unit to about 6e-8, which any sane relative tolerance
+    // admits, so dropping normalize() leaves that line GREEN. Measured directly -- a sabotage seed
+    // that removed the call reddened nothing at all in this whole battery. What discriminates is the
+    // BITS.
+    const engine::Vec3 radiansTriple{engine::radians(degreesTriple[0]), engine::radians(degreesTriple[1]),
+                                     engine::radians(degreesTriple[2])};
+    const engine::Quat raw = engine::fromEulerAngles(radiansTriple);
+    // The DIFFERENCE, not the length: at default ostream precision 0.99999994 prints as "1",
+    // which would make this line read as evidence of the opposite of what it measures.
+    MESSAGE("VF6 euler-constructor length minus one: " << (engine::length(raw) - 1.0F));
+    const engine::Quat got = std::get<engine::Quat>(rotation);
+    const engine::Quat expected = engine::normalize(raw);
+    const bool matchesNormalized =
+        got.x == expected.x && got.y == expected.y && got.z == expected.z && got.w == expected.w;
+    CHECK(matchesNormalized);
+
+    // ANTI-VACUITY: normalize() really does move the bits at this pose, which is what makes the check
+    // above a statement rather than a tautology. On a toolchain whose euler constructor returned an
+    // exactly unit quaternion this would redden and the MESSAGE above would say why -- a loud, honest
+    // failure in place of a silently vacuous pass.
+    const bool differsFromRaw = got.x != raw.x || got.y != raw.y || got.z != raw.z || got.w != raw.w;
+    CHECK(differsFromRaw);
+
     // ...and it is the RIGHT rotation, not merely a unit one: the triple comes back out.
     const std::array<float, 3> back = axisRowValues(rotation, FieldKind::Quat);
     CHECK(back[0] == doctest::Approx(30.0F).epsilon(1e-4));
@@ -1274,6 +1298,18 @@ TEST_CASE("inspector: `enabled` compares with ==, so NaN stays live and -0.0 doe
     const FieldValue negativeZero{engine::Vec3{-0.0F, -0.0F, -0.0F}};
     CHECK_FALSE(axisResetAction(std::nullopt, FieldKind::Vec3, negativeZero, defaultValue).enabled);
     CHECK_FALSE(axisResetAction(std::size_t{0}, FieldKind::Vec3, negativeZero, defaultValue).enabled);
+
+    // A DIFFERENCE SMALLER THAN EPSILON IS STILL A DIFFERENCE, and this is the ONLY arm that tells
+    // `==` from approxEquals. Neither arm above can: both comparators call NaN unequal to everything
+    // and both call -0.0F equal to +0.0F. Measured -- a sabotage seed swapping the comparator for
+    // approxEquals reddened nothing until this arm existed.
+    const engine::Vec3 unitDefault{1.0F, 1.0F, 1.0F};
+    const std::optional<FieldValue> unitDefaultValue{FieldValue{unitDefault}};
+    const engine::Vec3 nudged{1.0F + (engine::EPSILON * 0.5F), 1.0F, 1.0F};
+    REQUIRE(nudged.x != unitDefault.x);                  // the nudge really moved the bits
+    REQUIRE(engine::approxEquals(nudged, unitDefault));  // ...and approxEquals calls the two EQUAL
+    CHECK(axisResetAction(std::nullopt, FieldKind::Vec3, FieldValue{nudged}, unitDefaultValue).enabled);
+    CHECK(axisResetAction(std::size_t{0}, FieldKind::Vec3, FieldValue{nudged}, unitDefaultValue).enabled);
 }
 
 TEST_CASE("inspector: a non-axis kind resets as a WHOLE FIELD, with or without an axis (task E.3.1, VF13)") {
@@ -1446,7 +1482,9 @@ void registerFdNoDefaultMeta() {
             .data<&FdNoDefault::value>("value"_hs, "value");
         return true;
     }();
-    CHECK(registered);
+    // NOT a CHECK: `registered` is true by construction, and an assertion that cannot fail must never
+    // be presented as one. It exists to name the initialiser's side effect.
+    (void)registered;
 }
 
 }  // namespace

@@ -1,4 +1,5 @@
 #include <aero/core/log.hpp>
+#include <aero/core/math.hpp>              // task E.3.1: degrees/radians/eulerAngles/fromEulerAngles
 #include <aero/editor/asset_database.hpp>  // task 3.1.5: the Guid row resolves a reference to a record
 #include <aero/editor/asset_view.hpp>      // classifyAssetKind, assetKindLabel
 #include <aero/editor/inspector_model.hpp>

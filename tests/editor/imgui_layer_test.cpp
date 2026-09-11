@@ -12813,17 +12813,43 @@ namespace {
     return code.size();
 }
 
-// `needle` as a STANDALONE token: not preceded or followed by an identifier character, a digit or a
-// '.'. Without that, scanning for "61" would match inside "1615" and inside "0.61", and a scan that
-// over-matches on a clean tree gets relaxed rather than fixed.
+// How many lines in [from, to) contain `needle` -- the bounded counterpart of soleLineContaining, for
+// an assertion about ONE function's body.
+[[nodiscard]] std::size_t countInRange(const std::vector<std::string>& code, std::string_view needle, std::size_t from,
+                                       std::size_t to) {
+    std::size_t hits = 0;
+    for (std::size_t i = from; i < to && i < code.size(); ++i) {
+        if (code[i].find(needle) != std::string::npos) {
+            ++hits;
+        }
+    }
+    return hits;
+}
+
+// `needle` as a STANDALONE numeric token: not preceded or followed by an identifier character, a
+// digit or a '.'. Without the boundary test, scanning for "61" would match inside "1615" and inside
+// "0.61", and a scan that over-matches on a clean tree gets relaxed rather than fixed.
+//
+// A TRAILING LITERAL SUFFIX IS SKIPPED, AND THAT IS NOT A REFINEMENT -- IT IS THE WHOLE SCAN. Without
+// it, `226U` reads as "226" followed by an identifier character and is INVISIBLE, and `226U` is
+// precisely how axis_palette.hpp itself spells its bytes, so the most likely restatement is the one
+// spelling the scan would have missed. Measured in both directions: a seed restating `226U` in
+// inspector_panel.cpp left this clause green until the suffix skip existed, and removing the skip
+// again makes the same seed invisible.
 [[nodiscard]] bool containsStandaloneToken(const std::string& line, std::string_view needle) {
     const auto isTokenChar = [](char c) {
         return (std::isalnum(static_cast<unsigned char>(c)) != 0) || c == '_' || c == '.';
     };
+    const auto isLiteralSuffix = [](char c) {
+        return c == 'u' || c == 'U' || c == 'l' || c == 'L' || c == 'f' || c == 'F';
+    };
     std::size_t at = line.find(needle);
     while (at != std::string::npos) {
         const bool leftOk = at == 0 || !isTokenChar(line[at - 1]);
-        const std::size_t after = at + needle.size();
+        std::size_t after = at + needle.size();
+        while (after < line.size() && isLiteralSuffix(line[after])) {
+            ++after;
+        }
         const bool rightOk = after >= line.size() || !isTokenChar(line[after]);
         if (leftOk && rightOk) {
             return true;
@@ -12939,6 +12965,28 @@ TEST_CASE("editor: the axis row's gate is read AFTER the group closes (task E.3.
         CHECK(rowHits == 3);
     }
 
+    SUBCASE("(d) the Quat cache's IsItemActive() is read after the group too") {
+        // Read BEFORE EndGroup it reports the LAST AXIS's state rather than the group's, so dragging
+        // X or Y would never latch the cache and the row would fight the user's own numbers every
+        // frame. Nothing in tests/ can drive a drag, so the ordering is pinned as text -- and it had
+        // to be: a sabotage seed that computed the flag inside drawAxisRow and handed it out reddened
+        // NOTHING until this clause existed.
+        const std::size_t beginAt = soleLineContaining(code, "ImGui::BeginGroup()");
+        const std::size_t endAt = soleLineContaining(code, "ImGui::EndGroup()");
+        CHECK(countInRange(code, "IsItemActive", beginAt, endAt) == 0);
+
+        const std::size_t quatAt = soleLineContaining(code, "case FieldKind::Quat:");
+        const std::size_t callAt = firstLineContaining(code, "drawAxisRow(", quatAt);
+        const std::size_t breakAt = firstLineContaining(code, "break;", quatAt);
+        REQUIRE(callAt < breakAt);
+        // Exactly one in the arm -- the String arm has one of its own, which is why this is bounded
+        // rather than counted over the whole file.
+        CHECK(countInRange(code, "ImGui::IsItemActive()", quatAt, breakAt) == 1);
+        const std::size_t activeAt = firstLineContaining(code, "ImGui::IsItemActive()", quatAt);
+        CHECK(activeAt > callAt);
+        CHECK(activeAt < breakAt);
+    }
+
     SUBCASE("(c) in BOTH arms the gate is read on a line strictly after the drawAxisRow call") {
         const std::array<std::string_view, 2> arms{"case FieldKind::Vec3:", "case FieldKind::Quat:"};
         for (const std::string_view arm : arms) {
@@ -12971,17 +13019,6 @@ namespace {
         }
     }
     return code.size();
-}
-
-[[nodiscard]] std::size_t countInRange(const std::vector<std::string>& code, std::string_view needle, std::size_t from,
-                                       std::size_t to) {
-    std::size_t hits = 0;
-    for (std::size_t i = from; i < to && i < code.size(); ++i) {
-        if (code[i].find(needle) != std::string::npos) {
-            ++hits;
-        }
-    }
-    return hits;
 }
 
 }  // namespace
