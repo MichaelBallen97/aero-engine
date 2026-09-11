@@ -15465,13 +15465,14 @@ title bar whenever a permission prompt was pending, at ~0.2 % CPU.
 
 ### E.3.1 — Axis-labelled vector fields — OPENS Epic E.3, and four assertions that could not fail
 
-**Branch `feat/E.3.1-axis-labelled-vector-fields`, SIX commits** — the plan's five, plus one closing
-the code-review round. Sized **M at the low end** in the plan, recorded before the first commit, and
-landed there. *(PR number and merge commit are filled in at merge.)*
+**Branch `feat/E.3.1-axis-labelled-vector-fields`, NINE commits** — the plan's five, one closing the
+first code-review round, and three closing a second one. Sized **M at the low end** in the plan,
+recorded before the first commit, and landed there. *(PR number and merge commit are filled in at
+merge.)*
 
 `ctest -N` **174 -> 174**, entry set byte-identical to the branch point's on both presets — no
 component, no target, no `add_test`, in any of the three configurations. doctest:
-`aero_editor_inspector_test` **31 -> 53**, `aero_editor_imgui_test` **181 -> 188**; the other five
+`aero_editor_inspector_test` **31 -> 55**, `aero_editor_imgui_test` **181 -> 188**; the other five
 unmoved, including `aero_scene_serialize_test` at **40**, which is the pin that says no component
 crept in. All eight guards unmoved — math **500**, platform **92**, rhi **163**, scene **92**,
 golden-rule **165**, project-no-delete **A=6/B=80**, audio **11/3/55**, probes **6/57** — because the
@@ -15506,7 +15507,9 @@ all eight kinds — carries a right-click reset menu, with per-axis entries on t
 
 **Each commit is green on its own and the four halves bisect independently**: the pure surface
 (nothing calls it), the defaults seam (nothing calls it), the table (no axis treatment yet), the axis
-row (no reset menu yet), the reset menu.
+row (no reset menu yet), the reset menu. The second review round's behaviour fix is its own commit for
+the same reason — the per-axis `enabled` rule is bisectable apart from the finiteness guard and apart
+from the docs.
 
 #### Measured before a line was written, and each contradicted a plausible guess
 
@@ -15624,3 +15627,75 @@ as well is what reddens `VF9`. Two seeds, not one; the matrix row should say so.
   which is also the honest shape for each commit read on its own.
 * **A `static const bool` initialised by a lambda is true by construction**, so `CHECK`ing it is an
   assertion that cannot fail. It is a `(void)` cast with its reason beside it.
+
+#### The second review round — two defects, three weak claims, and what each one teaches
+
+The first round closed four assertions that could not fail. A second pass over the same files found
+**two real defects and three claims weaker than they read**, in three commits.
+
+**THE PER-AXIS RESET NEVER CONVERGED, AND THE COVER WAS `Vec3`-ONLY, WHICH IS WHY.** `axisResetAction`
+computed `result = axisRowFieldValue(shown, kind)` and then `enabled = result != current` — a
+comparison of the whole recomposed value. For a `Quat` that recomposition goes out through euler and
+back through `fromEulerAngles` + `normalize`, which perturbs **the other two axes** by ~1e-7 every
+time. Measured on the branch before the fix: from a `(0, 20, 40)`-degree pose, five successive X
+resets gave `-2.403e-07`, `-3.600e-07`, `+5.676e-07`, `-1.832e-07`, `-7.762e-07` — **still enabled
+after five clicks, never converging**, so every click cost another undo entry. From a `(0, 20, 0)`
+pose the X box read **exactly 0.000** and the entry was still live. **Identity was the only exact
+fixpoint in the entire space**, and identity is exactly the pose the tier-0 battery happened to use.
+
+The rule that replaced it: **a per-axis entry asks "does this change the axis it NAMES, at the
+precision the row DISPLAYS?"** — the axis's own shown component against the default's, both rounded to
+three decimals (`std::round(v * 1000.0F) / 1000.0F`, **as floats, never as formatted strings**, because
+`-0.000` and `0.000` are different strings and must compare equal). The entry says "Reset X to 0.000"
+and the box says "0.000"; if those are the same number the action changes nothing anybody can see or
+type, so it must not cost an undo entry — `guidFieldRow`'s own rule at this row's precision. The
+**whole-field** entry is untouched and still bitwise, because it writes the default verbatim and `VF8`
+pins that. NaN still rounds to NaN and keeps the reset live; `-0.0F` still rounds to `-0.0F` and stays
+quiet against `+0.0F`. **Stated consequence: a `Vec3` axis differing from its default by less than
+0.0005 is now DISABLED**, which is what the box was already showing the user.
+
+**WHY NO CASE CAUGHT IT, WHICH IS THE PART WORTH CARRYING.** `VF10` — the AC-6 case — is `Vec3` in
+every one of its assertions, and a per-axis `Vec3` reset is a verbatim component copy with exact
+arithmetic. `VF8` covers only the whole-field `Quat`. `VF14` drives per-axis `Quat` resets, but always
+from a pose where all three axes are genuinely off, so it only ever asserts `enabled` **true**. Sabotage
+row `S7` was `Vec3`-only for the same reason. **Nothing anywhere asserted `enabled` for a per-axis
+`Quat` reset whose axis was already at its default.** `VF16` does, from both measured poses, with a
+15-degree anti-vacuity arm and a convergence arm proving one click settles it; re-seeding `S7` at the
+per-axis assignment reddens `VF16`'s four subcases plus `VF10` and `VF12`.
+
+**`axisResetAction` COULD `assert`-ABORT THE DEBUG EDITOR ON A READ.** `normalize(Quat)` asserts
+`lengthSquared(q) > 0.0f` (`quat.hpp:69`); a non-finite quaternion makes `lenSq` NaN, `NaN > 0.0f` is
+**false**, and the process dies — **measured, SIGABRT, exit 134**. Before E.3.1 that expression ran
+only when `edited == true`; `axisResetAction` runs it **every frame a per-axis popup is open**, derived
+from the stored value, so right-clicking one axis of a non-finite rotation would take the editor down.
+No live writer can put a non-finite `Quat` into a component today, so it is **latent, not reachable** —
+guarded anyway, because it costs three comparisons. The guard tests `std::isfinite` **FIRST**, before
+anything recomposes (E.2.2's `resolveSpotCone` precedent), and the resulting pair is coherent: the
+**per-axis** entry goes dead (recomposing would abort, and resetting one euler component cannot rescue
+a broken rotation anyway) while the **whole-field** entry stays live, because it writes the default
+verbatim and **is** the rescue. `Vec3` is deliberately not guarded — no `Vec3` path normalizes, so
+`VF12`'s NaN rescue keeps its per-axis half. **And the obvious input is the wrong one: the ZERO
+quaternion, which `normalize()` names in its own assert message, never reaches the guard at all**,
+because `eulerAngles({0,0,0,0})` is a finite `(0,0,0)` that recomposes into a unit quaternion. `VF17`
+records that measurement beside the two that do fire.
+
+**`VF6`'s ANTI-VACUITY ARM PREDICTED A TOOLCHAIN.** It asserted that `normalize()` moves the bits of
+GLM's euler constructor — true here, where `length(raw) - 1` is `-5.96046448e-08`, **exactly `-2^-24`,
+a one-ulp miss**. That last ulp is a product of all-`float` `cosf`/`sinf` terms, so it depends on the
+host libm **and** on FMA contraction policy, and this branch has never been compiled by GCC or MSVC. A
+lane whose constructor lands exactly unit — or merely close enough that `1.0f/length` rounds to `1.0f`
+— makes `normalize()` the identity, `got` **is** `raw` bit for bit, and the `CHECK` reddens a
+**correct** tree. `CHECK(matchesNormalized)` stays the claim; the vacuity signal is a `WARN`, which
+reports without failing, with an explicit message and the measured residual printed on every run.
+**A `WARN` is the right instrument whenever a case's own strength depends on a floating-point
+accident.**
+
+**AND AC-14's COVERAGE CLAIM WAS OVERSTATED.** `I142` genuinely exercises `BeginPopupContextItem`'s
+`IM_ASSERT(id != 0)` on **both** call sites every frame, which is real cover for seed `S16` — but **the
+popup never opens in any test on any lane**, because nothing in `tests/` can synthesise a right-click.
+So `EndPopup`, both `BeginDisabled`/`EndDisabled` pairs, `MenuItem`, `Separator` and the whole of
+`InspectorPanel::resetField` **execute nowhere in CI**. `I147` pins `resetField` as source text and
+nothing calls it: **`resetField` has zero runtime cover anywhere.** AC-14's behavioural cover is the
+validation page's rows 4, 5, 7, 8 and 9 and nothing else, and the plan, this entry and the page all say
+so now. **The generalisation: an ImGui tier that can only DRAW cannot claim a popup's body**, and every
+future context menu in this tree inherits that hole until something can open one.
