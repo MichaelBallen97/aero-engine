@@ -1173,12 +1173,23 @@ TEST_CASE("inspector: axisRowFieldValue rebuilds a Vec3 exactly and a Quat NORMA
         got.x == expected.x && got.y == expected.y && got.z == expected.z && got.w == expected.w;
     CHECK(matchesNormalized);
 
-    // ANTI-VACUITY: normalize() really does move the bits at this pose, which is what makes the check
-    // above a statement rather than a tautology. On a toolchain whose euler constructor returned an
-    // exactly unit quaternion this would redden and the MESSAGE above would say why -- a loud, honest
-    // failure in place of a silently vacuous pass.
+    // ANTI-VACUITY, REPORTED RATHER THAN ASSERTED -- and the downgrade is a cross-lane hazard, not
+    // caution. The residual printed above measures -5.96046448e-08, which is exactly -2^-24: a
+    // ONE-ULP miss. GLM's euler constructor is a product of all-float cosf/sinf terms, so that last
+    // ulp depends on the host libm AND on the toolchain's FMA contraction policy, and this code has
+    // never been compiled by GCC or MSVC. On a lane whose constructor lands exactly unit -- or merely
+    // close enough that 1.0f/length(raw) rounds to 1.0f -- normalize() is the identity, `got` IS
+    // `raw` bit for bit, and a CHECK here would redden a CORRECT tree.
+    //
+    // So: WARN, which reports and does not fail. CHECK(matchesNormalized) above remains the claim;
+    // this is the statement about whether the claim bites on this toolchain.
     const bool differsFromRaw = got.x != raw.x || got.y != raw.y || got.z != raw.z || got.w != raw.w;
-    CHECK(differsFromRaw);
+    WARN(differsFromRaw);
+    if (!differsFromRaw) {
+        MESSAGE(
+            "VF6: the euler constructor is exactly unit on this toolchain, so normalize() is the "
+            "identity and the bitwise arm above is VACUOUS here");
+    }
 
     // ...and it is the RIGHT rotation, not merely a unit one: the triple comes back out.
     const std::array<float, 3> back = axisRowValues(rotation, FieldKind::Quat);
@@ -1514,6 +1525,72 @@ TEST_CASE("inspector: a per-axis Quat reset CONVERGES and then goes quiet (task 
         CHECK(first.label == "Reset Y to -7.000");
         CHECK_FALSE(axisResetAction(std::size_t{1}, FieldKind::Quat, first.result, tiltedDefault).enabled);
     }
+}
+
+TEST_CASE("inspector: a non-finite Quat kills the per-axis entry and keeps the rescue (task E.3.1, VF17)") {
+    // THE CASE THAT COULD NOT BE WRITTEN BEFORE THE GUARD, because writing it aborted the binary:
+    // axisRowFieldValue's Quat arm calls normalize(), which asserts lengthSquared(q) > 0.0f, and a
+    // non-finite quaternion makes that NaN -- `NaN > 0.0f` is false, so the Debug/sanitizer build
+    // dies with SIGABRT (measured, exit 134). axisResetAction runs that recomposition on the STORED
+    // value every frame a per-axis popup is open, so it is a READ path, not an edit path.
+    //
+    // The Quat is built by aggregate initialisation, never through fromEulerAngles/normalize, which
+    // is the only way to get a non-finite one into a FieldValue at all.
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    const float inf = std::numeric_limits<float>::infinity();
+    const std::optional<FieldValue> identity{FieldValue{engine::Quat::identity()}};
+
+    const std::array<FieldValue, 2> broken{
+        FieldValue{engine::Quat{nan, 0.0F, 0.0F, 1.0F}},
+        FieldValue{engine::Quat{0.0F, inf, 0.0F, 1.0F}},
+    };
+    for (std::size_t i = 0; i < broken.size(); ++i) {
+        CAPTURE(i);
+        for (std::size_t axis = 0; axis < AXIS_ROW_COMPONENTS; ++axis) {
+            CAPTURE(axis);
+            const AxisResetAction one = axisResetAction(axis, FieldKind::Quat, broken[i], identity);
+            // DEAD, on every axis: recomposing would abort, and resetting one euler component of a
+            // broken rotation could not rescue it anyway.
+            CHECK_FALSE(one.enabled);
+            // ...and it still READS sensibly, because the label is built from the DEFAULT's shown
+            // component, which is finite. A greyed-out blank would tell the user nothing.
+            CHECK_FALSE(one.label.empty());
+        }
+
+        // THE RESCUE IS THE WHOLE-FIELD ENTRY, and it stays live: it writes the default verbatim and
+        // touches no normalize() at all. That pair -- per-axis dead, whole-field live -- is the point.
+        const AxisResetAction all = axisResetAction(std::nullopt, FieldKind::Quat, broken[i], identity);
+        CHECK(all.enabled);
+        CHECK((all.result == FieldValue{engine::Quat::identity()}));
+        CHECK(all.label == "Reset to default");
+    }
+
+    // THE LABEL IS THE DEFAULT'S NUMBER, NOT THE CURRENT ONE, so it is finite and assertable -- VF11
+    // declines to assert a non-finite "%.3f" because libc++ writes "nan" and MSVC can write
+    // "-nan(ind)", and this case would inherit that hazard if the label read `current`.
+    CHECK(axisResetAction(std::size_t{0}, FieldKind::Quat, broken[0], identity).label == "Reset X to 0.000");
+
+    // THE ZERO QUATERNION IS NOT IN THE SET ABOVE, AND THAT IS THE INTERESTING PART. normalize()
+    // names it in its own assert message, so it looks like the obvious input here -- but eulerAngles
+    // maps {0,0,0,0} to a FINITE (0, 0, 0), which recomposes through fromEulerAngles into a unit
+    // quaternion. It never reaches the guard, and it never aborted either. Measured, not assumed.
+    const FieldValue zeroQuat{engine::Quat{0.0F, 0.0F, 0.0F, 0.0F}};
+    const std::array<float, 3> zeroShown = axisRowValues(zeroQuat, FieldKind::Quat);
+    CHECK(std::isfinite(zeroShown[0]));
+    CHECK(std::isfinite(zeroShown[1]));
+    CHECK(std::isfinite(zeroShown[2]));
+    // Its three euler components already read as the identity's, so every per-axis entry is quiet
+    // for the ordinary reason, while the whole-field rescue is live because the STORED bits differ.
+    CHECK_FALSE(axisResetAction(std::size_t{0}, FieldKind::Quat, zeroQuat, identity).enabled);
+    CHECK(axisResetAction(std::nullopt, FieldKind::Quat, zeroQuat, identity).enabled);
+
+    // CONTRAST CONTROL: Vec3 is deliberately NOT guarded, because no Vec3 path calls normalize. Its
+    // per-axis NaN reset stays LIVE -- VF12's rescue, restated here so the asymmetry is legible in
+    // one place rather than inferred from two cases that never mention each other.
+    const std::optional<FieldValue> vecDefault{FieldValue{engine::Vec3{0.0F, 0.0F, 0.0F}}};
+    const FieldValue vecWithNan{engine::Vec3{nan, 1.0F, 1.0F}};
+    CHECK(axisResetAction(std::size_t{0}, FieldKind::Vec3, vecWithNan, vecDefault).enabled);
+    CHECK(axisResetAction(std::nullopt, FieldKind::Vec3, vecWithNan, vecDefault).enabled);
 }
 
 // ================================================================================================

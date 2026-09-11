@@ -324,6 +324,31 @@ AxisResetAction axisResetAction(std::optional<std::size_t> axis, FieldKind kind,
         const std::array<float, 3> defaultShown = axisRowValues(*defaultValue, kind);
         std::array<float, 3> shown = currentShown;
         shown[*axis] = defaultShown[*axis];
+
+        // FINITENESS IS TESTED FIRST, BEFORE ANYTHING RECOMPOSES -- E.2.2's resolveSpotCone
+        // precedent, and here it is an ABORT rather than a wrong number. axisRowFieldValue's Quat arm
+        // calls normalize(), which asserts lengthSquared(q) > 0.0f (quat.hpp:69); a non-finite
+        // quaternion makes lengthSquared NaN, `NaN > 0.0f` is FALSE, and the Debug/sanitizer editor
+        // dies with SIGABRT. Measured: exit 134.
+        //
+        // THAT MATTERS NOW BECAUSE THIS IS A READ PATH. Before task E.3.1 the recomposition ran only
+        // when the user had actually dragged a box; axisResetAction runs it every frame a per-axis
+        // popup is open, derived from the STORED value -- so right-clicking one axis of a non-finite
+        // rotation would abort. No live writer can put a non-finite Quat into a component today, so
+        // this is latent rather than reachable; it is guarded anyway because it costs three
+        // comparisons.
+        //
+        // THE PAIR IS COHERENT: the per-axis entry goes DEAD (recomposing would abort, and a
+        // per-axis reset cannot rescue a broken rotation anyway) while the WHOLE-FIELD entry below
+        // stays live -- it writes the default verbatim, touches no normalize(), and IS the rescue.
+        // Vec3 is deliberately not guarded: no Vec3 path calls normalize, so VF12's NaN rescue keeps
+        // its per-axis half.
+        const bool recomposeNormalizes = kind == FieldKind::Quat;
+        const bool shownIsFinite = std::isfinite(shown[0]) && std::isfinite(shown[1]) && std::isfinite(shown[2]);
+        if (recomposeNormalizes && !shownIsFinite) {
+            return action;  // disabled; `result` stays default-constructed and is never read
+        }
+
         action.result = axisRowFieldValue(shown, kind);
 
         // THE PER-AXIS QUESTION IS "DOES THIS CHANGE THE AXIS IT NAMES, AT THE PRECISION THE ROW
