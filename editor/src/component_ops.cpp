@@ -7,7 +7,9 @@
 #include <entt/entt.hpp>
 
 #include <cstdint>
+#include <optional>
 #include <string>
+#include <string_view>
 #include <variant>
 
 namespace engine::editor {
@@ -209,6 +211,46 @@ std::optional<FieldValue> readComponentField(World& world, Entity entity, Compon
         // audible on drift, not just the model.
         AERO_LOG_ERROR("component_ops: readComponentField -- '{}.{}' has meta type '{}', which no field editor maps",
                        typeName, field, member.type().info().name());
+    }
+    return result;
+}
+
+std::optional<FieldValue> defaultComponentField(const World& world, ComponentTypeId id, std::string_view field) {
+    // readComponentField's body with ONE structural difference -- metaType.construct() instead of
+    // metaType.from_void(world.getRaw(id, entity)) -- plus the not-default-constructible arm. It reuses
+    // this TU's own readMemberValue: there is deliberately NO shared extraction anywhere, because the
+    // dispatch already lives in the right translation unit. Do not go looking for a helper header.
+    const std::string_view typeName = world.componentTypeName(id);
+    if (typeName.empty()) {
+        AERO_LOG_ERROR("component_ops: defaultComponentField -- unregistered component id");
+        return std::nullopt;
+    }
+    const entt::meta_type metaType = resolveComponentMeta(typeName);
+    if (!metaType) {
+        AERO_LOG_ERROR("component_ops: defaultComponentField -- no entt::meta registered for '{}'", typeName);
+        return std::nullopt;
+    }
+    // A NAMED, NON-CONST LOCAL is required: readMemberValue takes entt::meta_any& and construct()
+    // returns a prvalue. meta_data::get takes a forwarding reference, so an OWNING meta_any binds
+    // exactly as from_void's read-only ref wrapper does on the entity path.
+    entt::meta_any instance = metaType.construct();
+    if (!instance) {
+        AERO_LOG_ERROR("component_ops: defaultComponentField -- '{}' is not default-constructible", typeName);
+        return std::nullopt;
+    }
+    const entt::meta_data member = metaType.data(entt::hashed_string::value(field.data(), field.size()));
+    if (!member) {
+        AERO_LOG_ERROR("component_ops: defaultComponentField -- unknown field '{}.{}'", typeName, field);
+        return std::nullopt;
+    }
+    std::optional<FieldValue> result = readMemberValue(member, instance);
+    if (!result.has_value()) {
+        // Unreachable today for the same O2 reason readComponentField's twin below is, and audible for
+        // the same reason: this seam promises that every rejection logs.
+        AERO_LOG_ERROR(
+            "component_ops: defaultComponentField -- '{}.{}' has meta type '{}', which no field "
+            "editor maps",
+            typeName, field, member.type().info().name());
     }
     return result;
 }

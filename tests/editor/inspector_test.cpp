@@ -8,6 +8,7 @@
 // with AERO_REQUIRE_GPU set or unset (it builds none of the platform/RHI/UI-shell machinery).
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include <aero/core/guid.hpp>              // task 3.1.5: formatGuid, GuidGenerator
+#include <aero/core/log.hpp>               // task E.3.1, FD10: setLogCallback -- the seam's rejection records
 #include <aero/editor/asset_database.hpp>  // task 3.1.5: the Guid row resolves against a real scan
 #include <aero/editor/component_ops.hpp>
 #include <aero/editor/inspector_model.hpp>
@@ -1395,4 +1396,312 @@ TEST_CASE("inspector: the label column's width is clamped, and the clamp cannot 
     SUBCASE("(e) the floor scales with the font, so it is a font-relative rule rather than a constant") {
         CHECK(inspectorLabelColumnWidth(4.0F, PADDING, 26.0F, 4000.0F) == doctest::Approx(130.0F).epsilon(1e-6));
     }
+}
+
+// ================================================================================================
+// task E.3.1 (FD1-FD10) -- defaultComponentField: the value a reset writes.
+//
+// Appended below the VF battery, i.e. below the AC-12 drift pin, where registerEditorReflection's
+// process-lifetime registration is already in place. NO CASE HERE CALLS entt::meta_reset(); each one
+// that needs a built-in calls registerEditorReflection() itself, the shape the AudioSource case above
+// states as a rule (a case that rides a neighbour's registration reads zero fields when run alone).
+// ================================================================================================
+namespace {
+
+using engine::editor::defaultComponentField;
+
+// The RAII log-capture guard: its destructor detaches, which a code-review round required after the
+// bare form was found to be a latent use-after-free (log.hpp -- detaching does NOT guarantee the
+// captured state may be destroyed). render_sky_test.cpp's own shape, copied rather than shared
+// because this TU links neither that file nor a test-support library that could hold it.
+struct LogCallbackGuard {
+    ~LogCallbackGuard() { engine::setLogCallback({}); }
+    LogCallbackGuard() = default;
+    LogCallbackGuard(const LogCallbackGuard&) = delete;
+    LogCallbackGuard& operator=(const LogCallbackGuard&) = delete;
+    LogCallbackGuard(LogCallbackGuard&&) = delete;
+    LogCallbackGuard& operator=(LogCallbackGuard&&) = delete;
+};
+
+// A component type the World can hold (default-constructible, so World::addRaw works) registered
+// under a name whose entt::meta belongs to a DIFFERENT, non-default-constructible type. That
+// mismatch is the only way to reach defaultComponentField's not-default-constructible arm at all:
+// resolveComponentMeta joins the two registries by NAME, and World::addRaw default-constructs, so an
+// ordinary registration can never produce a meta type whose construct() fails.
+struct FdNoDefaultCarrier {
+    int value = 0;
+};
+struct FdNoDefault {
+    explicit FdNoDefault(int v) : value(v) {}
+    int value;
+};
+
+// Once per process: entt::meta_factory APPENDS, so a second `.data<>` call would register the member
+// twice. Safe below the drift pin, where nothing calls entt::meta_reset().
+void registerFdNoDefaultMeta() {
+    static const bool registered = [] {
+        using namespace entt::literals;
+        entt::meta_factory<FdNoDefault>{}
+            .type("FdNoDefaultProbe"_hs, "FdNoDefaultProbe")
+            .data<&FdNoDefault::value>("value"_hs, "value");
+        return true;
+    }();
+    CHECK(registered);
+}
+
+}  // namespace
+
+TEST_CASE("inspector: engine::Transform's defaults -- scale is (1,1,1), not zero (task E.3.1, FD1)") {
+    engine::editor::registerEditorReflection();
+
+    World world;
+    const ComponentTypeId id = world.findComponentType("engine::Transform");
+    REQUIRE(id.valid());
+    const Entity e = world.create();
+    REQUIRE(world.addRaw(id, e, nullptr) != nullptr);
+
+    // SEEDED OFF-DEFAULT FIRST, and the case is vacuous without this: an implementation that read the
+    // LIVE component would return (1,1,1) too, because a freshly added Transform already holds it.
+    REQUIRE(writeComponentField(world, e, id, "scale", FieldValue{engine::Vec3{7.0F, 8.0F, 9.0F}}));
+    REQUIRE(writeComponentField(world, e, id, "position", FieldValue{engine::Vec3{4.0F, 5.0F, 6.0F}}));
+
+    const std::optional<FieldValue> scale = defaultComponentField(world, id, "scale");
+    REQUIRE(scale.has_value());
+    REQUIRE(std::holds_alternative<engine::Vec3>(*scale));
+    // THE HEADLINE. A reset that wrote zero would leave the object invisible, which is the single
+    // most user-hostile thing this feature could do.
+    CHECK(std::get<engine::Vec3>(*scale).x == 1.0F);
+    CHECK(std::get<engine::Vec3>(*scale).y == 1.0F);
+    CHECK(std::get<engine::Vec3>(*scale).z == 1.0F);
+
+    const std::optional<FieldValue> position = defaultComponentField(world, id, "position");
+    REQUIRE(position.has_value());
+    REQUIRE(std::holds_alternative<engine::Vec3>(*position));
+    CHECK(std::get<engine::Vec3>(*position).x == 0.0F);
+    CHECK(std::get<engine::Vec3>(*position).y == 0.0F);
+    CHECK(std::get<engine::Vec3>(*position).z == 0.0F);
+
+    const std::optional<FieldValue> rotation = defaultComponentField(world, id, "rotation");
+    REQUIRE(rotation.has_value());
+    REQUIRE(std::holds_alternative<engine::Quat>(*rotation));
+    CHECK((std::get<engine::Quat>(*rotation) == engine::Quat::identity()));
+}
+
+TEST_CASE("inspector: every reflected field of every built-in resolves a default (task E.3.1, FD2)") {
+    // A DRIFT PIN, not a proof: it cannot reach the not-default-constructible branch, because every
+    // built-in IS default-constructible -- FD9 below is what closes that. What this catches is a
+    // future built-in, or a future field, that stops resolving one.
+    engine::editor::registerEditorReflection();
+
+    World world;
+    const std::size_t count = world.componentTypeCount();
+    REQUIRE(count == 10);  // the 10 built-ins (E.2.2) -- the AC-12 case's own shape
+
+    const Entity e = world.create();
+    for (std::size_t i = 0; i < count; ++i) {
+        world.addRaw(world.componentTypeAt(i), e, nullptr);
+    }
+
+    InspectorModel model;
+    buildInspectorModel(world, e, model);
+    REQUIRE(model.components.size() == count);
+
+    std::size_t fieldsChecked = 0;
+    for (const engine::editor::ComponentEntry& entry : model.components) {
+        REQUIRE(entry.hasFields);
+        REQUIRE_FALSE(entry.fields.empty());
+        for (const engine::editor::FieldEntry& field : entry.fields) {
+            CAPTURE(entry.name);
+            CAPTURE(field.name);
+            const std::optional<FieldValue> value = defaultComponentField(world, entry.typeId, field.name);
+            REQUIRE(value.has_value());
+            // ...and the ALTERNATIVE matches the kind the model reports, so a default that resolved
+            // as some other type would redden here rather than reaching the panel as a kind mismatch.
+            CHECK(value->index() == field.value.index());
+            ++fieldsChecked;
+        }
+    }
+    // ANTI-VACUITY: a loop over an empty model would pass every line above.
+    CHECK(fieldsChecked > 30);
+}
+
+TEST_CASE("inspector: defaultComponentField's four rejections (task E.3.1, FD3, FD4, FD5, FD9)") {
+    engine::editor::registerEditorReflection();
+
+    World world;
+    const ComponentTypeId transformId = world.findComponentType("engine::Transform");
+    REQUIRE(transformId.valid());
+    const Entity e = world.create();
+    REQUIRE(world.addRaw(transformId, e, nullptr) != nullptr);
+    REQUIRE(writeComponentField(world, e, transformId, "scale", FieldValue{engine::Vec3{7.0F, 8.0F, 9.0F}}));
+
+    SUBCASE("FD3: an unknown field name, and the component on the entity is untouched") {
+        CHECK_FALSE(defaultComponentField(world, transformId, "nope").has_value());
+        const std::optional<FieldValue> live = readComponentField(world, e, transformId, "scale");
+        REQUIRE(live.has_value());
+        REQUIRE(std::holds_alternative<engine::Vec3>(*live));
+        CHECK(std::get<engine::Vec3>(*live).x == 7.0F);
+        CHECK(std::get<engine::Vec3>(*live).y == 8.0F);
+        CHECK(std::get<engine::Vec3>(*live).z == 9.0F);
+    }
+
+    SUBCASE("FD4: an unregistered component id") {
+        CHECK_FALSE(defaultComponentField(world, ComponentTypeId{}, "scale").has_value());
+    }
+
+    SUBCASE("FD5: a World-registered but META-LESS type -- 2.2.2's E4 asymmetry, one layer over") {
+        const ComponentTypeId markerId = registerComponent<InspectorMarker>(world, "InspectorMarker");
+        REQUIRE(markerId.valid());
+        CHECK_FALSE(defaultComponentField(world, markerId, "payload").has_value());
+    }
+
+    SUBCASE("FD9: a meta type that is NOT default-constructible") {
+        registerFdNoDefaultMeta();
+        const ComponentTypeId id = registerComponent<FdNoDefaultCarrier>(world, "FdNoDefaultProbe");
+        REQUIRE(id.valid());
+        // The name resolves to real meta -- so this is NOT the FD5 arm wearing a different hat, and
+        // the field really exists on that meta type.
+        REQUIRE(engine::editor::componentFieldsAreReflected(world, id));
+        CHECK_FALSE(defaultComponentField(world, id, "value").has_value());
+    }
+}
+
+TEST_CASE("inspector: defaultComponentField MUTATES NOTHING (task E.3.1, FD6)") {
+    // construct() builds a SEPARATE instance rather than a view of a live one. Seeded off-default so
+    // "the live value is unchanged" and "the default is (1,1,1)" are two distinguishable facts.
+    engine::editor::registerEditorReflection();
+
+    World world;
+    const ComponentTypeId id = world.findComponentType("engine::Transform");
+    REQUIRE(id.valid());
+    const Entity e = world.create();
+    REQUIRE(world.addRaw(id, e, nullptr) != nullptr);
+    REQUIRE(writeComponentField(world, e, id, "scale", FieldValue{engine::Vec3{7.0F, 8.0F, 9.0F}}));
+
+    const std::optional<FieldValue> before = readComponentField(world, e, id, "scale");
+    REQUIRE(before.has_value());
+
+    const std::optional<FieldValue> defaults = defaultComponentField(world, id, "scale");
+    REQUIRE(defaults.has_value());
+    REQUIRE(std::holds_alternative<engine::Vec3>(*defaults));
+    CHECK(std::get<engine::Vec3>(*defaults).x == 1.0F);
+
+    const std::optional<FieldValue> after = readComponentField(world, e, id, "scale");
+    REQUIRE(after.has_value());
+    CHECK((*after == *before));  // byte-identical, through the variant's own ==
+    CHECK(std::get<engine::Vec3>(*after).x == 7.0F);
+    CHECK(std::get<engine::Vec3>(*after).y == 8.0F);
+    CHECK(std::get<engine::Vec3>(*after).z == 9.0F);
+}
+
+TEST_CASE("inspector: the default is the MEMBER INITIALISER, never the AERO_RANGE minimum (task E.3.1, FD7)") {
+    // TWO fields, because one cannot discriminate both wrong readings.
+    World world;
+    aero_reflect_register_all_aero_editor_inspector_test();
+    const ComponentTypeId probeId = registerProbe(world);
+    REQUIRE(probeId.valid());
+    const Entity e = world.create();
+    world.addRaw(probeId, e, nullptr);
+
+    // `speed`: member init 1.0f, AERO_RANGE(0.0f, 10.0f). Separates the real default from BOTH
+    // "zero" and "rangeMin" at once, since those two coincide here.
+    const std::optional<FieldValue> speed = defaultComponentField(world, probeId, "speed");
+    REQUIRE(speed.has_value());
+    REQUIRE(std::holds_alternative<double>(*speed));
+    CHECK(std::get<double>(*speed) == doctest::Approx(1.0).epsilon(1e-9));
+
+    // `hugeRange`: member init 0, AERO_RANGE(1e300, 2e300), destination std::int16_t. THE DECISIVE
+    // ONE -- a rangeMin implementation clamps to 32767, which nothing else in this fixture produces.
+    const std::optional<FieldValue> huge = defaultComponentField(world, probeId, "hugeRange");
+    REQUIRE(huge.has_value());
+    REQUIRE(std::holds_alternative<std::int64_t>(*huge));
+    CHECK(std::get<std::int64_t>(*huge) == 0);
+    CHECK(std::get<std::int64_t>(*huge) != std::numeric_limits<std::int16_t>::max());
+
+    // ...and the colour Vec3, whose default is Vec3::one() -- the fixture's own (1,1,1) witness.
+    const std::optional<FieldValue> tint = defaultComponentField(world, probeId, "tint");
+    REQUIRE(tint.has_value());
+    REQUIRE(std::holds_alternative<engine::Vec3>(*tint));
+    CHECK(std::get<engine::Vec3>(*tint).x == 1.0F);
+    CHECK(std::get<engine::Vec3>(*tint).y == 1.0F);
+    CHECK(std::get<engine::Vec3>(*tint).z == 1.0F);
+
+    // A Guid default is NIL, and nil is a VALUE rather than an absence.
+    const std::optional<FieldValue> asset = defaultComponentField(world, probeId, "asset");
+    REQUIRE(asset.has_value());
+    REQUIRE(std::holds_alternative<engine::Guid>(*asset));
+    CHECK_FALSE(std::get<engine::Guid>(*asset).valid());
+}
+
+TEST_CASE("inspector: defaultComponentField binds through a const World& (task E.3.1, FD8, compile-time)") {
+    // The O1 shape, one seam entry over: this line would fail to COMPILE if the signature ever
+    // widened to World&, which is what makes the constness a compiler fact rather than a promise.
+    engine::editor::registerEditorReflection();
+
+    World world;
+    const ComponentTypeId id = world.findComponentType("engine::Transform");
+    REQUIRE(id.valid());
+    // A genuinely MUTABLE World, seeded through a mutating call -- a `const World` local would bind
+    // trivially and would not state the property this case exists for.
+    const Entity e = world.create();
+    REQUIRE(world.addRaw(id, e, nullptr) != nullptr);
+
+    const World& cw = world;
+    const std::optional<FieldValue> scale = defaultComponentField(cw, id, "scale");
+    REQUIRE(scale.has_value());
+    CHECK(std::holds_alternative<engine::Vec3>(*scale));
+}
+
+TEST_CASE("inspector: every defaultComponentField rejection logs EXACTLY ONE error (task E.3.1, FD10)") {
+    // The log assertion lives HERE, in one case, rather than bolted onto FD3/FD4/FD5/FD9 -- the sink
+    // is a single global slot, and installing one inside four cases would put four global-state
+    // installs where this TU has none today.
+    engine::editor::registerEditorReflection();
+    registerFdNoDefaultMeta();
+
+    World world;
+    const ComponentTypeId transformId = world.findComponentType("engine::Transform");
+    REQUIRE(transformId.valid());
+    const ComponentTypeId markerId = registerComponent<InspectorMarker>(world, "InspectorMarker");
+    REQUIRE(markerId.valid());
+    const ComponentTypeId noDefaultId = registerComponent<FdNoDefaultCarrier>(world, "FdNoDefaultProbe");
+    REQUIRE(noDefaultId.valid());
+
+    std::vector<std::string> records;
+    {
+        const LogCallbackGuard guard;
+        engine::setLogCallback([&records](const engine::LogRecord& record) {
+            // LogRecord::message is a view onto a caller-owned buffer, INVALID once the callback
+            // returns -- copy it.
+            records.emplace_back(record.message);
+        });
+
+        CHECK_FALSE(defaultComponentField(world, transformId, "nope").has_value());         // FD3
+        CHECK_FALSE(defaultComponentField(world, ComponentTypeId{}, "scale").has_value());  // FD4
+        CHECK_FALSE(defaultComponentField(world, markerId, "payload").has_value());         // FD5
+        CHECK_FALSE(defaultComponentField(world, noDefaultId, "value").has_value());        // FD9
+
+        REQUIRE(records.size() == 4);
+        for (const std::string& record : records) {
+            CAPTURE(record);
+            CHECK(record.find("defaultComponentField") != std::string::npos);
+        }
+        // The four are DISTINCT sentences, so one arm's message cannot be standing in for another's.
+        CHECK(records[0].find("unknown field") != std::string::npos);
+        CHECK(records[1].find("unregistered component id") != std::string::npos);
+        CHECK(records[2].find("no entt::meta registered") != std::string::npos);
+        CHECK(records[3].find("not default-constructible") != std::string::npos);
+
+        // ANTI-VACUITY CONTROL: a SUCCESSFUL call inside the same sink scope adds nothing at all.
+        // Without it, a sink that was never actually installed -- or a seam that logged nothing --
+        // would be indistinguishable from one that logs exactly on rejection.
+        const std::size_t beforeSuccess = records.size();
+        CHECK(defaultComponentField(world, transformId, "scale").has_value());
+        CHECK(records.size() == beforeSuccess);
+    }
+
+    // The guard detached; a call after the scope adds nothing more.
+    const std::size_t afterDetach = records.size();
+    CHECK_FALSE(defaultComponentField(world, transformId, "nope").has_value());
+    CHECK(records.size() == afterDetach);
 }
