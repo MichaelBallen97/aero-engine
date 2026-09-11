@@ -21,6 +21,7 @@
 #include <doctest/doctest.h>
 #include <entt/entt.hpp>
 
+#include <array>  // task E.3.1: the axis row's three shown components
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>  // task 3.1.5: the scanned-project fixture
@@ -982,4 +983,416 @@ TEST_CASE("inspector: engine::SpotLight's five reflected fields all resolve (tas
     CHECK_FALSE(entry.fields[0].hasRange);
     CHECK_FALSE(entry.fields[3].color);
     CHECK_FALSE(entry.fields[4].color);
+}
+
+// ================================================================================================
+// task E.3.1 (VF1-VF15) -- the axis row, asserted as VALUES. No ImGui context exists in this target
+// and none is needed: every decision the Vec3/Quat rows make -- which kinds get axes, which letter,
+// which colour, what a reset writes, whether it is live, how wide the label column is -- is a pure
+// function here, so a tier-0 case asserts exactly what a person sees.
+//
+// PLACED AT THE END, below the AC-12 drift pin, for that case's own reason: registerEditorReflection
+// is process-lifetime and permanent, and every entt::meta_reset() in this TU is ABOVE the pin. These
+// cases need no registry at all -- they are functions on FieldValue -- so NONE of them resets.
+// ================================================================================================
+namespace {
+
+using engine::editor::AXIS_ROW_COMPONENTS;
+using engine::editor::AxisResetAction;
+using engine::editor::axisResetAction;
+using engine::editor::axisRowColor;
+using engine::editor::axisRowFieldValue;
+using engine::editor::axisRowLabel;
+using engine::editor::axisRowValues;
+using engine::editor::inspectorLabelColumnWidth;
+using engine::editor::isAxisRow;
+
+// The three bytes, compared as INTEGERS: a std::uint8_t inside a CHECK stringifies as a character,
+// which turns a readable "226 == 125" failure into two unprintable glyphs.
+void checkAxisColor(std::size_t index, const std::array<std::uint8_t, 3>& expected) {
+    const std::array<std::uint8_t, 3> actual = axisRowColor(index);
+    CAPTURE(index);
+    CHECK(static_cast<int>(actual[0]) == static_cast<int>(expected[0]));
+    CHECK(static_cast<int>(actual[1]) == static_cast<int>(expected[1]));
+    CHECK(static_cast<int>(actual[2]) == static_cast<int>(expected[2]));
+}
+
+// A Quat from a euler triple in DEGREES -- the shape every rotation case below poses with.
+engine::Quat quatFromDegrees(float x, float y, float z) {
+    return engine::normalize(
+        engine::fromEulerAngles(engine::Vec3{engine::radians(x), engine::radians(y), engine::radians(z)}));
+}
+
+}  // namespace
+
+TEST_CASE("inspector: isAxisRow over all eight kinds, both colour flags (task E.3.1, VF1)") {
+    // SIXTEEN ARMS, WRITTEN OUT rather than looped: the point is that each kind's answer is stated
+    // here, so a switch that grew a wrong arm reddens on that arm's own line. A loop over an
+    // expectation table would restate the implementation's own switch and assert nothing.
+    CHECK_FALSE(isAxisRow(FieldKind::Bool, false));
+    CHECK_FALSE(isAxisRow(FieldKind::Bool, true));
+    CHECK_FALSE(isAxisRow(FieldKind::Int, false));
+    CHECK_FALSE(isAxisRow(FieldKind::Int, true));
+    CHECK_FALSE(isAxisRow(FieldKind::UInt, false));
+    CHECK_FALSE(isAxisRow(FieldKind::UInt, true));
+    CHECK_FALSE(isAxisRow(FieldKind::Float, false));
+    CHECK_FALSE(isAxisRow(FieldKind::Float, true));
+
+    // The two that matter, and the ONE discriminator: an AERO_COLOR Vec3 keeps its picker.
+    CHECK(isAxisRow(FieldKind::Vec3, false));
+    CHECK_FALSE(isAxisRow(FieldKind::Vec3, true));
+
+    // A Quat has no colour flag to carry, so it is an axis row either way -- asserted in BOTH
+    // directions, because "true when false" alone would not catch an implementation that keyed a
+    // Quat off `color` too.
+    CHECK(isAxisRow(FieldKind::Quat, false));
+    CHECK(isAxisRow(FieldKind::Quat, true));
+
+    CHECK_FALSE(isAxisRow(FieldKind::String, false));
+    CHECK_FALSE(isAxisRow(FieldKind::String, true));
+    CHECK_FALSE(isAxisRow(FieldKind::Guid, false));
+    CHECK_FALSE(isAxisRow(FieldKind::Guid, true));
+}
+
+TEST_CASE("inspector: axisRowLabel is X/Y/Z and TOTAL past the last axis (task E.3.1, VF2)") {
+    CHECK(axisRowLabel(0) == "X");
+    CHECK(axisRowLabel(1) == "Y");
+    CHECK(axisRowLabel(2) == "Z");
+
+    // TOTAL, not merely "not asserted": this is read inside a draw walk, where an out-of-bounds read
+    // is a wrong glyph at best and a crash at worst. Three out-of-range indices, including the one an
+    // unsigned underflow produces.
+    CHECK(axisRowLabel(AXIS_ROW_COMPONENTS).empty());
+    CHECK(axisRowLabel(4).empty());
+    CHECK(axisRowLabel(std::numeric_limits<std::size_t>::max()).empty());
+}
+
+TEST_CASE("inspector: axisRowColor derives from the palette and is TOTAL (task E.3.1, VF3)") {
+    // Compared against THE PALETTE'S OWN CONSTANTS, never against restated bytes: a palette edit then
+    // moves both sides together and only a MAPPING error (X's colour on Y, say) moves one of them.
+    // That is the difference between a pin and a copy.
+    checkAxisColor(0, engine::editor::AXIS_X_SRGB);
+    checkAxisColor(1, engine::editor::AXIS_Y_SRGB);
+    checkAxisColor(2, engine::editor::AXIS_Z_SRGB);
+
+    // ...and the three are actually DIFFERENT, without which the three checks above would all pass
+    // for an implementation that returned one colour for every index.
+    CHECK(static_cast<int>(axisRowColor(0)[0]) != static_cast<int>(axisRowColor(1)[0]));
+    CHECK(static_cast<int>(axisRowColor(1)[1]) != static_cast<int>(axisRowColor(2)[1]));
+
+    // Past the last axis: ImGui's own neutral fourth marker, NOT X's red. An implementation that
+    // clamped to index 0 would be invisible without this line.
+    checkAxisColor(AXIS_ROW_COMPONENTS, std::array<std::uint8_t, 3>{140U, 140U, 140U});
+    checkAxisColor(std::numeric_limits<std::size_t>::max(), std::array<std::uint8_t, 3>{140U, 140U, 140U});
+}
+
+TEST_CASE("inspector: axisRowValues carries a Vec3 through bit-exactly (task E.3.1, VF4)") {
+    // EXACT equality, not Approx: the Vec3 path performs no arithmetic at all, so any tolerance here
+    // would admit an implementation that did.
+    const engine::Vec3 v{-3.5F, 0.0F, 17.25F};
+    const std::array<float, 3> shown = axisRowValues(FieldValue{v}, FieldKind::Vec3);
+    CHECK(shown[0] == -3.5F);
+    CHECK(shown[1] == 0.0F);
+    CHECK(shown[2] == 17.25F);
+
+    // A non-axis kind answers zeros rather than reading the variant -- it is TOTAL, like the label.
+    const std::array<float, 3> notAxis = axisRowValues(FieldValue{v}, FieldKind::Float);
+    CHECK(notAxis[0] == 0.0F);
+    CHECK(notAxis[1] == 0.0F);
+    CHECK(notAxis[2] == 0.0F);
+
+    // ...and so is a kind/variant MISMATCH, which must answer rather than throw (no exception may
+    // cross this API).
+    const std::array<float, 3> mismatched = axisRowValues(FieldValue{double{7.0}}, FieldKind::Vec3);
+    CHECK(mismatched[0] == 0.0F);
+    CHECK(mismatched[1] == 0.0F);
+    CHECK(mismatched[2] == 0.0F);
+}
+
+TEST_CASE("inspector: axisRowValues shows a Quat as euler DEGREES (task E.3.1, VF5)") {
+    // The expectation is computed off `q` itself, never read back out of the function under test
+    // (GR8's rule: a case that compares two values from the same source asserts nothing).
+    const engine::Quat q{0.1F, 0.2F, 0.3F, 0.927F};
+    const engine::Vec3 radiansTriple = engine::eulerAngles(q);
+    const std::array<float, 3> shown = axisRowValues(FieldValue{q}, FieldKind::Quat);
+    CHECK(shown[0] == doctest::Approx(engine::degrees(radiansTriple.x)).epsilon(1e-5));
+    CHECK(shown[1] == doctest::Approx(engine::degrees(radiansTriple.y)).epsilon(1e-5));
+    CHECK(shown[2] == doctest::Approx(engine::degrees(radiansTriple.z)).epsilon(1e-5));
+
+    // DEGREES, not radians, stated as a magnitude a radian answer could never reach: 0.3 rad is
+    // 17.2 degrees, and the two differ by 57x.
+    CHECK(std::abs(shown[2]) > 5.0F);
+
+    // A SECOND, genuinely independent witness: pose from a known benign euler triple and read it
+    // back. This one does not go through eulerAngles on the expectation side at all.
+    const std::array<float, 3> roundTrip =
+        axisRowValues(FieldValue{quatFromDegrees(30.0F, 20.0F, 40.0F)}, FieldKind::Quat);
+    CHECK(roundTrip[0] == doctest::Approx(30.0F).epsilon(1e-4));
+    CHECK(roundTrip[1] == doctest::Approx(20.0F).epsilon(1e-4));
+    CHECK(roundTrip[2] == doctest::Approx(40.0F).epsilon(1e-4));
+
+    // eulerAngles(identity).y is -0.0F on this backend, which compares EQUAL to +0.0F -- recorded so
+    // the next reader does not chase a sign that is not a defect.
+    const std::array<float, 3> identityShown = axisRowValues(FieldValue{engine::Quat::identity()}, FieldKind::Quat);
+    CHECK(identityShown[0] == 0.0F);
+    CHECK(identityShown[1] == 0.0F);
+    CHECK(identityShown[2] == 0.0F);
+}
+
+TEST_CASE("inspector: axisRowFieldValue rebuilds a Vec3 exactly and a Quat NORMALIZED (task E.3.1, VF6)") {
+    const std::array<float, 3> shown{-3.5F, 0.0F, 17.25F};
+    const FieldValue rebuilt = axisRowFieldValue(shown, FieldKind::Vec3);
+    REQUIRE(std::holds_alternative<engine::Vec3>(rebuilt));
+    CHECK(std::get<engine::Vec3>(rebuilt).x == -3.5F);
+    CHECK(std::get<engine::Vec3>(rebuilt).y == 0.0F);
+    CHECK(std::get<engine::Vec3>(rebuilt).z == 17.25F);
+
+    // fromEulerAngles does NOT normalize (quat.hpp says so: measured length 0.99999994), so the
+    // normalize() this function applies is load-bearing, not decoration -- a stored non-unit rotation
+    // drifts every time it is composed.
+    const std::array<float, 3> degreesTriple{30.0F, 20.0F, 40.0F};
+    const FieldValue rotation = axisRowFieldValue(degreesTriple, FieldKind::Quat);
+    REQUIRE(std::holds_alternative<engine::Quat>(rotation));
+    CHECK(engine::length(std::get<engine::Quat>(rotation)) == doctest::Approx(1.0F).epsilon(1e-6));
+
+    // ...and it is the RIGHT rotation, not merely a unit one: the triple comes back out.
+    const std::array<float, 3> back = axisRowValues(rotation, FieldKind::Quat);
+    CHECK(back[0] == doctest::Approx(30.0F).epsilon(1e-4));
+    CHECK(back[1] == doctest::Approx(20.0F).epsilon(1e-4));
+    CHECK(back[2] == doctest::Approx(40.0F).epsilon(1e-4));
+}
+
+TEST_CASE("inspector: a per-axis Vec3 reset moves ONE component (task E.3.1, VF7)") {
+    const FieldValue current{engine::Vec3{3.0F, 4.0F, 5.0F}};
+    const std::optional<FieldValue> defaultValue{FieldValue{engine::Vec3{1.0F, 1.0F, 1.0F}}};
+
+    for (std::size_t axis = 0; axis < AXIS_ROW_COMPONENTS; ++axis) {
+        CAPTURE(axis);
+        const AxisResetAction action = axisResetAction(axis, FieldKind::Vec3, current, defaultValue);
+        CHECK(action.enabled);
+        REQUIRE(std::holds_alternative<engine::Vec3>(action.result));
+        const std::array<float, 3> after = axisRowValues(action.result, FieldKind::Vec3);
+        const std::array<float, 3> before = axisRowValues(current, FieldKind::Vec3);
+        const std::array<float, 3> defaults = axisRowValues(*defaultValue, FieldKind::Vec3);
+        for (std::size_t i = 0; i < AXIS_ROW_COMPONENTS; ++i) {
+            CAPTURE(i);
+            // BIT-EXACT on all three: the reset axis takes the default's own component and the other
+            // two are untouched, so a "reset all three" implementation reddens on the other two and a
+            // "reset a rounded default" one reddens on this one.
+            CHECK(after[i] == (i == axis ? defaults[i] : before[i]));
+        }
+    }
+}
+
+TEST_CASE("inspector: a whole-field Quat reset writes the default BITWISE (task E.3.1, VF8)") {
+    // Routing the whole-field case through euler would land a value that is approxEquals to the
+    // default but not == to it, which would leave `enabled` true FOREVER -- the menu entry would stay
+    // live after the reset and every click would push another undo entry. Bitwise is the assertion.
+    const engine::Quat defaultQuat = quatFromDegrees(5.0F, -7.0F, 11.0F);
+    const FieldValue current{quatFromDegrees(30.0F, 20.0F, 40.0F)};
+    const std::optional<FieldValue> defaultValue{FieldValue{defaultQuat}};
+
+    const AxisResetAction all = axisResetAction(std::nullopt, FieldKind::Quat, current, defaultValue);
+    CHECK(all.enabled);
+    CHECK((all.result == FieldValue{defaultQuat}));
+    CHECK(all.label == "Reset to default");
+
+    // ...and the SECOND reset from there is disabled, which is the property the bitwise write buys.
+    const AxisResetAction again = axisResetAction(std::nullopt, FieldKind::Quat, all.result, defaultValue);
+    CHECK_FALSE(again.enabled);
+}
+
+TEST_CASE("inspector: no default means a DISABLED entry that still reads sensibly (task E.3.1, VF9)") {
+    const FieldValue current{engine::Vec3{3.0F, 4.0F, 5.0F}};
+    const std::optional<FieldValue> noDefault;
+
+    const AxisResetAction one = axisResetAction(std::size_t{0}, FieldKind::Vec3, current, noDefault);
+    CHECK_FALSE(one.enabled);
+    CHECK_FALSE(one.label.empty());  // greyed out, never blank
+
+    const AxisResetAction all = axisResetAction(std::nullopt, FieldKind::Vec3, current, noDefault);
+    CHECK_FALSE(all.enabled);
+    CHECK_FALSE(all.label.empty());
+    CHECK(all.label == "Reset to default");
+}
+
+TEST_CASE("inspector: a reset that would change NOTHING is disabled (task E.3.1, VF10)") {
+    const engine::Vec3 one{1.0F, 1.0F, 1.0F};
+    const std::optional<FieldValue> defaultValue{FieldValue{one}};
+
+    const FieldValue atDefault{one};
+    CHECK_FALSE(axisResetAction(std::size_t{0}, FieldKind::Vec3, atDefault, defaultValue).enabled);
+    CHECK_FALSE(axisResetAction(std::nullopt, FieldKind::Vec3, atDefault, defaultValue).enabled);
+
+    // ANTI-VACUITY: move ONE component off the default and the SAME two calls report enabled. Without
+    // this arm, an implementation that hardcoded `enabled = false` would pass the two checks above.
+    const FieldValue moved{engine::Vec3{1.0F, 2.0F, 1.0F}};
+    CHECK(axisResetAction(std::size_t{1}, FieldKind::Vec3, moved, defaultValue).enabled);
+    CHECK(axisResetAction(std::nullopt, FieldKind::Vec3, moved, defaultValue).enabled);
+
+    // ...and the axis that is ALREADY at its default stays disabled even while the field as a whole
+    // differs -- the per-axis decision is per axis, not "does anything differ".
+    CHECK_FALSE(axisResetAction(std::size_t{0}, FieldKind::Vec3, moved, defaultValue).enabled);
+}
+
+TEST_CASE("inspector: the reset entries' exact text (task E.3.1, VF11)") {
+    // BYTE-EXACT, because this is what a person reads. "%.3f" is ImGuiDataType_Float's own PrintFmt,
+    // so the number in the menu is the number in the drag box beside it.
+    const FieldValue current{engine::Vec3{3.0F, 4.0F, 5.0F}};
+    const std::optional<FieldValue> defaultValue{FieldValue{engine::Vec3{1.0F, -2.5F, 0.0F}}};
+
+    CHECK(axisResetAction(std::size_t{0}, FieldKind::Vec3, current, defaultValue).label == "Reset X to 1.000");
+    CHECK(axisResetAction(std::size_t{1}, FieldKind::Vec3, current, defaultValue).label == "Reset Y to -2.500");
+    CHECK(axisResetAction(std::size_t{2}, FieldKind::Vec3, current, defaultValue).label == "Reset Z to 0.000");
+    CHECK(axisResetAction(std::nullopt, FieldKind::Vec3, current, defaultValue).label == "Reset to default");
+
+    // The whole-field label carries NO number on purpose: a Vec3 or Quat default has no one-number
+    // spelling, and "Reset to (1.000, 1.000, 1.000)" in a context menu is noise.
+    CHECK(axisResetAction(std::nullopt, FieldKind::Quat, FieldValue{engine::Quat::identity()},
+                          std::optional<FieldValue>{FieldValue{engine::Quat::identity()}})
+              .label == "Reset to default");
+
+    // NOT ASSERTED, deliberately: a non-finite value's "%.3f" is "nan" on libc++ and can be
+    // "-nan(ind)" on MSVC, so a label assertion over one would redden on Windows alone.
+}
+
+TEST_CASE("inspector: `enabled` compares with ==, so NaN stays live and -0.0 does not (task E.3.1, VF12)") {
+    // Vec3 ONLY. A non-finite triple must never reach the Quat arm of axisRowFieldValue:
+    // normalize(Quat) ASSERTS on a zero/NaN quaternion and would abort the Debug/sanitizer binary.
+    const std::optional<FieldValue> defaultValue{FieldValue{engine::Vec3{0.0F, 0.0F, 0.0F}}};
+
+    const FieldValue withNan{engine::Vec3{std::numeric_limits<float>::quiet_NaN(), 1.0F, 1.0F}};
+    // NaN != NaN, so a field carrying one never equals its default and the reset stays LIVE -- which
+    // is exactly the rescue a user looking at "nan" in a box wants.
+    CHECK(axisResetAction(std::nullopt, FieldKind::Vec3, withNan, defaultValue).enabled);
+    CHECK(axisResetAction(std::size_t{1}, FieldKind::Vec3, withNan, defaultValue).enabled);
+
+    // -0.0F == +0.0F, so a sign-bit-only write costs NO undo entry. An approxEquals-based comparison
+    // would agree here, which is why the arm above (NaN) is the one that discriminates; this arm is
+    // what a `!=`-on-bits implementation would redden.
+    const FieldValue negativeZero{engine::Vec3{-0.0F, -0.0F, -0.0F}};
+    CHECK_FALSE(axisResetAction(std::nullopt, FieldKind::Vec3, negativeZero, defaultValue).enabled);
+    CHECK_FALSE(axisResetAction(std::size_t{0}, FieldKind::Vec3, negativeZero, defaultValue).enabled);
+}
+
+TEST_CASE("inspector: a non-axis kind resets as a WHOLE FIELD, with or without an axis (task E.3.1, VF13)") {
+    // Defensive, and the reason it is one line rather than an assert: drawFieldResetMenu already gates
+    // on isAxisRow, so this path is unreachable from the panel -- but a future caller that forgets is
+    // better served by a correct whole-field reset than by a wrong per-axis one.
+    struct Case {
+        FieldKind kind;
+        FieldValue current;
+        FieldValue defaultValue;
+    };
+    const std::array<Case, 4> cases{
+        Case{FieldKind::Float, FieldValue{double{9.5}}, FieldValue{double{1.0}}},
+        Case{FieldKind::Bool, FieldValue{true}, FieldValue{false}},
+        Case{FieldKind::String, FieldValue{std::string{"typed"}}, FieldValue{std::string{}}},
+        Case{FieldKind::Guid, FieldValue{engine::Guid{1ULL, 2ULL}}, FieldValue{engine::Guid{}}},
+    };
+    for (std::size_t i = 0; i < cases.size(); ++i) {
+        CAPTURE(i);
+        const Case& one = cases[i];
+        const std::optional<FieldValue> defaultValue{one.defaultValue};
+        const AxisResetAction all = axisResetAction(std::nullopt, one.kind, one.current, defaultValue);
+        CHECK(all.enabled);
+        CHECK((all.result == one.defaultValue));
+        CHECK(all.label == "Reset to default");
+
+        // ...and naming an axis on a kind that has none changes NOTHING, including the label.
+        const AxisResetAction withAxis = axisResetAction(std::size_t{0}, one.kind, one.current, defaultValue);
+        CHECK(withAxis.enabled);
+        CHECK((withAxis.result == one.defaultValue));
+        CHECK(withAxis.label == "Reset to default");
+    }
+
+    // An OUT-OF-RANGE axis on a kind that DOES have axes falls to the whole field too, rather than
+    // indexing past a std::array.
+    const std::optional<FieldValue> vecDefault{FieldValue{engine::Vec3{1.0F, 1.0F, 1.0F}}};
+    const FieldValue vecCurrent{engine::Vec3{3.0F, 4.0F, 5.0F}};
+    const AxisResetAction past = axisResetAction(AXIS_ROW_COMPONENTS, FieldKind::Vec3, vecCurrent, vecDefault);
+    CHECK(past.enabled);
+    CHECK((past.result == *vecDefault));
+    CHECK(past.label == "Reset to default");
+}
+
+TEST_CASE("inspector: three per-axis Quat resets converge on the default (task E.3.1, VF14)") {
+    // A BENIGN POSE, and the choice is measured rather than taste. The euler triplet is
+    // (X = pitch, Y = yaw, Z = roll) and the YAW (Y) component comes from asin(), confined to
+    // [-pi/2, pi/2]: near |Y| = 90 degrees the decomposition is ill-conditioned and a three-reset
+    // sequence from (10, 89.999, 25) leaves a 0.838-DEGREE residual, which no sane tolerance admits.
+    // At the poses below the worst residual measured off-tree is 9.54e-07 deg, so epsilon(1e-4) in
+    // DEGREES has roughly 105x headroom. (Approx's scale term is what keeps the identity arm, whose
+    // expectation is 0.0, from needing an absolute tolerance of its own.)
+    const FieldValue start{quatFromDegrees(30.0F, 20.0F, 40.0F)};
+
+    SUBCASE("to identity") {
+        const std::optional<FieldValue> defaultValue{FieldValue{engine::Quat::identity()}};
+        FieldValue current = start;
+        for (std::size_t axis = 0; axis < AXIS_ROW_COMPONENTS; ++axis) {
+            const AxisResetAction action = axisResetAction(axis, FieldKind::Quat, current, defaultValue);
+            CAPTURE(axis);
+            CHECK(action.enabled);
+            current = action.result;
+        }
+        const std::array<float, 3> shown = axisRowValues(current, FieldKind::Quat);
+        CHECK(shown[0] == doctest::Approx(0.0F).epsilon(1e-4));
+        CHECK(shown[1] == doctest::Approx(0.0F).epsilon(1e-4));
+        CHECK(shown[2] == doctest::Approx(0.0F).epsilon(1e-4));
+    }
+
+    SUBCASE("to a non-identity default") {
+        const std::optional<FieldValue> defaultValue{FieldValue{quatFromDegrees(5.0F, -7.0F, 11.0F)}};
+        FieldValue current = start;
+        for (std::size_t axis = 0; axis < AXIS_ROW_COMPONENTS; ++axis) {
+            const AxisResetAction action = axisResetAction(axis, FieldKind::Quat, current, defaultValue);
+            CAPTURE(axis);
+            CHECK(action.enabled);
+            current = action.result;
+        }
+        const std::array<float, 3> shown = axisRowValues(current, FieldKind::Quat);
+        CHECK(shown[0] == doctest::Approx(5.0F).epsilon(1e-4));
+        CHECK(shown[1] == doctest::Approx(-7.0F).epsilon(1e-4));
+        CHECK(shown[2] == doctest::Approx(11.0F).epsilon(1e-4));
+    }
+}
+
+TEST_CASE("inspector: the label column's width is clamped, and the clamp cannot cross (task E.3.1, VF15)") {
+    // The panel measures the four inputs with ImGui and this decides, which is what makes the clamp
+    // reachable from a tier-0 binary with no ImGui context at all.
+    constexpr float FONT = 13.0F;
+    constexpr float PADDING = 4.0F;
+    constexpr float FLOOR = FONT * 5.0F;  // 65
+
+    SUBCASE("(a) an ordinary case is the measured width plus both cell paddings") {
+        const float width = inspectorLabelColumnWidth(100.0F, PADDING, FONT, 400.0F);
+        CHECK(width == doctest::Approx(108.0F).epsilon(1e-6));
+        // ANTI-VACUITY: (a) is neither already at the floor nor already at the ceiling, so it really
+        // is the unclamped arm. Without this, (a) would also pass for an implementation that always
+        // returned the floor.
+        CHECK(width > FLOOR);
+        CHECK(width < 400.0F * 0.5F);
+    }
+
+    SUBCASE("(b) a tiny label is raised to the floor") {
+        CHECK(inspectorLabelColumnWidth(4.0F, PADDING, FONT, 400.0F) == doctest::Approx(FLOOR).epsilon(1e-6));
+        CHECK(inspectorLabelColumnWidth(0.0F, 0.0F, FONT, 400.0F) == doctest::Approx(FLOOR).epsilon(1e-6));
+    }
+
+    SUBCASE("(c) a huge label is capped at half the available width") {
+        CHECK(inspectorLabelColumnWidth(5000.0F, PADDING, FONT, 400.0F) == doctest::Approx(200.0F).epsilon(1e-6));
+    }
+
+    SUBCASE("(d) a zero- or negative-width dock returns the floor and never crosses the clamp") {
+        // std::clamp with lo > hi is UNDEFINED BEHAVIOUR, and both of these reach it without the
+        // std::max in the ceiling. A green run under the Debug lane's UBSan is half the proof; the
+        // returned value is the other half.
+        CHECK(inspectorLabelColumnWidth(100.0F, PADDING, FONT, 0.0F) == doctest::Approx(FLOOR).epsilon(1e-6));
+        CHECK(inspectorLabelColumnWidth(100.0F, PADDING, FONT, -250.0F) == doctest::Approx(FLOOR).epsilon(1e-6));
+        CHECK(inspectorLabelColumnWidth(1.0F, 0.0F, FONT, -1.0F) == doctest::Approx(FLOOR).epsilon(1e-6));
+    }
+
+    SUBCASE("(e) the floor scales with the font, so it is a font-relative rule rather than a constant") {
+        CHECK(inspectorLabelColumnWidth(4.0F, PADDING, 26.0F, 4000.0F) == doctest::Approx(130.0F).epsilon(1e-6));
+    }
 }
