@@ -19,13 +19,54 @@ bool Selection::contains(Entity entity) const noexcept {
 Entity Selection::primary() const noexcept { return primaryEntity; }
 std::span<const Entity> Selection::entities() const noexcept { return std::span<const Entity>{items}; }
 
+std::uint64_t Selection::revision() const noexcept { return revisionValue; }
+
+// task E.3.2: the six PUBLIC mutators each bump EXACTLY ONCE, as their FIRST statement -- so an early
+// return cannot skip it -- and then do their work through the two private helpers, which never count.
 void Selection::set(Entity entity) {
+    ++revisionValue;
     items.clear();
     primaryEntity = {};
-    add(entity);  // one gate for the Entity{} rejection (I5)
+    addUncounted(entity);  // one gate for the Entity{} rejection (I5)
 }
 
 void Selection::add(Entity entity) {
+    ++revisionValue;
+    addUncounted(entity);
+}
+
+void Selection::remove(Entity entity) {
+    ++revisionValue;
+    removeUncounted(entity);
+}
+
+void Selection::toggle(Entity entity) {
+    ++revisionValue;
+    if (contains(entity)) {
+        removeUncounted(entity);
+    } else {
+        addUncounted(entity);
+    }
+}
+
+void Selection::setAll(std::span<const Entity> entities) {
+    ++revisionValue;  // ONE operation, whatever the span's length -- including EMPTY
+    items.clear();
+    primaryEntity = {};
+    for (const Entity e : entities) {
+        addUncounted(e);  // dedupes, rejects Entity{}, and leaves the LAST valid entry primary
+    }
+}
+
+void Selection::clear() noexcept {
+    ++revisionValue;
+    items.clear();
+    primaryEntity = {};
+}
+
+// ---- the two non-counting halves. Byte-for-byte the old add()/remove() bodies. ------------------
+
+void Selection::addUncounted(Entity entity) {
     if (!entity.valid() || contains(entity)) {
         return;
     }
@@ -33,7 +74,7 @@ void Selection::add(Entity entity) {
     primaryEntity = entity;  // the most recently ADDED entity is the primary (D2)
 }
 
-void Selection::remove(Entity entity) {
+void Selection::removeUncounted(Entity entity) noexcept {
     const auto it = std::find(items.begin(), items.end(), entity);
     if (it == items.end()) {
         return;
@@ -42,27 +83,6 @@ void Selection::remove(Entity entity) {
     if (primaryEntity == entity) {
         primaryEntity = items.empty() ? Entity{} : items.back();
     }
-}
-
-void Selection::toggle(Entity entity) {
-    if (contains(entity)) {
-        remove(entity);
-    } else {
-        add(entity);
-    }
-}
-
-void Selection::setAll(std::span<const Entity> entities) {
-    items.clear();
-    primaryEntity = {};
-    for (const Entity e : entities) {
-        add(e);  // dedupes, rejects Entity{}, and leaves the LAST valid entry primary
-    }
-}
-
-void Selection::clear() noexcept {
-    items.clear();
-    primaryEntity = {};
 }
 
 std::size_t Selection::prune(const World& world) {
