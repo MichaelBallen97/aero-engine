@@ -25,6 +25,10 @@
 #include <aero/editor/command_stack.hpp>   // a VALUE member needs the definition (the selection.hpp /
                                            // panel_registry.hpp precedent), unlike panel_context.hpp,
                                            // which holds a reference and forward-declares.
+#include <aero/editor/context_router.hpp>  // task E.3.2 -- a VALUE member (contextRouter) needs the
+                                           // definition, the command_stack.hpp precedent. PURE:
+                                           // ImGui-free, entt-free, World-free, so this header's
+                                           // ImGui-FREE-BY-RULE contract is intact.
 #include <aero/editor/entity_ops.hpp>      // a VALUE member (rootOrder) needs RootOrder's definition
 #include <aero/editor/imgui_layer.hpp>
 #include <aero/editor/material_session.hpp>      // task 3.4.2 -- a VALUE member (materialSession) needs
@@ -132,6 +136,18 @@ struct EditorAppConfig {
     // or it writes the developer's real editor_tools.json -- 2.6.1's BLOCKING-2 in a third costume
     // (AC-47), and this tree has shipped that exact bug once already.
     std::string toolPrefsPath;
+    // task E.3.2 (D14, the recentProjectsPath/layoutIniPath/toolPrefsPath precedent, a FOURTH
+    // instance -- and the one with a DIFFERENT default rule, stated here rather than discovered):
+    // where the machine-local editor UI preferences live. EMPTY has TWO meanings, selected by
+    // persistLayout:
+    //   persistLayout == true  => defaultEditorPrefsPath()
+    //   persistLayout == false => NO FILE AT ALL -- read nothing, write nothing, session-only
+    // That gate is what keeps 150 of the 152 EditorApp::create call sites under tests/ from reading
+    // or overwriting a developer's real preference file without one of them being edited. ANY test
+    // that sets persistLayout TRUE must set this too, or it writes the developer's real
+    // editor_prefs.json -- exactly the rule layoutIniPath above already carries, and 2.6.1's
+    // BLOCKING-2 in a fourth costume.
+    std::string editorPrefsPath;
     // task 3.1.4: the assets-tree watcher's tunables. `enabled` TRUE is the shipping behaviour and
     // therefore the default (the registerDefaultPanels/seedDefaultScene precedent). A test that does
     // not want background directory enumeration sets `.assetWatch = {.enabled = false}`; a test that
@@ -511,6 +527,30 @@ public:
     [[nodiscard]] std::size_t materialPreviewSkyDrawCount() const noexcept;
     [[nodiscard]] bool materialPreviewHasSun() const noexcept;
 
+    // ---- task E.3.2: context routing, as booleans, an int and three counters ----------------------
+    // The ImGui-free GPU tier's only window into the router. RouteSource itself stays out of this
+    // surface, exactly as modelImportState() keeps SessionState out (a FOURTH application): a case
+    // spells static_cast<int>(RouteSource::MaterialAsset) itself, which is what keeps the comparison
+    // readable and RT27's value pin the thing that guarantees it.
+    void setFocusRoutingEnabled(bool on) noexcept;  // also marks the preference file dirty
+    [[nodiscard]] bool focusRoutingEnabled() const noexcept;
+    [[nodiscard]] int pendingFocusRoute() const noexcept;  // static_cast<int>(RouteSource)
+    // "" until the first Apply. The id of the panel the LAST applied route raised -- a string_view
+    // into a member, so a caller holding it across a tick is holding a live reference to a value that
+    // can be reassigned; compare it, do not store it.
+    [[nodiscard]] std::string_view lastRoutedPanelId() const noexcept;
+    // LIFETIME counters, never reset. A Drop of RouteSource::None -- the common case, every frame --
+    // counts NOTHING, so focusRouteDropCount() is "how many real routes were refused" rather than
+    // "how many frames ran".
+    [[nodiscard]] std::size_t focusRouteApplyCount() const noexcept;
+    [[nodiscard]] std::size_t focusRouteHoldCount() const noexcept;
+    [[nodiscard]] std::size_t focusRouteDropCount() const noexcept;
+    // Forwards to PanelRegistry::drawnCount -- how many frames this panel's onDraw() has run, i.e.
+    // how many frames ImGui::Begin returned true for it. 0 for an unknown id AND for a registered
+    // panel that has never drawn; ask panels().find(id) first if the difference matters. EVERY
+    // routing assertion in this tree reads it as a DELTA across ticks, never as an absolute.
+    [[nodiscard]] std::uint64_t panelDrawnCount(const char* id) const noexcept;
+
 private:
     // task 3.2.4: the two file-scope-shaped helpers §D-12 names, as members because both touch
     // importSession and toolPrefsPath. THE ONLY PLACE THIS TASK LOGS (INV-B10).
@@ -697,6 +737,26 @@ private:
     // states that asymmetry; this is where it shows.
     std::optional<HierarchyAssetDrop> requestedHierarchyDrop;
     std::optional<ViewportAssetDrop> requestedViewportDrop;
+
+    // ---- task E.3.2 ------------------------------------------------------------------------------
+    // A VALUE member, nothrow-movable by composition (its own two static_asserts hold that), so
+    // EditorApp's `noexcept` move survives it -- F15's rule, and the reason this class holds no
+    // reference members at all.
+    ContextRouter contextRouter;
+    // Resolved ONCE in create(), exactly as recentsPath and toolPrefsPath above are -- but GATED on
+    // config.persistLayout. EMPTY means this instance does not persist preferences at all: read
+    // nothing, write nothing. Resolving it at the point of USE instead would give every call site its
+    // own chance to fall through to the real machine-wide file.
+    std::string editorPrefsPath;
+    // The recentsDirty idiom (projectFlow.recentsDirty), a second instance: the file is written ONLY
+    // when a value changed, never per frame.
+    bool editorPrefsDirty = false;
+    // DISTINCT NAMES from their accessors, the databasePtr/database() rule -- matching
+    // ContextRouter::latches/latchCount() and sceneAssetDirectives/sceneAssetDirectiveCount() above.
+    std::size_t focusRouteApplies = 0;
+    std::size_t focusRouteHolds = 0;
+    std::size_t focusRouteDrops = 0;
+    std::string lastRoutedPanel;  // "" until the first Apply
 };
 
 }  // namespace engine::editor

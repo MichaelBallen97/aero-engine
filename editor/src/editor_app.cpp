@@ -16,9 +16,14 @@
 #include <aero/editor/console_model.hpp>
 #include <aero/editor/editor_app.hpp>
 #include <aero/editor/editor_camera.hpp>
+#include <aero/editor/editor_prefs.hpp>  // task E.3.2: EditorPrefs + readEditorPrefs/writeEditorPrefs.
+                                         // context_router.hpp arrives through editor_app.hpp.
 #include <aero/editor/entity_ops.hpp>
 #include <aero/editor/material_edit.hpp>  // task 3.4.2: uniqueMaterialFileName -- New Material's
                                           // one naming rule, PURE and shared with the ME tier
+#include <aero/editor/project.hpp>        // task E.3.2: defaultEditorPrefsPath() -- named directly rather
+                                          // than left to arrive transitively, beside the two sibling
+                                          // resolvers create() has always called
 #include <aero/editor/project_files.hpp>  // task 3.4.2: listDirectory/joinRelative, for the same drain
 #include <aero/editor/scene_session.hpp>
 #include <aero/platform/context.hpp>
@@ -371,6 +376,29 @@ std::optional<EditorApp> EditorApp::create(rhi::Device& device, platform::Window
     // CONSUMES it yet; that is deliberate, so the seam exists before anything can accidentally bypass
     // it (§S step 3).
     app.toolPrefsPath = config.toolPrefsPath.empty() ? defaultToolPrefsPath() : std::string(config.toolPrefsPath);
+    // task E.3.2 (D14): the SAME shape, one line down, and resolved here for the same reason -- one
+    // resolution, one member, no call site able to fall through to the real machine-wide file. The
+    // DIFFERENCE from its three siblings is the persistLayout gate, and it is deliberate:
+    // `persistLayout` already means "this instance owns the user's persisted editor UI state" (its own
+    // comment reads "false in tests"), and a focus-routing preference IS layout-adjacent UI state. An
+    // EMPTY result means read nothing and write nothing: the preference is session-only and starts at
+    // its default. That is what keeps 150 of the 152 EditorApp::create call sites under tests/ from
+    // touching a developer's real preference file without one of them being edited. The two that set
+    // persistLayout = true must set .editorPrefsPath, exactly as they already must set .layoutIniPath.
+    app.editorPrefsPath = config.editorPrefsPath.empty()
+                              ? (config.persistLayout ? defaultEditorPrefsPath() : std::string{})
+                              : std::string(config.editorPrefsPath);
+    if (!app.editorPrefsPath.empty()) {
+        bool prefsCorrupt = false;
+        const EditorPrefs prefs = readEditorPrefs(app.editorPrefsPath, prefsCorrupt);
+        if (prefsCorrupt) {
+            // A MISSING file is defaults SILENTLY; only a file that EXISTS and does not parse gets
+            // this line, or every machine that has never opened the View menu is warned on every
+            // launch. The wording mirrors the tool-preferences WARN at :1834.
+            AERO_LOG_WARN("editor: preferences '{}' are corrupt or unsupported; using defaults", app.editorPrefsPath);
+        }
+        app.contextRouter.setEnabled(prefs.focusFollowsSelection);
+    }
     if (config.restoreLastProject) {
         app.recents = readRecentProjects(app.recentsPath);  // D15: NOT read at all when false (AC-34/E23)
     }
@@ -886,6 +914,10 @@ bool EditorApp::tick() {
         // is judged against this frame's session, and an entity created by a model drop appears in the
         // Hierarchy in the same frame the drop landed.
         //
+        // task E.3.2: the drop drain is no longer the last statement in this block -- the context
+        // router's three observations follow it, because they must see the session state every arm
+        // above has finished writing. It is still the last thing that CHANGES anything.
+        //
         // F9's rule, an EIGHTH application: every one-shot is drained as its OWN statement,
         // unconditionally, BEFORE it is inspected. A `panelX || editorX` expression would short-circuit
         // past a drain and strand the request until the next frame.
@@ -930,6 +962,26 @@ bool EditorApp::tick() {
         if (panelSlotDrop.has_value()) {
             applySlotDrop(*panelSlotDrop);
         }
+
+        // task E.3.2 (D1/D4): the EIGHTH occupant of this block -- 2.6.1's panel root, 3.1.1's
+        // database, 3.1.3's report, 3.1.4's watcher, 3.2.1's import session, 3.4.2's material session,
+        // 3.1.5's drop drain, and now the context router. EXTEND, NEVER TWIN: 3.1.4's seed S15
+        // reddened TWELVE tier-0 cases by skipping ONE statement in here.
+        //
+        // LAST, after every session it reads, so each observation sees THIS tick's settled answer --
+        // MaterialSession::reconcile above is synchronous, so targetPath() is current the moment it
+        // returns. The three calls are ORDER-INDEPENDENT by construction (RouteSource's numeric order
+        // is the priority, applied inside latch()); they are written in priority order for reading
+        // only, and RT22/RT23 drive both orders and assert the same winner.
+        //
+        // NOTHING HERE PREDICTS. The material arm asks MaterialSession's own sticky retarget; the
+        // import arm reads the SessionState the session itself wrote, and deliberately does nothing at
+        // all on the Idle tick that setTarget leaves behind (model_import_session.cpp:88) -- which is
+        // why a browser click takes two ticks to raise Import Details and zero duplicated predicates.
+        contextRouter.observeEntitySelection(sceneSelection.revision(), !sceneSelection.empty());
+        contextRouter.observeMaterialTarget(materialSession.targetPath());
+        contextRouter.observeImportTarget(importSession.target(), importSession.state() != SessionState::Idle,
+                                          importSession.state() != SessionState::NotImportable);
     }
     if (window != nullptr) {
         std::string title = session.windowTitle(!commandStack.isClean(), project.name());
@@ -943,6 +995,20 @@ bool EditorApp::tick() {
         projectFlow.recentsDirty = false;
         writeRecentProjects(recentsPath, recents);  // one WARN on failure; the editor keeps running
     }  // and the project stays open (AC-24)
+    // task E.3.2: written ONLY when the value changed -- never per-frame file I/O, ever (the
+    // recentsDirty idiom above, a second instance). An EMPTY editorPrefsPath means this instance does
+    // not persist preferences at all (D14): config.persistLayout was false, which is every test in the
+    // tree but two. The dirty flag is cleared whether or not a file is written, so a non-persisting
+    // instance does not re-attempt a write it will never perform.
+    if (editorPrefsDirty) {
+        editorPrefsDirty = false;
+        if (!editorPrefsPath.empty()) {
+            const EditorPrefs prefs{.focusFollowsSelection = contextRouter.enabled()};
+            if (const std::string reason = writeEditorPrefs(editorPrefsPath, prefs); !reason.empty()) {
+                AERO_LOG_WARN("editor: could not write preferences '{}' -- {}", editorPrefsPath, reason);
+            }
+        }
+    }
 
     layer.beginFrame();
     ShellUiState ui{.applyDefaultLayout = applyDefaultLayout,
@@ -1246,6 +1312,29 @@ std::size_t EditorApp::materialPreviewSkyDrawCount() const noexcept {
 bool EditorApp::materialPreviewHasSun() const noexcept {
     return materialPanel != nullptr && materialPanel->previewHasSun();
 }
+
+// ---- task E.3.2: the eight context-routing seams -------------------------------------------------
+void EditorApp::setFocusRoutingEnabled(bool on) noexcept {
+    // The SAME two effects the View-menu checkbox has (drawMenuBar + tick()'s read-back), so a test
+    // and a click are indistinguishable downstream -- the requestAssetBrowserSelectEntry posture.
+    // MARKS THE FILE DIRTY UNCONDITIONALLY, even when the value did not change: that is one write per
+    // call from a seam only tests and the menu use, and an equality gate would make the "toggle, then
+    // construct a second app" arm depend on the PREVIOUS value rather than on the call.
+    contextRouter.setEnabled(on);
+    editorPrefsDirty = true;
+}
+
+bool EditorApp::focusRoutingEnabled() const noexcept { return contextRouter.enabled(); }
+
+int EditorApp::pendingFocusRoute() const noexcept { return static_cast<int>(contextRouter.pending()); }
+
+std::string_view EditorApp::lastRoutedPanelId() const noexcept { return lastRoutedPanel; }
+
+std::size_t EditorApp::focusRouteApplyCount() const noexcept { return focusRouteApplies; }
+std::size_t EditorApp::focusRouteHoldCount() const noexcept { return focusRouteHolds; }
+std::size_t EditorApp::focusRouteDropCount() const noexcept { return focusRouteDrops; }
+
+std::uint64_t EditorApp::panelDrawnCount(const char* id) const noexcept { return registry.drawnCount(id); }
 
 // ---- task 3.1.5: the three request hooks (the EIGHTH application of the request shape) ------------
 // Each records EXACTLY what the corresponding panel's accept records. The first two land in an
