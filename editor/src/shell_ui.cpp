@@ -354,6 +354,12 @@ void drawPanels(PanelRegistry& panels, PanelContext& context) {
                                    // panel's widgets
         }
         if (contentVisible) {
+            // task E.3.2: Begin's own answer, RECORDED. For a docked panel `contentVisible` is exactly
+            // "this panel is the selected tab right now", and nothing in this tree could read that
+            // before. FIRST in the branch, so the count reflects Begin rather than anything onDraw
+            // does -- and INSIDE it, because a count taken outside would tick for a tabbed-away panel
+            // and make every routing assertion in I149-I158 vacuous.
+            panels.noteDrawn(i);
             panel.onDraw(context);
         }
         ImGui::End();                  // ALWAYS — Begin's return value never gates it
