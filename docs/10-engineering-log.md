@@ -15394,3 +15394,71 @@ fixture paths. Waiting for the other run to finish and re-running solo gave **18
 a statement about the machine, never about the code* — check for a concurrent run before reading it as
 anything else.
 
+
+### E.2.4 — macOS validation pass (2026-09-11): 12 PASS / 12
+
+Run against the merged `ae817dc` release build, editor wrapped in a minimal ad-hoc-signed `.app`
+(fresh bundle id), project `~/AeroE24Validation`, window 1900x1330 on a 1x 3440x1440 external
+display. Synthetic input via CGEvent; every capture bound to the launched PID and converted to sRGB
+before a byte was read. **No blockers, no partials, and all six declared sabotage seeds closed.**
+
+**The deliverable, measured rather than judged.** The preview's peak sphere luminance and the
+viewport's are **byte-identical at (192,198,209), delta 0.0 levels** — taken over a 22-frame burst
+spanning a full orbit, with disjoint search boxes and each box's corner proven to be background and
+its centre sphere. Under Solid mode the preview corner, the viewport corner and an independently
+computed ACES+sRGB oracle all read **(206,93,95) exactly**. Intensity 1 → 2 moved both to 220.9 /
+221.9 (delta 0.9); a (1, 0.49, 0.49) sun tinted both to (220,198,208) / (220,197,208).
+
+**The viewport is bit-identical to the branch point: 0 of 1 064 924 pixels below the strip row**,
+against a working control of 5391 of 27 092 on the strip row itself. The shader sets were verified
+byte-identical between `990ee2b` and `ae817dc` first, so E.2.2's "two binaries read whichever set was
+cooked last" trap could not apply — checked rather than assumed.
+
+**The preview's deliberate change, quantified:** sphere peak **230.0 → 212.4** but picture mean
+**64.1 → 134.6**, because the old flat `PREVIEW_CLEAR_COLOR` void (corner 59,59,68) became the
+scene's sky (corner 193,202,215). It reads as right; no retune of E.5.2's default light is warranted.
+
+**Seeds closed.** `S30`: at `intensity` **exactly 0.000000** the picture equals the no-sun picture
+(peak 140.1 both) while the notice stays away (0 amber px) — `hasSun` keys on the resolution.
+`S21`: a dismissing click landing ON a translate handle left the sphere at (503.0,366.0) →
+(503.0,366.0), and one Undo afterwards reverted the ORIGINAL move, proving no spurious entry.
+`S22`: Escape closed the popup 35205 → 0 dark px. `S24`: unchecking Gizmos removed the icon from the
+picture. `S25`: the popup's top-left (378,105) sits at the button's `(min.x,max.y)` (380,104), 17 px
+from the mouse. `S19` remains uncovered and unreachable, as the page states.
+
+#### Method findings, each of which produced a wrong answer first
+
+* **A FILE-ACCESS (TCC) PROMPT *DOES* ACCEPT A SYNTHETIC CLICK.** E.2.3's pass recorded that TCC
+  prompts "reject both CGEvent and the accessibility API and cannot be dismissed programmatically at
+  all"; re-measured here, the "requests access to your Desktop folder" dialog dismissed on a CGEvent
+  click at its button, as did the local-network one. **The prompts CASCADE — each new dialog's origin
+  shifts — and come in two heights (TCC 192, local-network 250), so the button offset must be DERIVED
+  from the freshly read bounds and never hardcoded.** Clicking a stale position is what makes them
+  look undismissable.
+* **THE EDITOR THROTTLES HARD WHEN IT IS NOT FRONTMOST.** A Tracy capture taken while the terminal
+  held focus recorded **2 frames and 22 zones in 20 s**; re-activating the editor every 2 s for the
+  whole window gave **21 894 frames and 192 821 zones**. Tracy also accepts **one server per client
+  run**, so the editor must be restarted before every capture.
+* **SELECTING A LIGHT PUTS THE TRANSFORM GIZMO AT THE ORIGIN, ON TOP OF A SPHERE THAT IS ALSO THERE.**
+  Its white centre handle is exactly (255,255,255) — 51 clipped pixels inside the measurement box —
+  and the first intensity-2 reading was therefore "viewport 255.0, delta 33.1" and was measuring the
+  gizmo. Deselecting took the clipped count to 0 and the delta to 0.9. **Any peak-luminance row must
+  deselect first.**
+* **THE PREVIEW ORBITS, SO A WHOLE-PREVIEW DIFF MEASURES THE ORBIT.** A naive diff after editing the
+  losing `Environment` reported 1791 changed pixels; excluding the sphere's box took it to 364 at max
+  delta 2, against 17212 at delta 33 for the winner. Exclude the sphere before making a background
+  claim.
+* **AN ImGui DRAG FIELD'S AUTO-SPEED SCALES WITH THE VALUE**, so the step gets finer as it approaches
+  zero (0.096/px at 1.2, ~0.014/px at 0.2) and **exact 0 is unreachable by dragging**. Exact values
+  come from authoring a scene file and opening it. Sub-pixel drags do not register at all for integer
+  fields.
+* **A POPUP OCCLUDES WHAT YOU ARE MEASURING.** A before/after gizmo comparison across a popup-open
+  boundary reported "MOVED" purely because the pixel count went 243 → 703 — the popup was covering
+  part of the gizmo. Measure in a region the popup does not cover.
+* **THE POPUP'S CONTROL POSITIONS ARE NOT FIXED between sessions of use** — `View axis` sat at image
+  y=275 at one point and y=291 later, so stale coordinates silently hit `Gizmos` instead and the
+  widget appeared to refuse to toggle. Re-measure from the current capture before every click.
+
+**Incidental findings, neither this task's:** `DirectionalLight::intensity` has **no lower clamp** (a
+left drag took it to −18.799997); and the editor's window was observed to render black with only a
+title bar whenever a permission prompt was pending, at ~0.2 % CPU.
