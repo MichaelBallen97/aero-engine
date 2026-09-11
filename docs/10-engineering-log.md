@@ -15466,9 +15466,10 @@ title bar whenever a permission prompt was pending, at ~0.2 % CPU.
 ### E.3.2 — Selection-follows-focus router — the contract the spec asked for was arithmetically impossible in the tree it was written against
 
 **Branch `feat/E.3.2-selection-follows-focus-router`, THIRTEEN commits** — the plan's eight, one per
-step, plus three the sabotage pass forced and two the code-review round forced. Sized **M** in the
-roadmap, recorded **M-at-the-M/L-boundary** before the first commit and landed **M/L**. *(PR number and
-merge commit are filled in at merge.)*
+step, plus three the sabotage pass forced and three the code-review round forced. Sized **M** in the
+roadmap, recorded **M-at-the-M/L-boundary** before the first commit and landed **M/L**. Merged as
+**PR #103**, merge commit **`b172198`**, fourteen commits, all six CI checks green with
+`headSha == HEAD` asserted and the merge commit's own run green on `main`.
 
 `ctest -N` **174 -> 174**, entry set byte-identical to the branch point's in both presets — no
 component, no target, no ctest entry, no shader, no engine file, no link-line change. doctest:
