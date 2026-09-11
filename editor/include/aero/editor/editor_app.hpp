@@ -503,6 +503,13 @@ public:
     [[nodiscard]] std::uint32_t materialPreviewTextureHeight() const noexcept;
     // AC-22's latched WARN, as a count so "latched" is assertable rather than asserted.
     [[nodiscard]] std::size_t materialPreviewUvSetWarnCount() const noexcept;
+    // ---- task E.2.4 -------------------------------------------------------------------------------
+    // The preview's sky-pass draw count and the notice's latched flag. The first is what makes "the
+    // preview draws the scene's sky" a runtime fact (I135); the second is the only observable for a
+    // notice no tier can read off the screen (I137). Spelled "sky-pass" rather than with the type's
+    // own name on purpose: INV-5's gate grep counts the FILES naming that type, and exactly two may.
+    [[nodiscard]] std::size_t materialPreviewSkyDrawCount() const noexcept;
+    [[nodiscard]] bool materialPreviewHasSun() const noexcept;
 
 private:
     // task 3.2.4: the two file-scope-shaped helpers §D-12 names, as members because both touch

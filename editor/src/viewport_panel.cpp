@@ -401,6 +401,9 @@ bool ViewportPanel::overlayOwnsPress(Vec2 pressPoints, Vec2 imageOrigin, Vec2 im
 // term (the transform handles). Both presses belong to the widget, and a rule written twice is a rule
 // that eventually disagrees with itself.
 bool ViewportPanel::viewAxisOwnsPoint(Vec2 pointPoints, Vec2 imageOrigin, Vec2 imageSize) const noexcept {
+    if (!viewAxisEnabledValue) {
+        return false;  // task E.2.4 (D12): hiding the widget and the widget owning nothing are ONE fact
+    }
     Vec2 axisMin{};
     Vec2 axisMax{};
     viewAxisRect(imageOrigin, imageSize, axisMin, axisMax);
@@ -413,6 +416,11 @@ bool ViewportPanel::viewAxisOwnsPoint(Vec2 pointPoints, Vec2 imageOrigin, Vec2 i
 // these report the rect in IMAGE-RELATIVE points with the origin at {0,0}; a caller comparing against
 // a screen position adds the origin itself, exactly as the overlay's own draw loop does.
 Vec2 ViewportPanel::viewAxisRectMin() const noexcept {
+    if (!viewAxisEnabledValue) {
+        return Vec2{};  // task E.2.4: the DEGENERATE rect -- the same answer viewAxisRect gives when
+                        // the widget hides for being too small (E.1.3's D16), so containsHalfOpen's
+                        // own guard turns it into "owns nothing" with no second predicate
+    }
     Vec2 rectMin{};
     Vec2 rectMax{};
     viewAxisRect(Vec2::zero(), lastImageSizePoints, rectMin, rectMax);
@@ -420,6 +428,10 @@ Vec2 ViewportPanel::viewAxisRectMin() const noexcept {
 }
 
 Vec2 ViewportPanel::viewAxisRectMax() const noexcept {
+    if (!viewAxisEnabledValue) {
+        return Vec2{};  // task E.2.4: the same degenerate rect viewAxisRectMin returns, so the pair is
+                        // EMPTY rather than half-answered
+    }
     Vec2 rectMin{};
     Vec2 rectMax{};
     viewAxisRect(Vec2::zero(), lastImageSizePoints, rectMin, rectMax);
@@ -826,8 +838,24 @@ void ViewportPanel::onDraw(PanelContext& context) {
     }
     // Step 9b: RECORD THE INTERACTIVE STRIP'S RECT, in the same screen-space POINTS io.MousePos uses,
     // so updatePick's ARM step can refuse a press the strip owns. `rowStart` is captured BEFORE the
-    // gizmo bar and `GetItemRectMax()` AFTER the view options, whose exposure slider is the row's
-    // last and rightmost item -- so the pair spans the whole interactive row.
+    // gizmo bar; the row ENDS at the `View` button, whose rect max drawViewOptions captured before it
+    // touched the popup.
+    //
+    // task E.2.4: the BUTTON's own rect, captured inside drawViewOptions before it touches the popup
+    // -- NOT ImGui's last-item rect read here.
+    //
+    // MEASURED, AND NOT WHAT THIS TASK ASSUMED. Reading the last-item rect here would ALSO name the
+    // button today: ImGui::End() restores `g.LastItemData = window_stack_data.ParentLastItemDataBackup`
+    // (imgui.cpp:8848 in the pinned 1.92.8-docking tree), so EndPopup hands the parent window's own
+    // last item back and the popup's contents never leak out. Sabotage seed S20 -- putting the
+    // last-item read back -- is therefore GREEN, and no assertion in this tree can distinguish the two
+    // spellings. The capture is kept anyway, and the reason is that it does not DEPEND on that
+    // restore: an ImGui bump that stopped restoring, or a stray item submitted between the popup and
+    // this line, would silently move the rect overlayOwnsPress() reads -- which decides whether a
+    // click on the strip deselects the scene entity behind it. I138 pins that the two rects are equal
+    // open and closed, as a REGRESSION GUARD for that day rather than as a witness for today.
+    // (Spelled without the accessor's own name so the gate grep for it reads exactly ONE line, the
+    // capture inside drawViewOptions.)
     //
     // ONLY THE INTERACTIVE ROW. The size readout and the fly line above it are TextColored, which
     // submits nothing clickable, so a press there has always fallen through to the scene pick and
@@ -839,7 +867,7 @@ void ViewportPanel::onDraw(PanelContext& context) {
     // call, to keep the two on one row.
     ImGui::SameLine();
     drawViewOptions();  // task 3.6.3 -- OUTSIDE drawGizmoBar's BeginDisabled(!gizmoHasTarget) scope
-    const ImVec2 rowEnd = ImGui::GetItemRectMax();
+    const Vec2 rowEnd = viewOptionsButtonMax;
     overlayRowTopLeft = Vec2{rowStart.x, rowStart.y};
     overlayRowBottomRight = Vec2{rowEnd.x, rowEnd.y};
 
@@ -1032,8 +1060,10 @@ void ViewportPanel::updateGizmo(PanelContext& context, Vec2 imageOrigin, Vec2 av
     // BE TOLD. ImGuizmo's CanActivate() is `IsMouseClicked(0) && !IsAnyItemHovered() &&
     // !IsAnyItemActive()` (ImGuizmo.cpp:1670-1677) and GetMoveType gates only on mbMouseOver, i.e.
     // "the cursor is over this window" (:2108-2113). The interactive overlay row is protected from
-    // that only INCIDENTALLY -- its Checkbox/Combo/SliderFloat are real ImGui items, so
-    // IsAnyItemHovered() is true over them -- while the widget deliberately submits NO item at all,
+    // that only INCIDENTALLY -- its SmallButtons (T/R/S, Local/World and, since task E.2.4, View) are
+    // real ImGui items, so IsAnyItemHovered() is true over them; E.2.4 moved the row's Checkbox,
+    // Combo and SliderFloat into the View popover, and the incidental protection survived the move
+    // unchanged because a SmallButton is an item too -- while the widget deliberately submits NO item at all,
     // which makes it invisible to exactly that protection. So a click on a ball whose box the
     // translate arrows happened to cross BOTH started the snap and latched a drag against a plane
     // captured in the PRE-snap view; the camera then rotated every frame and the release translated
@@ -1058,7 +1088,20 @@ void ViewportPanel::updateGizmo(PanelContext& context, Vec2 imageOrigin, Vec2 av
     const bool widgetOwnsCursor =
         hovered && !ImGuizmo::IsUsing() && viewAxisOwnsPoint(Vec2{io.MousePos.x, io.MousePos.y}, imageOrigin, avail);
     // D20: an RMB-fly begun mid-drag ends the drag cleanly at its current value.
-    ImGuizmo::Enable(gesture.gesture == CameraGesture::None && !widgetOwnsCursor);
+    // task E.2.4 (D11): while the popover is open, ImGuizmo must be told what ImGui already knows.
+    // A focused non-modal popup inhibits item hovering on every OTHER window (IsWindowContentHoverable,
+    // and ItemHoverable's own refusal), which is what keeps the scene pick and the camera gestures off
+    // the dismissing click -- `hovered` at step 4 is false for the whole time the popup is open. But
+    // ImGuizmo's CanActivate reads IsAnyItemHovered, which is `HoveredId != 0 ||
+    // HoveredIdPreviousFrame != 0` and is ZERO under that inhibition, and its mbMouseOver reads
+    // g.HoveredWindow, which ImGui clears only behind a MODAL. So on the frame a click OUTSIDE
+    // dismisses the popup, a handle under the cursor would start a drag.
+    // THE OPENING CLICK NEEDS NO TERM: `View` is a real ImGui item, so HoveredIdPreviousFrame is its id
+    // when the press lands and CanActivate is already false. It is the DISMISSING click, over the
+    // image, that ImGui does not cover -- E.1.3's class of defect by name.
+    // The latch is LAST frame's answer, which is the RIGHT one: the popup closes at EndFrame, after
+    // this draw walk.
+    ImGuizmo::Enable(gesture.gesture == CameraGesture::None && !widgetOwnsCursor && !viewOptionsOpenValue);
 
     // 6. Arguments.
     const GizmoSpace space = effectiveSpace(gizmoMode.operation, gizmoMode.space);
@@ -1172,6 +1215,15 @@ void ViewportPanel::beginViewSnap(ViewAxis axis) noexcept {
 }
 
 void ViewportPanel::updateViewAxisGizmo(Vec2 imageOrigin, Vec2 avail, bool inputHovered) {
+    // task E.2.4 (D12): hidden means NOT COMPUTED. Assigning a DEFAULT-CONSTRUCTED layout rather than
+    // only clearing `visible` is what stops a stale ball position surviving a toggle -- the pure
+    // function's own totality contract says every field is defaulted when it is invisible, and this
+    // matches it exactly. A snap already in flight is viewSnap's, not the layout's, and continues.
+    if (!viewAxisEnabledValue) {
+        axisLayout = ViewAxisLayout{};
+        axisHover = ViewAxisPick{};
+        return;
+    }
     axisLayout = viewAxisLayout(editorCamera, imageOrigin, avail);
     const ImGuiIO& io = ImGui::GetIO();
     axisHover = inputHovered ? viewAxisPickAt(axisLayout, Vec2{io.MousePos.x, io.MousePos.y}) : ViewAxisPick{};
@@ -1338,78 +1390,128 @@ void ViewportPanel::drawGizmoBar() {
 
 void ViewportPanel::drawViewOptions() {
     // NOT inside drawGizmoBar(): that function wraps its whole row in
-    // ImGui::BeginDisabled(!gizmoHasTarget), and tonemap controls that grey out because nothing is
-    // selected would be a defect. Called on the same LINE, in a different scope.
+    // ImGui::BeginDisabled(!gizmoHasTarget), and view options that grey out because nothing is
+    // selected would be a defect (3.6.3). Called on the same LINE, in a different scope.
     ImGui::PushID("viewoptions");  // 1:1 with PopID below -- INV-6
 
-    // FIRST IN THE ROW, DELIBERATELY. onDraw's step 9b records
-    // `rowEnd = ImGui::GetItemRectMax()` right after this function returns, and its comment names
-    // the exposure slider as the row's last and rightmost item. A checkbox appended at the END would
-    // make that comment false and silently move the rect overlayOwnsPress() reads -- which decides
-    // whether a click on the strip deselects the scene entity behind it. At the front, 2.3.2's
-    // contract, its comment and its rect are all untouched. E.2.4 moves this whole row into a
-    // popover and takes the checkbox with it.
-    //
-    // ONE toggle covers the grid AND the axes: they are one piece of chrome, and a second checkbox
-    // for two lines is not worth a row of the strip. `drawAxes` stays a parameter of the emitter so
-    // a test and the sample can drive both arms.
-    bool gridChecked = gridEnabledValue;
-    if (ImGui::Checkbox("Grid", &gridChecked)) {
-        gridEnabledValue = gridChecked;
+    // task E.2.4 (D10): ONE button. Everything the row carried -- Grid, Gizmos, the tonemap combo and
+    // the exposure slider -- now lives in the popup below, grouped the way the mock groups the
+    // viewport's header dropdowns. The HEADER-ROW placement itself is E.6.3's: nothing in this tree
+    // can put a widget in a docked panel's tab row.
+    if (ImGui::SmallButton("View")) {
+        ImGui::OpenPopup("##viewoptions");
     }
-    ImGui::SameLine();
-
-    // task E.2.3: SECOND IN THE ROW, DELIBERATELY, for the SAME reason Grid is first: onDraw's step 9b
-    // records `rowEnd = ImGui::GetItemRectMax()` right after this function returns, and its comment
-    // names the exposure slider as the row's last and rightmost item. A checkbox appended at the END
-    // would make that comment false and silently move the rect overlayOwnsPress() reads. Second keeps
-    // every word of it true; the row simply gets wider, which I107's lower bounds already tolerate.
-    //
-    // ONE toggle covers the ICONS and the GIZMOS: they are one piece of chrome, and two checkboxes for
-    // one concept is not worth a row of the strip. E.2.4 moves this whole row into a popover and takes
-    // BOTH checkboxes with it.
-    bool gizmosChecked = gizmosEnabledValue;
-    if (ImGui::Checkbox("Gizmos", &gizmosChecked)) {
-        gizmosEnabledValue = gizmosChecked;
+    // A6: IsItemHovered + SetTooltip, NEVER SetItemTooltip -- its ForTooltip flags exclude disabled
+    // items (drawGizmoBar's own note). Read BEFORE the rects below, which SetTooltip cannot disturb:
+    // it submits no item, so the last item is still the button.
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("View options");
     }
-    ImGui::SameLine();
+    const ImVec2 buttonMin = ImGui::GetItemRectMin();
+    const ImVec2 buttonMax = ImGui::GetItemRectMax();
+    // THE ROW ENDS HERE, and this capture is what step 9b reads. Taken BEFORE the popup so the
+    // recorded rect is identical whether the popup is open or closed (I138) WITHOUT depending on
+    // ImGui restoring the parent's last item at EndPopup -- which, measured, it does today
+    // (imgui.cpp:8848). Step 9b's own comment carries the full reading.
+    viewOptionsButtonMax = Vec2{buttonMax.x, buttonMax.y};
 
-    render::TonemapParams edited = tonemapParamsValue;
-    bool changed = false;
+    if (pendingViewOptionsOpen == true) {  // the seam's OPEN arm; no tier here can click a button
+        ImGui::OpenPopup("##viewoptions");
+    }
+    // Anchored UNDER the button, like a dropdown. OpenPopup's default position is the MOUSE, which is
+    // a context menu's posture, not a dropdown's. Setting this unconditionally is LEGAL while the
+    // popup is closed: BeginPopupEx consumes NextWindowData when the popup is not open ("We behave
+    // like Begin() and need to consume those").
+    ImGui::SetNextWindowPos(ImVec2(buttonMin.x, buttonMax.y), ImGuiCond_Always);
 
-    ImGui::SetNextItemWidth(OPTIONS_COMBO_WIDTH);
-    // ASYMMETRIC pair (like BeginMenu): EndCombo runs ONLY when BeginCombo returned true. Getting
-    // that backwards is an IM_ASSERT abort in the Debug build, not a visual glitch.
-    if (ImGui::BeginCombo("##tonemap", tonemapOperatorLabelCStr(edited.curve))) {
-        for (std::size_t i = 0; i < render::TONEMAP_OPERATOR_COUNT; ++i) {
-            const auto candidate = static_cast<render::TonemapOperator>(i);
-            const bool selected = candidate == edited.curve;
-            if (ImGui::Selectable(tonemapOperatorLabelCStr(candidate), selected)) {
-                edited.curve = candidate;
-                changed = true;
-            }
-            if (selected) {
-                ImGui::SetItemDefaultFocus();
-            }
+    bool open = false;
+    // ASYMMETRIC pair (the BeginMenu family): EndPopup runs ONLY when BeginPopup returned true.
+    // Getting that backwards is an IM_ASSERT abort in the Debug build, not a visual glitch.
+    if (ImGui::BeginPopup("##viewoptions")) {
+        open = true;
+
+        // ---- Display: the mock's `Shaded` and `Perspective 60` -------------------------------------
+        ImGui::TextDisabled("Display");
+        // The projection row exists because the view-axis widget's centre badge is today's ONLY
+        // projection toggle, and this task lets that widget be hidden (D12). It routes through the
+        // SAME member requestProjectionMode and the badge both use, so the seam, the badge and this
+        // row are indistinguishable downstream (E.1.3's rule).
+        const ProjectionMode mode = editorCamera.projectionMode();
+        if (ImGui::RadioButton("Perspective", mode == ProjectionMode::Perspective)) {
+            editorCamera.setProjectionMode(ProjectionMode::Perspective);
         }
-        ImGui::EndCombo();
-    }
-    ImGui::SameLine();
-    ImGui::SetNextItemWidth(OPTIONS_SLIDER_WIDTH);
-    // THE ORDER OF THE `||` IS DELIBERATE: SliderFloat(...) || changed, never changed || Slider(...).
-    // The second form short-circuits and would SKIP SUBMITTING THE SLIDER ENTIRELY on any frame the
-    // combo changed -- and an ImGui item that is not submitted is an item that vanishes for a frame.
-    changed = ImGui::SliderFloat("Exposure", &edited.exposure, render::MIN_EXPOSURE, render::MAX_EXPOSURE, "%.3f",
-                                 ImGuiSliderFlags_Logarithmic) ||
-              changed;
+        ImGui::SameLine();
+        if (ImGui::RadioButton("Orthographic", mode == ProjectionMode::Orthographic)) {
+            editorCamera.setProjectionMode(ProjectionMode::Orthographic);
+        }
 
-    if (changed) {
-        // 3.4.2's rule: clamping is done in C++, never by trusting the widget's own range. A slider
-        // with a v_min still lets a Ctrl+Click type anything at all, and no tier in this tree can
-        // perform that click -- so this call is the only thing standing between a typed value and a
-        // uniform.
-        tonemapParamsValue = render::sanitizeTonemapParams(edited);
+        render::TonemapParams edited = tonemapParamsValue;
+        bool changed = false;
+
+        ImGui::SetNextItemWidth(OPTIONS_COMBO_WIDTH);
+        // ASYMMETRIC pair (like BeginMenu): EndCombo runs ONLY when BeginCombo returned true.
+        if (ImGui::BeginCombo("Tonemap", tonemapOperatorLabelCStr(edited.curve))) {
+            for (std::size_t i = 0; i < render::TONEMAP_OPERATOR_COUNT; ++i) {
+                const auto candidate = static_cast<render::TonemapOperator>(i);
+                const bool selected = candidate == edited.curve;
+                if (ImGui::Selectable(tonemapOperatorLabelCStr(candidate), selected)) {
+                    edited.curve = candidate;
+                    changed = true;
+                }
+                if (selected) {
+                    ImGui::SetItemDefaultFocus();
+                }
+            }
+            ImGui::EndCombo();
+        }
+        ImGui::SetNextItemWidth(OPTIONS_SLIDER_WIDTH);
+        // THE ORDER OF THE `||` IS DELIBERATE: SliderFloat(...) || changed, never the reverse. The
+        // second form short-circuits and would SKIP SUBMITTING THE SLIDER ENTIRELY on any frame the
+        // combo changed -- and an ImGui item that is not submitted is an item that vanishes for a frame.
+        changed = ImGui::SliderFloat("Exposure", &edited.exposure, render::MIN_EXPOSURE, render::MAX_EXPOSURE, "%.3f",
+                                     ImGuiSliderFlags_Logarithmic) ||
+                  changed;
+        if (changed) {
+            // 3.4.2's rule: clamping is done in C++, never by trusting the widget's own range. A slider
+            // with a v_min still lets a Ctrl+Click type anything at all, and no tier in this tree can
+            // perform that click -- so this call is the only thing standing between a typed value and a
+            // uniform.
+            tonemapParamsValue = render::sanitizeTonemapParams(edited);
+        }
+
+        ImGui::Separator();
+
+        // ---- Overlays: the mock's `Gizmos on` ------------------------------------------------------
+        ImGui::TextDisabled("Overlays");
+        bool gridChecked = gridEnabledValue;
+        if (ImGui::Checkbox("Grid", &gridChecked)) {
+            gridEnabledValue = gridChecked;  // ONE toggle covers the grid AND the world axes (E.1.2)
+        }
+        bool gizmosChecked = gizmosEnabledValue;
+        if (ImGui::Checkbox("Gizmos", &gizmosChecked)) {
+            gizmosEnabledValue = gizmosChecked;  // ONE toggle covers the ICONS and the GIZMOS (E.2.3)
+        }
+        bool axisChecked = viewAxisEnabledValue;
+        if (ImGui::Checkbox("View axis", &axisChecked)) {
+            viewAxisEnabledValue = axisChecked;  // E.1.3's handoff (D12)
+        }
+
+        // The seam's CLOSE arm, and Escape BY HAND. NavUpdateCancelRequest returns before doing
+        // anything unless ImGuiConfigFlags_NavEnableKeyboard is set and this editor never sets it
+        // (imgui_layer.cpp) -- so Escape closes NO popup on its own here. 2.5.1's AC-27 precedent, and
+        // NOT redundant with ImGui's own handling for that reason: a future ImGui upgrade is the only
+        // thing that could make it so, and removing this on that assumption without re-reading the
+        // vendored source would break Escape with no test able to catch it (no tier here can press a
+        // key).
+        if (pendingViewOptionsOpen == false || ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
     }
+    // Consumed whichever arm ran -- including neither -- so a stale request cannot fire on a later
+    // frame.
+    pendingViewOptionsOpen.reset();
+    viewOptionsOpenValue = open;
     ImGui::PopID();
 }
 

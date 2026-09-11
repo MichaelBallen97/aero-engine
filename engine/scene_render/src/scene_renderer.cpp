@@ -96,6 +96,60 @@ Entity activeDirectionalLight(World& world) {
     return winner;
 }
 
+// task E.2.4: the walk buildRenderView used to run INLINE, extracted verbatim so the editor's
+// material preview reads the bridge's OWN answer. Nothing was "improved" in the move.
+ResolvedDirectionalLight resolveDirectionalLight(World& world) {
+    ResolvedDirectionalLight resolved;
+    // The winner comes from activeDirectionalLight, which is the ONLY tie-break (E.2.3's D8). This
+    // walk keeps its own ++count because that diagnostic counts every directional light in the scene
+    // rather than describing the winner, and it must still run for EVERY light.
+    resolved.entity = activeDirectionalLight(world);
+    world.each<DirectionalLight>([&](Entity le, DirectionalLight& dl) {
+        ++resolved.count;
+        if (le != resolved.entity) {
+            return;
+        }
+        // task 3.6.2: DESIGNATED, not positional. The old form was a three-value brace-init, and
+        // appending four fields to DirectionalLightData would have left it compiling while the four
+        // new ones silently took their DEFAULTS -- a shadow toggle that never reflects the light,
+        // with every test green. Naming every field makes a future append a compile error here
+        // instead of a silent one.
+        resolved.data = {.direction = normalize(transformDirection(worldMatrix(world, le), {0.0F, 0.0F, -1.0F})),
+                         .color = dl.color,
+                         .intensity = dl.intensity,
+                         .castsShadows = dl.castsShadows,
+                         .shadowBias = dl.shadowBias,
+                         .shadowNormalBias = dl.shadowNormalBias,
+                         .shadowDistance = dl.shadowDistance};
+    });
+    return resolved;
+}
+
+// task E.2.4: the environment walk (task E.2.1), extracted the same way and for the same reason.
+// NONE resolves to the defaults RenderView::environment already holds and is NOT a diagnostic,
+// because a world without one is the ordinary state of every scene authored before that task.
+ResolvedEnvironment resolveEnvironment(World& world) {
+    ResolvedEnvironment resolved;
+    world.each<Environment>([&](Entity ee, Environment& env) {
+        ++resolved.count;
+        if (!resolved.entity.valid() || ee.index < resolved.entity.index) {
+            resolved.entity = ee;
+            // DESIGNATED, not positional (3.6.2's rule): an appended field must be a compile error
+            // here, never a silent default. The two SELECTORS are CLAMPED -- the clampPrimitive rule,
+            // so a hand-edited 7 renders mode 0 rather than reinterpreting a byte.
+            resolved.data = {.backgroundMode = render::clampBackgroundMode(env.backgroundMode),
+                             .skyColor = env.skyColor,
+                             .horizonColor = env.horizonColor,
+                             .groundColor = env.groundColor,
+                             .solidColor = env.solidColor,
+                             .ambientMode = render::clampAmbientMode(env.ambientMode),
+                             .ambientColor = env.ambientColor,
+                             .ambientIntensity = env.ambientIntensity};
+        }
+    });
+    return resolved;
+}
+
 render::RenderView buildRenderView(World& world, RenderViewScratch& scratch, rhi::Extent2D viewport,
                                    const render::CameraView* cameraOverride, const AssetBindingTable* bindings) {
     AERO_PROFILE_ZONE;
@@ -209,53 +263,18 @@ render::RenderView buildRenderView(World& world, RenderViewScratch& scratch, rhi
     }
 
     // --- lights (D6): one directional (lowest index), <= MAX_POINT_LIGHTS point lights ---
-    // task E.2.3: the winner is resolved by activeDirectionalLight above, which the EDITOR also
-    // calls -- ONE resolution, two readers, so the viewport's "which directional light did the bridge
-    // ignore?" cannot disagree with the answer the bridge used. This walk keeps its own
-    // ++view.directionalCount, because that diagnostic counts every directional light in the scene
-    // rather than describing the winner, and it must still run for EVERY light.
-    const Entity dirEntity = activeDirectionalLight(world);
-    world.each<DirectionalLight>([&](Entity le, DirectionalLight& dl) {
-        ++view.directionalCount;
-        if (le != dirEntity) {
-            return;
-        }
-        // task 3.6.2: DESIGNATED, not positional. The old form was a three-value brace-init, and
-        // appending four fields to DirectionalLightData would have left it compiling while the
-        // four new ones silently took their DEFAULTS -- a shadow toggle that never reflects the
-        // light, with every test green. Naming every field makes a future append a compile
-        // error here instead of a silent one.
-        view.directional = {.direction = normalize(transformDirection(worldMatrix(world, le), {0.0F, 0.0F, -1.0F})),
-                            .color = dl.color,
-                            .intensity = dl.intensity,
-                            .castsShadows = dl.castsShadows,
-                            .shadowBias = dl.shadowBias,
-                            .shadowNormalBias = dl.shadowNormalBias,
-                            .shadowDistance = dl.shadowDistance};
-    });
-    // --- environment (task E.2.1): lowest entity index wins -- D5's rule, verbatim, as for the
-    // camera, the directional light and the listener. NONE resolves to the defaults `view.environment`
-    // already holds and is NOT a diagnostic, because a world without one is the ordinary state of
-    // every scene authored before this task. It sits HERE, in the light block, so the 0-camera early
-    // return above leaves environmentCount at 0 -- 2.3.1's INV-4, unchanged.
-    Entity envEntity{};
-    world.each<Environment>([&](Entity ee, Environment& env) {
-        ++view.environmentCount;
-        if (!envEntity.valid() || ee.index < envEntity.index) {
-            envEntity = ee;
-            // DESIGNATED, not positional (3.6.2's rule): an appended field must be a compile error
-            // here, never a silent default. The two SELECTORS are CLAMPED -- the clampPrimitive rule,
-            // so a hand-edited 7 renders mode 0 rather than reinterpreting a byte.
-            view.environment = {.backgroundMode = render::clampBackgroundMode(env.backgroundMode),
-                                .skyColor = env.skyColor,
-                                .horizonColor = env.horizonColor,
-                                .groundColor = env.groundColor,
-                                .solidColor = env.solidColor,
-                                .ambientMode = render::clampAmbientMode(env.ambientMode),
-                                .ambientColor = env.ambientColor,
-                                .ambientIntensity = env.ambientIntensity};
-        }
-    });
+    // task E.2.4: BOTH resolutions are now FUNCTIONS (resolveDirectionalLight / resolveEnvironment
+    // above), and this walk calls them rather than repeating them -- so the editor's material preview
+    // reads the bridge's own answer BY CONSTRUCTION. They sit HERE, below the 0-camera early return,
+    // so that arm still leaves directionalCount and environmentCount at 0 (2.3.1's INV-4, unchanged),
+    // and in this ORDER, so a future reader sees the same sequence of World walks the pre-E.2.4 body
+    // performed.
+    const ResolvedDirectionalLight sun = resolveDirectionalLight(world);
+    view.directional = sun.data;
+    view.directionalCount = sun.count;
+    const ResolvedEnvironment environment = resolveEnvironment(world);
+    view.environment = environment.data;
+    view.environmentCount = environment.count;
     world.each<PointLight>([&](Entity le, PointLight& pl) {
         if (scratch.points.size() >= render::MAX_POINT_LIGHTS) {
             view.pointsTruncated = true;

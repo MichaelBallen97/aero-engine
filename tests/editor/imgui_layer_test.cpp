@@ -49,6 +49,8 @@
 // task 3.1.5 (SL1-SL10): the scene-asset loader is SRC-PRIVATE, so it is reached the way
 // blender_service_test.cpp reaches blender_process.hpp -- by relative path into editor/src. It names
 // scene_render::MeshBinding, which is why aero::scene_render is on this target's link line.
+#include "../../editor/src/material_panel.hpp"  // task E.2.4, I136: previewOutputTarget() -- the same
+                                                // src-private reach the two lines below already make
 #include "../../editor/src/scene_asset_loader.hpp"
 #include "../../editor/src/viewport_panel.hpp"  // task 3.6.3: ViewportPanel's three test seams --
                                                 // postProcess(), tonemapParams(), requestTonemapParams().
@@ -60,6 +62,7 @@
 
 #include <algorithm>
 #include <array>  // the frozen panel-id roster; reached transitively on libc++, not on MSVC (813bc4d)
+#include <cmath>  // task E.2.4, I136: std::lround / std::abs over the readback's byte oracle
 #include <cstdint>
 #include <filesystem>
 #include <format>  // task 3.2.2, I65: truncatedFbxText()'s programmatic 257-node fixture
@@ -11440,29 +11443,37 @@ TEST_CASE(
     // that survives into CI on every push. UNGATED: the source exists whether or not
     // AERO_SHADER_TOOLS built anything.
 
-    SUBCASE("(a) the material preview takes Flat mode ONCE and names the removed field never") {
-        // D13's byte-identity claim, as source text: the preview lights its sphere from a rig of its
-        // own at EXACTLY the pre-E.2.1 ambient, so its picture did not move. A SECOND
-        // AmbientMode::Flat here would be a second rig, and `view.ambient` is the field this task
-        // REMOVED -- naming it at all would not compile, which is why the count that matters is the
-        // first one.
+    SUBCASE("(a) the material preview states NO ambient mode and NO camera literal, and DOES call the rig") {
+        // task E.2.4: this preview no longer states a light, an ambient, a field of view or a clip
+        // plane -- the camera is MaterialPreviewRig's and the lighting is the scene's, resolved by the
+        // bridge. E.2.1's version of this subcase counted ONE AmbientMode::Flat, the rig it froze; the
+        // count is now ZERO, and the needle that replaces it is the CALL that took its place.
         const std::vector<std::string> preview = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/material_preview.cpp");
         REQUIRE_FALSE(preview.empty());  // non-vacuity: the path resolved
-        CHECK(countLinesContaining(preview, "AmbientMode::Flat") == 1U);
+        CHECK(countLinesContaining(preview, "AmbientMode") == 0U);
         CHECK(countLinesContaining(preview, "view.ambient") == 0U);
-        // ...and the search can say NO, so a reader that matched everything could not fake the two
-        // above.
+        CHECK(countLinesContaining(preview, "materialPreviewView(") == 1U);  // the ANTI-VACUITY needle
+        // ...and the search can still say NO, so a reader that matched everything could not fake it.
         CHECK(countLinesContaining(preview, "AmbientMode::DoesNotExist") == 0U);
     }
 
-    SUBCASE("(b) NO file under editor/src or editor/include names SkyPass") {
-        // The editor does not own the pass; SceneRenderer does, and the editor already owns a
-        // SceneRenderer. A sweep, not a roster, so a file added later is covered the day it lands.
+    SUBCASE("(b) the editor owns EXACTLY ONE sky pass, the material preview's (task E.2.4)") {
+        // The editor does not own a sky pass for the VIEWPORT -- SceneRenderer does, and the editor
+        // already owns a SceneRenderer. Since E.2.4 it owns exactly one of its own, in the material
+        // preview, because a preview that does not draw the scene's background cannot claim parity
+        // with a viewport that does. A THIRD file naming SkyPass is a second owner and reddens here.
+        // A sweep, not a roster, so a file added later is covered the day it lands.
         // THE NON-EMPTY CHECK IS NOT OPTIONAL: a sweep over a mistyped root reads zero files and
         // passes, which is the vacuous-grep class this tree has recorded three times.
+        //
+        // The claim is a SET, so the accumulator is a de-duplicated, SORTED list of FILENAMES: a file
+        // naming SkyPass on three lines must contribute its name once, and the directory iteration
+        // order is unspecified. The `#include <aero/render/sky_pass.hpp>` line is invisible to this
+        // sweep by construction -- it spells `sky_pass`, not `SkyPass` -- so the two entries below are
+        // the member declaration and the create call, exactly.
         std::size_t scanned = 0;
         std::size_t namingSceneRenderer = 0;
-        std::string offenders;
+        std::vector<std::string> naming;  // FILENAMES, de-duplicated
         const std::array<std::string_view, 2> roots{AERO_EDITOR_SRC_DIR, AERO_EDITOR_INCLUDE_DIR};
         for (const std::string_view root : roots) {
             CAPTURE(root);
@@ -11478,19 +11489,27 @@ TEST_CASE(
                     continue;
                 }
                 ++scanned;
+                // The two arms are INDEPENDENT: the SceneRenderer counter must keep running over the
+                // whole file, so the SkyPass arm records a flag rather than breaking out of the walk.
+                bool namesSky = false;
                 for (const std::string& line : editorSourceCodeLines(entry.path().string())) {
-                    if (line.find("SkyPass") != std::string::npos) {
-                        offenders += entry.path().filename().string();
-                        offenders += ' ';
-                    }
+                    namesSky = namesSky || line.find("SkyPass") != std::string::npos;
                     if (line.find("SceneRenderer") != std::string::npos) {
                         ++namingSceneRenderer;
                     }
                 }
+                if (namesSky) {
+                    const std::string filename = entry.path().filename().string();
+                    if (std::find(naming.begin(), naming.end(), filename) == naming.end()) {
+                        naming.push_back(filename);
+                    }
+                }
             }
         }
-        INFO("files naming SkyPass: ", offenders);
-        CHECK(offenders.empty());
+        std::sort(naming.begin(), naming.end());
+        const std::vector<std::string> expected{"material_preview.cpp", "material_preview.hpp"};
+        INFO("files naming SkyPass: ", naming.size());
+        CHECK(naming == expected);
         // BOTH roots really were traversed, and the sweep really can find a render type: the editor
         // names SceneRenderer in several places, so a zero here would mean the reader is broken
         // rather than that the tree is clean.
@@ -11956,4 +11975,695 @@ TEST_CASE("editor: the icon atlas is released -- no leaked texture or sampler at
     CHECK(leakedTextureWarnings == 0U);
     CHECK(leakedSamplerWarnings == 0U);
     CHECK(anyLeakWarnings == 0U);
+}
+
+TEST_CASE("editor: the preview draws the scene's sky, and only while the panel draws (task E.2.4, I135)") {
+    // A RUNTIME fact, not a source-text one: the sky pass's OWN draw counter, read through
+    // EditorApp::materialPreviewSkyDrawCount(). It is what tells "the preview owns a SkyPass" from
+    // "the preview DRAWS its SkyPass every frame it renders".
+    //
+    // I88's preamble, verbatim -- this file's own convention for its GPU cases.
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "material i135", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    REQUIRE(
+        engine::editor::writeTextFileAtomic(created.root + "/assets/preview.aeromat", MINIMAL_AEROMAT_TEXT).empty());
+
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = created.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    app->panels().setVisible("Console", false);
+    app->panels().setVisible("Inspector", false);
+
+    REQUIRE(app->tick());
+    app->requestAssetBrowserSelectEntry("preview.aeromat");
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+    REQUIRE(app->materialTargetPath() == "preview.aeromat");
+    for (int i = 0; i < 5; ++i) {
+        REQUIRE(app->tick());
+    }
+
+#if AERO_SHADER_TOOLS_ENABLED
+    REQUIRE(app->materialPreviewAvailable());
+    const std::size_t afterWarmUp = app->materialPreviewSkyDrawCount();
+    CHECK(afterWarmUp >= 5U);
+    // ...and it climbs by EXACTLY ONE per rendered frame: a sky drawn twice per frame, or a counter
+    // that never moves again, are both defects this bound catches and a `>= 5` alone does not.
+    REQUIRE(app->tick());
+    CHECK(app->materialPreviewSkyDrawCount() == afterWarmUp + 1U);
+    REQUIRE(app->tick());
+    CHECK(app->materialPreviewSkyDrawCount() == afterWarmUp + 2U);
+
+    // A TABBED-AWAY PANEL COSTS ONE EARLY RETURN -- frameCount()'s own posture, applied to the sky.
+    const std::size_t beforeHiding = app->materialPreviewSkyDrawCount();
+    app->panels().setVisible("Material", false);
+    for (int i = 0; i < 3; ++i) {
+        REQUIRE(app->tick());
+    }
+    CHECK(app->materialPreviewSkyDrawCount() == beforeHiding);
+    app->panels().setVisible("Material", true);
+    REQUIRE(app->tick());
+    CHECK(app->materialPreviewSkyDrawCount() == beforeHiding + 1U);
+#else
+    // -DAERO_SHADER_TOOLS=OFF: the preview latches Unavailable in its CONSTRUCTOR, so no sky pass is
+    // ever created and the count can never move. ASSERTED rather than skipped (the 3.4.2 near-miss
+    // rule): "no shaders" must mean zero, not "we did not look".
+    CHECK_FALSE(app->materialPreviewAvailable());
+    CHECK(app->materialPreviewSkyDrawCount() == 0U);
+    REQUIRE(app->tick());
+    CHECK(app->materialPreviewSkyDrawCount() == 0U);
+#endif
+}
+
+TEST_CASE("editor: the scene's Environment reaches the material preview's PIXELS (task E.2.4, I136)") {
+    // THE DELIVERABLE, READ OFF THE TEXTURE. Every other arm of this task asserts a struct crossing a
+    // seam; this one reads the bytes the panel is about to show and compares them against a CPU
+    // oracle -- render::tonemapAndEncode, the same chain tonemap.frag.hlsl transcribes.
+    //
+    // I88's preamble, verbatim.
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "material i136", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    REQUIRE(
+        engine::editor::writeTextFileAtomic(created.root + "/assets/preview.aeromat", MINIMAL_AEROMAT_TEXT).empty());
+
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = created.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    app->panels().setVisible("Console", false);
+    app->panels().setVisible("Inspector", false);
+
+    REQUIRE(app->tick());
+    app->requestAssetBrowserSelectEntry("preview.aeromat");
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+    REQUIRE(app->materialTargetPath() == "preview.aeromat");
+
+#if AERO_SHADER_TOOLS_ENABLED
+    REQUIRE(app->materialPreviewAvailable());
+    auto* const material = dynamic_cast<engine::editor::MaterialPanel*>(app->panels().find("Material"));
+    REQUIRE(material != nullptr);
+    auto* const viewport = dynamic_cast<engine::editor::ViewportPanel*>(app->panels().find("Viewport"));
+    REQUIRE(viewport != nullptr);
+
+    // The scene's ONE Environment, found the picking.cpp way -- eachEntity + has<T>/get<T>, never a
+    // World::each<T> the editor tier does not have.
+    engine::Entity environmentEntity{};
+    app->world().eachEntity([&](engine::Entity e) {
+        if (app->world().has<engine::Environment>(e)) {
+            environmentEntity = e;
+        }
+    });
+    REQUIRE(environmentEntity.valid());
+
+    // Reads the top-left and centre texels of the DRAWN rect out of the preview's OUTPUT target.
+    // The row stride is the ALLOCATION's width, never the drawn one (E.1.4's margin lesson).
+    struct PreviewTexels {
+        std::array<std::uint8_t, 4> corner{};
+        std::array<std::uint8_t, 4> centre{};
+    };
+    const auto readPreview = [&]() {
+        const engine::render::RenderTarget* target = material->previewOutputTarget();
+        REQUIRE(target != nullptr);
+        const engine::rhi::Extent2D textureExtent = target->textureExtent();
+        const engine::rhi::Extent2D drawExtent = target->drawExtent();
+        REQUIRE(drawExtent.width > 4U);
+        REQUIRE(drawExtent.height > 4U);
+        std::vector<std::byte> bytes(static_cast<std::size_t>(textureExtent.width) * textureExtent.height * 4U,
+                                     std::byte{0xAB});
+        REQUIRE(device->readbackTexture(target->colorTexture(), 0U, bytes));
+        const auto texelAt = [&](std::uint32_t row, std::uint32_t column) {
+            const std::size_t base = ((static_cast<std::size_t>(row) * textureExtent.width) + column) * 4U;
+            return std::array<std::uint8_t, 4>{
+                static_cast<std::uint8_t>(bytes[base]), static_cast<std::uint8_t>(bytes[base + 1U]),
+                static_cast<std::uint8_t>(bytes[base + 2U]), static_cast<std::uint8_t>(bytes[base + 3U])};
+        };
+        return PreviewTexels{.corner = texelAt(0U, 0U),
+                             .centre = texelAt(drawExtent.height / 2U, drawExtent.width / 2U)};
+    };
+
+    // The CPU oracle: the same chain the fragment stage runs, at the SAME params the preview was
+    // handed (the viewport owns them, and the preview reads them through EditorApp::tick).
+    const engine::render::TonemapParams params = engine::render::sanitizeTonemapParams(viewport->tonemapParams());
+    const auto expectedBytes = [&params](engine::Vec3 linear) {
+        const engine::Vec3 encoded = engine::render::tonemapAndEncode(linear, params);
+        return std::array<int, 3>{static_cast<int>(std::lround(encoded.x * 255.0F)),
+                                  static_cast<int>(std::lround(encoded.y * 255.0F)),
+                                  static_cast<int>(std::lround(encoded.z * 255.0F))};
+    };
+    // THE TOLERANCE IS STATED, and it is the assertion rather than a note beside it (E.2.1's SB9/SB16
+    // lesson). +-1 per channel covers the GPU's own rounding of a float to an 8-bit unorm.
+    //
+    // MEASURED ON METAL: the delta is 0/0/0 on BOTH colours below -- the GPU's tonemap and this CPU
+    // oracle agree EXACTLY there, and the MESSAGE lines print it on every run of every lane. It is
+    // deliberately NOT tightened to exact, and the reason is that the measurement is one backend's:
+    // the sRGB OETF ends in pow(x, 1/2.4), whose precision D3D12 and Vulkan specify in ULPs rather
+    // than as correctly rounded, so a value sitting within a few ULPs of a byte boundary can quantise
+    // differently on WARP or lavapipe. The tolerance is not vacuous in the direction that matters --
+    // the centre arm below asserts a distance GREATER than it, and the control arm proves the corner
+    // tracks solidColor -- so widening beyond +-1 is what would need a new argument, not keeping it.
+    constexpr int TOLERANCE = 1;
+    const auto within = [](const std::array<std::uint8_t, 4>& got, const std::array<int, 3>& want) {
+        for (std::size_t i = 0; i < 3; ++i) {
+            if (std::abs(static_cast<int>(got.at(i)) - want.at(i)) > TOLERANCE) {
+                return false;
+            }
+        }
+        return true;
+    };
+
+    const engine::Vec3 firstSolid{0.5F, 0.125F, 0.25F};
+    {
+        auto* const env = app->world().get<engine::Environment>(environmentEntity);
+        REQUIRE(env != nullptr);
+        env->backgroundMode = 1U;  // Solid: the sky is EXACTLY solidColor, two zero deltas
+        env->solidColor = firstSolid;
+    }
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+    const PreviewTexels first = readPreview();
+    const std::array<int, 3> firstExpected = expectedBytes(firstSolid);
+    CAPTURE(static_cast<int>(first.corner.at(0)));
+    CAPTURE(static_cast<int>(first.corner.at(1)));
+    CAPTURE(static_cast<int>(first.corner.at(2)));
+    CAPTURE(firstExpected.at(0));
+    CAPTURE(firstExpected.at(1));
+    CAPTURE(firstExpected.at(2));
+    // Q3's measurement, printed on every run: if this is 0/0/0 on two different colours the tolerance
+    // can be tightened to exact. Never the other way round without a measurement.
+    MESSAGE("I136 corner delta: " << (static_cast<int>(first.corner.at(0)) - firstExpected.at(0)) << " "
+                                  << (static_cast<int>(first.corner.at(1)) - firstExpected.at(1)) << " "
+                                  << (static_cast<int>(first.corner.at(2)) - firstExpected.at(2)));
+    CHECK(within(first.corner, firstExpected));
+
+    // ...AND THE CENTRE IS NOT THE SKY. Without this arm a preview that drew the background over
+    // everything -- the sky pass moved after the geometry -- would satisfy the corner assertion
+    // perfectly. "Different" is asserted as a distance GREATER than the tolerance, not as `!=`.
+    CHECK_FALSE(within(first.centre, firstExpected));
+
+    // THE CONTROL: a different solidColor moves the corner and the corner follows it.
+    const engine::Vec3 secondSolid{0.125F, 0.5F, 0.25F};
+    {
+        auto* const env = app->world().get<engine::Environment>(environmentEntity);
+        REQUIRE(env != nullptr);
+        env->solidColor = secondSolid;
+    }
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+    const PreviewTexels second = readPreview();
+    const std::array<int, 3> secondExpected = expectedBytes(secondSolid);
+    MESSAGE("I136 corner delta (control): " << (static_cast<int>(second.corner.at(0)) - secondExpected.at(0)) << " "
+                                            << (static_cast<int>(second.corner.at(1)) - secondExpected.at(1)) << " "
+                                            << (static_cast<int>(second.corner.at(2)) - secondExpected.at(2)));
+    CHECK(within(second.corner, secondExpected));
+    // Anti-vacuity: the two colours really are distinguishable at 8 bits, so "the corner followed" is
+    // a statement about the picture rather than about two equal expectations.
+    CHECK(second.corner != first.corner);
+#else
+    // -DAERO_SHADER_TOOLS=OFF: there is no picture at all, and the panel says so.
+    CHECK_FALSE(app->materialPreviewAvailable());
+    auto* const material = dynamic_cast<engine::editor::MaterialPanel*>(app->panels().find("Material"));
+    REQUIRE(material != nullptr);
+    CHECK(material->previewOutputTarget() == nullptr);
+#endif
+}
+
+TEST_CASE("editor: the no-sun notice follows the RESOLUTION, not the intensity (task E.2.4, I137)") {
+    // D5's wording rule, in both directions and at the trap. `materialPreviewHasSun()` is the latch
+    // MaterialPanel writes in its service pass; the notice line drawPreview draws is keyed on exactly
+    // this flag, and NO TIER HERE CAN READ THE NOTICE OFF THE SCREEN -- validation row 5 is the only
+    // cover for "the line appears". This case covers the flag that decides it.
+    //
+    // Every mutation happens BETWEEN ticks, never inside one (the panels rule: never mutate the World
+    // during a draw walk).
+    //
+    // I88's preamble, verbatim. UNGATED below the preamble: the latch is written by servicePreview on
+    // every tick, whether or not the preview ever reached Ready, so this case asserts the same thing
+    // in a tools-OFF build.
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "material i137", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = created.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    REQUIRE(app->tick());
+
+    // The default scene HAS a sun, so the notice must not be showing.
+    CHECK(app->materialPreviewHasSun());
+
+    engine::Entity sunEntity{};
+    app->world().eachEntity([&](engine::Entity e) {
+        if (app->world().has<engine::DirectionalLight>(e)) {
+            sunEntity = e;
+        }
+    });
+    REQUIRE(sunEntity.valid());
+
+    // (1) REMOVE the component -> the resolution answers "none" -> the flag drops.
+    REQUIRE(app->world().remove<engine::DirectionalLight>(sunEntity));
+    REQUIRE(app->tick());
+    CHECK_FALSE(app->materialPreviewHasSun());
+
+    // (2) Put it back -> the flag returns. Without this the arm above would pass on a flag that is
+    // simply always false.
+    REQUIRE(app->world().add<engine::DirectionalLight>(sunEntity, engine::DirectionalLight{}) != nullptr);
+    REQUIRE(app->tick());
+    CHECK(app->materialPreviewHasSun());
+
+    // (3) THE TRAP, and the whole reason the flag is the resolution's answer rather than
+    // `sun.intensity != 0`: a sun the user set to 0 is a sun they SWITCHED OFF, and the notice must
+    // not claim the scene has none.
+    {
+        auto* const light = app->world().get<engine::DirectionalLight>(sunEntity);
+        REQUIRE(light != nullptr);
+        light->intensity = 0.0F;
+    }
+    REQUIRE(app->tick());
+    CHECK(app->materialPreviewHasSun());
+}
+
+TEST_CASE(
+    "editor: the preview's lighting comes from the bridge, and the preview states none of it (task E.2.4, I140)") {
+    // SOURCE-TEXT PINS, and each is here because no runtime tier can see what it asserts: nothing in
+    // tests/ can tell "EditorApp called the bridge's resolver" from "EditorApp wrote its own walk that
+    // happens to agree today", and nothing can tell "the preview reads the rig" from "the preview
+    // restated the rig's numbers".
+    SUBCASE("(a) editor_app.cpp resolves through the BRIDGE, immediately above the preview's service call") {
+        const std::vector<std::string> code = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/editor_app.cpp");
+        REQUIRE_FALSE(code.empty());  // non-vacuity: the path resolved
+        CHECK(countLinesContaining(code, "resolveEnvironment(sceneWorld)") == 1U);
+        CHECK(countLinesContaining(code, "resolveDirectionalLight(sceneWorld)") == 1U);
+        const std::size_t serviceAt = soleLineContaining(code, "servicePreview(");
+        const std::size_t environmentAt = soleLineContaining(code, "resolveEnvironment(sceneWorld)");
+        const std::size_t sunAt = soleLineContaining(code, "resolveDirectionalLight(sceneWorld)");
+        // ABOVE the call, and CLOSE to it: the resolution must describe the World this frame's
+        // viewport just rendered, not one read at some other point in tick().
+        CHECK(environmentAt < serviceAt);
+        CHECK(sunAt < serviceAt);
+        CHECK(serviceAt - environmentAt <= 8U);
+        CHECK(serviceAt - sunAt <= 8U);
+        // ...and the search can say NO.
+        CHECK(countLinesContaining(code, "resolveDoesNotExist(sceneWorld)") == 0U);
+    }
+
+    SUBCASE("(b) material_preview.cpp states NO lighting and NO camera, and calls the rig for both") {
+        const std::vector<std::string> code = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/material_preview.cpp");
+        REQUIRE_FALSE(code.empty());
+        // AC-14: not a light, not an ambient, not a field of view, not a clip plane.
+        CHECK(countLinesContaining(code, "AmbientMode") == 0U);
+        CHECK(countLinesContaining(code, "PREVIEW_LIGHT") == 0U);
+        CHECK(countLinesContaining(code, "PREVIEW_AMBIENT") == 0U);
+        CHECK(countLinesContaining(code, "PREVIEW_FOV") == 0U);
+        CHECK(countLinesContaining(code, "PREVIEW_NEAR") == 0U);
+        CHECK(countLinesContaining(code, "PREVIEW_FAR") == 0U);
+        CHECK(countLinesContaining(code, "lookAt(") == 0U);
+        CHECK(countLinesContaining(code, "perspective(") == 0U);
+        // ...and it reaches the rig for every one of them, exactly once each.
+        CHECK(countLinesContaining(code, "materialPreviewCamera(") == 1U);
+        CHECK(countLinesContaining(code, "materialPreviewView(") == 1U);
+        CHECK(countLinesContaining(code, "advanceMaterialPreviewOrbit(") == 1U);
+        CHECK(countLinesContaining(code, "SkyPass::create") == 1U);
+        // THE ORDER: sky BEFORE geometry, SceneRenderer::render's own. Reversed, the sphere is
+        // painted over by its own background.
+        const std::size_t skyAt = soleLineContaining(code, "sky->draw(");
+        const std::size_t geometryAt = soleLineContaining(code, "renderer->draw(");
+        CHECK(skyAt < geometryAt);
+        // THE FAILURE ARM, which no runtime tier can reach in a build whose shaders cooked: a sky pass
+        // that fails to create must latch Unavailable rather than leave a Ready preview with no sky.
+        const std::size_t skyGuardAt = soleLineContaining(code, "if (!sky) {");
+        const std::size_t unavailableAt = [&]() {
+            for (std::size_t i = skyGuardAt; i < code.size(); ++i) {
+                if (code[i].find("Status::Unavailable") != std::string::npos) {
+                    return i;
+                }
+            }
+            return code.size();
+        }();
+        CHECK(unavailableAt > skyGuardAt);
+        CHECK(unavailableAt - skyGuardAt <= 6U);
+        // ...and the search can say NO.
+        CHECK(countLinesContaining(code, "AmbientMode::DoesNotExist") == 0U);
+    }
+
+    SUBCASE("(c) the View popover's own source text, and the strip's emptiness") {
+        // NOTHING IN tests/ CAN CLICK A BUTTON OR PRESS A KEY, so the popup's anchor, its Escape
+        // binding and the ImGuizmo term it must carry have no runtime witness anywhere. They are
+        // pinned here and judged on the validation page (rows 7 and 8).
+        const std::vector<std::string> code = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/viewport_panel.cpp");
+        REQUIRE_FALSE(code.empty());
+        // The body, delimited exactly as I106(b) delimits it: from the signature to the next column-0
+        // closing brace.
+        const std::size_t bodyStart = soleLineContaining(code, "void ViewportPanel::drawViewOptions()");
+        std::size_t bodyEnd = code.size();
+        for (std::size_t i = bodyStart + 1U; i < code.size(); ++i) {
+            if (code[i].starts_with('}')) {
+                bodyEnd = i;
+                break;
+            }
+        }
+        REQUIRE(bodyEnd > bodyStart);
+        REQUIRE(bodyEnd < code.size());
+        const std::vector<std::string> body(code.begin() + static_cast<std::ptrdiff_t>(bodyStart),
+                                            code.begin() + static_cast<std::ptrdiff_t>(bodyEnd));
+
+        const std::array<std::string_view, 14> needles{"SmallButton(\"View\")",
+                                                       "OpenPopup(\"##viewoptions\")",
+                                                       "SetNextWindowPos(",
+                                                       "BeginPopup(\"##viewoptions\")",
+                                                       "EndPopup()",
+                                                       "IsKeyPressed(ImGuiKey_Escape",
+                                                       "CloseCurrentPopup()",
+                                                       "RadioButton(\"Perspective\"",
+                                                       "RadioButton(\"Orthographic\"",
+                                                       "Checkbox(\"Grid\"",
+                                                       "Checkbox(\"Gizmos\"",
+                                                       "Checkbox(\"View axis\"",
+                                                       "BeginCombo(",
+                                                       "SliderFloat(\"Exposure\""};
+        for (const std::string_view needle : needles) {
+            CAPTURE(needle);
+            CHECK(countLinesContaining(body, needle) > 0U);
+        }
+        // ...and the search can say NO, so a body that matched everything could not fake the fourteen.
+        CHECK(countLinesContaining(body, "Checkbox(\"DoesNotExist\"") == 0U);
+
+        // THE ROW RECT IS CAPTURED BEFORE THE POPUP. Reversed, an open popover moves the rect
+        // overlayOwnsPress reads -- seed S20's shape, and I138's runtime arm.
+        const std::size_t captureAt = soleLineContaining(body, "viewOptionsButtonMax = Vec2{");
+        const std::size_t popupAt = soleLineContaining(body, "BeginPopup(\"##viewoptions\")");
+        CHECK(captureAt < popupAt);
+
+        // THE ImGuizmo TERM. The dismissing click lands on the image with ImGui's hover inhibition
+        // active, so ImGuizmo's own CanActivate cannot see the popup; this is what tells it.
+        const std::size_t enableAt = soleLineContaining(code, "ImGuizmo::Enable(gesture.gesture");
+        CHECK(code[enableAt].find("viewOptionsOpenValue") != std::string::npos);
+
+        // THE STRIP KEEPS ONLY MODE CONTROLS, as source text: neither the Grid checkbox nor the
+        // Exposure slider is submitted anywhere in this file OUTSIDE the popup body.
+        CHECK(countLinesContaining(code, "Checkbox(\"Grid\"") == countLinesContaining(body, "Checkbox(\"Grid\""));
+        CHECK(countLinesContaining(code, "SliderFloat(\"Exposure\"") ==
+              countLinesContaining(body, "SliderFloat(\"Exposure\""));
+    }
+}
+
+TEST_CASE("editor: the View popover opens, closes, and MOVES NO RECT (task E.2.4, I138)") {
+    // The seam exists because NO TIER IN THIS TREE CAN CLICK A BUTTON. What it buys is the one claim
+    // that matters structurally: the recorded interactive-row rect -- the rect overlayOwnsPress reads,
+    // which decides whether a click on the strip deselects the scene entity behind it -- is IDENTICAL
+    // whether the popover is open or closed.
+    //
+    // WHAT THIS ARM IS AND IS NOT, MEASURED. It is a REGRESSION GUARD, not a witness for today's
+    // code: ImGui::End() restores the parent window's last-item data at EndPopup (imgui.cpp:8848 in
+    // the pinned tree), so reading the last-item rect in step 9b would name the SAME button and the
+    // two spellings are indistinguishable here -- sabotage seed S20 is green for exactly that reason,
+    // and is recorded as a redundancy rather than a hole. What the arm still catches is the day that
+    // stops being true (an ImGui bump, or a stray item submitted between the popup and step 9b),
+    // which is silent everywhere else.
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "view options i138", .width = 900, .height = 600});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = created.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());  // two warm-up ticks so step 9b has run at least once
+    auto* const viewport = dynamic_cast<engine::editor::ViewportPanel*>(app->panels().find("Viewport"));
+    REQUIRE(viewport != nullptr);
+
+#if AERO_SHADER_TOOLS_ENABLED
+    const engine::Vec2 closedMin = viewport->overlayRowMin();
+    const engine::Vec2 closedMax = viewport->overlayRowMax();
+    // Anti-vacuity, for I107's reason: an EMPTY rect would make every equality below vacuous.
+    REQUIRE(closedMax.x > closedMin.x);
+    REQUIRE(closedMax.y > closedMin.y);
+    CHECK_FALSE(viewport->viewOptionsOpen());  // closed by default
+
+    viewport->requestViewOptionsOpen(true);
+    REQUIRE(app->tick());
+    CHECK(viewport->viewOptionsOpen());
+    // THE CLAIM: EXACTLY equal, not approximately. The rect comes from the BUTTON's own rect max,
+    // captured before the popup is touched, so an open popup cannot move it by a single point.
+    CHECK(viewport->overlayRowMin() == closedMin);
+    CHECK(viewport->overlayRowMax() == closedMax);
+
+    viewport->requestViewOptionsOpen(false);
+    REQUIRE(app->tick());
+    // STILL OPEN ON THIS FRAME, and that is the DESIGN rather than a lag -- MEASURED, and it is the
+    // property the whole ImGuizmo term rests on. CloseCurrentPopup runs INSIDE the popup's body, so
+    // the popup DID draw this frame and BeginPopup's own answer for the frame that just drew is
+    // `true`. It is the same one-frame shape ImGui itself has for a click outside, which closes the
+    // popup in UpdateMouseMovingWindowEndFrame -- at EndFrame, AFTER the whole draw walk. That is
+    // exactly why updateGizmo reading this latch one step earlier NEXT frame is reading the RIGHT
+    // frame: on the dismissing click's frame the latch still says open, which is when ImGuizmo must
+    // be told.
+    CHECK(viewport->viewOptionsOpen());
+    CHECK(viewport->overlayRowMin() == closedMin);
+    CHECK(viewport->overlayRowMax() == closedMax);
+
+    REQUIRE(app->tick());
+    CHECK_FALSE(viewport->viewOptionsOpen());
+    CHECK(viewport->overlayRowMin() == closedMin);
+    CHECK(viewport->overlayRowMax() == closedMax);
+
+    // The request is a ONE-SHOT: consumed whichever arm ran, so a stale one cannot fire later.
+    REQUIRE(app->tick());
+    CHECK_FALSE(viewport->viewOptionsOpen());
+#else
+    // -DAERO_SHADER_TOOLS=OFF: the viewport latches Unavailable and onDraw returns before step 9b, so
+    // nothing writes the row rect and nothing draws the button. ASSERTED rather than skipped.
+    CHECK_FALSE(viewport->viewOptionsOpen());
+    CHECK(viewport->overlayRowMin() == engine::Vec2{});
+    CHECK(viewport->overlayRowMax() == engine::Vec2{});
+    viewport->requestViewOptionsOpen(true);
+    REQUIRE(app->tick());
+    CHECK_FALSE(viewport->viewOptionsOpen());
+#endif
+}
+
+TEST_CASE("editor: hiding the view-axis widget hides its PRESS CLAIM too (task E.2.4, I139)") {
+    // E.1.3's handoff, taken. OFF is ONE fact, not four: the layout is never computed, nothing draws,
+    // no snap can begin, viewAxisOwnsPoint answers false and viewAxisRectMin/Max answer the DEGENERATE
+    // rect -- which is exactly what viewAxisRect already returns when the widget hides for being too
+    // small, so containsHalfOpen's own guard turns it into "owns nothing" with no second predicate.
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "view axis i139", .width = 900, .height = 600});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = created.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+    auto* const viewport = dynamic_cast<engine::editor::ViewportPanel*>(app->panels().find("Viewport"));
+    REQUIRE(viewport != nullptr);
+    CHECK(viewport->viewAxisEnabled());  // default ON, like the grid and the gizmos
+
+#if AERO_SHADER_TOOLS_ENABLED
+    const engine::Vec2 shownMin = viewport->viewAxisRectMin();
+    const engine::Vec2 shownMax = viewport->viewAxisRectMax();
+    REQUIRE(shownMax.x > shownMin.x);  // a REAL rect, or every arm below is vacuous
+    REQUIRE(shownMax.y > shownMin.y);
+
+    // I116's exact shape, with the real image rect reconstructed from the widget's own margin.
+    const engine::Vec2 origin{};
+    const engine::Vec2 size{shownMax.x + engine::editor::VIEW_AXIS_MARGIN_POINTS, 600.0F};
+    const engine::Vec2 centre{(shownMin.x + shownMax.x) * 0.5F, (shownMin.y + shownMax.y) * 0.5F};
+    CHECK(viewport->overlayOwnsPress(centre, origin, size));
+
+    SUBCASE("OFF: the rect is degenerate and the same press falls through to the scene") {
+        viewport->requestViewAxisEnabled(false);
+        REQUIRE(app->tick());
+        CHECK_FALSE(viewport->viewAxisEnabled());
+        CHECK(viewport->viewAxisRectMin() == viewport->viewAxisRectMax());
+        CHECK(viewport->viewAxisRectMin() == engine::Vec2{});
+        CHECK_FALSE(viewport->overlayOwnsPress(centre, origin, size));
+
+        // ...and BACK, so the arm above is a statement about the toggle rather than about a widget
+        // that stopped working.
+        viewport->requestViewAxisEnabled(true);
+        REQUIRE(app->tick());
+        CHECK(viewport->viewAxisRectMin() == shownMin);
+        CHECK(viewport->viewAxisRectMax() == shownMax);
+        CHECK(viewport->overlayOwnsPress(centre, origin, size));
+    }
+
+    SUBCASE("a snap ALREADY IN FLIGHT completes -- it is the camera's animation, not the widget's") {
+        viewport->requestViewSnap(engine::editor::ViewAxis::PosX);
+        REQUIRE(viewport->viewSnapActive());
+        const engine::editor::EditorCamera* camera = app->viewportCamera();
+        REQUIRE(camera != nullptr);
+        const float yawBefore = camera->yaw();
+        const float pitchBefore = camera->pitch();
+
+        viewport->requestViewAxisEnabled(false);
+        REQUIRE(app->tick());
+        // STILL RUNNING, with the widget hidden -- and the camera really moved between the two ticks,
+        // which is what tells "the snap survived" from "the snap was cancelled and the flag is stale".
+        CHECK(viewport->viewSnapActive());
+        CHECK_FALSE(viewport->viewAxisEnabled());
+        const bool moved = camera->yaw() != yawBefore || camera->pitch() != pitchBefore;
+        CHECK(moved);
+
+        // ...and it COMPLETES. PanelContext::deltaSeconds caps at VIEW_SNAP_SECONDS, so a handful of
+        // ticks is more than enough; the loop bounds it rather than assuming a count.
+        for (int i = 0; i < 240 && viewport->viewSnapActive(); ++i) {
+            REQUIRE(app->tick());
+        }
+        CHECK_FALSE(viewport->viewSnapActive());
+    }
+#else
+    // -DAERO_SHADER_TOOLS=OFF: the panel is Unavailable, so the rect is degenerate in BOTH toggle
+    // states. ASSERTED rather than skipped, so "hidden owns nothing" is tested in the one
+    // configuration where it is trivially true as well as in the one where it is not.
+    CHECK(viewport->viewAxisRectMin() == viewport->viewAxisRectMax());
+    viewport->requestViewAxisEnabled(false);
+    REQUIRE(app->tick());
+    CHECK_FALSE(viewport->viewAxisEnabled());
+    CHECK(viewport->viewAxisRectMin() == viewport->viewAxisRectMax());
+    CHECK_FALSE(viewport->overlayOwnsPress(engine::Vec2{10.0F, 10.0F}, engine::Vec2{}, engine::Vec2{900.0F, 600.0F}));
+#endif
+}
+
+TEST_CASE("editor: the viewport strip carries only MODE controls (task E.2.4, I141)") {
+    // I107 bounds the recorded row from BELOW (>= 40 points) and its comment names the PRE-E.2.4 row,
+    // "T R S Local + a combo + a slider". The row is now `T R S | Local | View`, so I107's assertions
+    // all still hold and only its comment went stale -- it is left BYTE-IDENTICAL on purpose, because
+    // "green unedited" is a stronger gate step as a hard diff than as "unedited except a comment".
+    //
+    // THIS case bounds it from ABOVE, which is the direction a regression that put the 130-point
+    // exposure slider and the 92-point combo back on the strip would break.
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "view options i141", .width = 900, .height = 600});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = created.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+    auto* const viewport = dynamic_cast<engine::editor::ViewportPanel*>(app->panels().find("Viewport"));
+    REQUIRE(viewport != nullptr);
+
+#if AERO_SHADER_TOOLS_ENABLED
+    const engine::Vec2 rowMin = viewport->overlayRowMin();
+    const engine::Vec2 rowMax = viewport->overlayRowMax();
+    const float width = rowMax.x - rowMin.x;
+    const float height = rowMax.y - rowMin.y;
+    MESSAGE("I141 recorded strip row: " << width << " x " << height << " points");
+    // I107's own lower bounds, restated so this case is readable on its own.
+    CHECK(width >= 40.0F);
+    CHECK(height >= 8.0F);
+    // THE UPPER BOUND, DERIVED FROM A MEASUREMENT rather than chosen. Measured on this row when the
+    // case was written: 156 x 13 points for `T R S | Local | View` at the default font (the MESSAGE
+    // above prints it on every run of every lane, so the next reader does not have to re-derive it).
+    // The bound is TWICE that width, rounded up to a round number -- loose enough that a font or
+    // padding change does not redden it, tight enough that putting the 92-point combo and the
+    // 130-point exposure slider back on the strip (~240 more points with their spacings) does.
+    CHECK(width < 320.0F);
+    // ONE ROW HIGH. A second row of widgets would push this past the bound while leaving the width
+    // alone, which is the other shape the regression can take.
+    CHECK(height <= 40.0F);
+#else
+    CHECK(viewport->overlayRowMin() == engine::Vec2{});
+    CHECK(viewport->overlayRowMax() == engine::Vec2{});
+#endif
 }

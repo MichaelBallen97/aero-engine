@@ -15133,3 +15133,264 @@ by a command-line flag so each run is pure from its first frame.
 `\[warn\]`, which cannot match spdlog's actual `[warning]` spelling — a guard that could not have
 failed. Re-run with the right pattern and verified in the other direction against an E.2.2-era log
 captured the same way, which returns 2 warnings. The zero is a measurement; the first one was not.
+
+---
+
+### E.2.4 — Material-preview parity + exposure relocation — CLOSES Epic E.2, and the design premise it was built on turned out to be false
+
+**Branch `feat/E.2.4-material-preview-parity`, NINE commits** — the plan's five, one for the sabotage
+matrix's finding, one for the code-review round's four, one formatting-only fix for two hand-written
+cases that round appended, and the docs note. Sized **M** in the roadmap, recorded **L** before the
+first commit and landed **L**. *(PR number and merge commit are filled in at merge.)*
+
+`ctest -N` **174 -> 174**, entry set byte-identical to the branch point's — no component, no target,
+no ctest entry, in any of the three configurations. doctest: `aero_tests` **1400 -> 1404**,
+`aero_editor_shell_test` **1829 -> 1842**, `aero_editor_imgui_test` **170 -> 181**; the other four
+binaries unmoved. Guards: math **496 -> 500**, project-no-delete **A=6/B=79 -> A=6/B=80**; platform
+**92**, rhi **163**, scene **92**, golden-rule **165**, audio **11/3/55** and probes **6/57** all
+unmoved. Both reduced configurations re-measured fresh, with byte-identical entry sets: shader-tools-OFF
+**161** and reflect-tools-OFF **93**.
+
+**Two new tracked source files, two new test TUs, fourteen edited source/test/CMake files plus three
+docs.** `git ls-files 'editor/src/*.cpp'` **79 -> 80** and
+`git ls-files 'editor/include/aero/editor/*.hpp'` **57 -> 58**. **THE "PAIR COUNT" CARRIED IN
+`CLAUDE.md` SINCE E.1.5 IS DROPPED RATHER THAN INCREMENTED**: the tree was measured six ways looking
+for the 28/30 figure — `editor/src/*.cpp` (79), `editor/src/*.hpp` (23),
+`editor/include/aero/editor/*.hpp` (57), `.cpp` with a matching `.hpp` in either place (76), both in
+`editor/src` (23), `.cpp` whose `.hpp` is public (53) — and **none of the six is 28 or 30**. The metric
+behind that number is undefined in the tree, and the line had already been flagged as carried
+arithmetic rather than a measurement. The two `git ls-files` counts replace it because anyone can
+re-run them.
+
+**What shipped.** `buildRenderView` resolved the active `DirectionalLight` and the `Environment` in two
+inline walks, so a second reader had no way to get the bridge's own answer except by writing a second
+walk — `buildSelectionMaskSet`'s D11 verbatim. Both became functions, moved **verbatim**:
+`scene_render::resolveDirectionalLight` and `resolveEnvironment`, each returning `{data, entity,
+count}`, both pure, GPU-free and **log-free on every path**, and `buildRenderView` calls them.
+`activeDirectionalLight` stays and is what `resolveDirectionalLight` calls for its tie-break, so there
+are now three readers of one tie-break and still exactly one tie-break. The material preview draws a
+unit sphere at the world origin under the open scene's `Environment` and its active sun — colour,
+intensity **and world direction** — with the scene's sky behind it through a `render::SkyPass` it owns,
+drawn **before** the geometry, **all-or-nothing** with `post`/`target`/`renderer`. The camera moved to
+a public, pure `editor/include/aero/editor/material_preview_rig.hpp`. A one-line amber notice explains
+an ambient-only sphere. And, independently, the viewport strip became `T R S | Local/World | View`,
+with Projection, Tonemap, Exposure, Grid, Gizmos and View axis in one anchored popover.
+
+**Commits 1–4 leave the viewport strip untouched and commit 5 leaves the preview untouched**, so the
+two halves bisect independently — which is the whole reason one branch carried two features safely.
+
+#### The sentences that govern new work
+
+**1. `ImGui::End()` RESTORES THE PARENT'S LAST-ITEM DATA AT `EndPopup`, AND THIS TASK WAS DESIGNED
+AROUND A HAZARD THAT THEREFORE DOES NOT EXIST.** The plan's D-level argument for capturing the `View`
+button's rect into `viewOptionsButtonMax` was that `GetItemRectMax()` after a `BeginPopup`/`EndPopup`
+pair names the **popup's** last item, so the recorded interactive row would jump the moment the popover
+opened. Sabotage seed `S20` — putting the last-item read back, seeded with the popup **open** — came
+back **green**, and the pinned source says why: `ImGui::End()` ends with
+`g.LastItemData = window_stack_data.ParentLastItemDataBackup` (`imgui.cpp:8848`, 1.92.8-docking), so
+the popup's contents never leak out to a later read. Confirmed two ways, the source and a seeded build.
+**The capture stays**, because it does not *depend* on that restore: an ImGui bump that stopped
+restoring, or a stray item submitted between the popup and step 9b, would silently move the rect
+`overlayOwnsPress` reads — and that rect decides whether a click on the strip deselects the entity
+behind it. `I138`'s rect-equality arm is now documented as a **regression guard, not a witness**, and
+`S20` is recorded as a redundancy rather than a hole. **Re-read `imgui.cpp:8848` at every ImGui bump**,
+exactly as `ImGuizmo.cpp:1229-1230` already requires.
+
+**2. A POPOVER'S OPEN LATCH REPORTS THE FRAME THAT DREW, AND THE EXTRA FRAME IS LOAD-BEARING.**
+`CloseCurrentPopup` runs **inside** the popup's body, so on the frame a close request lands the popup
+still drew and `viewOptionsOpen()` is still `true`; it reads `false` the frame after. The plan predicted
+one tick and it is two. That is not a lag to work around — it is the same one-frame shape ImGui has for
+a click outside, which it closes in `UpdateMouseMovingWindowEndFrame` at `EndFrame`, **after** the whole
+draw walk, and it is exactly why `updateGizmo` reading the latch one step earlier next frame reads the
+**right** frame: on the dismissing click's frame the latch still says open, which is when ImGuizmo must
+be told.
+
+**3. THE OPENING CLICK ON A POPOVER BUTTON IS PROTECTED BY ImGui AND THE DISMISSING CLICK IS NOT.**
+`CanActivate()` is `IsMouseClicked(0) && !IsAnyItemHovered() && !IsAnyItemActive()`, and
+`IsAnyItemHovered()` is `HoveredId != 0 || HoveredIdPreviousFrame != 0`. The user hovered `View` on the
+previous frame before pressing it, so `HoveredIdPreviousFrame` is the button's id and ImGuizmo already
+refuses — **because `View` is a real ImGui item**, the exact protection E.1.3 recorded as absent for a
+widget drawn with `ImDrawList` alone. The **dismissing** click is over the image, where both hover ids
+are zero under the popup's inhibition, so `ImGuizmo::Enable` gains one more term — never an early
+return, which would hide the handles for every frame the popover is open.
+
+**4. `AERO_LOG_WARN`'S FIRST ARGUMENT IS THE FORMAT STRING, AND A TWO-ARGUMENT CALL SILENTLY DROPS THE
+SECOND.** The code-review round's log-free control was first written
+`AERO_LOG_WARN("scene_render", "...")`, which logs the literal `scene_render` and discards the rest —
+the macro forwards to a formatter, and `scene_renderer.cpp:49`'s own `AERO_LOG_WARN("{}", message)` is
+the correct shape. The control **failed**, which is what a control is for; without it the case would
+have shipped asserting emptiness against a capture nothing could have filled.
+
+**5. A SANITISER ADDED INSIDE A SHARED PURE FUNCTION IS INVISIBLE TO A TWO-SIDED A/B.** `PX` compares
+the rig's path against `SceneRenderer`'s. Side A **is** the rig — so a defensive clamp added inside
+`materialPreviewView` would sanitise side A while side B passes the number through, and all four `PX`
+arms stay green while the byte identity breaks in the one direction they structurally cannot see. That
+is why AC-10's non-finite scene colour is asserted at **tier 0** by `PV13` and not by `PX`, and it
+generalises to any A/B whose two sides share a component.
+
+**6. AN EXTRACTION MAKES ONE COMPUTATION OUT OF TWO, SO A SEED IN IT REDDENS EVERY READER.** `S1`
+(highest-index tie-break), `S2` (the direction left untransformed) and `S5b` (the count moved below the
+skip) each redden pre-existing sibling cases as well as the new ones. That is the **point** of the
+extraction, not a coarse mutation, and the sabotage log records them as expected rather than narrowing
+the seeds. `scene_render_test.cpp:87` already asserted the resolved direction on a non-identity
+rotation before this task, which is why the new case's novelty is **the tie** and not the direction.
+
+**7. A WIRING ARM AND AN ORACLE ARM ASSERT DIFFERENT THINGS, AND ONE OF THEM ASSERTS ALMOST NOTHING.**
+After the extraction, `resolveDirectionalLight(w).data` and `buildRenderView(w, …).directional` are
+**one computation**, so comparing them proves the *wiring* and says nothing about the arithmetic —
+E.1.2's `GR8` lesson stated where it applies rather than tripped over. Proved rather than argued: with
+the oracle arm deleted, seed `S2` **passes**.
+
+**8. `I127(b)` HAD TO BECOME A SET BEFORE IT COULD BECOME AN ALLOWLIST.** Its accumulator was a
+per-**line** filename concatenation, which cannot express "the set of files naming `SkyPass` is exactly
+these two" — a file naming the type on three lines contributes its name three times and the directory
+iteration order is unspecified. It is now a de-duplicated, **sorted** vector of filenames compared
+against a stated two-element expectation, with the `SkyPass` and `SceneRenderer` arms kept independent
+so the anti-vacuity counter still runs over every line of every file. Proved in **both** directions: a
+third editor file naming the type reddens it, and widening the assertion to `naming.size() <= 3` makes
+the same seed invisible. The `#include <aero/render/sky_pass.hpp>` line is invisible to the sweep by
+construction — it spells `sky_pass`, not `SkyPass`.
+
+**9. A SOURCE-TEXT PIN CAN BE BROKEN BY A CHANGE THAT LOOKS LIKE A PURE REFACTOR.** The spec's own
+step-9b spelling replaced `overlayRowBottomRight = Vec2{rowEnd.x, rowEnd.y}` with
+`overlayRowBottomRight = viewOptionsButtonMax`, which deletes the exact substring
+`overlayRowBottomRight = Vec2{` that **two** cases `REQUIRE` through `soleLineContaining` — `I106(d)`
+and `I119`, the second of which is about the very widget commit 5 touches. `soleLineContaining`
+`REQUIRE`s exactly one match, so that is a hard failure, not a warning. The fix keeps the literal
+byte-identical by reading the member into a local first. **Read a pin's NEEDLE, not its intent, before
+renaming the line it watches** — and the only safe roster is a derived one: a grep over every
+`soleLineContaining`/`countLinesContaining` call aimed at what the task rewrites, re-run at branch time
+and again before the commit that rewrites them (22 needles here, all surviving).
+
+**10. THREE GATE GREPS IN THE PLAN EXPECTED "NO OUTPUT" AND ARE NON-EMPTY BY PROSE — INCLUDING AT THE
+BRANCH POINT.** The World-free check over the preview and the panel, and the purity check over the rig,
+both match only **comments**, several of them the prohibition sentences the plan itself asked for; and
+`ImGui::GetStyle()` in the plan's own gate is a typo for `ImGuizmo::GetStyle()`, which reads **2** and
+is `I125(e)`'s pin. These are the `check-audio-boundary.sh` canary species: **read the grep, never
+count it**. Two comments were deliberately reworded so the greps that *are* meant to be exact stay
+exact — `editor_app.hpp` says "sky-pass" rather than the type's name so `INV-5` reads two files, and
+step 9b's comment does not spell `GetItemRectMax` so that grep reads the one real call site.
+
+**11. `PV12`'s JUSTIFICATION WAS RIGHT ABOUT THE ANGLE AND WRONG ABOUT THE COUNT.** The plan asserted
+that all eight corners of the unit sphere's bounding box project inside the viewport; measured, the
+sphere's angular radius from this eye is **18.0°** against a **30°** half field of view, while the
+box's corners sit at √3 and subtend **32.4°** — so the assertion is false and the case samples the
+**sphere** (six poles and eight normalised diagonals) instead. The first version of the corrected
+comment then said *four* of eight corners miss; projected through these very matrices at angle 0.7,
+exactly **one** does — `(+1,−1,+1)` at `|clip.y/clip.w| = 1.096`, the next-nearest `(+1,+1,−1)` at
+`0.888`. One is enough to make the plan's assertion false; the 32.4° figure is the worst case over the
+whole sphere of radius √3 and says nothing about how many corners miss. **A measured-sounding number
+in a justification is still a claim.**
+
+#### What was deliberately left out
+
+Point and spot lights in the preview (a lamp lights a sphere at the origin by where the lamp happens to
+**sit**, which predicts nothing about the material); shadows in the preview (no caster, no receiver);
+a fallback key light when the scene has no sun (it would make the preview lie in exactly the scene
+where the user most needs the explanation); a preview-specific exposure, and exposure on `Environment`
+(E.2.1's own non-goal); a FOV control (`EditorCamera::setFovYRadians` exists and the mock implies one,
+but nothing owns it); header-row placement, icons and `EditorTheme` colours (E.6.x); persistence of any
+of the four viewport toggles or the tonemap params — **this task moved the controls, not the state**;
+a thumbnail producer (E.4.5); Create ▸ Sphere (E.5.2). **E.5.1's primitive-material defect is
+reproduced, not fixed**, for the fifth task running: `buildRenderView`'s primitive arm still never
+assigns `instance.material`, so `PX`'s side B draws the renderer's default material — side A creates
+its material with the **same call** the default uses, so the two are identical by construction and the
+A/B proves the **lighting** half of parity exactly. `PX` gains a non-default-material arm the day E.5.1
+lands.
+
+#### The sabotage matrix — 31 seeds, 7 assertion mutants
+
+**Twenty-eight reddened the named case.** The three worth naming: `S3`, the drift seed —
+`buildRenderView` re-inlining the old walks while the resolvers' tie-breaks drift — reddens the two new
+cases' **wiring arms and nothing else**, which is exactly what those arms exist for. `S8` reddens
+`PV7`'s bit-equality, so the mvp-association arm is **live**: the two associations differ for 2 of the
+3 seeded models, and the case prints which on every run. `S28` — the parity harness's
+`castsShadows = false` precondition — reddens **`PX4` alone** of the four arms, because at angle 0.7
+the shadow pass changes no texel of this sphere and only PX4's second angle exposes it; deleting PX4
+would make that seed invisible, which is now stated beside the precondition.
+
+**Six came back green, each explained rather than repaired.** `S20` — the `ImGui::End()` finding above,
+a redundancy. `S12b` — the orbit's NaN refusal mis-spelled as `deltaSeconds < 0` — is caught by the
+`!std::isfinite(next)` guard behind it; `S12c`, breaking **both** guards, reddens `PV11`, which is what
+proves `PV11` carries the claim at all. `S27b` — clearing only `axisLayout.visible` instead of assigning
+a default layout — is green because `drawViewAxisGizmo` and `viewAxisPickAt` both gate on `visible`,
+exactly as the plan predicted. `S24` (the three checkboxes writing locals) and `S30` (the notice drawn
+unconditionally) are **declared holes**: the seams drive the members directly, and `I137` reads the flag
+and never the picture. Their cover is validation rows 7 and 5.
+
+**`S31` WAS A DECLARED HOLE AND IS NOW CLOSED.** Seeding an `AERO_LOG_WARN` into
+`resolveDirectionalLight` was green at the sabotage gate, because every WARN case in
+`scene_render_test.cpp` reads `contains(...)` — presence, never a count — so a record a resolver started
+emitting was invisible to all of them, and AC-11's "log-free on every path" rested on a grep run once by
+hand. The code-review round added a case that walks three lights and three environments through both
+resolvers inside a capture scope and asserts the capture is **empty**, with `count == 3` on both sides
+as anti-vacuity for the resolution and a deliberately emitted WARN as anti-vacuity for the capture.
+Re-seeded, it reddens. Its old declared cover — validation row 6's "multiple Environments" WARN count —
+**never covered the directional half at all**, because the default scene has one sun so `count > 1`
+never fires there.
+
+**Declared holes that remain: `S19`, `S21`, `S22`, `S24`, `S25`, `S30`** — an unreachable failure path,
+a click, a key, a checkbox-vs-its-seam, a popup anchor and a picture. Each is named in the validation
+page's rows 5, 7 and 8 with the row that is its only cover, and `S21` is the sharpest: **nothing in
+`tests/` can click, so row 8 is the only behavioural cover anywhere for the `ImGuizmo::Enable` term.**
+
+**The assertion mutants all behaved.** With the oracle arm deleted `S2` passes; with `PV7` relaxed to an
+epsilon `S8` passes; with the byte comparison weakened to "at least one byte agrees" `S11` passes on
+PX1/PX2/PX4; with `I136`'s centre arm deleted `S14` passes; and with the combo and slider put back on
+the strip `I141`'s upper bound reddens. `PX3`'s "darker" mutant is **not constructible** — its measured
+headroom is **1969 / 1584 / 1095 half-ulps** against a stated two-half-ulp tolerance, so the tolerance
+form and a bare `!=` agree on this picture. The tolerance is still the right thing to ship; its mutant
+is simply unobservable at that headroom, which is a fact about the picture rather than about the arm.
+
+#### The answers to the plan's open questions
+
+**Q1 — does the 0-camera early return fire under a `cameraOverride`? NO.** `buildRenderView`'s decision
+is three-armed and the override arm is **first**, so an override with zero `Camera` entities does not
+take the early return and the light block runs. `PX`'s harness seeds a `Camera` anyway, so the answer
+does not change the test — it changes what a future reader believes.
+
+**Q3 — can `I136`'s tolerance be tightened from ±1 to exact? MEASURED 0/0/0 ON BOTH COLOURS, AND
+DELIBERATELY NOT TIGHTENED.** The GPU tonemap and the CPU `render::tonemapAndEncode` agree **exactly**
+on Metal, and the case prints the delta on every run of every lane. It stays at ±1 because the
+measurement is one backend's: the sRGB OETF ends in `pow(x, 1/2.4)`, whose precision D3D12 and Vulkan
+specify in **ULPs** rather than as correctly rounded, so a value within a few ULPs of a byte boundary
+can quantise differently on WARP or lavapipe. The tolerance is not vacuous in the direction that
+matters — the centre arm asserts a distance **greater** than it, and the control arm proves the corner
+tracks `solidColor`.
+
+**Q4 — is `PV7`'s association arm live? YES**, for 2 of the 3 seeded models, reported by `MESSAGE` on
+every run so the next reader does not have to re-derive it.
+
+**Q11 — which combo label was written?** `"Tonemap"`, visible, replacing `"##tonemap"`; inside a popup
+a visible label is what makes the group readable and there is no row to keep narrow. `I140(c)` pins that
+spelling.
+
+#### Method, for the next task
+
+**A BUILD TREE GOES STALE SILENTLY AND `ctest -N` CANNOT SEE IT.** At this task's branch point
+`build/macos-debug` was a build of a pre-E.2.3 commit and reported E.2.2's doctest totals, while
+`build/macos-release` was current — and `ctest -N` read **174** out of both, because the entry count is
+a configure-time property. Rebuild before believing any doctest number, and read the totals out of
+**both** presets so a disagreement is visible. This is also what settled `CLAUDE.md`'s two stale
+`1827`s: the correct figure is **1829**, measured from a build of E.2.3's final content, and the `1827`
+was that task's *sabotage*-gate number taken before its code-review round added two cases.
+
+**A CASE APPENDED BY HAND IS NOT FORMATTED BY THE ACT OF APPENDING IT.** The two cases the
+code-review round added were written straight into their files and committed without a
+`clang-format --dry-run --Werror` pass; the formatter wanted a blank line gone and a declaration
+joined onto one 118-column line. Caught by the gate's own local format step rather than by CI, which
+is where it belongs — a local format pass is the cheap half of the lint job and the only half that
+runs before the push. **Run it on every file a commit touches, including the ones it only appends
+to.**
+
+**AND A CONCURRENT TEST RUN ON THE SAME MACHINE LOOKS EXACTLY LIKE A DEFECT.** During this task's final
+gate, `aero_editor_shell_test` failed under `ctest` with 15, 24 and 29 failures on three runs — every
+one of them in `blender_service_test.cpp`, whose cases spawn processes, in a file this branch does not
+touch. The same **unchanged binary** had passed 1842/1842 minutes earlier with no rebuild in between,
+which is what proves it is not a property of the build. The cause was a second full-suite run in flight
+on the same machine: two instances of the same binary racing over the same `/var/folders/.../aero_*`
+fixture paths. Waiting for the other run to finish and re-running solo gave **1842/1842** and
+**174/174 on both presets**. *A non-deterministic failure count on a binary that has not been rebuilt is
+a statement about the machine, never about the code* — check for a concurrent run before reading it as
+anything else.
+

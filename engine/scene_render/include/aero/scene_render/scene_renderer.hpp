@@ -156,7 +156,46 @@ inline constexpr std::size_t DEFAULT_SELECTION_MASK_ENTITY_CAP = 256;
 //
 // Non-const World& for World::each<>'s sake, like buildRenderView. Emits NO log record on any path,
 // and does NOT touch RenderView::directionalCount -- that diagnostic is per-WALK, not per-winner.
+//
+// task E.2.4: resolveDirectionalLight below calls this, so there are now three readers of one
+// tie-break and still exactly one tie-break.
 [[nodiscard]] Entity activeDirectionalLight(World& world);
+
+// task E.2.4: the scene's ACTIVE directional light, RESOLVED -- the walk buildRenderView runs,
+// extracted so a SECOND reader (the editor's material preview) gets the bridge's OWN answer rather
+// than a second resolution that drifts. That is buildSelectionMaskSet's D11 recorded verbatim:
+// a second walk with a different iteration mechanism is exactly how a tie-break stops agreeing.
+// activeDirectionalLight's tie-break is the ONLY tie-break -- this CALLS it.
+//
+// `data.intensity == 0` AND an INVALID `entity` both mean "the scene has none" -- DirectionalLightData's
+// own encoding, unchanged since 1.4.1 -- and a default-constructed ResolvedDirectionalLight IS that
+// state, which is what makes the extraction behaviour-free for a world with no sun.
+// `count` is EVERY DirectionalLight in the world, the per-WALK diagnostic RenderView::directionalCount
+// carries; it describes the scene, not the winner.
+//
+// EMITS NO LOG RECORD ON ANY PATH. The latched "multiple DirectionalLights" WARN stays
+// SceneRenderer::render's, so the editor's SECOND call per frame produces no second WARN.
+// Non-const World& for World::each<>'s sake, like buildRenderView and activeDirectionalLight.
+struct ResolvedDirectionalLight {
+    render::DirectionalLightData data{};
+    Entity entity{};
+    std::uint32_t count = 0;
+};
+[[nodiscard]] ResolvedDirectionalLight resolveDirectionalLight(World& world);
+
+// task E.2.4: the scene's Environment, RESOLVED -- lowest entity index wins (D5's rule, as for the
+// camera, the directional light and the listener), both SELECTORS clamped through
+// render::clampBackgroundMode / clampAmbientMode (the clampPrimitive rule, so a hand-edited 7 renders
+// mode 0 rather than reinterpreting a byte). With none: `entity` invalid, `count` 0, and
+// `data == EnvironmentData{}` -- which is the value RenderView::environment already defaults to, and
+// is why the extraction is behaviour-free there too. ZERO IS NOT A DIAGNOSTIC (E.2.1): a world without
+// one is the ordinary state of every scene authored before that task. Same log-free posture as above.
+struct ResolvedEnvironment {
+    render::EnvironmentData data{};
+    Entity entity{};
+    std::uint32_t count = 0;
+};
+[[nodiscard]] ResolvedEnvironment resolveEnvironment(World& world);
 
 // Room for future knobs (ambient override, max lights, ...); v0 uses defaults.
 struct SceneRendererConfig {};

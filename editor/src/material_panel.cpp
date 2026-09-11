@@ -457,15 +457,27 @@ void MaterialPanel::drawPreview() {
     // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
     const auto texId = static_cast<ImTextureID>(reinterpret_cast<std::uintptr_t>(native));
     ImGui::Image(texId, imageSize, ImVec2(0, 0), uvMax);
+    // task E.2.4 (D5): the ONE line that explains an ambient-only sphere. Keyed on the RESOLUTION's
+    // answer -- a sun set to intensity 0 is a sun the user switched off, and this must not claim there
+    // is none. It sits AFTER the Image deliberately: both early returns above leave no picture at all
+    // (a collapsed region, or the unavailable-reason line), and there is nothing to explain there.
+    // TEXT ONLY: no GPU call may appear in this walk (I96's needle list).
+    if (!previewHasSunValue) {
+        ImGui::PushStyleColor(ImGuiCol_Text, NOTICE_COLOR);
+        ImGui::TextWrapped("%s", "No directional light in the scene -- the preview is lit by its environment only.");
+        ImGui::PopStyleColor();
+    }
 }
 
 void MaterialPanel::servicePreview(MaterialSession& session, const AssetDatabase& database,
                                    std::string_view assetsRootAbs, float deltaSeconds,
-                                   const render::TonemapParams& tonemap) {
+                                   const render::TonemapParams& tonemap, const MaterialPreviewLighting& lighting) {
     // The one-shot is drained as its OWN statement, unconditionally, before it is inspected (F9's
     // ||-short-circuit rule, applied to a channel that crosses into the GPU layer).
     const bool documentChanged = session.takeDocumentChanged();
-    preview.service(session.document(), documentChanged, &database, assetsRootAbs, deltaSeconds, tonemap);
+    // task E.2.4: latched HERE, read by the next draw walk. One frame late, and invisible.
+    previewHasSunValue = lighting.hasSun;
+    preview.service(session.document(), documentChanged, &database, assetsRootAbs, deltaSeconds, tonemap, lighting);
 }
 
 void MaterialPanel::onDraw(PanelContext& /*context*/) {  // no World/Selection/Project read (the

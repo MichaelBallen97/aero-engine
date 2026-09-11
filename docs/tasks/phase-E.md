@@ -181,6 +181,10 @@ display is 2x — so E.1.1's thick-line handoff stays unfired for a fifth task. 
 
 **Goal:** the light types behave like their equivalents in Unity/Godot/Blender, are *visible* in the viewport, and light a scene that is not a black void. The components are already correct — a directional light does aim down its entity's −Z axis (1.4.1's D6) — but nothing draws that direction, nothing says which of two directional lights won, there is no cone light for a lamp, and the only ambient in the engine is a hardcoded 3 % constant with no component behind it.
 **Definition of Done:** a scene with no lights at all is legibly lit by its environment; every light type has a gizmo and a defensible falloff; the material preview and the viewport agree.
+**CLOSED IN CODE with E.2.4** — all four tasks merged. The last clause of the Definition of Done is the
+only one that became a *measurement* rather than a judgement: the preview's path and the viewport's
+path write identical bytes into identical HDR targets, asserted on four configurations. E.2.1, E.2.2
+and E.2.3 are macOS-validated (10/3-open, 12/12 and 12/12); **E.2.4 is not validated on any platform**.
 
 ### E.2.1 `Environment` component + sky pass · P0 · L · depends: 1.3.3, 3.4.1, 3.6.3 — **MERGED**
 **Sized L, landed L** (PR #98, merge commit `28deab0`, fifteen commits). The sweep was the expensive
@@ -281,7 +285,7 @@ view-options row with two checkboxes; **E.5.1**'s primitive-material defect is r
 fourth task running; **E.5.2** now lands something visible the moment a light is created; **E.6.1**
 inherits four more theme candidates.
 
-### E.2.4 Material-preview parity + exposure relocation · P1 · M · depends: 3.4.2, E.2.1
+### E.2.4 Material-preview parity + exposure relocation · P1 · M · depends: 3.4.2, E.2.1 — **CODE COMPLETE**
 **Goal:** the material preview should predict what the material will look like in the scene. Today it
 cannot: it hardcodes its own light — a fixed direction at intensity **3.0**, white, no point lights,
 no shadows — against a scene whose default directional light is intensity **1.0**.
@@ -293,6 +297,38 @@ Subtasks:
 - Preview lighting derived from the scene `Environment`; the remaining rig constants named and justified
 - Preview/viewport A/B recorded, so "they match" is a measurement rather than an impression
 - Exposure + tonemap operator move to a view-options popover; the viewport strip keeps only mode controls
+
+_Outcome:_ **Sized M in the roadmap, recorded L before the first commit and landed L** (nine commits).
+`buildRenderView`'s two inline light walks became **`scene_render::resolveDirectionalLight` /
+`resolveEnvironment`**, which `buildRenderView` itself calls — one resolution, three readers, agreement
+by construction rather than by review, and the extraction is behaviour-free (every pre-existing case in
+`scene_render_test.cpp` is byte-identical, proved by an empty removal diff). The preview draws a unit
+sphere at the world origin under the scene's `Environment` and its **active** `DirectionalLight` in
+colour, intensity **and world direction**, with the scene's sky behind it through a `SkyPass` that is
+**all-or-nothing** with the three GPU objects beside it; `material_preview.cpp` now states **no lighting
+literal and no camera literal at all**. The camera lives in a new public, pure
+`editor/material_preview_rig.hpp` — `MaterialPreviewRig`, `MaterialPreviewLighting`,
+`advanceMaterialPreviewOrbit`, `materialPreviewCamera`, `materialPreviewView` — with no ImGui, no EnTT,
+no `rhi` type, no `World` and nothing that can throw. **"They match" is a measurement**: `PX1`–`PX4`
+render the preview's path and the viewport's path into two identical RGBA16Float targets from the same
+lighting and the same camera and compare them **byte for byte**, before the tonemap where exactness is
+available, each with three anti-vacuity arms. A one-line amber notice explains an ambient-only sphere,
+keyed on the **resolution's** answer and never on `intensity != 0`. Separately the viewport strip became
+`T R S | Local/World | View`, with Projection, Tonemap, Exposure, Grid, Gizmos and View axis in one
+anchored popover in two labelled groups. Measured: `ctest -N` **174 -> 174** with a byte-identical
+entry set, doctest **1404 / 1842 / 181 / 40 / 31 / 7 / 28**, guards math **496 -> 500** and
+project-no-delete **B 79 -> 80** with the other six unmoved, both reduced configurations **161** and
+**93**, `editor/src/*.cpp` **79 -> 80** and `editor/include/aero/editor/*.hpp` **57 -> 58**.
+**NOT VALIDATED ON ANY PLATFORM** — its twelve-step page is written and unrun, and six declared
+sabotage seeds have their only cover in rows 5, 7 and 8. Handoffs: **E.1.2's and E.2.3's
+"E.2.4 moves this whole row into a popover" and E.1.3's view-axis visibility toggle are all
+DISCHARGED**; **E.1.1's thick-line handoff stays FIRED and unmoved** (no line, no icon, HiDPI
+deliberately not a row); **E.4.5** inherits `material_preview_rig.hpp` by name; **E.6.2** takes the
+mode controls and leaves `View` on the viewport; **E.6.3** restyles this popover's two groups rather
+than regrouping them; **E.5.1**'s primitive-material defect is reproduced for the fifth task running,
+and `PX` gains a non-default-material arm the day it lands. New unowned: the preview carrying the
+scene's **point and spot lights**, a **FOV control**, and **persisting** the four viewport toggles and
+the tonemap params — this task moved the controls, not the state.
 
 ---
 
@@ -425,6 +461,13 @@ thumbnail per material.
 Subtasks:
 - Surface the document name on the tile and in the list row, without deriving either name from the other
 - A rendered material thumbnail producer behind the existing `ThumbnailLedger` — a second producer, not a second cache
+- **E.2.4 left this task `editor/material_preview_rig.hpp` to call BY NAME**: a thumbnail is
+  `materialPreviewCamera(rig, fixedAngle, 1.0F)` plus `materialPreviewView(camera, lighting, instances)`
+  rendered once into the ledger's target. The header is pure and holds no GPU object, so the producer
+  picks the orbit angle it wants and decides **explicitly** whether the lighting is the open scene's
+  (through `scene_render::resolveEnvironment` / `resolveDirectionalLight`, as the preview does) or a
+  fixed studio rig — a thumbnail that changes when the scene's sun moves may or may not be wanted, and
+  that is this task's call to make rather than to inherit
 - Inherit the ledger's stickiness, budget and eviction rules rather than re-deriving them; the service call stays outside the draw walk
 
 ---
@@ -504,6 +547,10 @@ tags, row tint, footer counts), Assets (breadcrumb, footer, item count, selectio
 (view-options row, hint chips, stats overlay).
 Subtasks:
 - Hierarchy, Inspector, Console, Assets, Viewport and the three secondary panels, each against the theme
+- **The viewport's `View` popover is E.2.4's and is already grouped the way the mock groups its header
+  dropdowns** — `Display` (Projection, Tonemap, Exposure) above `Overlays` (Grid, Gizmos, View axis) —
+  so this task **restyles it rather than regrouping it**. Moving those groups into a docked panel's tab
+  row is the part nothing in the tree can do today, which is why E.2.4 stopped at a popover
 - The viewport stats overlay (frame time, draw calls, triangles, entities, GPU time) and hint chips
 - **Panel ids stay frozen** — they are the `imgui.ini` settings keys, and the existing pin covers them
 - Every panel re-checked at HiDPI and at a small window size
