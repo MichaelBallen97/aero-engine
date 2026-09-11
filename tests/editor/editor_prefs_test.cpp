@@ -1,6 +1,7 @@
 // Aero Engine — editor_prefs.json's codec and file operations (task E.3.2, EP1-EP11). Tier 0:
 // aero_editor_shell_test, no ImGui, no GPU, no window.
 #include <aero/editor/editor_prefs.hpp>
+#include <aero/editor/project.hpp>  // EP12: defaultEditorPrefsPath and its two siblings
 #include <aero/editor/text_file.hpp>
 
 #include <doctest/doctest.h>
@@ -233,4 +234,37 @@ TEST_CASE("editor: two writes of the same value produce BYTE-IDENTICAL files (EP
     const engine::editor::FileReadResult c = engine::editor::readTextFile(other);
     REQUIRE(c.text.has_value());
     CHECK(*c.text != *a.text);
+}
+
+TEST_CASE("editor: defaultEditorPrefsPath names ITS OWN file, beside its two siblings (EP12)") {
+    // SABOTAGE-FORCED. Nothing anywhere exercised this resolver: the two test call sites that set
+    // persistLayout TRUE both supply an explicit editorPrefsPath, and every other one resolves "" --
+    // which is the whole point of D14's gate, and which left the function body uncovered. Seeding it
+    // to return TOOL_PREFS_FILE_NAME reddened no test at all, so this is the case that says what the
+    // three machine-local files are: three DIFFERENT names under one directory.
+    const std::string prefs = engine::editor::defaultEditorPrefsPath();
+    const std::string tools = engine::editor::defaultToolPrefsPath();
+    const std::string recents = engine::editor::defaultRecentProjectsPath();
+    REQUIRE_FALSE(prefs.empty());
+    REQUIRE_FALSE(tools.empty());
+    REQUIRE_FALSE(recents.empty());
+
+    const std::string_view leaf = "editor_prefs.json";
+    REQUIRE(prefs.size() >= leaf.size());
+    CHECK(std::string_view(prefs).substr(prefs.size() - leaf.size()) == leaf);
+
+    // THREE DISTINCT FILES. The ANTI-VACUITY half is the shared prefix below: without it "they differ"
+    // would also be satisfied by a resolver that returned a completely unrelated path.
+    CHECK(prefs != tools);
+    CHECK(prefs != recents);
+    CHECK(tools != recents);
+    const std::size_t prefsDir = prefs.find_last_of("/\\");
+    const std::size_t toolsDir = tools.find_last_of("/\\");
+    const std::size_t recentsDir = recents.find_last_of("/\\");
+    if (prefsDir != std::string::npos && toolsDir != std::string::npos && recentsDir != std::string::npos) {
+        CHECK(prefs.substr(0, prefsDir) == tools.substr(0, toolsDir));
+        CHECK(prefs.substr(0, prefsDir) == recents.substr(0, recentsDir));
+    }
+
+    CHECK(engine::editor::defaultEditorPrefsPath() == prefs);  // deterministic within a process
 }
