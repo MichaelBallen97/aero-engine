@@ -71,13 +71,10 @@ T doubleToClamped(double v) {
     return static_cast<T>(v);
 }
 
+// The Quat drag cache still speaks Vec3, so these two stay. vecDegrees/vecRadians moved to
+// inspector_model.cpp at task E.3.1, where axisRowValues/axisRowFieldValue own that arithmetic.
 std::array<float, 3> toArray(Vec3 v) { return {v.x, v.y, v.z}; }
 Vec3 fromArray(const std::array<float, 3>& a) { return Vec3{a[0], a[1], a[2]}; }
-
-// degrees()/radians() are scalar-only (math/constants.hpp) -- applied componentwise for the euler
-// triplet, since there is no Vec3 overload.
-Vec3 vecDegrees(Vec3 v) { return Vec3{degrees(v.x), degrees(v.y), degrees(v.z)}; }
-Vec3 vecRadians(Vec3 v) { return Vec3{radians(v.x), radians(v.y), radians(v.z)}; }
 
 // DragScalar's speed heuristic: a ranged field drags across its whole span in ~200 steps; an
 // unranged one uses a fixed default per kind.
@@ -251,6 +248,60 @@ void InspectorPanel::drawComponent(PanelContext& context, Entity primary, const 
     ImGui::PopID();
 }
 
+bool InspectorPanel::drawAxisRow(std::array<float, 3>& shown, float speed) {
+    // WHAT DragScalarN DOES INTERNALLY (imgui_widgets.cpp:2814), opened up: BeginGroup, then per
+    // component PushID(i) / SameLine(0, ItemInnerSpacing.x) / DragScalar / PopID, then EndGroup. The
+    // reason to hand-roll it is that each axis needs its OWN item to carry a label, a colour and (from
+    // task E.3.1's next step) a context menu -- DragFloat3 exposes none of the three.
+    const float gap = ImGui::GetStyle().ItemInnerSpacing.x;
+
+    // The MAX over the three letters, not CalcTextSize("X").x: with a proportional font the three
+    // differ by a fraction of a pixel, and taking the max means the width budget can never
+    // UNDER-allocate and the last box can never overrun the cell.
+    float letterWidth = 0.0F;
+    for (std::size_t i = 0; i < AXIS_ROW_COMPONENTS; ++i) {
+        const std::string_view label = axisRowLabel(i);
+        letterWidth = std::max(letterWidth, ImGui::CalcTextSize(label.data(), label.data() + label.size()).x);
+    }
+    // [letter][gap][box] x3, with one gap between units: 3*letter + 5*gap + 3*box == the cell.
+    const float total = ImGui::GetContentRegionAvail().x;
+    const float boxWidth = std::max((total - (3.0F * letterWidth) - (5.0F * gap)) / 3.0F, 1.0F);
+
+    bool edited = false;
+    ImGui::BeginGroup();  // 1:1 with EndGroup below -- nothing between them can return
+    for (std::size_t i = 0; i < AXIS_ROW_COMPONENTS; ++i) {
+        ImGui::PushID(static_cast<int>(i));
+        if (i > 0) {
+            ImGui::SameLine(0.0F, gap);
+        }
+        // THE ONE PLACE AN ImU32 IS BUILT. The colour is DERIVED from axis_palette.hpp through
+        // axisRowColor -- this file states no colour literal of its own, which I143 pins, because a
+        // restated literal one byte off is invisible to every automated tier (E.1.4's sabotage row 20).
+        const std::array<std::uint8_t, 3> rgb = axisRowColor(i);
+        const std::string_view label = axisRowLabel(i);
+        ImGui::AlignTextToFramePadding();  // idempotent (ImMax-based); once per letter
+        ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(rgb[0], rgb[1], rgb[2], 255));
+        // THE LETTER BEFORE THE BOX IS LOAD-BEARING, NOT COSMETIC: ItemAdd clears the pending
+        // NextItemData, so drawField's SetNextItemWidth(-1.0F) is consumed by this Text -- the first
+        // item submitted here -- rather than by the first DragScalar, which would otherwise take the
+        // whole cell's width.
+        ImGui::TextUnformatted(label.data(), label.data() + label.size());
+        ImGui::PopStyleColor();  // 1:1 with PushStyleColor
+        ImGui::SameLine(0.0F, gap);
+        ImGui::SetNextItemWidth(boxWidth);
+        // nullptr for p_min/p_max/format is EXACTLY DragFloat3's behaviour: it passes two pointers to
+        // 0.0f, which DragBehaviorT treats as unbounded, and DragScalar falls back to
+        // ImGuiDataType_Float's PrintFmt, "%.3f" -- DragFloat3's own default. The display is
+        // byte-identical to what this row showed before.
+        edited = ImGui::DragScalar("##a", ImGuiDataType_Float, &shown[i], speed, nullptr, nullptr, nullptr,
+                                   ImGuiSliderFlags_None) ||
+                 edited;
+        ImGui::PopID();
+    }
+    ImGui::EndGroup();
+    return edited;
+}
+
 void InspectorPanel::drawField(PanelContext& context, Entity primary, const ComponentEntry& entry,
                                const FieldEntry& field) {
     // task E.3.1: one table ROW per field -- the label cell, then the value cell. The old
@@ -345,24 +396,26 @@ void InspectorPanel::drawField(PanelContext& context, Entity primary, const Comp
             break;
         }
         case FieldKind::Vec3: {
-            std::array<float, 3> tmp = toArray(std::get<Vec3>(field.value));
+            std::array<float, 3> shown = axisRowValues(field.value, FieldKind::Vec3);
             bool edited = false;
             if (field.color) {
                 // HDR preserves > 1 (E19); the seam does NOT clamp colours -- colour and range are
-                // orthogonal.
-                edited = ImGui::ColorEdit3("##v", tmp.data(), ImGuiColorEditFlags_Float | ImGuiColorEditFlags_HDR);
+                // orthogonal. A colour's three numbers are CHANNELS, not axes, which is exactly what
+                // isAxisRow(Vec3, color=true) answers false to.
+                edited = ImGui::ColorEdit3("##v", shown.data(), ImGuiColorEditFlags_Float | ImGuiColorEditFlags_HDR);
             } else {
-                edited = ImGui::DragFloat3("##v", tmp.data(), 0.1F);
+                edited = drawAxisRow(shown, 0.1F);
             }
-            // DragFloat3/ColorEdit4 wrap themselves in BeginGroup/EndGroup, and EndGroup forwards the
-            // active/deactivated id to LastItemData, so the gate below sees the WHOLE widget's edges,
-            // not a single axis's (task 2.4.2 G2). Read once, after the branch.
+            // ColorEdit3 wraps itself in BeginGroup/EndGroup and so does drawAxisRow, and EndGroup
+            // forwards the active/deactivated id to LastItemData, so the gate below sees the WHOLE
+            // widget's edges, not a single axis's (task 2.4.2 G2). Read once, after the branch -- the
+            // merge-chain semantics are byte for byte what they were with DragFloat3.
             const EditGate gate = gateForLastItem();
             if (gate.opened) {
                 context.commands.breakMergeChain();
             }
             if (edited) {
-                pushFieldEdit(context, primary, entry, field, FieldValue{fromArray(tmp)});
+                pushFieldEdit(context, primary, entry, field, axisRowFieldValue(shown, FieldKind::Vec3));
             }
             if (gate.closed) {
                 context.commands.breakMergeChain();
@@ -370,18 +423,17 @@ void InspectorPanel::drawField(PanelContext& context, Entity primary, const Comp
             break;
         }
         case FieldKind::Quat: {
-            // C7: DragScalarN/DragFloat3 wraps its items in BeginGroup/EndGroup, so IsItemActive()
-            // right after it is group-correct (reflects the WHOLE triplet, not just the last axis).
+            // C7: drawAxisRow wraps its items in BeginGroup/EndGroup, so IsItemActive() right after it
+            // is group-correct (reflects the WHOLE triplet, not just the last axis).
             const bool cacheHit = quatCache.active && quatCache.matches(primary, entry.typeId, field.name);
-            const std::array<float, 3> deg = cacheHit ? toArray(quatCache.eulerDegrees)
-                                                      : toArray(vecDegrees(eulerAngles(std::get<Quat>(field.value))));
-            std::array<float, 3> dragged = deg;
-            const bool edited = ImGui::DragFloat3("##v", dragged.data(), 1.0F);
+            std::array<float, 3> shown =
+                cacheHit ? toArray(quatCache.eulerDegrees) : axisRowValues(field.value, FieldKind::Quat);
+            const bool edited = drawAxisRow(shown, 1.0F);
             // The gate refers to this same last-submitted item; read it here, immediately after the
             // widget call and before the cache block below (which submits no ImGui item of its own).
             const EditGate gate = gateForLastItem();
             if (ImGui::IsItemActive()) {
-                quatCache = {primary, entry.typeId, field.name, /*active=*/true, fromArray(dragged)};
+                quatCache = {primary, entry.typeId, field.name, /*active=*/true, fromArray(shown)};
             } else if (cacheHit) {
                 quatCache = {};  // released: drop, so the display re-derives next frame (E11)
             }
@@ -389,8 +441,7 @@ void InspectorPanel::drawField(PanelContext& context, Entity primary, const Comp
                 context.commands.breakMergeChain();
             }
             if (edited) {
-                pushFieldEdit(context, primary, entry, field,
-                              FieldValue{normalize(fromEulerAngles(vecRadians(fromArray(dragged))))});
+                pushFieldEdit(context, primary, entry, field, axisRowFieldValue(shown, FieldKind::Quat));
             }
             if (gate.closed) {
                 context.commands.breakMergeChain();

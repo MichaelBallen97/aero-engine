@@ -61,8 +61,9 @@
 #include <doctest/doctest.h>
 
 #include <algorithm>
-#include <array>  // the frozen panel-id roster; reached transitively on libc++, not on MSVC (813bc4d)
-#include <cmath>  // task E.2.4, I136: std::lround / std::abs over the readback's byte oracle
+#include <array>   // the frozen panel-id roster; reached transitively on libc++, not on MSVC (813bc4d)
+#include <cctype>  // task E.3.1, I143: std::isalnum over the panel's own source text
+#include <cmath>   // task E.2.4, I136: std::lround / std::abs over the readback's byte oracle
 #include <cstdint>
 #include <filesystem>
 #include <format>  // task 3.2.2, I65: truncatedFbxText()'s programmatic 257-node fixture
@@ -12793,4 +12794,165 @@ TEST_CASE("editor: the Inspector's row rhythm is ONE table per component (task E
     // EndTable is called exactly once too, and the pair is asymmetric by API: an unbalanced call is an
     // IM_ASSERT abort in Debug, which is what I142 exists to catch at runtime.
     (void)soleLineContaining(code, "ImGui::EndTable()");
+}
+
+// ---- I143, I144: the axis row's derivation and its gate ordering ----------------------------------
+namespace {
+
+// The first line at or after `from` containing `needle`, or code.size() when there is none. Distinct
+// from soleLineContaining, which REQUIREs exactly one hit in the WHOLE file -- an assertion about one
+// switch arm needs a bounded search, because `drawAxisRow(` legitimately appears three times (its
+// definition and its two call sites) and `gateForLastItem()` appears nine.
+[[nodiscard]] std::size_t firstLineContaining(const std::vector<std::string>& code, std::string_view needle,
+                                              std::size_t from) {
+    for (std::size_t i = from; i < code.size(); ++i) {
+        if (code[i].find(needle) != std::string::npos) {
+            return i;
+        }
+    }
+    return code.size();
+}
+
+// `needle` as a STANDALONE token: not preceded or followed by an identifier character, a digit or a
+// '.'. Without that, scanning for "61" would match inside "1615" and inside "0.61", and a scan that
+// over-matches on a clean tree gets relaxed rather than fixed.
+[[nodiscard]] bool containsStandaloneToken(const std::string& line, std::string_view needle) {
+    const auto isTokenChar = [](char c) {
+        return (std::isalnum(static_cast<unsigned char>(c)) != 0) || c == '_' || c == '.';
+    };
+    std::size_t at = line.find(needle);
+    while (at != std::string::npos) {
+        const bool leftOk = at == 0 || !isTokenChar(line[at - 1]);
+        const std::size_t after = at + needle.size();
+        const bool rightOk = after >= line.size() || !isTokenChar(line[after]);
+        if (leftOk && rightOk) {
+            return true;
+        }
+        at = line.find(needle, at + 1);
+    }
+    return false;
+}
+
+}  // namespace
+
+TEST_CASE("editor: the axis letters' colours are DERIVED from the palette, never restated (task E.3.1, I143)") {
+    // E.1.4's sabotage row 20 is why this is structural rather than reviewed: restating a palette
+    // colour as an IM_COL32 literal one byte off is invisible to every automated tier in this tree and
+    // to a reading of the diff. So the pin is that the panel states NO colour of its own at all.
+    const std::vector<std::string> modelCode = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/inspector_model.cpp");
+    const std::vector<std::string> panelCode = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/inspector_panel.cpp");
+    REQUIRE(modelCode.size() > 100);
+    REQUIRE(panelCode.size() > 100);
+
+    SUBCASE("(a) inspector_model.cpp is the file that names the palette accessor") {
+        std::size_t hits = 0;
+        for (const std::string& line : modelCode) {
+            if (line.find("axisColorSrgbBytes") != std::string::npos) {
+                ++hits;
+            }
+        }
+        CHECK(hits == 3);  // one per axis, the whole of the mapping
+    }
+
+    SUBCASE("(b) inspector_panel.cpp names axisRowColor and NOT the palette accessor") {
+        std::size_t axisRowColorHits = 0;
+        std::size_t paletteHits = 0;
+        for (const std::string& line : panelCode) {
+            if (line.find("axisRowColor") != std::string::npos) {
+                ++axisRowColorHits;
+            }
+            if (line.find("axisColorSrgbBytes") != std::string::npos) {
+                ++paletteHits;
+            }
+        }
+        CHECK(axisRowColorHits == 1);
+        CHECK(paletteHits == 0);
+    }
+
+    SUBCASE("(c) no palette byte appears in inspector_panel.cpp as a standalone literal") {
+        // The nine sRGB bytes of the three axis colours (226,65,73 / 125,199,61 / 56,133,226 -- 226
+        // twice, so eight distinct values). Comments are already stripped by editorSourceCodeLines,
+        // so a citation in prose can neither satisfy nor break this.
+        const std::array<std::string_view, 8> paletteBytes{"226", "65", "73", "125", "199", "61", "56", "133"};
+        for (const std::string_view byteText : paletteBytes) {
+            CAPTURE(byteText);
+            std::size_t hits = 0;
+            for (const std::string& line : panelCode) {
+                if (containsStandaloneToken(line, byteText)) {
+                    ++hits;
+                }
+            }
+            CHECK(hits == 0);
+        }
+        // ANTI-VACUITY: the scanner does find a literal that IS in the file, so "zero" is a statement
+        // about the palette bytes rather than about a scanner that matches nothing.
+        std::size_t alphaHits = 0;
+        for (const std::string& line : panelCode) {
+            if (containsStandaloneToken(line, "255")) {
+                ++alphaHits;
+            }
+        }
+        CHECK(alphaHits == 1);  // IM_COL32's opaque alpha, and nothing else
+
+        // ...and the one IM_COL32 in the file is built from the accessor's own bytes.
+        const std::size_t colorAt = soleLineContaining(panelCode, "IM_COL32(");
+        CHECK(panelCode[colorAt].find("rgb[0]") != std::string::npos);
+        CHECK(panelCode[colorAt].find("rgb[1]") != std::string::npos);
+        CHECK(panelCode[colorAt].find("rgb[2]") != std::string::npos);
+    }
+}
+
+TEST_CASE("editor: the axis row's gate is read AFTER the group closes (task E.3.1, I144)") {
+    // SOURCE PIN, and the only cover sabotage seeds S8 and S19 have anywhere: no runtime tier in this
+    // tree can observe a merge chain broken on the wrong frame, because nothing here can synthesise a
+    // drag. THE ORDER IS THE ASSERTION.
+    const std::vector<std::string> code = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/inspector_panel.cpp");
+    REQUIRE(code.size() > 100);
+
+    SUBCASE("(a) exactly one group, and it lives inside drawAxisRow") {
+        // With EndGroup() INSIDE drawAxisRow, a gate read "before EndGroup" is structurally impossible
+        // without moving the gate call into that function -- which this clause also catches, because
+        // it would make gateForLastItem appear between the two group lines.
+        const std::size_t beginAt = soleLineContaining(code, "ImGui::BeginGroup()");
+        const std::size_t endAt = soleLineContaining(code, "ImGui::EndGroup()");
+        CHECK(beginAt < endAt);
+        const std::size_t definitionAt = soleLineContaining(code, "bool InspectorPanel::drawAxisRow(");
+        CHECK(definitionAt < beginAt);
+        CHECK(firstLineContaining(code, "gateForLastItem()", beginAt) > endAt);
+    }
+
+    SUBCASE("(b) DragFloat3 is gone from the file entirely") {
+        std::size_t hits = 0;
+        for (const std::string& line : code) {
+            if (line.find("DragFloat3") != std::string::npos) {
+                ++hits;
+            }
+        }
+        CHECK(hits == 0);
+        // ...and drawAxisRow is named exactly three times: its definition and the two arms below.
+        std::size_t rowHits = 0;
+        for (const std::string& line : code) {
+            if (line.find("drawAxisRow(") != std::string::npos) {
+                ++rowHits;
+            }
+        }
+        CHECK(rowHits == 3);
+    }
+
+    SUBCASE("(c) in BOTH arms the gate is read on a line strictly after the drawAxisRow call") {
+        const std::array<std::string_view, 2> arms{"case FieldKind::Vec3:", "case FieldKind::Quat:"};
+        for (const std::string_view arm : arms) {
+            CAPTURE(arm);
+            const std::size_t armAt = soleLineContaining(code, arm);
+            const std::size_t callAt = firstLineContaining(code, "drawAxisRow(", armAt);
+            const std::size_t gateAt = firstLineContaining(code, "gateForLastItem()", armAt);
+            REQUIRE(callAt < code.size());
+            REQUIRE(gateAt < code.size());
+            CHECK(callAt > armAt);
+            CHECK(gateAt > callAt);
+            // ...and both really are inside THIS arm rather than in a later one.
+            const std::size_t breakAt = firstLineContaining(code, "break;", armAt);
+            CHECK(gateAt < breakAt);
+        }
+    }
 }

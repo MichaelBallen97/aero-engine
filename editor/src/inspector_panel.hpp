@@ -69,6 +69,10 @@ private:
 
     void drawComponent(PanelContext& context, Entity primary, const ComponentEntry& entry, float labelWidth);
     void drawField(PanelContext& context, Entity primary, const ComponentEntry& entry, const FieldEntry& field);
+    // task E.3.1: what DragScalarN does internally, opened up -- three DragScalars with a coloured
+    // axis letter before each, inside ONE BeginGroup/EndGroup so a single gateForLastItem() read
+    // after it sees the WHOLE triplet's edges, exactly as it did after DragFloat3.
+    bool drawAxisRow(std::array<float, 3>& shown, float speed);
     void applyPending(PanelContext& context, Entity primary);
 
     InspectorModel model;  // D15 scratch, rebuilt every frame
