@@ -7,6 +7,9 @@
 #include <aero/editor/panel.hpp>
 #include <aero/editor/project_settings.hpp>
 #include <aero/editor/scene_session.hpp>
+#include <aero/editor/selection.hpp>  // task E.3.2: the focus slot's sourceStillValid guard calls
+                                      // context.selection.empty(), and panel_context.hpp only
+                                      // FORWARD-DECLARES Selection. PUBLIC and ImGui-free.
 
 #include "project_ui.hpp"  // task 2.6.1: drawWelcomeWindow / drawNewProjectModal
 
@@ -228,6 +231,22 @@ void drawMenuBar(PanelRegistry& panels, PanelContext& context, ShellUiState& sta
             if (ImGui::MenuItem(panels.panelAt(i).title(), nullptr, &shown)) {
                 panels.setVisibleAt(i, shown);
             }
+        }
+        ImGui::Separator();
+        // task E.3.2 (D11). The LABEL says what the behaviour DOES -- focus follows the selection --
+        // which is the INVERSE reading of the task's own name ("selection-follows-focus router").
+        // Recorded here so nobody "corrects" one to match the other: the task number and title are
+        // referenced and numbering is append-only, while the user-facing string has to be true.
+        //
+        // The bool* overload flips state.routeEnabled IN PLACE and returns true on the click -- the
+        // panel-toggle loop directly above depends on exactly that -- which is what makes an un-tick
+        // take effect in THIS frame: drawMenuBar runs at the top of drawShellUi and the focus slot
+        // below reads the new value at guard 2 (D12).
+        //
+        // In the View menu rather than Edit: this menu is already the panel menu, it is where Reset
+        // Layout lives, and the preference is about panels.
+        if (ImGui::MenuItem("Focus Follows Selection", nullptr, &state.routeEnabled)) {
+            state.routeToggleRequested = true;
         }
         ImGui::Separator();
         if (ImGui::MenuItem("Reset Layout")) {
@@ -533,17 +552,68 @@ void drawShellUi(PanelRegistry& panels, PanelContext& context, ShellUiState& sta
         applyFileRequests(cmd, context.commands, fileMenu.session, fileMenu.flow, fileMenu.dialogs, fileMenu.project);
     }
     applyHistoryRequests(context, state);  // task 2.4.1, D19/AC-21
-    // code-review BLOCKING-1 test seam: the SAME two calls the "Edit > Project Settings..." menu item
-    // makes (drawMenuBar, above) -- applied generically and BEFORE DockSpaceOverViewport, for the
-    // identical reason that click's own comment states: dock nodes update INSIDE
-    // DockSpaceOverViewport, which runs immediately below, so the focus lands with no one-frame lag.
-    // An unknown id is a silent no-op, matching SetWindowFocus's own documented behaviour.
-    if (!state.focusPanelId.empty()) {
+    // ---- task E.3.2: THE editor's ONE focus slot. -------------------------------------------------
+    // Both paths resolve here, in this order, and ImGui::SetWindowFocus is called AT MOST ONCE per
+    // frame from this block. SetWindowFocus is last-writer-wins for the TAB it selects, but its SIDE
+    // EFFECTS are not idempotent: FocusWindow closes every popup above the focused window
+    // (imgui.cpp:13740) and STEALS the active widget (imgui.cpp:13754-13756, whose own comment at
+    // :13751 names this very slot -- "Focus a window while an InputText in another window is active,
+    // if focus happens before the old InputText can run"). Two calls would pay both costs twice for
+    // one visible result.
+    //
+    // POSITION IS LOAD-BEARING and unchanged from 3.1.3's: BEFORE DockSpaceOverViewport, which runs
+    // immediately below, because dock nodes update INSIDE it -- so the focus lands with no one-frame
+    // lag. SetWindowFocus selects the dock tab through DockNodeUpdateTabBar (imgui.cpp:19611-19613),
+    // NOT through FocusWindow's own "Select in dock node" block, which is commented out in 1.92.8
+    // (imgui.cpp:13763-13766, for issue #2304). An unknown id is a silent no-op.
+    //
+    // THE EXPLICIT PATH WINS (D8): it is a COMMAND -- Edit > Project Settings..., and the
+    // requestPanelFocus seam -- while a route is an INFERENCE. Holding the route for the next tick was
+    // rejected: the user asked for a specific panel, and popping a different one 16 ms later is
+    // exactly the behaviour this task exists to remove.
+    const bool explicitFocus = !state.focusPanelId.empty();
+    if (explicitFocus) {
         const std::string requestedId = std::move(state.focusPanelId);
         state.focusPanelId.clear();
         if (panels.find(requestedId.c_str()) != nullptr) {
-            panels.setVisible(requestedId.c_str(), true);
-            ImGui::SetWindowFocus(requestedId.c_str());
+            panels.setVisible(requestedId.c_str(), true);  // an EXPLICIT request may re-show a panel
+            ImGui::SetWindowFocus(requestedId.c_str());    // an automatic route may NOT (E.3.2 D7)
+        }
+    }
+    {
+        const char* const routeTarget = routedPanelId(state.routeSource);
+        const ImGuiIO& io = ImGui::GetIO();
+        const RouteGuards guards{
+            .enabled = state.routeEnabled,
+            // Only the ENTITY arm can be invalidated between the reconcile block and here:
+            // applyFileRequests (above) can load a scene, which clears the selection (D6). The asset
+            // arms' one-tick window is ACCEPTED and stated -- a vanished target draws a correct EMPTY
+            // panel, not a wrong one, and closing it would need a second ShellUiState field for
+            // nothing.
+            .sourceStillValid = state.routeSource != RouteSource::EntitySelection || !context.selection.empty(),
+            // REGISTERED **and** VISIBLE. A route never re-opens a panel the user closed (D7), and a
+            // hidden panel is a DROP rather than a HOLD because it could stay hidden forever. This is
+            // also the user's second, coarser off switch: close the panel, and the route for it stops.
+            // panels.find("") is nullptr (the registry rejects empty ids at add), so a None source is
+            // already gone at guard 1 and never reaches a lookup that could matter.
+            .targetAvailable = panels.find(routeTarget) != nullptr && panels.visible(routeTarget),
+            .explicitFocusThisFrame = explicitFocus,
+            .textInputActive = io.WantTextInput,
+            // GetDragDropPayload(), not IsDragDropActive(): the latter is internal-only, declared in
+            // imgui_internal.h (hierarchy_panel.cpp:265-268 records why a TU may not reach for it).
+            .dragPayloadLive = ImGui::GetDragDropPayload() != nullptr,
+            // Describes the LAST Manipulate call -- which is the RIGHT frame here, because the route
+            // being applied was detected from the previous frame's events (E.1.3's F8, read forwards).
+            .gizmoDragActive = ImGuizmo::IsUsing(),
+            // nullptr is SAFE and the flag combination is mandatory: with AnyPopupId set, IsPopupOpen
+            // never evaluates g.CurrentWindow->GetID(str_id) (imgui.cpp:12887). A real string id with
+            // AnyPopupLevel IM_ASSERTs (:12889) and would abort the Debug lanes. Covers a menu left
+            // open in the menu bar -- an open BeginMenu popup persists in g.OpenPopupStack across
+            // frames -- and E.2.4's View popover alike.
+            .popupOpen = ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopup)};
+        state.routeOutcome = routeOutcome(state.routeSource, guards);
+        if (state.routeOutcome == RouteOutcome::Apply) {
+            ImGui::SetWindowFocus(routeTarget);
         }
     }
     const ImGuiID dockId = ImGui::DockSpaceOverViewport(0, ImGui::GetMainViewport());

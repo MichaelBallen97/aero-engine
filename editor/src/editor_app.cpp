@@ -1015,7 +1015,12 @@ bool EditorApp::tick() {
                     .placeUnplacedPanels = placeUnplacedPanels,
                     .undoRequested = undoRequested,
                     .redoRequested = redoRequested,
-                    .focusPanelId = requestedPanelFocus};
+                    .focusPanelId = requestedPanelFocus,
+                    // task E.3.2: the reconcile block above has already run, so a route latched THIS
+                    // tick is carried into THIS tick's frame. routeToggleRequested and routeOutcome
+                    // are OUT-only and take their defaults.
+                    .routeSource = contextRouter.pending(),
+                    .routeEnabled = contextRouter.enabled()};
     // Consumed: a request never survives the tick that carried it. Unlike applyDefaultLayout below,
     // these are NOT read back out of `ui` -- drawShellUi clears them as it applies them, and reading
     // them back would re-arm the request every frame (task 2.4.1).
@@ -1039,6 +1044,36 @@ bool EditorApp::tick() {
     applyDefaultLayout = ui.applyDefaultLayout;         // drawShellUi clears it once consumed, and re-sets
                                                         // it for View > Reset Layout
     placeUnplacedPanels = ui.placeUnplacedPanels;       // cleared once consumed; nothing ever re-arms it
+    // task E.3.2. The toggle is adopted ONLY when the checkbox was actually flipped -- routeEnabled is
+    // an in/out field, and adopting it unconditionally would be harmless today and a silent
+    // re-introduction of a stale value the moment anything else writes it.
+    if (ui.routeToggleRequested) {
+        contextRouter.setEnabled(ui.routeEnabled);
+        editorPrefsDirty = true;
+    }
+    // Counters FIRST, and gated on a real source, so a Drop of None -- the common case, on every
+    // single frame -- counts nothing and focusRouteDropCount() means "how many real routes were
+    // refused" rather than "how many frames ran".
+    if (ui.routeSource != RouteSource::None) {
+        switch (ui.routeOutcome) {
+            case RouteOutcome::Apply:
+                ++focusRouteApplies;
+                lastRoutedPanel = routedPanelId(ui.routeSource);
+                break;
+            case RouteOutcome::Hold:
+                ++focusRouteHolds;
+                break;
+            case RouteOutcome::Drop:
+                ++focusRouteDrops;
+                break;
+        }
+    }
+    // Hold KEEPS the latch for the next tick; Apply and Drop are both terminal. The check is on the
+    // OUTCOME, not on the source, so a Drop of None -- which never entered the switch above -- still
+    // clears a latch that is already None. Idempotent, and one statement.
+    if (ui.routeOutcome != RouteOutcome::Hold) {
+        contextRouter.clearPending();
+    }
     // D3: the offscreen scene pass runs AFTER the draw walk (only it knows this frame's panel size,
     // which is what removes the one-frame resize lag) and BEFORE endFrame (ImGui's command buffer is
     // acquired and submitted there; ours must be submitted first -- F8's ordering guarantee, and F7
