@@ -1143,11 +1143,13 @@ E.2.1 (PR #98, `28deab0`), E.2.2 (PR #99, `bf363e4`) and E.2.3 (PR #100, `00e4c7
 E.1.1's thick-line handoff after eight tasks. **E.2.4 IS macOS-VALIDATED 12 of 12, 2026-09-11, with no blockers
 and no partials**, which closes the last of Epic E.2's validation debt and all six of its declared
 seeds. **Every task in Epics E.1 and E.2 is now merged AND macOS-validated except E.1.5, whose page
-has not been run on any platform** -- that, plus E.3.2's own unrun page, is what is left of Phase E's
-validation risk on this OS.
+has not been run on any platform** -- and with E.3.1 validated 13 of 14 and E.3.2 validated
+9 / 1 partial / 2 not executable, **E.1.5's unrun page is now the WHOLE of Phase E's validation risk
+on this OS**.
 
-**The spine, as E.3.2 leaves it. Epics E.3 (three tasks left), E.4, E.5 and E.6 are the open front —
-fourteen tasks, planning only.** **E.4.5 (thumbnails) is unblocked and now has `material_preview_rig.hpp` to call BY
+**The spine, as E.3.1 and E.3.2 leave it. Epics E.3 (two tasks left), E.4, E.5 and E.6 are the open
+front — thirteen tasks, planning only** (24 in the phase, 11 merged: E.1's five, E.2's four, E.3.1 and
+E.3.2). **E.4.5 (thumbnails) is unblocked and now has `material_preview_rig.hpp` to call BY
 NAME**: a thumbnail is `materialPreviewCamera(rig, fixedAngle, 1.0F)` plus `materialPreviewView(...)`
 with whatever `MaterialPreviewLighting` it wants — the scene's, or a fixed studio lighting, a decision
 E.4.5 makes explicitly. **E.3 still inherits exactly TWO Inspector-row gaps** — E.2.1's enum-aware row
