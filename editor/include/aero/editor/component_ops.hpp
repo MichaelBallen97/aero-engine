@@ -72,6 +72,31 @@ bool removeComponent(World& world, Entity entity, ComponentTypeId id);  // silen
 // pairs the write path, it is not a semantic. Every caller holds a World&.
 [[nodiscard]] std::optional<FieldValue> readComponentField(World& world, Entity entity, ComponentTypeId id,
                                                            std::string_view field);
+
+// task E.3.1: the same read, off a DEFAULT-CONSTRUCTED instance rather than off an entity -- "what
+// would this field be on a freshly added component?", which is what a reset-to-default menu entry
+// needs. It touches NO entity and takes no Entity parameter at all.
+//
+// `const World&`, and it is the SECOND function on this header with that constness (the other is
+// componentFieldsAreReflected above) -- see the constness note, which this does not change: the honest
+// minimum here is a type-name lookup and a meta resolve, exactly as it is there.
+//
+// NO REFLECT-GEN CHANGE IS NEEDED, and that was measured rather than hoped: EnTT installs a
+// default_constructor for any default-constructible type at resolve<Type>() (entt/meta/node.hpp's
+// `if constexpr (std::is_default_constructible_v<Type>)`), and meta_type::construct() with zero
+// arguments falls through to it (entt/meta/meta.hpp). A type that is NOT default-constructible simply
+// has a null default_constructor and construct() returns an invalid meta_any -- one of the rejections
+// below, never a crash.
+//
+// COST, MEASURED THROUGH THE SHIPPING AGGREGATOR: one heap allocation per call for an engine::Transform
+// (meta_any's own storage; sizeof(meta_any) 64, sizeof(Transform) 40). That is cheap but not free, so
+// the panel calls this ON DEMAND from inside an open popup -- never once per field per frame.
+//
+// Rejections return nullopt + one AERO_LOG_ERROR and NEVER mutate anything: unregistered id, no meta
+// for the type, the type is not default-constructible, unknown field, and a meta type no field editor
+// maps.
+[[nodiscard]] std::optional<FieldValue> defaultComponentField(const World& world, ComponentTypeId id,
+                                                              std::string_view field);
 // Clamps TWICE (D8): to the field's FieldUiMeta range when present, AND to the destination type's
 // numeric limits -- a 300 into a uint8_t stores 255, never wraps (EnTT's own conversion WRAPS to 44;
 // measured). NaN is NOT sanitized: std::clamp's comparisons are false for NaN, so it passes through,

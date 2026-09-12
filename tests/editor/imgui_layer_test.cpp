@@ -61,8 +61,9 @@
 #include <doctest/doctest.h>
 
 #include <algorithm>
-#include <array>  // the frozen panel-id roster; reached transitively on libc++, not on MSVC (813bc4d)
-#include <cmath>  // task E.2.4, I136: std::lround / std::abs over the readback's byte oracle
+#include <array>   // the frozen panel-id roster; reached transitively on libc++, not on MSVC (813bc4d)
+#include <cctype>  // task E.3.1, I143: std::isalnum over the panel's own source text
+#include <cmath>   // task E.2.4, I136: std::lround / std::abs over the readback's byte oracle
 #include <cstdint>
 #include <filesystem>
 #include <format>  // task 3.2.2, I65: truncatedFbxText()'s programmatic 257-node fixture
@@ -13790,4 +13791,424 @@ TEST_CASE(
     app->requestQuit();
     CHECK(app->tick() == false);
     app.reset();
+}
+
+// ---- I142, I145, I146: task E.3.1's two-column inspector rows -------------------------------------
+
+TEST_CASE("editor: the Inspector draws every field kind inside a table without aborting (task E.3.1, I142)") {
+    // A SMOKE TEST WEARING A STRONG HAT, and the hat is real: BeginTable/EndTable imbalance,
+    // PushID/PopID imbalance and BeginPopupContextItem(nullptr) on an id-0 item are all IM_ASSERT
+    // ABORTS in the Debug build, so "the frame completed" is a genuine assertion here. In a RELEASE
+    // lane it asserts almost nothing, and this comment is the honest statement of that.
+    //
+    // DECLARED LIMIT: six of the eight FieldKind arms draw here. No built-in component carries a
+    // signed integer or a std::string field, and this target runs no aero_reflect_generate, so it
+    // cannot register a fixture that does -- FieldKind::Int and FieldKind::String are unreachable
+    // from this tier AND from the shipping editor. Their structural safety comes from sharing the row
+    // preamble (one TableNextRow, one label cell, one value cell) with the six that are covered; each
+    // submits exactly one item inside it.
+    //
+    // 2.2.2's own Inspector case above is left BYTE-IDENTICAL: it is about structural-edit survival
+    // on the default Cube, which is a different claim from this one.
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "inspector table i142", .width = 640, .height = 480});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = engine::editor::EditorApp::create(
+        *device, *window, ctx, {.persistLayout = false, .unfocusedFrameCapHz = 0.0F, .restoreLastProject = false});
+    REQUIRE(app.has_value());
+
+    engine::World& world = app->world();
+    engine::Entity cube{};
+    world.eachEntity([&](engine::Entity e) {
+        if (world.name(e) == "Cube") {
+            cube = e;
+        }
+    });
+    REQUIRE(cube.valid());
+
+    // EVERY built-in on ONE entity, so the widest possible set of field kinds draws in one frame:
+    // Bool, UInt, Float, a non-colour Vec3 (Transform::position/scale), a colour Vec3
+    // (MeshRenderer::color and four more), Quat (Transform::rotation) and Guid (AudioSource::clip).
+    const std::size_t typeCount = world.componentTypeCount();
+    REQUIRE(typeCount == 10);
+    std::size_t added = 0;
+    for (std::size_t i = 0; i < typeCount; ++i) {
+        const engine::ComponentTypeId id = world.componentTypeAt(i);
+        if (!world.hasRaw(id, cube)) {
+            CHECK(engine::editor::addComponent(world, cube, id));
+            ++added;
+        }
+    }
+    CHECK(added > 0);  // anti-vacuity: the loop really did widen the set of drawn kinds
+
+    app->selection().set(cube);
+    for (int i = 0; i < 3; ++i) {
+        REQUIRE(app->tick());
+        CHECK(app->presentedLastFrame());
+    }
+
+    // ...and every OTHER seeded entity in turn, so the label column is re-measured against a
+    // different longest field name each time and a component with no fields still draws.
+    std::vector<engine::Entity> all;
+    world.eachEntity([&](engine::Entity e) { all.push_back(e); });
+    CHECK(all.size() >= 2);
+    for (const engine::Entity e : all) {
+        app->selection().set(e);
+        REQUIRE(app->tick());
+        CHECK(app->presentedLastFrame());
+    }
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: the Inspector's label column is NOT user-resizable (task E.3.1, I145)") {
+    // SOURCE PIN, and the only cover sabotage seed S9 has anywhere. The ABSENCE of
+    // ImGuiTableFlags_Resizable is what makes imgui_tables.cpp re-apply our requested width every
+    // frame (:809-810 -> :934-938 -> :988-989); adding it silently freezes the column at whatever the
+    // user last dragged it to and no runtime tier in this tree can see the difference.
+    const std::vector<std::string> code = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/inspector_panel.cpp");
+    REQUIRE(code.size() > 100);  // the read really traversed the file
+    std::size_t resizable = 0;
+    for (const std::string& line : code) {
+        if (line.find("ImGuiTableFlags_Resizable") != std::string::npos) {
+            ++resizable;
+        }
+    }
+    CHECK(resizable == 0);
+
+    // ANTI-VACUITY: the scan can find the flags line that IS there, so "zero" is a statement about
+    // this file rather than about a reader that found nothing at all.
+    (void)soleLineContaining(code, "ImGuiTableFlags_SizingFixedFit");
+}
+
+TEST_CASE("editor: the Inspector's row rhythm is ONE table per component (task E.3.1, I146)") {
+    // SOURCE PIN. One table per component, never one per field arm and never a third column appearing
+    // silently -- and the 120-point SameLine that used to set the label column is gone for good.
+    const std::vector<std::string> code = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/inspector_panel.cpp");
+    REQUIRE(code.size() > 100);
+
+    std::size_t sameLine120 = 0;
+    std::size_t beginTable = 0;
+    std::size_t setupColumn = 0;
+    for (const std::string& line : code) {
+        if (line.find("ImGui::SameLine(120") != std::string::npos) {
+            ++sameLine120;
+        }
+        if (line.find("BeginTable(") != std::string::npos) {
+            ++beginTable;
+        }
+        if (line.find("TableSetupColumn(") != std::string::npos) {
+            ++setupColumn;
+        }
+    }
+    CHECK(sameLine120 == 0);
+    CHECK(beginTable == 1);
+    CHECK(setupColumn == 2);
+
+    // EndTable is called exactly once too, and the pair is asymmetric by API: an unbalanced call is an
+    // IM_ASSERT abort in Debug, which is what I142 exists to catch at runtime.
+    (void)soleLineContaining(code, "ImGui::EndTable()");
+}
+
+// ---- I143, I144: the axis row's derivation and its gate ordering ----------------------------------
+namespace {
+
+// The first line at or after `from` containing `needle`, or code.size() when there is none. Distinct
+// from soleLineContaining, which REQUIREs exactly one hit in the WHOLE file -- an assertion about one
+// switch arm needs a bounded search, because `drawAxisRow(` legitimately appears three times (its
+// definition and its two call sites) and `gateForLastItem()` appears nine.
+[[nodiscard]] std::size_t firstLineContaining(const std::vector<std::string>& code, std::string_view needle,
+                                              std::size_t from) {
+    for (std::size_t i = from; i < code.size(); ++i) {
+        if (code[i].find(needle) != std::string::npos) {
+            return i;
+        }
+    }
+    return code.size();
+}
+
+// How many lines in [from, to) contain `needle` -- the bounded counterpart of soleLineContaining, for
+// an assertion about ONE function's body.
+[[nodiscard]] std::size_t countInRange(const std::vector<std::string>& code, std::string_view needle, std::size_t from,
+                                       std::size_t to) {
+    std::size_t hits = 0;
+    for (std::size_t i = from; i < to && i < code.size(); ++i) {
+        if (code[i].find(needle) != std::string::npos) {
+            ++hits;
+        }
+    }
+    return hits;
+}
+
+// `needle` as a STANDALONE numeric token: not preceded or followed by an identifier character, a
+// digit or a '.'. Without the boundary test, scanning for "61" would match inside "1615" and inside
+// "0.61", and a scan that over-matches on a clean tree gets relaxed rather than fixed.
+//
+// A TRAILING LITERAL SUFFIX IS SKIPPED, AND THAT IS NOT A REFINEMENT -- IT IS THE WHOLE SCAN. Without
+// it, `226U` reads as "226" followed by an identifier character and is INVISIBLE, and `226U` is
+// precisely how axis_palette.hpp itself spells its bytes, so the most likely restatement is the one
+// spelling the scan would have missed. Measured in both directions: a seed restating `226U` in
+// inspector_panel.cpp left this clause green until the suffix skip existed, and removing the skip
+// again makes the same seed invisible.
+[[nodiscard]] bool containsStandaloneToken(const std::string& line, std::string_view needle) {
+    const auto isTokenChar = [](char c) {
+        return (std::isalnum(static_cast<unsigned char>(c)) != 0) || c == '_' || c == '.';
+    };
+    const auto isLiteralSuffix = [](char c) {
+        return c == 'u' || c == 'U' || c == 'l' || c == 'L' || c == 'f' || c == 'F';
+    };
+    std::size_t at = line.find(needle);
+    while (at != std::string::npos) {
+        const bool leftOk = at == 0 || !isTokenChar(line[at - 1]);
+        std::size_t after = at + needle.size();
+        while (after < line.size() && isLiteralSuffix(line[after])) {
+            ++after;
+        }
+        const bool rightOk = after >= line.size() || !isTokenChar(line[after]);
+        if (leftOk && rightOk) {
+            return true;
+        }
+        at = line.find(needle, at + 1);
+    }
+    return false;
+}
+
+}  // namespace
+
+TEST_CASE("editor: the axis letters' colours are DERIVED from the palette, never restated (task E.3.1, I143)") {
+    // E.1.4's sabotage row 20 is why this is structural rather than reviewed: restating a palette
+    // colour as an IM_COL32 literal one byte off is invisible to every automated tier in this tree and
+    // to a reading of the diff. So the pin is that the panel states NO colour of its own at all.
+    const std::vector<std::string> modelCode = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/inspector_model.cpp");
+    const std::vector<std::string> panelCode = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/inspector_panel.cpp");
+    REQUIRE(modelCode.size() > 100);
+    REQUIRE(panelCode.size() > 100);
+
+    SUBCASE("(a) inspector_model.cpp is the file that names the palette accessor") {
+        std::size_t hits = 0;
+        for (const std::string& line : modelCode) {
+            if (line.find("axisColorSrgbBytes") != std::string::npos) {
+                ++hits;
+            }
+        }
+        CHECK(hits == 3);  // one per axis, the whole of the mapping
+    }
+
+    SUBCASE("(b) inspector_panel.cpp names axisRowColor and NOT the palette accessor") {
+        std::size_t axisRowColorHits = 0;
+        std::size_t paletteHits = 0;
+        for (const std::string& line : panelCode) {
+            if (line.find("axisRowColor") != std::string::npos) {
+                ++axisRowColorHits;
+            }
+            if (line.find("axisColorSrgbBytes") != std::string::npos) {
+                ++paletteHits;
+            }
+        }
+        CHECK(axisRowColorHits == 1);
+        CHECK(paletteHits == 0);
+    }
+
+    SUBCASE("(c) no palette byte appears in inspector_panel.cpp as a standalone literal") {
+        // The nine sRGB bytes of the three axis colours (226,65,73 / 125,199,61 / 56,133,226 -- 226
+        // twice, so eight distinct values). Comments are already stripped by editorSourceCodeLines,
+        // so a citation in prose can neither satisfy nor break this.
+        const std::array<std::string_view, 8> paletteBytes{"226", "65", "73", "125", "199", "61", "56", "133"};
+        for (const std::string_view byteText : paletteBytes) {
+            CAPTURE(byteText);
+            std::size_t hits = 0;
+            for (const std::string& line : panelCode) {
+                if (containsStandaloneToken(line, byteText)) {
+                    ++hits;
+                }
+            }
+            CHECK(hits == 0);
+        }
+        // ANTI-VACUITY: the scanner does find a literal that IS in the file, so "zero" is a statement
+        // about the palette bytes rather than about a scanner that matches nothing.
+        std::size_t alphaHits = 0;
+        for (const std::string& line : panelCode) {
+            if (containsStandaloneToken(line, "255")) {
+                ++alphaHits;
+            }
+        }
+        CHECK(alphaHits == 1);  // IM_COL32's opaque alpha, and nothing else
+
+        // ...and the one IM_COL32 in the file is built from the accessor's own bytes.
+        const std::size_t colorAt = soleLineContaining(panelCode, "IM_COL32(");
+        CHECK(panelCode[colorAt].find("rgb[0]") != std::string::npos);
+        CHECK(panelCode[colorAt].find("rgb[1]") != std::string::npos);
+        CHECK(panelCode[colorAt].find("rgb[2]") != std::string::npos);
+    }
+}
+
+TEST_CASE("editor: the axis row's gate is read AFTER the group closes (task E.3.1, I144)") {
+    // SOURCE PIN, and the only cover sabotage seeds S8 and S19 have anywhere: no runtime tier in this
+    // tree can observe a merge chain broken on the wrong frame, because nothing here can synthesise a
+    // drag. THE ORDER IS THE ASSERTION.
+    const std::vector<std::string> code = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/inspector_panel.cpp");
+    REQUIRE(code.size() > 100);
+
+    SUBCASE("(a) exactly one group, and it lives inside drawAxisRow") {
+        // With EndGroup() INSIDE drawAxisRow, a gate read "before EndGroup" is structurally impossible
+        // without moving the gate call into that function -- which this clause also catches, because
+        // it would make gateForLastItem appear between the two group lines.
+        const std::size_t beginAt = soleLineContaining(code, "ImGui::BeginGroup()");
+        const std::size_t endAt = soleLineContaining(code, "ImGui::EndGroup()");
+        CHECK(beginAt < endAt);
+        const std::size_t definitionAt = soleLineContaining(code, "bool InspectorPanel::drawAxisRow(");
+        CHECK(definitionAt < beginAt);
+        CHECK(firstLineContaining(code, "gateForLastItem()", beginAt) > endAt);
+    }
+
+    SUBCASE("(b) DragFloat3 is gone from the file entirely") {
+        std::size_t hits = 0;
+        for (const std::string& line : code) {
+            if (line.find("DragFloat3") != std::string::npos) {
+                ++hits;
+            }
+        }
+        CHECK(hits == 0);
+        // ...and drawAxisRow is named exactly three times: its definition and the two arms below.
+        std::size_t rowHits = 0;
+        for (const std::string& line : code) {
+            if (line.find("drawAxisRow(") != std::string::npos) {
+                ++rowHits;
+            }
+        }
+        CHECK(rowHits == 3);
+    }
+
+    SUBCASE("(d) the Quat cache's IsItemActive() is read after the group too") {
+        // Read BEFORE EndGroup it reports the LAST AXIS's state rather than the group's, so dragging
+        // X or Y would never latch the cache and the row would fight the user's own numbers every
+        // frame. Nothing in tests/ can drive a drag, so the ordering is pinned as text -- and it had
+        // to be: a sabotage seed that computed the flag inside drawAxisRow and handed it out reddened
+        // NOTHING until this clause existed.
+        const std::size_t beginAt = soleLineContaining(code, "ImGui::BeginGroup()");
+        const std::size_t endAt = soleLineContaining(code, "ImGui::EndGroup()");
+        CHECK(countInRange(code, "IsItemActive", beginAt, endAt) == 0);
+
+        const std::size_t quatAt = soleLineContaining(code, "case FieldKind::Quat:");
+        const std::size_t callAt = firstLineContaining(code, "drawAxisRow(", quatAt);
+        const std::size_t breakAt = firstLineContaining(code, "break;", quatAt);
+        REQUIRE(callAt < breakAt);
+        // Exactly one in the arm -- the String arm has one of its own, which is why this is bounded
+        // rather than counted over the whole file.
+        CHECK(countInRange(code, "ImGui::IsItemActive()", quatAt, breakAt) == 1);
+        const std::size_t activeAt = firstLineContaining(code, "ImGui::IsItemActive()", quatAt);
+        CHECK(activeAt > callAt);
+        CHECK(activeAt < breakAt);
+    }
+
+    SUBCASE("(c) in BOTH arms the gate is read on a line strictly after the drawAxisRow call") {
+        const std::array<std::string_view, 2> arms{"case FieldKind::Vec3:", "case FieldKind::Quat:"};
+        for (const std::string_view arm : arms) {
+            CAPTURE(arm);
+            const std::size_t armAt = soleLineContaining(code, arm);
+            const std::size_t callAt = firstLineContaining(code, "drawAxisRow(", armAt);
+            const std::size_t gateAt = firstLineContaining(code, "gateForLastItem()", armAt);
+            REQUIRE(callAt < code.size());
+            REQUIRE(gateAt < code.size());
+            CHECK(callAt > armAt);
+            CHECK(gateAt > callAt);
+            // ...and both really are inside THIS arm rather than in a later one.
+            const std::size_t breakAt = firstLineContaining(code, "break;", armAt);
+            CHECK(gateAt < breakAt);
+        }
+    }
+}
+
+// ---- I147, I148: the reset's merge-chain discipline and its placement -----------------------------
+namespace {
+
+// The index of the line closing the function that opens at `from`: the first line at or below it
+// whose first character is '}' at column 0. Every function body in editor/src is indented, so this is
+// exact rather than heuristic -- and it is what lets an assertion be about ONE function's body rather
+// than about the whole file.
+[[nodiscard]] std::size_t functionBodyEnd(const std::vector<std::string>& code, std::size_t from) {
+    for (std::size_t i = from + 1U; i < code.size(); ++i) {
+        if (!code[i].empty() && code[i][0] == '}') {
+            return i;
+        }
+    }
+    return code.size();
+}
+
+}  // namespace
+
+TEST_CASE("editor: a reset breaks the merge chain on BOTH sides and drops both caches (task E.3.1, I147)") {
+    // SOURCE PIN, and the only cover sabotage seeds S14 and S18 have anywhere: nothing in tests/ can
+    // synthesise a right-click, so "the reset is one undo entry and never merges with the drag before
+    // it" is judged on hardware. What CAN be stated mechanically is the shape of the function.
+    const std::vector<std::string> code = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/inspector_panel.cpp");
+    REQUIRE(code.size() > 100);
+
+    const std::size_t bodyStart = soleLineContaining(code, "void InspectorPanel::resetField(");
+    const std::size_t bodyEnd = functionBodyEnd(code, bodyStart);
+    REQUIRE(bodyEnd > bodyStart + 2U);  // a real body, not an empty one
+
+    const std::size_t pushAt = firstLineContaining(code, "pushFieldEdit(", bodyStart);
+    REQUIRE(pushAt < bodyEnd);
+    CHECK(countInRange(code, "pushFieldEdit(", bodyStart, bodyEnd) == 1);
+
+    // TWO breaks, one on each side of the push. Deleting EITHER is the careless edit this pins --
+    // dropping the one before lets the reset merge into a drag released a moment earlier, and
+    // dropping the one after lets the NEXT drag merge into the reset.
+    CHECK(countInRange(code, "breakMergeChain()", bodyStart, bodyEnd) == 2);
+    CHECK(countInRange(code, "breakMergeChain()", bodyStart, pushAt) == 1);
+    CHECK(countInRange(code, "breakMergeChain()", pushAt + 1U, bodyEnd) == 1);
+
+    // Both caches are dropped, and AFTER the push -- the push reads this frame's model value, and the
+    // Quat row would otherwise keep displaying the pre-reset euler triple until the pointer moved.
+    CHECK(countInRange(code, "quatCache = {}", bodyStart, bodyEnd) == 1);
+    CHECK(countInRange(code, "stringCache = {}", bodyStart, bodyEnd) == 1);
+    CHECK(countInRange(code, "quatCache = {}", pushAt + 1U, bodyEnd) == 1);
+    CHECK(countInRange(code, "stringCache = {}", pushAt + 1U, bodyEnd) == 1);
+
+    // A reset is a VALUE edit: it must never be routed through `pending`, which is for Add/Remove.
+    CHECK(countInRange(code, "pending", bodyStart, bodyEnd) == 0);
+}
+
+TEST_CASE("editor: the whole-field reset menu hangs off the LABEL cell (task E.3.1, I148)") {
+    // SOURCE PIN, and the only cover sabotage seed S22's placement half has. D6's reason:
+    // FieldKind::String keeps an uncommitted buffer whose release is keyed on ImGui::IsItemActive(),
+    // so a popup opening over the value widget steals ActiveId and SILENTLY DISCARDS in-progress
+    // typing. The behavioural half -- type into a field, right-click, the typing survives -- is a
+    // validation row, because nothing in tests/ can synthesise a right-click.
+    const std::vector<std::string> code = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/inspector_panel.cpp");
+    REQUIRE(code.size() > 100);
+
+    const std::size_t bodyStart = soleLineContaining(code, "void InspectorPanel::drawField(");
+    const std::size_t bodyEnd = functionBodyEnd(code, bodyStart);
+    REQUIRE(bodyEnd > bodyStart + 2U);
+
+    CHECK(countInRange(code, "drawFieldResetMenu(", bodyStart, bodyEnd) == 1);
+    const std::size_t menuAt = firstLineContaining(code, "drawFieldResetMenu(", bodyStart);
+    REQUIRE(menuAt < bodyEnd);
+
+    // Exactly two cells per row, and the menu is submitted between them -- i.e. against the LABEL
+    // cell's last item, never against the value widget.
+    REQUIRE(countInRange(code, "TableNextColumn()", bodyStart, bodyEnd) == 2);
+    const std::size_t firstColumnAt = firstLineContaining(code, "TableNextColumn()", bodyStart);
+    const std::size_t secondColumnAt = firstLineContaining(code, "TableNextColumn()", firstColumnAt + 1U);
+    REQUIRE(secondColumnAt < bodyEnd);
+    CHECK(menuAt > firstColumnAt);
+    CHECK(menuAt < secondColumnAt);
+
+    // ...and it carries an EXPLICIT str_id, because a Text item's own id is 0 and
+    // BeginPopupContextItem IM_ASSERTs on an id of 0 -- which is an abort in the Debug build, not a
+    // glitch, and is what I142 exercises at runtime.
+    CHECK(code[menuAt].find("nullptr") == std::string::npos);
+    CHECK(code[menuAt].find("\"##fieldmenu\"") != std::string::npos);
 }

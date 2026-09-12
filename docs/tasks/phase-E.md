@@ -360,6 +360,61 @@ Subtasks:
 - Colour picker rows keep their existing behaviour (an `AERO_COLOR` `Vec3` is not an axis triple)
 - The merge-chain gate pair (2.4.1's asymmetric open/close edges) preserved on every new sub-widget
 
+_Outcome: **M at the low end, as recorded before implementation (D0).** Nine commits on
+`feat/E.3.1-axis-labelled-vector-fields` — five implementing the plan, one closing the first
+code-review round, three closing a second. *(PR number and merge commit are filled in at merge; the page is not yet validated on any
+platform.)* **NO new file, NO CMake line, NO component, NO serialized field, NO `add_test`, NO
+shader, NO dependency and NO link-line change** — five existing files edited
+(`inspector_model.{hpp,cpp}`, `component_ops.{hpp,cpp}`, `inspector_panel.{hpp,cpp}`) plus two test
+TUs. `ctest -N` **unmoved at 174** with a byte-identical entry set on both presets;
+`aero_editor_inspector_test` **31 → 55 (+24)** and `aero_editor_imgui_test` **181 → 188 (+7)**, both
+measured, the other five unmoved — including `aero_scene_serialize_test` at 40, the pin that says no
+component crept in. All eight guard counts unmoved (**500 / 92 / 163 / 92 / 165 / A=6 B=80 / 11-3-55
+/ 6-57**), because the task adds no tracked file. Both reduced configurations re-measured fresh:
+shader-tools-OFF **161**, reflect-tools-OFF **93**, nothing added in either, all 70 `cooker.*`
+present in all three.
+**The deliverable, in one sentence: the row is chosen by `FieldKind` and by the `AERO_COLOR` flag and
+by nothing else**, so `InspectorProbe` — a fixture no editor source has ever heard of — gets the full
+treatment, which is ADR-004 asserted rather than promised. `DragFloat3` is gone from the panel
+entirely; what replaces it is `DragScalarN`'s own internal loop opened up, three `DragScalar`s with a
+coloured letter before each inside one `BeginGroup`/`EndGroup`, so one `gateForLastItem()` read after
+the group sees exactly what one read after `DragFloat3` saw and the merge chain is unchanged **by
+construction**. The colours are derived from `axis_palette.hpp`; `inspector_panel.cpp` states no
+colour literal of its own, pinned structurally because a restated byte one value off is invisible to
+every automated tier.
+**The finding worth carrying: three assertions that could not fail, and a scan that could not see the
+spelling most likely to be written.** The sabotage matrix ran in full, 25 rows across 31 seeded
+builds. Twenty-one reddened exactly the named cases; two are declared no-cover rows the plan already
+predicted (the box-width arithmetic and the per-component label width, both layout facts no tier in
+this tree can reach); and **four came back green that should not have.** Dropping `normalize()` from
+the `Quat` rebuild left `VF6` green because GLM's euler constructor is already unit to 5.96e-08 —
+measured, and now printed by the case — which any sane relative tolerance admits; the discriminator is
+bitwise. Swapping `==` for `approxEquals` in the enabled decision left `VF12` green because **both
+comparators agree on NaN and on -0.0F**, so the arm that separates them had to be a component nudged
+by half an EPSILON. Reading the `Quat` cache's `IsItemActive()` before `EndGroup` — which reports the
+last axis's state rather than the group's — was invisible until `I144` gained a clause pinning its
+position. And `I143`'s byte scan was defeated by an integer-literal **suffix**: `226U` reads as digits
+followed by an identifier character, and `226U` is exactly how `axis_palette.hpp` spells its own
+bytes. All four closed and re-seeded; the last proved in both directions, since removing the suffix
+skip again makes the same seed invisible.
+**A second review round then found two defects and three claims weaker than they read.** The per-axis
+reset compared the WHOLE recomposed value, and for a `Quat` that recomposition perturbs the other two
+axes by ~1e-7 every time: from a `(0, 20, 40)`-degree pose five successive X resets oscillated at
+~1e-7 and the entry stayed live forever, while from a `(0, 20, 0)` pose the X box read **exactly
+0.000** with the entry still enabled. Identity was the only exact fixpoint in the whole space, and
+identity is what the `Vec3`-only battery happened to use — `VF10` is `Vec3` in every assertion, `VF8`
+covers only the whole-field `Quat`, and `VF14` only ever drives a pose where all three axes are off.
+The per-axis entry now compares the axis's own shown component against the default's, **rounded to the
+three decimals the box prints**, so a reset that changes nothing the user can read is disabled; the
+whole-field entry stays bitwise. Separately, `axisResetAction` could `assert`-abort the Debug editor on
+a READ — `normalize()` asserts `lengthSquared > 0.0f`, a non-finite rotation makes that NaN, exit 134 —
+because the recomposition that used to run only on an edit now runs every frame a per-axis popup is
+open; it tests `std::isfinite` first and kills the per-axis entry while leaving the whole-field rescue
+live. `VF16` and `VF17` are the cover; `VF6`'s anti-vacuity arm became a `WARN` because it asserted a
+one-ulp property of the host libm; and **AC-14's tier attribution was corrected — the reset popup never
+opens in any test on any lane, so `InspectorPanel::resetField` has zero runtime cover anywhere and rows
+4, 5, 7, 8 and 9 are its only behavioural witness.**_
+
 ### E.3.2 Selection-follows-focus router · P0 · M · depends: 2.2.1, 3.1.3, 3.4.2
 **Goal:** clicking a thing should show you the thing. Today selecting an entity leaves the Inspector
 tabbed away if you last looked at Import Details, and opening a material means finding the Material

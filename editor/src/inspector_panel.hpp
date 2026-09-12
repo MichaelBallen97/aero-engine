@@ -11,12 +11,18 @@
 //                 into `pending`, never applied here
 //   4. apply      one switch over `pending` -- the ONLY place a component is added or removed
 // No walk here is recursive (F22) -- the model is two flat vectors, never a tree.
+//
+// task E.3.1: phase 3 measures ONE label-column width over the WHOLE model before the component loop
+// and hands it to every component's two-column table, so the panel reads as one column rather than as
+// N. Every field kind draws inside that table; nothing draws with SameLine arithmetic any more.
 #include <aero/editor/component_ops.hpp>
 #include <aero/editor/inspector_model.hpp>
 #include <aero/editor/panel.hpp>
 #include <aero/scene/entity.hpp>
 
+#include <array>
 #include <cstdint>
+#include <optional>
 #include <string>
 
 namespace engine::editor {
@@ -61,8 +67,22 @@ private:
         std::string buffer;
     };
 
-    void drawComponent(PanelContext& context, Entity primary, const ComponentEntry& entry);
+    void drawComponent(PanelContext& context, Entity primary, const ComponentEntry& entry, float labelWidth);
     void drawField(PanelContext& context, Entity primary, const ComponentEntry& entry, const FieldEntry& field);
+    // task E.3.1: what DragScalarN does internally, opened up -- three DragScalars with a coloured
+    // axis letter before each, inside ONE BeginGroup/EndGroup so a single gateForLastItem() read
+    // after it sees the WHOLE triplet's edges, exactly as it did after DragFloat3.
+    bool drawAxisRow(PanelContext& context, Entity primary, const ComponentEntry& entry, const FieldEntry& field,
+                     std::array<float, 3>& shown, float speed);
+    void drawFieldResetMenu(PanelContext& context, Entity primary,
+                            const ComponentEntry& entry,      // the component the row belongs to
+                            const FieldEntry& field,          // the row, by kind, colour flag and value
+                            std::optional<std::size_t> axis,  // nullopt == the whole field (label cell)
+                            const char* strId);               // nullptr on an axis: the drag's own id
+    // A reset is a VALUE edit, so it writes through the seam inline like every other arm -- it must
+    // NOT go through `pending`, which is for Add/Remove only (see the four-phase note above).
+    void resetField(PanelContext& context, Entity primary, const ComponentEntry& entry, const FieldEntry& field,
+                    FieldValue after);
     void applyPending(PanelContext& context, Entity primary);
 
     InspectorModel model;  // D15 scratch, rebuilt every frame
