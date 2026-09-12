@@ -360,17 +360,20 @@ Subtasks:
 - Colour picker rows keep their existing behaviour (an `AERO_COLOR` `Vec3` is not an axis triple)
 - The merge-chain gate pair (2.4.1's asymmetric open/close edges) preserved on every new sub-widget
 
-_Outcome: **M at the low end, as recorded before implementation (D0).** Nine commits on
-`feat/E.3.1-axis-labelled-vector-fields` — five implementing the plan, one closing the first
-code-review round, three closing a second. *(PR number and merge commit are filled in at merge; the page is not yet validated on any
-platform.)* **NO new file, NO CMake line, NO component, NO serialized field, NO `add_test`, NO
+_Outcome: **M at the low end, as recorded before implementation (D0). MERGED — PR #102, merge commit
+`a8d963d`, and macOS-VALIDATED: 13 rows PASS, 1 row PASS with one sub-case NOT EXECUTABLE, 0 FAIL,
+2026-09-12.** Ten commits on `feat/E.3.1-axis-labelled-vector-fields` — seven from the plan (five code,
+one closing the first code-review round, one docs) and three closing a second — plus a **hand-resolved
+merge of E.3.2's `main`**, which landed first, and one docs commit. **NO new file, NO CMake line, NO component, NO serialized field, NO `add_test`, NO
 shader, NO dependency and NO link-line change** — five existing files edited
 (`inspector_model.{hpp,cpp}`, `component_ops.{hpp,cpp}`, `inspector_panel.{hpp,cpp}`) plus two test
 TUs. `ctest -N` **unmoved at 174** with a byte-identical entry set on both presets;
 `aero_editor_inspector_test` **31 → 55 (+24)** and `aero_editor_imgui_test` **181 → 188 (+7)**, both
 measured, the other five unmoved — including `aero_scene_serialize_test` at 40, the pin that says no
-component crept in. All eight guard counts unmoved (**500 / 92 / 163 / 92 / 165 / A=6 B=80 / 11-3-55
-/ 6-57**), because the task adds no tracked file. Both reduced configurations re-measured fresh:
+component crept in. All eight guard counts unmoved, because the task adds no tracked file. **On the
+merge with E.3.2 the totals re-measured to 1404 / 1886 / 201 / 40 / 55 / 7 / 28 and the guards to
+506 / 92 / 163 / 92 / 165 / A=6 B=82 / 11-3-55 / 6-57** — every move there is E.3.2's, and the
+arithmetic is the check that the merge lost nothing: `201 = 181 + 7 + 13` and `55 = 31 + 24`. Both reduced configurations re-measured fresh:
 shader-tools-OFF **161**, reflect-tools-OFF **93**, nothing added in either, all 70 `cooker.*`
 present in all three.
 **The deliverable, in one sentence: the row is chosen by `FieldKind` and by the `AERO_COLOR` flag and
@@ -413,7 +416,24 @@ open; it tests `std::isfinite` first and kills the per-axis entry while leaving 
 live. `VF16` and `VF17` are the cover; `VF6`'s anti-vacuity arm became a `WARN` because it asserted a
 one-ulp property of the host libm; and **AC-14's tier attribution was corrected — the reset popup never
 opens in any test on any lane, so `InspectorPanel::resetField` has zero runtime cover anywhere and rows
-4, 5, 7, 8 and 9 are its only behavioural witness.**_
+4, 5, 7, 8 and 9 are its only behavioural witness.**
+**The macOS pass then ran those rows, and `resetField` executed for the first time anywhere.** The
+convergence fix is confirmed from outside the code: at a near-gimbal `(12.000, 87.000, 27.000)` pose one
+click of `Reset X to 0.000` took X to `-0.000` with Y and Z **exactly preserved**, and the entry read
+**greyed on the very next open** and stayed greyed on a third — while the whole-field entry stayed live
+in the same menu, which is the two-comparator design seen from the product side. A reset is its own undo
+entry (drag `position.X` `0 → 4.800`, reset, one Undo returns **4.800**); the label column tracks the
+selection (**139 / 188 / 139 px** for Cube / Environment / Point Light); and dragging the boundary
+between the two columns leaves the panel **bit-identical, 0 of 135 270 pixels**. The axis letters
+measure **byte-exact** — `rgb(226,65,73)` / `rgb(125,199,61)` / `rgb(56,133,226)`.
+**Two method facts the pass had to establish first.** `screencapture` embeds the **display's** ICC
+profile, so raw bytes are not authored bytes; the letters read `rgb(222,57,64)` until the capture was
+converted to sRGB, and it is **not** antialiasing — the glyph grid is binary, so there was nothing to
+blend. And the `0.0005` display-precision threshold is **unreachable on a `Vec3` axis row by any mouse
+gesture**: the drag speed is `0.1`/px, fractional-pixel deltas do not survive, an out-and-back drag
+returns bit-exactly, and ImGui's Alt-held 100x slowdown does not arrive through synthetic input. So the
+deliberate `Vec3` half of that behaviour change has no reachable consequence through the editor's own
+input; the rule is judged on the `Quat` path, where the residue arises naturally._
 
 ### E.3.2 Selection-follows-focus router · P0 · M · depends: 2.2.1, 3.1.3, 3.4.2
 **Goal:** clicking a thing should show you the thing. Today selecting an entity leaves the Inspector
