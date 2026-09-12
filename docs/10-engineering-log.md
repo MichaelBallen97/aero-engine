@@ -15937,3 +15937,36 @@ asserts the modification time is unmoved: one tick could not tell "written only 
 G4 (drop the `&`) → `I159`, with `I153` staying green, which is the finding restated as a measurement;
 G5 (drop the `routeToggleRequested` gate) → `I158`; G6 (drop the `fileExists` discriminator) → `EP13`,
 with `EP8`'s missing-file arm staying green, which is what makes it a statement about the *distinction*.
+
+#### E.3.1 — macOS validation pass, 2026-09-12
+
+Run against commit `1cef0ba` (PR #102, all six CI checks green), `macos-debug` (ASan/UBSan), the editor
+driven for real through `CGEvent` synthetic input against a signed `.app` bundle on a 3440x1440 @ 1x
+display. **13 rows PASS, 1 row PASS with one sub-case NOT EXECUTABLE, 0 FAIL, 0 blockers**, and no
+sanitizer report of any kind for the whole session. Full records in
+`editor/validation/E.3.1-axis-labelled-vector-fields.md` (gitignored). What outlives the pass:
+
+* **`screencapture` embeds the DISPLAY's ICC profile, so raw bytes are not authored bytes.** The X
+  letter read `rgb(222,57,64)` against an expected `rgb(226,65,73)`, Y and Z off by different amounts.
+  It is **not** antialiasing — the glyph pixel grid is perfectly binary, so there was nothing to
+  average. Converting the capture to sRGB recovers all three exactly. A control proves the pipeline is
+  otherwise exact: the `position` label's own text reads `rgb(255,255,255)` on 103 pixels. E.2.1
+  recorded this caveat for the headless path; this is its GUI spelling, with the remedy.
+* **Enabled versus disabled menu text is measurable, and is the reliable discriminator**:
+  `rgb(255,255,255)` against `rgb(161,161,161)`. Do not judge "greyed out" by eye from a screenshot.
+* **The `0.0005` display-precision threshold is unreachable on a `Vec3` axis row through any mouse
+  gesture** — the unranged drag speed is `0.1`/px (200x the threshold), fractional-pixel deltas do not
+  survive the backend, an out-and-back drag returns bit-exactly, and ImGui's Alt-held 100x slowdown
+  **does not arrive** through synthetic input (a 100 px Alt-drag moved the value the full `9.800`).
+  So the deliberate `Vec3` half of that behaviour change has **no reachable consequence through the
+  editor's own input**; it is reachable only by a programmatic write. The rule itself is judged on the
+  `Quat` path, where the euler round-trip produces the sub-threshold residue naturally.
+* **The fix confirmed in the product**: from a near-gimbal `(12.000, 87.000, 27.000)` pose, one click of
+  `Reset X to 0.000` took X to `-0.000` (residue ~-2.4e-07) with Y and Z **exactly preserved**, and the
+  entry read **greyed on the very next open** and stayed greyed on a third — while the whole-field entry
+  stayed live in the same menu, which is the two-comparator design observed from the outside.
+* **A reset is its own undo entry**: drag `position.X` `0 -> 4.800`, reset to `0.000`, one Undo returns
+  **`4.800`** — the drag survived — and a second returns `0.000`.
+* **The label column tracks the selection**: Cube **139 px**, Environment **188 px**, Point Light **139
+  px**; and dragging the boundary between the two columns leaves the panel **bit-identical, 0 of
+  135 270 pixels differing**.
