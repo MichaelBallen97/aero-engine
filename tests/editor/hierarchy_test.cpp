@@ -19,7 +19,9 @@
 #include <doctest/doctest.h>
 
 #include <algorithm>
+#include <array>  // task E.3.2: the revision cases' setAll batches
 #include <cstddef>
+#include <cstdint>  // task E.3.2: Selection::revision()'s std::uint64_t
 #include <functional>
 #include <span>
 #include <string>
@@ -169,6 +171,95 @@ TEST_CASE("editor: Selection::prune drops dead handles and fixes the primary (I5
     CHECK(s.primary() == Entity{});
 }
 
+TEST_CASE("editor: Selection::revision counts OPERATIONS, not distinct selections (task E.3.2)") {
+    World w;
+    const Entity a = w.create();
+    const Entity b = w.create();
+    Selection s;
+    CHECK(s.revision() == 0U);  // a fresh Selection has performed no operations
+
+    // Each of the six public mutators bumps by EXACTLY ONE per call.
+    s.set(a);
+    CHECK(s.revision() == 1U);
+    s.add(b);
+    CHECK(s.revision() == 2U);
+    s.remove(b);
+    CHECK(s.revision() == 3U);
+    s.toggle(b);
+    CHECK(s.revision() == 4U);
+    s.setAll(std::array<Entity, 2>{a, b});
+    CHECK(s.revision() == 5U);
+    s.clear();
+    CHECK(s.revision() == 6U);
+
+    SUBCASE("the three NO-OP arms bump too -- the act counts, not the contents") {
+        // This is the whole reason revision() is a COUNTER and not a diff: each of the three calls
+        // below leaves the selection byte-identical, and each is a user act the router must route.
+        Selection t;
+        t.set(a);
+        const std::uint64_t afterSet = t.revision();
+        const std::size_t countAfterSet = t.count();
+
+        t.set(a);  // the SAME entity, already the whole selection
+        CHECK(t.revision() == afterSet + 1U);
+        CHECK(t.count() == countAfterSet);  // anti-vacuity: nothing about the SET changed
+
+        t.add(a);  // already present -> add()'s early return
+        CHECK(t.revision() == afterSet + 2U);
+        CHECK(t.count() == countAfterSet);
+
+        t.remove(b);  // absent -> remove()'s early return
+        CHECK(t.revision() == afterSet + 3U);
+        CHECK(t.count() == countAfterSet);
+    }
+
+    SUBCASE("setAll is ONE operation whatever the span's length, including EMPTY") {
+        Selection t;
+        const std::array<Entity, 2> batch{a, b};
+        t.setAll(batch);
+        CHECK(t.revision() == 1U);
+        CHECK(t.count() == 2U);  // anti-vacuity: the span really was consumed
+        t.setAll(std::span<const Entity>{});
+        CHECK(t.revision() == 2U);
+        CHECK(t.empty());
+    }
+}
+
+TEST_CASE("editor: Selection::prune NEVER bumps the revision (task E.3.2)") {
+    // LOAD-BEARING, not tidy: HierarchyPanel::onDraw calls prune every frame (hierarchy_panel.cpp:80),
+    // so a bumping prune would latch a context route on every frame the Hierarchy is visible.
+    World w;
+    const Entity a = w.create();
+    const Entity b = w.create();
+    const Entity c = w.create();
+    Selection s;
+    s.add(a);
+    s.add(b);
+    s.add(c);
+    const std::uint64_t afterAdds = s.revision();
+    REQUIRE(afterAdds == 3U);
+
+    SUBCASE("a prune that drops NOTHING") {
+        CHECK(s.prune(w) == 0U);
+        CHECK(s.revision() == afterAdds);
+    }
+    SUBCASE("a prune that really drops handles") {
+        REQUIRE(w.destroy(b));
+        REQUIRE(w.destroy(c));
+        const std::size_t dropped = s.prune(w);
+        CHECK(dropped == 2U);  // ANTI-VACUITY: the prune did real work
+        CHECK(s.count() == 1U);
+        CHECK(s.revision() == afterAdds);  // ...and still did not count as an operation
+    }
+    SUBCASE("ten prunes in a row -- the frame-loop shape") {
+        REQUIRE(w.destroy(c));
+        for (int i = 0; i < 10; ++i) {
+            s.prune(w);
+        }
+        CHECK(s.revision() == afterAdds);
+    }
+}
+
 TEST_CASE("editor: Selection's shape and noexcept contract") {
     static_assert(std::is_nothrow_move_constructible_v<Selection>);
     static_assert(std::is_nothrow_move_assignable_v<Selection>);
@@ -179,6 +270,13 @@ TEST_CASE("editor: Selection's shape and noexcept contract") {
     static_assert(noexcept(s.contains(Entity{})));
     static_assert(noexcept(s.primary()));
     static_assert(noexcept(s.entities()));
+    static_assert(noexcept(s.revision()));  // task E.3.2
+    Selection moved;
+    moved.set(Entity{});             // one operation, on a null entity
+    const Selection copied = moved;  // the counter travels with the object it belongs to
+    CHECK(copied.revision() == moved.revision());
+    const Selection movedInto = std::move(moved);
+    CHECK(movedInto.revision() == copied.revision());
 }
 
 // ---- clickSelectionAction (bugfix: multi-select drag, task 2.2.1) -------------------------------

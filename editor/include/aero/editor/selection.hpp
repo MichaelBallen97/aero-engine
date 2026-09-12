@@ -33,6 +33,26 @@ public:
     [[nodiscard]] Entity primary() const noexcept;              // Entity{} when empty
     [[nodiscard]] std::span<const Entity> entities() const noexcept;
 
+    // task E.3.2. HOW MANY SELECTION OPERATIONS HAVE BEEN PERFORMED ON THIS OBJECT -- not how many
+    // DISTINCT selections have existed. Every call to set/add/remove/toggle/setAll/clear bumps it by
+    // exactly ONE, WHETHER OR NOT THE CONTENTS CHANGED: a second click on an already-selected row
+    // leaves the set identical and is still a user act, and the context router (E.3.2) must raise the
+    // Inspector for it. A diff of the contents cannot express that, which is why this is a counter.
+    //
+    // EXACTLY ONE PER PUBLIC CALL, and that is why set/toggle/setAll delegate to the two private,
+    // non-counting helpers below rather than to add()/remove(): delegating to the public ones would
+    // make set() bump twice and setAll() of five entities bump six times.
+    //
+    // prune() NEVER BUMPS IT, and that is load-bearing rather than tidy: HierarchyPanel::onDraw calls
+    // prune EVERY FRAME (hierarchy_panel.cpp:80), so a bumping prune would latch a route on every
+    // frame the Hierarchy is visible -- a permanent focus storm. A prune-only change can also only
+    // ever SHRINK the selection: it is the World destroying handles behind this object's back, never
+    // a user act, so there is nothing to raise a panel for.
+    //
+    // Monotonic and never reset -- not by clear(), not by a scene swap, not by a project swap. A
+    // consumer stores the last value it SAW; it never stores a meaning for any particular value.
+    [[nodiscard]] std::uint64_t revision() const noexcept;
+
     void set(Entity entity);                        // replace with exactly one; Entity{} clears
     void add(Entity entity);                        // no-op if present; otherwise appended and becomes primary
     void remove(Entity entity);                     // no-op if absent
@@ -45,8 +65,15 @@ public:
     std::size_t prune(const World& world);
 
 private:
+    // task E.3.2. The BODIES of add()/remove(), with NO revision bump -- see revision()'s contract.
+    // addUncounted is not noexcept (push_back can allocate); removeUncounted is (erase + an Entity
+    // assignment), which mirrors add()/clear()'s existing declarations exactly.
+    void addUncounted(Entity entity);
+    void removeUncounted(Entity entity) noexcept;
+
     std::vector<Entity> items;
     Entity primaryEntity{};
+    std::uint64_t revisionValue = 0;  // task E.3.2
 };
 
 // ---- the click-to-select decision (bugfix, task 2.2.1: multi-select drag) ---------------------

@@ -11,14 +11,13 @@ Two platform matrices, never to be conflated: the **editor** runs on macOS/Windo
 ## Current state — read this first
 
 **PHASE E (Editor Experience) IS OPEN — it executes between Phase 3 and Phase 4.**
-**EPIC E.1 (Viewport legibility) AND EPIC E.2 (Lighting & environment) ARE BOTH CLOSED IN CODE AND macOS-VALIDATED EXCEPT E.1.5, whose page has not been run on any platform. EPIC E.3 (Inspector & context routing) IS NOW OPEN: E.3.1 (axis-labelled vector fields) is IMPLEMENTED ON ITS BRANCH — NINE commits on `feat/E.3.1-axis-labelled-vector-fields`, the full local gate green on both presets and both reduced configurations, the 25-row sabotage matrix run in full over 31 seeded builds and TWO code-review rounds closed (the second found a per-axis `Quat` reset that never converged and a latent Debug abort on a read path) — and is NOT YET MERGED and NOT YET VALIDATED ON ANY PLATFORM. It adds NO file, NO CMake line, NO component and NO `add_test`; `ctest -N` stays 174 with a byte-identical entry set and all eight guard counts are unmoved. Its three remaining sibling tasks (E.3.2, E.3.3, E.3.4) are planning only.**
-**E.1's five tasks and E.2's four are all merged.** E.2.1 (`Environment` + sky pass, PR #98, merge commit `28deab0`) and E.2.2 (point falloff + `SpotLight`, PR #99, merge commit `bf363e4`) took the built-in component count to TEN; E.2.3 (light gizmos + viewport icons, PR #100, merge commit `00e4c7b`, seventeen commits) is merged AND macOS-VALIDATED 12 of 12; **E.2.4 (material-preview parity + exposure relocation) CLOSES THE EPIC — nine commits, the full local gate green on both presets and both reduced configurations, the 31-seed sabotage matrix run in full and a code-review round closed. **IT IS macOS-VALIDATED 12 of 12, 2026-09-11, no blockers and no partials.** **THE BUILT-IN COUNT STAYS TEN: neither E.2.3 nor E.2.4 adds a component, so the five-generation-site rule and the component-count sweep do not fire for either of them at all.** E.1.1 (Debug line
+**EPIC E.3 (Inspector & context routing) IS OPEN: E.3.2 (selection-follows-focus router) IS MERGED; E.3.1, E.3.3 and E.3.4 are planning only.** **E.3.2 LANDED BEFORE E.3.1, which is legal and is not a gap** — the two are independent, they were specced and planned the same day against the same commit, and E.3.1's plan claims the `I142`–`I148` case-id block while E.3.2 takes `I149`–`I159`, so **the `I142`–`I148` gap in `imgui_layer_test.cpp` is DELIBERATE and must not be closed.** E.3.2 is fourteen commits — the plan's eight, three the sabotage pass forced and two the code-review round forced — with the full local gate green on both presets and both reduced configurations, the 32-seed sabotage matrix run in full, and a code-review round that found **six** gaps including **a real focus-steal defect** (below). **Its validation page has NOT been run on any platform.**
+**EPIC E.1 (Viewport legibility) AND EPIC E.2 (Lighting & environment) ARE BOTH CLOSED IN CODE — E.1's five tasks and E.2's four are all merged.** E.2.1 (`Environment` + sky pass, PR #98, merge commit `28deab0`) and E.2.2 (point falloff + `SpotLight`, PR #99, merge commit `bf363e4`) took the built-in component count to TEN; E.2.3 (light gizmos + viewport icons, PR #100, merge commit `00e4c7b`, seventeen commits) is merged AND macOS-VALIDATED 12 of 12; **E.2.4 (material-preview parity + exposure relocation) CLOSES THE EPIC — nine commits, the full local gate green on both presets and both reduced configurations, the 31-seed sabotage matrix run in full and a code-review round closed. **IT IS macOS-VALIDATED 12 of 12, 2026-09-11, no blockers and no partials.** **THE BUILT-IN COUNT STAYS TEN: neither E.2.3 nor E.2.4 adds a component, so the five-generation-site rule and the component-count sweep do not fire for either of them at all.** E.1.1 (Debug line
 renderer, PR #92 `15bf58b`), E.1.2 (Grid floor + world axes, PR #93 `d91eab1`), E.1.3 (View-axis
 gizmo, PR #94 `6fb323c`, plus the follow-up PR #95 `0ab204d`) and E.1.4 (Silhouette selection
 outline, PR #96 `3aadffb`) are all merged **and macOS-validated**; **E.1.5 (Transform-gizmo restyle)
 is merged** — five commits, the full local gate green on both presets and both reduced
-configurations. **Of the 24 tasks, ten are merged, E.3.1 is implemented on its branch, and the other
-13 are planning only.** Six epics, 24
+configurations. **The other 15 tasks are planning only.** Six epics, 24
 tasks, in `docs/tasks/phase-E.md`. It is **lettered, not fractioned**, because `3.5` and `3.5.1`/`3.5.2` are
 already Phase 3's Skeletal-animation epic and its tasks — a "Phase 3.5" would collide with referenced
 numbers, and numbering is append-only. In Notion its `Phase #` is `3.5`, a sort key, not an
@@ -61,90 +60,71 @@ Epics **3.1** (AssetDatabase), **3.2** (Importers), **3.3** (Cooker v0), **3.4**
 > as the position moves, never grown: it reached 207 k characters once and that is what this note
 > exists to prevent.
 
-### E.3.1 — Axis-labelled vector fields — OPENS Epic E.3. IMPLEMENTED, NOT MERGED, NOT VALIDATED
+### E.3.2 — Selection-follows-focus router (MERGED) — Epic E.3 opens, and NOT with E.3.1
 
-**You can tell which box is Y, and you can put it back.** A non-colour `Vec3` and every `Quat` draw
-three drag boxes, each preceded by an `X`/`Y`/`Z` letter in the axis colour; every field kind draws in
-a two-column table whose label width is measured once per frame over the WHOLE model; and every field
-carries a right-click reset-to-default, with per-axis entries on the two vector kinds. **The row is
-chosen by `FieldKind` and by the `AERO_COLOR` flag and by nothing else**, so `InspectorProbe` — a
-fixture no editor source has ever heard of — gets the full treatment, which is ADR-004 asserted rather
-than promised. Nine commits — five implementing the plan, one closing the first code-review round,
-three closing the second. **NO new file, NO CMake line, NO component, NO serialized field, NO
-`add_test`, NO shader, NO dependency, NO link-line change.** `ctest -N` **174 -> 174**, entry set
-byte-identical; doctest `aero_editor_inspector_test` **31 -> 55** and `aero_editor_imgui_test`
-**181 -> 188**, the other five unmoved; all eight guard counts unmoved. **`I` numbers now top out at
-`I148`, and `VF`/`FD` are claimed — E.3.2's spec claims `I142`+ and must renumber to `I149`+.** Full
-detail in `docs/10`; the sentences that govern new work are below.
+**Selecting a thing raises the panel that edits it.** Four panels share the Right dock node and exactly
+one is on screen, so clicking a `.aeromat` reloaded a material *behind a tab you could not see*. E.3.2
+is one context router over the focus plumbing that already existed, split three ways: **`EditorApp`
+detects**, **`shell_ui.cpp` applies**, **`context_router.hpp` decides**. Two new public pairs
+(`context_router`, `editor_prefs`), one `Selection` accessor, one `PanelRegistry` counter, four
+`ShellUiState` fields, one View-menu checkbox, one new machine-local JSON file and one `docs/09`
+**subsection** (§8.5). **NO component, NO target, NO ctest entry, NO shader, NO engine file, NO
+link-line change.** `ctest -N` **174 -> 174**, entry set byte-identical in both presets; doctest
+`aero_editor_shell_test` **1842 -> 1886**, `aero_editor_imgui_test` **181 -> 194**, the other five
+unmoved. **THE BUILT-IN COUNT STAYS TEN: E.3.2 adds no component, so the five-generation-site rule and
+the component-count sweep do not fire for it at all.** Full detail in `docs/10`; the sentences that
+govern new work are below.
 
-**1. THE LETTER BEFORE ITS BOX IS LOAD-BEARING, NOT COSMETIC.** `ImGui::ItemAdd` clears the pending
-`NextItemData`, so `drawField`'s shared `SetNextItemWidth(-1.0F)` is consumed by the `X` letter's
-`TextUnformatted` — the first item submitted on the axis path — rather than by the first `DragScalar`,
-which would otherwise take the whole cell. Reversing letter and box breaks the layout silently.
+**1. A DELEGATING MUTATOR CANNOT CARRY A PER-CALL COUNTER IN ITS OWN BODY.** `Selection::set`, `toggle`
+and `setAll` all routed through `add`/`remove`, so "bump as the first statement of every mutator" gives
+`set` **two** bumps and `setAll(n)` **n + 1**, while bumping only in `add`/`remove` gives `setAll({})`
+**zero**. Two private, non-counting helpers are the fix, and it is not a tidy-up: the three arms the
+counter exists for — a re-`set` of the same entity, an `add` of a present one, a `remove` of an absent
+one — are exactly the arms that would have read 2, 2 and 1. **And `Selection::prune` must NEVER bump**:
+`HierarchyPanel::onDraw` prunes every frame, so a bumping prune is a permanent focus storm.
 
-**2. NEVER CALL `BeginPopupContextItem(nullptr)` AFTER `EndGroup()`.** A group's own `ItemAdd` uses
-id 0 and only overwrites `LastItemData.ID` when the group contains the active or deactivated id, so
-that call is an `IM_ASSERT` **abort** on any frame nothing inside the group is active. The per-axis
-menu passes `nullptr` safely because it sits INSIDE the loop against the axis's own drag id; the
-label-cell menu passes an explicit `"##fieldmenu"` because a `Text` item's id is 0. **And the
-whole-field menu hangs off the LABEL cell for a second reason**: `FieldKind::String` keeps an
-uncommitted buffer whose release is keyed on `IsItemActive()`, so a popup over the value widget steals
-`ActiveId` and silently discards in-progress typing.
+**2. `ImGui::FocusWindow` HAS TWO SIDE EFFECTS AND NEITHER IS IDEMPOTENT.** It closes every popup above
+the focused window (`imgui.cpp:13740`) and **steals the active widget** (`:13754-13756`), with ImGui's
+own comment at `:13751` naming this very slot. A stolen `InputText` edit is **discarded**, not
+interrupted — `MaterialPanel` commits only on `IsItemDeactivatedAfterEdit()` and the panel that lost
+the tab never draws to observe the edge. **The editor therefore has exactly ONE focus slot and calls
+`SetWindowFocus` at most once per frame; `I159` pins one file and three calls. Re-read `:13740` and
+`:13754` at every ImGui bump**, beside `ImGuizmo.cpp:1229-1230` and `imgui.cpp:8848`.
 
-**3. FOUR ASSERTIONS THAT COULD NOT FAIL, ALL FOUND BY SEEDING AND ALL CLOSED.** (a) A dropped
-`normalize()` on the `Quat` rebuild is INVISIBLE to a length check: GLM's euler constructor is already
-unit to **5.96e-08**, which any sane relative tolerance admits — the discriminator is bitwise. (b) `==`
-versus `approxEquals` on the reset's `enabled` decision is invisible to BOTH a NaN arm and a `-0.0F`
-arm, because the two comparators agree on both; the input that separates them is a component nudged by
-**half an EPSILON**. (c) Reading the `Quat` cache's `IsItemActive()` before `EndGroup` reports the LAST
-AXIS's state rather than the group's, and no tier could see it until `I144` pinned the call's position.
-(d) **A STANDALONE-TOKEN LITERAL SCAN IS DEFEATED BY AN INTEGER SUFFIX**: `226U` reads as digits
-followed by an identifier character and is invisible, and `226U` is exactly how `axis_palette.hpp`
-spells its own bytes — so the most likely restatement is the one spelling the scan missed. Skip a
-trailing `u/U/l/L/f/F` run before testing the boundary, and prove it in BOTH directions.
+**3. `PanelRegistry::noteDrawn` IS WHAT MAKES A TAB ASSERTABLE AT ALL.** `ImGui::Begin` returns false
+for a docked window that is not the selected tab and `drawPanels` skips `onDraw` entirely, so "the
+Inspector raised" was **unfalsifiable at every automated tier** before this task — 3.1.3's log records
+two attempts that passed while executing none of the code they named. Six lines record `Begin`'s own
+answer, and every routing claim is a **delta across one tick** with an anti-vacuity arm.
 
-**3b. A PER-AXIS RESET ASKS A DIFFERENT QUESTION FROM A WHOLE-FIELD ONE, AND ASKING THE WHOLE-FIELD
-QUESTION NEVER CONVERGES.** A `Quat`'s per-axis reset recomposes through euler and perturbs the OTHER
-TWO axes by ~1e-7, so comparing the recomposed value against the current one leaves the entry live
-FOREVER — measured, five successive X resets from a `(0, 20, 40)`-degree pose gave `-2.403e-07`,
-`-3.600e-07`, `+5.676e-07`, `-1.832e-07`, `-7.762e-07` — and from a `(0, 20, 0)` pose the X box read
-**exactly 0.000** with the entry still enabled. **Identity is the only exact fixpoint in the whole
-space, which is why nothing caught it**: the tier-0 cover was `Vec3`-only, where a per-axis reset is a
-verbatim copy. The per-axis entry now compares the axis's own SHOWN component against the default's,
-ROUNDED to the three decimals the box prints (`std::round(v * 1000) / 1000`, as floats — `-0.000` and
-`0.000` are different STRINGS and must compare equal). The whole-field entry stays BITWISE. Deliberate
-consequence: a `Vec3` axis differing from its default by less than **0.0005** is disabled.
+**4. MATERIAL IS THE RIGHT NODE'S DEFAULT FRONT TAB, AND EVERY RIGHT-NODE PANEL DRAWS ONCE ON FRAME
+ONE.** Measured, both of them, and each made an obvious assertion vacuous first: `panelDrawnCount(x) >
+before` is satisfied with or without a route when `x` is already the drawing tab, so `I149`/`I150`/`I157`
+put the Inspector in front with an explicit request **and `REQUIRE` the target is not drawing**; and a
+baseline taken before the two settle ticks reads a layout artefact, which is what reddened `I153` on
+its first run. **Any future GPU-tier routing case inherits both.**
 
-**3c. A FUNCTION THAT WAS ONLY EVER REACHED ON AN EDIT BECOMES A READ PATH THE DAY A POPUP CALLS IT.**
-`axisRowFieldValue`'s `Quat` arm calls `normalize()`, which asserts `lengthSquared(q) > 0.0f`; a
-non-finite quaternion makes that NaN, `NaN > 0.0f` is false, and the Debug/sanitizer editor dies with
-**SIGABRT, measured exit 134**. Before E.3.1 that expression ran only when the user had dragged a box;
-`axisResetAction` runs it every frame a per-axis popup is open, off the STORED value. It tests
-`std::isfinite` FIRST (E.2.2's `resolveSpotCone` precedent) and disables the per-axis entry, while the
-whole-field entry stays live because it writes the default verbatim and IS the rescue. `Vec3` is
-deliberately not guarded — no `Vec3` path normalizes. **The zero quaternion, which `normalize()` names
-in its own assert message, never reaches the guard at all**: `eulerAngles({0,0,0,0})` is a finite
-`(0,0,0)`.
+**0. A PREFERENCE THAT SUPPRESSES AN EFFECT MUST NOT SUPPRESS THE OBSERVATION THAT FEEDS IT** — the
+code-review round's BLOCKING finding, and a real focus steal the whole green matrix was blind to.
+Gating the three `observe*` **early returns** on `enabled` left every baseline stale, so ticking
+View ▸ Focus Follows Selection back on raised a panel for an act performed minutes earlier. **The gate
+belongs in the LATCH condition**; the baseline always advances. `observeImportTarget` keeps `!settled`
+in its early return, because that rule is the SESSION's and is independent of the preference. The case
+that should have caught it, `RT24`, **pinned the defect while calling it correct** — it re-observed the
+value produced while disabled and named that "a fresh act". **A case written from the same sentence as
+the code cannot falsify that sentence.** Same round, same species: `readEditorPrefs` conflated a
+MISSING file with one that EXISTS and cannot be READ (`readTextFile` disengages for both), so an
+ACL-blocked `editor_prefs.json` reset the preference with no WARN; `fileExists` is the discriminator,
+and it is `std::filesystem::exists`, so it is **TRUE for a directory** — which is what makes a directory
+the portable stand-in for a permission-refused file.
 
-**3d. AN ANTI-VACUITY ARM THAT PREDICTS A TOOLCHAIN IS A CROSS-LANE FLAKE.** `VF6` asserted that
-`normalize()` moves the bits of GLM's euler constructor — true here, where `length(raw) - 1` is
-`-5.96046448e-08`, exactly `-2^-24`, a ONE-ULP miss. That last ulp depends on the host libm and on FMA
-contraction policy, and a lane that lands exactly unit makes `normalize()` the identity and reddens a
-CORRECT tree. The claim stays a `CHECK`; the vacuity signal is a `WARN`, which reports without
-failing, with the measured residual printed on every run.
-
-**4. `entt::meta_type::construct()` GIVES A COMPONENT'S DEFAULTS FOR FREE, WITH NO REFLECT-GEN
-CHANGE.** EnTT installs a `default_constructor` for any default-constructible type at
-`resolve<Type>()`, and zero-argument `construct()` falls through to it; a type that is NOT
-default-constructible simply returns an invalid `meta_any`. Measured cost: **one heap allocation per
-call**, which is why `defaultComponentField` is called from inside an open popup only, never per field
-per frame. **A rejection arm needing a non-default-constructible type is unreachable through an
-ordinary registration** (`World::addRaw` default-constructs) — `FD9` reaches it by registering meta for
-one under the registration NAME a different, default-constructible type carries on the `World`.
-
-**5. `misc-unused-parameters` IS IN clang-tidy's `misc-*` GROUP AND CI RUNS `--warnings-as-errors`**,
-so a method cannot be introduced at one step carrying the parameters a later step's body will need.
-Give it the narrower signature and widen it with its first use.
+**5. AN ADDRESS COMPARISON CANNOT SEE A DANGLING `c_str()`, AND A SEED PLACED AFTER THE GUARD THAT
+REFUSES IT IS INERT.** `routedPanelId(x) == routedPanelId(x)` stayed **green** against a seeded
+`return std::string("Inspector").c_str();` — the temporary is SSO, so it lives in the callee's frame
+and two calls from one caller land at the same address; ASan's `detect_stack_use_after_return` is
+**off by default**. Pin a lifetime by surviving intervening work, never by an address. And the plan's
+`S16` (a `setVisible` inside the `Apply` arm) could not change behaviour at all, because a hidden
+target takes the **Drop** four guards earlier. **Seed the mistake, not the symptom.**
 
 ### E.2.4 — Material-preview parity + exposure relocation — CLOSES Epic E.2. macOS-VALIDATED 12/12
 
@@ -496,7 +476,7 @@ miniaudio; `A38` is covered only by validation row 9. Full detail in `docs/10`.
 | **Phase 2** — Editor | **COMPLETE, gate met 2026-08-02.** All six epics closed and macOS-validated; Windows/Linux rows pending for every task (`editor/VALIDATION.md`). Gate artifact: `samples/phase-2-editor-scene/` — data, deliberately not `add_subdirectory`'d. |
 | **Phase 3** — Asset Pipeline & 3D Content | **OPEN.** **All seven epics CLOSED in code** — 3.1–3.6, and 3.7 with 3.7.1 + 3.7.2 merged and macOS-validated and **3.7.3 merged (PR #91)**. What is left is the gate below and the validation debt. Per-task detail in `docs/10`. |
 | **Phase 3 gate** | Drop a rigged glTF/FBX in → PBR materials + shadows + a playing animation + **an audible sound**. The audible half exists in code as of 3.7.2 and **has not been validated on any platform** — 3.7.2's macOS pass ticked 47 of 53 records and left the 6 that need ears open. |
-| **Phase E** — Editor Experience | **OPEN. EPIC E.3 (Inspector & context routing) IS NOW OPEN and E.3.1 (axis-labelled vector fields) IS IMPLEMENTED ON ITS BRANCH -- NINE commits, NOT YET MERGED and NOT YET VALIDATED ON ANY PLATFORM.** It adds NO file, NO CMake line, NO component and NO `add_test`: `ctest -N` UNMOVED at 174 with a byte-identical entry set on both presets, doctest **1404 / 1842 / 188 / 40 / 55 / 7 / 28** (only the imgui and inspector totals moved, +7 and +24), all eight guard counts UNMOVED at 500 / 92 / 163 / 92 / 165 / A=6 B=80 / 11-3-55 / 6-57 because no tracked file is added, and both reduced configurations re-measured fresh at **161** and **93** with nothing added in either and all 70 `cooker.*` entries present in all three. The 25-row sabotage matrix ran in full over 31 seeded builds: 21 rows reddened exactly the named cases, 2 are declared no-cover layout rows the plan predicted, and **4 came back green that should not have** -- a dropped `normalize()` (GLM's euler constructor is already unit to 5.96e-08, so no length tolerance can see it), `==` versus `approxEquals` (both comparators agree on NaN AND on -0.0F), the `Quat` cache's `IsItemActive()` moving before `EndGroup`, and a literal scan defeated by the `U` suffix `axis_palette.hpp` itself writes. All four closed, re-seeded and confirmed reddening; the last proved in both directions. **A SECOND REVIEW ROUND THEN FOUND TWO DEFECTS AND THREE WEAK CLAIMS, ALL FIXED IN THREE FURTHER COMMITS**: a per-axis `Quat` reset compared the WHOLE recomposed value and so never converged (measured -- five X resets from a `(0, 20, 40)`-degree pose oscillated at ~1e-7 and stayed live forever, and from a `(0, 20, 0)` pose the X box read exactly `0.000` with the entry still enabled), and `axisResetAction` could `assert`-abort the Debug editor on a READ path through `normalize()` (measured, exit 134). The per-axis entry now decides at the row's own DISPLAYED precision and tests `std::isfinite` first; `VF16` and `VF17` are the cover the `Vec3`-only battery could not give, `VF6`'s anti-vacuity arm became a `WARN` because it predicted a toolchain's last ulp, and **AC-14's cover was overstated -- `InspectorPanel::resetField` has ZERO runtime cover anywhere and the validation rows are its only behavioural witness**. **E.3.1's validation page exists and is unrun on every platform.** -- EPIC E.1 AND EPIC E.2 ARE BOTH CLOSED IN CODE -- E.1's five tasks (all macOS-validated) and E.2's four. E.2.4 (material-preview parity + exposure relocation) CLOSES E.2: nine commits, `ctest -N` UNMOVED at 174 with a byte-identical entry set, doctest 1404 / 1842 / 181 / 40 / 31 / 7 / 28, all eight guards green (math 496 -> 500 and project-no-delete B 79 -> 80, the other six unmoved), both reduced configurations 161 and 93 with byte-identical entry sets, the 31-seed sabotage matrix run in full and a code-review round closed. **IT IS macOS-VALIDATED -- 12 PASS / 12, 2026-09-11, no blockers and no partials**, and the pass closed all six declared seeds. **The deliverable is measured, not impressionistic: the preview's peak sphere luminance and the viewport's are BYTE-IDENTICAL at (192,198,209), delta 0.0 levels**, taken over a 22-frame burst spanning a full orbit with disjoint search boxes; under Solid mode the preview corner, the viewport corner and an independently computed ACES+sRGB oracle all read **(206,93,95) exactly**. **The viewport below the strip row is BIT-IDENTICAL to the `990ee2b` build -- 0 of 1 064 924 pixels -- with the strip row itself as a working control at 5391 of 27 092.** The preview's deliberate change is quantified: sphere peak **230.0 -> 212.4** but picture mean **64.1 -> 134.6**, because a dark void became the scene's sky -- **it reads as RIGHT, and no retune of E.5.2's default light is warranted**. Seed cover: **`S30`** -- at `intensity` **exactly 0.000000** the picture equals the no-sun picture (peak 140.1 both) while the notice stays away (0 amber px), so `hasSun` keys on the RESOLUTION; **`S21`** -- a dismissing click landing ON a translate handle left the sphere at **(503.0,366.0) -> (503.0,366.0)**, and one Undo afterwards reverted the ORIGINAL move, proving no spurious entry; **`S22`** -- Escape closed the popup 35205 -> 0 dark px; **`S24`** -- unchecking Gizmos removed the icon from the picture; **`S25`** -- the popup's top-left **(378,105)** sits at the button's `(min.x,max.y)` **(380,104)**, **17 px from the mouse**. Sun direction: peak-brightness orbit phase **69 deg -> 332 deg** for a 90 deg yaw, **97 deg apart** at 5.2 deg frame resolution. Two Environments: the loser's edit moves **364** background px at max delta 2 while the winner's moves **17212** at delta 33, and the WARN fires **exactly once**. Tracy: **NO new zone in either of two A/B pairs**; the preview's `renderFrame` mean rises **+26.97 us** and **+11.42 us** -- same sign, but the E.2.4 build's own run-to-run spread is **15.54 us**, so **+0.01 to +0.03 ms is a BOUND, not a measurement** (~0.1 % of a frame). HiDPI is deliberately NOT a row (this task draws no line and no icon), so **E.1.1's thick-line handoff stays FIRED and unmoved**. **A METHOD FACT THAT CONTRADICTS WHAT E.2.3's PASS RECORDED, re-measured here: a FILE-ACCESS (TCC) prompt DOES accept a synthetic click** -- the "AeroE24 requests access to your Desktop folder" dialog dismissed on a CGEvent click at its Permitir button, as did the local-network one. **The prompts CASCADE (each new dialog's origin shifts) and come in two heights -- TCC 192, local-network 250 -- so the button offset must be DERIVED from the measured bounds, never hardcoded.** **And the editor throttles hard when it is not frontmost**: a Tracy capture taken while the terminal held focus recorded **2 frames in 20 s**, against **21 894** when the editor was re-activated every 2 s. -- **E.2.3 IS MERGED (PR #100, `00e4c7b`, seventeen commits, all six CI checks green on `f1a39aa` with `headSha == HEAD` asserted) AND macOS-VALIDATED 12 of 12, 2026-09-08, no blockers and no partials.** `ctest -N` UNMOVED at 174 with a byte-identical entry set, doctest 1400 / 1829 / 170 / 40 / 31 / 7 / 28, all eight guards green, both reduced configurations 161 and 93, the sabotage matrix run in full (two real holes found and fixed) and a code-review round that found three more (the decisive one: NOTHING anywhere distinguished the four atlas glyphs, so a mis-wired `glyphAlpha` arm drew a point glyph on every spot light with the whole suite green -- seeding it reddens `VI12` ALONE of 1828 cases). **THE VALIDATION FIRED E.1.1's THICK-LINE HANDOFF, which had been UNFIRED for eight tasks.** Row 4 began NOT EXECUTABLE -- both externals are 1x and NEITHER EXPOSES A SINGLE HiDPI MODE (56 and 87 modes enumerated, zero above 1x) -- then those monitors were disconnected, leaving the built-in **3024x1964 Retina** panel, and the row became executable. Icons scale correctly (**28x19 / 40x40 px at 2x** against **14x9 / 19x20 at 1x**, exactly 2x, still 22 POINTS) but **debug LINES do not: 387 of 441 sampled runs across the directional gizmo are ONE DEVICE PIXEL**, i.e. 0.5 points, half their apparent weight at 1x -- which applies to the grid and the world axes too, not just the gizmos. Row 9 is stronger than the page asked: **0 differing of 1 552 000 with `getbbox()` returning None** -- not one pixel -- against a 267-px control, and the D6 divergence is **outline (255,167,56) vs icon (228,192,53)**, max channel delta 27. Row 12 needed no frame match at all: `material_preview.cpp` is ABSENT from E.2.3's changed-file set and includes nothing from `aero/render` or `aero/scene_render`, so it cannot see `DebugDraw`, `debugCircleBasis` or `activeDirectionalLight` -- byte-identical BY CONSTRUCTION. Row 10 is honest about its limit: **no new Tracy zone in either configuration** (diffed against E.2.2's 32-zone capture) is rigorous, but the frame-cost delta is not -- two independent A/B pairs at 23 icons produced deltas of OPPOSITE SIGN, so the feature costs less than the variance between two runs of the same build. Row 1: sun **19x20 -> 19x20** and camera **14x9 -> 14x9**, delta **0** across an ~87x dolly. Row 3: **0** stray ink around all five icons (seed S28 covered). Row 5: sphere follows range **112/320/542 px**, the inner circle vanishes twice with the outer bbox unchanged, both cone bounds clamp to exactly **1.570796**. Row 7: peak ink **(207,208,212)** active vs **(144,144,146)** muted, delete swaps to **(211,207,209)** on the SAME background and Undo restores **(144,144,146)**. Row 11: **0** leak WARNs, log 14 lines all `[info]`, with a WARN-capture control. **NEW METHOD FACTS, EACH OF WHICH PRODUCED A WRONG ANSWER FIRST:** a pending macOS permission prompt stalls the editor to ~2 frames per 3 minutes while it still logs "shell ready" -- Tracy's port-8086 listener triggers the LOCAL NETWORK prompt; local-network prompts accept synthetic clicks but FILE-ACCESS (TCC) prompts reject both CGEvent and the accessibility API and cannot be dismissed programmatically at all; replacing the executable inside an `.app` invalidates its signature and macOS then grants NO window silently (make it a real file and `codesign --force --sign -`, a symlinked executable cannot be signed at all); a bundle identity that has been full-screen can relaunch onto an INACTIVE Space (`onscreen=false`, accessibility reports zero windows) and a fresh bundle id clears it; synthetic input needs the target app FRONTMOST or clicks silently do nothing; **a synthetic Escape goes to whatever app is frontmost -- including the terminal running the session, which it interrupts -- so close ImGui menus by CLICKING**; ImGuizmo's centre handle correctly claims a press over a coincident icon, so a picking row must move the gizmo away first; and **undo of a delete does not restore the original entity index**, so the active-directional winner can move after an undo. E.2.1 AND E.2.2 ARE MERGED — E.2.1 MERGED (PR #98, `28deab0`) and E.2.2 MERGED (PR #99, `bf363e4`, ten commits, all six CI checks green on `b0d44a2` with `headSha == HEAD` asserted). **E.2.2 IS macOS-VALIDATED — 12 PASS / 12, 2026-09-07, no blockers and no partials.** The falloff A/B was MEASURED against a branch-point build through the real render chain, not predicted: the slab reads **0.049194** against **0.193359** at `d = 2.5` and **0.005703** against **0.051788** at `d = 5` — ratios **0.2544 / 0.1101** against a predicted 0.2543 / 0.1106 — and the range edge is monotone to exactly zero, so **no ring**. The spot's pool measures **2.3274** against `4·tan 30° = 2.3094`, **4.0054** against 4.0000 widened, `inner == outer` collapses the soft band from **0.758** units to **0.000**, and a 20° yaw moves the near edge to **0.7036** against 0.7053, recovering a **19.69°** tilt. Nine spots keep eight with **one latched WARN**; the dropped light moves **0** texels against ~1420 for a kept one; a tenth `PointLight` still draws. All nine degenerate cone and range configurations render **0 non-finite texels**. In the editor `SpotLight` is the **last** Add Component entry, five rows at exact defaults, both cone bounds clamp (**0.000000** / **1.570796**), each drag is **one named undo entry**, and two undos restore the viewport to **0 differing pixels of 2 000 000** with a 15 159-px control; selecting a light entity draws E.1.4's marker plus the gizmo and clicking the marker picks it. Tracy: `draw` **0.0124 ms** over 4 377 frames, **no new zone**, vsync-bound at 15.77 ms of 16.67. `phase-3-shadows` at intensity 56 keeps the ground lit under the casters with a visible falloff — **sabotage seed 28's only cover, now settled**. **THE PASS CHARACTERISED E.2.1's OPEN `Save Scene` OBSERVATION AS A REAL DEFECT: it is a SILENT NO-OP WHILE THE SCENE HAS NO BOUND PATH** — no write, no log line, the dirty marker left set — while `Save Scene As…` in the same menu saves, and once a path is bound `Save Scene` works. **It is not E.2.2's and needs its own task.** **Row 8's blocker was a FIXTURE GAP, not a defect** — importing `tests/fixtures/materials/canonical.aeromat` into the project's `assets/` is all it needed, and that clears E.2.1's row 10 the same way. **The preview ANIMATES**, so its identity is measured as a cross-build frame match: the closest pair ACROSS builds differs by **31 texels of 23 000** against a within-build floor of **771/772** — a 25x margin — and `material_preview.cpp` never assigns `points` or `spots`, so nothing here can reach it. **Row 9's A/B**: both builds pin to **16.674 ms with 0 dropped frames** over 1500 frames; eight spots cost **0.107 ms** of scene render, 0.64 % of a frame. **Row 6's sample half**: the phase-1 lamp is **3.9x dimmer** (peak contribution +21.0 -> +5.4 levels) and **41 % tighter** (1040 -> 613 px), 0 WARN, which independently reproduces row 1's predicted 4.0x. **INPUT METHOD, MEASURED AND NOT TO BE RE-DERIVED:** the screen must be **UNLOCKED** or the window server gives every application **zero windows**; synthetic clicks and drags drive ImGui fully and a drag field is driven by **dragging**; a bare mouse **move does not update the cursor**, so a hover proves nothing; **text entry NEVER arrives** by any encoding while **Backspace and Escape do**; **modifier shortcuts do not arrive**, so commands must come from the menus. Tracy listens on **port 8086 and accepts ONE server per client run**, so a stale process holds it and every later capture fails — and a client that starts while the port is taken opens **no listener at all**, so it can never be profiled. **AND THE TRAP THAT INVALIDATED A FIRST ATTEMPT AT THREE ROWS: the cooked shaders live in ONE directory per preset and `AERO_SHADERS_DIR` is compiled into every binary as that path, so two binaries built from different commits both read whichever shader set was cooked LAST.** A build A/B must snapshot `build/<preset>/shaders` per side and restore the matching set before each run; without that the phase-1 sample reported **byte-identical**, and with it the same comparison moves **412 933 pixels**. An A/B that shares one shader directory silently compares a build against itself.** 13 tasks remain, planning only. Inserted between 3 and 4; six epics, 24 tasks in `docs/tasks/phase-E.md`. Viewport legibility (E.1), lighting & environment (E.2), inspector & context routing (E.3), project/scene/asset management (E.4), content-creation UX (E.5), shell identity (E.6). **E.1.1** 8/10 PASS 2026-09-03 · **E.1.2** 8 PASS / 2 PARTIAL / 1 NOT EXECUTABLE 2026-09-04 · **E.1.3** 11 PASS / 1 PARTIAL / 2 NOT EXECUTABLE / 1 NOT RUN 2026-09-05, and that pass found the ortho gizmo-suppression defect fixed in PR #95 · **E.1.4** 10 PASS / 1 NOT EXECUTABLE 2026-09-05 · **E.1.5** 11 PASS / 1 NOT EXECUTABLE 2026-09-05. **E.2.1 is macOS-validated — 10 PASS / 3 open, 2026-09-06.** Its render rows were measured head­lessly through the real `SceneRenderer` -> `SkyPass` -> `PostProcess` chain with a framebuffer readback (no ICC round trip, so the bytes are exact): **every sky oracle difference is 0**; the unlit cube reads `(85,117,162)` on its top face against `(73,91,124)` on its side — dim, not black; ortho is exactly **one** colour; and **a world with no `Environment` is bit-identical to one with a default component, 0 of 921 600, with a 20 694-px anti-vacuity control**. Confirmed **in the editor**: New Scene seeds **four** entities with `Environment` ninth in Add Component, its eight fields at exact defaults, **no Transform**, E.1.4's marker at the origin and **no gizmo**; the grid stays legible over the ground (**Δlum 52.1**); each field edit is **exactly one** named undo entry and two undos restore the viewport to **0 differing pixels of 1 795 500**; the multi-Environment WARN fires **once and latches**, the loser's edit moves **0** sky pixels and the winner's **302 820**; and **Solid + Flat + intensity 1 is bit-identical to the branch-point build — 0 of 1 795 500, with a 1 792 032-pixel control**. Cost is **below the ~0.7 CPU-s noise floor**. `phase-1-scene`, a pre-task sample, renders under the default sky at 85 fps with zero WARN. **Three rows remain open**: row 4's normal-mapped arm is **GATED ON E.5.1** (a material on a *primitive* is silently discarded, so the default Cube cannot carry one — a dependency nobody had recorded), row 7's `Save Scene` produced no write under synthetic input while every other menu action worked (**possibly a real defect, unresolved**), row 10 has no material asset and row 12's release editor never connected to `tracy-capture`. **THE GUI WAS REACHED BY WRAPPING THE BINARY IN A MINIMAL `.app` BUNDLE**: a bare binary launched from an automation session gets **no window**, but `open`ing an `.app` gives it a Foreground LaunchServices identity, after which window geometry, `CGEvent` input and PID-bound capture all work. **`System Events`' own `click at` does not drive ImGui.** **HiDPI is deliberately NOT a row here** (a fullscreen gradient has no size-dependent feature), so E.1.1's thick-line handoff stays UNFIRED for a sixth task. **A branch-point A/B must be built at the PRIMARY binary path**: a binary elsewhere is a distinct application identity to macOS and receives no window. Windows and Linux unvalidated, as everywhere. |
+| **Phase E** — Editor Experience | **OPEN. EPIC E.3 (Inspector & context routing) IS OPEN AND E.3.2 (selection-follows-focus router) IS MERGED — fourteen commits, `ctest -N` UNMOVED at 174 with a byte-identical entry set in both presets, doctest 1404 / 1886 / 194 / 40 / 31 / 7 / 28, guards 506 / 92 / 163 / 92 / 165 / A=6 B=82 / 11-3-55 / 6-57, both reduced configurations 161 and 93 with byte-identical entry sets, the 32-seed sabotage matrix run in full (three real holes found and closed), a code-review round that found SIX more including a real focus-steal defect (a disabled preference left every router baseline STALE, so re-enabling raised a panel for a minutes-old act), and NO existing GPU case adjusted — all 181 passed unedited. E.3.2 LANDED BEFORE E.3.1 and the `I142`–`I148` case-id gap is deliberate. ITS VALIDATION PAGE HAS NOT BEEN RUN ON ANY PLATFORM. E.3.1, E.3.3 and E.3.4 are planning only.** **EPIC E.1 AND EPIC E.2 ARE BOTH CLOSED IN CODE -- E.1's five tasks (all macOS-validated) and E.2's four. E.2.4 (material-preview parity + exposure relocation) CLOSES E.2: nine commits, `ctest -N` UNMOVED at 174 with a byte-identical entry set, doctest 1404 / 1842 / 181 / 40 / 31 / 7 / 28, all eight guards green (math 496 -> 500 and project-no-delete B 79 -> 80, the other six unmoved), both reduced configurations 161 and 93 with byte-identical entry sets, the 31-seed sabotage matrix run in full and a code-review round closed. **IT IS macOS-VALIDATED -- 12 PASS / 12, 2026-09-11, no blockers and no partials**, and the pass closed all six declared seeds. **The deliverable is measured, not impressionistic: the preview's peak sphere luminance and the viewport's are BYTE-IDENTICAL at (192,198,209), delta 0.0 levels**, taken over a 22-frame burst spanning a full orbit with disjoint search boxes; under Solid mode the preview corner, the viewport corner and an independently computed ACES+sRGB oracle all read **(206,93,95) exactly**. **The viewport below the strip row is BIT-IDENTICAL to the `990ee2b` build -- 0 of 1 064 924 pixels -- with the strip row itself as a working control at 5391 of 27 092.** The preview's deliberate change is quantified: sphere peak **230.0 -> 212.4** but picture mean **64.1 -> 134.6**, because a dark void became the scene's sky -- **it reads as RIGHT, and no retune of E.5.2's default light is warranted**. Seed cover: **`S30`** -- at `intensity` **exactly 0.000000** the picture equals the no-sun picture (peak 140.1 both) while the notice stays away (0 amber px), so `hasSun` keys on the RESOLUTION; **`S21`** -- a dismissing click landing ON a translate handle left the sphere at **(503.0,366.0) -> (503.0,366.0)**, and one Undo afterwards reverted the ORIGINAL move, proving no spurious entry; **`S22`** -- Escape closed the popup 35205 -> 0 dark px; **`S24`** -- unchecking Gizmos removed the icon from the picture; **`S25`** -- the popup's top-left **(378,105)** sits at the button's `(min.x,max.y)` **(380,104)**, **17 px from the mouse**. Sun direction: peak-brightness orbit phase **69 deg -> 332 deg** for a 90 deg yaw, **97 deg apart** at 5.2 deg frame resolution. Two Environments: the loser's edit moves **364** background px at max delta 2 while the winner's moves **17212** at delta 33, and the WARN fires **exactly once**. Tracy: **NO new zone in either of two A/B pairs**; the preview's `renderFrame` mean rises **+26.97 us** and **+11.42 us** -- same sign, but the E.2.4 build's own run-to-run spread is **15.54 us**, so **+0.01 to +0.03 ms is a BOUND, not a measurement** (~0.1 % of a frame). HiDPI is deliberately NOT a row (this task draws no line and no icon), so **E.1.1's thick-line handoff stays FIRED and unmoved**. **A METHOD FACT THAT CONTRADICTS WHAT E.2.3's PASS RECORDED, re-measured here: a FILE-ACCESS (TCC) prompt DOES accept a synthetic click** -- the "AeroE24 requests access to your Desktop folder" dialog dismissed on a CGEvent click at its Permitir button, as did the local-network one. **The prompts CASCADE (each new dialog's origin shifts) and come in two heights -- TCC 192, local-network 250 -- so the button offset must be DERIVED from the measured bounds, never hardcoded.** **And the editor throttles hard when it is not frontmost**: a Tracy capture taken while the terminal held focus recorded **2 frames in 20 s**, against **21 894** when the editor was re-activated every 2 s. -- **E.2.3 IS MERGED (PR #100, `00e4c7b`, seventeen commits, all six CI checks green on `f1a39aa` with `headSha == HEAD` asserted) AND macOS-VALIDATED 12 of 12, 2026-09-08, no blockers and no partials.** `ctest -N` UNMOVED at 174 with a byte-identical entry set, doctest 1400 / 1829 / 170 / 40 / 31 / 7 / 28, all eight guards green, both reduced configurations 161 and 93, the sabotage matrix run in full (two real holes found and fixed) and a code-review round that found three more (the decisive one: NOTHING anywhere distinguished the four atlas glyphs, so a mis-wired `glyphAlpha` arm drew a point glyph on every spot light with the whole suite green -- seeding it reddens `VI12` ALONE of 1828 cases). **THE VALIDATION FIRED E.1.1's THICK-LINE HANDOFF, which had been UNFIRED for eight tasks.** Row 4 began NOT EXECUTABLE -- both externals are 1x and NEITHER EXPOSES A SINGLE HiDPI MODE (56 and 87 modes enumerated, zero above 1x) -- then those monitors were disconnected, leaving the built-in **3024x1964 Retina** panel, and the row became executable. Icons scale correctly (**28x19 / 40x40 px at 2x** against **14x9 / 19x20 at 1x**, exactly 2x, still 22 POINTS) but **debug LINES do not: 387 of 441 sampled runs across the directional gizmo are ONE DEVICE PIXEL**, i.e. 0.5 points, half their apparent weight at 1x -- which applies to the grid and the world axes too, not just the gizmos. Row 9 is stronger than the page asked: **0 differing of 1 552 000 with `getbbox()` returning None** -- not one pixel -- against a 267-px control, and the D6 divergence is **outline (255,167,56) vs icon (228,192,53)**, max channel delta 27. Row 12 needed no frame match at all: `material_preview.cpp` is ABSENT from E.2.3's changed-file set and includes nothing from `aero/render` or `aero/scene_render`, so it cannot see `DebugDraw`, `debugCircleBasis` or `activeDirectionalLight` -- byte-identical BY CONSTRUCTION. Row 10 is honest about its limit: **no new Tracy zone in either configuration** (diffed against E.2.2's 32-zone capture) is rigorous, but the frame-cost delta is not -- two independent A/B pairs at 23 icons produced deltas of OPPOSITE SIGN, so the feature costs less than the variance between two runs of the same build. Row 1: sun **19x20 -> 19x20** and camera **14x9 -> 14x9**, delta **0** across an ~87x dolly. Row 3: **0** stray ink around all five icons (seed S28 covered). Row 5: sphere follows range **112/320/542 px**, the inner circle vanishes twice with the outer bbox unchanged, both cone bounds clamp to exactly **1.570796**. Row 7: peak ink **(207,208,212)** active vs **(144,144,146)** muted, delete swaps to **(211,207,209)** on the SAME background and Undo restores **(144,144,146)**. Row 11: **0** leak WARNs, log 14 lines all `[info]`, with a WARN-capture control. **NEW METHOD FACTS, EACH OF WHICH PRODUCED A WRONG ANSWER FIRST:** a pending macOS permission prompt stalls the editor to ~2 frames per 3 minutes while it still logs "shell ready" -- Tracy's port-8086 listener triggers the LOCAL NETWORK prompt; local-network prompts accept synthetic clicks but FILE-ACCESS (TCC) prompts reject both CGEvent and the accessibility API and cannot be dismissed programmatically at all; replacing the executable inside an `.app` invalidates its signature and macOS then grants NO window silently (make it a real file and `codesign --force --sign -`, a symlinked executable cannot be signed at all); a bundle identity that has been full-screen can relaunch onto an INACTIVE Space (`onscreen=false`, accessibility reports zero windows) and a fresh bundle id clears it; synthetic input needs the target app FRONTMOST or clicks silently do nothing; **a synthetic Escape goes to whatever app is frontmost -- including the terminal running the session, which it interrupts -- so close ImGui menus by CLICKING**; ImGuizmo's centre handle correctly claims a press over a coincident icon, so a picking row must move the gizmo away first; and **undo of a delete does not restore the original entity index**, so the active-directional winner can move after an undo. E.2.1 AND E.2.2 ARE MERGED — E.2.1 MERGED (PR #98, `28deab0`) and E.2.2 MERGED (PR #99, `bf363e4`, ten commits, all six CI checks green on `b0d44a2` with `headSha == HEAD` asserted). **E.2.2 IS macOS-VALIDATED — 12 PASS / 12, 2026-09-07, no blockers and no partials.** The falloff A/B was MEASURED against a branch-point build through the real render chain, not predicted: the slab reads **0.049194** against **0.193359** at `d = 2.5` and **0.005703** against **0.051788** at `d = 5` — ratios **0.2544 / 0.1101** against a predicted 0.2543 / 0.1106 — and the range edge is monotone to exactly zero, so **no ring**. The spot's pool measures **2.3274** against `4·tan 30° = 2.3094`, **4.0054** against 4.0000 widened, `inner == outer` collapses the soft band from **0.758** units to **0.000**, and a 20° yaw moves the near edge to **0.7036** against 0.7053, recovering a **19.69°** tilt. Nine spots keep eight with **one latched WARN**; the dropped light moves **0** texels against ~1420 for a kept one; a tenth `PointLight` still draws. All nine degenerate cone and range configurations render **0 non-finite texels**. In the editor `SpotLight` is the **last** Add Component entry, five rows at exact defaults, both cone bounds clamp (**0.000000** / **1.570796**), each drag is **one named undo entry**, and two undos restore the viewport to **0 differing pixels of 2 000 000** with a 15 159-px control; selecting a light entity draws E.1.4's marker plus the gizmo and clicking the marker picks it. Tracy: `draw` **0.0124 ms** over 4 377 frames, **no new zone**, vsync-bound at 15.77 ms of 16.67. `phase-3-shadows` at intensity 56 keeps the ground lit under the casters with a visible falloff — **sabotage seed 28's only cover, now settled**. **THE PASS CHARACTERISED E.2.1's OPEN `Save Scene` OBSERVATION AS A REAL DEFECT: it is a SILENT NO-OP WHILE THE SCENE HAS NO BOUND PATH** — no write, no log line, the dirty marker left set — while `Save Scene As…` in the same menu saves, and once a path is bound `Save Scene` works. **It is not E.2.2's and needs its own task.** **Row 8's blocker was a FIXTURE GAP, not a defect** — importing `tests/fixtures/materials/canonical.aeromat` into the project's `assets/` is all it needed, and that clears E.2.1's row 10 the same way. **The preview ANIMATES**, so its identity is measured as a cross-build frame match: the closest pair ACROSS builds differs by **31 texels of 23 000** against a within-build floor of **771/772** — a 25x margin — and `material_preview.cpp` never assigns `points` or `spots`, so nothing here can reach it. **Row 9's A/B**: both builds pin to **16.674 ms with 0 dropped frames** over 1500 frames; eight spots cost **0.107 ms** of scene render, 0.64 % of a frame. **Row 6's sample half**: the phase-1 lamp is **3.9x dimmer** (peak contribution +21.0 -> +5.4 levels) and **41 % tighter** (1040 -> 613 px), 0 WARN, which independently reproduces row 1's predicted 4.0x. **INPUT METHOD, MEASURED AND NOT TO BE RE-DERIVED:** the screen must be **UNLOCKED** or the window server gives every application **zero windows**; synthetic clicks and drags drive ImGui fully and a drag field is driven by **dragging**; a bare mouse **move does not update the cursor**, so a hover proves nothing; **text entry NEVER arrives** by any encoding while **Backspace and Escape do**; **modifier shortcuts do not arrive**, so commands must come from the menus. Tracy listens on **port 8086 and accepts ONE server per client run**, so a stale process holds it and every later capture fails — and a client that starts while the port is taken opens **no listener at all**, so it can never be profiled. **AND THE TRAP THAT INVALIDATED A FIRST ATTEMPT AT THREE ROWS: the cooked shaders live in ONE directory per preset and `AERO_SHADERS_DIR` is compiled into every binary as that path, so two binaries built from different commits both read whichever shader set was cooked LAST.** A build A/B must snapshot `build/<preset>/shaders` per side and restore the matching set before each run; without that the phase-1 sample reported **byte-identical**, and with it the same comparison moves **412 933 pixels**. An A/B that shares one shader directory silently compares a build against itself.** 15 tasks remain, planning only. Inserted between 3 and 4; six epics, 24 tasks in `docs/tasks/phase-E.md`. Viewport legibility (E.1), lighting & environment (E.2), inspector & context routing (E.3), project/scene/asset management (E.4), content-creation UX (E.5), shell identity (E.6). **E.1.1** 8/10 PASS 2026-09-03 · **E.1.2** 8 PASS / 2 PARTIAL / 1 NOT EXECUTABLE 2026-09-04 · **E.1.3** 11 PASS / 1 PARTIAL / 2 NOT EXECUTABLE / 1 NOT RUN 2026-09-05, and that pass found the ortho gizmo-suppression defect fixed in PR #95 · **E.1.4** 10 PASS / 1 NOT EXECUTABLE 2026-09-05 · **E.1.5** 11 PASS / 1 NOT EXECUTABLE 2026-09-05. **E.2.1 is macOS-validated — 10 PASS / 3 open, 2026-09-06.** Its render rows were measured head­lessly through the real `SceneRenderer` -> `SkyPass` -> `PostProcess` chain with a framebuffer readback (no ICC round trip, so the bytes are exact): **every sky oracle difference is 0**; the unlit cube reads `(85,117,162)` on its top face against `(73,91,124)` on its side — dim, not black; ortho is exactly **one** colour; and **a world with no `Environment` is bit-identical to one with a default component, 0 of 921 600, with a 20 694-px anti-vacuity control**. Confirmed **in the editor**: New Scene seeds **four** entities with `Environment` ninth in Add Component, its eight fields at exact defaults, **no Transform**, E.1.4's marker at the origin and **no gizmo**; the grid stays legible over the ground (**Δlum 52.1**); each field edit is **exactly one** named undo entry and two undos restore the viewport to **0 differing pixels of 1 795 500**; the multi-Environment WARN fires **once and latches**, the loser's edit moves **0** sky pixels and the winner's **302 820**; and **Solid + Flat + intensity 1 is bit-identical to the branch-point build — 0 of 1 795 500, with a 1 792 032-pixel control**. Cost is **below the ~0.7 CPU-s noise floor**. `phase-1-scene`, a pre-task sample, renders under the default sky at 85 fps with zero WARN. **Three rows remain open**: row 4's normal-mapped arm is **GATED ON E.5.1** (a material on a *primitive* is silently discarded, so the default Cube cannot carry one — a dependency nobody had recorded), row 7's `Save Scene` produced no write under synthetic input while every other menu action worked (**possibly a real defect, unresolved**), row 10 has no material asset and row 12's release editor never connected to `tracy-capture`. **THE GUI WAS REACHED BY WRAPPING THE BINARY IN A MINIMAL `.app` BUNDLE**: a bare binary launched from an automation session gets **no window**, but `open`ing an `.app` gives it a Foreground LaunchServices identity, after which window geometry, `CGEvent` input and PID-bound capture all work. **`System Events`' own `click at` does not drive ImGui.** **HiDPI is deliberately NOT a row here** (a fullscreen gradient has no size-dependent feature), so E.1.1's thick-line handoff stays UNFIRED for a sixth task. **A branch-point A/B must be built at the PRIMARY binary path**: a binary elsewhere is a distinct application identity to macOS and receives no window. Windows and Linux unvalidated, as everywhere. |
 | **Phase E gate** | Open a project and land in the scene you were last editing, on a lit grid floor under a sky; create a Cube from the menu, drop a material on it and see it shade; aim a spot light with a visible gizmo; rename, move and delete assets without leaving the editor. Gate artifact: `samples/phase-E-editor/`. |
 
 ### Engine layers, in dependency order
@@ -518,11 +498,55 @@ miniaudio; `A38` is covered only by validation row 9. Full detail in `docs/10`.
   `PRIVATE aero::profiling`, and **never `aero::scene_internal`** (which carries `EnTT::EnTT`
   INTERFACE by design). Folding its walk into `engine/audio` would put **EnTT on the link line of every
   binary that links audio**, including the Phase 5 runtime.
-* **`/editor`** gained one source pair at E.2.4 (`material_preview_rig`) on top of E.2.3's two (`viewport_icons`, `viewport_gizmos`). **THE "PAIR COUNT" THIS LINE USED TO CARRY IS DROPPED, BECAUSE IT IS NOT REPRODUCIBLE**: E.2.4 measured the tree six ways looking for the 28/30 figure recorded here since E.1.5 and **none of the six is it** — the metric behind that number is undefined, and it had already been flagged as carried arithmetic rather than a measurement. The two figures anyone can re-run are `git ls-files`: **`editor/src/*.cpp` 79 -> 80** and **`editor/include/aero/editor/*.hpp` 57 -> 58** at E.2.4. Use those; `/tools` links `aero::assets` and `aero::editor_core`
+* **`/editor`** gained TWO source pairs at E.3.2 (`context_router`, `editor_prefs`) on top of E.2.4's one (`material_preview_rig`) and E.2.3's two (`viewport_icons`, `viewport_gizmos`). **THE "PAIR COUNT" THIS LINE USED TO CARRY IS DROPPED, BECAUSE IT IS NOT REPRODUCIBLE**: E.2.4 measured the tree six ways looking for the 28/30 figure recorded here since E.1.5 and **none of the six is it** — the metric behind that number is undefined, and it had already been flagged as carried arithmetic rather than a measurement. The two figures anyone can re-run are `git ls-files`: **`editor/src/*.cpp` 80 -> 82** and **`editor/include/aero/editor/*.hpp` 58 -> 60** at E.3.2. Use those; `/tools` links `aero::assets` and `aero::editor_core`
   through `aero_cooker`, which is legal because `tools/` is enumerated by neither half of the golden
   rule.
 
 ### Standing invariants that govern new work
+
+**THE EDITOR HAS EXACTLY ONE FOCUS SLOT, AND `ImGui::SetWindowFocus` IS CALLED AT MOST ONCE PER
+FRAME FROM IT (E.3.2).** It lives in `shell_ui.cpp` immediately before `DockSpaceOverViewport` — dock
+nodes update inside it, so the focus lands with no one-frame lag — and it resolves both paths in order:
+an explicit `requestPanelFocus` first (a COMMAND), then the pending context route (an INFERENCE).
+`I159(a)` pins that exactly one file names the symbol and calls it exactly three times. **A fourth
+caller in another file is a second focus policy with no way to order it against the first.** The reason
+is that **`FocusWindow`'s two side effects are not idempotent**: it closes every popup above the focused
+window (`imgui.cpp:13740`) and **steals the active widget** (`:13754-13756`, whose own comment at
+`:13751` names this very slot), and a stolen `InputText` edit is DISCARDED rather than interrupted.
+**Re-read `:13740` and `:13754` at every ImGui bump**, exactly as `ImGuizmo.cpp:1229-1230` and
+`imgui.cpp:8848` already require.
+
+**A ROUTE NEVER RE-OPENS A PANEL THE USER CLOSED, AND EVERY DROP IS TESTED BEFORE EVERY HOLD (E.3.2).**
+`targetAvailable` is *registered AND visible*, and a hidden target is a **Drop**, not a Hold — closing
+a panel is the user's second, coarser off switch. The five terminal conditions can each persist
+indefinitely, so holding on one would hold forever; the four transient ones all end on a mouse-up, a
+click-away or an Escape. **Never reorder a Drop below a Hold.** And the router **derives nothing**: it
+spells neither `isImportableModelName` nor `isBlendFileName`, reading the `SessionState` the import
+session itself wrote, which costs one extra tick. If that ever has to be one tick, the fix is a
+settled-state signal ON THE SESSION, published before `ShellUiState` is built — never a predicate in
+the router.
+
+**A PREFERENCE THAT SUPPRESSES AN EFFECT MUST NOT SUPPRESS THE OBSERVATION THAT FEEDS IT (E.3.2).**
+`ContextRouter`'s three `observe*` functions gate the **LATCH**, never the early return: a baseline
+advances on every tick whatever the preference says, so an act performed while routing is off is SEEN
+AND FORGOTTEN rather than SKIPPED. Gating the early return instead leaves the baseline stale, and the
+first observation after the preference comes back on raises a panel for a minutes-old act — a focus
+steal triggered by ticking a menu item, which the whole green matrix was blind to. **`observeImportTarget`
+is the one exception and it is deliberate**: `!settled` stays in its early return, because D4's rule is
+the SESSION's and is independent of the preference. **The general shape: when a switch turns a REACTION
+off, the state that decides "is this new?" must keep advancing, or the switch becomes a delay line.**
+
+**`.claude/rules/editor.md` — the same section carries this.** And the case that was supposed to catch
+it, `RT24`, **pinned the defect while calling it correct**: it re-observed the value produced while
+disabled and named that "a fresh act". **A case written from the same sentence as the code cannot
+falsify that sentence** — which is why a seed that restores the defect, not a re-reading, is what
+closed it.
+
+**`Selection::prune` MUST NEVER BUMP `Selection::revision` (E.3.2).** `HierarchyPanel::onDraw` prunes
+every frame, so a bumping prune is a permanent focus storm; `I159(e)` pins the absence as source text
+because a prune that bumped and un-bumped would satisfy the effect. And **`set`, `toggle` and `setAll`
+delegate to two PRIVATE, NON-COUNTING helpers**, never to `add`/`remove`: the counter counts public
+CALLS, so routing them through the public mutators makes `set` bump twice and `setAll(n)` bump n + 1.
 
 **IMGUIZMO'S TWO VISIBILITY SETTERS ARE CROSSED, AND NO TIER IN THIS TREE CAN READ EITHER VALUE.**
 `SetPlaneLimit` hides **axes** and `SetAxisLimit` hides **planes** (`ImGuizmo.cpp:1229-1230` against
@@ -755,34 +779,30 @@ Read totals from **doctest's own `filters:` line**, never from a `grep -c` of ca
 count on its own page goes stale, and adding one task's delta to another task's baseline is exactly the
 arithmetic that produces a confident wrong number.
 
-At **E.3.1's** gate, measured on both presets and agreeing between them: **`ctest -N` 174**, UNMOVED
-since E.2.2's, and its entry **SET byte-identical to the branch point's** — none of E.2.3, E.2.4 and
-E.3.1 adds a component, a target or a ctest entry. doctest across **seven** binaries
-**1404 / 1842 / 188 / 40 / 55 / 7 / 28** (`aero_tests`, `aero_editor_shell_test`,
+At **E.3.2's** gate, measured on both presets and agreeing between them: **`ctest -N` 174**, UNMOVED
+since E.2.2's, and its entry **SET byte-identical to the branch point's** — none of E.2.3, E.2.4 or
+E.3.2 adds a component, a target or a ctest entry. doctest across **seven** binaries
+**1404 / 1886 / 194 / 40 / 31 / 7 / 28** (`aero_tests`, `aero_editor_shell_test`,
 `aero_editor_imgui_test`, `aero_scene_serialize_test`, `aero_editor_inspector_test`,
 `aero_reflect_meta_test`, `aero_reflect_json_test`), up from E.2.4's **1404 / 1842 / 181 / 40 / 31 /
 7 / 28**, E.2.3's **1400 / 1829 / 170 / 40 / 31 / 7 / 28** and E.2.2's
-**1377 / 1793 / 163 / 40 / 31 / 7 / 28**. **E.3.1 is the first task since E.2.1 to move
-`aero_editor_inspector_test` (31 -> 55), and it moved NOTHING else but the imgui total (181 -> 188)**
-— which is what a task that writes only tier-0 and ImGui-tier cases looks like. **THE `1827` RECORDED HERE UNTIL E.2.4
+**1377 / 1793 / 163 / 40 / 31 / 7 / 28**. **THE `1827` RECORDED HERE UNTIL E.2.4
 WAS STALE BY TWO**: it was measured at E.2.3's *sabotage* gate, before that task's code-review round
 added two cases, and the phase table's `1829` — measured from a build of E.2.3's branch-point content
 — was right all along. E.2.4 re-measured both from a freshly rebuilt tree and they agree. **A task
 that adds a BUILT-IN moves `ctest -N` too** (it adds a per-header reflect-gen case) **and three of the
 seven doctest totals; a task that adds none moves only the doctest totals of the binaries it writes
-cases into.** The THREE that none of E.2.3, E.2.4 and E.3.1 moved are `aero_scene_serialize_test`
-(40), `aero_reflect_meta_test` (7) and `aero_reflect_json_test` (28): the last two generate from a
-fixture aggregator, not the built-in list, and **a moved SERIALIZE total on a no-component task means
-a component crept in — stop and find it**. **`aero_tests` (1404) is E.3.1's fourth must-not-move pin
-but is NOT a member of that set, and this sentence said otherwise until E.3.1's second review round**:
-E.2.3 moved it **1377 -> 1400** and E.2.4 moved it **1400 -> 1404**, as the figures four lines above
-say. It is a pin for E.3.1 alone, because E.3.1 touches no engine source. (E.3.1 moved
-`aero_editor_inspector_test` on purpose, by writing 24 tier-0 cases into it; that total is only a
-component signal for a task that writes none.) **A `SUBCASE`
+cases into.** The four that none of E.2.3, E.2.4 and E.3.2 moved are `aero_scene_serialize_test` (40),
+`aero_editor_inspector_test` (31), `aero_reflect_meta_test` (7) and `aero_reflect_json_test` (28):
+the last two generate from a fixture aggregator, not the built-in list, and a moved serialize or
+inspector total on a no-component task means a component crept in — stop and find it. **A `SUBCASE`
 is not a `TEST_CASE`** — E.2.1's last two commits added 21 assertions and moved no total at all,
 E.2.2's three review-round commits added assertions to four files and moved no total either, E.2.3's
 two sabotage-forced commits added six assertions across two files and moved none, and **E.2.4's
-`I140(c)` is a third subcase on an existing case and contributed ZERO**. Never predict a delta
+`I140(c)` is a third subcase on an existing case and contributed ZERO**. **E.3.2 added EIGHTEEN
+`SUBCASE`s and they moved nothing; its three sabotage-forced commits moved the shell total by exactly
+one (`EP12`), and its two code-review commits moved it by one more (`EP13`) and the imgui total by two
+(`I160`, `I161`) while `I159(f)` — a sixth subcase on an existing case — moved nothing.** Never predict a delta
 arithmetically.
 
 **AND A BUILD TREE GOES STALE SILENTLY TOO, WHICH `ctest -N` CANNOT SEE.** At E.2.4's branch point
@@ -795,16 +815,13 @@ out of both presets so a disagreement is visible.
 gate** — it said `1780`, measured at PR #94's gate, and PR #95 then added `G19` while nobody
 re-measured. Read the binary, never the block.
 
-The eight guard counts at **E.3.1's** gate: math **500**, platform **92**, rhi **163**, scene **92**,
-golden-rule **165**, project-no-delete **A=6/B=80**, audio **11/3/55**, probes **6/57** — **ALL EIGHT
-UNMOVED from E.2.4's**, because E.3.1 adds no tracked file at all (`git ls-files 'editor/src/*.cpp'`
-stays **80** and `git ls-files 'editor/include/aero/editor/*.hpp'` stays **58**). E.2.4's own move was
-math **496 -> 500** and project-no-delete **B 79 -> 80**, from its four new tracked C-family files.
-**The two reduced configurations read `161` (shader-tools-OFF) and `93` (reflect-tools-OFF)**, both
-re-measured fresh at E.3.1's gate too, with nothing added in either and all 70 `cooker.*` entries
-present in all three. **`aero_editor_inspector_test` is one of the four binaries reflect-tools-OFF
-removes, so E.3.1's whole `VF`/`FD` battery is absent in that configuration** — expected, and stated
-rather than discovered. **THE `159` RECORDED HERE UNTIL E.2.2 WAS STALE, AND THE ARITHMETIC SAYS SO**:
+The eight guard counts at **E.3.2's** gate: math **506**, platform **92**, rhi **163**, scene **92**,
+golden-rule **165**, project-no-delete **A=6/B=82**, audio **11/3/55**, probes **6/57** — math and
+project-no-delete moved by E.3.2's six new tracked C-family files (four editor, two tests), and the
+other six are unmoved from E.2.4's **500 / 92 / 163 / 92 / 165 / A=6 B=80 / 11-3-55 / 6-57**. **A THIRD
+guard moving on a task of this shape is a stop-and-find-out.** **The two
+reduced configurations read `161` (shader-tools-OFF) and `93` (reflect-tools-OFF)**, both re-measured
+fresh at that gate. **THE `159` RECORDED HERE UNTIL E.2.2 WAS STALE, AND THE ARITHMETIC SAYS SO**:
 shader-tools-OFF removes exactly the 13 `shaderc.*` entries and adds nothing, so it was
 `173 - 13 = 160` at E.2.1's gate and is `174 - 13 = 161` now — the number should have moved when E.2.1
 added a `reflect-gen.*` entry, which is `AERO_REFLECT_TOOLS`-gated and therefore present in this
@@ -866,21 +883,14 @@ enters the determinism manifest**, and the README says so.
 
 ### The validation debt — the whole of the remaining risk
 
-**macOS is otherwise green EXCEPT FOR E.1.5 AND E.3.1**, neither of whose pages has been run on any
-platform, so that is what is left. **E.3.1's page carries 14 rows and FOUR of them are the only cover
-their sabotage seed has anywhere**: row 12 (the third box must not overrun the cell — computing the
-box width without subtracting the letter widths reddened nothing in 188 cases), row 10 (one label
-column shared by every component — a per-component measurement likewise reddened nothing), row 8 (a
-reset is one undo entry and never merges with the drag before it) and row 4's behavioural half (the
-whole-field menu must not eat in-progress typing). **Nothing in `tests/` can synthesise a right-click
-or a drag**, so every gesture claim in E.3.1 is validation-only by construction — **and E.3.1's second
-review round made that sharper than the page first claimed: `I142` exercises `BeginPopupContextItem`'s
-own `IM_ASSERT` on both call sites every frame, but THE POPUP NEVER OPENS in any test on any lane, so
-`EndPopup`, both `BeginDisabled`/`EndDisabled` pairs, `MenuItem`, `Separator` and the whole of
-`InspectorPanel::resetField` execute NOWHERE in CI.** `I147` pins `resetField` as source text and
-nothing calls it: **`resetField` has ZERO runtime cover anywhere**, and AC-14's behavioural cover is
-the validation page's rows 4, 5, 7, 8 and 9, never `I142`. HiDPI is deliberately
-not a row (it draws no line and no icon), so **E.1.1's thick-line handoff stays FIRED and unmoved**. **E.2.4 IS macOS-VALIDATED — 12 PASS / 12, 2026-09-11, no blockers and no partials**,
+**TWO PAGES HAVE NOT BEEN RUN ON ANY PLATFORM: E.1.5's and E.3.2's.** E.3.2's is twelve rows
+(`editor/validation/E.3.2-selection-follows-focus-router.md`, gitignored, so it enters no commit), and
+**six of them are the ONLY cover a declared sabotage seed has anywhere**: row 2 for `S17`
+(`sourceStillValid` hard-coded — nothing in `tests/` can load a scene between the reconcile block and
+the focus slot inside one tick), rows 5 and 6 for `S24` (a raise must not discard a half-typed name or
+move a drop surface mid-drag — **no tier in this tree can type**), row 7 for `S18`'s behavioural half
+(a raise must not close an open menu; `I159(b)` pins only the flag spelling), and row 8 for the
+gizmo-drag hold. **macOS is otherwise green.** **E.2.4 IS macOS-VALIDATED — 12 PASS / 12, 2026-09-11, no blockers and no partials**,
 and the pass closed **all six of its declared sabotage seeds**: S30 (row 5 — at `intensity` **exactly
 0.000000** the picture equals the no-sun picture, peak 140.1 both, while the notice stays away at 0
 amber pixels, so `hasSun` keys on the RESOLUTION and never on the value), S22/S24/S25 (row 7 — Escape
@@ -1057,13 +1067,24 @@ binary is `aero_sample_phaseE_debug_draw`** — `phaseE`, no underscore before t
 
 ### Next
 
-**Phase E is the open front. EPIC E.3 IS NOW OPEN: E.3.1 (axis-labelled vector fields) is IMPLEMENTED
-ON `feat/E.3.1-axis-labelled-vector-fields` — NINE commits, unmerged, and its validation page is unrun
-on every platform. E.3.2, E.3.3 and E.3.4 are planning only.** E.3.1 claims `VF`, `FD` and
-**`I142`–`I148`**, which takes the tree's `I` ceiling to **148** — **`docs/specs/E.3.2` claims
-`I142`–`I152` and must renumber to `I149`+**, per its own tie-break sentence. E.3.1 discharges the
-first of E.3's own Definition-of-Done clauses ("every vector field is axis-labelled") and adds no
-Inspector-row gap of its own.
+**Phase E is the open front, and EPIC E.3 IS NOW OPEN: E.3.2 (selection-follows-focus router) is
+merged — fourteen commits, the full local gate green on both presets and both reduced configurations,
+the 32-seed sabotage matrix run in full with three real holes found and closed, a code-review round
+that found six more (one of them a REAL focus-steal defect the whole green matrix was blind to), and
+NO existing GPU case adjusted. Its validation page is UNRUN on all three platforms.** **E.3.1, E.3.3 and E.3.4 are
+planning only, and E.3.1's `I142`–`I148` case-id block stays RESERVED — the gap in
+`imgui_layer_test.cpp` is deliberate.** **`editor_prefs.json` NOW EXISTS BY NAME**, with its own
+version, codec and writer (docs/09 §8.5), and an absent key is its default — so the standing "persist
+the four viewport toggles and the tonemap params per user" handoff (3.6.3 / E.1.2 / E.2.3 / E.2.4) and
+**E.6.1's `EditorTheme`** both have a **home** and still have **no implementation**; neither is
+discharged. **Two new unowned handoffs**: a **file-open verb** in the Asset Browser (a double-click on
+a file records byte-identical `SelectEntry` to a single click today, so whoever wants "double-click
+opens" owns a new `ActionKind`, a meaning for "open" per asset kind, and its interaction with this
+router), and the **camera-gesture guard** (excluded with a measurement — `updatePick` cannot arm during
+a gesture — so any future task whose command writes the `Selection` while a camera gesture is live must
+add the term, which needs a `ViewportPanel` accessor and one `ShellUiState` field). **E.3 still
+inherits exactly TWO Inspector-row gaps** — E.2.1's enum-aware row and E.2.2's unit-aware row — and
+**E.3.2 adds none and closes none**.
 
 **EPIC E.1 AND EPIC E.2 ARE BOTH CLOSED IN CODE — all nine tasks merged.**
 E.2.1 (PR #98, `28deab0`), E.2.2 (PR #99, `bf363e4`) and E.2.3 (PR #100, `00e4c7b`) are on `main`;
@@ -1072,26 +1093,18 @@ E.2.1 (PR #98, `28deab0`), E.2.2 (PR #99, `bf363e4`) and E.2.3 (PR #100, `00e4c7
 E.1.1's thick-line handoff after eight tasks. **E.2.4 IS macOS-VALIDATED 12 of 12, 2026-09-11, with no blockers
 and no partials**, which closes the last of Epic E.2's validation debt and all six of its declared
 seeds. **Every task in Epics E.1 and E.2 is now merged AND macOS-validated except E.1.5, whose page
-has not been run on any platform** -- that is what is left of Phase E's validation risk on this OS.
+has not been run on any platform** -- that, plus E.3.2's own unrun page, is what is left of Phase E's
+validation risk on this OS.
 
-**The spine, as E.3.1 leaves it. Epics E.3, E.4, E.5 and E.6 are the open front — thirteen tasks still
-planning only, plus E.3.1 awaiting merge and validation.** **E.4.5 (thumbnails) is unblocked and now has `material_preview_rig.hpp` to call BY
+**The spine, as E.3.2 leaves it. Epics E.3 (three tasks left), E.4, E.5 and E.6 are the open front —
+fourteen tasks, planning only.** **E.4.5 (thumbnails) is unblocked and now has `material_preview_rig.hpp` to call BY
 NAME**: a thumbnail is `materialPreviewCamera(rig, fixedAngle, 1.0F)` plus `materialPreviewView(...)`
 with whatever `MaterialPreviewLighting` it wants — the scene's, or a fixed studio lighting, a decision
 E.4.5 makes explicitly. **E.3 still inherits exactly TWO Inspector-row gaps** — E.2.1's enum-aware row
 (`Environment`'s two modes are bare 0/1 drag fields because reflect-gen cannot reflect an enum) and
-E.2.2's unit-aware row (`SpotLight`'s cone angles are raw radians clamped to `[0, 1.5708]`) — **E.2.3
-and E.2.4 add none.** **E.3.1 took the palette key and is `axis_palette.hpp`'s THIRD consumer**, deriving its letters'
-colours through `axisRowColor` and stating no colour literal of its own; E.2.3's four gizmo tints join
-`axis_palette.hpp` as **E.6.1** `EditorTheme` candidates and **neither E.2.4 nor E.3.1 adds a colour**.
-**E.3.1 leaves THREE new handoffs of its own**: the label column's floor and ceiling
-(`5 x fontSize`, `0.5 x available`) are named tuning constants judged only by its validation rows 10
-and 11; a "differs from default" indicator is DECLINED with its cost stated — the default for
-every field of every component every frame is one heap allocation each, so the honest route is a
-per-type default cache, which is a real design and is unowned; and **nothing in this tree can OPEN an
-ImGui popup**, so `InspectorPanel::resetField` and every widget inside the reset menu run in no test
-on any lane. A tier that can drive a popup would close that hole for every future context menu too,
-and it is unowned. **E.5.1
+E.2.2's unit-aware row (`SpotLight`'s cone angles are raw radians clamped to `[0, 1.5708]`) — **E.2.3,
+E.2.4 and E.3.2 add none.** **E.3.1** still inherits the palette key; E.2.3's four gizmo tints join
+`axis_palette.hpp` as **E.6.1** `EditorTheme` candidates and **E.2.4 adds no colour at all**. **E.5.1
 is an S-sized fix for a confirmed defect and is independent of everything** — E.1.4, E.2.1, E.2.2,
 E.2.3 and now E.2.4 have all reproduced it rather than fixing it in passing, and E.2.4's `PX` battery
 gains a non-default-material arm the day it lands. **E.5.2 owns the coplanar-geometry problem, has a

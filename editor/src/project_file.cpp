@@ -1,11 +1,11 @@
 // Aero Engine — the project format's <filesystem>-and-SDL half (task 2.6.1). THE only new SDL TU
 // this task adds (besides the pre-existing file_dialog.cpp and imgui_layer.cpp -- the roster moves
 // from two files to three, A4). NEVER THROWS: every std::filesystem call uses the std::error_code
-// overload (project_files.cpp's E20 rule). NEVER LOGS except at exactly THREE call sites (code
-// review: an earlier "exactly ONE exception" banner undercounted this by two): the pref-path CWD
-// fallback inside defaultRecentProjectsPath (mirroring imgui_layer.cpp:46's WARN), the
-// corrupt-recents-file WARN inside readRecentProjects (AC-23), and the recents-write-failure WARN
-// inside writeRecentProjects (AC-24). NEVER DELETES, RENAMES or MOVES anything -- the only writes
+// overload (project_files.cpp's E20 rule). NEVER LOGS except at exactly FIVE call sites: the pref-path
+// CWD fallback inside each of the three default*Path() resolvers (defaultRecentProjectsPath,
+// defaultToolPrefsPath and, from task E.3.2, defaultEditorPrefsPath), the corrupt-recents-file WARN
+// inside readRecentProjects (AC-23), and the recents-write-failure WARN inside writeRecentProjects
+// (AC-24). NEVER DELETES, RENAMES or MOVES anything -- the only writes
 // anywhere in this task are three create_directory calls and two atomic file writes (INV-P4/D7).
 #include <aero/core/log.hpp>
 #include <aero/editor/project.hpp>
@@ -84,6 +84,11 @@ constexpr std::string_view RECENTS_FILE_NAME = "recent_projects.json";
 // blender_tool.hpp: nothing else needs the name, and putting it there would force this TU to include a
 // Blender header for one string.
 constexpr std::string_view TOOL_PREFS_FILE_NAME = "editor_tools.json";
+// task E.3.2 (section 3.6). TU-LOCAL, exactly like the two above, and deliberately NOT in
+// editor_prefs.hpp: nothing else needs the name, and putting it there would make this TU include a
+// format header for one string. The FORMAT VERSION is public and lives in editor_prefs.hpp, which is
+// the same split blender_tool.hpp:233 / project_file.cpp:86 already make for editor_tools.json.
+constexpr std::string_view EDITOR_PREFS_FILE_NAME = "editor_prefs.json";
 
 }  // namespace
 
@@ -306,6 +311,26 @@ std::string defaultToolPrefsPath() {
     }
     AERO_LOG_WARN("editor: could not resolve a pref/base path for {}; falling back to CWD", TOOL_PREFS_FILE_NAME);
     return std::string(TOOL_PREFS_FILE_NAME);
+}
+
+// task E.3.2: defaultToolPrefsPath's body verbatim with the constant swapped, INCLUDING the SDL_free
+// asymmetry -- the pref path must be freed (an ASan leak on both Debug lanes otherwise) and the base
+// path must NOT be (SDL caches it; freeing it is a crash). This is the THIRD exception to INV-P6 in
+// this TU, and the same one: a single WARN, on the CWD fallback only.
+//
+// This function performs no remove, rename or copy, so `project_file.cpp`'s membership in
+// check-project-no-delete.sh's Check A denylist is unchanged and the guard stays green.
+std::string defaultEditorPrefsPath() {
+    if (char* const pref = SDL_GetPrefPath("AeroEngine", "AeroEditor"); pref != nullptr) {
+        const std::string path = std::string(pref) + std::string(EDITOR_PREFS_FILE_NAME);
+        SDL_free(pref);
+        return path;
+    }
+    if (const char* const base = SDL_GetBasePath(); base != nullptr) {
+        return std::string(base) + std::string(EDITOR_PREFS_FILE_NAME);
+    }
+    AERO_LOG_WARN("editor: could not resolve a pref/base path for {}; falling back to CWD", EDITOR_PREFS_FILE_NAME);
+    return std::string(EDITOR_PREFS_FILE_NAME);
 }
 
 RecentProjects readRecentProjects(std::string_view pathUtf8) {

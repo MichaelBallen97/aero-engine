@@ -325,6 +325,58 @@ TEST_CASE("editor: registry move leaves the source empty and preserves addresses
     CHECK(moveConstructedSrc->count() == 0);
 }
 
+TEST_CASE("editor: PanelRegistry records how many frames each panel drew (task E.3.2)") {
+    engine::editor::PanelRegistry registry;
+    REQUIRE(registry.add(std::make_unique<TestPanel>("A")) != nullptr);
+    REQUIRE(registry.add(std::make_unique<TestPanel>("B")) != nullptr);
+
+    CHECK(registry.drawnCountAt(0) == 0U);
+    CHECK(registry.drawnCountAt(1) == 0U);
+    CHECK(registry.drawnCount("A") == 0U);
+    CHECK(registry.drawnCount("B") == 0U);
+
+    registry.noteDrawn(0);
+    registry.noteDrawn(0);
+    registry.noteDrawn(1);
+
+    CHECK(registry.drawnCountAt(0) == 2U);
+    CHECK(registry.drawnCountAt(1) == 1U);  // INDEPENDENT per entry
+    CHECK(registry.drawnCount("A") == 2U);  // ...and the by-id accessor agrees
+    CHECK(registry.drawnCount("B") == 1U);
+    CHECK(registry.drawnCount("Nope") == 0U);   // an UNKNOWN id reads 0, never an assert
+    CHECK(registry.drawnCount(nullptr) == 0U);  // ...and so does a null one (the C6 posture)
+
+    SUBCASE("the counter is a LIFETIME count -- visibility does not reset it") {
+        registry.setVisible("A", false);
+        CHECK(registry.drawnCountAt(0) == 2U);
+        registry.setVisible("A", true);
+        CHECK(registry.drawnCountAt(0) == 2U);
+    }
+}
+
+TEST_CASE("editor: a registry move carries the drawn counts with it (task E.3.2)") {
+    std::optional<engine::editor::PanelRegistry> source;
+    source.emplace();
+    REQUIRE(source->add(std::make_unique<TestPanel>("A")) != nullptr);
+    REQUIRE(source->add(std::make_unique<TestPanel>("B")) != nullptr);
+    source->noteDrawn(0);
+    source->noteDrawn(0);
+    source->noteDrawn(0);
+    source->noteDrawn(1);
+
+    engine::editor::PanelRegistry moveConstructed = std::move(*source);
+    source.reset();
+    REQUIRE(moveConstructed.count() == 2U);
+    CHECK(moveConstructed.drawnCountAt(0) == 3U);
+    CHECK(moveConstructed.drawnCountAt(1) == 1U);
+
+    engine::editor::PanelRegistry moveAssigned;
+    moveAssigned = std::move(moveConstructed);
+    REQUIRE(moveAssigned.count() == 2U);
+    CHECK(moveAssigned.drawnCount("A") == 3U);
+    CHECK(moveAssigned.drawnCount("B") == 1U);
+}
+
 TEST_CASE("editor: framePaceSleepMs covers all five branches") {
     using engine::editor::framePaceSleepMs;
     using engine::editor::MINIMIZED_SLEEP_MS;

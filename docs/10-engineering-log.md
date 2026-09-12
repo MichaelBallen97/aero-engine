@@ -15699,3 +15699,241 @@ nothing calls it: **`resetField` has zero runtime cover anywhere.** AC-14's beha
 validation page's rows 4, 5, 7, 8 and 9 and nothing else, and the plan, this entry and the page all say
 so now. **The generalisation: an ImGui tier that can only DRAW cannot claim a popup's body**, and every
 future context menu in this tree inherits that hole until something can open one.
+### E.3.2 — Selection-follows-focus router — the contract the spec asked for was arithmetically impossible in the tree it was written against
+
+**Branch `feat/E.3.2-selection-follows-focus-router`, THIRTEEN commits** — the plan's eight, one per
+step, plus three the sabotage pass forced and three the code-review round forced. Sized **M** in the
+roadmap, recorded **M-at-the-M/L-boundary** before the first commit and landed **M/L**. Merged as
+**PR #103**, merge commit **`b172198`**, fourteen commits, all six CI checks green with
+`headSha == HEAD` asserted and the merge commit's own run green on `main`.
+
+`ctest -N` **174 -> 174**, entry set byte-identical to the branch point's in both presets — no
+component, no target, no ctest entry, no shader, no engine file, no link-line change. doctest:
+`aero_editor_shell_test` **1842 -> 1886**, `aero_editor_imgui_test` **181 -> 194**; `aero_tests`
+**1404**, `aero_scene_serialize_test` **40**, `aero_editor_inspector_test` **31**,
+`aero_reflect_meta_test` **7** and `aero_reflect_json_test` **28** all unmoved. Guards: math
+**500 -> 506**, project-no-delete **A=6/B=80 -> A=6/B=82**; platform **92**, rhi **163**, scene **92**,
+golden-rule **165**, audio **11/3/55** and probes **6/57** all unmoved. Both reduced configurations
+re-measured fresh, with byte-identical entry sets: shader-tools-OFF **161** (exactly the 13 `shaderc.*`
+entries removed, nothing added) and reflect-tools-OFF **93** (77 `reflect-gen.*` plus four doctest
+binaries removed, nothing added); all **70 `cooker.*`** entries present in all three.
+`git ls-files 'editor/src/*.cpp'` **80 -> 82** and `git ls-files 'editor/include/aero/editor/*.hpp'`
+**58 -> 60**. Both reduced configurations carry all **13** E.3.2 GPU cases and all **40** `RT`+`EP`
+cases and run them green.
+
+**What shipped.** Four panels share the Right dock node and exactly one of them is on screen, decided
+by whichever tab won the first frame — so clicking a `.aeromat` reloaded a material *behind a tab you
+could not see*, and `editor_app.cpp:1911`'s New Material drain had been promising "the Material panel
+opens on it" since 3.4.2 with nothing implementing it. E.3.2 is one context router over the focus
+plumbing that already existed, split three ways because the split *is* the design: **`EditorApp`
+detects** (it owns the `Selection` and both sessions, and is ImGui-free by rule), **`shell_ui.cpp`
+applies** (it is the ImGui frame-composition TU and owns the one focus slot), and **`context_router.hpp`
+decides** (two total `noexcept` functions driven by 27 tier-0 cases with no window and no GPU).
+
+The router **derives nothing**. It reads `Selection::revision()` — a new monotonic count of selection
+*operations* — `MaterialSession`'s own sticky target, and `ModelImportSession`'s own `SessionState`,
+and it spells **neither** `isImportableModelName` **nor** `isBlendFileName`. `RouteSource`'s numeric
+order **is** its priority, applied inside `latch()`, so the outcome does not depend on the order
+`EditorApp` calls the three `observe*` functions. `routeOutcome` resolves eight plain `bool` guards
+into `Drop`, `Hold` or `Apply`, and **every Drop is tested before every Hold**. The preference lives in
+a new machine-local `editor_prefs.json` (v1, docs/09 §8.5), read once in `create()` and written only on
+change, with its path resolving **only when `persistLayout` is true** — which is what let 150 of the
+152 `EditorApp::create` call sites under `tests/` stay exactly as they were.
+
+**No existing GPU case needed adjusting.** R1 was the plan's likeliest source of unplanned work — 49
+cases call `requestAssetBrowserSelectEntry(`, 21 drive `requestPanelFocus(`, and four panels share the
+Right node — and all 181 pre-existing cases passed unedited at step 6's gate, on the first run.
+
+#### The sentences that govern new work
+
+1. **A DELEGATING MUTATOR CANNOT CARRY A PER-CALL COUNTER IN ITS OWN BODY.** `Selection::set`, `toggle`
+   and `setAll` all routed through `add`/`remove`, so the spec's "bump as the first statement of every
+   mutator" gives `set` **two** bumps, `toggle` two, and `setAll(n)` **n + 1** — while bumping only in
+   `add`/`remove` gives `setAll({})` **zero**. Neither spelling satisfies "how many selection
+   operations have been performed". The fix is two private, non-counting helpers, and it is not a
+   tidy-up: the three arms the counter exists for — a re-`set` of the same entity, an `add` of a
+   present one, a `remove` of an absent one — are exactly the arms that would have read 2, 2 and 1.
+   **A contract stated over a delegating API is a claim about the delegation, and it has to be read.**
+
+2. **`ImGui::FocusWindow` HAS TWO SIDE EFFECTS AND NEITHER IS IDEMPOTENT.** It closes every popup above
+   the focused window (`imgui.cpp:13740`) and **steals the active widget** (`:13754-13756`), with
+   ImGui's own comment at `:13751` naming this very slot: *"Focus a window while an InputText in
+   another window is active, if focus happens before the old InputText can run."* Type a material name,
+   click an entity, and the typed name is **discarded** — `MaterialPanel` commits only on
+   `IsItemDeactivatedAfterEdit()` and the panel that lost the tab never draws to observe the edge. That
+   is why the editor has exactly **one** focus slot and calls `SetWindowFocus` **at most once per
+   frame**. **Re-read `:13740` and `:13754` at every ImGui bump**, beside `ImGuizmo.cpp:1229-1230` and
+   `imgui.cpp:8848`.
+
+3. **A COUNTER ON THE REGISTRY IS WHAT MAKES A TAB ASSERTABLE AT ALL.** `ImGui::Begin` returns false
+   for a docked window that is not the selected tab and `drawPanels` skips `onDraw` entirely, so before
+   this task "the Inspector raised" was **unfalsifiable at every automated tier** — 3.1.3's own entry
+   records two test attempts that passed while executing none of the code they named.
+   `PanelRegistry::noteDrawn` records `Begin`'s own answer in six lines, and every routing claim in
+   `I149`–`I158` is a **delta across one tick** with an anti-vacuity arm.
+
+4. **MATERIAL IS THE RIGHT NODE'S DEFAULT FRONT TAB, AND THAT MAKES THE OBVIOUS ASSERTION VACUOUS.**
+   Measured, not predicted: it drew on every tick of `I157`, which is how it was found —
+   `panelDrawnCount("Material") > before` is satisfied with or without a route. `I149`, `I150` and
+   `I157` therefore put the Inspector in front with an explicit request **and `REQUIRE` that the target
+   is not drawing** before acting. **And every Right-node panel draws once on the very first frame**,
+   before the dock node has selected a tab, so a baseline taken before the two settle ticks reads a
+   layout artefact — that is what reddened `I153` on its first run.
+
+5. **AN ADDRESS COMPARISON CANNOT SEE A DANGLING `c_str()`.** `RT2` asserted `routedPanelId(x) ==
+   routedPanelId(x)` to pin static lifetime, and a seeded `return std::string("Inspector").c_str();`
+   left it **green**: the temporary is SSO, so it lives in `routedPanelId`'s own frame, and two calls
+   from one caller put that frame at the same address — both pointers dangle and compare equal. ASan
+   does not help either, because `detect_stack_use_after_return` is **off by default** on this lane.
+   The seed was caught by `RT1` and `RT13`, which *dereference*; `RT2` now holds the pointer, spends the
+   stack and reads it back. **Pin a lifetime by surviving intervening work, never by an address.**
+
+6. **A SEED PLACED AFTER THE GUARD THAT REFUSES IT IS INERT.** The plan's `S16` added
+   `panels.setVisible(routeTarget, true)` inside the `Apply` arm to prove a route cannot re-open a
+   closed panel — but a hidden target takes guard 4's **Drop**, so the `Apply` arm never runs and the
+   edit cannot change behaviour at all. The edit that *does* re-open a closed panel is the one that
+   copies the **explicit** path wholesale: drop `&& panels.visible(routeTarget)` from `targetAvailable`
+   **and** add the `setVisible`. That reddens `I154`. **Seed the mistake, not the symptom.**
+
+7. **A CANONICAL FORM IS NOT PINNED BY DETERMINISM, KEY ORDER, A TRAILING NEWLINE OR A ROUND TRIP.**
+   `docs/09` §8.5 says `editor_prefs.json` is `JsonWriter`'s default configuration — pretty, two-space
+   — and seeding a **compact, four-space** config left `EP2`, `EP11` and the entire 1884-case tier-0
+   suite **green**, because all four of those properties survive a different config. `EP2` now asserts
+   the exact bytes of the envelope. A restatement that happens to *match* the default byte for byte
+   stays invisible, and that residue is stated rather than covered.
+
+8. **THE `persistLayout` GATE LEAVES ITS OWN RESOLVER WITH NO RUNTIME COVER.** Both test sites that set
+   `persistLayout = true` supply an explicit `editorPrefsPath` and every other site resolves `""`, so
+   `defaultEditorPrefsPath()`'s body is reached by **nothing** — seeding it to return
+   `TOOL_PREFS_FILE_NAME` reddened no test anywhere. `EP12` states what the three machine-local files
+   are: three different names under one shared parent. **A design that keeps tests off a machine-wide
+   file also keeps them off the code that names it.**
+
+9. **A PREFERENCE THAT SUPPRESSES AN EFFECT MUST NOT SUPPRESS THE OBSERVATION THAT FEEDS IT.** Found
+   by the code-review round, not by the 32-seed matrix: gating the three `observe*` EARLY RETURNS on
+   `enabled` left every baseline stale, so turning the preference back on raised a panel for an act
+   performed minutes earlier. **The gate belongs in the LATCH condition.** The general shape: when a
+   switch turns a *reaction* off, the state that decides "is this new?" must keep advancing, or the
+   switch becomes a delay line. And the case that was supposed to catch it, `RT24`, **pinned the
+   defect while calling it correct** — it re-observed the value produced while disabled and named that
+   "a fresh act". **A case written from the same sentence as the code cannot falsify that sentence.**
+
+#### Corrections the plan needed, each measured
+
+* **`JsonValue`, `JsonParseResult`, `JsonWriter` and `parseJson` live in `engine`, not
+  `engine::reflect`** (`json_value.hpp:15`, `json_reader.hpp:15`, `json_writer.hpp:7`). The plan's four
+  `using engine::reflect::...` declarations are a compile error; `editor_prefs.cpp` uses the
+  unqualified names through the enclosing namespace, exactly as `blender_tool.cpp` does.
+* **`shell_ui.cpp` had only a FORWARD DECLARATION of `Selection`** (through `command_stack.hpp`), so
+  the focus slot's `context.selection.empty()` did not compile. It now includes
+  `<aero/editor/selection.hpp>` — public, ImGui-free.
+* **`editor_app.cpp` did not include `<aero/editor/project.hpp>` at all**; `defaultToolPrefsPath()` had
+  been arriving transitively. It is now named directly, beside the resolver it calls.
+* **`V2` as the plan spells it (`git grep -nE 'ImGui|ImGuizmo'` over `editor_app.cpp`) read 25 lines at
+  the BRANCH POINT** — `ImGuiLayer` is a first-party editor type. The real predicate, and the one
+  `I159(c)` enforces, is comment-stripped `ImGui::` / `ImGuizmo::` / `imgui.h`, and all three read
+  **zero**.
+* **`V3` reads SEVEN lines, not eight**: six `++revisionValue;` plus one `return revisionValue;`.
+* **`V7` cannot stay at 152 and 2**: `I158` constructs three apps, two of them with
+  `persistLayout = true`. Measured after this task: **164** `EditorApp::create` sites and **four**
+  `persistLayout = true` code sites — and **all four carry `.editorPrefsPath`**, which is the property
+  D14 actually rests on.
+* **`V4`, `V5` and `V8` are not literally zero and must be READ**: every match outside
+  `project_file.cpp` is the prohibition sentence in a comment. Comment-stripped they read 0 / 0 / 0.
+* **`I155`'s per-tick prose was one tick short.** The measured ledger after
+  `requestAssetBrowserSelectEntry` is: **tick A** the panel drains `SelectEntry`; **tick B** the
+  reconcile calls `setTarget`, which sets `Idle` synchronously, so the observation is unsettled and
+  does nothing while `service()` classifies in the post-draw slot; **tick C** the observation latches
+  and the focus slot applies it in the same tick. `I150`'s "tick x3" was right; `I155`'s narrative was
+  not.
+* **`clang-format-18` and `clang-tidy-18` do not exist under `/opt/homebrew/opt/llvm@18/bin/`.** The
+  binaries there are `clang-format` and `clang-tidy`, both reporting 18.1.8.
+
+#### The sabotage matrix — 32 seeds, three real holes found and closed
+
+Every seed was applied after the fix was committed, proved to have landed with `git diff`, judged on
+doctest's own `test cases:` line, and reverted. **Three reddened nothing and were fixed** (`S12` ->
+`RT2` strengthened, `S30` -> `EP2` strengthened, `S32` -> `EP12` added). **One is re-specified**
+(`S16`, §6 above). **Six are inert or declared holes:**
+
+* **`S17` — `sourceStillValid` hard-coded true. NOT A HOLE — the code-review round retired it.** The
+  claim that "nothing in `tests/` can load a scene between the reconcile block and the focus slot
+  inside one tick" is **false**: `requestNewScene()` on a CLEAN command stack takes `FileStep::Perform`
+  immediately, inside `applyFileRequests` at `shell_ui.cpp:552`, which is 38 lines ABOVE the focus slot
+  in the same tick, and `resetSceneState` clears the selection. `I160` drives it and the seed reddens
+  it. **Manual row 2 is no longer the only cover.**
+* **`S18`'s behavioural half.** `I159(b)` pins the flag spelling as source text; only **manual row 7**
+  can see that a raise does not close an open menu.
+* **`S22` — `RouteOutcome routeOutcome = RouteOutcome::Hold;` as the default.** INERT by construction:
+  `drawShellUi` assigns the field on every frame, so the default is unreachable. The field's own
+  comment already says it is a fail-safe for a caller that does not exist.
+* **`S23` — adopting `routeEnabled` without the `routeToggleRequested` gate. NOT A HOLE EITHER.** It
+  was called harmless because nothing else writes the field — true of the *value*, and irrelevant to
+  the *effect*: the same edit sets `editorPrefsDirty` on **every frame**, so a persisting instance
+  rewrites `editor_prefs.json` on every frame, which is the per-frame I/O `docs/09` §8.5 forbids.
+  `I158` missed it because its second app ticked **once** before capturing the modification time; it
+  now ticks **ten** times with no toggle and asserts the mtime is unmoved, and the seed reddens it.
+* **`S24` — clearing the latch on `Hold`. NARROWED: the `popupOpen` arm is covered; only
+  `textInputActive` is not.** `Hold` had no coverage above the pure function at all, which was the
+  code-review round's riskiest finding — `focusRouteHoldCount()` was referenced by nothing but its own
+  definition. `I161` drives it: a DIRTY command stack makes `requestNewScene()` raise the
+  unsaved-changes modal, whose popup opens **before** the focus slot, so the route Holds. What stays
+  uncovered is **typing** (no tier in this tree can) and the **Hold -> Apply** transition at the GPU
+  tier, because `FileFlow::choice` has no public accessor and this TU cannot answer a modal
+  (`imgui_layer_test.cpp:2445` records that for another task). **Manual rows 5 and 6** still own the
+  text-field arm.
+* **`S27` — the flush dropping its `!editorPrefsPath.empty()` guard.** INERT: `writeEditorPrefs` itself
+  refuses an empty path and returns success, so the outer guard is redundant with the inner one.
+* **`S31` — an inline path instead of a named local.** A greppability invariant; **§V6** is its only
+  cover, read by eye.
+
+#### The code-review round — six findings, two of them code
+
+Six gaps, closed in two commits, each proved by seeding the defect and watching the named case redden.
+**The two code-level ones are real defects that every automated tier was green against.**
+
+**G1 (BLOCKING) — the router SKIPPED what it observed while off, instead of FORGETTING it.** All three
+`observe*` functions gated their **early return** on `enabledValue`, so every baseline went stale while
+routing was off. The first observation after the preference came back on compared this tick's value
+against one from *before* it went off, saw a "change", and raised a panel for an act performed minutes
+earlier — **a focus steal triggered by ticking a menu item**, reachable in three clicks (routing off →
+click an entity → tick View ▸ Focus Follows Selection back on). The header already stated the correct
+contract in so many words; the code did the opposite of it, and the header's own "so" was what made the
+inversion read as a justification. **The gate belongs in the LATCH condition, never in the early
+return**: a baseline always advances, and only the raise is suppressed. `observeImportTarget` keeps
+`!settled` in its early return, because that rule is about the SESSION's state machine and is
+independent of the preference — `RT18` and `I155` hold that line.
+**`RT24` pinned the defect while calling it correct**: it re-observed revision 2 — *the same act
+performed while disabled* — and its own comment called that "a fresh act after re-enabling". A fresh
+act is revision **3**. The lesson is the general one: **a case written from the same sentence as the
+code cannot falsify that sentence.**
+
+**G6 — `readEditorPrefs` conflated "missing" with "exists and cannot be read".** `readTextFile`
+disengages its `text` for a missing file, a directory and an unreadable file alike, so a root-owned or
+ACL-blocked `editor_prefs.json` silently produced defaults with `corrupt = false` and **no WARN** — the
+user's preference reset to ON with nothing in the log. The header said those two must never be
+conflated. `fileExists` is the discriminator, and it was already declared in the header this TU
+includes. **Measured, not assumed: `fileExists` is `std::filesystem::exists` (`text_file.cpp:103-106`),
+so it is TRUE for a directory** — which is what makes a directory the portable stand-in for a
+permission-refused file, needing no privileged user and no umask assumption. `EP13` carries both arms,
+with the chmod-000 one skipped **loudly** if the platform ignores the mode.
+
+**G2, G3, G4 and G5 — four coverage gaps on stated acceptance criteria.** `I160` drives guard 3 and
+retires `S17`. `I161` is the only coverage `Hold` has above the pure function — and **the modal comes
+up ONE TICK AFTER the request**, measured: `drawUnsavedChangesModal` runs at `shell_ui.cpp:540` and
+`applyFileRequests`, which is what *sets* `confirmOpen`, at `:552`, so a route latched on the tick that
+carried the request **applies** before any popup exists. The case raises the modal first and latches
+afterwards, with the identical gesture run beforehand as a no-modal **control** that applies — nothing
+here can read `IsPopupOpen`, so the contrast is the proof. `I159(f)` pins the View checkbox as source
+text, because **dropping the `&` from
+`MenuItem("Focus Follows Selection", nullptr, &state.routeEnabled)` COMPILES** — both overloads are
+viable — and turns the item into a no-op that reaches neither the router nor the file, with the whole
+suite green and `I153` still passing. `I158` now ticks its second app ten times with no toggle and
+asserts the modification time is unmoved: one tick could not tell "written only on change" from
+"written every frame".
+
+**The six seeds, each reverted after its verdict:** G1 (restore the `!enabledValue ||` early return) →
+`RT24`; G2 (`sourceStillValid = true`) → `I160`; G3 (`popupOpen = false`) → `I161` **and** `I159`;
+G4 (drop the `&`) → `I159`, with `I153` staying green, which is the finding restated as a measurement;
+G5 (drop the `routeToggleRequested` gate) → `I158`; G6 (drop the `fileExists` discriminator) → `EP13`,
+with `EP8`'s missing-file arm staying green, which is what makes it a statement about the *distinction*.
