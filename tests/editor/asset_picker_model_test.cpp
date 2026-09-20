@@ -484,6 +484,16 @@ TEST_CASE("MP18: the layout is at least as tall as its parts, and always finite"
     CHECK(noCombo.popupSize.y > noCombo.gridHeight);
     CHECK(noCombo.gridHeight > 0.0F);
 
+    // THE NOTICE LINE IS RESERVED WHETHER OR NOT ANYTHING IS TRUNCATED, and this is the arm that can
+    // SEE it: the two above cannot, because dropping one text line leaves the popup taller than the
+    // grid and leaves the combo delta unchanged. (Found by seeding exactly that and watching this case
+    // stay green.) Written from the PARTS LIST rather than from the implementation's own sum: two
+    // paddings, a heading row, a search row, the grid, and one text line for the notice.
+    CHECK(noCombo.popupSize.y >= (2.0F * metrics.windowPadding) + metrics.frameHeight + metrics.frameHeight +
+                                     noCombo.gridHeight + metrics.textLineHeight);
+    CHECK(withCombo.popupSize.y >= (2.0F * metrics.windowPadding) + metrics.frameHeight + metrics.frameHeight +
+                                       metrics.frameHeight + withCombo.gridHeight + metrics.textLineHeight);
+
     // A non-finite or non-positive metric yields a FINITE, POSITIVE size: a NaN window size is an
     // ImGui assertion, so the layout must never be the thing that produces one.
     const float nan = std::numeric_limits<float>::quiet_NaN();

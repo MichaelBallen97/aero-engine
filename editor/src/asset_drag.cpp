@@ -172,11 +172,23 @@ DropAction classifyAssetDrop(AssetKind kind, DropSurface surface, bool targetHas
                     return assetFieldRow();
             }
             return DropAction::None;
+        // NOT DRAGGABLE -- and they reach assetFieldRow() ANYWAY rather than short-circuiting to None.
+        // That is the whole point of composing the row instead of restating it: the day a script
+        // component wants a `.json`, widening assetKindIsDraggable is ONE edit and this surface widens
+        // with it. A direct `return DropAction::None;` here would read identically today and would
+        // silently NOT widen -- and AR2's Text-on-a-Text-field row is what proves the term is live.
         case AssetKind::Folder:
         case AssetKind::Text:
         case AssetKind::Unknown:
-            // Not draggable, so assetFieldRow() would answer None here too -- stated as one arm rather
-            // than four, because "a refused kind is refused on EVERY surface" is the claim.
+            switch (surface) {
+                case DropSurface::HierarchyRow:
+                case DropSurface::HierarchyVoid:
+                case DropSurface::Viewport:
+                case DropSurface::MaterialSlot:
+                    return DropAction::None;
+                case DropSurface::AssetField:
+                    return assetFieldRow();
+            }
             return DropAction::None;
     }
     return DropAction::None;  // unreachable; both switches are total over their enums
