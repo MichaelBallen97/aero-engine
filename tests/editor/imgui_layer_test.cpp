@@ -14357,10 +14357,25 @@ TEST_CASE("editor: the picker's popup BODY executes, per field, with the field's
     REQUIRE(app->tick());
     CHECK(app->assetPickerOpen());
     CHECK(app->assetPickerCandidateCount() == 1U);
-    app->requestAssetPickerClose();
+    // AND WHICH ONE, NOT MERELY HOW MANY. The fixture holds exactly one Model and exactly one
+    // Material, so a `material` field wrongly annotated `model` still lists ONE candidate and the
+    // count alone cannot tell the two apart -- it has to be committed and READ BACK. (Found by
+    // seeding exactly that and watching this case stay green.)
+    app->requestAssetPickerMove(1);
+    REQUIRE(app->tick());
+    CHECK(app->assetPickerCursor() == 1U);
+    app->requestAssetPickerCommit();
     REQUIRE(app->tick());
     REQUIRE(app->tick());
     CHECK_FALSE(app->assetPickerOpen());
+    {
+        const std::optional<engine::Guid> materialGuid = app->assetGuidForPath("m.aeromat");
+        REQUIRE(materialGuid.has_value());
+        const engine::MeshRenderer* bound = app->world().get<engine::MeshRenderer>(cube);
+        REQUIRE(bound != nullptr);
+        CHECK((bound->material == *materialGuid));
+        CHECK_FALSE(bound->mesh.valid());  // and it landed on `material`, not on its neighbour
+    }
 
     // `clip` wants AUDIO. The component is added to the CUBE through the public seam, so the Inspector
     // is already drawing the entity and no extra settle tick is needed.
