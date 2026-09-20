@@ -9723,6 +9723,44 @@ struct DropFixture {
     return fixture;
 }
 
+// ---- task E.3.3: the picker's own project ---------------------------------------------------------
+struct PickerFixture {
+    std::string root;
+    std::string assetsRoot;
+};
+
+// SIX draggable records, chosen so every rules value has a DISTINCT, SMALL count:
+//   tex/a.png, tex/b.png (Texture, decodable)   tex/c.ktx2 (Texture, NOT decodable -- the icon arm)
+//   hero.obj (Model)     m.aeromat (Material)   tone.wav (Audio)
+// plus notes.txt (Text), which every rule must refuse. The three textures live under tex/ so the
+// BROWSER -- which lists the ROOT -- never notes a texture key even while it is visible, which is what
+// makes I167's "attempts == 0 with the picker closed" a statement about the PICKER.
+//
+// Built entirely from THIS FILE's own literals: this target defines no audio fixture path and has no
+// .glb to copy. The placeholder bytes are honest -- the picker classifies by EXTENSION, and neither
+// .wav nor .ktx2 is thumbnail-decodable at all, so nothing any of these cases drives ever decodes them.
+[[nodiscard]] PickerFixture makePickerProject(bool withTextures) {
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    PickerFixture fixture{.root = created.root, .assetsRoot = created.root + "/assets"};
+    REQUIRE(engine::editor::writeTextFileAtomic(fixture.assetsRoot + "/hero.obj", MINIMAL_OBJ_TEXT).empty());
+    REQUIRE(engine::editor::writeTextFileAtomic(fixture.assetsRoot + "/m.aeromat", MINIMAL_AEROMAT_TEXT).empty());
+    REQUIRE(engine::editor::writeTextFileAtomic(fixture.assetsRoot + "/notes.txt", "notes\n").empty());
+    REQUIRE(engine::editor::writeTextFileAtomic(fixture.assetsRoot + "/tone.wav", "RIFFplaceholder").empty());
+    if (withTextures) {
+        // MEASURED, not assumed: writeTextFileAtomic opens an ofstream on the target and does NOT
+        // create parent directories, so `tex/` must exist first or every write below fails.
+        REQUIRE(engine::editor::ensureDirectory(fixture.assetsRoot + "/tex").empty());
+        REQUIRE(
+            writeBinaryFixture(fixture.assetsRoot + "/tex/a.png", TINY_PNG_RED.data(), TINY_PNG_RED.size()).empty());
+        REQUIRE(writeBinaryFixture(fixture.assetsRoot + "/tex/b.png", TINY_PNG_GREEN.data(), TINY_PNG_GREEN.size())
+                    .empty());
+        REQUIRE(engine::editor::writeTextFileAtomic(fixture.assetsRoot + "/tex/c.ktx2", "placeholder").empty());
+    }
+    return fixture;
+}
+
 // The kind byte a payload carries. It is a PEEK HINT -- every drain re-derives the real kind from the
 // record -- so these cases spell it honestly rather than passing 0 everywhere.
 constexpr std::uint8_t MODEL_KIND = static_cast<std::uint8_t>(engine::editor::AssetKind::Model);
@@ -14211,4 +14249,454 @@ TEST_CASE("editor: the whole-field reset menu hangs off the LABEL cell (task E.3
     // glitch, and is what I142 exercises at runtime.
     CHECK(code[menuAt].find("nullptr") == std::string::npos);
     CHECK(code[menuAt].find("\"##fieldmenu\"") != std::string::npos);
+}
+
+// ---- I162-I168: task E.3.3's asset-reference picker, end to end ------------------------------------
+//
+// THE POPUP'S BODY EXECUTES HERE, which is the first time in this tree. I86's own comment recorded the
+// gap it closes: "a BeginCombo's LIST BODY never executes here -- the picker's per-record loop, its
+// Selectable arms ... are drawn only by a hand on a mouse." Every one of those lines now runs on all
+// three lanes, every push.
+//
+// THE SHARED SHAPE, and each part of it is load-bearing:
+//   * the Console is hidden so Assets is the drawing Bottom tab and a SelectEntry request can drain;
+//   * TWO settle ticks before any baseline, because every Right-node panel draws once on frame one,
+//     before the dock node has selected a tab (E.3.2's fourth rule), so an earlier baseline reads a
+//     layout artefact;
+//   * the Inspector is put in front with an EXPLICIT requestPanelFocus and its drawing is REQUIREd
+//     before anything is asserted -- Material is the Right node's default front tab, so a case that
+//     assumed the Inspector was drawing would assert over a panel whose onDraw never ran.
+//
+// THE COUNTS come from makePickerProject's six draggable records and are hand-written from that
+// table, never computed from the walk under test: {AssetField, Model} 1, {AssetField, Material} 1,
+// {AssetField, Audio} 1, {AssetField, nullopt} 6, {MaterialSlot, nullopt} 3.
+
+namespace {
+
+// The seeded "Cube", with the Inspector in front and drawing. Returns the entity.
+[[nodiscard]] engine::Entity focusInspectorOnCube(engine::editor::EditorApp& app) {
+    engine::World& world = app.world();
+    engine::Entity cube{};
+    world.eachEntity([&](engine::Entity e) {
+        if (world.name(e) == "Cube") {
+            cube = e;
+        }
+    });
+    REQUIRE(cube.valid());
+    app.selection().set(cube);
+    app.requestPanelFocus("Inspector");
+    REQUIRE(app.tick());
+    const std::uint64_t before = app.panelDrawnCount("Inspector");
+    REQUIRE(app.tick());
+    // ANTI-VACUITY: the Inspector really is the drawing tab now. Without this every assertion below
+    // would be about a panel whose onDraw never ran -- 3.1.3's own recorded failure, twice.
+    REQUIRE(app.panelDrawnCount("Inspector") > before);
+    return cube;
+}
+
+}  // namespace
+
+TEST_CASE("editor: the picker's popup BODY executes, per field, with the field's own count (I162)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "picker i162", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const PickerFixture fixture = makePickerProject(true);
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = fixture.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    app->panels().setVisible("Console", false);
+    REQUIRE(app->tick());  // 1
+    REQUIRE(app->tick());  // 2: let the default dock layout settle
+    const engine::Entity cube = focusInspectorOnCube(*app);
+    CHECK_FALSE(app->assetPickerOpen());
+
+    // `mesh` wants a MODEL, and the fixture has exactly one.
+    app->requestInspectorAssetPicker("engine::MeshRenderer", "mesh");
+    REQUIRE(app->tick());
+    CHECK(app->assetPickerOpen());
+    CHECK(app->assetPickerCandidateCount() == 1U);
+    CHECK(app->assetPickerCursor() == 0U);  // a nil field lands on None
+
+    // THE ONE-FRAME LATENCY IS THE DESIGN: CloseCurrentPopup runs INSIDE the body, so on the closing
+    // frame the popup DID draw and the observable is still true; it reads false the frame after.
+    app->requestAssetPickerClose();
+    REQUIRE(app->tick());
+    CHECK(app->assetPickerOpen());  // the closing frame drew
+    REQUIRE(app->tick());
+    CHECK_FALSE(app->assetPickerOpen());
+    REQUIRE(app->tick());
+    CHECK_FALSE(app->assetPickerOpen());  // the one-shot was consumed, not re-applied
+
+    // `material` wants a MATERIAL. THIS ARM IS WHAT PROVES THE OBSERVABLES ARE OWNER-ONLY:
+    // MeshRenderer draws BOTH Guid rows every frame, so a per-field write would have the row that
+    // draws second overwrite the first's answer and assetPickerOpen() would read false here.
+    app->requestInspectorAssetPicker("engine::MeshRenderer", "material");
+    REQUIRE(app->tick());
+    CHECK(app->assetPickerOpen());
+    CHECK(app->assetPickerCandidateCount() == 1U);
+    app->requestAssetPickerClose();
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+    CHECK_FALSE(app->assetPickerOpen());
+
+    // `clip` wants AUDIO. The component is added to the CUBE through the public seam, so the Inspector
+    // is already drawing the entity and no extra settle tick is needed.
+    const engine::ComponentTypeId audioSourceId = app->world().findComponentType("engine::AudioSource");
+    REQUIRE(audioSourceId.valid());
+    CHECK(engine::editor::addComponent(app->world(), cube, audioSourceId));
+    REQUIRE(app->tick());
+    app->requestInspectorAssetPicker("engine::AudioSource", "clip");
+    REQUIRE(app->tick());
+    CHECK(app->assetPickerOpen());
+    CHECK(app->assetPickerCandidateCount() == 1U);
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: search, move, commit, undo -- the picker writes ONE entry and refuses no-ops (I163)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "picker i163", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const PickerFixture fixture = makePickerProject(true);
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = fixture.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    app->panels().setVisible("Console", false);
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+    const engine::Entity cube = focusInspectorOnCube(*app);
+
+    app->requestInspectorAssetPicker("engine::MeshRenderer", "mesh");
+    REQUIRE(app->tick());
+    REQUIRE(app->assetPickerOpen());
+    CHECK(app->assetPickerCandidateCount() == 1U);
+
+    // The search narrows to nothing, then back to the one model -- the popup's own box, filtered by
+    // the browser's leaf-name rule.
+    app->requestAssetPickerSearch("zzz");
+    REQUIRE(app->tick());
+    CHECK(app->assetPickerCandidateCount() == 0U);
+    app->requestAssetPickerSearch("hero");
+    REQUIRE(app->tick());
+    CHECK(app->assetPickerCandidateCount() == 1U);
+
+    app->requestAssetPickerMove(1);
+    REQUIRE(app->tick());
+    CHECK(app->assetPickerCursor() == 1U);
+
+    const std::size_t beforeCommit = app->commands().count();
+    app->requestAssetPickerCommit();
+    REQUIRE(app->tick());
+
+    const std::optional<engine::Guid> heroGuid = app->assetGuidForPath("hero.obj");
+    REQUIRE(heroGuid.has_value());
+    const engine::MeshRenderer* renderer = app->world().get<engine::MeshRenderer>(cube);
+    REQUIRE(renderer != nullptr);
+// BOTH ARMS ASSERT, neither skips (DP6's shape): the write rides SetFieldCommand through the
+// reflection seam, so with -DAERO_REFLECT_TOOLS=OFF there is no entt::meta for MeshRenderer and no
+// pick can land at all. "How many undo entries" is not a meaningful question there.
+#if AERO_REFLECT_TOOLS_ENABLED
+    CHECK((renderer->mesh == *heroGuid));
+    CHECK(app->commands().count() == beforeCommit + 1U);  // EXACTLY one entry
+
+    // A RE-OPEN LANDS ON THE BOUND ASSET, and committing the same thing again pushes NOTHING -- the
+    // host's equality refusal, which is guidFieldRow's own rule at this row's precision.
+    app->requestInspectorAssetPicker("engine::MeshRenderer", "mesh");
+    REQUIRE(app->tick());
+    REQUIRE(app->assetPickerOpen());
+    CHECK(app->assetPickerCursor() == 1U);
+    const std::size_t beforeNoOp = app->commands().count();
+    app->requestAssetPickerCommit();
+    REQUIRE(app->tick());
+    CHECK(app->commands().count() == beforeNoOp);
+
+    // None on a BOUND field clears it, and costs one entry.
+    app->requestInspectorAssetPicker("engine::MeshRenderer", "mesh");
+    REQUIRE(app->tick());
+    REQUIRE(app->assetPickerOpen());
+    app->requestAssetPickerMove(-5);  // past the start: movePickerCursor clamps to None
+    REQUIRE(app->tick());
+    CHECK(app->assetPickerCursor() == 0U);
+    const std::size_t beforeClear = app->commands().count();
+    app->requestAssetPickerCommit();
+    REQUIRE(app->tick());
+    renderer = app->world().get<engine::MeshRenderer>(cube);
+    REQUIRE(renderer != nullptr);
+    CHECK_FALSE(renderer->mesh.valid());
+    CHECK(app->commands().count() == beforeClear + 1U);
+
+    // None on an ALREADY-NIL field pushes nothing -- the second host refusal.
+    app->requestInspectorAssetPicker("engine::MeshRenderer", "mesh");
+    REQUIRE(app->tick());
+    REQUIRE(app->assetPickerOpen());
+    CHECK(app->assetPickerCursor() == 0U);
+    const std::size_t beforeNilClear = app->commands().count();
+    app->requestAssetPickerCommit();
+    REQUIRE(app->tick());
+    CHECK(app->commands().count() == beforeNilClear);
+    REQUIRE(app->tick());
+    REQUIRE_FALSE(app->assetPickerOpen());  // that commit closed it, which is the next arm's baseline
+
+    // THE STALE-SEAM ARM. A commit issued with NOTHING open must be DROPPED, not held until the next
+    // open -- and "the undo count did not move" CANNOT SEE THAT, because committing the bound asset is
+    // refused for equality anyway. THE DISCRIMINATOR IS THAT THE NEXT OPEN STAYS OPEN: a surviving
+    // request fires on the popup's very first body execution and closes it, which reads as open on
+    // that frame (the closing frame drew) and closed on the next.
+    const std::size_t beforeStale = app->commands().count();
+    app->requestAssetPickerCommit();
+    app->requestAssetPickerClose();
+    app->requestAssetPickerMove(2);
+    app->requestAssetPickerSearch("zzz");
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+    CHECK(app->commands().count() == beforeStale);
+
+    app->requestInspectorAssetPicker("engine::MeshRenderer", "mesh");
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+    CHECK(app->assetPickerOpen());                  // no stale commit or close fired
+    CHECK(app->assetPickerCandidateCount() == 1U);  // no stale search narrowed it
+    CHECK(app->assetPickerCursor() == 0U);          // no stale move walked the cursor
+    CHECK(app->commands().count() == beforeStale);
+
+    // TWO UNDOS walk back through the two real entries: nil -> hero, hero -> nil.
+    app->requestUndo();
+    REQUIRE(app->tick());
+    renderer = app->world().get<engine::MeshRenderer>(cube);
+    REQUIRE(renderer != nullptr);
+    CHECK((renderer->mesh == *heroGuid));
+    app->requestUndo();
+    REQUIRE(app->tick());
+    renderer = app->world().get<engine::MeshRenderer>(cube);
+    REQUIRE(renderer != nullptr);
+    CHECK_FALSE(renderer->mesh.valid());
+#else
+    // No meta: the pick is inert. The field never moved and nothing entered the history.
+    CHECK_FALSE(renderer->mesh.valid());
+    CHECK(app->commands().count() == beforeCommit);
+    CHECK_FALSE(app->commands().canUndo());
+#endif
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: a pending open NEVER fires on the wrong field, and is not consumed by one (I165)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "picker i165", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const PickerFixture fixture = makePickerProject(true);
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = fixture.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    app->panels().setVisible("Console", false);
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+    focusInspectorOnCube(*app);
+
+    // A component the Cube does not have, and a field that does not exist. The Cube DOES draw two Guid
+    // rows every frame, so a request that matched "the next reference row drawn" would open on one of
+    // them immediately.
+    app->requestInspectorAssetPicker("engine::PointLight", "nothing");
+    for (int i = 0; i < 10; ++i) {
+        CAPTURE(i);
+        REQUIRE(app->tick());
+        CHECK_FALSE(app->assetPickerOpen());
+    }
+
+    // ...and the stale request did not CONSUME itself on a wrong field either: a real one still opens.
+    app->requestInspectorAssetPicker("engine::MeshRenderer", "mesh");
+    REQUIRE(app->tick());
+    CHECK(app->assetPickerOpen());
+    CHECK(app->assetPickerCandidateCount() == 1U);
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: the picker's source-text pins -- ordering, absence and reuse (I166)") {
+    // Source text only: no window, no device. Every clause reasons about CODE, so every read is
+    // comment-stripped -- a citation in prose must never satisfy or break one of these.
+    SUBCASE("(a) the peek runs BEFORE the accept, and each API is named ONCE") {
+        const std::vector<std::string> code = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/asset_picker.cpp");
+        const std::size_t beginAt = soleLineContaining(code, "BeginDragDropTarget(");
+        const std::size_t classifyAt = soleLineContaining(code, "classifyAssetDrop(");
+        const std::size_t acceptAt = soleLineContaining(code, "AcceptDragDropPayload(");
+        // AN ORDERING, NOT A MEMBERSHIP (3.4.2's I96 lesson): ImGui draws the drop highlight as a side
+        // effect of AcceptDragDropPayload, so classifying after it is a promise the editor breaks --
+        // and a membership pin cannot see which side of the accept the decision fell on.
+        CHECK(beginAt < classifyAt);
+        CHECK(classifyAt < acceptAt);
+    }
+    SUBCASE("(b) every key binding this widget relies on is spelled exactly once, and NOT the one it refuses") {
+        const std::vector<std::string> code = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/asset_picker.cpp");
+        CHECK(countLinesContaining(code, "IsKeyPressed(ImGuiKey_Escape") == 1U);
+        CHECK(countLinesContaining(code, "ImGuiInputTextFlags_EnterReturnsTrue") == 1U);
+        CHECK(countLinesContaining(code, "SetKeyboardFocusHere(") == 1U);
+        // BEFORE the first Step(), or a keyboard move past the visible rows scrolls nothing at all.
+        CHECK(countLinesContaining(code, "IncludeItemByIndex(") == 1U);
+        // ZERO: setting it would break the click-to-commit close, because the widget relies on a
+        // tile's own auto-close and on CloseCurrentPopup being idempotent afterwards.
+        CHECK(countLinesContaining(code, "NoAutoClosePopups") == 0U);
+    }
+    SUBCASE("(c) the widget states NO AssetKind literal at all") {
+        const std::vector<std::string> code = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/asset_picker.cpp");
+        // The mechanical form of ADR-004's genericity claim for this widget: the kinds come from the
+        // rules, which come from the annotation, which comes from the component.
+        CHECK(countLinesContaining(code, "AssetKind::") == 0U);
+        // ANTI-VACUITY, the file's own matrix call: a reader that found nothing at all would satisfy
+        // the clause above for the wrong reason.
+        CHECK(countLinesContaining(code, "classifyAssetDrop(") == 1U);
+    }
+    SUBCASE("(e) the Inspector's pick goes through resetField, on one line with the picked guid") {
+        const std::vector<std::string> code = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/inspector_panel.cpp");
+        std::size_t reuse = 0;
+        for (const std::string& line : code) {
+            if (line.find("resetField(") != std::string::npos && line.find("picked.guid") != std::string::npos) {
+                ++reuse;
+            }
+        }
+        // D9: a pick is a DISCRETE write -- the merge chain broken on BOTH sides, both edit caches
+        // dropped -- which is exactly resetField's operation and is why a function named "reset" is
+        // the right one here.
+        CHECK(reuse == 1U);
+    }
+    SUBCASE("(f) keyboard navigation is never enabled, so every key this widget binds is really ours") {
+        const std::vector<std::string> code = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/imgui_layer.cpp");
+        // With NavEnableKeyboard on, Up/Down would do two things at once -- ImGui's own nav AND the
+        // picker's cursor -- silently. Nothing in tests/ pinned this before task E.3.3.
+        CHECK(countLinesContaining(code, "NavEnableKeyboard") == 0U);
+        // ANTI-VACUITY: the ConfigFlags really are written in this file, so the reader is reading the
+        // right one.
+        CHECK(countLinesContaining(code, "ImGuiConfigFlags_DockingEnable") == 1U);
+    }
+}
+
+TEST_CASE("editor: an OPEN picker HOLDS a context route, and the held route applies on close (I168)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "picker i168", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const PickerFixture fixture = makePickerProject(true);
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = fixture.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    app->panels().setVisible("Console", false);
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+
+    // A SECOND ENTITY CARRYING A MeshRenderer, created BEFORE the picker opens. The popup's identity is
+    // the ID stack -- PushID(component name) + PushID(field name), with NO entity id -- so the
+    // Inspector must draw the SAME engine::MeshRenderer.mesh row for the new primary, or the popup's
+    // window goes unsubmitted and ImGui closes it at the next NewFrame.
+    const engine::ComponentTypeId meshRendererId = app->world().findComponentType("engine::MeshRenderer");
+    REQUIRE(meshRendererId.valid());
+    const engine::Entity other = engine::editor::createEntity(app->world(), engine::Entity{}, "Other");
+    REQUIRE(other.valid());
+    CHECK(engine::editor::addComponent(app->world(), other, meshRendererId));
+
+    focusInspectorOnCube(*app);
+    app->requestInspectorAssetPicker("engine::MeshRenderer", "mesh");
+    REQUIRE(app->tick());
+    REQUIRE(app->assetPickerOpen());
+
+    const std::size_t holdsBefore = app->focusRouteHoldCount();
+    const std::size_t appliesBefore = app->focusRouteApplyCount();
+    const std::string routedBefore(app->lastRoutedPanelId());
+
+    // A selection made while the picker is up must NOT raise a panel out from under it: an open popup
+    // is one of the router's four HOLD conditions, and the latch survives.
+    app->selection().set(other);
+    REQUIRE(app->tick());
+    CHECK(app->focusRouteHoldCount() > holdsBefore);
+    CHECK(app->focusRouteApplyCount() == appliesBefore);
+    CHECK(app->lastRoutedPanelId() == routedBefore);
+    CHECK(app->assetPickerOpen());  // and the popup itself survived the selection change
+
+    const std::size_t holdsAfterOne = app->focusRouteHoldCount();
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+    CHECK(app->focusRouteHoldCount() > holdsAfterOne);  // it keeps holding, it does not drop
+
+    // Close the picker, and the HELD route applies. THE TICK LEDGER, MEASURED rather than predicted --
+    // it is THREE ticks, not two, and each one is a different guard:
+    //   tick 1 -- the popup's CLOSING frame. CloseCurrentPopup runs inside the body, so the popup DID
+    //             draw and the focus slot (which runs earlier in the same tick) still saw popupOpen.
+    //   tick 2 -- the popup is gone, but io.WantTextInput is still set from the search box that had
+    //             the keyboard, and textInputActive is a HOLD condition of its own.
+    //   tick 3 -- nothing holds, so the latch APPLIES.
+    // Asserted as a shape rather than as a single count, so a change in WHICH guard holds on tick 2
+    // reads as a moved number rather than as a silent pass.
+    app->requestAssetPickerClose();
+    REQUIRE(app->tick());
+    CHECK(app->focusRouteApplyCount() == appliesBefore);  // still holding: the closing frame drew
+    REQUIRE(app->tick());
+    CHECK(app->focusRouteApplyCount() == appliesBefore);  // still holding: the box still wants text
+    REQUIRE(app->tick());
+    CHECK(app->focusRouteApplyCount() > appliesBefore);
+    CHECK(app->lastRoutedPanelId() == std::string_view("Inspector"));
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
 }

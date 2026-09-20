@@ -91,6 +91,8 @@ class HierarchyPanel;      // task 3.1.5: src-private. The drop drain needs its 
                            // non-owning pointer joins the four above -- a sixth application.
 class InspectorPanel;      // task 3.1.5: src-private. setDatabase(&assetDatabase) is reconciled beside
                            // the Material panel's, so this pointer joins them too -- a seventh.
+struct AssetPickerState;   // task E.3.3: src-private (editor/src/asset_picker.hpp). A STRUCT, declared
+                           // with the matching tag so clang does not warn under -Wmismatched-tags.
 class ThumbnailService;    // task E.3.3: src-private (editor/src/thumbnail_service.hpp). Held through a
                            // unique_ptr for exactly the SceneAssetLoader reason -- it owns a
                            // ThumbnailStore, whose header is src-private and GPU-touching, and
@@ -478,6 +480,24 @@ public:
     void requestViewportAssetDrop(Guid guid, std::uint8_t kind, Vec2 ndc);
     void requestMaterialSlotTextureDrop(std::size_t slot, Guid textureGuid);
 
+    // ---- task E.3.3: the picker, driven without a mouse or a keyboard ------------------------------
+    // The requestAssetBrowserSelectEntry shape, a NINTH application. Each one-shot is consumed by the
+    // FIELD IT NAMES on that field's next draw; the four LIVE ones are DROPPED when no popup is open,
+    // so a stale request can never commit something the user did not choose. All six are no-ops -- and
+    // all three observables zero -- when `assetPicker` is null, exactly as the drains are null-guarded.
+    void requestInspectorAssetPicker(std::string_view componentName, std::string_view fieldName);
+    void requestMaterialSlotPicker(std::size_t slot);
+    void requestAssetPickerSearch(std::string_view query);  // applied to the OPEN popup on its next draw
+    // STEPS, not a single direction: a case moving to the third candidate writes ONE call rather than
+    // three ticks. |delta| reductions of movePickerCursor are applied in one frame, which is exactly
+    // what holding an arrow key does.
+    void requestAssetPickerMove(int delta);
+    void requestAssetPickerCommit() noexcept;
+    void requestAssetPickerClose() noexcept;
+    [[nodiscard]] bool assetPickerOpen() const noexcept;  // the LAST DRAWN frame's answer, never a live read
+    [[nodiscard]] std::size_t assetPickerCandidateCount() const noexcept;
+    [[nodiscard]] std::size_t assetPickerCursor() const noexcept;  // 0 == None
+
     // ---- task 3.1.5 black-box accessors: the scene-asset ledger, as numbers ------------------------
     [[nodiscard]] std::size_t sceneAssetEntryCount() const noexcept;   // ledger entries, any state
     [[nodiscard]] std::size_t sceneAssetReadyCount() const noexcept;   // state == Ready
@@ -732,6 +752,10 @@ private:
     // does -- which is what lets each consumer be handed it ONCE, in create(), rather than reconciled
     // every tick. Null on a moved-from app, exactly as sceneAssetLoader is.
     std::unique_ptr<ThumbnailService> thumbnails;
+    // task E.3.3: the picker's whole session state, one object, because ImGui allows one popup at a
+    // time. The sceneAssetLoader posture again -- a unique_ptr to an incomplete src-private type, so
+    // the address is stable across this app's own move and each host is handed it ONCE in create().
+    std::unique_ptr<AssetPickerState> assetPicker;
     // Captured in create(); the caller's contract already requires it to outlive the app. It is what
     // the service pass destroys retired TEXTURES through -- meshes and materials go back to the
     // ForwardRenderer that minted them, and a texture belongs to the device.

@@ -683,23 +683,64 @@ TEST_CASE("inspector: a Guid field reads, writes and REFUSES a wrong type (task 
     CHECK_FALSE(writeComponentField(world, e, probeId, "tint", FieldValue{written}));
 }
 
-TEST_CASE("inspector: no inspector row is a drop target (task 3.1.5, IR8, seed S35's twin)") {
-    // D14, and the only tier that can state it: assignment happens on the Hierarchy row, in the
-    // viewport and on a material slot -- never on an inspector field. A drop target here would be a
-    // fourth assignment surface with its own accept rules, and no runtime tier in this tree can drive
-    // an ImGui drag, so the pin is the panel's own source text.
-    std::ifstream file(AERO_EDITOR_SRC_DIR "/inspector_panel.cpp", std::ios::binary);
-    REQUIRE(file.is_open());
-    std::string line;
-    std::size_t scanned = 0;
-    while (std::getline(file, line)) {
-        ++scanned;
-        const std::size_t comment = line.find("//");
-        const std::string code = comment == std::string::npos ? line : line.substr(0, comment);
-        CHECK(code.find("BeginDragDropTarget") == std::string::npos);
-        CHECK(code.find("AcceptDragDropPayload") == std::string::npos);
+TEST_CASE("inspector: a field has exactly ONE assignment surface, and it is the WIDGET's (IR8)") {
+    // task E.3.3 SUPERSEDES 3.1.5's D14 with an affordance rather than contradicting it. A Guid field
+    // IS assignable now -- but through drawAssetReferenceField, which owns the target for both hosts,
+    // so there is still exactly ONE accept rule rather than a fourth surface with its own. No runtime
+    // tier in this tree can drive an ImGui drag, so both halves are the sources' own text.
+    const auto codeLinesOf = [](const char* path) {
+        std::ifstream file(path, std::ios::binary);
+        REQUIRE(file.is_open());
+        std::vector<std::string> lines;
+        std::string line;
+        while (std::getline(file, line)) {
+            const std::size_t comment = line.find("//");
+            lines.push_back(comment == std::string::npos ? line : line.substr(0, comment));
+        }
+        return lines;
+    };
+
+    SUBCASE("(a) inspector_panel.cpp still names NEITHER drop API -- unchanged, and still true") {
+        const std::vector<std::string> code = codeLinesOf(AERO_EDITOR_SRC_DIR "/inspector_panel.cpp");
+        for (const std::string& line : code) {
+            CHECK(line.find("BeginDragDropTarget") == std::string::npos);
+            CHECK(line.find("AcceptDragDropPayload") == std::string::npos);
+        }
+        CHECK(code.size() > 100);  // the scan really traversed the file, not an empty read
     }
-    CHECK(scanned > 100);  // the scan really traversed the file, rather than passing on an empty read
+
+    SUBCASE("(b) asset_picker.cpp names each ONCE, and CLASSIFIES BETWEEN them") {
+        // THE PEEK RULE AS AN ORDERING, not as a membership: ImGui draws the drop highlight as a side
+        // effect of AcceptDragDropPayload, so classifying AFTER it is a promise the editor breaks.
+        // 3.4.2's I96 lesson -- a membership pin certified a use-after-free it could not see.
+        const std::vector<std::string> code = codeLinesOf(AERO_EDITOR_SRC_DIR "/asset_picker.cpp");
+        std::size_t begins = 0;
+        std::size_t accepts = 0;
+        std::size_t classifies = 0;
+        std::size_t beginLine = 0;
+        std::size_t acceptLine = 0;
+        std::size_t classifyLine = 0;
+        for (std::size_t i = 0; i < code.size(); ++i) {
+            if (code[i].find("BeginDragDropTarget(") != std::string::npos) {
+                ++begins;
+                beginLine = i;
+            }
+            if (code[i].find("AcceptDragDropPayload(") != std::string::npos) {
+                ++accepts;
+                acceptLine = i;
+            }
+            if (code[i].find("classifyAssetDrop(") != std::string::npos) {
+                ++classifies;
+                classifyLine = i;
+            }
+        }
+        CHECK(code.size() > 100);
+        CHECK(begins == 1);
+        CHECK(accepts == 1);
+        CHECK(classifies == 1);
+        CHECK(beginLine < classifyLine);
+        CHECK(classifyLine < acceptLine);
+    }
 }
 
 // D16's claim made machine-checkable, and placed immediately after the drift pin for the reason that

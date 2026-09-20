@@ -39,6 +39,7 @@
 #include "asset_browser_panel.hpp"
 // task E.3.3 (D5): the SHARED thumbnail ledger/store/budget. Held through a unique_ptr on a public
 // header, so this TU is where the complete type is needed.
+#include "asset_picker.hpp"  // task E.3.3 -- AssetPickerState, held through a unique_ptr on a public header
 #include "console_panel.hpp"
 #include "editor_reflection.hpp"
 #include "file_dialog.hpp"  // task 2.5.1: DialogChannel's definition -- the shared_ptr's deleter needs
@@ -65,6 +66,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <cstdlib>  // task E.3.3 -- std::abs over the picker seam's signed step count
 #include <memory>
 #include <optional>
 #include <string>
@@ -346,6 +348,8 @@ std::optional<EditorApp> EditorApp::create(rhi::Device& device, platform::Window
     // task E.3.3 (D5): created BEFORE the panel block below, because every consumer is handed the
     // pointer immediately after its own emplace -- once, never reconciled (the viewportPanel posture).
     app.thumbnails = std::make_unique<ThumbnailService>(&device);
+    // task E.3.3: ONE picker state for the whole editor, because ImGui allows one popup at a time.
+    app.assetPicker = std::make_unique<AssetPickerState>();
     // ...and the SAME device is what the service pass destroys retired TEXTURES through. The code-review
     // round found this line missing: the member kept its nullptr initialiser, so destroyRetired's third
     // branch was dead and every texture the ledger adopted through reportSlotTexture survived every
@@ -434,8 +438,13 @@ std::optional<EditorApp> EditorApp::create(rhi::Device& device, platform::Window
         // asset-drop one-shot; the Inspector's is reconciled with the database beside the Material
         // panel's. Both are non-owning and address-stable (the registry holds unique_ptrs), exactly
         // like viewportPanel below.
-        app.hierarchyPanel = app.registry.emplace<HierarchyPanel>();      // task 2.2.1 -- was a PlaceholderPanel
-        app.inspectorPanel = app.registry.emplace<InspectorPanel>();      // task 2.2.2 -- was a PlaceholderPanel
+        app.hierarchyPanel = app.registry.emplace<HierarchyPanel>();  // task 2.2.1 -- was a PlaceholderPanel
+        app.inspectorPanel = app.registry.emplace<InspectorPanel>();  // task 2.2.2 -- was a PlaceholderPanel
+        // task E.3.3: SET ONCE, right after the emplace -- both point at heap objects this app holds
+        // through a unique_ptr, so the addresses survive the app's own move and there is nothing to
+        // reconcile (the viewportPanel posture, not the per-tick setDatabase one).
+        app.inspectorPanel->setAssetPicker(app.assetPicker.get());
+        app.inspectorPanel->setThumbnails(app.thumbnails.get());
         app.viewportPanel = app.registry.emplace<ViewportPanel>(device);  // task 2.2.3 -- was a PlaceholderPanel
         // task 2.2.5 -- was a PlaceholderPanel. logScope is engaged exactly when this branch runs (both
         // guards read the same const config field), but the has_value() test is NOT defensive
@@ -1929,6 +1938,58 @@ void EditorApp::requestAssetBrowserSelectEntry(std::string_view relativePath) {
     if (assetBrowserPanel != nullptr) {
         assetBrowserPanel->requestSelectEntry(std::string(relativePath));
     }
+}
+
+// ---- task E.3.3: the picker's six seams and three observables ------------------------------------
+// "Inspector" and "Material" are written as LITERALS here, matching InspectorPanel::id() and
+// MaterialPanel::id() -- the same restatement context_router.cpp makes for the three routed ids. A
+// wrong literal is not a silent failure: the popup simply never opens, which I162 and I164 fail on.
+void EditorApp::requestInspectorAssetPicker(std::string_view componentName, std::string_view fieldName) {
+    if (assetPicker != nullptr) {
+        assetPicker->pendingOpen =
+            AssetPickerOpenRequest{.hostId = "Inspector", .fieldKey = inspectorAssetFieldKey(componentName, fieldName)};
+    }
+}
+
+void EditorApp::requestMaterialSlotPicker(std::size_t slot) {
+    if (assetPicker != nullptr) {
+        assetPicker->pendingOpen = AssetPickerOpenRequest{.hostId = "Material", .fieldKey = materialSlotFieldKey(slot)};
+    }
+}
+
+void EditorApp::requestAssetPickerSearch(std::string_view query) {
+    if (assetPicker != nullptr) {
+        assetPicker->pendingSearch = std::string(query);
+    }
+}
+
+void EditorApp::requestAssetPickerMove(int delta) {
+    if (assetPicker != nullptr && delta != 0) {
+        assetPicker->pendingMove = delta > 0 ? AssetPickerMove::Next : AssetPickerMove::Prev;
+        assetPicker->pendingMoveSteps = static_cast<std::size_t>(std::abs(delta));
+    }
+}
+
+void EditorApp::requestAssetPickerCommit() noexcept {
+    if (assetPicker != nullptr) {
+        assetPicker->pendingCommit = true;
+    }
+}
+
+void EditorApp::requestAssetPickerClose() noexcept {
+    if (assetPicker != nullptr) {
+        assetPicker->pendingClose = true;
+    }
+}
+
+bool EditorApp::assetPickerOpen() const noexcept { return assetPicker != nullptr && assetPicker->openValue; }
+
+std::size_t EditorApp::assetPickerCandidateCount() const noexcept {
+    return assetPicker != nullptr ? assetPicker->candidateCountValue : std::size_t{0};
+}
+
+std::size_t EditorApp::assetPickerCursor() const noexcept {
+    return assetPicker != nullptr ? assetPicker->cursorValue : std::size_t{0};
 }
 
 // task 3.1.4 (D10): applied IMMEDIATELY -- there is no one-shot to drain, because this writes the

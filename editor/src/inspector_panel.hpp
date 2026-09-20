@@ -15,6 +15,10 @@
 // task E.3.1: phase 3 measures ONE label-column width over the WHOLE model before the component loop
 // and hands it to every component's two-column table, so the panel reads as one column rather than as
 // N. Every field kind draws inside that table; nothing draws with SameLine arithmetic any more.
+//
+// task E.3.3: phase 3's Guid arm draws the picker. A pick is a DISCRETE write through resetField --
+// it must never merge with a drag on the same field a moment earlier -- and this file still names no
+// ImGui drop API at all, because the target belongs to the widget.
 #include <aero/editor/component_ops.hpp>
 #include <aero/editor/inspector_model.hpp>
 #include <aero/editor/panel.hpp>
@@ -26,6 +30,12 @@
 #include <string>
 
 namespace engine::editor {
+
+// Forward-declared, never #included here: this header stays ImGui-free BY FILE PLACEMENT, and
+// asset_picker.hpp is src-private. `AssetPickerState` is a STRUCT -- declared with the matching tag so
+// clang does not warn under -Wmismatched-tags.
+struct AssetPickerState;
+class ThumbnailService;
 
 class InspectorPanel final : public Panel {
 public:
@@ -40,6 +50,12 @@ public:
     // EditorApp sets it every tick, from the same reconcile statement that already sets the Material
     // panel's. NULL is a legal state and the Guid row has a sentence for it.
     void setDatabase(const AssetDatabase* db) noexcept { database = db; }
+
+    // task E.3.3: both set ONCE in EditorApp::create (the viewportPanel posture), not reconciled --
+    // each points at a heap object EditorApp holds through a unique_ptr, so the address survives the
+    // app's own move. NULL is a legal state: the Guid arm falls back to 3.1.5's read-only row.
+    void setAssetPicker(AssetPickerState* s) noexcept { assetPicker = s; }
+    void setThumbnails(ThumbnailService* s) noexcept { thumbnails = s; }
 
 private:
     enum class ActionKind : std::uint8_t { None = 0, AddComponent, RemoveComponent };
@@ -92,6 +108,10 @@ private:
     std::string labelScratch;
     std::string shortNameScratch;
     const AssetDatabase* database = nullptr;  // task 3.1.5, reconciled -- see setDatabase above
+    // task E.3.3: see setAssetPicker/setThumbnails above. Borrowed, never owned, set once.
+    AssetPickerState* assetPicker = nullptr;
+    ThumbnailService* thumbnails = nullptr;
+    std::string fieldKeyScratch;  // labelScratch's idiom -- no per-frame allocation once warm
 };
 
 }  // namespace engine::editor

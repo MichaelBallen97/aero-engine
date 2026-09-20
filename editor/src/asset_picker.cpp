@@ -132,7 +132,20 @@ AssetFieldResult drawAssetReferenceField(const AssetFieldInputs& in, AssetPicker
         state.openFieldKey.assign(in.fieldKey);
     }
 
-    // 5. THE ANCHOR AND THE SIZE, computed BEFORE BeginPopup so the arithmetic is exact rather than one
+    // 5. THE FOUR LIVE ONE-SHOTS ARE DROPPED WHEN NOTHING IS OPEN AT ALL. Without this they are not
+    //    "pending until the popup opens" -- they are a DELAY LINE: a commit issued while closed would
+    //    survive to the next open and commit something the user never chose, on the very frame the
+    //    popup appeared. Any drawn reference field may perform this clear; it is idempotent, and it
+    //    runs AFTER the open arm above so a request issued in the same tick as the open still applies.
+    if (state.openFieldKey.empty()) {
+        state.pendingSearch.reset();
+        state.pendingMove.reset();
+        state.pendingMoveSteps = 1;
+        state.pendingCommit = false;
+        state.pendingClose = false;
+    }
+
+    // 6. THE ANCHOR AND THE SIZE, computed BEFORE BeginPopup so the arithmetic is exact rather than one
     //    frame late. Both SetNext* calls are legal while the popup is closed: BeginPopup clears
     //    NextWindowData on its early-out (imgui.cpp:13196-13199). SetNextWindowSize overrides the
     //    AlwaysAutoResize flag BeginPopup adds (imgui.cpp:8182, :13201), which is what makes a fixed
@@ -286,13 +299,16 @@ AssetFieldResult drawAssetReferenceField(const AssetFieldInputs& in, AssetPicker
             in.database != nullptr ? in.database->records() : std::span<const AssetRecord>{};
 
         ImGuiListClipper clipper;
+        clipper.Begin(rows, rowHeight);
         if (scrollToCursor) {
-            // BEFORE Begin, which is unambiguously before the first Step() (imgui.h:3015's own
-            // sentence): without it the cursor's row can be clipped away entirely and SetScrollHereY
-            // never runs, so a keyboard move past the visible rows would scroll nothing.
+            // AFTER Begin() and BEFORE the first Step(), which is what ImGui's own assertion requires:
+            // the clipper's constructor memsets DisplayStart to 0 and Begin() is what sets it to -1,
+            // so `IM_ASSERT(DisplayStart < 0)` (imgui.cpp:3418) ABORTS on a call placed above Begin --
+            // and TempData is null there too. Without this call the cursor's row can be clipped away
+            // entirely and SetScrollHereY never runs, so a keyboard move past the visible rows would
+            // scroll nothing at all.
             clipper.IncludeItemByIndex(static_cast<int>(state.cursor) / columns);
         }
-        clipper.Begin(rows, rowHeight);
         while (clipper.Step()) {
             for (int row = clipper.DisplayStart; row < clipper.DisplayEnd; ++row) {
                 for (int column = 0; column < columns; ++column) {
