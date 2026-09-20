@@ -425,6 +425,19 @@ a **human mouse/keyboard pass** recorded per OS in `editor/VALIDATION.md`.
 
 ## Asset browser v1 (task 3.1.3)
 
+- **THE LEDGER AND THE STORE LIVE IN `ThumbnailService` (task E.3.3), owned by `EditorApp` through a
+  `unique_ptr`, with THREE consumers and ONE shared budget.** A `unique_ptr` and not a value member,
+  because the service owns a `ThumbnailStore` whose header is src-private and GPU-touching while
+  `editor_app.hpp` is a PUBLIC header held ImGui-free and GPU-free by file placement — the
+  `sceneAssetLoader` posture. The heap object's address survives an `EditorApp` move, so each consumer
+  is handed the pointer **once, in `create()`**, never reconciled per tick. The service pass keeps its
+  slot and its statement position in `tick()`'s post-draw block and its internal order
+  (touch → reimport clear → superseded sweep → evict → decode); **`++frame` is its FIRST statement**,
+  and advancing the clock after the touch loop instead frees a texture this frame's draw list still
+  names — synchronous on Vulkan/D3D12, deferred on Metal. A consumer **notes** keys in the draw walk
+  and **never** mutates. `thumbnailKeyForRecord` is the pure five-guard half, over a RECORD, because a
+  picker candidate is a record and not a `(FileEntry, path)` pair; the browser keeps guards 1 (a folder)
+  and 3 (no database) and composes the rest through it.
 - **Thumbnails are a strict two-phase system, and the phases live in different TUs on purpose.**
   `editor/include/aero/editor/thumbnail_cache.hpp` (`ThumbnailLedger`) is PURE — no ImGui, no
   `<filesystem>`, no GPU — and owns only the key, the `Absent`/`Ready`/`Failed`/`Skipped` state
@@ -1378,12 +1391,24 @@ a **human mouse/keyboard pass** recorded per OS in `editor/VALIDATION.md`.
   `AcceptDragDropPayload` is the commitment. The whole accept/refuse matrix is one total pure function
   so the decision is a tier-0 table test and the ImGui half stays four lines per site:
 
-  | kind \ surface | HierarchyRow | HierarchyVoid | Viewport | MaterialSlot |
-  |---|---|---|---|---|
-  | Model | Instantiate | Instantiate | Instantiate | None |
-  | Material | Assign **iff** the target has a `MeshRenderer` | None | Assign **iff** the hit has one | None |
-  | Texture | None | None | None | BindTextureSlot |
-  | Folder / Audio / Text / Unknown | None | None | None | None |
+  | kind \ surface | HierarchyRow | HierarchyVoid | Viewport | MaterialSlot | AssetField |
+  |---|---|---|---|---|---|
+  | Model | Instantiate | Instantiate | Instantiate | None | AssignRef* |
+  | Material | Assign **iff** the target has a `MeshRenderer` | None | Assign **iff** the hit has one | None | AssignRef* |
+  | Texture | None | None | None | BindTextureSlot | AssignRef* |
+  | Audio | None | None | None | None | AssignRef* |
+  | Folder / Text / Unknown | None | None | None | None | AssignRef* |
+
+  **(*) `AssignAssetReference` iff `assetKindIsDraggable(kind) && (!fieldKind || *fieldKind == kind)`**
+  — ONE expression, written into every kind's arm, never short-circuited for the kinds that happen to
+  refuse today. Folder/Text/Unknown reach it too and are refused BY IT, which is what makes widening
+  `assetKindIsDraggable` (for a future `Text` reference) ONE edit that widens the drag source, the
+  token vocabulary and this surface together. `fieldKind` is the kind the field's `AERO_ASSET` names,
+  `nullopt` for an unannotated field AND for every surface that is not a field, and it is
+  **NON-DEFAULTED** (E.1.3's rule): a default would let a future `AssetField` site forget it and
+  silently become unconstrained, while non-defaulted makes every unconverted site a compile error.
+  There are **six** production call sites, and two of them are the drop drains in `editor_app.cpp`,
+  which recompute the action from the live `World` at drain time.
 
   It is a `switch (kind)` around a `switch (surface)`, **both without `default:`**, so a new `AssetKind`
   or a new `DropSurface` is a `-Wswitch` error rather than a silent `None`. `targetHasMeshRenderer` is
@@ -1475,6 +1500,47 @@ a **human mouse/keyboard pass** recorded per OS in `editor/VALIDATION.md`.
   **`I122`'s clause (c) is what keeps it true** -- it pins as source text that no `ImGui::Image` call in
   `viewport_panel.cpp` names anything but `target->colorTexture()`, because the defect it prevents is
   invisible to every pass this project can run locally.
+
+## The asset-reference field (task E.3.3)
+
+**A FIELD HAS EXACTLY ONE ASSIGNMENT SURFACE AND IT IS `drawAssetReferenceField`'s.** A panel that wants
+a reference field calls the widget; it does NOT write its own `BeginDragDropTarget`. 3.1.5's D14 ("no
+InputText, no drop target on a `Guid` row") is **superseded by an affordance, not contradicted** — there
+is still exactly ONE accept rule rather than a fourth surface with rules of its own, and
+`inspector_panel.cpp` still names no ImGui drop API at all, which `IR8` clause (a) keeps pinning. The
+peek rule is the widget's, once, for both hosts, and `IR8` clause (b) pins it as an **ORDERING** —
+classify BETWEEN the begin and the accept — because a membership pin cannot see which side of the accept
+the decision fell on (3.4.2's `I96` lesson).
+
+**THE KINDS A FIELD MAY NAME ARE EXACTLY THE KINDS A DRAG MAY CARRY.** `assetReferenceKindFromToken` is
+DERIVED from `ASSET_KIND_FILTER_OPTIONS` ∩ `assetKindIsDraggable`, never a list of its own, so a kind
+added to one set and not the other is a red test rather than a silent asymmetry.
+
+**THE WIDGET HOLDS NO DECISION.** Every predicate is `asset_picker_model`'s, and `asset_picker.cpp`
+states no `AssetKind::` literal at all — the kinds come from the rules, which come from the annotation,
+which comes from the component. That is the mechanical form of ADR-004's genericity claim for this
+widget, and `I166(c)` pins it.
+
+**THE OBSERVABLES AND THE FOUR LIVE ONE-SHOTS ARE OWNER-KEYED, AND A LIVE ONE-SHOT IS DROPPED WHEN
+NOTHING IS OPEN.** `MeshRenderer` draws TWO `Guid` rows every frame, so a per-field write has the second
+clobber the first in the same frame. And a one-shot that merely waits for a popup is a **delay line**: it
+fires on the frame the next popup appears. An unmoved undo count cannot see that — the discriminator is
+that the next open **stays open**.
+
+**AN API-POSITIONED POPUP IS NEVER CLAMPED BY ImGui, AND ONE OFF THE SCREEN HAS ITS CHILD CULLED.**
+`Begin`'s visibility clamp runs only `if (!window_pos_set_by_api && …)` (`imgui.cpp:8279`), and a culled
+child makes `ImGuiListClipper::Step()` return **false immediately** — no tile submitted, no key noted, no
+error anywhere. `assetPickerAnchor` therefore clamps BOTH axes itself, applied to the window's effective
+top so the `(0,1)` flip pivot is honoured. **Any future window this tree positions by API inherits this.**
+
+**`ImGuiListClipper::IncludeItemByIndex` GOES AFTER `Begin()`, NEVER BEFORE IT.** The constructor
+`memset`s `DisplayStart` to 0 and `Begin` is what sets it to −1, so a call placed above `Begin` trips
+`IM_ASSERT(DisplayStart < 0)` (`imgui.cpp:3418`) — an **abort** in the Debug build — and dereferences a
+null `TempData`. The header's "before the first call to `Step()`" reads as if above `Begin` were safe.
+
+**SHOWING A HIDDEN PANEL CLOSES AN OPEN POPUP**, because ImGui focuses a window that becomes visible and
+`FocusWindow` closes every popup above it (`imgui.cpp:13740`). A case that re-shows a panel and then
+measures a popup is measuring one that is no longer there.
 
 Full history: `docs/10-engineering-log.md`, Epic 2.1 / 2.2 / 2.5 / 2.6 entries, and tasks 3.1.1, 3.1.2,
 3.1.3, 3.1.4, 3.1.5, 3.2.1, 3.2.2, 3.2.3, 3.2.4, 3.2.5 and 3.4.2's entries under Phase 3.

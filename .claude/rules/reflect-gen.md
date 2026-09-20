@@ -21,10 +21,23 @@ CLI dispatch precedence: `--emit-json` > `--emit-meta` > `--components` > raw AS
 
 A bare `[[engine::component]]` is **discarded by Clang** — no attribute cursor survives,
 only a `-Wunknown-attributes` warning. So annotations go through macros in
-`<aero/reflect/annotations.hpp>` (`AERO_COMPONENT`, `AERO_RANGE(min,max)`, `AERO_COLOR`)
-which expand to `[[clang::annotate(...)]]` **only** when `AERO_REFLECT_PARSE` is defined,
-and to nothing under the real compiler. The tool auto-injects `-DAERO_REFLECT_PARSE=1`;
-no caller manages the marker.
+`<aero/reflect/annotations.hpp>` (`AERO_COMPONENT`, `AERO_RANGE(min,max)`, `AERO_COLOR`,
+`AERO_ASSET(kind)`) which expand to `[[clang::annotate(...)]]` **only** when
+`AERO_REFLECT_PARSE` is defined, and to nothing under the real compiler. The tool
+auto-injects `-DAERO_REFLECT_PARSE=1`; no caller manages the marker.
+
+`AERO_ASSET(kind)` (task E.3.3) applies to **`Guid` fields only** — judged after
+classification, like the other two, so a misapplied one warns and is dropped rather than
+failing the build. Its payload must be an **identifier** (`[A-Za-z_][A-Za-z0-9_]*`,
+non-empty; `AERO_ASSET()` stringizes to `""` and is malformed, not "absent").
+
+**THE TOOL NEVER VALIDATES THE VOCABULARY, BECAUSE THE VOCABULARY IS THE EDITOR'S.** The
+set of kinds a field may name is `AssetKind` — an editor type this layer must not know, the
+golden rule running the other way. `shader` therefore PARSES here and is emitted verbatim;
+refusing it is `assetReferenceKindFromToken`'s job
+(`editor/include/aero/editor/asset_drag.hpp`), and an unrecognised token is *unconstrained
+plus one warning* in the editor, never an error here. Do not "helpfully" add a kind list to
+this tool.
 
 ## The reflectable subset — extend it only by exact match
 
