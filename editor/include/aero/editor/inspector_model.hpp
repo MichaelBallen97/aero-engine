@@ -27,6 +27,12 @@ struct FieldEntry {
     double rangeMin = 0.0;
     double rangeMax = 0.0;
     bool color = false;
+    // task E.3.3: the field's AERO_ASSET token, VERBATIM and UNJUDGED -- "" when unannotated. A
+    // std::string rather than a string_view into generated storage: the model is rebuilt into
+    // caller-owned scratch every frame (D15) and a view would alias a TU this header cannot see.
+    // NOTHING HERE RESOLVES IT: assetReferenceKindFromToken (asset_drag.hpp) owns the vocabulary, and
+    // the panel asks it per frame.
+    std::string assetKindToken;
     FieldValue value;
 };
 

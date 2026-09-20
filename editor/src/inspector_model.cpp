@@ -143,12 +143,21 @@ void buildInspectorModel(const World& world, Entity entity, InspectorModel& out)
                     field.rangeMin = 0.0;
                     field.rangeMax = 0.0;
                     field.color = false;
+                    // CLEAR, never `= {}`: the model is rebuilt into caller-owned scratch every frame
+                    // (D15), and clear() is what preserves this string's capacity across a same-shape
+                    // rebuild the way the vectors around it preserve theirs.
+                    field.assetKindToken.clear();
                     const engine::reflect::FieldUiMeta* uiMeta = data.custom();
                     if (uiMeta != nullptr) {
                         field.hasRange = uiMeta->hasRange;
                         field.rangeMin = uiMeta->rangeMin;
                         field.rangeMax = uiMeta->rangeMax;
                         field.color = uiMeta->color;
+                        // task E.3.3: CARRIED, never judged. A nullptr is the ordinary unannotated
+                        // case, which the clear() above has already spelled.
+                        if (uiMeta->assetKind != nullptr) {
+                            field.assetKindToken = uiMeta->assetKind;
+                        }
                     }
                     ++fieldWriteIndex;
                 }
