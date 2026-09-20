@@ -9723,44 +9723,6 @@ struct DropFixture {
     return fixture;
 }
 
-// ---- task E.3.3: the picker's own project ---------------------------------------------------------
-struct PickerFixture {
-    std::string root;
-    std::string assetsRoot;
-};
-
-// SIX draggable records, chosen so every rules value has a DISTINCT, SMALL count:
-//   tex/a.png, tex/b.png (Texture, decodable)   tex/c.ktx2 (Texture, NOT decodable -- the icon arm)
-//   hero.obj (Model)     m.aeromat (Material)   tone.wav (Audio)
-// plus notes.txt (Text), which every rule must refuse. The three textures live under tex/ so the
-// BROWSER -- which lists the ROOT -- never notes a texture key even while it is visible, which is what
-// makes I167's "attempts == 0 with the picker closed" a statement about the PICKER.
-//
-// Built entirely from THIS FILE's own literals: this target defines no audio fixture path and has no
-// .glb to copy. The placeholder bytes are honest -- the picker classifies by EXTENSION, and neither
-// .wav nor .ktx2 is thumbnail-decodable at all, so nothing any of these cases drives ever decodes them.
-[[nodiscard]] PickerFixture makePickerProject(bool withTextures) {
-    const std::string location = uniqueProjectLocation();
-    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
-    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
-    PickerFixture fixture{.root = created.root, .assetsRoot = created.root + "/assets"};
-    REQUIRE(engine::editor::writeTextFileAtomic(fixture.assetsRoot + "/hero.obj", MINIMAL_OBJ_TEXT).empty());
-    REQUIRE(engine::editor::writeTextFileAtomic(fixture.assetsRoot + "/m.aeromat", MINIMAL_AEROMAT_TEXT).empty());
-    REQUIRE(engine::editor::writeTextFileAtomic(fixture.assetsRoot + "/notes.txt", "notes\n").empty());
-    REQUIRE(engine::editor::writeTextFileAtomic(fixture.assetsRoot + "/tone.wav", "RIFFplaceholder").empty());
-    if (withTextures) {
-        // MEASURED, not assumed: writeTextFileAtomic opens an ofstream on the target and does NOT
-        // create parent directories, so `tex/` must exist first or every write below fails.
-        REQUIRE(engine::editor::ensureDirectory(fixture.assetsRoot + "/tex").empty());
-        REQUIRE(
-            writeBinaryFixture(fixture.assetsRoot + "/tex/a.png", TINY_PNG_RED.data(), TINY_PNG_RED.size()).empty());
-        REQUIRE(writeBinaryFixture(fixture.assetsRoot + "/tex/b.png", TINY_PNG_GREEN.data(), TINY_PNG_GREEN.size())
-                    .empty());
-        REQUIRE(engine::editor::writeTextFileAtomic(fixture.assetsRoot + "/tex/c.ktx2", "placeholder").empty());
-    }
-    return fixture;
-}
-
 // The kind byte a payload carries. It is a PEEK HINT -- every drain re-derives the real kind from the
 // record -- so these cases spell it honestly rather than passing 0 everywhere.
 constexpr std::uint8_t MODEL_KIND = static_cast<std::uint8_t>(engine::editor::AssetKind::Model);
@@ -14273,6 +14235,48 @@ TEST_CASE("editor: the whole-field reset menu hangs off the LABEL cell (task E.3
 
 namespace {
 
+// ---- task E.3.3: the picker's own project ---------------------------------------------------------
+// DELIBERATELY NOT beside makeDropProject: that helper lives inside this file's
+// `#if AERO_SHADER_TOOLS_ENABLED` region, because a model DROP instantiates and therefore renders.
+// The picker needs a GPU DEVICE, not cooked shaders, so its fixture and its cases must be present and
+// asserting in BOTH configurations -- which is what the shader-tools-OFF build measures.
+struct PickerFixture {
+    std::string root;
+    std::string assetsRoot;
+};
+
+// SIX draggable records, chosen so every rules value has a DISTINCT, SMALL count:
+//   tex/a.png, tex/b.png (Texture, decodable)   tex/c.ktx2 (Texture, NOT decodable -- the icon arm)
+//   hero.obj (Model)     m.aeromat (Material)   tone.wav (Audio)
+// plus notes.txt (Text), which every rule must refuse. The three textures live under tex/ so the
+// BROWSER -- which lists the ROOT -- never notes a texture key even while it is visible, which is what
+// makes I167's "attempts == 0 with the picker closed" a statement about the PICKER.
+//
+// Built entirely from THIS FILE's own literals: this target defines no audio fixture path and has no
+// .glb to copy. The placeholder bytes are honest -- the picker classifies by EXTENSION, and neither
+// .wav nor .ktx2 is thumbnail-decodable at all, so nothing any of these cases drives ever decodes them.
+[[nodiscard]] PickerFixture makePickerProject(bool withTextures) {
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    PickerFixture fixture{.root = created.root, .assetsRoot = created.root + "/assets"};
+    REQUIRE(engine::editor::writeTextFileAtomic(fixture.assetsRoot + "/hero.obj", MINIMAL_OBJ_TEXT).empty());
+    REQUIRE(engine::editor::writeTextFileAtomic(fixture.assetsRoot + "/m.aeromat", MINIMAL_AEROMAT_TEXT).empty());
+    REQUIRE(engine::editor::writeTextFileAtomic(fixture.assetsRoot + "/notes.txt", "notes\n").empty());
+    REQUIRE(engine::editor::writeTextFileAtomic(fixture.assetsRoot + "/tone.wav", "RIFFplaceholder").empty());
+    if (withTextures) {
+        // MEASURED, not assumed: writeTextFileAtomic opens an ofstream on the target and does NOT
+        // create parent directories, so `tex/` must exist first or every write below fails.
+        REQUIRE(engine::editor::ensureDirectory(fixture.assetsRoot + "/tex").empty());
+        REQUIRE(
+            writeBinaryFixture(fixture.assetsRoot + "/tex/a.png", TINY_PNG_RED.data(), TINY_PNG_RED.size()).empty());
+        REQUIRE(writeBinaryFixture(fixture.assetsRoot + "/tex/b.png", TINY_PNG_GREEN.data(), TINY_PNG_GREEN.size())
+                    .empty());
+        REQUIRE(engine::editor::writeTextFileAtomic(fixture.assetsRoot + "/tex/c.ktx2", "placeholder").empty());
+    }
+    return fixture;
+}
+
 // The seeded "Cube", with the Inspector in front and drawing. Returns the entity.
 [[nodiscard]] engine::Entity focusInspectorOnCube(engine::editor::EditorApp& app) {
     engine::World& world = app.world();
@@ -14324,6 +14328,11 @@ TEST_CASE("editor: the picker's popup BODY executes, per field, with the field's
     const engine::Entity cube = focusInspectorOnCube(*app);
     CHECK_FALSE(app->assetPickerOpen());
 
+// BOTH ARMS ASSERT, neither skips (DP6's shape). MEASURED, and it is a STRONGER degradation than "no
+// undo entry": with -DAERO_REFLECT_TOOLS=OFF there is no generated entt::meta for any built-in, so
+// buildInspectorModel reports hasFields == false and the Inspector draws NO Guid ROW AT ALL -- there
+// is nothing for a picker request to open on, in any of the four Inspector-hosted cases here.
+#if AERO_REFLECT_TOOLS_ENABLED
     // `mesh` wants a MODEL, and the fixture has exactly one.
     app->requestInspectorAssetPicker("engine::MeshRenderer", "mesh");
     REQUIRE(app->tick());
@@ -14363,6 +14372,16 @@ TEST_CASE("editor: the picker's popup BODY executes, per field, with the field's
     REQUIRE(app->tick());
     CHECK(app->assetPickerOpen());
     CHECK(app->assetPickerCandidateCount() == 1U);
+#else
+    (void)cube;
+    app->requestInspectorAssetPicker("engine::MeshRenderer", "mesh");
+    for (int i = 0; i < 5; ++i) {
+        CAPTURE(i);
+        REQUIRE(app->tick());
+        CHECK_FALSE(app->assetPickerOpen());
+    }
+    CHECK(app->assetPickerCandidateCount() == 0U);
+#endif
 
     app->requestQuit();
     CHECK(app->tick() == false);
@@ -14396,6 +14415,9 @@ TEST_CASE("editor: search, move, commit, undo -- the picker writes ONE entry and
     REQUIRE(app->tick());
     const engine::Entity cube = focusInspectorOnCube(*app);
 
+// BOTH ARMS ASSERT, neither skips -- see I162's note: with no meta the Inspector draws no Guid row, so
+// the request opens nothing and no pick can land.
+#if AERO_REFLECT_TOOLS_ENABLED
     app->requestInspectorAssetPicker("engine::MeshRenderer", "mesh");
     REQUIRE(app->tick());
     REQUIRE(app->assetPickerOpen());
@@ -14422,10 +14444,6 @@ TEST_CASE("editor: search, move, commit, undo -- the picker writes ONE entry and
     REQUIRE(heroGuid.has_value());
     const engine::MeshRenderer* renderer = app->world().get<engine::MeshRenderer>(cube);
     REQUIRE(renderer != nullptr);
-// BOTH ARMS ASSERT, neither skips (DP6's shape): the write rides SetFieldCommand through the
-// reflection seam, so with -DAERO_REFLECT_TOOLS=OFF there is no entt::meta for MeshRenderer and no
-// pick can land at all. "How many undo entries" is not a meaningful question there.
-#if AERO_REFLECT_TOOLS_ENABLED
     CHECK((renderer->mesh == *heroGuid));
     CHECK(app->commands().count() == beforeCommit + 1U);  // EXACTLY one entry
 
@@ -14502,9 +14520,18 @@ TEST_CASE("editor: search, move, commit, undo -- the picker writes ONE entry and
     REQUIRE(renderer != nullptr);
     CHECK_FALSE(renderer->mesh.valid());
 #else
-    // No meta: the pick is inert. The field never moved and nothing entered the history.
+    // No meta, no Guid row, no popup, no pick: the whole path is inert and the history stays empty.
+    const std::size_t beforeInert = app->commands().count();
+    app->requestInspectorAssetPicker("engine::MeshRenderer", "mesh");
+    for (int i = 0; i < 5; ++i) {
+        CAPTURE(i);
+        REQUIRE(app->tick());
+        CHECK_FALSE(app->assetPickerOpen());
+    }
+    const engine::MeshRenderer* renderer = app->world().get<engine::MeshRenderer>(cube);
+    REQUIRE(renderer != nullptr);
     CHECK_FALSE(renderer->mesh.valid());
-    CHECK(app->commands().count() == beforeCommit);
+    CHECK(app->commands().count() == beforeInert);
     CHECK_FALSE(app->commands().canUndo());
 #endif
 
@@ -14538,7 +14565,7 @@ TEST_CASE("editor: a pending open NEVER fires on the wrong field, and is not con
     app->panels().setVisible("Console", false);
     REQUIRE(app->tick());
     REQUIRE(app->tick());
-    focusInspectorOnCube(*app);
+    (void)focusInspectorOnCube(*app);  // the entity itself is not needed here
 
     // A component the Cube does not have, and a field that does not exist. The Cube DOES draw two Guid
     // rows every frame, so a request that matched "the next reference row drawn" would open on one of
@@ -14551,10 +14578,16 @@ TEST_CASE("editor: a pending open NEVER fires on the wrong field, and is not con
     }
 
     // ...and the stale request did not CONSUME itself on a wrong field either: a real one still opens.
+    // BOTH ARMS ASSERT -- see I162's note. The arm ABOVE is what this case is about and it holds in
+    // both configurations; only the "a real one still opens" half needs meta.
     app->requestInspectorAssetPicker("engine::MeshRenderer", "mesh");
     REQUIRE(app->tick());
+#if AERO_REFLECT_TOOLS_ENABLED
     CHECK(app->assetPickerOpen());
     CHECK(app->assetPickerCandidateCount() == 1U);
+#else
+    CHECK_FALSE(app->assetPickerOpen());  // no Guid row exists to open on
+#endif
 
     app->requestQuit();
     CHECK(app->tick() == false);
@@ -14667,9 +14700,12 @@ TEST_CASE("editor: an OPEN picker HOLDS a context route, and the held route appl
     REQUIRE(other.valid());
     CHECK(engine::editor::addComponent(app->world(), other, meshRendererId));
 
-    focusInspectorOnCube(*app);
+    (void)focusInspectorOnCube(*app);  // the entity itself is not needed here
     app->requestInspectorAssetPicker("engine::MeshRenderer", "mesh");
     REQUIRE(app->tick());
+// BOTH ARMS ASSERT -- see I162's note. With no meta there is no Guid row, so no popup ever opens and
+// there is nothing to HOLD the route: it applies straight away, which is the honest degradation.
+#if AERO_REFLECT_TOOLS_ENABLED
     REQUIRE(app->assetPickerOpen());
 
     const std::size_t holdsBefore = app->focusRouteHoldCount();
@@ -14707,6 +14743,15 @@ TEST_CASE("editor: an OPEN picker HOLDS a context route, and the held route appl
     REQUIRE(app->tick());
     CHECK(app->focusRouteApplyCount() > appliesBefore);
     CHECK(app->lastRoutedPanelId() == std::string_view("Inspector"));
+#else
+    CHECK_FALSE(app->assetPickerOpen());
+    const std::size_t appliesBefore = app->focusRouteApplyCount();
+    app->selection().set(other);
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+    CHECK(app->focusRouteApplyCount() > appliesBefore);  // nothing held it
+    CHECK(app->lastRoutedPanelId() == std::string_view("Inspector"));
+#endif
 
     app->requestQuit();
     CHECK(app->tick() == false);

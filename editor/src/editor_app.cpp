@@ -1463,6 +1463,10 @@ void EditorApp::applyHierarchyDrop(const HierarchyAssetDrop& drop) {
             pushMaterialAssign(drop.targetRow, record->guid);
             break;
         case DropAction::BindTextureSlot:
+        // task E.3.3: AssignAssetReference is the ASSET FIELD's row and cannot reach this drain -- the
+        // surface here is only ever HierarchyRow or HierarchyVoid. Enumerated rather than defaulted,
+        // because that is what makes the NEXT enumerator a -Wswitch error instead of a silent refusal.
+        case DropAction::AssignAssetReference:
         case DropAction::None:
             break;  // a refusal that reached the drain is a STALE refusal, not an illegal one: peek
                     // already blocked the illegal ones, so this logs nothing beyond the null above
@@ -1494,6 +1498,7 @@ void EditorApp::applyViewportDrop(const ViewportAssetDrop& drop) {
             pushMaterialAssign(target, record->guid);
             break;
         case DropAction::BindTextureSlot:
+        case DropAction::AssignAssetReference:  // task E.3.3: the asset FIELD's row -- never this drain's
         case DropAction::None:
             break;
     }
