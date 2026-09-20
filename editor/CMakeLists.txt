@@ -125,6 +125,7 @@ add_library(aero_editor_core STATIC
     src/thumbnail_cache.cpp     # task 3.1.3 -- key/state/LRU/budget + the box resampler (PURE, no GPU)
     src/thumbnail_store.cpp     # task 3.1.3 -- the ONLY stb_image TU; RHI texture lifetime
     src/thumbnail_service.cpp   # task E.3.3 -- the SHARED thumbnail ledger/store/budget (src-private)
+    src/asset_tile.cpp          # task E.3.3 -- the tile FACE, shared by the browser and the picker
     src/asset_actions.cpp       # task 3.1.3 -- the ONE sanctioned deletion (D12/D13)
     src/asset_watcher.cpp       # task 3.1.4 -- the budgeted assets-tree change probe (PURE + one walk)
     src/model_import.cpp        # task 3.2.1 -- the canonical model + every pure helper (NO fastgltf)

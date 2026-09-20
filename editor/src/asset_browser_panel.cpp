@@ -22,6 +22,7 @@
 #include <aero/editor/panel_context.hpp>
 #include <aero/editor/project_files.hpp>
 
+#include "asset_tile.hpp"         // task E.3.3 -- the tile FACE, shared with the picker
 #include "text_input.hpp"         // task 3.1.3 (A1): inputTextString -- NEVER imgui_stdlib (Windows Debug LNK2038)
 #include "thumbnail_service.hpp"  // task E.3.3 -- the SHARED ledger/store, borrowed through thumbnailsPtr
 
@@ -62,45 +63,6 @@ constexpr std::size_t GUID_SUFFIX_LENGTH = 4;
 std::string elideGuid(Guid guid) {
     const std::string full = formatGuid(guid);
     return full.substr(0, GUID_PREFIX_LENGTH) + "…" + full.substr(full.size() - GUID_SUFFIX_LENGTH);
-}
-
-// task 3.1.3 (A15): the tile caption's own truncation policy. ImGui offers no ellipsis for draw-list
-// text, so this measures with ImGui::CalcTextSize and truncates by hand -- the LONGEST byte prefix
-// whose (prefix + ellipsis) still fits TILE_CAPTION_LINES lines at `wrapWidth`, landing on a UTF-8
-// boundary (never slicing a multi-byte sequence). Needs a live ImGui context (CalcTextSize/
-// GetTextLineHeight), so it lives here, not in asset_view.cpp (which stays ImGui-free).
-std::string elideForCaption(const std::string& name, float wrapWidth) {
-    const float twoLineHeight = static_cast<float>(TILE_CAPTION_LINES) * ImGui::GetTextLineHeight();
-    const ImVec2 full = ImGui::CalcTextSize(name.c_str(), nullptr, false, wrapWidth);
-    if (full.y <= twoLineHeight) {
-        return name;
-    }
-    std::size_t lo = 0;
-    std::size_t hi = name.size();
-    while (lo < hi) {
-        const std::size_t mid = lo + ((hi - lo + 1) / 2);
-        std::size_t cut = mid;
-        while (cut > 0 && (static_cast<unsigned char>(name[cut]) & 0xC0U) == 0x80U) {
-            --cut;  // step back to a UTF-8 boundary
-        }
-        if (cut == 0) {
-            hi = 0;
-            break;
-        }
-        std::string candidate(name, 0, cut);
-        candidate += "…";
-        const ImVec2 size = ImGui::CalcTextSize(candidate.c_str(), nullptr, false, wrapWidth);
-        if (size.y <= twoLineHeight) {
-            lo = mid;
-        } else {
-            hi = mid - 1;
-        }
-    }
-    std::size_t finalCut = lo;
-    while (finalCut > 0 && (static_cast<unsigned char>(name[finalCut]) & 0xC0U) == 0x80U) {
-        --finalCut;
-    }
-    return name.substr(0, finalCut) + "…";
 }
 
 }  // namespace
@@ -697,11 +659,6 @@ void AssetBrowserPanel::drawTile(const FileEntry& entry, const std::string& rel,
         beginAssetDragSource(rel, entry.name.c_str());
     }
 
-    ImDrawList* const drawList = ImGui::GetWindowDrawList();
-    const ImVec2 iconMin(itemMin.x + pad, itemMin.y + pad);
-    const ImVec2 iconMax(iconMin.x + tileEdge, iconMin.y + tileEdge);
-    const float rounding = ImGui::GetStyle().FrameRounding;
-
     // task 3.1.3, Step 7: three lines, none of which mutate (§D-7) -- the ONLY thumbnail participation
     // in the draw walk. `thumbnailKeyFor` returns nullopt for a folder, an undecodable extension, or
     // any of INV-V3's other six guards; `noteVisible` appends to the service's own per-frame scratch,
@@ -713,39 +670,11 @@ void AssetBrowserPanel::drawTile(const FileEntry& entry, const std::string& rel,
         texture = thumbnailsPtr->nativeTextureFor(*key);
     }
 
-    if (texture != nullptr) {
-        // F7 (A6): the SDL_GPU ImGui backend takes the native texture pointer directly as the id; a
-        // thumbnail needs no sampler of its own. viewport_panel.cpp:201-204's exact idiom.
-        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
-        const auto texId = static_cast<ImTextureID>(reinterpret_cast<std::uintptr_t>(texture));
-        drawList->AddImage(texId, iconMin, iconMax);
-    } else {
-        // The generated type icon -- what a Skipped/Failed/no-database entry, or an undecodable
-        // extension, falls back to FOREVER.
-        const AssetKind kind = classifyAssetKind(entry.name, entry.isDirectory);
-        const IconColor color = iconColorFor(kind);
-        const ImU32 fillColor = IM_COL32(color.r, color.g, color.b, color.a);
-        drawList->AddRectFilled(iconMin, iconMax, fillColor, rounding);
-        if (entry.isDirectory) {
-            // D6: a folder is a two-rect glyph in a fixed colour -- a small "tab" atop the body, both
-            // in the SAME icon colour so it reads as one shape rather than two overlapping tiles.
-            const float tabWidth = (iconMax.x - iconMin.x) * 0.45F;
-            const float tabHeight = (iconMax.y - iconMin.y) * 0.18F;
-            const ImU32 tabColor = IM_COL32(color.r, color.g, color.b, 255U);
-            drawList->AddRectFilled(iconMin, ImVec2(iconMin.x + tabWidth, iconMin.y + tabHeight), tabColor, rounding);
-        } else {
-            labelScratch = iconLabelFor(entry.name);
-            const ImVec2 textSize = ImGui::CalcTextSize(labelScratch.c_str());
-            const ImVec2 textPos((iconMin.x + iconMax.x - textSize.x) * 0.5F,
-                                 (iconMin.y + iconMax.y - textSize.y) * 0.5F);
-            drawList->AddText(textPos, IM_COL32_WHITE, labelScratch.c_str());
-        }
-    }
-
-    // The caption: leaf name, wrapped to at most TILE_CAPTION_LINES and ellipsised beyond that (A15).
-    // A15's 8-argument AddText overload -- imgui.h:3477 -- is the only one with a wrap width. A search
-    // hit folds its containing folder into the SAME caption (the plan's own "subtitled" requirement),
-    // so it stays identifiable outside the directory the user is currently browsing (AC-15).
+    // task E.3.3 (D6): the face is drawAssetTileFace's now -- the picker draws the SAME one, so a
+    // pixel of padding cannot drift between the two a year from now. A search hit folds its containing
+    // folder into the SAME caption (the plan's own "subtitled" requirement), so it stays identifiable
+    // outside the directory the user is currently browsing (AC-15). `captionSource` is a NAMED LOCAL
+    // because the face holds a view into it, alive until the call returns.
     std::string captionSource = entry.name;
     if (isSearchHit) {
         const std::string parent = parentOf(rel);
@@ -753,11 +682,17 @@ void AssetBrowserPanel::drawTile(const FileEntry& entry, const std::string& rel,
             captionSource = parent + "/" + entry.name;
         }
     }
-    const float wrapWidth = tileW - (2.0F * pad);
-    const std::string caption = elideForCaption(captionSource, wrapWidth);
-    const ImVec2 captionPos(itemMin.x + pad, iconMax.y + pad);
-    drawList->AddText(ImGui::GetFont(), ImGui::GetFontSize(), captionPos, IM_COL32_WHITE, caption.c_str(), nullptr,
-                      wrapWidth, nullptr);
+    // A designated initialiser must follow DECLARATION order -- clang accepts a wrong one with a
+    // warning while GCC and MSVC reject (E.2.2's finding 3). This is AssetTileFace's own order.
+    const AssetTileFace face{.nativeTexture = texture,
+                             .kind = classifyAssetKind(entry.name, entry.isDirectory),
+                             .isDirectory = entry.isDirectory,
+                             .fileName = entry.name,
+                             .captionSource = captionSource,
+                             .tileW = tileW,
+                             .tileEdge = tileEdge,
+                             .pad = pad};
+    drawAssetTileFace(ImGui::GetWindowDrawList(), itemMin, face, labelScratch);
 }
 
 void AssetBrowserPanel::drawContentsGrid(float paneHeight) {
