@@ -221,7 +221,8 @@ bool HierarchyPanel::drawRow(PanelContext& context, Entity entity) {
             // has, so the drop is its own one-shot drained by tick() rather than a PendingAction.
             const auto kind = static_cast<AssetKind>(asset->kind);
             const bool hasMesh = world.has<MeshRenderer>(entity);
-            if (classifyAssetDrop(kind, DropSurface::HierarchyRow, hasMesh) != DropAction::None &&
+            if (classifyAssetDrop(kind, DropSurface::HierarchyRow, hasMesh, /*fieldKind=*/std::nullopt) !=
+                    DropAction::None &&
                 ImGui::AcceptDragDropPayload(ASSET_PAYLOAD_TYPE) != nullptr) {
                 pendingAssetDrop = HierarchyAssetDrop{.payload = *asset, .targetRow = entity};
             }
@@ -354,8 +355,8 @@ void HierarchyPanel::drawVoidTarget(PanelContext& context) {
             // empty space is refused (there is no entity to assign it to) while a model instantiates
             // at the scene root. targetHasMeshRenderer is FALSE here because there is no target.
             const auto kind = static_cast<AssetKind>(asset->kind);
-            if (classifyAssetDrop(kind, DropSurface::HierarchyVoid, /*targetHasMeshRenderer=*/false) !=
-                    DropAction::None &&
+            if (classifyAssetDrop(kind, DropSurface::HierarchyVoid, /*targetHasMeshRenderer=*/false,
+                                  /*fieldKind=*/std::nullopt) != DropAction::None &&
                 ImGui::AcceptDragDropPayload(ASSET_PAYLOAD_TYPE) != nullptr) {
                 pendingAssetDrop = HierarchyAssetDrop{.payload = *asset, .targetRow = Entity{}};
             }

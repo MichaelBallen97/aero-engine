@@ -1427,7 +1427,7 @@ void EditorApp::applyHierarchyDrop(const HierarchyAssetDrop& drop) {
     const AssetKind kind = classifyAssetKind(leafOf(record->relativePath), /*isDirectory=*/false);
     const bool hasMesh = drop.targetRow.valid() && sceneWorld.has<MeshRenderer>(drop.targetRow);
     const DropSurface surface = drop.targetRow.valid() ? DropSurface::HierarchyRow : DropSurface::HierarchyVoid;
-    switch (classifyAssetDrop(kind, surface, hasMesh)) {
+    switch (classifyAssetDrop(kind, surface, hasMesh, /*fieldKind=*/std::nullopt)) {
         case DropAction::InstantiateModel:
             instantiateModelDrop(*record, drop.targetRow, Transform{});  // LOCAL identity under the row
             break;
@@ -1453,7 +1453,7 @@ void EditorApp::applyViewportDrop(const ViewportAssetDrop& drop) {
     const AssetKind kind = classifyAssetKind(leafOf(record->relativePath), /*isDirectory=*/false);
     const Entity target = viewportPanel->pickAt(sceneWorld, drop.ndc);
     const bool hasMesh = target.valid() && sceneWorld.has<MeshRenderer>(target);
-    switch (classifyAssetDrop(kind, DropSurface::Viewport, hasMesh)) {
+    switch (classifyAssetDrop(kind, DropSurface::Viewport, hasMesh, /*fieldKind=*/std::nullopt)) {
         case DropAction::InstantiateModel: {
             // Placement is resolved HERE, not at accept time, so the entity lands where the camera is
             // NOW rather than where it was a frame ago. dropPlacementPoint is total: every ray yields

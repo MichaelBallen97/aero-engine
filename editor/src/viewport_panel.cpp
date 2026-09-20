@@ -484,7 +484,7 @@ void ViewportPanel::acceptViewportAssetDrop(PanelContext& context, Vec2 imageOri
         const Entity hit = pickAt(context.world, ndc);
         targetHasMesh = hit.valid() && context.world.has<MeshRenderer>(hit);
     }
-    if (classifyAssetDrop(kind, DropSurface::Viewport, targetHasMesh) == DropAction::None) {
+    if (classifyAssetDrop(kind, DropSurface::Viewport, targetHasMesh, /*fieldKind=*/std::nullopt) == DropAction::None) {
         return;  // REFUSED AT PEEK: AcceptDragDropPayload is never called, so ImGui draws no highlight
     }
     if (ImGui::AcceptDragDropPayload(ASSET_PAYLOAD_TYPE) != nullptr) {

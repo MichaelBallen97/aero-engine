@@ -60,14 +60,32 @@ static_assert(std::is_trivially_copyable_v<AssetDragPayload>);
 // copy -- a nil guid in a payload is a corrupt payload, not a "none" value.
 [[nodiscard]] std::optional<AssetDragPayload> decodeAssetDragPayload(const void* data, int sizeBytes) noexcept;
 
-// Model | Texture | Material. Folder, Audio, Text and Unknown are NOT draggable -- and note that a
-// `.mtl` classifies Unknown (asset_view.cpp's table) even though it is importable, so it starts no drag.
+// Model | Texture | Material | AUDIO (task E.3.3 -- AudioSource::clip is a drop target now, so an
+// audio file must be able to START a drag; the source refuses a non-draggable kind). Folder, Text and
+// Unknown are NOT draggable -- and note that a `.mtl` classifies Unknown (asset_view.cpp's table) even
+// though it is importable, so it starts no drag.
 [[nodiscard]] bool assetKindIsDraggable(AssetKind kind) noexcept;
 
-// ---- the routing matrix (D12) --------------------------------------------------------------------
+// task E.3.3: the token an AERO_ASSET(...) may carry -> the kind, DERIVED and never listed: the
+// DRAGGABLE kind whose ASCII-folded assetKindLabel equals the ASCII-folded token. "texture" "model"
+// "material" "audio" resolve; "folder" "text" "unknown" and anything else are nullopt, which the
+// widget treats as UNCONSTRAINED plus one WARN. The kinds a field may NAME are exactly the kinds a
+// drag may CARRY -- one sentence, one home, and AR5 pins the derivation in both directions.
+[[nodiscard]] std::optional<AssetKind> assetReferenceKindFromToken(std::string_view token) noexcept;
 
-enum class DropSurface : std::uint8_t { HierarchyRow = 0, HierarchyVoid, Viewport, MaterialSlot };
-enum class DropAction : std::uint8_t { None = 0, InstantiateModel, AssignMaterial, BindTextureSlot };
+// ---- the routing matrix (D12) --------------------------------------------------------------------
+//
+// AssetField (task E.3.3) is APPENDED, so MaterialSlot's value is unmoved. Neither enum is persisted
+// anywhere, but asset_drag_test.cpp's ALL_SURFACES is POSITIONAL, and this sentence is what says so.
+
+enum class DropSurface : std::uint8_t { HierarchyRow = 0, HierarchyVoid, Viewport, MaterialSlot, AssetField };
+enum class DropAction : std::uint8_t {
+    None = 0,
+    InstantiateModel,
+    AssignMaterial,
+    BindTextureSlot,
+    AssignAssetReference
+};
 
 // NEVER named toString (.claude/rules/ci-portability.md): DOCTEST_STRINGIFY expands to an UNQUALIFIED
 // toString(...), so a toString on a public header is found by ADL and hard-errors every lane inside
@@ -81,15 +99,24 @@ enum class DropAction : std::uint8_t { None = 0, InstantiateModel, AssignMateria
 // entity (the void, a material slot) and is recomputed from the LIVE World at the accept site -- never
 // remembered, never taken from the payload.
 //
-//   kind \ surface | HierarchyRow          | HierarchyVoid    | Viewport              | MaterialSlot
-//   Model          | InstantiateModel      | InstantiateModel | InstantiateModel      | None
-//   Material       | AssignMaterial iff MR | None             | AssignMaterial iff MR | None
-//   Texture        | None                  | None             | None                  | BindTextureSlot
-//   Folder/Audio/Text/Unknown              | None everywhere
+//   kind \ surface | HierarchyRow  | HierarchyVoid | Viewport      | MaterialSlot | AssetField
+//   Model          | Instantiate   | Instantiate   | Instantiate   | None         | AssignRef*
+//   Material       | Assign iff MR | None          | Assign iff MR | None         | AssignRef*
+//   Texture        | None          | None          | None          | BindSlot     | AssignRef*
+//   Audio          | None          | None          | None          | None         | AssignRef*
+//   Folder/Text/Unknown            | None everywhere, AssetField INCLUDED (not draggable)
+//
+//   (*) iff !fieldKind || *fieldKind == kind.
+//
+// `fieldKind` is the kind the field's AERO_ASSET names -- nullopt for an unannotated field AND for
+// every surface that is not a field. NON-DEFAULTED (E.1.3's rule): a default would let a future
+// AssetField site forget it and silently become UNCONSTRAINED, a wrong picture with no error and no
+// failing test, while non-defaulted makes every unconverted site a compile error.
 //
 // Implemented as a switch (kind) containing a switch (surface), BOTH without `default:` -- so a new
 // AssetKind or a new DropSurface is a -Wswitch error rather than a silent None.
-[[nodiscard]] DropAction classifyAssetDrop(AssetKind kind, DropSurface surface, bool targetHasMeshRenderer) noexcept;
+[[nodiscard]] DropAction classifyAssetDrop(AssetKind kind, DropSurface surface, bool targetHasMeshRenderer,
+                                           std::optional<AssetKind> fieldKind) noexcept;
 
 // ---- the three drop-request structs (0.4) --------------------------------------------------------
 // One struct per surface, each carrying EXACTLY what the real gesture carries and nothing more. They

@@ -336,8 +336,8 @@ template <typename Enum, std::size_t N, typename LabelFn>
         if (ImGui::BeginDragDropTarget()) {
             if (const std::optional<AssetDragPayload> asset = peekAssetPayload(); asset.has_value()) {
                 const auto kind = static_cast<AssetKind>(asset->kind);
-                if (classifyAssetDrop(kind, DropSurface::MaterialSlot, /*targetHasMeshRenderer=*/false) ==
-                        DropAction::BindTextureSlot &&
+                if (classifyAssetDrop(kind, DropSurface::MaterialSlot, /*targetHasMeshRenderer=*/false,
+                                      /*fieldKind=*/std::nullopt) == DropAction::BindTextureSlot &&
                     ImGui::AcceptDragDropPayload(ASSET_PAYLOAD_TYPE) != nullptr) {
                     // EXACTLY the picker's own idiom above: a REBIND keeps the slot's sampler tokens,
                     // a FRESH bind takes the format's defaults, which MaterialTextureSlot{} already
