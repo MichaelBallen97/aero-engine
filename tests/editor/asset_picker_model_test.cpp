@@ -314,13 +314,36 @@ TEST_CASE("MP12: the anchor keeps the popup on screen -- below, above, and shift
         CHECK(anchor.pivot == Vec2{0.0F, 1.0F});
         CHECK(anchor.above);
     }
-    SUBCASE("room in NEITHER direction: stay below, and let the popup scroll") {
+    SUBCASE("room in NEITHER direction: stay below, but PINNED to the work area's top") {
         // A button near the bottom of a work area SHORTER than the popup. Flipping into a gap that is
-        // also too short would hide the button itself, which is worse than a scrolling popup.
+        // also too short would hide the button itself, so it stays below -- but its TOP is pulled onto
+        // the work area, because an API-set position is the one ImGui never clamps and a popup placed
+        // past the bottom of the screen has its grid child CULLED, which silently submits no tiles at
+        // all. (Measured in a 320x180 window: the grid drew on the appearing frame and never again.)
         const AssetPickerAnchor anchor =
             assetPickerAnchor(Vec2{100.0F, 150.0F}, Vec2{300.0F, 170.0F}, size, workMin, Vec2{1000.0F, 200.0F});
-        CHECK(anchor.pos.y == doctest::Approx(170.0F));
+        CHECK(anchor.pos.y == doctest::Approx(workMin.y));
         CHECK_FALSE(anchor.above);
+    }
+    SUBCASE("past the bottom edge: shifted UP so the bottom lands exactly on workMax.y") {
+        // The y mirror of the x rule. The geometry is deliberate: a 400-tall work area and a 300-tall
+        // popup, with the button at 150..170 -- 170 + 300 overflows the bottom AND 150 - 300 is above
+        // the top, so there is room in NEITHER direction and the popup stays below. It still fits once
+        // pulled up, which is what separates this arm from the taller-than-the-work-area one.
+        const Vec2 shortWork{1000.0F, 400.0F};
+        const AssetPickerAnchor anchor =
+            assetPickerAnchor(Vec2{100.0F, 150.0F}, Vec2{300.0F, 170.0F}, size, workMin, shortWork);
+        CHECK_FALSE(anchor.above);
+        CHECK(anchor.pos.y == doctest::Approx(100.0F));
+        CHECK(anchor.pos.y + size.y == doctest::Approx(shortWork.y));
+    }
+    SUBCASE("the flip's pivot is honoured by the y clamp, never clamped as if it were a top-left") {
+        // With room above, the (0,1) pivot means the WINDOW's top is pos.y - size.y. Clamping `pos`
+        // directly would treat the button's top as the window's top and move a correctly-placed popup.
+        const AssetPickerAnchor anchor =
+            assetPickerAnchor(Vec2{100.0F, 700.0F}, Vec2{300.0F, 720.0F}, size, workMin, workMax);
+        REQUIRE(anchor.above);
+        CHECK(anchor.pos.y == doctest::Approx(700.0F));  // unmoved: 700 - 300 = 400 is well inside
     }
     SUBCASE("past the right edge: shifted left so the right edge lands exactly on workMax.x") {
         const AssetPickerAnchor anchor =

@@ -135,6 +135,22 @@ AssetPickerAnchor assetPickerAnchor(Vec2 buttonMin, Vec2 buttonMax, Vec2 popupSi
     // area at the left edge rather than at a negative x.
     anchor.pos.x = std::min(anchor.pos.x, workMax.x - popupSize.x);
     anchor.pos.x = std::max(anchor.pos.x, workMin.x);
+
+    // AND THE SAME RULE ON Y, which is not symmetry for its own sake. A popup TALLER than the work
+    // area has room in neither direction, so it stays below -- and an API-set position is the one
+    // ImGui never clamps (imgui.cpp:8279), so without this it is placed past the bottom of the screen,
+    // where ImGui CULLS its grid child. A culled child makes ImGuiListClipper::Step() return false
+    // immediately, so no tile is submitted, no thumbnail key is noted, and nothing in the picture says
+    // why. MEASURED in a 320x180 window: the grid drew on the popup's appearing frame and on no frame
+    // after it.
+    //
+    // With a (0,1) pivot the window's TOP is pos.y - size.y, so the clamp is applied to the effective
+    // top and converted back -- never to `pos` directly, which means two different things.
+    const float pivotOffset = anchor.above ? popupSize.y : 0.0F;
+    float top = anchor.pos.y - pivotOffset;
+    top = std::min(top, workMax.y - popupSize.y);
+    top = std::max(top, workMin.y);
+    anchor.pos.y = top + pivotOffset;
     return anchor;
 }
 

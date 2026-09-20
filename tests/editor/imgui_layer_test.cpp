@@ -14956,20 +14956,48 @@ TEST_CASE("editor: the SERVICE owns thumbnails, not the browser -- the picker de
     //     AFTER the touch loop, so a key drawn THIS frame is excluded by the same currentFrame rule
     //     that protects ordinary eviction. Getting that ordering wrong frees a texture this frame's
     //     draw list still names -- synchronous on Vulkan and D3D12, merely deferred on Metal.
+    // THE BROWSER MUST COME BACK FIRST, AND THE PICKER MUST BE RE-OPENED AFTER IT -- measured, not
+    // assumed: showing a hidden panel makes ImGui focus it, and FocusWindow closes every popup above
+    // the focused window (imgui.cpp:13740), so a picker opened BEFORE the re-show is gone by the time
+    // the reimport lands and nothing is noting a key at all.
+    app->requestAssetPickerClose();
     app->panels().setVisible("Assets", true);
-    REQUIRE(app->tick());
-    const std::size_t residentBefore = app->thumbnailResidentCount();
-    CHECK(residentBefore >= 1U);
-    app->requestAssetBrowserReimportAll();
     for (int i = 0; i < 3; ++i) {
         REQUIRE(app->tick());
     }
-    // No crash and no sanitizer report is half the claim; the other half is that the cache really was
-    // dropped and really did come back.
+    app->requestMaterialSlotPicker(0);
+    for (int i = 0; i < 5; ++i) {
+        REQUIRE(app->tick());
+    }
+    REQUIRE(app->assetPickerOpen());
+    const std::size_t attemptsBefore = app->thumbnailLoadAttempts();
+    const std::size_t residentBefore = app->thumbnailResidentCount();
+    REQUIRE(residentBefore >= 1U);  // ANTI-VACUITY: there is something for the clear to threaten
+    app->requestAssetBrowserReimportAll();
+    REQUIRE(app->tick());
+
+    // THE ORDERING ASSERTION, and it is a LOCAL witness for what 3.1.3 recorded as a cross-lane-only
+    // class. The reimport-clear flag is drained INSIDE service(), AFTER its touch loop, so every key
+    // the picker drew THIS frame is already marked at the current frame and is excluded by
+    // evictions()'s own "never evict a key touched at currentFrame" rule. Get that ordering wrong --
+    // drain the flag first, or advance the clock after the touch loop instead of before it -- and the
+    // visible keys are destroyed WHILE this frame's draw list still names them: a use-after-free that
+    // is synchronous on Vulkan and D3D12 and merely DEFERRED on Metal, so no crash and no sanitizer
+    // report can be the witness here.
+    //
+    // WHAT IS OBSERVABLE ON EVERY LANE is the consequence: a protected key is NOT destroyed, so it is
+    // NOT re-decoded. Both mistakes make the resident count collapse and the attempt count climb.
+    CHECK(app->thumbnailResidentCount() == residentBefore);
+    CHECK(app->thumbnailLoadAttempts() == attemptsBefore);
+
+    CHECK(app->thumbnailResidentCount() == residentBefore);
+    CHECK(app->thumbnailLoadAttempts() == attemptsBefore);
+
     for (int i = 0; i < 8; ++i) {
         REQUIRE(app->tick());
     }
     CHECK(app->thumbnailResidentCount() <= engine::editor::MAX_THUMBNAILS_RESIDENT);
+    CHECK(app->thumbnailReadyCount() >= 1U);  // and they are still THERE, not quietly re-decoded
 
     app->requestQuit();
     CHECK(app->tick() == false);
