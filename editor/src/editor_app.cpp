@@ -484,6 +484,9 @@ std::optional<EditorApp> EditorApp::create(rhi::Device& device, platform::Window
         // preview is lazy and latched, so a session that never opens a material allocates no GPU
         // object at all (A-9/R2).
         app.materialPanel = app.registry.emplace<MaterialPanel>(device);
+        // task E.3.3: SET ONCE, right after the emplace -- the Inspector's own posture, one panel over.
+        app.materialPanel->setAssetPicker(app.assetPicker.get());
+        app.materialPanel->setThumbnails(app.thumbnails.get());
     }
 
     // task 2.6.1: `&& !app.project.isOpen()` is MANDATORY, not defensive. Opening a project above went

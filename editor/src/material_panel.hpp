@@ -32,6 +32,12 @@ class Device;  // forward-declared: the preview holds the pointer, this header n
 
 namespace engine::editor {
 
+// Forward-declared, never #included here: this header stays ImGui-free BY FILE PLACEMENT, and
+// asset_picker.hpp is src-private. `AssetPickerState` is a STRUCT -- declared with the matching tag so
+// clang does not warn under -Wmismatched-tags (task E.3.3).
+struct AssetPickerState;
+class ThumbnailService;
+
 class AssetDatabase;  // a reconciled POINTER, never a reference member (3.1.1's D13 / A-2 / INV-4):
                       // EditorApp is movable, so a reference binds to a pre-move address.
 
@@ -125,8 +131,19 @@ public:
     [[nodiscard]] bool previewHasSun() const noexcept { return previewHasSunValue; }
     [[nodiscard]] const render::RenderTarget* previewOutputTarget() const noexcept { return preview.outputTarget(); }
 
+    // task E.3.3: both set ONCE in EditorApp::create (the viewportPanel posture), not reconciled --
+    // each points at a heap object EditorApp holds through a unique_ptr, so the address survives the
+    // app's own move. NULL is a legal state: the slot then draws its bound-state block and no control.
+    void setAssetPicker(AssetPickerState* s) noexcept { assetPicker = s; }
+    void setThumbnails(ThumbnailService* s) noexcept { thumbnails = s; }
+
 private:
     void drawPreview();  // the preview strip: an ImGui::Image, or ONE line saying why not (AC-32)
+    // task E.3.3: a PRIVATE MEMBER rather than a free function -- it reads databasePtr, labelScratch,
+    // observedSlotDrop, assetPicker, thumbnails and keyScratch off `this`, so the parameter list is
+    // four rather than the ten a free function would have needed.
+    [[nodiscard]] bool drawSlotSection(std::size_t index, MaterialDocument& form, PreviewTextureState textureState,
+                                       std::string_view textureNotice);
 
     const MaterialSession* sessionPtr = nullptr;  // non-owning; ALWAYS null-check
     const AssetDatabase* databasePtr = nullptr;   // non-owning; null before the first scan
@@ -147,9 +164,14 @@ private:
     // task E.2.4: the RESOLUTION's answer, latched in the service pass. NOT `sun.intensity != 0` --
     // a sun the user set to 0 is a sun they switched off, and the notice must not claim there is none.
     bool previewHasSunValue = false;
-    std::array<std::string, SLOT_COUNT> slotSearch;  // one picker search line per slot
-    std::string labelScratch;                        // per-frame scratch, NOT model state (the 2.2.1 idiom)
-    MaterialPreview preview;                         // OWNED; the only GPU state anywhere in this panel
+    // task E.3.3: `slotSearch` is DELETED. The picker's search is per OPEN, not per slot (D12), so
+    // there is nothing left for a per-slot line to remember.
+    std::string labelScratch;  // per-frame scratch, NOT model state (the 2.2.1 idiom)
+    std::string keyScratch;    // labelScratch's idiom, for the slot's seam key
+    // task E.3.3: borrowed, never owned, set once -- see setAssetPicker/setThumbnails above.
+    AssetPickerState* assetPicker = nullptr;
+    ThumbnailService* thumbnails = nullptr;
+    MaterialPreview preview;  // OWNED; the only GPU state anywhere in this panel
 };
 
 }  // namespace engine::editor

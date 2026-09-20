@@ -14595,6 +14595,18 @@ TEST_CASE("editor: the picker's source-text pins -- ordering, absence and reuse 
         // the clause above for the wrong reason.
         CHECK(countLinesContaining(code, "classifyAssetDrop(") == 1U);
     }
+    SUBCASE("(d) the Material slot's combo, its search line and its own drop target are GONE") {
+        const std::vector<std::string> code = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/material_panel.cpp");
+        // 3.4.2's search line + combo and 3.1.5's slot drop target all lived here; the widget owns all
+        // three now, so what this file must NOT contain is a second copy of any of them.
+        CHECK(countLinesContaining(code, R"(BeginCombo("Texture")") == 0U);
+        CHECK(countLinesContaining(code, "BeginDragDropTarget") == 0U);
+        CHECK(countLinesContaining(code, "slotSearch") == 0U);
+        // ANTI-VACUITY: the slot section really is still drawn from this file -- its declaration and
+        // at least one call -- so the three zeros above are about the CONTROLS rather than about a
+        // reader that found nothing.
+        CHECK(countLinesContaining(code, "drawSlotSection") >= 2U);
+    }
     SUBCASE("(e) the Inspector's pick goes through resetField, on one line with the picked guid") {
         const std::vector<std::string> code = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/inspector_panel.cpp");
         std::size_t reuse = 0;
@@ -14695,6 +14707,209 @@ TEST_CASE("editor: an OPEN picker HOLDS a context route, and the held route appl
     REQUIRE(app->tick());
     CHECK(app->focusRouteApplyCount() > appliesBefore);
     CHECK(app->lastRoutedPanelId() == std::string_view("Inspector"));
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: a material slot binds, rebinds and clears through the SAME widget (I164)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "picker i164", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const PickerFixture fixture = makePickerProject(true);
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = fixture.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    app->panels().setVisible("Console", false);  // so Assets draws and SelectEntry drains
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+
+    app->requestAssetBrowserSelectEntry("m.aeromat");
+    for (int i = 0; i < 4; ++i) {  // DP11's own count: drain, then reconcile-and-retarget
+        REQUIRE(app->tick());
+    }
+    REQUIRE(app->materialTargetPath() == std::string_view("m.aeromat"));
+    app->requestPanelFocus("Material");
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+
+    // THREE candidates, not two: a Texture-kind record that is not thumbnail-DECODABLE is still a
+    // candidate, which is MP16's runtime twin -- the two predicates are different tables.
+    app->requestMaterialSlotPicker(0);
+    REQUIRE(app->tick());
+    REQUIRE(app->assetPickerOpen());
+    CHECK(app->assetPickerCandidateCount() == 3U);
+
+    app->requestAssetPickerMove(1);
+    REQUIRE(app->tick());
+    REQUIRE(app->assetPickerCursor() == 1U);
+    app->requestAssetPickerCommit();
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+
+    const engine::MaterialDocument* document = app->materialDocument();
+    REQUIRE(document != nullptr);
+    REQUIRE(document->baseColor.has_value());
+    const engine::Guid firstBound = document->baseColor->guid;
+    CHECK(firstBound.valid());
+    CHECK(document->baseColor->uvSet == 0U);  // a FRESH bind takes the format's own defaults
+    CHECK(app->materialDirty());
+
+    // A REBIND keeps the slot's sampler tokens. Set uvSet through the document seam first, so the
+    // rebind has something of its own to preserve.
+    {
+        engine::MaterialDocument edited = *document;
+        REQUIRE(edited.baseColor.has_value());
+        edited.baseColor->uvSet = 1U;
+        app->requestMaterialDocument(edited);
+    }
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+    REQUIRE(app->materialDocument() != nullptr);
+    REQUIRE(app->materialDocument()->baseColor.has_value());
+    REQUIRE(app->materialDocument()->baseColor->uvSet == 1U);
+
+    app->requestMaterialSlotPicker(0);
+    REQUIRE(app->tick());
+    REQUIRE(app->assetPickerOpen());
+    CHECK(app->assetPickerCursor() == 1U);  // a re-open lands on the BOUND texture
+    app->requestAssetPickerMove(1);
+    REQUIRE(app->tick());
+    CHECK(app->assetPickerCursor() == 2U);
+    app->requestAssetPickerCommit();
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+
+    document = app->materialDocument();
+    REQUIRE(document != nullptr);
+    REQUIRE(document->baseColor.has_value());
+    CHECK_FALSE((document->baseColor->guid == firstBound));  // the guid moved
+    CHECK(document->baseColor->uvSet == 1U);                 // ...and the sampler token did NOT
+
+    // None DISENGAGES the whole slot -- absence is spelled by omission, never by a nil guid.
+    app->requestMaterialSlotPicker(0);
+    REQUIRE(app->tick());
+    REQUIRE(app->assetPickerOpen());
+    app->requestAssetPickerMove(-3);
+    REQUIRE(app->tick());
+    CHECK(app->assetPickerCursor() == 0U);
+    app->requestAssetPickerCommit();
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+
+    document = app->materialDocument();
+    REQUIRE(document != nullptr);
+    CHECK_FALSE(document->baseColor.has_value());
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: the SERVICE owns thumbnails, not the browser -- the picker decodes alone (I167)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "picker i167", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    // NO TEXTURES YET. The ORDER below is not optional and the case says so: requestAssetBrowserSelectEntry
+    // records an ActionKind the BROWSER'S OWN onDraw drains, so the browser must be visible and drawing
+    // until the material is targeted -- and only THEN may it be hidden.
+    const PickerFixture fixture = makePickerProject(false);
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = fixture.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    app->panels().setVisible("Console", false);
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+
+    app->requestAssetBrowserSelectEntry("m.aeromat");
+    for (int i = 0; i < 4; ++i) {
+        REQUIRE(app->tick());
+    }
+    REQUIRE(app->materialTargetPath() == std::string_view("m.aeromat"));
+
+    // NOW the textures appear, under tex/ -- a subfolder, so the browser (which lists the ROOT) never
+    // notes one of their keys even while it is still visible.
+    REQUIRE(engine::editor::ensureDirectory(fixture.assetsRoot + "/tex").empty());
+    REQUIRE(writeBinaryFixture(fixture.assetsRoot + "/tex/a.png", TINY_PNG_RED.data(), TINY_PNG_RED.size()).empty());
+    REQUIRE(
+        writeBinaryFixture(fixture.assetsRoot + "/tex/b.png", TINY_PNG_GREEN.data(), TINY_PNG_GREEN.size()).empty());
+    REQUIRE(engine::editor::writeTextFileAtomic(fixture.assetsRoot + "/tex/c.ktx2", "placeholder").empty());
+    app->requestAssetRescan();
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+
+    app->panels().setVisible("Assets", false);  // from here on, nothing else can note a thumbnail key
+    app->requestPanelFocus("Material");
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+
+    // (a) ANTI-VACUITY. With the browser hidden and no picker open, NOTHING notes a key, so the
+    //     service decodes nothing. Without this arm, (b) would pass for a build in which the browser
+    //     was still doing all the work.
+    const std::size_t attemptsIdle = app->thumbnailLoadAttempts();
+    for (int i = 0; i < 5; ++i) {
+        REQUIRE(app->tick());
+    }
+    CHECK(app->thumbnailLoadAttempts() == attemptsIdle);
+
+    // (b) THE PICKER ALONE drives the shared service: its tiles note keys, and the same budget decodes
+    //     them. Two decodable PNGs, at MAX_THUMBNAIL_DECODES_PER_TICK a tick.
+    app->requestMaterialSlotPicker(0);
+    for (int i = 0; i < 5; ++i) {
+        REQUIRE(app->tick());
+    }
+    CHECK(app->assetPickerOpen());
+    CHECK(app->thumbnailLoadAttempts() >= attemptsIdle + 2U);
+    CHECK(app->thumbnailReadyCount() >= 1U);
+    CHECK(app->thumbnailResidentCount() <= engine::editor::MAX_THUMBNAILS_RESIDENT);
+
+    // (c) THE REIMPORT-CLEAR ARM, and it is S33's only witness: the flag is drained INSIDE service(),
+    //     AFTER the touch loop, so a key drawn THIS frame is excluded by the same currentFrame rule
+    //     that protects ordinary eviction. Getting that ordering wrong frees a texture this frame's
+    //     draw list still names -- synchronous on Vulkan and D3D12, merely deferred on Metal.
+    app->panels().setVisible("Assets", true);
+    REQUIRE(app->tick());
+    const std::size_t residentBefore = app->thumbnailResidentCount();
+    CHECK(residentBefore >= 1U);
+    app->requestAssetBrowserReimportAll();
+    for (int i = 0; i < 3; ++i) {
+        REQUIRE(app->tick());
+    }
+    // No crash and no sanitizer report is half the claim; the other half is that the cache really was
+    // dropped and really did come back.
+    for (int i = 0; i < 8; ++i) {
+        REQUIRE(app->tick());
+    }
+    CHECK(app->thumbnailResidentCount() <= engine::editor::MAX_THUMBNAILS_RESIDENT);
 
     app->requestQuit();
     CHECK(app->tick() == false);
