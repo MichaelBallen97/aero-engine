@@ -17,6 +17,7 @@
 // decomposition entirely. No toString overload is added anywhere.
 #include <aero/core/guid.hpp>
 #include <aero/editor/asset_drag.hpp>
+#include <aero/editor/asset_picker_model.hpp>  // task E.3.3 -- AR7 states the picker's accept rule here
 #include <aero/editor/asset_view.hpp>
 #include <aero/scene/entity.hpp>
 
@@ -694,4 +695,33 @@ TEST_CASE("AR5: the vocabulary IS the draggable set -- the derivation, in both d
 TEST_CASE("AR6: the fifth surface and the fifth action have their own labels") {
     CHECK(dropSurfaceLabel(DropSurface::AssetField) == std::string_view("asset field"));
     CHECK(dropActionLabel(DropAction::AssignAssetReference) == std::string_view("assign asset reference"));
+}
+
+TEST_CASE("AR7: the PICKER's accept predicate is this matrix, stated at the DRAG tier") {
+    // Deliberately here rather than only in asset_picker_model_test.cpp: stated at this tier it is
+    // falsifiable WITHOUT the model, so a model that grew a predicate of its own would have to
+    // disagree with two independent cases rather than one.
+    using engine::editor::assetPickerAccepts;
+    using engine::editor::AssetPickerRules;
+
+    const AssetPickerRules textureSlot{DropSurface::MaterialSlot, std::nullopt};
+    const AssetPickerRules unconstrainedField{DropSurface::AssetField, std::nullopt};
+    const AssetPickerRules audioField{DropSurface::AssetField, AssetKind::Audio};
+
+    std::size_t slotAccepts = 0;
+    std::size_t fieldAccepts = 0;
+    std::size_t audioAccepts = 0;
+    for (const AssetKind kind : ALL_KINDS) {
+        CAPTURE(static_cast<int>(kind));
+        CHECK(assetPickerAccepts(textureSlot, kind) == (kind == AssetKind::Texture));
+        CHECK(assetPickerAccepts(unconstrainedField, kind) == assetKindIsDraggable(kind));
+        CHECK(assetPickerAccepts(audioField, kind) == (kind == AssetKind::Audio));
+        slotAccepts += assetPickerAccepts(textureSlot, kind) ? 1U : 0U;
+        fieldAccepts += assetPickerAccepts(unconstrainedField, kind) ? 1U : 0U;
+        audioAccepts += assetPickerAccepts(audioField, kind) ? 1U : 0U;
+    }
+    // ANTI-VACUITY: a predicate that always answered false would satisfy none of these.
+    CHECK(slotAccepts == 1);
+    CHECK(fieldAccepts == 4);
+    CHECK(audioAccepts == 1);
 }
