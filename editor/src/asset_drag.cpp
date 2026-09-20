@@ -159,24 +159,18 @@ DropAction classifyAssetDrop(AssetKind kind, DropSurface surface, bool targetHas
                     return assetFieldRow();
             }
             return DropAction::None;
-        // task E.3.3: Audio LEAVES the four-kind refusal group, because it is draggable now and has an
-        // AssetField row of its own. Its four OLD surfaces are byte-identical: still None everywhere.
+        // THE FOUR KINDS THE OLD SURFACES ALL REFUSE, in ONE arm -- and Audio (task E.3.3, draggable)
+        // sits here with the three that are not, deliberately. On the four pre-E.3.3 surfaces they are
+        // identical: None, every time. The ONLY thing that separates them is DRAGGABILITY, and
+        // draggability is decided INSIDE assetFieldRow() -- so merging the arms is what makes that a
+        // structural statement rather than a comment, and it is why they reach the composed row
+        // instead of short-circuiting to None.
+        //
+        // That composition is the whole point: the day a script component wants a `.json`, widening
+        // assetKindIsDraggable is ONE edit and this surface widens with it. A direct
+        // `return DropAction::None;` here would read identically today and would silently NOT widen.
+        // AR2's Text-on-a-Text-field row is what proves the term is live.
         case AssetKind::Audio:
-            switch (surface) {
-                case DropSurface::HierarchyRow:
-                case DropSurface::HierarchyVoid:
-                case DropSurface::Viewport:
-                case DropSurface::MaterialSlot:
-                    return DropAction::None;
-                case DropSurface::AssetField:
-                    return assetFieldRow();
-            }
-            return DropAction::None;
-        // NOT DRAGGABLE -- and they reach assetFieldRow() ANYWAY rather than short-circuiting to None.
-        // That is the whole point of composing the row instead of restating it: the day a script
-        // component wants a `.json`, widening assetKindIsDraggable is ONE edit and this surface widens
-        // with it. A direct `return DropAction::None;` here would read identically today and would
-        // silently NOT widen -- and AR2's Text-on-a-Text-field row is what proves the term is live.
         case AssetKind::Folder:
         case AssetKind::Text:
         case AssetKind::Unknown:
