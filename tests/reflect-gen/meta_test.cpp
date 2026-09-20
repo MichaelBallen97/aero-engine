@@ -9,11 +9,13 @@
 // fallback (spec §3.6). The assertions below are unaffected either way.
 #include <aero/core/guid.hpp>            // engine::Guid (task 3.1.5)
 #include <aero/reflect/annotations.hpp>  // engine::reflect::FieldUiMeta (task 2.2.2)
+#include <aero/scene/audio_source.hpp>   // task E.3.3 (RF2)
 #include <aero/scene/camera.hpp>
 #include <aero/scene/light.hpp>
 #include <aero/scene/mesh_renderer.hpp>  // task 2.2.2
 #include <aero/scene/transform.hpp>
 
+#include "component_asset.hpp"  // task E.3.3
 #include "component_codegen.hpp"
 #include "component_guid.hpp"  // task 3.1.5
 #include "component_wiring.hpp"
@@ -24,6 +26,7 @@
 // involving a std::string_view through operator<<, and MSVC's overload needs a COMPLETE std::ostream.
 #include <ostream>
 #include <string>
+#include <string_view>
 #include <vector>
 
 // Forward-declared here; DEFINED by the GENERATED component_codegen.meta.gen.cpp that
@@ -60,6 +63,14 @@ void aero_reflect_register_mesh_renderer();
 // engine::Guid category). Same frozen snake_case cross-boundary contract as the declarations above.
 // NOLINTNEXTLINE(readability-identifier-naming)
 void aero_reflect_register_component_guid();
+
+// Forward-declared here; DEFINED by the GENERATED audio_source.meta.gen.cpp and
+// component_asset.meta.gen.cpp (task E.3.3, the AERO_ASSET annotation). Same frozen snake_case
+// cross-boundary contract as the declarations above.
+// NOLINTNEXTLINE(readability-identifier-naming)
+void aero_reflect_register_audio_source();
+// NOLINTNEXTLINE(readability-identifier-naming)
+void aero_reflect_register_component_asset();
 
 // Forward-declared here; DEFINED by the GENERATED aero_reflect_meta_test.aggregator.gen.cpp (task
 // 1.1.4, D4) that calls every per-header register function (both above) in HEADERS-list order.
@@ -294,6 +305,108 @@ TEST_CASE("GD8: a Guid member is WRITABLE through entt::meta, to an exact engine
     // clearing it back to nil is an ordinary write, not a special case
     CHECK(member.set(handle, engine::Guid{}));
     CHECK_FALSE(value.asset.valid());
+
+    entt::meta_reset();
+}
+
+// ---- task E.3.3: the AERO_ASSET annotation through GENERATED entt::meta (RF1-RF3) -----------------
+//
+// The TEXT the emitter writes is pinned by reflect-gen.asset_meta; these three cases are the runtime
+// proof that the token reaches entt::meta's custom data and that an unannotated field still carries
+// none. They stand alone rather than extending the Camera/Light and Referencing cases above, so the
+// binary's own case total moves and the gate can check it.
+
+TEST_CASE("RF1: MeshRenderer's two Guid fields carry their asset kinds, and the OLD customs default") {
+    using namespace entt::literals;
+    aero_reflect_register_mesh_renderer();
+
+    auto byType = entt::resolve<engine::MeshRenderer>();
+    REQUIRE(static_cast<bool>(byType));
+
+    const engine::reflect::FieldUiMeta* meshMeta = byType.data("mesh"_hs).custom();
+    REQUIRE(meshMeta != nullptr);
+    REQUIRE(meshMeta->assetKind != nullptr);
+    // A std::string_view comparison, never `==` on a const char*, which would compare POINTERS.
+    CHECK(std::string_view(meshMeta->assetKind) == "model");
+    CHECK_FALSE(meshMeta->hasRange);
+    CHECK_FALSE(meshMeta->color);
+
+    const engine::reflect::FieldUiMeta* materialMeta = byType.data("material"_hs).custom();
+    REQUIRE(materialMeta != nullptr);
+    REQUIRE(materialMeta->assetKind != nullptr);
+    CHECK(std::string_view(materialMeta->assetKind) == "material");
+
+    // THE HALF A NAIVE IMPLEMENTATION BREAKS: the member is APPENDED to FieldUiMeta, so every
+    // PRE-EXISTING custom must still default it to nullptr. primitive carries a range and color
+    // carries a colour; neither names an asset kind.
+    const engine::reflect::FieldUiMeta* primitiveMeta = byType.data("primitive"_hs).custom();
+    REQUIRE(primitiveMeta != nullptr);
+    CHECK(primitiveMeta->hasRange);
+    CHECK(primitiveMeta->assetKind == nullptr);
+
+    const engine::reflect::FieldUiMeta* colorMeta = byType.data("color"_hs).custom();
+    REQUIRE(colorMeta != nullptr);
+    CHECK(colorMeta->color);
+    CHECK(colorMeta->assetKind == nullptr);
+
+    // meshIndex carries no annotation at all, so it carries no custom at all (D6's sparsity).
+    const engine::reflect::FieldUiMeta* meshIndexMeta = byType.data("meshIndex"_hs).custom();
+    CHECK(meshIndexMeta == nullptr);
+
+    entt::meta_reset();
+}
+
+TEST_CASE("RF2: AudioSource::clip names the AUDIO kind, and its ranged neighbour names none") {
+    using namespace entt::literals;
+    aero_reflect_register_audio_source();
+
+    auto byType = entt::resolve<engine::AudioSource>();
+    REQUIRE(static_cast<bool>(byType));
+
+    const engine::reflect::FieldUiMeta* clipMeta = byType.data("clip"_hs).custom();
+    REQUIRE(clipMeta != nullptr);
+    REQUIRE(clipMeta->assetKind != nullptr);
+    CHECK(std::string_view(clipMeta->assetKind) == "audio");
+    CHECK_FALSE(clipMeta->hasRange);
+    CHECK_FALSE(clipMeta->color);
+
+    const engine::reflect::FieldUiMeta* volumeMeta = byType.data("volume"_hs).custom();
+    REQUIRE(volumeMeta != nullptr);
+    CHECK(volumeMeta->hasRange);
+    CHECK(volumeMeta->assetKind == nullptr);
+
+    entt::meta_reset();
+}
+
+TEST_CASE("RF3: the tool passes a token's VOCABULARY through and drops a misapplied or malformed one") {
+    using namespace entt::literals;
+    aero_reflect_register_component_asset();
+
+    auto byType = entt::resolve<engine::demo::Referenced>();
+    REQUIRE(static_cast<bool>(byType));
+
+    const engine::reflect::FieldUiMeta* textureMeta = byType.data("texture"_hs).custom();
+    REQUIRE(textureMeta != nullptr);
+    REQUIRE(textureMeta->assetKind != nullptr);
+    CHECK(std::string_view(textureMeta->assetKind) == "texture");
+
+    // `shader` is grammar-valid and vocabulary-UNKNOWN. The tool validates the GRAMMAR only; the
+    // EDITOR owns the set of kinds, so this reaches the runtime verbatim and is refused there.
+    const engine::reflect::FieldUiMeta* shaderMeta = byType.data("shader"_hs).custom();
+    REQUIRE(shaderMeta != nullptr);
+    REQUIRE(shaderMeta->assetKind != nullptr);
+    CHECK(std::string_view(shaderMeta->assetKind) == "shader");
+
+    // Unannotated, misapplied (a float) and malformed (a non-identifier, an empty payload) all carry
+    // NO custom AT ALL -- not a defaulted one. That is D6's sparsity, one annotation over.
+    const engine::reflect::FieldUiMeta* anythingMeta = byType.data("anything"_hs).custom();
+    const engine::reflect::FieldUiMeta* scaleMeta = byType.data("scale"_hs).custom();
+    const engine::reflect::FieldUiMeta* dashedMeta = byType.data("dashed"_hs).custom();
+    const engine::reflect::FieldUiMeta* emptyMeta = byType.data("empty"_hs).custom();
+    CHECK(anythingMeta == nullptr);
+    CHECK(scaleMeta == nullptr);
+    CHECK(dashedMeta == nullptr);
+    CHECK(emptyMeta == nullptr);
 
     entt::meta_reset();
 }

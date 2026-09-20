@@ -17,7 +17,11 @@ struct AERO_COMPONENT AudioSource {
     // The cooked .aerowave this entity plays. NIL == nothing to play, which is the ORDINARY state of
     // a freshly added component and is COUNTED, never warned -- the RenderView::unresolvedMeshes rule
     // verbatim: a WARN would fire once per session on correct behaviour.
-    Guid clip{};
+    //
+    // The Guid is the SOURCE asset's, not the cooked file's -- AudioSystem keys clips by the cooked
+    // container's own sourceGuid (clip.cpp:132, system.cpp:115), which is the `.meta` beside the
+    // `.wav`. That is why the annotation says `audio` (task E.3.3).
+    Guid clip AERO_ASSET(audio){};
 
     float volume AERO_RANGE(0.0f, 1.0f) = 1.0f;
 

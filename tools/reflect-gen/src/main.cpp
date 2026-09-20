@@ -317,6 +317,7 @@ struct Field {
     std::string rangeMin;  // validated numeric token, suffix-stripped ("0.0175", "0", "-1")
     std::string rangeMax;  // stored as TEXT, never re-formatted -- that is what keeps AC-4 byte-stable
     bool color = false;
+    std::string assetKind;  // task E.3.3: the validated token, verbatim; EMPTY means absent
 };
 
 struct Component {
@@ -500,6 +501,7 @@ struct FieldAnnotations {
     bool hasRange = false;
     std::string rangeMin;
     std::string rangeMax;
+    std::string assetKind;                 // task E.3.3 -- EMPTY means absent
     std::vector<std::string> diagnostics;  // deferred: judged after classification (D7)
 };
 
@@ -607,6 +609,30 @@ bool parseRangePayload(std::string_view payload, FieldAnnotations& out, std::str
     return true;
 }
 
+// task E.3.3: an identifier, and nothing else -- [A-Za-z_][A-Za-z0-9_]*, non-empty. Deliberately NOT
+// a vocabulary check: `shader` parses here and is refused by the EDITOR, which is where the set of
+// kinds lives. An EMPTY payload (AERO_ASSET() stringizes to "") is malformed, not "no annotation".
+bool isIdentifierToken(std::string_view token) noexcept {
+    if (token.empty()) {
+        return false;
+    }
+    // ASCII by hand, never <cctype>: std::isalpha/isalnum are LOCALE-dependent and take an int whose
+    // value must be representable as unsigned char (3.1.3's S17 finding, one file over). And no
+    // substr() anywhere -- it is a potentially-throwing call, which would escape this noexcept.
+    const auto isAlpha = [](char c) { return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z'); };
+    const auto isDigit = [](char c) { return c >= '0' && c <= '9'; };
+    if (!isAlpha(token.front()) && token.front() != '_') {
+        return false;
+    }
+    for (std::size_t i = 1; i < token.size(); ++i) {
+        const char c = token[i];
+        if (!isAlpha(c) && !isDigit(c) && c != '_') {
+            return false;
+        }
+    }
+    return true;
+}
+
 // One-level child visit over a FieldDecl -- the SAME presence pattern as annotateMarkerVisitor
 // (Continue, never Recurse). The AnnotateAttr is the FIRST child, so this is cheap.
 CXChildVisitResult fieldAnnotationVisitor(CXCursor cursor, CXCursor /*parent*/, CXClientData clientData) {
@@ -617,12 +643,23 @@ CXChildVisitResult fieldAnnotationVisitor(CXCursor cursor, CXCursor /*parent*/, 
     const std::string spelling = toStdString(clang_getCursorSpelling(cursor));
     constexpr std::string_view ENGINE_PREFIX = "engine::";
     constexpr std::string_view RANGE_PREFIX = "engine::range:";
+    constexpr std::string_view ASSET_PREFIX = "engine::asset:";
     if (spelling == "engine::color") {
         out->color = true;
     } else if (spelling.starts_with(RANGE_PREFIX)) {
         std::string reason;
         if (!parseRangePayload(std::string_view{spelling}.substr(RANGE_PREFIX.size()), *out, reason)) {
             out->diagnostics.push_back("malformed engine::range annotation (" + reason + ") -- ignored");
+        }
+        // task E.3.3: this arm MUST be tested BEFORE the unknown-engine:: catch-all below, or every
+        // asset annotation is reported as "unknown engine:: field annotation" and dropped -- and
+        // annotations_unknown stays green throughout, because it asserts a DIFFERENT string.
+    } else if (spelling.starts_with(ASSET_PREFIX)) {
+        const std::string_view payload = std::string_view{spelling}.substr(ASSET_PREFIX.size());
+        if (isIdentifierToken(payload)) {
+            out->assetKind = std::string(payload);
+        } else {
+            out->diagnostics.emplace_back("malformed engine::asset annotation (kind must be an identifier) -- ignored");
         }
     } else if (spelling.starts_with(ENGINE_PREFIX)) {
         out->diagnostics.push_back("unknown engine:: field annotation '" + spelling + "' -- ignored");
@@ -681,6 +718,14 @@ CXChildVisitResult fieldVisitor(CXCursor cursor, CXCursor /*parent*/, CXClientDa
                           << ": engine::color applies only to Vec3 fields\n";
             }
         }
+        if (!annotations.assetKind.empty()) {  // task E.3.3: applicability, judged after classification
+            if (category == FieldCategory::Guid) {
+                field.assetKind = annotations.assetKind;
+            } else {
+                std::cerr << "aero_reflect_gen: warning: " << *state->qualifiedName << '.' << field.name
+                          << ": engine::asset applies only to Guid fields\n";
+            }
+        }
 
         state->fields->push_back(std::move(field));
     }
@@ -727,6 +772,9 @@ void emitComponents(const std::vector<Component>& components) {
             }
             if (field.color) {
                 std::cout << " [color]";
+            }
+            if (!field.assetKind.empty()) {  // task E.3.3
+                std::cout << " [asset " << field.assetKind << "]";
             }
             std::cout << '\n';
             if (field.category == FieldCategory::Unsupported) {  // lenient: warn, never fail (D7)
@@ -783,7 +831,7 @@ void emitMeta(const std::vector<Component>& components, const std::string& input
     // include root and would fail to find the header.
     const bool anyCustom = std::any_of(components.begin(), components.end(), [](const Component& c) {
         return std::any_of(c.fields.begin(), c.fields.end(), [](const Field& f) {
-            return f.category != FieldCategory::Unsupported && (f.hasRange || f.color);
+            return f.category != FieldCategory::Unsupported && (f.hasRange || f.color || !f.assetKind.empty());
         });
     });
 
@@ -814,12 +862,19 @@ void emitMeta(const std::vector<Component>& components, const std::string& input
             }
             out << "\n        .data<&" << qn << "::" << field.name << ">(\"" << field.name << "\"_hs, \"" << field.name
                 << "\")";
-            if (field.hasRange || field.color) {  // task 2.2.2 (D6): sparse, per member
+            // task 2.2.2 (D6): sparse, per member -- widened by task E.3.3 to a third annotation.
+            if (field.hasRange || field.color || !field.assetKind.empty()) {
                 const std::string rangeMin = field.hasRange ? field.rangeMin : "0.0";
                 const std::string rangeMax = field.hasRange ? field.rangeMax : "0.0";
                 out << "\n        .custom<engine::reflect::FieldUiMeta>(engine::reflect::FieldUiMeta{"
                     << ".hasRange = " << (field.hasRange ? "true" : "false") << ", .rangeMin = " << rangeMin
-                    << ", .rangeMax = " << rangeMax << ", .color = " << (field.color ? "true" : "false") << "})";
+                    << ", .rangeMax = " << rangeMax << ", .color = " << (field.color ? "true" : "false");
+                // task E.3.3: written ONLY when present, which is what keeps every PRE-EXISTING
+                // custom's generated bytes byte-identical to what they were before the member existed.
+                if (!field.assetKind.empty()) {
+                    out << ", .assetKind = \"" << field.assetKind << "\"";
+                }
+                out << "})";
             }
         }
         out << ";\n";
