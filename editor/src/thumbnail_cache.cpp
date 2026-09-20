@@ -1,15 +1,41 @@
 // Aero Engine — the thumbnail policy layer (task 3.1.3). PURE: no stb, no GPU, no ImGui, no
 // <filesystem>, no logging (INV-V8). The ledger's bounds and the box resampler are both provable
 // from a std::vector/std::span literal with no context of any kind.
+#include <aero/editor/project_files.hpp>  // task E.3.3 -- leafOf; PUBLIC, <filesystem>-free by rule
 #include <aero/editor/thumbnail_cache.hpp>
 
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <span>
 #include <vector>
 
 namespace engine::editor {
+
+// task E.3.3: the browser's guards 2, 4, 5, 6 and 7, moved here verbatim with their own comments so a
+// SECOND consumer (the picker's tile) asks the identical question rather than a similar one. Guard 4
+// ("no identity for this file") is structural here: a record IS the argument.
+std::optional<ThumbnailKey> thumbnailKeyForRecord(const AssetRecord& record) noexcept {
+    // 2: .ktx2/.dds are Texture but not decodable (D7). The leaf is derived from the record's own
+    // relativePath through the tree's OWN helper, so the browser no longer needs to pass a
+    // FileEntry::name for it and nothing here re-derives a path rule that already exists.
+    if (!isThumbnailDecodable(leafOf(record.relativePath))) {
+        return std::nullopt;
+    }
+    if (record.state == AssetMetaState::Invalid) {  // 5: no identity this session (D7's posture)
+        return std::nullopt;
+    }
+    if (record.metaWriteFailed) {  // 6: the sidecar never landed on disk (3.1.3's code-review finding 3)
+        return std::nullopt;
+    }
+    // 7: 3.1.2's A4 trap made operational -- an all-zero contentHash is the EMPTY FILE's real digest,
+    // not a sentinel, so the only "was this hashed?" test is the `change` enum.
+    if (record.change == ImportChange::Unhashable || record.change == ImportChange::NotHashed) {
+        return std::nullopt;
+    }
+    return ThumbnailKey{.guid = record.guid, .hash = record.contentHash};
+}
 
 void ThumbnailLedger::touch(const ThumbnailKey& key, std::uint64_t frame) {
     const auto it = std::lower_bound(entries.begin(), entries.end(), key,

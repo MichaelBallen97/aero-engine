@@ -37,10 +37,13 @@
 #include <aero/scene_render/scene_renderer.hpp>      // task E.2.4 -- the two resolvers
 
 #include "asset_browser_panel.hpp"
+// task E.3.3 (D5): the SHARED thumbnail ledger/store/budget. Held through a unique_ptr on a public
+// header, so this TU is where the complete type is needed.
 #include "console_panel.hpp"
 #include "editor_reflection.hpp"
 #include "file_dialog.hpp"  // task 2.5.1: DialogChannel's definition -- the shared_ptr's deleter needs
-                            // a complete type wherever it could run, including this TU's ~EditorApp
+#include "thumbnail_service.hpp"
+// a complete type wherever it could run, including this TU's ~EditorApp
 #include "hierarchy_panel.hpp"
 #include "import_details_panel.hpp"  // task 3.2.1 -- ImportDetailsPanel's definition, the src-private
                                      // shared_ptr/unique_ptr-completeness precedent above, applied to a
@@ -340,6 +343,9 @@ std::optional<EditorApp> EditorApp::create(rhi::Device& device, platform::Window
     // renderer is NOT stored: it is passed per call, because it belongs to the ViewportPanel and may
     // not exist yet.
     app.sceneAssetLoader = std::make_unique<SceneAssetLoader>(device);
+    // task E.3.3 (D5): created BEFORE the panel block below, because every consumer is handed the
+    // pointer immediately after its own emplace -- once, never reconciled (the viewportPanel posture).
+    app.thumbnails = std::make_unique<ThumbnailService>(&device);
     // ...and the SAME device is what the service pass destroys retired TEXTURES through. The code-review
     // round found this line missing: the member kept its nullptr initialiser, so destroyRetired's third
     // branch was dead and every texture the ledger adopted through reportSlotTexture survived every
@@ -439,9 +445,11 @@ std::optional<EditorApp> EditorApp::create(rhi::Device& device, platform::Window
             app.consolePanel = app.registry.emplace<ConsolePanel>(std::move(*logScope));
         }
         AERO_LOG_INFO("editor: assets root '{}'", app.project.assetsRoot());
-        // task 3.1.3 (A17): the device is passed AT CONSTRUCTION, not reconciled -- unlike the
-        // project root, it can never change during a session.
-        app.assetBrowserPanel = app.registry.emplace<AssetBrowserPanel>(app.project.assetsRoot(), &device);
+        // task E.3.3: the device is gone from this constructor -- the store it used to build lives in
+        // ThumbnailService now, lent through setThumbnails() on the next line. ONCE, not reconciled:
+        // the service is a heap object whose address survives this app's own move.
+        app.assetBrowserPanel = app.registry.emplace<AssetBrowserPanel>(app.project.assetsRoot());
+        app.assetBrowserPanel->setThumbnails(app.thumbnails.get());
         // task 2.6.2 (D12): LAST. Inspector registers before it and therefore stays the selected tab
         // in the shared Right dock node (the Console-before-Assets property), and no existing panel's
         // index shifts, so every index-based assertion in the tree keeps its meaning. Its return value
@@ -703,6 +711,10 @@ bool EditorApp::tick() {
         if (assetBrowserPanel != nullptr) {
             if (assetBrowserPanel->root() != assetDatabase.root()) {
                 assetBrowserPanel->setRoot(assetDatabase.root());
+                // task E.3.3: the two lines setRoot() used to perform itself, at the SAME point, so
+                // I40's "resident 0 after a project swap" keeps its exact timing. The service is
+                // shared now, so the panel is no longer the right place to decide this.
+                thumbnails->clear();
             }
             assetBrowserPanel->setDatabase(&assetDatabase);
             // task 3.1.3: unconditional, same block, same reasoning as setDatabase() above (F14).
@@ -714,7 +726,7 @@ bool EditorApp::tick() {
             if (assetDatabase.generation() != lastAssetGeneration) {
                 lastAssetGeneration = assetDatabase.generation();
                 assetBrowserPanel->invalidateListings();
-                assetBrowserPanel->notifyDatabaseRescanned();
+                thumbnails->noteDatabaseRescanned();  // task E.3.3: was the panel's own flag
             }
             // task 3.1.4: F9 -- drained as its OWN statement, unconditionally, BEFORE it is inspected.
             // This tree has shipped the `||`-short-circuit bug once (I30 is its mechanical proof) and
@@ -1081,10 +1093,12 @@ bool EditorApp::tick() {
     if (viewportPanel != nullptr) {
         viewportPanel->renderScene(sceneWorld);
     }
-    // task 3.1.3 (D8): serviceThumbnails() is the ONLY thumbnail mutator, and it runs here -- the
-    // SECOND occupant of the slot between drawShellUi and endFrame, the renderScene precedent.
-    if (assetBrowserPanel != nullptr) {
-        assetBrowserPanel->serviceThumbnails();
+    // task 3.1.3 (D8): the thumbnail service pass is the ONLY thumbnail mutator, and it runs here --
+    // the SECOND occupant of the slot between drawShellUi and endFrame, the renderScene precedent.
+    // task E.3.3 moved the body into ThumbnailService and kept this statement's position exactly,
+    // because THREE consumers share it now rather than one panel owning it.
+    if (thumbnails != nullptr) {
+        thumbnails->service(assetDatabase);
     }
     // task 3.2.1 (D16/AC-48/INV-M12): OUTSIDE the ImGui draw walk, in the SAME SLOT as renderScene()
     // and serviceThumbnails(). A Full import is SYNCHRONOUS and may visibly hitch on a large model --
@@ -1251,17 +1265,19 @@ bool EditorApp::assetBrowserDeleteModalPending() const noexcept {
     return assetBrowserPanel != nullptr && assetBrowserPanel->deleteModalPending();
 }
 
+// task E.3.3: re-pointed at the SHARED service. A moved-from app holds a null pointer, exactly as it
+// holds a null sceneAssetLoader, so all four are null-guarded like the drains.
 std::size_t EditorApp::thumbnailReadyCount() const noexcept {
-    return assetBrowserPanel != nullptr ? assetBrowserPanel->thumbnailReadyCount() : std::size_t{0};
+    return thumbnails != nullptr ? thumbnails->readyCount() : std::size_t{0};
 }
 std::size_t EditorApp::thumbnailUnavailableCount() const noexcept {
-    return assetBrowserPanel != nullptr ? assetBrowserPanel->thumbnailUnavailableCount() : std::size_t{0};
+    return thumbnails != nullptr ? thumbnails->unavailableCount() : std::size_t{0};
 }
 std::size_t EditorApp::thumbnailResidentCount() const noexcept {
-    return assetBrowserPanel != nullptr ? assetBrowserPanel->thumbnailResidentCount() : std::size_t{0};
+    return thumbnails != nullptr ? thumbnails->residentCount() : std::size_t{0};
 }
 std::size_t EditorApp::thumbnailLoadAttempts() const noexcept {
-    return assetBrowserPanel != nullptr ? assetBrowserPanel->thumbnailLoadAttempts() : std::size_t{0};
+    return thumbnails != nullptr ? thumbnails->loadAttempts() : std::size_t{0};
 }
 std::size_t EditorApp::assetOrphanCount() const noexcept { return lastAssetReport.orphanTotal; }
 // code-review SHOULD-FIX 10: the assetOrphanCount() shape verbatim, applied to phase 7.5's own capped

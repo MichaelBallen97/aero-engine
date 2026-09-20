@@ -91,6 +91,10 @@ class HierarchyPanel;      // task 3.1.5: src-private. The drop drain needs its 
                            // non-owning pointer joins the four above -- a sixth application.
 class InspectorPanel;      // task 3.1.5: src-private. setDatabase(&assetDatabase) is reconciled beside
                            // the Material panel's, so this pointer joins them too -- a seventh.
+class ThumbnailService;    // task E.3.3: src-private (editor/src/thumbnail_service.hpp). Held through a
+                           // unique_ptr for exactly the SceneAssetLoader reason -- it owns a
+                           // ThumbnailStore, whose header is src-private and GPU-touching, and
+                           // editor_app.hpp is a PUBLIC header that exposes engine + std types only.
 class SceneAssetLoader;    // task 3.1.5: src-private (editor/src/scene_asset_loader.hpp). Held through
                            // a unique_ptr, which is legal with an INCOMPLETE type here because
                            // ~EditorApp is defined OUT OF LINE in editor_app.cpp, where the definition
@@ -721,6 +725,13 @@ private:
     // renderer, while that panel is still alive.
     SceneAssetLedger sceneAssetLedger;
     std::unique_ptr<SceneAssetLoader> sceneAssetLoader;  // created in create(); never null on a live app
+    // ---- task E.3.3 (D5): ONE ledger, ONE store, ONE clock, ONE budget, THREE consumers -----------
+    // The sceneAssetLoader posture exactly: a unique_ptr to an incomplete type, legal because
+    // ~EditorApp is defined out of line and both moves are user-declared noexcept. The pointer is
+    // ADDRESS-STABLE across an EditorApp move -- the heap object does not move when the unique_ptr
+    // does -- which is what lets each consumer be handed it ONCE, in create(), rather than reconciled
+    // every tick. Null on a moved-from app, exactly as sceneAssetLoader is.
+    std::unique_ptr<ThumbnailService> thumbnails;
     // Captured in create(); the caller's contract already requires it to outlive the app. It is what
     // the service pass destroys retired TEXTURES through -- meshes and materials go back to the
     // ForwardRenderer that minted them, and a texture belongs to the device.

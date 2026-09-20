@@ -24,8 +24,6 @@
 #include <aero/editor/project_files.hpp>
 #include <aero/editor/thumbnail_cache.hpp>  // task 3.1.3 -- ThumbnailKey/ThumbnailLedger (pure, GPU-free)
 
-#include "thumbnail_store.hpp"  // task 3.1.3 -- src-private: the ONLY stb/GPU TU for thumbnails
-
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -34,10 +32,6 @@
 #include <string_view>
 #include <unordered_map>
 #include <vector>
-
-namespace engine::rhi {
-class Device;  // forward-declared, never #included here (A17) -- viewport_panel.hpp:19-21's shape
-}  // namespace engine::rhi
 
 namespace engine::editor {
 
@@ -50,13 +44,15 @@ struct AssetScanReport;  // task 3.1.3 -- the SAME forward-declaration-only prec
 struct WatchStatus;      // task 3.1.4 -- the SAME forward-declaration-only precedent as AssetScanReport:
                          // the header needs only the NAME for a pointer member, so it does not pull in
                          // <aero/editor/asset_watcher.hpp>. The .cpp includes it.
+class ThumbnailService;  // task E.3.3 -- the SAME precedent again; the .cpp includes thumbnail_service.hpp
 
 class AssetBrowserPanel final : public Panel {
 public:
-    // task 3.1.3 (A17): `device` defaults to nullptr, which keeps thumbnails deliberately unavailable
-    // (E13/AC-11) -- store.available() stays false, drawTile falls back to the icon path forever, and
-    // nothing crashes. EditorApp::create() always passes a real device.
-    explicit AssetBrowserPanel(std::string rootPath, rhi::Device* device = nullptr);
+    // task E.3.3: the rhi::Device* parameter is GONE -- the store it used to construct now lives in
+    // ThumbnailService, which EditorApp owns and lends through setThumbnails(). A panel with no service
+    // lent keeps 3.1.3's E13/AC-11 behaviour exactly: every tile falls back to the icon path forever
+    // and nothing crashes.
+    explicit AssetBrowserPanel(std::string rootPath);
 
     // FROZEN (D20/INV-1): "Assets" is the ImGui window name AND the imgui.ini settings key
     // (panel.hpp:46-47), and it has been written into every aero_editor.ini since 2.1.3. Renaming it
@@ -113,11 +109,10 @@ public:
         return requested;
     }
 
-    // task 3.1.3 (D8): the ONLY thumbnail mutator, called from EditorApp::tick() OUTSIDE the draw
-    // walk (the ViewportPanel::renderScene precedent) -- touches visible keys, evicts beyond the cap
-    // BEFORE decoding (so the bound stated in the footer is exactly true), then decodes at most
-    // MAX_THUMBNAIL_DECODES_PER_TICK Absent keys.
-    void serviceThumbnails();
+    // task E.3.3 (D5): the service is RECONCILED, never owned -- set ONCE in EditorApp::create(), right
+    // after this panel's own emplace, because it points at a heap object EditorApp holds through a
+    // unique_ptr and that address survives the app's own move. NULL is a legal state.
+    void setThumbnails(ThumbnailService* service) noexcept { thumbnailsPtr = service; }
 
     // code-review BLOCKING-1: the ImGui-free-at-source GPU tier cannot click the Reimport All button,
     // and EditorApp::requestAssetReimport() (task 3.1.2) drives a DIFFERENT path (the deep rescan
@@ -164,11 +159,6 @@ public:
     // so a test-driven rescan could leave rows on screen for files that no longer existed.
     void invalidateListings();
 
-    // task 3.1.4 (D9): the pendingThumbnailReimportClear shape verbatim, and for the identical
-    // BLOCKING-1 reason -- a one-shot set from OUTSIDE the draw walk and consumed by the NEXT
-    // serviceThumbnails(), AFTER its touch loop. Never destroys a texture from inside onDraw().
-    void notifyDatabaseRescanned() noexcept { pendingSupersededSweep = true; }
-
     // task 3.1.4 (D10): reconciled every tick, never owned -- the setDatabase()/setScanReport()
     // precedent, a THIRD instance. EditorApp owns the watcher; the panel only renders its state.
     void setWatchStatus(const WatchStatus* status) noexcept { watchStatusPtr = status; }
@@ -202,11 +192,6 @@ public:
 
     // task 3.1.3 (A12): black-box observability for the GPU tier, forwarded by EditorApp -- the
     // assetCacheEntryCount() shape verbatim.
-    [[nodiscard]] std::size_t thumbnailReadyCount() const noexcept { return ledger.readyCount(); }
-    [[nodiscard]] std::size_t thumbnailUnavailableCount() const noexcept { return ledger.unavailableCount(); }
-    [[nodiscard]] std::size_t thumbnailResidentCount() const noexcept { return store.residentCount(); }
-    [[nodiscard]] std::size_t thumbnailLoadAttempts() const noexcept { return store.loadAttempts(); }
-
     // code-review finding 4: the same black-box observability, for the SEARCH half. Without these a
     // GPU-tier case can drive the seams above and still prove nothing -- the branch it means to cover
     // is entered only when `searchRows.hits` is non-empty, so a case that silently searched zero
@@ -280,11 +265,10 @@ private:
     [[nodiscard]] const DirectoryListing* cached(const std::string& rel) const;
 
     // task 3.1.3 (INV-V3): std::nullopt unless ALL SEVEN conditions hold -- in ONE function so no
-    // call site can forget one. See the .cpp for the full list.
+    // call site can forget one. task E.3.3 split it: guards 1 (a folder) and 3 (no database) stay
+    // here, and the other five moved into the pure thumbnailKeyForRecord, which a record is all that
+    // is needed for -- so the picker's tile asks the IDENTICAL question rather than a similar one.
     [[nodiscard]] std::optional<ThumbnailKey> thumbnailKeyFor(const FileEntry& entry, const std::string& rel) const;
-    // "" when the record behind `key` has vanished (a rescan raced the decode) -- the caller treats
-    // an empty path as Failed, never as "try again".
-    [[nodiscard]] std::string absolutePathFor(const ThumbnailKey& key) const;
 
     std::string rootUtf8;
     std::string currentDir;     // relative; "" == the root
@@ -306,21 +290,10 @@ private:
     AssetViewMode viewMode = AssetViewMode::Grid;
     TileSize tileSize = TileSize::Medium;
 
-    // task 3.1.3, Step 7 -- the two-phase thumbnail wiring (D8). `store`/`ledger` are member-named,
-    // not `databasePtr`-style pointers: ThumbnailStore/ThumbnailLedger are OWNED here, one per panel.
-    ThumbnailLedger ledger;
-    ThumbnailStore store;
-    std::vector<ThumbnailKey> visibleThumbnailKeys;  // per-frame scratch, cleared in phase 1
-    std::uint64_t frameCounter = 0;                  // the LRU's clock; monotonic, NEVER wall time
-    // code-review BLOCKING-1: set by applyPending()'s ReimportAll arm, consumed by the NEXT
-    // serviceThumbnails() call -- NEVER an immediate ledger.clear()/store.clear() from inside the draw
-    // walk (that destroyed a texture this SAME frame's drawTile() had already written into the ImGui
-    // draw list, a use-after-free that is synchronous on Vulkan/D3D12 and merely deferred on Metal).
-    // serviceThumbnails() drains this AFTER its own touch loop, so anything drawn (and therefore
-    // touched) THIS frame is excluded by the SAME evictions()-vs-`currentFrame` rule that already
-    // protects normal cap eviction (E12) -- it survives one more tick, harmlessly, rather than being
-    // destroyed before this frame's endFrame() has consumed the draw data that references it.
-    bool pendingThumbnailReimportClear = false;
+    // task E.3.3 (D5): the ledger, the store, the LRU clock, the per-frame scratch and the two pending
+    // flags all moved into ThumbnailService, which EditorApp owns and three consumers share. What is
+    // left here is a borrowed pointer -- the databasePtr/reportPtr posture, a fourth instance.
+    ThumbnailService* thumbnailsPtr = nullptr;
 
     // task 3.1.3, Step 8 -- the whole-project search (D5: AssetDatabase::records() IS the index).
     AssetFilter filter;        // COMMITTED; the search box edits a SCRATCH copy (queryScratch)
@@ -342,15 +315,6 @@ private:
     // EditorApp has pushed one, which the header and footer both handle honestly rather than lying.
     const WatchStatus* watchStatusPtr = nullptr;
     std::optional<bool> watchToggleRequest;  // one-shot, drained by takeWatchToggleRequest()
-    // D9: set from OUTSIDE the draw walk (EditorApp's reconcile) and consumed by the NEXT
-    // serviceThumbnails(), AFTER its touch loop -- pendingThumbnailReimportClear's shape verbatim,
-    // and for the identical BLOCKING-1 reason.
-    bool pendingSupersededSweep = false;
-    // MEMBERS, never locals: the visibleThumbnailKeys/breadcrumb/labelScratch idiom, so a
-    // 50 000-record project does not allocate two large vectors on every rescan.
-    std::vector<ThumbnailKey> liveKeyScratch;
-    std::vector<Guid> abstainingScratch;
-
     // ---- task 3.4.2 ------------------------------------------------------------------------------
     // One-shot, drained by takeCreateMaterialRequest(). Engaged == "create a material in this
     // directory" ("" == the root); disengaged == nothing requested.

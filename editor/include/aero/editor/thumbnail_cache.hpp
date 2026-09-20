@@ -5,9 +5,13 @@
 // src-private). NOTHING HERE LOGS (INV-V8).
 #include <aero/core/content_hash.hpp>
 #include <aero/core/guid.hpp>
+#include <aero/editor/asset_cache.hpp>  // task E.3.3 -- ImportChange
+#include <aero/editor/asset_meta.hpp>   // task E.3.3 -- AssetRecord, AssetMetaState
+#include <aero/editor/asset_view.hpp>   // task E.3.3 -- isThumbnailDecodable
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <span>
 #include <vector>
 
@@ -103,6 +107,22 @@ private:
     // nothrow-movable on all three standard libraries.
     std::vector<Entry> entries;
 };
+
+// task E.3.3: FIVE of the browser's seven guards, as a pure function over a RECORD -- because a picker
+// CANDIDATE is a record, not a (FileEntry, path) pair. The browser keeps guards 1 (a folder is never a
+// candidate) and 3 (no database) and composes the rest through this.
+//
+// ORDER MATTERS AND IS PRESERVED: metaWriteFailed is checked BEFORE `change`, because phase 8 never
+// assigns such a record a `change` at all, so it reads as the default UpToDate to any test on `change`
+// alone (asset_meta.hpp's own note at the field, and 3.4.2's finding 3).
+//
+//   nullopt when: the extension is not thumbnail-decodable (.ktx2/.dds are Texture but get an ICON),
+//                 state == Invalid, metaWriteFailed, or change is NotHashed / Unhashable.
+//
+// An all-zero contentHash is the EMPTY FILE's real digest and never a sentinel (3.1.2's A4), so the
+// ONLY "was this hashed?" test is the `change` enum. NOTHING HERE LOGS (INV-V8): a refusal is nullopt
+// and nothing else.
+[[nodiscard]] std::optional<ThumbnailKey> thumbnailKeyForRecord(const AssetRecord& record) noexcept;
 
 // ---- the resampler --------------------------------------------------------------------------------
 // Fits `src` (RGBA8, tightly packed, srcW*srcH*4 bytes) into an `edge` x `edge` RGBA8 tile,
