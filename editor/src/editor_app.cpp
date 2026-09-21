@@ -37,6 +37,7 @@
 #include <aero/scene_render/scene_renderer.hpp>      // task E.2.4 -- the two resolvers
 
 #include "asset_browser_panel.hpp"
+#include "asset_picker.hpp"  // task E.3.3 -- AssetPickerState, held through a unique_ptr on a public header
 #include "console_panel.hpp"
 #include "editor_reflection.hpp"
 #include "file_dialog.hpp"  // task 2.5.1: DialogChannel's definition -- the shared_ptr's deleter needs
@@ -52,6 +53,9 @@
 #include "scene_asset_loader.hpp"  // task 3.1.5 -- the loader's definition, so the unique_ptr member
                                    // below can be created and destroyed in this TU
 #include "shell_ui.hpp"
+#include "thumbnail_service.hpp"  // task E.3.3 (D5): the SHARED thumbnail ledger/store/budget, held
+                                  // through a unique_ptr on a public header -- this TU is where the
+                                  // complete type is needed
 #include "viewport_panel.hpp"
 
 #include <chrono>
@@ -62,6 +66,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <cstdlib>  // task E.3.3 -- std::abs over the picker seam's signed step count
 #include <memory>
 #include <optional>
 #include <string>
@@ -340,6 +345,11 @@ std::optional<EditorApp> EditorApp::create(rhi::Device& device, platform::Window
     // renderer is NOT stored: it is passed per call, because it belongs to the ViewportPanel and may
     // not exist yet.
     app.sceneAssetLoader = std::make_unique<SceneAssetLoader>(device);
+    // task E.3.3 (D5): created BEFORE the panel block below, because every consumer is handed the
+    // pointer immediately after its own emplace -- once, never reconciled (the viewportPanel posture).
+    app.thumbnails = std::make_unique<ThumbnailService>(&device);
+    // task E.3.3: ONE picker state for the whole editor, because ImGui allows one popup at a time.
+    app.assetPicker = std::make_unique<AssetPickerState>();
     // ...and the SAME device is what the service pass destroys retired TEXTURES through. The code-review
     // round found this line missing: the member kept its nullptr initialiser, so destroyRetired's third
     // branch was dead and every texture the ledger adopted through reportSlotTexture survived every
@@ -428,8 +438,13 @@ std::optional<EditorApp> EditorApp::create(rhi::Device& device, platform::Window
         // asset-drop one-shot; the Inspector's is reconciled with the database beside the Material
         // panel's. Both are non-owning and address-stable (the registry holds unique_ptrs), exactly
         // like viewportPanel below.
-        app.hierarchyPanel = app.registry.emplace<HierarchyPanel>();      // task 2.2.1 -- was a PlaceholderPanel
-        app.inspectorPanel = app.registry.emplace<InspectorPanel>();      // task 2.2.2 -- was a PlaceholderPanel
+        app.hierarchyPanel = app.registry.emplace<HierarchyPanel>();  // task 2.2.1 -- was a PlaceholderPanel
+        app.inspectorPanel = app.registry.emplace<InspectorPanel>();  // task 2.2.2 -- was a PlaceholderPanel
+        // task E.3.3: SET ONCE, right after the emplace -- both point at heap objects this app holds
+        // through a unique_ptr, so the addresses survive the app's own move and there is nothing to
+        // reconcile (the viewportPanel posture, not the per-tick setDatabase one).
+        app.inspectorPanel->setAssetPicker(app.assetPicker.get());
+        app.inspectorPanel->setThumbnails(app.thumbnails.get());
         app.viewportPanel = app.registry.emplace<ViewportPanel>(device);  // task 2.2.3 -- was a PlaceholderPanel
         // task 2.2.5 -- was a PlaceholderPanel. logScope is engaged exactly when this branch runs (both
         // guards read the same const config field), but the has_value() test is NOT defensive
@@ -439,9 +454,11 @@ std::optional<EditorApp> EditorApp::create(rhi::Device& device, platform::Window
             app.consolePanel = app.registry.emplace<ConsolePanel>(std::move(*logScope));
         }
         AERO_LOG_INFO("editor: assets root '{}'", app.project.assetsRoot());
-        // task 3.1.3 (A17): the device is passed AT CONSTRUCTION, not reconciled -- unlike the
-        // project root, it can never change during a session.
-        app.assetBrowserPanel = app.registry.emplace<AssetBrowserPanel>(app.project.assetsRoot(), &device);
+        // task E.3.3: the device is gone from this constructor -- the store it used to build lives in
+        // ThumbnailService now, lent through setThumbnails() on the next line. ONCE, not reconciled:
+        // the service is a heap object whose address survives this app's own move.
+        app.assetBrowserPanel = app.registry.emplace<AssetBrowserPanel>(app.project.assetsRoot());
+        app.assetBrowserPanel->setThumbnails(app.thumbnails.get());
         // task 2.6.2 (D12): LAST. Inspector registers before it and therefore stays the selected tab
         // in the shared Right dock node (the Console-before-Assets property), and no existing panel's
         // index shifts, so every index-based assertion in the tree keeps its meaning. Its return value
@@ -467,6 +484,9 @@ std::optional<EditorApp> EditorApp::create(rhi::Device& device, platform::Window
         // preview is lazy and latched, so a session that never opens a material allocates no GPU
         // object at all (A-9/R2).
         app.materialPanel = app.registry.emplace<MaterialPanel>(device);
+        // task E.3.3: SET ONCE, right after the emplace -- the Inspector's own posture, one panel over.
+        app.materialPanel->setAssetPicker(app.assetPicker.get());
+        app.materialPanel->setThumbnails(app.thumbnails.get());
     }
 
     // task 2.6.1: `&& !app.project.isOpen()` is MANDATORY, not defensive. Opening a project above went
@@ -703,6 +723,10 @@ bool EditorApp::tick() {
         if (assetBrowserPanel != nullptr) {
             if (assetBrowserPanel->root() != assetDatabase.root()) {
                 assetBrowserPanel->setRoot(assetDatabase.root());
+                // task E.3.3: the two lines setRoot() used to perform itself, at the SAME point, so
+                // I40's "resident 0 after a project swap" keeps its exact timing. The service is
+                // shared now, so the panel is no longer the right place to decide this.
+                thumbnails->clear();
             }
             assetBrowserPanel->setDatabase(&assetDatabase);
             // task 3.1.3: unconditional, same block, same reasoning as setDatabase() above (F14).
@@ -714,7 +738,7 @@ bool EditorApp::tick() {
             if (assetDatabase.generation() != lastAssetGeneration) {
                 lastAssetGeneration = assetDatabase.generation();
                 assetBrowserPanel->invalidateListings();
-                assetBrowserPanel->notifyDatabaseRescanned();
+                thumbnails->noteDatabaseRescanned();  // task E.3.3: was the panel's own flag
             }
             // task 3.1.4: F9 -- drained as its OWN statement, unconditionally, BEFORE it is inspected.
             // This tree has shipped the `||`-short-circuit bug once (I30 is its mechanical proof) and
@@ -1081,10 +1105,29 @@ bool EditorApp::tick() {
     if (viewportPanel != nullptr) {
         viewportPanel->renderScene(sceneWorld);
     }
-    // task 3.1.3 (D8): serviceThumbnails() is the ONLY thumbnail mutator, and it runs here -- the
-    // SECOND occupant of the slot between drawShellUi and endFrame, the renderScene precedent.
-    if (assetBrowserPanel != nullptr) {
-        assetBrowserPanel->serviceThumbnails();
+    // task 3.1.3 (D8): the thumbnail service pass is the ONLY thumbnail mutator, and it runs here --
+    // the SECOND occupant of the slot between drawShellUi and endFrame, the renderScene precedent.
+    // task E.3.3 moved the body into ThumbnailService and kept this statement's position exactly,
+    // because THREE consumers share it now rather than one panel owning it.
+    if (thumbnails != nullptr) {
+        thumbnails->service(assetDatabase);
+    }
+    // task E.3.3: THE TICK IN WHICH NO FIELD CLAIMED THE POPUP. Every asset field writes the
+    // observables OWNER-ONLY, so a tick in which the owning row was not drawn at all -- the selection
+    // moved to an entity without that component, the panel was tabbed away or hidden -- would otherwise
+    // leave them frozen at the last frame that DID draw. ImGui has already closed the popup by then
+    // (its window stopped being submitted), so assetPickerOpen() would keep reporting an open popup
+    // that is gone, against editor_app.hpp's "the LAST DRAWN frame's answer", and the four live
+    // one-shots would never be dropped again because `openFieldKey` stays set forever.
+    //
+    // It belongs HERE and not in the widget: only a slot that runs after the WHOLE draw walk can know
+    // that nobody claimed it, and this is that slot.
+    if (assetPicker != nullptr && !std::exchange(assetPicker->ownerDrewThisTick, false)) {
+        assetPicker->openValue = false;
+        assetPicker->candidateCountValue = 0;
+        assetPicker->cursorValue = 0;
+        assetPicker->openHostId.clear();
+        assetPicker->openFieldKey.clear();
     }
     // task 3.2.1 (D16/AC-48/INV-M12): OUTSIDE the ImGui draw walk, in the SAME SLOT as renderScene()
     // and serviceThumbnails(). A Full import is SYNCHRONOUS and may visibly hitch on a large model --
@@ -1251,17 +1294,19 @@ bool EditorApp::assetBrowserDeleteModalPending() const noexcept {
     return assetBrowserPanel != nullptr && assetBrowserPanel->deleteModalPending();
 }
 
+// task E.3.3: re-pointed at the SHARED service. A moved-from app holds a null pointer, exactly as it
+// holds a null sceneAssetLoader, so all four are null-guarded like the drains.
 std::size_t EditorApp::thumbnailReadyCount() const noexcept {
-    return assetBrowserPanel != nullptr ? assetBrowserPanel->thumbnailReadyCount() : std::size_t{0};
+    return thumbnails != nullptr ? thumbnails->readyCount() : std::size_t{0};
 }
 std::size_t EditorApp::thumbnailUnavailableCount() const noexcept {
-    return assetBrowserPanel != nullptr ? assetBrowserPanel->thumbnailUnavailableCount() : std::size_t{0};
+    return thumbnails != nullptr ? thumbnails->unavailableCount() : std::size_t{0};
 }
 std::size_t EditorApp::thumbnailResidentCount() const noexcept {
-    return assetBrowserPanel != nullptr ? assetBrowserPanel->thumbnailResidentCount() : std::size_t{0};
+    return thumbnails != nullptr ? thumbnails->residentCount() : std::size_t{0};
 }
 std::size_t EditorApp::thumbnailLoadAttempts() const noexcept {
-    return assetBrowserPanel != nullptr ? assetBrowserPanel->thumbnailLoadAttempts() : std::size_t{0};
+    return thumbnails != nullptr ? thumbnails->loadAttempts() : std::size_t{0};
 }
 std::size_t EditorApp::assetOrphanCount() const noexcept { return lastAssetReport.orphanTotal; }
 // code-review SHOULD-FIX 10: the assetOrphanCount() shape verbatim, applied to phase 7.5's own capped
@@ -1427,7 +1472,7 @@ void EditorApp::applyHierarchyDrop(const HierarchyAssetDrop& drop) {
     const AssetKind kind = classifyAssetKind(leafOf(record->relativePath), /*isDirectory=*/false);
     const bool hasMesh = drop.targetRow.valid() && sceneWorld.has<MeshRenderer>(drop.targetRow);
     const DropSurface surface = drop.targetRow.valid() ? DropSurface::HierarchyRow : DropSurface::HierarchyVoid;
-    switch (classifyAssetDrop(kind, surface, hasMesh)) {
+    switch (classifyAssetDrop(kind, surface, hasMesh, /*fieldKind=*/std::nullopt)) {
         case DropAction::InstantiateModel:
             instantiateModelDrop(*record, drop.targetRow, Transform{});  // LOCAL identity under the row
             break;
@@ -1435,6 +1480,10 @@ void EditorApp::applyHierarchyDrop(const HierarchyAssetDrop& drop) {
             pushMaterialAssign(drop.targetRow, record->guid);
             break;
         case DropAction::BindTextureSlot:
+        // task E.3.3: AssignAssetReference is the ASSET FIELD's row and cannot reach this drain -- the
+        // surface here is only ever HierarchyRow or HierarchyVoid. Enumerated rather than defaulted,
+        // because that is what makes the NEXT enumerator a -Wswitch error instead of a silent refusal.
+        case DropAction::AssignAssetReference:
         case DropAction::None:
             break;  // a refusal that reached the drain is a STALE refusal, not an illegal one: peek
                     // already blocked the illegal ones, so this logs nothing beyond the null above
@@ -1453,7 +1502,7 @@ void EditorApp::applyViewportDrop(const ViewportAssetDrop& drop) {
     const AssetKind kind = classifyAssetKind(leafOf(record->relativePath), /*isDirectory=*/false);
     const Entity target = viewportPanel->pickAt(sceneWorld, drop.ndc);
     const bool hasMesh = target.valid() && sceneWorld.has<MeshRenderer>(target);
-    switch (classifyAssetDrop(kind, DropSurface::Viewport, hasMesh)) {
+    switch (classifyAssetDrop(kind, DropSurface::Viewport, hasMesh, /*fieldKind=*/std::nullopt)) {
         case DropAction::InstantiateModel: {
             // Placement is resolved HERE, not at accept time, so the entity lands where the camera is
             // NOW rather than where it was a frame ago. dropPlacementPoint is total: every ray yields
@@ -1466,6 +1515,7 @@ void EditorApp::applyViewportDrop(const ViewportAssetDrop& drop) {
             pushMaterialAssign(target, record->guid);
             break;
         case DropAction::BindTextureSlot:
+        case DropAction::AssignAssetReference:  // task E.3.3: the asset FIELD's row -- never this drain's
         case DropAction::None:
             break;
     }
@@ -1913,6 +1963,58 @@ void EditorApp::requestAssetBrowserSelectEntry(std::string_view relativePath) {
     if (assetBrowserPanel != nullptr) {
         assetBrowserPanel->requestSelectEntry(std::string(relativePath));
     }
+}
+
+// ---- task E.3.3: the picker's six seams and three observables ------------------------------------
+// "Inspector" and "Material" are written as LITERALS here, matching InspectorPanel::id() and
+// MaterialPanel::id() -- the same restatement context_router.cpp makes for the three routed ids. A
+// wrong literal is not a silent failure: the popup simply never opens, which I162 and I164 fail on.
+void EditorApp::requestInspectorAssetPicker(std::string_view componentName, std::string_view fieldName) {
+    if (assetPicker != nullptr) {
+        assetPicker->pendingOpen =
+            AssetPickerOpenRequest{.hostId = "Inspector", .fieldKey = inspectorAssetFieldKey(componentName, fieldName)};
+    }
+}
+
+void EditorApp::requestMaterialSlotPicker(std::size_t slot) {
+    if (assetPicker != nullptr) {
+        assetPicker->pendingOpen = AssetPickerOpenRequest{.hostId = "Material", .fieldKey = materialSlotFieldKey(slot)};
+    }
+}
+
+void EditorApp::requestAssetPickerSearch(std::string_view query) {
+    if (assetPicker != nullptr) {
+        assetPicker->pendingSearch = std::string(query);
+    }
+}
+
+void EditorApp::requestAssetPickerMove(int delta) {
+    if (assetPicker != nullptr && delta != 0) {
+        assetPicker->pendingMove = delta > 0 ? AssetPickerMove::Next : AssetPickerMove::Prev;
+        assetPicker->pendingMoveSteps = static_cast<std::size_t>(std::abs(delta));
+    }
+}
+
+void EditorApp::requestAssetPickerCommit() noexcept {
+    if (assetPicker != nullptr) {
+        assetPicker->pendingCommit = true;
+    }
+}
+
+void EditorApp::requestAssetPickerClose() noexcept {
+    if (assetPicker != nullptr) {
+        assetPicker->pendingClose = true;
+    }
+}
+
+bool EditorApp::assetPickerOpen() const noexcept { return assetPicker != nullptr && assetPicker->openValue; }
+
+std::size_t EditorApp::assetPickerCandidateCount() const noexcept {
+    return assetPicker != nullptr ? assetPicker->candidateCountValue : std::size_t{0};
+}
+
+std::size_t EditorApp::assetPickerCursor() const noexcept {
+    return assetPicker != nullptr ? assetPicker->cursorValue : std::size_t{0};
 }
 
 // task 3.1.4 (D10): applied IMMEDIATELY -- there is no one-shot to drain, because this writes the

@@ -10,6 +10,8 @@
 // literal (the standing 3.1.1 rule).
 #include <aero/core/content_hash.hpp>
 #include <aero/core/guid.hpp>
+#include <aero/editor/asset_cache.hpp>  // task E.3.3 -- ImportChange, for thumbnailKeyForRecord's guard 7
+#include <aero/editor/asset_meta.hpp>   // task E.3.3 -- AssetRecord, AssetMetaState
 #include <aero/editor/thumbnail_cache.hpp>
 
 #include <doctest/doctest.h>
@@ -18,7 +20,9 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <span>
+#include <string>
 #include <vector>
 
 using engine::ContentHash;
@@ -789,4 +793,104 @@ TEST_CASE(
     CHECK(ledger.stateOf(survivor) == ThumbnailState::Ready);
     CHECK(ledger.stateOf(stale1) == ThumbnailState::Absent);
     CHECK(ledger.stateOf(stale2) == ThumbnailState::Absent);
+}
+
+// ---- task E.3.3: thumbnailKeyForRecord, the five record guards as a pure function (TS1-TS4) -------
+//
+// THE FIRST TIER-0 COVER THESE FIVE GUARDS HAVE EVER HAD: until this task they lived inside
+// AssetBrowserPanel::thumbnailKeyFor and executed only behind a GPU.
+
+namespace {
+
+// An Ok, hashed, decodable record -- TS1's subject and the base every TS2 variant differs from in
+// EXACTLY ONE field, which is what makes each arm a statement about one guard.
+[[nodiscard]] engine::editor::AssetRecord decodableRecord(std::string relativePath) {
+    GuidGenerator generator{0x0E33E33E33E33E33ULL};  // fixed seed -- NO entropy source anywhere
+    engine::editor::AssetRecord record;
+    record.relativePath = std::move(relativePath);
+    record.guid = generator.next();
+    record.state = engine::editor::AssetMetaState::Ok;
+    record.contentHash = ContentHash{.hi = 0x1122334455667788ULL, .lo = 0x99AABBCCDDEEFF00ULL};
+    record.change = engine::editor::ImportChange::UpToDate;
+    record.metaWriteFailed = false;
+    return record;
+}
+
+}  // namespace
+
+TEST_CASE("TS1: a decodable, hashed, valid record yields {guid, contentHash}") {
+    const engine::editor::AssetRecord record = decodableRecord("tex/a.png");
+    const std::optional<ThumbnailKey> key = engine::editor::thumbnailKeyForRecord(record);
+    REQUIRE(key.has_value());
+    CHECK((key->guid == record.guid));
+    CHECK((key->hash == record.contentHash));
+
+    // The LEAF is what decides decodability, derived from the record's own path -- a directory named
+    // after a texture must not make an undecodable file decodable.
+    const engine::editor::AssetRecord nested = decodableRecord("a.png/b.txt");
+    CHECK_FALSE(engine::editor::thumbnailKeyForRecord(nested).has_value());
+}
+
+TEST_CASE("TS2: EACH guard alone refuses -- five records, each differing in ONE field") {
+    SUBCASE("an undecodable extension (.ktx2 is Texture, and gets an ICON)") {
+        const engine::editor::AssetRecord record = decodableRecord("tex/a.ktx2");
+        CHECK_FALSE(engine::editor::thumbnailKeyForRecord(record).has_value());
+    }
+    SUBCASE("state == Invalid -- no identity this session") {
+        engine::editor::AssetRecord record = decodableRecord("tex/a.png");
+        record.state = engine::editor::AssetMetaState::Invalid;
+        CHECK_FALSE(engine::editor::thumbnailKeyForRecord(record).has_value());
+    }
+    SUBCASE("metaWriteFailed -- the sidecar never landed on disk") {
+        engine::editor::AssetRecord record = decodableRecord("tex/a.png");
+        record.metaWriteFailed = true;
+        CHECK_FALSE(engine::editor::thumbnailKeyForRecord(record).has_value());
+        // AND THE ORDER IS WHAT MATTERS: phase 8 never assigns such a record a `change` at all, so it
+        // reads as the default UpToDate to any test on `change` alone. This arm is red the moment the
+        // metaWriteFailed guard moves BELOW the change guard, because `change` here IS UpToDate.
+        CHECK((record.change == engine::editor::ImportChange::UpToDate));
+    }
+    SUBCASE("change == NotHashed -- the scan skipped this file by budget") {
+        engine::editor::AssetRecord record = decodableRecord("tex/a.png");
+        record.change = engine::editor::ImportChange::NotHashed;
+        CHECK_FALSE(engine::editor::thumbnailKeyForRecord(record).has_value());
+    }
+    SUBCASE("change == Unhashable -- the bytes could not be read") {
+        engine::editor::AssetRecord record = decodableRecord("tex/a.png");
+        record.change = engine::editor::ImportChange::Unhashable;
+        CHECK_FALSE(engine::editor::thumbnailKeyForRecord(record).has_value());
+    }
+}
+
+TEST_CASE("TS3: an ALL-ZERO content hash is the empty file's real digest, never a sentinel") {
+    // 3.1.2's A4 trap, pinned from this side: the ONLY "was this hashed?" test is the `change` enum,
+    // so a record whose digest is all zeros and whose change is UpToDate has a REAL key.
+    engine::editor::AssetRecord record = decodableRecord("tex/empty.png");
+    record.contentHash = ContentHash{};
+    REQUIRE(record.guid.valid());
+    CHECK_FALSE(record.contentHash.valid());  // the trap: valid() is FALSE for the empty digest
+    const std::optional<ThumbnailKey> key = engine::editor::thumbnailKeyForRecord(record);
+    REQUIRE(key.has_value());
+    CHECK((key->hash == ContentHash{}));
+    CHECK((key->guid == record.guid));
+}
+
+TEST_CASE("TS4: the key is (guid, hash) -- one guid, two hashes, two keys") {
+    // The edited-texture case: the same asset identity with new bytes is a DIFFERENT thumbnail, which
+    // is what makes an edit re-decode for free and what the superseded sweep then cleans up.
+    const engine::editor::AssetRecord first = decodableRecord("tex/a.png");
+    engine::editor::AssetRecord second = first;
+    second.contentHash = ContentHash{.hi = 0x9999999999999999ULL, .lo = 0x8888888888888888ULL};
+
+    const std::optional<ThumbnailKey> keyA = engine::editor::thumbnailKeyForRecord(first);
+    const std::optional<ThumbnailKey> keyB = engine::editor::thumbnailKeyForRecord(second);
+    REQUIRE(keyA.has_value());
+    REQUIRE(keyB.has_value());
+    CHECK((keyA->guid == keyB->guid));
+    CHECK_FALSE((*keyA == *keyB));
+
+    // And the same record twice is the same key -- the function is a pure mapping, not a generator.
+    const std::optional<ThumbnailKey> again = engine::editor::thumbnailKeyForRecord(first);
+    REQUIRE(again.has_value());
+    CHECK((*keyA == *again));
 }

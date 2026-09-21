@@ -37,6 +37,7 @@ set(SPOT_LIGHT_HPP "${SCENE_INCLUDE}/aero/scene/spot_light.hpp")       # task E.
 set(ANNOTATIONS_HPP "${FIXTURES_DIR}/component_annotations.hpp")  # task 2.2.2
 set(TEXT_HPP "${FIXTURES_DIR}/component_text.hpp")                # task 2.2.2
 set(GUID_HPP "${FIXTURES_DIR}/component_guid.hpp")                # task 3.1.5
+set(ASSET_HPP "${FIXTURES_DIR}/component_asset.hpp")              # task E.3.3
 
 # Runs aero_reflect_gen once. Spec D8/C.6: ASAN_OPTIONS scoped to this one process --
 # detect_leaks=0 only (libclang leaks by design at process exit: global initializers, the CXIndex
@@ -930,6 +931,11 @@ elseif(CASE STREQUAL "components_engine_mesh_renderer")
     aero_expect_stdout_contains("${out}" "field mesh : Guid [guid]")
     aero_expect_stdout_contains("${out}" "field meshIndex : std::uint32_t [primitive]")
     aero_expect_stdout_contains("${out}" "field material : Guid [guid]")
+    # task E.3.3: both Guid fields now declare the asset kind they want, ON THE REAL ENGINE HEADER.
+    # The three assertions above stay as they are -- they are substring checks with no trailing
+    # newline, so they are satisfied by the longer line just as well.
+    aero_expect_stdout_contains("${out}" "field mesh : Guid [guid] [asset model]")
+    aero_expect_stdout_contains("${out}" "field material : Guid [guid] [asset material]")
 
     # declaration order: primitive -> color -> mesh -> meshIndex -> material
     string(FIND "${out}" "field primitive" _p)
@@ -1288,6 +1294,63 @@ elseif(CASE STREQUAL "guid_json")
     if(NOT _idx_skip EQUAL -1)
         message(FATAL_ERROR "case 'guid_json': engine::Guid must not be skipped, got:\n${out}")
     endif()
+
+elseif(CASE STREQUAL "asset_components")
+    # task E.3.3: AERO_ASSET(kind). The tool validates a GRAMMAR (an identifier) and NOTHING ELSE --
+    # `shader` is grammar-valid and vocabulary-unknown, and it is passed through verbatim, because the
+    # set of kinds a field may name belongs to the EDITOR (assetReferenceKindFromToken), a layer the
+    # engine's reflect half must not know about.
+    aero_run_tool(ARGS --components "${ASSET_HPP}" -- ${CLANG_ARGS} -I "${ENGINE_INCLUDE}" -I "${REFLECT_INCLUDE}"
+        OUT_RESULT result OUT_STDOUT out OUT_STDERR err)
+    aero_expect_exit_or_dump("${result}" 0 "${err}")
+    aero_expect_stdout_contains("${out}" "field texture : engine::Guid [guid] [asset texture]")
+    aero_expect_stdout_contains("${out}" "field shader : engine::Guid [guid] [asset shader]")
+    # the unannotated and the dropped fields print with NO [asset ...] suffix -- the trailing \n is
+    # what proves no suffix followed (annotations_components' own idiom)
+    aero_expect_stdout_contains("${out}" "field anything : engine::Guid [guid]\n")
+    aero_expect_stdout_contains("${out}" "field scale : float [primitive]\n")
+    aero_expect_stdout_contains("${out}" "field dashed : engine::Guid [guid]\n")
+    aero_expect_stdout_contains("${out}" "field empty : engine::Guid [guid]\n")
+
+elseif(CASE STREQUAL "asset_meta")
+    aero_run_tool(ARGS --emit-meta "${ASSET_HPP}" -- ${CLANG_ARGS} -I "${ENGINE_INCLUDE}" -I "${REFLECT_INCLUDE}"
+        OUT_RESULT result OUT_STDOUT out OUT_STDERR err)
+    aero_expect_exit_or_dump("${result}" 0 "${err}")
+    aero_expect_stdout_contains("${out}" "#include <aero/reflect/annotations.hpp>")
+    # .assetKind is APPENDED LAST, after .color -- FieldUiMeta's declaration order IS the emitted
+    # designated-initializer order (C++20 requires it), and this is the pin on that.
+    aero_expect_stdout_contains("${out}"
+        ".data<&engine::demo::Referenced::texture>(\"texture\"_hs, \"texture\")\n        .custom<engine::reflect::FieldUiMeta>(engine::reflect::FieldUiMeta{.hasRange = false, .rangeMin = 0.0, .rangeMax = 0.0, .color = false, .assetKind = \"texture\"})")
+    aero_expect_stdout_contains("${out}"
+        ".data<&engine::demo::Referenced::shader>(\"shader\"_hs, \"shader\")\n        .custom<engine::reflect::FieldUiMeta>(engine::reflect::FieldUiMeta{.hasRange = false, .rangeMin = 0.0, .rangeMax = 0.0, .color = false, .assetKind = \"shader\"})")
+    # NO .custom mentions `anything` (unannotated), `scale` (misapplied), `dashed` or `empty`
+    # (malformed) -- proven by TWO consecutive-.data runs with nothing inserted between them. Two
+    # runs rather than one, because `shader` carries a custom and splits the chain in the middle.
+    aero_expect_stdout_contains("${out}"
+        ".data<&engine::demo::Referenced::anything>(\"anything\"_hs, \"anything\")\n        .data<&engine::demo::Referenced::shader>(\"shader\"_hs, \"shader\")")
+    aero_expect_stdout_contains("${out}"
+        ".data<&engine::demo::Referenced::scale>(\"scale\"_hs, \"scale\")\n        .data<&engine::demo::Referenced::dashed>(\"dashed\"_hs, \"dashed\")\n        .data<&engine::demo::Referenced::empty>(\"empty\"_hs, \"empty\");")
+
+elseif(CASE STREQUAL "asset_misapplied")
+    # Applicability is judged AFTER classification (D7), exactly as engine::range and engine::color
+    # are: an asset kind on a non-Guid field warns and is dropped, never an error.
+    aero_run_tool(ARGS --components "${ASSET_HPP}" -- ${CLANG_ARGS} -I "${ENGINE_INCLUDE}" -I "${REFLECT_INCLUDE}"
+        OUT_RESULT result OUT_STDOUT out OUT_STDERR err)
+    aero_expect_exit_or_dump("${result}" 0 "${err}")
+    aero_expect_stderr_contains("${err}" "Referenced.scale: engine::asset applies only to Guid fields")
+
+elseif(CASE STREQUAL "asset_malformed")
+    # A token that is not an identifier, and an EMPTY payload -- AERO_ASSET() stringizes to "", which
+    # is malformed rather than "no annotation". Both warn, both drop, exit stays 0.
+    aero_run_tool(ARGS --components "${ASSET_HPP}" -- ${CLANG_ARGS} -I "${ENGINE_INCLUDE}" -I "${REFLECT_INCLUDE}"
+        OUT_RESULT result OUT_STDOUT out OUT_STDERR err)
+    aero_expect_exit_or_dump("${result}" 0 "${err}")
+    aero_expect_stderr_contains("${err}"
+        "Referenced.dashed: malformed engine::asset annotation (kind must be an identifier) -- ignored")
+    aero_expect_stderr_contains("${err}"
+        "Referenced.empty: malformed engine::asset annotation (kind must be an identifier) -- ignored")
+    aero_expect_stdout_contains("${out}" "field dashed : engine::Guid [guid]\n")
+    aero_expect_stdout_contains("${out}" "field empty : engine::Guid [guid]\n")
 
 else()
     message(FATAL_ERROR "run_case.cmake: unknown CASE '${CASE}'")

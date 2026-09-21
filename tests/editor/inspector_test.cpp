@@ -137,11 +137,11 @@ TEST_CASE("inspector: model lists present components in registration order, fiel
     const engine::editor::ComponentEntry& probeEntry = model.components[1];
     CHECK(probeEntry.name == "InspectorProbe");
     REQUIRE(probeEntry.hasFields);
-    REQUIRE(probeEntry.fields.size() == 13);  // task 3.1.5 appended `asset`
+    REQUIRE(probeEntry.fields.size() == 14);  // 3.1.5 appended `asset`; E.3.3 appended `textureRef`
 
-    const std::vector<std::string> expectedOrder{"speed",        "tint",      "label", "gear", "tiny",
-                                                 "enabled",      "aim",       "mass",  "tick", "glyph",
-                                                 "clampedRange", "hugeRange", "asset"};
+    const std::vector<std::string> expectedOrder{"speed",        "tint",      "label", "gear",      "tiny",
+                                                 "enabled",      "aim",       "mass",  "tick",      "glyph",
+                                                 "clampedRange", "hugeRange", "asset", "textureRef"};
     REQUIRE(expectedOrder.size() == probeEntry.fields.size());  // the list IS the declaration order
     for (std::size_t i = 0; i < expectedOrder.size(); ++i) {
         CHECK(probeEntry.fields[i].name == expectedOrder[i]);
@@ -161,7 +161,7 @@ TEST_CASE("inspector: model over InspectorProbe -- every field's kind, range and
     buildInspectorModel(world, e, model);
     REQUIRE(model.components.size() == 1);
     const std::vector<engine::editor::FieldEntry>& fields = model.components[0].fields;
-    REQUIRE(fields.size() == 13);  // task 3.1.5 appended `asset`
+    REQUIRE(fields.size() == 14);  // 3.1.5 appended `asset`; E.3.3 appended `textureRef`
 
     const engine::editor::FieldEntry& speed = findField(fields, "speed");
     CHECK(speed.kind == FieldKind::Float);
@@ -494,7 +494,7 @@ TEST_CASE(
     InspectorModel model;
     buildInspectorModel(world, e, model);
     REQUIRE(model.components.size() == 1);
-    REQUIRE(model.components[0].fields.size() == 13);
+    REQUIRE(model.components[0].fields.size() == 14);
 
     model.components.reserve(64);
     model.components[0].fields.reserve(512);
@@ -507,7 +507,7 @@ TEST_CASE(
 
     buildInspectorModel(world, e, model);
     CHECK(model.components.size() == 1);
-    CHECK(model.components[0].fields.size() == 13);
+    CHECK(model.components[0].fields.size() == 14);
     CHECK(model.components.data() == componentsData);
     CHECK(model.components[0].fields.data() == fieldsData);
     CHECK(model.components.capacity() == componentCapacity);
@@ -683,23 +683,64 @@ TEST_CASE("inspector: a Guid field reads, writes and REFUSES a wrong type (task 
     CHECK_FALSE(writeComponentField(world, e, probeId, "tint", FieldValue{written}));
 }
 
-TEST_CASE("inspector: no inspector row is a drop target (task 3.1.5, IR8, seed S35's twin)") {
-    // D14, and the only tier that can state it: assignment happens on the Hierarchy row, in the
-    // viewport and on a material slot -- never on an inspector field. A drop target here would be a
-    // fourth assignment surface with its own accept rules, and no runtime tier in this tree can drive
-    // an ImGui drag, so the pin is the panel's own source text.
-    std::ifstream file(AERO_EDITOR_SRC_DIR "/inspector_panel.cpp", std::ios::binary);
-    REQUIRE(file.is_open());
-    std::string line;
-    std::size_t scanned = 0;
-    while (std::getline(file, line)) {
-        ++scanned;
-        const std::size_t comment = line.find("//");
-        const std::string code = comment == std::string::npos ? line : line.substr(0, comment);
-        CHECK(code.find("BeginDragDropTarget") == std::string::npos);
-        CHECK(code.find("AcceptDragDropPayload") == std::string::npos);
+TEST_CASE("inspector: a field has exactly ONE assignment surface, and it is the WIDGET's (IR8)") {
+    // task E.3.3 SUPERSEDES 3.1.5's D14 with an affordance rather than contradicting it. A Guid field
+    // IS assignable now -- but through drawAssetReferenceField, which owns the target for both hosts,
+    // so there is still exactly ONE accept rule rather than a fourth surface with its own. No runtime
+    // tier in this tree can drive an ImGui drag, so both halves are the sources' own text.
+    const auto codeLinesOf = [](const char* path) {
+        std::ifstream file(path, std::ios::binary);
+        REQUIRE(file.is_open());
+        std::vector<std::string> lines;
+        std::string line;
+        while (std::getline(file, line)) {
+            const std::size_t comment = line.find("//");
+            lines.push_back(comment == std::string::npos ? line : line.substr(0, comment));
+        }
+        return lines;
+    };
+
+    SUBCASE("(a) inspector_panel.cpp still names NEITHER drop API -- unchanged, and still true") {
+        const std::vector<std::string> code = codeLinesOf(AERO_EDITOR_SRC_DIR "/inspector_panel.cpp");
+        for (const std::string& line : code) {
+            CHECK(line.find("BeginDragDropTarget") == std::string::npos);
+            CHECK(line.find("AcceptDragDropPayload") == std::string::npos);
+        }
+        CHECK(code.size() > 100);  // the scan really traversed the file, not an empty read
     }
-    CHECK(scanned > 100);  // the scan really traversed the file, rather than passing on an empty read
+
+    SUBCASE("(b) asset_picker.cpp names each ONCE, and CLASSIFIES BETWEEN them") {
+        // THE PEEK RULE AS AN ORDERING, not as a membership: ImGui draws the drop highlight as a side
+        // effect of AcceptDragDropPayload, so classifying AFTER it is a promise the editor breaks.
+        // 3.4.2's I96 lesson -- a membership pin certified a use-after-free it could not see.
+        const std::vector<std::string> code = codeLinesOf(AERO_EDITOR_SRC_DIR "/asset_picker.cpp");
+        std::size_t begins = 0;
+        std::size_t accepts = 0;
+        std::size_t classifies = 0;
+        std::size_t beginLine = 0;
+        std::size_t acceptLine = 0;
+        std::size_t classifyLine = 0;
+        for (std::size_t i = 0; i < code.size(); ++i) {
+            if (code[i].find("BeginDragDropTarget(") != std::string::npos) {
+                ++begins;
+                beginLine = i;
+            }
+            if (code[i].find("AcceptDragDropPayload(") != std::string::npos) {
+                ++accepts;
+                acceptLine = i;
+            }
+            if (code[i].find("classifyAssetDrop(") != std::string::npos) {
+                ++classifies;
+                classifyLine = i;
+            }
+        }
+        CHECK(code.size() > 100);
+        CHECK(begins == 1);
+        CHECK(accepts == 1);
+        CHECK(classifies == 1);
+        CHECK(beginLine < classifyLine);
+        CHECK(classifyLine < acceptLine);
+    }
 }
 
 // D16's claim made machine-checkable, and placed immediately after the drift pin for the reason that
@@ -1901,4 +1942,173 @@ TEST_CASE("inspector: every defaultComponentField rejection logs EXACTLY ONE err
     const std::size_t afterDetach = records.size();
     CHECK_FALSE(defaultComponentField(world, transformId, "nope").has_value());
     CHECK(records.size() == afterDetach);
+}
+
+// ---- task E.3.3: the model CARRIES a Guid field's asset kind and JUDGES nothing (KP1-KP4) ---------
+//
+// Appended BELOW the AC-12 drift pin, so every case here inherits a meta context that
+// registerEditorReflection() has already populated -- there is no entt::meta_reset() anywhere below
+// that pin, which is exactly why these four register what they need themselves rather than assuming
+// a clean context.
+
+TEST_CASE("KP1: the model copies a field's AERO_ASSET token verbatim and resolves nothing (AC-9)") {
+    World world;
+    aero_reflect_register_all_aero_editor_inspector_test();
+    const ComponentTypeId probeId = registerProbe(world);
+    REQUIRE(probeId.valid());
+    const Entity e = world.create();
+    world.addRaw(probeId, e, nullptr);
+
+    InspectorModel model;
+    buildInspectorModel(world, e, model);
+    REQUIRE(model.components.size() == 1);
+    const std::vector<engine::editor::FieldEntry>& fields = model.components[0].fields;
+
+    // Two reference fields, ONE of them annotated. That is the whole point of the pair: an
+    // unconstrained Guid and a constrained one, told apart by nothing but the token.
+    const engine::editor::FieldEntry& unconstrained = findField(fields, "asset");
+    CHECK(unconstrained.kind == FieldKind::Guid);
+    CHECK(unconstrained.assetKindToken.empty());
+    CHECK_FALSE(unconstrained.hasRange);
+    CHECK_FALSE(unconstrained.color);
+
+    const engine::editor::FieldEntry& constrained = findField(fields, "textureRef");
+    CHECK(constrained.kind == FieldKind::Guid);
+    CHECK(constrained.assetKindToken == "texture");
+    CHECK_FALSE(constrained.hasRange);
+    CHECK_FALSE(constrained.color);
+
+    // The model never resolves the token -- it is carried as WRITTEN. An editor-side vocabulary
+    // (assetReferenceKindFromToken) is what judges it, one layer up, every frame.
+    CHECK(constrained.assetKindToken == std::string{"texture"});
+}
+
+TEST_CASE("KP2: the three REAL built-in reference fields name their kinds, and nothing else does") {
+    engine::editor::registerEditorReflection();
+
+    World world;
+    const Entity e = world.create();
+    const ComponentTypeId meshRendererId = world.findComponentType("engine::MeshRenderer");
+    const ComponentTypeId audioSourceId = world.findComponentType("engine::AudioSource");
+    REQUIRE(meshRendererId.valid());
+    REQUIRE(audioSourceId.valid());
+    world.addRaw(meshRendererId, e, nullptr);
+    world.addRaw(audioSourceId, e, nullptr);
+
+    InspectorModel model;
+    buildInspectorModel(world, e, model);
+    REQUIRE(model.components.size() == 2);
+
+    const auto entryFor = [&model](std::string_view name) -> const engine::editor::ComponentEntry& {
+        for (const engine::editor::ComponentEntry& entry : model.components) {
+            if (entry.name == name) {
+                return entry;
+            }
+        }
+        FAIL("component not found: ", name);
+        return model.components.front();
+    };
+
+    const engine::editor::ComponentEntry& meshRenderer = entryFor("engine::MeshRenderer");
+    CHECK(findField(meshRenderer.fields, "mesh").assetKindToken == "model");
+    CHECK(findField(meshRenderer.fields, "material").assetKindToken == "material");
+
+    const engine::editor::ComponentEntry& audioSource = entryFor("engine::AudioSource");
+    CHECK(findField(audioSource.fields, "clip").assetKindToken == "audio");
+
+    // ANTI-VACUITY, both halves: the counts are hand-written from the headers' own field lists, so a
+    // loop that walked nothing -- or one that found a token on every field -- reads wrong here rather
+    // than reading "all empty, all fine". MeshRenderer has five fields, two annotated; AudioSource
+    // has eight, one annotated.
+    REQUIRE(meshRenderer.fields.size() == 5);
+    REQUIRE(audioSource.fields.size() == 8);
+    std::size_t meshRendererEmpty = 0;
+    for (const engine::editor::FieldEntry& field : meshRenderer.fields) {
+        if (field.assetKindToken.empty()) {
+            ++meshRendererEmpty;
+        }
+    }
+    std::size_t audioSourceEmpty = 0;
+    for (const engine::editor::FieldEntry& field : audioSource.fields) {
+        if (field.assetKindToken.empty()) {
+            ++audioSourceEmpty;
+        }
+    }
+    CHECK(meshRendererEmpty == 3);
+    CHECK(audioSourceEmpty == 7);
+}
+
+TEST_CASE("KP3: the new member survives D15's scratch reuse -- capacity AND the string's buffer") {
+    World world;
+    aero_reflect_register_all_aero_editor_inspector_test();
+    const ComponentTypeId probeId = registerProbe(world);
+    const Entity e = world.create();
+    world.addRaw(probeId, e, nullptr);
+
+    InspectorModel model;
+    buildInspectorModel(world, e, model);
+    REQUIRE(model.components.size() == 1);
+    REQUIRE(model.components[0].fields.size() == 14);
+
+    model.components.reserve(64);
+    model.components[0].fields.reserve(512);
+    const void* fieldsData = model.components[0].fields.data();
+    const std::size_t fieldCapacity = model.components[0].fields.capacity();
+
+    // THE TOKEN STRING'S OWN BUFFER, and it has to be forced OFF the small-string optimisation first
+    // or the arm cannot decide anything. "texture" is seven bytes, so it lives inside the FieldEntry
+    // itself: its address is a function of the entry's position in `fields`, which the vector-identity
+    // arm above has ALREADY pinned, so every spelling of "empty this string" produces the identical
+    // address AND the identical (SSO) capacity. Reserving past the SSO threshold puts the characters
+    // on the heap, where a spelling that FREES the allocation becomes visible: clear() keeps it and
+    // the assignment of a seven-byte token reuses it, while `= std::string{}` move-assigns from an
+    // empty temporary and deallocates, dropping the string back to SSO -- capacity 263 -> 22.
+    //
+    // `= {}` is DELIBERATELY NOT the seed here, and the implementation's comment used to name it:
+    // measured, a braced-init-list selects operator=(initializer_list<char>), which assigns zero
+    // characters and keeps the buffer, so it is indistinguishable from clear() at every tier.
+    engine::editor::FieldEntry* tokenField = nullptr;
+    for (engine::editor::FieldEntry& f : model.components[0].fields) {
+        if (f.name == "textureRef") {
+            tokenField = &f;
+        }
+    }
+    REQUIRE(tokenField != nullptr);
+    tokenField->assetKindToken.reserve(256);
+    const void* tokenData = tokenField->assetKindToken.c_str();
+    const std::size_t tokenCapacity = tokenField->assetKindToken.capacity();
+    REQUIRE(tokenCapacity >= 256);  // ANTI-VACUITY: the buffer really is off SSO now
+
+    buildInspectorModel(world, e, model);
+    CHECK(model.components[0].fields.size() == 14);
+    CHECK(model.components[0].fields.data() == fieldsData);
+    CHECK(model.components[0].fields.capacity() == fieldCapacity);
+    const engine::editor::FieldEntry& rebuilt = findField(model.components[0].fields, "textureRef");
+    CHECK(rebuilt.assetKindToken == "texture");
+    CHECK(rebuilt.assetKindToken.capacity() == tokenCapacity);
+    CHECK(static_cast<const void*>(rebuilt.assetKindToken.c_str()) == tokenData);
+}
+
+TEST_CASE("KP4: an ANNOTATED Guid field round-trips through the seam exactly as an unannotated one") {
+    World world;
+    aero_reflect_register_all_aero_editor_inspector_test();
+    const ComponentTypeId probeId = registerProbe(world);
+    REQUIRE(probeId.valid());
+    const Entity e = world.create();
+    world.addRaw(probeId, e, nullptr);
+
+    // The annotation is a UI hint. It changes nothing about component_ops, which is what keeps the
+    // picker's write path identical to the Clear button's.
+    const engine::Guid written{0x1122334455667788ULL, 0x99AABBCCDDEEFF00ULL};
+    REQUIRE(writeComponentField(world, e, probeId, "textureRef", FieldValue{written}));
+    const std::optional<FieldValue> readBack = readComponentField(world, e, probeId, "textureRef");
+    REQUIRE(readBack.has_value());
+    REQUIRE(std::holds_alternative<engine::Guid>(*readBack));
+    CHECK((std::get<engine::Guid>(*readBack) == written));
+
+    // And it is refused just as hard on a wrong type -- IR7's own rule, on the annotated twin.
+    CHECK_FALSE(writeComponentField(world, e, probeId, "textureRef", FieldValue{3.5}));
+    const std::optional<FieldValue> untouched = readComponentField(world, e, probeId, "textureRef");
+    REQUIRE(untouched.has_value());
+    CHECK((std::get<engine::Guid>(*untouched) == written));
 }

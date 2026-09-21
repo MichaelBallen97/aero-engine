@@ -1,6 +1,7 @@
 #include "inspector_panel.hpp"
 
 #include <aero/core/math.hpp>
+#include <aero/editor/asset_drag.hpp>  // task E.3.3 -- assetReferenceKindFromToken, DropSurface
 #include <aero/editor/command_stack.hpp>
 #include <aero/editor/component_commands.hpp>
 #include <aero/editor/entity_ops.hpp>
@@ -8,6 +9,7 @@
 #include <aero/editor/selection.hpp>
 #include <aero/scene/world.hpp>
 
+#include "asset_picker.hpp"  // task E.3.3 -- the ONE asset-reference field widget
 #include "text_input.hpp"
 
 #include <algorithm>
@@ -548,18 +550,55 @@ void InspectorPanel::drawField(PanelContext& context, Entity primary, const Comp
             break;
         }
         case FieldKind::Guid: {
-            // task 3.1.5 (D14/D-20). The row is chosen by KIND, never by component or field name --
-            // the standing rule that keeps the inspector generic. NO InputText: a hand-typed guid is
-            // not a workflow anybody needs and it would need parse-error UI. NO DROP TARGET EITHER:
-            // assignment happens on the Hierarchy row and in the viewport, and IR8 pins that by
-            // scanning this file's own code for ImGui's drop-target entry points. Their names are
-            // deliberately not spelled here: that pin strips comments, but the plain grep a reader
-            // would reach for does not, and a prose mention would read as a violation.
+            // task E.3.3: the row is still chosen by KIND, never by component or field name -- the
+            // standing rule that keeps the inspector generic. What is NEW is that the field says which
+            // kind it WANTS, through its own AERO_ASSET token; an unresolved token is UNCONSTRAINED
+            // plus one WARN on the open frame, never a refused row.
+            //
+            // 3.1.5's D14 is SUPERSEDED, not contradicted: there is exactly ONE assignment surface for
+            // a field, and it is the widget's -- this file still names no ImGui drop API at all, which
+            // IR8 clause (a) keeps pinning. Their names are deliberately not spelled here: that pin
+            // strips comments, but the plain grep a reader would reach for does not.
             //
             // Both decisions -- the sentence and whether Clear is live -- come from ONE pure call, so
             // this panel holds no second copy of either and a tier-0 case asserts what is drawn here.
             const GuidFieldRow row = guidFieldRow(std::get<Guid>(field.value), database);
-            ImGui::TextUnformatted(row.text.c_str());
+            const std::optional<AssetKind> wanted = assetReferenceKindFromToken(field.assetKindToken);
+            const std::string_view unknown = (!field.assetKindToken.empty() && !wanted.has_value())
+                                                 ? std::string_view(field.assetKindToken)
+                                                 : std::string_view{};
+            AssetFieldResult picked{};
+            if (assetPicker != nullptr) {
+                fieldKeyScratch = inspectorAssetFieldKey(entry.name, field.name);
+                // THE WIDTH IS THIS HOST'S ARITHMETIC: `Clear` shares this row, so a -FLT_MIN button
+                // would push it off the row edge. Measured with the same CalcTextSize the button
+                // itself uses, so a theme or DPI change moves both together, and floored at one frame
+                // height so a narrow panel still yields a clickable button rather than a negative one.
+                //
+                // NOT SetNextItemWidth: ImGui::Button takes an explicit ImVec2 size and ignores the
+                // next-item width, and drawField's shared SetNextItemWidth(-1.0F) is consumed by the
+                // first ItemAdd that follows (E.3.1's lesson 1) -- which is why the width had to
+                // become an argument at all.
+                const ImGuiStyle& style = ImGui::GetStyle();
+                const float clearWidth =
+                    ImGui::CalcTextSize("Clear").x + (2.0F * style.FramePadding.x) + style.ItemSpacing.x;
+                const float buttonWidth =
+                    std::max(ImGui::GetContentRegionAvail().x - clearWidth, ImGui::GetFrameHeight());
+                // A designated initialiser must follow DECLARATION order (E.2.2's finding 3);
+                // `idSuffix` is omitted because its default is right.
+                const AssetFieldInputs inputs{.valueText = row.text,
+                                              .buttonWidth = buttonWidth,
+                                              .current = std::get<Guid>(field.value),
+                                              .rules = AssetPickerRules{DropSurface::AssetField, wanted},
+                                              .hostId = id(),
+                                              .fieldKey = fieldKeyScratch,
+                                              .unknownToken = unknown,
+                                              .database = database,
+                                              .thumbnails = thumbnails};
+                picked = drawAssetReferenceField(inputs, *assetPicker);
+            } else {
+                ImGui::TextUnformatted(row.text.c_str());  // no picker lent (a bare panel): 3.1.5's row
+            }
             ImGui::SameLine();
             ImGui::BeginDisabled(!row.clearEnabled);
             const bool cleared = ImGui::SmallButton("Clear");
@@ -575,6 +614,26 @@ void InspectorPanel::drawField(PanelContext& context, Entity primary, const Comp
             }
             if (gate.closed) {
                 context.commands.breakMergeChain();  // AFTER the push
+            }
+            // D9: a pick is a DISCRETE write -- resetField's operation exactly (the chain broken on
+            // BOTH sides, both caches dropped) -- and one that changes nothing pushes nothing, which
+            // is guidFieldRow's own rule at this row's precision. The two refusals are the HOST's,
+            // because only the host holds the current value.
+            const Guid current = std::get<Guid>(field.value);
+            switch (picked.outcome) {  // NO default: a fifth outcome is a -Wswitch error
+                case AssetFieldOutcome::Picked:
+                case AssetFieldOutcome::Dropped:
+                    if (picked.guid != current) {
+                        resetField(context, primary, entry, field, FieldValue{picked.guid});
+                    }
+                    break;
+                case AssetFieldOutcome::Cleared:
+                    if (current.valid()) {
+                        resetField(context, primary, entry, field, FieldValue{Guid{}});
+                    }
+                    break;
+                case AssetFieldOutcome::None:
+                    break;
             }
             break;
         }

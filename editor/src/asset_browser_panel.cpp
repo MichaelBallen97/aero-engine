@@ -22,7 +22,9 @@
 #include <aero/editor/panel_context.hpp>
 #include <aero/editor/project_files.hpp>
 
-#include "text_input.hpp"  // task 3.1.3 (A1): inputTextString -- NEVER imgui_stdlib (Windows Debug LNK2038)
+#include "asset_tile.hpp"         // task E.3.3 -- the tile FACE, shared with the picker
+#include "text_input.hpp"         // task 3.1.3 (A1): inputTextString -- NEVER imgui_stdlib (Windows Debug LNK2038)
+#include "thumbnail_service.hpp"  // task E.3.3 -- the SHARED ledger/store, borrowed through thumbnailsPtr
 
 #include <algorithm>
 #include <array>
@@ -63,49 +65,9 @@ std::string elideGuid(Guid guid) {
     return full.substr(0, GUID_PREFIX_LENGTH) + "…" + full.substr(full.size() - GUID_SUFFIX_LENGTH);
 }
 
-// task 3.1.3 (A15): the tile caption's own truncation policy. ImGui offers no ellipsis for draw-list
-// text, so this measures with ImGui::CalcTextSize and truncates by hand -- the LONGEST byte prefix
-// whose (prefix + ellipsis) still fits TILE_CAPTION_LINES lines at `wrapWidth`, landing on a UTF-8
-// boundary (never slicing a multi-byte sequence). Needs a live ImGui context (CalcTextSize/
-// GetTextLineHeight), so it lives here, not in asset_view.cpp (which stays ImGui-free).
-std::string elideForCaption(const std::string& name, float wrapWidth) {
-    const float twoLineHeight = static_cast<float>(TILE_CAPTION_LINES) * ImGui::GetTextLineHeight();
-    const ImVec2 full = ImGui::CalcTextSize(name.c_str(), nullptr, false, wrapWidth);
-    if (full.y <= twoLineHeight) {
-        return name;
-    }
-    std::size_t lo = 0;
-    std::size_t hi = name.size();
-    while (lo < hi) {
-        const std::size_t mid = lo + ((hi - lo + 1) / 2);
-        std::size_t cut = mid;
-        while (cut > 0 && (static_cast<unsigned char>(name[cut]) & 0xC0U) == 0x80U) {
-            --cut;  // step back to a UTF-8 boundary
-        }
-        if (cut == 0) {
-            hi = 0;
-            break;
-        }
-        std::string candidate(name, 0, cut);
-        candidate += "…";
-        const ImVec2 size = ImGui::CalcTextSize(candidate.c_str(), nullptr, false, wrapWidth);
-        if (size.y <= twoLineHeight) {
-            lo = mid;
-        } else {
-            hi = mid - 1;
-        }
-    }
-    std::size_t finalCut = lo;
-    while (finalCut > 0 && (static_cast<unsigned char>(name[finalCut]) & 0xC0U) == 0x80U) {
-        --finalCut;
-    }
-    return name.substr(0, finalCut) + "…";
-}
-
 }  // namespace
 
-AssetBrowserPanel::AssetBrowserPanel(std::string rootPath, rhi::Device* device)
-    : rootUtf8(std::move(rootPath)), store(device) {}
+AssetBrowserPanel::AssetBrowserPanel(std::string rootPath) : rootUtf8(std::move(rootPath)) {}
 
 void AssetBrowserPanel::setRoot(std::string rootPath) {
     rootUtf8 = std::move(rootPath);
@@ -123,9 +85,10 @@ void AssetBrowserPanel::setRoot(std::string rootPath) {
     // 3.1.1's own easy-to-miss line, a second instance.
     reimportRequested = false;
     // task 3.1.3 (E27, seed S26): a texture keyed by a GUID from the OLD project is meaningless
-    // against the new one -- both are cleared together, exactly like the cache/tree state above.
-    ledger.clear();
-    store.clear();
+    // against the new one. task E.3.3 moved those two lines into ThumbnailService::clear(), which
+    // EditorApp calls at the SAME point -- immediately after this setRoot() -- so I40's "resident 0
+    // after a project swap" keeps its exact timing. The service is shared, so the panel is no longer
+    // the right place to decide that.
     // task 3.1.3, Step 8: a project-wide search against the OLD project's records is meaningless
     // against the new one -- the SAME reasoning, a third time.
     filter = AssetFilter{};
@@ -161,12 +124,6 @@ bool AssetBrowserPanel::ensureCached(const std::string& rel) {
 
 // ---- phase 1: reconcile. THE ONLY PLACE I/O HAPPENS (D7) --------------------------------------
 void AssetBrowserPanel::reconcile() {
-    // task 3.1.3 (D8): the LRU clock and the per-frame scratch, first -- serviceThumbnails() (called
-    // OUTSIDE the draw walk, after renderScene) reads frameCounter and drawTile below repopulates
-    // visibleThumbnailKeys from scratch every frame.
-    ++frameCounter;
-    visibleThumbnailKeys.clear();
-
     // F15: true on the first frame the panel becomes visible -- INCLUDING the frame its docked tab is
     // selected, or View > Assets re-checks it. That is D9's whole "manual Refresh plus one line"
     // bargain: a filesystem watcher is 3.1.4's deliverable (AC-4).
@@ -702,54 +659,22 @@ void AssetBrowserPanel::drawTile(const FileEntry& entry, const std::string& rel,
         beginAssetDragSource(rel, entry.name.c_str());
     }
 
-    ImDrawList* const drawList = ImGui::GetWindowDrawList();
-    const ImVec2 iconMin(itemMin.x + pad, itemMin.y + pad);
-    const ImVec2 iconMax(iconMin.x + tileEdge, iconMin.y + tileEdge);
-    const float rounding = ImGui::GetStyle().FrameRounding;
-
     // task 3.1.3, Step 7: three lines, none of which mutate (§D-7) -- the ONLY thumbnail participation
     // in the draw walk. `thumbnailKeyFor` returns nullopt for a folder, an undecodable extension, or
-    // any of INV-V3's other six guards; `visibleThumbnailKeys` is per-frame scratch cleared in phase 1,
-    // never model state, and `nativeTextureFor` is a const read that answers nullptr until Ready.
+    // any of INV-V3's other six guards; `noteVisible` appends to the service's own per-frame scratch,
+    // which service() clears, and `nativeTextureFor` is a const read that answers nullptr until Ready.
     void* texture = nullptr;
-    if (const std::optional<ThumbnailKey> key = thumbnailKeyFor(entry, rel); key.has_value()) {
-        visibleThumbnailKeys.push_back(*key);
-        texture = store.nativeTextureFor(*key);
+    if (const std::optional<ThumbnailKey> key = thumbnailKeyFor(entry, rel);
+        key.has_value() && thumbnailsPtr != nullptr) {
+        thumbnailsPtr->noteVisible(*key);
+        texture = thumbnailsPtr->nativeTextureFor(*key);
     }
 
-    if (texture != nullptr) {
-        // F7 (A6): the SDL_GPU ImGui backend takes the native texture pointer directly as the id; a
-        // thumbnail needs no sampler of its own. viewport_panel.cpp:201-204's exact idiom.
-        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
-        const auto texId = static_cast<ImTextureID>(reinterpret_cast<std::uintptr_t>(texture));
-        drawList->AddImage(texId, iconMin, iconMax);
-    } else {
-        // The generated type icon -- what a Skipped/Failed/no-database entry, or an undecodable
-        // extension, falls back to FOREVER.
-        const AssetKind kind = classifyAssetKind(entry.name, entry.isDirectory);
-        const IconColor color = iconColorFor(kind);
-        const ImU32 fillColor = IM_COL32(color.r, color.g, color.b, color.a);
-        drawList->AddRectFilled(iconMin, iconMax, fillColor, rounding);
-        if (entry.isDirectory) {
-            // D6: a folder is a two-rect glyph in a fixed colour -- a small "tab" atop the body, both
-            // in the SAME icon colour so it reads as one shape rather than two overlapping tiles.
-            const float tabWidth = (iconMax.x - iconMin.x) * 0.45F;
-            const float tabHeight = (iconMax.y - iconMin.y) * 0.18F;
-            const ImU32 tabColor = IM_COL32(color.r, color.g, color.b, 255U);
-            drawList->AddRectFilled(iconMin, ImVec2(iconMin.x + tabWidth, iconMin.y + tabHeight), tabColor, rounding);
-        } else {
-            labelScratch = iconLabelFor(entry.name);
-            const ImVec2 textSize = ImGui::CalcTextSize(labelScratch.c_str());
-            const ImVec2 textPos((iconMin.x + iconMax.x - textSize.x) * 0.5F,
-                                 (iconMin.y + iconMax.y - textSize.y) * 0.5F);
-            drawList->AddText(textPos, IM_COL32_WHITE, labelScratch.c_str());
-        }
-    }
-
-    // The caption: leaf name, wrapped to at most TILE_CAPTION_LINES and ellipsised beyond that (A15).
-    // A15's 8-argument AddText overload -- imgui.h:3477 -- is the only one with a wrap width. A search
-    // hit folds its containing folder into the SAME caption (the plan's own "subtitled" requirement),
-    // so it stays identifiable outside the directory the user is currently browsing (AC-15).
+    // task E.3.3 (D6): the face is drawAssetTileFace's now -- the picker draws the SAME one, so a
+    // pixel of padding cannot drift between the two a year from now. A search hit folds its containing
+    // folder into the SAME caption (the plan's own "subtitled" requirement), so it stays identifiable
+    // outside the directory the user is currently browsing (AC-15). `captionSource` is a NAMED LOCAL
+    // because the face holds a view into it, alive until the call returns.
     std::string captionSource = entry.name;
     if (isSearchHit) {
         const std::string parent = parentOf(rel);
@@ -757,11 +682,17 @@ void AssetBrowserPanel::drawTile(const FileEntry& entry, const std::string& rel,
             captionSource = parent + "/" + entry.name;
         }
     }
-    const float wrapWidth = tileW - (2.0F * pad);
-    const std::string caption = elideForCaption(captionSource, wrapWidth);
-    const ImVec2 captionPos(itemMin.x + pad, iconMax.y + pad);
-    drawList->AddText(ImGui::GetFont(), ImGui::GetFontSize(), captionPos, IM_COL32_WHITE, caption.c_str(), nullptr,
-                      wrapWidth, nullptr);
+    // A designated initialiser must follow DECLARATION order -- clang accepts a wrong one with a
+    // warning while GCC and MSVC reject (E.2.2's finding 3). This is AssetTileFace's own order.
+    const AssetTileFace face{.nativeTexture = texture,
+                             .kind = classifyAssetKind(entry.name, entry.isDirectory),
+                             .isDirectory = entry.isDirectory,
+                             .fileName = entry.name,
+                             .captionSource = captionSource,
+                             .tileW = tileW,
+                             .tileEdge = tileEdge,
+                             .pad = pad};
+    drawAssetTileFace(ImGui::GetWindowDrawList(), itemMin, face, labelScratch);
 }
 
 void AssetBrowserPanel::drawContentsGrid(float paneHeight) {
@@ -1120,10 +1051,11 @@ void AssetBrowserPanel::drawFooter() {
         }
     }
     // task 3.1.3 (AC-28): APPENDED, never replacing -- the thumbnail summary, shown only when
-    // non-zero. `readyCount`/`unavailableCount` forward straight to the ledger (thumbnailReadyCount()/
-    // thumbnailUnavailableCount() are the SAME two calls, exposed for the GPU tier).
-    const std::size_t readyThumbnails = ledger.readyCount();
-    const std::size_t unavailableThumbnails = ledger.unavailableCount();
+    // non-zero. task E.3.3: the counts come off the SHARED service now, so the footer reports the
+    // whole editor's thumbnails rather than this panel's -- which is what they always meant, since
+    // there was only ever one ledger. A panel with no service lent reports zero and shows nothing.
+    const std::size_t readyThumbnails = thumbnailsPtr != nullptr ? thumbnailsPtr->readyCount() : 0;
+    const std::size_t unavailableThumbnails = thumbnailsPtr != nullptr ? thumbnailsPtr->unavailableCount() : 0;
     if (readyThumbnails > 0 || unavailableThumbnails > 0) {
         if (!labelScratch.empty()) {
             labelScratch += "   |   ";
@@ -1238,7 +1170,9 @@ void AssetBrowserPanel::applyPending() {
             // consumed it -- synchronous on Vulkan/D3D12, only deferred (and therefore silent) on
             // Metal. Set a flag instead; serviceThumbnails() (which runs OUTSIDE the draw walk, D8's
             // own rule) drains it safely.
-            pendingThumbnailReimportClear = true;
+            if (thumbnailsPtr != nullptr) {
+                thumbnailsPtr->requestReimportClear();
+            }
             break;
         case ActionKind::SetViewMode:
             // task 3.1.3, Step 6 -- the path carries "grid" or "list" (§D-7's PendingAction shape).
@@ -1315,141 +1249,22 @@ void AssetBrowserPanel::applyPending() {
 // ---- task 3.1.3: thumbnails, the two-phase wiring (D8) -----------------------------------------
 
 // INV-V3: nullopt unless ALL SEVEN conditions hold, in ONE function so no call site can forget one.
+// task E.3.3 split it: this keeps guard 1 (a folder is never a candidate) and guard 3 (no scan has ever
+// completed), both of which need a FileEntry and a database; the other five moved into the pure
+// thumbnailKeyForRecord, which is all a picker CANDIDATE -- a record, not a (FileEntry, path) pair --
+// can be asked. Guard 2 (isThumbnailDecodable) moved WITH them, deriving the leaf from the record's own
+// relativePath, so this function no longer needs entry.name for it.
 std::optional<ThumbnailKey> AssetBrowserPanel::thumbnailKeyFor(const FileEntry& entry, const std::string& rel) const {
     if (entry.isDirectory) {  // 1: a folder is never a thumbnail candidate
-        return std::nullopt;
-    }
-    if (!isThumbnailDecodable(entry.name)) {  // 2: .ktx2/.dds are Texture but not decodable (D7)
         return std::nullopt;
     }
     if (databasePtr == nullptr) {  // 3: no scan has ever completed
         return std::nullopt;
     }
     const AssetRecord* const record = databasePtr->findByPath(rel);
-    if (record == nullptr) {  // 4: no identity for this file
-        return std::nullopt;
-    }
-    if (record->state == AssetMetaState::Invalid) {  // 5: no identity this session (D7's posture)
-        return std::nullopt;
-    }
-    if (record->metaWriteFailed) {  // 6: the sidecar never landed on disk (code-review finding 3)
-        return std::nullopt;
-    }
-    // 7: 3.1.2's A4 trap made operational -- an all-zero contentHash is the EMPTY FILE's real digest,
-    // not a sentinel, so the only "was this hashed?" test is the `change` enum.
-    if (record->change == ImportChange::Unhashable || record->change == ImportChange::NotHashed) {
-        return std::nullopt;
-    }
-    return ThumbnailKey{.guid = record->guid, .hash = record->contentHash};
+    return record != nullptr ? thumbnailKeyForRecord(*record) : std::nullopt;  // 4 is structural there
 }
 
-std::string AssetBrowserPanel::absolutePathFor(const ThumbnailKey& key) const {
-    if (databasePtr == nullptr) {
-        return {};
-    }
-    const AssetRecord* const record = databasePtr->findByGuid(key.guid);
-    if (record == nullptr) {
-        return {};  // the record vanished (a rescan raced the decode) -- treated as Failed, never retried
-    }
-    return rootUtf8 + "/" + record->relativePath;
-}
-
-void AssetBrowserPanel::serviceThumbnails() {
-    if (!store.available()) {  // E13/AC-11: no device -- thumbnails stay unavailable forever
-        visibleThumbnailKeys.clear();
-        return;
-    }
-    for (const ThumbnailKey& key : visibleThumbnailKeys) {
-        ledger.touch(key, frameCounter);
-    }
-    visibleThumbnailKeys.clear();
-
-    // code-review BLOCKING-1: the ReimportAll flag, drained HERE -- after the touch loop above, so
-    // anything drawn (and therefore touched) THIS SAME frame is already marked at `frameCounter` and
-    // is excluded by evictions()'s own "never evict a key touched at currentFrame" rule (E12). A key
-    // still visible next tick is touched again and survives again, forever, at zero cost beyond
-    // holding a possibly-stale (but never dangling) texture one tick longer; a key whose content
-    // actually changed gets a brand-new ThumbnailKey once EditorApp's own rescan (reimportRequested,
-    // set above) completes and is decoded fresh regardless. `evictions(0, frameCounter)` reads as
-    // "every Ready key beyond a cap of zero" -- i.e. every Ready key that eviction's own protection
-    // does not shield.
-    if (pendingThumbnailReimportClear) {
-        pendingThumbnailReimportClear = false;
-        for (const ThumbnailKey& key : ledger.evictions(0, frameCounter)) {
-            store.destroy(key);
-            ledger.forget(key);
-        }
-    }
-
-    // task 3.1.4 (D9/AC-31): drained HERE -- after the touch loop above, so every key drawn this
-    // frame is already marked at `frameCounter` and is excluded by supersededBy's own currentFrame
-    // rule, the same protection E12 gives ordinary eviction. NEVER from onDraw(): 3.1.3's BLOCKING-1,
-    // where SDL_ReleaseGPUTexture frees SYNCHRONOUSLY on Vulkan (SDL_gpu_vulkan.c:7070-7073) and
-    // D3D12 (SDL_gpu_d3d12.c:1460-1463) and only DEFERS on Metal (SDL_gpu_metal.m:936-944).
-    //
-    // What this exists for: ThumbnailKey is {Guid, ContentHash}, so an edited texture already gets a
-    // FRESH key and re-decodes for free. What needs code is the OLD key -- its GPU texture is now
-    // unreachable forever, and under LRU alone it survives until 256 residents push it out.
-    // Iterating in Photoshop therefore strands one dead 128x128 RGBA8 texture per save.
-    if (pendingSupersededSweep) {
-        pendingSupersededSweep = false;
-        if (databasePtr != nullptr) {
-            liveKeyScratch.clear();
-            abstainingScratch.clear();
-            for (const AssetRecord& assetRecord : databasePtr->records()) {
-                // metaWriteFailed FIRST -- a failed sidecar write leaves `change` at its default
-                // UpToDate for a file whose bytes on disk are not what was hashed (3.1.2's own
-                // code-review finding 3). An all-zero contentHash is the EMPTY FILE's real digest,
-                // not a sentinel, so the ONLY "was this hashed?" test is the `change` enum (3.1.2 A4).
-                const bool hashUsable = !assetRecord.metaWriteFailed && assetRecord.guid.valid() &&
-                                        assetRecord.change != ImportChange::NotHashed &&
-                                        assetRecord.change != ImportChange::Unhashable;
-                if (hashUsable) {
-                    liveKeyScratch.push_back(ThumbnailKey{.guid = assetRecord.guid, .hash = assetRecord.contentHash});
-                } else if (assetRecord.guid.valid()) {
-                    abstainingScratch.push_back(assetRecord.guid);  // AC-32: NO OPINION about its keys
-                }
-            }
-            std::sort(liveKeyScratch.begin(), liveKeyScratch.end());  // supersededBy's precondition
-            std::sort(abstainingScratch.begin(), abstainingScratch.end());
-            for (const ThumbnailKey& key : ledger.supersededBy(liveKeyScratch, abstainingScratch, frameCounter)) {
-                store.destroy(key);
-                ledger.forget(key);
-            }
-        }
-    }
-
-    // EVICTION RUNS BEFORE DECODING, DELIBERATELY (INV-V5, seed S3): the other order lets the
-    // resident count exceed the cap by up to MAX_THUMBNAIL_DECODES_PER_TICK for a tick, which makes
-    // the bound this task states in a FOOTER a lie.
-    for (const ThumbnailKey& key : ledger.evictions(MAX_THUMBNAILS_RESIDENT, frameCounter)) {
-        store.destroy(key);
-        ledger.forget(key);
-    }
-    for (const ThumbnailKey& key : ledger.nextDecodes(MAX_THUMBNAIL_DECODES_PER_TICK)) {
-        const std::string absolute = absolutePathFor(key);
-        const ThumbnailState state = absolute.empty() ? ThumbnailState::Failed : store.load(key, absolute);
-        switch (state) {  // NO default: -- a new state is a -Wswitch warning, not a silent fallthrough
-            case ThumbnailState::Ready:
-                ledger.markReady(key);
-                break;
-            case ThumbnailState::Failed:
-                ledger.markFailed(key);
-                break;
-            case ThumbnailState::Skipped:
-                ledger.markSkipped(key);
-                break;
-            case ThumbnailState::Absent:
-                ledger.markFailed(key);  // load() never returns it; defensive
-                break;
-        }
-    }
-}
-
-// code-review BLOCKING-1: identical in effect to a real click on the Reimport All button --
-// record(ActionKind::ReimportAll, {}) is exactly what drawHeader() calls when the button returns
-// true. EditorApp forwards to this from a new public hook (requestAssetBrowserReimportAll()) because
-// the ImGui-free-at-source GPU tier has no other way to press a widget.
 void AssetBrowserPanel::requestReimportAll() noexcept { record(ActionKind::ReimportAll, {}); }
 
 // task 3.1.4: 2.2.4's watcher seam, made callable. EXACTLY the two statements ActionKind::Refresh's

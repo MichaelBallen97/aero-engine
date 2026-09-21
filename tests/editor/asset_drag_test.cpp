@@ -17,6 +17,7 @@
 // decomposition entirely. No toString overload is added anywhere.
 #include <aero/core/guid.hpp>
 #include <aero/editor/asset_drag.hpp>
+#include <aero/editor/asset_picker_model.hpp>  // task E.3.3 -- AR7 states the picker's accept rule here
 #include <aero/editor/asset_view.hpp>
 #include <aero/scene/entity.hpp>
 
@@ -63,8 +64,14 @@ constexpr Guid SAMPLE_GUID{0x0123456789ABCDEFULL, 0xFEDCBA9876543210ULL};
 constexpr std::array<AssetKind, 7> ALL_KINDS{AssetKind::Folder, AssetKind::Texture, AssetKind::Model,
                                              AssetKind::Audio,  AssetKind::Text,    AssetKind::Material,
                                              AssetKind::Unknown};
-constexpr std::array<DropSurface, 4> ALL_SURFACES{DropSurface::HierarchyRow, DropSurface::HierarchyVoid,
-                                                  DropSurface::Viewport, DropSurface::MaterialSlot};
+constexpr std::array<DropSurface, 5> ALL_SURFACES{DropSurface::HierarchyRow, DropSurface::HierarchyVoid,
+                                                  DropSurface::Viewport, DropSurface::MaterialSlot,
+                                                  DropSurface::AssetField};
+// task E.3.3: every DropAction, in enum order -- DR11's second injectivity loop, which had only a
+// surface loop before the fifth action existed.
+constexpr std::array<DropAction, 5> ALL_ACTIONS{DropAction::None, DropAction::InstantiateModel,
+                                                DropAction::AssignMaterial, DropAction::BindTextureSlot,
+                                                DropAction::AssignAssetReference};
 
 // The whole file, or "" when it could not be read. Binary mode: the pins below are line- and
 // token-oriented and must not depend on a text-mode CRLF translation the Windows lane would apply.
@@ -176,78 +183,101 @@ TEST_CASE("asset_drag: every malformed buffer decodes to nullopt (DR2-DR6)") {
     }
 }
 
-// THE 28-ROW TABLE. Written as data, not as 28 hand-written checks: a missing row is visible as a
+// THE 35-ROW TABLE. Written as data, not as 35 hand-written checks: a missing row is visible as a
 // SHORTER table, and S28 (Texture reaching the Viewport) reddens exactly one row of it.
-TEST_CASE("asset_drag: classifyAssetDrop's whole 28-row matrix (DR7)") {
+//
+// task E.3.3 added the fieldKind column and SEVEN AssetField rows, one per kind, all with nullopt --
+// the unannotated field, which is the row every existing surface's completeness claim is about. The
+// 32-cell per-fieldKind cross product lives in AR1 and the Text-on-a-Text-field row in AR2, because
+// putting them here would take this table past sixty rows and make the EXISTING matrix harder to
+// read, and this table's job is the four old surfaces' completeness -- which a nullopt column
+// preserves exactly, since the 28 old rows' expectations are byte-identical.
+TEST_CASE("asset_drag: classifyAssetDrop's whole 35-row matrix (DR7)") {
     struct Row {
         AssetKind kind;
         DropSurface surface;
         bool hasMeshRenderer;
+        std::optional<AssetKind> fieldKind;
         DropAction expected;
     };
-    constexpr std::array<Row, 28> TABLE{{
+    constexpr std::array<Row, 35> TABLE{{
         // Model -- instantiates on all three scene surfaces, refused on a material slot.
-        {AssetKind::Model, DropSurface::HierarchyRow, false, DropAction::InstantiateModel},
-        {AssetKind::Model, DropSurface::HierarchyVoid, false, DropAction::InstantiateModel},
-        {AssetKind::Model, DropSurface::Viewport, false, DropAction::InstantiateModel},
-        {AssetKind::Model, DropSurface::MaterialSlot, false, DropAction::None},
+        {AssetKind::Model, DropSurface::HierarchyRow, false, std::nullopt, DropAction::InstantiateModel},
+        {AssetKind::Model, DropSurface::HierarchyVoid, false, std::nullopt, DropAction::InstantiateModel},
+        {AssetKind::Model, DropSurface::Viewport, false, std::nullopt, DropAction::InstantiateModel},
+        {AssetKind::Model, DropSurface::MaterialSlot, false, std::nullopt, DropAction::None},
         // Material -- assigns ONLY where a MeshRenderer exists to assign onto.
-        {AssetKind::Material, DropSurface::HierarchyRow, true, DropAction::AssignMaterial},
-        {AssetKind::Material, DropSurface::HierarchyRow, false, DropAction::None},
-        {AssetKind::Material, DropSurface::HierarchyVoid, false, DropAction::None},
-        {AssetKind::Material, DropSurface::Viewport, true, DropAction::AssignMaterial},
-        {AssetKind::Material, DropSurface::Viewport, false, DropAction::None},
-        {AssetKind::Material, DropSurface::MaterialSlot, false, DropAction::None},
+        {AssetKind::Material, DropSurface::HierarchyRow, true, std::nullopt, DropAction::AssignMaterial},
+        {AssetKind::Material, DropSurface::HierarchyRow, false, std::nullopt, DropAction::None},
+        {AssetKind::Material, DropSurface::HierarchyVoid, false, std::nullopt, DropAction::None},
+        {AssetKind::Material, DropSurface::Viewport, true, std::nullopt, DropAction::AssignMaterial},
+        {AssetKind::Material, DropSurface::Viewport, false, std::nullopt, DropAction::None},
+        {AssetKind::Material, DropSurface::MaterialSlot, false, std::nullopt, DropAction::None},
         // Texture -- the material slot and NOWHERE else (S28's row is the Viewport one).
-        {AssetKind::Texture, DropSurface::HierarchyRow, false, DropAction::None},
-        {AssetKind::Texture, DropSurface::HierarchyVoid, false, DropAction::None},
-        {AssetKind::Texture, DropSurface::Viewport, false, DropAction::None},
-        {AssetKind::Texture, DropSurface::MaterialSlot, false, DropAction::BindTextureSlot},
+        {AssetKind::Texture, DropSurface::HierarchyRow, false, std::nullopt, DropAction::None},
+        {AssetKind::Texture, DropSurface::HierarchyVoid, false, std::nullopt, DropAction::None},
+        {AssetKind::Texture, DropSurface::Viewport, false, std::nullopt, DropAction::None},
+        {AssetKind::Texture, DropSurface::MaterialSlot, false, std::nullopt, DropAction::BindTextureSlot},
         // The four non-draggable kinds, every surface: None, sixteen times.
-        {AssetKind::Folder, DropSurface::HierarchyRow, false, DropAction::None},
-        {AssetKind::Folder, DropSurface::HierarchyVoid, false, DropAction::None},
-        {AssetKind::Folder, DropSurface::Viewport, false, DropAction::None},
-        {AssetKind::Folder, DropSurface::MaterialSlot, false, DropAction::None},
-        {AssetKind::Audio, DropSurface::HierarchyRow, false, DropAction::None},
-        {AssetKind::Audio, DropSurface::HierarchyVoid, false, DropAction::None},
-        {AssetKind::Audio, DropSurface::Viewport, false, DropAction::None},
-        {AssetKind::Audio, DropSurface::MaterialSlot, false, DropAction::None},
-        {AssetKind::Text, DropSurface::HierarchyRow, false, DropAction::None},
-        {AssetKind::Text, DropSurface::HierarchyVoid, false, DropAction::None},
-        {AssetKind::Text, DropSurface::Viewport, false, DropAction::None},
-        {AssetKind::Text, DropSurface::MaterialSlot, false, DropAction::None},
-        {AssetKind::Unknown, DropSurface::HierarchyRow, false, DropAction::None},
-        {AssetKind::Unknown, DropSurface::MaterialSlot, false, DropAction::None},
+        {AssetKind::Folder, DropSurface::HierarchyRow, false, std::nullopt, DropAction::None},
+        {AssetKind::Folder, DropSurface::HierarchyVoid, false, std::nullopt, DropAction::None},
+        {AssetKind::Folder, DropSurface::Viewport, false, std::nullopt, DropAction::None},
+        {AssetKind::Folder, DropSurface::MaterialSlot, false, std::nullopt, DropAction::None},
+        {AssetKind::Audio, DropSurface::HierarchyRow, false, std::nullopt, DropAction::None},
+        {AssetKind::Audio, DropSurface::HierarchyVoid, false, std::nullopt, DropAction::None},
+        {AssetKind::Audio, DropSurface::Viewport, false, std::nullopt, DropAction::None},
+        {AssetKind::Audio, DropSurface::MaterialSlot, false, std::nullopt, DropAction::None},
+        {AssetKind::Text, DropSurface::HierarchyRow, false, std::nullopt, DropAction::None},
+        {AssetKind::Text, DropSurface::HierarchyVoid, false, std::nullopt, DropAction::None},
+        {AssetKind::Text, DropSurface::Viewport, false, std::nullopt, DropAction::None},
+        {AssetKind::Text, DropSurface::MaterialSlot, false, std::nullopt, DropAction::None},
+        {AssetKind::Unknown, DropSurface::HierarchyRow, false, std::nullopt, DropAction::None},
+        {AssetKind::Unknown, DropSurface::MaterialSlot, false, std::nullopt, DropAction::None},
+        // task E.3.3: the fifth surface, one row per kind, UNCONSTRAINED (nullopt). The four
+        // draggable kinds assign; the three that cannot start a drag are refused, which is what makes
+        // DR8's "a refused kind is None whatever the surface" true here too.
+        {AssetKind::Model, DropSurface::AssetField, false, std::nullopt, DropAction::AssignAssetReference},
+        {AssetKind::Material, DropSurface::AssetField, false, std::nullopt, DropAction::AssignAssetReference},
+        {AssetKind::Texture, DropSurface::AssetField, false, std::nullopt, DropAction::AssignAssetReference},
+        {AssetKind::Audio, DropSurface::AssetField, false, std::nullopt, DropAction::AssignAssetReference},
+        {AssetKind::Folder, DropSurface::AssetField, false, std::nullopt, DropAction::None},
+        {AssetKind::Text, DropSurface::AssetField, false, std::nullopt, DropAction::None},
+        {AssetKind::Unknown, DropSurface::AssetField, false, std::nullopt, DropAction::None},
     }};
 
     // The table's own shape is asserted first: a row silently deleted during an edit would otherwise
     // make every later assertion pass over a shorter table (the project_settings shape lesson).
-    REQUIRE(TABLE.size() == 28);
+    REQUIRE(TABLE.size() == 35);
     std::size_t modelRows = 0;
     std::size_t assignRows = 0;
     std::size_t bindRows = 0;
+    std::size_t referenceRows = 0;
     for (const Row& row : TABLE) {
         CAPTURE(dropSurfaceLabel(row.surface));
         CAPTURE(dropActionLabel(row.expected));
-        const DropAction got = classifyAssetDrop(row.kind, row.surface, row.hasMeshRenderer);
+        const DropAction got = classifyAssetDrop(row.kind, row.surface, row.hasMeshRenderer, row.fieldKind);
         CHECK((got == row.expected));
         modelRows += (row.expected == DropAction::InstantiateModel) ? 1U : 0U;
         assignRows += (row.expected == DropAction::AssignMaterial) ? 1U : 0U;
         bindRows += (row.expected == DropAction::BindTextureSlot) ? 1U : 0U;
+        referenceRows += (row.expected == DropAction::AssignAssetReference) ? 1U : 0U;
     }
+    // The three OLD tallies are UNMOVED, which is the claim that the fifth surface changed nothing
+    // about the four that came before it.
     CHECK(modelRows == 3);
     CHECK(assignRows == 2);
     CHECK(bindRows == 1);
+    CHECK(referenceRows == 4);
 }
 
 TEST_CASE("asset_drag: classifyAssetDrop is TOTAL over kind x surface x flag (DR8)") {
-    // Every one of the 56 combinations answers something; nothing is left to a default: arm, and the
+    // Every one of the 70 combinations answers something; nothing is left to a default: arm, and the
     // function never depends on an out-of-range value.
     std::size_t seen = 0;
     for (const AssetKind kind : ALL_KINDS) {
         for (const DropSurface surface : ALL_SURFACES) {
             for (const bool flag : {false, true}) {
-                const DropAction action = classifyAssetDrop(kind, surface, flag);
+                const DropAction action = classifyAssetDrop(kind, surface, flag, std::nullopt);
                 // A refused kind is None whatever the surface and whatever the flag.
                 if (!assetKindIsDraggable(kind)) {
                     CHECK((action == DropAction::None));
@@ -256,14 +286,14 @@ TEST_CASE("asset_drag: classifyAssetDrop is TOTAL over kind x surface x flag (DR
             }
         }
     }
-    CHECK(seen == 56);
+    CHECK(seen == 70);  // 7 kinds x 5 surfaces (task E.3.3 appended AssetField) x 2 flags
 }
 
 TEST_CASE("asset_drag: targetHasMeshRenderer is consulted ONLY on the two Material rows (DR9)") {
     for (const AssetKind kind : ALL_KINDS) {
         for (const DropSurface surface : ALL_SURFACES) {
-            const DropAction off = classifyAssetDrop(kind, surface, false);
-            const DropAction on = classifyAssetDrop(kind, surface, true);
+            const DropAction off = classifyAssetDrop(kind, surface, false, std::nullopt);
+            const DropAction on = classifyAssetDrop(kind, surface, true, std::nullopt);
             const bool sensitive = kind == AssetKind::Material &&
                                    (surface == DropSurface::HierarchyRow || surface == DropSurface::Viewport);
             if (sensitive) {
@@ -282,7 +312,7 @@ TEST_CASE("asset_drag: assetKindIsDraggable answers all seven kinds individually
     CHECK_FALSE(assetKindIsDraggable(AssetKind::Folder));
     CHECK(assetKindIsDraggable(AssetKind::Texture));
     CHECK(assetKindIsDraggable(AssetKind::Model));
-    CHECK_FALSE(assetKindIsDraggable(AssetKind::Audio));
+    CHECK(assetKindIsDraggable(AssetKind::Audio));  // task E.3.3: AudioSource::clip is a drop target
     CHECK_FALSE(assetKindIsDraggable(AssetKind::Text));
     CHECK(assetKindIsDraggable(AssetKind::Material));
     CHECK_FALSE(assetKindIsDraggable(AssetKind::Unknown));
@@ -291,7 +321,7 @@ TEST_CASE("asset_drag: assetKindIsDraggable answers all seven kinds individually
     for (const AssetKind kind : engine::editor::ASSET_KIND_FILTER_OPTIONS) {
         draggable += assetKindIsDraggable(kind) ? 1U : 0U;
     }
-    CHECK(draggable == 3);
+    CHECK(draggable == 4);  // task E.3.3: Texture, Model, Material, Audio
 }
 
 TEST_CASE("asset_drag: dropSurfaceLabel and dropActionLabel are total and INJECTIVE (DR11)") {
@@ -301,11 +331,13 @@ TEST_CASE("asset_drag: dropSurfaceLabel and dropActionLabel are total and INJECT
     CHECK(dropSurfaceLabel(DropSurface::HierarchyVoid) == std::string_view("hierarchy void"));
     CHECK(dropSurfaceLabel(DropSurface::Viewport) == std::string_view("viewport"));
     CHECK(dropSurfaceLabel(DropSurface::MaterialSlot) == std::string_view("material slot"));
+    CHECK(dropSurfaceLabel(DropSurface::AssetField) == std::string_view("asset field"));
 
     CHECK(dropActionLabel(DropAction::None) == std::string_view("none"));
     CHECK(dropActionLabel(DropAction::InstantiateModel) == std::string_view("instantiate model"));
     CHECK(dropActionLabel(DropAction::AssignMaterial) == std::string_view("assign material"));
     CHECK(dropActionLabel(DropAction::BindTextureSlot) == std::string_view("bind texture slot"));
+    CHECK(dropActionLabel(DropAction::AssignAssetReference) == std::string_view("assign asset reference"));
 
     std::vector<std::string_view> surfaces;
     for (const DropSurface surface : ALL_SURFACES) {
@@ -315,6 +347,19 @@ TEST_CASE("asset_drag: dropSurfaceLabel and dropActionLabel are total and INJECT
     for (std::size_t i = 0; i < surfaces.size(); ++i) {
         for (std::size_t j = i + 1; j < surfaces.size(); ++j) {
             CHECK(surfaces[i] != surfaces[j]);
+        }
+    }
+
+    // task E.3.3: the SAME claim for the actions, which had no injectivity loop before the fifth one
+    // existed -- a label shared between two actions is what a literal-by-literal list cannot see.
+    std::vector<std::string_view> actions;
+    for (const DropAction action : ALL_ACTIONS) {
+        actions.push_back(dropActionLabel(action));
+        CHECK_FALSE(actions.back().empty());
+    }
+    for (std::size_t i = 0; i < actions.size(); ++i) {
+        for (std::size_t j = i + 1; j < actions.size(); ++j) {
+            CHECK(actions[i] != actions[j]);
         }
     }
 }
@@ -497,4 +542,186 @@ TEST_CASE("asset_drag: decodeAssetDragPayload is the ONLY reader of a payload's 
         CHECK(false);
     }
     CHECK(offenders.empty());
+}
+
+// ---- task E.3.3: the AssetField surface and the token vocabulary (AR1-AR6) -----------------------
+//
+// These live beside DR7 rather than inside it: the per-fieldKind cross product is 32 cells, and
+// folding it into that table would take it past sixty rows and make the four OLD surfaces' matrix
+// harder to read. DR7 keeps the completeness claim; these keep the constraint claim.
+
+TEST_CASE("AR1: an AssetField accepts a draggable kind iff the field names it, or names nothing") {
+    struct Cell {
+        AssetKind payload;
+        std::optional<AssetKind> fieldKind;
+        DropAction expected;
+    };
+    // The four DRAGGABLE payload kinds x {nullopt} u ALL_KINDS = 4 x 8 = 32 cells, spelled out
+    // against literals rather than computed from the predicate under test.
+    constexpr std::array<Cell, 32> TABLE{{
+        {AssetKind::Texture, std::nullopt, DropAction::AssignAssetReference},
+        {AssetKind::Texture, AssetKind::Folder, DropAction::None},
+        {AssetKind::Texture, AssetKind::Texture, DropAction::AssignAssetReference},
+        {AssetKind::Texture, AssetKind::Model, DropAction::None},
+        {AssetKind::Texture, AssetKind::Audio, DropAction::None},
+        {AssetKind::Texture, AssetKind::Text, DropAction::None},
+        {AssetKind::Texture, AssetKind::Material, DropAction::None},
+        {AssetKind::Texture, AssetKind::Unknown, DropAction::None},
+
+        {AssetKind::Model, std::nullopt, DropAction::AssignAssetReference},
+        {AssetKind::Model, AssetKind::Folder, DropAction::None},
+        {AssetKind::Model, AssetKind::Texture, DropAction::None},
+        {AssetKind::Model, AssetKind::Model, DropAction::AssignAssetReference},
+        {AssetKind::Model, AssetKind::Audio, DropAction::None},
+        {AssetKind::Model, AssetKind::Text, DropAction::None},
+        {AssetKind::Model, AssetKind::Material, DropAction::None},
+        {AssetKind::Model, AssetKind::Unknown, DropAction::None},
+
+        {AssetKind::Audio, std::nullopt, DropAction::AssignAssetReference},
+        {AssetKind::Audio, AssetKind::Folder, DropAction::None},
+        {AssetKind::Audio, AssetKind::Texture, DropAction::None},
+        {AssetKind::Audio, AssetKind::Model, DropAction::None},
+        {AssetKind::Audio, AssetKind::Audio, DropAction::AssignAssetReference},
+        {AssetKind::Audio, AssetKind::Text, DropAction::None},
+        {AssetKind::Audio, AssetKind::Material, DropAction::None},
+        {AssetKind::Audio, AssetKind::Unknown, DropAction::None},
+
+        {AssetKind::Material, std::nullopt, DropAction::AssignAssetReference},
+        {AssetKind::Material, AssetKind::Folder, DropAction::None},
+        {AssetKind::Material, AssetKind::Texture, DropAction::None},
+        {AssetKind::Material, AssetKind::Model, DropAction::None},
+        {AssetKind::Material, AssetKind::Audio, DropAction::None},
+        {AssetKind::Material, AssetKind::Text, DropAction::None},
+        {AssetKind::Material, AssetKind::Material, DropAction::AssignAssetReference},
+        {AssetKind::Material, AssetKind::Unknown, DropAction::None},
+    }};
+
+    REQUIRE(TABLE.size() == 32);
+    std::size_t accepted = 0;
+    for (const Cell& cell : TABLE) {
+        CAPTURE(static_cast<int>(cell.payload));
+        CAPTURE(dropActionLabel(cell.expected));
+        const DropAction got =
+            classifyAssetDrop(cell.payload, DropSurface::AssetField, /*targetHasMeshRenderer=*/false, cell.fieldKind);
+        CHECK((got == cell.expected));
+        accepted += (got == DropAction::AssignAssetReference) ? 1U : 0U;
+    }
+    // Eight acceptances: four unconstrained fields plus four matching ones. A row that silently
+    // stopped constraining would push this to 28.
+    CHECK(accepted == 8);
+}
+
+TEST_CASE("AR2: a NON-draggable payload is refused on an asset field, even by a field naming it") {
+    for (const AssetKind payload : {AssetKind::Folder, AssetKind::Text, AssetKind::Unknown}) {
+        CAPTURE(static_cast<int>(payload));
+        CHECK((classifyAssetDrop(payload, DropSurface::AssetField, false, std::nullopt) == DropAction::None));
+        for (const AssetKind fieldKind : ALL_KINDS) {
+            CAPTURE(static_cast<int>(fieldKind));
+            // INCLUDING the diagonal -- Text on a Text-kind field. That is the row a naive "the kinds
+            // are equal, so accept" restatement gets wrong, and nothing else in this file can see it:
+            // a field can never NAME one of these kinds anyway (assetReferenceKindFromToken refuses
+            // every one of them), so the composition with draggability is what does the refusing.
+            CHECK((classifyAssetDrop(payload, DropSurface::AssetField, false, fieldKind) == DropAction::None));
+        }
+    }
+}
+
+TEST_CASE("AR3: fieldKind is IGNORED on all four pre-E.3.3 surfaces") {
+    constexpr std::array<DropSurface, 4> OLD_SURFACES{DropSurface::HierarchyRow, DropSurface::HierarchyVoid,
+                                                      DropSurface::Viewport, DropSurface::MaterialSlot};
+    for (const AssetKind kind : ALL_KINDS) {
+        for (const DropSurface surface : OLD_SURFACES) {
+            for (const bool flag : {false, true}) {
+                CAPTURE(dropSurfaceLabel(surface));
+                const DropAction none = classifyAssetDrop(kind, surface, flag, std::nullopt);
+                const DropAction texture = classifyAssetDrop(kind, surface, flag, AssetKind::Texture);
+                const DropAction audio = classifyAssetDrop(kind, surface, flag, AssetKind::Audio);
+                CHECK((none == texture));
+                CHECK((none == audio));
+            }
+        }
+    }
+}
+
+TEST_CASE("AR4: assetReferenceKindFromToken resolves the four draggable labels, ASCII-folded") {
+    using engine::editor::assetReferenceKindFromToken;
+    REQUIRE(assetReferenceKindFromToken("texture").has_value());
+    CHECK((*assetReferenceKindFromToken("texture") == AssetKind::Texture));
+    CHECK((*assetReferenceKindFromToken("model") == AssetKind::Model));
+    CHECK((*assetReferenceKindFromToken("material") == AssetKind::Material));
+    CHECK((*assetReferenceKindFromToken("audio") == AssetKind::Audio));
+
+    // The fold is ASCII and case-insensitive in both directions.
+    CHECK((*assetReferenceKindFromToken("Texture") == AssetKind::Texture));
+    CHECK((*assetReferenceKindFromToken("TEXTURE") == AssetKind::Texture));
+    CHECK((*assetReferenceKindFromToken("MoDeL") == AssetKind::Model));
+
+    // Everything else is nullopt, which the widget reads as UNCONSTRAINED plus one WARN -- never a
+    // refused field. `shader` is the grammar-valid, vocabulary-unknown token the tool passes through.
+    CHECK_FALSE(assetReferenceKindFromToken("folder").has_value());
+    CHECK_FALSE(assetReferenceKindFromToken("text").has_value());
+    CHECK_FALSE(assetReferenceKindFromToken("unknown").has_value());
+    CHECK_FALSE(assetReferenceKindFromToken("").has_value());
+    CHECK_FALSE(assetReferenceKindFromToken("shader").has_value());
+    CHECK_FALSE(assetReferenceKindFromToken("audio ").has_value());  // a trailing space is not the label
+    CHECK_FALSE(assetReferenceKindFromToken(" audio").has_value());
+    CHECK_FALSE(assetReferenceKindFromToken("audi").has_value());
+}
+
+TEST_CASE("AR5: the vocabulary IS the draggable set -- the derivation, in both directions") {
+    using engine::editor::assetKindLabel;
+    using engine::editor::assetReferenceKindFromToken;
+    std::size_t resolvable = 0;
+    for (const AssetKind kind : engine::editor::ASSET_KIND_FILTER_OPTIONS) {
+        CAPTURE(std::string(assetKindLabel(kind)));
+        // The label ASCII-folded to lowercase is exactly the token a field would write.
+        std::string token(assetKindLabel(kind));
+        for (char& c : token) {
+            if (c >= 'A' && c <= 'Z') {
+                c = static_cast<char>(c + ('a' - 'A'));
+            }
+        }
+        const std::optional<AssetKind> resolved = assetReferenceKindFromToken(token);
+        // A kind added to ONE set and not the other is this line, not a silent asymmetry.
+        CHECK(resolved.has_value() == assetKindIsDraggable(kind));
+        if (resolved.has_value()) {
+            CHECK((*resolved == kind));  // and it resolves to ITSELF, never to a neighbour
+            ++resolvable;
+        }
+    }
+    CHECK(resolvable == 4);
+}
+
+TEST_CASE("AR6: the fifth surface and the fifth action have their own labels") {
+    CHECK(dropSurfaceLabel(DropSurface::AssetField) == std::string_view("asset field"));
+    CHECK(dropActionLabel(DropAction::AssignAssetReference) == std::string_view("assign asset reference"));
+}
+
+TEST_CASE("AR7: the PICKER's accept predicate is this matrix, stated at the DRAG tier") {
+    // Deliberately here rather than only in asset_picker_model_test.cpp: stated at this tier it is
+    // falsifiable WITHOUT the model, so a model that grew a predicate of its own would have to
+    // disagree with two independent cases rather than one.
+    using engine::editor::assetPickerAccepts;
+    using engine::editor::AssetPickerRules;
+
+    const AssetPickerRules textureSlot{DropSurface::MaterialSlot, std::nullopt};
+    const AssetPickerRules unconstrainedField{DropSurface::AssetField, std::nullopt};
+    const AssetPickerRules audioField{DropSurface::AssetField, AssetKind::Audio};
+
+    std::size_t slotAccepts = 0;
+    std::size_t fieldAccepts = 0;
+    std::size_t audioAccepts = 0;
+    for (const AssetKind kind : ALL_KINDS) {
+        CAPTURE(static_cast<int>(kind));
+        CHECK(assetPickerAccepts(textureSlot, kind) == (kind == AssetKind::Texture));
+        CHECK(assetPickerAccepts(unconstrainedField, kind) == assetKindIsDraggable(kind));
+        CHECK(assetPickerAccepts(audioField, kind) == (kind == AssetKind::Audio));
+        slotAccepts += assetPickerAccepts(textureSlot, kind) ? 1U : 0U;
+        fieldAccepts += assetPickerAccepts(unconstrainedField, kind) ? 1U : 0U;
+        audioAccepts += assetPickerAccepts(audioField, kind) ? 1U : 0U;
+    }
+    // ANTI-VACUITY: a predicate that always answered false would satisfy none of these.
+    CHECK(slotAccepts == 1);
+    CHECK(fieldAccepts == 4);
+    CHECK(audioAccepts == 1);
 }

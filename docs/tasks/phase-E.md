@@ -464,6 +464,32 @@ Subtasks:
 - Adopt it on the Material panel's five texture slots, replacing the combo
 - Legality composed from 3.1.5's existing drop matrix, never re-stated beside it
 
+_Outcome:_ **sized L, recorded before implementation, landed L.** Fourteen commits — the plan's nine,
+one closing three findings the full gate produced, and four closing the sabotage matrix. `AERO_ASSET(kind)`
+is the fourth field annotation, and the split it introduces is the part worth carrying: the tool
+validates a GRAMMAR (the token is an identifier) and the EDITOR owns the VOCABULARY, because the set of
+kinds is an editor type the engine's reflect layer must not know. A fifth `DropSurface` with a
+NON-DEFAULTED fourth parameter routes the field through 3.1.5's own matrix, so what a button accepts and
+what its popup lists are one answer asked once; `Audio` joins the draggable set, because a drop target on
+`AudioSource::clip` whose payload can never be dragged is a dead surface. The thumbnail ledger and store
+moved into one `ThumbnailService` with three consumers and one budget, and the tile face into one shared
+painter — both extractions, proved by every existing thumbnail and browser case passing unedited. The
+popup's BODY executes in CI, which is the first time in this tree and closes the gap `I86` stated in its
+own words.
+`ctest -N` **174 → 178** (four `reflect-gen.asset_*` process cases; entry set otherwise byte-identical,
+**165** shader-tools-OFF, **93** reflect-tools-OFF), doctest **1404 / 1915 / 209 / 40 / 59 / 10 / 28**,
+guards **516 / 92 / 163 / 92 / 165 / A=6 B=86 / 11-3-55 / 6-57**. **The built-in count stays TEN** — two
+headers gain annotations and nothing else — and `docs/09` is untouched.
+The 46-seed matrix found **four holes in this task's own tests** and, chasing two of them, a real
+product defect: an API-positioned popup is never clamped by ImGui, so a popup taller than the work area
+ran off the bottom of the screen and ImGui **culled its grid child**, which submits no tiles and says
+nothing. The code-review round then found four should-fix gaps, none blocking — two of them (a tile face
+drawn at the `Selectable`'s expanded item origin, and a value sentence passed as an ImGui label, which is
+truncated at its first `##`) are invisible to every automated tier and are validation row 15's alone.
+It deliberately does not build a `meshIndex` sub-picker, a thumbnail in the row (E.3.4's), a
+rendered material thumbnail (E.4.5's), fuzzy search, or an enum-/unit-aware row. **Its validation page is
+written and unrun on every platform.**
+
 ### E.3.4 Material inspector redesign · P1 · M · depends: 3.4.2, E.3.3
 **Goal:** the material panel is a flat list of numbers and five identical dropdowns; it should read
 as a material.

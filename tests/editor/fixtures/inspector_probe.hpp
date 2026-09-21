@@ -42,4 +42,8 @@ struct AERO_COMPONENT InspectorProbe {
     // rangeMin, which used to be cast unguarded regardless of magnitude (finding 2).
     std::int16_t hugeRange AERO_RANGE(1e300, 2e300) = 0;
     engine::Guid asset;  // task 3.1.5's category; nil by default, which is a VALUE and not an absence
+    // task E.3.3: an ANNOTATED Guid, appended for 3.1.5's own reason -- so this binary has both a
+    // constrained and an unconstrained reference field and KP1 can tell them apart. AERO_ASSET expands
+    // to nothing under the real compiler, so the struct's layout is unchanged.
+    engine::Guid textureRef AERO_ASSET(texture);
 };

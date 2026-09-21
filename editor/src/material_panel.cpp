@@ -30,6 +30,7 @@
 #include <aero/reflect/material_format.hpp>
 #include <aero/render/material.hpp>
 
+#include "asset_picker.hpp"  // task E.3.3 -- the ONE asset-reference field widget
 #include "text_input.hpp"
 
 #include <algorithm>
@@ -222,23 +223,18 @@ template <typename Enum, std::size_t N, typename LabelFn>
     return changed;
 }
 
-// task 3.1.5: the hierarchy panel's peek, one payload type over and one TU over -- the established
-// one-per-TU rule. It never decodes by hand: every byte goes to decodeAssetDragPayload.
-[[nodiscard]] std::optional<AssetDragPayload> peekAssetPayload() {
-    const ImGuiPayload* payload = ImGui::GetDragDropPayload();
-    if (payload == nullptr || !payload->IsDataType(ASSET_PAYLOAD_TYPE)) {
-        return std::nullopt;
-    }
-    return decodeAssetDragPayload(payload->Data, payload->DataSize);
-}
+}  // namespace
 
 // ---- one texture slot (AC-20/AC-21/AC-22) --------------------------------------------------------
 // PushID/PopID are 1:1 across EVERY path through this function -- no continue, no break, no return
 // between them (an unbalanced id stack is an IM_ASSERT abort in the Debug ImGui build).
-[[nodiscard]] bool drawSlotSection(std::size_t index, MaterialDocument& form, const AssetDatabase* database,
-                                   std::string& search, std::string& scratch, PreviewTextureState textureState,
-                                   std::string_view textureNotice,
-                                   std::optional<MaterialSlotTextureDrop>& observedDrop) {
+bool MaterialPanel::drawSlotSection(std::size_t index, MaterialDocument& form, PreviewTextureState textureState,
+                                    std::string_view textureNotice) {
+    // task E.3.3: a MEMBER now. `database`, `scratch` and `observedDrop` were three of its eight
+    // parameters and are members of this panel; `search` is gone with the per-slot search line.
+    const AssetDatabase* const database = databasePtr;
+    std::string& scratch = labelScratch;
+    std::optional<MaterialSlotTextureDrop>& observedDrop = observedSlotDrop;
     bool changed = false;
     ImGui::PushID(static_cast<int>(index));
     scratch = std::string(materialSlotLabel(index));
@@ -293,68 +289,53 @@ template <typename Enum, std::size_t N, typename LabelFn>
             }
         }
 
-        // --- the picker --------------------------------------------------------------------------
-        // Texture-kind records only, in the database's OWN path order (records() is already sorted),
-        // filtered by the browser's own leaf-name predicate so the two search boxes behave alike.
-        inputTextString("Search", search, ImGuiInputTextFlags_None);
-        if (record != nullptr) {
-            scratch = record->relativePath;
-        } else {
-            scratch = slot.has_value() ? "(unresolved)" : "None";
-        }
-        if (ImGui::BeginCombo("Texture", scratch.c_str())) {
-            if (ImGui::Selectable("None", !slot.has_value())) {
-                slot.reset();
-                changed = true;
-            }
-            if (database != nullptr) {
-                const AssetFilter filter{.query = search, .kind = AssetKind::Texture, .anyKind = false};
-                for (const AssetRecord& candidate : database->records()) {
-                    const bool eligible =
-                        candidate.guid.valid() && matchesFilter(leafOf(candidate.relativePath), false, filter);
-                    if (eligible) {
-                        const bool selected = slot.has_value() && slot->guid == candidate.guid;
-                        if (ImGui::Selectable(candidate.relativePath.c_str(), selected)) {
-                            // A REBIND keeps the slot's sampler tokens; a FRESH bind takes the
-                            // format's own defaults, which is what MaterialTextureSlot{} already is.
-                            MaterialTextureSlot bound = slot.has_value() ? *slot : MaterialTextureSlot{};
-                            bound.guid = candidate.guid;
-                            slot = bound;
-                            changed = true;
-                        }
-                    }
-                }
-            }
-            ImGui::EndCombo();  // ASYMMETRIC: only because BeginCombo returned true
-        }
-        // task 3.1.5: the slot drop target, attached to the combo widget just submitted. End()
-        // restores g.LastItemData, so the combo is the last item in BOTH branches above and a plain
-        // BeginDragDropTarget() attaches correctly -- no imgui_internal.h is needed here.
+        // --- the picker (task E.3.3, D10) --------------------------------------------------------
+        // The SAME widget the Inspector's Guid row draws, with this slot's rules {MaterialSlot,
+        // nullopt} -- so what this button accepts and what its popup lists are the matrix's OWN
+        // BindTextureSlot row, asked once. It replaces 3.4.2's search line + combo AND 3.1.5's slot
+        // drop target, both of which lived here; observedDrop keeps its meaning, so tick()'s
+        // vanished-guid WARN is reached exactly as before.
         //
-        // An UNTARGETED panel refuses at peek for free: the whole slot section is not drawn at all
-        // when the session has no document, so there is no target to accept on.
-        if (ImGui::BeginDragDropTarget()) {
-            if (const std::optional<AssetDragPayload> asset = peekAssetPayload(); asset.has_value()) {
-                const auto kind = static_cast<AssetKind>(asset->kind);
-                if (classifyAssetDrop(kind, DropSurface::MaterialSlot, /*targetHasMeshRenderer=*/false) ==
-                        DropAction::BindTextureSlot &&
-                    ImGui::AcceptDragDropPayload(ASSET_PAYLOAD_TYPE) != nullptr) {
-                    // EXACTLY the picker's own idiom above: a REBIND keeps the slot's sampler tokens,
-                    // a FRESH bind takes the format's defaults, which MaterialTextureSlot{} already
-                    // is. Then `changed = true` and the existing frame-copy -> pendingDocument ->
-                    // session.edit -> dirty -> Apply river does the rest. NO new write path and NO new
-                    // session surface: saveMaterialFile stays the ONE .aeromat writer (INV-D7).
-                    MaterialTextureSlot bound = slot.has_value() ? *slot : MaterialTextureSlot{};
-                    bound.guid = asset->guid;
-                    slot = bound;
-                    changed = true;
+        // -FLT_MIN fills the cell, which is right HERE and wrong in the Inspector: this slot's Clear is
+        // a separate Button on its own line below, while the Inspector's shares the row.
+        scratch = record != nullptr ? record->relativePath : (slot.has_value() ? "(unresolved)" : "None");
+        keyScratch = materialSlotFieldKey(index);
+        AssetFieldResult picked{};
+        if (assetPicker != nullptr) {
+            const AssetFieldInputs inputs{.valueText = scratch,
+                                          .buttonWidth = -FLT_MIN,
+                                          .current = slot.has_value() ? slot->guid : Guid{},
+                                          .rules = AssetPickerRules{DropSurface::MaterialSlot, std::nullopt},
+                                          .hostId = id(),
+                                          .fieldKey = keyScratch,
+                                          .unknownToken = std::string_view{},
+                                          .database = database,
+                                          .thumbnails = thumbnails};
+            picked = drawAssetReferenceField(inputs, *assetPicker);
+        }
+        switch (picked.outcome) {  // NO default: a fifth outcome is a -Wswitch error
+            case AssetFieldOutcome::Picked:
+            case AssetFieldOutcome::Dropped: {
+                // EXACTLY the two existing paths' idiom: a REBIND keeps the slot's sampler tokens, a
+                // FRESH bind takes the format's own defaults, which MaterialTextureSlot{} already is.
+                MaterialTextureSlot bound = slot.has_value() ? *slot : MaterialTextureSlot{};
+                bound.guid = picked.guid;
+                slot = bound;
+                changed = true;
+                if (picked.outcome == AssetFieldOutcome::Dropped) {
                     // Reported so tick() sees the SAME thing for a real gesture as for the seam: the
                     // drain's only job here is the vanished-guid refusal WARN, and a warning that
                     // fired only for driven drops would be a warning nobody ever sees.
-                    observedDrop = MaterialSlotTextureDrop{.slot = index, .textureGuid = asset->guid};
+                    observedDrop = MaterialSlotTextureDrop{.slot = index, .textureGuid = picked.guid};
                 }
+                break;
             }
-            ImGui::EndDragDropTarget();  // ONLY because BeginDragDropTarget returned true
+            case AssetFieldOutcome::Cleared:
+                slot.reset();  // AC-20: the WHOLE slot, never a nil guid -- absence is spelled by omission
+                changed = true;
+                break;
+            case AssetFieldOutcome::None:
+                break;
         }
 
         ImGui::BeginDisabled(!slot.has_value());  // 1:1 with EndDisabled; nothing exits between them
@@ -401,8 +382,6 @@ template <typename Enum, std::size_t N, typename LabelFn>
     ImGui::PopID();
     return changed;
 }
-
-}  // namespace
 
 MaterialPanel::MaterialPanel(rhi::Device& device) noexcept : preview(&device) {}
 
@@ -589,9 +568,7 @@ void MaterialPanel::onDraw(PanelContext& /*context*/) {  // no World/Selection/P
     for (std::size_t i = 0; i < SLOT_COUNT; ++i) {
         // The preview is READ here, never driven: slotTextureState/slotNotice are const reads of state
         // the service pass owns, exactly like nativeColorTexture below (INV-5).
-        changed = drawSlotSection(i, form, databasePtr, slotSearch[i], labelScratch, preview.slotTextureState(i),
-                                  preview.slotNotice(i), observedSlotDrop) ||
-                  changed;
+        changed = drawSlotSection(i, form, preview.slotTextureState(i), preview.slotNotice(i)) || changed;
     }
     if (changed && !(form == *document)) {
         pendingDocument = form;  // last-writer-wins; nothing is applied here

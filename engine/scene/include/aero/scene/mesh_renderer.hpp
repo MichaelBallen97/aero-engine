@@ -40,9 +40,9 @@ struct AERO_COMPONENT MeshRenderer {
     // `material` NIL => each submesh draws the material its own source assigned (resolved by the
     // scene_render binding table); VALID => that one material overrides EVERY submesh of this entity.
     // Per-submesh overrides need a reflectable array, which the subset does not have.
-    Guid mesh{};
+    Guid mesh AERO_ASSET(model){};
     std::uint32_t meshIndex = 0;
-    Guid material{};
+    Guid material AERO_ASSET(material){};
 
     bool operator==(const MeshRenderer&) const = default;
 };

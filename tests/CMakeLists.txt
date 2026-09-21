@@ -480,7 +480,8 @@ add_executable(aero_editor_shell_test editor/shell_test.cpp editor/hierarchy_tes
                editor/viewport_gizmos_test.cpp    # task E.2.3 — the icon/gizmo world walk
                editor/material_preview_rig_test.cpp   # task E.2.4 — the pure preview rig (PV)
                editor/editor_prefs_test.cpp           # task E.3.2 — the preference envelope (EP)
-               editor/context_router_test.cpp)        # task E.3.2 — the pure router (RT)
+               editor/context_router_test.cpp         # task E.3.2 — the pure router (RT)
+               editor/asset_picker_model_test.cpp)     # task E.3.3 — the pure picker model (MP)
 target_link_libraries(aero_editor_shell_test PRIVATE
     doctest::doctest aero::editor_core aero::scene aero::scene_internal aero::core Threads::Threads)
 add_test(NAME aero_editor_shell_test COMMAND aero_editor_shell_test)
@@ -761,7 +762,9 @@ if(AERO_REFLECT_TOOLS)
         annotations_misapplied annotations_unknown annotations_determinism
         string_components string_meta string_json
         # task 3.1.5: the engine::Guid category
-        guid_components guid_meta guid_json)
+        guid_components guid_meta guid_json
+        # task E.3.3: the AERO_ASSET annotation
+        asset_components asset_meta asset_misapplied asset_malformed)
     foreach(_aero_reflect_case IN LISTS _aero_reflect_cases)
         add_test(NAME reflect-gen.${_aero_reflect_case}
             COMMAND "${CMAKE_COMMAND}"
@@ -788,6 +791,7 @@ if(AERO_REFLECT_TOOLS)
                 reflect-gen/fixtures/component_wiring.hpp
                 ${AERO_BUILTIN_COMPONENT_HEADERS}   # task 3.5.2 (D7) -- the REAL headers, named once
                 reflect-gen/fixtures/component_guid.hpp  # task 3.1.5 -- the engine::Guid category
+                reflect-gen/fixtures/component_asset.hpp  # task E.3.3 -- the AERO_ASSET annotation
         INCLUDE_DIRS "${CMAKE_SOURCE_DIR}/engine/core/include"      # aero::core PUBLIC dir (D9)
                      "${CMAKE_SOURCE_DIR}/engine/scene/include"     # 1.3.2 — parse: entity.hpp
                      "${CMAKE_SOURCE_DIR}/engine/reflect/include")  # 1.3.2 — parse: annotations.hpp
