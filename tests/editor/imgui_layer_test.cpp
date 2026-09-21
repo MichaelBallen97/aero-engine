@@ -137,6 +137,22 @@ struct QuietTraceLogging {
     return {reinterpret_cast<const char*>(bytes.data()), bytes.size()};
 }
 
+// task E.3.4 (I172): how many times a literal occurs in a source file, advancing by the needle's own
+// length so overlapping matches are not double-counted. A COUNT rather than a membership test, because
+// the property I172(d)/(e) state is "exactly one", and "at least one" would stay green against a second
+// copy -- which is precisely the drift a shared formula exists to prevent.
+[[nodiscard]] std::size_t countOccurrences(std::string_view haystack, std::string_view needle) {
+    if (needle.empty()) {
+        return 0;
+    }
+    std::size_t count = 0;
+    for (std::size_t at = haystack.find(needle); at != std::string_view::npos;
+         at = haystack.find(needle, at + needle.size())) {
+        ++count;
+    }
+    return count;
+}
+
 // task E.3.2: a fresh, never-yet-existing editor-preferences PATH -- the file itself is written by
 // the app under test, never here. The persistLayout gate (EditorAppConfig::editorPrefsPath) means an
 // app that does NOT set this and does NOT set persistLayout writes nothing at all; every case that
@@ -14650,10 +14666,12 @@ TEST_CASE("editor: the picker's source-text pins -- ordering, absence and reuse 
         CHECK(countLinesContaining(code, R"(BeginCombo("Texture")") == 0U);
         CHECK(countLinesContaining(code, "BeginDragDropTarget") == 0U);
         CHECK(countLinesContaining(code, "slotSearch") == 0U);
-        // ANTI-VACUITY: the slot section really is still drawn from this file -- its declaration and
-        // at least one call -- so the three zeros above are about the CONTROLS rather than about a
-        // reader that found nothing.
-        CHECK(countLinesContaining(code, "drawSlotSection") >= 2U);
+        // ANTI-VACUITY: the slot row really is still drawn from this file -- its definition and at
+        // least one call -- so the three zeros above are about the CONTROLS rather than about a reader
+        // that found nothing. The NAME moved at task E.3.4 (drawSlotSection -> drawSlotRow, when the
+        // row stopped being a CollapsingHeader of its own and became one item); the arm's meaning and
+        // its reason are unchanged, and the three claims it guards were not touched.
+        CHECK(countLinesContaining(code, "drawSlotRow") >= 2U);
     }
     SUBCASE("(e) the Inspector's pick goes through resetField, on one line with the picked guid") {
         const std::vector<std::string> code = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/inspector_panel.cpp");
@@ -15110,6 +15128,772 @@ TEST_CASE("editor: a tick in which NO field claimed the popup resets every obser
     CHECK(app->assetPickerCandidateCount() == 0U);
     CHECK(app->assetPickerCursor() == 0U);
 #endif
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+// ---- task E.3.4: the redesigned Material panel ----------------------------------------------------
+// PLACEMENT: at the END of the file, after the last region-level #endif, so these cases sit OUTSIDE
+// every existing `#if AERO_SHADER_TOOLS_ENABLED` / `#if AERO_REFLECT_TOOLS_ENABLED` region. A case
+// dropped inside one of those is silently ABSENT in the matching reduced configuration -- which is the
+// whole of 3.6.3's lesson. Each case below carries its OWN split where it needs one, with BOTH arms
+// asserting, in I99's idiom.
+
+TEST_CASE("editor: the Material preview is derived from the panel's height (task E.3.4, I171)") {
+    // I99's fixture verbatim: a 320x180 window, a project, one MINIMAL_AEROMAT_TEXT file, Console and
+    // Inspector hidden so Material wins the Right dock tab and onDraw actually runs.
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "material i171", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/height.aeromat", MINIMAL_AEROMAT_TEXT).empty());
+
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = created.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    app->panels().setVisible("Console", false);
+    app->panels().setVisible("Inspector", false);
+    REQUIRE(app->tick());
+    app->requestAssetBrowserSelectEntry("height.aeromat");
+    for (int i = 0; i < 4; ++i) {
+        REQUIRE(app->tick());
+    }
+    REQUIRE(app->materialTargetPath() == "height.aeromat");
+
+#if AERO_SHADER_TOOLS_ENABLED
+    // THE I99 CONTRACT, ASSERTED DIRECTLY. AC-3 exists so that a short panel never drops the preview,
+    // and I88/I99/I100/I135/I136 all drive the preview in a window of exactly this size. A layout that
+    // stopped previewing below some sensible height would break five cases with a BLANK REGION and no
+    // error -- which is why this is a REQUIRE here as well as a bound at tier 0 (MR15).
+    REQUIRE(app->materialPreviewAvailable());
+    REQUIRE(app->materialPreviewImageCount() > 0U);
+    const std::uint32_t shortHeight = app->materialPreviewTextureHeight();
+    REQUIRE(shortHeight > 0U);
+    CHECK(app->materialPreviewStaleImageCount() == 0U);
+
+    // I99's OWN RECIPE, and the second half is not ceremony: a window resize alone leaves the Right
+    // dock column at its absolute WIDTH, so requestLayoutReset() is what widens it. The HEIGHT follows
+    // the window's work area directly -- which is exactly the asymmetry that makes the assertion below
+    // a statement about THIS TASK: before E.3.4 the preview was a constant 180 points at every panel
+    // height, so `tallHeight > shortHeight` was FALSE by construction.
+    //
+    // 900x800, NOT 800x500, AND THE ARITHMETIC IS WHY. A 320x180 window is in Scrolling mode on BOTH
+    // scales and its preview is the floor: 130 points. At 800x500 the fixed-region arm gives ~174
+    // points at 1x -- and nextTargetExtent QUANTISES (64 px per I99's own comment), so 130 and 174
+    // round into the SAME bucket at 1x and this assertion would have compared a number against
+    // itself. At 900x800 the two are two buckets apart with margin on both scales. THIS CASE
+    // THEREFORE ALSO EXERCISES THE MODE TRANSITION -- Scrolling at the short size, FixedRegions at the
+    // tall one -- which is the only runtime witness that both walks draw at all. The mode itself is
+    // not exposed through EditorApp and is not asserted here; MR15 and MR21 own that at tier 0.
+    window->setSize(900, 800);
+    for (int i = 0; i < 3; ++i) {
+        REQUIRE(app->tick());
+        CHECK(app->materialPreviewStaleImageCount() == 0U);
+    }
+    app->requestLayoutReset();
+    for (int i = 0; i < 6; ++i) {
+        REQUIRE(app->tick());
+        CHECK(app->materialPreviewStaleImageCount() == 0U);
+    }
+
+    const std::uint32_t tallHeight = app->materialPreviewTextureHeight();
+    CAPTURE(shortHeight);
+    CAPTURE(tallHeight);
+    // A claim about crossing a quantum, not about an exact ratio. IF A LANE EVER COLLAPSES THEM INTO
+    // ONE BUCKET, widen the second window rather than weakening the comparison -- a `>=` here would be
+    // satisfied by a preview that never moved at all.
+    CHECK(tallHeight > shortHeight);
+    CHECK(app->materialPreviewStaleImageCount() == 0U);
+#else
+    // -DAERO_SHADER_TOOLS=OFF: there is no preview target at all, so the derivation this case exists
+    // to prove has nothing to act on. The OFF contract is asserted instead -- and the half that still
+    // matters IS asserted: the layout arm still runs, the panel still draws, and the document still
+    // round-trips, so a layout that divided by zero or asserted on a degenerate metric would still be
+    // caught here. I99's OFF arm is the idiom.
+    CHECK_FALSE(app->materialPreviewAvailable());
+    CHECK(app->materialPreviewTextureHeight() == 0U);
+    window->setSize(900, 800);
+    for (int i = 0; i < 3; ++i) {
+        REQUIRE(app->tick());
+    }
+    app->requestLayoutReset();
+    for (int i = 0; i < 6; ++i) {
+        REQUIRE(app->tick());
+    }
+    CHECK(app->materialPreviewImageCount() == 0U);
+    CHECK(app->materialPreviewStaleImageCount() == 0U);
+    REQUIRE(app->materialDocument() != nullptr);  // the panel still EDITS with no preview
+#endif
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: a short Material panel still edits and still previews (task E.3.4, I174)") {
+    // A deliberately short window -- 320x180, the same size five existing cases use, and the one the
+    // step-0 measurement found takes the Scrolling fallback on a Retina display.
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "material i174", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/short.aeromat", MINIMAL_AEROMAT_TEXT).empty());
+
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = created.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    app->panels().setVisible("Console", false);
+    app->panels().setVisible("Inspector", false);
+    REQUIRE(app->tick());
+    app->requestAssetBrowserSelectEntry("short.aeromat");
+    for (int i = 0; i < 4; ++i) {
+        REQUIRE(app->tick());
+    }
+    REQUIRE(app->materialTargetPath() == "short.aeromat");
+
+    // THE CLAIM: no layout arm leaves the body at zero AND the footer off-screen. The footer is not
+    // directly observable, so the observable proxy is that the panel still WORKS: the document
+    // round-trips through the seam, which means the body drew and the frame copy was recorded.
+    // `-footerHeight` is what makes the footer's reachability structural in FixedRegions mode
+    // (CalcItemSize's ImMax(4.0f, avail.y + size.y)) and the window's own scrollbar is what makes it
+    // reachable in Scrolling mode; this case is what proves the surrounding walk did not break in
+    // EITHER, because a 320x180 window takes the fallback at a display scale of 2 and the fixed
+    // regions at a scale of 1.
+    REQUIRE(app->materialDocument() != nullptr);
+    engine::MaterialDocument edited = *app->materialDocument();
+    edited.roughnessFactor = 0.25F;
+    app->requestMaterialDocument(edited);
+    for (int i = 0; i < 3; ++i) {
+        REQUIRE(app->tick());
+    }
+    CHECK(app->materialDocument()->roughnessFactor == doctest::Approx(0.25F));
+
+#if AERO_SHADER_TOOLS_ENABLED
+    const std::size_t before = app->materialPreviewImageCount();
+    for (int i = 0; i < 3; ++i) {
+        REQUIRE(app->tick());
+    }
+    CHECK(app->materialPreviewImageCount() > before);  // it still CLIMBS on a short panel
+#else
+    CHECK(app->materialPreviewImageCount() == 0U);
+#endif
+
+    SUBCASE("hiding and re-showing the panel changes nothing -- I90's shape") {
+        app->panels().setVisible("Material", false);
+        for (int i = 0; i < 3; ++i) {
+            REQUIRE(app->tick());
+        }
+        app->panels().setVisible("Material", true);
+        for (int i = 0; i < 3; ++i) {
+            REQUIRE(app->tick());
+        }
+        REQUIRE(app->materialDocument() != nullptr);
+        CHECK(app->materialDocument()->roughnessFactor == doctest::Approx(0.25F));
+#if AERO_SHADER_TOOLS_ENABLED
+        CHECK(app->materialPreviewStaleImageCount() == 0U);
+#endif
+    }
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE(
+    "editor: the Material panel states no label, no sentence, no magnitude and no colour "
+    "(task E.3.4, I172)") {
+    // NO #if: three file reads, no context, no GPU, no preview quantity. The I166(c) form -- "the
+    // widget states no AssetKind:: literal at all" -- one panel over. A source-text pin is the ONLY
+    // mechanical statement available for "the panel holds no decision", because nothing in this tree
+    // reads rendered text.
+    //
+    // IT DOES NOT STRIP COMMENTS, deliberately: a section title or a layout magnitude restated in a
+    // comment is still a second copy of a number that has one home, and the next person to edit the
+    // panel reads the comment.
+    const auto readSource = [](std::string_view path) {
+        const engine::editor::FileReadResult read = engine::editor::readTextFile(path);
+        REQUIRE(read.text.has_value());
+        REQUIRE_FALSE(read.text->empty());
+        return *read.text;
+    };
+    const std::string panel = readSource(AERO_EDITOR_SRC_DIR "/material_panel.cpp");
+    const std::string inspector = readSource(AERO_EDITOR_SRC_DIR "/inspector_panel.cpp");
+    const std::string picker = readSource(AERO_EDITOR_SRC_DIR "/asset_picker.cpp");
+    REQUIRE(panel.size() > 1000U);  // anti-vacuity: the file really was read
+    REQUIRE(inspector.size() > 1000U);
+    REQUIRE(picker.size() > 1000U);
+
+    SUBCASE("(a) no section title, no field label, no sentence, no sampler label, no dirty word") {
+        // Every string below comes from material_inspector_model.hpp. A restatement here is the exact
+        // drift the model exists to prevent, and it would be INVISIBLE: two copies of "Base Color"
+        // that differ by a byte render as two different section titles with no error anywhere.
+        for (const char* s : {"\"Material\"",      "\"Base Color\"",   "\"Metallic / Roughness\"",
+                              "\"Normal\"",        "\"Occlusion\"",    "\"Emission\"",
+                              "\"Rendering\"",     "\"File\"",         "\"Tint\"",
+                              "\"Metallic\"",      "\"Roughness\"",    "\"Color\"",
+                              "\"Scale\"",         "\"Strength\"",     "\"Alpha mode\"",
+                              "\"Alpha cutoff\"",  "\"Double sided\"", "Sampled as sRGB",
+                              "Sampled as linear", "\"Sampler\"",      "Sampler (custom)",
+                              "unknown key",       "Unsaved changes"}) {
+            CAPTURE(s);
+            CHECK(panel.find(s) == std::string::npos);
+        }
+        // "Name" is DELIBERATELY absent from that list: `nameDraft`/`nameEditing` and the seam's own
+        // identifiers contain it, so the clause would be unfalsifiable. The label itself comes from the
+        // model like every other; this is a limit of a token scan and is stated rather than hidden.
+        //
+        // AND "Material" IS SAFE HERE ONLY BY ACCIDENT OF PLACEMENT: Panel::id() returns "Material"
+        // but is defined INLINE IN material_panel.hpp, not in the .cpp, so this file does not contain
+        // that literal. If a later task moves id() into the .cpp, drop "Material" from this list
+        // rather than weakening the clause.
+    }
+    SUBCASE("(b) the panel names NO ImDrawList primitive -- the thumbnail is the shared painter's") {
+        for (const char* s : {"AddImage", "AddRectFilled", "AddText", "GetWindowDrawList"}) {
+            CAPTURE(s);
+            CHECK(panel.find(s) == std::string::npos);
+        }
+    }
+    SUBCASE("(c) no layout magnitude, and no bare separator height") {
+        for (const char* s : {"MATERIAL_PREVIEW_", "MATERIAL_BODY_", "0.38", "180.0F", "PREVIEW_HEIGHT_POINTS"}) {
+            CAPTURE(s);
+            CHECK(panel.find(s) == std::string::npos);
+        }
+        // The separator's height is READ, never stated: ImGui 1.92.8 removed the "a 1 px Separator
+        // does not move the cursor" hack while SeparatorEx's own header comment still describes it,
+        // and ScaleAllSizes scales the value -- measured at 2 on a Retina display. Its ONLY spelling
+        // in this file is the metric assignment, which names the style member.
+        CHECK(panel.find("style.SeparatorSize") != std::string::npos);
+        // `180` without the F suffix is DELIBERATELY not swept: E.3.1's finding 5 is that a token scan
+        // is blind to integer-literal suffixes, and the inverse holds too -- a bare `180` matches
+        // inside any longer number. The constant this clause is about was spelled `180.0F`.
+    }
+    SUBCASE("(d) the Apply emphasis derives from the style -- no colour literal") {
+        CHECK(panel.find("GetStyleColorVec4(ImGuiCol_ButtonActive)") != std::string::npos);
+        CHECK(panel.find("IM_COL32") == std::string::npos);
+        // The two file-local ImVec4s (WARNING_COLOR / NOTICE_COLOR) stay, UNCHANGED and UNMOVED, and
+        // are E.6.1's candidates. This task adds NONE -- which is why the COUNT is pinned rather than
+        // the absence.
+        CHECK(countOccurrences(panel, "constexpr ImVec4") == 2U);
+    }
+    SUBCASE("(e) ONE width formula, in ONE place") {
+        // Two exact counts over one literal each, NOT "the file does not contain CalcTextSize" --
+        // inspector_panel.cpp uses CalcTextSize elsewhere and legitimately will again. If a later task
+        // renames the Inspector's `Clear`, this is a two-character edit to one assertion, which is a
+        // better failure mode than a silent second formula.
+        CHECK(countOccurrences(inspector, "CalcTextSize(\"Clear\")") == 0U);
+        CHECK(countOccurrences(picker, "CalcTextSize(\"Clear\")") == 0U);  // it takes a PARAMETER
+        CHECK(countOccurrences(picker, "assetReferenceFieldWidth") >= 1U);
+        CHECK(countOccurrences(inspector, "assetReferenceFieldWidth(\"Clear\")") == 1U);
+        // The material slot's row joined the clause the moment it stopped passing -FLT_MIN: ONE
+        // formula, TWO hosts, and a second copy in either would be invisible -- two reference buttons
+        // two pixels apart is a failing test nowhere, because nothing in this tree measures a rect.
+        CHECK(countOccurrences(panel, "assetReferenceFieldWidth(\"Clear\")") == 1U);
+    }
+    SUBCASE("(f) the seam key comes from materialSlotFieldKey, never a hand-built string") {
+        // This re-creates exactly the class E.3.3's inspectorAssetFieldKey exists to prevent: a
+        // hand-built key that agrees byte for byte TODAY and silently stops matching the seam the day
+        // the format changes. The two agree now, so only source text can state this.
+        CHECK(panel.find("materialSlotFieldKey") != std::string::npos);
+        CHECK(panel.find("\"slot:\"") == std::string::npos);
+    }
+}
+
+TEST_CASE(
+    "editor: the redesigned Material panel balances, and the sampler disclosure is drivable "
+    "(task E.3.4, I170)") {
+    // NO #if: this case asserts NO preview quantity, so it is identical in both configurations and a
+    // split would add a second arm with nothing to say.
+    //
+    // A GREEN RUN *IS* THE ASSERTION for the balance half: an unbalanced PushID/PopID,
+    // BeginTable/EndTable, BeginChild/EndChild, PushStyleColor/PopStyleColor or
+    // BeginDisabled/EndDisabled is an IM_ASSERT ABORT in the Debug ImGui build, not a visual glitch.
+    // Dropping NoTreePushOnOpen without adding a TreePop aborts here, which is the oracle doing its
+    // job and is why this case is written before the disclosure is trusted.
+    //
+    // I86's fixture: every slot arm at once -- a resolved Texture with FIVE non-default sampler
+    // tokens, a resolved NON-texture, an unresolvable GUID, and two unbound slots.
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "material i170", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    const std::string assetsRoot = created.root + "/assets";
+    REQUIRE(engine::editor::writeTextFileAtomic(assetsRoot + "/full.aeromat", FULL_AEROMAT_TEXT).empty());
+    REQUIRE(engine::editor::writeTextFileAtomic(assetsRoot + "/other.aeromat", MINIMAL_AEROMAT_TEXT).empty());
+    REQUIRE(engine::editor::writeTextFileAtomic(assetsRoot + "/notes.txt", "not a texture").empty());
+    REQUIRE(writeBinaryFixture(assetsRoot + "/wood.png", TINY_PNG_RED.data(), TINY_PNG_RED.size()).empty());
+
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = created.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    app->panels().setVisible("Console", false);
+    app->panels().setVisible("Inspector", false);  // so Material wins the Right dock tab and onDraw runs
+    REQUIRE(app->tick());
+    app->requestAssetBrowserSelectEntry("full.aeromat");
+    for (int i = 0; i < 4; ++i) {
+        REQUIRE(app->tick());
+    }
+    REQUIRE(app->materialTargetPath() == "full.aeromat");
+
+    const std::optional<engine::Guid> textureGuid = app->assetGuidForPath("wood.png");
+    REQUIRE(textureGuid.has_value());
+    const std::optional<engine::Guid> notesGuid = app->assetGuidForPath("notes.txt");
+    REQUIRE(notesGuid.has_value());
+
+    engine::MaterialDocument bound = *app->materialDocument();
+    bound.baseColor = engine::MaterialTextureSlot{.guid = *textureGuid,
+                                                  .uvSet = 2,
+                                                  .wrapU = engine::MaterialWrap::Clamp,
+                                                  .wrapV = engine::MaterialWrap::Mirror,
+                                                  .minFilter = engine::MaterialFilter::Nearest,
+                                                  .magFilter = engine::MaterialFilter::Linear,
+                                                  .mipFilter = engine::MaterialMipFilter::None};
+    bound.metallicRoughness = engine::MaterialTextureSlot{.guid = *notesGuid};  // resolved, NOT a texture
+    bound.normal = engine::MaterialTextureSlot{.guid = engine::Guid{.hi = 0xDEADBEEFU, .lo = 0xFEEDFACEU}};
+    bound.occlusion.reset();  // unbound
+    bound.emissive.reset();   // unbound
+    app->requestMaterialDocument(bound);
+    for (int i = 0; i < 4; ++i) {
+        REQUIRE(app->tick());
+    }
+    REQUIRE(app->materialDocument() != nullptr);
+    REQUIRE(app->materialDocument()->baseColor.has_value());
+
+    SUBCASE("(a) every disclosure CLOSED") {
+        for (std::size_t i = 0; i < 5; ++i) {
+            app->requestMaterialSlotDetails(i, false);
+        }
+        for (int i = 0; i < 2; ++i) {
+            REQUIRE(app->tick());
+        }
+        for (std::size_t i = 0; i < 5; ++i) {
+            CAPTURE(i);
+            CHECK_FALSE(app->materialSlotDetailsOpen(i));
+        }
+    }
+    SUBCASE("(b) every disclosure OPEN -- THE COVERAGE TRANSFER") {
+        // THIS IS THE RECORDED REPLACEMENT for what I86 stops reaching. Behind a closed node the six
+        // sampler rows' five BeginCombo calls and one DragInt execute on NO LANE AT ALL, because no
+        // tier in this tree can click a disclosure. The seam is not a convenience; it is the price of
+        // the move -- and a green run here is what says those widgets were submitted at all.
+        for (std::size_t i = 0; i < 5; ++i) {
+            app->requestMaterialSlotDetails(i, true);
+        }
+        for (int i = 0; i < 2; ++i) {
+            REQUIRE(app->tick());
+        }
+        for (std::size_t i = 0; i < 5; ++i) {
+            CAPTURE(i);
+            CHECK(app->materialSlotDetailsOpen(i));
+        }
+        // ANTI-VACUITY: the fixture really has a bound slot, so a disclosure really was drawn -- the
+        // node is not submitted at all for an unbound one.
+        REQUIRE(app->materialDocument() != nullptr);
+        REQUIRE(app->materialDocument()->baseColor.has_value());
+        CHECK(app->materialDocument()->baseColor->uvSet == 2U);
+        // THE ROWS WERE SUBMITTED, asserted rather than inferred from a green run. Added by sabotage
+        // seed S26: every assertion above reads back what the seam WROTE, so swapping ImGuiCond_Always
+        // for ImGuiCond_Once -- which leaves ImGui's own storage in charge and never opens the node --
+        // left this case entirely green while the six sampler widgets executed on no lane at all.
+        // Three of the five slots are bound, so an open pass draws three disclosures per frame.
+        const std::size_t drawnBefore = app->materialSamplerRowsDrawn();
+        REQUIRE(app->tick());
+        CHECK(app->materialSamplerRowsDrawn() > drawnBefore);
+    }
+    SUBCASE("(c) a CLOSE request closes -- which is what ImGuiCond_Always buys") {
+        app->requestMaterialSlotDetails(0, true);
+        for (int i = 0; i < 2; ++i) {
+            REQUIRE(app->tick());
+        }
+        REQUIRE(app->materialSlotDetailsOpen(0));
+        app->requestMaterialSlotDetails(0, false);
+        for (int i = 0; i < 2; ++i) {
+            REQUIRE(app->tick());
+        }
+        CHECK_FALSE(app->materialSlotDetailsOpen(0));
+        // AND THE NODE ITSELF CLOSED, which the line above cannot see: it reads the array the seam
+        // wrote. ImGuiCond_Once hands the decision to ImGui's own storage, so a close request leaves
+        // the node OPEN and the rows keep being submitted -- this is the arm that says so (S26).
+        const std::size_t drawnAfterClose = app->materialSamplerRowsDrawn();
+        for (int i = 0; i < 2; ++i) {
+            REQUIRE(app->tick());
+        }
+        CHECK(app->materialSamplerRowsDrawn() == drawnAfterClose);
+    }
+    SUBCASE("(d) an out-of-range slot is a no-op, in both directions") {
+        app->requestMaterialSlotDetails(99, true);
+        REQUIRE(app->tick());
+        CHECK_FALSE(app->materialSlotDetailsOpen(99));
+        for (std::size_t i = 0; i < 5; ++i) {
+            CAPTURE(i);
+            CHECK_FALSE(app->materialSlotDetailsOpen(i));  // and it did not spill into a real slot
+        }
+    }
+    SUBCASE("(e) a RETARGET closes every disclosure") {
+        app->requestMaterialSlotDetails(0, true);
+        for (int i = 0; i < 2; ++i) {
+            REQUIRE(app->tick());
+        }
+        REQUIRE(app->materialSlotDetailsOpen(0));
+        // A DIFFERENT .aeromat, through the same seam I93/I95 use. Without the retarget reset the
+        // disclosure carries over to a material the user has not opened it on -- and this is the one
+        // arm that makes that seedable at all.
+        app->requestAssetBrowserSelectEntry("other.aeromat");
+        for (int i = 0; i < 4; ++i) {
+            REQUIRE(app->tick());
+        }
+        REQUIRE(app->materialTargetPath() == "other.aeromat");
+        CHECK_FALSE(app->materialSlotDetailsOpen(0));
+    }
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE(
+    "editor: a material slot's picker still claims its popup with a thumbnail in the row "
+    "(task E.3.4, I173)") {
+    // WRITTEN AS THE DISCRIMINATOR, NOT AS A SECOND COPY OF I164. A case that merely re-ran I164's
+    // sequence and asserted the same outcomes would pass whether or not the thumbnail block executed
+    // at all -- the "two values from one source" shape E.1.2's matrix found twice. So this asserts the
+    // OWNER-CLAIM: with a taller button carrying a thumbnail inside its frame, the seam still finds
+    // the field by key, the popup still opens, the candidate count is unchanged, and the four outcome
+    // arms still mean what they meant.
+    //
+    // It CANNOT see the thumbnail, the inset sentence or Clear's position -- nothing in this tree
+    // measures a widget rect. Validation row 3 is the witness for all three.
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "picker i173", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const PickerFixture fixture = makePickerProject(true);
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = fixture.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    app->panels().setVisible("Console", false);
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+    app->requestAssetBrowserSelectEntry("m.aeromat");
+    for (int i = 0; i < 4; ++i) {
+        REQUIRE(app->tick());
+    }
+    REQUIRE(app->materialTargetPath() == std::string_view("m.aeromat"));
+    app->requestPanelFocus("Material");
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+
+    // THE SPLIT IS FOR ONE CALL, AND THE COMMENT THIS REPLACES SAID OTHERWISE. It used to claim the
+    // thumbnail is "only in effect when the panel drew a Ready preview" -- that is wrong, and MR19 is
+    // the proof: thumbEdge is MATERIAL_SLOT_THUMB_FONT_MULTIPLE * fontSize, computed by a function
+    // that never sees the preview, and positive for EVERY metric set. So the tall button and the
+    // thumbnail are in effect in shader-tools-OFF exactly as they are here, and everything this case
+    // asserts below is a document fact that holds identically in both configurations.
+    //
+    // The only thing that needs a split is materialPreviewAvailable(), and AC-18 requires the OFF arm
+    // to ASSERT the OFF contract rather than skip -- I99's and I174's idiom.
+#if AERO_SHADER_TOOLS_ENABLED
+    REQUIRE(app->materialPreviewAvailable());
+#else
+    CHECK_FALSE(app->materialPreviewAvailable());
+    CHECK(app->materialPreviewImageCount() == 0U);
+#endif
+    REQUIRE_FALSE(app->assetPickerOpen());  // anti-vacuity: closed to begin with
+    app->requestMaterialSlotPicker(0);
+    REQUIRE(app->tick());
+    REQUIRE(app->assetPickerOpen());  // the TALLER button's field still claimed the popup BY KEY
+    // UNCHANGED from I164's count: a taller button does not change what the popup lists.
+    CHECK(app->assetPickerCandidateCount() == 3U);
+
+    SUBCASE("(a) a commit binds, and the popup closes -- false -> true -> false") {
+        app->requestAssetPickerMove(1);
+        REQUIRE(app->tick());
+        REQUIRE(app->assetPickerCursor() == 1U);
+        app->requestAssetPickerCommit();
+        for (int i = 0; i < 2; ++i) {
+            REQUIRE(app->tick());
+        }
+        CHECK_FALSE(app->assetPickerOpen());
+        REQUIRE(app->materialDocument() != nullptr);
+        REQUIRE(app->materialDocument()->baseColor.has_value());
+        CHECK(app->materialDocument()->baseColor->guid.valid());
+        CHECK(app->materialDocument()->baseColor->uvSet == 0U);  // a FRESH bind takes the defaults
+    }
+    SUBCASE("(b) a REBIND preserves the sampler tokens") {
+        app->requestAssetPickerMove(1);
+        REQUIRE(app->tick());
+        app->requestAssetPickerCommit();
+        for (int i = 0; i < 2; ++i) {
+            REQUIRE(app->tick());
+        }
+        REQUIRE(app->materialDocument() != nullptr);
+        REQUIRE(app->materialDocument()->baseColor.has_value());
+        const engine::Guid firstBound = app->materialDocument()->baseColor->guid;
+        {
+            engine::MaterialDocument edited = *app->materialDocument();
+            REQUIRE(edited.baseColor.has_value());
+            edited.baseColor->uvSet = 1U;
+            app->requestMaterialDocument(edited);
+        }
+        for (int i = 0; i < 2; ++i) {
+            REQUIRE(app->tick());
+        }
+        REQUIRE(app->materialDocument()->baseColor.has_value());
+        REQUIRE(app->materialDocument()->baseColor->uvSet == 1U);
+
+        app->requestMaterialSlotPicker(0);
+        REQUIRE(app->tick());
+        REQUIRE(app->assetPickerOpen());
+        app->requestAssetPickerMove(1);
+        REQUIRE(app->tick());
+        app->requestAssetPickerCommit();
+        for (int i = 0; i < 2; ++i) {
+            REQUIRE(app->tick());
+        }
+        REQUIRE(app->materialDocument()->baseColor.has_value());
+        CHECK_FALSE((app->materialDocument()->baseColor->guid == firstBound));  // the guid moved
+        CHECK(app->materialDocument()->baseColor->uvSet == 1U);                 // the token survived the rebind
+    }
+    SUBCASE("(c) None DISENGAGES the slot -- never a nil guid") {
+        app->requestAssetPickerMove(1);
+        REQUIRE(app->tick());
+        app->requestAssetPickerCommit();
+        for (int i = 0; i < 2; ++i) {
+            REQUIRE(app->tick());
+        }
+        REQUIRE(app->materialDocument() != nullptr);
+        REQUIRE(app->materialDocument()->baseColor.has_value());
+
+        app->requestMaterialSlotPicker(0);
+        REQUIRE(app->tick());
+        REQUIRE(app->assetPickerOpen());
+        app->requestAssetPickerMove(-3);
+        REQUIRE(app->tick());
+        REQUIRE(app->assetPickerCursor() == 0U);
+        app->requestAssetPickerCommit();
+        for (int i = 0; i < 2; ++i) {
+            REQUIRE(app->tick());
+        }
+        CHECK_FALSE(app->materialDocument()->baseColor.has_value());
+    }
+    SUBCASE("(d) a pick does not disturb the sampler disclosure's state") {
+        // The two seams are independent and nothing should couple them. Cheap, and it is the only arm
+        // that would catch a drawSlotRow that reset slotDetails as a side effect. The slot must be
+        // BOUND for the disclosure to be drawn at all, so the commit comes first.
+        app->requestAssetPickerMove(1);
+        REQUIRE(app->tick());
+        app->requestAssetPickerCommit();
+        for (int i = 0; i < 2; ++i) {
+            REQUIRE(app->tick());
+        }
+        REQUIRE(app->materialDocument() != nullptr);
+        REQUIRE(app->materialDocument()->baseColor.has_value());
+        app->requestMaterialSlotDetails(0, true);
+        for (int i = 0; i < 2; ++i) {
+            REQUIRE(app->tick());
+        }
+        REQUIRE(app->materialSlotDetailsOpen(0));
+
+        app->requestMaterialSlotPicker(0);
+        REQUIRE(app->tick());
+        REQUIRE(app->assetPickerOpen());
+        app->requestAssetPickerCommit();
+        for (int i = 0; i < 2; ++i) {
+            REQUIRE(app->tick());
+        }
+        CHECK(app->materialSlotDetailsOpen(0));
+    }
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE(
+    "editor: a collapsed Material section stays collapsed across the mode boundary "
+    "(task E.3.4, I175)") {
+    // THE REGRESSION THE CODE-REVIEW ROUND FOUND. ImGui keeps a CollapsingHeader's open bit in the
+    // SUBMITTING WINDOW's StateStorage (imgui.cpp:8581), and E.3.4 put the body inside a child in one
+    // mode and not in the other -- so the same eight headers were two independent sets of bits, and
+    // dragging the dock divider across the boundary restored every collapsed section to DefaultOpen.
+    // Before E.3.4 the panel had no child and a collapsed section stayed collapsed, so this was a
+    // regression against main rather than a new limitation.
+    //
+    // NO #if: it asserts no preview quantity. The mode flip is driven by WINDOW SIZE, which works in
+    // both configurations -- materialPanelLayout never sees the preview.
+    //
+    // THE ASSERTION IS NOT A READ-BACK OF THE SEAM. materialSectionOpen() would round-trip whatever
+    // was requested whatever ImGui did with it -- seed S26's shape exactly. The discriminator is
+    // materialSamplerRowsDrawn(): a collapsed section submits NO body, so the slot row and its sampler
+    // disclosure are never reached and the counter stops climbing. That is a statement about what was
+    // DRAWN, and it is what reddens if the open bit goes back to being ImGui's.
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "material i175", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    const std::string assetsRoot = created.root + "/assets";
+    REQUIRE(engine::editor::writeTextFileAtomic(assetsRoot + "/full.aeromat", FULL_AEROMAT_TEXT).empty());
+    REQUIRE(writeBinaryFixture(assetsRoot + "/wood.png", TINY_PNG_RED.data(), TINY_PNG_RED.size()).empty());
+
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = created.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    app->panels().setVisible("Console", false);
+    app->panels().setVisible("Inspector", false);
+    REQUIRE(app->tick());
+    app->requestAssetBrowserSelectEntry("full.aeromat");
+    for (int i = 0; i < 4; ++i) {
+        REQUIRE(app->tick());
+    }
+    REQUIRE(app->materialTargetPath() == "full.aeromat");
+
+    // Bind slot 0 so its section has a sampler disclosure to count, and open that disclosure.
+    const std::optional<engine::Guid> textureGuid = app->assetGuidForPath("wood.png");
+    REQUIRE(textureGuid.has_value());
+    {
+        engine::MaterialDocument bound = *app->materialDocument();
+        bound.baseColor = engine::MaterialTextureSlot{.guid = *textureGuid};
+        app->requestMaterialDocument(bound);
+    }
+    for (int i = 0; i < 4; ++i) {
+        REQUIRE(app->tick());
+    }
+    REQUIRE(app->materialDocument() != nullptr);
+    REQUIRE(app->materialDocument()->baseColor.has_value());
+    app->requestMaterialSlotDetails(0, true);
+    for (int i = 0; i < 2; ++i) {
+        REQUIRE(app->tick());
+    }
+
+    // ANTI-VACUITY: with `Base Color` (section 1) OPEN, the disclosure really is being drawn, so the
+    // counter really does climb. Without this the "stopped climbing" assertions below would be
+    // satisfied by a panel that never drew anything at all.
+    REQUIRE(app->materialSectionOpen(1));
+    const std::size_t whileOpen = app->materialSamplerRowsDrawn();
+    REQUIRE(app->tick());
+    REQUIRE(app->materialSamplerRowsDrawn() > whileOpen);
+
+    // Collapse `Base Color`. Its body -- the slot row AND the sampler disclosure -- stops being
+    // submitted, so the counter freezes.
+    app->requestMaterialSectionOpen(1, false);
+    for (int i = 0; i < 2; ++i) {
+        REQUIRE(app->tick());
+    }
+    CHECK_FALSE(app->materialSectionOpen(1));
+    const std::size_t whileCollapsed = app->materialSamplerRowsDrawn();
+    REQUIRE(app->tick());
+    CHECK(app->materialSamplerRowsDrawn() == whileCollapsed);
+
+    // ---- CROSS THE MODE BOUNDARY --------------------------------------------------------------
+    // 320x180 is Scrolling at a display scale of 2 and 900x800 is FixedRegions at both scales, which
+    // is the same transition I171 drives. requestLayoutReset is what moves the dock column, exactly as
+    // I99 records.
+    window->setSize(900, 800);
+    for (int i = 0; i < 3; ++i) {
+        REQUIRE(app->tick());
+    }
+    app->requestLayoutReset();
+    for (int i = 0; i < 6; ++i) {
+        REQUIRE(app->tick());
+    }
+
+    // THE CLAIM: still collapsed, and still drawing nothing. With ImGui's per-window storage in charge
+    // the header would come back DefaultOpen in the other window and the counter would resume.
+    CHECK_FALSE(app->materialSectionOpen(1));
+    const std::size_t afterFlip = app->materialSamplerRowsDrawn();
+    for (int i = 0; i < 2; ++i) {
+        REQUIRE(app->tick());
+    }
+    CHECK(app->materialSamplerRowsDrawn() == afterFlip);
+
+    // And re-opening it in the NEW mode resumes drawing -- so the freeze above was the collapse and
+    // not the resize.
+    app->requestMaterialSectionOpen(1, true);
+    for (int i = 0; i < 2; ++i) {
+        REQUIRE(app->tick());
+    }
+    CHECK(app->materialSectionOpen(1));
+    const std::size_t reopened = app->materialSamplerRowsDrawn();
+    REQUIRE(app->tick());
+    CHECK(app->materialSamplerRowsDrawn() > reopened);
 
     app->requestQuit();
     CHECK(app->tick() == false);

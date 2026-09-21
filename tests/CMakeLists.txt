@@ -191,6 +191,21 @@ add_executable(aero_editor_imgui_test
 target_link_libraries(aero_editor_imgui_test PRIVATE
     doctest::doctest aero::editor_core aero::rhi aero::platform aero::core aero::scene_render ${CMAKE_DL_LIBS})
 target_include_directories(aero_editor_imgui_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})  # tests/ for rhi_test_support.hpp
+# task E.3.4: /bigobj, and it is a SIZE limit rather than a portability defect. A COFF object file
+# carries at most 65 279 sections; imgui_layer_test.cpp is one 15 901-line TU holding 215 TEST_CASEs,
+# and MSVC emits a COMDAT section per inline function and per template instantiation, so Release --
+# which instantiates more, not fewer -- crossed the limit at E.3.4 with `fatal error C1128`. The Debug
+# lane was still under it, which is why this surfaced on ONE of the six preset/lane combinations and on
+# no local build: clang and GCC have no equivalent cap, so nothing outside MSVC can see it coming.
+#
+# Scoped to this ONE target deliberately. The cap is PER OBJECT FILE, and this is the only TU in the
+# tree anywhere near it -- aero_editor_shell_test carries more cases but spreads them over forty-odd
+# TUs, and the next largest single file is under a third of this one. A project-wide /bigobj would hide
+# the next TU to approach the limit rather than surface it. Widen it when a second target actually
+# fails, never pre-emptively.
+if(MSVC)
+    target_compile_options(aero_editor_imgui_test PRIVATE /bigobj)
+endif()
 # code-review finding 4 (I30): the panel's own Refresh-button flag cannot be driven through a real
 # frame here (this target is ImGui-free at source and cannot synthesize a widget click -- the
 # AC-27/FileDialogHost precedent, the same reason PU1 in project_test.cpp reads project_ui.cpp's own
@@ -481,7 +496,8 @@ add_executable(aero_editor_shell_test editor/shell_test.cpp editor/hierarchy_tes
                editor/material_preview_rig_test.cpp   # task E.2.4 — the pure preview rig (PV)
                editor/editor_prefs_test.cpp           # task E.3.2 — the preference envelope (EP)
                editor/context_router_test.cpp         # task E.3.2 — the pure router (RT)
-               editor/asset_picker_model_test.cpp)     # task E.3.3 — the pure picker model (MP)
+               editor/asset_picker_model_test.cpp     # task E.3.3 — the pure picker model (MP)
+               editor/material_inspector_model_test.cpp)   # task E.3.4 — the pure panel model (MR)
 target_link_libraries(aero_editor_shell_test PRIVATE
     doctest::doctest aero::editor_core aero::scene aero::scene_internal aero::core Threads::Threads)
 add_test(NAME aero_editor_shell_test COMMAND aero_editor_shell_test)

@@ -86,6 +86,13 @@ void beginSession(AssetPickerState& state, const AssetFieldInputs& in, const std
 
 }  // namespace
 
+float assetReferenceFieldWidth(const char* trailingButtonLabel) {
+    const ImGuiStyle& style = ImGui::GetStyle();
+    const float trailingWidth =
+        ImGui::CalcTextSize(trailingButtonLabel).x + (2.0F * style.FramePadding.x) + style.ItemSpacing.x;
+    return std::max(ImGui::GetContentRegionAvail().x - trailingWidth, ImGui::GetFrameHeight());
+}
+
 AssetFieldResult drawAssetReferenceField(const AssetFieldInputs& in, AssetPickerState& state) {
     AssetFieldResult result{};
     const std::vector<AssetKind> options = assetPickerFilterOptions(in.rules);
@@ -97,7 +104,13 @@ AssetFieldResult drawAssetReferenceField(const AssetFieldInputs& in, AssetPicker
     //    invisible label still measures one line high (CalcTextSize's `text == text_display_end` arm
     //    returns `{0, font_size}`, imgui.cpp:6447-6448), so the frame stands exactly as tall as a
     //    labelled button's and the anchor arithmetic below is unmoved.
-    const bool pressed = ImGui::Button(in.idSuffix, ImVec2(in.buttonWidth, 0.0F));
+    //
+    //    task E.3.4: `thumbnailEdge` grows the frame so the bound asset's thumbnail can live INSIDE
+    //    it, which is what makes a material slot's whole row ONE item -- one press target, one drop
+    //    target, one popup anchor. A zero edge yields the literal 0.0F this line has always passed, so
+    //    the Inspector's row is byte-identical BY CONSTRUCTION.
+    const float buttonHeight = in.thumbnailEdge > 0.0F ? in.thumbnailEdge + (2.0F * style.FramePadding.y) : 0.0F;
+    const bool pressed = ImGui::Button(in.idSuffix, ImVec2(in.buttonWidth, buttonHeight));
 
     // 2. THE BUTTON'S GEOMETRY, captured BEFORE the popup is touched. End() restores the parent's
     //    last-item data at EndPopup (imgui.cpp:8848), so reading these afterwards names the button
@@ -113,11 +126,63 @@ AssetFieldResult drawAssetReferenceField(const AssetFieldInputs& in, AssetPicker
     //    and answers it the same way. AddText submits NO ImGui item, so the button is still the last
     //    item for the drop target below, and the clip rect is the button's own frame, so a long
     //    sentence is cut at the frame edge rather than spilling across the next cell.
+    //
+    // 3a. THE THUMBNAIL (task E.3.4), on the draw list INSIDE the button's frame, after ImGui::Button
+    //     has painted the frame and before the sentence, so the sentence draws OVER it. It runs above
+    //     step 4's BeginDragDropTarget and that is safe for the same reason the AddText below it is:
+    //     drawAssetTileFace's own contract says IT SUBMITS NO ImGui ITEM, so the button is still the
+    //     last item when the drop target attaches.
+    //
+    //     drawAssetTileFace with pad = 0 and an EMPTY caption is an ICON-ONLY face: AddText returns
+    //     immediately on an empty range (imgui_draw.cpp:1737-1738), so the shared painter needs no
+    //     parameter of its own and there is no second painter anywhere (E.3.3's D6, collecting its
+    //     dividend -- the browser tile, the picker's grid tile and this row are ONE function, and a
+    //     padding change moves all three together).
+    //
+    //     A NIL reference paints NOTHING: the button's own frame is the empty state and the sentence
+    //     already says "None". A NON-NIL guid the database cannot resolve paints the Unknown kind
+    //     icon, because "there is something here and I cannot find it" is worth a glyph.
+    if (in.thumbnailEdge > 0.0F && in.current.valid()) {
+        const AssetRecord* const record = in.database != nullptr ? in.database->findByGuid(in.current) : nullptr;
+        AssetTileFace face{};
+        face.tileW = in.thumbnailEdge;
+        face.tileEdge = in.thumbnailEdge;
+        face.pad = 0.0F;                          // the icon is exactly tileEdge square at itemMin
+        face.captionSource = std::string_view{};  // icon only
+        if (record != nullptr) {
+            face.kind = classifyAssetKind(leafOf(record->relativePath), /*isDirectory=*/false);
+            face.fileName = leafOf(record->relativePath);  // iconLabelFor's input
+            if (in.thumbnails != nullptr) {
+                if (const std::optional<ThumbnailKey> key = thumbnailKeyForRecord(*record); key.has_value()) {
+                    // MANDATORY, not polite: evictions() excludes only what was touched at the CURRENT
+                    // frame, so without this the LRU evicts the one thumbnail the user is looking at
+                    // (E.3.3's S34 / I167).
+                    in.thumbnails->noteVisible(*key);
+                    face.nativeTexture = in.thumbnails->nativeTextureFor(*key);
+                }
+            }
+        }
+        drawAssetTileFace(ImGui::GetWindowDrawList(),
+                          ImVec2(buttonMin.x + style.FramePadding.x, buttonMin.y + style.FramePadding.y), face,
+                          state.tileScratch);
+    }
+
     if (!in.valueText.empty()) {
         ImDrawList* const drawList = ImGui::GetWindowDrawList();
         drawList->PushClipRect(buttonMin, buttonMax, /*intersect_with_current_clip_rect=*/true);
-        drawList->AddText(ImVec2(buttonMin.x + style.FramePadding.x, buttonMin.y + style.FramePadding.y),
-                          ImGui::GetColorU32(ImGuiCol_Text), in.valueText.data(),
+        // task E.3.4. The zero-thumbnail arm is TODAY'S EXPRESSION, character for character, and it is
+        // a BRANCH rather than a formula that reduces to it: (buttonHeight - fontSize) * 0.5F is only
+        // ARITHMETICALLY FramePadding.y, and GetFrameHeight() is a rounded sum, so an unbranched
+        // "generalisation" could move the Inspector's text by an ulp for no reason at all. The
+        // Inspector is byte-identical BY CONSTRUCTION here, not by a test -- nothing in this tree
+        // measures a widget rect or reads rendered text.
+        const float textX = in.thumbnailEdge > 0.0F
+                                ? buttonMin.x + style.FramePadding.x + in.thumbnailEdge + style.ItemInnerSpacing.x
+                                : buttonMin.x + style.FramePadding.x;
+        const float textY = in.thumbnailEdge > 0.0F
+                                ? buttonMin.y + (((buttonMax.y - buttonMin.y) - ImGui::GetFontSize()) * 0.5F)
+                                : buttonMin.y + style.FramePadding.y;
+        drawList->AddText(ImVec2(textX, textY), ImGui::GetColorU32(ImGuiCol_Text), in.valueText.data(),
                           in.valueText.data() + in.valueText.size());
         drawList->PopClipRect();
     }

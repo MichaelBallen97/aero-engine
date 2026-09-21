@@ -99,10 +99,38 @@ struct AssetFieldInputs {
     std::string_view unknownToken;            // non-empty => WARN once on the open frame, naming fieldKey
     const AssetDatabase* database = nullptr;  // null is legal: no candidates, and the button still draws
     ThumbnailService* thumbnails = nullptr;   // null is legal: every tile draws its kind icon
+    // task E.3.4, APPENDED LAST so no existing designated initialiser moves -- a designator must
+    // follow DECLARATION order in C++20, and clang accepts a wrong order with -Wreorder-init-list (a
+    // WARNING) while GCC and MSVC REJECT (E.2.2's finding 3). 0 == no thumbnail, which is the
+    // Inspector's row and is TODAY's behaviour exactly: the button's height argument stays the 0.0F
+    // it already is.
+    float thumbnailEdge = 0.0F;
 };
 
 // Draws [button][popup] inside the CALLER's PushID scope and reports what happened. The host decides
 // what a pick MEANS -- this names no World, no CommandStack, no MaterialDocument and no Panel.
 [[nodiscard]] AssetFieldResult drawAssetReferenceField(const AssetFieldInputs& in, AssetPickerState& state);
+
+// The reference button's width when a trailing SmallButton shares its row -- the Inspector's `Clear`
+// and, since task E.3.4, the material slot's. ONE formula, TWO hosts: a theme or DPI change moves both
+// together and neither host restates it. Floored at one frame height so a narrow panel still yields a
+// clickable button rather than a negative one.
+//
+// NOT SetNextItemWidth: ImGui::Button takes an explicit ImVec2 size and IGNORES the next-item width,
+// and the Inspector's shared SetNextItemWidth(-1.0F) is consumed by the first ItemAdd that follows
+// (E.3.1's lesson 1) -- which is why the width had to become an argument at all.
+//
+// It reads the LIVE style and the CURRENT content region, so it must be called inside the draw walk,
+// on the row it is sizing. `float` in and `float` out, so this header still names no ImGui type.
+//
+// NEITHER FILE STATES THE LITERAL, and this sentence used to say the opposite -- corrected by the
+// code-review round. The label arrives as a PARAMETER and the body calls
+// CalcTextSize(trailingButtonLabel), so `CalcTextSize("Clear")` reads ZERO in inspector_panel.cpp and
+// ZERO in asset_picker.cpp; what I172(e) pins at exactly one apiece is the CALL,
+// `assetReferenceFieldWidth("Clear")`, in inspector_panel.cpp and in material_panel.cpp. A second
+// trailing-button host adds a third such call and states no literal either -- writing
+// CalcTextSize("Clear") into this file on the strength of the old sentence would redden I172(e) for a
+// reason that sentence declared legal.
+[[nodiscard]] float assetReferenceFieldWidth(const char* trailingButtonLabel);
 
 }  // namespace engine::editor

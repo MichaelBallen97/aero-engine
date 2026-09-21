@@ -1982,6 +1982,30 @@ void EditorApp::requestMaterialSlotPicker(std::size_t slot) {
     }
 }
 
+void EditorApp::requestMaterialSlotDetails(std::size_t slot, bool open) noexcept {
+    if (materialPanel != nullptr) {
+        materialPanel->setSlotDetailsOpen(slot, open);
+    }
+}
+
+bool EditorApp::materialSlotDetailsOpen(std::size_t slot) const noexcept {
+    return materialPanel != nullptr && materialPanel->slotDetailsOpen(slot);
+}
+
+std::size_t EditorApp::materialSamplerRowsDrawn() const noexcept {
+    return materialPanel != nullptr ? materialPanel->samplerRowsDrawn() : 0;
+}
+
+void EditorApp::requestMaterialSectionOpen(std::size_t section, bool open) noexcept {
+    if (materialPanel != nullptr) {
+        materialPanel->setSectionOpen(section, open);
+    }
+}
+
+bool EditorApp::materialSectionOpen(std::size_t section) const noexcept {
+    return materialPanel != nullptr && materialPanel->sectionIsOpen(section);
+}
+
 void EditorApp::requestAssetPickerSearch(std::string_view query) {
     if (assetPicker != nullptr) {
         assetPicker->pendingSearch = std::string(query);

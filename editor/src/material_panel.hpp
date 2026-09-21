@@ -13,6 +13,11 @@
 // records it as ONE pending whole-document edit -- last-writer-wins, the house's pending-action
 // shape. The document is small, and one slot cannot half-apply the way a per-field channel can.
 #include <aero/editor/asset_drag.hpp>  // task 3.1.5: MaterialSlotTextureDrop
+// task E.3.4: the panel's PURE model. Included rather than forward-declared since the code-review
+// round, because the section array's SIZE is MATERIAL_SECTION_COUNT and a restated count here would be
+// a second place for the section table's length to live. It is PUBLIC and ImGui-free, so it costs this
+// header nothing it was protecting.
+#include <aero/editor/material_inspector_model.hpp>
 #include <aero/editor/material_session.hpp>
 #include <aero/editor/panel.hpp>
 
@@ -63,8 +68,22 @@ public:
     // materials. Registered LAST in create(), after ImportDetailsPanel, so the Inspector keeps the
     // selected tab by default and no existing panel's registration index shifts.
     [[nodiscard]] DockSlot defaultDockSlot() const noexcept override { return DockSlot::Right; }
-    // options() is DELIBERATELY not overridden: the panel scrolls (Project Settings' recorded posture),
-    // because its sections carry no ScrollY of their own.
+    // options() is DELIBERATELY not overridden, and the reason CHANGED at E.3.4. The old comment said
+    // "its sections carry no ScrollY of their own", which stopped being true when the body became a
+    // child -- and then only SOMETIMES, which is why this now names THREE cases rather than two:
+    //
+    //   1. Untargeted / Error -- the WINDOW scrolls. A long parse error wraps and must be readable;
+    //      I100 drives that arm.
+    //   2. Ready, MaterialPanelMode::FixedRegions -- the window's content is exactly header + a child
+    //      sized to the remainder + footer, which CANNOT overflow. The child scrolls; the window does
+    //      not need to.
+    //   3. Ready, MaterialPanelMode::Scrolling -- there is NO child at all and the WINDOW scrolls,
+    //      exactly as in case 1. This is the arm a short dock node takes, and on a Retina display at
+    //      320x180 it is the arm the product actually takes (the fixed chrome is 103 points against a
+    //      98-point content region).
+    //
+    // So noScrollbar would buy nothing in case 2 and would SILENTLY CLIP cases 1 and 3 -- the Error
+    // state's wrapped message, and the whole form on a short panel.
     void onDraw(PanelContext& context) override;
 
     void setSession(const MaterialSession* s) noexcept { sessionPtr = s; }  // reconciled, NEVER owned
@@ -131,6 +150,50 @@ public:
     [[nodiscard]] bool previewHasSun() const noexcept { return previewHasSunValue; }
     [[nodiscard]] const render::RenderTarget* previewOutputTarget() const noexcept { return preview.outputTarget(); }
 
+    // ---- task E.3.4: the per-slot sampler disclosure's open state ---------------------------------
+    // THE PANEL owns it, not ImGui's storage: ImGui::SetNextItemOpen(open, ImGuiCond_Always) drives the
+    // node and ImGui::IsItemToggledOpen() reports a click (imgui_widgets.cpp:6817-6823 and :7073-7078
+    // -- a forced-open node is STILL clickable), so this array is the single source of truth and a seam
+    // can drive it. Reset to all closed on every retarget. Without the seam, six BeginCombo calls and a
+    // DragInt would execute on NO lane at all, because no tier in this tree can click a disclosure --
+    // so the seam is not a convenience, it is the price of closing the node.
+    //
+    // Out of range is a NO-OP in both directions, the preview accessors' exact posture.
+    // operator[] rather than at(), and the guard above it is why: at() THROWS, which makes a noexcept
+    // accessor a bugprone-exception-escape error under --warnings-as-errors. The index is proven in
+    // range by the line above, so the subscript is the honest spelling of what the guard already
+    // established.
+    void setSlotDetailsOpen(std::size_t slot, bool open) noexcept {
+        if (slot < SLOT_COUNT) {
+            slotDetails[slot] = open;
+        }
+    }
+    [[nodiscard]] bool slotDetailsOpen(std::size_t slot) const noexcept {
+        return slot < SLOT_COUNT && slotDetails[slot];
+    }
+    // HOW MANY SAMPLER DISCLOSURES ACTUALLY SUBMITTED THEIR ROWS, cumulative over the panel's life.
+    // Found by sabotage seed S26: slotDetailsOpen() reads the array the SEAM just wrote, so it round-
+    // trips whatever was requested and cannot see whether ImGui OBEYED -- swapping ImGuiCond_Always
+    // for ImGuiCond_Once leaves ImGui's own storage in charge, the node never opens, the six sampler
+    // widgets are never submitted, and every assertion in I170 stayed green. This counter is the
+    // difference between "the panel remembers what I asked" and "the rows were drawn", and it is what
+    // makes I170(b)'s coverage-transfer claim an assertion rather than an inference from a green run.
+    [[nodiscard]] std::size_t samplerRowsDrawn() const noexcept { return samplerRowsDrawnValue; }
+
+    // ---- the eight sections' open state (the code-review round's finding) --------------------------
+    // PANEL-owned for a sharper reason than the disclosure's: ImGui stores a CollapsingHeader's open
+    // bit in the SUBMITTING WINDOW's StateStorage, and the body is a child in one mode and not in the
+    // other -- so before this existed, crossing the mode boundary re-opened every collapsed section.
+    // Seeded all-TRUE because the sections ship DefaultOpen. Out of range is a no-op both ways.
+    void setSectionOpen(std::size_t section, bool open) noexcept {
+        if (section < MATERIAL_SECTION_COUNT) {
+            sectionOpen[section] = open;
+        }
+    }
+    [[nodiscard]] bool sectionIsOpen(std::size_t section) const noexcept {
+        return section < MATERIAL_SECTION_COUNT && sectionOpen[section];
+    }
+
     // task E.3.3: both set ONCE in EditorApp::create (the viewportPanel posture), not reconciled --
     // each points at a heap object EditorApp holds through a unique_ptr, so the address survives the
     // app's own move. NULL is a legal state: the slot then draws its bound-state block and no control.
@@ -138,12 +201,25 @@ public:
     void setThumbnails(ThumbnailService* s) noexcept { thumbnails = s; }
 
 private:
-    void drawPreview();  // the preview strip: an ImGui::Image, or ONE line saying why not (AC-32)
-    // task E.3.3: a PRIVATE MEMBER rather than a free function -- it reads databasePtr, labelScratch,
-    // observedSlotDrop, assetPicker, thumbnails and keyScratch off `this`, so the parameter list is
-    // four rather than the ten a free function would have needed.
-    [[nodiscard]] bool drawSlotSection(std::size_t index, MaterialDocument& form, PreviewTextureState textureState,
-                                       std::string_view textureNotice);
+    // task E.3.4: the height is the LAYOUT's now, not a constant. An ImGui::Image, or ONE line saying
+    // why not (AC-32).
+    void drawPreview(float previewHeight);
+    // task E.3.4: the eight sections and the two wrapped notices, as ONE function called from BOTH
+    // body paths -- so nothing inside it can drift between FixedRegions and Scrolling. A member for
+    // drawSlotSection's stated reason: it reads preview, previewHasSunValue, nameDraft, nameEditing,
+    // labelScratch and databasePtr off `this`.
+    void drawBody(MaterialDocument& form, const MaterialPanelLayout& layout,
+                  const std::optional<MaterialError>& invalid, bool& changed);
+    // task E.3.4: the File section's read-only rows. A member for drawBody's reason -- it reads
+    // sessionPtr, databasePtr and labelScratch off `this`, so the parameter list is one.
+    void drawFileSection(float labelWidth);
+    // task E.3.4: PRIVATE MEMBERS rather than free functions, for E.3.3's stated reason -- they read
+    // databasePtr, labelScratch, keyScratch, observedSlotDrop, assetPicker, thumbnails, preview and
+    // slotDetails off `this`, so the parameter lists are four and four rather than the ten-plus a free
+    // function would have needed.
+    [[nodiscard]] bool drawSlotRow(std::size_t index, MaterialDocument& form, const MaterialSlotRow& row,
+                                   float thumbEdge);
+    void drawSamplerDisclosure(std::size_t index, MaterialDocument& form, const MaterialSlotRow& row, bool& changed);
 
     const MaterialSession* sessionPtr = nullptr;  // non-owning; ALWAYS null-check
     const AssetDatabase* databasePtr = nullptr;   // non-owning; null before the first scan
@@ -168,6 +244,15 @@ private:
     // there is nothing left for a per-slot line to remember.
     std::string labelScratch;  // per-frame scratch, NOT model state (the 2.2.1 idiom)
     std::string keyScratch;    // labelScratch's idiom, for the slot's seam key
+    // task E.3.4: retarget detection, for the per-slot UI state ALONE. It is NOT model state and it is
+    // never compared against anything the session owns -- the session's own sticky-target rule is
+    // untouched by it.
+    std::string lastTargetPath;
+    std::array<bool, SLOT_COUNT> slotDetails{};  // all false: every disclosure starts closed
+    std::size_t samplerRowsDrawnValue = 0;       // see samplerRowsDrawn() -- seed S26's witness
+    // All TRUE: the eight sections ship DefaultOpen. See setSectionOpen for why ImGui's own storage
+    // cannot be the authority here.
+    std::array<bool, MATERIAL_SECTION_COUNT> sectionOpen{};
     // task E.3.3: borrowed, never owned, set once -- see setAssetPicker/setThumbnails above.
     AssetPickerState* assetPicker = nullptr;
     ThumbnailService* thumbnails = nullptr;
