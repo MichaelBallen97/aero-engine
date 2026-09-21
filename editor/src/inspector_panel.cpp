@@ -570,20 +570,11 @@ void InspectorPanel::drawField(PanelContext& context, Entity primary, const Comp
             AssetFieldResult picked{};
             if (assetPicker != nullptr) {
                 fieldKeyScratch = inspectorAssetFieldKey(entry.name, field.name);
-                // THE WIDTH IS THIS HOST'S ARITHMETIC: `Clear` shares this row, so a -FLT_MIN button
-                // would push it off the row edge. Measured with the same CalcTextSize the button
-                // itself uses, so a theme or DPI change moves both together, and floored at one frame
-                // height so a narrow panel still yields a clickable button rather than a negative one.
-                //
-                // NOT SetNextItemWidth: ImGui::Button takes an explicit ImVec2 size and ignores the
-                // next-item width, and drawField's shared SetNextItemWidth(-1.0F) is consumed by the
-                // first ItemAdd that follows (E.3.1's lesson 1) -- which is why the width had to
-                // become an argument at all.
-                const ImGuiStyle& style = ImGui::GetStyle();
-                const float clearWidth =
-                    ImGui::CalcTextSize("Clear").x + (2.0F * style.FramePadding.x) + style.ItemSpacing.x;
-                const float buttonWidth =
-                    std::max(ImGui::GetContentRegionAvail().x - clearWidth, ImGui::GetFrameHeight());
+                // THE WIDTH IS THIS HOST'S ARITHMETIC AND IT IS SHARED (task E.3.4): `Clear` shares
+                // this row, so a -FLT_MIN button would push it off the row edge. The formula and its
+                // reasoning now live in asset_picker.cpp beside the button it sizes, so the material
+                // slot's row uses the same one.
+                const float buttonWidth = assetReferenceFieldWidth("Clear");
                 // A designated initialiser must follow DECLARATION order (E.2.2's finding 3);
                 // `idSuffix` is omitted because its default is right.
                 const AssetFieldInputs inputs{.valueText = row.text,
