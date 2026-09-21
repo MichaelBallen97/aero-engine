@@ -138,6 +138,23 @@ template <typename Enum, std::size_t N, typename LabelFn>
 // project_settings_panel.cpp's own TABLE_FLAGS, verbatim and for its reasons: a fixed label column, a
 // stretch value column, resizable by the user, and NoSavedSettings so a table's width is never a
 // persisted format.
+// ONE sampler row inside the disclosure's table: the label cell, then the combo filling the value
+// cell. The label is a plain literal here rather than a model string, deliberately -- the six sampler
+// tokens are the FORMAT's own vocabulary (docs/09 section 11.1's slot table) and their row labels name
+// members of that table, not fields of the document the model enumerates. `##`-prefixed ids keep the
+// label out of the widget, exactly as the scalar rows do.
+template <typename Enum, std::size_t N, typename LabelFn>
+[[nodiscard]] bool samplerTokenRow(const char* label, const char* id, Enum& value, const std::array<Enum, N>& values,
+                                   LabelFn labelOf, std::string& scratch) {
+    ImGui::TableNextRow();
+    ImGui::TableNextColumn();
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted(label);
+    ImGui::TableNextColumn();
+    ImGui::SetNextItemWidth(-1.0F);
+    return tokenCombo(id, value, values, labelOf, scratch);
+}
+
 constexpr ImGuiTableFlags MATERIAL_TABLE_FLAGS =
     ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_Resizable | ImGuiTableFlags_NoSavedSettings;
 
@@ -282,162 +299,184 @@ constexpr ImGuiTableFlags MATERIAL_TABLE_FLAGS =
 
 }  // namespace
 
-// ---- one texture slot (AC-20/AC-21/AC-22) --------------------------------------------------------
+// ---- one texture slot's ROW (task E.3.4, replacing 3.4.2's drawSlotSection) ------------------------
+// ONE ImGui item carries the whole reference: the E.3.3 picker's button, grown tall enough to hold the
+// bound asset's thumbnail inside its own frame, with `Clear` beside it on the same row and the
+// colour-space note beneath. One press target, one drop target, one popup anchor.
+//
 // PushID/PopID are 1:1 across EVERY path through this function -- no continue, no break, no return
 // between them (an unbalanced id stack is an IM_ASSERT abort in the Debug ImGui build).
-bool MaterialPanel::drawSlotSection(std::size_t index, MaterialDocument& form, PreviewTextureState textureState,
-                                    std::string_view textureNotice) {
-    // task E.3.3: a MEMBER now. `database`, `scratch` and `observedDrop` were three of its eight
-    // parameters and are members of this panel; `search` is gone with the per-slot search line.
-    const AssetDatabase* const database = databasePtr;
-    std::string& scratch = labelScratch;
-    std::optional<MaterialSlotTextureDrop>& observedDrop = observedSlotDrop;
+bool MaterialPanel::drawSlotRow(std::size_t index, MaterialDocument& form, const MaterialSlotRow& row,
+                                float thumbEdge) {
     bool changed = false;
-    ImGui::PushID(static_cast<int>(index));
-    scratch = std::string(materialSlotLabel(index));
-    // DEFAULT-OPEN, like every CollapsingHeader in this tree: no tier here can click one, so a closed
-    // node's branches never execute anywhere, under any sanitizer (3.2.4's recorded lesson).
-    if (ImGui::CollapsingHeader(scratch.c_str(), ImGuiTreeNodeFlags_DefaultOpen)) {
-        std::optional<MaterialTextureSlot>& slot = documentSlotAt(form, index);
-
-        // --- bound state -------------------------------------------------------------------------
-        const AssetRecord* record = nullptr;
-        if (slot.has_value() && database != nullptr) {
-            record = database->findByGuid(slot->guid);
-        }
-        if (!slot.has_value()) {
-            ImGui::TextDisabled("None");
-        } else {
-            scratch = formatGuid(slot->guid);
-            ImGui::TextUnformatted(scratch.c_str());
-            if (record != nullptr) {
-                const AssetKind kind = classifyAssetKind(leafOf(record->relativePath), false);
-                scratch = std::format("{}  -  {}", record->relativePath, assetKindLabel(kind));
-                ImGui::TextUnformatted(scratch.c_str());
-                if (kind != AssetKind::Texture) {
-                    // AC-21: named, not silently ignored -- and Apply stays legal either way.
-                    ImGui::PushStyleColor(ImGuiCol_Text, NOTICE_COLOR);
-                    ImGui::TextWrapped("%s", "This asset is not a texture; the slot will use its default.");
-                    ImGui::PopStyleColor();
-                }
-            } else if (database != nullptr) {
-                ImGui::PushStyleColor(ImGuiCol_Text, NOTICE_COLOR);
-                ImGui::TextWrapped("%s", "This GUID is not in this project; the slot will use its default.");
-                ImGui::PopStyleColor();
-            }
-            // --- what the PREVIEW made of it (task 3.4.2 step 7, D7/AC-21) -----------------------
-            // Exactly ONE row, and only when there is something to say. The refusal's own sentence
-            // comes from the loader, which is the only thing that knows whether the file was missing,
-            // a .hdr, undecodable, uncookable or refused by the GPU. No `default:` -- a fifth state
-            // is a -Wswitch failure here rather than a slot that silently says nothing.
-            switch (textureState) {
-                case PreviewTextureState::Loading:
-                    ImGui::TextDisabled("%s", "Loading the preview texture...");
-                    break;
-                case PreviewTextureState::Failed:
-                    scratch = std::string(textureNotice);
-                    ImGui::PushStyleColor(ImGuiCol_Text, NOTICE_COLOR);
-                    ImGui::TextWrapped("%s", scratch.c_str());
-                    ImGui::PopStyleColor();
-                    break;
-                case PreviewTextureState::None:
-                case PreviewTextureState::Ready:
-                    break;
-            }
-        }
-
-        // --- the picker (task E.3.3, D10) --------------------------------------------------------
-        // The SAME widget the Inspector's Guid row draws, with this slot's rules {MaterialSlot,
-        // nullopt} -- so what this button accepts and what its popup lists are the matrix's OWN
-        // BindTextureSlot row, asked once. It replaces 3.4.2's search line + combo AND 3.1.5's slot
-        // drop target, both of which lived here; observedDrop keeps its meaning, so tick()'s
-        // vanished-guid WARN is reached exactly as before.
-        //
-        // -FLT_MIN fills the cell, which is right HERE and wrong in the Inspector: this slot's Clear is
-        // a separate Button on its own line below, while the Inspector's shares the row.
-        scratch = record != nullptr ? record->relativePath : (slot.has_value() ? "(unresolved)" : "None");
+    ImGui::PushID("slot");
+    std::optional<MaterialTextureSlot>& slot = documentSlotAt(form, index);
+    AssetFieldResult picked{};
+    if (assetPicker != nullptr) {
+        // materialSlotFieldKey returns std::string BY VALUE and AssetFieldInputs::fieldKey is a
+        // string_view, so the key MUST land in a member first: inlining it into the aggregate below
+        // leaves the view dangling for the whole call. "slot:0" is inside libc++'s SSO buffer, so the
+        // bytes usually survive and NOTHING reddens -- E.3.2's recorded lesson, one host over, and
+        // ASan's detect_stack_use_after_return is off by default here. The SAME applies to
+        // `row.valueText`, which is why `row` is a caller-owned named local that outlives this call.
         keyScratch = materialSlotFieldKey(index);
-        AssetFieldResult picked{};
-        if (assetPicker != nullptr) {
-            const AssetFieldInputs inputs{.valueText = scratch,
-                                          .buttonWidth = -FLT_MIN,
-                                          .current = slot.has_value() ? slot->guid : Guid{},
-                                          .rules = AssetPickerRules{DropSurface::MaterialSlot, std::nullopt},
-                                          .hostId = id(),
-                                          .fieldKey = keyScratch,
-                                          .unknownToken = std::string_view{},
-                                          .database = database,
-                                          .thumbnails = thumbnails};
-            picked = drawAssetReferenceField(inputs, *assetPicker);
-        }
-        switch (picked.outcome) {  // NO default: a fifth outcome is a -Wswitch error
-            case AssetFieldOutcome::Picked:
-            case AssetFieldOutcome::Dropped: {
-                // EXACTLY the two existing paths' idiom: a REBIND keeps the slot's sampler tokens, a
-                // FRESH bind takes the format's own defaults, which MaterialTextureSlot{} already is.
-                MaterialTextureSlot bound = slot.has_value() ? *slot : MaterialTextureSlot{};
-                bound.guid = picked.guid;
-                slot = bound;
-                changed = true;
-                if (picked.outcome == AssetFieldOutcome::Dropped) {
-                    // Reported so tick() sees the SAME thing for a real gesture as for the seam: the
-                    // drain's only job here is the vanished-guid refusal WARN, and a warning that
-                    // fired only for driven drops would be a warning nobody ever sees.
-                    observedDrop = MaterialSlotTextureDrop{.slot = index, .textureGuid = picked.guid};
-                }
-                break;
+        const AssetFieldInputs inputs{.valueText = row.valueText,
+                                      // `Clear` shares this row NOW, so the width is the SHARED
+                                      // formula's -- not -FLT_MIN, which is what has put Clear on its
+                                      // own line since 3.4.2 and is exactly what this task changes.
+                                      .buttonWidth = assetReferenceFieldWidth("Clear"),
+                                      .current = slot.has_value() ? slot->guid : Guid{},
+                                      .rules = AssetPickerRules{DropSurface::MaterialSlot, std::nullopt},
+                                      .hostId = id(),
+                                      .fieldKey = keyScratch,
+                                      .unknownToken = std::string_view{},
+                                      .database = databasePtr,
+                                      .thumbnails = thumbnails,
+                                      .thumbnailEdge = thumbEdge};
+        picked = drawAssetReferenceField(inputs, *assetPicker);
+    }
+    switch (picked.outcome) {  // NO default: a fifth outcome is a -Wswitch error
+        case AssetFieldOutcome::Picked:
+        case AssetFieldOutcome::Dropped: {
+            // EXACTLY 3.4.2's idiom: a REBIND keeps the slot's sampler tokens, a FRESH bind takes the
+            // format's own defaults, which MaterialTextureSlot{} already is.
+            MaterialTextureSlot bound = slot.has_value() ? *slot : MaterialTextureSlot{};
+            bound.guid = picked.guid;
+            slot = bound;
+            changed = true;
+            if (picked.outcome == AssetFieldOutcome::Dropped) {
+                // Reported so tick() sees the SAME thing for a real gesture as for the seam: the
+                // drain's only job here is the vanished-guid refusal WARN, and a warning that fired
+                // only for driven drops would be a warning nobody ever sees.
+                observedSlotDrop = MaterialSlotTextureDrop{.slot = index, .textureGuid = picked.guid};
             }
-            case AssetFieldOutcome::Cleared:
-                slot.reset();  // AC-20: the WHOLE slot, never a nil guid -- absence is spelled by omission
-                changed = true;
-                break;
-            case AssetFieldOutcome::None:
-                break;
+            break;
         }
-
-        ImGui::BeginDisabled(!slot.has_value());  // 1:1 with EndDisabled; nothing exits between them
-        if (ImGui::Button("Clear")) {
+        case AssetFieldOutcome::Cleared:
             slot.reset();  // AC-20: the WHOLE slot, never a nil guid -- absence is spelled by omission
             changed = true;
-        }
-        ImGui::EndDisabled();
+            break;
+        case AssetFieldOutcome::None:
+            break;
+    }
 
-        // --- sampler state, while bound ----------------------------------------------------------
-        if (slot.has_value()) {
-            int uvSet = static_cast<int>(slot->uvSet);
-            if (ImGui::DragInt("UV set", &uvSet, 0.1F, 0, static_cast<int>(MATERIAL_MAX_UV_SETS) - 1)) {
-                slot->uvSet = clampUvSet(uvSet);
-                changed = true;
-            }
-            if (slot->uvSet != 0) {
-                // AC-22, the v1 rule: MeshVertex carries one UV set, so a consumer honours set 0 and
-                // WARNs. The value is STORED for fidelity -- this note is why it looks ignored.
-                ImGui::PushStyleColor(ImGuiCol_Text, NOTICE_COLOR);
-                ImGui::TextWrapped("%s", "v1 consumers honour UV set 0; this value is stored, not sampled.");
-                ImGui::PopStyleColor();
-            }
-            // Five separate `if`s rather than one chain of `|| changed`: every one of these lines
-            // would otherwise sit within a couple of columns of the format limit, and Homebrew's
-            // clang-format 18 and Ubuntu's disagree about how to break a chain that long.
-            if (tokenCombo("Wrap U", slot->wrapU, WRAP_VALUES, materialWrapLabel, scratch)) {
-                changed = true;
-            }
-            if (tokenCombo("Wrap V", slot->wrapV, WRAP_VALUES, materialWrapLabel, scratch)) {
-                changed = true;
-            }
-            if (tokenCombo("Min filter", slot->minFilter, FILTER_VALUES, materialFilterLabel, scratch)) {
-                changed = true;
-            }
-            if (tokenCombo("Mag filter", slot->magFilter, FILTER_VALUES, materialFilterLabel, scratch)) {
-                changed = true;
-            }
-            if (tokenCombo("Mip filter", slot->mipFilter, MIP_FILTER_VALUES, materialMipFilterLabel, scratch)) {
-                changed = true;
-            }
-        }
+    // `Clear` SHARES the row now. A SmallButton has no FramePadding.y, so on a tall picker button it
+    // sits at the row's baseline rather than its middle -- AlignTextToFramePadding aligns to the
+    // DEFAULT frame height and would fight the tall button, so this is SameLine and nothing else.
+    ImGui::SameLine();
+    ImGui::BeginDisabled(!row.clearEnabled);  // 1:1 with EndDisabled; nothing exits between them
+    if (ImGui::SmallButton("Clear")) {
+        slot.reset();  // AC-20: the WHOLE slot, never a nil guid
+        changed = true;
+    }
+    ImGui::EndDisabled();
+
+    // The colour-space note, composed from materialSlotIsSrgb by the model. A DYNAMIC string is never a
+    // format string -- and a static one goes through "%s" too, so there is ONE rule here rather than a
+    // judgement at every call.
+    ImGui::TextDisabled("%s", materialColorSpaceNote(index).data());
+
+    // THE NOTICES STAY ON THE CHANNEL, never inside the disclosure: every one of them explains
+    // something the user can SEE without opening anything.
+    if (row.notice != MaterialSlotNotice::None) {
+        ImGui::PushStyleColor(ImGuiCol_Text, NOTICE_COLOR);
+        ImGui::TextWrapped("%s", materialSlotNoticeText(row.notice).data());
+        ImGui::PopStyleColor();
+    }
+    // What the PREVIEW made of it (3.4.2's D7/AC-21), unchanged: exactly ONE row, and only when there
+    // is something to say. The refusal's own sentence comes from the loader, which is the only thing
+    // that knows whether the file was missing, a .hdr, undecodable, uncookable or refused by the GPU.
+    // No `default:` -- a fifth state is a -Wswitch failure rather than a slot that silently says
+    // nothing.
+    switch (preview.slotTextureState(index)) {
+        case PreviewTextureState::Loading:
+            ImGui::TextDisabled("%s", "Loading the preview texture...");
+            break;
+        case PreviewTextureState::Failed:
+            labelScratch = std::string(preview.slotNotice(index));
+            ImGui::PushStyleColor(ImGuiCol_Text, NOTICE_COLOR);
+            ImGui::TextWrapped("%s", labelScratch.c_str());
+            ImGui::PopStyleColor();
+            break;
+        case PreviewTextureState::None:
+        case PreviewTextureState::Ready:
+            break;
+    }
+    // AC-22, the v1 rule, and OUTSIDE the disclosure deliberately: MeshVertex carries one UV set, so a
+    // consumer honours set 0 and WARNs. The value is STORED for fidelity -- this note is why it looks
+    // ignored, and a user who has not opened the sampler node still needs to read it.
+    if (slot.has_value() && slot->uvSet != 0) {
+        ImGui::PushStyleColor(ImGuiCol_Text, NOTICE_COLOR);
+        ImGui::TextWrapped("%s", "v1 consumers honour UV set 0; this value is stored, not sampled.");
+        ImGui::PopStyleColor();
     }
     ImGui::PopID();
     return changed;
+}
+
+// ---- the sampler disclosure (task E.3.4) ----------------------------------------------------------
+// The six sampler tokens, behind a per-slot node that starts CLOSED. Drawn only while the slot is
+// bound -- an unbound slot has nothing to sample and six combos over an absent slot would be six
+// controls that write nowhere.
+void MaterialPanel::drawSamplerDisclosure(std::size_t index, MaterialDocument& form, const MaterialSlotRow& row,
+                                          bool& changed) {
+    std::optional<MaterialTextureSlot>& slot = documentSlotAt(form, index);
+    if (!slot.has_value()) {
+        return;
+    }
+    // THE PANEL owns the open state. SetNextItemOpen(ImGuiCond_Always) makes TreeNodeUpdateNextOpen
+    // take is_open straight from NextItemData.OpenVal (imgui_widgets.cpp:6817-6823) AND the click path
+    // still runs, flipping is_open and raising ImGuiItemStatusFlags_ToggledOpen (:7073-7078), which
+    // IsItemToggledOpen reads (imgui.cpp:6590-6594). So a forced-open node is STILL clickable and this
+    // array is the single source of truth. ImGuiCond_Once would hand the decision to ImGui's own
+    // storage instead, and a close request would then not close.
+    ImGui::SetNextItemOpen(slotDetailsOpen(index), ImGuiCond_Always);
+    // NoTreePushOnOpen means there is NO TreePop -- the same property that lets every CollapsingHeader
+    // in this tree need none (imgui_widgets.cpp:7152-7153, TreePop at :7242). This task therefore adds
+    // NO asymmetric ImGui pair at all. No Indent either: the rows are a two-column table under the node
+    // and read as a sub-list without one.
+    const bool open = ImGui::TreeNodeEx(materialSamplerNodeLabel(row.samplerIsDefault).data(),
+                                        ImGuiTreeNodeFlags_NoTreePushOnOpen | ImGuiTreeNodeFlags_SpanAvailWidth);
+    if (ImGui::IsItemToggledOpen()) {
+        setSlotDetailsOpen(index, !slotDetailsOpen(index));
+    }
+    if (!open) {
+        return;
+    }
+    if (ImGui::BeginTable("##sampler", 2, MATERIAL_TABLE_FLAGS)) {  // EndTable ONLY if true
+        ImGui::TableSetupColumn("##label", ImGuiTableColumnFlags_WidthFixed, widestMaterialLabel());
+        ImGui::TableSetupColumn("##value", ImGuiTableColumnFlags_WidthStretch);
+
+        ImGui::TableNextRow();
+        ImGui::TableNextColumn();
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextUnformatted("UV set");
+        ImGui::TableNextColumn();
+        ImGui::SetNextItemWidth(-1.0F);
+        int uvSet = static_cast<int>(slot->uvSet);
+        if (ImGui::DragInt("##uvset", &uvSet, 0.1F, 0, static_cast<int>(MATERIAL_MAX_UV_SETS) - 1)) {
+            slot->uvSet = clampUvSet(uvSet);
+            changed = true;
+        }
+
+        // Five separate statements rather than one chain of `|| changed`: every one of these lines
+        // would otherwise sit within a couple of columns of the format limit, and Homebrew's
+        // clang-format 18 and Ubuntu's disagree about how to break a chain that long.
+        changed =
+            samplerTokenRow("Wrap U", "##wrapu", slot->wrapU, WRAP_VALUES, materialWrapLabel, labelScratch) || changed;
+        changed =
+            samplerTokenRow("Wrap V", "##wrapv", slot->wrapV, WRAP_VALUES, materialWrapLabel, labelScratch) || changed;
+        changed = samplerTokenRow("Min filter", "##minfilter", slot->minFilter, FILTER_VALUES, materialFilterLabel,
+                                  labelScratch) ||
+                  changed;
+        changed = samplerTokenRow("Mag filter", "##magfilter", slot->magFilter, FILTER_VALUES, materialFilterLabel,
+                                  labelScratch) ||
+                  changed;
+        changed = samplerTokenRow("Mip filter", "##mipfilter", slot->mipFilter, MIP_FILTER_VALUES,
+                                  materialMipFilterLabel, labelScratch) ||
+                  changed;
+        ImGui::EndTable();
+    }
 }
 
 // ---- the body (task E.3.4) ------------------------------------------------------------------------
@@ -445,10 +484,9 @@ bool MaterialPanel::drawSlotSection(std::size_t index, MaterialDocument& form, P
 // same thing. It submits no BeginChild of its own: whether a child surrounds it is the CALLER's
 // decision and the layout's mode is what makes it.
 //
-// This step keeps 3.4.2's flat run verbatim -- drawScalarRows, SeparatorText("Textures") and the five
-// drawSlotSection calls. The sections arrive in the next step; the frame is built first on purpose, so
-// the sections are written inside the final geometry rather than inside a shape about to move.
-void MaterialPanel::drawBody(MaterialDocument& form, const MaterialPanelLayout& /*layout*/,
+// The eight sections, one PushID each, under ONE shared label-column width measured over every label
+// in every section -- so all eight tables align as if they were a single form.
+void MaterialPanel::drawBody(MaterialDocument& form, const MaterialPanelLayout& layout,
                              const std::optional<MaterialError>& invalid, bool& changed) {
     // E.2.4's no-sun notice, MOVED here from under the image. It WRAPS, and a wrapped line cannot live
     // in a fixed-height region -- that is the whole reason it moved. previewHasSunValue is latched in
@@ -477,14 +515,30 @@ void MaterialPanel::drawBody(MaterialDocument& form, const MaterialPanelLayout& 
     for (const MaterialSection& section : materialSections()) {
         ImGui::PushID(static_cast<int>(sectionIndex));  // 1:1 with the PopID at the bottom, EVERY path
         if (ImGui::CollapsingHeader(section.title.data(), ImGuiTreeNodeFlags_DefaultOpen)) {
-            // The slot row is still 3.4.2's drawSlotSection for exactly one commit, called with the
-            // index the table gives it. It keeps its own CollapsingHeader here, which nests a header
-            // inside a header -- ImGui allows it and it is visibly wrong. The next step replaces it;
-            // deleting it here would merge two reviewable commits into one that is not.
+            // materialSlotRow is computed ONCE per section, before the row, and the SAME value
+            // reaches drawSlotRow and drawSamplerDisclosure. Computing it twice is not wrong, it is a
+            // second place to pass the wrong record.
+            //
+            // `row` MUST be a named local that outlives drawAssetReferenceField: its valueText is a
+            // std::string and AssetFieldInputs::valueText is a string_view, so inlining
+            // materialSlotRow(...).valueText into the widget's aggregate would hand it a view into a
+            // temporary that dies at the end of that full-expression.
+            //
+            // THE FOUR PLAIN VALUES are resolved here, by the caller, which is what keeps the model
+            // free of AssetDatabase, of AssetKind and of asset_view. databaseAvailable and recordFound
+            // are NOT interchangeable: without a database this panel is not entitled to say "this GUID
+            // is not in this project" -- it has not read one.
+            MaterialSlotRow row{};
             if (section.slot.has_value()) {
-                changed = drawSlotSection(*section.slot, form, preview.slotTextureState(*section.slot),
-                                          preview.slotNotice(*section.slot)) ||
-                          changed;
+                const std::optional<MaterialTextureSlot>& slot = documentSlotAt(form, *section.slot);
+                const AssetRecord* const record = (databasePtr != nullptr && slot.has_value() && slot->guid.valid())
+                                                      ? databasePtr->findByGuid(slot->guid)
+                                                      : nullptr;
+                row = materialSlotRow(
+                    slot, record != nullptr ? std::string_view(record->relativePath) : std::string_view{},
+                    record != nullptr && classifyAssetKind(leafOf(record->relativePath), false) == AssetKind::Texture,
+                    databasePtr != nullptr, record != nullptr);
+                changed = drawSlotRow(*section.slot, form, row, layout.thumbEdge) || changed;
             }
             if (!section.fields.empty()) {
                 if (ImGui::BeginTable("##rows", 2, MATERIAL_TABLE_FLAGS)) {  // EndTable ONLY if true
@@ -510,6 +564,12 @@ void MaterialPanel::drawBody(MaterialDocument& form, const MaterialPanelLayout& 
             }
             if (section.id == MaterialSectionId::File) {
                 drawFileSection(labelWidth);
+            }
+            // LAST in the section, below the notices: the six sampler tokens, closed by default. It
+            // re-reads the slot itself rather than trusting a flag from above, because drawSlotRow may
+            // have bound or cleared it this very frame.
+            if (section.slot.has_value()) {
+                drawSamplerDisclosure(*section.slot, form, row, changed);
             }
         }
         ImGui::PopID();
@@ -704,11 +764,11 @@ void MaterialPanel::onDraw(PanelContext& /*context*/) {  // no World/Selection/P
     }
 
     // ---- the retarget reset (task E.3.4) ---------------------------------------------------------
-    // Per-slot UI state is state about THIS material, so a new target must start it fresh. The
-    // detection lands here, above everything, because every path below this point draws the form; its
-    // one consumer -- the sampler disclosure's open state -- arrives with the slot row. targetPath()
-    // returns a string_view, so the member takes an explicit std::string construction.
+    // slotDetails is UI state about THIS material, so a new target starts every disclosure CLOSED.
+    // The detection lands here, above everything, because every path below this point draws the form.
+    // targetPath() returns a string_view, so the member takes an explicit std::string construction.
     if (sessionPtr->targetPath() != lastTargetPath) {
+        slotDetails.fill(false);
         lastTargetPath = std::string(sessionPtr->targetPath());
     }
 

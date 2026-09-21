@@ -14666,10 +14666,12 @@ TEST_CASE("editor: the picker's source-text pins -- ordering, absence and reuse 
         CHECK(countLinesContaining(code, R"(BeginCombo("Texture")") == 0U);
         CHECK(countLinesContaining(code, "BeginDragDropTarget") == 0U);
         CHECK(countLinesContaining(code, "slotSearch") == 0U);
-        // ANTI-VACUITY: the slot section really is still drawn from this file -- its declaration and
-        // at least one call -- so the three zeros above are about the CONTROLS rather than about a
-        // reader that found nothing.
-        CHECK(countLinesContaining(code, "drawSlotSection") >= 2U);
+        // ANTI-VACUITY: the slot row really is still drawn from this file -- its definition and at
+        // least one call -- so the three zeros above are about the CONTROLS rather than about a reader
+        // that found nothing. The NAME moved at task E.3.4 (drawSlotSection -> drawSlotRow, when the
+        // row stopped being a CollapsingHeader of its own and became one item); the arm's meaning and
+        // its reason are unchanged, and the three claims it guards were not touched.
+        CHECK(countLinesContaining(code, "drawSlotRow") >= 2U);
     }
     SUBCASE("(e) the Inspector's pick goes through resetField, on one line with the picked guid") {
         const std::vector<std::string> code = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/inspector_panel.cpp");
@@ -15416,6 +15418,10 @@ TEST_CASE(
         CHECK(countOccurrences(picker, "CalcTextSize(\"Clear\")") == 0U);  // it takes a PARAMETER
         CHECK(countOccurrences(picker, "assetReferenceFieldWidth") >= 1U);
         CHECK(countOccurrences(inspector, "assetReferenceFieldWidth(\"Clear\")") == 1U);
+        // The material slot's row joined the clause the moment it stopped passing -FLT_MIN: ONE
+        // formula, TWO hosts, and a second copy in either would be invisible -- two reference buttons
+        // two pixels apart is a failing test nowhere, because nothing in this tree measures a rect.
+        CHECK(countOccurrences(panel, "assetReferenceFieldWidth(\"Clear\")") == 1U);
     }
     SUBCASE("(f) the seam key comes from materialSlotFieldKey, never a hand-built string") {
         // This re-creates exactly the class E.3.3's inspectorAssetFieldKey exists to prevent: a
@@ -15424,4 +15430,320 @@ TEST_CASE(
         CHECK(panel.find("materialSlotFieldKey") != std::string::npos);
         CHECK(panel.find("\"slot:\"") == std::string::npos);
     }
+}
+
+TEST_CASE(
+    "editor: the redesigned Material panel balances, and the sampler disclosure is drivable "
+    "(task E.3.4, I170)") {
+    // NO #if: this case asserts NO preview quantity, so it is identical in both configurations and a
+    // split would add a second arm with nothing to say.
+    //
+    // A GREEN RUN *IS* THE ASSERTION for the balance half: an unbalanced PushID/PopID,
+    // BeginTable/EndTable, BeginChild/EndChild, PushStyleColor/PopStyleColor or
+    // BeginDisabled/EndDisabled is an IM_ASSERT ABORT in the Debug ImGui build, not a visual glitch.
+    // Dropping NoTreePushOnOpen without adding a TreePop aborts here, which is the oracle doing its
+    // job and is why this case is written before the disclosure is trusted.
+    //
+    // I86's fixture: every slot arm at once -- a resolved Texture with FIVE non-default sampler
+    // tokens, a resolved NON-texture, an unresolvable GUID, and two unbound slots.
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "material i170", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    const std::string assetsRoot = created.root + "/assets";
+    REQUIRE(engine::editor::writeTextFileAtomic(assetsRoot + "/full.aeromat", FULL_AEROMAT_TEXT).empty());
+    REQUIRE(engine::editor::writeTextFileAtomic(assetsRoot + "/other.aeromat", MINIMAL_AEROMAT_TEXT).empty());
+    REQUIRE(engine::editor::writeTextFileAtomic(assetsRoot + "/notes.txt", "not a texture").empty());
+    REQUIRE(writeBinaryFixture(assetsRoot + "/wood.png", TINY_PNG_RED.data(), TINY_PNG_RED.size()).empty());
+
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = created.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    app->panels().setVisible("Console", false);
+    app->panels().setVisible("Inspector", false);  // so Material wins the Right dock tab and onDraw runs
+    REQUIRE(app->tick());
+    app->requestAssetBrowserSelectEntry("full.aeromat");
+    for (int i = 0; i < 4; ++i) {
+        REQUIRE(app->tick());
+    }
+    REQUIRE(app->materialTargetPath() == "full.aeromat");
+
+    const std::optional<engine::Guid> textureGuid = app->assetGuidForPath("wood.png");
+    REQUIRE(textureGuid.has_value());
+    const std::optional<engine::Guid> notesGuid = app->assetGuidForPath("notes.txt");
+    REQUIRE(notesGuid.has_value());
+
+    engine::MaterialDocument bound = *app->materialDocument();
+    bound.baseColor = engine::MaterialTextureSlot{.guid = *textureGuid,
+                                                  .uvSet = 2,
+                                                  .wrapU = engine::MaterialWrap::Clamp,
+                                                  .wrapV = engine::MaterialWrap::Mirror,
+                                                  .minFilter = engine::MaterialFilter::Nearest,
+                                                  .magFilter = engine::MaterialFilter::Linear,
+                                                  .mipFilter = engine::MaterialMipFilter::None};
+    bound.metallicRoughness = engine::MaterialTextureSlot{.guid = *notesGuid};  // resolved, NOT a texture
+    bound.normal = engine::MaterialTextureSlot{.guid = engine::Guid{.hi = 0xDEADBEEFU, .lo = 0xFEEDFACEU}};
+    bound.occlusion.reset();  // unbound
+    bound.emissive.reset();   // unbound
+    app->requestMaterialDocument(bound);
+    for (int i = 0; i < 4; ++i) {
+        REQUIRE(app->tick());
+    }
+    REQUIRE(app->materialDocument() != nullptr);
+    REQUIRE(app->materialDocument()->baseColor.has_value());
+
+    SUBCASE("(a) every disclosure CLOSED") {
+        for (std::size_t i = 0; i < 5; ++i) {
+            app->requestMaterialSlotDetails(i, false);
+        }
+        for (int i = 0; i < 2; ++i) {
+            REQUIRE(app->tick());
+        }
+        for (std::size_t i = 0; i < 5; ++i) {
+            CAPTURE(i);
+            CHECK_FALSE(app->materialSlotDetailsOpen(i));
+        }
+    }
+    SUBCASE("(b) every disclosure OPEN -- THE COVERAGE TRANSFER") {
+        // THIS IS THE RECORDED REPLACEMENT for what I86 stops reaching. Behind a closed node the six
+        // sampler rows' five BeginCombo calls and one DragInt execute on NO LANE AT ALL, because no
+        // tier in this tree can click a disclosure. The seam is not a convenience; it is the price of
+        // the move -- and a green run here is what says those widgets were submitted at all.
+        for (std::size_t i = 0; i < 5; ++i) {
+            app->requestMaterialSlotDetails(i, true);
+        }
+        for (int i = 0; i < 2; ++i) {
+            REQUIRE(app->tick());
+        }
+        for (std::size_t i = 0; i < 5; ++i) {
+            CAPTURE(i);
+            CHECK(app->materialSlotDetailsOpen(i));
+        }
+        // ANTI-VACUITY: the fixture really has a bound slot, so a disclosure really was drawn -- the
+        // node is not submitted at all for an unbound one.
+        REQUIRE(app->materialDocument() != nullptr);
+        REQUIRE(app->materialDocument()->baseColor.has_value());
+        CHECK(app->materialDocument()->baseColor->uvSet == 2U);
+    }
+    SUBCASE("(c) a CLOSE request closes -- which is what ImGuiCond_Always buys") {
+        app->requestMaterialSlotDetails(0, true);
+        for (int i = 0; i < 2; ++i) {
+            REQUIRE(app->tick());
+        }
+        REQUIRE(app->materialSlotDetailsOpen(0));
+        app->requestMaterialSlotDetails(0, false);
+        for (int i = 0; i < 2; ++i) {
+            REQUIRE(app->tick());
+        }
+        // Seeding ImGuiCond_Once here hands the decision to ImGui's own storage: the node stays open
+        // and this is the only arm that says so.
+        CHECK_FALSE(app->materialSlotDetailsOpen(0));
+    }
+    SUBCASE("(d) an out-of-range slot is a no-op, in both directions") {
+        app->requestMaterialSlotDetails(99, true);
+        REQUIRE(app->tick());
+        CHECK_FALSE(app->materialSlotDetailsOpen(99));
+        for (std::size_t i = 0; i < 5; ++i) {
+            CAPTURE(i);
+            CHECK_FALSE(app->materialSlotDetailsOpen(i));  // and it did not spill into a real slot
+        }
+    }
+    SUBCASE("(e) a RETARGET closes every disclosure") {
+        app->requestMaterialSlotDetails(0, true);
+        for (int i = 0; i < 2; ++i) {
+            REQUIRE(app->tick());
+        }
+        REQUIRE(app->materialSlotDetailsOpen(0));
+        // A DIFFERENT .aeromat, through the same seam I93/I95 use. Without the retarget reset the
+        // disclosure carries over to a material the user has not opened it on -- and this is the one
+        // arm that makes that seedable at all.
+        app->requestAssetBrowserSelectEntry("other.aeromat");
+        for (int i = 0; i < 4; ++i) {
+            REQUIRE(app->tick());
+        }
+        REQUIRE(app->materialTargetPath() == "other.aeromat");
+        CHECK_FALSE(app->materialSlotDetailsOpen(0));
+    }
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE(
+    "editor: a material slot's picker still claims its popup with a thumbnail in the row "
+    "(task E.3.4, I173)") {
+    // WRITTEN AS THE DISCRIMINATOR, NOT AS A SECOND COPY OF I164. A case that merely re-ran I164's
+    // sequence and asserted the same outcomes would pass whether or not the thumbnail block executed
+    // at all -- the "two values from one source" shape E.1.2's matrix found twice. So this asserts the
+    // OWNER-CLAIM: with a taller button carrying a thumbnail inside its frame, the seam still finds
+    // the field by key, the popup still opens, the candidate count is unchanged, and the four outcome
+    // arms still mean what they meant.
+    //
+    // It CANNOT see the thumbnail, the inset sentence or Clear's position -- nothing in this tree
+    // measures a widget rect. Validation row 3 is the witness for all three.
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "picker i173", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const PickerFixture fixture = makePickerProject(true);
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = fixture.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    app->panels().setVisible("Console", false);
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+    app->requestAssetBrowserSelectEntry("m.aeromat");
+    for (int i = 0; i < 4; ++i) {
+        REQUIRE(app->tick());
+    }
+    REQUIRE(app->materialTargetPath() == std::string_view("m.aeromat"));
+    app->requestPanelFocus("Material");
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+
+#if AERO_SHADER_TOOLS_ENABLED
+    // The thumbnail is only in effect when the panel drew a Ready preview, which is what makes this
+    // the ON arm. thumbEdge is the layout's and is positive for every metric set, so the row's button
+    // is the TALL one here.
+    REQUIRE(app->materialPreviewAvailable());
+#endif
+    REQUIRE_FALSE(app->assetPickerOpen());  // anti-vacuity: closed to begin with
+    app->requestMaterialSlotPicker(0);
+    REQUIRE(app->tick());
+    REQUIRE(app->assetPickerOpen());  // the TALLER button's field still claimed the popup BY KEY
+    // UNCHANGED from I164's count: a taller button does not change what the popup lists.
+    CHECK(app->assetPickerCandidateCount() == 3U);
+
+    SUBCASE("(a) a commit binds, and the popup closes -- false -> true -> false") {
+        app->requestAssetPickerMove(1);
+        REQUIRE(app->tick());
+        REQUIRE(app->assetPickerCursor() == 1U);
+        app->requestAssetPickerCommit();
+        for (int i = 0; i < 2; ++i) {
+            REQUIRE(app->tick());
+        }
+        CHECK_FALSE(app->assetPickerOpen());
+        REQUIRE(app->materialDocument() != nullptr);
+        REQUIRE(app->materialDocument()->baseColor.has_value());
+        CHECK(app->materialDocument()->baseColor->guid.valid());
+        CHECK(app->materialDocument()->baseColor->uvSet == 0U);  // a FRESH bind takes the defaults
+    }
+    SUBCASE("(b) a REBIND preserves the sampler tokens") {
+        app->requestAssetPickerMove(1);
+        REQUIRE(app->tick());
+        app->requestAssetPickerCommit();
+        for (int i = 0; i < 2; ++i) {
+            REQUIRE(app->tick());
+        }
+        REQUIRE(app->materialDocument() != nullptr);
+        REQUIRE(app->materialDocument()->baseColor.has_value());
+        const engine::Guid firstBound = app->materialDocument()->baseColor->guid;
+        {
+            engine::MaterialDocument edited = *app->materialDocument();
+            REQUIRE(edited.baseColor.has_value());
+            edited.baseColor->uvSet = 1U;
+            app->requestMaterialDocument(edited);
+        }
+        for (int i = 0; i < 2; ++i) {
+            REQUIRE(app->tick());
+        }
+        REQUIRE(app->materialDocument()->baseColor.has_value());
+        REQUIRE(app->materialDocument()->baseColor->uvSet == 1U);
+
+        app->requestMaterialSlotPicker(0);
+        REQUIRE(app->tick());
+        REQUIRE(app->assetPickerOpen());
+        app->requestAssetPickerMove(1);
+        REQUIRE(app->tick());
+        app->requestAssetPickerCommit();
+        for (int i = 0; i < 2; ++i) {
+            REQUIRE(app->tick());
+        }
+        REQUIRE(app->materialDocument()->baseColor.has_value());
+        CHECK_FALSE((app->materialDocument()->baseColor->guid == firstBound));  // the guid moved
+        CHECK(app->materialDocument()->baseColor->uvSet == 1U);                 // the token survived the rebind
+    }
+    SUBCASE("(c) None DISENGAGES the slot -- never a nil guid") {
+        app->requestAssetPickerMove(1);
+        REQUIRE(app->tick());
+        app->requestAssetPickerCommit();
+        for (int i = 0; i < 2; ++i) {
+            REQUIRE(app->tick());
+        }
+        REQUIRE(app->materialDocument() != nullptr);
+        REQUIRE(app->materialDocument()->baseColor.has_value());
+
+        app->requestMaterialSlotPicker(0);
+        REQUIRE(app->tick());
+        REQUIRE(app->assetPickerOpen());
+        app->requestAssetPickerMove(-3);
+        REQUIRE(app->tick());
+        REQUIRE(app->assetPickerCursor() == 0U);
+        app->requestAssetPickerCommit();
+        for (int i = 0; i < 2; ++i) {
+            REQUIRE(app->tick());
+        }
+        CHECK_FALSE(app->materialDocument()->baseColor.has_value());
+    }
+    SUBCASE("(d) a pick does not disturb the sampler disclosure's state") {
+        // The two seams are independent and nothing should couple them. Cheap, and it is the only arm
+        // that would catch a drawSlotRow that reset slotDetails as a side effect. The slot must be
+        // BOUND for the disclosure to be drawn at all, so the commit comes first.
+        app->requestAssetPickerMove(1);
+        REQUIRE(app->tick());
+        app->requestAssetPickerCommit();
+        for (int i = 0; i < 2; ++i) {
+            REQUIRE(app->tick());
+        }
+        REQUIRE(app->materialDocument() != nullptr);
+        REQUIRE(app->materialDocument()->baseColor.has_value());
+        app->requestMaterialSlotDetails(0, true);
+        for (int i = 0; i < 2; ++i) {
+            REQUIRE(app->tick());
+        }
+        REQUIRE(app->materialSlotDetailsOpen(0));
+
+        app->requestMaterialSlotPicker(0);
+        REQUIRE(app->tick());
+        REQUIRE(app->assetPickerOpen());
+        app->requestAssetPickerCommit();
+        for (int i = 0; i < 2; ++i) {
+            REQUIRE(app->tick());
+        }
+        CHECK(app->materialSlotDetailsOpen(0));
+    }
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
 }

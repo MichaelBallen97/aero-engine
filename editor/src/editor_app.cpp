@@ -1982,6 +1982,16 @@ void EditorApp::requestMaterialSlotPicker(std::size_t slot) {
     }
 }
 
+void EditorApp::requestMaterialSlotDetails(std::size_t slot, bool open) noexcept {
+    if (materialPanel != nullptr) {
+        materialPanel->setSlotDetailsOpen(slot, open);
+    }
+}
+
+bool EditorApp::materialSlotDetailsOpen(std::size_t slot) const noexcept {
+    return materialPanel != nullptr && materialPanel->slotDetailsOpen(slot);
+}
+
 void EditorApp::requestAssetPickerSearch(std::string_view query) {
     if (assetPicker != nullptr) {
         assetPicker->pendingSearch = std::string(query);

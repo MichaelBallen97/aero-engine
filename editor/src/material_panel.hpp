@@ -42,6 +42,7 @@ class ThumbnailService;
 // model is PUBLIC and ImGui-free, so including it would be legal -- the forward declaration is simply
 // the smaller edit, and drawBody takes the layout by const reference.
 struct MaterialPanelLayout;
+struct MaterialSlotRow;
 
 class AssetDatabase;  // a reconciled POINTER, never a reference member (3.1.1's D13 / A-2 / INV-4):
                       // EditorApp is movable, so a reference binds to a pre-move address.
@@ -150,6 +151,28 @@ public:
     [[nodiscard]] bool previewHasSun() const noexcept { return previewHasSunValue; }
     [[nodiscard]] const render::RenderTarget* previewOutputTarget() const noexcept { return preview.outputTarget(); }
 
+    // ---- task E.3.4: the per-slot sampler disclosure's open state ---------------------------------
+    // THE PANEL owns it, not ImGui's storage: ImGui::SetNextItemOpen(open, ImGuiCond_Always) drives the
+    // node and ImGui::IsItemToggledOpen() reports a click (imgui_widgets.cpp:6817-6823 and :7073-7078
+    // -- a forced-open node is STILL clickable), so this array is the single source of truth and a seam
+    // can drive it. Reset to all closed on every retarget. Without the seam, six BeginCombo calls and a
+    // DragInt would execute on NO lane at all, because no tier in this tree can click a disclosure --
+    // so the seam is not a convenience, it is the price of closing the node.
+    //
+    // Out of range is a NO-OP in both directions, the preview accessors' exact posture.
+    // operator[] rather than at(), and the guard above it is why: at() THROWS, which makes a noexcept
+    // accessor a bugprone-exception-escape error under --warnings-as-errors. The index is proven in
+    // range by the line above, so the subscript is the honest spelling of what the guard already
+    // established.
+    void setSlotDetailsOpen(std::size_t slot, bool open) noexcept {
+        if (slot < SLOT_COUNT) {
+            slotDetails[slot] = open;
+        }
+    }
+    [[nodiscard]] bool slotDetailsOpen(std::size_t slot) const noexcept {
+        return slot < SLOT_COUNT && slotDetails[slot];
+    }
+
     // task E.3.3: both set ONCE in EditorApp::create (the viewportPanel posture), not reconciled --
     // each points at a heap object EditorApp holds through a unique_ptr, so the address survives the
     // app's own move. NULL is a legal state: the slot then draws its bound-state block and no control.
@@ -169,11 +192,13 @@ private:
     // task E.3.4: the File section's read-only rows. A member for drawBody's reason -- it reads
     // sessionPtr, databasePtr and labelScratch off `this`, so the parameter list is one.
     void drawFileSection(float labelWidth);
-    // task E.3.3: a PRIVATE MEMBER rather than a free function -- it reads databasePtr, labelScratch,
-    // observedSlotDrop, assetPicker, thumbnails and keyScratch off `this`, so the parameter list is
-    // four rather than the ten a free function would have needed.
-    [[nodiscard]] bool drawSlotSection(std::size_t index, MaterialDocument& form, PreviewTextureState textureState,
-                                       std::string_view textureNotice);
+    // task E.3.4: PRIVATE MEMBERS rather than free functions, for E.3.3's stated reason -- they read
+    // databasePtr, labelScratch, keyScratch, observedSlotDrop, assetPicker, thumbnails, preview and
+    // slotDetails off `this`, so the parameter lists are four and four rather than the ten-plus a free
+    // function would have needed.
+    [[nodiscard]] bool drawSlotRow(std::size_t index, MaterialDocument& form, const MaterialSlotRow& row,
+                                   float thumbEdge);
+    void drawSamplerDisclosure(std::size_t index, MaterialDocument& form, const MaterialSlotRow& row, bool& changed);
 
     const MaterialSession* sessionPtr = nullptr;  // non-owning; ALWAYS null-check
     const AssetDatabase* databasePtr = nullptr;   // non-owning; null before the first scan
@@ -202,6 +227,7 @@ private:
     // never compared against anything the session owns -- the session's own sticky-target rule is
     // untouched by it.
     std::string lastTargetPath;
+    std::array<bool, SLOT_COUNT> slotDetails{};  // all false: every disclosure starts closed
     // task E.3.3: borrowed, never owned, set once -- see setAssetPicker/setThumbnails above.
     AssetPickerState* assetPicker = nullptr;
     ThumbnailService* thumbnails = nullptr;

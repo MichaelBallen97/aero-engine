@@ -487,6 +487,12 @@ public:
     // all three observables zero -- when `assetPicker` is null, exactly as the drains are null-guarded.
     void requestInspectorAssetPicker(std::string_view componentName, std::string_view fieldName);
     void requestMaterialSlotPicker(std::size_t slot);
+    // task E.3.4: the per-slot sampler disclosure. STATE, not an event, so it is a SETTER rather than
+    // a one-shot: a case drives it once and reads it back on any later tick. Out-of-range is a no-op
+    // and a null panel is a no-op -- the preview accessors' exact posture. This is what keeps six
+    // BeginCombo calls and a DragInt executing in CI once the disclosure closes by default.
+    void requestMaterialSlotDetails(std::size_t slot, bool open) noexcept;
+    [[nodiscard]] bool materialSlotDetailsOpen(std::size_t slot) const noexcept;
     void requestAssetPickerSearch(std::string_view query);  // applied to the OPEN popup on its next draw
     // STEPS, not a single direction: a case moving to the third candidate writes ONE call rather than
     // three ticks. |delta| reductions of movePickerCursor are applied in one frame, which is exactly
