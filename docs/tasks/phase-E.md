@@ -188,7 +188,7 @@ macOS-VALIDATED** — E.2.1 10 PASS / 3 open, E.2.2 12/12, E.2.3 12/12, **E.2.4 
 blockers, no partials)** — so the epic is closed in code *and* on hardware for this OS.
 
 ### E.2.1 `Environment` component + sky pass · P0 · L · depends: 1.3.3, 3.4.1, 3.6.3 — **MERGED**
-**Sized L, landed L** (PR #98, merge commit `28deab0`, fifteen commits). The sweep was the expensive
+**Sized L, landed L** (PR #98, merge commit `28deab0`, sixteen commits). The sweep was the expensive
 half exactly as sized, and it was **larger than planned**: 21 built-in count literals against 5
 look-alikes that had to stay unchanged, plus 19 default-scene pins, a test-case title and two name
 rosters. `ctest -N` **172 -> 173**; doctest `aero_tests` **1294 -> 1342**, imgui **162 -> 163**,

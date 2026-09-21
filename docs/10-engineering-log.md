@@ -13855,7 +13855,7 @@ control.
 
 **The round found a BLOCKING defect the whole GPU tier was structurally blind to.** Six findings,
 closed in five commits (findings 3 and 4 share one, and finding 1's fix and its witness are split)
-plus this record, on top of the task's nine — so the branch is **fifteen commits**.
+plus this record, on top of the task's nine — so the branch is **sixteen commits** (the count below was written inside the final commit and undercounted it by one).
 
 **1. THE CLAMP BOUND WAS OFF BY HALF A TEXEL, AND IT DREW A BAND ALONG THE FRAME EDGE ON THE
 EDITOR'S OWN GEOMETRY.** `tap()` clamped every sample to `tonemapSourceUvMax(drawExtent,
@@ -15972,7 +15972,7 @@ sanitizer report of any kind for the whole session. Full records in
   135 270 pixels differing**.
 ### E.3.3 — Asset-reference picker — the first time a scene reference can be SET from the Inspector, and four holes the matrix found in its own tests
 
-**Branch `feat/E.3.3-asset-reference-picker`, FIFTEEN commits** — the plan's nine, one closing three
+**Branch `feat/E.3.3-asset-reference-picker`, SIXTEEN commits** — the plan's nine, one closing three
 findings the full gate produced, four closing the sabotage matrix, and one closing the code-review
 round. Sized **L** in the roadmap, recorded **L** before the first commit, landed **L**. *(PR number and
 merge commit are filled in at merge.)*
