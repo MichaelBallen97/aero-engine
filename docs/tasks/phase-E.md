@@ -346,6 +346,9 @@ the tonemap params — this task moved the controls, not the state.
 
 **Goal:** the Inspector says what it is showing, follows what you click, and lets you *pick* an asset instead of reading a GUID. All three are missing: a `Vec3` renders as three unlabelled drag boxes, clicking an entity does not raise the Inspector, and an asset reference is a text string plus a `Clear` button.
 **Definition of Done:** every vector field is axis-labelled; selecting anything raises the panel that edits it; every asset reference is a searchable picker with a preview.
+**CLOSED IN CODE with E.3.4** — all four tasks merged. E.3.1, E.3.2 and E.3.3 are macOS-validated;
+E.3.4's page is written and unrun. The epic's own Definition of Done was met at E.3.3; E.3.4 is the task
+that made the panel those pickers live in read as a material rather than as a form.
 
 ### E.3.1 Axis-labelled vector fields · P0 · M · depends: 2.2.2
 **Goal:** you should be able to tell which box is Y. `inspector_panel.cpp`'s `Vec3` arm is a bare
@@ -500,6 +503,31 @@ Subtasks:
 - Section grouping and row layout; the slot row (thumbnail + picker + clear + colour space)
 - Preview sizing and placement; Apply/Revert affordance and dirty-state legibility
 - The sticky-target rule, the `sessionCopy != fileCopy` dirty rule and the single write path all unchanged
+
+_Outcome:_ **sized M, recorded before implementation, landed M. Eight commits; the full local gate green
+on both presets and both reduced configurations; the 54-seed sabotage matrix run in full and a
+code-review round closed. Its validation page is written and has NOT been run on any platform.** The
+panel is a fixed identity line and live preview, a scrolling body of eight sections, and a fixed footer;
+each texture slot is ONE ImGui item and the six sampler tokens sit behind a per-slot disclosure that
+starts closed and is drivable from a seam. Every number, label, sentence and priority order the panel
+decides lives in one new public, pure, ImGui-free pair with a tier-0 battery.
+
+**The task's shape was set by a measurement taken before any code was written.** The plan derived a
+67-point fixed chrome from the unscaled style defaults; instrumenting the panel and reading the live
+style in the 320x180 window five GPU cases drive gave **98 points of content region against a 103-point
+chrome**, because `ScaleAllSizes` doubles the style on a Retina display while the font does not. The
+first design answered that with a zero-height preview — which would have failed `I99`, `I135` and AC-3
+on every Retina Mac **while the three 1x CI lanes stayed green**. The layout therefore carries a mode:
+fixed regions where they fit, the window's own scrolling where they do not, with the preview floored in
+both so the guarantee has no antecedent left to falsify. The threshold is the one value that makes the
+preview's height **continuous** across the boundary.
+
+**Two findings outlive it.** ImGui's `StateStorage` is per WINDOW, so a body that is a child in one mode
+and not in the other keeps two independent sets of collapse bits — collapsed sections silently re-opened
+when the panel crossed the boundary, a regression against `main` that the code-review round caught and
+that panel-owned open state fixes. And a seam whose accessor reads back the state the seam wrote is a
+round trip rather than a test: sabotage seed `S26` walked straight through 149 green assertions, and the
+discriminator turned out to be counting what the widget actually **drew**.
 
 ---
 

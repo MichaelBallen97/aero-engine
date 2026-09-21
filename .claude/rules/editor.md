@@ -25,8 +25,12 @@ Held by **file placement**, not by a guard: every ImGui and EnTT entry point liv
 
 An unbalanced call is an `IM_ASSERT` **abort** in the Debug build, not a visual glitch.
 
-- `Begin`/`End`, `TreeNodeEx`/`TreePop`, `PushID`/`PopID` are **1:1** — call `End()`
-  regardless of what `Begin()` returned.
+- `Begin`/`End`, `TreeNodeEx`/`TreePop`, `PushID`/`PopID` and **`BeginChild`/`EndChild`** are
+  **1:1** — call `End*()` regardless of what `Begin*()` returned. `console_panel.cpp:107` states the
+  contrast in its own words: *"EndCombo ONLY when BeginCombo returned true. The OPPOSITE of EndChild
+  below."* The 1:1 rule is **"`EndChild` exactly once per `BeginChild`"**, not "always call
+  `EndChild`" — a branch that calls **neither** satisfies it, which is what lets a panel put the pair
+  inside one arm of a mode branch (task E.3.4).
 - `BeginMainMenuBar`/`BeginMenu` are the **opposite**: call `End*` only when `Begin*`
   returned true.
 - `CollapsingHeader` needs no `TreePop` (`NoTreePushOnOpen`).
@@ -1635,3 +1639,54 @@ front tab**, so `panelDrawnCount("Material") > before` is satisfied with or with
 something else in front with an explicit request first, and `REQUIRE` that the target is not drawing.
 And **every Right-node panel draws once on the very first frame**, before the dock node has selected a
 tab, so take every baseline **after** the two settle ticks.
+
+
+## A disclosure a seam must be able to drive (task E.3.4)
+
+`ImGui::SetNextItemOpen(open, ImGuiCond_Always)` + `ImGui::IsItemToggledOpen()`, with the **panel**
+owning the flag — never ImGui's storage. `TreeNodeUpdateNextOpen` takes `is_open` straight from
+`NextItemData.OpenVal` under `ImGuiCond_Always` (`imgui_widgets.cpp:6817-6823`) and the click path
+still runs, flipping it and raising `ImGuiItemStatusFlags_ToggledOpen` (`:7073-7078`), which
+`IsItemToggledOpen` reads (`imgui.cpp:6590-6594`). **A forced-open node is still clickable.**
+
+Why it matters: **no tier in this tree can click a disclosure**, so a closed node's branches execute on
+no lane at all. If a closed-by-default node hides widgets that need CI coverage, the seam is not a
+convenience — it is the price of closing the node.
+
+**AND THE SEAM'S OWN ACCESSOR CANNOT BE THE TEST.** Reading back the flag the seam just wrote is a
+round trip: it reports what was *requested*, never whether ImGui *obeyed*. Sabotage seed `S26`
+(`ImGuiCond_Once` instead of `Always`, which hands the decision back to ImGui's storage so the node
+never opens) walked through **149 green assertions** for exactly that reason. Assert a **consequence the
+widget produced** — `MaterialPanel::samplerRowsDrawn()` counts disclosures that actually submitted their
+rows, because a node that did not open submits none.
+
+## A panel with fixed regions (task E.3.4)
+
+A fixed region's height is a **pure function** with a tier-0 battery, never arithmetic inside the draw
+walk. The scrolling body is `BeginChild(id, ImVec2(0, -footerHeight))` — a **negative** height, so
+`CalcItemSize` resolves it as `ImMax(4.0f, avail.y + size.y)` (`imgui.cpp:12344-12345`) and ImGui's own
+remainder is authoritative: a one-pixel error costs the child a pixel instead of clipping a button off
+the bottom. (`asset_browser_panel.cpp:1311-1315` floors its child at `1.0F` for the **opposite**
+requirement — two side-by-side panes sharing one explicit height — and both are right.) **Never pass a
+zero height meaning "nothing"**: `CalcItemSize` reads zero as *use the whole remaining region*.
+
+**Nothing that wraps may live in a fixed-height region.** A wrapped line makes the region's height a
+function of the panel's *width*, which makes every derived size a function of the panel's width — and if
+one of those sizes is a render target's, dragging the dock divider sideways reallocates it. Draw one
+always-reserved line instead, empty when there is nothing to say.
+
+**`Separator()`'s layout height is `max(style.SeparatorSize, 1)` and must be READ, not stated.** 1.92.8
+removed the "a 1 px separator does not move the cursor" hack (`imgui_widgets.cpp:1703-1708`) while
+`SeparatorEx`'s own header comment at `:1657` still describes it, and `ScaleAllSizes` scales the value —
+measured at **2** on a Retina display, where this editor calls it unconditionally
+(`imgui_layer.cpp:87-89`). **A footer that follows a child needs THREE `ItemSpacing` terms**, because
+`EndChild` calls `ItemSize(child_size)` (`imgui.cpp:6860`) and `ItemSize` advances by
+`line_height + ItemSpacing.y` (`:12129`); `imgui.cpp:437` spells the recipe.
+
+**★ AND A BODY THAT IS SOMETIMES A CHILD IS TWO SETS OF WIDGET STATE.** `TreeNodeSetOpen` writes through
+`g.CurrentWindow->DC.StateStorage` (`imgui_widgets.cpp:6802`) and `DC.StateStorage` is
+`&window->StateStorage` (`imgui.cpp:8581`) — **per window**, and a child is a distinct window. So the
+same `CollapsingHeader` is a different entry inside the child than it is in the parent, and crossing a
+mode boundary restores every collapsed section to `DefaultOpen`. One function called from two places
+keeps the two modes drawing the same **code**; that is not the same as the same **state**. **Anything
+ImGui keys by window must be a panel member if it is to survive the flip.**

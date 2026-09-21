@@ -16307,3 +16307,184 @@ the button, and a tile's icon, thumbnail and caption must sit inside the tile th
 come back green at every automated tier, because nothing here reads rendered text or measures a widget
 rect. Row 13's HiDPI half inherits the browser's tile story; **E.1.1's thick-line handoff is untouched —
 this task draws no line.**
+
+---
+
+### E.3.4 — Material inspector redesign — CLOSES Epic E.3, and a chrome that did not fit the panel it was measured in
+
+**The Material panel is a form now rather than a list of numbers.** An identity line and a live preview
+whose height is derived from the panel's; a scrolling body of eight `CollapsingHeader` sections, five of
+them pairing a texture slot with the scalars that scale it under one shared label column; a footer
+carrying Apply, Revert, the dirty word and one always-reserved status line. Each slot is **one ImGui
+item** — the E.3.3 picker's button, grown tall enough to hold the bound asset's thumbnail inside its own
+frame, `Clear` beside it, the colour-space note beneath — with the six sampler tokens behind a per-slot
+disclosure that starts closed and is drivable from a seam. Every number, label, sentence and priority
+order the panel decides moved into one new public, pure, ImGui-free pair.
+
+**Eight commits.** `ctest -N` **178 → 178** in both presets and **165 / 93** in the two reduced
+configurations, all four with a byte-identical entry set. doctest **1404 / 1936 / 215 / 40 / 59 / 10 /
+28** — only the two permitted binaries moved, `aero_editor_shell_test` by the `MR1`–`MR21` battery and
+`aero_editor_imgui_test` by `I170`–`I175`. Guards **519 / 92 / 163 / 92 / 165 / A=6 B=87 / 11-3-55 /
+6-57**: math and project-no-delete prong B are the only two that move, by the three new tracked
+C-family files of which one is an `editor/src/*.cpp`. **The built-in component count stays TEN** — no
+component, so the five-generation-site rule and the component-count sweep do not fire at all. No shader,
+no new target, no new ctest entry, no `docs/09` change, no new dependency, no link-line change; `git
+diff` over `engine/` and over the five files AC-11 freezes is empty.
+
+#### ★ The step-0 measurement, and why the design had to grow a second mode
+
+The plan derived a 67-point fixed chrome from this tree's unscaled style defaults and predicted the
+Material panel's content region in a 320x180 editor window would be "roughly twice" that. **Instrumented
+at the top of `onDraw`'s `Ready` arm, run under `-tc='*I99*'`, reverted and rebuilt, it is not.** All six
+inputs, because a number without its inputs cannot be re-checked:
+
+| | 320x180 | 800x500 |
+|---|---|---|
+| `availHeight` | **98** | **418** |
+| `fontSize` / `textLineHeight` | 13 / 13 | 13 / 13 |
+| `frameHeight` | **25** | 25 |
+| `itemSpacingY` | **8** | 8 |
+| `SeparatorSize` | **2** | 2 |
+
+`availHeight == windowHeight − 82` at both sizes. The style is **doubled** —
+`ImGui::GetStyle().ScaleAllSizes(SDL_GetWindowDisplayScale(win))` runs unconditionally at
+`imgui_layer.cpp:87-89` and the display is a 3024x1964 built-in Retina panel at scale **2.0** — **while
+the font is not**, which is why `frameHeight` is 25 at `fontSize` 13. `io.ConfigDpiScaleFonts` only
+overwrites `FontScaleDpi` when a monitor's DPI **changes**, and a window created already on the 2x
+display never fires that event. **That gap is E.6.1's**; E.3.4 only had to be correct in its presence.
+
+So the fixed chrome is **103 points against a 98-point content region** — the arithmetic is
+`identity 21 + headerTail 18 + footer 64`, against `17 + 9 + 45 = 71` at 1x. The first design answered
+that with a **zero-height preview**, which would have taken `I99`, `I135`, `I171`'s ON arm and AC-3 down
+**on every Retina Mac while the three 1x CI lanes stayed green**. A green CI and a red local gate, in
+that direction, is the failure shape worth remembering.
+
+**The answer is a second mode, not a tuned constant.** `MaterialPanelLayout` carries a
+`MaterialPanelMode`: `FixedRegions` pins a header and footer around a `BeginChild`, `Scrolling` lets the
+window scroll as the panel always has. `previewHeight >= MATERIAL_PREVIEW_MIN_FONT * fontSize` in
+**both**, so `previewShown` is unconditionally true and AC-3 lost its antecedent. **The threshold is
+`minPreview + MATERIAL_BODY_FLOOR_POINTS` because that is the one value that makes `previewHeight`
+continuous**: at the boundary the fixed-region chain evaluates to exactly `minPreview`, which is the
+fallback's own value, so dragging the divider across it moves the picture by **zero**. A threshold of
+`minBody` steps it; a threshold of `FLOOR` alone collapses it from 130 points to about one.
+
+#### ★ `footerHeight` needs THREE `ItemSpacing` terms, and ImGui's changelog calls the two-term form a bug
+
+`EndChild()` calls `ItemSize(child_size)` (`imgui.cpp:6860`) and `ItemSize` advances `CursorPos.y` by
+`line_height + ItemSpacing.y` (`:12129`), so the child's own bottom edge is followed by a spacing
+**before** the separator. The recipe is spelled verbatim at `imgui.cpp:437`. Measured: **45 points at
+1x, 64 at 2x**. `MR14`'s `footerHeight == 45.0F` and `MR21`'s `== 64.0F` / `fixedChrome == 103.0F` exist
+for that one seed and nothing else witnesses a one-spacing error in a reserved height.
+
+Separately and for the same family of reasons: **`SeparatorEx`'s `thickness == 1.0f` special case does
+not exist in 1.92.8 and the function's own header comment at `:1657` still describes it** — the line
+that implemented it is commented out at `:1703-1708`. `Separator()` passes
+`ImMax(style.SeparatorSize, 1.0f)` (`:1741`) and `ScaleAllSizes` does
+`SeparatorSize = ImTrunc(SeparatorSize * scale)` (`imgui.cpp:1645`), so the value is 1 only while the
+display scale is 1 — measured at **2** here. Read the code, not the comment; the panel reads the metric
+from the live style and `I172(c)` pins that it states no bare separator magnitude.
+
+#### ★ ImGui's `StateStorage` is PER WINDOW, and a body that is sometimes a child is two sets of state
+
+The code-review round's finding, and the one user-visible regression this task introduced against
+`main`. `TreeNodeSetOpen` writes through `g.CurrentWindow->DC.StateStorage`
+(`imgui_widgets.cpp:6802`), and `DC.StateStorage = &window->StateStorage` (`imgui.cpp:8581`). A child
+is a distinct `ImGuiWindow`. So a `CollapsingHeader` submitted inside the `##body` child and the *same*
+header submitted in the `Material` window are **two independent entries**: collapse `Rendering` and
+`File` in a tall panel, drag the divider until the content region falls below `fixed + minPreview + 4`,
+and both are open again from `DefaultOpen` against a storage that has never seen those ids. Before
+E.3.4 there was no child and a collapsed section stayed collapsed.
+
+The eight sections now carry **panel-owned** open state, which is exactly what `slotDetails` already
+existed for and what the headers were simply missed out of.
+**The general rule, and it is the one to carry: one function called from two places keeps the two modes
+drawing the same CODE, which is not the same as the same STATE. Anything ImGui keys by window — a
+`CollapsingHeader`'s open bit above all — must be a panel member if it is to survive a mode flip.**
+
+#### ★ A seam whose read-back is a tautology proves nothing, and that is what the matrix found
+
+The 54-seed matrix ran in full: **41 seeds behaved exactly as planned, 13 diverged, one was a real hole.**
+
+`S26` swaps `ImGuiCond_Always` for `ImGuiCond_Once` on the sampler disclosure and left `I170` **entirely
+green at 149 assertions**. The reason is structural rather than a weak case: every observable `I170` had
+was `materialSlotDetailsOpen()`, which reads back the array the **seam** just wrote — it round-trips
+whatever was requested and says nothing about whether ImGui obeyed. Under `Once`, ImGui's own storage
+stays in charge, the node never opens, and the five `BeginCombo` calls and the `DragInt` execute on **no
+lane at all** — precisely the coverage the seam exists to transfer.
+
+The discriminator is what `TreeNodeEx` **answered**, counted inside the `if (open)` arm:
+`samplerRowsDrawn()`. `I170(b)` asserts it climbs while the disclosures are open and `I170(c)` asserts
+it stops after a close request. **The same shape closes the section regression**: `I175` never reads
+`materialSectionOpen()` for its claim, because a collapsed section submits no body and the counter
+freezes — a statement about what was **drawn**.
+
+**The generalisation: a seam that writes state and an accessor that reads the same state make a
+round trip, not a test. Assert a consequence the widget produced.**
+
+#### ★ `S47` does NOT survive silently — the plan's claim about ASan was wrong, and the correction matters
+
+C12 predicted that inlining `materialSlotFieldKey(index)` into the `AssetFieldInputs` aggregate would
+dangle invisibly, because `"slot:0"` sits inside libc++'s SSO buffer and ASan's
+`detect_stack_use_after_return` is off by default. **Measured: it aborts.** ASan reports
+`stack-use-after-scope`, a **READ of size 6 at offset 192** inside the dead temporary's slot in
+`drawSlotRow`'s own frame, and `I164` crashes with `SIGABRT`.
+
+`stack-use-after-scope` is a **different check** from `detect_stack_use_after_return`: the latter is off
+by default and covers a pointer into a frame that has **returned**; the former is **on** by default and
+covers a temporary that died in the **current** frame, which is exactly this. So the hazard has
+automatic cover on all three Debug lanes. **`keyScratch` stays** — it is still the right shape and the
+comment still explains why — but the plan's §9.3 list of *"twenty with no automated cover"* is
+**nineteen**: `S47` comes out, and validation row 3 is no longer its only, weak witness.
+
+#### The other divergences, and four seeds that are inert
+
+**`S22`'s prediction is inverted.** §9 said "`MR16` **only** — no single-sample case can see it". `MR16`
+stays **green** (the mutation is still monotone and still 1-Lipschitz) while `MR14` and `MR17` — both
+single-sample cases — catch it, with `MR15` and `MR21`. **`S52`'s 1x/2x claim is also wrong as
+written**: it reddens `MR15` on the **1x** sweep, at `avail = 0`, because the sweep starts at zero where
+even the 1x chrome exceeds the region; the real asymmetry lives in `MR21`'s 320x180 subcase.
+`S12`'s `MR9` arm is blind because its fixture passes `recordIsTexture = true`; `S17` and `S20` both land
+on `MR15`'s `sawBodyClamped`, the arm the two-sweep revision added for exactly them; `S38` aborts in
+`I174`, which runs before `I170` in declaration order.
+
+**Four seeds redden nothing where the plan expected them to, and none is a test weakness.** `S18` and
+`S19` went inert when the fallback made the preview's floor unconditional. **`S21` joins them**: the
+guard tests `value > 0.0F && std::isfinite(value)`, and `isfinite` rejects a NaN on its own, so
+rewriting `v > 0` as `!(v <= 0)` produces functionally identical code — there is nothing for any test to
+catch. The negated spelling is kept as defence in depth, being the form that stays correct if the
+`isfinite` term is ever dropped, and the comment now says which term carries which guarantee.
+**`S16` is a different species again**: retuning `MATERIAL_PREVIEW_FRACTION` to `0.9` reddens nothing
+across all 21 `MR` cases, because the battery asserts bounds, reachability and mode rather than the
+tuned value — which is what §4.1 says a retune must be free to do. The plan's §9 contradicts its own
+§4.1 there, and §4.1 is right.
+
+#### Two smaller corrections the round produced
+
+`I173`'s `#if AERO_SHADER_TOOLS_ENABLED` had **no `#else`**, so AC-18 was unmet — and the comment
+justifying the split was wrong in a more interesting way than the missing arm. `thumbEdge` is
+`MATERIAL_SLOT_THUMB_FONT_MULTIPLE * fontSize`, computed by a function that never sees the preview and
+proven positive for every metric set by `MR19`, so the tall button and the thumbnail are in effect in
+shader-tools-OFF exactly as in ON. The split protects one call, `materialPreviewAvailable()`.
+
+`asset_picker.hpp` stated **the opposite of the pin it names**: that `I172(e)` pins
+`CalcTextSize("Clear")` appearing once in `asset_picker.cpp`, when the test asserts **zero** — the label
+arrives as a parameter. The hazard is concrete, since the next task adding a trailing-button host would
+write that literal on the comment's authority and redden a clause the comment declared legal.
+
+#### `I136` is red at `HEAD` on a 2x display, and it is NOT this task's
+
+Found while establishing the branch-point baseline, on an unmodified tree: `I136` fails
+`REQUIRE(drawExtent.width > 4U)` with value **4**, deterministically, three runs. Same root cause as the
+chrome finding on the **width** axis — at 320 points wide with a 2x-scaled style the Right dock node is
+effectively collapsed, and `I136` ticks three times without a `requestLayoutReset()` (`I99`, which does
+both, passes). **The local GPU tier therefore gates at 213/214**, with `I136` named rather than quietly
+counted as green. **Handed to E.6.1** with the DPI mechanism; E.3.4 does not touch it.
+
+#### What was deliberately left out, with owners
+
+No thumbnail on the Inspector's `Guid` row (`thumbnailEdge` defaults to 0 — **E.6.3**); no rendered
+material thumbnail (**E.4.5**, and `ThumbnailService` is already its home); no Revert confirmation modal
+(**E.4.3**); no keyboard shortcut for Apply (**E.6.2**); no preview controls, no resizable preview and
+no FOV control (unowned); `PREVIEW_MAX_EXTENT` untouched (3.4.2's budget). `materialSlotLabel` now has
+three consumers, all wanting the **format key** — the UI call site that used a format key as a label is
+gone, which is the shape it should always have had.
