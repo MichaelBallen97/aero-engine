@@ -188,7 +188,7 @@ macOS-VALIDATED** — E.2.1 10 PASS / 3 open, E.2.2 12/12, E.2.3 12/12, **E.2.4 
 blockers, no partials)** — so the epic is closed in code *and* on hardware for this OS.
 
 ### E.2.1 `Environment` component + sky pass · P0 · L · depends: 1.3.3, 3.4.1, 3.6.3 — **MERGED**
-**Sized L, landed L** (PR #98, merge commit `28deab0`, sixteen commits). The sweep was the expensive
+**Sized L, landed L** (PR #98, merge commit `28deab0`, fifteen commits). The sweep was the expensive
 half exactly as sized, and it was **larger than planned**: 21 built-in count literals against 5
 look-alikes that had to stay unchanged, plus 19 default-scene pins, a test-case title and two name
 rosters. `ctest -N` **172 -> 173**; doctest `aero_tests` **1294 -> 1342**, imgui **162 -> 163**,
@@ -464,7 +464,7 @@ Subtasks:
 - Adopt it on the Material panel's five texture slots, replacing the combo
 - Legality composed from 3.1.5's existing drop matrix, never re-stated beside it
 
-_Outcome:_ **sized L, recorded before implementation, landed L.** Fourteen commits — the plan's nine,
+_Outcome:_ **sized L, recorded before implementation, landed L. Merged 2026-09-21 as PR #104, merge commit `fc77c4b`, sixteen commits, all six CI checks green with `headSha == HEAD` asserted; macOS-validated the same day — 10 PASS / 3 PARTIAL / 1 NOT EXECUTABLE / 1 NOT RUN, 43 of 51 records ticked, nothing failed.** Sixteen commits — the plan's nine,
 one closing three findings the full gate produced, and four closing the sabotage matrix. `AERO_ASSET(kind)`
 is the fourth field annotation, and the split it introduces is the part worth carrying: the tool
 validates a GRAMMAR (the token is an identifier) and the EDITOR owns the VOCABULARY, because the set of

@@ -16246,10 +16246,58 @@ tier and seeding it reddens nothing. `= std::string{}` move-assigns and dealloca
   rather than fixed: the seams' contract is "applied to the OPEN popup on its next draw", and at the
   moment that earlier field drew, nothing was open.
 
+#### E.3.3 — macOS validation pass, 2026-09-21: 10 PASS / 3 PARTIAL / 1 NOT EXECUTABLE / 1 NOT RUN
+
+**43 of 51 records ticked and NOTHING FAILED.** Driven through a signed minimal `.app` bundle with
+synthetic CoreGraphics input, every capture bound to the launched PID, on the built-in 3024x1964 Retina
+panel. **The two draw-list rules the code-review round added have their ONLY cover here and both hold.**
+The bound button reads `hero##v2.obj` **whole** — not `hero`, not empty — and the tile face is centred
+identically in BOTH hosts: gaps inside the highlight measure **left 22 / right 23 / top 14 / bottom 73
+device px in the picker AND in the browser**, despite a 104 px icon against a 156 px one, because the
+padding is a shared constant. The gap-1 bug would have shifted the picker's face ~4 px up and left.
+
+**The culled-grid defect is absent in the product.** At a window **330 pt tall against a ~415 pt popup**
+the popup anchors to the top of the work area and its grid DRAWS — tiles, thumbnails and a hover
+tooltip. The x-clamp lands the popup's right edge **exactly on the work-area edge at 1500.0 pt**, and a
+below-anchored popup sits flush under its button (top **434.5** against button bottom **435.0**).
+
+**Undo is exact.** A pick after a `meshIndex` drag undoes to the previous mesh **leaving meshIndex at
+52**; a second undo restores 0. Re-picking the bound asset, and `None` on a nil field, both leave the
+Edit menu **byte-identical with `Redo MeshRenderer.meshIndex` still present** — a pushed command would
+have cleared the redo stack, which is what makes that a real witness rather than a reading of the label.
+**The Material slot**: a bind dirties the document (Apply/Revert `rgb(255,255,255)` against a disabled
+`Clear` at `rgb(165,172,180)`), `UV set 3` and the wrap modes survive a rebind, and `None` + Apply leaves
+**`baseColor` ABSENT** from the file's `textures` block while the fresh `metallicRoughness` bind takes
+the format's defaults. **With the Assets panel CLOSED the picker's thumbnails still load**, and
+re-opening it shows them already resident — one cache, 16 thumbnails. An open picker **HOLDS** a route
+(Material stayed in front with Focus Follows Selection ON) while `Edit > Project Settings...` **wins**.
+
+**The narrow-panel measurement is worth carrying**: at the default width the button's right edge sits at
+**1416.5 pt** and `Clear`'s left edge at **1433.0 pt**; dragged to the narrowest the panel allows, the
+button is clipped by its table cell to **8.0 pt** and **`Clear` is not drawn at all** — the floor chose a
+clickable button over a visible `Clear`, exactly as the code comment says, and the 8 pt sliver DID open
+the popup.
+
+**Three method facts, each of which produced a wrong answer first.** A leftover `editor_prefs.json` from
+E.3.2's own pass held `focusFollowsSelection: false`, so entity clicks raised nothing and the router
+looked broken — it is a persisted preference doing its job, and it must be ENABLED before any Hold is
+testable. **`xargs -a` does not exist in BSD userland**, so a verification pipeline using it reports the
+shell's status rather than the tool's — a clean formatter run read as a FAILURE. And counting "is the
+popup still up?" by sampling pixels behind it is unreliable, because the host panel fills the same
+region; read the frame.
+
 #### What is NOT validated
 
-`editor/validation/E.3.3-asset-reference-picker.md` is written and **has not been run on any platform**.
-Fifteen rows; the ones that are the ONLY cover a declared seed has anywhere are **row 1** (S45, the
+**The three PARTIALs and the one NOT EXECUTABLE are limits of synthetic input, not defects.** Text entry
+never reaches the editor by any encoding, so typing a query is hand-only — though the search box
+provably HAS the keyboard, because it draws its caret on the opening frame. Synthetic drag-and-drop
+tears docked panels out of their dock instead of carrying a payload, so **row 6 is NOT EXECUTABLE in
+full** and `S27`'s behavioural half plus AC-11's audio half stay uncovered. Only a 2x display was
+attached, so row 13's 1x comparison has no other side. **Row 12 (S42, one WARN per open rather than per
+frame) is NOT RUN** — it needs a rebuild with a field temporarily annotated `AERO_ASSET(shader)` — and
+**row 14 (cost) is NOT RUN**, needing a Tracy session. Row 5's Left/Right and scroll-into-view halves
+and row 7's truncation-notice half were not exercised. **Windows and Linux are unrun, as everywhere.**
+Of the fifteen rows, the ones that are the ONLY cover a declared seed has anywhere are **row 1** (S45, the
 button's width against `Clear`), **row 12** (S42, one WARN per open rather than per frame), **row 6**
 (the drop target — **no tier in this tree can drag**), **rows 3 and 5** (the click-to-commit close and
 the keyboard, whose source pins `I166(b)` covers but whose behaviour it cannot), and **row 7's
