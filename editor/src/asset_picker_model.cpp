@@ -112,9 +112,13 @@ AssetPickerAnchor assetPickerAnchor(Vec2 buttonMin, Vec2 buttonMax, Vec2 popupSi
     // BELOW is the answer, and everything after this is a correction to it.
     AssetPickerAnchor anchor{.pos = Vec2{buttonMin.x, buttonMax.y}, .pivot = Vec2{0.0F, 0.0F}, .above = false};
 
-    // THE FINITENESS GUARD RUNS FIRST and returns the below-anchor UNCLAMPED: std::clamp(NaN, lo, hi)
-    // returns NaN on libc++ (3.7.2's standing rule), and a non-finite window position is an ImGui
-    // assertion -- so a NaN must not be allowed to propagate through the corrections below.
+    // THE FINITENESS GUARD RUNS FIRST and returns that below-anchor with NO correction applied. Read
+    // the header's contract before changing this: it is NOT a sanitiser, and a non-finite buttonMin.x
+    // or buttonMax.y comes straight back out non-finite -- this function cannot invent a sane rect.
+    // What it guarantees is ONE answer rather than a mixture, and that the corrections below never
+    // manufacture a plausible finite position out of a garbage bound. It is also what keeps a future
+    // fold into std::clamp safe, since std::clamp(NaN, lo, hi) returns NaN on libc++ (3.7.2's standing
+    // rule) where std::min/std::max return the first argument.
     const bool finite = std::isfinite(buttonMin.x) && std::isfinite(buttonMin.y) && std::isfinite(buttonMax.x) &&
                         std::isfinite(buttonMax.y) && std::isfinite(popupSize.x) && std::isfinite(popupSize.y) &&
                         std::isfinite(workMin.x) && std::isfinite(workMin.y) && std::isfinite(workMax.x) &&

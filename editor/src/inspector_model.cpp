@@ -143,9 +143,16 @@ void buildInspectorModel(const World& world, Entity entity, InspectorModel& out)
                     field.rangeMin = 0.0;
                     field.rangeMax = 0.0;
                     field.color = false;
-                    // CLEAR, never `= {}`: the model is rebuilt into caller-owned scratch every frame
-                    // (D15), and clear() is what preserves this string's capacity across a same-shape
-                    // rebuild the way the vectors around it preserve theirs.
+                    // CLEAR, never a MOVE-ASSIGN: the model is rebuilt into caller-owned scratch
+                    // every frame (D15), and clear() is what preserves this string's capacity across a
+                    // same-shape rebuild the way the vectors around it preserve theirs.
+                    //
+                    // MEASURED, correcting this comment's own earlier wording: `= {}` is NOT the
+                    // counterexample it named. A braced-init-list selects
+                    // operator=(initializer_list<char>), which assigns zero characters and KEEPS the
+                    // buffer -- byte for byte as good as clear(), and seeding it reddens nothing. What
+                    // frees the allocation is `= std::string{}` (or re-emplacing the whole FieldEntry),
+                    // and that is the spelling KP3 seeds: capacity 263 -> 22 and the pointer moves.
                     field.assetKindToken.clear();
                     const engine::reflect::FieldUiMeta* uiMeta = data.custom();
                     if (uiMeta != nullptr) {

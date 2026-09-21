@@ -14990,14 +14990,126 @@ TEST_CASE("editor: the SERVICE owns thumbnails, not the browser -- the picker de
     CHECK(app->thumbnailResidentCount() == residentBefore);
     CHECK(app->thumbnailLoadAttempts() == attemptsBefore);
 
-    CHECK(app->thumbnailResidentCount() == residentBefore);
-    CHECK(app->thumbnailLoadAttempts() == attemptsBefore);
-
     for (int i = 0; i < 8; ++i) {
         REQUIRE(app->tick());
     }
     CHECK(app->thumbnailResidentCount() <= engine::editor::MAX_THUMBNAILS_RESIDENT);
     CHECK(app->thumbnailReadyCount() >= 1U);  // and they are still THERE, not quietly re-decoded
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: a tick in which NO field claimed the popup resets every observable (I169)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "picker i169", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const PickerFixture fixture = makePickerProject(true);
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = fixture.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    app->panels().setVisible("Console", false);
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+
+    // AN ENTITY WITH NO MeshRenderer -- createEntity always adds a Transform and nothing else
+    // (entity_ops.cpp:68), so selecting it makes the Inspector draw Transform's rows and NO Guid row
+    // at all. That is the whole scenario: the field that owns the popup simply stops being drawn.
+    const engine::Entity plain = engine::editor::createEntity(app->world(), engine::Entity{}, "Plain");
+    REQUIRE(plain.valid());
+    CHECK(app->world().get<engine::MeshRenderer>(plain) == nullptr);
+
+    // AND AN ENTITY WITH EXACTLY ONE Guid ROW, which arm (b) needs and `Cube` cannot provide.
+    // MeshRenderer draws TWO reference fields, and the SECOND one performs the "nothing is open"
+    // clear for the first -- so a stale one-shot over a MeshRenderer entity is dropped one tick later
+    // whatever this task's post-draw slot does, and an arm written over it decides nothing. That is
+    // the same sibling-field effect E.3.3 recorded as an accepted cost; here it is what makes the
+    // component choice load-bearing rather than incidental.
+    const engine::ComponentTypeId audioSourceId = app->world().findComponentType("engine::AudioSource");
+    const engine::Entity lone = engine::editor::createEntity(app->world(), engine::Entity{}, "Lone");
+    REQUIRE(lone.valid());
+
+    const engine::Entity cube = focusInspectorOnCube(*app);
+    app->requestInspectorAssetPicker("engine::MeshRenderer", "mesh");
+    REQUIRE(app->tick());
+// BOTH ARMS ASSERT -- see I162's note. With no meta there is no Guid row for ANY entity, so no popup
+// ever opens and the observables are zero throughout, which is the honest degradation.
+#if AERO_REFLECT_TOOLS_ENABLED
+    REQUIRE(app->assetPickerOpen());
+    REQUIRE(app->assetPickerCandidateCount() == 1U);
+
+    // (a) THE OWNING ROW STOPS BEING DRAWN. ImGui closes a popup whose window goes unsubmitted at the
+    //     next NewFrame, so the popup is genuinely gone -- but the observables are written OWNER-ONLY,
+    //     and the owner is not running, so nothing inside the widget can say so. Only a slot that runs
+    //     after the WHOLE draw walk can, and that is what this arm pins: without it assetPickerOpen()
+    //     stays frozen at the last frame that DID draw and reports an open popup forever.
+    app->selection().set(plain);
+    REQUIRE(app->tick());
+    CHECK_FALSE(app->assetPickerOpen());
+    CHECK(app->assetPickerCandidateCount() == 0U);
+    CHECK(app->assetPickerCursor() == 0U);
+    for (int i = 0; i < 3; ++i) {  // and it stays reset, rather than flickering back
+        CAPTURE(i);
+        REQUIRE(app->tick());
+        CHECK_FALSE(app->assetPickerOpen());
+    }
+
+    // (b) AND THE FOUR LIVE ONE-SHOTS ARE DROPPABLE AGAIN, which is the consequence that costs a user
+    //     something. `openFieldKey` is what the widget's drop block tests; left stale it never empties,
+    //     so a commit issued while nothing is open survives to the next open and fires on the very
+    //     frame the popup appears -- a delay line, not a pending request. AN UNMOVED UNDO COUNT CANNOT
+    //     SEE THAT (the stale commit lands on None over an already-nil field, which the host refuses
+    //     as a no-op): the discriminator is that the NEXT OPEN STAYS OPEN. Driven over `Lone`, whose
+    //     ONE Guid row has no sibling to perform the clear on its behalf -- see its own comment above.
+    REQUIRE(audioSourceId.valid());
+    CHECK(engine::editor::addComponent(app->world(), lone, audioSourceId));
+    app->requestAssetPickerCommit();
+    app->selection().set(lone);
+    REQUIRE(app->tick());  // the `clip` row draws with nothing open -- this is the tick that drops it
+    CHECK_FALSE(app->assetPickerOpen());
+
+    app->requestInspectorAssetPicker("engine::AudioSource", "clip");
+    REQUIRE(app->tick());
+    CHECK(app->assetPickerOpen());
+    CHECK(app->assetPickerCandidateCount() == 1U);  // the fixture's one audio file
+    REQUIRE(app->tick());
+    CHECK(app->assetPickerOpen());  // STILL open: no stale commit rode in on the opening frame
+    REQUIRE(app->tick());
+    CHECK(app->assetPickerOpen());
+
+    const engine::AudioSource* bound = app->world().get<engine::AudioSource>(lone);
+    REQUIRE(bound != nullptr);
+    CHECK_FALSE(bound->clip.valid());  // and nothing was committed behind the user's back
+#else
+    (void)cube;
+    (void)audioSourceId;
+    (void)lone;
+    for (int i = 0; i < 3; ++i) {
+        CAPTURE(i);
+        REQUIRE(app->tick());
+        CHECK_FALSE(app->assetPickerOpen());
+    }
+    app->selection().set(plain);
+    REQUIRE(app->tick());
+    CHECK_FALSE(app->assetPickerOpen());
+    CHECK(app->assetPickerCandidateCount() == 0U);
+    CHECK(app->assetPickerCursor() == 0U);
+#endif
 
     app->requestQuit();
     CHECK(app->tick() == false);

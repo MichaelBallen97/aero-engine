@@ -1521,11 +1521,36 @@ states no `AssetKind::` literal at all — the kinds come from the rules, which 
 which comes from the component. That is the mechanical form of ADR-004's genericity claim for this
 widget, and `I166(c)` pins it.
 
-**THE OBSERVABLES AND THE FOUR LIVE ONE-SHOTS ARE OWNER-KEYED, AND A LIVE ONE-SHOT IS DROPPED WHEN
-NOTHING IS OPEN.** `MeshRenderer` draws TWO `Guid` rows every frame, so a per-field write has the second
-clobber the first in the same frame. And a one-shot that merely waits for a popup is a **delay line**: it
-fires on the frame the next popup appears. An unmoved undo count cannot see that — the discriminator is
-that the next open **stays open**.
+**THE OBSERVABLES AND THE FOUR LIVE ONE-SHOTS ARE OWNER-KEYED, A LIVE ONE-SHOT IS DROPPED WHEN NOTHING
+IS OPEN, AND A TICK IN WHICH NO FIELD CLAIMED THE POPUP RESETS THEM FROM OUTSIDE THE WIDGET.**
+`MeshRenderer` draws TWO `Guid` rows every frame, so a per-field write has the second clobber the first
+in the same frame. And a one-shot that merely waits for a popup is a **delay line**: it fires on the
+frame the next popup appears. An unmoved undo count cannot see that — the discriminator is that the next
+open **stays open**.
+
+**The third clause is what owner-keying costs.** The owning row stops being drawn the moment the
+selection moves to an entity without that component, or its panel is tabbed away; ImGui closes the popup
+because its window goes unsubmitted, and **a widget that is not running cannot write the observable that
+says so**. The widget sets a seen-this-tick stamp and `EditorApp::tick()`'s post-draw slot consumes it —
+only a slot that runs after the WHOLE draw walk can know nobody claimed it. Without that reset,
+`assetPickerOpen()` stays frozen at the last frame that DID draw and `openFieldKey` never empties, so the
+one-shot drop never runs again. **`MeshRenderer` hides the second half of this**: its `material` row
+performs the "nothing is open" clear on the `mesh` row's behalf one tick later whatever the post-draw
+slot does, so a case written over it decides nothing — `I169`'s arm (b) uses a single-`Guid`-field
+component for that reason.
+
+**A LABEL IS TRUNCATED AT ITS FIRST `##`, AND A `Selectable`'s ITEM BOX IS NOT ITS TILE.** Two draw-list
+rules, and **neither has automated cover anywhere** — nothing in this tree reads rendered text or measures
+a widget rect, and both seeds come back green. (a) A value sentence goes through
+`ImDrawList::AddText`, clipped to the widget's own rect, and the `Button`'s label is the `###` id ALONE:
+`FindRenderedTextEnd` stops at the first `##` (`imgui.cpp:3918`), so `readme##v2.png` renders as `readme`
+and `##notes.png` renders as nothing at all. An empty visible label still measures one line high
+(`imgui.cpp:6447-6448`), so a `ImVec2(w, 0)` button keeps its frame height, and `AddText` submits no ImGui
+item, so the last-item data still names the button for `BeginDragDropTarget` and the anchor.
+`asset_browser_panel.cpp:635-637` has carried the same rule for its tile caption since 3.1.3 (E19). (b) A
+tile's origin is `GetCursorScreenPos()` taken **before** the `Selectable`, never `GetItemRectMin()` after
+it — a `Selectable` extends its item box on the MIN side by half the item spacing
+(`imgui_widgets.cpp:7395-7396`), which is half a spacing of drift in both axes.
 
 **AN API-POSITIONED POPUP IS NEVER CLAMPED BY ImGui, AND ONE OFF THE SCREEN HAS ITS CHILD CULLED.**
 `Begin`'s visibility clamp runs only `if (!window_pos_set_by_api && …)` (`imgui.cpp:8279`), and a culled

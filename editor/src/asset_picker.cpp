@@ -89,12 +89,15 @@ void beginSession(AssetPickerState& state, const AssetFieldInputs& in, const std
 AssetFieldResult drawAssetReferenceField(const AssetFieldInputs& in, AssetPickerState& state) {
     AssetFieldResult result{};
     const std::vector<AssetKind> options = assetPickerFilterOptions(in.rules);
+    const ImGuiStyle& style = ImGui::GetStyle();
 
-    // 1. THE VALUE BUTTON. The label IS the value sentence, so the id must be the ### suffix alone --
-    //    otherwise the id changes when the bound asset changes, which would orphan an open popup.
-    state.labelScratch.assign(in.valueText);
-    state.labelScratch += in.idSuffix;
-    const bool pressed = ImGui::Button(state.labelScratch.c_str(), ImVec2(in.buttonWidth, 0.0F));
+    // 1. THE VALUE BUTTON, WHOSE LABEL IS THE ID SUFFIX AND NOTHING ELSE. `###ref` renders nothing --
+    //    FindRenderedTextEnd stops at the first `##` (imgui.cpp:3918) -- and hashes from the `###`, so
+    //    the id is identical however the bound asset changes and an open popup is never orphaned. An
+    //    invisible label still measures one line high (CalcTextSize's `text == text_display_end` arm
+    //    returns `{0, font_size}`, imgui.cpp:6447-6448), so the frame stands exactly as tall as a
+    //    labelled button's and the anchor arithmetic below is unmoved.
+    const bool pressed = ImGui::Button(in.idSuffix, ImVec2(in.buttonWidth, 0.0F));
 
     // 2. THE BUTTON'S GEOMETRY, captured BEFORE the popup is touched. End() restores the parent's
     //    last-item data at EndPopup (imgui.cpp:8848), so reading these afterwards names the button
@@ -103,7 +106,23 @@ AssetFieldResult drawAssetReferenceField(const AssetFieldInputs& in, AssetPicker
     const ImVec2 buttonMin = ImGui::GetItemRectMin();
     const ImVec2 buttonMax = ImGui::GetItemRectMax();
 
-    // 3. THE DROP TARGET, on the button. PEEK -> CLASSIFY -> ACCEPT, in that order, always: an illegal
+    // 3. THE VALUE SENTENCE, ON THE DRAW LIST -- never handed to ImGui as a label. A label is truncated
+    //    at its first `##` by the very rule the id above relies on, so an asset named `readme##v2.png`
+    //    would read `readme` and one named `##notes.png` would leave the button blank.
+    //    asset_browser_panel.cpp:635-637 records the identical hazard for a tile caption (3.1.3's E19)
+    //    and answers it the same way. AddText submits NO ImGui item, so the button is still the last
+    //    item for the drop target below, and the clip rect is the button's own frame, so a long
+    //    sentence is cut at the frame edge rather than spilling across the next cell.
+    if (!in.valueText.empty()) {
+        ImDrawList* const drawList = ImGui::GetWindowDrawList();
+        drawList->PushClipRect(buttonMin, buttonMax, /*intersect_with_current_clip_rect=*/true);
+        drawList->AddText(ImVec2(buttonMin.x + style.FramePadding.x, buttonMin.y + style.FramePadding.y),
+                          ImGui::GetColorU32(ImGuiCol_Text), in.valueText.data(),
+                          in.valueText.data() + in.valueText.size());
+        drawList->PopClipRect();
+    }
+
+    // 4. THE DROP TARGET, on the button. PEEK -> CLASSIFY -> ACCEPT, in that order, always: an illegal
     //    drop must never draw a highlight, and the highlight is AcceptDragDropPayload's side effect.
     if (ImGui::BeginDragDropTarget()) {
         if (const std::optional<AssetDragPayload> asset = peekAssetPayload(); asset.has_value()) {
@@ -117,7 +136,7 @@ AssetFieldResult drawAssetReferenceField(const AssetFieldInputs& in, AssetPicker
         ImGui::EndDragDropTarget();  // ONLY because BeginDragDropTarget returned true
     }
 
-    // 4. THE SEAM'S OPEN ARM -- consumed ONLY by the field it names, so a request for a field that is
+    // 5. THE SEAM'S OPEN ARM -- consumed ONLY by the field it names, so a request for a field that is
     //    not drawn this frame survives to the next and never fires on a wrong one.
     bool opening = pressed;
     if (state.pendingOpen.has_value() && state.pendingOpen->hostId == in.hostId &&
@@ -132,7 +151,7 @@ AssetFieldResult drawAssetReferenceField(const AssetFieldInputs& in, AssetPicker
         state.openFieldKey.assign(in.fieldKey);
     }
 
-    // 5. THE FOUR LIVE ONE-SHOTS ARE DROPPED WHEN NOTHING IS OPEN AT ALL. Without this they are not
+    // 6. THE FOUR LIVE ONE-SHOTS ARE DROPPED WHEN NOTHING IS OPEN AT ALL. Without this they are not
     //    "pending until the popup opens" -- they are a DELAY LINE: a commit issued while closed would
     //    survive to the next open and commit something the user never chose, on the very frame the
     //    popup appeared. Any drawn reference field may perform this clear; it is idempotent, and it
@@ -145,13 +164,12 @@ AssetFieldResult drawAssetReferenceField(const AssetFieldInputs& in, AssetPicker
         state.pendingClose = false;
     }
 
-    // 6. THE ANCHOR AND THE SIZE, computed BEFORE BeginPopup so the arithmetic is exact rather than one
+    // 7. THE ANCHOR AND THE SIZE, computed BEFORE BeginPopup so the arithmetic is exact rather than one
     //    frame late. Both SetNext* calls are legal while the popup is closed: BeginPopup clears
     //    NextWindowData on its early-out (imgui.cpp:13196-13199). SetNextWindowSize overrides the
     //    AlwaysAutoResize flag BeginPopup adds (imgui.cpp:8182, :13201), which is what makes a fixed
     //    size legal on a popup at all -- and an API-SET POSITION IS THE ONE ImGui NEVER CLAMPS
     //    (:8279), which is why the anchor does the clamping itself.
-    const ImGuiStyle& style = ImGui::GetStyle();
     const AssetPickerMetrics metrics{.fontSize = ImGui::GetFontSize(),
                                      .frameHeight = ImGui::GetFrameHeight(),
                                      .textLineHeight = ImGui::GetTextLineHeight(),
@@ -322,6 +340,12 @@ AssetFieldResult drawAssetReferenceField(const AssetFieldInputs& in, AssetPicker
                     // PushID/PopID are 1:1 with NO continue, break or return between them -- an
                     // unbalanced id stack is an IM_ASSERT abort in the Debug ImGui build.
                     ImGui::PushID(index);
+                    // THE TILE'S ORIGIN, captured BEFORE the Selectable -- drawTile's own shape
+                    // (asset_browser_panel.cpp:634). GetItemRectMin() afterwards is a DIFFERENT point:
+                    // a Selectable extends its item box on the MIN side by half the item spacing
+                    // (imgui_widgets.cpp:7395-7396), so every face would be drawn up and to the left of
+                    // the tile it belongs to by (ItemSpacing.x/2, ItemSpacing.y/2).
+                    const ImVec2 itemMin = ImGui::GetCursorScreenPos();
                     const bool selected = static_cast<std::size_t>(index) == state.cursor;
                     if (ImGui::Selectable("##tile", selected, ImGuiSelectableFlags_None, ImVec2(tileW, tileH))) {
                         state.cursor = static_cast<std::size_t>(index);
@@ -330,7 +354,6 @@ AssetFieldResult drawAssetReferenceField(const AssetFieldInputs& in, AssetPicker
                     if (selected && scrollToCursor) {
                         ImGui::SetScrollHereY();
                     }
-                    const ImVec2 itemMin = ImGui::GetItemRectMin();
                     AssetTileFace face{};
                     face.tileW = tileW;
                     face.tileEdge = tileEdge;
@@ -407,6 +430,13 @@ AssetFieldResult drawAssetReferenceField(const AssetFieldInputs& in, AssetPicker
     // THE OWNER-ONLY OBSERVABLES. A field that owns nothing writes NOTHING -- see rule 3 in the banner.
     // The one-frame latency is the design, not a lag: CloseCurrentPopup runs INSIDE the body, so on the
     // closing frame the popup DID draw and this still reads true; it reads false the frame after.
+    if (open || owner) {
+        // SEEN. The post-draw slot resets every observable in any tick this stays false, which is what
+        // makes assetPickerOpen() the LAST DRAWN frame's answer even when the owning row stopped being
+        // drawn entirely. It is set for a NON-open owner too, so the closing frame's own `else` arm
+        // below is not mistaken for "nobody drew".
+        state.ownerDrewThisTick = true;
+    }
     if (open) {
         state.openValue = true;
         state.candidateCountValue = state.candidates.items.size();

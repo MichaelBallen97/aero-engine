@@ -380,12 +380,27 @@ TEST_CASE("MP13: a NON-FINITE input returns the below-anchor UNCLAMPED -- no std
         CHECK(anchor.pivot == Vec2{0.0F, 0.0F});
         CHECK_FALSE(anchor.above);
     };
-    belowUnclamped(Vec2{nan, 100.0F}, Vec2{300.0F, 120.0F}, size, workMin, workMax);
-    belowUnclamped(Vec2{100.0F, 100.0F}, Vec2{300.0F, nan}, size, workMin, workMax);
-    belowUnclamped(Vec2{100.0F, 100.0F}, Vec2{300.0F, 120.0F}, Vec2{nan, 300.0F}, workMin, workMax);
-    belowUnclamped(Vec2{100.0F, 100.0F}, Vec2{300.0F, 120.0F}, size, Vec2{nan, 0.0F}, workMax);
-    belowUnclamped(Vec2{100.0F, 100.0F}, Vec2{300.0F, 120.0F}, size, workMin, Vec2{nan, 800.0F});
-    belowUnclamped(Vec2{100.0F, 100.0F}, Vec2{300.0F, 120.0F}, size, workMin, Vec2{inf, 800.0F});
+    // EVERY arm sits at x = 900, which the shift-left correction WOULD move to 800 (workMax.x -
+    // popupSize.x). At the x = 100 these arms used to use, the guarded and the unguarded answers are
+    // the same number and the case could not decide whether the guard ran -- see the dedicated arm
+    // below, which is the one that is proven in both directions.
+    belowUnclamped(Vec2{nan, 100.0F}, Vec2{980.0F, 120.0F}, size, workMin, workMax);
+    belowUnclamped(Vec2{900.0F, 100.0F}, Vec2{980.0F, nan}, size, workMin, workMax);
+    belowUnclamped(Vec2{900.0F, 100.0F}, Vec2{980.0F, 120.0F}, Vec2{nan, 300.0F}, workMin, workMax);
+    belowUnclamped(Vec2{900.0F, 100.0F}, Vec2{980.0F, 120.0F}, size, Vec2{nan, 0.0F}, workMax);
+    belowUnclamped(Vec2{900.0F, 100.0F}, Vec2{980.0F, 120.0F}, size, workMin, Vec2{nan, 800.0F});
+    belowUnclamped(Vec2{900.0F, 100.0F}, Vec2{980.0F, 120.0F}, size, workMin, Vec2{inf, 800.0F});
+
+    // THE ARM THE GUARD ACTUALLY DECIDES, spelled out rather than folded into the helper, because it
+    // is the only one whose two answers are DIFFERENT NUMBERS: the non-finite component is
+    // buttonMin.y, so pos.x is finite on both paths and the guard is the only thing that can leave it
+    // unshifted. WITH the guard, pos.x is buttonMin.x verbatim (900); WITHOUT it, the shift-left
+    // correction moves it to workMax.x - popupSize.x (800). Delete the `if (!finite) return anchor;`
+    // and this arm -- alone in the case -- reddens.
+    const AssetPickerAnchor guarded =
+        assetPickerAnchor(Vec2{900.0F, nan}, Vec2{980.0F, 120.0F}, size, workMin, workMax);
+    CHECK(guarded.pos.x == 900.0F);
+    CHECK_FALSE(guarded.pos.x == 800.0F);
 
     // ANTI-VACUITY: the SAME finite inputs really are clamped, so the arms above are a statement
     // about non-finiteness rather than about the anchor doing nothing.

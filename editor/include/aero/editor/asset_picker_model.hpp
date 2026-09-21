@@ -85,8 +85,21 @@ enum class AssetPickerMove : std::uint8_t { Prev = 0, Next, First, Last };
 // only `if (!window_pos_set_by_api && !(flags & ChildWindow))` (imgui.cpp:8279), so a dropdown
 // anchored under a button near the bottom of a tall Inspector would run off the screen.
 //
-// NaN-SAFE: a non-finite input returns the below-anchor UNCLAMPED, because std::clamp(NaN, lo, hi)
-// returns NaN on libc++ and a non-finite window position is an ImGui assertion.
+// THE NON-FINITE CONTRACT, STATED EXACTLY, BECAUSE IT IS NARROWER THAN "NaN-safe" WOULD SUGGEST. If
+// ANY of the ten input components is non-finite, the below-anchor is returned with NO correction
+// applied at all -- one predictable answer instead of a mixture of clamped and unclamped components.
+// IT IS NOT A SANITISER AND CANNOT BE ONE: the below-anchor is literally (buttonMin.x, buttonMax.y),
+// so a non-finite BUTTON RECT comes straight back out, non-finite. Nothing here can invent a sane
+// rect, and a non-finite button rect is an ImGui-level impossibility -- the caller reads it from
+// GetItemRectMin/Max of an item ImGui has just laid out.
+//
+// What the guard DOES buy is that the corrections can never manufacture a wrong-looking FINITE answer
+// out of a garbage bound, and immunity to the corrections themselves: std::clamp(NaN, lo, hi) returns
+// NaN on libc++ (3.7.2's standing rule), so folding the two std::min/std::max pairs into std::clamp
+// would turn a finite `pos` into a non-finite window position -- an ImGui assertion -- the moment any
+// OTHER input went non-finite. MP13 proves the guard is reached at all (a non-finite buttonMin.y
+// leaves pos.x at 900 instead of shifting it to 800) and the sabotage matrix's S23b proves the
+// std::clamp half.
 struct AssetPickerAnchor {
     Vec2 pos;
     Vec2 pivot;

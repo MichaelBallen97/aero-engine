@@ -50,11 +50,10 @@ struct AssetPickerState {
     std::string openFieldKey;
 
     // Per-frame scratch the tile face clobbers, and the tooltip's own. MEMBERS rather than locals for
-    // the labelScratch reason: a popup over a thousand records must not allocate twice per tile per
-    // frame. Neither is model state and neither is read outside the draw walk.
+    // the 2.2.1 labelScratch reason: a popup over a thousand records must not allocate twice per tile
+    // per frame. Neither is model state and neither is read outside the draw walk.
     std::string tileScratch;
     std::string tooltipScratch;
-    std::string labelScratch;  // the button's label + its ### id suffix
 
     // ---- seams (I138's shape) ----
     std::optional<AssetPickerOpenRequest> pendingOpen;
@@ -68,6 +67,13 @@ struct AssetPickerState {
     bool openValue = false;
     std::size_t candidateCountValue = 0;
     std::size_t cursorValue = 0;
+
+    // THE OWNER'S SEEN-THIS-TICK STAMP, set by the widget and CONSUMED once per tick by EditorApp's
+    // post-draw slot. Without it a tick in which the owning row did not draw at all -- the selection
+    // moved to an entity without that component, or the panel was tabbed away -- leaves every
+    // observable frozen at the last frame that DID draw, so assetPickerOpen() keeps reporting an open
+    // popup ImGui has already closed and step 6's drop of the four live one-shots never runs again.
+    bool ownerDrewThisTick = false;
 };
 
 enum class AssetFieldOutcome : std::uint8_t { None = 0, Picked, Cleared, Dropped };
@@ -80,10 +86,11 @@ struct AssetFieldResult {
 // readable and starts being a place to transpose two strings, and .clang-tidy disables
 // bugprone-easily-swappable-parameters, so nothing would have caught it.
 struct AssetFieldInputs {
-    // The button's id. The LABEL is `valueText`, so `###` is REQUIRED: without it the id would change
-    // every time the bound asset changes, and an id that changes under an open popup orphans it.
+    // The button's WHOLE label, and `###` is REQUIRED: everything before the `###` is what ImGui would
+    // render, so a suffix without it would draw a second copy of the sentence the widget draws itself,
+    // and an id computed from anything the bound asset can change orphans an open popup.
     const char* idSuffix = "###ref";
-    std::string_view valueText;  // guidFieldRow's sentence, or the slot's
+    std::string_view valueText;  // guidFieldRow's sentence, or the slot's -- drawn on the DRAW LIST
     float buttonWidth = 0.0F;    // the HOST's arithmetic (-FLT_MIN fills the cell)
     Guid current;                // the bound guid (nil == none) -- where a fresh open lands
     AssetPickerRules rules;

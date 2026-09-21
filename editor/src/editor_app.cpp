@@ -37,14 +37,11 @@
 #include <aero/scene_render/scene_renderer.hpp>      // task E.2.4 -- the two resolvers
 
 #include "asset_browser_panel.hpp"
-// task E.3.3 (D5): the SHARED thumbnail ledger/store/budget. Held through a unique_ptr on a public
-// header, so this TU is where the complete type is needed.
 #include "asset_picker.hpp"  // task E.3.3 -- AssetPickerState, held through a unique_ptr on a public header
 #include "console_panel.hpp"
 #include "editor_reflection.hpp"
 #include "file_dialog.hpp"  // task 2.5.1: DialogChannel's definition -- the shared_ptr's deleter needs
-#include "thumbnail_service.hpp"
-// a complete type wherever it could run, including this TU's ~EditorApp
+                            // a complete type wherever it could run, including this TU's ~EditorApp
 #include "hierarchy_panel.hpp"
 #include "import_details_panel.hpp"  // task 3.2.1 -- ImportDetailsPanel's definition, the src-private
                                      // shared_ptr/unique_ptr-completeness precedent above, applied to a
@@ -56,6 +53,9 @@
 #include "scene_asset_loader.hpp"  // task 3.1.5 -- the loader's definition, so the unique_ptr member
                                    // below can be created and destroyed in this TU
 #include "shell_ui.hpp"
+#include "thumbnail_service.hpp"  // task E.3.3 (D5): the SHARED thumbnail ledger/store/budget, held
+                                  // through a unique_ptr on a public header -- this TU is where the
+                                  // complete type is needed
 #include "viewport_panel.hpp"
 
 #include <chrono>
@@ -1111,6 +1111,23 @@ bool EditorApp::tick() {
     // because THREE consumers share it now rather than one panel owning it.
     if (thumbnails != nullptr) {
         thumbnails->service(assetDatabase);
+    }
+    // task E.3.3: THE TICK IN WHICH NO FIELD CLAIMED THE POPUP. Every asset field writes the
+    // observables OWNER-ONLY, so a tick in which the owning row was not drawn at all -- the selection
+    // moved to an entity without that component, the panel was tabbed away or hidden -- would otherwise
+    // leave them frozen at the last frame that DID draw. ImGui has already closed the popup by then
+    // (its window stopped being submitted), so assetPickerOpen() would keep reporting an open popup
+    // that is gone, against editor_app.hpp's "the LAST DRAWN frame's answer", and the four live
+    // one-shots would never be dropped again because `openFieldKey` stays set forever.
+    //
+    // It belongs HERE and not in the widget: only a slot that runs after the WHOLE draw walk can know
+    // that nobody claimed it, and this is that slot.
+    if (assetPicker != nullptr && !std::exchange(assetPicker->ownerDrewThisTick, false)) {
+        assetPicker->openValue = false;
+        assetPicker->candidateCountValue = 0;
+        assetPicker->cursorValue = 0;
+        assetPicker->openHostId.clear();
+        assetPicker->openFieldKey.clear();
     }
     // task 3.2.1 (D16/AC-48/INV-M12): OUTSIDE the ImGui draw walk, in the SAME SLOT as renderScene()
     // and serviceThumbnails(). A Full import is SYNCHRONOUS and may visibly hitch on a large model --

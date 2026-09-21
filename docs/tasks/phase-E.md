@@ -477,13 +477,16 @@ painter — both extractions, proved by every existing thumbnail and browser cas
 popup's BODY executes in CI, which is the first time in this tree and closes the gap `I86` stated in its
 own words.
 `ctest -N` **174 → 178** (four `reflect-gen.asset_*` process cases; entry set otherwise byte-identical,
-**165** shader-tools-OFF, **93** reflect-tools-OFF), doctest **1404 / 1915 / 208 / 40 / 59 / 10 / 28**,
+**165** shader-tools-OFF, **93** reflect-tools-OFF), doctest **1404 / 1915 / 209 / 40 / 59 / 10 / 28**,
 guards **516 / 92 / 163 / 92 / 165 / A=6 B=86 / 11-3-55 / 6-57**. **The built-in count stays TEN** — two
 headers gain annotations and nothing else — and `docs/09` is untouched.
 The 46-seed matrix found **four holes in this task's own tests** and, chasing two of them, a real
 product defect: an API-positioned popup is never clamped by ImGui, so a popup taller than the work area
 ran off the bottom of the screen and ImGui **culled its grid child**, which submits no tiles and says
-nothing. It deliberately does not build a `meshIndex` sub-picker, a thumbnail in the row (E.3.4's), a
+nothing. The code-review round then found four should-fix gaps, none blocking — two of them (a tile face
+drawn at the `Selectable`'s expanded item origin, and a value sentence passed as an ImGui label, which is
+truncated at its first `##`) are invisible to every automated tier and are validation row 15's alone.
+It deliberately does not build a `meshIndex` sub-picker, a thumbnail in the row (E.3.4's), a
 rendered material thumbnail (E.4.5's), fuzzy search, or an enum-/unit-aware row. **Its validation page is
 written and unrun on every platform.**
 

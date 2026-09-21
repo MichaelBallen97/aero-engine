@@ -2054,10 +2054,30 @@ TEST_CASE("KP3: the new member survives D15's scratch reuse -- capacity AND the 
     model.components[0].fields.reserve(512);
     const void* fieldsData = model.components[0].fields.data();
     const std::size_t fieldCapacity = model.components[0].fields.capacity();
-    // The TOKEN STRING's own buffer, which is what `clear()`-rather-than-`= {}` is for. "texture" is
-    // short enough to be an SSO buffer inside the FieldEntry, so this is an assertion that the entry
-    // itself was not destroyed and re-emplaced.
-    const void* tokenData = findField(model.components[0].fields, "textureRef").assetKindToken.c_str();
+
+    // THE TOKEN STRING'S OWN BUFFER, and it has to be forced OFF the small-string optimisation first
+    // or the arm cannot decide anything. "texture" is seven bytes, so it lives inside the FieldEntry
+    // itself: its address is a function of the entry's position in `fields`, which the vector-identity
+    // arm above has ALREADY pinned, so every spelling of "empty this string" produces the identical
+    // address AND the identical (SSO) capacity. Reserving past the SSO threshold puts the characters
+    // on the heap, where a spelling that FREES the allocation becomes visible: clear() keeps it and
+    // the assignment of a seven-byte token reuses it, while `= std::string{}` move-assigns from an
+    // empty temporary and deallocates, dropping the string back to SSO -- capacity 263 -> 22.
+    //
+    // `= {}` is DELIBERATELY NOT the seed here, and the implementation's comment used to name it:
+    // measured, a braced-init-list selects operator=(initializer_list<char>), which assigns zero
+    // characters and keeps the buffer, so it is indistinguishable from clear() at every tier.
+    engine::editor::FieldEntry* tokenField = nullptr;
+    for (engine::editor::FieldEntry& f : model.components[0].fields) {
+        if (f.name == "textureRef") {
+            tokenField = &f;
+        }
+    }
+    REQUIRE(tokenField != nullptr);
+    tokenField->assetKindToken.reserve(256);
+    const void* tokenData = tokenField->assetKindToken.c_str();
+    const std::size_t tokenCapacity = tokenField->assetKindToken.capacity();
+    REQUIRE(tokenCapacity >= 256);  // ANTI-VACUITY: the buffer really is off SSO now
 
     buildInspectorModel(world, e, model);
     CHECK(model.components[0].fields.size() == 14);
@@ -2065,6 +2085,7 @@ TEST_CASE("KP3: the new member survives D15's scratch reuse -- capacity AND the 
     CHECK(model.components[0].fields.capacity() == fieldCapacity);
     const engine::editor::FieldEntry& rebuilt = findField(model.components[0].fields, "textureRef");
     CHECK(rebuilt.assetKindToken == "texture");
+    CHECK(rebuilt.assetKindToken.capacity() == tokenCapacity);
     CHECK(static_cast<const void*>(rebuilt.assetKindToken.c_str()) == tokenData);
 }
 

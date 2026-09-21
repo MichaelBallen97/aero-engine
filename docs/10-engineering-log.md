@@ -15972,16 +15972,16 @@ sanitizer report of any kind for the whole session. Full records in
   135 270 pixels differing**.
 ### E.3.3 — Asset-reference picker — the first time a scene reference can be SET from the Inspector, and four holes the matrix found in its own tests
 
-**Branch `feat/E.3.3-asset-reference-picker`, FOURTEEN commits** — the plan's nine, one closing three
-findings the full gate produced, and four closing the sabotage matrix. Sized **L** in the roadmap,
-recorded **L** before the first commit, landed **L**. *(PR number and merge commit are filled in at
-merge.)*
+**Branch `feat/E.3.3-asset-reference-picker`, FIFTEEN commits** — the plan's nine, one closing three
+findings the full gate produced, four closing the sabotage matrix, and one closing the code-review
+round. Sized **L** in the roadmap, recorded **L** before the first commit, landed **L**. *(PR number and
+merge commit are filled in at merge.)*
 
 `ctest -N` **174 -> 178** in both tools-ON presets, and the entry **SET** differs by exactly the four
 `reflect-gen.asset_*` names with **zero removals** — measured against a configured worktree at the
-branch point, not carried. doctest across the seven binaries **1404 / 1915 / 208 / 40 / 59 / 10 / 28**,
+branch point, not carried. doctest across the seven binaries **1404 / 1915 / 209 / 40 / 59 / 10 / 28**,
 from freshly built trees, agreeing in both presets: `aero_editor_shell_test` 1886 -> 1915,
-`aero_editor_imgui_test` 201 -> 208, `aero_editor_inspector_test` 55 -> 59, `aero_reflect_meta_test`
+`aero_editor_imgui_test` 201 -> 209, `aero_editor_inspector_test` 55 -> 59, `aero_reflect_meta_test`
 7 -> 10, and `aero_tests` (1404), `aero_scene_serialize_test` (40) and `aero_reflect_json_test` (28)
 **unmoved** — the last two are the pins that say no serialized and no JSON change crept in, and an
 annotation is invisible to `--emit-json` by construction. Guards: math **506 -> 516** (ten new tracked
@@ -16075,13 +16075,27 @@ after it.** The anchor now clamps **y** exactly as it already clamped x, applied
 **effective top** so the `(0,1)` flip pivot is honoured rather than clamped as if it were a top-left.
 **Any future API-positioned window in this tree inherits both halves.**
 
-**3. THE OBSERVABLES AND THE LIVE ONE-SHOTS ARE OWNER-KEYED, AND A LIVE ONE-SHOT IS DROPPED WHEN
-NOTHING IS OPEN.** `MeshRenderer` draws **two** `Guid` rows every frame, so a per-field write has the
-`material` row clobber the `mesh` row's answer in the same frame and `assetPickerOpen()` reads **false
-while the popup is open**. And a `pendingCommit` that merely *waits* for a popup is not pending — it is
-a **delay line**: it fires on the very frame the next popup appears and closes it again. **"The undo
-count did not move" cannot see that**, because committing the bound asset is refused for equality
-anyway; the discriminator is that the next open **stays open**.
+**3. THE OBSERVABLES AND THE LIVE ONE-SHOTS ARE OWNER-KEYED, A LIVE ONE-SHOT IS DROPPED WHEN NOTHING IS
+OPEN, AND A TICK IN WHICH NO FIELD CLAIMED THE POPUP RESETS THEM FROM OUTSIDE THE WIDGET.**
+`MeshRenderer` draws **two** `Guid` rows every frame, so a per-field write has the `material` row clobber
+the `mesh` row's answer in the same frame and `assetPickerOpen()` reads **false while the popup is
+open**. And a `pendingCommit` that merely *waits* for a popup is not pending — it is a **delay line**: it
+fires on the very frame the next popup appears and closes it again. **"The undo count did not move"
+cannot see that**, because committing the bound asset is refused for equality anyway; the discriminator
+is that the next open **stays open**.
+
+**The third clause is the code-review round's**, and it is the price owner-keying charges. The owning row
+stops being drawn the moment the selection moves to an entity without that component (or its panel is
+tabbed away); ImGui closes the popup because its window goes unsubmitted, and **nothing inside a widget
+that is not running can write the observable that says so** — so `assetPickerOpen()` stayed frozen at the
+last frame that DID draw, against `editor_app.hpp`'s own "the LAST DRAWN frame's answer", and
+`openFieldKey` stayed set forever, which is what the drop of the four live one-shots tests. The widget
+sets a seen-this-tick stamp; **`tick()`'s post-draw slot consumes it**, because only a slot that runs
+after the WHOLE draw walk can know that nobody claimed it. **And `MeshRenderer` HIDES the second half**:
+its `material` row performs the "nothing is open" clear on the `mesh` row's behalf one tick later,
+whatever the post-draw slot does, so an arm written over it decides nothing — measured, on the first
+draft of `I169`, which came back green against the seeded defect. `I169`'s arm (b) drives a
+single-`Guid`-field component (`AudioSource::clip` on an entity with nothing else) for that reason.
 
 **4. A COUNT IS NOT A CHOICE.** `I162`'s `material` arm asserted `candidateCount == 1`. The fixture holds
 exactly one Model and exactly one Material, so a `material` field wrongly annotated `model` still lists
@@ -16119,7 +16133,9 @@ The picker is re-opened **after** the browser returns.
 Every seed was applied **after** its fix was committed, proved present with `git diff` before any
 verdict was read, rebuilt with the build tool's own step list captured, judged on doctest's own
 `test cases:` line, then reverted with `git diff` empty **and** `git show HEAD:<file> | diff -q -` for
-every touched file. **Forty-one reddened**; five are recorded below with their measurements.
+every touched file. **Forty-two reddened**; four are recorded below with their measurements. (It was
+forty-one and five until the code-review round gave `MP13` an arm the finiteness guard actually decides
+— see that section.)
 
 **Four came back green that should not have, and all four are closed:**
 
@@ -16136,14 +16152,8 @@ every touched file. **Forty-one reddened**; five are recorded below with their m
   tiles note their keys every frame, the protection has an observable consequence on this lane at last,
   and **both seeds now redden `I167(c)`**. Two declared cross-lane-only holes became local witnesses.
 
-**Five are recorded rather than covered, each with its measurement:**
+**Four are recorded rather than covered, each with its measurement:**
 
-* **S23** — the anchor's finiteness guard, removed. **INERT as implemented, and the reason is
-  `std::min`/`std::max`**: both return their first argument when a comparison involving NaN is false, so
-  a NaN propagates through the x clamp unchanged and lands on the same below-anchor the guard returns;
-  the flip's two comparisons are false under NaN as well. Proved in the other direction by **S23b**,
-  which removes the guard **and** switches to `std::clamp` — the refactor the guard exists to defend
-  against — and reddens `MP13`. The guard stays, as defence against exactly that refactor.
 * **S26** — `inspectorAssetFieldKey` using the short component name. Reddens `MP17` and is **structurally
   invisible at the GPU tier**: the request seam and the field arm both build their key through the same
   function, so they still agree and the popup still opens. That is D3's design working, and it means
@@ -16162,6 +16172,61 @@ every touched file. **Forty-one reddened**; five are recorded below with their m
 then seeded before it was committed, and the harness's `git checkout` took the fix with the seed.
 **Commit the fix, then seed it.** The harness also caught one incomplete revert on its own second-order
 check, which had silently poisoned the next seed's verdict — both were re-run clean.
+
+#### The code-review round — four should-fix gaps, none blocking, and two of them invisible everywhere
+
+Closed in one commit after the docs commit. Three are code and one is a test; three tidy-ups rode along.
+
+**1. THE TILE FACE WAS DRAWN AT THE WRONG ORIGIN.** The picker's grid captured `GetItemRectMin()`
+**after** its `Selectable`, where the browser's own `drawTile` has always captured
+`GetCursorScreenPos()` **before**. A `Selectable` extends its item box on the MIN side by half the item
+spacing (`imgui_widgets.cpp:7395-7396`), so every face — icon, thumbnail and caption — sat up and to the
+left of the tile it belonged to by `(ItemSpacing.x/2, ItemSpacing.y/2)`. **Seeded back and NOTHING
+reddened**, on either preset: no tier in this tree measures a widget rect, so this is a validation-only
+property and row 15 exists for it.
+
+**2. THE VALUE SENTENCE WAS THE BUTTON'S LABEL, AND ImGui TRUNCATES A LABEL AT ITS FIRST `##`.**
+`FindRenderedTextEnd` stops there (`imgui.cpp:3918`), so an asset named `readme##v2.png` rendered as
+`readme` and one named `##notes.png` left the button blank — the hazard `asset_browser_panel.cpp:635-637`
+has documented for its tile caption since 3.1.3 (E19), reproduced one file over. The button now takes
+`in.idSuffix` — the `###ref` id ALONE, which renders nothing and hashes to the **identical** value, so
+the popup, the drop target, the anchor and every source pin are unmoved — and the sentence goes on the
+draw list, clipped to the button's own frame. Two measurements made it safe: `AddText` submits **no
+ImGui item**, so the `Button` is still the last item for `BeginDragDropTarget`; and an empty visible
+label still measures one line high (`CalcTextSize`'s `text == text_display_end` arm returns
+`{0, font_size}`, `imgui.cpp:6447-6448`), so `ImVec2(width, 0)` still produces a full frame height and
+the anchor arithmetic did not move. `state.labelScratch` is gone. **Seeded back and NOTHING reddened**
+either — nothing here reads rendered text.
+
+**3. `assetPickerOpen()` WENT STALE WHEN NOBODY DREW.** See governing sentence 3 above; `I169` is the
+case, and its first draft was itself unfalsifiable for a reason worth keeping.
+
+**4. `MP13` COULD NOT SEE ITS OWN GUARD.** Every arm used `buttonMin.x = 100` against a work area of
+1000 and a popup of 200, where the shift-left correction is `min(100, 800) = 100` — **the guarded and
+the unguarded answers are the same number**. Every arm now sits at `x = 900`, which the correction moves
+to 800, plus a dedicated arm whose non-finite component is `buttonMin.y` so that `pos.x` is finite on
+both paths and the guard is the only thing that can leave it unshifted: **900 guarded, 800 unguarded**.
+**This is what makes `S23` a real seed at last** — removing the guard while keeping `std::min`/`std::max`
+now reddens `MP13` in four assertions, where it was recorded as inert. `S23b` (guard removed **and**
+folded into `std::clamp`) reddens `MP12` and `MP13`.
+
+**And the header's contract was corrected rather than the code.** It said *"NaN-SAFE"*, which the
+function is not and cannot be: the below-anchor it returns is literally `(buttonMin.x, buttonMax.y)`, so
+a non-finite button rect comes **straight back out**. What the guard actually buys is one predictable
+answer instead of a mixture of clamped and unclamped components, and immunity to exactly the `std::clamp`
+refactor `S23b` performs. A non-finite button rect is an ImGui-level impossibility — the caller reads it
+from `GetItemRectMin/Max` of an item ImGui has just laid out — and the comment says so now.
+
+**The three tidy-ups**, and one of them found a fourth measurement: the two-line `file_dialog.hpp`
+include comment that the new `thumbnail_service.hpp` include had split apart; `I167` arm (c)'s verbatim
+duplicate `CHECK` pair; and `KP3`'s `c_str()` arm, which could not tell `clear()` from anything because
+`"texture"` is seven bytes and lives in the `FieldEntry`'s own SSO buffer, whose address the
+vector-identity arm above it had already pinned. The token is forced off SSO with `reserve(256)` first
+now, where a spelling that FREES the allocation becomes visible — **and the implementation's own comment
+named the wrong counterexample.** Measured: `= {}` selects `operator=(initializer_list<char>)`, which
+assigns zero characters and **keeps the buffer**, so it is indistinguishable from `clear()` at every
+tier and seeding it reddens nothing. `= std::string{}` move-assigns and deallocates: capacity
+**263 -> 22**, pointer moved, `KP3` red. Both the comment and the seed name that spelling now.
 
 #### What was deliberately NOT built, with owners
 
@@ -16184,9 +16249,13 @@ check, which had silently poisoned the next seed's verdict — both were re-run 
 #### What is NOT validated
 
 `editor/validation/E.3.3-asset-reference-picker.md` is written and **has not been run on any platform**.
-Fourteen rows; the ones that are the ONLY cover a declared seed has anywhere are **row 1** (S45, the
+Fifteen rows; the ones that are the ONLY cover a declared seed has anywhere are **row 1** (S45, the
 button's width against `Clear`), **row 12** (S42, one WARN per open rather than per frame), **row 6**
 (the drop target — **no tier in this tree can drag**), **rows 3 and 5** (the click-to-commit close and
 the keyboard, whose source pins `I166(b)` covers but whose behaviour it cannot), and **row 7's
-truncation half** (S24's visible consequence). Row 13's HiDPI half inherits the browser's tile story;
-**E.1.1's thick-line handoff is untouched — this task draws no line.**
+truncation half** (S24's visible consequence). **Row 15 is the code-review round's**, and it is the only
+cover ANYTHING has for the two draw-list rules: an asset whose name contains `##` must read in full on
+the button, and a tile's icon, thumbnail and caption must sit inside the tile they belong to. Both seeds
+come back green at every automated tier, because nothing here reads rendered text or measures a widget
+rect. Row 13's HiDPI half inherits the browser's tile story; **E.1.1's thick-line handoff is untouched —
+this task draws no line.**
