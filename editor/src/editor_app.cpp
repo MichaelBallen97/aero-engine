@@ -1996,6 +1996,16 @@ std::size_t EditorApp::materialSamplerRowsDrawn() const noexcept {
     return materialPanel != nullptr ? materialPanel->samplerRowsDrawn() : 0;
 }
 
+void EditorApp::requestMaterialSectionOpen(std::size_t section, bool open) noexcept {
+    if (materialPanel != nullptr) {
+        materialPanel->setSectionOpen(section, open);
+    }
+}
+
+bool EditorApp::materialSectionOpen(std::size_t section) const noexcept {
+    return materialPanel != nullptr && materialPanel->sectionIsOpen(section);
+}
+
 void EditorApp::requestAssetPickerSearch(std::string_view query) {
     if (assetPicker != nullptr) {
         assetPicker->pendingSearch = std::string(query);

@@ -15645,11 +15645,20 @@ TEST_CASE(
     REQUIRE(app->tick());
     REQUIRE(app->tick());
 
+    // THE SPLIT IS FOR ONE CALL, AND THE COMMENT THIS REPLACES SAID OTHERWISE. It used to claim the
+    // thumbnail is "only in effect when the panel drew a Ready preview" -- that is wrong, and MR19 is
+    // the proof: thumbEdge is MATERIAL_SLOT_THUMB_FONT_MULTIPLE * fontSize, computed by a function
+    // that never sees the preview, and positive for EVERY metric set. So the tall button and the
+    // thumbnail are in effect in shader-tools-OFF exactly as they are here, and everything this case
+    // asserts below is a document fact that holds identically in both configurations.
+    //
+    // The only thing that needs a split is materialPreviewAvailable(), and AC-18 requires the OFF arm
+    // to ASSERT the OFF contract rather than skip -- I99's and I174's idiom.
 #if AERO_SHADER_TOOLS_ENABLED
-    // The thumbnail is only in effect when the panel drew a Ready preview, which is what makes this
-    // the ON arm. thumbEdge is the layout's and is positive for every metric set, so the row's button
-    // is the TALL one here.
     REQUIRE(app->materialPreviewAvailable());
+#else
+    CHECK_FALSE(app->materialPreviewAvailable());
+    CHECK(app->materialPreviewImageCount() == 0U);
 #endif
     REQUIRE_FALSE(app->assetPickerOpen());  // anti-vacuity: closed to begin with
     app->requestMaterialSlotPicker(0);
@@ -15756,6 +15765,135 @@ TEST_CASE(
         }
         CHECK(app->materialSlotDetailsOpen(0));
     }
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE(
+    "editor: a collapsed Material section stays collapsed across the mode boundary "
+    "(task E.3.4, I175)") {
+    // THE REGRESSION THE CODE-REVIEW ROUND FOUND. ImGui keeps a CollapsingHeader's open bit in the
+    // SUBMITTING WINDOW's StateStorage (imgui.cpp:8581), and E.3.4 put the body inside a child in one
+    // mode and not in the other -- so the same eight headers were two independent sets of bits, and
+    // dragging the dock divider across the boundary restored every collapsed section to DefaultOpen.
+    // Before E.3.4 the panel had no child and a collapsed section stayed collapsed, so this was a
+    // regression against main rather than a new limitation.
+    //
+    // NO #if: it asserts no preview quantity. The mode flip is driven by WINDOW SIZE, which works in
+    // both configurations -- materialPanelLayout never sees the preview.
+    //
+    // THE ASSERTION IS NOT A READ-BACK OF THE SEAM. materialSectionOpen() would round-trip whatever
+    // was requested whatever ImGui did with it -- seed S26's shape exactly. The discriminator is
+    // materialSamplerRowsDrawn(): a collapsed section submits NO body, so the slot row and its sampler
+    // disclosure are never reached and the counter stops climbing. That is a statement about what was
+    // DRAWN, and it is what reddens if the open bit goes back to being ImGui's.
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "material i175", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    const std::string assetsRoot = created.root + "/assets";
+    REQUIRE(engine::editor::writeTextFileAtomic(assetsRoot + "/full.aeromat", FULL_AEROMAT_TEXT).empty());
+    REQUIRE(writeBinaryFixture(assetsRoot + "/wood.png", TINY_PNG_RED.data(), TINY_PNG_RED.size()).empty());
+
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = created.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    app->panels().setVisible("Console", false);
+    app->panels().setVisible("Inspector", false);
+    REQUIRE(app->tick());
+    app->requestAssetBrowserSelectEntry("full.aeromat");
+    for (int i = 0; i < 4; ++i) {
+        REQUIRE(app->tick());
+    }
+    REQUIRE(app->materialTargetPath() == "full.aeromat");
+
+    // Bind slot 0 so its section has a sampler disclosure to count, and open that disclosure.
+    const std::optional<engine::Guid> textureGuid = app->assetGuidForPath("wood.png");
+    REQUIRE(textureGuid.has_value());
+    {
+        engine::MaterialDocument bound = *app->materialDocument();
+        bound.baseColor = engine::MaterialTextureSlot{.guid = *textureGuid};
+        app->requestMaterialDocument(bound);
+    }
+    for (int i = 0; i < 4; ++i) {
+        REQUIRE(app->tick());
+    }
+    REQUIRE(app->materialDocument() != nullptr);
+    REQUIRE(app->materialDocument()->baseColor.has_value());
+    app->requestMaterialSlotDetails(0, true);
+    for (int i = 0; i < 2; ++i) {
+        REQUIRE(app->tick());
+    }
+
+    // ANTI-VACUITY: with `Base Color` (section 1) OPEN, the disclosure really is being drawn, so the
+    // counter really does climb. Without this the "stopped climbing" assertions below would be
+    // satisfied by a panel that never drew anything at all.
+    REQUIRE(app->materialSectionOpen(1));
+    const std::size_t whileOpen = app->materialSamplerRowsDrawn();
+    REQUIRE(app->tick());
+    REQUIRE(app->materialSamplerRowsDrawn() > whileOpen);
+
+    // Collapse `Base Color`. Its body -- the slot row AND the sampler disclosure -- stops being
+    // submitted, so the counter freezes.
+    app->requestMaterialSectionOpen(1, false);
+    for (int i = 0; i < 2; ++i) {
+        REQUIRE(app->tick());
+    }
+    CHECK_FALSE(app->materialSectionOpen(1));
+    const std::size_t whileCollapsed = app->materialSamplerRowsDrawn();
+    REQUIRE(app->tick());
+    CHECK(app->materialSamplerRowsDrawn() == whileCollapsed);
+
+    // ---- CROSS THE MODE BOUNDARY --------------------------------------------------------------
+    // 320x180 is Scrolling at a display scale of 2 and 900x800 is FixedRegions at both scales, which
+    // is the same transition I171 drives. requestLayoutReset is what moves the dock column, exactly as
+    // I99 records.
+    window->setSize(900, 800);
+    for (int i = 0; i < 3; ++i) {
+        REQUIRE(app->tick());
+    }
+    app->requestLayoutReset();
+    for (int i = 0; i < 6; ++i) {
+        REQUIRE(app->tick());
+    }
+
+    // THE CLAIM: still collapsed, and still drawing nothing. With ImGui's per-window storage in charge
+    // the header would come back DefaultOpen in the other window and the counter would resume.
+    CHECK_FALSE(app->materialSectionOpen(1));
+    const std::size_t afterFlip = app->materialSamplerRowsDrawn();
+    for (int i = 0; i < 2; ++i) {
+        REQUIRE(app->tick());
+    }
+    CHECK(app->materialSamplerRowsDrawn() == afterFlip);
+
+    // And re-opening it in the NEW mode resumes drawing -- so the freeze above was the collapse and
+    // not the resize.
+    app->requestMaterialSectionOpen(1, true);
+    for (int i = 0; i < 2; ++i) {
+        REQUIRE(app->tick());
+    }
+    CHECK(app->materialSectionOpen(1));
+    const std::size_t reopened = app->materialSamplerRowsDrawn();
+    REQUIRE(app->tick());
+    CHECK(app->materialSamplerRowsDrawn() > reopened);
 
     app->requestQuit();
     CHECK(app->tick() == false);

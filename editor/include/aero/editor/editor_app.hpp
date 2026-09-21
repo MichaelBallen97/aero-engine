@@ -497,6 +497,13 @@ public:
     // reads back what the seam wrote and therefore cannot see whether ImGui obeyed; this can. Seed S26
     // (ImGuiCond_Once instead of ImGuiCond_Always) is invisible to every other observable in the tree.
     [[nodiscard]] std::size_t materialSamplerRowsDrawn() const noexcept;
+    // task E.3.4, the code-review round: the eight sections' collapse state. A SEAM rather than a
+    // source-text pin because the regression it guards -- ImGui's per-window StateStorage re-opening
+    // every collapsed section when the body's mode flips -- is only observable by CLOSING a section and
+    // then crossing the boundary, and no tier in this tree can click a header. Out of range is a no-op
+    // and a null panel is a no-op.
+    void requestMaterialSectionOpen(std::size_t section, bool open) noexcept;
+    [[nodiscard]] bool materialSectionOpen(std::size_t section) const noexcept;
     void requestAssetPickerSearch(std::string_view query);  // applied to the OPEN popup on its next draw
     // STEPS, not a single direction: a case moving to the third candidate writes ONE call rather than
     // three ticks. |delta| reductions of movePickerCursor are applied in one frame, which is exactly

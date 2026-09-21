@@ -122,8 +122,15 @@ struct AssetFieldInputs {
 //
 // It reads the LIVE style and the CURRENT content region, so it must be called inside the draw walk,
 // on the row it is sizing. `float` in and `float` out, so this header still names no ImGui type.
-// I172(e) pins that inspector_panel.cpp states CalcTextSize("Clear") ZERO times and asset_picker.cpp
-// exactly ONCE.
+//
+// NEITHER FILE STATES THE LITERAL, and this sentence used to say the opposite -- corrected by the
+// code-review round. The label arrives as a PARAMETER and the body calls
+// CalcTextSize(trailingButtonLabel), so `CalcTextSize("Clear")` reads ZERO in inspector_panel.cpp and
+// ZERO in asset_picker.cpp; what I172(e) pins at exactly one apiece is the CALL,
+// `assetReferenceFieldWidth("Clear")`, in inspector_panel.cpp and in material_panel.cpp. A second
+// trailing-button host adds a third such call and states no literal either -- writing
+// CalcTextSize("Clear") into this file on the strength of the old sentence would redden I172(e) for a
+// reason that sentence declared legal.
 [[nodiscard]] float assetReferenceFieldWidth(const char* trailingButtonLabel);
 
 }  // namespace engine::editor

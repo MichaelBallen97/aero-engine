@@ -13,6 +13,11 @@
 // records it as ONE pending whole-document edit -- last-writer-wins, the house's pending-action
 // shape. The document is small, and one slot cannot half-apply the way a per-field channel can.
 #include <aero/editor/asset_drag.hpp>  // task 3.1.5: MaterialSlotTextureDrop
+// task E.3.4: the panel's PURE model. Included rather than forward-declared since the code-review
+// round, because the section array's SIZE is MATERIAL_SECTION_COUNT and a restated count here would be
+// a second place for the section table's length to live. It is PUBLIC and ImGui-free, so it costs this
+// header nothing it was protecting.
+#include <aero/editor/material_inspector_model.hpp>
 #include <aero/editor/material_session.hpp>
 #include <aero/editor/panel.hpp>
 
@@ -37,12 +42,6 @@ namespace engine::editor {
 // clang does not warn under -Wmismatched-tags (task E.3.3).
 struct AssetPickerState;
 class ThumbnailService;
-
-// task E.3.4: forward-declared rather than included, so this header's include set does not move. The
-// model is PUBLIC and ImGui-free, so including it would be legal -- the forward declaration is simply
-// the smaller edit, and drawBody takes the layout by const reference.
-struct MaterialPanelLayout;
-struct MaterialSlotRow;
 
 class AssetDatabase;  // a reconciled POINTER, never a reference member (3.1.1's D13 / A-2 / INV-4):
                       // EditorApp is movable, so a reference binds to a pre-move address.
@@ -181,6 +180,20 @@ public:
     // makes I170(b)'s coverage-transfer claim an assertion rather than an inference from a green run.
     [[nodiscard]] std::size_t samplerRowsDrawn() const noexcept { return samplerRowsDrawnValue; }
 
+    // ---- the eight sections' open state (the code-review round's finding) --------------------------
+    // PANEL-owned for a sharper reason than the disclosure's: ImGui stores a CollapsingHeader's open
+    // bit in the SUBMITTING WINDOW's StateStorage, and the body is a child in one mode and not in the
+    // other -- so before this existed, crossing the mode boundary re-opened every collapsed section.
+    // Seeded all-TRUE because the sections ship DefaultOpen. Out of range is a no-op both ways.
+    void setSectionOpen(std::size_t section, bool open) noexcept {
+        if (section < MATERIAL_SECTION_COUNT) {
+            sectionOpen[section] = open;
+        }
+    }
+    [[nodiscard]] bool sectionIsOpen(std::size_t section) const noexcept {
+        return section < MATERIAL_SECTION_COUNT && sectionOpen[section];
+    }
+
     // task E.3.3: both set ONCE in EditorApp::create (the viewportPanel posture), not reconciled --
     // each points at a heap object EditorApp holds through a unique_ptr, so the address survives the
     // app's own move. NULL is a legal state: the slot then draws its bound-state block and no control.
@@ -237,6 +250,9 @@ private:
     std::string lastTargetPath;
     std::array<bool, SLOT_COUNT> slotDetails{};  // all false: every disclosure starts closed
     std::size_t samplerRowsDrawnValue = 0;       // see samplerRowsDrawn() -- seed S26's witness
+    // All TRUE: the eight sections ship DefaultOpen. See setSectionOpen for why ImGui's own storage
+    // cannot be the authority here.
+    std::array<bool, MATERIAL_SECTION_COUNT> sectionOpen{};
     // task E.3.3: borrowed, never owned, set once -- see setAssetPicker/setThumbnails above.
     AssetPickerState* assetPicker = nullptr;
     ThumbnailService* thumbnails = nullptr;

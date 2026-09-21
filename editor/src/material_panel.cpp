@@ -490,9 +490,15 @@ void MaterialPanel::drawSamplerDisclosure(std::size_t index, MaterialDocument& f
 }
 
 // ---- the body (task E.3.4) ------------------------------------------------------------------------
-// CALLED FROM BOTH body paths and from nowhere else, which is what keeps the two modes drawing the
-// same thing. It submits no BeginChild of its own: whether a child surrounds it is the CALLER's
-// decision and the layout's mode is what makes it.
+// CALLED FROM BOTH body paths and from nowhere else. It submits no BeginChild of its own: whether a
+// child surrounds it is the CALLER's decision and the layout's mode is what makes it.
+//
+// ONE function is what keeps the two modes drawing the same CODE. It is NOT by itself what keeps them
+// drawing the same THING, and the code-review round found the difference: every widget ImGui keys by
+// window -- a CollapsingHeader's open bit above all -- is a different entry in the `##body` child than
+// it is in the Material window. Anything here whose state must survive a mode flip therefore has to be
+// a PANEL member, which is what sectionOpen and slotDetails are. A new per-widget state added inside
+// this function inherits that obligation.
 //
 // The eight sections, one PushID each, under ONE shared label-column width measured over every label
 // in every section -- so all eight tables align as if they were a single form.
@@ -524,7 +530,20 @@ void MaterialPanel::drawBody(MaterialDocument& form, const MaterialPanelLayout& 
     std::size_t sectionIndex = 0;
     for (const MaterialSection& section : materialSections()) {
         ImGui::PushID(static_cast<int>(sectionIndex));  // 1:1 with the PopID at the bottom, EVERY path
-        if (ImGui::CollapsingHeader(section.title.data(), ImGuiTreeNodeFlags_DefaultOpen)) {
+        // THE PANEL OWNS THE OPEN BIT, not ImGui's storage -- drawSamplerDisclosure's idiom, and for a
+        // sharper reason. ImGui keeps a CollapsingHeader's state in the SUBMITTING WINDOW's
+        // StateStorage, so the same header is a different entry in the `##body` child than it is in
+        // the Material window, and a mode flip therefore restored every section to DefaultOpen. The
+        // array is a member, so it is the same eight bits whichever window draws them.
+        //
+        // ImGuiCond_Always and NOT Once: Once hands the decision back to the per-window storage this
+        // exists to bypass, which is the whole defect again (and is seed S26 one widget over).
+        ImGui::SetNextItemOpen(sectionOpen[sectionIndex], ImGuiCond_Always);
+        const bool sectionDrawn = ImGui::CollapsingHeader(section.title.data(), ImGuiTreeNodeFlags_DefaultOpen);
+        if (ImGui::IsItemToggledOpen()) {
+            sectionOpen[sectionIndex] = !sectionOpen[sectionIndex];
+        }
+        if (sectionDrawn) {
             // materialSlotRow is computed ONCE per section, before the row, and the SAME value
             // reaches drawSlotRow and drawSamplerDisclosure. Computing it twice is not wrong, it is a
             // second place to pass the wrong record.
@@ -779,6 +798,7 @@ void MaterialPanel::onDraw(PanelContext& /*context*/) {  // no World/Selection/P
     // targetPath() returns a string_view, so the member takes an explicit std::string construction.
     if (sessionPtr->targetPath() != lastTargetPath) {
         slotDetails.fill(false);
+        sectionOpen.fill(true);  // the sections ship DefaultOpen, so a new target starts them OPEN
         lastTargetPath = std::string(sessionPtr->targetPath());
     }
 
@@ -840,8 +860,15 @@ void MaterialPanel::onDraw(PanelContext& /*context*/) {  // no World/Selection/P
     // the pair is written INSIDE the FixedRegions arm, both calls in the same block, with nothing
     // between them that can return or continue.
     //
-    // Everything inside drawBody() is IDENTICAL in both paths -- one function, called from two places,
-    // so the sections, the label column and the two notices cannot drift between the modes.
+    // ONE drawBody, called from two places, so the sections, the label column and the two notices are
+    // the same CODE in both paths. That is not the same as the same STATE, and the difference is
+    // exactly the code-review round's finding: ImGui's per-window StateStorage
+    // (imgui.cpp:8581 -- `window->DC.StateStorage = &window->StateStorage`) means a CollapsingHeader
+    // submitted inside the `##body` child writes its open bit to the CHILD's storage, while the same
+    // header submitted in the Scrolling path writes to the Material window's. Two modes, two
+    // independent sets of collapse bits, so crossing the boundary re-opened every collapsed section
+    // from DefaultOpen -- a regression against the pre-E.3.4 panel, which had no child at all. The
+    // sections carry PANEL-owned open state for that reason; see sectionOpen.
     if (layout.mode == MaterialPanelMode::FixedRegions) {
         // -footerHeight, NEVER layout.bodyHeight: CalcItemSize resolves a negative child height as
         // ImMax(4.0f, avail.y + size.y) (imgui.cpp:12344-12345), so ImGui's own remainder is
