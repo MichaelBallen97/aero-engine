@@ -346,8 +346,8 @@ the tonemap params — this task moved the controls, not the state.
 
 **Goal:** the Inspector says what it is showing, follows what you click, and lets you *pick* an asset instead of reading a GUID. All three are missing: a `Vec3` renders as three unlabelled drag boxes, clicking an entity does not raise the Inspector, and an asset reference is a text string plus a `Clear` button.
 **Definition of Done:** every vector field is axis-labelled; selecting anything raises the panel that edits it; every asset reference is a searchable picker with a preview.
-**CLOSED IN CODE with E.3.4** — all four tasks merged. E.3.1, E.3.2 and E.3.3 are macOS-validated;
-E.3.4's page is written and unrun. The epic's own Definition of Done was met at E.3.3; E.3.4 is the task
+**CLOSED with E.3.4** — all four tasks merged, and E.3.1, E.3.3 and E.3.4 are macOS-validated
+(E.3.2's page remains unrun). The epic's own Definition of Done was met at E.3.3; E.3.4 is the task
 that made the panel those pickers live in read as a material rather than as a form.
 
 ### E.3.1 Axis-labelled vector fields · P0 · M · depends: 2.2.2
@@ -506,7 +506,8 @@ Subtasks:
 
 _Outcome:_ **sized M, recorded before implementation, landed M. Eight commits; the full local gate green
 on both presets and both reduced configurations; the 54-seed sabotage matrix run in full and a
-code-review round closed. Its validation page is written and has NOT been run on any platform.** The
+code-review round closed. **macOS-validated 2026-09-22 — 12 PASS / 1 PARTIAL / 1 NOT EXECUTABLE,
+nothing failed**, which closes eighteen of the nineteen seeds that had no automated cover.** The
 panel is a fixed identity line and live preview, a scrolling body of eight sections, and a fixed footer;
 each texture slot is ONE ImGui item and the six sampler tokens sit behind a per-slot disclosure that
 starts closed and is drivable from a seam. Every number, label, sentence and priority order the panel
@@ -528,6 +529,18 @@ when the panel crossed the boundary, a regression against `main` that the code-r
 that panel-owned open state fixes. And a seam whose accessor reads back the state the seam wrote is a
 round trip rather than a test: sabotage seed `S26` walked straight through 149 green assertions, and the
 discriminator turned out to be counting what the widget actually **drew**.
+
+**The pass confirmed the design in the product, by measurement rather than by eye.** The label column is
+identical at x=1454 in all eight sections and does not move when `Alpha cutoff` appears; the slot face
+is 52 x 52 at gaps 4 / 3 / 3, and a nil slot paints 0 of 2704 pixels. Apply's emphasis is **byte-exact
+`ImGuiCol_ButtonActive`** while its disabled fill is **byte-identical to Revert's** — the discriminator
+an unconditional push would have destroyed — and `100%s.aeromat` renders its `%s` literally. Over an
+eleven-step height sweep the preview floors at exactly 130 px in **both** modes, stays monotone, and
+**does not jump at the boundary**; collapsed sections survive the crossing in both directions. The
+Inspector's two `Guid` rows are **0 differing pixels of 189 504** against a branch-point build, and
+there is no new Tracy zone, with the cost delta smaller than the same build's own run-to-run spread.
+**Row 11 is NOT EXECUTABLE** (no 2x display attached) and **row 12 PARTIAL** (no synthetic text entry);
+both are input limits rather than defects.
 
 ---
 

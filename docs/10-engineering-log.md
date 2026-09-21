@@ -16488,3 +16488,72 @@ material thumbnail (**E.4.5**, and `ThumbnailService` is already its home); no R
 no FOV control (unowned); `PREVIEW_MAX_EXTENT` untouched (3.4.2's budget). `materialSlotLabel` now has
 three consumers, all wanting the **format key** — the UI call site that used a format key as a label is
 gone, which is the shape it should always have had.
+
+#### The macOS validation pass — 12 PASS / 1 PARTIAL / 1 NOT EXECUTABLE, 2026-09-22, nothing failed
+
+Run against `main @ 170ad9b` on a **1x** display (MSI MP341CQ 3440x1440; the machine is in clamshell
+and both attached externals report `backingScale 1.0`), window 2302x1094. Style there is
+`font 13 / FramePadding (4,3) / ItemSpacing.y 4 / Separator 1`, content region `windowHeight − 82`,
+and the **mode boundary sits at a 205-point content region** rather than the 237 the 2x style gives.
+68 of 73 records ticked. **Eighteen of the nineteen seeds with no automated cover are closed.**
+
+**The numbers worth keeping.** The label column is **identical at x=1454 (border) / 1459 (widget) in
+all eight sections including `File`**, and does not move when `Alpha cutoff` appears or disappears —
+it is measured over every label, drawn or not. The slot button is **58 px = thumbEdge 52 +
+2·FramePadding.y 3**; the face measures **52 × 52 at gaps left 4 / top 3 / bottom 3**, which is
+`buttonMin + FramePadding` with `pad = 0` exactly as designed. That measurement was taken on the
+**`.ktx2`** slot, because a kind icon fills the face while a thumbnail need not — a 32 × 32 source PNG
+draws its content ~14 px inside the 52 px box, and **the Asset Browser shows the identical proportion
+for the same files**, so the shared painter is genuinely shared and the smallness is the
+ThumbnailStore's handling of a tiny source, predating this task. A **nil** slot paints **0 of 2704**
+pixels in its face.
+
+**Both colour seeds are caught by measurement rather than by eye.** Apply's emphasised fill is
+**`rgb(15,135,250)`, byte-exact `ImGuiCol_ButtonActive`**, while its *disabled* fill is
+**byte-identical to Revert's** at `rgb(28,46,71)` — an unconditional push would have painted
+`ButtonActive × DisabledAlpha`, a faded blue, and the two would differ (`S37`). And `100%s.aeromat`
+renders **`Write these changes to 100%s.aeromat.`** with the `%s` literal, which is the `"%s"`
+argument form confirmed in the product (`S39`).
+
+**The geometry holds across an eleven-step sweep** (window 1094 → 260, content 1012 → 178): Apply is
+reachable at every step — without scrolling above the boundary, by scrolling below it, verified
+directly at h=260 — the preview never vanishes, it **floors at exactly 130 px = `MIN_FONT 10 × 13` in
+BOTH modes**, saturates at **311/312 = `MAX_FONT 24 × 13`**, is **monotone non-decreasing**, and
+**does not jump across the boundary**: it reads 130 at 300, 287, 280, 270 and 260, which is the
+continuity the mode predicate was chosen for. Six continuous passes across the boundary produced no
+hitch. **The code-review round's regression is fixed in the product**: `Rendering` and `File`
+collapsed at h=700 stayed collapsed through 260 and back to 700, in both directions.
+
+**The header does not move.** Preview **(95,327,233) with the unknown-key notice and (95,327,233)
+clean**, byte-identical; footer **80 px** for both a short and a very long message, so the long one is
+clipped rather than wrapped; and the no-sun notice — `No directional light in the scene -- the preview
+is lit by its environment only.` — draws **in the body above `Material`**, with the preview
+**(95,406,312) with and without it**.
+
+**Two A/B results.** The Inspector's `mesh` and `material` rows are **0 differing pixels of 189 504**
+against a branch-point build (`91dcab8` built at the primary binary path, shader directories verified
+byte-identical, both binaries run from the same signed bundle at identical geometry), with a **500-px
+anti-vacuity control** — 444 in the title bar and 56 in the Console's timestamps — proving the two
+captures are from different runs. And **there is no new Tracy zone**: 31, roster identical across
+three captures. **There is also no `renderFrame` zone in this tree** — the frame-level zones are
+`renderScene` and `render`, and the validation page's name for it was an assumption. Over 2 733 /
+2 726 / 2 782 frames the **within-build spread exceeds the cross-build delta on 6 of 8 zones**
+(`renderScene` 0.0121 against 0.0001), so the honest answer is a **bound, not a measurement**.
+
+**Two rows could not be completed, both input limits rather than defects.** Row 11 (HiDPI) is **NOT
+EXECUTABLE** — no 2x display is attached, so the 624-device-pixel-against-512 softness cannot be
+judged. Row 12 is **PARTIAL** — synthetic text entry never arrives, so "type into `Name` and scroll it
+out of view" is hand-only; the body's independent scrolling and Revert's discard were both verified.
+
+**Method facts earned here, because each cost a wrong answer first.** A **pending TCC prompt stalls
+the editor to ~0.2 % CPU with a window that exists at the right geometry and never renders** — the
+capture comes back entirely black; find it by sweeping `layer > 0` for `UserNotificationCenter`. The
+prompts **cascade, one per bundle identity**, and **both accepted a synthetic click** on the
+affirmative button derived from the dialog's own bounds (centre ≈ `x + 0.727·w`, `y + 0.844·h`);
+granting took the editor from 0.2 % to 14 % CPU immediately. A **stale editor survives `pkill -f`**,
+and a window lookup then captures the wrong process — `pkill -9` and assert the process list is empty.
+A **stalled bundle identity stays stalled** until a fresh `CFBundleIdentifier` clears it. Correcting
+an earlier note: **synthetic mouse moves DO provoke ImGui tooltips** here (move in two or three steps,
+then wait ~2 s), which is how all four Apply/Revert tooltips were read; the scroll wheel drives child
+scrolling; and **Backspace deletes the selected entity**, because the Edit menu has no Delete item.
+Text entry still never arrives by any encoding.
