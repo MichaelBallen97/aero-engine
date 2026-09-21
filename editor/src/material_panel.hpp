@@ -166,6 +166,9 @@ private:
     // labelScratch and databasePtr off `this`.
     void drawBody(MaterialDocument& form, const MaterialPanelLayout& layout,
                   const std::optional<MaterialError>& invalid, bool& changed);
+    // task E.3.4: the File section's read-only rows. A member for drawBody's reason -- it reads
+    // sessionPtr, databasePtr and labelScratch off `this`, so the parameter list is one.
+    void drawFileSection(float labelWidth);
     // task E.3.3: a PRIVATE MEMBER rather than a free function -- it reads databasePtr, labelScratch,
     // observedSlotDrop, assetPicker, thumbnails and keyScratch off `this`, so the parameter list is
     // four rather than the ten a free function would have needed.

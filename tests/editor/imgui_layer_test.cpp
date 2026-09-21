@@ -137,6 +137,22 @@ struct QuietTraceLogging {
     return {reinterpret_cast<const char*>(bytes.data()), bytes.size()};
 }
 
+// task E.3.4 (I172): how many times a literal occurs in a source file, advancing by the needle's own
+// length so overlapping matches are not double-counted. A COUNT rather than a membership test, because
+// the property I172(d)/(e) state is "exactly one", and "at least one" would stay green against a second
+// copy -- which is precisely the drift a shared formula exists to prevent.
+[[nodiscard]] std::size_t countOccurrences(std::string_view haystack, std::string_view needle) {
+    if (needle.empty()) {
+        return 0;
+    }
+    std::size_t count = 0;
+    for (std::size_t at = haystack.find(needle); at != std::string_view::npos;
+         at = haystack.find(needle, at + needle.size())) {
+        ++count;
+    }
+    return count;
+}
+
 // task E.3.2: a fresh, never-yet-existing editor-preferences PATH -- the file itself is written by
 // the app under test, never here. The persistLayout gate (EditorAppConfig::editorPrefsPath) means an
 // app that does NOT set this and does NOT set persistLayout writes nothing at all; every case that
@@ -15313,4 +15329,99 @@ TEST_CASE("editor: a short Material panel still edits and still previews (task E
     app->requestQuit();
     CHECK(app->tick() == false);
     app.reset();
+}
+
+TEST_CASE(
+    "editor: the Material panel states no label, no sentence, no magnitude and no colour "
+    "(task E.3.4, I172)") {
+    // NO #if: three file reads, no context, no GPU, no preview quantity. The I166(c) form -- "the
+    // widget states no AssetKind:: literal at all" -- one panel over. A source-text pin is the ONLY
+    // mechanical statement available for "the panel holds no decision", because nothing in this tree
+    // reads rendered text.
+    //
+    // IT DOES NOT STRIP COMMENTS, deliberately: a section title or a layout magnitude restated in a
+    // comment is still a second copy of a number that has one home, and the next person to edit the
+    // panel reads the comment.
+    const auto readSource = [](std::string_view path) {
+        const engine::editor::FileReadResult read = engine::editor::readTextFile(path);
+        REQUIRE(read.text.has_value());
+        REQUIRE_FALSE(read.text->empty());
+        return *read.text;
+    };
+    const std::string panel = readSource(AERO_EDITOR_SRC_DIR "/material_panel.cpp");
+    const std::string inspector = readSource(AERO_EDITOR_SRC_DIR "/inspector_panel.cpp");
+    const std::string picker = readSource(AERO_EDITOR_SRC_DIR "/asset_picker.cpp");
+    REQUIRE(panel.size() > 1000U);  // anti-vacuity: the file really was read
+    REQUIRE(inspector.size() > 1000U);
+    REQUIRE(picker.size() > 1000U);
+
+    SUBCASE("(a) no section title, no field label, no sentence, no sampler label, no dirty word") {
+        // Every string below comes from material_inspector_model.hpp. A restatement here is the exact
+        // drift the model exists to prevent, and it would be INVISIBLE: two copies of "Base Color"
+        // that differ by a byte render as two different section titles with no error anywhere.
+        for (const char* s : {"\"Material\"",      "\"Base Color\"",   "\"Metallic / Roughness\"",
+                              "\"Normal\"",        "\"Occlusion\"",    "\"Emission\"",
+                              "\"Rendering\"",     "\"File\"",         "\"Tint\"",
+                              "\"Metallic\"",      "\"Roughness\"",    "\"Color\"",
+                              "\"Scale\"",         "\"Strength\"",     "\"Alpha mode\"",
+                              "\"Alpha cutoff\"",  "\"Double sided\"", "Sampled as sRGB",
+                              "Sampled as linear", "\"Sampler\"",      "Sampler (custom)",
+                              "unknown key",       "Unsaved changes"}) {
+            CAPTURE(s);
+            CHECK(panel.find(s) == std::string::npos);
+        }
+        // "Name" is DELIBERATELY absent from that list: `nameDraft`/`nameEditing` and the seam's own
+        // identifiers contain it, so the clause would be unfalsifiable. The label itself comes from the
+        // model like every other; this is a limit of a token scan and is stated rather than hidden.
+        //
+        // AND "Material" IS SAFE HERE ONLY BY ACCIDENT OF PLACEMENT: Panel::id() returns "Material"
+        // but is defined INLINE IN material_panel.hpp, not in the .cpp, so this file does not contain
+        // that literal. If a later task moves id() into the .cpp, drop "Material" from this list
+        // rather than weakening the clause.
+    }
+    SUBCASE("(b) the panel names NO ImDrawList primitive -- the thumbnail is the shared painter's") {
+        for (const char* s : {"AddImage", "AddRectFilled", "AddText", "GetWindowDrawList"}) {
+            CAPTURE(s);
+            CHECK(panel.find(s) == std::string::npos);
+        }
+    }
+    SUBCASE("(c) no layout magnitude, and no bare separator height") {
+        for (const char* s : {"MATERIAL_PREVIEW_", "MATERIAL_BODY_", "0.38", "180.0F", "PREVIEW_HEIGHT_POINTS"}) {
+            CAPTURE(s);
+            CHECK(panel.find(s) == std::string::npos);
+        }
+        // The separator's height is READ, never stated: ImGui 1.92.8 removed the "a 1 px Separator
+        // does not move the cursor" hack while SeparatorEx's own header comment still describes it,
+        // and ScaleAllSizes scales the value -- measured at 2 on a Retina display. Its ONLY spelling
+        // in this file is the metric assignment, which names the style member.
+        CHECK(panel.find("style.SeparatorSize") != std::string::npos);
+        // `180` without the F suffix is DELIBERATELY not swept: E.3.1's finding 5 is that a token scan
+        // is blind to integer-literal suffixes, and the inverse holds too -- a bare `180` matches
+        // inside any longer number. The constant this clause is about was spelled `180.0F`.
+    }
+    SUBCASE("(d) the Apply emphasis derives from the style -- no colour literal") {
+        CHECK(panel.find("GetStyleColorVec4(ImGuiCol_ButtonActive)") != std::string::npos);
+        CHECK(panel.find("IM_COL32") == std::string::npos);
+        // The two file-local ImVec4s (WARNING_COLOR / NOTICE_COLOR) stay, UNCHANGED and UNMOVED, and
+        // are E.6.1's candidates. This task adds NONE -- which is why the COUNT is pinned rather than
+        // the absence.
+        CHECK(countOccurrences(panel, "constexpr ImVec4") == 2U);
+    }
+    SUBCASE("(e) ONE width formula, in ONE place") {
+        // Two exact counts over one literal each, NOT "the file does not contain CalcTextSize" --
+        // inspector_panel.cpp uses CalcTextSize elsewhere and legitimately will again. If a later task
+        // renames the Inspector's `Clear`, this is a two-character edit to one assertion, which is a
+        // better failure mode than a silent second formula.
+        CHECK(countOccurrences(inspector, "CalcTextSize(\"Clear\")") == 0U);
+        CHECK(countOccurrences(picker, "CalcTextSize(\"Clear\")") == 0U);  // it takes a PARAMETER
+        CHECK(countOccurrences(picker, "assetReferenceFieldWidth") >= 1U);
+        CHECK(countOccurrences(inspector, "assetReferenceFieldWidth(\"Clear\")") == 1U);
+    }
+    SUBCASE("(f) the seam key comes from materialSlotFieldKey, never a hand-built string") {
+        // This re-creates exactly the class E.3.3's inspectorAssetFieldKey exists to prevent: a
+        // hand-built key that agrees byte for byte TODAY and silently stops matching the seam the day
+        // the format changes. The two agree now, so only source text can state this.
+        CHECK(panel.find("materialSlotFieldKey") != std::string::npos);
+        CHECK(panel.find("\"slot:\"") == std::string::npos);
+    }
 }

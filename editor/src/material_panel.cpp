@@ -135,85 +135,147 @@ template <typename Enum, std::size_t N, typename LabelFn>
     return changed;
 }
 
-// ---- the scalar rows, docs/09 section 11 order (AC-17) -------------------------------------------
-[[nodiscard]] bool drawScalarRows(MaterialDocument& form, std::string& nameDraft, bool& nameEditing,
-                                  std::string& scratch) {
-    bool changed = false;
+// project_settings_panel.cpp's own TABLE_FLAGS, verbatim and for its reasons: a fixed label column, a
+// stretch value column, resizable by the user, and NoSavedSettings so a table's width is never a
+// persisted format.
+constexpr ImGuiTableFlags MATERIAL_TABLE_FLAGS =
+    ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_Resizable | ImGuiTableFlags_NoSavedSettings;
 
-    // `name` commits on deactivate-after-edit (AC-17). The draft is re-synced on every frame the
-    // widget is NOT active, which is also how a retarget reaches it -- see the header's own note on
-    // why a per-frame copy of form.name cannot carry the gesture.
-    if (!nameEditing) {
-        nameDraft = form.name;
-    }
-    inputTextString("Name", nameDraft, ImGuiInputTextFlags_None);
-    nameEditing = ImGui::IsItemActive();
-    if (ImGui::IsItemDeactivatedAfterEdit()) {
-        form.name = nameDraft;
-        changed = true;
-    }
-
-    std::array<float, 4> base{form.baseColorFactor.x, form.baseColorFactor.y, form.baseColorFactor.z,
-                              form.baseColorFactor.w};
-    if (ImGui::ColorEdit4("Base color", base.data(), ImGuiColorEditFlags_Float)) {
-        form.baseColorFactor.x = clampUnit(base[0]);
-        form.baseColorFactor.y = clampUnit(base[1]);
-        form.baseColorFactor.z = clampUnit(base[2]);
-        form.baseColorFactor.w = clampUnit(base[3]);
-        changed = true;
-    }
-
-    float metallic = form.metallicFactor;
-    if (ImGui::SliderFloat("Metallic", &metallic, 0.0F, 1.0F)) {
-        form.metallicFactor = clampUnit(metallic);
-        changed = true;
-    }
-    float roughness = form.roughnessFactor;
-    if (ImGui::SliderFloat("Roughness", &roughness, 0.0F, 1.0F)) {
-        form.roughnessFactor = clampUnit(roughness);
-        changed = true;
-    }
-
-    // HDR only for emissive: docs/09 section 11.1 leaves it unbounded above (the lights' precedent),
-    // and baseColorFactor is a [0,1] tint that an HDR picker would invite somebody to break.
-    std::array<float, 3> emissive{form.emissiveFactor.x, form.emissiveFactor.y, form.emissiveFactor.z};
-    if (ImGui::ColorEdit3("Emissive", emissive.data(), ImGuiColorEditFlags_Float | ImGuiColorEditFlags_HDR)) {
-        form.emissiveFactor.x = clampNonNegative(emissive[0]);
-        form.emissiveFactor.y = clampNonNegative(emissive[1]);
-        form.emissiveFactor.z = clampNonNegative(emissive[2]);
-        changed = true;
-    }
-
-    // v_min == v_max == 0 is ImGui's "no bound at all": the C++ clamp below is the ONLY enforcement,
-    // which is exactly AC-18's point rather than an oversight.
-    float normalScale = form.normalScale;
-    if (ImGui::DragFloat("Normal scale", &normalScale, 0.01F, 0.0F, 0.0F, "%.3f")) {
-        form.normalScale = clampNonNegative(normalScale);
-        changed = true;
-    }
-    float occlusion = form.occlusionStrength;
-    if (ImGui::SliderFloat("Occlusion strength", &occlusion, 0.0F, 1.0F)) {
-        form.occlusionStrength = clampUnit(occlusion);
-        changed = true;
-    }
-
-    if (tokenCombo("Alpha mode", form.alphaMode, ALPHA_MODE_VALUES, materialAlphaModeLabel, scratch)) {
-        changed = true;
-    }
-    // AC-19: the ROW is conditional, the VALUE is not. The format stores alphaCutoff whatever the mode
-    // is, so switching to opaque and back must return the number the user chose, not 0.5.
-    if (form.alphaMode == MaterialAlphaMode::Mask) {
-        float cutoff = form.alphaCutoff;
-        if (ImGui::SliderFloat("Alpha cutoff", &cutoff, 0.0F, 1.0F)) {
-            form.alphaCutoff = clampUnit(cutoff);
-            changed = true;
+// ONE pass over every label in every section, so all eight tables get the SAME column-0 width and the
+// panel reads as ONE form rather than as eight unrelated tables. Ten CalcTextSize calls, and `Alpha
+// cutoff` is measured whether or not its row is drawn this frame -- measuring only what is on screen
+// would make the column jump when the alpha mode changes.
+//
+// WHAT IT DOES NOT DO: re-widen the column after a RUNTIME font-scale change. TableSetupColumn's init
+// width reaches column->WidthRequest only under IsInitializing, and the one per-frame re-apply path is
+// gated on !column_is_resizable -- project_settings_panel.cpp:59-70 records the full analysis with its
+// line numbers and it is NOT restated here. Consequence, stated once: labels WRAP rather than clip
+// after such a change, and the user can drag the divider.
+//
+// materialFieldLabel returns a string_view over a STRING LITERAL, which the model's header states as a
+// contract -- so .data() is NUL-terminated and CalcTextSize(const char*) is safe.
+[[nodiscard]] float widestMaterialLabel() {
+    float widest = 0.0F;
+    for (const MaterialSection& section : materialSections()) {
+        for (const MaterialFieldId field : section.fields) {
+            widest = std::max(widest, ImGui::CalcTextSize(materialFieldLabel(field).data()).x);
         }
     }
+    return widest + (ImGui::GetStyle().CellPadding.x * 2.0F);
+}
 
-    bool doubleSided = form.doubleSided;
-    if (ImGui::Checkbox("Double sided", &doubleSided)) {
-        form.doubleSided = doubleSided;
-        changed = true;
+// ---- ONE scalar row's VALUE CELL (task E.3.4) -----------------------------------------------------
+// 3.4.2's drawScalarRows, arm for arm, behind a switch with NO `default:` so an eleventh field is a
+// -Wswitch error rather than a row that silently draws nothing. Every clamp, every widget, every flag
+// and both of AC-18's and AC-19's rules cross VERBATIM -- this is a re-shaping of the caller, not of
+// the controls.
+//
+// THE CALLER OWNS THE ROW AND THIS OWNS THE CELL (E.3.1's InspectorPanel::drawField shape): the label
+// cell, TableNextRow, TableNextColumn and SetNextItemWidth all happen above, so every widget below
+// passes "" as its label -- the label column already said what it is.
+//
+// alphaCutoff's conditionality is the CALLER's too, and deliberately: skipping it here would submit a
+// label cell and an EMPTY value cell.
+[[nodiscard]] bool drawFieldRow(MaterialFieldId field, MaterialDocument& form, std::string& nameDraft,
+                                bool& nameEditing, std::string& scratch) {
+    bool changed = false;
+    switch (field) {
+        case MaterialFieldId::Name: {
+            // `name` commits on deactivate-after-edit (AC-17). The draft is re-synced on every frame
+            // the widget is NOT active, which is also how a retarget reaches it -- see the header's
+            // own note on why a per-frame copy of form.name cannot carry the gesture.
+            if (!nameEditing) {
+                nameDraft = form.name;
+            }
+            inputTextString("##name", nameDraft, ImGuiInputTextFlags_None);
+            nameEditing = ImGui::IsItemActive();
+            if (ImGui::IsItemDeactivatedAfterEdit()) {
+                form.name = nameDraft;
+                changed = true;
+            }
+            break;
+        }
+        case MaterialFieldId::BaseColorFactor: {
+            std::array<float, 4> base{form.baseColorFactor.x, form.baseColorFactor.y, form.baseColorFactor.z,
+                                      form.baseColorFactor.w};
+            if (ImGui::ColorEdit4("##tint", base.data(), ImGuiColorEditFlags_Float)) {
+                form.baseColorFactor.x = clampUnit(base[0]);
+                form.baseColorFactor.y = clampUnit(base[1]);
+                form.baseColorFactor.z = clampUnit(base[2]);
+                form.baseColorFactor.w = clampUnit(base[3]);
+                changed = true;
+            }
+            break;
+        }
+        case MaterialFieldId::MetallicFactor: {
+            float metallic = form.metallicFactor;
+            if (ImGui::SliderFloat("##metallic", &metallic, 0.0F, 1.0F)) {
+                form.metallicFactor = clampUnit(metallic);
+                changed = true;
+            }
+            break;
+        }
+        case MaterialFieldId::RoughnessFactor: {
+            float roughness = form.roughnessFactor;
+            if (ImGui::SliderFloat("##roughness", &roughness, 0.0F, 1.0F)) {
+                form.roughnessFactor = clampUnit(roughness);
+                changed = true;
+            }
+            break;
+        }
+        case MaterialFieldId::EmissiveFactor: {
+            // HDR only for emissive: docs/09 section 11.1 leaves it unbounded above (the lights'
+            // precedent), and baseColorFactor is a [0,1] tint that an HDR picker would invite somebody
+            // to break.
+            std::array<float, 3> emissive{form.emissiveFactor.x, form.emissiveFactor.y, form.emissiveFactor.z};
+            if (ImGui::ColorEdit3("##emissive", emissive.data(), ImGuiColorEditFlags_Float | ImGuiColorEditFlags_HDR)) {
+                form.emissiveFactor.x = clampNonNegative(emissive[0]);
+                form.emissiveFactor.y = clampNonNegative(emissive[1]);
+                form.emissiveFactor.z = clampNonNegative(emissive[2]);
+                changed = true;
+            }
+            break;
+        }
+        case MaterialFieldId::NormalScale: {
+            // v_min == v_max == 0 is ImGui's "no bound at all": the C++ clamp below is the ONLY
+            // enforcement, which is exactly AC-18's point rather than an oversight.
+            float normalScale = form.normalScale;
+            if (ImGui::DragFloat("##normalscale", &normalScale, 0.01F, 0.0F, 0.0F, "%.3f")) {
+                form.normalScale = clampNonNegative(normalScale);
+                changed = true;
+            }
+            break;
+        }
+        case MaterialFieldId::OcclusionStrength: {
+            float occlusion = form.occlusionStrength;
+            if (ImGui::SliderFloat("##occlusion", &occlusion, 0.0F, 1.0F)) {
+                form.occlusionStrength = clampUnit(occlusion);
+                changed = true;
+            }
+            break;
+        }
+        case MaterialFieldId::AlphaMode:
+            changed = tokenCombo("##alphamode", form.alphaMode, ALPHA_MODE_VALUES, materialAlphaModeLabel, scratch);
+            break;
+        case MaterialFieldId::AlphaCutoff: {
+            // AC-19: the ROW is conditional -- in the CALLER -- and the VALUE is not. The format stores
+            // alphaCutoff whatever the mode is, so switching to opaque and back must return the number
+            // the user chose, not 0.5.
+            float cutoff = form.alphaCutoff;
+            if (ImGui::SliderFloat("##alphacutoff", &cutoff, 0.0F, 1.0F)) {
+                form.alphaCutoff = clampUnit(cutoff);
+                changed = true;
+            }
+            break;
+        }
+        case MaterialFieldId::DoubleSided: {
+            bool doubleSided = form.doubleSided;
+            if (ImGui::Checkbox("##doublesided", &doubleSided)) {
+                form.doubleSided = doubleSided;
+                changed = true;
+            }
+            break;
+        }
     }
     return changed;
 }
@@ -406,12 +468,104 @@ void MaterialPanel::drawBody(MaterialDocument& form, const MaterialPanelLayout& 
         ImGui::PopStyleColor();
     }
 
-    changed = drawScalarRows(form, nameDraft, nameEditing, labelScratch) || changed;
-    ImGui::SeparatorText("Textures");
-    for (std::size_t i = 0; i < SLOT_COUNT; ++i) {
-        // The preview is READ here, never driven: slotTextureState/slotNotice are const reads of state
-        // the service pass owns, exactly like nativeColorTexture below (INV-5).
-        changed = drawSlotSection(i, form, preview.slotTextureState(i), preview.slotNotice(i)) || changed;
+    // ONE measurement over EVERY label in EVERY section, so all eight tables share one column-0 width
+    // and the panel reads as one form. Measured before the loop, so no section can widen the column
+    // for the sections after it.
+    const float labelWidth = widestMaterialLabel();
+
+    std::size_t sectionIndex = 0;
+    for (const MaterialSection& section : materialSections()) {
+        ImGui::PushID(static_cast<int>(sectionIndex));  // 1:1 with the PopID at the bottom, EVERY path
+        if (ImGui::CollapsingHeader(section.title.data(), ImGuiTreeNodeFlags_DefaultOpen)) {
+            // The slot row is still 3.4.2's drawSlotSection for exactly one commit, called with the
+            // index the table gives it. It keeps its own CollapsingHeader here, which nests a header
+            // inside a header -- ImGui allows it and it is visibly wrong. The next step replaces it;
+            // deleting it here would merge two reviewable commits into one that is not.
+            if (section.slot.has_value()) {
+                changed = drawSlotSection(*section.slot, form, preview.slotTextureState(*section.slot),
+                                          preview.slotNotice(*section.slot)) ||
+                          changed;
+            }
+            if (!section.fields.empty()) {
+                if (ImGui::BeginTable("##rows", 2, MATERIAL_TABLE_FLAGS)) {  // EndTable ONLY if true
+                    ImGui::TableSetupColumn("##label", ImGuiTableColumnFlags_WidthFixed, labelWidth);
+                    ImGui::TableSetupColumn("##value", ImGuiTableColumnFlags_WidthStretch);
+                    for (const MaterialFieldId field : section.fields) {
+                        // AC-19's conditionality lives HERE, before TableNextRow: skipping inside
+                        // drawFieldRow instead would submit a label cell and an EMPTY value cell.
+                        if (field == MaterialFieldId::AlphaCutoff && form.alphaMode != MaterialAlphaMode::Mask) {
+                            continue;
+                        }
+                        // The CALLER owns the row, the ARM owns the cell.
+                        ImGui::TableNextRow();
+                        ImGui::TableNextColumn();
+                        ImGui::AlignTextToFramePadding();
+                        ImGui::TextUnformatted(materialFieldLabel(field).data());
+                        ImGui::TableNextColumn();
+                        ImGui::SetNextItemWidth(-1.0F);
+                        changed = drawFieldRow(field, form, nameDraft, nameEditing, labelScratch) || changed;
+                    }
+                    ImGui::EndTable();
+                }
+            }
+            if (section.id == MaterialSectionId::File) {
+                drawFileSection(labelWidth);
+            }
+        }
+        ImGui::PopID();
+        ++sectionIndex;
+    }
+}
+
+// ---- the File section (task E.3.4) ----------------------------------------------------------------
+// Read-only diagnostics: where this material lives, what identity the project gave it, and the full
+// per-key list of what Apply would delete. The list LEFT the top status strip and landed here, which
+// is what closes the one-commit gap the previous step opened; the footer's status line still carries
+// the SUMMARY every frame.
+//
+// It draws its OWN two-column table with the SAME labelWidth the seven other sections use -- never a
+// bare TextUnformatted run, or the one read-only section would be the one that does not line up.
+void MaterialPanel::drawFileSection(float labelWidth) {
+    if (sessionPtr == nullptr) {
+        return;  // unreachable from the Ready arm; a null pointer is never assumed away
+    }
+    if (ImGui::BeginTable("##file", 2, MATERIAL_TABLE_FLAGS)) {  // EndTable ONLY if true
+        ImGui::TableSetupColumn("##label", ImGuiTableColumnFlags_WidthFixed, labelWidth);
+        ImGui::TableSetupColumn("##value", ImGuiTableColumnFlags_WidthStretch);
+
+        ImGui::TableNextRow();
+        ImGui::TableNextColumn();
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextUnformatted("Path");
+        ImGui::TableNextColumn();
+        labelScratch = std::string(sessionPtr->targetPath());
+        ImGui::TextWrapped("%s", labelScratch.c_str());
+
+        // The GUID row is drawn only when there IS a database to ask; "no .meta yet" is a real answer
+        // and is 3.4.2's own wording, carried verbatim.
+        if (databasePtr != nullptr) {
+            const AssetRecord* const record = databasePtr->findByPath(sessionPtr->targetPath());
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn();
+            ImGui::AlignTextToFramePadding();
+            ImGui::TextUnformatted("GUID");
+            ImGui::TableNextColumn();
+            labelScratch =
+                record == nullptr || !record->guid.valid() ? std::string("no .meta yet") : formatGuid(record->guid);
+            ImGui::TextDisabled("%s", labelScratch.c_str());
+        }
+        ImGui::EndTable();
+    }
+
+    // The parser's own per-key list (3.4.2's engine channel). Each entry names a key Apply will DELETE,
+    // which is the only half of "not canonical" worth interrupting somebody over. OUTSIDE the table
+    // and wrapped, because a removed key's name is unbounded and a wrapped line inside a fixed-width
+    // cell would be clipped rather than wrapped.
+    for (const std::string& warning : sessionPtr->warnings()) {
+        labelScratch = warning;
+        ImGui::PushStyleColor(ImGuiCol_Text, NOTICE_COLOR);
+        ImGui::TextWrapped("%s", labelScratch.c_str());
+        ImGui::PopStyleColor();
     }
 }
 
@@ -432,8 +586,8 @@ void MaterialPanel::drawPreview(float previewHeight) {
     if (!(avail.x > 0.0F)) {
         return;  // a degenerate/collapsed region: no request, no image (the viewport's own E1 rule)
     }
-    // The HEIGHT is materialPanelLayout's answer and is at least MATERIAL_PREVIEW_MIN_FONT * fontSize
-    // in both modes, so it is never zero and never negative (AC-3). The width still follows the panel.
+    // The HEIGHT is materialPanelLayout's answer, which floors it at the model's own minimum in BOTH
+    // modes, so it is never zero and never negative (AC-3). The width still follows the panel.
     // The `avail.x > 0` guard above is the PANEL's and is unchanged: previewShown is the model's answer
     // about HEIGHT alone, and a zero-width panel must still cost no GPU extent.
     const ImVec2 imageSize{avail.x, previewHeight};
