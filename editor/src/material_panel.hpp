@@ -38,6 +38,11 @@ namespace engine::editor {
 struct AssetPickerState;
 class ThumbnailService;
 
+// task E.3.4: forward-declared rather than included, so this header's include set does not move. The
+// model is PUBLIC and ImGui-free, so including it would be legal -- the forward declaration is simply
+// the smaller edit, and drawBody takes the layout by const reference.
+struct MaterialPanelLayout;
+
 class AssetDatabase;  // a reconciled POINTER, never a reference member (3.1.1's D13 / A-2 / INV-4):
                       // EditorApp is movable, so a reference binds to a pre-move address.
 
@@ -63,8 +68,22 @@ public:
     // materials. Registered LAST in create(), after ImportDetailsPanel, so the Inspector keeps the
     // selected tab by default and no existing panel's registration index shifts.
     [[nodiscard]] DockSlot defaultDockSlot() const noexcept override { return DockSlot::Right; }
-    // options() is DELIBERATELY not overridden: the panel scrolls (Project Settings' recorded posture),
-    // because its sections carry no ScrollY of their own.
+    // options() is DELIBERATELY not overridden, and the reason CHANGED at E.3.4. The old comment said
+    // "its sections carry no ScrollY of their own", which stopped being true when the body became a
+    // child -- and then only SOMETIMES, which is why this now names THREE cases rather than two:
+    //
+    //   1. Untargeted / Error -- the WINDOW scrolls. A long parse error wraps and must be readable;
+    //      I100 drives that arm.
+    //   2. Ready, MaterialPanelMode::FixedRegions -- the window's content is exactly header + a child
+    //      sized to the remainder + footer, which CANNOT overflow. The child scrolls; the window does
+    //      not need to.
+    //   3. Ready, MaterialPanelMode::Scrolling -- there is NO child at all and the WINDOW scrolls,
+    //      exactly as in case 1. This is the arm a short dock node takes, and on a Retina display at
+    //      320x180 it is the arm the product actually takes (the fixed chrome is 103 points against a
+    //      98-point content region).
+    //
+    // So noScrollbar would buy nothing in case 2 and would SILENTLY CLIP cases 1 and 3 -- the Error
+    // state's wrapped message, and the whole form on a short panel.
     void onDraw(PanelContext& context) override;
 
     void setSession(const MaterialSession* s) noexcept { sessionPtr = s; }  // reconciled, NEVER owned
@@ -138,7 +157,15 @@ public:
     void setThumbnails(ThumbnailService* s) noexcept { thumbnails = s; }
 
 private:
-    void drawPreview();  // the preview strip: an ImGui::Image, or ONE line saying why not (AC-32)
+    // task E.3.4: the height is the LAYOUT's now, not a constant. An ImGui::Image, or ONE line saying
+    // why not (AC-32).
+    void drawPreview(float previewHeight);
+    // task E.3.4: the eight sections and the two wrapped notices, as ONE function called from BOTH
+    // body paths -- so nothing inside it can drift between FixedRegions and Scrolling. A member for
+    // drawSlotSection's stated reason: it reads preview, previewHasSunValue, nameDraft, nameEditing,
+    // labelScratch and databasePtr off `this`.
+    void drawBody(MaterialDocument& form, const MaterialPanelLayout& layout,
+                  const std::optional<MaterialError>& invalid, bool& changed);
     // task E.3.3: a PRIVATE MEMBER rather than a free function -- it reads databasePtr, labelScratch,
     // observedSlotDrop, assetPicker, thumbnails and keyScratch off `this`, so the parameter list is
     // four rather than the ten a free function would have needed.
@@ -168,6 +195,10 @@ private:
     // there is nothing left for a per-slot line to remember.
     std::string labelScratch;  // per-frame scratch, NOT model state (the 2.2.1 idiom)
     std::string keyScratch;    // labelScratch's idiom, for the slot's seam key
+    // task E.3.4: retarget detection, for the per-slot UI state ALONE. It is NOT model state and it is
+    // never compared against anything the session owns -- the session's own sticky-target rule is
+    // untouched by it.
+    std::string lastTargetPath;
     // task E.3.3: borrowed, never owned, set once -- see setAssetPicker/setThumbnails above.
     AssetPickerState* assetPicker = nullptr;
     ThumbnailService* thumbnails = nullptr;

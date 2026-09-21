@@ -15115,3 +15115,202 @@ TEST_CASE("editor: a tick in which NO field claimed the popup resets every obser
     CHECK(app->tick() == false);
     app.reset();
 }
+
+// ---- task E.3.4: the redesigned Material panel ----------------------------------------------------
+// PLACEMENT: at the END of the file, after the last region-level #endif, so these cases sit OUTSIDE
+// every existing `#if AERO_SHADER_TOOLS_ENABLED` / `#if AERO_REFLECT_TOOLS_ENABLED` region. A case
+// dropped inside one of those is silently ABSENT in the matching reduced configuration -- which is the
+// whole of 3.6.3's lesson. Each case below carries its OWN split where it needs one, with BOTH arms
+// asserting, in I99's idiom.
+
+TEST_CASE("editor: the Material preview is derived from the panel's height (task E.3.4, I171)") {
+    // I99's fixture verbatim: a 320x180 window, a project, one MINIMAL_AEROMAT_TEXT file, Console and
+    // Inspector hidden so Material wins the Right dock tab and onDraw actually runs.
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "material i171", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/height.aeromat", MINIMAL_AEROMAT_TEXT).empty());
+
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = created.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    app->panels().setVisible("Console", false);
+    app->panels().setVisible("Inspector", false);
+    REQUIRE(app->tick());
+    app->requestAssetBrowserSelectEntry("height.aeromat");
+    for (int i = 0; i < 4; ++i) {
+        REQUIRE(app->tick());
+    }
+    REQUIRE(app->materialTargetPath() == "height.aeromat");
+
+#if AERO_SHADER_TOOLS_ENABLED
+    // THE I99 CONTRACT, ASSERTED DIRECTLY. AC-3 exists so that a short panel never drops the preview,
+    // and I88/I99/I100/I135/I136 all drive the preview in a window of exactly this size. A layout that
+    // stopped previewing below some sensible height would break five cases with a BLANK REGION and no
+    // error -- which is why this is a REQUIRE here as well as a bound at tier 0 (MR15).
+    REQUIRE(app->materialPreviewAvailable());
+    REQUIRE(app->materialPreviewImageCount() > 0U);
+    const std::uint32_t shortHeight = app->materialPreviewTextureHeight();
+    REQUIRE(shortHeight > 0U);
+    CHECK(app->materialPreviewStaleImageCount() == 0U);
+
+    // I99's OWN RECIPE, and the second half is not ceremony: a window resize alone leaves the Right
+    // dock column at its absolute WIDTH, so requestLayoutReset() is what widens it. The HEIGHT follows
+    // the window's work area directly -- which is exactly the asymmetry that makes the assertion below
+    // a statement about THIS TASK: before E.3.4 the preview was a constant 180 points at every panel
+    // height, so `tallHeight > shortHeight` was FALSE by construction.
+    //
+    // 900x800, NOT 800x500, AND THE ARITHMETIC IS WHY. A 320x180 window is in Scrolling mode on BOTH
+    // scales and its preview is the floor: 130 points. At 800x500 the fixed-region arm gives ~174
+    // points at 1x -- and nextTargetExtent QUANTISES (64 px per I99's own comment), so 130 and 174
+    // round into the SAME bucket at 1x and this assertion would have compared a number against
+    // itself. At 900x800 the two are two buckets apart with margin on both scales. THIS CASE
+    // THEREFORE ALSO EXERCISES THE MODE TRANSITION -- Scrolling at the short size, FixedRegions at the
+    // tall one -- which is the only runtime witness that both walks draw at all. The mode itself is
+    // not exposed through EditorApp and is not asserted here; MR15 and MR21 own that at tier 0.
+    window->setSize(900, 800);
+    for (int i = 0; i < 3; ++i) {
+        REQUIRE(app->tick());
+        CHECK(app->materialPreviewStaleImageCount() == 0U);
+    }
+    app->requestLayoutReset();
+    for (int i = 0; i < 6; ++i) {
+        REQUIRE(app->tick());
+        CHECK(app->materialPreviewStaleImageCount() == 0U);
+    }
+
+    const std::uint32_t tallHeight = app->materialPreviewTextureHeight();
+    CAPTURE(shortHeight);
+    CAPTURE(tallHeight);
+    // A claim about crossing a quantum, not about an exact ratio. IF A LANE EVER COLLAPSES THEM INTO
+    // ONE BUCKET, widen the second window rather than weakening the comparison -- a `>=` here would be
+    // satisfied by a preview that never moved at all.
+    CHECK(tallHeight > shortHeight);
+    CHECK(app->materialPreviewStaleImageCount() == 0U);
+#else
+    // -DAERO_SHADER_TOOLS=OFF: there is no preview target at all, so the derivation this case exists
+    // to prove has nothing to act on. The OFF contract is asserted instead -- and the half that still
+    // matters IS asserted: the layout arm still runs, the panel still draws, and the document still
+    // round-trips, so a layout that divided by zero or asserted on a degenerate metric would still be
+    // caught here. I99's OFF arm is the idiom.
+    CHECK_FALSE(app->materialPreviewAvailable());
+    CHECK(app->materialPreviewTextureHeight() == 0U);
+    window->setSize(900, 800);
+    for (int i = 0; i < 3; ++i) {
+        REQUIRE(app->tick());
+    }
+    app->requestLayoutReset();
+    for (int i = 0; i < 6; ++i) {
+        REQUIRE(app->tick());
+    }
+    CHECK(app->materialPreviewImageCount() == 0U);
+    CHECK(app->materialPreviewStaleImageCount() == 0U);
+    REQUIRE(app->materialDocument() != nullptr);  // the panel still EDITS with no preview
+#endif
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: a short Material panel still edits and still previews (task E.3.4, I174)") {
+    // A deliberately short window -- 320x180, the same size five existing cases use, and the one the
+    // step-0 measurement found takes the Scrolling fallback on a Retina display.
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "material i174", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/short.aeromat", MINIMAL_AEROMAT_TEXT).empty());
+
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = created.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    app->panels().setVisible("Console", false);
+    app->panels().setVisible("Inspector", false);
+    REQUIRE(app->tick());
+    app->requestAssetBrowserSelectEntry("short.aeromat");
+    for (int i = 0; i < 4; ++i) {
+        REQUIRE(app->tick());
+    }
+    REQUIRE(app->materialTargetPath() == "short.aeromat");
+
+    // THE CLAIM: no layout arm leaves the body at zero AND the footer off-screen. The footer is not
+    // directly observable, so the observable proxy is that the panel still WORKS: the document
+    // round-trips through the seam, which means the body drew and the frame copy was recorded.
+    // `-footerHeight` is what makes the footer's reachability structural in FixedRegions mode
+    // (CalcItemSize's ImMax(4.0f, avail.y + size.y)) and the window's own scrollbar is what makes it
+    // reachable in Scrolling mode; this case is what proves the surrounding walk did not break in
+    // EITHER, because a 320x180 window takes the fallback at a display scale of 2 and the fixed
+    // regions at a scale of 1.
+    REQUIRE(app->materialDocument() != nullptr);
+    engine::MaterialDocument edited = *app->materialDocument();
+    edited.roughnessFactor = 0.25F;
+    app->requestMaterialDocument(edited);
+    for (int i = 0; i < 3; ++i) {
+        REQUIRE(app->tick());
+    }
+    CHECK(app->materialDocument()->roughnessFactor == doctest::Approx(0.25F));
+
+#if AERO_SHADER_TOOLS_ENABLED
+    const std::size_t before = app->materialPreviewImageCount();
+    for (int i = 0; i < 3; ++i) {
+        REQUIRE(app->tick());
+    }
+    CHECK(app->materialPreviewImageCount() > before);  // it still CLIMBS on a short panel
+#else
+    CHECK(app->materialPreviewImageCount() == 0U);
+#endif
+
+    SUBCASE("hiding and re-showing the panel changes nothing -- I90's shape") {
+        app->panels().setVisible("Material", false);
+        for (int i = 0; i < 3; ++i) {
+            REQUIRE(app->tick());
+        }
+        app->panels().setVisible("Material", true);
+        for (int i = 0; i < 3; ++i) {
+            REQUIRE(app->tick());
+        }
+        REQUIRE(app->materialDocument() != nullptr);
+        CHECK(app->materialDocument()->roughnessFactor == doctest::Approx(0.25F));
+#if AERO_SHADER_TOOLS_ENABLED
+        CHECK(app->materialPreviewStaleImageCount() == 0U);
+#endif
+    }
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}

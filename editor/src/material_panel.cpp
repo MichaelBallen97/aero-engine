@@ -25,6 +25,7 @@
 #include <aero/editor/asset_database.hpp>
 #include <aero/editor/asset_view.hpp>
 #include <aero/editor/material_edit.hpp>
+#include <aero/editor/material_inspector_model.hpp>
 #include <aero/editor/panel_context.hpp>
 #include <aero/editor/project_files.hpp>
 #include <aero/reflect/material_format.hpp>
@@ -55,12 +56,6 @@ static_assert(MaterialPanel::SLOT_COUNT == render::MATERIAL_TEXTURE_SLOT_COUNT);
 
 constexpr ImVec4 WARNING_COLOR{1.0F, 0.4F, 0.4F, 1.0F};  // project_ui.cpp's own error-text colour
 constexpr ImVec4 NOTICE_COLOR{1.0F, 0.8F, 0.4F, 1.0F};   // a warm amber for the non-fatal notices
-
-// A FIXED preview height in POINTS, deliberately not GetContentRegionAvail().y: this panel SCROLLS, so
-// by the time the slot sections have been submitted the remaining vertical space is routinely zero or
-// negative, and a height derived from it would collapse the preview to nothing on exactly the machines
-// where the panel is most useful. The width still follows the panel (a docked column is narrow).
-constexpr float PREVIEW_HEIGHT_POINTS = 180.0F;
 
 // D7/E9's rule from the viewport, verbatim: GetContentRegionAvail() is in LOGICAL units and a GPU
 // allocation must be sized in PIXELS. A non-finite or non-positive scale falls back to 1.0, spelled
@@ -383,6 +378,43 @@ bool MaterialPanel::drawSlotSection(std::size_t index, MaterialDocument& form, P
     return changed;
 }
 
+// ---- the body (task E.3.4) ------------------------------------------------------------------------
+// CALLED FROM BOTH body paths and from nowhere else, which is what keeps the two modes drawing the
+// same thing. It submits no BeginChild of its own: whether a child surrounds it is the CALLER's
+// decision and the layout's mode is what makes it.
+//
+// This step keeps 3.4.2's flat run verbatim -- drawScalarRows, SeparatorText("Textures") and the five
+// drawSlotSection calls. The sections arrive in the next step; the frame is built first on purpose, so
+// the sections are written inside the final geometry rather than inside a shape about to move.
+void MaterialPanel::drawBody(MaterialDocument& form, const MaterialPanelLayout& /*layout*/,
+                             const std::optional<MaterialError>& invalid, bool& changed) {
+    // E.2.4's no-sun notice, MOVED here from under the image. It WRAPS, and a wrapped line cannot live
+    // in a fixed-height region -- that is the whole reason it moved. previewHasSunValue is latched in
+    // the SERVICE pass and is read here unchanged, so WHEN it is true does not move.
+    if (!previewHasSunValue) {
+        ImGui::PushStyleColor(ImGuiCol_Text, NOTICE_COLOR);
+        ImGui::TextWrapped("%s", "No directional light in the scene -- the preview is lit by its environment only.");
+        ImGui::PopStyleColor();
+    }
+    // The validation message, wrapped, at the top of the form where a reader meets it before the field
+    // that caused it. The footer's status line echoes it in ONE line beside a dead Apply; this is the
+    // detail, and it is here rather than in the footer precisely because it wraps.
+    if (invalid.has_value()) {
+        labelScratch = invalid->message;
+        ImGui::PushStyleColor(ImGuiCol_Text, WARNING_COLOR);
+        ImGui::TextWrapped("%s", labelScratch.c_str());
+        ImGui::PopStyleColor();
+    }
+
+    changed = drawScalarRows(form, nameDraft, nameEditing, labelScratch) || changed;
+    ImGui::SeparatorText("Textures");
+    for (std::size_t i = 0; i < SLOT_COUNT; ++i) {
+        // The preview is READ here, never driven: slotTextureState/slotNotice are const reads of state
+        // the service pass owns, exactly like nativeColorTexture below (INV-5).
+        changed = drawSlotSection(i, form, preview.slotTextureState(i), preview.slotNotice(i)) || changed;
+    }
+}
+
 MaterialPanel::MaterialPanel(rhi::Device& device) noexcept : preview(&device) {}
 
 // ---- the preview strip (AC-28/AC-32) --------------------------------------------------------------
@@ -391,13 +423,20 @@ MaterialPanel::MaterialPanel(rhi::Device& device) noexcept : preview(&device) {}
 // ImGuiLayer::endFrame, AFTER the post-draw service pass, so the allocation must be settled before the
 // handle is read; MaterialPreview::prepareFrame carries the full reasoning. Nothing else GPU-shaped
 // happens in this walk: every create, upload and destroy stays in the service pass (INV-5).
-void MaterialPanel::drawPreview() {
-    ImGui::SeparatorText("Preview");
+void MaterialPanel::drawPreview(float previewHeight) {
+    // task E.3.4: NO SeparatorText here any more -- this is the HEADER now, above the body and the
+    // footer, and the identity line above it already says which material this is. The Error arm's own
+    // SeparatorText("Preview") + "Nothing to preview until this file parses." is untouched; I100 reads
+    // it.
     const ImVec2 avail = ImGui::GetContentRegionAvail();
     if (!(avail.x > 0.0F)) {
         return;  // a degenerate/collapsed region: no request, no image (the viewport's own E1 rule)
     }
-    const ImVec2 imageSize{avail.x, PREVIEW_HEIGHT_POINTS};
+    // The HEIGHT is materialPanelLayout's answer and is at least MATERIAL_PREVIEW_MIN_FONT * fontSize
+    // in both modes, so it is never zero and never negative (AC-3). The width still follows the panel.
+    // The `avail.x > 0` guard above is the PANEL's and is unchanged: previewShown is the model's answer
+    // about HEIGHT alone, and a zero-width panel must still cost no GPU extent.
+    const ImVec2 imageSize{avail.x, previewHeight};
     const ImGuiIO& io = ImGui::GetIO();
     rhi::Extent2D pixels{toPixels(imageSize.x, io.DisplayFramebufferScale.x),
                          toPixels(imageSize.y, io.DisplayFramebufferScale.y)};
@@ -436,16 +475,11 @@ void MaterialPanel::drawPreview() {
     // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
     const auto texId = static_cast<ImTextureID>(reinterpret_cast<std::uintptr_t>(native));
     ImGui::Image(texId, imageSize, ImVec2(0, 0), uvMax);
-    // task E.2.4 (D5): the ONE line that explains an ambient-only sphere. Keyed on the RESOLUTION's
-    // answer -- a sun set to intensity 0 is a sun the user switched off, and this must not claim there
-    // is none. It sits AFTER the Image deliberately: both early returns above leave no picture at all
-    // (a collapsed region, or the unavailable-reason line), and there is nothing to explain there.
-    // TEXT ONLY: no GPU call may appear in this walk (I96's needle list).
-    if (!previewHasSunValue) {
-        ImGui::PushStyleColor(ImGuiCol_Text, NOTICE_COLOR);
-        ImGui::TextWrapped("%s", "No directional light in the scene -- the preview is lit by its environment only.");
-        ImGui::PopStyleColor();
-    }
+    // task E.3.4: E.2.4's no-sun notice has MOVED OUT of here and into the body. It WRAPS, and a
+    // wrapped line inside the header would make the header's height a function of the panel's WIDTH,
+    // which would make the preview's height one too -- so dragging the dock divider sideways would
+    // reallocate the render target. It reads the same latched previewHasSunValue on the same tick, so
+    // WHEN it is true has not moved.
 }
 
 void MaterialPanel::servicePreview(MaterialSession& session, const AssetDatabase& database,
@@ -515,44 +549,48 @@ void MaterialPanel::onDraw(PanelContext& /*context*/) {  // no World/Selection/P
         return;
     }
 
-    // ---- the status strip ------------------------------------------------------------------------
+    // ---- the retarget reset (task E.3.4) ---------------------------------------------------------
+    // Per-slot UI state is state about THIS material, so a new target must start it fresh. The
+    // detection lands here, above everything, because every path below this point draws the form; its
+    // one consumer -- the sampler disclosure's open state -- arrives with the slot row. targetPath()
+    // returns a string_view, so the member takes an explicit std::string construction.
+    if (sessionPtr->targetPath() != lastTargetPath) {
+        lastTargetPath = std::string(sessionPtr->targetPath());
+    }
+
+    // ---- the geometry, read ONCE -----------------------------------------------------------------
+    // Six live style reads, never a literal. separatorHeight above all: ImGui 1.92.8 REMOVED the
+    // "a 1 px Separator does not move the cursor" hack -- the line that implemented it is commented
+    // out at imgui_widgets.cpp:1706 and ItemSize(ImVec2(0.0f, thickness)) now runs unconditionally --
+    // while SeparatorEx's own header comment at :1657 still DESCRIBES the removed hack. Read the code,
+    // not the comment. Separator() passes ImMax(style.SeparatorSize, 1.0f) (:1741), and ScaleAllSizes
+    // does SeparatorSize = ImTrunc(SeparatorSize * scale) (imgui.cpp:1645) -- which this editor CALLS
+    // unconditionally at imgui_layer.cpp:87-89 -- so the value is 1 only while the window's display
+    // scale is 1. Measured on this machine at a scale of 2: it is 2.
+    const ImGuiStyle& style = ImGui::GetStyle();
+    const MaterialPanelLayout layout =
+        materialPanelLayout(MaterialPanelMetrics{.availHeight = ImGui::GetContentRegionAvail().y,
+                                                 .fontSize = ImGui::GetFontSize(),
+                                                 .frameHeight = ImGui::GetFrameHeight(),
+                                                 .textLineHeight = ImGui::GetTextLineHeight(),
+                                                 .itemSpacingY = style.ItemSpacing.y,
+                                                 .separatorHeight = std::max(style.SeparatorSize, 1.0F)});
+
+    // ---- HEADER ----------------------------------------------------------------------------------
     labelScratch = std::string(sessionPtr->targetPath());
     if (sessionPtr->dirty()) {
-        labelScratch += " *";
+        labelScratch += " *";  // VERBATIM today's suffix, so nothing that reads it regresses
     }
     ImGui::TextUnformatted(labelScratch.c_str());
-    if (databasePtr != nullptr) {
-        const AssetRecord* record = databasePtr->findByPath(sessionPtr->targetPath());
-        labelScratch =
-            record == nullptr || !record->guid.valid() ? std::string("no .meta yet") : formatGuid(record->guid);
-        ImGui::TextDisabled("%s", labelScratch.c_str());
-    }
-    if (sessionPtr->externalChangeNoticed()) {
-        ImGui::PushStyleColor(ImGuiCol_Text, NOTICE_COLOR);
-        ImGui::TextWrapped("%s", "This file changed on disk; Apply will overwrite it.");
-        ImGui::PopStyleColor();
-    }
-    // The parser's own per-key list (task 3.4.2's engine channel). Each entry names a key Apply will
-    // DELETE, which is the only half of "not canonical" worth interrupting somebody over.
-    for (const std::string& warning : sessionPtr->warnings()) {
-        labelScratch = warning;
-        ImGui::PushStyleColor(ImGuiCol_Text, NOTICE_COLOR);
-        ImGui::TextWrapped("%s", labelScratch.c_str());
-        ImGui::PopStyleColor();
-    }
-    if (!sessionPtr->lastMessage().empty()) {
-        labelScratch = std::string(sessionPtr->lastMessage());
-        ImGui::TextDisabled("%s", labelScratch.c_str());
-    }
+    drawPreview(layout.previewHeight);
     ImGui::Separator();
 
-    // ---- the editable form -----------------------------------------------------------------------
     // A per-frame COPY of the session document: nothing below can mutate the session, and the copy is
     // recorded as ONE pending edit iff it ends the frame different from what it started as. tick()
     // drains that edit into the session before the next onDraw, so the value read back here is always
     // the last one recorded (ImportDetailsPanel's own recorded shape).
     MaterialDocument form = *document;
-    bool changed = drawScalarRows(form, nameDraft, nameEditing, labelScratch);
+    bool changed = false;
     // task 3.1.5, the SEAM's own fold. requestSlotTextureDrop cannot write the frame copy -- there is
     // no frame copy outside onDraw -- so it records here and the NEXT onDraw folds it in at exactly
     // the point the picker would have written it, before the slot section runs. That is what makes a
@@ -564,33 +602,76 @@ void MaterialPanel::onDraw(PanelContext& /*context*/) {  // no World/Selection/P
         target = bound;
         changed = true;
     }
-    ImGui::SeparatorText("Textures");
-    for (std::size_t i = 0; i < SLOT_COUNT; ++i) {
-        // The preview is READ here, never driven: slotTextureState/slotNotice are const reads of state
-        // the service pass owns, exactly like nativeColorTexture below (INV-5).
-        changed = drawSlotSection(i, form, preview.slotTextureState(i), preview.slotNotice(i)) || changed;
+
+    // The SESSION copy is what Apply would write, so the gate validates that and not the form: a
+    // pending edit recorded this frame reaches the session next frame and is judged then. Computed
+    // ONCE, here, and handed to both the body (which wraps it) and the footer (which gates Apply on
+    // it and echoes it in one line).
+    const std::optional<MaterialError> invalid = validateMaterial(*document);
+
+    // ---- BODY ------------------------------------------------------------------------------------
+    // TWO PATHS, AND THE CHILD EXISTS IN ONLY ONE OF THEM. The 1:1 rule for BeginChild/EndChild is NOT
+    // "call EndChild whatever happened" -- it is "EndChild exactly once per BeginChild". A branch that
+    // calls NEITHER satisfies it; a branch that calls one without the other is an IM_ASSERT abort. So
+    // the pair is written INSIDE the FixedRegions arm, both calls in the same block, with nothing
+    // between them that can return or continue.
+    //
+    // Everything inside drawBody() is IDENTICAL in both paths -- one function, called from two places,
+    // so the sections, the label column and the two notices cannot drift between the modes.
+    if (layout.mode == MaterialPanelMode::FixedRegions) {
+        // -footerHeight, NEVER layout.bodyHeight: CalcItemSize resolves a negative child height as
+        // ImMax(4.0f, avail.y + size.y) (imgui.cpp:12344-12345), so ImGui's own remainder is
+        // authoritative and a one-pixel error in footerHeight costs the child a pixel instead of
+        // clipping Apply off the bottom of the panel. asset_browser_panel.cpp:1311-1315 floors its own
+        // child at 1.0F for the OPPOSITE requirement -- two side-by-side panes must share ONE explicit
+        // height -- and both are right; here the child is alone and ImGui's remainder is the point.
+        ImGui::BeginChild("##body", ImVec2(0.0F, -layout.footerHeight));
+        drawBody(form, layout, invalid, changed);
+        ImGui::EndChild();  // 1:1 with the BeginChild above, same block, nothing exits between them
+    } else {
+        // NO CHILD. layout.footerHeight is not passed to anything here -- passing it would be
+        // meaningless, and passing layout.bodyHeight (which is 0.0F in this mode) to BeginChild would
+        // be worse: CalcItemSize reads a ZERO height as "use the whole remaining region" rather than
+        // as "nothing", so the footer would land off the bottom of a full-height child. The mode is
+        // what prevents that, which is why it is an enum on the layout and not a height comparison
+        // here.
+        drawBody(form, layout, invalid, changed);
     }
+
     if (changed && !(form == *document)) {
         pendingDocument = form;  // last-writer-wins; nothing is applied here
     }
 
-    // ---- Apply / Revert --------------------------------------------------------------------------
-    // The SESSION copy is what Apply would write, so the gate validates that and not the form: a
-    // pending edit recorded this frame reaches the session next frame and is judged then.
+    // ---- FOOTER ----------------------------------------------------------------------------------
     ImGui::Separator();
     const bool dirty = sessionPtr->dirty();
-    const std::optional<MaterialError> invalid = validateMaterial(*document);
-    ImGui::BeginDisabled(!dirty || invalid.has_value());  // 1:1 with EndDisabled; nothing exits between
+    const bool applyEnabled = dirty && !invalid.has_value();
+    if (applyEnabled) {
+        // viewport_panel.cpp's emphasis idiom -- a colour the STYLE already owns, so E.6.1's
+        // EditorTheme inherits it for free and this task states no colour literal at all. ENABLED
+        // ONLY: BeginDisabled pushes ALPHA, so an unconditional push would paint a FADED primary.
+        ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
+    }
+    ImGui::BeginDisabled(!applyEnabled);  // 1:1 with EndDisabled; nothing exits between them
     if (ImGui::Button("Apply")) {
         applyRequested = true;
     }
     ImGui::EndDisabled();
+    if (applyEnabled) {
+        ImGui::PopStyleColor();  // 1:1, on the SAME condition, evaluated once above
+    }
     // A DISABLED item is not hovered without ImGuiHoveredFlags_AllowWhenDisabled, and SetItemTooltip
     // carries ForTooltip flags that skip a disabled item outright -- IsItemHovered + SetTooltip is the
     // pair this tree uses (viewport_panel.cpp's A6 note).
-    if ((!dirty || invalid.has_value()) && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
-        ImGui::SetTooltip("%s", dirty ? "This material has a value the format refuses; fix it to save."
-                                      : "Nothing to save -- this material matches the file.");
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+        // BOTH tooltips interpolate the file leaf, so BOTH go through a named local and a "%s"
+        // argument: A DYNAMIC STRING IS NEVER A FORMAT STRING (project_settings_panel.cpp's rule, a
+        // fourth application). A material named "100%s.aeromat" is exactly the input that proves it.
+        labelScratch = applyEnabled
+                           ? std::format("Write these changes to {}.", leafOf(sessionPtr->targetPath()))
+                           : (dirty ? std::string("This material has a value the format refuses; fix it to save.")
+                                    : std::string("Nothing to save -- this material matches the file."));
+        ImGui::SetTooltip("%s", labelScratch.c_str());
     }
     ImGui::SameLine();
     ImGui::BeginDisabled(!dirty);
@@ -598,18 +679,34 @@ void MaterialPanel::onDraw(PanelContext& /*context*/) {  // no World/Selection/P
         revertRequested = true;
     }
     ImGui::EndDisabled();
-    if (invalid.has_value()) {
-        labelScratch = invalid->message;
-        ImGui::PushStyleColor(ImGuiCol_Text, WARNING_COLOR);
-        ImGui::TextWrapped("%s", labelScratch.c_str());
-        ImGui::PopStyleColor();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+        labelScratch = dirty ? std::format("Discard your changes and reload {}.", leafOf(sessionPtr->targetPath()))
+                             : std::string("Nothing to discard -- this material matches the file.");
+        ImGui::SetTooltip("%s", labelScratch.c_str());
     }
+    ImGui::SameLine();
+    ImGui::TextUnformatted(materialDirtyWord(dirty).data());  // the MODEL's string, never a literal here
 
-    // LAST, under the editing form: the live picture of the SESSION copy, so it tracks every
-    // unapplied edit (D6). It is drawn last for the same reason Apply is -- the form above is what a
-    // user reads first, and a 180-point image between the rows and the buttons would push them off a
-    // narrow dock.
-    drawPreview();
+    // ONE line, ALWAYS drawn, empty when there is nothing to say -- so the footer's height, and
+    // therefore the preview's, cannot change because a notice appeared (asset_picker.cpp's own
+    // always-reserved idiom). TextUnformatted, NEVER TextWrapped: a long message is CLIPPED at the
+    // panel edge rather than growing a second line.
+    const MaterialStatusLine status = materialStatusLine(
+        invalid.has_value() ? std::string_view(invalid->message) : std::string_view{},
+        sessionPtr->externalChangeNoticed(), sessionPtr->warnings().size(), sessionPtr->lastMessage());
+    switch (status.severity) {  // NO default: a fourth severity is a -Wswitch error
+        case MaterialStatusSeverity::Warning:
+            ImGui::PushStyleColor(ImGuiCol_Text, WARNING_COLOR);
+            break;
+        case MaterialStatusSeverity::Notice:
+            ImGui::PushStyleColor(ImGuiCol_Text, NOTICE_COLOR);
+            break;
+        case MaterialStatusSeverity::Disabled:
+            ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+            break;
+    }
+    ImGui::TextUnformatted(status.text.c_str());
+    ImGui::PopStyleColor();  // 1:1 -- every arm above pushed exactly one
 }
 
 }  // namespace engine::editor
