@@ -610,7 +610,7 @@ miniaudio; `A38` is covered only by validation row 9. Full detail in `docs/10`.
 | **Phase 2** — Editor | **COMPLETE, gate met 2026-08-02.** All six epics closed and macOS-validated; Windows/Linux rows pending for every task (`editor/VALIDATION.md`). Gate artifact: `samples/phase-2-editor-scene/` — data, deliberately not `add_subdirectory`'d. |
 | **Phase 3** — Asset Pipeline & 3D Content | **OPEN.** **All seven epics CLOSED in code** — 3.1–3.6, and 3.7 with 3.7.1 + 3.7.2 merged and macOS-validated and **3.7.3 merged (PR #91)**. What is left is the gate below and the validation debt. Per-task detail in `docs/10`. |
 | **Phase 3 gate** | Drop a rigged glTF/FBX in → PBR materials + shadows + a playing animation + **an audible sound**. The audible half exists in code as of 3.7.2 and **has not been validated on any platform** — 3.7.2's macOS pass ticked 47 of 53 records and left the 6 that need ears open. |
-| **Phase E** — Editor Experience | **OPEN. EPICS E.1, E.2 AND E.3 ARE ALL CLOSED IN CODE — thirteen of the phase's 24 tasks merged; E.4, E.5 and E.6 are the open front, eleven tasks, planning only.** **E.3.4 (material inspector redesign) CLOSES EPIC E.3** — eight commits, the full local gate green on both presets and both reduced configurations, the 54-seed sabotage matrix run in full (41 as predicted, 13 divergences, ONE real hole found and closed) and a code-review round that found four gaps, one of them a user-visible regression against `main`: ImGui's `StateStorage` is PER WINDOW, so a body that is a child in one layout mode and not in the other kept two independent sets of collapse bits and re-opened every collapsed section at the boundary. `ctest -N` **178 -> 178** in both presets, byte-identical entry set, **165 / 93** reduced; doctest **1404 / 1936 / 215 / 40 / 59 / 10 / 28**; guards **519 / 92 / 163 / 92 / 165 / A=6 B=87 / 11-3-55 / 6-57**; `git ls-files` **87 / 62**. **THE BUILT-IN COUNT STAYS TEN.** **Its validation page is written and UNRUN on every platform**, as are E.1.5's and E.3.2's — those three are the whole of this OS's remaining Phase E risk. **`I136` IS RED AT `HEAD` ON A 2x DISPLAY AND IS NOT E.3.4's** — same 2x cause on the width axis, handed to E.6.1; the local GPU tier gates at **213/214** with it named. Validation verdicts: **E.1.1** 8 PASS / 2 partial · **E.1.2** 8 / 2 partial / 1 N-E · **E.1.3** 11 / 1 partial / 2 N-E / 1 N-R, and that pass found the ortho gizmo-suppression defect fixed in PR #95 · **E.1.4** 10 / 1 N-E · **E.1.5 UNRUN** · **E.2.1** 10 PASS / 3 open · **E.2.2** 12/12 · **E.2.3** 12/12, and it FIRED E.1.1's thick-line handoff after eight tasks (debug lines are ONE DEVICE PIXEL at 2x, which applies to the grid and world axes too) · **E.2.4** 12/12 · **E.3.1** 13 PASS / 1 partial · **E.3.2 UNRUN** · **E.3.3** 10 / 3 partial / 1 N-E / 1 N-R, nothing failed · **E.3.4 UNRUN**. Full per-task detail, every measurement and every method trap: `docs/10`. Windows and Linux unvalidated, as everywhere. |
+| **Phase E** — Editor Experience | **OPEN. EPICS E.1, E.2 AND E.3 ARE ALL CLOSED IN CODE — thirteen of the phase's 24 tasks merged; E.4, E.5 and E.6 are the open front, eleven tasks, planning only.** **E.3.4 (material inspector redesign) CLOSES EPIC E.3** — eight commits, the full local gate green on both presets and both reduced configurations, the 54-seed sabotage matrix run in full (41 as predicted, 13 divergences, ONE real hole found and closed) and a code-review round that found four gaps, one of them a user-visible regression against `main`: ImGui's `StateStorage` is PER WINDOW, so a body that is a child in one layout mode and not in the other kept two independent sets of collapse bits and re-opened every collapsed section at the boundary. `ctest -N` **178 -> 178** in both presets, byte-identical entry set, **165 / 93** reduced; doctest **1404 / 1936 / 215 / 40 / 59 / 10 / 28**; guards **519 / 92 / 163 / 92 / 165 / A=6 B=87 / 11-3-55 / 6-57**; `git ls-files` **87 / 62**. **THE BUILT-IN COUNT STAYS TEN.** **IT IS macOS-VALIDATED — 12 PASS / 1 PARTIAL / 1 NOT EXECUTABLE, 2026-09-22, and NOTHING FAILED** (68 of 73 records ticked); E.1.5's and E.3.2's pages remain UNRUN and are now the whole of this OS's remaining Phase E risk. **`I136` IS RED AT `HEAD` ON A 2x DISPLAY AND IS NOT E.3.4's** — same 2x cause on the width axis, handed to E.6.1; the local GPU tier gates at **213/214** with it named. Validation verdicts: **E.1.1** 8 PASS / 2 partial · **E.1.2** 8 / 2 partial / 1 N-E · **E.1.3** 11 / 1 partial / 2 N-E / 1 N-R, and that pass found the ortho gizmo-suppression defect fixed in PR #95 · **E.1.4** 10 / 1 N-E · **E.1.5 UNRUN** · **E.2.1** 10 PASS / 3 open · **E.2.2** 12/12 · **E.2.3** 12/12, and it FIRED E.1.1's thick-line handoff after eight tasks (debug lines are ONE DEVICE PIXEL at 2x, which applies to the grid and world axes too) · **E.2.4** 12/12 · **E.3.1** 13 PASS / 1 partial · **E.3.2 UNRUN** · **E.3.3** 10 / 3 partial / 1 N-E / 1 N-R, nothing failed · **E.3.4** 12 PASS / 1 partial / 1 N-E, nothing failed. Full per-task detail, every measurement and every method trap: `docs/10`. Windows and Linux unvalidated, as everywhere. |
 | **Phase E gate** | Open a project and land in the scene you were last editing, on a lit grid floor under a sky; create a Cube from the menu, drop a material on it and see it shade; aim a spot light with a visible gizmo; rename, move and delete assets without leaving the editor. Gate artifact: `samples/phase-E-editor/`. |
 
 ### Engine layers, in dependency order
@@ -1045,11 +1045,35 @@ enters the determinism manifest**, and the README says so.
 
 ### The validation debt — the whole of the remaining risk
 
-**THREE PAGES HAVE NOT BEEN RUN ON ANY PLATFORM: E.1.5's, E.3.2's AND E.3.4's.** They are the whole of
+**TWO PAGES HAVE NOT BEEN RUN ON ANY PLATFORM: E.1.5's AND E.3.2's.** They are the whole of
 Phase E's validation risk on this OS; every other task in E.1, E.2 and E.3 is macOS-validated.
 
-**E.3.4's is fourteen rows** (`editor/validation/E.3.4-material-inspector-redesign.md`, gitignored, so
-it enters no commit), and **TEN of them are the ONLY cover a declared sabotage seed has anywhere** —
+**E.3.4's page IS macOS-RUN — 12 PASS / 1 PARTIAL / 1 NOT EXECUTABLE, 2026-09-22, nothing failed**,
+which closes **eighteen of its nineteen uncovered seeds**. The measurements worth carrying: the label
+column is **identical at x=1454 in all eight sections including `File`**, and does not move when
+`Alpha cutoff` appears; the slot button is **58 px = thumbEdge 52 + 2*FramePadding.y**, its face
+**52x52 at gaps left 4 / top 3 / bottom 3** (measured on a `.ktx2` slot, where the kind icon fills the
+face), and a **nil slot paints 0 of 2704 pixels**; **Apply's emphasis is rgb(15,135,250) = byte-exact
+`ImGuiCol_ButtonActive` while its DISABLED fill is byte-identical to Revert's** — `S37` caught, since
+an unconditional push would paint a faded blue; **`100%s.aeromat` renders `%s` literally** in the
+tooltip — `S39` caught; the preview **floors at exactly 130 = MIN_FONT 10 x 13 in BOTH modes**,
+saturates at **312**, is **monotone non-decreasing over an eleven-step sweep** and **does not jump at
+the boundary**; **collapsed sections survive the boundary in both directions**, so the code-review
+round's per-window-`StateStorage` regression is fixed in the product; the Inspector's two `Guid` rows
+are **0 differing of 189 504** against a branch-point build with a 500-px anti-vacuity control; and
+there is **no new Tracy zone** (31, identical) with the cost delta **smaller than the same build's own
+run-to-run spread on 6 of 8 zones** — a bound, not a measurement. **Row 11 is NOT EXECUTABLE** (both
+attached displays are `backingScale 1.0`; the machine is in clamshell, so there is no 2x panel) and
+**row 12 is PARTIAL** (text entry never arrives synthetically). **THERE IS NO `renderFrame` ZONE in
+this tree** — the frame-level zones are `renderScene` and `render`, and the page said otherwise.
+**NEW METHOD FACTS: a pending TCC prompt stalls the editor to ~0.2% CPU with a window that NEVER
+RENDERS (a black capture), the prompts CASCADE one per bundle identity, and BOTH accepted a synthetic
+click on the affirmative button derived from the dialog's own bounds (~`x + 0.727w`, `y + 0.844h`);
+a stale editor survives `pkill -f` and must be `pkill -9`ed; a stalled bundle identity stays stalled
+until a fresh `CFBundleIdentifier` clears it; synthetic mouse MOVES do provoke ImGui tooltips here;
+and Backspace deletes the selected entity, because the Edit menu has no Delete.**
+Its fourteen rows live at `editor/validation/E.3.4-material-inspector-redesign.md` (gitignored, so
+it enters no commit), and **TEN of them were the ONLY cover a declared sabotage seed had anywhere** —
 nineteen seeds across those ten rows, every one of them a rect, a colour, a gesture, a wrap or a
 frame-to-frame layout fact no tier in this tree can reach. The ones that matter most: **row 7** (the
 footer surviving every panel height, `S18`/`S19`/`S24`, and the only place the preview's reallocation
