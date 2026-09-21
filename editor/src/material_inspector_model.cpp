@@ -47,11 +47,17 @@ constexpr std::array<MaterialSection, MATERIAL_SECTION_COUNT> SECTIONS{{
 }};
 static_assert(SECTIONS.size() == MATERIAL_SECTION_COUNT);
 
-// `!(v > 0)` rather than `v <= 0` SO A NaN TAKES THE FALLBACK (gridColumnsFor's own posture, and
-// 3.7.2's std::clamp(NaN) lesson), AND std::isfinite so an INFINITY takes it too: the header's
-// contract is a FINITE, POSITIVE layout for EVERY metric set, and an infinite fontSize would carry
-// straight through to thumbEdge with nothing downstream able to clamp it back. MR18's +inf arm is
-// what this second term exists for.
+// TWO terms, and which one carries which guarantee is worth stating exactly, because sabotage seed
+// S21 measured it: `std::isfinite` rejects BOTH a NaN and an infinity on its own, so it -- not the
+// negated comparison -- is what makes a NaN take the fallback here. Rewriting `v > 0` as `!(v <= 0)`
+// or back again therefore changes nothing and reddens nothing, which is why S21 is recorded as inert
+// rather than as covered.
+//
+// The negated spelling is kept anyway, as gridColumnsFor's own posture and 3.7.2's
+// std::clamp(NaN) lesson: it is the form that stays correct if the isfinite term is ever dropped, and
+// a guard whose NaN-safety depends on exactly one of two terms is one edit from being wrong. The
+// isfinite term is the one MR18's +inf arm needs -- an infinite fontSize would otherwise carry
+// straight through to thumbEdge with nothing downstream able to clamp it back.
 [[nodiscard]] float positiveFinite(float value, float fallback) noexcept {
     return (value > 0.0F && std::isfinite(value)) ? value : fallback;
 }

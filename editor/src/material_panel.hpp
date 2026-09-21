@@ -172,6 +172,14 @@ public:
     [[nodiscard]] bool slotDetailsOpen(std::size_t slot) const noexcept {
         return slot < SLOT_COUNT && slotDetails[slot];
     }
+    // HOW MANY SAMPLER DISCLOSURES ACTUALLY SUBMITTED THEIR ROWS, cumulative over the panel's life.
+    // Found by sabotage seed S26: slotDetailsOpen() reads the array the SEAM just wrote, so it round-
+    // trips whatever was requested and cannot see whether ImGui OBEYED -- swapping ImGuiCond_Always
+    // for ImGuiCond_Once leaves ImGui's own storage in charge, the node never opens, the six sampler
+    // widgets are never submitted, and every assertion in I170 stayed green. This counter is the
+    // difference between "the panel remembers what I asked" and "the rows were drawn", and it is what
+    // makes I170(b)'s coverage-transfer claim an assertion rather than an inference from a green run.
+    [[nodiscard]] std::size_t samplerRowsDrawn() const noexcept { return samplerRowsDrawnValue; }
 
     // task E.3.3: both set ONCE in EditorApp::create (the viewportPanel posture), not reconciled --
     // each points at a heap object EditorApp holds through a unique_ptr, so the address survives the
@@ -228,6 +236,7 @@ private:
     // untouched by it.
     std::string lastTargetPath;
     std::array<bool, SLOT_COUNT> slotDetails{};  // all false: every disclosure starts closed
+    std::size_t samplerRowsDrawnValue = 0;       // see samplerRowsDrawn() -- seed S26's witness
     // task E.3.3: borrowed, never owned, set once -- see setAssetPicker/setThumbnails above.
     AssetPickerState* assetPicker = nullptr;
     ThumbnailService* thumbnails = nullptr;

@@ -1992,6 +1992,10 @@ bool EditorApp::materialSlotDetailsOpen(std::size_t slot) const noexcept {
     return materialPanel != nullptr && materialPanel->slotDetailsOpen(slot);
 }
 
+std::size_t EditorApp::materialSamplerRowsDrawn() const noexcept {
+    return materialPanel != nullptr ? materialPanel->samplerRowsDrawn() : 0;
+}
+
 void EditorApp::requestAssetPickerSearch(std::string_view query) {
     if (assetPicker != nullptr) {
         assetPicker->pendingSearch = std::string(query);

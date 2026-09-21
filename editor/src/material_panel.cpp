@@ -315,10 +315,17 @@ bool MaterialPanel::drawSlotRow(std::size_t index, MaterialDocument& form, const
     if (assetPicker != nullptr) {
         // materialSlotFieldKey returns std::string BY VALUE and AssetFieldInputs::fieldKey is a
         // string_view, so the key MUST land in a member first: inlining it into the aggregate below
-        // leaves the view dangling for the whole call. "slot:0" is inside libc++'s SSO buffer, so the
-        // bytes usually survive and NOTHING reddens -- E.3.2's recorded lesson, one host over, and
-        // ASan's detect_stack_use_after_return is off by default here. The SAME applies to
-        // `row.valueText`, which is why `row` is a caller-owned named local that outlives this call.
+        // leaves the view dangling from the end of that declaration until the call returns. The SAME
+        // applies to `row.valueText`, which is why `row` is a caller-owned named local that outlives
+        // this call.
+        //
+        // MEASURED, and it corrects what this comment used to claim: seeding the inlined form does
+        // NOT survive silently -- ASan reports `stack-use-after-scope`, a READ of size 6 inside the
+        // dead temporary's slot in drawSlotRow's own frame, and I164 aborts. That check is ON by
+        // default; `detect_stack_use_after_return`, which is the one that is off, is a DIFFERENT
+        // check and applies to a RETURNED frame, not to a temporary that died in this one. So the
+        // hazard has automatic cover on all three Debug lanes -- which is a reason to keep the member
+        // rather than a reason it stopped mattering.
         keyScratch = materialSlotFieldKey(index);
         const AssetFieldInputs inputs{.valueText = row.valueText,
                                       // `Clear` shares this row NOW, so the width is the SHARED
@@ -443,6 +450,9 @@ void MaterialPanel::drawSamplerDisclosure(std::size_t index, MaterialDocument& f
     if (!open) {
         return;
     }
+    // Counted HERE and not at the seam: `open` is what TreeNodeEx answered, so this is a statement
+    // about what ImGui did rather than about what was asked for (seed S26).
+    ++samplerRowsDrawnValue;
     if (ImGui::BeginTable("##sampler", 2, MATERIAL_TABLE_FLAGS)) {  // EndTable ONLY if true
         ImGui::TableSetupColumn("##label", ImGuiTableColumnFlags_WidthFixed, widestMaterialLabel());
         ImGui::TableSetupColumn("##value", ImGuiTableColumnFlags_WidthStretch);

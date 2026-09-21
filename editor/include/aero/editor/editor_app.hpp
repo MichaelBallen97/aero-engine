@@ -493,6 +493,10 @@ public:
     // BeginCombo calls and a DragInt executing in CI once the disclosure closes by default.
     void requestMaterialSlotDetails(std::size_t slot, bool open) noexcept;
     [[nodiscard]] bool materialSlotDetailsOpen(std::size_t slot) const noexcept;
+    // Cumulative count of sampler disclosures that actually SUBMITTED their rows. materialSlotDetailsOpen
+    // reads back what the seam wrote and therefore cannot see whether ImGui obeyed; this can. Seed S26
+    // (ImGuiCond_Once instead of ImGuiCond_Always) is invisible to every other observable in the tree.
+    [[nodiscard]] std::size_t materialSamplerRowsDrawn() const noexcept;
     void requestAssetPickerSearch(std::string_view query);  // applied to the OPEN popup on its next draw
     // STEPS, not a single direction: a case moving to the third candidate writes ONE call rather than
     // three ticks. |delta| reductions of movePickerCursor are applied in one frame, which is exactly

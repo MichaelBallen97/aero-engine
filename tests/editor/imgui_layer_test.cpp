@@ -15540,6 +15540,14 @@ TEST_CASE(
         REQUIRE(app->materialDocument() != nullptr);
         REQUIRE(app->materialDocument()->baseColor.has_value());
         CHECK(app->materialDocument()->baseColor->uvSet == 2U);
+        // THE ROWS WERE SUBMITTED, asserted rather than inferred from a green run. Added by sabotage
+        // seed S26: every assertion above reads back what the seam WROTE, so swapping ImGuiCond_Always
+        // for ImGuiCond_Once -- which leaves ImGui's own storage in charge and never opens the node --
+        // left this case entirely green while the six sampler widgets executed on no lane at all.
+        // Three of the five slots are bound, so an open pass draws three disclosures per frame.
+        const std::size_t drawnBefore = app->materialSamplerRowsDrawn();
+        REQUIRE(app->tick());
+        CHECK(app->materialSamplerRowsDrawn() > drawnBefore);
     }
     SUBCASE("(c) a CLOSE request closes -- which is what ImGuiCond_Always buys") {
         app->requestMaterialSlotDetails(0, true);
@@ -15551,9 +15559,15 @@ TEST_CASE(
         for (int i = 0; i < 2; ++i) {
             REQUIRE(app->tick());
         }
-        // Seeding ImGuiCond_Once here hands the decision to ImGui's own storage: the node stays open
-        // and this is the only arm that says so.
         CHECK_FALSE(app->materialSlotDetailsOpen(0));
+        // AND THE NODE ITSELF CLOSED, which the line above cannot see: it reads the array the seam
+        // wrote. ImGuiCond_Once hands the decision to ImGui's own storage, so a close request leaves
+        // the node OPEN and the rows keep being submitted -- this is the arm that says so (S26).
+        const std::size_t drawnAfterClose = app->materialSamplerRowsDrawn();
+        for (int i = 0; i < 2; ++i) {
+            REQUIRE(app->tick());
+        }
+        CHECK(app->materialSamplerRowsDrawn() == drawnAfterClose);
     }
     SUBCASE("(d) an out-of-range slot is a no-op, in both directions") {
         app->requestMaterialSlotDetails(99, true);
