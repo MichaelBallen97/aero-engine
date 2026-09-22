@@ -162,11 +162,20 @@ _nd_expect_substr("stage 12" "${_nd_out}" "cannot self-verify" TRUE)
 _nd_seed("editor/src/asset_actions.cpp" "${_nd_clean_body}")
 _nd_run("stage 12 (restored)" 0 "${BASH}" "${SCRIPT}")
 
-# --- Stage 13 (task E.4.1): remove_all seeded in project_state.cpp -> exit 1. The seventh Check-A
-# file's own proof: listing a file in FORBIDDEN_FILES that no stage ever seeds would be an entry
-# nothing shows to be live, which is the same species of hole stage 10 closes for Check B. --------
-_nd_seed("editor/src/project_state.cpp" "void bad() { std::error_code ec; std::filesystem::remove_all(\"x\", ec); }\n")
-_nd_run("stage 13 (remove_all, project_state.cpp)" 1 "${BASH}" "${SCRIPT}")
+# --- Stage 13 (task E.4.1): std::filesystem::copy seeded in project_state.cpp -> exit 1. The seventh
+# Check-A file's own proof: listing a file in FORBIDDEN_FILES that no stage ever seeds would be an
+# entry nothing shows to be live, which is the same species of hole stage 10 closes for Check B.
+#
+# THE SEED IS `::copy`, AND THAT IS WHAT MAKES THE STAGE DISCRIMINATE (code review). It is in Check
+# A's FORBIDDEN_RE and DELIBERATELY NOT in Check B's DELETE_RE (`::copy` would match `std::copy` under
+# a glob over every editor/src TU), so Check A is the ONLY check that can fail this stage. A delete or
+# rename seed proves nothing here: Check B's glob catches it in ANY editor/src/*.cpp and emits the
+# same file:line prefix, so the stage would stay green with the FORBIDDEN_FILES entry deleted -- green
+# against the very mutation it exists to catch. Stage 4 seeds the identical form into project_ui.cpp
+# for the same reason; this is that stage's wording, one file over. Verified in both directions: it
+# exits 1 with the entry present, and exits 0 (failing this stage, loudly) with the entry removed.
+_nd_seed("editor/src/project_state.cpp" "void bad() { std::error_code ec; std::filesystem::copy(\"x\", \"y\", ec); }\n")
+_nd_run("stage 13 (copy, project_state.cpp)" 1 "${BASH}" "${SCRIPT}")
 _nd_expect_substr("stage 13" "${_nd_out}" "editor/src/project_state.cpp:1" TRUE)
 _nd_seed("editor/src/project_state.cpp" "${_nd_clean_body}")
 _nd_run("stage 13 (cleaned)" 0 "${BASH}" "${SCRIPT}")
