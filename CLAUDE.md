@@ -74,7 +74,7 @@ validation pass exists for any task in any phase.** N-E = not executable, N-R = 
 | E.3.2 Selection-follows-focus router | #103 | `b172198` | **UNRUN on every platform** |
 | E.3.3 Asset-reference picker | #104 | `fc77c4b` | 10 PASS / 3 partial / 1 N-E / 1 N-R, nothing failed |
 | E.3.4 Material inspector redesign | #105 | `170ad9b` | 12 PASS / 1 partial / 1 N-E, nothing failed |
-| E.4.1 Reopen the last scene | #106 | `068c45c` | **UNRUN on every platform** — but its sabotage matrix IS run: 26 seeds / 29 runs, **no coverage hole** |
+| E.4.1 Reopen the last scene | #106 | `068c45c` | **12 / 12**, nothing failed — and 26 sabotage seeds / 29 runs with **no coverage hole** |
 
 **E.3.2 landed before E.3.1** — legal, disjointly id-reserved; the reservation is discharged and the
 numbering is contiguous.
@@ -794,16 +794,21 @@ mono 48 kHz 0.5 s, **exactly 48 064 B each**, cut at a whole number of cycles so
 **Validation pages are gitignored, so they enter no commit.** Per-page measurements and method notes are in
 `docs/10`; this is the ledger of what is still owed.
 
-**THREE PAGES HAVE NOT BEEN RUN ON ANY PLATFORM: E.1.5's, E.3.2's AND E.4.1's.** They are the whole of
-Phase E's validation risk on this OS — every other task in E.1, E.2 and E.3 is macOS-validated (see the
-index above). **E.4.1's is the heaviest of the three**: almost every row is *quit, relaunch, look*, a
-PROCESS-LIFETIME claim no tier in this tree can make, because `aero_editor_imgui_test` drives ticks
-inside one process and never restarts an editor. **E.4.1's sabotage matrix, by contrast, IS run** — 26
-seeds / 29 runs, **no seed green with nothing else catching it**, four divergences all about the tests
-(`docs/10`). An earlier attempt was abandoned mid-seed and **left a live seed in the working tree**
-(the deleted `sceneIoAvailable()` gate), caught by `git status` before anything was committed. **Always
-`git status` after an interrupted sabotage run**; an aborted seed looks exactly like a clean tree until
-it is read.
+**TWO PAGES HAVE NOT BEEN RUN ON ANY PLATFORM: E.1.5's AND E.3.2's.** They are the whole of Phase E's
+validation risk on this OS — every other task in E.1, E.2, E.3 and now E.4 is macOS-validated (see the
+index above). **E.4.1 is fully validated: 12 / 12 macOS, nothing failed**, and its sabotage matrix is
+run too — 26 seeds / 29 runs, **no seed green with nothing else catching it** (`docs/10`). An earlier
+matrix attempt was abandoned mid-seed and **left a live seed in the working tree** (the deleted
+`sceneIoAvailable()` gate), caught by `git status` before anything was committed. **Always `git status`
+after an interrupted sabotage run**; an aborted seed looks exactly like a clean tree until it is read.
+
+**A PROJECT UNDER A SYMLINKED PATH SILENTLY LOSES ITS RECORDED POSITION (E.4.1's macOS pass).** `/tmp`
+is a symlink to `private/tmp`, and the editor's native panels return the resolved form while `argv[1]`
+keeps whatever was typed — so `projectRelativeScenePath`'s **purely lexical** prefix test declines and
+records `""`. That is D8's DESIGNED failure mode (*forget*, never *wrong project*), reached from a
+direction D8 did not name: E5 assumed the root and the scene path share one source, and the native
+panel is a second. **E.4.2 owns the real predicate including symlinks and now has a reproducible
+example.** Validate on a NON-symlinked root unless symlinks are the thing under test.
 
 **WHY A VALIDATION PAGE IS NOT OPTIONAL: for many tasks it is the ONLY cover a declared sabotage seed has
 anywhere.** The recurring pattern is that no tier in this tree can type, click, press a key, open an ImGui

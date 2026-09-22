@@ -16698,13 +16698,38 @@ this file**; nothing enforces that today beyond file placement.
 
 #### Validation and sabotage status — both OWED
 
-**The twelve-row manual page is written and UNRUN on every platform**
-(`editor/validation/E.4.1-reopen-the-last-scene.md`, gitignored). Almost every row is *quit, relaunch,
-look* — a **process-lifetime** claim, and no tier in this tree can make one, because
-`aero_editor_imgui_test` drives ticks inside one process and never restarts an editor. The automated
-battery proves the file's contents and the write cadence; the page is the only thing that proves the
-loop closes for a person. Rows 2 and 6 are the only behavioural cover the save-then-quit and
-broken-scene-stops paths have anywhere.
+**The twelve-row manual page is RUN on macOS: 12 PASS, 0 PARTIAL, 0 NOT EXECUTABLE, 0 NOT RUN**
+(`editor/validation/E.4.1-reopen-the-last-scene.md`, gitignored; 2026-09-23, `main` @ `5d817a6`,
+`macos-release`, Apple M1 Pro). Almost every row is *quit, relaunch, look* — a **process-lifetime**
+claim no tier in this tree can make, because `aero_editor_imgui_test` drives ticks inside one process
+and never restarts an editor. **Seed S24's only product-level witness (row 6) and seed S15's (row 2)
+both passed.** Row 2 was run in its strongest form: an *untitled* dirty scene saved through
+`AskWhereToSave` during `File ▸ Exit`, so the path is created **in the same tick as the quit** — the
+exact frame a top-of-tick reconcile loses — and the record came out
+`"lastScene": "scenes/s15-quit.scene.json"`. Row 6 landed on the four-entity default with exactly one
+ERROR and `a.scene.json` provably not opened. Row 9's E12 clause held: the repository root stayed
+clean after the editor wrote into `samples/phase-2-editor-scene/Library/`. Row 11 measured
+**53 / 52 / 52 ms** to `shell ready` (recorded scene / first-scene fallback / nothing), so the restore
+costs ~1 ms, and E9's 3000-entry `scenes/` cost **74 ms**.
+
+**★ THE PASS FOUND A LIVE INSTANCE OF D8's "FORGET" MODE, AND IT IS NOT A DEFECT.** The first scratch
+project lived under `/tmp`, which on macOS is a symlink to `private/tmp`. The editor was launched with
+`/tmp/...` while the native panels return `/private/tmp/...`, so `projectRelativeScenePath`'s **purely
+lexical** prefix test declined every scene and recorded `""`. Re-running the identical gesture on a
+non-symlinked root recorded correctly on the first try, which is what proves the mechanism. So: **a
+project under a symlinked path silently loses its recorded position** — the designed failure mode
+(*forget*, never *wrong project*), arrived at from a direction D8 did not name, since E5 assumed the
+root and the scene path come from the same source and the native panel is a second source. **E.4.2
+owns the real predicate including symlinks (H1) and now has a reproducible example to test against.**
+
+Two smaller facts the pass produced. `tests/fixtures/assets/materials.gltf` is a **materials-only**
+fixture that yields `ForwardRenderer::createMesh: the cooked mesh carries no drawable geometry` — it
+is not usable as a mesh fixture, and it is the same error an early `I184` buffer produced. And the
+native Save panel appends its own `.json`, so `withSceneExtension` sees an extension already present
+and leaves it: a scene saved through that panel is `name.json`, not `name.scene.json`. Harmless for
+the record (the path arithmetic is extension-blind) but it means such a scene is **invisible to
+`firstSceneUnder`**, whose suffix test requires `.scene.json`. Unowned; worth a sentence to whoever
+owns Save As next.
 
 **The sabotage matrix is RUN and the battery holds: 26 seeds, 29 runs** (S9, S17 and S20 each have two
 placements), against `main` after the merge. **No seed came back green with nothing else catching it —
