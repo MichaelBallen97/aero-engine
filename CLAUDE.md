@@ -74,7 +74,7 @@ validation pass exists for any task in any phase.** N-E = not executable, N-R = 
 | E.3.2 Selection-follows-focus router | #103 | `b172198` | **UNRUN on every platform** |
 | E.3.3 Asset-reference picker | #104 | `fc77c4b` | 10 PASS / 3 partial / 1 N-E / 1 N-R, nothing failed |
 | E.3.4 Material inspector redesign | #105 | `170ad9b` | 12 PASS / 1 partial / 1 N-E, nothing failed |
-| E.4.1 Reopen the last scene | #106 | `068c45c` | **UNRUN on every platform** — and its 25-seed sabotage matrix is UNRUN too |
+| E.4.1 Reopen the last scene | #106 | `068c45c` | **UNRUN on every platform** — but its sabotage matrix IS run: 26 seeds / 29 runs, **no coverage hole** |
 
 **E.3.2 landed before E.3.1** — legal, disjointly id-reserved; the reservation is discharged and the
 numbering is contiguous.
@@ -798,10 +798,12 @@ mono 48 kHz 0.5 s, **exactly 48 064 B each**, cut at a whole number of cycles so
 Phase E's validation risk on this OS — every other task in E.1, E.2 and E.3 is macOS-validated (see the
 index above). **E.4.1's is the heaviest of the three**: almost every row is *quit, relaunch, look*, a
 PROCESS-LIFETIME claim no tier in this tree can make, because `aero_editor_imgui_test` drives ticks
-inside one process and never restarts an editor. **E.4.1's 25-seed sabotage matrix is also UNRUN** — it
-was abandoned at S5 and **left a live seed in the working tree** (the deleted `sceneIoAvailable()` gate),
-caught by `git status` before anything was committed. **Always `git status` after an interrupted
-sabotage run**; an aborted seed looks exactly like a clean tree until it is read.
+inside one process and never restarts an editor. **E.4.1's sabotage matrix, by contrast, IS run** — 26
+seeds / 29 runs, **no seed green with nothing else catching it**, four divergences all about the tests
+(`docs/10`). An earlier attempt was abandoned mid-seed and **left a live seed in the working tree**
+(the deleted `sceneIoAvailable()` gate), caught by `git status` before anything was committed. **Always
+`git status` after an interrupted sabotage run**; an aborted seed looks exactly like a clean tree until
+it is read.
 
 **WHY A VALIDATION PAGE IS NOT OPTIONAL: for many tasks it is the ONLY cover a declared sabotage seed has
 anywhere.** The recurring pattern is that no tier in this tree can type, click, press a key, open an ImGui

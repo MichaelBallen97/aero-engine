@@ -16706,12 +16706,50 @@ battery proves the file's contents and the write cadence; the page is the only t
 loop closes for a person. Rows 2 and 6 are the only behavioural cover the save-then-quit and
 broken-scene-stops paths have anywhere.
 
-**The 25-seed sabotage matrix is UNRUN**, abandoned at S5. Recorded because the abort mattered more than
-the gap: **it left a live seed in the working tree** — the deleted `sceneIoAvailable()` gate in
-`restoreLastScene` — which `git status` caught immediately, nothing was committed and the merge was
-unaffected. **Always `git status` after an interrupted sabotage run**; an aborted seed looks exactly
-like a clean tree until it is read. The matrix can still be run against `main`, and anything it finds is
-a test-strength fix rather than a correctness one.
+**The sabotage matrix is RUN and the battery holds: 26 seeds, 29 runs** (S9, S17 and S20 each have two
+placements), against `main` after the merge. **No seed came back green with nothing else catching it —
+there is no coverage hole.** Two seeds are inert-as-declared, four diverged from the plan's prediction,
+and every divergence is about the *tests* rather than the code. A first attempt had been abandoned at S5
+and **left a live seed in the working tree** — the deleted `sceneIoAvailable()` gate — which `git status`
+caught before anything was committed. **Always `git status` after an interrupted sabotage run**; an
+aborted seed looks exactly like a clean tree until it is read.
+
+**★ S22 was declared INERT and went RED, which is the good direction.** The plan's inertness argument —
+"the writer's own empty-root guard absorbs an unconditional write" — only covers the *no project open*
+case; with a project open, an unconditional `writeProjectState` really does write. **`I185` catches it**,
+on the `CHECK_FALSE(fileExists(rootB + "/Library/editor-state.json"))` arm. `I185` was added by the
+code-review round *after* the plan was written, so the battery is stronger here than its own author
+predicted. Nothing to fix — but it is a reminder that an inertness argument is a claim about one
+configuration and should name which.
+
+**★ S6's three named app-tier witnesses are BLIND to it, and the reason is the D9 coupling, now measured.**
+Deleting `ensureDirectory` from `writeProjectState` does not redden `I177`, `I178` or `I179` as the plan
+predicted. None of those pre-seeds a state file, and by the time `persistProjectState` writes, `Library/`
+**already exists** — created by the AssetDatabase reconcile in tick 1. That is precisely the coupling
+`project_state.cpp`'s own D9 comment calls "invisible and one reconcile edit away from being false", and
+it is now a measurement rather than a worry. The real witnesses are `PJ35`, `PJ39` and `PJ40`; the five
+app-tier cases that do redden fail at their own *seeding* line, not through the editor's write path.
+**An app-tier case that depends on another subsystem having created a directory is not a witness for the
+code that was supposed to create it.**
+
+**★ S16 reddens `I182`, but for the opposite reason to the one the plan states.** The assertion reads
+`0 == 1`, not `10 == 1`. Moving the two baseline assignments inside `if (reason.empty())` does not
+produce a WARN per frame — the same two assignments also serve the `AdoptBaseline` arm, so gating them on
+a successful write **freezes the baseline for ever**, `projectStateStep` answers `AdoptBaseline` on every
+subsequent tick, and the `Write` arm is never reached again: **zero** WARNs. The case owns the invariant;
+the plan's sentence about what it would print does not. **A shared assignment cannot be gated on one
+arm's outcome.**
+
+**S13 → `PJ47` and S18 → `PJ14` stayed green, both unobservable by construction and both non-findings.**
+`PJ47` expects a NEW scene, which is also what the broken ordering produces — the restore reads the
+outgoing empty root, does nothing, and `adoptProject` seeds the default anyway. `PJ14`'s two subcases are
+absorbed, one by `scene.size() <= root.size()` and the other by the R25 gate refusing an empty remainder
+(`isLegalRelativePath("")` is false). This is E.2.3's "a redundant arm makes its own seed unobservable"
+species: ten other cases hold S13's invariant and `PJ13` holds S18's. Record as non-findings; do not
+"fix" them.
+
+Two smaller corrections to §9's text, both confirmed: **S3 has eight app-tier witnesses of ten**, not the
+single `I176` the plan claims, and **S23 has a second tools-OFF witness in `PJ43`.**
 
 Also worth carrying: the end-to-end GPU case for the mid-tick swap **is not drivable from
 `aero_editor_imgui_test`**. The only in-tick chain that changes a scene path *and* swaps the project is
