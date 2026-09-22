@@ -63,6 +63,10 @@ _nd_seed("editor/src/project_ui.cpp"   "${_nd_clean_body}")
 _nd_seed("editor/src/asset_meta.cpp"     "${_nd_clean_body}")
 _nd_seed("editor/src/asset_database.cpp" "${_nd_clean_body}")
 _nd_seed("editor/src/asset_cache.cpp"    "${_nd_clean_body}")
+# task E.4.1: the SEVENTH Check-A file. Self-test 1 refuses to pass when a named file is absent from
+# the tree it is scanning, so the scratch tree has to carry every entry of FORBIDDEN_FILES -- adding
+# one to the script without adding it here turns stage 1 into an exit 2.
+_nd_seed("editor/src/project_state.cpp"  "${_nd_clean_body}")
 # task 3.1.3 (D13): Check B's own PERMITTED_DELETERS entries, plus a THIRD, ordinary file that must
 # stay clean throughout -- the hole Check B exists to close.
 _nd_seed("editor/src/text_file.cpp"          "${_nd_clean_body}")
@@ -157,5 +161,14 @@ _nd_run("stage 12 (asset_actions.cpp missing -- Check B cannot self-verify)" 2 "
 _nd_expect_substr("stage 12" "${_nd_out}" "cannot self-verify" TRUE)
 _nd_seed("editor/src/asset_actions.cpp" "${_nd_clean_body}")
 _nd_run("stage 12 (restored)" 0 "${BASH}" "${SCRIPT}")
+
+# --- Stage 13 (task E.4.1): remove_all seeded in project_state.cpp -> exit 1. The seventh Check-A
+# file's own proof: listing a file in FORBIDDEN_FILES that no stage ever seeds would be an entry
+# nothing shows to be live, which is the same species of hole stage 10 closes for Check B. --------
+_nd_seed("editor/src/project_state.cpp" "void bad() { std::error_code ec; std::filesystem::remove_all(\"x\", ec); }\n")
+_nd_run("stage 13 (remove_all, project_state.cpp)" 1 "${BASH}" "${SCRIPT}")
+_nd_expect_substr("stage 13" "${_nd_out}" "editor/src/project_state.cpp:1" TRUE)
+_nd_seed("editor/src/project_state.cpp" "${_nd_clean_body}")
+_nd_run("stage 13 (cleaned)" 0 "${BASH}" "${SCRIPT}")
 
 message(STATUS "project-no-delete.no_delete_e2e: OK")
