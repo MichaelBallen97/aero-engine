@@ -134,6 +134,12 @@ struct ProjectState {
 // The result is joinRelative(scenesRelative, leaf), VERBATIM -- so a scenesPath of "." legitimately
 // yields "./a.scene.json", which is isLegalRelativePath, re-resolves through absoluteScenePath to the
 // same file, and is NOT special-cased. A second rule for a cosmetic gain is a second rule.
+// AN ENTRY WHOSE JOINED RESULT IS NOT isLegalRelativePath IS SKIPPED AND THE SCAN CONTINUES (plan
+// R25, code review): `entry.name` is an OS-supplied leaf, and ':' and '\' are legal POSIX filename
+// bytes this tree's relative-path rule refuses anywhere -- so "boss:arena.scene.json" would otherwise
+// be returned verbatim and then answer "" from absoluteScenePath, which reaches openSceneFile as an
+// EMPTY path and spends the restore's one and only attempt on nothing. The producer must guarantee
+// what the consumer requires; projectRelativeScenePath already did.
 [[nodiscard]] std::string firstSceneUnder(std::string_view projectRootUtf8, std::string_view scenesRelativeUtf8);
 
 enum class StartupScene : std::uint8_t { NewScene = 0, Recorded, FirstUnderScenes };

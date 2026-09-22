@@ -271,7 +271,22 @@ std::string firstSceneUnder(std::string_view projectRootUtf8, std::string_view s
         if (entry.isDirectory || !isSceneFileName(entry.name)) {
             continue;
         }
-        return joinRelative(scenesRelativeUtf8, entry.name);  // ROOT-relative, not scenes-relative
+        std::string candidate = joinRelative(scenesRelativeUtf8, entry.name);  // ROOT-relative, not
+                                                                               // scenes-relative
+        // R25, THE OTHER PRODUCER. projectRelativeScenePath gates its remainder for this reason and
+        // this one did not: `entry.name` is an OS-supplied LEAF, and ':' and '\' are legal POSIX
+        // filename bytes that isLegalRelativePath refuses ANYWHERE. Returned verbatim, such a name
+        // makes absoluteScenePath answer "" -- which reaches openSceneFile as an EMPTY path: one
+        // spurious ERROR naming nothing, the default scene left on screen, and the loadable scene
+        // beside it never tried, because the restore takes ONE attempt by design (D6).
+        //
+        // SKIP AND KEEP SCANNING, never abandon: one unrepresentable name costs that FILE, not the
+        // project's startup scene. A `return {}` here would hand the whole directory to the first bad
+        // byte in it.
+        if (!isLegalRelativePath(candidate)) {
+            continue;
+        }
+        return candidate;
     }
     return {};
 }

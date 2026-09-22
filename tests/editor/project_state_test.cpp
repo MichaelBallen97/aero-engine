@@ -2,8 +2,11 @@
 // deciders and its two file operations (task E.4.1, PJ1-PJ40). Tier 0: aero_editor_shell_test, no
 // ImGui, no GPU, no window, and UNGATED -- every case here must be PRESENT and PASSING in all three
 // configurations. Do NOT define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN; shell_test.cpp supplies main().
-#include <aero/editor/asset_cache.hpp>  // LIBRARY_GITIGNORE_TEXT / ASSET_CACHE_GITIGNORE_NAME -- PJ35/PJ36
-                                        // read the SHIPPED constants, never a restated copy
+#include <aero/editor/asset_cache.hpp>    // LIBRARY_GITIGNORE_TEXT / ASSET_CACHE_GITIGNORE_NAME -- PJ35/PJ36
+                                          // read the SHIPPED constants, never a restated copy
+#include <aero/editor/project_files.hpp>  // task E.4.1 (PJ57): listDirectory / FileEntry / ScanStatus --
+                                          // the anti-vacuity arm reads the SAME listing firstSceneUnder
+                                          // walks, so "the refused leaf comes first" is measured, not assumed
 #include <aero/editor/project_state.hpp>
 #include <aero/editor/text_file.hpp>
 
@@ -409,6 +412,52 @@ TEST_CASE("project_state: a nested scenesPath and a scenesPath of \".\" both wor
         CHECK(result == "./a.scene.json");
         CHECK(engine::editor::fileExists(absoluteScenePath(dir.utf8(), result)));
     }
+}
+
+TEST_CASE("project_state: a leaf the JOINER would refuse is SKIPPED, and the scan continues (PJ57)") {
+    // R25, applied to the OTHER producer feeding absoluteScenePath. `entry.name` is an OS-supplied
+    // leaf, and ':' and '\' are perfectly legal POSIX filename bytes that isLegalRelativePath rejects
+    // ANYWHERE in a relative path. Returning such a leaf verbatim made absoluteScenePath answer "",
+    // which reached openSceneFile as an EMPTY path: one spurious ERROR naming nothing, the default
+    // scene left on screen, and -- because the restore takes ONE attempt, by design (D6) -- the
+    // perfectly loadable scene beside it never tried.
+    //
+    // SKIPPED, NOT ABANDONED: the scan continues to the next entry, so one unrepresentable name costs
+    // that one file rather than the whole project's startup scene.
+    const TempDir dir;
+    std::error_code ec;
+    std::filesystem::create_directories(dir.join("scenes"), ec);
+    // Both sort AHEAD of the legal one under entryOrderLess ('a' and 'b' before 'z'), so either would
+    // win if the refusal were not there.
+    const bool colonSeeded = engine::editor::writeTextFileAtomic(dir.join("scenes/a:colon.scene.json"), "{}").empty();
+    const bool backslashSeeded =
+        engine::editor::writeTextFileAtomic(dir.join("scenes/b\\slash.scene.json"), "{}").empty();
+    REQUIRE(engine::editor::writeTextFileAtomic(dir.join("scenes/zz.scene.json"), "{}").empty());
+
+    // ANTI-VACUITY, and it is what makes this case mean anything at all: the illegal leaf must REALLY
+    // be on disk, and must really be the entry the listing offers FIRST. Windows cannot create either
+    // name -- the OS refuses the bytes, so the hazard cannot exist there -- and that arm asserts the
+    // ordinary answer rather than skipping, since a case that silently measures nothing is worse than
+    // no case (no #if may appear in a test file in this tree).
+    if (colonSeeded || backslashSeeded) {
+        CHECK(engine::editor::fileExists(
+            dir.join(colonSeeded ? "scenes/a:colon.scene.json" : "scenes/b\\slash.scene.json")));
+        const engine::editor::DirectoryListing listing =
+            engine::editor::listDirectory(dir.utf8(), "scenes", /*includeHidden=*/false);
+        REQUIRE(listing.status == engine::editor::ScanStatus::Ok);
+        REQUIRE_FALSE(listing.entries.empty());
+        // The first scene-named FILE in the listing is one of the refused ones -- i.e. the loop really
+        // does reach a candidate it has to decline before it reaches "zz".
+        std::string firstSceneNamed;
+        for (const engine::editor::FileEntry& entry : listing.entries) {
+            if (!entry.isDirectory && isSceneFileName(entry.name)) {
+                firstSceneNamed = entry.name;
+                break;
+            }
+        }
+        CHECK(firstSceneNamed != "zz.scene.json");
+    }
+    CHECK(firstSceneUnder(dir.utf8(), "scenes") == "scenes/zz.scene.json");
 }
 
 // ---- chooseStartupScene: PJ25, PJ26 ----------------------------------------------------------------

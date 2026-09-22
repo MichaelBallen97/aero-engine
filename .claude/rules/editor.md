@@ -318,6 +318,13 @@ and resolves; `EditorApp::persistProjectState` decides and writes.
   can write a document it cannot read back. Its failure mode is **"forget"**, never "wrong project":
   a false negative records `""` and the user gets a new scene. When E.4.2's predicate lands, this
   function becomes its caller or is deleted in favour of it.
+- **EVERY producer of a project-relative path gates on `isLegalRelativePath` — `firstSceneUnder` too.**
+  `entry.name` is an **OS-supplied leaf**, and `':'` and `'\'` are legal POSIX filename bytes that
+  rule refuses anywhere, so a `boss:arena.scene.json` returned verbatim answers `""` from
+  `absoluteScenePath` and reaches `openSceneFile` as an **empty path** — one spurious ERROR naming
+  nothing, and the restore's one-and-only attempt spent on it while the loadable scene beside it is
+  never tried. Such an entry is **skipped and the scan continues**; abandoning the directory would
+  hand the whole project's startup scene to the first bad byte in it.
 
 ## Project settings (task 2.6.2)
 
