@@ -25,6 +25,7 @@
 // (.claude/rules/editor.md). Every filesystem call it makes goes through text_file.hpp and
 // project_files.hpp, exactly as editor_prefs.cpp and asset_cache.cpp do.
 #include <cstddef>
+#include <cstdint>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -113,5 +114,64 @@ struct ProjectState {
 // point, and the next rescan writes the ignore file anyway.
 // An EMPTY root writes nothing and returns "" -- "this instance has no project" is not a failure.
 [[nodiscard]] std::string writeProjectState(std::string_view projectRootUtf8, const ProjectState& state);
+
+// ---- the startup-scene resolution ----------------------------------------------------------------
+
+// ASCII-case-folded SUFFIX test on a LEAF name, the isMetaFileName / isBlendFileName /
+// isImportableModelName shape: SOMETHING MUST PRECEDE THE EXTENSION. ".scene.json" alone is FALSE --
+// it is not a scene "of" anything, exactly as asset_meta.cpp:172 says of ".meta" and
+// blender_tool.cpp:48-49 says of ".blend". "scene.json" is FALSE too (it does not carry the suffix at
+// all). Case-folded because a case-insensitive volume can serve "Level.SCENE.JSON".
+[[nodiscard]] bool isSceneFileName(std::string_view fileNameUtf8) noexcept;
+
+// The first *.scene.json FILE directly under <root>/<scenesRelative>, as a ROOT-relative path.
+// NON-RECURSIVE (D7): one listDirectory call, hidden entries excluded, entryOrderLess order, the
+// first entry that is NOT a directory and whose leaf isSceneFileName. Directories sort FIRST
+// (project_files.hpp:109-113), so the !isDirectory test is load-bearing and not defensive.
+// "" when there is none, when the listing's status is not Ok, or when either argument is empty.
+// listingIsComplete is deliberately NOT consulted: this caller picks a file to READ, and a truncated
+// listing still yields a real scene (project_files.hpp:90-102 draws exactly that line).
+// The result is joinRelative(scenesRelative, leaf), VERBATIM -- so a scenesPath of "." legitimately
+// yields "./a.scene.json", which is isLegalRelativePath, re-resolves through absoluteScenePath to the
+// same file, and is NOT special-cased. A second rule for a cosmetic gain is a second rule.
+[[nodiscard]] std::string firstSceneUnder(std::string_view projectRootUtf8, std::string_view scenesRelativeUtf8);
+
+enum class StartupScene : std::uint8_t { NewScene = 0, Recorded, FirstUnderScenes };
+
+struct StartupSceneFacts {
+    bool recorded = false;         // ProjectState::lastSceneRecorded
+    bool recordedEmpty = true;     // ProjectState::lastScene.empty()
+    bool recordedExists = false;   // fileExists(<root>/<lastScene>) -- TRUE for a directory (F8)
+    bool firstSceneFound = false;  // firstSceneUnder() returned a name
+};
+
+// PURE. Four bools in, one enum out -- a 16-row truth table with no arm without a case.
+//   !recorded                                  -> firstSceneFound ? FirstUnderScenes : NewScene
+//   recorded && recordedEmpty                  -> NewScene                       (D2's third state)
+//   recorded && !empty && recordedExists       -> Recorded
+//   recorded && !empty && !recordedExists      -> firstSceneFound ? FirstUnderScenes : NewScene
+// `recordedExists` is read in the FIRST arm and nowhere else, so the four !recorded rows ignore it
+// completely -- PJ25 asserts that, because a decider that reads a fact it should ignore is a real
+// defect, and it is why the caller computes firstSceneUnder UNCONDITIONALLY rather than feeding this
+// function a false-but-unread fact.
+// IT DOES NOT MODEL "the candidate failed to open" AT ALL, and that is D6: the caller opens the
+// candidate once and never re-enters this function. One attempt, always.
+[[nodiscard]] StartupScene chooseStartupScene(const StartupSceneFacts& facts) noexcept;
+
+// ---- the write decision ---------------------------------------------------------------------------
+
+enum class ProjectStateStep : std::uint8_t { Nothing = 0, AdoptBaseline, Write };
+
+// PURE. The end-of-tick reconcile, as a decision:
+//   currentRoot != baselineRoot                     -> AdoptBaseline  (a project OPEN, SWAP or CLOSE:
+//                                                                      the state was READ, not changed)
+//   currentRoot.empty()                             -> Nothing        (no project, nothing to record)
+//   currentScene != baselineScene                   -> Write
+//   otherwise                                       -> Nothing
+// `currentScene`/`baselineScene` are the RECORDED (project-relative) form, never the absolute path --
+// passing the absolute one both defeats D3 and makes two different out-of-project scenes look like a
+// change (sabotage seed S4).
+[[nodiscard]] ProjectStateStep projectStateStep(std::string_view currentRoot, std::string_view baselineRoot,
+                                                std::string_view currentScene, std::string_view baselineScene) noexcept;
 
 }  // namespace engine::editor

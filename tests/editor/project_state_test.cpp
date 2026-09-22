@@ -19,11 +19,18 @@
 #include <system_error>
 
 using engine::editor::absoluteScenePath;
+using engine::editor::chooseStartupScene;
+using engine::editor::firstSceneUnder;
+using engine::editor::isSceneFileName;
 using engine::editor::parseProjectState;
 using engine::editor::projectRelativeScenePath;
 using engine::editor::ProjectState;
 using engine::editor::projectStatePath;
+using engine::editor::projectStateStep;
+using engine::editor::ProjectStateStep;
 using engine::editor::readProjectState;
+using engine::editor::StartupScene;
+using engine::editor::StartupSceneFacts;
 using engine::editor::writeProjectState;
 using engine::editor::writeProjectStateText;
 
@@ -64,6 +71,14 @@ public:
 private:
     std::filesystem::path dirPath;
 };
+
+// A scoped enum inside a CHECK needs DOUBLE PARENTHESES, and `CHECK((a == b))` prints `CHECK( true )`
+// on a FAILURE as well as on a pass. An operator<< in THIS anonymous namespace is invisible to
+// doctest -- its streamability trait calls an UNQUALIFIED operator<< from inside doctest::detail, so
+// only namespaces ASSOCIATED WITH THE ARGUMENTS are searched, and StartupScene's is engine::editor
+// (task E.2.2's measured rule). Comparing ints instead prints both values and needs no printer.
+[[nodiscard]] int sceneChoice(StartupScene value) noexcept { return static_cast<int>(value); }
+[[nodiscard]] int stepChoice(ProjectStateStep value) noexcept { return static_cast<int>(value); }
 
 // Reads a file's exact bytes. Returns nullopt when it does not exist or cannot be read.
 [[nodiscard]] std::optional<std::string> readBytes(std::string_view path) {
@@ -279,6 +294,212 @@ TEST_CASE("project_state: absolute -> relative -> absolute is the identity for a
         REQUIRE_FALSE(relative.empty());
         CHECK(absoluteScenePath(root, relative) == abs);
     }
+}
+
+// ---- isSceneFileName / firstSceneUnder: PJ17-PJ24 --------------------------------------------------
+
+TEST_CASE("project_state: isSceneFileName, every arm pinned (PJ17)") {
+    // ACCEPTED.
+    CHECK(isSceneFileName("a.scene.json"));
+    CHECK(isSceneFileName("A.SCENE.JSON"));  // ASCII-case-folded: a case-insensitive volume serves this
+    CHECK(isSceneFileName("a.Scene.Json"));
+    CHECK(isSceneFileName("my.level.scene.json"));  // the suffix is the LAST 11 bytes, not "the extension"
+    CHECK(isSceneFileName(".hidden.scene.json"));   // it HAS a stem; PJ21 is what excludes it, not this
+    // REFUSED.
+    // THE STEM REQUIREMENT (plan 4.5). ".scene.json" alone is not a scene OF anything -- the
+    // isMetaFileName / isBlendFileName / isImportableModelName shape, whose own comments say exactly
+    // this about ".meta" (asset_meta.cpp:172) and ".blend" (blender_tool.cpp:48-49).
+    CHECK_FALSE(isSceneFileName(".scene.json"));
+    CHECK_FALSE(isSceneFileName("scene.json"));  // no leading '.', so it does not carry the suffix
+    CHECK_FALSE(isSceneFileName("a.json"));
+    CHECK_FALSE(isSceneFileName("a.scene.jsonx"));  // a SUFFIX test, not a "contains"
+    CHECK_FALSE(isSceneFileName("a.scene.json.bak"));
+    CHECK_FALSE(isSceneFileName("ascene.json"));
+    CHECK_FALSE(isSceneFileName(""));
+}
+
+TEST_CASE("project_state: firstSceneUnder picks the first by entryOrderLess, not by creation order (PJ18)") {
+    const TempDir dir;
+    std::error_code ec;
+    std::filesystem::create_directories(dir.join("scenes"), ec);
+    // Created c, a, b -- so "the first one written" and "the first in order" disagree.
+    for (const std::string_view leaf : {"c.scene.json", "a.scene.json", "b.scene.json"}) {
+        REQUIRE(
+            engine::editor::writeTextFileAtomic(dir.join(std::string("scenes/") + std::string(leaf)), "{}").empty());
+    }
+    CHECK(firstSceneUnder(dir.utf8(), "scenes") == "scenes/a.scene.json");
+}
+
+TEST_CASE("project_state: firstSceneUnder SKIPS DIRECTORIES -- the single most likely regression (PJ19)") {
+    // entryOrderLess sorts directories FIRST (project_files.hpp:109-113), so "take entries.front()" is
+    // wrong in the most ordinary case there is: a scenes/ folder with a subfolder in it. The directory
+    // is deliberately named so it sorts AHEAD of the real scene.
+    const TempDir dir;
+    std::error_code ec;
+    std::filesystem::create_directories(dir.join("scenes/aaa.scene.json"), ec);
+    REQUIRE(engine::editor::writeTextFileAtomic(dir.join("scenes/zzz.scene.json"), "{}").empty());
+    CHECK(firstSceneUnder(dir.utf8(), "scenes") == "scenes/zzz.scene.json");
+}
+
+TEST_CASE("project_state: non-scene files are skipped, and a directory of them yields nothing (PJ20)") {
+    const TempDir dir;
+    std::error_code ec;
+    std::filesystem::create_directories(dir.join("scenes"), ec);
+    for (const std::string_view leaf : {"a.json", "b.txt", "c.scene", "readme.md", ".scene.json"}) {
+        REQUIRE(
+            engine::editor::writeTextFileAtomic(dir.join(std::string("scenes/") + std::string(leaf)), "{}").empty());
+    }
+    CHECK(firstSceneUnder(dir.utf8(), "scenes").empty());
+    // ANTI-VACUITY: add one real scene and the SAME directory now yields it.
+    REQUIRE(engine::editor::writeTextFileAtomic(dir.join("scenes/real.scene.json"), "{}").empty());
+    CHECK(firstSceneUnder(dir.utf8(), "scenes") == "scenes/real.scene.json");
+}
+
+TEST_CASE("project_state: HIDDEN entries are excluded (PJ21)") {
+    const TempDir dir;
+    std::error_code ec;
+    std::filesystem::create_directories(dir.join("scenes"), ec);
+    REQUIRE(engine::editor::writeTextFileAtomic(dir.join("scenes/.hidden.scene.json"), "{}").empty());
+    // PJ17 proves isSceneFileName ACCEPTS ".hidden.scene.json", so this refusal is listDirectory's
+    // includeHidden=false and nothing else. The two facts are pinned independently on purpose: a
+    // regression in either must not be maskable by the other.
+    CHECK(firstSceneUnder(dir.utf8(), "scenes").empty());
+    REQUIRE(engine::editor::writeTextFileAtomic(dir.join("scenes/visible.scene.json"), "{}").empty());
+    CHECK(firstSceneUnder(dir.utf8(), "scenes") == "scenes/visible.scene.json");
+}
+
+TEST_CASE("project_state: a missing, non-directory or rootless scenes path yields nothing (PJ22)") {
+    const TempDir dir;
+    SUBCASE("the directory does not exist") { CHECK(firstSceneUnder(dir.utf8(), "scenes").empty()); }
+    SUBCASE("paths.scenes names a FILE") {
+        REQUIRE(engine::editor::writeTextFileAtomic(dir.join("scenes"), "not a directory").empty());
+        CHECK(firstSceneUnder(dir.utf8(), "scenes").empty());
+    }
+    SUBCASE("an empty root") { CHECK(firstSceneUnder("", "scenes").empty()); }
+    SUBCASE("an empty scenes path") { CHECK(firstSceneUnder(dir.utf8(), "").empty()); }
+}
+
+TEST_CASE("project_state: the result is ROOT-relative, not scenes-relative (PJ23)") {
+    const TempDir dir;
+    std::error_code ec;
+    std::filesystem::create_directories(dir.join("scenes"), ec);
+    REQUIRE(engine::editor::writeTextFileAtomic(dir.join("scenes/a.scene.json"), "{}").empty());
+    const std::string result = firstSceneUnder(dir.utf8(), "scenes");
+    CHECK(result == "scenes/a.scene.json");  // NOT "a.scene.json"
+    // ...and it round-trips through absoluteScenePath to a file that EXISTS, which is the property the
+    // caller actually depends on.
+    CHECK(engine::editor::fileExists(absoluteScenePath(dir.utf8(), result)));
+}
+
+TEST_CASE("project_state: a nested scenesPath and a scenesPath of \".\" both work (PJ24)") {
+    SUBCASE("content/scenes") {
+        const TempDir dir;
+        std::error_code ec;
+        std::filesystem::create_directories(dir.join("content/scenes"), ec);
+        REQUIRE(engine::editor::writeTextFileAtomic(dir.join("content/scenes/a.scene.json"), "{}").empty());
+        CHECK(firstSceneUnder(dir.utf8(), "content/scenes") == "content/scenes/a.scene.json");
+    }
+    SUBCASE(".") {
+        // DELIBERATELY NOT SPECIAL-CASED (plan 6.6b): joinRelative(".", leaf) is "./leaf", which is
+        // isLegalRelativePath, re-resolves to the same file, and round-trips. Pinned in BOTH
+        // directions -- the exact bytes, and the fact that those bytes name the file.
+        const TempDir dir;
+        REQUIRE(engine::editor::writeTextFileAtomic(dir.join("a.scene.json"), "{}").empty());
+        const std::string result = firstSceneUnder(dir.utf8(), ".");
+        CHECK(result == "./a.scene.json");
+        CHECK(engine::editor::fileExists(absoluteScenePath(dir.utf8(), result)));
+    }
+}
+
+// ---- chooseStartupScene: PJ25, PJ26 ----------------------------------------------------------------
+
+TEST_CASE("project_state: chooseStartupScene's WHOLE 16-row truth table (PJ25)") {
+    struct Row {
+        bool recorded;
+        bool recordedEmpty;
+        bool recordedExists;
+        bool firstSceneFound;
+        StartupScene expected;
+    };
+    // All sixteen combinations, INCLUDING the four `!recorded && recordedExists` rows that cannot
+    // happen in practice: a decider that reads a fact it should ignore is a real defect, and these
+    // four are the only thing in the tree that can catch it. They are also why restoreLastScene
+    // computes firstSceneUnder UNCONDITIONALLY (plan 4.1) -- a false-but-unread fact would turn this
+    // case from an assertion into a coincidence.
+    constexpr std::array<Row, 16> ROWS = {{
+        {false, false, false, false, StartupScene::NewScene},
+        {false, false, false, true, StartupScene::FirstUnderScenes},
+        {false, false, true, false, StartupScene::NewScene},         // recordedExists IGNORED
+        {false, false, true, true, StartupScene::FirstUnderScenes},  // recordedExists IGNORED
+        {false, true, false, false, StartupScene::NewScene},
+        {false, true, false, true, StartupScene::FirstUnderScenes},
+        {false, true, true, false, StartupScene::NewScene},         // recordedExists IGNORED
+        {false, true, true, true, StartupScene::FirstUnderScenes},  // recordedExists IGNORED
+        {true, false, false, false, StartupScene::NewScene},
+        {true, false, false, true, StartupScene::FirstUnderScenes},  // D6's CASCADE arm
+        {true, false, true, false, StartupScene::Recorded},
+        {true, false, true, true, StartupScene::Recorded},  // the record BEATS the first scene
+        {true, true, false, false, StartupScene::NewScene},
+        {true, true, false, true, StartupScene::NewScene},  // D2's third state BEATS the first scene
+        {true, true, true, false, StartupScene::NewScene},
+        {true, true, true, true, StartupScene::NewScene},
+    }};
+    for (const Row& row : ROWS) {
+        CAPTURE(row.recorded);
+        CAPTURE(row.recordedEmpty);
+        CAPTURE(row.recordedExists);
+        CAPTURE(row.firstSceneFound);
+        const StartupSceneFacts facts{.recorded = row.recorded,
+                                      .recordedEmpty = row.recordedEmpty,
+                                      .recordedExists = row.recordedExists,
+                                      .firstSceneFound = row.firstSceneFound};
+        CHECK(sceneChoice(chooseStartupScene(facts)) == sceneChoice(row.expected));
+    }
+}
+
+TEST_CASE("project_state: chooseStartupScene's three arms, as the user stories they are (PJ26)") {
+    SUBCASE("I was editing scenes/level1 -- give it back") {
+        const StartupSceneFacts facts{
+            .recorded = true, .recordedEmpty = false, .recordedExists = true, .firstSceneFound = true};
+        CHECK(sceneChoice(chooseStartupScene(facts)) == sceneChoice(StartupScene::Recorded));
+    }
+    SUBCASE("I chose File > New Scene and quit -- do NOT hand me somebody else's scene") {
+        const StartupSceneFacts facts{
+            .recorded = true, .recordedEmpty = true, .recordedExists = false, .firstSceneFound = true};
+        CHECK(sceneChoice(chooseStartupScene(facts)) == sceneChoice(StartupScene::NewScene));
+    }
+    SUBCASE("I just cloned this project -- show me something rather than an empty box") {
+        const StartupSceneFacts facts{
+            .recorded = false, .recordedEmpty = true, .recordedExists = false, .firstSceneFound = true};
+        CHECK(sceneChoice(chooseStartupScene(facts)) == sceneChoice(StartupScene::FirstUnderScenes));
+    }
+}
+
+// ---- projectStateStep: PJ27-PJ30 -------------------------------------------------------------------
+
+TEST_CASE("project_state: a ROOT change ADOPTS, whatever the scenes are (PJ27)") {
+    // Including when the scenes are EQUAL, and including a close (root -> ""): the state was just
+    // READ, not changed, and writing here would re-record the value it was read from (D5). The two
+    // produce byte-identical files, so projectStateWriteCount() is the only thing that can see it.
+    CHECK(stepChoice(projectStateStep("/a", "", "", "")) == stepChoice(ProjectStateStep::AdoptBaseline));
+    CHECK(stepChoice(projectStateStep("/a", "/b", "x", "x")) == stepChoice(ProjectStateStep::AdoptBaseline));
+    CHECK(stepChoice(projectStateStep("/a", "/b", "x", "y")) == stepChoice(ProjectStateStep::AdoptBaseline));
+    CHECK(stepChoice(projectStateStep("", "/b", "", "y")) == stepChoice(ProjectStateStep::AdoptBaseline));
+}
+
+TEST_CASE("project_state: one root, a changed scene WRITES; an unchanged one does NOTHING (PJ28)") {
+    CHECK(stepChoice(projectStateStep("/a", "/a", "x", "y")) == stepChoice(ProjectStateStep::Write));
+    CHECK(stepChoice(projectStateStep("/a", "/a", "x", "x")) == stepChoice(ProjectStateStep::Nothing));
+}
+
+TEST_CASE("project_state: no project means nothing to record, even with differing scenes (PJ29)") {
+    CHECK(stepChoice(projectStateStep("", "", "x", "y")) == stepChoice(ProjectStateStep::Nothing));
+    CHECK(stepChoice(projectStateStep("", "", "", "")) == stepChoice(ProjectStateStep::Nothing));
+}
+
+TEST_CASE("project_state: CLEARING the scene is a change, in both directions (PJ30)") {
+    CHECK(stepChoice(projectStateStep("/a", "/a", "", "x")) == stepChoice(ProjectStateStep::Write));
+    CHECK(stepChoice(projectStateStep("/a", "/a", "x", "")) == stepChoice(ProjectStateStep::Write));
 }
 
 // ---- the two file operations: PJ31-PJ40 ------------------------------------------------------------

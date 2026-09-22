@@ -8,7 +8,8 @@
 // the first of them. The RULE (create the directory, write the ignore file when absent) is repeated
 // here; no STRING is.
 #include <aero/editor/asset_cache.hpp>
-#include <aero/editor/project.hpp>  // isLegalRelativePath -- the ONE validator for a relative path
+#include <aero/editor/project.hpp>        // isLegalRelativePath -- the ONE validator for a relative path
+#include <aero/editor/project_files.hpp>  // listDirectory / joinRelative / FileEntry / ScanStatus
 #include <aero/editor/project_state.hpp>
 #include <aero/editor/text_file.hpp>  // readTextFile / writeTextFileAtomic / fileExists / ensureDirectory
 #include <aero/reflect/json_reader.hpp>
@@ -30,6 +31,7 @@ namespace {
 // through the enclosing namespace exactly as editor_prefs.cpp's codec does.
 constexpr std::string_view VERSION_KEY = "version";
 constexpr std::string_view LAST_SCENE_KEY = "lastScene";
+constexpr std::string_view SCENE_FILE_SUFFIX = ".scene.json";
 
 // objectRoot / versionEquals: FILE-LOCAL COPIES of editor_prefs.cpp:31-48, which lives in THAT TU's
 // anonymous namespace and is not reachable from here. Scaffolding is copied; the assertion is shared
@@ -52,6 +54,31 @@ constexpr std::string_view LAST_SCENE_KEY = "lastScene";
     }
     const std::optional<std::uint64_t> value = version->asU64();
     return value.has_value() && *value == static_cast<std::uint64_t>(expected);
+}
+
+// A FOURTH file-local copy of blender_tool.cpp:42-63's foldAscii/endsWithFolded pair, for the same
+// reason the other three exist: both live in that TU's anonymous namespace and are not reachable from
+// here. ASCII-only and locale-independent -- NEVER std::tolower(char), whose UTF-8 continuation bytes
+// are negative as char.
+constexpr unsigned char foldAscii(unsigned char c) noexcept {
+    return (c >= 'A' && c <= 'Z') ? static_cast<unsigned char>(c + ('a' - 'A')) : c;
+}
+
+// `name.size() <= ext.size()` is THE STEM REQUIREMENT -- ".scene.json" alone is not a scene of
+// anything, exactly as asset_meta.cpp:172 says of ".meta" and blender_tool.cpp:48-49 of ".blend".
+[[nodiscard]] bool endsWithFolded(std::string_view name, std::string_view ext) noexcept {
+    if (name.size() <= ext.size()) {
+        return false;
+    }
+    const std::size_t offset = name.size() - ext.size();
+    for (std::size_t i = 0; i < ext.size(); ++i) {
+        const unsigned char lhs = foldAscii(static_cast<unsigned char>(name[offset + i]));
+        const unsigned char rhs = foldAscii(static_cast<unsigned char>(ext[i]));
+        if (lhs != rhs) {
+            return false;
+        }
+    }
+    return true;
 }
 
 // THE one join. Strips EVERY trailing '/' from the root, then joins with exactly one. A root of "/"
@@ -226,6 +253,52 @@ std::string writeProjectState(std::string_view projectRootUtf8, const ProjectSta
     // neither from the assets root -- which is the shape INV-A1 is stated in.
     const std::string statePath = projectStatePath(projectRootUtf8);
     return writeTextFileAtomic(statePath, writeProjectStateText(state));
+}
+
+bool isSceneFileName(std::string_view fileNameUtf8) noexcept { return endsWithFolded(fileNameUtf8, SCENE_FILE_SUFFIX); }
+
+std::string firstSceneUnder(std::string_view projectRootUtf8, std::string_view scenesRelativeUtf8) {
+    if (projectRootUtf8.empty() || scenesRelativeUtf8.empty()) {
+        return {};
+    }
+    const DirectoryListing listing = listDirectory(projectRootUtf8, scenesRelativeUtf8, /*includeHidden=*/false);
+    if (listing.status != ScanStatus::Ok) {
+        return {};  // Missing, NotADirectory, Unreadable -- all simply yield no candidate (D7)
+    }
+    for (const FileEntry& entry : listing.entries) {
+        // entryOrderLess sorts DIRECTORIES FIRST (project_files.hpp:109-113), so "take entries.front()"
+        // is wrong in the most ordinary case there is -- a scenes/ folder with a subfolder in it.
+        if (entry.isDirectory || !isSceneFileName(entry.name)) {
+            continue;
+        }
+        return joinRelative(scenesRelativeUtf8, entry.name);  // ROOT-relative, not scenes-relative
+    }
+    return {};
+}
+
+StartupScene chooseStartupScene(const StartupSceneFacts& facts) noexcept {
+    // ARM ORDER IS LOAD-BEARING. The Recorded test comes first and carries !recordedEmpty explicitly,
+    // so the (impossible-in-practice, still tested) row recorded && recordedEmpty && recordedExists
+    // falls to the second arm and yields NewScene. And `recordedExists` appears in exactly ONE
+    // expression, which is what makes PJ25's four !recorded rows a real assertion.
+    if (facts.recorded && !facts.recordedEmpty && facts.recordedExists) {
+        return StartupScene::Recorded;
+    }
+    if (facts.recorded && facts.recordedEmpty) {
+        return StartupScene::NewScene;  // D2's third state: the user was on an UNSAVED scene
+    }
+    return facts.firstSceneFound ? StartupScene::FirstUnderScenes : StartupScene::NewScene;
+}
+
+ProjectStateStep projectStateStep(std::string_view currentRoot, std::string_view baselineRoot,
+                                  std::string_view currentScene, std::string_view baselineScene) noexcept {
+    if (currentRoot != baselineRoot) {
+        return ProjectStateStep::AdoptBaseline;  // the state was READ, not changed (D5)
+    }
+    if (currentRoot.empty()) {
+        return ProjectStateStep::Nothing;  // no project, nothing to record
+    }
+    return currentScene != baselineScene ? ProjectStateStep::Write : ProjectStateStep::Nothing;
 }
 
 }  // namespace engine::editor
