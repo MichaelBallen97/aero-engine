@@ -592,6 +592,16 @@ public:
     // routing assertion in this tree reads it as a DELTA across ticks, never as an absolute.
     [[nodiscard]] std::uint64_t panelDrawnCount(const char* id) const noexcept;
 
+    // ---- task E.4.1: the per-project editor state's ONE observable ---------------------------------
+    // SUCCESSFUL writes of <projectRoot>/Library/editor-state.json, lifetime, never reset. It is the
+    // ONLY thing in the tree that can tell "the editor READ this project's state" from "it read it and
+    // wrote it straight back", because those two produce BYTE-IDENTICAL files -- no assertion over the
+    // file's content can see the difference (D5). Sabotage seed S3 makes a project open write, and
+    // I176 is its only witness anywhere. Do not delete it.
+    // A FAILED write does not move it (D13): the counter is an assertion about the DISK, not about the
+    // attempt, which is what makes I182's "one WARN across ten ticks, and the count stays 0" sayable.
+    [[nodiscard]] std::size_t projectStateWriteCount() const noexcept;
+
 private:
     // task 3.2.4: the two file-scope-shaped helpers §D-12 names, as members because both touch
     // importSession and toolPrefsPath. THE ONLY PLACE THIS TASK LOGS (INV-B10).
@@ -636,6 +646,14 @@ private:
     // Releases every handle the ledger still holds, through the viewport's own renderer, and clears
     // the binding table. Called on a project swap and at shutdown, BOTH while the panels are alive.
     void releaseSceneAssets();
+
+    // task E.4.1 (D4/D5/D13): the end-of-tick reconcile. Compares
+    // (project.root(), projectRelativeScenePath(root, session.path())) against the baseline pair below.
+    // A ROOT change adopts the baseline and writes NOTHING; a SCENE change inside ONE project writes;
+    // anything else does nothing. Called from exactly one place -- tick(), between endFrame() and the
+    // quitConfirmed branch -- and from nowhere else. NEVER from a draw walk, never from a destructor,
+    // never from requestQuit() (which is noexcept, and a file write must not be inside one).
+    void persistProjectState();
 
     // BY VALUE + move (task 2.2.4): EditorAppConfig gained a std::string field, so it is no longer
     // trivially copyable and modernize-pass-by-value (--warnings-as-errors in CI) requires this shape.
@@ -809,6 +827,18 @@ private:
     std::size_t focusRouteHolds = 0;
     std::size_t focusRouteDrops = 0;
     std::string lastRoutedPanel;  // "" until the first Apply
+
+    // ---- task E.4.1 ------------------------------------------------------------------------------
+    // The (project root, recorded scene) pair last known to be on disk. A project CHANGE adopts them
+    // WITHOUT writing -- the state was just READ, not changed (D5); only a scene change inside ONE
+    // project writes. The editorPrefsDirty idiom one layer over: the file is written when a value
+    // CHANGED, never per frame. Both are plain std::string, so EditorApp's `noexcept = default` move
+    // survives them (every standard library's std::string move is noexcept).
+    std::string projectStateRoot;
+    std::string projectStateScene;
+    // DISTINCT NAME from its accessor, the databasePtr/database() rule -- matching
+    // ContextRouter::latches/latchCount() and focusRouteApplies/focusRouteApplyCount() above.
+    std::size_t projectStateWrites = 0;
 };
 
 }  // namespace engine::editor

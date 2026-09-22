@@ -25,6 +25,8 @@
                                           // than left to arrive transitively, beside the two sibling
                                           // resolvers create() has always called
 #include <aero/editor/project_files.hpp>  // task 3.4.2: listDirectory/joinRelative, for the same drain
+#include <aero/editor/project_state.hpp>  // task E.4.1: the per-project state file, its relative-path
+                                          // arithmetic and its write decision
 #include <aero/editor/scene_session.hpp>
 #include <aero/platform/context.hpp>
 #include <aero/platform/event.hpp>
@@ -491,9 +493,12 @@ std::optional<EditorApp> EditorApp::create(rhi::Device& device, platform::Window
 
     // task 2.6.1: `&& !app.project.isOpen()` is MANDATORY, not defensive. Opening a project above went
     // through adoptProject -> newScene -> resetSceneState + seedDefaultScene, so the World already
-    // holds the three seed entities; seeding again would produce SIX. This is 2.5.1's S5 trap in a new
-    // costume. Corollary, and it is CORRECT: opening a project always yields three entities, even with
-    // seedDefaultScene == false -- AC-18 says a project switch resets to a FRESH DEFAULT scene.
+    // holds the four seed entities; seeding again would produce EIGHT. This is 2.5.1's S5 trap in a new
+    // costume. Corollary, and it is CORRECT: opening a project yields a FRESH DEFAULT scene even with
+    // seedDefaultScene == false -- AC-18 says a project switch resets to one. Task E.4.1: it no longer
+    // always yields FOUR entities, because openProjectPath may now restore the project's last scene on
+    // top of that fresh default; the guard above is unaffected, because what it prevents is a SECOND
+    // seed, not a particular count.
     if (config.seedDefaultScene && !app.project.isOpen()) {
         engine::editor::seedDefaultScene(app.sceneWorld);  // fully qualified: the config field shadows
     }
@@ -502,6 +507,37 @@ std::optional<EditorApp> EditorApp::create(rhi::Device& device, platform::Window
     AERO_LOG_INFO("editor: shell ready ({} panels, {} entities, layout: {})", app.registry.count(),
                   app.sceneWorld.entityCount(), app.applyDefaultLayout ? "default" : "restored");
     return app;
+}
+
+void EditorApp::persistProjectState() {
+    // NAMED LOCALS, FIRST: ProjectSession::root() and SceneSession::path() both return a
+    // std::string_view into a member of a live object, and both `root` and `scene` outlive the
+    // full-expressions below.
+    const std::string root(project.root());
+    const std::string scene = projectRelativeScenePath(root, session.path());
+    switch (projectStateStep(root, projectStateRoot, scene, projectStateScene)) {
+        case ProjectStateStep::Nothing:
+            return;
+        case ProjectStateStep::AdoptBaseline:
+            break;  // fall through to the adopt below, WITHOUT writing (D5)
+        case ProjectStateStep::Write: {
+            const std::string reason =
+                writeProjectState(root, ProjectState{.lastScene = scene, .lastSceneRecorded = true});
+            if (reason.empty()) {
+                ++projectStateWrites;
+            } else {
+                AERO_LOG_WARN("editor: could not record the last scene for project '{}' -- {}", root, reason);
+            }
+            break;
+        }
+    }
+    // The baseline advances WHETHER OR NOT the write succeeded (D13). Otherwise a read-only Library/
+    // produces a write attempt AND a WARN on every frame, forever -- asset_database.cpp's INV-C11
+    // ("in-memory regardless of whether the write succeeded"), one file over. A failure therefore costs
+    // exactly ONE WARN per scene change (I182), and projectStateWriteCount() counts only successes,
+    // which is what keeps it an assertion about the disk rather than about the attempt.
+    projectStateRoot = root;
+    projectStateScene = scene;
 }
 
 bool EditorApp::tick() {
@@ -1200,6 +1236,15 @@ bool EditorApp::tick() {
     // ledger touches no ImGui-sampled texture, so appending after it is safe.
     serviceSceneAssets();
     presented = layer.endFrame(config.clearColor);
+    // task E.4.1 (D4): the END of the tick, never the top. applyFileRequests runs INSIDE drawShellUi
+    // (shell_ui.cpp:552) earlier in THIS tick, so a scene opened, saved or cleared by this frame's menu
+    // action is already in session.path() by the time the draw walk returns. And the unsaved-changes
+    // modal's "Save" answer performs the save AND the pending Quit in ONE tick -- fileFlow.quitConfirmed
+    // is read on the next line and tick() returns false for ever after -- so a top-of-tick reconcile
+    // would lose exactly that frame, which is the most common quit path there is.
+    // It touches no ImGui and no GPU, so it has no draw-walk constraint of its own: the placement is
+    // about the QUIT, not about ImGui.
+    persistProjectState();
     if (fileFlow.quitConfirmed) {
         // File > Exit / Ctrl+Q / the window [X] -- all AFTER the guard said yes (task 2.5.1 D1). This
         // frame still completed, so Render stays balanced (AC-28).
@@ -1415,6 +1460,8 @@ std::size_t EditorApp::focusRouteHoldCount() const noexcept { return focusRouteH
 std::size_t EditorApp::focusRouteDropCount() const noexcept { return focusRouteDrops; }
 
 std::uint64_t EditorApp::panelDrawnCount(const char* id) const noexcept { return registry.drawnCount(id); }
+
+std::size_t EditorApp::projectStateWriteCount() const noexcept { return projectStateWrites; }
 
 // ---- task 3.1.5: the three request hooks (the EIGHTH application of the request shape) ------------
 // Each records EXACTLY what the corresponding panel's accept records. The first two land in an
