@@ -476,6 +476,106 @@ one WARN, an empty list, the editor keeps running — with one exception: an ind
 array element is skipped and the rest of the list is kept, so one corrupt row never costs the whole
 file. No golden fixtures; this format has no byte-stability requirement any caller depends on.
 
+### 4.10 The per-project editor state envelope
+
+**Nature.** Machine-local, per-project, derived, disposable. **One file per PROJECT**, at
+`<projectRoot>/Library/editor-state.json` — beside `asset-cache.json` (§6) and `BlenderExports/`
+(§7.5), inside the directory that already carries a `.gitignore` containing `*`, is already excluded
+from the asset scan by the project root's canonical path, and is already excluded from the file
+watcher the same way. It records the editor's **working position** in that project, so that opening
+the project resumes where you left it.
+
+It is deliberately **not** in `editor_prefs.json` (§8.5): that file is one per MACHINE and its whole
+nature is "a property of a person at a machine, not of a project", and a map keyed by project root
+inside it would grow without bound, would have no eviction rule, and would break the moment the
+project directory were renamed — which is exactly when a user most wants their scene back. It is
+deliberately **not** in `project.json` (§4.1): that file is committed and shared, and a working
+position is the worst possible thing to hand a teammate — §8.1 already makes this argument for the
+Blender path.
+
+The mirror-image weakness is intended, not a cost: copy the project to another machine and the
+position does not travel. The position **is** machine-local, and `Library/` is where this document
+already puts machine-local derived state.
+
+**Envelope.** Two root keys, in this exact order on save.
+
+| Key | Kind | Required | Rule |
+|---|---|---|---|
+| `version` | number, integral | yes | must equal `1`; validated first |
+| `lastScene` | string | no | a **project-relative**, `'/'`-separated path satisfying §4.4's relative-path rule, **or** empty. At most 1024 bytes. A non-string, an over-long value or an illegal relative path is a parse failure — never a coerced or truncated value |
+
+**`lastScene` has THREE states, not two, and the third one is the point.**
+
+| State | On disk | Means |
+|---|---|---|
+| **not recorded** | the key is absent, or the file is | nothing has ever been written here |
+| **recorded empty** | `"lastScene": ""` | the user was on an **unsaved** scene when they left |
+| **recorded** | `"lastScene": "scenes/level1.scene.json"` | the user was editing that file |
+
+Collapsing the first two is the obvious simplification and it is wrong in a way a user notices
+immediately: a person who chose `File ▸ New Scene` and quit would be handed somebody else's scene on
+the next launch. The writer therefore **omits the key entirely** when nothing is recorded, and the
+parser sets "recorded" from the key's **presence**. An **absent key is its own answer** and is not a
+failure — which is what makes appending a key to this file a non-breaking change with no version
+bump: the editor camera pose is the named candidate, and it lands here as one key.
+
+An **unknown key** is ignored and the document still parses.
+
+**Resolution.** On opening a project, the editor chooses a startup scene once, from four facts and
+with **exactly one open attempt**:
+
+| Situation | Result |
+|---|---|
+| recorded, and the file **exists** | open it |
+| recorded, and the file is **missing** | the first `*.scene.json` directly under `paths.scenes`; if there is none, a new scene |
+| recorded **empty** | a new scene, whatever `paths.scenes` contains |
+| **not recorded** (no file, an unparseable one, or an absent key) | the first scene under `paths.scenes`; if there is none, a new scene |
+
+The first-scene candidate is the first entry in the directory listing's own order that is **not a
+directory** and whose leaf name ends in `.scene.json` (ASCII-case-folded, and something must precede
+the suffix). The search is **non-recursive** — the top level of `paths.scenes` only — and hidden
+entries are excluded.
+
+**A recorded scene that EXISTS and fails to open STOPS there**: one error, the fresh default scene,
+and **no second attempt**. Missing cascades; broken does not. Silently opening a *different* scene
+than the one you last used is the same species of harm as silently opening a different project,
+which §4.9's own startup rule already refuses.
+
+A **missing** file is the default state, **silently** — the normal state on a machine that has never
+opened this project. A file that **exists and cannot be read** (a directory, or one the OS refuses),
+that does not parse, or that carries a wrong `version`, is the default state **plus one warning**,
+emitted from the project-open path and nowhere else. The state is an **optimisation, never a gate**:
+the project still opens.
+
+**Identity vs content.** There is no identity here at all: the file is one remembered path. Losing it
+costs one `File ▸ Open Scene`. It is written **only when the open scene changes inside one project**
+— never per frame, and never on a tick that merely **read** it, which means opening a project writes
+nothing at all. A **project change adopts the new pair silently**; only a scene change writes. A
+**failed write is not retried**: the in-memory baseline advances anyway, so a read-only `Library/`
+costs one warning per scene change rather than one per frame.
+
+A **stale record is never auto-pruned.** A record naming a scene that has been deleted, renamed or
+moved is left exactly as it is and re-resolved on the next open — §4.9's own rule, for the same
+reason: the destructive interpretation of a transient `exists() == false` is the irreversible one. A
+consequence worth stating rather than discovering: after a cascade, the record still names the
+missing scene, and it is corrected only when the user next changes scene. The behaviour is right
+every time, and if the missing scene comes back the record means exactly what it says.
+
+A scene opened from **outside** the project root has no relative form and is recorded as `""` — a
+forgotten position, never a path pointing out of the project it belongs to.
+
+**Canonicalization.** `writeTextFileAtomic`, `JsonWriter`'s default configuration (pretty, 2-space),
+fixed key order with `version` first, exactly one trailing `\n`; re-parses equal. Two writes of the
+same value produce byte-identical files. The writer creates `Library/` when it is absent and writes
+`Library/.gitignore` **only when absent**, never overwriting one, from the same constants §6 uses —
+so a project can never acquire a committed `editor-state.json`, even on the first write into a
+`Library/` the asset scan has not yet created. A `.gitignore` failure does not block the state write.
+
+**This file is EDITOR-ONLY.** The runtime never reads it.
+
+No golden fixtures; this format has no byte-stability requirement any caller depends on beyond the
+canonical form above.
+
 ## 5. Asset meta format v1
 
 > Enforced in code by `editor/src/asset_meta.cpp` (the pure parse/write/lifecycle half) and
