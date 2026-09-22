@@ -10,9 +10,9 @@ Two platform matrices, never to be conflated: the **editor** runs on macOS/Windo
 
 ## Current state — read this first
 
-**Phase E (Editor Experience) is the open front**, executing between Phase 3 and Phase 4. **Thirteen of its
-24 tasks are merged: Epics E.1, E.2 and E.3 are all CLOSED IN CODE. E.4, E.5 and E.6 are what is left —
-eleven tasks, planning only.** Phase 3 remains OPEN behind it: all seven of its epics are closed in code,
+**Phase E (Editor Experience) is the open front**, executing between Phase 3 and Phase 4. **Fourteen of its
+24 tasks are merged: Epics E.1, E.2 and E.3 are all CLOSED IN CODE, and E.4.1 has OPENED Epic E.4.
+E.4.2-E.4.5, E.5 and E.6 are what is left — ten tasks, planning only.** Phase 3 remains OPEN behind it: all seven of its epics are closed in code,
 and what is left is its deliverable gate and the validation debt.
 
 **Phase E is lettered, not fractioned.** `3.5` and `3.5.1`/`3.5.2` are already Phase 3's skeletal-animation
@@ -24,7 +24,9 @@ In Notion its `Phase #` is `3.5` — a sort key, not an identifier.
 (E.2.2). Nothing since E.2.2 has added one, so the five-generation-site rule and the component-count sweep
 have not fired since — **they still apply in full to the next built-in, whenever one arrives.**
 
-**Next free ids: `I176` at the ImGui tier.** The `MR` prefix is taken (E.3.4's `MR1`–`MR21`).
+**Next free ids: `I186` at the ImGui tier.** The `MR` prefix is taken (E.3.4's `MR1`–`MR21`) and so is
+`PJ` (E.4.1's `PJ1`–`PJ57`). **E.4.1 TOOK `I176`–`I185`, and the E.4.2 and E.4.4 specs/plans still claim
+`I176`+ — both must RE-MEASURE the ceiling and renumber before they are implemented.**
 
 **Four facts Phase E was built on, each measured in the tree and each contradicting a plausible guess.**
 (1) The directional light **already** derives its direction from the entity's −Z world axis
@@ -72,6 +74,7 @@ validation pass exists for any task in any phase.** N-E = not executable, N-R = 
 | E.3.2 Selection-follows-focus router | #103 | `b172198` | **UNRUN on every platform** |
 | E.3.3 Asset-reference picker | #104 | `fc77c4b` | 10 PASS / 3 partial / 1 N-E / 1 N-R, nothing failed |
 | E.3.4 Material inspector redesign | #105 | `170ad9b` | 12 PASS / 1 partial / 1 N-E, nothing failed |
+| E.4.1 Reopen the last scene | #106 | `068c45c` | **UNRUN on every platform** — and its 25-seed sabotage matrix is UNRUN too |
 
 **E.3.2 landed before E.3.1** — legal, disjointly id-reserved; the reservation is discharged and the
 numbering is contiguous.
@@ -85,7 +88,7 @@ numbering is contiguous.
 | **Phase 2** — Editor | **COMPLETE, gate met 2026-08-02.** All six epics closed and macOS-validated; Windows/Linux rows pending for every task (`editor/VALIDATION.md`). Gate artifact: `samples/phase-2-editor-scene/` — data, deliberately not `add_subdirectory`'d. |
 | **Phase 3** — Asset Pipeline & 3D Content | **OPEN.** All seven epics (3.1–3.7) **CLOSED in code**. What is left is the gate below and the validation debt. |
 | **Phase 3 gate** | Drop a rigged glTF/FBX in → PBR materials + shadows + a playing animation + **an audible sound**. The audible half exists in code as of 3.7.2 and **has never been heard on any platform.** |
-| **Phase E** — Editor Experience | **OPEN.** Epics E.1, E.2 and E.3 **CLOSED in code** — 13 of 24 tasks merged, see the index above. **E.4, E.5 and E.6 are the open front: eleven tasks, planning only.** Two validation pages are unrun (E.1.5, E.3.2) and are the whole of this OS's remaining Phase E risk. |
+| **Phase E** — Editor Experience | **OPEN.** Epics E.1, E.2 and E.3 **CLOSED in code**; **E.4.1 merged, OPENING Epic E.4** — 14 of 24 tasks merged, see the index above. **E.4.2–E.4.5, E.5 and E.6 are the open front: ten tasks, planning only.** THREE validation pages are unrun (E.1.5, E.3.2, E.4.1) and are the whole of this OS's remaining Phase E risk. |
 | **Phase E gate** | Open a project and land in the scene you were last editing, on a lit grid floor under a sky; create a Cube from the menu, drop a material on it and see it shade; aim a spot light with a visible gizmo; rename, move and delete assets without leaving the editor. Gate artifact: `samples/phase-E-editor/`. |
 
 ### Engine layers, in dependency order
@@ -307,6 +310,28 @@ prune that bumped and un-bumped would satisfy the effect. **And `set`, `toggle` 
 PRIVATE, NON-COUNTING helpers**, never to `add`/`remove`: the counter counts public CALLS, so routing them
 through the public mutators makes `set` bump twice and `setAll(n)` bump n + 1, while bumping only in
 `add`/`remove` gives `setAll({})` zero. **A delegating mutator cannot carry a per-call counter in its own body.**
+
+**A PROJECT CHANGE ADOPTS THE PER-PROJECT STATE BASELINE WITHOUT WRITING — BUT THE OUTGOING PAIR IS
+HANDED OFF FIRST, BECAUSE ONE TICK CAN CHANGE BOTH THE SCENE AND THE PROJECT (E.4.1).** `resolveConfirm`'s
+`AskWhereToSave` arm keeps the pending action, and `applyDialogResult` then calls `saveSceneFile` — giving
+an untitled scene a path INSIDE the outgoing project — and `performAction(flow.pending)` **in the same
+call**, so `openProjectPath` → `adoptProject` → `clearPath()` + `set()` all land before the draw walk
+ends. **That pair exists only between those two statements and is invisible at BOTH ends of the tick**, so
+a top-of-tick snapshot does NOT recover it — at tick start the scene is still untitled, i.e. `""`, which
+equals the baseline. `ProjectFlow::outgoingState{Root,Scene}` is published in `openProjectPath` **above
+and outside** `adoptProject` (whose five statements stay byte-identical) and drained by
+`EditorApp::persistProjectState`, **still the ONE write site**, which asks the SAME pure `projectStateStep`
+about the pending pair rather than spelling a second condition that could drift. **A non-empty pending
+root IS the validity flag** — a separate bool would be a second spelling of one fact and an arm no seed
+could distinguish. **Any future path that can change the scene and the project in one tick inherits this.**
+
+**EVERY PRODUCER OF A PATH THAT WILL BE REJOINED MUST GUARANTEE WHAT THE PARSER REQUIRES (E.4.1).**
+`isLegalRelativePath` rejects **any** `'\'` or `':'`, and both are legal POSIX filename bytes — so
+`firstSceneUnder`, which returns an OS-supplied LEAF verbatim, could emit `scenes/boss:arena.scene.json`,
+make `absoluteScenePath` return `""`, and produce one spurious ERROR plus **no second attempt** (the
+design makes exactly one, ever). `projectRelativeScenePath` was gated and `firstSceneUnder` was not; it
+now skips such an entry and keeps scanning. **Both feed the same joiner — gate every producer, not the
+one you thought of first.**
 
 **`ImGuiListClipper::IncludeItemByIndex` GOES AFTER `Begin()` (E.3.3)** — the constructor `memset`s
 `DisplayStart` to 0 and `Begin` is what sets it to −1, so a call above it is an `IM_ASSERT` abort.
@@ -769,8 +794,14 @@ mono 48 kHz 0.5 s, **exactly 48 064 B each**, cut at a whole number of cycles so
 **Validation pages are gitignored, so they enter no commit.** Per-page measurements and method notes are in
 `docs/10`; this is the ledger of what is still owed.
 
-**TWO PAGES HAVE NOT BEEN RUN ON ANY PLATFORM: E.1.5's AND E.3.2's.** They are the whole of Phase E's
-validation risk on this OS — every other task in E.1, E.2 and E.3 is macOS-validated (see the index above).
+**THREE PAGES HAVE NOT BEEN RUN ON ANY PLATFORM: E.1.5's, E.3.2's AND E.4.1's.** They are the whole of
+Phase E's validation risk on this OS — every other task in E.1, E.2 and E.3 is macOS-validated (see the
+index above). **E.4.1's is the heaviest of the three**: almost every row is *quit, relaunch, look*, a
+PROCESS-LIFETIME claim no tier in this tree can make, because `aero_editor_imgui_test` drives ticks
+inside one process and never restarts an editor. **E.4.1's 25-seed sabotage matrix is also UNRUN** — it
+was abandoned at S5 and **left a live seed in the working tree** (the deleted `sceneIoAvailable()` gate),
+caught by `git status` before anything was committed. **Always `git status` after an interrupted
+sabotage run**; an aborted seed looks exactly like a clean tree until it is read.
 
 **WHY A VALIDATION PAGE IS NOT OPTIONAL: for many tasks it is the ONLY cover a declared sabotage seed has
 anywhere.** The recurring pattern is that no tier in this tree can type, click, press a key, open an ImGui
@@ -831,11 +862,13 @@ display's ICC profile, and **there is no `renderFrame` Tracy zone in this tree**
 
 ### Next
 
-**E.4, E.5 and E.6 are the open front: eleven tasks, planning only.** See `docs/tasks/phase-E.md`, and
-`docs/tasks/phase-3.md` for what Phase 3 still owes.
+**E.4.2–E.4.5, E.5 and E.6 are the open front: ten tasks, planning only.** See `docs/tasks/phase-E.md`,
+and `docs/tasks/phase-3.md` for what Phase 3 still owes.
 
-**Ownership of the open work.** **E.4.2** owns scene/project containment (fact 4 above) and is specced before
-E.4.1 deliberately. **E.4.5** (material names & thumbnails) is unblocked **twice over**: it has
+**Ownership of the open work.** **E.4.2** owns scene/project containment (fact 4 above) and was specced
+before E.4.1 deliberately; **it must renumber off `I176` now that E.4.1 has taken `I176`–`I185`**, and
+when its containment predicate lands, E.4.1's LEXICAL `projectRelativeScenePath` becomes its caller or is
+deleted in favour of it. **E.4.5** (material names & thumbnails) is unblocked **twice over**: it has
 `material_preview_rig.hpp` to call BY NAME — a thumbnail is `materialPreviewCamera(rig, fixedAngle, 1.0F)`
 plus `materialPreviewView(...)` with whatever `MaterialPreviewLighting` it wants — and it has E.3.3's
 `ThumbnailService`, which is the "a second PRODUCER, not

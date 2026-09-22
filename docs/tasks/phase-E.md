@@ -548,8 +548,13 @@ both are input limits rather than defects.
 
 **Goal:** the editor should remember where you were, refuse to wander into another project, and let you manage files without a file manager. None of the three is true: there is no per-project editor state at all, `openSceneFile` performs zero validation of the path against the project root, and the Asset Browser is read-only by contract with sixteen actions of which none is a file mutation.
 **Definition of Done:** reopening a project lands in the scene you last saved; a scene outside the project is refused with an explanation; the browser can create, rename, move and delete safely, with `.meta` identity preserved.
+**OPENED with E.4.1** (PR #106, `068c45c`) — one of five tasks merged, and the first clause of the
+Definition of Done is discharged: reopening a project lands in the scene you last saved. Its manual
+validation page and its 25-seed sabotage matrix are both **unrun**. E.4.1 took the ImGui-tier ids
+`I176`–`I185` and the tier-0 prefix `PJ`, so **E.4.2 and E.4.4 — whose specs both claim `I176`+ — must
+re-measure the ceiling and renumber.**
 
-### E.4.1 Reopen the last scene · P0 · M · depends: 2.5.1, 2.6.1
+### E.4.1 Reopen the last scene · P0 · M · depends: 2.5.1, 2.6.1 · **MERGED** — PR #106, `068c45c`
 **Goal:** opening a project should resume your work. Today opening one always lands on an Untitled
 seeded scene, because adopting a project is defined as "new scene, clear path".
 **Deliverable:** a versioned, machine-local per-project editor state file under the project's

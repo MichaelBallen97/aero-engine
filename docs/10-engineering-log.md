@@ -16557,3 +16557,166 @@ an earlier note: **synthetic mouse moves DO provoke ImGui tooltips** here (move 
 then wait ~2 s), which is how all four Apply/Revert tooltips were read; the scroll wheel drives child
 scrolling; and **Backspace deletes the selected entity**, because the Edit menu has no Delete item.
 Text entry still never arrives by any encoding.
+
+### E.4.1 — Reopen the last scene — OPENS Epic E.4, and a record lost between two statements of one tick
+
+**Opening a project resumes your work now.** One versioned, machine-local document per project,
+`<projectRoot>/Library/editor-state.json`, carries the last scene as a **project-relative** path and is
+wired to two moments: opening a project READS it and resolves a startup scene through a pure three-way
+decider (recorded → the first `*.scene.json` directly under `paths.scenes` → a new scene), and the end
+of every tick RECONCILES it, writing only when the open scene changed inside one project and adopting
+the pair without writing when the project itself changed. The whole of the format, the path arithmetic,
+the resolution and the write decision live in one new public, pure-by-placement pair
+(`project_state.{hpp,cpp}`) with no `<filesystem>`, no ImGui, no SDL, no entt, no logging and no `#if`.
+`Library/` was already gitignored, already excluded from the asset scan by canonical path and already
+excluded from the watcher, so the file is invisible to git, to the scan and to the watcher **with no
+code change anywhere** to make that true.
+
+**Eight commits**, merged as `068c45c` (PR #106), **6/6 CI green** with the run's `headSha == HEAD`.
+`ctest -N` **178 → 178** in both presets and **165 / 93** in the two reduced configurations, all four
+with a byte-identical entry set — the task adds no ctest entry. doctest **1404 / 1993 / 225 / 40 / 59 /
+10 / 28**: only the two permitted binaries moved, `aero_editor_shell_test` by `PJ1`–`PJ57` and
+`aero_editor_imgui_test` by `I176`–`I185`. The five untouched binaries — **including both
+component-sensitive ones** — are byte-unmoved, which is what says no component crept in. Guards **522 /
+92 / 163 / 92 / 165 / A=7 B=88 / 11-3-55 / 6-57**: math and project-no-delete are the only movers, math
+by the three new tracked C-family files and project-no-delete by one new `editor/src/*.cpp` (prong B)
+plus the deliberate seventh Check-A entry. **The built-in component count stays TEN.** No component, no
+shader, no panel, no menu item, no reflect-gen change, no `project.json` change, no new target, no
+link-line change.
+
+#### ★ The record a project swap throws away, and why neither end of the tick can see it
+
+The reconcile is one comparison at the end of `tick()`: the pair `(project.root(), relative scene)`
+against a baseline held on the app. A different **root** means the state was just READ, so adopt and
+write nothing; the same root with a different **scene** means write. That equivalence — "the root
+changed, therefore nothing changed" — is **false**, and the editor has a path that proves it.
+
+The user is in project A on an **untitled, dirty** scene and picks `File ▸ Open Project…`. `resolveConfirm`
+takes the `AskWhereToSave` arm, which keeps `flow.pending` set and launches the native Save panel. A
+later tick delivers the answer to `applyDialogResult`, which calls `saveSceneFile` — giving the untitled
+scene a path **inside A** — and then, *in the same call*, `performAction(flow.pending)` →
+`openProjectPath(B)` → `adoptProject` → `clearPath()` + `set(B)`. At end of tick the root is already B,
+the comparison takes the adopt arm, and **A never records the scene the user just saved into it.**
+
+The trap worth carrying: **the lost pair exists only between `saveSceneFile` and `adoptProject`, so it
+is invisible at BOTH ends of the tick.** A snapshot at the top of `tick()` — the obvious repair, and the
+one first reached for — does not work: at tick start the scene is still untitled, i.e. `""`, which
+equals the baseline. The information has to be captured where it exists.
+
+The fix is a **handoff, not a second write site**: `ProjectFlow` gains `outgoingStateRoot` /
+`outgoingStateScene` beside `recentsDirty` (the same "set during the flow, consumed once per tick"
+idiom), published in `openProjectPath` **immediately before** the `adoptProject` call — above it and
+outside it, so `adoptProject`'s five statements stay byte-identical — and drained by
+`persistProjectState`, which remains the one write site. The drain asks **the same pure decider**
+about the pending pair rather than spelling a second condition, so the reconcile's idea of what a
+change *is* cannot drift between the two. A non-empty pending root **is** the validity flag; a separate
+bool would be a second spelling of the same fact and an arm no seed could distinguish.
+
+#### ★ A leaf name the filesystem allows and the record format forbids
+
+`firstSceneUnder` returned `joinRelative(scenesRelative, entry.name)` verbatim, where `entry.name` is
+whatever the OS handed back. `isLegalRelativePath` rejects **any** `'\'` or `':'` anywhere — and both
+are perfectly legal POSIX filename bytes. So a project whose `scenes/` held `boss:arena.scene.json`,
+sorting first, produced an empty join from `absoluteScenePath`, one spurious ERROR naming an empty
+path, and — because the design makes exactly one attempt, ever — **the perfectly loadable second scene
+was never tried.** This is the R25 rule ("the producer guarantees what the parser requires") applied to
+one producer and not the other. The loop now skips such an entry and keeps scanning.
+
+#### ★ A guard stage that went red for the wrong reason, and therefore proved nothing
+
+`project_state.cpp` writes into `Library/` and must never delete, so it joined
+`check-project-no-delete.sh`'s Check-A allowlist, and a new e2e stage was added to show the entry was
+live. The stage seeded `remove_all` — and **Check B catches `remove_all` independently**, over every
+tracked `editor/src/*.cpp` outside `PERMITTED_DELETERS`, emitting the same `file:line` prefix. So with
+the Check-A entry deleted the stage stayed green against exactly the mutation it existed to catch.
+
+`FORBIDDEN_RE` (Check A) carries `::copy`; `DELETE_RE` (Check B) deliberately does not. Seeding
+`std::filesystem::copy` therefore fails **only** via Check A. Measured in both directions: red with the
+entry present, green with it removed — and the old seed re-measured under the same mutation to confirm
+it had been green. Stage 4 already used that seed one file over, so the precedent was in the file.
+**Generalisation: a stage that proves a guard goes red is not the same claim as a stage that proves a
+particular list entry is load-bearing. Seed a token only the arm under test refuses.**
+
+#### Where the plan overrode the spec, both re-measured in the tree
+
+**The default scene is FOUR entities, not three.** `seedDefaultScene` creates Main Camera, Directional
+Light, Cube **and `Environment`** (added at E.2.1); seventeen `entityCount() == 4` pins corroborate it.
+Every "three seeded entities" sentence in the spec was wrong, and `editor_app.cpp`'s seed-guard comment
+was independently stale — it claimed "three seed entities" and "would produce SIX" for what is four and
+eight. **`isSceneFileName` requires a stem**, so a bare `.scene.json` is FALSE: the spec claimed its own
+precedent accepted it, but `endsWithFolded` and `isMetaFileName` both use `size() <= ext.size() → false`,
+each with a comment saying so in as many words. The spec's "existing cases 45, 46, 47" do not exist —
+they are `P73`, `P74`, `P75`, `P81`, `P82`, and **zero existing cases changed.**
+
+#### `aero_editor_imgui_test` reads 198 in shader-tools-OFF, and that is REAL
+
+The plan asserted that a shader-OFF total of 197 "cannot be a real configuration difference" and had to
+be staleness. Freshly configured and built at the branch point it reads **198 against 215 — a genuine,
+pre-existing gap of 17 cases**, caused by a region-level `#if AERO_SHADER_TOOLS_ENABLED` in
+`imgui_layer_test.cpp` and its siblings; comparing the two binaries' case lists shows exactly the
+sixteen 3.1.5 `SL`/`DP` cases and E.2.4's `PX2` absent. E.4.1 adds +9 in every configuration, so the gap
+is preserved rather than widened. **The claim was wrong; the number is a fact.** Related and recorded
+rather than swept: that file carries seven `#if AERO_*_TOOLS_ENABLED` regions, which sits against
+CLAUDE.md's absolute "no `#if` of any kind in a test file". E.4.1 adds none — `I184`'s reduced-config
+arm is a **runtime** probe on `viewport->debugDraw()` — and sweeping the existing seven is a separate,
+explicitly requested task.
+
+#### What was deliberately left out, with owners
+
+**No containment validation** at `openSceneFile`/`saveSceneFile` — **E.4.2's**, whole and entire; this
+task changed neither signature nor body. `projectRelativeScenePath` is a **lexical** stand-in with no
+symlink, case or drive-letter handling, and its failure mode is *forget*, never *wrong project*: a false
+negative records `""` and the user gets a new scene. When E.4.2's predicate lands this function becomes
+its caller or is deleted in favour of it. **No camera pose and no per-scene state** — an appended key is
+a non-breaking change by this parser's own absent-key rule, so adding one now would only widen the
+format's first version; the camera pose is the named candidate and is unowned. **No auto-pruning of a
+stale record** — a record naming a deleted scene is left alone and re-resolved on the next open, the
+`recent_projects.json` rule. **E.4.3 does not need to update this file** when it renames or deletes a
+scene: a stale record takes the cascade, which is correct by construction. **The runtime must never read
+this file**; nothing enforces that today beyond file placement.
+
+#### The sentences that govern new work
+
+1. **`restoreLastScene` runs from `openProjectPath` ONLY, and ONLY after `adoptProject`.** Before it, it
+   reads the *outgoing* project's state. `createAndOpenProject` deliberately does not call it — a
+   freshly created project has no `Library/`, no state file and no scenes by construction.
+2. **The write reconcile is the END of `tick()`, never the top.** The modal's "Save" answer performs the
+   save **and** the pending Quit in one tick, after which `tick()` returns false forever; a top-of-tick
+   reconcile loses exactly that frame, which is the most common quit path there is.
+3. **A project CHANGE adopts the baseline without writing; only a scene change inside one project
+   writes** — *except* that the outgoing pair is handed off first, because a guarded Save can change the
+   scene and the project in the same tick. The two produce byte-identical files, so
+   `projectStateWriteCount()` is the only thing that can tell them apart. Do not delete it.
+4. **A failed write advances the baseline anyway.** Otherwise a read-only `Library/` WARNs on every
+   frame instead of once per change.
+5. **`lastScene` absent and `lastScene: ""` are DIFFERENT ANSWERS** — the first cascades to the
+   project's first scene, the second opens a new one. Collapsing them hands a person who chose
+   `File ▸ New Scene` somebody else's scene.
+6. **Every producer of a path that will be rejoined must guarantee what the parser requires.** Both
+   `projectRelativeScenePath` and `firstSceneUnder` feed `absoluteScenePath`; only the first was gated
+   at first, and the second is what shipped the defect above.
+
+#### Validation and sabotage status — both OWED
+
+**The twelve-row manual page is written and UNRUN on every platform**
+(`editor/validation/E.4.1-reopen-the-last-scene.md`, gitignored). Almost every row is *quit, relaunch,
+look* — a **process-lifetime** claim, and no tier in this tree can make one, because
+`aero_editor_imgui_test` drives ticks inside one process and never restarts an editor. The automated
+battery proves the file's contents and the write cadence; the page is the only thing that proves the
+loop closes for a person. Rows 2 and 6 are the only behavioural cover the save-then-quit and
+broken-scene-stops paths have anywhere.
+
+**The 25-seed sabotage matrix is UNRUN**, abandoned at S5. Recorded because the abort mattered more than
+the gap: **it left a live seed in the working tree** — the deleted `sceneIoAvailable()` gate in
+`restoreLastScene` — which `git status` caught immediately, nothing was committed and the merge was
+unaffected. **Always `git status` after an interrupted sabotage run**; an aborted seed looks exactly
+like a clean tree until it is read. The matrix can still be run against `main`, and anything it finds is
+a test-strength fix rather than a correctness one.
+
+Also worth carrying: the end-to-end GPU case for the mid-tick swap **is not drivable from
+`aero_editor_imgui_test`**. The only in-tick chain that changes a scene path *and* swaps the project is
+`applyDialogResult`'s terminal Save arm, and `EditorApp` exposes no way to reach it — `fileFlow.choice`
+has no request hook, `DialogChannel` is declared only in a src-private header, and answering the modal
+on an untitled scene would launch a real native Save panel in CI. `PJ55` drives the exact chain at the
+flow tier instead and is its only behavioural witness; `I185` covers the drain through real frames. A
+true end-to-end witness needs a new `EditorApp` test seam, which is new public API and a design call.
