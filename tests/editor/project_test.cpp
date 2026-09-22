@@ -1712,3 +1712,142 @@ TEST_CASE("project: createProject reports an ABSOLUTE root for a relative locati
     CHECK(directoryExists(created.root + "/assets"));
     CHECK(directoryExists(created.root + "/scenes"));
 }
+
+// ---- PJ41-PJ43, PJ54: task E.4.1's configuration-independent arms ---------------------------------
+//
+// These four live in the UNGATED TU deliberately (D10). The state read and its one WARN sit ABOVE
+// restoreLastScene's sceneIoAvailable() gate, so they behave identically in all three build
+// configurations -- and a case that asserts that cannot live in scene_io_test.cpp, which is ABSENT
+// from the reflect-OFF build. There is no #if here and there must never be one: test files in this
+// tree may not contain one at all.
+
+TEST_CASE("project: a CORRUPT editor-state.json produces exactly ONE warning (PJ41/AC-10)") {
+    const LogFixture fixture;
+    const engine::editor::LogSinkScope scope;
+    std::vector<engine::editor::LogEntry> records;
+
+    const TempDir dir;
+    const ProjectCreateOutcome created = createProject(dir.utf8(), "MyGame", "0.1.0");
+    REQUIRE(created.problem == CreateProblem::Ok);
+    std::error_code ec;
+    std::filesystem::create_directories(created.root + "/Library", ec);
+    REQUIRE(writeTextFileAtomic(created.root + "/Library/editor-state.json", "{ not json").empty());
+
+    FlowFixture f;
+    SceneSession session;
+    scope.sink()->take(records);
+    records.clear();
+
+    const bool ok = openProjectPath(f.ctx, f.commands, session, f.project, created.root);
+
+    CHECK(ok);  // the state is an OPTIMISATION, never a gate
+    scope.sink()->take(records);
+    CHECK(countAtLevel(records, engine::LogLevel::Warn) == 1);
+    CHECK(countAtLevel(records, engine::LogLevel::Error) == 0);
+    CHECK(countAtLevel(records, engine::LogLevel::Info) == 1);  // the project INFO, and no scene line
+    // The WARN NAMES THE FILE -- without this the case would pass for a warning about anything at all.
+    const auto named = std::count_if(records.begin(), records.end(), [](const engine::editor::LogEntry& e) {
+        return e.level == engine::LogLevel::Warn && e.message.find("editor-state.json") != std::string::npos;
+    });
+    CHECK(named == 1);
+    // ...and the editor landed on the fresh default scene, untouched.
+    CHECK(f.world.entityCount() == 4);
+    CHECK(session.path().empty());
+}
+
+TEST_CASE("project: a MISSING editor-state.json produces NO warning at all (PJ42/AC-10)") {
+    // PJ41's ANTI-VACUITY PARTNER, and the reason a first open of any project is silent. Without the
+    // fileExists discriminator inside readProjectState this case goes red and PJ41 stays green --
+    // which is exactly the asymmetry sabotage seed S9 exercises.
+    const LogFixture fixture;
+    const engine::editor::LogSinkScope scope;
+    std::vector<engine::editor::LogEntry> records;
+
+    const TempDir dir;
+    const ProjectCreateOutcome created = createProject(dir.utf8(), "MyGame", "0.1.0");
+    REQUIRE(created.problem == CreateProblem::Ok);
+    REQUIRE_FALSE(engine::editor::fileExists(created.root + "/Library"));
+
+    FlowFixture f;
+    SceneSession session;
+    scope.sink()->take(records);
+    records.clear();
+
+    const bool ok = openProjectPath(f.ctx, f.commands, session, f.project, created.root);
+
+    CHECK(ok);
+    scope.sink()->take(records);
+    CHECK(countAtLevel(records, engine::LogLevel::Warn) == 0);
+    CHECK(countAtLevel(records, engine::LogLevel::Error) == 0);
+    CHECK(countAtLevel(records, engine::LogLevel::Info) == 1);
+}
+
+TEST_CASE("project: an UNREADABLE Library still opens the project (PJ43/AC-10)") {
+    // A DIRECTORY wearing the state file's name is the portable stand-in for a permission-refused
+    // file (editor_prefs.hpp's EP13). The project must still open: the state is an optimisation.
+    const LogFixture fixture;
+    const engine::editor::LogSinkScope scope;
+    std::vector<engine::editor::LogEntry> records;
+
+    const TempDir dir;
+    const ProjectCreateOutcome created = createProject(dir.utf8(), "MyGame", "0.1.0");
+    REQUIRE(created.problem == CreateProblem::Ok);
+    std::error_code ec;
+    std::filesystem::create_directories(created.root + "/Library/editor-state.json", ec);
+
+    FlowFixture f;
+    SceneSession session;
+    scope.sink()->take(records);
+    records.clear();
+
+    const bool ok = openProjectPath(f.ctx, f.commands, session, f.project, created.root);
+
+    CHECK(ok);
+    CHECK(f.projectSession.isOpen());
+    CHECK(f.projectSession.name() == "MyGame");
+    scope.sink()->take(records);
+    CHECK(countAtLevel(records, engine::LogLevel::Warn) == 1);
+    CHECK(countAtLevel(records, engine::LogLevel::Error) == 0);
+}
+
+TEST_CASE("project: the sceneIoAvailable gate sits BELOW the read and ABOVE the resolution (PJ54, seed S5)") {
+    // THE ONLY WITNESS SEED S5 HAS. PJ41-PJ43 all open a createProject scaffold with an EMPTY scenes/,
+    // so the resolution is NewScene and dropping the gate changes nothing. This project has a REAL,
+    // LOADABLE scene, so with the gate dropped the tools-OFF build attempts openSceneFile on a genuine
+    // candidate, openSceneText returns "built without AERO_REFLECT_TOOLS", and ONE ERROR is logged per
+    // project open -- red here, invisible everywhere else in the tree.
+    //
+    // BOTH ARMS ASSERT, neither skips, and the split is sceneIoAvailable() -- a RUNTIME predicate
+    // present in every configuration, so this TU still contains no #if of any kind.
+    //
+    // The scene text is the empty-scene document's exact bytes, hand-spelled because this TU is
+    // UNGATED and cannot call sceneToText. Zero entities is deliberate: with the tool ON the restored
+    // World holds NOTHING, which is unmistakably distinct from the four-entity default.
+    const LogFixture fixture;
+    const engine::editor::LogSinkScope scope;
+    std::vector<engine::editor::LogEntry> records;
+
+    const TempDir dir;
+    const ProjectCreateOutcome created = createProject(dir.utf8(), "MyGame", "0.1.0");
+    REQUIRE(created.problem == CreateProblem::Ok);
+    REQUIRE(writeTextFileAtomic(created.root + "/scenes/a.scene.json", "{\n  \"version\": 1,\n  \"entities\": []\n}\n")
+                .empty());
+
+    FlowFixture f;
+    SceneSession session;
+    scope.sink()->take(records);
+    records.clear();
+
+    const bool ok = openProjectPath(f.ctx, f.commands, session, f.project, created.root);
+    CHECK(ok);
+
+    const bool io = engine::editor::sceneIoAvailable();
+    scope.sink()->take(records);
+    // THE ASSERTION, and it holds in BOTH arms: no attempt is made that cannot succeed.
+    CHECK(countAtLevel(records, engine::LogLevel::Error) == 0);
+    CHECK(countAtLevel(records, engine::LogLevel::Warn) == 0);
+    // ...and the two arms differ exactly where they should.
+    CHECK(countAtLevel(records, engine::LogLevel::Info) == (io ? 2U : 1U));
+    CHECK(session.path().empty() == !io);
+    CHECK(f.world.entityCount() == (io ? 0U : 4U));
+}

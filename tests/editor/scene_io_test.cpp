@@ -11,8 +11,12 @@
 #include <aero/editor/console_model.hpp>
 #include <aero/editor/entity_commands.hpp>
 #include <aero/editor/entity_ops.hpp>
+#include <aero/editor/project.hpp>        // task E.4.1 (PJ44-PJ53): createProject, ProjectSession, the
+                                          // ProjectContext the restore path needs
+#include <aero/editor/project_state.hpp>  // task E.4.1: writeProjectState, to SEED a record
 #include <aero/editor/scene_session.hpp>
 #include <aero/editor/selection.hpp>
+#include <aero/editor/text_file.hpp>  // task E.4.1: writeTextFileAtomic / fileExists
 #include <aero/editor/transform_ops.hpp>
 #include <aero/scene/scene.hpp>
 #include <aero/scene/world.hpp>
@@ -20,13 +24,16 @@
 #include <doctest/doctest.h>
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <filesystem>
+#include <initializer_list>
 #include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <utility>
 #include <vector>
 
 using engine::editor::CommandContext;
@@ -34,6 +41,7 @@ using engine::editor::CommandStack;
 using engine::editor::openSceneText;
 using engine::editor::RootOrder;
 using engine::editor::sceneIoAvailable;
+using engine::editor::SceneSession;
 using engine::editor::sceneToText;
 using engine::editor::Selection;
 
@@ -91,6 +99,52 @@ public:
 private:
     std::filesystem::path dirPath;
 };
+
+// ---- task E.4.1's own fixtures (PJ44-PJ53) --------------------------------------------------------
+
+// The FIFTH copy of project_test.cpp:166-184's shape. A TU-local helper is TU-scoped -- this file's
+// own banner above already states the rule for TempDir, and it applies unchanged here.
+struct FlowFixture {
+    engine::World world;
+    Selection selection;
+    RootOrder roots;
+    CommandStack commands;
+    CommandContext ctx{world, selection, roots};
+    engine::editor::ProjectSession projectSession;
+    engine::editor::ProjectFlow projectFlow;
+    engine::editor::RecentProjects recents;
+    engine::editor::ProjectContext project{projectSession, projectFlow, recents, ""};
+};
+
+// A REAL, loadable scene whose entity count is DISTINCT from the four-entity default seed, so "this
+// scene opened" cannot be satisfied by adoptProject's own newScene. Four + `extra`.
+[[nodiscard]] std::string sceneTextWithExtras(std::size_t extra) {
+    engine::World world;
+    engine::editor::seedDefaultScene(world);  // FOUR: Main Camera, Directional Light, Cube, Environment
+    for (std::size_t i = 0; i < extra; ++i) {
+        const engine::Entity e = engine::editor::createEntity(world, {}, "Extra" + std::to_string(i));
+        REQUIRE(e.valid());
+    }
+    const std::optional<std::string> text = engine::editor::sceneToText(world);
+    REQUIRE(text.has_value());
+    return *text;
+}
+
+// A scaffolded project plus whatever scenes the caller names, each with a distinct entity count.
+struct SceneProject {
+    std::string root;
+};
+
+[[nodiscard]] SceneProject makeSceneProject(const TempDir& dir,
+                                            std::initializer_list<std::pair<std::string_view, std::size_t>> scenes) {
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(dir.utf8(), "MyGame", "");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    for (const auto& [relative, extra] : scenes) {
+        const std::string path = created.root + "/" + std::string(relative);
+        REQUIRE(engine::editor::writeTextFileAtomic(path, sceneTextWithExtras(extra)).empty());
+    }
+    return SceneProject{.root = created.root};
+}
 
 }  // namespace
 
@@ -567,4 +621,294 @@ TEST_CASE("scene_io: a malformed file through the flow changes nothing (IO14/AC-
     CHECK(countAtLevel(records, engine::LogLevel::Error) == 1);
     CHECK(world.entityCount() == countBefore);
     CHECK(session.path() == "/some/other/path.scene.json");
+}
+
+// ---- PJ44-PJ53: task E.4.1's startup-scene restore, driven through openProjectPath ----------------
+
+TEST_CASE("scene_io: a recorded, existing scene is OPENED on project open (PJ44/AC-1/AC-36)") {
+    const LogFixture fixture;
+    const engine::editor::LogSinkScope scope;
+    std::vector<engine::editor::LogEntry> records;
+
+    const TempDir dir;
+    const SceneProject project = makeSceneProject(dir, {{"scenes/a.scene.json", 2}});
+    REQUIRE(
+        engine::editor::writeProjectState(
+            project.root, engine::editor::ProjectState{.lastScene = "scenes/a.scene.json", .lastSceneRecorded = true})
+            .empty());
+
+    FlowFixture f;
+    SceneSession session;
+    scope.sink()->take(records);
+    records.clear();
+
+    REQUIRE(engine::editor::openProjectPath(f.ctx, f.commands, session, f.project, project.root));
+
+    CHECK(f.world.entityCount() == 6);  // FOUR seeded + two extras -- not the default's four
+    CHECK(session.path() == project.root + "/scenes/a.scene.json");
+    CHECK(f.commands.isClean());
+    CHECK(f.selection.empty());
+
+    scope.sink()->take(records);
+    CHECK(countAtLevel(records, engine::LogLevel::Info) == 2);  // the project's, then the scene's
+    CHECK(countAtLevel(records, engine::LogLevel::Error) == 0);
+    CHECK(countAtLevel(records, engine::LogLevel::Warn) == 0);
+    // AC-36: the PROJECT line comes FIRST. The only positional record read in either project TU, and
+    // deliberate -- with the INFO last, a restore whose candidate failed to open reads as the project
+    // having failed. `records` is in emission order (console_model.hpp's sink appends).
+    std::vector<std::string> infos;
+    for (const engine::editor::LogEntry& e : records) {
+        if (e.level == engine::LogLevel::Info) {
+            infos.push_back(e.message);
+        }
+    }
+    REQUIRE(infos.size() == 2U);
+    CHECK(infos[0].find("opened project") != std::string::npos);
+    CHECK(infos[1].find("opened scene") != std::string::npos);
+}
+
+TEST_CASE("scene_io: a recorded, MISSING scene cascades to the first scene under paths.scenes (PJ45/AC-3)") {
+    const TempDir dir;
+    const SceneProject project = makeSceneProject(dir, {{"scenes/a.scene.json", 2}});
+    REQUIRE(engine::editor::writeProjectState(
+                project.root,
+                engine::editor::ProjectState{.lastScene = "scenes/gone.scene.json", .lastSceneRecorded = true})
+                .empty());
+
+    FlowFixture f;
+    SceneSession session;
+    REQUIRE(engine::editor::openProjectPath(f.ctx, f.commands, session, f.project, project.root));
+
+    CHECK(session.path() == project.root + "/scenes/a.scene.json");  // the CASCADE fired
+    CHECK(f.world.entityCount() == 6);
+    // ...and the stale record is LEFT ALONE (D14, plan E13): nothing here prunes it.
+    bool corrupt = false;
+    const engine::editor::ProjectState after = engine::editor::readProjectState(project.root, corrupt);
+    CHECK_FALSE(corrupt);
+    CHECK(after.lastScene == "scenes/gone.scene.json");
+}
+
+TEST_CASE("scene_io: a recorded, PRESENT but BROKEN scene STOPS -- D6's whole content (PJ46/AC-4/AC-8)") {
+    const LogFixture fixture;
+    const engine::editor::LogSinkScope scope;
+    std::vector<engine::editor::LogEntry> records;
+
+    const TempDir dir;
+    // TWO scenes under scenes/: `a` is the one the cascade WOULD choose, `b` is the recorded one.
+    const SceneProject project = makeSceneProject(dir, {{"scenes/a.scene.json", 2}});
+    REQUIRE(engine::editor::writeTextFileAtomic(project.root + "/scenes/b.scene.json", "{ not a scene").empty());
+    // ANTI-VACUITY, and it is what makes this case an assertion at all: prove `a` EXISTS and is what
+    // firstSceneUnder would pick, so "a was not opened" means "the cascade was refused" and not
+    // "there was nothing to cascade to".
+    REQUIRE(engine::editor::firstSceneUnder(project.root, "scenes") == "scenes/a.scene.json");
+    REQUIRE(
+        engine::editor::writeProjectState(
+            project.root, engine::editor::ProjectState{.lastScene = "scenes/b.scene.json", .lastSceneRecorded = true})
+            .empty());
+
+    FlowFixture f;
+    SceneSession session;
+    scope.sink()->take(records);
+    records.clear();
+
+    REQUIRE(engine::editor::openProjectPath(f.ctx, f.commands, session, f.project, project.root));
+
+    CHECK(session.path().empty());      // NOTHING opened
+    CHECK(f.world.entityCount() == 4);  // the fresh default scene adoptProject left
+    CHECK(f.commands.isClean());
+    CHECK(f.selection.empty());
+    scope.sink()->take(records);
+    CHECK(countAtLevel(records, engine::LogLevel::Error) == 1);  // openSceneFile's, naming b
+    CHECK(countAtLevel(records, engine::LogLevel::Info) == 1);   // the project's, and NO scene INFO
+    // The ERROR names the RECORDED scene and not the cascade candidate.
+    const auto namedB = std::count_if(records.begin(), records.end(), [](const engine::editor::LogEntry& e) {
+        return e.level == engine::LogLevel::Error && e.message.find("b.scene.json") != std::string::npos;
+    });
+    CHECK(namedB == 1);
+}
+
+TEST_CASE("scene_io: a RECORDED-EMPTY lastScene lands on a new scene, whatever scenes/ holds (PJ47/AC-5)") {
+    const TempDir dir;
+    const SceneProject project =
+        makeSceneProject(dir, {{"scenes/a.scene.json", 2}, {"scenes/b.scene.json", 3}, {"scenes/c.scene.json", 5}});
+    REQUIRE(engine::editor::writeProjectState(project.root,
+                                              engine::editor::ProjectState{.lastScene = "", .lastSceneRecorded = true})
+                .empty());
+
+    FlowFixture f;
+    SceneSession session;
+    REQUIRE(engine::editor::openProjectPath(f.ctx, f.commands, session, f.project, project.root));
+
+    CHECK(session.path().empty());      // D2's third state
+    CHECK(f.world.entityCount() == 4);  // not 6, not 7, not 9
+}
+
+TEST_CASE("scene_io: NO state file at all -- the first scene, or a new one (PJ48/AC-6)") {
+    SUBCASE("scenes/ has content: the FIRST scene opens") {
+        const TempDir dir;
+        const SceneProject project = makeSceneProject(dir, {{"scenes/b.scene.json", 3}, {"scenes/a.scene.json", 2}});
+        REQUIRE_FALSE(engine::editor::fileExists(project.root + "/Library/editor-state.json"));
+        FlowFixture f;
+        SceneSession session;
+        REQUIRE(engine::editor::openProjectPath(f.ctx, f.commands, session, f.project, project.root));
+        CHECK(session.path() == project.root + "/scenes/a.scene.json");  // `a`, by entryOrderLess
+        CHECK(f.world.entityCount() == 6);
+    }
+    SUBCASE("scenes/ is empty: a NEW scene") {
+        const LogFixture fixture;
+        const engine::editor::LogSinkScope scope;
+        std::vector<engine::editor::LogEntry> records;
+        const TempDir dir;
+        const SceneProject project = makeSceneProject(dir, {});
+        FlowFixture f;
+        SceneSession session;
+        scope.sink()->take(records);
+        records.clear();
+        REQUIRE(engine::editor::openProjectPath(f.ctx, f.commands, session, f.project, project.root));
+        CHECK(session.path().empty());
+        CHECK(f.world.entityCount() == 4);
+        scope.sink()->take(records);
+        // SEED S21's witness at this tier: a decider that returns FirstUnderScenes with no first scene
+        // makes the caller open "" -- which fails, logs one ERROR, and leaves BOTH assertions above
+        // still passing. "No attempt was made" is the claim, and only this line says it.
+        CHECK(countAtLevel(records, engine::LogLevel::Error) == 0);
+        CHECK(countAtLevel(records, engine::LogLevel::Info) == 1);  // the project's, and no scene line
+    }
+}
+
+TEST_CASE("scene_io: a recorded path that names a DIRECTORY takes the STOP arm (PJ49)") {
+    // fileExists is std::filesystem::exists, so a directory reads PRESENT, takes D6's stop arm, and
+    // produces one ERROR from openSceneFile. Correct and honest; pinned so it is not later mistaken
+    // for a bug (F8's second consequence).
+    const LogFixture fixture;
+    const engine::editor::LogSinkScope scope;
+    std::vector<engine::editor::LogEntry> records;
+
+    const TempDir dir;
+    const SceneProject project = makeSceneProject(dir, {{"scenes/a.scene.json", 2}});
+    std::error_code ec;
+    std::filesystem::create_directories(project.root + "/scenes/dir.scene.json", ec);
+    REQUIRE(
+        engine::editor::writeProjectState(
+            project.root, engine::editor::ProjectState{.lastScene = "scenes/dir.scene.json", .lastSceneRecorded = true})
+            .empty());
+
+    FlowFixture f;
+    SceneSession session;
+    scope.sink()->take(records);
+    records.clear();
+    REQUIRE(engine::editor::openProjectPath(f.ctx, f.commands, session, f.project, project.root));
+
+    CHECK(session.path().empty());
+    CHECK(f.world.entityCount() == 4);
+    scope.sink()->take(records);
+    CHECK(countAtLevel(records, engine::LogLevel::Error) == 1);
+}
+
+TEST_CASE("scene_io: the history is CLEAN and the selection EMPTY after every arm (PJ50/AC-9)") {
+    // One case over all four arms, driven from a DIRTY, NON-EMPTY starting state so "clean afterwards"
+    // is a real assertion rather than an unchanged default (P73's own idiom).
+    const TempDir dir;
+    const SceneProject project = makeSceneProject(dir, {{"scenes/a.scene.json", 2}});
+    struct Arm {
+        std::string_view name;
+        bool recorded;
+        std::string_view value;
+    };
+    const std::array<Arm, 4> arms = {{{"no record", false, ""},
+                                      {"recorded empty", true, ""},
+                                      {"recorded present", true, "scenes/a.scene.json"},
+                                      {"recorded missing", true, "scenes/gone.scene.json"}}};
+    for (const Arm& arm : arms) {
+        CAPTURE(arm.name);
+        if (arm.recorded) {
+            REQUIRE(engine::editor::writeProjectState(
+                        project.root,
+                        engine::editor::ProjectState{.lastScene = std::string(arm.value), .lastSceneRecorded = true})
+                        .empty());
+        }
+        FlowFixture f;
+        SceneSession session;
+        // DIRTY and NON-EMPTY first.
+        const engine::Entity extra = f.world.create();
+        REQUIRE(f.commands.push(f.ctx, std::make_unique<engine::editor::DeleteEntitiesCommand>(
+                                           std::vector<engine::Entity>{extra}, std::vector<engine::Entity>{})));
+        REQUIRE_FALSE(f.commands.isClean());
+        f.selection.set(extra);
+        REQUIRE_FALSE(f.selection.empty());
+
+        REQUIRE(engine::editor::openProjectPath(f.ctx, f.commands, session, f.project, project.root));
+
+        CHECK(f.commands.isClean());
+        CHECK(f.commands.count() == 0);
+        CHECK(f.selection.empty());
+    }
+}
+
+TEST_CASE("scene_io: a project SWAP reads the NEW project's state, not the outgoing one (PJ51, seed S13)") {
+    const TempDir dirA;
+    const TempDir dirB;
+    const SceneProject a = makeSceneProject(dirA, {{"scenes/a.scene.json", 2}});
+    const SceneProject b = makeSceneProject(dirB, {{"scenes/b.scene.json", 5}});
+    REQUIRE(engine::editor::writeProjectState(
+                a.root, engine::editor::ProjectState{.lastScene = "scenes/a.scene.json", .lastSceneRecorded = true})
+                .empty());
+    REQUIRE(engine::editor::writeProjectState(
+                b.root, engine::editor::ProjectState{.lastScene = "scenes/b.scene.json", .lastSceneRecorded = true})
+                .empty());
+
+    FlowFixture f;
+    SceneSession session;
+    REQUIRE(engine::editor::openProjectPath(f.ctx, f.commands, session, f.project, a.root));
+    REQUIRE(session.path() == a.root + "/scenes/a.scene.json");
+    REQUIRE(f.world.entityCount() == 6);
+
+    REQUIRE(engine::editor::openProjectPath(f.ctx, f.commands, session, f.project, b.root));
+    CHECK(session.path() == b.root + "/scenes/b.scene.json");  // B's record, read through B's root
+    CHECK(f.world.entityCount() == 9);                         // four + five, not four + two
+}
+
+TEST_CASE("scene_io: createAndOpenProject lands on a NEW scene and reads no state (PJ52/R19)") {
+    const LogFixture fixture;
+    const engine::editor::LogSinkScope scope;
+    std::vector<engine::editor::LogEntry> records;
+
+    const TempDir dir;
+    FlowFixture f;
+    SceneSession session;
+    scope.sink()->take(records);
+    records.clear();
+
+    REQUIRE(engine::editor::createAndOpenProject(f.ctx, f.commands, session, f.project, dir.utf8(), "Fresh"));
+
+    CHECK(session.path().empty());
+    CHECK(f.world.entityCount() == 4);
+    scope.sink()->take(records);
+    CHECK(countAtLevel(records, engine::LogLevel::Info) == 1);  // exactly ONE, still (A24)
+    CHECK(countAtLevel(records, engine::LogLevel::Warn) == 0);
+    CHECK(countAtLevel(records, engine::LogLevel::Error) == 0);
+    // A NAMED LOCAL for root()'s view, exactly as everywhere else.
+    const std::string root(f.projectSession.root());
+    CHECK_FALSE(engine::editor::fileExists(root + "/Library/editor-state.json"));
+}
+
+TEST_CASE("scene_io: a recorded scene OUTSIDE paths.scenes but inside the root opens (PJ53)") {
+    // The record is ROOT-relative, not scenes-relative. Without that, a project whose scenes live in
+    // two places would forget half of them.
+    const TempDir dir;
+    const SceneProject project = makeSceneProject(dir, {{"scenes/a.scene.json", 2}});
+    std::error_code ec;
+    std::filesystem::create_directories(project.root + "/levels", ec);
+    REQUIRE(
+        engine::editor::writeTextFileAtomic(project.root + "/levels/deep.scene.json", sceneTextWithExtras(7)).empty());
+    REQUIRE(engine::editor::writeProjectState(
+                project.root,
+                engine::editor::ProjectState{.lastScene = "levels/deep.scene.json", .lastSceneRecorded = true})
+                .empty());
+
+    FlowFixture f;
+    SceneSession session;
+    REQUIRE(engine::editor::openProjectPath(f.ctx, f.commands, session, f.project, project.root));
+    CHECK(session.path() == project.root + "/levels/deep.scene.json");
+    CHECK(f.world.entityCount() == 11);  // four + seven, NOT the first scene's six
 }

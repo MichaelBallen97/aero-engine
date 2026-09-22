@@ -271,6 +271,10 @@ struct FileFlow {
 // Returns true iff the project was replaced. LOGS: one ERROR on any failure (naming the path, plus
 // line/column when line > 0); one WARN per unknown key; one WARN on an engineVersion mismatch; one
 // INFO on success carrying name, root, assets and scenes.
+// task E.4.1: on success it ALSO resolves and opens a startup scene from
+// <root>/Library/editor-state.json (docs/09 section 4.10) -- so it may additionally emit one WARN for
+// an unreadable state file plus openSceneFile's own ERROR/INFO/WARN lines, all AFTER the INFO above.
+// A missing state file is silent, and the resolution is skipped entirely when !sceneIoAvailable().
 [[nodiscard]] bool openProjectPath(CommandContext& context, CommandStack& commands, SceneSession& session,
                                    ProjectContext& project, std::string_view pathUtf8);
 
