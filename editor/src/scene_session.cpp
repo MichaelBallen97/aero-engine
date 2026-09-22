@@ -4,6 +4,9 @@
 // serialization bridge live in text_file.cpp / scene_io.cpp instead (D19/F17, F9's gate).
 #include <aero/core/log.hpp>
 #include <aero/editor/entity_ops.hpp>
+#include <aero/editor/project_state.hpp>  // task E.4.1: the per-project state, its resolver and its
+                                          // path arithmetic. ProjectSession itself arrives through
+                                          // scene_session.hpp -> project.hpp.
 #include <aero/editor/scene_session.hpp>
 #include <aero/editor/selection.hpp>
 #include <aero/scene/world.hpp>
@@ -234,6 +237,62 @@ void adoptProject(CommandContext& ctx, CommandStack& commands, SceneSession& ses
     project.flow.recentsDirty = true;                 // without this, AC-22 never persists
 }
 
+// task E.4.1. Runs ONLY from openProjectPath, ONLY after adoptProject, and exactly ONCE per open.
+// createAndOpenProject does not call it: createProject refuses a non-empty target
+// (project_file.cpp:213-217), so a fresh project has no Library/, no state file and no scenes BY
+// CONSTRUCTION, and a call there could only ever be a no-op (F2).
+//
+// IT CANNOT CHANGE THE PROJECT, and that is enforced rather than intended: its parameter is a
+// `const ProjectSession&`, so INV-P1's setter is not reachable from here at all -- 2.6.2's
+// PanelContext::project rule ("the const is the enforcement"), one layer down. It only chooses a scene
+// and opens it through the ONE existing path, so INV-P1 and INV-6 are both untouched.
+//
+// The parameter is `projectSession`, NEVER `session`: `session` is the SceneSession above it.
+void restoreLastScene(CommandContext& ctx, CommandStack& commands, SceneSession& session,
+                      const ProjectSession& projectSession) {
+    // A NAMED LOCAL, FIRST: root() returns a std::string_view into the live session (project.hpp:100-102,
+    // and 2.6.1's FileDialogHost::projectRoot lesson), and everything below outlives the full-expression.
+    const std::string root(projectSession.root());
+    bool corrupt = false;
+    const ProjectState state = readProjectState(root, corrupt);
+    if (corrupt) {
+        // A MISSING file is silent; only one that EXISTS and cannot be read or parsed gets this line,
+        // or every first open of every project warns. UNCONDITIONAL -- ABOVE the sceneIoAvailable gate
+        // on purpose (D10), so the diagnostic is identical in all three build configurations and is
+        // assertable from the UNGATED project_test.cpp (PJ41). Putting the gate first would silence it
+        // in the tools-OFF build, a behaviour difference no test could see without an #if, which test
+        // files in this tree may not contain.
+        AERO_LOG_WARN("editor: project state '{}' is unreadable or unsupported -- starting a new scene",
+                      projectStatePath(root));
+    }
+    if (!sceneIoAvailable()) {
+        return;  // .claude/rules/editor.md: every native scene I/O call site checks this FIRST.
+    }
+    const std::string recordedAbsolute = absoluteScenePath(root, state.lastScene);
+    // UNCONDITIONAL, even when the recorded scene will win (plan 4.1): chooseStartupScene must receive
+    // a TRUE firstSceneFound or PJ25's "the decider ignores a fact it should ignore" rows stop being an
+    // assertion. One opendir per project open, against a tick-1 rescan of the whole assets tree.
+    const std::string firstRelative = firstSceneUnder(root, projectSession.manifest().scenesPath);
+    const StartupSceneFacts facts{.recorded = state.lastSceneRecorded,
+                                  .recordedEmpty = state.lastScene.empty(),
+                                  .recordedExists = !recordedAbsolute.empty() && fileExists(recordedAbsolute),
+                                  .firstSceneFound = !firstRelative.empty()};
+    switch (chooseStartupScene(facts)) {
+        case StartupScene::NewScene:
+            return;  // adoptProject already left exactly this: a seeded scene, no path, a clean history
+        case StartupScene::Recorded:
+            // ONE attempt, ever. A failure logs one ERROR inside openSceneFile and leaves the seeded
+            // scene untouched (PARSE FIRST, THEN SWAP -- scene_io.cpp's rule; openSceneFile calls
+            // setPath only after the load succeeded). That IS D6's "stop": it needs no code, only the
+            // absence of a second try.
+            (void)openSceneFile(ctx, commands, session, recordedAbsolute);
+            return;
+        case StartupScene::FirstUnderScenes:
+            (void)openSceneFile(ctx, commands, session, absoluteScenePath(root, firstRelative));
+            return;
+    }
+}
+
 }  // namespace
 
 bool openProjectPath(CommandContext& context, CommandStack& commands, SceneSession& session, ProjectContext& project,
@@ -256,10 +315,36 @@ bool openProjectPath(CommandContext& context, CommandStack& commands, SceneSessi
         AERO_LOG_WARN("editor: project '{}' was created with engine version {} (this build is {})", outcome.root,
                       outcome.manifest.engineVersion, project.engineVersion);
     }
+    // task E.4.1 (code review): HAND OFF the OUTGOING project's (root, scene) pair before the adopt,
+    // while both halves still exist. A guarded Save can chain into this open inside ONE tick --
+    // applyDialogResult saves an untitled scene INTO the outgoing project and then performs the
+    // pending OpenProject in the same call -- and that pair is invisible at both ends of the tick, so
+    // the end-of-tick reconcile would see only a root change, take AdoptBaseline and write nothing.
+    // EditorApp::persistProjectState drains this once per tick and is still the ONE write site; this
+    // writes nothing, reads no file and logs nothing.
+    //
+    // ABOVE the adopt and OUTSIDE it, both deliberately: `set()` is what makes root() name the NEW
+    // project, and adoptProject's five statements are byte-identical to what 2.6.1 shipped (AC-26) --
+    // it stays the one operation that changes the project and does nothing else.
+    if (project.session.isOpen()) {  // nothing to hand off when this is the first open of the session
+        // A NAMED LOCAL FIRST: root() is a VIEW into the member `set()` is about to overwrite.
+        std::string outgoingRoot(project.session.root());
+        // The RECORDED form -- project-relative, exactly what persistProjectState compares against its
+        // baseline and what parseProjectState can read back. "" when the scene is untitled or lives
+        // outside the project, which is a legitimate value to record (D2's third state).
+        project.flow.outgoingStateScene = projectRelativeScenePath(outgoingRoot, session.path());
+        project.flow.outgoingStateRoot = std::move(outgoingRoot);  // LAST: non-empty IS the flag
+    }
     adoptProject(context, commands, session, project, outcome.manifest, outcome.root);  // ONLY after
                                                                                         // every check passed
     AERO_LOG_INFO("editor: opened project '{}' at '{}' -- assets '{}', scenes '{}'", project.session.name(),
                   project.session.root(), project.session.assetsRoot(), project.session.scenesRoot());
+    // task E.4.1: AFTER the adopt (F1 -- the state file's path is derived from project.session.root(),
+    // which only set() makes correct; calling it before would read the OUTGOING project's state) and
+    // AFTER the INFO (plan 4.4), so the Console reads "opened project" and THEN the scene's own lines.
+    // With the INFO last, a restore whose candidate fails to open reads "could not open scene X"
+    // followed by "opened project Y", which a reader parses as the PROJECT having failed.
+    restoreLastScene(context, commands, session, project.session);
     return true;
 }
 

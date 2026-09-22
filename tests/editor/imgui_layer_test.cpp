@@ -30,9 +30,10 @@
 #include <aero/editor/entity_ops.hpp>
 #include <aero/editor/model_import_session.hpp>  // task 3.2.1: SessionState, named directly (I52-I59)
 #include <aero/editor/panel_registry.hpp>
-#include <aero/editor/picking.hpp>       // task 2.3.2
-#include <aero/editor/project.hpp>       // task 2.6.1
-#include <aero/editor/scene_bounds.hpp>  // task 2.3.1
+#include <aero/editor/picking.hpp>        // task 2.3.2
+#include <aero/editor/project.hpp>        // task 2.6.1
+#include <aero/editor/project_state.hpp>  // task E.4.1 (I176-I184): ProjectState + the two file operations
+#include <aero/editor/scene_bounds.hpp>   // task 2.3.1
 #include <aero/editor/scene_session.hpp>
 #include <aero/editor/selection.hpp>
 #include <aero/editor/selection_overlay.hpp>  // task 2.3.2
@@ -15894,6 +15895,737 @@ TEST_CASE(
     const std::size_t reopened = app->materialSamplerRowsDrawn();
     REQUIRE(app->tick());
     CHECK(app->materialSamplerRowsDrawn() > reopened);
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+// ================================================================================================
+// task E.4.1 (I176-I184) -- the per-project editor state's write cadence, driven through real frames.
+//
+// Nothing below edits an existing case, and none was affected: measured at the branch point, NO
+// existing GPU case ever reaches ProjectStateStep::Write -- with a project open, session.path() is ""
+// on every tick of every one of them (the sole case that both opens a project and issues a scene
+// request, I161, issues a GUARDED requestNewScene that never performs). These nine are the first
+// cases in this tree to exercise the write path at all.
+//
+// PLACED AFTER THE LAST REGION-LEVEL #endif, and every one of them is registered UNCONDITIONALLY: a
+// case dropped inside one of this file's `#if` regions is silently ABSENT in the matching reduced
+// configuration. The two capability splits these cases need are RUNTIME predicates instead --
+// sceneIoAvailable() for the reflect-tools-OFF build and ViewportPanel::debugDraw() for the
+// shader-tools-OFF one -- so this block adds no preprocessor of its own and BOTH arms assert.
+// ================================================================================================
+
+namespace {
+
+// The same three lines as project_state_test.cpp's readBytes: the file's exact bytes, or nullopt.
+[[nodiscard]] std::optional<std::string> readBytesOf(std::string_view path) {
+    const engine::editor::FileReadResult read = engine::editor::readTextFile(path);
+    return read.text;
+}
+
+// nullopt when the record is corrupt, so a case can REQUIRE a readable one before asserting on it.
+[[nodiscard]] std::optional<engine::editor::ProjectState> readStateOf(std::string_view projectRoot) {
+    bool corrupt = false;
+    // NOT const: the return below is an implicit move into the optional, and a const local defeats it
+    // (performance-no-automatic-move is --warnings-as-errors in CI).
+    engine::editor::ProjectState state = engine::editor::readProjectState(projectRoot, corrupt);
+    if (corrupt) {
+        return std::nullopt;
+    }
+    return state;
+}
+
+// A REAL, loadable scene document when this build has scene I/O, and a placeholder when it does not.
+// Nothing reads the placeholder: restoreLastScene returns at its own sceneIoAvailable() gate before
+// any open is attempted, so in the tools-OFF build the file's CONTENT is never parsed -- only its
+// EXISTENCE matters, and only to firstSceneUnder.
+[[nodiscard]] std::string startupSceneText(std::size_t extra) {
+    engine::World world;
+    engine::editor::seedDefaultScene(world);
+    for (std::size_t i = 0; i < extra; ++i) {
+        const engine::Entity e = engine::editor::createEntity(world, {}, "Extra" + std::to_string(i));
+        REQUIRE(e.valid());
+    }
+    const std::optional<std::string> text = engine::editor::sceneToText(world);
+    return text.value_or("{}");
+}
+
+// A scaffolded project in a fresh temp location. `scenes` are written verbatim under the root.
+[[nodiscard]] std::string makeStateProject(std::initializer_list<std::string_view> scenes) {
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    std::size_t extra = 1;
+    for (const std::string_view relative : scenes) {
+        REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/" + std::string(relative), startupSceneText(extra))
+                    .empty());
+        ++extra;
+    }
+    return created.root;
+}
+
+// task E.4.1's own glTF fixture: ONE mesh, positions only, no material and no image, so the ledger
+// resolves it with no texture pass at all. Deliberately NOT SL_TWO_MESH_GLTF_TEXT -- that constant
+// lives inside this file's `#if AERO_SHADER_TOOLS_ENABLED` region and is not declared in the
+// tools-OFF build, where these cases still compile.
+constexpr std::string_view E41_ONE_MESH_GLTF_TEXT =
+    R"({"asset":{"version":"2.0"},"scene":0,"scenes":[{"nodes":[0]}],)"
+    R"("nodes":[{"name":"A","mesh":0}],)"
+    R"("meshes":[{"name":"MeshA","primitives":[{"attributes":{"POSITION":0},"indices":1,"mode":4}]}],)"
+    R"("accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3","min":[0,0,0],"max":[1,1,0]},)"
+    R"({"bufferView":1,"componentType":5123,"count":3,"type":"SCALAR"}],)"
+    R"("bufferViews":[{"buffer":0,"byteOffset":0,"byteLength":36,"target":34962},)"
+    R"({"buffer":0,"byteOffset":36,"byteLength":6,"target":34963}],)"
+    R"("buffers":[{"byteLength":42,"uri":"data:application/octet-stream;base64,)"
+    R"(AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAAAAABAAIA"}]})";
+
+}  // namespace
+
+TEST_CASE("editor: opening a project whose state names a scene writes NOTHING (task E.4.1, I176, seed S3)") {
+    // THE ONLY WITNESS SEED S3 HAS ANYWHERE. A project open that re-records the value it just read
+    // produces a BYTE-IDENTICAL file, so no assertion over the file's content can see it -- which is
+    // exactly why projectStateWriteCount() exists.
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "state i176", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string root = makeStateProject({"scenes/a.scene.json"});
+    REQUIRE(engine::editor::writeProjectState(
+                root, engine::editor::ProjectState{.lastScene = "scenes/a.scene.json", .lastSceneRecorded = true})
+                .empty());
+    const std::optional<std::string> before = readBytesOf(root + "/Library/editor-state.json");
+    REQUIRE(before.has_value());
+
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+
+    if (!engine::editor::sceneIoAvailable()) {
+        // BOTH ARMS ASSERT, neither skips, and this one needs no preprocessor: with scene I/O
+        // unavailable openSceneFile never calls setPath, so the session path stays "", the reconcile
+        // sees a project change and then NOTHING, and the record is read and LEFT EXACTLY AS IT IS.
+        CHECK(app->scenePath().empty());
+        for (int i = 0; i < 5; ++i) {
+            REQUIRE(app->tick());
+        }
+        CHECK(app->projectStateWriteCount() == 0U);
+        const std::optional<std::string> untouched = readBytesOf(root + "/Library/editor-state.json");
+        REQUIRE(untouched.has_value());
+        CHECK(*untouched == *before);  // the tools-OFF build never clobbers a record
+        app->requestQuit();
+        CHECK(app->tick() == false);
+        app.reset();
+        return;
+    }
+
+    REQUIRE(app->scenePath() == root + "/scenes/a.scene.json");  // ANTI-VACUITY: it DID restore
+    for (int i = 0; i < 5; ++i) {
+        REQUIRE(app->tick());
+    }
+    CHECK(app->projectStateWriteCount() == 0U);
+    const std::optional<std::string> after = readBytesOf(root + "/Library/editor-state.json");
+    REQUIRE(after.has_value());
+    CHECK(*after == *before);
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: requestOpenScene records the new scene in the SAME tick (task E.4.1, I177, seed S15)") {
+    // ASSERTED AFTER THE TICK THAT APPLIED THE CHANGE, which is what catches a top-of-tick placement:
+    // applyFileRequests runs inside drawShellUi earlier in this very tick, so by the end of it
+    // session.path() already names the new scene.
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "state i177", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string root = makeStateProject({"scenes/a.scene.json", "scenes/b.scene.json"});
+    REQUIRE_FALSE(engine::editor::fileExists(root + "/Library/editor-state.json"));
+
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    REQUIRE(app->tick());  // settle; the cascade already opened `a` during create()
+
+    if (!engine::editor::sceneIoAvailable()) {
+        CHECK(app->scenePath().empty());
+        CHECK(app->projectStateWriteCount() == 0U);
+        app->requestQuit();
+        CHECK(app->tick() == false);
+        app.reset();
+        return;
+    }
+
+    REQUIRE(app->scenePath() == root + "/scenes/a.scene.json");
+    const std::size_t before = app->projectStateWriteCount();
+    app->requestOpenScene(root + "/scenes/b.scene.json");
+    REQUIRE(app->tick());  // ONE tick
+    CHECK(app->scenePath() == root + "/scenes/b.scene.json");
+    CHECK(app->projectStateWriteCount() == before + 1U);
+    const std::optional<engine::editor::ProjectState> state = readStateOf(root);
+    REQUIRE(state.has_value());
+    CHECK(state->lastScene == "scenes/b.scene.json");
+    CHECK(state->lastSceneRecorded);
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: a save to a new path records it; a repeat save records nothing more (task E.4.1, I178)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "state i178", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string root = makeStateProject({});  // no scenes, no state file -> a NEW scene
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    REQUIRE(app->tick());  // settle: the tick that adopts the baseline for this project
+    REQUIRE(app->scenePath().empty());
+
+    const std::string target = root + "/scenes/saved.scene.json";
+    app->requestSaveSceneAs(target);
+    REQUIRE(app->tick());
+
+    if (!engine::editor::sceneIoAvailable()) {
+        // saveSceneFile refuses without the serializer, so the path never changes and nothing is
+        // recorded. The claim is the same one D10's corollary makes: no write, and no attempt.
+        CHECK(app->scenePath().empty());
+        CHECK(app->projectStateWriteCount() == 0U);
+        app->requestQuit();
+        CHECK(app->tick() == false);
+        app.reset();
+        return;
+    }
+
+    CHECK(app->scenePath() == target);
+    const std::size_t afterFirst = app->projectStateWriteCount();
+    CHECK(afterFirst >= 1U);
+    const std::optional<engine::editor::ProjectState> state = readStateOf(root);
+    REQUIRE(state.has_value());
+    CHECK(state->lastScene == "scenes/saved.scene.json");
+
+    app->requestSaveScene();  // the SAME path
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());  // and a second tick, so "nothing more" is not a one-frame artefact
+    CHECK(app->projectStateWriteCount() == afterFirst);  // the path did not CHANGE (AC-13)
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: File > New Scene records the key PRESENT and EMPTY (task E.4.1, I179/AC-5)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "state i179", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string root = makeStateProject({"scenes/a.scene.json"});
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    REQUIRE(app->tick());  // settle
+
+    if (!engine::editor::sceneIoAvailable()) {
+        CHECK(app->scenePath().empty());
+        CHECK(app->projectStateWriteCount() == 0U);
+        app->requestQuit();
+        CHECK(app->tick() == false);
+        app.reset();
+        return;
+    }
+
+    REQUIRE_FALSE(app->scenePath().empty());
+    const std::size_t before = app->projectStateWriteCount();
+    app->requestNewScene();  // the document is CLEAN, so this performs rather than guarding
+    REQUIRE(app->tick());
+    CHECK(app->scenePath().empty());
+    CHECK(app->projectStateWriteCount() == before + 1U);
+    const std::optional<engine::editor::ProjectState> state = readStateOf(root);
+    REQUIRE(state.has_value());
+    CHECK(state->lastScene.empty());
+    CHECK(state->lastSceneRecorded);  // THE KEY IS PRESENT -- D2's third state, on disk
+    // ...and it is present in the BYTES, not only in the parse.
+    const std::optional<std::string> bytes = readBytesOf(root + "/Library/editor-state.json");
+    REQUIRE(bytes.has_value());
+    CHECK(bytes->find("\"lastScene\": \"\"") != std::string::npos);
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: a RUNTIME project swap writes nothing for either project (task E.4.1, I180, seed S3)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "state i180", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string rootA = makeStateProject({"scenes/a.scene.json"});
+    const std::string rootB = makeStateProject({"scenes/b.scene.json"});
+    REQUIRE(engine::editor::writeProjectState(
+                rootA, engine::editor::ProjectState{.lastScene = "scenes/a.scene.json", .lastSceneRecorded = true})
+                .empty());
+    REQUIRE(engine::editor::writeProjectState(
+                rootB, engine::editor::ProjectState{.lastScene = "scenes/b.scene.json", .lastSceneRecorded = true})
+                .empty());
+    const std::optional<std::string> aBefore = readBytesOf(rootA + "/Library/editor-state.json");
+    REQUIRE(aBefore.has_value());
+
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = rootA,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+
+    const std::size_t before = app->projectStateWriteCount();
+    app->requestOpenProject(rootB);
+    REQUIRE(app->tick());  // the swap happens inside drawShellUi -> applyFileRequests
+    REQUIRE(app->tick());  // and the reconcile that follows it
+    CHECK(app->projectRoot() == rootB);
+    CHECK(app->projectStateWriteCount() == before);  // AdoptBaseline, not Write
+
+    if (engine::editor::sceneIoAvailable()) {
+        CHECK(app->scenePath() == rootB + "/scenes/b.scene.json");
+    } else {
+        CHECK(app->scenePath().empty());  // no restore at all, and still no write
+    }
+    const std::optional<std::string> aAfter = readBytesOf(rootA + "/Library/editor-state.json");
+    REQUIRE(aAfter.has_value());
+    CHECK(*aAfter == *aBefore);  // A's file is untouched
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: with NO project open nothing is written anywhere (task E.4.1, I181/AC-14)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "state i181", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = "",
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    REQUIRE(app->projectRoot().empty());
+    REQUIRE(app->tick());
+
+    const std::string scratch = uniqueScenePath(".scene.json");
+    app->requestSaveSceneAs(scratch);  // a real scene-path change, OUTSIDE any project
+    REQUIRE(app->tick());
+    if (engine::editor::sceneIoAvailable()) {
+        REQUIRE(app->scenePath() == scratch);
+    } else {
+        REQUIRE(app->scenePath().empty());
+    }
+    for (int i = 0; i < 10; ++i) {
+        REQUIRE(app->tick());
+    }
+    CHECK(app->projectStateWriteCount() == 0U);
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: a read-only Library WARNs ONCE across ten ticks, not once per frame (task E.4.1, I182, seed S16)") {
+    // Library occupied by a FILE is the portable stand-in for a refused write. D13's whole content:
+    // the baseline advances WHETHER OR NOT the write succeeded, so a failure costs exactly one WARN
+    // per scene CHANGE. Without it, this reads ten.
+    //
+    // It counts log RECORDS, not WARNs -- EditorApp exposes only logRecordCount() -- and its
+    // discrimination comes from the QUIESCENT baseline: the asset scan's own complaint about the
+    // occupied Library/ is absorbed by the settle ticks before the baseline is taken.
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "state i182", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string root = makeStateProject({});
+    // BEFORE create(): a FILE where the directory must go.
+    REQUIRE(engine::editor::writeTextFileAtomic(root + "/Library", "not a directory").empty());
+
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    for (int i = 0; i < 4; ++i) {
+        REQUIRE(app->tick());  // settle to quiescence FIRST -- the scan's own lines land here
+    }
+
+    if (!engine::editor::sceneIoAvailable()) {
+        // No save can succeed, so the scene path never changes and the reconcile never reaches Write.
+        app->requestSaveSceneAs(root + "/scenes/x.scene.json");
+        for (int i = 0; i < 10; ++i) {
+            REQUIRE(app->tick());
+        }
+        CHECK(app->projectStateWriteCount() == 0U);
+        app->requestQuit();
+        CHECK(app->tick() == false);
+        app.reset();
+        return;
+    }
+
+    const std::size_t recordsBefore = app->logRecordCount();
+    app->requestSaveSceneAs(root + "/scenes/x.scene.json");
+    for (int i = 0; i < 10; ++i) {
+        REQUIRE(app->tick());
+    }
+    CHECK(app->projectStateWriteCount() == 0U);          // the write FAILED, every time it was tried
+    CHECK(app->logRecordCount() - recordsBefore == 1U);  // and it was tried exactly ONCE
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: a scene opened from OUTSIDE the project root records \"\" (task E.4.1, I183, seed S4)") {
+    // D3's case, and the one that would silently record an ABSOLUTE path under seed S4.
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "state i183", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string root = makeStateProject({"scenes/a.scene.json"});
+    REQUIRE(engine::editor::writeProjectState(
+                root, engine::editor::ProjectState{.lastScene = "scenes/a.scene.json", .lastSceneRecorded = true})
+                .empty());
+
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    REQUIRE(app->tick());  // settle
+
+    if (!engine::editor::sceneIoAvailable()) {
+        CHECK(app->scenePath().empty());
+        CHECK(app->projectStateWriteCount() == 0U);
+        app->requestQuit();
+        CHECK(app->tick() == false);
+        app.reset();
+        return;
+    }
+
+    REQUIRE(app->scenePath() == root + "/scenes/a.scene.json");
+    const std::string outside = uniqueScenePath("-outside.scene.json");
+    REQUIRE(engine::editor::writeTextFileAtomic(outside, startupSceneText(3)).empty());
+    const std::size_t before = app->projectStateWriteCount();
+    app->requestOpenScene(outside);
+    REQUIRE(app->tick());
+    REQUIRE(app->scenePath() == outside);                 // it DID open -- nothing refuses it today
+    CHECK(app->projectStateWriteCount() == before + 1U);  // and the change WAS recorded
+    const std::optional<engine::editor::ProjectState> state = readStateOf(root);
+    REQUIRE(state.has_value());
+    CHECK(state->lastScene.empty());  // as "" -- a forgotten position, never a path out of the project
+    CHECK(state->lastSceneRecorded);
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: a restored scene's assets resolve on the startup path (task E.4.1, I184/AC-17)") {
+    // Proves F6's ordering with a NON-EMPTY World at create() time, which never happened before this
+    // task: the scene is loaded during create(), BEFORE the first rescan, the first service pass and
+    // the first draw -- all of which are inside tick 1.
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "state i184", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    // The model and a PINNED sidecar, so the scene below can name the GUID the scan will find: a valid
+    // .meta is never rewritten (3.1.1's D6), so this GUID is the one the database serves.
+    const engine::Guid meshGuid = engine::GuidGenerator(0xE41E41ULL).next();
+    REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/one.gltf", E41_ONE_MESH_GLTF_TEXT).empty());
+    REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/one.gltf.meta",
+                                                engine::editor::writeMetaText(meshGuid))
+                .empty());
+
+    // A scene whose ONE extra entity carries a MeshRenderer naming that GUID.
+    std::string sceneText = "{}";
+    {
+        engine::World world;
+        engine::editor::seedDefaultScene(world);
+        const engine::Entity e = engine::editor::createEntity(world, {}, "Model");
+        REQUIRE(e.valid());
+        REQUIRE(world.add<engine::MeshRenderer>(e, engine::MeshRenderer{.mesh = meshGuid}) != nullptr);
+        const std::optional<std::string> text = engine::editor::sceneToText(world);
+        sceneText = text.value_or("{}");
+    }
+    REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/scenes/a.scene.json", sceneText).empty());
+    REQUIRE(
+        engine::editor::writeProjectState(
+            created.root, engine::editor::ProjectState{.lastScene = "scenes/a.scene.json", .lastSceneRecorded = true})
+            .empty());
+
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = created.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+
+    if (!engine::editor::sceneIoAvailable()) {
+        CHECK(app->scenePath().empty());
+        REQUIRE(app->tick());
+        CHECK(app->sceneAssetEntryCount() == 0U);  // no scene, so no GUID for the ledger to see
+        app->requestQuit();
+        CHECK(app->tick() == false);
+        app.reset();
+        return;
+    }
+    REQUIRE(app->scenePath() == created.root + "/scenes/a.scene.json");
+    // ANTI-VACUITY, asserted where it is TRUE rather than inferred from a tick count: create()
+    // performs no service pass, so nothing can be Ready yet.
+    CHECK(app->sceneAssetReadyCount() == 0U);
+
+    // ONE tick FIRST -- the viewport's renderer is built on its first draw, so the capability probe
+    // below reads a null debugDraw() before any tick has run whatever the build configuration is.
+    REQUIRE(app->tick());
+    auto* const viewport = dynamic_cast<engine::editor::ViewportPanel*>(app->panels().find("Viewport"));
+    REQUIRE(viewport != nullptr);
+    if (viewport->debugDraw() == nullptr) {
+        // NO COOKED SHADERS (the shader-tools-OFF build): ForwardRenderer::create found no artifacts,
+        // so the viewport never initialised and the ledger's execute half has nothing to upload
+        // through. The restore itself is unaffected, which is this arm's claim -- the split I88-I92's
+        // tools-OFF arm makes, as a RUNTIME test rather than an #if.
+        CHECK_FALSE(app->scenePath().empty());
+        app->requestQuit();
+        CHECK(app->tick() == false);
+        app.reset();
+        return;
+    }
+
+    // task E.4.1 (plan 4.6): a BOUNDED settle, never a fixed frame count. On the STARTUP path the
+    // first rescan, the first service pass and the first draw are all inside tick 1, and the scene was
+    // loaded during create() -- before any of them -- so the tick count to Ready depends on the scan
+    // and decode budgets and on the lane's disk. E.1.3 already recorded a cross-lane flake of this
+    // exact species. The loop also exits on a FAILED entry, so a failure is reported by the assertion
+    // below rather than by the bound running out.
+    constexpr int MAX_SETTLE_TICKS = 32;
+    int settleTicks = 1;  // the probe tick above is the first of them
+    while (settleTicks < MAX_SETTLE_TICKS && app->sceneAssetReadyCount() == 0U && app->sceneAssetFailedCount() == 0U) {
+        REQUIRE(app->tick());
+        ++settleTicks;
+    }
+    INFO("settled after " << settleTicks << " ticks; ledger message: " << app->sceneAssetMessage(meshGuid));
+    REQUIRE(settleTicks < MAX_SETTLE_TICKS);  // anti-vacuity: the BOUND is not what ended the loop
+    CHECK(app->sceneAssetFailedCount() == 0U);
+    CHECK(app->sceneAssetReadyCount() > 0U);
+    CHECK(app->sceneAssetEntryCount() > 0U);  // the ledger saw the restored scene's GUIDs at all
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: a project swap neither re-records nor clobbers the outgoing project (task E.4.1, I185)") {
+    // THE HALF OF THE OUTGOING-PAIR HANDOFF A REAL EditorApp CAN DRIVE, and this case says plainly
+    // which half that is. The handoff exists for a chain no tier here can reach: a guarded Save on an
+    // UNTITLED scene launches the native Save panel, and its answer reaches applyDialogResult, which
+    // saves into the outgoing project and performs the pending OpenProject IN THE SAME CALL.
+    // FileFlow::choice has no EditorApp accessor and DialogChannel is src-private, so neither the
+    // modal answer nor the dialog result can be injected from here -- PJ55 (scene_io_test.cpp) drives
+    // that chain at the flow tier and is its only behavioural witness.
+    //
+    // What IS reachable is every way the drain could go WRONG on an ordinary swap, and each of them
+    // moves something this case reads: a drain that fired whenever a pair was pending, or that wrote
+    // the BASELINE scene rather than the pending one, or that re-recorded the value it just read,
+    // moves projectStateWriteCount() and/or A's bytes. I176 and I180 assert the same silence WITHOUT
+    // a pending pair in play; this one asserts it WITH one, across a scene change the swap must carry
+    // over untouched.
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "state i185", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string rootA = makeStateProject({"scenes/a.scene.json", "scenes/b.scene.json"});
+    const std::string rootB = makeStateProject({"scenes/z.scene.json"});
+    REQUIRE(engine::editor::writeProjectState(
+                rootA, engine::editor::ProjectState{.lastScene = "scenes/a.scene.json", .lastSceneRecorded = true})
+                .empty());
+    REQUIRE_FALSE(engine::editor::fileExists(rootB + "/Library/editor-state.json"));
+
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = rootA,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    REQUIRE(app->tick());  // settle: the tick that adopts A's baseline
+
+    if (!engine::editor::sceneIoAvailable()) {
+        // BOTH ARMS ASSERT. With no serializer the session path never leaves "", so the swap carries
+        // an EMPTY outgoing scene -- which equals A's baseline and must still write nothing at all.
+        const std::optional<std::string> aBefore = readBytesOf(rootA + "/Library/editor-state.json");
+        REQUIRE(aBefore.has_value());
+        app->requestOpenProject(rootB);
+        REQUIRE(app->tick());
+        REQUIRE(app->tick());
+        CHECK(app->projectRoot() == rootB);
+        CHECK(app->projectStateWriteCount() == 0U);
+        const std::optional<std::string> aAfter = readBytesOf(rootA + "/Library/editor-state.json");
+        REQUIRE(aAfter.has_value());
+        CHECK(*aAfter == *aBefore);
+        CHECK_FALSE(engine::editor::fileExists(rootB + "/Library/editor-state.json"));
+        app->requestQuit();
+        CHECK(app->tick() == false);
+        app.reset();
+        return;
+    }
+
+    REQUIRE(app->scenePath() == rootA + "/scenes/a.scene.json");  // ANTI-VACUITY: A's record restored
+    // A REAL scene change inside A, recorded by the ordinary reconcile one tick before the swap. This
+    // is what the swap must carry over: the record that is CORRECT when the swap begins.
+    app->requestOpenScene(rootA + "/scenes/b.scene.json");
+    REQUIRE(app->tick());
+    REQUIRE(app->scenePath() == rootA + "/scenes/b.scene.json");
+    const std::size_t writesBeforeSwap = app->projectStateWriteCount();
+    REQUIRE(writesBeforeSwap >= 1U);
+    const std::optional<engine::editor::ProjectState> aRecorded = readStateOf(rootA);
+    REQUIRE(aRecorded.has_value());
+    REQUIRE(aRecorded->lastScene == "scenes/b.scene.json");
+    const std::optional<std::string> aBefore = readBytesOf(rootA + "/Library/editor-state.json");
+    REQUIRE(aBefore.has_value());
+
+    app->requestOpenProject(rootB);
+    REQUIRE(app->tick());  // the swap: publish, adopt, restore, then the drain and the reconcile
+    REQUIRE(app->tick());  // and one more, so "nothing further" is not a one-frame artefact
+    CHECK(app->projectRoot() == rootB);
+    CHECK(app->scenePath() == rootB + "/scenes/z.scene.json");  // B cascaded to its only scene
+    // THE PENDING PAIR EQUALLED THE BASELINE, so the drain wrote NOTHING -- and neither did the
+    // reconcile, which saw a root change (AdoptBaseline). The count is lifetime, so this is an exact
+    // equality rather than a bound.
+    CHECK(app->projectStateWriteCount() == writesBeforeSwap);
+    const std::optional<std::string> aAfter = readBytesOf(rootA + "/Library/editor-state.json");
+    REQUIRE(aAfter.has_value());
+    CHECK(*aAfter == *aBefore);  // A's record still names the scene A was left on, byte for byte
+    // ...and B, whose state was READ and never written, still has no record at all.
+    CHECK_FALSE(engine::editor::fileExists(rootB + "/Library/editor-state.json"));
 
     app->requestQuit();
     CHECK(app->tick() == false);

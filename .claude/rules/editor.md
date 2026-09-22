@@ -246,6 +246,86 @@ a **human mouse/keyboard pass** recorded per OS in `editor/VALIDATION.md`.
   bool return instead of from `ec` breaks the legal "adopt an existing empty directory" path every
   time E7/AC-13 legitimately hits it. Confirmed load-bearing by direct sabotage (seed S22).
 
+### The per-project editor state (task E.4.1)
+
+`<projectRoot>/Library/editor-state.json` (docs/09 §4.10) records the last scene, as a
+project-relative path. `project_state.{hpp,cpp}` is PURE — no `<filesystem>`, no ImGui, no SDL, no
+entt, no logging, no `#if` — and the whole of the format, the path arithmetic, the resolution and the
+write decision live in it. Two consumers, one each: `restoreLastScene` in `scene_session.cpp` reads
+and resolves; `EditorApp::persistProjectState` decides and writes.
+
+- **(1) `restoreLastScene` runs from `openProjectPath` ONLY, and ONLY after `adoptProject`.** Before
+  it, `project.session.root()` still names the OUTGOING project and the restore reads that project's
+  state. `createAndOpenProject` deliberately does **not** call it: `createProject` refuses a
+  non-empty target, so a fresh project has no `Library/`, no state file and no scenes **by
+  construction**, and a call there could only ever be a no-op. It takes a `const ProjectSession&`
+  rather than the `ProjectContext&` its caller holds, so **INV-P1's setter is not reachable from it
+  at all** — 2.6.2's `PanelContext::project` rule ("the `const` is the enforcement"), one layer down.
+- **(2) The write reconcile is the END of `tick()`, never the top.** `applyFileRequests` runs inside
+  `drawShellUi` earlier in the same tick, so a scene opened, saved or cleared by this frame's menu
+  action is already in `session.path()` by the time the draw walk returns — and the unsaved-changes
+  modal's **"Save"** answer performs the save **and** the pending Quit in ONE tick, after which
+  `tick()` returns false for ever. A top-of-tick reconcile loses exactly that frame, which is the
+  most common quit path there is. The call sits between `endFrame()` and the `quitConfirmed` branch;
+  it touches no ImGui and no GPU, so the placement is about the QUIT, not about the draw walk. **No
+  test tier can answer that modal** — `FileFlow::choice` has no public `EditorApp` accessor and the
+  GPU tier is ImGui-free at source — so this is proven only by a manual pass.
+- **(3) A project CHANGE adopts the baseline WITHOUT writing; only a scene change inside one project
+  writes.** Writing on a project change would re-record the value just read from that same file, and
+  the two produce **byte-identical** files — so no assertion over the file's content can tell them
+  apart. `EditorApp::projectStateWriteCount()` is the ONLY thing in the tree that can. **Do not
+  delete it**, and do not "simplify" the reconcile to "write whenever the pair differs".
+- **(3b) …but the OUTGOING project's own scene change is handed off, because one tick can do both.**
+  A guarded Save on an **untitled** scene takes `resolveConfirm`'s `AskWhereToSave` arm, and the
+  native panel's answer reaches `applyDialogResult`, which saves the scene **into the outgoing
+  project** and performs the pending `OpenProject` **in the same call**. That `(root, scene)` pair is
+  invisible at **both ends** of the tick — at the top the scene is still untitled, at the end the
+  session already names the new project — so rule (3) alone records neither. `openProjectPath`
+  therefore publishes the pair into `ProjectFlow::outgoingState{Root,Scene}` immediately **before**
+  `adoptProject` (never inside it — its five statements are byte-identical to 2.6.1's, and `set()` is
+  what makes `root()` name the new project), and `persistProjectState` **drains it first**, through
+  the **same** `projectStateStep` against the **same** baseline, then clears both fields whether or
+  not it wrote. **This is a handoff, not a second write site**: `persistProjectState` remains the only
+  thing in the tree that writes `editor-state.json`. A non-empty pending root **is** the "pending"
+  flag; a separate bool would be a second spelling of the same fact. On a plain open or swap the
+  pending pair **equals** the baseline, so nothing is written and (3) still holds — which is what
+  `I176`, `I180` and `I185` assert. **No tier can drive the chain itself** (`FileFlow::choice` has no
+  `EditorApp` accessor and `DialogChannel` is src-private), so `PJ55` drives it at the flow tier and
+  is its only behavioural witness.
+- **(4) A failed write advances the baseline anyway.** Otherwise a read-only `Library/` produces a
+  write attempt and a WARN on **every frame**, for ever. `asset_database.cpp`'s INV-C11 ("in-memory
+  regardless of whether the write succeeded"), one file over. A failure therefore costs exactly one
+  WARN per scene change, and the counter above counts only **successes**, which keeps it an
+  assertion about the disk rather than about the attempt.
+- **(5) `lastScene` ABSENT and `lastScene: ""` are DIFFERENT ANSWERS.** Absent cascades to the
+  project's first scene; `""` opens a new one. Collapsing them hands a person who chose
+  `File ▸ New Scene` somebody else's scene on the next launch. The writer **omits the key** when
+  nothing is recorded and the parser reads "recorded" from the key's **presence** — which is also
+  what makes appending a second key to this file a non-breaking change with no version bump.
+- **A recorded scene that is MISSING cascades; one that EXISTS and fails to open STOPS.** One
+  `fileExists` call tells them apart, it is made by the caller, and `chooseStartupScene` stays pure.
+  The decider picks a *candidate*; the caller opens it **once** and never re-enters the decider. D6's
+  "stop" is not code — it is the absence of a second attempt, so the way to break it is to ADD one.
+- **A stale record is never pruned, and the cascade does not correct it.** A cascade takes the
+  AdoptBaseline arm, which writes nothing, so a record naming a deleted scene survives until the user
+  next changes scene. That is deliberate — `recent_projects.json`'s rule (docs/09 §4.9) plus the
+  write rule above — and the behaviour is right every time the scene is still missing. **Do not add
+  a write on the cascade arm**: it would be a second write site, in the TU defined as the one that
+  logs and does not write, and it would write on a mere open.
+- **`projectRelativeScenePath` is a LEXICAL stand-in, not E.4.2's containment predicate.** No symlink
+  resolution, no case folding, no drive-letter rule — and its remainder is gated on
+  `isLegalRelativePath`, because the producer must guarantee what the parser requires or this build
+  can write a document it cannot read back. Its failure mode is **"forget"**, never "wrong project":
+  a false negative records `""` and the user gets a new scene. When E.4.2's predicate lands, this
+  function becomes its caller or is deleted in favour of it.
+- **EVERY producer of a project-relative path gates on `isLegalRelativePath` — `firstSceneUnder` too.**
+  `entry.name` is an **OS-supplied leaf**, and `':'` and `'\'` are legal POSIX filename bytes that
+  rule refuses anywhere, so a `boss:arena.scene.json` returned verbatim answers `""` from
+  `absoluteScenePath` and reaches `openSceneFile` as an **empty path** — one spurious ERROR naming
+  nothing, and the restore's one-and-only attempt spent on it while the loadable scene beside it is
+  never tried. Such an entry is **skipped and the scan continues**; abandoning the directory would
+  hand the whole project's startup scene to the first bad byte in it.
+
 ## Project settings (task 2.6.2)
 
 - **`PanelContext::project` is a `const ProjectSession&`, and the `const` is the enforcement.**
