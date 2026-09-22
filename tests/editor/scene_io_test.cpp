@@ -912,3 +912,68 @@ TEST_CASE("scene_io: a recorded scene OUTSIDE paths.scenes but inside the root o
     CHECK(session.path() == project.root + "/levels/deep.scene.json");
     CHECK(f.world.entityCount() == 11);  // four + seven, NOT the first scene's six
 }
+
+TEST_CASE("scene_io: a guarded Save that CHAINS into a project open hands off the outgoing pair (PJ55)") {
+    // THE CHAIN THIS CASE IS ABOUT, and the only one in the tree that changes a scene's path and the
+    // open project in ONE tick: the user is on an UNTITLED, DIRTY scene in A and picks
+    // File > Open Project.... The guard raises the modal, "Save" on an untitled scene takes
+    // resolveConfirm's AskWhereToSave arm (saveBeforePending = true, flow.pending KEPT), and the
+    // native panel's answer arrives at applyDialogResult, which saves the scene INTO A and then
+    // performs the pending OpenProject in the SAME call.
+    //
+    // The (A, "scenes/saved.scene.json") pair exists at NEITHER END of that tick -- at the top the
+    // scene is still untitled, and by the end the session already names B's scene -- so the
+    // end-of-tick reconcile sees only a ROOT change, takes AdoptBaseline and writes nothing. The
+    // handoff below is what carries it across.
+    //
+    // THIS TIER IS THE ONLY BEHAVIOURAL WITNESS THE CHAIN HAS. The GPU tier cannot reach it:
+    // FileFlow::choice has no EditorApp accessor (so the modal cannot be answered) and DialogChannel
+    // is src-private (so no DialogResult can be delivered), which is why I185 asserts the half a real
+    // EditorApp CAN drive -- that a swap writes nothing and clobbers nothing -- and says so itself.
+    const TempDir dirA;
+    const TempDir dirB;
+    const SceneProject a = makeSceneProject(dirA, {});  // NO scenes: the untitled scene is the only one
+    const SceneProject b = makeSceneProject(dirB, {{"scenes/b.scene.json", 5}});
+
+    FlowFixture f;
+    SceneSession session;
+    REQUIRE(engine::editor::openProjectPath(f.ctx, f.commands, session, f.project, a.root));
+    REQUIRE(session.path().empty());  // A holds no scene at all -- adoptProject's fresh default
+    REQUIRE(session.untitled());
+    // ANTI-VACUITY for the publish below: nothing was open BEFORE A, so that open published nothing.
+    REQUIRE(f.projectFlow.outgoingStateRoot.empty());
+
+    // The flow state resolveConfirm's AskWhereToSave arm leaves behind, spelled out: a Save dialog in
+    // flight, the pending OpenProject kept, and saveBeforePending set. `projectFlow.requestedPath` is
+    // OpenProject's own no-dialog seam (D15), and `host.channel == nullptr` proves no native panel is
+    // reachable from here (A17).
+    engine::editor::FileFlow flow;
+    flow.dialog = engine::editor::DialogKind::Save;
+    flow.pending = engine::editor::FileAction::OpenProject;
+    flow.saveBeforePending = true;
+    f.projectFlow.requestedPath = b.root;
+    const engine::editor::FileDialogHost host{};
+    const std::string savedPath = a.root + "/scenes/saved.scene.json";
+    const engine::editor::DialogResult result{.ready = true, .cancelled = false, .failed = false, .path = savedPath};
+
+    engine::editor::applyDialogResult(f.ctx, f.commands, session, flow, host, result, f.project);
+
+    // ANTI-VACUITY: the WHOLE chain ran in that one call -- the scene reached A's disk, and the
+    // project is now B with B's own first scene open (four seeded + five extras).
+    CHECK(engine::editor::fileExists(savedPath));
+    REQUIRE(f.projectSession.root() == b.root);
+    CHECK(session.path() == b.root + "/scenes/b.scene.json");
+    CHECK(f.world.entityCount() == 9);
+
+    // THE HANDOFF: the outgoing project and the scene it was left on, as a ROOT-RELATIVE path -- the
+    // recorded form, never the absolute one (a project-relative path is what parseProjectState reads
+    // back, and what makes a moved project directory still resolve).
+    CHECK(f.projectFlow.outgoingStateRoot == a.root);
+    CHECK(f.projectFlow.outgoingStateScene == "scenes/saved.scene.json");
+
+    // AND IT IS A HANDOFF, NOT A WRITE. Nothing under editor/src/ writes editor-state.json except
+    // EditorApp::persistProjectState, which is not reachable from this tier at all -- so neither
+    // project has a state file after the chain, however loudly the pair above says what to record.
+    CHECK_FALSE(engine::editor::fileExists(a.root + "/Library/editor-state.json"));
+    CHECK_FALSE(engine::editor::fileExists(b.root + "/Library/editor-state.json"));
+}

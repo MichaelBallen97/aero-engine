@@ -620,3 +620,36 @@ TEST_CASE("project_state: two identical writes leave a BYTE-identical file (PJ40
     REQUIRE(second.has_value());
     CHECK(*second == *first);  // the BYTES, not the parse
 }
+
+// ---- the end-of-tick DRAIN's own predicate: PJ56 ---------------------------------------------------
+
+TEST_CASE("project_state: the outgoing-pair DRAIN is projectStateStep, asked about a DIFFERENT pair (PJ56)") {
+    // EditorApp::persistProjectState drains ProjectFlow's outgoing (root, scene) pair -- published by
+    // openProjectPath immediately before the adopt -- by asking THIS decider the same question it asks
+    // about the live session: "does this pair differ from the baseline in a way that must be written?"
+    // No second predicate is spelled anywhere, deliberately: a hand-written three-term condition beside
+    // this function is a second rule that can drift from it, and the drain and the reconcile must never
+    // disagree about what a change IS.
+    //
+    // These are the drain's four rows, in the drain's own vocabulary. They are the same function
+    // PJ27-PJ30 cover, and that is the point of the case.
+    //
+    // (1) THE ROW THE HANDOFF EXISTS FOR: the baseline still names the outgoing project, and the pair
+    // says its scene moved while this tick ran -- a guarded Save that chained into a project open.
+    CHECK(stepChoice(projectStateStep("/p/A", "/p/A", "scenes/saved.scene.json", "")) ==
+          stepChoice(ProjectStateStep::Write));
+    // (2) A PLAIN SWAP: the pair is exactly what the last reconcile already recorded, so nothing is
+    // written -- which is what keeps I176 and I180 ("opening or swapping a project writes nothing")
+    // true with the drain in place.
+    CHECK(stepChoice(projectStateStep("/p/A", "/p/A", "scenes/a.scene.json", "scenes/a.scene.json")) ==
+          stepChoice(ProjectStateStep::Nothing));
+    // (3) A PAIR THE BASELINE CANNOT SPEAK FOR -- two opens in one tick, so the pending root is no
+    // longer the one the baseline names. DROPPED, never written: writing it would record a scene
+    // against a baseline that was never reconciled for it.
+    CHECK(stepChoice(projectStateStep("/p/A", "/p/B", "scenes/saved.scene.json", "")) !=
+          stepChoice(ProjectStateStep::Write));
+    // (4) NOTHING PENDING -- the ordinary tick, and the reason the pending root's emptiness is the
+    // whole of the "is a pair pending" flag. A separate bool would be a second spelling of this row.
+    CHECK(stepChoice(projectStateStep("", "", "", "")) == stepChoice(ProjectStateStep::Nothing));
+    CHECK(stepChoice(projectStateStep("", "/p/A", "", "scenes/a.scene.json")) != stepChoice(ProjectStateStep::Write));
+}

@@ -510,6 +510,37 @@ std::optional<EditorApp> EditorApp::create(rhi::Device& device, platform::Window
 }
 
 void EditorApp::persistProjectState() {
+    // ---- THE DRAIN, FIRST (task E.4.1, code review) -----------------------------------------------
+    // The OUTGOING project's pair, published by openProjectPath immediately before the adopt. It is
+    // the only way a scene change made INSIDE a tick that also swapped the project can still be
+    // recorded: a guarded Save on an untitled scene chains through applyDialogResult into the pending
+    // OpenProject, so the save lands in the old project and the swap lands in the same call, and the
+    // reconcile below sees only a ROOT change. Drained BEFORE that reconcile, so it reads the baseline
+    // the pair belongs to rather than the one this tick is about to adopt.
+    //
+    // THE SAME DECIDER, ASKED ABOUT A DIFFERENT PAIR (PJ56). `Write` here means exactly what it means
+    // below -- the baseline still names this root, and the scene against it moved -- and the two arms
+    // it does not take are the drop conditions: a pending root the baseline does not name (two opens
+    // in one tick) and no pending root at all (every ordinary tick). A hand-written condition beside
+    // this one could drift from the reconcile's idea of what a change IS; this cannot.
+    if (projectStateStep(projectFlow.outgoingStateRoot, projectStateRoot, projectFlow.outgoingStateScene,
+                         projectStateScene) == ProjectStateStep::Write) {
+        const std::string reason =
+            writeProjectState(projectFlow.outgoingStateRoot,
+                              ProjectState{.lastScene = projectFlow.outgoingStateScene, .lastSceneRecorded = true});
+        if (reason.empty()) {
+            ++projectStateWrites;
+        } else {
+            AERO_LOG_WARN("editor: could not record the last scene for project '{}' -- {}",
+                          projectFlow.outgoingStateRoot, reason);
+        }
+    }
+    // CLEARED WHETHER OR NOT ANYTHING WAS WRITTEN, and whatever the arm above decided -- the pair
+    // describes ONE tick's swap and must never be reconsidered against a later tick's baseline. The
+    // `recentsDirty` rule, one field over: consumed once per tick, not left to be drained twice.
+    projectFlow.outgoingStateRoot.clear();
+    projectFlow.outgoingStateScene.clear();
+
     // NAMED LOCALS, FIRST: ProjectSession::root() and SceneSession::path() both return a
     // std::string_view into a member of a live object, and both `root` and `scene` outlive the
     // full-expressions below.

@@ -315,6 +315,26 @@ bool openProjectPath(CommandContext& context, CommandStack& commands, SceneSessi
         AERO_LOG_WARN("editor: project '{}' was created with engine version {} (this build is {})", outcome.root,
                       outcome.manifest.engineVersion, project.engineVersion);
     }
+    // task E.4.1 (code review): HAND OFF the OUTGOING project's (root, scene) pair before the adopt,
+    // while both halves still exist. A guarded Save can chain into this open inside ONE tick --
+    // applyDialogResult saves an untitled scene INTO the outgoing project and then performs the
+    // pending OpenProject in the same call -- and that pair is invisible at both ends of the tick, so
+    // the end-of-tick reconcile would see only a root change, take AdoptBaseline and write nothing.
+    // EditorApp::persistProjectState drains this once per tick and is still the ONE write site; this
+    // writes nothing, reads no file and logs nothing.
+    //
+    // ABOVE the adopt and OUTSIDE it, both deliberately: `set()` is what makes root() name the NEW
+    // project, and adoptProject's five statements are byte-identical to what 2.6.1 shipped (AC-26) --
+    // it stays the one operation that changes the project and does nothing else.
+    if (project.session.isOpen()) {  // nothing to hand off when this is the first open of the session
+        // A NAMED LOCAL FIRST: root() is a VIEW into the member `set()` is about to overwrite.
+        std::string outgoingRoot(project.session.root());
+        // The RECORDED form -- project-relative, exactly what persistProjectState compares against its
+        // baseline and what parseProjectState can read back. "" when the scene is untitled or lives
+        // outside the project, which is a legitimate value to record (D2's third state).
+        project.flow.outgoingStateScene = projectRelativeScenePath(outgoingRoot, session.path());
+        project.flow.outgoingStateRoot = std::move(outgoingRoot);  // LAST: non-empty IS the flag
+    }
     adoptProject(context, commands, session, project, outcome.manifest, outcome.root);  // ONLY after
                                                                                         // every check passed
     AERO_LOG_INFO("editor: opened project '{}' at '{}' -- assets '{}', scenes '{}'", project.session.name(),

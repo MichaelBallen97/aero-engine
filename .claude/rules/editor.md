@@ -275,6 +275,23 @@ and resolves; `EditorApp::persistProjectState` decides and writes.
   the two produce **byte-identical** files — so no assertion over the file's content can tell them
   apart. `EditorApp::projectStateWriteCount()` is the ONLY thing in the tree that can. **Do not
   delete it**, and do not "simplify" the reconcile to "write whenever the pair differs".
+- **(3b) …but the OUTGOING project's own scene change is handed off, because one tick can do both.**
+  A guarded Save on an **untitled** scene takes `resolveConfirm`'s `AskWhereToSave` arm, and the
+  native panel's answer reaches `applyDialogResult`, which saves the scene **into the outgoing
+  project** and performs the pending `OpenProject` **in the same call**. That `(root, scene)` pair is
+  invisible at **both ends** of the tick — at the top the scene is still untitled, at the end the
+  session already names the new project — so rule (3) alone records neither. `openProjectPath`
+  therefore publishes the pair into `ProjectFlow::outgoingState{Root,Scene}` immediately **before**
+  `adoptProject` (never inside it — its five statements are byte-identical to 2.6.1's, and `set()` is
+  what makes `root()` name the new project), and `persistProjectState` **drains it first**, through
+  the **same** `projectStateStep` against the **same** baseline, then clears both fields whether or
+  not it wrote. **This is a handoff, not a second write site**: `persistProjectState` remains the only
+  thing in the tree that writes `editor-state.json`. A non-empty pending root **is** the "pending"
+  flag; a separate bool would be a second spelling of the same fact. On a plain open or swap the
+  pending pair **equals** the baseline, so nothing is written and (3) still holds — which is what
+  `I176`, `I180` and `I185` assert. **No tier can drive the chain itself** (`FileFlow::choice` has no
+  `EditorApp` accessor and `DialogChannel` is src-private), so `PJ55` drives it at the flow tier and
+  is its only behavioural witness.
 - **(4) A failed write advances the baseline anyway.** Otherwise a read-only `Library/` produces a
   write attempt and a WARN on **every frame**, for ever. `asset_database.cpp`'s INV-C11 ("in-memory
   regardless of whether the write succeeded"), one file over. A failure therefore costs exactly one

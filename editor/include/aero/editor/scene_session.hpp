@@ -206,6 +206,29 @@ struct ProjectFlow {
                                 // discipline: CLEARED ON EVERY PATH that abandons or defers (F10)
     bool clearRecentsRequested = false;
     bool recentsDirty = false;  // set by adoptProject and by a clear; consumed once per tick
+    // task E.4.1 (code review): the OUTGOING project's (root, project-relative scene) pair, published
+    // by openProjectPath immediately BEFORE the adopt and drained ONCE PER TICK by
+    // EditorApp::persistProjectState. The `recentsDirty` idiom directly above -- set during the flow,
+    // consumed once per tick -- carrying a VALUE instead of a bit.
+    //
+    // WHY IT EXISTS: a guarded Save can CHAIN into a project open inside ONE tick. An untitled, dirty
+    // scene plus File > Open Project... takes resolveConfirm's AskWhereToSave arm, and the native
+    // panel's answer reaches applyDialogResult, which saves the scene INTO the outgoing project and
+    // then performs the pending OpenProject in the SAME call. That pair is invisible at BOTH ENDS of
+    // the tick: at the top the scene is still untitled (""), and by the end the session already names
+    // the new project's scene. The end-of-tick reconcile therefore sees only a ROOT change, takes
+    // AdoptBaseline and writes NOTHING -- and the scene the user just saved is never recorded for the
+    // project it was saved into. The handoff is what makes that pair sayable at the end of the tick.
+    //
+    // IT IS NOT A SECOND WRITE SITE: nothing here writes anything, and EditorApp::persistProjectState
+    // remains the ONE and ONLY writer of editor-state.json (.claude/rules/editor.md).
+    //
+    // A NON-EMPTY `outgoingStateRoot` IS the "a pair is pending" flag -- it is published only when a
+    // project is actually open (ProjectSession::isOpen() == !root().empty(), project.hpp:99), and the
+    // drain clears BOTH fields whether or not it wrote. A separate bool would be a second spelling of
+    // the same fact, and an arm no seed could distinguish from this one.
+    std::string outgoingStateRoot;
+    std::string outgoingStateScene;
 };
 // Everything the project half of the flow needs, built fresh each frame in tick() -- the
 // PanelContext / FileMenuContext shape, and for the same reason (D7).

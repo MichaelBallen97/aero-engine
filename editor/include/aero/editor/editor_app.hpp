@@ -653,6 +653,12 @@ private:
     // anything else does nothing. Called from exactly one place -- tick(), between endFrame() and the
     // quitConfirmed branch -- and from nowhere else. NEVER from a draw walk, never from a destructor,
     // never from requestQuit() (which is noexcept, and a file write must not be inside one).
+    //
+    // IT FIRST DRAINS ProjectFlow's OUTGOING PAIR (code review), published by openProjectPath before
+    // the adopt: a tick that both changed the scene and swapped the project would otherwise record
+    // neither -- the reconcile above sees only the root change. Same decider, same baseline, one
+    // extra write at most, and the pending fields are cleared whether or not anything was written.
+    // This method stays the ONLY place in the tree that writes editor-state.json.
     void persistProjectState();
 
     // BY VALUE + move (task 2.2.4): EditorAppConfig gained a std::string field, so it is no longer

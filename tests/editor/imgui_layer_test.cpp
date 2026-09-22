@@ -16533,3 +16533,101 @@ TEST_CASE("editor: a restored scene's assets resolve on the startup path (task E
     CHECK(app->tick() == false);
     app.reset();
 }
+
+TEST_CASE("editor: a project swap neither re-records nor clobbers the outgoing project (task E.4.1, I185)") {
+    // THE HALF OF THE OUTGOING-PAIR HANDOFF A REAL EditorApp CAN DRIVE, and this case says plainly
+    // which half that is. The handoff exists for a chain no tier here can reach: a guarded Save on an
+    // UNTITLED scene launches the native Save panel, and its answer reaches applyDialogResult, which
+    // saves into the outgoing project and performs the pending OpenProject IN THE SAME CALL.
+    // FileFlow::choice has no EditorApp accessor and DialogChannel is src-private, so neither the
+    // modal answer nor the dialog result can be injected from here -- PJ55 (scene_io_test.cpp) drives
+    // that chain at the flow tier and is its only behavioural witness.
+    //
+    // What IS reachable is every way the drain could go WRONG on an ordinary swap, and each of them
+    // moves something this case reads: a drain that fired whenever a pair was pending, or that wrote
+    // the BASELINE scene rather than the pending one, or that re-recorded the value it just read,
+    // moves projectStateWriteCount() and/or A's bytes. I176 and I180 assert the same silence WITHOUT
+    // a pending pair in play; this one asserts it WITH one, across a scene change the swap must carry
+    // over untouched.
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "state i185", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string rootA = makeStateProject({"scenes/a.scene.json", "scenes/b.scene.json"});
+    const std::string rootB = makeStateProject({"scenes/z.scene.json"});
+    REQUIRE(engine::editor::writeProjectState(
+                rootA, engine::editor::ProjectState{.lastScene = "scenes/a.scene.json", .lastSceneRecorded = true})
+                .empty());
+    REQUIRE_FALSE(engine::editor::fileExists(rootB + "/Library/editor-state.json"));
+
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = rootA,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    REQUIRE(app->tick());  // settle: the tick that adopts A's baseline
+
+    if (!engine::editor::sceneIoAvailable()) {
+        // BOTH ARMS ASSERT. With no serializer the session path never leaves "", so the swap carries
+        // an EMPTY outgoing scene -- which equals A's baseline and must still write nothing at all.
+        const std::optional<std::string> aBefore = readBytesOf(rootA + "/Library/editor-state.json");
+        REQUIRE(aBefore.has_value());
+        app->requestOpenProject(rootB);
+        REQUIRE(app->tick());
+        REQUIRE(app->tick());
+        CHECK(app->projectRoot() == rootB);
+        CHECK(app->projectStateWriteCount() == 0U);
+        const std::optional<std::string> aAfter = readBytesOf(rootA + "/Library/editor-state.json");
+        REQUIRE(aAfter.has_value());
+        CHECK(*aAfter == *aBefore);
+        CHECK_FALSE(engine::editor::fileExists(rootB + "/Library/editor-state.json"));
+        app->requestQuit();
+        CHECK(app->tick() == false);
+        app.reset();
+        return;
+    }
+
+    REQUIRE(app->scenePath() == rootA + "/scenes/a.scene.json");  // ANTI-VACUITY: A's record restored
+    // A REAL scene change inside A, recorded by the ordinary reconcile one tick before the swap. This
+    // is what the swap must carry over: the record that is CORRECT when the swap begins.
+    app->requestOpenScene(rootA + "/scenes/b.scene.json");
+    REQUIRE(app->tick());
+    REQUIRE(app->scenePath() == rootA + "/scenes/b.scene.json");
+    const std::size_t writesBeforeSwap = app->projectStateWriteCount();
+    REQUIRE(writesBeforeSwap >= 1U);
+    const std::optional<engine::editor::ProjectState> aRecorded = readStateOf(rootA);
+    REQUIRE(aRecorded.has_value());
+    REQUIRE(aRecorded->lastScene == "scenes/b.scene.json");
+    const std::optional<std::string> aBefore = readBytesOf(rootA + "/Library/editor-state.json");
+    REQUIRE(aBefore.has_value());
+
+    app->requestOpenProject(rootB);
+    REQUIRE(app->tick());  // the swap: publish, adopt, restore, then the drain and the reconcile
+    REQUIRE(app->tick());  // and one more, so "nothing further" is not a one-frame artefact
+    CHECK(app->projectRoot() == rootB);
+    CHECK(app->scenePath() == rootB + "/scenes/z.scene.json");  // B cascaded to its only scene
+    // THE PENDING PAIR EQUALLED THE BASELINE, so the drain wrote NOTHING -- and neither did the
+    // reconcile, which saw a root change (AdoptBaseline). The count is lifetime, so this is an exact
+    // equality rather than a bound.
+    CHECK(app->projectStateWriteCount() == writesBeforeSwap);
+    const std::optional<std::string> aAfter = readBytesOf(rootA + "/Library/editor-state.json");
+    REQUIRE(aAfter.has_value());
+    CHECK(*aAfter == *aBefore);  // A's record still names the scene A was left on, byte for byte
+    // ...and B, whose state was READ and never written, still has no record at all.
+    CHECK_FALSE(engine::editor::fileExists(rootB + "/Library/editor-state.json"));
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
