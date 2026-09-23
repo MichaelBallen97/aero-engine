@@ -16808,8 +16808,21 @@ TEST_CASE("editor: accepting the offer swaps the project (task E.4.2, I187)") {
     REQUIRE(app->tick());  // the reconcile observes the swap
 
     CHECK_FALSE(app->sceneContainmentOfferOpen());
-    CHECK(app->projectRoot() == offered);                   // the project that was OFFERED
-    CHECK(app->assetBrowserRoot() == offered + "/assets");  // the reconcile OBSERVED it
+    // ★ BOTH SIDES NORMALIZED, and on Windows that is the whole assertion rather than a formality.
+    // `offered` came out of the containment layer, which unifies separators to '/'
+    // (normalizeForContainment); ProjectSession::root() is built by projectRootFromPath +
+    // absolutePath, which lexically_normal's and therefore keeps the platform's NATIVE separators --
+    // backslashes on Windows. So the same directory reads "C:/Users/.../ProjB" on one side and
+    // "C:\\Users\\...\\ProjB" on the other, and a raw == is green on macOS and Linux and RED ON
+    // WINDOWS ALONE. Measured: this case failed exactly here on the MSVC lane and nowhere else.
+    // assetBrowserRoot() is worse still -- assetsRoot() joins with '/' onto a native root
+    // (project.hpp:110-115 calls the result mixed-separator BY DESIGN), so it is neither spelling.
+    // The claim being made is "the project that was OFFERED is the project that was OPENED", which is
+    // about directory IDENTITY, not about byte spelling -- so both sides go through the normaliser.
+    const std::string openedRoot = engine::editor::normalizeForContainment(app->projectRoot());
+    const std::string openedAssets = engine::editor::normalizeForContainment(app->assetBrowserRoot());
+    CHECK(openedRoot == offered);                // the project that was OFFERED
+    CHECK(openedAssets == offered + "/assets");  // the reconcile OBSERVED it
     CHECK(app->projectName() == "ProjB");
     CHECK(app->world().entityCount() == 4U);  // newScene reseeded the default
     CHECK(app->scenePath().empty());          // adoptProject cleared it
