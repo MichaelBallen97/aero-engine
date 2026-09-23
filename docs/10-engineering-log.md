@@ -16783,3 +16783,334 @@ has no request hook, `DialogChannel` is declared only in a src-private header, a
 on an untitled scene would launch a real native Save panel in CI. `PJ55` drives the exact chain at the
 flow tier instead and is its only behavioural witness; `I185` covers the drain through real frames. A
 true end-to-end witness needs a new `EditorApp` test seam, which is new public API and a design call.
+
+### E.4.2 — Scene/project containment — one predicate, two choke points, and an abandon site that leaked a project target
+
+**A scene from another project can no longer be opened or saved into the open one.** One containment
+predicate is applied at `openSceneFile` and `saveSceneFile` — the two choke points every entry path in
+the editor passes through — and nowhere else. It refuses with exactly one ERROR whose reason clause is
+produced by a single function, and the modal it raises hands the user **those same bytes**, so the two
+wordings cannot drift. A refused **open** offers the project the scene actually belongs to, found by
+walking up from the scene for the nearest enclosing `project.json`; a refused **save** offers nothing at
+all, deliberately, because accepting a project offer routes through `adoptProject` → `newScene` →
+`World::clear()` + `CommandStack::clear()` and would present data loss as the remedy for a failed save.
+With no project open the verdict is `NoProject`, which **permits and logs nothing** — the Welcome window
+is a supported state and `File ▸ Open Scene…` is enabled in it today.
+
+The pure half is a new public, `<filesystem>`-free, ImGui-free, entt-free, log-free pair
+(`scene_containment.{hpp,cpp}`) reachable from the ungated tier-0 binary in **all three** build
+configurations: `directoryWithin` (a **two-cursor, allocation-free, `noexcept`** segment-wise walk),
+`lexicalContainment`, `normalizeForContainment`, `containmentPermits` and `containmentReason`. The
+resolver `resolveSceneContainment` composes them with a canonical rescue and the upward walk;
+`findEnclosingProject` is file-local and iterative. `ContainmentOffer` rides on `FileFlow`, the modal is
+the third in `shell_ui.cpp`'s post-menu-bar slot, and the offer's two answers are drained at **step 0**
+of `applyFileRequests`. `EditorApp` gains two request hooks and three black-box accessors.
+
+**Eight commits** on `feat/E.4.2-scene-project-containment` — seven of code and tests, plus one for the
+docs — branch point `457b66b`. `ctest -N` **178 → 178** in both presets and **165 / 93** in the two
+reduced configurations, all four with a byte-identical entry set — the task adds no ctest entry, no
+target, no component, no shader, no menu item, no `find_package` and no link-line change. doctest
+**1404 / 2036 / 232 / 40 / 59 / 10 / 28**: only the two permitted binaries moved,
+`aero_editor_shell_test` by **+43** (1993 → 2036, `CN1`–`CN25`, `SS41`–`SS54`, `IO17`–`IO21`) and
+`aero_editor_imgui_test` by **+7** (225 → 232, `I186`–`I192`). The
+five untouched binaries — **including both component-sensitive ones** — are byte-unmoved, which is what
+says no component crept in; **the built-in component count stays TEN.** Guards
+**525 / 92 / 163 / 92 / 165 / A=7 B=89 / 11-3-55 / 6-57**: math (+3, the three new tracked C-family
+files) and project-no-delete prong B (+1, the one new `editor/src/*.cpp`) are the only movers.
+`scene_containment.cpp` is deliberately **NOT** in Check A's allowlist — it writes nothing at all, it
+only reads — and being outside prong A is exactly what makes a future delete written into it a hard CI
+failure through prong B. `git ls-files`: `editor/src/*.cpp` **89**, `editor/include/aero/editor/*.hpp`
+**64**. Id ceilings after the branch: `CN` 25, `SS` 54, `IO` 21, **`I` 192**.
+
+**AC-19 measured rather than assumed: the whole `CN` battery runs 25 / 25 in BOTH reduced
+configurations.** Containment reads no scene and serializes nothing, so it never touches the engine's
+serialization bridge — which is why `scene_containment_test.cpp` is present and passing everywhere,
+unlike `scene_io_test.cpp`, which is absent from the reflect-OFF build by design.
+
+**`I136` PASSED in this session** (30 assertions), so the local GPU tier gated **232 / 232** rather than
+231 / 232. **This is a display-dependent observation and NOT a fix.** Nothing on this branch touches the
+DPI story; `REQUIRE(drawExtent.width > 4U)` reading 4 on a 2x display remains E.6.1's, and a green run
+of that case is not evidence it is closed.
+
+#### ★ The E.4.1 interaction — why the plan needed a §0, and what it decided
+
+E.4.1 merged between this task's spec and its implementation, and it touched every file E.4.2 targets.
+**The call-site census went 29 → 31**: `restoreLastScene` (`scene_session.cpp`) added **two** new
+`openSceneFile` sites, one per arm of E.4.1's startup decider. Both pass the **newly adopted** project's
+root — a named `std::string` copy, because `root()` returns a view into the live session — and a
+**permanent `nullptr` offer**. The `nullptr` is architectural rather than a limitation: `restoreLastScene`
+takes no `FileFlow&` and neither does `openProjectPath`, so there is no offer in scope, and raising one
+would fire during a project open the user did not initiate as a scene action, enter `modalInputActive` on
+the very frame the project swapped, and offer **the project that was just opened**. A refusal there is
+E.4.1's own documented behaviour reached one statement earlier: one ERROR, `false`, the seeded scene left
+on screen, no second attempt. It is also unreachable in practice — every path `restoreLastScene` builds
+goes through `joinUnderRoot` against the same root, so it is `Contained` **lexically, with zero
+filesystem calls**. `IO21` pins that, with an anti-vacuity arm asserting the resolver's own verdict, so a
+future change to `absoluteScenePath` or `joinUnderRoot` cannot silently make every project restore refuse.
+
+**`project_state.hpp`'s invitation was answered NEITHER way.** Its comment read *"E.4.2 owns all four and
+this function becomes its caller — or is deleted in favour of it."* `projectRelativeScenePath` stays
+exactly as it is, and the header now records why rather than leaving the question open: the two answer
+**different questions with opposite safe defaults** (*"may this proceed?"* refuses on doubt; *"what do I
+record?"* forgets on doubt, and a refusal where a forget belongs turns a lost bookmark into a blocked
+operation); `directoryWithin` returns a `bool` and takes a **directory** while that one takes a **file**
+and returns the **remainder**; it runs **once per tick** from `EditorApp::persistProjectState`, where the
+canonical rescue would be two filesystem calls every tick for as long as an out-of-project scene is open;
+and it carries an `isLegalRelativePath` gate that is a state-file **format** rule containment must not
+know about.
+
+Two smaller consequences recorded rather than acted on. **`PJ14`'s comment
+(`project_state_test.cpp:268`) goes stale and the case does not** — *"nothing refuses a `..` segment at
+`openSceneFile` today"* is now false while the sentence after it (`setPath` is public) is still true, so
+the case and its anti-vacuity arm both stand; the single-author rule here is forward-only and a stale
+parenthetical in a green case is not this task's to sweep. And **the empty-path ERROR text would change if
+that path were ever reintroduced** — *"could not open scene '' — No such file or directory"* becomes
+*"…— the path could not be resolved."* Still exactly one ERROR, still `false`; `PJ48`(b) asserts a count
+of zero and `PJ46` matches on a filename, so neither would move even then.
+
+One user-visible consequence in the reduced configuration: **a save that is both out-of-project and built
+without `AERO_REFLECT_TOOLS` now reports the containment reason**, which is the earlier and more specific
+truth. And `I183` **changed meaning rather than moving** — it was written around the very defect this task
+closes, its own assertion reading *"it DID open — nothing refuses it today"*, and it now asserts the
+refusal's consequences. The rule it was actually about (`projectRelativeScenePath` forgetting an
+out-of-project path) is unchanged and keeps its cover in `PJ13`/`PJ14`.
+
+#### ★ The sabotage matrix — 29 seeds, three real coverage holes, one non-finding
+
+Twenty-five seeds reddened the case named for them. Four did not, and **three of those four were real
+holes** rather than redundant arms.
+
+**`S13′` — building all six production `SceneFileContext`s from `scenesRoot()` left BOTH binaries
+entirely green.** This is the trap `D1` and `AC-2` exist for, and it is the single most likely accidental
+defect in the task: `FileDialogHost::projectRoot` is bound to `project.scenesRoot()` at two sites in
+`editor_app.cpp`, so a call site reaching for the root that is already in scope silently checks every
+scene against `<root>/scenes` and refuses anything the user deliberately put in `assets/levels/`.
+**`IO18` asserts that rule at the PREDICATE but constructs its own context and hands it in, so it cannot
+see which root the call sites chose.** Closed by `SS51`, which drives **five production sites** (both
+`performAction` arms, `applyFileRequests`' own `SaveScene`, and both `applyDialogResult` arms) with a
+scene inside the project and outside `scenes/`, plus two anti-vacuity arms proving containment is
+consulted at all. **Generalisation: a case that supplies its own instance of the thing under test cannot
+witness which instance production chose.**
+
+**`S9` — deleting the permitted-path early return passed the whole binary.** The rescue then runs on every
+permitted open and every permitted save — two filesystem calls the permitted path is specified never to
+make — and **changes no answer anywhere**, because the rescue can only ever assign `Contained`. `AC-9` had
+no consequence to assert: a cost with no observable consequence is not assertable *as* a consequence.
+Closed by giving `CN13` a second instrument — a **source-text ordering pin** over
+`resolveSceneContainment`'s own body, asserting the permitted-path gate sits **above** both
+`canonicalDirectory` calls and is an early return. It also reddens the opposite mutation, a rescue moved
+above the lexical decision.
+
+**`S26` — `CN8` exercised `lexicalContainment` only and never `resolveSceneContainment`**, so setting the
+resolver's empty-root arm to `Outside` was invisible to every `CN` case. `CN8` gains that arm, with
+`findOwningProject = true` so the `D5` early return is proven to precede the walk, plus a non-empty-root
+control.
+
+**`SS42` was strengthened rather than added to**: its target directory is now created, so *"a refused save
+writes nothing"* is an assertion about the **refusal** instead of about a write that would have failed
+anyway. Without that, moving the containment check below `writeTextFileAtomic` left the assertion green.
+
+#### Four seeds have no automated witness, each for its own reason
+
+* **`S15` — the `%`-format half only, and it did NOT fire under ASan.** Replacing the modal's named
+  `std::string leaf` with `fileNameOf(offer.scenePath).data()` produced **byte-identical output and no
+  ASan report**: `ContainmentOffer::scenePath` is an **owning** `std::string` and `fileNameOf` returns a
+  **suffix** of it, so `.data()` happens to be NUL-terminated at the leaf's end. The buffer-overrun half
+  of the seed is therefore **inert by construction** here; it is a caller-side property, not a contract of
+  the function, and a future producer handing that field a non-owning slice would make it a real read past
+  the end. The comment now states it as **the shape** rather than as a fix for an observed overrun. The
+  live half is the format string, and **validation row 3 is its only witness**.
+* **`S16` — deleting `CloseCurrentPopup` from the buttons.** No automated cover anywhere; **validation
+  row 11**, and 2.6.1's BLOCKING-1 re-proved.
+* **`S24` — inserting `ContainmentOffer` into `FileFlow` rather than appending it — reddens NOTHING, and
+  that is the finding.** Re-measured on this branch: `git grep -nE 'FileFlow[a-zA-Z]* *\{' -- tests`
+  **exits 1** — **no test anywhere aggregate-initialises a `FileFlow`**; all uses are `FileFlow flow;`.
+  The append rule is kept because it is free and because the failure it prevents (a `bool` re-mapped onto
+  another `bool`, which nothing diagnoses) is silent — **not** because something would catch a violation,
+  and the field's comment now says exactly that. **Deliberately NOT closed with a test written for the
+  seed**: that would be a case written for a mutation rather than for a contract.
+* **`S29` — dropping the two one-shot clears from `raiseContainmentOffer`.** Reachable only when one
+  refusal follows another within a frame of an unanswered modal. The lines stay; the code-review round
+  then found the chain that makes them load-bearing (below), and `SS53` is the witness that finding
+  produced.
+
+#### ★ The code-review round — eight findings, and the blocking one is a leaked project target
+
+**BLOCKING — a containment-refused SAVE leaked the pending action's project target.**
+`applyDialogResult`'s Save arm cleared `flow.pending` and `flow.saveBeforePending` on failure but
+**neither `requestedPath`**, and it is the one hole in a roster **every other abandon site in that file
+observes**. The chain is reachable entirely from the UI: a refused open offers the owning project →
+accepting parks that project in `project.flow.requestedPath` and requests `OpenProject` → a **dirty**
+document sends it through the unsaved-changes modal, where it waits as `flow.pending` with its target
+parked → `Save` on an **untitled** document takes `AskWhereToSave` → the user picks a folder outside the
+open project → containment refuses the write. **The next `File ▸ Open Project…` then found the leaked
+target, took `performAction`'s no-dialog seam and adopted that project with no folder dialog and no
+click**, through `adoptProject` → `newScene`. So a refused **save** armed a silent project swap out of a
+refused **open** minutes earlier. Both fields are now cleared on that arm. `SS52`.
+
+**A new refusal clears the previous offer's two unanswered one-shots** — the plan's §7.3, restored. They
+can meet because the product's own ordering puts a raise **between** an answer and its drain:
+`applyDialogResult` runs early in `tick()` and the step-0 drain runs inside `drawShellUi`, so a refusal
+raised by a native dialog's answer lands after a button (or a request hook) recorded its one-shot and
+before `applyFileRequests` consumes it. Carried over, the drain reads the **new** offer's fields: the user
+presses `Open "ProjB"` and the editor opens **ProjC**. **The worst case is a wrong-target open, not merely
+a lost modal** — and the lost click is the cheap half, because the new modal is still on screen and still
+answerable. The shipped comment had the risk inverted and now states the reachable chain. `SS53`.
+
+**`refusalSerial` is monotonic for the `FileFlow`'s lifetime and `EditorApp` mirrors it ABSOLUTELY.** The
+drain used to reset it with a bare `offer = {}`, which made a dismiss plus a fresh refusal inside **one**
+`applyFileRequests` call run `1 → 0 → 1`: the delta mirror's `>` guard saw nothing and the counter froze
+for a refusal the user can watch happen — and `sceneContainmentRefusalCount()` is the GPU tier's **only**
+window into one. The clear now goes through one helper that restores the serial, and the mirror is a plain
+absolute assignment with no guard to get wrong. `SS54`, `I191`.
+
+**The containment modal closes a popup whose offer has been drained.** `requestSceneContainmentAccept`
+/`Dismiss` record the one-shot and nothing else — unlike the buttons, which also call
+`CloseCurrentPopup` — so the bare early return left an entry in `g.OpenPopupStack` that **ImGui never
+GCs**: `GetTopMostPopupModal` tests only the `Modal` flag, not `Active` and not `WasActive`, and
+`UpdateHoveredWindowAndCaptureFlags` then pins `g.HoveredWindow` to `NULL` **for ever after**, making
+every menu, panel, button and dock tab unclickable. That is 2.6.1's BLOCKING-1 exactly, reached from the
+other side. `editor_app.hpp`'s claim that the hooks record what the buttons record is corrected in the
+same commit. **`I192` is a source-text ordering pin and nothing more — no tier here can read
+`g.HoveredWindow`** — so the hook-driven validation row is its behavioural witness.
+
+**`findEnclosingProject` no longer offers the project that is ALREADY OPEN, and the guard is
+CANONICAL-AWARE rather than a byte compare.** Reachable when the lexical test misses **and** the rescue
+cannot fire — a symlinked or case-differing spelling of the open root plus a scene directory that does not
+exist, which `canonicalDirectory` answers `""` for — and accepting routes through `adoptProject` →
+`newScene`, silently resetting a clean document for what reads as a no-op. **A byte comparison alone is
+very nearly unreachable here**: a walk that reaches the open root byte-for-byte means the root's segments
+are a prefix of the scene directory's, which `directoryWithin` would already have called `Contained`. The
+differing spelling **is** the defect's route, so resolving it is the fix — one extra `canonicalDirectory`
+call, on the refused path only, and only once a manifest was found. `CN25`, whose two arms cover the
+symlink-capable and the case-insensitive host.
+
+**`MAX_PROJECT_SEARCH_DEPTH` gets its first test.** Two arms one directory level apart, so **the cap is
+the discriminator and nothing else can be**: at `cap − 1` the project is the last directory the walk
+probes, at `cap` it is the first one it never reaches. No directory is created, which keeps the deepest
+path off Windows's `MAX_PATH`. `CN18`.
+
+**Two comments corrected rather than trusted** — `FileFlow`'s append rule (which kept its rule and lost
+its overstated justification) and the modal's `%s` hazard (restated as the shape rather than as a fix for
+an observed overrun). Both are the `S24` and `S15` measurements above, written where the code is.
+
+#### Two cross-platform risks, recorded rather than fixed — both bounded, both in the safe direction
+
+* **MSVC's `path("C:/").parent_path()` may be `"C:"`.** If it is, neither term of the walk's terminal
+  guard (`!dir.has_parent_path() || dir.parent_path() == dir`) fires, and the next iteration probes
+  `C:/project.json` spelled **drive-relative** — resolved against the process's current directory on that
+  drive rather than against its root. **Bounded**: the depth cap still holds, the extra probe is one
+  `is_regular_file`, and the worst outcome is an **offer** naming an unexpected project, never a permit.
+  **Unmeasured** — a Windows validation row.
+* **A scene sitting directly at a POSIX filesystem root is a FALSE REFUSAL.**
+  `directoryOf("/x.scene.json")` is `""`, not `"/"`, so `lexicalContainment` takes the bare-leaf arm and
+  answers `Outside`. It needs a project rooted at `/` to reach, it is in the safe direction, and closing it
+  would mean teaching `directoryOf` that `""` and `"/"` differ — a change to a helper five other callers
+  share.
+
+#### The filesystem facts this machine measured
+
+`/tmp` → `/private/tmp`, and `$TMPDIR` (`/var/folders/…/T`) → `/private/var/folders/…/T`. Project roots
+are recorded with `absolute`, **not** `weakly_canonical` (`project_file.cpp:50-54`), so **every
+`TempDir`-based project in this tree is recorded under the symlinked spelling** — which is precisely why
+the canonical rescue exists, and E.4.1's macOS pass had already observed the defect it prevents, in the
+product, with a reproducible recipe. The volume is **CASE-INSENSITIVE**. Its probe is worth carrying
+because the obvious one does not work: **`diskutil info -plist /` emits NO `CaseSensitive` key on this
+macOS version** — use `[ -d /Users ] && [ -d /users ]` instead. `CN15` probes the volume rather than
+assuming a platform, and on a case-insensitive host the case-folding seed `S5` leaves it green, which is
+correct and must be recorded as such rather than read as a hole.
+
+#### The two open questions, answered by running them
+
+**Q-A — `I190`'s "input is released" discriminator IS reachable, and no new accessor was added.** A
+swallowed request and a guarded one both leave the World unchanged, so the case uses `requestGuardedQuit`
+twice on a **clean** document: while the offer is up the quit is swallowed at step 2 and the editor keeps
+running; after the dismiss the identical request takes effect and `tick()` returns false. `fileFlow.pending`
+stays unexposed — a second observable for a half validation already owns was the trade 2.6.2's
+`requestProjectSettings()` hook was rejected over.
+
+**Q-B — `S15` did not fire under ASan**, for the reason above, and the seed is recorded as *uncovered by
+any automated tier*. **Q-C — answered in advance and re-confirmed**: `S24` has no witness on this tree.
+
+#### What was deliberately left out, with owners
+
+**The project's other file entry points are unvalidated.** `loadProjectFrom` and `createProject` keep
+their own validation and are untouched, so after E.4.2 **a scene cannot escape its project and a project
+can still be opened from anywhere** — and **nothing in this tree asks whether a project may be created
+INSIDE another project**. Unowned. **Open the project AND THEN the scene** (the offer opens the project
+and drops the scene path) is unowned: doing both means a second pending action surviving the frame that
+carried it, **across an `adoptProject`**, against a clearing roster of five sites — BLOCKING-1's exact
+shape in the editor's most safety-critical state machine. If a manual pass says the two-step is
+intolerable it is a scoped addition: one field on `ProjectFlow`, cleared where `requestedPath` already is,
+consumed only on `openProjectPath` returning true. **Offering to adopt a scene's project when NO project
+is open** is a new affordance rather than a containment rule and needs a different modal shape; today that
+case is silently permitted. **A symlink inside the project pointing OUT is permitted**, `CN16` pins it,
+and closing it is **one line** — run the rescue unconditionally — plus a cost measurement on every open
+and save. **`<root>/Library/` is NOT a reserved destination**; `IO19` pins today's behaviour and validation
+row 14 records it as the "before" so **E.4.3**'s reserved-path policy is a deliberate change rather than a
+drift. **E.4.3 inherits `directoryWithin` and `normalizeForContainment` directly** — they are exactly the
+*"is this path inside the project"* predicate create / rename / move / delete each need, `directoryWithin`
+is safe against an un-normalised argument (a `..` anywhere on either side returns false), and E.4.3 must
+**reuse this pair rather than write a second one**. And there are now **five** copies of the
+`pathFromUtf8`/`utf8FromPath` pair in the editor; sharing them needs a new header for two functions that
+would have to stay `<filesystem>`-free at the declaration, which no current public header can offer —
+recorded, not done.
+
+#### The sentences that govern new work
+
+1. **The root is `ProjectSession::root()`, NEVER `FileDialogHost::projectRoot`** (bound to
+   `scenesRoot()`), never `assetsRoot()`. The wrong one refuses every scene the user deliberately put
+   outside `<root>/scenes`, and `scenesRoot()` is **mixed-separator on Windows by design**, so half of
+   that defect is invisible on macOS and Linux forever. `SS51` drives five production sites; `IO18` and
+   `CN20` hold the predicate side.
+2. **The `SceneFileContext` is built AT the call expression and never hoisted.** `root()` returns a view
+   into the live `ProjectSession` and `adoptProject` replaces it from inside `performAction`. `CN19` is
+   the source-text pin, narrowed so a view-**returning function** and a `std::string` **copy** are both
+   scanned and classified legal.
+3. **The parameter is NON-DEFAULTED at both choke points.** A default lets a future site silently take the
+   permissive arm — a wrong picture with no error and no failing test. The permissive value is spelled
+   `NO_PROJECT_SCENE_CONTEXT` and `CN20` asserts `editor/src` names it **zero** times.
+4. **The rescue only ever WIDENS.** It is reachable only from `Outside` and can only produce `Contained`,
+   which is what bounds every untested platform behaviour to a **false refusal with a readable ERROR**
+   rather than a false accept. Never invert it, and never run it on the permitted path — `CN13`'s ordering
+   pin is what stops that, because the mutation changes no answer anywhere.
+5. **Every layer fails toward a false REFUSAL.** An un-normalised path is `Unresolvable` rather than
+   compared; a `..` segment on **either** side, **anywhere**, is `Unresolvable` and is never resolved;
+   comparison is **byte-exact and never case-folded** (folding would accept a foreign scene on a
+   case-sensitive volume — the canonical rescue is what answers the case and drive-letter questions).
+6. **A refused SAVE never offers a project**, because accepting one runs `adoptProject` → `newScene` →
+   `World::clear()` + `CommandStack::clear()`. Both terms are spelled at **both** the raiser and the
+   modal, and the resolver does not even perform the walk for a save, so a future resolver change cannot
+   silently grow a button.
+7. **`restoreLastScene`'s two call sites take a permanent `nullptr` offer** — that function has no
+   `FileFlow` in scope **by design**, and a modal during a project open would offer the project that was
+   just opened. Both paths are `Contained` by construction; `IO21` is what stops a change to
+   `absoluteScenePath` or `joinUnderRoot` making every restore refuse.
+8. **Any new abandon path in `scene_session.cpp` must clear BOTH `flow.requestedPath` and
+   `project.flow.requestedPath`.** A failed write abandons the pending action, so that action's own target
+   must go with it, whichever flow object it lives in. `SS52` is the case; the leak it closed adopted a
+   project with no dialog and no click.
+9. **`ContainmentOffer::refusalSerial` is MONOTONIC for the `FileFlow`'s lifetime.** Every clear goes
+   through the one helper that restores it, and `EditorApp` mirrors it **absolutely**, at the END of the
+   tick, as the second occupant of E.4.1's slot ahead of `persistProjectState()` — **extend that slot,
+   never twin it.** A drain that resets the serial loses a refusal the user watched happen.
+10. **Any programmatic path that closes this modal must enter the popup to close it.** ImGui never GCs an
+    entry for a popup that simply stops being submitted, and the cost of getting it wrong is
+    `g.HoveredWindow == NULL` for the rest of the process. Any future request hook that answers a modal
+    inherits this.
+11. **`canonicalDirectory`'s INV-C9 is widened to "a dedup key OR a COMPARISON key, and nothing else".**
+    The second use compares two canonical strings and **discards both** — nothing stored, reported,
+    written or displayed. The widening is spelled in `project_files.hpp` and in `.claude/rules/editor.md`,
+    changed together.
+
+#### Validation status — the page is WRITTEN and UNRUN
+
+`editor/validation/E.4.2-scene-project-containment.md` (gitignored), **sixteen rows**: the plan's
+fourteen plus two the code-review round added — one driving the modal through the **request hooks** rather
+than its buttons and then exercising a menu, a dock tab and a panel (the `g.HoveredWindow` half `I192` can
+only pin as source text), and one reaching the already-open-project guard through a **symlinked** project
+path, for which E.4.1's macOS pass supplies a reproducible `/tmp` → `/private/tmp` recipe. **Rows 3, 4, 5,
+6, 9, 10, 11, 15 and 16 are the only cover their seeds have anywhere** — nothing in `tests/` can press a
+modal button, type a character, press a key, open a native file dialog or read rendered text. The two
+cross-platform risks above are rows in the **Windows** section. **HiDPI is deliberately not a row**: this
+task draws no line, no icon and no overlay, so E.1.1's thick-line handoff stays fired and unmoved.
