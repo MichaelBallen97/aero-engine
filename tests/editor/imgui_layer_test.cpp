@@ -17032,3 +17032,130 @@ TEST_CASE("editor: dismissing the offer closes it and releases input (task E.4.2
     CHECK(app->tick() == false);
     app.reset();
 }
+
+TEST_CASE("editor: a dismiss and a fresh refusal in ONE tick both land (task E.4.2, I191)") {
+    // sceneContainmentRefusalCount() is this tier's ONLY window into a refusal, and the counter used
+    // to mirror the flow's serial as a DELTA while the step-0 drain reset that serial to 0. A dismiss
+    // followed by a new refusal INSIDE THE SAME applyFileRequests call therefore went 1 -> 0 -> 1, and
+    // a delta mirror cannot tell that from "nothing happened": the count froze while the editor
+    // refused an open the user can see refused on screen. The serial is now monotonic for the
+    // FileFlow's lifetime and the mirror is absolute. SS54 is the same claim at tier 0.
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "containment i191", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string rootA = makeNamedProject("ProjA");
+    const std::string rootB = makeNamedProject("ProjB");
+    const std::string firstInB = rootB + "/one.scene.json";
+    const std::string secondInB = rootB + "/two.scene.json";
+    REQUIRE(engine::editor::writeTextFileAtomic(firstInB, startupSceneText(3)).empty());
+    REQUIRE(engine::editor::writeTextFileAtomic(secondInB, startupSceneText(3)).empty());
+
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = rootA,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+    REQUIRE(app->projectRoot() == rootA);
+
+    app->requestOpenScene(firstInB);
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+    REQUIRE(app->sceneContainmentOfferOpen());
+    const std::size_t afterFirst = app->sceneContainmentRefusalCount();
+    REQUIRE(afterFirst >= 1U);  // the first refusal was counted at all
+
+    // ---- BOTH IN ONE TICK. The drain runs at step 0 of applyFileRequests and the new refusal at
+    //      step 2 of the SAME call, so this is one tick, not two.
+    app->requestSceneContainmentDismiss();
+    app->requestOpenScene(secondInB);
+    REQUIRE(app->tick());
+
+    CHECK(app->sceneContainmentRefusalCount() == afterFirst + 1U);
+    // ...and the second refusal really did happen, which is what makes the count claim falsifiable:
+    // the modal is up again, and it names the scene that was just refused.
+    CHECK(app->sceneContainmentOfferOpen());
+    CHECK(app->projectRoot() == rootA);  // nothing was opened by either the dismiss or the refusal
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: a DRAINED containment offer still closes its popup (task E.4.2, I192)") {
+    // 2.6.1's BLOCKING-1, from the side the request hooks reach: ImGui owns g.OpenPopupStack and never
+    // GCs an entry for a popup that simply stops being submitted -- GetTopMostPopupModal
+    // (imgui.cpp:12894-12902) tests only the Modal flag, and UpdateHoveredWindowAndCaptureFlags
+    // (:5621-5623) then pins g.HoveredWindow to NULL for ever after. EditorApp's two request hooks
+    // record the one-shot WITHOUT the CloseCurrentPopup the buttons call, so the step-0 drain can clear
+    // `open` while the popup is still on ImGui's stack, and the arm below is what closes it.
+    //
+    // A SOURCE-TEXT PIN because nothing in this tree can read g.HoveredWindow or g.OpenPopupStack:
+    // aero_editor_imgui_test is ImGui-free at source. The validation page's hook-driven row is the only
+    // behavioural witness. And it is an ORDERING, never a membership (3.4.2's I96 lesson): a
+    // CloseCurrentPopup that is not INSIDE a BeginPopupModal closes nothing at all.
+    const std::vector<std::string> shell = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/shell_ui.cpp");
+    REQUIRE_FALSE(shell.empty());
+
+    const auto firstIn = [&shell](std::string_view needle, std::size_t lo, std::size_t hi) {
+        for (std::size_t i = lo; i < hi && i < shell.size(); ++i) {
+            if (shell[i].find(needle) != std::string::npos) {
+                return i;
+            }
+        }
+        return shell.size();
+    };
+    const auto countIn = [&shell](std::string_view needle, std::size_t lo, std::size_t hi) {
+        std::size_t hits = 0;
+        for (std::size_t i = lo; i < hi && i < shell.size(); ++i) {
+            if (shell[i].find(needle) != std::string::npos) {
+                ++hits;
+            }
+        }
+        return hits;
+    };
+
+    // The modal is entered from TWO places now: the drained arm and the body proper.
+    CHECK(countLinesContaining(shell, "ImGui::BeginPopupModal(CONTAINMENT_MODAL_ID") == 2U);
+    const std::size_t notOpenAt = soleLineContaining(shell, "if (!offer.open) {");
+    std::size_t mainBeginAt = shell.size();
+    for (std::size_t i = shell.size(); i-- > 0;) {
+        if (shell[i].find("ImGui::BeginPopupModal(CONTAINMENT_MODAL_ID") != std::string::npos) {
+            mainBeginAt = i;  // the LAST of the two: the body proper
+            break;
+        }
+    }
+    REQUIRE(mainBeginAt < shell.size());
+    REQUIRE(notOpenAt < mainBeginAt);
+
+    // Inside the drained arm, in this order: TEST the stack, ENTER the popup, CLOSE it, END it, and
+    // only then return. A bare `return;` there -- the shape this replaced -- leaves every one of these
+    // unfound and reddens the REQUIRE below.
+    const std::size_t guardAt = firstIn("ImGui::IsPopupOpen(CONTAINMENT_MODAL_ID)", notOpenAt, mainBeginAt);
+    REQUIRE(guardAt < mainBeginAt);
+    const std::size_t orphanBeginAt = firstIn("ImGui::BeginPopupModal(CONTAINMENT_MODAL_ID", notOpenAt, mainBeginAt);
+    const std::size_t closeAt = firstIn("ImGui::CloseCurrentPopup();", notOpenAt, mainBeginAt);
+    const std::size_t endAt = firstIn("ImGui::EndPopup();", notOpenAt, mainBeginAt);
+    const std::size_t returnAt = firstIn("return;", notOpenAt, mainBeginAt);
+    CHECK(guardAt < orphanBeginAt);
+    CHECK(orphanBeginAt < closeAt);
+    CHECK(closeAt < endAt);
+    CHECK(endAt < returnAt);
+    CHECK(returnAt < mainBeginAt);
+    // F13's balance, within that arm: exactly one Begin and exactly one End.
+    CHECK(countIn("ImGui::BeginPopupModal(", notOpenAt, mainBeginAt) == 1U);
+    CHECK(countIn("ImGui::EndPopup();", notOpenAt, mainBeginAt) == 1U);
+}

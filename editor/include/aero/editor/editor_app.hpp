@@ -348,8 +348,14 @@ public:
 
     // ---- task E.4.2: the containment offer's two answers, reachable without a click. The
     // requestAssetBrowserViewMode shape (3.1.3's code-review finding 4), an EIGHTH application: each
-    // records EXACTLY what the modal's own button records, applied on the NEXT tick's step-0 drain.
-    // aero_editor_imgui_test is ImGui-FREE AT SOURCE and can press no button at all. ----
+    // records the one-shot the modal's own button records, applied on the NEXT tick's step-0 drain.
+    // aero_editor_imgui_test is ImGui-FREE AT SOURCE and can press no button at all.
+    //
+    // NOT identical to pressing the button: the buttons ALSO call ImGui::CloseCurrentPopup, which
+    // these cannot reach from outside the draw walk. drawSceneContainmentModal closes the popup for
+    // them -- it enters a still-open popup whose offer has been drained and closes it there. Without
+    // that arm these two hooks would leave an entry in g.OpenPopupStack for ever (the code-review
+    // round; shell_ui.cpp's own comment, and project_ui.cpp:107-117 for the precedent). ----
     void requestSceneContainmentAccept() noexcept;   // "Open '<name>'"
     void requestSceneContainmentDismiss() noexcept;  // Cancel / OK / Esc
 
@@ -616,8 +622,9 @@ public:
     [[nodiscard]] std::string_view sceneContainmentOfferProject() const noexcept;
     // MONOTONIC, per process. offerOpen() alone cannot tell "was never refused" from "was refused and
     // dismissed", so every GPU-tier claim about a refusal is a DELTA on this counter -- E.3.2's
-    // panelDrawnCount lesson, verbatim. It counts the flow's own refusalSerial DELTA, because the
-    // step-0 drain resets that serial to 0 whenever the offer is cleared.
+    // panelDrawnCount lesson, verbatim. It MIRRORS the flow's own refusalSerial, absolutely: that
+    // serial survives every drain (scene_session.cpp's clearContainmentOffer), so two refusals
+    // separated by a dismiss inside ONE tick are two counts, not one.
     [[nodiscard]] std::size_t sceneContainmentRefusalCount() const noexcept;
 
 private:
@@ -869,8 +876,11 @@ private:
     // projectStateWrites/projectStateWriteCount() directly above. Both are std::size_t, so
     // EditorApp's `noexcept = default` move survives them unchanged (3.1.4's INV-W9 does not come
     // into play: no node-based container).
-    std::size_t containmentRefusals = 0;           // monotonic, per process
-    std::size_t containmentRefusalSerialSeen = 0;  // the last serial mirrored from the flow
+    // Monotonic, per process: an ABSOLUTE mirror of FileFlow::containmentOffer::refusalSerial, taken
+    // once per tick. Never a delta -- the serial survives every drain, so there is nothing to
+    // accumulate, and the delta form it replaced lost a refusal that landed in the same tick as a
+    // drain (the code-review round; I191).
+    std::size_t containmentRefusals = 0;
 };
 
 }  // namespace engine::editor

@@ -179,9 +179,16 @@ namespace {
 //
 // The serial is bumped on EVERY raise, including one that overwrites an offer still on screen: it is
 // what EditorApp's monotonic counter mirrors, and a raise that did not bump would be a refusal the
-// GPU tier cannot see. The two IN one-shots are deliberately NOT touched -- a raise cannot answer
-// itself, and clearing them here would silently swallow an accept the user pressed on the previous
-// offer in the same tick.
+// GPU tier cannot see.
+//
+// ★ AND THE TWO IN ONE-SHOTS ARE CLEARED (§7.3, restored by the code-review round): AN ANSWER PRESSED
+// ON OFFER A MUST NEVER BE APPLIED TO OFFER B. The two can meet because the product's own ordering
+// puts a raise between an answer and its drain -- applyDialogResult runs at editor_app.cpp:640 and
+// the step-0 drain runs inside drawShellUi at :1134, so a refusal raised by a native dialog's answer
+// lands after the button (or the request hook) recorded its one-shot and before applyFileRequests
+// consumes it. Carried over, the drain then reads the NEW offer's fields: the user presses
+// "Open ProjB" and the editor opens ProjC. A wrong-target action beats a lost click, and the lost
+// click is the worst this costs -- the new modal is still on screen and still answerable. SS53.
 void raiseContainmentOffer(ContainmentOffer* offer, std::string_view pathUtf8, const std::string& reason,
                            const ContainmentVerdict& verdict, bool forSave) {
     if (offer == nullptr) {
@@ -197,7 +204,23 @@ void raiseContainmentOffer(ContainmentOffer* offer, std::string_view pathUtf8, c
     // future resolver change must not silently grow a button, so the guard lives here too.
     offer->projectRoot = forSave ? std::string() : verdict.owningProjectRoot;
     offer->projectName = forSave ? std::string() : verdict.owningProjectName;
+    offer->acceptRequested = false;  // a stale answer never survives a new refusal (SS53)
+    offer->dismissRequested = false;
     offer->refusalSerial = serial + 1U;
+}
+
+// task E.4.2: THE one way an offer is cleared. Every field is reset EXCEPT `refusalSerial`, which is
+// MONOTONIC FOR THE LIFETIME OF THE FileFlow (scene_session.hpp's own sentence on the field).
+//
+// A bare `offer = {}` reset it to 0, and the code-review round found what that costs: a dismiss and a
+// FRESH refusal inside ONE applyFileRequests call -- the drain at step 0, the refusal at step 2 -- run
+// the serial 1 -> 0 -> 1, which EditorApp's mirror cannot tell from "nothing happened". The counter
+// froze while the editor refused an open the user watched being refused, and
+// sceneContainmentRefusalCount() is the GPU tier's ONLY window into a refusal. SS54 and I191.
+void clearContainmentOffer(ContainmentOffer& offer) {
+    const std::size_t serial = offer.refusalSerial;
+    offer = {};
+    offer.refusalSerial = serial;
 }
 
 }  // namespace
@@ -523,7 +546,8 @@ void applyFileRequests(CommandContext& context, CommandStack& commands, SceneSes
     //     `containmentOffer.open`, so draining later would let the very modal the user just answered
     //     swallow the request it produced -- a modal that can never be answered. S11 is the seed.
     if (flow.containmentOffer.dismissRequested) {
-        flow.containmentOffer = {};  // closes the modal, offers nothing, changes nothing else
+        clearContainmentOffer(flow.containmentOffer);  // closes the modal, offers nothing, changes
+                                                       // nothing else -- and KEEPS the serial (SS54)
     }
     if (flow.containmentOffer.acceptRequested) {
         // Re-tested HERE, not merely at the button that is drawn: the button only EXISTS when
@@ -532,8 +556,9 @@ void applyFileRequests(CommandContext& context, CommandStack& commands, SceneSes
         // (D9). SS48's second arm is what proves the re-test, by setting the flag directly.
         const bool offerable = !flow.containmentOffer.forSave && !flow.containmentOffer.projectRoot.empty();
         std::string root = std::move(flow.containmentOffer.projectRoot);
-        flow.containmentOffer = {};  // BEFORE the request, so modalInputActive is ALREADY false when
-                                     // step 2 tests it -- S25 is the seed for getting this backwards
+        clearContainmentOffer(flow.containmentOffer);  // BEFORE the request, so modalInputActive is
+                                                       // ALREADY false when step 2 tests it -- S25 is
+                                                       // the seed for getting this backwards
         if (offerable) {
             project.flow.requestedPath = std::move(root);
             flow.requested = FileAction::OpenProject;  // step 2 applies guardFor, so a DIRTY scene
@@ -795,6 +820,21 @@ void applyDialogResult(CommandContext& context, CommandStack& commands, SceneSes
                                   SceneFileContext{project.session.root(), &flow.containmentOffer});
     if (ok && flow.saveBeforePending) {
         performAction(flow.pending, context, commands, session, flow, host, project);
+    } else if (!ok) {
+        // BLOCKING-1 (the code-review round), the LAST site in its roster: a failed write -- a
+        // containment refusal among them -- ABANDONS the pending action, so that action's own target
+        // must go with it, whichever flow object it lives in. Every other abandon site in this file
+        // clears both fields; this arm cleared `pending` and `saveBeforePending` and left them.
+        //
+        // The chain that made it reachable, every step of it from the UI: a refused open offers the
+        // owning project -> accepting writes ProjB into project.flow.requestedPath and requests
+        // OpenProject -> a DIRTY document sends that through the unsaved-changes modal, where it
+        // waits as flow.pending with its target parked -> "Save" on an UNTITLED document takes
+        // AskWhereToSave -> the user picks a folder OUTSIDE the open project -> containment refuses
+        // here. The next File > Open Project... then found a non-empty requestedPath, took
+        // performAction's no-dialog seam and adopted ProjB with no dialog and no click. SS52.
+        flow.requestedPath.clear();
+        project.flow.requestedPath.clear();
     }
     flow.pending = FileAction::None;
     flow.saveBeforePending = false;

@@ -332,14 +332,41 @@ void drawSceneContainmentModal(FileMenuContext& fileMenu) {
         ImGui::OpenPopup(CONTAINMENT_MODAL_ID);
     }
     if (!offer.open) {
+        // 2.6.1's BLOCKING-1 FROM THE OTHER SIDE (the code-review round), and it is a real hole rather
+        // than belt-and-braces: EditorApp::requestSceneContainmentAccept/Dismiss record the one-shot
+        // and NOTHING ELSE -- unlike the buttons below, which also call CloseCurrentPopup. The step-0
+        // drain then clears `open`, and from the next frame the bare early return meant this popup was
+        // never submitted again and therefore never closed. ImGui owns g.OpenPopupStack and NEVER GCs
+        // an entry for a popup that simply stops being submitted: GetTopMostPopupModal
+        // (imgui.cpp:12894-12902) tests only the Modal flag -- not Active, not WasActive -- and
+        // UpdateHoveredWindowAndCaptureFlags (:5621-5623) then sets g.HoveredWindow = NULL for ever
+        // after, which makes every menu, panel, button and dock tab unclickable. project_ui.cpp:107-117
+        // records the identical failure for the New Project modal.
+        //
+        // Entering the popup is the only way to close it -- CloseCurrentPopup closes the popup at the
+        // CURRENT BeginPopupStack level, so it has to be called from inside one. The body is empty by
+        // construction (the offer it described is gone), so this costs one frame of an auto-resized
+        // empty modal, exactly as any button-driven close does (the popup DOES draw on its closing
+        // frame -- E.2.4's latch measurement).
+        if (ImGui::IsPopupOpen(CONTAINMENT_MODAL_ID)) {
+            if (ImGui::BeginPopupModal(CONTAINMENT_MODAL_ID, nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+                ImGui::CloseCurrentPopup();
+                ImGui::EndPopup();  // F13: paired ONLY because BeginPopupModal returned true
+            }
+        }
         return;
     }
     // F13: EndPopup ONLY when BeginPopupModal returned true -- the BeginMenu family, not the Begin one.
     if (ImGui::BeginPopupModal(CONTAINMENT_MODAL_ID, nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
         // A NAMED std::string, never fileNameOf(...).data(): fileNameOf returns a view INTO its
-        // argument (scene_session.cpp:124-134) and is NOT NUL-terminated, so %s on .data() runs past
-        // the leaf into the rest of the path -- or off the end of it. The documentName() precedent
-        // above is the same construction for the same reason. S15 is the seed.
+        // argument (scene_session.cpp:124-134), and a string_view carries no terminator guarantee at
+        // all -- THIS IS THE SHAPE, not a fix for an overrun observed here. Measured for this call
+        // site (the code-review round, S15): `offer.scenePath` is an OWNING std::string and
+        // fileNameOf returns a SUFFIX of it, so .data() happens to be NUL-terminated at the leaf's
+        // end and the seed produced byte-identical output with no ASan report. It is the caller-side
+        // property that makes it safe, not the function's contract, and a future producer handing
+        // this field a non-owning slice would turn it into a real read past the end. The
+        // documentName() precedent above is the same construction for the same reason.
         const std::string leaf(fileNameOf(offer.scenePath));
         // %s ALWAYS, NEVER Text(leaf.c_str()) bare -- a file named "100%s.scene.json" is otherwise a
         // format bug, and E.3.4's validation pass confirmed that trap live for "100%s.aeromat".

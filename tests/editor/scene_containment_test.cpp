@@ -493,7 +493,7 @@ TEST_CASE("scene_containment: the rescue cannot rescue what does not exist, and 
                .state == SceneContainment::Contained));
 }
 
-TEST_CASE("scene_containment: findEnclosingProject, all five arms (CN18, D8/D9)") {
+TEST_CASE("scene_containment: findEnclosingProject, all six arms (CN18, D8/D9)") {
     const TempDir tmp;
     std::error_code ec;
     // Built with createProject(), never a hand-written manifest -- the name must come from the same
@@ -556,6 +556,40 @@ TEST_CASE("scene_containment: findEnclosingProject, all five arms (CN18, D8/D9)"
         CHECK(v.owningProjectName.empty());
     }
 
+    SUBCASE("MAX_PROJECT_SEARCH_DEPTH bounds the walk, and it is the ONLY thing that separates these two") {
+        // The header and the .cpp both claim that exceeding the cap makes NO OFFER while the refusal
+        // still stands -- "a degradation, never a wrong answer" -- and nothing proved it. The two arms
+        // differ by exactly ONE directory level, so the cap is the discriminator and nothing else can
+        // be: at `cap - 1` levels the project is the LAST directory the walk probes, at `cap` levels it
+        // is the first one it never reaches.
+        //
+        // NO DIRECTORY IS CREATED, on purpose: the walk steps with parent_path() and only PROBES for a
+        // project.json at each level, so the chain need not exist -- which also keeps the deepest path
+        // off Windows's MAX_PATH, where std::filesystem does not prefix \\?\ and create_directories
+        // would fail for a reason that has nothing to do with this rule.
+        const std::size_t cap = engine::editor::MAX_PROJECT_SEARCH_DEPTH;
+        REQUIRE(cap > 2U);  // anti-vacuity: the arithmetic below is meaningless for a tiny cap
+        std::string chain;
+        for (std::size_t i = 0; i + 1U < cap; ++i) {
+            chain += "/a";  // ONE byte per level -- cap levels of "/dNN" would be a long-path test
+        }
+        const std::string atCap = created.root + chain + "/x.scene.json";      // cap - 1 levels deep
+        const std::string pastCap = created.root + chain + "/a/x.scene.json";  // cap levels deep
+        CAPTURE(cap);
+
+        // ---- THE CONTROL: one level shallower, and the project IS found.
+        const ContainmentVerdict inside = resolveSceneContainment(atCap, openRoot, /*findOwningProject=*/true);
+        REQUIRE((inside.state == SceneContainment::Outside));
+        CHECK(inside.owningProjectRoot == normalizeForContainment(created.root));
+        CHECK(inside.owningProjectName == "ProjB");
+
+        // ---- AND PAST THE CAP: still REFUSED, with no offer at all.
+        const ContainmentVerdict beyond = resolveSceneContainment(pastCap, openRoot, /*findOwningProject=*/true);
+        CHECK((beyond.state == SceneContainment::Outside));  // the refusal is NOT degraded
+        CHECK(beyond.owningProjectRoot.empty());
+        CHECK(beyond.owningProjectName.empty());
+    }
+
     SUBCASE("findOwningProject == false with a project RIGHT THERE: BOTH fields empty") {
         // D9 at the value level, and the only place the save arm's "no walk is even performed" is
         // asserted at tier 0. Without it, a findEnclosingProject that never ran at all would pass the
@@ -564,6 +598,81 @@ TEST_CASE("scene_containment: findEnclosingProject, all five arms (CN18, D8/D9)"
         REQUIRE((save.state == SceneContainment::Outside));
         CHECK(save.owningProjectRoot.empty());
         CHECK(save.owningProjectName.empty());
+    }
+}
+
+TEST_CASE("scene_containment: the walk never offers the project that is ALREADY OPEN (CN25, D8)") {
+    // THE HOLE THIS CLOSES (the code-review round): findEnclosingProject climbs from the scene's own
+    // directory and stops at the first project.json it finds -- which can be the OPEN project's own,
+    // whenever the lexical test missed AND the rescue could not fire. Accepting such an offer routes
+    // through adoptProject -> newScene -> World::clear() + CommandStack::clear(), so a button labelled
+    // "Open ProjA" while ProjA is open silently RESETS a clean document for what reads as a no-op.
+    //
+    // Both arms below need a spelling of the open root that differs BYTE-WISE from the scene's route
+    // while naming the same directory, plus a scene directory that does not exist (canonicalDirectory
+    // answers "" for anything that is not an existing directory, which is what keeps the rescue from
+    // answering first). A byte comparison alone cannot see either arm -- the differing spelling is
+    // exactly what makes the defect reachable -- so the guard compares the CANONICAL forms.
+    const TempDir tmp;
+    std::error_code ec;
+    std::filesystem::create_directories(tmp.pathOf("real"), ec);  // createProject requires an EXISTING location
+    REQUIRE_FALSE(static_cast<bool>(ec));
+    const ProjectCreateOutcome created = engine::editor::createProject(tmp.join("real"), "ProjA", "0.1.0");
+    REQUIRE(created.problem == CreateProblem::Ok);
+
+    SUBCASE("through a symlinked spelling of the open root (symlink-capable hosts only)") {
+        std::filesystem::create_directory_symlink(tmp.pathOf("real"), tmp.pathOf("link"), ec);
+        if (ec) {
+            MESSAGE(
+                "skipped: this platform/filesystem refuses create_directory_symlink (Windows needs Developer Mode)");
+        } else {
+            // The open project, spelled through the LINK; the scene, spelled through the TARGET, in a
+            // directory that does not exist. Lexically outside, unrescuable, and the walk lands on the
+            // open project's own manifest.
+            const std::string openRootViaLink = tmp.join("link/ProjA");
+            const std::string scene = created.root + "/gone/x.scene.json";
+            REQUIRE((lexicalContainment(normalizeForContainment(scene), normalizeForContainment(openRootViaLink)) ==
+                     SceneContainment::Outside));
+            REQUIRE_FALSE(std::filesystem::exists(tmp.pathOf("real/ProjA/gone")));
+
+            const ContainmentVerdict v = resolveSceneContainment(scene, openRootViaLink, /*findOwningProject=*/true);
+            CHECK((v.state == SceneContainment::Outside));  // still REFUSED -- the guard offers less,
+            CHECK(v.owningProjectRoot.empty());             // never permits more
+            CHECK(v.owningProjectName.empty());
+
+            // ★ THE ANTI-VACUITY ARM: the SAME walk, from the SAME directory, against a DIFFERENT open
+            //   project, DOES produce the offer. Without it, a findEnclosingProject that never ran at
+            //   all would satisfy every assertion above.
+            const ContainmentVerdict other =
+                resolveSceneContainment(scene, tmp.join("elsewhere/ProjZ"), /*findOwningProject=*/true);
+            REQUIRE((other.state == SceneContainment::Outside));
+            CHECK(other.owningProjectRoot == normalizeForContainment(created.root));
+            CHECK(other.owningProjectName == "ProjA");
+        }
+    }
+
+    SUBCASE("through a case-differing spelling of the open root (case-insensitive volumes only)") {
+        // CN15's PROBE, never a platform assumption: does this volume resolve "proja" to the "ProjA"
+        // createProject just made?
+        const bool caseInsensitive = std::filesystem::is_directory(tmp.pathOf("real/proja"), ec);
+        CAPTURE(caseInsensitive);
+        const std::string openRootLowered = tmp.join("real/proja");
+        const std::string scene = created.root + "/gone/x.scene.json";
+        REQUIRE((lexicalContainment(normalizeForContainment(scene), normalizeForContainment(openRootLowered)) ==
+                 SceneContainment::Outside));
+
+        const ContainmentVerdict v = resolveSceneContainment(scene, openRootLowered, /*findOwningProject=*/true);
+        CHECK((v.state == SceneContainment::Outside));
+        if (caseInsensitive) {
+            // The two spellings name ONE directory, so the walk found the open project itself.
+            CHECK(v.owningProjectRoot.empty());
+            CHECK(v.owningProjectName.empty());
+        } else {
+            // On a case-SENSITIVE volume "<tmp>/real/proja" is a different, non-existent root, so
+            // ProjA really is another project and offering it is correct.
+            CHECK(v.owningProjectRoot == normalizeForContainment(created.root));
+            CHECK(v.owningProjectName == "ProjA");
+        }
     }
 }
 

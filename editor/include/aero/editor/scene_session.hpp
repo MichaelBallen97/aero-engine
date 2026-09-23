@@ -201,13 +201,19 @@ struct ContainmentOffer {
                               // the accept's target
     std::string projectName;  // "" when that manifest did not parse -- the offer is still made
 
-    // MONOTONIC, bumped on EVERY raise including an overwrite. EditorApp mirrors the DELTA, never the
-    // value, because the step-0 drain assigns a default-constructed offer and resets this to 0
-    // (task E.4.2 §3.6). A bool here would lose the second of two refusals in one applyFileRequests
-    // call, which D11 makes a real sequence rather than a hypothetical one.
+    // MONOTONIC FOR THE LIFETIME OF THE FileFlow, bumped on EVERY raise including one that overwrites
+    // an offer still on screen, and NEVER RESET -- the step-0 drain goes through
+    // scene_session.cpp's clearContainmentOffer, which restores this one field after the reset
+    // (task E.4.2 §3.6, amended by the code-review round). EditorApp therefore mirrors it ABSOLUTELY.
+    // A bool here would lose the second of two refusals in one applyFileRequests call, which D11
+    // makes a real sequence rather than a hypothetical one -- and a serial the drain reset to 0 loses
+    // the same pair one level up, because 1 -> 0 -> 1 is indistinguishable from "nothing happened"
+    // (SS54, I191).
     std::size_t refusalSerial = 0;
 
-    // ---- IN -- one-shots, set by the modal's buttons and by NOTHING else.
+    // ---- IN -- one-shots, set by the modal's buttons (and EditorApp's two request hooks) and by
+    // NOTHING else. BOTH ARE CLEARED BY EVERY RAISE: an answer belongs to the offer it was pressed on
+    // and must never be applied to a later one (SS53).
     bool acceptRequested = false;   // "Open '<name>'" -- only ever DRAWN when !forSave && !projectRoot.empty()
     bool dismissRequested = false;  // Cancel / OK / Esc / a programmatic close
 };
@@ -315,9 +321,17 @@ struct FileFlow {
     // that knows what a Blender path is. This file deliberately learns nothing beyond "a string came
     // back" -- no Blender header, no Blender type, no Blender behaviour (AC-46).
     std::string pickedBlenderPath;
-    // task E.4.2. APPENDED (the FileEntry / AssetMetaState::Reattached rule): tests aggregate-
-    // initialise FileFlow, and an insertion would silently re-map every field after it -- `bool` to
-    // `std::string` would not compile, but `bool` to `bool` would, and nothing diagnoses it.
+    // task E.4.2. APPENDED, never inserted -- the FileEntry (project_files.hpp:49-53) /
+    // AssetMetaState::Reattached (asset_meta.hpp:148) rule, as FORWARD defence: a positional
+    // aggregate initializer is silently re-mapped by an insertion, and `bool` to `bool` is neither a
+    // narrowing nor a promotion, so nothing diagnoses it.
+    //
+    // MEASURED, so the justification is not overstated (the code-review round): NO test anywhere
+    // aggregate-initialises a FileFlow today -- `git grep -nE 'FileFlow[a-zA-Z]* *\{' -- tests` exits
+    // 1, and every use is `FileFlow flow;`. So seed S24 (insert this field ahead of `requested`)
+    // reddens NOTHING, and this rule currently has no witness in the tree. It is kept because it is
+    // free and because the failure it prevents is silent; it is NOT kept because something would
+    // catch a violation. Do not add an aggregate-initialising test purely to give the seed a witness.
     ContainmentOffer containmentOffer;
 };
 

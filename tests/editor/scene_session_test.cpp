@@ -1648,3 +1648,217 @@ TEST_CASE(
         CHECK(anyMessageContains(records, "must be saved inside the open project"));
     }
 }
+
+// ---- SS52-SS54: the code-review round ------------------------------------------------------------
+
+TEST_CASE(
+    "scene_session: a containment-refused SAVE abandons the pending action's own target, whichever "
+    "flow object it lives in (SS52/BLOCKING-1)") {
+    // THE CHAIN THIS CLOSES, end to end, every step reachable from the UI: an open is refused and the
+    // user accepts the offer -> the step-0 drain writes ProjB into project.flow.requestedPath and
+    // requests OpenProject -> the document is DIRTY, so guardFor raises the unsaved-changes modal and
+    // the OpenProject becomes flow.pending with its target parked -> the user answers "Save" on an
+    // UNTITLED document -> AskWhereToSave launches the native Save panel -> the user picks a folder
+    // OUTSIDE the open project -> containment REFUSES the write. The pending action is abandoned at
+    // that point, so its target must go with it: the Save arm cleared flow.pending and
+    // flow.saveBeforePending but left BOTH requestedPath fields set, and the next File > Open
+    // Project... then took performAction's no-dialog seam and adopted ProjB with no dialog and no
+    // click. Every other abandon site in this file clears both; this arm was the hole.
+    using engine::editor::CreateProblem;
+    using engine::editor::createProject;
+    using engine::editor::DialogKind;
+    using engine::editor::DialogResult;
+    using engine::editor::ProjectCreateOutcome;
+    using engine::editor::ProjectManifest;
+
+    const LogFixture fixture;
+    const TempDir tmp;
+    const std::string rootA = tmp.join("ProjA");
+    // A REAL project on disk, so the leak's consequence is an ACTUAL adopt rather than a failed one:
+    // with the defect present the second applyFileRequests below opens ProjB for real.
+    const ProjectCreateOutcome b = createProject(tmp.utf8(), "ProjB", "0.1.0");
+    REQUIRE(b.problem == CreateProblem::Ok);
+
+    FlowFixture f;
+    SceneSession session;  // UNTITLED -- the AskWhereToSave arm's own precondition
+    f.projectSession.set(ProjectManifest{}, rootA);
+    REQUIRE(session.untitled());
+
+    // The state AskWhereToSave leaves behind, seeded directly: the native Save panel is in flight, it
+    // is the modal's "Save" answer, and the deferred OpenProject's target is parked where that action
+    // keeps it -- project.flow.requestedPath, a DIFFERENT flow object's field from flow.requestedPath.
+    f.flow.dialog = DialogKind::Save;
+    f.flow.saveBeforePending = true;
+    f.flow.pending = FileAction::OpenProject;
+    f.projectFlow.requestedPath = b.root;
+
+    const engine::editor::LogSinkScope scope;
+    std::vector<engine::editor::LogEntry> records;
+    scope.sink()->take(records);
+    records.clear();
+
+    DialogResult result;
+    result.ready = true;
+    result.path = tmp.join("Elsewhere/x.scene.json");  // outside ProjA -> the containment refusal
+    applyDialogResult(f.ctx, f.commands, session, f.flow, f.host, result, f.project);
+
+    // The refusal really was a CONTAINMENT one, not a write failure -- without this the case would
+    // pass for the wrong reason on any path the filesystem happened to reject.
+    REQUIRE(f.flow.containmentOffer.open);
+    REQUIRE(f.flow.containmentOffer.forSave);
+    CHECK(session.untitled());  // nothing was written or bound
+    CHECK((f.flow.pending == FileAction::None));
+    CHECK_FALSE(f.flow.saveBeforePending);
+    CHECK(f.flow.requestedPath.empty());
+    CHECK(f.projectFlow.requestedPath.empty());  // ★ the hole: the abandoned action's OWN target
+
+    // ---- ★ THE CONSEQUENCE, and it is what makes the assertion above more than a field read: the
+    //      user dismisses the modal and later asks for File > Open Project... A leaked target makes
+    //      performAction take its no-dialog seam and ADOPT ProjB silently.
+    //
+    //      The observable is the ADOPT, never `flow.dialog == DialogKind::ProjectFolder`: this tier
+    //      has no DialogChannel (FileDialogHost{} is the null-channel seam, and file_dialog.hpp is
+    //      src-private), so with the target correctly cleared the arm is A17's silent no-op and
+    //      `flow.dialog` stays None in BOTH directions. The project root does not.
+    f.flow.containmentOffer = {};
+    records.clear();
+    f.flow.requested = FileAction::OpenProject;
+    REQUIRE(f.commands.isClean());  // so step 2 PERFORMS rather than raising the guard's modal
+    applyFileRequests(f.ctx, f.commands, session, f.flow, f.host, f.project);
+
+    CHECK(f.projectSession.root() == rootA);  // NOT ProjB -- no project was adopted
+    scope.sink()->take(records);
+    CHECK_FALSE(anyMessageContains(records, "opened project"));
+    CHECK(countAtLevel(records, engine::LogLevel::Info) == 0);
+}
+
+TEST_CASE("scene_session: a NEW refusal clears the previous offer's unanswered buttons (SS53, §7.3)") {
+    // WHY A ONE-SHOT CAN OUTLIVE ITS OFFER AT ALL, measured in the product's own ordering:
+    // applyDialogResult runs at editor_app.cpp:640 and the step-0 drain runs inside drawShellUi at
+    // :1134, so a refusal raised by a dialog result lands BETWEEN the button (or the request hook)
+    // recording an answer and the drain consuming it. Without the two clears, that answer is applied
+    // to the NEW offer: the user pressed "Open ProjB" and the editor opens ProjC. A wrong-target
+    // action, not merely a lost click -- which is why the raise clears them rather than preserving
+    // them.
+    using engine::editor::CreateProblem;
+    using engine::editor::createProject;
+    using engine::editor::normalizeForContainment;
+    using engine::editor::openSceneFile;
+    using engine::editor::ProjectCreateOutcome;
+    using engine::editor::ProjectManifest;
+    using engine::editor::saveSceneFile;
+    using engine::editor::SceneFileContext;
+
+    const LogFixture fixture;
+    const TempDir tmp;
+    const std::string rootA = tmp.join("ProjA");
+    const ProjectCreateOutcome b = createProject(tmp.utf8(), "ProjB", "0.1.0");
+    const ProjectCreateOutcome c = createProject(tmp.utf8(), "ProjC", "0.1.0");
+    REQUIRE(b.problem == CreateProblem::Ok);
+    REQUIRE(c.problem == CreateProblem::Ok);
+    REQUIRE(b.root != c.root);  // anti-vacuity: the two targets really are different projects
+    const std::string sceneInC = c.root + "/scenes/x.scene.json";
+
+    SUBCASE("an ACCEPT pressed on offer A never opens offer B's project") {
+        FlowFixture f;
+        SceneSession session;
+        f.projectSession.set(ProjectManifest{}, rootA);
+        f.flow.containmentOffer.open = true;
+        f.flow.containmentOffer.projectRoot = b.root;  // offer A: "Open ProjB"
+        f.flow.containmentOffer.projectName = "ProjB";
+        f.flow.containmentOffer.acceptRequested = true;
+
+        CHECK_FALSE(openSceneFile(f.ctx, f.commands, session, sceneInC,
+                                  SceneFileContext{f.projectSession.root(), &f.flow.containmentOffer}));
+        // The raise really did overwrite the offer -- otherwise the drain below would be answering the
+        // same offer it was pressed on and the case would assert nothing.
+        REQUIRE(f.flow.containmentOffer.projectRoot == normalizeForContainment(c.root));
+
+        applyFileRequests(f.ctx, f.commands, session, f.flow, f.host, f.project);
+
+        CHECK(f.flow.containmentOffer.open);      // the NEW modal is still up, awaiting its own answer
+        CHECK(f.projectSession.root() == rootA);  // and NOTHING was adopted -- neither ProjB nor ProjC
+        CHECK(f.projectFlow.requestedPath.empty());
+    }
+
+    SUBCASE("an ACCEPT pressed on offer A never silently dismisses a SAVE-shaped offer B") {
+        FlowFixture f;
+        SceneSession session;
+        f.projectSession.set(ProjectManifest{}, rootA);
+        f.flow.containmentOffer.open = true;
+        f.flow.containmentOffer.projectRoot = b.root;
+        f.flow.containmentOffer.acceptRequested = true;
+
+        CHECK_FALSE(saveSceneFile(f.ctx, f.commands, session, tmp.join("Elsewhere/x.scene.json"),
+                                  /*appendExtension=*/false,
+                                  SceneFileContext{f.projectSession.root(), &f.flow.containmentOffer}));
+        REQUIRE(f.flow.containmentOffer.forSave);
+        REQUIRE(f.flow.containmentOffer.projectRoot.empty());  // D9: a save offers nothing...
+
+        applyFileRequests(f.ctx, f.commands, session, f.flow, f.host, f.project);
+
+        // ...so the stale accept would fail the drain's `offerable` re-test and close the modal
+        // WITHOUT opening anything -- a refusal the user never saw and never answered.
+        CHECK(f.flow.containmentOffer.open);
+        CHECK(f.flow.containmentOffer.forSave);
+        CHECK(f.projectSession.root() == rootA);
+    }
+
+    SUBCASE("a DISMISS pressed on offer A never swallows offer B") {
+        FlowFixture f;
+        SceneSession session;
+        f.projectSession.set(ProjectManifest{}, rootA);
+        f.flow.containmentOffer.open = true;
+        f.flow.containmentOffer.projectRoot = b.root;
+        f.flow.containmentOffer.dismissRequested = true;  // the OTHER one-shot, on its own
+
+        CHECK_FALSE(openSceneFile(f.ctx, f.commands, session, sceneInC,
+                                  SceneFileContext{f.projectSession.root(), &f.flow.containmentOffer}));
+        applyFileRequests(f.ctx, f.commands, session, f.flow, f.host, f.project);
+
+        CHECK(f.flow.containmentOffer.open);
+        CHECK(f.projectSession.root() == rootA);
+    }
+}
+
+TEST_CASE("scene_session: the drain preserves refusalSerial, so a refusal in the same tick is not lost (SS54)") {
+    // refusalSerial is MONOTONIC FOR THE LIFETIME OF THE FileFlow and EditorApp mirrors it as an
+    // ABSOLUTE value. A drain that reset it to 0 made the second of "dismiss + a fresh refusal in one
+    // applyFileRequests call" invisible to every counter above it: 1 -> 0 -> 1 is indistinguishable
+    // from "nothing happened", and sceneContainmentRefusalCount() is the GPU tier's ONLY window into a
+    // refusal. I191 is the same claim one tier up.
+    using engine::editor::ProjectManifest;
+
+    const LogFixture fixture;
+    const TempDir tmp;
+    const std::string rootA = tmp.join("ProjA");
+
+    FlowFixture f;
+    SceneSession session;
+    f.projectSession.set(ProjectManifest{}, rootA);
+
+    f.flow.requested = FileAction::OpenScene;
+    f.flow.requestedPath = tmp.join("Other/one.scene.json");
+    applyFileRequests(f.ctx, f.commands, session, f.flow, f.host, f.project);
+    REQUIRE(f.flow.containmentOffer.open);
+    REQUIRE(f.flow.containmentOffer.refusalSerial == 1U);
+
+    // ONE call carrying BOTH answers-then-request: the drain runs at step 0 and the new refusal at
+    // step 2, so the serial has to survive the drain or the second refusal reads as the first.
+    f.flow.containmentOffer.dismissRequested = true;
+    f.flow.requested = FileAction::OpenScene;
+    f.flow.requestedPath = tmp.join("Other/two.scene.json");
+    applyFileRequests(f.ctx, f.commands, session, f.flow, f.host, f.project);
+
+    CHECK(f.flow.containmentOffer.open);  // the second refusal DID raise...
+    CHECK(f.flow.containmentOffer.scenePath == tmp.join("Other/two.scene.json"));
+    CHECK(f.flow.containmentOffer.refusalSerial == 2U);  // ...and it is distinguishable from the first
+
+    // The OTHER drain site preserves it too. This offer names no project (nothing above
+    // <tmp>/Other holds a project.json), so the accept requests nothing and only closes the modal.
+    REQUIRE(f.flow.containmentOffer.projectRoot.empty());
+    f.flow.containmentOffer.acceptRequested = true;
+    applyFileRequests(f.ctx, f.commands, session, f.flow, f.host, f.project);
+    CHECK_FALSE(f.flow.containmentOffer.open);
+    CHECK(f.flow.containmentOffer.refusalSerial == 2U);
+}

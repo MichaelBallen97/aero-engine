@@ -103,7 +103,21 @@ constexpr bool isSeparator(char c) noexcept { return c == '/' || c == '\\'; }
 // D8's upward walk, in the anonymous namespace: nothing outside this TU calls it. EXPLICITLY
 // ITERATIVE -- misc-no-recursion is --warnings-as-errors in CI and a recursive walk would be
 // rejected outright.
-void findEnclosingProject(std::string_view startDirUtf8, ContainmentVerdict& out) {
+//
+// `openRootUtf8` and `openRootCanonUtf8` are the OPEN project's two spellings, and they are what stop
+// the walk OFFERING THE PROJECT THAT IS ALREADY OPEN (the code-review round, CN25). The walk climbs
+// from the scene's own directory, so whenever the lexical test missed AND the rescue could not fire --
+// a symlinked or case-differing spelling of the open root, plus a scene directory that does not exist,
+// which canonicalDirectory answers "" for -- the first project.json above the scene is the open
+// project's own. Accepting that offer routes through adoptProject -> newScene -> World::clear() +
+// CommandStack::clear(), so a button labelled "Open ProjA" while ProjA is open silently RESETS a clean
+// document for what reads as a no-op. The refusal itself still stands; only the offer is withheld.
+//
+// It STOPS rather than climbing past: the nearest enclosing project is the only one that owns this
+// scene, and a grandparent is the "confidently wrong answer" the broken-manifest arm below refuses for
+// the same reason.
+void findEnclosingProject(std::string_view startDirUtf8, std::string_view openRootUtf8,
+                          std::string_view openRootCanonUtf8, ContainmentVerdict& out) {
     if (startDirUtf8.empty()) {
         return;
     }
@@ -116,7 +130,19 @@ void findEnclosingProject(std::string_view startDirUtf8, ContainmentVerdict& out
         // stop the walk at a level holding no project at all (D8; CLAUDE.md records the same property
         // from the other side at E.3.2). CN18's directory arm is what proves it, and S19 is the seed.
         if (std::filesystem::is_regular_file(manifest, ec) && !ec) {
-            out.owningProjectRoot = utf8FromPath(dir);
+            const std::string foundRoot = utf8FromPath(dir);
+            // IS THIS THE PROJECT THAT IS ALREADY OPEN? Both spellings are tested and the CANONICAL
+            // one is the arm that matters: a byte comparison alone is very nearly unreachable here,
+            // because a walk that reaches the open root byte-for-byte means the root's segments are a
+            // prefix of the scene directory's, which directoryWithin would already have called
+            // Contained. The differing spelling IS the defect's route, so resolving it is the fix.
+            // One extra canonicalDirectory call, on the refused path only, and only once a manifest
+            // was actually found.
+            if (foundRoot == openRootUtf8 ||
+                (!openRootCanonUtf8.empty() && canonicalDirectory(foundRoot) == openRootCanonUtf8)) {
+                return;  // REFUSED, with NO offer -- D8's degradation, for a different reason
+            }
+            out.owningProjectRoot = foundRoot;
             const ProjectLoadOutcome loaded = loadProjectFrom(out.owningProjectRoot);
             if (loaded.ok) {
                 out.owningProjectName = loaded.manifest.name;
@@ -135,6 +161,12 @@ void findEnclosingProject(std::string_view startDirUtf8, ContainmentVerdict& out
         if (!dir.has_parent_path() || dir.parent_path() == dir) {
             return;  // stepToParent's own guard (project_file.cpp:76-80), or "/" recurses forever
         }
+        // ★ UNMEASURED ON WINDOWS (the code-review round, recorded rather than fixed): if
+        // path("C:/").parent_path() is "C:" rather than "C:/", neither term of the guard above fires
+        // and the next iteration probes "C:/project.json" spelled DRIVE-RELATIVE -- resolved against
+        // the process's current directory on that drive, not against its root. BOUNDED: the depth cap
+        // still holds, the extra probe is one is_regular_file, and the worst outcome is an offer
+        // naming a project the user did not expect rather than a permit. Windows validation row.
         dir = dir.parent_path();
     }
     // MAX_PROJECT_SEARCH_DEPTH exceeded: NO OFFER is made and the refusal still stands, with the
@@ -195,7 +227,13 @@ SceneContainment lexicalContainment(std::string_view scenePathUtf8, std::string_
     }
     const std::string_view dir = directoryOf(scenePathUtf8);  // scene_session.hpp:113
     if (dir.empty()) {
-        return SceneContainment::Outside;  // a bare leaf has no directory at all
+        // A bare leaf has no directory at all. It also catches a scene sitting DIRECTLY at a POSIX
+        // filesystem root -- directoryOf("/x.scene.json") is "", not "/" -- which is a FALSE REFUSAL
+        // for a project rooted at "/" (the code-review round, recorded rather than fixed). It is in
+        // the safe direction (D3), it needs a project at the filesystem root to reach, and closing it
+        // would mean teaching directoryOf that "" and "/" differ, which is a change to a helper five
+        // other callers share.
+        return SceneContainment::Outside;
     }
     return directoryWithin(dir, projectRootUtf8) ? SceneContainment::Contained : SceneContainment::Outside;
 }
@@ -266,7 +304,7 @@ ContainmentVerdict resolveSceneContainment(std::string_view scenePathUtf8, std::
     // which discards the very work being saved. There is nothing to offer, so there is nothing to
     // look up, and a refused save therefore costs no extra filesystem call at all.
     if (findOwningProject) {
-        findEnclosingProject(directoryOf(normScene), out);
+        findEnclosingProject(directoryOf(normScene), normRoot, canonRoot, out);
     }
     return out;  // Outside
 }

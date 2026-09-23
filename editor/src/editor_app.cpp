@@ -1282,14 +1282,13 @@ bool EditorApp::tick() {
     // applyFileRequests, which runs within drawShellUi EARLIER IN THIS TICK, so a top-of-tick mirror
     // would lag every refusal by a frame.
     //
-    // The flow's own serial is RESET to 0 whenever the offer is cleared (the step-0 drain assigns a
-    // default-constructed ContainmentOffer), so this mirrors the DELTA, never the value. The `>` guard
-    // is what makes the reset harmless -- an unguarded subtraction on std::size_t would wrap. Two
-    // refusals in one applyFileRequests call bump the flow's serial twice and are BOTH counted.
-    if (fileFlow.containmentOffer.refusalSerial > containmentRefusalSerialSeen) {
-        containmentRefusals += fileFlow.containmentOffer.refusalSerial - containmentRefusalSerialSeen;
-    }
-    containmentRefusalSerialSeen = fileFlow.containmentOffer.refusalSerial;
+    // AN ABSOLUTE MIRROR, NEVER A DELTA (the code-review round). The flow's serial is monotonic for
+    // the FileFlow's lifetime -- scene_session.cpp's clearContainmentOffer preserves it across every
+    // drain -- so there is nothing to accumulate and no `>` guard to get wrong. The delta form this
+    // replaced was defeated by the drain resetting the serial: a dismiss plus a fresh refusal inside
+    // ONE applyFileRequests call ran 1 -> 0 -> 1, `1 > 1` is false, and the counter did not move for a
+    // refusal the user could see on screen. I191 drives exactly that tick.
+    containmentRefusals = fileFlow.containmentOffer.refusalSerial;
     persistProjectState();
     if (fileFlow.quitConfirmed) {
         // File > Exit / Ctrl+Q / the window [X] -- all AFTER the guard said yes (task 2.5.1 D1). This
