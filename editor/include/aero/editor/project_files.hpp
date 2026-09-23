@@ -177,7 +177,12 @@ void buildVisibleTree(const std::function<const DirectoryListing*(const std::str
 // everything else here: it resolves; it does not create, move or normalize anything on disk.
 // Deliberately NOT used to record or display a path anywhere -- project roots are `absolute`, not
 // `weakly_canonical`, ON PURPOSE (a project reached through a symlink must not be silently recorded
-// under its target). THIS VALUE IS A DEDUP KEY AND NOTHING ELSE (INV-C9).
+// under its target). THIS VALUE IS A DEDUP KEY OR A COMPARISON KEY, AND NOTHING ELSE (INV-C9,
+// widened at task E.4.2). The widening is deliberate and narrow: scene_containment.cpp compares two
+// canonical strings and DISCARDS BOTH -- nothing is stored in a record, put in a report, written to
+// the cache, or shown to the user, which is exactly what INV-C9 forbids and exactly what that use
+// does not do. The forward-slash normalisation at project_files.cpp:418 is what makes such a
+// comparison valid on Windows, and it exists for the identical reason.
 [[nodiscard]] std::string canonicalDirectory(std::string_view absolutePathUtf8);
 
 // task 3.1.4: "now", in FileEntry::mtime's OWN opaque domain (docs/09 §6.5 -- ticks, never a date).

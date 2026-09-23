@@ -100,6 +100,47 @@ constexpr bool isSeparator(char c) noexcept { return c == '/' || c == '\\'; }
     return dotDot;
 }
 
+// D8's upward walk, in the anonymous namespace: nothing outside this TU calls it. EXPLICITLY
+// ITERATIVE -- misc-no-recursion is --warnings-as-errors in CI and a recursive walk would be
+// rejected outright.
+void findEnclosingProject(std::string_view startDirUtf8, ContainmentVerdict& out) {
+    if (startDirUtf8.empty()) {
+        return;
+    }
+    std::filesystem::path dir = pathFromUtf8(startDirUtf8);
+    for (std::size_t depth = 0; depth < MAX_PROJECT_SEARCH_DEPTH; ++depth) {
+        std::error_code ec;
+        const std::filesystem::path manifest = dir / std::string(PROJECT_FILE_NAME);
+        // is_regular_file, NEVER editor::fileExists -- that is std::filesystem::exists
+        // (text_file.hpp:32), which is TRUE FOR A DIRECTORY, so a directory named project.json would
+        // stop the walk at a level holding no project at all (D8; CLAUDE.md records the same property
+        // from the other side at E.3.2). CN18's directory arm is what proves it, and S19 is the seed.
+        if (std::filesystem::is_regular_file(manifest, ec) && !ec) {
+            out.owningProjectRoot = utf8FromPath(dir);
+            const ProjectLoadOutcome loaded = loadProjectFrom(out.owningProjectRoot);
+            if (loaded.ok) {
+                out.owningProjectName = loaded.manifest.name;
+            }
+            // A present-but-BROKEN manifest STOPS the walk with a blank name (D8). Continuing upward
+            // would offer a GRANDPARENT project that does not own this scene -- a confidently wrong
+            // answer, where "there is a project here and I cannot read it" is the honest one. The
+            // offer is still made; opening it fails with openProjectPath's own ERROR
+            // (scene_session.cpp:306-307), which is the right place for that failure to surface.
+            //
+            // loaded.unknownKeys is DELIBERATELY NOT WARNED here: this NAMES a project, it does not
+            // open one, and INV-P6 puts that WARN at the opening caller. Warning here would produce
+            // messages about a project the user never opened.
+            return;
+        }
+        if (!dir.has_parent_path() || dir.parent_path() == dir) {
+            return;  // stepToParent's own guard (project_file.cpp:76-80), or "/" recurses forever
+        }
+        dir = dir.parent_path();
+    }
+    // MAX_PROJECT_SEARCH_DEPTH exceeded: NO OFFER is made and the refusal still stands, with the
+    // "outside the open project" wording. A degradation, never a wrong answer (D8).
+}
+
 }  // namespace
 
 bool directoryWithin(std::string_view directoryUtf8, std::string_view rootUtf8) noexcept {
@@ -180,6 +221,54 @@ std::string normalizeForContainment(std::string_view pathUtf8) {
         out.pop_back();
     }
     return out;
+}
+
+ContainmentVerdict resolveSceneContainment(std::string_view scenePathUtf8, std::string_view projectRootUtf8,
+                                           bool findOwningProject) {
+    ContainmentVerdict out;
+    if (projectRootUtf8.empty()) {
+        out.state = SceneContainment::NoProject;
+        return out;  // D5 -- ZERO syscalls, ZERO allocations, before anything else happens
+    }
+    const std::string normScene = normalizeForContainment(scenePathUtf8);
+    const std::string normRoot = normalizeForContainment(projectRootUtf8);
+
+    out.state = lexicalContainment(normScene, normRoot);
+    if (containmentPermits(out.state)) {
+        return out;  // D4 -- THE COMMON PATH for every open and every save. Still zero syscalls.
+    }
+    if (out.state == SceneContainment::Unresolvable) {
+        return out;  // no rescue for a path we could not even parse
+    }
+
+    // ---- THE RESCUE (D4 step 4). Reachable ONLY from Outside, and it can only ever produce
+    // Contained -- it WIDENS, it never narrows, which is what bounds the untested Windows behaviour
+    // to a false refusal with a readable ERROR rather than a false accept (R3).
+    //
+    // It canonicalises the scene's PARENT DIRECTORY, never the scene file. Three reasons, all
+    // measured or cited: canonicalDirectory returns "" for anything that is not an EXISTING
+    // DIRECTORY (project_files.cpp:405-408); a SAVE target routinely does not exist yet, and
+    // canonical() on a missing path fails; and the question is about a directory's identity in the
+    // first place. Canonicalising the file would make every Save-to-a-new-name outside the lexical
+    // root take the "" arm and be refused for the wrong reason.
+    //
+    // `directoryOf` returns a VIEW into its argument (scene_session.cpp:129-135), so it is called on
+    // the NAMED `normScene`, never on a temporary.
+    const std::string canonRoot = canonicalDirectory(normRoot);
+    const std::string canonDir = canonicalDirectory(directoryOf(normScene));
+    if (!canonRoot.empty() && !canonDir.empty() && directoryWithin(canonDir, canonRoot)) {
+        out.state = SceneContainment::Contained;
+        return out;
+    }
+
+    // ---- D8's upward walk. NOT performed for a SAVE (D9): accepting a project offer routes through
+    // adoptProject -> newScene (scene_session.cpp:232) -> World::clear() + CommandStack::clear(),
+    // which discards the very work being saved. There is nothing to offer, so there is nothing to
+    // look up, and a refused save therefore costs no extra filesystem call at all.
+    if (findOwningProject) {
+        findEnclosingProject(directoryOf(normScene), out);
+    }
+    return out;  // Outside
 }
 
 std::string containmentReason(const ContainmentVerdict& v, std::string_view projectRootUtf8, bool forSave) {

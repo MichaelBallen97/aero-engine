@@ -29,9 +29,12 @@
 using engine::editor::containmentPermits;
 using engine::editor::containmentReason;
 using engine::editor::ContainmentVerdict;
+using engine::editor::CreateProblem;
 using engine::editor::directoryWithin;
 using engine::editor::lexicalContainment;
 using engine::editor::normalizeForContainment;
+using engine::editor::ProjectCreateOutcome;
+using engine::editor::resolveSceneContainment;
 using engine::editor::SceneContainment;
 
 namespace {
@@ -249,6 +252,214 @@ TEST_CASE("scene_containment: a relative path is absolutised against the CWD (CN
     CAPTURE(cwdUtf8);
     CAPTURE(norm);
     CHECK(norm.rfind(cwdUtf8, 0) == 0);
+
+    // CN12(b): the RESOLVER on the same shape -- a relative scene path against an absolute root is
+    // Outside and never a crash. The absolutization happens inside resolveSceneContainment, so the
+    // comparison is between two absolute paths whatever the caller handed in.
+    const ContainmentVerdict v = resolveSceneContainment("rel/x.scene.json", "/definitely/not/here",
+                                                         /*findOwningProject=*/false);
+    CHECK((v.state == SceneContainment::Outside));  // never a crash, never Unresolvable
+    CHECK(v.owningProjectRoot.empty());             // findOwningProject == false
+}
+
+// ---- CN13-CN18: the resolver, the canonical rescue and the upward walk --------------------------
+
+TEST_CASE("scene_containment: the permitted path performs no filesystem call at all (CN13, AC-9)") {
+    // THE INSTRUMENT, and why it is this one: there is no portable syscall counter in this tree
+    // (LD_PRELOAD is a proven dead end, CLAUDE.md), a timing bound is below the run-to-run spread,
+    // and a source-text pin would assert the call site's POSITION -- an INTENTION -- rather than that
+    // the function returned before reaching it. This asserts a CONSEQUENCE: a resolver that touched
+    // the disk on the happy path returns a DIFFERENT ANSWER once the disk is gone. Seed S7 (run the
+    // rescue unconditionally) reddens this case and NOTHING ELSE in the tree. Do not "simplify" it
+    // into a source-text pin.
+    const TempDir tmp;
+    const std::string root = tmp.join("ProjA");
+    const std::string scene = tmp.join("ProjA/scenes/x.scene.json");
+    std::error_code ec;
+    std::filesystem::create_directories(tmp.pathOf("ProjA/scenes"), ec);
+    REQUIRE_FALSE(static_cast<bool>(ec));
+    REQUIRE(engine::editor::writeTextFileAtomic(scene, "{}").empty());
+
+    REQUIRE((resolveSceneContainment(scene, root, /*findOwningProject=*/false).state == SceneContainment::Contained));
+
+    // DELETE THE WHOLE TREE and re-query with the IDENTICAL strings. The removal COUNT is not
+    // asserted: on a case-insensitive volume a stray .DS_Store makes it unstable. Non-existence is.
+    std::filesystem::remove_all(tmp.pathOf("ProjA"), ec);
+    REQUIRE_FALSE(std::filesystem::exists(tmp.pathOf("ProjA")));
+    CHECK((resolveSceneContainment(scene, root, /*findOwningProject=*/false).state == SceneContainment::Contained));
+    CHECK((resolveSceneContainment(scene, root, /*findOwningProject=*/true).state == SceneContainment::Contained));
+    // THE ANTI-VACUITY ARM IS CN14, which flips Contained -> Outside under the same deletion --
+    // proving the deletion is observable at all.
+}
+
+TEST_CASE("scene_containment: the canonical rescue resolves a symlinked route (CN14, D4, symlink-capable hosts only)") {
+    const TempDir tmp;
+    std::error_code ec;
+    std::filesystem::create_directories(tmp.pathOf("real/scenes"), ec);
+    std::filesystem::create_directory_symlink(tmp.pathOf("real"), tmp.pathOf("link"), ec);
+    if (ec) {
+        MESSAGE("skipped: this platform/filesystem refuses create_directory_symlink (Windows needs Developer Mode)");
+    } else {
+        const std::string sceneViaTarget = tmp.join("real/scenes/x.scene.json");
+        const std::string rootViaLink = tmp.join("link");
+        REQUIRE(engine::editor::writeTextFileAtomic(sceneViaTarget, "{}").empty());
+        // LEXICALLY it is outside: "real" is not the segment "link".
+        REQUIRE((lexicalContainment(normalizeForContainment(sceneViaTarget), normalizeForContainment(rootViaLink)) ==
+                 SceneContainment::Outside));
+        // AND THE RESCUE SAYS CONTAINED.
+        CHECK((resolveSceneContainment(sceneViaTarget, rootViaLink, /*findOwningProject=*/false).state ==
+               SceneContainment::Contained));
+        // THE REVERSE ROUTE TOO -- root through the target, scene through the link.
+        CHECK((resolveSceneContainment(tmp.join("link/scenes/x.scene.json"), tmp.join("real"),
+                                       /*findOwningProject=*/false)
+                   .state == SceneContainment::Contained));
+        // ★ CN13's ANTI-VACUITY ARM: delete the tree and the SAME query flips to Outside, which proves
+        //   the rescue really does touch the disk and therefore that CN13's green is meaningful.
+        std::filesystem::remove(tmp.pathOf("link"), ec);
+        std::filesystem::remove_all(tmp.pathOf("real"), ec);
+        CHECK((resolveSceneContainment(sceneViaTarget, rootViaLink, /*findOwningProject=*/false).state ==
+               SceneContainment::Outside));
+    }
+}
+
+TEST_CASE("scene_containment: the canonical rescue answers the CASE question the predicate refuses (CN15, D4/F8)") {
+    const TempDir tmp;
+    std::error_code ec;
+    std::filesystem::create_directories(tmp.pathOf("ProjA/scenes"), ec);
+    REQUIRE(std::filesystem::is_directory(tmp.pathOf("ProjA"), ec));
+    // PROBE, never a platform assumption: does the volume resolve "proja" to the "ProjA" just created?
+    const bool caseInsensitive = std::filesystem::is_directory(tmp.pathOf("proja"), ec);
+    CAPTURE(caseInsensitive);
+    const std::string scene = tmp.join("proja/scenes/x.scene.json");
+    const std::string root = tmp.join("ProjA");
+    if (caseInsensitive) {
+        REQUIRE(engine::editor::writeTextFileAtomic(tmp.join("ProjA/scenes/x.scene.json"), "{}").empty());
+    }
+    // LEXICALLY it is Outside either way -- CN6's rule, restated at the resolver.
+    REQUIRE((lexicalContainment(normalizeForContainment(scene), normalizeForContainment(root)) ==
+             SceneContainment::Outside));
+    // BOTH ANSWERS ARE CORRECT and the case asserts whichever the volume gives: on a case-INSENSITIVE
+    // volume canonicalDirectory("<tmp>/proja/scenes") case-corrects to ".../ProjA/scenes" (measured on
+    // this machine) and the rescue succeeds; on a case-SENSITIVE one that directory does not exist,
+    // canonicalDirectory returns "" and Outside is right.
+    const SceneContainment expected = caseInsensitive ? SceneContainment::Contained : SceneContainment::Outside;
+    CHECK((resolveSceneContainment(scene, root, /*findOwningProject=*/false).state == expected));
+}
+
+TEST_CASE("scene_containment: the rescue WIDENS and never narrows (CN16, D13.1, symlink-capable hosts only)") {
+    // A scene inside the project whose own directory is a symlink pointing OUT. Lexically CONTAINED;
+    // canonically it is not. D13.1 says it stays PERMITTED, and this case is what makes that a
+    // deliberate documented gap rather than a drift. S9 (let the rescue run on a permitted verdict and
+    // take its answer) reddens exactly this.
+    const TempDir tmp;
+    std::error_code ec;
+    std::filesystem::create_directories(tmp.pathOf("outside/real"), ec);
+    std::filesystem::create_directories(tmp.pathOf("ProjA"), ec);
+    std::filesystem::create_directory_symlink(tmp.pathOf("outside/real"), tmp.pathOf("ProjA/escape"), ec);
+    if (ec) {
+        MESSAGE("skipped: this platform/filesystem refuses create_directory_symlink (Windows needs Developer Mode)");
+    } else {
+        const std::string scene = tmp.join("ProjA/escape/x.scene.json");
+        REQUIRE((lexicalContainment(normalizeForContainment(scene), normalizeForContainment(tmp.join("ProjA"))) ==
+                 SceneContainment::Contained));
+        CHECK((resolveSceneContainment(scene, tmp.join("ProjA"), /*findOwningProject=*/false).state ==
+               SceneContainment::Contained));
+    }
+}
+
+TEST_CASE("scene_containment: the rescue cannot rescue what does not exist, and a save target need not (CN17)") {
+    const TempDir tmp;
+    std::error_code ec;
+    // (a) OUTSIDE and missing: still Outside. The rescue's two "" guards are what make it so, not a
+    //     crash.
+    CHECK((resolveSceneContainment(tmp.join("nowhere/x.scene.json"), tmp.join("ProjA"), /*findOwningProject=*/false)
+               .state == SceneContainment::Outside));
+    // (b) ★ INSIDE and missing -- the SAVE case, and the reason the rescue takes the PARENT DIRECTORY.
+    //     The lexical arm answers first, so the missing directory never matters. S8 (canonicalise the
+    //     scene FILE) reddens this arm.
+    std::filesystem::create_directories(tmp.pathOf("ProjA"), ec);
+    REQUIRE_FALSE(static_cast<bool>(ec));
+    CHECK((resolveSceneContainment(tmp.join("ProjA/brand/new/dir/x.scene.json"), tmp.join("ProjA"),
+                                   /*findOwningProject=*/false)
+               .state == SceneContainment::Contained));
+    // (c) a save target directly in the root, also missing.
+    CHECK((resolveSceneContainment(tmp.join("ProjA/Untitled.scene.json"), tmp.join("ProjA"),
+                                   /*findOwningProject=*/false)
+               .state == SceneContainment::Contained));
+}
+
+TEST_CASE("scene_containment: findEnclosingProject, all five arms (CN18, D8/D9)") {
+    const TempDir tmp;
+    std::error_code ec;
+    // Built with createProject(), never a hand-written manifest -- the name must come from the same
+    // writer loadProjectFrom() reads, or the case asserts two spellings of one thing agreeing.
+    const ProjectCreateOutcome created = engine::editor::createProject(tmp.utf8(), "ProjB", "0.1.0");
+    REQUIRE(created.problem == CreateProblem::Ok);
+    const std::string sceneInProjB = created.root + "/scenes/x.scene.json";
+    REQUIRE(engine::editor::writeTextFileAtomic(sceneInProjB, "{}").empty());
+    // The OPEN project's root for every arm below: a sibling that does not exist, so the verdict is
+    // Outside lexically and the rescue's "" guard keeps it there.
+    const std::string openRoot = tmp.join("ProjA");
+
+    SUBCASE("a real project above the scene: root and name both found") {
+        const ContainmentVerdict v = resolveSceneContainment(sceneInProjB, openRoot, /*findOwningProject=*/true);
+        REQUIRE((v.state == SceneContainment::Outside));
+        CHECK(v.owningProjectRoot == normalizeForContainment(created.root));
+        CHECK(v.owningProjectName == "ProjB");
+    }
+
+    SUBCASE("a corrupt project.json STOPS the walk with a blank name") {
+        // The root is STILL set, the name is EMPTY, and the walk does NOT climb to the grandparent
+        // (which is `created`, a perfectly readable project). S20 is the seed.
+        const std::string brokenRoot = created.root + "/vendor/Broken";
+        std::filesystem::create_directories(tmp.pathOf("ProjB/vendor/Broken/scenes"), ec);
+        REQUIRE_FALSE(static_cast<bool>(ec));
+        REQUIRE(engine::editor::writeTextFileAtomic(brokenRoot + "/project.json", "not json at all {{{").empty());
+        const std::string scene = brokenRoot + "/scenes/x.scene.json";
+        const ContainmentVerdict v = resolveSceneContainment(scene, openRoot, /*findOwningProject=*/true);
+        REQUIRE((v.state == SceneContainment::Outside));
+        CHECK(v.owningProjectRoot == normalizeForContainment(brokenRoot));
+        CHECK(v.owningProjectName.empty());
+        // ★ THE ANTI-VACUITY HALF: it reported the BROKEN one, not the readable grandparent.
+        CHECK(v.owningProjectRoot != normalizeForContainment(created.root));
+    }
+
+    SUBCASE("a DIRECTORY named project.json is walked THROUGH, not stopped at") {
+        // This is the is_regular_file discrimination; fileExists (std::filesystem::exists) is true for
+        // a directory and would stop here with a blank name. S19 is the seed.
+        std::filesystem::create_directories(tmp.pathOf("ProjB/vendor/DirManifest/project.json"), ec);
+        std::filesystem::create_directories(tmp.pathOf("ProjB/vendor/DirManifest/scenes"), ec);
+        REQUIRE_FALSE(static_cast<bool>(ec));
+        REQUIRE(std::filesystem::is_directory(tmp.pathOf("ProjB/vendor/DirManifest/project.json"), ec));
+        const std::string scene = created.root + "/vendor/DirManifest/scenes/x.scene.json";
+        const ContainmentVerdict v = resolveSceneContainment(scene, openRoot, /*findOwningProject=*/true);
+        REQUIRE((v.state == SceneContainment::Outside));
+        CHECK(v.owningProjectRoot == normalizeForContainment(created.root));
+        CHECK(v.owningProjectName == "ProjB");
+    }
+
+    SUBCASE("no project anywhere above: both fields empty") {
+        // This arm can only assert "empty" if nothing ABOVE the OS temp directory holds a
+        // project.json -- true on this machine and on every CI lane, and said here rather than
+        // pretended to be structural. `tmp` itself carries none: ProjB is a CHILD of it, not a parent.
+        std::filesystem::create_directories(tmp.pathOf("empty"), ec);
+        REQUIRE_FALSE(static_cast<bool>(ec));
+        const ContainmentVerdict v =
+            resolveSceneContainment(tmp.join("empty/x.scene.json"), openRoot, /*findOwningProject=*/true);
+        REQUIRE((v.state == SceneContainment::Outside));
+        CHECK(v.owningProjectRoot.empty());
+        CHECK(v.owningProjectName.empty());
+    }
+
+    SUBCASE("findOwningProject == false with a project RIGHT THERE: BOTH fields empty") {
+        // D9 at the value level, and the only place the save arm's "no walk is even performed" is
+        // asserted at tier 0. Without it, a findEnclosingProject that never ran at all would pass the
+        // "no project anywhere" arm and could be argued to pass the others.
+        const ContainmentVerdict save = resolveSceneContainment(sceneInProjB, openRoot, /*findOwningProject=*/false);
+        REQUIRE((save.state == SceneContainment::Outside));
+        CHECK(save.owningProjectRoot.empty());
+        CHECK(save.owningProjectName.empty());
+    }
 }
 
 // ---- CN21-CN24: containmentReason, the ONE sentence (D6) ---------------------------------------
