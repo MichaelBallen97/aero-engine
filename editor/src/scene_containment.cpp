@@ -262,7 +262,7 @@ ContainmentVerdict resolveSceneContainment(std::string_view scenePathUtf8, std::
     }
 
     // ---- D8's upward walk. NOT performed for a SAVE (D9): accepting a project offer routes through
-    // adoptProject -> newScene (scene_session.cpp:232) -> World::clear() + CommandStack::clear(),
+    // adoptProject -> newScene (scene_session.cpp:261) -> World::clear() + CommandStack::clear(),
     // which discards the very work being saved. There is nothing to offer, so there is nothing to
     // look up, and a refused save therefore costs no extra filesystem call at all.
     if (findOwningProject) {

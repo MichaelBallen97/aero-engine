@@ -185,6 +185,40 @@ struct FileDialogHost {
     std::string_view projectRoot;  // D20's fallback start directory
 };
 
+// ---- task E.4.2: the containment refusal's own offer (defined in full at the commit that draws the
+// modal; only the NAME is needed here, the DialogChannel precedent at :176-178) -------------------
+struct ContainmentOffer;
+
+// task E.4.2: everything the two scene-file choke points need beyond the path. NON-DEFAULTED at both
+// (D12, E.1.3's rule applied to a 31-expression edit) -- a default would let a future call site
+// silently take the permissive arm, which is a wrong picture with no error and no failing test.
+struct SceneFileContext {
+    // THE OPEN PROJECT'S ROOT, and nothing else. NEVER FileDialogHost::projectRoot, which is bound to
+    // project.scenesRoot() at editor_app.cpp:638-639 and :1130-1132 and would silently check every
+    // scene against <root>/scenes -- refusing anything the user deliberately put in assets/levels/.
+    // scenesRoot() is also MIXED-SEPARATOR on Windows by design (project.hpp:110-115), so half of
+    // that defect is invisible on macOS and Linux forever.
+    //
+    // "" means no project is open, which PERMITS (D5) -- the Welcome window and
+    // `restoreLastProject = false` are real, supported states in which File > Open Scene... is
+    // enabled today (shell_ui.cpp:102 gates the I/O chords on sceneIoAvailable(), not on a project).
+    //
+    // A VIEW into the live ProjectSession, so it is built AT THE CALL EXPRESSION and never hoisted
+    // across a performAction() call: adoptProject replaces `rootPath` in there
+    // (scene_session.cpp:263), and a hoisted view would dangle. That is 2.6.1's
+    // FileDialogHost::projectRoot lesson applied a second time, and CN19 is its source-text pin.
+    std::string_view projectRoot;
+
+    // OUT, OPTIONAL. A refusal fills it and raises the modal; nullptr means "refuse to the log and
+    // raise nothing", which is what every test and every non-UI caller wants.
+    ContainmentOffer* offer = nullptr;
+};
+
+// The permissive value, SPELLED (D12). Every test call site names this; editor/src names it ZERO
+// times and CN20 asserts so, so a production site taking the permissive arm is a FAILING TEST rather
+// than something a code-review round has to notice.
+inline constexpr SceneFileContext NO_PROJECT_SCENE_CONTEXT{};
+
 // ---- the New Project form and the project flow's own state (task 2.6.1, §3.6) -------------------
 struct NewProjectForm {
     // STATE -- owned by the flow, edited by the modal's own widgets.
@@ -278,14 +312,20 @@ struct FileFlow {
 // scene was replaced. LOGS: one ERROR on any failure (naming the path, plus line/column when
 // line > 0); one INFO on success carrying the four SceneLoadReport counts; one additional WARN iff
 // skipped + failed > 0 (D21). This and saveSceneFile are the ONLY places task 2.5.1 logs.
+// task E.4.2: refuses BEFORE any I/O when `fileContext` says the path is outside the open project
+// (D6): one ERROR, false, and readTextFile is never called.
 [[nodiscard]] bool openSceneFile(CommandContext& context, CommandStack& commands, SceneSession& session,
-                                 std::string_view absolutePathUtf8);
+                                 std::string_view absolutePathUtf8, const SceneFileContext& fileContext);
 
 // Serialize, apply D13's extension rule when `appendExtension`, write atomically, and on success set
 // the path and mark the history CLEAN. Returns true iff the file was written. Logs exactly one ERROR
 // on failure and NOTHING on success.
+// task E.4.2: refuses BEFORE serialization when `fileContext` says the target is outside the open
+// project (D6/D7) -- the extension rule is applied first, so the check runs on the file that will
+// actually be written.
 [[nodiscard]] bool saveSceneFile(CommandContext& context, CommandStack& commands, SceneSession& session,
-                                 std::string_view absolutePathUtf8, bool appendExtension);
+                                 std::string_view absolutePathUtf8, bool appendExtension,
+                                 const SceneFileContext& fileContext);
 
 // ---- the two project-opening logging actions (task 2.6.1; mirrors openSceneFile/saveSceneFile as
 // the ONLY other places this task logs) -----------------------------------------------------------

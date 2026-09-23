@@ -11,9 +11,10 @@
 #include <aero/editor/console_model.hpp>
 #include <aero/editor/entity_commands.hpp>
 #include <aero/editor/entity_ops.hpp>
-#include <aero/editor/project.hpp>        // task E.4.1 (PJ44-PJ53): createProject, ProjectSession, the
-                                          // ProjectContext the restore path needs
-#include <aero/editor/project_state.hpp>  // task E.4.1: writeProjectState, to SEED a record
+#include <aero/editor/project.hpp>            // task E.4.1 (PJ44-PJ53): createProject, ProjectSession, the
+                                              // ProjectContext the restore path needs
+#include <aero/editor/project_state.hpp>      // task E.4.1: writeProjectState, to SEED a record
+#include <aero/editor/scene_containment.hpp>  // task E.4.2: the verdict IO21 asserts directly
 #include <aero/editor/scene_session.hpp>
 #include <aero/editor/selection.hpp>
 #include <aero/editor/text_file.hpp>  // task E.4.1: writeTextFileAtomic / fileExists
@@ -389,6 +390,7 @@ TEST_CASE("scene_io: names survive, including an entity with no name (IO10)") {
 // ---- IO11-IO14: the flow through real files (task 2.5.1 step 5) -----------------------------------
 
 TEST_CASE("scene_io: save -> open round trip through the flow (IO11/AC-10/AC-15/AC-20)") {
+    using engine::editor::NO_PROJECT_SCENE_CONTEXT;
     using engine::editor::openSceneFile;
     using engine::editor::saveSceneFile;
 
@@ -403,7 +405,7 @@ TEST_CASE("scene_io: save -> open round trip through the flow (IO11/AC-10/AC-15/
     CommandContext ctx{world, selection, roots};
     engine::editor::SceneSession session;
 
-    REQUIRE(saveSceneFile(ctx, commands, session, path, /*appendExtension=*/false));
+    REQUIRE(saveSceneFile(ctx, commands, session, path, /*appendExtension=*/false, NO_PROJECT_SCENE_CONTEXT));
     CHECK(commands.isClean());
     CHECK(session.path() == path);
 
@@ -413,13 +415,14 @@ TEST_CASE("scene_io: save -> open round trip through the flow (IO11/AC-10/AC-15/
     REQUIRE(extra.valid());
     REQUIRE(world.entityCount() == 5);
 
-    REQUIRE(openSceneFile(ctx, commands, session, path));
+    REQUIRE(openSceneFile(ctx, commands, session, path, NO_PROJECT_SCENE_CONTEXT));
     CHECK(world.entityCount() == 4);  // the mutation is gone
     CHECK(commands.isClean());
     CHECK(commands.count() == 0);
 }
 
 TEST_CASE("scene_io: a failed save does not lie (IO12/AC-21/S22)") {
+    using engine::editor::NO_PROJECT_SCENE_CONTEXT;
     using engine::editor::saveSceneFile;
 
     const LogFixture fixture;
@@ -447,7 +450,7 @@ TEST_CASE("scene_io: a failed save does not lie (IO12/AC-21/S22)") {
     scope.sink()->take(records);
     records.clear();
 
-    const bool ok = saveSceneFile(ctx, commands, session, path, /*appendExtension=*/false);
+    const bool ok = saveSceneFile(ctx, commands, session, path, /*appendExtension=*/false, NO_PROJECT_SCENE_CONTEXT);
 
     CHECK_FALSE(ok);
     scope.sink()->take(records);
@@ -457,6 +460,7 @@ TEST_CASE("scene_io: a failed save does not lie (IO12/AC-21/S22)") {
 }
 
 TEST_CASE("scene_io: D13's refusal -- appending the extension never overwrites silently (IO13/AC-22)") {
+    using engine::editor::NO_PROJECT_SCENE_CONTEXT;
     using engine::editor::saveSceneFile;
     using engine::editor::writeTextFileAtomic;
 
@@ -479,7 +483,8 @@ TEST_CASE("scene_io: D13's refusal -- appending the extension never overwrites s
     records.clear();
 
     const std::string bareName = dir.join("x");
-    const bool refused = saveSceneFile(ctx, commands, session, bareName, /*appendExtension=*/true);
+    const bool refused =
+        saveSceneFile(ctx, commands, session, bareName, /*appendExtension=*/true, NO_PROJECT_SCENE_CONTEXT);
     CHECK_FALSE(refused);
     scope.sink()->take(records);
     CHECK(countAtLevel(records, engine::LogLevel::Error) == 1);
@@ -489,7 +494,7 @@ TEST_CASE("scene_io: D13's refusal -- appending the extension never overwrites s
     CHECK(*afterRefusal.text == "PRE-EXISTING");  // byte-identical -- nothing was written
 
     // The SAME call with appendExtension=false writes the bare name literally (D15's hook contract).
-    CHECK(saveSceneFile(ctx, commands, session, bareName, /*appendExtension=*/false));
+    CHECK(saveSceneFile(ctx, commands, session, bareName, /*appendExtension=*/false, NO_PROJECT_SCENE_CONTEXT));
     CHECK(session.path() == bareName);
 }
 
@@ -498,6 +503,7 @@ TEST_CASE("scene_io: openSceneFile logs exactly one INFO and zero WARN on a clea
     // IO11 (which drives openSceneFile through a real file) installs no LogSinkScope at all, IO6 calls
     // openSceneText directly (which by design never logs), and IO14 counts ERRORs only. This closes the
     // gap for the clean-load half: exactly one INFO, zero WARN.
+    using engine::editor::NO_PROJECT_SCENE_CONTEXT;
     using engine::editor::openSceneFile;
     using engine::editor::saveSceneFile;
 
@@ -516,7 +522,8 @@ TEST_CASE("scene_io: openSceneFile logs exactly one INFO and zero WARN on a clea
     CommandContext seedCtx{seedWorld, seedSelection, seedRoots};  // a PRVALUE cannot bind to
                                                                   // saveSceneFile's CommandContext&
     engine::editor::SceneSession seedSession;
-    REQUIRE(saveSceneFile(seedCtx, seedCommands, seedSession, path, /*appendExtension=*/false));
+    REQUIRE(
+        saveSceneFile(seedCtx, seedCommands, seedSession, path, /*appendExtension=*/false, NO_PROJECT_SCENE_CONTEXT));
 
     engine::World world;
     Selection selection;
@@ -528,7 +535,7 @@ TEST_CASE("scene_io: openSceneFile logs exactly one INFO and zero WARN on a clea
     scope.sink()->take(records);
     records.clear();
 
-    REQUIRE(openSceneFile(ctx, commands, session, path));
+    REQUIRE(openSceneFile(ctx, commands, session, path, NO_PROJECT_SCENE_CONTEXT));
 
     scope.sink()->take(records);
     CHECK(countAtLevel(records, engine::LogLevel::Info) == 1);
@@ -539,6 +546,7 @@ TEST_CASE("scene_io: openSceneFile logs exactly one INFO and zero WARN on a clea
 TEST_CASE(
     "scene_io: openSceneFile logs one INFO AND at least one WARN when a component is skipped "
     "(IO16/AC-14/D21)") {
+    using engine::editor::NO_PROJECT_SCENE_CONTEXT;
     using engine::editor::openSceneFile;
     using engine::editor::writeTextFileAtomic;
 
@@ -566,7 +574,7 @@ TEST_CASE(
     scope.sink()->take(records);
     records.clear();
 
-    REQUIRE(openSceneFile(ctx, commands, session, path));
+    REQUIRE(openSceneFile(ctx, commands, session, path, NO_PROJECT_SCENE_CONTEXT));
 
     scope.sink()->take(records);
     CHECK(countAtLevel(records, engine::LogLevel::Info) == 1);
@@ -580,6 +588,7 @@ TEST_CASE(
 }
 
 TEST_CASE("scene_io: a malformed file through the flow changes nothing (IO14/AC-11/AC-12)") {
+    using engine::editor::NO_PROJECT_SCENE_CONTEXT;
     using engine::editor::openSceneFile;
     using engine::editor::writeTextFileAtomic;
 
@@ -605,7 +614,7 @@ TEST_CASE("scene_io: a malformed file through the flow changes nothing (IO14/AC-
     scope.sink()->take(records);
     records.clear();
 
-    CHECK_FALSE(openSceneFile(ctx, commands, session, malformedPath));
+    CHECK_FALSE(openSceneFile(ctx, commands, session, malformedPath, NO_PROJECT_SCENE_CONTEXT));
     scope.sink()->take(records);
     CHECK(countAtLevel(records, engine::LogLevel::Error) == 1);
     CHECK(world.entityCount() == countBefore);
@@ -616,7 +625,8 @@ TEST_CASE("scene_io: a malformed file through the flow changes nothing (IO14/AC-
     CHECK(session.path() == "/some/other/path.scene.json");
 
     records.clear();
-    CHECK_FALSE(openSceneFile(ctx, commands, session, dir.join("definitely-missing.scene.json")));
+    CHECK_FALSE(
+        openSceneFile(ctx, commands, session, dir.join("definitely-missing.scene.json"), NO_PROJECT_SCENE_CONTEXT));
     scope.sink()->take(records);
     CHECK(countAtLevel(records, engine::LogLevel::Error) == 1);
     CHECK(world.entityCount() == countBefore);
@@ -976,4 +986,217 @@ TEST_CASE("scene_io: a guarded Save that CHAINS into a project open hands off th
     // project has a state file after the chain, however loudly the pair above says what to record.
     CHECK_FALSE(engine::editor::fileExists(a.root + "/Library/editor-state.json"));
     CHECK_FALSE(engine::editor::fileExists(b.root + "/Library/editor-state.json"));
+}
+
+// ---- IO17-IO21: task E.4.2, the PERMITTED path end to end (reflect-ON only) -----------------------
+
+namespace {
+
+// The u8-bytes path constructor, TU-local like every other helper here. NEVER the narrow-char
+// std::filesystem::path constructor, which assumes the active code page on Windows.
+[[nodiscard]] std::filesystem::path pathOfUtf8(std::string_view utf8) {
+    const std::u8string bytes(reinterpret_cast<const char8_t*>(utf8.data()), utf8.size());
+    return std::filesystem::path(bytes);
+}
+
+// True iff ANY record's message contains `needle` -- used only for NEGATIVE claims about containment
+// wording, so a permitted path is proven to have logged none of it.
+[[nodiscard]] bool anyMessageContains(const std::vector<engine::editor::LogEntry>& records, std::string_view needle) {
+    return std::any_of(records.begin(), records.end(), [needle](const engine::editor::LogEntry& e) {
+        return e.message.find(needle) != std::string::npos;
+    });
+}
+
+}  // namespace
+
+TEST_CASE("scene_io: a scene inside a real project round-trips (IO17, AC-1/AC-2)") {
+    using engine::editor::openSceneFile;
+    using engine::editor::saveSceneFile;
+    using engine::editor::SceneFileContext;
+
+    const TempDir dir;
+    // Built with createProject(), not a hand-made directory: the root must be the same value
+    // loadProjectFrom would produce, and createProject is what produces it (project_file.cpp:201-202
+    // absolutises). A hand-made root would test a string this editor never actually holds.
+    //
+    // ★ THIS CASE IS ALSO THE ONE THAT PROVES THE CANONICAL RESCUE IS LOAD-BEARING IN THIS TREE:
+    //   created.root is under TMPDIR, which on macOS is /var/folders/... while its realpath is
+    //   /private/var/folders/.... If it ever goes red with a refusal, the rescue is the first thing
+    //   to look at.
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(dir.utf8(), "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    const std::string target = created.root + "/scenes/level1.scene.json";
+    const SceneFileContext inProject{created.root, nullptr};
+
+    engine::World world;
+    engine::editor::seedDefaultScene(world);
+    Selection selection;
+    RootOrder roots;
+    CommandStack commands;
+    CommandContext ctx{world, selection, roots};
+    engine::editor::SceneSession session;
+
+    REQUIRE(saveSceneFile(ctx, commands, session, target, /*appendExtension=*/false, inProject));
+    CHECK(commands.isClean());
+    CHECK(session.path() == target);
+
+    REQUIRE(engine::editor::createEntity(world, {}, "Extra").valid());
+    REQUIRE(world.entityCount() == 5);
+    REQUIRE(openSceneFile(ctx, commands, session, target, inProject));
+    CHECK(world.entityCount() == 4);
+    CHECK(commands.isClean());
+    CHECK(commands.count() == 0);
+    CHECK(session.path() == target);
+}
+
+TEST_CASE("scene_io: a nested subdirectory of the ROOT is permitted, not only <root>/scenes (IO18, D1)") {
+    using engine::editor::openSceneFile;
+    using engine::editor::saveSceneFile;
+    using engine::editor::SceneFileContext;
+
+    const TempDir dir;
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(dir.utf8(), "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    std::error_code ec;
+    std::filesystem::create_directories(pathOfUtf8(created.root + "/assets/levels"), ec);
+    REQUIRE_FALSE(static_cast<bool>(ec));
+    const SceneFileContext inProject{created.root, nullptr};
+
+    engine::World world;
+    engine::editor::seedDefaultScene(world);
+    Selection selection;
+    RootOrder roots;
+    CommandStack commands;
+    CommandContext ctx{world, selection, roots};
+    CommandContext& c = ctx;
+    engine::editor::SceneSession session;
+
+    // <root>/assets/levels/deep.scene.json -- OUTSIDE <root>/scenes, INSIDE <root>. The one case that
+    // reddens under S13 (building the context from scenesRoot() instead of root()), which is the single
+    // most likely accidental defect in the whole task.
+    const std::string deep = created.root + "/assets/levels/deep.scene.json";
+    REQUIRE(saveSceneFile(c, commands, session, deep, /*appendExtension=*/false, inProject));
+    REQUIRE(openSceneFile(c, commands, session, deep, inProject));
+    CHECK(session.path() == deep);
+    // ★ AND THE ANTI-VACUITY ARM: <root>/scenes/x.scene.json ALSO works, so a context that happened to
+    //   be scenesRoot() would pass THIS one and fail only the first -- which is what makes S13 visible
+    //   rather than making the whole case red for any reason at all.
+    const std::string underScenes = created.root + "/scenes/x.scene.json";
+    REQUIRE(saveSceneFile(c, commands, session, underScenes, /*appendExtension=*/false, inProject));
+    CHECK(session.path() == underScenes);
+}
+
+TEST_CASE("scene_io: <root>/Library/ is permitted -- the stated non-goal (IO19, D13.3)") {
+    using engine::editor::saveSceneFile;
+    using engine::editor::SceneFileContext;
+
+    // Pinned so that a later reserved-path policy (E.4.3's) is a DELIBERATE change with a red test,
+    // never a drift. Containment asks ONE question -- is this inside the project -- and Library/ is.
+    const TempDir dir;
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(dir.utf8(), "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    std::error_code ec;
+    std::filesystem::create_directories(pathOfUtf8(created.root + "/Library"), ec);
+    REQUIRE_FALSE(static_cast<bool>(ec));
+
+    engine::World world;
+    engine::editor::seedDefaultScene(world);
+    Selection selection;
+    RootOrder roots;
+    CommandStack commands;
+    CommandContext ctx{world, selection, roots};
+    engine::editor::SceneSession session;
+
+    const std::string inLibrary = created.root + "/Library/scratch.scene.json";
+    REQUIRE(saveSceneFile(ctx, commands, session, inLibrary, /*appendExtension=*/false,
+                          SceneFileContext{created.root, nullptr}));
+    CHECK(engine::editor::fileExists(inLibrary));
+}
+
+TEST_CASE("scene_io: containment is checked on the APPENDED target, not the argument (IO20, D7)") {
+    using engine::editor::saveSceneFile;
+    using engine::editor::SceneFileContext;
+
+    const LogFixture fixture;
+    const TempDir dir;
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(dir.utf8(), "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    const SceneFileContext inProject{created.root, nullptr};
+
+    engine::World world;
+    engine::editor::seedDefaultScene(world);
+    Selection selection;
+    RootOrder roots;
+    CommandStack commands;
+    CommandContext ctx{world, selection, roots};
+    engine::editor::SceneSession session;
+
+    // (a) a BARE name INSIDE the root writes <name>.scene.json.
+    const std::string bareInside = created.root + "/scenes/level2";
+    REQUIRE(saveSceneFile(ctx, commands, session, bareInside, /*appendExtension=*/true, inProject));
+    CHECK(session.path() == bareInside + ".scene.json");
+    CHECK(engine::editor::fileExists(bareInside + ".scene.json"));
+
+    // (b) ★ a BARE name OUTSIDE the root refuses, and the ERROR names the APPENDED target, not the
+    //     bare argument. S18 (check the raw argument, below the serialization as it was) reddens
+    //     exactly this.
+    const engine::editor::LogSinkScope scope;
+    std::vector<engine::editor::LogEntry> records;
+    scope.sink()->take(records);
+    records.clear();
+
+    const std::string bareOutside = dir.join("Other/level3");
+    CHECK_FALSE(saveSceneFile(ctx, commands, session, bareOutside, /*appendExtension=*/true, inProject));
+    scope.sink()->take(records);
+    REQUIRE(countAtLevel(records, engine::LogLevel::Error) == 1);
+    REQUIRE(records.size() >= 1U);
+    CHECK(records.front().message.find("level3.scene.json") != std::string::npos);  // the TARGET
+    // The discriminating half: "level3.scene.json" CONTAINS "level3", so a find("level3") check would
+    // pass either way. Match the quote that closes the path, which only the bare spelling produces.
+    CHECK(records.front().message.find("level3'") == std::string::npos);
+    CHECK(session.path() == bareInside + ".scene.json");  // and (a)'s binding survived the refusal
+}
+
+TEST_CASE("scene_io: the project-restore path is Contained BY CONSTRUCTION (IO21, task E.4.1 handoff)") {
+    using engine::editor::resolveSceneContainment;
+    using engine::editor::SceneContainment;
+
+    // restoreLastScene hands openSceneFile a path built by absoluteScenePath -> joinUnderRoot against
+    // the SAME root its SceneFileContext carries, so every candidate is lexically inside it with zero
+    // filesystem calls. This case is what stops a future change to absoluteScenePath or joinUnderRoot
+    // silently making EVERY project restore refuse -- the two new call sites pass nullptr for the offer
+    // permanently (restoreLastScene has no FileFlow in scope by design), so a refusal there would be a
+    // single ERROR and a lost scene with no modal and no other symptom.
+    const LogFixture fixture;
+    const engine::editor::LogSinkScope scope;
+    std::vector<engine::editor::LogEntry> records;
+
+    const TempDir dir;
+    const SceneProject project = makeSceneProject(dir, {{"scenes/a.scene.json", 2}});
+    REQUIRE(
+        engine::editor::writeProjectState(
+            project.root, engine::editor::ProjectState{.lastScene = "scenes/a.scene.json", .lastSceneRecorded = true})
+            .empty());
+
+    FlowFixture f;
+    SceneSession session;
+    scope.sink()->take(records);
+    records.clear();
+
+    REQUIRE(engine::editor::openProjectPath(f.ctx, f.commands, session, f.project, project.root));
+
+    CHECK(session.path() == project.root + "/scenes/a.scene.json");  // it LOADED
+    CHECK(f.world.entityCount() == 6);                               // four seeded + two extras
+    scope.sink()->take(records);
+    CHECK(countAtLevel(records, engine::LogLevel::Error) == 0);
+    CHECK_FALSE(anyMessageContains(records, "outside the open project"));
+    CHECK_FALSE(anyMessageContains(records, "must be saved inside"));
+    CHECK_FALSE(anyMessageContains(records, "could not be resolved"));
+
+    // ★ THE ANTI-VACUITY ARM, and what makes this an assertion rather than a coincidence: the same
+    //   path, judged directly, is Contained -- so "it loaded" is known to be BECAUSE containment
+    //   permitted, not merely alongside it.
+    CHECK((resolveSceneContainment(engine::editor::absoluteScenePath(project.root, "scenes/a.scene.json"), project.root,
+                                   /*findOwningProject=*/false)
+               .state == SceneContainment::Contained));
 }

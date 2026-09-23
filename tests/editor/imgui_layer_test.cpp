@@ -16371,8 +16371,17 @@ TEST_CASE("editor: a read-only Library WARNs ONCE across ten ticks, not once per
     app.reset();
 }
 
-TEST_CASE("editor: a scene opened from OUTSIDE the project root records \"\" (task E.4.1, I183, seed S4)") {
-    // D3's case, and the one that would silently record an ABSOLUTE path under seed S4.
+TEST_CASE("editor: a scene from OUTSIDE the project root is REFUSED (task E.4.1 I183, task E.4.2)") {
+    // E.4.1 wrote this as D3's end-to-end case -- the one that would silently record an ABSOLUTE
+    // path under its seed S4 -- and its own assertion read "it DID open -- nothing refuses it
+    // today". TASK E.4.2 IS WHAT MADE THAT SENTENCE FALSE: openSceneFile now resolves containment
+    // BEFORE any I/O and refuses a path outside the open project, so the out-of-project open never
+    // happens and D3's "record \"\"" arm is no longer reachable from the editor at all.
+    //
+    // projectRelativeScenePath's forget-on-doubt rule is UNCHANGED and keeps its tier-0 cover in
+    // PJ13/PJ14 (project_state_test.cpp:252-276), which is where seed S4 is still caught. What this
+    // case asserts now is the refusal's own consequence: the session, the recorded position and the
+    // write count are all exactly what they were before the request.
     engine::platform::Context ctx;
     if (!ctx.valid()) {
         AERO_SKIP_OR_FAIL("no platform context");
@@ -16412,14 +16421,18 @@ TEST_CASE("editor: a scene opened from OUTSIDE the project root records \"\" (ta
     REQUIRE(app->scenePath() == root + "/scenes/a.scene.json");
     const std::string outside = uniqueScenePath("-outside.scene.json");
     REQUIRE(engine::editor::writeTextFileAtomic(outside, startupSceneText(3)).empty());
+    // IT EXISTS AND IT IS LOADABLE: the refusal below is containment's, never "no such file" and never
+    // a parse failure. Without this arm the case would pass for a reason that has nothing to do with
+    // the rule it is about.
+    REQUIRE(engine::editor::fileExists(outside));
     const std::size_t before = app->projectStateWriteCount();
     app->requestOpenScene(outside);
     REQUIRE(app->tick());
-    REQUIRE(app->scenePath() == outside);                 // it DID open -- nothing refuses it today
-    CHECK(app->projectStateWriteCount() == before + 1U);  // and the change WAS recorded
+    CHECK(app->scenePath() == root + "/scenes/a.scene.json");  // UNCHANGED -- the open was refused
+    CHECK(app->projectStateWriteCount() == before);            // no scene change, so nothing recorded
     const std::optional<engine::editor::ProjectState> state = readStateOf(root);
     REQUIRE(state.has_value());
-    CHECK(state->lastScene.empty());  // as "" -- a forgotten position, never a path out of the project
+    CHECK(state->lastScene == "scenes/a.scene.json");  // the project's own scene, still recorded
     CHECK(state->lastSceneRecorded);
 
     app->requestQuit();

@@ -4,9 +4,10 @@
 // serialization bridge live in text_file.cpp / scene_io.cpp instead (D19/F17, F9's gate).
 #include <aero/core/log.hpp>
 #include <aero/editor/entity_ops.hpp>
-#include <aero/editor/project_state.hpp>  // task E.4.1: the per-project state, its resolver and its
-                                          // path arithmetic. ProjectSession itself arrives through
-                                          // scene_session.hpp -> project.hpp.
+#include <aero/editor/project_state.hpp>      // task E.4.1: the per-project state, its resolver and its
+                                              // path arithmetic. ProjectSession itself arrives through
+                                              // scene_session.hpp -> project.hpp.
+#include <aero/editor/scene_containment.hpp>  // task E.4.2: the containment verdict and its one sentence
 #include <aero/editor/scene_session.hpp>
 #include <aero/editor/selection.hpp>
 #include <aero/scene/world.hpp>
@@ -167,8 +168,18 @@ void newScene(CommandContext& context, CommandStack& commands) {
 // ---- the two logging actions (A30: the ONLY two places this task logs) ---------------------------
 
 bool openSceneFile(CommandContext& context, CommandStack& commands, SceneSession& session,
-                   std::string_view absolutePathUtf8) {
+                   std::string_view absolutePathUtf8, const SceneFileContext& fileContext) {
     const std::string path(absolutePathUtf8);
+    // task E.4.2 (D6): FIRST -- before readTextFile, so a refused open performs NO I/O AT ALL and
+    // leaves the World, the Selection, the RootOrder, the clean flag and session.path() byte-identical
+    // (AC-4). findOwningProject = TRUE: an open is the one refusal that can offer a project (D9).
+    const ContainmentVerdict verdict =
+        resolveSceneContainment(path, fileContext.projectRoot, /*findOwningProject=*/true);
+    if (!containmentPermits(verdict.state)) {
+        const std::string reason = containmentReason(verdict, fileContext.projectRoot, /*forSave=*/false);
+        AERO_LOG_ERROR("editor: could not open scene '{}' -- {}", path, reason);  // exactly ONE
+        return false;
+    }
     const FileReadResult read = readTextFile(path);
     if (!read.text.has_value()) {
         AERO_LOG_ERROR("editor: could not open scene '{}' -- {}", path, read.error);
@@ -194,13 +205,31 @@ bool openSceneFile(CommandContext& context, CommandStack& commands, SceneSession
 }
 
 bool saveSceneFile(CommandContext& context, CommandStack& commands, SceneSession& session,
-                   std::string_view absolutePathUtf8, bool appendExtension) {
+                   std::string_view absolutePathUtf8, bool appendExtension, const SceneFileContext& fileContext) {
+    // task E.4.2 (D7): the extension rule MOVES ABOVE the serialization, so containment is checked on
+    // the file that will actually be WRITTEN rather than on the argument. Both live in the same
+    // directory, so today the verdict is the same either way -- but checking the written thing is the
+    // only version of this that stays true if withSceneExtension ever changes. IO20 pins it; S18 seeds
+    // the raw argument back in.
+    const std::string target = appendExtension ? withSceneExtension(absolutePathUtf8) : std::string(absolutePathUtf8);
+    // findOwningProject = FALSE (D9): a refused save NEVER offers a project, because accepting one
+    // routes through adoptProject (:259-267) -> newScene (:261) -> World::clear() +
+    // CommandStack::clear() and would discard the very work being saved. There is nothing to offer, so
+    // there is nothing to look up, and a refused save costs no extra filesystem call at all.
+    const ContainmentVerdict verdict =
+        resolveSceneContainment(target, fileContext.projectRoot, /*findOwningProject=*/false);
+    if (!containmentPermits(verdict.state)) {
+        const std::string reason = containmentReason(verdict, fileContext.projectRoot, /*forSave=*/true);
+        AERO_LOG_ERROR("editor: could not save scene '{}' -- {}", target, reason);
+        return false;  // NO setClean, NO setPath -- a save that lies is the worst outcome here (R4)
+    }
     const std::optional<std::string> text = sceneToText(context.world);
     if (!text.has_value()) {
-        AERO_LOG_ERROR("editor: could not save scene '{}' -- {}", absolutePathUtf8, "built without AERO_REFLECT_TOOLS");
+        // task E.4.2: names `target`, not the argument -- `target` now exists above and the D13 refusal
+        // two lines below already names it, so one function would otherwise spell "the file" two ways.
+        AERO_LOG_ERROR("editor: could not save scene '{}' -- {}", target, "built without AERO_REFLECT_TOOLS");
         return false;
     }
-    const std::string target = appendExtension ? withSceneExtension(absolutePathUtf8) : std::string(absolutePathUtf8);
     // D13's existence check fires ONLY when the extension was actually appended -- if the user typed a
     // name that already has one, the native panel already asked about overwriting.
     if (appendExtension && target != absolutePathUtf8 && fileExists(target)) {
@@ -285,10 +314,11 @@ void restoreLastScene(CommandContext& ctx, CommandStack& commands, SceneSession&
             // scene untouched (PARSE FIRST, THEN SWAP -- scene_io.cpp's rule; openSceneFile calls
             // setPath only after the load succeeded). That IS D6's "stop": it needs no code, only the
             // absence of a second try.
-            (void)openSceneFile(ctx, commands, session, recordedAbsolute);
+            (void)openSceneFile(ctx, commands, session, recordedAbsolute, SceneFileContext{root, nullptr});
             return;
         case StartupScene::FirstUnderScenes:
-            (void)openSceneFile(ctx, commands, session, absoluteScenePath(root, firstRelative));
+            (void)openSceneFile(ctx, commands, session, absoluteScenePath(root, firstRelative),
+                                SceneFileContext{root, nullptr});
             return;
     }
 }
@@ -378,7 +408,8 @@ void performAction(FileAction action, CommandContext& context, CommandStack& com
             if (!flow.requestedPath.empty()) {  // D15's test seam: skip the dialog, use this path
                 const std::string path = flow.requestedPath;
                 flow.requestedPath.clear();
-                (void)openSceneFile(context, commands, session, path);
+                (void)openSceneFile(context, commands, session, path,
+                                    SceneFileContext{project.session.root(), nullptr});
                 return;
             }
             if (host.channel != nullptr) {
@@ -394,7 +425,8 @@ void performAction(FileAction action, CommandContext& context, CommandStack& com
             if (!flow.requestedPath.empty()) {
                 const std::string path = flow.requestedPath;
                 flow.requestedPath.clear();
-                (void)saveSceneFile(context, commands, session, path, /*appendExtension=*/false);
+                (void)saveSceneFile(context, commands, session, path, /*appendExtension=*/false,
+                                    SceneFileContext{project.session.root(), nullptr});
                 return;
             }
             if (host.channel != nullptr) {
@@ -517,7 +549,8 @@ void applyFileRequests(CommandContext& context, CommandStack& commands, SceneSes
                 break;
             }
             case FileStep::WriteNow: {  // Save, titled
-                const bool ok = saveSceneFile(context, commands, session, session.path(), /*appendExtension=*/false);
+                const bool ok = saveSceneFile(context, commands, session, session.path(), /*appendExtension=*/false,
+                                              SceneFileContext{project.session.root(), nullptr});
                 const FileAction pending = flow.pending;
                 flow.pending = FileAction::None;
                 if (ok) {
@@ -589,7 +622,8 @@ void applyFileRequests(CommandContext& context, CommandStack& commands, SceneSes
     if (action == FileAction::SaveScene) {
         switch (saveStep(session.untitled())) {
             case FileStep::WriteNow:
-                (void)saveSceneFile(context, commands, session, session.path(), /*appendExtension=*/false);
+                (void)saveSceneFile(context, commands, session, session.path(), /*appendExtension=*/false,
+                                    SceneFileContext{project.session.root(), nullptr});
                 return;
             case FileStep::AskWhereToSave:
                 // BLOCKING-1 (code review): no hook ever sets `flow.requestedPath` for a plain SaveScene
@@ -668,7 +702,7 @@ void applyDialogResult(CommandContext& context, CommandStack& commands, SceneSes
         return;
     }
     if (kind == DialogKind::Open) {
-        (void)openSceneFile(context, commands, session, result.path);
+        (void)openSceneFile(context, commands, session, result.path, SceneFileContext{project.session.root(), nullptr});
         flow.pending = FileAction::None;
         return;
     }
@@ -695,7 +729,8 @@ void applyDialogResult(CommandContext& context, CommandStack& commands, SceneSes
     }
     // kind == DialogKind::Save. appendExtension is true ONLY here -- a native Save panel is the one
     // place a user can type a bare name (D13); requestSaveSceneAs(path) hands a path literally.
-    const bool ok = saveSceneFile(context, commands, session, result.path, /*appendExtension=*/true);
+    const bool ok = saveSceneFile(context, commands, session, result.path, /*appendExtension=*/true,
+                                  SceneFileContext{project.session.root(), nullptr});
     if (ok && flow.saveBeforePending) {
         performAction(flow.pending, context, commands, session, flow, host, project);
     }

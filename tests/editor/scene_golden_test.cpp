@@ -41,6 +41,7 @@
 
 using engine::editor::CommandContext;
 using engine::editor::CommandStack;
+using engine::editor::NO_PROJECT_SCENE_CONTEXT;
 using engine::editor::openSceneFile;
 using engine::editor::readTextFile;
 using engine::editor::RootOrder;
@@ -172,7 +173,7 @@ TEST_CASE("scene_golden/editor: openSceneFile loads each golden cleanly (EG2/AC-
         REQUIRE(ed.commands.push(ed.context, std::move(dirty)));
         REQUIRE_FALSE(ed.commands.isClean());
 
-        REQUIRE(openSceneFile(ed.context, ed.commands, ed.session, fixture.path));
+        REQUIRE(openSceneFile(ed.context, ed.commands, ed.session, fixture.path, NO_PROJECT_SCENE_CONTEXT));
         CHECK(ed.world.entityCount() == fixture.entities);
         CHECK(ed.commands.isClean());  // a fresh load is a saved document by definition
         CHECK(ed.commands.count() == 0);
@@ -192,10 +193,11 @@ TEST_CASE("scene_golden/editor: a save writes the fixture's exact bytes back (EG
         REQUIRE_MESSAGE(source.ok, source.error);
 
         EditorFixture ed;
-        REQUIRE(openSceneFile(ed.context, ed.commands, ed.session, fixture.path));
+        REQUIRE(openSceneFile(ed.context, ed.commands, ed.session, fixture.path, NO_PROJECT_SCENE_CONTEXT));
 
         const std::string target = dir.join(std::string{fixture.name} + ".scene.json");
-        REQUIRE(saveSceneFile(ed.context, ed.commands, ed.session, target, /*appendExtension=*/false));
+        REQUIRE(saveSceneFile(ed.context, ed.commands, ed.session, target, /*appendExtension=*/false,
+                              NO_PROJECT_SCENE_CONTEXT));
         CHECK(ed.session.path() == target);
         // NO isClean() assertion here, deliberately. The open above already left the stack clean and
         // nothing between them dirties it, so the check would pass with saveSceneFile's setClean()
@@ -236,13 +238,15 @@ TEST_CASE("scene_golden/editor: a written file re-opens and re-saves identically
         const std::string second = dir.join(std::string{fixture.name} + "-2.scene.json");
         {
             EditorFixture ed;
-            REQUIRE(openSceneFile(ed.context, ed.commands, ed.session, fixture.path));
-            REQUIRE(saveSceneFile(ed.context, ed.commands, ed.session, first, /*appendExtension=*/false));
+            REQUIRE(openSceneFile(ed.context, ed.commands, ed.session, fixture.path, NO_PROJECT_SCENE_CONTEXT));
+            REQUIRE(saveSceneFile(ed.context, ed.commands, ed.session, first, /*appendExtension=*/false,
+                                  NO_PROJECT_SCENE_CONTEXT));
         }
         {
             EditorFixture ed;
-            REQUIRE(openSceneFile(ed.context, ed.commands, ed.session, first));
-            REQUIRE(saveSceneFile(ed.context, ed.commands, ed.session, second, /*appendExtension=*/false));
+            REQUIRE(openSceneFile(ed.context, ed.commands, ed.session, first, NO_PROJECT_SCENE_CONTEXT));
+            REQUIRE(saveSceneFile(ed.context, ed.commands, ed.session, second, /*appendExtension=*/false,
+                                  NO_PROJECT_SCENE_CONTEXT));
         }
         const engine::editor::FileReadResult a = readTextFile(first);
         const engine::editor::FileReadResult b = readTextFile(second);
@@ -264,17 +268,18 @@ TEST_CASE("scene_golden/editor: a New Scene between two opens leaves no residue 
     REQUIRE_MESSAGE(source.ok, source.error);
 
     EditorFixture ed;
-    REQUIRE(openSceneFile(ed.context, ed.commands, ed.session, GOLDEN_FULL));
+    REQUIRE(openSceneFile(ed.context, ed.commands, ed.session, GOLDEN_FULL, NO_PROJECT_SCENE_CONTEXT));
     REQUIRE(ed.world.entityCount() == 8);
 
     engine::editor::newScene(ed.context, ed.commands);
     CHECK(ed.world.entityCount() == 4);  // the four seed entities, and nothing from `full`
 
-    REQUIRE(openSceneFile(ed.context, ed.commands, ed.session, GOLDEN_FULL));
+    REQUIRE(openSceneFile(ed.context, ed.commands, ed.session, GOLDEN_FULL, NO_PROJECT_SCENE_CONTEXT));
     CHECK(ed.world.entityCount() == 8);  // 8, never 11
 
     const std::string target = dir.join("after-new.scene.json");
-    REQUIRE(saveSceneFile(ed.context, ed.commands, ed.session, target, /*appendExtension=*/false));
+    REQUIRE(saveSceneFile(ed.context, ed.commands, ed.session, target, /*appendExtension=*/false,
+                          NO_PROJECT_SCENE_CONTEXT));
     const engine::editor::FileReadResult written = readTextFile(target);
     REQUIRE_MESSAGE(written.text.has_value(), written.error);
     INFO(scene_golden::describeMismatch(source.text, *written.text));
@@ -305,7 +310,7 @@ TEST_CASE("scene_golden/editor: opening a golden logs exactly one INFO and no WA
         scope.sink()->take(records);
         records.clear();
 
-        REQUIRE(openSceneFile(ed.context, ed.commands, ed.session, golden.path));
+        REQUIRE(openSceneFile(ed.context, ed.commands, ed.session, golden.path, NO_PROJECT_SCENE_CONTEXT));
 
         scope.sink()->take(records);
         CHECK(countAtLevel(records, engine::LogLevel::Info) == 1);
@@ -329,9 +334,10 @@ TEST_CASE("scene_golden/editor: a non-ASCII target directory round-trips byte-id
     REQUIRE_MESSAGE(source.ok, source.error);
 
     EditorFixture ed;
-    REQUIRE(openSceneFile(ed.context, ed.commands, ed.session, GOLDEN_EDGE));
+    REQUIRE(openSceneFile(ed.context, ed.commands, ed.session, GOLDEN_EDGE, NO_PROJECT_SCENE_CONTEXT));
     const std::string target = sub + "/edge.scene.json";
-    REQUIRE(saveSceneFile(ed.context, ed.commands, ed.session, target, /*appendExtension=*/false));
+    REQUIRE(saveSceneFile(ed.context, ed.commands, ed.session, target, /*appendExtension=*/false,
+                          NO_PROJECT_SCENE_CONTEXT));
 
     const engine::editor::FileReadResult written = readTextFile(target);
     REQUIRE_MESSAGE(written.text.has_value(), written.error);

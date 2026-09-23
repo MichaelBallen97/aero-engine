@@ -25,6 +25,7 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <vector>
 
 using engine::editor::containmentPermits;
 using engine::editor::containmentReason;
@@ -89,6 +90,34 @@ private:
     std::string out(reinterpret_cast<const char*>(bytes.data()), bytes.size());
     std::replace(out.begin(), out.end(), '\\', '/');
     return out;
+}
+
+// Everything after the first `//` removed. CN19 and CN20 both scan comment-stripped text, because the
+// sentences explaining each rule necessarily name the very pattern the rule forbids.
+[[nodiscard]] std::string_view stripLineComment(std::string_view line) {
+    const std::size_t at = line.find("//");
+    return at == std::string_view::npos ? line : line.substr(0, at);
+}
+
+// PU1's instrument (project_test.cpp:1596-1603): read a file through AERO_EDITOR_SRC_DIR and split on
+// '\n'. A missing file is a REQUIRE failure, never a silent skip.
+[[nodiscard]] std::vector<std::string_view> splitLines(const std::string& text) {
+    std::vector<std::string_view> lines;
+    std::string_view remaining = text;
+    while (true) {
+        const std::size_t newline = remaining.find('\n');
+        if (newline == std::string_view::npos) {
+            lines.push_back(remaining);
+            break;
+        }
+        lines.push_back(remaining.substr(0, newline));
+        remaining.remove_prefix(newline + 1U);
+    }
+    return lines;
+}
+
+[[nodiscard]] bool isIdentifierByte(char c) {
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == ':';
 }
 
 }  // namespace
@@ -527,4 +556,140 @@ TEST_CASE("scene_containment: an OPEN's reason has three distinct arms (CN24, D6
     CHECK(named != unnamed);
     CHECK(unnamed != none);
     CHECK(named != none);
+}
+
+// ---- CN19-CN20: the two source-text pins (commit 3) ---------------------------------------------
+
+TEST_CASE("scene_containment: no editor/src file hoists a .root() view into a named local (CN19, D1)") {
+    // project.session.root() returns a VIEW into the live session, and adoptProject replaces `rootPath`
+    // (scene_session.cpp's adoptProject) from INSIDE performAction, so a hoisted local would dangle on
+    // exactly the frame a project swaps -- and ASan would only catch it on such a frame, which is why
+    // this is a TEXT pin rather than a runtime case. S14 is the seed.
+    //
+    // ★ THE PREDICATE IS NARROWED, because the obvious "both tokens on one line" form FALSE-POSITIVES
+    //   ON A CLEAN TREE: editor_app.cpp's `std::string_view EditorApp::projectRoot() const noexcept
+    //   { return project.root(); }` contains both and is entirely legal. A line is a violation iff,
+    //   after its // comment is stripped, it contains `.root()` AND spells `std::string_view` followed
+    //   by an identifier CONTAINING NO `::` and then `=` or `(`. It does NOT ban `.root()` -- there
+    //   are legitimate by-value and by-argument uses all over editor/src, including every one of this
+    //   task's own production call sites.
+    const std::filesystem::path srcDir(AERO_EDITOR_SRC_DIR);
+    REQUIRE(std::filesystem::is_directory(srcDir));
+
+    std::size_t filesScanned = 0;
+    std::size_t linesScanned = 0;
+    std::size_t rootMentions = 0;
+    std::size_t hoistedViewCount = 0;
+    bool sawViewReturningFunction = false;  // POSITIVE CONTROL 1 -- scanned AND classified legal
+    bool sawStringCopyOfRoot = false;       // POSITIVE CONTROL 2 -- the model answer D1 asks for
+
+    std::error_code ec;
+    for (const std::filesystem::directory_entry& entry : std::filesystem::directory_iterator(srcDir, ec)) {
+        if (entry.path().extension() != ".cpp") {
+            continue;
+        }
+        const std::u8string bytes = entry.path().u8string();
+        const std::string pathUtf8(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+        const engine::editor::FileReadResult read = engine::editor::readTextFile(pathUtf8);
+        REQUIRE(read.text.has_value());
+        ++filesScanned;
+        for (const std::string_view raw : splitLines(*read.text)) {
+            ++linesScanned;
+            const std::string_view line = stripLineComment(raw);
+            if (line.find(".root()") == std::string_view::npos) {
+                continue;
+            }
+            ++rootMentions;
+            if (line.find("std::string_view EditorApp::projectRoot") != std::string_view::npos) {
+                sawViewReturningFunction = true;
+            }
+            if (line.find("const std::string root(projectSession.root());") != std::string_view::npos) {
+                sawStringCopyOfRoot = true;
+            }
+            const std::size_t viewAt = line.find("std::string_view");
+            if (viewAt == std::string_view::npos) {
+                continue;  // a by-value or by-argument use: legal, and the common case
+            }
+            std::size_t i = viewAt + std::string_view("std::string_view").size();
+            while (i < line.size() && (line[i] == ' ' || line[i] == '\t')) {
+                ++i;
+            }
+            const std::size_t tokenStart = i;
+            while (i < line.size() && isIdentifierByte(line[i])) {
+                ++i;
+            }
+            const std::string_view token = line.substr(tokenStart, i - tokenStart);
+            if (token.empty() || token.find("::") != std::string_view::npos) {
+                continue;  // a qualified name -- a FUNCTION returning a view, not a local hoisting one
+            }
+            while (i < line.size() && (line[i] == ' ' || line[i] == '\t')) {
+                ++i;
+            }
+            if (i < line.size() && (line[i] == '=' || line[i] == '(')) {
+                CAPTURE(line);
+                ++hoistedViewCount;
+            }
+        }
+    }
+
+    // THE ANTI-VACUITY ARMS. Without them a mis-narrowed predicate is vacuously true for every tree in
+    // the language (HE17's shape): the scan really read files, `.root()` really does appear, and BOTH
+    // named controls were reached and classified legal.
+    REQUIRE(filesScanned > 20U);
+    REQUIRE(linesScanned > 100U);
+    REQUIRE(rootMentions > 0U);
+    CHECK(sawViewReturningFunction);
+    CHECK(sawStringCopyOfRoot);
+    CHECK(hoistedViewCount == 0U);
+}
+
+TEST_CASE("scene_containment: editor/src never spells the permissive context (CN20, D12)") {
+    // `SceneFileContext{}` is an easy thing to type without thinking, so the permissive value has a
+    // NAME and this case asserts that no production file uses it. A production site taking the
+    // permissive arm is therefore a FAILING TEST rather than something a code-review round has to
+    // notice. The scan is over EVERY tracked editor/src/*.cpp, not only scene_session.cpp -- a future
+    // panel calling openSceneFile is exactly the site this protects.
+    constexpr std::string_view TOKEN = "NO_PROJECT_SCENE_CONTEXT";
+    const std::filesystem::path srcDir(AERO_EDITOR_SRC_DIR);
+    REQUIRE(std::filesystem::is_directory(srcDir));
+    // DERIVED, not a second compile definition: AERO_EDITOR_SRC_DIR is <src>/editor/src, so two steps
+    // up and back down is tests/editor. The case asserts the derived directory exists AND holds this
+    // very file, so a repo layout change is a clear failure rather than a silent zero.
+    const std::filesystem::path testsDir = srcDir.parent_path().parent_path() / "tests" / "editor";
+    REQUIRE(std::filesystem::is_directory(testsDir));
+    REQUIRE(std::filesystem::is_regular_file(testsDir / "scene_containment_test.cpp"));
+
+    const auto countIn = [&TOKEN](const std::filesystem::path& dir, std::size_t& files) {
+        std::size_t hits = 0;
+        std::error_code ec;
+        for (const std::filesystem::directory_entry& entry : std::filesystem::directory_iterator(dir, ec)) {
+            if (entry.path().extension() != ".cpp") {
+                continue;
+            }
+            const std::u8string bytes = entry.path().u8string();
+            const std::string pathUtf8(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+            const engine::editor::FileReadResult read = engine::editor::readTextFile(pathUtf8);
+            REQUIRE(read.text.has_value());
+            ++files;
+            for (const std::string_view raw : splitLines(*read.text)) {
+                if (stripLineComment(raw).find(TOKEN) != std::string_view::npos) {
+                    ++hits;
+                }
+            }
+        }
+        return hits;
+    };
+
+    std::size_t productionFiles = 0;
+    std::size_t testFiles = 0;
+    const std::size_t productionHits = countIn(srcDir, productionFiles);
+    const std::size_t testHits = countIn(testsDir, testFiles);
+
+    REQUIRE(productionFiles > 20U);
+    REQUIRE(testFiles > 20U);
+    CHECK(productionHits == 0U);
+    // ★ THE ANTI-VACUITY HALF, and it is the point: without it a one-character typo in the scanned
+    //   token makes `productionHits == 0` true for every tree in the language. A loose bound, so
+    //   adding a test does not redden it, and tight enough that a typo cannot hide behind it.
+    CHECK(testHits > 20U);
 }

@@ -9,6 +9,7 @@
 #include <aero/editor/console_model.hpp>
 #include <aero/editor/entity_commands.hpp>
 #include <aero/editor/entity_ops.hpp>
+#include <aero/editor/scene_containment.hpp>  // task E.4.2: the verdict SS43 asserts directly
 #include <aero/editor/scene_session.hpp>
 #include <aero/editor/selection.hpp>
 #include <aero/scene/scene.hpp>
@@ -1017,4 +1018,204 @@ TEST_CASE(
     CHECK_FALSE(engine::editor::fileExists(orphan.path + ".scene.json"));
     CHECK(f.flow.pending == FileAction::None);
     CHECK_FALSE(f.flow.saveBeforePending);
+}
+
+// ---- SS41-SS46: task E.4.2, the containment refusal at the two choke points -----------------------
+
+namespace {
+
+// True iff ANY record's message contains `needle`. Used only for the NEGATIVE claim "no containment
+// wording was logged", which must hold in every build configuration (SS43). TU-local, like every other
+// helper in this file -- a free function at namespace scope here would have external linkage.
+[[nodiscard]] bool anyMessageContains(const std::vector<engine::editor::LogEntry>& records, std::string_view needle) {
+    return std::any_of(records.begin(), records.end(), [needle](const engine::editor::LogEntry& e) {
+        return e.message.find(needle) != std::string::npos;
+    });
+}
+
+}  // namespace
+
+TEST_CASE("scene_session: a refused open changes nothing and logs exactly one ERROR (SS41, AC-3/AC-4)") {
+    using engine::editor::openSceneFile;
+    using engine::editor::SceneFileContext;
+
+    const LogFixture fixture;  // declared FIRST so it is destroyed LAST
+    const TempDir tmp;
+    const std::string root = tmp.join("ProjA");
+    const std::string foreign = tmp.join("Other/x.scene.json");
+    // ★ NEITHER DIRECTORY IS CREATED AND THE TARGET DOES NOT EXIST. If readTextFile were reached, the
+    //   ERROR would carry the OS's own "no such file" reason instead of the containment reason -- which
+    //   is how this case proves the check ran FIRST, on a consequence rather than a syscall counter.
+    REQUIRE_FALSE(engine::editor::fileExists(foreign));
+
+    engine::World world;
+    engine::editor::seedDefaultScene(world);
+    Selection selection;
+    RootOrder roots;
+    CommandStack commands;
+    CommandContext ctx{world, selection, roots};
+    engine::editor::SceneSession session;
+    session.setPath("/previous/scene.scene.json");
+
+    // CAPTURE BEFORE, compare AFTER -- never "it looks unchanged".
+    const std::size_t entitiesBefore = world.entityCount();
+    const std::size_t commandsBefore = commands.count();
+    const bool cleanBefore = commands.isClean();
+    const std::string pathBefore(session.path());
+    const std::size_t selectedBefore = selection.count();
+
+    const engine::editor::LogSinkScope scope;
+    std::vector<engine::editor::LogEntry> records;
+    scope.sink()->take(records);
+    records.clear();
+
+    CHECK_FALSE(openSceneFile(ctx, commands, session, foreign, SceneFileContext{root, nullptr}));
+
+    scope.sink()->take(records);
+    CHECK(countAtLevel(records, engine::LogLevel::Error) == 1);
+    CHECK(countAtLevel(records, engine::LogLevel::Warn) == 0);
+    CHECK(countAtLevel(records, engine::LogLevel::Info) == 0);
+    // ★ THE ERROR IS THE CONTAINMENT ONE, NOT THE OS'S -- the "readTextFile was never reached"
+    //   assertion, made on a consequence rather than on the call's absence.
+    REQUIRE(records.size() >= 1U);
+    CHECK(records.front().message.find("outside the open project") != std::string::npos);
+    CHECK(records.front().message.find("No such file") == std::string::npos);
+
+    CHECK(world.entityCount() == entitiesBefore);
+    CHECK(commands.count() == commandsBefore);
+    CHECK(commands.isClean() == cleanBefore);
+    CHECK(session.path() == pathBefore);
+    CHECK(selection.count() == selectedBefore);
+}
+
+TEST_CASE("scene_session: a refused save writes nothing, marks nothing clean and rebinds no path (SS42, AC-5)") {
+    using engine::editor::saveSceneFile;
+    using engine::editor::SceneFileContext;
+
+    const LogFixture fixture;
+    const TempDir tmp;
+    const std::string root = tmp.join("ProjA");
+    const std::string foreign = tmp.join("Other/x.scene.json");
+
+    engine::World world;
+    engine::editor::seedDefaultScene(world);
+    Selection selection;
+    RootOrder roots;
+    CommandStack commands;
+    CommandContext ctx{world, selection, roots};
+    // THE STACK STARTS DIRTY, as IO12 does, so "setClean was not called" is not vacuous. A direct World
+    // mutation leaves the stack clean and the assertion would say nothing.
+    const engine::Entity probe = world.create();
+    REQUIRE(commands.push(ctx, std::make_unique<engine::editor::DeleteEntitiesCommand>(
+                                   std::vector<engine::Entity>{probe}, std::vector<engine::Entity>{})));
+    REQUIRE_FALSE(commands.isClean());
+    engine::editor::SceneSession session;
+    session.setPath("/previous/scene.scene.json");
+    const std::string pathBefore(session.path());
+
+    const engine::editor::LogSinkScope scope;
+    std::vector<engine::editor::LogEntry> records;
+    scope.sink()->take(records);
+    records.clear();
+
+    CHECK_FALSE(
+        saveSceneFile(ctx, commands, session, foreign, /*appendExtension=*/false, SceneFileContext{root, nullptr}));
+
+    scope.sink()->take(records);
+    CHECK_FALSE(commands.isClean());                   // setClean was NOT called
+    CHECK(session.path() == pathBefore);               // setPath was NOT called
+    CHECK_FALSE(engine::editor::fileExists(foreign));  // nothing was written
+    CHECK(countAtLevel(records, engine::LogLevel::Error) == 1);
+    REQUIRE(records.size() >= 1U);
+    CHECK(records.front().message.find("must be saved inside the open project") != std::string::npos);
+    CHECK(records.front().message.find("Save Scene As") != std::string::npos);
+    // ★ D9 at the message level: a refused SAVE never names another project, so it can never offer one.
+    CHECK(records.front().message.find("belongs to") == std::string::npos);
+}
+
+TEST_CASE("scene_session: NO_PROJECT_SCENE_CONTEXT permits and logs no containment wording (SS43, D5)") {
+    using engine::editor::lexicalContainment;
+    using engine::editor::NO_PROJECT_SCENE_CONTEXT;
+    using engine::editor::openSceneFile;
+    using engine::editor::saveSceneFile;
+    using engine::editor::SceneContainment;
+
+    const LogFixture fixture;
+    const TempDir tmp;
+    const std::string path = tmp.join("level1.scene.json");
+
+    engine::World world;
+    engine::editor::seedDefaultScene(world);
+    Selection selection;
+    RootOrder roots;
+    CommandStack commands;
+    CommandContext ctx{world, selection, roots};
+    engine::editor::SceneSession session;
+
+    const engine::editor::LogSinkScope scope;
+    std::vector<engine::editor::LogEntry> records;
+    scope.sink()->take(records);
+    records.clear();
+
+    // DELIBERATELY NO CLAIM ABOUT THE ROUND TRIP SUCCEEDING: that needs the serialization bridge and
+    // this TU is ungated, so in a tools-OFF build the save fails with its OWN ERROR. IO17 owns the "and
+    // it really loaded" half. What must hold in EVERY configuration is that nothing refused on
+    // containment grounds.
+    (void)saveSceneFile(ctx, commands, session, path, /*appendExtension=*/false, NO_PROJECT_SCENE_CONTEXT);
+    (void)openSceneFile(ctx, commands, session, path, NO_PROJECT_SCENE_CONTEXT);
+
+    scope.sink()->take(records);
+    CHECK_FALSE(anyMessageContains(records, "outside the open project"));
+    CHECK_FALSE(anyMessageContains(records, "must be saved inside"));
+    CHECK_FALSE(anyMessageContains(records, "could not be resolved"));
+    CHECK_FALSE(anyMessageContains(records, "belongs to"));
+    // ANTI-VACUITY: the sink really was listening -- a tools-OFF build logs one ERROR here and a
+    // tools-ON build logs one INFO, so SOMETHING was recorded in either configuration.
+    CHECK_FALSE(records.empty());
+    // AND the permissive verdict, asserted directly at the predicate, which works in every configuration.
+    CHECK((lexicalContainment(tmp.join("anywhere/x.scene.json"), "") == SceneContainment::NoProject));
+}
+
+TEST_CASE("scene_session: a refusal with a NULL offer still refuses and still logs (SS46, D12)") {
+    // THE EVERY-TEST PATH, asserted rather than assumed: every test call site and every non-UI caller
+    // passes offer == nullptr, so a null there must change NOTHING about the refusal's observable half.
+    // Commit 4 appends the arm that compares this against a REAL offer; this half is what proves the
+    // null pointer is dereferenced nowhere on either choke point's refusal path.
+    using engine::editor::NO_PROJECT_SCENE_CONTEXT;
+    using engine::editor::openSceneFile;
+    using engine::editor::saveSceneFile;
+    using engine::editor::SceneFileContext;
+
+    const LogFixture fixture;
+    const TempDir tmp;
+    const std::string root = tmp.join("ProjA");
+    const SceneFileContext refuseOnly{root, nullptr};
+    REQUIRE(refuseOnly.offer == nullptr);
+    // The permissive value carries no offer either, and names no root -- D12's whole point.
+    CHECK(NO_PROJECT_SCENE_CONTEXT.offer == nullptr);
+    CHECK(NO_PROJECT_SCENE_CONTEXT.projectRoot.empty());
+
+    engine::World world;
+    engine::editor::seedDefaultScene(world);
+    Selection selection;
+    RootOrder roots;
+    CommandStack commands;
+    CommandContext ctx{world, selection, roots};
+    engine::editor::SceneSession session;
+
+    const engine::editor::LogSinkScope scope;
+    std::vector<engine::editor::LogEntry> records;
+    scope.sink()->take(records);
+    records.clear();
+
+    CHECK_FALSE(openSceneFile(ctx, commands, session, tmp.join("Other/x.scene.json"), refuseOnly));
+    scope.sink()->take(records);
+    CHECK(countAtLevel(records, engine::LogLevel::Error) == 1);
+    records.clear();
+
+    CHECK_FALSE(
+        saveSceneFile(ctx, commands, session, tmp.join("Other/y.scene.json"), /*appendExtension=*/false, refuseOnly));
+    scope.sink()->take(records);
+    CHECK(countAtLevel(records, engine::LogLevel::Error) == 1);
+    CHECK(session.untitled());  // and neither call bound a path
 }
