@@ -30,10 +30,11 @@
 #include <aero/editor/entity_ops.hpp>
 #include <aero/editor/model_import_session.hpp>  // task 3.2.1: SessionState, named directly (I52-I59)
 #include <aero/editor/panel_registry.hpp>
-#include <aero/editor/picking.hpp>        // task 2.3.2
-#include <aero/editor/project.hpp>        // task 2.6.1
-#include <aero/editor/project_state.hpp>  // task E.4.1 (I176-I184): ProjectState + the two file operations
-#include <aero/editor/scene_bounds.hpp>   // task 2.3.1
+#include <aero/editor/picking.hpp>            // task 2.3.2
+#include <aero/editor/project.hpp>            // task 2.6.1
+#include <aero/editor/project_state.hpp>      // task E.4.1 (I176-I184): ProjectState + the two file operations
+#include <aero/editor/scene_bounds.hpp>       // task 2.3.1
+#include <aero/editor/scene_containment.hpp>  // task E.4.2 (I187): normalizeForContainment
 #include <aero/editor/scene_session.hpp>
 #include <aero/editor/selection.hpp>
 #include <aero/editor/selection_overlay.hpp>  // task 2.3.2
@@ -16641,6 +16642,393 @@ TEST_CASE("editor: a project swap neither re-records nor clobbers the outgoing p
     CHECK_FALSE(engine::editor::fileExists(rootB + "/Library/editor-state.json"));
 
     app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+// ================================================================================================
+// task E.4.2 (I186-I190) -- the containment offer, driven through real frames.
+//
+// PLACED AFTER THE LAST REGION-LEVEL #endif and registered UNCONDITIONALLY, exactly as E.4.1's block
+// above is: a case dropped inside one of this file's `#if` regions is silently ABSENT in the matching
+// reduced configuration. None of these five needs a build-gate branch at all -- openSceneFile and
+// saveSceneFile resolve containment BEFORE any I/O and before any sceneIoAvailable() test, so a
+// refusal, its offer and its serial are identical in all three configurations. The ONE place scene
+// I/O matters is I186's anti-vacuity arm, where "and the scene really LOADED" is the claim, and that
+// arm names sceneIoAvailable() as a RUNTIME predicate rather than a preprocessor region.
+// ================================================================================================
+
+namespace {
+
+// A scaffolded project with a CHOSEN NAME, an EMPTY scenes/ and no state file -- so opening it
+// restores nothing and lands on a fresh default scene in every build configuration. makeStateProject
+// above always names its project "MyGame"; I187 asserts projectName() == "ProjB", which needs this.
+[[nodiscard]] std::string makeNamedProject(std::string_view name) {
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, name, "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    return created.root;
+}
+
+}  // namespace
+
+TEST_CASE("editor: a refused open raises the offer and changes nothing (task E.4.2, I186)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "containment i186", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string rootA = makeNamedProject("ProjA");
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = rootA,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+    REQUIRE(app->projectRoot() == rootA);
+    REQUIRE(app->scenePath().empty());  // ProjA has an EMPTY scenes/: nothing was restored
+
+    const std::size_t refusalsBefore = app->sceneContainmentRefusalCount();
+    const std::size_t entitiesBefore = app->world().entityCount();
+    const std::string pathBefore(app->scenePath());
+    const std::size_t logsBefore = app->logRecordCount();
+
+    const std::string foreign = uniqueScenePath("-i186.scene.json");
+    REQUIRE(engine::editor::writeTextFileAtomic(foreign, startupSceneText(3)).empty());
+    // IT EXISTS AND IT IS LOADABLE, so the refusal below cannot be "no such file" and cannot be a
+    // parse failure. Without this arm the case would pass for a reason unrelated to the rule.
+    REQUIRE(engine::editor::fileExists(foreign));
+
+    app->requestOpenScene(foreign);
+    REQUIRE(app->tick());  // applyFileRequests refuses and raises; the END-of-tick mirror counts it
+    REQUIRE(app->tick());  // the modal is submitted, and the Console sink has pumped the ERROR
+
+    CHECK(app->sceneContainmentRefusalCount() == refusalsBefore + 1U);
+    CHECK(app->sceneContainmentOfferOpen());
+    CHECK(app->world().entityCount() == entitiesBefore);  // NOTHING was swapped
+    CHECK(app->scenePath() == pathBefore);                // the document is not rebound
+    CHECK(app->logRecordCount() > logsBefore);            // one ERROR reached the Console sink
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+
+    // ---- THE ANTI-VACUITY ARM: the SAME call with NO PROJECT OPEN increases the counter by ZERO.
+    //      Without it, a counter that incremented on every requestOpenScene would pass everything
+    //      above. A SECOND EditorApp, because closing the project is not a thing this tier can do --
+    //      the viewportCamera() case's own two-app shape, for the same reason.
+    std::optional<engine::editor::EditorApp> bare =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(bare.has_value());
+    REQUIRE(bare->projectRoot().empty());
+    REQUIRE(bare->tick());
+    const std::size_t bareEntitiesBefore = bare->world().entityCount();
+
+    const std::string second = uniqueScenePath("-i186b.scene.json");
+    REQUIRE(engine::editor::writeTextFileAtomic(second, startupSceneText(3)).empty());
+    bare->requestOpenScene(second);
+    REQUIRE(bare->tick());
+    REQUIRE(bare->tick());
+
+    CHECK(bare->sceneContainmentRefusalCount() == 0U);  // D5 at the GPU tier: "" PERMITS
+    CHECK_FALSE(bare->sceneContainmentOfferOpen());
+    if (engine::editor::sceneIoAvailable()) {
+        // ...and it really LOADED, which is what makes "the counter did not move" a statement about
+        // the permit rather than about a call that failed for some other reason.
+        CHECK(bare->scenePath() == second);
+        CHECK(bare->world().entityCount() != bareEntitiesBefore);
+    }
+
+    bare->requestQuit();
+    CHECK(bare->tick() == false);
+    bare.reset();
+}
+
+TEST_CASE("editor: accepting the offer swaps the project (task E.4.2, I187)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "containment i187", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string rootA = makeNamedProject("ProjA");
+    const std::string rootB = makeNamedProject("ProjB");
+    // THE REFUSED SCENE LIVES AT ProjB'S ROOT, deliberately NOT under ProjB/scenes: firstSceneUnder
+    // scans <root>/<scenes> only, so ProjB's startup cascade finds nothing and the swap lands on a
+    // fresh default scene. That is what keeps this case about the OFFER rather than about E.4.1's
+    // restore, and it is why the two assertions below can be exact.
+    const std::string sceneInB = rootB + "/x.scene.json";
+    REQUIRE(engine::editor::writeTextFileAtomic(sceneInB, startupSceneText(3)).empty());
+
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = rootA,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+    REQUIRE(app->projectRoot() == rootA);
+    REQUIRE(app->commands().isClean());  // CLEAN on purpose -- I188 owns the dirty path
+
+    app->requestOpenScene(sceneInB);
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+    REQUIRE(app->sceneContainmentOfferOpen());
+    // A COPY: the accessor is a VIEW into the live FileFlow and the next tick's drain clears it.
+    const std::string offered(app->sceneContainmentOfferProject());
+    REQUIRE(offered == engine::editor::normalizeForContainment(rootB));  // the OFFER'S target
+    const std::size_t recentsBefore = app->recentProjectCount();
+
+    app->requestSceneContainmentAccept();
+    REQUIRE(app->tick());  // step 0 drains -> OpenProject -> guardFor (CLEAN scene) -> Perform
+    REQUIRE(app->tick());  // the reconcile observes the swap
+
+    CHECK_FALSE(app->sceneContainmentOfferOpen());
+    CHECK(app->projectRoot() == offered);                   // the project that was OFFERED
+    CHECK(app->assetBrowserRoot() == offered + "/assets");  // the reconcile OBSERVED it
+    CHECK(app->projectName() == "ProjB");
+    CHECK(app->world().entityCount() == 4U);  // newScene reseeded the default
+    CHECK(app->scenePath().empty());          // adoptProject cleared it
+    CHECK(app->recentProjectCount() > recentsBefore);
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: accepting the offer on a DIRTY document is GUARDED, not performed (task E.4.2, I188)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "containment i188", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string rootA = makeNamedProject("ProjA");
+    const std::string rootB = makeNamedProject("ProjB");
+    const std::string sceneInB = rootB + "/x.scene.json";
+    REQUIRE(engine::editor::writeTextFileAtomic(sceneInB, startupSceneText(3)).empty());
+
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = rootA,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+
+    app->requestOpenScene(sceneInB);
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+    REQUIRE(app->sceneContainmentOfferOpen());
+    const std::string offered(app->sceneContainmentOfferProject());
+    REQUIRE_FALSE(offered.empty());
+
+    // DIRTY the document through a REAL command -- a direct World mutation leaves the stack clean and
+    // would take I187's path instead (I161's rule). AFTER the refusal, never before: a dirty document
+    // makes requestOpenScene itself guarded, so the unsaved-changes modal would rise and no offer
+    // would ever be raised.
+    const engine::Entity subject = engine::editor::createEntity(app->world(), {}, "Subject");
+    REQUIRE(subject.valid());
+    const std::optional<engine::Transform> before = engine::editor::readTransform(app->world(), subject);
+    REQUIRE(before.has_value());
+    engine::Transform after = *before;
+    after.position = before->position + engine::Vec3{1.0F, 2.0F, 3.0F};
+    engine::editor::CommandContext cmd{app->world(), app->selection(), app->roots()};
+    REQUIRE(app->commands().push(cmd, std::make_unique<engine::editor::TransformCommand>(subject, *before, after)));
+    REQUIRE_FALSE(app->commands().isClean());
+
+    const std::string rootBefore(app->projectRoot());
+    const std::string browserBefore(app->assetBrowserRoot());
+    const std::size_t entitiesBefore = app->world().entityCount();
+    REQUIRE(rootBefore != offered);  // ANTI-VACUITY: the offer really names a DIFFERENT project
+
+    app->requestSceneContainmentAccept();
+    REQUIRE(app->tick());  // step 0 drains -> OpenProject -> guardFor(dirty) -> Confirm
+    REQUIRE(app->tick());  // drawUnsavedChangesModal opens the popup
+
+    // THE OBSERVABLE IS THE ABSENCE OF THE SWAP, not a confirmOpen accessor -- there is none, and
+    // I161 makes exactly this claim the same way ("the swap is GUARDED, not performed").
+    CHECK_FALSE(app->sceneContainmentOfferOpen());  // the containment modal DID close (step 0 ran)
+    CHECK(app->projectRoot() == rootBefore);        // and the project did NOT swap
+    CHECK(app->assetBrowserRoot() == browserBefore);
+    CHECK(app->world().entityCount() == entitiesBefore);  // the dirty entity is still there
+    CHECK_FALSE(app->commands().isClean());
+
+    // THE THREE EXTRA TICKS ARE THE LOAD-BEARING PART. Without them the case cannot tell "the guard
+    // held" from "the swap is one tick behind my count", and this tier's one-tick lags are exactly
+    // what makes that confusion easy. The clean-document control is I187, which swaps within the
+    // same two ticks.
+    for (int i = 0; i < 3; ++i) {
+        CAPTURE(i);
+        REQUIRE(app->tick());
+        CHECK(app->projectRoot() == rootBefore);
+    }
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: a refused SAVE offers no project (task E.4.2, I189, D9)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "containment i189", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string rootA = makeNamedProject("ProjA");
+    // A SIBLING PROJECT EXISTS AND WOULD BE FOUND BY AN OPEN'S UPWARD WALK -- so "no project is
+    // offered" below is D9's refusal, not an accident of where the target happens to sit.
+    const std::string rootB = makeNamedProject("ProjB");
+
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = rootA,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+    REQUIRE(app->scenePath().empty());
+
+    // Dirty the document, so "still dirty afterwards" is not vacuous.
+    const engine::Entity subject = engine::editor::createEntity(app->world(), {}, "Subject");
+    REQUIRE(subject.valid());
+    const std::optional<engine::Transform> before = engine::editor::readTransform(app->world(), subject);
+    REQUIRE(before.has_value());
+    engine::Transform after = *before;
+    after.position = before->position + engine::Vec3{1.0F, 2.0F, 3.0F};
+    engine::editor::CommandContext cmd{app->world(), app->selection(), app->roots()};
+    REQUIRE(app->commands().push(cmd, std::make_unique<engine::editor::TransformCommand>(subject, *before, after)));
+    REQUIRE_FALSE(app->commands().isClean());
+
+    const std::string outside = rootB + "/y.scene.json";  // INSIDE ProjB, outside the OPEN project
+    REQUIRE_FALSE(engine::editor::fileExists(outside));
+    const std::size_t refusalsBefore = app->sceneContainmentRefusalCount();
+
+    app->requestSaveSceneAs(outside);
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+
+    CHECK(app->sceneContainmentRefusalCount() == refusalsBefore + 1U);
+    CHECK(app->sceneContainmentOfferOpen());
+    CHECK(app->sceneContainmentOfferProject().empty());  // D9 at the GPU tier, with ProjB right there
+    CHECK_FALSE(app->commands().isClean());              // still dirty -- setClean did not run
+    CHECK(app->scenePath().empty());                     // setPath did not run either
+    CHECK_FALSE(engine::editor::fileExists(outside));    // and NO FILE was written
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: dismissing the offer closes it and releases input (task E.4.2, I190)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "containment i190", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string rootA = makeNamedProject("ProjA");
+    const std::string rootB = makeNamedProject("ProjB");
+    const std::string sceneInB = rootB + "/x.scene.json";
+    REQUIRE(engine::editor::writeTextFileAtomic(sceneInB, startupSceneText(3)).empty());
+
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = rootA,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+    REQUIRE(app->commands().isClean());  // CLEAN on purpose -- the guarded quit below must PERFORM
+
+    app->requestOpenScene(sceneInB);
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+    REQUIRE(app->sceneContainmentOfferOpen());
+    const std::string offered(app->sceneContainmentOfferProject());
+    const std::string rootBefore(app->projectRoot());
+    const std::size_t entitiesBefore = app->world().entityCount();
+    const std::size_t refusalsBefore = app->sceneContainmentRefusalCount();
+    REQUIRE(rootBefore != offered);  // ANTI-VACUITY: the offer names a DIFFERENT project
+
+    // ---- THE CONTROL, and it is what makes the release claim below mean anything. While the offer
+    //      is up modalInputActive() is TRUE, so a GUARDED quit is SWALLOWED at step 2: one INFO, and
+    //      the editor keeps running. THE SAME REQUEST is issued again after the dismiss, and the
+    //      difference between the two outcomes is the whole proof -- a swallowed request and a
+    //      guarded one both leave the World unchanged, so nothing static could separate them.
+    app->requestGuardedQuit();
+    REQUIRE(app->tick());                       // STILL RUNNING: the quit was swallowed
+    REQUIRE(app->sceneContainmentOfferOpen());  // and nothing about the offer changed
+
+    // ---- THE DISMISS.
+    app->requestSceneContainmentDismiss();
+    REQUIRE(app->tick());
+
+    CHECK_FALSE(app->sceneContainmentOfferOpen());
+    CHECK(app->projectRoot() == rootBefore);  // a dismiss requests NOTHING...
+    CHECK(app->world().entityCount() == entitiesBefore);
+    CHECK(app->sceneContainmentRefusalCount() == refusalsBefore);  // ...and is not itself a refusal
+    for (int i = 0; i < 2; ++i) {                                  // and it is not one tick behind, either
+        CAPTURE(i);
+        REQUIRE(app->tick());
+        CHECK(app->projectRoot() == rootBefore);
+    }
+
+    // ---- AND THE RELEASE: the identical request now takes effect.
+    REQUIRE(app->commands().isClean());
+    app->requestGuardedQuit();
     CHECK(app->tick() == false);
     app.reset();
 }

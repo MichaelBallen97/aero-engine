@@ -1275,6 +1275,21 @@ bool EditorApp::tick() {
     // would lose exactly that frame, which is the most common quit path there is.
     // It touches no ImGui and no GPU, so it has no draw-walk constraint of its own: the placement is
     // about the QUIT, not about ImGui.
+    //
+    // task E.4.2: MONOTONIC per process, and the SECOND occupant of E.4.1's end-of-tick slot, ahead of
+    // persistProjectState(). Extend the slot; never twin it. It is HERE rather than in tick()'s
+    // top-of-tick reconcile block for E.4.1's own D4 reason above -- the refusal is raised inside
+    // applyFileRequests, which runs within drawShellUi EARLIER IN THIS TICK, so a top-of-tick mirror
+    // would lag every refusal by a frame.
+    //
+    // The flow's own serial is RESET to 0 whenever the offer is cleared (the step-0 drain assigns a
+    // default-constructed ContainmentOffer), so this mirrors the DELTA, never the value. The `>` guard
+    // is what makes the reset harmless -- an unguarded subtraction on std::size_t would wrap. Two
+    // refusals in one applyFileRequests call bump the flow's serial twice and are BOTH counted.
+    if (fileFlow.containmentOffer.refusalSerial > containmentRefusalSerialSeen) {
+        containmentRefusals += fileFlow.containmentOffer.refusalSerial - containmentRefusalSerialSeen;
+    }
+    containmentRefusalSerialSeen = fileFlow.containmentOffer.refusalSerial;
     persistProjectState();
     if (fileFlow.quitConfirmed) {
         // File > Exit / Ctrl+Q / the window [X] -- all AFTER the guard said yes (task 2.5.1 D1). This
@@ -1493,6 +1508,13 @@ std::size_t EditorApp::focusRouteDropCount() const noexcept { return focusRouteD
 std::uint64_t EditorApp::panelDrawnCount(const char* id) const noexcept { return registry.drawnCount(id); }
 
 std::size_t EditorApp::projectStateWriteCount() const noexcept { return projectStateWrites; }
+
+// ---- task E.4.2: the containment offer's three black-box accessors -------------------------------
+bool EditorApp::sceneContainmentOfferOpen() const noexcept { return fileFlow.containmentOffer.open; }
+std::string_view EditorApp::sceneContainmentOfferProject() const noexcept {
+    return fileFlow.containmentOffer.projectRoot;
+}
+std::size_t EditorApp::sceneContainmentRefusalCount() const noexcept { return containmentRefusals; }
 
 // ---- task 3.1.5: the three request hooks (the EIGHTH application of the request shape) ------------
 // Each records EXACTLY what the corresponding panel's accept records. The first two land in an
@@ -1986,6 +2008,13 @@ void EditorApp::requestOpenProject(std::string_view path) {
     projectFlow.requestedPath = path;
 }
 void EditorApp::requestClearRecentProjects() noexcept { projectFlow.clearRecentsRequested = true; }
+
+// task E.4.2: the requestUndo()/requestLayoutReset()/requestAssetBrowserViewMode shape -- each records
+// EXACTLY what the modal's own button records, and is applied on the NEXT tick's step-0 drain. Never
+// immediately: a request that took effect inside the hook would bypass the drain's own re-test, which
+// is the ONLY thing standing between a save-shaped offer and adoptProject -> newScene -> World::clear().
+void EditorApp::requestSceneContainmentAccept() noexcept { fileFlow.containmentOffer.acceptRequested = true; }
+void EditorApp::requestSceneContainmentDismiss() noexcept { fileFlow.containmentOffer.dismissRequested = true; }
 
 // task 3.1.1 (AC-38): the requestUndo()/requestLayoutReset() shape, drained in the SAME reconcile
 // expression as AssetBrowserPanel::takeRescanRequest() -- see tick()'s reconcile block above.
