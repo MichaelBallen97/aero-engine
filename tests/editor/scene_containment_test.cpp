@@ -201,6 +201,22 @@ TEST_CASE("scene_containment: an empty root is NoProject, before every other tes
     CHECK((lexicalContainment("", "") == SceneContainment::NoProject));                      // the root wins, FIRST
     CHECK((lexicalContainment("/w/P/../x.scene.json", "") == SceneContainment::NoProject));  // and over D3
     CHECK(containmentPermits(SceneContainment::NoProject));
+
+    // ★ THE RESOLVER'S OWN D5 ARM, and not merely lexicalContainment's. Every other case in this file
+    //   hands resolveSceneContainment a NON-EMPTY root, so without this arm the resolver's own empty-root
+    //   branch has no tier-0 witness at all: changing it to Outside leaves every CN case green and is
+    //   caught only indirectly, by the scene_io and scene_golden cases that happen to run with no project
+    //   open. findOwningProject is TRUE on purpose -- D5 returns before the walk can run, so both offer
+    //   fields must still be empty.
+    const ContainmentVerdict noProject = resolveSceneContainment("/w/P/x.scene.json", "", /*findOwningProject=*/true);
+    CHECK((noProject.state == SceneContainment::NoProject));
+    CHECK(containmentPermits(noProject.state));
+    CHECK(noProject.owningProjectRoot.empty());
+    CHECK(noProject.owningProjectName.empty());
+    // ANTI-VACUITY: the SAME scene path against a NON-EMPTY root that does not contain it is Outside, so
+    // the verdict above is a statement about the empty root rather than about this function.
+    CHECK((resolveSceneContainment("/w/P/x.scene.json", "/w/Q", /*findOwningProject=*/false).state ==
+           SceneContainment::Outside));
 }
 
 TEST_CASE("scene_containment: Unresolvable, and all four enumerators through containmentPermits (CN9, D3)") {
@@ -319,6 +335,66 @@ TEST_CASE("scene_containment: the permitted path performs no filesystem call at 
     CHECK((resolveSceneContainment(scene, root, /*findOwningProject=*/true).state == SceneContainment::Contained));
     // THE ANTI-VACUITY ARM IS CN14, which flips Contained -> Outside under the same deletion --
     // proving the deletion is observable at all.
+
+    // ★ THE SECOND INSTRUMENT, and it is NOT redundant with the deleted-tree arm above. Deleting the
+    //   `if (containmentPermits(out.state)) return out;` early return outright leaves the rescue
+    //   running on EVERY permitted open and every permitted save -- two filesystem calls the permitted
+    //   path is specified never to make -- while changing NO ANSWER anywhere, because the rescue only
+    //   ever assigns Contained and can never narrow one. Measured: that mutation passes every case in
+    //   this binary, this one included. A COST with no observable consequence cannot be asserted as
+    //   a consequence, so the ordering is pinned as source text -- and as an ORDERING, never a mere
+    //   membership (3.4.2's I96 lesson: a pin must encode the property that matters). It also reddens
+    //   the other direction, a rescue MOVED above the lexical decision.
+    const std::filesystem::path srcDir(AERO_EDITOR_SRC_DIR);
+    const engine::editor::FileReadResult src =
+        engine::editor::readTextFile(genericUtf8Of(srcDir / "scene_containment.cpp"));
+    REQUIRE(src.text.has_value());
+    const std::vector<std::string_view> lines = splitLines(*src.text);
+    std::size_t start = lines.size();
+    std::size_t end = lines.size();
+    for (std::size_t i = 0; i < lines.size(); ++i) {
+        const std::string_view line = stripLineComment(lines[i]);
+        if (start == lines.size()) {
+            if (line.find("ContainmentVerdict resolveSceneContainment(") != std::string_view::npos) {
+                start = i;
+            }
+            continue;
+        }
+        if (line == "}") {  // the definition's own closing brace, the only one at column 0
+            end = i;
+            break;
+        }
+    }
+    REQUIRE(start < lines.size());
+    REQUIRE(end < lines.size());
+    REQUIRE(end - start > 10U);  // anti-vacuity: a real body was scanned, not an empty range
+
+    std::size_t permitsAt = lines.size();
+    std::size_t firstCanonAt = lines.size();
+    std::size_t canonCalls = 0;
+    for (std::size_t i = start; i < end; ++i) {
+        const std::string_view line = stripLineComment(lines[i]);
+        if (permitsAt == lines.size() && line.find("containmentPermits(") != std::string_view::npos) {
+            permitsAt = i;
+        }
+        if (line.find("canonicalDirectory(") != std::string_view::npos) {
+            if (firstCanonAt == lines.size()) {
+                firstCanonAt = i;
+            }
+            ++canonCalls;
+        }
+    }
+    CAPTURE(permitsAt);
+    CAPTURE(firstCanonAt);
+    REQUIRE(permitsAt < lines.size());     // the permitted-path gate EXISTS...
+    REQUIRE(firstCanonAt < lines.size());  // ...and so does the rescue it gates
+    CHECK(canonCalls == 2U);               // both rescue calls found -- the scan is not half-blind
+    CHECK(permitsAt < firstCanonAt);       // ...and the gate is ABOVE both of them
+    // ...and it is an early RETURN rather than a mention: on that line, or on the one below it.
+    const bool returnsThere =
+        stripLineComment(lines[permitsAt]).find("return") != std::string_view::npos ||
+        (permitsAt + 1U < end && stripLineComment(lines[permitsAt + 1U]).find("return") != std::string_view::npos);
+    CHECK(returnsThere);
 }
 
 TEST_CASE("scene_containment: the canonical rescue resolves a symlinked route (CN14, D4, symlink-capable hosts only)") {

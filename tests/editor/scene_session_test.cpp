@@ -1033,6 +1033,13 @@ namespace {
     });
 }
 
+// The u8-bytes path constructor, TU-local like every other helper here. NEVER the narrow-char
+// std::filesystem::path constructor, which assumes the active code page on Windows.
+[[nodiscard]] std::filesystem::path pathOfUtf8(std::string_view utf8) {
+    const std::u8string bytes(reinterpret_cast<const char8_t*>(utf8.data()), utf8.size());
+    return std::filesystem::path(bytes);
+}
+
 }  // namespace
 
 TEST_CASE("scene_session: a refused open changes nothing and logs exactly one ERROR (SS41, AC-3/AC-4)") {
@@ -1096,6 +1103,15 @@ TEST_CASE("scene_session: a refused save writes nothing, marks nothing clean and
     const TempDir tmp;
     const std::string root = tmp.join("ProjA");
     const std::string foreign = tmp.join("Other/x.scene.json");
+    // ★ THE TARGET'S DIRECTORY IS CREATED ON PURPOSE, and it is what makes "nothing was written" an
+    //   assertion rather than a coincidence: without it writeTextFileAtomic would fail whatever the
+    //   containment check did, so CHECK_FALSE(fileExists(foreign)) below would be green for a reason
+    //   unrelated to the rule. Measured: moving the containment check BELOW the write leaves that
+    //   assertion green on a missing directory and is caught only by the message arm. With the
+    //   directory present the write would SUCCEED if it were ever reached.
+    std::error_code ec;
+    std::filesystem::create_directories(pathOfUtf8(tmp.join("Other")), ec);
+    REQUIRE_FALSE(static_cast<bool>(ec));
 
     engine::World world;
     engine::editor::seedDefaultScene(world);
@@ -1504,5 +1520,131 @@ TEST_CASE("scene_session: the containment modal and the unsaved-changes modal ar
         // and CHECK_FALSE decomposes exactly as CHECK does.
         const bool bothModalsUp = f.flow.confirmOpen && f.flow.containmentOffer.open;
         CHECK_FALSE(bothModalsUp);
+    }
+}
+
+TEST_CASE(
+    "scene_session: every production call site builds the context from root(), never scenesRoot() (SS51, D1/AC-2)") {
+    // ★ WHY THIS CASE EXISTS, AND WHY IO18 IS NOT IT. IO18 asserts the same rule at the PREDICATE, but
+    //   it constructs its own SceneFileContext and hands it in, so it cannot see which root
+    //   scene_session.cpp's own call sites chose. Measured directly: replacing
+    //   `project.session.root()` with `project.session.scenesRoot()` at all six production sites --
+    //   the exact value FileDialogHost::projectRoot is bound to (editor_app.cpp's two host
+    //   constructions), and the single most likely accidental defect in this task -- left BOTH
+    //   binaries entirely green. Everything below drives a PRODUCTION site instead, so a context built
+    //   from the wrong root refuses a scene that is plainly inside the project.
+    //
+    //   The observable is `containmentOffer.open`, never the file or the World: containment is
+    //   resolved BEFORE any I/O and before sceneIoAvailable(), so every arm reads the same in all
+    //   three build configurations.
+    using engine::editor::DialogKind;
+    using engine::editor::DialogResult;
+    using engine::editor::ProjectManifest;
+
+    const LogFixture fixture;
+    const TempDir tmp;
+    const std::string root = tmp.join("ProjA");
+    const std::string inside = root + "/assets/levels/deep.scene.json";  // in the project, NOT in scenes/
+    const std::string outside = tmp.join("Other/x.scene.json");          // outside the project entirely
+    std::error_code ec;
+    std::filesystem::create_directories(pathOfUtf8(root + "/assets/levels"), ec);
+    REQUIRE_FALSE(static_cast<bool>(ec));
+
+    // ---- (a) performAction's OpenScene site, through applyFileRequests.
+    {
+        FlowFixture f;
+        SceneSession session;
+        f.projectSession.set(ProjectManifest{}, root);
+        // THE PRECONDITION THAT MAKES EVERY ARM BELOW DISCRIMINATING: the two roots really do differ,
+        // and `inside` is under one and not the other.
+        REQUIRE(f.projectSession.scenesRoot() != root);
+        REQUIRE(inside.rfind(f.projectSession.scenesRoot(), 0) != 0U);
+        REQUIRE(inside.rfind(root, 0) == 0U);
+
+        f.flow.requested = FileAction::OpenScene;
+        f.flow.requestedPath = inside;
+        applyFileRequests(f.ctx, f.commands, session, f.flow, f.host, f.project);
+        CHECK_FALSE(f.flow.containmentOffer.open);
+    }
+
+    // ---- (b) performAction's SaveSceneAs site, through applyFileRequests.
+    {
+        FlowFixture f;
+        SceneSession session;
+        f.projectSession.set(ProjectManifest{}, root);
+        f.flow.requested = FileAction::SaveSceneAs;
+        f.flow.requestedPath = inside;
+        applyFileRequests(f.ctx, f.commands, session, f.flow, f.host, f.project);
+        CHECK_FALSE(f.flow.containmentOffer.open);
+    }
+
+    // ---- (c) applyFileRequests' own SaveScene/WriteNow site, on a TITLED session.
+    {
+        FlowFixture f;
+        SceneSession session;
+        session.setPath(inside);
+        f.projectSession.set(ProjectManifest{}, root);
+        f.flow.requested = FileAction::SaveScene;
+        applyFileRequests(f.ctx, f.commands, session, f.flow, f.host, f.project);
+        CHECK_FALSE(f.flow.containmentOffer.open);
+    }
+
+    // ---- (d) applyDialogResult's Open site.
+    {
+        FlowFixture f;
+        SceneSession session;
+        f.projectSession.set(ProjectManifest{}, root);
+        f.flow.dialog = DialogKind::Open;
+        DialogResult result;
+        result.ready = true;
+        result.path = inside;
+        applyDialogResult(f.ctx, f.commands, session, f.flow, f.host, result, f.project);
+        CHECK_FALSE(f.flow.containmentOffer.open);
+    }
+
+    // ---- (e) applyDialogResult's Save site -- the only one that appends the extension (D13).
+    {
+        FlowFixture f;
+        SceneSession session;
+        f.projectSession.set(ProjectManifest{}, root);
+        f.flow.dialog = DialogKind::Save;
+        DialogResult result;
+        result.ready = true;
+        result.path = inside;
+        applyDialogResult(f.ctx, f.commands, session, f.flow, f.host, result, f.project);
+        CHECK_FALSE(f.flow.containmentOffer.open);
+    }
+
+    // ---- ★ THE ANTI-VACUITY ARMS. Without them every CHECK_FALSE above is satisfied by a build in
+    //      which containment is never consulted at all -- which is precisely what this file's own
+    //      SceneFileContext-in-hand cases cannot rule out for the production sites. One OPEN and one
+    //      SAVE, the same two functions, a path genuinely outside the project: the offer DOES rise,
+    //      and it carries the containment wording.
+    {
+        const engine::editor::LogSinkScope scope;
+        std::vector<engine::editor::LogEntry> records;
+        FlowFixture f;
+        SceneSession session;
+        f.projectSession.set(ProjectManifest{}, root);
+        scope.sink()->take(records);
+        records.clear();
+
+        f.flow.requested = FileAction::OpenScene;
+        f.flow.requestedPath = outside;
+        applyFileRequests(f.ctx, f.commands, session, f.flow, f.host, f.project);
+        CHECK(f.flow.containmentOffer.open);
+        CHECK_FALSE(f.flow.containmentOffer.forSave);
+        scope.sink()->take(records);
+        CHECK(anyMessageContains(records, "outside the open project"));
+        records.clear();
+
+        f.flow.containmentOffer = {};
+        f.flow.requested = FileAction::SaveSceneAs;
+        f.flow.requestedPath = outside;
+        applyFileRequests(f.ctx, f.commands, session, f.flow, f.host, f.project);
+        CHECK(f.flow.containmentOffer.open);
+        CHECK(f.flow.containmentOffer.forSave);
+        scope.sink()->take(records);
+        CHECK(anyMessageContains(records, "must be saved inside the open project"));
     }
 }
