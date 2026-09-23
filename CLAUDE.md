@@ -12,7 +12,9 @@ Two platform matrices, never to be conflated: the **editor** runs on macOS/Windo
 
 **Phase E (Editor Experience) is the open front**, executing between Phase 3 and Phase 4. **Fourteen of its
 24 tasks are merged: Epics E.1, E.2 and E.3 are all CLOSED IN CODE, and E.4.1 has OPENED Epic E.4.
-E.4.2-E.4.5, E.5 and E.6 are what is left — ten tasks, planning only.** Phase 3 remains OPEN behind it: all seven of its epics are closed in code,
+E.4.2 is CLOSED IN CODE on `feat/E.4.2-scene-project-containment` — eight commits, not yet merged, page
+unrun — so E.4 stands at one of five merged and two of five built. E.4.3-E.4.5, E.5 and E.6 are what is
+left — nine tasks, planning only.** Phase 3 remains OPEN behind it: all seven of its epics are closed in code,
 and what is left is its deliverable gate and the validation debt.
 
 **Phase E is lettered, not fractioned.** `3.5` and `3.5.1`/`3.5.2` are already Phase 3's skeletal-animation
@@ -24,9 +26,11 @@ In Notion its `Phase #` is `3.5` — a sort key, not an identifier.
 (E.2.2). Nothing since E.2.2 has added one, so the five-generation-site rule and the component-count sweep
 have not fired since — **they still apply in full to the next built-in, whenever one arrives.**
 
-**Next free ids: `I186` at the ImGui tier.** The `MR` prefix is taken (E.3.4's `MR1`–`MR21`) and so is
-`PJ` (E.4.1's `PJ1`–`PJ57`). **E.4.1 TOOK `I176`–`I185`, and the E.4.2 and E.4.4 specs/plans still claim
-`I176`+ — both must RE-MEASURE the ceiling and renumber before they are implemented.**
+**Next free ids: `I193` at the ImGui tier.** The `MR` prefix is taken (E.3.4's `MR1`–`MR21`), so is `PJ`
+(E.4.1's `PJ1`–`PJ57`), and so is `CN` (E.4.2's `CN1`–`CN25`). E.4.1 took `I176`–`I185` and E.4.2 took
+`I186`–`I192`; the other E.4.2 ceilings are `SS` 54 and `IO` 21. **The E.4.3, E.4.4 and E.4.5 specs all
+claim `I176`+ or `I199`+ — every one of them must RE-MEASURE the ceiling and renumber before it is
+implemented.**
 
 **Four facts Phase E was built on, each measured in the tree and each contradicting a plausible guess.**
 (1) The directional light **already** derives its direction from the entity's −Z world axis
@@ -38,12 +42,20 @@ silently discarded at draw time — **a confirmed defect, still open, owned by E
 E.2.3 and E.2.4 have each reproduced it rather than fixing it in passing. (3) `rhi::PrimitiveType::LineList`
 and `FillMode::Line` existed since 0.4.1 with **no consumer at all** until E.1.1, still the tree's only
 `LineList` pipeline set — **`FillMode::Line` remains unexercised and wireframe-of-meshes is an unowned
-handoff.** (4) `openSceneFile`/`saveSceneFile` perform **zero** containment validation against the project
-root, so a scene from another project loads while the AssetDatabase still resolves GUIDs against the open
-one — E.1.3 answered the clip-space half and left this one; **it is E.4.2's.**
+handoff.** (4) **CLOSED BY E.4.2, and replaced rather than deleted because the residue is deliberate.**
+`openSceneFile`/`saveSceneFile` used to perform **zero** containment validation against the project root,
+so a scene from another project loaded while the AssetDatabase still resolved GUIDs against the open one.
+Today both take a non-defaulted `SceneFileContext` and refuse an out-of-project path **before any I/O**,
+with one ERROR and a modal, **lexical first with a canonical rescue that only ever widens** — and four
+things are still permitted **on purpose**: the no-project state (`NoProject` permits and logs nothing —
+the Welcome window is supported), a symlink **inside** the project pointing out (`CN16` pins it, closing
+it is one line plus a cost measurement), `<root>/Library/` as a save destination (`IO19` pins it;
+**E.4.3** owns any reserved-path policy), and **the project's own entry points** — `loadProjectFrom` and
+`createProject` are untouched, so a scene cannot escape its project while a project can still be opened,
+or created, anywhere. Those four are the unowned handoffs, not a gap in the predicate.
 
 > **Per-task history — what each task shipped, what it deliberately left out, every trap and every dead end —
-> lives in `docs/10-engineering-log.md`**, which carries a `### <task>` entry for every task through E.3.4,
+> lives in `docs/10-engineering-log.md`**, which carries a `### <task>` entry for every task through E.4.2,
 > each with its own `#### The sentences that govern new work` subsection. **Grep it before re-deriving
 > anything.**
 >
@@ -75,6 +87,7 @@ validation pass exists for any task in any phase.** N-E = not executable, N-R = 
 | E.3.3 Asset-reference picker | #104 | `fc77c4b` | 10 PASS / 3 partial / 1 N-E / 1 N-R, nothing failed |
 | E.3.4 Material inspector redesign | #105 | `170ad9b` | 12 PASS / 1 partial / 1 N-E, nothing failed |
 | E.4.1 Reopen the last scene | #106 | `068c45c` | **12 / 12**, nothing failed — and 26 sabotage seeds / 29 runs with **no coverage hole** |
+| E.4.2 Scene/project containment | **not yet opened** | **unmerged** — branch `feat/E.4.2-scene-project-containment`, 8 commits | **page WRITTEN, 16 rows, UNRUN on every platform** — 29 sabotage seeds found **three real coverage holes**, and the code-review round found eight findings, one blocking |
 
 **E.3.2 landed before E.3.1** — legal, disjointly id-reserved; the reservation is discharged and the
 numbering is contiguous.
@@ -88,7 +101,7 @@ numbering is contiguous.
 | **Phase 2** — Editor | **COMPLETE, gate met 2026-08-02.** All six epics closed and macOS-validated; Windows/Linux rows pending for every task (`editor/VALIDATION.md`). Gate artifact: `samples/phase-2-editor-scene/` — data, deliberately not `add_subdirectory`'d. |
 | **Phase 3** — Asset Pipeline & 3D Content | **OPEN.** All seven epics (3.1–3.7) **CLOSED in code**. What is left is the gate below and the validation debt. |
 | **Phase 3 gate** | Drop a rigged glTF/FBX in → PBR materials + shadows + a playing animation + **an audible sound**. The audible half exists in code as of 3.7.2 and **has never been heard on any platform.** |
-| **Phase E** — Editor Experience | **OPEN.** Epics E.1, E.2 and E.3 **CLOSED in code**; **E.4.1 merged, OPENING Epic E.4** — 14 of 24 tasks merged, see the index above. **E.4.2–E.4.5, E.5 and E.6 are the open front: ten tasks, planning only.** THREE validation pages are unrun (E.1.5, E.3.2, E.4.1) and are the whole of this OS's remaining Phase E risk. |
+| **Phase E** — Editor Experience | **OPEN.** Epics E.1, E.2 and E.3 **CLOSED in code**; **E.4.1 merged and E.4.2 closed in code on its branch** — 14 of 24 merged, 15 built, see the index above. **E.4.3–E.4.5, E.5 and E.6 are the open front: nine tasks, planning only.** THREE validation pages are unrun (E.1.5, E.3.2, E.4.2) and are the whole of this OS's remaining Phase E risk. |
 | **Phase E gate** | Open a project and land in the scene you were last editing, on a lit grid floor under a sky; create a Cube from the menu, drop a material on it and see it shade; aim a spot light with a visible gizmo; rename, move and delete assets without leaving the editor. Gate artifact: `samples/phase-E-editor/`. |
 
 ### Engine layers, in dependency order
@@ -113,10 +126,12 @@ numbering is contiguous.
 * **`/editor`** has gained ten public pairs across Epics E.2 and E.3: `material_inspector_model` (E.3.4 —
   PURE: no ImGui, no GPU, no `<filesystem>`, no logging, so tier 0 can walk the whole panel's shape),
   `thumbnail_service`, `asset_tile`, `asset_picker_model`, `asset_picker` (E.3.3), `context_router`,
-  `editor_prefs` (E.3.2), `material_preview_rig` (E.2.4), `viewport_icons`, `viewport_gizmos` (E.2.3).
+  `editor_prefs` (E.3.2), `material_preview_rig` (E.2.4), `viewport_icons`, `viewport_gizmos` (E.2.3) —
+  plus `project_state` (E.4.1) and `scene_containment` (E.4.2) in Epic E.4, both PURE and both tier-0
+  reachable in all three build configurations.
   **DO NOT record a "pair count" here — it is not reproducible**: E.2.4 measured the tree six ways looking
   for the figure this line used to carry and none of the six was it. The two figures anyone can re-run are
-  `git ls-files`: **`editor/src/*.cpp` = 87** and **`editor/include/aero/editor/*.hpp` = 62** at E.3.4.
+  `git ls-files`: **`editor/src/*.cpp` = 89** and **`editor/include/aero/editor/*.hpp` = 64** at E.4.2.
   `/tools` links `aero::assets` and `aero::editor_core` through `aero_cooker`, which is legal because
   `tools/` is enumerated by neither half of the golden rule.
 
@@ -332,6 +347,37 @@ make `absoluteScenePath` return `""`, and produce one spurious ERROR plus **no s
 design makes exactly one, ever). `projectRelativeScenePath` was gated and `firstSceneUnder` was not; it
 now skips such an entry and keeps scanning. **Both feed the same joiner — gate every producer, not the
 one you thought of first.**
+
+**SCENE CONTAINMENT HAS ONE AUTHORITY AND IT IS `ProjectSession::root()` (E.4.2).** `openSceneFile` and
+`saveSceneFile` take a **NON-DEFAULTED** `SceneFileContext` — a default would let a future site silently
+take the permissive arm, which is a wrong picture with no error and no failing test — and the context is
+built **at the call expression, never hoisted**, because `root()` returns a view into the live session and
+`adoptProject` replaces it from inside `performAction` (`CN19` pins it; `CN20` asserts `editor/src` spells
+`NO_PROJECT_SCENE_CONTEXT` zero times). **NEVER `FileDialogHost::projectRoot`**, which is bound to
+`scenesRoot()` and refuses every scene deliberately put outside `<root>/scenes` — and is
+**mixed-separator on Windows by design**, so half that defect is invisible on macOS and Linux forever;
+`SS51` drives five production sites because `IO18` supplies its own context and cannot see which root the
+call sites chose. **The verdict is LEXICAL FIRST and the canonical rescue only ever WIDENS** — reachable
+only from `Outside`, producing only `Contained`, which bounds every untested platform to a *false refusal
+with a readable ERROR* rather than a false accept. Running it on the permitted path changes **no answer
+anywhere**, so `CN13` pins the early return's **position in the source text**; nothing else can see it.
+**A refused SAVE never offers a project**, at both the raiser and the modal, because accepting one runs
+`adoptProject` → `newScene` → `World::clear()` + `CommandStack::clear()` and would present data loss as
+the remedy for a failed save. `restoreLastScene`'s two sites pass a **permanent `nullptr` offer**: they
+have no `FileFlow` in scope by design, and a modal there would offer the project just opened.
+
+**EVERY ABANDON PATH IN `scene_session.cpp` CLEARS BOTH `flow.requestedPath` AND
+`project.flow.requestedPath` (E.4.2).** A failed write abandons the pending action, so that action's own
+target goes with it whichever flow object it lives in — `applyDialogResult`'s Save arm was the one hole in
+that roster, and a containment-refused save therefore armed a later `File ▸ Open Project…` to skip its
+folder dialog and adopt a project from a refused **open** minutes earlier, through `adoptProject` →
+`newScene`, with no dialog and no click (`SS52`). **And any programmatic path that answers a modal must
+ENTER the popup to close it**: a request hook records the one-shot without the `CloseCurrentPopup` a
+button calls, and ImGui **never GCs** an entry for a popup that simply stops being submitted —
+`GetTopMostPopupModal` tests only the `Modal` flag, after which `g.HoveredWindow` is `NULL` for the rest
+of the process and every menu, panel and dock tab is unclickable (2.6.1's BLOCKING-1, re-proved from the
+other side). **No tier here can read `g.HoveredWindow`**, so `I192` is a source-text pin and a manual pass
+is the behavioural witness. Every future request hook that answers a modal inherits both.
 
 **`ImGuiListClipper::IncludeItemByIndex` GOES AFTER `Begin()` (E.3.3)** — the constructor `memset`s
 `DisplayStart` to 0 and `Begin` is what sets it to −1, so a call above it is an `IM_ASSERT` abort.
@@ -719,14 +765,15 @@ is a configure-time property. **Rebuild before you believe any doctest number, a
 presets so a disagreement is visible.** A recorded total goes stale the same way: `origin/main`'s own shell
 total was one stale at E.1.4's gate. **Read the binary, never the block.**
 
-**At E.3.4's gate**, measured on both presets out of freshly built trees and agreeing between them:
+**At E.4.2's gate**, measured on both presets out of freshly built trees and agreeing between them, with
+both reduced configurations configured fresh:
 
 | Measurement | Value |
 |---|---|
 | `ctest -N` | **178**, entry set byte-identical between presets; **165** shader-tools-OFF, **93** reflect-tools-OFF |
-| doctest, seven binaries | **1404 / 1936 / 215 / 40 / 59 / 10 / 28** |
-| guards | math **519**, platform **92**, rhi **163**, scene **92**, golden-rule **165**, project-no-delete **A=6 B=87**, audio **11-3-55**, probes **6-57** |
-| `git ls-files` | `editor/src/*.cpp` **87**, `editor/include/aero/editor/*.hpp` **62** |
+| doctest, seven binaries | **1404 / 2036 / 232 / 40 / 59 / 10 / 28** |
+| guards | math **525**, platform **92**, rhi **163**, scene **92**, golden-rule **165**, project-no-delete **A=7 B=89**, audio **11-3-55**, probes **6-57** |
+| `git ls-files` | `editor/src/*.cpp` **89**, `editor/include/aero/editor/*.hpp` **64** |
 
 The seven doctest binaries, in order: `aero_tests`, `aero_editor_shell_test`, `aero_editor_imgui_test`,
 `aero_scene_serialize_test`, `aero_editor_inspector_test`, `aero_reflect_meta_test`, `aero_reflect_json_test`.
@@ -765,10 +812,12 @@ that peaked at 7.6 GB here. **Each run must name which binaries it built and ran
 **`check-math-boundary.sh` counts `git ls-files`, so it reads a STALE number until new files are `git add`ed**
 — stage first, then measure.
 
-**THE LOCAL GPU TIER GATES AT 213 OF 214, NOT 214 OF 214.** `I136` fails `REQUIRE(drawExtent.width > 4U)` with
-value **4** on a 2x display, deterministically, **on an unmodified `HEAD`** — pre-existing, the DPI story's,
-handed to E.6.1. **Name it; never let a known failure be quietly counted as green, and never let it hide a new
-one.**
+**`I136` IS DISPLAY-DEPENDENT, SO THE LOCAL GPU TIER GATES AT EITHER 231 OR 232 OF 232 AND THE RUN MUST SAY
+WHICH.** It fails `REQUIRE(drawExtent.width > 4U)` with value **4** on a 2x display — deterministically at
+E.3.4's and E.4.1's gates, on an unmodified `HEAD` — and it **PASSED at E.4.2's gate** (30 assertions, a
+full 232 / 232) in a session that touches nothing in the DPI story. **A green run is therefore not evidence
+it is fixed**; it is pre-existing, it is the DPI story's, and it is handed to E.6.1. **Name it either way;
+never let a known failure be quietly counted as green, and never let it hide a new one.**
 
 **COUNTS DIVERGE BY OS, so never assume one.** Windows skips **three** e2e cases —
 `golden-rule.include_scan_e2e`, `audio-boundary.guard_e2e` and `boundary-probes.probe_links_e2e`, all
@@ -794,9 +843,9 @@ mono 48 kHz 0.5 s, **exactly 48 064 B each**, cut at a whole number of cycles so
 **Validation pages are gitignored, so they enter no commit.** Per-page measurements and method notes are in
 `docs/10`; this is the ledger of what is still owed.
 
-**TWO PAGES HAVE NOT BEEN RUN ON ANY PLATFORM: E.1.5's AND E.3.2's.** They are the whole of Phase E's
-validation risk on this OS — every other task in E.1, E.2, E.3 and now E.4 is macOS-validated (see the
-index above). **E.4.1 is fully validated: 12 / 12 macOS, nothing failed**, and its sabotage matrix is
+**THREE PAGES HAVE NOT BEEN RUN ON ANY PLATFORM: E.1.5's, E.3.2's AND E.4.2's.** They are the whole of
+Phase E's validation risk on this OS — every other task in E.1, E.2, E.3 and E.4 is macOS-validated (see
+the index above). **E.4.1 is fully validated: 12 / 12 macOS, nothing failed**, and its sabotage matrix is
 run too — 26 seeds / 29 runs, **no seed green with nothing else catching it** (`docs/10`). An earlier
 matrix attempt was abandoned mid-seed and **left a live seed in the working tree** (the deleted
 `sceneIoAvailable()` gate), caught by `git status` before anything was committed. **Always `git status`
@@ -808,7 +857,22 @@ keeps whatever was typed — so `projectRelativeScenePath`'s **purely lexical** 
 records `""`. That is D8's DESIGNED failure mode (*forget*, never *wrong project*), reached from a
 direction D8 did not name: E5 assumed the root and the scene path share one source, and the native
 panel is a second. **E.4.2 owns the real predicate including symlinks and now has a reproducible
-example.** Validate on a NON-symlinked root unless symlinks are the thing under test.
+example.** Validate on a NON-symlinked root unless symlinks are the thing under test. **E.4.2's predicate
+has since landed**, and its canonical rescue is what answers this shape; whether that rescue is
+load-bearing **in production** rather than only in tests is exactly what its validation row 5 measures,
+and the answer is still unknown.
+
+**E.4.2'S SIXTEEN-ROW PAGE IS LIVE DEBT AND NINE OF ITS ROWS ARE SEED-ONLY COVER**
+(`editor/validation/E.4.2-scene-project-containment.md`): row 3 for `S15`'s live `%`-format half (its
+buffer-overrun half is **inert by construction** and produced no ASan report), row 4 for `S12`'s
+consequence — *accepting a save-shaped offer would discard the unsaved work* — rows 5 and 6 for the
+symlink and case routes the canonical rescue exists for, row 9 for the hand-bound Escape, row 10 for
+`S10`, row 11 for `S16` entirely, row 15 for the request-hook popup close (`I192` can only pin it as
+source text; **no tier here can read `g.HoveredWindow`**) and row 16 for the already-open-project guard
+reached through a symlinked path. Its two **Windows** rows are the two cross-platform risks recorded
+rather than fixed: `path("C:/").parent_path()` possibly yielding `"C:"` and giving the walk one extra
+drive-relative probe, and a scene directly at a POSIX filesystem root being a **false refusal** — both
+bounded, both in the safe direction.
 
 **WHY A VALIDATION PAGE IS NOT OPTIONAL: for many tasks it is the ONLY cover a declared sabotage seed has
 anywhere.** The recurring pattern is that no tier in this tree can type, click, press a key, open an ImGui
@@ -869,13 +933,17 @@ display's ICC profile, and **there is no `renderFrame` Tracy zone in this tree**
 
 ### Next
 
-**E.4.2–E.4.5, E.5 and E.6 are the open front: ten tasks, planning only.** See `docs/tasks/phase-E.md`,
-and `docs/tasks/phase-3.md` for what Phase 3 still owes.
+**E.4.3–E.4.5, E.5 and E.6 are the open front: nine tasks, planning only** — plus E.4.2's own branch,
+which is built and awaits a PR and its manual pass. See `docs/tasks/phase-E.md`, and
+`docs/tasks/phase-3.md` for what Phase 3 still owes.
 
-**Ownership of the open work.** **E.4.2** owns scene/project containment (fact 4 above) and was specced
-before E.4.1 deliberately; **it must renumber off `I176` now that E.4.1 has taken `I176`–`I185`**, and
-when its containment predicate lands, E.4.1's LEXICAL `projectRelativeScenePath` becomes its caller or is
-deleted in favour of it. **E.4.5** (material names & thumbnails) is unblocked **twice over**: it has
+**Ownership of the open work.** **E.4.3** (asset file operations) inherits E.4.2's `directoryWithin` and
+`normalizeForContainment` **by name** — they are exactly the *"is this path inside the project"* predicate
+create / rename / move / delete each need, and `directoryWithin` is safe against an un-normalised argument
+(a `..` anywhere on either side returns false), so **reuse the pair; do not write a second one**. E.4.3
+also owns any reserved-destination policy for `<root>/Library/`, where `IO19` and E.4.2's validation row
+14 record today's permissive behaviour as the "before". **E.4.5** (material names & thumbnails) is
+unblocked **twice over**: it has
 `material_preview_rig.hpp` to call BY NAME — a thumbnail is `materialPreviewCamera(rig, fixedAngle, 1.0F)`
 plus `materialPreviewView(...)` with whatever `MaterialPreviewLighting` it wants — and it has E.3.3's
 `ThumbnailService`, which is the "a second PRODUCER, not

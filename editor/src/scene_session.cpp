@@ -4,9 +4,10 @@
 // serialization bridge live in text_file.cpp / scene_io.cpp instead (D19/F17, F9's gate).
 #include <aero/core/log.hpp>
 #include <aero/editor/entity_ops.hpp>
-#include <aero/editor/project_state.hpp>  // task E.4.1: the per-project state, its resolver and its
-                                          // path arithmetic. ProjectSession itself arrives through
-                                          // scene_session.hpp -> project.hpp.
+#include <aero/editor/project_state.hpp>      // task E.4.1: the per-project state, its resolver and its
+                                              // path arithmetic. ProjectSession itself arrives through
+                                              // scene_session.hpp -> project.hpp.
+#include <aero/editor/scene_containment.hpp>  // task E.4.2: the containment verdict and its one sentence
 #include <aero/editor/scene_session.hpp>
 #include <aero/editor/selection.hpp>
 #include <aero/scene/world.hpp>
@@ -26,7 +27,10 @@ namespace engine::editor {
 // task 2.6.1: NewProject/OpenProject join NewScene/OpenScene/Quit. This is the ONLY change to any
 // pure function's body this task makes -- and it is what buys AC-19 whole (D1).
 bool modalInputActive(const FileFlow& flow, const ProjectFlow& projectFlow) noexcept {
-    return flow.dialog != DialogKind::None || flow.confirmOpen || projectFlow.form.open;
+    return flow.dialog != DialogKind::None || flow.confirmOpen || projectFlow.form.open ||
+           flow.containmentOffer.open;  // task E.4.2 -- the THIRD modal. Omitting it is 2.5.1's
+                                        // BLOCKING-2 in a new costume: a Ctrl+S behind the modal
+                                        // launching a second native dialog on top of it (D10).
 }
 
 bool discardsWork(FileAction action) noexcept {
@@ -166,9 +170,75 @@ void newScene(CommandContext& context, CommandStack& commands) {
 
 // ---- the two logging actions (A30: the ONLY two places this task logs) ---------------------------
 
+namespace {
+
+// task E.4.2: fill the offer a refusal raises, or do nothing at all when the caller supplied none.
+// File-local: the two choke points directly below are its ONLY callers, and a refusal is the ONLY
+// thing that may write these fields -- a second writer anywhere would be a second offer policy with
+// no way to order it against this one (E.3.2's one-focus-slot rule, applied to a modal).
+//
+// The serial is bumped on EVERY raise, including one that overwrites an offer still on screen: it is
+// what EditorApp's monotonic counter mirrors, and a raise that did not bump would be a refusal the
+// GPU tier cannot see.
+//
+// ★ AND THE TWO IN ONE-SHOTS ARE CLEARED (§7.3, restored by the code-review round): AN ANSWER PRESSED
+// ON OFFER A MUST NEVER BE APPLIED TO OFFER B. The two can meet because the product's own ordering
+// puts a raise between an answer and its drain -- applyDialogResult runs at editor_app.cpp:640 and
+// the step-0 drain runs inside drawShellUi at :1134, so a refusal raised by a native dialog's answer
+// lands after the button (or the request hook) recorded its one-shot and before applyFileRequests
+// consumes it. Carried over, the drain then reads the NEW offer's fields: the user presses
+// "Open ProjB" and the editor opens ProjC. A wrong-target action beats a lost click, and the lost
+// click is the worst this costs -- the new modal is still on screen and still answerable. SS53.
+void raiseContainmentOffer(ContainmentOffer* offer, std::string_view pathUtf8, const std::string& reason,
+                           const ContainmentVerdict& verdict, bool forSave) {
+    if (offer == nullptr) {
+        return;  // D12: refuse to the log and raise nothing -- every test and every non-UI caller
+    }
+    const std::size_t serial = offer->refusalSerial;
+    offer->open = true;
+    offer->forSave = forSave;
+    offer->scenePath = std::string(pathUtf8);
+    offer->reason = reason;  // containmentReason's OWN bytes, never a second wording (D6/AC-20)
+    // D9: a refused SAVE offers nothing, and BOTH terms are spelled. The resolver does not even
+    // perform the walk for a save, so `verdict.owningProjectRoot` is empty there today -- but a
+    // future resolver change must not silently grow a button, so the guard lives here too.
+    offer->projectRoot = forSave ? std::string() : verdict.owningProjectRoot;
+    offer->projectName = forSave ? std::string() : verdict.owningProjectName;
+    offer->acceptRequested = false;  // a stale answer never survives a new refusal (SS53)
+    offer->dismissRequested = false;
+    offer->refusalSerial = serial + 1U;
+}
+
+// task E.4.2: THE one way an offer is cleared. Every field is reset EXCEPT `refusalSerial`, which is
+// MONOTONIC FOR THE LIFETIME OF THE FileFlow (scene_session.hpp's own sentence on the field).
+//
+// A bare `offer = {}` reset it to 0, and the code-review round found what that costs: a dismiss and a
+// FRESH refusal inside ONE applyFileRequests call -- the drain at step 0, the refusal at step 2 -- run
+// the serial 1 -> 0 -> 1, which EditorApp's mirror cannot tell from "nothing happened". The counter
+// froze while the editor refused an open the user watched being refused, and
+// sceneContainmentRefusalCount() is the GPU tier's ONLY window into a refusal. SS54 and I191.
+void clearContainmentOffer(ContainmentOffer& offer) {
+    const std::size_t serial = offer.refusalSerial;
+    offer = {};
+    offer.refusalSerial = serial;
+}
+
+}  // namespace
+
 bool openSceneFile(CommandContext& context, CommandStack& commands, SceneSession& session,
-                   std::string_view absolutePathUtf8) {
+                   std::string_view absolutePathUtf8, const SceneFileContext& fileContext) {
     const std::string path(absolutePathUtf8);
+    // task E.4.2 (D6): FIRST -- before readTextFile, so a refused open performs NO I/O AT ALL and
+    // leaves the World, the Selection, the RootOrder, the clean flag and session.path() byte-identical
+    // (AC-4). findOwningProject = TRUE: an open is the one refusal that can offer a project (D9).
+    const ContainmentVerdict verdict =
+        resolveSceneContainment(path, fileContext.projectRoot, /*findOwningProject=*/true);
+    if (!containmentPermits(verdict.state)) {
+        const std::string reason = containmentReason(verdict, fileContext.projectRoot, /*forSave=*/false);
+        AERO_LOG_ERROR("editor: could not open scene '{}' -- {}", path, reason);  // exactly ONE
+        raiseContainmentOffer(fileContext.offer, path, reason, verdict, /*forSave=*/false);
+        return false;
+    }
     const FileReadResult read = readTextFile(path);
     if (!read.text.has_value()) {
         AERO_LOG_ERROR("editor: could not open scene '{}' -- {}", path, read.error);
@@ -194,13 +264,34 @@ bool openSceneFile(CommandContext& context, CommandStack& commands, SceneSession
 }
 
 bool saveSceneFile(CommandContext& context, CommandStack& commands, SceneSession& session,
-                   std::string_view absolutePathUtf8, bool appendExtension) {
+                   std::string_view absolutePathUtf8, bool appendExtension, const SceneFileContext& fileContext) {
+    // task E.4.2 (D7): the extension rule MOVES ABOVE the serialization, so containment is checked on
+    // the file that will actually be WRITTEN rather than on the argument. Both live in the same
+    // directory, so today the verdict is the same either way -- but checking the written thing is the
+    // only version of this that stays true if withSceneExtension ever changes. IO20 pins it; S18 seeds
+    // the raw argument back in.
+    const std::string target = appendExtension ? withSceneExtension(absolutePathUtf8) : std::string(absolutePathUtf8);
+    // findOwningProject = FALSE (D9): a refused save NEVER offers a project, because accepting one
+    // routes through adoptProject (:259-267) -> newScene (:261) -> World::clear() +
+    // CommandStack::clear() and would discard the very work being saved. There is nothing to offer, so
+    // there is nothing to look up, and a refused save costs no extra filesystem call at all.
+    const ContainmentVerdict verdict =
+        resolveSceneContainment(target, fileContext.projectRoot, /*findOwningProject=*/false);
+    if (!containmentPermits(verdict.state)) {
+        const std::string reason = containmentReason(verdict, fileContext.projectRoot, /*forSave=*/true);
+        AERO_LOG_ERROR("editor: could not save scene '{}' -- {}", target, reason);
+        // `target`, NEVER absolutePathUtf8 -- the modal shows the file that would have been written,
+        // which is the same string the ERROR one line above named (D7/IO20).
+        raiseContainmentOffer(fileContext.offer, target, reason, verdict, /*forSave=*/true);
+        return false;  // NO setClean, NO setPath -- a save that lies is the worst outcome here (R4)
+    }
     const std::optional<std::string> text = sceneToText(context.world);
     if (!text.has_value()) {
-        AERO_LOG_ERROR("editor: could not save scene '{}' -- {}", absolutePathUtf8, "built without AERO_REFLECT_TOOLS");
+        // task E.4.2: names `target`, not the argument -- `target` now exists above and the D13 refusal
+        // two lines below already names it, so one function would otherwise spell "the file" two ways.
+        AERO_LOG_ERROR("editor: could not save scene '{}' -- {}", target, "built without AERO_REFLECT_TOOLS");
         return false;
     }
-    const std::string target = appendExtension ? withSceneExtension(absolutePathUtf8) : std::string(absolutePathUtf8);
     // D13's existence check fires ONLY when the extension was actually appended -- if the user typed a
     // name that already has one, the native panel already asked about overwriting.
     if (appendExtension && target != absolutePathUtf8 && fileExists(target)) {
@@ -285,10 +376,11 @@ void restoreLastScene(CommandContext& ctx, CommandStack& commands, SceneSession&
             // scene untouched (PARSE FIRST, THEN SWAP -- scene_io.cpp's rule; openSceneFile calls
             // setPath only after the load succeeded). That IS D6's "stop": it needs no code, only the
             // absence of a second try.
-            (void)openSceneFile(ctx, commands, session, recordedAbsolute);
+            (void)openSceneFile(ctx, commands, session, recordedAbsolute, SceneFileContext{root, nullptr});
             return;
         case StartupScene::FirstUnderScenes:
-            (void)openSceneFile(ctx, commands, session, absoluteScenePath(root, firstRelative));
+            (void)openSceneFile(ctx, commands, session, absoluteScenePath(root, firstRelative),
+                                SceneFileContext{root, nullptr});
             return;
     }
 }
@@ -378,7 +470,8 @@ void performAction(FileAction action, CommandContext& context, CommandStack& com
             if (!flow.requestedPath.empty()) {  // D15's test seam: skip the dialog, use this path
                 const std::string path = flow.requestedPath;
                 flow.requestedPath.clear();
-                (void)openSceneFile(context, commands, session, path);
+                (void)openSceneFile(context, commands, session, path,
+                                    SceneFileContext{project.session.root(), &flow.containmentOffer});
                 return;
             }
             if (host.channel != nullptr) {
@@ -394,7 +487,8 @@ void performAction(FileAction action, CommandContext& context, CommandStack& com
             if (!flow.requestedPath.empty()) {
                 const std::string path = flow.requestedPath;
                 flow.requestedPath.clear();
-                (void)saveSceneFile(context, commands, session, path, /*appendExtension=*/false);
+                (void)saveSceneFile(context, commands, session, path, /*appendExtension=*/false,
+                                    SceneFileContext{project.session.root(), &flow.containmentOffer});
                 return;
             }
             if (host.channel != nullptr) {
@@ -446,6 +540,30 @@ void applyFileRequests(CommandContext& context, CommandStack& commands, SceneSes
     //    note, load-bearing: `createRequested` can only be set while `form.open` is true, and
     //    `form.open` is exactly what the refusal check below tests. Running these afterwards would
     //    let one frame's Create be swallowed by its own form.
+    //
+    // 0a. task E.4.2 (D10): the containment offer's two answers. HERE, at step 0, for the reason the
+    //     block comment above already gives: step 2's modalInputActive refusal tests
+    //     `containmentOffer.open`, so draining later would let the very modal the user just answered
+    //     swallow the request it produced -- a modal that can never be answered. S11 is the seed.
+    if (flow.containmentOffer.dismissRequested) {
+        clearContainmentOffer(flow.containmentOffer);  // closes the modal, offers nothing, changes
+                                                       // nothing else -- and KEEPS the serial (SS54)
+    }
+    if (flow.containmentOffer.acceptRequested) {
+        // Re-tested HERE, not merely at the button that is drawn: the button only EXISTS when
+        // !forSave && !projectRoot.empty(), but a raw request hook can set acceptRequested on a
+        // save-shaped offer, and that must not reach adoptProject -> newScene -> World::clear()
+        // (D9). SS48's second arm is what proves the re-test, by setting the flag directly.
+        const bool offerable = !flow.containmentOffer.forSave && !flow.containmentOffer.projectRoot.empty();
+        std::string root = std::move(flow.containmentOffer.projectRoot);
+        clearContainmentOffer(flow.containmentOffer);  // BEFORE the request, so modalInputActive is
+                                                       // ALREADY false when step 2 tests it -- S25 is
+                                                       // the seed for getting this backwards
+        if (offerable) {
+            project.flow.requestedPath = std::move(root);
+            flow.requested = FileAction::OpenProject;  // step 2 applies guardFor, so a DIRTY scene
+        }  // raises the unsaved-changes modal FIRST (D10)
+    }
     if (project.flow.form.cancelRequested) {
         project.flow.form = {};  // closes the modal, discards
     }
@@ -517,7 +635,8 @@ void applyFileRequests(CommandContext& context, CommandStack& commands, SceneSes
                 break;
             }
             case FileStep::WriteNow: {  // Save, titled
-                const bool ok = saveSceneFile(context, commands, session, session.path(), /*appendExtension=*/false);
+                const bool ok = saveSceneFile(context, commands, session, session.path(), /*appendExtension=*/false,
+                                              SceneFileContext{project.session.root(), &flow.containmentOffer});
                 const FileAction pending = flow.pending;
                 flow.pending = FileAction::None;
                 if (ok) {
@@ -589,7 +708,8 @@ void applyFileRequests(CommandContext& context, CommandStack& commands, SceneSes
     if (action == FileAction::SaveScene) {
         switch (saveStep(session.untitled())) {
             case FileStep::WriteNow:
-                (void)saveSceneFile(context, commands, session, session.path(), /*appendExtension=*/false);
+                (void)saveSceneFile(context, commands, session, session.path(), /*appendExtension=*/false,
+                                    SceneFileContext{project.session.root(), &flow.containmentOffer});
                 return;
             case FileStep::AskWhereToSave:
                 // BLOCKING-1 (code review): no hook ever sets `flow.requestedPath` for a plain SaveScene
@@ -668,7 +788,8 @@ void applyDialogResult(CommandContext& context, CommandStack& commands, SceneSes
         return;
     }
     if (kind == DialogKind::Open) {
-        (void)openSceneFile(context, commands, session, result.path);
+        (void)openSceneFile(context, commands, session, result.path,
+                            SceneFileContext{project.session.root(), &flow.containmentOffer});
         flow.pending = FileAction::None;
         return;
     }
@@ -695,9 +816,25 @@ void applyDialogResult(CommandContext& context, CommandStack& commands, SceneSes
     }
     // kind == DialogKind::Save. appendExtension is true ONLY here -- a native Save panel is the one
     // place a user can type a bare name (D13); requestSaveSceneAs(path) hands a path literally.
-    const bool ok = saveSceneFile(context, commands, session, result.path, /*appendExtension=*/true);
+    const bool ok = saveSceneFile(context, commands, session, result.path, /*appendExtension=*/true,
+                                  SceneFileContext{project.session.root(), &flow.containmentOffer});
     if (ok && flow.saveBeforePending) {
         performAction(flow.pending, context, commands, session, flow, host, project);
+    } else if (!ok) {
+        // BLOCKING-1 (the code-review round), the LAST site in its roster: a failed write -- a
+        // containment refusal among them -- ABANDONS the pending action, so that action's own target
+        // must go with it, whichever flow object it lives in. Every other abandon site in this file
+        // clears both fields; this arm cleared `pending` and `saveBeforePending` and left them.
+        //
+        // The chain that made it reachable, every step of it from the UI: a refused open offers the
+        // owning project -> accepting writes ProjB into project.flow.requestedPath and requests
+        // OpenProject -> a DIRTY document sends that through the unsaved-changes modal, where it
+        // waits as flow.pending with its target parked -> "Save" on an UNTITLED document takes
+        // AskWhereToSave -> the user picks a folder OUTSIDE the open project -> containment refuses
+        // here. The next File > Open Project... then found a non-empty requestedPath, took
+        // performAction's no-dialog seam and adopted ProjB with no dialog and no click. SS52.
+        flow.requestedPath.clear();
+        project.flow.requestedPath.clear();
     }
     flow.pending = FileAction::None;
     flow.saveBeforePending = false;

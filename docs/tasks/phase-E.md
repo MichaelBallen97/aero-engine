@@ -554,6 +554,10 @@ Definition of Done is discharged: reopening a project lands in the scene you las
 coverage hole). E.4.1 took the ImGui-tier ids
 `I176`–`I185` and the tier-0 prefix `PJ`, so **E.4.2 and E.4.4 — whose specs both claim `I176`+ — must
 re-measure the ceiling and renumber.**
+**E.4.2 is CLOSED IN CODE** on `feat/E.4.2-scene-project-containment` (eight commits, unmerged), which
+discharges the second clause: a scene outside the project is refused with an explanation. It renumbered to
+`I186`–`I192` and took the tier-0 prefix `CN` (`CN1`–`CN25`), so **the next free ImGui-tier id is `I193`**
+and E.4.3, E.4.4 and E.4.5 must each re-measure before they are implemented.
 
 ### E.4.1 Reopen the last scene · P0 · M · depends: 2.5.1, 2.6.1 · **MERGED** — PR #106, `068c45c`
 **Goal:** opening a project should resume your work. Today opening one always lands on an Untitled
@@ -569,7 +573,7 @@ Subtasks:
 - The open-project resolution order: recorded scene → first scene under `paths.scenes` → new scene
 - Respect INV-P1 — no second `ProjectSession::set()` call site; `project.json`'s five-key envelope untouched
 
-### E.4.2 Scene/project containment · P0 · S · depends: 2.5.1, 2.6.1
+### E.4.2 Scene/project containment · P0 · S · depends: 2.5.1, 2.6.1 — **CODE COMPLETE**
 **Goal:** the editor should not silently open a scene belonging to a different project. It does today:
 `openSceneFile` and `saveSceneFile` take a raw absolute path from any of four callers and act on it
 with no comparison against the open project's root, which leaves the document pointing at project B
@@ -581,6 +585,47 @@ Subtasks:
 - The containment predicate as a pure function (normalisation, symlinks, case, the drive-letter case), tested alone
 - Applied at `openSceneFile` and `saveSceneFile`; the "open that project instead" offer
 - The no-project case stated explicitly rather than falling through
+
+_Outcome:_ **sized S, recorded before implementation, landed S. Eight commits — seven of code and tests,
+plus one for the docs; the full local gate green on both presets and both reduced configurations; the
+29-seed sabotage matrix run in full and a code-review round closed. The sixteen-row validation page is
+WRITTEN and UNRUN on every platform.** One
+containment predicate sits at `openSceneFile` and `saveSceneFile` and nowhere else. The pure half — a
+two-cursor, allocation-free, `noexcept`, segment-wise `directoryWithin`, plus `lexicalContainment`,
+`normalizeForContainment`, `containmentPermits` and one reason sentence both consumers hand the user
+verbatim — is a new public `<filesystem>`-free, ImGui-free, log-free pair with a 25-case tier-0 battery
+that runs **25 / 25 in all three build configurations**. The resolver composes it with a canonical rescue
+and, for an open only, an upward walk for the owning project. **The order is the design:** an empty root
+is `NoProject` with zero syscalls; the lexical verdict returns immediately when it permits, so every open
+and every save the editor actually performs costs **no filesystem call at all**; only a refusal pays for
+canonicalisation, and only of the scene's **parent directory**, so a save target that does not exist yet
+is still judged correctly. **The rescue widens and never narrows**, which bounds a wrong answer on an
+untested platform to a false refusal with a readable message rather than a false accept.
+
+**The most important decision in the task is what a refused SAVE does: it offers nothing.** Accepting a
+project offer routes through `adoptProject` → `newScene` → `World::clear()` + `CommandStack::clear()`, so
+presenting "open that project" as the remedy for a failed save would be presenting data loss as a remedy.
+The save arm gets one `OK` and a reason that says to use `Save Scene As…`; the resolver does not even
+perform the walk for it.
+
+**Three of the twenty-nine seeds exposed real coverage holes rather than redundant arms.** Building all
+six production contexts from `scenesRoot()` — the exact value `FileDialogHost::projectRoot` is bound to,
+and the single most likely accidental defect in the task — left **both binaries entirely green**, because
+`IO18` asserts the rule at the predicate while supplying its own context and cannot see which root the
+call sites chose; `SS51` now drives five production sites. Deleting the permitted-path early return
+changes **no answer anywhere** — the rescue can only ever widen — so `CN13` gained a source-text
+**ordering** pin, the only instrument that can see a cost with no consequence. And `CN8` exercised
+`lexicalContainment` only, never the resolver.
+
+**The code-review round's blocking finding was a leaked project target.** `applyDialogResult`'s Save arm
+cleared `flow.pending` but neither `requestedPath` — the one hole in a roster every other abandon site in
+that file observes — so a containment-refused **save** armed a later `File ▸ Open Project…` to skip its
+folder dialog and silently adopt the project from a refused **open** minutes earlier. Four more findings
+are behavioural: a new refusal now clears the previous offer's unanswered one-shots (whose worst case is a
+**wrong-target open**), `refusalSerial` is monotonic and mirrored absolutely, the modal closes a popup
+whose offer was drained through a request hook rather than a button, and the upward walk no longer offers
+**the project that is already open** — with a guard that is canonical-aware, because a byte compare cannot
+see the symlinked spelling that is the defect's only route.
 
 ### E.4.3 Asset file operations · P0 · L · depends: 3.1.1, 3.1.3, 3.1.4
 _(Sized L, recorded before implementation: it is five destructive-capable operations, a guard

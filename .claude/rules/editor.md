@@ -180,6 +180,39 @@ a **human mouse/keyboard pass** recorded per OS in `editor/VALIDATION.md`.
   it so, and removing the hand-bound check on that assumption without re-verifying against the
   vendored source would silently break AC-27 with no test able to catch it (no tier can press a
   key on a modal; see `editor/validation/2.5.1-save-load-new-from-editor.md` row 14).
+- **Containment is decided at `openSceneFile` and `saveSceneFile` and NOWHERE ELSE (task E.4.2).** Both
+  take a **non-defaulted** `const SceneFileContext&` — a default would let a future call site silently
+  take the permissive arm, which is a wrong picture with no error and no failing test, while
+  non-defaulted makes every unconverted site a compile error. The context is built **at the call
+  expression and never hoisted**: `ProjectSession::root()` returns a view into the live session and
+  `adoptProject` replaces it from inside `performAction` (`CN19` pins the absence of a hoist; `CN20`
+  asserts `editor/src` spells `NO_PROJECT_SCENE_CONTEXT` zero times). A refusal is **exactly one ERROR**
+  whose reason clause is `containmentReason`'s own bytes, handed to the modal verbatim so the two
+  wordings cannot drift. `NoProject` **permits and logs nothing** — the Welcome window is a supported
+  state and `File ▸ Open Scene…` is enabled in it. The verdict is **lexical first**, so a permitted open
+  or save performs **no filesystem call at all**, and the canonical rescue runs only on a refusal and can
+  only ever **widen** it — never run it on the permitted path, and never invert it: a mistake anywhere in
+  this stack must produce a false **refusal**, never a false accept. A surviving `..` on either side is
+  `Unresolvable` and is never resolved. **A refused SAVE never offers a project**, spelled at both the
+  raiser and the modal, because accepting one runs `adoptProject` → `newScene` → `World::clear()` +
+  `CommandStack::clear()` and would discard the very work being saved. `restoreLastScene`'s two sites
+  pass a **permanent null offer** — they have no `FileFlow` in scope by design, and a modal there would
+  offer the project that was just opened.
+- **`FileDialogHost::projectRoot` is the WRONG value for containment (task E.4.2), and reaching for it is
+  the most likely accidental defect in this area.** It is bound to `project.scenesRoot()`
+  (`editor_app.cpp`, two sites), so using it checks every scene against `<root>/scenes` and refuses
+  anything the user deliberately put in `assets/levels/`. It is also **mixed-separator on Windows by
+  design** (`project.hpp`'s join rule), which makes half of that defect invisible on macOS and Linux
+  forever. The authority is `ProjectSession::root()`. `IO18` holds the rule at the predicate but supplies
+  its own context, so it cannot see which root production chose — **`SS51` is the case that drives five
+  real call sites**, and the seed that motivated it left both binaries entirely green.
+- **Every abandon path in `scene_session.cpp` clears BOTH `flow.requestedPath` and
+  `project.flow.requestedPath` (task E.4.2, `SS52`).** A failed write abandons the pending action, so that
+  action's own target must go with it, whichever flow object it lives in. `applyDialogResult`'s Save arm
+  was the one hole in that roster: a containment-refused save left a project parked in
+  `project.flow.requestedPath`, and the next `File ▸ Open Project…` found it, took `performAction`'s
+  no-dialog seam and adopted that project with no folder dialog and no click. When you add a new failure
+  arm here, clear the roster, not just the field you were thinking about.
 
 ## Projects (task 2.6.1)
 
@@ -506,6 +539,16 @@ and resolves; `EditorApp::persistProjectState` decides and writes.
   libstdc++ both take the uncached branch) and nothing on Windows (`FindFirstFileW` already returns it).
   Do not add `entry.refresh(ec)` to make it "free" — that changes the dangling-symlink asymmetry
   2.2.4's code review already had to discover and fix once.
+- **INV-C9 is WIDENED at task E.4.2: `canonicalDirectory`'s result is a dedup key OR a COMPARISON key,
+  and nothing else.** The second use is `scene_containment.cpp`, which canonicalises a project root and a
+  scene's parent directory, compares them and **discards both** — nothing is stored in a record, put in a
+  report, written to the cache, or shown to the user, which is exactly what INV-C9 forbids and exactly
+  what that use does not do. The forward-slash normalisation inside `canonicalDirectory` is what makes
+  such a comparison valid on Windows, and it exists for the identical reason. The widening is spelled in
+  `project_files.hpp`'s own header comment and here, changed together — **a third use must state which of
+  the two it is, and a use that RECORDS or DISPLAYS the value is still forbidden**: project roots are
+  `absolute`, not `weakly_canonical`, on purpose, so a project reached through a symlink must never be
+  silently recorded under its target.
 
 ## Asset browser v1 (task 3.1.3)
 

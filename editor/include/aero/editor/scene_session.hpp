@@ -185,6 +185,69 @@ struct FileDialogHost {
     std::string_view projectRoot;  // D20's fallback start directory
 };
 
+// ---- task E.4.2: the containment refusal's own offer ---------------------------------------------
+// The NewProjectForm shape verbatim (:245-259): OUT fields written by the two choke points, `open`
+// read by the modal, two IN one-shots written by the modal's buttons and consumed OUTSIDE the draw
+// walk, at STEP 0 of applyFileRequests (D10 -- step 0 runs BEFORE the modalInputActive refusal in
+// step 2, or the accept is swallowed by the very modal that produced it).
+struct ContainmentOffer {
+    // ---- STATE / OUT -- set by openSceneFile/saveSceneFile through SceneFileContext::offer.
+    bool open = false;        // the modal is up -> modalInputActive() MUST include this (D10)
+    bool forSave = false;     // the refusal was a SAVE: NO project is ever offered (D9)
+    std::string scenePath;    // the refused path, verbatim, for the modal's first line
+    std::string reason;       // containmentReason()'s exact bytes -- the SAME string the ERROR
+                              // carried, never a second wording (D6/AC-20)
+    std::string projectRoot;  // "" when no enclosing project.json was found AND always for a save;
+                              // the accept's target
+    std::string projectName;  // "" when that manifest did not parse -- the offer is still made
+
+    // MONOTONIC FOR THE LIFETIME OF THE FileFlow, bumped on EVERY raise including one that overwrites
+    // an offer still on screen, and NEVER RESET -- the step-0 drain goes through
+    // scene_session.cpp's clearContainmentOffer, which restores this one field after the reset
+    // (task E.4.2 §3.6, amended by the code-review round). EditorApp therefore mirrors it ABSOLUTELY.
+    // A bool here would lose the second of two refusals in one applyFileRequests call, which D11
+    // makes a real sequence rather than a hypothetical one -- and a serial the drain reset to 0 loses
+    // the same pair one level up, because 1 -> 0 -> 1 is indistinguishable from "nothing happened"
+    // (SS54, I191).
+    std::size_t refusalSerial = 0;
+
+    // ---- IN -- one-shots, set by the modal's buttons (and EditorApp's two request hooks) and by
+    // NOTHING else. BOTH ARE CLEARED BY EVERY RAISE: an answer belongs to the offer it was pressed on
+    // and must never be applied to a later one (SS53).
+    bool acceptRequested = false;   // "Open '<name>'" -- only ever DRAWN when !forSave && !projectRoot.empty()
+    bool dismissRequested = false;  // Cancel / OK / Esc / a programmatic close
+};
+
+// task E.4.2: everything the two scene-file choke points need beyond the path. NON-DEFAULTED at both
+// (D12, E.1.3's rule applied to a 31-expression edit) -- a default would let a future call site
+// silently take the permissive arm, which is a wrong picture with no error and no failing test.
+struct SceneFileContext {
+    // THE OPEN PROJECT'S ROOT, and nothing else. NEVER FileDialogHost::projectRoot, which is bound to
+    // project.scenesRoot() at editor_app.cpp:638-639 and :1130-1132 and would silently check every
+    // scene against <root>/scenes -- refusing anything the user deliberately put in assets/levels/.
+    // scenesRoot() is also MIXED-SEPARATOR on Windows by design (project.hpp:110-115), so half of
+    // that defect is invisible on macOS and Linux forever.
+    //
+    // "" means no project is open, which PERMITS (D5) -- the Welcome window and
+    // `restoreLastProject = false` are real, supported states in which File > Open Scene... is
+    // enabled today (shell_ui.cpp:102 gates the I/O chords on sceneIoAvailable(), not on a project).
+    //
+    // A VIEW into the live ProjectSession, so it is built AT THE CALL EXPRESSION and never hoisted
+    // across a performAction() call: adoptProject replaces `rootPath` in there
+    // (scene_session.cpp:263), and a hoisted view would dangle. That is 2.6.1's
+    // FileDialogHost::projectRoot lesson applied a second time, and CN19 is its source-text pin.
+    std::string_view projectRoot;
+
+    // OUT, OPTIONAL. A refusal fills it and raises the modal; nullptr means "refuse to the log and
+    // raise nothing", which is what every test and every non-UI caller wants.
+    ContainmentOffer* offer = nullptr;
+};
+
+// The permissive value, SPELLED (D12). Every test call site names this; editor/src names it ZERO
+// times and CN20 asserts so, so a production site taking the permissive arm is a FAILING TEST rather
+// than something a code-review round has to notice.
+inline constexpr SceneFileContext NO_PROJECT_SCENE_CONTEXT{};
+
 // ---- the New Project form and the project flow's own state (task 2.6.1, §3.6) -------------------
 struct NewProjectForm {
     // STATE -- owned by the flow, edited by the modal's own widgets.
@@ -258,10 +321,22 @@ struct FileFlow {
     // that knows what a Blender path is. This file deliberately learns nothing beyond "a string came
     // back" -- no Blender header, no Blender type, no Blender behaviour (AC-46).
     std::string pickedBlenderPath;
+    // task E.4.2. APPENDED, never inserted -- the FileEntry (project_files.hpp:49-53) /
+    // AssetMetaState::Reattached (asset_meta.hpp:148) rule, as FORWARD defence: a positional
+    // aggregate initializer is silently re-mapped by an insertion, and `bool` to `bool` is neither a
+    // narrowing nor a promotion, so nothing diagnoses it.
+    //
+    // MEASURED, so the justification is not overstated (the code-review round): NO test anywhere
+    // aggregate-initialises a FileFlow today -- `git grep -nE 'FileFlow[a-zA-Z]* *\{' -- tests` exits
+    // 1, and every use is `FileFlow flow;`. So seed S24 (insert this field ahead of `requested`)
+    // reddens NOTHING, and this rule currently has no witness in the tree. It is kept because it is
+    // free and because the failure it prevents is silent; it is NOT kept because something would
+    // catch a violation. Do not add an aggregate-initialising test purely to give the seed a witness.
+    ContainmentOffer containmentOffer;
 };
 
 // Is some MODAL surface currently the owner of input? True while a native dialog is in flight, the
-// unsaved-changes modal is up, or the New Project modal is up.
+// unsaved-changes modal is up, the New Project modal is up, or the scene-containment modal is up.
 //
 // THE single definition (Phase 2 audit). It used to be written out by hand at each site, and
 // shell_ui.cpp's banner already named what a disagreement costs -- 2.5.1's BLOCKING-2, where a chord
@@ -278,14 +353,20 @@ struct FileFlow {
 // scene was replaced. LOGS: one ERROR on any failure (naming the path, plus line/column when
 // line > 0); one INFO on success carrying the four SceneLoadReport counts; one additional WARN iff
 // skipped + failed > 0 (D21). This and saveSceneFile are the ONLY places task 2.5.1 logs.
+// task E.4.2: refuses BEFORE any I/O when `fileContext` says the path is outside the open project
+// (D6): one ERROR, false, and readTextFile is never called.
 [[nodiscard]] bool openSceneFile(CommandContext& context, CommandStack& commands, SceneSession& session,
-                                 std::string_view absolutePathUtf8);
+                                 std::string_view absolutePathUtf8, const SceneFileContext& fileContext);
 
 // Serialize, apply D13's extension rule when `appendExtension`, write atomically, and on success set
 // the path and mark the history CLEAN. Returns true iff the file was written. Logs exactly one ERROR
 // on failure and NOTHING on success.
+// task E.4.2: refuses BEFORE serialization when `fileContext` says the target is outside the open
+// project (D6/D7) -- the extension rule is applied first, so the check runs on the file that will
+// actually be written.
 [[nodiscard]] bool saveSceneFile(CommandContext& context, CommandStack& commands, SceneSession& session,
-                                 std::string_view absolutePathUtf8, bool appendExtension);
+                                 std::string_view absolutePathUtf8, bool appendExtension,
+                                 const SceneFileContext& fileContext);
 
 // ---- the two project-opening logging actions (task 2.6.1; mirrors openSceneFile/saveSceneFile as
 // the ONLY other places this task logs) -----------------------------------------------------------

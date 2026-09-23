@@ -162,6 +162,8 @@ add_library(aero_editor_core STATIC
     src/editor_prefs.cpp         # task E.3.2 -- the machine-local editor preference file; PURE, no SDL
     src/context_router.cpp       # task E.3.2 -- the pure routing decision and the one-slot latch
     src/project_state.cpp        # task E.4.1 -- <projectRoot>/Library/editor-state.json; PURE, no <filesystem>
+    src/scene_containment.cpp    # task E.4.2 -- the containment predicate; ALL <filesystem> for this
+                                 # pair, never logs, never writes (D1-D4)
 )
 add_library(aero::editor_core ALIAS aero_editor_core)
 target_include_directories(aero_editor_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)

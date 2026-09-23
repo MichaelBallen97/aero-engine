@@ -76,7 +76,13 @@ struct ProjectState {
 // THIS IS NOT E.4.2's CONTAINMENT PREDICATE AND MUST NOT BE USED AS ONE (D8). It is PURELY LEXICAL:
 // '\' unified to '/' on both sides, trailing separators stripped from the root, then a BYTE-WISE test
 // that the scene begins with root + '/'. No symlink resolution, no case folding, no drive-letter rule.
-// E.4.2 owns all four and this function becomes its caller -- or is deleted in favour of it.
+// E.4.2's predicate LANDED and DELIBERATELY DID NOT absorb this one, so the invitation above is
+// closed: that one answers "may this proceed?" and REFUSES on doubt; this one answers "what do I
+// record?" and FORGETS on doubt, and a refusal where a forget belongs turns a lost bookmark into a
+// blocked operation. directoryWithin cannot replace it either -- it returns a bool and takes a
+// DIRECTORY, while this takes a FILE and returns the REMAINDER. And this runs once per tick from
+// EditorApp::persistProjectState, where resolveSceneContainment's canonical rescue would be two
+// filesystem calls EVERY TICK for as long as an out-of-project scene is open.
 //
 // Its failure mode is "FORGET", never "wrong project": a false negative records "" and the user gets a
 // new scene; a false positive records a relative path that either does not exist on the next open (the
