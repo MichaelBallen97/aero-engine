@@ -185,9 +185,32 @@ struct FileDialogHost {
     std::string_view projectRoot;  // D20's fallback start directory
 };
 
-// ---- task E.4.2: the containment refusal's own offer (defined in full at the commit that draws the
-// modal; only the NAME is needed here, the DialogChannel precedent at :176-178) -------------------
-struct ContainmentOffer;
+// ---- task E.4.2: the containment refusal's own offer ---------------------------------------------
+// The NewProjectForm shape verbatim (:245-259): OUT fields written by the two choke points, `open`
+// read by the modal, two IN one-shots written by the modal's buttons and consumed OUTSIDE the draw
+// walk, at STEP 0 of applyFileRequests (D10 -- step 0 runs BEFORE the modalInputActive refusal in
+// step 2, or the accept is swallowed by the very modal that produced it).
+struct ContainmentOffer {
+    // ---- STATE / OUT -- set by openSceneFile/saveSceneFile through SceneFileContext::offer.
+    bool open = false;        // the modal is up -> modalInputActive() MUST include this (D10)
+    bool forSave = false;     // the refusal was a SAVE: NO project is ever offered (D9)
+    std::string scenePath;    // the refused path, verbatim, for the modal's first line
+    std::string reason;       // containmentReason()'s exact bytes -- the SAME string the ERROR
+                              // carried, never a second wording (D6/AC-20)
+    std::string projectRoot;  // "" when no enclosing project.json was found AND always for a save;
+                              // the accept's target
+    std::string projectName;  // "" when that manifest did not parse -- the offer is still made
+
+    // MONOTONIC, bumped on EVERY raise including an overwrite. EditorApp mirrors the DELTA, never the
+    // value, because the step-0 drain assigns a default-constructed offer and resets this to 0
+    // (task E.4.2 §3.6). A bool here would lose the second of two refusals in one applyFileRequests
+    // call, which D11 makes a real sequence rather than a hypothetical one.
+    std::size_t refusalSerial = 0;
+
+    // ---- IN -- one-shots, set by the modal's buttons and by NOTHING else.
+    bool acceptRequested = false;   // "Open '<name>'" -- only ever DRAWN when !forSave && !projectRoot.empty()
+    bool dismissRequested = false;  // Cancel / OK / Esc / a programmatic close
+};
 
 // task E.4.2: everything the two scene-file choke points need beyond the path. NON-DEFAULTED at both
 // (D12, E.1.3's rule applied to a 31-expression edit) -- a default would let a future call site
@@ -292,10 +315,14 @@ struct FileFlow {
     // that knows what a Blender path is. This file deliberately learns nothing beyond "a string came
     // back" -- no Blender header, no Blender type, no Blender behaviour (AC-46).
     std::string pickedBlenderPath;
+    // task E.4.2. APPENDED (the FileEntry / AssetMetaState::Reattached rule): tests aggregate-
+    // initialise FileFlow, and an insertion would silently re-map every field after it -- `bool` to
+    // `std::string` would not compile, but `bool` to `bool` would, and nothing diagnoses it.
+    ContainmentOffer containmentOffer;
 };
 
 // Is some MODAL surface currently the owner of input? True while a native dialog is in flight, the
-// unsaved-changes modal is up, or the New Project modal is up.
+// unsaved-changes modal is up, the New Project modal is up, or the scene-containment modal is up.
 //
 // THE single definition (Phase 2 audit). It used to be written out by hand at each site, and
 // shell_ui.cpp's banner already named what a disagreement costs -- 2.5.1's BLOCKING-2, where a chord

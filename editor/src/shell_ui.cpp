@@ -321,6 +321,78 @@ void drawUnsavedChangesModal(FileMenuContext& fileMenu) {
     }
 }
 
+// task E.4.2: the THIRD modal, in the SAME post-menu-bar slot as the other two -- drawMenuBar has
+// returned, EndMainMenuBar has run, the ID stack is clean and OpenPopup is legal here (2.5.1's F13).
+// The ### form makes the ID stable (imgui.cpp:2539-2545), exactly as UNSAVED_MODAL_ID does above.
+constexpr const char* CONTAINMENT_MODAL_ID = "Scene Outside Project###aero_scene_containment";
+
+void drawSceneContainmentModal(FileMenuContext& fileMenu) {
+    ContainmentOffer& offer = fileMenu.flow.containmentOffer;
+    if (offer.open && !ImGui::IsPopupOpen(CONTAINMENT_MODAL_ID)) {
+        ImGui::OpenPopup(CONTAINMENT_MODAL_ID);
+    }
+    if (!offer.open) {
+        return;
+    }
+    // F13: EndPopup ONLY when BeginPopupModal returned true -- the BeginMenu family, not the Begin one.
+    if (ImGui::BeginPopupModal(CONTAINMENT_MODAL_ID, nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        // A NAMED std::string, never fileNameOf(...).data(): fileNameOf returns a view INTO its
+        // argument (scene_session.cpp:124-134) and is NOT NUL-terminated, so %s on .data() runs past
+        // the leaf into the rest of the path -- or off the end of it. The documentName() precedent
+        // above is the same construction for the same reason. S15 is the seed.
+        const std::string leaf(fileNameOf(offer.scenePath));
+        // %s ALWAYS, NEVER Text(leaf.c_str()) bare -- a file named "100%s.scene.json" is otherwise a
+        // format bug, and E.3.4's validation pass confirmed that trap live for "100%s.aeromat".
+        ImGui::Text(offer.forSave ? "Cannot save \"%s\" here." : "Cannot open \"%s\".", leaf.c_str());
+        ImGui::TextDisabled("%s", offer.reason.c_str());  // the ERROR's OWN bytes (D6/AC-20)
+        ImGui::Separator();
+        // D9: a refused SAVE never offers a project, because accepting one routes through
+        // adoptProject -> newScene -> World::clear() + CommandStack::clear() and would discard the
+        // very work the user pressed Save to preserve. The resolver does not even perform the walk
+        // for a save, so projectRoot is empty there anyway -- BOTH terms are spelled, because a
+        // future resolver change must not silently grow a button.
+        const bool offerable = !offer.forSave && !offer.projectRoot.empty();
+        if (offerable) {
+            const std::string label =
+                offer.projectName.empty() ? std::string("Open That Project") : ("Open \"" + offer.projectName + "\"");
+            if (ImGui::Button(label.c_str())) {  // a Button's label is NOT a format string
+                offer.acceptRequested = true;
+                // 2.6.1's BLOCKING-1, on EVERY button: ImGui owns g.OpenPopupStack and never GCs an
+                // entry for a popup that simply stops being submitted, so omitting this sets
+                // g.HoveredWindow = NULL FOREVER AFTER and every menu, panel and dock tab becomes
+                // unclickable (project_ui.cpp:108-117). S16, and validation row 11 is its only
+                // witness.
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::SetItemDefaultFocus();  // Enter == open that project
+            ImGui::SameLine();
+        }
+        if (ImGui::Button(offerable ? "Cancel" : "OK")) {
+            offer.dismissRequested = true;
+            ImGui::CloseCurrentPopup();
+        }
+        if (!offerable) {
+            ImGui::SetItemDefaultFocus();  // Enter == dismiss, when dismissing is the only option
+        }
+        // Esc is HAND-BOUND, and that is deliberate rather than a workaround: NavUpdateCancelRequest's
+        // popup branch EXCLUDES ImGuiWindowFlags_Modal (imgui.cpp:15032) and the editor never sets
+        // ImGuiConfigFlags_NavEnableKeyboard (imgui_layer.cpp:79), so that path is doubly dead -- the
+        // unsaved-changes modal above states the identical reasoning. repeat=false: one press, one
+        // dismiss. NO TIER IN THIS TREE CAN PRESS A KEY; validation row 9 is its only witness
+        // anywhere.
+        if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
+            offer.dismissRequested = true;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    } else {
+        // A SAFETY NET, not the Esc mechanism above: in 1.92.8 the only thing that can reach here is
+        // a PROGRAMMATIC close, because a modal also swallows outside clicks. Treating it as a
+        // dismiss keeps the flow from wedging with `open` stuck true.
+        offer.dismissRequested = true;
+    }
+}
+
 // Applied HERE -- after drawMenuBar returned (EndMainMenuBar has run) and BEFORE the dockspace and the
 // panel walk. That is the precondition .claude/rules/editor.md's "never mutate the World during a draw
 // walk" actually protects: no ImGui tree is open and no eachChild walk is in flight
@@ -541,6 +613,7 @@ void drawShellUi(PanelRegistry& panels, PanelContext& context, ShellUiState& sta
     drawNewProjectModal(fileMenu);                  // the SAME slot as the unsaved-changes modal: drawMenuBar has
                                                     // returned, EndMainMenuBar has run, the ID stack is clean and
                                                     // OpenPopup is legal here (2.5.1's F13)
+    drawSceneContainmentModal(fileMenu);            // task E.4.2 -- the THIRD modal, same slot, same rules (D11)
     {
         // applyFileRequests runs BEFORE applyHistoryRequests, on purpose (plan A32/E22): if one frame
         // carries both a scene swap and an undo request, the undo must be evaluated against the stack

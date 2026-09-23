@@ -1179,8 +1179,11 @@ TEST_CASE("scene_session: NO_PROJECT_SCENE_CONTEXT permits and logs no containme
 TEST_CASE("scene_session: a refusal with a NULL offer still refuses and still logs (SS46, D12)") {
     // THE EVERY-TEST PATH, asserted rather than assumed: every test call site and every non-UI caller
     // passes offer == nullptr, so a null there must change NOTHING about the refusal's observable half.
-    // Commit 4 appends the arm that compares this against a REAL offer; this half is what proves the
-    // null pointer is dereferenced nowhere on either choke point's refusal path.
+    // The first half proves the null pointer is dereferenced nowhere on either choke point's refusal
+    // path; the SECOND half (below) runs the SAME refusal twice, once with a null offer and once with
+    // a real one, and compares the OBSERVABLE halves byte for byte -- without it, "nullptr raises
+    // nothing" is compatible with "nullptr also does nothing else".
+    using engine::editor::ContainmentOffer;
     using engine::editor::NO_PROJECT_SCENE_CONTEXT;
     using engine::editor::openSceneFile;
     using engine::editor::saveSceneFile;
@@ -1218,4 +1221,288 @@ TEST_CASE("scene_session: a refusal with a NULL offer still refuses and still lo
     scope.sink()->take(records);
     CHECK(countAtLevel(records, engine::LogLevel::Error) == 1);
     CHECK(session.untitled());  // and neither call bound a path
+    records.clear();
+
+    // ---- the SECOND arm: the same refusal, null offer vs real offer, compared byte for byte -------
+    const std::string sameTarget = tmp.join("Other/z.scene.json");
+
+    CHECK_FALSE(openSceneFile(ctx, commands, session, sameTarget, refuseOnly));
+    scope.sink()->take(records);
+    REQUIRE(records.size() == 1U);
+    const std::size_t nullErrors = countAtLevel(records, engine::LogLevel::Error);
+    const std::string nullMessage = records.front().message;
+    records.clear();
+
+    ContainmentOffer offer;
+    CHECK_FALSE(openSceneFile(ctx, commands, session, sameTarget, SceneFileContext{root, &offer}));
+    scope.sink()->take(records);
+    REQUIRE(records.size() == 1U);
+    CHECK(countAtLevel(records, engine::LogLevel::Error) == nullErrors);
+    CHECK(records.front().message == nullMessage);  // the SAME bytes, not merely the same count
+    CHECK(session.untitled());                      // and neither call bound a path
+    // ANTI-VACUITY: the real offer really WAS filled, so "identical observables" is a statement about
+    // two refusals that differ, not about two calls that both did nothing.
+    CHECK(offer.open);
+    CHECK(offer.refusalSerial == 1U);
+    CHECK(offer.scenePath == sameTarget);
+    CHECK_FALSE(offer.reason.empty());
+}
+
+// ---- SS44-SS49: task E.4.2 commit 4, the offer the refusal raises and the modal's two answers -----
+
+TEST_CASE("scene_session: a refused OPEN fills the offer and names the owning project (SS44, AC-20)") {
+    using engine::editor::ContainmentOffer;
+    using engine::editor::containmentReason;
+    using engine::editor::ContainmentVerdict;
+    using engine::editor::CreateProblem;
+    using engine::editor::createProject;
+    using engine::editor::normalizeForContainment;
+    using engine::editor::openSceneFile;
+    using engine::editor::ProjectCreateOutcome;
+    using engine::editor::resolveSceneContainment;
+    using engine::editor::SceneFileContext;
+
+    const LogFixture fixture;
+    const TempDir tmp;
+    const std::string rootA = tmp.join("ProjA");
+    // A REAL sibling project on disk, built with createProject so the name comes from the same writer
+    // loadProjectFrom reads -- never a hand-written manifest that could drift from the real one.
+    const ProjectCreateOutcome b = createProject(tmp.utf8(), "ProjB", "0.1.0");
+    REQUIRE(b.problem == CreateProblem::Ok);
+    const std::string foreign = b.root + "/scenes/x.scene.json";
+    REQUIRE(engine::editor::writeTextFileAtomic(foreign, "{}").empty());
+
+    engine::World world;
+    engine::editor::seedDefaultScene(world);
+    Selection selection;
+    RootOrder roots;
+    CommandStack commands;
+    CommandContext ctx{world, selection, roots};
+    engine::editor::SceneSession session;
+
+    ContainmentOffer offer;
+    CHECK_FALSE(openSceneFile(ctx, commands, session, foreign, SceneFileContext{rootA, &offer}));
+
+    CHECK(offer.open);
+    CHECK_FALSE(offer.forSave);
+    CHECK(offer.scenePath == foreign);
+    CHECK(offer.projectRoot == normalizeForContainment(b.root));
+    CHECK(offer.projectName == "ProjB");
+    CHECK(offer.refusalSerial == 1U);
+    CHECK_FALSE(offer.acceptRequested);  // a raise never answers itself
+    CHECK_FALSE(offer.dismissRequested);
+
+    // AC-20: the reason is containmentReason's OWN OUTPUT, not a second wording. Built here from the
+    // SAME verdict the choke point resolved -- the only comparison that can catch a drift, because
+    // comparing offer.reason against the LOG's text would compare two copies of one string.
+    const ContainmentVerdict v = resolveSceneContainment(foreign, rootA, /*findOwningProject=*/true);
+    CHECK(offer.reason == containmentReason(v, rootA, /*forSave=*/false));
+    CHECK_FALSE(offer.reason.empty());  // anti-vacuity: "" == "" would pass otherwise
+    CHECK(offer.reason.find("ProjB") != std::string::npos);
+}
+
+TEST_CASE("scene_session: a refused SAVE fills the offer but offers NO project (SS45, D9)") {
+    using engine::editor::ContainmentOffer;
+    using engine::editor::CreateProblem;
+    using engine::editor::createProject;
+    using engine::editor::openSceneFile;
+    using engine::editor::ProjectCreateOutcome;
+    using engine::editor::saveSceneFile;
+    using engine::editor::SceneFileContext;
+
+    const LogFixture fixture;
+    const TempDir tmp;
+    const std::string rootA = tmp.join("ProjA");
+    // THE SAME sibling project exists and is perfectly findable. A save refusal must still offer
+    // NOTHING -- accepting one routes through adoptProject -> newScene -> World::clear(), which would
+    // discard the very work the user pressed Save to preserve.
+    const ProjectCreateOutcome b = createProject(tmp.utf8(), "ProjB", "0.1.0");
+    REQUIRE(b.problem == CreateProblem::Ok);
+
+    engine::World world;
+    engine::editor::seedDefaultScene(world);
+    Selection selection;
+    RootOrder roots;
+    CommandStack commands;
+    CommandContext ctx{world, selection, roots};
+    engine::editor::SceneSession session;
+
+    ContainmentOffer offer;
+    CHECK_FALSE(saveSceneFile(ctx, commands, session, b.root + "/scenes/y.scene.json",
+                              /*appendExtension=*/false, SceneFileContext{rootA, &offer}));
+    CHECK(offer.open);
+    CHECK(offer.forSave);
+    CHECK(offer.refusalSerial == 1U);
+    CHECK(offer.projectRoot.empty());  // EVEN THOUGH ProjB IS RIGHT THERE
+    CHECK(offer.projectName.empty());
+    CHECK(offer.reason.find("ProjB") == std::string::npos);
+    CHECK(offer.reason.find("Save Scene As") != std::string::npos);
+
+    // THE ANTI-VACUITY ARM: the identical path through openSceneFile DOES fill both fields, so this
+    // case is not green merely because findEnclosingProject never works on this machine.
+    const std::string openTarget = b.root + "/scenes/x.scene.json";
+    REQUIRE(engine::editor::writeTextFileAtomic(openTarget, "{}").empty());
+    ContainmentOffer openOffer;
+    CHECK_FALSE(openSceneFile(ctx, commands, session, openTarget, SceneFileContext{rootA, &openOffer}));
+    CHECK_FALSE(openOffer.forSave);
+    CHECK_FALSE(openOffer.projectRoot.empty());
+    CHECK(openOffer.projectName == "ProjB");
+}
+
+TEST_CASE("scene_session: modalInputActive's four disjuncts, each ALONE (SS47, D10)") {
+    using engine::editor::DialogKind;
+    using engine::editor::FileFlow;
+    using engine::editor::modalInputActive;
+    using engine::editor::ProjectFlow;
+
+    FileFlow flow;
+    ProjectFlow projectFlow;
+    CHECK_FALSE(modalInputActive(flow, projectFlow));  // the baseline
+    flow.dialog = DialogKind::Open;
+    CHECK(modalInputActive(flow, projectFlow));
+    flow = {};
+    flow.confirmOpen = true;
+    CHECK(modalInputActive(flow, projectFlow));
+    flow = {};
+    projectFlow.form.open = true;
+    CHECK(modalInputActive(flow, projectFlow));
+    projectFlow = {};
+    // ★ the NEW disjunct, alone -- so S10 (dropping it) reddens exactly this assertion rather than
+    //   being masked by a sibling that happened to be true at the same time.
+    flow.containmentOffer.open = true;
+    CHECK(modalInputActive(flow, projectFlow));
+    flow.containmentOffer.open = false;
+    CHECK_FALSE(modalInputActive(flow, projectFlow));  // and it clears
+
+    // The OTHER ContainmentOffer fields must NOT make it true on their own -- a disjunct on `forSave`
+    // or on a non-empty `scenePath` would keep every File chord dead after a dismissed modal.
+    flow.containmentOffer.forSave = true;
+    flow.containmentOffer.scenePath = "/w/x.scene.json";
+    flow.containmentOffer.refusalSerial = 7U;
+    CHECK_FALSE(modalInputActive(flow, projectFlow));
+}
+
+TEST_CASE("scene_session: the step-0 drain applies the offer's two answers (SS48, D9/D10)") {
+    const LogFixture fixture;
+    const engine::editor::LogSinkScope scope;
+    std::vector<engine::editor::LogEntry> records;
+
+    FlowFixture f;
+    SceneSession session;
+    scope.sink()->take(records);
+    records.clear();
+
+    // ---- (a) ACCEPT on an OPEN-shaped offer.
+    f.flow.containmentOffer.open = true;
+    f.flow.containmentOffer.projectRoot = "/w/ProjB";
+    f.flow.containmentOffer.projectName = "ProjB";
+    f.flow.containmentOffer.acceptRequested = true;
+    applyFileRequests(f.ctx, f.commands, session, f.flow, f.host, f.project);
+
+    // CAREFUL: step 2 consumes flow.requested in the SAME call, so asserting `requested ==
+    // OpenProject` afterwards would be asserting the request SURVIVED -- which is the bug (S25), not
+    // the feature. The observable is the CONSEQUENCE: openProjectPath ran against "/w/ProjB", which
+    // does not exist, so it logged one ERROR and changed nothing.
+    CHECK((f.flow.requested == FileAction::None));
+    CHECK(f.projectFlow.requestedPath.empty());  // ...because OpenProject was PERFORMED
+    scope.sink()->take(records);
+    CHECK(countAtLevel(records, engine::LogLevel::Error) == 1);
+    REQUIRE(records.size() >= 1U);
+    CHECK(records.front().message.find("could not open project") != std::string::npos);
+    CHECK(records.front().message.find("/w/ProjB") != std::string::npos);
+    CHECK_FALSE(f.flow.containmentOffer.open);  // default-constructed
+    CHECK(f.flow.containmentOffer.refusalSerial == 0U);
+    CHECK(f.flow.containmentOffer.projectRoot.empty());
+    CHECK_FALSE(f.flow.containmentOffer.acceptRequested);
+    records.clear();
+
+    // ---- (b) ACCEPT on a SAVE-shaped offer, set DIRECTLY (bypassing the button that would never be
+    //          drawn). The re-test inside the drain is what must refuse it -- S12's value-level half.
+    f.flow.containmentOffer = {};
+    f.flow.containmentOffer.open = true;
+    f.flow.containmentOffer.forSave = true;
+    f.flow.containmentOffer.projectRoot = "/w/ProjB";  // set on purpose -- the ONLY guard is `forSave`
+    f.flow.containmentOffer.acceptRequested = true;
+    applyFileRequests(f.ctx, f.commands, session, f.flow, f.host, f.project);
+
+    CHECK((f.flow.requested == FileAction::None));
+    CHECK(f.projectFlow.requestedPath.empty());  // NOTHING was requested
+    scope.sink()->take(records);
+    CHECK(countAtLevel(records, engine::LogLevel::Error) == 0);  // openProjectPath never ran at all
+    CHECK_FALSE(f.flow.containmentOffer.open);                   // but the modal still CLOSED
+    records.clear();
+
+    // ---- (c) DISMISS clears and requests nothing.
+    f.flow.containmentOffer = {};
+    f.flow.containmentOffer.open = true;
+    f.flow.containmentOffer.projectRoot = "/w/ProjB";
+    f.flow.containmentOffer.dismissRequested = true;
+    applyFileRequests(f.ctx, f.commands, session, f.flow, f.host, f.project);
+
+    CHECK_FALSE(f.flow.containmentOffer.open);
+    CHECK((f.flow.requested == FileAction::None));
+    CHECK(f.projectFlow.requestedPath.empty());
+    scope.sink()->take(records);
+    CHECK(countAtLevel(records, engine::LogLevel::Error) == 0);
+}
+
+TEST_CASE("scene_session: the containment modal and the unsaved-changes modal are never both up (SS49, AC-14)") {
+    using engine::editor::ProjectManifest;
+
+    // ---- (a) A refusal raised INSIDE applyFileRequests leaves confirmOpen FALSE. A CLEAN document
+    //          requesting an OpenScene on a foreign path: guardFor returns Perform, performAction
+    //          calls openSceneFile, which refuses and raises through &flow.containmentOffer.
+    const LogFixture fixture;
+    const TempDir tmp;
+    {
+        FlowFixture f;
+        SceneSession session;
+        f.projectSession.set(ProjectManifest{}, tmp.join("ProjA"));
+        REQUIRE(f.commands.isClean());
+
+        f.flow.requested = FileAction::OpenScene;
+        f.flow.requestedPath = tmp.join("Other/x.scene.json");
+        applyFileRequests(f.ctx, f.commands, session, f.flow, f.host, f.project);
+
+        CHECK(f.flow.containmentOffer.open);
+        CHECK_FALSE(f.flow.confirmOpen);  // AC-14
+        CHECK((f.flow.pending == FileAction::None));
+    }
+
+    // ---- (b) The unsaved-changes modal's "Save" answer on a TITLED-but-outside scene refuses, and
+    //          the containment offer takes the modal's place rather than joining it.
+    {
+        FlowFixture f;
+        SceneSession session;
+        f.projectSession.set(ProjectManifest{}, tmp.join("ProjA"));
+        session.setPath(tmp.join("Other/current.scene.json"));  // titled, and outside the root
+        f.makeDirty();
+        const std::size_t entitiesBefore = f.world.entityCount();
+
+        f.flow.requested = FileAction::OpenScene;
+        f.flow.requestedPath = tmp.join("Other/next.scene.json");
+        applyFileRequests(f.ctx, f.commands, session, f.flow, f.host, f.project);
+        REQUIRE(f.flow.confirmOpen);
+        REQUIRE((f.flow.pending == FileAction::OpenScene));
+
+        // resolveConfirm(Save, titled) -> WriteNow -> saveSceneFile, which refuses on containment.
+        f.flow.choice = ConfirmChoice::Save;
+        applyFileRequests(f.ctx, f.commands, session, f.flow, f.host, f.project);
+
+        CHECK_FALSE(f.flow.confirmOpen);         // cleared BEFORE the save ran
+        CHECK(f.flow.containmentOffer.open);     // and the offer is up in its place
+        CHECK(f.flow.containmentOffer.forSave);  // in its SAVE shape (D9)
+        CHECK(f.flow.containmentOffer.projectRoot.empty());
+        CHECK((f.flow.pending == FileAction::None));  // the pending action is ABANDONED
+        CHECK(f.flow.requestedPath.empty());          // BLOCKING-1's roster, BOTH halves
+        CHECK(f.projectFlow.requestedPath.empty());
+        CHECK(f.world.entityCount() == entitiesBefore);  // the OpenScene did NOT happen
+        CHECK_FALSE(f.commands.isClean());               // and setClean did not run either
+
+        // AC-14 stated as the invariant: never both. A NAMED BOOL, not `CHECK_FALSE(a && b)` --
+        // doctest FORBIDS `&&` on a decomposed expression (doctest.h:2015, "Expression Too Complex"),
+        // and CHECK_FALSE decomposes exactly as CHECK does.
+        const bool bothModalsUp = f.flow.confirmOpen && f.flow.containmentOffer.open;
+        CHECK_FALSE(bothModalsUp);
+    }
 }

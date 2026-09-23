@@ -27,7 +27,10 @@ namespace engine::editor {
 // task 2.6.1: NewProject/OpenProject join NewScene/OpenScene/Quit. This is the ONLY change to any
 // pure function's body this task makes -- and it is what buys AC-19 whole (D1).
 bool modalInputActive(const FileFlow& flow, const ProjectFlow& projectFlow) noexcept {
-    return flow.dialog != DialogKind::None || flow.confirmOpen || projectFlow.form.open;
+    return flow.dialog != DialogKind::None || flow.confirmOpen || projectFlow.form.open ||
+           flow.containmentOffer.open;  // task E.4.2 -- the THIRD modal. Omitting it is 2.5.1's
+                                        // BLOCKING-2 in a new costume: a Ctrl+S behind the modal
+                                        // launching a second native dialog on top of it (D10).
 }
 
 bool discardsWork(FileAction action) noexcept {
@@ -167,6 +170,38 @@ void newScene(CommandContext& context, CommandStack& commands) {
 
 // ---- the two logging actions (A30: the ONLY two places this task logs) ---------------------------
 
+namespace {
+
+// task E.4.2: fill the offer a refusal raises, or do nothing at all when the caller supplied none.
+// File-local: the two choke points directly below are its ONLY callers, and a refusal is the ONLY
+// thing that may write these fields -- a second writer anywhere would be a second offer policy with
+// no way to order it against this one (E.3.2's one-focus-slot rule, applied to a modal).
+//
+// The serial is bumped on EVERY raise, including one that overwrites an offer still on screen: it is
+// what EditorApp's monotonic counter mirrors, and a raise that did not bump would be a refusal the
+// GPU tier cannot see. The two IN one-shots are deliberately NOT touched -- a raise cannot answer
+// itself, and clearing them here would silently swallow an accept the user pressed on the previous
+// offer in the same tick.
+void raiseContainmentOffer(ContainmentOffer* offer, std::string_view pathUtf8, const std::string& reason,
+                           const ContainmentVerdict& verdict, bool forSave) {
+    if (offer == nullptr) {
+        return;  // D12: refuse to the log and raise nothing -- every test and every non-UI caller
+    }
+    const std::size_t serial = offer->refusalSerial;
+    offer->open = true;
+    offer->forSave = forSave;
+    offer->scenePath = std::string(pathUtf8);
+    offer->reason = reason;  // containmentReason's OWN bytes, never a second wording (D6/AC-20)
+    // D9: a refused SAVE offers nothing, and BOTH terms are spelled. The resolver does not even
+    // perform the walk for a save, so `verdict.owningProjectRoot` is empty there today -- but a
+    // future resolver change must not silently grow a button, so the guard lives here too.
+    offer->projectRoot = forSave ? std::string() : verdict.owningProjectRoot;
+    offer->projectName = forSave ? std::string() : verdict.owningProjectName;
+    offer->refusalSerial = serial + 1U;
+}
+
+}  // namespace
+
 bool openSceneFile(CommandContext& context, CommandStack& commands, SceneSession& session,
                    std::string_view absolutePathUtf8, const SceneFileContext& fileContext) {
     const std::string path(absolutePathUtf8);
@@ -178,6 +213,7 @@ bool openSceneFile(CommandContext& context, CommandStack& commands, SceneSession
     if (!containmentPermits(verdict.state)) {
         const std::string reason = containmentReason(verdict, fileContext.projectRoot, /*forSave=*/false);
         AERO_LOG_ERROR("editor: could not open scene '{}' -- {}", path, reason);  // exactly ONE
+        raiseContainmentOffer(fileContext.offer, path, reason, verdict, /*forSave=*/false);
         return false;
     }
     const FileReadResult read = readTextFile(path);
@@ -221,6 +257,9 @@ bool saveSceneFile(CommandContext& context, CommandStack& commands, SceneSession
     if (!containmentPermits(verdict.state)) {
         const std::string reason = containmentReason(verdict, fileContext.projectRoot, /*forSave=*/true);
         AERO_LOG_ERROR("editor: could not save scene '{}' -- {}", target, reason);
+        // `target`, NEVER absolutePathUtf8 -- the modal shows the file that would have been written,
+        // which is the same string the ERROR one line above named (D7/IO20).
+        raiseContainmentOffer(fileContext.offer, target, reason, verdict, /*forSave=*/true);
         return false;  // NO setClean, NO setPath -- a save that lies is the worst outcome here (R4)
     }
     const std::optional<std::string> text = sceneToText(context.world);
@@ -409,7 +448,7 @@ void performAction(FileAction action, CommandContext& context, CommandStack& com
                 const std::string path = flow.requestedPath;
                 flow.requestedPath.clear();
                 (void)openSceneFile(context, commands, session, path,
-                                    SceneFileContext{project.session.root(), nullptr});
+                                    SceneFileContext{project.session.root(), &flow.containmentOffer});
                 return;
             }
             if (host.channel != nullptr) {
@@ -426,7 +465,7 @@ void performAction(FileAction action, CommandContext& context, CommandStack& com
                 const std::string path = flow.requestedPath;
                 flow.requestedPath.clear();
                 (void)saveSceneFile(context, commands, session, path, /*appendExtension=*/false,
-                                    SceneFileContext{project.session.root(), nullptr});
+                                    SceneFileContext{project.session.root(), &flow.containmentOffer});
                 return;
             }
             if (host.channel != nullptr) {
@@ -478,6 +517,28 @@ void applyFileRequests(CommandContext& context, CommandStack& commands, SceneSes
     //    note, load-bearing: `createRequested` can only be set while `form.open` is true, and
     //    `form.open` is exactly what the refusal check below tests. Running these afterwards would
     //    let one frame's Create be swallowed by its own form.
+    //
+    // 0a. task E.4.2 (D10): the containment offer's two answers. HERE, at step 0, for the reason the
+    //     block comment above already gives: step 2's modalInputActive refusal tests
+    //     `containmentOffer.open`, so draining later would let the very modal the user just answered
+    //     swallow the request it produced -- a modal that can never be answered. S11 is the seed.
+    if (flow.containmentOffer.dismissRequested) {
+        flow.containmentOffer = {};  // closes the modal, offers nothing, changes nothing else
+    }
+    if (flow.containmentOffer.acceptRequested) {
+        // Re-tested HERE, not merely at the button that is drawn: the button only EXISTS when
+        // !forSave && !projectRoot.empty(), but a raw request hook can set acceptRequested on a
+        // save-shaped offer, and that must not reach adoptProject -> newScene -> World::clear()
+        // (D9). SS48's second arm is what proves the re-test, by setting the flag directly.
+        const bool offerable = !flow.containmentOffer.forSave && !flow.containmentOffer.projectRoot.empty();
+        std::string root = std::move(flow.containmentOffer.projectRoot);
+        flow.containmentOffer = {};  // BEFORE the request, so modalInputActive is ALREADY false when
+                                     // step 2 tests it -- S25 is the seed for getting this backwards
+        if (offerable) {
+            project.flow.requestedPath = std::move(root);
+            flow.requested = FileAction::OpenProject;  // step 2 applies guardFor, so a DIRTY scene
+        }  // raises the unsaved-changes modal FIRST (D10)
+    }
     if (project.flow.form.cancelRequested) {
         project.flow.form = {};  // closes the modal, discards
     }
@@ -550,7 +611,7 @@ void applyFileRequests(CommandContext& context, CommandStack& commands, SceneSes
             }
             case FileStep::WriteNow: {  // Save, titled
                 const bool ok = saveSceneFile(context, commands, session, session.path(), /*appendExtension=*/false,
-                                              SceneFileContext{project.session.root(), nullptr});
+                                              SceneFileContext{project.session.root(), &flow.containmentOffer});
                 const FileAction pending = flow.pending;
                 flow.pending = FileAction::None;
                 if (ok) {
@@ -623,7 +684,7 @@ void applyFileRequests(CommandContext& context, CommandStack& commands, SceneSes
         switch (saveStep(session.untitled())) {
             case FileStep::WriteNow:
                 (void)saveSceneFile(context, commands, session, session.path(), /*appendExtension=*/false,
-                                    SceneFileContext{project.session.root(), nullptr});
+                                    SceneFileContext{project.session.root(), &flow.containmentOffer});
                 return;
             case FileStep::AskWhereToSave:
                 // BLOCKING-1 (code review): no hook ever sets `flow.requestedPath` for a plain SaveScene
@@ -702,7 +763,8 @@ void applyDialogResult(CommandContext& context, CommandStack& commands, SceneSes
         return;
     }
     if (kind == DialogKind::Open) {
-        (void)openSceneFile(context, commands, session, result.path, SceneFileContext{project.session.root(), nullptr});
+        (void)openSceneFile(context, commands, session, result.path,
+                            SceneFileContext{project.session.root(), &flow.containmentOffer});
         flow.pending = FileAction::None;
         return;
     }
@@ -730,7 +792,7 @@ void applyDialogResult(CommandContext& context, CommandStack& commands, SceneSes
     // kind == DialogKind::Save. appendExtension is true ONLY here -- a native Save panel is the one
     // place a user can type a bare name (D13); requestSaveSceneAs(path) hands a path literally.
     const bool ok = saveSceneFile(context, commands, session, result.path, /*appendExtension=*/true,
-                                  SceneFileContext{project.session.root(), nullptr});
+                                  SceneFileContext{project.session.root(), &flow.containmentOffer});
     if (ok && flow.saveBeforePending) {
         performAction(flow.pending, context, commands, session, flow, host, project);
     }
