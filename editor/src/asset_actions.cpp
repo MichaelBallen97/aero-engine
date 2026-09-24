@@ -2,13 +2,18 @@
 // <filesystem>, and it holds EXACTLY ONE std::filesystem::remove call (§V6 greps both facts). NEVER
 // LOGS (INV-V8/INV-A3's posture extended here): every exit is a RESULT, never a printed line.
 #include <aero/editor/asset_actions.hpp>
+#include <aero/editor/asset_cache.hpp>  // task E.4.3 -- ASSET_CACHE_DIR_NAME, the trash's parent
 #include <aero/editor/asset_meta.hpp>
 #include <aero/editor/project_files.hpp>
 #include <aero/editor/text_file.hpp>
 
+#include <algorithm>
+#include <array>
 #include <cstddef>
+#include <cstdint>
 #include <filesystem>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -47,6 +52,56 @@ bool looksLikeAnAbsoluteRoot(std::string_view root) noexcept {
         }
     }
     return false;
+}
+
+// task E.4.3: the case-only carve-out, shared by planner rungs 9/10 and (from the next commit)
+// executor steps 4/6b so the two cannot disagree. ASCII-only case folding, deliberately: a
+// Unicode-aware fold would need ICU, which this project does not link and will not, and the rule is
+// about a volume's case-insensitivity for the ASCII names the editor can create at all
+// (validateAssetName already refuses every byte the rule would be ambiguous for).
+[[nodiscard]] bool asciiCaseEqual(std::string_view a, std::string_view b) noexcept {
+    if (a.size() != b.size()) {
+        return false;
+    }
+    const auto fold = [](char c) { return (c >= 'A' && c <= 'Z') ? static_cast<char>(c + ('a' - 'A')) : c; };
+    for (std::size_t i = 0; i < a.size(); ++i) {
+        if (fold(a[i]) != fold(b[i])) {
+            return false;
+        }
+    }
+    return true;
+}
+
+// task E.4.3: four digits, no locale, no <iomanip>, no std::format -- which is what makes the trash
+// path assertable IDENTICALLY on three OSes (formatFileSize's own reasoning, one file over).
+[[nodiscard]] std::string zeroPad4(std::uint32_t value) {
+    std::string digits = std::to_string(value);
+    while (digits.size() < 4) {
+        digits.insert(digits.begin(), '0');
+    }
+    return digits;
+}
+
+// task E.4.3: DATA, never code, and never a platform branch. CON/PRN/AUX/NUL plus COM1-9 and LPT1-9
+// -- the whole Windows reserved-device roster, compared case-insensitively against the name's STEM
+// (everything before the FIRST '.'), because "CON.png" and "con.tar.gz" are reserved too.
+constexpr std::array<std::string_view, 22> RESERVED_DEVICE_NAMES{
+    "CON",  "PRN",  "AUX",  "NUL",  "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7",
+    "COM8", "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+};
+
+// task E.4.3: the seven bytes Windows refuses in a filename. '/' and '\\' are NOT here -- they are
+// HasSeparator's, which is a different refusal with a different message.
+constexpr std::string_view RESERVED_NAME_CHARACTERS = R"(*?"<>|:)";
+
+// task E.4.3: rung 6's segment test, spelled once. `dest` is INSIDE `src` iff it IS src or it begins
+// with src followed by a separator. NEVER a raw prefix: "tex" must not read as a prefix of
+// "textures/a".
+[[nodiscard]] bool isInsideOrEqual(std::string_view outer, std::string_view inner) noexcept {
+    if (inner == outer) {
+        return true;
+    }
+    return inner.size() > outer.size() && inner.compare(0, outer.size(), outer) == 0 && inner[outer.size()] == '/';
 }
 
 }  // namespace
@@ -105,6 +160,375 @@ OrphanDeleteRefusal validateOrphanPath(std::string_view relativeMetaPath) noexce
     // that is the proof this promotion was behaviour-free.
     return validateRelativeAssetPath(relativeMetaPath) == AssetOpRefusal::None ? OrphanDeleteRefusal::None
                                                                                : OrphanDeleteRefusal::EscapesRoot;
+}
+
+AssetNameRefusal validateAssetName(std::string_view leaf) noexcept {
+    // Checked in ENUMERATOR ORDER, so the refusal a caller sees is the FIRST rule the name broke --
+    // deterministic, and what the AA battery asserts.
+    if (leaf.empty()) {
+        return AssetNameRefusal::Empty;
+    }
+    if (leaf.size() > MAX_ASSET_NAME_BYTES) {
+        return AssetNameRefusal::TooLong;
+    }
+    for (const char c : leaf) {
+        if (c == '/' || c == '\\') {
+            return AssetNameRefusal::HasSeparator;
+        }
+    }
+    if (leaf == "." || leaf == "..") {
+        return AssetNameRefusal::DotOrDotDot;
+    }
+    if (leaf.front() == '.') {
+        return AssetNameRefusal::Hidden;
+    }
+    for (const char c : leaf) {
+        // UNSIGNED, deliberately. A validator walking `char` as SIGNED reads a UTF-8 lead byte such
+        // as 0xc3 as NEGATIVE, and a naive `c < 0x20` test then fires on every non-ASCII name.
+        if (static_cast<unsigned char>(c) < 0x20U) {
+            return AssetNameRefusal::ControlCharacter;
+        }
+    }
+    for (const char c : leaf) {
+        if (RESERVED_NAME_CHARACTERS.find(c) != std::string_view::npos) {
+            return AssetNameRefusal::ReservedCharacter;
+        }
+    }
+    if (leaf.back() == '.' || leaf.back() == ' ') {
+        return AssetNameRefusal::TrailingDotOrSpace;
+    }
+    // The STEM -- everything before the FIRST '.', or the whole leaf when it has none. "CON.png" and
+    // "con.tar.gz" are both reserved; "CONS", "COM0" and "COM10" are NOT, which is what proves the
+    // matcher is an equality over the roster and never a prefix test.
+    // Pointer + length, NEVER substr: this function is noexcept and substr may throw
+    // std::out_of_range, which bugprone-exception-escape rejects outright (validateRelativeAssetPath
+    // above carries the identical rule for the identical reason).
+    const std::size_t dot = leaf.find('.');
+    const std::string_view stem(leaf.data(), dot == std::string_view::npos ? leaf.size() : dot);
+    for (const std::string_view reserved : RESERVED_DEVICE_NAMES) {
+        if (asciiCaseEqual(stem, reserved)) {
+            return AssetNameRefusal::ReservedDeviceName;
+        }
+    }
+    if (isMetaFileName(leaf)) {
+        return AssetNameRefusal::MetaSuffix;
+    }
+    if (leaf.size() > ATOMIC_TEMP_SUFFIX.size() &&
+        leaf.compare(leaf.size() - ATOMIC_TEMP_SUFFIX.size(), ATOMIC_TEMP_SUFFIX.size(), ATOMIC_TEMP_SUFFIX) == 0) {
+        return AssetNameRefusal::TempSuffix;
+    }
+    return AssetNameRefusal::None;
+}
+
+AssetOpRefusal assetOpPathLadder(AssetOpKind kind, std::string_view sourceRelative,
+                                 std::string_view destinationDirRelative) noexcept {
+    // Rung 1: the assets root is the PROJECT's, not the browser's. CreateFolder is the one kind for
+    // which "" is a legal source -- there it names the PARENT directory the folder is created in.
+    if (sourceRelative.empty() && kind != AssetOpKind::CreateFolder) {
+        return AssetOpRefusal::SourceIsRoot;
+    }
+    // Rung 2, skipped for CreateFolder's legal "" parent.
+    if (!(sourceRelative.empty() && kind == AssetOpKind::CreateFolder) &&
+        validateRelativeAssetPath(sourceRelative) != AssetOpRefusal::None) {
+        return AssetOpRefusal::BadSourcePath;
+    }
+    if (kind != AssetOpKind::Move) {
+        return AssetOpRefusal::None;  // rungs 3, 5 and 6 are Move's alone
+    }
+    // Rung 3: "" is the assets root and is a LEGAL destination.
+    if (!destinationDirRelative.empty() && validateRelativeAssetPath(destinationDirRelative) != AssetOpRefusal::None) {
+        return AssetOpRefusal::BadDestination;
+    }
+    // Rung 5: already where it is asked to go. A no-op, not an error.
+    if (destinationDirRelative == parentOf(sourceRelative)) {
+        return AssetOpRefusal::AlreadyThere;
+    }
+    // Rung 6: SEGMENT-WISE, never a raw prefix.
+    if (isInsideOrEqual(sourceRelative, destinationDirRelative)) {
+        return AssetOpRefusal::DestinationInsideSource;
+    }
+    return AssetOpRefusal::None;
+}
+
+AssetOpRefusal classifyAssetMove(std::string_view sourceRelative, std::string_view destinationDirRelative) noexcept {
+    return assetOpPathLadder(AssetOpKind::Move, sourceRelative, destinationDirRelative);
+}
+
+namespace {
+
+// task E.4.3: does `entries` already hold `leaf`? The case-only carve-out is the CALLER's -- a
+// Rename may collide with the SOURCE's own entry on a case-insensitive volume and that is legal,
+// while a Move into a different directory has no such argument.
+[[nodiscard]] bool listingHolds(const DirectoryListing& listing, std::string_view leaf,
+                                std::string_view caseOnlyExemptLeaf) noexcept {
+    for (const FileEntry& entry : listing.entries) {
+        if (entry.name == leaf) {
+            return true;  // an exact byte match is a collision whatever the carve-out says
+        }
+        if (!asciiCaseEqual(entry.name, leaf)) {
+            continue;  // not a collision on any volume
+        }
+        // A case-only match. On a case-INSENSITIVE volume it is the same name, so it IS a collision
+        // -- unless it is the source's own entry, which is exactly what a case-only RENAME is moving
+        // out of the way. Refusing there would make wood.png -> Wood.png impossible on macOS and
+        // Windows while working on Linux.
+        if (entry.name == caseOnlyExemptLeaf) {
+            continue;
+        }
+        return true;
+    }
+    return false;
+}
+
+}  // namespace
+
+AssetOpPlan planAssetOp(AssetOpKind kind, const AssetOpInputs& inputs, const DirectoryListing& destinationListing) {
+    AssetOpPlan plan;
+
+    // Rungs 1, 2, 3, 5 and 6 -- the SHARED ladder, called rather than restated, so classifyAssetMove
+    // and this function cannot disagree about DestinationInsideSource.
+    plan.refusal = assetOpPathLadder(kind, inputs.sourceRelative, inputs.destinationDirRelative);
+    if (plan.refusal != AssetOpRefusal::None) {
+        return plan;
+    }
+
+    // Rung 4: the typed leaf, for the two kinds that carry one.
+    if (kind == AssetOpKind::Rename || kind == AssetOpKind::CreateFolder) {
+        plan.nameRefusal = validateAssetName(inputs.newLeaf);
+        if (plan.nameRefusal != AssetNameRefusal::None) {
+            plan.refusal = AssetOpRefusal::BadName;
+            return plan;
+        }
+    }
+
+    // Rung 7 sits ABOVE rung 8 and the order is load-bearing: listingIsComplete is false for a
+    // non-Ok status too, so with the two swapped a destination that does not EXIST would be reported
+    // as "the folder could not be read in full" -- true, and useless.
+    if (kind == AssetOpKind::Move &&
+        (destinationListing.status == ScanStatus::Missing || destinationListing.status == ScanStatus::NotADirectory)) {
+        plan.refusal = AssetOpRefusal::DestinationMissing;
+        return plan;
+    }
+    // Rung 8: a PREFIX cannot prove a name is free. Skipped for Delete, whose trash sequence
+    // directory is fresh by construction and whose caller therefore passes DirectoryListing{}.
+    if (kind != AssetOpKind::Delete && !listingIsComplete(destinationListing)) {
+        plan.refusal = AssetOpRefusal::ListingIncomplete;
+        return plan;
+    }
+
+    // ---- step composition. The switch has NO `default:` so a fifth kind is a -Wswitch error. ----
+    const std::string_view sourceLeaf = leafOf(inputs.sourceRelative);
+    switch (kind) {
+        case AssetOpKind::CreateFolder: {
+            const std::string target = joinRelative(inputs.sourceRelative, inputs.newLeaf);
+            if (listingHolds(destinationListing, inputs.newLeaf, {})) {
+                plan.refusal = AssetOpRefusal::NameTaken;
+                return plan;
+            }
+            plan.directoryToCreate = AssetOpPath{AssetPathBase::AssetsRoot, target};
+            plan.stepCount = 0;
+            plan.resultingRelativePath = target;
+            break;
+        }
+        case AssetOpKind::Rename: {
+            const std::string parent = parentOf(inputs.sourceRelative);
+            const std::string target = joinRelative(parent, inputs.newLeaf);
+            // Rung 9, with the case-only carve-out: a rename whose new leaf ASCII-case-folds equal
+            // to the old one and differs byte-wise is PERMITTED.
+            if (listingHolds(destinationListing, inputs.newLeaf, sourceLeaf)) {
+                plan.refusal = AssetOpRefusal::NameTaken;
+                return plan;
+            }
+            plan.steps[0] = AssetOpStep{AssetOpPath{AssetPathBase::AssetsRoot, std::string(inputs.sourceRelative)},
+                                        AssetOpPath{AssetPathBase::AssetsRoot, target}};
+            plan.stepCount = 1;
+            if (!inputs.sourceIsDirectory) {
+                // Rung 10: the sidecar's destination name, refused BEFORE any step runs -- the one
+                // point at which refusing a half-move is still free.
+                const std::string sidecarLeaf = metaFileNameFor(inputs.newLeaf);
+                if (listingHolds(destinationListing, sidecarLeaf, metaFileNameFor(sourceLeaf))) {
+                    plan.refusal = AssetOpRefusal::SidecarBlocked;
+                    plan.stepCount = 0;
+                    plan.steps = {};
+                    return plan;
+                }
+                plan.steps[1] = AssetOpStep{
+                    AssetOpPath{AssetPathBase::AssetsRoot, joinRelative(parent, metaFileNameFor(sourceLeaf))},
+                    AssetOpPath{AssetPathBase::AssetsRoot, joinRelative(parent, sidecarLeaf)}};
+                plan.stepCount = 2;
+            }
+            plan.resultingRelativePath = target;
+            break;
+        }
+        case AssetOpKind::Move: {
+            const std::string target = joinRelative(inputs.destinationDirRelative, sourceLeaf);
+            // No carve-out here: a move to a DIFFERENT directory has no "the entry it collides with
+            // is the source itself" argument.
+            if (listingHolds(destinationListing, sourceLeaf, {})) {
+                plan.refusal = AssetOpRefusal::NameTaken;
+                return plan;
+            }
+            plan.steps[0] = AssetOpStep{AssetOpPath{AssetPathBase::AssetsRoot, std::string(inputs.sourceRelative)},
+                                        AssetOpPath{AssetPathBase::AssetsRoot, target}};
+            plan.stepCount = 1;
+            if (!inputs.sourceIsDirectory) {
+                const std::string sidecarLeaf = metaFileNameFor(sourceLeaf);
+                if (listingHolds(destinationListing, sidecarLeaf, {})) {
+                    plan.refusal = AssetOpRefusal::SidecarBlocked;
+                    plan.stepCount = 0;
+                    plan.steps = {};
+                    return plan;
+                }
+                plan.steps[1] = AssetOpStep{
+                    AssetOpPath{AssetPathBase::AssetsRoot, joinRelative(parentOf(inputs.sourceRelative), sidecarLeaf)},
+                    AssetOpPath{AssetPathBase::AssetsRoot, joinRelative(inputs.destinationDirRelative, sidecarLeaf)}};
+                plan.stepCount = 2;
+            }
+            plan.resultingRelativePath = target;
+            break;
+        }
+        case AssetOpKind::Delete: {
+            // The MIXED-BASE case, and the one a single-base design gets silently wrong: the source
+            // is under the ASSETS root and the destination under the PROJECT root.
+            const std::string trashTarget = trashRelativePathFor(inputs.trashSequence, inputs.sourceRelative);
+            plan.steps[0] = AssetOpStep{AssetOpPath{AssetPathBase::AssetsRoot, std::string(inputs.sourceRelative)},
+                                        AssetOpPath{AssetPathBase::ProjectRoot, trashTarget}};
+            plan.stepCount = 1;
+            plan.directoryToCreate = AssetOpPath{AssetPathBase::ProjectRoot, parentOf(trashTarget)};
+            if (!inputs.sourceIsDirectory) {
+                const std::string sidecarLeaf = metaFileNameFor(sourceLeaf);
+                const std::string sidecarRel = joinRelative(parentOf(inputs.sourceRelative), sidecarLeaf);
+                plan.steps[1] = AssetOpStep{
+                    AssetOpPath{AssetPathBase::AssetsRoot, sidecarRel},
+                    AssetOpPath{AssetPathBase::ProjectRoot, trashRelativePathFor(inputs.trashSequence, sidecarRel)}};
+                plan.stepCount = 2;
+            }
+            // ALWAYS "" -- the file is no longer in the assets tree, so there is nothing to select.
+            plan.resultingRelativePath.clear();
+            break;
+        }
+    }
+    return plan;
+}
+
+std::size_t countRecordsUnder(std::span<const AssetRecord> records, std::string_view folderRelative) noexcept {
+    if (folderRelative.empty()) {
+        return records.size();  // the assets root holds everything
+    }
+    // SEGMENT-WISE: "tex" must not count "textures/a.png". records() is sorted byte-lexicographically
+    // by relativePath, so this is a lower_bound on the folder NAME plus a walk while that prefix
+    // holds. ALLOCATION-FREE on purpose: this function is noexcept, and composing a
+    // `folderRelative + '/'` key here could throw std::bad_alloc, which bugprone-exception-escape
+    // rejects outright. Starting from the folder name itself is equivalent because every path
+    // beginning with those bytes is contiguous in byte order, whatever byte follows them.
+    const auto first = std::lower_bound(
+        records.begin(), records.end(), folderRelative,
+        [](const AssetRecord& record, std::string_view key) { return std::string_view(record.relativePath) < key; });
+    std::size_t count = 0;
+    for (auto it = first; it != records.end(); ++it) {
+        const std::string_view path(it->relativePath);
+        if (path.size() < folderRelative.size() || path.compare(0, folderRelative.size(), folderRelative) != 0) {
+            break;  // past every path that begins with this folder's name
+        }
+        // The SEGMENT test: "textures.png" begins with "textures" and is NOT inside it.
+        if (path.size() > folderRelative.size() && path[folderRelative.size()] == '/') {
+            ++count;
+        }
+    }
+    return count;
+}
+
+std::string trashRelativePathFor(std::uint32_t sequence, std::string_view assetsRelativePath) {
+    // Composed through joinRelative, never '+': an empty assetsRelativePath must not produce a
+    // trailing separator, which is that helper's own stated rule.
+    std::string path = joinRelative(std::string(ASSET_CACHE_DIR_NAME), ASSET_TRASH_DIR_NAME);
+    path = joinRelative(path, zeroPad4(sequence));
+    return joinRelative(path, assetsRelativePath);
+}
+
+AssetDeletePrompt assetDeletePromptFor(std::string_view relativePath, bool isDirectory, std::size_t indexedAssetCount) {
+    AssetDeletePrompt prompt;
+    // Every byte is ASCII and no sentence contains a '%'. `--` is an ASCII DOUBLE HYPHEN, never an en
+    // dash: a UTF-8 dash would make the byte comparisons that pin these strings depend on the source
+    // encoding.
+    if (isDirectory) {
+        prompt.title = "Delete folder \"" + std::string(leafOf(relativePath)) + "\"?";
+        prompt.detail = "It holds " + std::to_string(indexedAssetCount) + " indexed asset";
+        if (indexedAssetCount != 1) {
+            prompt.detail += "s";
+        }
+        prompt.detail += ". Everything inside it moves to the project trash together.";
+        prompt.footer = "The files are not erased -- they move to Library/Trash/ inside this project.";
+    } else {
+        prompt.title = "Delete \"" + std::string(relativePath) + "\"?";
+        prompt.detail = "Its .meta sidecar moves with it, so its identity is preserved if you put it back.";
+        prompt.footer = "The file is not erased -- it moves to Library/Trash/ inside this project.";
+    }
+    return prompt;
+}
+
+std::string assetNameRefusalMessage(AssetNameRefusal refusal) {
+    // No `default:` -- a new enumerator is a -Wswitch error. None is "" so the modal draws no error
+    // line at all when the name is legal.
+    switch (refusal) {
+        case AssetNameRefusal::None:
+            return {};
+        case AssetNameRefusal::Empty:
+            return "Enter a name.";
+        case AssetNameRefusal::TooLong:
+            return "That name is longer than 255 bytes, which no supported filesystem accepts.";
+        case AssetNameRefusal::HasSeparator:
+            return "A name cannot contain a slash. Use drag-and-drop to move an asset instead.";
+        case AssetNameRefusal::DotOrDotDot:
+            // A custom raw delimiter: the default `)"` would terminate at the first `.")` in the
+            // text itself, which silently truncates the sentence rather than failing to compile.
+            return R"MSG("." and ".." are not names.)MSG";
+        case AssetNameRefusal::Hidden:
+            return "A name starting with a dot is hidden, and the asset browser would not show it.";
+        case AssetNameRefusal::ControlCharacter:
+            return "That name contains a control character.";
+        case AssetNameRefusal::ReservedCharacter:
+            return "A name cannot contain any of * ? \" < > | : -- Windows refuses them.";
+        case AssetNameRefusal::TrailingDotOrSpace:
+            return "A name cannot end in a dot or a space -- Windows strips those silently.";
+        case AssetNameRefusal::ReservedDeviceName:
+            return "That is a reserved device name on Windows, with or without an extension.";
+        case AssetNameRefusal::MetaSuffix:
+            return "A name cannot end in .meta -- that is what an asset's sidecar is called.";
+        case AssetNameRefusal::TempSuffix:
+            return "A name cannot end in .aero-tmp -- the asset browser skips those.";
+    }
+    return {};  // unreachable; enumerated so a new refusal is a -Wswitch warning, not silent
+}
+
+std::string_view assetNameRefusalLabel(AssetNameRefusal refusal) noexcept {
+    switch (refusal) {
+        case AssetNameRefusal::None:
+            return "None";
+        case AssetNameRefusal::Empty:
+            return "Empty";
+        case AssetNameRefusal::TooLong:
+            return "TooLong";
+        case AssetNameRefusal::HasSeparator:
+            return "HasSeparator";
+        case AssetNameRefusal::DotOrDotDot:
+            return "DotOrDotDot";
+        case AssetNameRefusal::Hidden:
+            return "Hidden";
+        case AssetNameRefusal::ControlCharacter:
+            return "ControlCharacter";
+        case AssetNameRefusal::ReservedCharacter:
+            return "ReservedCharacter";
+        case AssetNameRefusal::TrailingDotOrSpace:
+            return "TrailingDotOrSpace";
+        case AssetNameRefusal::ReservedDeviceName:
+            return "ReservedDeviceName";
+        case AssetNameRefusal::MetaSuffix:
+            return "MetaSuffix";
+        case AssetNameRefusal::TempSuffix:
+            return "TempSuffix";
+    }
+    return "None";  // unreachable; enumerated so a new refusal is a -Wswitch warning, not silent
 }
 
 std::string_view assetOpRefusalLabel(AssetOpRefusal refusal) noexcept {
