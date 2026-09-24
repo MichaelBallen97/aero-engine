@@ -53,6 +53,7 @@
 #include <aero/scene/transform.hpp>  // task 3.1.5: instantiateModelDrop's root placement, by reference
 #include <aero/scene/world.hpp>
 
+#include <array>  // task E.4.3 -- the NEW_ASSET_KINDS table, a static member
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -642,6 +643,50 @@ private:
     // deleted). The bytes go through material_session.cpp's saveMaterialFile, the ONE .aeromat write
     // path (D12), so this adds no writeTextFileAtomic call site at all.
     [[nodiscard]] bool createMaterialAsset(std::string_view directoryRel);
+
+    // ---- task E.4.3: the five orchestrating methods -----------------------------------------------
+    // Each takes createMaterialAsset's shape verbatim: the PANEL's root, refuse an empty one, list
+    // with includeHidden = true, plan, execute, log exactly ONE line, and requestSelectEntry the
+    // result. Called from tick()'s reconcile block and nowhere else, so nothing here runs inside a
+    // draw walk.
+    //
+    // Each returns TRUE iff the operation PERFORMED. The drain ignores the return and sets its own
+    // fileOpPerformed flag on ATTEMPT -- the two are different questions, and the asymmetry with
+    // materialCreated above is deliberate (see the drain's own comment).
+    //
+    // Hidden entries are INCLUDED in every listing: a hidden file still owns its name, and a freeness
+    // decision taken against a hidden-filtered listing would rename over one.
+    [[nodiscard]] bool createAssetFolder(std::string_view parentRel);
+    [[nodiscard]] bool renameAssetEntry(std::string_view rel, std::string_view newLeaf);
+    [[nodiscard]] bool moveAssetEntry(std::string_view rel, std::string_view destinationDirRel);
+    [[nodiscard]] bool deleteAssetEntry(std::string_view rel);
+    // `kindIndex` arrives from a UI seam, so an out-of-range index RETURNS FALSE rather than
+    // asserting: a [[maybe_unused]] assert in a Release build would be a silent out-of-bounds
+    // member-pointer call.
+    [[nodiscard]] bool createAssetOfKind(std::size_t kindIndex, std::string_view directoryRel);
+
+    // TRUE when `rel` IS the Material panel's open document, or is a FOLDER CONTAINING it, AND the
+    // session is dirty. Refusing is the honest answer: MaterialSession is path-keyed and sticky, so
+    // after a successful rename the session would FOLLOW the new path and discard unsaved edits with
+    // no prompt.
+    //
+    // It lives in EditorApp because EditorApp owns the session. The pure planner knows nothing about
+    // materials and MUST NOT: a planner that consulted a UI session would be untestable at tier 0.
+    //
+    // SEGMENT-WISE prefix, never a raw string prefix: "tex" must not contain "textures/a.aeromat".
+    [[nodiscard]] bool assetOpBlockedByDirtyMaterial(std::string_view rel) const;
+
+    // task E.4.3 (D12): the New Asset menu is a TABLE of kinds and Material is its only row. A second
+    // kind is one row plus one producer; createMaterialAsset is UNCHANGED and gains a second caller.
+    // A PRIVATE NESTED type with a STATIC member table, not an anonymous-namespace one: a
+    // pointer-to-member of a PRIVATE member function is an access error from file scope, and the
+    // diagnostic for that is not obvious.
+    struct NewAssetKind {
+        std::string_view label;                       // "Material" -- the menu row's text
+        std::string_view stem;                        // "NewMaterial" -- for the log line only
+        bool (EditorApp::*create)(std::string_view);  // &EditorApp::createMaterialAsset
+    };
+    static const std::array<NewAssetKind, 1> NEW_ASSET_KINDS;
 
     // ---- task 3.1.5: the drop drains and the ledger's service pass --------------------------------
     // The three drains run in tick()'s RECONCILE block, in surface order, AFTER the material session

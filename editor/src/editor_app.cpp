@@ -2270,6 +2270,243 @@ bool EditorApp::createMaterialAsset(std::string_view directoryRel) {
     return true;
 }
 
+// ---- task E.4.3: the five orchestrating methods -------------------------------------------------
+// Each is createMaterialAsset's shape verbatim. Called from tick()'s reconcile block and nowhere
+// else, so nothing here runs inside a draw walk.
+
+// D12: one row today. A second kind is one row plus one producer, and createMaterialAsset is
+// byte-identical -- it simply gains a second caller.
+const std::array<EditorApp::NewAssetKind, 1> EditorApp::NEW_ASSET_KINDS{{
+    {"Material", "NewMaterial", &EditorApp::createMaterialAsset},
+}};
+
+bool EditorApp::assetOpBlockedByDirtyMaterial(std::string_view rel) const {
+    // Belt-and-braces: "" never reaches here today -- rung 1 refuses it as SourceIsRoot before the
+    // planner, and all three callers check this block AFTER the root refusals -- but an empty `rel`
+    // would make EVERY target "contained", so a future caller that reorders the checks would
+    // otherwise block everything.
+    if (rel.empty()) {
+        return false;
+    }
+    if (!materialSession.dirty()) {
+        return false;
+    }
+    const std::string_view target = materialSession.targetPath();  // "" when Untargeted
+    if (target.empty()) {
+        return false;
+    }
+    if (target == rel) {
+        return true;
+    }
+    // A FOLDER containing it. SEGMENT-WISE: "tex" must not contain "textures/a.aeromat".
+    return target.size() > rel.size() && target.compare(0, rel.size(), rel) == 0 && target[rel.size()] == '/';
+}
+
+namespace {
+
+// task E.4.3: the one place the five methods agree about what a missing root means. Returns false and
+// leaves both strings untouched when either root is unusable, which the caller reports with one WARN.
+[[nodiscard]] bool assetOpRoots(const AssetBrowserPanel* panel, const ProjectSession& project, std::string& assetsRoot,
+                                std::string& projectRoot) {
+    if (panel == nullptr) {
+        return false;
+    }
+    // The PANEL's root, not project.assetsRoot(): every path these methods receive is relative to
+    // the root the panel was showing, and the two can differ for exactly one tick after a project
+    // swap (createMaterialAsset's own reasoning, unchanged).
+    assetsRoot = panel->root();
+    projectRoot = project.root();
+    return !assetsRoot.empty() && !projectRoot.empty();
+}
+
+// task E.4.3: one WARN per refusal, in the "{}"-formatted form. AERO_LOG_WARN's FIRST argument is the
+// FORMAT STRING, and a two-argument call silently discards the second (E.2.4's finding).
+void logAssetOpRefusal(std::string_view verb, std::string_view rel, const AssetOpResult& result) {
+    AERO_LOG_WARN("assets: refused to {} '{}' -- {} ({})", verb, rel, result.message,
+                  assetOpRefusalLabel(result.refusal));
+}
+
+// task E.4.3: the LISTING's own answer for "is this entry a folder", never classifyAssetKind -- which
+// cannot tell a folder from an extension-less file, and whose isDirectory argument only ever FORCES
+// Folder. The one-shots carry a path and nothing else (the panel's own request structs), so this is
+// where EditorApp recovers the fact; `listing` must be the listing of rel's PARENT directory.
+[[nodiscard]] bool entryIsDirectory(const DirectoryListing& listing, std::string_view rel) {
+    const std::string_view leaf = leafOf(rel);
+    for (const FileEntry& entry : listing.entries) {
+        if (entry.name == leaf) {
+            return entry.isDirectory;
+        }
+    }
+    return false;  // not in the listing: the executor's step 3 refuses it as SourceMissing anyway
+}
+
+}  // namespace
+
+bool EditorApp::createAssetFolder(std::string_view parentRel) {
+    std::string assetsRoot;
+    std::string projectRoot;
+    if (!assetOpRoots(assetBrowserPanel, project, assetsRoot, projectRoot)) {
+        AERO_LOG_WARN("assets: cannot create a folder -- no project is open");
+        return false;
+    }
+    // Hidden entries INCLUDED: a hidden file still owns its name.
+    const DirectoryListing listing = listDirectory(assetsRoot, parentRel, /*includeHidden=*/true);
+    std::vector<std::string_view> taken;
+    taken.reserve(listing.entries.size());
+    for (const FileEntry& entry : listing.entries) {
+        taken.emplace_back(entry.name);
+    }
+    const std::string leaf = uniqueMaterialFileName("NewFolder", taken);
+    if (leaf.empty()) {
+        AERO_LOG_WARN("assets: cannot create a folder in '{}' -- no unused name after {} attempts",
+                      parentRel.empty() ? std::string_view("<assets root>") : parentRel, MAX_NEW_MATERIAL_ATTEMPTS);
+        return false;
+    }
+    AssetOpInputs inputs;
+    inputs.sourceRelative = parentRel;
+    inputs.newLeaf = leaf;
+    const AssetOpResult result =
+        executeAssetOpPlan(planAssetOp(AssetOpKind::CreateFolder, inputs, listing), projectRoot, assetsRoot);
+    if (!result.performed) {
+        logAssetOpRefusal("create a folder in", parentRel.empty() ? std::string_view("<assets root>") : parentRel,
+                          result);
+        return false;
+    }
+    AERO_LOG_INFO("assets: created folder '{}'", result.resultingPath);
+    assetBrowserPanel->requestSelectEntry(result.resultingPath);
+    return true;
+}
+
+bool EditorApp::renameAssetEntry(std::string_view rel, std::string_view newLeaf) {
+    std::string assetsRoot;
+    std::string projectRoot;
+    if (!assetOpRoots(assetBrowserPanel, project, assetsRoot, projectRoot)) {
+        AERO_LOG_WARN("assets: cannot rename '{}' -- no project is open", rel);
+        return false;
+    }
+    if (assetOpBlockedByDirtyMaterial(rel)) {
+        // THE ONE REFUSAL IN THIS TASK THAT DOES NOT RESCAN, because nothing changed: the tree is
+        // exactly as the user is looking at it.
+        AERO_LOG_WARN(
+            "assets: refused to rename '{}' -- the Material panel has unsaved changes to it. "
+            "Apply or revert your changes first.",
+            rel);
+        return false;
+    }
+    // ONE listing serves both purposes here: a rename's destination directory IS the source's parent.
+    const DirectoryListing listing = listDirectory(assetsRoot, parentOf(rel), /*includeHidden=*/true);
+    AssetOpInputs inputs;
+    inputs.sourceRelative = rel;
+    inputs.sourceIsDirectory = entryIsDirectory(listing, rel);
+    inputs.newLeaf = newLeaf;
+    const AssetOpResult result =
+        executeAssetOpPlan(planAssetOp(AssetOpKind::Rename, inputs, listing), projectRoot, assetsRoot);
+    if (!result.performed) {
+        logAssetOpRefusal("rename", rel, result);
+        if (result.torn) {
+            AERO_LOG_WARN("assets: '{}' is TORN -- {}. The next scan will attempt re-attachment by content hash.", rel,
+                          result.message);
+        }
+        return false;
+    }
+    AERO_LOG_INFO("assets: renamed '{}' -> '{}'", rel, result.resultingPath);
+    assetBrowserPanel->requestSelectEntry(result.resultingPath);
+    return true;
+}
+
+bool EditorApp::moveAssetEntry(std::string_view rel, std::string_view destinationDirRel) {
+    std::string assetsRoot;
+    std::string projectRoot;
+    if (!assetOpRoots(assetBrowserPanel, project, assetsRoot, projectRoot)) {
+        AERO_LOG_WARN("assets: cannot move '{}' -- no project is open", rel);
+        return false;
+    }
+    if (assetOpBlockedByDirtyMaterial(rel)) {
+        AERO_LOG_WARN(
+            "assets: refused to move '{}' -- the Material panel has unsaved changes to it. "
+            "Apply or revert your changes first.",
+            rel);
+        return false;
+    }
+    // TWO listings, because a move's source parent and destination are different directories: the
+    // planner needs the DESTINATION's, and sourceIsDirectory is the SOURCE parent's answer.
+    const DirectoryListing sourceListing = listDirectory(assetsRoot, parentOf(rel), /*includeHidden=*/true);
+    const DirectoryListing listing = listDirectory(assetsRoot, destinationDirRel, /*includeHidden=*/true);
+    AssetOpInputs inputs;
+    inputs.sourceRelative = rel;
+    inputs.sourceIsDirectory = entryIsDirectory(sourceListing, rel);
+    inputs.destinationDirRelative = destinationDirRel;
+    const AssetOpResult result =
+        executeAssetOpPlan(planAssetOp(AssetOpKind::Move, inputs, listing), projectRoot, assetsRoot);
+    if (!result.performed) {
+        logAssetOpRefusal("move", rel, result);
+        if (result.torn) {
+            AERO_LOG_WARN("assets: '{}' is TORN -- {}. The next scan will attempt re-attachment by content hash.", rel,
+                          result.message);
+        }
+        return false;
+    }
+    AERO_LOG_INFO("assets: moved '{}' -> '{}'", rel, result.resultingPath);
+    assetBrowserPanel->requestSelectEntry(result.resultingPath);
+    return true;
+}
+
+bool EditorApp::deleteAssetEntry(std::string_view rel) {
+    std::string assetsRoot;
+    std::string projectRoot;
+    if (!assetOpRoots(assetBrowserPanel, project, assetsRoot, projectRoot)) {
+        AERO_LOG_WARN("assets: cannot delete '{}' -- no project is open", rel);
+        return false;
+    }
+    if (assetOpBlockedByDirtyMaterial(rel)) {
+        AERO_LOG_WARN(
+            "assets: refused to delete '{}' -- the Material panel has unsaved changes to it. "
+            "Apply or revert your changes first.",
+            rel);
+        return false;
+    }
+    const std::optional<std::uint32_t> sequence = allocateTrashSequence(projectRoot);
+    if (!sequence.has_value()) {
+        // The bound is SURFACED, never silent, and this is the only place in this task that mentions
+        // emptying the trash -- it does not offer to do it.
+        AERO_LOG_WARN(
+            "assets: cannot delete '{}' -- the project trash at '{}/Library/Trash' is full "
+            "({} sequences used). Empty it by hand.",
+            rel, projectRoot, MAX_TRASH_SEQUENCE);
+        return false;
+    }
+    // The source parent's listing is read for sourceIsDirectory ALONE: the planner gets an empty one.
+    const DirectoryListing sourceListing = listDirectory(assetsRoot, parentOf(rel), /*includeHidden=*/true);
+    AssetOpInputs inputs;
+    inputs.sourceRelative = rel;
+    inputs.sourceIsDirectory = entryIsDirectory(sourceListing, rel);
+    inputs.trashSequence = *sequence;
+    // Delete passes an EMPTY listing rather than paying a listDirectory on a directory it is about to
+    // create: the trash sequence directory is fresh by construction, so rung 8 is skipped for it.
+    const AssetOpResult result =
+        executeAssetOpPlan(planAssetOp(AssetOpKind::Delete, inputs, DirectoryListing{}), projectRoot, assetsRoot);
+    if (!result.performed) {
+        logAssetOpRefusal("delete", rel, result);
+        if (result.torn) {
+            AERO_LOG_WARN("assets: '{}' is TORN -- {}. The next scan will attempt re-attachment by content hash.", rel,
+                          result.message);
+        }
+        return false;
+    }
+    AERO_LOG_INFO("assets: moved '{}' to the project trash (Library/Trash/{})", rel, *sequence);
+    // Step j is SKIPPED for Delete: resultingPath is always "", and requestSelectEntry("") would
+    // select the assets root, which is a surprising thing to do after a delete.
+    return true;
+}
+
+bool EditorApp::createAssetOfKind(std::size_t kindIndex, std::string_view directoryRel) {
+    if (kindIndex >= NEW_ASSET_KINDS.size()) {
+        AERO_LOG_WARN("assets: no New Asset kind at index {}", kindIndex);
+        return false;
+    }
+    return (this->*(NEW_ASSET_KINDS[kindIndex].create))(directoryRel);
+}
+
 // code-review BLOCKING-1 test seam: stores the id for tick()'s ShellUiState construction to carry --
 // see ShellUiState::focusPanelId's own comment for why this exists and drawShellUi's own new block for
 // where it is applied (BEFORE DockSpaceOverViewport, the "Edit > Project Settings..." click's own
