@@ -554,7 +554,7 @@ Definition of Done is discharged: reopening a project lands in the scene you las
 coverage hole). E.4.1 took the ImGui-tier ids
 `I176`–`I185` and the tier-0 prefix `PJ`, so **E.4.2 and E.4.4 — whose specs both claim `I176`+ — must
 re-measure the ceiling and renumber.**
-**E.4.2 is CLOSED IN CODE** on `feat/E.4.2-scene-project-containment` (eight commits, unmerged), which
+**E.4.2 is MERGED** (PR #107, `f88079d`, 2026-09-24 — nine commits) and **macOS-validated 14 / 16**, which
 discharges the second clause: a scene outside the project is refused with an explanation. It renumbered to
 `I186`–`I192` and took the tier-0 prefix `CN` (`CN1`–`CN25`), so **the next free ImGui-tier id is `I193`**
 and E.4.3, E.4.4 and E.4.5 must each re-measure before they are implemented.
@@ -573,7 +573,7 @@ Subtasks:
 - The open-project resolution order: recorded scene → first scene under `paths.scenes` → new scene
 - Respect INV-P1 — no second `ProjectSession::set()` call site; `project.json`'s five-key envelope untouched
 
-### E.4.2 Scene/project containment · P0 · S · depends: 2.5.1, 2.6.1 — **CODE COMPLETE**
+### E.4.2 Scene/project containment · P0 · S → M · depends: 2.5.1, 2.6.1 — **MERGED ✅**
 **Goal:** the editor should not silently open a scene belonging to a different project. It does today:
 `openSceneFile` and `saveSceneFile` take a raw absolute path from any of four callers and act on it
 with no comparison against the open project's root, which leaves the document pointing at project B
@@ -586,10 +586,18 @@ Subtasks:
 - Applied at `openSceneFile` and `saveSceneFile`; the "open that project instead" offer
 - The no-project case stated explicitly rather than falling through
 
-_Outcome:_ **sized S, recorded before implementation, landed S. Eight commits — seven of code and tests,
-plus one for the docs; the full local gate green on both presets and both reduced configurations; the
-29-seed sabotage matrix run in full and a code-review round closed. The sixteen-row validation page is
-WRITTEN and UNRUN on every platform.** One
+_Outcome:_ **sized S, recorded before implementation, landed M exactly as D0 predicted. Merged as PR #107
+(`f88079d`), nine commits; the full local gate green on both presets and both reduced configurations; the
+29-seed sabotage matrix run in full, a code-review round closed, and CI green 6 / 6. The sixteen-row
+validation page is RUN on macOS — 12 rows pass outright, 2 as stated variants, 1 partial, 2 NOT
+EXECUTABLE.** ★ **Row 5 settled the task's biggest open question: with the root recorded as
+`/tmp/aero-symlink-proj` and the native dialog returning `/private/tmp/...`, the open was permitted — and
+since those paths share no leading segment, the canonical rescue alone permitted it. The rescue is
+load-bearing in production, not only in tests.** Row 2 confirmed E.4.1's handoff in the product: accepting
+the offer lands in the scene originally picked. The three records still owed all trace to one measured
+fact — **no synthetic keyboard input reaches a bare-binary editor** — so row 9's Escape third, row 15 (no
+GUI seam for the request hooks) and row 16 (`NSOpenPanel` disables `Open` once the parent directory is
+gone) stay open, the last two with `CN25` and `I186`–`I192` as their automated cover. One
 containment predicate sits at `openSceneFile` and `saveSceneFile` and nowhere else. The pure half — a
 two-cursor, allocation-free, `noexcept`, segment-wise `directoryWithin`, plus `lexicalContainment`,
 `normalizeForContainment`, `containmentPermits` and one reason sentence both consumers hand the user

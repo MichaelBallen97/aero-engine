@@ -17103,7 +17103,7 @@ recorded, not done.
     written or displayed. The widening is spelled in `project_files.hpp` and in `.claude/rules/editor.md`,
     changed together.
 
-#### Validation status — the page is WRITTEN and UNRUN
+#### Validation status — RUN on macOS, 14 of 16
 
 `editor/validation/E.4.2-scene-project-containment.md` (gitignored), **sixteen rows**: the plan's
 fourteen plus two the code-review round added — one driving the modal through the **request hooks** rather
@@ -17114,3 +17114,58 @@ path, for which E.4.1's macOS pass supplies a reproducible `/tmp` → `/private/
 modal button, type a character, press a key, open a native file dialog or read rendered text. The two
 cross-platform risks above are rows in the **Windows** section. **HiDPI is deliberately not a row**: this
 task draws no line, no icon and no overlay, so E.1.1's thick-line handoff stays fired and unmoved.
+
+**RUN 2026-09-24** on macOS 26.0, Apple Silicon, 2x Retina, volume **case-insensitive**, `macos-debug` at
+`f88079d`. Driven with synthetic **mouse** events against the real editor. **12 rows pass outright, 2 pass
+as stated variants, 1 is partial, 2 are NOT EXECUTABLE.**
+
+★ **ROW 5 SETTLES R2, AND THE ANSWER IS THE ONE THE RESCUE WAS BUILT FOR.** A project opened through
+`/tmp/aero-symlink-proj` records that spelling as its root (`loadProjectFrom` uses `absolute`, deliberately
+not `weakly_canonical`). The native dialog then returned
+`/private/tmp/aero-symlink-proj/scenes/level1.scene.json`, and the open was **PERMITTED** — one INFO, zero
+ERROR, no modal. The two paths **share no leading segment**, so `directoryWithin` cannot have accepted it
+and D4 step 4 is the only thing that did. **THE CANONICAL RESCUE IS LOAD-BEARING IN PRODUCTION, NOT ONLY IN
+TESTS.** Remove it and an ordinary open of any project reached through `/tmp` is refused outright. The
+dialog's own breadcrumb read `private > tmp > aero-symlink-proj`, i.e. the panel had already resolved the
+link before the editor ever saw the path — which is precisely the second source E.4.1's D8 did not name.
+
+**ROW 2 CONFIRMS E.4.1'S HANDOFF IN THE PRODUCT.** Accepting `Open "ProjB"` opened ProjB **and** landed in
+`ProjB/scenes/level1.scene.json` — the scene originally picked. The plan predicted this would become true
+once E.4.1 shipped; it has, so Q12's project-only offer lands the user where they were going.
+
+**ROW 4 IS THE ONE WORTH RE-READING.** A refused save into ProjB showed **`OK` only** with ProjB a real
+project sitting right there, the title stayed `*level1.scene.json - ProjA`, **nothing was written**, and
+undo/redo across the refusal proved the history intact. D9 behaves exactly as argued.
+
+★ **THREE RECORDS REMAIN OWED, AND ONE MEASURED FACT CAUSES ALL THREE: NO SYNTHETIC KEYBOARD INPUT REACHES
+THIS EDITOR.** Not CGEvent chords (Ctrl or Cmd), not `System Events keystroke`, not typing into the native
+dialog's Go-to-Folder field. `aero_editor` is a **bare Unix executable**, so it never becomes a key window;
+`NSRunningApplication.activate` does not fix it and `System Events set frontmost` makes it frontmost without
+making it key for keystrokes. Synthetic **mouse** events work completely, including navigating the native
+file dialog by its column view, which is how every dialog row here was driven. **This extends the recorded
+"no typing" finding to ALL keyboard input, chords included.** The consequences:
+
+* **Row 9's Escape third has no witness anywhere**, automated or manual — unchanged, and only a human
+  pressing the key can close it. Cancel and OK are both verified, across four separate modals.
+* **Row 10 was closed on a DIFFERENT observable than the page specifies.** Its `Ctrl+N` arm is vacuous here,
+  so it was recorded and not counted; what carries the row is that a **click** on the File menu while the
+  modal is up does nothing and `File` does not even take its hover highlight, with the window drawn dimmed.
+  A stronger instrument than the one asked for, and it is the one to use next time.
+* **Row 15 is NOT EXECUTABLE**: this build exposes no debug entry, key binding or scripted-tick seam for
+  `requestSceneContainmentAccept/Dismiss`. Closest evidence actually run: `I186`–`I192` on a real device
+  with `AERO_REQUIRE_GPU=1`, **7 cases / 180 assertions, all pass**. `g.HoveredWindow` stays unread.
+* **Row 16 is NOT EXECUTABLE for a second, independent reason.** `NSOpenPanel` watches the filesystem: the
+  moment the scene's parent directory is deleted it **clears the selection, navigates up and disables
+  `Open`**, so it will not return a path whose parent is gone. Cover stays `CN25`. Reaching this row needs a
+  debug seam that feeds a raw path to `requestOpenScene`.
+
+**ROW 6 AND ROW 13 PASSED AS STATED VARIANTS.** Row 6 put the case difference on the **root** side
+(launching with `~/aero-validation/proja`, opening through `ProjA`) because its recipe needs Go-to-Folder
+typing — the same rescue, the same asymmetry, **permitted** as required on a case-insensitive volume. Row 13
+could not use `Ctrl+S`, and a menu-driven substitute is dominated by synthetic-click latency by roughly five
+orders of magnitude, so it measured **startup to `shell ready`** — which runs `openSceneFile` once through
+the permitted path — against a real branch-point build (`457b66b` in a worktree sharing the main repo's
+`vcpkg`, submodule SHA `f87344c` **identical** at both commits). Eight launches each: median **91.0 ms**
+with containment against **92.0 ms** without, i.e. a **−1.0 ms** delta against run-to-run spreads of **27 ms
+and 12 ms**. The delta is inside the noise, exactly as the row predicted, so the result stands as a **bound**
+and AC-9's structural proof (`CN13` plus its ordering pin) remains the real evidence.

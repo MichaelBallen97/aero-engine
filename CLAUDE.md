@@ -10,11 +10,10 @@ Two platform matrices, never to be conflated: the **editor** runs on macOS/Windo
 
 ## Current state — read this first
 
-**Phase E (Editor Experience) is the open front**, executing between Phase 3 and Phase 4. **Fourteen of its
-24 tasks are merged: Epics E.1, E.2 and E.3 are all CLOSED IN CODE, and E.4.1 has OPENED Epic E.4.
-E.4.2 is CLOSED IN CODE on `feat/E.4.2-scene-project-containment` — eight commits, not yet merged, page
-unrun — so E.4 stands at one of five merged and two of five built. E.4.3-E.4.5, E.5 and E.6 are what is
-left — nine tasks, planning only.** Phase 3 remains OPEN behind it: all seven of its epics are closed in code,
+**Phase E (Editor Experience) is the open front**, executing between Phase 3 and Phase 4. **Fifteen of its
+24 tasks are merged: Epics E.1, E.2 and E.3 are all CLOSED IN CODE, and E.4.1 and E.4.2 are both MERGED AND
+macOS-VALIDATED — so Epic E.4 stands at two of five, with two of its three Definition-of-Done clauses
+discharged. E.4.3-E.4.5, E.5 and E.6 are what is left — nine tasks, planning only.** Phase 3 remains OPEN behind it: all seven of its epics are closed in code,
 and what is left is its deliverable gate and the validation debt.
 
 **Phase E is lettered, not fractioned.** `3.5` and `3.5.1`/`3.5.2` are already Phase 3's skeletal-animation
@@ -87,7 +86,7 @@ validation pass exists for any task in any phase.** N-E = not executable, N-R = 
 | E.3.3 Asset-reference picker | #104 | `fc77c4b` | 10 PASS / 3 partial / 1 N-E / 1 N-R, nothing failed |
 | E.3.4 Material inspector redesign | #105 | `170ad9b` | 12 PASS / 1 partial / 1 N-E, nothing failed |
 | E.4.1 Reopen the last scene | #106 | `068c45c` | **12 / 12**, nothing failed — and 26 sabotage seeds / 29 runs with **no coverage hole** |
-| E.4.2 Scene/project containment | **not yet opened** | **unmerged** — branch `feat/E.4.2-scene-project-containment`, 8 commits | **page WRITTEN, 16 rows, UNRUN on every platform** — 29 sabotage seeds found **three real coverage holes**, and the code-review round found eight findings, one blocking |
+| E.4.2 Scene/project containment | #107 | `f88079d` | **14 of 16 rows** — 12 outright, 2 as stated variants, 1 partial, **2 NOT EXECUTABLE**. 29 sabotage seeds found **three real coverage holes**; the code-review round found eight findings, one blocking; Windows CI found a ninth after all three passed |
 
 **E.3.2 landed before E.3.1** — legal, disjointly id-reserved; the reservation is discharged and the
 numbering is contiguous.
@@ -101,7 +100,7 @@ numbering is contiguous.
 | **Phase 2** — Editor | **COMPLETE, gate met 2026-08-02.** All six epics closed and macOS-validated; Windows/Linux rows pending for every task (`editor/VALIDATION.md`). Gate artifact: `samples/phase-2-editor-scene/` — data, deliberately not `add_subdirectory`'d. |
 | **Phase 3** — Asset Pipeline & 3D Content | **OPEN.** All seven epics (3.1–3.7) **CLOSED in code**. What is left is the gate below and the validation debt. |
 | **Phase 3 gate** | Drop a rigged glTF/FBX in → PBR materials + shadows + a playing animation + **an audible sound**. The audible half exists in code as of 3.7.2 and **has never been heard on any platform.** |
-| **Phase E** — Editor Experience | **OPEN.** Epics E.1, E.2 and E.3 **CLOSED in code**; **E.4.1 merged and E.4.2 closed in code on its branch** — 14 of 24 merged, 15 built, see the index above. **E.4.3–E.4.5, E.5 and E.6 are the open front: nine tasks, planning only.** THREE validation pages are unrun (E.1.5, E.3.2, E.4.2) and are the whole of this OS's remaining Phase E risk. |
+| **Phase E** — Editor Experience | **OPEN.** Epics E.1, E.2 and E.3 **CLOSED in code**; **E.4.1 and E.4.2 both merged and macOS-validated** — 15 of 24 merged, see the index above. **E.4.3–E.4.5, E.5 and E.6 are the open front: nine tasks, planning only.** TWO validation pages are unrun (E.1.5, E.3.2) and are the whole of this OS's remaining Phase E risk. |
 | **Phase E gate** | Open a project and land in the scene you were last editing, on a lit grid floor under a sky; create a Cube from the menu, drop a material on it and see it shade; aim a spot light with a visible gizmo; rename, move and delete assets without leaving the editor. Gate artifact: `samples/phase-E-editor/`. |
 
 ### Engine layers, in dependency order
@@ -843,7 +842,7 @@ mono 48 kHz 0.5 s, **exactly 48 064 B each**, cut at a whole number of cycles so
 **Validation pages are gitignored, so they enter no commit.** Per-page measurements and method notes are in
 `docs/10`; this is the ledger of what is still owed.
 
-**THREE PAGES HAVE NOT BEEN RUN ON ANY PLATFORM: E.1.5's, E.3.2's AND E.4.2's.** They are the whole of
+**TWO PAGES HAVE NOT BEEN RUN ON ANY PLATFORM: E.1.5's AND E.3.2's.** They are the whole of
 Phase E's validation risk on this OS — every other task in E.1, E.2, E.3 and E.4 is macOS-validated (see
 the index above). **E.4.1 is fully validated: 12 / 12 macOS, nothing failed**, and its sabotage matrix is
 run too — 26 seeds / 29 runs, **no seed green with nothing else catching it** (`docs/10`). An earlier
@@ -856,21 +855,31 @@ is a symlink to `private/tmp`, and the editor's native panels return the resolve
 keeps whatever was typed — so `projectRelativeScenePath`'s **purely lexical** prefix test declines and
 records `""`. That is D8's DESIGNED failure mode (*forget*, never *wrong project*), reached from a
 direction D8 did not name: E5 assumed the root and the scene path share one source, and the native
-panel is a second. **E.4.2 owns the real predicate including symlinks and now has a reproducible
-example.** Validate on a NON-symlinked root unless symlinks are the thing under test. **E.4.2's predicate
-has since landed**, and its canonical rescue is what answers this shape; whether that rescue is
-load-bearing **in production** rather than only in tests is exactly what its validation row 5 measures,
-and the answer is still unknown.
+panel is a second. **E.4.2 owns the real predicate including symlinks, and its
+validation row 5 has now MEASURED this shape in the product.** ★ **THE CANONICAL RESCUE IS LOAD-BEARING IN
+PRODUCTION, NOT ONLY IN TESTS — R2 IS ANSWERED.** With a project opened through `/tmp/aero-symlink-proj`
+(the root recorded with that spelling, because `loadProjectFrom` uses `absolute` and NOT
+`weakly_canonical`) and the native dialog returning `/private/tmp/aero-symlink-proj/scenes/level1.scene.json`,
+the open was **PERMITTED**. The two paths share **no leading segment**, so no lexical comparison could have
+accepted it — D4 step 4 is the only thing that did. **Delete the rescue and an ordinary open under `/tmp`
+is refused outright.** Validate on a NON-symlinked root unless symlinks are the thing under test.
 
-**E.4.2'S SIXTEEN-ROW PAGE IS LIVE DEBT AND NINE OF ITS ROWS ARE SEED-ONLY COVER**
-(`editor/validation/E.4.2-scene-project-containment.md`): row 3 for `S15`'s live `%`-format half (its
-buffer-overrun half is **inert by construction** and produced no ASan report), row 4 for `S12`'s
-consequence — *accepting a save-shaped offer would discard the unsaved work* — rows 5 and 6 for the
-symlink and case routes the canonical rescue exists for, row 9 for the hand-bound Escape, row 10 for
-`S10`, row 11 for `S16` entirely, row 15 for the request-hook popup close (`I192` can only pin it as
-source text; **no tier here can read `g.HoveredWindow`**) and row 16 for the already-open-project guard
-reached through a symlinked path. Its two **Windows** rows are the two cross-platform risks recorded
-rather than fixed: `path("C:/").parent_path()` possibly yielding `"C:"` and giving the walk one extra
+**E.4.2'S SIXTEEN-ROW PAGE IS RUN ON macOS — 14 of 16, with 2 NOT EXECUTABLE and 1 PARTIAL**
+(`editor/validation/E.4.2-scene-project-containment.md`). Seven seed-only rows are now **closed**: row 3
+(`S15`'s live `%`-format half — its buffer-overrun half is **inert by construction** and produced no ASan
+report), row 4 (`S12`'s consequence: the `OK`-only modal, and undo/redo proving the unsaved work survived),
+rows 5 and 6 (the symlink and case routes), row 10 (`S10`, closed on **click** evidence — the File menu is
+unclickable and un-highlightable while the modal is up) and row 11 (`S16`, closed for **both** buttons).
+
+**THREE RECORDS REMAIN OWED AND EACH HAS A MEASURED REASON.** Row 9's **Escape** third, row 15
+(request-hook popup close; `I192` pins only the ordering as source text and **no tier here can read
+`g.HoveredWindow`**) and row 16 (the already-open-project guard; cover stays `CN25`). ★ **THE CAUSE OF ALL
+THREE IS ONE MEASURED FACT: NO SYNTHETIC KEYBOARD INPUT REACHES THIS EDITOR** — not CGEvent chords, not
+`System Events keystroke`, not the native dialog's Go-to-Folder field — because `aero_editor` is a bare
+Unix executable and never becomes a key window. Synthetic **mouse** events work fully, including navigating
+the native file dialog by its column view. Row 16 additionally cannot be staged at all: `NSOpenPanel`
+watches the filesystem and **clears the selection and disables `Open`** the moment the scene's parent
+directory is deleted. Its two **Windows** rows are the two cross-platform risks recorded rather than fixed: `path("C:/").parent_path()` possibly yielding `"C:"` and giving the walk one extra
 drive-relative probe, and a scene directly at a POSIX filesystem root being a **false refusal** — both
 bounded, both in the safe direction.
 
@@ -933,9 +942,8 @@ display's ICC profile, and **there is no `renderFrame` Tracy zone in this tree**
 
 ### Next
 
-**E.4.3–E.4.5, E.5 and E.6 are the open front: nine tasks, planning only** — plus E.4.2's own branch,
-which is built and awaits a PR and its manual pass. See `docs/tasks/phase-E.md`, and
-`docs/tasks/phase-3.md` for what Phase 3 still owes.
+**E.4.3–E.4.5, E.5 and E.6 are the open front: nine tasks, planning only.** See `docs/tasks/phase-E.md`,
+and `docs/tasks/phase-3.md` for what Phase 3 still owes.
 
 **Ownership of the open work.** **E.4.3** (asset file operations) inherits E.4.2's `directoryWithin` and
 `normalizeForContainment` **by name** — they are exactly the *"is this path inside the project"* predicate
