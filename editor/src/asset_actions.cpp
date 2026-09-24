@@ -94,6 +94,33 @@ constexpr std::array<std::string_view, 22> RESERVED_DEVICE_NAMES{
 // HasSeparator's, which is a different refusal with a different message.
 constexpr std::string_view RESERVED_NAME_CHARACTERS = R"(*?"<>|:)";
 
+// task E.4.3: resolve an AssetOpPath against the right root. The WHOLE reason AssetPathBase exists:
+// a Delete's destination is under the PROJECT root and everything else is under the ASSETS root, and
+// a single "relative" string gives the caller no way to tell which to prepend.
+[[nodiscard]] std::string absoluteFor(const AssetOpPath& p, std::string_view projectRootUtf8,
+                                      std::string_view assetsRootUtf8) {
+    const std::string_view root = p.base == AssetPathBase::ProjectRoot ? projectRootUtf8 : assetsRootUtf8;
+    return p.relative.empty() ? std::string(root) : std::string(root) + "/" + p.relative;
+}
+
+// task E.4.3: the executor's live free-name check, with the SAME case-only carve-out the planner's
+// rungs 9 and 10 apply -- shared through asciiCaseEqual so the two cannot disagree. On a
+// case-INSENSITIVE volume fileExists("a/Wood.png") is TRUE when only a/wood.png exists, so a naive
+// step 4 would refuse every case-only rename; the carve-out is what makes wood.png -> Wood.png work
+// there, and it is keyed on the step's OWN source leaf rather than on a general exemption.
+[[nodiscard]] bool destinationBlocked(const std::string& fromAbs, const std::string& toAbs, std::string_view fromLeaf,
+                                      std::string_view toLeaf) {
+    if (!fileExists(toAbs)) {
+        return false;
+    }
+    if (fromAbs == toAbs) {
+        return true;  // not a rename at all
+    }
+    // The destination exists. It is NOT a collision when this is a case-only rename within one
+    // directory -- there the only entry it can be is the source itself.
+    return !(asciiCaseEqual(fromLeaf, toLeaf) && parentOf(fromAbs) == parentOf(toAbs));
+}
+
 // task E.4.3: rung 6's segment test, spelled once. `dest` is INSIDE `src` iff it IS src or it begins
 // with src followed by a separator. NEVER a raw prefix: "tex" must not read as a prefix of
 // "textures/a".
@@ -571,6 +598,144 @@ std::string_view assetOpRefusalLabel(AssetOpRefusal refusal) noexcept {
             return "RollbackFailed";
     }
     return "None";  // unreachable; enumerated so a new refusal is a -Wswitch warning, not silent
+}
+
+std::optional<std::uint32_t> allocateTrashSequence(std::string_view projectRootUtf8) {
+    // fileExists ONLY: this function creates nothing and removes nothing, so it matches neither
+    // FORBIDDEN_RE nor DELETE_RE. An INTEGER counter, never a timestamp -- currentFileTimeTicks() is
+    // opaque file_time_type ticks and never a date (docs/09 §6.5), so a timestamped directory would
+    // be non-deterministic and untestable, and would collide anyway at one-second resolution.
+    for (std::uint32_t sequence = 1; sequence <= MAX_TRASH_SEQUENCE; ++sequence) {
+        const std::string candidate =
+            std::string(projectRootUtf8) + "/" + trashRelativePathFor(sequence, std::string_view{});
+        if (!fileExists(candidate)) {
+            return sequence;
+        }
+    }
+    // Exhausted. The caller reports TrashUnavailable rather than reusing a directory: reuse would
+    // put two deletes of the same path in one folder, where the second collides with the first.
+    return std::nullopt;
+}
+
+AssetOpResult executeAssetOpPlan(const AssetOpPlan& plan, std::string_view projectRootUtf8,
+                                 std::string_view assetsRootUtf8) {
+    AssetOpResult result;
+
+    // Step 0: refuse an empty or non-absolute root EXPLICITLY, before it is ever concatenated into a
+    // path -- deleteOrphanMeta's own code-review finding 5, applied to BOTH roots this time.
+    if (!looksLikeAnAbsoluteRoot(projectRootUtf8) || !looksLikeAnAbsoluteRoot(assetsRootUtf8)) {
+        result.refusal = AssetOpRefusal::NoProject;
+        result.message = "the project or assets root is empty or not absolute";
+        return result;
+    }
+
+    // Step 1: a refused plan is returned VERBATIM -- both enumerators and the message -- and nothing
+    // is touched.
+    if (plan.refusal != AssetOpRefusal::None) {
+        result.refusal = plan.refusal;
+        result.nameRefusal = plan.nameRefusal;
+        result.message = plan.message;
+        return result;
+    }
+
+    // Step 2: the directory a CreateFolder makes, or the trash sequence directory a Delete needs.
+    if (!plan.directoryToCreate.relative.empty()) {
+        const std::string dirAbs = absoluteFor(plan.directoryToCreate, projectRootUtf8, assetsRootUtf8);
+        if (const std::string error = ensureDirectory(dirAbs); !error.empty()) {
+            // A Delete's directory is the trash's; anything else is the folder the user asked for.
+            result.refusal = plan.directoryToCreate.base == AssetPathBase::ProjectRoot
+                                 ? AssetOpRefusal::TrashUnavailable
+                                 : AssetOpRefusal::RenameFailed;
+            result.message = error;
+            return result;
+        }
+    }
+    if (plan.stepCount == 0) {
+        // CreateFolder uses steps 0-2 only and renames NOTHING, which is what makes New Folder a
+        // non-destructive operation entirely: ensureDirectory matches neither FORBIDDEN_RE nor
+        // DELETE_RE.
+        result.performed = true;
+        result.resultingPath = plan.resultingRelativePath;
+        return result;
+    }
+
+    const std::string fromAbs = absoluteFor(plan.steps[0].from, projectRootUtf8, assetsRootUtf8);
+    const std::string toAbs = absoluteFor(plan.steps[0].to, projectRootUtf8, assetsRootUtf8);
+
+    // Step 3: the source is re-verified from disk immediately before acting.
+    if (!fileExists(fromAbs)) {
+        result.refusal = AssetOpRefusal::SourceMissing;
+        result.message = "the source no longer exists";
+        return result;
+    }
+    // Step 3b: the destination's PARENT. "" is the root itself, which exists by step 0. This is the
+    // rung that catches a folder deleted between the plan and the act.
+    if (const std::string destParent = parentOf(plan.steps[0].to.relative); !destParent.empty()) {
+        const AssetOpPath parentPath{plan.steps[0].to.base, destParent};
+        if (!fileExists(absoluteFor(parentPath, projectRootUtf8, assetsRootUtf8))) {
+            result.refusal = AssetOpRefusal::DestinationMissing;
+            result.message = "the destination folder no longer exists";
+            return result;
+        }
+    }
+    // Step 4: a LIVE free-name check, ADDITIONAL to the planner's listing-based rung 9 and never a
+    // replacement for it. The listing check produces the good message and catches the truncation
+    // case; this one closes the window between reading the listing and acting. BOTH run.
+    if (destinationBlocked(fromAbs, toAbs, leafOf(plan.steps[0].from.relative), leafOf(plan.steps[0].to.relative))) {
+        result.refusal = AssetOpRefusal::NameTaken;
+        result.message = "something with that name already exists";
+        return result;
+    }
+
+    // Step 5: the ASSET or the FOLDER. The overwhelmingly common failure -- the name is taken, the
+    // volume is read-only, the OS refuses -- happens HERE, where nothing has happened yet and the
+    // refusal is free.
+    std::error_code ec;
+    std::filesystem::rename(pathFromUtf8(fromAbs), pathFromUtf8(toAbs), ec);
+    if (ec) {
+        result.refusal = AssetOpRefusal::RenameFailed;  // NOTHING HAPPENED
+        result.message = ec.message();
+        return result;
+    }
+
+    if (plan.stepCount == 2) {
+        const std::string sidecarFromAbs = absoluteFor(plan.steps[1].from, projectRootUtf8, assetsRootUtf8);
+        const std::string sidecarToAbs = absoluteFor(plan.steps[1].to, projectRootUtf8, assetsRootUtf8);
+        // Step 6a: Missing is NOT an error (E21). There is no sidecar to carry, which is why an
+        // unscanned file and an Invalid-state record both move cleanly.
+        if (fileExists(sidecarFromAbs)) {
+            // Step 6b/6c: either the sidecar's destination is occupied, or the OS refuses the rename.
+            // Both roll step 5 back; a failure of the ROLLBACK itself is a distinct, loud outcome.
+            const bool blocked = destinationBlocked(sidecarFromAbs, sidecarToAbs, leafOf(plan.steps[1].from.relative),
+                                                    leafOf(plan.steps[1].to.relative));
+            std::error_code sidecarEc;
+            if (!blocked) {
+                std::filesystem::rename(pathFromUtf8(sidecarFromAbs), pathFromUtf8(sidecarToAbs), sidecarEc);
+            }
+            if (blocked || sidecarEc) {
+                std::error_code rollbackEc;
+                std::filesystem::rename(pathFromUtf8(toAbs), pathFromUtf8(fromAbs), rollbackEc);
+                if (rollbackEc) {
+                    result.refusal = AssetOpRefusal::RollbackFailed;
+                    result.torn = true;
+                    // BOTH paths, so a manual recovery is possible from the log line alone.
+                    result.message = "the asset moved to '" + plan.steps[0].to.relative +
+                                     "' but its sidecar is still at '" + plan.steps[1].from.relative +
+                                     "', and the rollback failed: " + rollbackEc.message();
+                    return result;
+                }
+                result.refusal = blocked ? AssetOpRefusal::SidecarBlocked : AssetOpRefusal::SidecarRenameFailed;
+                result.message =
+                    blocked ? std::string("the sidecar's destination name is already taken") : sidecarEc.message();
+                return result;
+            }
+        }
+    }
+
+    // Step 7.
+    result.performed = true;
+    result.resultingPath = plan.resultingRelativePath;
+    return result;
 }
 
 OrphanDeleteResult deleteOrphanMeta(std::string_view assetsRootUtf8, std::string_view relativeMetaPath) {

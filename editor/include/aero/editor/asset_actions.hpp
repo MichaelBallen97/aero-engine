@@ -12,6 +12,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -213,6 +214,19 @@ inline constexpr std::uint32_t MAX_TRASH_SEQUENCE = 9999;          // four digit
 // The sequence is zero-padded to FOUR digits with no locale and no <iomanip>; a sequence above
 // MAX_TRASH_SEQUENCE is never produced (allocateTrashSequence refuses first).
 [[nodiscard]] std::string trashRelativePathFor(std::uint32_t sequence, std::string_view assetsRelativePath);
+
+// The first sequence whose directory does not exist, starting at 1. Uses fileExists ONLY -- it
+// CREATES nothing, REMOVES nothing, and matches neither FORBIDDEN_RE nor DELETE_RE. nullopt when
+// MAX_TRASH_SEQUENCE is exhausted, which the caller reports as TrashUnavailable rather than reusing
+// a directory: reuse would put two deletes of the same path in one folder, where the second collides
+// with the first.
+[[nodiscard]] std::optional<std::uint32_t> allocateTrashSequence(std::string_view projectRootUtf8);
+
+// THE ONE PLACE D3 AND D4 ARE IMPLEMENTED. Two renames, a rollback, and a fixed re-verification
+// order. NEVER THROWS -- every std::filesystem call uses the std::error_code overload, exactly as
+// deleteOrphanMeta already does. NEVER LOGS (INV-A3's posture, extended): it RETURNS a result.
+[[nodiscard]] AssetOpResult executeAssetOpPlan(const AssetOpPlan& plan, std::string_view projectRootUtf8,
+                                               std::string_view assetsRootUtf8);
 
 // ---- the blast-radius count and the modals' sentences --------------------------------------------
 

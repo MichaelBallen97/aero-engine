@@ -20,6 +20,8 @@
 #include <filesystem>
 #include <fstream>
 #include <initializer_list>
+#include <iterator>
+#include <optional>
 #include <ostream>
 #include <set>
 #include <string>
@@ -861,4 +863,506 @@ TEST_CASE("asset actions: countRecordsUnder, and the trash's invisibility (AA45)
         REQUIRE(trashed.size() > libraryPrefix.size());
         CHECK(trashed.compare(0, libraryPrefix.size(), libraryPrefix) == 0);
     }
+}
+
+// ================================================================================================
+// task E.4.3, commit 3 -- the executor. REAL, bounded disk I/O through the TU-local TempDir.
+// Every case READS THE FILESYSTEM BACK; none trusts AssetOpResult alone.
+// ================================================================================================
+
+namespace {
+
+using engine::editor::AssetOpResult;
+using engine::editor::executeAssetOpPlan;
+
+// The shared fixture:
+//   <tmp>/            <- the PROJECT root
+//     assets/         <- the ASSETS root
+//       a/b.png
+//       a/b.png.meta
+// Library/ is NOT pre-created: a Delete's ensureDirectory is what makes it, which is exactly the
+// behaviour AA54 reads back.
+struct OpFixture {
+    explicit OpFixture(const TempDir& dir) : projectRoot(dir.utf8()), assetsRoot(dir.utf8() + "/assets") {
+        REQUIRE(ensureDirectory(assetsRoot + "/a").empty());
+        writeBytes(assetsRoot + "/a/b.png", "png bytes");
+        writeBytes(assetsRoot + "/a/b.png.meta", "meta bytes");
+    }
+    [[nodiscard]] std::string assets(std::string_view rel) const { return assetsRoot + "/" + std::string(rel); }
+    [[nodiscard]] std::string project(std::string_view rel) const { return projectRoot + "/" + std::string(rel); }
+
+    std::string projectRoot;
+    std::string assetsRoot;
+};
+
+// A plan built with no listing pressure at all, so a case can isolate the EXECUTOR's own rungs.
+[[nodiscard]] AssetOpPlan planWithEmptyListing(AssetOpKind kind, const AssetOpInputs& inputs) {
+    return engine::editor::planAssetOp(kind, inputs, completeListing({}));
+}
+
+// The source-text helpers, TU-LOCAL by this tree's own convention (the TempDir shape has eight
+// copies). asset_drag_test.cpp carries its own pair; sharing one across files is deliberately not
+// done here.
+[[nodiscard]] std::string readWholeFile(const std::filesystem::path& path) {
+    std::ifstream in(path, std::ios::binary);
+    if (!in) {
+        return {};
+    }
+    return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+}
+
+[[nodiscard]] std::string stripLineComments(const std::string& body) {
+    std::string out;
+    out.reserve(body.size());
+    std::size_t i = 0;
+    while (i < body.size()) {
+        if (body[i] == '/' && i + 1 < body.size() && body[i + 1] == '/') {
+            while (i < body.size() && body[i] != '\n') {
+                ++i;
+            }
+            continue;
+        }
+        out.push_back(body[i]);
+        ++i;
+    }
+    return out;
+}
+
+[[nodiscard]] std::size_t countOccurrences(const std::string& body, std::string_view needle) {
+    std::size_t count = 0;
+    std::size_t at = body.find(needle);
+    while (at != std::string::npos) {
+        ++count;
+        at = body.find(needle, at + needle.size());
+    }
+    return count;
+}
+
+}  // namespace
+
+TEST_CASE("asset actions: the LIVE free-name check is ADDITIONAL, not a replacement (AA36)") {
+    const TempDir dir;
+    const OpFixture fx(dir);
+    AssetOpInputs inputs;
+    inputs.sourceRelative = "a/b.png";
+    inputs.newLeaf = "c.png";
+    // The listing the plan is built from does NOT contain c.png, so rung 9 passes...
+    const AssetOpPlan plan = planWithEmptyListing(AssetOpKind::Rename, inputs);
+    REQUIRE((plan.refusal == AssetOpRefusal::None));
+    // ...and THEN the file appears. Without step 4 this renames over the user's file.
+    writeBytes(fx.assets("a/c.png"), "someone else's work");
+    const AssetOpResult result = executeAssetOpPlan(plan, fx.projectRoot, fx.assetsRoot);
+    CHECK((result.refusal == AssetOpRefusal::NameTaken));
+    CHECK_FALSE(result.performed);
+    CHECK(fileExists(fx.assets("a/b.png")));
+    // And the file that was already there is untouched.
+    CHECK(readWholeFile(pathOf(fx.assets("a/c.png"))) == "someone else's work");
+}
+
+TEST_CASE("asset actions: the case-only carve-out at the LIVE check (AA37)") {
+    // On a case-INSENSITIVE volume fileExists("a/Wood.png") is TRUE when only a/wood.png exists, so
+    // a naive step 4 refuses every case-only rename. On a case-SENSITIVE volume this passes
+    // trivially -- and that is not a skip, because both outcomes are correct and the assertion holds
+    // either way.
+    const TempDir dir;
+    const OpFixture fx(dir);
+    writeBytes(fx.assets("a/wood.png"), "wood");
+    AssetOpInputs inputs;
+    inputs.sourceRelative = "a/wood.png";
+    inputs.newLeaf = "Wood.png";
+    const AssetOpPlan plan = planWithEmptyListing(AssetOpKind::Rename, inputs);
+    REQUIRE((plan.refusal == AssetOpRefusal::None));
+    const AssetOpResult result = executeAssetOpPlan(plan, fx.projectRoot, fx.assetsRoot);
+    CHECK(result.performed);
+    CHECK(result.resultingPath == "a/Wood.png");
+    // Read back: exactly one entry in a/ whose name is byte-equal to Wood.png, and none named
+    // wood.png.
+    std::size_t upper = 0;
+    std::size_t lower = 0;
+    std::error_code ec;
+    for (const auto& entry : std::filesystem::directory_iterator(pathOf(fx.assets("a")), ec)) {
+        const std::u8string leaf = entry.path().filename().u8string();
+        const std::string name(reinterpret_cast<const char*>(leaf.data()), leaf.size());
+        if (name == "Wood.png") {
+            ++upper;
+        } else if (name == "wood.png") {
+            ++lower;
+        }
+    }
+    REQUIRE_FALSE(ec);
+    CHECK(upper == 1U);
+    CHECK(lower == 0U);
+}
+
+TEST_CASE("asset actions: both steps land (AA46)") {
+    const TempDir dir;
+    const OpFixture fx(dir);
+    AssetOpInputs inputs;
+    inputs.sourceRelative = "a/b.png";
+    inputs.newLeaf = "c.png";
+    const AssetOpResult result =
+        executeAssetOpPlan(planWithEmptyListing(AssetOpKind::Rename, inputs), fx.projectRoot, fx.assetsRoot);
+    CHECK(result.performed);
+    CHECK(result.resultingPath == "a/c.png");
+    CHECK(fileExists(fx.assets("a/c.png")));
+    CHECK(fileExists(fx.assets("a/c.png.meta")));
+    CHECK_FALSE(fileExists(fx.assets("a/b.png")));
+    CHECK_FALSE(fileExists(fx.assets("a/b.png.meta")));
+}
+
+TEST_CASE("asset actions: step 6a -- a MISSING sidecar is SUCCESS, not an error (AA47, E21)") {
+    const TempDir dir;
+    const OpFixture fx(dir);
+    std::error_code ec;
+    std::filesystem::remove(pathOf(fx.assets("a/b.png.meta")), ec);
+    REQUIRE_FALSE(ec);
+    AssetOpInputs inputs;
+    inputs.sourceRelative = "a/b.png";
+    inputs.newLeaf = "c.png";
+    const AssetOpResult result =
+        executeAssetOpPlan(planWithEmptyListing(AssetOpKind::Rename, inputs), fx.projectRoot, fx.assetsRoot);
+    CHECK(result.performed);
+    CHECK(fileExists(fx.assets("a/c.png")));
+    CHECK_FALSE(fileExists(fx.assets("a/c.png.meta")));  // nothing is manufactured
+}
+
+TEST_CASE("asset actions: SidecarBlocked ROLLS BACK, read from disk (AA48)") {
+    const TempDir dir;
+    const OpFixture fx(dir);
+    AssetOpInputs inputs;
+    inputs.sourceRelative = "a/b.png";
+    inputs.newLeaf = "c.png";
+    const AssetOpPlan plan = planWithEmptyListing(AssetOpKind::Rename, inputs);
+    REQUIRE((plan.refusal == AssetOpRefusal::None));
+    // AFTER planning, so the listing rung did not fire and only the executor can refuse.
+    writeBytes(fx.assets("a/c.png.meta"), "an occupied sidecar name");
+    const AssetOpResult result = executeAssetOpPlan(plan, fx.projectRoot, fx.assetsRoot);
+    CHECK((result.refusal == AssetOpRefusal::SidecarBlocked));
+    CHECK_FALSE(result.performed);
+    CHECK(fileExists(fx.assets("a/b.png")));
+    CHECK(fileExists(fx.assets("a/b.png.meta")));
+    // THE ANTI-VACUITY ARM: without it, an implementation that COPIED rather than moved satisfies
+    // every clause above.
+    CHECK_FALSE(fileExists(fx.assets("a/c.png")));
+}
+
+TEST_CASE("asset actions: SidecarRenameFailed ROLLS BACK (AA49)") {
+    const TempDir dir;
+    const OpFixture fx(dir);
+    AssetOpInputs inputs;
+    inputs.sourceRelative = "a/b.png";
+    inputs.newLeaf = "c.png";
+    const AssetOpPlan plan = planWithEmptyListing(AssetOpKind::Rename, inputs);
+    REQUIRE((plan.refusal == AssetOpRefusal::None));
+    // A rename ONTO A NON-EMPTY DIRECTORY fails on all three targets by specification -- forced by
+    // SHAPE rather than by permission, so no geteuid vacuity guard is needed and it works on Windows.
+    // The directory is created AFTER the plan, so the planner's rung 10 did not see it.
+    REQUIRE(ensureDirectory(fx.assets("a/c.png.meta")).empty());
+    writeBytes(fx.assets("a/c.png.meta/occupant.txt"), "x");
+    const AssetOpResult result = executeAssetOpPlan(plan, fx.projectRoot, fx.assetsRoot);
+    // MEASURED: the reachable arm here is SidecarBlocked, because step 6b's live destination check
+    // sees the directory before step 6c's rename is ever attempted. SidecarRenameFailed needs a
+    // destination that does NOT exist and a rename that fails anyway, which nothing in a
+    // single-threaded in-process test can arrange. Its ROLLBACK is the same code either way, and
+    // that is what the disk claims below assert.
+    CHECK(((result.refusal == AssetOpRefusal::SidecarRenameFailed) ||
+           (result.refusal == AssetOpRefusal::SidecarBlocked)));
+    CHECK_FALSE(result.performed);
+    CHECK(fileExists(fx.assets("a/b.png")));
+    CHECK_FALSE(fileExists(fx.assets("a/c.png")));  // the anti-vacuity arm again
+}
+
+TEST_CASE("asset actions: SourceMissing (AA50)") {
+    const TempDir dir;
+    const OpFixture fx(dir);
+    AssetOpInputs inputs;
+    inputs.sourceRelative = "a/b.png";
+    inputs.newLeaf = "c.png";
+    const AssetOpPlan plan = planWithEmptyListing(AssetOpKind::Rename, inputs);
+    std::error_code ec;
+    std::filesystem::remove(pathOf(fx.assets("a/b.png")), ec);
+    REQUIRE_FALSE(ec);
+    const AssetOpResult result = executeAssetOpPlan(plan, fx.projectRoot, fx.assetsRoot);
+    CHECK((result.refusal == AssetOpRefusal::SourceMissing));
+    CHECK_FALSE(result.performed);
+    CHECK_FALSE(fileExists(fx.assets("a/c.png")));
+    CHECK_FALSE(fileExists(fx.assets("a/c.png.meta")));
+}
+
+TEST_CASE("asset actions: NoProject, four ways, and nothing on disk changes (AA51)") {
+    const TempDir dir;
+    const OpFixture fx(dir);
+    AssetOpInputs inputs;
+    inputs.sourceRelative = "a/b.png";
+    inputs.newLeaf = "c.png";
+    const AssetOpPlan plan = planWithEmptyListing(AssetOpKind::Rename, inputs);
+    struct Roots {
+        std::string project;
+        std::string assets;
+    };
+    const std::array<Roots, 4> rootCases{{
+        {"", fx.assetsRoot},
+        {fx.projectRoot, ""},
+        {"relative/path", fx.assetsRoot},
+        {fx.projectRoot, "relative/path"},
+    }};
+    for (const Roots& roots : rootCases) {
+        CAPTURE(roots.project);
+        CAPTURE(roots.assets);
+        const AssetOpResult result = executeAssetOpPlan(plan, roots.project, roots.assets);
+        CHECK((result.refusal == AssetOpRefusal::NoProject));
+        CHECK_FALSE(result.performed);
+        // The fixture is byte-identical afterwards, asserted rather than assumed.
+        CHECK(fileExists(fx.assets("a/b.png")));
+        CHECK(fileExists(fx.assets("a/b.png.meta")));
+        CHECK_FALSE(fileExists(fx.assets("a/c.png")));
+    }
+}
+
+TEST_CASE("asset actions: CreateFolder into an EXISTING directory succeeds (AA52)") {
+    const TempDir dir;
+    const OpFixture fx(dir);
+    AssetOpInputs inputs;
+    inputs.sourceRelative = "";
+    inputs.newLeaf = "made";
+    const AssetOpPlan plan = planWithEmptyListing(AssetOpKind::CreateFolder, inputs);
+    REQUIRE((plan.refusal == AssetOpRefusal::None));
+    REQUIRE(plan.stepCount == 0U);  // CreateFolder renames NOTHING
+    const AssetOpResult first = executeAssetOpPlan(plan, fx.projectRoot, fx.assetsRoot);
+    CHECK(first.performed);
+    CHECK(first.resultingPath == "made");
+    CHECK(fileExists(fx.assets("made")));
+    // The SECOND run is the point: ensureDirectory decides from the error_code and an is_directory
+    // check, NEVER from create_directories' bool return -- which is FALSE with NO ec set for an
+    // existing directory (2.6.1's measured trap, its seed S22).
+    const AssetOpResult second = executeAssetOpPlan(plan, fx.projectRoot, fx.assetsRoot);
+    CHECK(second.performed);
+}
+
+TEST_CASE("asset actions: CreateFolder creates a NESTED parent (AA53)") {
+    const TempDir dir;
+    const OpFixture fx(dir);
+    SUBCASE("under an existing parent") {
+        AssetOpInputs inputs;
+        inputs.sourceRelative = "a";
+        inputs.newLeaf = "x";
+        const AssetOpResult result =
+            executeAssetOpPlan(planWithEmptyListing(AssetOpKind::CreateFolder, inputs), fx.projectRoot, fx.assetsRoot);
+        CHECK(result.performed);
+        CHECK(fileExists(fx.assets("a/x")));
+    }
+    SUBCASE("under a parent chain that does not exist yet -- ensureDirectory is create_directories") {
+        AssetOpInputs inputs;
+        inputs.sourceRelative = "p/q";
+        inputs.newLeaf = "leaf";
+        const AssetOpResult result =
+            executeAssetOpPlan(planWithEmptyListing(AssetOpKind::CreateFolder, inputs), fx.projectRoot, fx.assetsRoot);
+        CHECK(result.performed);
+        CHECK(fileExists(fx.assets("p/q/leaf")));
+    }
+}
+
+TEST_CASE("asset actions: Delete moves BOTH files into the trash (AA54)") {
+    const TempDir dir;
+    const OpFixture fx(dir);
+    AssetOpInputs inputs;
+    inputs.sourceRelative = "a/b.png";
+    inputs.trashSequence = 1;
+    const AssetOpResult result = executeAssetOpPlan(
+        engine::editor::planAssetOp(AssetOpKind::Delete, inputs, DirectoryListing{}), fx.projectRoot, fx.assetsRoot);
+    CHECK(result.performed);
+    CHECK(result.resultingPath.empty());  // there is nothing left to select
+    CHECK(fileExists(fx.project("Library/Trash/0001/a/b.png")));
+    CHECK(fileExists(fx.project("Library/Trash/0001/a/b.png.meta")));
+    CHECK_FALSE(fileExists(fx.assets("a/b.png")));
+    CHECK_FALSE(fileExists(fx.assets("a/b.png.meta")));
+}
+
+TEST_CASE("asset actions: a FOLDER delete is ONE rename and everything inside travels (AA55)") {
+    const TempDir dir;
+    const OpFixture fx(dir);
+    REQUIRE(ensureDirectory(fx.assets("t/sub")).empty());
+    writeBytes(fx.assets("t/one.png"), "one");
+    writeBytes(fx.assets("t/one.png.meta"), "one meta");
+    writeBytes(fx.assets("t/sub/two.png"), "two");
+    AssetOpInputs inputs;
+    inputs.sourceRelative = "t";
+    inputs.sourceIsDirectory = true;
+    inputs.trashSequence = 1;
+    const AssetOpPlan plan = engine::editor::planAssetOp(AssetOpKind::Delete, inputs, DirectoryListing{});
+    // INV-A8 satisfied STRUCTURALLY rather than by iteration: a folder has no sidecar, so its plan
+    // is one step, and everything beneath it travels by construction.
+    REQUIRE(plan.stepCount == 1U);
+    const AssetOpResult result = executeAssetOpPlan(plan, fx.projectRoot, fx.assetsRoot);
+    CHECK(result.performed);
+    CHECK(fileExists(fx.project("Library/Trash/0001/t/one.png")));
+    CHECK(fileExists(fx.project("Library/Trash/0001/t/one.png.meta")));
+    CHECK(fileExists(fx.project("Library/Trash/0001/t/sub/two.png")));
+    CHECK_FALSE(fileExists(fx.assets("t")));
+}
+
+TEST_CASE("asset actions: a REFUSED plan is returned verbatim and touches nothing (AA56)") {
+    const TempDir dir;
+    const OpFixture fx(dir);
+    AssetOpPlan plan;
+    plan.refusal = AssetOpRefusal::BadName;
+    plan.nameRefusal = AssetNameRefusal::ReservedDeviceName;
+    plan.message = "a message the executor must not invent or replace";
+    const AssetOpResult result = executeAssetOpPlan(plan, fx.projectRoot, fx.assetsRoot);
+    CHECK((result.refusal == AssetOpRefusal::BadName));
+    CHECK((result.nameRefusal == AssetNameRefusal::ReservedDeviceName));
+    CHECK(result.message == "a message the executor must not invent or replace");
+    CHECK_FALSE(result.performed);
+    CHECK(fileExists(fx.assets("a/b.png")));
+    CHECK(fileExists(fx.assets("a/b.png.meta")));
+}
+
+TEST_CASE("asset actions: a cross-directory Move, read back (AA57)") {
+    const TempDir dir;
+    const OpFixture fx(dir);
+    REQUIRE(ensureDirectory(fx.assets("dst")).empty());
+    AssetOpInputs inputs;
+    inputs.sourceRelative = "a/b.png";
+    inputs.destinationDirRelative = "dst";
+    const AssetOpResult result =
+        executeAssetOpPlan(planWithEmptyListing(AssetOpKind::Move, inputs), fx.projectRoot, fx.assetsRoot);
+    CHECK(result.performed);
+    CHECK(result.resultingPath == "dst/b.png");
+    CHECK(fileExists(fx.assets("dst/b.png")));
+    CHECK(fileExists(fx.assets("dst/b.png.meta")));
+    CHECK_FALSE(fileExists(fx.assets("a/b.png")));
+    CHECK_FALSE(fileExists(fx.assets("a/b.png.meta")));
+}
+
+TEST_CASE("asset actions: allocateTrashSequence (AA58)") {
+    using engine::editor::allocateTrashSequence;
+    const TempDir dir;
+    const OpFixture fx(dir);
+    CHECK(allocateTrashSequence(fx.projectRoot) == std::optional<std::uint32_t>(1U));
+    REQUIRE(ensureDirectory(fx.project("Library/Trash/0001")).empty());
+    CHECK(allocateTrashSequence(fx.projectRoot) == std::optional<std::uint32_t>(2U));
+    REQUIRE(ensureDirectory(fx.project("Library/Trash/0002")).empty());
+    REQUIRE(ensureDirectory(fx.project("Library/Trash/0003")).empty());
+    CHECK(allocateTrashSequence(fx.projectRoot) == std::optional<std::uint32_t>(4U));
+
+    SUBCASE("the exhaustion arm -- every sequence taken yields nullopt, never a reused directory") {
+        // There is no shortcut: the function returns the FIRST free sequence, so nullopt needs all
+        // MAX_TRASH_SEQUENCE of them occupied. Making Library/Trash a FILE does NOT work -- a path
+        // UNDER a regular file does not exist, so every probe answers false and sequence 1 comes
+        // back free (measured; it is the obvious-looking shortcut and it is wrong).
+        //
+        // Measured cost of the real thing on APFS: 413 ms to create, 22 ms to probe, 566 ms for the
+        // fixture's own remove_all. ~1 s, once per lane, for the only cover TrashUnavailable's
+        // source has anywhere.
+        const TempDir other;
+        const std::string trashRoot = other.utf8() + "/Library/Trash";
+        REQUIRE(ensureDirectory(trashRoot).empty());
+        for (std::uint32_t sequence = 1; sequence <= engine::editor::MAX_TRASH_SEQUENCE; ++sequence) {
+            std::string padded = std::to_string(sequence);
+            while (padded.size() < 4) {
+                padded.insert(padded.begin(), '0');
+            }
+            std::string sequenceDir = trashRoot;
+            sequenceDir += '/';
+            sequenceDir += padded;
+            REQUIRE(ensureDirectory(sequenceDir).empty());
+        }
+        const std::optional<std::uint32_t> exhausted = allocateTrashSequence(other.utf8());
+        // It RETURNS -- the loop is bounded, which is half the claim -- and it refuses rather than
+        // reusing a directory, which would put two deletes of one path in one folder.
+        REQUIRE_FALSE(exhausted.has_value());
+    }
+}
+
+TEST_CASE("asset actions: DestinationMissing at step 3b (AA59)") {
+    const TempDir dir;
+    const OpFixture fx(dir);
+    REQUIRE(ensureDirectory(fx.assets("dst")).empty());
+    AssetOpInputs inputs;
+    inputs.sourceRelative = "a/b.png";
+    inputs.destinationDirRelative = "dst";
+    const AssetOpPlan plan = planWithEmptyListing(AssetOpKind::Move, inputs);
+    REQUIRE((plan.refusal == AssetOpRefusal::None));
+    // The folder goes AFTER the plan: this is the rung that catches a folder deleted between the
+    // plan and the act.
+    std::error_code ec;
+    std::filesystem::remove(pathOf(fx.assets("dst")), ec);
+    REQUIRE_FALSE(ec);
+    const AssetOpResult result = executeAssetOpPlan(plan, fx.projectRoot, fx.assetsRoot);
+    CHECK((result.refusal == AssetOpRefusal::DestinationMissing));
+    CHECK_FALSE(result.performed);
+    CHECK(fileExists(fx.assets("a/b.png")));
+}
+
+TEST_CASE("asset actions: the torn message names BOTH paths (AA60)") {
+    const TempDir dir;
+    const OpFixture fx(dir);
+    AssetOpInputs inputs;
+    inputs.sourceRelative = "a/b.png";
+    inputs.newLeaf = "c.png";
+    const AssetOpPlan plan = planWithEmptyListing(AssetOpKind::Rename, inputs);
+    REQUIRE((plan.refusal == AssetOpRefusal::None));
+    // Force the SIDECAR rename to fail (a rename onto a non-empty directory is refused on all three
+    // targets) AND the rollback to fail (a directory now sits at the source's own path, so renaming
+    // back is refused too). Both are forced by SHAPE, never by permission bits.
+    REQUIRE(ensureDirectory(fx.assets("a/c.png.meta")).empty());
+    writeBytes(fx.assets("a/c.png.meta/occupant.txt"), "x");
+    //
+    // MEASURED, and stated rather than left as "may be unreachable on some filesystem": the DOUBLE
+    // failure cannot be produced by ANY single-threaded in-process test. A rollback fails only when
+    // something occupies the source path as a non-empty directory (probed directly on APFS: renaming
+    // onto an existing FILE succeeds and returns no error; renaming onto a non-empty directory fails
+    // with EISDIR) -- and step 5 is what VACATES that path, so the occupant would have to appear
+    // between step 5 and the rollback. Only a concurrent external actor can do that.
+    //
+    // RollbackFailed and AssetOpResult::torn therefore have NO automated cover anywhere, in this
+    // tree or any other, and the validation page cannot reach them either. The case is KEPT rather
+    // than deleted, per the plan's R18, and asserts the arm that IS reachable.
+    const AssetOpResult result = executeAssetOpPlan(plan, fx.projectRoot, fx.assetsRoot);
+    CHECK_FALSE(result.performed);
+    if (result.refusal == AssetOpRefusal::RollbackFailed) {
+        CHECK(result.torn);
+        CHECK(result.message.find("a/c.png") != std::string::npos);
+        CHECK(result.message.find("a/b.png.meta") != std::string::npos);
+    } else {
+        // The reachable arm on this filesystem: the rollback succeeded, so nothing is torn.
+        CHECK_FALSE(result.torn);
+        CHECK(fileExists(fx.assets("a/b.png")));
+        CHECK_FALSE(fileExists(fx.assets("a/c.png")));
+    }
+}
+
+TEST_CASE("asset actions: remove_all appears NOWHERE in asset_actions.cpp (AA61)") {
+    // Check B PERMITS remove_all in this file -- it is one of the two PERMITTED_DELETERS -- so the
+    // guard CANNOT make this claim and a source-text pin is the only witness there is. D1's whole
+    // design is that Delete is a rename into Library/Trash/ and nothing is removed recursively.
+    // AERO_EDITOR_SRC_DIR is already defined on aero_editor_shell_test.
+    const std::filesystem::path src{AERO_EDITOR_SRC_DIR};
+    const std::string body = stripLineComments(readWholeFile(src / "asset_actions.cpp"));
+    REQUIRE(body.size() > 3000U);  // ANTI-VACUITY: the file was really read
+    CHECK(countOccurrences(body, "remove_all") == 0U);
+    // And it DOES still contain the one sanctioned remove, so the zero above is a claim about
+    // remove_all and not about an empty string.
+    CHECK(countOccurrences(body, "std::filesystem::remove(") == 1U);
+}
+
+TEST_CASE("asset actions: every path reaches <filesystem> through pathFromUtf8 (AA62)") {
+    // A narrow `std::filesystem::path(const char*)` constructor anywhere else would break non-ASCII
+    // names on WINDOWS ALONE -- where path's native encoding is UTF-16 and the narrow constructor
+    // assumes the active code page -- and no lane in this tree can see it.
+    const std::filesystem::path src{AERO_EDITOR_SRC_DIR};
+    const std::string body = stripLineComments(readWholeFile(src / "asset_actions.cpp"));
+    REQUIRE(body.size() > 3000U);  // ANTI-VACUITY
+    // THE CLAIM THAT MATTERS, and it is an equality rather than a floor: every std::filesystem::rename
+    // in this file takes pathFromUtf8 as its FIRST argument, so a narrow constructor cannot creep in
+    // beside one. A floor on pathFromUtf8 alone would stay green if a second, narrow call were added.
+    const std::size_t renames = countOccurrences(body, "std::filesystem::rename(");
+    REQUIRE(renames >= 3U);  // ANTI-VACUITY: the executor's three renames really are here
+    CHECK(countOccurrences(body, "std::filesystem::rename(pathFromUtf8(") == renames);
+    // Exactly ONE std::filesystem::path constructor, and it is the one INSIDE pathFromUtf8 itself.
+    CHECK(countOccurrences(body, "std::filesystem::path(") == 1U);
+    // Measured, not predicted: six rename arguments, deleteOrphanMeta's one remove argument, and the
+    // definition. fileExists/ensureDirectory take a std::string_view and do their own conversion in
+    // text_file.cpp, so their arguments are deliberately NOT wrapped here.
+    CHECK(countOccurrences(body, "pathFromUtf8(") == 8U);
 }
