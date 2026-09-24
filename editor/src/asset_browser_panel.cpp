@@ -318,6 +318,12 @@ void AssetBrowserPanel::drawHeader() {
     if (ImGui::SmallButton(labelScratch.c_str())) {
         record(ActionKind::Navigate, {});
     }
+    // task E.4.3 (code-review G1) -- site 5: the ROOT crumb. Without it no widget anywhere carries
+    // folderRelative == "", the contents pane lists no "..", and an asset in ANY top-level folder
+    // could never be moved back to the assets root from the editor at all. "" is a LEGAL destination
+    // (rung 3 accepts it explicitly); it is the one the breadcrumb loop below structurally cannot
+    // produce, because that loop starts at the first real segment.
+    attachFolderDropTarget(std::string{});
     ImGui::PopID();
     std::string accumulated;
     for (std::size_t i = 0; i < breadcrumb.size(); ++i) {
@@ -369,6 +375,9 @@ void AssetBrowserPanel::drawTreePane(float paneHeight) {
             rootFlags |= ImGuiTreeNodeFlags_Selected;
         }
         ImGui::TreeNodeEx(labelScratch.c_str(), rootFlags);
+        // task E.4.3 (code-review G1) -- site 6: the root TREE row, the same destination reached the
+        // other way. Attached before IsItemClicked reads the item, like every other site.
+        attachFolderDropTarget(std::string{});
         if (ImGui::IsItemClicked()) {
             record(ActionKind::Navigate, {});
         }
@@ -718,13 +727,42 @@ void AssetBrowserPanel::attachFolderDropTarget(const std::string& folderRelative
         }
         acceptType = ASSET_PAYLOAD_TYPE;
     }
-    if (acceptType != nullptr && folderDropVerdict(source, folderRelative) == AssetOpRefusal::None) {
-        if (ImGui::AcceptDragDropPayload(acceptType, ImGuiDragDropFlags_None) != nullptr) {
-            record(ActionKind::MoveEntry, source, folderRelative);
-        }
-        ++dropTargetsAcceptedCount;  // an EFFECT counter: the Accept call was really made
+    if (acceptType != nullptr) {
+        finishFolderDrop(source, folderRelative, acceptType);
     }
     ImGui::EndDragDropTarget();
+}
+
+// task E.4.3 (code-review G6): THE WHOLE DECISION AND ITS WHOLE EFFECT, in ONE function called by the
+// real ImGui target above and by the injected seam below. The verdict, the accept counter and the
+// ActionKind::MoveEntry record all live here, so a statement deleted from this function breaks the
+// PRODUCT and the CASES together.
+//
+// It did not, and that was the gap: the seam used to carry its own copy of the counter and the
+// record, so deleting the record from the real target left drag-to-move doing nothing in the product
+// while I222, I223 and I224 all stayed green -- the exact "assert the EFFECT" failure this repo's
+// rules exist to prevent.
+//
+// `acceptType == nullptr` IS THE INJECTED SEAM. Nothing in tests/ can perform a real drag -- the
+// backend rewrites io.MousePos every NewFrame -- so there is no ImGui payload in flight to Accept and
+// the seam models a COMPLETED drop, whose delivery is therefore unconditional. Everything else is
+// identical, including which function computes the verdict.
+//
+// THE PEEK RULE IS HONOURED BY THE ORDER OF THE STATEMENTS: the verdict runs FIRST and returns early,
+// so AcceptDragDropPayload -- which is what draws the highlight -- is never reached for an illegal
+// drop. Moving the Accept above the verdict is a visible promise the editor then breaks.
+void AssetBrowserPanel::finishFolderDrop(const std::string& source, const std::string& folderRelative,
+                                         const char* acceptType) {
+    dropPeekRefusal = folderDropVerdict(source, folderRelative);
+    if (dropPeekRefusal != AssetOpRefusal::None) {
+        return;
+    }
+    ++dropTargetsAcceptedCount;  // an EFFECT counter: this target really accepted
+    const bool delivered =
+        acceptType == nullptr || ImGui::AcceptDragDropPayload(acceptType, ImGuiDragDropFlags_None) != nullptr;
+    if (delivered) {
+        record(ActionKind::MoveEntry, source, folderRelative);
+    }
 }
 
 // task E.4.3: THE DECISION, shared by the real ImGui target above and the injected seam below, so
@@ -750,20 +788,24 @@ void AssetBrowserPanel::applyInjectedDropPeek() {
     std::string source = dropPeekSource;
     if (!dropPeekIsMovePayload) {
         // An ASSET payload carries a GUID, and the payload is a HINT while the database is the
-        // AUTHORITY. A record that vanished mid-drag resolves to "", which the verdict then refuses
-        // as SourceIsRoot -- the same arm the real target takes.
+        // AUTHORITY. THE RESOLUTION GOES THROUGH findByGuid, exactly as the real target's does
+        // (code-review G6): resolving by PATH here would make I223's "re-resolved through the live
+        // database" subcase a claim about the simulation rather than about the product. The seam is
+        // handed a path because that is all a test can spell, so it turns that into the GUID a real
+        // payload would carry and then resolves THAT -- one extra lookup, and the arm under test is
+        // the real one. A record that vanished mid-drag yields "", which the verdict refuses as
+        // SourceIsRoot.
         source.clear();
         if (databasePtr != nullptr) {
-            if (const AssetRecord* const found = databasePtr->findByPath(dropPeekSource); found != nullptr) {
-                source = found->relativePath;
+            if (const AssetRecord* const named = databasePtr->findByPath(dropPeekSource); named != nullptr) {
+                if (const AssetRecord* const found = databasePtr->findByGuid(named->guid); found != nullptr) {
+                    source = found->relativePath;
+                }
             }
         }
     }
-    dropPeekRefusal = folderDropVerdict(source, dropPeekDestination);
-    if (dropPeekRefusal == AssetOpRefusal::None) {
-        ++dropTargetsAcceptedCount;
-        record(ActionKind::MoveEntry, source, dropPeekDestination);
-    }
+    // The SAME tail the real target runs, with no ImGui payload in flight to Accept.
+    finishFolderDrop(source, dropPeekDestination, nullptr);
 }
 
 // ---- phase 4 (grid): task 3.1.3, Step 6 -----------------------------------------------------------

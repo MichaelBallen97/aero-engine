@@ -384,6 +384,11 @@ private:
     // task E.4.3: the drop DECISION, shared by the real ImGui target and the injected seam, so the
     // two cannot diverge. It IS classifyAssetMove, which is itself a call to assetOpPathLadder.
     [[nodiscard]] static AssetOpRefusal folderDropVerdict(const std::string& source, const std::string& folderRelative);
+    // task E.4.3 (code-review G6): the verdict, the accept counter and the MoveEntry record, in ONE
+    // function called by the real ImGui target AND by the injected seam -- so a statement deleted
+    // from it breaks the product and the cases together. `acceptType == nullptr` is the seam, which
+    // models a COMPLETED drop with no ImGui payload in flight.
+    void finishFolderDrop(const std::string& source, const std::string& folderRelative, const char* acceptType);
     void applyInjectedDropPeek();
     void drawIssues();  // phase 4b -- task 3.1.3, Step 9 (D11)
     // task E.4.3 -- also phase 4b, drawn AFTER the orphan modal. The two modals are gated on

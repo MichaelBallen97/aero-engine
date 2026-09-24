@@ -91,7 +91,7 @@ validation pass exists for any task in any phase.** N-E = not executable, N-R = 
 | E.3.4 Material inspector redesign | #105 | `170ad9b` | 12 PASS / 1 partial / 1 N-E, nothing failed |
 | E.4.1 Reopen the last scene | #106 | `068c45c` | **12 / 12**, nothing failed — and 26 sabotage seeds / 29 runs with **no coverage hole** |
 | E.4.2 Scene/project containment | #107 | `f88079d` | **14 of 16 rows** — 12 outright, 2 as stated variants, 1 partial, **2 NOT EXECUTABLE**. 29 sabotage seeds found **three real coverage holes**; the code-review round found eight findings, one blocking; Windows CI found a ninth after all three passed |
-| E.4.3 Asset file operations | #<n> | `<sha>` | **NOT RUN** — the page exists at `editor/validation/E.4.3-asset-file-operations.md`; rows 3, 4, 5, 6, 8 and 9 are the only cover their declared seeds have |
+| E.4.3 Asset file operations | #108 | **unmerged** | **NOT RUN** — the page exists at `editor/validation/E.4.3-asset-file-operations.md`; rows 3, 4, 5, 6, 8 and 9 are the only cover their declared seeds have |
 
 **E.3.2 landed before E.3.1** — legal, disjointly id-reserved; the reservation is discharged and the
 numbering is contiguous.

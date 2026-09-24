@@ -17277,6 +17277,44 @@ TEST_CASE("editor: the asset context menu really draws, and carries its target (
     // (c) the panel kept drawing throughout.
     CHECK(app->panelDrawnCount("Assets") > drawnBefore);
 
+    // (f) THE PEEK IS A LITERAL PREFIX OF THE LADDER, as SOURCE TEXT -- and it is not redundant with
+    // AA43 (code-review G2). AA43 runs classifyAssetMove and planAssetOp over twelve pairs and
+    // asserts they AGREE, which is a claim about their OUTPUTS: a hand-written second copy of rungs
+    // 1/2/3/5/6 that happens to agree on those twelve inputs satisfies it completely, and so does a
+    // defect inside a shared ladder, since both sides then answer the same wrong thing. What makes
+    // the peek a prefix BY CALL rather than by description is structural, so it is pinned
+    // structurally: one return, and it names the shared function.
+    const std::vector<std::string> actions = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/asset_actions.cpp");
+    REQUIRE(actions.size() > 500U);  // ANTI-VACUITY: the file was really read
+    std::size_t bodyStart = actions.size();
+    for (std::size_t i = 0; i < actions.size(); ++i) {
+        if (actions[i].find("AssetOpRefusal classifyAssetMove(") != std::string::npos) {
+            bodyStart = i;
+            break;
+        }
+    }
+    REQUIRE(bodyStart < actions.size());  // the definition was found
+    std::size_t bodyEnd = actions.size();
+    for (std::size_t i = bodyStart + 1; i < actions.size(); ++i) {
+        if (actions[i] == "}") {
+            bodyEnd = i;
+            break;
+        }
+    }
+    REQUIRE(bodyEnd < actions.size());
+    std::size_t returns = 0;
+    std::size_t ladderMentions = 0;
+    for (std::size_t i = bodyStart; i < bodyEnd; ++i) {
+        if (actions[i].find("return") != std::string::npos) {
+            ++returns;
+        }
+        if (actions[i].find("assetOpPathLadder") != std::string::npos) {
+            ++ladderMentions;
+        }
+    }
+    CHECK(returns == 1U);         // ONE return: no second copy of the rungs can hide in a branch
+    CHECK(ladderMentions == 1U);  // and it DELEGATES rather than deciding
+
     app->requestQuit();
     CHECK(app->tick() == false);
 }
@@ -17605,6 +17643,15 @@ TEST_CASE("editor: the four new one-shots drain EXACTLY ONCE (task E.4.3, I218 -
         CHECK(countLinesContaining(panel, std::string(member) + ".reset();") == 1U);
     }
 
+    // AND THE CROSS-ROOT GUARD (code-review G7), pinned structurally because no tier in this tree can
+    // produce the state it refuses. deleteAssetEntry renames FROM the panel's assets root INTO the
+    // project root's Library/Trash, and the panel's root is reconciled at the END of the same asset
+    // block -- so a delete pending across a project swap would read the outgoing project's assets
+    // root against the incoming project's root. Driving that needs the panel's root and the session's
+    // to disagree, and AssetBrowserPanel is src-private with its setRoot reachable only from the
+    // reconcile itself. The guard is one comparison in assetOpRoots; this asserts it is there.
+    CHECK(countLinesContaining(code, "assetsRoot != projectRoot") == 1U);
+
     app->requestQuit();
     CHECK(app->tick() == false);
 }
@@ -17914,9 +17961,17 @@ TEST_CASE("editor: a completed drop records MoveEntry with BOTH paths, and the f
 }
 
 TEST_CASE("editor: a drop onto the assets ROOT moves UP a level (task E.4.3, I224)") {
-    // The breadcrumb's affordance, and the one a tree-only implementation silently omits: "" is the
-    // assets root and is a LEGAL destination, which a plain std::string destination could not express
-    // distinctly from "nothing requested".
+    // The affordance a tree-only implementation silently omits: "" is the assets root and is a LEGAL
+    // destination, which a plain std::string destination could not express distinctly from "nothing
+    // requested".
+    //
+    // THE SEAM ALONE IS NOT ENOUGH, AND THIS CASE SHIPPED THAT WAY (code-review G1). Driving
+    // requestDropPeek with an empty destination proves the PLANNER accepts "", and stays green
+    // against a build where no widget anywhere offers that destination -- which is exactly what the
+    // first version of this task did: attachFolderDropTarget's call sites covered currentDir's
+    // ancestors only, because the breadcrumb site sits INSIDE the segment loop and the loop starts at
+    // the first real segment. An asset in any top-level folder could not be moved back to the assets
+    // root at all. The source-text arm below is what pins the affordance itself.
     engine::platform::Context ctx;
     if (!ctx.valid()) {
         AERO_SKIP_OR_FAIL("no platform context");
@@ -17946,6 +18001,17 @@ TEST_CASE("editor: a drop onto the assets ROOT moves UP a level (task E.4.3, I22
     CHECK(engine::editor::fileExists(root + "/assets/b.png"));
     CHECK(engine::editor::fileExists(root + "/assets/b.png.meta"));
     CHECK_FALSE(engine::editor::fileExists(root + "/assets/a/b.png"));
+
+    // THE AFFORDANCE ITSELF, which no runtime tier can reach: two widgets offer the assets root as a
+    // destination -- the root breadcrumb and the root tree row -- and each attaches the target with
+    // an EMPTY folder. Nothing in tests/ can perform a real drag, so this is the only witness that
+    // the destination the arms above accept is one the user can actually aim at.
+    const std::vector<std::string> panel = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/asset_browser_panel.cpp");
+    REQUIRE(panel.size() > 1000U);  // ANTI-VACUITY: the file was really read
+    CHECK(countLinesContaining(panel, "attachFolderDropTarget(std::string{})") == 2U);
+    // And the four non-root sites are still there, so the count above is an ADDITION rather than a
+    // replacement: six call sites plus the definition and the declaration's own mention.
+    CHECK(countLinesContaining(panel, "attachFolderDropTarget") >= 7U);
 
     app->requestQuit();
     CHECK(app->tick() == false);

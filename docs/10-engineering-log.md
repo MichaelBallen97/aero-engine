@@ -17252,6 +17252,13 @@ already excludes the result from the scan, the watcher and git with no new rule 
   directly at all — it is called once, inside `ensureCached`, whose three call sites are all inside
   `reconcile()`. The case asserts that two-step containment.
 * **`docs/09`'s new subsection is §6.10, not §6.11** — §6.9 is the current last one.
+* **The `NewAssetKind` dispatch table was built and then DELETED (code-review G4).** The plan mandated
+  both the table and "New Asset ▸ Material reuses `CreateMaterial`", and the two are mutually
+  exclusive: with the menu taking the reuse path, nothing ever called `createAssetOfKind`, its
+  `label`/`stem` fields were never read, its bounds-check branch was unreachable, and R19's
+  private-member-pointer workaround (a static member rather than an anonymous-namespace table) was
+  paid for nothing — along with an `<array>` include on the PUBLIC header. A second kind is still one
+  producer plus one arm.
 * **Seed `S6` reddens `AA31` alone; `AA43` stays GREEN.** The plan predicted both. `AA43` compares
   `classifyAssetMove` against `planAssetOp`, and they share the seeded code, so they still AGREE
   while both are wrong. That is `AA43`'s design working as intended — it proves the prefix property,
@@ -17274,6 +17281,18 @@ already excludes the result from the scan, the watcher and git with no new rule 
 * **Seed `S14` is inert BY CONSTRUCTION and is a NON-FINDING.** `applyPending` moves `pending` out
   before dispatching, so a second `record()` inside an arm cannot clobber the action in flight. Do
   not "fix" it.
+* **`AssetOpRefusal::SidecarRenameFailed`'s assignment and its `sidecarEc.message()` are executed by
+  NOTHING** (code-review round). `AA49` accepts `SidecarRenameFailed || SidecarBlocked` because step
+  6b's live destination check fires first for the shape the plan chose (a non-empty directory at the
+  sidecar's destination), and reaching 6c instead needs a destination that does NOT exist and a
+  rename that fails anyway — which nothing in a single-threaded in-process test can arrange. The
+  ROLLBACK the arm shares with `SidecarBlocked` **is** covered, by `AA48` and `AA49` both reading the
+  filesystem back. Beside `RollbackFailed`/`torn`, this is the second named hole in the executor's
+  failure ladder.
+* **`ImGui::AcceptDragDropPayload` itself is executed by nothing**, and after the code-review round
+  that is the ONLY statement of the drop path in that position: everything else — the verdict, the
+  accept counter and the `MoveEntry` record — lives in `finishFolderDrop`, which the injected seam
+  calls too. Validation rows 4 and 5 remain the behavioural witness for the highlight and the drag.
 
 #### The sentences that govern new work
 
@@ -17311,3 +17330,26 @@ already excludes the result from the scan, the watcher and git with no new rule 
     witness is a source-text pin (`I218`'s third arm). A moved-from optional is still ENGAGED, so the
     omission costs one refused operation and one rescan per frame for ever, which no observable in
     this tree can see.
+11. **THE CASE-ONLY CARVE-OUT IS GATED ON `std::filesystem::equivalent`, NEVER ON THE LEXICAL
+    CONDITION ALONE** — this shipped once as silent DATA LOSS and the code-review round caught it.
+    "A case-only rename within one directory can only collide with the source itself" is true on a
+    case-INSENSITIVE volume and FALSE on a case-sensitive one. Without the equivalence test, on Linux:
+    rung 9 passes, something external creates the destination between the `listDirectory` and the act
+    (the window step 4 exists to close — seed `S9` / validation row 6), step 4 answers "not blocked",
+    the rename OVERWRITES it, and `performed` comes back true. **Proven locally on macOS** rather than
+    deferred to CI, by pointing `TMPDIR` at a case-sensitive APFS disk image — the recipe is in
+    `AA64`'s own comment, and `AA64` fails there with the gate reverted.
+12. **A SEAM THAT SIMULATES A WIDGET MUST CALL THE WIDGET'S OWN TAIL, NOT A COPY OF IT.** The drop
+    seam carried its own accept counter and its own `record`, so deleting the record from the real
+    ImGui target left drag-to-move doing nothing in the product while `I222`, `I223` and `I224` all
+    stayed green. `finishFolderDrop` is now the single tail both call, with `acceptType == nullptr`
+    meaning "the injected seam, which models a COMPLETED drop". **A future seam inherits this**: share
+    the effect, not merely the decision. The same round found the seam resolving an asset payload
+    through `findByPath` while the real target used `findByGuid`, which made `I223`'s re-resolution
+    subcase a claim about the simulation; the seam now goes path → guid → `findByGuid`.
+13. **`AA43` CANNOT SEE A HAND-WRITTEN SECOND COPY OF THE LADDER, AND `I210(f)` IS WHY IT EXISTS.**
+    Measured directly in the code-review round: replacing `classifyAssetMove`'s one-line delegation
+    with a hand-written copy of rungs 1/2/3/5/6 leaves `AA43` GREEN — it asserts the two sides AGREE,
+    which a faithful copy does — and reddens only `I210(f)`'s structural pin (one `return`, one
+    mention of `assetOpPathLadder`). The plan said both were needed; this is the measurement that
+    shows why.

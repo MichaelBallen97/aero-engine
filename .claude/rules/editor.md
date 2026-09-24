@@ -461,6 +461,16 @@ and resolves; `EditorApp::persistProjectState` decides and writes.
   **A REFUSAL still rescans** (`deleteOrphanMeta`'s rule): every refusal reason means "the tree
   changed under us". The ONE exception is the dirty-open-material refusal, where nothing changed.
 
+  **THE CASE-ONLY CARVE-OUT IS GATED ON `std::filesystem::equivalent`, never on "same leaf modulo
+  case, same directory" alone.** That lexical condition justifies itself with "the only entry it can
+  be is the source itself", which is true on a case-INSENSITIVE volume and FALSE on a case-sensitive
+  one — where the executor's live free-name check would then wave through a rename that OVERWRITES a
+  genuinely different file, in exactly the window (something created between the `listDirectory` and
+  the act) that check exists to close. It shipped that way once and the code-review round caught it.
+  The equivalence is true precisely on the volumes where the carve-out is legitimate; the
+  `error_code` overload fails SAFE, to a refusal. **The refusing arm is unobservable on macOS and
+  Windows** — `AA64` states the `TMPDIR`-on-a-case-sensitive-image recipe that reaches it locally.
+
   **`RollbackFailed` and `AssetOpResult::torn` have NO automated cover anywhere, and cannot.** A
   rollback fails only when something occupies the source path as a non-empty directory (measured on
   APFS: renaming onto an existing FILE succeeds silently; renaming onto a non-empty directory fails

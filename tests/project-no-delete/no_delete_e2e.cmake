@@ -215,6 +215,7 @@ _nd_seed("editor/src/asset_actions.cpp"
 _nd_run("stage 15 (rename, asset_actions.cpp -- PERMITTED)" 0 "${BASH}" "${SCRIPT}")
 _nd_expect_substr("stage 15" "${_nd_out}" "project-no-delete guard: OK" TRUE)
 _nd_seed("editor/src/asset_actions.cpp" "${_nd_clean_body}")
+_nd_run("stage 15 (cleaned)" 0 "${BASH}" "${SCRIPT}")
 
 # --- Stage 16 (B-new-3): the remove_all alternative in a third TU -> exit 1. -------------------------
 # Distinct from stage 10, which seeds std::filesystem::remove: remove_all is its OWN alternative in

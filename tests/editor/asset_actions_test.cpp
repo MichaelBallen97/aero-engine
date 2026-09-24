@@ -1362,10 +1362,14 @@ TEST_CASE("asset actions: every path reaches <filesystem> through pathFromUtf8 (
     CHECK(countOccurrences(body, "std::filesystem::rename(pathFromUtf8(") == renames);
     // Exactly ONE std::filesystem::path constructor, and it is the one INSIDE pathFromUtf8 itself.
     CHECK(countOccurrences(body, "std::filesystem::path(") == 1U);
-    // Measured, not predicted: six rename arguments, deleteOrphanMeta's one remove argument, and the
-    // definition. fileExists/ensureDirectory take a std::string_view and do their own conversion in
-    // text_file.cpp, so their arguments are deliberately NOT wrapped here.
-    CHECK(countOccurrences(body, "pathFromUtf8(") == 8U);
+    // Measured, not predicted, and RE-measured after the code-review round: six rename arguments,
+    // deleteOrphanMeta's one remove argument, the definition, and TWO more from destinationBlocked's
+    // std::filesystem::equivalent gate (the G5 data-loss fix). fileExists/ensureDirectory take a
+    // std::string_view and do their own conversion in text_file.cpp, so their arguments are
+    // deliberately NOT wrapped here.
+    CHECK(countOccurrences(body, "pathFromUtf8(") == 10U);
+    // And the equivalence call is wrapped on BOTH sides, for the same Windows reason the renames are.
+    CHECK(countOccurrences(body, "std::filesystem::equivalent(pathFromUtf8(") == 1U);
 }
 
 TEST_CASE("asset actions: the browser's ONLY disk read is reconcile's, so phase 4b does no I/O (AA63)") {
@@ -1444,4 +1448,122 @@ TEST_CASE("asset actions: the browser's ONLY disk read is reconcile's, so phase 
     // ANTI-VACUITY on both sweeps: a zero count would satisfy every CHECK above.
     REQUIRE(listDirectoryLines == 1U);
     REQUIRE(ensureCachedCalls == 3U);
+}
+
+TEST_CASE("asset actions: the case-only carve-out refuses a genuinely DIFFERENT file (AA64, code-review G5)") {
+    // THE ARM THAT SHIPPED AS SILENT DATA LOSS. The carve-out used to be keyed on leaf
+    // case-equality plus same-directory ALONE, whose justification -- "the only entry it can be is
+    // the source itself" -- holds on a case-INSENSITIVE volume and is FALSE on a case-sensitive one.
+    // On Linux: rung 9 passes (the listing holds no Wood.png), something external creates
+    // assets/a/Wood.png between that listDirectory and the act -- seed S9 / validation row 6 exactly
+    // -- step 4 answered "not blocked", the rename OVERWROTE it, and performed came back true.
+    //
+    // THIS CASE IS A NO-OP ON A CASE-INSENSITIVE VOLUME and that is stated rather than hidden: there
+    // a/wood.png and a/Wood.png ARE one file, the seeded "other file" cannot exist separately, and
+    // the rename is the legitimate case-only one. BOTH outcomes are asserted, so the case is
+    // meaningful on every lane rather than skipped on two.
+    //
+    // PROVEN LOCALLY ON macOS, not merely deferred to the Linux lane. TempDir builds under
+    // std::filesystem::temp_directory_path(), so pointing TMPDIR at a case-sensitive volume runs
+    // this case's real arm on a Mac:
+    //     hdiutil create -size 20m -fs "Case-sensitive APFS" -volname E43CS /tmp/e43cs.dmg
+    //     hdiutil attach /tmp/e43cs.dmg -mountpoint /tmp/e43csmnt && mkdir -p /tmp/e43csmnt/tmp
+    //     TMPDIR=/tmp/e43csmnt/tmp build/macos-debug/tests/aero_editor_shell_test -tc='"'"'*AA64*'"'"'
+    // Measured that way: PASSES with the equivalence gate, and FAILS (4 of 10 assertions) with it
+    // reverted to the lexical-only condition.
+    const TempDir dir;
+    const OpFixture fx(dir);
+    writeBytes(fx.assets("a/wood.png"), "the file being renamed");
+    AssetOpInputs inputs;
+    inputs.sourceRelative = "a/wood.png";
+    inputs.newLeaf = "Wood.png";
+    const AssetOpPlan plan = planWithEmptyListing(AssetOpKind::Rename, inputs);
+    REQUIRE((plan.refusal == AssetOpRefusal::None));
+
+    // AFTER planning, so rung 9 did not see it: the destination name now holds OTHER CONTENT.
+    writeBytes(fx.assets("a/Wood.png"), "SOMEONE ELSE'S WORK");
+    // The volume decides which world we are in, and the discriminator is whether that write created
+    // a second file or overwrote the first.
+    const bool caseSensitiveVolume = readWholeFile(pathOf(fx.assets("a/wood.png"))) == "the file being renamed";
+
+    const AssetOpResult result = executeAssetOpPlan(plan, fx.projectRoot, fx.assetsRoot);
+    if (caseSensitiveVolume) {
+        // THE FIX: a genuinely different file at the destination is a collision, carve-out or not.
+        CHECK((result.refusal == AssetOpRefusal::NameTaken));
+        CHECK_FALSE(result.performed);
+        CHECK(readWholeFile(pathOf(fx.assets("a/Wood.png"))) == "SOMEONE ELSE'S WORK");
+        CHECK(readWholeFile(pathOf(fx.assets("a/wood.png"))) == "the file being renamed");
+    } else {
+        // A case-INSENSITIVE volume: the two names are one file, so this is the legitimate case-only
+        // rename and it must still succeed -- the fix must not break AA37.
+        CHECK(result.performed);
+        CHECK(result.resultingPath == "a/Wood.png");
+    }
+}
+
+TEST_CASE("asset actions: EVERY planner refusal carries a non-empty message (AA65, code-review G3)") {
+    // The refusal enumerator reached the log while the message was EMPTY, so every WARN read
+    // "refused to move 'a/b.png' --  (NameTaken)". The rungs now return through one refuse() that
+    // supplies the sentence, and this is what keeps a future rung from being added as a bare
+    // `plan.refusal = X; return plan;` with everything else green.
+    //
+    // Driven through real inputs rather than by constructing plans, so it asserts the RUNGS and not
+    // a helper: each row is the smallest input that reaches exactly one rung.
+    using engine::editor::planAssetOp;
+    struct Row {
+        std::string_view label;
+        AssetOpKind kind;
+        std::string_view source;
+        std::string_view destination;
+        std::string_view newLeaf;
+        AssetOpRefusal expected;
+    };
+    const std::array<Row, 9> rows{{
+        {"SourceIsRoot", AssetOpKind::Move, "", "a", "", AssetOpRefusal::SourceIsRoot},
+        {"BadSourcePath", AssetOpKind::Move, "../x", "a", "", AssetOpRefusal::BadSourcePath},
+        {"BadDestination", AssetOpKind::Move, "a", "../x", "", AssetOpRefusal::BadDestination},
+        {"AlreadyThere", AssetOpKind::Move, "a/b.png", "a", "", AssetOpRefusal::AlreadyThere},
+        {"DestinationInsideSource", AssetOpKind::Move, "t", "t/sub", "", AssetOpRefusal::DestinationInsideSource},
+        {"BadName", AssetOpKind::Rename, "a/b.png", "", "CON", AssetOpRefusal::BadName},
+        {"NameTaken", AssetOpKind::Rename, "a/b.png", "", "taken.png", AssetOpRefusal::NameTaken},
+        {"SidecarBlocked", AssetOpKind::Rename, "a/b.png", "", "c.png", AssetOpRefusal::SidecarBlocked},
+        {"ListingIncomplete", AssetOpKind::Move, "a/b.png", "dst", "", AssetOpRefusal::ListingIncomplete},
+    }};
+    std::size_t checked = 0;
+    for (const Row& row : rows) {
+        CAPTURE(row.label);
+        AssetOpInputs inputs;
+        inputs.sourceRelative = row.source;
+        inputs.destinationDirRelative = row.destination;
+        inputs.newLeaf = row.newLeaf;
+        DirectoryListing listing = completeListing({"taken.png", "c.png.meta"});
+        if (row.expected == AssetOpRefusal::ListingIncomplete) {
+            listing.truncated = true;
+        }
+        const AssetOpPlan plan = planAssetOp(row.kind, inputs, listing);
+        CHECK((plan.refusal == row.expected));
+        CHECK_FALSE(plan.message.empty());
+        ++checked;
+    }
+    REQUIRE(checked == rows.size());  // ANTI-VACUITY: the loop really ran
+
+    // And the CONTROL: a plan that is NOT refused carries no message at all, so "non-empty" above is
+    // a claim about refusals rather than about every plan.
+    AssetOpInputs ok;
+    ok.sourceRelative = "a/b.png";
+    ok.newLeaf = "fresh.png";
+    const AssetOpPlan accepted = planAssetOp(AssetOpKind::Rename, ok, completeListing({}));
+    REQUIRE((accepted.refusal == AssetOpRefusal::None));
+    CHECK(accepted.message.empty());
+
+    // DestinationMissing reaches its rung only with a non-Ok listing, which completeListing cannot
+    // express -- asserted separately rather than left out.
+    DirectoryListing missing;
+    missing.status = ScanStatus::Missing;
+    AssetOpInputs moveInputs;
+    moveInputs.sourceRelative = "a/b.png";
+    moveInputs.destinationDirRelative = "gone";
+    const AssetOpPlan gone = planAssetOp(AssetOpKind::Move, moveInputs, missing);
+    CHECK((gone.refusal == AssetOpRefusal::DestinationMissing));
+    CHECK_FALSE(gone.message.empty());
 }

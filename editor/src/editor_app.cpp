@@ -2390,12 +2390,6 @@ bool EditorApp::createMaterialAsset(std::string_view directoryRel) {
 // Each is createMaterialAsset's shape verbatim. Called from tick()'s reconcile block and nowhere
 // else, so nothing here runs inside a draw walk.
 
-// D12: one row today. A second kind is one row plus one producer, and createMaterialAsset is
-// byte-identical -- it simply gains a second caller.
-const std::array<EditorApp::NewAssetKind, 1> EditorApp::NEW_ASSET_KINDS{{
-    {"Material", "NewMaterial", &EditorApp::createMaterialAsset},
-}};
-
 bool EditorApp::assetOpBlockedByDirtyMaterial(std::string_view rel) const {
     // Belt-and-braces: "" never reaches here today -- rung 1 refuses it as SourceIsRoot before the
     // planner, and all three callers check this block AFTER the root refusals -- but an empty `rel`
@@ -2432,7 +2426,29 @@ namespace {
     // swap (createMaterialAsset's own reasoning, unchanged).
     assetsRoot = panel->root();
     projectRoot = project.root();
-    return !assetsRoot.empty() && !projectRoot.empty();
+    if (assetsRoot.empty() || projectRoot.empty()) {
+        return false;
+    }
+    // THE TWO ROOTS MUST BELONG TO ONE PROJECT (code-review G7). createMaterialAsset's precedent only
+    // ever uses the ASSETS root, so it has no cross-root exposure; deleteAssetEntry renames FROM
+    // <assetsRoot>/... INTO <projectRoot>/Library/Trash/..., and nothing else asserts the two are
+    // related at all. The panel's root is reconciled at the END of this same asset block, so a delete
+    // pending across a project swap reads the OUTGOING project's assets root against the INCOMING
+    // project's root -- and renames a file out of one project into the other's trash. Low likelihood,
+    // irreversible path, one comparison.
+    //
+    // A LEXICAL containment test, deliberately, and it is the right kind here: both strings are
+    // produced by this editor from one manifest (project.hpp's join rule makes assetsRoot exactly
+    // `root() + '/' + paths.assets`), never typed by a user and never returned by a file dialog, so
+    // the absolute/symlink question E.4.2's directoryWithin exists for does not arise. `paths.assets`
+    // may legitimately be "." -- which makes the two roots EQUAL -- so equality is accepted, not just
+    // a proper prefix.
+    if (assetsRoot != projectRoot &&
+        !(assetsRoot.size() > projectRoot.size() && assetsRoot.compare(0, projectRoot.size(), projectRoot) == 0 &&
+          assetsRoot[projectRoot.size()] == '/')) {
+        return false;
+    }
+    return true;
 }
 
 // task E.4.3: New Folder's unique name. NOT uniqueMaterialFileName, which APPENDS ".aeromat" -- a
@@ -2651,14 +2667,6 @@ bool EditorApp::deleteAssetEntry(std::string_view rel) {
     // Step j is SKIPPED for Delete: resultingPath is always "", and requestSelectEntry("") would
     // select the assets root, which is a surprising thing to do after a delete.
     return true;
-}
-
-bool EditorApp::createAssetOfKind(std::size_t kindIndex, std::string_view directoryRel) {
-    if (kindIndex >= NEW_ASSET_KINDS.size()) {
-        AERO_LOG_WARN("assets: no New Asset kind at index {}", kindIndex);
-        return false;
-    }
-    return (this->*(NEW_ASSET_KINDS[kindIndex].create))(directoryRel);
 }
 
 // code-review BLOCKING-1 test seam: stores the id for tick()'s ShellUiState construction to carry --

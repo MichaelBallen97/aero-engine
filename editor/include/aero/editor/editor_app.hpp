@@ -53,7 +53,6 @@
 #include <aero/scene/transform.hpp>  // task 3.1.5: instantiateModelDrop's root placement, by reference
 #include <aero/scene/world.hpp>
 
-#include <array>  // task E.4.3 -- the NEW_ASSET_KINDS table, a static member
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -291,6 +290,11 @@ public:
     // seam, execute none of the code it names, and still pass.
     [[nodiscard]] std::size_t assetBrowserSearchHitCount() const noexcept;
     [[nodiscard]] bool assetBrowserListViewActive() const noexcept;
+    // CAREFUL, AND THE NAMES ARE THE TRAP (task E.4.3's code-review round): THIS one reports the
+    // ORPHAN-sidecar modal (task 3.1.3), while assetBrowserDeleteModalDrawnCount() below reports the
+    // ASSET-delete modal (task E.4.3). Both are correct and I214 pins both, but a case written
+    // against the pair is one word away from asserting the wrong modal. The E.4.3 pending flag is
+    // assetBrowserAssetDeleteModalPending().
     [[nodiscard]] bool assetBrowserDeleteModalPending() const noexcept;
 
     [[nodiscard]] std::size_t thumbnailReadyCount() const noexcept;
@@ -691,10 +695,6 @@ private:
     [[nodiscard]] bool renameAssetEntry(std::string_view rel, std::string_view newLeaf);
     [[nodiscard]] bool moveAssetEntry(std::string_view rel, std::string_view destinationDirRel);
     [[nodiscard]] bool deleteAssetEntry(std::string_view rel);
-    // `kindIndex` arrives from a UI seam, so an out-of-range index RETURNS FALSE rather than
-    // asserting: a [[maybe_unused]] assert in a Release build would be a silent out-of-bounds
-    // member-pointer call.
-    [[nodiscard]] bool createAssetOfKind(std::size_t kindIndex, std::string_view directoryRel);
 
     // TRUE when `rel` IS the Material panel's open document, or is a FOLDER CONTAINING it, AND the
     // session is dirty. Refusing is the honest answer: MaterialSession is path-keyed and sticky, so
@@ -707,17 +707,16 @@ private:
     // SEGMENT-WISE prefix, never a raw string prefix: "tex" must not contain "textures/a.aeromat".
     [[nodiscard]] bool assetOpBlockedByDirtyMaterial(std::string_view rel) const;
 
-    // task E.4.3 (D12): the New Asset menu is a TABLE of kinds and Material is its only row. A second
-    // kind is one row plus one producer; createMaterialAsset is UNCHANGED and gains a second caller.
-    // A PRIVATE NESTED type with a STATIC member table, not an anonymous-namespace one: a
-    // pointer-to-member of a PRIVATE member function is an access error from file scope, and the
-    // diagnostic for that is not obvious.
-    struct NewAssetKind {
-        std::string_view label;                       // "Material" -- the menu row's text
-        std::string_view stem;                        // "NewMaterial" -- for the log line only
-        bool (EditorApp::*create)(std::string_view);  // &EditorApp::createMaterialAsset
-    };
-    static const std::array<NewAssetKind, 1> NEW_ASSET_KINDS;
+    // task E.4.3 (D12): New Asset > Material records the SAME ActionKind::CreateMaterial the header's
+    // New Material button records -- two affordances, ONE implementation, and createMaterialAsset is
+    // byte-identical with a second caller.
+    //
+    // A NewAssetKind TABLE was built here and then DELETED in the code-review round (G4). The plan
+    // mandated both it and the CreateMaterial reuse, and the two are mutually exclusive: with the
+    // menu taking the reuse path nothing ever called the table, so its label/stem fields were never
+    // read, its bounds-check branch was unreachable, and R19's private-member-pointer workaround --
+    // a static member rather than an anonymous-namespace table -- was paid for nothing. A SECOND
+    // kind is still one producer plus one arm; it does not need a dispatch table to be one edit.
 
     // ---- task 3.1.5: the drop drains and the ledger's service pass --------------------------------
     // The three drains run in tick()'s RECONCILE block, in surface order, AFTER the material session

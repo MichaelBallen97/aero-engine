@@ -108,6 +108,25 @@ constexpr std::string_view RESERVED_NAME_CHARACTERS = R"(*?"<>|:)";
 // case-INSENSITIVE volume fileExists("a/Wood.png") is TRUE when only a/wood.png exists, so a naive
 // step 4 would refuse every case-only rename; the carve-out is what makes wood.png -> Wood.png work
 // there, and it is keyed on the step's OWN source leaf rather than on a general exemption.
+//
+// THE CARVE-OUT IS GATED ON THE DESTINATION ACTUALLY BEING THE SOURCE, AND THE LEXICAL CONDITION
+// ALONE IS NOT ENOUGH (code-review G5 -- this shipped once as silent DATA LOSS). "A case-only rename
+// within one directory can only collide with the source itself" is true on a case-INSENSITIVE volume
+// and FALSE on a case-sensitive one, where a/wood.png and a/Wood.png are two genuinely different
+// files. Without the equivalence test, on Linux: rung 9 passes because the listing holds no
+// Wood.png; something external creates a/Wood.png between that listDirectory and this call -- which
+// is precisely the window step 4 exists to close, and precisely seed S9 / validation row 6; step 4
+// answers "not blocked"; rename OVERWRITES it; performed == true and the user's file is gone.
+//
+// std::filesystem::equivalent is true iff both paths resolve to the SAME FILE, so it is true exactly
+// on the volumes where the carve-out is legitimate and false on the ones where it is not. The
+// error_code overload never throws and answers false on any error, which fails SAFE (a refusal).
+// Both callers -- step 4 and step 6b -- reach this having already established that both paths exist,
+// so an error here is a genuine filesystem problem and refusing is right.
+//
+// THE CASE-SENSITIVE ARM IS UNOBSERVABLE ON macOS AND WINDOWS, whose default volumes are
+// case-insensitive: there the equivalence is true and the carve-out applies exactly as before. Only
+// the Linux lane executes the refusal this fix adds.
 [[nodiscard]] bool destinationBlocked(const std::string& fromAbs, const std::string& toAbs, std::string_view fromLeaf,
                                       std::string_view toLeaf) {
     if (!fileExists(toAbs)) {
@@ -116,9 +135,15 @@ constexpr std::string_view RESERVED_NAME_CHARACTERS = R"(*?"<>|:)";
     if (fromAbs == toAbs) {
         return true;  // not a rename at all
     }
-    // The destination exists. It is NOT a collision when this is a case-only rename within one
-    // directory -- there the only entry it can be is the source itself.
-    return !(asciiCaseEqual(fromLeaf, toLeaf) && parentOf(fromAbs) == parentOf(toAbs));
+    if (!asciiCaseEqual(fromLeaf, toLeaf) || parentOf(fromAbs) != parentOf(toAbs)) {
+        return true;  // a different name entirely, or a different directory: a real collision
+    }
+    // A case-only rename within one directory. It is only NOT a collision when the destination IS
+    // the source -- which is what a case-insensitive volume makes true and a case-sensitive one does
+    // not.
+    std::error_code ec;
+    const bool sameFile = std::filesystem::equivalent(pathFromUtf8(fromAbs), pathFromUtf8(toAbs), ec);
+    return ec ? true : !sameFile;
 }
 
 // task E.4.3: rung 6's segment test, spelled once. `dest` is INSIDE `src` iff it IS src or it begins
