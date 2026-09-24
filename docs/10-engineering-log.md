@@ -17169,3 +17169,145 @@ the permitted path — against a real branch-point build (`457b66b` in a worktre
 with containment against **92.0 ms** without, i.e. a **−1.0 ms** delta against run-to-run spreads of **27 ms
 and 12 ms**. The delta is inside the noise, exactly as the row predicted, so the result stands as a **bound**
 and AC-9's structural proof (`CN13` plus its ordering pin) remains the real evidence.
+
+---
+
+### E.4.3 — Asset file operations
+
+**Shipped.** New Folder, New Asset ▸ Material, Rename, Move (including drag-to-move) and Delete, on
+files and folders, with a context menu and two confirmation modals. Every operation carries the
+`.meta` sidecar in the same operation, is all-or-nothing with a rollback on the second step, and is
+planned by a pure function of values before a byte moves. INV-A8 is discharged.
+
+Eight commits plus one fix commit from the sabotage pass. No new file, no new target, no new ctest
+entry, no component, no shader, no link-line change.
+
+**Delete is a `rename` into `<projectRoot>/Library/Trash/<NNNN>/<original assets-relative path>.**
+A folder delete is therefore ONE rename, `remove_all` never enters the editor at all, and `Library/`
+already excludes the result from the scan, the watcher and git with no new rule anywhere. `docs/09`
+§6.10 documents the layout — a LAYOUT, not a format: nothing reads it back.
+
+#### What was deliberately left out
+
+* **The F2 and Del key bindings, and their accelerator text.** The gating needs a THIRD condition the
+  spec did not name — `!ImGui::GetIO().WantTextInput`, because this panel's own header carries an
+  `InputText` search box, so `Del` while editing the query would delete the selected asset. Plus:
+  nothing in `tests/` can press a key, and the editor has no key-binding registry, so a third
+  hand-bound global would be an undeclared policy with no way to order it against the other two.
+  Advertising a shortcut that does nothing is worse than having neither, so the menu carries no
+  accelerator column. **Unowned handoff:** asset-browser keyboard shortcuts need a key-binding
+  registry first; E.6.2 is the nearest owner because it is the task that moves editor-wide controls,
+  but nothing in the roadmap claims it.
+* **Copy, Cut/Paste, Empty Trash, reveal-in-Finder, multi-select** — D14's exclusions, unchanged.
+
+#### Traps found, each measured
+
+* **`uniqueMaterialFileName` APPENDS `.aeromat`.** Reusing it for New Folder created a directory
+  called `NewFolder.aeromat`. It now has its own extension-free `uniqueFolderName`. Caught by `I216`.
+* **`planAssetOp` set a refusal but never a message**, so every planner refusal reached the log as an
+  empty clause — `refused to move 'a/b.png' --  (NameTaken)`. Every rung now returns through one
+  `refuse()` that supplies the sentence. Caught by reading `I221(a)`'s own log output, not by an
+  assertion.
+* **The GPU-tier preamble order is the opposite of the obvious one.** `requestPanelFocus("Assets")`
+  issued before the first `tick()` lands while `buildDefaultLayout` is still running and does
+  NOTHING, leaving Assets tabbed behind Console — where `ImGui::Begin` returns false, `drawPanels`
+  skips `onDraw`, and every case passes while executing none of the code it names. The two settle
+  ticks come FIRST, then the focus, then a third tick. Measured: with the focus first, `I210`'s menu
+  count, its target and its draw-count delta all read zero.
+* **`BeginMenu` submits its own item whether or not the submenu opens**, so the context menu's item
+  count is 5 with the `New Asset` submenu closed, not 4.
+* **`EditorApp::assetBrowserDeleteModalPending()` already existed** and forwards the ORPHAN modal.
+  The new accessor is `assetBrowserAssetDeleteModalPending()` — a distinct name at BOTH tiers, so no
+  existing case silently changes meaning.
+* **Two `noexcept` functions could not be written the obvious way.** `validateAssetName` takes its
+  stem by pointer+length rather than `substr`, and `countRecordsUnder` walks from the folder NAME
+  rather than composing a `folderRelative + '/'` key — both because `bugprone-exception-escape`
+  rejects a `noexcept` function that can throw, and both allocations/`substr` can. The walk is
+  equivalent because every path beginning with those bytes is contiguous in byte order.
+  `requestDeleteConfirm` moves rather than copies for the same reason.
+* **A raw string literal's default `)"` delimiter terminates at the first `.")` in the text.** The
+  `"." and ".." are not names.` message needed a custom `R"MSG(...)MSG"` delimiter; the default form
+  silently truncated the sentence rather than failing to compile.
+* **`DR18`'s allowlist had to widen by exactly one NAME.** `"decodeAssetDragPayload"` is not a
+  substring of `"decodeAssetMoveDragPayload"`, so the browser's legitimate second decoder was
+  reported as an offender. Widening the ALLOWLIST is right; widening a denylist would not have been.
+
+#### The plan's own predictions that measurement contradicted
+
+* **`AA25`'s derived form was arithmetically wrong.** The plan's `validateOrphanPath(x + ".meta")`
+  formula fails for three of its own fourteen rows: `"" + ".meta"` is `".meta"`, which
+  `isMetaFileName` REFUSES (5 bytes, not > 5) so the leaf test wins and the path half is never
+  reached; and `"a/.." + ".meta"` is `"a/...meta"`, whose last segment is no longer `".."` at all, so
+  the very rule under test disappears from the input. The delegate arm is a separate roster of whole
+  sidecar paths.
+* **`AA58`'s cheap exhaustion arm does not work.** Making `Library/Trash` a FILE does not make every
+  probe answer true — a path UNDER a regular file does not exist, so sequence 1 comes back free. The
+  case creates all 9999 directories: measured 413 ms to create, 22 ms to probe, 566 ms for the
+  fixture's own `remove_all`. ~1 s once per lane, for the only cover `TrashUnavailable`'s source has.
+* **`AA62`'s `pathFromUtf8` floor of 11 is 8 in this implementation**, because `fileExists` and
+  `ensureDirectory` take a `std::string_view` and convert internally. The case asserts the sharper
+  claim instead: every `std::filesystem::rename(` in the file is `std::filesystem::rename(pathFromUtf8(`,
+  as an EQUALITY over the two counts, so a narrow constructor cannot creep in beside one.
+* **`AA63`'s literal wording is false in this tree.** `listDirectory` is not called from `reconcile()`
+  directly at all — it is called once, inside `ensureCached`, whose three call sites are all inside
+  `reconcile()`. The case asserts that two-step containment.
+* **`docs/09`'s new subsection is §6.10, not §6.11** — §6.9 is the current last one.
+* **Seed `S6` reddens `AA31` alone; `AA43` stays GREEN.** The plan predicted both. `AA43` compares
+  `classifyAssetMove` against `planAssetOp`, and they share the seeded code, so they still AGREE
+  while both are wrong. That is `AA43`'s design working as intended — it proves the prefix property,
+  not the property's correctness — and `AA31` is what catches the wrongness.
+* **Seed `S27` is RED, not the predicted non-finding.** Widening `PERMITTED_DELETERS` to admit
+  `asset_browser_panel.cpp` now fails the e2e at the new stage 14, which asserts a third file is NOT
+  permitted. The guard detects an unreviewed widening rather than merely reporting `3 permitted files`.
+* **Two of the plan's four proposed e2e stages already existed.** Stage 10 seeds
+  `std::filesystem::remove` into `asset_browser_panel.cpp` expecting exit 1, and stage 12 already
+  covers a renamed `asset_actions.cpp`. The genuinely new stages are 14–19.
+
+#### Two coverage limits, measured rather than assumed
+
+* **`RollbackFailed` and `AssetOpResult::torn` cannot be reached by any single-threaded in-process
+  test**, and the validation page cannot reach them either. See the `.claude/rules/editor.md` entry.
+* **Seed `S21` is an UNCOVERED HOLE.** Removing the `assetKindIsDraggable(kind)` term from
+  `beginAssetDragSource` makes a `.txt` — which IS scanned and DOES have a valid record — take the
+  asset arm and encode an `AERO_ASSET` payload instead of a move payload. Green at BOTH tiers,
+  because nothing in `tests/` can start a drag. **Validation row 5 is its only cover.**
+* **Seed `S14` is inert BY CONSTRUCTION and is a NON-FINDING.** `applyPending` moves `pending` out
+  before dispatching, so a second `record()` inside an arm cannot clobber the action in flight. Do
+  not "fix" it.
+
+#### The sentences that govern new work
+
+1. **`Delete` is a `rename` into `Library/Trash/<NNNN>/`, and `remove_all` never enters the editor.**
+   Check B *permits* `remove_all` in `asset_actions.cpp`; `AA61` is the only thing that says it is not
+   there.
+2. **`beginAssetDragSource`'s `isDirectory` is non-defaulted and the source cannot derive it.** Three
+   call sites; `DR27` pins the hardcoded `false` as confined to the search-hit site, where it is
+   correct because `searchAssets` never matches a folder.
+3. **The peek is a LITERAL prefix of the ladder** — `classifyAssetMove` is a call to
+   `assetOpPathLadder`, and `AA43` pins that they agree. **A future operation must EXTEND the ladder,
+   never copy it.** Note what `AA43` therefore cannot see: a defect inside the shared ladder leaves
+   the two agreeing, so the ladder's own correctness is `AA31`'s to assert.
+4. **`MAX_MOVE_PAYLOAD_PATH` is 1024 and the source refuses what it cannot encode**, through the same
+   `assetMovePayloadFits` the decoder uses. Two places must never compare the same key by different
+   rules.
+5. **`DELETE_RE` matches a SPELLING**, which is why Check B gained the alias prong. **A future
+   destructive call must be fully qualified**; a `namespace fs = std::filesystem` alias is now a hard
+   CI failure in every `editor/src/*.cpp`, permitted files included.
+6. **The segment-wise rule now lives in FIVE places** — `assetOpPathLadder`'s rung 6
+   (`isInsideOrEqual`), `countRecordsUnder`, `assetOpBlockedByDirtyMaterial`, `listingHolds`'s
+   case-only carve-out and `AA45(c)`'s claim — and each has its own `("tex", "textures/a")`-shaped
+   case. **A sixth place needs a sixth case.**
+7. **The F2/Del shortcuts do NOT ship**, and the reason is a third gating condition
+   (`io.WantTextInput`) plus the absence of a key-binding registry. **Unowned handoff.**
+8. **`I136` was already red on a 2x display at this branch point** and is E.6.1's. It is
+   display-dependent: it PASSED at E.4.2's gate and fails here. Name it either way, every run.
+9. **The `NOT WIN32` e2e roster is FOUR, not three** — `tests/CMakeLists.txt:1078, 1110, 1134, 1155`
+   — and `project-no-delete.no_delete_e2e` is the one every earlier count omitted. Re-measure it,
+   never carry it. **Consequence for this task: stages 14–19 do not run on Windows**, and the guard
+   script itself never runs there either (the lint job is ubuntu-only). Coverage of the INVARIANT is
+   unaffected; the residual is the guard's BEHAVIOUR under an MSYS userland, identical in shape to
+   3.7.3's recorded residual.
+10. **A one-shot taker that moves out of an `optional` MUST `.reset()` afterwards**, and the only
+    witness is a source-text pin (`I218`'s third arm). A moved-from optional is still ENGAGED, so the
+    omission costs one refused operation and one rescan per frame for ever, which no observable in
+    this tree can see.

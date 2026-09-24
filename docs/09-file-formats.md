@@ -843,6 +843,62 @@ Envelope errors discard the whole document.
 A per-**entry** failure is silent and counted (`droppedEntries`/`droppedDependencies`), never a
 message — §6.3's inversion of §5's policy.
 
+### 6.10 The project trash (task E.4.3)
+
+> Written by `Delete` in the Asset Browser, through
+> `editor/src/asset_actions.cpp`'s `executeAssetOpPlan`. **This is a LAYOUT, not a format:** nothing
+> reads it back, so it has no magic, no version field and no evolution policy, and none of §1's
+> versioning rules applies to it. It is a subsection of §6 because `Library/` is §6's own directory.
+
+**What it is.** `<projectRoot>/Library/Trash/<NNNN>/<original assets-relative path>` — one directory
+per delete operation.
+
+```
+<projectRoot>/
+  Library/                 # 3.1.2 -- machine-local derived data, .gitignore'd with "*"
+    asset-cache.json
+    Trash/
+      0001/
+        textures/wood.png
+        textures/wood.png.meta
+      0002/
+        textures/            <- a whole folder, moved by ONE rename
+```
+
+**The sequence rule.** Four zero-padded digits, probe-allocated as the first `NNNN` that does not
+exist, starting at `0001` and bounded at `MAX_TRASH_SEQUENCE` (9999). Exhaustion is surfaced as one
+`AERO_LOG_WARN` naming the directory and refusing the delete — never a reused sequence, which would
+put two deletes of the same path in one folder, where the second collides with the first.
+
+**A counter, and deliberately NOT a timestamp.** `currentFileTimeTicks()` is opaque
+`file_time_type` ticks and never a date (§6.5 above already says so), a wall clock would be
+non-deterministic and therefore untestable, and one-second resolution would collide anyway.
+
+**The preserved-path rule.** The original **assets-relative** path is preserved inside the sequence
+directory, so the trash is self-documenting about where a file came from — which is what a manual
+recovery actually needs. The `.meta` sidecar travels beside its asset, so putting both back restores
+the asset's identity unchanged.
+
+**Nothing reads it back.** No restore command, no index, no manifest, no parser. That is what makes
+this a layout rather than a format.
+
+**It is invisible by rules that already existed.** `Library/` is excluded from the scan by canonical
+path (`asset_database.cpp:193`), from the watcher by the same (`asset_watcher.cpp:306`), and from git
+by 3.1.2's `LIBRARY_GITIGNORE_TEXT`. **No new exclusion is added anywhere**, and
+`asset_actions_test.cpp`'s `AA45(f)` asserts the trash path begins with `ASSET_CACHE_DIR_NAME` —
+compared against the constant and never against the literal `"Library"`, so changing that constant
+moves the claim with it.
+
+**Same volume by construction.** `assetsRoot()` is `<projectRoot> + '/' + paths.assets`, so the trash
+and the assets tree are under one root and one `rename` suffices. A cross-device failure surfaces as
+an `error_code` and becomes `RenameFailed` carrying the OS's own text — handled generically, with no
+special case and no `#if`.
+
+**The accepted costs, stated rather than discovered.** Deleting frees no disk space; the trash grows
+until emptied by hand; there is no *Empty Trash* command. A future one is a `remove_all` **scoped to
+`Library/Trash/`**, which is exactly the *"deliberate, reviewed relaxation that deletes ONLY inside
+`Library/`"* that `check-project-no-delete.sh`'s own header already licenses.
+
 ## 7. Blender export provenance record v1
 
 > Enforced in code by `editor/src/blender_tool.cpp` (`parseExportProvenance` /
