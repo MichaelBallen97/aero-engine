@@ -126,7 +126,13 @@ constexpr std::array<DropAction, 5> ALL_ACTIONS{DropAction::None, DropAction::In
 // one legacy memcpy (hierarchy_panel.cpp's pre-existing AERO_ENTITY peek). Anything else is a read --
 // which is exactly a cast.
 [[nodiscard]] bool payloadDataLineIsPermitted(std::string_view line) noexcept {
+    // task E.4.3 widens this ALLOWLIST by exactly one name. The tree now has a SECOND sanctioned
+    // decoder -- decodeAssetMoveDragPayload, for the move payload -- and "decodeAssetDragPayload" is
+    // NOT a substring of it, so the browser's legitimate call was reported as an offender. Widening
+    // the allowlist is the correct response and a widened DENYLIST would not be: the claim is still
+    // "a payload's ->Data is handed to a decoder and never cast", and it is still enumerated.
     return line.find("decodeAssetDragPayload") != std::string_view::npos ||
+           line.find("decodeAssetMoveDragPayload") != std::string_view::npos ||
            line.find("std::memcpy") != std::string_view::npos;
 }
 
@@ -507,6 +513,12 @@ TEST_CASE("asset_drag: decodeAssetDragPayload is the ONLY reader of a payload's 
     CHECK_FALSE(payloadDataLineIsPermitted(CAST_LINE));  // the seed S29 plants -> RED
     CHECK(payloadDataLineIsPermitted(LEGAL_DECODE));     // a legal SECOND decode call -> still green
     CHECK(payloadDataLineIsPermitted(LEGAL_MEMCPY));
+    // task E.4.3: the move decoder is permitted, and a CAST of the move payload is still refused --
+    // the allowlist grew by a name, not by a shape.
+    CHECK(payloadDataLineIsPermitted(
+        "        source = decodeAssetMoveDragPayload(peek->Data, peek->DataSize).value_or({});"));
+    CHECK_FALSE(
+        payloadDataLineIsPermitted("        const auto* p = static_cast<const AssetMoveDragPayload*>(payload->Data);"));
 
     const std::filesystem::path src{AERO_EDITOR_SRC_DIR};
     std::error_code ec;
@@ -724,4 +736,203 @@ TEST_CASE("AR7: the PICKER's accept predicate is this matrix, stated at the DRAG
     CHECK(slotAccepts == 1);
     CHECK(fieldAccepts == 4);
     CHECK(audioAccepts == 1);
+}
+
+// ==================================================================================================
+// task E.4.3 -- the SECOND payload type and the drag source's new isDirectory (DR19-DR27)
+// ==================================================================================================
+
+namespace {
+
+using engine::editor::AssetMoveDragPayload;
+using engine::editor::assetMovePayloadFits;
+using engine::editor::decodeAssetMoveDragPayload;
+using engine::editor::MAX_MOVE_PAYLOAD_PATH;
+
+// Fill a payload from a path, exactly as beginAssetMoveBranch does.
+[[nodiscard]] AssetMoveDragPayload makeMovePayload(std::string_view path, bool isDirectory = false) {
+    AssetMoveDragPayload payload{};
+    REQUIRE(path.size() < MAX_MOVE_PAYLOAD_PATH);
+    std::memcpy(payload.path.data(), path.data(), path.size());
+    payload.path[path.size()] = '\0';
+    payload.length = static_cast<std::uint16_t>(path.size());
+    payload.isDirectory = isDirectory ? 1U : 0U;
+    return payload;
+}
+
+[[nodiscard]] std::size_t countOccurrences(const std::string& body, std::string_view needle) {
+    std::size_t count = 0;
+    std::size_t at = body.find(needle);
+    while (at != std::string::npos) {
+        ++count;
+        at = body.find(needle, at + needle.size());
+    }
+    return count;
+}
+
+}  // namespace
+
+TEST_CASE("asset drag: classifyAssetKind's second argument, BOTH values (DR19, task E.4.3)") {
+    // THE CASE THAT MAKES beginAssetDragSource's new isDirectory parameter SAFE. The argument only
+    // ever FORCES Folder, so nothing that was draggable changes kind -- which is why the asset arm of
+    // the source is byte-identical in behaviour after the change.
+    using engine::editor::AssetKind;
+    using engine::editor::classifyAssetKind;
+    struct Row {
+        std::string_view leaf;
+        AssetKind asFile;
+    };
+    constexpr std::array<Row, 12> ROWS{{
+        {"wood.png", AssetKind::Texture},
+        {"a.ktx2", AssetKind::Texture},
+        {"m.aeromat", AssetKind::Material},
+        {"s.gltf", AssetKind::Model},
+        {"t.wav", AssetKind::Audio},
+        {"n.txt", AssetKind::Text},
+        {"x.mtl", AssetKind::Unknown},
+        {"textures", AssetKind::Unknown},
+        {"README", AssetKind::Unknown},
+        {"", AssetKind::Unknown},
+        {"a.PNG", AssetKind::Texture},
+        {"a.tar.gz", AssetKind::Unknown},
+    }};
+    std::size_t draggableAsFile = 0;
+    for (const Row& row : ROWS) {
+        CAPTURE(row.leaf);
+        CHECK((classifyAssetKind(row.leaf, false) == row.asFile));
+        // isDirectory only ever FORCES Folder -- for EVERY leaf, whatever it would classify as.
+        CHECK((classifyAssetKind(row.leaf, true) == AssetKind::Folder));
+        if (engine::editor::assetKindIsDraggable(row.asFile)) {
+            ++draggableAsFile;
+        }
+    }
+    // ANTI-VACUITY: the roster really does contain draggable kinds, so "nothing draggable changed"
+    // is a claim about something.
+    REQUIRE(draggableAsFile >= 4U);
+}
+
+TEST_CASE("asset drag: decodeAssetMoveDragPayload -- the SIZE rungs, both sides (DR20, task E.4.3)") {
+    const AssetMoveDragPayload payload = makeMovePayload("a/b.png");
+    CHECK_FALSE(decodeAssetMoveDragPayload(nullptr, static_cast<int>(sizeof payload)).has_value());
+    // BOTH sides of the size test, because a `>=`-shaped implementation passes exactly one of them.
+    CHECK_FALSE(decodeAssetMoveDragPayload(&payload, static_cast<int>(sizeof payload) - 1).has_value());
+    CHECK_FALSE(decodeAssetMoveDragPayload(&payload, static_cast<int>(sizeof payload) + 1).has_value());
+    CHECK_FALSE(decodeAssetMoveDragPayload(&payload, 0).has_value());
+    // The accepting control: the EXACT size works.
+    CHECK(decodeAssetMoveDragPayload(&payload, static_cast<int>(sizeof payload)).has_value());
+}
+
+TEST_CASE("asset drag: the LENGTH and NUL rungs (DR21, task E.4.3)") {
+    SUBCASE("length 0 is never valid") {
+        AssetMoveDragPayload payload = makeMovePayload("a/b");
+        payload.length = 0;
+        CHECK_FALSE(decodeAssetMoveDragPayload(&payload, static_cast<int>(sizeof payload)).has_value());
+    }
+    SUBCASE("length == MAX_MOVE_PAYLOAD_PATH is refused BEFORE path[length] is indexed") {
+        AssetMoveDragPayload payload = makeMovePayload("a/b");
+        payload.length = static_cast<std::uint16_t>(MAX_MOVE_PAYLOAD_PATH);
+        CHECK_FALSE(decodeAssetMoveDragPayload(&payload, static_cast<int>(sizeof payload)).has_value());
+    }
+    SUBCASE("a missing NUL at path[length]") {
+        AssetMoveDragPayload payload = makeMovePayload("a/b");
+        payload.path[3] = 'X';  // where the NUL was
+        CHECK_FALSE(decodeAssetMoveDragPayload(&payload, static_cast<int>(sizeof payload)).has_value());
+    }
+}
+
+TEST_CASE("asset drag: an ESCAPING path in a payload is CORRUPT, not refusable (DR22, task E.4.3)") {
+    // nullopt, never a refusal enumerator and never an empty string -- the same nil-guid-is-corrupt
+    // posture decodeAssetDragPayload already takes, applied to the other payload.
+    for (const std::string_view bad : {"../escape", "a/../b", "/abs", "C:/x", "a\\b"}) {
+        CAPTURE(bad);
+        const AssetMoveDragPayload payload = makeMovePayload(bad);
+        CHECK_FALSE(decodeAssetMoveDragPayload(&payload, static_cast<int>(sizeof payload)).has_value());
+    }
+    // ANTI-VACUITY: a legal path through the identical construction DOES decode.
+    const AssetMoveDragPayload good = makeMovePayload("a/b.png");
+    CHECK(decodeAssetMoveDragPayload(&good, static_cast<int>(sizeof good)) == std::optional<std::string>("a/b.png"));
+}
+
+TEST_CASE("asset drag: a valid round trip through a BYTE BUFFER (DR23, task E.4.3)") {
+    // Decoding from the struct's own address would not exercise the alignas(1) path UBSan is there to
+    // catch, which is the whole reason the decode memcpy's rather than casting.
+    const AssetMoveDragPayload payload = makeMovePayload("textures/wood.png");
+    std::array<std::byte, sizeof(AssetMoveDragPayload)> buffer{};
+    std::memcpy(buffer.data(), &payload, sizeof payload);
+    const std::optional<std::string> decoded =
+        decodeAssetMoveDragPayload(buffer.data(), static_cast<int>(buffer.size()));
+    REQUIRE(decoded.has_value());
+    CHECK(*decoded == "textures/wood.png");
+}
+
+TEST_CASE("asset drag: the boundary, both directions, through ONE comparator (DR24, task E.4.3)") {
+    // THE DECISION UNDER TEST: the source's refusal and the decoder's refusal are one comparator, so
+    // they cannot drift apart at the boundary. Raising the bound alone would let the encoder write a
+    // TRUNCATED path the decoder then accepts as a different, valid path -- silently moving the wrong
+    // file; refusing at source alone would leave a legal-but-deep path undraggable.
+    const std::string justFits(MAX_MOVE_PAYLOAD_PATH - 1, 'a');
+    const std::string tooLong(MAX_MOVE_PAYLOAD_PATH, 'a');
+    CHECK(assetMovePayloadFits(justFits));
+    CHECK_FALSE(assetMovePayloadFits(tooLong));
+    CHECK_FALSE(assetMovePayloadFits(""));
+    // And the payload built from the longest fitting path decodes to exactly that string.
+    const AssetMoveDragPayload payload = makeMovePayload(justFits);
+    const std::optional<std::string> decoded = decodeAssetMoveDragPayload(&payload, static_cast<int>(sizeof payload));
+    REQUIRE(decoded.has_value());
+    CHECK(decoded->size() == MAX_MOVE_PAYLOAD_PATH - 1);
+    CHECK(*decoded == justFits);
+}
+
+TEST_CASE("asset drag: the THREE payload type strings are distinct and legal (DR25, task E.4.3)") {
+    // "AERO_ASSET" is a strict PREFIX of "AERO_ASSET_MOVE", which would cross-fire under any prefix
+    // test. It cannot: ImGuiPayload::IsDataType is `strcmp(type, DataType) == 0` (imgui.h:2838) -- a
+    // FULL compare -- and AcceptDragDropPayload calls it before anything else (imgui.cpp:15859).
+    // RE-READ BOTH AT EVERY ImGui BUMP; this case cannot see that they moved.
+    constexpr std::array<std::string_view, 3> TYPES{engine::editor::ASSET_PAYLOAD_TYPE,
+                                                    engine::editor::ASSET_MOVE_PAYLOAD_TYPE, "AERO_ENTITY"};
+    CHECK(TYPES[0] == "AERO_ASSET");  // UNCHANGED by this task
+    CHECK(TYPES[1] == "AERO_ASSET_MOVE");
+    for (const std::string_view type : TYPES) {
+        CAPTURE(type);
+        // ImGui's DataType is char[32+1] and its assert is ImStrlen(type) < 33.
+        CHECK(type.size() < 32U);
+    }
+    CHECK(TYPES[0] != TYPES[1]);
+    CHECK(TYPES[0] != TYPES[2]);
+    CHECK(TYPES[1] != TYPES[2]);
+    // The prefix relationship is REAL, which is what makes the strcmp fact load-bearing rather than
+    // incidental.
+    CHECK(TYPES[1].substr(0, TYPES[0].size()) == TYPES[0]);
+}
+
+TEST_CASE("asset drag: AssetDragPayload did NOT move, and the new type's shape is pinned (DR26, task E.4.3)") {
+    // The three static_asserts restated as runtime CHECKs, so a failure is a named test failure
+    // rather than a build failure with no case attached to it.
+    CHECK(sizeof(engine::editor::AssetDragPayload) == 24U);
+    CHECK(alignof(engine::editor::AssetDragPayload) == 8U);
+    CHECK(std::is_trivially_copyable_v<engine::editor::AssetDragPayload>);
+    // And the new one: NO PADDING AT ALL, which is what lets its call site skip the memset
+    // AssetDragPayload's seven tail bytes require.
+    CHECK(sizeof(AssetMoveDragPayload) == MAX_MOVE_PAYLOAD_PATH + 4U);
+    CHECK(alignof(AssetMoveDragPayload) == 2U);
+    CHECK(std::is_trivially_copyable_v<AssetMoveDragPayload>);
+}
+
+TEST_CASE("asset drag: the hardcoded isDirectory=false is GONE from the drag source (DR27, task E.4.3)") {
+    // A SOURCE-TEXT PIN IS THE ONLY WITNESS THERE IS -- nothing in tests/ can start a drag.
+    //
+    // stripLineComments removes `//` comments, and `/*isDirectory=*/false` is a BLOCK comment, so it
+    // SURVIVES the strip and the zero below is meaningful. The opposite assumption would make this
+    // assertion vacuous.
+    const std::filesystem::path src{AERO_EDITOR_SRC_DIR};
+    const std::string body = stripLineComments(readWholeFile(src / "asset_browser_panel.cpp"));
+    REQUIRE(body.size() > 20000U);                                 // ANTI-VACUITY: the file was really read
+    CHECK(countOccurrences(body, "/*isDirectory=*/false") == 1U);  // the SEARCH HIT site alone
+    // Three call sites plus the definition. A fourth call site added without converting it is a
+    // compile error, which is what the non-defaulted parameter buys; this pins the roster anyway so
+    // a future site that passes a literal `false` by habit is visible.
+    CHECK(countOccurrences(body, "beginAssetDragSource(") == 4U);
+    // And the block comment that DOES remain is the search-results one, whose `false` is correct:
+    // searchAssets never matches a folder.
+    CHECK(countOccurrences(body, "hit.relativePath.c_str(), /*isDirectory=*/false") == 1U);
 }

@@ -1,11 +1,16 @@
 // editor/src/asset_drag.cpp -- task 3.1.5: the asset drag payload's decode and the drop routing
 // matrix. PURE: no ImGui call anywhere in this TU, no disk, no GPU, no logging. The panels do the
 // BeginDragDropSource / AcceptDragDropPayload glue and hand the raw bytes here.
+#include <aero/editor/asset_actions.hpp>  // task E.4.3 -- validateRelativeAssetPath, the decode's
 #include <aero/editor/asset_drag.hpp>
+// last rung. NO CYCLE: asset_actions.hpp includes
+// asset_meta.hpp and project_files.hpp, and neither
+// includes this file.
 
 #include <cstddef>
 #include <cstring>
 #include <optional>
+#include <string>
 #include <string_view>
 
 namespace engine::editor {
@@ -22,6 +27,35 @@ std::optional<AssetDragPayload> decodeAssetDragPayload(const void* data, int siz
         return std::nullopt;  // a nil guid in a payload is a CORRUPT payload, never a "none" value
     }
     return out;
+}
+
+// task E.4.3: the second payload's decode. The order of the rungs is load-bearing: the explicit
+// `payload.length >= MAX_MOVE_PAYLOAD_PATH` test is kept AS WELL AS assetMovePayloadFits, because the
+// bound must be checked BEFORE payload.path[payload.length] is indexed -- an out-of-range index would
+// be UB, and UBSan would catch it only on a Debug lane. The shared predicate then re-asserts the same
+// bound over the view, which is the comparator both sides share. Redundant by one comparison and
+// correct by construction.
+std::optional<std::string> decodeAssetMoveDragPayload(const void* data, int sizeBytes) {
+    if (data == nullptr || sizeBytes != static_cast<int>(sizeof(AssetMoveDragPayload))) {
+        return std::nullopt;
+    }
+    AssetMoveDragPayload payload{};
+    std::memcpy(&payload, data, sizeof payload);  // NEVER a cast: ImGui's buffer is alignas(1)
+    if (payload.length == 0U || payload.length >= MAX_MOVE_PAYLOAD_PATH) {
+        return std::nullopt;
+    }
+    if (payload.path[payload.length] != '\0') {
+        return std::nullopt;  // the NUL must be INSIDE the buffer, at exactly that index
+    }
+    const std::string_view view(payload.path.data(), payload.length);
+    if (!assetMovePayloadFits(view)) {
+        return std::nullopt;  // the SAME comparator the encoder refuses with
+    }
+    if (validateRelativeAssetPath(view) != AssetOpRefusal::None) {
+        // A payload carrying an escaping path is a CORRUPT payload, not a refusable operation.
+        return std::nullopt;
+    }
+    return std::string(view);
 }
 
 bool assetKindIsDraggable(AssetKind kind) noexcept {

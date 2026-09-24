@@ -180,4 +180,79 @@ _nd_expect_substr("stage 13" "${_nd_out}" "editor/src/project_state.cpp:1" TRUE)
 _nd_seed("editor/src/project_state.cpp" "${_nd_clean_body}")
 _nd_run("stage 13 (cleaned)" 0 "${BASH}" "${SCRIPT}")
 
+# --- Stages 14-19 (task E.4.3) -------------------------------------------------------------------
+# E.4.3 puts five std::filesystem::rename call sites into asset_actions.cpp. The stages below prove
+# Check B covers that spelling in a third file, that it still PERMITS it in asset_actions.cpp, and
+# that Check B's new prong 2 (the std::filesystem alias ban) fires and does not over-match.
+#
+# TWO OF THE PLAN'S PROPOSED STAGES WERE ALREADY HERE AND ARE NOT DUPLICATED: stage 10 already seeds
+# std::filesystem::remove into asset_browser_panel.cpp expecting exit 1, and stage 12 already covers
+# a renamed asset_actions.cpp ("cannot self-verify", seed S24). What was genuinely missing is the
+# RENAME spelling in a third file, the remove_all alternative, and -- above all -- the two
+# ANTI-VACUITY arms inside asset_actions.cpp: without them stage 14 proves only that the guard fires
+# SOMEWHERE, and a guard that refused everything, permitted files included, would pass it while
+# breaking task E.4.3's own executor.
+#
+# A guard's own .cmake e2e driver is inside the set some guards sweep, and that bit this tree twice
+# at 3.7.3. It does NOT bite here: check-project-no-delete.sh sweeps editor/src/*.cpp and the seven
+# named files, never *.cmake, so the seed strings below are invisible to it in the real repository.
+# Stated rather than rediscovered -- if a future prong ever widens the scan set to *.cmake, THIS FILE
+# is the first thing that breaks.
+
+# --- Stage 14 (B-new-1): the RENAME spelling in a third editor/src TU -> exit 1. ---------------------
+_nd_seed("editor/src/asset_browser_panel.cpp"
+         "void bad() { std::error_code ec; std::filesystem::rename(pathFromUtf8(a), pathFromUtf8(b), ec); }\n")
+_nd_run("stage 14 (rename, asset_browser_panel.cpp)" 1 "${BASH}" "${SCRIPT}")
+_nd_expect_substr("stage 14" "${_nd_out}" "editor/src/asset_browser_panel.cpp:1" TRUE)
+_nd_seed("editor/src/asset_browser_panel.cpp" "${_nd_clean_body}")
+_nd_run("stage 14 (cleaned)" 0 "${BASH}" "${SCRIPT}")
+
+# --- Stage 15 (B-new-2): the SAME call in asset_actions.cpp -> exit 0. THE ANTI-VACUITY ARM. ---------
+# This is the stage that says the allowlist still means something. Without it, a guard that refused
+# every file would pass stage 14 and break task E.4.3's executor on the very next commit.
+_nd_seed("editor/src/asset_actions.cpp"
+         "void permitted() { std::error_code ec; std::filesystem::rename(pathFromUtf8(a), pathFromUtf8(b), ec); }\n")
+_nd_run("stage 15 (rename, asset_actions.cpp -- PERMITTED)" 0 "${BASH}" "${SCRIPT}")
+_nd_expect_substr("stage 15" "${_nd_out}" "project-no-delete guard: OK" TRUE)
+_nd_seed("editor/src/asset_actions.cpp" "${_nd_clean_body}")
+_nd_run("stage 15 (cleaned)" 0 "${BASH}" "${SCRIPT}")
+
+# --- Stage 16 (B-new-3): the remove_all alternative in a third TU -> exit 1. -------------------------
+# Distinct from stage 10, which seeds std::filesystem::remove: remove_all is its OWN alternative in
+# DELETE_RE and was exercised only by the script's internal self-test, never hermetically.
+_nd_seed("editor/src/asset_browser_panel.cpp" "void bad() { std::error_code ec; std::filesystem::remove_all(\"x\", ec); }\n")
+_nd_run("stage 16 (remove_all, asset_browser_panel.cpp)" 1 "${BASH}" "${SCRIPT}")
+_nd_expect_substr("stage 16" "${_nd_out}" "editor/src/asset_browser_panel.cpp:1" TRUE)
+_nd_seed("editor/src/asset_browser_panel.cpp" "${_nd_clean_body}")
+_nd_run("stage 16 (cleaned)" 0 "${BASH}" "${SCRIPT}")
+
+# --- Stage 17 (B-new-4): the SAME remove_all in asset_actions.cpp -> exit 0. The SECOND anti-vacuity
+# arm, and it is the one that keeps D1 honest: Check B PERMITS remove_all here, which is exactly why
+# AA61's source-text pin is the only thing asserting the call is not actually present.
+_nd_seed("editor/src/asset_actions.cpp" "void permitted() { std::error_code ec; std::filesystem::remove_all(\"x\", ec); }\n")
+_nd_run("stage 17 (remove_all, asset_actions.cpp -- PERMITTED)" 0 "${BASH}" "${SCRIPT}")
+_nd_expect_substr("stage 17" "${_nd_out}" "project-no-delete guard: OK" TRUE)
+_nd_seed("editor/src/asset_actions.cpp" "${_nd_clean_body}")
+_nd_run("stage 17 (restored)" 0 "${BASH}" "${SCRIPT}")
+
+# --- Stage 18 (B-new-5): prong 2 fires on a namespace alias -> exit 1. --------------------------------
+# The call itself is `fs::rename`, which DELETE_RE cannot see AT ALL. Only prong 2 can fail this
+# stage, which is what makes it discriminate the new prong rather than the old pattern.
+_nd_seed("editor/src/asset_browser_panel.cpp"
+         "namespace fs = std::filesystem;\nvoid bad() { std::error_code ec; fs::rename(\"x\", \"y\", ec); }\n")
+_nd_run("stage 18 (namespace alias, asset_browser_panel.cpp)" 1 "${BASH}" "${SCRIPT}")
+_nd_expect_substr("stage 18" "${_nd_out}" "alias" TRUE)
+_nd_expect_substr("stage 18" "${_nd_out}" "editor/src/asset_browser_panel.cpp:1" TRUE)
+_nd_seed("editor/src/asset_browser_panel.cpp" "${_nd_clean_body}")
+_nd_run("stage 18 (cleaned)" 0 "${BASH}" "${SCRIPT}")
+
+# --- Stage 19 (B-new-6): prong 2's false-positive proof -> exit 0. -----------------------------------
+# An ordinary `#include <filesystem>` must not trip it. Stage 18 alone proves the prong fires
+# somewhere; this is what stops a pattern matching everything from passing.
+_nd_seed("editor/src/asset_browser_panel.cpp" "#include <filesystem>\nvoid ok() {}\n")
+_nd_run("stage 19 (ordinary include, prong 2 false-positive proof)" 0 "${BASH}" "${SCRIPT}")
+_nd_expect_substr("stage 19" "${_nd_out}" "project-no-delete guard: OK" TRUE)
+_nd_seed("editor/src/asset_browser_panel.cpp" "${_nd_clean_body}")
+_nd_run("stage 19 (cleaned)" 0 "${BASH}" "${SCRIPT}")
+
 message(STATUS "project-no-delete.no_delete_e2e: OK")

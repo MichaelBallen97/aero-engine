@@ -10,10 +10,11 @@ Two platform matrices, never to be conflated: the **editor** runs on macOS/Windo
 
 ## Current state — read this first
 
-**Phase E (Editor Experience) is the open front**, executing between Phase 3 and Phase 4. **Fifteen of its
-24 tasks are merged: Epics E.1, E.2 and E.3 are all CLOSED IN CODE, and E.4.1 and E.4.2 are both MERGED AND
-macOS-VALIDATED — so Epic E.4 stands at two of five, with two of its three Definition-of-Done clauses
-discharged. E.4.3-E.4.5, E.5 and E.6 are what is left — nine tasks, planning only.** Phase 3 remains OPEN behind it: all seven of its epics are closed in code,
+**Phase E (Editor Experience) is the open front**, executing between Phase 3 and Phase 4. **Sixteen of its
+24 tasks are merged: Epics E.1, E.2 and E.3 are all CLOSED IN CODE, E.4.1 and E.4.2 are both MERGED AND
+macOS-VALIDATED, and E.4.3 is MERGED AND UNVALIDATED — so Epic E.4 stands at three of five, with all three
+of its Definition-of-Done clauses discharged in code. E.4.4, E.4.5, E.5 and E.6 are what is left — eight
+tasks, planning only.** Phase 3 remains OPEN behind it: all seven of its epics are closed in code,
 and what is left is its deliverable gate and the validation debt.
 
 **Phase E is lettered, not fractioned.** `3.5` and `3.5.1`/`3.5.2` are already Phase 3's skeletal-animation
@@ -25,10 +26,13 @@ In Notion its `Phase #` is `3.5` — a sort key, not an identifier.
 (E.2.2). Nothing since E.2.2 has added one, so the five-generation-site rule and the component-count sweep
 have not fired since — **they still apply in full to the next built-in, whenever one arrives.**
 
-**Next free ids: `I193` at the ImGui tier.** The `MR` prefix is taken (E.3.4's `MR1`–`MR21`), so is `PJ`
-(E.4.1's `PJ1`–`PJ57`), and so is `CN` (E.4.2's `CN1`–`CN25`). E.4.1 took `I176`–`I185` and E.4.2 took
-`I186`–`I192`; the other E.4.2 ceilings are `SS` 54 and `IO` 21. **The E.4.3, E.4.4 and E.4.5 specs all
-claim `I176`+ or `I199`+ — every one of them must RE-MEASURE the ceiling and renumber before it is
+**Next free ids: `I227` at the ImGui tier**, `AA64`, `DR28`. The `MR` prefix is taken (E.3.4's
+`MR1`–`MR21`), so is `PJ` (E.4.1's `PJ1`–`PJ57`), and so is `CN` (E.4.2's `CN1`–`CN25`). E.4.1 took
+`I176`–`I185`, E.4.2 took `I186`–`I192` and E.4.3 took `I210`–`I226`; the other E.4.2 ceilings are `SS`
+54 and `IO` 21. **`I193`–`I209` are FREE and were never claimed by anything that merged** — E.4.3 kept
+its plan's `I210` base rather than renumbering a contiguous block into them, because a gap costs nothing
+and a renumbering invites exactly the silent collision this project has recorded. **The E.4.4 and E.4.5
+specs both claim `I176`+ or `I199`+ — both must RE-MEASURE the ceiling and renumber before they are
 implemented.**
 
 **Four facts Phase E was built on, each measured in the tree and each contradicting a plausible guess.**
@@ -87,6 +91,7 @@ validation pass exists for any task in any phase.** N-E = not executable, N-R = 
 | E.3.4 Material inspector redesign | #105 | `170ad9b` | 12 PASS / 1 partial / 1 N-E, nothing failed |
 | E.4.1 Reopen the last scene | #106 | `068c45c` | **12 / 12**, nothing failed — and 26 sabotage seeds / 29 runs with **no coverage hole** |
 | E.4.2 Scene/project containment | #107 | `f88079d` | **14 of 16 rows** — 12 outright, 2 as stated variants, 1 partial, **2 NOT EXECUTABLE**. 29 sabotage seeds found **three real coverage holes**; the code-review round found eight findings, one blocking; Windows CI found a ninth after all three passed |
+| E.4.3 Asset file operations | #108 | **unmerged** | **NOT RUN** — the page exists at `editor/validation/E.4.3-asset-file-operations.md`; rows 3, 4, 5, 6, 8 and 9 are the only cover their declared seeds have |
 
 **E.3.2 landed before E.3.1** — legal, disjointly id-reserved; the reservation is discharged and the
 numbering is contiguous.
@@ -100,7 +105,7 @@ numbering is contiguous.
 | **Phase 2** — Editor | **COMPLETE, gate met 2026-08-02.** All six epics closed and macOS-validated; Windows/Linux rows pending for every task (`editor/VALIDATION.md`). Gate artifact: `samples/phase-2-editor-scene/` — data, deliberately not `add_subdirectory`'d. |
 | **Phase 3** — Asset Pipeline & 3D Content | **OPEN.** All seven epics (3.1–3.7) **CLOSED in code**. What is left is the gate below and the validation debt. |
 | **Phase 3 gate** | Drop a rigged glTF/FBX in → PBR materials + shadows + a playing animation + **an audible sound**. The audible half exists in code as of 3.7.2 and **has never been heard on any platform.** |
-| **Phase E** — Editor Experience | **OPEN.** Epics E.1, E.2 and E.3 **CLOSED in code**; **E.4.1 and E.4.2 both merged and macOS-validated** — 15 of 24 merged, see the index above. **E.4.3–E.4.5, E.5 and E.6 are the open front: nine tasks, planning only.** TWO validation pages are unrun (E.1.5, E.3.2) and are the whole of this OS's remaining Phase E risk. |
+| **Phase E** — Editor Experience | **OPEN.** Epics E.1, E.2 and E.3 **CLOSED in code**; **E.4.1, E.4.2 and E.4.3 merged** — 16 of 24, see the index above. **E.4.4, E.4.5, E.5 and E.6 are the open front: eight tasks, planning only.** THREE validation pages are unrun (E.1.5, E.3.2, E.4.3) and are the whole of this OS's remaining Phase E risk. |
 | **Phase E gate** | Open a project and land in the scene you were last editing, on a lit grid floor under a sky; create a Cube from the menu, drop a material on it and see it shade; aim a spot light with a visible gizmo; rename, move and delete assets without leaving the editor. Gate artifact: `samples/phase-E-editor/`. |
 
 ### Engine layers, in dependency order
@@ -153,6 +158,44 @@ its own compile line, so `mixer.cpp` carries `vcpkg_installed` in `macos-release
 a `find_package` to any of the three voids the boundary silently while CI stays green — guard-enforced since
 3.7.3 by `check-audio-boundary.sh` prong A, `tests/audio_boundary_probe.cpp` (the compile-time half that
 survives Release) and `audio-boundary.guard_e2e` (the proof it goes red).
+
+**`DELETE_RE` MATCHES A SPELLING, WHICH IS WHY CHECK B GAINED AN ALIAS PRONG (E.4.3).**
+`namespace fs = std::filesystem; fs::rename(a, b, ec);` is invisible to `(remove_all|std::filesystem::remove|
+std::filesystem::rename)` in EVERY file, permitted or not — theoretical until E.4.3, because no editor TU
+had any reason to write a `rename`. **The fix is NOT a widened `DELETE_RE`** (a denylist over spellings
+cannot converge — 3.7.3's lesson) but the inverted claim: *the only legitimate spelling of the
+`std::filesystem` namespace in `editor/src/*.cpp` is the FULLY-QUALIFIED one*, applied to the permitted
+files too, since an alias there would blind Check B for them the moment the allowlist shrinks. **A future
+destructive call must be fully qualified.** Proved in both directions: deleting the prong makes e2e stage 18
+the first to fail, and an `ALIAS_RE` widened to match everything is refused by B-self-test 5 with exit 2
+before any stage runs.
+
+**`Delete` IS A `rename` INTO `Library/Trash/<NNNN>/`, AND `remove_all` NEVER ENTERS THE EDITOR (E.4.3).**
+Check B **permits** `remove_all` in `asset_actions.cpp` — it is one of the two `PERMITTED_DELETERS` — so the
+guard CANNOT make this claim and `AA61`'s source-text pin is the only witness there is. A folder delete is
+ONE rename, so everything inside travels by construction and INV-A8 is satisfied structurally rather than by
+iteration. **A future *Empty Trash* is a `remove_all` scoped to `Library/Trash/`**, which the guard's own
+header already licenses as a deliberate, reviewed relaxation.
+
+**THE SEGMENT-WISE PREFIX RULE NOW LIVES IN FIVE PLACES (E.4.3), AND A SIXTH NEEDS A SIXTH CASE.**
+`assetOpPathLadder`'s rung 6 (`isInsideOrEqual`), `countRecordsUnder`, `assetOpBlockedByDirtyMaterial`,
+`listingHolds`'s case-only carve-out, and `AA45(c)`'s claim — each with its own `("tex", "textures/a")`-shaped
+case, because a raw `starts_with` is right on every input except the one that matters. Seed `S8` came back
+green against the third of them until `I226` was written for it.
+
+**`beginAssetDragSource`'s `isDirectory` IS NON-DEFAULTED AND THE SOURCE CANNOT DERIVE IT (E.4.3).** It has
+only a path, and `classifyAssetKind`'s own `isDirectory` argument was hardcoded `false` there because until
+E.4.3 a folder and an extension-less file took the same early return. They now take DIFFERENT arms — a folder
+has no sidecar, so its plan has one step and not two — so a default would let a future call site silently
+encode a folder as a file, with no error and no failing test. Three call sites; `DR27` pins the one surviving
+`/*isDirectory=*/false` to the search-hit site, where it is correct because `searchAssets` never matches a
+folder.
+
+**A ONE-SHOT TAKER THAT MOVES OUT OF AN `optional` MUST `.reset()` AFTERWARDS (E.4.3).** A moved-from optional
+is still ENGAGED, so the omission leaves the one-shot set and re-runs a moved-from (empty) request on EVERY
+tick — one refused operation and one rescan per frame, for ever. **No observable in this tree can see it**;
+`I218`'s third arm is a source-text pin over the header that owns the four optional takers. Seed `S13` came
+back green until that arm existed.
 
 **A FOURTH vcpkg-free target must add itself to `VCPKG_FREE_CMAKE` in the commit that creates it, and to
 nothing else.** Target list and skip test are both DERIVED from that one roster — three parallel lists once
@@ -764,13 +807,13 @@ is a configure-time property. **Rebuild before you believe any doctest number, a
 presets so a disagreement is visible.** A recorded total goes stale the same way: `origin/main`'s own shell
 total was one stale at E.1.4's gate. **Read the binary, never the block.**
 
-**At E.4.2's gate**, measured on both presets out of freshly built trees and agreeing between them, with
+**At E.4.3's gate**, measured on both presets out of freshly built trees and agreeing between them, with
 both reduced configurations configured fresh:
 
 | Measurement | Value |
 |---|---|
-| `ctest -N` | **178**, entry set byte-identical between presets; **165** shader-tools-OFF, **93** reflect-tools-OFF |
-| doctest, seven binaries | **1404 / 2036 / 232 / 40 / 59 / 10 / 28** |
+| `ctest -N` | **178**, entry set byte-identical between presets AND to E.4.2's; **165** shader-tools-OFF, **93** reflect-tools-OFF; `cooker.*` **70 / 70 / 70** |
+| doctest, seven binaries | **1404 / 2084 / 247 / 40 / 59 / 10 / 28** |
 | guards | math **525**, platform **92**, rhi **163**, scene **92**, golden-rule **165**, project-no-delete **A=7 B=89**, audio **11-3-55**, probes **6-57** |
 | `git ls-files` | `editor/src/*.cpp` **89**, `editor/include/aero/editor/*.hpp` **64** |
 
@@ -818,11 +861,13 @@ full 232 / 232) in a session that touches nothing in the DPI story. **A green ru
 it is fixed**; it is pre-existing, it is the DPI story's, and it is handed to E.6.1. **Name it either way;
 never let a known failure be quietly counted as green, and never let it hide a new one.**
 
-**COUNTS DIVERGE BY OS, so never assume one.** Windows skips **three** e2e cases —
-`golden-rule.include_scan_e2e`, `audio-boundary.guard_e2e` and `boundary-probes.probe_links_e2e`, all
+**COUNTS DIVERGE BY OS, so never assume one.** Windows skips **FOUR** e2e cases —
+`golden-rule.include_scan_e2e`, **`project-no-delete.no_delete_e2e`**, `audio-boundary.guard_e2e` and
+`boundary-probes.probe_links_e2e`, registered at `tests/CMakeLists.txt:1078, 1110, 1134, 1155`, all
 `NOT WIN32` by the same D16 reasoning (the lint job that runs the scripts is ubuntu-only, and the BSD-userland
 proof comes from the macOS lane) — plus fourteen whole `BS` cases, one arm of `BS11` and one GPU case
-(`I80`). **Those 3.2.4 skips are not a random sample**: together they are the only coverage anywhere of both
+(`I80`). **The no-delete entry is the one every earlier count omitted; it was measured at E.4.3, and the
+figure was "three" here for four tasks.** **Those 3.2.4 skips are not a random sample**: together they are the only coverage anywhere of both
 Blender timeouts, cancellation, the `Converted` state, `ok: false`, both `ArtifactUnusable` arms and the
 refused-by-cap log.
 
@@ -842,7 +887,7 @@ mono 48 kHz 0.5 s, **exactly 48 064 B each**, cut at a whole number of cycles so
 **Validation pages are gitignored, so they enter no commit.** Per-page measurements and method notes are in
 `docs/10`; this is the ledger of what is still owed.
 
-**TWO PAGES HAVE NOT BEEN RUN ON ANY PLATFORM: E.1.5's AND E.3.2's.** They are the whole of
+**THREE PAGES HAVE NOT BEEN RUN ON ANY PLATFORM: E.1.5's, E.3.2's AND E.4.3's.** They are the whole of
 Phase E's validation risk on this OS — every other task in E.1, E.2, E.3 and E.4 is macOS-validated (see
 the index above). **E.4.1 is fully validated: 12 / 12 macOS, nothing failed**, and its sabotage matrix is
 run too — 26 seeds / 29 runs, **no seed green with nothing else catching it** (`docs/10`). An earlier
@@ -942,15 +987,20 @@ display's ICC profile, and **there is no `renderFrame` Tracy zone in this tree**
 
 ### Next
 
-**E.4.3–E.4.5, E.5 and E.6 are the open front: nine tasks, planning only.** See `docs/tasks/phase-E.md`,
+**E.4.4, E.4.5, E.5 and E.6 are the open front: eight tasks, planning only.** See `docs/tasks/phase-E.md`,
 and `docs/tasks/phase-3.md` for what Phase 3 still owes.
 
-**Ownership of the open work.** **E.4.3** (asset file operations) inherits E.4.2's `directoryWithin` and
-`normalizeForContainment` **by name** — they are exactly the *"is this path inside the project"* predicate
-create / rename / move / delete each need, and `directoryWithin` is safe against an un-normalised argument
-(a `..` anywhere on either side returns false), so **reuse the pair; do not write a second one**. E.4.3
-also owns any reserved-destination policy for `<root>/Library/`, where `IO19` and E.4.2's validation row
-14 record today's permissive behaviour as the "before". **E.4.5** (material names & thumbnails) is
+**Ownership of the open work.** **E.4.3 IS MERGED, and it did NOT use `directoryWithin` /
+`normalizeForContainment` — deliberately, and the reason generalises.** Those answer *"is this ABSOLUTE
+path inside that ABSOLUTE root"*, which is the question a native file dialog's answer raises. Every path
+E.4.3 handles is **assets-root-relative by construction** — the browser produced it — so the containment
+question it actually has is *"is this relative path safe"*, and that is `validateRelativeAssetPath`: no
+`..` SEGMENT, no leading `/`, no drive prefix, no backslash. **A future task must pick by the SHAPE OF ITS
+INPUT, not by habit**: an absolute path from a dialog takes E.4.2's pair, a relative path from the browser
+takes E.4.3's. **And E.4.3 added no reserved-destination policy for `<root>/Library/`** — it writes the
+trash INTO it — because `Library/` is excluded from the scan, so the browser cannot show it and no move
+INTO it is reachable through the UI. `IO19` and E.4.2's validation row 14 still record today's permissive
+behaviour as the "before", and that handoff is **still open**. **E.4.5** (material names & thumbnails) is
 unblocked **twice over**: it has
 `material_preview_rig.hpp` to call BY NAME — a thumbnail is `materialPreviewCamera(rig, fixedAngle, 1.0F)`
 plus `materialPreviewView(...)` with whatever `MaterialPreviewLighting` it wants — and it has E.3.3's
@@ -979,7 +1029,13 @@ surface first. E.3.4 adds one gap of its own shape, unowned: a **closed `File` s
 plus nothing else now that `requestMaterialSectionOpen` exists, the day a manual pass says the diagnostics are
 noise.
 
-**EIGHT UNOWNED HANDOFFS.** **Spot and point shadows** — the shadow pass is directional-only (3.6.2), Phase E's
+**NINE UNOWNED HANDOFFS.** **Asset-browser keyboard shortcuts (F2, Del)** — E.4.3 dropped both bindings AND
+their accelerator text: the gating needs a THIRD condition nobody named (`!io.WantTextInput`, because the
+browser's own header carries an `InputText` search box, so `Del` while editing the query would delete the
+selected asset), nothing in `tests/` can press a key, and the editor has no key-binding registry, so a third
+hand-bound global would be an undeclared policy with no way to order it against the other two. **E.6.2 is the
+nearest owner** because it is the task that moves editor-wide controls, but nothing in the roadmap claims it.
+**Spot and point shadows** — the shadow pass is directional-only (3.6.2), Phase E's
 non-goals name cascaded/soft shadows as 8.2.1's, and no roadmap item owns omni or spot shadow maps at all.
 **A camera FRUSTUM gizmo** — E.2.3 draws the camera an icon and no gizmo; a natural fit for 4.7. **A MIP CHAIN
 for E.2.3's icon atlas** — a 64-texel cell drawn at 22 points is a 2.91x minification, mitigated by a 4-texel

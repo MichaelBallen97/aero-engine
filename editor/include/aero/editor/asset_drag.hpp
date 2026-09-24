@@ -12,9 +12,11 @@
 #include <aero/editor/asset_view.hpp>  // AssetKind
 #include <aero/scene/entity.hpp>
 
+#include <array>  // task E.4.3 -- AssetMoveDragPayload's fixed-capacity path
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <string>  // task E.4.3 -- decodeAssetMoveDragPayload's return
 #include <string_view>
 #include <type_traits>
 
@@ -59,6 +61,72 @@ static_assert(std::is_trivially_copyable_v<AssetDragPayload>);
 // nullopt for: null data, a size that is not EXACTLY sizeof(AssetDragPayload), or a nil guid after the
 // copy -- a nil guid in a payload is a corrupt payload, not a "none" value.
 [[nodiscard]] std::optional<AssetDragPayload> decodeAssetDragPayload(const void* data, int sizeBytes) noexcept;
+
+// ---- task E.4.3: the move payload ---------------------------------------------------------------
+// The tree's THIRD payload type, after "AERO_ENTITY" (hierarchy reparent) and "AERO_ASSET" (3.1.5).
+// 15 chars, inside ImGui's own 32-char limit (imgui.h:2832 declares DataType as char[32+1] and
+// SetDragDropPayload asserts ImStrlen(type) < 33).
+//
+// "AERO_ASSET" is a strict PREFIX of "AERO_ASSET_MOVE", which would cross-fire under any prefix
+// test. It does not, and that is VERIFIED rather than assumed: ImGuiPayload::IsDataType is
+// `strcmp(type, DataType) == 0` (imgui.h:2838) -- a FULL compare -- and AcceptDragDropPayload calls
+// it before anything else (imgui.cpp:15859). RE-READ BOTH AT EVERY ImGui BUMP.
+inline constexpr const char* ASSET_MOVE_PAYLOAD_TYPE = "AERO_ASSET_MOVE";
+
+// 1024 is macOS's PATH_MAX, the tightest of the three desktop targets (Linux 4096; Windows 260
+// without long-path opt-in). An assets-relative path at or beyond this length cannot be OPENED on
+// macOS under any non-empty project root, so it cannot exist in a scanned tree there -- which makes
+// this bound cover every path the browser can actually show, rather than every path MAX_TREE_DEPTH
+// (32) x MAX_ASSET_NAME_BYTES (255) makes lexically legal (8192). The longest tracked path in this
+// repository measures 71 bytes.
+//
+// 512 was rejected: a LEGAL deep path would be silently undraggable -- the drag would start, the
+// target would peek nothing, and the user would see a drag that does nothing with no message
+// anywhere.
+inline constexpr std::size_t MAX_MOVE_PAYLOAD_PATH = 1024;  // bytes, NUL-terminated WITHIN
+
+// For the two things that cannot ride AssetDragPayload: a FOLDER (no guid, no sidecar, not an asset)
+// and a NON-DRAGGABLE kind (Text, Unknown -- a .txt, a .mtl). Fixed-capacity so the type stays
+// trivially copyable and the decode stays a pure function.
+//
+// UNLIKE AssetDragPayload this struct has NO PADDING AT ALL (1024 + 2 + 1 + 1 == 1028, already
+// 2-aligned), so a value-initialised instance is all-zero bytes with nothing indeterminate and the
+// call site needs no memset. The static_asserts below PIN that, because a future field would
+// silently reintroduce padding and put indeterminate bytes on the wire.
+struct AssetMoveDragPayload {
+    std::array<char, MAX_MOVE_PAYLOAD_PATH> path{};  // UTF-8, '/'-separated, NUL-terminated
+    std::uint16_t length = 0;                        // bytes before the NUL; 0 is never valid
+    std::uint8_t kind = 0;                           // static_cast<uint8_t>(AssetKind) -- a PEEK HINT
+    std::uint8_t isDirectory = 0;                    // 0/1; a bool would make the padding a question
+};
+static_assert(sizeof(AssetMoveDragPayload) == MAX_MOVE_PAYLOAD_PATH + 4);
+static_assert(alignof(AssetMoveDragPayload) == 2);
+static_assert(std::is_trivially_copyable_v<AssetMoveDragPayload>);
+
+// TRUE iff `relativePath` fits in AssetMoveDragPayload with its NUL inside. The ENCODER-side twin of
+// decodeAssetMoveDragPayload's length rung: 3.7.2's rule -- two places must never compare the same
+// key by different rules -- so the source's refusal and the decoder's refusal are ONE comparator, in
+// ONE place, and cannot drift apart at the boundary.
+//
+// Refusing at source alone would leave a legal-but-deep path undraggable, which is the failure being
+// removed; raising the bound alone would leave the encoder free to write a TRUNCATED path the decoder
+// then accepts as a different, valid path -- silently moving the wrong file. The pair makes over-long
+// unreachable AND un-truncatable.
+[[nodiscard]] constexpr bool assetMovePayloadFits(std::string_view relativePath) noexcept {
+    return !relativePath.empty() && relativePath.size() < MAX_MOVE_PAYLOAD_PATH;
+}
+
+// The decodeAssetDragPayload shape VERBATIM: raw pointer + size, so this header names no ImGui type,
+// and std::memcpy into a local NEVER a cast -- ImGui's buffer is alignas(1) and the three Debug
+// lanes run UBSan. NOT noexcept, unlike its sibling: it returns std::optional<std::string> and the
+// string allocates.
+//
+// nullopt for: null data; a size that is not EXACTLY sizeof(AssetMoveDragPayload); a length
+// assetMovePayloadFits refuses (0, or >= MAX_MOVE_PAYLOAD_PATH); a missing NUL at path[length]; or a
+// path validateRelativeAssetPath rejects. That LAST rung is the important one and it is deliberate:
+// a payload carrying an escaping path is a CORRUPT payload, not a refusable operation -- the same
+// nil-guid-is-corrupt posture decodeAssetDragPayload already takes, applied to the other payload.
+[[nodiscard]] std::optional<std::string> decodeAssetMoveDragPayload(const void* data, int sizeBytes);
 
 // Model | Texture | Material | AUDIO (task E.3.3 -- AudioSource::clip is a drop target now, so an
 // audio file must be able to START a drag; the source refuses a non-draggable kind). Folder, Text and

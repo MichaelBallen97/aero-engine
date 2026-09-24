@@ -290,6 +290,11 @@ public:
     // seam, execute none of the code it names, and still pass.
     [[nodiscard]] std::size_t assetBrowserSearchHitCount() const noexcept;
     [[nodiscard]] bool assetBrowserListViewActive() const noexcept;
+    // CAREFUL, AND THE NAMES ARE THE TRAP (task E.4.3's code-review round): THIS one reports the
+    // ORPHAN-sidecar modal (task 3.1.3), while assetBrowserDeleteModalDrawnCount() below reports the
+    // ASSET-delete modal (task E.4.3). Both are correct and I214 pins both, but a case written
+    // against the pair is one word away from asserting the wrong modal. The E.4.3 pending flag is
+    // assetBrowserAssetDeleteModalPending().
     [[nodiscard]] bool assetBrowserDeleteModalPending() const noexcept;
 
     [[nodiscard]] std::size_t thumbnailReadyCount() const noexcept;
@@ -469,6 +474,37 @@ public:
     // widget queues so the drain sees no difference between the two. A no-op when no Asset Browser
     // panel is registered.
     void requestAssetBrowserCreateMaterial() noexcept;
+
+    // ---- task E.4.3: the seven gesture seams, plus the drop-peek one ------------------------------
+    // Each is requestAssetBrowserCreateMaterial's shape verbatim: null-check the panel, forward,
+    // return void. Rename and Delete each need TWO -- one that OPENS the modal and one that COMMITS
+    // it -- because a single commit-seam would set the one-shot and prove nothing about whether the
+    // modal ever drew, and a commit-only seam would make the modal unobservable.
+    void requestAssetBrowserContextMenu(std::string path);
+    void requestAssetBrowserNewFolder() noexcept;
+    void requestAssetBrowserRename(std::string path);
+    void requestAssetBrowserRenameCommit(std::string newLeaf);
+    void requestAssetBrowserDelete(std::string path);
+    void requestAssetBrowserDeleteConfirm() noexcept;
+    void requestAssetBrowserMove(std::string path, std::string destinationDir);
+    // The EIGHTH seam, deliberately NOT counted among the seven: it models a PAYLOAD STATE rather
+    // than a user gesture, and has no applyPending arm. Nothing in tests/ can perform a real drag.
+    void requestAssetBrowserDropPeek(std::string sourcePath, std::string destinationDir, bool asMovePayload);
+
+    // ---- task E.4.3 black-box accessors -----------------------------------------------------------
+    // The first two report what was REQUESTED; the counters report what ImGui DID, incremented inside
+    // the body that actually ran. AssetOpRefusal stays off this surface as an int, exactly as
+    // modelImportState() keeps SessionState off it.
+    [[nodiscard]] bool assetBrowserRenameModalPending() const noexcept;
+    // A DISTINCT NAME from the pre-existing assetBrowserDeleteModalPending() above, which forwards the
+    // ORPHAN modal -- so no existing case silently changes meaning.
+    [[nodiscard]] bool assetBrowserAssetDeleteModalPending() const noexcept;
+    [[nodiscard]] std::size_t assetBrowserContextMenuItemsDrawn() const noexcept;
+    [[nodiscard]] std::size_t assetBrowserRenameModalDrawnCount() const noexcept;
+    [[nodiscard]] std::size_t assetBrowserDeleteModalDrawnCount() const noexcept;
+    [[nodiscard]] std::size_t assetBrowserDropTargetsAccepted() const noexcept;
+    [[nodiscard]] int assetBrowserLastDropPeekRefusal() const noexcept;
+    [[nodiscard]] std::string_view assetBrowserContextMenuTarget() const noexcept;
     // ---- task 3.4.2 black-box accessors: the ImGui-free GPU tier's only window into the session.
     // MaterialSessionState itself stays out of this surface, exactly as modelImportState() keeps
     // SessionState out -- the two booleans below are what a case actually asserts.
@@ -642,6 +678,45 @@ private:
     // deleted). The bytes go through material_session.cpp's saveMaterialFile, the ONE .aeromat write
     // path (D12), so this adds no writeTextFileAtomic call site at all.
     [[nodiscard]] bool createMaterialAsset(std::string_view directoryRel);
+
+    // ---- task E.4.3: the five orchestrating methods -----------------------------------------------
+    // Each takes createMaterialAsset's shape verbatim: the PANEL's root, refuse an empty one, list
+    // with includeHidden = true, plan, execute, log exactly ONE line, and requestSelectEntry the
+    // result. Called from tick()'s reconcile block and nowhere else, so nothing here runs inside a
+    // draw walk.
+    //
+    // Each returns TRUE iff the operation PERFORMED. The drain ignores the return and sets its own
+    // fileOpPerformed flag on ATTEMPT -- the two are different questions, and the asymmetry with
+    // materialCreated above is deliberate (see the drain's own comment).
+    //
+    // Hidden entries are INCLUDED in every listing: a hidden file still owns its name, and a freeness
+    // decision taken against a hidden-filtered listing would rename over one.
+    [[nodiscard]] bool createAssetFolder(std::string_view parentRel);
+    [[nodiscard]] bool renameAssetEntry(std::string_view rel, std::string_view newLeaf);
+    [[nodiscard]] bool moveAssetEntry(std::string_view rel, std::string_view destinationDirRel);
+    [[nodiscard]] bool deleteAssetEntry(std::string_view rel);
+
+    // TRUE when `rel` IS the Material panel's open document, or is a FOLDER CONTAINING it, AND the
+    // session is dirty. Refusing is the honest answer: MaterialSession is path-keyed and sticky, so
+    // after a successful rename the session would FOLLOW the new path and discard unsaved edits with
+    // no prompt.
+    //
+    // It lives in EditorApp because EditorApp owns the session. The pure planner knows nothing about
+    // materials and MUST NOT: a planner that consulted a UI session would be untestable at tier 0.
+    //
+    // SEGMENT-WISE prefix, never a raw string prefix: "tex" must not contain "textures/a.aeromat".
+    [[nodiscard]] bool assetOpBlockedByDirtyMaterial(std::string_view rel) const;
+
+    // task E.4.3 (D12): New Asset > Material records the SAME ActionKind::CreateMaterial the header's
+    // New Material button records -- two affordances, ONE implementation, and createMaterialAsset is
+    // byte-identical with a second caller.
+    //
+    // A NewAssetKind TABLE was built here and then DELETED in the code-review round (G4). The plan
+    // mandated both it and the CreateMaterial reuse, and the two are mutually exclusive: with the
+    // menu taking the reuse path nothing ever called the table, so its label/stem fields were never
+    // read, its bounds-check branch was unreachable, and R19's private-member-pointer workaround --
+    // a static member rather than an anonymous-namespace table -- was paid for nothing. A SECOND
+    // kind is still one producer plus one arm; it does not need a dispatch table to be one edit.
 
     // ---- task 3.1.5: the drop drains and the ledger's service pass --------------------------------
     // The three drains run in tick()'s RECONCILE block, in surface order, AFTER the material session

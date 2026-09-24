@@ -101,7 +101,14 @@ void AssetBrowserPanel::setRoot(std::string rootPath) {
     confirmedOrphanDelete.clear();
 }
 
-void AssetBrowserPanel::record(ActionKind kind, std::string path) { pending = PendingAction{kind, std::move(path)}; }
+void AssetBrowserPanel::record(ActionKind kind, std::string path) {
+    // task E.4.3: DELEGATES, so no existing call site changes.
+    record(kind, std::move(path), std::string{});
+}
+
+void AssetBrowserPanel::record(ActionKind kind, std::string path, std::string destination) {
+    pending = PendingAction{kind, std::move(path), std::move(destination)};
+}
 
 const DirectoryListing* AssetBrowserPanel::cached(const std::string& rel) const {
     const auto it = cache.find(rel);
@@ -311,6 +318,12 @@ void AssetBrowserPanel::drawHeader() {
     if (ImGui::SmallButton(labelScratch.c_str())) {
         record(ActionKind::Navigate, {});
     }
+    // task E.4.3 (code-review G1) -- site 5: the ROOT crumb. Without it no widget anywhere carries
+    // folderRelative == "", the contents pane lists no "..", and an asset in ANY top-level folder
+    // could never be moved back to the assets root from the editor at all. "" is a LEGAL destination
+    // (rung 3 accepts it explicitly); it is the one the breadcrumb loop below structurally cannot
+    // produce, because that loop starts at the first real segment.
+    attachFolderDropTarget(std::string{});
     ImGui::PopID();
     std::string accumulated;
     for (std::size_t i = 0; i < breadcrumb.size(); ++i) {
@@ -329,6 +342,9 @@ void AssetBrowserPanel::drawHeader() {
         if (ImGui::SmallButton(breadcrumb[i].c_str())) {
             record(ActionKind::Navigate, accumulated);
         }
+        // task E.4.3 -- site 4: the breadcrumb segment. It is the affordance that makes "move up one
+        // level" possible at all, and the one a tree-only implementation silently omits.
+        attachFolderDropTarget(accumulated);
         ImGui::PopID();  // no continue/break/return between Push and Pop
     }
     ImGui::Separator();
@@ -359,6 +375,9 @@ void AssetBrowserPanel::drawTreePane(float paneHeight) {
             rootFlags |= ImGuiTreeNodeFlags_Selected;
         }
         ImGui::TreeNodeEx(labelScratch.c_str(), rootFlags);
+        // task E.4.3 (code-review G1) -- site 6: the root TREE row, the same destination reached the
+        // other way. Attached before IsItemClicked reads the item, like every other site.
+        attachFolderDropTarget(std::string{});
         if (ImGui::IsItemClicked()) {
             record(ActionKind::Navigate, {});
         }
@@ -403,6 +422,16 @@ void AssetBrowserPanel::drawTreePane(float paneHeight) {
             // carries NO open/closed information. Comparing it would record a spurious ToggleDir on
             // every leaf row every frame -- which would also CLOBBER a genuine click recorded by an
             // earlier row, because `pending` is one last-writer-wins slot.
+            // task E.4.3 -- site 1: the tree row, a folder by construction. Inside the
+            // Indent/Unindent and PushID/PopID pairs, with no continue/break/return between them.
+            attachFolderDropTarget(row.path);
+            // task E.4.3: the right-click recorder, IMMEDIATELY after the item and inside the
+            // PushID/PopID pair -- there is no continue/break/return between them (F13). It is
+            // IsItemClicked(Right), never BeginPopupContextItem: a per-item popup would be keyed on
+            // PushID(i), an INDEX that changes the moment a directory above it opens.
+            if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) {
+                record(ActionKind::OpenContextMenu, row.path);
+            }
             if (!row.knownLeaf && nowOpen != row.open) {
                 record(ActionKind::ToggleDir, row.path);
             } else if (ImGui::IsItemClicked()) {
@@ -462,7 +491,7 @@ void AssetBrowserPanel::drawContentsList(float paneHeight) {
                         // task 3.1.5: IMMEDIATELY after the Selectable, before anything reads
                         // g.LastItemData. UNCONDITIONAL here -- searchAssets never matches a folder
                         // (the browser's own recorded fact), so every hit is a file.
-                        beginAssetDragSource(hit.relativePath, hit.relativePath.c_str());
+                        beginAssetDragSource(hit.relativePath, hit.relativePath.c_str(), /*isDirectory=*/false);
                         ImGui::SameLine(0.0F, 0.0F);
                         ImGui::TextUnformatted(hit.relativePath.c_str());
                         ImGui::PopID();  // no continue/break/return between Push and Pop
@@ -570,8 +599,12 @@ void AssetBrowserPanel::drawContentsList(float paneHeight) {
                     // task 3.1.5: same position as the search row above. GUARDED -- this list does
                     // show folders, and the helper's own kind test would refuse one anyway; checking
                     // the cheap thing here keeps findByPath off the per-directory path.
-                    if (!entry.isDirectory) {
-                        beginAssetDragSource(rel, entry.name.c_str());
+                    beginAssetDragSource(rel, entry.name.c_str(), entry.isDirectory);
+                    if (entry.isDirectory) {
+                        attachFolderDropTarget(rel);  // task E.4.3 -- site 3: a folder row in the list
+                    }
+                    if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) {  // task E.4.3
+                        record(ActionKind::OpenContextMenu, rel);
                     }
                     ImGui::SameLine(0.0F, 0.0F);
                     ImGui::TextUnformatted(entry.name.c_str());
@@ -594,20 +627,25 @@ void AssetBrowserPanel::drawContentsList(float paneHeight) {
 }
 
 // ---- task 3.1.5 (§0.11/§D-21): the ONE drag source, three call sites -------------------------------
-void AssetBrowserPanel::beginAssetDragSource(const std::string& relativePath, const char* previewText) {
+void AssetBrowserPanel::beginAssetDragSource(const std::string& relativePath, const char* previewText,
+                                             bool isDirectory) {
     // REFUSAL AT THE SOURCE, in this order. The cheap kind test runs before findByPath so a directory
     // never reaches the database at all, and a payload that would be refused at every target is never
     // created in the first place.
-    const AssetKind kind = classifyAssetKind(leafOf(relativePath), /*isDirectory=*/false);
-    if (!assetKindIsDraggable(kind)) {
-        return;  // Folder/Audio/Text/Unknown -- and .mtl, which is importable but Unknown-kinded
-    }
-    if (databasePtr == nullptr) {
-        return;
-    }
-    const AssetRecord* const record = databasePtr->findByPath(relativePath);
+    //
+    // task E.4.3: `isDirectory` is REAL now. classifyAssetKind's isDirectory argument only ever
+    // FORCES Folder, so no draggable kind changes classification and the asset arm below is
+    // byte-identical in behaviour -- a folder took the early return before and takes the MOVE branch
+    // now.
+    const AssetKind kind = classifyAssetKind(leafOf(relativePath), isDirectory);
+    const AssetRecord* const record =
+        (assetKindIsDraggable(kind) && databasePtr != nullptr) ? databasePtr->findByPath(relativePath) : nullptr;
     if (record == nullptr || !record->guid.valid()) {
-        return;  // not scanned yet, or an Invalid-state record: a nil guid is not a droppable identity
+        // NOT a draggable asset: a folder, a non-draggable kind (a .txt, a .mtl), an unscanned file,
+        // or an Invalid-state record. It can still be MOVED, which is the second payload's whole
+        // reason for existing.
+        beginAssetMoveBranch(relativePath, previewText, kind, isDirectory);
+        return;
     }
     if (!ImGui::BeginDragDropSource()) {
         return;  // NOT a drag this frame. EndDragDropSource is owed ONLY when this returned true.
@@ -625,6 +663,149 @@ void AssetBrowserPanel::beginAssetDragSource(const std::string& relativePath, co
     ImGui::SetDragDropPayload(ASSET_PAYLOAD_TYPE, &payload, sizeof(payload));  // ImGui COPIES (heap, >16B)
     ImGui::TextUnformatted(previewText);  // the house preview: label text, no thumbnail
     ImGui::EndDragDropSource();
+}
+
+// task E.4.3: the move arm. A SEPARATE function rather than a second branch inside the one above, so
+// each stays 1:1 Begin/End with no return between the pair -- the header's own standing constraint.
+//
+// The fit test happens BEFORE BeginDragDropSource: a path this long cannot be encoded, and a
+// TRUNCATING encode would silently move a DIFFERENT file. relativePath.empty() takes this refusal too,
+// through assetMovePayloadFits's first term -- the assets root is never draggable, and SourceIsRoot
+// would refuse it at the target anyway.
+//
+// Per-frame cost, measured against the pinned source rather than assumed: SetDragDropPayload
+// (imgui.cpp:15725) runs resize(0) then resize(n) EVERY frame the source is active, because the
+// default cond is ImGuiCond_Always -- and ImVector::resize reallocates only above capacity while
+// resize(0) does not free. So after the first frame of a drag this is ONE 1028-byte memcpy per frame
+// and ZERO allocations.
+void AssetBrowserPanel::beginAssetMoveBranch(const std::string& relativePath, const char* previewText, AssetKind kind,
+                                             bool isDirectory) {
+    if (!assetMovePayloadFits(relativePath)) {
+        return;
+    }
+    if (!ImGui::BeginDragDropSource()) {
+        return;
+    }
+    // NO memset: this type has no padding at all (1024 + 2 + 1 + 1 == 1028, already 2-aligned), which
+    // its own static_asserts pin -- unlike AssetDragPayload, whose seven tail bytes need one.
+    AssetMoveDragPayload payload{};
+    std::memcpy(payload.path.data(), relativePath.data(), relativePath.size());
+    payload.path[relativePath.size()] = '\0';
+    payload.length = static_cast<std::uint16_t>(relativePath.size());
+    payload.kind = static_cast<std::uint8_t>(kind);
+    payload.isDirectory = isDirectory ? 1U : 0U;
+    ImGui::SetDragDropPayload(ASSET_MOVE_PAYLOAD_TYPE, &payload, sizeof(payload));
+    ImGui::TextUnformatted(previewText);
+    ImGui::EndDragDropSource();
+}
+
+// task E.4.3: ONLY A FOLDER GETS A TARGET. A file tile submits none, so dropping on a file draws no
+// highlight and does nothing -- correct, and needing no refusal.
+//
+// THE PEEK RULE, a third application (hierarchy_panel.cpp:207-210's shape): classifyAssetMove runs
+// BEFORE AcceptDragDropPayload, so an illegal drop draws NO HIGHLIGHT. ImGui draws the highlight as a
+// side effect of Accept, so calling it and then deciding is a visible promise the editor then breaks.
+void AssetBrowserPanel::attachFolderDropTarget(const std::string& folderRelative) {
+    if (!ImGui::BeginDragDropTarget()) {
+        return;  // EndDragDropTarget is owed ONLY when this returned true (F18)
+    }
+    const ImGuiPayload* const peek = ImGui::GetDragDropPayload();
+    std::string source;
+    const char* acceptType = nullptr;
+    if (peek != nullptr && peek->IsDataType(ASSET_MOVE_PAYLOAD_TYPE)) {
+        source = decodeAssetMoveDragPayload(peek->Data, peek->DataSize).value_or(std::string{});
+        acceptType = ASSET_MOVE_PAYLOAD_TYPE;
+    } else if (peek != nullptr && peek->IsDataType(ASSET_PAYLOAD_TYPE)) {
+        // The payload is a HINT and the database is the AUTHORITY -- asset_drag.hpp's own rule,
+        // applied where it was written to apply. A record that vanished mid-drag yields "", and
+        // classifyAssetMove("", folder) then answers SourceIsRoot, so the drop refuses. That is right.
+        if (const std::optional<AssetDragPayload> decoded = decodeAssetDragPayload(peek->Data, peek->DataSize);
+            decoded.has_value() && databasePtr != nullptr) {
+            if (const AssetRecord* const found = databasePtr->findByGuid(decoded->guid); found != nullptr) {
+                source = found->relativePath;
+            }
+        }
+        acceptType = ASSET_PAYLOAD_TYPE;
+    }
+    if (acceptType != nullptr) {
+        finishFolderDrop(source, folderRelative, acceptType);
+    }
+    ImGui::EndDragDropTarget();
+}
+
+// task E.4.3 (code-review G6): THE WHOLE DECISION AND ITS WHOLE EFFECT, in ONE function called by the
+// real ImGui target above and by the injected seam below. The verdict, the accept counter and the
+// ActionKind::MoveEntry record all live here, so a statement deleted from this function breaks the
+// PRODUCT and the CASES together.
+//
+// It did not, and that was the gap: the seam used to carry its own copy of the counter and the
+// record, so deleting the record from the real target left drag-to-move doing nothing in the product
+// while I222, I223 and I224 all stayed green -- the exact "assert the EFFECT" failure this repo's
+// rules exist to prevent.
+//
+// `acceptType == nullptr` IS THE INJECTED SEAM. Nothing in tests/ can perform a real drag -- the
+// backend rewrites io.MousePos every NewFrame -- so there is no ImGui payload in flight to Accept and
+// the seam models a COMPLETED drop, whose delivery is therefore unconditional. Everything else is
+// identical, including which function computes the verdict.
+//
+// THE PEEK RULE IS HONOURED BY THE ORDER OF THE STATEMENTS: the verdict runs FIRST and returns early,
+// so AcceptDragDropPayload -- which is what draws the highlight -- is never reached for an illegal
+// drop. Moving the Accept above the verdict is a visible promise the editor then breaks.
+void AssetBrowserPanel::finishFolderDrop(const std::string& source, const std::string& folderRelative,
+                                         const char* acceptType) {
+    dropPeekRefusal = folderDropVerdict(source, folderRelative);
+    if (dropPeekRefusal != AssetOpRefusal::None) {
+        return;
+    }
+    ++dropTargetsAcceptedCount;  // an EFFECT counter: this target really accepted
+    const bool delivered =
+        acceptType == nullptr || ImGui::AcceptDragDropPayload(acceptType, ImGuiDragDropFlags_None) != nullptr;
+    if (delivered) {
+        record(ActionKind::MoveEntry, source, folderRelative);
+    }
+}
+
+// task E.4.3: THE DECISION, shared by the real ImGui target above and the injected seam below, so
+// the two cannot diverge. It IS classifyAssetMove -- which is itself a call to assetOpPathLadder --
+// so the peek, the drop-time plan and this all answer from one ladder rather than three copies.
+AssetOpRefusal AssetBrowserPanel::folderDropVerdict(const std::string& source, const std::string& folderRelative) {
+    return classifyAssetMove(source, folderRelative);
+}
+
+// task E.4.3: the injected drop, and the honest statement of what it does and does not cover.
+//
+// NOTHING IN tests/ CAN PERFORM A REAL DRAG -- the backend rewrites io.MousePos every NewFrame -- so
+// ImGui's own BeginDragDropTarget/AcceptDragDropPayload half of the path above has NO AUTOMATED
+// WITNESS ANYWHERE, and the drop HIGHLIGHT has none either (validation row 4 is its only cover).
+// What this seam does exercise is everything the panel decides: the source resolution (including the
+// database re-resolution an asset payload goes through), the verdict through the SAME
+// folderDropVerdict the real target calls, and the ActionKind::MoveEntry record with BOTH paths.
+void AssetBrowserPanel::applyInjectedDropPeek() {
+    if (!dropPeekActive) {
+        return;
+    }
+    dropPeekActive = false;
+    std::string source = dropPeekSource;
+    if (!dropPeekIsMovePayload) {
+        // An ASSET payload carries a GUID, and the payload is a HINT while the database is the
+        // AUTHORITY. THE RESOLUTION GOES THROUGH findByGuid, exactly as the real target's does
+        // (code-review G6): resolving by PATH here would make I223's "re-resolved through the live
+        // database" subcase a claim about the simulation rather than about the product. The seam is
+        // handed a path because that is all a test can spell, so it turns that into the GUID a real
+        // payload would carry and then resolves THAT -- one extra lookup, and the arm under test is
+        // the real one. A record that vanished mid-drag yields "", which the verdict refuses as
+        // SourceIsRoot.
+        source.clear();
+        if (databasePtr != nullptr) {
+            if (const AssetRecord* const named = databasePtr->findByPath(dropPeekSource); named != nullptr) {
+                if (const AssetRecord* const found = databasePtr->findByGuid(named->guid); found != nullptr) {
+                    source = found->relativePath;
+                }
+            }
+        }
+    }
+    // The SAME tail the real target runs, with no ImGui payload in flight to Accept.
+    finishFolderDrop(source, dropPeekDestination, nullptr);
 }
 
 // ---- phase 4 (grid): task 3.1.3, Step 6 -----------------------------------------------------------
@@ -655,8 +836,12 @@ void AssetBrowserPanel::drawTile(const FileEntry& entry, const std::string& rel,
     // task 3.1.5: BEFORE the draw-list capture, and that ordering is load-bearing --
     // BeginDragDropSource pushes a TOOLTIP WINDOW, so capturing this window's draw list afterwards
     // would be a question worth asking. Placing the helper first removes the question entirely.
-    if (!entry.isDirectory) {
-        beginAssetDragSource(rel, entry.name.c_str());
+    beginAssetDragSource(rel, entry.name.c_str(), entry.isDirectory);
+    if (entry.isDirectory) {
+        attachFolderDropTarget(rel);  // task E.4.3 -- site 2: a folder tile in the grid
+    }
+    if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) {  // task E.4.3
+        record(ActionKind::OpenContextMenu, rel);
     }
 
     // task 3.1.3, Step 7: three lines, none of which mutate (§D-7) -- the ONLY thumbnail participation
@@ -828,6 +1013,198 @@ void AssetBrowserPanel::drawContentsGrid(float paneHeight) {
 // ---- phase 4b: issues (task 3.1.3, Step 9, D11) -------------------------------------------------
 // "The report IS the issues list" -- no new computation, no second source of truth. Shown ONLY when
 // the total is non-zero (no ride-along empty header on a clean project).
+// ---- task E.4.3: the context menu -- ONE constant-id popup per pane ------------------------------
+// A right-click records OpenContextMenu; the NEXT frame this opens "##assetctx" from
+// contextMenuRequested (clearing it) and draws the menu from contextTarget. One menu definition
+// serves all three call sites (tree row, grid tile, list row) plus the pane background.
+//
+// NOT BeginPopupContextItem: the tree's rows are PushID(static_cast<int>(i)) -- an INDEX -- so a
+// per-item popup is keyed on an id that changes the moment a directory above it opens, and the popup
+// would close or, worse, RETARGET.
+//
+// NO ACCELERATOR COLUMN. The F2/Del bindings do not ship: they need a third gating condition nobody
+// named -- !ImGui::GetIO().WantTextInput, because this panel's own header carries an InputText search
+// box, so Del while editing the query would delete the SELECTED ASSET. A menu that advertises a
+// shortcut and does nothing when it is pressed is a lie the tree would have to keep.
+void AssetBrowserPanel::drawContextMenu() {
+    constexpr const char* CONTEXT_MENU_ID = "##assetctx";
+    if (contextMenuRequested) {
+        ImGui::OpenPopup(CONTEXT_MENU_ID);
+        contextMenuRequested = false;
+    }
+    // F13: EndPopup ONLY when BeginPopup returned true -- the BeginMenu family, not the Begin one.
+    if (!ImGui::BeginPopup(CONTEXT_MENU_ID)) {
+        return;
+    }
+    const bool haveProject = !rootUtf8.empty();
+    const bool targetIsRoot = contextTarget.empty();
+
+    // contextMenuItemsDrawnCount is incremented once per MenuItem call the body ACTUALLY makes,
+    // INCLUDING a disabled one -- a BeginDisabled/EndDisabled pair still submits the item. The count
+    // proves the body RAN; the enable state is asserted separately through the seams' effects.
+    ImGui::BeginDisabled(!haveProject);
+    if (ImGui::MenuItem("New Folder")) {
+        record(ActionKind::NewFolder, {});
+    }
+    ++contextMenuItemsDrawnCount;
+    // BeginMenu SUBMITS its own menu item whether or not the submenu opens, so it counts here; the
+    // row inside counts only on the frames the submenu is actually open.
+    const bool newAssetOpen = ImGui::BeginMenu("New Asset");
+    ++contextMenuItemsDrawnCount;
+    if (newAssetOpen) {
+        if (ImGui::MenuItem("Material")) {
+            // D12: the SAME ActionKind the header's New Material button records. Two affordances,
+            // one implementation.
+            record(ActionKind::CreateMaterial, {});
+        }
+        ++contextMenuItemsDrawnCount;
+        ImGui::EndMenu();  // ONLY because BeginMenu returned true
+    }
+    ImGui::EndDisabled();
+
+    ImGui::Separator();
+    ImGui::BeginDisabled(targetIsRoot);
+    if (ImGui::MenuItem("Rename")) {
+        record(ActionKind::RequestRename, contextTarget);
+    }
+    ++contextMenuItemsDrawnCount;
+    if (ImGui::MenuItem("Delete")) {
+        record(ActionKind::RequestDelete, contextTarget);
+    }
+    ++contextMenuItemsDrawnCount;
+    ImGui::EndDisabled();
+
+    ImGui::Separator();
+    // Copy GUID: disabled for a folder and for a nil-guid record -- existing behaviour, unchanged.
+    const AssetRecord* const targetRecord =
+        (databasePtr != nullptr && !targetIsRoot) ? databasePtr->findByPath(contextTarget) : nullptr;
+    const bool canCopyGuid = targetRecord != nullptr && targetRecord->guid.valid();
+    ImGui::BeginDisabled(!canCopyGuid);
+    if (ImGui::MenuItem("Copy GUID")) {
+        labelScratch = formatGuid(targetRecord->guid);
+        ImGui::SetClipboardText(labelScratch.c_str());
+    }
+    ++contextMenuItemsDrawnCount;
+    ImGui::EndDisabled();
+
+    ImGui::EndPopup();
+}
+
+// ---- task E.4.3: the two confirmation modals ------------------------------------------------------
+// Both copy drawIssues's orphan modal VERBATIM: the IsPopupOpen guard, AlwaysAutoResize,
+// TextWrapped("%s", ...), SetItemDefaultFocus on the affirmative button, the hand-bound Escape, and
+// the `else` branch that treats a programmatic close as Cancel.
+//
+// Both are gated on pendingOrphanDelete.empty() by their caller, so the pre-existing modal always
+// wins if two are somehow pending at once -- ImGui will happily stack modals and the result is a UI a
+// user cannot reason about.
+void AssetBrowserPanel::drawRenameModal() {
+    constexpr const char* RENAME_MODAL_ID = "Rename asset";
+    if (pendingRename.empty()) {
+        return;
+    }
+    if (!ImGui::IsPopupOpen(RENAME_MODAL_ID)) {
+        ImGui::OpenPopup(RENAME_MODAL_ID);
+    }
+    if (ImGui::BeginPopupModal(RENAME_MODAL_ID, nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        ++renameModalDrawn;  // an EFFECT counter: incremented inside the body that really drew
+        labelScratch = "Rename \"" + pendingRename + "\"";
+        ImGui::TextWrapped("%s", labelScratch.c_str());  // NEVER a bare format string (F14)
+        if (renameFocusPending) {
+            ImGui::SetKeyboardFocusHere();
+            renameFocusPending = false;  // the FIRST frame only, or the field can never lose focus
+        }
+        engine::editor::inputTextString("##renameLeaf", renameBuffer, ImGuiInputTextFlags_None);
+        // Recomputed EVERY frame the modal draws, from a pure call with no disk touch -- so it is
+        // legal inside phase 4b, and the button's disabled state and the error line can never
+        // disagree, because both read this one variable computed once.
+        renameRefusal = validateAssetName(renameBuffer);
+        if (renameRefusal != AssetNameRefusal::None) {
+            labelScratch = assetNameRefusalMessage(renameRefusal);
+            ImGui::TextWrapped("%s", labelScratch.c_str());
+        }
+        ImGui::Separator();
+        ImGui::BeginDisabled(renameRefusal != AssetNameRefusal::None);
+        if (ImGui::Button("Rename")) {
+            renameRequest = AssetRenameRequest{pendingRename, renameBuffer};
+            pendingRename.clear();
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndDisabled();
+        ImGui::SetItemDefaultFocus();  // Enter == Rename
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel")) {
+            pendingRename.clear();
+            ImGui::CloseCurrentPopup();
+        }
+        // ImGui CANNOT dismiss a MODAL with Escape: NavUpdateCancelRequest's popup branch excludes
+        // ImGuiWindowFlags_Modal (imgui.cpp:15032) and BeginPopupModal always sets it
+        // (imgui.cpp:13232) -- and the editor never enables ImGuiConfigFlags_NavEnableKeyboard
+        // (imgui_layer.cpp:82), so that path is doubly dead. Bind it ourselves, here, in the body.
+        if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
+            pendingRename.clear();
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    } else {
+        // A safety net, not the Esc mechanism above: only a PROGRAMMATIC close reaches here, because
+        // a modal swallows outside clicks. Treating it as Cancel keeps the flow from wedging.
+        pendingRename.clear();
+    }
+}
+
+void AssetBrowserPanel::drawAssetDeleteModal() {
+    constexpr const char* DELETE_ASSET_MODAL_ID = "Delete asset?";
+    if (pendingDelete.empty()) {
+        return;
+    }
+    if (!ImGui::IsPopupOpen(DELETE_ASSET_MODAL_ID)) {
+        ImGui::OpenPopup(DELETE_ASSET_MODAL_ID);
+    }
+    if (ImGui::BeginPopupModal(DELETE_ASSET_MODAL_ID, nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        ++assetDeleteModalDrawn;
+        // isDirectory comes from the CACHED LISTING's FileEntry, never from classifyAssetKind --
+        // which cannot tell a folder from an extension-less file.
+        bool isDirectory = false;
+        if (const DirectoryListing* const parentListing = cached(parentOf(pendingDelete)); parentListing != nullptr) {
+            const std::string_view leaf = leafOf(pendingDelete);
+            for (const FileEntry& entry : parentListing->entries) {
+                if (entry.name == leaf) {
+                    isDirectory = entry.isDirectory;
+                    break;
+                }
+            }
+        }
+        // ZERO I/O: countRecordsUnder is a lower_bound plus a walk over records(), which is exactly
+        // what makes the count legal inside phase 4b at all.
+        const std::size_t indexed =
+            databasePtr != nullptr ? countRecordsUnder(databasePtr->records(), pendingDelete) : 0;
+        const AssetDeletePrompt prompt = assetDeletePromptFor(pendingDelete, isDirectory, indexed);
+        ImGui::TextWrapped("%s", prompt.title.c_str());
+        ImGui::TextWrapped("%s", prompt.detail.c_str());
+        ImGui::TextDisabled("%s", prompt.footer.c_str());
+        ImGui::Separator();
+        if (ImGui::Button("Delete")) {
+            deleteRequest = pendingDelete;  // nothing touches disk here (D9)
+            pendingDelete.clear();
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::SetItemDefaultFocus();  // Enter == Delete
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel")) {
+            pendingDelete.clear();
+            ImGui::CloseCurrentPopup();
+        }
+        if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {  // see drawRenameModal's citation
+            pendingDelete.clear();
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    } else {
+        pendingDelete.clear();
+    }
+}
+
 void AssetBrowserPanel::drawIssues() {
     // task 3.1.3, Step 11: the delete-confirmation modal. Opened by applyPending() setting
     // pendingOrphanDelete (never from inside this draw walk); 2.5.1's shell_ui.cpp:247-302 shape
@@ -1243,6 +1620,33 @@ void AssetBrowserPanel::applyPending() {
             // recorded in the same frame is resolved by this same switch, and the last writer wins.
             createMaterialRequest = currentDir;
             break;
+        // ---- task E.4.3 -------------------------------------------------------------------------
+        case ActionKind::OpenContextMenu:
+            // ONE action, THREE effects, and that is not a shortcut: `pending` is one
+            // last-writer-wins slot (F1), so recording a separate SelectEntry beside this would
+            // clobber it and the menu would open on a stale target.
+            selectedEntry = action.path;
+            contextTarget = action.path;
+            contextMenuRequested = true;
+            break;
+        case ActionKind::NewFolder:
+            // CreateMaterial's arm verbatim: `currentDir` is read HERE because applyPending is the
+            // one place that sees committed state.
+            newFolderRequest = currentDir;
+            break;
+        case ActionKind::RequestRename:
+            pendingRename = action.path;
+            renameBuffer = std::string(leafOf(action.path));
+            renameRefusal = AssetNameRefusal::None;
+            renameFocusPending = true;
+            break;
+        case ActionKind::RequestDelete:
+            pendingDelete = action.path;  // and NOTHING else
+            break;
+        case ActionKind::MoveEntry:
+            // The ONLY kind that reads PendingAction::destination.
+            moveRequest = AssetMoveRequest{action.path, action.destination};
+            break;
     }
 }
 
@@ -1305,10 +1709,62 @@ void AssetBrowserPanel::requestSelectEntry(std::string relativePath) {
 // the SAME applyPending() arm and picks up the SAME currentDir a click would.
 void AssetBrowserPanel::requestCreateMaterial() noexcept { record(ActionKind::CreateMaterial, {}); }
 
+// ---- task E.4.3: the seven gesture seams plus requestDropPeek --------------------------------------
+// The first five record EXACTLY what a real widget records, so the next onDraw() drains each through
+// the SAME applyPending() arm. The two COMMIT seams do not: they model the modal's own button, which
+// sets the one-shot directly from inside the popup body -- the orphan modal's Delete button verbatim.
+void AssetBrowserPanel::requestContextMenu(std::string path) { record(ActionKind::OpenContextMenu, std::move(path)); }
+void AssetBrowserPanel::requestNewFolder() noexcept { record(ActionKind::NewFolder, {}); }
+void AssetBrowserPanel::requestRename(std::string path) { record(ActionKind::RequestRename, std::move(path)); }
+void AssetBrowserPanel::requestDelete(std::string path) { record(ActionKind::RequestDelete, std::move(path)); }
+void AssetBrowserPanel::requestMove(std::string path, std::string destinationDir) {
+    record(ActionKind::MoveEntry, std::move(path), std::move(destinationDir));
+}
+
+void AssetBrowserPanel::requestRenameCommit(std::string newLeaf) {
+    // The modal's Rename button, verbatim -- including its refusal: an illegal name sets NOTHING and
+    // leaves the modal up with its error line, which is what the button's BeginDisabled achieves for
+    // a real click.
+    if (pendingRename.empty()) {
+        return;
+    }
+    if (validateAssetName(newLeaf) != AssetNameRefusal::None) {
+        renameRefusal = validateAssetName(newLeaf);
+        renameBuffer = std::move(newLeaf);
+        return;
+    }
+    renameRequest = AssetRenameRequest{pendingRename, std::move(newLeaf)};
+    pendingRename.clear();
+}
+
+void AssetBrowserPanel::requestDeleteConfirm() noexcept {
+    if (pendingDelete.empty()) {
+        return;  // nothing pending: the one-shot stays "" and the drain sees no request
+    }
+    // MOVE, never copy: this function is noexcept and a string COPY can throw std::bad_alloc, which
+    // bugprone-exception-escape rejects. takeOrphanDeleteRequest's own idiom -- move out, then clear,
+    // because a moved-from string is valid but unspecified.
+    deleteRequest = std::move(pendingDelete);
+    pendingDelete.clear();
+}
+
+void AssetBrowserPanel::requestDropPeek(std::string sourcePath, std::string destinationDir, bool asMovePayload) {
+    dropPeekActive = true;
+    dropPeekIsMovePayload = asMovePayload;
+    dropPeekSource = std::move(sourcePath);
+    dropPeekDestination = std::move(destinationDir);
+}
+
 // ---- the frame ---------------------------------------------------------------------------------
 void AssetBrowserPanel::onDraw(PanelContext& /*context*/) {  // D18: the context is IGNORED
-    reconcile();                                             // 1 -- the only I/O
-    drawHeader();                                            // 2
+    // task E.4.3: the EFFECT counters reset at the TOP of every frame, BEFORE reconcile(), so each
+    // reports what THIS frame's bodies did rather than an accumulating lifetime total.
+    contextMenuItemsDrawnCount = 0;
+    renameModalDrawn = 0;
+    assetDeleteModalDrawn = 0;
+    dropTargetsAcceptedCount = 0;
+    reconcile();   // 1 -- the only I/O
+    drawHeader();  // 2
     // Reserve one line for the footer. std::max keeps a very short panel from passing a NEGATIVE
     // height to BeginChild, which ImGui reads as "bottom-align at N from the edge", not as zero.
     const float footerHeight = ImGui::GetFrameHeightWithSpacing();
@@ -1320,7 +1776,23 @@ void AssetBrowserPanel::onDraw(PanelContext& /*context*/) {  // D18: the context
     } else {
         drawContentsList(paneHeight);
     }
-    drawIssues();    // 4b -- task 3.1.3, Step 9
+    // task E.4.3: the pane BACKGROUND is a legal context target ("" -- New Folder and New Asset
+    // apply there). Recorded only when the click landed on no item at all, so it can never steal a
+    // row's own right-click.
+    if (ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows) && !ImGui::IsAnyItemHovered() &&
+        ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
+        record(ActionKind::OpenContextMenu, {});
+    }
+
+    applyInjectedDropPeek();  // task E.4.3 -- before applyPending, so its record is drained this frame
+    drawIssues();             // 4b -- task 3.1.3, Step 9
+    // task E.4.3: the context menu and the two modals, all in phase 4b, AFTER the orphan modal and
+    // each gated on pendingOrphanDelete.empty() so the pre-existing modal always wins.
+    drawContextMenu();
+    if (pendingOrphanDelete.empty()) {
+        drawRenameModal();
+        drawAssetDeleteModal();
+    }
     drawFooter();    // 5
     applyPending();  // the ONLY place anything mutates
 }

@@ -436,6 +436,47 @@ and resolves; `EditorApp::persistProjectState` decides and writes.
   operation that moves, renames or copies an asset MUST move, rename or copy its `.meta` in the same
   operation. A move that drops the sidecar is a silent identity loss — every scene reference to that
   asset dangles, and **no test in this tree can see it** happen.
+- **INV-A8 is ENFORCED since task E.4.3.** Every rename, move and delete carries the `.meta` in the
+  SAME operation, planned by `planAssetOp` before a byte moves.
+
+  **The order is fixed and is not a preference: the ASSET renames FIRST, the SIDECAR second, and a
+  failure on the second rolls the first back.** There is no portable two-file atomic rename, so the
+  question is only which torn state is least bad and which failure is most likely — and the
+  overwhelmingly common failure (the destination name is taken, the volume is read-only, the OS
+  refuses) happens on the FIRST rename, where nothing has happened yet and the refusal is free. A
+  failure of the rollback itself is a loud WARN naming BOTH paths, and 3.1.2's content-hash
+  re-attachment (`planReattachments`, run by every scan's phase 5) is the net beneath it — **named as
+  a net and never as the plan**: it needs the import cache to hold an entry for that GUID, which a
+  fresh clone, an `invalidateCache()` or a `Reimport All` leaves it without.
+
+  **Every operation is ALL-OR-NOTHING.** `AssetOpResult::performed` is true only when BOTH renames
+  landed, for every operation including Delete. The tempting exception — the file went, only the
+  sidecar stayed — produces an orphaned sidecar the user did not ask to create, and a single rule
+  with no exceptions is the only kind this tree has been able to keep.
+
+  **A folder operation is ONE rename and needs no loop**: a folder has no GUID and no sidecar, and
+  everything beneath it travels by construction. `AA55` asserts that structurally rather than by
+  iteration.
+
+  **A REFUSAL still rescans** (`deleteOrphanMeta`'s rule): every refusal reason means "the tree
+  changed under us". The ONE exception is the dirty-open-material refusal, where nothing changed.
+
+  **THE CASE-ONLY CARVE-OUT IS GATED ON `std::filesystem::equivalent`, never on "same leaf modulo
+  case, same directory" alone.** That lexical condition justifies itself with "the only entry it can
+  be is the source itself", which is true on a case-INSENSITIVE volume and FALSE on a case-sensitive
+  one — where the executor's live free-name check would then wave through a rename that OVERWRITES a
+  genuinely different file, in exactly the window (something created between the `listDirectory` and
+  the act) that check exists to close. It shipped that way once and the code-review round caught it.
+  The equivalence is true precisely on the volumes where the carve-out is legitimate; the
+  `error_code` overload fails SAFE, to a refusal. **The refusing arm is unobservable on macOS and
+  Windows** — `AA64` states the `TMPDIR`-on-a-case-sensitive-image recipe that reaches it locally.
+
+  **`RollbackFailed` and `AssetOpResult::torn` have NO automated cover anywhere, and cannot.** A
+  rollback fails only when something occupies the source path as a non-empty directory (measured on
+  APFS: renaming onto an existing FILE succeeds silently; renaming onto a non-empty directory fails
+  with EISDIR), and step 5 is what VACATES that path — so the occupant would have to appear between
+  step 5 and the rollback, which only a concurrent external actor can do. `AA60` keeps the reachable
+  arm and says so in its own comment.
 - **The panel holds a `const AssetDatabase*`, reconciled every tick — never a reference member (D13).**
   `EditorApp` is movable and `create()` returns `std::optional<EditorApp>`, so every live editor has
   been through at least one move. A reference bound at panel-construction time binds to whatever
