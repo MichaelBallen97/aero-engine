@@ -19,6 +19,7 @@
 #include <aero/core/log.hpp>              // AERO_LOG_* + initLogging (cases B and C)
 #include <aero/editor/asset_cache.hpp>    // task 3.1.2: ImportChange, ASSET_CACHE_DIR_NAME/FILE_NAME/
                                           // GITIGNORE_NAME -- I31's index-path/gitignore-path assertions
+#include <aero/editor/asset_actions.hpp>  // task E.4.3: AssetOpRefusal, for the drop-peek verdicts
 #include <aero/editor/asset_meta.hpp>     // task 3.1.3: writeMetaText, for I39/I41's orphan fixtures
 #include <aero/editor/blender_tool.hpp>   // task 3.2.4: ExportProvenance + BLENDER_EXPORT_DIR_NAME (I78)
 #include <aero/editor/command_stack.hpp>  // task 2.4.1
@@ -17760,4 +17761,179 @@ TEST_CASE(
 
     app->requestQuit();
     CHECK(app->tick() == false);
+}
+
+TEST_CASE("editor: an ILLEGAL drop is not accepted, and a legal one is (task E.4.3, I222)") {
+    // WHAT THIS CASE COVERS AND WHAT IT DOES NOT, stated plainly. Nothing in tests/ can perform a real
+    // drag -- the backend rewrites io.MousePos every NewFrame -- so ImGui's own
+    // BeginDragDropTarget/AcceptDragDropPayload half has no automated witness anywhere, and neither
+    // does the drop HIGHLIGHT (validation row 4 is its only cover, and seed S22's only cover).
+    // What IS covered is every decision the panel makes: the verdict comes from the SAME
+    // folderDropVerdict the real target calls, which is classifyAssetMove, which is a call to
+    // assetOpPathLadder rather than a second copy of it.
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "assetops i222", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    const std::string root = makeAssetOpProject();
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    (void)focusAssetsAndSettle(*app);
+
+    SUBCASE("a folder dropped into its OWN CHILD is refused, and nothing accepts") {
+        REQUIRE(engine::editor::ensureDirectory(root + "/assets/textures/sub").empty());
+        app->requestAssetBrowserDropPeek("textures", "textures/sub", /*asMovePayload=*/true);
+        REQUIRE(app->tick());
+        CHECK(app->assetBrowserLastDropPeekRefusal() ==
+              static_cast<int>(engine::editor::AssetOpRefusal::DestinationInsideSource));
+        CHECK(app->assetBrowserDropTargetsAccepted() == 0U);
+    }
+
+    SUBCASE("a LEGAL drop peeks None and DOES accept -- the anti-vacuity arm") {
+        // Without this half, a build where the target never submits at all passes the arm above.
+        app->requestAssetBrowserDropPeek("a/b.png", "textures", /*asMovePayload=*/true);
+        REQUIRE(app->tick());
+        CHECK(app->assetBrowserLastDropPeekRefusal() == static_cast<int>(engine::editor::AssetOpRefusal::None));
+        CHECK(app->assetBrowserDropTargetsAccepted() >= 1U);
+    }
+
+    SUBCASE("a folder onto ITSELF is refused") {
+        app->requestAssetBrowserDropPeek("textures", "textures", /*asMovePayload=*/true);
+        REQUIRE(app->tick());
+        CHECK(app->assetBrowserLastDropPeekRefusal() ==
+              static_cast<int>(engine::editor::AssetOpRefusal::DestinationInsideSource));
+        CHECK(app->assetBrowserDropTargetsAccepted() == 0U);
+    }
+
+    SUBCASE("a file dropped into the folder it ALREADY lives in is refused as AlreadyThere") {
+        app->requestAssetBrowserDropPeek("a/b.png", "a", /*asMovePayload=*/true);
+        REQUIRE(app->tick());
+        CHECK(app->assetBrowserLastDropPeekRefusal() == static_cast<int>(engine::editor::AssetOpRefusal::AlreadyThere));
+        CHECK(app->assetBrowserDropTargetsAccepted() == 0U);
+    }
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+}
+
+TEST_CASE("editor: a completed drop records MoveEntry with BOTH paths, and the file moves (task E.4.3, I223)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "assetops i223", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    const std::string root = makeAssetOpProject();
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    (void)focusAssetsAndSettle(*app);
+
+    SUBCASE("a MOVE payload carries its path verbatim") {
+        app->requestAssetBrowserDropPeek("a/b.png", "textures", /*asMovePayload=*/true);
+        REQUIRE(app->tick());  // the peek, the accept and the record
+        REQUIRE(app->tick());  // the drain
+        // BOTH paths reached the operation -- a record carrying only the source would move nothing.
+        CHECK(engine::editor::fileExists(root + "/assets/textures/b.png"));
+        CHECK(engine::editor::fileExists(root + "/assets/textures/b.png.meta"));
+        CHECK_FALSE(engine::editor::fileExists(root + "/assets/a/b.png"));
+    }
+
+    SUBCASE("an ASSET payload is RE-RESOLVED through the live database, not trusted from the payload") {
+        // asset_drag.hpp's own rule: the payload is a HINT and the database is the AUTHORITY.
+        app->requestAssetBrowserDropPeek("a/b.png", "textures", /*asMovePayload=*/false);
+        REQUIRE(app->tick());
+        REQUIRE(app->tick());
+        CHECK(engine::editor::fileExists(root + "/assets/textures/b.png"));
+    }
+
+    SUBCASE("an ASSET payload naming a record that VANISHED resolves to \"\" and refuses") {
+        // A record that vanished mid-drag yields "", classifyAssetMove("", folder) answers
+        // SourceIsRoot, and the drop refuses. That is right, and it is the arm a payload-trusting
+        // implementation gets wrong.
+        app->requestAssetBrowserDropPeek("a/never-scanned.png", "textures", /*asMovePayload=*/false);
+        REQUIRE(app->tick());
+        CHECK(app->assetBrowserLastDropPeekRefusal() == static_cast<int>(engine::editor::AssetOpRefusal::SourceIsRoot));
+        CHECK(app->assetBrowserDropTargetsAccepted() == 0U);
+    }
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+}
+
+TEST_CASE("editor: a drop onto the assets ROOT moves UP a level (task E.4.3, I224)") {
+    // The breadcrumb's affordance, and the one a tree-only implementation silently omits: "" is the
+    // assets root and is a LEGAL destination, which a plain std::string destination could not express
+    // distinctly from "nothing requested".
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "assetops i224", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    const std::string root = makeAssetOpProject();
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    (void)focusAssetsAndSettle(*app);
+
+    app->requestAssetBrowserDropPeek("a/b.png", {}, /*asMovePayload=*/true);
+    REQUIRE(app->tick());
+    CHECK(app->assetBrowserLastDropPeekRefusal() == static_cast<int>(engine::editor::AssetOpRefusal::None));
+    REQUIRE(app->tick());
+    CHECK(engine::editor::fileExists(root + "/assets/b.png"));
+    CHECK(engine::editor::fileExists(root + "/assets/b.png.meta"));
+    CHECK_FALSE(engine::editor::fileExists(root + "/assets/a/b.png"));
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+}
+
+TEST_CASE("editor: the Asset Browser panel is STILL read-only by contract (task E.4.3, I225)") {
+    // 3.1.3's §V6 grep, promoted from a plan file (gitignored, gone at merge) into a case that
+    // survives. This task added five user-facing destructive operations and the panel still performs
+    // no I/O and names no filesystem type: it records an ActionKind, applyPending sets a one-shot,
+    // and EditorApp::tick() -- outside the draw walk -- is what touches disk.
+    const std::vector<std::string> code = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/asset_browser_panel.cpp");
+    REQUIRE(code.size() > 1000U);  // ANTI-VACUITY: the file was really read
+    CHECK(countLinesContaining(code, "#include <filesystem>") == 0U);
+    CHECK(countLinesContaining(code, "std::filesystem::") == 0U);
+    // ANTI-VACUITY on the OTHER side: the file really does carry this task's code, so the two zeros
+    // above are claims about a panel that gained destructive AFFORDANCES rather than about a file
+    // that never changed.
+    CHECK(countLinesContaining(code, "ActionKind::MoveEntry") >= 1U);
+    CHECK(countLinesContaining(code, "attachFolderDropTarget") >= 4U);
 }

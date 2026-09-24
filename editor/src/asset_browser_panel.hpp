@@ -364,7 +364,27 @@ private:
     // record / no valid guid -- the SOURCE-side twin of the peek rule (D11): refusal happens here, so
     // an illegal payload never exists. ONE helper, THREE call sites; it is 1:1 Begin/End internally
     // and contains no return between the pair.
-    void beginAssetDragSource(const std::string& relativePath, const char* previewText);
+    // task E.4.3: `isDirectory` is NON-DEFAULTED on purpose. The function CANNOT derive it -- it has
+    // only a path, and classifyAssetKind's own isDirectory argument was hardcoded false here because
+    // until E.4.3 a folder and an extension-less file took the same early return. They now take
+    // DIFFERENT arms (a folder has no sidecar, so its plan has one step and not two), so a default
+    // would let a future call site silently encode a folder as a file, with no error and no failing
+    // test. Non-defaulted makes every unconverted site a compile error, which is what makes this
+    // change atomic.
+    void beginAssetDragSource(const std::string& relativePath, const char* previewText, bool isDirectory);
+    // task E.4.3: attaches a folder drop target to the item JUST SUBMITTED. Call IMMEDIATELY after the
+    // item and BEFORE anything reads g.LastItemData. EndDragDropTarget runs ONLY when
+    // BeginDragDropTarget returned true -- F18's asymmetry, the opposite of EndChild's rule, and
+    // getting it backwards is an IM_ASSERT abort rather than a wrong picture.
+    void attachFolderDropTarget(const std::string& folderRelative);
+    // task E.4.3: the move arm of the drag source, as its OWN function rather than a second branch,
+    // so each stays 1:1 Begin/End with no return between the pair.
+    void beginAssetMoveBranch(const std::string& relativePath, const char* previewText, AssetKind kind,
+                              bool isDirectory);
+    // task E.4.3: the drop DECISION, shared by the real ImGui target and the injected seam, so the
+    // two cannot diverge. It IS classifyAssetMove, which is itself a call to assetOpPathLadder.
+    [[nodiscard]] static AssetOpRefusal folderDropVerdict(const std::string& source, const std::string& folderRelative);
+    void applyInjectedDropPeek();
     void drawIssues();  // phase 4b -- task 3.1.3, Step 9 (D11)
     // task E.4.3 -- also phase 4b, drawn AFTER the orphan modal. The two modals are gated on
     // pendingOrphanDelete.empty() by their caller, so the pre-existing one always wins.

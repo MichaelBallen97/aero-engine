@@ -336,6 +336,9 @@ void AssetBrowserPanel::drawHeader() {
         if (ImGui::SmallButton(breadcrumb[i].c_str())) {
             record(ActionKind::Navigate, accumulated);
         }
+        // task E.4.3 -- site 4: the breadcrumb segment. It is the affordance that makes "move up one
+        // level" possible at all, and the one a tree-only implementation silently omits.
+        attachFolderDropTarget(accumulated);
         ImGui::PopID();  // no continue/break/return between Push and Pop
     }
     ImGui::Separator();
@@ -410,6 +413,9 @@ void AssetBrowserPanel::drawTreePane(float paneHeight) {
             // carries NO open/closed information. Comparing it would record a spurious ToggleDir on
             // every leaf row every frame -- which would also CLOBBER a genuine click recorded by an
             // earlier row, because `pending` is one last-writer-wins slot.
+            // task E.4.3 -- site 1: the tree row, a folder by construction. Inside the
+            // Indent/Unindent and PushID/PopID pairs, with no continue/break/return between them.
+            attachFolderDropTarget(row.path);
             // task E.4.3: the right-click recorder, IMMEDIATELY after the item and inside the
             // PushID/PopID pair -- there is no continue/break/return between them (F13). It is
             // IsItemClicked(Right), never BeginPopupContextItem: a per-item popup would be keyed on
@@ -476,7 +482,7 @@ void AssetBrowserPanel::drawContentsList(float paneHeight) {
                         // task 3.1.5: IMMEDIATELY after the Selectable, before anything reads
                         // g.LastItemData. UNCONDITIONAL here -- searchAssets never matches a folder
                         // (the browser's own recorded fact), so every hit is a file.
-                        beginAssetDragSource(hit.relativePath, hit.relativePath.c_str());
+                        beginAssetDragSource(hit.relativePath, hit.relativePath.c_str(), /*isDirectory=*/false);
                         ImGui::SameLine(0.0F, 0.0F);
                         ImGui::TextUnformatted(hit.relativePath.c_str());
                         ImGui::PopID();  // no continue/break/return between Push and Pop
@@ -584,8 +590,9 @@ void AssetBrowserPanel::drawContentsList(float paneHeight) {
                     // task 3.1.5: same position as the search row above. GUARDED -- this list does
                     // show folders, and the helper's own kind test would refuse one anyway; checking
                     // the cheap thing here keeps findByPath off the per-directory path.
-                    if (!entry.isDirectory) {
-                        beginAssetDragSource(rel, entry.name.c_str());
+                    beginAssetDragSource(rel, entry.name.c_str(), entry.isDirectory);
+                    if (entry.isDirectory) {
+                        attachFolderDropTarget(rel);  // task E.4.3 -- site 3: a folder row in the list
                     }
                     if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) {  // task E.4.3
                         record(ActionKind::OpenContextMenu, rel);
@@ -611,20 +618,25 @@ void AssetBrowserPanel::drawContentsList(float paneHeight) {
 }
 
 // ---- task 3.1.5 (§0.11/§D-21): the ONE drag source, three call sites -------------------------------
-void AssetBrowserPanel::beginAssetDragSource(const std::string& relativePath, const char* previewText) {
+void AssetBrowserPanel::beginAssetDragSource(const std::string& relativePath, const char* previewText,
+                                             bool isDirectory) {
     // REFUSAL AT THE SOURCE, in this order. The cheap kind test runs before findByPath so a directory
     // never reaches the database at all, and a payload that would be refused at every target is never
     // created in the first place.
-    const AssetKind kind = classifyAssetKind(leafOf(relativePath), /*isDirectory=*/false);
-    if (!assetKindIsDraggable(kind)) {
-        return;  // Folder/Audio/Text/Unknown -- and .mtl, which is importable but Unknown-kinded
-    }
-    if (databasePtr == nullptr) {
-        return;
-    }
-    const AssetRecord* const record = databasePtr->findByPath(relativePath);
+    //
+    // task E.4.3: `isDirectory` is REAL now. classifyAssetKind's isDirectory argument only ever
+    // FORCES Folder, so no draggable kind changes classification and the asset arm below is
+    // byte-identical in behaviour -- a folder took the early return before and takes the MOVE branch
+    // now.
+    const AssetKind kind = classifyAssetKind(leafOf(relativePath), isDirectory);
+    const AssetRecord* const record =
+        (assetKindIsDraggable(kind) && databasePtr != nullptr) ? databasePtr->findByPath(relativePath) : nullptr;
     if (record == nullptr || !record->guid.valid()) {
-        return;  // not scanned yet, or an Invalid-state record: a nil guid is not a droppable identity
+        // NOT a draggable asset: a folder, a non-draggable kind (a .txt, a .mtl), an unscanned file,
+        // or an Invalid-state record. It can still be MOVED, which is the second payload's whole
+        // reason for existing.
+        beginAssetMoveBranch(relativePath, previewText, kind, isDirectory);
+        return;
     }
     if (!ImGui::BeginDragDropSource()) {
         return;  // NOT a drag this frame. EndDragDropSource is owed ONLY when this returned true.
@@ -642,6 +654,116 @@ void AssetBrowserPanel::beginAssetDragSource(const std::string& relativePath, co
     ImGui::SetDragDropPayload(ASSET_PAYLOAD_TYPE, &payload, sizeof(payload));  // ImGui COPIES (heap, >16B)
     ImGui::TextUnformatted(previewText);  // the house preview: label text, no thumbnail
     ImGui::EndDragDropSource();
+}
+
+// task E.4.3: the move arm. A SEPARATE function rather than a second branch inside the one above, so
+// each stays 1:1 Begin/End with no return between the pair -- the header's own standing constraint.
+//
+// The fit test happens BEFORE BeginDragDropSource: a path this long cannot be encoded, and a
+// TRUNCATING encode would silently move a DIFFERENT file. relativePath.empty() takes this refusal too,
+// through assetMovePayloadFits's first term -- the assets root is never draggable, and SourceIsRoot
+// would refuse it at the target anyway.
+//
+// Per-frame cost, measured against the pinned source rather than assumed: SetDragDropPayload
+// (imgui.cpp:15725) runs resize(0) then resize(n) EVERY frame the source is active, because the
+// default cond is ImGuiCond_Always -- and ImVector::resize reallocates only above capacity while
+// resize(0) does not free. So after the first frame of a drag this is ONE 1028-byte memcpy per frame
+// and ZERO allocations.
+void AssetBrowserPanel::beginAssetMoveBranch(const std::string& relativePath, const char* previewText, AssetKind kind,
+                                             bool isDirectory) {
+    if (!assetMovePayloadFits(relativePath)) {
+        return;
+    }
+    if (!ImGui::BeginDragDropSource()) {
+        return;
+    }
+    // NO memset: this type has no padding at all (1024 + 2 + 1 + 1 == 1028, already 2-aligned), which
+    // its own static_asserts pin -- unlike AssetDragPayload, whose seven tail bytes need one.
+    AssetMoveDragPayload payload{};
+    std::memcpy(payload.path.data(), relativePath.data(), relativePath.size());
+    payload.path[relativePath.size()] = '\0';
+    payload.length = static_cast<std::uint16_t>(relativePath.size());
+    payload.kind = static_cast<std::uint8_t>(kind);
+    payload.isDirectory = isDirectory ? 1U : 0U;
+    ImGui::SetDragDropPayload(ASSET_MOVE_PAYLOAD_TYPE, &payload, sizeof(payload));
+    ImGui::TextUnformatted(previewText);
+    ImGui::EndDragDropSource();
+}
+
+// task E.4.3: ONLY A FOLDER GETS A TARGET. A file tile submits none, so dropping on a file draws no
+// highlight and does nothing -- correct, and needing no refusal.
+//
+// THE PEEK RULE, a third application (hierarchy_panel.cpp:207-210's shape): classifyAssetMove runs
+// BEFORE AcceptDragDropPayload, so an illegal drop draws NO HIGHLIGHT. ImGui draws the highlight as a
+// side effect of Accept, so calling it and then deciding is a visible promise the editor then breaks.
+void AssetBrowserPanel::attachFolderDropTarget(const std::string& folderRelative) {
+    if (!ImGui::BeginDragDropTarget()) {
+        return;  // EndDragDropTarget is owed ONLY when this returned true (F18)
+    }
+    const ImGuiPayload* const peek = ImGui::GetDragDropPayload();
+    std::string source;
+    const char* acceptType = nullptr;
+    if (peek != nullptr && peek->IsDataType(ASSET_MOVE_PAYLOAD_TYPE)) {
+        source = decodeAssetMoveDragPayload(peek->Data, peek->DataSize).value_or(std::string{});
+        acceptType = ASSET_MOVE_PAYLOAD_TYPE;
+    } else if (peek != nullptr && peek->IsDataType(ASSET_PAYLOAD_TYPE)) {
+        // The payload is a HINT and the database is the AUTHORITY -- asset_drag.hpp's own rule,
+        // applied where it was written to apply. A record that vanished mid-drag yields "", and
+        // classifyAssetMove("", folder) then answers SourceIsRoot, so the drop refuses. That is right.
+        if (const std::optional<AssetDragPayload> decoded = decodeAssetDragPayload(peek->Data, peek->DataSize);
+            decoded.has_value() && databasePtr != nullptr) {
+            if (const AssetRecord* const found = databasePtr->findByGuid(decoded->guid); found != nullptr) {
+                source = found->relativePath;
+            }
+        }
+        acceptType = ASSET_PAYLOAD_TYPE;
+    }
+    if (acceptType != nullptr && folderDropVerdict(source, folderRelative) == AssetOpRefusal::None) {
+        if (ImGui::AcceptDragDropPayload(acceptType, ImGuiDragDropFlags_None) != nullptr) {
+            record(ActionKind::MoveEntry, source, folderRelative);
+        }
+        ++dropTargetsAcceptedCount;  // an EFFECT counter: the Accept call was really made
+    }
+    ImGui::EndDragDropTarget();
+}
+
+// task E.4.3: THE DECISION, shared by the real ImGui target above and the injected seam below, so
+// the two cannot diverge. It IS classifyAssetMove -- which is itself a call to assetOpPathLadder --
+// so the peek, the drop-time plan and this all answer from one ladder rather than three copies.
+AssetOpRefusal AssetBrowserPanel::folderDropVerdict(const std::string& source, const std::string& folderRelative) {
+    return classifyAssetMove(source, folderRelative);
+}
+
+// task E.4.3: the injected drop, and the honest statement of what it does and does not cover.
+//
+// NOTHING IN tests/ CAN PERFORM A REAL DRAG -- the backend rewrites io.MousePos every NewFrame -- so
+// ImGui's own BeginDragDropTarget/AcceptDragDropPayload half of the path above has NO AUTOMATED
+// WITNESS ANYWHERE, and the drop HIGHLIGHT has none either (validation row 4 is its only cover).
+// What this seam does exercise is everything the panel decides: the source resolution (including the
+// database re-resolution an asset payload goes through), the verdict through the SAME
+// folderDropVerdict the real target calls, and the ActionKind::MoveEntry record with BOTH paths.
+void AssetBrowserPanel::applyInjectedDropPeek() {
+    if (!dropPeekActive) {
+        return;
+    }
+    dropPeekActive = false;
+    std::string source = dropPeekSource;
+    if (!dropPeekIsMovePayload) {
+        // An ASSET payload carries a GUID, and the payload is a HINT while the database is the
+        // AUTHORITY. A record that vanished mid-drag resolves to "", which the verdict then refuses
+        // as SourceIsRoot -- the same arm the real target takes.
+        source.clear();
+        if (databasePtr != nullptr) {
+            if (const AssetRecord* const found = databasePtr->findByPath(dropPeekSource); found != nullptr) {
+                source = found->relativePath;
+            }
+        }
+    }
+    dropPeekRefusal = folderDropVerdict(source, dropPeekDestination);
+    if (dropPeekRefusal == AssetOpRefusal::None) {
+        ++dropTargetsAcceptedCount;
+        record(ActionKind::MoveEntry, source, dropPeekDestination);
+    }
 }
 
 // ---- phase 4 (grid): task 3.1.3, Step 6 -----------------------------------------------------------
@@ -672,8 +794,9 @@ void AssetBrowserPanel::drawTile(const FileEntry& entry, const std::string& rel,
     // task 3.1.5: BEFORE the draw-list capture, and that ordering is load-bearing --
     // BeginDragDropSource pushes a TOOLTIP WINDOW, so capturing this window's draw list afterwards
     // would be a question worth asking. Placing the helper first removes the question entirely.
-    if (!entry.isDirectory) {
-        beginAssetDragSource(rel, entry.name.c_str());
+    beginAssetDragSource(rel, entry.name.c_str(), entry.isDirectory);
+    if (entry.isDirectory) {
+        attachFolderDropTarget(rel);  // task E.4.3 -- site 2: a folder tile in the grid
     }
     if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) {  // task E.4.3
         record(ActionKind::OpenContextMenu, rel);
@@ -1619,7 +1742,8 @@ void AssetBrowserPanel::onDraw(PanelContext& /*context*/) {  // D18: the context
         record(ActionKind::OpenContextMenu, {});
     }
 
-    drawIssues();  // 4b -- task 3.1.3, Step 9
+    applyInjectedDropPeek();  // task E.4.3 -- before applyPending, so its record is drained this frame
+    drawIssues();             // 4b -- task 3.1.3, Step 9
     // task E.4.3: the context menu and the two modals, all in phase 4b, AFTER the orphan modal and
     // each gated on pendingOrphanDelete.empty() so the pre-existing modal always wins.
     drawContextMenu();
