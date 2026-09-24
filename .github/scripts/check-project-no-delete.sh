@@ -175,7 +175,12 @@ readonly PERMITTED_DELETERS=(
 for probe in \
   'std::filesystem::remove_all(target, ec);' \
   'std::filesystem::remove(target, ec);' \
-  'std::filesystem::rename(target, dest, ec);'; do
+  'std::filesystem::rename(target, dest, ec);' \
+  'std::filesystem::rename(pathFromUtf8(fromAbs), pathFromUtf8(toAbs), ec);' \
+  '        std::filesystem::rename(pathFromUtf8(toAbs), pathFromUtf8(fromAbs), rollbackEc);'; do
+  # The last two are the EXACT TEXT of task E.4.3's own call sites, including the leading indentation
+  # on one -- which is what proves the pattern is not anchored, rather than proving it matches a form
+  # nobody in this tree actually writes.
   if ! printf '%s\n' "$probe" | grep -qE "$DELETE_RE"; then
     echo "::error::project-no-delete guard (Check B): DELETE_RE in $0 no longer matches '$probe' -- it is" >&2
     echo "         vacuous for that form. Fix DELETE_RE." >&2
@@ -250,6 +255,84 @@ if [ "$checkBScanned" -eq 0 ]; then
   exit 2
 fi
 
+# --- Check B prong 2 (task E.4.3): no editor/src TU may ALIAS std::filesystem, or using-declare one
+# of the destructive names. DELETE_RE matches a SPELLING; an alias RENAMES the spelling and makes the
+# whole of Check B vacuous for that file -- `namespace fs = std::filesystem; fs::rename(a, b, ec);`
+# is invisible to it, in every file, permitted or not. Theoretical until E.4.3, because no editor TU
+# had any reason to write a rename; after it, the browser panel sits one temptation away.
+#
+# INVERTED ON PURPOSE (3.7.3's lesson: a command denylist over spellings CANNOT CONVERGE). Widening
+# DELETE_RE to chase `fs::rename` would invite `filesystem::rename`, a using-declaration and a
+# per-call alias in turn. This asserts the small, closed thing instead -- the only legitimate spelling
+# of the std::filesystem namespace in editor/src is the FULLY-QUALIFIED one -- and refuses everything
+# else.
+#
+# Applied over EVERY tracked editor/src/*.cpp, INCLUDING the two permitted ones: they may CALL a
+# destructive function, but they may not RENAME the namespace, because that would blind Check B for
+# them too the moment the allowlist ever shrinks.
+#
+# POSIX ERE, never `\b`: `grep -E '\b...'` degrades to a LITERAL `\b` on BSD/macOS, so the guard would
+# pass green while matching nothing. Explicit character classes only.
+readonly ALIAS_RE='(namespace[[:space:]]+[A-Za-z_][A-Za-z_0-9]*[[:space:]]*=[[:space:]]*(::)?(std::)?filesystem|using[[:space:]]+(::)?std::filesystem::(remove_all|remove|rename|copy))'
+
+# --- B-self-test 4 (task E.4.3): ALIAS_RE fires on each alias form. --------------------------------
+for probe in \
+  'namespace fs = std::filesystem;' \
+  'namespace stdfs = ::std::filesystem;' \
+  'using std::filesystem::rename;'; do
+  if ! printf '%s\n' "$probe" | grep -qE "$ALIAS_RE"; then
+    echo "::error::project-no-delete guard (Check B prong 2): ALIAS_RE in $0 no longer matches '$probe'" >&2
+    echo "         -- it is vacuous for that form. Fix ALIAS_RE." >&2
+    exit 2
+  fi
+done
+
+# --- B-self-test 5 (task E.4.3): and it does NOT over-match. ---------------------------------------
+# Arm 4 alone proves the pattern fires SOMEWHERE; this is what stops a pattern that matches
+# everything from passing it. Both arms are non-negotiable.
+for probe in \
+  '#include <filesystem>' \
+  'std::filesystem::rename(a, b, ec);' \
+  'namespace engine::editor {'; do
+  if printf '%s\n' "$probe" | grep -qE "$ALIAS_RE"; then
+    echo "::error::project-no-delete guard (Check B prong 2): ALIAS_RE in $0 OVER-matches '$probe' --" >&2
+    echo "         an ordinary include, a qualified call and a namespace opener must all pass." >&2
+    exit 2
+  fi
+done
+
+aliasViolations=""
+while IFS= read -r f; do
+  [ -z "$f" ] && continue
+  stripped="$(nl -ba -w1 -s: "$f" | sed -E 's|//.*||')"
+  hits="$(printf '%s\n' "$stripped" | grep -E "$ALIAS_RE" || true)"
+  if [ -n "$hits" ]; then
+    while IFS= read -r hit; do
+      n="${hit%%:*}"
+      aliasViolations="${aliasViolations}${f}:${n}: a std::filesystem namespace alias or using-declaration (task E.4.3, Check B prong 2)
+"
+    done <<< "$hits"
+  fi
+done < <(git ls-files -- 'editor/src/*.cpp')
+
+if [ -n "$aliasViolations" ]; then
+  echo "A std::filesystem alias was found in editor/src -- it makes Check B vacuous for that file (task E.4.3):" >&2
+  echo "$aliasViolations" >&2
+  echo "" >&2
+  echo "Fix: spell the namespace in full at every call site -- std::filesystem::rename(a, b, ec)." >&2
+  echo "     DELETE_RE matches a SPELLING, so an alias renames the spelling out of its reach. This" >&2
+  echo "     prong is deliberately an allowlist-shaped claim (the namespace is spelled ONE way) and" >&2
+  echo "     must never be 'fixed' by widening DELETE_RE to chase the alias forms." >&2
+  if [ -n "${GITHUB_ACTIONS:-}" ]; then
+    while IFS= read -r v; do
+      [ -z "$v" ] && continue
+      f="${v%%:*}"; rest="${v#*:}"; n="${rest%%:*}"
+      echo "::error file=${f},line=${n}::a std::filesystem namespace alias or using-declaration makes Check B vacuous for this file (task E.4.3). Spell the namespace in full."
+    done <<< "$aliasViolations"
+  fi
+  exit 1
+fi
+
 if [ -n "$checkBViolations" ]; then
   echo "A delete/rename call was found in a file NOT in Check B's PERMITTED_DELETERS allowlist (task 3.1.3 D13):" >&2
   echo "$checkBViolations" >&2
@@ -267,4 +350,4 @@ if [ -n "$checkBViolations" ]; then
   exit 1
 fi
 
-echo "project-no-delete guard: OK -- Check A: ${#FORBIDDEN_FILES[@]} files scanned, no delete/rename/copy in the project, asset or cache flow; Check B: ${checkBScanned} editor/src/*.cpp scanned, delete/rename confined to ${#PERMITTED_DELETERS[@]} permitted files"
+echo "project-no-delete guard: OK -- Check A: ${#FORBIDDEN_FILES[@]} files scanned, no delete/rename/copy in the project, asset or cache flow; Check B: ${checkBScanned} editor/src/*.cpp scanned, delete/rename confined to ${#PERMITTED_DELETERS[@]} permitted files, no std::filesystem alias in any of them"
