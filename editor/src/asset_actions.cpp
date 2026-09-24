@@ -51,25 +51,27 @@ bool looksLikeAnAbsoluteRoot(std::string_view root) noexcept {
 
 }  // namespace
 
-OrphanDeleteRefusal validateOrphanPath(std::string_view relativeMetaPath) noexcept {
-    const std::string_view leaf = leafOf(relativeMetaPath);
-    if (!isMetaFileName(leaf)) {
-        return OrphanDeleteRefusal::NotAMetaName;  // covers an empty path too (leafOf("") == "")
+// task E.4.3: validateOrphanPath's path-shape half, PROMOTED verbatim -- same checks, same order,
+// same pointer+length arithmetic. The file operations arriving in this task decide "is this a safe
+// assets-relative path" through this one function rather than four copies of it.
+AssetOpRefusal validateRelativeAssetPath(std::string_view relativePath) noexcept {
+    if (relativePath.empty()) {
+        return AssetOpRefusal::BadSourcePath;
     }
-    for (const char c : relativeMetaPath) {
+    for (const char c : relativePath) {
         if (c == '\\') {
-            return OrphanDeleteRefusal::EscapesRoot;  // a Windows separator must never reach a
-                                                      // relative key (2.2.4's paths are '/'-only)
+            return AssetOpRefusal::BadSourcePath;  // a Windows separator must never reach a
+                                                   // relative key (2.2.4's paths are '/'-only)
         }
     }
-    if (relativeMetaPath.front() == '/') {
-        return OrphanDeleteRefusal::EscapesRoot;  // an absolute POSIX path
+    if (relativePath.front() == '/') {
+        return AssetOpRefusal::BadSourcePath;  // an absolute POSIX path
     }
-    if (relativeMetaPath.size() >= 2) {
-        const char first = relativeMetaPath[0];
+    if (relativePath.size() >= 2) {
+        const char first = relativePath[0];
         const bool isAsciiLetter = (first >= 'A' && first <= 'Z') || (first >= 'a' && first <= 'z');
-        if (isAsciiLetter && relativeMetaPath[1] == ':') {
-            return OrphanDeleteRefusal::EscapesRoot;  // a rooted Windows drive letter ("C:...")
+        if (isAsciiLetter && relativePath[1] == ':') {
+            return AssetOpRefusal::BadSourcePath;  // a rooted Windows drive letter ("C:...")
         }
     }
     // ANY ".." SEGMENT, not merely the substring -- "..foo" and "foo.." are legal leaf names.
@@ -77,19 +79,74 @@ OrphanDeleteRefusal validateOrphanPath(std::string_view relativeMetaPath) noexce
     // may throw std::out_of_range -- bugprone-exception-escape (asset_view.cpp's rawExtensionOf
     // precedent, task 3.1.3's own earlier fix for the identical trap).
     std::size_t start = 0;
-    while (start <= relativeMetaPath.size()) {
-        const std::size_t slash = relativeMetaPath.find('/', start);
-        const std::size_t end = slash == std::string_view::npos ? relativeMetaPath.size() : slash;
-        const std::string_view segment(relativeMetaPath.data() + start, end - start);
+    while (start <= relativePath.size()) {
+        const std::size_t slash = relativePath.find('/', start);
+        const std::size_t end = slash == std::string_view::npos ? relativePath.size() : slash;
+        const std::string_view segment(relativePath.data() + start, end - start);
         if (segment == "..") {
-            return OrphanDeleteRefusal::EscapesRoot;
+            return AssetOpRefusal::BadSourcePath;
         }
         if (slash == std::string_view::npos) {
             break;
         }
         start = slash + 1;
     }
-    return OrphanDeleteRefusal::None;
+    return AssetOpRefusal::None;
+}
+
+OrphanDeleteRefusal validateOrphanPath(std::string_view relativeMetaPath) noexcept {
+    const std::string_view leaf = leafOf(relativeMetaPath);
+    if (!isMetaFileName(leaf)) {
+        return OrphanDeleteRefusal::NotAMetaName;  // covers an empty path too (leafOf("") == "")
+    }
+    // task E.4.3: the path-shape half is now validateRelativeAssetPath, shared with the file
+    // operations. The ORDER is unchanged -- the leaf test still runs FIRST, so an empty path and a
+    // non-sidecar name still report NotAMetaName and not EscapesRoot. AA1-AA24 pass UNEDITED, and
+    // that is the proof this promotion was behaviour-free.
+    return validateRelativeAssetPath(relativeMetaPath) == AssetOpRefusal::None ? OrphanDeleteRefusal::None
+                                                                               : OrphanDeleteRefusal::EscapesRoot;
+}
+
+std::string_view assetOpRefusalLabel(AssetOpRefusal refusal) noexcept {
+    // No `default:` -- a new enumerator is a -Wswitch error rather than a silent gap. That is the
+    // whole reason neither refusal enum carries a Count sentinel.
+    switch (refusal) {
+        case AssetOpRefusal::None:
+            return "None";
+        case AssetOpRefusal::NoProject:
+            return "NoProject";
+        case AssetOpRefusal::BadSourcePath:
+            return "BadSourcePath";
+        case AssetOpRefusal::BadDestination:
+            return "BadDestination";
+        case AssetOpRefusal::SourceIsRoot:
+            return "SourceIsRoot";
+        case AssetOpRefusal::BadName:
+            return "BadName";
+        case AssetOpRefusal::SourceMissing:
+            return "SourceMissing";
+        case AssetOpRefusal::DestinationMissing:
+            return "DestinationMissing";
+        case AssetOpRefusal::DestinationInsideSource:
+            return "DestinationInsideSource";
+        case AssetOpRefusal::AlreadyThere:
+            return "AlreadyThere";
+        case AssetOpRefusal::ListingIncomplete:
+            return "ListingIncomplete";
+        case AssetOpRefusal::NameTaken:
+            return "NameTaken";
+        case AssetOpRefusal::SidecarBlocked:
+            return "SidecarBlocked";
+        case AssetOpRefusal::TrashUnavailable:
+            return "TrashUnavailable";
+        case AssetOpRefusal::RenameFailed:
+            return "RenameFailed";
+        case AssetOpRefusal::SidecarRenameFailed:
+            return "SidecarRenameFailed";
+        case AssetOpRefusal::RollbackFailed:
+            return "RollbackFailed";
+    }
+    return "None";  // unreachable; enumerated so a new refusal is a -Wswitch warning, not silent
 }
 
 OrphanDeleteResult deleteOrphanMeta(std::string_view assetsRootUtf8, std::string_view relativeMetaPath) {

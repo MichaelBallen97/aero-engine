@@ -14,6 +14,7 @@
 
 #include <doctest/doctest.h>
 
+#include <array>
 #include <cstddef>
 #include <filesystem>
 #include <fstream>
@@ -320,4 +321,93 @@ TEST_CASE(
     const OrphanDeleteResult result = deleteOrphanMeta(dir.utf8(), "wood.png.meta");
     CHECK(result.deleted);
     CHECK(result.message.empty());
+}
+
+// ================================================================================================
+// task E.4.3, commit 1 -- the validateRelativeAssetPath promotion
+// ================================================================================================
+
+TEST_CASE(
+    "asset actions: validateRelativeAssetPath agrees with validateOrphanPath's path half on fourteen "
+    "inputs (AA25, task E.4.3)") {
+    // The promotion is behaviour-free, and AA1-AA24 passing UNEDITED is the primary proof. This is
+    // the secondary one: for every shape, the shared validator and the delegate answer the same.
+    // ".."-as-a-SEGMENT is the rule, never ".." as a prefix -- "..config" is a legal leaf name and
+    // nothing pinned that before.
+    struct Row {
+        std::string_view path;
+        bool safe;
+    };
+    constexpr std::array<Row, 14> ROWS{{
+        {"", false},
+        {"a", true},
+        {"a/b", true},
+        {"a\\b", false},
+        {"/a", false},
+        {"C:/a", false},
+        {"c:a", false},
+        {"../a", false},
+        {"a/../b", false},
+        {"a/..", false},
+        {"..config", true},
+        {"a/..config", true},
+        {"a/b/..", false},
+        {"a./b", true},
+    }};
+    std::size_t safeCount = 0;
+    std::size_t refusedCount = 0;
+    for (const Row& row : ROWS) {
+        CAPTURE(row.path);
+        const engine::editor::AssetOpRefusal shared = engine::editor::validateRelativeAssetPath(row.path);
+        CHECK(((shared == engine::editor::AssetOpRefusal::None) == row.safe));
+        if (row.safe) {
+            ++safeCount;
+        } else {
+            ++refusedCount;
+        }
+    }
+    // ANTI-VACUITY: a table that is all one way proves nothing about the other direction.
+    REQUIRE(safeCount >= 4U);
+    REQUIRE(refusedCount >= 4U);
+
+    SUBCASE("and the delegate answers EscapesRoot on exactly the paths the shared validator refuses") {
+        // A SEPARATE roster, spelled as whole sidecar paths rather than derived by appending ".meta"
+        // to the rows above. Appending would be wrong in two distinct ways and both are silent:
+        // "" + ".meta" is ".meta", which isMetaFileName REFUSES (5 bytes, not > 5), so the leaf test
+        // wins and the path half is never reached; and "a/.." + ".meta" is "a/...meta", whose last
+        // segment is no longer ".." at all, so the very rule under test disappears from the input.
+        constexpr std::array<Row, 9> SIDECARS{{
+            {"wood.png.meta", true},
+            {"a/wood.png.meta", true},
+            {"..config/wood.png.meta", true},
+            {"a./wood.png.meta", true},
+            {"a\\wood.png.meta", false},
+            {"/wood.png.meta", false},
+            {"C:/wood.png.meta", false},
+            {"../wood.png.meta", false},
+            {"a/../wood.png.meta", false},
+        }};
+        std::size_t agreements = 0;
+        for (const Row& row : SIDECARS) {
+            CAPTURE(row.path);
+            const bool sharedSafe =
+                engine::editor::validateRelativeAssetPath(row.path) == engine::editor::AssetOpRefusal::None;
+            const bool delegateSafe = validateOrphanPath(row.path) != OrphanDeleteRefusal::EscapesRoot;
+            CHECK(sharedSafe == row.safe);
+            CHECK(delegateSafe == row.safe);
+            ++agreements;
+        }
+        REQUIRE(agreements == SIDECARS.size());  // ANTI-VACUITY: the loop ran
+    }
+}
+
+TEST_CASE("asset actions: the delegate still runs its LEAF test FIRST (AA26, task E.4.3)") {
+    // The order is load-bearing and is why AA1-AA24 pass unedited: today's body checks the leaf
+    // first and the path shape second. Had the promotion swapped them, an empty path would start
+    // reporting EscapesRoot instead of NotAMetaName and at least two existing cases would flip.
+    CHECK((validateOrphanPath("") == OrphanDeleteRefusal::NotAMetaName));
+    // "../x.png" escapes AND is not a sidecar name; the leaf test wins because it runs first.
+    CHECK((validateOrphanPath("../x.png") == OrphanDeleteRefusal::NotAMetaName));
+    // The control: with a sidecar leaf, the SAME escaping path does reach the path test.
+    CHECK((validateOrphanPath("../x.png.meta") == OrphanDeleteRefusal::EscapesRoot));
 }
