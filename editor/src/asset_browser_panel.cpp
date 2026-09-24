@@ -101,7 +101,14 @@ void AssetBrowserPanel::setRoot(std::string rootPath) {
     confirmedOrphanDelete.clear();
 }
 
-void AssetBrowserPanel::record(ActionKind kind, std::string path) { pending = PendingAction{kind, std::move(path)}; }
+void AssetBrowserPanel::record(ActionKind kind, std::string path) {
+    // task E.4.3: DELEGATES, so no existing call site changes.
+    record(kind, std::move(path), std::string{});
+}
+
+void AssetBrowserPanel::record(ActionKind kind, std::string path, std::string destination) {
+    pending = PendingAction{kind, std::move(path), std::move(destination)};
+}
 
 const DirectoryListing* AssetBrowserPanel::cached(const std::string& rel) const {
     const auto it = cache.find(rel);
@@ -403,6 +410,13 @@ void AssetBrowserPanel::drawTreePane(float paneHeight) {
             // carries NO open/closed information. Comparing it would record a spurious ToggleDir on
             // every leaf row every frame -- which would also CLOBBER a genuine click recorded by an
             // earlier row, because `pending` is one last-writer-wins slot.
+            // task E.4.3: the right-click recorder, IMMEDIATELY after the item and inside the
+            // PushID/PopID pair -- there is no continue/break/return between them (F13). It is
+            // IsItemClicked(Right), never BeginPopupContextItem: a per-item popup would be keyed on
+            // PushID(i), an INDEX that changes the moment a directory above it opens.
+            if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) {
+                record(ActionKind::OpenContextMenu, row.path);
+            }
             if (!row.knownLeaf && nowOpen != row.open) {
                 record(ActionKind::ToggleDir, row.path);
             } else if (ImGui::IsItemClicked()) {
@@ -573,6 +587,9 @@ void AssetBrowserPanel::drawContentsList(float paneHeight) {
                     if (!entry.isDirectory) {
                         beginAssetDragSource(rel, entry.name.c_str());
                     }
+                    if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) {  // task E.4.3
+                        record(ActionKind::OpenContextMenu, rel);
+                    }
                     ImGui::SameLine(0.0F, 0.0F);
                     ImGui::TextUnformatted(entry.name.c_str());
                     ImGui::PopID();  // no continue/break/return between Push and Pop
@@ -657,6 +674,9 @@ void AssetBrowserPanel::drawTile(const FileEntry& entry, const std::string& rel,
     // would be a question worth asking. Placing the helper first removes the question entirely.
     if (!entry.isDirectory) {
         beginAssetDragSource(rel, entry.name.c_str());
+    }
+    if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) {  // task E.4.3
+        record(ActionKind::OpenContextMenu, rel);
     }
 
     // task 3.1.3, Step 7: three lines, none of which mutate (§D-7) -- the ONLY thumbnail participation
@@ -828,6 +848,198 @@ void AssetBrowserPanel::drawContentsGrid(float paneHeight) {
 // ---- phase 4b: issues (task 3.1.3, Step 9, D11) -------------------------------------------------
 // "The report IS the issues list" -- no new computation, no second source of truth. Shown ONLY when
 // the total is non-zero (no ride-along empty header on a clean project).
+// ---- task E.4.3: the context menu -- ONE constant-id popup per pane ------------------------------
+// A right-click records OpenContextMenu; the NEXT frame this opens "##assetctx" from
+// contextMenuRequested (clearing it) and draws the menu from contextTarget. One menu definition
+// serves all three call sites (tree row, grid tile, list row) plus the pane background.
+//
+// NOT BeginPopupContextItem: the tree's rows are PushID(static_cast<int>(i)) -- an INDEX -- so a
+// per-item popup is keyed on an id that changes the moment a directory above it opens, and the popup
+// would close or, worse, RETARGET.
+//
+// NO ACCELERATOR COLUMN. The F2/Del bindings do not ship: they need a third gating condition nobody
+// named -- !ImGui::GetIO().WantTextInput, because this panel's own header carries an InputText search
+// box, so Del while editing the query would delete the SELECTED ASSET. A menu that advertises a
+// shortcut and does nothing when it is pressed is a lie the tree would have to keep.
+void AssetBrowserPanel::drawContextMenu() {
+    constexpr const char* CONTEXT_MENU_ID = "##assetctx";
+    if (contextMenuRequested) {
+        ImGui::OpenPopup(CONTEXT_MENU_ID);
+        contextMenuRequested = false;
+    }
+    // F13: EndPopup ONLY when BeginPopup returned true -- the BeginMenu family, not the Begin one.
+    if (!ImGui::BeginPopup(CONTEXT_MENU_ID)) {
+        return;
+    }
+    const bool haveProject = !rootUtf8.empty();
+    const bool targetIsRoot = contextTarget.empty();
+
+    // contextMenuItemsDrawnCount is incremented once per MenuItem call the body ACTUALLY makes,
+    // INCLUDING a disabled one -- a BeginDisabled/EndDisabled pair still submits the item. The count
+    // proves the body RAN; the enable state is asserted separately through the seams' effects.
+    ImGui::BeginDisabled(!haveProject);
+    if (ImGui::MenuItem("New Folder")) {
+        record(ActionKind::NewFolder, {});
+    }
+    ++contextMenuItemsDrawnCount;
+    // BeginMenu SUBMITS its own menu item whether or not the submenu opens, so it counts here; the
+    // row inside counts only on the frames the submenu is actually open.
+    const bool newAssetOpen = ImGui::BeginMenu("New Asset");
+    ++contextMenuItemsDrawnCount;
+    if (newAssetOpen) {
+        if (ImGui::MenuItem("Material")) {
+            // D12: the SAME ActionKind the header's New Material button records. Two affordances,
+            // one implementation.
+            record(ActionKind::CreateMaterial, {});
+        }
+        ++contextMenuItemsDrawnCount;
+        ImGui::EndMenu();  // ONLY because BeginMenu returned true
+    }
+    ImGui::EndDisabled();
+
+    ImGui::Separator();
+    ImGui::BeginDisabled(targetIsRoot);
+    if (ImGui::MenuItem("Rename")) {
+        record(ActionKind::RequestRename, contextTarget);
+    }
+    ++contextMenuItemsDrawnCount;
+    if (ImGui::MenuItem("Delete")) {
+        record(ActionKind::RequestDelete, contextTarget);
+    }
+    ++contextMenuItemsDrawnCount;
+    ImGui::EndDisabled();
+
+    ImGui::Separator();
+    // Copy GUID: disabled for a folder and for a nil-guid record -- existing behaviour, unchanged.
+    const AssetRecord* const targetRecord =
+        (databasePtr != nullptr && !targetIsRoot) ? databasePtr->findByPath(contextTarget) : nullptr;
+    const bool canCopyGuid = targetRecord != nullptr && targetRecord->guid.valid();
+    ImGui::BeginDisabled(!canCopyGuid);
+    if (ImGui::MenuItem("Copy GUID")) {
+        labelScratch = formatGuid(targetRecord->guid);
+        ImGui::SetClipboardText(labelScratch.c_str());
+    }
+    ++contextMenuItemsDrawnCount;
+    ImGui::EndDisabled();
+
+    ImGui::EndPopup();
+}
+
+// ---- task E.4.3: the two confirmation modals ------------------------------------------------------
+// Both copy drawIssues's orphan modal VERBATIM: the IsPopupOpen guard, AlwaysAutoResize,
+// TextWrapped("%s", ...), SetItemDefaultFocus on the affirmative button, the hand-bound Escape, and
+// the `else` branch that treats a programmatic close as Cancel.
+//
+// Both are gated on pendingOrphanDelete.empty() by their caller, so the pre-existing modal always
+// wins if two are somehow pending at once -- ImGui will happily stack modals and the result is a UI a
+// user cannot reason about.
+void AssetBrowserPanel::drawRenameModal() {
+    constexpr const char* RENAME_MODAL_ID = "Rename asset";
+    if (pendingRename.empty()) {
+        return;
+    }
+    if (!ImGui::IsPopupOpen(RENAME_MODAL_ID)) {
+        ImGui::OpenPopup(RENAME_MODAL_ID);
+    }
+    if (ImGui::BeginPopupModal(RENAME_MODAL_ID, nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        ++renameModalDrawn;  // an EFFECT counter: incremented inside the body that really drew
+        labelScratch = "Rename \"" + pendingRename + "\"";
+        ImGui::TextWrapped("%s", labelScratch.c_str());  // NEVER a bare format string (F14)
+        if (renameFocusPending) {
+            ImGui::SetKeyboardFocusHere();
+            renameFocusPending = false;  // the FIRST frame only, or the field can never lose focus
+        }
+        engine::editor::inputTextString("##renameLeaf", renameBuffer, ImGuiInputTextFlags_None);
+        // Recomputed EVERY frame the modal draws, from a pure call with no disk touch -- so it is
+        // legal inside phase 4b, and the button's disabled state and the error line can never
+        // disagree, because both read this one variable computed once.
+        renameRefusal = validateAssetName(renameBuffer);
+        if (renameRefusal != AssetNameRefusal::None) {
+            labelScratch = assetNameRefusalMessage(renameRefusal);
+            ImGui::TextWrapped("%s", labelScratch.c_str());
+        }
+        ImGui::Separator();
+        ImGui::BeginDisabled(renameRefusal != AssetNameRefusal::None);
+        if (ImGui::Button("Rename")) {
+            renameRequest = AssetRenameRequest{pendingRename, renameBuffer};
+            pendingRename.clear();
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndDisabled();
+        ImGui::SetItemDefaultFocus();  // Enter == Rename
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel")) {
+            pendingRename.clear();
+            ImGui::CloseCurrentPopup();
+        }
+        // ImGui CANNOT dismiss a MODAL with Escape: NavUpdateCancelRequest's popup branch excludes
+        // ImGuiWindowFlags_Modal (imgui.cpp:15032) and BeginPopupModal always sets it
+        // (imgui.cpp:13232) -- and the editor never enables ImGuiConfigFlags_NavEnableKeyboard
+        // (imgui_layer.cpp:82), so that path is doubly dead. Bind it ourselves, here, in the body.
+        if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
+            pendingRename.clear();
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    } else {
+        // A safety net, not the Esc mechanism above: only a PROGRAMMATIC close reaches here, because
+        // a modal swallows outside clicks. Treating it as Cancel keeps the flow from wedging.
+        pendingRename.clear();
+    }
+}
+
+void AssetBrowserPanel::drawAssetDeleteModal() {
+    constexpr const char* DELETE_ASSET_MODAL_ID = "Delete asset?";
+    if (pendingDelete.empty()) {
+        return;
+    }
+    if (!ImGui::IsPopupOpen(DELETE_ASSET_MODAL_ID)) {
+        ImGui::OpenPopup(DELETE_ASSET_MODAL_ID);
+    }
+    if (ImGui::BeginPopupModal(DELETE_ASSET_MODAL_ID, nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        ++assetDeleteModalDrawn;
+        // isDirectory comes from the CACHED LISTING's FileEntry, never from classifyAssetKind --
+        // which cannot tell a folder from an extension-less file.
+        bool isDirectory = false;
+        if (const DirectoryListing* const parentListing = cached(parentOf(pendingDelete)); parentListing != nullptr) {
+            const std::string_view leaf = leafOf(pendingDelete);
+            for (const FileEntry& entry : parentListing->entries) {
+                if (entry.name == leaf) {
+                    isDirectory = entry.isDirectory;
+                    break;
+                }
+            }
+        }
+        // ZERO I/O: countRecordsUnder is a lower_bound plus a walk over records(), which is exactly
+        // what makes the count legal inside phase 4b at all.
+        const std::size_t indexed =
+            databasePtr != nullptr ? countRecordsUnder(databasePtr->records(), pendingDelete) : 0;
+        const AssetDeletePrompt prompt = assetDeletePromptFor(pendingDelete, isDirectory, indexed);
+        ImGui::TextWrapped("%s", prompt.title.c_str());
+        ImGui::TextWrapped("%s", prompt.detail.c_str());
+        ImGui::TextDisabled("%s", prompt.footer.c_str());
+        ImGui::Separator();
+        if (ImGui::Button("Delete")) {
+            deleteRequest = pendingDelete;  // nothing touches disk here (D9)
+            pendingDelete.clear();
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::SetItemDefaultFocus();  // Enter == Delete
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel")) {
+            pendingDelete.clear();
+            ImGui::CloseCurrentPopup();
+        }
+        if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {  // see drawRenameModal's citation
+            pendingDelete.clear();
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    } else {
+        pendingDelete.clear();
+    }
+}
+
 void AssetBrowserPanel::drawIssues() {
     // task 3.1.3, Step 11: the delete-confirmation modal. Opened by applyPending() setting
     // pendingOrphanDelete (never from inside this draw walk); 2.5.1's shell_ui.cpp:247-302 shape
@@ -1243,6 +1455,33 @@ void AssetBrowserPanel::applyPending() {
             // recorded in the same frame is resolved by this same switch, and the last writer wins.
             createMaterialRequest = currentDir;
             break;
+        // ---- task E.4.3 -------------------------------------------------------------------------
+        case ActionKind::OpenContextMenu:
+            // ONE action, THREE effects, and that is not a shortcut: `pending` is one
+            // last-writer-wins slot (F1), so recording a separate SelectEntry beside this would
+            // clobber it and the menu would open on a stale target.
+            selectedEntry = action.path;
+            contextTarget = action.path;
+            contextMenuRequested = true;
+            break;
+        case ActionKind::NewFolder:
+            // CreateMaterial's arm verbatim: `currentDir` is read HERE because applyPending is the
+            // one place that sees committed state.
+            newFolderRequest = currentDir;
+            break;
+        case ActionKind::RequestRename:
+            pendingRename = action.path;
+            renameBuffer = std::string(leafOf(action.path));
+            renameRefusal = AssetNameRefusal::None;
+            renameFocusPending = true;
+            break;
+        case ActionKind::RequestDelete:
+            pendingDelete = action.path;  // and NOTHING else
+            break;
+        case ActionKind::MoveEntry:
+            // The ONLY kind that reads PendingAction::destination.
+            moveRequest = AssetMoveRequest{action.path, action.destination};
+            break;
     }
 }
 
@@ -1305,10 +1544,62 @@ void AssetBrowserPanel::requestSelectEntry(std::string relativePath) {
 // the SAME applyPending() arm and picks up the SAME currentDir a click would.
 void AssetBrowserPanel::requestCreateMaterial() noexcept { record(ActionKind::CreateMaterial, {}); }
 
+// ---- task E.4.3: the seven gesture seams plus requestDropPeek --------------------------------------
+// The first five record EXACTLY what a real widget records, so the next onDraw() drains each through
+// the SAME applyPending() arm. The two COMMIT seams do not: they model the modal's own button, which
+// sets the one-shot directly from inside the popup body -- the orphan modal's Delete button verbatim.
+void AssetBrowserPanel::requestContextMenu(std::string path) { record(ActionKind::OpenContextMenu, std::move(path)); }
+void AssetBrowserPanel::requestNewFolder() noexcept { record(ActionKind::NewFolder, {}); }
+void AssetBrowserPanel::requestRename(std::string path) { record(ActionKind::RequestRename, std::move(path)); }
+void AssetBrowserPanel::requestDelete(std::string path) { record(ActionKind::RequestDelete, std::move(path)); }
+void AssetBrowserPanel::requestMove(std::string path, std::string destinationDir) {
+    record(ActionKind::MoveEntry, std::move(path), std::move(destinationDir));
+}
+
+void AssetBrowserPanel::requestRenameCommit(std::string newLeaf) {
+    // The modal's Rename button, verbatim -- including its refusal: an illegal name sets NOTHING and
+    // leaves the modal up with its error line, which is what the button's BeginDisabled achieves for
+    // a real click.
+    if (pendingRename.empty()) {
+        return;
+    }
+    if (validateAssetName(newLeaf) != AssetNameRefusal::None) {
+        renameRefusal = validateAssetName(newLeaf);
+        renameBuffer = std::move(newLeaf);
+        return;
+    }
+    renameRequest = AssetRenameRequest{pendingRename, std::move(newLeaf)};
+    pendingRename.clear();
+}
+
+void AssetBrowserPanel::requestDeleteConfirm() noexcept {
+    if (pendingDelete.empty()) {
+        return;  // nothing pending: the one-shot stays "" and the drain sees no request
+    }
+    // MOVE, never copy: this function is noexcept and a string COPY can throw std::bad_alloc, which
+    // bugprone-exception-escape rejects. takeOrphanDeleteRequest's own idiom -- move out, then clear,
+    // because a moved-from string is valid but unspecified.
+    deleteRequest = std::move(pendingDelete);
+    pendingDelete.clear();
+}
+
+void AssetBrowserPanel::requestDropPeek(std::string sourcePath, std::string destinationDir, bool asMovePayload) {
+    dropPeekActive = true;
+    dropPeekIsMovePayload = asMovePayload;
+    dropPeekSource = std::move(sourcePath);
+    dropPeekDestination = std::move(destinationDir);
+}
+
 // ---- the frame ---------------------------------------------------------------------------------
 void AssetBrowserPanel::onDraw(PanelContext& /*context*/) {  // D18: the context is IGNORED
-    reconcile();                                             // 1 -- the only I/O
-    drawHeader();                                            // 2
+    // task E.4.3: the EFFECT counters reset at the TOP of every frame, BEFORE reconcile(), so each
+    // reports what THIS frame's bodies did rather than an accumulating lifetime total.
+    contextMenuItemsDrawnCount = 0;
+    renameModalDrawn = 0;
+    assetDeleteModalDrawn = 0;
+    dropTargetsAcceptedCount = 0;
+    reconcile();   // 1 -- the only I/O
+    drawHeader();  // 2
     // Reserve one line for the footer. std::max keeps a very short panel from passing a NEGATIVE
     // height to BeginChild, which ImGui reads as "bottom-align at N from the edge", not as zero.
     const float footerHeight = ImGui::GetFrameHeightWithSpacing();
@@ -1320,7 +1611,22 @@ void AssetBrowserPanel::onDraw(PanelContext& /*context*/) {  // D18: the context
     } else {
         drawContentsList(paneHeight);
     }
-    drawIssues();    // 4b -- task 3.1.3, Step 9
+    // task E.4.3: the pane BACKGROUND is a legal context target ("" -- New Folder and New Asset
+    // apply there). Recorded only when the click landed on no item at all, so it can never steal a
+    // row's own right-click.
+    if (ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows) && !ImGui::IsAnyItemHovered() &&
+        ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
+        record(ActionKind::OpenContextMenu, {});
+    }
+
+    drawIssues();  // 4b -- task 3.1.3, Step 9
+    // task E.4.3: the context menu and the two modals, all in phase 4b, AFTER the orphan modal and
+    // each gated on pendingOrphanDelete.empty() so the pre-existing modal always wins.
+    drawContextMenu();
+    if (pendingOrphanDelete.empty()) {
+        drawRenameModal();
+        drawAssetDeleteModal();
+    }
     drawFooter();    // 5
     applyPending();  // the ONLY place anything mutates
 }

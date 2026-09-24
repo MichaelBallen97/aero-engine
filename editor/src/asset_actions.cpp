@@ -309,22 +309,72 @@ namespace {
 
 }  // namespace
 
+namespace {
+
+// task E.4.3: the human sentence for a PLANNER refusal. The executor composes its own (an
+// error_code's message, or a path pair), so this covers the rungs alone. Without it every planner
+// refusal reached the log as an empty clause -- measured through I221(a), whose WARN read
+// "refused to move 'a/b.png' --  (NameTaken)".
+[[nodiscard]] std::string plannerRefusalMessage(AssetOpRefusal refusal) {
+    switch (refusal) {
+        case AssetOpRefusal::None:
+            return {};
+        case AssetOpRefusal::SourceIsRoot:
+            return "the assets root itself cannot be renamed, moved or deleted";
+        case AssetOpRefusal::BadSourcePath:
+            return "that is not a safe assets-relative path";
+        case AssetOpRefusal::BadDestination:
+            return "the destination is not a safe assets-relative path";
+        case AssetOpRefusal::BadName:
+            return "that name cannot be used";  // nameRefusal carries WHICH rule
+        case AssetOpRefusal::AlreadyThere:
+            return "it is already in that folder";
+        case AssetOpRefusal::DestinationInsideSource:
+            return "a folder cannot be moved into itself or into one of its own subfolders";
+        case AssetOpRefusal::DestinationMissing:
+            return "the destination folder does not exist";
+        case AssetOpRefusal::ListingIncomplete:
+            return "the destination folder could not be read in full";
+        case AssetOpRefusal::NameTaken:
+            return "something with that name is already there";
+        case AssetOpRefusal::SidecarBlocked:
+            return "its .meta sidecar's destination name is already taken";
+        // The executor's own outcomes: it composes each message itself, from an error_code or a path
+        // pair, so none of them is ever produced by the planner.
+        case AssetOpRefusal::NoProject:
+        case AssetOpRefusal::SourceMissing:
+        case AssetOpRefusal::TrashUnavailable:
+        case AssetOpRefusal::RenameFailed:
+        case AssetOpRefusal::SidecarRenameFailed:
+        case AssetOpRefusal::RollbackFailed:
+            return {};
+    }
+    return {};  // unreachable; enumerated so a new refusal is a -Wswitch warning
+}
+
+}  // namespace
+
 AssetOpPlan planAssetOp(AssetOpKind kind, const AssetOpInputs& inputs, const DirectoryListing& destinationListing) {
     AssetOpPlan plan;
+    // Every `return plan` below runs through this, so a rung cannot ship a refusal with no sentence.
+    const auto refuse = [&plan](AssetOpRefusal refusal) -> AssetOpPlan& {
+        plan.refusal = refusal;
+        plan.message = plannerRefusalMessage(refusal);
+        return plan;
+    };
 
     // Rungs 1, 2, 3, 5 and 6 -- the SHARED ladder, called rather than restated, so classifyAssetMove
     // and this function cannot disagree about DestinationInsideSource.
-    plan.refusal = assetOpPathLadder(kind, inputs.sourceRelative, inputs.destinationDirRelative);
-    if (plan.refusal != AssetOpRefusal::None) {
-        return plan;
+    if (const AssetOpRefusal ladder = assetOpPathLadder(kind, inputs.sourceRelative, inputs.destinationDirRelative);
+        ladder != AssetOpRefusal::None) {
+        return refuse(ladder);
     }
 
     // Rung 4: the typed leaf, for the two kinds that carry one.
     if (kind == AssetOpKind::Rename || kind == AssetOpKind::CreateFolder) {
         plan.nameRefusal = validateAssetName(inputs.newLeaf);
         if (plan.nameRefusal != AssetNameRefusal::None) {
-            plan.refusal = AssetOpRefusal::BadName;
-            return plan;
+            return refuse(AssetOpRefusal::BadName);
         }
     }
 
@@ -333,14 +383,12 @@ AssetOpPlan planAssetOp(AssetOpKind kind, const AssetOpInputs& inputs, const Dir
     // as "the folder could not be read in full" -- true, and useless.
     if (kind == AssetOpKind::Move &&
         (destinationListing.status == ScanStatus::Missing || destinationListing.status == ScanStatus::NotADirectory)) {
-        plan.refusal = AssetOpRefusal::DestinationMissing;
-        return plan;
+        return refuse(AssetOpRefusal::DestinationMissing);
     }
     // Rung 8: a PREFIX cannot prove a name is free. Skipped for Delete, whose trash sequence
     // directory is fresh by construction and whose caller therefore passes DirectoryListing{}.
     if (kind != AssetOpKind::Delete && !listingIsComplete(destinationListing)) {
-        plan.refusal = AssetOpRefusal::ListingIncomplete;
-        return plan;
+        return refuse(AssetOpRefusal::ListingIncomplete);
     }
 
     // ---- step composition. The switch has NO `default:` so a fifth kind is a -Wswitch error. ----
@@ -349,8 +397,7 @@ AssetOpPlan planAssetOp(AssetOpKind kind, const AssetOpInputs& inputs, const Dir
         case AssetOpKind::CreateFolder: {
             const std::string target = joinRelative(inputs.sourceRelative, inputs.newLeaf);
             if (listingHolds(destinationListing, inputs.newLeaf, {})) {
-                plan.refusal = AssetOpRefusal::NameTaken;
-                return plan;
+                return refuse(AssetOpRefusal::NameTaken);
             }
             plan.directoryToCreate = AssetOpPath{AssetPathBase::AssetsRoot, target};
             plan.stepCount = 0;
@@ -363,8 +410,7 @@ AssetOpPlan planAssetOp(AssetOpKind kind, const AssetOpInputs& inputs, const Dir
             // Rung 9, with the case-only carve-out: a rename whose new leaf ASCII-case-folds equal
             // to the old one and differs byte-wise is PERMITTED.
             if (listingHolds(destinationListing, inputs.newLeaf, sourceLeaf)) {
-                plan.refusal = AssetOpRefusal::NameTaken;
-                return plan;
+                return refuse(AssetOpRefusal::NameTaken);
             }
             plan.steps[0] = AssetOpStep{AssetOpPath{AssetPathBase::AssetsRoot, std::string(inputs.sourceRelative)},
                                         AssetOpPath{AssetPathBase::AssetsRoot, target}};
@@ -374,10 +420,9 @@ AssetOpPlan planAssetOp(AssetOpKind kind, const AssetOpInputs& inputs, const Dir
                 // point at which refusing a half-move is still free.
                 const std::string sidecarLeaf = metaFileNameFor(inputs.newLeaf);
                 if (listingHolds(destinationListing, sidecarLeaf, metaFileNameFor(sourceLeaf))) {
-                    plan.refusal = AssetOpRefusal::SidecarBlocked;
                     plan.stepCount = 0;
                     plan.steps = {};
-                    return plan;
+                    return refuse(AssetOpRefusal::SidecarBlocked);
                 }
                 plan.steps[1] = AssetOpStep{
                     AssetOpPath{AssetPathBase::AssetsRoot, joinRelative(parent, metaFileNameFor(sourceLeaf))},
@@ -392,8 +437,7 @@ AssetOpPlan planAssetOp(AssetOpKind kind, const AssetOpInputs& inputs, const Dir
             // No carve-out here: a move to a DIFFERENT directory has no "the entry it collides with
             // is the source itself" argument.
             if (listingHolds(destinationListing, sourceLeaf, {})) {
-                plan.refusal = AssetOpRefusal::NameTaken;
-                return plan;
+                return refuse(AssetOpRefusal::NameTaken);
             }
             plan.steps[0] = AssetOpStep{AssetOpPath{AssetPathBase::AssetsRoot, std::string(inputs.sourceRelative)},
                                         AssetOpPath{AssetPathBase::AssetsRoot, target}};
@@ -401,10 +445,9 @@ AssetOpPlan planAssetOp(AssetOpKind kind, const AssetOpInputs& inputs, const Dir
             if (!inputs.sourceIsDirectory) {
                 const std::string sidecarLeaf = metaFileNameFor(sourceLeaf);
                 if (listingHolds(destinationListing, sidecarLeaf, {})) {
-                    plan.refusal = AssetOpRefusal::SidecarBlocked;
                     plan.stepCount = 0;
                     plan.steps = {};
-                    return plan;
+                    return refuse(AssetOpRefusal::SidecarBlocked);
                 }
                 plan.steps[1] = AssetOpStep{
                     AssetOpPath{AssetPathBase::AssetsRoot, joinRelative(parentOf(inputs.sourceRelative), sidecarLeaf)},

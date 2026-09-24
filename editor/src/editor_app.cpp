@@ -742,8 +742,47 @@ bool EditorApp::tick() {
             // the new file and the scan that mints its `.meta` are ONE pass rather than two ticks apart.
             materialCreated = createMaterialAsset(*createMaterialDir);
         }
-        const bool refresh =
-            assetRescanRequested || panelRefresh || orphanHandled || watchFired || materialCreated;  // task 3.1.4
+        // task E.4.3: four MORE one-shots in this block, each drained as its OWN statement for the
+        // identical F9 reason -- and all four inside ONE `if (assetBrowserPanel != nullptr)` block,
+        // none on the right of a `&&`. The existing panelRefresh/panelReimport lines use
+        // `!= nullptr &&` because their takers return bool, and short-circuiting a bool taker is the
+        // exact bug F9 names; those two are pre-existing and untouched, but the new four must not
+        // copy that shape. A moved-from optional is still ENGAGED, so every taker resets afterwards.
+        std::optional<std::string> newFolderDir;
+        std::optional<AssetRenameRequest> renameReq;
+        std::optional<AssetMoveRequest> moveReq;
+        std::string deleteRel;
+        if (assetBrowserPanel != nullptr) {
+            newFolderDir = assetBrowserPanel->takeNewFolderRequest();
+            renameReq = assetBrowserPanel->takeRenameRequest();
+            moveReq = assetBrowserPanel->takeMoveRequest();
+            deleteRel = assetBrowserPanel->takeDeleteRequest();
+        }
+        bool fileOpPerformed = false;
+        if (newFolderDir.has_value()) {
+            (void)createAssetFolder(*newFolderDir);
+            fileOpPerformed = true;
+        }
+        if (renameReq.has_value()) {
+            (void)renameAssetEntry(renameReq->path, renameReq->newLeaf);
+            fileOpPerformed = true;
+        }
+        if (moveReq.has_value()) {
+            (void)moveAssetEntry(moveReq->path, moveReq->destinationDir);
+            fileOpPerformed = true;
+        }
+        if (!deleteRel.empty()) {
+            (void)deleteAssetEntry(deleteRel);
+            fileOpPerformed = true;
+        }
+        // task E.4.3: TRUE when any of the four operations above was ATTEMPTED -- performed OR
+        // refused -- on orphanHandled's rule (a refusal means the tree changed under us, so the
+        // listing is stale either way). materialCreated above is deliberately NOT this shape: it is
+        // 3.4.2's return value and its refusal-does-not-rescan behaviour is that task's contract,
+        // pinned by that task's cases.
+        const bool refresh = assetRescanRequested || panelRefresh || orphanHandled || watchFired ||
+                             materialCreated      // task 3.1.4
+                             || fileOpPerformed;  // task E.4.3
         const bool reimport = assetReimportRequested || panelReimport;
         assetRescanRequested = false;
         assetReimportRequested = false;
@@ -1437,6 +1476,83 @@ void EditorApp::requestAssetBrowserCreateMaterial() noexcept {
     if (assetBrowserPanel != nullptr) {
         assetBrowserPanel->requestCreateMaterial();
     }
+}
+
+// ---- task E.4.3: the seven forwarders ------------------------------------------------------------
+// Each takes requestAssetBrowserCreateMaterial's exact shape: null-check the panel, forward, return
+// void. Rename and Delete each need TWO, one that OPENS the modal and one that COMMITS it: a single
+// commit-forwarder would set the one-shot and prove nothing about whether the modal ever drew, and a
+// forwarder for the commit alone would make the modal unobservable. Both are needed on both sides,
+// so the two counts are equal by construction.
+void EditorApp::requestAssetBrowserContextMenu(std::string path) {
+    if (assetBrowserPanel != nullptr) {
+        assetBrowserPanel->requestContextMenu(std::move(path));
+    }
+}
+void EditorApp::requestAssetBrowserNewFolder() noexcept {
+    if (assetBrowserPanel != nullptr) {
+        assetBrowserPanel->requestNewFolder();
+    }
+}
+void EditorApp::requestAssetBrowserRename(std::string path) {
+    if (assetBrowserPanel != nullptr) {
+        assetBrowserPanel->requestRename(std::move(path));
+    }
+}
+void EditorApp::requestAssetBrowserRenameCommit(std::string newLeaf) {
+    if (assetBrowserPanel != nullptr) {
+        assetBrowserPanel->requestRenameCommit(std::move(newLeaf));
+    }
+}
+void EditorApp::requestAssetBrowserDelete(std::string path) {
+    if (assetBrowserPanel != nullptr) {
+        assetBrowserPanel->requestDelete(std::move(path));
+    }
+}
+void EditorApp::requestAssetBrowserDeleteConfirm() noexcept {
+    if (assetBrowserPanel != nullptr) {
+        assetBrowserPanel->requestDeleteConfirm();
+    }
+}
+void EditorApp::requestAssetBrowserMove(std::string path, std::string destinationDir) {
+    if (assetBrowserPanel != nullptr) {
+        assetBrowserPanel->requestMove(std::move(path), std::move(destinationDir));
+    }
+}
+// The EIGHTH seam (see the panel's own comment): it models a PAYLOAD STATE, not a gesture, and has
+// no applyPending arm -- so §1.4.3's count of seven deliberately does not include it.
+void EditorApp::requestAssetBrowserDropPeek(std::string sourcePath, std::string destinationDir, bool asMovePayload) {
+    if (assetBrowserPanel != nullptr) {
+        assetBrowserPanel->requestDropPeek(std::move(sourcePath), std::move(destinationDir), asMovePayload);
+    }
+}
+
+// ---- task E.4.3: the black-box observables the GPU tier asserts through -------------------------
+bool EditorApp::assetBrowserRenameModalPending() const noexcept {
+    return assetBrowserPanel != nullptr && assetBrowserPanel->renameModalPending();
+}
+bool EditorApp::assetBrowserAssetDeleteModalPending() const noexcept {
+    return assetBrowserPanel != nullptr && assetBrowserPanel->assetDeleteModalPending();
+}
+std::size_t EditorApp::assetBrowserContextMenuItemsDrawn() const noexcept {
+    return assetBrowserPanel != nullptr ? assetBrowserPanel->contextMenuItemsDrawn() : 0;
+}
+std::size_t EditorApp::assetBrowserRenameModalDrawnCount() const noexcept {
+    return assetBrowserPanel != nullptr ? assetBrowserPanel->renameModalDrawnCount() : 0;
+}
+std::size_t EditorApp::assetBrowserDeleteModalDrawnCount() const noexcept {
+    return assetBrowserPanel != nullptr ? assetBrowserPanel->assetDeleteModalDrawnCount() : 0;
+}
+std::size_t EditorApp::assetBrowserDropTargetsAccepted() const noexcept {
+    return assetBrowserPanel != nullptr ? assetBrowserPanel->dropTargetsAccepted() : 0;
+}
+int EditorApp::assetBrowserLastDropPeekRefusal() const noexcept {
+    // An INT, so AssetOpRefusal itself never reaches editor_app.hpp's surface -- modelImportState()'s
+    // own posture, applied a second time.
+    return assetBrowserPanel != nullptr ? static_cast<int>(assetBrowserPanel->lastDropPeekRefusal()) : 0;
+}
+std::string_view EditorApp::assetBrowserContextMenuTarget() const noexcept {
+    return assetBrowserPanel != nullptr ? std::string_view(assetBrowserPanel->contextMenuTarget()) : std::string_view{};
 }
 
 void EditorApp::requestMaterialDocument(MaterialDocument document) { requestedMaterialDocument = std::move(document); }
@@ -2319,6 +2435,44 @@ namespace {
     return !assetsRoot.empty() && !projectRoot.empty();
 }
 
+// task E.4.3: New Folder's unique name. NOT uniqueMaterialFileName, which APPENDS ".aeromat" -- a
+// folder has no extension, and reusing it created "NewFolder.aeromat" as a directory (caught by
+// I216). Same shape otherwise: "NewFolder", "NewFolder-2", ..., "" on exhaustion, compared
+// ASCII-case-insensitively so two names differing only in case cannot collide on a case-insensitive
+// filesystem.
+[[nodiscard]] std::string uniqueFolderName(std::string_view stem, std::span<const std::string_view> taken,
+                                           std::size_t maxAttempts) {
+    const auto foldedEqual = [](std::string_view a, std::string_view b) {
+        if (a.size() != b.size()) {
+            return false;
+        }
+        const auto fold = [](char c) { return (c >= 'A' && c <= 'Z') ? static_cast<char>(c + ('a' - 'A')) : c; };
+        for (std::size_t i = 0; i < a.size(); ++i) {
+            if (fold(a[i]) != fold(b[i])) {
+                return false;
+            }
+        }
+        return true;
+    };
+    for (std::size_t attempt = 1; attempt <= maxAttempts; ++attempt) {
+        std::string candidate(stem);
+        if (attempt > 1) {
+            candidate += "-" + std::to_string(attempt);
+        }
+        bool collides = false;
+        for (const std::string_view name : taken) {
+            if (foldedEqual(name, candidate)) {
+                collides = true;
+                break;
+            }
+        }
+        if (!collides) {
+            return candidate;
+        }
+    }
+    return {};
+}
+
 // task E.4.3: one WARN per refusal, in the "{}"-formatted form. AERO_LOG_WARN's FIRST argument is the
 // FORMAT STRING, and a two-argument call silently discards the second (E.2.4's finding).
 void logAssetOpRefusal(std::string_view verb, std::string_view rel, const AssetOpResult& result) {
@@ -2356,7 +2510,7 @@ bool EditorApp::createAssetFolder(std::string_view parentRel) {
     for (const FileEntry& entry : listing.entries) {
         taken.emplace_back(entry.name);
     }
-    const std::string leaf = uniqueMaterialFileName("NewFolder", taken);
+    const std::string leaf = uniqueFolderName("NewFolder", taken, MAX_NEW_MATERIAL_ATTEMPTS);
     if (leaf.empty()) {
         AERO_LOG_WARN("assets: cannot create a folder in '{}' -- no unused name after {} attempts",
                       parentRel.empty() ? std::string_view("<assets root>") : parentRel, MAX_NEW_MATERIAL_ATTEMPTS);

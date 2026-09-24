@@ -27,6 +27,7 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <utility>
 #include <vector>
 
 #if !defined(_WIN32)
@@ -1365,4 +1366,82 @@ TEST_CASE("asset actions: every path reaches <filesystem> through pathFromUtf8 (
     // definition. fileExists/ensureDirectory take a std::string_view and do their own conversion in
     // text_file.cpp, so their arguments are deliberately NOT wrapped here.
     CHECK(countOccurrences(body, "pathFromUtf8(") == 8U);
+}
+
+TEST_CASE("asset actions: the browser's ONLY disk read is reconcile's, so phase 4b does no I/O (AA63)") {
+    // THIS CASE EXISTS BECAUSE SABOTAGE SEED S25 CAME BACK GREEN. Counting the delete modal's
+    // blast radius with listDirectory instead of records() is FUNCTIONALLY IDENTICAL -- same number,
+    // same sentence -- so no behavioural assertion anywhere can tell the two apart. What it changes
+    // is that it puts I/O inside phase 4b, which asset_browser_panel.hpp:8-16 forbids: reconcile is
+    // the ONLY place I/O happens, and scanning mid-draw would rehash `cache` while buildVisibleTree
+    // holds a reference into it.
+    //
+    // It reads asset_browser_panel.cpp from asset_actions_test.cpp, which is a slightly odd home. It
+    // goes here anyway: AERO_EDITOR_SRC_DIR is defined on aero_editor_shell_test, the claim is pure
+    // text with no ImGui context, and putting it at the ImGui tier would make a GPU-gated case out of
+    // a claim that needs no GPU.
+    //
+    // THE SHAPE IS MEASURED, NOT ASSUMED. listDirectory is not called from reconcile() directly at
+    // all -- it is called once, inside ensureCached, whose every call site is inside reconcile(). So
+    // the claim is spelled as that two-step containment rather than as "every listDirectory line sits
+    // inside reconcile", which is false in this tree and would have made the case red on a correct
+    // one.
+    const std::filesystem::path src{AERO_EDITOR_SRC_DIR};
+    const std::string body = stripLineComments(readWholeFile(src / "asset_browser_panel.cpp"));
+    REQUIRE(body.size() > 20000U);  // ANTI-VACUITY: the file was really read
+
+    // Split into lines so a containment claim can be made at all.
+    std::vector<std::string> lines;
+    std::size_t start = 0;
+    while (start <= body.size()) {
+        const std::size_t newline = body.find('\n', start);
+        const std::size_t end = newline == std::string::npos ? body.size() : newline;
+        lines.emplace_back(body, start, end - start);
+        if (newline == std::string::npos) {
+            break;
+        }
+        start = newline + 1;
+    }
+    // The body of a function that starts at `openAt` and ends at the next line that is exactly "}".
+    const auto bodyRangeOf = [&lines](std::string_view signature) {
+        std::size_t openAt = lines.size();
+        for (std::size_t i = 0; i < lines.size(); ++i) {
+            if (lines[i].find(signature) != std::string::npos) {
+                openAt = i;
+                break;
+            }
+        }
+        REQUIRE(openAt < lines.size());  // ANTI-VACUITY: the definition was found
+        std::size_t closeAt = lines.size();
+        for (std::size_t i = openAt + 1; i < lines.size(); ++i) {
+            if (lines[i] == "}") {
+                closeAt = i;
+                break;
+            }
+        }
+        REQUIRE(closeAt < lines.size());
+        return std::pair<std::size_t, std::size_t>{openAt, closeAt};
+    };
+
+    const auto [ensureOpen, ensureClose] = bodyRangeOf("bool AssetBrowserPanel::ensureCached(");
+    const auto [reconcileOpen, reconcileClose] = bodyRangeOf("void AssetBrowserPanel::reconcile(");
+
+    std::size_t listDirectoryLines = 0;
+    std::size_t ensureCachedCalls = 0;
+    for (std::size_t i = 0; i < lines.size(); ++i) {
+        if (lines[i].find("listDirectory(") != std::string::npos) {
+            ++listDirectoryLines;
+            CAPTURE(i);
+            CHECK((i > ensureOpen && i < ensureClose));  // the ONE disk read is ensureCached's
+        }
+        // A CALL, never the definition line itself.
+        if (lines[i].find("ensureCached(") != std::string::npos && i != ensureOpen) {
+            ++ensureCachedCalls;
+            CAPTURE(i);
+            CHECK((i > reconcileOpen && i < reconcileClose));  // and it is reached ONLY from phase 1
+        }
+    }
+    // ANTI-VACUITY on both sweeps: a zero count would satisfy every CHECK above.
+    REQUIRE(listDirectoryLines == 1U);
+    REQUIRE(ensureCachedCalls == 3U);
 }

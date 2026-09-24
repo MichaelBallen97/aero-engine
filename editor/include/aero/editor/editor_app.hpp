@@ -470,6 +470,37 @@ public:
     // widget queues so the drain sees no difference between the two. A no-op when no Asset Browser
     // panel is registered.
     void requestAssetBrowserCreateMaterial() noexcept;
+
+    // ---- task E.4.3: the seven gesture seams, plus the drop-peek one ------------------------------
+    // Each is requestAssetBrowserCreateMaterial's shape verbatim: null-check the panel, forward,
+    // return void. Rename and Delete each need TWO -- one that OPENS the modal and one that COMMITS
+    // it -- because a single commit-seam would set the one-shot and prove nothing about whether the
+    // modal ever drew, and a commit-only seam would make the modal unobservable.
+    void requestAssetBrowserContextMenu(std::string path);
+    void requestAssetBrowserNewFolder() noexcept;
+    void requestAssetBrowserRename(std::string path);
+    void requestAssetBrowserRenameCommit(std::string newLeaf);
+    void requestAssetBrowserDelete(std::string path);
+    void requestAssetBrowserDeleteConfirm() noexcept;
+    void requestAssetBrowserMove(std::string path, std::string destinationDir);
+    // The EIGHTH seam, deliberately NOT counted among the seven: it models a PAYLOAD STATE rather
+    // than a user gesture, and has no applyPending arm. Nothing in tests/ can perform a real drag.
+    void requestAssetBrowserDropPeek(std::string sourcePath, std::string destinationDir, bool asMovePayload);
+
+    // ---- task E.4.3 black-box accessors -----------------------------------------------------------
+    // The first two report what was REQUESTED; the counters report what ImGui DID, incremented inside
+    // the body that actually ran. AssetOpRefusal stays off this surface as an int, exactly as
+    // modelImportState() keeps SessionState off it.
+    [[nodiscard]] bool assetBrowserRenameModalPending() const noexcept;
+    // A DISTINCT NAME from the pre-existing assetBrowserDeleteModalPending() above, which forwards the
+    // ORPHAN modal -- so no existing case silently changes meaning.
+    [[nodiscard]] bool assetBrowserAssetDeleteModalPending() const noexcept;
+    [[nodiscard]] std::size_t assetBrowserContextMenuItemsDrawn() const noexcept;
+    [[nodiscard]] std::size_t assetBrowserRenameModalDrawnCount() const noexcept;
+    [[nodiscard]] std::size_t assetBrowserDeleteModalDrawnCount() const noexcept;
+    [[nodiscard]] std::size_t assetBrowserDropTargetsAccepted() const noexcept;
+    [[nodiscard]] int assetBrowserLastDropPeekRefusal() const noexcept;
+    [[nodiscard]] std::string_view assetBrowserContextMenuTarget() const noexcept;
     // ---- task 3.4.2 black-box accessors: the ImGui-free GPU tier's only window into the session.
     // MaterialSessionState itself stays out of this surface, exactly as modelImportState() keeps
     // SessionState out -- the two booleans below are what a case actually asserts.
