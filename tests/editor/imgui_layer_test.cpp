@@ -17592,6 +17592,19 @@ TEST_CASE("editor: the four new one-shots drain EXACTLY ONCE (task E.4.3, I218 -
         CHECK(countLinesWithBoth(code, taker, "&&") == 0U);
     }
 
+    // AND THE THIRD ARM, which exists because seed S13 came back green without it: a moved-from
+    // optional is still ENGAGED, so a taker that moves out and forgets .reset() leaves the one-shot
+    // set for ever and re-runs a moved-from (empty) request on EVERY subsequent tick. The effect is
+    // one refused operation and one rescan per frame, which no observable in this tree can see -- so
+    // the pin is source text, over the header that owns the three optional takers.
+    const std::vector<std::string> panel = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/asset_browser_panel.hpp");
+    REQUIRE(panel.size() > 200U);  // ANTI-VACUITY: the header was really read
+    for (const char* member : {"newFolderRequest", "renameRequest", "moveRequest", "createMaterialRequest"}) {
+        CAPTURE(member);
+        // Exactly one `<member>.reset();` line each -- the drain that makes the move a drain.
+        CHECK(countLinesContaining(panel, std::string(member) + ".reset();") == 1U);
+    }
+
     app->requestQuit();
     CHECK(app->tick() == false);
 }
@@ -17758,6 +17771,22 @@ TEST_CASE(
     REQUIRE(app->tick());
     CHECK_FALSE(engine::editor::fileExists(root + "/assets/textures2"));
     CHECK(engine::editor::fileExists(root + "/assets/textures/m.aeromat"));
+
+    // THE FALSE-REFUSAL DIRECTION, and it exists because seed S28 came back green without it: drop
+    // the `!materialSession.dirty()` early return and a CLEAN open material blocks its own rename
+    // forever. A case asserting only the refusal misses that entirely -- the block must be keyed on
+    // DIRTINESS, not merely on being open.
+    app->requestMaterialRevert();
+    REQUIRE(app->tick());
+    REQUIRE(app->materialTargetPath() == "textures/m.aeromat");  // still OPEN...
+    REQUIRE_FALSE(app->materialDirty());                         // ...and now CLEAN
+    app->requestAssetBrowserRename("textures");
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+    app->requestAssetBrowserRenameCommit("textures3");
+    REQUIRE(app->tick());
+    CHECK(engine::editor::fileExists(root + "/assets/textures3/m.aeromat"));
+    CHECK_FALSE(engine::editor::fileExists(root + "/assets/textures"));
 
     app->requestQuit();
     CHECK(app->tick() == false);
