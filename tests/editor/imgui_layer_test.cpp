@@ -18032,3 +18032,224 @@ TEST_CASE("editor: the Asset Browser panel is STILL read-only by contract (task 
     CHECK(countLinesContaining(code, "ActionKind::MoveEntry") >= 1U);
     CHECK(countLinesContaining(code, "attachFolderDropTarget") >= 4U);
 }
+
+// ---- I227-I229: task E.4.4's browser ignore rules --------------------------------------------------
+//
+// The deliverable's only end-to-end witnesses: the Asset Browser's directory grid is reachable from
+// tests/ solely through EditorApp's forwarders, and only a REAL panel drawing REAL frames can show that a
+// roster-named DIRECTORY survives (I228) and that `Show hidden` reveals dotfiles and nothing else (I229).
+// Every case uses I39's fixture shape: a real project, fixture files written BEFORE the app exists, and the
+// Assets panel brought to the front, because it shares the bottom dock slot with the Console and a
+// tabbed-behind panel never runs onDraw at all.
+
+namespace {
+
+// A BOUNDED settle on a property that does not depend on what the roster filters -- "the panel has cached
+// its current directory at least once" -- never a fixed frame count (E.4.1's I184 precedent). The caller
+// REQUIREs the result is below the bound, so the bound is never what ended the wait.
+constexpr int E44_MAX_SETTLE_TICKS = 32;
+[[nodiscard]] int settleAssetBrowser(engine::editor::EditorApp& app) {
+    int ticks = 0;
+    while (ticks < E44_MAX_SETTLE_TICKS && app.assetBrowserVisibleEntryCount() == 0U) {
+        REQUIRE(app.tick());
+        ++ticks;
+    }
+    return ticks;
+}
+
+}  // namespace
+
+TEST_CASE("editor: the Asset Browser lists no ignored name, and the scan agrees (task E.4.4, I227)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "ignore rules i227", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    const std::string assetsDir = created.root + "/assets/";  // createProject leaves it EMPTY
+    REQUIRE(writeBinaryFixture(assetsDir + "wood.png", TINY_PNG_RED.data(), TINY_PNG_RED.size()).empty());
+    REQUIRE(engine::editor::writeTextFileAtomic(assetsDir + "model.blend", "x").empty());
+    // Eight names the roster ignores, one of every class: Blender's backups and save temp, an editor backup,
+    // a generic backup, both OS names, and this engine's own atomic-write temp.
+    constexpr std::array<std::string_view, 8> IGNORED = {
+        "model.blend1", "model.blend2", "scene.blend@", "notes.txt~",
+        "a.png.bak",    "Thumbs.db",    "desktop.ini",  "stale.png.aero-tmp",
+    };
+    for (const std::string_view leaf : IGNORED) {
+        REQUIRE(engine::editor::writeTextFileAtomic(assetsDir + std::string(leaf), "x").empty());
+    }
+
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = created.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    REQUIRE(app->tick());  // 1: the first rescan runs inside this tick, BEFORE the frame draws
+    REQUIRE(app->tick());  // 2: the default dock layout settles
+    app->requestPanelFocus("Assets");
+    REQUIRE(app->tick());  // 3: the focus lands before DockSpaceOverViewport
+    const int settled = settleAssetBrowser(*app);
+    INFO("settled after " << settled << " further ticks");
+    REQUIRE(settled < E44_MAX_SETTLE_TICKS);
+
+    // COUNT FIRST: a panel that cached nothing satisfies every "does not contain" below.
+    REQUIRE(app->assetBrowserVisibleEntryCount() == 2U);
+    CHECK(app->assetBrowserListingContains("model.blend"));  // the Blender ASSET is kept (seed S3's victim)
+    CHECK(app->assetBrowserListingContains("wood.png"));
+    for (const std::string_view leaf : IGNORED) {
+        CAPTURE(leaf);
+        CHECK_FALSE(app->assetBrowserListingContains(leaf));
+    }
+    // The scan agrees -- the same roster, the other consumer (AC-11).
+    CHECK(app->assetCount() == 2U);
+    CHECK(app->assetGuidForPath("model.blend").has_value());
+    CHECK_FALSE(app->assetGuidForPath("model.blend1").has_value());
+
+    // AC-17's search arm. The whole-project search reads the DATABASE's records, so it never saw a backup:
+    // "model" matches model.blend, and would also match both backups had they been indexed.
+    app->requestAssetBrowserSearch("model");
+    REQUIRE(app->tick());  // drains SetQuery and rebuilds the search rows in applyPending()
+    CHECK(app->assetBrowserSearchHitCount() == 1U);
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: a folder with a roster name is still listed and still scanned (task E.4.4, I228)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "ignore rules i228", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    const std::string assetsDir = created.root + "/assets/";
+    REQUIRE(writeBinaryFixture(assetsDir + "wood.png", TINY_PNG_RED.data(), TINY_PNG_RED.size()).empty());
+    // Three DIRECTORIES whose names a FILE could never keep. A folder the user made is never ignored.
+    constexpr std::array<std::string_view, 3> FOLDERS = {"backup.bak", "old~", "Thumbs.db"};
+    for (const std::string_view folder : FOLDERS) {
+        std::error_code ec;
+        std::filesystem::create_directories(std::filesystem::path(assetsDir + std::string(folder)), ec);
+        REQUIRE_FALSE(ec);
+    }
+    const std::string innerPath = assetsDir + "backup.bak/inner.png";
+    REQUIRE(writeBinaryFixture(innerPath, TINY_PNG_GREEN.data(), TINY_PNG_GREEN.size()).empty());
+
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = created.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+    app->requestPanelFocus("Assets");
+    REQUIRE(app->tick());
+    const int settled = settleAssetBrowser(*app);
+    INFO("settled after " << settled << " further ticks");
+    REQUIRE(settled < E44_MAX_SETTLE_TICKS);
+
+    // wood.png plus the three folders -- the grid AND the left-hand tree read this one cached listing.
+    REQUIRE(app->assetBrowserVisibleEntryCount() == 4U);
+    CHECK(app->assetBrowserListingContains("wood.png"));
+    for (const std::string_view folder : FOLDERS) {
+        CAPTURE(folder);
+        CHECK(app->assetBrowserListingContains(folder));
+    }
+    // ...and the scan descended into a roster-named folder (AD75's mirror, through the real app).
+    CHECK(app->assetGuidForPath("backup.bak/inner.png").has_value());
+    CHECK(app->assetCount() == 2U);
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: Show hidden reveals a dotfile and never an ignored name (task E.4.4, I229)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "ignore rules i229", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    const std::string assetsDir = created.root + "/assets/";
+    REQUIRE(writeBinaryFixture(assetsDir + "wood.png", TINY_PNG_RED.data(), TINY_PNG_RED.size()).empty());
+    REQUIRE(writeBinaryFixture(assetsDir + ".hidden.png", TINY_PNG_BLUE.data(), TINY_PNG_BLUE.size()).empty());
+    REQUIRE(engine::editor::writeTextFileAtomic(assetsDir + "model.blend1", "x").empty());
+
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = created.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+    app->requestPanelFocus("Assets");
+    REQUIRE(app->tick());
+    const int settled = settleAssetBrowser(*app);
+    INFO("settled after " << settled << " further ticks");
+    REQUIRE(settled < E44_MAX_SETTLE_TICKS);
+
+    // BEFORE the toggle: listDirectory drops the dotfile and the roster drops the backup.
+    REQUIRE(app->assetBrowserVisibleEntryCount() == 1U);
+    CHECK(app->assetBrowserListingContains("wood.png"));
+    CHECK_FALSE(app->assetBrowserListingContains(".hidden.png"));
+    CHECK_FALSE(app->assetBrowserListingContains("model.blend1"));
+
+    // The frame that drains the toggle CLEARS the cache at its end (applyPending runs after the draw), so
+    // the listing is refilled only by the NEXT frame's reconcile -- settle on the dotfile appearing, bounded.
+    app->requestAssetBrowserToggleHidden();
+    int toggleTicks = 0;
+    while (toggleTicks < E44_MAX_SETTLE_TICKS && !app->assetBrowserListingContains(".hidden.png")) {
+        REQUIRE(app->tick());
+        ++toggleTicks;
+    }
+    INFO("the dotfile appeared after " << toggleTicks << " ticks");
+    REQUIRE(toggleTicks < E44_MAX_SETTLE_TICKS);  // the bound did not end it: the dotfile DID appear
+
+    // AFTER: the dotfile is revealed and the backup is STILL dropped -- one checkbox, one meaning (D6).
+    // Both arms in one case are what make this a statement about the checkbox, not about the filter alone.
+    REQUIRE(app->assetBrowserVisibleEntryCount() == 2U);
+    CHECK(app->assetBrowserListingContains("wood.png"));
+    CHECK(app->assetBrowserListingContains(".hidden.png"));
+    CHECK_FALSE(app->assetBrowserListingContains("model.blend1"));
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}

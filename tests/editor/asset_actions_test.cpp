@@ -505,7 +505,7 @@ TEST_CASE("asset actions: validateAssetName -- the Windows rules and the two suf
     }
 
     CHECK((validateAssetName("x.meta") == AssetNameRefusal::MetaSuffix));
-    CHECK((validateAssetName("x.aero-tmp") == AssetNameRefusal::TempSuffix));
+    CHECK((validateAssetName("x.aero-tmp") == AssetNameRefusal::IgnoredName));  // task E.4.4: renamed in place
 }
 
 TEST_CASE("asset actions: planAssetOp -- step composition, the mechanical statement of INV-A8 (AA30)") {
@@ -734,7 +734,7 @@ TEST_CASE("asset actions: assetNameRefusalMessage is TOTAL and None is empty (AA
         AssetNameRefusal::TrailingDotOrSpace,
         AssetNameRefusal::ReservedDeviceName,
         AssetNameRefusal::MetaSuffix,
-        AssetNameRefusal::TempSuffix,
+        AssetNameRefusal::IgnoredName,
     };
     CHECK(assetNameRefusalMessage(AssetNameRefusal::None).empty());
     std::size_t nonEmpty = 0;
@@ -778,7 +778,7 @@ TEST_CASE("asset actions: no prompt or refusal string contains a '%' or a byte >
         AssetNameRefusal::TrailingDotOrSpace,
         AssetNameRefusal::ReservedDeviceName,
         AssetNameRefusal::MetaSuffix,
-        AssetNameRefusal::TempSuffix,
+        AssetNameRefusal::IgnoredName,
     };
     for (const AssetNameRefusal refusal : ALL) {
         checkAscii(assetNameRefusalMessage(refusal));
@@ -1566,4 +1566,153 @@ TEST_CASE("asset actions: EVERY planner refusal carries a non-empty message (AA6
     const AssetOpPlan gone = planAssetOp(AssetOpKind::Move, moveInputs, missing);
     CHECK((gone.refusal == AssetOpRefusal::DestinationMissing));
     CHECK_FALSE(gone.message.empty());
+}
+
+TEST_CASE("asset actions: validateAssetName refuses every ignored name, file or folder (AA66, task E.4.4)") {
+    // Task E.4.4 grew the scan's ignore list from ONE suffix to a roster (asset_meta.hpp, docs/09 5.10),
+    // and a rename to x.bak, x~ or scene.blend1 makes the asset vanish from the browser exactly as
+    // x.aero-tmp always did -- so the refusal grew with it, renamed IN PLACE to IgnoredName. The corpus
+    // is BUILT FROM the two roster arrays, so an entry added there is refused here with no edit, and a
+    // deleted entry shrinks the corpus rather than deleting an assertion.
+    using engine::editor::IGNORED_ASSET_NAME_SUFFIXES;
+    using engine::editor::IGNORED_ASSET_NAMES;
+    using engine::editor::isIgnoredAssetName;
+    using engine::editor::planAssetOp;
+    using engine::editor::validateAssetName;
+
+    // Anti-vacuity FIRST: an ordinary name and the Blender ASSET itself -- one digit short of a backup --
+    // are both legal, so every refusal below is about the ROSTER, never a validator that refuses all.
+    REQUIRE((validateAssetName("wood.png") == AssetNameRefusal::None));
+    REQUIRE((validateAssetName("model.blend") == AssetNameRefusal::None));
+    REQUIRE_FALSE(IGNORED_ASSET_NAMES.empty());
+    REQUIRE_FALSE(IGNORED_ASSET_NAME_SUFFIXES.empty());
+
+    std::vector<std::string> names;
+    names.reserve((2U * IGNORED_ASSET_NAMES.size()) + IGNORED_ASSET_NAME_SUFFIXES.size() + 4U);
+    for (const std::string_view entry : IGNORED_ASSET_NAMES) {
+        names.emplace_back(entry);
+        std::string upper(entry);
+        for (char& c : upper) {
+            if (c >= 'a' && c <= 'z') {
+                c = static_cast<char>(c - ('a' - 'A'));
+            }
+        }
+        names.push_back(upper);  // the roster folds ASCII case, so the refusal must too
+    }
+    for (const std::string_view suffix : IGNORED_ASSET_NAME_SUFFIXES) {
+        names.push_back("wood.png" + std::string(suffix));
+    }
+    names.emplace_back("scene.blend1");  // the Blender rule, which no array spells
+    names.emplace_back("scene.blend32");
+    names.emplace_back("x.BLEND2");
+    names.emplace_back("~");  // a name EQUAL to a suffix is ignored, and "~" is not hidden, so it gets here
+    REQUIRE(names.size() > IGNORED_ASSET_NAME_SUFFIXES.size());
+    for (const std::string& name : names) {
+        CAPTURE(name);
+        // The corpus really is the roster's (a REQUIRE, so a stray name cannot pass vacuously) ...
+        REQUIRE(isIgnoredAssetName(name));
+        // ... and every name in it is refused, by exactly this rule.
+        CHECK((validateAssetName(name) == AssetNameRefusal::IgnoredName));
+    }
+
+    // The arm's POSITION in the ladder is unchanged: an EARLIER rule still wins. A dot-prefixed roster
+    // name is Hidden first, and a sidecar OF a backup is MetaSuffix first -- never IgnoredName.
+    CHECK((validateAssetName(".bak") == AssetNameRefusal::Hidden));
+    CHECK((validateAssetName("scene.blend1.meta") == AssetNameRefusal::MetaSuffix));
+
+    // THE FOLDER CONSEQUENCE, pinned on purpose. validateAssetName is given a LEAF and nothing else -- no
+    // file/folder context -- and planAssetOp's rung 4 applies it to CreateFolder as well as Rename, so a
+    // folder CREATED or RENAMED in the editor as "backup.bak" is refused too. That is conservative and
+    // consistent with E.4.3, which refuses a ".meta" or ".aero-tmp" folder name on the same terms;
+    // relaxing it would need a context this function does not have. A folder made OUTSIDE the editor is
+    // still listed and scanned (directories are never ignored -- BV1, AD75), and the name-FREEDOM
+    // listings stay unfiltered by the roster (D9, BV9): refusing a TARGET name is a different question.
+    CHECK((validateAssetName("backup.bak") == AssetNameRefusal::IgnoredName));
+    AssetOpInputs folderInputs;
+    folderInputs.sourceRelative = "";  // CreateFolder's source names the PARENT; "" is the assets root
+    folderInputs.newLeaf = "backup.bak";
+    const AssetOpPlan folder = planAssetOp(AssetOpKind::CreateFolder, folderInputs, completeListing({}));
+    CHECK((folder.refusal == AssetOpRefusal::BadName));
+    CHECK((folder.nameRefusal == AssetNameRefusal::IgnoredName));
+    CHECK_FALSE(folder.message.empty());
+}
+
+TEST_CASE("asset actions: a sidecar beside an IGNORED file is deletable, beside an asset not (AA67)") {
+    // E22's race guard (deleteOrphanMeta step 4) protects a LIVE identity, and only a SCANNABLE asset can
+    // hold one. A sidecar an earlier build wrote beside a file the ignore roster now covers is an orphan
+    // the scan reports on every pass and never consumes -- refusing it because that file EXISTS made its
+    // Delete button permanently useless for every project an earlier build had indexed.
+    using engine::editor::parseMeta;
+    using engine::editor::readTextFile;
+    // Every "deleted" arm below must be impossible to satisfy through a Missing or NotAMeta short-circuit
+    // (steps 2 and 3 run BEFORE step 4), so the fixture sidecar is proven to EXIST and to PARSE first.
+    const auto requireValidSidecar = [](const std::string& absolutePath) {
+        const engine::editor::FileReadResult read = readTextFile(absolutePath);
+        REQUIRE(read.text.has_value());
+        REQUIRE(parseMeta(*read.text).guid.has_value());
+    };
+    const TempDir dir;
+    GuidGenerator gen(67);
+
+    // (a) THE DEFECT: scene.blend1 exists and is ignored; its stale sidecar is deleted, the backup is not.
+    constexpr std::string_view BACKUP_BYTES = "blender rolling backup";
+    writeBytes(dir.join("scene.blend1"), BACKUP_BYTES);
+    REQUIRE(writeTextFileAtomic(dir.join("scene.blend1.meta"), writeMetaText(gen.next())).empty());
+    requireValidSidecar(dir.join("scene.blend1.meta"));
+    const OrphanDeleteResult backup = deleteOrphanMeta(dir.utf8(), "scene.blend1.meta");
+    CHECK((backup.refusal == OrphanDeleteRefusal::None));
+    CHECK(backup.deleted);
+    CHECK(backup.message.empty());
+    CHECK_FALSE(fileExists(dir.join("scene.blend1.meta")));
+    const engine::editor::FileReadResult backupAfter = readTextFile(dir.join("scene.blend1"));
+    REQUIRE(backupAfter.text.has_value());
+    CHECK(*backupAfter.text == BACKUP_BYTES);  // the ignored file itself is never touched
+
+    // (b) THE CONTROL: the race protection survives for a SCANNABLE asset -- wood.png exists, so its
+    // sidecar is a live identity and is refused, with BOTH files left exactly where they were.
+    writeBytes(dir.join("wood.png"), "png");
+    REQUIRE(writeTextFileAtomic(dir.join("wood.png.meta"), writeMetaText(gen.next())).empty());
+    requireValidSidecar(dir.join("wood.png.meta"));
+    const OrphanDeleteResult live = deleteOrphanMeta(dir.utf8(), "wood.png.meta");
+    CHECK_FALSE(live.deleted);
+    CHECK((live.refusal == OrphanDeleteRefusal::AssetPresent));
+    CHECK(fileExists(dir.join("wood.png")));
+    CHECK(fileExists(dir.join("wood.png.meta")));
+
+    // (c) Breadth: two more roster classes -- an editor backup (a TAIL suffix) and an OS name (an EXACT
+    // name) -- each deletable while the ignored file is present.
+    for (const std::string_view ignored : {std::string_view("notes.txt~"), std::string_view("Thumbs.db")}) {
+        CAPTURE(ignored);
+        const std::string sidecar = std::string(ignored) + ".meta";
+        writeBytes(dir.join(ignored), "noise");
+        REQUIRE(writeTextFileAtomic(dir.join(sidecar), writeMetaText(gen.next())).empty());
+        requireValidSidecar(dir.join(sidecar));
+        const OrphanDeleteResult result = deleteOrphanMeta(dir.utf8(), sidecar);
+        CHECK((result.refusal == OrphanDeleteRefusal::None));
+        CHECK(result.deleted);
+        CHECK_FALSE(fileExists(dir.join(sidecar)));
+        CHECK(fileExists(dir.join(ignored)));
+    }
+
+    // (d) BELOW THE ASSETS ROOT, which is where the LEAF-vs-PATH distinction bites. Step 4 must classify the
+    // sidecar's LEAF, never its relative path: an exact roster name stops matching once a folder prefix is
+    // attached -- isScannableAssetName("tex/THUMBS.DB") is TRUE -- so a step 4 fed the path would refuse
+    // this delete again, the original defect for OS-noise files in every subfolder, with every root-level
+    // arm above still green. THUMBS.DB is a realistic fixture: it was SCANNABLE before task E.4.4, whose
+    // predecessor compared "Thumbs.db" byte for byte, so an earlier build really could have written it.
+    // The arm's two premises, asserted rather than assumed: the LEAF is ignored, the PATH form is not.
+    REQUIRE_FALSE(engine::editor::isScannableAssetName("THUMBS.DB"));
+    REQUIRE(engine::editor::isScannableAssetName("tex/THUMBS.DB"));
+    constexpr std::string_view NESTED_BYTES = "windows thumbnail cache";
+    REQUIRE(ensureDirectory(dir.join("tex")).empty());
+    writeBytes(dir.join("tex/THUMBS.DB"), NESTED_BYTES);
+    REQUIRE(writeTextFileAtomic(dir.join("tex/THUMBS.DB.meta"), writeMetaText(gen.next())).empty());
+    requireValidSidecar(dir.join("tex/THUMBS.DB.meta"));
+    const OrphanDeleteResult nested = deleteOrphanMeta(dir.utf8(), "tex/THUMBS.DB.meta");
+    CHECK((nested.refusal == OrphanDeleteRefusal::None));
+    CHECK(nested.deleted);
+    CHECK_FALSE(fileExists(dir.join("tex/THUMBS.DB.meta")));
+    const engine::editor::FileReadResult nestedAfter = readTextFile(dir.join("tex/THUMBS.DB"));
+    REQUIRE(nestedAfter.text.has_value());
+    CHECK(*nestedAfter.text == NESTED_BYTES);  // the ignored file itself is never touched
 }

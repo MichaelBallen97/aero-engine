@@ -296,6 +296,12 @@ public:
     // against the pair is one word away from asserting the wrong modal. The E.4.3 pending flag is
     // assetBrowserAssetDeleteModalPending().
     [[nodiscard]] bool assetBrowserDeleteModalPending() const noexcept;
+    // task E.4.4: the directory grid's observability -- the assetBrowserSearchHitCount() shape (0 / false
+    // when no Asset Browser panel is registered). Both read the panel's CACHED listing for its current
+    // directory and perform no I/O. Assert the count FIRST: a panel that cached nothing satisfies every
+    // "does not contain".
+    [[nodiscard]] std::size_t assetBrowserVisibleEntryCount() const noexcept;
+    [[nodiscard]] bool assetBrowserListingContains(std::string_view leafName) const noexcept;
 
     [[nodiscard]] std::size_t thumbnailReadyCount() const noexcept;
     [[nodiscard]] std::size_t thumbnailUnavailableCount() const noexcept;
@@ -430,6 +436,12 @@ public:
     // EXACTLY what a real single click on an Assets row/tile records (ActionKind::SelectEntry) -- ""
     // selects nothing, exactly like Navigate clearing it.
     void requestAssetBrowserSelectEntry(std::string_view relativePath);
+
+    // task E.4.4: the `Show hidden` checkbox's seam -- the requestAssetBrowserCreateMaterial() forward
+    // verbatim. It queues the SAME ActionKind::ToggleHidden the checkbox queues, drained by the next
+    // onDraw()'s applyPending(); a no-op when no Asset Browser panel is registered. A TOGGLE with no
+    // getter, so a caller asserts the listing it produces, never the flag.
+    void requestAssetBrowserToggleHidden() noexcept;
 
     // ---- task 3.2.1 black-box accessors: the ImGui-free GPU tier's only window into the session ----
     [[nodiscard]] std::size_t modelImportCount() const noexcept;

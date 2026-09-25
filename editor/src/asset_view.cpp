@@ -254,6 +254,11 @@ bool matchesFilter(std::string_view leafName, bool isDirectory, const AssetFilte
     return false;
 }
 
+// task E.4.4 -- the rationale for both terms is at the declaration (asset_view.hpp).
+bool isBrowserVisibleName(std::string_view leafName, bool isDirectory) noexcept {
+    return isDirectory || (!isMetaFileName(leafName) && !isIgnoredAssetName(leafName));
+}
+
 std::vector<std::size_t> filterEntriesByKind(std::span<const FileEntry> entries, const AssetFilter& filter) {
     std::vector<std::size_t> indices;
     indices.reserve(entries.size());

@@ -87,6 +87,22 @@ struct AssetFilter {
 // matches AssetKind::Folder.
 [[nodiscard]] bool matchesFilter(std::string_view leafName, bool isDirectory, const AssetFilter& filter) noexcept;
 
+// task E.4.4: what the Asset Browser's directory listing KEEPS, decided at cache-fill time. It composes
+// the ONE roster in asset_meta.hpp; it never restates it.
+//
+// `isDirectory` LEADS, and it is load-bearing: the roster is about FILES, and a folder the user named
+// "backup.bak", "old~" or "Thumbs.db" is a folder they made. Hiding it would remove it from the grid AND
+// from the left-hand tree -- a directory the editor could then never open -- with no error, no log, and
+// nothing below the ImGui tier able to see it.
+//
+// The HIDDEN rule is deliberately ABSENT. listDirectory already applies it, gated on the panel's own
+// `Show hidden` checkbox; restating it here would make that checkbox do nothing at all.
+//
+// Sidecars and ignored names are dropped UNCONDITIONALLY: both are classes the editor KNOWS are not
+// content, so `Show hidden` reveals dotfiles and nothing else. "" answers true; listDirectory never yields
+// an empty leaf (project_files.cpp skips one and counts it), so that answer is defined, not reachable.
+[[nodiscard]] bool isBrowserVisibleName(std::string_view leafName, bool isDirectory) noexcept;
+
 // code-review BLOCKING-2 (AC-13's first clause: "Textures alone filters the current directory"): the
 // WIRING matchesFilter needs to actually filter a directory listing when no query is set -- the panel
 // had matchesFilter (and its own tests, AV37/AV38) but never called it for the non-search path, so

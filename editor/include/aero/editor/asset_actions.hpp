@@ -25,7 +25,9 @@ enum class OrphanDeleteRefusal : std::uint8_t {
     EscapesRoot,   // an absolute path, a rooted drive letter, a ".." segment, or a backslash
     Missing,       // the file is gone -- someone else deleted it. Nothing to do; not an error
     NotAMeta,      // it exists but does not parse as a .meta v1 (D12 check 4)
-    AssetPresent,  // the asset it names exists again -- it is NOT an orphan any more (E22)
+    AssetPresent,  // the asset it names exists again -- it is NOT an orphan any more (E22). Only a
+                   // SCANNABLE name counts (task E.4.4): a file the ignore roster covers is never paired
+                   // with a sidecar, so its presence does not stop the delete
     RemoveFailed,  // the OS refused
 };
 
@@ -100,8 +102,12 @@ enum class AssetNameRefusal : std::uint8_t {
     ReservedDeviceName,  // CON/PRN/AUX/NUL/COM1-9/LPT1-9, case-insensitive, WITH or WITHOUT an
                          // extension -- "CON.png" is reserved too
     MetaSuffix,          // isMetaFileName -- would manufacture an orphan sidecar the scan then reports
-    TempSuffix,          // ATOMIC_TEMP_SUFFIX -- isScannableAssetName skips it (3.1.1 D16), so the
-                         // asset would simply vanish from the browser
+    IgnoredName,         // isIgnoredAssetName -- the roster in asset_meta.hpp (docs/09 §5.10), which the
+                         // scan skips, so a FILE given this name would vanish from the browser. Renamed
+                         // IN PLACE from TempSuffix at task E.4.4 (same position, so no value moves) when
+                         // the one suffix it tested became a whole roster. A FOLDER name is refused too,
+                         // for want of a file/folder context here -- the MetaSuffix posture, not a claim
+                         // that such a folder would be hidden (directories never are)
 };
 
 // The one-word label. NOT named toString, for assetOpRefusalLabel's reason above.

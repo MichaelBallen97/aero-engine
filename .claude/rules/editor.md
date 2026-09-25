@@ -502,9 +502,10 @@ and resolves; `EditorApp::persistProjectState` decides and writes.
   `std::optional`, so the address a reference would have captured never actually moves on this specific
   compiler/build combination. Do not read that green run as license to switch back to a reference.
 - **`.aero-tmp` is skipped by the scan, not deleted (D16).** `writeTextFileAtomic` transiently creates
-  `<path>.aero-tmp` inside the user's own assets tree; a killed editor leaves one behind. Without the
-  suffix check in `isScannableAssetName`, a leftover `wood.png.meta.aero-tmp` would itself be treated
-  as a scannable asset and given `wood.png.meta.aero-tmp.meta`.
+  `<path>.aero-tmp` inside the user's own assets tree; a killed editor leaves one behind. Without its
+  entry in the ignore roster (`IGNORED_ASSET_NAME_SUFFIXES`, which names `ATOMIC_TEMP_SUFFIX` by
+  identifier and which `isIgnoredAssetName` reads -- task E.4.4), a leftover `wood.png.meta.aero-tmp`
+  would itself be treated as a scannable asset and given `wood.png.meta.aero-tmp.meta`.
 - **The panel's root and the database's root are the SAME string by construction (INV-A9/A16).** Both
   are reconciled from `project.assetsRoot()` in the same `EditorApp::tick()` block, which is the only
   reason `AssetBrowserPanel::selectedEntry` (relative to the panel's root) is a valid
@@ -531,6 +532,28 @@ and resolves; `EditorApp::persistProjectState` decides and writes.
   paragraph's earlier, wrong attribution). The member is `databasePtr`, the accessor `database()` — the
   `RenderTarget::depthFormatValue` / `depthFormat()` precedent from 2.3.1, applied a second time to this
   exact class of collision.
+- **The ignore roster is ONE value, and a name-freedom check never filters by it (task E.4.4, D9).**
+  `IGNORED_ASSET_NAMES`, `IGNORED_ASSET_NAME_SUFFIXES` and `BLEND_BACKUP_STEM` in `asset_meta.hpp` are the
+  whole of "not an asset". Add an entry THERE, and to `docs/09` §5.10's table in the same commit — never a
+  fifth term in `isScannableAssetName`. Every consumer COMPOSES `isIgnoredAssetName` rather than restating
+  it: the scan refuses hidden + sidecar + ignored; the browser's listing refuses sidecar + ignored through
+  `isBrowserVisibleName`, whose `isDirectory` term comes FIRST (a folder named `backup.bak` is a folder the
+  user made) and which deliberately omits the hidden rule (`listDirectory` owns it, behind `Show hidden`);
+  the watcher is scannable-or-sidecar by composition. **But a check that asks "is this name already TAKEN?"
+  lists UNFILTERED**: an ignored file still owns its name on disk, so filtering New Material's listing
+  (`createMaterialAsset`) or E.4.3's New Folder / Rename / Move free-name listings (`createAssetFolder`,
+  `renameAssetEntry`, `moveAssetEntry`) by either predicate would hand out a name that exists and let a
+  write or a rename land over the user's file. **Refusing an ignored name as a rename or new-folder TARGET
+  is the opposite question and is correct** — the file would vanish from the browser — and
+  `validateAssetName`'s `IgnoredName` arm does it, for a folder name too, because it sees a leaf with no
+  file/folder context. `asset_view_test.cpp`'s `BV9` pins the exact set of editor files that may name
+  either predicate; a new consumer adds itself there, out loud. **`deleteOrphanMeta`'s `AssetPresent`
+  refusal (E22) is scoped to a SCANNABLE NAME** — `isScannableAssetName(assetLeaf) && fileExists(...)`,
+  on the LEAF and never the relative path — and it must stay exactly that. Widening it back to "any file
+  exists" makes every pre-E.4.4 Blender project's orphaned `.blend1.meta` undeletable from the editor,
+  since the ignored backup beside it never goes away (`AA67`, `AD76`); narrowing it to an exact-case
+  pairing test deletes the sidecar a case-only rename leaves behind on a case-insensitive volume, and
+  the GUID with it.
 
 ## Import cache (task 3.1.2)
 
@@ -662,7 +685,8 @@ and resolves; `EditorApp::persistProjectState` decides and writes.
   fixed order, immediately before deleting — never trusts a stale scan result.** `validateOrphanPath`
   (no `..` segment, no absolute path, no drive letter, no `\` separator, a real `.meta` filename) →
   the sidecar still exists → it still reads as text → it still parses as a `.meta` v1 sidecar with a
-  valid GUID → **the asset it describes does not exist again** (the race-closing check: something
+  valid GUID → **the asset it describes does not exist again**, for a scannable name only since E.4.4
+  (the race-closing check: something
   could have re-created the asset between the scan and the click). Any single failure refuses the
   delete and leaves the file untouched — never a partial state, never a "probably fine" heuristic.
   Reordering this sequence (sabotage seed S22) is the single most important seed in the delete half:

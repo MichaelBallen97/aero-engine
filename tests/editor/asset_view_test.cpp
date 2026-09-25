@@ -6,22 +6,27 @@
 // asset_meta.hpp and project_files.hpp (code-review BLOCKING-2 added the latter, for
 // filterEntriesByKind's FileEntry parameter) -- neither needs reflection, so every case here must be
 // PRESENT and PASSING in all three build configurations -- prove it with --list-test-cases. Tier-0: no
-// GPU, no window, no ImGui context, no disk I/O, no entropy source.
+// GPU, no window, no ImGui context, no entropy source, and no disk I/O except BV9's read of the editor's
+// own source text through AERO_EDITOR_SRC_DIR (task E.4.4; the DR18 precedent in asset_drag_test.cpp).
 #include <aero/editor/asset_meta.hpp>
 #include <aero/editor/asset_view.hpp>
 #include <aero/editor/project_files.hpp>
 
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
+#include <fstream>
 #include <limits>
 #include <ostream>
 #include <span>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <vector>
 
 using engine::editor::ASSET_KIND_FILTER_OPTIONS;
@@ -35,6 +40,12 @@ using engine::editor::filterEntriesByKind;
 using engine::editor::gridColumnsFor;
 using engine::editor::iconColorFor;
 using engine::editor::iconLabelFor;
+using engine::editor::IGNORED_ASSET_NAME_SUFFIXES;
+using engine::editor::IGNORED_ASSET_NAMES;
+using engine::editor::isBrowserVisibleName;
+using engine::editor::isIgnoredAssetName;
+using engine::editor::isMetaFileName;
+using engine::editor::isScannableAssetName;
 using engine::editor::isThumbnailDecodable;
 using engine::editor::matchesFilter;
 using engine::editor::searchAssets;
@@ -533,4 +544,208 @@ TEST_CASE("asset view: the Material kind FILTERS, both predicate and wiring (AV5
     REQUIRE(indices.size() == 2);
     CHECK(indices[0] == 0);
     CHECK(indices[1] == 3);
+}
+
+// ---- task E.4.4: isBrowserVisibleName (BV1-BV9) ---------------------------------------------------
+//
+// What the Asset Browser's directory listing KEEPS. The predicate is pure, so a case here that passes
+// isDirectory = true asserts the right thing BY CONSTRUCTION -- which is why I228 drives a real
+// roster-named directory through the real panel. Every case name ENDS with its id and ")".
+
+namespace {
+
+// One name per scannable kind, the Blender ASSET itself, and a name with no extension.
+constexpr std::array<std::string_view, 12> ORDINARY_ASSETS = {
+    "wood.png",  "hero.glb", "scene.gltf", "a.fbx",    "model.blend", "clip.wav",
+    "m.aeromat", "t.ktx2",   "x.hlsl",     "notes.md", "README",      "level.scene.json",
+};
+
+// The roster's FILE forms, built from the arrays so a deleted entry shrinks the corpus.
+[[nodiscard]] std::vector<std::string> rosterFileNames() {
+    std::vector<std::string> names;
+    names.reserve(IGNORED_ASSET_NAMES.size() + IGNORED_ASSET_NAME_SUFFIXES.size() + 2U);
+    for (const std::string_view entry : IGNORED_ASSET_NAMES) {
+        names.emplace_back(entry);
+    }
+    for (const std::string_view suffix : IGNORED_ASSET_NAME_SUFFIXES) {
+        names.push_back("wood.png" + std::string(suffix));
+    }
+    names.emplace_back("scene.blend1");
+    names.emplace_back("scene.blend32");
+    return names;
+}
+
+// One line with its `//` comment removed -- the editorSourceCodeLines rule (imgui_layer_test.cpp): a
+// citation in PROSE must never satisfy or break a gate about CODE.
+[[nodiscard]] std::string withoutLineComment(std::string line) {
+    if (const std::size_t comment = line.find("//"); comment != std::string::npos) {
+        line.erase(comment);
+    }
+    return line;
+}
+
+[[nodiscard]] bool namesARosterPredicate(const std::string& codeLine) {
+    return codeLine.find("isIgnoredAssetName") != std::string::npos ||
+           codeLine.find("isBrowserVisibleName") != std::string::npos;
+}
+
+}  // namespace
+
+TEST_CASE("asset view: a DIRECTORY is always browser-visible, whatever it is called (AC-9, seed S6, BV1)") {
+    std::vector<std::string> names = rosterFileNames();
+    names.emplace_back("wood.png.meta");  // a folder NAMED like a sidecar is still a folder
+    names.emplace_back("old~");
+    names.emplace_back("backup.bak");
+    for (const std::string_view suffix : IGNORED_ASSET_NAME_SUFFIXES) {
+        names.emplace_back(suffix);  // a folder named exactly ".bak" or "~"
+    }
+    REQUIRE(names.size() > 15U);  // anti-vacuity: the roster really contributed
+    for (const std::string& name : names) {
+        CAPTURE(name);
+        // A REQUIRE: every other browser claim is moot if the editor can lose a folder the user made.
+        REQUIRE(isBrowserVisibleName(name, true));
+    }
+}
+
+TEST_CASE("asset view: a FILE on the roster is not browser-visible (AC-11, BV2)") {
+    const std::vector<std::string> names = rosterFileNames();
+    REQUIRE(names.size() > IGNORED_ASSET_NAME_SUFFIXES.size());
+    for (const std::string& name : names) {
+        CAPTURE(name);
+        CHECK_FALSE(isBrowserVisibleName(name, false));
+    }
+}
+
+TEST_CASE("asset view: a sidecar FILE is not browser-visible, in any case (BV3)") {
+    CHECK_FALSE(isBrowserVisibleName("wood.png.meta", false));
+    CHECK_FALSE(isBrowserVisibleName("wood.png.META", false));
+    CHECK_FALSE(isBrowserVisibleName("scene.blend1.meta", false));  // the sidecar OF an ignored file
+}
+
+TEST_CASE("asset view: an ordinary asset file is browser-visible (BV4)") {
+    for (const std::string_view name : ORDINARY_ASSETS) {
+        CAPTURE(name);
+        CHECK(isBrowserVisibleName(name, false));
+    }
+}
+
+TEST_CASE("asset view: a HIDDEN file is browser-visible -- listDirectory owns that rule (AC-10, seed S7, BV5)") {
+    // Restating the hidden rule here would make the panel's `Show hidden` checkbox do nothing at all:
+    // listDirectory(root, rel, showHidden) already drops dotfiles unless it is ticked.
+    CHECK(isBrowserVisibleName(".DS_Store", false));
+    CHECK(isBrowserVisibleName(".hidden.png", false));
+    CHECK(isBrowserVisibleName(".gitignore", false));
+}
+
+TEST_CASE("asset view: file visibility is exactly not-a-sidecar and not-ignored (BV6)") {
+    std::vector<std::string> names = rosterFileNames();
+    names.insert(names.end(), ORDINARY_ASSETS.begin(), ORDINARY_ASSETS.end());
+    for (const std::string_view extra :
+         {std::string_view("wood.png.meta"), std::string_view(".DS_Store"), std::string_view(".meta"),
+          std::string_view("a.blend1x"), std::string_view("MyThumbs.dbFile.png"), std::string_view("")}) {
+        names.emplace_back(extra);
+    }
+    std::size_t visible = 0;
+    std::size_t dropped = 0;
+    for (const std::string& name : names) {
+        CAPTURE(name);
+        const bool expected = !isMetaFileName(name) && !isIgnoredAssetName(name);
+        CHECK(isBrowserVisibleName(name, false) == expected);
+        if (expected) {
+            ++visible;
+        } else {
+            ++dropped;
+        }
+    }
+    CHECK(visible >= ORDINARY_ASSETS.size());  // anti-vacuity: the corpus straddles the predicate
+    CHECK(dropped > IGNORED_ASSET_NAME_SUFFIXES.size());
+}
+
+TEST_CASE("asset view: the empty name has a DEFINED answer, though no listing yields it (BV7)") {
+    // listDirectory skips an empty leaf and counts it (project_files.cpp:307-308), so this is unreachable
+    // from the panel; a defined answer still beats an undefined one.
+    CHECK(isBrowserVisibleName("", false));
+    CHECK(isBrowserVisibleName("", true));
+}
+
+TEST_CASE("asset view: every scannable name is visible as a file, and not the converse (BV8)") {
+    std::vector<std::string> names = rosterFileNames();
+    names.insert(names.end(), ORDINARY_ASSETS.begin(), ORDINARY_ASSETS.end());
+    std::size_t scannable = 0;
+    for (const std::string& name : names) {
+        if (isScannableAssetName(name)) {
+            ++scannable;
+            CAPTURE(name);
+            CHECK(isBrowserVisibleName(name, false));
+        }
+    }
+    CHECK(scannable >= ORDINARY_ASSETS.size());  // anti-vacuity: the implication was exercised
+    // The CONVERSE is false, and asserted rather than noted: a dotfile is visible (when Show hidden lets
+    // listDirectory return it) yet never scannable.
+    CHECK(isBrowserVisibleName(".DS_Store", false));
+    CHECK_FALSE(isScannableAssetName(".DS_Store"));
+}
+
+TEST_CASE("asset view: only six editor files name the roster predicates (AC-18, seed S16, BV9)") {
+    // THE NAME-FREEDOM PIN (D9). EditorApp's New Material path lists a folder UNFILTERED -- "a hidden file
+    // still owns its name" (editor_app.cpp) -- and an IGNORED file owns its name exactly as hard. A filter
+    // added there would let uniqueMaterialFileName return a name that already exists, and
+    // writeTextFileAtomic would rename the default document over a user's file with no warning and no
+    // undo. No runtime witness can exist: no roster name can collide with NewMaterial<N>.aeromat. So the
+    // pin is a SET of the files allowed to name either predicate, and its ABSENCE of editor_app.cpp is the
+    // claim. A set, never a `<=` bound (E.2.4 measured that a bound hides the seed in both directions).
+    //
+    // Its limit, stated: a name-freedom filter spelled with isScannableAssetName or isMetaFileName is not
+    // caught here -- those predicates predate this task and are named in many files.
+    //
+    // (a) The reader's own self-test: a code token counts; the same token in a comment does not.
+    CHECK(namesARosterPredicate(withoutLineComment("    return isIgnoredAssetName(name);")));
+    CHECK_FALSE(namesARosterPredicate(withoutLineComment("    // never isBrowserVisibleName here")));
+    CHECK_FALSE(namesARosterPredicate(withoutLineComment("    return isMetaFileName(name);")));
+
+    // (b) The sweep: BOTH editor roots, .cpp and .hpp, non-recursive (neither root has subdirectories).
+    const std::filesystem::path src{AERO_EDITOR_SRC_DIR};
+    const std::filesystem::path include = src.parent_path() / "include" / "aero" / "editor";
+    std::vector<std::string> naming;
+    std::size_t srcScanned = 0;
+    std::size_t includeScanned = 0;
+    for (const std::filesystem::path& root : {src, include}) {
+        std::error_code ec;
+        REQUIRE(std::filesystem::is_directory(root, ec));
+        for (const std::filesystem::directory_entry& entry : std::filesystem::directory_iterator(root, ec)) {
+            const std::string extension = entry.path().extension().string();
+            if (!entry.is_regular_file() || (extension != ".cpp" && extension != ".hpp")) {
+                continue;
+            }
+            if (root == src) {
+                ++srcScanned;
+            } else {
+                ++includeScanned;
+            }
+            std::ifstream in(entry.path(), std::ios::binary);
+            REQUIRE(in.good());
+            std::string line;
+            while (std::getline(in, line)) {
+                if (namesARosterPredicate(withoutLineComment(line))) {
+                    naming.push_back(entry.path().filename().string());
+                    break;
+                }
+            }
+        }
+        REQUIRE_FALSE(ec);
+    }
+    std::sort(naming.begin(), naming.end());
+    naming.erase(std::unique(naming.begin(), naming.end()), naming.end());
+    std::string joined;
+    for (const std::string& name : naming) {
+        joined += name + " ";
+    }
+    INFO("files naming a roster predicate in code: ", joined);
+    // asset_actions.cpp joined at task E.4.4's Commit 3a: validateAssetName refuses an ignored TARGET name,
+    // which is the opposite question from name freedom and the one legitimate reason to name the roster there.
+    const std::vector<std::string> expected{"asset_actions.cpp", "asset_browser_panel.cpp", "asset_meta.cpp",
+                                            "asset_meta.hpp",    "asset_view.cpp",          "asset_view.hpp"};
+    CHECK(naming == expected);
+    CHECK(srcScanned > 80U);      // anti-vacuity: 115 files under editor/src at the branch point
+    CHECK(includeScanned > 40U);  // anti-vacuity: 64 headers under editor/include/aero/editor
 }

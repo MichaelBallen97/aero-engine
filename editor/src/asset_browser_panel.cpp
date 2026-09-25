@@ -122,9 +122,15 @@ bool AssetBrowserPanel::ensureCached(const std::string& rel) {
     DirectoryListing listing = listDirectory(rootUtf8, rel, showHidden);
     // task 3.1.1 (§D-7): filtered at CACHE-FILL time, not at draw time -- the footer count, the tree
     // builder and the selection lookup then all agree, with no second filtered view to keep in sync.
-    // listDirectory itself is unchanged; only this cached copy drops sidecar rows.
+    // listDirectory itself is unchanged; only this cached copy drops rows.
+    //
+    // task E.4.4: the predicate is isBrowserVisibleName, which composes the ONE roster in asset_meta.hpp.
+    // Before this task it was isMetaFileName alone, so a .blend1, a leftover .aero-tmp, a Thumbs.db and a
+    // desktop.ini each kept a tile the SCAN had already refused -- the one consumer that did not follow
+    // isScannableAssetName. It follows by COMPOSITION now, never by a second list, and stays at cache-fill
+    // time for §D-7's reason. `Show hidden` still reaches listDirectory above and nothing else.
     std::erase_if(listing.entries,
-                  [](const FileEntry& entry) { return !entry.isDirectory && isMetaFileName(entry.name); });
+                  [](const FileEntry& entry) { return !isBrowserVisibleName(entry.name, entry.isDirectory); });
     cache.emplace(rel, std::move(listing));
     return true;
 }
@@ -1731,6 +1737,23 @@ void AssetBrowserPanel::requestSelectEntry(std::string relativePath) {
 // exactly what drawHeader() calls when the New Material button returns true, so the request travels
 // the SAME applyPending() arm and picks up the SAME currentDir a click would.
 void AssetBrowserPanel::requestCreateMaterial() noexcept { record(ActionKind::CreateMaterial, {}); }
+// task E.4.4: the requestCreateMaterial() shape verbatim -- record(ActionKind::ToggleHidden, {}) is exactly
+// what drawHeader() records when the `Show hidden` checkbox changes.
+void AssetBrowserPanel::requestToggleHidden() noexcept { record(ActionKind::ToggleHidden, {}); }
+
+// task E.4.4: read-only views of currentDir's CACHED listing (the rationale is at the declaration).
+std::size_t AssetBrowserPanel::cachedEntryCount() const noexcept {
+    const DirectoryListing* const listing = cached(currentDir);
+    return listing != nullptr ? listing->entries.size() : std::size_t{0};
+}
+bool AssetBrowserPanel::cachedListingContains(std::string_view leafName) const noexcept {
+    const DirectoryListing* const listing = cached(currentDir);
+    if (listing == nullptr) {
+        return false;
+    }
+    return std::any_of(listing->entries.begin(), listing->entries.end(),
+                       [leafName](const FileEntry& entry) { return entry.name == leafName; });
+}
 
 // ---- task E.4.3: the seven gesture seams plus requestDropPeek --------------------------------------
 // The first five record EXACTLY what a real widget records, so the next onDraw() drains each through

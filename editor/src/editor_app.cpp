@@ -1422,6 +1422,13 @@ bool EditorApp::assetBrowserListViewActive() const noexcept {
 bool EditorApp::assetBrowserDeleteModalPending() const noexcept {
     return assetBrowserPanel != nullptr && assetBrowserPanel->deleteModalPending();
 }
+// task E.4.4: the same null-checked forward, twice more.
+std::size_t EditorApp::assetBrowserVisibleEntryCount() const noexcept {
+    return assetBrowserPanel != nullptr ? assetBrowserPanel->cachedEntryCount() : std::size_t{0};
+}
+bool EditorApp::assetBrowserListingContains(std::string_view leafName) const noexcept {
+    return assetBrowserPanel != nullptr && assetBrowserPanel->cachedListingContains(leafName);
+}
 
 // task E.3.3: re-pointed at the SHARED service. A moved-from app holds a null pointer, exactly as it
 // holds a null sceneAssetLoader, so all four are null-guarded like the drains.
@@ -2184,6 +2191,13 @@ void EditorApp::requestAssetBrowserDeleteOrphanClick(std::string_view relativeMe
 void EditorApp::requestAssetBrowserSelectEntry(std::string_view relativePath) {
     if (assetBrowserPanel != nullptr) {
         assetBrowserPanel->requestSelectEntry(std::string(relativePath));
+    }
+}
+
+// task E.4.4: the requestAssetBrowserCreateMaterial() forward, for the `Show hidden` checkbox.
+void EditorApp::requestAssetBrowserToggleHidden() noexcept {
+    if (assetBrowserPanel != nullptr) {
+        assetBrowserPanel->requestToggleHidden();
     }
 }
 

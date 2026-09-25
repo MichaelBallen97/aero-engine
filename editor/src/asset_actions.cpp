@@ -265,9 +265,11 @@ AssetNameRefusal validateAssetName(std::string_view leaf) noexcept {
     if (isMetaFileName(leaf)) {
         return AssetNameRefusal::MetaSuffix;
     }
-    if (leaf.size() > ATOMIC_TEMP_SUFFIX.size() &&
-        leaf.compare(leaf.size() - ATOMIC_TEMP_SUFFIX.size(), ATOMIC_TEMP_SUFFIX.size(), ATOMIC_TEMP_SUFFIX) == 0) {
-        return AssetNameRefusal::TempSuffix;
+    // task E.4.4: the WHOLE ignore roster, composed rather than restated -- this arm used to test
+    // ATOMIC_TEMP_SUFFIX alone, and the scan now skips every name isIgnoredAssetName accepts. A TARGET-name
+    // rule only: a name-FREEDOM listing must never filter by the roster (docs/09 5.10, BV9).
+    if (isIgnoredAssetName(leaf)) {
+        return AssetNameRefusal::IgnoredName;
     }
     return AssetNameRefusal::None;
 }
@@ -590,8 +592,11 @@ std::string assetNameRefusalMessage(AssetNameRefusal refusal) {
             return "That is a reserved device name on Windows, with or without an extension.";
         case AssetNameRefusal::MetaSuffix:
             return "A name cannot end in .meta -- that is what an asset's sidecar is called.";
-        case AssetNameRefusal::TempSuffix:
-            return "A name cannot end in .aero-tmp -- the asset browser skips those.";
+        case AssetNameRefusal::IgnoredName:
+            // ASCII only (AA42), hence "section" rather than the section sign. True of a FOLDER as well
+            // as a file: it says the scan skips FILES so named, never that a folder would be hidden.
+            return "That name is on the asset ignore list (docs/09 section 5.10) -- the scan skips backup, "
+                   "temporary and OS files named like it.";
     }
     return {};  // unreachable; enumerated so a new refusal is a -Wswitch warning, not silent
 }
@@ -620,8 +625,8 @@ std::string_view assetNameRefusalLabel(AssetNameRefusal refusal) noexcept {
             return "ReservedDeviceName";
         case AssetNameRefusal::MetaSuffix:
             return "MetaSuffix";
-        case AssetNameRefusal::TempSuffix:
-            return "TempSuffix";
+        case AssetNameRefusal::IgnoredName:
+            return "IgnoredName";
     }
     return "None";  // unreachable; enumerated so a new refusal is a -Wswitch warning, not silent
 }
@@ -852,12 +857,24 @@ OrphanDeleteResult deleteOrphanMeta(std::string_view assetsRootUtf8, std::string
         return result;
     }
 
-    // 4: the check that stops a race from destroying a live identity (E22).
+    // 4: the check that stops a race from destroying a live identity (E22) -- SCOPED, since task E.4.4, to
+    // a SCANNABLE NAME: it refuses whenever the leaf this sidecar describes is one the scan could pair and
+    // ANYTHING exists at that path. The breadth is deliberate. A folder of that name counts, and so, on a
+    // case-insensitive volume, does a file differing only in case: after a case-only rename outside the
+    // editor (wood.png -> Wood.png) the scan, which pairs names by exact bytes, leaves wood.png.meta
+    // unpaired while it is the only file on disk still holding that GUID, and only this existence test
+    // keeps a delete of it refused. Never narrow it to an exact-case pairing test.
+    // What IS exempt is an ignored name. E22 protects a LIVE identity, and a file the ignore roster covers
+    // (scene.blend1, Thumbs.db, notes.txt~) is never given a record, so a sidecar an earlier build wrote
+    // beside it is an orphan the scan reports on every pass and never consumes; refusing it because that
+    // file EXISTS made its Delete button permanently useless. The test takes the LEAF, never assetRelPath:
+    // an exact roster name stops matching once a folder prefix is attached ("tex/THUMBS.DB" is scannable).
+    // The pure test runs FIRST, so an ignored leaf never touches the disk here.
     const std::string_view metaLeaf = leafOf(relativeMetaPath);
     const std::string_view assetLeaf = assetNameForMeta(metaLeaf);
     const std::string assetRelPath = joinRelative(parentOf(relativeMetaPath), assetLeaf);
     const std::string absoluteAssetPath = std::string(assetsRootUtf8) + "/" + assetRelPath;
-    if (fileExists(absoluteAssetPath)) {
+    if (isScannableAssetName(assetLeaf) && fileExists(absoluteAssetPath)) {
         result.refusal = OrphanDeleteRefusal::AssetPresent;
         result.message = "the asset it describes exists again";
         return result;

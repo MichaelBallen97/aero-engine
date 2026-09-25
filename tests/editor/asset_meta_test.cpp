@@ -12,6 +12,7 @@
 #include <aero/core/guid.hpp>
 #include <aero/editor/asset_meta.hpp>
 #include <aero/editor/import_settings.hpp>
+#include <aero/editor/project_files.hpp>  // task E.4.4: isHiddenName (IX15, IX18, AM28)
 #include <aero/reflect/json_reader.hpp>
 #include <aero/reflect/json_value.hpp>
 
@@ -23,6 +24,7 @@
 #include <array>
 #include <cstddef>
 #include <optional>
+#include <ostream>  // MSVC alone needs the complete type to stringify a string_view inside a CHECK
 #include <string>
 #include <string_view>
 #include <vector>
@@ -40,7 +42,13 @@ using engine::editor::assetNameForMeta;
 using engine::editor::AssetPlanEntry;
 using engine::editor::AssetPlanResult;
 using engine::editor::AssetRecord;
+using engine::editor::ATOMIC_TEMP_SUFFIX;
+using engine::editor::BLEND_BACKUP_STEM;
+using engine::editor::IGNORED_ASSET_NAME_SUFFIXES;
+using engine::editor::IGNORED_ASSET_NAMES;
 using engine::editor::ImportSettings;
+using engine::editor::isHiddenName;
+using engine::editor::isIgnoredAssetName;
 using engine::editor::isMetaFileName;
 using engine::editor::isScannableAssetName;
 using engine::editor::isWatchableAssetName;
@@ -121,9 +129,11 @@ TEST_CASE("asset_meta: isScannableAssetName accepts everything else (AM8, AC-21,
     CHECK(isScannableAssetName("notes.metal"));           // ends "metal", not ".meta"
     CHECK(isScannableAssetName("a.aero-tmp.png"));        // the suffix is a MIDDLE segment, not the tail
     CHECK(isScannableAssetName("\xF0\x9F\x9A\x80.png"));  // an emoji leaf name (E28)
-    // Exact bytes, never a substring test: a name that merely CONTAINS "Thumbs.db" is scannable.
+    // Equality, never a substring test: a name that merely CONTAINS "Thumbs.db" is scannable. (Task
+    // E.4.4 made the equality ASCII-case-folded and put ".bak" on the roster -- so the vehicle below is
+    // ".dbx", which proves the same thing and is not an ignored name.)
     CHECK(isScannableAssetName("MyThumbs.dbFile.png"));
-    CHECK(isScannableAssetName("Thumbs.db.bak"));
+    CHECK(isScannableAssetName("Thumbs.dbx"));
 }
 
 // ---- parseMeta success ------------------------------------------------------------------------
@@ -749,10 +759,396 @@ TEST_CASE("asset_meta: isWatchableAssetName is EXACTLY the composition of the tw
         "wood.png", "wood.png.meta", ".DS_Store", ".hidden",       "wood.png.aero-tmp", "wood.png.meta.aero-tmp",
         "",         "Thumbs.db",     ".meta",     "wood.png.META",
     };
-    for (const std::string_view name : NAMES) {
+    // task E.4.4 WIDENED this corpus rather than adding a case -- INV-W3's equality re-proved over the
+    // names the recomposition changed: the Blender forms, a folded OS name, a sidecar OF a backup, a
+    // HIDDEN sidecar, and every roster entry alone, after a real name and after a sidecar name.
+    constexpr std::array<std::string_view, 8> ROSTER_FORMS = {
+        "THUMBS.DB", "scene.blend",       "scene.blend1", "scene.blend32",
+        ".blend7",   "scene.blend1.meta", ".x.png.meta",  "a.blend1x",
+    };
+    std::vector<std::string> names(NAMES.begin(), NAMES.end());
+    names.insert(names.end(), ROSTER_FORMS.begin(), ROSTER_FORMS.end());
+    for (const std::string_view entry : IGNORED_ASSET_NAMES) {
+        names.emplace_back(entry);
+    }
+    for (const std::string_view suffix : IGNORED_ASSET_NAME_SUFFIXES) {
+        names.emplace_back(suffix);
+        names.push_back("wood.png" + std::string(suffix));
+        names.push_back("wood.png.meta" + std::string(suffix));
+    }
+    REQUIRE(names.size() > 30U);  // anti-vacuity: the roster really contributed (41 today)
+    for (const std::string& name : names) {
         CAPTURE(name);
         CHECK(isWatchableAssetName(name) == (isScannableAssetName(name) || isMetaFileName(name)));
     }
+}
+
+// ---- the ignore roster (task E.4.4, IX1-IX18) ----------------------------------------------------
+//
+// EVERY case that ranges over the roster ITERATES THE ARRAYS, so deleting an entry shrinks a corpus
+// rather than deleting an assertion (D1, the ASSET_KIND_FILTER_OPTIONS lesson). Every array-driven loop
+// is preceded by a REQUIRE that the array is non-empty, so an emptied array cannot pass vacuously.
+// Each case name ENDS with its id and ")" so a -tc='*IX7)' filter selects exactly one case.
+
+namespace {
+
+// ASCII-only case mappers -- NEVER std::toupper(char): a UTF-8 continuation byte is negative as char.
+[[nodiscard]] std::string asciiUpper(std::string_view text) {
+    std::string out(text);
+    for (char& c : out) {
+        if (c >= 'a' && c <= 'z') {
+            c = static_cast<char>(c - ('a' - 'A'));
+        }
+    }
+    return out;
+}
+
+[[nodiscard]] std::string asciiLower(std::string_view text) {
+    std::string out(text);
+    for (char& c : out) {
+        if (c >= 'A' && c <= 'Z') {
+            c = static_cast<char>(c + ('a' - 'A'));
+        }
+    }
+    return out;
+}
+
+// One name per scannable kind this editor classifies, plus the Blender ASSET itself and a name with no
+// extension. Shared by IX16 and AM28.
+constexpr std::array<std::string_view, 14> REAL_ASSET_NAMES = {
+    "wood.png",  "hero.glb", "scene.gltf", "a.fbx", "a.obj",    "model.blend", "clip.wav",
+    "m.aeromat", "t.ktx2",   "x.hlsl",     "x.ts",  "notes.md", "README",      "level.scene.json",
+};
+
+constexpr std::string_view ASSET_META_HEADER = AERO_EDITOR_SRC_DIR "/../include/aero/editor/asset_meta.hpp";
+
+// The comment-stripped code lines of a text -- the editorSourceCodeLines rule (imgui_layer_test.cpp): a
+// citation in PROSE must never satisfy or break a gate about CODE.
+[[nodiscard]] std::vector<std::string> codeLinesOf(std::string_view text) {
+    std::vector<std::string> lines;
+    while (!text.empty()) {
+        const std::size_t newline = text.find('\n');
+        std::string_view line = text.substr(0, newline);
+        if (const std::size_t comment = line.find("//"); comment != std::string_view::npos) {
+            line = line.substr(0, comment);
+        }
+        lines.emplace_back(line);
+        if (newline == std::string_view::npos) {
+            break;
+        }
+        text.remove_prefix(newline + 1);
+    }
+    return lines;
+}
+
+}  // namespace
+
+TEST_CASE("asset_meta: every exact roster name is ignored, in any ASCII case (AC-4, IX1)") {
+    REQUIRE_FALSE(IGNORED_ASSET_NAMES.empty());
+    for (const std::string_view name : IGNORED_ASSET_NAMES) {
+        CAPTURE(name);
+        CHECK(isIgnoredAssetName(name));
+        CHECK(isIgnoredAssetName(asciiUpper(name)));  // a widening: 3.1.1 compared these byte for byte
+        CHECK(isIgnoredAssetName(asciiLower(name)));
+    }
+}
+
+TEST_CASE("asset_meta: a roster suffix after a real name is ignored; the name alone is not (AC-2, IX2)") {
+    constexpr std::string_view STEM = "wood.png";
+    // The negative arm is what makes the loop a STATEMENT: a predicate that ignored everything would pass
+    // the loop and fail here.
+    REQUIRE_FALSE(isIgnoredAssetName(STEM));
+    REQUIRE_FALSE(IGNORED_ASSET_NAME_SUFFIXES.empty());
+    for (const std::string_view suffix : IGNORED_ASSET_NAME_SUFFIXES) {
+        const std::string name = std::string(STEM) + std::string(suffix);
+        CAPTURE(name);
+        CHECK(isIgnoredAssetName(name));
+    }
+}
+
+TEST_CASE("asset_meta: the roster is exactly the documented entries, none empty or shadowed (IX3)") {
+    // The roster's CONTENTS, pinned. A universal over the arrays cannot see an entry DELETED from them --
+    // the corpus simply shrinks -- so this is the one place, with docs/09 section 5.10, where the entries
+    // are restated on purpose. Changing the roster means changing this pin and 5.10 in the same commit.
+    const std::vector<std::string_view> names(IGNORED_ASSET_NAMES.begin(), IGNORED_ASSET_NAMES.end());
+    const std::vector<std::string_view> expectedNames{"Thumbs.db", "desktop.ini"};
+    CHECK(names == expectedNames);
+    const auto& roster = IGNORED_ASSET_NAME_SUFFIXES;
+    const std::vector<std::string_view> suffixes(roster.begin(), roster.end());
+    const std::vector<std::string_view> expectedSuffixes{
+        ".aero-tmp", ".blend@", ".bak", ".tmp", ".orig", ".rej", "~",
+    };
+    CHECK(suffixes == expectedSuffixes);
+    CHECK(BLEND_BACKUP_STEM == ".blend");
+    // ...and the well-formedness claims, which any future entry must also satisfy.
+    CHECK_FALSE(IGNORED_ASSET_NAMES.empty());
+    CHECK_FALSE(IGNORED_ASSET_NAME_SUFFIXES.empty());
+    CHECK_FALSE(BLEND_BACKUP_STEM.empty());
+    std::vector<std::string> folded;
+    for (const std::string_view entry : IGNORED_ASSET_NAMES) {
+        CAPTURE(entry);
+        CHECK_FALSE(entry.empty());
+        folded.push_back(asciiLower(entry));
+    }
+    for (const std::string_view entry : IGNORED_ASSET_NAME_SUFFIXES) {
+        CAPTURE(entry);
+        CHECK_FALSE(entry.empty());  // an EMPTY suffix would match every name in every project
+        folded.push_back(asciiLower(entry));
+    }
+    std::vector<std::string> unique = folded;
+    std::sort(unique.begin(), unique.end());
+    unique.erase(std::unique(unique.begin(), unique.end()), unique.end());
+    CHECK(unique.size() == folded.size());  // no entry is listed twice, in any case
+    // No EXACT name is also matched by a SUFFIX -- that would make the exact-name loop partly dead code.
+    // True today. If a future entry legitimately breaks it, delete THIS loop, with a comment naming the
+    // exact entry the suffix loop now shadows, rather than working around it.
+    for (const std::string_view name : IGNORED_ASSET_NAMES) {
+        for (const std::string_view suffix : IGNORED_ASSET_NAME_SUFFIXES) {
+            CAPTURE(name);
+            CAPTURE(suffix);
+            CHECK_FALSE(asciiLower(name).ends_with(asciiLower(suffix)));
+        }
+    }
+}
+
+TEST_CASE("asset_meta: an exact roster name is EQUALITY, never a substring (AC-4, seed S13, IX4)") {
+    // Anti-vacuity FIRST: both exact names really are ignored, so the negatives below are about the SHAPE
+    // of the match rather than about a roster that matches nothing.
+    REQUIRE(isIgnoredAssetName("Thumbs.db"));
+    REQUIRE(isIgnoredAssetName("desktop.ini"));
+    constexpr std::array<std::string_view, 6> NAMES = {
+        "MyThumbs.dbFile.png", "Thumbs.dbx", "xdesktop.ini", "my-desktop.ini", "Thumbs.db.png", "desktop.ini.txt",
+    };
+    for (const std::string_view name : NAMES) {
+        CAPTURE(name);
+        CHECK_FALSE(isIgnoredAssetName(name));
+    }
+}
+
+TEST_CASE("asset_meta: a roster suffix in the MIDDLE of a name is not a match (IX5)") {
+    REQUIRE(isIgnoredAssetName("a.bak"));  // anti-vacuity: the same suffix at the TAIL is a match
+    constexpr std::array<std::string_view, 7> NAMES = {
+        "a.bak.png", "a.aero-tmp.png", "a~.png", "a.tmp.fbx", "a.orig.txt", "a.rej.md", "a.blend@.glb",
+    };
+    for (const std::string_view name : NAMES) {
+        CAPTURE(name);
+        CHECK_FALSE(isIgnoredAssetName(name));
+    }
+}
+
+TEST_CASE("asset_meta: a roster suffix matches in any ASCII case (AC-4, IX6)") {
+    CHECK(isIgnoredAssetName("wood.png.BAK"));
+    CHECK(isIgnoredAssetName("wood.png.Bak"));
+    CHECK(isIgnoredAssetName("x.AERO-TMP"));  // a widening: 3.1.1 compared .aero-tmp case-SENSITIVELY
+    CHECK(isIgnoredAssetName("x.Orig"));
+    CHECK(isIgnoredAssetName("x.BLEND@"));
+    REQUIRE_FALSE(IGNORED_ASSET_NAME_SUFFIXES.empty());
+    for (const std::string_view suffix : IGNORED_ASSET_NAME_SUFFIXES) {
+        const std::string upper = "x" + asciiUpper(suffix);
+        CAPTURE(upper);
+        CHECK(isIgnoredAssetName(upper));
+    }
+}
+
+TEST_CASE("asset_meta: a name EQUAL to a roster suffix matches it, unlike .meta (seed S2, IX7)") {
+    CHECK(isIgnoredAssetName("~"));
+    CHECK(isIgnoredAssetName(".bak"));
+    CHECK(isIgnoredAssetName(".aero-tmp"));
+    REQUIRE_FALSE(IGNORED_ASSET_NAME_SUFFIXES.empty());
+    for (const std::string_view suffix : IGNORED_ASSET_NAME_SUFFIXES) {
+        CAPTURE(suffix);
+        CHECK(isIgnoredAssetName(suffix));
+    }
+    // The asymmetry, stated where it can be read: ".meta" alone is NOT a sidecar (the `size > 5` guard).
+    CHECK_FALSE(isMetaFileName(".meta"));
+}
+
+TEST_CASE("asset_meta: the empty name is invalid, not ignored (AC-1, IX8)") {
+    CHECK_FALSE(isIgnoredAssetName(""));
+    CHECK_FALSE(isScannableAssetName(""));  // refused on its OWN term
+}
+
+TEST_CASE("asset_meta: Blender's rolling backups are ignored, in range and beyond it (AC-5, IX9)") {
+    // Save Versions' property range is 0..32 (rna_userdef.cc); 0 writes no backup at all.
+    for (int n = 1; n <= 32; ++n) {
+        const std::string name = "scene.blend" + std::to_string(n);
+        CAPTURE(name);
+        CHECK(isIgnoredAssetName(name));
+    }
+    // UNBOUNDED by decision (D3): past the maximum, zero-padded, a lone zero and a year all match.
+    constexpr std::array<std::string_view, 5> BEYOND = {
+        "model.blend33", "model.blend01", "model.blend0", "model.blend99", "model.blend2024",
+    };
+    for (const std::string_view name : BEYOND) {
+        CAPTURE(name);
+        CHECK(isIgnoredAssetName(name));
+    }
+}
+
+TEST_CASE("asset_meta: the Blender ASSET itself is never ignored (AC-5, seed S3, IX10)") {
+    // A REQUIRE, because every other Blender arm is meaningless if the asset itself is eaten -- a rule that
+    // ate it would make every Blender project in this engine unusable.
+    REQUIRE_FALSE(isIgnoredAssetName("model.blend"));
+    REQUIRE(isScannableAssetName("model.blend"));
+    CHECK_FALSE(isIgnoredAssetName("MODEL.BLEND"));
+    CHECK_FALSE(isIgnoredAssetName("a.tar.blend"));
+    CHECK_FALSE(isIgnoredAssetName(".blend"));  // hidden, and a backup of nothing
+}
+
+TEST_CASE("asset_meta: the Blender digit run must reach the TAIL (AC-6, IX11)") {
+    REQUIRE(isIgnoredAssetName("a.blend1"));  // anti-vacuity: the tail form IS a match
+    constexpr std::array<std::string_view, 3> NAMES = {"a.blend1x", "a.blend1.png", "a.blend 1"};
+    for (const std::string_view name : NAMES) {
+        CAPTURE(name);
+        CHECK_FALSE(isIgnoredAssetName(name));
+    }
+}
+
+TEST_CASE("asset_meta: what precedes the Blender digits must END with .blend (IX12)") {
+    REQUIRE(isIgnoredAssetName("a.blend1"));
+    constexpr std::array<std::string_view, 5> NAMES = {"blend1", "xblend1", "a.blen1", "a.blendx1", "a.blend.1"};
+    for (const std::string_view name : NAMES) {
+        CAPTURE(name);
+        CHECK_FALSE(isIgnoredAssetName(name));
+    }
+}
+
+TEST_CASE("asset_meta: an all-digit name strips to nothing and is not a backup (seed S4, IX13)") {
+    constexpr std::array<std::string_view, 4> DIGITS = {"123", "0", "00", "2024"};
+    for (const std::string_view name : DIGITS) {
+        CAPTURE(name);
+        CHECK_FALSE(isIgnoredAssetName(name));
+        CHECK(isScannableAssetName(name));
+    }
+}
+
+TEST_CASE("asset_meta: the Blender rule folds ASCII case (AC-4, IX14)") {
+    CHECK(isIgnoredAssetName("x.BLEND2"));
+    CHECK(isIgnoredAssetName("x.Blend2"));
+    CHECK(isIgnoredAssetName("x.bLeNd7"));
+}
+
+TEST_CASE("asset_meta: a dot-prefixed backup is ignored AND hidden, independently (IX15)") {
+    CHECK(isIgnoredAssetName(".blend7"));  // the remainder EQUALS the stem -- the edge seed S2 breaks
+    CHECK(isHiddenName(".blend7"));
+    CHECK_FALSE(isIgnoredAssetName(".hidden.png"));  // hidden but NOT ignored
+    CHECK(isHiddenName(".hidden.png"));
+}
+
+TEST_CASE("asset_meta: no real asset name is ignored (IX16)") {
+    REQUIRE_FALSE(REAL_ASSET_NAMES.empty());
+    for (const std::string_view name : REAL_ASSET_NAMES) {
+        CAPTURE(name);
+        CHECK_FALSE(isIgnoredAssetName(name));
+    }
+}
+
+TEST_CASE("asset_meta: ATOMIC_TEMP_SUFFIX is in the roster BY NAME (AC-3, seed S12, IX17)") {
+    // (a) The VALUE: exactly one entry equals the constant.
+    std::size_t copies = 0;
+    for (const std::string_view suffix : IGNORED_ASSET_NAME_SUFFIXES) {
+        copies += suffix == ATOMIC_TEMP_SUFFIX ? 1U : 0U;
+    }
+    CHECK(copies == 1U);
+    // (b) The SOURCE. A re-spelled ".aero-tmp" literal has the same VALUE, so no runtime assertion can see
+    // it -- only the header's own text can (E.1.4's sabotage row 20, a restated colour, is the same shape).
+    const scene_golden::FileBytes header = scene_golden::readBytes(ASSET_META_HEADER);
+    REQUIRE(header.ok);
+    const std::vector<std::string> code = codeLinesOf(header.text);
+    REQUIRE(code.size() > 100U);  // anti-vacuity: the reader really read the header
+    std::size_t literalLines = 0;
+    for (const std::string& line : code) {
+        if (line.find("\".aero-tmp\"") != std::string::npos) {
+            ++literalLines;
+        }
+    }
+    CHECK(literalLines == 1U);  // ATOMIC_TEMP_SUFFIX's own definition, and nothing else
+    std::string initializer;
+    bool inside = false;
+    for (const std::string& line : code) {
+        inside = inside || line.find("IGNORED_ASSET_NAME_SUFFIXES{") != std::string::npos;
+        if (inside) {
+            initializer += line;
+            initializer += '\n';
+            if (line.find("};") != std::string::npos) {
+                break;
+            }
+        }
+    }
+    INFO("initializer text: ", initializer);
+    REQUIRE_FALSE(initializer.empty());  // anti-vacuity: the reader found the array at all
+    CHECK(initializer.find("ATOMIC_TEMP_SUFFIX") != std::string::npos);
+    CHECK(initializer.find("aero-tmp") == std::string::npos);
+}
+
+TEST_CASE("asset_meta: hidden, sidecar and ignored are three DISJOINT questions (IX18)") {
+    CHECK_FALSE(isIgnoredAssetName("wood.png.meta"));  // a sidecar is not ignored ...
+    CHECK_FALSE(isMetaFileName("wood.png.bak"));       // ... and an ignored name is not a sidecar
+    CHECK_FALSE(isIgnoredAssetName(".DS_Store"));      // a hidden name is not ignored
+    CHECK_FALSE(isIgnoredAssetName(".hidden"));
+    // THE ORPHAN PATH DEPENDS ON THIS (D7): a sidecar OF an ignored file is still a SIDECAR, so the scan
+    // still buckets it, consumes it with nothing, and reports it -- rather than dropping it silently.
+    CHECK(isMetaFileName("scene.blend1.meta"));
+    CHECK_FALSE(isIgnoredAssetName("scene.blend1.meta"));
+    // ... and a backup OF a sidecar is ignored, not a sidecar: the TAIL decides, once.
+    CHECK(isIgnoredAssetName("wood.png.meta.bak"));
+    CHECK_FALSE(isMetaFileName("wood.png.meta.bak"));
+    REQUIRE_FALSE(IGNORED_ASSET_NAME_SUFFIXES.empty());
+    for (const std::string_view suffix : IGNORED_ASSET_NAME_SUFFIXES) {
+        const std::string name = "wood.png" + std::string(suffix);
+        CAPTURE(name);
+        CHECK_FALSE(isMetaFileName(name));
+        CHECK_FALSE(isHiddenName(name));
+    }
+}
+
+TEST_CASE("asset_meta: isScannableAssetName is exactly four disjoint refusals (AC-7, seed S5, AM28)") {
+    // AM-w11's shape, one layer down: a PROPERTY over a corpus, never a list of examples. isHiddenName is
+    // taken from project_files.hpp HERE, in the test, and that is what proves the production code's INLINE
+    // hidden term (asset_meta.cpp keeps `front() == '.'`) equal to the one-source rule.
+    constexpr std::array<std::string_view, 13> EDGES = {
+        "",
+        ".DS_Store",
+        ".hidden.png",
+        "wood.png.meta",
+        "wood.png.META",
+        ".meta",
+        "scene.blend1.meta",
+        "model.blend1",
+        "x.BLEND32",
+        ".blend7",
+        "a.blend1x",
+        "123",
+        "THUMBS.DB",
+    };
+    std::vector<std::string> names(EDGES.begin(), EDGES.end());
+    names.insert(names.end(), REAL_ASSET_NAMES.begin(), REAL_ASSET_NAMES.end());
+    for (const std::string_view entry : IGNORED_ASSET_NAMES) {
+        names.emplace_back(entry);
+        names.push_back(asciiUpper(entry));
+    }
+    for (const std::string_view suffix : IGNORED_ASSET_NAME_SUFFIXES) {
+        names.emplace_back(suffix);
+        names.push_back("wood.png" + std::string(suffix));
+        names.push_back(".wood.png" + std::string(suffix));  // hidden AND ignored: two terms refuse it
+    }
+    std::size_t accepted = 0;
+    std::size_t refused = 0;
+    for (const std::string& name : names) {
+        CAPTURE(name);
+        const std::string_view n = name;
+        const bool expected = !n.empty() && !isHiddenName(n) && !isMetaFileName(n) && !isIgnoredAssetName(n);
+        CHECK(isScannableAssetName(n) == expected);
+        if (expected) {
+            ++accepted;
+        } else {
+            ++refused;
+        }
+    }
+    // Anti-vacuity: the corpus straddles the predicate. Every real asset is accepted, and the roster alone
+    // contributes more refusals than it has suffixes.
+    CHECK(accepted >= REAL_ASSET_NAMES.size());
+    CHECK(refused > IGNORED_ASSET_NAME_SUFFIXES.size());
 }
 
 // ---- the optional importer block (task 3.2.1, D6) --------------------------------------------------
