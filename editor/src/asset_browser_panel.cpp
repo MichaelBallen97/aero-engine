@@ -1125,23 +1125,37 @@ void AssetBrowserPanel::drawRenameModal() {
         }
         ImGui::Separator();
         ImGui::BeginDisabled(renameRefusal != AssetNameRefusal::None);
-        if (ImGui::Button("Rename")) {
-            renameRequest = AssetRenameRequest{pendingRename, renameBuffer};
-            pendingRename.clear();
-            ImGui::CloseCurrentPopup();
-        }
+        bool commit = ImGui::Button("Rename");
         ImGui::EndDisabled();
-        ImGui::SetItemDefaultFocus();  // Enter == Rename
+        ImGui::SetItemDefaultFocus();
         ImGui::SameLine();
-        if (ImGui::Button("Cancel")) {
-            pendingRename.clear();
-            ImGui::CloseCurrentPopup();
-        }
+        bool dismiss = ImGui::Button("Cancel");
         // ImGui CANNOT dismiss a MODAL with Escape: NavUpdateCancelRequest's popup branch excludes
         // ImGuiWindowFlags_Modal (imgui.cpp:15032) and BeginPopupModal always sets it
         // (imgui.cpp:13232) -- and the editor never enables ImGuiConfigFlags_NavEnableKeyboard
         // (imgui_layer.cpp:82), so that path is doubly dead. Bind it ourselves, here, in the body.
-        if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
+        dismiss = ImGui::IsKeyPressed(ImGuiKey_Escape, false) || dismiss;
+        // And ENTER is dead for the SAME reason, which is why SetItemDefaultFocus above cannot carry
+        // it: that path also needs nav. A macOS pass measured it -- Return left this modal open and
+        // renamed nothing while the button committed instantly. So bind Enter here too, symmetric
+        // with Escape. THREE things this must get right:
+        //   * KeypadEnter is a DISTINCT ImGuiKey (imgui.h:1678), never folded into Enter.
+        //   * IsKeyPressed(key, bool) passes ImGuiKeyOwner_Any (imgui.cpp:10478-10481), so it fires
+        //     even though the InputText holds Shortcut(ImGuiKey_Enter, ..., id) while active
+        //     (imgui_widgets.cpp:5136) -- which is exactly why the Escape binding already works
+        //     with the field focused.
+        //   * It is gated on the SAME `renameRefusal` the button's BeginDisabled uses, so Enter can
+        //     never commit a name the button refuses. A separate condition here would be a second
+        //     validation policy with no way to keep the two in step.
+        const bool enterPressed =
+            ImGui::IsKeyPressed(ImGuiKey_Enter, false) || ImGui::IsKeyPressed(ImGuiKey_KeypadEnter, false);
+        commit = (enterPressed && renameRefusal == AssetNameRefusal::None) || commit;
+        // Dismiss WINS over commit: if both arrive in one frame the safe answer is to write nothing.
+        if (dismiss) {
+            pendingRename.clear();
+            ImGui::CloseCurrentPopup();
+        } else if (commit) {
+            renameRequest = AssetRenameRequest{pendingRename, renameBuffer};
             pendingRename.clear();
             ImGui::CloseCurrentPopup();
         }
@@ -1184,18 +1198,22 @@ void AssetBrowserPanel::drawAssetDeleteModal() {
         ImGui::TextWrapped("%s", prompt.detail.c_str());
         ImGui::TextDisabled("%s", prompt.footer.c_str());
         ImGui::Separator();
-        if (ImGui::Button("Delete")) {
-            deleteRequest = pendingDelete;  // nothing touches disk here (D9)
-            pendingDelete.clear();
-            ImGui::CloseCurrentPopup();
-        }
-        ImGui::SetItemDefaultFocus();  // Enter == Delete
+        bool commit = ImGui::Button("Delete");
+        ImGui::SetItemDefaultFocus();
         ImGui::SameLine();
-        if (ImGui::Button("Cancel")) {
+        bool dismiss = ImGui::Button("Cancel");
+        // Escape AND Enter are both hand-bound -- see drawRenameModal's citation for why neither
+        // reaches a modal on its own here. No validity gate on this one: unlike Rename there is no
+        // refusable input, so the Delete button is never disabled and Enter matches it exactly.
+        dismiss = ImGui::IsKeyPressed(ImGuiKey_Escape, false) || dismiss;
+        const bool enterPressed =
+            ImGui::IsKeyPressed(ImGuiKey_Enter, false) || ImGui::IsKeyPressed(ImGuiKey_KeypadEnter, false);
+        commit = enterPressed || commit;
+        if (dismiss) {  // dismiss WINS: if both arrive in one frame, delete nothing
             pendingDelete.clear();
             ImGui::CloseCurrentPopup();
-        }
-        if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {  // see drawRenameModal's citation
+        } else if (commit) {
+            deleteRequest = pendingDelete;  // nothing touches disk here (D9)
             pendingDelete.clear();
             ImGui::CloseCurrentPopup();
         }
@@ -1221,17 +1239,17 @@ void AssetBrowserPanel::drawIssues() {
             ImGui::TextWrapped("%s", pendingOrphanDelete.c_str());
             ImGui::TextDisabled("The asset it described no longer exists; the file itself is not touched.");
             ImGui::Separator();
-            if (ImGui::Button("Delete")) {
-                confirmedOrphanDelete = pendingOrphanDelete;  // nothing touches disk here (D9)
-                pendingOrphanDelete.clear();
-                ImGui::CloseCurrentPopup();
-            }
-            ImGui::SetItemDefaultFocus();  // Enter == Delete
+            bool commit = ImGui::Button("Delete");
+            ImGui::SetItemDefaultFocus();
             ImGui::SameLine();
-            if (ImGui::Button("Cancel")) {
-                pendingOrphanDelete.clear();
-                ImGui::CloseCurrentPopup();
-            }
+            bool dismiss = ImGui::Button("Cancel");
+            // Enter is hand-bound here for the SAME reason Escape is, below -- SetItemDefaultFocus
+            // above cannot carry it while nav is off, so this modal's own "Enter == Delete" claim was
+            // never true either. Bound now so all three of this panel's modals answer Enter and
+            // Escape identically; a user who learns Enter in one must not find it dead in another.
+            const bool enterPressed =
+                ImGui::IsKeyPressed(ImGuiKey_Enter, false) || ImGui::IsKeyPressed(ImGuiKey_KeypadEnter, false);
+            commit = enterPressed || commit;
             // ImGui CANNOT dismiss a MODAL with Escape: NavUpdateCancelRequest's popup branch excludes
             // ImGuiWindowFlags_Modal (imgui.cpp:15032) and BeginPopupModal always sets it
             // (imgui.cpp:13232) -- and the editor does not enable ImGuiConfigFlags_NavEnableKeyboard at
@@ -1241,7 +1259,12 @@ void AssetBrowserPanel::drawIssues() {
             // the editor-chord rule exists so a focused InputText can win a chord back, but a modal
             // already blocks every other window, and a global Escape route would also fire on the
             // frames the modal is NOT up.
-            if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
+            dismiss = ImGui::IsKeyPressed(ImGuiKey_Escape, false) || dismiss;
+            if (dismiss) {  // dismiss WINS: if both arrive in one frame, delete nothing
+                pendingOrphanDelete.clear();
+                ImGui::CloseCurrentPopup();
+            } else if (commit) {
+                confirmedOrphanDelete = pendingOrphanDelete;  // nothing touches disk here (D9)
                 pendingOrphanDelete.clear();
                 ImGui::CloseCurrentPopup();
             }
