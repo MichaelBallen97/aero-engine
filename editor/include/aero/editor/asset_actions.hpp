@@ -26,7 +26,7 @@ enum class OrphanDeleteRefusal : std::uint8_t {
     Missing,       // the file is gone -- someone else deleted it. Nothing to do; not an error
     NotAMeta,      // it exists but does not parse as a .meta v1 (D12 check 4)
     AssetPresent,  // the asset it names exists again -- it is NOT an orphan any more (E22). Only a
-                   // SCANNABLE asset counts (task E.4.4): a file the ignore roster covers is never paired
+                   // SCANNABLE name counts (task E.4.4): a file the ignore roster covers is never paired
                    // with a sidecar, so its presence does not stop the delete
     RemoveFailed,  // the OS refused
 };

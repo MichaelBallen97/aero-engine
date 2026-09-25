@@ -548,10 +548,12 @@ and resolves; `EditorApp::persistProjectState` decides and writes.
   `validateAssetName`'s `IgnoredName` arm does it, for a folder name too, because it sees a leaf with no
   file/folder context. `asset_view_test.cpp`'s `BV9` pins the exact set of editor files that may name
   either predicate; a new consumer adds itself there, out loud. **`deleteOrphanMeta`'s `AssetPresent`
-  refusal (E22) is scoped to a SCANNABLE asset** — `isScannableAssetName(assetLeaf) && fileExists(...)` —
-  and widening it back to "any file exists" makes every pre-E.4.4 Blender project's orphaned
-  `.blend1.meta` undeletable from the editor, since the ignored backup beside it never goes away
-  (`AA67`, `AD76`).
+  refusal (E22) is scoped to a SCANNABLE NAME** — `isScannableAssetName(assetLeaf) && fileExists(...)`,
+  on the LEAF and never the relative path — and it must stay exactly that. Widening it back to "any file
+  exists" makes every pre-E.4.4 Blender project's orphaned `.blend1.meta` undeletable from the editor,
+  since the ignored backup beside it never goes away (`AA67`, `AD76`); narrowing it to an exact-case
+  pairing test deletes the sidecar a case-only rename leaves behind on a case-insensitive volume, and
+  the GUID with it.
 
 ## Import cache (task 3.1.2)
 
@@ -683,7 +685,8 @@ and resolves; `EditorApp::persistProjectState` decides and writes.
   fixed order, immediately before deleting — never trusts a stale scan result.** `validateOrphanPath`
   (no `..` segment, no absolute path, no drive letter, no `\` separator, a real `.meta` filename) →
   the sidecar still exists → it still reads as text → it still parses as a `.meta` v1 sidecar with a
-  valid GUID → **the asset it describes does not exist again** (the race-closing check: something
+  valid GUID → **the asset it describes does not exist again**, for a scannable name only since E.4.4
+  (the race-closing check: something
   could have re-created the asset between the scan and the click). Any single failure refuses the
   delete and leaves the file untouched — never a partial state, never a "probably fine" heuristic.
   Reordering this sequence (sabotage seed S22) is the single most important seed in the delete half:

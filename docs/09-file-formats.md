@@ -792,9 +792,10 @@ a name that was made outside the editor is still listed and scanned, per the rul
 consumed by no asset, and is reported as an **orphan** — capped in `AssetScanReport::orphans`, WARNed once
 per scan, and listed in the Asset Browser's Issues popup with a `Delete` button. **That button removes such a
 sidecar even though the ignored file beside it is still present**: the refusal that protects a live asset
-(*"the asset it describes exists again"*) applies only to a file the scan would pair with the sidecar, and
-an ignored file never is. §5.3's rule is unchanged: **a `.meta` whose asset is gone is never deleted by the
-scan.** The cache entry that build kept for the
+(*"the asset it describes exists again"*) applies whenever the name the sidecar describes is one the scan
+could pair — a scannable name — and anything exists at that path, a folder or (on a case-insensitive
+volume) a file differing only in case included; an ignored name never is. §5.3's rule is unchanged:
+**a `.meta` whose asset is gone is never deleted by the scan.** The cache entry that build kept for the
 file ages out exactly like any file that disappeared — retained with a growing `missing` count (§6.2) for
 three scans and dropped on the fourth.
 
