@@ -12,9 +12,9 @@ Two platform matrices, never to be conflated: the **editor** runs on macOS/Windo
 
 **Phase E (Editor Experience) is the open front**, executing between Phase 3 and Phase 4. **Seventeen of its
 24 tasks are merged: Epics E.1, E.2 and E.3 are all CLOSED IN CODE, and Epic E.4 stands at four of five —
-E.4.1, E.4.2 and E.4.3 merged and macOS-validated, E.4.4 merged and UNRUN — with all three of its
-Definition-of-Done clauses discharged in code. E.4.5, E.5 and E.6 are what is left — seven tasks, planning
-only.** Phase 3 remains OPEN behind it: all seven of its epics are closed in code,
+E.4.1 through E.4.4 merged and macOS-validated — with all three of its Definition-of-Done clauses
+discharged in code. E.4.5, E.5 and E.6 are what is left — seven tasks, planning only.** Phase 3 remains
+OPEN behind it: all seven of its epics are closed in code,
 and what is left is its deliverable gate and the validation debt.
 
 **Phase E is lettered, not fractioned.** `3.5` and `3.5.1`/`3.5.2` are already Phase 3's skeletal-animation
@@ -26,11 +26,12 @@ In Notion its `Phase #` is `3.5` — a sort key, not an identifier.
 (E.2.2). Nothing since E.2.2 has added one, so the five-generation-site rule and the component-count sweep
 have not fired since — **they still apply in full to the next built-in, whenever one arrives.**
 
-**Next free ids, measured at `28e9529` by a whole-`tests/` token sweep over every ref: `I230` at the ImGui
-tier**, `AA68`, `AD77`, `AM29`, `DR28`, `IX19`, `BV10`. Taken tier-0 prefixes include `MR` (E.3.4,
+**Next free ids, measured at `f215cbb` by a whole-`tests/` token sweep over every ref: `I232` at the ImGui
+tier**, `AA68`, `AD77`, `AM29`, `AV60`, `DR28`, `IX19`, `BV10`. Taken tier-0 prefixes include `MR` (E.3.4,
 `MR1`–`MR21`), `PJ` (E.4.1, `PJ1`–`PJ57`), `CN` (E.4.2, `CN1`–`CN25`), and `IX` / `BV` (E.4.4,
 `IX1`–`IX18`, `BV1`–`BV9`); the other E.4.2 ceilings are `SS` 54 and `IO` 21. E.4.1 took `I176`–`I185`,
-E.4.2 `I186`–`I192`, E.4.3 `I210`–`I226` and E.4.4 `I227`–`I229`. **`I193`–`I209` are FREE and were never
+E.4.2 `I186`–`I192`, E.4.3 `I210`–`I226`, E.4.4 `I227`–`I229`, and E.4.4's validation fix (#111)
+`I230`–`I231` plus `AV55`–`AV59`. **`I193`–`I209` are FREE and were never
 claimed by anything that merged** — a gap costs nothing, and renumbering a block into one invites exactly the
 silent collision this project has recorded. **E.4.5's spec claims `I199`–`I209`; it must RE-MEASURE the
 ceiling before it is implemented.**
@@ -92,7 +93,7 @@ validation pass exists for any task in any phase.** N-E = not executable, N-R = 
 | E.4.1 Reopen the last scene | #106 | `068c45c` | **12 / 12**, nothing failed — and 26 sabotage seeds / 29 runs with **no coverage hole** |
 | E.4.2 Scene/project containment | #107 | `f88079d` | **14 of 16 rows** — 12 outright, 2 as stated variants, 1 partial, **2 NOT EXECUTABLE**. 29 sabotage seeds found **three real coverage holes**; the code-review round found eight findings, one blocking; Windows CI found a ninth after all three passed |
 | E.4.3 Asset file operations | #108 | `3dff5ef` | **59 / 59, nothing open** (53/57 on the first run; the 2 failures were one defect, fixed by #109 `d228a99`, and the fix round added 2 records). All six seed-critical rows pass, so S9, S11, S14, S18, S21, S22 and S28 all have witnesses |
-| E.4.4 Browser ignore rules | #110 | `28e9529` | **UNRUN on every platform** (eight rows). 29 sabotage seeds, no hole; the code-review round found one blocking defect — an orphan beside an ignored file could never be deleted |
+| E.4.4 Browser ignore rules | #110, fix #111 | `28e9529`, `f215cbb` | **8 / 8**, nothing open — **the first run failed row 2 on two real defects no lane could see**: the UI font drew `?` for every `…` and `—`, and the open Issues list fell below the panel, both fixed by #111. 29 sabotage seeds, no hole (#111 ran 24 more and its CI fix 5, all caught); the code-review round found one blocking defect — an orphan beside an ignored file could never be deleted |
 
 **E.3.2 landed before E.3.1** — legal, disjointly id-reserved; the reservation is discharged and the
 numbering is contiguous.
@@ -106,7 +107,7 @@ numbering is contiguous.
 | **Phase 2** — Editor | **COMPLETE, gate met 2026-08-02.** All six epics closed and macOS-validated; Windows/Linux rows pending for every task (`editor/VALIDATION.md`). Gate artifact: `samples/phase-2-editor-scene/` — data, deliberately not `add_subdirectory`'d. |
 | **Phase 3** — Asset Pipeline & 3D Content | **OPEN.** All seven epics (3.1–3.7) **CLOSED in code**. What is left is the gate below and the validation debt. |
 | **Phase 3 gate** | Drop a rigged glTF/FBX in → PBR materials + shadows + a playing animation + **an audible sound**. The audible half exists in code as of 3.7.2 and **has never been heard on any platform.** |
-| **Phase E** — Editor Experience | **OPEN.** Epics E.1, E.2 and E.3 **CLOSED in code**; **E.4.1–E.4.4 merged** — 17 of 24, see the index above. **E.4.5, E.5 and E.6 are the open front: seven tasks, planning only.** THREE validation pages are unrun (E.1.5, E.3.2, E.4.4) and are the whole of this OS's remaining Phase E risk. |
+| **Phase E** — Editor Experience | **OPEN.** Epics E.1, E.2 and E.3 **CLOSED in code**; **E.4.1–E.4.4 merged** — 17 of 24, see the index above. **E.4.5, E.5 and E.6 are the open front: seven tasks, planning only.** TWO validation pages are unrun (E.1.5, E.3.2) and are the whole of this OS's remaining Phase E risk. |
 | **Phase E gate** | Open a project and land in the scene you were last editing, on a lit grid floor under a sky; create a Cube from the menu, drop a material on it and see it shade; aim a spot light with a visible gizmo; rename, move and delete assets without leaving the editor. Gate artifact: `samples/phase-E-editor/`. |
 
 ### Engine layers, in dependency order
@@ -136,8 +137,8 @@ numbering is contiguous.
   reachable in all three build configurations.
   **DO NOT record a "pair count" here — it is not reproducible**: E.2.4 measured the tree six ways looking
   for the figure this line used to carry and none of the six was it. The two figures anyone can re-run are
-  `git ls-files`: **`editor/src/*.cpp` = 89** and **`editor/include/aero/editor/*.hpp` = 64** at E.4.4,
-  unchanged since E.4.2.
+  `git ls-files`: **`editor/src/*.cpp` = 90** and **`editor/include/aero/editor/*.hpp` = 64** at #111,
+  whose src-private `default_font` pair is the only addition since E.4.2.
   `/tools` links `aero::assets` and `aero::editor_core` through `aero_cooker`, which is legal because
   `tools/` is enumerated by neither half of the golden rule.
 
@@ -484,15 +485,28 @@ before constructing an `EditorApp` is silently displaced by the Console panel's 
 when the app clears the slot at teardown. **Any case observing a log record around an `EditorApp` lifetime
 must install its callback AFTER the last `app.reset()`**, inside the scope that still owns the device.
 
-**THE STYLE IS DOUBLED ON A RETINA DISPLAY AND THE FONT IS NOT (E.3.4) — E.6.1 OWNS THIS.**
-`ScaleAllSizes(SDL_GetWindowDisplayScale(win))` runs unconditionally at `imgui_layer.cpp:87-89`, while
-`io.ConfigDpiScaleFonts` only overwrites `FontScaleDpi` when a monitor's DPI **CHANGES** — which never fires
-for a window created already on the 2x display. Measured at scale 2.0 in a 320x180 window: `availHeight`
+**THE STYLE IS DOUBLED ON A RETINA DISPLAY AND THE FONT IS NOT (E.3.4) — E.6.1 OWNS THIS, AND BY THE CODE
+PATH IT IS macOS-ONLY.** The style takes `SDL_GetWindowDisplayScale` (`imgui_layer.cpp:87-89`), which is
+pixel density × content scale — **2.0** on Retina (`SDL_video.c:1905-1908`). The font takes `FontScaleDpi`,
+which `ConfigDpiScaleFonts` rewrites EVERY frame (`imgui.cpp:16701-16702`, re-armed at `:6293`) from
+`SDL_GetDisplayContentScale` (`imgui_impl_sdl3.cpp:963`). SDL's Cocoa backend never sets that, so it is
+**1.0** (`SDL_video.c:879-880`). Windows, X11 and Wayland do set it, so at 200% the font should scale there
+too — read from source, unmeasured. Measured at scale 2.0 in a 320x180 window: `availHeight`
 **98** (`windowHeight − 82`), `fontSize` 13, `frameHeight` **25**, `textLineHeight` 13, `itemSpacingY` **8**,
 `SeparatorSize` **2** — so fixed chrome costing 71 points at 1x costs **103 against 98**. A layout with one
 mode answers that with a zero-height element, **failing on every Retina Mac while the three 1x CI lanes stay
 green.** Any panel with fixed chrome needs a MODE, a floor, and a threshold chosen to make the derived height
-**continuous** across the boundary.
+**continuous** across the boundary — **and must RESERVE that chrome before sizing its flexible region**
+(`assetBrowserLayout`, #111: `Issues` and the footer had fallen off the panel at every size measured).
+
+**THE UI FONT IS ProggyClean AT 13, ADDED EXPLICITLY, AND IT DRAWS `?` PAST ASCII, LATIN-1 AND 26 REMAPPED
+WINDOWS-1252 MARKS (#111).** `addEditorDefaultFont()` uses `AddFontDefaultBitmap()`, never
+`AddFontDefault()`, which picks ProggyForever from an expected size of 15. It remaps U+2026, U+2014 and 24
+more onto the CP1252 slots the font carries; U+20AC is drawn natively. Before this, every `…` and `—` drew
+`?` with every test green. **A new UI symbol draws `?` unless it is on that list, and a font change
+invalidates the table.** `I230(g)` pins the table to Unicode's `CP1252.TXT`, because `{† ‡ š ž}`, `{Š Ž}`
+and `{‹ ›}` are geometry twins. **Never hold an `ImFontGlyph*` across another lookup**: a bake reallocates
+the array.
 
 **A NON-DEFAULTED PARAMETER ON A WIDELY-CALLED EDITOR FUNCTION IS A 57-LINE EDIT, AND IT IS STILL THE RIGHT
 CALL.** `buildSelectionOverlay` has **38 call sites, 37 in `selection_overlay_test.cpp`**; `projectToViewport`
@@ -662,6 +676,12 @@ does not terminate**: at `focus = 1e6, spacing = 0.01` the quotient reaches ~1e8
 #### Test method
 
 **ASSERT THE EFFECT, NEVER THE INTENTION** — the single most repeated failure in this project's review rounds.
+
+**AN ANTI-VACUITY ARM MUST NOT DEPEND ON THE MACHINE'S GEOMETRY (#111).** `I231`'s check that the Issues body
+grew past one row read `13 > 13` on CI's macOS runner, whose panel was short enough that the layout
+**correctly** held the body at its floor. The check measured the display. Compare a layout claim against the
+layout's own answer for the metrics the panel **recorded** (`assetBrowserLayoutMetrics()`), and prove the
+measurement with the measured value itself. A check that depends on geometry can be a `WARN` at most.
 
 **A SEAM'S OWN ACCESSOR IS A ROUND TRIP, NOT A TEST (E.3.4).** Reading back the flag a seam just wrote reports
 what was *requested*, never whether ImGui *obeyed*. Seed `S26` (`ImGuiCond_Once` instead of `Always`, handing
@@ -839,16 +859,16 @@ is a configure-time property. **Rebuild before you believe any doctest number, a
 presets so a disagreement is visible.** A recorded total goes stale the same way: `origin/main`'s own shell
 total was one stale at E.1.4's gate. **Read the binary, never the block.**
 
-**At E.4.4's merge (`28e9529`)**, measured on both presets out of freshly rebuilt trees and agreeing between
-them, with both reduced configurations rebuilt (configured fresh at E.4.4's gate; no CMake file has changed
-since):
+**At #111's merge (`f215cbb`)**, measured on both presets out of freshly rebuilt trees and agreeing between
+them. Both reduced configurations were rebuilt from the directories configured fresh at E.4.4's gate; #111
+added `default_font.cpp` to `editor/CMakeLists.txt`, so each rebuild re-ran the configure step:
 
 | Measurement | Value |
 |---|---|
 | `ctest -N` | **178**, entry set byte-identical between presets AND to E.4.3's; **165** shader-tools-OFF (exactly the 13 `shaderc.*` removed), **93** reflect-tools-OFF (81 `reflect-gen.*` + four doctest binaries removed), nothing added in either; `cooker.*` **70 / 70 / 70** |
-| doctest, seven binaries | **1404 / 2123 / 250 / 40 / 59 / 10 / 28** |
-| guards | math **525**, platform **92**, rhi **163**, scene **92**, golden-rule **165**, project-no-delete **A=7 B=89** (2 permitted), audio **11-3-55**, probes **6-57** |
-| `git ls-files` | `editor/src/*.cpp` **89**, `editor/include/aero/editor/*.hpp` **64** |
+| doctest, seven binaries | **1404 / 2128 / 252 / 40 / 59 / 10 / 28** |
+| guards | math **527**, platform **92**, rhi **163**, scene **92**, golden-rule **165**, project-no-delete **A=7 B=90** (2 permitted), audio **11-3-55**, probes **6-57** |
+| `git ls-files` | `editor/src/*.cpp` **90**, `editor/include/aero/editor/*.hpp` **64** |
 
 The seven doctest binaries, in order: `aero_tests`, `aero_editor_shell_test`, `aero_editor_imgui_test`,
 `aero_scene_serialize_test`, `aero_editor_inspector_test`, `aero_reflect_meta_test`, `aero_reflect_json_test`.
@@ -887,10 +907,11 @@ that peaked at 7.6 GB here. **Each run must name which binaries it built and ran
 **`check-math-boundary.sh` counts `git ls-files`, so it reads a STALE number until new files are `git add`ed**
 — stage first, then measure.
 
-**`I136` IS DISPLAY-DEPENDENT, SO THE LOCAL GPU TIER GATES AT EITHER 249 OR 250 OF 250 AND THE RUN MUST SAY
+**`I136` IS DISPLAY-DEPENDENT, SO THE LOCAL GPU TIER GATES AT EITHER 251 OR 252 OF 252 AND THE RUN MUST SAY
 WHICH.** It fails `REQUIRE(drawExtent.width > 4U)` with value **4** on a 2x display — deterministically at
-E.3.4's and E.4.1's gates and at E.4.4's branch point, on an unmodified `HEAD` — and it **PASSED at E.4.2's
-and E.4.4's gates** (30 assertions each), the latter measured with only 1x displays attached. **A green run is therefore not
+E.3.4's and E.4.1's gates and at E.4.4's branch point, on an unmodified `HEAD` — and it **PASSED at E.4.2's,
+E.4.4's and #111's gates** (30 assertions each), the last two measured with only 1x displays attached.
+**A green run is therefore not
 evidence it is fixed**; it is pre-existing, it is the DPI story's, and it is handed to E.6.1. **Name it
 either way, with the display configuration; never let a known failure be quietly counted as green, and
 never let it hide a new one.**
@@ -921,13 +942,13 @@ mono 48 kHz 0.5 s, **exactly 48 064 B each**, cut at a whole number of cycles so
 **Validation pages are gitignored, so they enter no commit.** Per-page measurements and method notes are in
 `docs/10`; this is the ledger of what is still owed.
 
-**THREE PAGES HAVE NOT BEEN RUN ON ANY PLATFORM: E.1.5's, E.3.2's AND E.4.4's.** They are the whole of
-Phase E's validation risk on this OS — every other task in E.1, E.2, E.3 and E.4 is macOS-validated (see
-the index above). **E.4.4's eight rows** carry the only real-hardware cover seeds `S15` (row 4, a
-roster-named sub-folder) and `S8` (row 5, `Show hidden`) have; row 3 is `AD76`'s manual twin — the Delete
-must succeed while the ignored backup is present. Rows 2 and 3 drive the `Issues` section, which E.4.3's pass
-found clipping at every height measured (below), so they may be NOT EXECUTABLE until that is fixed, and
-`AD76` would then stay row 3's only cover. **E.4.1 is fully validated: 12 / 12 macOS, nothing failed**, and its sabotage matrix is
+**TWO PAGES HAVE NOT BEEN RUN ON ANY PLATFORM: E.1.5's AND E.3.2's.** They are the whole of Phase E's
+validation risk on this OS — every other task in E.1–E.4 is macOS-validated (see the index above).
+**E.4.4's page is RUN, 8 / 8, and its first run is the newest proof that a pass finds what every tier
+misses**: it failed row 2 on two real defects no lane could see — a font drawing `?` and a list below its
+panel — and the re-run on #111 closed seeds `S15` (row 4) and `S8` (row 5) on real hardware and ran
+`AD76`'s manual twin (row 3: the Delete succeeded with the ignored backup present).
+**E.4.1 is fully validated: 12 / 12 macOS, nothing failed**, and its sabotage matrix is
 run too — 26 seeds / 29 runs, **no seed green with nothing else catching it** (`docs/10`). An earlier
 matrix attempt was abandoned mid-seed and **left a live seed in the working tree** (the deleted
 `sceneIoAvailable()` gate), caught by `git status` before anything was committed. **Always `git status`
@@ -959,7 +980,9 @@ unclickable and un-highlightable while the modal is up) and row 11 (`S16`, close
 `g.HoveredWindow`**) and row 16 (the already-open-project guard; cover stays `CN25`). ★ **THE CAUSE OF ALL
 THREE IS ONE MEASURED FACT: NO SYNTHETIC KEYBOARD INPUT REACHES THIS EDITOR** — not CGEvent chords, not
 `System Events keystroke`, not the native dialog's Go-to-Folder field — because `aero_editor` is a bare
-Unix executable and never becomes a key window. Synthetic **mouse** events work fully, including navigating
+Unix executable and never becomes a key window. **That is a fact about the bare executable, not the
+editor**: E.4.3's and E.4.4's passes ran it as a signed `.app` and typed into its modals, so row 9's Escape
+third is executable now. Synthetic **mouse** events work fully, including navigating
 the native file dialog by its column view. Row 16 additionally cannot be staged at all: `NSOpenPanel`
 watches the filesystem and **clears the selection and disables `Open`** the moment the scene's parent
 directory is deleted. Its two **Windows** rows are the two cross-platform risks recorded rather than fixed: `path("C:/").parent_path()` possibly yielding `"C:"` and giving the walk one extra
@@ -1016,7 +1039,10 @@ with a window that **NEVER RENDERS** (a black capture); the prompts **CASCADE**,
 both kinds accept a synthetic click on the affirmative button derived from the dialog's own **fresh** bounds
 (~`x + 0.727w`, `y + 0.844h`). A stale editor survives `pkill -f` and must be `pkill -9`ed; a stalled bundle
 identity stays stalled until a fresh `CFBundleIdentifier` clears it. Synthetic mouse MOVES do provoke ImGui
-tooltips; **synthetic typing and synthetic drag-and-drop do not work at all** (DND undocks panels instead).
+tooltips. **Synthetic KEYBOARD input reaches ImGui only when the editor runs as a signed `.app`** (a bare
+executable never becomes a key window). It goes to the FRONTMOST app, so confirm that before every key; and
+Enter deactivates a single-line `InputText`. **Synthetic drag-and-drop still does not work** (it undocks
+panels). **Click window-relative, re-reading the origin every time** — the window can move mid-row.
 **Bind every capture to its launched PID** — two live `aero_editor` processes once made a window lookup
 capture the STALE one and produced three false "0 differing" comparisons, including one that provably
 contained an outline. **Let an anti-vacuity control be what catches that.** Note `screencapture` carries the
@@ -1026,9 +1052,7 @@ display's ICC profile, and **there is no `renderFrame` Tracy zone in this tree**
 ### Next
 
 **E.4.5, E.5 and E.6 are the open front: seven tasks, planning only** — E.4.5, E.5.1–E.5.2 and E.6.1–E.6.4.
-See `docs/tasks/phase-E.md`, and `docs/tasks/phase-3.md` for what Phase 3 still owes. **E.4.4 is done and
-hands nothing to E.4.3**: it widened E.4.3's `validateAssetName` itself (`TempSuffix` → `IgnoredName`, in
-place).
+See `docs/tasks/phase-E.md`, and `docs/tasks/phase-3.md` for what Phase 3 still owes.
 
 **Ownership of the open work.** **E.4.3 IS MERGED, and it did NOT use `directoryWithin` /
 `normalizeForContainment` — deliberately, and the reason generalises.** Those answer *"is this ABSOLUTE
@@ -1075,18 +1099,14 @@ inherits this — never write "Enter commits" without binding it.** The three th
 right (`KeypadEnter` is a distinct key; `IsKeyPressed` passes `ImGuiKeyOwner_Any`; a commit key shares the
 button's disabled predicate), each with its pinned-source citation, are in `.claude/rules/editor.md`.
 
-**AND THE ORPHAN MODAL STILL HAS NO UI WITNESS, BECAUSE `Issues` CLIPS.** Expanding the Assets panel's
-`Issues` section overflows past the panel's bottom edge at **every window and dock height measured**, so the
-orphan row cannot be clicked and `"Delete orphaned .meta?"` cannot be opened by hand. Pre-existing in 3.1.3's
-`drawIssues`, consistent with the Retina style-scaled-but-font-not gap **E.6.1** owns, and unowned on its
-own account. Its Enter binding is code-identical to the two that were verified — an argument, not an
-observation.
+**THE ORPHAN MODAL HAS A UI WITNESS NOW (#111).** `Issues` no longer clips, and E.4.4's rows 2 and 3 opened
+`"Delete orphaned .meta?"` from a real row and confirmed it by click and by **Enter**. Until then, Enter had
+only been argued from identical code.
 
 **EIGHTEEN UNOWNED HANDOFFS — one per bullet below; re-count the bullets, never the headline.** It read
 "NINE" over a list that already held thirteen, because two "smaller" items, the exposure clause and
 `FillMode::Line` were never counted. Handoffs recorded in their own paragraphs elsewhere in this block (fact
-4's four permitted cases, the two inspector-row gaps, the closed `File` section, the `Issues` clipping) are
-not repeated here.
+4's four permitted cases, the two inspector-row gaps, the closed `File` section) are not repeated here.
 
 - **Asset-browser keyboard shortcuts (F2, Del)** — E.4.3 dropped both bindings AND their accelerator text:
   the gating needs a THIRD condition (`!io.WantTextInput`, because the browser's header carries an `InputText`
@@ -1121,7 +1141,7 @@ not repeated here.
   both the browser predicate and the scan's bucket loop, so it is a traversal decision (E.4.4).
 - **vim / emacs swap and auto-save files** — dot-prefixed, so already hidden on macOS and Linux (E.4.4).
 - **A bulk "delete all orphaned sidecars" action or a distinct Issues category** for sidecars of now-ignored
-  files — E.4.4's validation row 2 decides whether the first scan after upgrading needs it.
+  files — E.4.4's row 2 judged 40 of them usable, and tedious to delete one click at a time.
 
 **E.1.1's THICK-LINE HANDOFF IS FIRED, NOT CLEARED AND NOT DEFERRED.** E.2.3's macOS pass measured it: icons
 scale exactly 2x and hold 22 points, but **387 of 441 sampled runs across the gizmo are ONE DEVICE PIXEL** —

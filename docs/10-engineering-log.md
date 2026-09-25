@@ -17574,10 +17574,212 @@ measured above. Deferred with a trigger: swapping `isScannableAssetName`'s inlin
    binary and exits 0. Select an existing `(ID, …)` case with `?` (doctest's `wildcmp` matches any one
    character) and end every new case name with its id and `)`.
 
-#### Validation and sabotage status
+#### Validation and sabotage status — RUN on macOS, 8 / 8, after one fix PR
 
 Sabotage: **29 seeds, no hole** (above). Validation page: `editor/validation/E.4.4-browser-ignore-rules.md`,
-**eight rows, UNRUN on every platform**. Rows 4 and 5 are the only cover seeds `S15` and `S8` have on real
+**eight rows**. Rows 4 and 5 are the only cover seeds `S15` and `S8` have on real
 hardware, and row 3 is `AD76`'s manual twin — the delete must succeed while the ignored backup is present.
 **`I136` passed at this task's gate (30 assertions, 250 / 250 locally) only because no 2x display was
 attached**; it is display-dependent, not fixed, and it is still E.6.1's.
+
+**RUN 2026-09-26** on macOS, APFS (case-insensitive), two 1x displays, Blender 5.2.0 LTS, against the
+release build of `6dc9e85`, with rows 2 and 3 re-run on `81ad65c`, PR #111's final head. Driven with
+synthetic mouse **and keyboard** events: the editor ran as a signed `.app`, which is what lets synthetic
+keys reach it. **8 / 8, nothing open.** This is the second run. The first, on `28e9529`, failed row 2 on
+two real defects, and PR #111 fixed them (next section). What the rows measured:
+
+* **Row 1: what Blender writes, and its manual is wrong about it.** Three saves at the default left
+  `model.blend` and `model.blend1`. Blender 5.2.0 LTS's Save Versions default is **1**
+  (`short versions = 1`, `DNA_userdef_types.h:949`, range 0–32), not the manual's 2. Two more saves at 2
+  added `model.blend2`. The scan logged `1 files, 1 .meta created` and hashed only `model.blend`
+  (95 941 B), and `git status` named no backup sidecar.
+* **Row 2's judgement is "usable".** 40 backups plus 40 earlier-build sidecars scanned as
+  `0 files, 0 .meta created, 0 repaired, 40 orphans, 0 invalid`. The capped WARN is one 677-character line,
+  and it renders. The open Issues list is its own scrollable region, 20 rows plus `…and 20 more`, with the
+  footer still on screen. Deleting 40 orphans one click at a time is tedious; that is the bulk-delete
+  handoff, not a defect.
+* **Row 3 is `AD76` on real hardware.** `Delete .meta` on `scene27.blend1.meta` was clicked inside the
+  scrolling list and confirmed in the modal, whose text now names both orphan cases. The `.meta` count went
+  from 40 to 39, every backup stayed, `scene27.blend1`'s SHA-1 did not change, and the rescan reported 39.
+  On the re-run on `81ad65c` the same delete was confirmed with **Enter**. That is the first time the orphan
+  modal's Enter binding has been observed working, rather than argued from identical code.
+* **Rows 4 and 5 close `S15` and `S8` on hardware.** Inside `backup.bak/`, only `inner.png` is listed and
+  scanned. `Show hidden` reads 1, 2, then 1 items (off, on, off), with `model.blend1` and `Thumbs.db` hidden
+  throughout.
+* **Row 6.** The three differently-cased names are not listed and get no `.meta`. On this case-insensitive
+  volume, writing `thumbs.db` beside `THUMBS.DB` wrote to the same inode, and the watcher ignored it.
+* **Row 7, cost.** 200 × 64 KiB `noise*.blend1` beside 10 PNGs changed nothing measurable:
+  - `N files` is 10 either way;
+  - the cache is byte-identical at 3 586 B;
+  - the first scan read 1 110 B of the 13.1 MB on disk;
+  - median Tracy frames are 16.74 ms with the noise files and 16.71 ms without, both vsync-bound.
+* **Row 8.** Each of the four roster names shows the ignore-list line, Rename is disabled, and Enter commits
+  nothing. The disabled label measured (167,174,184), against Cancel's (255,255,255). The folder rename is
+  refused too. The legal rename `wood.png` → `wood2.png` keeps GUID `939ad992…e19b`.
+
+#### ★ The first macOS run failed row 2 on two real defects — fixed in PR #111 (`f215cbb`)
+
+**No automated tier could see either one, and both predate E.4.4.** The editor had never added a font of
+its own, and the layout gap is 3.1.3's `drawIssues`. E.4.4 made both visible at volume.
+
+**1. The UI font drew `?` for every `…` and `—`.** The editor added no font, so ImGui 1.92.8 drew everything
+in its embedded ProggyClean. ProggyClean has no glyph at U+2026 or U+2014. It does carry the whole
+Windows-1252 punctuation set, at the CP1252 code points: `0x85` is `…` and `0x97` is `—`. ImGui itself
+configures `EllipsisChar = 0x0085` for this font (`imgui_draw.cpp:3189`). So, on the first run:
+- row 2's overflow line read `?and 20 more`;
+- the footer's GUID read `7e370ec3?b940`;
+- tile captions ended in `?`;
+- so did dozens of engine log lines in the Console.
+
+`default_font.{hpp,cpp}` now adds ProggyClean explicitly, through `AddFontDefaultBitmap()`. That is the
+same font the implicit path chose, glyph for glyph. It then calls `AddRemapChar` for the 26 assigned CP1252
+punctuation code points, pointing each at the slot the font already has, so no string literal changes.
+U+20AC is the one exclusion: the font draws it natively, and slot `0x80` is empty. `I230` proves:
+- the control falls back to `?`;
+- every remap resolves to its slot's glyph at 13 and 26 px;
+- the table's contents;
+- identity with the implicit font over ASCII and Latin-1;
+- a code point outside the table still draws `?`;
+- a source pin on the call site;
+- in (g), that the table equals the Windows-1252 standard.
+
+**2. The Issues section and the footer fell below the panel.** `onDraw` reserved one line for the footer
+and gave the panes the rest, but `drawIssues()` drew its header and list between the panes and the footer.
+With 40 orphans, "Issues (40)" and the footer were reachable only by scrolling the whole panel. That is
+what E.4.3's pass had recorded as clipping "at every window and dock height measured".
+
+A pure `assetBrowserLayout()` now reserves the footer and the Issues region before it sizes the panes:
+- the Issues header is fixed;
+- the body is a scrollable child, capped at 40% of the panel, that shrinks to its measured content and
+  yields space first, so the panes keep four font heights;
+- every non-finite or negative metric counts as zero;
+- the panes never go below 1, and an open body never below one row.
+
+The body's content height is measured one frame late. `issuesOpen` is a panel member, because ImGui's state
+storage is per window (E.3.4's rule). `AV55`–`AV59` pin the arithmetic at the 1x and Retina metric sets.
+`I231` builds row 2's project and asserts the panel window's `GetScrollMaxY()` is 0 in four states: closed,
+on every frame of opening, open, and with the orphan modal up.
+
+Two texts were corrected with them:
+- the roster comment's Save Versions default: 1, as measured, not the manual's 2;
+- the orphan-delete confirmation. It said "The asset it described no longer exists", which is false in the
+  case E.4.4 made common: a sidecar whose file is present but ignored. It now names both cases.
+
+**Nine commits.** Four are the fixes, and four close the code-review round, which found nothing
+blocking:
+- the standard pin, `I230(g)`;
+- every line another file cites by number kept where `main` has it;
+- eight comments that still justified ASCII-only text with "the editor loads no font";
+- `I231` reading the row height off the panel instead of a restated 13.
+
+The ninth, `81ad65c`, fixes the first CI run's one failure (below). Merged as **`f215cbb`**, CI 6 / 6 on
+`81ad65c` with the run's `headSha == HEAD`. Measurements:
+- doctest **1404 / 2123 / 250 / 40 / 59 / 10 / 28 → 1404 / 2128 / 252 / 40 / 59 / 10 / 28**, identical
+  in both presets;
+- guards: math **525 → 527** and project-no-delete prong B **89 → 90**, both from the new
+  `default_font` pair; the other six did not move;
+- `ctest -N` **178**, reduced configurations **165 / 93**.
+
+**The sabotage pass ran 24 seeds, and every one was caught:**
+- 6 against the font, all caught by `I230`;
+- 11 against the layout. The original defect reads a scroll max of 17 in `I231`, and each guard is pinned
+  by the case predicted for it;
+- 5 swapped or dropped remap pairs, which only `I230(g)` sees;
+- 2 unmeasured-body seeds against `I231`.
+
+The CI fix then re-ran or added five seeds against its new arms (`R4a`–`R4e`, next section), and each was
+red.
+
+#### ★ The first CI run failed on an anti-vacuity arm that measured the display, not the code
+
+**macOS failed `I231` on exactly one assertion:** `bodyHeight > oneRow` read `13 > 13`. Every other arm was
+green, including 20 rows drawn and no overflow. Windows, and Linux's debug tests, passed the same commit,
+and locally the case had passed on both presets. Re-running the case at a series of window heights showed why:
+
+| Window height | Panel's available height | Measured content | Body | The old arm |
+|---|---|---|---|---|
+| 1000 | 187 | 370 | 74 | passes |
+| 760 | 127 | 370 | 25 | passes |
+| 700 | 112 | 370 | 13 | `13 > 13` |
+| 600 | 87 | 370 | 13 | `13 > 13` |
+| 450 | 49 | 370 | 13 | `13 > 13`, and the panel scrolls 12 |
+
+The measured content is 370 at every height, so the measurement always reached the layout in time. This was
+geometry, not a race. With 115 points or less available, the layout correctly holds the body at its one-row
+floor. The CI log does not show the runner's display, but the passing run on `81ad65c` settles it: there the
+measured content exceeded one row and the body equalled the layout's answer in both windows, so the 13 was
+the layout's floor and not a missed measurement. **The arm asserted "this display had room", which is a
+property of the machine, while claiming "the rows were measured".**
+
+`81ad65c` makes the panel record exactly the metrics it fed `assetBrowserLayout`. A read-only
+`assetBrowserLayoutMetrics()` replaces the row-height forwarder, which had become one field of that record.
+`I231` now asserts, for the geometry the panel actually had:
+- the measured content height is more than one row, which an unmeasured body cannot reach at any height;
+- the body child was given exactly the layout's answer for those metrics.
+
+The case runs twice. In a 1000-point window, "taller than one row" is only a `WARN`, since only the display
+decides it. In a 600-point window, CI's regime, the floor is asserted, and a runner can only make a window
+shorter.
+
+Five seeds prove the new arms, and each was red:
+- `R4a`, a body never measured: `0 > 13`;
+- `R4b`, the same with the row height doubled: `0 > 26`;
+- `R4c`, the old arm restored in the short window: CI's own `13 > 13`, with every new arm green;
+- `R4d`, the floor passed instead of the layout's answer: `13 == 74`;
+- `R4e`, the metrics never recorded: `REQUIRE( 0 > 0 )`.
+
+`R4e`'s shape was a real mistake made on the way. The first version copied the metrics before they were
+complete, and the new `REQUIRE` on `issuesShown` caught it. **Neither window has run on a 2x display**:
+every local run of this case had only 1x displays attached. On Retina the short window's fit check becomes
+a `WARN` by design, and the tall one's is unconditional and unmeasured there.
+
+#### ★ E.3.4's Retina explanation was wrong, and the real one makes the gap macOS-only
+
+The code-review round checked the claim that `ConfigDpiScaleFonts` rewrites `FontScaleDpi` only when a
+monitor's DPI changes. It is false. `SetCurrentViewport` writes `FontScaleDpi = CurrentDpiScale` whenever the
+current viewport changes (`imgui.cpp:16701-16702`), and `EndFrame` resets the current viewport (`:6293`), so
+the write runs every frame.
+
+The font stays at 13 on a Retina Mac for a different reason. That `DpiScale` comes from
+`SDL_GetDisplayContentScale` (`imgui_impl_sdl3.cpp:963`). SDL's Cocoa backend never sets a content scale,
+so it defaults to 1.0 (`SDL_video.c:879-880`). The style is scaled by `SDL_GetWindowDisplayScale` instead,
+which is pixel density × content scale = 2.0 (`:1905-1908`).
+
+**E.6.1's gap is therefore macOS-only by the code path.** The Windows, X11 and Wayland backends all set a
+content scale, so at 200% there the font should double with the style. Any threshold E.6.1 picks has to hold
+on both kinds of display. This is read from source; no Windows or Linux display has measured it. One more
+consequence: a 2x window already got ProggyClean before #111, because `FontScaleDpi` is 1 when the implicit
+font is chosen. So #111 changes nothing on Retina.
+
+#### Traps found in the fix and the pass, each measured
+
+* **An `ImFontGlyph*` does not survive the next lookup.** The first probe held one across a later
+  `FindGlyph`, whose bake `push_back`ed into `ImFontBaked::Glyphs` and reallocated it. That is a
+  use-after-free, which ASan confirmed. The probe reported 23 of 27 code points drawing; all 27 do. Copy
+  glyph fields by value.
+* **Geometry cannot prove a pairing.** `{† ‡ š ž}`, `{Š Ž}` and `{‹ ›}` are exact geometry twins at 13 and
+  26 px, so swapping the Š/Ž slots left every geometric subcase green. Only a table restated from Unicode's
+  `CP1252.TXT` catches it (`I230(g)`).
+* **In 1.92 a remapped glyph is baked under the REQUESTED code point**, so `Codepoint == slot` is the wrong
+  check. Compare against the `?` fallback and match the geometry.
+* **`AddFontDefault()` is not ProggyClean at every size.** From an expected size of 15 it returns
+  `AddFontDefaultVector()`, which is ProggyForever (`imgui_draw.cpp:3168`).
+* **Non-ASCII `U'…'` literals had to become code points**, because MSVC compiles without `/utf-8` and reads
+  each one as three characters.
+* **A bare ImGui context writes `imgui.ini` into the working directory**, and a probe run from the repo root
+  left one there.
+* **The editor window can move between validation steps**, and a capture bound to the PID hides the move.
+  Absolute clicks landed in empty space and nearly filed a false "Cancel does nothing". Click in
+  window-relative coordinates, with the origin re-read live.
+* **Enter deactivates a single-line `InputText`**, and every synthetic key after it goes nowhere, silently.
+
+#### The sentences that govern new work, from the validation fix
+
+1. **Any UI text outside ASCII, Latin-1 and the 26 remapped CP1252 marks draws `?`.** Check a new symbol
+   before using it. A font change invalidates `DEFAULT_FONT_CP1252_REMAPS` and `I230(g)`'s standard pin.
+2. **`AddFontDefaultBitmap()`, never `AddFontDefault()`.**
+3. **A panel reserves its fixed chrome before it sizes its flexible region**, through a pure layout
+   function tier 0 can walk. `assetBrowserLayout` is the precedent.
+4. **A layout assertion compares against the layout's own answer for the metrics the panel recorded**,
+   never against a panel height the test machine happened to give it. A check that depends on geometry
+   can be a `WARN` at most (`I231`).

@@ -559,8 +559,9 @@ discharges the second clause: a scene outside the project is refused with an exp
 `I186`–`I192` and took the tier-0 prefix `CN` (`CN1`–`CN25`), so **the next free ImGui-tier id is `I193`**
 and E.4.3, E.4.4 and E.4.5 must each re-measure before they are implemented.
 **E.4.3 is MERGED** (PR #108, `3dff5ef`) and **macOS-validated 59 / 59**, which discharges the third clause,
-and **E.4.4 is MERGED** (PR #110, `28e9529`) — **four of five**, with E.4.5 left. E.4.3 took `I210`–`I226`
-and E.4.4 took `I227`–`I229`, so **the next free ImGui-tier id is now `I230`**; `I193`–`I209` is a free gap
+and **E.4.4 is MERGED** (PR #110, `28e9529`) and **macOS-validated 8 / 8** after one fix PR (#111,
+`f215cbb`) — **four of five**, with E.4.5 left. E.4.3 took `I210`–`I226`, E.4.4 took `I227`–`I229` and its
+fix `I230`–`I231`, so **the next free ImGui-tier id is now `I232`**; `I193`–`I209` is a free gap
 that E.4.5's spec claims from `I199`, and E.4.5 must re-measure before it is implemented.
 
 ### E.4.1 Reopen the last scene · P0 · M · depends: 2.5.1, 2.6.1 · **MERGED** — PR #106, `068c45c`
@@ -668,7 +669,9 @@ Subtasks:
 - Existing sidecars for newly-ignored files become orphans and are reported by the existing issues path, never silently deleted
 
 _Outcome:_ **merged as PR #110 (`28e9529`), twelve commits, CI 6 / 6 green on the first run; the 29-seed
-sabotage matrix found no hole; the eight-row validation page is UNRUN on every platform.** ★ **The second
+sabotage matrix found no hole; the eight-row validation page is RUN on macOS, 8 / 8 — after its first
+run failed row 2 on two real defects, fixed by PR #111 (`f215cbb`): the UI font drew `?` for every `…` and
+`—`, and the open Issues list fell below the panel.** ★ **The second
 subtask was false as written: three of the four consumers followed the scan, and the browser's directory
 grid did not** — `ensureCached` filtered sidecars only, so every backup kept a tile the scan had refused. It
 follows by composition now (`isBrowserVisibleName`: directories first, the hidden rule left to
