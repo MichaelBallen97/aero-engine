@@ -18,6 +18,7 @@
                                             // and the math umbrella onto every TU that touches an
                                             // asset record (plan §A-11).
 
+#include <array>  // task E.4.4 -- the ignore roster's two arrays
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -48,6 +49,49 @@ inline constexpr std::size_t CREATE_NOTICE_THRESHOLD = 1000;
 // "wood.png.meta" -> "wood.png"; "" for a name that is not a sidecar (AC-20). POINTS INTO `metaName`
 // -- never call it on a temporary whose lifetime ends before the result is used.
 [[nodiscard]] std::string_view assetNameForMeta(std::string_view metaName) noexcept;
+
+// ---- the ignore roster (task E.4.4) ---------------------------------------------------------------
+//
+// THE single source. Three DISJOINT questions decide whether the scan sees a file, and this is the
+// third of them:
+//     hidden   -> isHiddenName        (project_files.hpp; listDirectory applies it)
+//     sidecar  -> isMetaFileName      (above)
+//     ignored  -> isIgnoredAssetName  (below)
+// Each consumer composes the ones it needs: the SCAN refuses all three, the Asset Browser's listing
+// refuses the last two (listDirectory owns the first, gated on the panel's own `Show hidden`), and the
+// WATCHER is exactly scannable-or-sidecar. Add an entry HERE and nowhere else; docs/09 §5.10 tables
+// the roster and must be updated in the same commit.
+
+// EXACT leaf names, compared ASCII-case-insensitively. Both are named by this repo's own .gitignore.
+// ".DS_Store" needs no entry: it is dot-prefixed, so the hidden rule already removes it.
+inline constexpr std::array<std::string_view, 2> IGNORED_ASSET_NAMES{"Thumbs.db", "desktop.ini"};
+
+// TAIL suffixes, compared ASCII-case-insensitively. Unlike ASSET_META_SUFFIX -- where ".meta" alone is
+// a sidecar of NOTHING and the test is `size > suffix.size()` -- a name EQUAL to one of these matches
+// it: "~" alone is a backup of nothing and is still not an asset.
+//   ATOMIC_TEMP_SUFFIX  writeTextFileAtomic's own temp; named BY IDENTIFIER, never re-spelled (3.1.1 D16)
+//   ".blend@"           Blender writes "<path>@" and renames it into place; one survives when the
+//                       version rotation or that rename fails
+//   ".bak" ".tmp"       the generic backup and temp suffixes (".tmp" is not ".aero-tmp", which ends -tmp)
+//   ".orig" ".rej"      GNU patch's backup and reject files; git mergetool's kept backup is ".orig" too
+//   "~"                 emacs's backup name, and vim's default 'backupext'
+inline constexpr std::array<std::string_view, 7> IGNORED_ASSET_NAME_SUFFIXES{
+    ATOMIC_TEMP_SUFFIX, ".blend@", ".bak", ".tmp", ".orig", ".rej", "~"};
+
+// Blender's rolling backups. Save Versions (Preferences > Save & Load) keeps previous saves beside the
+// file as .blend1, .blend2, ..., older saves carrying the higher number; the manual gives the default as
+// 2 and Blender's own property range caps the preference at 32. The rule is UNBOUNDED in N rather than a
+// 1..32 table: 32 is a PREFERENCE maximum, not a format constant, and ".blend" followed by digits is not
+// a file any tool reads. ".blend" with NO trailing digit is the asset and stays scannable.
+inline constexpr std::string_view BLEND_BACKUP_STEM = ".blend";
+
+// TRUE for a derived, temporary or OS-noise LEAF name: an entry of IGNORED_ASSET_NAMES, a name ending
+// in an entry of IGNORED_ASSET_NAME_SUFFIXES (a name EQUAL to a suffix matches), or BLEND_BACKUP_STEM
+// followed by one or more ASCII digits at the very end. Everything folds ASCII case, exact names
+// included. NOT true for a merely HIDDEN name (the dot rule is isHiddenName's) nor for a SIDECAR
+// (isMetaFileName's): the three questions are disjoint. "" is not ignored -- it is invalid, and
+// isScannableAssetName refuses it on its own term. Pure, allocation-free, noexcept.
+[[nodiscard]] bool isIgnoredAssetName(std::string_view fileName) noexcept;
 
 // D5/AC-21: is `fileName` a file the scan should mint an identity for? Rejects a hidden name, a
 // sidecar itself, anything ending ATOMIC_TEMP_SUFFIX (a suffix test, not equality -- E19), and the

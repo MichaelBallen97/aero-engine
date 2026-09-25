@@ -191,6 +191,71 @@ std::string_view assetNameForMeta(std::string_view metaName) noexcept {
     return std::string_view(metaName.data(), metaName.size() - ASSET_META_SUFFIX.size());
 }
 
+// ---- the ignore roster (task E.4.4) ---------------------------------------------------------------
+// The anonymous namespace is REOPENED here rather than extended at the top of the file, on purpose:
+// three other files cite lines of this file by number (":172", the isMetaFileName guard), and nothing
+// above this point moves. A second `namespace {` in one TU is the SAME unnamed namespace, so foldAscii
+// is in scope.
+namespace {
+
+[[nodiscard]] constexpr bool isAsciiDigit(unsigned char c) noexcept { return c >= '0' && c <= '9'; }
+
+// true iff the LAST tail.size() bytes of `name` equal `tail` under an ASCII case fold. A name EQUAL to
+// the tail matches ("~" alone is ignored), which is the OPPOSITE edge from isMetaFileName's
+// `size > suffix.size()` and from the stem-requiring endsWithFolded copies elsewhere in editor/src
+// (blender_tool.cpp, model_import.cpp, project_state.cpp). That is why this has a different name: do
+// NOT "fix" the `<` below into their `<=`.
+[[nodiscard]] constexpr bool foldedTailEquals(std::string_view name, std::string_view tail) noexcept {
+    if (name.size() < tail.size()) {
+        return false;
+    }
+    const std::size_t offset = name.size() - tail.size();
+    for (std::size_t i = 0; i < tail.size(); ++i) {
+        const unsigned char lhs = foldAscii(static_cast<unsigned char>(name[offset + i]));
+        const unsigned char rhs = foldAscii(static_cast<unsigned char>(tail[i]));
+        if (lhs != rhs) {
+            return false;
+        }
+    }
+    return true;
+}
+
+// true iff `a` and `b` are the same length and equal under an ASCII case fold -- the exact-name test.
+[[nodiscard]] constexpr bool foldedEquals(std::string_view a, std::string_view b) noexcept {
+    return a.size() == b.size() && foldedTailEquals(a, b);
+}
+
+}  // namespace
+
+bool isIgnoredAssetName(std::string_view fileName) noexcept {
+    if (fileName.empty()) {
+        return false;  // not IGNORED -- invalid. isScannableAssetName refuses it on its own term.
+    }
+    for (const std::string_view name : IGNORED_ASSET_NAMES) {
+        if (foldedEquals(fileName, name)) {
+            return true;  // EQUALITY, never a substring: "MyThumbs.dbFile.png" stays an asset
+        }
+    }
+    for (const std::string_view suffix : IGNORED_ASSET_NAME_SUFFIXES) {
+        if (foldedTailEquals(fileName, suffix)) {
+            return true;  // a TAIL test: "wood.png.meta.aero-tmp" too (3.1.1's E19)
+        }
+    }
+    // The Blender rule. Strip the TRAILING ASCII digit run; what remains must END with ".blend".
+    //   "model.blend1" -> "model.blend"  MATCH      "model.blend" -> no trailing digit: NO MATCH (the asset)
+    //   "x.BLEND32"    -> "x.BLEND"      MATCH      "a.blend1x"   -> no trailing digit: NO MATCH
+    //   ".blend7"      -> ".blend"       MATCH      "123"         -> strips to EMPTY: NO MATCH
+    std::size_t end = fileName.size();
+    while (end > 0 && isAsciiDigit(static_cast<unsigned char>(fileName[end - 1]))) {
+        --end;
+    }
+    if (end == fileName.size() || end == 0) {
+        return false;  // no trailing digit at all, or the whole name was digits
+    }
+    // pointer+size, never substr(): the assetNameForMeta precedent above (bugprone-exception-escape).
+    return foldedTailEquals(std::string_view(fileName.data(), end), BLEND_BACKUP_STEM);
+}
+
 bool isScannableAssetName(std::string_view fileName) noexcept {
     if (fileName.empty() || fileName.front() == '.') {  // hidden (project_files.cpp's isHiddenName rule)
         return false;
