@@ -1261,7 +1261,11 @@ void AssetBrowserPanel::drawIssues(float bodyHeight) {
             // C7/E20: the exact project-relative path through TextWrapped's "%s" form -- NEVER as a
             // bare format string. A path containing '%' would otherwise be a format bug.
             ImGui::TextWrapped("%s", pendingOrphanDelete.c_str());
-            ImGui::TextDisabled("The asset it described no longer exists; the file itself is not touched.");
+            // task E.4.4 (validation finding 4): an orphan is EITHER a sidecar whose file is gone OR one whose
+            // file is now on the ignore list (docs/09 section 5.10) and still on disk, so the text names both
+            // and says what is deleted. ASCII only, as the footer's watcher text is.
+            ImGui::TextDisabled("No asset uses this sidecar any more -- its file is gone or now on the ignore list");
+            ImGui::TextDisabled("(docs/09 section 5.10). Only the .meta file is deleted.");
             ImGui::Separator();
             bool commit = ImGui::Button("Delete");
             ImGui::SetItemDefaultFocus();
