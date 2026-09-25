@@ -65,24 +65,6 @@ std::string elideGuid(Guid guid) {
     return full.substr(0, GUID_PREFIX_LENGTH) + "…" + full.substr(full.size() - GUID_SUFFIX_LENGTH);
 }
 
-// task E.4.4 (validation finding 2): the Issues count, moved out of drawIssues because onDraw now needs
-// it too -- to reserve the header's line BEFORE the panes are sized. ONE sum, so the reservation and the
-// header can never disagree about whether the header draws.
-// Code-review finding 2 (3.1.1): report.invalid counts EVERY Invalid-state record, INCLUDING one
-// a write conflict downgraded -- report.invalidPaths already excludes those, so the count shown
-// here must subtract writeConflictTotal too, or the two would silently disagree (logAssetScan's
-// own identical subtraction, editor_app.cpp).
-[[nodiscard]] std::size_t invalidIssueCount(const AssetScanReport& report) noexcept {
-    return report.invalid - report.writeConflictTotal;
-}
-// code-review SHOULD-FIX 10: `importFailureTotal` (task 3.2.1's phase 7.5) was missing from this
-// sum entirely, so a model-only import failure never even opened the header -- total stayed 0 and
-// this function returned before ImGui::CollapsingHeader was ever called.
-[[nodiscard]] std::size_t issueTotal(const AssetScanReport& report) noexcept {
-    return report.orphanTotal + invalidIssueCount(report) + report.aliasedDirTotal + report.writeFailureTotal +
-           report.writeConflictTotal + report.hashFailureTotal + report.importFailureTotal;
-}
-
 }  // namespace
 
 AssetBrowserPanel::AssetBrowserPanel(std::string rootPath) : rootUtf8(std::move(rootPath)) {}
@@ -1246,6 +1228,29 @@ void AssetBrowserPanel::drawAssetDeleteModal() {
         pendingDelete.clear();
     }
 }
+
+namespace {
+
+// task E.4.4 (validation finding 2): the Issues count, moved out of drawIssues because onDraw now needs
+// it too -- to reserve the header's line BEFORE the panes are sized. ONE sum, so the reservation and the
+// header can never disagree about whether the header draws. Defined HERE, not with the helpers at the top
+// of the file, so no line above drawIssues moves and every citation of one by number stays true.
+// Code-review finding 2 (3.1.1): report.invalid counts EVERY Invalid-state record, INCLUDING one
+// a write conflict downgraded -- report.invalidPaths already excludes those, so the count shown
+// here must subtract writeConflictTotal too, or the two would silently disagree (logAssetScan's
+// own identical subtraction, editor_app.cpp).
+[[nodiscard]] std::size_t invalidIssueCount(const AssetScanReport& report) noexcept {
+    return report.invalid - report.writeConflictTotal;
+}
+// code-review SHOULD-FIX 10: `importFailureTotal` (task 3.2.1's phase 7.5) was missing from this
+// sum entirely, so a model-only import failure never even opened the header -- total stayed 0 and
+// this function returned before ImGui::CollapsingHeader was ever called.
+[[nodiscard]] std::size_t issueTotal(const AssetScanReport& report) noexcept {
+    return report.orphanTotal + invalidIssueCount(report) + report.aliasedDirTotal + report.writeFailureTotal +
+           report.writeConflictTotal + report.hashFailureTotal + report.importFailureTotal;
+}
+
+}  // namespace
 
 void AssetBrowserPanel::drawIssues(float bodyHeight) {
     // task 3.1.3, Step 11: the delete-confirmation modal. Opened by applyPending() setting

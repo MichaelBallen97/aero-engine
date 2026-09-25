@@ -1429,16 +1429,6 @@ std::size_t EditorApp::assetBrowserVisibleEntryCount() const noexcept {
 bool EditorApp::assetBrowserListingContains(std::string_view leafName) const noexcept {
     return assetBrowserPanel != nullptr && assetBrowserPanel->cachedListingContains(leafName);
 }
-// task E.4.4 (validation finding 2): the read-only forwards the vertical-fit case (I231) asserts through.
-std::size_t EditorApp::assetBrowserIssueRowsDrawn() const noexcept {
-    return assetBrowserPanel != nullptr ? assetBrowserPanel->issueRowsDrawn() : std::size_t{0};
-}
-float EditorApp::assetBrowserIssuesBodyHeight() const noexcept {
-    return assetBrowserPanel != nullptr ? assetBrowserPanel->issuesBodyHeightDrawn() : 0.0F;
-}
-float EditorApp::assetBrowserScrollMaxY() const noexcept {
-    return assetBrowserPanel != nullptr ? assetBrowserPanel->scrollMaxY() : 0.0F;
-}
 
 // task E.3.3: re-pointed at the SHARED service. A moved-from app holds a null pointer, exactly as it
 // holds a null sceneAssetLoader, so all four are null-guarded like the drains.
@@ -2216,6 +2206,17 @@ void EditorApp::requestAssetBrowserIssuesOpen(bool open) noexcept {
     if (assetBrowserPanel != nullptr) {
         assetBrowserPanel->requestIssuesOpen(open);
     }
+}
+// task E.4.4 (validation finding 2): the read-only forwards the vertical-fit case (I231) asserts through --
+// kept beside the seam, below every line of this file other files cite by number.
+std::size_t EditorApp::assetBrowserIssueRowsDrawn() const noexcept {
+    return assetBrowserPanel != nullptr ? assetBrowserPanel->issueRowsDrawn() : std::size_t{0};
+}
+float EditorApp::assetBrowserIssuesBodyHeight() const noexcept {
+    return assetBrowserPanel != nullptr ? assetBrowserPanel->issuesBodyHeightDrawn() : 0.0F;
+}
+float EditorApp::assetBrowserScrollMaxY() const noexcept {
+    return assetBrowserPanel != nullptr ? assetBrowserPanel->scrollMaxY() : 0.0F;
 }
 
 // ---- task E.3.3: the picker's six seams and three observables ------------------------------------

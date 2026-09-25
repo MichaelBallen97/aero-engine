@@ -14,7 +14,6 @@
 #include <vector>
 
 namespace engine::editor {
-
 namespace {
 
 // ASCII-only, locale-independent. NEVER std::tolower(char): UTF-8 continuation bytes are NEGATIVE as

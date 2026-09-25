@@ -48,7 +48,6 @@
 #include <aero/rhi/device.hpp>
 #include <aero/scene/scene.hpp>
 #include <aero/scene/world.hpp>
-
 // task 3.1.5 (SL1-SL10): the scene-asset loader is SRC-PRIVATE, so it is reached the way
 // blender_service_test.cpp reaches blender_process.hpp -- by relative path into editor/src. It names
 // scene_render::MeshBinding, which is why aero::scene_render is on this target's link line.
