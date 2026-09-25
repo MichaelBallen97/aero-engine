@@ -93,11 +93,11 @@ inline constexpr std::string_view BLEND_BACKUP_STEM = ".blend";
 // isScannableAssetName refuses it on its own term. Pure, allocation-free, noexcept.
 [[nodiscard]] bool isIgnoredAssetName(std::string_view fileName) noexcept;
 
-// D5/AC-21: is `fileName` a file the scan should mint an identity for? Rejects a hidden name, a
-// sidecar itself, anything ending ATOMIC_TEMP_SUFFIX (a suffix test, not equality -- E19), and the
-// two literal OS-noise names `Thumbs.db` / `desktop.ini` (A15's "two literal names plus the
-// .aero-tmp suffix"; `.DS_Store` needs no entry, it is dot-prefixed and isHiddenName already removes
-// it). Directories are never scannable asset names either -- the caller filters by isDirectory first.
+// D5/AC-21, RECOMPOSED at task E.4.4: is `fileName` a file the scan should mint an identity for?
+// Exactly FOUR disjoint refusals and nothing else -- the empty name, a hidden name (isHiddenName's
+// leading-dot rule), a sidecar (isMetaFileName) and an ignored name (isIgnoredAssetName, the roster
+// above). The roster is where an entry is ADDED; this function never grows a fifth term. Directories
+// are never scannable asset names either -- the caller filters by isDirectory first.
 [[nodiscard]] bool isScannableAssetName(std::string_view fileName) noexcept;
 
 // task 3.1.4 (D4): "a name the SCAN can see" -- EXACTLY isScannableAssetName(name) ||

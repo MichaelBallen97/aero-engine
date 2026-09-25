@@ -129,9 +129,11 @@ TEST_CASE("asset_meta: isScannableAssetName accepts everything else (AM8, AC-21,
     CHECK(isScannableAssetName("notes.metal"));           // ends "metal", not ".meta"
     CHECK(isScannableAssetName("a.aero-tmp.png"));        // the suffix is a MIDDLE segment, not the tail
     CHECK(isScannableAssetName("\xF0\x9F\x9A\x80.png"));  // an emoji leaf name (E28)
-    // Exact bytes, never a substring test: a name that merely CONTAINS "Thumbs.db" is scannable.
+    // Equality, never a substring test: a name that merely CONTAINS "Thumbs.db" is scannable. (Task
+    // E.4.4 made the equality ASCII-case-folded and put ".bak" on the roster -- so the vehicle below is
+    // ".dbx", which proves the same thing and is not an ignored name.)
     CHECK(isScannableAssetName("MyThumbs.dbFile.png"));
-    CHECK(isScannableAssetName("Thumbs.db.bak"));
+    CHECK(isScannableAssetName("Thumbs.dbx"));
 }
 
 // ---- parseMeta success ------------------------------------------------------------------------
@@ -757,7 +759,25 @@ TEST_CASE("asset_meta: isWatchableAssetName is EXACTLY the composition of the tw
         "wood.png", "wood.png.meta", ".DS_Store", ".hidden",       "wood.png.aero-tmp", "wood.png.meta.aero-tmp",
         "",         "Thumbs.db",     ".meta",     "wood.png.META",
     };
-    for (const std::string_view name : NAMES) {
+    // task E.4.4 WIDENED this corpus rather than adding a case -- INV-W3's equality re-proved over the
+    // names the recomposition changed: the Blender forms, a folded OS name, a sidecar OF a backup, a
+    // HIDDEN sidecar, and every roster entry alone, after a real name and after a sidecar name.
+    constexpr std::array<std::string_view, 8> ROSTER_FORMS = {
+        "THUMBS.DB", "scene.blend",       "scene.blend1", "scene.blend32",
+        ".blend7",   "scene.blend1.meta", ".x.png.meta",  "a.blend1x",
+    };
+    std::vector<std::string> names(NAMES.begin(), NAMES.end());
+    names.insert(names.end(), ROSTER_FORMS.begin(), ROSTER_FORMS.end());
+    for (const std::string_view entry : IGNORED_ASSET_NAMES) {
+        names.emplace_back(entry);
+    }
+    for (const std::string_view suffix : IGNORED_ASSET_NAME_SUFFIXES) {
+        names.emplace_back(suffix);
+        names.push_back("wood.png" + std::string(suffix));
+        names.push_back("wood.png.meta" + std::string(suffix));
+    }
+    REQUIRE(names.size() > 30U);  // anti-vacuity: the roster really contributed (41 today)
+    for (const std::string& name : names) {
         CAPTURE(name);
         CHECK(isWatchableAssetName(name) == (isScannableAssetName(name) || isMetaFileName(name)));
     }
@@ -1080,6 +1100,55 @@ TEST_CASE("asset_meta: hidden, sidecar and ignored are three DISJOINT questions 
         CHECK_FALSE(isMetaFileName(name));
         CHECK_FALSE(isHiddenName(name));
     }
+}
+
+TEST_CASE("asset_meta: isScannableAssetName is exactly four disjoint refusals (AC-7, seed S5, AM28)") {
+    // AM-w11's shape, one layer down: a PROPERTY over a corpus, never a list of examples. isHiddenName is
+    // taken from project_files.hpp HERE, in the test, and that is what proves the production code's INLINE
+    // hidden term (asset_meta.cpp keeps `front() == '.'`) equal to the one-source rule.
+    constexpr std::array<std::string_view, 13> EDGES = {
+        "",
+        ".DS_Store",
+        ".hidden.png",
+        "wood.png.meta",
+        "wood.png.META",
+        ".meta",
+        "scene.blend1.meta",
+        "model.blend1",
+        "x.BLEND32",
+        ".blend7",
+        "a.blend1x",
+        "123",
+        "THUMBS.DB",
+    };
+    std::vector<std::string> names(EDGES.begin(), EDGES.end());
+    names.insert(names.end(), REAL_ASSET_NAMES.begin(), REAL_ASSET_NAMES.end());
+    for (const std::string_view entry : IGNORED_ASSET_NAMES) {
+        names.emplace_back(entry);
+        names.push_back(asciiUpper(entry));
+    }
+    for (const std::string_view suffix : IGNORED_ASSET_NAME_SUFFIXES) {
+        names.emplace_back(suffix);
+        names.push_back("wood.png" + std::string(suffix));
+        names.push_back(".wood.png" + std::string(suffix));  // hidden AND ignored: two terms refuse it
+    }
+    std::size_t accepted = 0;
+    std::size_t refused = 0;
+    for (const std::string& name : names) {
+        CAPTURE(name);
+        const std::string_view n = name;
+        const bool expected = !n.empty() && !isHiddenName(n) && !isMetaFileName(n) && !isIgnoredAssetName(n);
+        CHECK(isScannableAssetName(n) == expected);
+        if (expected) {
+            ++accepted;
+        } else {
+            ++refused;
+        }
+    }
+    // Anti-vacuity: the corpus straddles the predicate. Every real asset is accepted, and the roster alone
+    // contributes more refusals than it has suffixes.
+    CHECK(accepted >= REAL_ASSET_NAMES.size());
+    CHECK(refused > IGNORED_ASSET_NAME_SUFFIXES.size());
 }
 
 // ---- the optional importer block (task 3.2.1, D6) --------------------------------------------------

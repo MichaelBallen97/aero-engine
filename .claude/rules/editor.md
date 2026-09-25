@@ -502,9 +502,10 @@ and resolves; `EditorApp::persistProjectState` decides and writes.
   `std::optional`, so the address a reference would have captured never actually moves on this specific
   compiler/build combination. Do not read that green run as license to switch back to a reference.
 - **`.aero-tmp` is skipped by the scan, not deleted (D16).** `writeTextFileAtomic` transiently creates
-  `<path>.aero-tmp` inside the user's own assets tree; a killed editor leaves one behind. Without the
-  suffix check in `isScannableAssetName`, a leftover `wood.png.meta.aero-tmp` would itself be treated
-  as a scannable asset and given `wood.png.meta.aero-tmp.meta`.
+  `<path>.aero-tmp` inside the user's own assets tree; a killed editor leaves one behind. Without its
+  entry in the ignore roster (`IGNORED_ASSET_NAME_SUFFIXES`, which names `ATOMIC_TEMP_SUFFIX` by
+  identifier and which `isIgnoredAssetName` reads -- task E.4.4), a leftover `wood.png.meta.aero-tmp`
+  would itself be treated as a scannable asset and given `wood.png.meta.aero-tmp.meta`.
 - **The panel's root and the database's root are the SAME string by construction (INV-A9/A16).** Both
   are reconciled from `project.assetsRoot()` in the same `EditorApp::tick()` block, which is the only
   reason `AssetBrowserPanel::selectedEntry` (relative to the panel's root) is a valid

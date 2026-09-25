@@ -256,34 +256,16 @@ bool isIgnoredAssetName(std::string_view fileName) noexcept {
     return foldedTailEquals(std::string_view(fileName.data(), end), BLEND_BACKUP_STEM);
 }
 
+// D5/AC-21, recomposed at task E.4.4: FOUR disjoint refusals, one term each. The hidden term is spelled
+// inline -- `front() == '.'`, exactly project_files.cpp's isHiddenName -- because including
+// project_files.hpp here would shift lines that other files cite by number (the isMetaFileName guard
+// above). AM28 proves the inline term equal to isHiddenName over the whole corpus. The roster lives in
+// asset_meta.hpp: ADD AN ENTRY THERE, never a fifth term here.
 bool isScannableAssetName(std::string_view fileName) noexcept {
-    if (fileName.empty() || fileName.front() == '.') {  // hidden (project_files.cpp's isHiddenName rule)
-        return false;
+    if (fileName.empty() || fileName.front() == '.') {
+        return false;  // the empty name, then a hidden one
     }
-    if (isMetaFileName(fileName)) {
-        return false;
-    }
-    if (fileName.size() >= ATOMIC_TEMP_SUFFIX.size()) {
-        const std::size_t offset = fileName.size() - ATOMIC_TEMP_SUFFIX.size();
-        bool isTempFile = true;
-        for (std::size_t i = 0; i < ATOMIC_TEMP_SUFFIX.size(); ++i) {
-            if (fileName[offset + i] != ATOMIC_TEMP_SUFFIX[i]) {
-                isTempFile = false;
-                break;
-            }
-        }
-        if (isTempFile) {
-            return false;  // a SUFFIX test (E19: "wood.png.meta.aero-tmp" too), never equality
-        }
-    }
-    // Two literal names plus the .aero-tmp suffix above (A15) -- both named by this repo's own
-    // .gitignore. ".DS_Store" needs no entry: it is dot-prefixed and the hidden check above already
-    // removes it. Exact bytes, never a substring test: a file that merely CONTAINS "Thumbs.db" in its
-    // name is scannable.
-    if (fileName == "Thumbs.db" || fileName == "desktop.ini") {
-        return false;
-    }
-    return true;
+    return !isMetaFileName(fileName) && !isIgnoredAssetName(fileName);  // a sidecar, then an ignored name
 }
 
 bool isWatchableAssetName(std::string_view fileName) noexcept {
