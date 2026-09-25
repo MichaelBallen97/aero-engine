@@ -1887,9 +1887,12 @@ A fixed region's height is a **pure function** with a tier-0 battery, never arit
 walk. The scrolling body is `BeginChild(id, ImVec2(0, -footerHeight))` — a **negative** height, so
 `CalcItemSize` resolves it as `ImMax(4.0f, avail.y + size.y)` (`imgui.cpp:12344-12345`) and ImGui's own
 remainder is authoritative: a one-pixel error costs the child a pixel instead of clipping a button off
-the bottom. (`asset_browser_panel.cpp:1311-1315` floors its child at `1.0F` for the **opposite**
-requirement — two side-by-side panes sharing one explicit height — and both are right.) **Never pass a
-zero height meaning "nothing"**: `CalcItemSize` reads zero as *use the whole remaining region*.
+the bottom. (The Asset Browser's panes are floored at `1.0F` for the **opposite** requirement — two
+side-by-side panes sharing one explicit height — and both are right. Since E.4.4's validation fix that
+floor lives in `assetBrowserLayout` (`asset_view.hpp`), which reserves the footer AND the Issues region
+before sizing the panes and caps the Issues body in a scrollable child — this section's second
+instance.) **Never pass a zero height meaning "nothing"**: `CalcItemSize` reads zero as *use the whole
+remaining region*.
 
 **Nothing that wraps may live in a fixed-height region.** A wrapped line makes the region's height a
 function of the panel's *width*, which makes every derived size a function of the panel's width — and if

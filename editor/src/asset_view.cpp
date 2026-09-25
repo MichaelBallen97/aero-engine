@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <span>
@@ -290,6 +291,41 @@ SearchResult searchAssets(std::span<const AssetRecord> records, const AssetFilte
     }
     result.truncated = result.total > result.hits.size();
     return result;
+}
+
+namespace {
+
+// A metric that is not a finite, positive number contributes NOTHING. `value > 0.0F` is false for a NaN.
+[[nodiscard]] float usableMetric(float value) noexcept {
+    const bool usable = std::isfinite(value) && value > 0.0F;
+    return usable ? value : 0.0F;
+}
+
+}  // namespace
+
+AssetBrowserLayout assetBrowserLayout(const AssetBrowserLayoutMetrics& metrics) noexcept {
+    const float avail = usableMetric(metrics.availHeight);
+    const float frame = usableMetric(metrics.frameHeight);
+    const float spacing = usableMetric(metrics.itemSpacingY);
+    AssetBrowserLayout layout;
+    // The footer's reservation is today's GetFrameHeightWithSpacing(): the spacing after the region above
+    // it plus a frame-height line, which the footer's one text line fits inside.
+    layout.footerHeight = spacing + frame;
+    if (metrics.issuesShown) {
+        layout.issuesHeight = frame + spacing;  // the CollapsingHeader is one frame tall
+        if (metrics.issuesOpen) {
+            const float bodyFloor = std::max(usableMetric(metrics.textLineHeight), 1.0F);
+            // Whole points, so every height here stays exact for whole-point metrics.
+            const float cap = std::max(std::floor(ASSET_ISSUES_BODY_MAX_FRACTION * avail), bodyFloor);
+            const float wanted = std::min(std::max(usableMetric(metrics.issuesContentHeight), bodyFloor), cap);
+            const float paneMin = ASSET_PANES_MIN_FONT * usableMetric(metrics.fontSize);
+            const float room = avail - layout.footerHeight - layout.issuesHeight - spacing - paneMin;
+            layout.issuesBodyHeight = std::max(std::min(wanted, room), bodyFloor);
+            layout.issuesHeight += layout.issuesBodyHeight + spacing;
+        }
+    }
+    layout.paneHeight = std::max(avail - layout.footerHeight - layout.issuesHeight, 1.0F);
+    return layout;
 }
 
 }  // namespace engine::editor

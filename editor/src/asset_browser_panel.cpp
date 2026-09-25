@@ -65,6 +65,24 @@ std::string elideGuid(Guid guid) {
     return full.substr(0, GUID_PREFIX_LENGTH) + "…" + full.substr(full.size() - GUID_SUFFIX_LENGTH);
 }
 
+// task E.4.4 (validation finding 2): the Issues count, moved out of drawIssues because onDraw now needs
+// it too -- to reserve the header's line BEFORE the panes are sized. ONE sum, so the reservation and the
+// header can never disagree about whether the header draws.
+// Code-review finding 2 (3.1.1): report.invalid counts EVERY Invalid-state record, INCLUDING one
+// a write conflict downgraded -- report.invalidPaths already excludes those, so the count shown
+// here must subtract writeConflictTotal too, or the two would silently disagree (logAssetScan's
+// own identical subtraction, editor_app.cpp).
+[[nodiscard]] std::size_t invalidIssueCount(const AssetScanReport& report) noexcept {
+    return report.invalid - report.writeConflictTotal;
+}
+// code-review SHOULD-FIX 10: `importFailureTotal` (task 3.2.1's phase 7.5) was missing from this
+// sum entirely, so a model-only import failure never even opened the header -- total stayed 0 and
+// this function returned before ImGui::CollapsingHeader was ever called.
+[[nodiscard]] std::size_t issueTotal(const AssetScanReport& report) noexcept {
+    return report.orphanTotal + invalidIssueCount(report) + report.aliasedDirTotal + report.writeFailureTotal +
+           report.writeConflictTotal + report.hashFailureTotal + report.importFailureTotal;
+}
+
 }  // namespace
 
 AssetBrowserPanel::AssetBrowserPanel(std::string rootPath) : rootUtf8(std::move(rootPath)) {}
@@ -1229,7 +1247,7 @@ void AssetBrowserPanel::drawAssetDeleteModal() {
     }
 }
 
-void AssetBrowserPanel::drawIssues() {
+void AssetBrowserPanel::drawIssues(float bodyHeight) {
     // task 3.1.3, Step 11: the delete-confirmation modal. Opened by applyPending() setting
     // pendingOrphanDelete (never from inside this draw walk); 2.5.1's shell_ui.cpp:247-302 shape
     // verbatim, retargeted at this action.
@@ -1287,16 +1305,8 @@ void AssetBrowserPanel::drawIssues() {
         return;
     }
     const AssetScanReport& report = *reportPtr;
-    // Code-review finding 2 (3.1.1): report.invalid counts EVERY Invalid-state record, INCLUDING one
-    // a write conflict downgraded -- report.invalidPaths already excludes those, so the count shown
-    // here must subtract writeConflictTotal too, or the two would silently disagree (logAssetScan's
-    // own identical subtraction, editor_app.cpp).
-    const std::size_t invalidOnly = report.invalid - report.writeConflictTotal;
-    // code-review SHOULD-FIX 10: `importFailureTotal` (task 3.2.1's phase 7.5) was missing from this
-    // sum entirely, so a model-only import failure never even opened the header -- total stayed 0 and
-    // this function returned before ImGui::CollapsingHeader was ever called.
-    const std::size_t total = report.orphanTotal + invalidOnly + report.aliasedDirTotal + report.writeFailureTotal +
-                              report.writeConflictTotal + report.hashFailureTotal + report.importFailureTotal;
+    const std::size_t invalidOnly = invalidIssueCount(report);
+    const std::size_t total = issueTotal(report);
     if (total == 0) {
         return;
     }
@@ -1310,7 +1320,22 @@ void AssetBrowserPanel::drawIssues() {
     // every such change, because a new id has no memory of the old one's state.
     ImGui::SetNextItemOpen(issuesOpen, ImGuiCond_Always);
     issuesOpen = ImGui::CollapsingHeader(labelScratch.c_str());
-    if (issuesOpen) {
+    if (issuesOpenRequest.has_value()) {  // task E.4.4 -- the seam lands exactly where a click lands
+        issuesOpen = *issuesOpenRequest;
+        issuesOpenRequest.reset();
+    }
+    // task E.4.4 (validation finding 2): the body is a scrollable CHILD, as tall as onDraw reserved for it
+    // BEFORE sizing the panes (assetBrowserLayout), so a long list scrolls inside it instead of pushing
+    // itself and the footer past the bottom of the panel. `bodyHeight` is 0 on the one frame a click opens
+    // the header -- the reservation was made while it was closed -- so the body starts on the next frame:
+    // never BeginChild at a height of 0, which ImGui reads as "fill the rest of the window".
+    if (!issuesOpen || !(bodyHeight >= 1.0F)) {
+        return;
+    }
+    // No border, so the child has no window padding and the measurement below is the rows alone.
+    // EndChild ALWAYS runs (F9); the rows are submitted only while the child is visible (C2).
+    issuesBodyDrawnHeight = bodyHeight;  // the EFFECT: the height this frame's body child was given
+    if (ImGui::BeginChild("##issues", ImVec2(0.0F, bodyHeight))) {
         if (report.orphanTotal > 0) {
             ImGui::TextUnformatted("Orphaned .meta files:");
             for (std::size_t i = 0; i < report.orphans.size(); ++i) {
@@ -1320,7 +1345,8 @@ void AssetBrowserPanel::drawIssues() {
                 if (ImGui::SmallButton("Delete .meta")) {
                     record(ActionKind::RequestDeleteOrphan, report.orphans[i]);
                 }
-                ImGui::PopID();  // no continue/break/return between Push and Pop
+                ++issueRowsDrawnCount;  // task E.4.4 -- the EFFECT: a row this frame's body really submitted
+                ImGui::PopID();         // no continue/break/return between Push and Pop
             }
             if (report.orphanTotal > report.orphans.size()) {
                 labelScratch = "…and " + std::to_string(report.orphanTotal - report.orphans.size()) + " more";
@@ -1352,7 +1378,12 @@ void AssetBrowserPanel::drawIssues() {
         // code-review SHOULD-FIX 10: the sixth category, following the identical capped-list +
         // uncapped-total idiom as the five above -- previously never drawn at all.
         drawCategory("Model import failures:", report.importFailures, report.importFailureTotal);
+        // task E.4.4: the rows' natural height, for the NEXT frame's reservation -- the cursor past the last
+        // row, less the spacing ItemSize added after it. GetCursorPosY is in content space, so the child's
+        // own scroll position does not move it.
+        issuesContentHeight = std::max(ImGui::GetCursorPosY() - ImGui::GetStyle().ItemSpacing.y, 0.0F);
     }
+    ImGui::EndChild();  // UNCONDITIONAL -- F9
 }
 
 // ---- phase 5: footer ---------------------------------------------------------------------------
@@ -1809,18 +1840,33 @@ void AssetBrowserPanel::onDraw(PanelContext& /*context*/) {  // D18: the context
     renameModalDrawn = 0;
     assetDeleteModalDrawn = 0;
     dropTargetsAcceptedCount = 0;
+    issueRowsDrawnCount = 0;
+    issuesBodyDrawnHeight = 0.0F;
     reconcile();   // 1 -- the only I/O
     drawHeader();  // 2
-    // Reserve one line for the footer. std::max keeps a very short panel from passing a NEGATIVE
-    // height to BeginChild, which ImGui reads as "bottom-align at N from the edge", not as zero.
-    const float footerHeight = ImGui::GetFrameHeightWithSpacing();
-    const float paneHeight = std::max(ImGui::GetContentRegionAvail().y - footerHeight, 1.0F);
-    drawTreePane(paneHeight);  // 3
+    // task E.4.4 (validation finding 2): the footer AND the Issues region are reserved BEFORE the panes
+    // are sized. Reserving the footer alone put the Issues header -- and, opened, its whole list -- below
+    // the panes and past the bottom of the panel, with the footer after it. The arithmetic, its floors
+    // and its NaN guards are assetBrowserLayout's (asset_view.hpp, AV55-AV59); the pane height stays a
+    // POSITIVE explicit height because the two panes share it side by side, and never 0 or negative,
+    // which BeginChild reads as "fill" or "bottom-align at N from the edge".
+    const ImGuiStyle& style = ImGui::GetStyle();
+    AssetBrowserLayoutMetrics metrics;
+    metrics.availHeight = ImGui::GetContentRegionAvail().y;
+    metrics.fontSize = ImGui::GetFontSize();
+    metrics.frameHeight = ImGui::GetFrameHeight();
+    metrics.textLineHeight = ImGui::GetTextLineHeight();
+    metrics.itemSpacingY = style.ItemSpacing.y;
+    metrics.issuesShown = reportPtr != nullptr && issueTotal(*reportPtr) > 0;
+    metrics.issuesOpen = issuesOpen;
+    metrics.issuesContentHeight = issuesContentHeight;
+    const AssetBrowserLayout layout = assetBrowserLayout(metrics);
+    drawTreePane(layout.paneHeight);  // 3
     ImGui::SameLine();
     if (viewMode == AssetViewMode::Grid) {  // task 3.1.3, Step 6 -- one child, two bodies (§D-7)
-        drawContentsGrid(paneHeight);
+        drawContentsGrid(layout.paneHeight);
     } else {
-        drawContentsList(paneHeight);
+        drawContentsList(layout.paneHeight);
     }
     // task E.4.3: the pane BACKGROUND is a legal context target ("" -- New Folder and New Asset
     // apply there). Recorded only when the click landed on no item at all, so it can never steal a
@@ -1830,8 +1876,8 @@ void AssetBrowserPanel::onDraw(PanelContext& /*context*/) {  // D18: the context
         record(ActionKind::OpenContextMenu, {});
     }
 
-    applyInjectedDropPeek();  // task E.4.3 -- before applyPending, so its record is drained this frame
-    drawIssues();             // 4b -- task 3.1.3, Step 9
+    applyInjectedDropPeek();              // task E.4.3 -- before applyPending, so its record is drained this frame
+    drawIssues(layout.issuesBodyHeight);  // 4b -- task 3.1.3, Step 9
     // task E.4.3: the context menu and the two modals, all in phase 4b, AFTER the orphan modal and
     // each gated on pendingOrphanDelete.empty() so the pre-existing modal always wins.
     drawContextMenu();
@@ -1839,7 +1885,10 @@ void AssetBrowserPanel::onDraw(PanelContext& /*context*/) {  // D18: the context
         drawRenameModal();
         drawAssetDeleteModal();
     }
-    drawFooter();    // 5
+    drawFooter();  // 5
+    // task E.4.4: read AFTER every child has ended, so the current window is the panel's own. ImGui set it
+    // in this frame's Begin from the previous frame's content, so a steady layout reads its steady value.
+    scrollMaxYAtDraw = ImGui::GetScrollMaxY();
     applyPending();  // the ONLY place anything mutates
 }
 

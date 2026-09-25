@@ -210,6 +210,13 @@ public:
     // default (false) and asserts the CONSEQUENCE in the listing -- a seam's own read-back would only
     // report what was requested.
     void requestToggleHidden() noexcept;
+    // task E.4.4 (validation finding 2): opens or closes the Issues section exactly as a click on its header
+    // does, and at the SAME point in the frame: the request is applied in drawIssues, right where
+    // CollapsingHeader returns a click, which is AFTER onDraw has sized the panes with the header closed.
+    // So the frame it lands on draws no body, exactly like a click's -- which is the frame the
+    // `bodyHeight >= 1` guard exists for. Held until the header next draws; a caller asserts
+    // issueRowsDrawn(), never the flag.
+    void requestIssuesOpen(bool open) noexcept { issuesOpenRequest = open; }
 
     // task 3.1.3 (A12): black-box observability for the GPU tier, forwarded by EditorApp -- the
     // assetCacheEntryCount() shape verbatim.
@@ -229,6 +236,15 @@ public:
     // any "does not contain": a panel that cached nothing satisfies every such claim.
     [[nodiscard]] std::size_t cachedEntryCount() const noexcept;
     [[nodiscard]] bool cachedListingContains(std::string_view leafName) const noexcept;
+    // task E.4.4 (validation finding 2), forwarded by EditorApp. issueRowsDrawn() counts the orphan rows the
+    // Issues body really SUBMITTED this frame (an EFFECT, reset at the top of every onDraw), so a caller can
+    // prove the section was open and drawing. scrollMaxY() is the panel window's GetScrollMaxY(), read at
+    // the END of the last onDraw: 0 means everything the panel drew fits inside it.
+    [[nodiscard]] std::size_t issueRowsDrawn() const noexcept { return issueRowsDrawnCount; }
+    // The height the Issues body child was given on the last frame it drew (0 when it did not draw): the
+    // measured content height reaching the budget, which a body stuck at one row would not show.
+    [[nodiscard]] float issuesBodyHeightDrawn() const noexcept { return issuesBodyDrawnHeight; }
+    [[nodiscard]] float scrollMaxY() const noexcept { return scrollMaxYAtDraw; }
 
     // ---- task E.4.3: the four one-shots ----------------------------------------------------------
     // Three are OPTIONAL for takeCreateMaterialRequest's stated reason -- "" is the LEGITIMATE value
@@ -405,7 +421,9 @@ private:
     // models a COMPLETED drop with no ImGui payload in flight.
     void finishFolderDrop(const std::string& source, const std::string& folderRelative, const char* acceptType);
     void applyInjectedDropPeek();
-    void drawIssues();  // phase 4b -- task 3.1.3, Step 9 (D11)
+    // phase 4b -- task 3.1.3, Step 9 (D11). task E.4.4: `bodyHeight` is the body child's reserved height,
+    // assetBrowserLayout's issuesBodyHeight; 0 means "do not draw the body this frame".
+    void drawIssues(float bodyHeight);
     // task E.4.3 -- also phase 4b, drawn AFTER the orphan modal. The two modals are gated on
     // pendingOrphanDelete.empty() by their caller, so the pre-existing one always wins.
     void drawContextMenu();
@@ -464,6 +482,13 @@ private:
     // which the "Issues (N)" label's changing id would otherwise silently defeat (drawIssues()'s
     // own comment has the full reasoning) -- the D5 precedent drawTreePane's `row.open` already sets.
     bool issuesOpen = false;
+    // task E.4.4 (validation finding 2): the Issues body's natural height, measured inside its child on the
+    // last frame it drew, and fed to the next frame's assetBrowserLayout. 0 until the first measurement.
+    float issuesContentHeight = 0.0F;
+    std::optional<bool> issuesOpenRequest;  // requestIssuesOpen's, applied where a header click lands
+    std::size_t issueRowsDrawnCount = 0;    // reset at the TOP of every onDraw
+    float issuesBodyDrawnHeight = 0.0F;     // reset at the TOP of every onDraw
+    float scrollMaxYAtDraw = 0.0F;          // written at the END of every onDraw
 
     // ---- task 3.1.4 ---------------------------------------------------------------------------
     // Reconciled, never owned (the databasePtr/reportPtr precedent, a third instance). NULL until

@@ -749,3 +749,206 @@ TEST_CASE("asset view: only six editor files name the roster predicates (AC-18, 
     CHECK(srcScanned > 80U);      // anti-vacuity: 115 files under editor/src at the branch point
     CHECK(includeScanned > 40U);  // anti-vacuity: 64 headers under editor/include/aero/editor
 }
+
+// ---- AV55-AV59: task E.4.4's validation finding 2 -- the Asset Browser's vertical budget -------------
+//
+// assetBrowserLayout is the whole of the arithmetic; AssetBrowserPanel::onDraw only reads the metrics
+// and passes the answer on. I231 (imgui_layer_test.cpp) is the ImGui-tier witness that the panel really
+// does fit; these cases pin the contract the panel relies on, at the two metric sets this editor runs at.
+
+namespace {
+
+using engine::editor::ASSET_ISSUES_BODY_MAX_FRACTION;
+using engine::editor::ASSET_PANES_MIN_FONT;
+using engine::editor::AssetBrowserLayout;
+using engine::editor::assetBrowserLayout;
+using engine::editor::AssetBrowserLayoutMetrics;
+
+// 1.92.8's defaults at 1x (a 13-point font, FramePadding.y 3, ItemSpacing.y 4) and on a Retina display,
+// where ScaleAllSizes doubles the STYLE and not the font (imgui_layer.cpp:87-89, E.3.4's measurement).
+constexpr AssetBrowserLayoutMetrics METRICS_1X{
+    .availHeight = 0.0F, .fontSize = 13.0F, .frameHeight = 19.0F, .textLineHeight = 13.0F, .itemSpacingY = 4.0F};
+constexpr AssetBrowserLayoutMetrics METRICS_2X{
+    .availHeight = 0.0F, .fontSize = 13.0F, .frameHeight = 25.0F, .textLineHeight = 13.0F, .itemSpacingY = 8.0F};
+// The smallest panel the budget fits with the body open: footer (spacing + frame) + header (frame +
+// spacing) + one text row + the spacing after it + a one-point pane. Spelled as LITERALS so this is the
+// header's stated contract, never the implementation's arithmetic re-run.
+constexpr float FIT_BOUND_1X = 64.0F;  // 23 + 23 + 13 + 4 + 1
+constexpr float FIT_BOUND_2X = 88.0F;  // 33 + 33 + 13 + 8 + 1
+
+[[nodiscard]] AssetBrowserLayoutMetrics withState(AssetBrowserLayoutMetrics metrics, float avail, bool shown, bool open,
+                                                  float content) {
+    metrics.availHeight = avail;
+    metrics.issuesShown = shown;
+    metrics.issuesOpen = open;
+    metrics.issuesContentHeight = content;
+    return metrics;
+}
+
+[[nodiscard]] float budgetSum(const AssetBrowserLayout& layout) {
+    return layout.paneHeight + layout.issuesHeight + layout.footerHeight;
+}
+
+// Exact on purpose: a sanitised metric must behave EXACTLY like 0, not approximately.
+[[nodiscard]] bool sameLayout(const AssetBrowserLayout& a, const AssetBrowserLayout& b) {
+    return a.paneHeight == b.paneHeight && a.issuesHeight == b.issuesHeight &&
+           a.issuesBodyHeight == b.issuesBodyHeight && a.footerHeight == b.footerHeight;
+}
+
+}  // namespace
+
+TEST_CASE("asset view: panes + Issues + footer fill the panel exactly whenever the floors allow (AV55)") {
+    // Whole and dyadic-fraction heights keep every sum here exact, so the claim is ==, not <=: the panes
+    // absorb the remainder, so nothing below them is pushed past the bottom and nothing is left unused.
+    std::vector<float> avails;
+    for (float avail = 0.0F; avail <= 600.0F; avail += 1.0F) {
+        avails.push_back(avail);
+    }
+    for (const float fractional : {195.25F, 333.5F, 1000.75F, 4096.0F}) {  // a dock split is rarely whole
+        avails.push_back(fractional);
+    }
+    struct Case {
+        const char* name;
+        AssetBrowserLayoutMetrics metrics;
+        float bound;
+    };
+    for (const Case& c : {Case{"1x", METRICS_1X, FIT_BOUND_1X}, Case{"2x", METRICS_2X, FIT_BOUND_2X}}) {
+        for (const bool shown : {false, true}) {
+            for (const bool open : {false, true}) {
+                for (const float content : {0.0F, 13.0F, 47.0F, 170.0F, 5000.0F}) {
+                    CAPTURE(c.name);
+                    CAPTURE(shown);
+                    CAPTURE(open);
+                    CAPTURE(content);
+                    std::size_t checked = 0;
+                    std::size_t exact = 0;
+                    float firstMiss = -1.0F;
+                    for (const float avail : avails) {
+                        if (avail < c.bound) {
+                            continue;
+                        }
+                        ++checked;
+                        const AssetBrowserLayout layout =
+                            assetBrowserLayout(withState(c.metrics, avail, shown, open, content));
+                        if (budgetSum(layout) == avail && layout.paneHeight >= 1.0F) {
+                            ++exact;
+                        } else if (firstMiss < 0.0F) {
+                            firstMiss = avail;
+                        }
+                    }
+                    CAPTURE(firstMiss);
+                    CHECK(checked > 500U);  // anti-vacuity: the sweep really ran above the bound
+                    CHECK(exact == checked);
+                }
+            }
+        }
+    }
+}
+
+TEST_CASE("asset view: the floors -- the body yields first, never below one row; the panes never below 1 (AV56)") {
+    constexpr float CONTENT = 5000.0F;  // 40 orphans' worth and more: the body always WANTS its cap
+    // (a) The panes keep ASSET_PANES_MIN_FONT font heights while the body can yield: at 150 the cap
+    // (floor(0.4 * 150) = 60) would leave the panes 40, so the body gives up 12 and the panes keep 52.
+    const AssetBrowserLayout yielding = assetBrowserLayout(withState(METRICS_1X, 150.0F, true, true, CONTENT));
+    CHECK(ASSET_PANES_MIN_FONT * METRICS_1X.fontSize == 52.0F);
+    CHECK(yielding.paneHeight == 52.0F);
+    CHECK(yielding.issuesBodyHeight == 48.0F);
+    CHECK(budgetSum(yielding) == 150.0F);
+    // (b) ... but never below one text row: at 100 the body is 13 and the PANES go below their minimum.
+    const AssetBrowserLayout oneRow = assetBrowserLayout(withState(METRICS_1X, 100.0F, true, true, CONTENT));
+    CHECK(oneRow.issuesBodyHeight == 13.0F);
+    CHECK(oneRow.paneHeight == 37.0F);
+    CHECK(budgetSum(oneRow) == 100.0F);
+    // (c) Below the fit bound nothing can fit, and the floors hold: the panes are 1 (BeginChild reads 0 as
+    // "fill the window"), the body one row, and only here does the budget exceed the panel.
+    for (const float avail : {0.0F, 1.0F, 10.0F, FIT_BOUND_1X - 1.0F}) {
+        CAPTURE(avail);
+        const AssetBrowserLayout tiny = assetBrowserLayout(withState(METRICS_1X, avail, true, true, CONTENT));
+        CHECK(tiny.paneHeight == 1.0F);
+        CHECK(tiny.issuesBodyHeight == 13.0F);
+        CHECK(tiny.issuesHeight == 23.0F + 13.0F + 4.0F);
+        CHECK(tiny.footerHeight == 23.0F);
+        CHECK(budgetSum(tiny) > avail);
+    }
+    // (d) A zero text-line height still yields a body of at least 1 -- a 0 would fill the window.
+    AssetBrowserLayoutMetrics noLine = withState(METRICS_1X, 300.0F, true, true, 0.0F);
+    noLine.textLineHeight = 0.0F;
+    CHECK(assetBrowserLayout(noLine).issuesBodyHeight == 1.0F);
+}
+
+TEST_CASE("asset view: the Issues body is capped, and otherwise exactly as tall as its content (AV57)") {
+    // The cap is floor(ASSET_ISSUES_BODY_MAX_FRACTION * avail): whole points.
+    CHECK(ASSET_ISSUES_BODY_MAX_FRACTION == 0.4F);
+    const AssetBrowserLayout capped = assetBrowserLayout(withState(METRICS_1X, 600.0F, true, true, 5000.0F));
+    CHECK(capped.issuesBodyHeight == 240.0F);
+    CHECK(capped.issuesBodyHeight < 5000.0F);  // anti-vacuity: the content really is taller than the cap
+    CHECK(assetBrowserLayout(withState(METRICS_1X, 601.0F, true, true, 5000.0F)).issuesBodyHeight == 240.0F);
+    CHECK(assetBrowserLayout(withState(METRICS_2X, 600.0F, true, true, 5000.0F)).issuesBodyHeight == 240.0F);
+    // Under the cap the body is its content: three rows are 3 * 13 + 2 * 4 = 47 points.
+    CHECK(assetBrowserLayout(withState(METRICS_1X, 600.0F, true, true, 47.0F)).issuesBodyHeight == 47.0F);
+    // Before the first measurement (0), and for anything shorter than a row, it is one row.
+    CHECK(assetBrowserLayout(withState(METRICS_1X, 600.0F, true, true, 0.0F)).issuesBodyHeight == 13.0F);
+    CHECK(assetBrowserLayout(withState(METRICS_1X, 600.0F, true, true, 5.0F)).issuesBodyHeight == 13.0F);
+    // A taller panel shows more rows: the cap scales with the panel, not with the font.
+    CHECK(assetBrowserLayout(withState(METRICS_1X, 1000.0F, true, true, 5000.0F)).issuesBodyHeight == 400.0F);
+}
+
+TEST_CASE("asset view: a NaN, negative or infinite metric counts as zero (AV58)") {
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    const float inf = std::numeric_limits<float>::infinity();
+    const AssetBrowserLayoutMetrics base = withState(METRICS_1X, 600.0F, true, true, 170.0F);
+    // Each field, replaced one at a time: the answer must be EXACTLY the one for a 0 in that field.
+    using Field = float AssetBrowserLayoutMetrics::*;
+    constexpr std::array<Field, 6> FIELDS{
+        &AssetBrowserLayoutMetrics::availHeight,  &AssetBrowserLayoutMetrics::fontSize,
+        &AssetBrowserLayoutMetrics::frameHeight,  &AssetBrowserLayoutMetrics::textLineHeight,
+        &AssetBrowserLayoutMetrics::itemSpacingY, &AssetBrowserLayoutMetrics::issuesContentHeight,
+    };
+    std::size_t checked = 0;
+    for (std::size_t f = 0; f < FIELDS.size(); ++f) {
+        AssetBrowserLayoutMetrics zeroed = base;
+        zeroed.*FIELDS[f] = 0.0F;
+        const AssetBrowserLayout expected = assetBrowserLayout(zeroed);
+        for (const float bad : {nan, -nan, -5.0F, -inf, inf}) {
+            CAPTURE(f);
+            CAPTURE(bad);
+            AssetBrowserLayoutMetrics broken = base;
+            broken.*FIELDS[f] = bad;
+            const AssetBrowserLayout layout = assetBrowserLayout(broken);
+            CHECK(std::isfinite(layout.paneHeight));
+            CHECK(std::isfinite(layout.issuesHeight));
+            CHECK(std::isfinite(layout.issuesBodyHeight));
+            CHECK(std::isfinite(layout.footerHeight));
+            CHECK(layout.paneHeight >= 1.0F);
+            CHECK(layout.issuesBodyHeight >= 1.0F);  // open, so drawn -- never the 0 that means "fill"
+            CHECK(sameLayout(layout, expected));
+            ++checked;
+        }
+    }
+    CHECK(checked == 30U);
+    // Anti-vacuity: the zeroed answers really differ from the healthy one, so "same as zero" is a claim.
+    AssetBrowserLayoutMetrics zeroAvail = base;
+    zeroAvail.availHeight = 0.0F;
+    CHECK_FALSE(sameLayout(assetBrowserLayout(zeroAvail), assetBrowserLayout(base)));
+    CHECK(assetBrowserLayout(zeroAvail).paneHeight == 1.0F);
+}
+
+TEST_CASE("asset view: no Issues means no reservation, and a closed header costs one line (AV59)") {
+    // Not shown: today's reservation exactly -- one frame-height line plus spacing for the footer, and the
+    // panes take the rest. A stale open flag with nothing to show changes nothing.
+    const AssetBrowserLayout none = assetBrowserLayout(withState(METRICS_1X, 300.0F, false, false, 0.0F));
+    CHECK(none.footerHeight == 19.0F + 4.0F);  // GetFrameHeightWithSpacing(), the pre-fix reservation
+    CHECK(none.issuesHeight == 0.0F);
+    CHECK(none.issuesBodyHeight == 0.0F);
+    CHECK(none.paneHeight == 300.0F - 23.0F);
+    CHECK(sameLayout(assetBrowserLayout(withState(METRICS_1X, 300.0F, false, true, 170.0F)), none));
+    // Shown and closed: the header's own line, and no body.
+    const AssetBrowserLayout closed = assetBrowserLayout(withState(METRICS_1X, 300.0F, true, false, 170.0F));
+    CHECK(closed.issuesHeight == 19.0F + 4.0F);
+    CHECK(closed.issuesBodyHeight == 0.0F);
+    CHECK(closed.paneHeight == 300.0F - 23.0F - 23.0F);
+    // Open: header + body + the spacing after the body.
+    const AssetBrowserLayout open = assetBrowserLayout(withState(METRICS_1X, 300.0F, true, true, 47.0F));
+    CHECK(open.issuesHeight == 23.0F + 47.0F + 4.0F);
+    CHECK(open.paneHeight == 300.0F - 23.0F - 74.0F);
+}

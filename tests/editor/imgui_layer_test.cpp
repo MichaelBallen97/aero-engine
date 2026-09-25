@@ -18431,3 +18431,111 @@ TEST_CASE("editor: the UI font draws UTF-8 punctuation from ProggyClean's own CP
         CHECK(countLinesContaining(fontUnit, "AddFontDefault()") == 0U);  // never the ProggyForever heuristic
     }
 }
+
+// ---- I231: task E.4.4's validation finding 2 -- the Asset Browser fits its panel with Issues open ------
+//
+// The macOS validation pass (row 2) found the "Issues (N)" header and the footer below the bottom of the
+// Assets panel with 40 orphans, because the panes were sized before the Issues region was accounted for.
+// This builds exactly that project, opens the section through the seam, and reads the panel window's own
+// GetScrollMaxY() as the panel recorded it at the end of onDraw: 0 means the panes, the Issues header, its
+// capped body and the footer all fit. The arithmetic is assetBrowserLayout's (AV55-AV59); this is the
+// witness that ImGui agrees with it. The window is 1000 points tall so that the Assets dock node stays
+// above the budget's fit bound on a Retina display too, where the style doubles and the font does not.
+
+TEST_CASE("editor: the Asset Browser fits its panel with 40 orphans and Issues open (task E.4.4, I231)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "issues fit i231", .width = 1280, .height = 1000});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    const std::string assetsDir = created.root + "/assets/";
+    REQUIRE(writeBinaryFixture(assetsDir + "wood.png", TINY_PNG_RED.data(), TINY_PNG_RED.size()).empty());
+    // Row 2's shape: 40 sidecars whose assets are gone. Their names sort after "wood.png.meta", which is not
+    // one of them -- wood.png is a live asset, so the listing is not empty and the panel settles.
+    constexpr int ORPHANS = 40;
+    engine::GuidGenerator guids{0xE44F2ULL};
+    for (int i = 0; i < ORPHANS; ++i) {
+        const std::string sidecar = assetsDir + "gone" + std::to_string(i) + ".png.meta";
+        REQUIRE(engine::editor::writeTextFileAtomic(sidecar, engine::editor::writeMetaText(guids.next())).empty());
+    }
+
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = created.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    REQUIRE(app->tick());  // 1: the first rescan runs inside this tick, BEFORE the frame draws
+    REQUIRE(app->tick());  // 2: the default dock layout settles
+    app->requestPanelFocus("Assets");
+    REQUIRE(app->tick());  // 3: the focus lands before DockSpaceOverViewport
+    const int settled = settleAssetBrowser(*app);
+    INFO("settled after " << settled << " further ticks");
+    REQUIRE(settled < E44_MAX_SETTLE_TICKS);
+    // ANTI-VACUITY, the first half: every orphan was reported, so the header draws, and the list is far
+    // longer than any body this panel can reserve.
+    REQUIRE(app->assetOrphanCount() == static_cast<std::size_t>(ORPHANS));
+
+    // The layout converges in two frames by construction -- the body's content height is measured one frame
+    // late, and ImGui computes a window's ScrollMax in Begin from the PREVIOUS frame's content -- so four
+    // ticks is a steady state, not a race.
+    constexpr int STEADY_TICKS = 4;
+
+    // (a) CLOSED. Before the fix even the closed header's one line pushed the footer past the bottom.
+    for (int i = 0; i < STEADY_TICKS; ++i) {
+        REQUIRE(app->tick());
+    }
+    CHECK(app->assetBrowserIssueRowsDrawn() == 0U);  // closed: the body submitted nothing
+    CHECK(app->assetBrowserIssuesBodyHeight() == 0.0F);
+    CHECK(app->assetBrowserScrollMaxY() == 0.0F);
+
+    // (b) OPENING. The seam lands where a click on the header lands -- after the panes were sized with the
+    // header closed -- so the first frame must draw NO body (a body child of height 0 would fill the panel
+    // and push the footer off for a frame), and no frame of the transition may overflow.
+    app->requestAssetBrowserIssuesOpen(true);
+    REQUIRE(app->tick());
+    CHECK(app->assetBrowserIssueRowsDrawn() == 0U);
+    CHECK(app->assetBrowserScrollMaxY() == 0.0F);
+    for (int i = 0; i < STEADY_TICKS; ++i) {
+        REQUIRE(app->tick());
+        CAPTURE(i);
+        CHECK(app->assetBrowserScrollMaxY() == 0.0F);
+    }
+    // OPEN. ANTI-VACUITY, the second half: the body really drew -- every listed orphan row was submitted
+    // (the scan caps the list at MAX_REPORTED_PER_CATEGORY) -- and still nothing overflows.
+    CHECK(app->assetBrowserIssueRowsDrawn() == engine::editor::MAX_REPORTED_PER_CATEGORY);
+    CHECK(app->assetBrowserScrollMaxY() == 0.0F);
+    // ... and the body is TALLER than one row: the rows' measured height reached the budget. One row is 13
+    // points at every scale -- the UI font is ProggyClean at 13 (I230(d)) and ScaleAllSizes leaves the font
+    // alone -- and a body that never measured its rows stays exactly that tall.
+    constexpr float ONE_ROW = 13.0F;
+    CHECK(app->assetBrowserIssuesBodyHeight() > ONE_ROW);
+
+    // (c) Row 3's path with the body open: a row's "Delete .meta" action opens the confirmation modal (the
+    // seam records exactly what the SmallButton records -- nothing in tests/ can click it), the rows keep
+    // drawing beneath the modal, and the panel still fits. The modal is its own window, drawn before the
+    // header, so the child cannot have moved it.
+    app->requestAssetBrowserDeleteOrphanClick("gone0.png.meta");
+    REQUIRE(app->tick());  // drains RequestDeleteOrphan
+    REQUIRE(app->tick());  // the modal is open and drawing
+    CHECK(app->assetBrowserDeleteModalPending());
+    CHECK(app->assetBrowserIssueRowsDrawn() == engine::editor::MAX_REPORTED_PER_CATEGORY);
+    CHECK(app->assetBrowserScrollMaxY() == 0.0F);
+    CHECK(engine::editor::fileExists(assetsDir + "gone0.png.meta"));  // opened, never confirmed
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
