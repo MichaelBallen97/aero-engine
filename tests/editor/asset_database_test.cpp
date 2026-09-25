@@ -3257,8 +3257,13 @@ TEST_CASE("asset_database: a sidecar-less .blend beside its byte-identical cache
     const AssetScanReport report = db.rescan(dir.utf8(), dir.utf8(), gen);
     CHECK(report.reattachmentTotal == 1);
     REQUIRE(report.reattachments.size() == 1);
-    CHECK(report.reattachments[0].find("scene.blend") != std::string::npos);
-    CHECK(report.reattachments[0].find("scene.blend1.meta") != std::string::npos);
+    // The line must NAME the candidate that re-attached, as its PREFIX. A bare find("scene.blend") was
+    // already satisfied by the orphan path 'scene.blend1.meta' later in the same line. The format is
+    // asset_database.cpp's: "<candidate>: took <guid> from orphan '<meta>' (last seen at '<path>'); ...".
+    const std::string& line = report.reattachments[0];
+    INFO("re-attachment line: ", line);
+    CHECK(line.starts_with("scene.blend: took " + formatGuid(backupGuid) + " from orphan 'scene.blend1.meta'"));
+    CHECK(line.find("(last seen at 'scene.blend1')") != std::string::npos);
     CHECK(report.orphanTotal == 0);  // reported ONCE, as a re-attachment, never also as an orphan
     const AssetRecord* const record = db.findByPath("scene.blend");
     REQUIRE(record != nullptr);
