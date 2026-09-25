@@ -857,12 +857,17 @@ OrphanDeleteResult deleteOrphanMeta(std::string_view assetsRootUtf8, std::string
         return result;
     }
 
-    // 4: the check that stops a race from destroying a live identity (E22).
+    // 4: the check that stops a race from destroying a live identity (E22) -- SCOPED, since task E.4.4, to
+    // an asset the scan would actually PAIR with this sidecar. E22 protects a LIVE identity, and only a
+    // SCANNABLE asset can hold one. A file the ignore roster covers (scene.blend1, Thumbs.db, notes.txt~)
+    // is never given a record, so a sidecar an earlier build wrote beside it is an orphan the scan reports
+    // on every pass and never consumes; refusing it because that file EXISTS made its Delete button
+    // permanently useless. The pure test runs FIRST, so an ignored leaf never touches the disk here.
     const std::string_view metaLeaf = leafOf(relativeMetaPath);
     const std::string_view assetLeaf = assetNameForMeta(metaLeaf);
     const std::string assetRelPath = joinRelative(parentOf(relativeMetaPath), assetLeaf);
     const std::string absoluteAssetPath = std::string(assetsRootUtf8) + "/" + assetRelPath;
-    if (fileExists(absoluteAssetPath)) {
+    if (isScannableAssetName(assetLeaf) && fileExists(absoluteAssetPath)) {
         result.refusal = OrphanDeleteRefusal::AssetPresent;
         result.message = "the asset it describes exists again";
         return result;

@@ -547,7 +547,11 @@ and resolves; `EditorApp::persistProjectState` decides and writes.
   is the opposite question and is correct** — the file would vanish from the browser — and
   `validateAssetName`'s `IgnoredName` arm does it, for a folder name too, because it sees a leaf with no
   file/folder context. `asset_view_test.cpp`'s `BV9` pins the exact set of editor files that may name
-  either predicate; a new consumer adds itself there, out loud.
+  either predicate; a new consumer adds itself there, out loud. **`deleteOrphanMeta`'s `AssetPresent`
+  refusal (E22) is scoped to a SCANNABLE asset** — `isScannableAssetName(assetLeaf) && fileExists(...)` —
+  and widening it back to "any file exists" makes every pre-E.4.4 Blender project's orphaned
+  `.blend1.meta` undeletable from the editor, since the ignored backup beside it never goes away
+  (`AA67`, `AD76`).
 
 ## Import cache (task 3.1.2)
 

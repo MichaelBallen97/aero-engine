@@ -1636,3 +1636,61 @@ TEST_CASE("asset actions: validateAssetName refuses every ignored name, file or 
     CHECK((folder.nameRefusal == AssetNameRefusal::IgnoredName));
     CHECK_FALSE(folder.message.empty());
 }
+
+TEST_CASE("asset actions: a sidecar beside an IGNORED file is deletable, beside an asset not (AA67)") {
+    // E22's race guard (deleteOrphanMeta step 4) protects a LIVE identity, and only a SCANNABLE asset can
+    // hold one. A sidecar an earlier build wrote beside a file the ignore roster now covers is an orphan
+    // the scan reports on every pass and never consumes -- refusing it because that file EXISTS made its
+    // Delete button permanently useless for every project an earlier build had indexed.
+    using engine::editor::parseMeta;
+    using engine::editor::readTextFile;
+    // Every "deleted" arm below must be impossible to satisfy through a Missing or NotAMeta short-circuit
+    // (steps 2 and 3 run BEFORE step 4), so the fixture sidecar is proven to EXIST and to PARSE first.
+    const auto requireValidSidecar = [](const std::string& absolutePath) {
+        const engine::editor::FileReadResult read = readTextFile(absolutePath);
+        REQUIRE(read.text.has_value());
+        REQUIRE(parseMeta(*read.text).guid.has_value());
+    };
+    const TempDir dir;
+    GuidGenerator gen(67);
+
+    // (a) THE DEFECT: scene.blend1 exists and is ignored; its stale sidecar is deleted, the backup is not.
+    constexpr std::string_view BACKUP_BYTES = "blender rolling backup";
+    writeBytes(dir.join("scene.blend1"), BACKUP_BYTES);
+    REQUIRE(writeTextFileAtomic(dir.join("scene.blend1.meta"), writeMetaText(gen.next())).empty());
+    requireValidSidecar(dir.join("scene.blend1.meta"));
+    const OrphanDeleteResult backup = deleteOrphanMeta(dir.utf8(), "scene.blend1.meta");
+    CHECK((backup.refusal == OrphanDeleteRefusal::None));
+    CHECK(backup.deleted);
+    CHECK(backup.message.empty());
+    CHECK_FALSE(fileExists(dir.join("scene.blend1.meta")));
+    const engine::editor::FileReadResult backupAfter = readTextFile(dir.join("scene.blend1"));
+    REQUIRE(backupAfter.text.has_value());
+    CHECK(*backupAfter.text == BACKUP_BYTES);  // the ignored file itself is never touched
+
+    // (b) THE CONTROL: the race protection survives for a SCANNABLE asset -- wood.png exists, so its
+    // sidecar is a live identity and is refused, with BOTH files left exactly where they were.
+    writeBytes(dir.join("wood.png"), "png");
+    REQUIRE(writeTextFileAtomic(dir.join("wood.png.meta"), writeMetaText(gen.next())).empty());
+    requireValidSidecar(dir.join("wood.png.meta"));
+    const OrphanDeleteResult live = deleteOrphanMeta(dir.utf8(), "wood.png.meta");
+    CHECK_FALSE(live.deleted);
+    CHECK((live.refusal == OrphanDeleteRefusal::AssetPresent));
+    CHECK(fileExists(dir.join("wood.png")));
+    CHECK(fileExists(dir.join("wood.png.meta")));
+
+    // (c) Breadth: two more roster classes -- an editor backup (a TAIL suffix) and an OS name (an EXACT
+    // name) -- each deletable while the ignored file is present.
+    for (const std::string_view ignored : {std::string_view("notes.txt~"), std::string_view("Thumbs.db")}) {
+        CAPTURE(ignored);
+        const std::string sidecar = std::string(ignored) + ".meta";
+        writeBytes(dir.join(ignored), "noise");
+        REQUIRE(writeTextFileAtomic(dir.join(sidecar), writeMetaText(gen.next())).empty());
+        requireValidSidecar(dir.join(sidecar));
+        const OrphanDeleteResult result = deleteOrphanMeta(dir.utf8(), sidecar);
+        CHECK((result.refusal == OrphanDeleteRefusal::None));
+        CHECK(result.deleted);
+        CHECK_FALSE(fileExists(dir.join(sidecar)));
+        CHECK(fileExists(dir.join(ignored)));
+    }
+}

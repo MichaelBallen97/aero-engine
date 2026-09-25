@@ -8,6 +8,7 @@
 // must be PRESENT and PASSING in all three build configurations -- prove it with --list-test-cases.
 // Tier-0: no GPU, no window, no ImGui context. Real, bounded disk I/O through a scratch TempDir.
 #include <aero/core/guid.hpp>
+#include <aero/editor/asset_actions.hpp>  // task E.4.4: deleteOrphanMeta (AD76)
 #include <aero/editor/asset_database.hpp>
 #include <aero/editor/text_file.hpp>
 
@@ -41,11 +42,14 @@ using engine::editor::AssetMetaState;
 using engine::editor::AssetRecord;
 using engine::editor::AssetScanReport;
 using engine::editor::CacheLoadOutcome;
+using engine::editor::deleteOrphanMeta;
 using engine::editor::fileExists;
 using engine::editor::IGNORED_ASSET_NAME_SUFFIXES;
 using engine::editor::ImportChange;
 using engine::editor::MAX_HASH_BYTES_PER_SCAN;
 using engine::editor::MISSING_SCAN_GRACE;
+using engine::editor::OrphanDeleteRefusal;
+using engine::editor::OrphanDeleteResult;
 using engine::editor::parseAssetCache;
 using engine::editor::ScanStatus;
 using engine::editor::writeAssetCacheText;
@@ -3305,4 +3309,57 @@ TEST_CASE("asset_database: a DIRECTORY with a roster name is descended into (AC-
         CHECK(db.findByPath(rel) != nullptr);
         CHECK(fileExists(dir.join(std::string(rel) + std::string(ASSET_META_SUFFIX))));
     }
+}
+
+TEST_CASE("asset_database: a stale sidecar beside an ignored file is deletable, and stays gone (AD76)") {
+    // Validation row 3, automated end to end: AD71's fixture, then the SAME call EditorApp's orphan drain
+    // makes -- deleteOrphanMeta(the database's own root, the report's own relative path) -- then a rescan.
+    // Before task E.4.4's fix the delete was refused (AssetPresent) forever, because scene.blend1 EXISTS:
+    // it is ignored, not gone, and the scan never pairs a sidecar with it.
+    const Guid guid = GuidGenerator(76).next();
+    const TempDir dir;
+    writeFile(dir.join("scene.blend1"), "backup");
+    writeFile(dir.join("scene.blend1.meta"), writeMetaText(guid));
+    AssetDatabase db;
+    GuidGenerator gen(760);
+    const AssetScanReport first = db.rescan(dir.utf8(), dir.utf8(), gen);
+    REQUIRE(first.orphanTotal == 1);
+    REQUIRE(first.orphans.size() == 1);
+    REQUIRE(first.orphans[0] == "scene.blend1.meta");
+
+    const OrphanDeleteResult result = deleteOrphanMeta(db.root(), first.orphans[0]);
+    CHECK((result.refusal == OrphanDeleteRefusal::None));
+    CHECK(result.deleted);
+    CHECK_FALSE(fileExists(dir.join("scene.blend1.meta")));
+    CHECK(fileExists(dir.join("scene.blend1")));  // the ignored file itself is never touched
+
+    const AssetScanReport second = db.rescan(dir.utf8(), dir.utf8(), gen);
+    CHECK(second.orphanTotal == 0);  // nothing left to report
+    CHECK(second.created == 0);      // and no sidecar is minted for the ignored file
+    CHECK(db.size() == 0);
+    CHECK_FALSE(fileExists(dir.join("scene.blend1.meta")));
+    CHECK(fileExists(dir.join("scene.blend1")));
+
+    // ANTI-VACUITY -- the race E22 exists for, which the fix must NOT open: a sidecar reported as an orphan
+    // whose SCANNABLE asset reappears before the click is refused, stays on disk, and is re-paired by the
+    // next scan with its ORIGINAL identity rather than a freshly minted one.
+    const Guid liveGuid = GuidGenerator(761).next();
+    const TempDir control;
+    writeFile(control.join("wood.png.meta"), writeMetaText(liveGuid));
+    AssetDatabase controlDb;
+    GuidGenerator controlGen(762);
+    const AssetScanReport before = controlDb.rescan(control.utf8(), control.utf8(), controlGen);
+    REQUIRE(before.orphanTotal == 1);
+    REQUIRE(before.orphans.size() == 1);
+    writeFile(control.join("wood.png"), "png");  // the asset comes back between the scan and the click
+    const OrphanDeleteResult refused = deleteOrphanMeta(controlDb.root(), before.orphans[0]);
+    CHECK_FALSE(refused.deleted);
+    CHECK((refused.refusal == OrphanDeleteRefusal::AssetPresent));
+    CHECK(fileExists(control.join("wood.png.meta")));
+    const AssetScanReport after = controlDb.rescan(control.utf8(), control.utf8(), controlGen);
+    CHECK(after.orphanTotal == 0);
+    CHECK(after.created == 0);
+    const AssetRecord* const record = controlDb.findByPath("wood.png");
+    REQUIRE(record != nullptr);
+    CHECK(record->guid == liveGuid);
 }
