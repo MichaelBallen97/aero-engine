@@ -241,13 +241,12 @@ public:
     // prove the section was open and drawing. scrollMaxY() is the panel window's GetScrollMaxY(), read at
     // the END of the last onDraw: 0 means everything the panel drew fits inside it.
     [[nodiscard]] std::size_t issueRowsDrawn() const noexcept { return issueRowsDrawnCount; }
-    // The height the Issues body child was given on the last frame it drew (0 when it did not draw): the
-    // measured content height reaching the budget, which a body stuck at one row would not show.
+    // The height the Issues body child was given on the last frame it drew (0 when it did not draw).
     [[nodiscard]] float issuesBodyHeightDrawn() const noexcept { return issuesBodyDrawnHeight; }
-    // The height of ONE body row as the last onDraw measured it -- GetTextLineHeight() in the panel window,
-    // the row the layout floors the body at -- so a caller compares the body against the panel's own row
-    // rather than a restated point count, which a DPI-scaled font would make wrong.
-    [[nodiscard]] float issuesRowHeight() const noexcept { return issuesRowHeightAtDraw; }
+    // EXACTLY the metrics the last onDraw fed assetBrowserLayout -- the recorded available height, the row
+    // height and the MEASURED content height among them -- so a caller can re-derive the layout's answer
+    // for the geometry this panel really had, instead of assuming a panel tall enough to show it.
+    [[nodiscard]] const AssetBrowserLayoutMetrics& layoutMetrics() const noexcept { return layoutMetricsAtDraw; }
     [[nodiscard]] float scrollMaxY() const noexcept { return scrollMaxYAtDraw; }
 
     // ---- task E.4.3: the four one-shots ----------------------------------------------------------
@@ -489,11 +488,11 @@ private:
     // task E.4.4 (validation finding 2): the Issues body's natural height, measured inside its child on the
     // last frame it drew, and fed to the next frame's assetBrowserLayout. 0 until the first measurement.
     float issuesContentHeight = 0.0F;
-    std::optional<bool> issuesOpenRequest;  // requestIssuesOpen's, applied where a header click lands
-    std::size_t issueRowsDrawnCount = 0;    // reset at the TOP of every onDraw
-    float issuesBodyDrawnHeight = 0.0F;     // reset at the TOP of every onDraw
-    float issuesRowHeightAtDraw = 0.0F;     // written by every onDraw, with the layout metrics
-    float scrollMaxYAtDraw = 0.0F;          // written at the END of every onDraw
+    std::optional<bool> issuesOpenRequest;          // requestIssuesOpen's, applied where a header click lands
+    std::size_t issueRowsDrawnCount = 0;            // reset at the TOP of every onDraw
+    float issuesBodyDrawnHeight = 0.0F;             // reset at the TOP of every onDraw
+    AssetBrowserLayoutMetrics layoutMetricsAtDraw;  // written by every onDraw, as assetBrowserLayout read it
+    float scrollMaxYAtDraw = 0.0F;                  // written at the END of every onDraw
 
     // ---- task 3.1.4 ---------------------------------------------------------------------------
     // Reconciled, never owned (the databasePtr/reportPtr precedent, a third instance). NULL until

@@ -1865,12 +1865,12 @@ void AssetBrowserPanel::onDraw(PanelContext& /*context*/) {  // D18: the context
     metrics.fontSize = ImGui::GetFontSize();
     metrics.frameHeight = ImGui::GetFrameHeight();
     metrics.textLineHeight = ImGui::GetTextLineHeight();
-    issuesRowHeightAtDraw = metrics.textLineHeight;  // task E.4.4 -- read back as issuesRowHeight()
     metrics.itemSpacingY = style.ItemSpacing.y;
     metrics.issuesShown = reportPtr != nullptr && issueTotal(*reportPtr) > 0;
     metrics.issuesOpen = issuesOpen;
     metrics.issuesContentHeight = issuesContentHeight;
     const AssetBrowserLayout layout = assetBrowserLayout(metrics);
+    layoutMetricsAtDraw = metrics;    // task E.4.4 -- EXACTLY what the layout read (layoutMetrics())
     drawTreePane(layout.paneHeight);  // 3
     ImGui::SameLine();
     if (viewMode == AssetViewMode::Grid) {  // task 3.1.3, Step 6 -- one child, two bodies (§D-7)

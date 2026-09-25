@@ -302,15 +302,17 @@ public:
     // "does not contain".
     [[nodiscard]] std::size_t assetBrowserVisibleEntryCount() const noexcept;
     [[nodiscard]] bool assetBrowserListingContains(std::string_view leafName) const noexcept;
-    // task E.4.4 (validation finding 2): the panel's vertical fit, read-only (0 when no Asset Browser panel
-    // is registered). The first counts orphan rows the Issues body really submitted on its last frame --
-    // the proof the section was open and drawing; the second is the height that body child was given, and
-    // the third the height of one body row as the panel measured it, so a body stuck at one row is
-    // visible at any DPI scale; the fourth is the panel window's GetScrollMaxY() as recorded at the end of
-    // its last onDraw, so 0 means the panes, Issues and footer all fit.
+    // task E.4.4 (validation finding 2): the panel's vertical fit, read-only (0 / default-constructed when no
+    // Asset Browser panel is registered). The first counts orphan rows the Issues body really submitted on
+    // its last frame -- the proof the section was open and drawing; the second is the height that body child
+    // was given; the third is EXACTLY the metrics the panel fed assetBrowserLayout on that frame (the
+    // recorded available height, the row height and the measured content height), so a caller can check the
+    // body against the layout's answer for the geometry the panel really had, at any window size or DPI;
+    // the fourth is the panel window's GetScrollMaxY() as recorded at the end of its last onDraw, so 0 means
+    // the panes, Issues and footer all fit.
     [[nodiscard]] std::size_t assetBrowserIssueRowsDrawn() const noexcept;
     [[nodiscard]] float assetBrowserIssuesBodyHeight() const noexcept;
-    [[nodiscard]] float assetBrowserIssuesRowHeight() const noexcept;
+    [[nodiscard]] AssetBrowserLayoutMetrics assetBrowserLayoutMetrics() const noexcept;
     [[nodiscard]] float assetBrowserScrollMaxY() const noexcept;
 
     [[nodiscard]] std::size_t thumbnailReadyCount() const noexcept;

@@ -2215,8 +2215,8 @@ std::size_t EditorApp::assetBrowserIssueRowsDrawn() const noexcept {
 float EditorApp::assetBrowserIssuesBodyHeight() const noexcept {
     return assetBrowserPanel != nullptr ? assetBrowserPanel->issuesBodyHeightDrawn() : 0.0F;
 }
-float EditorApp::assetBrowserIssuesRowHeight() const noexcept {
-    return assetBrowserPanel != nullptr ? assetBrowserPanel->issuesRowHeight() : 0.0F;
+AssetBrowserLayoutMetrics EditorApp::assetBrowserLayoutMetrics() const noexcept {
+    return assetBrowserPanel != nullptr ? assetBrowserPanel->layoutMetrics() : AssetBrowserLayoutMetrics{};
 }
 float EditorApp::assetBrowserScrollMaxY() const noexcept {
     return assetBrowserPanel != nullptr ? assetBrowserPanel->scrollMaxY() : 0.0F;

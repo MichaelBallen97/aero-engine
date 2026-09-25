@@ -18479,16 +18479,36 @@ TEST_CASE("editor: the UI font draws UTF-8 punctuation from ProggyClean's own CP
 // This builds exactly that project, opens the section through the seam, and reads the panel window's own
 // GetScrollMaxY() as the panel recorded it at the end of onDraw: 0 means the panes, the Issues header, its
 // capped body and the footer all fit. The arithmetic is assetBrowserLayout's (AV55-AV59); this is the
-// witness that ImGui agrees with it. The window is 1000 points tall so that the Assets dock node stays
-// above the budget's fit bound on a Retina display too, where the style doubles and the font does not.
+// witness that ImGui agrees with it.
+//
+// THE PANEL'S HEIGHT IS THE RUNNER'S, NOT THE TEST'S. CI's macOS lane gave a 1000-point window a panel short
+// enough that the layout -- correctly -- clamped the body to its one-row floor, and an arm asserting "the
+// body grew past one row" failed there as `13 > 13` while passing on a taller local display (measured here:
+// every window up to about 700 points tall does the same). So nothing below asserts a geometry. The body is
+// checked against assetBrowserLayout's answer for the metrics the panel RECORDED, and the proof that its
+// rows were measured is the measured content height itself. Two subcases: a tall panel, where the body has
+// room, and a deliberately SHORT one -- the geometry CI hit -- where the floor is the right answer.
 
 TEST_CASE("editor: the Asset Browser fits its panel with 40 orphans and Issues open (task E.4.4, I231)") {
+    using engine::editor::AssetBrowserLayout;
+    using engine::editor::AssetBrowserLayoutMetrics;
     engine::platform::Context ctx;
     if (!ctx.valid()) {
         AERO_SKIP_OR_FAIL("no platform context");
     }
+    // 1000 points leaves 187 of avail at 1x here, room for a 74-point body. 600 leaves 87: 23 above the fit
+    // bound, and no room above the one-row floor -- the regime CI's runner produced from the 1000-point
+    // window. A runner can only make a window SHORTER, so the short subcase stays in that regime anywhere.
+    bool tallPanel = true;
+    int windowHeight = 1000;
+    SUBCASE("a TALL panel, where the body has room to grow past one row") {}
+    SUBCASE("a SHORT panel, where the body is held at its one-row floor -- the geometry CI hit") {
+        tallPanel = false;
+        windowHeight = 600;
+    }
+    CAPTURE(windowHeight);
     std::optional<engine::platform::Window> window =
-        ctx.createWindow({.title = "issues fit i231", .width = 1280, .height = 1000});
+        ctx.createWindow({.title = "issues fit i231", .width = 1280, .height = windowHeight});
     REQUIRE(window.has_value());
     std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
     if (!device) {
@@ -18528,6 +18548,23 @@ TEST_CASE("editor: the Asset Browser fits its panel with 40 orphans and Issues o
     // longer than any body this panel can reserve.
     REQUIRE(app->assetOrphanCount() == static_cast<std::size_t>(ORPHANS));
 
+    // The panel must fit. The TALL panel always; the SHORT one whenever the layout's own budget fits the
+    // height the panel recorded, which is the header's contract ("only a panel shorter than the fit bound
+    // can scroll") -- 600 points is inside it at 1x, on every CI lane, but a Retina display doubles the
+    // style and may push it below, where scrolling is the DESIGNED answer. A WARN says so instead.
+    const auto checkFits = [&app, tallPanel] {
+        const AssetBrowserLayoutMetrics m = app->assetBrowserLayoutMetrics();
+        const AssetBrowserLayout l = engine::editor::assetBrowserLayout(m);
+        const float budget = l.paneHeight + l.issuesHeight + l.footerHeight;
+        const float scrollMax = app->assetBrowserScrollMaxY();
+        INFO("avail " << m.availHeight << ", budget " << budget << ", scroll max " << scrollMax);
+        if (tallPanel || budget <= m.availHeight) {
+            CHECK(scrollMax == 0.0F);
+        } else {
+            WARN(budget <= m.availHeight);
+        }
+    };
+
     // The layout converges in two frames by construction -- the body's content height is measured one frame
     // late, and ImGui computes a window's ScrollMax in Begin from the PREVIOUS frame's content -- so four
     // ticks is a steady state, not a race.
@@ -18539,7 +18576,7 @@ TEST_CASE("editor: the Asset Browser fits its panel with 40 orphans and Issues o
     }
     CHECK(app->assetBrowserIssueRowsDrawn() == 0U);  // closed: the body submitted nothing
     CHECK(app->assetBrowserIssuesBodyHeight() == 0.0F);
-    CHECK(app->assetBrowserScrollMaxY() == 0.0F);
+    checkFits();
 
     // (b) OPENING. The seam lands where a click on the header lands -- after the panes were sized with the
     // header closed -- so the first frame must draw NO body (a body child of height 0 would fill the panel
@@ -18547,23 +18584,42 @@ TEST_CASE("editor: the Asset Browser fits its panel with 40 orphans and Issues o
     app->requestAssetBrowserIssuesOpen(true);
     REQUIRE(app->tick());
     CHECK(app->assetBrowserIssueRowsDrawn() == 0U);
-    CHECK(app->assetBrowserScrollMaxY() == 0.0F);
+    checkFits();
     for (int i = 0; i < STEADY_TICKS; ++i) {
         REQUIRE(app->tick());
         CAPTURE(i);
-        CHECK(app->assetBrowserScrollMaxY() == 0.0F);
+        checkFits();
     }
     // OPEN. ANTI-VACUITY, the second half: the body really drew -- every listed orphan row was submitted
     // (the scan caps the list at MAX_REPORTED_PER_CATEGORY) -- and still nothing overflows.
     CHECK(app->assetBrowserIssueRowsDrawn() == engine::editor::MAX_REPORTED_PER_CATEGORY);
-    CHECK(app->assetBrowserScrollMaxY() == 0.0F);
-    // ... and the body is TALLER than one row: the rows' measured height reached the budget. A body that
-    // never measured its rows stays exactly one row tall, and the row is the PANEL'S OWN -- 13 points on
-    // every lane so far, but a DPI scale that reaches the font makes it taller, and a restated 13 would then
-    // pass on an unmeasured body.
-    const float oneRow = app->assetBrowserIssuesRowHeight();
-    REQUIRE(oneRow > 0.0F);  // anti-vacuity: the panel really reported a row
-    CHECK(app->assetBrowserIssuesBodyHeight() > oneRow);
+    checkFits();
+    {
+        // THE BODY, independent of the geometry. What the panel recorded is what the layout read; the body
+        // child must have been given the layout's answer for exactly that; and the rows' height must have been
+        // MEASURED -- twenty rows and their headings cannot measure one row, however little room the panel
+        // has. A body that never measured stays at the floor, which a short panel would also produce, so the
+        // body's height alone cannot tell the two apart: the measurement can.
+        const AssetBrowserLayoutMetrics recorded = app->assetBrowserLayoutMetrics();
+        const AssetBrowserLayout expected = engine::editor::assetBrowserLayout(recorded);
+        const float oneRow = recorded.textLineHeight;
+        const float body = app->assetBrowserIssuesBodyHeight();
+        INFO("avail " << recorded.availHeight << ", one row " << oneRow << ", measured content "
+                      << recorded.issuesContentHeight << ", body " << body << ", layout's body "
+                      << expected.issuesBodyHeight);
+        REQUIRE(oneRow > 0.0F);         // anti-vacuity: the panel really recorded a row
+        REQUIRE(recorded.issuesShown);  // ... from a frame with the header
+        REQUIRE(recorded.issuesOpen);   // ... open
+        CHECK(recorded.issuesContentHeight > oneRow);
+        CHECK(body == expected.issuesBodyHeight);
+        if (tallPanel) {
+            // Only a display's geometry decides this, so it is reported, never asserted -- it is the arm
+            // that failed on CI as `13 > 13`.
+            WARN(body > oneRow);
+        } else {
+            CHECK(body == oneRow);  // the regime this subcase exists for: no room above the floor
+        }
+    }
 
     // (c) Row 3's path with the body open: a row's "Delete .meta" action opens the confirmation modal (the
     // seam records exactly what the SmallButton records -- nothing in tests/ can click it), the rows keep
@@ -18574,7 +18630,7 @@ TEST_CASE("editor: the Asset Browser fits its panel with 40 orphans and Issues o
     REQUIRE(app->tick());  // the modal is open and drawing
     CHECK(app->assetBrowserDeleteModalPending());
     CHECK(app->assetBrowserIssueRowsDrawn() == engine::editor::MAX_REPORTED_PER_CATEGORY);
-    CHECK(app->assetBrowserScrollMaxY() == 0.0F);
+    checkFits();
     CHECK(engine::editor::fileExists(assetsDir + "gone0.png.meta"));  // opened, never confirmed
 
     app->requestQuit();
