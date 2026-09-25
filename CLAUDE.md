@@ -91,7 +91,7 @@ validation pass exists for any task in any phase.** N-E = not executable, N-R = 
 | E.3.4 Material inspector redesign | #105 | `170ad9b` | 12 PASS / 1 partial / 1 N-E, nothing failed |
 | E.4.1 Reopen the last scene | #106 | `068c45c` | **12 / 12**, nothing failed — and 26 sabotage seeds / 29 runs with **no coverage hole** |
 | E.4.2 Scene/project containment | #107 | `f88079d` | **14 of 16 rows** — 12 outright, 2 as stated variants, 1 partial, **2 NOT EXECUTABLE**. 29 sabotage seeds found **three real coverage holes**; the code-review round found eight findings, one blocking; Windows CI found a ninth after all three passed |
-| E.4.3 Asset file operations | #108 | `3dff5ef` | **55 of 57 records PASS, 2 FAIL.** All twelve rows run; all six seed-critical rows (3, 4, 5, 6, 8, 9) pass, so S9, S11, S14, S18, S21, S22 and S28 all have witnesses. **The 2 failures are ONE defect: Enter activates neither modal's default button** (below) |
+| E.4.3 Asset file operations | #108 | `3dff5ef` | **59 / 59, nothing open** (53/57 on the first run; the 2 failures were one defect, fixed by #109 `d228a99`, and the fix round added 2 records). All six seed-critical rows pass, so S9, S11, S14, S18, S21, S22 and S28 all have witnesses |
 
 **E.3.2 landed before E.3.1** — legal, disjointly id-reserved; the reservation is discharged and the
 numbering is contiguous.
@@ -1029,17 +1029,24 @@ surface first. E.3.4 adds one gap of its own shape, unowned: a **closed `File` s
 plus nothing else now that `requestMaterialSectionOpen` exists, the day a manual pass says the diagnostics are
 noise.
 
-**ENTER ACTIVATES NEITHER MODAL'S DEFAULT BUTTON, AND THE CAUSE IS THE ONE THE TASK ALREADY WORKED AROUND
-(E.4.3's macOS pass — OPEN DEFECT).** In both the Rename and the Delete modal, `Return` does nothing: the
-modal stays open and the operation is not performed, while clicking the button from the identical state
-commits at once, and Escape cancels correctly. **`SetItemDefaultFocus()` needs keyboard nav, and
-`imgui_layer.cpp` never sets `ImGuiConfigFlags_NavEnableKeyboard`** — which is the SAME fact 3.1.3 cites as
-the reason Escape had to be hand-bound with `IsKeyPressed`. So the Enter path was never going to fire, on any
-modal in this editor, and the orphan modal's own "Enter == Delete" comment is aspirational rather than
-measured. **The fix is symmetric with the existing Escape binding**; it is not a blocker, because every
-operation is reachable by its button and nothing is performed incorrectly. **Any future modal inherits this:
-do not write "Enter commits" without hand-binding it.** No owner; the nearest is whoever next touches modal
-input or the key-binding registry E.6.2 would need.
+**A MODAL'S DEFAULT BUTTON ANSWERS NEITHER KEY BY ITSELF — BIND BOTH, BY HAND (E.4.3's macOS pass, fixed in
+#109).** `SetItemDefaultFocus()` needs keyboard nav and `imgui_layer.cpp` never sets
+`ImGuiConfigFlags_NavEnableKeyboard`, which is the SAME fact 3.1.3 cites for hand-binding Escape — so
+**Enter was dead in all three of the asset browser's modals**, each carrying an `Enter == X` comment that was
+never true, until the pass measured it. All three now bind Enter with `IsKeyPressed` beside Escape. **Any new
+modal inherits this: never write "Enter commits" without binding it.** Three things such a binding must get
+right, each read off the pinned source: **`ImGuiKey_KeypadEnter` is a DISTINCT key** (`imgui.h:1678`);
+**`IsKeyPressed(key, bool)` passes `ImGuiKeyOwner_Any`** (`imgui.cpp:10478-10481`) so it fires through
+`InputText`'s own `Shortcut(ImGuiKey_Enter, …, id)` (`imgui_widgets.cpp:5136`) — which is why Escape already
+worked with a field focused; and a **commit key must share the button's disabled predicate**, never a second
+copy of it. Dismiss wins over commit in a frame carrying both.
+
+**AND THE ORPHAN MODAL STILL HAS NO UI WITNESS, BECAUSE `Issues` CLIPS.** Expanding the Assets panel's
+`Issues` section overflows past the panel's bottom edge at **every window and dock height measured**, so the
+orphan row cannot be clicked and `"Delete orphaned .meta?"` cannot be opened by hand. Pre-existing in 3.1.3's
+`drawIssues`, consistent with the Retina style-scaled-but-font-not gap **E.6.1** owns, and unowned on its
+own account. Its Enter binding is code-identical to the two that were verified — an argument, not an
+observation.
 
 **NINE UNOWNED HANDOFFS.** **Asset-browser keyboard shortcuts (F2, Del)** — E.4.3 dropped both bindings AND
 their accelerator text: the gating needs a THIRD condition nobody named (`!io.WantTextInput`, because the
