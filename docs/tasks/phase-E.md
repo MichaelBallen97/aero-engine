@@ -558,6 +558,10 @@ re-measure the ceiling and renumber.**
 discharges the second clause: a scene outside the project is refused with an explanation. It renumbered to
 `I186`–`I192` and took the tier-0 prefix `CN` (`CN1`–`CN25`), so **the next free ImGui-tier id is `I193`**
 and E.4.3, E.4.4 and E.4.5 must each re-measure before they are implemented.
+**E.4.3 is MERGED** (PR #108, `3dff5ef`) and **macOS-validated 59 / 59**, which discharges the third clause,
+and **E.4.4 is MERGED** (PR #110, `28e9529`) — **four of five**, with E.4.5 left. E.4.3 took `I210`–`I226`
+and E.4.4 took `I227`–`I229`, so **the next free ImGui-tier id is now `I230`**; `I193`–`I209` is a free gap
+that E.4.5's spec claims from `I199`, and E.4.5 must re-measure before it is implemented.
 
 ### E.4.1 Reopen the last scene · P0 · M · depends: 2.5.1, 2.6.1 · **MERGED** — PR #106, `068c45c`
 **Goal:** opening a project should resume your work. Today opening one always lands on an Untitled
@@ -635,7 +639,7 @@ whose offer was drained through a request hook rather than a button, and the upw
 **the project that is already open** — with a guard that is canonical-aware, because a byte compare cannot
 see the symlinked spelling that is the defect's only route.
 
-### E.4.3 Asset file operations · P0 · L · depends: 3.1.1, 3.1.3, 3.1.4
+### E.4.3 Asset file operations · P0 · L · depends: 3.1.1, 3.1.3, 3.1.4 · **MERGED** — PR #108, `3dff5ef`
 _(Sized L, recorded before implementation: it is five destructive-capable operations, a guard
 extension, a modal, drag-to-move, and the discharge of a standing invariant that no test in this
 tree can currently see violated.)_
@@ -653,7 +657,7 @@ Subtasks:
 - Write-then-rescan in the same tick so the watcher's settle window never double-fires
 - Refuse on an incomplete directory listing (`listingIsComplete`, never `status == Ok`) — a prefix cannot prove a name is free
 
-### E.4.4 Browser ignore rules · P1 · S · depends: 3.1.1, 3.1.4
+### E.4.4 Browser ignore rules · P1 · S · depends: 3.1.1, 3.1.4 · **MERGED** — PR #110, `28e9529`
 **Goal:** stop indexing files that are not assets. Blender's `.blend1`/`.blend2` rolling backups pass
 today's scan predicate, so each one gets a GUID, a `.meta` sidecar, a content hash, a cache entry and
 a tile in the browser labelled `BLE1`.
@@ -662,6 +666,18 @@ Subtasks:
 - Extend `isScannableAssetName`'s roster (`.blend1`, `.blend2`, editor backup suffixes) — the single source
 - Confirm the derivation holds: `isWatchableAssetName` composes it, so scan, watcher, browser and thumbnails follow without a second list
 - Existing sidecars for newly-ignored files become orphans and are reported by the existing issues path, never silently deleted
+
+_Outcome:_ **merged as PR #110 (`28e9529`), twelve commits, CI 6 / 6 green on the first run; the 29-seed
+sabotage matrix found no hole; the eight-row validation page is UNRUN on every platform.** ★ **The second
+subtask was false as written: three of the four consumers followed the scan, and the browser's directory
+grid did not** — `ensureCached` filtered sidecars only, so every backup kept a tile the scan had refused. It
+follows by composition now (`isBrowserVisibleName`: directories first, the hidden rule left to
+`Show hidden`), and `I227` is its end-to-end witness. The roster ships as two arrays and one rule
+(`docs/09` §5.10), not as `.blend1`/`.blend2` literals. ★ **The third subtask held only half-way until the
+code-review round**: the orphan WAS reported, but its `Delete` was refused for ever because
+`deleteOrphanMeta` read "a file exists beside the sidecar" as "a live asset" and the ignored backup never
+goes away. The refusal is now scoped to a scannable name (`AA67`, `AD76`). E.4.3's name refusal was widened
+here too: renaming or creating anything with a roster name is refused (`IgnoredName`).
 
 ### E.4.5 Material names & thumbnails in the browser · P1 · M · depends: 3.1.3, E.2.4
 **Goal:** a folder of materials should be readable. Today every `.aeromat` is an identical flat tile

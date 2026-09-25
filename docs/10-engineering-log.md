@@ -17353,3 +17353,231 @@ already excludes the result from the scan, the watcher and git with no new rule 
     which a faithful copy does — and reddens only `I210(f)`'s structural pin (one `return`, one
     mention of `assetOpPathLadder`). The plan said both were needed; this is the measurement that
     shows why.
+
+### E.4.4 — Browser ignore rules — one roster, the one consumer that never followed it, and an orphan nothing could delete
+
+**A Blender project's assets folder no longer fills up with backups.** `isIgnoredAssetName` answers one
+question — is this leaf name derived, temporary or OS noise — from two `constexpr` arrays and one rule in
+`asset_meta.hpp`: the exact names `Thumbs.db` and `desktop.ini`; seven tail suffixes (`ATOMIC_TEMP_SUFFIX`
+by identifier, Blender's `.blend@` save temp, `.bak`, `.tmp`, `.orig`, `.rej`, `~`); and Blender's rolling
+`.blend<digits>` backups, unbounded in N. Everything folds ASCII case, and a name EQUAL to a suffix matches
+it. `isScannableAssetName` is recomposed as four disjoint refusals (empty, hidden, sidecar, ignored) with
+lines 1–193 of `asset_meta.cpp` byte-identical, because three E.4.1 files cite `:172` by number;
+`isWatchableAssetName` is byte-identical and follows by composition. The Asset Browser's directory listing —
+**the one consumer the roadmap said already followed the scan, and did not** — filters through
+`isBrowserVisibleName`, which puts `isDirectory` first and deliberately omits the hidden rule.
+`validateAssetName`'s `TempSuffix` refusal is renamed **in place** to `IgnoredName` and widened to the whole
+roster. `deleteOrphanMeta`'s race guard is scoped to a scannable name. The panel gains two read-only
+observables (`cachedEntryCount`, `cachedListingContains`) and a `Show hidden` seam that records the EXISTING
+`ActionKind::ToggleHidden`, forwarded by `EditorApp` as `assetBrowserVisibleEntryCount`,
+`assetBrowserListingContains` and `requestAssetBrowserToggleHidden` — no `ActionKind` added. `docs/09` §5.10
+documents the visible set.
+
+**Twelve commits** on `feat/E.4.4-browser-ignore-rules`, branch point `7d52255` — the plan's six, the
+conditional Commit 3a (E.4.3 merged first), three from the first code-review round and two from the second
+— merged as **`28e9529`** (PR #110), **CI 6 / 6 green on the first run** with the run's `headSha == HEAD`
+(`2dcff03`): macOS 21m24s, Windows 31m46s, Linux 49m1s, format & lint, the vcpkg baseline and cook
+determinism. `ctest -N` **178 → 178** in both presets with a byte-identical entry set; reduced **165 / 93**,
+shader-tools-OFF removing exactly the 13 `shaderc.*` entries and reflect-tools-OFF the 81 `reflect-gen.*`
+entries plus four doctest binaries, nothing added in either, `cooker.*` **70 / 70 / 70**. doctest
+**1404 / 2086 / 247 / 40 / 59 / 10 / 28 → 1404 / 2123 / 250 / 40 / 59 / 10 / 28**, identical in both presets:
+only `aero_editor_shell_test` (**+37**: `IX1`–`IX18`, `AM28`, `BV1`–`BV9`, `AA66`, `AA67`, `AD70`–`AD76`) and
+`aero_editor_imgui_test` (**+3**: `I227`–`I229`) moved; the two component-sensitive binaries did not, and
+**the built-in component count stays TEN**. Guards **525 / 92 / 163 / 92 / 165 / A=7 B=89 (2 permitted) /
+11-3-55 / 6-57**, identical to the branch point: the task adds, renames and deletes no tracked file.
+`git ls-files` **89 / 64**. No target, no ctest entry, no CMake line, no shader, no link-line change.
+
+#### ★ The roadmap's subtask was false, and only a real panel could show it
+
+"`isWatchableAssetName` composes it, so scan, watcher, browser and thumbnails follow" — three of the four
+did. `AssetBrowserPanel::ensureCached` dropped sidecars ONLY, so every `.blend1`, leftover `.aero-tmp`,
+`Thumbs.db` and `desktop.ini` kept a grid tile the scan had already refused. The fix is one predicate inside
+the existing cache-fill `erase_if`. The proof is the ImGui tier, because the grid is reachable from `tests/`
+only through `EditorApp`: `I227` counts the real panel's cached listing with the COUNT asserted before any
+"does not contain" (a panel that cached nothing satisfies every negative), `I228` keeps three roster-named
+FOLDERS listed and scanned, and `I229` shows `Show hidden` revealing a dotfile while the backup stays hidden.
+Each settles with a bounded tick-until on a property — never a fixed frame count — because the frame that
+drains the toggle clears the cache at its END.
+
+#### ★ The code-review round's BLOCKING finding: a stale sidecar beside an ignored file could never be deleted
+
+**Missed by the plan, the spec, the first 27 sabotage seeds and the full local gate.** `deleteOrphanMeta`
+step 4 (E22) refused with `AssetPresent` whenever ANY file existed at the sidecar's paired path. Before this
+task that file could only be a live asset. After it, every project an earlier build indexed holds
+`scene.blend1` beside the `scene.blend1.meta` that build wrote: the scan reports the sidecar as an orphan
+(`AD71`) and WARNs it on every rescan, every Blender save fires the watcher, the Issues popup offers `Delete`
+— and step 4 refused it **for ever**, because `scene.blend1` exists: it is ignored, not gone. Nothing else in
+the editor could remove it. A probe linked against the debug build read
+`delete scene.blend1.meta -> deleted=0 refusal=5 still on disk=1`. The fix scopes the guard:
+`isScannableAssetName(assetLeaf) && fileExists(absoluteAssetPath)`, the pure test first. `AA67` pins it at
+tier 0 (the defect, a `wood.png` control that must still be refused, and two more roster classes), `AD76`
+runs validation row 3 end to end through the scan with the same `deleteOrphanMeta(db.root(), …)` call the
+app's orphan drain makes, and its control proves the race E22 exists for still holds: an orphan whose
+SCANNABLE asset reappears before the click is refused and re-paired with its ORIGINAL GUID.
+
+**Why every layer missed it is the lesson.** A sabotage matrix mutates the code a task WROTE, so it can only
+find holes in the tests of that code. This defect lived in code the task never touched, whose premise the
+task invalidated — "a file exists at that path" had silently meant "a live asset" since 3.1.3, and the roster
+made the two different things. Only reading every consumer of the scan's visible set could find it.
+
+The same round found two nits, each fixed in its own commit: `AD74`'s `find("scene.blend")` was already
+satisfied by the orphan path `'scene.blend1.meta'` later in the same line (it now asserts the exact prefix
+`"scene.blend: took <guid> from orphan 'scene.blend1.meta'"`, and a seeded line naming the backup's path
+instead of the candidate's fails it where the old check passed); and `docs/09` §5.10's opening "iff" gave a
+hidden file no tile, which is false while `Show hidden` is ticked (the iff now covers the identity alone and
+the tile rule is stated separately).
+
+#### ★ The second code-review round: the scope is a SCANNABLE NAME plus ANY existing path — say so exactly
+
+The code refuses whenever the LEAF is scannable and **anything** exists at the path: a folder of that name,
+or on a case-insensitive volume a file differing only in case. §5.10 and the step-4 comment said "a file the
+scan would pair", a narrower rule — and an edit "aligning" the code to that text would lose a real identity.
+Both now state the scope as enforced, the older 3.1.3 rules clause gained the qualifier in place, and the
+rules bullet warns against narrowing as well as widening. **Leaf versus path is load-bearing**: an exact
+roster name stops matching once a folder prefix is attached (`isScannableAssetName("tex/THUMBS.DB")` is
+TRUE), so a step 4 fed `assetRelPath` would refuse `tex/THUMBS.DB.meta` again while every root-level arm stayed
+green. `AA67` gained a nested arm, and seed `S25` reddens that arm alone. `THUMBS.DB` is a realistic fixture:
+it was scannable before this task, whose predecessor compared `Thumbs.db` byte for byte.
+
+**The case-only rename, measured rather than assumed** (case-insensitive APFS, two throwaway probes never
+committed). After `wood.png` → `Wood.png` outside the editor, with the import cache holding the entry, the
+scan does NOT report an orphan: it re-attaches `Wood.png` to the old GUID from `wood.png.meta`, the write of
+`Wood.png.meta` then collides case-insensitively with that sidecar (a write conflict), and the record ends
+`Invalid` with a **nil GUID** — on every scan (`orphans=0`, `reattach=1`, `conflicts=1`). `wood.png.meta` is
+the only file still holding the GUID, and step 4's case-insensitive existence test is what refuses its
+deletion. The recovery path is pre-existing 3.1.2 / E.4.3 behaviour, not this task's — **an UNOWNED
+HANDOFF** below.
+
+#### Where the plan overrode the spec, each re-measured
+
+The helpers are `foldedTailEquals` / `foldedEquals`, never `endsWithFolded`, which already meant two things
+in the tree (five copies require a stem, the cooker's does not); `BV9` sits at tier 0 and sweeps both editor
+roots; `asset_meta.cpp:1-193` stays byte-identical, with `AM28` proving the inline dot test equal to
+`isHiddenName`; the spec's "one scan removes the cache entry" is false — `MISSING_SCAN_GRACE` keeps it three
+scans (`AD73`); `IX3` pins the roster's exact contents; Commit 2 is a `feat`, because the scan's behaviour
+changes there.
+
+#### Where this implementation departed from the plan, and why
+
+* **Ids `I227`–`I229`, not the plan's `I191`–`I193`.** E.4.2 took `I186`–`I192`, so `I191` and `I192` were
+  literally taken; the ceiling measured `I226` on `main` and every ref. The plan's own §2.6 map, keyed on
+  E.4.3's plan reservation (`I210`–`I227`), gives **`I228`**; E.4.3 actually took `I210`–`I226`, so `I227`
+  was free, and `I193`–`I209` stay a free gap (E.4.5's spec claims `I199`+).
+* **Commit 3a exists** because E.4.3 merged first. `TempSuffix` → `IgnoredName` renamed IN PLACE (no value
+  moves); its message is ASCII-only (`AA42`), so it says "docs/09 section 5.10"; `AA66` iterates both arrays.
+  **Consequence, approved and pinned**: `validateAssetName` has no file/folder context, so a FOLDER created
+  or renamed in the editor as `backup.bak` is refused too — E.4.3's existing posture toward a `.meta` or
+  `.aero-tmp` folder name. A folder made outside the editor is still listed and scanned. `BV9`'s set gained
+  `asset_actions.cpp` (six files; `asset_actions.hpp` names the predicate only in a comment).
+* **The §3.3 check was mis-specified**: "old-side start ≥ 193" reads `@@ -191` with default diff context.
+  Proved instead with `git diff -U0` (`@@ -193,0 …`) plus a byte comparison of lines 1–193.
+* **Formatting moved code**: the formatter joined `isScannableAssetName`'s two-line `&&` return onto 118
+  columns, so it is an early return plus one line; `cachedListingContains` became an early return for the same
+  reason (a 116-column continuation). Both are kept well under the width at which Homebrew and Ubuntu
+  clang-format 18 disagree.
+* **Measured values replaced the plan's**: `BV9`'s anti-vacuity comments say 115 / 64 files, not 114 / 63;
+  `rosterFileNames()` reserves (clang-tidy `performance-inefficient-vector-operation`); an unused
+  `IGNORED_ASSET_NAMES` using-declaration was left out of `asset_database_test.cpp` (`misc-unused-using-decls`).
+* **Placement shifts**: the panel accessors follow `deleteModalPending()`, because E.4.3's public one-shots
+  block now sits where the plan put `private:`; the ImGui cases append after E.4.3's, outside every `#if`.
+* **§9.6's roster extraction was defective**: `sed -n '/A{/,/};/p'` on the single-line `IGNORED_ASSET_NAMES{…};`
+  swallows the next initializer, so `ATOMIC_TEMP_SUFFIX` counted 2; an `awk` range reads the correct 1 / 0 / 8.
+  And its AC-2 grep matches the header's own comments; comment-stripped, it is exactly the two initializers.
+* **Docs adapted to the post-E.4.3 tree**: §5.10 and the rules bullet name the three free-name listings
+  E.4.3 added (`createAssetFolder`, `renameAssetEntry`, `moveAssetEntry`) and state the target-name refusal.
+  The validation page has eight rows, not seven: row 8 is Commit 3a's refusal in the modal.
+* **Sabotage adaptations**: `S16`'s anchor is no longer unique (E.4.3's `createAssetFolder` has the identical
+  loop), so it was re-scoped to `createMaterialAsset` and `S16b` seeds the New Folder listing; `S18`'s
+  predicted mechanism was wrong (below).
+
+#### ★ The sabotage matrix — 29 seeds, no hole
+
+27 seeds against the plan's code, including three added (`S16b`, `S21b`, `S21c`), then `S24` and `S25` against
+the two code-review fixes. Every seed's landing was checked with `git diff`, every build recompiled, and every
+predicted-witness filter was checked on the clean build to select exactly its cases.
+
+| Seed | Mistake | Failed | Verdict |
+|---|---|---|---|
+| S1 | `.rej` deleted, size adjusted | `IX3` only | caught |
+| S1b | `.rej` deleted, size NOT adjusted (an empty suffix matches everything) | ≥ 161 shell cases; the binary SIGABRTs twice (`AD18`, `ME34`); `I227`–`I229` | caught, loudly |
+| S2 | `foldedTailEquals` `<` → `<=` | the 9 predicted + `AA66`; `I227` | caught |
+| S3 | Blender rule loses its trailing-digit guard | 5 predicted + 30 more (`AA66`, `AD74`, 22 `BS`, 6 `MS`); `I227` | caught |
+| S4 | all-digits guard removed | nothing | inert by construction |
+| S5 | roster term dropped from `isScannableAssetName` | the 14 predicted + `AW34`; `I227` | caught |
+| S6 | `isDirectory \|\|` dropped | `BV1`; `I228` (`AD75` green, as predicted) | caught |
+| S7 | hidden rule restated | `BV5`, `BV6`, `BV8`; `I229` | caught |
+| S8 | panel filter gated on `!showHidden` | `I229` alone, count 4 | caught (GPU tier only) |
+| S9 | panel passes `false` for `isDirectory` | `I228` alone | caught |
+| S10 | panel reverts to sidecars only | `BV9`; `I227`, `I229` | caught |
+| S11 | `isWatchableAssetName` forgets sidecars | `AM-w2`, `AM-w10`, `AM-w11` + `AW35` | caught |
+| S12 | temp suffix re-spelled as a literal | `IX17`'s source arm | caught |
+| S13 | exact-name loop uses the tail test | `IX4` | caught |
+| S14 | `""` becomes ignored | `IX8`, `BV7` | caught |
+| S15 | accessors read the root listing | nothing | known hole, accepted — no seam navigates the browser; validation row 4 |
+| S16 / S16b | New Material / New Folder free-name listing filtered | `BV9` | caught, source text only |
+| S17 | the scan deletes orphans | `AD15`, `AD71`–`AD73` + `AD31`, `AD46`, `AD74`; no-delete guard exit 1 | caught twice |
+| S18 | panel predicate loses its `!` | `I227`–`I229` on exact counts (10 / 1 / 2) | caught |
+| S19 | `cachedListingContains` always false | `I227`–`I229` positive arms | caught |
+| S20 | `cachedEntryCount` returns `cache.size()` | `I227`–`I229` (`I229` only after its toggle) | caught |
+| S21 | name refusal reverts to the temp suffix | `AA66`, `BV9` | caught |
+| S21b | `IgnoredName` rung above `Hidden` | `AA66` (`.bak` must be `Hidden`) | caught |
+| S21c | `IgnoredName` rung above `MetaSuffix` | nothing | inert by construction — the classes are disjoint (`IX18`) |
+| S22 | helpers moved beside `foldAscii` | nothing | gate-only by design: hunk starts at 43, `:172` moves to 199 |
+| S23 | tenth literal without `docs/09` | `IX3`; the gate reads 9 literals against 8 | caught |
+| S24 | fix 1 reverted (scope removed) | `AA67`, `AD76` | caught |
+| S25 | fix 1 fed `assetRelPath` | `AA67`'s nested arm alone | caught |
+
+`S18`'s plan said the three cases would fail waiting for a non-empty listing; they fail on the exact count,
+because an inverted filter keeps the scan's own `.meta` sidecars and the listing is never empty.
+
+#### Traps found, each measured
+
+* **A doctest run that "skips" most of its cases may be a crashed binary.** `S1b`'s `-tce` run printed
+  `208 | 177 passed | 31 failed | 1913 skipped` — the binary SIGABRTed in `AD18` and the summary still
+  printed. Read the log for `CRASHED` before believing a skip count.
+* **A single-file clang-tidy run prints no `[1/1] Processing file` line.** Its log is one
+  `N warnings generated.` line; that line, not a progress count, is the evidence it ran.
+* **`grep` in this machine's shell is a function wrapping another tool** and returned a silent false 0 on an
+  `-oE` alternation; every count here used `command grep`, with a known-present anti-vacuity token.
+
+#### What was deliberately left out, with owners
+
+All **unowned**: a project-level ignore file (`.aeroignore` or a `project.json` key — a format, a parse, an
+error catalog and a watcher interaction); a directory roster (`__MACOSX`, `node_modules`, Blender's
+`backup/`); vim/emacs swap and auto-save files; a bulk "delete all orphaned sidecars" action or a distinct
+Issues category (validation row 2 decides whether it is needed); **the case-only rename outside the editor**
+measured above. Deferred with a trigger: swapping `isScannableAssetName`'s inline dot test for
+`isHiddenName` once nothing cites `asset_meta.cpp:172`.
+
+#### The sentences that govern new work
+
+1. **The roster is ONE value.** Add an entry to `IGNORED_ASSET_NAMES` / `IGNORED_ASSET_NAME_SUFFIXES` /
+   `BLEND_BACKUP_STEM` and to `docs/09` §5.10 in the same commit, and update `IX3`'s pin — which exists
+   because **a universal over an array cannot see an entry deleted from it**. Never a fifth term in
+   `isScannableAssetName`.
+2. **Every consumer COMPOSES `isIgnoredAssetName`; a name-FREEDOM listing never filters by it.** An ignored
+   file still owns its name on disk. `BV9` pins the exact set of editor files that may name either roster
+   predicate (six); a new consumer adds itself there out loud.
+3. **`isBrowserVisibleName` keeps `isDirectory` first and the hidden rule out.**
+4. **`validateAssetName`'s `IgnoredName` is a TARGET-name refusal** — the opposite question from name
+   freedom — and it refuses a folder name too, for want of a file/folder context.
+5. **`deleteOrphanMeta`'s `AssetPresent` refusal is a SCANNABLE NAME on the LEAF plus ANY existing path.**
+   Widened back to "any file", every pre-E.4.4 Blender project's orphans are undeletable; narrowed to an
+   exact-case pairing, the sidecar a case-only rename leaves behind — the only copy of its GUID — is deletable.
+6. **★ A change to what the scan sees must be traced through every consumer that reads "a file exists at
+   that path" as "a live asset".** Before this task the two were the same thing; the roster made them
+   different, and the one consumer that still conflated them was in code the task never touched — which is
+   exactly where a sabotage matrix cannot look.
+7. **A cache entry for a path the scan stops seeing survives `MISSING_SCAN_GRACE` scans** (`AD73`). Never
+   assert it is gone after one.
+8. **A `-tc=` pattern can never contain a comma** — doctest splits on it, and a lone `*` selects the whole
+   binary and exits 0. Select an existing `(ID, …)` case with `?` (doctest's `wildcmp` matches any one
+   character) and end every new case name with its id and `)`.
+
+#### Validation and sabotage status
+
+Sabotage: **29 seeds, no hole** (above). Validation page: `editor/validation/E.4.4-browser-ignore-rules.md`,
+**eight rows, UNRUN on every platform**. Rows 4 and 5 are the only cover seeds `S15` and `S8` have on real
+hardware, and row 3 is `AD76`'s manual twin — the delete must succeed while the ignored backup is present.
+**`I136` passed at this task's gate (30 assertions, 250 / 250 locally) only because no 2x display was
+attached**; it is display-dependent, not fixed, and it is still E.6.1's.

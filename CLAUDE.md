@@ -10,11 +10,11 @@ Two platform matrices, never to be conflated: the **editor** runs on macOS/Windo
 
 ## Current state — read this first
 
-**Phase E (Editor Experience) is the open front**, executing between Phase 3 and Phase 4. **Sixteen of its
-24 tasks are merged: Epics E.1, E.2 and E.3 are all CLOSED IN CODE, E.4.1 and E.4.2 are both MERGED AND
-macOS-VALIDATED, and E.4.3 is MERGED AND macOS-VALIDATED — so Epic E.4 stands at three of five, with all three
-of its Definition-of-Done clauses discharged in code. E.4.4, E.4.5, E.5 and E.6 are what is left — eight
-tasks, planning only.** Phase 3 remains OPEN behind it: all seven of its epics are closed in code,
+**Phase E (Editor Experience) is the open front**, executing between Phase 3 and Phase 4. **Seventeen of its
+24 tasks are merged: Epics E.1, E.2 and E.3 are all CLOSED IN CODE, and Epic E.4 stands at four of five —
+E.4.1, E.4.2 and E.4.3 merged and macOS-validated, E.4.4 merged and UNRUN — with all three of its
+Definition-of-Done clauses discharged in code. E.4.5, E.5 and E.6 are what is left — seven tasks, planning
+only.** Phase 3 remains OPEN behind it: all seven of its epics are closed in code,
 and what is left is its deliverable gate and the validation debt.
 
 **Phase E is lettered, not fractioned.** `3.5` and `3.5.1`/`3.5.2` are already Phase 3's skeletal-animation
@@ -26,14 +26,14 @@ In Notion its `Phase #` is `3.5` — a sort key, not an identifier.
 (E.2.2). Nothing since E.2.2 has added one, so the five-generation-site rule and the component-count sweep
 have not fired since — **they still apply in full to the next built-in, whenever one arrives.**
 
-**Next free ids: `I227` at the ImGui tier**, `AA64`, `DR28`. The `MR` prefix is taken (E.3.4's
-`MR1`–`MR21`), so is `PJ` (E.4.1's `PJ1`–`PJ57`), and so is `CN` (E.4.2's `CN1`–`CN25`). E.4.1 took
-`I176`–`I185`, E.4.2 took `I186`–`I192` and E.4.3 took `I210`–`I226`; the other E.4.2 ceilings are `SS`
-54 and `IO` 21. **`I193`–`I209` are FREE and were never claimed by anything that merged** — E.4.3 kept
-its plan's `I210` base rather than renumbering a contiguous block into them, because a gap costs nothing
-and a renumbering invites exactly the silent collision this project has recorded. **The E.4.4 and E.4.5
-specs both claim `I176`+ or `I199`+ — both must RE-MEASURE the ceiling and renumber before they are
-implemented.**
+**Next free ids, measured at `28e9529` by a whole-`tests/` token sweep over every ref: `I230` at the ImGui
+tier**, `AA68`, `AD77`, `AM29`, `DR28`, `IX19`, `BV10`. Taken tier-0 prefixes include `MR` (E.3.4,
+`MR1`–`MR21`), `PJ` (E.4.1, `PJ1`–`PJ57`), `CN` (E.4.2, `CN1`–`CN25`), and `IX` / `BV` (E.4.4,
+`IX1`–`IX18`, `BV1`–`BV9`); the other E.4.2 ceilings are `SS` 54 and `IO` 21. E.4.1 took `I176`–`I185`,
+E.4.2 `I186`–`I192`, E.4.3 `I210`–`I226` and E.4.4 `I227`–`I229`. **`I193`–`I209` are FREE and were never
+claimed by anything that merged** — a gap costs nothing, and renumbering a block into one invites exactly the
+silent collision this project has recorded. **E.4.5's spec claims `I199`–`I209`; it must RE-MEASURE the
+ceiling before it is implemented.**
 
 **Four facts Phase E was built on, each measured in the tree and each contradicting a plausible guess.**
 (1) The directional light **already** derives its direction from the entity's −Z world axis
@@ -58,7 +58,7 @@ it is one line plus a cost measurement), `<root>/Library/` as a save destination
 or created, anywhere. Those four are the unowned handoffs, not a gap in the predicate.
 
 > **Per-task history — what each task shipped, what it deliberately left out, every trap and every dead end —
-> lives in `docs/10-engineering-log.md`**, which carries a `### <task>` entry for every task through E.4.2,
+> lives in `docs/10-engineering-log.md`**, which carries a `### <task>` entry for every task through E.4.4,
 > each with its own `#### The sentences that govern new work` subsection. **Grep it before re-deriving
 > anything.**
 >
@@ -92,6 +92,7 @@ validation pass exists for any task in any phase.** N-E = not executable, N-R = 
 | E.4.1 Reopen the last scene | #106 | `068c45c` | **12 / 12**, nothing failed — and 26 sabotage seeds / 29 runs with **no coverage hole** |
 | E.4.2 Scene/project containment | #107 | `f88079d` | **14 of 16 rows** — 12 outright, 2 as stated variants, 1 partial, **2 NOT EXECUTABLE**. 29 sabotage seeds found **three real coverage holes**; the code-review round found eight findings, one blocking; Windows CI found a ninth after all three passed |
 | E.4.3 Asset file operations | #108 | `3dff5ef` | **59 / 59, nothing open** (53/57 on the first run; the 2 failures were one defect, fixed by #109 `d228a99`, and the fix round added 2 records). All six seed-critical rows pass, so S9, S11, S14, S18, S21, S22 and S28 all have witnesses |
+| E.4.4 Browser ignore rules | #110 | `28e9529` | **UNRUN on every platform** (eight rows). 29 sabotage seeds, no hole; the code-review round found one blocking defect — an orphan beside an ignored file could never be deleted |
 
 **E.3.2 landed before E.3.1** — legal, disjointly id-reserved; the reservation is discharged and the
 numbering is contiguous.
@@ -105,7 +106,7 @@ numbering is contiguous.
 | **Phase 2** — Editor | **COMPLETE, gate met 2026-08-02.** All six epics closed and macOS-validated; Windows/Linux rows pending for every task (`editor/VALIDATION.md`). Gate artifact: `samples/phase-2-editor-scene/` — data, deliberately not `add_subdirectory`'d. |
 | **Phase 3** — Asset Pipeline & 3D Content | **OPEN.** All seven epics (3.1–3.7) **CLOSED in code**. What is left is the gate below and the validation debt. |
 | **Phase 3 gate** | Drop a rigged glTF/FBX in → PBR materials + shadows + a playing animation + **an audible sound**. The audible half exists in code as of 3.7.2 and **has never been heard on any platform.** |
-| **Phase E** — Editor Experience | **OPEN.** Epics E.1, E.2 and E.3 **CLOSED in code**; **E.4.1, E.4.2 and E.4.3 merged** — 16 of 24, see the index above. **E.4.4, E.4.5, E.5 and E.6 are the open front: eight tasks, planning only.** TWO validation pages are unrun (E.1.5, E.3.2) and are the whole of this OS's remaining Phase E risk. |
+| **Phase E** — Editor Experience | **OPEN.** Epics E.1, E.2 and E.3 **CLOSED in code**; **E.4.1–E.4.4 merged** — 17 of 24, see the index above. **E.4.5, E.5 and E.6 are the open front: seven tasks, planning only.** THREE validation pages are unrun (E.1.5, E.3.2, E.4.4) and are the whole of this OS's remaining Phase E risk. |
 | **Phase E gate** | Open a project and land in the scene you were last editing, on a lit grid floor under a sky; create a Cube from the menu, drop a material on it and see it shade; aim a spot light with a visible gizmo; rename, move and delete assets without leaving the editor. Gate artifact: `samples/phase-E-editor/`. |
 
 ### Engine layers, in dependency order
@@ -135,7 +136,8 @@ numbering is contiguous.
   reachable in all three build configurations.
   **DO NOT record a "pair count" here — it is not reproducible**: E.2.4 measured the tree six ways looking
   for the figure this line used to carry and none of the six was it. The two figures anyone can re-run are
-  `git ls-files`: **`editor/src/*.cpp` = 89** and **`editor/include/aero/editor/*.hpp` = 64** at E.4.2.
+  `git ls-files`: **`editor/src/*.cpp` = 89** and **`editor/include/aero/editor/*.hpp` = 64** at E.4.4,
+  unchanged since E.4.2.
   `/tools` links `aero::assets` and `aero::editor_core` through `aero_cooker`, which is legal because
   `tools/` is enumerated by neither half of the golden rule.
 
@@ -420,6 +422,32 @@ button calls, and ImGui **never GCs** an entry for a popup that simply stops bei
 of the process and every menu, panel and dock tab is unclickable (2.6.1's BLOCKING-1, re-proved from the
 other side). **No tier here can read `g.HoveredWindow`**, so `I192` is a source-text pin and a manual pass
 is the behavioural witness. Every future request hook that answers a modal inherits both.
+
+**THE IGNORE ROSTER IS ONE VALUE, EVERY CONSUMER COMPOSES IT, AND A NAME-FREEDOM LISTING NEVER FILTERS BY IT
+(E.4.4).** `IGNORED_ASSET_NAMES`, `IGNORED_ASSET_NAME_SUFFIXES` and `BLEND_BACKUP_STEM` in `asset_meta.hpp` are
+the whole of "not an asset": add an entry THERE and to `docs/09` §5.10 in the same commit, and update `IX3`,
+which pins the exact contents because **a universal over an array cannot see an entry deleted from it**.
+Every consumer composes `isIgnoredAssetName` — the scan, the watcher by composition, and the browser through
+`isBrowserVisibleName`, whose `isDirectory` term comes FIRST (a folder named `backup.bak` is the user's) and
+which carries NO hidden rule (`listDirectory` owns it, behind `Show hidden`). An ignored file still owns its
+name on disk, so **New Material, New Folder, Rename and Move list UNFILTERED**; `validateAssetName`'s
+`IgnoredName` refusing a roster name as a TARGET is the opposite question and is correct (it refuses a folder
+name too — it has no file/folder context). `BV9` pins the exact set of six editor files that may name either
+predicate.
+
+**`deleteOrphanMeta`'s `AssetPresent` REFUSAL IS A SCANNABLE NAME ON THE LEAF PLUS ANY EXISTING PATH (E.4.4,
+the code-review round's blocking finding)** — `isScannableAssetName(assetLeaf) && fileExists(...)`. Widen it
+back to "any file exists" and every pre-E.4.4 Blender project's orphaned `.blend1.meta` is undeletable for
+ever, since the ignored backup beside it never goes away (`AA67`, `AD76`). Narrow it to an exact-case pairing
+and the sidecar a case-only rename leaves on a case-insensitive volume — the only copy of its GUID — becomes
+deletable. Feed it the relative path instead of the leaf and `tex/THUMBS.DB.meta` is refused again, because
+an exact roster name stops matching behind a folder prefix (`AA67`'s nested arm).
+
+**★ A CHANGE TO WHAT THE SCAN SEES MUST BE TRACED THROUGH EVERY CONSUMER THAT READS "A FILE EXISTS AT THAT
+PATH" AS "A LIVE ASSET" (E.4.4).** The two were one fact until the roster split them, and the consumer that
+still conflated them sat in code the task never touched — so the plan, the spec, 27 sabotage seeds and the
+full gate all missed it. **A sabotage matrix mutates the code a task WROTE and cannot look anywhere else**;
+only reading every consumer of the visible set finds this class.
 
 **`ImGuiListClipper::IncludeItemByIndex` GOES AFTER `Begin()` (E.3.3)** — the constructor `memset`s
 `DisplayStart` to 0 and `Begin` is what sets it to −1, so a call above it is an `IM_ASSERT` abort.
@@ -754,6 +782,10 @@ it: `CHECK((a == b))` prints `CHECK( true )` on a FAILURE as well as a pass.
 **A `-tc=` FILTER IS A GLOB, NOT A REGEX, AND A FILTER THAT MATCHES NOTHING EXITS 0.** `*PK1[35]*` selected
 **zero** cases and the binary reported success — which reads as "the seed reverted cleanly" during a sabotage
 run on a tree where the seed was still live. **Read doctest's own `test cases:` line, never the exit code.**
+**And a pattern can never contain a comma** — doctest splits on it, and a stray lone `*` selects the whole
+binary and still exits 0 — so select an existing `(ID, …)` case with `?` (`*(AM7?*`) and end every new case
+name with its id and `)` (E.4.4). **A run whose summary "skips" most of its cases may be a crashed binary**:
+`S1b` printed `1913 skipped` after a SIGABRT — read the log for `CRASHED`.
 
 **`static_assert(!requires(T v) { v.member; })` ON A NON-DEPENDENT TYPE IS A HARD COMPILE ERROR**, not
 `false` — a requires-expression only substitutes when the type is dependent. Route such a check through a
@@ -807,14 +839,15 @@ is a configure-time property. **Rebuild before you believe any doctest number, a
 presets so a disagreement is visible.** A recorded total goes stale the same way: `origin/main`'s own shell
 total was one stale at E.1.4's gate. **Read the binary, never the block.**
 
-**At E.4.3's gate**, measured on both presets out of freshly built trees and agreeing between them, with
-both reduced configurations configured fresh:
+**At E.4.4's merge (`28e9529`)**, measured on both presets out of freshly rebuilt trees and agreeing between
+them, with both reduced configurations rebuilt (configured fresh at E.4.4's gate; no CMake file has changed
+since):
 
 | Measurement | Value |
 |---|---|
-| `ctest -N` | **178**, entry set byte-identical between presets AND to E.4.2's; **165** shader-tools-OFF, **93** reflect-tools-OFF; `cooker.*` **70 / 70 / 70** |
-| doctest, seven binaries | **1404 / 2084 / 247 / 40 / 59 / 10 / 28** |
-| guards | math **525**, platform **92**, rhi **163**, scene **92**, golden-rule **165**, project-no-delete **A=7 B=89**, audio **11-3-55**, probes **6-57** |
+| `ctest -N` | **178**, entry set byte-identical between presets AND to E.4.3's; **165** shader-tools-OFF (exactly the 13 `shaderc.*` removed), **93** reflect-tools-OFF (81 `reflect-gen.*` + four doctest binaries removed), nothing added in either; `cooker.*` **70 / 70 / 70** |
+| doctest, seven binaries | **1404 / 2123 / 250 / 40 / 59 / 10 / 28** |
+| guards | math **525**, platform **92**, rhi **163**, scene **92**, golden-rule **165**, project-no-delete **A=7 B=89** (2 permitted), audio **11-3-55**, probes **6-57** |
 | `git ls-files` | `editor/src/*.cpp` **89**, `editor/include/aero/editor/*.hpp` **64** |
 
 The seven doctest binaries, in order: `aero_tests`, `aero_editor_shell_test`, `aero_editor_imgui_test`,
@@ -854,12 +887,13 @@ that peaked at 7.6 GB here. **Each run must name which binaries it built and ran
 **`check-math-boundary.sh` counts `git ls-files`, so it reads a STALE number until new files are `git add`ed**
 — stage first, then measure.
 
-**`I136` IS DISPLAY-DEPENDENT, SO THE LOCAL GPU TIER GATES AT EITHER 231 OR 232 OF 232 AND THE RUN MUST SAY
+**`I136` IS DISPLAY-DEPENDENT, SO THE LOCAL GPU TIER GATES AT EITHER 249 OR 250 OF 250 AND THE RUN MUST SAY
 WHICH.** It fails `REQUIRE(drawExtent.width > 4U)` with value **4** on a 2x display — deterministically at
-E.3.4's and E.4.1's gates, on an unmodified `HEAD` — and it **PASSED at E.4.2's gate** (30 assertions, a
-full 232 / 232) in a session that touches nothing in the DPI story. **A green run is therefore not evidence
-it is fixed**; it is pre-existing, it is the DPI story's, and it is handed to E.6.1. **Name it either way;
-never let a known failure be quietly counted as green, and never let it hide a new one.**
+E.3.4's and E.4.1's gates and at E.4.4's branch point, on an unmodified `HEAD` — and it **PASSED at E.4.2's
+and E.4.4's gates** (30 assertions each), the latter measured with only 1x displays attached. **A green run is therefore not
+evidence it is fixed**; it is pre-existing, it is the DPI story's, and it is handed to E.6.1. **Name it
+either way, with the display configuration; never let a known failure be quietly counted as green, and
+never let it hide a new one.**
 
 **COUNTS DIVERGE BY OS, so never assume one.** Windows skips **FOUR** e2e cases —
 `golden-rule.include_scan_e2e`, **`project-no-delete.no_delete_e2e`**, `audio-boundary.guard_e2e` and
@@ -887,9 +921,13 @@ mono 48 kHz 0.5 s, **exactly 48 064 B each**, cut at a whole number of cycles so
 **Validation pages are gitignored, so they enter no commit.** Per-page measurements and method notes are in
 `docs/10`; this is the ledger of what is still owed.
 
-**TWO PAGES HAVE NOT BEEN RUN ON ANY PLATFORM: E.1.5's AND E.3.2's.** They are the whole of
+**THREE PAGES HAVE NOT BEEN RUN ON ANY PLATFORM: E.1.5's, E.3.2's AND E.4.4's.** They are the whole of
 Phase E's validation risk on this OS — every other task in E.1, E.2, E.3 and E.4 is macOS-validated (see
-the index above). **E.4.1 is fully validated: 12 / 12 macOS, nothing failed**, and its sabotage matrix is
+the index above). **E.4.4's eight rows** carry the only real-hardware cover seeds `S15` (row 4, a
+roster-named sub-folder) and `S8` (row 5, `Show hidden`) have; row 3 is `AD76`'s manual twin — the Delete
+must succeed while the ignored backup is present. Rows 2 and 3 drive the `Issues` section, which E.4.3's pass
+found clipping at every height measured (below), so they may be NOT EXECUTABLE until that is fixed, and
+`AD76` would then stay row 3's only cover. **E.4.1 is fully validated: 12 / 12 macOS, nothing failed**, and its sabotage matrix is
 run too — 26 seeds / 29 runs, **no seed green with nothing else catching it** (`docs/10`). An earlier
 matrix attempt was abandoned mid-seed and **left a live seed in the working tree** (the deleted
 `sceneIoAvailable()` gate), caught by `git status` before anything was committed. **Always `git status`
@@ -987,8 +1025,10 @@ display's ICC profile, and **there is no `renderFrame` Tracy zone in this tree**
 
 ### Next
 
-**E.4.4, E.4.5, E.5 and E.6 are the open front: eight tasks, planning only.** See `docs/tasks/phase-E.md`,
-and `docs/tasks/phase-3.md` for what Phase 3 still owes.
+**E.4.5, E.5 and E.6 are the open front: seven tasks, planning only** — E.4.5, E.5.1–E.5.2 and E.6.1–E.6.4.
+See `docs/tasks/phase-E.md`, and `docs/tasks/phase-3.md` for what Phase 3 still owes. **E.4.4 is done and
+hands nothing to E.4.3**: it widened E.4.3's `validateAssetName` itself (`TempSuffix` → `IgnoredName`, in
+place).
 
 **Ownership of the open work.** **E.4.3 IS MERGED, and it did NOT use `directoryWithin` /
 `normalizeForContainment` — deliberately, and the reason generalises.** Those answer *"is this ABSOLUTE
@@ -1030,16 +1070,10 @@ plus nothing else now that `requestMaterialSectionOpen` exists, the day a manual
 noise.
 
 **A MODAL'S DEFAULT BUTTON ANSWERS NEITHER KEY BY ITSELF — BIND BOTH, BY HAND (E.4.3's macOS pass, fixed in
-#109).** `SetItemDefaultFocus()` needs keyboard nav and `imgui_layer.cpp` never sets
-`ImGuiConfigFlags_NavEnableKeyboard`, which is the SAME fact 3.1.3 cites for hand-binding Escape — so
-**Enter was dead in all three of the asset browser's modals**, each carrying an `Enter == X` comment that was
-never true, until the pass measured it. All three now bind Enter with `IsKeyPressed` beside Escape. **Any new
-modal inherits this: never write "Enter commits" without binding it.** Three things such a binding must get
-right, each read off the pinned source: **`ImGuiKey_KeypadEnter` is a DISTINCT key** (`imgui.h:1678`);
-**`IsKeyPressed(key, bool)` passes `ImGuiKeyOwner_Any`** (`imgui.cpp:10478-10481`) so it fires through
-`InputText`'s own `Shortcut(ImGuiKey_Enter, …, id)` (`imgui_widgets.cpp:5136`) — which is why Escape already
-worked with a field focused; and a **commit key must share the button's disabled predicate**, never a second
-copy of it. Dismiss wins over commit in a frame carrying both.
+#109).** Enter was dead in all three of the asset browser's modals until the pass measured it; **any new modal
+inherits this — never write "Enter commits" without binding it.** The three things such a binding must get
+right (`KeypadEnter` is a distinct key; `IsKeyPressed` passes `ImGuiKeyOwner_Any`; a commit key shares the
+button's disabled predicate), each with its pinned-source citation, are in `.claude/rules/editor.md`.
 
 **AND THE ORPHAN MODAL STILL HAS NO UI WITNESS, BECAUSE `Issues` CLIPS.** Expanding the Assets panel's
 `Issues` section overflows past the panel's bottom edge at **every window and dock height measured**, so the
@@ -1048,30 +1082,46 @@ orphan row cannot be clicked and `"Delete orphaned .meta?"` cannot be opened by 
 own account. Its Enter binding is code-identical to the two that were verified — an argument, not an
 observation.
 
-**NINE UNOWNED HANDOFFS.** **Asset-browser keyboard shortcuts (F2, Del)** — E.4.3 dropped both bindings AND
-their accelerator text: the gating needs a THIRD condition nobody named (`!io.WantTextInput`, because the
-browser's own header carries an `InputText` search box, so `Del` while editing the query would delete the
-selected asset), nothing in `tests/` can press a key, and the editor has no key-binding registry, so a third
-hand-bound global would be an undeclared policy with no way to order it against the other two. **E.6.2 is the
-nearest owner** because it is the task that moves editor-wide controls, but nothing in the roadmap claims it.
-**Spot and point shadows** — the shadow pass is directional-only (3.6.2), Phase E's
-non-goals name cascaded/soft shadows as 8.2.1's, and no roadmap item owns omni or spot shadow maps at all.
-**A camera FRUSTUM gizmo** — E.2.3 draws the camera an icon and no gizmo; a natural fit for 4.7. **A MIP CHAIN
-for E.2.3's icon atlas** — a 64-texel cell drawn at 22 points is a 2.91x minification, mitigated by a 4-texel
-minimum feature size rather than eliminated; `Device::uploadTexture` already takes a mip level, so it is a
-downsampler and three lines. **Muting the point/spot lights the bridge TRUNCATES** — safe the day `RenderView`
-can report which lights survived. **A preview carrying the scene's POINT and SPOT lights** — deliberately
-excluded at E.2.4, because a lamp lights a sphere at the origin by where it happens to sit, which predicts
-nothing about the material. **A FOV control** — `EditorCamera::setFovYRadians` exists and the mock implies one.
-**PERSISTING the four viewport toggles and the tonemap params per user** — 3.6.3's, E.1.2's and E.2.3's
-handoff unchanged, since E.2.4 moved the controls and not the state; **exposure as a scene or camera property
-is still unowned too**. **A `meshIndex`-aware model pick** — a picker choosing `(mesh, meshIndex)` together
-needs either a reflectable "sub-asset" annotation or a component-aware row, and both are a design (likely
-first customer 4.7 or E.5.x). Plus two smaller ones from E.3.3: **`AERO_ASSET(text)` and a `Text` reference**
-— the vocabulary IS the draggable set, so the day a script component wants a `.json` it is ONE edit to
-`assetKindIsDraggable` and three tests (`DR10`, `AR5`, `MP1`) — and **a "reveal in browser" verb** from the
-picker or the row, which is E.3.2's file-open handoff seen from the other side and needs the same new
-`ActionKind`. **And `FillMode::Line` / wireframe-of-meshes** (fact 3 above) remains unowned.
+**EIGHTEEN UNOWNED HANDOFFS — one per bullet below; re-count the bullets, never the headline.** It read
+"NINE" over a list that already held thirteen, because two "smaller" items, the exposure clause and
+`FillMode::Line` were never counted. Handoffs recorded in their own paragraphs elsewhere in this block (fact
+4's four permitted cases, the two inspector-row gaps, the closed `File` section, the `Issues` clipping) are
+not repeated here.
+
+- **Asset-browser keyboard shortcuts (F2, Del)** — E.4.3 dropped both bindings AND their accelerator text:
+  the gating needs a THIRD condition (`!io.WantTextInput`, because the browser's header carries an `InputText`
+  search box), nothing in `tests/` can press a key, and there is no key-binding registry. **E.6.2 is the
+  nearest owner**, but nothing in the roadmap claims it.
+- **Spot and point shadows** — the shadow pass is directional-only (3.6.2); Phase E's non-goals name
+  cascaded/soft shadows as 8.2.1's, and nothing owns omni or spot shadow maps.
+- **A camera FRUSTUM gizmo** — E.2.3 draws the camera an icon and no gizmo; a natural fit for 4.7.
+- **A MIP CHAIN for E.2.3's icon atlas** — a 2.91x minification mitigated by a 4-texel minimum feature
+  size; `Device::uploadTexture` already takes a mip level, so it is a downsampler and three lines.
+- **Muting the point/spot lights the bridge TRUNCATES** — safe the day `RenderView` can report which survived.
+- **A preview carrying the scene's POINT and SPOT lights** — excluded at E.2.4: a lamp lights a sphere at the
+  origin by where it happens to sit, which predicts nothing about the material.
+- **A FOV control** — `EditorCamera::setFovYRadians` exists and the mock implies one.
+- **PERSISTING the four viewport toggles and the tonemap params per user** — 3.6.3's, E.1.2's and E.2.3's
+  handoff unchanged; E.2.4 moved the controls, not the state.
+- **Exposure as a scene or camera property.**
+- **A `meshIndex`-aware model pick** — needs a reflectable "sub-asset" annotation or a component-aware row;
+  likely first customer 4.7 or E.5.x.
+- **`AERO_ASSET(text)` and a `Text` reference** (E.3.3) — ONE edit to `assetKindIsDraggable` and three tests
+  (`DR10`, `AR5`, `MP1`) the day a script component wants a `.json`.
+- **A "reveal in browser" verb** from the picker or the row (E.3.3) — E.3.2's file-open handoff from the other
+  side, needing the same new `ActionKind`.
+- **`FillMode::Line` / wireframe-of-meshes** (fact 3 above).
+- **A case-only rename done OUTSIDE the editor (measured at E.4.4)** — on a case-insensitive volume the scan
+  re-attaches `Wood.png` to the old GUID from `wood.png.meta`, the write of `Wood.png.meta` collides with that
+  sidecar, and the record stays `Invalid` with a nil GUID on every scan. Pre-existing 3.1.2 / E.4.3 behaviour;
+  only `deleteOrphanMeta`'s existence test keeps that last copy of the GUID from being deleted.
+- **A project-level ignore file** (`.aeroignore` or a `project.json` key) — a format, a parse, an error
+  catalog and a watcher interaction (E.4.4).
+- **A directory roster** — `__MACOSX`, `node_modules`, Blender's `backup/`; `isDirectory` is the first term of
+  both the browser predicate and the scan's bucket loop, so it is a traversal decision (E.4.4).
+- **vim / emacs swap and auto-save files** — dot-prefixed, so already hidden on macOS and Linux (E.4.4).
+- **A bulk "delete all orphaned sidecars" action or a distinct Issues category** for sidecars of now-ignored
+  files — E.4.4's validation row 2 decides whether the first scan after upgrading needs it.
 
 **E.1.1's THICK-LINE HANDOFF IS FIRED, NOT CLEARED AND NOT DEFERRED.** E.2.3's macOS pass measured it: icons
 scale exactly 2x and hold 22 points, but **387 of 441 sampled runs across the gizmo are ONE DEVICE PIXEL** —
