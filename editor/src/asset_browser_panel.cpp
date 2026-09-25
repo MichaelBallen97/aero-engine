@@ -968,10 +968,10 @@ void AssetBrowserPanel::drawContentsGrid(float paneHeight) {
         // rest of its row blank -- visibly unlike every real tile beside it, which draws an icon rect
         // and a centred caption. Reported from the 3.1.3 human pass.
         //
-        // "<" and ".." are DELIBERATELY ASCII. This editor still loads no font of its own (the Unicode
-        // font is unowned, five tasks on from 2.2.4), so an arrow glyph like U+2190 is far outside
-        // ImGui's default range and would render as a missing-glyph box -- a worse regression than the
-        // block it replaces.
+        // "<" and ".." are DELIBERATELY ASCII. An arrow glyph like U+2190 is outside the set the one UI
+        // font covers (.claude/rules/editor.md, "The UI font"), so it would draw as '?' -- a worse
+        // regression than the block it replaces. Widening that set is E.6.1's, which owns the font and
+        // theme system.
         //
         // Keeping it off the grid flow is UNCHANGED and still load-bearing: sharing a row with the
         // clipper-driven grid below would make the clipper's row math account for one leading cell.
@@ -1515,9 +1515,9 @@ void AssetBrowserPanel::drawFooter() {
     // task 3.1.4 (AC-36): APPENDED, never replacing -- the watcher's condition, in a fixed precedence
     // order so the most ACTIONABLE condition wins. Omitted entirely when no watcher has been
     // reconciled yet, which is honest: the panel does not know.
-    // ASCII ONLY. This editor loads no font of its own -- its one font is ImGui's ProggyClean (Basic
-    // + Extended Latin) -- so a non-ASCII glyph renders as a missing-glyph box. That is 3.1.3's own
-    // post-merge fix, applied here as a rule rather than rediscovered.
+    // ASCII ONLY. The one UI font draws '?' for anything past ASCII, Latin-1 and the Windows-1252
+    // punctuation (.claude/rules/editor.md, "The UI font"). That is 3.1.3's own post-merge fix,
+    // applied here as a rule rather than rediscovered.
     if (watchStatusPtr != nullptr) {
         if (!labelScratch.empty()) {
             labelScratch += "   |   ";

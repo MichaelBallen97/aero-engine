@@ -16,8 +16,8 @@
 // third time): every draw call goes through a named local built with std::format, then passed as a
 // "%s" argument.
 //
-// ASCII ONLY in every literal (3.1.3's post-merge lesson): the editor loads no font of its own, and
-// ImGui's ProggyClean covers Basic + Extended Latin only.
+// ASCII ONLY in every literal (3.1.3's post-merge lesson): the one UI font draws '?' for anything past
+// ASCII, Latin-1 and the Windows-1252 punctuation (.claude/rules/editor.md, "The UI font").
 #include "material_panel.hpp"
 
 #include <aero/core/guid.hpp>

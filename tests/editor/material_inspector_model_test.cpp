@@ -64,8 +64,8 @@ using engine::editor::materialUnknownKeySummary;
 
 namespace {
 
-// Every string this model returns must be ASCII: the editor loads no font of its own and ImGui's
-// built-in covers Basic + Extended Latin only (3.1.3's post-merge lesson). One helper, six callers.
+// Every string this model returns must be ASCII: the one UI font draws '?' past a small fixed set
+// (.claude/rules/editor.md, "The UI font"; 3.1.3's post-merge lesson). One helper, six callers.
 [[nodiscard]] bool isAscii(std::string_view s) {
     return std::all_of(s.begin(), s.end(), [](char c) { return static_cast<unsigned char>(c) < 0x80U; });
 }

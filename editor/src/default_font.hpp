@@ -6,8 +6,8 @@
 // tests/editor/imgui_layer_test.cpp -- ImGui-free at source (2.1.3 D9) -- measure what the font draws
 // without including an ImGui header: the blender_process.hpp / viewport_panel.hpp reach, a third time.
 //
-// THE DEFECT THIS EXISTS FOR. The editor adds no font, so ImGui 1.92.8 draws everything in its embedded
-// ProggyClean. ProggyClean carries the Windows-1252 punctuation at the CP1252 code points (0x85 is the
+// THE DEFECT THIS EXISTS FOR. Before E.4.4's validation fix the editor added no font of its own, and ImGui
+// drew everything in its embedded ProggyClean, which carries Windows-1252 punctuation at CP1252 (0x85 is the
 // ellipsis, 0x97 the em dash), NOT at their Unicode code points (U+2026, U+2014) -- ImGui itself configures
 // `EllipsisChar = 0x0085` for this font (imgui_draw.cpp:3189, AddFontDefaultBitmap). Every ellipsis and em
 // dash a UTF-8 string in this tree carries -- the Issues list's "and N more" line, the footer's elided GUID,
