@@ -114,6 +114,24 @@ that way.
   `imgui_stdlib.h` "because it's the standard ImGui helper" — it is specifically the one header this
   project cannot link against on one of its three CI lanes.
 
+## The UI font (task E.4.4's validation pass)
+
+- **The editor draws every string in ONE font — ProggyClean at 13 (`default_font.{hpp,cpp}`) — and it
+  covers ASCII, Latin-1, the 26 remapped Windows-1252 punctuation marks (`DEFAULT_FONT_CP1252_REMAPS`:
+  the ellipsis, the en and em dashes, the curly quotes, the bullet, …) and the euro sign, and NOTHING
+  ELSE.** Any other character in a UI string — or in a log line, which reaches the Console — draws `?`: an
+  arrow, a check mark, a box-drawing character, any CJK text. `I230(d)` and `(e)` measure both halves.
+  Check a non-ASCII character against that set before writing it into a UI string; widening the set (a
+  glyph range, a merged icon font) belongs to E.6.1, which owns the font and theme system.
+- **The font is added EXPLICITLY through `AddFontDefaultBitmap()`, never `AddFontDefault()`.** The latter
+  is a heuristic that returns ProggyForever once the expected font size reaches 15, and the remap table is
+  measured for ProggyClean alone. `I230(f)` pins the call site in `ImGuiLayer::create` and that
+  `default_font.cpp` is the only editor file that adds a font.
+- **Never hold an `ImFontGlyph*` across another glyph lookup.** A lookup can bake a glyph, which
+  `push_back`s into `ImFontBaked::Glyphs` and may reallocate it — an earlier probe that kept the pointer
+  read freed memory (ASan: heap-use-after-free) and reported three glyphs as "different" that are
+  identical. Copy the values out immediately, as `measureDefaultFont` does.
+
 ## Undo/redo
 
 - **`CommandStack::push()` APPLIES the command** (task 2.4.1 D5). A caller must NOT have already

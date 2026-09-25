@@ -52,6 +52,7 @@
 // task 3.1.5 (SL1-SL10): the scene-asset loader is SRC-PRIVATE, so it is reached the way
 // blender_service_test.cpp reaches blender_process.hpp -- by relative path into editor/src. It names
 // scene_render::MeshBinding, which is why aero::scene_render is on this target's link line.
+#include "../../editor/src/default_font.hpp"    // task E.4.4 validation: the UI font, measured ImGui-free (I230)
 #include "../../editor/src/material_panel.hpp"  // task E.2.4, I136: previewOutputTarget() -- the same
                                                 // src-private reach the two lines below already make
 #include "../../editor/src/scene_asset_loader.hpp"
@@ -18252,4 +18253,181 @@ TEST_CASE("editor: Show hidden reveals a dotfile and never an ignored name (task
     app->requestQuit();
     CHECK(app->tick() == false);
     app.reset();
+}
+
+// ---- I230: task E.4.4's validation finding 1 -- the UI font's Windows-1252 remaps -------------------------
+//
+// NO GPU and NO window: default_font.hpp's measurement builds a PRIVATE ImGui context with a CPU-side atlas,
+// so this case runs on every lane, in every configuration, and never skips. It lives in THIS binary rather
+// than the tier-0 shell binary because aero_editor_shell_test's recorded contract is that nothing in it
+// builds an ImGui context (tests/CMakeLists.txt, AC-19); the TU stays ImGui-free at source, because
+// default_font.hpp names no ImGui type.
+
+namespace {
+
+[[nodiscard]] bool sameGlyphShape(const engine::editor::DefaultFontGlyph& a,
+                                  const engine::editor::DefaultFontGlyph& b) {
+    // EXACT float equality on purpose: two code points resolving to ONE baked glyph share its numbers bit
+    // for bit, and anything else is a different glyph.
+    return a.x0 == b.x0 && a.x1 == b.x1 && a.y0 == b.y0 && a.y1 == b.y1 && a.advanceX == b.advanceX &&
+           a.visible == b.visible;
+}
+
+}  // namespace
+
+TEST_CASE("editor: the UI font draws UTF-8 punctuation from ProggyClean's own CP1252 glyphs (task E.4.4, I230)") {
+    using engine::editor::DEFAULT_FONT_CP1252_NOT_REMAPPED;
+    using engine::editor::DEFAULT_FONT_CP1252_REMAPS;
+    using engine::editor::DefaultFontGlyph;
+    using engine::editor::DefaultFontMeasurement;
+    using engine::editor::DefaultFontSetup;
+    using engine::editor::measureDefaultFont;
+    constexpr char32_t FALLBACK = U'?';
+
+    SUBCASE("(a) the control: WITHOUT the remaps, an ellipsis and an em dash both fall back to '?'") {
+        constexpr std::array<char32_t, 2> PUNCTUATION{0x2026, 0x2014};
+        constexpr DefaultFontSetup WITHOUT_REMAPS = DefaultFontSetup::BitmapWithoutRemaps;
+        const DefaultFontMeasurement m = measureDefaultFont(WITHOUT_REMAPS, PUNCTUATION, 1.0F);
+        REQUIRE(m.ok);
+        REQUIRE(m.glyphs.size() == PUNCTUATION.size());
+        for (const DefaultFontGlyph& glyph : m.glyphs) {
+            CAPTURE(static_cast<std::uint32_t>(glyph.requested));
+            CHECK_FALSE(glyph.found);
+            CHECK(glyph.drawnCodepoint == FALLBACK);
+        }
+    }
+
+    SUBCASE("(b) WITH the table, every entry draws its CP1252 slot's own glyph, at 1x and at 2x") {
+        const std::size_t count = DEFAULT_FONT_CP1252_REMAPS.size();
+        REQUIRE(count > 0U);
+        std::vector<char32_t> codepoints;
+        codepoints.reserve(2U * count);
+        for (const auto& remap : DEFAULT_FONT_CP1252_REMAPS) {
+            codepoints.push_back(remap.unicode);
+        }
+        for (const auto& remap : DEFAULT_FONT_CP1252_REMAPS) {
+            codepoints.push_back(remap.cp1252Slot);
+        }
+        for (const float scale : {1.0F, 2.0F}) {
+            CAPTURE(scale);
+            const DefaultFontMeasurement m = measureDefaultFont(DefaultFontSetup::Editor, codepoints, scale);
+            REQUIRE(m.ok);
+            REQUIRE(m.glyphs.size() == 2U * count);
+            CHECK(m.bakedSize == m.referenceSize * scale);
+            for (std::size_t i = 0; i < count; ++i) {
+                const DefaultFontGlyph& unicode = m.glyphs[i];
+                const DefaultFontGlyph& slot = m.glyphs[count + i];
+                CAPTURE(static_cast<std::uint32_t>(unicode.requested));
+                CAPTURE(static_cast<std::uint32_t>(slot.requested));
+                CHECK(slot.found);     // the CP1252 slot really carries a glyph ...
+                CHECK(unicode.found);  // ... and the Unicode code point now resolves without falling back
+                CHECK(unicode.drawnCodepoint == unicode.requested);
+                CHECK(unicode.drawnCodepoint != FALLBACK);
+                CHECK(sameGlyphShape(unicode, slot));
+            }
+        }
+    }
+
+    SUBCASE("(c) the table holds the two code points this tree writes, and never the euro sign") {
+        std::vector<char32_t> unicodes;
+        std::vector<char32_t> slots;
+        for (const auto& remap : DEFAULT_FONT_CP1252_REMAPS) {
+            unicodes.push_back(remap.unicode);
+            slots.push_back(remap.cp1252Slot);
+            CAPTURE(static_cast<std::uint32_t>(remap.unicode));
+            CHECK(remap.cp1252Slot >= 0x80U);  // every slot is Windows-1252's 0x80-0x9F punctuation block
+            CHECK(remap.cp1252Slot <= 0x9FU);
+        }
+        // Spelled as code points, never as U'...' literals: this TU is compiled without /utf-8 on MSVC, which
+        // would read a UTF-8 character literal as three CP1252 characters.
+        constexpr char32_t ELLIPSIS = 0x2026;
+        constexpr char32_t EM_DASH = 0x2014;
+        CHECK(std::find(unicodes.begin(), unicodes.end(), ELLIPSIS) != unicodes.end());
+        CHECK(std::find(unicodes.begin(), unicodes.end(), EM_DASH) != unicodes.end());
+        for (const char32_t excluded : DEFAULT_FONT_CP1252_NOT_REMAPPED) {
+            CAPTURE(static_cast<std::uint32_t>(excluded));
+            CHECK(std::find(unicodes.begin(), unicodes.end(), excluded) == unicodes.end());
+        }
+        std::sort(unicodes.begin(), unicodes.end());
+        CHECK(std::adjacent_find(unicodes.begin(), unicodes.end()) == unicodes.end());  // no code point twice
+        std::sort(slots.begin(), slots.end());
+        CHECK(std::adjacent_find(slots.begin(), slots.end()) == slots.end());  // no slot twice
+        // WHY the euro sign is excluded, measured: it already draws natively, and its slot 0x80 is absent.
+        constexpr std::array<char32_t, 2> EURO{0x20AC, 0x80};
+        const DefaultFontMeasurement m = measureDefaultFont(DefaultFontSetup::Editor, EURO, 1.0F);
+        REQUIRE(m.ok);
+        REQUIRE(m.glyphs.size() == EURO.size());
+        CHECK(m.glyphs[0].found);
+        CHECK(m.glyphs[0].drawnCodepoint == EURO[0]);
+        CHECK_FALSE(m.glyphs[1].found);
+    }
+
+    SUBCASE("(d) the explicit font IS the one ImGui picked implicitly, glyph for glyph, ASCII and Latin-1") {
+        std::vector<char32_t> codepoints;
+        for (char32_t c = 0x20; c <= 0x7E; ++c) {
+            codepoints.push_back(c);
+        }
+        for (char32_t c = 0xA0; c <= 0xFF; ++c) {
+            codepoints.push_back(c);
+        }
+        const DefaultFontMeasurement implicitFont =
+            measureDefaultFont(DefaultFontSetup::ImGuiImplicit, codepoints, 1.0F);
+        const DefaultFontMeasurement editorFont = measureDefaultFont(DefaultFontSetup::Editor, codepoints, 1.0F);
+        REQUIRE(implicitFont.ok);
+        REQUIRE(editorFont.ok);
+        CHECK(implicitFont.fontName == "ProggyClean.ttf");  // NOT ProggyForever: the same font as before the fix
+        CHECK(editorFont.fontName == implicitFont.fontName);
+        CHECK(editorFont.referenceSize == 13.0F);
+        CHECK(editorFont.referenceSize == implicitFont.referenceSize);
+        REQUIRE(editorFont.glyphs.size() == codepoints.size());
+        REQUIRE(implicitFont.glyphs.size() == codepoints.size());
+        for (std::size_t i = 0; i < codepoints.size(); ++i) {
+            CAPTURE(static_cast<std::uint32_t>(codepoints[i]));
+            CHECK(editorFont.glyphs[i].found);  // the coverage editor.md's font rule states
+            CHECK(editorFont.glyphs[i].drawnCodepoint == implicitFont.glyphs[i].drawnCodepoint);
+            CHECK(sameGlyphShape(editorFont.glyphs[i], implicitFont.glyphs[i]));
+        }
+    }
+
+    SUBCASE("(e) anything else still draws '?', so the fallback is observable in the editor's own setup") {
+        constexpr std::array<char32_t, 2> ABSENT{0x4E2D, 0x3042};  // a CJK ideograph and a hiragana
+        const DefaultFontMeasurement m = measureDefaultFont(DefaultFontSetup::Editor, ABSENT, 1.0F);
+        REQUIRE(m.ok);
+        REQUIRE(m.glyphs.size() == ABSENT.size());
+        for (const DefaultFontGlyph& glyph : m.glyphs) {
+            CAPTURE(static_cast<std::uint32_t>(glyph.requested));
+            CHECK_FALSE(glyph.found);
+            CHECK(glyph.drawnCodepoint == FALLBACK);
+        }
+    }
+
+    SUBCASE("(f) ImGuiLayer::create adds the font exactly once, after CreateContext and before the backends") {
+        // The measurement above shares addEditorDefaultFont() with the editor, so it cannot see the editor
+        // stop CALLING it; this source-text pin can.
+        const std::vector<std::string> code = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/imgui_layer.cpp");
+        const std::size_t created = soleLineContaining(code, "ImGui::CreateContext()");
+        const std::size_t font = soleLineContaining(code, "addEditorDefaultFont()");
+        const std::size_t backend = soleLineContaining(code, "ImGui_ImplSDL3_InitForSDLGPU(");
+        CHECK(created < font);
+        CHECK(font < backend);
+        // ... and no other editor file adds a font, so the remapped one is the only one there is: a SET
+        // claim over every editor/src/*.cpp (the I110 walk), comment-stripped, with its anti-vacuity count.
+        std::size_t scanned = 0;
+        std::vector<std::string> addingFiles;
+        const std::filesystem::directory_iterator walk{AERO_EDITOR_SRC_DIR};
+        for (const std::filesystem::directory_entry& entry : walk) {
+            if (!entry.is_regular_file() || entry.path().extension() != ".cpp") {
+                continue;
+            }
+            ++scanned;
+            if (countLinesContaining(editorSourceCodeLines(entry.path().string()), "AddFont") > 0U) {
+                addingFiles.push_back(entry.path().filename().string());
+            }
+        }
+        CHECK(scanned > 80U);  // anti-vacuity: the walk really read editor/src
+        CHECK(addingFiles == std::vector<std::string>{"default_font.cpp"});
+        const std::vector<std::string> fontUnit = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/default_font.cpp");
+        CHECK(countLinesContaining(fontUnit, "AddFontDefaultBitmap()") == 1U);
+        CHECK(countLinesContaining(fontUnit, "AddFontDefault()") == 0U);  // never the ProggyForever heuristic
+    }
 }

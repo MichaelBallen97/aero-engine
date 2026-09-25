@@ -11,6 +11,8 @@
 #include <aero/rhi/device.hpp>
 #include <aero/rhi/internal/native_device.hpp>
 
+#include "default_font.hpp"
+
 #include <SDL3/SDL_events.h>
 #include <SDL3/SDL_filesystem.h>
 #include <SDL3/SDL_gpu.h>
@@ -24,9 +26,7 @@
 #include <utility>
 
 namespace engine::editor {
-
 namespace {
-
 // D5 sink: tee every raw SDL event ImGui's own backend needs to see (including the text-input /
 // gamepad events engine::platform::Context::pollEvent would otherwise translate-and-discard).
 void onRawEvent(void* /*user*/, const void* e) { ImGui_ImplSDL3_ProcessEvent(static_cast<const SDL_Event*>(e)); }
@@ -86,6 +86,16 @@ std::optional<ImGuiLayer> ImGuiLayer::create(rhi::Device& device, platform::Wind
     ImGui::StyleColorsDark();
     if (const float scale = SDL_GetWindowDisplayScale(win); scale > 0.0F) {
         ImGui::GetStyle().ScaleAllSizes(scale);
+    }
+    // task E.4.4 (validation finding 1): the UI font is added EXPLICITLY, before the first NewFrame, so the
+    // Windows-1252 remaps can be applied -- ProggyClean at 13, the same font ImGui picked implicitly, whose
+    // CP1252 punctuation otherwise drew every UTF-8 ellipsis and em dash as '?' (default_font.hpp). Placed
+    // here, below every line other files cite by number, so no citation of this file moves.
+    if (!addEditorDefaultFont()) {
+        AERO_LOG_ERROR("editor: ImGuiLayer::create: the default font could not be added");
+        ImGui::DestroyContext();
+        device.destroySwapchain(swapchain);
+        return std::nullopt;
     }
 
     if (!ImGui_ImplSDL3_InitForSDLGPU(win)) {

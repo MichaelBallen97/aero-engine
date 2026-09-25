@@ -76,6 +76,7 @@ add_subdirectory(third_party/ufbx)
 
 add_library(aero_editor_core STATIC
     src/imgui_layer.cpp
+    src/default_font.cpp        # task E.4.4 -- the UI font + its CP1252 remaps (the ONLY font setup)
     src/panel_registry.cpp
     src/editor_app.cpp
     src/shell_ui.cpp
