@@ -28,10 +28,13 @@ struct DefaultFontRemap {
     char32_t cp1252Slot = 0;
 };
 
-// MEASURED, not transcribed: with every remap applied, each `unicode` resolves to a glyph whose geometry
-// (X0/X1/Y0/Y1/AdvanceX/Visible) is IDENTICAL to its `cp1252Slot`'s, at the font's reference size and at
-// twice it -- imgui_layer_test.cpp's I230 re-measures all 26 on every run. That is every Windows-1252
-// punctuation code point in 0x80-0x9F whose slot the font carries.
+// The PAIRS are TRANSCRIBED from the Windows-1252 standard (Unicode's MICSFT/WINDOWS/CP1252.TXT, rows
+// 0x80-0x9F): every assigned slot except 0x80, see below. I230(g) restates that standard independently and
+// pins each pair against it, because a glyph's geometry cannot: several slots here are exact geometry twins
+// ({0x86, 0x87, 0x9A, 0x9E}, {0x8A, 0x8E}, {0x8B, 0x9B}), so a SWAPPED pair would draw the wrong letter
+// with every shape check green. What is MEASURED is that each remap RESOLVES: with the table applied, each
+// `unicode` draws a glyph whose geometry (X0/X1/Y0/Y1/AdvanceX/Visible) is IDENTICAL to its `cp1252Slot`'s,
+// at the font's reference size and at twice it -- I230(b) re-measures all 26 on every run.
 //
 // An earlier probe reported U+201A, U+201E and U+2021 as "differing in geometry". It was a heap-use-after-
 // free in the PROBE, confirmed by ASan: it held an ImFontGlyph* from FindGlyphNoFallback(slot) across a

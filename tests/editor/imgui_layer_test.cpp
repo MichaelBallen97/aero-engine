@@ -18430,6 +18430,47 @@ TEST_CASE("editor: the UI font draws UTF-8 punctuation from ProggyClean's own CP
         CHECK(countLinesContaining(fontUnit, "AddFontDefaultBitmap()") == 1U);
         CHECK(countLinesContaining(fontUnit, "AddFontDefault()") == 0U);  // never the ProggyForever heuristic
     }
+
+    SUBCASE("(g) every pair IS the Windows-1252 standard's, and the table is every assigned slot but 0x80") {
+        // (b) cannot see a WRONG pairing: it compares each remapped glyph against the slot the SAME entry
+        // names, so it passes for any pairing at all -- and geometry cannot tell these glyphs apart either:
+        // {0x86, 0x87, 0x9A, 0x9E}, {0x8A, 0x8E} and {0x8B, 0x9B} are exact geometry twins at 13 and 26 px.
+        // Swapping the slots of {0x0160, 0x8A} and {0x017D, 0x8E} keeps (a)-(f) green while every S-caron draws
+        // as a Z-caron and every Z-caron as an S-caron.
+        // So the pairs are pinned against the standard itself, RESTATED here as an independent literal --
+        // Unicode's MICSFT/WINDOWS/CP1252.TXT, rows 0x80-0x9F, 0 where the row is UNDEFINED (the IX3 posture:
+        // a changed table means changing this pin in the same commit).
+        constexpr std::array<char32_t, 32> WINDOWS_1252_80_9F{
+            0x20AC, 0,      0x201A, 0x0192, 0x201E, 0x2026, 0x2020, 0x2021,  // 0x80-0x87
+            0x02C6, 0x2030, 0x0160, 0x2039, 0x0152, 0,      0x017D, 0,       // 0x88-0x8F
+            0,      0x2018, 0x2019, 0x201C, 0x201D, 0x2022, 0x2013, 0x2014,  // 0x90-0x97
+            0x02DC, 0x2122, 0x0161, 0x203A, 0x0153, 0,      0x017E, 0x0178,  // 0x98-0x9F
+        };
+        constexpr char32_t FIRST_SLOT = 0x80;
+        // Every entry is the standard's own pair.
+        std::vector<char32_t> slots;
+        for (const auto& remap : DEFAULT_FONT_CP1252_REMAPS) {
+            CAPTURE(static_cast<std::uint32_t>(remap.unicode));
+            CAPTURE(static_cast<std::uint32_t>(remap.cp1252Slot));
+            REQUIRE(remap.cp1252Slot >= FIRST_SLOT);
+            REQUIRE(remap.cp1252Slot < FIRST_SLOT + WINDOWS_1252_80_9F.size());
+            CHECK(remap.unicode == WINDOWS_1252_80_9F[remap.cp1252Slot - FIRST_SLOT]);
+            slots.push_back(remap.cp1252Slot);
+        }
+        // And the table is EXACTLY the assigned slots minus 0x80, whose code point is the one exclusion.
+        std::vector<char32_t> expectedSlots;
+        for (std::size_t i = 0; i < WINDOWS_1252_80_9F.size(); ++i) {
+            const auto slot = static_cast<char32_t>(FIRST_SLOT + i);
+            if (WINDOWS_1252_80_9F[i] != 0 && slot != FIRST_SLOT) {
+                expectedSlots.push_back(slot);
+            }
+        }
+        std::sort(slots.begin(), slots.end());
+        CHECK(slots == expectedSlots);
+        CHECK(expectedSlots.size() == 26U);  // 32 rows, 5 UNDEFINED, and 0x80 excluded
+        REQUIRE(DEFAULT_FONT_CP1252_NOT_REMAPPED.size() == 1U);
+        CHECK(DEFAULT_FONT_CP1252_NOT_REMAPPED[0] == WINDOWS_1252_80_9F[0]);
+    }
 }
 
 // ---- I231: task E.4.4's validation finding 2 -- the Asset Browser fits its panel with Issues open ------
