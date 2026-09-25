@@ -735,6 +735,62 @@ same success-only warning §5.4 defines at the root, and does not itself stop th
 `importer` at all, still reads the GUID correctly and reports `importer` as a single unknown-key
 warning — §5.1's additive-evolution guarantee, applied to this key.
 
+### 5.10 The scan's visible set (task E.4.4)
+
+> Enforced in code by `isIgnoredAssetName` and `isScannableAssetName` in `editor/src/asset_meta.cpp`,
+> over the roster declared in `editor/include/aero/editor/asset_meta.hpp`;
+> `tests/editor/asset_meta_test.cpp`'s `IX` and `AM` batteries are their machine-checkable form.
+
+A **file** under the assets root is given an identity — a GUID, a `.meta`, a content hash, a cache entry
+and a browser tile — **iff none of these three is true of its leaf name** (and the name is not empty):
+
+| Class | Rule | Owner |
+|---|---|---|
+| hidden | a leading `.` | `isHiddenName` (`project_files.cpp`), applied by `listDirectory` |
+| sidecar | the tail `.meta`, ASCII-case-folded, on a name longer than 5 bytes | `isMetaFileName` (§5.1) |
+| ignored | the roster below | `isIgnoredAssetName` |
+
+**The roster.** Exact names and tail suffixes are compared **ASCII-case-insensitively**, and a name
+**equal** to a suffix matches it — the opposite edge from the sidecar rule, where `.meta` alone is a
+sidecar of nothing.
+
+| Kind | Entries |
+|---|---|
+| exact names | `Thumbs.db`, `desktop.ini` |
+| tail suffixes | `.aero-tmp`, `.blend@`, `.bak`, `.tmp`, `.orig`, `.rej`, `~` |
+| rule | `.blend` followed by one or more ASCII digits at the very end — Blender's rolling backups (`Save Versions`), `.blend1` … `.blend32` and beyond |
+
+`.blend` with no trailing digit is an asset and is never ignored. `.aero-tmp` is the editor's own
+atomic-write temp (§5.3's writes go through it). Nothing is on the roster that this project could not
+trace to a tool's own documentation or source.
+
+**Three consumers, one roster.** The **scan** refuses all three classes. The **Asset Browser's directory
+listing** refuses sidecars and ignored names unconditionally; its `Show hidden` checkbox governs the hidden
+class alone. The **watcher** sees exactly what the scan sees plus sidecars, by composition
+(`isWatchableAssetName`), which is what keeps the two visible sets equal — an inequality there makes the
+editor rescan forever. The whole-project search, the asset picker and thumbnails all read the scan's
+records, so they follow it with no rule of their own.
+
+**Directories are never ignored**, whatever they are called: a folder named `backup.bak` is listed, is
+shown in the tree, and is scanned into.
+
+**A name-freedom check never filters by the roster.** An ignored file still occupies its name on disk, so
+every check that asks whether a name is free — `EditorApp`'s New Material path and the Asset Browser's New
+Folder, Rename and Move — lists the directory unfiltered and treats every entry as taken, and so must any
+future one. **Refusing an ignored name as the TARGET of a rename or a new folder is the opposite question,
+and it is refused** (`AssetNameRefusal::IgnoredName`): a file given such a name would vanish from the
+browser. The check sees a leaf and nothing else, so it refuses such a name for a folder the editor creates
+or renames too — the same posture it takes toward a `.meta` or `.aero-tmp` folder name. A folder with such
+a name that was made outside the editor is still listed and scanned, per the rule above.
+
+**Files an earlier build already indexed.** A project scanned before this rule holds, for example,
+`scene.blend1.meta` beside a `scene.blend1` this build ignores. The sidecar is still a sidecar, is
+consumed by no asset, and is reported as an **orphan** — capped in `AssetScanReport::orphans`, WARNed once
+per scan, and listed in the Asset Browser's Issues popup with a `Delete` button. §5.3's rule is unchanged:
+**a `.meta` whose asset is gone is never deleted by the scan.** The cache entry that build kept for the
+file ages out exactly like any file that disappeared — retained with a growing `missing` count (§6.2) for
+three scans and dropped on the fourth.
+
 ## 6. Asset import cache index v1
 
 > Enforced in code by `editor/src/asset_cache.cpp` (the pure parse/write/change-detection half, task

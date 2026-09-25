@@ -532,6 +532,22 @@ and resolves; `EditorApp::persistProjectState` decides and writes.
   paragraph's earlier, wrong attribution). The member is `databasePtr`, the accessor `database()` — the
   `RenderTarget::depthFormatValue` / `depthFormat()` precedent from 2.3.1, applied a second time to this
   exact class of collision.
+- **The ignore roster is ONE value, and a name-freedom check never filters by it (task E.4.4, D9).**
+  `IGNORED_ASSET_NAMES`, `IGNORED_ASSET_NAME_SUFFIXES` and `BLEND_BACKUP_STEM` in `asset_meta.hpp` are the
+  whole of "not an asset". Add an entry THERE, and to `docs/09` §5.10's table in the same commit — never a
+  fifth term in `isScannableAssetName`. Every consumer COMPOSES `isIgnoredAssetName` rather than restating
+  it: the scan refuses hidden + sidecar + ignored; the browser's listing refuses sidecar + ignored through
+  `isBrowserVisibleName`, whose `isDirectory` term comes FIRST (a folder named `backup.bak` is a folder the
+  user made) and which deliberately omits the hidden rule (`listDirectory` owns it, behind `Show hidden`);
+  the watcher is scannable-or-sidecar by composition. **But a check that asks "is this name already TAKEN?"
+  lists UNFILTERED**: an ignored file still owns its name on disk, so filtering New Material's listing
+  (`createMaterialAsset`) or E.4.3's New Folder / Rename / Move free-name listings (`createAssetFolder`,
+  `renameAssetEntry`, `moveAssetEntry`) by either predicate would hand out a name that exists and let a
+  write or a rename land over the user's file. **Refusing an ignored name as a rename or new-folder TARGET
+  is the opposite question and is correct** — the file would vanish from the browser — and
+  `validateAssetName`'s `IgnoredName` arm does it, for a folder name too, because it sees a leaf with no
+  file/folder context. `asset_view_test.cpp`'s `BV9` pins the exact set of editor files that may name
+  either predicate; a new consumer adds itself there, out loud.
 
 ## Import cache (task 3.1.2)
 
