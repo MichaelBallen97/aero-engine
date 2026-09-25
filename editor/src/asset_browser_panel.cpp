@@ -1865,6 +1865,7 @@ void AssetBrowserPanel::onDraw(PanelContext& /*context*/) {  // D18: the context
     metrics.fontSize = ImGui::GetFontSize();
     metrics.frameHeight = ImGui::GetFrameHeight();
     metrics.textLineHeight = ImGui::GetTextLineHeight();
+    issuesRowHeightAtDraw = metrics.textLineHeight;  // task E.4.4 -- read back as issuesRowHeight()
     metrics.itemSpacingY = style.ItemSpacing.y;
     metrics.issuesShown = reportPtr != nullptr && issueTotal(*reportPtr) > 0;
     metrics.issuesOpen = issuesOpen;

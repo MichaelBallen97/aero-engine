@@ -244,6 +244,10 @@ public:
     // The height the Issues body child was given on the last frame it drew (0 when it did not draw): the
     // measured content height reaching the budget, which a body stuck at one row would not show.
     [[nodiscard]] float issuesBodyHeightDrawn() const noexcept { return issuesBodyDrawnHeight; }
+    // The height of ONE body row as the last onDraw measured it -- GetTextLineHeight() in the panel window,
+    // the row the layout floors the body at -- so a caller compares the body against the panel's own row
+    // rather than a restated point count, which a DPI-scaled font would make wrong.
+    [[nodiscard]] float issuesRowHeight() const noexcept { return issuesRowHeightAtDraw; }
     [[nodiscard]] float scrollMaxY() const noexcept { return scrollMaxYAtDraw; }
 
     // ---- task E.4.3: the four one-shots ----------------------------------------------------------
@@ -488,6 +492,7 @@ private:
     std::optional<bool> issuesOpenRequest;  // requestIssuesOpen's, applied where a header click lands
     std::size_t issueRowsDrawnCount = 0;    // reset at the TOP of every onDraw
     float issuesBodyDrawnHeight = 0.0F;     // reset at the TOP of every onDraw
+    float issuesRowHeightAtDraw = 0.0F;     // written by every onDraw, with the layout metrics
     float scrollMaxYAtDraw = 0.0F;          // written at the END of every onDraw
 
     // ---- task 3.1.4 ---------------------------------------------------------------------------

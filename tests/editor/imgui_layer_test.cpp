@@ -18557,11 +18557,13 @@ TEST_CASE("editor: the Asset Browser fits its panel with 40 orphans and Issues o
     // (the scan caps the list at MAX_REPORTED_PER_CATEGORY) -- and still nothing overflows.
     CHECK(app->assetBrowserIssueRowsDrawn() == engine::editor::MAX_REPORTED_PER_CATEGORY);
     CHECK(app->assetBrowserScrollMaxY() == 0.0F);
-    // ... and the body is TALLER than one row: the rows' measured height reached the budget. One row is 13
-    // points at every scale -- the UI font is ProggyClean at 13 (I230(d)) and ScaleAllSizes leaves the font
-    // alone -- and a body that never measured its rows stays exactly that tall.
-    constexpr float ONE_ROW = 13.0F;
-    CHECK(app->assetBrowserIssuesBodyHeight() > ONE_ROW);
+    // ... and the body is TALLER than one row: the rows' measured height reached the budget. A body that
+    // never measured its rows stays exactly one row tall, and the row is the PANEL'S OWN -- 13 points on
+    // every lane so far, but a DPI scale that reaches the font makes it taller, and a restated 13 would then
+    // pass on an unmeasured body.
+    const float oneRow = app->assetBrowserIssuesRowHeight();
+    REQUIRE(oneRow > 0.0F);  // anti-vacuity: the panel really reported a row
+    CHECK(app->assetBrowserIssuesBodyHeight() > oneRow);
 
     // (c) Row 3's path with the body open: a row's "Delete .meta" action opens the confirmation modal (the
     // seam records exactly what the SmallButton records -- nothing in tests/ can click it), the rows keep
