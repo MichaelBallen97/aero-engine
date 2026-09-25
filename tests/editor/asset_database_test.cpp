@@ -22,6 +22,7 @@
 #include <filesystem>
 #include <fstream>
 #include <optional>
+#include <ostream>  // MSVC alone needs the complete type to stringify a string_view inside a CHECK
 #include <span>
 #include <string>
 #include <string_view>
@@ -41,8 +42,10 @@ using engine::editor::AssetRecord;
 using engine::editor::AssetScanReport;
 using engine::editor::CacheLoadOutcome;
 using engine::editor::fileExists;
+using engine::editor::IGNORED_ASSET_NAME_SUFFIXES;
 using engine::editor::ImportChange;
 using engine::editor::MAX_HASH_BYTES_PER_SCAN;
+using engine::editor::MISSING_SCAN_GRACE;
 using engine::editor::parseAssetCache;
 using engine::editor::ScanStatus;
 using engine::editor::writeAssetCacheText;
@@ -3052,4 +3055,254 @@ TEST_CASE(
     const AssetRecord* const afterSecond = db.findByPath("models/room.dae");
     REQUIRE(afterSecond != nullptr);
     CHECK(afterSecond->change == ImportChange::DependencyChanged);
+}
+
+// ---- task E.4.4: ignored names and their sidecars (AD70-AD75) ------------------------------------
+//
+// Each case name ENDS with its id and ")" so a -tc='*AD70)' filter selects exactly one case.
+
+namespace {
+
+// The ignored FILE names the E.4.4 fixtures write: AC-11's literal list, then the roster's own suffix
+// array, so a deleted entry shrinks the corpus rather than deleting an assertion.
+[[nodiscard]] std::vector<std::string> ignoredFixtureNames() {
+    std::vector<std::string> names = {
+        "scene.blend1", "scene.blend2", "notes.txt~", "a.png.bak", "Thumbs.db", "desktop.ini", "scene.blend@",
+    };
+    for (const std::string_view suffix : IGNORED_ASSET_NAME_SUFFIXES) {
+        names.push_back("old.png" + std::string(suffix));
+    }
+    return names;
+}
+
+// Rename a file and its sidecar together -- the shape an earlier build left on disk.
+void renameWithSidecar(const TempDir& dir, std::string_view from, std::string_view to) {
+    std::error_code ec;
+    std::filesystem::rename(pathOf(dir.join(from)), pathOf(dir.join(to)), ec);
+    REQUIRE_FALSE(ec);
+    const std::string fromMeta = std::string(from) + std::string(ASSET_META_SUFFIX);
+    const std::string toMeta = std::string(to) + std::string(ASSET_META_SUFFIX);
+    std::filesystem::rename(pathOf(dir.join(fromMeta)), pathOf(dir.join(toMeta)), ec);
+    REQUIRE_FALSE(ec);
+}
+
+[[nodiscard]] AssetCacheParseResult readIndex(const TempDir& dir) {
+    const auto text = scene_golden::readBytes(dir.join("Library/asset-cache.json"));
+    REQUIRE(text.ok);
+    AssetCacheParseResult parsed = parseAssetCache(text.text);
+    REQUIRE(parsed.outcome == CacheLoadOutcome::Ok);
+    return parsed;
+}
+
+// Re-point one entry's informational path -- what an EARLIER build wrote for a file this build ignores.
+void repointCacheEntry(const TempDir& dir, Guid guid, std::string_view newPath) {
+    AssetCacheParseResult parsed = readIndex(dir);
+    bool found = false;
+    for (AssetCacheEntry& entry : parsed.index.entries) {
+        if (entry.guid == guid) {
+            entry.path = std::string(newPath);
+            found = true;
+        }
+    }
+    REQUIRE(found);
+    writeFile(dir.join("Library/asset-cache.json"), writeAssetCacheText(parsed.index));
+}
+
+}  // namespace
+
+TEST_CASE("asset_database: ignored names get no record, no sidecar, no cache entry (AC-11, AC-12, AD70)") {
+    const TempDir dir;
+    writeFile(dir.join("scene.blend"), "blend");
+    writeFile(dir.join("wood.png"), "png");
+    const std::vector<std::string> ignored = ignoredFixtureNames();
+    REQUIRE(ignored.size() > IGNORED_ASSET_NAME_SUFFIXES.size());
+    for (const std::string& name : ignored) {
+        writeFile(dir.join(name), "noise");
+    }
+
+    AssetDatabase db;
+    GuidGenerator gen(70);
+    const AssetScanReport report = db.rescan(dir.utf8(), dir.utf8(), gen);
+    CHECK(report.status == ScanStatus::Ok);
+    CHECK(db.size() == 2);
+    CHECK(report.filesSeen == 2);
+    CHECK(report.created == 2);
+    CHECK(report.orphanTotal == 0);
+    REQUIRE(db.findByPath("scene.blend") != nullptr);  // the Blender ASSET survives (seed S3's victim)
+    REQUIRE(db.findByPath("wood.png") != nullptr);
+    CHECK(fileExists(dir.join("scene.blend.meta")));
+    CHECK(fileExists(dir.join("wood.png.meta")));
+    // PER NAME, never by a count -- a count cannot say WHICH file was given an identity (AC-12).
+    for (const std::string& name : ignored) {
+        CAPTURE(name);
+        CHECK(db.findByPath(name) == nullptr);
+        CHECK_FALSE(fileExists(dir.join(name + std::string(ASSET_META_SUFFIX))));
+        CHECK(fileExists(dir.join(name)));  // ignored, never deleted
+    }
+    // AC-11's cache half: a fresh project indexes exactly the two scannable files.
+    const AssetCacheParseResult index = readIndex(dir);
+    CHECK(index.index.entries.size() == 2);
+}
+
+TEST_CASE("asset_database: an earlier build's sidecar is reported, never deleted (AC-13, seed S17, AD71)") {
+    const Guid guid = GuidGenerator(71).next();
+    const std::string sidecar = writeMetaText(guid);
+
+    // The IGNORED arm: scene.blend1, plus the sidecar an earlier build wrote for it.
+    const TempDir dir;
+    writeFile(dir.join("scene.blend1"), "backup");
+    writeFile(dir.join("scene.blend1.meta"), sidecar);
+    AssetDatabase db;
+    GuidGenerator gen(710);
+    const AssetScanReport report = db.rescan(dir.utf8(), dir.utf8(), gen);
+    CHECK(db.size() == 0);
+    CHECK(report.orphanTotal == 1);
+    REQUIRE(report.orphans.size() == 1);
+    CHECK(report.orphans[0] == "scene.blend1.meta");
+    const auto after = scene_golden::readBytes(dir.join("scene.blend1.meta"));
+    REQUIRE(after.ok);             // still on disk ...
+    CHECK(after.text == sidecar);  // ... byte for byte (3.1.1's D8)
+
+    // ANTI-VACUITY: the identical fixture under a name NOT on the roster is an ordinary asset whose valid
+    // sidecar is consumed -- so the orphan above is caused by the roster and by nothing else.
+    const TempDir control;
+    writeFile(control.join("scene.blendX"), "backup");
+    writeFile(control.join("scene.blendX.meta"), sidecar);
+    AssetDatabase controlDb;
+    GuidGenerator controlGen(711);
+    const AssetScanReport controlReport = controlDb.rescan(control.utf8(), control.utf8(), controlGen);
+    CHECK(controlReport.orphanTotal == 0);
+    const AssetRecord* const record = controlDb.findByPath("scene.blendX");
+    REQUIRE(record != nullptr);
+    CHECK(record->state == AssetMetaState::Ok);
+    CHECK(record->guid == guid);
+}
+
+TEST_CASE("asset_database: a second scan reports the same orphan and writes nothing (AC-14, AD72)") {
+    const TempDir dir;
+    writeFile(dir.join("scene.blend1"), "backup");
+    writeFile(dir.join("scene.blend1.meta"), writeMetaText(GuidGenerator(72).next()));
+    writeFile(dir.join("wood.png"), "png");
+    AssetDatabase db;
+    GuidGenerator gen(720);
+    const AssetScanReport first = db.rescan(dir.utf8(), dir.utf8(), gen);
+    REQUIRE(first.orphanTotal == 1);
+    REQUIRE(first.created == 1);  // wood.png, and only wood.png
+    const auto sidecarBefore = scene_golden::readBytes(dir.join("scene.blend1.meta"));
+    REQUIRE(sidecarBefore.ok);
+
+    const AssetScanReport second = db.rescan(dir.utf8(), dir.utf8(), gen);
+    CHECK(second.orphanTotal == 1);
+    REQUIRE(second.orphans.size() == 1);
+    CHECK(second.orphans[0] == "scene.blend1.meta");
+    CHECK(second.created == 0);
+    CHECK(second.repaired == 0);
+    CHECK(second.writeFailureTotal == 0);
+    CHECK_FALSE(second.cacheWritten);  // D15: the index text did not change, so nothing was written
+    const auto sidecarAfter = scene_golden::readBytes(dir.join("scene.blend1.meta"));
+    REQUIRE(sidecarAfter.ok);
+    CHECK(sidecarAfter.text == sidecarBefore.text);
+    CHECK(db.size() == 1);
+}
+
+TEST_CASE("asset_database: an ignored file's old cache entry ages out on D14's grace (AC-15, AD73)") {
+    const TempDir dir;
+    writeFile(dir.join("x.png"), "backup-bytes");
+    AssetDatabase db;
+    GuidGenerator gen(73);
+    REQUIRE(db.rescan(dir.utf8(), dir.utf8(), gen).created == 1);
+    const Guid guid = *db.guidForPath("x.png");
+    // What an EARLIER build left behind: the file, its sidecar and its cache entry, all under a name this
+    // build ignores.
+    renameWithSidecar(dir, "x.png", "scene.blend1");
+    repointCacheEntry(dir, guid, "scene.blend1");
+
+    for (std::uint32_t scan = 1; scan <= MISSING_SCAN_GRACE; ++scan) {
+        CAPTURE(scan);
+        const AssetScanReport report = db.rescan(dir.utf8(), dir.utf8(), gen);
+        CHECK(report.filesSeen == 0);
+        CHECK(report.orphanTotal == 1);  // the sidecar is reported on every scan and never deleted
+        CHECK(report.cacheWritten);      // `missing` changed, so the text did
+        const AssetCacheParseResult parsed = readIndex(dir);
+        const AssetCacheEntry* const entry = parsed.index.find(guid);
+        REQUIRE(entry != nullptr);  // RETAINED: the grace in which a moved file may still re-attach
+        CHECK(entry->missing == scan);
+        CHECK(entry->path == "scene.blend1");
+    }
+    const AssetScanReport last = db.rescan(dir.utf8(), dir.utf8(), gen);
+    CHECK(last.cacheWritten);
+    const AssetCacheParseResult finalIndex = readIndex(dir);
+    CHECK(finalIndex.index.find(guid) == nullptr);  // dropped on the scan that would exceed the grace
+    CHECK(fileExists(dir.join("scene.blend1.meta")));
+}
+
+TEST_CASE("asset_database: a sidecar-less .blend beside its byte-identical cached backup re-attaches (AD74)") {
+    // F6's one reachable path, pinned because it SURPRISES: this is re-attachment's designed behaviour, not
+    // a defect -- the alternative is a fresh GUID for a file whose identity is otherwise dead, and the WARN
+    // names both paths.
+    const TempDir dir;
+    writeFile(dir.join("x.png"), "identical-bytes");
+    AssetDatabase db;
+    GuidGenerator gen(74);
+    REQUIRE(db.rescan(dir.utf8(), dir.utf8(), gen).created == 1);
+    const Guid backupGuid = *db.guidForPath("x.png");
+    renameWithSidecar(dir, "x.png", "scene.blend1");
+    repointCacheEntry(dir, backupGuid, "scene.blend1");
+    writeFile(dir.join("scene.blend"), "identical-bytes");  // byte-identical, and NO sidecar
+
+    const AssetScanReport report = db.rescan(dir.utf8(), dir.utf8(), gen);
+    CHECK(report.reattachmentTotal == 1);
+    REQUIRE(report.reattachments.size() == 1);
+    CHECK(report.reattachments[0].find("scene.blend") != std::string::npos);
+    CHECK(report.reattachments[0].find("scene.blend1.meta") != std::string::npos);
+    CHECK(report.orphanTotal == 0);  // reported ONCE, as a re-attachment, never also as an orphan
+    const AssetRecord* const record = db.findByPath("scene.blend");
+    REQUIRE(record != nullptr);
+    CHECK(record->guid == backupGuid);
+    CHECK(record->state == AssetMetaState::Reattached);
+    CHECK(fileExists(dir.join("scene.blend1.meta")));  // the old sidecar is untouched (D8)
+
+    // ANTI-VACUITY: the SAME tree, except scene.blend has its OWN sidecar -- so it is not a candidate at all.
+    const TempDir control;
+    writeFile(control.join("x.png"), "identical-bytes");
+    AssetDatabase controlDb;
+    GuidGenerator controlGen(740);
+    REQUIRE(controlDb.rescan(control.utf8(), control.utf8(), controlGen).created == 1);
+    const Guid controlBackup = *controlDb.guidForPath("x.png");
+    renameWithSidecar(control, "x.png", "scene.blend1");
+    repointCacheEntry(control, controlBackup, "scene.blend1");
+    const Guid ownGuid = GuidGenerator(741).next();
+    writeFile(control.join("scene.blend"), "identical-bytes");
+    writeFile(control.join("scene.blend.meta"), writeMetaText(ownGuid));
+    const AssetScanReport controlReport = controlDb.rescan(control.utf8(), control.utf8(), controlGen);
+    CHECK(controlReport.reattachmentTotal == 0);
+    CHECK(controlReport.orphanTotal == 1);
+    const AssetRecord* const own = controlDb.findByPath("scene.blend");
+    REQUIRE(own != nullptr);
+    CHECK(own->guid == ownGuid);
+}
+
+TEST_CASE("asset_database: a DIRECTORY with a roster name is descended into (AC-16, AD75)") {
+    // The scan-side mirror of BV1: the only thing that would catch an ignore check hoisted above the
+    // phase-2 loop's `if (entry.isDirectory)` arm.
+    const TempDir dir;
+    std::error_code ec;
+    for (const std::string_view folder : {"backup.bak", "old~", "Thumbs.db"}) {
+        std::filesystem::create_directories(pathOf(dir.join(folder)), ec);
+        REQUIRE_FALSE(ec);
+    }
+    writeFile(dir.join("backup.bak/inner.png"), "a");
+    writeFile(dir.join("old~/deep.png"), "b");
+    writeFile(dir.join("Thumbs.db/x.png"), "c");
+
+    AssetDatabase db;
+    GuidGenerator gen(75);
+    const AssetScanReport report = db.rescan(dir.utf8(), dir.utf8(), gen);
+    CHECK(report.filesSeen == 3);
+    CHECK(db.size() == 3);
+    for (const std::string_view rel : {"backup.bak/inner.png", "old~/deep.png", "Thumbs.db/x.png"}) {
+        CAPTURE(rel);
+        CHECK(db.findByPath(rel) != nullptr);
+        CHECK(fileExists(dir.join(std::string(rel) + std::string(ASSET_META_SUFFIX))));
+    }
 }
