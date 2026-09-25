@@ -12,9 +12,9 @@
 // second time): every draw call goes through a named local built with std::format, then passed as a
 // "%s" argument.
 //
-// ASCII ONLY in every literal (3.1.3's post-merge lesson): the editor loads no font of its own, and
-// ImGui's ProggyClean covers Basic + Extended Latin only -- "." / "-" / "..." stand in for full-width
-// punctuation.
+// ASCII ONLY in every literal (3.1.3's post-merge lesson): the one UI font draws '?' for anything past
+// ASCII, Latin-1 and the Windows-1252 punctuation (.claude/rules/editor.md, "The UI font") -- "." / "-" /
+// "..." stand in for full-width punctuation.
 #include "import_details_panel.hpp"
 
 #include <aero/editor/blender_service.hpp>  // task 3.2.4: the Blender section reads it, never writes it

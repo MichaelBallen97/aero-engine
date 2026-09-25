@@ -302,6 +302,18 @@ public:
     // "does not contain".
     [[nodiscard]] std::size_t assetBrowserVisibleEntryCount() const noexcept;
     [[nodiscard]] bool assetBrowserListingContains(std::string_view leafName) const noexcept;
+    // task E.4.4 (validation finding 2): the panel's vertical fit, read-only (0 / default-constructed when no
+    // Asset Browser panel is registered). The first counts orphan rows the Issues body really submitted on
+    // its last frame -- the proof the section was open and drawing; the second is the height that body child
+    // was given; the third is EXACTLY the metrics the panel fed assetBrowserLayout on that frame (the
+    // recorded available height, the row height and the measured content height), so a caller can check the
+    // body against the layout's answer for the geometry the panel really had, at any window size or DPI;
+    // the fourth is the panel window's GetScrollMaxY() as recorded at the end of its last onDraw, so 0 means
+    // the panes, Issues and footer all fit.
+    [[nodiscard]] std::size_t assetBrowserIssueRowsDrawn() const noexcept;
+    [[nodiscard]] float assetBrowserIssuesBodyHeight() const noexcept;
+    [[nodiscard]] AssetBrowserLayoutMetrics assetBrowserLayoutMetrics() const noexcept;
+    [[nodiscard]] float assetBrowserScrollMaxY() const noexcept;
 
     [[nodiscard]] std::size_t thumbnailReadyCount() const noexcept;
     [[nodiscard]] std::size_t thumbnailUnavailableCount() const noexcept;
@@ -442,6 +454,11 @@ public:
     // onDraw()'s applyPending(); a no-op when no Asset Browser panel is registered. A TOGGLE with no
     // getter, so a caller asserts the listing it produces, never the flag.
     void requestAssetBrowserToggleHidden() noexcept;
+    // task E.4.4 (validation finding 2): opens or closes the Issues section as a click on its header does,
+    // landing where a click lands -- in the next frame's header, after the panes were sized -- so that frame
+    // draws no body. A no-op when no Asset Browser panel is registered. Assert assetBrowserIssueRowsDrawn(),
+    // never the flag.
+    void requestAssetBrowserIssuesOpen(bool open) noexcept;
 
     // ---- task 3.2.1 black-box accessors: the ImGui-free GPU tier's only window into the session ----
     [[nodiscard]] std::size_t modelImportCount() const noexcept;

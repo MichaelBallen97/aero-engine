@@ -128,4 +128,48 @@ struct SearchResult {
 [[nodiscard]] SearchResult searchAssets(std::span<const AssetRecord> records, const AssetFilter& filter,
                                         std::size_t cap = MAX_SEARCH_RESULTS);
 
+// ---- task E.4.4 (validation finding 2): the panel's vertical budget ----------------------------------
+// The panel used to reserve ONE line for the footer and give the panes everything else, so the
+// "Issues (N)" header -- and, opened, its whole list -- was drawn BELOW the panes, past the bottom of the
+// panel, with the footer after it: with 40 orphans the macOS validation pass reached both only by
+// scrolling the whole panel. The Issues region is now reserved BEFORE the panes are sized, and its body is
+// a scrollable child whose height is capped, so the panes, the header, the body and the footer always
+// share the panel's height rather than overflow it. .claude/rules/editor.md's "A panel with fixed
+// regions" section is the pattern; this is its second instance.
+//
+// STARTING VALUES. The pane minimum is in FONT UNITS, the MATERIAL_PREVIEW_* precedent, so a DPI change
+// moves it with the font; the cap is a fraction of the panel, so a taller panel shows more rows.
+inline constexpr float ASSET_PANES_MIN_FONT = 4.0F;            // the panes' height before the body yields
+inline constexpr float ASSET_ISSUES_BODY_MAX_FRACTION = 0.4F;  // the body's cap, of availHeight
+
+struct AssetBrowserLayoutMetrics {
+    float availHeight = 0.0F;     // GetContentRegionAvail().y right after the header row
+    float fontSize = 0.0F;        // GetFontSize()
+    float frameHeight = 0.0F;     // GetFrameHeight(): the Issues header's height, and the footer's line
+    float textLineHeight = 0.0F;  // GetTextLineHeight(): one body row, which is the body's floor
+    float itemSpacingY = 0.0F;    // style.ItemSpacing.y
+    bool issuesShown = false;     // the scan reported at least one issue, so the header draws
+    bool issuesOpen = false;      // the header is open, so the body child draws
+    // The body's NATURAL height, measured inside the child on the last frame it drew (one frame late, the
+    // shape of ImGui's own auto-resize). 0 before the first measurement; the body is then one row tall.
+    float issuesContentHeight = 0.0F;
+};
+
+struct AssetBrowserLayout {
+    float paneHeight = 1.0F;        // the two panes' shared height, >= 1: BeginChild reads 0 as "fill"
+    float issuesHeight = 0.0F;      // header + spacing [+ body + spacing]; 0 when no issue is shown
+    float issuesBodyHeight = 0.0F;  // the body child's height; 0 iff the body is not drawn, else >= 1
+    float footerHeight = 0.0F;      // spacing below the region above + the footer's line (frame height)
+};
+
+// TOTAL: a metric that is not a finite, positive number counts as 0, so no NaN and no negative reaches
+// BeginChild, and std::clamp is never used (it returns NaN for a NaN on libc++).
+//
+// THE BUDGET. footer and header are fixed. The body wants its measured content height, at least one text
+// row and at most floor(ASSET_ISSUES_BODY_MAX_FRACTION * avail); it YIELDS first, so the panes keep
+// ASSET_PANES_MIN_FONT * fontSize, but never below one row. The panes take what is left, never below 1.
+// So paneHeight + issuesHeight + footerHeight == availHeight whenever availHeight is at least
+// footer + header + one row + one spacing + 1, and only a panel shorter than that can scroll.
+[[nodiscard]] AssetBrowserLayout assetBrowserLayout(const AssetBrowserLayoutMetrics& metrics) noexcept;
+
 }  // namespace engine::editor

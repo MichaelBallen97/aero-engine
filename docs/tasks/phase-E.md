@@ -735,7 +735,7 @@ Subtasks:
 
 ## Epic E.6 — Shell identity & visual system · editor
 
-**Goal:** the editor should look like the mocks — one type scale, one palette, real icons, a toolbar and a status bar. Today it loads no font of its own (ImGui's built-in ProggyClean, which is why every literal in the tree is ASCII-only), has no icon set, and its entire theme is `StyleColorsDark()` plus a DPI size scale.
+**Goal:** the editor should look like the mocks — one type scale, one palette, real icons, a toolbar and a status bar. Today its one font is ImGui's built-in ProggyClean at 13, added explicitly since E.4.4's validation fix with 26 Windows-1252 punctuation marks remapped onto it; anything past ASCII, Latin-1 and the Windows-1252 punctuation draws `?` (`.claude/rules/editor.md`, "The UI font"), which is why every literal in the tree is ASCII-only. It has no icon set, and its entire theme is `StyleColorsDark()` plus a DPI size scale.
 **Definition of Done:** every panel is restyled against one shared theme; no colour, radius or spacing is a bare ImGui default or an anonymous file-local constant.
 
 ### E.6.1 Font, icon set and theme system · P0 · L · depends: 2.1.1

@@ -2201,6 +2201,27 @@ void EditorApp::requestAssetBrowserToggleHidden() noexcept {
     }
 }
 
+// task E.4.4 (validation finding 2): the Issues header's seam; the panel applies it where a click lands.
+void EditorApp::requestAssetBrowserIssuesOpen(bool open) noexcept {
+    if (assetBrowserPanel != nullptr) {
+        assetBrowserPanel->requestIssuesOpen(open);
+    }
+}
+// task E.4.4 (validation finding 2): the read-only forwards the vertical-fit case (I231) asserts through --
+// kept beside the seam, below every line of this file other files cite by number.
+std::size_t EditorApp::assetBrowserIssueRowsDrawn() const noexcept {
+    return assetBrowserPanel != nullptr ? assetBrowserPanel->issueRowsDrawn() : std::size_t{0};
+}
+float EditorApp::assetBrowserIssuesBodyHeight() const noexcept {
+    return assetBrowserPanel != nullptr ? assetBrowserPanel->issuesBodyHeightDrawn() : 0.0F;
+}
+AssetBrowserLayoutMetrics EditorApp::assetBrowserLayoutMetrics() const noexcept {
+    return assetBrowserPanel != nullptr ? assetBrowserPanel->layoutMetrics() : AssetBrowserLayoutMetrics{};
+}
+float EditorApp::assetBrowserScrollMaxY() const noexcept {
+    return assetBrowserPanel != nullptr ? assetBrowserPanel->scrollMaxY() : 0.0F;
+}
+
 // ---- task E.3.3: the picker's six seams and three observables ------------------------------------
 // "Inspector" and "Material" are written as LITERALS here, matching InspectorPanel::id() and
 // MaterialPanel::id() -- the same restatement context_router.cpp makes for the three routed ids. A

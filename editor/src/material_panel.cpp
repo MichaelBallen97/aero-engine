@@ -16,8 +16,8 @@
 // third time): every draw call goes through a named local built with std::format, then passed as a
 // "%s" argument.
 //
-// ASCII ONLY in every literal (3.1.3's post-merge lesson): the editor loads no font of its own, and
-// ImGui's ProggyClean covers Basic + Extended Latin only.
+// ASCII ONLY in every literal (3.1.3's post-merge lesson): the one UI font draws '?' for anything past
+// ASCII, Latin-1 and the Windows-1252 punctuation (.claude/rules/editor.md, "The UI font").
 #include "material_panel.hpp"
 
 #include <aero/core/guid.hpp>
@@ -873,9 +873,9 @@ void MaterialPanel::onDraw(PanelContext& /*context*/) {  // no World/Selection/P
         // -footerHeight, NEVER layout.bodyHeight: CalcItemSize resolves a negative child height as
         // ImMax(4.0f, avail.y + size.y) (imgui.cpp:12344-12345), so ImGui's own remainder is
         // authoritative and a one-pixel error in footerHeight costs the child a pixel instead of
-        // clipping Apply off the bottom of the panel. asset_browser_panel.cpp:1311-1315 floors its own
-        // child at 1.0F for the OPPOSITE requirement -- two side-by-side panes must share ONE explicit
-        // height -- and both are right; here the child is alone and ImGui's remainder is the point.
+        // clipping Apply off the bottom of the panel. The Asset Browser's assetBrowserLayout (asset_view.hpp)
+        // floors its panes at 1.0F for the OPPOSITE requirement -- two side-by-side panes must share ONE
+        // explicit height -- and both are right; here the child is alone and ImGui's remainder is the point.
         ImGui::BeginChild("##body", ImVec2(0.0F, -layout.footerHeight));
         drawBody(form, layout, invalid, changed);
         ImGui::EndChild();  // 1:1 with the BeginChild above, same block, nothing exits between them

@@ -164,6 +164,7 @@ add_library(aero_editor_core STATIC
     src/project_state.cpp        # task E.4.1 -- <projectRoot>/Library/editor-state.json; PURE, no <filesystem>
     src/scene_containment.cpp    # task E.4.2 -- the containment predicate; ALL <filesystem> for this
                                  # pair, never logs, never writes (D1-D4)
+    src/default_font.cpp         # task E.4.4 -- the UI font + its CP1252 remaps (the ONLY font setup)
 )
 add_library(aero::editor_core ALIAS aero_editor_core)
 target_include_directories(aero_editor_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)

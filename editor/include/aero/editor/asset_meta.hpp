@@ -78,10 +78,10 @@ inline constexpr std::array<std::string_view, 2> IGNORED_ASSET_NAMES{"Thumbs.db"
 inline constexpr std::array<std::string_view, 7> IGNORED_ASSET_NAME_SUFFIXES{
     ATOMIC_TEMP_SUFFIX, ".blend@", ".bak", ".tmp", ".orig", ".rej", "~"};
 
-// Blender's rolling backups. Save Versions (Preferences > Save & Load) keeps previous saves beside the
-// file as .blend1, .blend2, ..., older saves carrying the higher number; the manual gives the default as
-// 2 and Blender's own property range caps the preference at 32. The rule is UNBOUNDED in N rather than a
-// 1..32 table: 32 is a PREFERENCE maximum, not a format constant, and ".blend" followed by digits is not
+// Blender's rolling backups. Save Versions (Preferences > Save & Load) keeps older saves beside the file as
+// .blend1, .blend2, ... (older = higher). Default 1 (measured on Blender 5.2.0 LTS; `versions = 1` in its
+// DNA_userdef_types.h -- the manual's 2 is stale); its RNA range caps it at 32. The rule is UNBOUNDED in N
+// rather than a 1..32 table: 32 is a PREFERENCE maximum, not a format constant, and ".blend" + digits is not
 // a file any tool reads. ".blend" with NO trailing digit is the asset and stays scannable.
 inline constexpr std::string_view BLEND_BACKUP_STEM = ".blend";
 
