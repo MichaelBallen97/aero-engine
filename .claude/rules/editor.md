@@ -86,6 +86,21 @@ that way.
   `ctx.input()` — the latter has no notion of UI focus, so a focused `InputText` would
   swallow the chord. `ImGuiMod_Ctrl` maps to Cmd on macOS automatically.
 - `Escape` does **not** quit. Esc is the universal *dismiss* key in an editor.
+- **A MODAL'S DEFAULT BUTTON ANSWERS NEITHER `Enter` NOR `Escape` BY ITSELF — BIND BOTH, BY HAND
+  (task E.4.3's macOS pass).** `BeginPopupModal` always sets `ImGuiWindowFlags_Modal`
+  (`imgui.cpp:13232`), `NavUpdateCancelRequest`'s popup branch excludes it (`imgui.cpp:15032`), and this
+  editor never sets `ImGuiConfigFlags_NavEnableKeyboard` — so **`SetItemDefaultFocus()` carries
+  nothing**. Escape has been hand-bound since 2.5.1; **Enter was NOT**, and all three of the asset
+  browser's modals shipped an `Enter == X` comment that was never true until a validation pass measured
+  it. **Never write "Enter commits" without an `IsKeyPressed` beside it.** Three things such a binding
+  must get right: **`ImGuiKey_KeypadEnter` is a DISTINCT key** (`imgui.h:1678`) and is tested
+  separately; **`IsKeyPressed(key, bool)` passes `ImGuiKeyOwner_Any`** (`imgui.cpp:10478-10481`), so it
+  fires even though an active `InputText` holds `Shortcut(ImGuiKey_Enter, …, id)`
+  (`imgui_widgets.cpp:5136`) — which is why the Escape binding already worked with a field focused; and
+  **a commit key shares the button's own disabled predicate**, never a second copy of it, or the key
+  commits what the button refuses. Dismiss wins over commit in a frame carrying both. **No tier can
+  press a key on a modal**, so this has no automated cover anywhere — a validation row is its only
+  witness.
 - Unimplemented menu items ship `enabled = false` with a tooltip naming the owning task —
   never a dead handler behind a stub.
 - **`<imgui_stdlib.h>` is never included at all, and this line used to say the opposite.** Every text
