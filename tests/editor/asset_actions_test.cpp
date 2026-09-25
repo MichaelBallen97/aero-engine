@@ -1693,4 +1693,26 @@ TEST_CASE("asset actions: a sidecar beside an IGNORED file is deletable, beside 
         CHECK_FALSE(fileExists(dir.join(sidecar)));
         CHECK(fileExists(dir.join(ignored)));
     }
+
+    // (d) BELOW THE ASSETS ROOT, which is where the LEAF-vs-PATH distinction bites. Step 4 must classify the
+    // sidecar's LEAF, never its relative path: an exact roster name stops matching once a folder prefix is
+    // attached -- isScannableAssetName("tex/THUMBS.DB") is TRUE -- so a step 4 fed the path would refuse
+    // this delete again, the original defect for OS-noise files in every subfolder, with every root-level
+    // arm above still green. THUMBS.DB is a realistic fixture: it was SCANNABLE before task E.4.4, whose
+    // predecessor compared "Thumbs.db" byte for byte, so an earlier build really could have written it.
+    // The arm's two premises, asserted rather than assumed: the LEAF is ignored, the PATH form is not.
+    REQUIRE_FALSE(engine::editor::isScannableAssetName("THUMBS.DB"));
+    REQUIRE(engine::editor::isScannableAssetName("tex/THUMBS.DB"));
+    constexpr std::string_view NESTED_BYTES = "windows thumbnail cache";
+    REQUIRE(ensureDirectory(dir.join("tex")).empty());
+    writeBytes(dir.join("tex/THUMBS.DB"), NESTED_BYTES);
+    REQUIRE(writeTextFileAtomic(dir.join("tex/THUMBS.DB.meta"), writeMetaText(gen.next())).empty());
+    requireValidSidecar(dir.join("tex/THUMBS.DB.meta"));
+    const OrphanDeleteResult nested = deleteOrphanMeta(dir.utf8(), "tex/THUMBS.DB.meta");
+    CHECK((nested.refusal == OrphanDeleteRefusal::None));
+    CHECK(nested.deleted);
+    CHECK_FALSE(fileExists(dir.join("tex/THUMBS.DB.meta")));
+    const engine::editor::FileReadResult nestedAfter = readTextFile(dir.join("tex/THUMBS.DB"));
+    REQUIRE(nestedAfter.text.has_value());
+    CHECK(*nestedAfter.text == NESTED_BYTES);  // the ignored file itself is never touched
 }
