@@ -12,7 +12,7 @@ Two platform matrices, never to be conflated: the **editor** runs on macOS/Windo
 
 **Phase E (Editor Experience) is the open front**, executing between Phase 3 and Phase 4. **Sixteen of its
 24 tasks are merged: Epics E.1, E.2 and E.3 are all CLOSED IN CODE, E.4.1 and E.4.2 are both MERGED AND
-macOS-VALIDATED, and E.4.3 is MERGED AND UNVALIDATED — so Epic E.4 stands at three of five, with all three
+macOS-VALIDATED, and E.4.3 is MERGED AND macOS-VALIDATED — so Epic E.4 stands at three of five, with all three
 of its Definition-of-Done clauses discharged in code. E.4.4, E.4.5, E.5 and E.6 are what is left — eight
 tasks, planning only.** Phase 3 remains OPEN behind it: all seven of its epics are closed in code,
 and what is left is its deliverable gate and the validation debt.
@@ -91,7 +91,7 @@ validation pass exists for any task in any phase.** N-E = not executable, N-R = 
 | E.3.4 Material inspector redesign | #105 | `170ad9b` | 12 PASS / 1 partial / 1 N-E, nothing failed |
 | E.4.1 Reopen the last scene | #106 | `068c45c` | **12 / 12**, nothing failed — and 26 sabotage seeds / 29 runs with **no coverage hole** |
 | E.4.2 Scene/project containment | #107 | `f88079d` | **14 of 16 rows** — 12 outright, 2 as stated variants, 1 partial, **2 NOT EXECUTABLE**. 29 sabotage seeds found **three real coverage holes**; the code-review round found eight findings, one blocking; Windows CI found a ninth after all three passed |
-| E.4.3 Asset file operations | #108 | **unmerged** | **NOT RUN** — the page exists at `editor/validation/E.4.3-asset-file-operations.md`; rows 3, 4, 5, 6, 8 and 9 are the only cover their declared seeds have |
+| E.4.3 Asset file operations | #108 | `3dff5ef` | **55 of 57 records PASS, 2 FAIL.** All twelve rows run; all six seed-critical rows (3, 4, 5, 6, 8, 9) pass, so S9, S11, S14, S18, S21, S22 and S28 all have witnesses. **The 2 failures are ONE defect: Enter activates neither modal's default button** (below) |
 
 **E.3.2 landed before E.3.1** — legal, disjointly id-reserved; the reservation is discharged and the
 numbering is contiguous.
@@ -105,7 +105,7 @@ numbering is contiguous.
 | **Phase 2** — Editor | **COMPLETE, gate met 2026-08-02.** All six epics closed and macOS-validated; Windows/Linux rows pending for every task (`editor/VALIDATION.md`). Gate artifact: `samples/phase-2-editor-scene/` — data, deliberately not `add_subdirectory`'d. |
 | **Phase 3** — Asset Pipeline & 3D Content | **OPEN.** All seven epics (3.1–3.7) **CLOSED in code**. What is left is the gate below and the validation debt. |
 | **Phase 3 gate** | Drop a rigged glTF/FBX in → PBR materials + shadows + a playing animation + **an audible sound**. The audible half exists in code as of 3.7.2 and **has never been heard on any platform.** |
-| **Phase E** — Editor Experience | **OPEN.** Epics E.1, E.2 and E.3 **CLOSED in code**; **E.4.1, E.4.2 and E.4.3 merged** — 16 of 24, see the index above. **E.4.4, E.4.5, E.5 and E.6 are the open front: eight tasks, planning only.** THREE validation pages are unrun (E.1.5, E.3.2, E.4.3) and are the whole of this OS's remaining Phase E risk. |
+| **Phase E** — Editor Experience | **OPEN.** Epics E.1, E.2 and E.3 **CLOSED in code**; **E.4.1, E.4.2 and E.4.3 merged** — 16 of 24, see the index above. **E.4.4, E.4.5, E.5 and E.6 are the open front: eight tasks, planning only.** TWO validation pages are unrun (E.1.5, E.3.2) and are the whole of this OS's remaining Phase E risk. |
 | **Phase E gate** | Open a project and land in the scene you were last editing, on a lit grid floor under a sky; create a Cube from the menu, drop a material on it and see it shade; aim a spot light with a visible gizmo; rename, move and delete assets without leaving the editor. Gate artifact: `samples/phase-E-editor/`. |
 
 ### Engine layers, in dependency order
@@ -887,7 +887,7 @@ mono 48 kHz 0.5 s, **exactly 48 064 B each**, cut at a whole number of cycles so
 **Validation pages are gitignored, so they enter no commit.** Per-page measurements and method notes are in
 `docs/10`; this is the ledger of what is still owed.
 
-**THREE PAGES HAVE NOT BEEN RUN ON ANY PLATFORM: E.1.5's, E.3.2's AND E.4.3's.** They are the whole of
+**TWO PAGES HAVE NOT BEEN RUN ON ANY PLATFORM: E.1.5's AND E.3.2's.** They are the whole of
 Phase E's validation risk on this OS — every other task in E.1, E.2, E.3 and E.4 is macOS-validated (see
 the index above). **E.4.1 is fully validated: 12 / 12 macOS, nothing failed**, and its sabotage matrix is
 run too — 26 seeds / 29 runs, **no seed green with nothing else catching it** (`docs/10`). An earlier
@@ -1028,6 +1028,18 @@ a wrong ordering), plus physical light units, IES profiles and area lights.
 surface first. E.3.4 adds one gap of its own shape, unowned: a **closed `File` section**, which needs one flag
 plus nothing else now that `requestMaterialSectionOpen` exists, the day a manual pass says the diagnostics are
 noise.
+
+**ENTER ACTIVATES NEITHER MODAL'S DEFAULT BUTTON, AND THE CAUSE IS THE ONE THE TASK ALREADY WORKED AROUND
+(E.4.3's macOS pass — OPEN DEFECT).** In both the Rename and the Delete modal, `Return` does nothing: the
+modal stays open and the operation is not performed, while clicking the button from the identical state
+commits at once, and Escape cancels correctly. **`SetItemDefaultFocus()` needs keyboard nav, and
+`imgui_layer.cpp` never sets `ImGuiConfigFlags_NavEnableKeyboard`** — which is the SAME fact 3.1.3 cites as
+the reason Escape had to be hand-bound with `IsKeyPressed`. So the Enter path was never going to fire, on any
+modal in this editor, and the orphan modal's own "Enter == Delete" comment is aspirational rather than
+measured. **The fix is symmetric with the existing Escape binding**; it is not a blocker, because every
+operation is reachable by its button and nothing is performed incorrectly. **Any future modal inherits this:
+do not write "Enter commits" without hand-binding it.** No owner; the nearest is whoever next touches modal
+input or the key-binding registry E.6.2 would need.
 
 **NINE UNOWNED HANDOFFS.** **Asset-browser keyboard shortcuts (F2, Del)** — E.4.3 dropped both bindings AND
 their accelerator text: the gating needs a THIRD condition nobody named (`!io.WantTextInput`, because the
