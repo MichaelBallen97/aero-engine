@@ -741,14 +741,18 @@ warning — §5.1's additive-evolution guarantee, applied to this key.
 > over the roster declared in `editor/include/aero/editor/asset_meta.hpp`;
 > `tests/editor/asset_meta_test.cpp`'s `IX` and `AM` batteries are their machine-checkable form.
 
-A **file** under the assets root is given an identity — a GUID, a `.meta`, a content hash, a cache entry
-and a browser tile — **iff none of these three is true of its leaf name** (and the name is not empty):
+A **file** under the assets root is given an identity — a GUID, a `.meta`, a content hash and a cache
+entry — **iff none of these three is true of its leaf name** (and the name is not empty):
 
 | Class | Rule | Owner |
 |---|---|---|
 | hidden | a leading `.` | `isHiddenName` (`project_files.cpp`), applied by `listDirectory` |
 | sidecar | the tail `.meta`, ASCII-case-folded, on a name longer than 5 bytes | `isMetaFileName` (§5.1) |
 | ignored | the roster below | `isIgnoredAssetName` |
+
+**A browser tile follows a different rule**, because the `Show hidden` checkbox is the user's to tick: a
+sidecar or an ignored name **never** gets a tile, and a hidden name gets one **only while `Show hidden` is
+ticked** — shown, but still never given an identity. Every other file gets a tile.
 
 **The roster.** Exact names and tail suffixes are compared **ASCII-case-insensitively**, and a name
 **equal** to a suffix matches it — the opposite edge from the sidecar rule, where `.meta` alone is a
