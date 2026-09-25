@@ -203,6 +203,14 @@ public:
     // other way to press a widget.
     void requestCreateMaterial() noexcept;
 
+    // task E.4.4: the `Show hidden` checkbox's seam -- the requestCreateMaterial() shape verbatim. It records
+    // the EXISTING ActionKind::ToggleHidden exactly as the checkbox does (drawHeader), so the next onDraw()
+    // drains it through the SAME applyPending() arm, still the only writer of showHidden (INV-5). A TOGGLE,
+    // not a setter, and there is deliberately no showHidden getter: a caller flips it from the known
+    // default (false) and asserts the CONSEQUENCE in the listing -- a seam's own read-back would only
+    // report what was requested.
+    void requestToggleHidden() noexcept;
+
     // task 3.1.3 (A12): black-box observability for the GPU tier, forwarded by EditorApp -- the
     // assetCacheEntryCount() shape verbatim.
     // code-review finding 4: the same black-box observability, for the SEARCH half. Without these a
@@ -214,6 +222,13 @@ public:
     [[nodiscard]] std::size_t searchHitCount() const noexcept { return searchRows.hits.size(); }
     [[nodiscard]] bool listViewActive() const noexcept { return viewMode == AssetViewMode::List; }
     [[nodiscard]] bool deleteModalPending() const noexcept { return !pendingOrphanDelete.empty(); }
+    // task E.4.4: the directory grid's black-box observability, forwarded by EditorApp. Both read the CACHED
+    // listing for currentDir -- the exact object the grid, the tree, the footer count and the selection
+    // lookup all read, so asserting it is asserting the picture. Neither performs I/O. An UNCACHED
+    // directory answers as if it were empty, which is why a caller asserts the count is non-zero BEFORE
+    // any "does not contain": a panel that cached nothing satisfies every such claim.
+    [[nodiscard]] std::size_t cachedEntryCount() const noexcept;
+    [[nodiscard]] bool cachedListingContains(std::string_view leafName) const noexcept;
 
     // ---- task E.4.3: the four one-shots ----------------------------------------------------------
     // Three are OPTIONAL for takeCreateMaterialRequest's stated reason -- "" is the LEGITIMATE value

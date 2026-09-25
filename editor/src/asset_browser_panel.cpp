@@ -1737,6 +1737,23 @@ void AssetBrowserPanel::requestSelectEntry(std::string relativePath) {
 // exactly what drawHeader() calls when the New Material button returns true, so the request travels
 // the SAME applyPending() arm and picks up the SAME currentDir a click would.
 void AssetBrowserPanel::requestCreateMaterial() noexcept { record(ActionKind::CreateMaterial, {}); }
+// task E.4.4: the requestCreateMaterial() shape verbatim -- record(ActionKind::ToggleHidden, {}) is exactly
+// what drawHeader() records when the `Show hidden` checkbox changes.
+void AssetBrowserPanel::requestToggleHidden() noexcept { record(ActionKind::ToggleHidden, {}); }
+
+// task E.4.4: read-only views of currentDir's CACHED listing (the rationale is at the declaration).
+std::size_t AssetBrowserPanel::cachedEntryCount() const noexcept {
+    const DirectoryListing* const listing = cached(currentDir);
+    return listing != nullptr ? listing->entries.size() : std::size_t{0};
+}
+bool AssetBrowserPanel::cachedListingContains(std::string_view leafName) const noexcept {
+    const DirectoryListing* const listing = cached(currentDir);
+    if (listing == nullptr) {
+        return false;
+    }
+    return std::any_of(listing->entries.begin(), listing->entries.end(),
+                       [leafName](const FileEntry& entry) { return entry.name == leafName; });
+}
 
 // ---- task E.4.3: the seven gesture seams plus requestDropPeek --------------------------------------
 // The first five record EXACTLY what a real widget records, so the next onDraw() drains each through
