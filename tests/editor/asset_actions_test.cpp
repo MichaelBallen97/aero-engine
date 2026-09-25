@@ -505,7 +505,7 @@ TEST_CASE("asset actions: validateAssetName -- the Windows rules and the two suf
     }
 
     CHECK((validateAssetName("x.meta") == AssetNameRefusal::MetaSuffix));
-    CHECK((validateAssetName("x.aero-tmp") == AssetNameRefusal::TempSuffix));
+    CHECK((validateAssetName("x.aero-tmp") == AssetNameRefusal::IgnoredName));  // task E.4.4: renamed in place
 }
 
 TEST_CASE("asset actions: planAssetOp -- step composition, the mechanical statement of INV-A8 (AA30)") {
@@ -734,7 +734,7 @@ TEST_CASE("asset actions: assetNameRefusalMessage is TOTAL and None is empty (AA
         AssetNameRefusal::TrailingDotOrSpace,
         AssetNameRefusal::ReservedDeviceName,
         AssetNameRefusal::MetaSuffix,
-        AssetNameRefusal::TempSuffix,
+        AssetNameRefusal::IgnoredName,
     };
     CHECK(assetNameRefusalMessage(AssetNameRefusal::None).empty());
     std::size_t nonEmpty = 0;
@@ -778,7 +778,7 @@ TEST_CASE("asset actions: no prompt or refusal string contains a '%' or a byte >
         AssetNameRefusal::TrailingDotOrSpace,
         AssetNameRefusal::ReservedDeviceName,
         AssetNameRefusal::MetaSuffix,
-        AssetNameRefusal::TempSuffix,
+        AssetNameRefusal::IgnoredName,
     };
     for (const AssetNameRefusal refusal : ALL) {
         checkAscii(assetNameRefusalMessage(refusal));
@@ -1566,4 +1566,73 @@ TEST_CASE("asset actions: EVERY planner refusal carries a non-empty message (AA6
     const AssetOpPlan gone = planAssetOp(AssetOpKind::Move, moveInputs, missing);
     CHECK((gone.refusal == AssetOpRefusal::DestinationMissing));
     CHECK_FALSE(gone.message.empty());
+}
+
+TEST_CASE("asset actions: validateAssetName refuses every ignored name, file or folder (AA66, task E.4.4)") {
+    // Task E.4.4 grew the scan's ignore list from ONE suffix to a roster (asset_meta.hpp, docs/09 5.10),
+    // and a rename to x.bak, x~ or scene.blend1 makes the asset vanish from the browser exactly as
+    // x.aero-tmp always did -- so the refusal grew with it, renamed IN PLACE to IgnoredName. The corpus
+    // is BUILT FROM the two roster arrays, so an entry added there is refused here with no edit, and a
+    // deleted entry shrinks the corpus rather than deleting an assertion.
+    using engine::editor::IGNORED_ASSET_NAME_SUFFIXES;
+    using engine::editor::IGNORED_ASSET_NAMES;
+    using engine::editor::isIgnoredAssetName;
+    using engine::editor::planAssetOp;
+    using engine::editor::validateAssetName;
+
+    // Anti-vacuity FIRST: an ordinary name and the Blender ASSET itself -- one digit short of a backup --
+    // are both legal, so every refusal below is about the ROSTER, never a validator that refuses all.
+    REQUIRE((validateAssetName("wood.png") == AssetNameRefusal::None));
+    REQUIRE((validateAssetName("model.blend") == AssetNameRefusal::None));
+    REQUIRE_FALSE(IGNORED_ASSET_NAMES.empty());
+    REQUIRE_FALSE(IGNORED_ASSET_NAME_SUFFIXES.empty());
+
+    std::vector<std::string> names;
+    names.reserve((2U * IGNORED_ASSET_NAMES.size()) + IGNORED_ASSET_NAME_SUFFIXES.size() + 4U);
+    for (const std::string_view entry : IGNORED_ASSET_NAMES) {
+        names.emplace_back(entry);
+        std::string upper(entry);
+        for (char& c : upper) {
+            if (c >= 'a' && c <= 'z') {
+                c = static_cast<char>(c - ('a' - 'A'));
+            }
+        }
+        names.push_back(upper);  // the roster folds ASCII case, so the refusal must too
+    }
+    for (const std::string_view suffix : IGNORED_ASSET_NAME_SUFFIXES) {
+        names.push_back("wood.png" + std::string(suffix));
+    }
+    names.emplace_back("scene.blend1");  // the Blender rule, which no array spells
+    names.emplace_back("scene.blend32");
+    names.emplace_back("x.BLEND2");
+    names.emplace_back("~");  // a name EQUAL to a suffix is ignored, and "~" is not hidden, so it gets here
+    REQUIRE(names.size() > IGNORED_ASSET_NAME_SUFFIXES.size());
+    for (const std::string& name : names) {
+        CAPTURE(name);
+        // The corpus really is the roster's (a REQUIRE, so a stray name cannot pass vacuously) ...
+        REQUIRE(isIgnoredAssetName(name));
+        // ... and every name in it is refused, by exactly this rule.
+        CHECK((validateAssetName(name) == AssetNameRefusal::IgnoredName));
+    }
+
+    // The arm's POSITION in the ladder is unchanged: an EARLIER rule still wins. A dot-prefixed roster
+    // name is Hidden first, and a sidecar OF a backup is MetaSuffix first -- never IgnoredName.
+    CHECK((validateAssetName(".bak") == AssetNameRefusal::Hidden));
+    CHECK((validateAssetName("scene.blend1.meta") == AssetNameRefusal::MetaSuffix));
+
+    // THE FOLDER CONSEQUENCE, pinned on purpose. validateAssetName is given a LEAF and nothing else -- no
+    // file/folder context -- and planAssetOp's rung 4 applies it to CreateFolder as well as Rename, so a
+    // folder CREATED or RENAMED in the editor as "backup.bak" is refused too. That is conservative and
+    // consistent with E.4.3, which refuses a ".meta" or ".aero-tmp" folder name on the same terms;
+    // relaxing it would need a context this function does not have. A folder made OUTSIDE the editor is
+    // still listed and scanned (directories are never ignored -- BV1, AD75), and the name-FREEDOM
+    // listings stay unfiltered by the roster (D9, BV9): refusing a TARGET name is a different question.
+    CHECK((validateAssetName("backup.bak") == AssetNameRefusal::IgnoredName));
+    AssetOpInputs folderInputs;
+    folderInputs.sourceRelative = "";  // CreateFolder's source names the PARENT; "" is the assets root
+    folderInputs.newLeaf = "backup.bak";
+    const AssetOpPlan folder = planAssetOp(AssetOpKind::CreateFolder, folderInputs, completeListing({}));
+    CHECK((folder.refusal == AssetOpRefusal::BadName));
+    CHECK((folder.nameRefusal == AssetNameRefusal::IgnoredName));
+    CHECK_FALSE(folder.message.empty());
 }

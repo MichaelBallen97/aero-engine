@@ -686,7 +686,7 @@ TEST_CASE("asset view: every scannable name is visible as a file, and not the co
     CHECK_FALSE(isScannableAssetName(".DS_Store"));
 }
 
-TEST_CASE("asset view: only five editor files name the roster predicates (AC-18, seed S16, BV9)") {
+TEST_CASE("asset view: only six editor files name the roster predicates (AC-18, seed S16, BV9)") {
     // THE NAME-FREEDOM PIN (D9). EditorApp's New Material path lists a folder UNFILTERED -- "a hidden file
     // still owns its name" (editor_app.cpp) -- and an IGNORED file owns its name exactly as hard. A filter
     // added there would let uniqueMaterialFileName return a name that already exists, and
@@ -741,8 +741,10 @@ TEST_CASE("asset view: only five editor files name the roster predicates (AC-18,
         joined += name + " ";
     }
     INFO("files naming a roster predicate in code: ", joined);
-    const std::vector<std::string> expected{"asset_browser_panel.cpp", "asset_meta.cpp", "asset_meta.hpp",
-                                            "asset_view.cpp", "asset_view.hpp"};
+    // asset_actions.cpp joined at task E.4.4's Commit 3a: validateAssetName refuses an ignored TARGET name,
+    // which is the opposite question from name freedom and the one legitimate reason to name the roster there.
+    const std::vector<std::string> expected{"asset_actions.cpp", "asset_browser_panel.cpp", "asset_meta.cpp",
+                                            "asset_meta.hpp",    "asset_view.cpp",          "asset_view.hpp"};
     CHECK(naming == expected);
     CHECK(srcScanned > 80U);      // anti-vacuity: 115 files under editor/src at the branch point
     CHECK(includeScanned > 40U);  // anti-vacuity: 64 headers under editor/include/aero/editor

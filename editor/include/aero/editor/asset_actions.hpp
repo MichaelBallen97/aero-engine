@@ -100,8 +100,12 @@ enum class AssetNameRefusal : std::uint8_t {
     ReservedDeviceName,  // CON/PRN/AUX/NUL/COM1-9/LPT1-9, case-insensitive, WITH or WITHOUT an
                          // extension -- "CON.png" is reserved too
     MetaSuffix,          // isMetaFileName -- would manufacture an orphan sidecar the scan then reports
-    TempSuffix,          // ATOMIC_TEMP_SUFFIX -- isScannableAssetName skips it (3.1.1 D16), so the
-                         // asset would simply vanish from the browser
+    IgnoredName,         // isIgnoredAssetName -- the roster in asset_meta.hpp (docs/09 §5.10), which the
+                         // scan skips, so a FILE given this name would vanish from the browser. Renamed
+                         // IN PLACE from TempSuffix at task E.4.4 (same position, so no value moves) when
+                         // the one suffix it tested became a whole roster. A FOLDER name is refused too,
+                         // for want of a file/folder context here -- the MetaSuffix posture, not a claim
+                         // that such a folder would be hidden (directories never are)
 };
 
 // The one-word label. NOT named toString, for assetOpRefusalLabel's reason above.

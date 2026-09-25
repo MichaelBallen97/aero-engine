@@ -265,9 +265,11 @@ AssetNameRefusal validateAssetName(std::string_view leaf) noexcept {
     if (isMetaFileName(leaf)) {
         return AssetNameRefusal::MetaSuffix;
     }
-    if (leaf.size() > ATOMIC_TEMP_SUFFIX.size() &&
-        leaf.compare(leaf.size() - ATOMIC_TEMP_SUFFIX.size(), ATOMIC_TEMP_SUFFIX.size(), ATOMIC_TEMP_SUFFIX) == 0) {
-        return AssetNameRefusal::TempSuffix;
+    // task E.4.4: the WHOLE ignore roster, composed rather than restated -- this arm used to test
+    // ATOMIC_TEMP_SUFFIX alone, and the scan now skips every name isIgnoredAssetName accepts. A TARGET-name
+    // rule only: a name-FREEDOM listing must never filter by the roster (docs/09 5.10, BV9).
+    if (isIgnoredAssetName(leaf)) {
+        return AssetNameRefusal::IgnoredName;
     }
     return AssetNameRefusal::None;
 }
@@ -590,8 +592,11 @@ std::string assetNameRefusalMessage(AssetNameRefusal refusal) {
             return "That is a reserved device name on Windows, with or without an extension.";
         case AssetNameRefusal::MetaSuffix:
             return "A name cannot end in .meta -- that is what an asset's sidecar is called.";
-        case AssetNameRefusal::TempSuffix:
-            return "A name cannot end in .aero-tmp -- the asset browser skips those.";
+        case AssetNameRefusal::IgnoredName:
+            // ASCII only (AA42), hence "section" rather than the section sign. True of a FOLDER as well
+            // as a file: it says the scan skips FILES so named, never that a folder would be hidden.
+            return "That name is on the asset ignore list (docs/09 section 5.10) -- the scan skips backup, "
+                   "temporary and OS files named like it.";
     }
     return {};  // unreachable; enumerated so a new refusal is a -Wswitch warning, not silent
 }
@@ -620,8 +625,8 @@ std::string_view assetNameRefusalLabel(AssetNameRefusal refusal) noexcept {
             return "ReservedDeviceName";
         case AssetNameRefusal::MetaSuffix:
             return "MetaSuffix";
-        case AssetNameRefusal::TempSuffix:
-            return "TempSuffix";
+        case AssetNameRefusal::IgnoredName:
+            return "IgnoredName";
     }
     return "None";  // unreachable; enumerated so a new refusal is a -Wswitch warning, not silent
 }
