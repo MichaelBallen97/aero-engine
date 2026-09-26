@@ -342,34 +342,34 @@ std::string elideCaptionRight(std::string_view text, const CaptionLineFits& fits
     if (fits(text)) {
         return std::string(text);
     }
-    // elideForCaption's binary search, verbatim but for the measurer: `cut < size` stands where the old body read
-    // the std::string's terminating NUL, which is never a continuation byte either.
-    std::size_t lo = 0;
-    std::size_t hi = text.size();
+    // Every prefix a cut may keep ends on a UTF-8 boundary: the start of each code point after the first, and the
+    // text's own end. A longer prefix is never easier to fit than a shorter one, so the longest that fits beside
+    // the ellipsis is found by bisection over THIS list -- the second code-review round. elideForCaption's old
+    // bisection ran over BYTES and stepped each probe back to a boundary, and a probe inside the FIRST code point
+    // stepped back to byte 0, where it gave up: "\xF0\x9F\x98\x80ab" at two code points answered the ellipsis
+    // alone. Wherever the old body did not give up, this answers exactly what it answered.
+    std::vector<std::size_t> ends;
+    for (std::size_t at = 1; at < text.size(); ++at) {
+        if (!isUtf8Continuation(text[at])) {
+            ends.push_back(at);
+        }
+    }
+    ends.push_back(text.size());
+    // `fitting` counts the ends whose prefix fits: the first `fitting` of them do, the rest do not.
+    std::size_t fitting = 0;
+    std::size_t hi = ends.size();
     std::string candidate;
-    while (lo < hi) {
-        const std::size_t mid = lo + ((hi - lo + 1) / 2);
-        std::size_t cut = mid;
-        while (cut > 0 && cut < text.size() && isUtf8Continuation(text[cut])) {
-            --cut;  // step back to a UTF-8 boundary
-        }
-        if (cut == 0) {
-            hi = 0;
-            break;
-        }
-        candidate.assign(text.substr(0, cut));
+    while (fitting < hi) {
+        const std::size_t mid = fitting + ((hi - fitting) / 2);
+        candidate.assign(text.substr(0, ends[mid]));
         candidate += CAPTION_ELLIPSIS;
         if (fits(candidate)) {
-            lo = mid;
+            fitting = mid + 1;
         } else {
-            hi = mid - 1;
+            hi = mid;
         }
     }
-    std::size_t finalCut = lo;
-    while (finalCut > 0 && finalCut < text.size() && isUtf8Continuation(text[finalCut])) {
-        --finalCut;
-    }
-    std::string result(text.substr(0, finalCut));
+    std::string result(fitting == 0 ? std::string_view{} : text.substr(0, ends[fitting - 1]));
     result += CAPTION_ELLIPSIS;
     return result;
 }

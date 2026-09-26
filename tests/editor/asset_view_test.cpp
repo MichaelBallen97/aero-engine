@@ -1064,3 +1064,20 @@ TEST_CASE("asset view: elideCaptionRight keeps a whole caption, else its longest
     CHECK(elideCaptionRight("gold.aeromat", fitsCodePoints(1U)) == ELLIPSIS);
     CHECK(elideCaptionRight("gold.aeromat", fitsCodePoints(0U)) == ELLIPSIS);
 }
+
+TEST_CASE("asset view: a first code point wider than one byte is kept when it fits with the ellipsis (AV65)") {
+    // The second code-review round: bisecting over BYTES, a probe that fell inside the FIRST code point stepped
+    // back to byte 0 and gave up, answering the ellipsis alone although the whole first code point fit beside it.
+    // U+1F600 is four bytes; the font draws it as '?', but the rule is about bytes and boundaries, not glyphs.
+    const std::string grin = "\xF0\x9F\x98\x80";
+    const std::string text = grin + "abcdef";  // seven code points in ten bytes
+    CHECK(elideCaptionRight(text, fitsCodePoints(2U)) == withEllipsis(grin, ELLIPSIS));
+    CHECK(elideCaptionRight(text, fitsBytes(7U)) == withEllipsis(grin, ELLIPSIS));  // 4 + 3 bytes exactly
+    CHECK(elideCaptionRight(text, fitsCodePoints(3U)) == withEllipsis(grin + "a", ELLIPSIS));
+    CHECK(elideCaptionRight(text, fitsCodePoints(7U)) == text);  // fits whole: unchanged
+    // Nothing but the ellipsis fits: the ellipsis alone, and never a split first code point.
+    CHECK(elideCaptionRight(text, fitsCodePoints(1U)) == ELLIPSIS);
+    CHECK(elideCaptionRight(text, fitsBytes(6U)) == ELLIPSIS);
+    // The subtitled line inherits the rule where it falls back to eliding the leaf.
+    CHECK(subtitledTileCaptionLine(text, text, fitsCodePoints(2U)) == withEllipsis(grin, ELLIPSIS));
+}
