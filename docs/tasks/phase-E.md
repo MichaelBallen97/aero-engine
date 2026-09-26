@@ -560,9 +560,10 @@ discharges the second clause: a scene outside the project is refused with an exp
 and E.4.3, E.4.4 and E.4.5 must each re-measure before they are implemented.
 **E.4.3 is MERGED** (PR #108, `3dff5ef`) and **macOS-validated 59 / 59**, which discharges the third clause,
 and **E.4.4 is MERGED** (PR #110, `28e9529`) and **macOS-validated 8 / 8** after one fix PR (#111,
-`f215cbb`) — **four of five**, with E.4.5 left. E.4.3 took `I210`–`I226`, E.4.4 took `I227`–`I229` and its
-fix `I230`–`I231`, so **the next free ImGui-tier id is now `I232`**; `I193`–`I209` is a free gap
-that E.4.5's spec claims from `I199`, and E.4.5 must re-measure before it is implemented.
+`f215cbb`) — and **E.4.5 is MERGED** (PR #112, `caf8a74`), its twelve-step validation page unrun: **five of
+five — Epic E.4 CLOSED IN CODE.** E.4.3 took `I210`–`I226`, E.4.4 took `I227`–`I229` and its fix
+`I230`–`I231`, and E.4.5 took `I232`–`I243`; `I193`–`I209` stays a free gap, and **the next free ImGui-tier id
+is `I244`**.
 
 ### E.4.1 Reopen the last scene · P0 · M · depends: 2.5.1, 2.6.1 · **MERGED** — PR #106, `068c45c`
 **Goal:** opening a project should resume your work. Today opening one always lands on an Untitled
@@ -682,7 +683,7 @@ code-review round**: the orphan WAS reported, but its `Delete` was refused for e
 goes away. The refusal is now scoped to a scannable name (`AA67`, `AD76`). E.4.3's name refusal was widened
 here too: renaming or creating anything with a roster name is refused (`IgnoredName`).
 
-### E.4.5 Material names & thumbnails in the browser · P1 · M · depends: 3.1.3, E.2.4
+### E.4.5 Material names & thumbnails in the browser · P1 · M · depends: 3.1.3, E.2.4 · **MERGED** — PR #112, `caf8a74`
 **Goal:** a folder of materials should be readable. Today every `.aeromat` is an identical flat tile
 labelled `AERO` with its filename, and `MaterialDocument::name` — the name you typed in the Material
 panel — is never shown anywhere but that panel.
@@ -699,6 +700,28 @@ Subtasks:
   fixed studio rig — a thumbnail that changes when the scene's sun moves may or may not be wanted, and
   that is this task's call to make rather than to inherit
 - Inherit the ledger's stickiness, budget and eviction rules rather than re-deriving them; the service call stays outside the draw walk
+
+_Outcome:_ **merged as PR #112 (`caf8a74`, a true merge commit), twenty-five commits — the plan's seven, one
+from the sabotage matrix, sixteen from three code-review rounds and one from CI. The first CI run
+(`36238862338`) failed on macOS alone at `I233` — that runner's Assets grid fits four Medium tile columns —
+and `9e81d6a` draws the multi-tile cases' tiles Small, after which the second run (`36243064010`) was 6 / 6
+green. 83 sabotage seeds in three passes closed two holes; the twelve-step
+validation page is UNRUN on every platform.** A material tile shows a sphere rendered under a fixed studio
+rig, a base-colour swatch until then (and for ever with no GPU or no cooked shaders), and its document name
+dimmed under the file name — in the grid, the list, the picker's popup grid and the Inspector's
+`MeshRenderer.material` row. ★ **The second subtask's premise held, but the spec's walk did not**: asking the
+one ledger for the sum of the two budgets starves a kind, because tiles drawn in one frame are offered in
+GUID order and three materials can sort ahead of every image. The walk now asks for every pending key and
+spends each budget as it meets a candidate (`I233`). ★ **The first subtask needed a rule the spec got
+backwards**: a rename keeps the thumbnail key, so the "name equals the file's stem" suppression runs at draw
+time against the current file name rather than being cached under the key (`I240`). ★ **The third subtask's
+open question is answered, twice.** The lighting is a **fixed studio rig**, decided on the key's
+completeness: `ThumbnailKey` cannot express the scene's sun, so a scene-lit picture would be stale for ever.
+And the camera is **not** the preview rig called by name: a code-review round measured the preview's
+framing at 34 of 128 texels, so the thumbnail has its own `MATERIAL_THUMBNAIL_RIG` and its sphere fills about
+80% of the tile (102 texels). The fourth held: one ledger, one release site, the service pass outside the draw
+walk — and, since the second round, a material render is spent only on a tile drawn this frame, with an
+off-screen pending key released rather than kept.
 
 ---
 

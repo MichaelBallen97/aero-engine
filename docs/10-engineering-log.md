@@ -17783,3 +17783,300 @@ font is chosen. So #111 changes nothing on Retina.
 4. **A layout assertion compares against the layout's own answer for the metrics the panel recorded**,
    never against a panel height the test machine happened to give it. A check that depends on geometry
    can be a `WARN` at most (`I231`).
+
+### E.4.5 — Material names & thumbnails in the browser — CLOSES Epic E.4: a second producer behind one ledger, and a walk that could not find an image
+
+**A folder of materials is readable.** A material tile shows a sphere rendered under a fixed studio rig and
+framed by the thumbnail's own rig, so it fills about 80% of the tile; until that render lands — and for ever
+with no GPU or no cooked shaders — the tile paints the material's own base colour through the thumbnail's
+tone curve, with a label whose contrast follows the fill. The document name shows dimmed under the file name
+in the grid (a narrow search hit's first line keeps the file name and drops the folder's front), after it in
+the list, in the picker's popup grid and in the Inspector's `MeshRenderer.material` row. What shipped:
+`material_card.{hpp,cpp}` (public, pure: sanitising, the draw-time stem rule, the swatch, the label contrast,
+the row sentence, the studio lighting and `MATERIAL_THUMBNAIL_RIG`); `material_card_cache.{hpp,cpp}`
+(src-private, device-free, serviced ABOVE the device gate, one capped read per content hash, stored only when
+the bytes read hash to the key); `material_thumbnail.{hpp,cpp}` (src-private: the third `ForwardRenderer` in
+an editor frame, one 64 KiB target per key); `ThumbnailSource` / `thumbnailSourceForName` routing the ONE
+ledger's walk to two stores behind the ONE release helper, `releaseKey`; `thumbnailKeyForRecord`'s guard 2
+widened by delegation; `ThumbnailLedger::absentCount`; two appended `AssetTileFace` members,
+`elideForCaption`'s `maxLines`, and the pure caption rules `elideCaptionRight` / `subtitledTileCaptionLine`
+in `asset_view.hpp`; `guidFieldRow`'s appended `subtitle`; and, on `EditorApp`, the read-only observables
+`materialThumbnailRenderCount`, `materialThumbnailResidentCount`, `materialThumbnailsAvailable`,
+`materialThumbnailTargetFor`, `materialThumbnailBound`, `materialCardCount`, `materialCardReadCount`,
+`materialSubtitleFor` and `thumbnailAbsentCount`, plus the seam `requestAssetBrowserTileSize`. **Epic E.4 is
+CLOSED IN CODE, five of five.**
+
+**Twenty-five commits** on `feat/E.4.5-material-names-and-thumbnails`, branch point `c95dc78` (docs-only
+after `f215cbb`): the plan's seven (`e01fbb5`…`512648f`), one from the sabotage matrix (`6fbbdbc`), eight
+from the first code-review round (`fa1f24d`…`524da63`), seven from the second (`78ee3e4`…`32c83be`), one
+from the third (`85af864`) and one from CI (`9e81d6a`) — merged as **`caf8a74`** (PR #112, a true merge
+commit). **The first CI run, `36238862338` on `85af864`, failed on macOS alone, at `I233`** (Linux, Windows,
+format & lint and the vcpkg baseline passed; cook determinism skipped); `9e81d6a` fixed the test geometry,
+and **the second run, `36243064010`, was 6 / 6 green** with its `headSha` (`9e81d6a`) equal to the merged
+head. Measured on `caf8a74`, both presets rebuilt and agreeing: `ctest -N` **178 → 178** with an entry set
+byte-identical to the branch point's and between presets; reduced **165 / 93**, configured fresh — exactly
+the 13 `shaderc.*` entries removed, and the 81 `reflect-gen.*` entries plus four doctest binaries removed,
+nothing added in either, `cooker.*` **70 / 70 / 70**. doctest **1404 / 2128 / 252 / 40 / 59 / 10 / 28 → 1404 /
+2180 / 264 / 40 / 63 / 10 / 28**: `aero_editor_shell_test` **+52** (`MB1`–`MB26`, `CC1`–`CC14`, `TS5`–`TS10`,
+`AV60`–`AV65`), `aero_editor_imgui_test` **+12** (`I232`–`I243`) and `aero_editor_inspector_test` **+4**
+(`IR9`–`IR12`, the Guid-row cases in `inspector_test.cpp`). The inspector binary moved because this task
+writes cases into it, not because a component crept in: **the built-in component count stays TEN** and
+`aero_scene_serialize_test` did not move. Guards: math **527 → 535** (+8 tracked C-family files) and
+project-no-delete Check B **90 → 93** (+3 `editor/src/*.cpp`); platform 92, rhi 163, scene 92, golden-rule
+165, Check A 7, audio 11-3-55 and probes 6-57 unchanged. `git ls-files` **90 / 64 → 93 / 65**. No new target,
+ctest entry, shader or link-line change: `editor/CMakeLists.txt` and `tests/CMakeLists.txt` gained source
+lines only.
+
+#### ★ The spec's anti-starvation argument was false, and a GUID-ordered fixture shows it
+
+D6 asked the ledger for DECODES + RENDERS keys "in one call" and called that anti-starvation. Tiles drawn in
+one frame share `lastTouched`, so the order among them is the ledger's GUID order, and three material GUIDs
+below every image GUID hand the walk three materials and no image — starvation until the materials drain at
+one render per tick. The walk asks for every `Absent` key (`nextDecodes(ALL_ABSENT_KEYS)`, the ledger's own
+contract, body untouched) and spends each budget as it meets a candidate of its kind. `I233` pins it with
+sidecars written before the scan, so the fixture chooses the ledger's order; the spec's sum (`S6`), two
+per-budget calls (`S5`), a render budget of 2 (`S31`) and a spent budget that ends the walk (`S39`) all redden
+it — and all four were re-run after CI changed its geometry.
+
+#### ★ A rename keeps the ThumbnailKey, so nothing file-NAME-dependent may be cached under it
+
+The spec baked the stem suppression ("a name equal to the file's stem is noise") into the cached card. E.4.3's
+rename carries the sidecar and the import cache carries the hash, so the key survives a rename, and a baked
+answer is about a name that no longer exists. The rule runs at DRAW time against the current leaf
+(`materialCardSubtitle`), in every host. `I240` renames through E.4.3's seam and requires no re-read, no
+re-render and a moved subtitle (`S7`); `I242(d)` counts the calls per host (`S37`).
+
+#### ★ The first code-review round: fourteen findings, one blocking — the picker's swatch had no witness anywhere
+
+**X1, BLOCKING.** The picker's popup tile painted the material's swatch (`materialCardTint`) and no tier could
+see it removed: no case draws the picker's popup and reads its pixels. `I242(d)` now counts `materialCardTint(`
+per host — browser 1, picker 1, Inspector and tile face 0 — and validation row 3 is its behavioural witness.
+
+**Four production defects, each fixed in its own commit:**
+
+- **P1 (`fa1f24d`) — a card could be stored for bytes its key does not name.** The card gate trusts the
+  DATABASE's key, and the database is stale from an external edit until the watcher's rescan; a read in that
+  window returned new bytes that were cached under the old key for the session. The cache now hashes what it
+  read (`hashBytes`, the scan's own MurmurHash3, one-shot where the scan streams) and stores a card only when
+  that hash IS the key's. A parse failure of the key's own bytes stays sticky; a failure the content did not
+  decide — a hash mismatch, an OS read failure, a cap refusal (which reads no byte and so proves nothing) —
+  is retried only after `database.generation()` changes. `CC11`–`CC14`, including an edit-and-revert that
+  reads the original name back (`CC12`) and a read-side hash that equals the scan's across a chunk boundary
+  (`CC14`).
+- **P2 (`5aae82b`) — a material render was spent on tiles nobody could see.** The walk is oldest-touched
+  first and an `Absent` key is never dropped, so the materials of a folder scrolled past rendered ahead of
+  the page on screen. The service keeps a sorted, de-duplicated copy of this frame's visible keys, and the
+  render arm skips anything not in it. `I243`.
+- **P3 (`6936d9c`) — a narrow search hit's first line dropped the file name.** A subtitled tile gives its file
+  name one line, and a search hit's caption source is `parent/leaf`, so a right-elision kept the folder.
+  `subtitledTileCaptionLine` keeps the whole leaf behind an ellipsis, else right-elides the leaf; the rule is
+  pure over an injected measurer (`AV60`–`AV64`), and `I242(h)` pins the call site.
+- **P4 (`783ed99`) — `produce()` could replace a texture ImGui was sampling.** It rendered first and only then
+  looked the key up, replacing an existing target in place. The arm was unreachable — `releaseKey` destroys
+  before the ledger forgets — but the first matrix's `S16` reached it, and the binary died with an ASan SEGV
+  inside `ImGuiLayer::endFrame`, on Metal. `produce()` now answers a key that already holds a target before any
+  read or GPU work; `I242(i)` pins the order, and `S16` re-run completes with no ASan report.
+
+**Test and text items.** X2: `EditorApp::materialThumbnailBound` answers through the service's own
+`nativeTextureFor`, because `materialThumbnailTargetFor` reads the render store directly and could not see the
+service's routing (`I232`, `S55`). X3: `I242(e)` gained `SetItemTooltip` and the functions that take their
+format string SECOND. X4: the separator check moved inside the list-row helper's body, because the browser's
+footer spells the same five characters for an unrelated sentence. X5: every caller hands rule 4 the LEAF.
+X6: `IR9` compared one call with itself — the parameter's default is the empty view — and now spells its three
+sentences. T1–T4 corrected text in the tree (`524da63`): the picture depends on the slot textures too; the
+swatch-to-sphere change is continuous for a dielectric only; `-Wswitch` is a warning; and the 3.1.3 rules
+gained "since task E.4.5" qualifiers.
+
+#### ★ The second code-review round: the framing, an off-screen key that lingered, and a lost first code point
+
+- **F (`78ee3e4`, `6eac1c8`) — the thumbnail's own framing.** `produce()` reused the Material panel's preview
+  camera, which frames the sphere at **34 of 128 texels (about 27%)** — a coloured dot at the Small tile
+  size. A thumbnail is an identity cue, so the framing is fixed, not tuned: `MATERIAL_THUMBNAIL_RIG` (orbit
+  radius 2.35, height 0.32, a 30° field of view, near 0.1, far 100, orbit speed 0), used in place of
+  `DEFAULT_MATERIAL_PREVIEW_RIG`, which stays E.2.4's and untouched. **The sphere primitive's radius is 0.5
+  (`makeSphere`'s `RADIUS`), not 1**, so the eye sits 2.372 away and the silhouette projects to 80.5% of the
+  width — **measured at 102 of 128 texels, 79.7%, columns 13 to 114**. The elevation drops to 7.75°, because
+  narrowing the field of view at the preview's 21.8° pitch puts the whole frame below the horizon: the horizon
+  sits at row 30 (31.5 predicted), and the corner sums read 627 above and 446 below (the preview's: 626 and
+  435). The key light is re-derived for the new eye with the same recipe — normalise(0.7 toEye + 0.8 up +
+  0.5 left), travelling along its negation — to −(0.2345, 0.7229, 0.6500). `MB23` (the depth range against the
+  real radius), `MB25` (the silhouette's tangent points projected through the thumbnail camera: a fill inside
+  [0.75, 0.85], and a zero-elevation direction inside the frame above its centre), `MB26` (the light's
+  derivation), `I237`'s arms (c) and (d), and `I242(g)` (the rig by name, for builds with no shaders).
+- **N1 (`2a406a2`) — an off-screen `Absent` material key lingered for the session.** After P2 such a key hit
+  `continue` and stayed `Absent`: `supersededBy` keeps a live key and `evictions` touches `Ready` keys only, so
+  after one scroll through a large library every idle tick's walk scanned it. The walk now releases it through
+  `releaseKey` — safe, because it holds no texture and no draw list names it — and it returns as `Absent` the
+  next frame its tile is drawn. `ThumbnailLedger::absentCount` makes it observable: `TS10`, and `I243`'s arms
+  (b) and (d).
+- **N2 (`4edd1f1`) — `elideCaptionRight` gave up on a multi-byte first code point.** Its bisection ran over
+  BYTES and stepped each probe back to a boundary; a probe inside the first code point stepped back to 0, and
+  the loop answered the ellipsis alone although the first code point fit beside it. It now bisects over the
+  code-point boundaries, as the suffix search already did. `AV65`.
+- **Test and text items.** Validation row 4's long-name step could never pass (`…gold_leaf.aeromat` alone is 126
+  points against a 104-point caption line) and now compares three tile sizes for `au.aeromat` under a long
+  folder, with each first line computed by the real font's measurer; B2 restored the separator-literal count
+  for the three hosts that spell no footer; B3 made `I242(e)`'s second-argument parser skip string literals,
+  honouring an escaped quote; B4 built `CC13`'s paths from a path rather than a UTF-8 string; B5 recorded the
+  rules; B6 corrected row 10's scroll wording.
+
+#### The third code-review round: wording only (`85af864`)
+
+Four framing comments were reworded to state the framing as a fixed decision; `releaseKey`'s comment still
+said "three callers … and no fourth" and now names the fourth and why it is safe; and the radius constant in
+`material_card_test.cpp` claimed `MB23` and `MB25` would notice the primitive's radius changing — both read
+the restated 0.5, and only `I237(c)` would, on a lane with shaders.
+
+#### ★ CI's macOS runner fits four Medium tile columns in the Assets grid
+
+Run `36238862338` failed `I233` alone: `d - decodes == 2U` and the final `decodes == 2U` both read **1**.
+`renders == 3U` passed, so all three materials were drawn and `p2.png` — the fifth tile, alphabetically
+last — never was: the runner's grid held four Medium columns, and the fifth wrapped to a second row its short
+panel never showed. From the real constants at font size 13 and item spacing 8, a Medium tile is 84.5 wide,
+so four columns need **362** of contents width and five need **454.5**: the runner gave at least 362 and less
+than 454.5. The same log carries `I231`'s `WARN( 13 > 13 )`, the recorded short-window regime. **Reproduced
+locally** by narrowing the case's window to 1100 (407 of contents width, four Medium columns): the same `1 ==
+2` on both assertions. `9e81d6a` adds `EditorApp::requestAssetBrowserTileSize` (the tile-size combo's seam,
+recording exactly `ActionKind::SetTileSize`) and draws `I233`'s and `I243`'s tiles Small — 58.5 wide, so five
+need **324.5** (356.5 at a doubled style spacing of 16, still under 386). At 1100 the grid then holds six
+columns; at 1280, seven and then eight. `I243` passed on the runner with exactly four Medium columns — zero
+margin — and on Small passes locally down to a 900-wide window, where Medium already fails. The other E.4.5
+GPU cases draw at most two tiles.
+
+#### ★ `-Wswitch` is a warning, never a CI failure — measured
+
+A switch with no `default:` over an enum missing a case compiles with exit 0 under the pinned LLVM 18 clang,
+which prints `warning: enumeration value 'B' not handled in switch [-Wswitch]`; `clang-tidy` with this
+project's `.clang-tidy` reports `Suppressed 1 warnings (1 with check filters)` and exits 0, because the check
+list opens with `-*` and never re-enables `clang-diagnostic-*`. No lane compiles with `-Werror` (the only
+`--Werror` in the workflow is clang-format's): an editor TU's compile line carries the sanitizer flags and no
+`-W` flag at all. GCC enables `-Wswitch` only under `-Wall` (GCC's own manual: "This warning is enabled by
+`-Wall`"), which this project does not pass, and MSVC's C4062 is a level-4 warning "off by default". **So an
+unhandled enumerator is at most a warning on the macOS lane, and on the Linux and Windows lanes nothing at
+all** — while 51 lines in 37 tracked files on `caf8a74` (source comments, `docs/09`, `docs/10` and the
+editor rules) call it an "error" or a "failure", several of them "on the Linux lane". Those lines were left as
+they are; `thumbnail_cache.hpp`'s own comment says it correctly.
+
+#### Where the plan overrode the spec, each re-measured
+
+C5 (the three-dot ellipsis premise, false since #111: the cap appends U+2026, spelled once); C6 (rule 4 at draw
+time — above); C8 (the card cache gates on the record's CURRENT key and on `RenderedMaterial` before any read,
+and reads capped); C9 (`residentCount()` and `loadAttempts()` keep the decode store's meaning — `I167(c)` would
+have reddened); C10 (guard 2's widening lands with the producer that consumes it, so no commit makes a material
+"unavailable" in a shader-ON build); C12 (no `#if`: runtime arms cross-checked by `I232`, and `CC9` as the tier-0
+no-device witness); C13 (AC-5 restated: an Apply reaches the browser through the watcher, with no nudge); C14
+(the release path driven at a cap of zero through Reimport All); C16 (above); C17 (white is byte 232, not 255);
+C18 (the face views the card's name, no scratch copy); C19 (RAII for the slot textures, with `I235`'s `~Device`
+leak read as the witness); C20 (the thumbnail renderer logs no WARN of its own on a failed create); C21 (the
+picker's button face gains nothing); C22 (a card is not released with its picture).
+
+#### Where this implementation departed from the plan, and why
+
+- **Ids `I232`–`I243`, `MB1`–`MB26`, `CC1`–`CC14`, `TS5`–`TS10`, `AV60`–`AV65`** — the plan's blocks
+  (`I232`–`I242`, `MB1`–`MB24`, `CC1`–`CC10`, `TS5`–`TS9`) plus what the review rounds added.
+- **`I233` settles the layout on an EMPTY project**, then writes the five files and rescans: the dockspace's
+  first frame draws only the first tile(s). Since `9e81d6a` it also draws its tiles Small.
+- **`I242(d)`'s separator-literal count was `{5, 0, 0, 0}`, not four zeros** — the browser's footer spells
+  `"  -  "` on five lines at the branch point. The browser's arm later moved into `I242(j)`, scoped to the
+  row helper's body.
+- **Layout-only rewrites** (named locals and named wait predicates instead of forced line breaks near 120
+  columns, and `keys.reserve(6U)` for clang-tidy's `performance-inefficient-vector-operation`); each keeps its
+  arguments and its assertions.
+
+#### ★ The sabotage matrix — 83 seeds in three passes, and two holes closed
+
+- **First pass, `S1`–`S41`, on `512648f`:** 32 red as predicted; `S28` failed to compile as declared (a
+  non-defaulted `subtitle`, eight call sites); four declared non-findings green as declared (`S18`, `S23`,
+  `S25`, `S41`); four validation-only seeds green as declared (`S14`, `S15`, `S32`, `S33` — nothing in the tree
+  reads rendered captions or ImGui's pixels). **Hole one:** `S38` at a budget of 5 left `CC4` green because
+  `CC4` read the constant back; closed by `6fbbdbc` (a literal `4U`). `S16` crashed the binary, which became P4.
+- **Second pass, `S42`–`S67`, plus `S16` re-run:** 26 red as predicted, no hole.
+- **Third pass, `S68`–`S83`:** 15 red, one declared unobservable on macOS and green as declared (`S83`: a
+  narrow path constructor reads UTF-8 here); `S79` is the N2 defect itself, run tests-first. **Hole two:**
+  `S70` — the preview's pitch at the thumbnail's field of view — reddened `MB25` and `MB26` at tier 0 but left
+  `I237` green; closed by `6eac1c8`, `I237(d)`.
+- **After CI:** `S5`, `S6`, `S31` and `S39` re-run against the Small-tile fixture on `9e81d6a`, all red.
+- **Witnessed by source text alone:** `S50`, `S54`, `S56`–`S65` except `S55`, and `S80`–`S82`. Their
+  behavioural witnesses are validation rows 3, 4 and 6 — except `S60` (a restated separator draws the same
+  bytes) and `S80`, which only the source pins see, and `S81`/`S82`, which break a pin's own parser.
+
+#### Traps found, each measured
+
+- **A search or a tile-size request applies at the END of the frame that drains it**, so the tick after a
+  request still draws the OLD view (`I243` states its lag tick).
+- **The Assets contents width can change between frames by a scrollbar's width** (14 at 1x): a 1000-wide
+  window read 347, 375 and 361 across one run.
+- **`modernize-raw-string-literal` fires on a hoisted fixture string full of escaped quotes**; a raw literal
+  with a custom delimiter satisfies it.
+- **A New Material is a metal** (`metallicFactor` 1.0, glTF's default): under the studio rig its white
+  document renders 100–157 across the sphere and 0 at its far edge, against a swatch of 232; the same document
+  at `metallicFactor` 0 renders 140–230.
+
+#### What was deliberately left out, with owners
+
+- A thumbnail key that covers its DEPENDENCIES (a texture edit does not refresh a material's picture, R4) —
+  unowned. Reimport All refreshes only a tile NOT drawn in the frame its clear runs; an edit to the `.aeromat`
+  itself always refreshes it.
+- A quiet `parseMaterial` mode (a hand-edited file's unknown-key WARNs pass through once per card read and
+  once per render) — unowned; a `reflect` change.
+- A third producer (mesh, scene, audio waveform) — unowned; a third enumerator, a store and a `releaseKey` line.
+- A persisted thumbnail store under `Library/` — unowned.
+- An Apply that refreshes the browser without the watcher — declined, unowned.
+- **`material_preview_rig.hpp`'s "MUST exceed 1, the sphere's radius" and "unit sphere"** — the primitive's
+  radius is 0.5; E.2.4's header was left untouched on purpose, and the correction is unowned.
+- **Whether to enable `clang-diagnostic-switch`** in `.clang-tidy` (or `-Wswitch` as an error on a lane), and
+  the 51 lines that already call it an error — unowned; a lint decision, not this task's.
+- The dark swatch label and `ImGuiCol_TextDisabled` as theme roles, and whether 128² is enough at 2× — E.6.1.
+
+#### The sentences that govern new work
+
+1. **One ledger, two stores, one release site with FOUR callers.** Every thumbnail texture is released through
+   `ThumbnailService::releaseKey`, which asks both stores: the reimport clear, the superseded sweep, eviction,
+   and the walk's release of an `Absent` material key not drawn this frame. A third producer adds a
+   `ThumbnailSource` enumerator, a store and one line there. `I242(a)`/`(b)`.
+2. **The produce walk sees every `Absent` key.** Never ask `nextDecodes` for the sum of the budgets:
+   same-frame keys are GUID-ordered, and the oldest few can all be one kind (`I233`).
+3. **A material render is spent only on a tile drawn THIS frame, and an off-screen `Absent` material key is
+   RELEASED, not kept pending** (`I243`, `TS10`). Decodes keep their own rule.
+4. **`residentCount()`/`loadAttempts()` are the DECODE store's; `readyCount()`/`unavailableCount()` are the
+   ledger's.** At the end of every service pass `residentCount() + materialResidentCount() == readyCount()`.
+5. **Never cache a file-NAME-dependent answer under a content key** — a rename keeps the key (`I240`), and every
+   host applies the stem rule through `materialCardSubtitle` at draw time (`I242(d)`).
+6. **A card is stored only when the bytes read hash to its key**, and a failure the file's content did not
+   decide waits for the next rescan (`CC11`–`CC14`). The card cache runs above the device gate, gates on kind
+   before reading, reads capped, and keeps its own queue.
+7. **User text reaches ImGui only through `TextUnformatted` or `ImDrawList::AddText`.** `I242(e)` fails a call
+   in the four hosts to `Text`, `TextDisabled`, `TextWrapped`, `SetTooltip`, `BulletText` or `SetItemTooltip`
+   whose FIRST argument is not a string literal, and to `TextColored` or `LabelText` whose SECOND argument is
+   not — read after the first comma at parenthesis depth 0 outside a string literal. A new format function a
+   host calls joins the matching list.
+8. **A thumbnail is a function of its key AND the slot textures resolved at render time**: `produce()` takes no
+   lighting and no tonemap (`I238`), but a texture edit does not refresh the picture (R4).
+9. **The thumbnail's framing is its OWN constant, never the Material panel's preview rig.** A thumbnail is an
+   identity cue and the sphere must dominate the tile: `MATERIAL_THUMBNAIL_RIG`, with the sphere's real radius
+   of 0.5. A retune keeps the horizon inside the frame and re-derives the key light (`MB23`, `MB25`, `MB26`,
+   `I237(c)`/`(d)`, `I242(g)`).
+10. **`produce()` answers a key that already holds a target before any read or GPU work** (`I242(i)`).
+11. **A subtitled tile's first line keeps the file name**: the source when it fits, else an ellipsis and the
+    longest suffix that still holds the whole leaf, else the leaf right-elided; both caption rules bisect over
+    code-point boundaries, never bytes (`AV60`–`AV65`, `I242(h)`).
+12. **A GPU case that needs several tiles in one row draws them Small**, because CI's macOS runner fits four
+    Medium tile columns in the Assets grid (run `36238862338`); `requestAssetBrowserTileSize` is the seam.
+13. **A material GPU fixture sets `metallicFactor` to 0** — `MaterialDocument`'s glTF default of 1.0 makes a
+    metal with nothing to reflect under the rig.
+14. **A filtered doctest run reads `T - N skipped`, never `0 skipped`** — doctest counts every case the filter
+    did not select.
+15. **`-Wswitch` is a warning, not a CI failure.** No lane compiles with `-Werror`, and `.clang-tidy`, whose
+    check list opens with `-*`, never enables `clang-diagnostic-*`; GCC and MSVC do not even warn by default.
+    A switch with no `default:` still makes a new enumerator visible — on the macOS lane, as a warning — and
+    never guarantees a red build.
+
+#### Validation and sabotage status
+
+Sabotage: **83 seeds in three passes plus four re-runs after CI, two holes closed** (above). Validation page:
+`editor/validation/E.4.5-material-names-and-thumbnails.md` (gitignored), **twelve steps — UNRUN on every
+platform.** Rows 2, 3, 4 and 6 are SEED COVER: the only behavioural witness `S14`, `S15`, `S32`, `S33`, `S50`,
+`S54`, `S56`–`S59` and `S61`–`S65` have anywhere. Row 1 carries the framing's size and
+legibility judgement (the sphere should span about 41 / 62 / 83 points at Small / Medium / Large), row 4 the
+three first lines computed with the real font (`au.aer…`, `…au.aeromat`, `…ed/au.aeromat`), and row 10 the
+visible-page-first rule as the grid scrolls.
