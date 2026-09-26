@@ -144,8 +144,9 @@ enum class ThumbnailSource : std::uint8_t {
 // assigns such a record a `change` at all, so it reads as the default UpToDate to any test on `change`
 // alone (asset_meta.hpp's own note at the field, and 3.4.2's finding 3).
 //
-//   nullopt when: the extension is not thumbnail-decodable (.ktx2/.dds are Texture but get an ICON),
-//                 state == Invalid, metaWriteFailed, or change is NotHashed / Unhashable.
+//   nullopt when: no producer owns the leaf (thumbnailSourceForName answers None -- .ktx2/.dds are Texture
+//                 but get an ICON; task E.4.5 made .aeromat a RenderedMaterial), state == Invalid,
+//                 metaWriteFailed, or change is NotHashed / Unhashable.
 //
 // An all-zero contentHash is the EMPTY FILE's real digest and never a sentinel (3.1.2's A4), so the
 // ONLY "was this hashed?" test is the `change` enum. NOTHING HERE LOGS (INV-V8): a refusal is nullopt

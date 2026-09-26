@@ -16,6 +16,7 @@
 // presented, we take the proven visible path. The brief flash matches rhi_swapchain_test.
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include <aero/core/content_hash.hpp>     // task 3.2.4, I78: the cache hit's own settings fingerprint
+#include <aero/core/guid.hpp>             // task E.4.5: GuidGenerator, for sidecars with chosen identities
 #include <aero/core/log.hpp>              // AERO_LOG_* + initLogging (cases B and C)
 #include <aero/editor/asset_cache.hpp>    // task 3.1.2: ImportChange, ASSET_CACHE_DIR_NAME/FILE_NAME/
                                           // GITIGNORE_NAME -- I31's index-path/gitignore-path assertions
@@ -45,6 +46,7 @@
 #include <aero/editor/transform_ops.hpp>      // task 2.4.1
 #include <aero/platform/platform.hpp>
 #include <aero/reflect/material_format.hpp>  // task 3.4.2: MaterialDocument, named directly (I84)
+#include <aero/render/render_target.hpp>     // task E.4.5: the thumbnail target's extents (I237/I238)
 #include <aero/rhi/device.hpp>
 #include <aero/scene/scene.hpp>
 #include <aero/scene/world.hpp>
@@ -11501,11 +11503,13 @@ TEST_CASE(
         CHECK(countLinesContaining(preview, "AmbientMode::DoesNotExist") == 0U);
     }
 
-    SUBCASE("(b) the editor owns EXACTLY ONE sky pass, the material preview's (task E.2.4)") {
+    SUBCASE("(b) the editor owns EXACTLY TWO sky passes, the preview's and the thumbnail's (tasks E.2.4, E.4.5)") {
         // The editor does not own a sky pass for the VIEWPORT -- SceneRenderer does, and the editor
-        // already owns a SceneRenderer. Since E.2.4 it owns exactly one of its own, in the material
-        // preview, because a preview that does not draw the scene's background cannot claim parity
-        // with a viewport that does. A THIRD file naming SkyPass is a second owner and reddens here.
+        // already owns a SceneRenderer. Since E.2.4 it owns one of its own, in the material preview,
+        // because a preview that does not draw the scene's background cannot claim parity with a
+        // viewport that does; since E.4.5 a second, in the material THUMBNAIL renderer, because a sphere
+        // on an undefined background has no readable silhouette. A FIFTH file naming SkyPass is a third
+        // owner and reddens here.
         // A sweep, not a roster, so a file added later is covered the day it lands.
         // THE NON-EMPTY CHECK IS NOT OPTIONAL: a sweep over a mistyped root reads zero files and
         // passes, which is the vacuous-grep class this tree has recorded three times.
@@ -11551,7 +11555,10 @@ TEST_CASE(
             }
         }
         std::sort(naming.begin(), naming.end());
-        const std::vector<std::string> expected{"material_preview.cpp", "material_preview.hpp"};
+        // task E.4.5: edited DELIBERATELY, in the commit that creates both files -- the header declares the
+        // `sky` member and the source calls create -- and still an EXACT set, never a `<=` bound.
+        const std::vector<std::string> expected{"material_preview.cpp", "material_preview.hpp",
+                                                "material_thumbnail.cpp", "material_thumbnail.hpp"};
         INFO("files naming SkyPass: ", naming.size());
         CHECK(naming == expected);
         // BOTH roots really were traversed, and the sweep really can find a render type: the editor
@@ -18632,6 +18639,590 @@ TEST_CASE("editor: the Asset Browser fits its panel with 40 orphans and Issues o
     CHECK(app->assetBrowserIssueRowsDrawn() == engine::editor::MAX_REPORTED_PER_CATEGORY);
     checkFits();
     CHECK(engine::editor::fileExists(assetsDir + "gone0.png.meta"));  // opened, never confirmed
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+// ================================================================================================
+// task E.4.5 (I232-I242) -- material thumbnails, cards and names, through real frames.
+//
+// EVERY CASE HERE USES I43/I49's CI-PROVEN GEOMETRY: a 1280x800 window with Console hidden, so "Assets" owns
+// the Bottom slot and its first row of tiles draws every tick. CI's macOS runner delivers SHORTER windows
+// than requested (81ad65c), so every folder below fits in ONE row of at most five tiles, and every claim about
+// a tile is preceded by a REQUIRE on a production count -- a tile that was not drawn is a loud failure here,
+// never a vacuous pass. NO PREPROCESSOR CONDITIONAL: a case whose truth depends on a render reads
+// materialThumbnailsAvailable() and asserts BOTH arms (I232 pins that answer against the preview's).
+// ================================================================================================
+namespace {
+
+// A canonical .aeromat for a DIELECTRIC of the given name and base colour. metallicFactor 0 is load-bearing:
+// MaterialDocument defaults it to glTF's 1.0, and a metal with nothing to reflect renders near-black (the
+// E.1.4 trap). writeMaterialText's output is canonical, so it carries no unknown key and parseMaterial logs
+// nothing for it.
+[[nodiscard]] std::string materialText(std::string_view name, engine::Vec3 baseColor) {
+    engine::MaterialDocument document;
+    document.name = std::string(name);
+    document.baseColorFactor = engine::Vec4{baseColor.x, baseColor.y, baseColor.z, 1.0F};
+    document.metallicFactor = 0.0F;
+    document.roughnessFactor = 0.6F;
+    return engine::writeMaterialText(document);
+}
+
+[[nodiscard]] std::string_view bytesOf(const auto& array) {
+    return {reinterpret_cast<const char*>(array.data()), array.size()};
+}
+
+// Writes an asset AND a sidecar naming `guid`, so the scan adopts that identity. The only way a GPU-tier case
+// can choose the ledger's key order: tiles drawn in one frame share lastTouched, and the ledger then orders
+// them by GUID.
+void writeAssetWithGuid(const std::string& assetsRoot, const std::string& relativePath, std::string_view bytes,
+                        engine::Guid guid) {
+    REQUIRE(engine::editor::writeTextFileAtomic(assetsRoot + "/" + relativePath, bytes).empty());
+    REQUIRE(engine::editor::writeTextFileAtomic(assetsRoot + "/" + relativePath + ".meta",
+                                                engine::editor::writeMetaText(guid))
+                .empty());
+}
+
+[[nodiscard]] std::optional<engine::editor::EditorApp> makeThumbnailApp(engine::rhi::Device& device,
+                                                                        engine::platform::Window& window,
+                                                                        engine::platform::Context& ctx,
+                                                                        const std::string& projectRoot) {
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(device, window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = projectRoot,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    if (app.has_value()) {
+        app->panels().setVisible("Console", false);  // so "Assets" owns the Bottom slot (2.2.4's C5)
+    }
+    return app;
+}
+
+// Ticks until `done()` holds, at most `maxTicks` times -- a hard ceiling, so a stalled producer FAILS the case
+// instead of hanging the suite (tickSweeps' shape, over a predicate).
+template <typename Predicate>
+[[nodiscard]] bool tickUntil(engine::editor::EditorApp& app, Predicate done, int maxTicks = 120) {
+    for (int i = 0; i < maxTicks; ++i) {
+        if (done()) {
+            return true;
+        }
+        if (!app.tick()) {
+            return false;
+        }
+    }
+    return done();
+}
+
+// The ledger's identity (§4.2): each Ready key owns exactly one texture in exactly one store.
+[[nodiscard]] bool residentsMatchReady(const engine::editor::EditorApp& app) {
+    return app.thumbnailResidentCount() + app.materialThumbnailResidentCount() == app.thumbnailReadyCount();
+}
+
+// Both producers have been asked at least once -- a decode attempt AND a render attempt. A named predicate
+// rather than an inline lambda body, so the waits that use it are short single-line statements.
+[[nodiscard]] bool bothProducersRan(const engine::editor::EditorApp& app) {
+    return app.thumbnailLoadAttempts() >= 1U && app.materialThumbnailRenderCount() >= 1U;
+}
+
+struct Texel {
+    int r = 0;
+    int g = 0;
+    int b = 0;
+    int a = 0;
+};
+
+// Reads a rendered thumbnail back. BLOCKING, and legal HERE only: readbackTexture is a test-and-tooling path
+// (device.hpp), which is exactly why the EDITOR never calls it (D3's refused route 2).
+[[nodiscard]] std::vector<std::uint8_t> readThumbnail(engine::rhi::Device& device,
+                                                      const engine::render::RenderTarget& target) {
+    const engine::rhi::Extent2D extent = target.textureExtent();
+    REQUIRE(extent.width == engine::editor::THUMBNAIL_EDGE_TEXELS);
+    REQUIRE(extent.height == engine::editor::THUMBNAIL_EDGE_TEXELS);
+    REQUIRE(target.drawExtent().width == extent.width);  // quantum 1: no margin to mistake for content
+    REQUIRE(target.drawExtent().height == extent.height);
+    std::vector<std::byte> bytes(static_cast<std::size_t>(extent.width) * extent.height * 4U, std::byte{0xAB});
+    REQUIRE(device.readbackTexture(target.colorTexture(), 0U, bytes));
+    std::vector<std::uint8_t> out(bytes.size());
+    std::transform(bytes.begin(), bytes.end(), out.begin(), [](std::byte b) { return static_cast<std::uint8_t>(b); });
+    return out;
+}
+
+[[nodiscard]] Texel texelAt(const std::vector<std::uint8_t>& bytes, std::uint32_t row, std::uint32_t column) {
+    const std::size_t base = ((static_cast<std::size_t>(row) * engine::editor::THUMBNAIL_EDGE_TEXELS) + column) * 4U;
+    return Texel{.r = bytes[base], .g = bytes[base + 1U], .b = bytes[base + 2U], .a = bytes[base + 3U]};
+}
+
+constexpr std::uint32_t THUMB_LAST = engine::editor::THUMBNAIL_EDGE_TEXELS - 1U;
+constexpr std::uint32_t THUMB_CENTRE = engine::editor::THUMBNAIL_EDGE_TEXELS / 2U;
+
+}  // namespace
+
+TEST_CASE("editor: a material thumbnail is RENDERED, never decoded, and the availabilities agree (task E.4.5, I232)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "material thumbnails i232", .width = 1280, .height = 800});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/brass.aeromat",
+                                                materialText("Studio Brass", engine::Vec3{0.8F, 0.5F, 0.2F}))
+                .empty());
+    std::optional<engine::editor::EditorApp> app = makeThumbnailApp(*device, *window, ctx, created.root);
+    REQUIRE(app.has_value());
+    app->panels().setVisible("Inspector", false);  // so Material wins the Right node and its preview engages
+    REQUIRE(app->materialThumbnailRenderCount() == 0U);
+
+    // (a) PRODUCED ONCE, AND BY THE RENDER STORE. The first productive tick is also the proof the tile drew.
+    REQUIRE(tickUntil(*app, [&] { return app->materialThumbnailRenderCount() > 0U; }));
+    for (int i = 0; i < 10; ++i) {
+        REQUIRE(app->tick());
+    }
+    CHECK(app->materialThumbnailRenderCount() == 1U);  // attempted ONCE, ever -- sticky in both arms
+    CHECK(app->thumbnailLoadAttempts() == 0U);         // the DECODE store never saw it (seed S1)
+    CHECK(app->thumbnailResidentCount() == 0U);
+    CHECK(residentsMatchReady(*app));
+
+    // (b) THE TWO AVAILABILITIES AGREE once the preview has engaged. This is the one cross-check that stops a
+    //     shader-ON build from drifting into the shader-OFF arm of every render case below without reddening.
+    app->requestAssetBrowserSelectEntry("brass.aeromat");
+    for (int i = 0; i < 4; ++i) {
+        REQUIRE(app->tick());
+    }
+    REQUIRE(app->materialTargetPath() == "brass.aeromat");
+    CHECK(app->materialThumbnailsAvailable() == app->materialPreviewAvailable());
+    const std::optional<engine::Guid> guid = app->assetGuidForPath("brass.aeromat");
+    REQUIRE(guid.has_value());
+    if (app->materialThumbnailsAvailable()) {
+        CHECK(app->materialThumbnailResidentCount() == 1U);
+        CHECK(app->thumbnailReadyCount() == 1U);
+        CHECK(app->thumbnailUnavailableCount() == 0U);
+        CHECK(app->materialThumbnailTargetFor(*guid) != nullptr);
+    } else {
+        // -DAERO_SHADER_TOOLS=OFF: attempted once, Skipped, sticky -- and counted "unavailable" (C11).
+        CHECK(app->materialThumbnailResidentCount() == 0U);
+        CHECK(app->thumbnailReadyCount() == 0U);
+        CHECK(app->thumbnailUnavailableCount() == 1U);
+        CHECK(app->materialThumbnailTargetFor(*guid) == nullptr);
+    }
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: one walk spends two budgets, and three older materials starve no image (task E.4.5, I233)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "material thumbnails i233", .width = 1280, .height = 800});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    const std::string assetsRoot = created.root + "/assets";
+    // THE LAYOUT SETTLES FIRST, WITH NOTHING TO DRAW. The dockspace's very first frame draws the Bottom slot at
+    // a provisional size, and only the first tile(s) of the row are drawn on it -- measured: with the five
+    // files present at open, tick 0 rendered one material and decoded NOTHING, even with the images holding
+    // the two lowest GUIDs. So the project opens EMPTY, three ticks settle the layout, and only then are the
+    // five files written and rescanned -- the rescan and the listing invalidation both run in the reconcile
+    // block BEFORE the draw walk, so that walk draws all five tiles in ONE settled frame.
+    std::optional<engine::editor::EditorApp> app = makeThumbnailApp(*device, *window, ctx, created.root);
+    REQUIRE(app.has_value());
+    for (int i = 0; i < 3; ++i) {
+        REQUIRE(app->tick());
+    }
+    // THE ORDER IS THE FIXTURE. All five tiles are drawn in one frame, so they share lastTouched and the ledger
+    // offers them in GUID order: the three materials take the three LOWEST GUIDs, so any walk that looks at
+    // only the three oldest keys (the spec's sum) or at two per-budget prefixes (seed S5) finds no image.
+    std::array<engine::Guid, 5> guids{};
+    engine::GuidGenerator generator{0xE45A233ULL};  // fixed seed -- no entropy source anywhere
+    for (engine::Guid& guid : guids) {
+        guid = generator.next();
+    }
+    std::sort(guids.begin(), guids.end());
+    writeAssetWithGuid(assetsRoot, "m1.aeromat", materialText("One", engine::Vec3{0.8F, 0.1F, 0.1F}), guids[0]);
+    writeAssetWithGuid(assetsRoot, "m2.aeromat", materialText("Two", engine::Vec3{0.1F, 0.8F, 0.1F}), guids[1]);
+    writeAssetWithGuid(assetsRoot, "m3.aeromat", materialText("Three", engine::Vec3{0.1F, 0.1F, 0.8F}), guids[2]);
+    writeAssetWithGuid(assetsRoot, "p1.png", bytesOf(TINY_PNG_RED), guids[3]);
+    writeAssetWithGuid(assetsRoot, "p2.png", bytesOf(TINY_PNG_GREEN), guids[4]);
+    app->requestAssetRescan();
+
+    std::size_t renders = app->materialThumbnailRenderCount();
+    std::size_t decodes = app->thumbnailLoadAttempts();
+    REQUIRE(renders == 0U);
+    REQUIRE(decodes == 0U);
+    bool sawFirstProduction = false;
+    for (int i = 0; i < 60; ++i) {
+        REQUIRE(app->tick());
+        const std::size_t r = app->materialThumbnailRenderCount();
+        const std::size_t d = app->thumbnailLoadAttempts();
+        CHECK(r - renders <= engine::editor::MAX_THUMBNAIL_RENDERS_PER_TICK);  // AC-9, the render half
+        CHECK(d - decodes <= engine::editor::MAX_THUMBNAIL_DECODES_PER_TICK);  // AC-9, the decode half
+        if (!sawFirstProduction && (r != renders || d != decodes)) {
+            sawFirstProduction = true;
+            // ONE WALK, TWO BUDGETS: both images decode on the SAME tick the first material renders, although
+            // three materials sort ahead of them.
+            CHECK(r - renders == 1U);  // a LITERAL 1, not the constant: a retune edits this line too (seed S31)
+            CHECK(d - decodes == 2U);
+        }
+        renders = r;
+        decodes = d;
+        CHECK(residentsMatchReady(*app));
+    }
+    REQUIRE(sawFirstProduction);  // ANTI-VACUITY: the tiles were drawn and their keys walked
+    CHECK(renders == 3U);         // each material exactly once, one per tick
+    CHECK(decodes == 2U);
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: releaseKey releases the right store, and never a key on screen (task E.4.5, I234)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "material thumbnails i234", .width = 1280, .height = 800});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/brass.aeromat",
+                                                materialText("Brass", engine::Vec3{0.8F, 0.5F, 0.2F}))
+                .empty());
+    REQUIRE(writeBinaryFixture(created.root + "/assets/tex.png", TINY_PNG_BLUE.data(), TINY_PNG_BLUE.size()).empty());
+    std::optional<engine::editor::EditorApp> app = makeThumbnailApp(*device, *window, ctx, created.root);
+    REQUIRE(app.has_value());
+    REQUIRE(tickUntil(*app, [&] { return bothProducersRan(*app); }));
+    const bool rendered = app->materialThumbnailsAvailable();
+    const std::size_t renderedResident = rendered ? 1U : 0U;
+    REQUIRE(app->thumbnailResidentCount() == 1U);
+    REQUIRE(app->materialThumbnailResidentCount() == renderedResident);
+
+    // THE RELEASE PATH, DRIVEN AT A CAP OF ZERO. Reimport All drains as ledger.evictions(0, frame) -- the LRU's
+    // own function -- inside service(), AFTER the touch loop, so it releases every Ready key NOT drawn this
+    // frame and nothing else. MAX_THUMBNAILS_RESIDENT has no seam (C14); this is the same code at cap 0.
+    //
+    // (a) ONLY THE IMAGE ON SCREEN (kind filter "1" = Texture). The material's texture is released through
+    //     releaseKey's RENDER arm (seed S16); the image, touched this frame, is not released and not re-decoded.
+    app->requestAssetBrowserKindFilter("1");
+    REQUIRE(app->tick());  // the filter lands at the end of this frame's draw walk
+    REQUIRE(app->tick());  // ...and this frame draws with it
+    const std::size_t decodesBefore = app->thumbnailLoadAttempts();
+    app->requestAssetBrowserReimportAll();
+    REQUIRE(app->tick());
+    CHECK(app->thumbnailResidentCount() == 1U);            // PROTECTED: on screen this frame
+    CHECK(app->thumbnailLoadAttempts() == decodesBefore);  // ...so never re-decoded
+    CHECK(app->materialThumbnailResidentCount() == 0U);    // RELEASED
+    CHECK(residentsMatchReady(*app));
+
+    // (b) ONLY THE MATERIAL ON SCREEN (kind filter "5" = Material). Its key was forgotten in (a), so it is
+    //     produced again -- then the reimport clear must release the IMAGE (releaseKey's DECODE arm, seed S17)
+    //     and must NOT touch the rendered key drawn this frame (AC-10 for a rendered key).
+    const std::size_t rendersBefore = app->materialThumbnailRenderCount();
+    app->requestAssetBrowserKindFilter("5");
+    for (int i = 0; i < 10; ++i) {
+        REQUIRE(app->tick());
+    }
+    // Rendered: produced again once. Shader-OFF: its key is Skipped (sticky) and was never Ready, so the
+    // reimport clear left it alone and it is not produced again.
+    CHECK(app->materialThumbnailRenderCount() == rendersBefore + renderedResident);
+    REQUIRE(app->materialThumbnailResidentCount() == renderedResident);
+    const std::size_t rendersSettled = app->materialThumbnailRenderCount();
+    app->requestAssetBrowserReimportAll();
+    REQUIRE(app->tick());
+    CHECK(app->thumbnailResidentCount() == 0U);                        // RELEASED
+    CHECK(app->materialThumbnailResidentCount() == renderedResident);  // PROTECTED
+    CHECK(app->materialThumbnailRenderCount() == rendersSettled);      // ...so never re-rendered
+    CHECK(residentsMatchReady(*app));
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: every thumbnail and slot texture is released before ~Device (task E.4.5, I235)") {
+    // I134's SHAPE, for the second store. rhi::Device exposes no live-object accounting, so what this case reads
+    // is ~Device's own leak diagnostics -- and the callback has to OUTLIVE the Device, which is why the guard is
+    // declared first and the device lives in an inner scope. The material binds a REAL texture in its base
+    // colour slot, so a produce() that forgot to release its slot textures leaves one behind (seed S19).
+    struct LogCallbackGuard {
+        ~LogCallbackGuard() { engine::setLogCallback({}); }
+        LogCallbackGuard() = default;
+        LogCallbackGuard(const LogCallbackGuard&) = delete;
+        LogCallbackGuard& operator=(const LogCallbackGuard&) = delete;
+        LogCallbackGuard(LogCallbackGuard&&) = delete;
+        LogCallbackGuard& operator=(LogCallbackGuard&&) = delete;
+    };
+    std::size_t leakedTextureWarnings = 0;
+    std::size_t anyLeakWarnings = 0;
+    std::size_t probeRecords = 0;  // the callback's own liveness -- zero leaks and "never called" look alike
+
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    {
+        std::optional<engine::platform::Window> window =
+            ctx.createWindow({.title = "material thumbnails i235", .width = 1280, .height = 800});
+        REQUIRE(window.has_value());
+        std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+        if (!device) {
+            AERO_SKIP_OR_FAIL("no GPU device");
+        }
+        const std::string locationA = uniqueProjectLocation();
+        const engine::editor::ProjectCreateOutcome createdA =
+            engine::editor::createProject(locationA, "GameA", "0.1.0");
+        REQUIRE(createdA.problem == engine::editor::CreateProblem::Ok);
+        const std::string locationB = uniqueProjectLocation();
+        const engine::editor::ProjectCreateOutcome createdB =
+            engine::editor::createProject(locationB, "GameB", "0.1.0");
+        REQUIRE(createdB.problem == engine::editor::CreateProblem::Ok);
+
+        engine::GuidGenerator generator{0xE45A235ULL};
+        const engine::Guid textureGuid = generator.next();
+        writeAssetWithGuid(createdA.root + "/assets", "tex.png", bytesOf(TINY_PNG_RED), textureGuid);
+        engine::MaterialDocument painted;
+        painted.name = "Painted";
+        painted.baseColorFactor = engine::Vec4::one();  // WHITE -- any red at the centre is the TEXTURE's
+        painted.metallicFactor = 0.0F;
+        painted.roughnessFactor = 0.6F;
+        painted.baseColor = engine::MaterialTextureSlot{.guid = textureGuid};
+        REQUIRE(engine::editor::writeTextFileAtomic(createdA.root + "/assets/painted.aeromat",
+                                                    engine::writeMaterialText(painted))
+                    .empty());
+
+        std::optional<engine::editor::EditorApp> app = makeThumbnailApp(*device, *window, ctx, createdA.root);
+        REQUIRE(app.has_value());
+        REQUIRE(tickUntil(*app, [&] { return bothProducersRan(*app); }));
+        const bool rendered = app->materialThumbnailsAvailable();
+        CHECK(app->thumbnailResidentCount() == 1U);  // the decode store holds tex.png's own thumbnail
+        CHECK(app->materialThumbnailResidentCount() == (rendered ? 1U : 0U));
+        if (rendered) {
+            // ANTI-VACUITY for the slot texture: a WHITE material whose sphere is RED really did load and bind
+            // the red PNG, so a slot texture really was created -- and really must have been released.
+            const std::optional<engine::Guid> materialGuid = app->assetGuidForPath("painted.aeromat");
+            REQUIRE(materialGuid.has_value());
+            const engine::render::RenderTarget* const target = app->materialThumbnailTargetFor(*materialGuid);
+            REQUIRE(target != nullptr);
+            const Texel centre = texelAt(readThumbnail(*device, *target), THUMB_CENTRE, THUMB_CENTRE);
+            CAPTURE(centre.r);
+            CAPTURE(centre.g);
+            CAPTURE(centre.b);
+            CHECK(centre.r > centre.g + 32);
+            CHECK(centre.r > centre.b + 32);
+        }
+
+        // THE SWAP: EditorApp's reconcile calls ThumbnailService::clear(), which now clears both stores.
+        app->requestOpenProject(createdB.root);
+        REQUIRE(app->tick());
+        REQUIRE(app->tick());
+        CHECK(app->thumbnailResidentCount() == 0U);
+        CHECK(app->materialThumbnailResidentCount() == 0U);
+        CHECK(app->thumbnailReadyCount() == 0U);
+
+        app->requestQuit();
+        CHECK(app->tick() == false);
+        app.reset();  // ~EditorApp -> ~ThumbnailService -> ~MaterialThumbnailRenderer, all before ~Device
+
+        // THE CALLBACK IS INSTALLED HERE, AFTER THE LAST EditorApp IS GONE: setLogCallback is ONE global slot and
+        // EditorApp claims it for the Console panel at create() and clears it at teardown (E.2.3's rule).
+        const LogCallbackGuard detachOnExit;
+        engine::setLogCallback([&](const engine::LogRecord& record) {
+            if (record.level < engine::LogLevel::Warn) {
+                return;
+            }
+            if (record.message.find("leaked texture") != std::string_view::npos) {
+                ++leakedTextureWarnings;
+            }
+            if (record.message.find("leaked") != std::string_view::npos) {
+                ++anyLeakWarnings;
+            }
+            if (record.message.find("i235 liveness probe") != std::string_view::npos) {
+                ++probeRecords;
+            }
+        });
+        AERO_LOG_WARN("i235 liveness probe -- the log callback is installed and receiving");
+        REQUIRE(probeRecords == 1U);
+        device.reset();  // ~Device HERE, while the callback above is still installed
+    }
+    engine::setLogCallback({});
+    CHECK(leakedTextureWarnings == 0U);
+    CHECK(anyLeakWarnings == 0U);
+}
+
+TEST_CASE("editor: the rendered thumbnail is a lit sphere in front of the studio's sky (task E.4.5, I237)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "material thumbnails i237", .width = 1280, .height = 800});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/red.aeromat",
+                                                materialText("Red", engine::Vec3{0.9F, 0.05F, 0.05F}))
+                .empty());
+    std::optional<engine::editor::EditorApp> app = makeThumbnailApp(*device, *window, ctx, created.root);
+    REQUIRE(app.has_value());
+    REQUIRE(tickUntil(*app, [&] { return app->materialThumbnailRenderCount() > 0U; }));
+    const std::optional<engine::Guid> guid = app->assetGuidForPath("red.aeromat");
+    REQUIRE(guid.has_value());
+    const engine::render::RenderTarget* const target = app->materialThumbnailTargetFor(*guid);
+    if (!app->materialThumbnailsAvailable()) {
+        CHECK(target == nullptr);  // -DAERO_SHADER_TOOLS=OFF: no picture, only the swatch (AC-4's permanent arm)
+    } else {
+        REQUIRE(target != nullptr);
+        const std::vector<std::uint8_t> bytes = readThumbnail(*device, *target);
+        const Texel topLeft = texelAt(bytes, 0U, 0U);
+        const Texel topRight = texelAt(bytes, 0U, THUMB_LAST);
+        const Texel bottomLeft = texelAt(bytes, THUMB_LAST, 0U);
+        const Texel bottomRight = texelAt(bytes, THUMB_LAST, THUMB_LAST);
+        const Texel centre = texelAt(bytes, THUMB_CENTRE, THUMB_CENTRE);
+        for (const Texel& texel : {topLeft, topRight, bottomLeft, bottomRight, centre}) {
+            CHECK(texel.a == 255);  // opaque everywhere: the resolve writes a literal alpha
+        }
+        // (a) THE STUDIO'S SKY, RIGHT WAY UP. The rig looks down about 22 degrees with a 60-degree field of
+        //     view, so the top corners sit near the bright horizon band and the bottom corners on the dark
+        //     ground -- a vertically flipped target, or no sky at all, fails this. The gradient is vertical, so
+        //     the two top corners (and the two bottom ones) mirror each other.
+        CAPTURE(topLeft.r);
+        CAPTURE(bottomLeft.r);
+        CHECK(topLeft.r + topLeft.g + topLeft.b > bottomLeft.r + bottomLeft.g + bottomLeft.b + 60);
+        CHECK(std::abs(topLeft.r - topRight.r) <= 2);
+        CHECK(std::abs(topLeft.b - topRight.b) <= 2);
+        CHECK(std::abs(bottomLeft.g - bottomRight.g) <= 2);
+        // (b) A RED DIELECTRIC IN THE MIDDLE -- lit by the key light, so red dominates by a wide margin. A sky
+        //     drawn over the sphere (seed S22), or a render that ignored the document's own factors (S20),
+        //     fails this.
+        CAPTURE(centre.r);
+        CAPTURE(centre.g);
+        CAPTURE(centre.b);
+        CHECK(centre.r >= 96);
+        CHECK(centre.r > centre.g + 32);
+        CHECK(centre.r > centre.b + 32);
+    }
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: a thumbnail is a function of its key alone, whatever the scene's light (task E.4.5, I238)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "material thumbnails i238", .width = 1280, .height = 800});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/red.aeromat",
+                                                materialText("Red", engine::Vec3{0.9F, 0.05F, 0.05F}))
+                .empty());
+    REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/green.aeromat",
+                                                materialText("Green", engine::Vec3{0.05F, 0.9F, 0.05F}))
+                .empty());
+    std::optional<engine::editor::EditorApp> app = makeThumbnailApp(*device, *window, ctx, created.root);
+    REQUIRE(app.has_value());
+    REQUIRE(tickUntil(*app, [&] { return app->materialThumbnailRenderCount() >= 2U; }));
+    const std::optional<engine::Guid> red = app->assetGuidForPath("red.aeromat");
+    const std::optional<engine::Guid> green = app->assetGuidForPath("green.aeromat");
+    REQUIRE(red.has_value());
+    REQUIRE(green.has_value());
+    if (!app->materialThumbnailsAvailable()) {
+        CHECK(app->materialThumbnailTargetFor(*red) == nullptr);
+        CHECK(app->materialThumbnailTargetFor(*green) == nullptr);
+        app->requestQuit();
+        CHECK(app->tick() == false);
+        app.reset();
+        return;
+    }
+    const auto readTarget = [&](engine::Guid guid) {
+        const engine::render::RenderTarget* const target = app->materialThumbnailTargetFor(guid);
+        REQUIRE(target != nullptr);
+        return readThumbnail(*device, *target);
+    };
+    const auto differingBytes = [](const std::vector<std::uint8_t>& a, const std::vector<std::uint8_t>& b) {
+        REQUIRE(a.size() == b.size());
+        std::size_t differing = 0;
+        for (std::size_t i = 0; i < a.size(); ++i) {
+            differing += a[i] != b[i] ? 1U : 0U;
+        }
+        return differing;
+    };
+    const std::vector<std::uint8_t> redFirst = readTarget(*red);
+    const std::vector<std::uint8_t> greenFirst = readTarget(*green);
+    // DISCRIMINATION: two materials that differ only in base colour are two different pictures -- the
+    // anti-vacuity arm for the equality below, which a producer that ignored the document would also pass.
+    CHECK(differingBytes(redFirst, greenFirst) > 0U);
+
+    // MOVE THE SCENE: a brighter, redder sun and a different sky. The viewport sees all of it; a thumbnail keyed
+    // on (guid, contentHash) must see none of it (AC-12, seed S24).
+    engine::World& world = app->world();
+    std::size_t moved = 0;
+    world.eachEntity([&](engine::Entity e) {
+        if (auto* const light = world.get<engine::DirectionalLight>(e); light != nullptr) {
+            light->intensity = 6.0F;
+            light->color = engine::Vec3{1.0F, 0.2F, 0.2F};
+            ++moved;
+        }
+        if (auto* const environment = world.get<engine::Environment>(e); environment != nullptr) {
+            environment->skyColor = engine::Vec3{1.0F, 0.0F, 0.0F};
+            ++moved;
+        }
+    });
+    REQUIRE(moved == 2U);  // ANTI-VACUITY: the default scene's sun and environment really were changed
+
+    // RE-PRODUCE THE SAME KEYS: filter them off screen (Texture -- this project has none), let the reimport clear
+    // release both, then bring them back. Each is rendered a second time, from scratch, under the moved scene.
+    const std::size_t rendersBefore = app->materialThumbnailRenderCount();
+    app->requestAssetBrowserKindFilter("1");
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+    app->requestAssetBrowserReimportAll();
+    REQUIRE(app->tick());
+    REQUIRE(app->materialThumbnailResidentCount() == 0U);  // both released: nothing drew them this frame
+    app->requestAssetBrowserKindFilter("5");
+    REQUIRE(tickUntil(*app, [&] { return app->materialThumbnailRenderCount() >= rendersBefore + 2U; }));
+    CHECK(differingBytes(readTarget(*red), redFirst) == 0U);  // BYTE FOR BYTE, all 64 KiB
+    CHECK(differingBytes(readTarget(*green), greenFirst) == 0U);
 
     app->requestQuit();
     CHECK(app->tick() == false);

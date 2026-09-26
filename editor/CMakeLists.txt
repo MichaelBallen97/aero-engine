@@ -166,6 +166,7 @@ add_library(aero_editor_core STATIC
                                  # pair, never logs, never writes (D1-D4)
     src/default_font.cpp         # task E.4.4 -- the UI font + its CP1252 remaps (the ONLY font setup)
     src/material_card.cpp        # task E.4.5 -- the material card's model: name, swatch, rig; PURE, no GPU
+    src/material_thumbnail.cpp   # task E.4.5 -- the RENDERED material thumbnail; GPU, service pass only
 )
 add_library(aero::editor_core ALIAS aero_editor_core)
 target_include_directories(aero_editor_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)

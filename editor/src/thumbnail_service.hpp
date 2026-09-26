@@ -6,9 +6,15 @@
 // the browser's serviceThumbnails() occupied -- and inside it the order is
 // touch -> reimport clear -> superseded sweep -> EVICT -> DECODE, for the reasons the browser's
 // comments gave, which move with the code.
+//
+// task E.4.5: A SECOND PRODUCER, NOT A SECOND CACHE. One ledger, one clock, one cap, one LRU and ONE release
+// site (releaseKey) -- and two backing stores behind them: ThumbnailStore (decoded images) and
+// MaterialThumbnailRenderer (rendered materials), routed by thumbnailSourceForName in ONE walk over every
+// Absent key with one budget per producer.
 #include <aero/core/guid.hpp>
 #include <aero/editor/thumbnail_cache.hpp>
 
+#include "material_thumbnail.hpp"  // task E.4.5 -- the second backing store, held by value
 #include "thumbnail_store.hpp"
 
 #include <cstddef>
@@ -51,16 +57,32 @@ public:
     [[nodiscard]] std::size_t unavailableCount() const noexcept;
     [[nodiscard]] std::size_t residentCount() const noexcept;
     [[nodiscard]] std::size_t loadAttempts() const noexcept;
+    // task E.4.5: THE RENDER STORE's own counters. residentCount() and loadAttempts() above stay the DECODE
+    // store's -- I36, I37, I38 and I167 assert exactly that meaning -- while readyCount() and
+    // unavailableCount() stay the LEDGER's, spanning both producers, as they always meant "the editor's
+    // thumbnails". INVARIANT at the end of every service() and clear(), because each Ready key owns exactly
+    // one texture in exactly one store: residentCount() + materialResidentCount() == readyCount().
+    [[nodiscard]] std::size_t materialResidentCount() const noexcept;
+    [[nodiscard]] std::size_t materialRenderAttempts() const noexcept;  // monotonic; every produce() call
+    [[nodiscard]] bool materialThumbnailsAvailable() const noexcept;    // MaterialThumbnailRenderer::available
+    [[nodiscard]] const render::RenderTarget* materialTargetFor(const ThumbnailKey& key) const noexcept;
 
 private:
-    // "" when the record behind `key` has vanished (a rescan raced the decode) -- the caller treats an
-    // empty path as Failed, never as "try again". Reads database.root() where the browser read its own
-    // `rootUtf8`: THE SAME STRING BY CONSTRUCTION, both reconciled from project.assetsRoot() in one
-    // block (INV-A9/A16).
-    [[nodiscard]] std::string absolutePathFor(const ThumbnailKey& key, const AssetDatabase& database) const;
+    // task E.4.5: THE ONE RELEASE SITE (D3). Three callers -- the reimport clear, the superseded sweep and the
+    // LRU eviction -- and no fourth. EXACTLY ONE of its two destroys does work for any given key, because
+    // ThumbnailSource is a partition; calling both unconditionally spares every caller from knowing which
+    // producer owns the key it releases. (absolutePathFor is gone: the walk resolves the record itself,
+    // because it needs the record to route, and treats a vanished one as Failed -- that function's own
+    // contract, made explicit.)
+    void releaseKey(const ThumbnailKey& key);
+    // The ledger's four-arm mark, shared by both producers' results.
+    void markLedger(const ThumbnailKey& key, ThumbnailState state);
 
     ThumbnailLedger ledger;
     ThumbnailStore store;
+    // task E.4.5: the second backing store (D3). Declared AFTER `store`, and the constructor's init list keeps
+    // that order (-Wreorder). Destroyed BEFORE `store` and the ledger, and before ~Device either way.
+    MaterialThumbnailRenderer renders;
     std::vector<ThumbnailKey> visible;  // per-frame scratch; cleared by service()
     std::uint64_t frame = 0;            // the LRU's clock; monotonic, NEVER wall time
     bool pendingReimportClear = false;

@@ -30,10 +30,12 @@ ThumbnailSource thumbnailSourceForName(std::string_view fileName) noexcept {
 // SECOND consumer (the picker's tile) asks the identical question rather than a similar one. Guard 4
 // ("no identity for this file") is structural here: a record IS the argument.
 std::optional<ThumbnailKey> thumbnailKeyForRecord(const AssetRecord& record) noexcept {
-    // 2: .ktx2/.dds are Texture but not decodable (D7). The leaf is derived from the record's own
-    // relativePath through the tree's OWN helper, so the browser no longer needs to pass a
-    // FileEntry::name for it and nothing here re-derives a path rule that already exists.
-    if (!isThumbnailDecodable(leafOf(record.relativePath))) {
+    // 2: the ONE line task E.4.5 widens, and it widens by DELEGATION rather than by a second clause:
+    // .ktx2/.dds are Texture but have no producer (D7) and still get an ICON, and an .aeromat is now a
+    // RenderedMaterial and gets a key. The leaf is derived from the record's own relativePath through the
+    // tree's OWN helper, so the browser still passes no FileEntry::name for it and nothing here re-derives
+    // a path rule that already exists. THE OTHER FOUR GUARDS, THEIR ORDER AND THEIR COMMENTS DO NOT MOVE.
+    if (thumbnailSourceForName(leafOf(record.relativePath)) == ThumbnailSource::None) {
         return std::nullopt;
     }
     if (record.state == AssetMetaState::Invalid) {  // 5: no identity this session (D7's posture)

@@ -65,6 +65,10 @@ class Window;  // task 2.5.1 (F14): a POINTER member needs only the name -- a pr
                // below for ViewportPanel/ConsolePanel/EditorCamera. Keeps this header light (2.1.3 D9).
 }  // namespace engine::platform
 
+namespace engine::render {
+class RenderTarget;  // task E.4.5: materialThumbnailTargetFor returns a POINTER, so the NAME is enough here
+}  // namespace engine::render
+
 namespace engine::editor {
 
 class ViewportPanel;       // task 2.2.3: src-private (editor/src/viewport_panel.hpp). Only the NAME is
@@ -319,6 +323,16 @@ public:
     [[nodiscard]] std::size_t thumbnailUnavailableCount() const noexcept;
     [[nodiscard]] std::size_t thumbnailResidentCount() const noexcept;
     [[nodiscard]] std::size_t thumbnailLoadAttempts() const noexcept;
+    // task E.4.5: the RENDER store, beside the four above -- which keep their meanings: resident and load
+    // attempts are the DECODE store's, ready and unavailable are the ledger's (both producers). A moved-from
+    // app holds a null service, so every one is null-guarded exactly like those.
+    [[nodiscard]] std::size_t materialThumbnailRenderCount() const noexcept;    // produce() calls, monotonic
+    [[nodiscard]] std::size_t materialThumbnailResidentCount() const noexcept;  // rendered targets alive
+    [[nodiscard]] bool materialThumbnailsAvailable() const noexcept;            // device + cooked shaders + no failure
+    // READ-ONLY, for the GPU tier's pixel read (the MaterialPreview::outputTarget() posture): the rendered
+    // target for the record `guid` names, through its CURRENT ThumbnailKey. nullptr when there is no service,
+    // no record, no key or no target yet.
+    [[nodiscard]] const render::RenderTarget* materialThumbnailTargetFor(Guid guid) const noexcept;
 
     // task 3.1.3, Step 12: the A12 precedent, applied to the retained scan report -- I41 needs to
     // observe the orphan-delete round trip's effect on the Issues list from outside, and there is no

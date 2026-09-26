@@ -10,8 +10,9 @@
 // literal (the standing 3.1.1 rule).
 #include <aero/core/content_hash.hpp>
 #include <aero/core/guid.hpp>
-#include <aero/editor/asset_cache.hpp>  // task E.3.3 -- ImportChange, for thumbnailKeyForRecord's guard 7
-#include <aero/editor/asset_meta.hpp>   // task E.3.3 -- AssetRecord, AssetMetaState
+#include <aero/editor/asset_cache.hpp>    // task E.3.3 -- ImportChange, for thumbnailKeyForRecord's guard 7
+#include <aero/editor/asset_meta.hpp>     // task E.3.3 -- AssetRecord, AssetMetaState
+#include <aero/editor/project_files.hpp>  // task E.4.5 -- leafOf (TS7)
 #include <aero/editor/thumbnail_cache.hpp>
 
 #include <doctest/doctest.h>
@@ -978,4 +979,64 @@ TEST_CASE("TS6: thumbnailSourceForName folds ASCII case exactly as the tables it
                                                     : ThumbnailSource::None;
         CHECK((thumbnailSourceForName(name) == expected));
     }
+}
+
+TEST_CASE("TS7: a well-formed .aeromat record now yields {guid, contentHash} -- the widening, stated positively") {
+    const engine::editor::AssetRecord record = decodableRecord("mats/brass.aeromat");
+    const std::optional<ThumbnailKey> key = engine::editor::thumbnailKeyForRecord(record);
+    REQUIRE(key.has_value());
+    CHECK((key->guid == record.guid));
+    CHECK((key->hash == record.contentHash));
+    // The vocabulary agrees about who produces it -- the walk routes on this very answer.
+    CHECK((thumbnailSourceForName(engine::editor::leafOf(record.relativePath)) == ThumbnailSource::RenderedMaterial));
+    // The LEAF decides: a folder named like a material does not make its contents one.
+    CHECK_FALSE(engine::editor::thumbnailKeyForRecord(decodableRecord("m.aeromat/readme.txt")).has_value());
+    // And the icon arm is untouched: .ktx2 is still refused (TS2's first subcase, restated beside the widening).
+    CHECK_FALSE(engine::editor::thumbnailKeyForRecord(decodableRecord("tex/a.ktx2")).has_value());
+}
+
+TEST_CASE("TS8: the other four guards still refuse a .aeromat, in their order") {
+    SUBCASE("state == Invalid") {
+        engine::editor::AssetRecord record = decodableRecord("brass.aeromat");
+        record.state = engine::editor::AssetMetaState::Invalid;
+        CHECK_FALSE(engine::editor::thumbnailKeyForRecord(record).has_value());
+    }
+    SUBCASE("metaWriteFailed, with change still UpToDate -- the order is what this arm pins") {
+        engine::editor::AssetRecord record = decodableRecord("brass.aeromat");
+        record.metaWriteFailed = true;
+        CHECK((record.change == engine::editor::ImportChange::UpToDate));
+        CHECK_FALSE(engine::editor::thumbnailKeyForRecord(record).has_value());
+    }
+    SUBCASE("change == NotHashed") {
+        engine::editor::AssetRecord record = decodableRecord("brass.aeromat");
+        record.change = engine::editor::ImportChange::NotHashed;
+        CHECK_FALSE(engine::editor::thumbnailKeyForRecord(record).has_value());
+    }
+    SUBCASE("change == Unhashable") {
+        engine::editor::AssetRecord record = decodableRecord("brass.aeromat");
+        record.change = engine::editor::ImportChange::Unhashable;
+        CHECK_FALSE(engine::editor::thumbnailKeyForRecord(record).has_value());
+    }
+}
+
+TEST_CASE("TS9: each TS8 record yields a key the moment its one bad field is repaired -- TS8 is about guards") {
+    // THE ANTI-VACUITY ARM FOR TS8: without it, TS8 would pass for a fixture that no guard could ever accept
+    // (a wrong extension, a nil guid), and a lost guard would hide behind it.
+    const engine::editor::AssetRecord good = decodableRecord("brass.aeromat");
+    REQUIRE(engine::editor::thumbnailKeyForRecord(good).has_value());
+    engine::editor::AssetRecord record = good;
+    record.state = engine::editor::AssetMetaState::Invalid;
+    REQUIRE_FALSE(engine::editor::thumbnailKeyForRecord(record).has_value());
+    record.state = good.state;
+    CHECK(engine::editor::thumbnailKeyForRecord(record).has_value());
+    record.metaWriteFailed = true;
+    REQUIRE_FALSE(engine::editor::thumbnailKeyForRecord(record).has_value());
+    record.metaWriteFailed = false;
+    CHECK(engine::editor::thumbnailKeyForRecord(record).has_value());
+    record.change = engine::editor::ImportChange::NotHashed;
+    REQUIRE_FALSE(engine::editor::thumbnailKeyForRecord(record).has_value());
+    record.change = engine::editor::ImportChange::Unhashable;
+    REQUIRE_FALSE(engine::editor::thumbnailKeyForRecord(record).has_value());
+    record.change = good.change;
+    CHECK(engine::editor::thumbnailKeyForRecord(record).has_value());
 }

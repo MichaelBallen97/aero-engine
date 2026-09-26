@@ -1444,6 +1444,27 @@ std::size_t EditorApp::thumbnailResidentCount() const noexcept {
 std::size_t EditorApp::thumbnailLoadAttempts() const noexcept {
     return thumbnails != nullptr ? thumbnails->loadAttempts() : std::size_t{0};
 }
+// task E.4.5: the render store's four, the thumbnailReadyCount() shape verbatim.
+std::size_t EditorApp::materialThumbnailRenderCount() const noexcept {
+    return thumbnails != nullptr ? thumbnails->materialRenderAttempts() : std::size_t{0};
+}
+std::size_t EditorApp::materialThumbnailResidentCount() const noexcept {
+    return thumbnails != nullptr ? thumbnails->materialResidentCount() : std::size_t{0};
+}
+bool EditorApp::materialThumbnailsAvailable() const noexcept {
+    return thumbnails != nullptr && thumbnails->materialThumbnailsAvailable();
+}
+const render::RenderTarget* EditorApp::materialThumbnailTargetFor(Guid guid) const noexcept {
+    if (thumbnails == nullptr) {
+        return nullptr;
+    }
+    const AssetRecord* const record = assetDatabase.findByGuid(guid);
+    if (record == nullptr) {
+        return nullptr;
+    }
+    const std::optional<ThumbnailKey> key = thumbnailKeyForRecord(*record);
+    return key.has_value() ? thumbnails->materialTargetFor(*key) : nullptr;
+}
 std::size_t EditorApp::assetOrphanCount() const noexcept { return lastAssetReport.orphanTotal; }
 // code-review SHOULD-FIX 10: the assetOrphanCount() shape verbatim, applied to phase 7.5's own capped
 // category -- without this, a GPU-tier case has no black-box signature for report.importFailureTotal at
