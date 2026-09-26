@@ -662,6 +662,12 @@ and resolves; `EditorApp::persistProjectState` decides and writes.
   and **never** mutates. `thumbnailKeyForRecord` is the pure five-guard half, over a RECORD, because a
   picker candidate is a record and not a `(FileEntry, path)` pair; the browser keeps guards 1 (a folder)
   and 3 (no database) and composes the rest through it.
+  **Since task E.4.5:** the service owns a SECOND backing store, `MaterialThumbnailRenderer`
+  (`material_thumbnail.{hpp,cpp}`), and the pass spends TWO per-producer budgets —
+  `MAX_THUMBNAIL_DECODES_PER_TICK` and `MAX_THUMBNAIL_RENDERS_PER_TICK` — beside the card cache's own
+  `MAX_MATERIAL_CARD_READS_PER_TICK`, so there is no longer ONE shared budget. And the internal order gains
+  the card pass, which runs after `++frame` and ABOVE the device gate: `++frame` → card pass → device gate →
+  touch → reimport clear → superseded sweep → evict → the decode/render walk.
 - **Thumbnails are a strict two-phase system, and the phases live in different TUs on purpose.**
   `editor/include/aero/editor/thumbnail_cache.hpp` (`ThumbnailLedger`) is PURE — no ImGui, no
   `<filesystem>`, no GPU — and owns only the key, the `Absent`/`Ready`/`Failed`/`Skipped` state
@@ -669,6 +675,11 @@ and resolves; `EditorApp::persistProjectState` decides and writes.
   ONLY stb_image TU and the ONLY GPU-touching TU for thumbnails, and does the actual
   read → decode → resample → upload. Nothing above the pair (the panel, `EditorApp`) ever sees a
   decoded pixel or an `rhi::TextureHandle` — only `ThumbnailState`/`ThumbnailKey`.
+  **Since task E.4.5:** `material_thumbnail.cpp` is a SECOND GPU-touching TU for thumbnails (it renders, and
+  includes no stb_image of its own — its slot textures load through `loadTextureFromSourceFile`), and
+  `EditorApp::materialThumbnailTargetFor` returns a `const render::RenderTarget*` — a read-only observable
+  for the GPU tier's pixel read, whose `colorTexture()` is an `rhi::TextureHandle` — so `EditorApp` does see
+  one. No panel does, and no decoded pixel crosses either.
 - **A `ThumbnailKey` is `{Guid, ContentHash}`, never a bare `Guid`.** A record whose content hash was
   never computed this scan (skipped by budget, or `metaWriteFailed`) has no valid key at all and is
   never touched — a garbage/zero key would decode a file that was never actually hashed. Dropping
@@ -1588,6 +1599,75 @@ and resolves; `EditorApp::persistProjectState` decides and writes.
   `aero_editor_imgui_test` now carries `AERO_SHADER_TOOLS_ENABLED=1` inside its own
   `if(AERO_SHADER_TOOLS)` block, and both arms **assert** — a skip would leave AC-32 untested in the one
   configuration that can test it.
+
+## Material thumbnails and names (task E.4.5)
+
+- **A second producer, not a second cache.** `ThumbnailService` owns ONE `ThumbnailLedger` and TWO backing
+  stores — `ThumbnailStore` (decoded images) and `MaterialThumbnailRenderer` (rendered materials) — routed
+  by the total enumeration `thumbnailSourceForName`. **`releaseKey` is the one release site**: it asks both
+  stores and forgets the key, so the "never free a texture drawn this frame" protection covers both. A third
+  producer is a third `ThumbnailSource` enumerator, a third store, and a third line in `releaseKey` — the
+  `-Wswitch` diagnostic at the walk says where. `I242(a)`/`(b)` pin both.
+- **The walk sees every `Absent` key.** Tiles drawn in one frame share `lastTouched`, so the ledger offers
+  them in GUID order; asking `nextDecodes` for "decodes + renders" keys hands the walk only the oldest few,
+  which can all be one kind. `I233` pins it with GUIDs chosen through pre-written sidecars.
+- **`residentCount()` and `loadAttempts()` mean the DECODE store; `readyCount()`/`unavailableCount()` mean
+  the ledger.** The render store has its own counters, and at the end of every service pass
+  `residentCount() + materialResidentCount() == readyCount()`.
+- **The card cache (names and swatches) runs ABOVE the device gate, gates on kind BEFORE reading, and reads
+  capped** (`readFileBytes` with `MAX_THUMBNAIL_SOURCE_BYTES`). It has its own request queue,
+  `noteCardWanted` — never `noteVisible`, whose meaning E.3.3's `S34`/`I167` pin — and a card outlives its
+  picture's eviction. A `cardFor` pointer, and a view into its name, are valid for the whole draw walk.
+- **Never cache a file-NAME-dependent answer under a CONTENT key.** A rename keeps the `ThumbnailKey` (the
+  import cache is keyed by GUID and a move carries its hash), so the stem suppression runs at DRAW time
+  against the current leaf (`materialCardSubtitle`), in every host — `I242(d)` counts the calls per host.
+  `I240` renames through E.4.3's seam and pins the behaviour.
+- **A document name is user text: `TextUnformatted` or `ImDrawList::AddText`, never a format function.**
+  `I242(e)` fails any `ImGui::Text`/`TextDisabled`/`TextWrapped`/`SetTooltip`/`BulletText` call in the four
+  hosts whose first argument is not a string literal.
+  **The full set since the code-review rounds:** the first-argument functions are `Text`, `TextDisabled`,
+  `TextWrapped`, `SetTooltip`, `BulletText` and `SetItemTooltip`; `TextColored(col, fmt, ...)` and
+  `LabelText(label, fmt, ...)` take the format string SECOND, and the pin reads their second argument after
+  the first comma at parenthesis depth 0 OUTSIDE a string literal, honouring an escaped quote. A new format
+  function a host starts calling joins the matching list.
+- **The thumbnail's picture is a function of its key alone.** `produce()` takes no lighting and no tonemap;
+  the rig is `material_card.hpp`'s. `I238` re-renders under a moved scene and requires identical bytes.
+  **Except its slot textures (the code-review round):** `produce()` resolves each slot's GUID to the
+  texture's CURRENT bytes at render time, so the picture is a function of the key AND those textures. A
+  texture edit does not refresh it (R4, a recorded handoff); Reimport All refreshes it only for a tile NOT
+  drawn in the frame the clear runs, because the clear spares every key drawn that frame; otherwise it
+  refreshes once the `.aeromat`'s own bytes change, or once its key is evicted and the tile is drawn again.
+- **A material GPU fixture must set `metallicFactor` to 0** — `MaterialDocument` defaults it to glTF's 1.0,
+  and a metal with nothing to reflect renders near-black (E.1.4's trap).
+- **An Apply reaches the browser through the watcher, not a nudge** — the contract every asset kind has; with
+  Auto-refresh off, on the next Refresh. `I241` drives it at `settleMs = 0`.
+- **A material RENDER is spent only on a tile drawn THIS frame, and an off-screen `Absent` material key is
+  RELEASED, not kept pending (the code-review rounds).** The walk is oldest-touched-first, so without the first
+  half the materials a user scrolled past render ahead of the page on screen; without the second, a key met off
+  screen stays `Absent` for the session — `supersededBy` keeps a live key and `evictions` touches `Ready` keys
+  only — and every idle tick's walk scans it. The release goes through `releaseKey` and is safe because the key
+  was not drawn this frame. Decodes keep their own rule. `I243` and `TS10` pin it, through `absentCount()`.
+- **A card is stored only when the bytes read hash to its key.** The gate trusts the DATABASE's key, which is
+  stale from an external edit until the watcher's rescan, so the cache hashes what it read (`hashBytes`, the
+  scan's own hasher) and stores a card only on a match. A parse failure of the key's own bytes is sticky; a
+  failure the file's content did not decide — a mismatch, an OS read failure, a cap refusal — waits for the
+  next rescan (`database.generation()` must change). `CC11`–`CC14`.
+- **A subtitled tile's first line keeps the FILE NAME.** A search hit's caption source is `parent/leaf`, and a
+  right-elision keeps the folder and drops the name, so line one is `subtitledTileCaptionLine`: the source when
+  it fits, else an ellipsis and the longest suffix that still holds the whole leaf, else the leaf right-elided.
+  Both caption rules are pure over an injected measurer (`asset_view.hpp`) and bisect over code-point
+  boundaries, never bytes. `AV60`–`AV65`, and `I242(h)` for the call site.
+- **`produce()` answers a key that already holds a target BEFORE any read or GPU work.** It is unreachable
+  today — `releaseKey` destroys before the ledger forgets — and it is what keeps a mistake in that ordering a
+  stale picture rather than a render into, and a replacement of, a texture ImGui may be sampling this frame.
+  `I242(i)` pins the order as source text.
+- **The thumbnail's framing is its OWN constant, deliberately different from the Material panel's preview.** A
+  thumbnail is an identity cue, so the sphere must dominate the tile: `MATERIAL_THUMBNAIL_RIG`
+  (`material_card.hpp`) frames it at about 80% of the width, where `DEFAULT_MATERIAL_PREVIEW_RIG` frames about
+  27%. The sphere primitive's radius is **0.5**, not 1. Narrowing the field of view at the preview's pitch
+  puts the whole frame below the horizon, so the elevation drops with it, and the key light is re-derived for
+  the new eye with the same recipe. Never share one rig between the two: a retune of either would move the
+  other. `MB23`, `MB25`, `MB26`, `I237(c)`/`(d)` and `I242(g)` pin it.
 
 ## Drag-into-scene (task 3.1.5)
 

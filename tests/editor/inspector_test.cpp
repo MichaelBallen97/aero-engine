@@ -10,8 +10,10 @@
 #include <aero/core/guid.hpp>              // task 3.1.5: formatGuid, GuidGenerator
 #include <aero/core/log.hpp>               // task E.3.1, FD10: setLogCallback -- the seam's rejection records
 #include <aero/editor/asset_database.hpp>  // task 3.1.5: the Guid row resolves against a real scan
+#include <aero/editor/asset_view.hpp>      // task E.4.5 -- assetKindLabel, AssetKind (IR10)
 #include <aero/editor/component_ops.hpp>
 #include <aero/editor/inspector_model.hpp>
+#include <aero/editor/material_card.hpp>         // task E.4.5 -- materialCardRowText (IR10)
 #include <aero/editor/text_file.hpp>             // task 3.1.5: writeTextFileAtomic, for the scanned fixture
 #include <aero/scene/internal/world_access.hpp>  // registerComponent<T> -- the D18 proof fixture's seam
 #include <aero/scene/transform.hpp>
@@ -2111,4 +2113,95 @@ TEST_CASE("KP4: an ANNOTATED Guid field round-trips through the seam exactly as 
     const std::optional<FieldValue> untouched = readComponentField(world, e, probeId, "textureRef");
     REQUIRE(untouched.has_value());
     CHECK((std::get<engine::Guid>(*untouched) == written));
+}
+
+// ================================================================================================
+// task E.4.5 (IR9-IR12) -- guidFieldRow's appended subtitle. THE 59 CASES ABOVE ARE NOT EDITED: they call the
+// two-argument form and must pass unchanged, which is the proof that the composition is additive.
+// ================================================================================================
+namespace {
+
+// scanOneModel's shape, over a MATERIAL: the kind comes from the extension, so the bytes need only be a file.
+[[nodiscard]] std::unique_ptr<ScannedAssets> scanOneMaterial() {
+    static int counter = 0;
+    const std::filesystem::path dir =
+        std::filesystem::temp_directory_path() / ("aero_inspector_material_" + std::to_string(++counter));
+    std::error_code ec;
+    std::filesystem::remove_all(dir, ec);
+    std::filesystem::create_directories(dir / "assets", ec);
+
+    auto scanned = std::make_unique<ScannedAssets>();
+    scanned->projectRoot = utf8Of(dir);
+    scanned->assetsRoot = utf8Of(dir / "assets");
+    REQUIRE(engine::editor::writeTextFileAtomic(scanned->assetsRoot + "/brass.aeromat",
+                                                "{\n  \"version\": 1,\n  \"name\": \"Studio Brass\"\n}\n")
+                .empty());
+    const engine::editor::AssetScanReport report =
+        scanned->database.rescan(scanned->projectRoot, scanned->assetsRoot, scanned->generator);
+    REQUIRE(report.status == engine::editor::ScanStatus::Ok);
+    return scanned;
+}
+
+}  // namespace
+
+TEST_CASE("inspector: an EMPTY subtitle leaves all three Guid-row sentences byte-identical (task E.4.5, IR9)") {
+    const std::unique_ptr<ScannedAssets> scanned = scanOneModel();
+    const std::optional<engine::Guid> known = scanned->database.guidForPath("hero.glb");
+    REQUIRE(known.has_value());
+    const engine::Guid stranger{0xFEEDFACECAFEBEEFULL, 0x0123456789ABCDEFULL};
+    REQUIRE(scanned->database.findByGuid(stranger) == nullptr);
+    // Each arm against its OWN literal -- the sentence 3.1.5 shipped -- through the three-argument form with an
+    // empty subtitle (the code-review round). Comparing it against the two-argument form, as this case once did,
+    // compared one call with itself: the parameter's default IS the empty view, so no edit could redden it.
+    const engine::editor::GuidFieldRow nil =
+        engine::editor::guidFieldRow(engine::Guid{}, &scanned->database, std::string_view{});
+    CHECK(nil.text == "None");
+    CHECK_FALSE(nil.clearEnabled);
+    const engine::editor::GuidFieldRow model = engine::editor::guidFieldRow(*known, &scanned->database, "");
+    CHECK(model.text == "hero.glb  (Model)");  // IR2's own literal
+    CHECK(model.clearEnabled);
+    const engine::editor::GuidFieldRow missing =
+        engine::editor::guidFieldRow(stranger, &scanned->database, std::string_view{});
+    CHECK(missing.text == "feedface...  (missing)");
+    CHECK(missing.clearEnabled);
+}
+
+TEST_CASE("inspector: a subtitle composes through the ONE row function, before the kind (task E.4.5, IR10)") {
+    const std::unique_ptr<ScannedAssets> scanned = scanOneMaterial();
+    const std::optional<engine::Guid> guid = scanned->database.guidForPath("brass.aeromat");
+    REQUIRE(guid.has_value());
+    const engine::editor::GuidFieldRow row = engine::editor::guidFieldRow(*guid, &scanned->database, "Studio Brass");
+    // What the user reads, stated once as a literal...
+    CHECK(row.text == "brass.aeromat  -  Studio Brass  (Material)");
+    // ...and the drift pin: it IS the list row's sentence plus 3.1.5's kind suffix, so a separator changed in
+    // material_card.hpp moves both surfaces together or reddens here.
+    std::string composed = engine::editor::materialCardRowText("brass.aeromat", "Studio Brass");
+    composed += "  (";
+    composed += engine::editor::assetKindLabel(engine::editor::AssetKind::Material);
+    composed += ")";
+    CHECK(row.text == composed);
+    CHECK(row.clearEnabled);
+}
+
+TEST_CASE("inspector: a nil reference ignores any subtitle -- it names nothing (task E.4.5, IR11)") {
+    const std::unique_ptr<ScannedAssets> scanned = scanOneMaterial();
+    const engine::editor::GuidFieldRow none = engine::editor::guidFieldRow(engine::Guid{}, &scanned->database, "Name");
+    CHECK(none.text == "None");
+    CHECK_FALSE(none.clearEnabled);
+    CHECK(engine::editor::guidFieldRow(engine::Guid{}, nullptr, "Name").text == "None");
+}
+
+TEST_CASE("inspector: a missing record ignores any subtitle, database or not (task E.4.5, IR12)") {
+    const std::unique_ptr<ScannedAssets> scanned = scanOneMaterial();
+    const engine::Guid stranger{0xFEEDFACECAFEBEEFULL, 0x0123456789ABCDEFULL};
+    REQUIRE(scanned->database.findByGuid(stranger) == nullptr);
+    const std::string missing = engine::formatGuid(stranger).substr(0, 8) + "...  (missing)";
+    const engine::editor::GuidFieldRow unknown = engine::editor::guidFieldRow(stranger, &scanned->database, "Name");
+    CHECK(unknown.text == missing);
+    CHECK(unknown.clearEnabled);
+    const std::optional<engine::Guid> known = scanned->database.guidForPath("brass.aeromat");
+    REQUIRE(known.has_value());
+    const engine::editor::GuidFieldRow noDatabase = engine::editor::guidFieldRow(*known, nullptr, "Name");
+    CHECK(noDatabase.text == engine::formatGuid(*known).substr(0, 8) + "...  (missing)");
+    CHECK(noDatabase.clearEnabled);
 }

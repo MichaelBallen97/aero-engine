@@ -16,6 +16,7 @@
 // presented, we take the proven visible path. The brief flash matches rhi_swapchain_test.
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include <aero/core/content_hash.hpp>     // task 3.2.4, I78: the cache hit's own settings fingerprint
+#include <aero/core/guid.hpp>             // task E.4.5: GuidGenerator, for sidecars with chosen identities
 #include <aero/core/log.hpp>              // AERO_LOG_* + initLogging (cases B and C)
 #include <aero/editor/asset_cache.hpp>    // task 3.1.2: ImportChange, ASSET_CACHE_DIR_NAME/FILE_NAME/
                                           // GITIGNORE_NAME -- I31's index-path/gitignore-path assertions
@@ -45,6 +46,7 @@
 #include <aero/editor/transform_ops.hpp>      // task 2.4.1
 #include <aero/platform/platform.hpp>
 #include <aero/reflect/material_format.hpp>  // task 3.4.2: MaterialDocument, named directly (I84)
+#include <aero/render/render_target.hpp>     // task E.4.5: the thumbnail target's extents (I237/I238)
 #include <aero/rhi/device.hpp>
 #include <aero/scene/scene.hpp>
 #include <aero/scene/world.hpp>
@@ -11501,11 +11503,13 @@ TEST_CASE(
         CHECK(countLinesContaining(preview, "AmbientMode::DoesNotExist") == 0U);
     }
 
-    SUBCASE("(b) the editor owns EXACTLY ONE sky pass, the material preview's (task E.2.4)") {
+    SUBCASE("(b) the editor owns EXACTLY TWO sky passes, the preview's and the thumbnail's (tasks E.2.4, E.4.5)") {
         // The editor does not own a sky pass for the VIEWPORT -- SceneRenderer does, and the editor
-        // already owns a SceneRenderer. Since E.2.4 it owns exactly one of its own, in the material
-        // preview, because a preview that does not draw the scene's background cannot claim parity
-        // with a viewport that does. A THIRD file naming SkyPass is a second owner and reddens here.
+        // already owns a SceneRenderer. Since E.2.4 it owns one of its own, in the material preview,
+        // because a preview that does not draw the scene's background cannot claim parity with a
+        // viewport that does; since E.4.5 a second, in the material THUMBNAIL renderer, because a sphere
+        // on an undefined background has no readable silhouette. A FIFTH file naming SkyPass is a third
+        // owner and reddens here.
         // A sweep, not a roster, so a file added later is covered the day it lands.
         // THE NON-EMPTY CHECK IS NOT OPTIONAL: a sweep over a mistyped root reads zero files and
         // passes, which is the vacuous-grep class this tree has recorded three times.
@@ -11551,7 +11555,10 @@ TEST_CASE(
             }
         }
         std::sort(naming.begin(), naming.end());
-        const std::vector<std::string> expected{"material_preview.cpp", "material_preview.hpp"};
+        // task E.4.5: edited DELIBERATELY, in the commit that creates both files -- the header declares the
+        // `sky` member and the source calls create -- and still an EXACT set, never a `<=` bound.
+        const std::vector<std::string> expected{"material_preview.cpp", "material_preview.hpp",
+                                                "material_thumbnail.cpp", "material_thumbnail.hpp"};
         INFO("files naming SkyPass: ", naming.size());
         CHECK(naming == expected);
         // BOTH roots really were traversed, and the sweep really can find a render type: the editor
@@ -18632,6 +18639,1302 @@ TEST_CASE("editor: the Asset Browser fits its panel with 40 orphans and Issues o
     CHECK(app->assetBrowserIssueRowsDrawn() == engine::editor::MAX_REPORTED_PER_CATEGORY);
     checkFits();
     CHECK(engine::editor::fileExists(assetsDir + "gone0.png.meta"));  // opened, never confirmed
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+// ================================================================================================
+// task E.4.5 (I232-I242) -- material thumbnails, cards and names, through real frames.
+//
+// EVERY CASE HERE USES I43/I49's CI-PROVEN GEOMETRY: a 1280x800 window with Console hidden, so "Assets" owns
+// the Bottom slot and its first row of tiles draws every tick. CI's macOS runner delivers SHORTER windows
+// than requested (81ad65c), so every folder below fits in ONE row of at most five tiles, and every claim about
+// a tile is preceded by a REQUIRE on a production count -- a tile that was not drawn is a loud failure here,
+// never a vacuous pass. NO PREPROCESSOR CONDITIONAL: a case whose truth depends on a render reads
+// materialThumbnailsAvailable() and asserts BOTH arms (I232 pins that answer against the preview's).
+// ================================================================================================
+namespace {
+
+// A canonical .aeromat for a DIELECTRIC of the given name and base colour. metallicFactor 0 is load-bearing:
+// MaterialDocument defaults it to glTF's 1.0, and a metal with nothing to reflect renders near-black (the
+// E.1.4 trap). writeMaterialText's output is canonical, so it carries no unknown key and parseMaterial logs
+// nothing for it.
+[[nodiscard]] std::string materialText(std::string_view name, engine::Vec3 baseColor) {
+    engine::MaterialDocument document;
+    document.name = std::string(name);
+    document.baseColorFactor = engine::Vec4{baseColor.x, baseColor.y, baseColor.z, 1.0F};
+    document.metallicFactor = 0.0F;
+    document.roughnessFactor = 0.6F;
+    return engine::writeMaterialText(document);
+}
+
+[[nodiscard]] std::string_view bytesOf(const auto& array) {
+    return {reinterpret_cast<const char*>(array.data()), array.size()};
+}
+
+// Writes an asset AND a sidecar naming `guid`, so the scan adopts that identity. The only way a GPU-tier case
+// can choose the ledger's key order: tiles drawn in one frame share lastTouched, and the ledger then orders
+// them by GUID.
+void writeAssetWithGuid(const std::string& assetsRoot, const std::string& relativePath, std::string_view bytes,
+                        engine::Guid guid) {
+    REQUIRE(engine::editor::writeTextFileAtomic(assetsRoot + "/" + relativePath, bytes).empty());
+    REQUIRE(engine::editor::writeTextFileAtomic(assetsRoot + "/" + relativePath + ".meta",
+                                                engine::editor::writeMetaText(guid))
+                .empty());
+}
+
+[[nodiscard]] std::optional<engine::editor::EditorApp> makeThumbnailApp(engine::rhi::Device& device,
+                                                                        engine::platform::Window& window,
+                                                                        engine::platform::Context& ctx,
+                                                                        const std::string& projectRoot) {
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(device, window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = projectRoot,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    if (app.has_value()) {
+        app->panels().setVisible("Console", false);  // so "Assets" owns the Bottom slot (2.2.4's C5)
+    }
+    return app;
+}
+
+// Ticks until `done()` holds, at most `maxTicks` times -- a hard ceiling, so a stalled producer FAILS the case
+// instead of hanging the suite (tickSweeps' shape, over a predicate).
+template <typename Predicate>
+[[nodiscard]] bool tickUntil(engine::editor::EditorApp& app, Predicate done, int maxTicks = 120) {
+    for (int i = 0; i < maxTicks; ++i) {
+        if (done()) {
+            return true;
+        }
+        if (!app.tick()) {
+            return false;
+        }
+    }
+    return done();
+}
+
+// The ledger's identity (§4.2): each Ready key owns exactly one texture in exactly one store.
+[[nodiscard]] bool residentsMatchReady(const engine::editor::EditorApp& app) {
+    return app.thumbnailResidentCount() + app.materialThumbnailResidentCount() == app.thumbnailReadyCount();
+}
+
+// Both producers have been asked at least once -- a decode attempt AND a render attempt. A named predicate
+// rather than an inline lambda body, so the waits that use it are short single-line statements.
+[[nodiscard]] bool bothProducersRan(const engine::editor::EditorApp& app) {
+    return app.thumbnailLoadAttempts() >= 1U && app.materialThumbnailRenderCount() >= 1U;
+}
+
+// A render attempt AND a card read have both happened -- I236's wait, named for the same reason.
+[[nodiscard]] bool renderedAndCardRead(const engine::editor::EditorApp& app) {
+    return app.materialThumbnailRenderCount() > 0U && app.materialCardReadCount() > 0U;
+}
+
+// A card exists AND a render attempt has happened -- I240's wait.
+[[nodiscard]] bool cardAndRenderExist(const engine::editor::EditorApp& app) {
+    return app.materialCardCount() >= 1U && app.materialThumbnailRenderCount() >= 1U;
+}
+
+struct Texel {
+    int r = 0;
+    int g = 0;
+    int b = 0;
+    int a = 0;
+};
+
+// Reads a rendered thumbnail back. BLOCKING, and legal HERE only: readbackTexture is a test-and-tooling path
+// (device.hpp), which is exactly why the EDITOR never calls it (D3's refused route 2).
+[[nodiscard]] std::vector<std::uint8_t> readThumbnail(engine::rhi::Device& device,
+                                                      const engine::render::RenderTarget& target) {
+    const engine::rhi::Extent2D extent = target.textureExtent();
+    REQUIRE(extent.width == engine::editor::THUMBNAIL_EDGE_TEXELS);
+    REQUIRE(extent.height == engine::editor::THUMBNAIL_EDGE_TEXELS);
+    REQUIRE(target.drawExtent().width == extent.width);  // quantum 1: no margin to mistake for content
+    REQUIRE(target.drawExtent().height == extent.height);
+    std::vector<std::byte> bytes(static_cast<std::size_t>(extent.width) * extent.height * 4U, std::byte{0xAB});
+    REQUIRE(device.readbackTexture(target.colorTexture(), 0U, bytes));
+    std::vector<std::uint8_t> out(bytes.size());
+    std::transform(bytes.begin(), bytes.end(), out.begin(), [](std::byte b) { return static_cast<std::uint8_t>(b); });
+    return out;
+}
+
+[[nodiscard]] Texel texelAt(const std::vector<std::uint8_t>& bytes, std::uint32_t row, std::uint32_t column) {
+    const std::size_t base = ((static_cast<std::size_t>(row) * engine::editor::THUMBNAIL_EDGE_TEXELS) + column) * 4U;
+    return Texel{.r = bytes[base], .g = bytes[base + 1U], .b = bytes[base + 2U], .a = bytes[base + 3U]};
+}
+
+constexpr std::uint32_t THUMB_LAST = engine::editor::THUMBNAIL_EDGE_TEXELS - 1U;
+constexpr std::uint32_t THUMB_CENTRE = engine::editor::THUMBNAIL_EDGE_TEXELS / 2U;
+
+}  // namespace
+
+TEST_CASE("editor: a material thumbnail is RENDERED, never decoded, and the availabilities agree (task E.4.5, I232)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "material thumbnails i232", .width = 1280, .height = 800});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/brass.aeromat",
+                                                materialText("Studio Brass", engine::Vec3{0.8F, 0.5F, 0.2F}))
+                .empty());
+    std::optional<engine::editor::EditorApp> app = makeThumbnailApp(*device, *window, ctx, created.root);
+    REQUIRE(app.has_value());
+    app->panels().setVisible("Inspector", false);  // so Material wins the Right node and its preview engages
+    REQUIRE(app->materialThumbnailRenderCount() == 0U);
+
+    // (a) PRODUCED ONCE, AND BY THE RENDER STORE. The first productive tick is also the proof the tile drew.
+    REQUIRE(tickUntil(*app, [&] { return app->materialThumbnailRenderCount() > 0U; }));
+    for (int i = 0; i < 10; ++i) {
+        REQUIRE(app->tick());
+    }
+    CHECK(app->materialThumbnailRenderCount() == 1U);  // attempted ONCE, ever -- sticky in both arms
+    CHECK(app->thumbnailLoadAttempts() == 0U);         // the DECODE store never saw it (seed S1)
+    CHECK(app->thumbnailResidentCount() == 0U);
+    CHECK(residentsMatchReady(*app));
+
+    // (b) THE TWO AVAILABILITIES AGREE once the preview has engaged. This is the one cross-check that stops a
+    //     shader-ON build from drifting into the shader-OFF arm of every render case below without reddening.
+    app->requestAssetBrowserSelectEntry("brass.aeromat");
+    for (int i = 0; i < 4; ++i) {
+        REQUIRE(app->tick());
+    }
+    REQUIRE(app->materialTargetPath() == "brass.aeromat");
+    CHECK(app->materialThumbnailsAvailable() == app->materialPreviewAvailable());
+    const std::optional<engine::Guid> guid = app->assetGuidForPath("brass.aeromat");
+    REQUIRE(guid.has_value());
+    if (app->materialThumbnailsAvailable()) {
+        CHECK(app->materialThumbnailResidentCount() == 1U);
+        CHECK(app->thumbnailReadyCount() == 1U);
+        CHECK(app->thumbnailUnavailableCount() == 0U);
+        CHECK(app->materialThumbnailTargetFor(*guid) != nullptr);
+        // The code-review round: and a tile BINDS it -- through the service's own lookup, which is what every
+        // host calls. The target existing is not the same claim (seed S55).
+        CHECK(app->materialThumbnailBound(*guid));
+    } else {
+        // -DAERO_SHADER_TOOLS=OFF: attempted once, Skipped, sticky -- and counted "unavailable" (C11).
+        CHECK(app->materialThumbnailResidentCount() == 0U);
+        CHECK(app->thumbnailReadyCount() == 0U);
+        CHECK(app->thumbnailUnavailableCount() == 1U);
+        CHECK(app->materialThumbnailTargetFor(*guid) == nullptr);
+        CHECK_FALSE(app->materialThumbnailBound(*guid));  // the tile draws the swatch
+    }
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: one walk spends two budgets, and three older materials starve no image (task E.4.5, I233)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "material thumbnails i233", .width = 1280, .height = 800});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    const std::string assetsRoot = created.root + "/assets";
+    // THE LAYOUT SETTLES FIRST, WITH NOTHING TO DRAW. The dockspace's very first frame draws the Bottom slot at
+    // a provisional size, and only the first tile(s) of the row are drawn on it -- measured: with the five
+    // files present at open, tick 0 rendered one material and decoded NOTHING, even with the images holding
+    // the two lowest GUIDs. So the project opens EMPTY, three ticks settle the layout, and only then are the
+    // five files written and rescanned -- the rescan and the listing invalidation both run in the reconcile
+    // block BEFORE the draw walk, so that walk draws all five tiles in ONE settled frame.
+    //
+    // AND ALL FIVE MUST FIT ONE ROW, SO THE TILES ARE SMALL. macOS CI run 36238862338 failed here with
+    // `d - decodes == 2U` and the final `decodes == 2U` both reading 1: its Assets grid held FOUR Medium columns,
+    // so p2.png -- the fifth tile, alphabetically last -- wrapped to a second row the runner's short panel never
+    // showed, and was never drawn in 60 ticks. From the real constants at font size 13 and ItemSpacing.x 8: a
+    // Medium tile is 6 * 13 + 2 * 3.25 = 84.5 wide, so four columns need 4 * 92.5 - 8 = 362 of contents width
+    // and five need 454.5 -- the runner gave at least 362 and less than 454.5. A Small tile is 58.5 wide, and
+    // five need 5 * 66.5 - 8 = 324.5 (at a doubled style spacing of 16, the same argument reads 386 against
+    // 356.5). Reproduced locally in a 1100-wide window (407 of contents width: four Medium columns, the same
+    // `1 == 2`); Small fits six there. A still-narrower runner fails the final counts below with a clear value,
+    // never vacuously.
+    std::optional<engine::editor::EditorApp> app = makeThumbnailApp(*device, *window, ctx, created.root);
+    REQUIRE(app.has_value());
+    app->requestAssetBrowserTileSize(engine::editor::TileSize::Small);  // applied by the first tick's draw walk
+    for (int i = 0; i < 3; ++i) {
+        REQUIRE(app->tick());
+    }
+    // THE ORDER IS THE FIXTURE. All five tiles are drawn in one frame, so they share lastTouched and the ledger
+    // offers them in GUID order: the three materials take the three LOWEST GUIDs, so any walk that looks at
+    // only the three oldest keys (the spec's sum) or at two per-budget prefixes (seed S5) finds no image.
+    std::array<engine::Guid, 5> guids{};
+    engine::GuidGenerator generator{0xE45A233ULL};  // fixed seed -- no entropy source anywhere
+    for (engine::Guid& guid : guids) {
+        guid = generator.next();
+    }
+    std::sort(guids.begin(), guids.end());
+    writeAssetWithGuid(assetsRoot, "m1.aeromat", materialText("One", engine::Vec3{0.8F, 0.1F, 0.1F}), guids[0]);
+    writeAssetWithGuid(assetsRoot, "m2.aeromat", materialText("Two", engine::Vec3{0.1F, 0.8F, 0.1F}), guids[1]);
+    writeAssetWithGuid(assetsRoot, "m3.aeromat", materialText("Three", engine::Vec3{0.1F, 0.1F, 0.8F}), guids[2]);
+    writeAssetWithGuid(assetsRoot, "p1.png", bytesOf(TINY_PNG_RED), guids[3]);
+    writeAssetWithGuid(assetsRoot, "p2.png", bytesOf(TINY_PNG_GREEN), guids[4]);
+    app->requestAssetRescan();
+
+    std::size_t renders = app->materialThumbnailRenderCount();
+    std::size_t decodes = app->thumbnailLoadAttempts();
+    REQUIRE(renders == 0U);
+    REQUIRE(decodes == 0U);
+    bool sawFirstProduction = false;
+    for (int i = 0; i < 60; ++i) {
+        REQUIRE(app->tick());
+        const std::size_t r = app->materialThumbnailRenderCount();
+        const std::size_t d = app->thumbnailLoadAttempts();
+        CHECK(r - renders <= engine::editor::MAX_THUMBNAIL_RENDERS_PER_TICK);  // AC-9, the render half
+        CHECK(d - decodes <= engine::editor::MAX_THUMBNAIL_DECODES_PER_TICK);  // AC-9, the decode half
+        if (!sawFirstProduction && (r != renders || d != decodes)) {
+            sawFirstProduction = true;
+            // ONE WALK, TWO BUDGETS: both images decode on the SAME tick the first material renders, although
+            // three materials sort ahead of them.
+            CHECK(r - renders == 1U);  // a LITERAL 1, not the constant: a retune edits this line too (seed S31)
+            CHECK(d - decodes == 2U);
+        }
+        renders = r;
+        decodes = d;
+        CHECK(residentsMatchReady(*app));
+    }
+    REQUIRE(sawFirstProduction);  // ANTI-VACUITY: the tiles were drawn and their keys walked
+    CHECK(renders == 3U);         // each material exactly once, one per tick
+    CHECK(decodes == 2U);
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: releaseKey releases the right store, and never a key on screen (task E.4.5, I234)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "material thumbnails i234", .width = 1280, .height = 800});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/brass.aeromat",
+                                                materialText("Brass", engine::Vec3{0.8F, 0.5F, 0.2F}))
+                .empty());
+    REQUIRE(writeBinaryFixture(created.root + "/assets/tex.png", TINY_PNG_BLUE.data(), TINY_PNG_BLUE.size()).empty());
+    std::optional<engine::editor::EditorApp> app = makeThumbnailApp(*device, *window, ctx, created.root);
+    REQUIRE(app.has_value());
+    REQUIRE(tickUntil(*app, [&] { return bothProducersRan(*app); }));
+    const bool rendered = app->materialThumbnailsAvailable();
+    const std::size_t renderedResident = rendered ? 1U : 0U;
+    REQUIRE(app->thumbnailResidentCount() == 1U);
+    REQUIRE(app->materialThumbnailResidentCount() == renderedResident);
+
+    // THE RELEASE PATH, DRIVEN AT A CAP OF ZERO. Reimport All drains as ledger.evictions(0, frame) -- the LRU's
+    // own function -- inside service(), AFTER the touch loop, so it releases every Ready key NOT drawn this
+    // frame and nothing else. MAX_THUMBNAILS_RESIDENT has no seam (C14); this is the same code at cap 0.
+    //
+    // (a) ONLY THE IMAGE ON SCREEN (kind filter "1" = Texture). The material's texture is released through
+    //     releaseKey's RENDER arm (seed S16); the image, touched this frame, is not released and not re-decoded.
+    app->requestAssetBrowserKindFilter("1");
+    REQUIRE(app->tick());  // the filter lands at the end of this frame's draw walk
+    REQUIRE(app->tick());  // ...and this frame draws with it
+    const std::size_t decodesBefore = app->thumbnailLoadAttempts();
+    app->requestAssetBrowserReimportAll();
+    REQUIRE(app->tick());
+    CHECK(app->thumbnailResidentCount() == 1U);            // PROTECTED: on screen this frame
+    CHECK(app->thumbnailLoadAttempts() == decodesBefore);  // ...so never re-decoded
+    CHECK(app->materialThumbnailResidentCount() == 0U);    // RELEASED
+    CHECK(residentsMatchReady(*app));
+
+    // (b) ONLY THE MATERIAL ON SCREEN (kind filter "5" = Material). Its key was forgotten in (a), so it is
+    //     produced again -- then the reimport clear must release the IMAGE (releaseKey's DECODE arm, seed S17)
+    //     and must NOT touch the rendered key drawn this frame (AC-10 for a rendered key).
+    const std::size_t rendersBefore = app->materialThumbnailRenderCount();
+    app->requestAssetBrowserKindFilter("5");
+    for (int i = 0; i < 10; ++i) {
+        REQUIRE(app->tick());
+    }
+    // Rendered: produced again once. Shader-OFF: its key is Skipped (sticky) and was never Ready, so the
+    // reimport clear left it alone and it is not produced again.
+    CHECK(app->materialThumbnailRenderCount() == rendersBefore + renderedResident);
+    REQUIRE(app->materialThumbnailResidentCount() == renderedResident);
+    const std::size_t rendersSettled = app->materialThumbnailRenderCount();
+    app->requestAssetBrowserReimportAll();
+    REQUIRE(app->tick());
+    CHECK(app->thumbnailResidentCount() == 0U);                        // RELEASED
+    CHECK(app->materialThumbnailResidentCount() == renderedResident);  // PROTECTED
+    CHECK(app->materialThumbnailRenderCount() == rendersSettled);      // ...so never re-rendered
+    CHECK(residentsMatchReady(*app));
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: every thumbnail and slot texture is released before ~Device (task E.4.5, I235)") {
+    // I134's SHAPE, for the second store. rhi::Device exposes no live-object accounting, so what this case reads
+    // is ~Device's own leak diagnostics -- and the callback has to OUTLIVE the Device, which is why the guard is
+    // declared first and the device lives in an inner scope. The material binds a REAL texture in its base
+    // colour slot, so a produce() that forgot to release its slot textures leaves one behind (seed S19).
+    struct LogCallbackGuard {
+        ~LogCallbackGuard() { engine::setLogCallback({}); }
+        LogCallbackGuard() = default;
+        LogCallbackGuard(const LogCallbackGuard&) = delete;
+        LogCallbackGuard& operator=(const LogCallbackGuard&) = delete;
+        LogCallbackGuard(LogCallbackGuard&&) = delete;
+        LogCallbackGuard& operator=(LogCallbackGuard&&) = delete;
+    };
+    std::size_t leakedTextureWarnings = 0;
+    std::size_t anyLeakWarnings = 0;
+    std::size_t probeRecords = 0;  // the callback's own liveness -- zero leaks and "never called" look alike
+
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    {
+        std::optional<engine::platform::Window> window =
+            ctx.createWindow({.title = "material thumbnails i235", .width = 1280, .height = 800});
+        REQUIRE(window.has_value());
+        std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+        if (!device) {
+            AERO_SKIP_OR_FAIL("no GPU device");
+        }
+        const std::string locationA = uniqueProjectLocation();
+        const engine::editor::ProjectCreateOutcome createdA =
+            engine::editor::createProject(locationA, "GameA", "0.1.0");
+        REQUIRE(createdA.problem == engine::editor::CreateProblem::Ok);
+        const std::string locationB = uniqueProjectLocation();
+        const engine::editor::ProjectCreateOutcome createdB =
+            engine::editor::createProject(locationB, "GameB", "0.1.0");
+        REQUIRE(createdB.problem == engine::editor::CreateProblem::Ok);
+
+        engine::GuidGenerator generator{0xE45A235ULL};
+        const engine::Guid textureGuid = generator.next();
+        writeAssetWithGuid(createdA.root + "/assets", "tex.png", bytesOf(TINY_PNG_RED), textureGuid);
+        engine::MaterialDocument painted;
+        painted.name = "Painted";
+        painted.baseColorFactor = engine::Vec4::one();  // WHITE -- any red at the centre is the TEXTURE's
+        painted.metallicFactor = 0.0F;
+        painted.roughnessFactor = 0.6F;
+        painted.baseColor = engine::MaterialTextureSlot{.guid = textureGuid};
+        REQUIRE(engine::editor::writeTextFileAtomic(createdA.root + "/assets/painted.aeromat",
+                                                    engine::writeMaterialText(painted))
+                    .empty());
+
+        std::optional<engine::editor::EditorApp> app = makeThumbnailApp(*device, *window, ctx, createdA.root);
+        REQUIRE(app.has_value());
+        REQUIRE(tickUntil(*app, [&] { return bothProducersRan(*app); }));
+        const bool rendered = app->materialThumbnailsAvailable();
+        CHECK(app->thumbnailResidentCount() == 1U);  // the decode store holds tex.png's own thumbnail
+        CHECK(app->materialThumbnailResidentCount() == (rendered ? 1U : 0U));
+        if (rendered) {
+            // ANTI-VACUITY for the slot texture: a WHITE material whose sphere is RED really did load and bind
+            // the red PNG, so a slot texture really was created -- and really must have been released.
+            const std::optional<engine::Guid> materialGuid = app->assetGuidForPath("painted.aeromat");
+            REQUIRE(materialGuid.has_value());
+            const engine::render::RenderTarget* const target = app->materialThumbnailTargetFor(*materialGuid);
+            REQUIRE(target != nullptr);
+            const Texel centre = texelAt(readThumbnail(*device, *target), THUMB_CENTRE, THUMB_CENTRE);
+            CAPTURE(centre.r);
+            CAPTURE(centre.g);
+            CAPTURE(centre.b);
+            CHECK(centre.r > centre.g + 32);
+            CHECK(centre.r > centre.b + 32);
+        }
+
+        // THE SWAP: EditorApp's reconcile calls ThumbnailService::clear(), which now clears both stores.
+        app->requestOpenProject(createdB.root);
+        REQUIRE(app->tick());
+        REQUIRE(app->tick());
+        CHECK(app->thumbnailResidentCount() == 0U);
+        CHECK(app->materialThumbnailResidentCount() == 0U);
+        CHECK(app->thumbnailReadyCount() == 0U);
+
+        app->requestQuit();
+        CHECK(app->tick() == false);
+        app.reset();  // ~EditorApp -> ~ThumbnailService -> ~MaterialThumbnailRenderer, all before ~Device
+
+        // THE CALLBACK IS INSTALLED HERE, AFTER THE LAST EditorApp IS GONE: setLogCallback is ONE global slot and
+        // EditorApp claims it for the Console panel at create() and clears it at teardown (E.2.3's rule).
+        const LogCallbackGuard detachOnExit;
+        engine::setLogCallback([&](const engine::LogRecord& record) {
+            if (record.level < engine::LogLevel::Warn) {
+                return;
+            }
+            if (record.message.find("leaked texture") != std::string_view::npos) {
+                ++leakedTextureWarnings;
+            }
+            if (record.message.find("leaked") != std::string_view::npos) {
+                ++anyLeakWarnings;
+            }
+            if (record.message.find("i235 liveness probe") != std::string_view::npos) {
+                ++probeRecords;
+            }
+        });
+        AERO_LOG_WARN("i235 liveness probe -- the log callback is installed and receiving");
+        REQUIRE(probeRecords == 1U);
+        device.reset();  // ~Device HERE, while the callback above is still installed
+    }
+    engine::setLogCallback({});
+    CHECK(leakedTextureWarnings == 0U);
+    CHECK(anyLeakWarnings == 0U);
+}
+
+TEST_CASE("editor: the rendered thumbnail is a lit sphere in front of the studio's sky (task E.4.5, I237)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "material thumbnails i237", .width = 1280, .height = 800});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/red.aeromat",
+                                                materialText("Red", engine::Vec3{0.9F, 0.05F, 0.05F}))
+                .empty());
+    std::optional<engine::editor::EditorApp> app = makeThumbnailApp(*device, *window, ctx, created.root);
+    REQUIRE(app.has_value());
+    REQUIRE(tickUntil(*app, [&] { return app->materialThumbnailRenderCount() > 0U; }));
+    const std::optional<engine::Guid> guid = app->assetGuidForPath("red.aeromat");
+    REQUIRE(guid.has_value());
+    const engine::render::RenderTarget* const target = app->materialThumbnailTargetFor(*guid);
+    if (!app->materialThumbnailsAvailable()) {
+        CHECK(target == nullptr);  // -DAERO_SHADER_TOOLS=OFF: no picture, only the swatch (AC-4's permanent arm)
+    } else {
+        REQUIRE(target != nullptr);
+        const std::vector<std::uint8_t> bytes = readThumbnail(*device, *target);
+        const Texel topLeft = texelAt(bytes, 0U, 0U);
+        const Texel topRight = texelAt(bytes, 0U, THUMB_LAST);
+        const Texel bottomLeft = texelAt(bytes, THUMB_LAST, 0U);
+        const Texel bottomRight = texelAt(bytes, THUMB_LAST, THUMB_LAST);
+        const Texel centre = texelAt(bytes, THUMB_CENTRE, THUMB_CENTRE);
+        for (const Texel& texel : {topLeft, topRight, bottomLeft, bottomRight, centre}) {
+            CHECK(texel.a == 255);  // opaque everywhere: the resolve writes a literal alpha
+        }
+        // (a) THE STUDIO'S SKY, RIGHT WAY UP. The thumbnail's rig (MATERIAL_THUMBNAIL_RIG since the code-review
+        //     round) looks down about 8 degrees with a 30-degree field of view, so the top corners sit near the
+        //     bright horizon band and the bottom corners on the dark ground -- a vertically flipped target, or no
+        //     sky at all, fails this. The gradient is vertical, so the two top corners (and the two bottom ones)
+        //     mirror each other. These assertions are the ones the preview's framing passed, UNEDITED.
+        CAPTURE(topLeft.r);
+        CAPTURE(bottomLeft.r);
+        CHECK(topLeft.r + topLeft.g + topLeft.b > bottomLeft.r + bottomLeft.g + bottomLeft.b + 60);
+        CHECK(std::abs(topLeft.r - topRight.r) <= 2);
+        CHECK(std::abs(topLeft.b - topRight.b) <= 2);
+        CHECK(std::abs(bottomLeft.g - bottomRight.g) <= 2);
+        // (b) A RED DIELECTRIC IN THE MIDDLE -- lit by the key light, so red dominates by a wide margin. A sky
+        //     drawn over the sphere (seed S22), or a render that ignored the document's own factors (S20),
+        //     fails this.
+        CAPTURE(centre.r);
+        CAPTURE(centre.g);
+        CAPTURE(centre.b);
+        CHECK(centre.r >= 96);
+        CHECK(centre.r > centre.g + 32);
+        CHECK(centre.r > centre.b + 32);
+        // (c) THE SPHERE FILLS THE TILE (a framing decision, the code-review round). On the centre row, 18% of
+        //     the way in is INSIDE a sphere about 80% of the width across -- and outside the preview rig's, about
+        //     27% -- while 3% of the way in is still the backdrop. Measured: 102 of 128 texels across, from 13 to
+        //     114. Seed S68 (produce() back on the preview's rig) fails the first; a sphere grown past the frame
+        //     fails the second.
+        const auto redDominant = [](const Texel& texel) { return texel.r > texel.g + 32 && texel.r > texel.b + 32; };
+        const auto column = [](float fraction) {
+            return static_cast<std::uint32_t>(fraction * static_cast<float>(engine::editor::THUMBNAIL_EDGE_TEXELS));
+        };
+        const Texel inside = texelAt(bytes, THUMB_CENTRE, column(0.18F));
+        const Texel backdrop = texelAt(bytes, THUMB_CENTRE, column(0.03F));
+        CAPTURE(inside.r);
+        CAPTURE(inside.g);
+        CAPTURE(backdrop.r);
+        CAPTURE(backdrop.g);
+        CHECK(redDominant(inside));
+        CHECK_FALSE(redDominant(backdrop));
+        // (d) THE HORIZON CROSSES THE UPPER HALF. The horizon colour is the gradient's brightest, so down a
+        //     column that never meets the sphere the brightest texel IS the horizon -- measured at row 30. The
+        //     corner arm in (a) cannot see a horizon pushed just above the frame, because the ground brightens
+        //     toward it: the preview's 21.8-degree pitch at this 30-degree field of view (seed S70) still passes
+        //     (a) while this texel sits on row 0.
+        const std::uint32_t edge = column(0.02F);
+        std::uint32_t brightestRow = 0;
+        int brightestSum = -1;
+        for (std::uint32_t row = 0; row <= THUMB_LAST; ++row) {
+            const Texel texel = texelAt(bytes, row, edge);
+            if (texel.r + texel.g + texel.b > brightestSum) {
+                brightestSum = texel.r + texel.g + texel.b;
+                brightestRow = row;
+            }
+        }
+        CAPTURE(brightestRow);
+        CHECK(brightestRow > 0U);
+        CHECK(brightestRow < THUMB_CENTRE);
+    }
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: a thumbnail is a function of its key alone, whatever the scene's light (task E.4.5, I238)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "material thumbnails i238", .width = 1280, .height = 800});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/red.aeromat",
+                                                materialText("Red", engine::Vec3{0.9F, 0.05F, 0.05F}))
+                .empty());
+    REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/green.aeromat",
+                                                materialText("Green", engine::Vec3{0.05F, 0.9F, 0.05F}))
+                .empty());
+    std::optional<engine::editor::EditorApp> app = makeThumbnailApp(*device, *window, ctx, created.root);
+    REQUIRE(app.has_value());
+    REQUIRE(tickUntil(*app, [&] { return app->materialThumbnailRenderCount() >= 2U; }));
+    const std::optional<engine::Guid> red = app->assetGuidForPath("red.aeromat");
+    const std::optional<engine::Guid> green = app->assetGuidForPath("green.aeromat");
+    REQUIRE(red.has_value());
+    REQUIRE(green.has_value());
+    if (!app->materialThumbnailsAvailable()) {
+        CHECK(app->materialThumbnailTargetFor(*red) == nullptr);
+        CHECK(app->materialThumbnailTargetFor(*green) == nullptr);
+        app->requestQuit();
+        CHECK(app->tick() == false);
+        app.reset();
+        return;
+    }
+    const auto readTarget = [&](engine::Guid guid) {
+        const engine::render::RenderTarget* const target = app->materialThumbnailTargetFor(guid);
+        REQUIRE(target != nullptr);
+        return readThumbnail(*device, *target);
+    };
+    const auto differingBytes = [](const std::vector<std::uint8_t>& a, const std::vector<std::uint8_t>& b) {
+        REQUIRE(a.size() == b.size());
+        std::size_t differing = 0;
+        for (std::size_t i = 0; i < a.size(); ++i) {
+            differing += a[i] != b[i] ? 1U : 0U;
+        }
+        return differing;
+    };
+    const std::vector<std::uint8_t> redFirst = readTarget(*red);
+    const std::vector<std::uint8_t> greenFirst = readTarget(*green);
+    // DISCRIMINATION: two materials that differ only in base colour are two different pictures -- the
+    // anti-vacuity arm for the equality below, which a producer that ignored the document would also pass.
+    CHECK(differingBytes(redFirst, greenFirst) > 0U);
+
+    // MOVE THE SCENE: a brighter, redder sun and a different sky. The viewport sees all of it; a thumbnail keyed
+    // on (guid, contentHash) must see none of it (AC-12, seed S24).
+    engine::World& world = app->world();
+    std::size_t moved = 0;
+    world.eachEntity([&](engine::Entity e) {
+        if (auto* const light = world.get<engine::DirectionalLight>(e); light != nullptr) {
+            light->intensity = 6.0F;
+            light->color = engine::Vec3{1.0F, 0.2F, 0.2F};
+            ++moved;
+        }
+        if (auto* const environment = world.get<engine::Environment>(e); environment != nullptr) {
+            environment->skyColor = engine::Vec3{1.0F, 0.0F, 0.0F};
+            ++moved;
+        }
+    });
+    REQUIRE(moved == 2U);  // ANTI-VACUITY: the default scene's sun and environment really were changed
+
+    // RE-PRODUCE THE SAME KEYS: filter them off screen (Texture -- this project has none), let the reimport clear
+    // release both, then bring them back. Each is rendered a second time, from scratch, under the moved scene.
+    const std::size_t rendersBefore = app->materialThumbnailRenderCount();
+    app->requestAssetBrowserKindFilter("1");
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+    app->requestAssetBrowserReimportAll();
+    REQUIRE(app->tick());
+    REQUIRE(app->materialThumbnailResidentCount() == 0U);  // both released: nothing drew them this frame
+    app->requestAssetBrowserKindFilter("5");
+    REQUIRE(tickUntil(*app, [&] { return app->materialThumbnailRenderCount() >= rendersBefore + 2U; }));
+    CHECK(differingBytes(readTarget(*red), redFirst) == 0U);  // BYTE FOR BYTE, all 64 KiB
+    CHECK(differingBytes(readTarget(*green), greenFirst) == 0U);
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: a malformed .aeromat is read once and rendered once, ever (task E.4.5, I236)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "material thumbnails i236", .width = 1280, .height = 800});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    const std::string badPath = created.root + "/assets/bad.aeromat";
+    REQUIRE(engine::editor::writeTextFileAtomic(badPath, "{ this is not a material").empty());
+    std::optional<engine::editor::EditorApp> app = makeThumbnailApp(*device, *window, ctx, created.root);
+    REQUIRE(app.has_value());
+    REQUIRE(tickUntil(*app, [&] { return renderedAndCardRead(*app); }));
+    for (int i = 0; i < 30; ++i) {
+        REQUIRE(app->tick());  // the tile stays on screen and keeps asking, every one of these frames
+    }
+    CHECK(app->materialThumbnailRenderCount() == 1U);  // STICKY in the ledger: Failed, or Skipped with no shaders
+    CHECK(app->materialCardReadCount() == 1U);         // STICKY in the card cache (seed S13)
+    CHECK(app->materialCardCount() == 0U);
+    CHECK(app->materialThumbnailResidentCount() == 0U);
+    CHECK(app->thumbnailUnavailableCount() == 1U);  // the footer's "1 unavailable", in both configurations
+    CHECK(residentsMatchReady(*app));
+    const std::optional<engine::Guid> guid = app->assetGuidForPath("bad.aeromat");
+    REQUIRE(guid.has_value());
+    CHECK(app->materialSubtitleFor(*guid).empty());  // no card, no name -- and nothing derived from "bad"
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: a rename keeps the key, and the subtitle follows the new name (task E.4.5, I240)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "material names i240", .width = 1280, .height = 800});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/brass.aeromat",
+                                                materialText("Brass", engine::Vec3{0.8F, 0.5F, 0.2F}))
+                .empty());
+    std::optional<engine::editor::EditorApp> app = makeThumbnailApp(*device, *window, ctx, created.root);
+    REQUIRE(app.has_value());
+    REQUIRE(tickUntil(*app, [&] { return cardAndRenderExist(*app); }));
+    const std::optional<engine::Guid> guid = app->assetGuidForPath("brass.aeromat");
+    REQUIRE(guid.has_value());
+    // Rule 4: "brass.aeromat  -  Brass" is noise, so the tile shows the file name alone -- while the CARD exists.
+    CHECK(app->materialSubtitleFor(*guid).empty());
+    REQUIRE(app->materialCardCount() == 1U);  // ANTI-VACUITY: only rule 4 hides the name
+    const std::size_t reads = app->materialCardReadCount();
+    const std::size_t renders = app->materialThumbnailRenderCount();
+
+    // E.4.3's own rename seam. The sidecar travels with the file, the GUID survives, and the import cache keeps
+    // the content hash -- so the ThumbnailKey is UNCHANGED, and a name suppressed at READ time would stay hidden
+    // for ever (seed S7). Rule 4 runs at DRAW time, against the new leaf.
+    app->requestAssetBrowserRename("brass.aeromat");
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+    REQUIRE(app->assetBrowserRenameModalPending());
+    app->requestAssetBrowserRenameCommit("gold.aeromat");
+    REQUIRE(app->tick());
+    REQUIRE(engine::editor::fileExists(created.root + "/assets/gold.aeromat"));
+    for (int i = 0; i < 4; ++i) {
+        REQUIRE(app->tick());
+    }
+    const std::optional<engine::Guid> renamed = app->assetGuidForPath("gold.aeromat");
+    REQUIRE(renamed.has_value());
+    REQUIRE((*renamed == *guid));                           // the identity travelled with the sidecar
+    CHECK(app->materialSubtitleFor(*guid) == "Brass");      // ...and the name is now worth showing
+    CHECK(app->materialCardReadCount() == reads);           // the SAME key: never re-read
+    CHECK(app->materialThumbnailRenderCount() == renders);  // ...and never re-rendered
+
+    // BOTH LIST ARMS, drawn with a material that now HAS a subtitle: the style push/pop is 1:1 or the Debug
+    // build aborts right here (seed S30). A green run IS the balance proof -- I39's own shape.
+    app->requestAssetBrowserViewMode(engine::editor::AssetViewMode::List);
+    for (int i = 0; i < 3; ++i) {
+        REQUIRE(app->tick());
+    }
+    app->requestAssetBrowserSearch("gold");
+    for (int i = 0; i < 3; ++i) {
+        REQUIRE(app->tick());
+    }
+    CHECK(app->presentedLastFrame());
+    CHECK(app->materialCardReadCount() == reads);  // a list row asks the same cache, and reads nothing new
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: an Apply reaches the tile through the watcher, with no manual refresh (task E.4.5, I241)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "material names i241", .width = 1280, .height = 800});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/brass.aeromat",
+                                                materialText("Studio Brass", engine::Vec3{0.8F, 0.5F, 0.2F}))
+                .empty());
+    // I49's watcher configuration: settle and cooldown at 0, so a change settles in one or two sweeps.
+    std::optional<engine::editor::EditorApp> app = engine::editor::EditorApp::create(
+        *device, *window, ctx,
+        {.persistLayout = false,
+         .unfocusedFrameCapHz = 0.0F,
+         .projectPath = created.root,
+         .restoreLastProject = false,
+         .recentProjectsPath = uniqueRecentsFile(),
+         .assetWatch = {.enabled = true, .dirsPerPoll = 64, .cooldownMs = 0, .settleMs = 0}});
+    REQUIRE(app.has_value());
+    app->panels().setVisible("Console", false);
+    REQUIRE(tickToQuiescence(*app));  // the first scan's sidecar writes are seen once, then silence
+    REQUIRE(tickUntil(*app, [&] { return app->materialCardCount() >= 1U; }));
+    const std::optional<engine::Guid> guid = app->assetGuidForPath("brass.aeromat");
+    REQUIRE(guid.has_value());
+    REQUIRE(app->materialSubtitleFor(*guid) == "Studio Brass");
+    const std::size_t reads = app->materialCardReadCount();
+
+    // THE MATERIAL PANEL'S OWN APPLY PATH, through its seams: target the file, edit the name, Apply.
+    app->requestAssetBrowserSelectEntry("brass.aeromat");
+    for (int i = 0; i < 3; ++i) {
+        REQUIRE(app->tick());
+    }
+    REQUIRE(app->materialTargetPath() == "brass.aeromat");
+    REQUIRE(app->materialDocument() != nullptr);
+    engine::MaterialDocument edited = *app->materialDocument();
+    edited.name = "Polished Gold";
+    app->requestMaterialDocument(edited);
+    app->requestMaterialApply();
+    REQUIRE(app->tick());  // the edit and the Apply drain; saveMaterialFile writes the bytes
+
+    // NO requestAssetRescan: Apply requests none (C13), so the WATCHER alone carries the new bytes to a new key.
+    REQUIRE(tickSweeps(*app, 4));
+    REQUIRE(tickUntil(*app, [&] { return app->materialSubtitleFor(*guid) == "Polished Gold"; }));
+    CHECK(app->materialCardReadCount() == reads + 1U);  // a NEW key: exactly one fresh read (seed S26)
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: the Inspector's material row asks for its own card and carries the name (task E.4.5, I239)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "material names i239", .width = 1280, .height = 800});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/brass.aeromat",
+                                                materialText("Studio Brass", engine::Vec3{0.8F, 0.5F, 0.2F}))
+                .empty());
+    std::optional<engine::editor::EditorApp> app = makeThumbnailApp(*device, *window, ctx, created.root);
+    REQUIRE(app.has_value());
+    // THE BROWSER MUST NEVER BE THE ONE ASKING: hidden BEFORE the first tick, so no tile ever requests this card.
+    // The scan still runs -- it is EditorApp's reconcile, not the panel's.
+    app->panels().setVisible("Assets", false);
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+    const std::optional<engine::Guid> guid = app->assetGuidForPath("brass.aeromat");
+    REQUIRE(guid.has_value());
+    REQUIRE(app->materialCardReadCount() == 0U);  // ANTI-VACUITY for the claim below: nothing has asked yet
+
+    // Bind the seeded Cube's MeshRenderer.material, then put the Inspector in front of the Cube.
+    engine::World& world = app->world();
+    engine::Entity cube{};
+    world.eachEntity([&](engine::Entity e) {
+        if (world.name(e) == "Cube") {
+            cube = e;
+        }
+    });
+    REQUIRE(cube.valid());
+    auto* const renderer = world.get<engine::MeshRenderer>(cube);
+    REQUIRE(renderer != nullptr);
+    renderer->material = *guid;
+    (void)focusInspectorOnCube(*app);  // selects it, raises the Inspector and REQUIREs the Inspector drew
+    for (int i = 0; i < 3; ++i) {
+        REQUIRE(app->tick());
+    }
+    if (!engine::editor::sceneIoAvailable()) {
+        // -DAERO_REFLECT_TOOLS=OFF: the Inspector draws "(fields unavailable ...)" and no Guid row at all -- and a
+        // row that is not drawn requests nothing.
+        CHECK(app->materialCardReadCount() == 0U);
+    } else {
+        CHECK(app->materialCardReadCount() == 1U);  // THE INSPECTOR ALONE asked (seed S27)
+        CHECK(app->materialSubtitleFor(*guid) == "Studio Brass");
+    }
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: E.4.5's structure holds as source text -- routing, release, gate, hosts (task E.4.5, I242)") {
+    // Each clause is structural: no runtime tier can see it violated until a later edit makes it matter. Comment-
+    // stripped code lines only (editorSourceCodeLines), so a sentence in a comment never counts. NO #if.
+    const auto codeOf = [](std::string_view leaf) {
+        std::string path = AERO_EDITOR_SRC_DIR;
+        path += "/";
+        path += leaf;
+        const std::vector<std::string> code = editorSourceCodeLines(path);
+        REQUIRE(code.size() > 20U);  // ANTI-VACUITY: the file was really read
+        return code;
+    };
+    constexpr std::array<std::string_view, 4> HOSTS{"asset_browser_panel.cpp", "asset_picker.cpp",
+                                                    "inspector_panel.cpp", "asset_tile.cpp"};
+
+    SUBCASE("(a) thumbnailSourceForName: four files, two ROUTING sites, no extension literal (AC-6)") {
+        std::vector<std::string> naming;
+        std::size_t scanned = 0;
+        const std::array<std::string_view, 2> roots{AERO_EDITOR_SRC_DIR, AERO_EDITOR_INCLUDE_DIR};
+        for (const std::string_view root : roots) {
+            std::error_code ec;
+            const std::filesystem::recursive_directory_iterator walk(std::filesystem::path(root), ec);
+            REQUIRE_FALSE(ec);
+            for (const std::filesystem::directory_entry& entry : walk) {
+                const std::string extension = entry.path().extension().string();
+                if (!entry.is_regular_file() || (extension != ".cpp" && extension != ".hpp")) {
+                    continue;
+                }
+                ++scanned;
+                const std::vector<std::string> code = editorSourceCodeLines(entry.path().string());
+                if (countLinesContaining(code, "thumbnailSourceForName(") > 0U) {
+                    naming.push_back(entry.path().filename().string());
+                }
+            }
+        }
+        std::sort(naming.begin(), naming.end());
+        // One entry per line, each held there by its own comment -- a trailing comma alone does not stop
+        // clang-format from packing the list.
+        const std::vector<std::string> expected{
+            "material_card_cache.cpp",  // the card GATE
+            "thumbnail_cache.cpp",      // the definition, with guard 2 beside it
+            "thumbnail_cache.hpp",      // the declaration
+            "thumbnail_service.cpp",    // the produce walk
+        };
+        CHECK(naming == expected);  // the declaration, the definition + guard 2, the walk, and the card GATE
+        CHECK(scanned > 150U);
+        CHECK(countLinesContaining(codeOf("thumbnail_cache.cpp"), "thumbnailSourceForName(") == 2U);
+        CHECK(countLinesContaining(codeOf("thumbnail_service.cpp"), "thumbnailSourceForName(") == 1U);
+        const std::vector<std::string> cache = codeOf("thumbnail_cache.cpp");
+        constexpr std::string_view DEFINITION = "thumbnailSourceForName(std::string_view fileName) noexcept {";
+        const std::size_t begin = soleLineContaining(cache, DEFINITION);  // the .cpp's definition line alone
+        std::size_t end = begin;
+        while (end < cache.size() && cache[end] != "}") {
+            ++end;
+        }
+        REQUIRE(end < cache.size());
+        REQUIRE(end - begin >= 3U);  // a real body
+        for (std::size_t i = begin; i < end; ++i) {
+            CHECK(cache[i].find('"') == std::string::npos);  // COMPOSES the two tables; restates no extension
+        }
+    }
+    SUBCASE("(b) releaseKey is the ONE release site of both stores") {
+        const std::vector<std::string> service = codeOf("thumbnail_service.cpp");
+        CHECK(countLinesContaining(service, "store.destroy(") == 1U);
+        CHECK(countLinesContaining(service, "renders.destroy(") == 1U);
+        CHECK(countLinesContaining(service, "ledger.forget(") == 1U);
+        // Its definition and its FOUR callers: the reimport clear, the superseded sweep, eviction, and -- since the
+        // second code-review round -- the walk's release of a material key not drawn this frame, which would
+        // otherwise stay Absent for the whole session.
+        CHECK(countLinesContaining(service, "releaseKey(") == 5U);
+        const std::size_t defined = soleLineContaining(service, "void ThumbnailService::releaseKey(");
+        CHECK(soleLineContaining(service, "store.destroy(") == defined + 1U);
+        CHECK(soleLineContaining(service, "renders.destroy(") == defined + 2U);
+    }
+    SUBCASE("(c) the card pass runs after the clock and ABOVE the device gate") {
+        const std::vector<std::string> service = codeOf("thumbnail_service.cpp");
+        const std::size_t clock = soleLineContaining(service, "++frame;");
+        const std::size_t cards = soleLineContaining(service, "cards.service(database, frame);");
+        const std::size_t gate = soleLineContaining(service, "if (!store.available()) {");
+        CHECK(clock < cards);
+        CHECK(cards < gate);
+        CHECK(gate - clock <= 6U);  // ONE statement and its comment between them -- nothing else moved in
+    }
+    SUBCASE("(d) every host asks through noteCardWanted and answers through materialCardSubtitle") {
+        CHECK(countLinesContaining(codeOf("asset_browser_panel.cpp"), "noteCardWanted(") == 2U);  // tile + row helper
+        CHECK(countLinesContaining(codeOf("asset_picker.cpp"), "noteCardWanted(") == 1U);         // the popup tile
+        const std::vector<std::string> inspector = codeOf("inspector_panel.cpp");
+        CHECK(countLinesContaining(inspector, "noteCardWanted(") == 1U);
+        const std::size_t call = soleLineContaining(inspector, "guidFieldRow(");
+        CHECK(inspector[call].find(", subtitle)") != std::string::npos);
+        // RULE 4 RUNS IN EVERY HOST, because every host hands the MODEL's answer to what it draws: the browser
+        // twice (the tile and the row helper), the picker and the Inspector once each, and the tile FACE never
+        // -- it draws the subtitle it is handed. A host that passed the raw card name instead (seed S37) drops
+        // its count to zero here, and nothing else in the tree would notice.
+        constexpr std::array<std::size_t, 4> SUBTITLE_CALLS{2U, 1U, 1U, 0U};
+        static_assert(SUBTITLE_CALLS.size() == HOSTS.size());
+        // THE SWATCH, the code-review round: the two TILE hosts paint a material's own colour, and only they --
+        // the browser's grid tile and the picker's popup tile. The Inspector's row has no icon rect, and the FACE
+        // paints whatever tint it is handed. A tile host that stopped asking (seed S54) leaves every material in
+        // it the kind colour, which no runtime tier reads.
+        constexpr std::array<std::size_t, 4> TINT_CALLS{1U, 1U, 0U, 0U};
+        static_assert(TINT_CALLS.size() == HOSTS.size());
+        for (std::size_t h = 0; h < HOSTS.size(); ++h) {
+            CAPTURE(HOSTS[h]);
+            const std::vector<std::string> code = codeOf(HOSTS[h]);
+            CHECK(countLinesContaining(code, "materialCardSubtitle(") == SUBTITLE_CALLS[h]);
+            CHECK(countLinesContaining(code, "materialCardTint(") == TINT_CALLS[h]);
+            CHECK(countLinesContaining(code, "materialNameMatchesStem(") == 0U);  // rule 4 is the model's alone
+        }
+        // THE SEPARATOR IS NEVER RESTATED in the three hosts whose files spell no footer -- the picker, the
+        // Inspector and the tile face (the second code-review round restored these three). The browser's own
+        // check is clause (j)'s, scoped to the row helper's body, because its footer spells the same five
+        // characters for an unrelated sentence.
+        const std::string_view separatorLiteral = "\"  -  \"";
+        for (const std::string_view host : {HOSTS[1], HOSTS[2], HOSTS[3]}) {
+            CAPTURE(host);
+            CHECK(countLinesContaining(codeOf(host), separatorLiteral) == 0U);
+        }
+    }
+    SUBCASE("(e) no host hands a NON-LITERAL to an ImGui format function (D12's draw half, seed S9)") {
+        constexpr std::array<std::string_view, 6> FORMAT_FUNCTIONS{
+            "ImGui::Text(",            // Text(fmt, ...)
+            "ImGui::TextDisabled(",    // TextDisabled(fmt, ...)
+            "ImGui::TextWrapped(",     // TextWrapped(fmt, ...)
+            "ImGui::SetTooltip(",      // SetTooltip(fmt, ...)
+            "ImGui::BulletText(",      // BulletText(fmt, ...)
+            "ImGui::SetItemTooltip(",  // SetItemTooltip(fmt, ...) -- the code-review round
+        };
+        std::size_t formatCalls = 0;
+        for (const std::string_view host : HOSTS) {
+            const std::vector<std::string> code = codeOf(host);
+            for (std::size_t i = 0; i < code.size(); ++i) {
+                for (const std::string_view function : FORMAT_FUNCTIONS) {
+                    const std::size_t at = code[i].find(function);
+                    if (at == std::string::npos) {
+                        continue;
+                    }
+                    ++formatCalls;
+                    // The first argument: the rest of this line, or -- for a call broken after its paren -- the
+                    // next line's first non-blank character. It must OPEN A STRING LITERAL.
+                    std::string_view rest = std::string_view(code[i]).substr(at + function.size());
+                    while (!rest.empty() && rest.front() == ' ') {
+                        rest.remove_prefix(1);
+                    }
+                    if (rest.empty() && i + 1U < code.size()) {
+                        rest = code[i + 1U];
+                        while (!rest.empty() && rest.front() == ' ') {
+                            rest.remove_prefix(1);
+                        }
+                    }
+                    CAPTURE(host);
+                    CAPTURE(code[i]);
+                    CHECK((!rest.empty() && rest.front() == '"'));
+                }
+            }
+        }
+        CHECK(formatCalls >= 15U);  // ANTI-VACUITY: 19 such calls exist at c95dc78, one of them broken after "("
+        // THE SECOND-ARGUMENT FORMAT FUNCTIONS, the code-review round: TextColored(col, fmt, ...) and
+        // LabelText(label, fmt, ...) take their format string SECOND, so the first-argument rule above cannot see
+        // them. Their second argument must open a string literal: the call is joined with the next two lines and
+        // the first comma at parenthesis depth 0 ends the first argument -- OUTSIDE A STRING LITERAL, honouring an
+        // escaped quote (the second code-review round: `LabelText("Size, bytes", "%zu", n)` is legal and read its
+        // label's comma as the separator). NONE exists in the hosts today (seed S56 writes one), so the pin is a
+        // refusal of a future call, and its own arms are below.
+        constexpr std::array<std::string_view, 2> SECOND_ARGUMENT_FORMAT{
+            "ImGui::TextColored(",  // TextColored(col, fmt, ...)
+            "ImGui::LabelText(",    // LabelText(label, fmt, ...)
+        };
+        const auto secondArgumentOpensLiteral = [](std::string_view call) {
+            int depth = 0;
+            bool inLiteral = false;
+            for (std::size_t c = 0; c < call.size(); ++c) {
+                if (inLiteral) {
+                    if (call[c] == '\\') {
+                        ++c;  // an escaped character -- a quote included -- never ends the literal
+                    } else if (call[c] == '"') {
+                        inLiteral = false;
+                    }
+                } else if (call[c] == '"') {
+                    inLiteral = true;
+                } else if (call[c] == '(') {
+                    ++depth;
+                } else if (call[c] == ')') {
+                    --depth;
+                } else if (call[c] == ',' && depth == 0) {
+                    const std::size_t next = call.find_first_not_of(' ', c + 1U);
+                    return next != std::string_view::npos && call[next] == '"';
+                }
+            }
+            return false;  // no second argument on these three lines: not a call this pin can clear
+        };
+        // The rule's own arms, so a broken parser cannot pass every host vacuously. Hoisted: a string holding an
+        // escaped quote stays out of a doctest macro's argument list (the MSVC preprocessor rule).
+        const std::string_view literalSecond = "ImGui::GetStyleColorVec4(ImGuiCol_Text, 1), \"%s\", name);";
+        const std::string_view variableSecond = "ImGui::GetStyleColorVec4(ImGuiCol_Text), scratch.c_str());";
+        const std::string_view commaInLabel = R"x("Size, bytes", "%zu", n);)x";
+        const std::string_view escapedQuoteInLabel = R"x("a \", b", "%s", name);)x";
+        CHECK(secondArgumentOpensLiteral(literalSecond));
+        CHECK_FALSE(secondArgumentOpensLiteral(variableSecond));
+        CHECK(secondArgumentOpensLiteral(commaInLabel));
+        CHECK(secondArgumentOpensLiteral(escapedQuoteInLabel));
+        for (const std::string_view host : HOSTS) {
+            const std::vector<std::string> code = codeOf(host);
+            for (std::size_t i = 0; i < code.size(); ++i) {
+                for (const std::string_view function : SECOND_ARGUMENT_FORMAT) {
+                    const std::size_t at = code[i].find(function);
+                    if (at == std::string::npos) {
+                        continue;
+                    }
+                    std::string call = code[i].substr(at + function.size());
+                    for (std::size_t more = i + 1U; more < code.size() && more <= i + 2U; ++more) {
+                        call += ' ';
+                        call += code[more];
+                    }
+                    CAPTURE(host);
+                    CAPTURE(code[i]);
+                    CHECK(secondArgumentOpensLiteral(call));
+                }
+            }
+        }
+    }
+    SUBCASE("(f) the two new readers read CAPPED and never write") {
+        constexpr std::array<std::string_view, 2> READERS{"material_card_cache.cpp", "material_thumbnail.cpp"};
+        for (const std::string_view reader : READERS) {
+            CAPTURE(reader);
+            const std::vector<std::string> code = codeOf(reader);
+            CHECK(countLinesContaining(code, "readFileBytes(") == 1U);
+            CHECK(countLinesContaining(code, "readTextFile(") == 0U);
+            CHECK(countLinesContaining(code, "writeTextFileAtomic(") == 0U);
+            CHECK(countLinesContaining(code, "saveMaterialFile(") == 0U);
+        }
+    }
+    SUBCASE("(g) the producer's picture is the RIG's -- no scene light, no viewport grade, sky first") {
+        const std::vector<std::string> code = codeOf("material_thumbnail.cpp");
+        CHECK(countLinesContaining(code, "materialThumbnailLighting()") == 1U);
+        CHECK(countLinesContaining(code, "materialThumbnailTonemap()") == 1U);
+        CHECK(countLinesContaining(code, "MATERIAL_THUMBNAIL_ORBIT_ANGLE") == 1U);
+        // The thumbnail's OWN framing (the code-review round) -- never the Material panel's preview rig. This is
+        // the cover a -DAERO_SHADER_TOOLS=OFF build has, where I237's pixel arm cannot run.
+        CHECK(countLinesContaining(code, "MATERIAL_THUMBNAIL_RIG") == 1U);
+        CHECK(countLinesContaining(code, "DEFAULT_MATERIAL_PREVIEW_RIG") == 0U);
+        CHECK(countLinesContaining(code, "resolveEnvironment") == 0U);
+        CHECK(countLinesContaining(code, "resolveDirectionalLight") == 0U);
+        CHECK(countLinesContaining(code, "tonemapParams") == 0U);
+        CHECK(soleLineContaining(code, "sky->draw(") < soleLineContaining(code, "renderer->draw("));
+    }
+    SUBCASE("(h) a subtitled tile's FIRST line keeps the file name (the code-review round)") {
+        // The rule is asset_view.hpp's, pure and proven at tier 0 (AV60-AV63); what no tier-0 case can see is
+        // whether the tile face CALLS it -- with the caption source AND the leaf -- rather than right-eliding the
+        // caption source, which kept a search hit's folder and dropped its name.
+        const std::vector<std::string> tile = codeOf("asset_tile.cpp");
+        const std::size_t primary = soleLineContaining(tile, "const std::string primary = ");
+        constexpr std::string_view KEEPS_THE_NAME = "subtitledTileCaptionLine(face.captionSource, face.fileName, ";
+        CAPTURE(tile[primary]);
+        CHECK(tile[primary].find(KEEPS_THE_NAME) != std::string::npos);
+        CHECK(countLinesContaining(tile, "subtitledTileCaptionLine(") == 1U);
+        // ANTI-VACUITY: the unsubtitled caption still takes today's rule, so the face was really read as code.
+        CHECK(countLinesContaining(tile, "elideForCaption(std::string(face.captionSource), wrapWidth)") == 1U);
+    }
+    SUBCASE("(i) a key that already holds a target is answered before any read or GPU work (the code-review round)") {
+        // Unreachable at runtime by design -- releaseKey destroys before the ledger forgets -- so only the source
+        // text can say the answer comes FIRST: behind the chain's creation, the read, the slot loads, the material
+        // push and the output target, which is where a replacement of a texture ImGui samples used to be possible.
+        const std::vector<std::string> code = codeOf("material_thumbnail.cpp");
+        const std::size_t produce = soleLineContaining(code, "ThumbnailState MaterialThumbnailRenderer::produce(");
+        const std::size_t held = soleLineContaining(code, "held != targets.end() && held->first == key");
+        const std::size_t attempts = nextCodeLine(code, produce + 2U);  // past the signature's two lines
+        CHECK(code[attempts].find("++attempts;") != std::string::npos);
+        CHECK(nextCodeLine(code, attempts + 1U) == held);  // ++attempts, and then the answer: nothing between
+        CHECK(code[held + 1U].find("return ThumbnailState::Ready;") != std::string::npos);
+        CHECK(held < soleLineContaining(code, "    ensureInitialized();"));  // the chain's own GPU creates
+        CHECK(held < soleLineContaining(code, "readFileBytes("));
+        CHECK(held < soleLineContaining(code, "loadTextureFromSourceFile("));
+        CHECK(held < soleLineContaining(code, "renderer->createMaterial("));
+        CHECK(held < soleLineContaining(code, "render::RenderTarget::create("));
+    }
+    SUBCASE("(j) the list row's separator is spelled once, and every caller passes the LEAF") {
+        const std::vector<std::string> browser = codeOf("asset_browser_panel.cpp");
+        // THE HELPER'S BODY, walked to its closing brace (clause (a)'s walk): the separator is the card's constant,
+        // spelled exactly once, and the five characters it stands for never appear -- the file's own FOOTER spells
+        // them five times for an unrelated sentence, which is why a file-wide count could not see a row that
+        // dropped or restated the separator.
+        const std::size_t begin = soleLineContaining(browser, "void drawMaterialRowSuffix(");
+        std::size_t end = begin;
+        while (end < browser.size() && browser[end] != "}") {
+            ++end;
+        }
+        REQUIRE(end < browser.size());
+        REQUIRE(end - begin >= 10U);  // a real body
+        const std::vector<std::string> body(browser.begin() + static_cast<std::ptrdiff_t>(begin),
+                                            browser.begin() + static_cast<std::ptrdiff_t>(end));
+        CHECK(countLinesContaining(body, "MATERIAL_CARD_SEPARATOR") == 1U);
+        CHECK(countLinesContaining(body, "\"  -  \"") == 0U);
+        const std::size_t separator = soleLineContaining(body, "scratch = MATERIAL_CARD_SEPARATOR;");
+        CHECK(body[nextCodeLine(body, separator + 1U)].find("scratch += subtitle;") != std::string::npos);
+        // RULE 4 RUNS AGAINST THE FILE'S OWN LEAF, never the text the row or the tile displays: the search arm
+        // shows a full path and the grid tile's caption folds in the folder, so either one passed as the leaf
+        // makes a stem-named material in a subfolder show its name as if it differed (seeds S57, S58).
+        const std::size_t hitLeaf = soleLineContaining(browser, "const std::string_view hitLeaf = ");
+        CHECK(browser[hitLeaf].find("leafOf(hit.relativePath)") != std::string::npos);
+        constexpr std::string_view SEARCH_ARM = "drawMaterialRowSuffix(thumbnailsPtr, databasePtr, hit.";
+        constexpr std::string_view DIRECTORY_ARM = "drawMaterialRowSuffix(thumbnailsPtr, databasePtr, rel,";
+        const std::size_t searchArm = soleLineContaining(browser, SEARCH_ARM);
+        CHECK(browser[searchArm].find("hit.relativePath, hitLeaf, labelScratch)") != std::string::npos);
+        const std::size_t directoryArm = soleLineContaining(browser, DIRECTORY_ARM);
+        CHECK(browser[directoryArm].find("rel, entry.name, labelScratch)") != std::string::npos);
+        const std::size_t tile = soleLineContaining(browser, ".subtitle = materialCardSubtitle(");
+        CHECK(browser[tile].find("materialCardSubtitle(card, entry.name)") != std::string::npos);
+        CHECK(body[soleLineContaining(body, "materialCardSubtitle(")].find(", leaf)") != std::string::npos);
+    }
+}
+
+TEST_CASE("editor: a material renders only while its tile is on screen -- the visible page first (task E.4.5, I243)") {
+    // The code-review round: the produce walk is oldest-touched-first and an Absent key is never dropped, so
+    // without a visibility rule the materials a user scrolled PAST render first -- one expensive render per
+    // tick -- while the page on screen waits. A render is now spent only on a key drawn THIS frame.
+    //
+    // THE VIEWS ARE SWITCHED THROUGH THE SEARCH SEAM (the browser has no navigation seam), and a query applies
+    // at the END of the frame that drains it: the tick after a request still draws the OLD view. That lag
+    // tick is stated below rather than hidden, and it is legitimately a second render of the first view.
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "material thumbnails i243", .width = 1280, .height = 800});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    const std::string assetsRoot = created.root + "/assets";
+    // Two FOLDERS, so the root listing shows no material tile at all: nothing is drawn, nothing renders.
+    REQUIRE(engine::editor::ensureDirectory(assetsRoot + "/reds").empty());
+    REQUIRE(engine::editor::ensureDirectory(assetsRoot + "/blues").empty());
+    const std::array<std::string, 4> reds{"reds/red1.aeromat", "reds/red2.aeromat", "reds/red3.aeromat",
+                                          "reds/red4.aeromat"};
+    const std::string scarletText = materialText("Scarlet", engine::Vec3{0.8F, 0.1F, 0.1F});
+    for (const std::string& red : reds) {
+        std::string redPath = assetsRoot;
+        redPath += "/";
+        redPath += red;
+        REQUIRE(engine::editor::writeTextFileAtomic(redPath, scarletText).empty());
+    }
+    const std::string bluePath = assetsRoot + "/blues/blue.aeromat";
+    const std::string blueText = materialText("Cobalt", engine::Vec3{0.1F, 0.1F, 0.8F});
+    REQUIRE(engine::editor::writeTextFileAtomic(bluePath, blueText).empty());
+    std::optional<engine::editor::EditorApp> app = makeThumbnailApp(*device, *window, ctx, created.root);
+    REQUIRE(app.has_value());
+    // SMALL TILES, so the four reds share one row with margin to spare. Medium passed on macOS CI run
+    // 36238862338 with exactly four columns -- zero margin; I233's comment carries that runner's geometry.
+    app->requestAssetBrowserTileSize(engine::editor::TileSize::Small);
+    for (int i = 0; i < 3; ++i) {
+        REQUIRE(app->tick());
+    }
+    REQUIRE(app->materialThumbnailRenderCount() == 0U);  // no material tile drawn yet, so no render at all
+    const std::optional<engine::Guid> blue = app->assetGuidForPath("blues/blue.aeromat");
+    REQUIRE(blue.has_value());
+
+    // (a) THE FIRST VIEW: four red tiles, drawn in one frame, and exactly ONE render on its first productive tick.
+    app->requestAssetBrowserSearch("red");
+    REQUIRE(tickUntil(*app, [&] { return app->materialThumbnailRenderCount() > 0U; }));
+    REQUIRE(app->materialThumbnailRenderCount() == 1U);  // ANTI-VACUITY: the red view really drew and rendered
+    // ANTI-VACUITY for (b)'s "nothing pending": the three reds not yet rendered ARE pending here.
+    REQUIRE(app->thumbnailAbsentCount() == reds.size() - 1U);
+
+    // (b) THE SWITCH. The lag tick still draws the red view, so a second red may render -- it is on screen.
+    app->requestAssetBrowserSearch("blue");
+    REQUIRE(app->tick());
+    const std::size_t rendersBeforeBlue = app->materialThumbnailRenderCount();
+    REQUIRE(app->materialSubtitleFor(*blue).empty());  // the blue tile has not been drawn yet
+    // The tick that draws the blue view: its one render is the BLUE material's, although two reds are older.
+    REQUIRE(app->tick());
+    REQUIRE(app->materialSubtitleFor(*blue) == "Cobalt");  // ANTI-VACUITY: the blue tile was drawn this tick
+    CHECK(app->materialThumbnailRenderCount() == rendersBeforeBlue + 1U);
+    if (app->materialThumbnailsAvailable()) {
+        CHECK(app->materialThumbnailTargetFor(*blue) != nullptr);  // produced on the tick it first drew
+    }
+    // AND THE REDS NOT DRAWN THIS TICK ARE RELEASED, NOT KEPT PENDING (the second code-review round): the same
+    // walk met them first, oldest-first, and let them go. Nothing waits for a producer now.
+    CHECK(app->thumbnailAbsentCount() == 0U);
+
+    // (c) THE REDS NO LONGER ON SCREEN STAY UN-RENDERED: no further render, and exactly the reds that were
+    //     drawn when they rendered own a picture.
+    for (int i = 0; i < 5; ++i) {
+        REQUIRE(app->tick());
+    }
+    CHECK(app->materialThumbnailRenderCount() == rendersBeforeBlue + 1U);
+    if (app->materialThumbnailsAvailable()) {
+        std::size_t redsRendered = 0;
+        for (const std::string& red : reds) {
+            const std::optional<engine::Guid> guid = app->assetGuidForPath(red);
+            REQUIRE(guid.has_value());
+            redsRendered += app->materialThumbnailTargetFor(*guid) != nullptr ? 1U : 0U;
+        }
+        CHECK(redsRendered == rendersBeforeBlue);  // two reds, never drawn again, never rendered
+        CHECK(redsRendered < reds.size());
+    }
+    CHECK(app->thumbnailAbsentCount() == 0U);  // still nothing lingering, five idle ticks later
+
+    // (d) BACK TO THE REDS: drawn again, the released ones are touched again -- Absent once more -- and render,
+    //     one per tick. Each red is produced exactly ONCE over the whole case: the ones that rendered before the
+    //     switch were never released (a Ready key is eviction's business, not the walk's).
+    app->requestAssetBrowserSearch("red");
+    const std::size_t allRendered = reds.size() + 1U;  // four reds and the blue
+    REQUIRE(tickUntil(*app, [&] { return app->materialThumbnailRenderCount() == allRendered; }));
+    for (int i = 0; i < 5; ++i) {
+        REQUIRE(app->tick());
+    }
+    CHECK(app->materialThumbnailRenderCount() == allRendered);
+    CHECK(app->thumbnailAbsentCount() == 0U);
+    if (app->materialThumbnailsAvailable()) {
+        for (const std::string& red : reds) {
+            CAPTURE(red);
+            const std::optional<engine::Guid> guid = app->assetGuidForPath(red);
+            REQUIRE(guid.has_value());
+            CHECK(app->materialThumbnailTargetFor(*guid) != nullptr);
+        }
+    }
 
     app->requestQuit();
     CHECK(app->tick() == false);

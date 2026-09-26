@@ -143,6 +143,9 @@ public:
     // through the SAME applyPending() arm the widget would. One action per frame (`pending` is a single
     // slot), so a caller ticks between them.
     void requestViewMode(AssetViewMode mode) noexcept;
+    // task E.4.5 (CI run 36238862338): the tile-size combo, the same seam. A GPU case that needs several tiles
+    // drawn in ONE frame selects Small, so a narrow runner's grid still holds them all in its first row.
+    void requestTileSize(TileSize size) noexcept;
     void requestSearchQuery(std::string query);
     void requestKindFilter(std::string kind);
     void requestDeleteOrphanClick(std::string relativeMetaPath);

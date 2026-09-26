@@ -88,7 +88,14 @@ struct GuidFieldRow {
     std::string text;
     bool clearEnabled = false;  // the panel spells this BeginDisabled(!clearEnabled)
 };
-[[nodiscard]] GuidFieldRow guidFieldRow(Guid value, const AssetDatabase* database);
+// task E.4.5: `subtitle` APPENDED AND DEFAULTED, so every existing call compiles and every existing case passes
+// UNEDITED -- the proof that this is additive, not a rewrite. It is what a material's tile SHOWS
+// (materialCardSubtitle's answer, rule 4 already applied). When non-empty, the found-record sentence is
+// composed through material_card.hpp's OWN row function, so the Inspector and the browser's list row can
+// never drift:   "brass.aeromat  -  Studio Brass  (Material)"
+// A nil guid and a missing record IGNORE it: a name for a reference that resolves to nothing is a name for
+// nothing.
+[[nodiscard]] GuidFieldRow guidFieldRow(Guid value, const AssetDatabase* database, std::string_view subtitle = {});
 
 // ---- task E.3.1: the axis row, as VALUES ----------------------------------------------------------
 // Everything the Vec3/Quat rows decide, computed OUTSIDE the draw walk so a tier-0 case asserts what

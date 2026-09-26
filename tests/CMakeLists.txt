@@ -499,7 +499,9 @@ add_executable(aero_editor_shell_test editor/shell_test.cpp editor/hierarchy_tes
                editor/asset_picker_model_test.cpp     # task E.3.3 — the pure picker model (MP)
                editor/material_inspector_model_test.cpp    # task E.3.4 — the pure panel model (MR)
                editor/project_state_test.cpp              # task E.4.1 — the per-project state envelope (PJ)
-               editor/scene_containment_test.cpp)      # task E.4.2 — the pure containment core (CN)
+               editor/scene_containment_test.cpp       # task E.4.2 — the pure containment core (CN)
+               editor/material_card_test.cpp           # task E.4.5 — the pure material-card model (MB)
+               editor/material_card_cache_test.cpp)    # task E.4.5 — the card cache over a real scan (CC)
 target_link_libraries(aero_editor_shell_test PRIVATE
     doctest::doctest aero::editor_core aero::scene aero::scene_internal aero::core Threads::Threads)
 add_test(NAME aero_editor_shell_test COMMAND aero_editor_shell_test)

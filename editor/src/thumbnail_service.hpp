@@ -6,9 +6,17 @@
 // the browser's serviceThumbnails() occupied -- and inside it the order is
 // touch -> reimport clear -> superseded sweep -> EVICT -> DECODE, for the reasons the browser's
 // comments gave, which move with the code.
+//
+// task E.4.5: A SECOND PRODUCER, NOT A SECOND CACHE. One ledger, one clock, one cap, one LRU and ONE release
+// site (releaseKey) -- and two backing stores behind them: ThumbnailStore (decoded images) and
+// MaterialThumbnailRenderer (rendered materials), routed by thumbnailSourceForName in ONE walk over every
+// Absent key with one budget per producer. The material CARD cache (names and swatches) sits beside them and
+// is serviced ABOVE the device gate, because it needs no GPU at all.
 #include <aero/core/guid.hpp>
 #include <aero/editor/thumbnail_cache.hpp>
 
+#include "material_card_cache.hpp"  // task E.4.5 -- names and swatches, device-free, held by value
+#include "material_thumbnail.hpp"   // task E.4.5 -- the second backing store, held by value
 #include "thumbnail_store.hpp"
 
 #include <cstddef>
@@ -49,20 +57,52 @@ public:
 
     [[nodiscard]] std::size_t readyCount() const noexcept;
     [[nodiscard]] std::size_t unavailableCount() const noexcept;
+    [[nodiscard]] std::size_t absentCount() const noexcept;  // the ledger's -- task E.4.5's code-review round
     [[nodiscard]] std::size_t residentCount() const noexcept;
     [[nodiscard]] std::size_t loadAttempts() const noexcept;
+    // task E.4.5: THE RENDER STORE's own counters. residentCount() and loadAttempts() above stay the DECODE
+    // store's -- I36, I37, I38 and I167 assert exactly that meaning -- while readyCount() and
+    // unavailableCount() stay the LEDGER's, spanning both producers, as they always meant "the editor's
+    // thumbnails". INVARIANT at the end of every service() and clear(), because each Ready key owns exactly
+    // one texture in exactly one store: residentCount() + materialResidentCount() == readyCount().
+    [[nodiscard]] std::size_t materialResidentCount() const noexcept;
+    [[nodiscard]] std::size_t materialRenderAttempts() const noexcept;  // monotonic; every produce() call
+    [[nodiscard]] bool materialThumbnailsAvailable() const noexcept;    // MaterialThumbnailRenderer::available
+    [[nodiscard]] const render::RenderTarget* materialTargetFor(const ThumbnailKey& key) const noexcept;
+    // task E.4.5: the material CARD -- a name and a swatch -- on its OWN request queue, never noteVisible, which
+    // is the LEDGER's touch list and means exactly that (E.3.3's S34/I167). DRAW-WALK SAFE, both; cardFor's
+    // pointer is valid until the next service() or clear().
+    void noteCardWanted(const ThumbnailKey& key);
+    [[nodiscard]] const MaterialCard* cardFor(const ThumbnailKey& key) const noexcept;
+    [[nodiscard]] std::size_t materialCardCount() const noexcept;
+    [[nodiscard]] std::size_t materialCardReadCount() const noexcept;  // monotonic
 
 private:
-    // "" when the record behind `key` has vanished (a rescan raced the decode) -- the caller treats an
-    // empty path as Failed, never as "try again". Reads database.root() where the browser read its own
-    // `rootUtf8`: THE SAME STRING BY CONSTRUCTION, both reconciled from project.assetsRoot() in one
-    // block (INV-A9/A16).
-    [[nodiscard]] std::string absolutePathFor(const ThumbnailKey& key, const AssetDatabase& database) const;
+    // task E.4.5: THE ONE RELEASE SITE (D3). FOUR callers -- the reimport clear, the superseded sweep, the LRU
+    // eviction and, since the second code-review round, the produce walk's release of an Absent material key
+    // not drawn this frame. The fourth is safe for two reasons: an Absent key holds no texture in either
+    // store, so both destroys are no-ops, and a key not drawn this frame is named by no draw list. AT MOST ONE
+    // of the two destroys does work for any given key -- none for an Absent one -- because ThumbnailSource is a
+    // partition; calling both unconditionally spares every caller from knowing which producer owns the key it
+    // releases. (absolutePathFor is gone: the walk resolves the record itself,
+    // because it needs the record to route, and treats a vanished one as Failed -- that function's own
+    // contract, made explicit.)
+    void releaseKey(const ThumbnailKey& key);
+    // The ledger's four-arm mark, shared by both producers' results.
+    void markLedger(const ThumbnailKey& key, ThumbnailState state);
 
     ThumbnailLedger ledger;
     ThumbnailStore store;
+    // task E.4.5: the second backing store (D3). Declared AFTER `store`, and the constructor's init list keeps
+    // that order (-Wreorder). Destroyed BEFORE `store` and the ledger, and before ~Device either way.
+    MaterialThumbnailRenderer renders;
+    MaterialCardCache cards;            // task E.4.5 -- DEVICE-FREE; serviced ABOVE the device gate in service()
     std::vector<ThumbnailKey> visible;  // per-frame scratch; cleared by service()
-    std::uint64_t frame = 0;            // the LRU's clock; monotonic, NEVER wall time
+    // task E.4.5's code-review round: THIS frame's `visible`, sorted and de-duplicated before the scratch is
+    // cleared, so the produce walk can spend a RENDER only on a tile drawn this frame. A MEMBER, never a local:
+    // the visible/liveKeyScratch idiom.
+    std::vector<ThumbnailKey> drawnThisFrame;
+    std::uint64_t frame = 0;  // the LRU's clock; monotonic, NEVER wall time
     bool pendingReimportClear = false;
     bool pendingSupersededSweep = false;
     // MEMBERS, never locals: the visible/breadcrumb/labelScratch idiom, so a 50 000-record project does

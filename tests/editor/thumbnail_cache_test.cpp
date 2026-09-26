@@ -10,8 +10,9 @@
 // literal (the standing 3.1.1 rule).
 #include <aero/core/content_hash.hpp>
 #include <aero/core/guid.hpp>
-#include <aero/editor/asset_cache.hpp>  // task E.3.3 -- ImportChange, for thumbnailKeyForRecord's guard 7
-#include <aero/editor/asset_meta.hpp>   // task E.3.3 -- AssetRecord, AssetMetaState
+#include <aero/editor/asset_cache.hpp>    // task E.3.3 -- ImportChange, for thumbnailKeyForRecord's guard 7
+#include <aero/editor/asset_meta.hpp>     // task E.3.3 -- AssetRecord, AssetMetaState
+#include <aero/editor/project_files.hpp>  // task E.4.5 -- leafOf (TS7)
 #include <aero/editor/thumbnail_cache.hpp>
 
 #include <doctest/doctest.h>
@@ -21,8 +22,10 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <ostream>  // task E.4.5 -- ThumbnailSource's printer, and MSVC's string_view-in-a-CHECK trap
 #include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 using engine::ContentHash;
@@ -31,6 +34,8 @@ using engine::GuidGenerator;
 using engine::editor::fitRgbaIntoTile;
 using engine::editor::ThumbnailKey;
 using engine::editor::ThumbnailLedger;
+using engine::editor::ThumbnailSource;
+using engine::editor::thumbnailSourceForName;
 using engine::editor::ThumbnailState;
 
 namespace {
@@ -893,4 +898,176 @@ TEST_CASE("TS4: the key is (guid, hash) -- one guid, two hashes, two keys") {
     const std::optional<ThumbnailKey> again = engine::editor::thumbnailKeyForRecord(first);
     REQUIRE(again.has_value());
     CHECK((*keyA == *again));
+}
+
+// ---- task E.4.5: the routing vocabulary (TS5-TS6) and the widened key (TS7-TS9) ----------------------
+
+// doctest calls an UNQUALIFIED operator<< from inside doctest::detail, so only the namespaces ASSOCIATED with
+// the argument are searched (E.2.2's recorded lesson): a printer for an engine::editor enum must live in
+// engine::editor, or every failing CHECK below prints {?} == {?}. Defined in THIS TU only -- a second
+// definition in another TU of the same binary would be an ODR violation.
+namespace engine::editor {
+std::ostream& operator<<(std::ostream& out, ThumbnailSource source) {
+    switch (source) {
+        case ThumbnailSource::None:
+            return out << "None";
+        case ThumbnailSource::DecodedImage:
+            return out << "DecodedImage";
+        case ThumbnailSource::RenderedMaterial:
+            return out << "RenderedMaterial";
+    }
+    return out << "ThumbnailSource(" << static_cast<int>(source) << ")";
+}
+}  // namespace engine::editor
+
+TEST_CASE("TS5: thumbnailSourceForName is a TOTAL partition, composed from the two tables it names") {
+    struct Row {
+        std::string_view name;
+        ThumbnailSource expected;
+    };
+    constexpr std::array<Row, 20> ROSTER{{
+        // the EIGHT stb-decodable extensions (asset_view.cpp's THUMBNAIL_DECODABLE_EXTENSIONS)
+        {"a.png", ThumbnailSource::DecodedImage},
+        {"a.jpg", ThumbnailSource::DecodedImage},
+        {"a.jpeg", ThumbnailSource::DecodedImage},
+        {"a.tga", ThumbnailSource::DecodedImage},
+        {"a.bmp", ThumbnailSource::DecodedImage},
+        {"a.gif", ThumbnailSource::DecodedImage},
+        {"a.hdr", ThumbnailSource::DecodedImage},
+        {"a.psd", ThumbnailSource::DecodedImage},
+        // Texture by kind, but an ICON by 3.1.3's deliberate split -- never promoted by this task
+        {"a.ktx2", ThumbnailSource::None},
+        {"a.dds", ThumbnailSource::None},
+        // the one kind this task renders; the LAST extension decides
+        {"brass.aeromat", ThumbnailSource::RenderedMaterial},
+        {"a.b.aeromat", ThumbnailSource::RenderedMaterial},
+        // everything else has no producer
+        {"hero.gltf", ThumbnailSource::None},
+        {"hero.glb", ThumbnailSource::None},
+        {"tone.wav", ThumbnailSource::None},
+        {"notes.json", ThumbnailSource::None},
+        {"notes.txt", ThumbnailSource::None},
+        {"README", ThumbnailSource::None},
+        {"x.", ThumbnailSource::None},
+        {"aeromat", ThumbnailSource::None},  // no dot: no extension, whatever the name spells
+    }};
+    for (const Row& row : ROSTER) {
+        CAPTURE(row.name);
+        CHECK((thumbnailSourceForName(row.name) == row.expected));
+    }
+    CHECK((thumbnailSourceForName("") == ThumbnailSource::None));
+}
+
+TEST_CASE("TS6: thumbnailSourceForName folds ASCII case exactly as the tables it composes do") {
+    CHECK((thumbnailSourceForName("A.PNG") == ThumbnailSource::DecodedImage));
+    CHECK((thumbnailSourceForName("a.Jpg") == ThumbnailSource::DecodedImage));
+    CHECK((thumbnailSourceForName("BRASS.AEROMAT") == ThumbnailSource::RenderedMaterial));
+    CHECK((thumbnailSourceForName("brass.AeroMat") == ThumbnailSource::RenderedMaterial));
+    CHECK((thumbnailSourceForName("A.KTX2") == ThumbnailSource::None));
+    // COMPOSITION, not a copy: over mixed names the answer is exactly the two predicates it is built from,
+    // DecodedImage winning. A body that restated an extension list would drift from these the day a table
+    // grows; this loop is what a seed restating one (S2/S3) reddens beside TS5.
+    for (const std::string_view name :
+         {std::string_view("x.PnG"), std::string_view("x.tga"), std::string_view("x.aeromat"),
+          std::string_view("x.dds"), std::string_view("x.fbx"), std::string_view("x.")}) {
+        CAPTURE(name);
+        const bool decodable = engine::editor::isThumbnailDecodable(name);
+        const bool material =
+            engine::editor::classifyAssetKind(name, /*isDirectory=*/false) == engine::editor::AssetKind::Material;
+        const ThumbnailSource expected = decodable  ? ThumbnailSource::DecodedImage
+                                         : material ? ThumbnailSource::RenderedMaterial
+                                                    : ThumbnailSource::None;
+        CHECK((thumbnailSourceForName(name) == expected));
+    }
+}
+
+TEST_CASE("TS7: a well-formed .aeromat record now yields {guid, contentHash} -- the widening, stated positively") {
+    const engine::editor::AssetRecord record = decodableRecord("mats/brass.aeromat");
+    const std::optional<ThumbnailKey> key = engine::editor::thumbnailKeyForRecord(record);
+    REQUIRE(key.has_value());
+    CHECK((key->guid == record.guid));
+    CHECK((key->hash == record.contentHash));
+    // The vocabulary agrees about who produces it -- the walk routes on this very answer.
+    CHECK((thumbnailSourceForName(engine::editor::leafOf(record.relativePath)) == ThumbnailSource::RenderedMaterial));
+    // The LEAF decides: a folder named like a material does not make its contents one.
+    CHECK_FALSE(engine::editor::thumbnailKeyForRecord(decodableRecord("m.aeromat/readme.txt")).has_value());
+    // And the icon arm is untouched: .ktx2 is still refused (TS2's first subcase, restated beside the widening).
+    CHECK_FALSE(engine::editor::thumbnailKeyForRecord(decodableRecord("tex/a.ktx2")).has_value());
+}
+
+TEST_CASE("TS8: the other four guards still refuse a .aeromat, in their order") {
+    SUBCASE("state == Invalid") {
+        engine::editor::AssetRecord record = decodableRecord("brass.aeromat");
+        record.state = engine::editor::AssetMetaState::Invalid;
+        CHECK_FALSE(engine::editor::thumbnailKeyForRecord(record).has_value());
+    }
+    SUBCASE("metaWriteFailed, with change still UpToDate -- the order is what this arm pins") {
+        engine::editor::AssetRecord record = decodableRecord("brass.aeromat");
+        record.metaWriteFailed = true;
+        CHECK((record.change == engine::editor::ImportChange::UpToDate));
+        CHECK_FALSE(engine::editor::thumbnailKeyForRecord(record).has_value());
+    }
+    SUBCASE("change == NotHashed") {
+        engine::editor::AssetRecord record = decodableRecord("brass.aeromat");
+        record.change = engine::editor::ImportChange::NotHashed;
+        CHECK_FALSE(engine::editor::thumbnailKeyForRecord(record).has_value());
+    }
+    SUBCASE("change == Unhashable") {
+        engine::editor::AssetRecord record = decodableRecord("brass.aeromat");
+        record.change = engine::editor::ImportChange::Unhashable;
+        CHECK_FALSE(engine::editor::thumbnailKeyForRecord(record).has_value());
+    }
+}
+
+TEST_CASE("TS9: each TS8 record yields a key the moment its one bad field is repaired -- TS8 is about guards") {
+    // THE ANTI-VACUITY ARM FOR TS8: without it, TS8 would pass for a fixture that no guard could ever accept
+    // (a wrong extension, a nil guid), and a lost guard would hide behind it.
+    const engine::editor::AssetRecord good = decodableRecord("brass.aeromat");
+    REQUIRE(engine::editor::thumbnailKeyForRecord(good).has_value());
+    engine::editor::AssetRecord record = good;
+    record.state = engine::editor::AssetMetaState::Invalid;
+    REQUIRE_FALSE(engine::editor::thumbnailKeyForRecord(record).has_value());
+    record.state = good.state;
+    CHECK(engine::editor::thumbnailKeyForRecord(record).has_value());
+    record.metaWriteFailed = true;
+    REQUIRE_FALSE(engine::editor::thumbnailKeyForRecord(record).has_value());
+    record.metaWriteFailed = false;
+    CHECK(engine::editor::thumbnailKeyForRecord(record).has_value());
+    record.change = engine::editor::ImportChange::NotHashed;
+    REQUIRE_FALSE(engine::editor::thumbnailKeyForRecord(record).has_value());
+    record.change = engine::editor::ImportChange::Unhashable;
+    REQUIRE_FALSE(engine::editor::thumbnailKeyForRecord(record).has_value());
+    record.change = good.change;
+    CHECK(engine::editor::thumbnailKeyForRecord(record).has_value());
+}
+
+TEST_CASE("TS10: absentCount counts exactly the keys still waiting for a producer") {
+    // task E.4.5's second code-review round: the observable behind "an off-screen material key does not linger"
+    // (I243). Every state is present at once, so a count that took in Failed or Skipped -- the other two states
+    // nextDecodes never returns -- would read high here.
+    GuidGenerator gen(210);
+    ThumbnailLedger ledger;
+    CHECK(ledger.absentCount() == 0U);
+    const ThumbnailKey ready = keyFrom(gen);
+    const ThumbnailKey failed = keyFrom(gen);
+    const ThumbnailKey skipped = keyFrom(gen);
+    const ThumbnailKey waiting = keyFrom(gen);
+    const ThumbnailKey released = keyFrom(gen);
+    for (const ThumbnailKey& key : {ready, failed, skipped, waiting, released}) {
+        ledger.touch(key, 1);
+    }
+    CHECK(ledger.absentCount() == 5U);  // a touch inserts as Absent
+    ledger.markReady(ready);
+    ledger.markFailed(failed);
+    ledger.markSkipped(skipped);
+    CHECK(ledger.absentCount() == 2U);
+    ledger.forget(released);  // what the walk's release does to a key not drawn this frame
+    CHECK(ledger.absentCount() == 1U);
+    ledger.touch(ready, 2);  // a touch never resets a state
+    CHECK(ledger.absentCount() == 1U);
+    ledger.touch(released, 3);  // drawn again: back, as Absent
+    CHECK(ledger.absentCount() == 2U);
+    CHECK(ledger.nextDecodes(10U).size() == ledger.absentCount());  // the SAME set nextDecodes walks
+    ledger.clear();
+    CHECK(ledger.absentCount() == 0U);
 }

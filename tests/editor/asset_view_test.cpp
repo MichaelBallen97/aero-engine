@@ -952,3 +952,132 @@ TEST_CASE("asset view: no Issues means no reservation, and a closed header costs
     CHECK(open.issuesHeight == 23.0F + 47.0F + 4.0F);
     CHECK(open.paneHeight == 300.0F - 23.0F - 74.0F);
 }
+
+// ---- task E.4.5 (the code-review round): a SUBTITLED tile's first line keeps the FILE NAME ------------------
+// A tile carrying a document name gives its file name ONE line, and a search hit's caption source is
+// "parent/leaf" -- so today's right-elision kept the folder and dropped the very name the tile exists to show.
+// Both rules are pure over an injected measurer, so every case here is a table over a code-point budget.
+namespace {
+
+using engine::editor::CaptionLineFits;
+using engine::editor::elideCaptionRight;
+using engine::editor::subtitledTileCaptionLine;
+
+constexpr std::string_view ELLIPSIS = "\xE2\x80\xA6";  // U+2026 -- the caption's own ellipsis, one glyph
+constexpr std::string_view E_ACUTE = "\xC3\xA9";       // U+00E9 -- two bytes, one glyph
+
+[[nodiscard]] bool isContinuationByte(char byte) noexcept {
+    return (static_cast<unsigned char>(byte) & 0xC0U) == 0x80U;
+}
+
+// A line holds `width` CODE POINTS, and the ellipsis is one. A stray continuation byte costs NOTHING here, so a
+// suffix search that ignored UTF-8 boundaries would PREFER one -- which is what lets AV63 see that it did.
+[[nodiscard]] CaptionLineFits fitsCodePoints(std::size_t width) {
+    return [width](std::string_view text) {
+        const auto points =
+            std::count_if(text.begin(), text.end(), [](char byte) { return !isContinuationByte(byte); });
+        return static_cast<std::size_t>(points) <= width;
+    };
+}
+
+// A line holds `width` BYTES. A prefix that ends inside a sequence is SHORTER in bytes than the whole code point,
+// so a prefix search that ignored UTF-8 boundaries would prefer the split -- AV64's UTF-8 arm.
+[[nodiscard]] CaptionLineFits fitsBytes(std::size_t width) {
+    return [width](std::string_view text) { return text.size() <= width; };
+}
+
+[[nodiscard]] std::string withEllipsis(std::string_view head, std::string_view tail) {
+    std::string out(head);
+    out += tail;
+    return out;
+}
+
+}  // namespace
+
+TEST_CASE("asset view: a subtitled tile's first line is its caption source whenever that fits (AV60)") {
+    const CaptionLineFits fits = fitsCodePoints(20U);
+    CHECK(subtitledTileCaptionLine("mats/gold.aeromat", "gold.aeromat", fits) == "mats/gold.aeromat");
+    CHECK(subtitledTileCaptionLine("gold.aeromat", "gold.aeromat", fits) == "gold.aeromat");
+    // EXACTLY the width fits (the measurer is <=): unchanged, and no ellipsis is spent.
+    CHECK(subtitledTileCaptionLine("abcdefg/gold.aeromat", "gold.aeromat", fits) == "abcdefg/gold.aeromat");
+}
+
+TEST_CASE("asset view: a narrow search hit keeps its file name -- an ellipsis, then the longest suffix (AV61)") {
+    const CaptionLineFits fits = fitsCodePoints(20U);
+    const std::string source = "materials/metals/gold.aeromat";  // 29 code points
+    const std::string line = subtitledTileCaptionLine(source, "gold.aeromat", fits);
+    CHECK(line == withEllipsis(ELLIPSIS, "metals/gold.aeromat"));  // 1 + 19: the LONGEST suffix that fits
+    CHECK(line.starts_with(ELLIPSIS));
+    CHECK(line.ends_with("gold.aeromat"));
+    CHECK(fits(line));
+    // ANTI-VACUITY: today's rule over the SAME source and width keeps the folder and loses the name -- the
+    // defect this line fixes. If this arm stopped holding, the arms above would prove nothing.
+    const std::string rightElided = elideCaptionRight(source, fits);
+    CHECK(rightElided == withEllipsis("materials/metals/go", ELLIPSIS));
+    CHECK_FALSE(rightElided.ends_with("gold.aeromat"));
+    // Room for the name alone: the ellipsis and the whole leaf, nothing of the folder.
+    CHECK(subtitledTileCaptionLine(source, "gold.aeromat", fitsCodePoints(13U)) ==
+          withEllipsis(ELLIPSIS, "gold.aeromat"));
+}
+
+TEST_CASE("asset view: a file name too long for its line is right-elided -- the leaf, never the folder (AV62)") {
+    const CaptionLineFits fits = fitsCodePoints(12U);
+    const std::string leaf = "an_extremely_long_material.aeromat";
+    const std::string expected = withEllipsis("an_extremel", ELLIPSIS);  // 11 + 1
+    const std::string hit = "mats/" + leaf;
+    CHECK(subtitledTileCaptionLine(hit, leaf, fits) == expected);
+    // A caption source that IS the leaf -- every tile that is not a search hit -- keeps today's rule exactly.
+    CHECK(subtitledTileCaptionLine(leaf, leaf, fits) == expected);
+    CHECK(elideCaptionRight(leaf, fits) == expected);
+    // A leaf that is not the source's suffix is a caller's mistake: the line is then today's rule over the source.
+    const std::string source = "materials/metals/gold.aeromat";
+    const CaptionLineFits twenty = fitsCodePoints(20U);
+    CHECK(subtitledTileCaptionLine(source, "silver.aeromat", twenty) == elideCaptionRight(source, twenty));
+    CHECK(subtitledTileCaptionLine(source, "", twenty) == elideCaptionRight(source, twenty));
+}
+
+TEST_CASE("asset view: the kept suffix starts on a UTF-8 boundary, never inside a sequence (AV63)") {
+    std::string parent;
+    for (int i = 0; i < 5; ++i) {
+        parent += E_ACUTE;  // five two-byte code points
+    }
+    const std::string source = parent + "/or.aeromat";  // 16 code points in 21 bytes
+    const std::string line = subtitledTileCaptionLine(source, "or.aeromat", fitsCodePoints(14U));
+    std::string expected(ELLIPSIS);
+    expected += E_ACUTE;
+    expected += E_ACUTE;
+    expected += "/or.aeromat";  // 1 + 13 code points: two whole accents, never a half of a third
+    CHECK(line == expected);
+    REQUIRE(line.size() > ELLIPSIS.size());
+    CHECK_FALSE(isContinuationByte(line[ELLIPSIS.size()]));
+}
+
+TEST_CASE("asset view: elideCaptionRight keeps a whole caption, else its longest prefix and an ellipsis (AV64)") {
+    CHECK(elideCaptionRight("gold.aeromat", fitsCodePoints(12U)) == "gold.aeromat");
+    CHECK(elideCaptionRight("gold.aeromat", fitsCodePoints(6U)) == withEllipsis("gold.", ELLIPSIS));
+    // Never inside a sequence: "caf" + e-acute is five bytes, and seven bytes hold "caf" + a SPLIT accent + the
+    // three-byte ellipsis exactly -- so the prefix steps back to the accent's lead byte and keeps "caf" alone.
+    const std::string accented = "caf" + std::string(E_ACUTE) + "_noir.aeromat";
+    CHECK(elideCaptionRight(accented, fitsBytes(7U)) == withEllipsis("caf", ELLIPSIS));
+    CHECK(elideCaptionRight(accented, fitsBytes(8U)) == withEllipsis("caf" + std::string(E_ACUTE), ELLIPSIS));
+    // Nothing but the ellipsis fits: the ellipsis alone, as elideForCaption has always answered.
+    CHECK(elideCaptionRight("gold.aeromat", fitsCodePoints(1U)) == ELLIPSIS);
+    CHECK(elideCaptionRight("gold.aeromat", fitsCodePoints(0U)) == ELLIPSIS);
+}
+
+TEST_CASE("asset view: a first code point wider than one byte is kept when it fits with the ellipsis (AV65)") {
+    // The second code-review round: bisecting over BYTES, a probe that fell inside the FIRST code point stepped
+    // back to byte 0 and gave up, answering the ellipsis alone although the whole first code point fit beside it.
+    // U+1F600 is four bytes; the font draws it as '?', but the rule is about bytes and boundaries, not glyphs.
+    const std::string grin = "\xF0\x9F\x98\x80";
+    const std::string text = grin + "abcdef";  // seven code points in ten bytes
+    CHECK(elideCaptionRight(text, fitsCodePoints(2U)) == withEllipsis(grin, ELLIPSIS));
+    CHECK(elideCaptionRight(text, fitsBytes(7U)) == withEllipsis(grin, ELLIPSIS));  // 4 + 3 bytes exactly
+    CHECK(elideCaptionRight(text, fitsCodePoints(3U)) == withEllipsis(grin + "a", ELLIPSIS));
+    CHECK(elideCaptionRight(text, fitsCodePoints(7U)) == text);  // fits whole: unchanged
+    // Nothing but the ellipsis fits: the ellipsis alone, and never a split first code point.
+    CHECK(elideCaptionRight(text, fitsCodePoints(1U)) == ELLIPSIS);
+    CHECK(elideCaptionRight(text, fitsBytes(6U)) == ELLIPSIS);
+    // The subtitled line inherits the rule where it falls back to eliding the leaf.
+    CHECK(subtitledTileCaptionLine(text, text, fitsCodePoints(2U)) == withEllipsis(grin, ELLIPSIS));
+}

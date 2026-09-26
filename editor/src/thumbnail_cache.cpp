@@ -9,18 +9,33 @@
 #include <cstdint>
 #include <optional>
 #include <span>
+#include <string_view>
 #include <vector>
 
 namespace engine::editor {
+
+// task E.4.5: the routing vocabulary. DecodedImage FIRST (the header gives the reason), then the kind
+// table. Two table lookups on the last extension; no allocation, no literal.
+ThumbnailSource thumbnailSourceForName(std::string_view fileName) noexcept {
+    if (isThumbnailDecodable(fileName)) {
+        return ThumbnailSource::DecodedImage;
+    }
+    if (classifyAssetKind(fileName, /*isDirectory=*/false) == AssetKind::Material) {
+        return ThumbnailSource::RenderedMaterial;
+    }
+    return ThumbnailSource::None;
+}
 
 // task E.3.3: the browser's guards 2, 4, 5, 6 and 7, moved here verbatim with their own comments so a
 // SECOND consumer (the picker's tile) asks the identical question rather than a similar one. Guard 4
 // ("no identity for this file") is structural here: a record IS the argument.
 std::optional<ThumbnailKey> thumbnailKeyForRecord(const AssetRecord& record) noexcept {
-    // 2: .ktx2/.dds are Texture but not decodable (D7). The leaf is derived from the record's own
-    // relativePath through the tree's OWN helper, so the browser no longer needs to pass a
-    // FileEntry::name for it and nothing here re-derives a path rule that already exists.
-    if (!isThumbnailDecodable(leafOf(record.relativePath))) {
+    // 2: the ONE line task E.4.5 widens, and it widens by DELEGATION rather than by a second clause:
+    // .ktx2/.dds are Texture but have no producer (D7) and still get an ICON, and an .aeromat is now a
+    // RenderedMaterial and gets a key. The leaf is derived from the record's own relativePath through the
+    // tree's OWN helper, so the browser still passes no FileEntry::name for it and nothing here re-derives
+    // a path rule that already exists. THE OTHER FOUR GUARDS, THEIR ORDER AND THEIR COMMENTS DO NOT MOVE.
+    if (thumbnailSourceForName(leafOf(record.relativePath)) == ThumbnailSource::None) {
         return std::nullopt;
     }
     if (record.state == AssetMetaState::Invalid) {  // 5: no identity this session (D7's posture)
@@ -159,6 +174,11 @@ std::size_t ThumbnailLedger::unavailableCount() const noexcept {
     return static_cast<std::size_t>(std::count_if(entries.begin(), entries.end(), [](const Entry& e) {
         return e.state == ThumbnailState::Failed || e.state == ThumbnailState::Skipped;
     }));
+}
+
+std::size_t ThumbnailLedger::absentCount() const noexcept {
+    return static_cast<std::size_t>(std::count_if(entries.begin(), entries.end(),
+                                                  [](const Entry& e) { return e.state == ThumbnailState::Absent; }));
 }
 
 // ---- the resampler ----------------------------------------------------------------------------

@@ -19,6 +19,7 @@
 #include <aero/editor/editor_prefs.hpp>  // task E.3.2: EditorPrefs + readEditorPrefs/writeEditorPrefs.
                                          // context_router.hpp arrives through editor_app.hpp.
 #include <aero/editor/entity_ops.hpp>
+#include <aero/editor/material_card.hpp>  // task E.4.5: materialCardSubtitle
 #include <aero/editor/material_edit.hpp>  // task 3.4.2: uniqueMaterialFileName -- New Material's
                                           // one naming rule, PURE and shared with the ME tier
 #include <aero/editor/project.hpp>        // task E.3.2: defaultEditorPrefsPath() -- named directly rather
@@ -1438,11 +1439,66 @@ std::size_t EditorApp::thumbnailReadyCount() const noexcept {
 std::size_t EditorApp::thumbnailUnavailableCount() const noexcept {
     return thumbnails != nullptr ? thumbnails->unavailableCount() : std::size_t{0};
 }
+std::size_t EditorApp::thumbnailAbsentCount() const noexcept {
+    return thumbnails != nullptr ? thumbnails->absentCount() : std::size_t{0};
+}
 std::size_t EditorApp::thumbnailResidentCount() const noexcept {
     return thumbnails != nullptr ? thumbnails->residentCount() : std::size_t{0};
 }
 std::size_t EditorApp::thumbnailLoadAttempts() const noexcept {
     return thumbnails != nullptr ? thumbnails->loadAttempts() : std::size_t{0};
+}
+// task E.4.5: the render store's four, the thumbnailReadyCount() shape verbatim.
+std::size_t EditorApp::materialThumbnailRenderCount() const noexcept {
+    return thumbnails != nullptr ? thumbnails->materialRenderAttempts() : std::size_t{0};
+}
+std::size_t EditorApp::materialThumbnailResidentCount() const noexcept {
+    return thumbnails != nullptr ? thumbnails->materialResidentCount() : std::size_t{0};
+}
+bool EditorApp::materialThumbnailsAvailable() const noexcept {
+    return thumbnails != nullptr && thumbnails->materialThumbnailsAvailable();
+}
+const render::RenderTarget* EditorApp::materialThumbnailTargetFor(Guid guid) const noexcept {
+    if (thumbnails == nullptr) {
+        return nullptr;
+    }
+    const AssetRecord* const record = assetDatabase.findByGuid(guid);
+    if (record == nullptr) {
+        return nullptr;
+    }
+    const std::optional<ThumbnailKey> key = thumbnailKeyForRecord(*record);
+    return key.has_value() ? thumbnails->materialTargetFor(*key) : nullptr;
+}
+bool EditorApp::materialThumbnailBound(Guid guid) const noexcept {
+    if (thumbnails == nullptr) {
+        return false;
+    }
+    const AssetRecord* const record = assetDatabase.findByGuid(guid);
+    if (record == nullptr) {
+        return false;
+    }
+    const std::optional<ThumbnailKey> key = thumbnailKeyForRecord(*record);
+    return key.has_value() && thumbnails->nativeTextureFor(*key) != nullptr;
+}
+std::size_t EditorApp::materialCardCount() const noexcept {
+    return thumbnails != nullptr ? thumbnails->materialCardCount() : std::size_t{0};
+}
+std::size_t EditorApp::materialCardReadCount() const noexcept {
+    return thumbnails != nullptr ? thumbnails->materialCardReadCount() : std::size_t{0};
+}
+std::string EditorApp::materialSubtitleFor(Guid guid) const {
+    if (thumbnails == nullptr) {
+        return {};
+    }
+    const AssetRecord* const record = assetDatabase.findByGuid(guid);
+    if (record == nullptr) {
+        return {};
+    }
+    const std::optional<ThumbnailKey> key = thumbnailKeyForRecord(*record);
+    if (!key.has_value()) {
+        return {};
+    }
+    return std::string(materialCardSubtitle(thumbnails->cardFor(*key), leafOf(record->relativePath)));
 }
 std::size_t EditorApp::assetOrphanCount() const noexcept { return lastAssetReport.orphanTotal; }
 // code-review SHOULD-FIX 10: the assetOrphanCount() shape verbatim, applied to phase 7.5's own capped
@@ -2167,6 +2223,11 @@ void EditorApp::requestAssetBrowserReimportAll() noexcept {
 void EditorApp::requestAssetBrowserViewMode(AssetViewMode mode) noexcept {
     if (assetBrowserPanel != nullptr) {
         assetBrowserPanel->requestViewMode(mode);
+    }
+}
+void EditorApp::requestAssetBrowserTileSize(TileSize size) noexcept {
+    if (assetBrowserPanel != nullptr) {
+        assetBrowserPanel->requestTileSize(size);
     }
 }
 void EditorApp::requestAssetBrowserSearch(std::string_view query) {

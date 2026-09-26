@@ -5,8 +5,9 @@
 //      are identical -- but the DIRECTION matters: incrementing AFTER the touch loop would let
 //      evictions see last frame's touches and destroy a key drawn THIS frame, which is 3.1.3's
 //      BLOCKING-1 (synchronous on Vulkan/D3D12, deferred on Metal).
-//   2. absolutePathFor takes `const AssetDatabase&` and reads database.root() where the browser read
-//      its own rootUtf8; the null-database branch disappears with the reference.
+//   2. absolutePathFor took `const AssetDatabase&` and read database.root() where the browser read its
+//      own rootUtf8; the null-database branch disappeared with the reference. (task E.4.5 removed it: the
+//      produce walk resolves the record itself, because it needs the record to route.)
 //   3. clear() is new -- the two lines the browser's setRoot() used to perform inline.
 // Everything else below is the browser's own body, comments included.
 #include "thumbnail_service.hpp"
@@ -14,20 +15,37 @@
 #include <aero/editor/asset_cache.hpp>
 #include <aero/editor/asset_database.hpp>
 #include <aero/editor/asset_meta.hpp>
+#include <aero/editor/project_files.hpp>  // task E.4.5 -- leafOf, for the walk's routing
 
 #include <algorithm>
 #include <cstddef>
+#include <limits>
 #include <string>
 
 namespace engine::editor {
 
-ThumbnailService::ThumbnailService(rhi::Device* device) noexcept : store(device) {}
+namespace {
+
+// task E.4.5 (D-H): "every Absent key", in the ledger's own vocabulary. nextDecodes collects and sorts every
+// Absent entry whatever its budget, so asking for all of them costs only the copies it would have discarded.
+constexpr std::size_t ALL_ABSENT_KEYS = std::numeric_limits<std::size_t>::max();
+
+}  // namespace
+
+ThumbnailService::ThumbnailService(rhi::Device* device) noexcept : store(device), renders(device) {}
 
 bool ThumbnailService::available() const noexcept { return store.available(); }
 
 void ThumbnailService::noteVisible(const ThumbnailKey& key) { visible.push_back(key); }
 
-void* ThumbnailService::nativeTextureFor(const ThumbnailKey& key) const noexcept { return store.nativeTextureFor(key); }
+void* ThumbnailService::nativeTextureFor(const ThumbnailKey& key) const noexcept {
+    // task E.4.5: the decode store FIRST, so the common path is one binary search. The two key sets are
+    // DISJOINT by construction (ThumbnailSource partitions), so the order is a cost decision, not a semantic one.
+    if (void* const decoded = store.nativeTextureFor(key); decoded != nullptr) {
+        return decoded;
+    }
+    return renders.nativeTextureFor(key);
+}
 
 void ThumbnailService::requestReimportClear() noexcept { pendingReimportClear = true; }
 
@@ -36,23 +54,56 @@ void ThumbnailService::noteDatabaseRescanned() noexcept { pendingSupersededSweep
 void ThumbnailService::clear() {
     ledger.clear();
     store.clear();
+    renders.clear();  // task E.4.5 -- the same swap point; the render CHAIN survives, it is project-independent
+    cards.clear();    // task E.4.5 -- a project swap only: a Reimport All changes no bytes and keeps every card
 }
 
 std::size_t ThumbnailService::readyCount() const noexcept { return ledger.readyCount(); }
 std::size_t ThumbnailService::unavailableCount() const noexcept { return ledger.unavailableCount(); }
+std::size_t ThumbnailService::absentCount() const noexcept { return ledger.absentCount(); }
 std::size_t ThumbnailService::residentCount() const noexcept { return store.residentCount(); }
 std::size_t ThumbnailService::loadAttempts() const noexcept { return store.loadAttempts(); }
+// task E.4.5: the render store's own four -- see the header for why the four above keep their meanings.
+std::size_t ThumbnailService::materialResidentCount() const noexcept { return renders.residentCount(); }
+std::size_t ThumbnailService::materialRenderAttempts() const noexcept { return renders.renderAttempts(); }
+bool ThumbnailService::materialThumbnailsAvailable() const noexcept { return renders.available(); }
+const render::RenderTarget* ThumbnailService::materialTargetFor(const ThumbnailKey& key) const noexcept {
+    return renders.targetFor(key);
+}
+void ThumbnailService::noteCardWanted(const ThumbnailKey& key) { cards.noteCardWanted(key); }
+const MaterialCard* ThumbnailService::cardFor(const ThumbnailKey& key) const noexcept { return cards.cardFor(key); }
+std::size_t ThumbnailService::materialCardCount() const noexcept { return cards.cardCount(); }
+std::size_t ThumbnailService::materialCardReadCount() const noexcept { return cards.readCount(); }
 
-std::string ThumbnailService::absolutePathFor(const ThumbnailKey& key, const AssetDatabase& database) const {
-    const AssetRecord* const record = database.findByGuid(key.guid);
-    if (record == nullptr) {
-        return {};  // the record vanished (a rescan raced the decode) -- treated as Failed, never retried
+void ThumbnailService::releaseKey(const ThumbnailKey& key) {
+    store.destroy(key);    // a no-op for a rendered key
+    renders.destroy(key);  // a no-op for a decoded key
+    ledger.forget(key);
+}
+
+void ThumbnailService::markLedger(const ThumbnailKey& key, ThumbnailState state) {
+    switch (state) {  // NO default: -- a new state is a -Wswitch diagnostic, not a silent fallthrough
+        case ThumbnailState::Ready:
+            ledger.markReady(key);
+            break;
+        case ThumbnailState::Failed:
+            ledger.markFailed(key);
+            break;
+        case ThumbnailState::Skipped:
+            ledger.markSkipped(key);
+            break;
+        case ThumbnailState::Absent:
+            ledger.markFailed(key);  // neither producer returns it; defensive
+            break;
     }
-    return database.root() + "/" + record->relativePath;
 }
 
 void ThumbnailService::service(const AssetDatabase& database) {
-    ++frame;                   // the LRU's clock, advanced BEFORE the touch loop (difference 1 in the banner above)
+    ++frame;  // the LRU's clock, advanced BEFORE the touch loop (difference 1 in the banner above)
+    // task E.4.5: THE CARD PASS RUNS HERE, ABOVE THE DEVICE GATE, and the position is the whole point: a machine
+    // with no GPU and a build with no cooked shaders must still show every material's name and its own colour.
+    // It touches no GPU object and no ledger entry, and it shares this pass's clock.
+    cards.service(database, frame);
     if (!store.available()) {  // E13/AC-11: no device -- thumbnails stay unavailable forever
         visible.clear();
         return;
@@ -60,6 +111,11 @@ void ThumbnailService::service(const AssetDatabase& database) {
     for (const ThumbnailKey& key : visible) {
         ledger.touch(key, frame);
     }
+    // task E.4.5's code-review round: kept for the produce walk below -- a render is spent only on a key drawn
+    // THIS frame. Sorted and unique, because two hosts may note one key and the walk binary-searches it.
+    drawnThisFrame.assign(visible.begin(), visible.end());
+    std::sort(drawnThisFrame.begin(), drawnThisFrame.end());
+    drawnThisFrame.erase(std::unique(drawnThisFrame.begin(), drawnThisFrame.end()), drawnThisFrame.end());
     visible.clear();
 
     // code-review BLOCKING-1: the ReimportAll flag, drained HERE -- after the touch loop above, so
@@ -74,8 +130,7 @@ void ThumbnailService::service(const AssetDatabase& database) {
     if (pendingReimportClear) {
         pendingReimportClear = false;
         for (const ThumbnailKey& key : ledger.evictions(0, frame)) {
-            store.destroy(key);
-            ledger.forget(key);
+            releaseKey(key);  // task E.4.5 -- both stores, one helper
         }
     }
 
@@ -111,8 +166,7 @@ void ThumbnailService::service(const AssetDatabase& database) {
         std::sort(liveKeyScratch.begin(), liveKeyScratch.end());  // supersededBy's precondition
         std::sort(abstainingScratch.begin(), abstainingScratch.end());
         for (const ThumbnailKey& key : ledger.supersededBy(liveKeyScratch, abstainingScratch, frame)) {
-            store.destroy(key);
-            ledger.forget(key);
+            releaseKey(key);  // task E.4.5
         }
     }
 
@@ -120,24 +174,60 @@ void ThumbnailService::service(const AssetDatabase& database) {
     // resident count exceed the cap by up to MAX_THUMBNAIL_DECODES_PER_TICK for a tick, which makes
     // the bound this task states in a FOOTER a lie.
     for (const ThumbnailKey& key : ledger.evictions(MAX_THUMBNAILS_RESIDENT, frame)) {
-        store.destroy(key);
-        ledger.forget(key);
+        releaseKey(key);  // task E.4.5
     }
-    for (const ThumbnailKey& key : ledger.nextDecodes(MAX_THUMBNAIL_DECODES_PER_TICK)) {
-        const std::string absolute = absolutePathFor(key, database);
-        const ThumbnailState state = absolute.empty() ? ThumbnailState::Failed : store.load(key, absolute);
-        switch (state) {  // NO default: -- a new state is a -Wswitch warning, not a silent fallthrough
-            case ThumbnailState::Ready:
-                ledger.markReady(key);
+    // task E.4.5 (D-H): ONE walk over EVERY Absent key, oldest first, spending each budget as it meets a
+    // candidate of its own kind and stopping the moment both are spent. Asking the ledger for only
+    // (decodes + renders) keys would hand this loop the THREE oldest, which can all be materials -- tiles drawn
+    // in one frame share lastTouched, so their order is the ledger's GUID order -- and no image would decode
+    // until every material ahead of it had rendered, one per tick. Two nextDecodes calls, one per budget,
+    // starve the same way. A key skipped for budget stays Absent and is first in line next tick.
+    std::size_t decodesSpent = 0;
+    std::size_t rendersSpent = 0;
+    for (const ThumbnailKey& key : ledger.nextDecodes(ALL_ABSENT_KEYS)) {
+        if (decodesSpent >= MAX_THUMBNAIL_DECODES_PER_TICK && rendersSpent >= MAX_THUMBNAIL_RENDERS_PER_TICK) {
+            break;
+        }
+        const AssetRecord* const record = database.findByGuid(key.guid);
+        if (record == nullptr) {
+            ledger.markFailed(key);  // the record vanished (a rescan raced the draw walk) -- Failed, NEVER retried
+            continue;
+        }
+        switch (thumbnailSourceForName(leafOf(record->relativePath))) {  // NO default: -- -Wswitch
+            case ThumbnailSource::DecodedImage:
+                if (decodesSpent >= MAX_THUMBNAIL_DECODES_PER_TICK) {
+                    continue;
+                }
+                ++decodesSpent;
+                markLedger(key, store.load(key, database.root() + "/" + record->relativePath));
                 break;
-            case ThumbnailState::Failed:
+            case ThumbnailSource::RenderedMaterial:
+                // task E.4.5's code-review round: ONLY A TILE DRAWN THIS FRAME. The walk is oldest-touched-first
+                // and an Absent key is never dropped, so without this the materials a user scrolled PAST would
+                // render first -- one expensive render per tick -- while the page on screen waited, and past
+                // the resident cap each fresh off-screen render would be the next eviction. DECODES KEEP THEIR
+                // OWN RULE.
+                //
+                // AND AN OFF-SCREEN KEY IS RELEASED, NOT KEPT PENDING (the second code-review round). Kept, it would
+                // stay Absent for the whole session -- supersededBy keeps a live key, evictions touches Ready keys
+                // only -- so after one scroll through a large library every tick's walk would scan, and
+                // nextDecodes would allocate over, every such key, even while idle. Releasing it is SAFE: it was
+                // not drawn this frame, so no draw list names it, and both stores' destroys are no-ops for a key
+                // they never produced. It comes back as Absent the next frame its tile is drawn.
+                if (!std::binary_search(drawnThisFrame.begin(), drawnThisFrame.end(), key)) {
+                    releaseKey(key);
+                    continue;
+                }
+                if (rendersSpent >= MAX_THUMBNAIL_RENDERS_PER_TICK) {
+                    continue;
+                }
+                ++rendersSpent;
+                markLedger(key, renders.produce(key, database.root() + "/" + record->relativePath, database));
+                break;
+            case ThumbnailSource::None:
+                // UNREACHABLE by construction: a key exists only because thumbnailKeyForRecord accepted this
+                // very record, and it refuses None. Marked sticky so it can never occupy the walk again.
                 ledger.markFailed(key);
-                break;
-            case ThumbnailState::Skipped:
-                ledger.markSkipped(key);
-                break;
-            case ThumbnailState::Absent:
-                ledger.markFailed(key);  // load() never returns it; defensive
                 break;
         }
     }

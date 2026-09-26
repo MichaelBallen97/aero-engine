@@ -1,16 +1,21 @@
 #include "inspector_panel.hpp"
 
 #include <aero/core/math.hpp>
+#include <aero/editor/asset_database.hpp>
 #include <aero/editor/asset_drag.hpp>  // task E.3.3 -- assetReferenceKindFromToken, DropSurface
 #include <aero/editor/command_stack.hpp>
 #include <aero/editor/component_commands.hpp>
 #include <aero/editor/entity_ops.hpp>
+#include <aero/editor/material_card.hpp>
 #include <aero/editor/panel_context.hpp>
+#include <aero/editor/project_files.hpp>
 #include <aero/editor/selection.hpp>
+#include <aero/editor/thumbnail_cache.hpp>
 #include <aero/scene/world.hpp>
 
 #include "asset_picker.hpp"  // task E.3.3 -- the ONE asset-reference field widget
 #include "text_input.hpp"
+#include "thumbnail_service.hpp"
 
 #include <algorithm>
 #include <array>
@@ -19,6 +24,7 @@
 #include <imgui.h>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <variant>
@@ -562,7 +568,22 @@ void InspectorPanel::drawField(PanelContext& context, Entity primary, const Comp
             //
             // Both decisions -- the sentence and whether Clear is live -- come from ONE pure call, so
             // this panel holds no second copy of either and a tier-0 case asserts what is drawn here.
-            const GuidFieldRow row = guidFieldRow(std::get<Guid>(field.value), database);
+            // task E.4.5: a MATERIAL reference names its document, so a field bound to "Studio Brass" says so
+            // instead of "mat_04.aeromat". The same three calls every host makes: the card rides the record's
+            // thumbnail key on its OWN queue, and rule 4 runs against the file's CURRENT name. "" for every
+            // other kind, and until the card has been read -- the sentence is then byte-identical to today's.
+            // `subtitle` views the card, which is stable for this whole draw walk.
+            std::string_view subtitle;
+            if (thumbnails != nullptr && database != nullptr) {
+                if (const AssetRecord* const record = database->findByGuid(std::get<Guid>(field.value));
+                    record != nullptr) {
+                    if (const std::optional<ThumbnailKey> key = thumbnailKeyForRecord(*record); key.has_value()) {
+                        thumbnails->noteCardWanted(*key);
+                        subtitle = materialCardSubtitle(thumbnails->cardFor(*key), leafOf(record->relativePath));
+                    }
+                }
+            }
+            const GuidFieldRow row = guidFieldRow(std::get<Guid>(field.value), database, subtitle);
             const std::optional<AssetKind> wanted = assetReferenceKindFromToken(field.assetKindToken);
             const std::string_view unknown = (!field.assetKindToken.empty() && !wanted.has_value())
                                                  ? std::string_view(field.assetKindToken)

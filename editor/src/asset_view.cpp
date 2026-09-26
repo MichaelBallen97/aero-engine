@@ -327,4 +327,92 @@ AssetBrowserLayout assetBrowserLayout(const AssetBrowserLayoutMetrics& metrics) 
     return layout;
 }
 
+// ---- task E.4.5 (the code-review round): caption lines ------------------------------------------------------
+namespace {
+
+constexpr std::string_view CAPTION_ELLIPSIS = "\xE2\x80\xA6";  // U+2026, one glyph in the editor's font
+
+[[nodiscard]] bool isUtf8Continuation(char byte) noexcept {
+    return (static_cast<unsigned char>(byte) & 0xC0U) == 0x80U;
+}
+
+}  // namespace
+
+std::string elideCaptionRight(std::string_view text, const CaptionLineFits& fits) {
+    if (fits(text)) {
+        return std::string(text);
+    }
+    // Every prefix a cut may keep ends on a UTF-8 boundary: the start of each code point after the first, and the
+    // text's own end. A longer prefix is never easier to fit than a shorter one, so the longest that fits beside
+    // the ellipsis is found by bisection over THIS list -- the second code-review round. elideForCaption's old
+    // bisection ran over BYTES and stepped each probe back to a boundary, and a probe inside the FIRST code point
+    // stepped back to byte 0, where it gave up: "\xF0\x9F\x98\x80ab" at two code points answered the ellipsis
+    // alone. Wherever the old body did not give up, this answers exactly what it answered.
+    std::vector<std::size_t> ends;
+    for (std::size_t at = 1; at < text.size(); ++at) {
+        if (!isUtf8Continuation(text[at])) {
+            ends.push_back(at);
+        }
+    }
+    ends.push_back(text.size());
+    // `fitting` counts the ends whose prefix fits: the first `fitting` of them do, the rest do not.
+    std::size_t fitting = 0;
+    std::size_t hi = ends.size();
+    std::string candidate;
+    while (fitting < hi) {
+        const std::size_t mid = fitting + ((hi - fitting) / 2);
+        candidate.assign(text.substr(0, ends[mid]));
+        candidate += CAPTION_ELLIPSIS;
+        if (fits(candidate)) {
+            fitting = mid + 1;
+        } else {
+            hi = mid;
+        }
+    }
+    std::string result(fitting == 0 ? std::string_view{} : text.substr(0, ends[fitting - 1]));
+    result += CAPTION_ELLIPSIS;
+    return result;
+}
+
+std::string subtitledTileCaptionLine(std::string_view captionSource, std::string_view leaf,
+                                     const CaptionLineFits& fits) {
+    if (fits(captionSource)) {
+        return std::string(captionSource);
+    }
+    if (leaf.empty() || leaf.size() >= captionSource.size() || !captionSource.ends_with(leaf)) {
+        return elideCaptionRight(captionSource, fits);  // no folder to drop: today's caption rule
+    }
+    std::string candidate(CAPTION_ELLIPSIS);
+    candidate += leaf;
+    if (!fits(candidate)) {
+        return elideCaptionRight(leaf, fits);  // not even the whole name fits: keep its FRONT
+    }
+    // Every start a kept suffix may take: each UTF-8 boundary after the first byte, then the leaf's own start,
+    // which fits (measured just above). A longer suffix is never easier to fit than a shorter one, so the first
+    // start that fits is found by bisection over this list -- never over raw bytes, which may split a sequence.
+    const std::size_t leafStart = captionSource.size() - leaf.size();
+    std::vector<std::size_t> starts;
+    for (std::size_t at = 1; at < leafStart; ++at) {
+        if (!isUtf8Continuation(captionSource[at])) {
+            starts.push_back(at);
+        }
+    }
+    starts.push_back(leafStart);
+    std::size_t lo = 0;
+    std::size_t hi = starts.size() - 1;
+    while (lo < hi) {
+        const std::size_t mid = lo + ((hi - lo) / 2);
+        candidate.assign(CAPTION_ELLIPSIS);
+        candidate += captionSource.substr(starts[mid]);
+        if (fits(candidate)) {
+            hi = mid;
+        } else {
+            lo = mid + 1;
+        }
+    }
+    std::string result(CAPTION_ELLIPSIS);
+    result += captionSource.substr(starts[lo]);
+    return result;
+}
+
 }  // namespace engine::editor

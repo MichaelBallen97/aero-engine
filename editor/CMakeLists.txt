@@ -165,6 +165,9 @@ add_library(aero_editor_core STATIC
     src/scene_containment.cpp    # task E.4.2 -- the containment predicate; ALL <filesystem> for this
                                  # pair, never logs, never writes (D1-D4)
     src/default_font.cpp         # task E.4.4 -- the UI font + its CP1252 remaps (the ONLY font setup)
+    src/material_card.cpp        # task E.4.5 -- the material card's model: name, swatch, rig; PURE, no GPU
+    src/material_thumbnail.cpp   # task E.4.5 -- the RENDERED material thumbnail; GPU, service pass only
+    src/material_card_cache.cpp  # task E.4.5 -- material names + swatches; device-free, capped reads
 )
 add_library(aero::editor_core ALIAS aero_editor_core)
 target_include_directories(aero_editor_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
