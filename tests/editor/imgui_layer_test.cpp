@@ -19554,27 +19554,28 @@ TEST_CASE("editor: E.4.5's structure holds as source text -- routing, release, g
         // its count to zero here, and nothing else in the tree would notice.
         constexpr std::array<std::size_t, 4> SUBTITLE_CALLS{2U, 1U, 1U, 0U};
         static_assert(SUBTITLE_CALLS.size() == HOSTS.size());
-        // THE SEPARATOR IS SPELLED ONCE, as MATERIAL_CARD_SEPARATOR. The browser's FOOTER already spells the
-        // same five characters on FIVE lines of its own status sentence (pre-existing at the branch point, and
-        // unrelated to material names), so the pin is each host's branch-point count: a SIXTH line in the
-        // browser, or a first one anywhere else, is a host restating the card's separator.
-        constexpr std::array<std::size_t, 4> SEPARATOR_LITERAL_LINES{5U, 0U, 0U, 0U};
-        static_assert(SEPARATOR_LITERAL_LINES.size() == HOSTS.size());
+        // THE SWATCH, the code-review round: the two TILE hosts paint a material's own colour, and only they --
+        // the browser's grid tile and the picker's popup tile. The Inspector's row has no icon rect, and the FACE
+        // paints whatever tint it is handed. A tile host that stopped asking (seed S54) leaves every material in
+        // it the kind colour, which no runtime tier reads.
+        constexpr std::array<std::size_t, 4> TINT_CALLS{1U, 1U, 0U, 0U};
+        static_assert(TINT_CALLS.size() == HOSTS.size());
         for (std::size_t h = 0; h < HOSTS.size(); ++h) {
             CAPTURE(HOSTS[h]);
             const std::vector<std::string> code = codeOf(HOSTS[h]);
             CHECK(countLinesContaining(code, "materialCardSubtitle(") == SUBTITLE_CALLS[h]);
+            CHECK(countLinesContaining(code, "materialCardTint(") == TINT_CALLS[h]);
             CHECK(countLinesContaining(code, "materialNameMatchesStem(") == 0U);  // rule 4 is the model's alone
-            CHECK(countLinesContaining(code, "\"  -  \"") == SEPARATOR_LITERAL_LINES[h]);
         }
     }
     SUBCASE("(e) no host hands a NON-LITERAL to an ImGui format function (D12's draw half, seed S9)") {
-        constexpr std::array<std::string_view, 5> FORMAT_FUNCTIONS{
-            "ImGui::Text(",          // Text(fmt, ...)
-            "ImGui::TextDisabled(",  // TextDisabled(fmt, ...)
-            "ImGui::TextWrapped(",   // TextWrapped(fmt, ...)
-            "ImGui::SetTooltip(",    // SetTooltip(fmt, ...)
-            "ImGui::BulletText(",    // BulletText(fmt, ...)
+        constexpr std::array<std::string_view, 6> FORMAT_FUNCTIONS{
+            "ImGui::Text(",            // Text(fmt, ...)
+            "ImGui::TextDisabled(",    // TextDisabled(fmt, ...)
+            "ImGui::TextWrapped(",     // TextWrapped(fmt, ...)
+            "ImGui::SetTooltip(",      // SetTooltip(fmt, ...)
+            "ImGui::BulletText(",      // BulletText(fmt, ...)
+            "ImGui::SetItemTooltip(",  // SetItemTooltip(fmt, ...) -- the code-review round
         };
         std::size_t formatCalls = 0;
         for (const std::string_view host : HOSTS) {
@@ -19605,6 +19606,54 @@ TEST_CASE("editor: E.4.5's structure holds as source text -- routing, release, g
             }
         }
         CHECK(formatCalls >= 15U);  // ANTI-VACUITY: 19 such calls exist at c95dc78, one of them broken after "("
+        // THE SECOND-ARGUMENT FORMAT FUNCTIONS, the code-review round: TextColored(col, fmt, ...) and
+        // LabelText(label, fmt, ...) take their format string SECOND, so the first-argument rule above cannot see
+        // them. Their second argument must open a string literal: the call is joined with the next two lines and
+        // the first comma at parenthesis depth 0 ends the first argument. NONE exists in the hosts today (seed S56
+        // writes one), so the pin is a refusal of a future call, and its own arms are below.
+        constexpr std::array<std::string_view, 2> SECOND_ARGUMENT_FORMAT{
+            "ImGui::TextColored(",  // TextColored(col, fmt, ...)
+            "ImGui::LabelText(",    // LabelText(label, fmt, ...)
+        };
+        const auto secondArgumentOpensLiteral = [](std::string_view call) {
+            int depth = 0;
+            for (std::size_t c = 0; c < call.size(); ++c) {
+                if (call[c] == '(') {
+                    ++depth;
+                } else if (call[c] == ')') {
+                    --depth;
+                } else if (call[c] == ',' && depth == 0) {
+                    const std::size_t next = call.find_first_not_of(' ', c + 1U);
+                    return next != std::string_view::npos && call[next] == '"';
+                }
+            }
+            return false;  // no second argument on these three lines: not a call this pin can clear
+        };
+        // The rule's own arms, so a broken parser cannot pass every host vacuously. Hoisted: a string holding an
+        // escaped quote stays out of a doctest macro's argument list (the MSVC preprocessor rule).
+        const std::string_view literalSecond = "ImGui::GetStyleColorVec4(ImGuiCol_Text, 1), \"%s\", name);";
+        const std::string_view variableSecond = "ImGui::GetStyleColorVec4(ImGuiCol_Text), scratch.c_str());";
+        CHECK(secondArgumentOpensLiteral(literalSecond));
+        CHECK_FALSE(secondArgumentOpensLiteral(variableSecond));
+        for (const std::string_view host : HOSTS) {
+            const std::vector<std::string> code = codeOf(host);
+            for (std::size_t i = 0; i < code.size(); ++i) {
+                for (const std::string_view function : SECOND_ARGUMENT_FORMAT) {
+                    const std::size_t at = code[i].find(function);
+                    if (at == std::string::npos) {
+                        continue;
+                    }
+                    std::string call = code[i].substr(at + function.size());
+                    for (std::size_t more = i + 1U; more < code.size() && more <= i + 2U; ++more) {
+                        call += ' ';
+                        call += code[more];
+                    }
+                    CAPTURE(host);
+                    CAPTURE(code[i]);
+                    CHECK(secondArgumentOpensLiteral(call));
+                }
+            }
+        }
     }
     SUBCASE("(f) the two new readers read CAPPED and never write") {
         constexpr std::array<std::string_view, 2> READERS{"material_card_cache.cpp", "material_thumbnail.cpp"};
@@ -19656,6 +19705,40 @@ TEST_CASE("editor: E.4.5's structure holds as source text -- routing, release, g
         CHECK(held < soleLineContaining(code, "loadTextureFromSourceFile("));
         CHECK(held < soleLineContaining(code, "renderer->createMaterial("));
         CHECK(held < soleLineContaining(code, "render::RenderTarget::create("));
+    }
+    SUBCASE("(j) the list row's separator is spelled once, and every caller passes the LEAF") {
+        const std::vector<std::string> browser = codeOf("asset_browser_panel.cpp");
+        // THE HELPER'S BODY, walked to its closing brace (clause (a)'s walk): the separator is the card's constant,
+        // spelled exactly once, and the five characters it stands for never appear -- the file's own FOOTER spells
+        // them five times for an unrelated sentence, which is why a file-wide count could not see a row that
+        // dropped or restated the separator.
+        const std::size_t begin = soleLineContaining(browser, "void drawMaterialRowSuffix(");
+        std::size_t end = begin;
+        while (end < browser.size() && browser[end] != "}") {
+            ++end;
+        }
+        REQUIRE(end < browser.size());
+        REQUIRE(end - begin >= 10U);  // a real body
+        const std::vector<std::string> body(browser.begin() + static_cast<std::ptrdiff_t>(begin),
+                                            browser.begin() + static_cast<std::ptrdiff_t>(end));
+        CHECK(countLinesContaining(body, "MATERIAL_CARD_SEPARATOR") == 1U);
+        CHECK(countLinesContaining(body, "\"  -  \"") == 0U);
+        const std::size_t separator = soleLineContaining(body, "scratch = MATERIAL_CARD_SEPARATOR;");
+        CHECK(body[nextCodeLine(body, separator + 1U)].find("scratch += subtitle;") != std::string::npos);
+        // RULE 4 RUNS AGAINST THE FILE'S OWN LEAF, never the text the row or the tile displays: the search arm
+        // shows a full path and the grid tile's caption folds in the folder, so either one passed as the leaf
+        // makes a stem-named material in a subfolder show its name as if it differed (seeds S57, S58).
+        const std::size_t hitLeaf = soleLineContaining(browser, "const std::string_view hitLeaf = ");
+        CHECK(browser[hitLeaf].find("leafOf(hit.relativePath)") != std::string::npos);
+        constexpr std::string_view SEARCH_ARM = "drawMaterialRowSuffix(thumbnailsPtr, databasePtr, hit.";
+        constexpr std::string_view DIRECTORY_ARM = "drawMaterialRowSuffix(thumbnailsPtr, databasePtr, rel,";
+        const std::size_t searchArm = soleLineContaining(browser, SEARCH_ARM);
+        CHECK(browser[searchArm].find("hit.relativePath, hitLeaf, labelScratch)") != std::string::npos);
+        const std::size_t directoryArm = soleLineContaining(browser, DIRECTORY_ARM);
+        CHECK(browser[directoryArm].find("rel, entry.name, labelScratch)") != std::string::npos);
+        const std::size_t tile = soleLineContaining(browser, ".subtitle = materialCardSubtitle(");
+        CHECK(browser[tile].find("materialCardSubtitle(card, entry.name)") != std::string::npos);
+        CHECK(body[soleLineContaining(body, "materialCardSubtitle(")].find(", leaf)") != std::string::npos);
     }
 }
 
