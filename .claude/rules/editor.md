@@ -1589,6 +1589,38 @@ and resolves; `EditorApp::persistProjectState` decides and writes.
   `if(AERO_SHADER_TOOLS)` block, and both arms **assert** — a skip would leave AC-32 untested in the one
   configuration that can test it.
 
+## Material thumbnails and names (task E.4.5)
+
+- **A second producer, not a second cache.** `ThumbnailService` owns ONE `ThumbnailLedger` and TWO backing
+  stores — `ThumbnailStore` (decoded images) and `MaterialThumbnailRenderer` (rendered materials) — routed
+  by the total enumeration `thumbnailSourceForName`. **`releaseKey` is the one release site**: it asks both
+  stores and forgets the key, so the "never free a texture drawn this frame" protection covers both. A third
+  producer is a third `ThumbnailSource` enumerator, a third store, and a third line in `releaseKey` — the
+  `-Wswitch` diagnostic at the walk says where. `I242(a)`/`(b)` pin both.
+- **The walk sees every `Absent` key.** Tiles drawn in one frame share `lastTouched`, so the ledger offers
+  them in GUID order; asking `nextDecodes` for "decodes + renders" keys hands the walk only the oldest few,
+  which can all be one kind. `I233` pins it with GUIDs chosen through pre-written sidecars.
+- **`residentCount()` and `loadAttempts()` mean the DECODE store; `readyCount()`/`unavailableCount()` mean
+  the ledger.** The render store has its own counters, and at the end of every service pass
+  `residentCount() + materialResidentCount() == readyCount()`.
+- **The card cache (names and swatches) runs ABOVE the device gate, gates on kind BEFORE reading, and reads
+  capped** (`readFileBytes` with `MAX_THUMBNAIL_SOURCE_BYTES`). It has its own request queue,
+  `noteCardWanted` — never `noteVisible`, whose meaning E.3.3's `S34`/`I167` pin — and a card outlives its
+  picture's eviction. A `cardFor` pointer, and a view into its name, are valid for the whole draw walk.
+- **Never cache a file-NAME-dependent answer under a CONTENT key.** A rename keeps the `ThumbnailKey` (the
+  import cache is keyed by GUID and a move carries its hash), so the stem suppression runs at DRAW time
+  against the current leaf (`materialCardSubtitle`), in every host — `I242(d)` counts the calls per host.
+  `I240` renames through E.4.3's seam and pins the behaviour.
+- **A document name is user text: `TextUnformatted` or `ImDrawList::AddText`, never a format function.**
+  `I242(e)` fails any `ImGui::Text`/`TextDisabled`/`TextWrapped`/`SetTooltip`/`BulletText` call in the four
+  hosts whose first argument is not a string literal.
+- **The thumbnail's picture is a function of its key alone.** `produce()` takes no lighting and no tonemap;
+  the rig is `material_card.hpp`'s. `I238` re-renders under a moved scene and requires identical bytes.
+- **A material GPU fixture must set `metallicFactor` to 0** — `MaterialDocument` defaults it to glTF's 1.0,
+  and a metal with nothing to reflect renders near-black (E.1.4's trap).
+- **An Apply reaches the browser through the watcher, not a nudge** — the contract every asset kind has; with
+  Auto-refresh off, on the next Refresh. `I241` drives it at `settleMs = 0`.
+
 ## Drag-into-scene (task 3.1.5)
 
 - **`"AERO_ASSET"` is the tree's SECOND payload type, and the two can never cross-fire.** The first is
