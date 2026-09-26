@@ -1625,6 +1625,11 @@ and resolves; `EditorApp::persistProjectState` decides and writes.
 - **A document name is user text: `TextUnformatted` or `ImDrawList::AddText`, never a format function.**
   `I242(e)` fails any `ImGui::Text`/`TextDisabled`/`TextWrapped`/`SetTooltip`/`BulletText` call in the four
   hosts whose first argument is not a string literal.
+  **The full set since the code-review rounds:** the first-argument functions are `Text`, `TextDisabled`,
+  `TextWrapped`, `SetTooltip`, `BulletText` and `SetItemTooltip`; `TextColored(col, fmt, ...)` and
+  `LabelText(label, fmt, ...)` take the format string SECOND, and the pin reads their second argument after
+  the first comma at parenthesis depth 0 OUTSIDE a string literal, honouring an escaped quote. A new format
+  function a host starts calling joins the matching list.
 - **The thumbnail's picture is a function of its key alone.** `produce()` takes no lighting and no tonemap;
   the rig is `material_card.hpp`'s. `I238` re-renders under a moved scene and requires identical bytes.
   **Except its slot textures (the code-review round):** `produce()` resolves each slot's GUID to the
@@ -1636,6 +1641,33 @@ and resolves; `EditorApp::persistProjectState` decides and writes.
   and a metal with nothing to reflect renders near-black (E.1.4's trap).
 - **An Apply reaches the browser through the watcher, not a nudge** — the contract every asset kind has; with
   Auto-refresh off, on the next Refresh. `I241` drives it at `settleMs = 0`.
+- **A material RENDER is spent only on a tile drawn THIS frame, and an off-screen `Absent` material key is
+  RELEASED, not kept pending (the code-review rounds).** The walk is oldest-touched-first, so without the first
+  half the materials a user scrolled past render ahead of the page on screen; without the second, a key met off
+  screen stays `Absent` for the session — `supersededBy` keeps a live key and `evictions` touches `Ready` keys
+  only — and every idle tick's walk scans it. The release goes through `releaseKey` and is safe because the key
+  was not drawn this frame. Decodes keep their own rule. `I243` and `TS10` pin it, through `absentCount()`.
+- **A card is stored only when the bytes read hash to its key.** The gate trusts the DATABASE's key, which is
+  stale from an external edit until the watcher's rescan, so the cache hashes what it read (`hashBytes`, the
+  scan's own hasher) and stores a card only on a match. A parse failure of the key's own bytes is sticky; a
+  failure the file's content did not decide — a mismatch, an OS read failure, a cap refusal — waits for the
+  next rescan (`database.generation()` must change). `CC11`–`CC14`.
+- **A subtitled tile's first line keeps the FILE NAME.** A search hit's caption source is `parent/leaf`, and a
+  right-elision keeps the folder and drops the name, so line one is `subtitledTileCaptionLine`: the source when
+  it fits, else an ellipsis and the longest suffix that still holds the whole leaf, else the leaf right-elided.
+  Both caption rules are pure over an injected measurer (`asset_view.hpp`) and bisect over code-point
+  boundaries, never bytes. `AV60`–`AV65`, and `I242(h)` for the call site.
+- **`produce()` answers a key that already holds a target BEFORE any read or GPU work.** It is unreachable
+  today — `releaseKey` destroys before the ledger forgets — and it is what keeps a mistake in that ordering a
+  stale picture rather than a render into, and a replacement of, a texture ImGui may be sampling this frame.
+  `I242(i)` pins the order as source text.
+- **The thumbnail's framing is its OWN constant, deliberately different from the Material panel's preview.** A
+  thumbnail is an identity cue, so the sphere must dominate the tile: `MATERIAL_THUMBNAIL_RIG`
+  (`material_card.hpp`) frames it at about 80% of the width, where `DEFAULT_MATERIAL_PREVIEW_RIG` frames about
+  27%. The sphere primitive's radius is **0.5**, not 1. Narrowing the field of view at the preview's pitch
+  puts the whole frame below the horizon, so the elevation drops with it, and the key light is re-derived for
+  the new eye with the same recipe. Never share one rig between the two: a retune of either would move the
+  other. `MB23`, `MB25`, `MB26`, `I237(c)`/`(d)` and `I242(g)` pin it.
 
 ## Drag-into-scene (task 3.1.5)
 
