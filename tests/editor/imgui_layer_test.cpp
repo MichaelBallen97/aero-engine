@@ -19402,3 +19402,229 @@ TEST_CASE("editor: an Apply reaches the tile through the watcher, with no manual
     CHECK(app->tick() == false);
     app.reset();
 }
+
+TEST_CASE("editor: the Inspector's material row asks for its own card and carries the name (task E.4.5, I239)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "material names i239", .width = 1280, .height = 800});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/brass.aeromat",
+                                                materialText("Studio Brass", engine::Vec3{0.8F, 0.5F, 0.2F}))
+                .empty());
+    std::optional<engine::editor::EditorApp> app = makeThumbnailApp(*device, *window, ctx, created.root);
+    REQUIRE(app.has_value());
+    // THE BROWSER MUST NEVER BE THE ONE ASKING: hidden BEFORE the first tick, so no tile ever requests this card.
+    // The scan still runs -- it is EditorApp's reconcile, not the panel's.
+    app->panels().setVisible("Assets", false);
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+    const std::optional<engine::Guid> guid = app->assetGuidForPath("brass.aeromat");
+    REQUIRE(guid.has_value());
+    REQUIRE(app->materialCardReadCount() == 0U);  // ANTI-VACUITY for the claim below: nothing has asked yet
+
+    // Bind the seeded Cube's MeshRenderer.material, then put the Inspector in front of the Cube.
+    engine::World& world = app->world();
+    engine::Entity cube{};
+    world.eachEntity([&](engine::Entity e) {
+        if (world.name(e) == "Cube") {
+            cube = e;
+        }
+    });
+    REQUIRE(cube.valid());
+    auto* const renderer = world.get<engine::MeshRenderer>(cube);
+    REQUIRE(renderer != nullptr);
+    renderer->material = *guid;
+    (void)focusInspectorOnCube(*app);  // selects it, raises the Inspector and REQUIREs the Inspector drew
+    for (int i = 0; i < 3; ++i) {
+        REQUIRE(app->tick());
+    }
+    if (!engine::editor::sceneIoAvailable()) {
+        // -DAERO_REFLECT_TOOLS=OFF: the Inspector draws "(fields unavailable ...)" and no Guid row at all -- and a
+        // row that is not drawn requests nothing.
+        CHECK(app->materialCardReadCount() == 0U);
+    } else {
+        CHECK(app->materialCardReadCount() == 1U);  // THE INSPECTOR ALONE asked (seed S27)
+        CHECK(app->materialSubtitleFor(*guid) == "Studio Brass");
+    }
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: E.4.5's structure holds as source text -- routing, release, gate, hosts (task E.4.5, I242)") {
+    // Each clause is structural: no runtime tier can see it violated until a later edit makes it matter. Comment-
+    // stripped code lines only (editorSourceCodeLines), so a sentence in a comment never counts. NO #if.
+    const auto codeOf = [](std::string_view leaf) {
+        std::string path = AERO_EDITOR_SRC_DIR;
+        path += "/";
+        path += leaf;
+        const std::vector<std::string> code = editorSourceCodeLines(path);
+        REQUIRE(code.size() > 20U);  // ANTI-VACUITY: the file was really read
+        return code;
+    };
+    constexpr std::array<std::string_view, 4> HOSTS{"asset_browser_panel.cpp", "asset_picker.cpp",
+                                                    "inspector_panel.cpp", "asset_tile.cpp"};
+
+    SUBCASE("(a) thumbnailSourceForName: four files, two ROUTING sites, no extension literal (AC-6)") {
+        std::vector<std::string> naming;
+        std::size_t scanned = 0;
+        const std::array<std::string_view, 2> roots{AERO_EDITOR_SRC_DIR, AERO_EDITOR_INCLUDE_DIR};
+        for (const std::string_view root : roots) {
+            std::error_code ec;
+            const std::filesystem::recursive_directory_iterator walk(std::filesystem::path(root), ec);
+            REQUIRE_FALSE(ec);
+            for (const std::filesystem::directory_entry& entry : walk) {
+                const std::string extension = entry.path().extension().string();
+                if (!entry.is_regular_file() || (extension != ".cpp" && extension != ".hpp")) {
+                    continue;
+                }
+                ++scanned;
+                const std::vector<std::string> code = editorSourceCodeLines(entry.path().string());
+                if (countLinesContaining(code, "thumbnailSourceForName(") > 0U) {
+                    naming.push_back(entry.path().filename().string());
+                }
+            }
+        }
+        std::sort(naming.begin(), naming.end());
+        // One entry per line, each held there by its own comment -- a trailing comma alone does not stop
+        // clang-format from packing the list.
+        const std::vector<std::string> expected{
+            "material_card_cache.cpp",  // the card GATE
+            "thumbnail_cache.cpp",      // the definition, with guard 2 beside it
+            "thumbnail_cache.hpp",      // the declaration
+            "thumbnail_service.cpp",    // the produce walk
+        };
+        CHECK(naming == expected);  // the declaration, the definition + guard 2, the walk, and the card GATE
+        CHECK(scanned > 150U);
+        CHECK(countLinesContaining(codeOf("thumbnail_cache.cpp"), "thumbnailSourceForName(") == 2U);
+        CHECK(countLinesContaining(codeOf("thumbnail_service.cpp"), "thumbnailSourceForName(") == 1U);
+        const std::vector<std::string> cache = codeOf("thumbnail_cache.cpp");
+        constexpr std::string_view DEFINITION = "thumbnailSourceForName(std::string_view fileName) noexcept {";
+        const std::size_t begin = soleLineContaining(cache, DEFINITION);  // the .cpp's definition line alone
+        std::size_t end = begin;
+        while (end < cache.size() && cache[end] != "}") {
+            ++end;
+        }
+        REQUIRE(end < cache.size());
+        REQUIRE(end - begin >= 3U);  // a real body
+        for (std::size_t i = begin; i < end; ++i) {
+            CHECK(cache[i].find('"') == std::string::npos);  // COMPOSES the two tables; restates no extension
+        }
+    }
+    SUBCASE("(b) releaseKey is the ONE release site of both stores") {
+        const std::vector<std::string> service = codeOf("thumbnail_service.cpp");
+        CHECK(countLinesContaining(service, "store.destroy(") == 1U);
+        CHECK(countLinesContaining(service, "renders.destroy(") == 1U);
+        CHECK(countLinesContaining(service, "ledger.forget(") == 1U);
+        CHECK(countLinesContaining(service, "releaseKey(") == 4U);  // its definition and its three callers
+        const std::size_t defined = soleLineContaining(service, "void ThumbnailService::releaseKey(");
+        CHECK(soleLineContaining(service, "store.destroy(") == defined + 1U);
+        CHECK(soleLineContaining(service, "renders.destroy(") == defined + 2U);
+    }
+    SUBCASE("(c) the card pass runs after the clock and ABOVE the device gate") {
+        const std::vector<std::string> service = codeOf("thumbnail_service.cpp");
+        const std::size_t clock = soleLineContaining(service, "++frame;");
+        const std::size_t cards = soleLineContaining(service, "cards.service(database, frame);");
+        const std::size_t gate = soleLineContaining(service, "if (!store.available()) {");
+        CHECK(clock < cards);
+        CHECK(cards < gate);
+        CHECK(gate - clock <= 6U);  // ONE statement and its comment between them -- nothing else moved in
+    }
+    SUBCASE("(d) every host asks through noteCardWanted and answers through materialCardSubtitle") {
+        CHECK(countLinesContaining(codeOf("asset_browser_panel.cpp"), "noteCardWanted(") == 2U);  // tile + row helper
+        CHECK(countLinesContaining(codeOf("asset_picker.cpp"), "noteCardWanted(") == 1U);         // the popup tile
+        const std::vector<std::string> inspector = codeOf("inspector_panel.cpp");
+        CHECK(countLinesContaining(inspector, "noteCardWanted(") == 1U);
+        const std::size_t call = soleLineContaining(inspector, "guidFieldRow(");
+        CHECK(inspector[call].find(", subtitle)") != std::string::npos);
+        // RULE 4 RUNS IN EVERY HOST, because every host hands the MODEL's answer to what it draws: the browser
+        // twice (the tile and the row helper), the picker and the Inspector once each, and the tile FACE never
+        // -- it draws the subtitle it is handed. A host that passed the raw card name instead (seed S37) drops
+        // its count to zero here, and nothing else in the tree would notice.
+        constexpr std::array<std::size_t, 4> SUBTITLE_CALLS{2U, 1U, 1U, 0U};
+        static_assert(SUBTITLE_CALLS.size() == HOSTS.size());
+        // THE SEPARATOR IS SPELLED ONCE, as MATERIAL_CARD_SEPARATOR. The browser's FOOTER already spells the
+        // same five characters on FIVE lines of its own status sentence (pre-existing at the branch point, and
+        // unrelated to material names), so the pin is each host's branch-point count: a SIXTH line in the
+        // browser, or a first one anywhere else, is a host restating the card's separator.
+        constexpr std::array<std::size_t, 4> SEPARATOR_LITERAL_LINES{5U, 0U, 0U, 0U};
+        static_assert(SEPARATOR_LITERAL_LINES.size() == HOSTS.size());
+        for (std::size_t h = 0; h < HOSTS.size(); ++h) {
+            CAPTURE(HOSTS[h]);
+            const std::vector<std::string> code = codeOf(HOSTS[h]);
+            CHECK(countLinesContaining(code, "materialCardSubtitle(") == SUBTITLE_CALLS[h]);
+            CHECK(countLinesContaining(code, "materialNameMatchesStem(") == 0U);  // rule 4 is the model's alone
+            CHECK(countLinesContaining(code, "\"  -  \"") == SEPARATOR_LITERAL_LINES[h]);
+        }
+    }
+    SUBCASE("(e) no host hands a NON-LITERAL to an ImGui format function (D12's draw half, seed S9)") {
+        constexpr std::array<std::string_view, 5> FORMAT_FUNCTIONS{
+            "ImGui::Text(",          // Text(fmt, ...)
+            "ImGui::TextDisabled(",  // TextDisabled(fmt, ...)
+            "ImGui::TextWrapped(",   // TextWrapped(fmt, ...)
+            "ImGui::SetTooltip(",    // SetTooltip(fmt, ...)
+            "ImGui::BulletText(",    // BulletText(fmt, ...)
+        };
+        std::size_t formatCalls = 0;
+        for (const std::string_view host : HOSTS) {
+            const std::vector<std::string> code = codeOf(host);
+            for (std::size_t i = 0; i < code.size(); ++i) {
+                for (const std::string_view function : FORMAT_FUNCTIONS) {
+                    const std::size_t at = code[i].find(function);
+                    if (at == std::string::npos) {
+                        continue;
+                    }
+                    ++formatCalls;
+                    // The first argument: the rest of this line, or -- for a call broken after its paren -- the
+                    // next line's first non-blank character. It must OPEN A STRING LITERAL.
+                    std::string_view rest = std::string_view(code[i]).substr(at + function.size());
+                    while (!rest.empty() && rest.front() == ' ') {
+                        rest.remove_prefix(1);
+                    }
+                    if (rest.empty() && i + 1U < code.size()) {
+                        rest = code[i + 1U];
+                        while (!rest.empty() && rest.front() == ' ') {
+                            rest.remove_prefix(1);
+                        }
+                    }
+                    CAPTURE(host);
+                    CAPTURE(code[i]);
+                    CHECK((!rest.empty() && rest.front() == '"'));
+                }
+            }
+        }
+        CHECK(formatCalls >= 15U);  // ANTI-VACUITY: 19 such calls exist at c95dc78, one of them broken after "("
+    }
+    SUBCASE("(f) the two new readers read CAPPED and never write") {
+        constexpr std::array<std::string_view, 2> READERS{"material_card_cache.cpp", "material_thumbnail.cpp"};
+        for (const std::string_view reader : READERS) {
+            CAPTURE(reader);
+            const std::vector<std::string> code = codeOf(reader);
+            CHECK(countLinesContaining(code, "readFileBytes(") == 1U);
+            CHECK(countLinesContaining(code, "readTextFile(") == 0U);
+            CHECK(countLinesContaining(code, "writeTextFileAtomic(") == 0U);
+            CHECK(countLinesContaining(code, "saveMaterialFile(") == 0U);
+        }
+    }
+    SUBCASE("(g) the producer's picture is the RIG's -- no scene light, no viewport grade, sky first") {
+        const std::vector<std::string> code = codeOf("material_thumbnail.cpp");
+        CHECK(countLinesContaining(code, "materialThumbnailLighting()") == 1U);
+        CHECK(countLinesContaining(code, "materialThumbnailTonemap()") == 1U);
+        CHECK(countLinesContaining(code, "MATERIAL_THUMBNAIL_ORBIT_ANGLE") == 1U);
+        CHECK(countLinesContaining(code, "resolveEnvironment") == 0U);
+        CHECK(countLinesContaining(code, "resolveDirectionalLight") == 0U);
+        CHECK(countLinesContaining(code, "tonemapParams") == 0U);
+        CHECK(soleLineContaining(code, "sky->draw(") < soleLineContaining(code, "renderer->draw("));
+    }
+}

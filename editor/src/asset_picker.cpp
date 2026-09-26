@@ -14,6 +14,7 @@
 #include <aero/core/log.hpp>
 #include <aero/editor/asset_database.hpp>
 #include <aero/editor/asset_drag.hpp>
+#include <aero/editor/material_card.hpp>  // task E.4.5 -- the card's subtitle and tint
 #include <aero/editor/project_files.hpp>
 #include <aero/editor/thumbnail_cache.hpp>
 
@@ -442,6 +443,14 @@ AssetFieldResult drawAssetReferenceField(const AssetFieldInputs& in, AssetPicker
                                     key.has_value()) {
                                     in.thumbnails->noteVisible(*key);
                                     face.nativeTexture = in.thumbnails->nativeTextureFor(*key);
+                                    // task E.4.5: the grid tile's rule, verbatim -- the card rides the same
+                                    // key on its own queue, and the face views its name for this draw walk
+                                    // (the card is stable until the service pass). NO AssetKind literal here:
+                                    // I166(c) pins that this widget states none.
+                                    in.thumbnails->noteCardWanted(*key);
+                                    const MaterialCard* const card = in.thumbnails->cardFor(*key);
+                                    face.subtitle = materialCardSubtitle(card, face.fileName);
+                                    face.tint = materialCardTint(card);
                                 }
                             }
                         }

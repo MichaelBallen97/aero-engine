@@ -3,6 +3,7 @@
 #include <aero/editor/asset_database.hpp>  // task 3.1.5: the Guid row resolves a reference to a record
 #include <aero/editor/asset_view.hpp>      // classifyAssetKind, assetKindLabel
 #include <aero/editor/inspector_model.hpp>
+#include <aero/editor/material_card.hpp>  // task E.4.5: materialCardRowText
 #include <aero/editor/project_files.hpp>  // leafOf
 #include <aero/reflect/annotations.hpp>   // engine::reflect::FieldUiMeta
 
@@ -19,6 +20,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>  // task E.4.5 -- std::move, the Guid row's sentence
 #include <variant>
 
 namespace engine::editor {
@@ -177,7 +179,7 @@ void buildInspectorModel(const World& world, Entity entity, InspectorModel& out)
     out.components.resize(writeIndex);  // drop any stale tail; never shrinks capacity
 }
 
-GuidFieldRow guidFieldRow(Guid value, const AssetDatabase* database) {
+GuidFieldRow guidFieldRow(Guid value, const AssetDatabase* database, std::string_view subtitle) {
     if (!value.valid()) {
         // A NIL GUID IS "no reference", which is a legal, ordinary value -- not a broken one. Clear is
         // disabled because clearing nothing would push an undo entry that changes no byte.
@@ -193,8 +195,14 @@ GuidFieldRow guidFieldRow(Guid value, const AssetDatabase* database) {
         return {.text = formatGuid(value).substr(0, 8) + "...  (missing)", .clearEnabled = true};
     }
     const AssetKind kind = classifyAssetKind(leafOf(record->relativePath), /*isDirectory=*/false);
-    return {.text = std::string(leafOf(record->relativePath)) + "  (" + std::string(assetKindLabel(kind)) + ")",
-            .clearEnabled = true};
+    // task E.4.5: the file name, then -- for a material whose name is worth showing -- the separator and that
+    // name, through the ONE row function. An empty subtitle leaves 3.1.5's sentence byte-identical. Built in
+    // steps rather than as one `+` chain, so no line of it sits at the column limit.
+    std::string text = materialCardRowText(leafOf(record->relativePath), subtitle);
+    text += "  (";
+    text += assetKindLabel(kind);
+    text += ")";
+    return {.text = std::move(text), .clearEnabled = true};
 }
 
 // ---- task E.3.1: the axis row's decisions, all of them ---------------------------------------------
