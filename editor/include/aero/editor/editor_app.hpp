@@ -457,6 +457,9 @@ public:
     // each is a no-op when no Asset Browser panel is registered. `pending` holds ONE action, so a
     // caller ticks between calls. `kind` is "all" or a single digit -- static_cast<int>(AssetKind).
     void requestAssetBrowserViewMode(AssetViewMode mode) noexcept;
+    // task E.4.5 (CI run 36238862338): the Grid view's tile-size combo -- the same shape, the same one-action
+    // slot. TileSize is asset_view.hpp's, included above for AssetViewMode.
+    void requestAssetBrowserTileSize(TileSize size) noexcept;
     void requestAssetBrowserSearch(std::string_view query);  // "" clears, exactly as the Clear button
     void requestAssetBrowserKindFilter(std::string_view kind);
     void requestAssetBrowserDeleteOrphanClick(std::string_view relativeMetaPath);

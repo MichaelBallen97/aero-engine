@@ -1808,6 +1808,21 @@ void AssetBrowserPanel::invalidateListings() {
 void AssetBrowserPanel::requestViewMode(AssetViewMode mode) noexcept {
     record(ActionKind::SetViewMode, mode == AssetViewMode::Grid ? "grid" : "list");
 }
+// task E.4.5: EXACTLY what drawHeader's tile-size combo records, spelled by the same switch -- no default:, so a
+// new TileSize is a -Wswitch warning here as it is there.
+void AssetBrowserPanel::requestTileSize(TileSize size) noexcept {
+    switch (size) {
+        case TileSize::Small:
+            record(ActionKind::SetTileSize, "small");
+            break;
+        case TileSize::Medium:
+            record(ActionKind::SetTileSize, "medium");
+            break;
+        case TileSize::Large:
+            record(ActionKind::SetTileSize, "large");
+            break;
+    }
+}
 void AssetBrowserPanel::requestSearchQuery(std::string query) {
     if (query.empty()) {
         record(ActionKind::ClearSearch, {});

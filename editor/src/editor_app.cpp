@@ -2225,6 +2225,11 @@ void EditorApp::requestAssetBrowserViewMode(AssetViewMode mode) noexcept {
         assetBrowserPanel->requestViewMode(mode);
     }
 }
+void EditorApp::requestAssetBrowserTileSize(TileSize size) noexcept {
+    if (assetBrowserPanel != nullptr) {
+        assetBrowserPanel->requestTileSize(size);
+    }
+}
 void EditorApp::requestAssetBrowserSearch(std::string_view query) {
     if (assetBrowserPanel != nullptr) {
         assetBrowserPanel->requestSearchQuery(std::string(query));

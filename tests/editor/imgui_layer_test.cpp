@@ -18858,8 +18858,20 @@ TEST_CASE("editor: one walk spends two budgets, and three older materials starve
     // the two lowest GUIDs. So the project opens EMPTY, three ticks settle the layout, and only then are the
     // five files written and rescanned -- the rescan and the listing invalidation both run in the reconcile
     // block BEFORE the draw walk, so that walk draws all five tiles in ONE settled frame.
+    //
+    // AND ALL FIVE MUST FIT ONE ROW, SO THE TILES ARE SMALL. macOS CI run 36238862338 failed here with
+    // `d - decodes == 2U` and the final `decodes == 2U` both reading 1: its Assets grid held FOUR Medium columns,
+    // so p2.png -- the fifth tile, alphabetically last -- wrapped to a second row the runner's short panel never
+    // showed, and was never drawn in 60 ticks. From the real constants at font size 13 and ItemSpacing.x 8: a
+    // Medium tile is 6 * 13 + 2 * 3.25 = 84.5 wide, so four columns need 4 * 92.5 - 8 = 362 of contents width
+    // and five need 454.5 -- the runner gave at least 362 and less than 454.5. A Small tile is 58.5 wide, and
+    // five need 5 * 66.5 - 8 = 324.5 (at a doubled style spacing of 16, the same argument reads 386 against
+    // 356.5). Reproduced locally in a 1100-wide window (407 of contents width: four Medium columns, the same
+    // `1 == 2`); Small fits six there. A still-narrower runner fails the final counts below with a clear value,
+    // never vacuously.
     std::optional<engine::editor::EditorApp> app = makeThumbnailApp(*device, *window, ctx, created.root);
     REQUIRE(app.has_value());
+    app->requestAssetBrowserTileSize(engine::editor::TileSize::Small);  // applied by the first tick's draw walk
     for (int i = 0; i < 3; ++i) {
         REQUIRE(app->tick());
     }
@@ -19853,6 +19865,9 @@ TEST_CASE("editor: a material renders only while its tile is on screen -- the vi
     REQUIRE(engine::editor::writeTextFileAtomic(bluePath, blueText).empty());
     std::optional<engine::editor::EditorApp> app = makeThumbnailApp(*device, *window, ctx, created.root);
     REQUIRE(app.has_value());
+    // SMALL TILES, so the four reds share one row with margin to spare. Medium passed on macOS CI run
+    // 36238862338 with exactly four columns -- zero margin; I233's comment carries that runner's geometry.
+    app->requestAssetBrowserTileSize(engine::editor::TileSize::Small);
     for (int i = 0; i < 3; ++i) {
         REQUIRE(app->tick());
     }
