@@ -19163,6 +19163,24 @@ TEST_CASE("editor: the rendered thumbnail is a lit sphere in front of the studio
         CAPTURE(backdrop.g);
         CHECK(redDominant(inside));
         CHECK_FALSE(redDominant(backdrop));
+        // (d) THE HORIZON CROSSES THE UPPER HALF. The horizon colour is the gradient's brightest, so down a
+        //     column that never meets the sphere the brightest texel IS the horizon -- measured at row 30. The
+        //     corner arm in (a) cannot see a horizon pushed just above the frame, because the ground brightens
+        //     toward it: the preview's 21.8-degree pitch at this 30-degree field of view (seed S70) still passes
+        //     (a) while this texel sits on row 0.
+        const std::uint32_t edge = column(0.02F);
+        std::uint32_t brightestRow = 0;
+        int brightestSum = -1;
+        for (std::uint32_t row = 0; row <= THUMB_LAST; ++row) {
+            const Texel texel = texelAt(bytes, row, edge);
+            if (texel.r + texel.g + texel.b > brightestSum) {
+                brightestSum = texel.r + texel.g + texel.b;
+                brightestRow = row;
+            }
+        }
+        CAPTURE(brightestRow);
+        CHECK(brightestRow > 0U);
+        CHECK(brightestRow < THUMB_CENTRE);
     }
 
     app->requestQuit();
