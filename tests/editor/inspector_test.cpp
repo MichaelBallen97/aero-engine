@@ -2149,15 +2149,21 @@ TEST_CASE("inspector: an EMPTY subtitle leaves all three Guid-row sentences byte
     const std::optional<engine::Guid> known = scanned->database.guidForPath("hero.glb");
     REQUIRE(known.has_value());
     const engine::Guid stranger{0xFEEDFACECAFEBEEFULL, 0x0123456789ABCDEFULL};
-    for (const engine::Guid guid : {engine::Guid{}, *known, stranger}) {
-        const engine::editor::GuidFieldRow defaulted = engine::editor::guidFieldRow(guid, &scanned->database);
-        const engine::editor::GuidFieldRow empty =
-            engine::editor::guidFieldRow(guid, &scanned->database, std::string_view{});
-        CHECK(defaulted.text == empty.text);
-        CHECK(defaulted.clearEnabled == empty.clearEnabled);
-    }
-    // IR2's own literal, through the three-argument form -- unchanged.
-    CHECK(engine::editor::guidFieldRow(*known, &scanned->database, "").text == "hero.glb  (Model)");
+    REQUIRE(scanned->database.findByGuid(stranger) == nullptr);
+    // Each arm against its OWN literal -- the sentence 3.1.5 shipped -- through the three-argument form with an
+    // empty subtitle (the code-review round). Comparing it against the two-argument form, as this case once did,
+    // compared one call with itself: the parameter's default IS the empty view, so no edit could redden it.
+    const engine::editor::GuidFieldRow nil =
+        engine::editor::guidFieldRow(engine::Guid{}, &scanned->database, std::string_view{});
+    CHECK(nil.text == "None");
+    CHECK_FALSE(nil.clearEnabled);
+    const engine::editor::GuidFieldRow model = engine::editor::guidFieldRow(*known, &scanned->database, "");
+    CHECK(model.text == "hero.glb  (Model)");  // IR2's own literal
+    CHECK(model.clearEnabled);
+    const engine::editor::GuidFieldRow missing =
+        engine::editor::guidFieldRow(stranger, &scanned->database, std::string_view{});
+    CHECK(missing.text == "feedface...  (missing)");
+    CHECK(missing.clearEnabled);
 }
 
 TEST_CASE("inspector: a subtitle composes through the ONE row function, before the kind (task E.4.5, IR10)") {
