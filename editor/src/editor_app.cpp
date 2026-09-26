@@ -1466,6 +1466,17 @@ const render::RenderTarget* EditorApp::materialThumbnailTargetFor(Guid guid) con
     const std::optional<ThumbnailKey> key = thumbnailKeyForRecord(*record);
     return key.has_value() ? thumbnails->materialTargetFor(*key) : nullptr;
 }
+bool EditorApp::materialThumbnailBound(Guid guid) const noexcept {
+    if (thumbnails == nullptr) {
+        return false;
+    }
+    const AssetRecord* const record = assetDatabase.findByGuid(guid);
+    if (record == nullptr) {
+        return false;
+    }
+    const std::optional<ThumbnailKey> key = thumbnailKeyForRecord(*record);
+    return key.has_value() && thumbnails->nativeTextureFor(*key) != nullptr;
+}
 std::size_t EditorApp::materialCardCount() const noexcept {
     return thumbnails != nullptr ? thumbnails->materialCardCount() : std::size_t{0};
 }

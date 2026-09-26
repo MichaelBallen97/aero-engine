@@ -333,6 +333,11 @@ public:
     // target for the record `guid` names, through its CURRENT ThumbnailKey. nullptr when there is no service,
     // no record, no key or no target yet.
     [[nodiscard]] const render::RenderTarget* materialThumbnailTargetFor(Guid guid) const noexcept;
+    // The code-review round: whether a tile would BIND a thumbnail for the record `guid` names -- the service's
+    // own nativeTextureFor, the one call every tile host makes, through the CURRENT key. The target accessor
+    // above reads the render store directly, so it cannot see the service's routing; this can. False when there
+    // is no service, no record, no key or no texture yet.
+    [[nodiscard]] bool materialThumbnailBound(Guid guid) const noexcept;
     // task E.4.5: the card cache's two counters, and the ONE name observable: exactly what the Asset Browser's
     // tile shows under a material's file name for the record `guid` names -- rule 4 applied against the
     // record's CURRENT leaf, as every host applies it. "" when there is no service, no record, no key, no card

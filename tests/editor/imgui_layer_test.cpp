@@ -18819,12 +18819,16 @@ TEST_CASE("editor: a material thumbnail is RENDERED, never decoded, and the avai
         CHECK(app->thumbnailReadyCount() == 1U);
         CHECK(app->thumbnailUnavailableCount() == 0U);
         CHECK(app->materialThumbnailTargetFor(*guid) != nullptr);
+        // The code-review round: and a tile BINDS it -- through the service's own lookup, which is what every
+        // host calls. The target existing is not the same claim (seed S55).
+        CHECK(app->materialThumbnailBound(*guid));
     } else {
         // -DAERO_SHADER_TOOLS=OFF: attempted once, Skipped, sticky -- and counted "unavailable" (C11).
         CHECK(app->materialThumbnailResidentCount() == 0U);
         CHECK(app->thumbnailReadyCount() == 0U);
         CHECK(app->thumbnailUnavailableCount() == 1U);
         CHECK(app->materialThumbnailTargetFor(*guid) == nullptr);
+        CHECK_FALSE(app->materialThumbnailBound(*guid));  // the tile draws the swatch
     }
 
     app->requestQuit();
