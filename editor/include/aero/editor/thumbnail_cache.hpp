@@ -99,6 +99,10 @@ public:
     void clear() noexcept;
     [[nodiscard]] std::size_t readyCount() const noexcept;
     [[nodiscard]] std::size_t unavailableCount() const noexcept;  // Failed + Skipped, for the footer
+    // task E.4.5's code-review round, APPENDED: the keys still waiting for a producer. What makes "an off-screen
+    // material key does not linger" observable at all -- the walk releases one rather than keep it pending.
+    [[nodiscard]] std::size_t absentCount() const noexcept;
+
 private:
     // Shared by markReady/markFailed/markSkipped: a no-op for a key never touched (see the .cpp).
     void setState(const ThumbnailKey& key, ThumbnailState state) noexcept;

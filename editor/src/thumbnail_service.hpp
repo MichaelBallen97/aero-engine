@@ -57,6 +57,7 @@ public:
 
     [[nodiscard]] std::size_t readyCount() const noexcept;
     [[nodiscard]] std::size_t unavailableCount() const noexcept;
+    [[nodiscard]] std::size_t absentCount() const noexcept;  // the ledger's -- task E.4.5's code-review round
     [[nodiscard]] std::size_t residentCount() const noexcept;
     [[nodiscard]] std::size_t loadAttempts() const noexcept;
     // task E.4.5: THE RENDER STORE's own counters. residentCount() and loadAttempts() above stay the DECODE

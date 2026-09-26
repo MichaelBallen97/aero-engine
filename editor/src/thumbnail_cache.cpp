@@ -176,6 +176,11 @@ std::size_t ThumbnailLedger::unavailableCount() const noexcept {
     }));
 }
 
+std::size_t ThumbnailLedger::absentCount() const noexcept {
+    return static_cast<std::size_t>(std::count_if(entries.begin(), entries.end(),
+                                                  [](const Entry& e) { return e.state == ThumbnailState::Absent; }));
+}
+
 // ---- the resampler ----------------------------------------------------------------------------
 std::vector<std::uint8_t> fitRgbaIntoTile(std::span<const std::uint8_t> src, std::uint32_t srcW, std::uint32_t srcH,
                                           std::uint32_t edge) {

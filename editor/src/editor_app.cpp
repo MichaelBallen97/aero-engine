@@ -1439,6 +1439,9 @@ std::size_t EditorApp::thumbnailReadyCount() const noexcept {
 std::size_t EditorApp::thumbnailUnavailableCount() const noexcept {
     return thumbnails != nullptr ? thumbnails->unavailableCount() : std::size_t{0};
 }
+std::size_t EditorApp::thumbnailAbsentCount() const noexcept {
+    return thumbnails != nullptr ? thumbnails->absentCount() : std::size_t{0};
+}
 std::size_t EditorApp::thumbnailResidentCount() const noexcept {
     return thumbnails != nullptr ? thumbnails->residentCount() : std::size_t{0};
 }

@@ -60,6 +60,7 @@ void ThumbnailService::clear() {
 
 std::size_t ThumbnailService::readyCount() const noexcept { return ledger.readyCount(); }
 std::size_t ThumbnailService::unavailableCount() const noexcept { return ledger.unavailableCount(); }
+std::size_t ThumbnailService::absentCount() const noexcept { return ledger.absentCount(); }
 std::size_t ThumbnailService::residentCount() const noexcept { return store.residentCount(); }
 std::size_t ThumbnailService::loadAttempts() const noexcept { return store.loadAttempts(); }
 // task E.4.5: the render store's own four -- see the header for why the four above keep their meanings.
@@ -204,9 +205,17 @@ void ThumbnailService::service(const AssetDatabase& database) {
                 // task E.4.5's code-review round: ONLY A TILE DRAWN THIS FRAME. The walk is oldest-touched-first
                 // and an Absent key is never dropped, so without this the materials a user scrolled PAST would
                 // render first -- one expensive render per tick -- while the page on screen waited, and past
-                // the resident cap each fresh off-screen render would be the next eviction. An off-screen key
-                // simply stays Absent and renders the tick it is drawn again. DECODES KEEP THEIR OWN RULE.
+                // the resident cap each fresh off-screen render would be the next eviction. DECODES KEEP THEIR
+                // OWN RULE.
+                //
+                // AND AN OFF-SCREEN KEY IS RELEASED, NOT KEPT PENDING (the second code-review round). Kept, it would
+                // stay Absent for the whole session -- supersededBy keeps a live key, evictions touches Ready keys
+                // only -- so after one scroll through a large library every tick's walk would scan, and
+                // nextDecodes would allocate over, every such key, even while idle. Releasing it is SAFE: it was
+                // not drawn this frame, so no draw list names it, and both stores' destroys are no-ops for a key
+                // they never produced. It comes back as Absent the next frame its tile is drawn.
                 if (!std::binary_search(drawnThisFrame.begin(), drawnThisFrame.end(), key)) {
+                    releaseKey(key);
                     continue;
                 }
                 if (rendersSpent >= MAX_THUMBNAIL_RENDERS_PER_TICK) {

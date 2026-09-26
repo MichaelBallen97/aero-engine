@@ -321,6 +321,9 @@ public:
 
     [[nodiscard]] std::size_t thumbnailReadyCount() const noexcept;
     [[nodiscard]] std::size_t thumbnailUnavailableCount() const noexcept;
+    // task E.4.5's code-review round: the ledger's keys still waiting for a producer -- both producers'. Null-
+    // guarded like the two above.
+    [[nodiscard]] std::size_t thumbnailAbsentCount() const noexcept;
     [[nodiscard]] std::size_t thumbnailResidentCount() const noexcept;
     [[nodiscard]] std::size_t thumbnailLoadAttempts() const noexcept;
     // task E.4.5: the RENDER store, beside the four above -- which keep their meanings: resident and load

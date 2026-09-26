@@ -19567,7 +19567,10 @@ TEST_CASE("editor: E.4.5's structure holds as source text -- routing, release, g
         CHECK(countLinesContaining(service, "store.destroy(") == 1U);
         CHECK(countLinesContaining(service, "renders.destroy(") == 1U);
         CHECK(countLinesContaining(service, "ledger.forget(") == 1U);
-        CHECK(countLinesContaining(service, "releaseKey(") == 4U);  // its definition and its three callers
+        // Its definition and its FOUR callers: the reimport clear, the superseded sweep, eviction, and -- since the
+        // second code-review round -- the walk's release of a material key not drawn this frame, which would
+        // otherwise stay Absent for the whole session.
+        CHECK(countLinesContaining(service, "releaseKey(") == 5U);
         const std::size_t defined = soleLineContaining(service, "void ThumbnailService::releaseKey(");
         CHECK(soleLineContaining(service, "store.destroy(") == defined + 1U);
         CHECK(soleLineContaining(service, "renders.destroy(") == defined + 2U);
@@ -19837,6 +19840,8 @@ TEST_CASE("editor: a material renders only while its tile is on screen -- the vi
     app->requestAssetBrowserSearch("red");
     REQUIRE(tickUntil(*app, [&] { return app->materialThumbnailRenderCount() > 0U; }));
     REQUIRE(app->materialThumbnailRenderCount() == 1U);  // ANTI-VACUITY: the red view really drew and rendered
+    // ANTI-VACUITY for (b)'s "nothing pending": the three reds not yet rendered ARE pending here.
+    REQUIRE(app->thumbnailAbsentCount() == reds.size() - 1U);
 
     // (b) THE SWITCH. The lag tick still draws the red view, so a second red may render -- it is on screen.
     app->requestAssetBrowserSearch("blue");
@@ -19850,6 +19855,9 @@ TEST_CASE("editor: a material renders only while its tile is on screen -- the vi
     if (app->materialThumbnailsAvailable()) {
         CHECK(app->materialThumbnailTargetFor(*blue) != nullptr);  // produced on the tick it first drew
     }
+    // AND THE REDS NOT DRAWN THIS TICK ARE RELEASED, NOT KEPT PENDING (the second code-review round): the same
+    // walk met them first, oldest-first, and let them go. Nothing waits for a producer now.
+    CHECK(app->thumbnailAbsentCount() == 0U);
 
     // (c) THE REDS NO LONGER ON SCREEN STAY UN-RENDERED: no further render, and exactly the reds that were
     //     drawn when they rendered own a picture.
@@ -19866,6 +19874,27 @@ TEST_CASE("editor: a material renders only while its tile is on screen -- the vi
         }
         CHECK(redsRendered == rendersBeforeBlue);  // two reds, never drawn again, never rendered
         CHECK(redsRendered < reds.size());
+    }
+    CHECK(app->thumbnailAbsentCount() == 0U);  // still nothing lingering, five idle ticks later
+
+    // (d) BACK TO THE REDS: drawn again, the released ones are touched again -- Absent once more -- and render,
+    //     one per tick. Each red is produced exactly ONCE over the whole case: the ones that rendered before the
+    //     switch were never released (a Ready key is eviction's business, not the walk's).
+    app->requestAssetBrowserSearch("red");
+    const std::size_t allRendered = reds.size() + 1U;  // four reds and the blue
+    REQUIRE(tickUntil(*app, [&] { return app->materialThumbnailRenderCount() == allRendered; }));
+    for (int i = 0; i < 5; ++i) {
+        REQUIRE(app->tick());
+    }
+    CHECK(app->materialThumbnailRenderCount() == allRendered);
+    CHECK(app->thumbnailAbsentCount() == 0U);
+    if (app->materialThumbnailsAvailable()) {
+        for (const std::string& red : reds) {
+            CAPTURE(red);
+            const std::optional<engine::Guid> guid = app->assetGuidForPath(red);
+            REQUIRE(guid.has_value());
+            CHECK(app->materialThumbnailTargetFor(*guid) != nullptr);
+        }
     }
 
     app->requestQuit();

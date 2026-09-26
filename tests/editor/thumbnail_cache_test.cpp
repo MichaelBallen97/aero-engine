@@ -1040,3 +1040,34 @@ TEST_CASE("TS9: each TS8 record yields a key the moment its one bad field is rep
     record.change = good.change;
     CHECK(engine::editor::thumbnailKeyForRecord(record).has_value());
 }
+
+TEST_CASE("TS10: absentCount counts exactly the keys still waiting for a producer") {
+    // task E.4.5's second code-review round: the observable behind "an off-screen material key does not linger"
+    // (I243). Every state is present at once, so a count that took in Failed or Skipped -- the other two states
+    // nextDecodes never returns -- would read high here.
+    GuidGenerator gen(210);
+    ThumbnailLedger ledger;
+    CHECK(ledger.absentCount() == 0U);
+    const ThumbnailKey ready = keyFrom(gen);
+    const ThumbnailKey failed = keyFrom(gen);
+    const ThumbnailKey skipped = keyFrom(gen);
+    const ThumbnailKey waiting = keyFrom(gen);
+    const ThumbnailKey released = keyFrom(gen);
+    for (const ThumbnailKey& key : {ready, failed, skipped, waiting, released}) {
+        ledger.touch(key, 1);
+    }
+    CHECK(ledger.absentCount() == 5U);  // a touch inserts as Absent
+    ledger.markReady(ready);
+    ledger.markFailed(failed);
+    ledger.markSkipped(skipped);
+    CHECK(ledger.absentCount() == 2U);
+    ledger.forget(released);  // what the walk's release does to a key not drawn this frame
+    CHECK(ledger.absentCount() == 1U);
+    ledger.touch(ready, 2);  // a touch never resets a state
+    CHECK(ledger.absentCount() == 1U);
+    ledger.touch(released, 3);  // drawn again: back, as Absent
+    CHECK(ledger.absentCount() == 2U);
+    CHECK(ledger.nextDecodes(10U).size() == ledger.absentCount());  // the SAME set nextDecodes walks
+    ledger.clear();
+    CHECK(ledger.absentCount() == 0U);
+}
