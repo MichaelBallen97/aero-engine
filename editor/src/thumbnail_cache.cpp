@@ -9,9 +9,22 @@
 #include <cstdint>
 #include <optional>
 #include <span>
+#include <string_view>
 #include <vector>
 
 namespace engine::editor {
+
+// task E.4.5: the routing vocabulary. DecodedImage FIRST (the header gives the reason), then the kind
+// table. Two table lookups on the last extension; no allocation, no literal.
+ThumbnailSource thumbnailSourceForName(std::string_view fileName) noexcept {
+    if (isThumbnailDecodable(fileName)) {
+        return ThumbnailSource::DecodedImage;
+    }
+    if (classifyAssetKind(fileName, /*isDirectory=*/false) == AssetKind::Material) {
+        return ThumbnailSource::RenderedMaterial;
+    }
+    return ThumbnailSource::None;
+}
 
 // task E.3.3: the browser's guards 2, 4, 5, 6 and 7, moved here verbatim with their own comments so a
 // SECOND consumer (the picker's tile) asks the identical question rather than a similar one. Guard 4

@@ -21,8 +21,10 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <ostream>  // task E.4.5 -- ThumbnailSource's printer, and MSVC's string_view-in-a-CHECK trap
 #include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 using engine::ContentHash;
@@ -31,6 +33,8 @@ using engine::GuidGenerator;
 using engine::editor::fitRgbaIntoTile;
 using engine::editor::ThumbnailKey;
 using engine::editor::ThumbnailLedger;
+using engine::editor::ThumbnailSource;
+using engine::editor::thumbnailSourceForName;
 using engine::editor::ThumbnailState;
 
 namespace {
@@ -893,4 +897,85 @@ TEST_CASE("TS4: the key is (guid, hash) -- one guid, two hashes, two keys") {
     const std::optional<ThumbnailKey> again = engine::editor::thumbnailKeyForRecord(first);
     REQUIRE(again.has_value());
     CHECK((*keyA == *again));
+}
+
+// ---- task E.4.5: the routing vocabulary (TS5-TS6) and the widened key (TS7-TS9) ----------------------
+
+// doctest calls an UNQUALIFIED operator<< from inside doctest::detail, so only the namespaces ASSOCIATED with
+// the argument are searched (E.2.2's recorded lesson): a printer for an engine::editor enum must live in
+// engine::editor, or every failing CHECK below prints {?} == {?}. Defined in THIS TU only -- a second
+// definition in another TU of the same binary would be an ODR violation.
+namespace engine::editor {
+std::ostream& operator<<(std::ostream& out, ThumbnailSource source) {
+    switch (source) {
+        case ThumbnailSource::None:
+            return out << "None";
+        case ThumbnailSource::DecodedImage:
+            return out << "DecodedImage";
+        case ThumbnailSource::RenderedMaterial:
+            return out << "RenderedMaterial";
+    }
+    return out << "ThumbnailSource(" << static_cast<int>(source) << ")";
+}
+}  // namespace engine::editor
+
+TEST_CASE("TS5: thumbnailSourceForName is a TOTAL partition, composed from the two tables it names") {
+    struct Row {
+        std::string_view name;
+        ThumbnailSource expected;
+    };
+    constexpr std::array<Row, 20> ROSTER{{
+        // the EIGHT stb-decodable extensions (asset_view.cpp's THUMBNAIL_DECODABLE_EXTENSIONS)
+        {"a.png", ThumbnailSource::DecodedImage},
+        {"a.jpg", ThumbnailSource::DecodedImage},
+        {"a.jpeg", ThumbnailSource::DecodedImage},
+        {"a.tga", ThumbnailSource::DecodedImage},
+        {"a.bmp", ThumbnailSource::DecodedImage},
+        {"a.gif", ThumbnailSource::DecodedImage},
+        {"a.hdr", ThumbnailSource::DecodedImage},
+        {"a.psd", ThumbnailSource::DecodedImage},
+        // Texture by kind, but an ICON by 3.1.3's deliberate split -- never promoted by this task
+        {"a.ktx2", ThumbnailSource::None},
+        {"a.dds", ThumbnailSource::None},
+        // the one kind this task renders; the LAST extension decides
+        {"brass.aeromat", ThumbnailSource::RenderedMaterial},
+        {"a.b.aeromat", ThumbnailSource::RenderedMaterial},
+        // everything else has no producer
+        {"hero.gltf", ThumbnailSource::None},
+        {"hero.glb", ThumbnailSource::None},
+        {"tone.wav", ThumbnailSource::None},
+        {"notes.json", ThumbnailSource::None},
+        {"notes.txt", ThumbnailSource::None},
+        {"README", ThumbnailSource::None},
+        {"x.", ThumbnailSource::None},
+        {"aeromat", ThumbnailSource::None},  // no dot: no extension, whatever the name spells
+    }};
+    for (const Row& row : ROSTER) {
+        CAPTURE(row.name);
+        CHECK((thumbnailSourceForName(row.name) == row.expected));
+    }
+    CHECK((thumbnailSourceForName("") == ThumbnailSource::None));
+}
+
+TEST_CASE("TS6: thumbnailSourceForName folds ASCII case exactly as the tables it composes do") {
+    CHECK((thumbnailSourceForName("A.PNG") == ThumbnailSource::DecodedImage));
+    CHECK((thumbnailSourceForName("a.Jpg") == ThumbnailSource::DecodedImage));
+    CHECK((thumbnailSourceForName("BRASS.AEROMAT") == ThumbnailSource::RenderedMaterial));
+    CHECK((thumbnailSourceForName("brass.AeroMat") == ThumbnailSource::RenderedMaterial));
+    CHECK((thumbnailSourceForName("A.KTX2") == ThumbnailSource::None));
+    // COMPOSITION, not a copy: over mixed names the answer is exactly the two predicates it is built from,
+    // DecodedImage winning. A body that restated an extension list would drift from these the day a table
+    // grows; this loop is what a seed restating one (S2/S3) reddens beside TS5.
+    for (const std::string_view name :
+         {std::string_view("x.PnG"), std::string_view("x.tga"), std::string_view("x.aeromat"),
+          std::string_view("x.dds"), std::string_view("x.fbx"), std::string_view("x.")}) {
+        CAPTURE(name);
+        const bool decodable = engine::editor::isThumbnailDecodable(name);
+        const bool material =
+            engine::editor::classifyAssetKind(name, /*isDirectory=*/false) == engine::editor::AssetKind::Material;
+        const ThumbnailSource expected = decodable  ? ThumbnailSource::DecodedImage
+                                         : material ? ThumbnailSource::RenderedMaterial
+                                                    : ThumbnailSource::None;
+        CHECK((thumbnailSourceForName(name) == expected));
+    }
 }

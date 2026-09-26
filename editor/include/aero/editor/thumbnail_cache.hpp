@@ -13,6 +13,7 @@
 #include <cstdint>
 #include <optional>
 #include <span>
+#include <string_view>  // task E.4.5 -- thumbnailSourceForName's parameter
 #include <vector>
 
 namespace engine::editor {
@@ -47,6 +48,13 @@ inline constexpr std::uint32_t THUMBNAIL_EDGE_TEXELS = 128;
 inline constexpr std::uint64_t MAX_THUMBNAIL_SOURCE_BYTES = 64ULL * 1024ULL * 1024ULL;
 inline constexpr std::uint64_t MAX_THUMBNAIL_SOURCE_PIXELS = 64ULL * 1000ULL * 1000ULL;
 inline constexpr std::size_t MAX_THUMBNAILS_RESIDENT = 256;  // ~16 MiB at 128x128 RGBA8
+// task E.4.5: a material RENDER is not an image DECODE and must not spend a decode's budget -- it reads an
+// .aeromat, loads up to five source textures, pushes a material and records a sky, a forward and a resolve
+// pass. ThumbnailService::service walks EVERY Absent key once and spends each budget as it meets a
+// candidate of its own kind, so neither producer can starve the other (see that function). A rendered
+// thumbnail is one 128x128 RGBA8 texture -- exactly a decoded one's cost -- so the cap above is unchanged.
+// STARTING VALUE, judged on the validation page.
+inline constexpr std::size_t MAX_THUMBNAIL_RENDERS_PER_TICK = 1;
 
 class ThumbnailLedger {
 public:
@@ -107,6 +115,26 @@ private:
     // nothrow-movable on all three standard libraries.
     std::vector<Entry> entries;
 };
+
+// task E.4.5: WHICH PRODUCER OWNS A KEY. A TOTAL enumeration, used to ROUTE at exactly two sites --
+// thumbnailKeyForRecord's guard 2 below, and ThumbnailService::service's produce walk -- so a THIRD producer
+// is a third enumerator and a -Wswitch diagnostic at the walk's switch (an error under CI's clang-tidy,
+// which reports compiler diagnostics with --warnings-as-errors), never an `||` clause somebody forgets at
+// one site (3.7.3's standing rule: "if a guard ever needs a second arm for a second spelling of one
+// predicate, stop and invert it"). MaterialCardCache reads it a third time as a GATE -- a card is only
+// ever read for a RenderedMaterial key -- and never routes on it.
+//
+// IT COMPOSES, IT NEVER RESTATES. DecodedImage is isThumbnailDecodable's answer -- 3.1.3's deliberately
+// SEPARATE stb-readable subset, which is what keeps .ktx2 and .dds on the icon path; RenderedMaterial is
+// classifyAssetKind's, the one table that owns ".aeromat". No extension literal appears in its body.
+// DecodedImage IS TESTED FIRST, and the order is not arbitrary: an extension that ever appeared in both
+// tables must keep today's behaviour, and today's is the decode path.
+enum class ThumbnailSource : std::uint8_t {
+    None = 0,          // no producer: .ktx2, .dds, a model, audio, text, anything unclassified
+    DecodedImage,      // task 3.1.3's stb chain -- ThumbnailStore
+    RenderedMaterial,  // task E.4.5's render chain -- MaterialThumbnailRenderer
+};
+[[nodiscard]] ThumbnailSource thumbnailSourceForName(std::string_view fileName) noexcept;
 
 // task E.3.3: FIVE of the browser's seven guards, as a pure function over a RECORD -- because a picker
 // CANDIDATE is a record, not a (FileEntry, path) pair. The browser keeps guards 1 (a folder is never a
