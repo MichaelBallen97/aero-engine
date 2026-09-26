@@ -19610,6 +19610,15 @@ TEST_CASE("editor: E.4.5's structure holds as source text -- routing, release, g
             CHECK(countLinesContaining(code, "materialCardTint(") == TINT_CALLS[h]);
             CHECK(countLinesContaining(code, "materialNameMatchesStem(") == 0U);  // rule 4 is the model's alone
         }
+        // THE SEPARATOR IS NEVER RESTATED in the three hosts whose files spell no footer -- the picker, the
+        // Inspector and the tile face (the second code-review round restored these three). The browser's own
+        // check is clause (j)'s, scoped to the row helper's body, because its footer spells the same five
+        // characters for an unrelated sentence.
+        const std::string_view separatorLiteral = "\"  -  \"";
+        for (const std::string_view host : {HOSTS[1], HOSTS[2], HOSTS[3]}) {
+            CAPTURE(host);
+            CHECK(countLinesContaining(codeOf(host), separatorLiteral) == 0U);
+        }
     }
     SUBCASE("(e) no host hands a NON-LITERAL to an ImGui format function (D12's draw half, seed S9)") {
         constexpr std::array<std::string_view, 6> FORMAT_FUNCTIONS{
@@ -19652,16 +19661,27 @@ TEST_CASE("editor: E.4.5's structure holds as source text -- routing, release, g
         // THE SECOND-ARGUMENT FORMAT FUNCTIONS, the code-review round: TextColored(col, fmt, ...) and
         // LabelText(label, fmt, ...) take their format string SECOND, so the first-argument rule above cannot see
         // them. Their second argument must open a string literal: the call is joined with the next two lines and
-        // the first comma at parenthesis depth 0 ends the first argument. NONE exists in the hosts today (seed S56
-        // writes one), so the pin is a refusal of a future call, and its own arms are below.
+        // the first comma at parenthesis depth 0 ends the first argument -- OUTSIDE A STRING LITERAL, honouring an
+        // escaped quote (the second code-review round: `LabelText("Size, bytes", "%zu", n)` is legal and read its
+        // label's comma as the separator). NONE exists in the hosts today (seed S56 writes one), so the pin is a
+        // refusal of a future call, and its own arms are below.
         constexpr std::array<std::string_view, 2> SECOND_ARGUMENT_FORMAT{
             "ImGui::TextColored(",  // TextColored(col, fmt, ...)
             "ImGui::LabelText(",    // LabelText(label, fmt, ...)
         };
         const auto secondArgumentOpensLiteral = [](std::string_view call) {
             int depth = 0;
+            bool inLiteral = false;
             for (std::size_t c = 0; c < call.size(); ++c) {
-                if (call[c] == '(') {
+                if (inLiteral) {
+                    if (call[c] == '\\') {
+                        ++c;  // an escaped character -- a quote included -- never ends the literal
+                    } else if (call[c] == '"') {
+                        inLiteral = false;
+                    }
+                } else if (call[c] == '"') {
+                    inLiteral = true;
+                } else if (call[c] == '(') {
                     ++depth;
                 } else if (call[c] == ')') {
                     --depth;
@@ -19676,8 +19696,12 @@ TEST_CASE("editor: E.4.5's structure holds as source text -- routing, release, g
         // escaped quote stays out of a doctest macro's argument list (the MSVC preprocessor rule).
         const std::string_view literalSecond = "ImGui::GetStyleColorVec4(ImGuiCol_Text, 1), \"%s\", name);";
         const std::string_view variableSecond = "ImGui::GetStyleColorVec4(ImGuiCol_Text), scratch.c_str());";
+        const std::string_view commaInLabel = R"x("Size, bytes", "%zu", n);)x";
+        const std::string_view escapedQuoteInLabel = R"x("a \", b", "%s", name);)x";
         CHECK(secondArgumentOpensLiteral(literalSecond));
         CHECK_FALSE(secondArgumentOpensLiteral(variableSecond));
+        CHECK(secondArgumentOpensLiteral(commaInLabel));
+        CHECK(secondArgumentOpensLiteral(escapedQuoteInLabel));
         for (const std::string_view host : HOSTS) {
             const std::vector<std::string> code = codeOf(host);
             for (std::size_t i = 0; i < code.size(); ++i) {
