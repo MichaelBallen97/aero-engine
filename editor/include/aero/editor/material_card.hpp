@@ -38,6 +38,31 @@ namespace engine::editor {
 // unit length and points down, the gradient colours are finite and the sky is not the ground), never a
 // magnitude, so a retune reddens nothing.
 inline constexpr float MATERIAL_THUMBNAIL_ORBIT_ANGLE = 0.6F;  // radians -- a three-quarter view
+// THE THUMBNAIL'S OWN FRAMING, deliberately NOT the Material panel's (the owner's decision, the code-review
+// round). A thumbnail is an IDENTITY cue, so the sphere must dominate the tile: the preview's rig
+// (DEFAULT_MATERIAL_PREVIEW_RIG, E.2.4's, untouched) frames it at about 27% of the width, which at a Small tile
+// is a coloured dot. The numbers, and why each is what it is:
+//   * The sphere primitive's radius is 0.5 (render/src/primitives.cpp's makeSphere, RADIUS), NOT 1 -- so the
+//     eye distance d = sqrt(2.35^2 + 0.32^2) = 2.372 puts the silhouette's angular radius at asin(0.5 / d) =
+//     12.17 degrees, and against tan(15 degrees) that is a projected DIAMETER of 80.5% of the width (tan(12.17)
+//     / tan(15)). The 16x16 sphere is faceted, so the drawn silhouette is a little narrower -- measured at
+//     102 of 128 texels across the centre row (columns 13 to 114), 79.7%. The eye clears the sphere by 1.87
+//     units, far beyond the 0.1 near plane.
+//   * The ELEVATION IS LOW ON PURPOSE: narrowing the field of view while keeping the preview's 21.8-degree
+//     downward pitch would put the whole frame below the horizon. At atan(0.32 / 2.35) = 7.75 degrees the
+//     horizon sits at tan(7.75) / tan(15) = 0.51 of the half-height above the centre -- row 31.5 of 128
+//     predicted, the brightest backdrop row measured at 30 -- so the top corners stay in the bright horizon
+//     band and the bottom ones on the dark ground (corner sums measured at 627 above and 446 below).
+//   * The azimuth is MATERIAL_THUMBNAIL_ORBIT_ANGLE's, unchanged, and orbitSpeed is 0: a thumbnail never turns.
+// Tier 0 pins the depth range (MB23), the key light's derivation (MB26), and -- the ONE magnitude it pins,
+// because the owner fixed it -- a projected fill inside [0.75, 0.85] with the horizon inside the frame (MB25);
+// a retune inside that band reddens nothing. The GPU tier pins the drawn size (I237's arm (c)).
+inline constexpr MaterialPreviewRig MATERIAL_THUMBNAIL_RIG{.orbitRadius = 2.35F,
+                                                           .orbitHeight = 0.32F,
+                                                           .orbitSpeed = 0.0F,
+                                                           .fovYDegrees = 30.0F,
+                                                           .nearPlane = 0.1F,
+                                                           .farPlane = 100.0F};
 [[nodiscard]] MaterialPreviewLighting materialThumbnailLighting() noexcept;
 // ALREADY SANITIZED -- it is sanitizeTonemapParams(TonemapParams{}) -- because tonemapAndEncode puts that
 // duty on its caller (tonemap.hpp) and materialSwatchColor below calls it directly.

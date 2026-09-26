@@ -265,7 +265,7 @@ ThumbnailState MaterialThumbnailRenderer::produce(const ThumbnailKey& key, std::
     // aspect is EXACTLY 1: the target is square, and a division that could only ever produce 1.0 or a bug is
     // not written. The camera and the lighting are the RIG's -- this function states neither.
     const render::CameraView camera =
-        materialPreviewCamera(DEFAULT_MATERIAL_PREVIEW_RIG, MATERIAL_THUMBNAIL_ORBIT_ANGLE, 1.0F);
+        materialPreviewCamera(MATERIAL_THUMBNAIL_RIG, MATERIAL_THUMBNAIL_ORBIT_ANGLE, 1.0F);
     const render::RenderView view = materialPreviewView(camera, materialThumbnailLighting(), instances);
     sky->draw(*frame, view);
     renderer->draw(*frame, view);

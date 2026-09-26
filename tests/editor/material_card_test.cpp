@@ -1,4 +1,4 @@
-// tests/editor/material_card_test.cpp -- task E.4.5: the material card's PURE model (MB1-MB24). A TU of
+// tests/editor/material_card_test.cpp -- task E.4.5: the material card's PURE model (MB1-MB26). A TU of
 // aero_editor_shell_test, which supplies main() from shell_test.cpp -- do NOT define
 // DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN here.
 //
@@ -50,6 +50,16 @@ namespace {
 
 constexpr float QUIET_NAN = std::numeric_limits<float>::quiet_NaN();  // never NAN: that is a <cmath> macro
 constexpr float POSITIVE_INFINITY = std::numeric_limits<float>::infinity();
+
+// render/src/primitives.cpp's makeSphere RADIUS -- the sphere a thumbnail draws. Restated here because the
+// render layer exports no constant for it; MB23 and MB25 are exactly the cases that would notice it changing.
+constexpr float THUMBNAIL_SPHERE_RADIUS = 0.5F;
+
+// The camera produce() builds: the thumbnail's own rig, its fixed azimuth, a square target.
+[[nodiscard]] engine::render::CameraView thumbnailCamera() {
+    return engine::editor::materialPreviewCamera(engine::editor::MATERIAL_THUMBNAIL_RIG,
+                                                 engine::editor::MATERIAL_THUMBNAIL_ORBIT_ANGLE, 1.0F);
+}
 
 [[nodiscard]] MaterialDocument documentWithBaseColor(Vec4 color) {
     MaterialDocument document;
@@ -376,7 +386,7 @@ TEST_CASE("material card: the label rule weighs green heaviest and blue lightest
     CHECK_FALSE(materialSwatchWantsDarkLabel(IconColor{.r = 0U, .g = 178U, .b = 0U, .a = 255U}));
 }
 
-// ---- the fixed rig (MB22-MB23) ----------------------------------------------------------------------------
+// ---- the fixed rig (MB22-MB23, MB25-MB26) -------------------------------------------------------------------
 
 TEST_CASE("material card: the studio rig is a real rig, and a fixed one (MB22)") {
     const engine::render::TonemapParams tonemap = materialThumbnailTonemap();
@@ -408,8 +418,8 @@ TEST_CASE("material card: the studio rig is a real rig, and a fixed one (MB22)")
 }
 
 TEST_CASE("material card: the fixed orbit frames the sphere from outside and above (MB23)") {
-    const engine::render::CameraView camera = engine::editor::materialPreviewCamera(
-        engine::editor::DEFAULT_MATERIAL_PREVIEW_RIG, engine::editor::MATERIAL_THUMBNAIL_ORBIT_ANGLE, 1.0F);
+    // The code-review round: THE THUMBNAIL'S OWN RIG, which produce() now uses -- no longer the preview's.
+    const engine::render::CameraView camera = thumbnailCamera();
     for (const engine::Mat4& matrix : {camera.view, camera.proj}) {
         for (const Vec4& column : matrix.columns) {
             CHECK(std::isfinite(column.x));
@@ -418,8 +428,77 @@ TEST_CASE("material card: the fixed orbit frames the sphere from outside and abo
             CHECK(std::isfinite(column.w));
         }
     }
-    CHECK(engine::length(camera.eyePosition) > 1.0F);  // outside the unit sphere it frames
-    CHECK(camera.eyePosition.y > 0.0F);                // above its equator
+    const float distance = engine::length(camera.eyePosition);
+    CHECK(distance > THUMBNAIL_SPHERE_RADIUS);  // outside the sphere it frames (radius 0.5, not 1)
+    CHECK(camera.eyePosition.y > 0.0F);         // above its equator
+    // The near plane never cuts the sphere, and the far plane never drops its back: the whole sphere lies
+    // inside the depth range, with the near plane well short of its nearest point.
+    const engine::editor::MaterialPreviewRig& rig = engine::editor::MATERIAL_THUMBNAIL_RIG;
+    CHECK(rig.nearPlane < distance - THUMBNAIL_SPHERE_RADIUS);
+    CHECK(rig.farPlane > distance + THUMBNAIL_SPHERE_RADIUS);
+}
+
+TEST_CASE("material card: the thumbnail's sphere fills about 80% of it, under a visible horizon (MB25)") {
+    // The owner's framing decision, pinned through the camera the thumbnail ACTUALLY builds: the silhouette's
+    // tangent point is projected through its own view and projection, never recomputed from the rig's fields.
+    const engine::render::CameraView camera = thumbnailCamera();
+    const Vec3 eye = camera.eyePosition;
+    const float distance = engine::length(eye);
+    const Vec3 forward = engine::normalize(Vec3{} - eye);  // at the sphere's centre, the origin
+    const Vec3 right = engine::normalize(engine::cross(forward, Vec3{0.0F, 1.0F, 0.0F}));
+    const Vec3 up = engine::cross(right, forward);
+    const auto project = [&camera](Vec3 point) {
+        const Vec4 clip = camera.proj * (camera.view * Vec4{point.x, point.y, point.z, 1.0F});
+        REQUIRE(clip.w > 0.0F);  // in front of the eye
+        return Vec3{clip.x / clip.w, clip.y / clip.w, clip.z / clip.w};
+    };
+    // THE SILHOUETTE: from the eye, the tangent ray leaves the view axis at asin(r / d) and touches the sphere
+    // d * cos of that away. One tangent point to the RIGHT and one ABOVE; each must lie ON the sphere. NDC spans
+    // 2 across the frame, so the silhouette's NDC radius IS the diameter's fraction of the frame.
+    const float angularRadius = std::asin(THUMBNAIL_SPHERE_RADIUS / distance);
+    const auto tangentPoint = [&](Vec3 across) {
+        const Vec3 direction = (forward * std::cos(angularRadius)) + (across * std::sin(angularRadius));
+        const Vec3 point = eye + (direction * (distance * std::cos(angularRadius)));
+        CHECK(engine::length(point) == doctest::Approx(THUMBNAIL_SPHERE_RADIUS).epsilon(1e-4));
+        return point;
+    };
+    const Vec3 atRight = project(tangentPoint(right));
+    CAPTURE(atRight.x);
+    CHECK(atRight.x >= 0.75F);
+    CHECK(atRight.x <= 0.85F);
+    CHECK(std::abs(atRight.y) < 1e-4F);  // centred vertically
+    const Vec3 atTop = project(tangentPoint(up));
+    CAPTURE(atTop.y);
+    CHECK(atTop.y >= 0.75F);
+    CHECK(atTop.y <= 0.85F);
+    CHECK(std::abs(atTop.x) < 1e-4F);  // centred horizontally
+    // THE HORIZON: a direction at ZERO elevation along the view's own azimuth projects INSIDE the frame and ABOVE
+    // its centre -- so the sky band stays in the picture. Narrowing the field of view at the preview's 21.8-degree
+    // pitch would put this point above the top edge, and the whole frame below the horizon.
+    const Vec3 level = engine::normalize(Vec3{forward.x, 0.0F, forward.z});
+    const Vec3 horizon = project(eye + (level * 10.0F));
+    CAPTURE(horizon.y);
+    CHECK(std::abs(horizon.x) < 1e-4F);  // straight ahead: the azimuth is the view's
+    CHECK(horizon.y > 0.0F);             // above the centre...
+    CHECK(horizon.y < 1.0F);             // ...and inside the frame
+}
+
+TEST_CASE("material card: the key light is D-A's recipe for the thumbnail's own eye (MB26)") {
+    // "Over the viewer's left shoulder": toward the light is normalise(0.7 * toEye + 0.8 * up + 0.5 * left) for
+    // the eye the thumbnail camera actually has, and the light travels the opposite way. Re-derived when the
+    // framing changed; a rig retuned without re-deriving the light reddens here.
+    const Vec3 eye = thumbnailCamera().eyePosition;
+    const Vec3 toEye = engine::normalize(eye);
+    const Vec3 left{-std::sin(engine::editor::MATERIAL_THUMBNAIL_ORBIT_ANGLE), 0.0F,
+                    std::cos(engine::editor::MATERIAL_THUMBNAIL_ORBIT_ANGLE)};
+    const Vec3 towardLight = engine::normalize((toEye * 0.7F) + Vec3{0.0F, 0.8F, 0.0F} + (left * 0.5F));
+    const Vec3 travel = materialThumbnailLighting().sun.direction;
+    // The source spells the direction to four decimals, so the tolerance is the literal's, not a float's.
+    CHECK(travel.x == doctest::Approx(-towardLight.x).epsilon(1e-3));
+    CHECK(travel.y == doctest::Approx(-towardLight.y).epsilon(1e-3));
+    CHECK(travel.z == doctest::Approx(-towardLight.z).epsilon(1e-3));
+    CHECK(engine::dot(travel * -1.0F, left) > 0.0F);   // from the LEFT
+    CHECK(engine::dot(travel * -1.0F, toEye) > 0.0F);  // from the viewer's side, so the facing hemisphere is lit
 }
 
 // ---- totality (MB24) --------------------------------------------------------------------------------------

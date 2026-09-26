@@ -19126,10 +19126,11 @@ TEST_CASE("editor: the rendered thumbnail is a lit sphere in front of the studio
         for (const Texel& texel : {topLeft, topRight, bottomLeft, bottomRight, centre}) {
             CHECK(texel.a == 255);  // opaque everywhere: the resolve writes a literal alpha
         }
-        // (a) THE STUDIO'S SKY, RIGHT WAY UP. The rig looks down about 22 degrees with a 60-degree field of
-        //     view, so the top corners sit near the bright horizon band and the bottom corners on the dark
-        //     ground -- a vertically flipped target, or no sky at all, fails this. The gradient is vertical, so
-        //     the two top corners (and the two bottom ones) mirror each other.
+        // (a) THE STUDIO'S SKY, RIGHT WAY UP. The thumbnail's rig (MATERIAL_THUMBNAIL_RIG since the code-review
+        //     round) looks down about 8 degrees with a 30-degree field of view, so the top corners sit near the
+        //     bright horizon band and the bottom corners on the dark ground -- a vertically flipped target, or no
+        //     sky at all, fails this. The gradient is vertical, so the two top corners (and the two bottom ones)
+        //     mirror each other. These assertions are the ones the preview's framing passed, UNEDITED.
         CAPTURE(topLeft.r);
         CAPTURE(bottomLeft.r);
         CHECK(topLeft.r + topLeft.g + topLeft.b > bottomLeft.r + bottomLeft.g + bottomLeft.b + 60);
@@ -19145,6 +19146,23 @@ TEST_CASE("editor: the rendered thumbnail is a lit sphere in front of the studio
         CHECK(centre.r >= 96);
         CHECK(centre.r > centre.g + 32);
         CHECK(centre.r > centre.b + 32);
+        // (c) THE SPHERE FILLS THE TILE (the owner's framing, the code-review round). On the centre row, 18% of
+        //     the way in is INSIDE a sphere about 80% of the width across -- and outside the preview rig's, about
+        //     27% -- while 3% of the way in is still the backdrop. Measured: 102 of 128 texels across, from 13 to
+        //     114. Seed S68 (produce() back on the preview's rig) fails the first; a sphere grown past the frame
+        //     fails the second.
+        const auto redDominant = [](const Texel& texel) { return texel.r > texel.g + 32 && texel.r > texel.b + 32; };
+        const auto column = [](float fraction) {
+            return static_cast<std::uint32_t>(fraction * static_cast<float>(engine::editor::THUMBNAIL_EDGE_TEXELS));
+        };
+        const Texel inside = texelAt(bytes, THUMB_CENTRE, column(0.18F));
+        const Texel backdrop = texelAt(bytes, THUMB_CENTRE, column(0.03F));
+        CAPTURE(inside.r);
+        CAPTURE(inside.g);
+        CAPTURE(backdrop.r);
+        CAPTURE(backdrop.g);
+        CHECK(redDominant(inside));
+        CHECK_FALSE(redDominant(backdrop));
     }
 
     app->requestQuit();
@@ -19675,6 +19693,10 @@ TEST_CASE("editor: E.4.5's structure holds as source text -- routing, release, g
         CHECK(countLinesContaining(code, "materialThumbnailLighting()") == 1U);
         CHECK(countLinesContaining(code, "materialThumbnailTonemap()") == 1U);
         CHECK(countLinesContaining(code, "MATERIAL_THUMBNAIL_ORBIT_ANGLE") == 1U);
+        // The thumbnail's OWN framing (the code-review round) -- never the Material panel's preview rig. This is
+        // the cover a -DAERO_SHADER_TOOLS=OFF build has, where I237's pixel arm cannot run.
+        CHECK(countLinesContaining(code, "MATERIAL_THUMBNAIL_RIG") == 1U);
+        CHECK(countLinesContaining(code, "DEFAULT_MATERIAL_PREVIEW_RIG") == 0U);
         CHECK(countLinesContaining(code, "resolveEnvironment") == 0U);
         CHECK(countLinesContaining(code, "resolveDirectionalLight") == 0U);
         CHECK(countLinesContaining(code, "tonemapParams") == 0U);

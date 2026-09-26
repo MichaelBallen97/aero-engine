@@ -59,11 +59,14 @@ MaterialPreviewLighting materialThumbnailLighting() noexcept {
                                                .groundColor = Vec3{0.20F, 0.19F, 0.18F},
                                                .ambientMode = render::AmbientMode::Hemisphere,
                                                .ambientIntensity = 0.8F},
-        // The travel direction of a key light over the viewer's left shoulder at the orbit angle 0.6: the
-        // eye sits at (2.476, 1.2, 1.694), and 0.7 * toEye + 0.8 * up + 0.5 * left normalises to
-        // (0.189, 0.791, 0.582) -- the light travels the opposite way. materialPreviewView turns shadows
-        // off on the view; castsShadows is false here too, because a thumbnail has no caster.
-        .sun = render::DirectionalLightData{.direction = normalize(Vec3{-0.19F, -0.79F, -0.58F}),
+        // The travel direction of a key light over the viewer's left shoulder at the orbit angle 0.6, for
+        // MATERIAL_THUMBNAIL_RIG's eye (the code-review round re-derived it when the framing changed): the eye
+        // sits at (1.940, 0.32, 1.327), toEye = eye / 2.372 = (0.818, 0.135, 0.559), the viewer's left is
+        // (-sin 0.6, 0, cos 0.6) = (-0.565, 0, 0.825), and 0.7 * toEye + 0.8 * up + 0.5 * left normalises to
+        // (0.2345, 0.7229, 0.6500) -- the light travels the opposite way. The same recipe gave
+        // (0.189, 0.791, 0.582) for the preview rig's eye. materialPreviewView turns shadows off on the view;
+        // castsShadows is false here too, because a thumbnail has no caster.
+        .sun = render::DirectionalLightData{.direction = normalize(Vec3{-0.2345F, -0.7229F, -0.6500F}),
                                             .color = Vec3{1.0F, 0.97F, 0.92F},
                                             .intensity = 2.2F,
                                             .castsShadows = false},
