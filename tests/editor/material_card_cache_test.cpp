@@ -197,6 +197,10 @@ TEST_CASE("material card cache: at most four reads per tick, and the rest arrive
         cache.service(project->database, frame);
     };
     wantAll(1U);
+    // A LITERAL 4 as well as the constant. The constant alone agrees with any retune up to this fixture's
+    // six files -- a budget raised to 5 kept this case green -- so the claim in the case's name is pinned
+    // by the literal, and a deliberate retune edits this line too (I233's rule for the render budget).
+    CHECK(cache.readCount() == 4U);
     CHECK(cache.readCount() == engine::editor::MAX_MATERIAL_CARD_READS_PER_TICK);
     wantAll(2U);
     CHECK(cache.readCount() == 6U);
