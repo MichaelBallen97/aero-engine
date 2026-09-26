@@ -19628,3 +19628,90 @@ TEST_CASE("editor: E.4.5's structure holds as source text -- routing, release, g
         CHECK(soleLineContaining(code, "sky->draw(") < soleLineContaining(code, "renderer->draw("));
     }
 }
+
+TEST_CASE("editor: a material renders only while its tile is on screen -- the visible page first (task E.4.5, I243)") {
+    // The code-review round: the produce walk is oldest-touched-first and an Absent key is never dropped, so
+    // without a visibility rule the materials a user scrolled PAST render first -- one expensive render per
+    // tick -- while the page on screen waits. A render is now spent only on a key drawn THIS frame.
+    //
+    // THE VIEWS ARE SWITCHED THROUGH THE SEARCH SEAM (the browser has no navigation seam), and a query applies
+    // at the END of the frame that drains it: the tick after a request still draws the OLD view. That lag
+    // tick is stated below rather than hidden, and it is legitimately a second render of the first view.
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "material thumbnails i243", .width = 1280, .height = 800});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    const std::string assetsRoot = created.root + "/assets";
+    // Two FOLDERS, so the root listing shows no material tile at all: nothing is drawn, nothing renders.
+    REQUIRE(engine::editor::ensureDirectory(assetsRoot + "/reds").empty());
+    REQUIRE(engine::editor::ensureDirectory(assetsRoot + "/blues").empty());
+    const std::array<std::string, 4> reds{"reds/red1.aeromat", "reds/red2.aeromat", "reds/red3.aeromat",
+                                          "reds/red4.aeromat"};
+    const std::string scarletText = materialText("Scarlet", engine::Vec3{0.8F, 0.1F, 0.1F});
+    for (const std::string& red : reds) {
+        std::string redPath = assetsRoot;
+        redPath += "/";
+        redPath += red;
+        REQUIRE(engine::editor::writeTextFileAtomic(redPath, scarletText).empty());
+    }
+    const std::string bluePath = assetsRoot + "/blues/blue.aeromat";
+    const std::string blueText = materialText("Cobalt", engine::Vec3{0.1F, 0.1F, 0.8F});
+    REQUIRE(engine::editor::writeTextFileAtomic(bluePath, blueText).empty());
+    std::optional<engine::editor::EditorApp> app = makeThumbnailApp(*device, *window, ctx, created.root);
+    REQUIRE(app.has_value());
+    for (int i = 0; i < 3; ++i) {
+        REQUIRE(app->tick());
+    }
+    REQUIRE(app->materialThumbnailRenderCount() == 0U);  // no material tile drawn yet, so no render at all
+    const std::optional<engine::Guid> blue = app->assetGuidForPath("blues/blue.aeromat");
+    REQUIRE(blue.has_value());
+
+    // (a) THE FIRST VIEW: four red tiles, drawn in one frame, and exactly ONE render on its first productive tick.
+    app->requestAssetBrowserSearch("red");
+    REQUIRE(tickUntil(*app, [&] { return app->materialThumbnailRenderCount() > 0U; }));
+    REQUIRE(app->materialThumbnailRenderCount() == 1U);  // ANTI-VACUITY: the red view really drew and rendered
+
+    // (b) THE SWITCH. The lag tick still draws the red view, so a second red may render -- it is on screen.
+    app->requestAssetBrowserSearch("blue");
+    REQUIRE(app->tick());
+    const std::size_t rendersBeforeBlue = app->materialThumbnailRenderCount();
+    REQUIRE(app->materialSubtitleFor(*blue).empty());  // the blue tile has not been drawn yet
+    // The tick that draws the blue view: its one render is the BLUE material's, although two reds are older.
+    REQUIRE(app->tick());
+    REQUIRE(app->materialSubtitleFor(*blue) == "Cobalt");  // ANTI-VACUITY: the blue tile was drawn this tick
+    CHECK(app->materialThumbnailRenderCount() == rendersBeforeBlue + 1U);
+    if (app->materialThumbnailsAvailable()) {
+        CHECK(app->materialThumbnailTargetFor(*blue) != nullptr);  // produced on the tick it first drew
+    }
+
+    // (c) THE REDS NO LONGER ON SCREEN STAY UN-RENDERED: no further render, and exactly the reds that were
+    //     drawn when they rendered own a picture.
+    for (int i = 0; i < 5; ++i) {
+        REQUIRE(app->tick());
+    }
+    CHECK(app->materialThumbnailRenderCount() == rendersBeforeBlue + 1U);
+    if (app->materialThumbnailsAvailable()) {
+        std::size_t redsRendered = 0;
+        for (const std::string& red : reds) {
+            const std::optional<engine::Guid> guid = app->assetGuidForPath(red);
+            REQUIRE(guid.has_value());
+            redsRendered += app->materialThumbnailTargetFor(*guid) != nullptr ? 1U : 0U;
+        }
+        CHECK(redsRendered == rendersBeforeBlue);  // two reds, never drawn again, never rendered
+        CHECK(redsRendered < reds.size());
+    }
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}

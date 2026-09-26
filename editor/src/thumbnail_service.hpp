@@ -94,7 +94,11 @@ private:
     MaterialThumbnailRenderer renders;
     MaterialCardCache cards;            // task E.4.5 -- DEVICE-FREE; serviced ABOVE the device gate in service()
     std::vector<ThumbnailKey> visible;  // per-frame scratch; cleared by service()
-    std::uint64_t frame = 0;            // the LRU's clock; monotonic, NEVER wall time
+    // task E.4.5's code-review round: THIS frame's `visible`, sorted and de-duplicated before the scratch is
+    // cleared, so the produce walk can spend a RENDER only on a tile drawn this frame. A MEMBER, never a local:
+    // the visible/liveKeyScratch idiom.
+    std::vector<ThumbnailKey> drawnThisFrame;
+    std::uint64_t frame = 0;  // the LRU's clock; monotonic, NEVER wall time
     bool pendingReimportClear = false;
     bool pendingSupersededSweep = false;
     // MEMBERS, never locals: the visible/breadcrumb/labelScratch idiom, so a 50 000-record project does

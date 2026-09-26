@@ -110,6 +110,11 @@ void ThumbnailService::service(const AssetDatabase& database) {
     for (const ThumbnailKey& key : visible) {
         ledger.touch(key, frame);
     }
+    // task E.4.5's code-review round: kept for the produce walk below -- a render is spent only on a key drawn
+    // THIS frame. Sorted and unique, because two hosts may note one key and the walk binary-searches it.
+    drawnThisFrame.assign(visible.begin(), visible.end());
+    std::sort(drawnThisFrame.begin(), drawnThisFrame.end());
+    drawnThisFrame.erase(std::unique(drawnThisFrame.begin(), drawnThisFrame.end()), drawnThisFrame.end());
     visible.clear();
 
     // code-review BLOCKING-1: the ReimportAll flag, drained HERE -- after the touch loop above, so
@@ -196,6 +201,14 @@ void ThumbnailService::service(const AssetDatabase& database) {
                 markLedger(key, store.load(key, database.root() + "/" + record->relativePath));
                 break;
             case ThumbnailSource::RenderedMaterial:
+                // task E.4.5's code-review round: ONLY A TILE DRAWN THIS FRAME. The walk is oldest-touched-first
+                // and an Absent key is never dropped, so without this the materials a user scrolled PAST would
+                // render first -- one expensive render per tick -- while the page on screen waited, and past
+                // the resident cap each fresh off-screen render would be the next eviction. An off-screen key
+                // simply stays Absent and renders the tick it is drawn again. DECODES KEEP THEIR OWN RULE.
+                if (!std::binary_search(drawnThisFrame.begin(), drawnThisFrame.end(), key)) {
+                    continue;
+                }
                 if (rendersSpent >= MAX_THUMBNAIL_RENDERS_PER_TICK) {
                     continue;
                 }
