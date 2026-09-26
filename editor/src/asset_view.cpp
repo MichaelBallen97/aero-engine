@@ -327,4 +327,92 @@ AssetBrowserLayout assetBrowserLayout(const AssetBrowserLayoutMetrics& metrics) 
     return layout;
 }
 
+// ---- task E.4.5 (the code-review round): caption lines ------------------------------------------------------
+namespace {
+
+constexpr std::string_view CAPTION_ELLIPSIS = "\xE2\x80\xA6";  // U+2026, one glyph in the editor's font
+
+[[nodiscard]] bool isUtf8Continuation(char byte) noexcept {
+    return (static_cast<unsigned char>(byte) & 0xC0U) == 0x80U;
+}
+
+}  // namespace
+
+std::string elideCaptionRight(std::string_view text, const CaptionLineFits& fits) {
+    if (fits(text)) {
+        return std::string(text);
+    }
+    // elideForCaption's binary search, verbatim but for the measurer: `cut < size` stands where the old body read
+    // the std::string's terminating NUL, which is never a continuation byte either.
+    std::size_t lo = 0;
+    std::size_t hi = text.size();
+    std::string candidate;
+    while (lo < hi) {
+        const std::size_t mid = lo + ((hi - lo + 1) / 2);
+        std::size_t cut = mid;
+        while (cut > 0 && cut < text.size() && isUtf8Continuation(text[cut])) {
+            --cut;  // step back to a UTF-8 boundary
+        }
+        if (cut == 0) {
+            hi = 0;
+            break;
+        }
+        candidate.assign(text.substr(0, cut));
+        candidate += CAPTION_ELLIPSIS;
+        if (fits(candidate)) {
+            lo = mid;
+        } else {
+            hi = mid - 1;
+        }
+    }
+    std::size_t finalCut = lo;
+    while (finalCut > 0 && finalCut < text.size() && isUtf8Continuation(text[finalCut])) {
+        --finalCut;
+    }
+    std::string result(text.substr(0, finalCut));
+    result += CAPTION_ELLIPSIS;
+    return result;
+}
+
+std::string subtitledTileCaptionLine(std::string_view captionSource, std::string_view leaf,
+                                     const CaptionLineFits& fits) {
+    if (fits(captionSource)) {
+        return std::string(captionSource);
+    }
+    if (leaf.empty() || leaf.size() >= captionSource.size() || !captionSource.ends_with(leaf)) {
+        return elideCaptionRight(captionSource, fits);  // no folder to drop: today's caption rule
+    }
+    std::string candidate(CAPTION_ELLIPSIS);
+    candidate += leaf;
+    if (!fits(candidate)) {
+        return elideCaptionRight(leaf, fits);  // not even the whole name fits: keep its FRONT
+    }
+    // Every start a kept suffix may take: each UTF-8 boundary after the first byte, then the leaf's own start,
+    // which fits (measured just above). A longer suffix is never easier to fit than a shorter one, so the first
+    // start that fits is found by bisection over this list -- never over raw bytes, which may split a sequence.
+    const std::size_t leafStart = captionSource.size() - leaf.size();
+    std::vector<std::size_t> starts;
+    for (std::size_t at = 1; at < leafStart; ++at) {
+        if (!isUtf8Continuation(captionSource[at])) {
+            starts.push_back(at);
+        }
+    }
+    starts.push_back(leafStart);
+    std::size_t lo = 0;
+    std::size_t hi = starts.size() - 1;
+    while (lo < hi) {
+        const std::size_t mid = lo + ((hi - lo) / 2);
+        candidate.assign(CAPTION_ELLIPSIS);
+        candidate += captionSource.substr(starts[mid]);
+        if (fits(candidate)) {
+            hi = mid;
+        } else {
+            lo = mid + 1;
+        }
+    }
+    std::string result(CAPTION_ELLIPSIS);
+    result += captionSource.substr(starts[lo]);
+    return result;
+}
+
 }  // namespace engine::editor

@@ -10,6 +10,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <functional>  // task E.4.5 -- CaptionLineFits, the injected caption measurer
 #include <span>
 #include <string>
 #include <string_view>
@@ -171,5 +172,25 @@ struct AssetBrowserLayout {
 // So paneHeight + issuesHeight + footerHeight == availHeight whenever availHeight is at least
 // footer + header + one row + one spacing + 1, and only a panel shorter than that can scroll.
 [[nodiscard]] AssetBrowserLayout assetBrowserLayout(const AssetBrowserLayoutMetrics& metrics) noexcept;
+
+// ---- task E.4.5 (the code-review round): a caption LINE that keeps the file name -------------------------
+// A tile carrying a document name gives its file name ONE line, and a search hit's caption source is
+// "parent/leaf" -- so right-eliding it kept the FOLDER and dropped the very name the tile exists to show. The two
+// rules below decide a line PURELY: the host injects its measurer (TRUE == `text` fits the line), which makes
+// each rule a tier-0 table over a code-point budget and leaves the ImGui half one lambda (asset_tile.cpp).
+// Neither ever cuts inside a UTF-8 sequence, and both spend the caption's own ellipsis, U+2026.
+using CaptionLineFits = std::function<bool(std::string_view)>;
+
+// `text` when it fits; else the LONGEST byte prefix whose (prefix + ellipsis) fits, stepped back to a UTF-8
+// boundary; the ellipsis alone when not even one code point does. elideForCaption's rule, moved here so it can be
+// tested without an ImGui context -- elideForCaption is now this plus its measurer.
+[[nodiscard]] std::string elideCaptionRight(std::string_view text, const CaptionLineFits& fits);
+
+// Line one of a SUBTITLED tile: `captionSource` when it fits; else the ellipsis + the LONGEST suffix that fits
+// and still holds the WHOLE `leaf`, starting on a UTF-8 boundary; else -- not even ellipsis + leaf fits -- the
+// leaf right-elided. `leaf` is the file name and must END `captionSource` (a hit's "parent/leaf"); a caption
+// source that IS the leaf, or that does not end with it, is right-elided whole -- today's caption rule exactly.
+[[nodiscard]] std::string subtitledTileCaptionLine(std::string_view captionSource, std::string_view leaf,
+                                                   const CaptionLineFits& fits);
 
 }  // namespace engine::editor

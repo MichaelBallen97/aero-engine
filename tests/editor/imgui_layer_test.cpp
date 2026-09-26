@@ -19627,6 +19627,19 @@ TEST_CASE("editor: E.4.5's structure holds as source text -- routing, release, g
         CHECK(countLinesContaining(code, "tonemapParams") == 0U);
         CHECK(soleLineContaining(code, "sky->draw(") < soleLineContaining(code, "renderer->draw("));
     }
+    SUBCASE("(h) a subtitled tile's FIRST line keeps the file name (the code-review round)") {
+        // The rule is asset_view.hpp's, pure and proven at tier 0 (AV60-AV63); what no tier-0 case can see is
+        // whether the tile face CALLS it -- with the caption source AND the leaf -- rather than right-eliding the
+        // caption source, which kept a search hit's folder and dropped its name.
+        const std::vector<std::string> tile = codeOf("asset_tile.cpp");
+        const std::size_t primary = soleLineContaining(tile, "const std::string primary = ");
+        constexpr std::string_view KEEPS_THE_NAME = "subtitledTileCaptionLine(face.captionSource, face.fileName, ";
+        CAPTURE(tile[primary]);
+        CHECK(tile[primary].find(KEEPS_THE_NAME) != std::string::npos);
+        CHECK(countLinesContaining(tile, "subtitledTileCaptionLine(") == 1U);
+        // ANTI-VACUITY: the unsubtitled caption still takes today's rule, so the face was really read as code.
+        CHECK(countLinesContaining(tile, "elideForCaption(std::string(face.captionSource), wrapWidth)") == 1U);
+    }
 }
 
 TEST_CASE("editor: a material renders only while its tile is on screen -- the visible page first (task E.4.5, I243)") {

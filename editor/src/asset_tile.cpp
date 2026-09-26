@@ -12,6 +12,7 @@
 #include <imgui.h>
 #include <optional>
 #include <string>
+#include <string_view>
 
 namespace engine::editor {
 
@@ -22,6 +23,16 @@ namespace {
 // becomes a theme role and materialSwatchWantsDarkLabel's threshold a theme question.
 constexpr ImU32 DARK_SWATCH_LABEL = IM_COL32(24, 24, 24, 255);
 
+// task E.4.5's code-review round: THE caption measurer -- TRUE when `text`, wrapped at `wrapWidth`, is no taller
+// than `budgetHeight`. The explicit end pointer measures a view without copying it; an empty view measures the
+// literal "", so ImGui is never handed a null pointer whatever the view's data() is.
+[[nodiscard]] CaptionLineFits captionFitsWithin(float wrapWidth, float budgetHeight) {
+    return [wrapWidth, budgetHeight](std::string_view text) {
+        const char* const begin = text.empty() ? "" : text.data();
+        return ImGui::CalcTextSize(begin, begin + text.size(), false, wrapWidth).y <= budgetHeight;
+    };
+}
+
 }  // namespace
 
 // A15: ImGui's own text wrapping has no ellipsis and no "how many lines would this take" query for
@@ -29,37 +40,10 @@ constexpr ImU32 DARK_SWATCH_LABEL = IM_COL32(24, 24, 24, 255);
 // prefix whose (prefix + ellipsis) still fits `maxLines` lines at `wrapWidth` (TILE_CAPTION_LINES unless
 // the caller asks otherwise -- task E.4.5), landing on a UTF-8 boundary (never slicing a multi-byte sequence).
 std::string elideForCaption(const std::string& name, float wrapWidth, std::size_t maxLines) {
+    // task E.4.5's code-review round: the rule is elideCaptionRight's now (asset_view.hpp), pure and tier-0 tested;
+    // this is its measurer, byte for byte the old body's.
     const float budgetHeight = static_cast<float>(maxLines) * ImGui::GetTextLineHeight();
-    const ImVec2 full = ImGui::CalcTextSize(name.c_str(), nullptr, false, wrapWidth);
-    if (full.y <= budgetHeight) {
-        return name;
-    }
-    std::size_t lo = 0;
-    std::size_t hi = name.size();
-    while (lo < hi) {
-        const std::size_t mid = lo + ((hi - lo + 1) / 2);
-        std::size_t cut = mid;
-        while (cut > 0 && (static_cast<unsigned char>(name[cut]) & 0xC0U) == 0x80U) {
-            --cut;  // step back to a UTF-8 boundary
-        }
-        if (cut == 0) {
-            hi = 0;
-            break;
-        }
-        std::string candidate(name, 0, cut);
-        candidate += "…";
-        const ImVec2 size = ImGui::CalcTextSize(candidate.c_str(), nullptr, false, wrapWidth);
-        if (size.y <= budgetHeight) {
-            lo = mid;
-        } else {
-            hi = mid - 1;
-        }
-    }
-    std::size_t finalCut = lo;
-    while (finalCut > 0 && (static_cast<unsigned char>(name[finalCut]) & 0xC0U) == 0x80U) {
-        --finalCut;
-    }
-    return name.substr(0, finalCut) + "…";
+    return elideCaptionRight(name, captionFitsWithin(wrapWidth, budgetHeight));
 }
 
 void drawAssetTileFace(ImDrawList* drawList, ImVec2 itemMin, const AssetTileFace& face, std::string& scratch) {
@@ -122,7 +106,10 @@ void drawAssetTileFace(ImDrawList* drawList, ImVec2 itemMin, const AssetTileFace
     // path (D12), and still NO ImGui ITEM is submitted: GetColorU32, GetFont and GetTextLineHeight are reads.
     // GetColorU32 applies the current style alpha, so the subtitle's exact byte value is context-dependent and
     // is asserted nowhere as a constant.
-    const std::string primary = elideForCaption(std::string(face.captionSource), wrapWidth, 1U);
+    // The code-review round: line one keeps the FILE NAME. A search hit's source is "parent/leaf", and eliding it
+    // from the right kept the folder and dropped the name; subtitledTileCaptionLine drops the folder's front first.
+    const CaptionLineFits oneLine = captionFitsWithin(wrapWidth, ImGui::GetTextLineHeight());
+    const std::string primary = subtitledTileCaptionLine(face.captionSource, face.fileName, oneLine);
     drawList->AddText(font, fontSize, captionPos, IM_COL32_WHITE, primary.c_str(), nullptr, wrapWidth, nullptr);
     const std::string secondary = elideForCaption(std::string(face.subtitle), wrapWidth, 1U);
     const ImVec2 subtitlePos(captionPos.x, captionPos.y + ImGui::GetTextLineHeight());

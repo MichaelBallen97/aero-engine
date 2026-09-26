@@ -41,6 +41,9 @@ struct AssetTileFace {
 // a multi-byte sequence). Needs a live ImGui context, which is what puts it here.
 // task E.4.5: `maxLines` APPENDED AND DEFAULTED to TILE_CAPTION_LINES, so the one existing call compiles and
 // behaves byte-identically; 1 is what each half of a two-line caption gets.
+// task E.4.5's code-review round: the RULE is asset_view.hpp's elideCaptionRight now, pure and tier-0 tested;
+// this function is that rule plus its ImGui measurer. A subtitled tile's FIRST line is not this rule at all:
+// it is subtitledTileCaptionLine, which keeps the file name of a search hit whose folder does not fit.
 [[nodiscard]] std::string elideForCaption(const std::string& name, float wrapWidth,
                                           std::size_t maxLines = TILE_CAPTION_LINES);
 
