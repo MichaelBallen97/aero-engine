@@ -78,10 +78,13 @@ public:
     [[nodiscard]] std::size_t materialCardReadCount() const noexcept;  // monotonic
 
 private:
-    // task E.4.5: THE ONE RELEASE SITE (D3). Three callers -- the reimport clear, the superseded sweep and the
-    // LRU eviction -- and no fourth. EXACTLY ONE of its two destroys does work for any given key, because
-    // ThumbnailSource is a partition; calling both unconditionally spares every caller from knowing which
-    // producer owns the key it releases. (absolutePathFor is gone: the walk resolves the record itself,
+    // task E.4.5: THE ONE RELEASE SITE (D3). FOUR callers -- the reimport clear, the superseded sweep, the LRU
+    // eviction and, since the second code-review round, the produce walk's release of an Absent material key
+    // not drawn this frame. The fourth is safe for two reasons: an Absent key holds no texture in either
+    // store, so both destroys are no-ops, and a key not drawn this frame is named by no draw list. AT MOST ONE
+    // of the two destroys does work for any given key -- none for an Absent one -- because ThumbnailSource is a
+    // partition; calling both unconditionally spares every caller from knowing which producer owns the key it
+    // releases. (absolutePathFor is gone: the walk resolves the record itself,
     // because it needs the record to route, and treats a vanished one as Failed -- that function's own
     // contract, made explicit.)
     void releaseKey(const ThumbnailKey& key);

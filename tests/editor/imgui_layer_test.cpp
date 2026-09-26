@@ -19146,7 +19146,7 @@ TEST_CASE("editor: the rendered thumbnail is a lit sphere in front of the studio
         CHECK(centre.r >= 96);
         CHECK(centre.r > centre.g + 32);
         CHECK(centre.r > centre.b + 32);
-        // (c) THE SPHERE FILLS THE TILE (the owner's framing, the code-review round). On the centre row, 18% of
+        // (c) THE SPHERE FILLS THE TILE (a framing decision, the code-review round). On the centre row, 18% of
         //     the way in is INSIDE a sphere about 80% of the width across -- and outside the preview rig's, about
         //     27% -- while 3% of the way in is still the backdrop. Measured: 102 of 128 texels across, from 13 to
         //     114. Seed S68 (produce() back on the preview's rig) fails the first; a sphere grown past the frame

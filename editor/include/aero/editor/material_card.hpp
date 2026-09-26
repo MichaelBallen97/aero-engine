@@ -38,8 +38,8 @@ namespace engine::editor {
 // unit length and points down, the gradient colours are finite and the sky is not the ground), never a
 // magnitude, so a retune reddens nothing.
 inline constexpr float MATERIAL_THUMBNAIL_ORBIT_ANGLE = 0.6F;  // radians -- a three-quarter view
-// THE THUMBNAIL'S OWN FRAMING, deliberately NOT the Material panel's (the owner's decision, the code-review
-// round). A thumbnail is an IDENTITY cue, so the sphere must dominate the tile: the preview's rig
+// THE THUMBNAIL'S OWN FRAMING, deliberately NOT the Material panel's (a framing decision settled in the
+// code-review round). A thumbnail is an IDENTITY cue, so the sphere must dominate the tile: the preview's rig
 // (DEFAULT_MATERIAL_PREVIEW_RIG, E.2.4's, untouched) frames it at about 27% of the width, which at a Small tile
 // is a coloured dot. The numbers, and why each is what it is:
 //   * The sphere primitive's radius is 0.5 (render/src/primitives.cpp's makeSphere, RADIUS), NOT 1 -- so the
@@ -55,7 +55,8 @@ inline constexpr float MATERIAL_THUMBNAIL_ORBIT_ANGLE = 0.6F;  // radians -- a t
 //     band and the bottom ones on the dark ground (corner sums measured at 627 above and 446 below).
 //   * The azimuth is MATERIAL_THUMBNAIL_ORBIT_ANGLE's, unchanged, and orbitSpeed is 0: a thumbnail never turns.
 // Tier 0 pins the depth range (MB23), the key light's derivation (MB26), and -- the ONE magnitude it pins,
-// because the owner fixed it -- a projected fill inside [0.75, 0.85] with the horizon inside the frame (MB25);
+// because the framing is fixed, not tuned -- a projected fill inside [0.75, 0.85] with the horizon inside the
+// frame (MB25);
 // a retune inside that band reddens nothing. The GPU tier pins the drawn size (I237's arm (c)).
 inline constexpr MaterialPreviewRig MATERIAL_THUMBNAIL_RIG{.orbitRadius = 2.35F,
                                                            .orbitHeight = 0.32F,

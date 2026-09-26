@@ -52,7 +52,8 @@ constexpr float QUIET_NAN = std::numeric_limits<float>::quiet_NaN();  // never N
 constexpr float POSITIVE_INFINITY = std::numeric_limits<float>::infinity();
 
 // render/src/primitives.cpp's makeSphere RADIUS -- the sphere a thumbnail draws. Restated here because the
-// render layer exports no constant for it; MB23 and MB25 are exactly the cases that would notice it changing.
+// render layer exports no constant for it, which means MB23 and MB25 read THIS 0.5 and cannot notice the real
+// radius changing: only I237's arm (c) would, from the drawn pixels, and only on a lane with cooked shaders.
 constexpr float THUMBNAIL_SPHERE_RADIUS = 0.5F;
 
 // The camera produce() builds: the thumbnail's own rig, its fixed azimuth, a square target.
@@ -439,7 +440,7 @@ TEST_CASE("material card: the fixed orbit frames the sphere from outside and abo
 }
 
 TEST_CASE("material card: the thumbnail's sphere fills about 80% of it, under a visible horizon (MB25)") {
-    // The owner's framing decision, pinned through the camera the thumbnail ACTUALLY builds: the silhouette's
+    // The fixed framing, pinned through the camera the thumbnail ACTUALLY builds: the silhouette's
     // tangent point is projected through its own view and projection, never recomputed from the rig's fields.
     const engine::render::CameraView camera = thumbnailCamera();
     const Vec3 eye = camera.eyePosition;
