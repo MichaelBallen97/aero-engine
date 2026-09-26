@@ -2,6 +2,7 @@
 // every rule; the presentation decisions themselves are material_card.hpp's.
 #include "material_card_cache.hpp"
 
+#include <aero/core/content_hash.hpp>  // hashBytes -- the read-side check against the key (code-review round)
 #include <aero/editor/asset_database.hpp>
 #include <aero/editor/asset_meta.hpp>
 #include <aero/editor/project_files.hpp>  // leafOf
@@ -12,6 +13,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <span>
 #include <string>
 #include <utility>
 #include <vector>
@@ -24,6 +26,13 @@ template <typename Entries>
 [[nodiscard]] auto entryLowerBound(Entries& entries, const ThumbnailKey& key) noexcept {
     return std::lower_bound(entries.begin(), entries.end(), key,
                             [](const auto& entry, const ThumbnailKey& k) { return entry.key < k; });
+}
+
+// The code-review round: the scan's own hash over the bytes this cache actually read. hashBytes is
+// ContentHasher run one-shot, and the scan streams the same ContentHasher over the file (hashFileContents), so
+// the two agree on the same bytes by construction -- CC14 proves it across a chunk boundary.
+[[nodiscard]] ContentHash hashOfBytesRead(const std::string& bytes) noexcept {
+    return hashBytes(std::as_bytes(std::span<const char>(bytes.data(), bytes.size())));
 }
 
 }  // namespace
@@ -41,12 +50,16 @@ const MaterialCard* MaterialCardCache::cardFor(const ThumbnailKey& key) const no
 }
 
 void MaterialCardCache::service(const AssetDatabase& database, std::uint64_t frame) {
+    const std::uint64_t generation = database.generation();
     std::size_t readsThisTick = 0;
     for (const ThumbnailKey& key : wanted) {
         const auto at = entryLowerBound(entries, key);
-        if (at != entries.end() && at->key == key) {
-            at->lastWanted = frame;  // KNOWN: a card, or a sticky failure -- never read again for this key
-            continue;
+        const bool known = at != entries.end() && at->key == key;
+        if (known) {
+            at->lastWanted = frame;
+            if (!at->retryAfterRescan || at->attemptGeneration == generation) {
+                continue;  // a card, a sticky content failure, or a failure no rescan has answered yet
+            }
         }
         if (readsThisTick >= MAX_MATERIAL_CARD_READS_PER_TICK) {
             continue;  // still wanted next frame while it is still on screen; nothing is lost
@@ -66,17 +79,28 @@ void MaterialCardCache::service(const AssetDatabase& database, std::uint64_t fra
         }
         ++readsThisTick;
         ++reads;
-        Entry entry{.key = key, .card = {}, .lastWanted = frame, .parsed = false};
+        Entry entry{.key = key,
+                    .card = {},
+                    .lastWanted = frame,
+                    .parsed = false,
+                    .retryAfterRescan = false,
+                    .attemptGeneration = generation};
         const FileBytesResult file =
             readFileBytes(database.root() + "/" + record->relativePath, MAX_THUMBNAIL_SOURCE_BYTES);
-        if (file.bytes.has_value()) {
-            const MaterialParseResult parsed = parseMaterial(*file.bytes);
-            if (parsed.document.has_value()) {
-                entry.card = materialCardFor(*parsed.document);
-                entry.parsed = true;
-            }
+        if (!file.bytes.has_value() || !(hashOfBytesRead(*file.bytes) == key.hash)) {
+            // NOT decided by the key's content: an OS failure or a cap refusal says nothing about whose bytes those
+            // were, and a mismatch means the database is stale -- these are not the bytes the key names. A rescan
+            // decides, so the next read waits for one.
+            entry.retryAfterRescan = true;
+        } else if (const MaterialParseResult parsed = parseMaterial(*file.bytes); parsed.document.has_value()) {
+            entry.card = materialCardFor(*parsed.document);
+            entry.parsed = true;
+        }  // else: the key's OWN bytes do not parse -- sticky, the content decided it
+        if (known) {
+            *at = std::move(entry);  // a retry replaces its own entry in place: the sort order is unchanged
+        } else {
+            entries.insert(at, std::move(entry));  // `at` is this iteration's own lower bound -- still valid
         }
-        entries.insert(at, std::move(entry));  // `at` is this iteration's own lower bound -- still valid
     }
     wanted.clear();
     evictDownToCapacity(frame);

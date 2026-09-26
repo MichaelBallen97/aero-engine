@@ -27,10 +27,12 @@
 
 #include <doctest/doctest.h>
 
+#include <cstddef>  // task E.4.5 review -- std::byte, for CC14
 #include <filesystem>
 #include <memory>
 #include <optional>
 #include <ostream>  // MSVC alone needs the complete type to stringify a string_view inside a CHECK
+#include <span>     // task E.4.5 review -- the one-shot hash over the read bytes (CC14)
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -312,4 +314,133 @@ TEST_CASE("material card cache: clear() drops every card, and the read count nev
     cache.service(project->database, 2U);
     CHECK(cache.readCount() == 2U);
     CHECK(cache.cardFor(key) != nullptr);
+}
+
+// ---- task E.4.5's code-review round (CC11-CC14): a card is stored ONLY for the bytes its key names ----------
+//
+// The gate trusts the DATABASE's key, and the database is stale from an external edit until the watcher's
+// rescan. So the cache hashes what it actually read and stores a card only when that hash IS the key's; a
+// mismatch, or an OS read failure, is answered by the NEXT RESCAN -- never cached, never retried before one.
+
+namespace {
+
+// Moves a file and its sidecar together, the way an external file manager moving an asset with its .meta
+// would. OUTSIDE the editor, so nothing rescans.
+void moveWithSidecar(const CardProject& project, const std::string& from, const std::string& to) {
+    std::error_code ec;
+    std::filesystem::create_directories(std::filesystem::path(project.assetsRoot) / to, ec);
+    REQUIRE_FALSE(ec);
+    std::filesystem::path target =
+        std::filesystem::path(project.assetsRoot) / to / std::filesystem::path(from).filename();
+    std::filesystem::rename(std::filesystem::path(project.assetsRoot) / from, target, ec);
+    REQUIRE_FALSE(ec);
+    target += ".meta";
+    std::filesystem::rename(std::filesystem::path(project.assetsRoot) / (from + ".meta"), target, ec);
+    REQUIRE_FALSE(ec);
+}
+
+}  // namespace
+
+TEST_CASE("material card cache: bytes the key does not name are never cached, nor re-read before a rescan (CC11)") {
+    const std::unique_ptr<CardProject> project = makeCardProject({{"brass.aeromat", materialText("Brass", 0.5F)}});
+    const ThumbnailKey scanned = keyOf(*project, "brass.aeromat");
+    // An external edit the watcher has not reported yet: the database still names the OLD bytes.
+    writeFile(*project, "brass.aeromat", materialText("Polished Gold", 0.5F));
+    MaterialCardCache cache;
+    for (std::uint64_t frame = 1; frame <= 5; ++frame) {
+        cache.noteCardWanted(scanned);
+        cache.service(project->database, frame);
+    }
+    CHECK(cache.cardFor(scanned) == nullptr);  // the bytes on disk are NOT the bytes this key names
+    CHECK(cache.cardCount() == 0U);
+    CHECK(cache.readCount() == 1U);  // read ONCE, then held off: nothing a later service can learn without a rescan
+    // The rescan names the new bytes under a NEW key; the stale key is not read at all any more (the gate).
+    rescan(*project);
+    const ThumbnailKey current = keyOf(*project, "brass.aeromat");
+    REQUIRE_FALSE((current == scanned));
+    cache.noteCardWanted(scanned);
+    cache.service(project->database, 6U);
+    CHECK(cache.readCount() == 1U);
+    cache.noteCardWanted(current);
+    cache.service(project->database, 7U);
+    CHECK(cache.readCount() == 2U);
+    const MaterialCard* const card = cache.cardFor(current);
+    REQUIRE(card != nullptr);
+    CHECK(card->displayName == "Polished Gold");
+}
+
+TEST_CASE("material card cache: content that returns to its old bytes gets ITS OWN card back (CC12)") {
+    // The code-review round's exact scenario: B1 is scanned as {G,H1}; B2 is written and read under {G,H1}
+    // before any rescan; a rescan; B1 is written back and rescanned. {G,H1} must name B1 -- a cache that had
+    // stored B2's card under {G,H1} would show the wrong name and swatch until the project is reopened.
+    const std::unique_ptr<CardProject> project = makeCardProject({{"brass.aeromat", materialText("Brass", 0.5F)}});
+    const ThumbnailKey first = keyOf(*project, "brass.aeromat");
+    writeFile(*project, "brass.aeromat", materialText("Polished Gold", 0.8F));
+    MaterialCardCache cache;
+    cache.noteCardWanted(first);
+    cache.service(project->database, 1U);
+    CHECK(cache.cardFor(first) == nullptr);
+    CHECK(cache.readCount() == 1U);
+    rescan(*project);
+    REQUIRE_FALSE((keyOf(*project, "brass.aeromat") == first));
+    writeFile(*project, "brass.aeromat", materialText("Brass", 0.5F));
+    rescan(*project);
+    REQUIRE((keyOf(*project, "brass.aeromat") == first));  // the same content is the same key again
+    cache.noteCardWanted(first);
+    cache.service(project->database, 2U);
+    CHECK(cache.readCount() == 2U);  // a rescan happened since the refused attempt, so the key is read again
+    const MaterialCard* const card = cache.cardFor(first);
+    REQUIRE(card != nullptr);
+    CHECK(card->displayName == "Brass");             // B1's name -- never B2's
+    CHECK(static_cast<int>(card->swatch.r) == 206);  // and B1's swatch (MB11's oracle for 0.5), never B2's
+}
+
+TEST_CASE("material card cache: a file missing at its recorded path is retried after the rescan (CC13)") {
+    // Moved externally, sidecar with it, before its first read and before any rescan: the read fails on the OS
+    // side. That is not a fact about the key's content, so it is never sticky -- the rescan that finds the file
+    // at its new path (same GUID, same bytes, so the SAME key) lets the next want read it.
+    const std::unique_ptr<CardProject> project =
+        makeCardProject({{"brass.aeromat", materialText("Studio Brass", 0.5F)}});
+    const ThumbnailKey key = keyOf(*project, "brass.aeromat");
+    moveWithSidecar(*project, "brass.aeromat", "mats");
+    MaterialCardCache cache;
+    for (std::uint64_t frame = 1; frame <= 3; ++frame) {
+        cache.noteCardWanted(key);
+        cache.service(project->database, frame);
+    }
+    CHECK(cache.cardFor(key) == nullptr);
+    CHECK(cache.readCount() == 1U);  // one attempt, then held off until a rescan
+    rescan(*project);
+    REQUIRE((keyOf(*project, "mats/brass.aeromat") == key));
+    cache.noteCardWanted(key);
+    cache.service(project->database, 4U);
+    CHECK(cache.readCount() == 2U);
+    const MaterialCard* const card = cache.cardFor(key);
+    REQUIRE(card != nullptr);
+    CHECK(card->displayName == "Studio Brass");
+}
+
+TEST_CASE("material card cache: the read-side hash IS the scan's hash, across a chunk boundary (CC14)") {
+    // ANTI-VACUITY for CC11-CC13: the scan hashes a file STREAMING, in HASH_CHUNK_BYTES reads through
+    // ContentHasher, while the cache hashes the bytes it read in ONE shot. A valid document padded past one
+    // chunk with trailing whitespace makes the two disagree if either hasher ever differed -- and a cache
+    // whose check could never match would store no card for ANY material, which CC1 alone would not explain.
+    std::string text = materialText("Studio Brass", 0.5F);
+    text.append(engine::editor::HASH_CHUNK_BYTES + 4097U, ' ');
+    const std::unique_ptr<CardProject> project = makeCardProject({{"brass.aeromat", text}});
+    const ThumbnailKey key = keyOf(*project, "brass.aeromat");
+    const engine::editor::FileBytesResult file = engine::editor::readFileBytes(
+        project->assetsRoot + "/brass.aeromat", engine::editor::MAX_THUMBNAIL_SOURCE_BYTES);
+    REQUIRE(file.bytes.has_value());
+    REQUIRE(file.bytes->size() > engine::editor::HASH_CHUNK_BYTES);
+    const engine::ContentHash readSide =
+        engine::hashBytes(std::as_bytes(std::span<const char>(file.bytes->data(), file.bytes->size())));
+    CHECK((readSide == key.hash));
+    MaterialCardCache cache;
+    cache.noteCardWanted(key);
+    cache.service(project->database, 1U);
+    CHECK(cache.readCount() == 1U);
+    const MaterialCard* const card = cache.cardFor(key);
+    REQUIRE(card != nullptr);  // the check is LIVE and MATCHES: an unchanged file still gets its card
+    CHECK(card->displayName == "Studio Brass");
 }

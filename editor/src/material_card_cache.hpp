@@ -17,6 +17,18 @@
 // read whole PNGs as text. The read is readFileBytes with the decode store's own cap. NOTHING HERE LOGS -- a
 // refusal is an absent card -- except that parseMaterial, on a SUCCESSFUL parse of a hand-edited file, emits
 // one WARN per unknown key: the parser's own contract, passed through unchanged.
+//
+// AND IT STORES ONLY WHAT ITS KEY NAMES (the code-review round). The gate trusts the DATABASE's key, and the
+// database is stale from an external edit until the watcher's rescan -- so a read inside that window returns
+// bytes the key does not name. The bytes read are therefore hashed (hashBytes, the scan's own MurmurHash3,
+// one-shot where the scan streams) and a card is stored ONLY when that hash IS key.hash. The failures split
+// by what decided them:
+//   * decided by the key's OWN content -- bytes whose hash is key.hash and that do not parse -- is STICKY for
+//     that key, like ThumbnailState's Failed: the same bytes will never parse;
+//   * NOT decided by it -- a hash mismatch (the database is stale), an OS read failure (a file moved before
+//     the rescan saw it), or a refusal by the size cap (it reads no byte, so it cannot prove whose content it
+//     refused) -- is never cached and never retried before the NEXT RESCAN: the entry records
+//     database.generation() at the attempt, and the key is read again only once that has changed.
 #include <aero/editor/material_card.hpp>
 #include <aero/editor/thumbnail_cache.hpp>
 
@@ -48,8 +60,9 @@ public:
     [[nodiscard]] const MaterialCard* cardFor(const ThumbnailKey& key) const noexcept;
 
     // THE ONLY MUTATOR, called from ThumbnailService::service ABOVE the device gate. Touches every wanted key it
-    // already knows at `frame`; reads at most MAX_MATERIAL_CARD_READS_PER_TICK wanted keys it does not; then
-    // evicts down to capacity, least-recently-wanted first, never a key wanted at `frame`.
+    // already knows at `frame`; reads at most MAX_MATERIAL_CARD_READS_PER_TICK wanted keys it does not -- or
+    // whose last attempt failed for a reason a rescan since then may have answered; then evicts down to
+    // capacity, least-recently-wanted first, never a key wanted at `frame`.
     void service(const AssetDatabase& database, std::uint64_t frame);
     void clear() noexcept;
 
@@ -64,7 +77,12 @@ private:
         ThumbnailKey key;
         MaterialCard card;
         std::uint64_t lastWanted = 0;
-        bool parsed = false;  // FALSE == the read or the parse failed: STICKY per key, like ThumbnailState
+        bool parsed = false;  // TRUE == `card` holds the card of the bytes `key` names
+        // The code-review round, APPENDED: TRUE == no card, and the failure was NOT decided by this key's
+        // content (a hash mismatch, an OS failure, a cap refusal). Read again only once database.generation()
+        // differs from `attemptGeneration`. FALSE with `parsed` FALSE == the key's own bytes do not parse: STICKY.
+        bool retryAfterRescan = false;
+        std::uint64_t attemptGeneration = 0;
     };
     void evictDownToCapacity(std::uint64_t frame);
 
