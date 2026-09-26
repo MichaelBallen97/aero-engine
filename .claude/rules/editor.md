@@ -662,6 +662,12 @@ and resolves; `EditorApp::persistProjectState` decides and writes.
   and **never** mutates. `thumbnailKeyForRecord` is the pure five-guard half, over a RECORD, because a
   picker candidate is a record and not a `(FileEntry, path)` pair; the browser keeps guards 1 (a folder)
   and 3 (no database) and composes the rest through it.
+  **Since task E.4.5:** the service owns a SECOND backing store, `MaterialThumbnailRenderer`
+  (`material_thumbnail.{hpp,cpp}`), and the pass spends TWO per-producer budgets —
+  `MAX_THUMBNAIL_DECODES_PER_TICK` and `MAX_THUMBNAIL_RENDERS_PER_TICK` — beside the card cache's own
+  `MAX_MATERIAL_CARD_READS_PER_TICK`, so there is no longer ONE shared budget. And the internal order gains
+  the card pass, which runs after `++frame` and ABOVE the device gate: `++frame` → card pass → device gate →
+  touch → reimport clear → superseded sweep → evict → the decode/render walk.
 - **Thumbnails are a strict two-phase system, and the phases live in different TUs on purpose.**
   `editor/include/aero/editor/thumbnail_cache.hpp` (`ThumbnailLedger`) is PURE — no ImGui, no
   `<filesystem>`, no GPU — and owns only the key, the `Absent`/`Ready`/`Failed`/`Skipped` state
@@ -669,6 +675,11 @@ and resolves; `EditorApp::persistProjectState` decides and writes.
   ONLY stb_image TU and the ONLY GPU-touching TU for thumbnails, and does the actual
   read → decode → resample → upload. Nothing above the pair (the panel, `EditorApp`) ever sees a
   decoded pixel or an `rhi::TextureHandle` — only `ThumbnailState`/`ThumbnailKey`.
+  **Since task E.4.5:** `material_thumbnail.cpp` is a SECOND GPU-touching TU for thumbnails (it renders, and
+  includes no stb_image of its own — its slot textures load through `loadTextureFromSourceFile`), and
+  `EditorApp::materialThumbnailTargetFor` returns a `const render::RenderTarget*` — a read-only observable
+  for the GPU tier's pixel read, whose `colorTexture()` is an `rhi::TextureHandle` — so `EditorApp` does see
+  one. No panel does, and no decoded pixel crosses either.
 - **A `ThumbnailKey` is `{Guid, ContentHash}`, never a bare `Guid`.** A record whose content hash was
   never computed this scan (skipped by budget, or `metaWriteFailed`) has no valid key at all and is
   never touched — a garbage/zero key would decode a file that was never actually hashed. Dropping
@@ -1616,6 +1627,11 @@ and resolves; `EditorApp::persistProjectState` decides and writes.
   hosts whose first argument is not a string literal.
 - **The thumbnail's picture is a function of its key alone.** `produce()` takes no lighting and no tonemap;
   the rig is `material_card.hpp`'s. `I238` re-renders under a moved scene and requires identical bytes.
+  **Except its slot textures (the code-review round):** `produce()` resolves each slot's GUID to the
+  texture's CURRENT bytes at render time, so the picture is a function of the key AND those textures. A
+  texture edit does not refresh it (R4, a recorded handoff); Reimport All refreshes it only for a tile NOT
+  drawn in the frame the clear runs, because the clear spares every key drawn that frame; otherwise it
+  refreshes once the `.aeromat`'s own bytes change, or once its key is evicted and the tile is drawn again.
 - **A material GPU fixture must set `metallicFactor` to 0** — `MaterialDocument` defaults it to glTF's 1.0,
   and a metal with nothing to reflect renders near-black (E.1.4's trap).
 - **An Apply reaches the browser through the watcher, not a nudge** — the contract every asset kind has; with

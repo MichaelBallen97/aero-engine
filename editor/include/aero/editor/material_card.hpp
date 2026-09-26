@@ -5,10 +5,19 @@
 // presentation rule while the four hosts (the browser's grid and list, the picker's popup grid and the
 // Inspector's Guid row) hold only the glue.
 //
-// THE RIG BELOW IS WHY THE THUMBNAIL'S CACHE KEY IS COMPLETE. ThumbnailKey is {Guid, ContentHash} and
-// cannot express lighting or exposure, so a thumbnail lit by the OPEN SCENE would be a picture whose inputs
-// the key does not cover -- stale for ever, or re-rendered on every drag of the sun. The lighting, the
-// tonemap and the orbit angle are therefore FIXED, and each is spelled exactly once, here.
+// THE RIG BELOW IS WHY THE THUMBNAIL'S CACHE KEY IS COMPLETE -- FOR EVERYTHING BUT THE SLOT TEXTURES.
+// ThumbnailKey is {Guid, ContentHash} and cannot express lighting or exposure, so a thumbnail lit by the OPEN
+// SCENE would be a picture whose inputs the key does not cover -- stale for ever, or re-rendered on every drag
+// of the sun. The lighting, the tonemap and the orbit angle are therefore FIXED, and each is spelled exactly
+// once, here.
+//
+// THE ONE INPUT THE KEY DOES NOT COVER, STATED RATHER THAN HIDDEN (the code-review round): the slot TEXTURES.
+// produce() resolves each slot's GUID to that texture's CURRENT bytes at render time, so the picture is a
+// function of the key AND of those textures. Editing a texture therefore does not refresh a material's
+// thumbnail (R4, a recorded handoff). Reimport All refreshes it only for a tile NOT drawn in the frame its
+// clear runs -- the clear spares every key drawn that frame, so the tiles on screen when it is clicked keep
+// their pictures -- and otherwise a picture refreshes once the .aeromat's own bytes change, or once its key is
+// evicted and the tile is drawn again.
 #include <aero/core/math.hpp>
 #include <aero/editor/asset_view.hpp>            // IconColor
 #include <aero/editor/material_preview_rig.hpp>  // MaterialPreviewLighting (task E.2.4, by name)
@@ -74,7 +83,12 @@ struct MaterialDisplayName {
 // The tile fill for a material whose thumbnail has not rendered, or never will. nullopt -> the caller keeps
 // iconColorFor(AssetKind::Material), today's behaviour exactly.
 // linear baseColorFactor.rgb -> tonemapAndEncode(..., materialThumbnailTonemap()) -> round(v * 255), so the
-// swatch and the rendered sphere go through ONE tone curve and the swatch -> sphere change is not a jump.
+// swatch and the rendered sphere go through ONE tone curve and the swatch -> sphere change is not a jump --
+// FOR A DIELECTRIC. A METAL IS THE EXCEPTION, measured in the code-review round: metallicFactor defaults to
+// glTF's 1.0, so EVERY New Material is a metal, and a metal has no environment to reflect under this rig.
+// New Material's white document swatches at 232 and renders a sphere at roughly 100-160 on its key-lit side
+// and black away from it; the same document at metallicFactor 0 renders roughly 200-230. That change IS a
+// jump, and by design: the swatch shows the base colour, the picture shows the material.
 // NON-FINITE IS A REFUSAL, NOT A CLAMP: tonemapAndEncode PROPAGATES a NaN channel (tonemap.hpp), and a NaN
 // reaching IM_COL32 is a garbage byte -- so std::isfinite on x, y and z comes FIRST.
 // ALPHA IS IGNORED AND THE RESULT IS ALWAYS a = 255: baseColorFactor.w is the material's opacity, and a tile
