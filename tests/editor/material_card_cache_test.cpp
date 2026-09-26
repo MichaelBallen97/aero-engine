@@ -327,15 +327,18 @@ namespace {
 // Moves a file and its sidecar together, the way an external file manager moving an asset with its .meta
 // would. OUTSIDE the editor, so nothing rescans.
 void moveWithSidecar(const CardProject& project, const std::string& from, const std::string& to) {
+    // FROM THE PATH, never from project.assetsRoot: that is UTF-8, and std::filesystem::path's narrow constructor
+    // reads it in the ANSI code page on Windows, so a non-ASCII temp directory would name a different folder
+    // (the second code-review round). `from` and `to` are ASCII literals, which every code page reads alike.
+    const std::filesystem::path assets = project.dir / "assets";
     std::error_code ec;
-    std::filesystem::create_directories(std::filesystem::path(project.assetsRoot) / to, ec);
+    std::filesystem::create_directories(assets / to, ec);
     REQUIRE_FALSE(ec);
-    std::filesystem::path target =
-        std::filesystem::path(project.assetsRoot) / to / std::filesystem::path(from).filename();
-    std::filesystem::rename(std::filesystem::path(project.assetsRoot) / from, target, ec);
+    std::filesystem::path target = assets / to / std::filesystem::path(from).filename();
+    std::filesystem::rename(assets / from, target, ec);
     REQUIRE_FALSE(ec);
     target += ".meta";
-    std::filesystem::rename(std::filesystem::path(project.assetsRoot) / (from + ".meta"), target, ec);
+    std::filesystem::rename(assets / (from + ".meta"), target, ec);
     REQUIRE_FALSE(ec);
 }
 
