@@ -333,6 +333,13 @@ public:
     // target for the record `guid` names, through its CURRENT ThumbnailKey. nullptr when there is no service,
     // no record, no key or no target yet.
     [[nodiscard]] const render::RenderTarget* materialThumbnailTargetFor(Guid guid) const noexcept;
+    // task E.4.5: the card cache's two counters, and the ONE name observable: exactly what the Asset Browser's
+    // tile shows under a material's file name for the record `guid` names -- rule 4 applied against the
+    // record's CURRENT leaf, as every host applies it. "" when there is no service, no record, no key, no card
+    // yet, or when the name is suppressed. A read, never a request: it queues nothing.
+    [[nodiscard]] std::size_t materialCardCount() const noexcept;
+    [[nodiscard]] std::size_t materialCardReadCount() const noexcept;
+    [[nodiscard]] std::string materialSubtitleFor(Guid guid) const;
 
     // task 3.1.3, Step 12: the A12 precedent, applied to the retained scan report -- I41 needs to
     // observe the orphan-delete round trip's effect on the Issues list from outside, and there is no

@@ -55,6 +55,7 @@ void ThumbnailService::clear() {
     ledger.clear();
     store.clear();
     renders.clear();  // task E.4.5 -- the same swap point; the render CHAIN survives, it is project-independent
+    cards.clear();    // task E.4.5 -- a project swap only: a Reimport All changes no bytes and keeps every card
 }
 
 std::size_t ThumbnailService::readyCount() const noexcept { return ledger.readyCount(); }
@@ -68,6 +69,10 @@ bool ThumbnailService::materialThumbnailsAvailable() const noexcept { return ren
 const render::RenderTarget* ThumbnailService::materialTargetFor(const ThumbnailKey& key) const noexcept {
     return renders.targetFor(key);
 }
+void ThumbnailService::noteCardWanted(const ThumbnailKey& key) { cards.noteCardWanted(key); }
+const MaterialCard* ThumbnailService::cardFor(const ThumbnailKey& key) const noexcept { return cards.cardFor(key); }
+std::size_t ThumbnailService::materialCardCount() const noexcept { return cards.cardCount(); }
+std::size_t ThumbnailService::materialCardReadCount() const noexcept { return cards.readCount(); }
 
 void ThumbnailService::releaseKey(const ThumbnailKey& key) {
     store.destroy(key);    // a no-op for a rendered key
@@ -93,7 +98,11 @@ void ThumbnailService::markLedger(const ThumbnailKey& key, ThumbnailState state)
 }
 
 void ThumbnailService::service(const AssetDatabase& database) {
-    ++frame;                   // the LRU's clock, advanced BEFORE the touch loop (difference 1 in the banner above)
+    ++frame;  // the LRU's clock, advanced BEFORE the touch loop (difference 1 in the banner above)
+    // task E.4.5: THE CARD PASS RUNS HERE, ABOVE THE DEVICE GATE, and the position is the whole point: a machine
+    // with no GPU and a build with no cooked shaders must still show every material's name and its own colour.
+    // It touches no GPU object and no ledger entry, and it shares this pass's clock.
+    cards.service(database, frame);
     if (!store.available()) {  // E13/AC-11: no device -- thumbnails stay unavailable forever
         visible.clear();
         return;

@@ -19,6 +19,7 @@
 #include <aero/editor/editor_prefs.hpp>  // task E.3.2: EditorPrefs + readEditorPrefs/writeEditorPrefs.
                                          // context_router.hpp arrives through editor_app.hpp.
 #include <aero/editor/entity_ops.hpp>
+#include <aero/editor/material_card.hpp>  // task E.4.5: materialCardSubtitle
 #include <aero/editor/material_edit.hpp>  // task 3.4.2: uniqueMaterialFileName -- New Material's
                                           // one naming rule, PURE and shared with the ME tier
 #include <aero/editor/project.hpp>        // task E.3.2: defaultEditorPrefsPath() -- named directly rather
@@ -1464,6 +1465,26 @@ const render::RenderTarget* EditorApp::materialThumbnailTargetFor(Guid guid) con
     }
     const std::optional<ThumbnailKey> key = thumbnailKeyForRecord(*record);
     return key.has_value() ? thumbnails->materialTargetFor(*key) : nullptr;
+}
+std::size_t EditorApp::materialCardCount() const noexcept {
+    return thumbnails != nullptr ? thumbnails->materialCardCount() : std::size_t{0};
+}
+std::size_t EditorApp::materialCardReadCount() const noexcept {
+    return thumbnails != nullptr ? thumbnails->materialCardReadCount() : std::size_t{0};
+}
+std::string EditorApp::materialSubtitleFor(Guid guid) const {
+    if (thumbnails == nullptr) {
+        return {};
+    }
+    const AssetRecord* const record = assetDatabase.findByGuid(guid);
+    if (record == nullptr) {
+        return {};
+    }
+    const std::optional<ThumbnailKey> key = thumbnailKeyForRecord(*record);
+    if (!key.has_value()) {
+        return {};
+    }
+    return std::string(materialCardSubtitle(thumbnails->cardFor(*key), leafOf(record->relativePath)));
 }
 std::size_t EditorApp::assetOrphanCount() const noexcept { return lastAssetReport.orphanTotal; }
 // code-review SHOULD-FIX 10: the assetOrphanCount() shape verbatim, applied to phase 7.5's own capped

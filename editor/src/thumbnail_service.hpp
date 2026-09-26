@@ -10,11 +10,13 @@
 // task E.4.5: A SECOND PRODUCER, NOT A SECOND CACHE. One ledger, one clock, one cap, one LRU and ONE release
 // site (releaseKey) -- and two backing stores behind them: ThumbnailStore (decoded images) and
 // MaterialThumbnailRenderer (rendered materials), routed by thumbnailSourceForName in ONE walk over every
-// Absent key with one budget per producer.
+// Absent key with one budget per producer. The material CARD cache (names and swatches) sits beside them and
+// is serviced ABOVE the device gate, because it needs no GPU at all.
 #include <aero/core/guid.hpp>
 #include <aero/editor/thumbnail_cache.hpp>
 
-#include "material_thumbnail.hpp"  // task E.4.5 -- the second backing store, held by value
+#include "material_card_cache.hpp"  // task E.4.5 -- names and swatches, device-free, held by value
+#include "material_thumbnail.hpp"   // task E.4.5 -- the second backing store, held by value
 #include "thumbnail_store.hpp"
 
 #include <cstddef>
@@ -66,6 +68,13 @@ public:
     [[nodiscard]] std::size_t materialRenderAttempts() const noexcept;  // monotonic; every produce() call
     [[nodiscard]] bool materialThumbnailsAvailable() const noexcept;    // MaterialThumbnailRenderer::available
     [[nodiscard]] const render::RenderTarget* materialTargetFor(const ThumbnailKey& key) const noexcept;
+    // task E.4.5: the material CARD -- a name and a swatch -- on its OWN request queue, never noteVisible, which
+    // is the LEDGER's touch list and means exactly that (E.3.3's S34/I167). DRAW-WALK SAFE, both; cardFor's
+    // pointer is valid until the next service() or clear().
+    void noteCardWanted(const ThumbnailKey& key);
+    [[nodiscard]] const MaterialCard* cardFor(const ThumbnailKey& key) const noexcept;
+    [[nodiscard]] std::size_t materialCardCount() const noexcept;
+    [[nodiscard]] std::size_t materialCardReadCount() const noexcept;  // monotonic
 
 private:
     // task E.4.5: THE ONE RELEASE SITE (D3). Three callers -- the reimport clear, the superseded sweep and the
@@ -83,6 +92,7 @@ private:
     // task E.4.5: the second backing store (D3). Declared AFTER `store`, and the constructor's init list keeps
     // that order (-Wreorder). Destroyed BEFORE `store` and the ledger, and before ~Device either way.
     MaterialThumbnailRenderer renders;
+    MaterialCardCache cards;            // task E.4.5 -- DEVICE-FREE; serviced ABOVE the device gate in service()
     std::vector<ThumbnailKey> visible;  // per-frame scratch; cleared by service()
     std::uint64_t frame = 0;            // the LRU's clock; monotonic, NEVER wall time
     bool pendingReimportClear = false;
