@@ -19,6 +19,7 @@
 #include <aero/editor/asset_drag.hpp>  // task 3.1.5: the payload, its type string and the draggable rule
 #include <aero/editor/asset_meta.hpp>
 #include <aero/editor/asset_watcher.hpp>  // task 3.1.4 -- WatchStatus, read through the reconciled pointer
+#include <aero/editor/material_card.hpp>  // task E.4.5 -- the card's subtitle and tint rules, and the separator
 #include <aero/editor/panel_context.hpp>
 #include <aero/editor/project_files.hpp>
 
@@ -63,6 +64,42 @@ constexpr std::size_t GUID_SUFFIX_LENGTH = 4;
 std::string elideGuid(Guid guid) {
     const std::string full = formatGuid(guid);
     return full.substr(0, GUID_PREFIX_LENGTH) + "…" + full.substr(full.size() - GUID_SUFFIX_LENGTH);
+}
+
+// task E.4.5: a list row's DIMMED document name, on the same line as the file name -- ONE body for both list
+// arms, so the push/pop discipline lives in one place. Rule 4 runs against `leaf`, the file's own name, even
+// where the row shows a full path. Composes exactly materialCardRowText's sentence (file name, then
+// MATERIAL_CARD_SEPARATOR and the name), drawn in two colours.
+//
+// PushStyleColor + TextUnformatted, NEVER ImGui::TextDisabled: that is a variadic FORMAT function, and a
+// document name is arbitrary user-authored JSON text, so a name containing "%s" would read an absent vararg
+// (D12; seed S9). TextUnformatted takes no format string at all, so the class is unreachable rather than
+// merely absent. PushStyleColor/PopStyleColor are 1:1 with no return between them: an unbalanced style stack
+// is an IM_ASSERT abort in the Debug build (seed S30).
+void drawMaterialRowSuffix(ThumbnailService* thumbnails, const AssetDatabase* database, const std::string& rel,
+                           std::string_view leaf, std::string& scratch) {
+    if (thumbnails == nullptr || database == nullptr) {
+        return;
+    }
+    const AssetRecord* const record = database->findByPath(rel);  // nullptr for a folder
+    if (record == nullptr) {
+        return;
+    }
+    const std::optional<ThumbnailKey> key = thumbnailKeyForRecord(*record);
+    if (!key.has_value()) {
+        return;
+    }
+    thumbnails->noteCardWanted(*key);  // its OWN queue: a list row notes no thumbnail and never has
+    const std::string_view subtitle = materialCardSubtitle(thumbnails->cardFor(*key), leaf);
+    if (subtitle.empty()) {
+        return;  // a nameless material, and every non-material: the row stays byte-identical to today's
+    }
+    scratch = MATERIAL_CARD_SEPARATOR;
+    scratch += subtitle;
+    ImGui::SameLine(0.0F, 0.0F);
+    ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+    ImGui::TextUnformatted(scratch.c_str());
+    ImGui::PopStyleColor();
 }
 
 }  // namespace
@@ -500,6 +537,9 @@ void AssetBrowserPanel::drawContentsList(float paneHeight) {
                         beginAssetDragSource(hit.relativePath, hit.relativePath.c_str(), /*isDirectory=*/false);
                         ImGui::SameLine(0.0F, 0.0F);
                         ImGui::TextUnformatted(hit.relativePath.c_str());
+                        // task E.4.5: the row shows the full path; rule 4 compares against the LEAF
+                        const std::string_view hitLeaf = leafOf(hit.relativePath);
+                        drawMaterialRowSuffix(thumbnailsPtr, databasePtr, hit.relativePath, hitLeaf, labelScratch);
                         ImGui::PopID();  // no continue/break/return between Push and Pop
                         ImGui::TableSetColumnIndex(1);
                         ImGui::TextUnformatted(UNKNOWN_SIZE);
@@ -614,6 +654,7 @@ void AssetBrowserPanel::drawContentsList(float paneHeight) {
                     }
                     ImGui::SameLine(0.0F, 0.0F);
                     ImGui::TextUnformatted(entry.name.c_str());
+                    drawMaterialRowSuffix(thumbnailsPtr, databasePtr, rel, entry.name, labelScratch);  // task E.4.5
                     ImGui::PopID();  // no continue/break/return between Push and Pop
                     ImGui::TableSetColumnIndex(1);
                     if (!entry.isDirectory) {
@@ -855,10 +896,17 @@ void AssetBrowserPanel::drawTile(const FileEntry& entry, const std::string& rel,
     // any of INV-V3's other six guards; `noteVisible` appends to the service's own per-frame scratch,
     // which service() clears, and `nativeTextureFor` is a const read that answers nullptr until Ready.
     void* texture = nullptr;
+    // task E.4.5: the material CARD rides the SAME key -- no second question is asked of the record -- on its OWN
+    // queue (noteCardWanted, never noteVisible, whose meaning E.3.3's S34/I167 pin). The cache answers "not a
+    // material" by never reading one, so this block names no kind. `card` stays valid for the whole draw walk
+    // (the cache mutates only in its service pass), so the face may view its name.
+    const MaterialCard* card = nullptr;
     if (const std::optional<ThumbnailKey> key = thumbnailKeyFor(entry, rel);
         key.has_value() && thumbnailsPtr != nullptr) {
         thumbnailsPtr->noteVisible(*key);
         texture = thumbnailsPtr->nativeTextureFor(*key);
+        thumbnailsPtr->noteCardWanted(*key);
+        card = thumbnailsPtr->cardFor(*key);
     }
 
     // task E.3.3 (D6): the face is drawAssetTileFace's now -- the picker draws the SAME one, so a
@@ -882,7 +930,11 @@ void AssetBrowserPanel::drawTile(const FileEntry& entry, const std::string& rel,
                              .captionSource = captionSource,
                              .tileW = tileW,
                              .tileEdge = tileEdge,
-                             .pad = pad};
+                             .pad = pad,
+                             // task E.4.5, in DECLARATION order. Rule 4 runs HERE against entry.name -- the leaf,
+                             // search hit or not -- never against captionSource, which folds in the parent.
+                             .subtitle = materialCardSubtitle(card, entry.name),
+                             .tint = materialCardTint(card)};
     drawAssetTileFace(ImGui::GetWindowDrawList(), itemMin, face, labelScratch);
 }
 

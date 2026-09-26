@@ -18728,6 +18728,16 @@ template <typename Predicate>
     return app.thumbnailLoadAttempts() >= 1U && app.materialThumbnailRenderCount() >= 1U;
 }
 
+// A render attempt AND a card read have both happened -- I236's wait, named for the same reason.
+[[nodiscard]] bool renderedAndCardRead(const engine::editor::EditorApp& app) {
+    return app.materialThumbnailRenderCount() > 0U && app.materialCardReadCount() > 0U;
+}
+
+// A card exists AND a render attempt has happened -- I240's wait.
+[[nodiscard]] bool cardAndRenderExist(const engine::editor::EditorApp& app) {
+    return app.materialCardCount() >= 1U && app.materialThumbnailRenderCount() >= 1U;
+}
+
 struct Texel {
     int r = 0;
     int g = 0;
@@ -19223,6 +19233,170 @@ TEST_CASE("editor: a thumbnail is a function of its key alone, whatever the scen
     REQUIRE(tickUntil(*app, [&] { return app->materialThumbnailRenderCount() >= rendersBefore + 2U; }));
     CHECK(differingBytes(readTarget(*red), redFirst) == 0U);  // BYTE FOR BYTE, all 64 KiB
     CHECK(differingBytes(readTarget(*green), greenFirst) == 0U);
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: a malformed .aeromat is read once and rendered once, ever (task E.4.5, I236)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "material thumbnails i236", .width = 1280, .height = 800});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    const std::string badPath = created.root + "/assets/bad.aeromat";
+    REQUIRE(engine::editor::writeTextFileAtomic(badPath, "{ this is not a material").empty());
+    std::optional<engine::editor::EditorApp> app = makeThumbnailApp(*device, *window, ctx, created.root);
+    REQUIRE(app.has_value());
+    REQUIRE(tickUntil(*app, [&] { return renderedAndCardRead(*app); }));
+    for (int i = 0; i < 30; ++i) {
+        REQUIRE(app->tick());  // the tile stays on screen and keeps asking, every one of these frames
+    }
+    CHECK(app->materialThumbnailRenderCount() == 1U);  // STICKY in the ledger: Failed, or Skipped with no shaders
+    CHECK(app->materialCardReadCount() == 1U);         // STICKY in the card cache (seed S13)
+    CHECK(app->materialCardCount() == 0U);
+    CHECK(app->materialThumbnailResidentCount() == 0U);
+    CHECK(app->thumbnailUnavailableCount() == 1U);  // the footer's "1 unavailable", in both configurations
+    CHECK(residentsMatchReady(*app));
+    const std::optional<engine::Guid> guid = app->assetGuidForPath("bad.aeromat");
+    REQUIRE(guid.has_value());
+    CHECK(app->materialSubtitleFor(*guid).empty());  // no card, no name -- and nothing derived from "bad"
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: a rename keeps the key, and the subtitle follows the new name (task E.4.5, I240)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "material names i240", .width = 1280, .height = 800});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/brass.aeromat",
+                                                materialText("Brass", engine::Vec3{0.8F, 0.5F, 0.2F}))
+                .empty());
+    std::optional<engine::editor::EditorApp> app = makeThumbnailApp(*device, *window, ctx, created.root);
+    REQUIRE(app.has_value());
+    REQUIRE(tickUntil(*app, [&] { return cardAndRenderExist(*app); }));
+    const std::optional<engine::Guid> guid = app->assetGuidForPath("brass.aeromat");
+    REQUIRE(guid.has_value());
+    // Rule 4: "brass.aeromat  -  Brass" is noise, so the tile shows the file name alone -- while the CARD exists.
+    CHECK(app->materialSubtitleFor(*guid).empty());
+    REQUIRE(app->materialCardCount() == 1U);  // ANTI-VACUITY: only rule 4 hides the name
+    const std::size_t reads = app->materialCardReadCount();
+    const std::size_t renders = app->materialThumbnailRenderCount();
+
+    // E.4.3's own rename seam. The sidecar travels with the file, the GUID survives, and the import cache keeps
+    // the content hash -- so the ThumbnailKey is UNCHANGED, and a name suppressed at READ time would stay hidden
+    // for ever (seed S7). Rule 4 runs at DRAW time, against the new leaf.
+    app->requestAssetBrowserRename("brass.aeromat");
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+    REQUIRE(app->assetBrowserRenameModalPending());
+    app->requestAssetBrowserRenameCommit("gold.aeromat");
+    REQUIRE(app->tick());
+    REQUIRE(engine::editor::fileExists(created.root + "/assets/gold.aeromat"));
+    for (int i = 0; i < 4; ++i) {
+        REQUIRE(app->tick());
+    }
+    const std::optional<engine::Guid> renamed = app->assetGuidForPath("gold.aeromat");
+    REQUIRE(renamed.has_value());
+    REQUIRE((*renamed == *guid));                           // the identity travelled with the sidecar
+    CHECK(app->materialSubtitleFor(*guid) == "Brass");      // ...and the name is now worth showing
+    CHECK(app->materialCardReadCount() == reads);           // the SAME key: never re-read
+    CHECK(app->materialThumbnailRenderCount() == renders);  // ...and never re-rendered
+
+    // BOTH LIST ARMS, drawn with a material that now HAS a subtitle: the style push/pop is 1:1 or the Debug
+    // build aborts right here (seed S30). A green run IS the balance proof -- I39's own shape.
+    app->requestAssetBrowserViewMode(engine::editor::AssetViewMode::List);
+    for (int i = 0; i < 3; ++i) {
+        REQUIRE(app->tick());
+    }
+    app->requestAssetBrowserSearch("gold");
+    for (int i = 0; i < 3; ++i) {
+        REQUIRE(app->tick());
+    }
+    CHECK(app->presentedLastFrame());
+    CHECK(app->materialCardReadCount() == reads);  // a list row asks the same cache, and reads nothing new
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: an Apply reaches the tile through the watcher, with no manual refresh (task E.4.5, I241)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "material names i241", .width = 1280, .height = 800});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/brass.aeromat",
+                                                materialText("Studio Brass", engine::Vec3{0.8F, 0.5F, 0.2F}))
+                .empty());
+    // I49's watcher configuration: settle and cooldown at 0, so a change settles in one or two sweeps.
+    std::optional<engine::editor::EditorApp> app = engine::editor::EditorApp::create(
+        *device, *window, ctx,
+        {.persistLayout = false,
+         .unfocusedFrameCapHz = 0.0F,
+         .projectPath = created.root,
+         .restoreLastProject = false,
+         .recentProjectsPath = uniqueRecentsFile(),
+         .assetWatch = {.enabled = true, .dirsPerPoll = 64, .cooldownMs = 0, .settleMs = 0}});
+    REQUIRE(app.has_value());
+    app->panels().setVisible("Console", false);
+    REQUIRE(tickToQuiescence(*app));  // the first scan's sidecar writes are seen once, then silence
+    REQUIRE(tickUntil(*app, [&] { return app->materialCardCount() >= 1U; }));
+    const std::optional<engine::Guid> guid = app->assetGuidForPath("brass.aeromat");
+    REQUIRE(guid.has_value());
+    REQUIRE(app->materialSubtitleFor(*guid) == "Studio Brass");
+    const std::size_t reads = app->materialCardReadCount();
+
+    // THE MATERIAL PANEL'S OWN APPLY PATH, through its seams: target the file, edit the name, Apply.
+    app->requestAssetBrowserSelectEntry("brass.aeromat");
+    for (int i = 0; i < 3; ++i) {
+        REQUIRE(app->tick());
+    }
+    REQUIRE(app->materialTargetPath() == "brass.aeromat");
+    REQUIRE(app->materialDocument() != nullptr);
+    engine::MaterialDocument edited = *app->materialDocument();
+    edited.name = "Polished Gold";
+    app->requestMaterialDocument(edited);
+    app->requestMaterialApply();
+    REQUIRE(app->tick());  // the edit and the Apply drain; saveMaterialFile writes the bytes
+
+    // NO requestAssetRescan: Apply requests none (C13), so the WATCHER alone carries the new bytes to a new key.
+    REQUIRE(tickSweeps(*app, 4));
+    REQUIRE(tickUntil(*app, [&] { return app->materialSubtitleFor(*guid) == "Polished Gold"; }));
+    CHECK(app->materialCardReadCount() == reads + 1U);  // a NEW key: exactly one fresh read (seed S26)
 
     app->requestQuit();
     CHECK(app->tick() == false);

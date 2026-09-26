@@ -5,22 +5,33 @@
 #include "asset_tile.hpp"
 
 #include <aero/editor/asset_view.hpp>
+#include <aero/editor/material_card.hpp>  // task E.4.5 -- materialSwatchWantsDarkLabel
 
 #include <cstddef>
 #include <cstdint>
 #include <imgui.h>
+#include <optional>
 #include <string>
 
 namespace engine::editor {
 
+namespace {
+
+// task E.4.5: the kind label's colour on a PALE swatch. THE ONLY COLOUR LITERAL THIS TASK STATES, and it is a
+// contrast answer rather than a palette choice -- handed to E.6.1 with the theme: when EditorTheme lands this
+// becomes a theme role and materialSwatchWantsDarkLabel's threshold a theme question.
+constexpr ImU32 DARK_SWATCH_LABEL = IM_COL32(24, 24, 24, 255);
+
+}  // namespace
+
 // A15: ImGui's own text wrapping has no ellipsis and no "how many lines would this take" query for
 // wrapped text, so this measures with ImGui::CalcTextSize and truncates by hand -- the LONGEST byte
-// prefix whose (prefix + ellipsis) still fits TILE_CAPTION_LINES lines at `wrapWidth`, landing on a
-// UTF-8 boundary (never slicing a multi-byte sequence).
-std::string elideForCaption(const std::string& name, float wrapWidth) {
-    const float twoLineHeight = static_cast<float>(TILE_CAPTION_LINES) * ImGui::GetTextLineHeight();
+// prefix whose (prefix + ellipsis) still fits `maxLines` lines at `wrapWidth` (TILE_CAPTION_LINES unless
+// the caller asks otherwise -- task E.4.5), landing on a UTF-8 boundary (never slicing a multi-byte sequence).
+std::string elideForCaption(const std::string& name, float wrapWidth, std::size_t maxLines) {
+    const float budgetHeight = static_cast<float>(maxLines) * ImGui::GetTextLineHeight();
     const ImVec2 full = ImGui::CalcTextSize(name.c_str(), nullptr, false, wrapWidth);
-    if (full.y <= twoLineHeight) {
+    if (full.y <= budgetHeight) {
         return name;
     }
     std::size_t lo = 0;
@@ -38,7 +49,7 @@ std::string elideForCaption(const std::string& name, float wrapWidth) {
         std::string candidate(name, 0, cut);
         candidate += "…";
         const ImVec2 size = ImGui::CalcTextSize(candidate.c_str(), nullptr, false, wrapWidth);
-        if (size.y <= twoLineHeight) {
+        if (size.y <= budgetHeight) {
             lo = mid;
         } else {
             hi = mid - 1;
@@ -65,7 +76,9 @@ void drawAssetTileFace(ImDrawList* drawList, ImVec2 itemMin, const AssetTileFace
     } else {
         // The generated type icon -- what a Skipped/Failed/no-database entry, or an undecodable
         // extension, falls back to FOREVER.
-        const IconColor color = iconColorFor(face.kind);
+        // task E.4.5: the caller's tint wins over the kind colour, and NOTHING ELSE about this branch changes: a
+        // material with a parsed, finite base colour paints its OWN colour; every other tile paints its kind's.
+        const IconColor color = face.tint.value_or(iconColorFor(face.kind));
         const ImU32 fillColor = IM_COL32(color.r, color.g, color.b, color.a);
         drawList->AddRectFilled(iconMin, iconMax, fillColor, rounding);
         if (face.isDirectory) {
@@ -80,7 +93,11 @@ void drawAssetTileFace(ImDrawList* drawList, ImVec2 itemMin, const AssetTileFace
             const ImVec2 textSize = ImGui::CalcTextSize(scratch.c_str());
             const ImVec2 textPos((iconMin.x + iconMax.x - textSize.x) * 0.5F,
                                  (iconMin.y + iconMax.y - textSize.y) * 0.5F);
-            drawList->AddText(textPos, IM_COL32_WHITE, scratch.c_str());
+            // task E.4.5: THE LABEL'S CONTRAST FOLLOWS THE FILL. A white "AERT" (iconLabelFor's label for
+            // .aeromat, AV51) on a pale swatch is unreadable, and a fixed white is right only while every fill
+            // happens to be dark -- the "true by accident" shape. Every UNtinted tile keeps white exactly.
+            const bool darkLabel = face.tint.has_value() && materialSwatchWantsDarkLabel(color);
+            drawList->AddText(textPos, darkLabel ? DARK_SWATCH_LABEL : IM_COL32_WHITE, scratch.c_str());
         }
     }
 
@@ -89,10 +106,28 @@ void drawAssetTileFace(ImDrawList* drawList, ImVec2 itemMin, const AssetTileFace
     // hit folds its containing folder into the SAME caption (the plan's own "subtitled" requirement),
     // so it stays identifiable outside the directory the user is currently browsing (AC-15).
     const float wrapWidth = face.tileW - (2.0F * face.pad);
-    const std::string caption = elideForCaption(std::string(face.captionSource), wrapWidth);
     const ImVec2 captionPos(itemMin.x + face.pad, iconMax.y + face.pad);
-    drawList->AddText(ImGui::GetFont(), ImGui::GetFontSize(), captionPos, IM_COL32_WHITE, caption.c_str(), nullptr,
-                      wrapWidth, nullptr);
+    // task E.4.5: the font and its size, read once as named locals so each AddText below is a single line.
+    ImFont* const font = ImGui::GetFont();
+    const float fontSize = ImGui::GetFontSize();
+    if (face.subtitle.empty()) {
+        // TODAY'S CAPTION, argument for argument: the caption source wrapped to TILE_CAPTION_LINES.
+        const std::string caption = elideForCaption(std::string(face.captionSource), wrapWidth);
+        drawList->AddText(font, fontSize, captionPos, IM_COL32_WHITE, caption.c_str(), nullptr, wrapWidth, nullptr);
+        return;
+    }
+    // task E.4.5: TWO one-line captions in exactly the space the wrapped one had -- the file name first, in
+    // today's white, then the document's name beneath it in the theme's own disabled-text colour (a colour the
+    // theme already owns, E.3.4's D6 precedent). Both are draw-list text, so no format string exists on this
+    // path (D12), and still NO ImGui ITEM is submitted: GetColorU32, GetFont and GetTextLineHeight are reads.
+    // GetColorU32 applies the current style alpha, so the subtitle's exact byte value is context-dependent and
+    // is asserted nowhere as a constant.
+    const std::string primary = elideForCaption(std::string(face.captionSource), wrapWidth, 1U);
+    drawList->AddText(font, fontSize, captionPos, IM_COL32_WHITE, primary.c_str(), nullptr, wrapWidth, nullptr);
+    const std::string secondary = elideForCaption(std::string(face.subtitle), wrapWidth, 1U);
+    const ImVec2 subtitlePos(captionPos.x, captionPos.y + ImGui::GetTextLineHeight());
+    const ImU32 dimmed = ImGui::GetColorU32(ImGuiCol_TextDisabled);
+    drawList->AddText(font, fontSize, subtitlePos, dimmed, secondary.c_str(), nullptr, wrapWidth, nullptr);
 }
 
 }  // namespace engine::editor
