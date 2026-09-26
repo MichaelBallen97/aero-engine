@@ -176,6 +176,13 @@ void MaterialThumbnailRenderer::ensureInitialized() {
 ThumbnailState MaterialThumbnailRenderer::produce(const ThumbnailKey& key, std::string_view absolutePathUtf8,
                                                   const AssetDatabase& database) {
     ++attempts;  // FIRST and unconditional: a sticky refusal is still one attempt -- and the only one
+    // The code-review round: A KEY THAT ALREADY HOLDS A TARGET IS ANSWERED BEFORE ANY READ AND ANY GPU WORK.
+    // Only a key the ledger reports Absent reaches produce(), and releaseKey destroys a key's target before the
+    // ledger forgets it, so this arm is unreachable today. It is here so that a mistake in that ordering costs a
+    // stale picture -- never a render into, and a replacement of, a texture ImGui may be sampling this frame.
+    if (const auto held = targetLowerBound(targets, key); held != targets.end() && held->first == key) {
+        return ThumbnailState::Ready;
+    }
     ensureInitialized();
     if (status != Status::Ready || device == nullptr || !post || !renderer || !sky) {
         return ThumbnailState::Skipped;  // this build or device can never render one -- STICKY in the ledger
@@ -281,7 +288,10 @@ ThumbnailState MaterialThumbnailRenderer::produce(const ThumbnailKey& key, std::
     // its device memory only once the GPU is done with it, and nothing but this call ever held these handles.
     const auto at = targetLowerBound(targets, key);
     if (at != targets.end() && at->first == key) {
-        at->second = std::move(*output);  // unreachable (an Absent key has no target); replacing is safe
+        // UNREACHABLE TWICE OVER (the code-review round): releaseKey destroys a key's target before the ledger
+        // forgets the key, and the early return at the top answers a key that still holds one before any GPU
+        // work -- so nothing here ever replaces a texture ImGui may be sampling.
+        at->second = std::move(*output);
         return ThumbnailState::Ready;
     }
     targets.insert(at, std::pair<ThumbnailKey, render::RenderTarget>{key, std::move(*output)});

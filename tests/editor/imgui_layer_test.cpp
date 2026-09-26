@@ -19640,6 +19640,23 @@ TEST_CASE("editor: E.4.5's structure holds as source text -- routing, release, g
         // ANTI-VACUITY: the unsubtitled caption still takes today's rule, so the face was really read as code.
         CHECK(countLinesContaining(tile, "elideForCaption(std::string(face.captionSource), wrapWidth)") == 1U);
     }
+    SUBCASE("(i) a key that already holds a target is answered before any read or GPU work (the code-review round)") {
+        // Unreachable at runtime by design -- releaseKey destroys before the ledger forgets -- so only the source
+        // text can say the answer comes FIRST: behind the chain's creation, the read, the slot loads, the material
+        // push and the output target, which is where a replacement of a texture ImGui samples used to be possible.
+        const std::vector<std::string> code = codeOf("material_thumbnail.cpp");
+        const std::size_t produce = soleLineContaining(code, "ThumbnailState MaterialThumbnailRenderer::produce(");
+        const std::size_t held = soleLineContaining(code, "held != targets.end() && held->first == key");
+        const std::size_t attempts = nextCodeLine(code, produce + 2U);  // past the signature's two lines
+        CHECK(code[attempts].find("++attempts;") != std::string::npos);
+        CHECK(nextCodeLine(code, attempts + 1U) == held);  // ++attempts, and then the answer: nothing between
+        CHECK(code[held + 1U].find("return ThumbnailState::Ready;") != std::string::npos);
+        CHECK(held < soleLineContaining(code, "    ensureInitialized();"));  // the chain's own GPU creates
+        CHECK(held < soleLineContaining(code, "readFileBytes("));
+        CHECK(held < soleLineContaining(code, "loadTextureFromSourceFile("));
+        CHECK(held < soleLineContaining(code, "renderer->createMaterial("));
+        CHECK(held < soleLineContaining(code, "render::RenderTarget::create("));
+    }
 }
 
 TEST_CASE("editor: a material renders only while its tile is on screen -- the visible page first (task E.4.5, I243)") {
