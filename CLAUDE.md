@@ -25,14 +25,15 @@ In Notion its `Phase #` is `3.5` — a sort key, not an identifier.
 (E.2.2). Nothing since E.2.2 has added one, so the five-generation-site rule and the component-count sweep
 have not fired since — **they still apply in full to the next built-in, whenever one arrives.**
 
-**Next free ids, measured at `caf8a74` by a whole-`tests/` token sweep over every ref: `I244` at the ImGui
-tier**, `AA68`, `AD77`, `AM29`, `AV66`, `BV10`, `CC15`, `DR28`, `IR13`, `IX19`, `MB27`, `TS11`. Taken tier-0
-prefixes include `MR` (E.3.4, `MR1`–`MR21`), `PJ` (E.4.1, `PJ1`–`PJ57`), `CN` (E.4.2, `CN1`–`CN25`), `IX` /
-`BV` (E.4.4, `IX1`–`IX18`, `BV1`–`BV9`) and `MB` / `CC` (E.4.5, `MB1`–`MB26`, `CC1`–`CC14`); `MC` is mesh
-cook's (`MC1`–`MC58`), which is why the card cache took `CC`. The other ceilings: `SS` 54, `IO` 21, `TS` 10,
-`IR` 12. E.4.1 took `I176`–`I185`, E.4.2 `I186`–`I192`, E.4.3 `I210`–`I226`, E.4.4 `I227`–`I229`, E.4.4's
-validation fix (#111) `I230`–`I231` plus `AV55`–`AV59`, and E.4.5 `I232`–`I243` plus `AV60`–`AV65`,
-`TS5`–`TS10` and `IR9`–`IR12`. **`I193`–`I209` are FREE and were never claimed by anything that merged** — a
+**Next free ids, measured by a whole-`tests/` token sweep over every ref after E.4.5's validation
+follow-ups: `I245` at the ImGui tier**, `AA68`, `AD77`, `AM29`, `AV66`, `BV10`, `CC15`, `DR28`, `IR13`,
+`IX19`, `MB27`, `TS11`. Taken tier-0 prefixes include `MR` (E.3.4, `MR1`–`MR21`), `PJ` (E.4.1,
+`PJ1`–`PJ57`), `CN` (E.4.2, `CN1`–`CN25`), `IX` / `BV` (E.4.4, `IX1`–`IX18`, `BV1`–`BV9`) and `MB` / `CC`
+(E.4.5, `MB1`–`MB26`, `CC1`–`CC14`); `MC` is mesh cook's (`MC1`–`MC58`), which is why the card cache took
+`CC`. The other ceilings: `SS` 54, `IO` 21, `TS` 10, `IR` 12. E.4.1 took `I176`–`I185`, E.4.2
+`I186`–`I192`, E.4.3 `I210`–`I226`, E.4.4 `I227`–`I229`, E.4.4's validation fix (#111) `I230`–`I231` plus
+`AV55`–`AV59`, E.4.5 `I232`–`I243` plus `AV60`–`AV65`, `TS5`–`TS10` and `IR9`–`IR12`, and E.4.5's
+validation follow-ups `I244`. **`I193`–`I209` are FREE and were never claimed by anything that merged** — a
 gap costs nothing, and renumbering a block into one invites exactly the silent collision this project has
 recorded.
 
@@ -1138,7 +1139,7 @@ button's disabled predicate), each with its pinned-source citation, are in `.cla
 `"Delete orphaned .meta?"` from a real row and confirmed it by click and by **Enter**. Until then, Enter had
 only been argued from identical code.
 
-**TWENTY-FIVE UNOWNED HANDOFFS — one per bullet below; re-count the bullets, never the headline.** It read
+**TWENTY-THREE UNOWNED HANDOFFS — one per bullet below; re-count the bullets, never the headline.** It read
 "NINE" over a list that already held thirteen, because two "smaller" items, the exposure clause and
 `FillMode::Line` were never counted. Handoffs recorded in their own paragraphs elsewhere in this block (fact
 4's four permitted cases, the two inspector-row gaps, the closed `File` section) are not repeated here.
@@ -1186,10 +1187,6 @@ only been argued from identical code.
 - **A persisted thumbnail store under `Library/`** (E.4.5).
 - **An Apply that refreshes the browser without the watcher** — declined at E.4.5: an Apply reaches the
   browser through the watcher, as every asset kind's edit does.
-- **`material_preview_rig.hpp`'s "MUST exceed 1, the sphere's radius" and "unit sphere"** — the sphere
-  primitive's radius is 0.5 (`makeSphere`); E.4.5 left E.2.4's header untouched.
-- **Whether to enable `clang-diagnostic-switch`** (or `-Wswitch` as an error on a lane), and the 51 lines that
-  call a missing case an error — see the standing invariant under *Boundaries, guards and the build*.
 
 **E.1.1's THICK-LINE HANDOFF IS FIRED, NOT CLEARED AND NOT DEFERRED.** E.2.3's macOS pass measured it: icons
 scale exactly 2x and hold 22 points, but **387 of 441 sampled runs across the gizmo are ONE DEVICE PIXEL** —
