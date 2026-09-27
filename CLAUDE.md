@@ -266,10 +266,13 @@ asserts **no digest value**.
 **AN UNHANDLED ENUMERATOR FAILS CI'S LINUX clang-tidy STEP, THROUGH `clang-diagnostic-switch`, AND ONLY
 THERE.** `.clang-tidy` enables that one compiler diagnostic (E.4.5's follow-up), and the step lints every
 tracked `*.cpp` with `--warnings-as-errors='*'`, so a `switch` with no `default:` that misses an enumerator is
-a red lint step. The compile lanes still only warn (clang's default-on `-Wswitch`) or stay silent (GCC without
-`-Wall`; MSVC's C4062 is off by default), and no lane builds with `-Werror`. So the 51 older lines that call a
-missing case an "error" or a "failure" are now true of the lint lane, not of any compile lane. A `default:`
-arm silences the diagnostic, so a switch that must stay exhaustive keeps having none.
+a red lint step **when the switch is in a tracked `*.cpp` or in a header under `engine/`, `runtime/`,
+`editor/`, `tools/` or `tests/`** — `HeaderFilterRegex` suppresses it in any other header, so a `samples/`
+header's switch (`phase-0-cube/fps_gate.hpp:31`, measured) is not covered. The compile lanes still only warn
+(clang's default-on `-Wswitch`) or stay silent (GCC without `-Wall`; MSVC's C4062 is off by default), and no
+lane builds with `-Werror`. So the 51 older lines that call a missing case an "error" or a "failure" are now
+true of the lint lane, not of any compile lane. A `default:` arm silences the diagnostic, so a switch that
+must stay exhaustive keeps having none.
 
 #### Components, reflection and serialization
 
