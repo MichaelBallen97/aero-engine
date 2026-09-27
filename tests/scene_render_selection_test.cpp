@@ -505,3 +505,91 @@ TEST_CASE("scene_render selection: buildRenderView is OBSERVATIONALLY UNCHANGED 
         checkMatchedAgainst(view.instances, set.secondary[i]);
     }
 }
+
+TEST_CASE("scene_render selection: a primitive's material resolves IDENTICALLY in both builders (SQ13)") {
+    // task E.5.1 (D3): renderSelectionMask takes each instance's CULL MODE from its resolved material,
+    // so the mask's primitive arm must reach buildRenderView's decision AND count -- one resolver, two
+    // callers. Three primitives: a material that RESOLVES, one that does NOT, and NIL.
+    World world;
+    AssetBindingTable bindings;
+    const Guid bound = guidFrom(51, 52);
+    const Guid unbound = guidFrom(61, 62);
+    const engine::render::MaterialHandle boundHandle{11U, 1U};
+    bindings.setMaterial(bound, boundHandle);
+
+    const Entity resolves = makePrimitiveEntity(world, Vec3{1.0F, 0.0F, 0.0F}, 0U, Vec3{0.9F, 0.2F, 0.2F});
+    const Entity doesNot = makePrimitiveEntity(world, Vec3{0.0F, 1.0F, 0.0F}, 1U, Vec3{0.2F, 0.9F, 0.2F});
+    const Entity nil = makePrimitiveEntity(world, Vec3{0.0F, 0.0F, 1.0F}, 2U, Vec3{0.2F, 0.2F, 0.9F});
+    auto* const resolvesRenderer = world.get<MeshRenderer>(resolves);
+    auto* const doesNotRenderer = world.get<MeshRenderer>(doesNot);
+    REQUIRE(resolvesRenderer != nullptr);
+    REQUIRE(doesNotRenderer != nullptr);
+    resolvesRenderer->material = bound;
+    doesNotRenderer->material = unbound;
+
+    const engine::render::CameraView camera = testCamera();
+    RenderViewScratch viewScratch;
+    const engine::render::RenderView view = buildRenderView(world, viewScratch, VIEWPORT, &camera, &bindings);
+    REQUIRE(view.instances.size() == 3U);
+    CHECK(view.unresolvedMaterials == 1U);
+
+    SelectionMaskScratch scratch;
+    const std::array<Entity, 3> selected{resolves, doesNot, nil};
+    const SelectionMaskSet set = buildSelectionMaskSet(world, selected, Entity{}, camera, scratch, &bindings);
+    REQUIRE(set.secondary.size() == 3U);
+    CHECK(set.primary.empty());
+    CHECK(set.withoutGeometry.empty());
+    // The SAME count, into the SAME counter -- never unresolvedMeshes.
+    CHECK(set.unresolvedMaterials == view.unresolvedMaterials);
+    CHECK(set.unresolvedMaterials == 1U);
+    CHECK(set.unresolvedMeshes == 0U);
+    for (std::size_t i = 0; i < set.secondary.size(); ++i) {
+        INFO("mask instance ", i);
+        checkMatchedAgainst(view.instances, set.secondary[i]);  // every field, `material` included
+    }
+
+    // ANTI-VACUITY: per entity, in BOTH sets -- so the case cannot pass by both builders leaving every
+    // material default, which is exactly what they both did before E.5.1.
+    const auto materialOf = [&world](std::span<const MeshInstance> instances, Entity entity) {
+        const Mat4 model = engine::worldMatrix(world, entity);
+        engine::render::MaterialHandle found{};
+        int seen = 0;
+        for (const MeshInstance& instance : instances) {
+            if (instance.model == model) {
+                found = instance.material;
+                ++seen;
+            }
+        }
+        CHECK(seen == 1);
+        return found;
+    };
+    CHECK((materialOf(view.instances, resolves) == boundHandle));
+    CHECK((materialOf(set.secondary, resolves) == boundHandle));
+    CHECK_FALSE(materialOf(view.instances, doesNot).valid());
+    CHECK_FALSE(materialOf(set.secondary, doesNot).valid());
+    CHECK_FALSE(materialOf(view.instances, nil).valid());
+    CHECK_FALSE(materialOf(set.secondary, nil).valid());
+}
+
+TEST_CASE("scene_render selection: an UNRESOLVABLE primitive material is still OUTLINED, never a marker (SQ14)") {
+    // Material resolution never changes GEOMETRY: the forward pass draws such a primitive with the
+    // default material, so the mask must outline it. NULL table on purpose (D4: still counted).
+    World world;
+    const Entity primitive = makePrimitiveEntity(world, Vec3{1.0F, 0.0F, 0.0F}, 0U, Vec3::one());
+    auto* const primitiveRenderer = world.get<MeshRenderer>(primitive);
+    REQUIRE(primitiveRenderer != nullptr);
+    primitiveRenderer->material = guidFrom(71, 72);
+    // The CONTRAST, in the same fixture: a VALID mesh under the same null table IS a marker (SQ10).
+    const Entity referencing = makeReferencingEntity(world, Vec3{0.0F, 1.0F, 0.0F}, guidFrom(81, 82), 0U);
+
+    SelectionMaskScratch scratch;
+    const std::array<Entity, 2> selected{primitive, referencing};
+    const SelectionMaskSet set = buildSelectionMaskSet(world, selected, Entity{}, testCamera(), scratch, nullptr);
+    REQUIRE(set.secondary.size() == 1U);
+    CHECK_FALSE(set.secondary[0].material.valid());
+    CHECK(set.secondary[0].model == engine::worldMatrix(world, primitive));  // it IS the primitive
+    REQUIRE(set.withoutGeometry.size() == 1U);
+    CHECK((set.withoutGeometry[0] == referencing));  // ...and only the reference is a marker
+    CHECK(set.unresolvedMaterials == 1U);            // the primitive's VALID material, with no table
+    CHECK(set.unresolvedMeshes == 1U);               // the reference's miss, and ONLY that one
+}

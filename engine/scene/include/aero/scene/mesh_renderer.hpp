@@ -38,8 +38,12 @@ struct AERO_COMPONENT MeshRenderer {
     // thing. A content-hash encoding stays reachable for whoever needs cross-reorder stability (4.4.4).
     //
     // `material` NIL => each submesh draws the material its own source assigned (resolved by the
-    // scene_render binding table); VALID => that one material overrides EVERY submesh of this entity.
-    // Per-submesh overrides need a reflectable array, which the subset does not have.
+    // scene_render binding table), and a primitive draws the renderer's default material; VALID => that
+    // one material overrides EVERY submesh of this entity, or is the primitive's material when `mesh` is
+    // NIL (task E.5.1). A VALID GUID that does not resolve -- still loading, failed, deleted, or naming
+    // something that is not a material -- draws what NIL would, and is counted in
+    // render::RenderView::unresolvedMaterials, never warned. Per-submesh overrides need a reflectable
+    // array, which the subset does not have.
     Guid mesh AERO_ASSET(model){};
     std::uint32_t meshIndex = 0;
     Guid material AERO_ASSET(material){};

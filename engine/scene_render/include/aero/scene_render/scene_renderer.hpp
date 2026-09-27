@@ -71,12 +71,13 @@ struct RenderViewScratch {
 // `bindings` (task 3.1.5): the resolution table for MeshRenderer::mesh / ::material. DEFAULTED AND
 // LAST, so every caller written before 3.1.5 -- both samples and every existing test -- compiles and
 // behaves IDENTICALLY (INV-D3). With `bindings == nullptr` the walk is byte-equivalent to the
-// pre-3.1.5 walk for every input: an entity whose `mesh` is NIL takes the primitive path statement for
-// statement, and an entity whose `mesh` is VALID emits nothing and adds one to
-// RenderView::unresolvedMeshes -- a state no pre-3.1.5 input can reach, since MeshRenderer had no
-// `mesh` field to fill. A null table and a missing entry are NOT errors: they are the ordinary
-// in-flight state between a drop and the editor ledger's upload, which is why they are COUNTED and
-// never warned.
+// pre-3.1.5 walk for every PRE-3.1.5 INPUT: an entity whose `mesh` and `material` are both NIL takes
+// the primitive path statement for statement. Two states no pre-3.1.5 input can reach, because
+// MeshRenderer had neither field to fill: an entity whose `mesh` is VALID emits nothing and adds one to
+// RenderView::unresolvedMeshes; and (task E.5.1) an entity whose `mesh` is NIL but whose `material` is
+// VALID emits its primitive with the default material and adds one to RenderView::unresolvedMaterials.
+// A null table and a missing entry are NOT errors: they are the ordinary in-flight state between a drop
+// and the editor ledger's upload, which is why they are COUNTED and never warned.
 [[nodiscard]] render::RenderView buildRenderView(World& world, RenderViewScratch& scratch, rhi::Extent2D viewport,
                                                  const render::CameraView* cameraOverride = nullptr,
                                                  const AssetBindingTable* bindings = nullptr);
@@ -119,7 +120,9 @@ inline constexpr std::size_t DEFAULT_SELECTION_MASK_ENTITY_CAP = 256;
 //                                         buildRenderView walks each<Transform, MeshRenderer>, so such
 //                                         an entity is NOT DRAWN by the forward pass and must get a
 //                                         marker rather than an outline that can never appear
-//   * MeshRenderer with an INVALID mesh -> ONE primitive instance
+//   * MeshRenderer with an INVALID mesh -> ONE primitive instance, its material resolved by
+//                                         buildRenderView's own rule (task E.5.1 -- the mask's cull mode
+//                                         depends on it)
 //   * a resolved binding               -> one instance per submesh matching `meshIndex`
 //   * a reference nothing resolves, or zero matching submeshes -> withoutGeometry, ++unresolvedMeshes
 //
