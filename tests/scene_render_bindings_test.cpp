@@ -1021,4 +1021,76 @@ TEST_CASE("scene_render bindings: a cooked mesh resolves end to end through Scen
     CHECK(sceneRenderer->lastUnresolvedMaterials() == 0);
 }
 
+TEST_CASE("scene_render bindings: a primitive's bound material reaches the draw through SceneRenderer (BR30)") {
+    const engine::platform::Context ctx{{.headless = false}};
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no real video driver available");
+    }
+    auto device = engine::rhi::Device::create();
+    if (!device.has_value()) {
+        AERO_SKIP_OR_FAIL("no GPU device available");
+    }
+    auto target = engine::render::RenderTarget::create(*device, {64, 64});
+    REQUIRE(target.has_value());
+    engine::VirtualFileSystem vfs;
+    vfs.mount(std::make_unique<engine::DirectoryBackend>(AERO_SHADERS_DIR));
+    auto sceneRenderer =
+        engine::scene_render::SceneRenderer::create(*device, vfs, target->colorFormat(), target->depthFormat());
+    REQUIRE(sceneRenderer.has_value());
+
+    // BR22's argument, one arm over: a doubleSided material is what makes the draw OBSERVABLE. Minted on
+    // THE RENDERER THAT DRAWS IT, and bound by GUID exactly as the editor's ledger binds one.
+    const MaterialHandle doubleSided = sceneRenderer->renderer().createMaterial({.doubleSided = true}, {});
+    REQUIRE(doubleSided.valid());
+    sceneRenderer->bindings().setMaterial(guidOf(50), doubleSided);
+    REQUIRE(sceneRenderer->bindings().materialCount() == 1);
+
+    World world;
+    const Entity camEntity = world.create();
+    const Transform camTransform{Vec3{0.0F, 0.0F, 3.0F}, Quat::identity(), Vec3::one()};
+    REQUIRE(world.add<Transform>(camEntity, camTransform) != nullptr);
+    REQUIRE(world.add<Camera>(camEntity, Camera{}) != nullptr);
+    const Entity light = world.create();
+    REQUIRE(world.add<Transform>(light) != nullptr);
+    REQUIRE(world.add<DirectionalLight>(light, DirectionalLight{Vec3::one(), 1.0F}) != nullptr);
+    // ONE Cube PRIMITIVE -- `mesh` NIL -- where BR22 has a cooked mesh.
+    const Entity cube = addMeshEntity(world, Transform{}, MeshRenderer{.primitive = 0, .color = Vec3::one()});
+    auto* const cubeRenderer = world.get<MeshRenderer>(cube);
+    REQUIRE(cubeRenderer != nullptr);
+    REQUIRE_FALSE(cubeRenderer->mesh.valid());
+
+    // One frame through the WHOLE SceneRenderer::render (shadow + sky + forward), returning the
+    // pipeline-transition delta it produced.
+    const auto renderOnce = [&]() -> std::size_t {
+        std::optional<engine::render::Frame> open = target->beginFrame({0.05F, 0.05F, 0.08F, 1.0F});
+        REQUIRE(open.has_value());
+        const std::size_t before = sceneRenderer->renderer().pipelineBindCount();
+        sceneRenderer->render(world, *open);
+        CHECK(target->endFrame(std::move(*open)));
+        return sceneRenderer->renderer().pipelineBindCount() - before;
+    };
+
+    // Frame 1 -- NIL: the default material, the reset pipeline, no transition, nothing counted.
+    const std::size_t nilDelta = renderOnce();  // outside CHECK: a REQUIRE inside must abort the case
+    CHECK(nilDelta == 0U);
+    CHECK(sceneRenderer->lastUnresolvedMaterials() == 0U);
+    CHECK(sceneRenderer->renderer().lastFrameDrawn() == 1U);  // ANTI-VACUITY: the primitive really drew
+
+    // Frame 2 -- BOUND: the doubleSided material reached the draw, so the primitive arm bound the
+    // cull-none pipeline. This 1 is the number E.5.1's defect makes 0.
+    cubeRenderer->material = guidOf(50);
+    const std::size_t boundDelta = renderOnce();
+    CHECK(boundDelta == 1U);
+    CHECK(sceneRenderer->lastUnresolvedMaterials() == 0U);
+    CHECK(sceneRenderer->renderer().lastFrameDrawn() == 1U);
+
+    // Frame 3 -- UNBOUND: the default again, and the latch MOVES, so the two zeroes above are not a
+    // never-written member.
+    cubeRenderer->material = guidOf(51);
+    const std::size_t unboundDelta = renderOnce();
+    CHECK(unboundDelta == 0U);
+    CHECK(sceneRenderer->lastUnresolvedMaterials() == 1U);
+    CHECK(sceneRenderer->renderer().lastFrameDrawn() == 1U);
+}
+
 #endif  // AERO_SHADER_TOOLS_ENABLED
