@@ -18074,9 +18074,42 @@ picker's button face gains nothing); C22 (a card is not released with its pictur
 #### Validation and sabotage status
 
 Sabotage: **83 seeds in three passes plus four re-runs after CI, two holes closed** (above). Validation page:
-`editor/validation/E.4.5-material-names-and-thumbnails.md` (gitignored), **twelve steps — UNRUN on every
-platform.** Rows 2, 3, 4 and 6 are SEED COVER: the only behavioural witness `S14`, `S15`, `S32`, `S33`, `S50`,
+`editor/validation/E.4.5-material-names-and-thumbnails.md` (gitignored), **twelve steps — RUN on macOS
+2026-09-27, 11 / 11 executable rows** (row 11, HiDPI, is not executable: both attached displays are 1×). Rows 2, 3, 4 and 6 are SEED COVER: the only behavioural witness `S14`, `S15`, `S32`, `S33`, `S50`,
 `S54`, `S56`–`S59` and `S61`–`S65` have anywhere. Row 1 carries the framing's size and
 legibility judgement (the sphere should span about 41 / 62 / 83 points at Small / Medium / Large), row 4 the
 three first lines computed with the real font (`au.aer…`, `…au.aeromat`, `…ed/au.aeromat`), and row 10 the
 visible-page-first rule as the grid scrolls.
+
+#### The macOS validation pass, and PR #113 (`fd4eb40`)
+
+**Run 2026-09-27, 11 / 11 executable rows** against the release build, driven as a signed `.app` on two 1×
+displays. Row 11 (HiDPI) is not executable here. The measurements that carry the rows:
+- the sphere spans 42 / 63 / 83 px on 52 / 78 / 104 px tiles;
+- every caption's line 1 is byte-identical to the `c95dc78` branch point;
+- the swatches match the page's table (Charcoal 49,49,49 is the only white label), and their hues are within ~2.5°
+  of the spheres';
+- Apply reaches the tile, the list row and the Inspector row in 3.2–3.9 s through the watcher;
+- steady state over forty materials is 16.70 ms against the branch point's 16.67 ms, and the five-4096² material is
+  one 1101.6 ms tick (R2);
+- RSS is flat at 110.8 / 112.5 / 109.5 MB over a 60 s scroll of 300 materials;
+- a textures-and-models project differs from the branch point by 0 of 1 174 690 pixels.
+
+**Row 6's first run failed one check.** `drawAssetReferenceField` clipped a long value sentence at the button's
+frame with no mark, so a 96-byte-capped name lost its `…` and `(Material)` in the Inspector. PR #113 elides an
+overflowing sentence through `elideCaptionRight`, and a fitting one is drawn byte-identically. `I244` pins the
+width formula, the direction of the overflow test, the measurer and both arms; the code-review round found the
+first version could not see an inverted `>`.
+
+PR #113 also closed E.4.5's two open points:
+- `.clang-tidy` enables `clang-diagnostic-switch`, so the Linux lint step fails on an unhandled enumerator in a
+  tracked `*.cpp` or in a header under engine/runtime/editor/tools/tests. `samples/` headers fall outside
+  `HeaderFilterRegex`. All 309 tracked `*.cpp` were clean, and a seed exits 1 under the new config and 0 under the
+  old one.
+- `material_preview_rig.hpp` now gives the sphere's radius as 0.5.
+
+**Driving facts learnt on this pass:**
+- the first scrollbar drag must start inside the track (y ≥ the grid's top), or it lands on the toolbar;
+- the right dock's splitter drag succeeds only intermittently, so a pixel A/B must not depend on it;
+- a `tracy-capture` started in a detached subshell dies with the tool call, so keep it in the same shell and
+  `wait` for it.

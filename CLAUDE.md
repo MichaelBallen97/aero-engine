@@ -12,7 +12,7 @@ Two platform matrices, never to be conflated: the **editor** runs on macOS/Windo
 
 **Phase E (Editor Experience) is the open front**, executing between Phase 3 and Phase 4. **Eighteen of its
 24 tasks are merged: Epics E.1, E.2, E.3 and E.4 are all CLOSED IN CODE — E.4 five of five, with E.4.1
-through E.4.4 macOS-validated and E.4.5's page unrun. E.5 and E.6 are what is left — six tasks, planning
+through E.4.5 macOS-validated. E.5 and E.6 are what is left — six tasks, planning
 only.** Phase 3 remains OPEN behind it: all seven of its epics are closed in code, and what is left is its
 deliverable gate and the validation debt.
 
@@ -95,7 +95,7 @@ validation pass exists for any task in any phase.** N-E = not executable, N-R = 
 | E.4.2 Scene/project containment | #107 | `f88079d` | **14 of 16 rows** — 12 outright, 2 as stated variants, 1 partial, **2 NOT EXECUTABLE**. 29 sabotage seeds found **three real coverage holes**; the code-review round found eight findings, one blocking; Windows CI found a ninth after all three passed |
 | E.4.3 Asset file operations | #108 | `3dff5ef` | **59 / 59, nothing open** (53/57 on the first run; the 2 failures were one defect, fixed by #109 `d228a99`, and the fix round added 2 records). All six seed-critical rows pass, so S9, S11, S14, S18, S21, S22 and S28 all have witnesses |
 | E.4.4 Browser ignore rules | #110, fix #111 | `28e9529`, `f215cbb` | **8 / 8**, nothing open — **the first run failed row 2 on two real defects no lane could see**: the UI font drew `?` for every `…` and `—`, and the open Issues list fell below the panel, both fixed by #111. 29 sabotage seeds, no hole (#111 ran 24 more and its CI fix 5, all caught); the code-review round found one blocking defect — an orphan beside an ignored file could never be deleted |
-| E.4.5 Material names & thumbnails | #112 | `caf8a74` | **UNRUN on every platform** (12 steps) |
+| E.4.5 Material names & thumbnails | #112, fix #113 | `caf8a74`, `fd4eb40` | **11 / 11** executable rows, row 11 N-E (1× displays); row 6's first run failed one check, fixed by #113 |
 
 **E.3.2 landed before E.3.1** — legal, disjointly id-reserved; the reservation is discharged and the
 numbering is contiguous.
@@ -109,7 +109,7 @@ numbering is contiguous.
 | **Phase 2** — Editor | **COMPLETE, gate met 2026-08-02.** All six epics closed and macOS-validated; Windows/Linux rows pending for every task (`editor/VALIDATION.md`). Gate artifact: `samples/phase-2-editor-scene/` — data, deliberately not `add_subdirectory`'d. |
 | **Phase 3** — Asset Pipeline & 3D Content | **OPEN.** All seven epics (3.1–3.7) **CLOSED in code**. What is left is the gate below and the validation debt. |
 | **Phase 3 gate** | Drop a rigged glTF/FBX in → PBR materials + shadows + a playing animation + **an audible sound**. The audible half exists in code as of 3.7.2 and **has never been heard on any platform.** |
-| **Phase E** — Editor Experience | **OPEN.** Epics E.1, E.2, E.3 and E.4 **CLOSED in code** — 18 of 24 merged, see the index above. **E.5 and E.6 are the open front: six tasks, planning only.** THREE validation pages are unrun (E.1.5, E.3.2, E.4.5) and are the whole of this OS's remaining Phase E risk. |
+| **Phase E** — Editor Experience | **OPEN.** Epics E.1, E.2, E.3 and E.4 **CLOSED in code** — 18 of 24 merged, see the index above. **E.5 and E.6 are the open front: six tasks, planning only.** TWO validation pages are unrun (E.1.5, E.3.2) and are the whole of this OS's remaining Phase E risk. |
 | **Phase E gate** | Open a project and land in the scene you were last editing, on a lit grid floor under a sky; create a Cube from the menu, drop a material on it and see it shade; aim a spot light with a visible gizmo; rename, move and delete assets without leaving the editor. Gate artifact: `samples/phase-E-editor/`. |
 
 ### Engine layers, in dependency order
@@ -982,11 +982,12 @@ mono 48 kHz 0.5 s, **exactly 48 064 B each**, cut at a whole number of cycles so
 **Validation pages are gitignored, so they enter no commit.** Per-page measurements and method notes are in
 `docs/10`; this is the ledger of what is still owed.
 
-**THREE PAGES HAVE NOT BEEN RUN ON ANY PLATFORM: E.1.5's, E.3.2's AND E.4.5's.** They are the whole of Phase
-E's validation risk on this OS — every other task in E.1–E.4 is macOS-validated (see the index above).
-**E.4.5's twelve steps** (`editor/validation/E.4.5-material-names-and-thumbnails.md`) are the only
-behavioural witness fifteen of its sabotage seeds have (rows 2, 3, 4 and 6), and row 1 judges the new
-framing: a sphere of about 41 / 62 / 83 points at Small / Medium / Large.
+**TWO PAGES HAVE NOT BEEN RUN ON ANY PLATFORM: E.1.5's AND E.3.2's.** They are the whole of Phase E's
+validation risk on this OS — every other task in E.1–E.4 is macOS-validated (see the index above).
+**E.4.5's page is RUN, 11 / 11 executable rows** (row 11, HiDPI, is not executable on 1× displays): spheres of
+42 / 63 / 83 px on 52 / 78 / 104 px tiles, every caption line 1 byte-identical to the branch point, flat RSS over a
+300-material scroll, and 0 of 1 174 690 differing pixels on a project with no material. **Row 6's first run
+failed one check** — a long value in an asset field was clipped with no `…` — fixed by #113 (`I244`).
 **E.4.4's page is RUN, 8 / 8, and its first run is the newest proof that a pass finds what every tier
 misses**: it failed row 2 on two real defects no lane could see — a font drawing `?` and a list below its
 panel — and the re-run on #111 closed seeds `S15` (row 4) and `S8` (row 5) on real hardware and ran

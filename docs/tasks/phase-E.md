@@ -560,10 +560,10 @@ discharges the second clause: a scene outside the project is refused with an exp
 and E.4.3, E.4.4 and E.4.5 must each re-measure before they are implemented.
 **E.4.3 is MERGED** (PR #108, `3dff5ef`) and **macOS-validated 59 / 59**, which discharges the third clause,
 and **E.4.4 is MERGED** (PR #110, `28e9529`) and **macOS-validated 8 / 8** after one fix PR (#111,
-`f215cbb`) — and **E.4.5 is MERGED** (PR #112, `caf8a74`), its twelve-step validation page unrun: **five of
+`f215cbb`) — and **E.4.5 is MERGED** (PR #112, `caf8a74`) and **macOS-validated 11 / 11** after one fix PR (#113, `fd4eb40`): **five of
 five — Epic E.4 CLOSED IN CODE.** E.4.3 took `I210`–`I226`, E.4.4 took `I227`–`I229` and its fix
-`I230`–`I231`, and E.4.5 took `I232`–`I243`; `I193`–`I209` stays a free gap, and **the next free ImGui-tier id
-is `I244`**.
+`I230`–`I231`, E.4.5 took `I232`–`I243` and its fix `I244`; `I193`–`I209` stays a free gap, and **the next free
+ImGui-tier id is `I245`**.
 
 ### E.4.1 Reopen the last scene · P0 · M · depends: 2.5.1, 2.6.1 · **MERGED** — PR #106, `068c45c`
 **Goal:** opening a project should resume your work. Today opening one always lands on an Untitled
@@ -721,7 +721,10 @@ And the camera is **not** the preview rig called by name: a code-review round me
 framing at 34 of 128 texels, so the thumbnail has its own `MATERIAL_THUMBNAIL_RIG` and its sphere fills about
 80% of the tile (102 texels). The fourth held: one ledger, one release site, the service pass outside the draw
 walk — and, since the second round, a material render is spent only on a tile drawn this frame, with an
-off-screen pending key released rather than kept.
+off-screen pending key released rather than kept. **macOS-validated 11 / 11 executable rows (2026-09-27)**; row 11
+is not executable on 1× displays. Row 6's first run failed one check — a long value in an asset field was clipped
+with no `…` — fixed by PR #113 (`fd4eb40`), which also made an unhandled enumerator a CI failure
+(`clang-diagnostic-switch`) and corrected the preview rig's radius comment.
 
 ---
 
