@@ -10346,6 +10346,142 @@ TEST_CASE("editor: the drop is not a PendingAction and never mutates in a draw w
     CHECK(service < endFrame);
 }
 
+TEST_CASE("editor: a primitive's material resolves end to end, and a refused one is COUNTED (task E.5.1, I245)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "primitive material i245", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    // makeDropProject's three assets plus the two this case is about: a doubleSided material -- the one
+    // material property a pipeline-transition count can see (BR21/BR22's argument, one tier up) -- and a
+    // version-2 document the loader REFUSES, which is the steady unresolved state.
+    const DropFixture fixture = makeDropProject();
+    constexpr std::string_view TWO_SIDED_AEROMAT_TEXT =
+        "{\n  \"version\": 1,\n  \"name\": \"Two Sided\",\n  \"doubleSided\": true\n}\n";
+    const std::string twoSidedPath = fixture.assetsRoot + "/twosided.aeromat";
+    const std::string refusedPath = fixture.assetsRoot + "/bad.aeromat";
+    REQUIRE(engine::editor::writeTextFileAtomic(twoSidedPath, TWO_SIDED_AEROMAT_TEXT).empty());
+    REQUIRE(engine::editor::writeTextFileAtomic(refusedPath, REJECT_AEROMAT_TEXT).empty());
+
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = fixture.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    for (int i = 0; i < 3; ++i) {
+        REQUIRE(app->tick());
+    }
+    const std::optional<engine::Guid> twoSided = app->assetGuidForPath("twosided.aeromat");
+    const std::optional<engine::Guid> refused = app->assetGuidForPath("bad.aeromat");
+    REQUIRE(twoSided.has_value());
+    REQUIRE(refused.has_value());
+    auto* const viewport = dynamic_cast<engine::editor::ViewportPanel*>(app->panels().find("Viewport"));
+    REQUIRE(viewport != nullptr);
+    REQUIRE(viewport->sceneForwardRenderer() != nullptr);
+
+    // Re-read through the panel on every call rather than held across ticks.
+    const auto pipelineBinds = [viewport]() -> std::size_t {
+        engine::render::ForwardRenderer* const forward = viewport->sceneForwardRenderer();
+        REQUIRE(forward != nullptr);
+        return forward->pipelineBindCount();
+    };
+    // A BOUNDED settle, never a fixed tick count (E.4.1's shape): the ledger's pass count to Ready depends
+    // on the lane. Returns the ticks spent; the caller REQUIREs the predicate ended it, not the bound.
+    constexpr int MAX_SETTLE_TICKS = 32;
+    const auto settle = [&](const auto& settled) -> int {
+        int ticks = 0;
+        while (ticks < MAX_SETTLE_TICKS && !settled()) {
+            REQUIRE(app->tick());
+            ++ticks;
+        }
+        return ticks;
+    };
+    // K ticks, one scene pass each, and the pipeline-transition delta they produced.
+    constexpr int MEASURED_TICKS = 4;
+    const auto measure = [&]() -> std::size_t {
+        const std::size_t before = pipelineBinds();
+        for (int i = 0; i < MEASURED_TICKS; ++i) {
+            REQUIRE(app->tick());
+        }
+        return pipelineBinds() - before;
+    };
+
+    // An entity of our OWN -- I121's precedent -- so nothing here depends on the default scene's
+    // contents. `mesh` NIL: a primitive, the arm task E.5.1 fixed.
+    engine::World& world = app->world();
+    const engine::Entity own = world.create();
+    REQUIRE(world.add<engine::Transform>(own, engine::Transform{}) != nullptr);
+    REQUIRE(world.add<engine::MeshRenderer>(own, engine::MeshRenderer{}) != nullptr);
+    const auto assign = [&world, own](engine::Guid material) {
+        auto* const renderer = world.get<engine::MeshRenderer>(own);
+        REQUIRE(renderer != nullptr);
+        REQUIRE_FALSE(renderer->mesh.valid());
+        renderer->material = material;
+    };
+
+    // ---- BASELINE: both primitives on the default material -------------------------------------------
+    for (int i = 0; i < 2; ++i) {
+        REQUIRE(app->tick());
+    }
+    // ANTI-VACUITY for every delta below: the viewport's scene pass really drew BOTH primitives -- the
+    // default Cube and ours -- so no zero below can come from a culled instance or a skipped pass.
+    REQUIRE(viewport->sceneForwardRenderer() != nullptr);
+    REQUIRE(viewport->sceneForwardRenderer()->lastFrameDrawn() >= 2U);
+    const std::size_t baseline = measure();
+    CHECK(app->viewportUnresolvedMaterials() == 0U);
+
+    // ---- RESOLVED: the doubleSided material reaches the viewport's own draw ---------------------------
+    // The frames between the write and the ledger's upload legitimately read 1 (3.1.5's D7: transient by
+    // design), which is why the measured window opens only once the settle has ended.
+    assign(*twoSided);
+    const auto materialBound = [&app] {
+        return app->sceneAssetMaterialBindingCount() >= 1U && app->viewportUnresolvedMaterials() == 0U;
+    };
+    const int resolveTicks = settle(materialBound);
+    INFO("resolved after " << resolveTicks << " ticks; ledger: " << app->sceneAssetMessage(*twoSided));
+    REQUIRE(resolveTicks < MAX_SETTLE_TICKS);  // the predicate ended the loop, never the bound
+    const std::size_t resolved = measure();
+    INFO("baseline delta " << baseline << ", resolved delta " << resolved << " over " << MEASURED_TICKS);
+    // The resolved doubleSided material bound the cull-none pipeline in the viewport's own scene pass. With
+    // E.5.1's defect restored the primitive draws the default and this reads resolved == baseline.
+    CHECK(resolved > baseline);
+    CHECK(app->viewportUnresolvedMaterials() == 0U);
+
+    // ---- REFUSED: Failed is STICKY, the primitive draws the default, and the count is STEADY ------------
+    assign(*refused);
+    const int refuseTicks = settle([&app] { return app->sceneAssetFailedCount() >= 1U; });
+    REQUIRE(refuseTicks < MAX_SETTLE_TICKS);
+    REQUIRE(app->tick());  // one pass AFTER the failure, so the latch describes the settled state
+    const std::size_t refusedBefore = pipelineBinds();
+    for (int i = 0; i < MEASURED_TICKS; ++i) {
+        REQUIRE(app->tick());
+        CAPTURE(i);
+        CHECK(app->viewportUnresolvedMaterials() == 1U);  // EVERY tick -- never a transient, never a 0
+    }
+    const std::size_t refusedDelta = pipelineBinds() - refusedBefore;  // outside CHECK: its REQUIRE must abort
+    CHECK(refusedDelta == baseline);  // the default material again: no extra transition
+
+    // ---- back to NIL: nothing counted, and the baseline picture ----------------------------------------
+    assign(engine::Guid{});
+    REQUIRE(app->tick());
+    const std::size_t nilAgain = measure();
+    CHECK(app->viewportUnresolvedMaterials() == 0U);
+    CHECK(nilAgain == baseline);
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
 #endif  // AERO_SHADER_TOOLS_ENABLED
 
 // ---- task E.1.3: the view-axis gizmo, through the real panel -------------------------------------
