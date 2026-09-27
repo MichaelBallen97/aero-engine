@@ -646,6 +646,145 @@ TEST_CASE("editor: the two paths agree at two further orbit angles (task E.2.4, 
     CHECK(differingTexels(perAngle.at(0), perAngle.at(1)) > 0U);
 }
 
+TEST_CASE("editor: preview and viewport agree with a NON-DEFAULT material on the primitive (task E.5.1, PX5)") {
+    AERO_PX_PREAMBLE();
+
+    engine::World world;
+    seedParityWorld(world, ArmEnvironment{}, true);
+    // THE EDITOR'S OWN THREE LINES, verbatim -- PX1's.
+    const engine::scene_render::ResolvedEnvironment resolvedEnvironment =
+        engine::scene_render::resolveEnvironment(world);
+    const engine::scene_render::ResolvedDirectionalLight resolvedSun =
+        engine::scene_render::resolveDirectionalLight(world);
+    const engine::editor::MaterialPreviewLighting lighting{
+        .environment = resolvedEnvironment.data, .sun = resolvedSun.data, .hasSun = resolvedSun.entity.valid()};
+    REQUIRE(lighting.hasSun);
+    const engine::render::CameraView camera =
+        engine::editor::materialPreviewCamera(engine::editor::DEFAULT_MATERIAL_PREVIEW_RIG, ANGLE, 1.0F);
+
+    // The seeded sphere is a PRIMITIVE -- `mesh` NIL -- which is the arm task E.5.1 fixed.
+    engine::Entity sphere{};
+    world.eachEntity([&](engine::Entity e) {
+        if (world.has<engine::MeshRenderer>(e)) {
+            sphere = e;
+        }
+    });
+    REQUIRE(sphere.valid());
+    auto* const sphereRenderer = world.get<engine::MeshRenderer>(sphere);
+    REQUIRE(sphereRenderer != nullptr);
+    REQUIRE_FALSE(sphereRenderer->mesh.valid());
+    REQUIRE_FALSE(sphereRenderer->material.valid());
+
+    // D9: FACTOR-ONLY and non-default. From DEFAULT_MATERIAL_PARAMS, never MaterialParams{}: the latter's
+    // metallicFactor is glTF's 1.0, and a metal with nothing to reflect is near-black (E.1.4's lesson).
+    engine::render::MaterialParams red = engine::render::DEFAULT_MATERIAL_PARAMS;
+    red.baseColorFactor = engine::Vec4{0.85F, 0.2F, 0.1F, 1.0F};
+    red.metallicFactor = 0.0F;
+    red.roughnessFactor = 0.35F;
+    REQUIRE_FALSE((red == engine::render::DEFAULT_MATERIAL_PARAMS));
+    const engine::Guid boundGuid{0xE51ULL, 1ULL};
+    const engine::Guid unboundGuid{0xE51ULL, 2ULL};
+
+    // SIDE A -- the preview's path, PX1's statements verbatim. An ENGAGED `params` is minted on THIS
+    // side's own ForwardRenderer; a disengaged one draws with an INVALID handle, which is literally the
+    // value the pre-fix bridge emitted for every primitive.
+    const auto previewPath = [&](const std::optional<engine::render::MaterialParams>& params) {
+        std::vector<std::byte> bytes(READBACK_BYTES, std::byte{0xAB});
+        std::optional<engine::render::RenderTarget> target = engine::render::RenderTarget::create(
+            *device, {EXTENT, EXTENT},
+            {.colorFormat = engine::rhi::TextureFormat::RGBA16Float, .depth = true, .quantum = 1});
+        REQUIRE(target.has_value());
+        std::optional<engine::render::ForwardRenderer> forward = engine::render::ForwardRenderer::create(
+            *device, vfs,
+            {.colorFormat = target->colorFormat(), .depthFormat = target->depthFormat(), .shadowMapResolution = 0});
+        REQUIRE(forward.has_value());
+        std::optional<engine::render::SkyPass> sky = engine::render::SkyPass::create(
+            *device, vfs, {.colorFormat = target->colorFormat(), .depthFormat = target->depthFormat()});
+        REQUIRE(sky.has_value());
+        const engine::render::MaterialHandle material =
+            params.has_value() ? forward->createMaterial(*params, {}) : engine::render::MaterialHandle{};
+        std::array<engine::render::MeshInstance, 1> instances{};
+        instances.at(0).primitive = engine::render::PrimitiveId::Sphere;
+        instances.at(0).model = engine::Mat4::identity();
+        instances.at(0).normalMatrix = engine::Mat4::identity();
+        instances.at(0).color = engine::Vec3::one();
+        instances.at(0).material = material;
+        const engine::render::RenderView view = engine::editor::materialPreviewView(camera, lighting, instances);
+        std::optional<engine::render::Frame> frame = target->beginFrame(CLEAR);
+        REQUIRE(frame.has_value());
+        sky->draw(*frame, view);
+        forward->draw(*frame, view);
+        REQUIRE(target->endFrame(std::move(*frame)));
+        REQUIRE(device->readbackTexture(target->colorTexture(), 0U, bytes));
+        if (material.valid()) {
+            forward->destroyMaterial(material);
+        }
+        return bytes;
+    };
+
+    // SIDE B -- the viewport's path: SceneRenderer over the World, whose sphere names whatever GUID the
+    // arm put in MeshRenderer::material. An ENGAGED `params` is minted on scene->renderer() -- handles are
+    // PER RENDERER -- and bound under `bound`, exactly as the editor's ledger binds a loaded material.
+    struct ViewportResult {
+        std::vector<std::byte> bytes;
+        std::uint32_t unresolvedMaterials = 0;
+    };
+    const auto viewportPath = [&](const std::optional<engine::render::MaterialParams>& params, engine::Guid bound) {
+        ViewportResult result{std::vector<std::byte>(READBACK_BYTES, std::byte{0xAB}), 0U};
+        std::optional<engine::render::RenderTarget> target = engine::render::RenderTarget::create(
+            *device, {EXTENT, EXTENT},
+            {.colorFormat = engine::rhi::TextureFormat::RGBA16Float, .depth = true, .quantum = 1});
+        REQUIRE(target.has_value());
+        std::optional<engine::scene_render::SceneRenderer> scene =
+            engine::scene_render::SceneRenderer::create(*device, vfs, target->colorFormat(), target->depthFormat());
+        REQUIRE(scene.has_value());
+        if (params.has_value()) {
+            const engine::render::MaterialHandle handle = scene->renderer().createMaterial(*params, {});
+            REQUIRE(handle.valid());
+            scene->bindings().setMaterial(bound, handle);
+        }
+        std::optional<engine::render::Frame> frame = target->beginFrame(CLEAR);
+        REQUIRE(frame.has_value());
+        scene->render(world, *frame, &camera);  // THE SAME camera, by pointer, as the override
+        REQUIRE(target->endFrame(std::move(*frame)));
+        REQUIRE(device->readbackTexture(target->colorTexture(), 0U, result.bytes));
+        result.unresolvedMaterials = scene->lastUnresolvedMaterials();
+        return result;
+    };
+
+    // ---- (b) NIL is today's picture: both paths draw the default, byte for byte, nothing counted ------
+    const std::vector<std::byte> nilA = previewPath(std::nullopt);
+    const ViewportResult nilB = viewportPath(std::nullopt, boundGuid);
+    checkBytesEqual(nilA, nilB.bytes);
+    CHECK(nilB.unresolvedMaterials == 0U);
+
+    // ---- (a) THE HEADLINE: the sphere names a BOUND non-default material, and the two paths agree ------
+    sphereRenderer->material = boundGuid;
+    const std::vector<std::byte> redA = previewPath(red);
+    const ViewportResult redB = viewportPath(red, boundGuid);
+    checkBytesEqual(redA, redB.bytes);
+    CHECK(redB.unresolvedMaterials == 0U);
+
+    // ---- (c) an UNRESOLVED guid falls back to the default EXACTLY, and is counted -----------------------
+    // The table is NOT empty (the red material is bound under boundGuid), so this is a miss, not a null.
+    sphereRenderer->material = unboundGuid;
+    const ViewportResult unresolvedB = viewportPath(red, boundGuid);
+    checkBytesEqual(nilB.bytes, unresolvedB.bytes);
+    CHECK(unresolvedB.unresolvedMaterials == 1U);
+
+    // ---- (d) ANTI-VACUITY: the material moved the picture, on the sphere ----------------------------------
+    const std::size_t moved = differingTexels(redB.bytes, nilB.bytes);
+    INFO("texels the material moved: ", moved, " of ", EXTENT * EXTENT);
+    CHECK(moved > (static_cast<std::size_t>(EXTENT) * EXTENT) / 100U);  // > 1 %, PX1's own threshold
+    const Half4 redCentre = halfAt(redB.bytes, EXTENT, EXTENT / 2U, EXTENT / 2U);
+    const Half4 nilCentre = halfAt(nilB.bytes, EXTENT, EXTENT / 2U, EXTENT / 2U);
+    INFO("centre, red material ", redCentre, " default material ", nilCentre);
+    CHECK_FALSE(redCentre == nilCentre);  // the named texel: the sphere, because only its material moved
+    // ...and RED, not merely different: positive halves order as their bit patterns do.
+    CHECK(redCentre.r > redCentre.g);
+    CHECK(redCentre.r > redCentre.b);
+}
+
 #else
 
 TEST_CASE("editor: with no cooked shaders this TU registers no GPU parity case (task E.2.4, PX)") {
