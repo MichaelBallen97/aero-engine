@@ -548,6 +548,271 @@ TEST_CASE("scene_render bindings: pointsTruncated is unchanged by the presence o
 }
 
 // ================================================================================================
+// task E.5.1 -- arm 1 resolves `material` through the SAME D7 order arm 3 uses (BR23-BR29)
+// ================================================================================================
+
+namespace {
+
+// BR23's four primitives, built twice in the SAME creation order into two worlds that differ ONLY in
+// the material GUID -- so any field that differs between the two worlds' instances moved because of
+// the material. One is rotated AND non-uniformly scaled, so the matrices compared are not trivial.
+void addFourPrimitives(World& world, const std::vector<Vec3>& colors, Guid material) {
+    const Quat turned = engine::fromAxisAngle(Vec3::unitY(), engine::radians(40.0F));
+    const Transform left{Vec3{-2.0F, 0.0F, 0.0F}, Quat::identity(), Vec3::one()};
+    const Transform rotatedScaled{Vec3{2.0F, 0.5F, -1.0F}, turned, Vec3{2.0F, 0.5F, 1.5F}};
+    const Transform flattened{Vec3{0.0F, -1.0F, -2.0F}, Quat::identity(), Vec3{3.0F, 1.0F, 3.0F}};
+    const Transform above{Vec3{0.0F, 2.0F, 0.0F}, Quat::identity(), Vec3::one()};
+    addMeshEntity(world, left, MeshRenderer{.primitive = 0, .color = colors[0], .material = material});
+    addMeshEntity(world, rotatedScaled, MeshRenderer{.primitive = 1, .color = colors[1], .material = material});
+    addMeshEntity(world, flattened, MeshRenderer{.primitive = 2, .color = colors[2], .material = material});
+    // 9 is >= PrimitiveId::Count: it clamps to Cube, and must carry the material all the same (E8)
+    addMeshEntity(world, above, MeshRenderer{.primitive = 9, .color = colors[3], .material = material});
+}
+
+}  // namespace
+
+TEST_CASE("scene_render bindings: a primitive whose material RESOLVES draws with it, and only it moved (BR23)") {
+    const std::vector<Vec3> colors{Vec3{0.9F, 0.1F, 0.1F}, Vec3{0.1F, 0.9F, 0.1F}, Vec3{0.1F, 0.1F, 0.9F},
+                                   Vec3{0.5F, 0.5F, 0.5F}};
+    AssetBindingTable table;
+    table.setMaterial(guidOf(50), MaterialHandle{7, 1});
+
+    World withMaterial;
+    addCamera(withMaterial);
+    addFourPrimitives(withMaterial, colors, guidOf(50));
+    World nilTwin;  // the SAME four entities, created in the same order, every `material` NIL
+    addCamera(nilTwin);
+    addFourPrimitives(nilTwin, colors, Guid{});
+
+    RenderViewScratch scratchA;
+    RenderViewScratch scratchB;
+    const RenderView a = buildRenderView(withMaterial, scratchA, VIEWPORT, nullptr, &table);
+    const RenderView b = buildRenderView(nilTwin, scratchB, VIEWPORT, nullptr, &table);
+    REQUIRE(a.instances.size() == 4);
+    REQUIRE(b.instances.size() == 4);
+    CHECK(a.unresolvedMaterials == 0);  // a RESOLVING override is not an unresolved one
+    CHECK(a.unresolvedMeshes == 0);
+    CHECK(b.unresolvedMaterials == 0);
+
+    for (std::size_t i = 0; i < colors.size(); ++i) {
+        CAPTURE(i);
+        const std::vector<MeshInstance> fromA = instancesColored(a, colors[i]);
+        const std::vector<MeshInstance> fromB = instancesColored(b, colors[i]);
+        REQUIRE(fromA.size() == 1);
+        REQUIRE(fromB.size() == 1);
+        const MeshInstance& withIt = fromA[0];
+        const MeshInstance& withoutIt = fromB[0];
+        CHECK((withIt.material == MaterialHandle{7, 1}));  // the bound handle, on every primitive
+        CHECK_FALSE(withoutIt.material.valid());           // NIL: what the arm emitted before E.5.1
+        // ...and NOTHING ELSE moved: every other field equals the NIL twin's, bit for bit.
+        CHECK((withIt.primitive == withoutIt.primitive));
+        CHECK((withIt.mesh == withoutIt.mesh));
+        CHECK_FALSE(withIt.mesh.valid());
+        CHECK(withIt.submesh == withoutIt.submesh);
+        CHECK(withIt.model == withoutIt.model);
+        CHECK(withIt.normalMatrix == withoutIt.normalMatrix);
+        CHECK(withIt.mvp == withoutIt.mvp);
+        CHECK(withIt.color == withoutIt.color);
+        CHECK(withIt.palette.empty());
+        CHECK(withoutIt.palette.empty());
+    }
+    // The primitive selector is honoured with a material on, including the clamp.
+    CHECK((instancesColored(a, colors[0])[0].primitive == PrimitiveId::Cube));
+    CHECK((instancesColored(a, colors[1])[0].primitive == PrimitiveId::Sphere));
+    CHECK((instancesColored(a, colors[2])[0].primitive == PrimitiveId::Plane));
+    CHECK((instancesColored(a, colors[3])[0].primitive == PrimitiveId::Cube));  // 9 clamps, never wraps
+    // ANTI-VACUITY: the rotated, non-uniformly scaled entity has a non-trivial normal matrix, so the
+    // matrix equalities above compared something.
+    CHECK_FALSE(instancesColored(a, colors[1])[0].normalMatrix == Mat4::identity());
+}
+
+TEST_CASE("scene_render bindings: a primitive's UNRESOLVED material is counted once, draws the default (BR24)") {
+    World world;
+    addCamera(world);
+    addMeshEntity(world, Transform{}, MeshRenderer{.primitive = 1, .color = Vec3::one(), .material = guidOf(51)});
+
+    // NON-EMPTY on purpose: a mesh entry and a material under OTHER guids, so an implementation that
+    // counts only when the table is empty -- or only when it is null -- is caught here.
+    AssetBindingTable table;
+    table.setMesh(guidOf(1), bindingOf(MeshHandle{1, 1}, {0}));
+    table.setMaterial(guidOf(50), MaterialHandle{7, 1});
+    REQUIRE(table.materialCount() == 1);
+    REQUIRE_FALSE(table.findMaterial(guidOf(51)).valid());
+
+    RenderViewScratch scratch;
+    const RenderView view = buildRenderView(world, scratch, VIEWPORT, nullptr, &table);
+    REQUIRE(view.instances.size() == 1);
+    CHECK((view.instances[0].primitive == PrimitiveId::Sphere));
+    CHECK_FALSE(view.instances[0].material.valid());  // INVALID -> the default material at draw time
+    CHECK(view.unresolvedMaterials == 1);
+    CHECK(view.unresolvedMeshes == 0);  // a material miss is never a mesh miss
+}
+
+TEST_CASE("scene_render bindings: with a NULL table a primitive's VALID material is still counted (BR25)") {
+    const Quat tilted = engine::fromAxisAngle(Vec3::unitX(), engine::radians(20.0F));
+    const Transform transform{Vec3{0.5F, 0.0F, -1.0F}, tilted, Vec3{1.0F, 2.0F, 1.0F}};
+    const MeshRenderer named{.primitive = 2, .color = Vec3{0.3F, 0.3F, 0.3F}, .material = guidOf(52)};
+    MeshRenderer nil = named;
+    nil.material = Guid{};
+
+    World world;
+    addCamera(world);
+    addMeshEntity(world, transform, named);
+    World twin;  // the SAME entity with a NIL material: what the arm emitted for it before E.5.1
+    addCamera(twin);
+    addMeshEntity(twin, transform, nil);
+
+    RenderViewScratch explicitScratch;
+    RenderViewScratch defaultedScratch;
+    RenderViewScratch twinScratch;
+    const RenderView explicitNull = buildRenderView(world, explicitScratch, VIEWPORT, nullptr, nullptr);
+    const RenderView defaulted = buildRenderView(world, defaultedScratch, VIEWPORT);
+    const RenderView twinView = buildRenderView(twin, twinScratch, VIEWPORT, nullptr, nullptr);
+    REQUIRE(explicitNull.instances.size() == 1);
+    REQUIRE(defaulted.instances.size() == 1);
+    REQUIRE(twinView.instances.size() == 1);
+
+    // D4: COUNTED with no table at all -- the imported arm's rule, verbatim, on both spellings of "null".
+    CHECK(explicitNull.unresolvedMaterials == 1);
+    CHECK(defaulted.unresolvedMaterials == 1);
+    CHECK(twinView.unresolvedMaterials == 0);
+    // INV-D3 as amended: the INSTANCE is the NIL twin's, field for field -- only the counter moved.
+    CHECK_FALSE(explicitNull.instances[0].material.valid());
+    CHECK(sameInstance(explicitNull.instances[0], twinView.instances[0]));
+    CHECK(sameInstance(defaulted.instances[0], explicitNull.instances[0]));
+}
+
+TEST_CASE("scene_render bindings: a primitive with a NIL material is byte-identical to the pre-E.5.1 arm (BR26)") {
+    // The expected instance is written BY HAND, as the pre-fix arm built it, at PURE TRANSLATIONS: there
+    // the normal matrix is exactly the identity, so no line here restates `embed` (BR8's principle -- a
+    // test that copies the implementation cannot falsify it). The mvp is composed with the BRIDGE's own
+    // association, (proj * view) * model, or the comparison would not be bit-exact.
+    const Vec3 red{0.7F, 0.2F, 0.2F};
+    const Vec3 green{0.2F, 0.7F, 0.2F};
+    const Vec3 blue{0.2F, 0.2F, 0.7F};
+    const Transform left{Vec3{-1.0F, 0.0F, 0.0F}, Quat::identity(), Vec3::one()};
+    const Transform right{Vec3{1.0F, 0.0F, 0.0F}, Quat::identity(), Vec3::one()};
+    const Transform back{Vec3{0.0F, 1.0F, -1.0F}, Quat::identity(), Vec3::one()};
+    World world;
+    addCamera(world);
+    const Entity cube = addMeshEntity(world, left, MeshRenderer{.primitive = 0, .color = red});
+    const Entity sphere = addMeshEntity(world, right, MeshRenderer{.primitive = 1, .color = green});
+    const Entity clamped = addMeshEntity(world, back, MeshRenderer{.primitive = 5, .color = blue});  // 5 clamps
+
+    // A POPULATED table -- two material entries and a mesh entry, none of which a NIL material names --
+    // and a NULL one. Neither may change a single field or move a counter.
+    AssetBindingTable populated;
+    populated.setMaterial(guidOf(50), MaterialHandle{7, 1});
+    populated.setMaterial(guidOf(51), MaterialHandle{8, 2});
+    populated.setMesh(guidOf(1), bindingOf(MeshHandle{1, 1}, {0}));
+
+    RenderViewScratch populatedScratch;
+    RenderViewScratch nullScratch;
+    const RenderView withTable = buildRenderView(world, populatedScratch, VIEWPORT, nullptr, &populated);
+    const RenderView withoutTable = buildRenderView(world, nullScratch, VIEWPORT, nullptr, nullptr);
+
+    const auto checkOne = [&world](const RenderView& view, Entity entity, PrimitiveId primitive, Vec3 color) {
+        const std::vector<MeshInstance> found = instancesColored(view, color);
+        REQUIRE(found.size() == 1);
+        const MeshInstance& got = found[0];
+        const Mat4 model = engine::worldMatrix(world, entity);
+        const Mat4 viewProj = view.camera.proj * view.camera.view;
+        CHECK((got.primitive == primitive));
+        CHECK_FALSE(got.mesh.valid());
+        CHECK(got.submesh == 0U);
+        CHECK(got.palette.empty());
+        CHECK(got.model == model);
+        CHECK(got.normalMatrix == Mat4::identity());
+        CHECK(got.mvp == viewProj * model);
+        CHECK(got.color == color);
+        CHECK((got.material == MaterialHandle{}));
+    };
+    for (const RenderView* view : {&withTable, &withoutTable}) {
+        REQUIRE(view->hasCamera);
+        REQUIRE(view->instances.size() == 3);
+        CHECK(view->unresolvedMaterials == 0);
+        CHECK(view->unresolvedMeshes == 0);
+        checkOne(*view, cube, PrimitiveId::Cube, red);
+        checkOne(*view, sphere, PrimitiveId::Sphere, green);
+        checkOne(*view, clamped, PrimitiveId::Cube, blue);
+    }
+    for (const Vec3 color : {red, green, blue}) {
+        const std::vector<MeshInstance> fromTable = instancesColored(withTable, color);
+        const std::vector<MeshInstance> fromNull = instancesColored(withoutTable, color);
+        REQUIRE(fromTable.size() == 1);
+        REQUIRE(fromNull.size() == 1);
+        CHECK(sameInstance(fromTable[0], fromNull[0]));
+    }
+    // ANTI-VACUITY: the model really carries the translation, so `model == worldMatrix` is not two
+    // identities agreeing.
+    CHECK(engine::worldMatrix(world, cube).columns[3].x == -1.0F);
+}
+
+TEST_CASE("scene_render bindings: a primitive's material count is PER EMITTED INSTANCE (BR27)") {
+    World world;
+    addCamera(world);
+    const MeshRenderer sharing{.primitive = 0, .color = Vec3::one(), .material = guidOf(53)};
+    for (int i = 0; i < 3; ++i) {
+        const Transform at{Vec3{static_cast<float>(i), 0.0F, 0.0F}, Quat::identity(), Vec3::one()};
+        addMeshEntity(world, at, sharing);
+    }
+    // An ARM-2 entity: a VALID mesh nothing resolves, carrying the SAME unbound material. It emits
+    // NOTHING, so it counts one mesh and NO material (D5). Hoisting the resolve above the mesh branch
+    // would make this 4.
+    const MeshRenderer arm2{.primitive = 0, .color = Vec3::one(), .mesh = guidOf(2), .material = guidOf(53)};
+    addMeshEntity(world, Transform{}, arm2);
+
+    AssetBindingTable table;
+    table.setMaterial(guidOf(60), MaterialHandle{3, 1});  // present, and names neither guid above
+
+    RenderViewScratch scratch;
+    const RenderView view = buildRenderView(world, scratch, VIEWPORT, nullptr, &table);
+    REQUIRE(view.instances.size() == 3);
+    CHECK(view.unresolvedMaterials == 3);  // N primitives on one unbound guid count N -- never 1, never 4
+    CHECK(view.unresolvedMeshes == 1);
+}
+
+TEST_CASE("scene_render bindings: the 0-camera early return keeps a primitive's handle and count (BR28)") {
+    World world;  // NO camera: BR17's shape, for the material arm -- the instance walk precedes the camera
+    const Vec3 boundColor{1.0F, 0.0F, 0.0F};
+    const Vec3 unboundColor{0.0F, 1.0F, 0.0F};
+    addMeshEntity(world, Transform{}, MeshRenderer{.primitive = 0, .color = boundColor, .material = guidOf(50)});
+    addMeshEntity(world, Transform{}, MeshRenderer{.primitive = 1, .color = unboundColor, .material = guidOf(54)});
+
+    AssetBindingTable table;
+    table.setMaterial(guidOf(50), MaterialHandle{7, 1});
+
+    RenderViewScratch scratch;
+    const RenderView view = buildRenderView(world, scratch, VIEWPORT, nullptr, &table);
+    CHECK_FALSE(view.hasCamera);
+    CHECK(view.cameraCount == 0);
+    REQUIRE(view.instances.size() == 2);
+    const std::vector<MeshInstance> bound = instancesColored(view, boundColor);
+    const std::vector<MeshInstance> unbound = instancesColored(view, unboundColor);
+    REQUIRE(bound.size() == 1);
+    REQUIRE(unbound.size() == 1);
+    CHECK((bound[0].material == MaterialHandle{7, 1}));
+    CHECK_FALSE(unbound[0].material.valid());
+    CHECK(view.unresolvedMaterials == 1);
+}
+
+TEST_CASE("scene_render bindings: a MeshRenderer with no Transform counts no material either (BR29)") {
+    World world;
+    addCamera(world);
+    const Entity orphan = world.create();
+    const MeshRenderer orphanRenderer{.primitive = 0, .color = Vec3{0.4F, 0.4F, 0.4F}, .material = guidOf(55)};
+    REQUIRE(world.add<MeshRenderer>(orphan, orphanRenderer) != nullptr);
+    addMeshEntity(world, Transform{}, MeshRenderer{.primitive = 1, .color = Vec3::one()});  // not an empty walk
+
+    // A NULL table on purpose: if the orphan were visited at all, D4 would count its VALID material.
+    RenderViewScratch scratch;
+    const RenderView view = buildRenderView(world, scratch, VIEWPORT, nullptr, nullptr);
+    REQUIRE(view.instances.size() == 1);
+    CHECK((view.instances[0].primitive == PrimitiveId::Sphere));  // the ordinary one, never the orphan
+    CHECK(view.unresolvedMaterials == 0);                         // each<Transform, MeshRenderer> skips it
+}
+
+// ================================================================================================
 // Tier 1 -- a real Device, no window. Compiled only where the shader toolchain built the artifacts
 // ForwardRenderer::create loads.
 // ================================================================================================
@@ -754,6 +1019,81 @@ TEST_CASE("scene_render bindings: a cooked mesh resolves end to end through Scen
     }
     CHECK(sceneRenderer->lastUnresolvedMeshes() == 1);
     CHECK(sceneRenderer->lastUnresolvedMaterials() == 0);
+}
+
+TEST_CASE("scene_render bindings: a primitive's bound material reaches the draw through SceneRenderer (BR30)") {
+    const engine::platform::Context ctx{{.headless = false}};
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no real video driver available");
+    }
+    auto device = engine::rhi::Device::create();
+    if (!device.has_value()) {
+        AERO_SKIP_OR_FAIL("no GPU device available");
+    }
+    auto target = engine::render::RenderTarget::create(*device, {64, 64});
+    REQUIRE(target.has_value());
+    engine::VirtualFileSystem vfs;
+    vfs.mount(std::make_unique<engine::DirectoryBackend>(AERO_SHADERS_DIR));
+    auto sceneRenderer =
+        engine::scene_render::SceneRenderer::create(*device, vfs, target->colorFormat(), target->depthFormat());
+    REQUIRE(sceneRenderer.has_value());
+
+    // BR22's argument, one arm over: a doubleSided material is what makes the draw OBSERVABLE. Minted on
+    // THE RENDERER THAT DRAWS IT, and bound by GUID exactly as the editor's ledger binds one. It starts from
+    // DEFAULT_MATERIAL_PARAMS (metallic 0), the fixture rule, although only its two-sidedness is read here.
+    engine::render::MaterialParams twoSidedParams = engine::render::DEFAULT_MATERIAL_PARAMS;
+    twoSidedParams.doubleSided = true;
+    const MaterialHandle doubleSided = sceneRenderer->renderer().createMaterial(twoSidedParams, {});
+    REQUIRE(doubleSided.valid());
+    sceneRenderer->bindings().setMaterial(guidOf(50), doubleSided);
+    REQUIRE(sceneRenderer->bindings().materialCount() == 1);
+
+    World world;
+    const Entity camEntity = world.create();
+    const Transform camTransform{Vec3{0.0F, 0.0F, 3.0F}, Quat::identity(), Vec3::one()};
+    REQUIRE(world.add<Transform>(camEntity, camTransform) != nullptr);
+    REQUIRE(world.add<Camera>(camEntity, Camera{}) != nullptr);
+    const Entity light = world.create();
+    REQUIRE(world.add<Transform>(light) != nullptr);
+    REQUIRE(world.add<DirectionalLight>(light, DirectionalLight{Vec3::one(), 1.0F}) != nullptr);
+    // ONE Cube PRIMITIVE -- `mesh` NIL -- where BR22 has a cooked mesh.
+    const Entity cube = addMeshEntity(world, Transform{}, MeshRenderer{.primitive = 0, .color = Vec3::one()});
+    auto* const cubeRenderer = world.get<MeshRenderer>(cube);
+    REQUIRE(cubeRenderer != nullptr);
+    REQUIRE_FALSE(cubeRenderer->mesh.valid());
+
+    // One frame through the WHOLE SceneRenderer::render (shadow + sky + forward), returning the
+    // pipeline-transition delta it produced.
+    const auto renderOnce = [&]() -> std::size_t {
+        std::optional<engine::render::Frame> open = target->beginFrame({0.05F, 0.05F, 0.08F, 1.0F});
+        REQUIRE(open.has_value());
+        const std::size_t before = sceneRenderer->renderer().pipelineBindCount();
+        sceneRenderer->render(world, *open);
+        CHECK(target->endFrame(std::move(*open)));
+        return sceneRenderer->renderer().pipelineBindCount() - before;
+    };
+
+    // Frame 1 -- NIL: the default material, the reset pipeline, no transition, nothing counted.
+    const std::size_t nilDelta = renderOnce();  // outside CHECK: a REQUIRE inside must abort the case
+    CHECK(nilDelta == 0U);
+    CHECK(sceneRenderer->lastUnresolvedMaterials() == 0U);
+    CHECK(sceneRenderer->renderer().lastFrameDrawn() == 1U);  // ANTI-VACUITY: the primitive really drew
+
+    // Frame 2 -- BOUND: the doubleSided material reached the draw, so the primitive arm bound the
+    // cull-none pipeline. This 1 is the number E.5.1's defect makes 0.
+    cubeRenderer->material = guidOf(50);
+    const std::size_t boundDelta = renderOnce();
+    CHECK(boundDelta == 1U);
+    CHECK(sceneRenderer->lastUnresolvedMaterials() == 0U);
+    CHECK(sceneRenderer->renderer().lastFrameDrawn() == 1U);
+
+    // Frame 3 -- UNBOUND: the default again, and the latch MOVES, so the two zeroes above are not a
+    // never-written member.
+    cubeRenderer->material = guidOf(51);
+    const std::size_t unboundDelta = renderOnce();
+    CHECK(unboundDelta == 0U);
+    CHECK(sceneRenderer->lastUnresolvedMaterials() == 1U);
+    CHECK(sceneRenderer->renderer().lastFrameDrawn() == 1U);
 }
 
 #endif  // AERO_SHADER_TOOLS_ENABLED

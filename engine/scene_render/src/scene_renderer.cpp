@@ -51,23 +51,32 @@ void warnOnce(bool& latch, const char* message) {
     }
 }
 
-// task 3.1.5 — which material an emitted submesh draws with. The D7 order, and THE ORDER IS THE
+// task 3.1.5 — which material an emitted instance draws with. The D7 order, and THE ORDER IS THE
 // SPECIFICATION:
-//   1. an entity-level override that RESOLVES wins, on every submesh;
+//   1. an entity-level override that RESOLVES wins -- on every submesh of a model, and (task E.5.1) on
+//      the one instance a primitive emits;
 //   2. an override that does NOT resolve is COUNTED and falls through — it does not silently become
-//      the submesh's own material without a trace, and it does not blank the draw;
-//   3. otherwise the submesh's own bound handle, which may legitimately be INVALID (the source
-//      assigned no material) and resolves to ForwardRenderer::defaultMaterial() at draw time,
-//      3.4.1's contract.
-// The count fires ONCE PER EMITTED SUBMESH, not once per entity: it answers "how many draws could not
+//      the fallback without a trace, and it does not blank the draw;
+//   3. otherwise `fallbackMaterial`: for a submesh, its own bound handle, which may legitimately be
+//      INVALID (the source assigned no material); for a primitive, NO_SOURCE_MATERIAL, always INVALID
+//      -- a primitive has no source. INVALID resolves to ForwardRenderer::defaultMaterial() at draw
+//      time, 3.4.1's contract, which is exactly what a primitive drew before E.5.1 whatever its
+//      `material` said.
+// The count fires ONCE PER EMITTED INSTANCE, not once per entity: it answers "how many draws could not
 // use the material they were asked for", which is the number a diagnostic reader wants — an
-// entity-level count would understate a seven-submesh model by a factor of seven.
+// entity-level count would understate a seven-submesh model by a factor of seven. A primitive emits
+// exactly one instance, so it counts at most one; an entity that emits nothing (arm 2) never gets here.
 //
 // task E.1.4: the last parameter is the COUNTER rather than the RenderView, so buildSelectionMaskSet
 // -- which has no RenderView -- reaches the identical three-arm decision instead of carrying a copy
 // that could drift. Nothing else about it moves, and SQ12 plus the untouched
 // scene_render_bindings_test.cpp battery are what make that a claim rather than an assertion.
-[[nodiscard]] render::MaterialHandle resolveMaterial(const MeshRenderer& meshRenderer, const MeshBindingSubmesh& sub,
+// task E.5.1: the second parameter was the SUBMESH, of which only `.material` was ever read; it became
+// the FALLBACK HANDLE so the primitive arms of both builders reach this one decision rather than a copy
+// of it. BR23-BR29 and SQ13-SQ14 are what make "exactly as the imported arm" a claim rather than an
+// assertion.
+[[nodiscard]] render::MaterialHandle resolveMaterial(const MeshRenderer& meshRenderer,
+                                                     render::MaterialHandle fallbackMaterial,
                                                      const AssetBindingTable* bindings,
                                                      std::uint32_t& unresolvedMaterials) {
     if (meshRenderer.material.valid()) {
@@ -78,8 +87,15 @@ void warnOnce(bool& latch, const char* message) {
         }
         ++unresolvedMaterials;
     }
-    return sub.material;
+    return fallbackMaterial;
 }
+
+// task E.5.1 -- a primitive's D7 third arm (resolveMaterial above). A primitive has no source-assigned
+// material, so its fallback is always the INVALID handle, which resolves to
+// ForwardRenderer::defaultMaterial() at draw time. NAMED rather than spelled render::MaterialHandle{} at
+// the two call sites so a reader sees WHY it is invalid, and so the two sites cannot spell it
+// differently.
+constexpr render::MaterialHandle NO_SOURCE_MATERIAL{};
 
 }  // namespace
 
@@ -168,15 +184,19 @@ render::RenderView buildRenderView(World& world, RenderViewScratch& scratch, rhi
         // pre-3.1.5 body too, and neither reads meshRenderer.
         const Mat4 normalMatrix = embed(transpose(inverse(toMat3(model))));  // correct normals under non-uniform scale
 
-        // --- arm 1: no reference. TODAY'S PATH, BYTE FOR BYTE. Not "the fallback" — the primitive
-        // path is what every pre-3.1.5 scene, both samples and every existing test exercise, and it
-        // must stay observationally identical, which is INV-D3's first half.
+        // --- arm 1: no MESH reference -> ONE primitive instance. For a NIL `material` this is still the
+        // pre-3.1.5 path byte for byte, which is INV-D3's first half: resolveMaterial returns
+        // NO_SOURCE_MATERIAL without reading the table or touching the counter, and that is the value the
+        // default-initialised field held before. task E.5.1: a VALID `material` now resolves HERE through
+        // the same D7 order arm 3 uses -- wins when bound, COUNTED when not -- where before it was written
+        // to the component, loaded by the ledger and then discarded at this line.
         if (!meshRenderer.mesh.valid()) {
             render::MeshInstance instance;
             instance.primitive = clampPrimitive(meshRenderer.primitive);
             instance.model = model;
             instance.normalMatrix = normalMatrix;
             instance.color = meshRenderer.color;
+            instance.material = resolveMaterial(meshRenderer, NO_SOURCE_MATERIAL, bindings, view.unresolvedMaterials);
             scratch.instances.push_back(instance);  // mvp filled below, once the camera is known
             return;
         }
@@ -209,7 +229,7 @@ render::RenderView buildRenderView(World& world, RenderViewScratch& scratch, rhi
             instance.model = model;
             instance.normalMatrix = normalMatrix;
             instance.color = meshRenderer.color;
-            instance.material = resolveMaterial(meshRenderer, sub, bindings, view.unresolvedMaterials);
+            instance.material = resolveMaterial(meshRenderer, sub.material, bindings, view.unresolvedMaterials);
             scratch.instances.push_back(instance);  // mvp filled below, once the camera is known
             ++emitted;
         }
@@ -367,9 +387,11 @@ SelectionMaskSet buildSelectionMaskSet(World& world, std::span<const Entity> sel
             // COMPOSED PER INSTANCE as viewProj * model, never accumulated and never read back off
             // another instance -- SQ8 recomputes it independently and would be vacuous otherwise.
             instance.mvp = viewProj * model;
-            // instance.material is left DEFAULT here, exactly as buildRenderView leaves it. That is
-            // E.5.1's confirmed defect and E.5.1's to fix: changing it here would make the mask
-            // disagree with the picture in the one direction INV-1 forbids.
+            // task E.5.1: the SAME resolution buildRenderView's arm 1 performs, and it is not optional --
+            // renderSelectionMask takes this instance's CULL MODE from its resolved material (E.1.4's D5),
+            // so a doubleSided material resolved there and not here would draw a plane's underside and
+            // leave it unoutlined. SQ13 is the witness that the two arms agree.
+            instance.material = resolveMaterial(meshRenderer, NO_SOURCE_MATERIAL, bindings, set.unresolvedMaterials);
             bucket.push_back(instance);
             continue;
         }
@@ -398,7 +420,7 @@ SelectionMaskSet buildSelectionMaskSet(World& world, std::span<const Entity> sel
             instance.model = model;
             instance.normalMatrix = normalMatrix;
             instance.color = meshRenderer.color;
-            instance.material = resolveMaterial(meshRenderer, sub, bindings, set.unresolvedMaterials);
+            instance.material = resolveMaterial(meshRenderer, sub.material, bindings, set.unresolvedMaterials);
             instance.mvp = viewProj * model;
             bucket.push_back(instance);
             ++emitted;
