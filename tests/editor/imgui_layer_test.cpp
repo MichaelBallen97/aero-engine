@@ -19969,8 +19969,8 @@ TEST_CASE("editor: an asset field's overflowing value sentence is elided with an
     CHECK(soleLineContaining(block, "PushClipRect(buttonMin, buttonMax") < elision);
 
     // (b) Every AddText in the block comes AFTER the elision. Each call is read with its next line, where
-    // clang-format breaks its argument list.
-    std::vector<std::string> calls;
+    // clang-format breaks its argument list, and keeps its line index for clause (e).
+    std::vector<std::pair<std::size_t, std::string>> calls;
     for (std::size_t i = 0; i < block.size(); ++i) {
         if (block[i].find("AddText(") == std::string::npos) {
             continue;
@@ -19982,7 +19982,7 @@ TEST_CASE("editor: an asset field's overflowing value sentence is elided with an
             call += ' ';
             call += block[i + 1U];
         }
-        calls.push_back(call);
+        calls.emplace_back(i, call);
     }
     CHECK(countLinesContaining(code, "AddText(") == calls.size());  // the file draws text only in this block
 
@@ -19991,6 +19991,43 @@ TEST_CASE("editor: an asset field's overflowing value sentence is elided with an
     // names the elided text, never the raw sentence.
     REQUIRE(calls.size() == 2U);
     constexpr std::string_view RAW = "in.valueText.data()";
-    const auto namesRaw = [RAW](const std::string& call) { return call.find(RAW) != std::string::npos; };
-    CHECK(std::count_if(calls.begin(), calls.end(), namesRaw) == 1);
+    constexpr std::string_view ELIDED = "elided.data()";
+    const auto callsNaming = [&calls](std::string_view needle) {
+        return std::count_if(calls.begin(), calls.end(), [needle](const std::pair<std::size_t, std::string>& c) {
+            return c.second.find(needle) != std::string::npos;
+        });
+    };
+    CHECK(callsNaming(RAW) == 1);
+    CHECK(callsNaming(ELIDED) == 1);
+
+    // (d) WHICH WAY THE TEST POINTS, AND AGAINST WHICH WIDTH (the code-review round). Clauses (a)-(c) stay green with
+    // the comparison flipped -- an overflowing sentence drawn raw and clipped again -- and with the width taken as
+    // the whole frame: a slot row's text starts after its thumbnail, so its sentence would still be cut, with no
+    // ellipsis, by up to thumbnailEdge + ItemInnerSpacing.x. So the width, the guard and the measurer are pinned as
+    // the expressions they are, in the order they must run.
+    const std::size_t width = soleLineContaining(block, "const float textAvail = ");
+    CAPTURE(block[width]);
+    CHECK(block[width].find("= buttonMax.x - style.FramePadding.x - textX;") != std::string::npos);
+    const std::size_t guard = soleLineContaining(block, "if (ImGui::CalcTextSize(in.valueText.data(), ");
+    CAPTURE(block[guard]);
+    CHECK(block[guard].find(").x > textAvail) {") != std::string::npos);
+    const std::size_t measurer = soleLineContaining(block, "return ImGui::CalcTextSize(first, ");
+    CAPTURE(block[measurer]);
+    CHECK(block[measurer].find(").x <= textAvail;") != std::string::npos);
+    CHECK(width < guard);
+    CHECK(guard < elision);
+    CHECK(elision < measurer);
+
+    // (e) THE ARMS. The elided AddText is inside the overflow arm, and the raw one is in the else arm after it.
+    const std::size_t elseArm = soleLineContaining(block, "} else {");
+    for (const std::pair<std::size_t, std::string>& entry : calls) {
+        const std::size_t line = entry.first;
+        CAPTURE(entry.second);
+        if (entry.second.find(RAW) != std::string::npos) {
+            CHECK(elseArm < line);
+        } else {
+            CHECK(guard < line);
+            CHECK(line < elseArm);
+        }
+    }
 }
