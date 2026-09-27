@@ -1607,7 +1607,8 @@ and resolves; `EditorApp::persistProjectState` decides and writes.
   by the total enumeration `thumbnailSourceForName`. **`releaseKey` is the one release site**: it asks both
   stores and forgets the key, so the "never free a texture drawn this frame" protection covers both. A third
   producer is a third `ThumbnailSource` enumerator, a third store, and a third line in `releaseKey` — the
-  `-Wswitch` diagnostic at the walk says where. `I242(a)`/`(b)` pin both.
+  `-Wswitch` diagnostic at the walk says where. It fails CI's Linux clang-tidy step, where `.clang-tidy`
+  enables `clang-diagnostic-switch`, and is at most a warning in the compile lanes. `I242(a)`/`(b)` pin both.
 - **The walk sees every `Absent` key.** Tiles drawn in one frame share `lastTouched`, so the ledger offers
   them in GUID order; asking `nextDecodes` for "decodes + renders" keys hands the walk only the oldest few,
   which can all be one kind. `I233` pins it with GUIDs chosen through pre-written sidecars.

@@ -2,17 +2,19 @@
 // Aero Engine -- the material preview's rig (task E.2.4). PUBLIC and PURE: no ImGui, no EnTT, no rhi
 // type, no World, no allocation, no logging, nothing that can throw.
 //
-// WHAT THE PREVIEW DRAWS IS A UNIT SPHERE AT THE WORLD ORIGIN UNDER THE OPEN SCENE'S LIGHTING, seen
-// from a camera that orbits it -- so the "rig" is the CAMERA and nothing else. The environment and the
-// sun are the SCENE's, resolved by the bridge's own resolvers (scene_render::resolveEnvironment /
-// resolveDirectionalLight, which buildRenderView itself calls) and handed in here as render types.
-// This header never learns where its lighting came from, which is what lets E.4.5's thumbnail producer
-// feed it whatever a thumbnail wants at whatever orbit angle it likes.
+// WHAT THE PREVIEW DRAWS IS A SPHERE OF RADIUS 0.5 (render/src/primitives.cpp's makeSphere, RADIUS) AT
+// THE WORLD ORIGIN UNDER THE OPEN SCENE'S LIGHTING, seen from a camera that orbits it -- so the "rig" is
+// the CAMERA and nothing else. The environment and the sun are the SCENE's, resolved by the bridge's own
+// resolvers (scene_render::resolveEnvironment / resolveDirectionalLight, which buildRenderView itself
+// calls) and handed in here as render types. This header never learns where its lighting came from,
+// which is what lets E.4.5's thumbnail producer feed it whatever a thumbnail wants at whatever orbit
+// angle it likes.
 //
 // EVERY NUMBER BELOW IS A TUNING CONSTANT judged on the validation page. Tier 0 asserts RELATIONSHIPS
-// between them -- the eye is outside the unit sphere, the near plane is closer than the sphere's
-// nearest point, the far plane is beyond its farthest, the sphere fits the vertical field of view --
-// never a magnitude, so a retune reddens nothing.
+// between them -- the eye is outside the sphere, the near plane is closer than the sphere's nearest
+// point, the far plane is beyond its farthest, the sphere fits the vertical field of view -- never a
+// magnitude, so a retune reddens nothing. PV1 states each one for a radius of 1, twice the sphere's,
+// which implies it for 0.5.
 //
 // libm reached: std::cos and std::sin (the eye), std::isfinite and std::fmod (the orbit), plus
 // whatever engine::perspective and engine::lookAt reach (std::tan). NO BIT-DETERMINISM CLAIM IS MADE
@@ -31,9 +33,9 @@ namespace engine::editor {
 
 struct MaterialPreviewRig {
     // The framing, COPIED from samples/phase-3-materials/main.cpp at 3.4.2 rather than re-derived, and
-    // MOVED here from material_preview.hpp: a unit sphere at the origin, comfortably framed, turning
-    // slowly enough that GGX highlights are judgeable by eye as they sweep.
-    float orbitRadius = 3.0F;  // eye distance from the Y axis; MUST exceed 1, the sphere's radius
+    // MOVED here from material_preview.hpp: a sphere of radius 0.5 at the origin, comfortably framed,
+    // turning slowly enough that GGX highlights are judgeable by eye as they sweep.
+    float orbitRadius = 3.0F;  // eye distance from the Y axis; MUST exceed 0.5, the sphere's radius
     float orbitHeight = 1.2F;  // eye height; the camera looks slightly DOWN at the sphere
     float orbitSpeed = 0.35F;  // radians per second
     float fovYDegrees = 60.0F;
