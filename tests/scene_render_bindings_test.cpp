@@ -1039,8 +1039,11 @@ TEST_CASE("scene_render bindings: a primitive's bound material reaches the draw 
     REQUIRE(sceneRenderer.has_value());
 
     // BR22's argument, one arm over: a doubleSided material is what makes the draw OBSERVABLE. Minted on
-    // THE RENDERER THAT DRAWS IT, and bound by GUID exactly as the editor's ledger binds one.
-    const MaterialHandle doubleSided = sceneRenderer->renderer().createMaterial({.doubleSided = true}, {});
+    // THE RENDERER THAT DRAWS IT, and bound by GUID exactly as the editor's ledger binds one. It starts from
+    // DEFAULT_MATERIAL_PARAMS (metallic 0), the fixture rule, although only its two-sidedness is read here.
+    engine::render::MaterialParams twoSidedParams = engine::render::DEFAULT_MATERIAL_PARAMS;
+    twoSidedParams.doubleSided = true;
+    const MaterialHandle doubleSided = sceneRenderer->renderer().createMaterial(twoSidedParams, {});
     REQUIRE(doubleSided.valid());
     sceneRenderer->bindings().setMaterial(guidOf(50), doubleSided);
     REQUIRE(sceneRenderer->bindings().materialCount() == 1);

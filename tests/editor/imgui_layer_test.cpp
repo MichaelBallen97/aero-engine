@@ -10360,10 +10360,16 @@ TEST_CASE("editor: a primitive's material resolves end to end, and a refused one
     }
     // makeDropProject's three assets plus the two this case is about: a doubleSided material -- the one
     // material property a pipeline-transition count can see (BR21/BR22's argument, one tier up) -- and a
-    // version-2 document the loader REFUSES, which is the steady unresolved state.
+    // version-2 document the loader REFUSES, which is the steady unresolved state. The two-sided document
+    // spells metallic 0, the fixture rule, although only its two-sidedness is read here.
     const DropFixture fixture = makeDropProject();
     constexpr std::string_view TWO_SIDED_AEROMAT_TEXT =
-        "{\n  \"version\": 1,\n  \"name\": \"Two Sided\",\n  \"doubleSided\": true\n}\n";
+        "{\n"
+        "  \"version\": 1,\n"
+        "  \"name\": \"Two Sided\",\n"
+        "  \"metallicFactor\": 0,\n"
+        "  \"doubleSided\": true\n"
+        "}\n";
     const std::string twoSidedPath = fixture.assetsRoot + "/twosided.aeromat";
     const std::string refusedPath = fixture.assetsRoot + "/bad.aeromat";
     REQUIRE(engine::editor::writeTextFileAtomic(twoSidedPath, TWO_SIDED_AEROMAT_TEXT).empty());
