@@ -19940,3 +19940,57 @@ TEST_CASE("editor: a material renders only while its tile is on screen -- the vi
     CHECK(app->tick() == false);
     app.reset();
 }
+
+TEST_CASE("editor: an asset field's overflowing value sentence is elided with an ellipsis (task E.4.5, I244)") {
+    // E.4.5's macOS validation pass, row 6: the Inspector's material row drew a long document name's sentence
+    // clipped at the button's frame edge -- cut mid-glyph, its "(Material)" suffix lost, and no sign that anything
+    // was. The rule is elideCaptionRight's, pure and proven at tier 0 (AV64 and AV65 pin that a fitting text comes
+    // back unchanged); what no tier can see is whether the widget CALLS it, because nothing in this tree reads
+    // rendered text or measures a widget rect. So the source text is the witness. Comment-stripped code lines only
+    // (editorSourceCodeLines), so a sentence in a comment never counts. NO #if.
+    std::string path = AERO_EDITOR_SRC_DIR;
+    path += "/asset_picker.cpp";
+    const std::vector<std::string> code = editorSourceCodeLines(path);
+    REQUIRE(code.size() > 100U);  // ANTI-VACUITY: the file was really read
+    // THE VALUE-SENTENCE BLOCK, from its guard to its PopClipRect.
+    const std::size_t begin = soleLineContaining(code, "if (!in.valueText.empty()) {");
+    std::size_t end = begin;
+    while (end < code.size() && code[end].find("PopClipRect();") == std::string::npos) {
+        ++end;
+    }
+    REQUIRE(end < code.size());
+    REQUIRE(end - begin >= 10U);  // a real body
+    const std::vector<std::string> block(code.begin() + static_cast<std::ptrdiff_t>(begin),
+                                         code.begin() + static_cast<std::ptrdiff_t>(end) + 1);
+
+    // (a) The elision is called exactly once, inside the block, and the clip rect stays above it as a safety net.
+    CHECK(countLinesContaining(code, "elideCaptionRight(") == 1U);
+    const std::size_t elision = soleLineContaining(block, "elideCaptionRight(");
+    CHECK(soleLineContaining(block, "PushClipRect(buttonMin, buttonMax") < elision);
+
+    // (b) Every AddText in the block comes AFTER the elision. Each call is read with its next line, where
+    // clang-format breaks its argument list.
+    std::vector<std::string> calls;
+    for (std::size_t i = 0; i < block.size(); ++i) {
+        if (block[i].find("AddText(") == std::string::npos) {
+            continue;
+        }
+        CAPTURE(block[i]);
+        CHECK(elision < i);
+        std::string call = block[i];
+        if (i + 1U < block.size()) {
+            call += ' ';
+            call += block[i + 1U];
+        }
+        calls.push_back(call);
+    }
+    CHECK(countLinesContaining(code, "AddText(") == calls.size());  // the file draws text only in this block
+
+    // (c) Two paths, two calls. The FITTING path's AddText still names in.valueText -- the same call on the same
+    // bytes, which is what keeps the Inspector byte-identical whenever the sentence fits -- and the overflow path's
+    // names the elided text, never the raw sentence.
+    REQUIRE(calls.size() == 2U);
+    constexpr std::string_view RAW = "in.valueText.data()";
+    const auto namesRaw = [RAW](const std::string& call) { return call.find(RAW) != std::string::npos; };
+    CHECK(std::count_if(calls.begin(), calls.end(), namesRaw) == 1);
+}

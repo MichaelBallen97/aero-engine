@@ -14,6 +14,7 @@
 #include <aero/core/log.hpp>
 #include <aero/editor/asset_database.hpp>
 #include <aero/editor/asset_drag.hpp>
+#include <aero/editor/asset_view.hpp>     // elideCaptionRight -- an overflowing value sentence
 #include <aero/editor/material_card.hpp>  // task E.4.5 -- the card's subtitle and tint
 #include <aero/editor/project_files.hpp>
 #include <aero/editor/thumbnail_cache.hpp>
@@ -30,6 +31,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -125,8 +127,9 @@ AssetFieldResult drawAssetReferenceField(const AssetFieldInputs& in, AssetPicker
     //    would read `readme` and one named `##notes.png` would leave the button blank.
     //    asset_browser_panel.cpp:635-637 records the identical hazard for a tile caption (3.1.3's E19)
     //    and answers it the same way. AddText submits NO ImGui item, so the button is still the last
-    //    item for the drop target below, and the clip rect is the button's own frame, so a long
-    //    sentence is cut at the frame edge rather than spilling across the next cell.
+    //    item for the drop target below. A long sentence is elided with `…` to the frame, so a cut is
+    //    visible, and clipped to the button's own frame as a safety net, so it never spills across the
+    //    next cell.
     //
     // 3a. THE THUMBNAIL (task E.3.4), on the draw list INSIDE the button's frame, after ImGui::Button
     //     has painted the frame and before the sentence, so the sentence draws OVER it. It runs above
@@ -183,8 +186,26 @@ AssetFieldResult drawAssetReferenceField(const AssetFieldInputs& in, AssetPicker
         const float textY = in.thumbnailEdge > 0.0F
                                 ? buttonMin.y + (((buttonMax.y - buttonMin.y) - ImGui::GetFontSize()) * 0.5F)
                                 : buttonMin.y + style.FramePadding.y;
-        drawList->AddText(ImVec2(textX, textY), ImGui::GetColorU32(ImGuiCol_Text), in.valueText.data(),
-                          in.valueText.data() + in.valueText.size());
+        // task E.4.5's validation pass (row 6): A SENTENCE THAT OVERFLOWS IS ELIDED, NOT MERELY CLIPPED. The clip
+        // alone cut a long name mid-glyph at the frame edge and lost the "(Material)" suffix with no sign that
+        // anything was cut. The width is the frame's inner edge, the same FramePadding.x the text starts after.
+        // A sentence that fits takes the else arm -- the SAME AddText on the SAME bytes as before, so the row is
+        // unchanged -- and only the overflow arm allocates. elideCaptionRight is asset_view.hpp's pure rule: the
+        // longest prefix that fits beside an ellipsis, cut on a UTF-8 boundary. I244 pins the call.
+        const float textAvail = buttonMax.x - style.FramePadding.x - textX;
+        if (ImGui::CalcTextSize(in.valueText.data(), in.valueText.data() + in.valueText.size()).x > textAvail) {
+            // An empty view measures the literal "", so ImGui is never handed a null pointer (asset_tile.cpp's
+            // measurer does the same).
+            const std::string elided = elideCaptionRight(in.valueText, [textAvail](std::string_view text) {
+                const char* const first = text.empty() ? "" : text.data();
+                return ImGui::CalcTextSize(first, first + text.size()).x <= textAvail;
+            });
+            drawList->AddText(ImVec2(textX, textY), ImGui::GetColorU32(ImGuiCol_Text), elided.data(),
+                              elided.data() + elided.size());
+        } else {
+            drawList->AddText(ImVec2(textX, textY), ImGui::GetColorU32(ImGuiCol_Text), in.valueText.data(),
+                              in.valueText.data() + in.valueText.size());
+        }
         drawList->PopClipRect();
     }
 
