@@ -262,15 +262,13 @@ never may be** (`docs/09` §14.7): their decoders run floating-point transforms 
 availability and FMA contraction policy. `cooker.audio_lossy_digests` prints both digests on every lane and
 asserts **no digest value**.
 
-**`-Wswitch` IS A WARNING, NOT A CI FAILURE (E.4.5), AND 51 LINES IN THE TREE SAY OTHERWISE.** A switch with
-no `default:` makes a new enumerator visible only as clang's default-on `-Wswitch` warning, on the macOS
-lane. No lane compiles with `-Werror` (the workflow's one `--Werror` is clang-format's); `.clang-tidy`'s check
-list opens with `-*` and never enables `clang-diagnostic-*` (measured: `Suppressed 1 warnings (1 with check
-filters)`, exit 0); GCC enables `-Wswitch` only under `-Wall`, which this project does not pass; and MSVC's
-C4062 is off by default. On `caf8a74`, 51 lines in 37 tracked files — source comments, `docs/09`, `docs/10`
-and the editor rules — call a missing case an "error" or a "failure", several "on the Linux lane", the one lane where
-GCC does not even warn. **Never rely on a missing case turning CI red**; a rule that must fail the build needs
-a test. Whether to enable `clang-diagnostic-switch` is an unowned decision (`docs/10`, E.4.5).
+**AN UNHANDLED ENUMERATOR FAILS CI'S LINUX clang-tidy STEP, THROUGH `clang-diagnostic-switch`, AND ONLY
+THERE.** `.clang-tidy` enables that one compiler diagnostic (E.4.5's follow-up), and the step lints every
+tracked `*.cpp` with `--warnings-as-errors='*'`, so a `switch` with no `default:` that misses an enumerator is
+a red lint step. The compile lanes still only warn (clang's default-on `-Wswitch`) or stay silent (GCC without
+`-Wall`; MSVC's C4062 is off by default), and no lane builds with `-Werror`. So the 51 older lines that call a
+missing case an "error" or a "failure" are now true of the lint lane, not of any compile lane. A `default:`
+arm silences the diagnostic, so a switch that must stay exhaustive keeps having none.
 
 #### Components, reflection and serialization
 

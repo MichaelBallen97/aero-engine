@@ -7,8 +7,10 @@
 # Run locally with LLVM 18 after a configure:
 #   clang-tidy-18 -p build/macos-debug --warnings-as-errors='*' $(git ls-files 'tests/*.cpp')
 ---
+# clang-diagnostic-switch: a switch with no default: that misses an enumerator must fail CI, not only warn.
 Checks: >
   -*,
+  clang-diagnostic-switch,
   bugprone-*,
   performance-*,
   portability-*,

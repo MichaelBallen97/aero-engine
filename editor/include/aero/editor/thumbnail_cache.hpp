@@ -122,9 +122,9 @@ private:
 
 // task E.4.5: WHICH PRODUCER OWNS A KEY. A TOTAL enumeration, used to ROUTE at exactly two sites --
 // thumbnailKeyForRecord's guard 2 below, and ThumbnailService::service's produce walk -- so a THIRD producer
-// is a third enumerator and a -Wswitch diagnostic at the walk's switch -- a WARNING, on by default in clang,
-// and never an error: no lane builds with -Werror, and .clang-tidy's `-*` check list does not re-enable
-// clang-diagnostic-*, so clang-tidy suppresses it (measured in the code-review round) -- never an `||` clause
+// is a third enumerator and a -Wswitch diagnostic at the walk's switch -- a CI FAILURE on the Linux lint lane,
+// whose clang-tidy step runs with --warnings-as-errors and whose .clang-tidy enables clang-diagnostic-switch,
+// and still at most a WARNING in the compile lanes, none of which builds with -Werror -- never an `||` clause
 // somebody forgets at one site (3.7.3's standing rule: "if a guard ever needs a second arm for a second
 // spelling of one predicate, stop and invert it"). MaterialCardCache reads it a third time as a GATE -- a
 // card is only ever read for a RenderedMaterial key -- and never routes on it.
