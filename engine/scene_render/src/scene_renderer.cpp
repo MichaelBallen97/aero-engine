@@ -56,9 +56,9 @@ void warnOnce(bool& latch, const char* message) {
 //   1. an entity-level override that RESOLVES wins, on every submesh;
 //   2. an override that does NOT resolve is COUNTED and falls through — it does not silently become
 //      the submesh's own material without a trace, and it does not blank the draw;
-//   3. otherwise the submesh's own bound handle, which may legitimately be INVALID (the source
-//      assigned no material) and resolves to ForwardRenderer::defaultMaterial() at draw time,
-//      3.4.1's contract.
+//   3. otherwise `fallbackMaterial`, the submesh's own bound handle, which may legitimately be INVALID
+//      (the source assigned no material) and resolves to ForwardRenderer::defaultMaterial() at draw
+//      time, 3.4.1's contract.
 // The count fires ONCE PER EMITTED SUBMESH, not once per entity: it answers "how many draws could not
 // use the material they were asked for", which is the number a diagnostic reader wants — an
 // entity-level count would understate a seven-submesh model by a factor of seven.
@@ -67,7 +67,10 @@ void warnOnce(bool& latch, const char* message) {
 // -- which has no RenderView -- reaches the identical three-arm decision instead of carrying a copy
 // that could drift. Nothing else about it moves, and SQ12 plus the untouched
 // scene_render_bindings_test.cpp battery are what make that a claim rather than an assertion.
-[[nodiscard]] render::MaterialHandle resolveMaterial(const MeshRenderer& meshRenderer, const MeshBindingSubmesh& sub,
+// task E.5.1: the second parameter was the SUBMESH, of which only `.material` was ever read; it is now
+// the FALLBACK HANDLE, so a caller with no submesh can reach this one decision rather than a copy of it.
+[[nodiscard]] render::MaterialHandle resolveMaterial(const MeshRenderer& meshRenderer,
+                                                     render::MaterialHandle fallbackMaterial,
                                                      const AssetBindingTable* bindings,
                                                      std::uint32_t& unresolvedMaterials) {
     if (meshRenderer.material.valid()) {
@@ -78,7 +81,7 @@ void warnOnce(bool& latch, const char* message) {
         }
         ++unresolvedMaterials;
     }
-    return sub.material;
+    return fallbackMaterial;
 }
 
 }  // namespace
@@ -209,7 +212,7 @@ render::RenderView buildRenderView(World& world, RenderViewScratch& scratch, rhi
             instance.model = model;
             instance.normalMatrix = normalMatrix;
             instance.color = meshRenderer.color;
-            instance.material = resolveMaterial(meshRenderer, sub, bindings, view.unresolvedMaterials);
+            instance.material = resolveMaterial(meshRenderer, sub.material, bindings, view.unresolvedMaterials);
             scratch.instances.push_back(instance);  // mvp filled below, once the camera is known
             ++emitted;
         }
@@ -398,7 +401,7 @@ SelectionMaskSet buildSelectionMaskSet(World& world, std::span<const Entity> sel
             instance.model = model;
             instance.normalMatrix = normalMatrix;
             instance.color = meshRenderer.color;
-            instance.material = resolveMaterial(meshRenderer, sub, bindings, set.unresolvedMaterials);
+            instance.material = resolveMaterial(meshRenderer, sub.material, bindings, set.unresolvedMaterials);
             instance.mvp = viewProj * model;
             bucket.push_back(instance);
             ++emitted;
