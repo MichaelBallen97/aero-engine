@@ -10662,17 +10662,18 @@ TEST_CASE("editor: what cancels a running view snap, and what does NOT (task E.1
     const std::vector<std::string> code = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/viewport_panel.cpp");
     REQUIRE_FALSE(code.empty());
 
-    SUBCASE("there are EXACTLY TWO cancels, and each sits where its reason requires") {
-        // soleLineContaining is deliberately NOT used here: there are legitimately two call sites --
-        // step 8b'' (a camera gesture took over) and step 8e (F is about to reframe) -- and a pin that
-        // required one would be pinning the absence of the other.
+    SUBCASE("there are EXACTLY THREE cancels, and each sits where its reason requires") {
+        // soleLineContaining is deliberately NOT used here: there are legitimately three call sites --
+        // step 8b'' (a camera gesture took over), step 8e (F is about to reframe) and, since task E.5.2,
+        // frameCreatedEntity (a create is about to reframe, F's own reason) -- and a pin that required
+        // one would be pinning the absence of the others.
         std::vector<std::size_t> cancels;
         for (std::size_t i = 0; i < code.size(); ++i) {
             if (code[i].find("viewSnap.cancel();") != std::string::npos) {
                 cancels.push_back(i);
             }
         }
-        REQUIRE(cancels.size() == 2U);
+        REQUIRE(cancels.size() == 3U);
 
         const std::size_t nextGestureAt = soleLineContaining(code, "gesture = nextGesture(gesture, gestureInput);");
         // The CALL, not the definition -- the bare name matches both.
@@ -10697,6 +10698,12 @@ TEST_CASE("editor: what cancels a running view snap, and what does NOT (task E.1
         // yaw/pitch -- the snap writes both every frame, focusOn writes pivot and distance.
         CHECK(cancels[1] < focusAt);
         CHECK(focusAt - cancels[1] <= 6U);  // the same statement group, not a distant one
+
+        // THE CREATE CANCEL (task E.5.2): frameCreatedEntity's FIRST statement, before it reframes --
+        // the F cancel's reason, from EditorApp's create drain.
+        const std::size_t createAt = soleLineContaining(code, "void ViewportPanel::frameCreatedEntity(");
+        CHECK(createAt < cancels[2]);
+        CHECK(cancels[2] == createAt + 1U);
     }
     SUBCASE("the snap advance runs AFTER editorCamera.update, so it writes last and wins") {
         const std::size_t updateAt =
