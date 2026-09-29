@@ -20871,6 +20871,27 @@ TEST_CASE("editor: the Create glue no tier can click holds as source text (task 
         CHECK(countLinesContaining(body, "resetField(") == 1U);
         CHECK(countLinesContaining(body, "pushFieldEdit(") == 0U);
     }
+    SUBCASE("(h) the statements that carry a real click into the drain, and the reveal after it") {
+        // Both seams (requestCreateEntity, HierarchyPanel::requestCreate) write the destination members
+        // DIRECTLY, so no GPU-tier case notices any of these lines going.
+        const std::vector<std::string> editorApp = codeOf("editor_app.cpp");
+        CHECK(countLinesContaining(editorApp, "pendingMenuCreate = ui.createRequest") == 1U);
+        CHECK(countLinesContaining(editorApp, "hierarchyPanel->revealEntity(created)") == 1U);
+        // The menu bar's two writes (Empty, and the helper's pick): inside its Create menu, nowhere else.
+        const std::size_t start = soleLineContaining(shell, "BeginMenu(\"Create\")");
+        std::size_t end = start + 1U;
+        while (end < shell.size() && shell[end].find("ImGui::EndMenu();") == std::string::npos) {
+            ++end;
+        }
+        REQUIRE(end < shell.size());
+        const std::vector<std::string> createMenu(shell.begin() + static_cast<std::ptrdiff_t>(start),
+                                                  shell.begin() + static_cast<std::ptrdiff_t>(end));
+        CHECK(countLinesContaining(createMenu, "state.createRequest = ") == 2U);
+        CHECK(countLinesContaining(shell, "state.createRequest = ") == 2U);
+        // The Hierarchy's four: Create Empty and a typed pick, in each of its two context menus. The trailing
+        // space keeps a comparison (`==`) from counting as a write.
+        CHECK(countLinesContaining(hierarchy, "pendingCreate = ") == 4U);
+    }
 }
 
 TEST_CASE("editor: a create raises the Inspector in the tick it lands (task E.5.2, I255)") {
