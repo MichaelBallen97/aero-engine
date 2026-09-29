@@ -20523,6 +20523,10 @@ TEST_CASE(
         REQUIRE(world.get<engine::Transform>(created) != nullptr);
         CHECK(e52TransformBits(*world.get<engine::Transform>(created), expected.transform));
         CHECK(e52ComponentMatches(world, created, expected.component));
+        // AT THE ROOT, whatever is selected (D6). From the second kind on, the selection is the previous
+        // create, so a parent taken from it is live here -- and a local Transform alone cannot see one.
+        CHECK_FALSE(world.parent(created).valid());
+        CHECK(app->roots().indexOf(created) != engine::editor::NO_ROOT_SLOT);  // the Hierarchy lists it
         CHECK(app->commands().undoLabel() == std::string("Create ") + engine::editor::createKindLabel(k));
         CHECK(app->commands().count() == countBefore + 1U);
 
@@ -20542,6 +20546,8 @@ TEST_CASE(
         REQUIRE(world.get<engine::Transform>(created) != nullptr);
         CHECK(e52TransformBits(*world.get<engine::Transform>(created), expected.transform));
         CHECK(e52ComponentMatches(world, created, expected.component));
+        CHECK_FALSE(world.parent(created).valid());
+        CHECK(app->roots().indexOf(created) != engine::editor::NO_ROOT_SLOT);
         CHECK(app->selection().primary() == created);
     }
 
