@@ -311,10 +311,13 @@ void InspectorPanel::resetField(PanelContext& context, Entity primary, const Com
 }
 
 void InspectorPanel::requestNamedSelection(std::string component, std::string field, std::size_t index) {
-    pendingNamedSelection.emplace();
-    pendingNamedSelection->componentName = std::move(component);
-    pendingNamedSelection->fieldName = std::move(field);
-    pendingNamedSelection->index = index;
+    // Built whole and assigned, never emplace()d empty. NamedSelection is a NESTED struct with a default
+    // member initializer, which clang parses only once InspectorPanel is complete -- so a no-argument
+    // is_constructible_v<NamedSelection> can be settled as false while the class is still open, and
+    // libstdc++'s emplace() is then refused (CI's Linux clang-tidy lane; libc++ and GCC both accept it).
+    // A move construction never needs the initializer.
+    pendingNamedSelection =
+        NamedSelection{.componentName = std::move(component), .fieldName = std::move(field), .index = index};
 }
 
 bool InspectorPanel::drawAxisRow(PanelContext& context, Entity primary, const ComponentEntry& entry,
