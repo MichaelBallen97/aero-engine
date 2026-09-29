@@ -11,7 +11,8 @@
                                       // context.selection.empty(), and panel_context.hpp only
                                       // FORWARD-DECLARES Selection. PUBLIC and ImGui-free.
 
-#include "project_ui.hpp"  // task 2.6.1: drawWelcomeWindow / drawNewProjectModal
+#include "create_menu_ui.hpp"  // task E.5.2: drawCreateMenuItems -- the ONE drawing helper
+#include "project_ui.hpp"      // task 2.6.1: drawWelcomeWindow / drawNewProjectModal
 
 #include <array>
 #include <cstddef>
@@ -222,6 +223,21 @@ void drawMenuBar(PanelRegistry& panels, PanelContext& context, ShellUiState& sta
         if (ImGui::MenuItem("Project Settings...", nullptr, false, settingsPanelExists)) {
             panels.setVisible(PROJECT_SETTINGS_PANEL_ID, true);
             ImGui::SetWindowFocus(PROJECT_SETTINGS_PANEL_ID);
+        }
+        ImGui::EndMenu();
+    }
+    // task E.5.2: Create, between Edit and View. Every item is gated on `fileEnabled` for the history items'
+    // own reason (above): a modal owns the input, and a create behind the unsaved-changes modal would change
+    // the very document the modal is asking about. The drain re-checks (defence in depth) and counts a
+    // refusal. The menu RECORDS a kind and applies nothing: EditorApp::applyCreate places, pushes, frames
+    // and reveals (D1).
+    if (ImGui::BeginMenu("Create")) {  // EndMenu ONLY when BeginMenu returned true
+        if (ImGui::MenuItem("Empty", nullptr, false, fileEnabled)) {
+            state.createRequest = CreateKind::Empty;
+        }
+        ImGui::Separator();
+        if (const std::optional<CreateKind> typed = drawCreateMenuItems(fileEnabled); typed.has_value()) {
+            state.createRequest = typed;
         }
         ImGui::EndMenu();
     }

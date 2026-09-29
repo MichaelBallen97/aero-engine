@@ -26,6 +26,7 @@
 #include <aero/editor/command_stack.hpp>  // task 2.4.1
 #include <aero/editor/component_ops.hpp>
 #include <aero/editor/console_model.hpp>  // DEFAULT_LOG_HISTORY_CAPACITY (case C)
+#include <aero/editor/create_menu.hpp>    // task E.5.2 (I246-I250): CreateKind, createSeed, createAnchor
 #include <aero/editor/editor_app.hpp>
 #include <aero/editor/editor_camera.hpp>    // task 2.3.1
 #include <aero/editor/entity_commands.hpp>  // task 2.4.2
@@ -46,6 +47,7 @@
 #include <aero/editor/transform_ops.hpp>      // task 2.4.1
 #include <aero/platform/platform.hpp>
 #include <aero/reflect/material_format.hpp>  // task 3.4.2: MaterialDocument, named directly (I84)
+#include <aero/render/mesh.hpp>              // task E.5.2 (I248, I249): PrimitiveId
 #include <aero/render/render_target.hpp>     // task E.4.5: the thumbnail target's extents (I237/I238)
 #include <aero/rhi/device.hpp>
 #include <aero/scene/scene.hpp>
@@ -53,9 +55,10 @@
 // task 3.1.5 (SL1-SL10): the scene-asset loader is SRC-PRIVATE, so it is reached the way
 // blender_service_test.cpp reaches blender_process.hpp -- by relative path into editor/src. It names
 // scene_render::MeshBinding, which is why aero::scene_render is on this target's link line.
-#include "../../editor/src/default_font.hpp"    // task E.4.4 validation: the UI font, measured ImGui-free (I230)
-#include "../../editor/src/material_panel.hpp"  // task E.2.4, I136: previewOutputTarget() -- the same
-                                                // src-private reach the two lines below already make
+#include "../../editor/src/default_font.hpp"     // task E.4.4 validation: the UI font, measured ImGui-free (I230)
+#include "../../editor/src/hierarchy_panel.hpp"  // task E.5.2, I249: requestCreate -- the panel-to-drain path
+#include "../../editor/src/material_panel.hpp"   // task E.2.4, I136: previewOutputTarget() -- the same
+                                                 // src-private reach the two lines below already make
 #include "../../editor/src/scene_asset_loader.hpp"
 #include "../../editor/src/viewport_panel.hpp"  // task 3.6.3: ViewportPanel's three test seams --
                                                 // postProcess(), tonemapParams(), requestTonemapParams().
@@ -67,9 +70,12 @@
 
 #include <algorithm>
 #include <array>   // the frozen panel-id roster; reached transitively on libc++, not on MSVC (813bc4d)
+#include <bit>     // task E.5.2 (I247): std::bit_cast -- the camera state, bit for bit
 #include <cctype>  // task E.3.1, I143: std::isalnum over the panel's own source text
 #include <cmath>   // task E.2.4, I136: std::lround / std::abs over the readback's byte oracle
+#include <cstddef>
 #include <cstdint>
+#include <cstring>  // task E.5.2: std::memcmp -- the created Transform, bit for bit
 #include <filesystem>
 #include <format>  // task 3.2.2, I65: truncatedFbxText()'s programmatic 257-node fixture
 #include <fstream>
@@ -84,6 +90,7 @@
 #include <system_error>  // std::error_code -- the non-throwing filesystem::remove overload
 #include <type_traits>   // task 2.4.2, I11: std::is_nothrow_move_constructible_v/assignable_v
 #include <utility>       // task E.3.2, I159(d): std::pair over the header/literal roster
+#include <variant>       // task E.5.2: SeedComponent
 #include <vector>
 
 namespace {
@@ -20403,6 +20410,489 @@ TEST_CASE(
     app->requestUndo();
     REQUIRE(app->tick());
     CHECK(backgroundMode() == 0U);
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+// ---- task E.5.2: the Create pipeline, end to end (I246-I250, I253, I255) ---------------------------------
+namespace {
+
+// "bit for bit, all ten floats" -- Transform's own == is float ==. Through const std::byte*
+// (render_material_test.cpp's precedent): bugprone-suspicious-memory-comparison refuses a memcmp over a
+// float-carrying type, and here the object representation IS the claim.
+[[nodiscard]] bool e52TransformBits(const engine::Transform& a, const engine::Transform& b) {
+    static_assert(sizeof(engine::Transform) == 10U * sizeof(float));
+    const auto* lhs = reinterpret_cast<const std::byte*>(&a);
+    const auto* rhs = reinterpret_cast<const std::byte*>(&b);
+    return std::memcmp(lhs, rhs, sizeof(engine::Transform)) == 0;
+}
+
+// The created entity carries the seed's component -- or, for monostate, NOTHING but its Transform. Read off
+// the WORLD, never off the seed that was pushed.
+[[nodiscard]] bool e52ComponentMatches(const engine::World& world, engine::Entity e,
+                                       const engine::editor::SeedComponent& component) {
+    return std::visit(
+        [&world, e](const auto& value) -> bool {
+            using T = std::decay_t<decltype(value)>;
+            if constexpr (std::is_same_v<T, std::monostate>) {
+                std::size_t present = 0;
+                for (std::size_t i = 0; i < world.componentTypeCount(); ++i) {
+                    if (world.hasRaw(world.componentTypeAt(i), e)) {
+                        ++present;
+                    }
+                }
+                return present == 1U;
+            } else {
+                const T* const live = world.get<T>(e);
+                return live != nullptr && *live == value;
+            }
+        },
+        component);
+}
+
+// Every kind, in enum order: CreateKind is 0..7 with Count the bound, so the index IS the kind.
+static_assert(engine::editor::CREATE_KIND_COUNT == 8U);
+constexpr std::array<engine::editor::CreateKind, 8> E52_ALL_KINDS = [] {
+    std::array<engine::editor::CreateKind, 8> kinds{};
+    for (std::size_t i = 0; i < kinds.size(); ++i) {
+        kinds[i] = static_cast<engine::editor::CreateKind>(i);
+    }
+    return kinds;
+}();
+
+// The boilerplate every E.5.2 pipeline case opens with: a 320 x 180 window, the device, an EditorApp on the
+// default scene, three warm-up ticks. `window` and `device` are the caller's, so they outlive the app.
+[[nodiscard]] std::optional<engine::editor::EditorApp> e52App(engine::rhi::Device& device,
+                                                              engine::platform::Window& window,
+                                                              engine::platform::Context& ctx) {
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(device, window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    for (int i = 0; i < 3; ++i) {
+        REQUIRE(app->tick());
+    }
+    return app;
+}
+
+}  // namespace
+
+TEST_CASE(
+    "editor: every Create kind creates, selects, labels, undoes and redoes -- in every configuration "
+    "(task E.5.2, I246)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "create i246", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = e52App(*device, *window, ctx);
+    // The camera exists in every configuration: the viewport panel is emplaced unconditionally.
+    REQUIRE(app->viewportCamera() != nullptr);
+    engine::World& world = app->world();
+
+    for (const engine::editor::CreateKind k : E52_ALL_KINDS) {
+        CAPTURE(static_cast<int>(k));
+        const engine::Vec3 pivotBefore = app->viewportCamera()->pivot();
+        const std::size_t entitiesBefore = world.entityCount();
+        const std::size_t countBefore = app->commands().count();
+        const std::span<const engine::Entity> selectedNow = app->selection().entities();
+        const std::vector<engine::Entity> selectionBefore(selectedNow.begin(), selectedNow.end());
+
+        app->requestCreateEntity(k);
+        REQUIRE(app->tick());  // ONE tick: the drain precedes the draw walk
+
+        CHECK(world.entityCount() == entitiesBefore + 1U);
+        const engine::Entity created = app->selection().primary();
+        REQUIRE(world.alive(created));
+        CHECK(app->selection().entities().size() == 1U);
+        const engine::editor::EntitySeed expected =
+            engine::editor::createSeed(k, engine::editor::createAnchor(pivotBefore));
+        CHECK(world.name(created) == expected.name);
+        REQUIRE(world.get<engine::Transform>(created) != nullptr);
+        CHECK(e52TransformBits(*world.get<engine::Transform>(created), expected.transform));
+        CHECK(e52ComponentMatches(world, created, expected.component));
+        CHECK(app->commands().undoLabel() == std::string("Create ") + engine::editor::createKindLabel(k));
+        CHECK(app->commands().count() == countBefore + 1U);
+
+        // UNDO: gone, and the pre-create selection back element for element.
+        app->requestUndo();
+        REQUIRE(app->tick());
+        CHECK_FALSE(world.alive(created));
+        REQUIRE(app->selection().entities().size() == selectionBefore.size());
+        for (std::size_t i = 0; i < selectionBefore.size(); ++i) {
+            CHECK(app->selection().entities()[i] == selectionBefore[i]);
+        }
+
+        // REDO: the SAME handle, index and generation, carrying the same Transform and component.
+        app->requestRedo();
+        REQUIRE(app->tick());
+        REQUIRE(world.alive(created));
+        REQUIRE(world.get<engine::Transform>(created) != nullptr);
+        CHECK(e52TransformBits(*world.get<engine::Transform>(created), expected.transform));
+        CHECK(e52ComponentMatches(world, created, expected.component));
+        CHECK(app->selection().primary() == created);
+    }
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE(
+    "editor: a create frames -- a box is fitted, a point is recentred, a running snap is cancelled "
+    "(task E.5.2, I247)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "create i247", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = e52App(*device, *window, ctx);
+    auto* const viewport = dynamic_cast<engine::editor::ViewportPanel*>(app->panels().find("Viewport"));
+    REQUIRE(viewport != nullptr);
+    REQUIRE(app->viewportCamera() != nullptr);
+    engine::World& world = app->world();
+    const auto bits = [](float a, float b) {
+        return std::bit_cast<std::uint32_t>(a) == std::bit_cast<std::uint32_t>(b);
+    };
+    const auto sameVec = [&bits](engine::Vec3 a, engine::Vec3 b) {
+        return bits(a.x, b.x) && bits(a.y, b.y) && bits(a.z, b.z);
+    };
+
+    SUBCASE("a Cube is FITTED exactly as frameCreated fits its box") {
+        // The drain frames with the aspect the PREVIOUS onDraw stored, so both are read before the tick.
+        const float aspect = viewport->aspect();
+        engine::editor::EditorCamera reference = *app->viewportCamera();
+        app->requestCreateEntity(engine::editor::CreateKind::Cube);
+        REQUIRE(app->tick());
+        const engine::Entity created = app->selection().primary();
+        REQUIRE(world.alive(created));
+        reference.frameCreated(engine::editor::entityBounds(world, created, true, nullptr), aspect);
+        const engine::editor::EditorCamera& live = *app->viewportCamera();
+        CHECK(sameVec(live.pivot(), reference.pivot()));
+        CHECK(bits(live.distance(), reference.distance()));
+        CHECK(bits(live.yaw(), reference.yaw()));
+        CHECK(bits(live.pitch(), reference.pitch()));
+    }
+    SUBCASE("a Point Light is RECENTRED: the pivot moves, nothing else does") {
+        const float distance = app->viewportCamera()->distance();
+        const float yaw = app->viewportCamera()->yaw();
+        const float pitch = app->viewportCamera()->pitch();
+        app->requestCreateEntity(engine::editor::CreateKind::PointLight);
+        REQUIRE(app->tick());
+        const engine::Entity created = app->selection().primary();
+        REQUIRE(world.get<engine::Transform>(created) != nullptr);
+        const engine::editor::EditorCamera& live = *app->viewportCamera();
+        CHECK(sameVec(live.pivot(), world.get<engine::Transform>(created)->position));
+        CHECK(bits(live.distance(), distance));
+        CHECK(bits(live.yaw(), yaw));
+        CHECK(bits(live.pitch(), pitch));
+    }
+    SUBCASE("a running view snap is CANCELLED by the create -- an effect, not a flag") {
+        // One real frame can complete a whole snap (the 0.25 s delta cap equals VIEW_SNAP_SECONDS), so the
+        // flag alone would read false with or without the cancel. The EFFECT: across the create tick, yaw and
+        // pitch do not move -- and the control proves a live snap DOES move them on a tick.
+        const bool panelDraws = viewport->sceneForwardRenderer() != nullptr;
+        viewport->requestViewSnap(engine::editor::ViewAxis::PosX);
+        const float yawBeforeControl = app->viewportCamera()->yaw();
+        REQUIRE(app->tick());
+        if (panelDraws) {
+            CHECK_FALSE(bits(app->viewportCamera()->yaw(), yawBeforeControl));  // the snap really writes yaw
+        } else {
+            // shader-tools-OFF: the panel returns before the snap advance (I115's own tools-OFF arm), so
+            // the snap neither moves the camera nor ends -- asserted, never skipped.
+            CHECK(bits(app->viewportCamera()->yaw(), yawBeforeControl));
+            CHECK(viewport->viewSnapActive());
+        }
+        viewport->requestViewSnap(engine::editor::ViewAxis::NegZ);
+        REQUIRE(viewport->viewSnapActive());
+        const float yaw = app->viewportCamera()->yaw();
+        const float pitch = app->viewportCamera()->pitch();
+        app->requestCreateEntity(engine::editor::CreateKind::Sphere);
+        REQUIRE(app->tick());
+        // The drain cancelled the snap BEFORE onDraw could advance it; a Sphere's fit keeps yaw and pitch.
+        CHECK(bits(app->viewportCamera()->yaw(), yaw));
+        CHECK(bits(app->viewportCamera()->pitch(), pitch));
+        CHECK_FALSE(viewport->viewSnapActive());
+    }
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: the anchor follows the pivot, on the ground (task E.5.2, I248)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "create i248", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = e52App(*device, *window, ctx);
+    REQUIRE(app->viewportCamera() != nullptr);
+    app->viewportCamera()->setPivot(engine::Vec3{5.0F, 3.0F, -7.0F});
+    app->requestCreateEntity(engine::editor::CreateKind::Cube);
+    REQUIRE(app->tick());
+    const engine::Entity created = app->selection().primary();
+    const engine::Transform* const transform = app->world().get<engine::Transform>(created);
+    REQUIRE(transform != nullptr);
+    CHECK(transform->position.x == 5.0F);
+    CHECK(transform->position.z == -7.0F);
+    // The resting height READ from the catalog mirror, never typed -- and never the pivot's 3.
+    const auto cube = static_cast<std::uint32_t>(engine::render::PrimitiveId::Cube);
+    CHECK(transform->position.y == -engine::editor::primitiveLocalBounds(cube).min.y);
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: the Hierarchy's one-shot reaches the drain exactly once (task E.5.2, I249)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "create i249", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = e52App(*device, *window, ctx);
+    auto* const hierarchy = dynamic_cast<engine::editor::HierarchyPanel*>(app->panels().find("Hierarchy"));
+    REQUIRE(hierarchy != nullptr);
+    engine::World& world = app->world();
+    const std::size_t entitiesBefore = world.entityCount();
+
+    hierarchy->requestCreate(engine::editor::CreateKind::Sphere);
+    REQUIRE(app->tick());
+    CHECK(world.entityCount() == entitiesBefore + 1U);
+    const engine::Entity created = app->selection().primary();
+    REQUIRE(world.alive(created));
+    const engine::MeshRenderer* const renderer = world.get<engine::MeshRenderer>(created);
+    REQUIRE(renderer != nullptr);
+    CHECK(renderer->primitive == static_cast<std::uint32_t>(engine::render::PrimitiveId::Sphere));
+    CHECK(app->commands().undoLabel() == "Create Sphere");
+
+    // Two more ticks and NO further entity: the taker RESET its optional (a moved-from optional stays
+    // engaged -- E.4.3's trap, seed S17). Nothing else can see it.
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+    CHECK(world.entityCount() == entitiesBefore + 1U);
+
+    // The Hierarchy's Create Empty is the pipeline's (AC-11).
+    hierarchy->requestCreate(engine::editor::CreateKind::Empty);
+    REQUIRE(app->tick());
+    CHECK(world.entityCount() == entitiesBefore + 2U);
+    CHECK(app->commands().undoLabel() == "Create Empty");
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE(
+    "editor: a create behind a modal is refused and counted, then works once it closes "
+    "(task E.5.2, I250)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "create i250", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    // I190's fixture: a scene from ANOTHER project raises the containment offer, a modal.
+    const std::string rootA = makeNamedProject("ProjA");
+    const std::string rootB = makeNamedProject("ProjB");
+    const std::string sceneInB = rootB + "/x.scene.json";
+    REQUIRE(engine::editor::writeTextFileAtomic(sceneInB, startupSceneText(3)).empty());
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = rootA,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+    app->requestOpenScene(sceneInB);
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+    REQUIRE(app->sceneContainmentOfferOpen());
+
+    const std::size_t entitiesBefore = app->world().entityCount();
+    const std::size_t refusedBefore = app->createRefusedCount();
+    app->requestCreateEntity(engine::editor::CreateKind::Cube);
+    REQUIRE(app->tick());
+    CHECK(app->world().entityCount() == entitiesBefore);
+    CHECK(app->createRefusedCount() == refusedBefore + 1U);
+    CHECK(app->sceneContainmentOfferOpen());  // the refusal changed nothing about the modal
+
+    app->requestSceneContainmentDismiss();
+    REQUIRE(app->tick());
+    REQUIRE_FALSE(app->sceneContainmentOfferOpen());
+
+    // ANTI-VACUITY: the SAME request is not refused once the modal is gone.
+    app->requestCreateEntity(engine::editor::CreateKind::Cube);
+    REQUIRE(app->tick());
+    CHECK(app->world().entityCount() == entitiesBefore + 1U);
+    CHECK(app->createRefusedCount() == refusedBefore + 1U);  // unmoved
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: the Create glue no tier can click holds as source text (task E.5.2, I253)") {
+    // Comment-stripped code lines only (editorSourceCodeLines), so a sentence in a comment never counts.
+    // NO #if.
+    const auto codeOf = [](std::string_view leaf) {
+        std::string path = AERO_EDITOR_SRC_DIR;
+        path += "/";
+        path += leaf;
+        const std::vector<std::string> code = editorSourceCodeLines(path);
+        REQUIRE(code.size() > 20U);  // ANTI-VACUITY: the file was really read
+        return code;
+    };
+    const std::vector<std::string> shell = codeOf("shell_ui.cpp");
+    const std::vector<std::string> hierarchy = codeOf("hierarchy_panel.cpp");
+    const std::vector<std::string> menuUi = codeOf("create_menu_ui.cpp");
+    const std::vector<std::string> inspector = codeOf("inspector_panel.cpp");
+
+    SUBCASE("(a) the menu bar and both Hierarchy menus call the ONE drawing helper") {
+        CHECK(countLinesContaining(shell, "drawCreateMenuItems(") == 1U);
+        CHECK(countLinesContaining(hierarchy, "drawCreateMenuItems(") == 2U);
+    }
+    SUBCASE("(b) the helper walks the table and names no kind") {
+        CHECK(countLinesContaining(menuUi, "CreateKind::") == 0U);
+        // A known-present needle, so the read is live.
+        CHECK(countLinesContaining(menuUi, "createMenuEntries()") >= 1U);
+    }
+    SUBCASE("(c) createSeed( is spelled by exactly its definition and its one caller") {
+        std::vector<std::string> naming;
+        std::size_t scanned = 0;
+        std::error_code ec;
+        const std::filesystem::path srcRoot(AERO_EDITOR_SRC_DIR);
+        const std::filesystem::recursive_directory_iterator walk(srcRoot, ec);
+        REQUIRE_FALSE(ec);
+        for (const std::filesystem::directory_entry& entry : walk) {
+            if (!entry.is_regular_file() || entry.path().extension().string() != ".cpp") {
+                continue;
+            }
+            ++scanned;
+            if (countLinesContaining(editorSourceCodeLines(entry.path().string()), "createSeed(") > 0U) {
+                naming.push_back(entry.path().filename().string());
+            }
+        }
+        std::sort(naming.begin(), naming.end());
+        const std::vector<std::string> expected{
+            "create_menu.cpp",  // the definition
+            "editor_app.cpp",   // the one caller, applyCreate
+        };
+        CHECK(naming == expected);
+        REQUIRE(scanned > 90U);
+    }
+    SUBCASE("(d) the menu bar builds no command; the Hierarchy builds exactly one (Create Child's)") {
+        CHECK(countLinesContaining(shell, "CreateEntityCommand") == 0U);
+        CHECK(countLinesContaining(hierarchy, "make_unique<CreateEntityCommand>") == 1U);
+    }
+    SUBCASE("(e) the Inspector names no component and no field") {
+        for (const std::string_view needle :
+             {"MeshRenderer", "Environment", "primitive", "backgroundMode", "ambientMode"}) {
+            CAPTURE(needle);
+            CHECK(countLinesContaining(inspector, needle) == 0U);
+        }
+        CHECK(countLinesContaining(inspector, "namedSelectorRow(") >= 1U);  // the known-present control
+    }
+    SUBCASE("(f) every item in the menu bar's Create menu takes the modal gate") {
+        const std::size_t start = soleLineContaining(shell, "BeginMenu(\"Create\")");
+        std::size_t end = start + 1U;
+        while (end < shell.size() && shell[end].find("ImGui::EndMenu();") == std::string::npos) {
+            ++end;
+        }
+        REQUIRE(end < shell.size());
+        std::size_t checked = 0;
+        for (std::size_t i = start + 1U; i < end; ++i) {
+            if (shell[i].find("MenuItem(") != std::string::npos ||
+                shell[i].find("drawCreateMenuItems(") != std::string::npos) {
+                CAPTURE(shell[i]);
+                CHECK(shell[i].find("fileEnabled") != std::string::npos);
+                ++checked;
+            }
+        }
+        REQUIRE(checked >= 2U);  // the Empty item and the helper call
+    }
+    SUBCASE("(g) a named-selector pick is a resetField, never a pushFieldEdit") {
+        const std::size_t begin = soleLineContaining(inspector, "void InspectorPanel::drawNamedSelector(");
+        std::size_t end = begin;
+        while (end < inspector.size() && inspector[end] != "}") {
+            ++end;
+        }
+        REQUIRE(end < inspector.size());
+        const std::vector<std::string> body(inspector.begin() + static_cast<std::ptrdiff_t>(begin),
+                                            inspector.begin() + static_cast<std::ptrdiff_t>(end));
+        CHECK(countLinesContaining(body, "resetField(") == 1U);
+        CHECK(countLinesContaining(body, "pushFieldEdit(") == 0U);
+    }
+}
+
+TEST_CASE("editor: a create raises the Inspector in the tick it lands (task E.5.2, I255)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "create i255", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = e52App(*device, *window, ctx);
+
+    // Material in front, and REQUIRE the Inspector really is not drawing (E.3.2: a baseline taken before the
+    // settle reads a layout artefact).
+    app->requestPanelFocus("Material");
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+    const std::uint64_t inspectorIdle = app->panelDrawnCount("Inspector");
+    REQUIRE(app->tick());
+    REQUIRE(app->panelDrawnCount("Inspector") == inspectorIdle);
+
+    const std::uint64_t before = app->panelDrawnCount("Inspector");
+    const std::size_t appliesBefore = app->focusRouteApplyCount();
+    app->requestCreateEntity(engine::editor::CreateKind::Cube);
+    REQUIRE(app->tick());                               // ONE tick
+    CHECK(app->panelDrawnCount("Inspector") > before);  // IN that tick
+    CHECK(app->focusRouteApplyCount() == appliesBefore + 1U);
+    CHECK(app->lastRoutedPanelId() == "Inspector");
 
     app->requestQuit();
     CHECK(app->tick() == false);

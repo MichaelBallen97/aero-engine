@@ -2005,3 +2005,20 @@ same `CollapsingHeader` is a different entry inside the child than it is in the 
 mode boundary restores every collapsed section to `DefaultOpen`. One function called from two places
 keeps the two modes drawing the same **code**; that is not the same as the same **state**. **Anything
 ImGui keys by window must be a panel member if it is to survive the flip.**
+
+## The Create menu (task E.5.2)
+
+**One pipeline: the hosts RECORD a `CreateKind`, and only `EditorApp::applyCreate` places, pushes, frames
+and reveals.** The menu bar (`ShellUiState::createRequest`, copied after `drawShellUi`) and both Hierarchy
+context menus (`pendingCreate`) write a one-shot; the reconcile block drains both, after the drop drain and
+**before** the context router, so the Inspector rises in the tick a create lands. A new entry is **one row
+in `createMenuEntries()` plus one arm in `createSeed()`** — `create_menu_ui.cpp` walks the table and names
+no kind. A create is the **seeded `CreateEntityCommand`**, one undo step with typed writes inside its first
+`redo()`; never a panel write, never `AddComponentCommand` + `SetFieldCommand` (which need meta and would
+split the undo). Every typed create is at the **root**; Create Child is the one parenting create.
+
+**Framing: a box is fitted exactly as `F` fits it; a point is recentred, never zoomed**
+(`EditorCamera::frameCreated`). `F` itself is unchanged. `ViewportPanel::frameCreatedEntity` is the editor
+camera's **second writer** and runs from the reconcile block, **before the draw walk** — never from
+`renderScene` (INV-3). Undo does not move the camera back and redo does not re-frame: the camera is tool
+state.

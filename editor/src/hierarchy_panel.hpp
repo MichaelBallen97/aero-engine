@@ -13,7 +13,8 @@
 // eachChild's cursor -- world.hpp:157-163 -- and unbalance TreeNodeEx/TreePop) is impossible by
 // construction. EVERY walk here is an explicit stack, never a recursive function: misc-no-recursion
 // is --warnings-as-errors in CI (D13/I7).
-#include <aero/editor/asset_drag.hpp>  // task 3.1.5 -- AssetDragPayload, HierarchyAssetDrop
+#include <aero/editor/asset_drag.hpp>   // task 3.1.5 -- AssetDragPayload, HierarchyAssetDrop
+#include <aero/editor/create_menu.hpp>  // task E.5.2 -- CreateKind, by value below; PUBLIC and PURE
 #include <aero/editor/entity_ops.hpp>
 #include <aero/editor/panel.hpp>
 #include <aero/editor/tree_walk.hpp>
@@ -50,6 +51,25 @@ public:
         pendingAssetDrop = HierarchyAssetDrop{.payload = payload, .targetRow = targetRow};
     }
 
+    // ---- task E.5.2: the create one-shot, drained by tick() -- takeAssetDropRequest's shape ----------
+    // The panel RECORDS a kind; EditorApp places, pushes, frames and reveals (D1), because a create needs the
+    // viewport camera this panel does not have. Both "Create Empty" items and the typed entries in BOTH
+    // context menus write pendingCreate. std::exchange RESETS the member (a moved-from optional stays
+    // engaged -- E.4.3's rule, which I249's "no further entity" arm is the only witness of).
+    [[nodiscard]] std::optional<CreateKind> takeCreateRequest() noexcept {
+        return std::exchange(pendingCreate, std::nullopt);
+    }
+    // The SEAM: it writes the SAME member the menu items write, so a test and a click are indistinguishable
+    // downstream (requestAssetDrop's shape).
+    void requestCreate(CreateKind kind) noexcept { pendingCreate = kind; }
+    // Called by EditorApp's create drain with the entity it just created: the Shift-range anchor moves to it
+    // (what applyPending's old CreateEmpty arm did), and the next drawTree opens its ancestors and scrolls
+    // its row into view when it is not visible.
+    void revealEntity(Entity entity) noexcept {
+        rangeAnchor = entity;
+        revealTarget = entity;
+    }
+
 private:
     // performance-enum-size: the explicit underlying type is mandatory, like every engine enum.
     enum class ActionKind : std::uint8_t {
@@ -58,7 +78,6 @@ private:
         Toggle,  // target: the ctrl/cmd-clicked row
         Range,   // target: the shift-clicked row (the anchor is a member)
         ClearSelection,
-        CreateEmpty,
         CreateChild,  // target: the parent (the selection primary)
         Delete,
         Duplicate,
@@ -97,15 +116,21 @@ private:
     // or defensively dropped in phase 1 if that release is ever missed (E24-style: see onDraw).
     Entity deferredSelectTarget{};
     // Review round 2, Gap 2: the just-created/duplicated entity a collapsed ancestor must open to
-    // reveal. `revealTarget` is set by applyPending and consumed (turned into `revealPath`, the
+    // reveal. `revealTarget` is set by applyPending (Create Child, Duplicate) or by revealEntity
+    // (EditorApp's create drain) and consumed (turned into `revealPath`, the
     // ancestor chain, then cleared) by the VERY NEXT drawTree -- one frame after creation, since the
     // entity does not exist yet during the frame that creates it (drawTree runs before applyPending,
     // D12's phase order).
     Entity revealTarget{};
     std::vector<Entity> revealPath;
+    // task E.5.2: the row to scroll into view on THIS walk -- copied from revealTarget at the top of drawTree
+    // and cleared when that row is drawn, or unconditionally at the end of drawTree, so a target whose row is
+    // never drawn cannot scroll on a later frame.
+    Entity scrollTarget{};
     bool renameFocusPending = false;
     PendingAction pending{};
     std::optional<HierarchyAssetDrop> pendingAssetDrop;  // task 3.1.5 -- drained by tick(), never here
+    std::optional<CreateKind> pendingCreate;             // task E.5.2 -- drained by tick(), never here
 };
 
 }  // namespace engine::editor
