@@ -242,12 +242,13 @@ void RootOrder::clear() noexcept {
 void seedDefaultScene(World& world) {
     const Entity camera = createEntity(world, {}, "Main Camera");
     if (camera.valid()) {
-        world.add<Transform>(camera, Transform{.position = {0.0F, 1.0F, 5.0F}});
+        world.add<Transform>(camera, Transform{.position = DEFAULT_SCENE_CAMERA_POSITION});
         world.add<Camera>(camera, Camera{});
     }
     const Entity light = createEntity(world, {}, "Directional Light");
     if (light.valid()) {
-        world.add<Transform>(light, Transform{.rotation = fromAxisAngle(Vec3{1.0F, 0.0F, 0.0F}, radians(-50.0F))});
+        const Quat sunRotation = fromAxisAngle(Vec3{1.0F, 0.0F, 0.0F}, DEFAULT_SCENE_SUN_PITCH_RADIANS);
+        world.add<Transform>(light, Transform{.rotation = sunRotation});
         world.add<DirectionalLight>(light, DirectionalLight{});
     }
     const Entity cube = createEntity(world, {}, "Cube");
