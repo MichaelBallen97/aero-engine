@@ -10,9 +10,9 @@ Two platform matrices, never to be conflated: the **editor** runs on macOS/Windo
 
 ## Current state — read this first
 
-**Phase E (Editor Experience) is the open front**, executing between Phase 3 and Phase 4. **Eighteen of its
-24 tasks are merged: Epics E.1, E.2, E.3 and E.4 are all CLOSED IN CODE — E.4 five of five, with E.4.1
-through E.4.5 macOS-validated. E.5 and E.6 are what is left — six tasks, planning
+**Phase E (Editor Experience) is the open front**, executing between Phase 3 and Phase 4. **Nineteen of its
+24 tasks are merged: Epics E.1, E.2, E.3 and E.4 are all CLOSED IN CODE, and E.5.1 — which opens Epic E.5 —
+is merged and macOS-validated 13 / 13. E.5.2 and E.6.1–E.6.4 are what is left — five tasks, planning
 only.** Phase 3 remains OPEN behind it: all seven of its epics are closed in code, and what is left is its
 deliverable gate and the validation debt.
 
@@ -25,15 +25,16 @@ In Notion its `Phase #` is `3.5` — a sort key, not an identifier.
 (E.2.2). Nothing since E.2.2 has added one, so the five-generation-site rule and the component-count sweep
 have not fired since — **they still apply in full to the next built-in, whenever one arrives.**
 
-**Next free ids, measured by a whole-`tests/` token sweep over every ref after E.4.5's validation
-follow-ups: `I245` at the ImGui tier**, `AA68`, `AD77`, `AM29`, `AV66`, `BV10`, `CC15`, `DR28`, `IR13`,
-`IX19`, `MB27`, `TS11`. Taken tier-0 prefixes include `MR` (E.3.4, `MR1`–`MR21`), `PJ` (E.4.1,
+**Next free ids, measured by a whole-`tests/` token sweep over every ref after E.5.1's merge: `I246` at the
+ImGui tier**, `AA68`, `AD77`, `AM29`, `AV66`, `BR31`, `BV10`, `CC15`, `DR28`, `IR13`, `IX19`, `MB27`,
+`PX6`, `SQ15`, `TS11`. Taken tier-0 prefixes include `MR` (E.3.4, `MR1`–`MR21`), `PJ` (E.4.1,
 `PJ1`–`PJ57`), `CN` (E.4.2, `CN1`–`CN25`), `IX` / `BV` (E.4.4, `IX1`–`IX18`, `BV1`–`BV9`) and `MB` / `CC`
 (E.4.5, `MB1`–`MB26`, `CC1`–`CC14`); `MC` is mesh cook's (`MC1`–`MC58`), which is why the card cache took
 `CC`. The other ceilings: `SS` 54, `IO` 21, `TS` 10, `IR` 12. E.4.1 took `I176`–`I185`, E.4.2
 `I186`–`I192`, E.4.3 `I210`–`I226`, E.4.4 `I227`–`I229`, E.4.4's validation fix (#111) `I230`–`I231` plus
-`AV55`–`AV59`, E.4.5 `I232`–`I243` plus `AV60`–`AV65`, `TS5`–`TS10` and `IR9`–`IR12`, and E.4.5's
-validation follow-ups `I244`. **`I193`–`I209` are FREE and were never claimed by anything that merged** — a
+`AV55`–`AV59`, E.4.5 `I232`–`I243` plus `AV60`–`AV65`, `TS5`–`TS10` and `IR9`–`IR12`, E.4.5's
+validation follow-ups `I244`, and E.5.1 `I245` plus `BR23`–`BR30`, `SQ13`–`SQ14` and `PX5`.
+**`I193`–`I209` are FREE and were never claimed by anything that merged** — a
 gap costs nothing, and renumbering a block into one invites exactly the silent collision this project has
 recorded.
 
@@ -41,10 +42,13 @@ recorded.
 (1) The directional light **already** derives its direction from the entity's −Z world axis
 (`scene_renderer.cpp:191-208`) — "it behaves like a point light" was an *affordance* gap, not a math bug,
 because nothing drew the direction and nothing said which of two directional lights the bridge picked.
-(2) `buildRenderView`'s **primitive arm never assigns `instance.material`** (`scene_renderer.cpp:99-107`),
-so a material dropped on a primitive is written to the component through the undoable command and then
-silently discarded at draw time — **a confirmed defect, still open, owned by E.5.1**; E.1.4, E.2.1, E.2.2,
-E.2.3 and E.2.4 have each reproduced it rather than fixing it in passing. (3) `rhi::PrimitiveType::LineList`
+(2) **CLOSED BY E.5.1 (PR #114, `834bcb3`).** `buildRenderView`'s primitive arm used to never assign
+`instance.material`, so a material dropped on a primitive was written, loaded by the ledger and then
+discarded at draw time — reproduced rather than fixed by E.1.4, E.2.1, E.2.2, E.2.3 and E.2.4. Both
+builders' primitive arms (`scene_renderer.cpp:193-202` and `:381-397`) now resolve through the ONE
+`resolveMaterial`, whose second parameter is a fallback handle — `NO_SOURCE_MATERIAL` for a primitive — and
+**both move together**, because the selection mask takes its cull mode from the resolved material.
+(3) `rhi::PrimitiveType::LineList`
 and `FillMode::Line` existed since 0.4.1 with **no consumer at all** until E.1.1, still the tree's only
 `LineList` pipeline set — **`FillMode::Line` remains unexercised and wireframe-of-meshes is an unowned
 handoff.** (4) **CLOSED BY E.4.2, and replaced rather than deleted because the residue is deliberate.**
@@ -60,7 +64,7 @@ it is one line plus a cost measurement), `<root>/Library/` as a save destination
 or created, anywhere. Those four are the unowned handoffs, not a gap in the predicate.
 
 > **Per-task history — what each task shipped, what it deliberately left out, every trap and every dead end —
-> lives in `docs/10-engineering-log.md`**, which carries a `### <task>` entry for every task through E.4.5,
+> lives in `docs/10-engineering-log.md`**, which carries a `### <task>` entry for every task through E.5.1,
 > each with its own `#### The sentences that govern new work` subsection. **Grep it before re-deriving
 > anything.**
 >
@@ -83,7 +87,7 @@ validation pass exists for any task in any phase.** N-E = not executable, N-R = 
 | E.1.3 View-axis gizmo | #94, fix #95 | `6fb323c`, `0ab204d` | 11 PASS / 1 partial / 2 N-E / 1 N-R — **the pass found the ortho gizmo-suppression defect** |
 | E.1.4 Silhouette selection outline | #96 | `3aadffb` | 10 PASS / 1 N-E |
 | E.1.5 Transform-gizmo restyle | #97 | `cdc81ce` | **UNRUN on every platform** |
-| E.2.1 `Environment` + sky pass | #98 | `28deab0` | 10 PASS / 3 open |
+| E.2.1 `Environment` + sky pass | #98 | `28deab0` | 11 PASS / 2 open — row 4's normal-map arm closed by E.5.1's pass |
 | E.2.2 Point falloff + `SpotLight` | #99 | `bf363e4` | 12 / 12 |
 | E.2.3 Light gizmos + viewport icons | #100 | `00e4c7b` | 12 / 12 |
 | E.2.4 Material-preview parity | #101 | `ae817dc` | 12 / 12 |
@@ -96,6 +100,7 @@ validation pass exists for any task in any phase.** N-E = not executable, N-R = 
 | E.4.3 Asset file operations | #108 | `3dff5ef` | **59 / 59, nothing open** (53/57 on the first run; the 2 failures were one defect, fixed by #109 `d228a99`, and the fix round added 2 records). All six seed-critical rows pass, so S9, S11, S14, S18, S21, S22 and S28 all have witnesses |
 | E.4.4 Browser ignore rules | #110, fix #111 | `28e9529`, `f215cbb` | **8 / 8**, nothing open — **the first run failed row 2 on two real defects no lane could see**: the UI font drew `?` for every `…` and `—`, and the open Issues list fell below the panel, both fixed by #111. 29 sabotage seeds, no hole (#111 ran 24 more and its CI fix 5, all caught); the code-review round found one blocking defect — an orphan beside an ignored file could never be deleted |
 | E.4.5 Material names & thumbnails | #112, fix #113 | `caf8a74`, `fd4eb40` | **11 / 11** executable rows, row 11 N-E (1× displays); row 6's first run failed one check, fixed by #113 |
+| E.5.1 Primitive material binding fix | #114 | `834bcb3` | **13 / 13**, nothing failed — 17 sabotage seeds, no hole; its row 5 closes E.2.1 row 4's normal-map arm |
 
 **E.3.2 landed before E.3.1** — legal, disjointly id-reserved; the reservation is discharged and the
 numbering is contiguous.
@@ -109,7 +114,7 @@ numbering is contiguous.
 | **Phase 2** — Editor | **COMPLETE, gate met 2026-08-02.** All six epics closed and macOS-validated; Windows/Linux rows pending for every task (`editor/VALIDATION.md`). Gate artifact: `samples/phase-2-editor-scene/` — data, deliberately not `add_subdirectory`'d. |
 | **Phase 3** — Asset Pipeline & 3D Content | **OPEN.** All seven epics (3.1–3.7) **CLOSED in code**. What is left is the gate below and the validation debt. |
 | **Phase 3 gate** | Drop a rigged glTF/FBX in → PBR materials + shadows + a playing animation + **an audible sound**. The audible half exists in code as of 3.7.2 and **has never been heard on any platform.** |
-| **Phase E** — Editor Experience | **OPEN.** Epics E.1, E.2, E.3 and E.4 **CLOSED in code** — 18 of 24 merged, see the index above. **E.5 and E.6 are the open front: six tasks, planning only.** TWO validation pages are unrun (E.1.5, E.3.2) and are the whole of this OS's remaining Phase E risk. |
+| **Phase E** — Editor Experience | **OPEN.** Epics E.1, E.2, E.3 and E.4 **CLOSED in code**, and E.5.1 merged — 19 of 24, see the index above. **E.5.2 and E.6 are the open front: five tasks, planning only.** TWO validation pages are unrun (E.1.5, E.3.2) and are the whole of this OS's remaining Phase E risk. |
 | **Phase E gate** | Open a project and land in the scene you were last editing, on a lit grid floor under a sky; create a Cube from the menu, drop a material on it and see it shade; aim a spot light with a visible gizmo; rename, move and delete assets without leaving the editor. Gate artifact: `samples/phase-E-editor/`. |
 
 ### Engine layers, in dependency order
@@ -898,14 +903,15 @@ is a configure-time property. **Rebuild before you believe any doctest number, a
 presets so a disagreement is visible.** A recorded total goes stale the same way: `origin/main`'s own shell
 total was one stale at E.1.4's gate. **Read the binary, never the block.**
 
-**At E.4.5's merge (`caf8a74`)**, measured on both presets out of freshly rebuilt trees and agreeing between
-them, with both reduced configurations configured fresh. E.4.5 moved `aero_editor_inspector_test` (+4) by
-writing its `IR9`–`IR12` cases into it — a binary the task writes cases into, not a component:
+**At E.5.1's merge (`834bcb3`)**, measured on `3212047` (its tree) on both presets out of rebuilt trees and
+agreeing between them, with both reduced configurations configured fresh. E.5.1 moved only `aero_tests` (+10)
+and `aero_editor_imgui_test` (+2); the imgui binary's branch point was **265**, not E.4.5's 264, because `I244`
+landed in #113:
 
 | Measurement | Value |
 |---|---|
-| `ctest -N` | **178**, entry set byte-identical between presets AND to #111's; **165** shader-tools-OFF (exactly the 13 `shaderc.*` removed), **93** reflect-tools-OFF (81 `reflect-gen.*` + four doctest binaries removed), nothing added in either; `cooker.*` **70 / 70 / 70** |
-| doctest, seven binaries | **1404 / 2180 / 264 / 40 / 63 / 10 / 28** |
+| `ctest -N` | **178**, entry set byte-identical between presets AND to E.4.5's; **165** shader-tools-OFF (exactly the 13 `shaderc.*` removed), **93** reflect-tools-OFF (81 `reflect-gen.*` + four doctest binaries removed), nothing added in either; `cooker.*` **70 / 70 / 70** |
+| doctest, seven binaries | **1414 / 2180 / 267 / 40 / 63 / 10 / 28** |
 | guards | math **535**, platform **92**, rhi **163**, scene **92**, golden-rule **165**, project-no-delete **A=7 B=93** (2 permitted), audio **11-3-55**, probes **6-57** |
 | `git ls-files` | `editor/src/*.cpp` **93**, `editor/include/aero/editor/*.hpp` **65** |
 
@@ -946,10 +952,10 @@ that peaked at 7.6 GB here. **Each run must name which binaries it built and ran
 **`check-math-boundary.sh` counts `git ls-files`, so it reads a STALE number until new files are `git add`ed**
 — stage first, then measure.
 
-**`I136` IS DISPLAY-DEPENDENT, SO THE LOCAL GPU TIER GATES AT EITHER 263 OR 264 OF 264 AND THE RUN MUST SAY
+**`I136` IS DISPLAY-DEPENDENT, SO THE LOCAL GPU TIER GATES AT EITHER 266 OR 267 OF 267 AND THE RUN MUST SAY
 WHICH.** It fails `REQUIRE(drawExtent.width > 4U)` with value **4** on a 2x display — deterministically at
 E.3.4's and E.4.1's gates and at E.4.4's branch point, on an unmodified `HEAD` — and it **PASSED at E.4.2's,
-E.4.4's, #111's and E.4.5's gates** (30 assertions each), the last three measured with only 1x displays
+E.4.4's, #111's, E.4.5's and E.5.1's gates** (30 assertions each), the last four measured with only 1x displays
 attached.
 **A green run is therefore not
 evidence it is fixed**; it is pre-existing, it is the DPI story's, and it is handed to E.6.1. **Name it
@@ -983,11 +989,14 @@ mono 48 kHz 0.5 s, **exactly 48 064 B each**, cut at a whole number of cycles so
 `docs/10`; this is the ledger of what is still owed.
 
 **TWO PAGES HAVE NOT BEEN RUN ON ANY PLATFORM: E.1.5's AND E.3.2's.** They are the whole of Phase E's
-validation risk on this OS — every other task in E.1–E.4 is macOS-validated (see the index above).
-**E.4.5's page is RUN, 11 / 11 executable rows** (row 11, HiDPI, is not executable on 1× displays): spheres of
-42 / 63 / 83 px on 52 / 78 / 104 px tiles, every caption line 1 byte-identical to the branch point, flat RSS over a
-300-material scroll, and 0 of 1 174 690 differing pixels on a project with no material. **Row 6's first run
-failed one check** — a long value in an asset field was clipped with no `…` — fixed by #113 (`I244`).
+validation risk on this OS — every other task in E.1–E.4 and E.5.1 is macOS-validated (see the index above).
+**E.5.1's page is RUN, 13 / 13, nothing failed** (2026-09-29): the headline Cube red in the first capture after
+the drop, Undo restoring the default bytes exactly, a two-sided Plane drawn AND outlined from below while a
+single-sided one is neither, a refused material drawing the exact default with one Console line — and its row 5
+closed E.2.1's row 4 normal-map arm. Its page also records four corrections to its own text (row 2's Console
+lines need a Debug build; row 8's viewport follows through the ledger's Apply nudge, not the watcher).
+**E.4.5's page is RUN, 11 / 11 executable rows** (row 11, HiDPI, is not executable on 1× displays); **row 6's
+first run failed one check** — a long value in an asset field was clipped with no `…` — fixed by #113 (`I244`).
 **E.4.4's page is RUN, 8 / 8, and its first run is the newest proof that a pass finds what every tier
 misses**: it failed row 2 on two real defects no lane could see — a font drawing `?` and a list below its
 panel — and the re-run on #111 closed seeds `S15` (row 4) and `S8` (row 5) on real hardware and ran
@@ -1047,11 +1056,11 @@ behavioural half, and row 8 for the gizmo-drag hold.
 `SkyPass::create` failure arm, is unreachable at runtime in any build whose shaders cooked, so the source-text
 pin in `I140(b)` is its only witness — as that page itself states.
 
-**STILL-OPEN RECORDS ON PAGES THAT OTHERWISE PASSED.** E.2.1 has three: row 4's normal-mapped arm is **GATED
-ON E.5.1** (a material dropped on a *primitive* is silently discarded, so the default Cube cannot carry one —
-a dependency nothing recorded before that pass), row 7's `Save Scene` produced **no write and no log line**
-under synthetic input while New Scene, Reset Layout and Undo all worked from the same path — **possibly a real
-defect, explicitly unresolved** — and rows 10/12 lacked a material asset and a Tracy connection. E.1.3 has
+**STILL-OPEN RECORDS ON PAGES THAT OTHERWISE PASSED.** E.2.1 has two — its row 4 normal-mapped arm was
+closed by E.5.1's pass (the bump reads in the ambient-only shade, the witness its seed 8 lacked): row 7's `Save
+Scene` produced **no write and no log line** under synthetic input while New Scene, Reset Layout and Undo all
+worked from the same path — **possibly a real defect, explicitly unresolved** — and rows 10/12 lacked a
+material asset and a Tracy connection. E.1.3 has
 three: row 6's translate/scale-in-ortho arm (blocked by the defect PR #95 fixed, re-runnable now), row 7 (this
 scene's only floor is a debug LINE grid, which receives no shadow — a solid plane is **E.5.2's**) and row 13's
 cost A/B, which needs a second build at the branch point.
@@ -1095,7 +1104,7 @@ display's ICC profile, and **there is no `renderFrame` Tracy zone in this tree**
 
 ### Next
 
-**E.5 and E.6 are the open front: six tasks, planning only** — E.5.1–E.5.2 and E.6.1–E.6.4.
+**E.5.2 and E.6 are the open front: five tasks, planning only** — E.5.2 and E.6.1–E.6.4.
 See `docs/tasks/phase-E.md`, and `docs/tasks/phase-3.md` for what Phase 3 still owes.
 
 **Ownership of the open work.** **E.4.3 IS MERGED, and it did NOT use `directoryWithin` /
@@ -1112,9 +1121,10 @@ behaviour as the "before", and that handoff is **still open**. **E.4.5 is MERGED
 tile shows a sphere rendered and framed by the thumbnail's own rig, a base-colour swatch until then, and the
 document's name on four surfaces — what it left out, and its handoffs, are in `docs/10`. **And
 `assetReferenceFieldWidth` is ONE formula with TWO hosts**, so a
-theme or DPI change moves the Inspector's reference row and the material slot's together. **E.5.1** is an S-sized fix for the confirmed `instance.material`
-defect and is independent of everything; E.2.4's `PX` battery gains a non-default-material arm the day it
-lands. **E.5.2** owns the coplanar-geometry problem, has a ground colour to sit its plane against, and owns
+theme or DPI change moves the Inspector's reference row and the material slot's together. **E.5.1 is MERGED**
+(`834bcb3`): a material on a primitive shades, and E.2.4's `PX` battery has its non-default-material arm,
+`PX5`; every primitive E.5.2's Create menu makes takes a material the moment it exists, with no further bridge
+work. **E.5.2** owns the coplanar-geometry problem, has a ground colour to sit its plane against, and owns
 the Create menu's Light entries (Directional / Point / Spot), which now land something **visible** the moment
 they are created — the default scene is deliberately unchanged by every Phase E task so far, and its seventeen
 `entityCount() == 4` pins are byte-identical. **E.6.1** owns the DPI story E.1.5 deferred, plus the two
@@ -1143,7 +1153,7 @@ button's disabled predicate), each with its pinned-source citation, are in `.cla
 `"Delete orphaned .meta?"` from a real row and confirmed it by click and by **Enter**. Until then, Enter had
 only been argued from identical code.
 
-**TWENTY-THREE UNOWNED HANDOFFS — one per bullet below; re-count the bullets, never the headline.** It read
+**TWENTY-FOUR UNOWNED HANDOFFS — one per bullet below; re-count the bullets, never the headline.** It read
 "NINE" over a list that already held thirteen, because two "smaller" items, the exposure clause and
 `FillMode::Line` were never counted. Handoffs recorded in their own paragraphs elsewhere in this block (fact
 4's four permitted cases, the two inspector-row gaps, the closed `File` section) are not repeated here.
@@ -1191,6 +1201,8 @@ only been argued from identical code.
 - **A persisted thumbnail store under `Library/`** (E.4.5).
 - **An Apply that refreshes the browser without the watcher** — declined at E.4.5: an Apply reaches the
   browser through the watcher, as every asset kind's edit does.
+- **The Delete log line's trash path** (found on E.5.1's macOS pass) — it prints `Library/Trash/1` while the
+  directory on disk is `0001`: E.4.3's sequence number printed unpadded. Cosmetic; one format specifier.
 
 **E.1.1's THICK-LINE HANDOFF IS FIRED, NOT CLEARED AND NOT DEFERRED.** E.2.3's macOS pass measured it: icons
 scale exactly 2x and hold 22 points, but **387 of 441 sampled runs across the gizmo are ONE DEVICE PIXEL** —

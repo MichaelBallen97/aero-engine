@@ -733,7 +733,7 @@ with no `…` — fixed by PR #113 (`fd4eb40`), which also made an unhandled enu
 **Goal:** making a cube should be a menu item, and the material you assign should show up. Neither is true: there is no create-primitive command anywhere, and a material assigned to a primitive is written to the component and then ignored by the renderer.
 **Definition of Done:** every built-in entity type is creatable from a menu; a material dropped on a primitive renders with that material.
 
-### E.5.1 Primitive material binding fix · P0 · S · depends: 3.1.5, 3.4.1
+### E.5.1 Primitive material binding fix · P0 · S · depends: 3.1.5, 3.4.1 · **MERGED** — PR #114, `834bcb3`
 **Goal:** fix a confirmed defect. `buildRenderView`'s primitive arm never assigns
 `instance.material`; `resolveMaterial` is called only from the imported-mesh arm. So a `.aeromat`
 dropped on a primitive entity **is** written to `MeshRenderer::material` through the undoable
@@ -745,6 +745,19 @@ Subtasks:
 - Resolve the material on the primitive arm; the unresolved/in-flight case counted, not silently dropped
 - A test that a primitive plus a valid material GUID draws with that material's parameters
 - A test that a primitive with a nil material GUID still draws byte-identically to today
+
+_Outcome:_ **merged as PR #114 (`834bcb3`, a true merge commit), six commits — the plan's five and one from the
+code-review round — on the first CI run (`36323500277`, 6 / 6). Landed S, as sized: one production TU.** Both
+primitive arms — `buildRenderView`'s and `buildSelectionMaskSet`'s, in one commit, because the selection mask
+takes its cull mode from the resolved material — now resolve through the one `resolveMaterial`, whose second
+parameter became a fallback handle (`NO_SOURCE_MATERIAL` for a primitive). All three subtasks are discharged:
+the unresolved case is counted, never silently dropped (`BR24`, `BR25`, `BR27`, `SQ13`, `I245`'s steady
+`viewportUnresolvedMaterials() == 1`); a primitive with a valid GUID draws with that material's parameters,
+byte for byte against the material preview's path (`BR23`, `BR30`, `PX5` — E.2.4's recorded handoff); and a
+NIL material is field-for-field the pre-fix instance (`BR26`, `PX5`(b)). 17 sabotage seeds, no hole.
+**macOS-validated 13 / 13 (2026-09-29), nothing failed** — and its row 5 closes E.2.1's row 4 normal-map arm,
+which had been gated on this fix. With it, **the E.5 Definition of Done's second clause holds**: a material
+dropped on a primitive renders with that material.
 
 ### E.5.2 Create menu + named primitive selector · P0 · M · depends: 2.2.1, 2.4.2, E.2.2
 **Goal:** creating content should not require knowing that `1` means Sphere. Today a primitive is made

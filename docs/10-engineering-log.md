@@ -18113,3 +18113,131 @@ PR #113 also closed E.4.5's two open points:
 - the right dock's splitter drag succeeds only intermittently, so a pixel A/B must not depend on it;
 - a `tracy-capture` started in a detached subshell dies with the tool call, so keep it in the same shell and
   `wait` for it.
+
+### E.5.1 — Primitive material binding fix — OPENS Epic E.5: one resolver, two builders, and a defect five tasks reproduced
+
+**A material on a primitive draws with that material.** A `.aeromat` dropped on the default Cube, a Sphere
+or a Plane had been written to `MeshRenderer::material` through the undoable command (3.1.5) and loaded into
+the binding table by the scene-asset ledger (3.1.5), and was then discarded by the render bridge:
+`buildRenderView`'s primitive arm never assigned `instance.material`, and `buildSelectionMaskSet`'s arm left
+it default with a comment naming this task. What shipped is one production TU:
+`engine/scene_render/src/scene_renderer.cpp`'s file-local `resolveMaterial` takes a
+`render::MaterialHandle fallbackMaterial` instead of the `MeshBindingSubmesh` it only ever read `.material`
+from, a file-local `constexpr render::MaterialHandle NO_SOURCE_MATERIAL{}` names a primitive's fallback, and
+both primitive arms resolve through the one function before their `push_back`. Comment-only edits to
+`scene_renderer.hpp` (INV-D3's paragraph narrowed to pre-3.1.5 inputs, and the mask bullet) and
+`mesh_renderer.hpp` (the `material` paragraph gains the primitive meaning). No editor, ledger, loader,
+render, shader, rhi, reflect-gen, CMake or format change: `ForwardRenderer::draw` already resolved every
+instance's material before its primitive arm, the primitives already carried UVs and analytic tangents, and
+the ledger already loaded materials referenced only by primitives. **Behaviour change for existing
+projects:** a scene saved since 3.1.5 with a material on a primitive now draws that material.
+
+**Six commits** on `fix/E.5.1-primitive-material-binding`, branch point `a094fd0`: the plan's five
+(`0e3e794` the behaviour-free resolver refactor, `7bdf4f9` both builders in one commit, `702980f` `BR30`,
+`a12e2fa` `PX5`, `761cd3f` `I245`) and one from the code-review round (`3212047`) — merged as **`834bcb3`**
+(PR #114, a true merge commit) on the first CI run, **`36323500277`, 6 / 6 green with `headSha` `3212047`**.
+Measured on `3212047`, both presets rebuilt and agreeing: `ctest -N` **178 → 178**, reduced **165 / 93**,
+entry sets identical to the branch point's (13 `shaderc.*` removed, and 81 `reflect-gen.*` plus four doctest
+binaries removed, nothing added, `cooker.*` **70 / 70 / 70**). doctest **1404 / 2180 / 265 / 40 / 63 / 10 / 28
+→ 1414 / 2180 / 267 / 40 / 63 / 10 / 28**: `aero_tests` **+10** (`BR23`–`BR30`, `SQ13`–`SQ14`) and
+`aero_editor_imgui_test` **+2** (`PX5`, `I245`). The branch point's imgui total was **265**, not E.4.5's 264 —
+`I244` landed in #113. Every guard reads its branch-point value (math 535, platform 92, rhi 163, scene 92,
+golden-rule 165, project-no-delete A=7 B=93, audio 11-3-55, probes 6-57); `git ls-files` **93 / 65**
+unchanged; the four test TUs' `#if` counts unchanged (bindings 2, selection 0, parity 3, imgui 160). **The
+built-in component count stays TEN.**
+
+#### ★ Both builders move in ONE commit, and the reason is a picture
+
+`renderSelectionMask` takes its cull mode from the instance's RESOLVED material (E.1.4's D5). Fixing
+`buildRenderView` alone would draw a two-sided Plane's underside and leave it unoutlined — a selected object
+that looks unselected, the one direction INV-1 forbids. `SQ13` matches the two builders' instances by
+`(model, submesh)` and requires the same handle and the same count; the macOS pass's row 6 is the picture:
+from below, `twosided` is drawn AND outlined, `red` is neither.
+
+#### Where the plan overrode the spec, each re-measured
+
+* **The spec's wrapped call would have failed formatting on every lane.** Each new resolver call is a single
+  statement of 118 / 117 columns at a 12-space indent, under `ColumnLimit: 120`, so clang-format joins the
+  spec's two-line form. The plan writes each on one line — deterministic on both clang-format builds, because
+  the Homebrew/Ubuntu skew only affects statements that must break.
+* **The parameter is `fallbackMaterial`, not `fallback`**: `fallback` put the declaration's first line at 119
+  columns.
+* **The spec's F19 was wrong in substance**: `imgui_layer_test.cpp` carries 160 preprocessor lines, not
+  "seven regions"; the posture (add none) is unchanged.
+* **Eight line citations had drifted**, including CLAUDE.md's fact (2): the arm is `scene_renderer.cpp:174-182`.
+* `NO_SOURCE_MATERIAL` lands with its two callers (commit 2): nothing in `cmake/`, the presets or `.clang-tidy`
+  enables an unused-variable warning, so the choice is on content.
+
+#### Where this implementation departed from the plan, and why
+
+* `auto* const` for three `world.get<MeshRenderer>()` locals — clang-tidy's `modernize-use-auto` refused the
+  plan's spelled type (`BR22`'s own form).
+* `I245`'s refused-arm pipeline delta is taken into a local before its `CHECK`: the plan's lambda held a
+  `REQUIRE`, and doctest wraps a `CHECK` in `try/catch`, so the `REQUIRE` would have degraded to a failure
+  that lets the case run on.
+* The plan's DP selector `*(task 3.1.5?DP*` selects **zero** cases (the names read `, DP`); `??` selects nine.
+* The code-review round's one finding: `BR30`'s and `I245`'s two-sided materials kept glTF's metallic 1
+  against the fixture rule. Neither case reads a pixel, so no assertion moved; fixed in `3212047` and `S1`
+  re-seeded afterwards.
+
+#### ★ The sabotage matrix — 17 seeds, no hole
+
+`S1`–`S15` from the spec plus `S16` (the mask arm's line below `push_back`) and `S17`
+(`NO_SOURCE_MATERIAL = {0, 1}`, the default material's own handle, which only `BR26`'s hand-written
+`MaterialHandle{}` can see). Every seed turned its predicted cases red. `S10` (the resolver inverted so a
+valid fallback wins) is invisible to every primitive case by construction — a primitive's fallback is always
+invalid — and is caught by `BR10`, `BR11` and `SQ12`: a non-finding. `S15` (the editor case's `== 1U`
+weakened to `<= 1U` on top of `S3`) went GREEN while `BR24`/`BR25` stayed red, which is what proves the exact
+count is load-bearing at the editor tier.
+
+#### Traps found, each measured
+
+* **The imgui binary's assertion total varies run to run on an unchanged binary** (43 806 / 43 790 / 43 789),
+  because `I80`'s count does — compare that binary's CASE counts, never its assertion totals.
+* **`git switch -c <branch> origin/main` sets the new branch's upstream to `origin/main`**, so a bare
+  `git push` would target main; unset it.
+* **A page's instructions can be wrong about the build:** undo/redo log at `AERO_LOG_DEBUG`, compiled out
+  under `NDEBUG`, so a "the Console names the entry" row needs a Debug build.
+
+#### What was deliberately left out, and which task holds each
+
+The Create menu and a named primitive selector (**E.5.2**); per-face or per-submesh materials on a primitive
+(not v1); alpha-tested shadows and masks (**8.2.1**, now reachable from a primitive too); draw ordering by
+material (**Phase 8**); the open plain-Save-Scene no-op (unowned). Stale sentences elsewhere
+(`samples/phase-3-materials/main.cpp:10-11`, `docs/03-architecture.md:137`) stay as written, forward-only.
+
+#### The sentences that govern new work
+
+1. **A primitive's material resolves through `resolveMaterial` with `NO_SOURCE_MATERIAL`** — the one D7
+   decision the mesh arms use, never a copy of it. An invalid handle resolves to the default at draw time.
+2. **Both builders move together**: `renderSelectionMask`'s cull mode comes from the resolved material, so a
+   change to one builder's primitive arm without the other's is a picture where a selected object is not
+   outlined. `SQ13` is the witness.
+3. **A VALID material that does not resolve is COUNTED, with or without a table**, once per EMITTED instance —
+   a primitive counts at most one, an entity that emits nothing counts none. Never hoist the resolve above the
+   mesh branch.
+4. **The resolve goes before the `push_back`** in both arms (`S13`, `S16`).
+
+#### Validation and sabotage status — RUN on macOS, 13 / 13
+
+`editor/validation/E.5.1-primitive-material-binding-fix.md` (gitignored), **run 2026-09-29 on `834bcb3`,
+13 / 13, nothing failed, no fix needed**, as a signed `.app` on two 1× displays (row 2's Console half on the
+debug build). The measurements that carry the rows:
+- the headline Cube is red in the first capture, 0.28 s after the drop (169,174,185 → 157,66,43);
+- Undo restores the default bytes exactly; the debug Console names `MeshRenderer.material` once each way;
+- the checker covers every Cube face 4 × 4; `twosided` from below draws 86,157,198 against the sky's
+  133,167,204 and is outlined, `red` from below is neither;
+- `cutout` and `glass` each raise their latched WARN once; `future` (`"version": 2`) draws the exact default
+  bytes with one Console line; a deleted material falls back with no flood;
+- an Applied edit reaches the viewport through the ledger's Apply nudge within one capture, and the watcher's
+  rescan follows ~2–3 s later; preview and viewport spheres peak at 217.4 / 206.8 luminance;
+- the scene survives Save Scene As… and a relaunch; an imported mesh's override (and both of `multi.gltf`'s
+  `RichNode` submeshes) draw red.
+
+**E.2.1's row 4 normal-map arm is CLOSED by this pass's row 5** — the bump reads in the ambient-only shade
+(stdev 9.8 against a flat control's 2.1), the witness E.2.1's seed 8 had lacked. Found out of scope on the
+pass: the Delete log line prints `Library/Trash/1` while the directory is `0001` (E.4.3), and
+`tests/fixtures/assets/cube.obj` is wound inside-out (3.2.3's parse fixture), so it shows its inner faces.
+
+**Build & dependency impact: none.** No dependency lands, `vcpkg.json` and `/vcpkg` are untouched, no target,
+no ctest entry, no shader and no link-line change.
