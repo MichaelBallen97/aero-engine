@@ -1668,7 +1668,6 @@ void ViewportPanel::renderScene(World& world) {
     // not gate it, because with the grid off the Tested bucket is empty and the value is inert. The editor's
     // ONLY Tested producer is the grid (debug_grid.cpp:63), so the ground plane's nudge is the right one for
     // everything in that bucket; debug_draw.hpp says what a future Tested producer off the ground inherits.
-    renderedExtentValue = extent;
     const Mat4 renderedViewProj = cameraView.proj * cameraView.view;
     const float ground = render::DEBUG_GRID_PLANE_HEIGHT;
     const float groundNudge = render::debugGridDepthNudge(renderedViewProj, ground, extent.width, extent.height);

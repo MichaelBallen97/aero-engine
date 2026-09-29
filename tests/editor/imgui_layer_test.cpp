@@ -20958,10 +20958,16 @@ TEST_CASE("editor: the viewport sets the grid's nudge from the camera it renders
         return;
     }
 
+    // The scene target's DRAWN sub-rect, read off PostProcess -- the renderer's own state, never a copy the
+    // code under test wrote for this case. renderScene's extent is sceneFrame->extent(), which reports that
+    // same drawn rect (render_target.hpp), and onDraw resizes the target before renderScene in every tick.
+    const engine::render::PostProcess* const post = viewport->postProcess();
+    REQUIRE(post != nullptr);  // the viewport is Available here, so its PostProcess exists
+
     // A BOUNDED settle until the viewport has really rendered.
     constexpr int MAX_SETTLE_TICKS = 32;
     int ticks = 0;
-    while (ticks < MAX_SETTLE_TICKS && viewport->renderedExtent().width == 0U) {
+    while (ticks < MAX_SETTLE_TICKS && post->sceneDrawExtent().width == 0U) {
         REQUIRE(app->tick());
         ++ticks;
     }
@@ -20970,7 +20976,7 @@ TEST_CASE("editor: the viewport sets the grid's nudge from the camera it renders
     // THE CLAIM: the nudge is the ground plane's, from the camera the viewport RENDERED at the extent it
     // rendered -- EXACT, because it is the same function on the same inputs (the camera is not written after
     // renderScene in a tick).
-    const engine::rhi::Extent2D ext = viewport->renderedExtent();
+    const engine::rhi::Extent2D ext = post->sceneDrawExtent();
     REQUIRE(ext.width > 0U);  // ANTI-VACUITY: a real extent
     REQUIRE(ext.height > 0U);
     const float aspect = static_cast<float>(ext.width) / static_cast<float>(ext.height);
