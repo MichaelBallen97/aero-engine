@@ -1663,6 +1663,16 @@ void ViewportPanel::renderScene(World& world) {
                                   .iconSizePixels = VIEWPORT_ICON_SIZE_POINTS * lastFramebufferScale},
                                  gizmoScratch, debugDrawer->batch());
     }
+    // task E.5.2: the grid's coplanar nudge, from the camera being RENDERED (the association flush itself
+    // uses, proj * view), for the drawn extent in framebuffer pixels, EVERY frame -- the grid's toggle does
+    // not gate it, because with the grid off the Tested bucket is empty and the value is inert. The editor's
+    // ONLY Tested producer is the grid (debug_grid.cpp:63), so the ground plane's nudge is the right one for
+    // everything in that bucket; debug_draw.hpp says what a future Tested producer off the ground inherits.
+    renderedExtentValue = extent;
+    const Mat4 renderedViewProj = cameraView.proj * cameraView.view;
+    const float ground = render::DEBUG_GRID_PLANE_HEIGHT;
+    const float groundNudge = render::debugGridDepthNudge(renderedViewProj, ground, extent.width, extent.height);
+    debugDrawer->setTestedLineDepthNudge(groundNudge);
     debugDrawer->flush(*sceneFrame, cameraView);
     post->endScene(std::move(*sceneFrame));  // submits command buffer A -- AFTER the upload's submit
 

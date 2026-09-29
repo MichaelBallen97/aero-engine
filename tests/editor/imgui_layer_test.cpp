@@ -47,6 +47,7 @@
 #include <aero/editor/transform_ops.hpp>      // task 2.4.1
 #include <aero/platform/platform.hpp>
 #include <aero/reflect/material_format.hpp>  // task 3.4.2: MaterialDocument, named directly (I84)
+#include <aero/render/debug_grid.hpp>        // task E.5.2 (I254): debugGridDepthNudge
 #include <aero/render/mesh.hpp>              // task E.5.2 (I248, I249): PrimitiveId
 #include <aero/render/render_target.hpp>     // task E.4.5: the thumbnail target's extents (I237/I238)
 #include <aero/rhi/device.hpp>
@@ -20893,6 +20894,70 @@ TEST_CASE("editor: a create raises the Inspector in the tick it lands (task E.5.
     CHECK(app->panelDrawnCount("Inspector") > before);  // IN that tick
     CHECK(app->focusRouteApplyCount() == appliesBefore + 1U);
     CHECK(app->lastRoutedPanelId() == "Inspector");
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: the viewport sets the grid's nudge from the camera it renders (task E.5.2, I254)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "grid nudge i254", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = e52App(*device, *window, ctx);
+    auto* const viewport = dynamic_cast<engine::editor::ViewportPanel*>(app->panels().find("Viewport"));
+    REQUIRE(viewport != nullptr);
+    REQUIRE(app->tick());  // the renderer is built on the first draw
+
+    if (viewport->debugDraw() == nullptr) {
+        // THE SHADER-TOOLS-OFF ARM, at runtime (E.4.1's idiom): the panel is Unavailable, so there is no
+        // DebugDraw to set a nudge on and no forward renderer either -- BOTH halves asserted, never skipped.
+        CHECK(viewport->sceneForwardRenderer() == nullptr);
+        REQUIRE(app->tick());
+        app->requestQuit();
+        CHECK(app->tick() == false);
+        app.reset();
+        return;
+    }
+
+    // A BOUNDED settle until the viewport has really rendered.
+    constexpr int MAX_SETTLE_TICKS = 32;
+    int ticks = 0;
+    while (ticks < MAX_SETTLE_TICKS && viewport->renderedExtent().width == 0U) {
+        REQUIRE(app->tick());
+        ++ticks;
+    }
+    REQUIRE(ticks < MAX_SETTLE_TICKS);  // the predicate ended the loop, never the bound
+
+    // THE CLAIM: the nudge is the ground plane's, from the camera the viewport RENDERED at the extent it
+    // rendered -- EXACT, because it is the same function on the same inputs (the camera is not written after
+    // renderScene in a tick).
+    const engine::rhi::Extent2D ext = viewport->renderedExtent();
+    REQUIRE(ext.width > 0U);  // ANTI-VACUITY: a real extent
+    REQUIRE(ext.height > 0U);
+    const float aspect = static_cast<float>(ext.width) / static_cast<float>(ext.height);
+    const engine::editor::EditorCamera& cam = *app->viewportCamera();
+    const engine::Mat4 viewProj = cam.projectionMatrix(aspect) * cam.viewMatrix();
+    const float ground = engine::render::DEBUG_GRID_PLANE_HEIGHT;
+    const float grid = engine::render::debugGridDepthNudge(viewProj, ground, ext.width, ext.height);
+    const float expected = engine::render::sanitizeDebugLineDepthNudge(grid);
+    CHECK(viewport->debugDraw()->testedLineDepthNudge() == expected);
+    CHECK(expected > engine::render::DEBUG_GRID_DEPTH_NUDGE_FLOOR);  // ANTI-VACUITY: the slope term is live
+
+    // IT FOLLOWS THE CAMERA: a grazing pitch makes the ground's slope, and so the nudge, larger.
+    const float before = viewport->debugDraw()->testedLineDepthNudge();
+    app->viewportCamera()->setPitch(engine::radians(-3.0F));
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+    CHECK(viewport->debugDraw()->testedLineDepthNudge() > before);
 
     app->requestQuit();
     CHECK(app->tick() == false);

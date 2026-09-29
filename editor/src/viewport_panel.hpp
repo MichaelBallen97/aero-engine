@@ -109,6 +109,10 @@ public:
     // postProcess() / outputTarget(). THIS TASK PUSHES NOTHING INTO IT FROM THE EDITOR.
     [[nodiscard]] render::DebugDraw* debugDraw() noexcept;
     [[nodiscard]] const render::DebugDraw* debugDraw() const noexcept;
+    // task E.5.2 (I254): the drawn extent renderScene last rendered at, in framebuffer pixels -- the SAME
+    // local the aspect and the grid's depth nudge were computed from. {0, 0} until the first rendered frame.
+    // Read-only and render-side: it exists so a test can recompute the nudge from what was actually used.
+    [[nodiscard]] rhi::Extent2D renderedExtent() const noexcept { return renderedExtentValue; }
 
     // ---- task E.1.4 -----------------------------------------------------------------------------
     // This panel's SelectionOutline, joining the other five as a test seam. NULL when the panel is
@@ -387,6 +391,9 @@ private:
                                    // block BEFORE the draw walk; NEVER in renderScene; READ in both (INV-3)
     CameraGestureState gesture{};  // LATCHED across frames -- D5 rule 1 needs the previous value
     float lastAspect = 1.0F;       // set in onDraw (PIXELS, D15); read by F's focusOn, same frame
+
+    // task E.5.2 -- written ONLY in renderScene, from its own extent; renderedExtent() reads it.
+    rhi::Extent2D renderedExtentValue{};
 
     // Task 2.3.2 (D10): the pick's own press/release tracking. NOT an ImGui item state -- ImGui::Image
     // submits its item with id 0, so nothing on the image ever becomes Active and there is no item
