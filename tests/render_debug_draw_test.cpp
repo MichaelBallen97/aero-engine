@@ -2511,10 +2511,15 @@ TEST_CASE("render debug draw: every grid line wins at 45 degrees and straight do
     struct Pose {
         const char* name;
         float pitchDegrees;
-        float zCentre;  // the ground point under the view centre
+        float zCentre;       // the ground point under the view centre
+        bool slopeRequired;  // the no-nudge render must lose texels here on every lane
     };
-    // Straight down the slope is ~0 and the FLOOR alone decides -- the pose the floor exists for.
-    constexpr std::array<Pose, 2> POSES{{{"45 degrees", 45.0F, -2.0F}, {"straight down", 90.0F, 0.0F}}};
+    // Straight down the slope is ~0 and the nudge is essentially the FLOOR (GR27 pins that constant). Whether
+    // a face-on plane loses equal-depth texels without it is a rasterization property that may differ by
+    // lane, so that pose only WARNs about it; the 45-degree pose loses them by the slope, DG21's mechanism.
+    constexpr Pose FORTY_FIVE{"45 degrees", 45.0F, -2.0F, true};
+    constexpr Pose STRAIGHT_DOWN{"straight down", 90.0F, 0.0F, false};
+    constexpr std::array<Pose, 2> POSES{FORTY_FIVE, STRAIGHT_DOWN};
     for (const Pose& pose : POSES) {
         const std::string_view name = pose.name;  // a view, so doctest prints the TEXT rather than a pointer
         CAPTURE(name);
@@ -2544,6 +2549,13 @@ TEST_CASE("render debug draw: every grid line wins at 45 degrees and straight do
         REQUIRE(g.size() >= 1900U);
         REQUIRE(countAt(a, g, DG_BLUE) == g.size());
         CHECK(v == g.size());
+        // ANTI-VACUITY: without the nudge some line texels lose (Metal: 2439 of 3810 survive at 45 degrees,
+        // 2125 of 4629 straight down), so the pose needs what it is checked for.
+        if (pose.slopeRequired) {
+            CHECK(v0 < g.size());
+        } else {
+            WARN(v0 < g.size());
+        }
     }
 }
 
