@@ -20173,3 +20173,231 @@ TEST_CASE("editor: an asset field's overflowing value sentence is elided with an
         }
     }
 }
+
+// ---- task E.5.2: the named selector, driven through the real Inspector (I251, I252) ----------------------
+// Both cases select the DEFAULT scene's own entities by name: they land four commits before the Create
+// pipeline, and they test the selector, not the pipeline.
+
+TEST_CASE(
+    "editor: MeshRenderer.primitive is a named selector -- drawn, picked, refused, dropped "
+    "(task E.5.2, I251)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "named selector i251", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    for (int i = 0; i < 3; ++i) {
+        REQUIRE(app->tick());
+    }
+    engine::World& world = app->world();
+    engine::Entity cube{};
+    world.eachEntity([&](engine::Entity e) {
+        if (world.name(e) == "Cube") {
+            cube = e;
+        }
+    });
+    REQUIRE(cube.valid());
+    const auto primitive = [&world, cube] {
+        const auto* const renderer = world.get<engine::MeshRenderer>(cube);
+        REQUIRE(renderer != nullptr);
+        return renderer->primitive;  // read off the WORLD, never off the request
+    };
+    const bool reflected =
+        engine::editor::componentFieldsAreReflected(world, world.findComponentType("engine::MeshRenderer"));
+
+    // A BOUNDED settle (I245's shape): until the Inspector has drawn, never a fixed tick count.
+    constexpr int MAX_SETTLE_TICKS = 32;
+    const auto settleUntilInspectorDraws = [&] {
+        const std::uint64_t before = app->panelDrawnCount("Inspector");
+        int ticks = 0;
+        while (ticks < MAX_SETTLE_TICKS && app->panelDrawnCount("Inspector") == before) {
+            REQUIRE(app->tick());
+            ++ticks;
+        }
+        REQUIRE(ticks < MAX_SETTLE_TICKS);  // the predicate ended the loop, never the bound
+    };
+    app->selection().set(cube);
+    app->requestPanelFocus("Inspector");
+    settleUntilInspectorDraws();
+
+    // K frames, each of which DREW the Inspector -- asserted, so no count below is satisfied by a panel that
+    // did not draw.
+    constexpr int K = 4;
+    const std::uint64_t framesBefore = app->panelDrawnCount("Inspector");
+    const std::size_t selectorsBefore = app->inspectorNamedSelectorsDrawn();
+    for (int i = 0; i < K; ++i) {
+        REQUIRE(app->tick());
+    }
+    const std::uint64_t frames = app->panelDrawnCount("Inspector") - framesBefore;
+    REQUIRE(frames == static_cast<std::uint64_t>(K));
+    const std::size_t countBefore = app->commands().count();
+
+    if (!reflected) {
+        // ---- THE REFLECT-TOOLS-OFF ARM, asserted at runtime (no #if): no fields, so no selector, and the
+        //      seam writes nothing.
+        CHECK(app->inspectorNamedSelectorsDrawn() == selectorsBefore);
+        app->requestInspectorNamedSelection("engine::MeshRenderer", "primitive", 1);
+        REQUIRE(app->tick());
+        CHECK(app->commands().count() == countBefore);
+        CHECK(primitive() == 0U);
+        app->requestQuit();
+        CHECK(app->tick() == false);
+        app.reset();
+        return;
+    }
+
+    // ---- EXACTLY ONE selector per drawn frame: `primitive` is MeshRenderer's only labelled row, and
+    //      `meshIndex` -- an UNLABELLED uint32 in the same component -- draws the drag. This is the arm that
+    //      proves the counter counts SELECTORS, not integer rows (seed S34).
+    CHECK(app->inspectorNamedSelectorsDrawn() - selectorsBefore == static_cast<std::size_t>(frames));
+
+    // ---- A PICK: one discrete undo entry, the value written, read off the World.
+    REQUIRE(primitive() == 0U);  // the default Cube
+    app->requestInspectorNamedSelection("engine::MeshRenderer", "primitive", 1);
+    REQUIRE(app->tick());
+    CHECK(primitive() == 1U);
+    CHECK(app->commands().count() == countBefore + 1U);
+    CHECK(app->commands().undoLabel() == "MeshRenderer.primitive");
+
+    // ---- THE CURRENT VALUE pushes nothing (seed S31); an OUT-OF-RANGE index pushes nothing.
+    app->requestInspectorNamedSelection("engine::MeshRenderer", "primitive", 1);
+    REQUIRE(app->tick());
+    CHECK(app->commands().count() == countBefore + 1U);
+    app->requestInspectorNamedSelection("engine::MeshRenderer", "primitive", 7);
+    REQUIRE(app->tick());
+    CHECK(app->commands().count() == countBefore + 1U);
+    CHECK(primitive() == 1U);
+
+    // ---- THE ONE-TICK LIFETIME: a request made while the Inspector does NOT draw is dropped, and showing
+    //      the panel afterwards does not apply it (seed S32 / the expiry). Material in front first, and
+    //      REQUIRE the Inspector really stopped drawing (E.3.2's "a baseline before the settle reads a
+    //      layout artefact").
+    app->requestPanelFocus("Material");
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+    const std::uint64_t hiddenBefore = app->panelDrawnCount("Inspector");
+    app->requestInspectorNamedSelection("engine::MeshRenderer", "primitive", 2);
+    REQUIRE(app->tick());
+    REQUIRE(app->panelDrawnCount("Inspector") == hiddenBefore);  // the request's tick did NOT draw the row
+    app->requestPanelFocus("Inspector");
+    const std::size_t selectorsShown = app->inspectorNamedSelectorsDrawn();
+    settleUntilInspectorDraws();
+    REQUIRE(app->tick());
+    CHECK(app->inspectorNamedSelectorsDrawn() > selectorsShown);  // ANTI-VACUITY: the row DID draw again...
+    CHECK(primitive() == 1U);                                     // ...and the stale request did not apply
+    CHECK(app->commands().count() == countBefore + 1U);
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE(
+    "editor: Environment's two modes are named selectors too -- the second component "
+    "(task E.5.2, I252)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "named selector i252", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    for (int i = 0; i < 3; ++i) {
+        REQUIRE(app->tick());
+    }
+    engine::World& world = app->world();
+    engine::Entity env{};
+    world.eachEntity([&](engine::Entity e) {
+        if (world.name(e) == "Environment") {
+            env = e;
+        }
+    });
+    REQUIRE(env.valid());
+    const auto backgroundMode = [&world, env] {
+        const auto* const environment = world.get<engine::Environment>(env);
+        REQUIRE(environment != nullptr);
+        return environment->backgroundMode;  // read off the WORLD
+    };
+    const bool reflected =
+        engine::editor::componentFieldsAreReflected(world, world.findComponentType("engine::Environment"));
+
+    constexpr int MAX_SETTLE_TICKS = 32;
+    const auto settleUntilInspectorDraws = [&] {
+        const std::uint64_t before = app->panelDrawnCount("Inspector");
+        int ticks = 0;
+        while (ticks < MAX_SETTLE_TICKS && app->panelDrawnCount("Inspector") == before) {
+            REQUIRE(app->tick());
+            ++ticks;
+        }
+        REQUIRE(ticks < MAX_SETTLE_TICKS);
+    };
+    app->selection().set(env);
+    app->requestPanelFocus("Inspector");
+    settleUntilInspectorDraws();
+
+    constexpr int K = 4;
+    const std::uint64_t framesBefore = app->panelDrawnCount("Inspector");
+    const std::size_t selectorsBefore = app->inspectorNamedSelectorsDrawn();
+    for (int i = 0; i < K; ++i) {
+        REQUIRE(app->tick());
+    }
+    const std::uint64_t frames = app->panelDrawnCount("Inspector") - framesBefore;
+    REQUIRE(frames == static_cast<std::uint64_t>(K));
+    const std::size_t countBefore = app->commands().count();
+
+    if (!reflected) {
+        // THE REFLECT-TOOLS-OFF ARM, at runtime: no selector drawn, and the seam writes nothing.
+        CHECK(app->inspectorNamedSelectorsDrawn() == selectorsBefore);
+        app->requestInspectorNamedSelection("engine::Environment", "backgroundMode", 1);
+        REQUIRE(app->tick());
+        CHECK(app->commands().count() == countBefore);
+        CHECK(backgroundMode() == 0U);
+        app->requestQuit();
+        CHECK(app->tick() == false);
+        app.reset();
+        return;
+    }
+
+    // TWO selectors per drawn frame: backgroundMode and ambientMode. ambientIntensity is a float and draws
+    // the drag.
+    CHECK(app->inspectorNamedSelectorsDrawn() - selectorsBefore == 2U * static_cast<std::size_t>(frames));
+
+    REQUIRE(backgroundMode() == 0U);
+    app->requestInspectorNamedSelection("engine::Environment", "backgroundMode", 1);
+    REQUIRE(app->tick());
+    CHECK(backgroundMode() == 1U);
+    CHECK(app->commands().count() == countBefore + 1U);
+    CHECK(app->commands().undoLabel() == "Environment.backgroundMode");
+
+    app->requestUndo();
+    REQUIRE(app->tick());
+    CHECK(backgroundMode() == 0U);
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}

@@ -171,6 +171,16 @@ names — walk the registration table. `editor::component_ops` is the seam
 clamp in C++ before writing the exact concrete type, never letting EnTT convert (it silently
 wraps `300` into a `uint8_t` as `44`).
 
+**A labelled integer is a named selector, chosen by metadata alone (task E.5.2).** `namedSelectorRow`
+(`inspector_model.hpp`) re-checks at runtime every condition reflect-gen enforces for `AERO_LABELS` —
+Int/UInt, 1..64 valid distinct identifiers, `AERO_RANGE(0, N-1)` exactly — and answers nothing otherwise,
+so the drag stays the fallback and a hand-built or skewed `FieldUiMeta` can never draw a lying dropdown.
+The panel's Int and UInt arms ask it first; the row is never chosen by a component or field name
+(`I253(e)`). **A pick is a discrete write through `resetField`**, and the current value and an
+out-of-range index push nothing. The test seam (`requestNamedSelection`) lives exactly one tick —
+`EditorApp` expires it after `drawShellUi` — because a panel that did not draw would otherwise apply a
+stale request the first time it is shown.
+
 **No panel writes the scene directly (true since task 2.4.2).** The only call sites of
 `entity_ops` / `component_ops` / `transform_ops` mutators under `editor/src/` are their own
 TUs and their command TUs (`entity_commands.cpp`, `component_commands.cpp`,

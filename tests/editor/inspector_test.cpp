@@ -15,7 +15,12 @@
 #include <aero/editor/inspector_model.hpp>
 #include <aero/editor/material_card.hpp>         // task E.4.5 -- materialCardRowText (IR10)
 #include <aero/editor/text_file.hpp>             // task 3.1.5: writeTextFileAtomic, for the scanned fixture
+#include <aero/render/environment.hpp>           // task E.5.2 (IR20): BackgroundMode, AmbientMode
+#include <aero/render/mesh.hpp>                  // task E.5.2 (IR20): PrimitiveId
+#include <aero/scene/environment.hpp>            // task E.5.2 (IR20)
 #include <aero/scene/internal/world_access.hpp>  // registerComponent<T> -- the D18 proof fixture's seam
+#include <aero/scene/light.hpp>                  // task E.5.2 (IR19)
+#include <aero/scene/mesh_renderer.hpp>          // task E.5.2 (IR19, IR20, IR22)
 #include <aero/scene/transform.hpp>
 
 #include "inspector_probe.hpp"
@@ -24,7 +29,8 @@
 #include <doctest/doctest.h>
 #include <entt/entt.hpp>
 
-#include <array>  // task E.3.1: the axis row's three shown components
+#include <algorithm>  // task E.5.2: std::sort over IR21's labelled set
+#include <array>      // task E.3.1: the axis row's three shown components
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>  // task 3.1.5: the scanned-project fixture
@@ -47,6 +53,8 @@ using engine::editor::buildInspectorModel;
 using engine::editor::FieldKind;
 using engine::editor::FieldValue;
 using engine::editor::InspectorModel;
+using engine::editor::namedSelectorRow;    // task E.5.2
+using engine::editor::namedSelectorValue;  // task E.5.2
 using engine::editor::readComponentField;
 using engine::editor::writeComponentField;
 using engine::scene::internal::registerComponent;
@@ -107,6 +115,21 @@ const engine::editor::FieldEntry& findField(const std::vector<engine::editor::Fi
     return fields.front();
 }
 
+// task E.5.2: a hand-built labelled row -- the IR cases judge namedSelectorRow on inputs no tool emits.
+using engine::editor::FieldEntry;
+[[nodiscard]] FieldEntry labelledField(FieldKind kind, FieldValue value, std::string labels, double rangeMin,
+                                       double rangeMax, bool hasRange = true) {
+    FieldEntry f;
+    f.name = "selector";
+    f.kind = kind;
+    f.value = std::move(value);
+    f.labels = std::move(labels);
+    f.hasRange = hasRange;
+    f.rangeMin = rangeMin;
+    f.rangeMax = rangeMax;
+    return f;
+}
+
 }  // namespace
 
 TEST_CASE("inspector: model lists present components in registration order, fields in declaration order (AC-8)") {
@@ -139,11 +162,12 @@ TEST_CASE("inspector: model lists present components in registration order, fiel
     const engine::editor::ComponentEntry& probeEntry = model.components[1];
     CHECK(probeEntry.name == "InspectorProbe");
     REQUIRE(probeEntry.hasFields);
-    REQUIRE(probeEntry.fields.size() == 14);  // 3.1.5 appended `asset`; E.3.3 appended `textureRef`
+    REQUIRE(probeEntry.fields.size() == 16);  // 3.1.5 appended `asset`; E.3.3 appended `textureRef`;
+                                              // E.5.2 appended mode and level
 
-    const std::vector<std::string> expectedOrder{"speed",        "tint",      "label", "gear",      "tiny",
-                                                 "enabled",      "aim",       "mass",  "tick",      "glyph",
-                                                 "clampedRange", "hugeRange", "asset", "textureRef"};
+    const std::vector<std::string> expectedOrder{"speed", "tint",       "label", "gear",  "tiny",         "enabled",
+                                                 "aim",   "mass",       "tick",  "glyph", "clampedRange", "hugeRange",
+                                                 "asset", "textureRef", "mode",  "level"};
     REQUIRE(expectedOrder.size() == probeEntry.fields.size());  // the list IS the declaration order
     for (std::size_t i = 0; i < expectedOrder.size(); ++i) {
         CHECK(probeEntry.fields[i].name == expectedOrder[i]);
@@ -163,7 +187,8 @@ TEST_CASE("inspector: model over InspectorProbe -- every field's kind, range and
     buildInspectorModel(world, e, model);
     REQUIRE(model.components.size() == 1);
     const std::vector<engine::editor::FieldEntry>& fields = model.components[0].fields;
-    REQUIRE(fields.size() == 14);  // 3.1.5 appended `asset`; E.3.3 appended `textureRef`
+    REQUIRE(fields.size() == 16);  // 3.1.5 appended `asset`; E.3.3 appended `textureRef`;
+                                   // E.5.2 appended mode and level
 
     const engine::editor::FieldEntry& speed = findField(fields, "speed");
     CHECK(speed.kind == FieldKind::Float);
@@ -496,7 +521,7 @@ TEST_CASE(
     InspectorModel model;
     buildInspectorModel(world, e, model);
     REQUIRE(model.components.size() == 1);
-    REQUIRE(model.components[0].fields.size() == 14);
+    REQUIRE(model.components[0].fields.size() == 16);
 
     model.components.reserve(64);
     model.components[0].fields.reserve(512);
@@ -509,7 +534,7 @@ TEST_CASE(
 
     buildInspectorModel(world, e, model);
     CHECK(model.components.size() == 1);
-    CHECK(model.components[0].fields.size() == 14);
+    CHECK(model.components[0].fields.size() == 16);
     CHECK(model.components.data() == componentsData);
     CHECK(model.components[0].fields.data() == fieldsData);
     CHECK(model.components.capacity() == componentCapacity);
@@ -2050,7 +2075,7 @@ TEST_CASE("KP3: the new member survives D15's scratch reuse -- capacity AND the 
     InspectorModel model;
     buildInspectorModel(world, e, model);
     REQUIRE(model.components.size() == 1);
-    REQUIRE(model.components[0].fields.size() == 14);
+    REQUIRE(model.components[0].fields.size() == 16);
 
     model.components.reserve(64);
     model.components[0].fields.reserve(512);
@@ -2082,7 +2107,7 @@ TEST_CASE("KP3: the new member survives D15's scratch reuse -- capacity AND the 
     REQUIRE(tokenCapacity >= 256);  // ANTI-VACUITY: the buffer really is off SSO now
 
     buildInspectorModel(world, e, model);
-    CHECK(model.components[0].fields.size() == 14);
+    CHECK(model.components[0].fields.size() == 16);
     CHECK(model.components[0].fields.data() == fieldsData);
     CHECK(model.components[0].fields.capacity() == fieldCapacity);
     const engine::editor::FieldEntry& rebuilt = findField(model.components[0].fields, "textureRef");
@@ -2204,4 +2229,356 @@ TEST_CASE("inspector: a missing record ignores any subtitle, database or not (ta
     const engine::editor::GuidFieldRow noDatabase = engine::editor::guidFieldRow(*known, nullptr, "Name");
     CHECK(noDatabase.text == engine::formatGuid(*known).substr(0, 8) + "...  (missing)");
     CHECK(noDatabase.clearEnabled);
+}
+
+// ---- task E.5.2: the named selector's pure half -- IR13-IR22 ------------------------------------------
+
+TEST_CASE("inspector: a labelled UInt field is a named selector (task E.5.2, IR13)") {
+    const std::array<std::string, 3> expected{"Alpha", "Beta", "Gamma"};
+    for (std::uint64_t v = 0; v < 3U; ++v) {
+        CAPTURE(v);
+        const FieldEntry field = labelledField(FieldKind::UInt, FieldValue{v}, "Alpha|Beta|Gamma", 0.0, 2.0);
+        const auto row = namedSelectorRow(field);
+        REQUIRE(row.has_value());
+        REQUIRE(row->labels.size() == 3U);
+        for (std::size_t i = 0; i < expected.size(); ++i) {
+            CHECK(row->labels[i] == expected[i]);
+        }
+        REQUIRE(row->selected.has_value());
+        CHECK(*row->selected == static_cast<std::size_t>(v));
+        CHECK(row->preview == expected[static_cast<std::size_t>(v)]);
+    }
+}
+
+TEST_CASE("inspector: a labelled Int field, and its signed out-of-range values (task E.5.2, IR14)") {
+    const auto rowFor = [](std::int64_t v) {
+        return namedSelectorRow(labelledField(FieldKind::Int, FieldValue{v}, "Low|High", 0.0, 1.0));
+    };
+    const auto one = rowFor(1);
+    REQUIRE(one.has_value());
+    REQUIRE(one->selected.has_value());
+    CHECK(*one->selected == 1U);
+    CHECK(one->preview == "High");
+
+    const auto negative = rowFor(-1);
+    REQUIRE(negative.has_value());
+    CHECK_FALSE(negative->selected.has_value());
+    CHECK(negative->preview == "-1 (out of range)");
+
+    const auto past = rowFor(2);
+    REQUIRE(past.has_value());
+    CHECK_FALSE(past->selected.has_value());
+    CHECK(past->preview == "2 (out of range)");
+}
+
+TEST_CASE("inspector: an unsigned out-of-range value previews in decimal (task E.5.2, IR15)") {
+    const auto rowFor = [](std::uint64_t v) {
+        return namedSelectorRow(labelledField(FieldKind::UInt, FieldValue{v}, "A|B|C", 0.0, 2.0));
+    };
+    const auto seven = rowFor(7);
+    REQUIRE(seven.has_value());
+    CHECK_FALSE(seven->selected.has_value());
+    CHECK(seven->preview == "7 (out of range)");
+
+    const auto huge = rowFor(std::numeric_limits<std::uint64_t>::max());
+    REQUIRE(huge.has_value());
+    CHECK_FALSE(huge->selected.has_value());
+    CHECK(huge->preview == "18446744073709551615 (out of range)");
+}
+
+TEST_CASE("inspector: every refused shape draws the plain drag (task E.5.2, IR16)") {
+    // Does namedSelectorRow answer for this hand-built row? One spelling for every arm below.
+    const auto answers = [](FieldKind kind, FieldValue value, std::string labels, double lo, double hi,
+                            bool ranged = true) {
+        const FieldEntry field = labelledField(kind, std::move(value), std::move(labels), lo, hi, ranged);
+        return namedSelectorRow(field).has_value();
+    };
+    const FieldValue zero{std::uint64_t{0}};
+    // ANTI-VACUITY: the same builder, on an input every rule accepts, answers -- so each refusal below is a
+    // refusal of THAT input, never of the builder.
+    REQUIRE(answers(FieldKind::UInt, zero, "A|B", 0.0, 1.0));
+
+    // Every other kind, labelled and ranged exactly as an accepted row would be.
+    {
+        CAPTURE("Bool");
+        CHECK_FALSE(answers(FieldKind::Bool, FieldValue{true}, "A|B", 0.0, 1.0));
+    }
+    {
+        CAPTURE("Float");
+        CHECK_FALSE(answers(FieldKind::Float, FieldValue{0.0}, "A|B", 0.0, 1.0));
+    }
+    {
+        CAPTURE("String");
+        CHECK_FALSE(answers(FieldKind::String, FieldValue{std::string{"x"}}, "A|B", 0.0, 1.0));
+    }
+    {
+        CAPTURE("Vec3");
+        CHECK_FALSE(answers(FieldKind::Vec3, FieldValue{engine::Vec3{}}, "A|B", 0.0, 1.0));
+    }
+    {
+        CAPTURE("Quat");
+        CHECK_FALSE(answers(FieldKind::Quat, FieldValue{engine::Quat{}}, "A|B", 0.0, 1.0));
+    }
+    {
+        CAPTURE("Guid");
+        CHECK_FALSE(answers(FieldKind::Guid, FieldValue{engine::Guid{}}, "A|B", 0.0, 1.0));
+    }
+    {
+        CAPTURE("Int holding a uint64");
+        CHECK_FALSE(answers(FieldKind::Int, zero, "A|B", 0.0, 1.0));
+    }
+
+    // The label grammar. Each range is what the pieces WOULD need, so only the grammar can refuse.
+    struct Malformed {
+        const char* tag;
+        const char* labels;
+        double rangeMax;
+    };
+    const std::array<Malformed, 7> malformed{{{"empty", "", 0.0},
+                                              {"empty middle piece", "A||B", 2.0},
+                                              {"empty first piece", "|A", 1.0},
+                                              {"empty last piece", "A|", 1.0},
+                                              {"duplicate", "A|A", 1.0},
+                                              {"space", "A B", 0.0},
+                                              {"leading digit", "1st|2nd", 1.0}}};
+    for (const Malformed& m : malformed) {
+        CAPTURE(m.tag);
+        CHECK_FALSE(answers(FieldKind::UInt, zero, m.labels, 0.0, m.rangeMax));
+    }
+
+    // THE CAP, BOTH WAYS: 65 labels are refused, 64 are accepted. Built by a loop, never typed.
+    const auto joinedLabels = [](std::size_t n) {
+        std::string joined;
+        for (std::size_t i = 0; i < n; ++i) {
+            if (i != 0U) {
+                joined += '|';
+            }
+            joined += 'L';
+            joined += std::to_string(i);
+        }
+        return joined;
+    };
+    {
+        CAPTURE("65 labels");
+        CHECK_FALSE(answers(FieldKind::UInt, zero, joinedLabels(65), 0.0, 64.0));
+    }
+    {
+        CAPTURE("64 labels");
+        const auto row = namedSelectorRow(labelledField(FieldKind::UInt, zero, joinedLabels(64), 0.0, 63.0));
+        REQUIRE(row.has_value());
+        CHECK(row->labels.size() == 64U);
+        CHECK(row->labels.size() == engine::editor::MAX_FIELD_LABELS);
+    }
+
+    // The range rule: hasRange, rangeMin == 0 and rangeMax == N-1, each broken ALONE.
+    {
+        CAPTURE("no range");
+        CHECK_FALSE(answers(FieldKind::UInt, zero, "A|B", 0.0, 1.0, /*ranged=*/false));
+    }
+    {
+        CAPTURE("rangeMin 1");
+        CHECK_FALSE(answers(FieldKind::UInt, zero, "A|B", 1.0, 1.0));
+    }
+    {
+        CAPTURE("rangeMax N");
+        CHECK_FALSE(answers(FieldKind::UInt, zero, "A|B|C", 0.0, 3.0));
+    }
+    {
+        CAPTURE("rangeMax N-2");
+        CHECK_FALSE(answers(FieldKind::UInt, zero, "A|B|C", 0.0, 1.0));
+    }
+}
+
+TEST_CASE("inspector: a pick writes an exact integer of the field's own kind (task E.5.2, IR17)") {
+    const FieldValue signedPick = namedSelectorValue(FieldKind::Int, 5);
+    REQUIRE(std::holds_alternative<std::int64_t>(signedPick));
+    CHECK(std::get<std::int64_t>(signedPick) == 5);
+
+    const FieldValue unsignedPick = namedSelectorValue(FieldKind::UInt, 5);
+    REQUIRE(std::holds_alternative<std::uint64_t>(unsignedPick));
+    CHECK(std::get<std::uint64_t>(unsignedPick) == 5U);
+
+    const FieldValue refused = namedSelectorValue(FieldKind::Float, 5);
+    CHECK(refused.index() == 0U);  // the bool alternative: FieldValue{}
+}
+
+TEST_CASE("inspector: AERO_LABELS reaches the row end to end through the probe (task E.5.2, IR18)") {
+    World world;
+    aero_reflect_register_all_aero_editor_inspector_test();
+    const ComponentTypeId probeId = registerProbe(world);
+    const Entity e = world.create();
+    world.addRaw(probeId, e, nullptr);
+
+    InspectorModel model;
+    buildInspectorModel(world, e, model);
+    REQUIRE(model.components.size() == 1);
+    const std::vector<FieldEntry>& fields = model.components[0].fields;
+
+    const FieldEntry& mode = findField(fields, "mode");
+    const FieldEntry& level = findField(fields, "level");
+    CHECK(mode.labels == "Alpha|Beta|Gamma");
+    CHECK(level.labels == "Low|High");
+
+    std::size_t checked = 0;
+    for (const FieldEntry& field : fields) {
+        if (field.name == "mode" || field.name == "level") {
+            continue;
+        }
+        CAPTURE(field.name);
+        CHECK(field.labels.empty());
+        ++checked;
+    }
+    CHECK(checked == 14U);  // ANTI-VACUITY: every other probe field was really walked
+
+    const auto modeRow = namedSelectorRow(mode);
+    REQUIRE(modeRow.has_value());
+    CHECK(modeRow->labels.size() == 3U);
+    // `level` is std::int32_t, so FieldKind::Int: the SIGNED arm, end to end.
+    CHECK(level.kind == FieldKind::Int);
+    const auto levelRow = namedSelectorRow(level);
+    REQUIRE(levelRow.has_value());
+    CHECK(levelRow->labels.size() == 2U);
+    // NO entt::meta_reset(): this case sits below the AC-12 drift pin, where registerEditorReflection's
+    // process-lifetime registration must survive for every case after it (IR19-IR22 among them).
+}
+
+TEST_CASE("inspector: a reused slot never keeps a stale labels string (task E.5.2, IR19)") {
+    engine::editor::registerEditorReflection();
+    World world;
+    const Entity x = world.create();
+    REQUIRE(world.add<engine::Transform>(x) != nullptr);
+    REQUIRE(world.add<engine::MeshRenderer>(x) != nullptr);
+    const Entity y = world.create();
+    REQUIRE(world.add<engine::Transform>(y) != nullptr);
+    REQUIRE(world.add<engine::DirectionalLight>(y) != nullptr);
+
+    InspectorModel model;
+    buildInspectorModel(world, x, model);
+    REQUIRE(model.components.size() == 2);
+    REQUIRE(model.components[1].name == "engine::MeshRenderer");
+    REQUIRE_FALSE(model.components[1].fields.empty());
+    REQUIRE(model.components[1].fields[0].name == "primitive");
+    CHECK(model.components[1].fields[0].labels == "Cube|Sphere|Plane");
+
+    // Y INTO THE SAME MODEL: the slot that held `primitive` now holds a field with no labels.
+    buildInspectorModel(world, y, model);
+    REQUIRE(model.components.size() == 2);
+    REQUIRE_FALSE(model.components[1].fields.empty());
+    CHECK(model.components[1].fields[0].labels.empty());
+
+    // KP3's shape: the labels string's OWN buffer survives a same-shape rebuild. "Cube|Sphere|Plane" is 17
+    // bytes, inside libc++'s SSO buffer, so the reserve below is what makes the pointer arm decide anything.
+    buildInspectorModel(world, x, model);
+    model.components.reserve(64);
+    model.components[1].fields.reserve(512);
+    model.components[1].fields[0].labels.reserve(256);
+    const std::size_t labelsCapacity = model.components[1].fields[0].labels.capacity();
+    REQUIRE(labelsCapacity >= 256);  // ANTI-VACUITY: the buffer really is off SSO now
+    const void* labelsData = model.components[1].fields[0].labels.c_str();
+
+    buildInspectorModel(world, x, model);
+    REQUIRE(model.components.size() == 2);
+    const FieldEntry& rebuilt = model.components[1].fields[0];
+    CHECK(rebuilt.labels == "Cube|Sphere|Plane");
+    CHECK(rebuilt.labels.capacity() == labelsCapacity);
+    CHECK(static_cast<const void*>(rebuilt.labels.c_str()) == labelsData);
+}
+
+TEST_CASE("inspector: the labels track the render enums by count and position (task E.5.2, IR20)") {
+    engine::editor::registerEditorReflection();
+    World world;
+    const Entity e = world.create();
+    REQUIRE(world.add<engine::MeshRenderer>(e) != nullptr);
+    REQUIRE(world.add<engine::Environment>(e) != nullptr);
+
+    InspectorModel model;
+    buildInspectorModel(world, e, model);
+    const auto fieldsOf = [&model](std::string_view component) -> const std::vector<FieldEntry>& {
+        for (const engine::editor::ComponentEntry& entry : model.components) {
+            if (entry.name == component) {
+                return entry.fields;
+            }
+        }
+        FAIL("component not found: ", component);
+        return model.components.front().fields;
+    };
+
+    using engine::render::AmbientMode;
+    using engine::render::BackgroundMode;
+    using engine::render::PrimitiveId;
+    const auto primitive = namedSelectorRow(findField(fieldsOf("engine::MeshRenderer"), "primitive"));
+    REQUIRE(primitive.has_value());
+    REQUIRE(primitive->labels.size() == static_cast<std::size_t>(PrimitiveId::Count));
+    CHECK(primitive->labels[static_cast<std::size_t>(PrimitiveId::Cube)] == "Cube");
+    CHECK(primitive->labels[static_cast<std::size_t>(PrimitiveId::Sphere)] == "Sphere");
+    CHECK(primitive->labels[static_cast<std::size_t>(PrimitiveId::Plane)] == "Plane");
+
+    const std::vector<FieldEntry>& environment = fieldsOf("engine::Environment");
+    const auto background = namedSelectorRow(findField(environment, "backgroundMode"));
+    REQUIRE(background.has_value());
+    REQUIRE(background->labels.size() == engine::render::BACKGROUND_MODE_COUNT);
+    CHECK(background->labels[static_cast<std::size_t>(BackgroundMode::Sky)] == "Sky");
+    CHECK(background->labels[static_cast<std::size_t>(BackgroundMode::Solid)] == "Solid");
+
+    const auto ambient = namedSelectorRow(findField(environment, "ambientMode"));
+    REQUIRE(ambient.has_value());
+    REQUIRE(ambient->labels.size() == engine::render::AMBIENT_MODE_COUNT);
+    CHECK(ambient->labels[static_cast<std::size_t>(AmbientMode::Hemisphere)] == "Hemisphere");
+    CHECK(ambient->labels[static_cast<std::size_t>(AmbientMode::Flat)] == "Flat");
+}
+
+TEST_CASE(
+    "inspector: exactly the three real selectors are named, and no other built-in field "
+    "(task E.5.2, IR21)") {
+    engine::editor::registerEditorReflection();
+    World world;
+    const std::size_t count = world.componentTypeCount();
+    REQUIRE(count == 10);  // the ten built-ins -- FD2's own shape
+
+    const Entity e = world.create();
+    for (std::size_t i = 0; i < count; ++i) {
+        world.addRaw(world.componentTypeAt(i), e, nullptr);
+    }
+
+    InspectorModel model;
+    buildInspectorModel(world, e, model);
+    REQUIRE(model.components.size() == 10);
+
+    std::size_t walked = 0;
+    std::vector<std::string> named;
+    for (const engine::editor::ComponentEntry& entry : model.components) {
+        for (const FieldEntry& field : entry.fields) {
+            ++walked;
+            if (namedSelectorRow(field).has_value()) {
+                std::string key = entry.name;
+                key += '.';
+                key += field.name;
+                named.push_back(std::move(key));
+            }
+        }
+    }
+    CHECK(walked > 40U);  // ANTI-VACUITY: the walk really visited the built-ins' fields
+    std::sort(named.begin(), named.end());
+    REQUIRE(named.size() == 3U);
+    CHECK(named[0] == "engine::Environment.ambientMode");
+    CHECK(named[1] == "engine::Environment.backgroundMode");
+    CHECK(named[2] == "engine::MeshRenderer.primitive");
+}
+
+TEST_CASE("inspector: a labelled field still clamps through the one write seam (task E.5.2, IR22)") {
+    engine::editor::registerEditorReflection();
+    World world;
+    const Entity e = world.create();
+    REQUIRE(world.add<engine::MeshRenderer>(e) != nullptr);
+    const ComponentTypeId id = world.findComponentType("engine::MeshRenderer");
+    REQUIRE(id.valid());
+
+    const FieldValue pick = namedSelectorValue(FieldKind::UInt, 2);
+    REQUIRE(writeComponentField(world, e, id, "primitive", pick));
+    REQUIRE(world.get<engine::MeshRenderer>(e) != nullptr);
+    CHECK(world.get<engine::MeshRenderer>(e)->primitive == 2U);  // read off the WORLD
+
+    // AERO_RANGE(0, 2)'s clamp, untouched by the annotation: a 3 lands as 2.
+    CHECK(writeComponentField(world, e, id, "primitive", FieldValue{std::uint64_t{3}}));
+    CHECK(world.get<engine::MeshRenderer>(e)->primitive == 2U);
 }

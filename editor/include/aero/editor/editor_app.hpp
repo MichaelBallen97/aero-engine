@@ -596,6 +596,12 @@ public:
     // so a stale request can never commit something the user did not choose. All six are no-ops -- and
     // all three observables zero -- when `assetPicker` is null, exactly as the drains are null-guarded.
     void requestInspectorAssetPicker(std::string_view componentName, std::string_view fieldName);
+    // task E.5.2: the named selector's seam and observable. `component` is the FULL registration name
+    // ("engine::MeshRenderer"). Forwarded to the Inspector when one is registered, a no-op otherwise; the
+    // request lives ONE tick (see InspectorPanel::requestNamedSelection).
+    void requestInspectorNamedSelection(std::string_view component, std::string_view field, std::size_t index);
+    // Cumulative named-selector rows the Inspector SUBMITTED; 0 without an Inspector.
+    [[nodiscard]] std::size_t inspectorNamedSelectorsDrawn() const noexcept;
     void requestMaterialSlotPicker(std::size_t slot);
     // task E.3.4: the per-slot sampler disclosure. STATE, not an event, so it is a SETTER rather than
     // a one-shot: a case drives it once and reads it back on any later tick. Out-of-range is a no-op

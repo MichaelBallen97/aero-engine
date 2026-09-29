@@ -27,6 +27,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>  // task E.5.2: std::exchange -- the one-shot taker's own idiom
 #include <variant>
 
 namespace engine::editor {
@@ -137,6 +138,10 @@ float measuredLabelColumnWidth(const InspectorModel& model) {
 }  // namespace
 
 void InspectorPanel::onDraw(PanelContext& context) {
+    // task E.5.2: the seam's request is taken HERE, before any early return below, and std::exchange
+    // RESETS the member (a moved-from optional stays engaged -- E.4.3). Overwriting frameNamedSelection
+    // also discards whatever the previous onDraw did not consume.
+    frameNamedSelection = std::exchange(pendingNamedSelection, std::nullopt);
     // ID discipline (D13/E14): PushID(full registration name) per component, PushID(field name)
     // per row -- so two same-named fields in different components, and two same-short-named types
     // in different namespaces, never collide. Widgets use the "##v" label so only the left column
@@ -305,6 +310,13 @@ void InspectorPanel::resetField(PanelContext& context, Entity primary, const Com
     stringCache = {};
 }
 
+void InspectorPanel::requestNamedSelection(std::string component, std::string field, std::size_t index) {
+    pendingNamedSelection.emplace();
+    pendingNamedSelection->componentName = std::move(component);
+    pendingNamedSelection->fieldName = std::move(field);
+    pendingNamedSelection->index = index;
+}
+
 bool InspectorPanel::drawAxisRow(PanelContext& context, Entity primary, const ComponentEntry& entry,
                                  const FieldEntry& field, std::array<float, 3>& shown, float speed) {
     // WHAT DragScalarN DOES INTERNALLY (imgui_widgets.cpp:2814), opened up: BeginGroup, then per
@@ -366,6 +378,40 @@ bool InspectorPanel::drawAxisRow(PanelContext& context, Entity primary, const Co
     return edited;
 }
 
+void InspectorPanel::drawNamedSelector(PanelContext& context, Entity primary, const ComponentEntry& entry,
+                                       const FieldEntry& field, const NamedSelectorRow& selector) {
+    ++namedSelectorsDrawnValue;  // a row that SUBMITTED a selector -- the consequence the seam cannot fake
+    std::optional<std::size_t> chosen;
+    // drawField's SetNextItemWidth(-1.0F) sizes this combo to the value cell.
+    if (ImGui::BeginCombo("##v", selector.preview.c_str())) {  // EndCombo ONLY when this returned true
+        for (std::size_t i = 0; i < selector.labels.size(); ++i) {
+            ImGui::PushID(static_cast<int>(i));  // 1:1 with PopID below -- nothing between them returns
+            const bool current = selector.selected == i;
+            if (ImGui::Selectable(selector.labels[i].c_str(), current)) {
+                chosen = i;
+            }
+            if (current) {
+                ImGui::SetItemDefaultFocus();
+            }
+            ImGui::PopID();
+        }
+        ImGui::EndCombo();
+    }
+    // THE SEAM joins HERE and assigns the SAME local a click assigns -- one code path downstream.
+    if (frameNamedSelection.has_value() && frameNamedSelection->matches(entry.name, field.name)) {
+        chosen = frameNamedSelection->index;
+        frameNamedSelection.reset();
+    }
+    // A DISCRETE write: resetField breaks the merge chain on BOTH sides and drops both edit caches -- a pick
+    // must never merge with a drag on this field a moment earlier (E.3.3's pick posture). An out-of-range
+    // index and the CURRENT value both push nothing: "clearing nothing would push an undo entry that changes
+    // no byte" (guidFieldRow's rule). The merge-chain gate pair is not read for this row: a combo is not a
+    // continuous gesture, and resetField already brackets its one push.
+    if (chosen.has_value() && *chosen < selector.labels.size() && chosen != selector.selected) {
+        resetField(context, primary, entry, field, namedSelectorValue(field.kind, *chosen));
+    }
+}
+
 void InspectorPanel::drawField(PanelContext& context, Entity primary, const ComponentEntry& entry,
                                const FieldEntry& field) {
     // task E.3.1: one table ROW per field -- the label cell, then the value cell. The old
@@ -406,6 +452,13 @@ void InspectorPanel::drawField(PanelContext& context, Entity primary, const Comp
             break;
         }
         case FieldKind::Int: {
+            // task E.5.2: a LABELLED selector draws the named dropdown INSTEAD of the drag -- chosen by the
+            // field's own metadata alone (namedSelectorRow), never by a component or field name. Anything
+            // namedSelectorRow refuses falls through to today's drag, byte for byte.
+            if (const auto selector = namedSelectorRow(field); selector.has_value()) {
+                drawNamedSelector(context, primary, entry, field, *selector);
+                break;
+            }
             std::int64_t v = std::get<std::int64_t>(field.value);
             const auto lo = doubleToClamped<std::int64_t>(field.rangeMin);
             const auto hi = doubleToClamped<std::int64_t>(field.rangeMax);
@@ -426,6 +479,11 @@ void InspectorPanel::drawField(PanelContext& context, Entity primary, const Comp
             break;
         }
         case FieldKind::UInt: {
+            // task E.5.2: the Int arm's rule, the unsigned arm -- metadata alone chooses the dropdown.
+            if (const auto selector = namedSelectorRow(field); selector.has_value()) {
+                drawNamedSelector(context, primary, entry, field, *selector);
+                break;
+            }
             std::uint64_t v = std::get<std::uint64_t>(field.value);
             const auto lo = doubleToClamped<std::uint64_t>(field.rangeMin);
             const auto hi = doubleToClamped<std::uint64_t>(field.rangeMax);

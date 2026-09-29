@@ -86,6 +86,28 @@ DispatchedValue readEntryValue(const entt::meta_data& data, entt::meta_any& hand
     return out;
 }
 
+// task E.5.2: the label grammar, [A-Za-z_][A-Za-z0-9_]*, ASCII by hand -- reflect-gen's isIdentifierToken,
+// DUPLICATED rather than shared: the tool is freestanding and the editor must not depend on it (the house
+// style for tiny per-layer helpers: shortComponentName, doubleToClamped). Never <cctype>, which is
+// locale-dependent.
+[[nodiscard]] bool isLabelIdentifier(std::string_view token) noexcept {
+    if (token.empty()) {
+        return false;
+    }
+    const auto isAlpha = [](char c) { return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z'); };
+    const auto isDigit = [](char c) { return c >= '0' && c <= '9'; };
+    if (!isAlpha(token.front()) && token.front() != '_') {
+        return false;
+    }
+    for (std::size_t i = 1; i < token.size(); ++i) {
+        const char c = token[i];
+        if (!isAlpha(c) && !isDigit(c) && c != '_') {
+            return false;
+        }
+    }
+    return true;
+}
+
 }  // namespace
 
 void buildInspectorModel(const World& world, Entity entity, InspectorModel& out) {
@@ -156,6 +178,7 @@ void buildInspectorModel(const World& world, Entity entity, InspectorModel& out)
                     // frees the allocation is `= std::string{}` (or re-emplacing the whole FieldEntry),
                     // and that is the spelling KP3 seeds: capacity 263 -> 22 and the pointer moves.
                     field.assetKindToken.clear();
+                    field.labels.clear();  // task E.5.2 -- the same KP3 rule, the same reason
                     const engine::reflect::FieldUiMeta* uiMeta = data.custom();
                     if (uiMeta != nullptr) {
                         field.hasRange = uiMeta->hasRange;
@@ -166,6 +189,10 @@ void buildInspectorModel(const World& world, Entity entity, InspectorModel& out)
                         // case, which the clear() above has already spelled.
                         if (uiMeta->assetKind != nullptr) {
                             field.assetKindToken = uiMeta->assetKind;
+                        }
+                        // task E.5.2: CARRIED, never judged -- namedSelectorRow judges it per frame.
+                        if (uiMeta->labels != nullptr) {
+                            field.labels = uiMeta->labels;
                         }
                     }
                     ++fieldWriteIndex;
@@ -203,6 +230,71 @@ GuidFieldRow guidFieldRow(Guid value, const AssetDatabase* database, std::string
     text += assetKindLabel(kind);
     text += ")";
     return {.text = std::move(text), .clearEnabled = true};
+}
+
+std::optional<NamedSelectorRow> namedSelectorRow(const FieldEntry& field) {
+    const bool isInt = field.kind == FieldKind::Int && std::holds_alternative<std::int64_t>(field.value);
+    const bool isUInt = field.kind == FieldKind::UInt && std::holds_alternative<std::uint64_t>(field.value);
+    // The cheap refusals FIRST, so an unlabelled integer row -- every such row, every frame -- allocates
+    // nothing here.
+    if ((!isInt && !isUInt) || field.labels.empty() || !field.hasRange || field.rangeMin != 0.0) {
+        return std::nullopt;
+    }
+    NamedSelectorRow row;
+    std::string_view rest = field.labels;
+    while (true) {
+        const std::size_t bar = rest.find('|');
+        const std::string_view piece = rest.substr(0, bar);
+        if (!isLabelIdentifier(piece) || row.labels.size() == MAX_FIELD_LABELS ||
+            std::find(row.labels.begin(), row.labels.end(), piece) != row.labels.end()) {
+            return std::nullopt;
+        }
+        row.labels.emplace_back(piece);
+        if (bar == std::string_view::npos) {
+            break;
+        }
+        rest.remove_prefix(bar + 1);
+    }
+    // EXACT: the tool emitted rangeMax as the literal N-1 and FieldUiMeta holds it as a double.
+    if (field.rangeMax != static_cast<double>(row.labels.size() - 1U)) {
+        return std::nullopt;
+    }
+    if (isInt) {
+        const std::int64_t v = std::get<std::int64_t>(field.value);
+        if (v >= 0 && static_cast<std::uint64_t>(v) < row.labels.size()) {
+            row.selected = static_cast<std::size_t>(v);
+        } else {
+            row.preview = std::format("{} (out of range)", v);
+        }
+    } else {
+        const std::uint64_t v = std::get<std::uint64_t>(field.value);
+        if (v < row.labels.size()) {
+            row.selected = static_cast<std::size_t>(v);
+        } else {
+            row.preview = std::format("{} (out of range)", v);
+        }
+    }
+    if (row.selected.has_value()) {
+        row.preview = row.labels[*row.selected];
+    }
+    return row;
+}
+
+FieldValue namedSelectorValue(FieldKind kind, std::size_t index) {
+    switch (kind) {
+        case FieldKind::Int:
+            return FieldValue{static_cast<std::int64_t>(index)};
+        case FieldKind::UInt:
+            return FieldValue{static_cast<std::uint64_t>(index)};
+        case FieldKind::Bool:
+        case FieldKind::Float:
+        case FieldKind::Vec3:
+        case FieldKind::Quat:
+        case FieldKind::String:
+        case FieldKind::Guid:
+            break;
+    }
+    return FieldValue{};
 }
 
 // ---- task E.3.1: the axis row's decisions, all of them ---------------------------------------------

@@ -1175,6 +1175,12 @@ bool EditorApp::tick() {
     applyDefaultLayout = ui.applyDefaultLayout;         // drawShellUi clears it once consumed, and re-sets
                                                         // it for View > Reset Layout
     placeUnplacedPanels = ui.placeUnplacedPanels;       // cleared once consumed; nothing ever re-arms it
+    // task E.5.2: a named-selector request lives exactly ONE tick. The Inspector consumed it above if it
+    // drew the row; if it did not draw at all (hidden, or another tab in front) it is dropped HERE, so it
+    // can never apply on a later frame -- the thing a real click cannot do either.
+    if (inspectorPanel != nullptr) {
+        inspectorPanel->expireNamedSelection();
+    }
     // task E.3.2. The toggle is adopted ONLY when the checkbox was actually flipped -- routeEnabled is
     // an in/out field, and adopting it unconditionally would be harmless today and a silent
     // re-introduction of a stale value the moment anything else writes it.
@@ -2292,6 +2298,16 @@ void EditorApp::requestInspectorAssetPicker(std::string_view componentName, std:
         assetPicker->pendingOpen =
             AssetPickerOpenRequest{.hostId = "Inspector", .fieldKey = inspectorAssetFieldKey(componentName, fieldName)};
     }
+}
+
+void EditorApp::requestInspectorNamedSelection(std::string_view component, std::string_view field, std::size_t index) {
+    if (inspectorPanel != nullptr) {
+        inspectorPanel->requestNamedSelection(std::string(component), std::string(field), index);
+    }
+}
+
+std::size_t EditorApp::inspectorNamedSelectorsDrawn() const noexcept {
+    return inspectorPanel != nullptr ? inspectorPanel->namedSelectorsDrawn() : 0U;
 }
 
 void EditorApp::requestMaterialSlotPicker(std::size_t slot) {

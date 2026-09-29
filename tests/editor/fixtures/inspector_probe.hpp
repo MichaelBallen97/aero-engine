@@ -46,4 +46,9 @@ struct AERO_COMPONENT InspectorProbe {
     // constrained and an unconstrained reference field and KP1 can tell them apart. AERO_ASSET expands
     // to nothing under the real compiler, so the struct's layout is unchanged.
     engine::Guid textureRef AERO_ASSET(texture);
+    // task E.5.2: two LABELLED selectors, appended for 3.1.5's own reason -- one unsigned, one signed -- so
+    // this binary reads AERO_LABELS end to end (IR18) without borrowing a real component. AERO_LABELS
+    // expands to nothing under the real compiler, so the struct gains two plain integers and nothing else.
+    std::uint32_t mode AERO_RANGE(0, 2) AERO_LABELS(Alpha, Beta, Gamma) = 0;
+    std::int32_t level AERO_RANGE(0, 1) AERO_LABELS(Low, High) = 0;
 };
