@@ -937,6 +937,10 @@ elseif(CASE STREQUAL "components_engine_mesh_renderer")
     # newline, so they are satisfied by the longer line just as well.
     aero_expect_stdout_contains("${out}" "field mesh : Guid [guid] [asset model]")
     aero_expect_stdout_contains("${out}" "field material : Guid [guid] [asset material]")
+    # task E.5.2: the selector now NAMES its three values, in render::PrimitiveId's order. The range
+    # assertion above stays as it is -- a substring with no trailing newline, satisfied by this longer line.
+    aero_expect_stdout_contains("${out}"
+        "field primitive : std::uint32_t [primitive] [range 0:2] [labels Cube|Sphere|Plane]\n")
 
     # declaration order: primitive -> color -> mesh -> meshIndex -> material
     string(FIND "${out}" "field primitive" _p)
@@ -989,6 +993,9 @@ elseif(CASE STREQUAL "components_engine_environment")
     aero_expect_stdout_contains("${out}" "field groundColor : Vec3 [vec3] [color]")
     aero_expect_stdout_contains("${out}" "field solidColor : Vec3 [vec3] [color]")
     aero_expect_stdout_contains("${out}" "field ambientMode : std::uint32_t [primitive] [range 0:1]")
+    # task E.5.2: both selectors are named, in render::BackgroundMode's and render::AmbientMode's order.
+    aero_expect_stdout_contains("${out}" "field backgroundMode : std::uint32_t [primitive] [range 0:1] [labels Sky|Solid]\n")
+    aero_expect_stdout_contains("${out}" "field ambientMode : std::uint32_t [primitive] [range 0:1] [labels Hemisphere|Flat]\n")
     aero_expect_stdout_contains("${out}" "field ambientColor : Vec3 [vec3] [color]")
     aero_expect_stdout_contains("${out}" "field ambientIntensity : float [primitive]")
     # ...and ambientIntensity carries NO [range]: 1.3.3's D19. Asserted as an ABSENCE, because the

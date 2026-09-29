@@ -13,7 +13,9 @@
 // identically, and the bridge clamps anything out of range to 0 -- which is the DEFAULT mode on both
 // selectors, deliberately, so "out of range" and "the default" are one number. The enums that NAME
 // the values live in engine/render/environment.hpp, the layer that consumes them; this header cannot
-// include that one (scene never learns about render) and does not need to.
+// include that one (scene never learns about render) and does not need to. AERO_LABELS repeats their
+// names, in their order, for the Inspector's named selector (task E.5.2); IR20 is the tripwire that
+// keeps the two spellings in step.
 //
 // EVERY COLOUR IS LINEAR RGB, UNCLAMPED (HDR-legal), exactly as the light colours are, and nothing
 // sanitises them: a negative intensity darkens and a NaN propagates visibly, exactly as
@@ -22,7 +24,7 @@
 // constant edit -- and it must move on BOTH sides of the render boundary, which the bridge test's
 // witness case enforces.
 #include <aero/core/math.hpp>            // Vec3
-#include <aero/reflect/annotations.hpp>  // AERO_COMPONENT, AERO_COLOR, AERO_RANGE
+#include <aero/reflect/annotations.hpp>  // AERO_COMPONENT, AERO_COLOR, AERO_RANGE, AERO_LABELS
 
 #include <cstdint>
 #include <type_traits>
@@ -31,7 +33,7 @@ namespace engine {
 
 struct AERO_COMPONENT Environment {
     // 0 = Sky (the three-colour gradient below), 1 = Solid (`solidColor` everywhere).
-    std::uint32_t backgroundMode AERO_RANGE(0, 1) = 0;
+    std::uint32_t backgroundMode AERO_RANGE(0, 1) AERO_LABELS(Sky, Solid) = 0;
     // `= Vec3{...}`, never a brace-initialiser directly after the annotation: the annotation's
     // canonical position is AFTER the name and BEFORE an `=` initializer (annotations.hpp:21-28),
     // and that is the only form reflect-gen's per-header cases have ever parsed.
@@ -42,7 +44,7 @@ struct AERO_COMPONENT Environment {
                                                                // the editor's pre-E.2.1 clear colour
     // 0 = Hemisphere (skyColor facing up, groundColor facing down, blended by the surface normal),
     // 1 = Flat (`ambientColor` on every surface).
-    std::uint32_t ambientMode AERO_RANGE(0, 1) = 0;
+    std::uint32_t ambientMode AERO_RANGE(0, 1) AERO_LABELS(Hemisphere, Flat) = 0;
     Vec3 ambientColor AERO_COLOR = Vec3{0.03f, 0.03f, 0.03f};  // read ONLY when ambientMode == 1;
                                                                // the pre-E.2.1 hardcoded constant
     // Scales BOTH ambient modes -- a knob that is inert in one mode is the class of silent field this

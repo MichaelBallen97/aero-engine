@@ -11,6 +11,7 @@
 #include <aero/reflect/annotations.hpp>  // engine::reflect::FieldUiMeta (task 2.2.2)
 #include <aero/scene/audio_source.hpp>   // task E.3.3 (RF2)
 #include <aero/scene/camera.hpp>
+#include <aero/scene/environment.hpp>  // task E.5.2 (RF6)
 #include <aero/scene/light.hpp>
 #include <aero/scene/mesh_renderer.hpp>  // task 2.2.2
 #include <aero/scene/transform.hpp>
@@ -25,6 +26,7 @@
 
 // <ostream> is required by MSVC, not by libc++ (the 0.4.1 trap): doctest stringifies a failing CHECK
 // involving a std::string_view through operator<<, and MSVC's overload needs a COMPLETE std::ostream.
+#include <algorithm>
 #include <array>
 #include <ostream>
 #include <string>
@@ -75,6 +77,8 @@ void aero_reflect_register_audio_source();
 void aero_reflect_register_component_asset();
 // NOLINTNEXTLINE(readability-identifier-naming)
 void aero_reflect_register_component_labels();  // task E.5.2 -- GENERATED from component_labels.hpp
+// NOLINTNEXTLINE(readability-identifier-naming)
+void aero_reflect_register_environment();  // task E.5.2 -- GENERATED from engine/scene/.../environment.hpp
 
 // Forward-declared here; DEFINED by the GENERATED aero_reflect_meta_test.aggregator.gen.cpp (task
 // 1.1.4, D4) that calls every per-header register function (both above) in HEADERS-list order.
@@ -485,6 +489,76 @@ TEST_CASE(
     const engine::reflect::FieldUiMeta* unranged = byType.data("unranged"_hs).custom();
     CHECK(flag == nullptr);
     CHECK(unranged == nullptr);
+
+    entt::meta_reset();
+}
+
+TEST_CASE("the real selectors carry their labels and keep every older member (task E.5.2, RF6)") {
+    using namespace entt::literals;
+    aero_reflect_register_mesh_renderer();
+    aero_reflect_register_environment();
+
+    auto meshRenderer = entt::resolve<engine::MeshRenderer>();
+    REQUIRE(static_cast<bool>(meshRenderer));
+    const engine::reflect::FieldUiMeta* primitive = meshRenderer.data("primitive"_hs).custom();
+    REQUIRE(primitive != nullptr);
+    REQUIRE(primitive->labels != nullptr);
+    CHECK(std::string_view(primitive->labels) == "Cube|Sphere|Plane");
+    // THE HALF AN APPENDED MEMBER BREAKS (RF1's shape): every older member keeps its value.
+    CHECK(primitive->hasRange);
+    CHECK(primitive->rangeMin == 0.0);
+    CHECK(primitive->rangeMax == 2.0);
+    CHECK_FALSE(primitive->color);
+    CHECK(primitive->assetKind == nullptr);
+
+    auto environment = entt::resolve<engine::Environment>();
+    REQUIRE(static_cast<bool>(environment));
+    const engine::reflect::FieldUiMeta* background = environment.data("backgroundMode"_hs).custom();
+    REQUIRE(background != nullptr);
+    REQUIRE(background->labels != nullptr);
+    CHECK(std::string_view(background->labels) == "Sky|Solid");
+    CHECK(background->rangeMax == 1.0);
+    const engine::reflect::FieldUiMeta* ambient = environment.data("ambientMode"_hs).custom();
+    REQUIRE(ambient != nullptr);
+    REQUIRE(ambient->labels != nullptr);
+    CHECK(std::string_view(ambient->labels) == "Hemisphere|Flat");
+    CHECK(ambient->rangeMax == 1.0);
+
+    entt::meta_reset();
+}
+
+TEST_CASE("no other built-in field carries labels (task E.5.2, RF7)") {
+    aero_reflect_register_all_aero_reflect_meta_test();
+    // The ten built-ins, by registration name (the project's built-in roster). Resolved by id, so a
+    // missing one is a loud REQUIRE, never a silently shorter walk.
+    constexpr std::array<std::string_view, 10> BUILTINS{
+        "engine::Transform",     "engine::Camera",     "engine::DirectionalLight", "engine::PointLight",
+        "engine::MeshRenderer",  "engine::SpotLight",  "engine::AnimationPlayer",  "engine::AudioSource",
+        "engine::AudioListener", "engine::Environment"};
+    std::size_t members = 0;
+    std::vector<std::string> labelled;
+    for (const std::string_view name : BUILTINS) {
+        INFO("built-in: " << name);
+        const entt::meta_type type = entt::resolve(entt::hashed_string{name.data(), name.size()});
+        REQUIRE(static_cast<bool>(type));
+        for (auto&& [id, data] : type.data()) {
+            (void)id;
+            ++members;
+            const engine::reflect::FieldUiMeta* meta = data.custom();
+            if (meta != nullptr && meta->labels != nullptr) {
+                labelled.push_back(std::string(name) + "." + std::string(data.name()));
+            }
+        }
+    }
+    MESSAGE("built-in data members walked: " << members);
+    // ANTI-VACUITY: ten types resolved above (each a REQUIRE), and the walk saw the members -- 46 by a
+    // count of the ten headers at e131993, so an empty or truncated walk cannot pass.
+    REQUIRE(members > 40U);
+    std::sort(labelled.begin(), labelled.end());
+    REQUIRE(labelled.size() == 3U);
+    CHECK(labelled[0] == "engine::Environment.ambientMode");
+    CHECK(labelled[1] == "engine::Environment.backgroundMode");
+    CHECK(labelled[2] == "engine::MeshRenderer.primitive");
 
     entt::meta_reset();
 }
