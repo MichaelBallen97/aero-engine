@@ -17,13 +17,15 @@
 
 #include "component_asset.hpp"  // task E.3.3
 #include "component_codegen.hpp"
-#include "component_guid.hpp"  // task 3.1.5
+#include "component_guid.hpp"    // task 3.1.5
+#include "component_labels.hpp"  // task E.5.2
 #include "component_wiring.hpp"
 
 #include <entt/entt.hpp>
 
 // <ostream> is required by MSVC, not by libc++ (the 0.4.1 trap): doctest stringifies a failing CHECK
 // involving a std::string_view through operator<<, and MSVC's overload needs a COMPLETE std::ostream.
+#include <array>
 #include <ostream>
 #include <string>
 #include <string_view>
@@ -71,6 +73,8 @@ void aero_reflect_register_component_guid();
 void aero_reflect_register_audio_source();
 // NOLINTNEXTLINE(readability-identifier-naming)
 void aero_reflect_register_component_asset();
+// NOLINTNEXTLINE(readability-identifier-naming)
+void aero_reflect_register_component_labels();  // task E.5.2 -- GENERATED from component_labels.hpp
 
 // Forward-declared here; DEFINED by the GENERATED aero_reflect_meta_test.aggregator.gen.cpp (task
 // 1.1.4, D4) that calls every per-header register function (both above) in HEADERS-list order.
@@ -407,6 +411,80 @@ TEST_CASE("RF3: the tool passes a token's VOCABULARY through and drops a misappl
     CHECK(scaleMeta == nullptr);
     CHECK(dashedMeta == nullptr);
     CHECK(emptyMeta == nullptr);
+
+    entt::meta_reset();
+}
+
+// ---- task E.5.2: the AERO_LABELS annotation reaches the runtime, and every dropped arm reaches NOTHING --
+
+TEST_CASE("the fixture's three valid selectors carry their labels at runtime (task E.5.2, RF4)") {
+    using namespace entt::literals;
+    aero_reflect_register_component_labels();
+    auto byType = entt::resolve<engine::demo::Labelled>();
+    REQUIRE(static_cast<bool>(byType));
+
+    const engine::reflect::FieldUiMeta* tier = byType.data("tier"_hs).custom();
+    REQUIRE(tier != nullptr);
+    REQUIRE(tier->labels != nullptr);
+    CHECK(std::string_view(tier->labels) == "Low|Mid|High");  // never == on two const char*: POINTERS
+    CHECK(tier->hasRange);
+    CHECK(tier->rangeMin == 0.0);
+    CHECK(tier->rangeMax == 2.0);
+    CHECK_FALSE(tier->color);
+    CHECK(tier->assetKind == nullptr);  // the member BEFORE the appended one still defaults
+
+    const engine::reflect::FieldUiMeta* gear = byType.data("gear"_hs).custom();
+    REQUIRE(gear != nullptr);
+    REQUIRE(gear->labels != nullptr);
+    CHECK(std::string_view(gear->labels) == "Park|Drive");  // a SIGNED selector
+    CHECK(gear->rangeMax == 1.0);
+
+    // 0x0 / 0x2: the consistency check compared the range NUMERICALLY, and the runtime reads 2.
+    const engine::reflect::FieldUiMeta* hexRange = byType.data("hexRange"_hs).custom();
+    REQUIRE(hexRange != nullptr);
+    REQUIRE(hexRange->labels != nullptr);
+    CHECK(std::string_view(hexRange->labels) == "A|B|C");
+    CHECK(hexRange->rangeMin == 0.0);
+    CHECK(hexRange->rangeMax == 2.0);
+
+    entt::meta_reset();
+}
+
+TEST_CASE(
+    "every dropped AERO_LABELS arm reaches the runtime with no labels and its range intact "
+    "(task E.5.2, RF5)") {
+    using namespace entt::literals;
+    aero_reflect_register_component_labels();
+    auto byType = entt::resolve<engine::demo::Labelled>();
+    REQUIRE(static_cast<bool>(byType));
+
+    // Each of these KEPT its range: asserting the range is what stops "labels dropped" from being
+    // satisfied by "the whole custom vanished".
+    struct Kept {
+        entt::id_type id;
+        double lo;
+        double hi;
+    };
+    const std::array<Kept, 7> kept{{{"plain"_hs, 0.0, 3.0},
+                                    {"ratio"_hs, 0.0, 1.0},
+                                    {"numeric"_hs, 0.0, 1.0},
+                                    {"empty"_hs, 0.0, 0.0},
+                                    {"twice"_hs, 0.0, 1.0},
+                                    {"shortList"_hs, 0.0, 3.0},
+                                    {"offset"_hs, 1.0, 2.0}}};
+    for (const Kept& k : kept) {
+        const engine::reflect::FieldUiMeta* meta = byType.data(k.id).custom();
+        REQUIRE(meta != nullptr);
+        CHECK(meta->labels == nullptr);
+        CHECK(meta->hasRange);
+        CHECK(meta->rangeMin == k.lo);
+        CHECK(meta->rangeMax == k.hi);
+    }
+    // No range and no accepted label: NO custom at all (D6's sparsity, one annotation over).
+    const engine::reflect::FieldUiMeta* flag = byType.data("flag"_hs).custom();
+    const engine::reflect::FieldUiMeta* unranged = byType.data("unranged"_hs).custom();
+    CHECK(flag == nullptr);
+    CHECK(unranged == nullptr);
 
     entt::meta_reset();
 }

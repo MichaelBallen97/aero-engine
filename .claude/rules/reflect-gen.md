@@ -22,7 +22,7 @@ CLI dispatch precedence: `--emit-json` > `--emit-meta` > `--components` > raw AS
 A bare `[[engine::component]]` is **discarded by Clang** — no attribute cursor survives,
 only a `-Wunknown-attributes` warning. So annotations go through macros in
 `<aero/reflect/annotations.hpp>` (`AERO_COMPONENT`, `AERO_RANGE(min,max)`, `AERO_COLOR`,
-`AERO_ASSET(kind)`) which expand to `[[clang::annotate(...)]]` **only** when
+`AERO_ASSET(kind)`, `AERO_LABELS(ident, …)`) which expand to `[[clang::annotate(...)]]` **only** when
 `AERO_REFLECT_PARSE` is defined, and to nothing under the real compiler. The tool
 auto-injects `-DAERO_REFLECT_PARSE=1`; no caller manages the marker.
 
@@ -38,6 +38,15 @@ refusing it is `assetReferenceKindFromToken`'s job
 (`editor/include/aero/editor/asset_drag.hpp`), and an unrecognised token is *unconstrained
 plus one warning* in the editor, never an error here. Do not "helpfully" add a kind list to
 this tool.
+
+`AERO_LABELS(ident, …)` (task E.5.2) names an **integer** selector's values, label *i* naming the value *i*.
+The payload is identifiers only (E.3.3's grammar, each piece trimmed), no duplicates, at most 64 — the
+editor's `MAX_FIELD_LABELS` is the twin, restated because this tool is freestanding. **It requires
+`AERO_RANGE(0, N-1)` on the same field**, compared numerically; otherwise one warning, labels dropped,
+range kept. The mirror is `FieldUiMeta::labels`, `|`-joined, appended last and written only when present.
+**Its visitor arm must precede the unknown-`engine::` catch-all** — placed after it, every labels
+annotation is reported unknown and dropped while `annotations_unknown` stays green (it asserts a
+different string); `labels_components` pins the absence of that message for exactly this reason.
 
 ## The reflectable subset — extend it only by exact match
 

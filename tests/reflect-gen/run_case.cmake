@@ -38,6 +38,7 @@ set(ANNOTATIONS_HPP "${FIXTURES_DIR}/component_annotations.hpp")  # task 2.2.2
 set(TEXT_HPP "${FIXTURES_DIR}/component_text.hpp")                # task 2.2.2
 set(GUID_HPP "${FIXTURES_DIR}/component_guid.hpp")                # task 3.1.5
 set(ASSET_HPP "${FIXTURES_DIR}/component_asset.hpp")              # task E.3.3
+set(LABELS_HPP "${FIXTURES_DIR}/component_labels.hpp")            # task E.5.2
 
 # Runs aero_reflect_gen once. Spec D8/C.6: ASAN_OPTIONS scoped to this one process --
 # detect_leaks=0 only (libclang leaks by design at process exit: global initializers, the CXIndex
@@ -1351,6 +1352,151 @@ elseif(CASE STREQUAL "asset_malformed")
         "Referenced.empty: malformed engine::asset annotation (kind must be an identifier) -- ignored")
     aero_expect_stdout_contains("${out}" "field dashed : engine::Guid [guid]\n")
     aero_expect_stdout_contains("${out}" "field empty : engine::Guid [guid]\n")
+
+elseif(CASE STREQUAL "labels_components")
+    # task E.5.2: AERO_LABELS(ident, ...). The tool validates the identifier GRAMMAR, refuses a duplicate
+    # and more than 64, requires an INTEGER field, and requires AERO_RANGE(0, N-1) on the same field.
+    # Every valid arm prints its '|'-joined labels; every dropped arm prints NO suffix, which the trailing
+    # \n proves (annotations_components' own idiom).
+    aero_run_tool(ARGS --components "${LABELS_HPP}" -- ${CLANG_ARGS} -I "${ENGINE_INCLUDE}" -I "${REFLECT_INCLUDE}"
+        OUT_RESULT result OUT_STDOUT out OUT_STDERR err)
+    aero_expect_exit_or_dump("${result}" 0 "${err}")
+    aero_expect_stdout_contains("${out}" "field tier : std::uint32_t [primitive] [range 0:2] [labels Low|Mid|High]\n")
+    aero_expect_stdout_contains("${out}" "field gear : std::int16_t [primitive] [range 0:1] [labels Park|Drive]\n")
+    aero_expect_stdout_contains("${out}" "field hexRange : std::uint8_t [primitive] [range 0x0:0x2] [labels A|B|C]\n")
+    aero_expect_stdout_contains("${out}" "field plain : std::uint32_t [primitive] [range 0:3]\n")
+    aero_expect_stdout_contains("${out}" "field ratio : float [primitive] [range 0.0:1.0]\n")
+    aero_expect_stdout_contains("${out}" "field flag : bool [primitive]\n")
+    aero_expect_stdout_contains("${out}" "field numeric : std::uint32_t [primitive] [range 0:1]\n")
+    aero_expect_stdout_contains("${out}" "field empty : std::uint32_t [primitive] [range 0:0]\n")
+    aero_expect_stdout_contains("${out}" "field twice : std::uint32_t [primitive] [range 0:1]\n")
+    aero_expect_stdout_contains("${out}" "field shortList : std::uint32_t [primitive] [range 0:3]\n")
+    aero_expect_stdout_contains("${out}" "field offset : std::uint32_t [primitive] [range 1:2]\n")
+    aero_expect_stdout_contains("${out}" "field unranged : std::uint32_t [primitive]\n")
+    # THE CATCH-ALL ORDERING, PINNED: a labels arm placed after the unknown-engine:: catch-all reports
+    # every labels annotation as unknown -- and annotations_unknown stays green, because it asserts a
+    # different string (seed S24).
+    string(FIND "${err}" "unknown engine:: field annotation 'engine::labels" _idx_unknown)
+    if(NOT _idx_unknown EQUAL -1)
+        message(FATAL_ERROR "case 'labels_components': the labels arm must precede the catch-all:\n${err}")
+    endif()
+
+elseif(CASE STREQUAL "labels_meta")
+    # The custom carries .labels LAST, after .color, and ONLY when present -- so a field with no labels
+    # emits exactly the bytes the emitter wrote before this task (annotations_meta, asset_meta and
+    # guid_meta, all green UNEDITED, are the proof for every other fixture).
+    aero_run_tool(ARGS --emit-meta "${LABELS_HPP}" -- ${CLANG_ARGS} -I "${ENGINE_INCLUDE}" -I "${REFLECT_INCLUDE}"
+        OUT_RESULT result1 OUT_STDOUT out OUT_STDERR err)
+    aero_expect_exit_or_dump("${result1}" 0 "${err}")
+    aero_run_tool(ARGS --emit-meta "${LABELS_HPP}" -- ${CLANG_ARGS} -I "${ENGINE_INCLUDE}" -I "${REFLECT_INCLUDE}"
+        OUT_RESULT result2 OUT_STDOUT out2 OUT_STDERR err2)
+    aero_expect_exit_or_dump("${result2}" 0 "${err2}")
+    if(NOT out STREQUAL out2)
+        message(FATAL_ERROR "case 'labels_meta': two runs differ -- the emitter is not deterministic")
+    endif()
+    aero_expect_stdout_contains("${out}" "#include <aero/reflect/annotations.hpp>")
+    aero_expect_stdout_contains("${out}"
+        ".data<&engine::demo::Labelled::tier>(\"tier\"_hs, \"tier\")\n        .custom<engine::reflect::FieldUiMeta>(engine::reflect::FieldUiMeta{.hasRange = true, .rangeMin = 0, .rangeMax = 2, .color = false, .labels = \"Low|Mid|High\"})")
+    aero_expect_stdout_contains("${out}"
+        ".data<&engine::demo::Labelled::gear>(\"gear\"_hs, \"gear\")\n        .custom<engine::reflect::FieldUiMeta>(engine::reflect::FieldUiMeta{.hasRange = true, .rangeMin = 0, .rangeMax = 1, .color = false, .labels = \"Park|Drive\"})")
+    aero_expect_stdout_contains("${out}"
+        ".data<&engine::demo::Labelled::hexRange>(\"hexRange\"_hs, \"hexRange\")\n        .custom<engine::reflect::FieldUiMeta>(engine::reflect::FieldUiMeta{.hasRange = true, .rangeMin = 0x0, .rangeMax = 0x2, .color = false, .labels = \"A|B|C\"})")
+    # RANGE-ONLY customs -- the pre-task bytes exactly, with NO .labels: the unlabelled arm and every
+    # arm whose labels were dropped while its range was kept.
+    foreach(_pair "plain:0:3" "ratio:0.0:1.0" "numeric:0:1" "empty:0:0" "twice:0:1" "shortList:0:3" "offset:1:2")
+        string(REPLACE ":" ";" _parts "${_pair}")
+        list(GET _parts 0 _f)
+        list(GET _parts 1 _lo)
+        list(GET _parts 2 _hi)
+        aero_expect_stdout_contains("${out}"
+            ".data<&engine::demo::Labelled::${_f}>(\"${_f}\"_hs, \"${_f}\")\n        .custom<engine::reflect::FieldUiMeta>(engine::reflect::FieldUiMeta{.hasRange = true, .rangeMin = ${_lo}, .rangeMax = ${_hi}, .color = false})")
+    endforeach()
+    # NO custom at all for `flag` (misapplied, and no range) and `unranged` (mismatch, and no range):
+    # two consecutive-.data runs with nothing between (asset_meta's idiom). `unranged` is the LAST field,
+    # so its run ends the chain with ';'.
+    aero_expect_stdout_contains("${out}"
+        ".data<&engine::demo::Labelled::flag>(\"flag\"_hs, \"flag\")\n        .data<&engine::demo::Labelled::numeric>(\"numeric\"_hs, \"numeric\")")
+    aero_expect_stdout_contains("${out}"
+        ".data<&engine::demo::Labelled::unranged>(\"unranged\"_hs, \"unranged\");")
+    # ...and .labels appears EXACTLY three times in the whole TU: nothing else was labelled.
+    string(REGEX MATCHALL "\\.labels = " _labels_hits "${out}")
+    list(LENGTH _labels_hits _labels_count)
+    if(NOT _labels_count EQUAL 3)
+        message(FATAL_ERROR "case 'labels_meta': expected exactly 3 .labels initializers, got ${_labels_count}:\n${out}")
+    endif()
+
+elseif(CASE STREQUAL "labels_misapplied")
+    # Applicability is judged AFTER classification (D7), exactly as the other three are: labels on a
+    # non-integer field warn and are dropped, never an error, and a range on the same field is KEPT.
+    aero_run_tool(ARGS --components "${LABELS_HPP}" -- ${CLANG_ARGS} -I "${ENGINE_INCLUDE}" -I "${REFLECT_INCLUDE}"
+        OUT_RESULT result OUT_STDOUT out OUT_STDERR err)
+    aero_expect_exit_or_dump("${result}" 0 "${err}")
+    aero_expect_stderr_contains("${err}" "Labelled.ratio: engine::labels applies only to integer fields")
+    aero_expect_stderr_contains("${err}" "Labelled.flag: engine::labels applies only to integer fields")
+
+elseif(CASE STREQUAL "labels_malformed")
+    # A non-identifier, an EMPTY list (AERO_LABELS() stringizes to ""), a duplicate -- and the cap, in
+    # BOTH directions, from two headers this case writes into its own WORK_DIR (65 identifiers in the
+    # shared fixture would drown it).
+    aero_run_tool(ARGS --components "${LABELS_HPP}" -- ${CLANG_ARGS} -I "${ENGINE_INCLUDE}" -I "${REFLECT_INCLUDE}"
+        OUT_RESULT result OUT_STDOUT out OUT_STDERR err)
+    aero_expect_exit_or_dump("${result}" 0 "${err}")
+    aero_expect_stderr_contains("${err}"
+        "Labelled.numeric: malformed engine::labels annotation (labels must be a comma-separated list of identifiers) -- ignored")
+    aero_expect_stderr_contains("${err}"
+        "Labelled.empty: malformed engine::labels annotation (labels must be a comma-separated list of identifiers) -- ignored")
+    aero_expect_stderr_contains("${err}"
+        "Labelled.twice: malformed engine::labels annotation (duplicate label 'Same') -- ignored")
+
+    set(_labels64 "")
+    set(_labels65 "")
+    foreach(_i RANGE 0 64)
+        if(_i LESS 64)
+            list(APPEND _labels64 "L${_i}")
+        endif()
+        list(APPEND _labels65 "L${_i}")
+    endforeach()
+    list(JOIN _labels64 ", " _args64)
+    list(JOIN _labels65 ", " _args65)
+    list(JOIN _labels64 "|" _pipe64)
+    foreach(_n 64 65)
+        math(EXPR _max "${_n} - 1")
+        set(_args "${_args${_n}}")
+        file(WRITE "${WORK_DIR}/cap${_n}.hpp"
+            "#pragma once\n#include <aero/reflect/annotations.hpp>\n\n#include <cstdint>\n\n"
+            "namespace engine::demo {\nstruct AERO_COMPONENT Cap${_n} {\n"
+            "    std::uint32_t pick AERO_RANGE(0, ${_max}) AERO_LABELS(${_args}) = 0;\n"
+            "};\n}  // namespace engine::demo\n")
+    endforeach()
+    aero_run_tool(ARGS --components "${WORK_DIR}/cap64.hpp" -- ${CLANG_ARGS} -I "${ENGINE_INCLUDE}"
+        -I "${REFLECT_INCLUDE}" OUT_RESULT r64 OUT_STDOUT out64 OUT_STDERR err64)
+    aero_expect_exit_or_dump("${r64}" 0 "${err64}")
+    aero_expect_stdout_contains("${out64}" "field pick : std::uint32_t [primitive] [range 0:63] [labels ${_pipe64}]\n")
+    string(FIND "${err64}" "aero_reflect_gen: warning:" _idx_w64)
+    if(NOT _idx_w64 EQUAL -1)
+        message(FATAL_ERROR "case 'labels_malformed': 64 labels must be accepted warning-free:\n${err64}")
+    endif()
+    aero_run_tool(ARGS --components "${WORK_DIR}/cap65.hpp" -- ${CLANG_ARGS} -I "${ENGINE_INCLUDE}"
+        -I "${REFLECT_INCLUDE}" OUT_RESULT r65 OUT_STDOUT out65 OUT_STDERR err65)
+    aero_expect_exit_or_dump("${r65}" 0 "${err65}")
+    aero_expect_stderr_contains("${err65}"
+        "Cap65.pick: malformed engine::labels annotation (more than 64 labels) -- ignored")
+    aero_expect_stdout_contains("${out65}" "field pick : std::uint32_t [primitive] [range 0:64]\n")
+
+elseif(CASE STREQUAL "labels_mismatch")
+    # The one rule the other annotations do not have: the labels must name the WHOLE of AERO_RANGE's
+    # domain and nothing else. On a mismatch, ONE warning naming the range required -- labels dropped,
+    # range KEPT (AERO_RANGE stays the one authority for the domain).
+    aero_run_tool(ARGS --components "${LABELS_HPP}" -- ${CLANG_ARGS} -I "${ENGINE_INCLUDE}" -I "${REFLECT_INCLUDE}"
+        OUT_RESULT result OUT_STDOUT out OUT_STDERR err)
+    aero_expect_exit_or_dump("${result}" 0 "${err}")
+    aero_expect_stderr_contains("${err}"
+        "Labelled.shortList: engine::labels needs AERO_RANGE(0, 1) on the same field -- ignored")
+    aero_expect_stderr_contains("${err}"
+        "Labelled.offset: engine::labels needs AERO_RANGE(0, 1) on the same field -- ignored")
+    aero_expect_stderr_contains("${err}"
+        "Labelled.unranged: engine::labels needs AERO_RANGE(0, 1) on the same field -- ignored")
+    aero_expect_stdout_contains("${out}" "field shortList : std::uint32_t [primitive] [range 0:3]\n")
 
 else()
     message(FATAL_ERROR "run_case.cmake: unknown CASE '${CASE}'")

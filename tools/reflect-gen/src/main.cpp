@@ -318,6 +318,7 @@ struct Field {
     std::string rangeMax;  // stored as TEXT, never re-formatted -- that is what keeps AC-4 byte-stable
     bool color = false;
     std::string assetKind;  // task E.3.3: the validated token, verbatim; EMPTY means absent
+    std::string labels;     // task E.5.2: VALIDATED and '|'-joined ("Cube|Sphere|Plane"); EMPTY means absent
 };
 
 struct Component {
@@ -421,6 +422,32 @@ FieldCategory classifyField(CXType fieldType) {
 // to a bool field (a checkbox has no numeric range), and this is the oracle fieldVisitor asks.
 bool isBoolField(CXType fieldType) { return clang_getCanonicalType(fieldType).kind == CXType_Bool; }
 
+// task E.5.2: what "an integer selector" means for engine::labels -- classifyField's 18-kind whitelist
+// minus Bool, Float and Double. Canonical, like isBoolField, so std::uint32_t reads as UInt and a typedef
+// cannot hide a float. A kind outside the whitelist never reaches this: it is not a Primitive at all.
+bool isIntegerField(CXType fieldType) {
+    switch (clang_getCanonicalType(fieldType).kind) {
+        case CXType_Char_U:
+        case CXType_UChar:
+        case CXType_Char16:
+        case CXType_Char32:
+        case CXType_UShort:
+        case CXType_UInt:
+        case CXType_ULong:
+        case CXType_ULongLong:
+        case CXType_Char_S:
+        case CXType_SChar:
+        case CXType_WChar:
+        case CXType_Short:
+        case CXType_Int:
+        case CXType_Long:
+        case CXType_LongLong:
+            return true;
+        default:
+            return false;  // Bool, Float, Double -- and every non-primitive kind
+    }
+}
+
 std::string_view categoryTag(FieldCategory category) {
     switch (category) {
         case FieldCategory::Primitive:
@@ -502,6 +529,7 @@ struct FieldAnnotations {
     std::string rangeMin;
     std::string rangeMax;
     std::string assetKind;                 // task E.3.3 -- EMPTY means absent
+    std::string labels;                    // task E.5.2 -- '|'-joined; EMPTY means absent
     std::vector<std::string> diagnostics;  // deferred: judged after classification (D7)
 };
 
@@ -633,6 +661,62 @@ bool isIdentifierToken(std::string_view token) noexcept {
     return true;
 }
 
+// task E.5.2: engine::labels. Twin: MAX_FIELD_LABELS in editor/include/aero/editor/inspector_model.hpp.
+// The tool is freestanding (no engine header), so the number is restated here and pinned from both
+// sides: labels_malformed refuses a 65th label at the process boundary, IR16 refuses one in the editor.
+constexpr std::size_t MAX_FIELD_LABELS = 64;
+
+// "engine::labels:<a>, <b>, ..." after the prefix. Split on ',', trim ASCII ' ' and '\t' from each piece,
+// require isIdentifierToken, refuse a duplicate, cap the count. On success out.labels holds the pieces
+// joined with '|' ("Cube|Sphere|Plane"); on failure `reason` names the FIRST violation and `out` is
+// untouched. An EMPTY payload (AERO_LABELS() stringizes to "") is one empty piece, so it is malformed --
+// never "no annotation", AERO_ASSET()'s own rule.
+bool parseLabelsPayload(std::string_view payload, FieldAnnotations& out, std::string& reason) {
+    const auto trim = [](std::string_view s) {
+        while (!s.empty() && (s.front() == ' ' || s.front() == '\t')) {
+            s.remove_prefix(1);
+        }
+        while (!s.empty() && (s.back() == ' ' || s.back() == '\t')) {
+            s.remove_suffix(1);
+        }
+        return s;
+    };
+    std::vector<std::string_view> pieces;
+    std::size_t start = 0;
+    while (true) {
+        const std::size_t comma = payload.find(',', start);
+        const std::size_t length = comma == std::string_view::npos ? std::string_view::npos : comma - start;
+        const std::string_view piece = trim(payload.substr(start, length));
+        if (!isIdentifierToken(piece)) {
+            reason = "labels must be a comma-separated list of identifiers";
+            return false;
+        }
+        if (std::find(pieces.begin(), pieces.end(), piece) != pieces.end()) {
+            // append(), never operator+ inside the loop: performance-inefficient-string-concatenation
+            reason.assign("duplicate label '").append(piece).append("'");
+            return false;
+        }
+        pieces.push_back(piece);
+        if (comma == std::string_view::npos) {
+            break;
+        }
+        start = comma + 1;
+    }
+    if (pieces.size() > MAX_FIELD_LABELS) {
+        reason.assign("more than ").append(std::to_string(MAX_FIELD_LABELS)).append(" labels");
+        return false;
+    }
+    std::string joined;
+    for (const std::string_view piece : pieces) {
+        if (!joined.empty()) {
+            joined.push_back('|');
+        }
+        joined.append(piece);
+    }
+    out.labels = std::move(joined);
+    return true;
+}
+
 // One-level child visit over a FieldDecl -- the SAME presence pattern as annotateMarkerVisitor
 // (Continue, never Recurse). The AnnotateAttr is the FIRST child, so this is cheap.
 CXChildVisitResult fieldAnnotationVisitor(CXCursor cursor, CXCursor /*parent*/, CXClientData clientData) {
@@ -644,6 +728,7 @@ CXChildVisitResult fieldAnnotationVisitor(CXCursor cursor, CXCursor /*parent*/, 
     constexpr std::string_view ENGINE_PREFIX = "engine::";
     constexpr std::string_view RANGE_PREFIX = "engine::range:";
     constexpr std::string_view ASSET_PREFIX = "engine::asset:";
+    constexpr std::string_view LABELS_PREFIX = "engine::labels:";  // task E.5.2
     if (spelling == "engine::color") {
         out->color = true;
     } else if (spelling.starts_with(RANGE_PREFIX)) {
@@ -660,6 +745,15 @@ CXChildVisitResult fieldAnnotationVisitor(CXCursor cursor, CXCursor /*parent*/, 
             out->assetKind = std::string(payload);
         } else {
             out->diagnostics.emplace_back("malformed engine::asset annotation (kind must be an identifier) -- ignored");
+        }
+        // task E.5.2: this arm MUST ALSO precede the unknown-engine:: catch-all, for the E.3.3 reason
+        // above: placed after it, every labels annotation is reported as unknown and dropped, and
+        // annotations_unknown stays green throughout, because it asserts a DIFFERENT string.
+        // labels_components pins the absence of that string for exactly this reason (seed S24).
+    } else if (spelling.starts_with(LABELS_PREFIX)) {
+        std::string reason;
+        if (!parseLabelsPayload(std::string_view{spelling}.substr(LABELS_PREFIX.size()), *out, reason)) {
+            out->diagnostics.push_back("malformed engine::labels annotation (" + reason + ") -- ignored");
         }
     } else if (spelling.starts_with(ENGINE_PREFIX)) {
         out->diagnostics.push_back("unknown engine:: field annotation '" + spelling + "' -- ignored");
@@ -726,6 +820,29 @@ CXChildVisitResult fieldVisitor(CXCursor cursor, CXCursor /*parent*/, CXClientDa
                           << ": engine::asset applies only to Guid fields\n";
             }
         }
+        // task E.5.2: applicability (integer primitives only), THEN consistency with the ACCEPTED range --
+        // the one rule the other three annotations do not have. Each failure is ONE warning; the labels
+        // are dropped and the range is kept. strtod is the numeric oracle the range parser already
+        // trusts (parseRangeToken), so 0, 0.0 and 0x0 are all zero and 0x2 is 2 on every host.
+        if (!annotations.labels.empty()) {
+            if (category != FieldCategory::Primitive || !isIntegerField(type)) {
+                std::cerr << "aero_reflect_gen: warning: " << *state->qualifiedName << '.' << field.name
+                          << ": engine::labels applies only to integer fields\n";
+            } else {
+                const auto bars = std::count(annotations.labels.begin(), annotations.labels.end(), '|');
+                const std::size_t count = static_cast<std::size_t>(bars) + 1U;
+                const double lo = std::strtod(field.rangeMin.c_str(), nullptr);
+                const double hi = std::strtod(field.rangeMax.c_str(), nullptr);
+                const bool consistent = field.hasRange && lo == 0.0 && hi == static_cast<double>(count - 1U);
+                if (consistent) {
+                    field.labels = annotations.labels;
+                } else {
+                    std::cerr << "aero_reflect_gen: warning: " << *state->qualifiedName << '.' << field.name
+                              << ": engine::labels needs AERO_RANGE(0, " << (count - 1U)
+                              << ") on the same field -- ignored\n";
+                }
+            }
+        }
 
         state->fields->push_back(std::move(field));
     }
@@ -775,6 +892,10 @@ void emitComponents(const std::vector<Component>& components) {
             }
             if (!field.assetKind.empty()) {  // task E.3.3
                 std::cout << " [asset " << field.assetKind << "]";
+            }
+            // task E.5.2 -- after [asset ...], the order the suffixes are declared in
+            if (!field.labels.empty()) {
+                std::cout << " [labels " << field.labels << "]";
             }
             std::cout << '\n';
             if (field.category == FieldCategory::Unsupported) {  // lenient: warn, never fail (D7)
@@ -831,7 +952,8 @@ void emitMeta(const std::vector<Component>& components, const std::string& input
     // include root and would fail to find the header.
     const bool anyCustom = std::any_of(components.begin(), components.end(), [](const Component& c) {
         return std::any_of(c.fields.begin(), c.fields.end(), [](const Field& f) {
-            return f.category != FieldCategory::Unsupported && (f.hasRange || f.color || !f.assetKind.empty());
+            return f.category != FieldCategory::Unsupported &&
+                   (f.hasRange || f.color || !f.assetKind.empty() || !f.labels.empty());
         });
     });
 
@@ -862,8 +984,9 @@ void emitMeta(const std::vector<Component>& components, const std::string& input
             }
             out << "\n        .data<&" << qn << "::" << field.name << ">(\"" << field.name << "\"_hs, \"" << field.name
                 << "\")";
-            // task 2.2.2 (D6): sparse, per member -- widened by task E.3.3 to a third annotation.
-            if (field.hasRange || field.color || !field.assetKind.empty()) {
+            // task 2.2.2 (D6): sparse, per member -- widened by task E.3.3 to a third annotation, and by
+            // task E.5.2 to a fourth.
+            if (field.hasRange || field.color || !field.assetKind.empty() || !field.labels.empty()) {
                 const std::string rangeMin = field.hasRange ? field.rangeMin : "0.0";
                 const std::string rangeMax = field.hasRange ? field.rangeMax : "0.0";
                 out << "\n        .custom<engine::reflect::FieldUiMeta>(engine::reflect::FieldUiMeta{"
@@ -873,6 +996,12 @@ void emitMeta(const std::vector<Component>& components, const std::string& input
                 // custom's generated bytes byte-identical to what they were before the member existed.
                 if (!field.assetKind.empty()) {
                     out << ", .assetKind = \"" << field.assetKind << "\"";
+                }
+                // task E.5.2: LAST, and written ONLY when present -- the same rule, so every pre-existing
+                // custom's bytes stay identical (annotations_meta, asset_meta and guid_meta, unedited).
+                // Identifiers and '|' only: nothing here can need escaping.
+                if (!field.labels.empty()) {
+                    out << ", .labels = \"" << field.labels << "\"";
                 }
                 out << "})";
             }
