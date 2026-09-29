@@ -1205,6 +1205,9 @@ struct NudgePose {
     float eyeHeight = 1.0F;
     float pitch = 0.5F;  // radians, positive = looking DOWN
     float yaw = 0.0F;
+    // Radians about `forward`. 0 is the world-up lookAt every other case uses, whose right vector is
+    // horizontal -- so the ground's depth is constant along screen x there and the nudge's x term is zero.
+    float roll = 0.0F;
     float fovY = 1.0471976F;  // 60 degrees
     float nearPlane = 0.1F;
     float farPlane = 1000.0F;  // the editor's own range (docs/10's E.1.2 row 6)
@@ -1217,8 +1220,13 @@ struct NudgePose {
     const float cosPitch = std::cos(p.pitch);
     const Vec3 forward{-std::sin(p.yaw) * cosPitch, -std::sin(p.pitch), -std::cos(p.yaw) * cosPitch};
     const bool down = std::fabs(cosPitch) < 1e-6F;
-    const Vec3 up = down ? Vec3{0.0F, 0.0F, -1.0F} : Vec3{0.0F, 1.0F, 0.0F};
-    return engine::lookAt(eye, eye + forward, up);
+    const Vec3 worldUp = down ? Vec3{0.0F, 0.0F, -1.0F} : Vec3{0.0F, 1.0F, 0.0F};
+    // The camera's own up, turned about `forward` by `roll`: up' = up cos(roll) + right sin(roll), which is
+    // already perpendicular to `forward`, so lookAt keeps it as it is.
+    const Vec3 right = engine::normalize(engine::cross(forward, worldUp));
+    const Vec3 up = engine::cross(right, forward);
+    const Vec3 rolledUp = (up * std::cos(p.roll)) + (right * std::sin(p.roll));
+    return engine::lookAt(eye, eye + forward, rolledUp);
 }
 
 [[nodiscard]] engine::Mat4 nudgeViewProj(const NudgePose& p) {
@@ -1308,12 +1316,32 @@ TEST_CASE(
             CHECK(std::fabs(n - expected) <= 1e-4 * expected);  // the epsilon IS part of the claim
         }
     }
-    SUBCASE("(b) the unprojection oracle -- a general pose, in double, with no matrix inverse") {
-        const NudgePose pose{.eyeHeight = 1.5F,
-                             .pitch = degreesToRadians(20.0F),
-                             .yaw = degreesToRadians(30.0F),
-                             .width = 640U,
-                             .height = 360U};
+    SUBCASE("(b) the unprojection oracle -- two general poses, in double, with no matrix inverse") {
+        // The world-up pose keeps the camera's right vector horizontal, so its +x difference below is
+        // identically zero and the nudge's x term has no witness there. The ROLLED pose tilts the horizon by
+        // 30 degrees, which moves about sin(30 deg) = half of the slope into screen x.
+        struct Case {
+            const char* name;
+            NudgePose pose;
+            bool xTermLive;
+        };
+        const std::array<Case, 2> cases{{
+            {"world up",
+             {.eyeHeight = 1.5F,
+              .pitch = degreesToRadians(20.0F),
+              .yaw = degreesToRadians(30.0F),
+              .width = 640U,
+              .height = 360U},
+             false},
+            {"rolled 30 degrees",
+             {.eyeHeight = 1.5F,
+              .pitch = degreesToRadians(20.0F),
+              .yaw = degreesToRadians(30.0F),
+              .roll = degreesToRadians(30.0F),
+              .width = 640U,
+              .height = 360U},
+             true},
+        }};
         struct D3 {
             double x;
             double y;
@@ -1323,41 +1351,65 @@ TEST_CASE(
         const auto cross = [](D3 a, D3 b) {
             return D3{(a.y * b.z) - (a.z * b.y), (a.z * b.x) - (a.x * b.z), (a.x * b.y) - (a.y * b.x)};
         };
-        const double yaw = pose.yaw;
-        const double pitch = pose.pitch;
-        const double cosPitch = std::cos(pitch);
-        const D3 forward{-std::sin(yaw) * cosPitch, -std::sin(pitch), -std::cos(yaw) * cosPitch};
-        const D3 rightRaw = cross(forward, D3{0.0, 1.0, 0.0});
-        const double rightLength = std::sqrt(dot(rightRaw, rightRaw));
-        const D3 right{rightRaw.x / rightLength, rightRaw.y / rightLength, rightRaw.z / rightLength};
-        const D3 upward = cross(right, forward);
-        const D3 eye{0.0, pose.eyeHeight, 0.0};
-        const double tanHalf = std::tan(static_cast<double>(pose.fovY) / 2.0);
-        const double aspect = static_cast<double>(pose.width) / static_cast<double>(pose.height);
-        const double zFar = pose.farPlane;
-        const double zNear = pose.nearPlane;
-        // NDC depth of the ground point under pixel (px, py)'s CENTRE.
-        const auto depthAtPixel = [&](double px, double py) {
-            const double x = ((2.0 * (px + 0.5)) / pose.width) - 1.0;
-            const double y = 1.0 - ((2.0 * (py + 0.5)) / pose.height);
-            const D3 dir{forward.x + (x * tanHalf * aspect * right.x) + (y * tanHalf * upward.x),
-                         forward.y + (x * tanHalf * aspect * right.y) + (y * tanHalf * upward.y),
-                         forward.z + (x * tanHalf * aspect * right.z) + (y * tanHalf * upward.z)};
-            const double t = -eye.y / dir.y;
-            const D3 toPoint{t * dir.x, t * dir.y, t * dir.z};
-            const double w = dot(toPoint, forward);
-            return (zFar / (zFar - zNear)) * (1.0 - (zNear / w));
+        const auto unit = [&dot](D3 v) {
+            const double length = std::sqrt(dot(v, v));
+            return D3{v.x / length, v.y / length, v.z / length};
         };
-        const double cx = pose.width / 2.0;
-        const double cy = pose.height / 2.0;
-        const double d0 = depthAtPixel(cx, cy);
-        const double slope = std::hypot(depthAtPixel(cx + 1.0, cy) - d0, depthAtPixel(cx, cy + 1.0) - d0);
-        const double expected = expectedNudge(slope);
-        const double n = nudgeOf(pose);
-        CAPTURE(expected);
-        CAPTURE(n);
-        CHECK(slope > 0.0);  // ANTI-VACUITY: the oracle measured a slope
-        CHECK(std::fabs(n - expected) <= 1e-3 * expected);
+        for (const Case& c : cases) {
+            const std::string_view name = c.name;  // a view, so doctest prints the TEXT rather than a pointer
+            CAPTURE(name);
+            const NudgePose& pose = c.pose;
+            const double yaw = pose.yaw;
+            const double pitch = pose.pitch;
+            const double roll = pose.roll;
+            const double cosPitch = std::cos(pitch);
+            const D3 forward{-std::sin(yaw) * cosPitch, -std::sin(pitch), -std::cos(yaw) * cosPitch};
+            const D3 level = unit(cross(forward, D3{0.0, 1.0, 0.0}));
+            const D3 levelUp = cross(level, forward);
+            // The roll, derived here in double and on its own: turn the up vector about `forward`, then take
+            // the right vector exactly as a right-handed lookAt does, cross(forward, up).
+            const D3 upward{(levelUp.x * std::cos(roll)) + (level.x * std::sin(roll)),
+                            (levelUp.y * std::cos(roll)) + (level.y * std::sin(roll)),
+                            (levelUp.z * std::cos(roll)) + (level.z * std::sin(roll))};
+            const D3 right = unit(cross(forward, upward));
+            const D3 eye{0.0, pose.eyeHeight, 0.0};
+            const double tanHalf = std::tan(static_cast<double>(pose.fovY) / 2.0);
+            const double aspect = static_cast<double>(pose.width) / static_cast<double>(pose.height);
+            const double zFar = pose.farPlane;
+            const double zNear = pose.nearPlane;
+            // NDC depth of the ground point under pixel (px, py)'s CENTRE.
+            const auto depthAtPixel = [&](double px, double py) {
+                const double x = ((2.0 * (px + 0.5)) / pose.width) - 1.0;
+                const double y = 1.0 - ((2.0 * (py + 0.5)) / pose.height);
+                const D3 dir{forward.x + (x * tanHalf * aspect * right.x) + (y * tanHalf * upward.x),
+                             forward.y + (x * tanHalf * aspect * right.y) + (y * tanHalf * upward.y),
+                             forward.z + (x * tanHalf * aspect * right.z) + (y * tanHalf * upward.z)};
+                const double t = -eye.y / dir.y;
+                const D3 toPoint{t * dir.x, t * dir.y, t * dir.z};
+                const double w = dot(toPoint, forward);
+                return (zFar / (zFar - zNear)) * (1.0 - (zNear / w));
+            };
+            const double cx = pose.width / 2.0;
+            const double cy = pose.height / 2.0;
+            const double d0 = depthAtPixel(cx, cy);
+            const double dx = depthAtPixel(cx + 1.0, cy) - d0;
+            const double dy = depthAtPixel(cx, cy + 1.0) - d0;
+            const double slope = std::hypot(dx, dy);
+            const double expected = expectedNudge(slope);
+            const double n = nudgeOf(pose);
+            CAPTURE(dx);
+            CAPTURE(dy);
+            CAPTURE(expected);
+            CAPTURE(n);
+            CHECK(slope > 0.0);  // ANTI-VACUITY: the oracle measured a slope
+            if (c.xTermLive) {
+                // ANTI-VACUITY for the x term: at least a QUARTER of the slope lies along screen x (half
+                // is expected). The nudge is computed in float, about 1e-6 relative, so a quarter is five
+                // orders of magnitude clear of rounding: a dropped or mis-scaled x term cannot hide here.
+                REQUIRE(std::fabs(dx) >= 0.25 * slope);
+            }
+            CHECK(std::fabs(n - expected) <= 1e-3 * expected);
+        }
     }
 }
 
@@ -1373,8 +1425,11 @@ TEST_CASE("render debug grid: the nudge is per PIXEL (task E.5.2, GR30)") {
     const double n2 = nudgeOf(both);
     CHECK(std::fabs((n2 - floor) - ((n1 - floor) / 2.0)) <= 1e-5 * (n1 - floor));
 
-    // yaw 0: the slope is purely vertical, so W ALONE changes nothing -- within 1e-6 relative, not bit for
-    // bit, because W enters the aspect and so every cofactor of the general inverse.
+    // W ALONE changes nothing -- at ANY pose, because a pixel's angle is fovY / H: a wider window adds pixels
+    // without tilting any of them. W enters the aspect, which scales the NDC x gradient by W / H, and the
+    // 2 / W per pixel cancels it. Within 1e-6 relative, not bit for bit, because W enters every cofactor of
+    // the general inverse. This pose's x term is ZERO (see NudgePose::roll), so the rolled arm below is the
+    // one that can see the cancellation fail.
     NudgePose wide = base;
     wide.width *= 2U;
     CHECK(std::fabs(nudgeOf(wide) - n1) <= 1e-6 * n1);
@@ -1382,6 +1437,23 @@ TEST_CASE("render debug grid: the nudge is per PIXEL (task E.5.2, GR30)") {
     NudgePose tall = base;
     tall.height *= 2U;
     CHECK(std::fabs((nudgeOf(tall) - floor) - ((n1 - floor) / 2.0)) <= 1e-5 * (n1 - floor));
+
+    SUBCASE("rolled: the x term is live, and is still per pixel") {
+        NudgePose rolled = base;
+        rolled.roll = degreesToRadians(30.0F);
+        const double r1 = nudgeOf(rolled);
+        REQUIRE(r1 - floor > 0.0);
+        NudgePose rolledWide = rolled;
+        rolledWide.width *= 2U;
+        const double rWide = nudgeOf(rolledWide);
+        CAPTURE(r1);
+        CAPTURE(rWide);
+        CHECK(std::fabs(rWide - r1) <= 1e-6 * r1);  // a per-pixel x term scaled by the HEIGHT would double
+        NudgePose rolledBoth = rolled;
+        rolledBoth.width *= 2U;
+        rolledBoth.height *= 2U;
+        CHECK(std::fabs((nudgeOf(rolledBoth) - floor) - ((r1 - floor) / 2.0)) <= 1e-5 * (r1 - floor));
+    }
 }
 
 TEST_CASE("render debug grid: the orthographic arm (task E.5.2, GR31)") {
