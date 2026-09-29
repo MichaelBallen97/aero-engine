@@ -78,6 +78,12 @@ inline constexpr float DEBUG_GRID_MAX_VIEW_SCALE = 1.0e6F;
 inline constexpr int DEBUG_GRID_MIN_LEVEL = -6;
 inline constexpr int DEBUG_GRID_MAX_LEVEL = 9;
 inline constexpr float DEBUG_GRID_PLANE_HEIGHT = 0.0F;  // world Y of the ground plane
+// task E.5.2 -- the coplanar handoff E.1.2 left to "the task that first creates a Plane at y = 0". TUNING
+// CONSTANTS, decided on three backends by DG21-DG23; a change is a recorded amendment. PIXELS is how many
+// pixels of the ground's depth slope; FLOOR is 4 ulps of a D32Float depth in [0.5, 1), spelled in DECIMAL,
+// exactly: 2.384185791015625e-7 IS 2^-22 (GR27 asserts it == std::ldexp(1.0F, -22)).
+inline constexpr float DEBUG_GRID_DEPTH_NUDGE_PIXELS = 1.0F;
+inline constexpr float DEBUG_GRID_DEPTH_NUDGE_FLOOR = 2.384185791015625e-7F;
 
 // DERIVED, NEVER A LITERAL: CADENCES x {lines along X, lines along Z} x (2*CELLS + 1) x SEGMENTS,
 // plus the two axes. An UPPER bound: the disc clip and the far-plane clamp only ever reduce it, and
@@ -155,5 +161,19 @@ struct DebugGridCadence {
 // bad push. ALLOCATION-FREE: every line is built in a stack array and pushed with one lines(span)
 // call.
 [[nodiscard]] std::uint32_t emitDebugGrid(DebugDrawBatch& batch, const DebugGridParams& params);
+
+// task E.5.2: how far, in NDC depth (0 = near, ADR-005), a Tested line lying ON the plane y = planeHeight
+// must be pulled toward the viewer to win against any surface on that plane at every pixel -- the line
+// samples depth at the pixel centre's projection onto the LINE, the surface at the pixel centre, up to
+// ~0.7 px apart -- and against nothing more than DEBUG_GRID_DEPTH_NUDGE_PIXELS pixels of that plane's own
+// depth slope in front of it:
+//     min(DEBUG_LINE_DEPTH_NUDGE_MAX, PIXELS * slopePerPixel + FLOOR),
+//     slopePerPixel = |grad d| in framebuffer pixels, from the plane's q = row1(M^-1) - h * row3(M^-1).
+// The same algebra holds for an orthographic projection. PURE, TOTAL, noexcept: 0 for a zero-sized target,
+// a non-finite height, or a non-finite or singular matrix; DEBUG_LINE_DEPTH_NUDGE_MAX for a plane seen
+// edge-on (q_z == 0) or a non-finite slope. Reaches std::sqrt and std::isfinite only (GR22), plus
+// inverse(Mat4) from the core math layer -- detail::packSkyCamera's precedent for a noexcept caller.
+[[nodiscard]] float debugGridDepthNudge(const Mat4& viewProj, float planeHeight, std::uint32_t widthPx,
+                                        std::uint32_t heightPx) noexcept;
 
 }  // namespace engine::render

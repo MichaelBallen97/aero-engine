@@ -20,6 +20,7 @@
 #include <fstream>
 #include <limits>
 #include <numbers>
+#include <random>  // task E.5.2 (GR32): the fixed-seed adversarial pose sweep
 #include <span>
 #include <string>
 #include <string_view>
@@ -1189,4 +1190,282 @@ TEST_CASE("render debug grid: emitDebugGrid and debugGridCadence make ONE decisi
         const rd::DebugGridParams params = defaultPose();
         CHECK((rd::debugGridCadence(params) == rd::debugGridCadence(params)));
     }
+}
+
+// ------------------------------------------------------------------------------------------------
+// Task E.5.2. debugGridDepthNudge: the ground plane's per-pixel NDC depth slope, plus a floor, clamped.
+// Checked against a closed form and against an independent unprojection oracle; total over every pose.
+// ------------------------------------------------------------------------------------------------
+
+namespace {
+
+// The pose family the closed-form oracle covers -- an eye at height e, yaw 0 unless given, pitched DOWN by
+// `pitch` radians; RH, -Z forward. Straight down takes -Z as up (the world up is degenerate).
+struct NudgePose {
+    float eyeHeight = 1.0F;
+    float pitch = 0.5F;  // radians, positive = looking DOWN
+    float yaw = 0.0F;
+    float fovY = 1.0471976F;  // 60 degrees
+    float nearPlane = 0.1F;
+    float farPlane = 1000.0F;  // the editor's own range (docs/10's E.1.2 row 6)
+    std::uint32_t width = 1280;
+    std::uint32_t height = 720;
+};
+
+[[nodiscard]] engine::Mat4 nudgeView(const NudgePose& p) {
+    const Vec3 eye{0.0F, p.eyeHeight, 0.0F};
+    const float cosPitch = std::cos(p.pitch);
+    const Vec3 forward{-std::sin(p.yaw) * cosPitch, -std::sin(p.pitch), -std::cos(p.yaw) * cosPitch};
+    const bool down = std::fabs(cosPitch) < 1e-6F;
+    const Vec3 up = down ? Vec3{0.0F, 0.0F, -1.0F} : Vec3{0.0F, 1.0F, 0.0F};
+    return engine::lookAt(eye, eye + forward, up);
+}
+
+[[nodiscard]] engine::Mat4 nudgeViewProj(const NudgePose& p) {
+    const float aspect = static_cast<float>(p.width) / static_cast<float>(p.height);
+    return engine::perspective(p.fovY, aspect, p.nearPlane, p.farPlane) * nudgeView(p);
+}
+
+[[nodiscard]] float nudgeOf(const NudgePose& p, float planeHeight = 0.0F) {
+    return rd::debugGridDepthNudge(nudgeViewProj(p), planeHeight, p.width, p.height);
+}
+
+// The spec's closed form, in DOUBLE: slopePerPixel = (f n / (f - n)) * cos(theta) / (fy * e) * 2 / H.
+[[nodiscard]] double closedFormSlope(const NudgePose& p) {
+    const double fy = 1.0 / std::tan(static_cast<double>(p.fovY) / 2.0);
+    const double f = p.farPlane;
+    const double n = p.nearPlane;
+    const double theta = p.pitch;
+    const double e = p.eyeHeight;
+    return (f * n / (f - n)) * std::cos(theta) / (fy * e) * 2.0 / static_cast<double>(p.height);
+}
+
+[[nodiscard]] double expectedNudge(double slopePerPixel) {
+    return (static_cast<double>(rd::DEBUG_GRID_DEPTH_NUDGE_PIXELS) * slopePerPixel) +
+           static_cast<double>(rd::DEBUG_GRID_DEPTH_NUDGE_FLOOR);
+}
+
+[[nodiscard]] float degreesToRadians(float degrees) { return degrees * std::numbers::pi_v<float> / 180.0F; }
+
+}  // namespace
+
+TEST_CASE("render debug grid: looking straight down, only the floor remains (task E.5.2, GR27)") {
+    const NudgePose pose{.eyeHeight = 10.0F, .pitch = std::numbers::pi_v<float> / 2.0F};
+    const float n = nudgeOf(pose);
+    CHECK(n >= rd::DEBUG_GRID_DEPTH_NUDGE_FLOOR);
+    CHECK(n <= rd::DEBUG_GRID_DEPTH_NUDGE_FLOOR * 1.001F);
+    // The constants, EXACTLY -- the tuning value DG21 decided. A retune is a recorded amendment that edits
+    // this line in the same commit (seed S38 reds it).
+    CHECK(rd::DEBUG_GRID_DEPTH_NUDGE_FLOOR == std::ldexp(1.0F, -22));
+    CHECK(rd::DEBUG_GRID_DEPTH_NUDGE_PIXELS == 1.0F);
+}
+
+TEST_CASE("render debug grid: the nudge grows toward the horizon (task E.5.2, GR28)") {
+    constexpr std::array<float, 6> PITCHES_DEGREES{80.0F, 60.0F, 40.0F, 20.0F, 10.0F, 5.0F};
+    float previous = 0.0F;
+    for (const float degrees : PITCHES_DEGREES) {
+        const float n = nudgeOf(NudgePose{.eyeHeight = 1.0F, .pitch = degreesToRadians(degrees)});
+        CAPTURE(degrees);
+        CAPTURE(previous);
+        CAPTURE(n);
+        CHECK(n > previous);  // STRICTLY -- the oracle's cos(theta) is monotonic here
+        previous = n;
+    }
+    // ...and not by reaching a clamp plateau: the last one is still below the ceiling.
+    CHECK(previous < rd::DEBUG_LINE_DEPTH_NUDGE_MAX);
+}
+
+TEST_CASE(
+    "render debug grid: the nudge IS the plane's slope, by two independent oracles "
+    "(task E.5.2, GR29)") {
+    SUBCASE("(a) the closed form, six poses") {
+        struct Tuple {
+            float pitchDegrees;
+            float height;
+            float fovYDegrees;
+            std::uint32_t pixelsHigh;
+        };
+        constexpr std::array<Tuple, 6> TUPLES{{{10.0F, 1.0F, 60.0F, 192U},
+                                               {30.0F, 2.0F, 60.0F, 360U},
+                                               {45.0F, 1.0F, 45.0F, 720U},
+                                               {60.0F, 5.0F, 90.0F, 1080U},
+                                               {20.0F, 0.5F, 30.0F, 480U},
+                                               {80.0F, 10.0F, 60.0F, 1080U}}};
+        for (const Tuple& t : TUPLES) {
+            const double wideExact = static_cast<double>(t.pixelsHigh) * 16.0 / 9.0;
+            const auto wide = static_cast<std::uint32_t>(std::lround(wideExact));
+            const NudgePose pose{.eyeHeight = t.height,
+                                 .pitch = degreesToRadians(t.pitchDegrees),
+                                 .fovY = degreesToRadians(t.fovYDegrees),
+                                 .width = wide,
+                                 .height = t.pixelsHigh};
+            const double expected = expectedNudge(closedFormSlope(pose));
+            const double n = nudgeOf(pose);
+            CAPTURE(t.pitchDegrees);
+            CAPTURE(t.height);
+            CAPTURE(expected);
+            CAPTURE(n);
+            CHECK(std::fabs(n - expected) <= 1e-4 * expected);  // the epsilon IS part of the claim
+        }
+    }
+    SUBCASE("(b) the unprojection oracle -- a general pose, in double, with no matrix inverse") {
+        const NudgePose pose{.eyeHeight = 1.5F,
+                             .pitch = degreesToRadians(20.0F),
+                             .yaw = degreesToRadians(30.0F),
+                             .width = 640U,
+                             .height = 360U};
+        struct D3 {
+            double x;
+            double y;
+            double z;
+        };
+        const auto dot = [](D3 a, D3 b) { return (a.x * b.x) + (a.y * b.y) + (a.z * b.z); };
+        const auto cross = [](D3 a, D3 b) {
+            return D3{(a.y * b.z) - (a.z * b.y), (a.z * b.x) - (a.x * b.z), (a.x * b.y) - (a.y * b.x)};
+        };
+        const double yaw = pose.yaw;
+        const double pitch = pose.pitch;
+        const double cosPitch = std::cos(pitch);
+        const D3 forward{-std::sin(yaw) * cosPitch, -std::sin(pitch), -std::cos(yaw) * cosPitch};
+        const D3 rightRaw = cross(forward, D3{0.0, 1.0, 0.0});
+        const double rightLength = std::sqrt(dot(rightRaw, rightRaw));
+        const D3 right{rightRaw.x / rightLength, rightRaw.y / rightLength, rightRaw.z / rightLength};
+        const D3 upward = cross(right, forward);
+        const D3 eye{0.0, pose.eyeHeight, 0.0};
+        const double tanHalf = std::tan(static_cast<double>(pose.fovY) / 2.0);
+        const double aspect = static_cast<double>(pose.width) / static_cast<double>(pose.height);
+        const double zFar = pose.farPlane;
+        const double zNear = pose.nearPlane;
+        // NDC depth of the ground point under pixel (px, py)'s CENTRE.
+        const auto depthAtPixel = [&](double px, double py) {
+            const double x = ((2.0 * (px + 0.5)) / pose.width) - 1.0;
+            const double y = 1.0 - ((2.0 * (py + 0.5)) / pose.height);
+            const D3 dir{forward.x + (x * tanHalf * aspect * right.x) + (y * tanHalf * upward.x),
+                         forward.y + (x * tanHalf * aspect * right.y) + (y * tanHalf * upward.y),
+                         forward.z + (x * tanHalf * aspect * right.z) + (y * tanHalf * upward.z)};
+            const double t = -eye.y / dir.y;
+            const D3 toPoint{t * dir.x, t * dir.y, t * dir.z};
+            const double w = dot(toPoint, forward);
+            return (zFar / (zFar - zNear)) * (1.0 - (zNear / w));
+        };
+        const double cx = pose.width / 2.0;
+        const double cy = pose.height / 2.0;
+        const double d0 = depthAtPixel(cx, cy);
+        const double slope = std::hypot(depthAtPixel(cx + 1.0, cy) - d0, depthAtPixel(cx, cy + 1.0) - d0);
+        const double expected = expectedNudge(slope);
+        const double n = nudgeOf(pose);
+        CAPTURE(expected);
+        CAPTURE(n);
+        CHECK(slope > 0.0);  // ANTI-VACUITY: the oracle measured a slope
+        CHECK(std::fabs(n - expected) <= 1e-3 * expected);
+    }
+}
+
+TEST_CASE("render debug grid: the nudge is per PIXEL (task E.5.2, GR30)") {
+    const NudgePose base{.eyeHeight = 1.0F, .pitch = degreesToRadians(20.0F), .width = 1280U, .height = 720U};
+    const double floor = rd::DEBUG_GRID_DEPTH_NUDGE_FLOOR;
+    const double n1 = nudgeOf(base);
+    REQUIRE(n1 - floor > 0.0);
+
+    NudgePose both = base;
+    both.width *= 2U;
+    both.height *= 2U;
+    const double n2 = nudgeOf(both);
+    CHECK(std::fabs((n2 - floor) - ((n1 - floor) / 2.0)) <= 1e-5 * (n1 - floor));
+
+    // yaw 0: the slope is purely vertical, so W ALONE changes nothing -- within 1e-6 relative, not bit for
+    // bit, because W enters the aspect and so every cofactor of the general inverse.
+    NudgePose wide = base;
+    wide.width *= 2U;
+    CHECK(std::fabs(nudgeOf(wide) - n1) <= 1e-6 * n1);
+
+    NudgePose tall = base;
+    tall.height *= 2U;
+    CHECK(std::fabs((nudgeOf(tall) - floor) - ((n1 - floor) / 2.0)) <= 1e-5 * (n1 - floor));
+}
+
+TEST_CASE("render debug grid: the orthographic arm (task E.5.2, GR31)") {
+    constexpr float HALF_HEIGHT = 5.0F;
+    constexpr float HALF_WIDTH = HALF_HEIGHT * (16.0F / 9.0F);
+    constexpr float ORTHO_NEAR = 0.1F;  // never NEAR/FAR: <windef.h> defines both as macros
+    constexpr float ORTHO_FAR = 1000.0F;
+    const auto proj = engine::ortho(-HALF_WIDTH, HALF_WIDTH, -HALF_HEIGHT, HALF_HEIGHT, ORTHO_NEAR, ORTHO_FAR);
+    for (const float degrees : {30.0F, 60.0F}) {
+        CAPTURE(degrees);
+        const NudgePose pose{.eyeHeight = 1.0F, .pitch = degreesToRadians(degrees)};
+        const float n = rd::debugGridDepthNudge(proj * nudgeView(pose), 0.0F, pose.width, pose.height);
+        const double theta = pose.pitch;
+        const double depthSpan = static_cast<double>(ORTHO_FAR) - ORTHO_NEAR;
+        const double perNdc = std::cos(theta) * HALF_HEIGHT / (std::sin(theta) * depthSpan);
+        const double slope = perNdc * 2.0 / pose.height;
+        const double expected = expectedNudge(slope);
+        CAPTURE(expected);
+        CAPTURE(n);
+        CHECK(std::fabs(n - expected) <= 1e-4 * expected);
+    }
+    // A HORIZONTAL ortho camera sees the plane EDGE-ON: the clamp.
+    const NudgePose level{.eyeHeight = 1.0F, .pitch = 0.0F};
+    CHECK(rd::debugGridDepthNudge(proj * nudgeView(level), 0.0F, level.width, level.height) ==
+          rd::DEBUG_LINE_DEPTH_NUDGE_MAX);
+}
+
+TEST_CASE("render debug grid: the nudge is total (task E.5.2, GR32)") {
+    const NudgePose pose{};
+    const engine::Mat4 good = nudgeViewProj(pose);
+    CHECK(rd::debugGridDepthNudge(good, 0.0F, 0U, 720U) == 0.0F);
+    CHECK(rd::debugGridDepthNudge(good, 0.0F, 1280U, 0U) == 0.0F);
+    for (const float poison : {NAN_F, INF_F, -INF_F}) {
+        engine::Mat4 bad = good;
+        bad.columns[1].z = poison;
+        CAPTURE(poison);
+        CHECK(rd::debugGridDepthNudge(bad, 0.0F, 1280U, 720U) == 0.0F);
+    }
+    CHECK(rd::debugGridDepthNudge(engine::Mat4::zero(), 0.0F, 1280U, 720U) == 0.0F);  // singular
+    CHECK(rd::debugGridDepthNudge(good, NAN_F, 1280U, 720U) == 0.0F);
+    // AN EYE IN THE PLANE sees it edge-on: the clamp.
+    CHECK(rd::debugGridDepthNudge(good, pose.eyeHeight, 1280U, 720U) == rd::DEBUG_LINE_DEPTH_NUDGE_MAX);
+    // Only the eye's height ABOVE the plane matters.
+    const float raised = nudgeOf(NudgePose{.eyeHeight = 3.0F}, 2.0F);
+    const float ground = nudgeOf(NudgePose{.eyeHeight = 1.0F}, 0.0F);
+    CHECK(std::fabs(raised - ground) <= 1e-5F * ground);
+
+    // A 1000-pose ADVERSARIAL sweep: every result is finite, >= 0 and <= the ceiling.
+    std::mt19937 random{20260929U};
+    std::uniform_real_distribution<float> heights{-100.0F, 100.0F};
+    std::uniform_real_distribution<float> angles{-std::numbers::pi_v<float>, std::numbers::pi_v<float>};
+    std::uniform_real_distribution<float> fovs{0.01F, 3.1F};
+    std::uniform_real_distribution<float> nears{1e-4F, 10.0F};
+    std::uniform_real_distribution<float> depths{1e-3F, 1e5F};
+    std::uniform_int_distribution<std::uint32_t> pixels{1U, 8192U};
+    for (int i = 0; i < 1000; ++i) {
+        NudgePose p;
+        p.eyeHeight = heights(random);
+        p.pitch = angles(random);
+        p.yaw = angles(random);
+        p.fovY = fovs(random);
+        p.nearPlane = nears(random);
+        p.farPlane = p.nearPlane + depths(random);
+        p.width = pixels(random);
+        p.height = pixels(random);
+        const float n = nudgeOf(p);
+        CAPTURE(i);
+        CAPTURE(p.eyeHeight);
+        CAPTURE(p.pitch);
+        CAPTURE(p.yaw);
+        CAPTURE(p.fovY);
+        CAPTURE(p.nearPlane);
+        CAPTURE(p.farPlane);
+        CAPTURE(p.width);
+        CAPTURE(p.height);
+        REQUIRE(std::isfinite(n));
+        REQUIRE(n >= 0.0F);
+        REQUIRE(n <= rd::DEBUG_LINE_DEPTH_NUDGE_MAX);
+    }
+}
+
+TEST_CASE("render debug grid: the clamp bites (task E.5.2, GR33)") {
+    const NudgePose pose{.eyeHeight = 0.001F, .pitch = degreesToRadians(2.0F)};
+    CHECK(nudgeOf(pose) == rd::DEBUG_LINE_DEPTH_NUDGE_MAX);
+    // ANTI-VACUITY: the unclamped term really is above the ceiling.
+    CHECK(expectedNudge(closedFormSlope(pose)) > static_cast<double>(rd::DEBUG_LINE_DEPTH_NUDGE_MAX));
 }

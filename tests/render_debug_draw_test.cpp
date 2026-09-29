@@ -1202,6 +1202,123 @@ struct PixelAt {
                                       .eyePosition = eye};
 }
 
+// task E.5.2: DG6's pinned ForwardRenderer view -- shadows off, culling off, sun intensity 0 (unit
+// direction), FLAT ambient {1,1,1} at 1, the default material -- so a surface's colour is its instance colour
+// EXACTLY, under a REAL camera.
+[[nodiscard]] engine::render::MeshInstance groundInstance(engine::render::PrimitiveId id, const Mat4& model,
+                                                          Vec3 colour, const engine::render::CameraView& camera) {
+    engine::render::MeshInstance instance{};
+    instance.primitive = id;
+    instance.model = model;
+    instance.mvp = (camera.proj * camera.view) * model;
+    instance.normalMatrix = Mat4::identity();  // Flat ambient and a zero-intensity sun read no normal
+    instance.color = colour;
+    return instance;
+}
+
+// The one pixel class each coplanar assertion counts: EXACT bytes.
+constexpr Rgba DG_GREEN{0U, 255U, 0U, 255U};
+constexpr Rgba DG_BLUE{0U, 0U, 255U, 255U};
+constexpr Rgba DG_RED{255U, 0U, 0U, 255U};
+
+// One segment of a coplanar line set.
+struct GroundLine {
+    Vec3 from;
+    Vec3 to;
+};
+
+// What one coplanar render draws: the instances (possibly none), then the lines (possibly none), TESTED.
+struct GroundScene {
+    std::span<const engine::render::MeshInstance> instances;
+    std::span<const GroundLine> lines;
+};
+
+// The four objects every coplanar render goes through, bundled so a call names only what changes.
+struct GroundRig {
+    engine::rhi::Device& device;
+    engine::render::RenderTarget& target;
+    engine::render::ForwardRenderer& forward;
+    engine::render::DebugDraw& draw;
+};
+
+// beginFrame -> the instances -> the lines at `nudge` -> endFrame -> readback: DG6's renderOnce, shared by
+// DG21-DG23 so the three cases render the identical way.
+[[nodiscard]] std::vector<std::byte> renderGround(const GroundRig& rig, const engine::render::CameraView& camera,
+                                                  const GroundScene& scene, float nudge) {
+    engine::render::RenderView view;
+    view.camera = camera;
+    view.instances = scene.instances;
+    view.environment.ambientMode = engine::render::AmbientMode::Flat;
+    view.environment.ambientColor = Vec3::one();
+    view.environment.ambientIntensity = 1.0F;
+    view.directional = {.direction = Vec3{0.0F, -1.0F, 0.0F}, .color = Vec3::one(), .intensity = 0.0F};
+    view.cullingEnabled = false;
+    view.shadowsEnabled = false;
+    std::optional<engine::render::Frame> frame = rig.target.beginFrame({0.0F, 0.0F, 0.0F, 1.0F});
+    REQUIRE(frame.has_value());
+    if (!scene.instances.empty()) {
+        rig.forward.draw(*frame, view);
+    }
+    const Vec4 green{0.0F, 1.0F, 0.0F, 1.0F};
+    for (const GroundLine& line : scene.lines) {
+        rig.draw.batch().line(line.from, line.to, green, engine::render::DebugDepth::Tested);
+    }
+    rig.draw.setTestedLineDepthNudge(nudge);
+    rig.draw.flush(*frame, camera);
+    REQUIRE(rig.target.endFrame(std::move(*frame)));
+    std::vector<std::byte> pixels(static_cast<std::size_t>(DG_W) * DG_H * 4U, std::byte{0xAB});
+    REQUIRE(rig.device.readbackTexture(rig.target.colorTexture(), 0, pixels));
+    return pixels;
+}
+
+// The texel indices (row * DG_W + column) of a readback that are EXACTLY `colour`.
+[[nodiscard]] std::vector<std::size_t> texelsOf(const std::vector<std::byte>& pixels, Rgba colour) {
+    std::vector<std::size_t> indices;
+    for (std::uint32_t row = 0; row < DG_H; ++row) {
+        for (std::uint32_t column = 0; column < DG_W; ++column) {
+            if (texelAt(pixels, row, column) == colour) {
+                indices.push_back((static_cast<std::size_t>(row) * DG_W) + column);
+            }
+        }
+    }
+    return indices;
+}
+
+// How many of `indices` are EXACTLY `colour` in `pixels`.
+[[nodiscard]] std::size_t countAt(const std::vector<std::byte>& pixels, const std::vector<std::size_t>& at,
+                                  Rgba colour) {
+    std::size_t count = 0;
+    for (const std::size_t index : at) {
+        const auto row = static_cast<std::uint32_t>(index / DG_W);
+        const auto column = static_cast<std::uint32_t>(index % DG_W);
+        if (texelAt(pixels, row, column) == colour) {
+            ++count;
+        }
+    }
+    return count;
+}
+
+// The 40 x 40 BLUE Plane at y = 0 every coplanar case lies its lines on.
+[[nodiscard]] engine::render::MeshInstance groundPlane(const engine::render::CameraView& camera) {
+    const Mat4 model = engine::scaling(Vec3{40.0F, 1.0F, 40.0F});
+    return groundInstance(engine::render::PrimitiveId::Plane, model, Vec3{0.0F, 0.0F, 1.0F}, camera);
+}
+
+// DG21's and DG23's line set: rows parallel to X at z = -2 .. -18 across x in [-15, 15], and columns
+// parallel to Z at x = -3 .. 3 across z in [-18, -2] -- all on y = 0, all inside the Plane's footprint.
+[[nodiscard]] std::vector<GroundLine> groundGridLines() {
+    std::vector<GroundLine> lines;
+    for (int z = -2; z >= -18; --z) {
+        const auto depth = static_cast<float>(z);
+        lines.push_back({Vec3{-15.0F, 0.0F, depth}, Vec3{15.0F, 0.0F, depth}});
+    }
+    for (int x = -3; x <= 3; ++x) {
+        const auto across = static_cast<float>(x);
+        lines.push_back({Vec3{across, 0.0F, -2.0F}, Vec3{across, 0.0F, -18.0F}});
+    }
+    return lines;
+}
+
 // task E.5.2: how many texels of a readback are EXACTLY `colour`.
 [[nodiscard]] std::size_t countTexels(const std::vector<std::byte>& pixels, Rgba colour) {
     std::size_t count = 0;
@@ -2324,6 +2441,172 @@ TEST_CASE("render debug draw: the nudge never reaches an Overlay line (task E.5.
         CHECK(countTexels(overlayAtZero, greenTexel) >= 40U);
         CHECK(overlayAtZero == overlayAtMax);
     }
+}
+
+// ------------------------------------------------------------------------------------------------
+// Task E.5.2. The coplanar handoff E.1.2 left: grid lines lying ON a surface, at the editor's own nudge.
+// `G` = the line texels (lines alone), `V` = those still green over the Plane at the computed nudge, `V0` =
+// those still green at nudge 0. Every count is printed with MESSAGE, so the per-lane numbers are in the log.
+// ------------------------------------------------------------------------------------------------
+
+TEST_CASE(
+    "render debug draw: every grid line wins over a coplanar surface at a grazing pose "
+    "(task E.5.2, DG21)") {
+    AERO_DG_PREAMBLE();
+    auto draw = engine::render::DebugDraw::create(
+        *device, vfs, {.colorFormat = target->colorFormat(), .depthFormat = target->depthFormat()});
+    REQUIRE(draw.has_value());
+    auto forward = engine::render::ForwardRenderer::create(
+        *device, vfs,
+        {.colorFormat = target->colorFormat(), .depthFormat = target->depthFormat(), .shadowMapResolution = 0});
+    REQUIRE(forward.has_value());
+    const GroundRig rig{*device, *target, *forward, *draw};
+
+    // Height 1 m, pitched 10 degrees down: the grazing pose where the fight is worst.
+    const engine::render::CameraView camera =
+        groundCamera(1.0F, engine::radians(10.0F), engine::radians(60.0F), 0.1F, 100.0F);
+    const float nudge = engine::render::debugGridDepthNudge(camera.proj * camera.view, 0.0F, DG_W, DG_H);
+    const engine::render::MeshInstance plane = groundPlane(camera);
+    const std::span<const engine::render::MeshInstance> planeOnly{&plane, 1};
+
+    // Every orientation relative to the view: rows, columns and four diagonals.
+    std::vector<GroundLine> lines = groundGridLines();
+    lines.push_back({Vec3{-10.0F, 0.0F, -2.0F}, Vec3{10.0F, 0.0F, -18.0F}});
+    lines.push_back({Vec3{10.0F, 0.0F, -2.0F}, Vec3{-10.0F, 0.0F, -18.0F}});
+    lines.push_back({Vec3{-15.0F, 0.0F, -6.0F}, Vec3{5.0F, 0.0F, -18.0F}});
+    lines.push_back({Vec3{15.0F, 0.0F, -6.0F}, Vec3{-5.0F, 0.0F, -18.0F}});
+
+    const std::vector<std::byte> a = renderGround(rig, camera, {.instances = planeOnly}, nudge);  // the Plane
+    const std::vector<std::byte> b = renderGround(rig, camera, {.lines = lines}, nudge);          // the lines
+    const GroundScene both{.instances = planeOnly, .lines = lines};
+    const std::vector<std::byte> c = renderGround(rig, camera, both, nudge);
+    const std::vector<std::byte> c0 = renderGround(rig, camera, both, 0.0F);
+
+    const std::vector<std::size_t> g = texelsOf(b, DG_GREEN);
+    const std::size_t v = countAt(c, g, DG_GREEN);
+    const std::size_t v0 = countAt(c0, g, DG_GREEN);
+    MESSAGE("DG21 |G| " << g.size() << " |V| " << v << " |V0| " << v0 << " nudge " << nudge);
+    // The floor is about HALF the count measured on the first run (Metal: |G| 4519, |V0| 3304 -- a 26.9 %
+    // loss without the nudge at this pose), so a lane that rasterizes a little differently still passes and
+    // an empty line set never does.
+    REQUIRE(g.size() >= 2200U);
+    // The lines really lie on the Plane ON SCREEN, so no count below is satisfied off the surface.
+    REQUIRE(countAt(a, g, DG_BLUE) == g.size());
+    CHECK(v == g.size());  // EVERY line texel draws over the coplanar Plane
+    // ANTI-VACUITY, D16 measured: without the nudge at least 1 % of the line texels lose.
+    CHECK(g.size() - v0 >= g.size() / 100U);
+}
+
+TEST_CASE("render debug draw: every grid line wins at 45 degrees and straight down (task E.5.2, DG22)") {
+    AERO_DG_PREAMBLE();
+    auto draw = engine::render::DebugDraw::create(
+        *device, vfs, {.colorFormat = target->colorFormat(), .depthFormat = target->depthFormat()});
+    REQUIRE(draw.has_value());
+    auto forward = engine::render::ForwardRenderer::create(
+        *device, vfs,
+        {.colorFormat = target->colorFormat(), .depthFormat = target->depthFormat(), .shadowMapResolution = 0});
+    REQUIRE(forward.has_value());
+    const GroundRig rig{*device, *target, *forward, *draw};
+
+    struct Pose {
+        const char* name;
+        float pitchDegrees;
+        float zCentre;  // the ground point under the view centre
+    };
+    // Straight down the slope is ~0 and the FLOOR alone decides -- the pose the floor exists for.
+    constexpr std::array<Pose, 2> POSES{{{"45 degrees", 45.0F, -2.0F}, {"straight down", 90.0F, 0.0F}}};
+    for (const Pose& pose : POSES) {
+        const std::string_view name = pose.name;  // a view, so doctest prints the TEXT rather than a pointer
+        CAPTURE(name);
+        const engine::render::CameraView camera =
+            groundCamera(2.0F, engine::radians(pose.pitchDegrees), engine::radians(60.0F), 0.1F, 100.0F);
+        const float nudge = engine::render::debugGridDepthNudge(camera.proj * camera.view, 0.0F, DG_W, DG_H);
+        const engine::render::MeshInstance plane = groundPlane(camera);
+        const std::span<const engine::render::MeshInstance> planeOnly{&plane, 1};
+        // Rows and columns every 0.25 m, k in [-6, 6], each spanning +/-1.5 m around the centre.
+        std::vector<GroundLine> lines;
+        const float zc = pose.zCentre;
+        for (int k = -6; k <= 6; ++k) {
+            const float offset = 0.25F * static_cast<float>(k);
+            lines.push_back({Vec3{-1.5F, 0.0F, zc + offset}, Vec3{1.5F, 0.0F, zc + offset}});
+            lines.push_back({Vec3{offset, 0.0F, zc - 1.5F}, Vec3{offset, 0.0F, zc + 1.5F}});
+        }
+        const std::vector<std::byte> a = renderGround(rig, camera, {.instances = planeOnly}, nudge);
+        const std::vector<std::byte> b = renderGround(rig, camera, {.lines = lines}, nudge);
+        const GroundScene both{.instances = planeOnly, .lines = lines};
+        const std::vector<std::byte> c = renderGround(rig, camera, both, nudge);
+        const std::vector<std::byte> c0 = renderGround(rig, camera, both, 0.0F);
+        const std::vector<std::size_t> g = texelsOf(b, DG_GREEN);
+        const std::size_t v = countAt(c, g, DG_GREEN);
+        const std::size_t v0 = countAt(c0, g, DG_GREEN);
+        MESSAGE("DG22 " << name << " |G| " << g.size() << " |V| " << v << " |V0| " << v0 << " nudge " << nudge);
+        // About HALF the first run's count (Metal: 3810 at 45 degrees, 4629 straight down).
+        REQUIRE(g.size() >= 1900U);
+        REQUIRE(countAt(a, g, DG_BLUE) == g.size());
+        CHECK(v == g.size());
+    }
+}
+
+TEST_CASE("render debug draw: occlusion survives the nudge outside a two-pixel band (task E.5.2, DG23)") {
+    AERO_DG_PREAMBLE();
+    auto draw = engine::render::DebugDraw::create(
+        *device, vfs, {.colorFormat = target->colorFormat(), .depthFormat = target->depthFormat()});
+    REQUIRE(draw.has_value());
+    auto forward = engine::render::ForwardRenderer::create(
+        *device, vfs,
+        {.colorFormat = target->colorFormat(), .depthFormat = target->depthFormat(), .shadowMapResolution = 0});
+    REQUIRE(forward.has_value());
+    const GroundRig rig{*device, *target, *forward, *draw};
+
+    // DG21's pose, plus a RED unit Cube resting on the Plane in front of the lines.
+    const engine::render::CameraView camera =
+        groundCamera(1.0F, engine::radians(10.0F), engine::radians(60.0F), 0.1F, 100.0F);
+    const float nudge = engine::render::debugGridDepthNudge(camera.proj * camera.view, 0.0F, DG_W, DG_H);
+    const Mat4 cubeModel = engine::translation(Vec3{0.0F, 0.5F, -4.0F});
+    const std::array<engine::render::MeshInstance, 2> scene{
+        groundPlane(camera),
+        groundInstance(engine::render::PrimitiveId::Cube, cubeModel, Vec3{1.0F, 0.0F, 0.0F}, camera)};
+    const std::vector<GroundLine> lines = groundGridLines();
+
+    const std::vector<std::byte> e = renderGround(rig, camera, {.instances = scene}, nudge);  // no lines
+    const std::vector<std::byte> d = renderGround(rig, camera, {.instances = scene, .lines = lines}, nudge);
+
+    // S = the Cube's texels; S2 = those whose whole 5 x 5 neighbourhood (+/-2) is in S -- the silhouette
+    // ERODED by 2 px, D17's one-pixel band plus a pixel of margin.
+    const auto isRed = [&e](std::int64_t row, std::int64_t column) {
+        const bool inside = row >= 0 && column >= 0 && row < static_cast<std::int64_t>(DG_H) &&
+                            column < static_cast<std::int64_t>(DG_W);
+        return inside && texelAt(e, static_cast<std::uint32_t>(row), static_cast<std::uint32_t>(column)) == DG_RED;
+    };
+    std::size_t s = 0;
+    std::size_t s2 = 0;
+    std::size_t greenInside = 0;
+    std::size_t greenOutside = 0;
+    for (std::uint32_t row = 0; row < DG_H; ++row) {
+        for (std::uint32_t column = 0; column < DG_W; ++column) {
+            const bool green = texelAt(d, row, column) == DG_GREEN;
+            if (!isRed(row, column)) {
+                greenOutside += green ? 1U : 0U;
+                continue;
+            }
+            ++s;
+            bool interior = true;
+            for (std::int64_t dr = -2; dr <= 2 && interior; ++dr) {
+                for (std::int64_t dc = -2; dc <= 2 && interior; ++dc) {
+                    interior = isRed(static_cast<std::int64_t>(row) + dr, static_cast<std::int64_t>(column) + dc);
+                }
+            }
+            if (interior) {
+                ++s2;
+                greenInside += green ? 1U : 0U;
+            }
+        }
+    }
+    MESSAGE("DG23 |S| " << s << " |S2| " << s2 << " green inside S2 " << greenInside << " green outside S "
+                        << greenOutside << " nudge " << nudge);
+    REQUIRE(s2 >= 900U);       // about HALF the first run's |S2| (Metal: 1806)
+    CHECK(greenInside == 0U);  // the lines behind the Cube stay hidden
+    CHECK(greenOutside > 0U);  // ANTI-VACUITY: the lines really drew elsewhere
 }
 
 TEST_CASE("render debug draw: the nudge survives a move, both kinds (task E.5.2, DG25)") {
