@@ -20576,7 +20576,7 @@ TEST_CASE(
         return bits(a.x, b.x) && bits(a.y, b.y) && bits(a.z, b.z);
     };
 
-    SUBCASE("a Cube is FITTED exactly as frameCreated fits its box") {
+    SUBCASE("a Cube is FITTED exactly as F (focusOn) fits its box") {
         // The drain frames with the aspect the PREVIOUS onDraw stored, so both are read before the tick.
         const float aspect = viewport->aspect();
         engine::editor::EditorCamera reference = *app->viewportCamera();
@@ -20584,7 +20584,10 @@ TEST_CASE(
         REQUIRE(app->tick());
         const engine::Entity created = app->selection().primary();
         REQUIRE(world.alive(created));
-        reference.frameCreated(engine::editor::entityBounds(world, created, true, nullptr), aspect);
+        // The ORACLE is F's own focusOn, never frameCreated: the function under test on both sides of the
+        // identity would agree with itself whatever it did (the sabotage round's S13 stayed green here until
+        // this read focusOn). A unit Cube has extent, so frameCreated must fit it exactly as focusOn does.
+        reference.focusOn(engine::editor::entityBounds(world, created, true, nullptr), aspect);
         const engine::editor::EditorCamera& live = *app->viewportCamera();
         CHECK(sameVec(live.pivot(), reference.pivot()));
         CHECK(bits(live.distance(), reference.distance()));
