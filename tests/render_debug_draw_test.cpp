@@ -22,6 +22,7 @@
 #include <doctest/doctest.h>
 
 #include <array>
+#include <bit>  // task E.5.2 (DD29, DD30): std::bit_cast -- the nudge's bits, including +0 vs -0
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -597,9 +598,9 @@ TEST_CASE("render debug draw: packDebugLineView writes viewProj column-major at 
     for (int i = 0; i < 16; ++i) {
         raw[i] = static_cast<float>(i) + 0.5F;
     }
-    const auto block = rd::packDebugLineView(m);
-    CHECK(block.size() == 64U);
-    CHECK(rd::DEBUG_LINE_VERTEX_UNIFORM_BYTES == 64U);
+    const auto block = rd::packDebugLineView(m, 0.0F);
+    CHECK(block.size() == 80U);
+    CHECK(rd::DEBUG_LINE_VERTEX_UNIFORM_BYTES == 80U);
     std::array<float, 16> readBack{};
     std::memcpy(readBack.data(), block.data(), 64U);
     for (int i = 0; i < 16; ++i) {
@@ -780,6 +781,29 @@ TEST_CASE("render debug draw: the HLSL transcribes the C++ contract, pinned as s
         // every untextured billboard white and every colour argument silently inert.
         CHECK(contains(billboardFrag, "* color"));
     }
+    SUBCASE("the depth nudge (task E.5.2)") {
+        CHECK(contains(lineVert, "uDepthNudge"));
+        // THREE SCALAR pads, never a float3: a float3 re-introduced by a later edit is red here.
+        CHECK(contains(lineVert, "float _pad0"));
+        CHECK(contains(lineVert, "float _pad1"));
+        CHECK(contains(lineVert, "float _pad2"));
+        CHECK_FALSE(contains(lineVert, "float3 _pad"));
+        // THE NUDGE LINE -- all four tokens on ONE statement, never four unrelated occurrences (the sizing-
+        // line pattern above). Seeds S35 (+=) and S36 (no * w) both land on this statement.
+        std::istringstream stream{lineVert};
+        std::string line;
+        bool sawNudgeLine = false;
+        while (std::getline(stream, line)) {
+            if (line.find("uDepthNudge") != std::string::npos && line.find("-=") != std::string::npos) {
+                CHECK(line.find("position.z") != std::string::npos);
+                CHECK(line.find(".w") != std::string::npos);
+                sawNudgeLine = true;
+            }
+        }
+        CHECK(sawNudgeLine);  // anti-vacuity: the loop really found the statement
+        // ...and the BILLBOARD stage never sees it (seed S40).
+        CHECK_FALSE(contains(billboardVert, "uDepthNudge"));
+    }
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -905,6 +929,59 @@ TEST_CASE("render debug draw: debugCircleBasis IS wireCircle's basis, bit for bi
         CHECK_FALSE(bitsOf(v[15].position) == bitsOf(v[0].position));
         CHECK(engine::length(v[15].position - v[0].position) < 1e-5F);  // ...but only just
     }
+}
+
+// ------------------------------------------------------------------------------------------------
+// Task E.5.2. The Tested-line depth nudge: the 80-byte line block and the sanitizer, every configuration.
+// ------------------------------------------------------------------------------------------------
+
+TEST_CASE("render debug draw: packDebugLineView puts the nudge at 64 and zeroes 68..79 (task E.5.2, DD29)") {
+    // DD20's sixteen DISTINCT entries.
+    Mat4 m{};
+    float* const raw = m.data();
+    for (int i = 0; i < 16; ++i) {
+        raw[i] = static_cast<float>(i) + 0.5F;
+    }
+    const auto block = rd::packDebugLineView(m, 0.00123F);
+    std::array<float, 16> readBack{};
+    std::memcpy(readBack.data(), block.data(), 64U);
+    for (int i = 0; i < 16; ++i) {
+        CHECK(readBack[static_cast<std::size_t>(i)] == static_cast<float>(i) + 0.5F);
+    }
+    std::uint32_t bits = 0;
+    std::memcpy(&bits, block.data() + 64, 4U);
+    CHECK(bits == std::bit_cast<std::uint32_t>(0.00123F));
+    for (std::size_t i = 68; i < 80U; ++i) {
+        CAPTURE(i);
+        CHECK(block[i] == std::byte{0});
+    }
+    // A zero nudge writes POSITIVE zero's bits.
+    const auto zero = rd::packDebugLineView(m, 0.0F);
+    for (std::size_t i = 64; i < 68U; ++i) {
+        CAPTURE(i);
+        CHECK(zero[i] == std::byte{0});
+    }
+}
+
+TEST_CASE("render debug draw: sanitizeDebugLineDepthNudge is total (task E.5.2, DD30)") {
+    const auto bitsOfSanitized = [](float value) {
+        return std::bit_cast<std::uint32_t>(rd::sanitizeDebugLineDepthNudge(value));
+    };
+    constexpr std::uint32_t POSITIVE_ZERO = 0U;
+    const float max = rd::DEBUG_LINE_DEPTH_NUDGE_MAX;
+    CHECK(bitsOfSanitized(0.0F) == POSITIVE_ZERO);
+    CHECK(bitsOfSanitized(-0.0F) == POSITIVE_ZERO);  // BITS: == alone cannot see -0
+    CHECK(bitsOfSanitized(-1e-3F) == POSITIVE_ZERO);
+    CHECK(bitsOfSanitized(NAN_F) == POSITIVE_ZERO);
+    CHECK(bitsOfSanitized(INF_F) == POSITIVE_ZERO);  // every non-finite input is "no nudge"
+    CHECK(bitsOfSanitized(-INF_F) == POSITIVE_ZERO);
+    CHECK(bitsOfSanitized(2.0F * max) == std::bit_cast<std::uint32_t>(max));
+    CHECK(bitsOfSanitized(max) == std::bit_cast<std::uint32_t>(max));
+    CHECK(bitsOfSanitized(0.00123F) == std::bit_cast<std::uint32_t>(0.00123F));
+    const float denorm = std::numeric_limits<float>::denorm_min();
+    CHECK(bitsOfSanitized(denorm) == std::bit_cast<std::uint32_t>(denorm));
+    // The constant, EXACTLY: 2^-7, so a spelling that rounds is red whichever form it takes.
+    CHECK(rd::DEBUG_LINE_DEPTH_NUDGE_MAX == std::ldexp(1.0F, -7));
 }
 
 // ================================================================================================
@@ -1108,6 +1185,34 @@ struct PixelAt {
     const float ndcY = clip.y / clip.w;
     return PixelAt{static_cast<std::uint32_t>((0.5F - (ndcY * 0.5F)) * static_cast<float>(DG_H)),
                    static_cast<std::uint32_t>(((ndcX * 0.5F) + 0.5F) * static_cast<float>(DG_W))};
+}
+
+// task E.5.2: a perspective camera at height `h` above the ground plane, yaw 0, pitched DOWN by `pitch`
+// radians -- the pose family DG21-DG24 and the editor's grid live in. RH, -Z forward (transform.hpp's D3).
+// Straight down (pitch = HALF_PI) takes -Z as its up vector, where the world up is degenerate.
+[[nodiscard]] engine::render::CameraView groundCamera(float h, float pitch, float fovY, float nearPlane,
+                                                      float farPlane) {
+    const Vec3 eye{0.0F, h, 0.0F};
+    const Vec3 forward{0.0F, -std::sin(pitch), -std::cos(pitch)};
+    const bool straightDown = std::fabs(std::cos(pitch)) < 1e-6F;
+    const Vec3 up = straightDown ? Vec3{0.0F, 0.0F, -1.0F} : Vec3{0.0F, 1.0F, 0.0F};
+    const float aspect = static_cast<float>(DG_W) / static_cast<float>(DG_H);
+    return engine::render::CameraView{.view = engine::lookAt(eye, eye + forward, up),
+                                      .proj = engine::perspective(fovY, aspect, nearPlane, farPlane),
+                                      .eyePosition = eye};
+}
+
+// task E.5.2: how many texels of a readback are EXACTLY `colour`.
+[[nodiscard]] std::size_t countTexels(const std::vector<std::byte>& pixels, Rgba colour) {
+    std::size_t count = 0;
+    for (std::uint32_t row = 0; row < DG_H; ++row) {
+        for (std::uint32_t column = 0; column < DG_W; ++column) {
+            if (texelAt(pixels, row, column) == colour) {
+                ++count;
+            }
+        }
+    }
+    return count;
 }
 
 }  // namespace
@@ -2152,6 +2257,94 @@ TEST_CASE("render light gizmo: a Tested cone is hidden by geometry and an Overla
     CHECK(unoccludedGreen > testedGreen);
     // ...and the occluder really is there in the arm that draws nothing.
     CHECK(texelAt(tested, 96U, 128U) == Rgba{255U, 0U, 0U, 255U});
+}
+
+// ------------------------------------------------------------------------------------------------
+// Task E.5.2. The Tested-line depth nudge on the GPU: it never reaches an Overlay line (DG24), and it
+// survives a move (DG25).
+// ------------------------------------------------------------------------------------------------
+
+TEST_CASE("render debug draw: the nudge never reaches an Overlay line (task E.5.2, DG24)") {
+    AERO_DG_PREAMBLE();
+    auto draw = engine::render::DebugDraw::create(
+        *device, vfs, {.colorFormat = target->colorFormat(), .depthFormat = target->depthFormat()});
+    REQUIRE(draw.has_value());
+    const Vec4 green{0.0F, 1.0F, 0.0F, 1.0F};
+    const Rgba greenTexel{0U, 255U, 0U, 255U};
+    constexpr engine::render::DebugDepth TESTED = engine::render::DebugDepth::Tested;
+    constexpr engine::render::DebugDepth OVERLAY = engine::render::DebugDepth::Overlay;
+    const float maxNudge = rd::DEBUG_LINE_DEPTH_NUDGE_MAX;
+
+    SUBCASE("(a) the grazing pose: an Overlay grid is byte-identical at nudge 0 and at the max") {
+        const engine::render::CameraView camera =
+            groundCamera(1.0F, engine::radians(10.0F), engine::radians(60.0F), 0.1F, 100.0F);
+        const auto render = [&](float nudge) {
+            for (int z = -2; z >= -20; --z) {  // rows parallel to X
+                const auto depth = static_cast<float>(z);
+                draw->batch().line(Vec3{-3.0F, 0.0F, depth}, Vec3{3.0F, 0.0F, depth}, green, OVERLAY);
+            }
+            for (int x = -3; x <= 3; ++x) {  // columns parallel to Z
+                const auto across = static_cast<float>(x);
+                draw->batch().line(Vec3{across, 0.0F, -2.0F}, Vec3{across, 0.0F, -20.0F}, green, OVERLAY);
+            }
+            draw->setTestedLineDepthNudge(nudge);
+            return flushAndRead(*device, *target, *draw, camera);
+        };
+        const std::vector<std::byte> first = render(0.0F);
+        const std::vector<std::byte> second = render(maxNudge);
+        CHECK(first == second);
+        CHECK(countTexels(first, greenTexel) > 0U);  // ANTI-VACUITY: the lines really drew
+    }
+    SUBCASE("(b) the near-plane pose: the one place an Overlay nudge would CLIP a line") {
+        const float aspect = static_cast<float>(DG_W) / static_cast<float>(DG_H);
+        const engine::render::CameraView camera{
+            .view = Mat4::identity(),
+            .proj = engine::perspective(engine::radians(60.0F), aspect, 0.1F, 100.0F),
+            .eyePosition = Vec3{0.0F, 0.0F, 0.0F}};
+        // One line straddling the near plane's view depth 0.1 -- from 0.0995 to 0.1005.
+        const Vec3 from{-0.05F, 0.002F, -0.0995F};
+        const Vec3 to{0.05F, 0.002F, -0.1005F};
+        const auto render = [&](engine::render::DebugDepth depth, float nudge) {
+            draw->batch().line(from, to, green, depth);
+            draw->setTestedLineDepthNudge(nudge);
+            return flushAndRead(*device, *target, *draw, camera);
+        };
+        // THE ANTI-VACUITY THAT MAKES (b) MEAN ANYTHING: the SAME line drawn as TESTED (depth cleared to 1,
+        // nothing else drawn) shows at nudge 0 and VANISHES at the max -- a nudge of 2^-7 moves its near
+        // clip from view depth 0.1 to about 0.1008, past the segment's far end. The pose is sensitive.
+        const std::size_t testedAtZero = countTexels(render(TESTED, 0.0F), greenTexel);
+        const std::size_t testedAtMax = countTexels(render(TESTED, maxNudge), greenTexel);
+        MESSAGE("DG24(b) Tested line texels: nudge 0 -> " << testedAtZero << ", max -> " << testedAtMax);
+        CHECK(testedAtZero >= 40U);
+        CHECK(testedAtMax == 0U);
+        // ...so an Overlay line that is byte-identical at both can only mean the nudge never reached it
+        // (seed S47: one shared push before both draws).
+        const std::vector<std::byte> overlayAtZero = render(OVERLAY, 0.0F);
+        const std::vector<std::byte> overlayAtMax = render(OVERLAY, maxNudge);
+        CHECK(countTexels(overlayAtZero, greenTexel) >= 40U);
+        CHECK(overlayAtZero == overlayAtMax);
+    }
+}
+
+TEST_CASE("render debug draw: the nudge survives a move, both kinds (task E.5.2, DG25)") {
+    AERO_DG_PREAMBLE();
+    auto a = engine::render::DebugDraw::create(
+        *device, vfs, {.colorFormat = target->colorFormat(), .depthFormat = target->depthFormat()});
+    REQUIRE(a.has_value());
+    constexpr float NUDGE = 0.00390625F;  // 2^-8: non-default, in range, exact
+    a->setTestedLineDepthNudge(NUDGE);
+    CHECK(a->testedLineDepthNudge() == NUDGE);
+
+    engine::render::DebugDraw moved{std::move(*a)};
+    CHECK(moved.testedLineDepthNudge() == NUDGE);
+    CHECK(a->testedLineDepthNudge() == 0.0F);  // NOLINT(bugprone-use-after-move) -- reset() is the contract
+
+    auto b = engine::render::DebugDraw::create(
+        *device, vfs, {.colorFormat = target->colorFormat(), .depthFormat = target->depthFormat()});
+    REQUIRE(b.has_value());
+    *b = std::move(moved);
+    CHECK(b->testedLineDepthNudge() == NUDGE);
+    CHECK(moved.testedLineDepthNudge() == 0.0F);  // NOLINT(bugprone-use-after-move)
 }
 
 #endif  // AERO_SHADER_TOOLS_ENABLED
