@@ -2578,7 +2578,10 @@ TEST_CASE("inspector: a labelled field still clamps through the one write seam (
     REQUIRE(world.get<engine::MeshRenderer>(e) != nullptr);
     CHECK(world.get<engine::MeshRenderer>(e)->primitive == 2U);  // read off the WORLD
 
-    // AERO_RANGE(0, 2)'s clamp, untouched by the annotation: a 3 lands as 2.
+    // AERO_RANGE(0, 2)'s clamp, untouched by the annotation: a 3 lands as 2. From 0, so a write that was
+    // IGNORED (leaving 0) and one that was CLAMPED (landing on 2) read differently.
+    REQUIRE(writeComponentField(world, e, id, "primitive", namedSelectorValue(FieldKind::UInt, 0)));
+    REQUIRE(world.get<engine::MeshRenderer>(e)->primitive == 0U);
     CHECK(writeComponentField(world, e, id, "primitive", FieldValue{std::uint64_t{3}}));
     CHECK(world.get<engine::MeshRenderer>(e)->primitive == 2U);
 }
