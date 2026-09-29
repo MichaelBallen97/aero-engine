@@ -14,8 +14,12 @@
 #include <doctest/doctest.h>
 
 #include <algorithm>
+#include <array>
+#include <bit>  // task E.5.2: std::bit_cast -- EC1-EC4 compare camera state bit for bit
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
+#include <cstring>  // task E.5.2: std::memcmp over the pivot's bytes
 #include <limits>
 #include <optional>
 #include <string>
@@ -1283,4 +1287,128 @@ TEST_CASE("editor camera: case 17 -- the ortho arm is TOTAL, and focusOn frames 
             }
         }
     }
+}
+
+// ---- task E.5.2: frameCreated -- a box is FITTED as F fits it, a point is RECENTRED (EC1-EC4) ------------
+
+namespace {
+
+// The four numbers that ARE the camera's state (D17), read through the public accessors.
+struct CameraState {
+    Vec3 pivot;
+    float distance = 0.0F;
+    float yaw = 0.0F;
+    float pitch = 0.0F;
+};
+
+[[nodiscard]] CameraState stateOf(const EditorCamera& c) {
+    return CameraState{.pivot = c.pivot(), .distance = c.distance(), .yaw = c.yaw(), .pitch = c.pitch()};
+}
+
+// Bit for bit. The pivot through const std::byte* (a memcmp over a float-carrying type is refused by
+// bugprone-suspicious-memory-comparison), the three floats through std::bit_cast.
+[[nodiscard]] bool bitsEqual(const Vec3& a, const Vec3& b) {
+    const auto* lhs = reinterpret_cast<const std::byte*>(&a);
+    const auto* rhs = reinterpret_cast<const std::byte*>(&b);
+    return std::memcmp(lhs, rhs, sizeof(Vec3)) == 0;
+}
+[[nodiscard]] bool bitsEqual(float a, float b) {
+    return std::bit_cast<std::uint32_t>(a) == std::bit_cast<std::uint32_t>(b);
+}
+[[nodiscard]] bool bitsEqual(const CameraState& a, const CameraState& b) {
+    const bool pivotAndDistance = bitsEqual(a.pivot, b.pivot) && bitsEqual(a.distance, b.distance);
+    return pivotAndDistance && bitsEqual(a.yaw, b.yaw) && bitsEqual(a.pitch, b.pitch);
+}
+
+// A fixed NON-default starting pose, so "unchanged" cannot be satisfied by a default-constructed camera.
+[[nodiscard]] EditorCamera startingCamera(engine::editor::ProjectionMode mode) {
+    EditorCamera c;
+    c.setPivot(Vec3{1.0F, 2.0F, 3.0F});
+    c.setDistance(12.0F);
+    c.setYaw(0.4F);
+    c.setPitch(-0.3F);
+    c.setProjectionMode(mode);
+    return c;
+}
+
+[[nodiscard]] Aabb unitBoxAt(Vec3 centre) {
+    return Aabb{.min = centre - Vec3{0.5F, 0.5F, 0.5F}, .max = centre + Vec3{0.5F, 0.5F, 0.5F}};
+}
+
+// A 10 x 0 x 10 plane box: zero THICKNESS, non-zero extent.
+[[nodiscard]] Aabb planeBox() { return Aabb{.min = Vec3{-5.0F, 0.0F, -5.0F}, .max = Vec3{5.0F, 0.0F, 5.0F}}; }
+
+constexpr std::array<engine::editor::ProjectionMode, 2> MODES{engine::editor::ProjectionMode::Perspective,
+                                                              engine::editor::ProjectionMode::Orthographic};
+
+}  // namespace
+
+TEST_CASE("editor camera: a box is fitted EXACTLY as focusOn fits it (task E.5.2, EC1)") {
+    const std::array<Aabb, 2> boxes{unitBoxAt(Vec3{2.0F, 0.5F, -1.0F}), planeBox()};
+    for (std::size_t b = 0; b < boxes.size(); ++b) {
+        for (const float aspect : {0.5F, 1.0F, 2.0F}) {
+            for (const engine::editor::ProjectionMode mode : MODES) {
+                CAPTURE(b);
+                CAPTURE(aspect);
+                CAPTURE(static_cast<int>(mode));
+                EditorCamera created = startingCamera(mode);
+                EditorCamera focused = startingCamera(mode);
+                const CameraState start = stateOf(created);
+                created.frameCreated(boxes[b], aspect);
+                focused.focusOn(boxes[b], aspect);
+                CHECK(bitsEqual(stateOf(created), stateOf(focused)));
+                CHECK_FALSE(bitsEqual(stateOf(created), start));  // ANTI-VACUITY: the fit moved the camera
+            }
+        }
+    }
+}
+
+TEST_CASE("editor camera: a point is RECENTRED, never zoomed (task E.5.2, EC2)") {
+    Aabb point = Aabb::empty();
+    point.expand(Vec3{4.0F, 2.0F, -6.0F});
+    REQUIRE(point.valid());
+    REQUIRE(point.radius() == 0.0F);
+    for (const engine::editor::ProjectionMode mode : MODES) {
+        CAPTURE(static_cast<int>(mode));
+        EditorCamera c = startingCamera(mode);
+        const CameraState start = stateOf(c);
+        c.frameCreated(point, 1.5F);
+        const CameraState after = stateOf(c);
+        CHECK(bitsEqual(after.pivot, Vec3{4.0F, 2.0F, -6.0F}));
+        CHECK(bitsEqual(after.distance, start.distance));
+        CHECK(bitsEqual(after.yaw, start.yaw));
+        CHECK(bitsEqual(after.pitch, start.pitch));
+
+        // ANTI-VACUITY: F's own rule on the same point ZOOMS (FOCUS_MIN_RADIUS), so the point rule is
+        // really a different rule.
+        EditorCamera twin = startingCamera(mode);
+        twin.focusOn(point, 1.5F);
+        CHECK_FALSE(bitsEqual(twin.distance(), start.distance));
+    }
+}
+
+TEST_CASE("editor camera: an invalid box changes nothing (task E.5.2, EC3)") {
+    Aabb nanBox{.min = Vec3{0.0F, 0.0F, 0.0F}, .max = Vec3{1.0F, 1.0F, 1.0F}};
+    nanBox.max.x = std::numeric_limits<float>::quiet_NaN();
+    const std::array<Aabb, 2> invalid{Aabb::empty(), nanBox};
+    for (const Aabb& box : invalid) {
+        REQUIRE_FALSE(box.valid());
+        EditorCamera c = startingCamera(engine::editor::ProjectionMode::Perspective);
+        const CameraState start = stateOf(c);
+        c.frameCreated(box, 1.5F);
+        CHECK(bitsEqual(stateOf(c), start));
+    }
+}
+
+TEST_CASE("editor camera: a zero-THICKNESS plane box is fitted, not recentred (task E.5.2, EC4)") {
+    const Aabb box = planeBox();
+    REQUIRE(box.size().y == 0.0F);
+    REQUIRE(box.radius() > 0.0F);
+    EditorCamera c = startingCamera(engine::editor::ProjectionMode::Perspective);
+    const CameraState start = stateOf(c);
+    c.frameCreated(box, 1.5F);
+    EditorCamera twin = startingCamera(engine::editor::ProjectionMode::Perspective);
+    twin.focusOn(box, 1.5F);
+    CHECK_FALSE(bitsEqual(c.distance(), start.distance));  // the distance MOVED -- a fit, not a recentre
+    CHECK(bitsEqual(c.distance(), twin.distance()));       // ...and it is exactly F's fit
 }

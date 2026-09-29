@@ -7,6 +7,7 @@
 #include <aero/scene/mesh_renderer.hpp>  // task 3.1.5: the row arm asks the LIVE World, never the payload
 #include <aero/scene/world.hpp>
 
+#include "create_menu_ui.hpp"  // task E.5.2: drawCreateMenuItems -- the ONE drawing helper
 #include "text_input.hpp"
 
 #include <algorithm>
@@ -139,6 +140,7 @@ void HierarchyPanel::drawTree(PanelContext& context) {
             revealPath.push_back(cur);
         }
     }
+    scrollTarget = revealTarget;  // task E.5.2 -- consumed by drawRow, or dropped below
     revealTarget = {};
 
     // The actual walk is the pure, ImGui-free engine::editor::walkForest (review round 2, Gap 1):
@@ -156,6 +158,7 @@ void HierarchyPanel::drawTree(PanelContext& context) {
     walkForest(world, context.roots.entities(), stack, childArena, enter, unwind);
 
     revealPath.clear();  // consumed -- ImGui's own per-ID storage now remembers the open state
+    scrollTarget = {};   // task E.5.2: a reveal whose row was never drawn does not scroll on a later frame
 }
 
 bool HierarchyPanel::drawRow(PanelContext& context, Entity entity) {
@@ -191,6 +194,17 @@ bool HierarchyPanel::drawRow(PanelContext& context, Entity entity) {
     // The label goes through the "%s" FORMAT argument, never as the format string: the str_id
     // overload is IM_FMTARGS(3), and an entity named "%s" would otherwise be a format-string bug.
     const bool open = ImGui::TreeNodeEx("##row", flags, "%s", isRenaming ? "" : labelScratch.c_str());
+    // task E.5.2 (D7): the revealed row is scrolled into view when it is NOT visible -- a root create is
+    // appended at the bottom of the root order, so in a long scene the new selection would otherwise be off
+    // screen. IsItemVisible and SetScrollHereY both read the item JUST submitted (SetScrollHereY targets
+    // CursorPosPrevLine, imgui.cpp:12733-12743). A scroll request mutates no World and no Selection, so it is
+    // legal inside this read-only walk.
+    if (scrollTarget.valid() && entity == scrollTarget) {
+        if (!ImGui::IsItemVisible()) {
+            ImGui::SetScrollHereY(0.5F);
+        }
+        scrollTarget = {};
+    }
     rows.push_back(entity);  // visible-row order -- the Shift-range domain (E20)
 
     // -- drag SOURCE ------------------------------------------------------------------------------
@@ -290,11 +304,18 @@ bool HierarchyPanel::drawRow(PanelContext& context, Entity entity) {
 
     // -- context menu ------------------------------------------------------------------------------
     if (ImGui::BeginPopupContextItem()) {  // keyed on the current ID scope == this row
+        // task E.5.2 (D6): Create Empty is ONE kind through the ONE pipeline -- recorded here, placed,
+        // pushed, framed and revealed by EditorApp::applyCreate on the next tick.
         if (ImGui::MenuItem("Create Empty")) {
-            pending = PendingAction{.kind = ActionKind::CreateEmpty};
+            pendingCreate = CreateKind::Empty;
         }
         if (ImGui::MenuItem("Create Child")) {
             pending = PendingAction{.kind = ActionKind::CreateChild, .target = entity};
+        }
+        // task E.5.2 (D5): the typed entries create at the ROOT, never under this row -- a world-space
+        // default made local to an arbitrary parent would be a tilted, stretched Plane.
+        if (const std::optional<CreateKind> typed = drawCreateMenuItems(true); typed.has_value()) {
+            pendingCreate = typed;
         }
         ImGui::Separator();
         if (ImGui::MenuItem("Rename", "F2")) {
@@ -365,7 +386,11 @@ void HierarchyPanel::drawVoidTarget(PanelContext& context) {
     }
     if (ImGui::BeginPopupContextItem("##voidmenu")) {
         if (ImGui::MenuItem("Create Empty")) {
-            pending = PendingAction{.kind = ActionKind::CreateEmpty};
+            pendingCreate = CreateKind::Empty;  // task E.5.2 (D6): through the one pipeline
+        }
+        ImGui::Separator();
+        if (const std::optional<CreateKind> typed = drawCreateMenuItems(true); typed.has_value()) {
+            pendingCreate = typed;
         }
         ImGui::EndPopup();
     }
@@ -409,18 +434,6 @@ void HierarchyPanel::applyPending(PanelContext& context) {
             selection.clear();
             rangeAnchor = {};
             break;
-        case ActionKind::CreateEmpty: {
-            CommandContext cmd = toCommandContext(context);
-            if (context.commands.push(
-                    cmd, std::make_unique<CreateEntityCommand>(Entity{}, std::string_view{}, selection.entities()))) {
-                // The command has already set the selection to the created entity (AC-22, D5), so the
-                // panel reads it back instead of holding a pointer into the stack -- a merged or
-                // rejected command is destroyed INSIDE push(), and a raw pointer held across that call
-                // is exactly the dangling class command_stack.hpp:60-65 warns about.
-                rangeAnchor = selection.primary();
-            }
-            break;
-        }
         case ActionKind::CreateChild: {
             // Section O-2's consistency extension (review round 2, Gap 5): resolveCreateChildParent
             // makes a right-click on a row OUTSIDE the selection act on that row alone -- Delete and

@@ -254,6 +254,15 @@ struct DebugDrawConfig {
     std::string_view billboardFragmentShaderPath = "res://debug_billboard.frag";
 };
 
+// task E.5.2: the ceiling every Tested-line depth nudge is clamped to, in NDC depth (0 = near, ADR-005).
+// 2^-7, spelled in decimal (exact): room for a camera about 2 cm above the ground at a grazing angle,
+// while the near-plane sliver a nudge can clip stays under a millimetre at the editor's 0.1 near plane
+// (a nudged depth below 0 is clipped: z < n / (1 - 2^-7)). A TUNING CONSTANT decided by DG21-DG23.
+inline constexpr float DEBUG_LINE_DEPTH_NUDGE_MAX = 0.0078125F;
+// TOTAL: non-finite or <= 0 -> 0 (and -0.0 -> +0.0); above DEBUG_LINE_DEPTH_NUDGE_MAX -> the max; otherwise
+// the value itself, bit for bit. The finiteness arm comes FIRST: std::clamp(NaN, ...) returns NaN on libc++.
+[[nodiscard]] float sanitizeDebugLineDepthNudge(float ndc) noexcept;
+
 class DebugDraw {
 public:
     // nullopt + ONE ERROR naming the cause on: colorFormat Invalid or a depth format; depthFormat
@@ -283,6 +292,18 @@ public:
     // billboard -- a per-billboard texture would break the one-draw-per-bucket rule, and E.2.3's
     // icons are a handful of glyphs that belong in one atlas anyway; uvMin/uvMax select the glyph.
     void setBillboardTexture(rhi::TextureHandle texture, rhi::SamplerHandle sampler) noexcept;
+
+    // task E.5.2: pulls every TESTED line toward the viewer by `ndc` of NDC depth, in the vertex stage -- the
+    // shader-side slope-scaled bias a line cannot get from the rasterizer (E.1.2 measured that it cannot).
+    // DEFAULT 0, so nothing that does not ask for a nudge gets one. SANITIZED on store; persists until set
+    // again (a SETTING, not a per-frame counter). NEVER applied to Overlay lines or to billboards: flush
+    // pushes the line block with this value before the Tested draw and with 0 before the Overlay draw,
+    // because a nudged Overlay vertex in the sliver just past the near plane would be CLIPPED. The editor
+    // sets it every frame to render::debugGridDepthNudge(...) for the ground plane, because its ONLY Tested
+    // producer is the grid. A FUTURE TESTED PRODUCER THAT DOES NOT LIE ON THE GROUND inherits one pixel of
+    // the ground's slope -- decide it in that producer's task.
+    void setTestedLineDepthNudge(float ndc) noexcept;
+    [[nodiscard]] float testedLineDepthNudge() const noexcept;
 
     // Uploads the batch on its OWN command buffer (submitted before returning), records up to four
     // draws into `frame`'s ALREADY-OPEN pass, and CLEARS THE BATCH ON EVERY PATH including every
@@ -329,6 +350,7 @@ private:
     rhi::SamplerHandle defaultSampler{};                 // Linear / ClampToEdge, OWNED
     rhi::TextureHandle billboardTexture{};               // BORROWED; invalid == use defaultTexture
     rhi::SamplerHandle billboardSampler{};               // BORROWED; invalid == use defaultSampler
+    float lineDepthNudge = 0.0F;                         // task E.5.2 -- SANITIZED; a distinct name
     std::vector<DebugLineVertex> lineStaging;            // reserved to 2 * maxLines, ONCE
     std::vector<DebugBillboardVertex> billboardStaging;  // reserved to 6 * maxBillboards, ONCE
     std::uint32_t lastLines = 0;

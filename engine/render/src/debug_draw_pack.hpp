@@ -11,7 +11,7 @@
 // (vertex t/s -> space0, vertex UBOs -> space1):
 //
 //   shaders/debug_line.vert.hlsl      : cbuffer DebugView : register(b0, space1)
-//        float4x4 uViewProj;                                              // 64 bytes
+//        float4x4 uViewProj; float uDepthNudge; float _pad0; float _pad1; float _pad2;   // 80 (task E.5.2)
 //   shaders/debug_billboard.vert.hlsl : cbuffer DebugBillboardView : register(b0, space1)
 //        float4x4 uViewProj; float2 uViewportPx; float2 _pad0;            // 80 bytes
 //
@@ -28,8 +28,10 @@
 
 namespace engine::render {
 
-// std140: a float4x4 is 64 bytes and needs no padding.
-inline constexpr std::size_t DEBUG_LINE_VERTEX_UNIFORM_BYTES = 64;
+// std140: 64 for the matrix, the nudge at 64, then THREE SCALAR pads to the 16-byte boundary (task E.5.2).
+// Scalars and not a float3: a three-component vector is 16-aligned under strict std140 and would land at 80,
+// making the block 96 on any path that applies strict rules; a scalar is 4-aligned under every rule.
+inline constexpr std::size_t DEBUG_LINE_VERTEX_UNIFORM_BYTES = 80;
 // std140: 64 for the matrix + a float2 at 64 + 8 bytes of explicit padding to the 16-byte boundary.
 // The shader declares the padding as `float2 _pad0`, so the two agree by construction.
 inline constexpr std::size_t DEBUG_BILLBOARD_VERTEX_UNIFORM_BYTES = 80;
@@ -55,9 +57,11 @@ static_assert(sizeof(Mat4) == 64);
 // (mat4.hpp), and the HLSL declares float4x4 with the matching majorness. BOTH packers ZERO THEIR
 // BUFFER FIRST, so no padding byte is ever indeterminate on the wire (DD21 compares the tail).
 [[nodiscard]] inline std::array<std::byte, DEBUG_LINE_VERTEX_UNIFORM_BYTES> packDebugLineView(
-    const Mat4& viewProj) noexcept {
+    const Mat4& viewProj, float depthNudge) noexcept {
     std::array<std::byte, DEBUG_LINE_VERTEX_UNIFORM_BYTES> block{};  // value-init: every byte zero
     std::memcpy(block.data(), viewProj.data(), sizeof(Mat4));
+    std::memcpy(block.data() + sizeof(Mat4), &depthNudge, sizeof(float));
+    // Bytes 68..79 stay zero: the shader's three scalar pads.
     return block;
 }
 

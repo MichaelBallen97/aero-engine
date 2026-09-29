@@ -10,11 +10,39 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <optional>
 #include <span>
+#include <string>
+#include <type_traits>  // task E.5.2: std::decay_t / std::is_same_v in applySeed's visit
 #include <utility>
+#include <variant>
 #include <vector>
 
 namespace engine::editor {
+
+namespace {
+
+// task E.5.2: overwrite createEntity's default Transform in place, then add the ONE seed component with a
+// typed add<T>. monostate is success. false leaves the entity for the caller to destroy.
+[[nodiscard]] bool applySeed(World& world, Entity entity, const Transform& pose, const SeedComponent& seed) {
+    auto* const installed = world.get<Transform>(entity);
+    if (installed == nullptr) {
+        return false;
+    }
+    *installed = pose;
+    return std::visit(
+        [&world, entity](const auto& value) -> bool {
+            using T = std::decay_t<decltype(value)>;
+            if constexpr (std::is_same_v<T, std::monostate>) {
+                return true;
+            } else {
+                return world.add<T>(entity, value) != nullptr;
+            }
+        },
+        seed);
+}
+
+}  // namespace
 
 // Capture `roots`' subtrees AND their root display slots, then destroy them. Returns false --
 // having changed NOTHING -- when the capture comes out empty, which is exactly "every target is
@@ -71,10 +99,36 @@ bool restoreStructuralState(CommandContext& ctx, const StructuralUndoState& stat
 CreateEntityCommand::CreateEntityCommand(Entity parent, std::string_view name, std::span<const Entity> selBefore)
     : parentTarget(parent), createName(name), selectionBefore(selBefore.begin(), selBefore.end()) {}
 
+CreateEntityCommand::CreateEntityCommand(Entity parent, EntitySeed seed, std::span<const Entity> selBefore)
+    : parentTarget(parent),
+      createName(std::move(seed.name)),
+      labelText(std::move(seed.label)),
+      seedTransform(seed.transform),
+      seedComponent(seed.component),
+      selectionBefore(selBefore.begin(), selBefore.end()) {}
+
 bool CreateEntityCommand::redo(CommandContext& context) {
     if (!createdEntity.valid()) {
         createdEntity = createEntity(context.world, parentTarget, createName);
         if (!createdEntity.valid()) {
+            return false;
+        }
+        // task E.5.2: the seed, applied INSIDE the command -- the one write path (2.4.1 D5), and
+        // InstantiateAssetCommand's own shape (asset_commands.cpp:56-77). Unseeded: nothing to apply.
+        bool seedApplied = true;
+        if (seedTransform.has_value()) {
+            seedApplied = applySeed(context.world, createdEntity, *seedTransform, seedComponent);
+        }
+        if (!seedApplied) {
+            // NO PARTIAL MUTATION on a false return (command_stack.hpp's contract). Unreachable for a
+            // built-in on a live World -- createEntity has just installed the Transform, and World::add<T>
+            // returns nullptr only for a dead entity, an unregistered T or a tag type, and no alternative is
+            // either (World::World registers every built-in, in every configuration) -- so it is correct by
+            // construction rather than by a test; X28 covers the failure a caller CAN provoke (a dead
+            // parent).
+            destroyEntities(context.world, std::span<const Entity>{&createdEntity, 1});
+            context.selection.prune(context.world);
+            createdEntity = {};
             return false;
         }
         context.selection.set(createdEntity);
@@ -97,7 +151,9 @@ bool CreateEntityCommand::undo(CommandContext& context) {
     return true;
 }
 
-std::string_view CreateEntityCommand::label() const noexcept { return CREATE_ENTITY_COMMAND_LABEL; }
+std::string_view CreateEntityCommand::label() const noexcept {
+    return labelText.empty() ? CREATE_ENTITY_COMMAND_LABEL : std::string_view{labelText};
+}
 Entity CreateEntityCommand::created() const noexcept { return createdEntity; }
 
 // ---- DeleteEntitiesCommand ----------------------------------------------------------------------

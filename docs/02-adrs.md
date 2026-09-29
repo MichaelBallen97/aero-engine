@@ -258,6 +258,25 @@ which is `AERO_RANGE`'s own leniency one annotation over. **The reflectable subs
 is a UI hint on an existing category, `--emit-json` is untouched, and the three *"not in the reflectable
 subset"* warning strings still read 3.
 
+### Implementation note (task E.5.2)
+
+**The fifth field annotation.** `AERO_LABELS(ident, …)` names the values of an integer selector, label *i*
+naming the value *i*. Its payload is a comma-separated list of identifiers, stringized by a variadic macro
+that only libclang ever expands; the tool trims each piece, requires E.3.3's identifier grammar, refuses a
+duplicate and more than 64, and judges applicability after classification (integer primitives only).
+**Its one rule the other annotations do not have: the same field must carry `AERO_RANGE(0, N-1)`**, compared
+numerically — otherwise one warning names the range required, the labels are dropped and the range is
+kept. `AERO_RANGE` stays the single authority for the field's domain; the labels only name it.
+
+It is mirrored at runtime by `FieldUiMeta::labels`, a `const char*` **appended last** and pointing at a
+`|`-joined string literal in the generated TU, written only when present — so every pre-existing custom's
+bytes are identical, which `reflect-gen.annotations_meta`, `asset_meta` and `guid_meta` prove by staying
+green unedited. **The reflectable subset does not grow**: it is a UI hint on an existing category,
+`--emit-json` is untouched, no scene key changes, and the three *"not in the reflectable subset"* warning
+strings still read 3. Identifiers were chosen over string literals so the generated C++ needs no escaping
+and the runtime separator cannot collide with a label; a label containing a space is therefore not
+expressible, and widening the grammar is a recorded handoff.
+
 ---
 
 ## ADR-005 — Math: own types, swappable backend

@@ -155,7 +155,13 @@ class EditorCamera {
 public:
     void update(const CameraInput& in, float deltaSeconds) noexcept;  // TOTAL (AC-18)
     void focusOn(const Aabb& bounds, float aspect) noexcept;          // INSTANT (D12)
-    void reset() noexcept;                                            // the D8 default pose
+    // task E.5.2 -- INSTANT, like focusOn. A box with EXTENT (radius() > 0) is FITTED exactly as focusOn fits
+    // it -- a zero-thickness plane has extent and is fitted. A POINT box (radius() == 0 exactly: a light, a
+    // camera, an empty) is RECENTRED: the pivot moves to it and distance, yaw and pitch are untouched,
+    // because focusOn's FOCUS_MIN_RADIUS would put the eye 0.7 m from a light and every surface it lights
+    // out of frame. An invalid box changes nothing. F keeps focusOn; this is creation's rule alone.
+    void frameCreated(const Aabb& bounds, float aspect) noexcept;
+    void reset() noexcept;  // the D8 default pose
 
     [[nodiscard]] Vec3 position() const noexcept;  // pivot - forward()*distance (INV-1)
     [[nodiscard]] Quat rotation() const noexcept;  // yawQ * pitchQ (D16 -- no roll, ever)

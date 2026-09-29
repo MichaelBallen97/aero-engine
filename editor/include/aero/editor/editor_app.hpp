@@ -29,6 +29,7 @@
                                            // definition, the command_stack.hpp precedent. PURE:
                                            // ImGui-free, entt-free, World-free, so this header's
                                            // ImGui-FREE-BY-RULE contract is intact.
+#include <aero/editor/create_menu.hpp>     // task E.5.2 -- CreateKind by value in two seams; PURE
 #include <aero/editor/entity_ops.hpp>      // a VALUE member (rootOrder) needs RootOrder's definition
 #include <aero/editor/imgui_layer.hpp>
 #include <aero/editor/material_session.hpp>      // task 3.4.2 -- a VALUE member (materialSession) needs
@@ -587,6 +588,13 @@ public:
     // the next tick()'s reconcile block. `kind` is static_cast<std::uint8_t>(AssetKind) so AssetKind
     // stays out of this header's surface, exactly as modelImportState() keeps SessionState out.
     void requestHierarchyAssetDrop(Guid guid, std::uint8_t kind, Entity targetRow);  // Entity{} == the void
+    // task E.5.2: the Create pipeline's seam. Writes the SAME member the menu bar's click is copied into
+    // after drawShellUi, so a seam and a click are indistinguishable downstream; the next tick's reconcile
+    // block applies it (applyCreate).
+    void requestCreateEntity(CreateKind kind) noexcept { pendingMenuCreate = kind; }
+    // Creates refused because a modal owned the input (applyCreate's defence in depth) -- so a test can tell
+    // "refused" from "never arrived".
+    [[nodiscard]] std::size_t createRefusedCount() const noexcept { return createRefusals; }
     void requestViewportAssetDrop(Guid guid, std::uint8_t kind, Vec2 ndc);
     void requestMaterialSlotTextureDrop(std::size_t slot, Guid textureGuid);
 
@@ -596,6 +604,12 @@ public:
     // so a stale request can never commit something the user did not choose. All six are no-ops -- and
     // all three observables zero -- when `assetPicker` is null, exactly as the drains are null-guarded.
     void requestInspectorAssetPicker(std::string_view componentName, std::string_view fieldName);
+    // task E.5.2: the named selector's seam and observable. `component` is the FULL registration name
+    // ("engine::MeshRenderer"). Forwarded to the Inspector when one is registered, a no-op otherwise; the
+    // request lives ONE tick (see InspectorPanel::requestNamedSelection).
+    void requestInspectorNamedSelection(std::string_view component, std::string_view field, std::size_t index);
+    // Cumulative named-selector rows the Inspector SUBMITTED; 0 without an Inspector.
+    [[nodiscard]] std::size_t inspectorNamedSelectorsDrawn() const noexcept;
     void requestMaterialSlotPicker(std::size_t slot);
     // task E.3.4: the per-slot sampler disclosure. STATE, not an event, so it is a SETTER rather than
     // a one-shot: a case drives it once and reads it back on any later tick. Out-of-range is a no-op
@@ -786,6 +800,9 @@ private:
     // guid against the LIVE database (INV-D8) and recomputes the action from the LIVE World; neither
     // is ever trusted from the payload.
     void applyHierarchyDrop(const HierarchyAssetDrop& drop);
+    // task E.5.2: the ONE place a create is placed, pushed, framed and revealed. Called only from tick()'s
+    // reconcile block, after the drop drain and before the context router.
+    void applyCreate(CreateKind kind);
     void applyViewportDrop(const ViewportAssetDrop& drop);
     void applySlotDrop(const MaterialSlotTextureDrop& drop);
     // The import -> plan -> command sequence. `placement` is the ROOT entity's local Transform, so the
@@ -974,6 +991,8 @@ private:
     // states that asymmetry; this is where it shows.
     std::optional<HierarchyAssetDrop> requestedHierarchyDrop;
     std::optional<ViewportAssetDrop> requestedViewportDrop;
+    std::optional<CreateKind> pendingMenuCreate;  // task E.5.2 -- the menu bar's click and the seam's
+    std::size_t createRefusals = 0;               // task E.5.2 -- member/accessor collision rule
 
     // ---- task E.3.2 ------------------------------------------------------------------------------
     // A VALUE member, nothrow-movable by composition (its own two static_asserts hold that), so

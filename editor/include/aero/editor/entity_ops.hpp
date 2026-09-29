@@ -5,6 +5,7 @@
 // the seam the command stack wraps (D15/D16). A public home is also what lets the tier-0 test cover
 // them with no src include path.
 
+#include <aero/core/math.hpp>  // task E.5.2: Vec3, radians -- the two named default-scene constants
 #include <aero/scene/entity.hpp>
 
 #include <cstddef>
@@ -83,6 +84,13 @@ bool reparentEntity(World& world, Entity child, Entity parent);
 // dropped (topMost's own contract); order preserved.
 [[nodiscard]] std::vector<Entity> reparentTargets(const World& world, std::span<const Entity> selection,
                                                   Entity dragged);
+
+// task E.5.2: the default scene's camera offset and sun pitch, NAMED so the Create menu's Camera and
+// Directional Light are the default scene's by construction rather than by two matching literals.
+// `radians` is constexpr (core/math/constants.hpp) and Vec3 is an aggregate, so both are constant
+// expressions. The _RADIANS suffix is the <wingdi.h> lesson (editor_camera.hpp's DEFAULT_PITCH_RADIANS).
+inline constexpr Vec3 DEFAULT_SCENE_CAMERA_POSITION{0.0F, 1.0F, 5.0F};
+inline constexpr float DEFAULT_SCENE_SUN_PITCH_RADIANS = radians(-50.0F);
 
 // The default new-scene contents (D9). APPENDS to `world` -- clear() it first for a true "new
 // scene" (E32). Reused verbatim by 2.5.1's File > New Scene.

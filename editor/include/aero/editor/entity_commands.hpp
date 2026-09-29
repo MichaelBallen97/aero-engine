@@ -5,12 +5,19 @@
 
 #include <aero/editor/command_stack.hpp>
 #include <aero/editor/scene_snapshot.hpp>
+#include <aero/scene/camera.hpp>  // task E.5.2: SeedComponent's alternatives, all public and entt-free
 #include <aero/scene/entity.hpp>
+#include <aero/scene/light.hpp>          // task E.5.2
+#include <aero/scene/mesh_renderer.hpp>  // task E.5.2
+#include <aero/scene/spot_light.hpp>     // task E.5.2
+#include <aero/scene/transform.hpp>      // task E.5.2
 
 #include <cstddef>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
+#include <variant>
 #include <vector>
 
 namespace engine::editor {
@@ -32,6 +39,20 @@ inline constexpr std::string_view DUPLICATE_ENTITIES_COMMAND_LABEL = "Duplicate"
 inline constexpr std::string_view REPARENT_COMMAND_LABEL = "Reparent";
 inline constexpr std::string_view RENAME_COMMAND_LABEL = "Rename";
 
+// ---- task E.5.2: the SEED a create can carry --------------------------------------------------------
+// What a seeded create adds beyond createEntity. monostate == nothing beyond the Transform. Every
+// alternative is a trivially copyable built-in, so a command holds its seed BY VALUE -- the "values and
+// handles only" rule (command_stack.hpp). A new alternative is a new built-in someone wants a menu entry
+// for: add it here and to create_menu.cpp's createSeed, nowhere else.
+using SeedComponent = std::variant<std::monostate, MeshRenderer, DirectionalLight, PointLight, SpotLight, Camera>;
+
+struct EntitySeed {
+    std::string name;         // "" == unnamed (createEntity's own rule; the Hierarchy shows "Entity <index>")
+    std::string label;        // the Edit menu's noun phrase, "Create Cube"; "" == CREATE_ENTITY_COMMAND_LABEL
+    Transform transform{};    // written OVER createEntity's default Transform, never beside it
+    SeedComponent component;  // added with a TYPED World::add<T> -- no entt::meta, so every configuration
+};
+
 // Capture `roots`' subtrees AND their root display slots, then destroy them. Returns false -- having
 // changed NOTHING -- when the capture comes out empty. PROMOTED from entity_commands.cpp's anonymous
 // namespace at task 3.1.5: InstantiateAssetCommand is the sixth structural command and needs the exact
@@ -51,6 +72,11 @@ public:
     // since D5 means the panel has not written yet. It must NOT be a span: redo() mutates the very
     // Selection the caller's span points into (A20).
     CreateEntityCommand(Entity parent, std::string_view name, std::span<const Entity> selectionBefore);
+    // task E.5.2: the SEEDED create. The FIRST redo is createEntity plus the seed -- the Transform written
+    // over the default one, the one component added TYPED; every LATER redo and every undo is the unseeded
+    // form's own code (D21), because the snapshot already carries every component. The label is the seed's,
+    // fixed here and never changed (the label contract, command_stack.hpp).
+    CreateEntityCommand(Entity parent, EntitySeed seed, std::span<const Entity> selectionBefore);
     bool redo(CommandContext& context) override;  // 1st: createEntity; later: restoreStructuralState (D21)
     bool undo(CommandContext& context) override;  // captureAndDestroySubtrees + restore the old selection
     [[nodiscard]] std::string_view label() const noexcept override;
@@ -59,6 +85,11 @@ public:
 private:
     Entity parentTarget{};  // Entity{} == a root
     std::string createName;
+    // task E.5.2: the seed. labelText "" == CREATE_ENTITY_COMMAND_LABEL; seedTransform is engaged iff the
+    // command was seeded; seedComponent is monostate when unseeded, or seeded with no component.
+    std::string labelText;
+    std::optional<Transform> seedTransform;
+    SeedComponent seedComponent;
     Entity createdEntity{};     // filled by the FIRST redo; the identity every later cycle restores
     StructuralUndoState state;  // filled by undo, consumed by every later redo (D21)
     std::vector<Entity> selectionBefore;

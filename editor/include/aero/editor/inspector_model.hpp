@@ -33,6 +33,11 @@ struct FieldEntry {
     // NOTHING HERE RESOLVES IT: assetReferenceKindFromToken (asset_drag.hpp) owns the vocabulary, and
     // the panel asks it per frame.
     std::string assetKindToken;
+    // task E.5.2: the field's AERO_LABELS, VERBATIM and UNJUDGED -- '|'-joined, "" when unannotated. The
+    // assetKindToken posture exactly: a std::string, not a view into generated storage, rebuilt into
+    // caller-owned scratch every frame and CLEARED (never move-assigned) so its capacity survives (KP3).
+    // namedSelectorRow below is the only thing that judges it.
+    std::string labels;
     FieldValue value;
 };
 
@@ -96,6 +101,36 @@ struct GuidFieldRow {
 // A nil guid and a missing record IGNORE it: a name for a reference that resolves to nothing is a name for
 // nothing.
 [[nodiscard]] GuidFieldRow guidFieldRow(Guid value, const AssetDatabase* database, std::string_view subtitle = {});
+
+// ---- task E.5.2: the named selector, as VALUES ----------------------------------------------------
+// The integer row's other shape: a dropdown naming each value, chosen by the field's OWN metadata and
+// never by a component or field name (ADR-004). Everything the panel draws and decides is computed here,
+// so a tier-0 case asserts what is drawn (guidFieldRow's and axisResetAction's shape, one kind over).
+
+// reflect-gen's twin cap (tools/reflect-gen/src/main.cpp's MAX_FIELD_LABELS; the tool is freestanding and
+// restates it). Checked again here so a hand-built or version-skewed FieldUiMeta cannot reach the panel
+// with more.
+inline constexpr std::size_t MAX_FIELD_LABELS = 64;
+
+struct NamedSelectorRow {
+    std::vector<std::string> labels;      // label i names the value i; 1..MAX_FIELD_LABELS entries
+    std::optional<std::size_t> selected;  // the stored value, iff it lies in [0, labels.size())
+    std::string preview;                  // labels[*selected], else "<value> (out of range)"
+};
+
+// nullopt -- the panel draws today's clamped drag, byte for byte -- UNLESS every condition reflect-gen
+// enforces holds at runtime too (D11):
+//   * kind is Int and value holds std::int64_t, or kind is UInt and value holds std::uint64_t;
+//   * `labels` splits on '|' into 1..MAX_FIELD_LABELS pieces, each a non-empty identifier, no two equal;
+//   * hasRange, rangeMin == 0.0 and rangeMax == labels.size() - 1, compared EXACTLY.
+// TOTAL. Logs nothing: a draw-walk WARN would be a 60 Hz flood, and the tool warned at generation time.
+[[nodiscard]] std::optional<NamedSelectorRow> namedSelectorRow(const FieldEntry& field);
+
+// What a pick of `index` writes: FieldValue{std::int64_t(index)} for Int, FieldValue{std::uint64_t(index)}
+// for UInt -- exact, then clamped by writeComponentField as any integer edit is. FieldValue{} (the
+// variant's first alternative, bool) otherwise, which the caller never asks for: it asked
+// namedSelectorRow first.
+[[nodiscard]] FieldValue namedSelectorValue(FieldKind kind, std::size_t index);
 
 // ---- task E.3.1: the axis row, as VALUES ----------------------------------------------------------
 // Everything the Vec3/Quat rows decide, computed OUTSIDE the draw walk so a tier-0 case asserts what

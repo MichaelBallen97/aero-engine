@@ -898,6 +898,12 @@ void ViewportPanel::focusSelection(PanelContext& context) {
     }
 }
 
+void ViewportPanel::frameCreatedEntity(const World& world, Entity entity) {
+    viewSnap.cancel();  // F's own first statement (:812): a running snap writes yaw/pitch every frame
+    const Aabb bounds = entityBounds(world, entity, /*includeDescendants=*/true, meshBounds);
+    editorCamera.frameCreated(bounds, lastAspect);
+}
+
 void ViewportPanel::updatePick(PanelContext& context, Vec2 imageOrigin, Vec2 avail, bool hovered) {
     const ImGuiIO& io = ImGui::GetIO();
 
@@ -1595,8 +1601,9 @@ void ViewportPanel::renderScene(World& world) {
         return;
     }
     // INV-3: no ImGui call, no World mutation -- and, from task 2.3.1, no CAMERA mutation either. The
-    // camera is READ here and WRITTEN only in onDraw; moving the update here would work today and
-    // break the moment 2.3.3 needs the view-projection during the draw walk.
+    // camera is WRITTEN in onDraw and, before the draw walk, by frameCreatedEntity -- never here; it is
+    // READ here. Moving the update here would work today and break the moment 2.3.3 needs the
+    // view-projection during the draw walk.
     AERO_PROFILE_ZONE;
     // task 3.6.3: the scene now draws into the HDR target `post` owns, and a fullscreen resolve turns
     // that into the 8-bit texture ImGui samples. Command buffer A (the scene) is SUBMITTED before B
@@ -1656,6 +1663,15 @@ void ViewportPanel::renderScene(World& world) {
                                   .iconSizePixels = VIEWPORT_ICON_SIZE_POINTS * lastFramebufferScale},
                                  gizmoScratch, debugDrawer->batch());
     }
+    // task E.5.2: the grid's coplanar nudge, from the camera being RENDERED (the association flush itself
+    // uses, proj * view), for the drawn extent in framebuffer pixels, EVERY frame -- the grid's toggle does
+    // not gate it, because with the grid off the Tested bucket is empty and the value is inert. The editor's
+    // ONLY Tested producer is the grid (debug_grid.cpp:63), so the ground plane's nudge is the right one for
+    // everything in that bucket; debug_draw.hpp says what a future Tested producer off the ground inherits.
+    const Mat4 renderedViewProj = cameraView.proj * cameraView.view;
+    const float ground = render::DEBUG_GRID_PLANE_HEIGHT;
+    const float groundNudge = render::debugGridDepthNudge(renderedViewProj, ground, extent.width, extent.height);
+    debugDrawer->setTestedLineDepthNudge(groundNudge);
     debugDrawer->flush(*sceneFrame, cameraView);
     post->endScene(std::move(*sceneFrame));  // submits command buffer A -- AFTER the upload's submit
 

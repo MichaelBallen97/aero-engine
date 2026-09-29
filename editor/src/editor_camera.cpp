@@ -310,4 +310,15 @@ void EditorCamera::focusOn(const Aabb& bounds, float aspect) noexcept {
     }
 }
 
+void EditorCamera::frameCreated(const Aabb& bounds, float aspect) noexcept {
+    if (!bounds.valid()) {
+        return;
+    }
+    if (bounds.radius() == 0.0F) {  // EXACT -- scene_bounds.hpp: "exactly 0 for a point box"
+        setPivot(bounds.center());  // clamps through clampState, like every setter
+        return;
+    }
+    focusOn(bounds, aspect);
+}
+
 }  // namespace engine::editor

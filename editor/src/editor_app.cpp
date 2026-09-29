@@ -16,8 +16,9 @@
 #include <aero/editor/console_model.hpp>
 #include <aero/editor/editor_app.hpp>
 #include <aero/editor/editor_camera.hpp>
-#include <aero/editor/editor_prefs.hpp>  // task E.3.2: EditorPrefs + readEditorPrefs/writeEditorPrefs.
-                                         // context_router.hpp arrives through editor_app.hpp.
+#include <aero/editor/editor_prefs.hpp>     // task E.3.2: EditorPrefs + readEditorPrefs/writeEditorPrefs.
+                                            // context_router.hpp arrives through editor_app.hpp.
+#include <aero/editor/entity_commands.hpp>  // task E.5.2: the seeded CreateEntityCommand
 #include <aero/editor/entity_ops.hpp>
 #include <aero/editor/material_card.hpp>  // task E.4.5: materialCardSubtitle
 #include <aero/editor/material_edit.hpp>  // task 3.4.2: uniqueMaterialFileName -- New Material's
@@ -1047,7 +1048,8 @@ bool EditorApp::tick() {
         //
         // task E.3.2: the drop drain is no longer the last statement in this block -- the context
         // router's three observations follow it, because they must see the session state every arm
-        // above has finished writing. It is still the last thing that CHANGES anything.
+        // above has finished writing. Since task E.5.2 the CREATE drain below is the last thing that
+        // CHANGES anything; the drop drain precedes it.
         //
         // F9's rule, an EIGHTH application: every one-shot is drained as its OWN statement,
         // unconditionally, BEFORE it is inspected. A `panelX || editorX` expression would short-circuit
@@ -1092,6 +1094,23 @@ bool EditorApp::tick() {
         // one drain below sees a driven drop and a real one identically.
         if (panelSlotDrop.has_value()) {
             applySlotDrop(*panelSlotDrop);
+        }
+
+        // task E.5.2 (D1): the create drain -- the NINTH occupant of this block. EXTEND, NEVER TWIN. Two
+        // one-shots, each drained as its OWN statement before it is inspected (3.1.5's F9 rule, its NINTH
+        // application), applied in surface order: the Hierarchy's, then the menu bar's (which the seam
+        // shares). AFTER the drop drain, so a drop and a create in one tick keep their surface order; BEFORE
+        // the router, so the selection a create installs raises the Inspector THIS tick (I255, seed S19).
+        std::optional<CreateKind> panelCreate;
+        if (hierarchyPanel != nullptr) {
+            panelCreate = hierarchyPanel->takeCreateRequest();
+        }
+        const std::optional<CreateKind> menuCreate = std::exchange(pendingMenuCreate, std::nullopt);
+        if (panelCreate.has_value()) {
+            applyCreate(*panelCreate);
+        }
+        if (menuCreate.has_value()) {
+            applyCreate(*menuCreate);
         }
 
         // task E.3.2 (D1/D4): the EIGHTH occupant of this block -- 2.6.1's panel root, 3.1.1's
@@ -1175,6 +1194,18 @@ bool EditorApp::tick() {
     applyDefaultLayout = ui.applyDefaultLayout;         // drawShellUi clears it once consumed, and re-sets
                                                         // it for View > Reset Layout
     placeUnplacedPanels = ui.placeUnplacedPanels;       // cleared once consumed; nothing ever re-arms it
+    // task E.5.2: the menu bar's Create click, carried to the NEXT tick's drain. A copy, never a move:
+    // std::optional<CreateKind> is trivially copyable (performance-move-const-arg, the drop drain's own
+    // note).
+    if (ui.createRequest.has_value()) {
+        pendingMenuCreate = ui.createRequest;
+    }
+    // task E.5.2: a named-selector request lives exactly ONE tick. The Inspector consumed it above if it
+    // drew the row; if it did not draw at all (hidden, or another tab in front) it is dropped HERE, so it
+    // can never apply on a later frame -- the thing a real click cannot do either.
+    if (inspectorPanel != nullptr) {
+        inspectorPanel->expireNamedSelection();
+    }
     // task E.3.2. The toggle is adopted ONLY when the checkbox was actually flipped -- routeEnabled is
     // an in/out field, and adopting it unconditionally would be harmless today and a silent
     // re-introduction of a stale value the moment anything else writes it.
@@ -1737,6 +1768,35 @@ std::uint32_t EditorApp::viewportUnresolvedMaterials() const noexcept {
     return viewportPanel != nullptr ? viewportPanel->lastUnresolvedMaterials() : 0U;
 }
 
+// ---- task E.5.2: the create pipeline --------------------------------------------------------------
+void EditorApp::applyCreate(CreateKind kind) {
+    if (static_cast<std::size_t>(kind) >= CREATE_KIND_COUNT) {
+        return;  // defensive: no host can produce one
+    }
+    // DEFENCE IN DEPTH, 2.5.1 BLOCKING-2's posture: the menu bar already disables every Create item behind
+    // a modal, and this refuses any other path -- a create behind the unsaved-changes modal would change the
+    // very document the modal is asking about. COUNTED, so "refused" and "never arrived" differ.
+    if (modalInputActive(fileFlow, projectFlow)) {
+        ++createRefusals;
+        return;
+    }
+    const Vec3 pivot = viewportPanel != nullptr ? viewportPanel->camera().pivot() : DEFAULT_PIVOT;
+    const EntitySeed seed = createSeed(kind, createAnchor(pivot));
+    CommandContext cmd{sceneWorld, sceneSelection, rootOrder};
+    auto command = std::make_unique<CreateEntityCommand>(Entity{}, seed, sceneSelection.entities());
+    if (!commandStack.push(cmd, std::move(command))) {
+        return;  // the stack has already WARNed once; nothing was created
+    }
+    // The COMMAND selected it (AC-22's read-back rule): no pointer into the stack is held across push().
+    const Entity created = sceneSelection.primary();
+    if (viewportPanel != nullptr) {
+        viewportPanel->frameCreatedEntity(sceneWorld, created);  // the camera's second writer, pre-draw-walk
+    }
+    if (hierarchyPanel != nullptr) {
+        hierarchyPanel->revealEntity(created);
+    }
+}
+
 // ---- task 3.1.5: the three drop drains ------------------------------------------------------------
 // Every one of them RE-RESOLVES the guid against the live database (INV-D8) and RE-DERIVES the action
 // from the live World. The payload's `kind` byte was a peek hint and is never authoritative: a record
@@ -2292,6 +2352,16 @@ void EditorApp::requestInspectorAssetPicker(std::string_view componentName, std:
         assetPicker->pendingOpen =
             AssetPickerOpenRequest{.hostId = "Inspector", .fieldKey = inspectorAssetFieldKey(componentName, fieldName)};
     }
+}
+
+void EditorApp::requestInspectorNamedSelection(std::string_view component, std::string_view field, std::size_t index) {
+    if (inspectorPanel != nullptr) {
+        inspectorPanel->requestNamedSelection(std::string(component), std::string(field), index);
+    }
+}
+
+std::size_t EditorApp::inspectorNamedSelectorsDrawn() const noexcept {
+    return inspectorPanel != nullptr ? inspectorPanel->namedSelectorsDrawn() : 0U;
 }
 
 void EditorApp::requestMaterialSlotPicker(std::size_t slot) {

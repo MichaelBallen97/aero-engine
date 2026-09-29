@@ -13,16 +13,24 @@
 #include <aero/editor/selection.hpp>
 #include <aero/editor/transform_command.hpp>
 #include <aero/scene/internal/world_access.hpp>
+#include <aero/scene/light.hpp>          // task E.5.2 (X25-X31)
+#include <aero/scene/mesh_renderer.hpp>  // task E.5.2
 #include <aero/scene/scene.hpp>
+#include <aero/scene/spot_light.hpp>  // task E.5.2
 
 #include <doctest/doctest.h>
 
 #include <algorithm>
+#include <array>  // task E.5.2 (X27)
 #include <cstddef>
+#include <cstring>  // task E.5.2: std::memcmp -- "bit for bit, all ten floats"
 #include <memory>
+#include <span>  // task E.5.2: std::span<const Entity>{} -- the empty pre-command selection
 #include <string>
 #include <string_view>
+#include <type_traits>  // task E.5.2: std::decay_t / std::is_same_v in X27's visit
 #include <utility>
+#include <variant>  // task E.5.2: SeedComponent
 #include <vector>
 
 using engine::Camera;
@@ -38,12 +46,14 @@ using engine::editor::CommandStack;
 using engine::editor::CreateEntityCommand;
 using engine::editor::DeleteEntitiesCommand;
 using engine::editor::DuplicateEntitiesCommand;
+using engine::editor::EntitySeed;  // task E.5.2
 using engine::editor::LogEntry;
 using engine::editor::LogSinkScope;
 using engine::editor::RemoveComponentCommand;
 using engine::editor::RenameEntityCommand;
 using engine::editor::ReparentCommand;
 using engine::editor::RootOrder;
+using engine::editor::SeedComponent;  // task E.5.2
 using engine::editor::Selection;
 using engine::editor::TransformCommand;
 using engine::scene::internal::registerComponent;
@@ -64,6 +74,40 @@ struct LogFixture {
     LogFixture(LogFixture&&) = delete;
     LogFixture& operator=(LogFixture&&) = delete;
 };
+
+// task E.5.2: "bit for bit, all ten floats" -- memcmp, because Transform's own == is float ==, which calls
+// +0 and -0 equal. Transform is 10 contiguous floats (no padding), which the static_assert pins here.
+static_assert(sizeof(Transform) == 10U * sizeof(float));
+[[nodiscard]] bool bitsEqual(const Transform& a, const Transform& b) {
+    // Through const std::byte*, render_material_test.cpp's precedent: the comparison IS of object
+    // representations, and bugprone-suspicious-memory-comparison rejects a memcmp over a float-carrying type.
+    const auto* lhs = reinterpret_cast<const std::byte*>(&a);
+    const auto* rhs = reinterpret_cast<const std::byte*>(&b);
+    return std::memcmp(lhs, rhs, sizeof(Transform)) == 0;
+}
+
+// task E.5.2: a seeded Transform with EVERY component non-default, so a kept default is visible.
+[[nodiscard]] Transform seededTransform() {
+    Transform t;
+    t.position = Vec3{4.0F, 0.5F, -6.0F};
+    t.rotation = engine::fromAxisAngle(Vec3{0.0F, 1.0F, 0.0F}, 0.7F);
+    t.scale = Vec3{2.0F, 3.0F, 4.0F};
+    return t;
+}
+
+// task E.5.2: one EntitySeed, member by member -- so no case's seed is a long designated-initializer list.
+[[nodiscard]] EntitySeed makeSeed(std::string name, std::string label, const Transform& transform,
+                                  SeedComponent component) {
+    EntitySeed seed;
+    seed.name = std::move(name);
+    seed.label = std::move(label);
+    seed.transform = transform;
+    seed.component = component;
+    return seed;
+}
+
+// task E.5.2: the empty pre-command selection every seeded create below starts from.
+constexpr std::span<const Entity> NO_SELECTION{};
 
 // X16(b)'s probe: a genuinely empty (tag) type the private ComponentSnapshot store cannot mirror
 // (F10/H3 -- see scene_snapshot_test.cpp's N6/N11 comments for the full reasoning).
@@ -999,4 +1043,221 @@ TEST_CASE("structural_commands: a delete with NO RootOrder ever reconciled is a 
     REQUIRE(stack.undo(ctx));
     CHECK(world.alive(e));
     CHECK(roots.entities().empty());  // still never reconciled -- nothing crashed, nothing inserted
+}
+
+// ---- task E.5.2: the SEEDED create (X25-X31) -- every case reads the WORLD, never the seed it pushed ------
+
+TEST_CASE("structural_commands: a seeded create builds the whole entity in ONE push (task E.5.2, X25)") {
+    World world;
+    Selection selection;
+    RootOrder roots;
+    CommandContext ctx{world, selection, roots};
+    CommandStack stack;
+    const Transform seeded = seededTransform();
+    const engine::MeshRenderer renderer{.primitive = 1, .color = Vec3{0.2F, 0.4F, 0.6F}};
+    const EntitySeed seed = makeSeed("Cube", "Create Cube", seeded, renderer);
+    const std::size_t countBefore = stack.count();
+
+    REQUIRE(stack.push(ctx, std::make_unique<CreateEntityCommand>(Entity{}, seed, NO_SELECTION)));
+    const Entity e = selection.primary();
+    REQUIRE(world.alive(e));
+    CHECK(world.name(e) == "Cube");
+    REQUIRE(world.get<Transform>(e) != nullptr);
+    CHECK(bitsEqual(*world.get<Transform>(e), seeded));
+    REQUIRE(world.get<engine::MeshRenderer>(e) != nullptr);
+    CHECK(*world.get<engine::MeshRenderer>(e) == std::get<engine::MeshRenderer>(seed.component));
+    CHECK(selection.entities().size() == 1U);
+    CHECK(stack.undoLabel() == "Create Cube");
+    CHECK(stack.count() == countBefore + 1U);
+}
+
+TEST_CASE(
+    "structural_commands: a seeded entity keeps its identity through five undo/redo cycles "
+    "(task E.5.2, X26)") {
+    World world;
+    Selection selection;
+    RootOrder roots;
+    CommandContext ctx{world, selection, roots};
+    CommandStack stack;
+    const Entity a = world.create();
+    const Entity b = world.create();
+    const std::array<Entity, 2> before{a, b};
+    selection.setAll(before);  // the PRE-command selection
+
+    const Transform seeded = seededTransform();
+    const engine::PointLight light{.intensity = 3.5F};
+    const EntitySeed seed = makeSeed("Point Light", "Create Point Light", seeded, light);
+    REQUIRE(stack.push(ctx, std::make_unique<CreateEntityCommand>(Entity{}, seed, selection.entities())));
+    const Entity e = selection.primary();
+    REQUIRE(world.alive(e));
+
+    for (int cycle = 0; cycle < 5; ++cycle) {
+        CAPTURE(cycle);
+        REQUIRE(stack.undo(ctx));
+        CHECK_FALSE(world.alive(e));
+        REQUIRE(selection.entities().size() == 2U);
+        CHECK(selection.entities()[0] == a);
+        CHECK(selection.entities()[1] == b);
+
+        REQUIRE(stack.redo(ctx));
+        REQUIRE(world.alive(e));  // the SAME handle: index AND generation
+        CHECK(selection.primary().index == e.index);
+        CHECK(selection.primary().generation == e.generation);
+        REQUIRE(world.get<Transform>(e) != nullptr);
+        CHECK(bitsEqual(*world.get<Transform>(e), seeded));
+        REQUIRE(world.get<engine::PointLight>(e) != nullptr);
+        CHECK(*world.get<engine::PointLight>(e) == light);
+        CHECK(selection.primary() == e);
+    }
+}
+
+TEST_CASE("structural_commands: every SeedComponent alternative applies and round-trips (task E.5.2, X27)") {
+    // Each NON-DEFAULT, so a component added with T{} instead of the seed's value is visible. Typed add<T>
+    // needs no generated meta, so this case is the reflect-tools-OFF proof (seed S20).
+    const std::array<SeedComponent, 6> alternatives{
+        SeedComponent{std::monostate{}},
+        SeedComponent{engine::MeshRenderer{.primitive = 2}},
+        SeedComponent{engine::DirectionalLight{.intensity = 2.0F, .castsShadows = false}},
+        SeedComponent{engine::PointLight{.range = 4.0F}},
+        SeedComponent{engine::SpotLight{.outerConeRadians = 0.9F}},
+        SeedComponent{engine::Camera{.fovYRadians = 1.2F}},
+    };
+    for (const SeedComponent& component : alternatives) {
+        CAPTURE(component.index());
+        World world;
+        Selection selection;
+        RootOrder roots;
+        CommandContext ctx{world, selection, roots};
+        CommandStack stack;
+        const EntitySeed seed = makeSeed("Seeded", "Create Seeded", seededTransform(), component);
+        REQUIRE(stack.push(ctx, std::make_unique<CreateEntityCommand>(Entity{}, seed, NO_SELECTION)));
+        const Entity e = selection.primary();
+        REQUIRE(world.alive(e));
+        REQUIRE(stack.undo(ctx));
+        REQUIRE(stack.redo(ctx));
+        REQUIRE(world.alive(e));
+
+        const bool matches = std::visit(
+            [&world, e](const auto& value) -> bool {
+                using T = std::decay_t<decltype(value)>;
+                if constexpr (std::is_same_v<T, std::monostate>) {
+                    // NOTHING but the Transform: walk every registered type.
+                    std::size_t present = 0;
+                    for (std::size_t i = 0; i < world.componentTypeCount(); ++i) {
+                        if (world.hasRaw(world.componentTypeAt(i), e)) {
+                            ++present;
+                        }
+                    }
+                    CHECK(present == 1U);
+                    return world.has<Transform>(e);
+                } else {
+                    const T* const live = world.get<T>(e);
+                    REQUIRE(live != nullptr);
+                    return *live == value;
+                }
+            },
+            component);
+        CHECK(matches);
+    }
+}
+
+TEST_CASE("structural_commands: a seeded create under a DEAD parent changes nothing (task E.5.2, X28)") {
+    World world;
+    Selection selection;
+    RootOrder roots;
+    CommandContext ctx{world, selection, roots};
+    CommandStack stack;
+    const Entity dead = world.create();
+    REQUIRE(world.destroy(dead));
+    const Entity someLive = world.create();
+    selection.set(someLive);
+    const std::size_t entitiesBefore = world.entityCount();
+    const std::size_t countBefore = stack.count();
+
+    const engine::MeshRenderer sphere{.primitive = 1};
+    const EntitySeed seed = makeSeed("Cube", "Create Cube", seededTransform(), sphere);
+    CHECK_FALSE(stack.push(ctx, std::make_unique<CreateEntityCommand>(dead, seed, selection.entities())));
+    CHECK(world.entityCount() == entitiesBefore);
+    CHECK(selection.primary() == someLive);
+    CHECK(stack.count() == countBefore);
+}
+
+TEST_CASE(
+    "structural_commands: the label rules -- empty seed label, the unseeded form, stability "
+    "(task E.5.2, X29)") {
+    World world;
+    Selection selection;
+    RootOrder roots;
+    CommandContext ctx{world, selection, roots};
+
+    {
+        CommandStack stack;
+        const EntitySeed unlabelled = makeSeed("Thing", "", Transform{}, std::monostate{});
+        REQUIRE(stack.push(ctx, std::make_unique<CreateEntityCommand>(Entity{}, unlabelled, NO_SELECTION)));
+        CHECK(stack.undoLabel() == "Create Entity");
+    }
+    {
+        CommandStack stack;
+        REQUIRE(stack.push(ctx, std::make_unique<CreateEntityCommand>(Entity{}, "Thing", NO_SELECTION)));
+        CHECK(stack.undoLabel() == "Create Entity");  // the UNSEEDED form keeps its label
+    }
+    {
+        CommandStack stack;
+        const EntitySeed spot = makeSeed("Spot Light", "Create Spot Light", Transform{}, engine::SpotLight{});
+        auto owned = std::make_unique<CreateEntityCommand>(Entity{}, spot, NO_SELECTION);
+        CreateEntityCommand* const command = owned.get();  // taken BEFORE push (X18's idiom)
+        CHECK(command->label() == "Create Spot Light");
+        REQUIRE(stack.push(ctx, std::move(owned)));
+        CHECK(command->label() == "Create Spot Light");
+        REQUIRE(stack.undo(ctx));
+        CHECK(command->label() == "Create Spot Light");
+        REQUIRE(stack.redo(ctx));
+        CHECK(command->label() == "Create Spot Light");
+        CHECK(stack.undoLabel() == "Create Spot Light");
+    }
+}
+
+TEST_CASE("structural_commands: nothing merges into a seeded create (task E.5.2, X30)") {
+    World world;
+    Selection selection;
+    RootOrder roots;
+    CommandContext ctx{world, selection, roots};
+    CommandStack stack;
+    const Transform seeded = seededTransform();
+    const EntitySeed seed = makeSeed("Cube", "Create Cube", seeded, engine::MeshRenderer{});
+    const std::size_t countBefore = stack.count();
+    REQUIRE(stack.push(ctx, std::make_unique<CreateEntityCommand>(Entity{}, seed, NO_SELECTION)));
+    const Entity e = selection.primary();
+    REQUIRE(world.get<Transform>(e) != nullptr);
+
+    // NO breakMergeChain between the two pushes: the create must refuse the merge on its own.
+    Transform moved = *world.get<Transform>(e);
+    moved.position = Vec3{9.0F, 0.5F, 9.0F};
+    REQUIRE(stack.push(ctx, std::make_unique<TransformCommand>(e, *world.get<Transform>(e), moved)));
+    CHECK(stack.count() == countBefore + 2U);
+
+    REQUIRE(stack.undo(ctx));
+    REQUIRE(world.alive(e));
+    REQUIRE(world.get<Transform>(e) != nullptr);
+    CHECK(bitsEqual(*world.get<Transform>(e), seeded));
+}
+
+TEST_CASE(
+    "structural_commands: the seed's Transform REPLACES the default, never beside it "
+    "(task E.5.2, X31)") {
+    World world;
+    Selection selection;
+    RootOrder roots;
+    CommandContext ctx{world, selection, roots};
+    CommandStack stack;
+    const std::size_t transformsBefore = world.componentCount<Transform>();
+    Transform wide;
+    wide.scale = Vec3{10.0F, 1.0F, 10.0F};
+    const EntitySeed seed = makeSeed("Plane", "Create Plane", wide, engine::MeshRenderer{.primitive = 2});
+    REQUIRE(stack.push(ctx, std::make_unique<CreateEntityCommand>(Entity{}, seed, NO_SELECTION)));
+    const Entity e = selection.primary();
+    REQUIRE(world.get<Transform>(e) != nullptr);
+    CHECK(world.get<Transform>(e)->scale == Vec3{10.0F, 1.0F, 10.0F});
+    // Overwritten IN PLACE: exactly one more Transform in the World, never a second one beside the default.
+    CHECK(world.componentCount<Transform>() == transformsBefore + 1U);
 }

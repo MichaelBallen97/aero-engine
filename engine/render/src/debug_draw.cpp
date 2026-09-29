@@ -362,6 +362,15 @@ bool DebugDrawBatch::empty() const noexcept { return lineCount() == 0U && billbo
 
 DebugDraw::DebugDraw(rhi::Device* owner, DebugDrawBudget allocated) : device(owner), batchValue(allocated) {}
 
+float sanitizeDebugLineDepthNudge(float ndc) noexcept {
+    // The finiteness arm FIRST: std::clamp(NaN, lo, hi) returns NaN on libc++ (3.7.2's finding) and so does
+    // std::min(NaN, x). `!(ndc > 0.0F)` catches +0, -0 (returned as +0) and every negative.
+    if (!std::isfinite(ndc) || !(ndc > 0.0F)) {
+        return 0.0F;
+    }
+    return std::min(ndc, DEBUG_LINE_DEPTH_NUDGE_MAX);
+}
+
 std::optional<DebugDraw> DebugDraw::create(rhi::Device& device, const VirtualFileSystem& shaderVfs,
                                            const DebugDrawConfig& config) {
     AERO_PROFILE_ZONE_NAMED("render::DebugDraw::create");
@@ -540,6 +549,7 @@ DebugDraw::DebugDraw(DebugDraw&& other) noexcept
       defaultSampler(other.defaultSampler),
       billboardTexture(other.billboardTexture),
       billboardSampler(other.billboardSampler),
+      lineDepthNudge(other.lineDepthNudge),
       lineStaging(std::move(other.lineStaging)),
       billboardStaging(std::move(other.billboardStaging)),
       lastLines(other.lastLines),
@@ -571,6 +581,7 @@ DebugDraw& DebugDraw::operator=(DebugDraw&& other) noexcept {
     defaultSampler = other.defaultSampler;
     billboardTexture = other.billboardTexture;
     billboardSampler = other.billboardSampler;
+    lineDepthNudge = other.lineDepthNudge;
     lineStaging = std::move(other.lineStaging);
     billboardStaging = std::move(other.billboardStaging);
     lastLines = other.lastLines;
@@ -631,6 +642,7 @@ void DebugDraw::reset() noexcept {
     defaultSampler = {};
     billboardTexture = {};
     billboardSampler = {};
+    lineDepthNudge = 0.0F;
     lineStaging.clear();
     billboardStaging.clear();
     batchValue.clear();
@@ -766,19 +778,27 @@ void DebugDraw::flush(Frame& frame, const CameraView& camera) {
     const rhi::CommandBufferHandle frameCmd = frame.commandBuffer();
     const Mat4 viewProj = camera.proj * camera.view;  // M * v, right-to-left (forward_renderer.cpp's own)
     if (!lineStaging.empty()) {
-        const auto block = packDebugLineView(viewProj);
-        device->pushVertexUniforms(frameCmd, 0, block);
-        device->bindVertexBuffer(pass, 0, lineBuffer);
+        device->bindVertexBuffer(pass, 0, lineBuffer);  // still ONE bind for both buckets
         // TESTED BEFORE OVERLAY, per primitive: overlay content is meant to be seen over everything,
         // including tested lines, and drawing it LAST is what makes that true where the two overlap.
         // firstVertex is legal here because NEITHER shader reads SV_VertexID -- the fullscreen
         // triangle does, and its draw starts at 0.
+        //
+        // task E.5.2: the line block is pushed PER DRAW -- the nudge before the Tested draw, ZERO before the
+        // Overlay draw. A push is captured per draw and may repeat inside an open pass (the billboard block
+        // below already re-pushes this slot). ONE shared push would let the nudge reach Overlay lines, which
+        // test no depth but ARE clipped at NDC depth 0 -- a nudged vertex in [0, nudge) would be cut away.
+        // Only DG24(b) can see the difference (seed S47).
         if (testedLines != 0U) {
+            const auto tested = packDebugLineView(viewProj, lineDepthNudge);
+            device->pushVertexUniforms(frameCmd, 0, tested);
             device->bindGraphicsPipeline(pass, linePipelines[0]);
             device->draw(pass, testedLines * 2U, 1, 0);
             ++lastDrawCalls;
         }
         if (overlayLines != 0U) {
+            const auto overlay = packDebugLineView(viewProj, 0.0F);
+            device->pushVertexUniforms(frameCmd, 0, overlay);
             device->bindGraphicsPipeline(pass, linePipelines[1]);
             device->draw(pass, overlayLines * 2U, 1, testedLines * 2U);
             ++lastDrawCalls;
@@ -826,5 +846,7 @@ std::size_t DebugDraw::uploadCount() const noexcept { return uploads; }
 bool DebugDraw::hasWarnedBudget() const noexcept { return warnedBudget; }
 bool DebugDraw::hasWarnedUploadFailure() const noexcept { return warnedUploadFailure; }
 bool DebugDraw::hasBillboardTexture() const noexcept { return billboardTexture.valid(); }
+void DebugDraw::setTestedLineDepthNudge(float ndc) noexcept { lineDepthNudge = sanitizeDebugLineDepthNudge(ndc); }
+float DebugDraw::testedLineDepthNudge() const noexcept { return lineDepthNudge; }
 
 }  // namespace engine::render

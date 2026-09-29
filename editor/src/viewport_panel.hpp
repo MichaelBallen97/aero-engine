@@ -61,6 +61,11 @@ public:
     [[nodiscard]] EditorCamera& camera() noexcept;
     [[nodiscard]] const EditorCamera& camera() const noexcept;
 
+    // task E.5.2: frame a just-created entity. Called by EditorApp's create drain in the RECONCILE block --
+    // before this tick's draw walk, never from renderScene -- so the tick's onDraw and renderScene see ONE
+    // camera, which is the property INV-3 protects. Cancels a running view snap exactly as F does.
+    void frameCreatedEntity(const World& world, Entity entity);
+
     // ---- task 3.1.5 ---------------------------------------------------------------------------
     // The aspect the LAST drawn frame used, so tick() can build the same drop ray this panel would.
     [[nodiscard]] float aspect() const noexcept { return lastAspect; }
@@ -378,7 +383,8 @@ private:
     const char* unavailableReason = nullptr;  // string literal; shown in-panel when Unavailable
     bool renderRequested = false;             // set by onDraw, consumed by renderScene
 
-    EditorCamera editorCamera;     // WRITTEN only in onDraw; READ in both phases (INV-3)
+    EditorCamera editorCamera;     // WRITTEN in onDraw, and by frameCreatedEntity from EditorApp's reconcile
+                                   // block BEFORE the draw walk; NEVER in renderScene; READ in both (INV-3)
     CameraGestureState gesture{};  // LATCHED across frames -- D5 rule 1 needs the previous value
     float lastAspect = 1.0F;       // set in onDraw (PIXELS, D15); read by F's focusOn, same frame
 

@@ -171,6 +171,16 @@ names — walk the registration table. `editor::component_ops` is the seam
 clamp in C++ before writing the exact concrete type, never letting EnTT convert (it silently
 wraps `300` into a `uint8_t` as `44`).
 
+**A labelled integer is a named selector, chosen by metadata alone (task E.5.2).** `namedSelectorRow`
+(`inspector_model.hpp`) re-checks at runtime every condition reflect-gen enforces for `AERO_LABELS` —
+Int/UInt, 1..64 valid distinct identifiers, `AERO_RANGE(0, N-1)` exactly — and answers nothing otherwise,
+so the drag stays the fallback and a hand-built or skewed `FieldUiMeta` can never draw a lying dropdown.
+The panel's Int and UInt arms ask it first; the row is never chosen by a component or field name
+(`I253(e)`). **A pick is a discrete write through `resetField`**, and the current value and an
+out-of-range index push nothing. The test seam (`requestNamedSelection`) lives exactly one tick —
+`EditorApp` expires it after `drawShellUi` — because a panel that did not draw would otherwise apply a
+stale request the first time it is shown.
+
 **No panel writes the scene directly (true since task 2.4.2).** The only call sites of
 `entity_ops` / `component_ops` / `transform_ops` mutators under `editor/src/` are their own
 TUs and their command TUs (`entity_commands.cpp`, `component_commands.cpp`,
@@ -1995,3 +2005,20 @@ same `CollapsingHeader` is a different entry inside the child than it is in the 
 mode boundary restores every collapsed section to `DefaultOpen`. One function called from two places
 keeps the two modes drawing the same **code**; that is not the same as the same **state**. **Anything
 ImGui keys by window must be a panel member if it is to survive the flip.**
+
+## The Create menu (task E.5.2)
+
+**One pipeline: the hosts RECORD a `CreateKind`, and only `EditorApp::applyCreate` places, pushes, frames
+and reveals.** The menu bar (`ShellUiState::createRequest`, copied after `drawShellUi`) and both Hierarchy
+context menus (`pendingCreate`) write a one-shot; the reconcile block drains both, after the drop drain and
+**before** the context router, so the Inspector rises in the tick a create lands. A new entry is **one row
+in `createMenuEntries()` plus one arm in `createSeed()`** — `create_menu_ui.cpp` walks the table and names
+no kind. A create is the **seeded `CreateEntityCommand`**, one undo step with typed writes inside its first
+`redo()`; never a panel write, never `AddComponentCommand` + `SetFieldCommand` (which need meta and would
+split the undo). Every typed create is at the **root**; Create Child is the one parenting create.
+
+**Framing: a box is fitted exactly as `F` fits it; a point is recentred, never zoomed**
+(`EditorCamera::frameCreated`). `F` itself is unchanged. `ViewportPanel::frameCreatedEntity` is the editor
+camera's **second writer** and runs from the reconcile block, **before the draw walk** — never from
+`renderScene` (INV-3). Undo does not move the camera back and redo does not re-frame: the camera is tool
+state.

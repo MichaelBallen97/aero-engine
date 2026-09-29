@@ -25,9 +25,11 @@
 #include <aero/scene/entity.hpp>
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <string_view>
 
 namespace engine::editor {
 
@@ -57,6 +59,24 @@ public:
     void setAssetPicker(AssetPickerState* s) noexcept { assetPicker = s; }
     void setThumbnails(ThumbnailService* s) noexcept { thumbnails = s; }
 
+    // ---- task E.5.2: the named selector's seam and its one observable ----------------------------
+    // The SEAM: writes a one-shot the panel hands to its NEXT onDraw (moved into frameNamedSelection as
+    // that call's FIRST statement, before any early return) and applies at the matching row by assigning
+    // the SAME local a Selectable click assigns. `component` is the FULL registration name
+    // ("engine::MeshRenderer"), the inspectorAssetFieldKey inputs, compared exactly. The request lives
+    // ONE TICK: EditorApp calls expireNamedSelection() after drawShellUi, so a tick that did not draw the
+    // row -- the panel hidden, another tab in front, another entity selected -- drops it, and it can never
+    // land on a later frame or on another entity (E.3.3's rule for live one-shots).
+    void requestNamedSelection(std::string component, std::string field, std::size_t index);
+    void expireNamedSelection() noexcept {
+        pendingNamedSelection.reset();
+        frameNamedSelection.reset();
+    }
+    // Cumulative count of named-selector rows the panel SUBMITTED (one per BeginCombo call). A seam's own
+    // accessor is a round trip; this is a consequence the widget produced (E.3.4's materialSamplerRowsDrawn
+    // lesson), and it is what tells a selector from a drag.
+    [[nodiscard]] std::size_t namedSelectorsDrawn() const noexcept { return namedSelectorsDrawnValue; }
+
 private:
     enum class ActionKind : std::uint8_t { None = 0, AddComponent, RemoveComponent };
     struct PendingAction {
@@ -82,6 +102,15 @@ private:
     struct StringEditCache : EditKey {
         std::string buffer;
     };
+    // task E.5.2: one requested pick. Plain values, compared exactly.
+    struct NamedSelection {
+        std::string componentName;
+        std::string fieldName;
+        std::size_t index = 0;
+        [[nodiscard]] bool matches(std::string_view component, std::string_view field) const noexcept {
+            return componentName == component && fieldName == field;
+        }
+    };
 
     void drawComponent(PanelContext& context, Entity primary, const ComponentEntry& entry, float labelWidth);
     void drawField(PanelContext& context, Entity primary, const ComponentEntry& entry, const FieldEntry& field);
@@ -99,6 +128,9 @@ private:
     // NOT go through `pending`, which is for Add/Remove only (see the four-phase note above).
     void resetField(PanelContext& context, Entity primary, const ComponentEntry& entry, const FieldEntry& field,
                     FieldValue after);
+    // task E.5.2: the Int/UInt arms' other shape. A pick is a DISCRETE write through resetField.
+    void drawNamedSelector(PanelContext& context, Entity primary, const ComponentEntry& entry, const FieldEntry& field,
+                           const NamedSelectorRow& selector);
     void applyPending(PanelContext& context, Entity primary);
 
     InspectorModel model;  // D15 scratch, rebuilt every frame
@@ -112,6 +144,10 @@ private:
     AssetPickerState* assetPicker = nullptr;
     ThumbnailService* thumbnails = nullptr;
     std::string fieldKeyScratch;  // labelScratch's idiom -- no per-frame allocation once warm
+
+    std::optional<NamedSelection> pendingNamedSelection;  // task E.5.2 -- the seam writes this
+    std::optional<NamedSelection> frameNamedSelection;    // task E.5.2 -- THIS onDraw's copy
+    std::size_t namedSelectorsDrawnValue = 0;             // task E.5.2 -- member/accessor collision rule
 };
 
 }  // namespace engine::editor

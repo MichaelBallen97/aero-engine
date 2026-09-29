@@ -168,6 +168,8 @@ add_library(aero_editor_core STATIC
     src/material_card.cpp        # task E.4.5 -- the material card's model: name, swatch, rig; PURE, no GPU
     src/material_thumbnail.cpp   # task E.4.5 -- the RENDERED material thumbnail; GPU, service pass only
     src/material_card_cache.cpp  # task E.4.5 -- material names + swatches; device-free, capped reads
+    src/create_menu.cpp          # task E.5.2 -- the Create menu's table, anchor and seeds; PURE, no ImGui
+    src/create_menu_ui.cpp       # task E.5.2 -- the Create menu's ONE ImGui TU; walks the table, no kind literal
 )
 add_library(aero::editor_core ALIAS aero_editor_core)
 target_include_directories(aero_editor_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)

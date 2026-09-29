@@ -252,4 +252,48 @@ std::uint32_t emitDebugGrid(DebugDrawBatch& batch, const DebugGridParams& params
     return accepted;
 }
 
+float debugGridDepthNudge(const Mat4& viewProj, float planeHeight, std::uint32_t widthPx,
+                          std::uint32_t heightPx) noexcept {
+    if (widthPx == 0U || heightPx == 0U || !std::isfinite(planeHeight)) {
+        return 0.0F;
+    }
+    const auto allFinite = [](const Mat4& m) {
+        for (const Vec4& column : m.columns) {
+            if (!std::isfinite(column.x) || !std::isfinite(column.y) || !std::isfinite(column.z) ||
+                !std::isfinite(column.w)) {
+                return false;
+            }
+        }
+        return true;
+    };
+    if (!allFinite(viewProj)) {
+        return 0.0F;
+    }
+    // A SINGULAR camera yields inf/NaN from engine::inverse (all SIXTEEN elements are checked -- the
+    // packSkyCamera / culling.cpp Frustum::valid idiom, because a subset can pass an infinite last column).
+    const Mat4 inv = inverse(viewProj);
+    if (!allFinite(inv)) {
+        return 0.0F;
+    }
+    // q_j = row 1 of M^-1 minus planeHeight times row 3. Mat4 is COLUMN-major (mat4.hpp D8): element
+    // (row r, column c) is columns[c][r], so row 1 is the .y of every column and row 3 the .w. Reading
+    // columns[1] / columns[3] instead would be the TRANSPOSED plane (seed S44; GR29's oracles catch it).
+    const float qx = inv.columns[0].y - (planeHeight * inv.columns[0].w);
+    const float qy = inv.columns[1].y - (planeHeight * inv.columns[1].w);
+    const float qz = inv.columns[2].y - (planeHeight * inv.columns[2].w);
+    if (qz == 0.0F) {
+        return DEBUG_LINE_DEPTH_NUDGE_MAX;  // the plane is seen EDGE-ON: its depth is not a function of x, y
+    }
+    // d(depth)/d(pixel) along x and y: -q/q_z per NDC unit, and one pixel is 2/W (2/H) of NDC. The sign is
+    // irrelevant under the square.
+    const float gx = (2.0F * qx) / (qz * static_cast<float>(widthPx));
+    const float gy = (2.0F * qy) / (qz * static_cast<float>(heightPx));
+    const float slopePerPixel = std::sqrt((gx * gx) + (gy * gy));
+    if (!std::isfinite(slopePerPixel)) {
+        return DEBUG_LINE_DEPTH_NUDGE_MAX;
+    }
+    const float nudge = (DEBUG_GRID_DEPTH_NUDGE_PIXELS * slopePerPixel) + DEBUG_GRID_DEPTH_NUDGE_FLOOR;
+    return nudge < DEBUG_LINE_DEPTH_NUDGE_MAX ? nudge : DEBUG_LINE_DEPTH_NUDGE_MAX;
+}
+
 }  // namespace engine::render

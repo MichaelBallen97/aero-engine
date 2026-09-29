@@ -5,10 +5,12 @@
 #include <aero/editor/context_router.hpp>  // task E.3.2: RouteSource / RouteOutcome, BY VALUE below.
                                            // PURE and ImGui-free, so this header's own ImGui-free
                                            // contract (which editor_app.cpp depends on) is intact.
+#include <aero/editor/create_menu.hpp>     // task E.5.2: CreateKind, BY VALUE below -- PUBLIC and PURE
 #include <aero/editor/panel_registry.hpp>
 #include <aero/editor/scene_session.hpp>  // task 2.5.1: FileMenuContext names FileFlow/FileDialogHost
 
-#include <string>  // code-review BLOCKING-1: ShellUiState::focusPanelId
+#include <optional>  // task E.5.2: ShellUiState::createRequest
+#include <string>    // code-review BLOCKING-1: ShellUiState::focusPanelId
 
 namespace engine::editor {
 
@@ -59,6 +61,12 @@ struct ShellUiState {
     // the latch; Hold keeps it for the next tick. Defaults to Drop so a caller that never reaches the
     // slot (there is none today) fails safe rather than latching forever.
     RouteOutcome routeOutcome = RouteOutcome::Drop;
+    // ---- task E.5.2 ------------------------------------------------------------------------------
+    // OUT, one-shot: the kind the menu bar's Create menu chose THIS frame. EditorApp copies it into its own
+    // pendingMenuCreate after drawShellUi, and the NEXT tick's reconcile block applies it -- the menu bar has
+    // no camera and no Hierarchy, so it only records (D1). Cleared by being rebuilt each tick, never re-armed
+    // (the routeToggleRequested shape).
+    std::optional<CreateKind> createRequest;
 };
 
 // task 2.5.1 (plan A14): everything the File menu needs that PanelContext deliberately does NOT
