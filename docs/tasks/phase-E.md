@@ -732,6 +732,11 @@ with no `…` — fixed by PR #113 (`fd4eb40`), which also made an unhandled enu
 
 **Goal:** making a cube should be a menu item, and the material you assign should show up. Neither is true: there is no create-primitive command anywhere, and a material assigned to a primitive is written to the component and then ignored by the renderer.
 **Definition of Done:** every built-in entity type is creatable from a menu; a material dropped on a primitive renders with that material.
+**CLOSED IN CODE with E.5.2** (PR #115, `ab3fd72`) — two of two merged, and both clauses of the Definition of
+Done hold: every built-in entity type is creatable from a menu, read as E.5.2's D8 records below, and a material
+dropped on a primitive renders with that material (E.5.1, macOS-validated 13 / 13). E.5.2's page is UNRUN on
+every platform. E.5.1 took `I245`, E.5.2 took `I246`–`I255` and the tier-0 prefixes `CR` and `EC`, so **the next
+free ImGui-tier id is `I256`**.
 
 ### E.5.1 Primitive material binding fix · P0 · S · depends: 3.1.5, 3.4.1 · **MERGED** — PR #114, `834bcb3`
 **Goal:** fix a confirmed defect. `buildRenderView`'s primitive arm never assigns
@@ -759,7 +764,7 @@ NIL material is field-for-field the pre-fix instance (`BR26`, `PX5`(b)). 17 sabo
 which had been gated on this fix. With it, **the E.5 Definition of Done's second clause holds**: a material
 dropped on a primitive renders with that material.
 
-### E.5.2 Create menu + named primitive selector · P0 · M · depends: 2.2.1, 2.4.2, E.2.2
+### E.5.2 Create menu + named primitive selector · P0 · M · depends: 2.2.1, 2.4.2, E.2.2 · **MERGED** — PR #115, `ab3fd72`
 **Goal:** creating content should not require knowing that `1` means Sphere. Today a primitive is made
 by Create Empty → Add Component → dragging a clamped `0..2` number with no names on it, and there is
 no way at all to create a light or a camera except the same route.
@@ -772,6 +777,25 @@ Subtasks:
 - Every entry routed through the existing structural commands — no new direct World write
 - A named selector for `primitive`, driven by a reflection-visible label annotation inside the generic integer arm, never by a component-name special case
 - Newly created entities are selected and framed, so creation is visible
+
+_Outcome:_ **sized M in the roadmap, recorded L before implementation (D0) and landed L. Merged as PR #115
+(`ab3fd72`, a true merge commit), eighteen commits — the plan's ten, one from the sabotage matrix, six from the
+code-review round and one from CI. The first CI run (`36629991509`) failed on Linux's clang-tidy step alone — a
+nested struct's default member initializer under libstdc++ — fixed by `4831f92`; the second (`36635673835`) was
+6 / 6 green. 52 sabotage runs closed one hole; the eighteen-row validation page is UNRUN on every platform.**
+All four subtasks are discharged: the Create menu is in the menu bar and both Hierarchy menus, each kind with a
+per-type transform at the view's ground point; every entry is the existing `CreateEntityCommand` with a seed —
+one undo step, no new direct World write (`I253`); `primitive` is a named dropdown driven by `AERO_LABELS`, the
+fifth field annotation, inside the generic integer arms with no component-name special case (`I253(e)`), and
+`Environment`'s two modes take it too, which closes E.2.1's enum-aware row; and a created entity is selected,
+framed as `F` frames it (a point recentred, never zoomed), raised in the Inspector and revealed in the
+Hierarchy. E.1.2's coplanar handoff is discharged with it: the grid's lines win against a surface on the ground
+plane (Metal: 26.9 % of line texels lost at 10° without the nudge, none with it). **D8's reading of "every
+built-in entity type"**: the menu makes the deliverable's seven kinds plus Empty. `Environment` is one per scene
+and seeded by every new scene (Add Component still reaches it); `AudioSource` and `AudioListener` have no
+viewport presence, so their creation could not be visible; and `AnimationPlayer` is a behaviour on an imported,
+skinned model — none is an entity anyone creates from nothing. With it, **the E.5 Definition of Done's first
+clause holds.**
 
 ---
 

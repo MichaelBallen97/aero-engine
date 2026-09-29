@@ -10,11 +10,10 @@ Two platform matrices, never to be conflated: the **editor** runs on macOS/Windo
 
 ## Current state — read this first
 
-**Phase E (Editor Experience) is the open front**, executing between Phase 3 and Phase 4. **Nineteen of its
-24 tasks are merged: Epics E.1, E.2, E.3 and E.4 are all CLOSED IN CODE, and E.5.1 — which opens Epic E.5 —
-is merged and macOS-validated 13 / 13. E.5.2 and E.6.1–E.6.4 are what is left — five tasks, planning
-only.** Phase 3 remains OPEN behind it: all seven of its epics are closed in code, and what is left is its
-deliverable gate and the validation debt.
+**Phase E (Editor Experience) is the open front**, executing between Phase 3 and Phase 4. **Twenty of its
+24 tasks are merged: Epics E.1–E.5 are all CLOSED IN CODE, and E.5.2, which closed E.5, is UNRUN on every
+platform. E.6.1–E.6.4 are what is left — four tasks, planning only.** Phase 3 remains OPEN behind it: all
+seven of its epics are closed in code, and what is left is its deliverable gate and the validation debt.
 
 **Phase E is lettered, not fractioned.** `3.5` and `3.5.1`/`3.5.2` are already Phase 3's skeletal-animation
 epic and its tasks, and numbering is append-only, so a "Phase 3.5" would collide with referenced numbers.
@@ -25,15 +24,17 @@ In Notion its `Phase #` is `3.5` — a sort key, not an identifier.
 (E.2.2). Nothing since E.2.2 has added one, so the five-generation-site rule and the component-count sweep
 have not fired since — **they still apply in full to the next built-in, whenever one arrives.**
 
-**Next free ids, measured by a whole-`tests/` token sweep over every ref after E.5.1's merge: `I246` at the
-ImGui tier**, `AA68`, `AD77`, `AM29`, `AV66`, `BR31`, `BV10`, `CC15`, `DR28`, `IR13`, `IX19`, `MB27`,
-`PX6`, `SQ15`, `TS11`. Taken tier-0 prefixes include `MR` (E.3.4, `MR1`–`MR21`), `PJ` (E.4.1,
-`PJ1`–`PJ57`), `CN` (E.4.2, `CN1`–`CN25`), `IX` / `BV` (E.4.4, `IX1`–`IX18`, `BV1`–`BV9`) and `MB` / `CC`
-(E.4.5, `MB1`–`MB26`, `CC1`–`CC14`); `MC` is mesh cook's (`MC1`–`MC58`), which is why the card cache took
-`CC`. The other ceilings: `SS` 54, `IO` 21, `TS` 10, `IR` 12. E.4.1 took `I176`–`I185`, E.4.2
-`I186`–`I192`, E.4.3 `I210`–`I226`, E.4.4 `I227`–`I229`, E.4.4's validation fix (#111) `I230`–`I231` plus
-`AV55`–`AV59`, E.4.5 `I232`–`I243` plus `AV60`–`AV65`, `TS5`–`TS10` and `IR9`–`IR12`, E.4.5's
-validation follow-ups `I244`, and E.5.1 `I245` plus `BR23`–`BR30`, `SQ13`–`SQ14` and `PX5`.
+**Next free ids, measured by a whole-`tests/` token sweep over every ref after E.5.2's merge: `I256` at the
+ImGui tier**, `AA68`, `AD77`, `AM29`, `AV66`, `BR31`, `BV10`, `CC15`, `CR10`, `DD31`, `DG26`, `DR28`, `EC5`,
+`GR34`, `IR23`, `IX19`, `MB27`, `PX6`, `RF8`, `SQ15`, `TS11`, `X32`. Taken tier-0 prefixes include `MR`
+(E.3.4, `MR1`–`MR21`), `PJ` (E.4.1, `PJ1`–`PJ57`), `CN` (E.4.2, `CN1`–`CN25`), `IX` / `BV` (E.4.4,
+`IX1`–`IX18`, `BV1`–`BV9`), `MB` / `CC` (E.4.5, `MB1`–`MB26`, `CC1`–`CC14`) and `CR` / `EC` (E.5.2,
+`CR1`–`CR9`, `EC1`–`EC4`); `MC` is mesh cook's (`MC1`–`MC58`), which is why the card cache took `CC`. The
+other ceilings: `SS` 54, `IO` 21, `TS` 10, `IR` 22. E.4.1 took `I176`–`I185`, E.4.2 `I186`–`I192`, E.4.3
+`I210`–`I226`, E.4.4 `I227`–`I229`, its fix (#111) `I230`–`I231` plus `AV55`–`AV59`, E.4.5 `I232`–`I243` plus
+`AV60`–`AV65`, `TS5`–`TS10` and `IR9`–`IR12`, its follow-ups `I244`, E.5.1 `I245` plus `BR23`–`BR30`,
+`SQ13`–`SQ14` and `PX5`, and E.5.2 `I246`–`I255` plus `IR13`–`IR22`, `X25`–`X31`, `GR27`–`GR33`,
+`DD29`–`DD30`, `DG21`–`DG25` and `RF4`–`RF7`.
 **`I193`–`I209` are FREE and were never claimed by anything that merged** — a
 gap costs nothing, and renumbering a block into one invites exactly the silent collision this project has
 recorded.
@@ -64,7 +65,7 @@ it is one line plus a cost measurement), `<root>/Library/` as a save destination
 or created, anywhere. Those four are the unowned handoffs, not a gap in the predicate.
 
 > **Per-task history — what each task shipped, what it deliberately left out, every trap and every dead end —
-> lives in `docs/10-engineering-log.md`**, which carries a `### <task>` entry for every task through E.5.1,
+> lives in `docs/10-engineering-log.md`**, which carries a `### <task>` entry for every task through E.5.2,
 > each with its own `#### The sentences that govern new work` subsection. **Grep it before re-deriving
 > anything.**
 >
@@ -101,6 +102,7 @@ validation pass exists for any task in any phase.** N-E = not executable, N-R = 
 | E.4.4 Browser ignore rules | #110, fix #111 | `28e9529`, `f215cbb` | **8 / 8**, nothing open — **the first run failed row 2 on two real defects no lane could see**: the UI font drew `?` for every `…` and `—`, and the open Issues list fell below the panel, both fixed by #111. 29 sabotage seeds, no hole (#111 ran 24 more and its CI fix 5, all caught); the code-review round found one blocking defect — an orphan beside an ignored file could never be deleted |
 | E.4.5 Material names & thumbnails | #112, fix #113 | `caf8a74`, `fd4eb40` | **11 / 11** executable rows, row 11 N-E (1× displays); row 6's first run failed one check, fixed by #113 |
 | E.5.1 Primitive material binding fix | #114 | `834bcb3` | **13 / 13**, nothing failed — 17 sabotage seeds, no hole; its row 5 closes E.2.1 row 4's normal-map arm |
+| E.5.2 Create menu + named selector | #115 | `ab3fd72` | **UNRUN on every platform** |
 
 **E.3.2 landed before E.3.1** — legal, disjointly id-reserved; the reservation is discharged and the
 numbering is contiguous.
@@ -114,7 +116,7 @@ numbering is contiguous.
 | **Phase 2** — Editor | **COMPLETE, gate met 2026-08-02.** All six epics closed and macOS-validated; Windows/Linux rows pending for every task (`editor/VALIDATION.md`). Gate artifact: `samples/phase-2-editor-scene/` — data, deliberately not `add_subdirectory`'d. |
 | **Phase 3** — Asset Pipeline & 3D Content | **OPEN.** All seven epics (3.1–3.7) **CLOSED in code**. What is left is the gate below and the validation debt. |
 | **Phase 3 gate** | Drop a rigged glTF/FBX in → PBR materials + shadows + a playing animation + **an audible sound**. The audible half exists in code as of 3.7.2 and **has never been heard on any platform.** |
-| **Phase E** — Editor Experience | **OPEN.** Epics E.1, E.2, E.3 and E.4 **CLOSED in code**, and E.5.1 merged — 19 of 24, see the index above. **E.5.2 and E.6 are the open front: five tasks, planning only.** TWO validation pages are unrun (E.1.5, E.3.2) and are the whole of this OS's remaining Phase E risk. |
+| **Phase E** — Editor Experience | **OPEN.** Epics E.1–E.5 **CLOSED in code** — 20 of 24, see the index above. **E.6 is the open front: four tasks, planning only.** THREE validation pages are unrun (E.1.5, E.3.2, E.5.2) and are the whole of this OS's remaining Phase E risk. |
 | **Phase E gate** | Open a project and land in the scene you were last editing, on a lit grid floor under a sky; create a Cube from the menu, drop a material on it and see it shade; aim a spot light with a visible gizmo; rename, move and delete assets without leaving the editor. Gate artifact: `samples/phase-E-editor/`. |
 
 ### Engine layers, in dependency order
@@ -141,12 +143,12 @@ numbering is contiguous.
   `thumbnail_service`, `asset_tile`, `asset_picker_model`, `asset_picker` (E.3.3), `context_router`,
   `editor_prefs` (E.3.2), `material_preview_rig` (E.2.4), `viewport_icons`, `viewport_gizmos` (E.2.3) —
   plus `project_state` (E.4.1), `scene_containment` (E.4.2) and `material_card` (E.4.5) in Epic E.4, all
-  three PURE and all three tier-0 reachable in all three build configurations.
+  three PURE and all three tier-0 reachable in all three build configurations, and `create_menu` (E.5.2 —
+  ImGui-free: the create table, the anchor and the seeds).
   **DO NOT record a "pair count" here — it is not reproducible**: E.2.4 measured the tree six ways looking
   for the figure this line used to carry and none of the six was it. The two figures anyone can re-run are
-  `git ls-files`: **`editor/src/*.cpp` = 93** and **`editor/include/aero/editor/*.hpp` = 65** at E.4.5
-  (`caf8a74`), which added the public `material_card` pair and the src-private `material_card_cache` and
-  `material_thumbnail` pairs.
+  `git ls-files`: **`editor/src/*.cpp` = 95** and **`editor/include/aero/editor/*.hpp` = 66** at E.5.2
+  (`ab3fd72`), which added the public `create_menu` pair and the src-private `create_menu_ui` pair.
   `/tools` links `aero::assets` and `aero::editor_core` through `aero_cooker`, which is legal because
   `tools/` is enumerated by neither half of the golden rule.
 
@@ -279,6 +281,11 @@ lane builds with `-Werror`. So the 51 older lines that call a missing case an "e
 true of the lint lane, not of any compile lane. A `default:` arm silences the diagnostic, so a switch that
 must stay exhaustive keeps having none.
 
+**A NESTED STRUCT'S DEFAULT MEMBER INITIALIZER IS PARSED ONLY ONCE ITS ENCLOSING CLASS IS COMPLETE (E.5.2,
+`4831f92`)**, so libstdc++ refuses a no-argument `optional<Nested>::emplace()` inside that class — seen only by
+CI's Linux clang-tidy step; libc++ (the local tidy), GCC and MSVC accept it. Build such a value whole and
+assign it.
+
 #### Components, reflection and serialization
 
 **`AERO_BUILTIN_COMPONENT_HEADERS` NAMES THE BUILT-IN COMPONENT HEADERS ONCE**, at root scope. It reaches
@@ -291,7 +298,10 @@ worse — green and wrong.
 
 **A COMPONENT-COUNT LITERAL IS NOT CONFINED TO THE TESTS THAT ARE ABOUT COMPONENTS.** 3.7.2 found them in
 `scene_test.cpp`, `transform_test.cpp`, `editor/hierarchy_test.cpp`, `editor/inspector_test.cpp` and
-`scene_serialize_test.cpp` — **every one found by a red test, none by a grep.**
+`scene_serialize_test.cpp` — **every one found by a red test, none by a grep.** E.5.2 added three more the
+next built-in must update: `RF7`'s hand-written ten-name `BUILTINS` array
+(`tests/reflect-gen/meta_test.cpp:534-537`) and `IR21`'s two `== 10` pins
+(`tests/editor/inspector_test.cpp:2536`, `:2545`).
 
 **AND THE GREP ALSO OVER-MATCHES.** E.2.1's sweep came to **21** built-in literals (not the 18 planned) and
 **19** default-scene pins, against **five look-alikes that had to stay unchanged**: `scene_test.cpp:224`
@@ -314,7 +324,16 @@ built with `world.create()` + `setName` directly — never `createEntity` + `rem
 `AERO_ASSET(kind)` is the fourth field annotation; a fifth `DropSurface` with a NON-DEFAULTED fourth parameter
 routes the field through 3.1.5's own matrix.
 
+**`AERO_LABELS` NEEDS `AERO_RANGE(0, N-1)` ON THE SAME FIELD (E.5.2)**, and the editor's `namedSelectorRow`
+re-checks it, falling back to the drag. **A new reflect-gen annotation arm goes ABOVE the unknown-`engine::`
+catch-all** (`S24`), and a new `FieldUiMeta` member is appended LAST, so older customs stay byte-identical.
+
 #### The editor — ImGui, ImGuizmo, focus and panels
+
+**ONE CREATE PIPELINE (E.5.2)**: a new entry is one `createMenuEntries()` row plus one `createSeed` arm, and
+only `EditorApp::applyCreate` places (at the root), pushes, frames and reveals (`I246`, `I253`); its camera
+write runs before the draw walk, never in `renderScene`. **A click-emulating seam lives ONE tick**
+(`expireNamedSelection`, `S48`).
 
 **THE EDITOR HAS EXACTLY ONE FOCUS SLOT, AND `ImGui::SetWindowFocus` IS CALLED AT MOST ONCE PER FRAME FROM IT
 (E.3.2).** It lives in `shell_ui.cpp` immediately before `DockSpaceOverViewport` — dock nodes update inside
@@ -626,6 +645,13 @@ triangle topologies: the shadow pass (`forward_renderer.cpp`, the only live cons
 the handoff and DECLINED it** — every billboard it pushes is `DebugDepth::Overlay`, whose pipeline does not
 test depth at all. **The handoff is RE-ISSUED** to whichever task first wants a depth-*tested* billboard.
 
+**THE TESTED-LINE DEPTH NUDGE IS THE GROUND PLANE'S (E.5.2)** (`debugGridDepthNudge`, `z -= nudge * w`, set
+every frame); a Tested producer off the ground needs its own rule. **`flush` pushes the line block PER DRAW** —
+one shared push clips Overlay lines at the near plane, seen only by `DG24(b)`. **A roll-free camera gives the
+ground ZERO screen-x depth gradient**: only a ROLLED pose tests the x term (`GR29(b)`), and the nudge is
+independent of the viewport WIDTH when the aspect follows it (`GR30`). **A "bit-identical to the branch
+point" validation row needs the grid off.**
+
 **THE DEBUG BATCH IS SHARED, SO "THE BATCH IS EMPTY" IS A WHOLE-EDITOR CLAIM — AND THE WALL IS FOUR CASES, NOT
 THREE.** Any task adding a producer to `render::DebugDraw` reddens every case that counts the batch exactly:
 E.1.2's grid took `I108`/`I109`/`I111`; **E.2.3's icons took `I108`, `I109`, `I112`** (`I111` reads only LINE
@@ -903,17 +929,15 @@ is a configure-time property. **Rebuild before you believe any doctest number, a
 presets so a disagreement is visible.** A recorded total goes stale the same way: `origin/main`'s own shell
 total was one stale at E.1.4's gate. **Read the binary, never the block.**
 
-**At E.5.1's merge (`834bcb3`)**, measured on `3212047` (its tree) on both presets out of rebuilt trees and
-agreeing between them, with both reduced configurations configured fresh. E.5.1 moved only `aero_tests` (+10)
-and `aero_editor_imgui_test` (+2); the imgui binary's branch point was **265**, not E.4.5's 264, because `I244`
-landed in #113:
+**At E.5.2's merge (`ab3fd72`)**, measured on `d240cbf` (the merge adds `4831f92`'s one assignment) on both
+presets, rebuilt and agreeing, with both reduced configurations configured fresh:
 
 | Measurement | Value |
 |---|---|
-| `ctest -N` | **178**, entry set byte-identical between presets AND to E.4.5's; **165** shader-tools-OFF (exactly the 13 `shaderc.*` removed), **93** reflect-tools-OFF (81 `reflect-gen.*` + four doctest binaries removed), nothing added in either; `cooker.*` **70 / 70 / 70** |
-| doctest, seven binaries | **1414 / 2180 / 267 / 40 / 63 / 10 / 28** |
-| guards | math **535**, platform **92**, rhi **163**, scene **92**, golden-rule **165**, project-no-delete **A=7 B=93** (2 permitted), audio **11-3-55**, probes **6-57** |
-| `git ls-files` | `editor/src/*.cpp` **93**, `editor/include/aero/editor/*.hpp` **65** |
+| `ctest -N` | **183** in both presets (178 + the five `labels_*`); **170** shader-tools-OFF (exactly the 13 `shaderc.*` removed), **93** reflect-tools-OFF (86 `reflect-gen.*` + four doctest binaries removed), nothing added in either; `cooker.*` **70 / 70 / 70** |
+| doctest, seven binaries | **1428 / 2200 / 277 / 40 / 73 / 14 / 28** |
+| guards | math **541**, platform **92**, rhi **163**, scene **92**, golden-rule **165**, project-no-delete **A=7 B=95** (2 permitted), audio **11-3-55**, probes **6-57** |
+| `git ls-files` | `editor/src/*.cpp` **95**, `editor/include/aero/editor/*.hpp` **66** |
 
 The seven doctest binaries, in order: `aero_tests`, `aero_editor_shell_test`, `aero_editor_imgui_test`,
 `aero_scene_serialize_test`, `aero_editor_inspector_test`, `aero_reflect_meta_test`, `aero_reflect_json_test`.
@@ -952,11 +976,11 @@ that peaked at 7.6 GB here. **Each run must name which binaries it built and ran
 **`check-math-boundary.sh` counts `git ls-files`, so it reads a STALE number until new files are `git add`ed**
 — stage first, then measure.
 
-**`I136` IS DISPLAY-DEPENDENT, SO THE LOCAL GPU TIER GATES AT EITHER 266 OR 267 OF 267 AND THE RUN MUST SAY
+**`I136` IS DISPLAY-DEPENDENT, SO THE LOCAL GPU TIER GATES AT EITHER 276 OR 277 OF 277 AND THE RUN MUST SAY
 WHICH.** It fails `REQUIRE(drawExtent.width > 4U)` with value **4** on a 2x display — deterministically at
 E.3.4's and E.4.1's gates and at E.4.4's branch point, on an unmodified `HEAD` — and it **PASSED at E.4.2's,
-E.4.4's, #111's, E.4.5's and E.5.1's gates** (30 assertions each), the last four measured with only 1x displays
-attached.
+E.4.4's, #111's, E.4.5's, E.5.1's and E.5.2's gates** (30 assertions each), the last five measured with only 1x
+displays attached.
 **A green run is therefore not
 evidence it is fixed**; it is pre-existing, it is the DPI story's, and it is handed to E.6.1. **Name it
 either way, with the display configuration; never let a known failure be quietly counted as green, and
@@ -988,8 +1012,9 @@ mono 48 kHz 0.5 s, **exactly 48 064 B each**, cut at a whole number of cycles so
 **Validation pages are gitignored, so they enter no commit.** Per-page measurements and method notes are in
 `docs/10`; this is the ledger of what is still owed.
 
-**TWO PAGES HAVE NOT BEEN RUN ON ANY PLATFORM: E.1.5's AND E.3.2's.** They are the whole of Phase E's
-validation risk on this OS — every other task in E.1–E.4 and E.5.1 is macOS-validated (see the index above).
+**THREE PAGES HAVE NOT BEEN RUN ON ANY PLATFORM: E.1.5's, E.3.2's AND E.5.2's.** They are the whole of Phase E's
+validation risk on this OS — every other task in E.1–E.5 is macOS-validated (see the index above). E.5.2's
+rows are the only witness of its menus opening, the modal greying them, and the grid in motion.
 **E.5.1's page is RUN, 13 / 13, nothing failed** (2026-09-29): the headline Cube red in the first capture after
 the drop, Undo restoring the default bytes exactly, a two-sided Plane drawn AND outlined from below while a
 single-sided one is neither, a refused material drawing the exact default with one Console line — and its row 5
@@ -1061,9 +1086,9 @@ closed by E.5.1's pass (the bump reads in the ambient-only shade, the witness it
 Scene` produced **no write and no log line** under synthetic input while New Scene, Reset Layout and Undo all
 worked from the same path — **possibly a real defect, explicitly unresolved** — and rows 10/12 lacked a
 material asset and a Tracy connection. E.1.3 has
-three: row 6's translate/scale-in-ortho arm (blocked by the defect PR #95 fixed, re-runnable now), row 7 (this
-scene's only floor is a debug LINE grid, which receives no shadow — a solid plane is **E.5.2's**) and row 13's
-cost A/B, which needs a second build at the branch point.
+three: row 6's translate/scale-in-ortho arm (blocked by the defect PR #95 fixed, re-runnable now), row 7 (the
+debug LINE grid receives no shadow — **runnable since E.5.2**: Create ▸ Plane lands a solid floor, and E.5.2's
+row 12 runs it) and row 13's cost A/B, which needs a second build at the branch point.
 
 **OUTSTANDING macOS PASSES: 3.5.1's twelve rows, 3.5.2's twelve rows, and 3.7.2's twelve rows.** Each is the
 only cover its task's declared seeds have anywhere. **3.4.2's `S26` cannot be covered from macOS at all** —
@@ -1104,7 +1129,7 @@ display's ICC profile, and **there is no `renderFrame` Tracy zone in this tree**
 
 ### Next
 
-**E.5.2 and E.6 are the open front: five tasks, planning only** — E.5.2 and E.6.1–E.6.4.
+**E.6 is the open front: four tasks, planning only** — E.6.1–E.6.4.
 See `docs/tasks/phase-E.md`, and `docs/tasks/phase-3.md` for what Phase 3 still owes.
 
 **Ownership of the open work.** **E.4.3 IS MERGED, and it did NOT use `directoryWithin` /
@@ -1121,25 +1146,22 @@ behaviour as the "before", and that handoff is **still open**. **E.4.5 is MERGED
 tile shows a sphere rendered and framed by the thumbnail's own rig, a base-colour swatch until then, and the
 document's name on four surfaces — what it left out, and its handoffs, are in `docs/10`. **And
 `assetReferenceFieldWidth` is ONE formula with TWO hosts**, so a
-theme or DPI change moves the Inspector's reference row and the material slot's together. **E.5.1 is MERGED**
-(`834bcb3`): a material on a primitive shades, and E.2.4's `PX` battery has its non-default-material arm,
-`PX5`; every primitive E.5.2's Create menu makes takes a material the moment it exists, with no further bridge
-work. **E.5.2** owns the coplanar-geometry problem, has a ground colour to sit its plane against, and owns
-the Create menu's Light entries (Directional / Point / Spot), which now land something **visible** the moment
-they are created — the default scene is deliberately unchanged by every Phase E task so far, and its seventeen
-`entityCount() == 4` pins are byte-identical. **E.6.1** owns the DPI story E.1.5 deferred, plus the two
-measurements E.3.4 handed it (the style/font scale gap and `I136`) and E.4.5's three: the dark swatch label
-(`DARK_SWATCH_LABEL`, the one colour literal E.4.5 states) and `ImGuiCol_TextDisabled` as theme roles, and
-whether a 128² thumbnail is enough at 2×. **E.6.2** moves `T R S` and `Local/World`
+theme or DPI change moves the Inspector's reference row and the material slot's together. **E.5.1 and E.5.2
+are MERGED** (`834bcb3`, `ab3fd72`), closing Epic E.5; what each left out is in `docs/10`. The default scene
+is deliberately unchanged by every Phase E task so far, and its seventeen `entityCount() == 4` pins are
+byte-identical. **E.6.1** owns the DPI
+story E.1.5 deferred, plus the two measurements E.3.4 handed it (the style/font scale gap and `I136`), E.4.5's
+three: the dark swatch label (`DARK_SWATCH_LABEL`, the one colour literal E.4.5 states) and
+`ImGuiCol_TextDisabled` as theme roles, and whether a 128² thumbnail is enough at 2× — and E.5.2's icons for
+the Create entries. **E.6.2** moves `T R S` and `Local/World`
 into the main toolbar and leaves `View` on the viewport — it is per-view, not per-shell. **E.6.3** splits
 E.2.4's popover into the mock's header dropdowns; the grouping is already the mock's, so it restyles rather
 than regroups. **8.2** inherits IBL/HDRI and the after-opaque sky variant (`SB9`/`SB16` are in place to catch
 a wrong ordering), plus physical light units, IES profiles and area lights.
 
-**TWO INSPECTOR-ROW GAPS ARE OPEN AND E.3 CLOSED WITHOUT ADDING OR CLOSING ANY** — E.2.1's **enum-aware row**
-(`Environment`'s two modes are bare 0/1 drag fields because reflect-gen cannot reflect an enum) and E.2.2's
-**unit-aware row** (`SpotLight`'s cone angles are raw radians clamped to `[0, 1.5708]`). Both are a reflect-gen
-surface first. E.3.4 adds one gap of its own shape, unowned: a **closed `File` section**, which needs one flag
+**ONE INSPECTOR-ROW GAP IS OPEN** — E.2.2's **unit-aware row** (`SpotLight`'s cone angles are raw radians
+clamped to `[0, 1.5708]`), a reflect-gen surface first. E.2.1's **enum-aware row is CLOSED by E.5.2's
+`AERO_LABELS`**. E.3.4 adds one gap of its own shape, unowned: a **closed `File` section**, which needs one flag
 plus nothing else now that `requestMaterialSectionOpen` exists, the day a manual pass says the diagnostics are
 noise.
 
@@ -1153,15 +1175,16 @@ button's disabled predicate), each with its pinned-source citation, are in `.cla
 `"Delete orphaned .meta?"` from a real row and confirmed it by click and by **Enter**. Until then, Enter had
 only been argued from identical code.
 
-**TWENTY-FOUR UNOWNED HANDOFFS — one per bullet below; re-count the bullets, never the headline.** It read
+**THIRTY-TWO UNOWNED HANDOFFS — one per bullet below; re-count the bullets, never the headline.** It read
 "NINE" over a list that already held thirteen, because two "smaller" items, the exposure clause and
 `FillMode::Line` were never counted. Handoffs recorded in their own paragraphs elsewhere in this block (fact
-4's four permitted cases, the two inspector-row gaps, the closed `File` section) are not repeated here.
+4's four permitted cases, the inspector-row gap, the closed `File` section) are not repeated here.
 
 - **Asset-browser keyboard shortcuts (F2, Del)** — E.4.3 dropped both bindings AND their accelerator text:
   the gating needs a THIRD condition (`!io.WantTextInput`, because the browser's header carries an `InputText`
   search box), nothing in `tests/` can press a key, and there is no key-binding registry. **E.6.2 is the
   nearest owner**, but nothing in the roadmap claims it.
+  E.5.2's Create entries have no shortcut either.
 - **Spot and point shadows** — the shadow pass is directional-only (3.6.2); Phase E's non-goals name
   cascaded/soft shadows as 8.2.1's, and nothing owns omni or spot shadow maps.
 - **A camera FRUSTUM gizmo** — E.2.3 draws the camera an icon and no gizmo; a natural fit for 4.7.
@@ -1203,6 +1226,14 @@ only been argued from identical code.
   browser through the watcher, as every asset kind's edit does.
 - **The Delete log line's trash path** (found on E.5.1's macOS pass) — it prints `Library/Trash/1` while the
   directory on disk is `0001`: E.4.3's sequence number printed unpadded. Cosmetic; one format specifier.
+- **A typed create as a CHILD of the right-clicked row** (E.5.2) — needs a local-transform rule.
+- **Placement by a surface raycast** (E.5.2).
+- **Click-to-place in the viewport** (E.5.2).
+- **Uniquified names** (`Cube (1)`) (E.5.2).
+- **`AERO_LABELS` with spaces** (E.5.2).
+- **Create ▸ Audio and ▸ Environment** (E.5.2 D8).
+- **A Tested debug-line producer off the ground plane** (E.5.2).
+- **reflect-gen's `parseRangeToken` hex-`F` quirk** — `AERO_RANGE(0, 0x2F)` reads as 2; latent.
 
 **E.1.1's THICK-LINE HANDOFF IS FIRED, NOT CLEARED AND NOT DEFERRED.** E.2.3's macOS pass measured it: icons
 scale exactly 2x and hold 22 points, but **387 of 441 sampled runs across the gizmo are ONE DEVICE PIXEL** —

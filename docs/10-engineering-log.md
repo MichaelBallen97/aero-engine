@@ -18241,3 +18241,222 @@ pass: the Delete log line prints `Library/Trash/1` while the directory is `0001`
 
 **Build & dependency impact: none.** No dependency lands, `vcpkg.json` and `/vcpkg` are untouched, no target,
 no ctest entry, no shader and no link-line change.
+
+### E.5.2 — Create menu + named primitive selector — CLOSES Epic E.5: one create pipeline, a fifth annotation, and a grid that wins against the ground
+
+**Three halves, one task.** (1) **A Create menu** — in the menu bar between Edit and View, and in both of the
+Hierarchy's context menus — makes an `Empty`, a `3D Object ▸ Cube / Sphere / Plane`, a `Light ▸ Directional /
+Point / Spot` or a `Camera` in one undoable step. The hosts only RECORD a `CreateKind` (`ShellUiState::createRequest`,
+`HierarchyPanel::pendingCreate`); the reconcile block drains both after the drop drain and before the context
+router, and `EditorApp::applyCreate` alone places, pushes, frames and reveals. The seed comes from the pure
+`create_menu` pair — `createMenuEntries()`, `createAnchor(pivot)` = `(pivot.x, 0, pivot.z)` with finiteness
+guards, and `createSeed(kind, anchor)`: a Cube or Sphere rests at `y = 0.5`, a Plane is a 10 × 10 tile at
+`y = 0`, a Point light 2 m and a Spot 3 m up (the Spot pitched −90°, straight down), a Directional 3 m up with
+the default scene's sun rotation and a Camera at the default camera's offset — `DEFAULT_SCENE_CAMERA_POSITION`
+and `DEFAULT_SCENE_SUN_PITCH_RADIANS` are now shared with `seedDefaultScene`, which is otherwise unchanged. A
+create is the **existing** `CreateEntityCommand`, extended with an `EntitySeed` (a Transform plus one
+`std::variant` component) applied by typed writes inside its first `redo()`, so it is one undo step with no
+meta and works in every configuration. Framing is `EditorCamera::frameCreated`: a box is fitted exactly as `F`
+fits it, a point is recentred and never zoomed, and `ViewportPanel::frameCreatedEntity` — the camera's second
+writer — runs from the reconcile block, before the draw walk, and cancels a running view snap. A create behind
+a modal is refused and counted. (2) **`AERO_LABELS(ident, …)`, the fifth field annotation**: reflect-gen
+validates the grammar (identifiers, distinct, at most 64, integer fields only, `AERO_RANGE(0, N-1)` on the same
+field) and refuses anything else with one warning; `FieldUiMeta::labels` is appended LAST, `|`-joined, so every
+older custom is byte-identical; `--components` prints ` [labels …]`. The Inspector's generic Int/UInt arms ask
+the pure `namedSelectorRow` first and draw a dropdown — a pick is one `resetField` write, the current value and
+an out-of-range index push nothing, an out-of-range value previews `N (out of range)`. `MeshRenderer.primitive`
+(`Cube, Sphere, Plane`), `Environment.backgroundMode` (`Sky, Solid`) and `Environment.ambientMode`
+(`Hemisphere, Flat`) are labelled, which closes E.2.1's enum-aware row. (3) **E.1.2's coplanar handoff
+discharged**: `render::debugGridDepthNudge(viewProj, planeHeight, W, H)` is the plane's per-pixel NDC depth
+slope, analytically from the inverse view-projection (`DEBUG_GRID_DEPTH_NUDGE_PIXELS = 1`, a 2⁻²² floor, a 2⁻⁷
+clamp, total over every input, an orthographic arm), `DebugDraw::setTestedLineDepthNudge` stores it sanitized,
+`debug_line.vert` applies `z -= nudge * w`, the line block grows to 80 bytes (the nudge at 64, three scalar pads)
+and is pushed per draw, and the viewport sets the ground plane's nudge every frame from the camera it renders.
+**The built-in component count stays TEN; no scene key, no `docs/09` sentence and no default-scene entity
+changed.**
+
+**Eighteen commits** on `feat/E.5.2-create-menu-named-selector`, branch point `e131993`: the plan's ten
+(`1c11db9` `AERO_LABELS`, `88d4545` the three labelled fields, `6f98e0f` the named selector, `acedf71` the seeded
+command, `5d4e4b6` the create table, `705aab6` framing, `58e77cf` the pipeline, `feeec77` the Tested-line nudge,
+`e914c6e` the ground plane's nudge, `c3c05fb` the viewport's wiring), one from the sabotage matrix (`596b654`),
+six from the code-review round (`f5c0af3`, `a5d14f9`, `f1db12c`, `2e412b0`, `a60bc65`, `d240cbf`) and one from CI
+(`4831f92`) — merged as **`ab3fd72`** (PR #115, a true merge commit). **The first CI run, `36629991509` on
+`d240cbf`, failed on Linux's clang-tidy step alone** (below); **the second, `36635673835` on `4831f92`, was
+6 / 6 green** — lint, vcpkg baseline, Windows (41m52s), macOS (16m22s), Linux (1h7m53s), cook determinism.
+Measured on `d240cbf`, both presets rebuilt and agreeing: doctest **1414 / 2180 / 267 / 40 / 63 / 10 / 28 →
+1428 / 2200 / 277 / 40 / 73 / 14 / 28** — `aero_tests` +14 (`GR27`–`GR33`, `DD29`, `DD30`, `DG21`–`DG25`),
+`aero_editor_shell_test` +20 (`CR1`–`CR9`, `X25`–`X31`, `EC1`–`EC4`), `aero_editor_imgui_test` +10
+(`I246`–`I255`), `aero_editor_inspector_test` +10 (`IR13`–`IR22`, with the probe fixture's six `== 14 → 16`
+pins), `aero_reflect_meta_test` +4 (`RF4`–`RF7`), each confirmed by listing exactly those ids; the serialize
+and json binaries unmoved. `ctest -N` **178 → 183** in both presets (the five `reflect-gen.labels_*` process
+cases, reflect-gen 81 → 86), shader-tools-OFF **165 → 170**, reflect-tools-OFF **93 → 93** byte-identical,
+`cooker.*` **70 / 70 / 70**; both reduced trees configured fresh and run whole (shader-OFF 1291 / 2200 / 258 /
+40 / 73 / 14 / 28 and ctest 170 / 170; reflect-OFF 1428 / 2160 / 277 and ctest 93 / 93). Guards: math
+**535 → 541** (six new tracked C-family files), project-no-delete prong B **93 → 95**, the other six
+byte-identical; `git ls-files` **93 / 65 → 95 / 66**; `#if` counts unchanged (imgui 160, debug-draw 2). `I136`
+passed in both presets on 1× displays (3440×1440 and 1080×1920). The merge tree differs from `d240cbf` by
+`4831f92`'s one assignment, after which the inspector and imgui binaries passed 73 / 73 and 277 / 277.
+
+**`DG21` — Metal measured locally: `|G|` 4519, `|V|` 4519, `|V0|` 3304, so 26.9 % of line texels lose to a
+coplanar Plane at the 10° grazing pose without the nudge and none with it** (nudge 5.93e-4); `DG22` 45°
+3810 / 3810 / 2439 and straight down 4629 / 4629 / 2125; `DG23`'s band 1806 texels with nothing leaking.
+**WARP and lavapipe PASS, per-lane counts not captured** — the CI logs carry no passing case's output. The
+starting pose held on every lane: no `PIXELS` retune and no pose change was needed.
+
+#### ★ The first CI run failed on Linux's clang-tidy step alone, and the cause is a C++ parse order
+
+`InspectorPanel::requestNamedSelection` did `pendingNamedSelection.emplace()` and then wrote three members.
+`NamedSelection` is a NESTED struct with a default member initializer, which clang parses only once the
+enclosing class is complete, so inside `InspectorPanel` `is_constructible_v<NamedSelection>` can settle
+`false` — and libstdc++'s no-argument `optional::emplace()` is then refused (`clang-diagnostic-error`,
+`inspector_panel.cpp:314`). libc++ (the local pinned-SDK tidy), the GCC compile and MSVC all accept it, and the
+step fails before Linux runs any test. `4831f92` builds the request whole and assigns it — a move never needs
+the initializer. The plan had spelled that assignment; the `emplace()` form was an implementation deviation at
+step 3, and it is the one that cost a CI round.
+
+#### Where the plan overrode the spec (C1–C9), each re-measured
+
+* **C1** — a hidden panel's `onDraw` never runs, so a request consumed "at the top of `onDraw`" waits and applies
+  on the first shown frame; the named-selection seam therefore lives ONE tick (`expireNamedSelection` after
+  `drawShellUi`), and `S32` became a non-finding while the new `S48` is the red one.
+* **C2** — `I251`/`I252` select the default scene's Cube and Environment: the pipeline lands four commits later.
+* **C3** — `create_menu.cpp` joins `aero_editor_core` at step 5 (so `CR1`–`CR9` link), `create_menu_ui.cpp` at 7.
+* **C4** — `DD30`'s `+inf → max` contradicted D18's "non-finite → 0"; the contract text won.
+* **C5** — the spec's `float uDepthNudge; float3 _pad0;` puts the pad at 80 under strict std140 (a vec3 aligns
+  to 16) and makes the block 96 bytes; three scalar pads are 80 under every rule, and `DD26` pins them.
+* **C6 — WITHDRAWN.** The plan read `ViewportPanel`'s `post` as unreachable and added a `renderedExtent()`
+  accessor recorded from `renderScene`'s own `extent` — so `I254` read its oracle's extent from the very local
+  that fed the nudge. `postProcess()` and `PostProcess::sceneDrawExtent()` were public all along, and the
+  test file already called them; `2e412b0` removed the accessor, and `I254` reads the scene target's drawn
+  sub-rect, which `sceneFrame->extent()` reports.
+* **C7** — the runtime tools-OFF precedent is E.4.1's `sceneIoAvailable()` shape, not `I120`/`I121`'s `#if`.
+* **C8** — `I253(c)`'s set is `{create_menu.cpp, editor_app.cpp}`: the definition of `createSeed` is in
+  `editor/src` too, so a line sweep finds two files.
+* **C9** — one real tick can complete a whole view snap (`deltaSeconds` caps at `VIEW_SNAP_SECONDS`), so
+  `viewSnapActive() == false` is true with or without the cancel; `I247` asserts the EFFECT (yaw and pitch
+  unchanged across the create tick) after a control tick proving the snap moves them.
+
+Two smaller ones: `GR30`'s width claim is asserted to 1e-6 relative, not bit for bit (W enters every cofactor of
+the general inverse); and `makeDropProject()` lives inside a `#if AERO_SHADER_TOOLS_ENABLED` region, so no new
+`I` case can use it.
+
+#### Traps found, each measured
+
+* **`I115` (E.1.3's pin) counts `viewSnap.cancel();` lines and REQUIRED exactly two**; `frameCreatedEntity` adds
+  a third for `F`'s own reason. `I115` now requires three and pins the third as `frameCreatedEntity`'s first
+  statement — an unpredicted red, fixed without loosening the two original positional checks.
+* **`I247`'s snap control cannot hold in shader-tools-OFF**: the panel returns before the snap advances there
+  (`I115`'s own tools-OFF arm shows it). `I247` branches at RUNTIME on `sceneForwardRenderer() != nullptr` —
+  Ready runs the control, Unavailable asserts the snap did not move and is still active — and its effect
+  assertions across the create tick are unconditional.
+* **`Mat4{}` is the IDENTITY** (`mat4.hpp` D14), not zero: `GR32`'s all-zero arm needs `Mat4::zero()`.
+* **`bugprone-suspicious-memory-comparison` refuses a `memcmp` over a float-carrying type**; every bit-equality
+  helper compares through `const std::byte*` (`render_material_test.cpp`'s precedent), because there the object
+  representation IS the claim.
+* **`<windef.h>` defines `near` and `far` as macros**: the oracles' locals are `zNear`/`zFar` and
+  `ORTHO_NEAR`/`ORTHO_FAR`.
+* **doctest stringifies a `const char*` CAPTURE as a pointer**; `DG22`'s pose name is captured as a
+  `std::string_view`.
+* **An `entt::meta_reset()` below `inspector_test.cpp`'s AC-12 drift pin breaks every later case in a
+  whole-binary run** — one was added at the end of `IR18` and removed before its commit.
+* **A roll-free camera gives the ground plane ZERO screen-x depth gradient.** With a world-up `lookAt` the
+  right vector is horizontal, so the ground's depth is constant along screen x and the nudge's x term is
+  identically zero at every such pose — the unprojection oracle measured `dx` exactly 0 (`dy` −2.00958e-4) at
+  the world-up pose, and −1.00479e-4 against `dy` −1.74035e-4 (half the slope) rolled 30°. Only a rolled pose
+  can witness that term.
+
+#### ★ The code-review round — pass A found nothing; pass B found seven, each fixed and seed-proven
+
+1. **No case checked that a typed create lands at the root** — seeding `applyCreate`'s `Entity{}` parent to
+   `sceneSelection.primary()` left `I246`–`I255` green. `f5c0af3`: `I246` requires no parent and a root-order
+   slot after the create and after the redo; the seed reddens `I246` alone (28 assertions, kinds 2–8).
+2. **`I253` pinned none of the statements that carry a real click into the drain** — both seams write the
+   destination members directly. `a5d14f9`: clause (h) counts `pendingMenuCreate = ui.createRequest`, the
+   menu bar's two `state.createRequest` writes, the Hierarchy's four `pendingCreate` writes and the reveal;
+   deleting any one reddens `I253(h)` and nothing else.
+3. **The nudge's x term had no witness** (the roll-free fact above). `f1db12c`: `NudgePose` gains a roll,
+   `GR29(b)` checks a pose rolled 30° against the oracle with a `REQUIRE` that a quarter of the slope lies along
+   x, and `GR30` checks the rolled pose per pixel. Dropping `gx` now reddens `GR29(b)`; dividing `gx` by the
+   height reddens `GR29(b)` and `GR30`. **The finding asked `GR30` to show that changing W with H fixed CHANGES
+   the nudge; it does not, at any pose** — a pixel's angle is fovY / H, W enters only the aspect, which scales
+   the NDC x gradient by W / H, and the 2 / W per pixel cancels it (measured: 1.50957e-4 at 1280 × 720 and at
+   2560 × 720 on the rolled pose). The arm asserts the nudge is UNCHANGED, which is exactly what the
+   divide-by-height seed breaks.
+4. **C6** above: `2e412b0`. The retargeted seeds — the nudge computed with W and H swapped, and at the
+   allocation's `sceneTextureExtent()` — both redden `I254`; `S50`, which deleted the accessor's assignment,
+   is retired with it.
+5. **`DG22` computed its no-nudge count and only printed it.** `a60bc65`: at 45° the no-nudge render must lose
+   texels (Metal: 2439 of 3810 survive), DG21's slope-driven mechanism; straight down it only `WARN`s, because
+   a face-on plane's equal-depth behaviour is a rasterization property that may differ by lane, and `GR27` pins
+   the floor constant itself. With the floor at 0, `GR27` and `DG22`'s straight-down `v == |G|` go red (2125 of
+   4629) while its `WARN` stays silent — its condition still holds; a test mutant rendering the no-nudge frame
+   WITH the nudge reddens the 45° `CHECK` and fires the `WARN`.
+6. **`IR22`'s clamp arm could not tell a clamp from an ignored write** (it wrote 3 over an already-clamped 2).
+   `d240cbf` writes 0 first. A seed that drops an out-of-range unsigned write reddens the new `IR22`; the old
+   one stays green under it.
+7. **`RF7` walks a hand-written list of the ten built-ins** — recorded, not changed: it and `IR21`'s two `== 10`
+   pins join the component-count sweep (the standing invariant says where).
+
+#### ★ The sabotage matrix — 52 runs, one hole, closed
+
+47 seeds from the spec, 3 added (`S48`–`S50`), 2 assertion mutants; every seed confirmed landed, only the
+binaries it touches rebuilt, every verdict read from doctest's own `test cases:` line. **The hole was `S13`**
+(`frameCreated` recentres a box instead of fitting it): `EC1`/`EC4` went red and `I247` stayed green, because
+its Cube arm compared `frameCreated` against `frameCreated`. `596b654` makes `F`'s own `focusOn` the oracle;
+re-seeded, `I247` is red. **Non-findings, reason recorded:** `S32` (the end-of-tick expiry is a second guard on
+the same property), `S49` (`DG21` is layout-blind at offset 64; `DD26` holds the scalar pads). Inside red seeds:
+`S20`'s `I246` green in `macos-debug` as predicted (`X27` went red in both configurations, a stronger witness
+than planned), `S21`'s `guid_meta` inert by construction, `S30`'s `I251` green (`I253(g)` is the only witness),
+`S34`'s `I252` green by construction. **`M1`** (DG21's equality relaxed to half, with `PIXELS` at 0.25) went
+green — the equality is what gives `PIXELS` a floor, and 0.25 px of slope loses 311 texels on Metal. **`M2` as
+written was vacuous**: `I246`'s oracle is `createSeed` itself, so breaking `createSeed` moves both sides; re-aimed
+at the pipeline (`applySeed` writing the position alone), `I246` is red with the whole-Transform comparison and
+green with a position-only one. `S47` has `DG24(b)` as its only witness. After the code-review round, `S6`–`S8`,
+`S13`, `S35`, `S37`, `S38` and `S42`–`S44` were re-run on `d240cbf`, all red.
+
+#### What was deliberately left out (D19), and which task holds each
+
+A typed create as a child of the right-clicked row; Create ▸ Audio and ▸ Environment (D8: Environment is one
+per scene and seeded by every new scene, audio has no viewport icon yet, and AnimationPlayer belongs to an
+imported model); placement by a surface raycast; click-to-place; a keyboard shortcut for any entry (no
+key-binding registry — **E.6.2**'s neighbourhood, unclaimed); uniquified names; labels with spaces; the
+unit-aware row (E.2.2's gap, unchanged); a camera frustum gizmo; re-framing on redo; any default-scene change
+(D15); any change to `F`; any `docs/09` change; any new component. Icons for the Create entries are **E.6.1**'s.
+Found and left latent: reflect-gen's `parseRangeToken` strips a trailing `f`/`F` before recognising hex, so
+`AERO_RANGE(0, 0x2F)` would read as 2 — no hex range exists in the tree.
+
+#### The sentences that govern new work
+
+1. **A new Create entry is one `createMenuEntries()` row plus one `createSeed` arm; the hosts record a kind and
+   only `EditorApp::applyCreate` places, pushes, frames and reveals** — at the root, as one seeded
+   `CreateEntityCommand`. `I246`, `I253(b)(c)(d)(h)`.
+2. **`AERO_LABELS` requires `AERO_RANGE(0, N-1)` on the same field, and a labels arm — any new annotation arm —
+   precedes reflect-gen's unknown-`engine::` catch-all.** `labels_*`, `RF4`–`RF7`, `S24`.
+3. **The Tested-line nudge is the ground plane's**; a Tested producer off the ground inherits it and needs its
+   own rule. `I254`, `DG21`–`DG23`.
+4. **`flush` pushes the line block per draw** — the nudge before the Tested draw, zero before the Overlay draw;
+   one shared push clips Overlay lines at the near plane. `DG24(b)`, the only witness (`S47`).
+5. **Only a rolled pose tests the nudge's screen-x term, and the nudge is independent of the viewport width when
+   the projection's aspect follows it.** `GR29(b)`, `GR30`.
+6. **A "bit-identical to the branch point" validation row needs the grid off** — with it on, a one-pixel band
+   where geometry meets `y = 0` legitimately differs.
+7. **The camera's second writer, `frameCreatedEntity`, runs before the draw walk, never in `renderScene`.**
+   `I247`, `I115`.
+8. **A seam that emulates a click lives one tick** (`expireNamedSelection`), or a hidden panel applies it the
+   first time it is shown. `I251`, `S48`.
+9. **A nested struct with a default member initializer is not default-constructible inside its enclosing class
+   under libstdc++** — build it whole and assign it; only CI's Linux clang-tidy step sees the difference.
+10. **`RF7`'s `BUILTINS` array (`tests/reflect-gen/meta_test.cpp:534-537`) and `IR21`'s two `== 10` pins
+    (`tests/editor/inspector_test.cpp:2536`, `:2545`) are component-count sites** the next built-in updates.
+
+#### Validation and sabotage status — UNRUN on every platform
+
+`editor/validation/E.5.2-create-menu-named-primitive-selector.md` (gitignored) — eighteen rows, every record
+unticked. Its rows are the only witness of the menus opening, the items greyed behind a modal, the Hierarchy
+scrolling to a new row, the dropdown itself, and the grid in motion at 100 m and 500 m; row 12 runs E.1.3's
+row 7 (a directional shadow on a created Plane in ortho), which this task made executable.
+
+**Build & dependency impact:** no vcpkg or `/vcpkg` change and no new target. New files: `create_menu.{hpp,cpp}`,
+`create_menu_ui.{hpp,cpp}`, `tests/editor/create_menu_test.cpp` and the fixture
+`tests/reflect-gen/fixtures/component_labels.hpp`; five new ctest process cases; `debug_line.vert.hlsl`'s
+cbuffer grows to 80 bytes.
