@@ -4,6 +4,7 @@
 // serialization bridge live in text_file.cpp / scene_io.cpp instead (D19/F17, F9's gate).
 #include <aero/core/log.hpp>
 #include <aero/editor/entity_ops.hpp>
+#include <aero/editor/project_files.hpp>      // fix 2.5.1: isHiddenName, the hidden rule listDirectory applies
 #include <aero/editor/project_state.hpp>      // task E.4.1: the per-project state, its resolver and its
                                               // path arithmetic. ProjectSession itself arrives through
                                               // scene_session.hpp -> project.hpp.
@@ -157,8 +158,11 @@ constexpr unsigned char foldAscii(unsigned char c) noexcept {
 }
 
 // Deliberately WITHOUT the stem requirement isSceneFileName carries -- ".json" must match ".json" here, so
-// that it can be stripped to an EMPTY stem and refused, rather than kept as a stem of its own and saved as
-// the hidden ".json.scene.json".
+// that it can be stripped to an EMPTY stem and refused as nameless, rather than kept as a stem of its own
+// and turned into the hidden ".json.scene.json". A stem that REALLY begins with a dot (".r9", ".json.json",
+// ".foo.scene.json") keeps it, and saveSceneFile refuses that result as HIDDEN, with its own reason:
+// firstSceneUnder and the browser list with includeHidden=false (isHiddenName), so neither would ever see
+// such a scene.
 [[nodiscard]] bool hasSuffixFolded(std::string_view name, std::string_view suffix) noexcept {
     if (name.size() < suffix.size()) {
         return false;
@@ -174,8 +178,9 @@ constexpr unsigned char foldAscii(unsigned char c) noexcept {
 }
 
 // ORDER MATTERS: ".scene.json" also ends in ".json". Tried second, the leaf ".scene.json" (which
-// isSceneFileName rejects for its empty stem) would strip to ".scene", keep it as a stem and save the
-// hidden file ".scene.scene.json"; tried first, it strips to "" and is refused. SS57 pins that input.
+// isSceneFileName rejects for its empty stem) would strip to ".scene", keep it as a stem and become the
+// hidden ".scene.scene.json" -- refused only for its dot, under the wrong reason; tried first, it strips to
+// "" and is refused as nameless. SS57 pins that input.
 constexpr std::array<std::string_view, 3> SAVE_NAME_SUFFIXES{".scene.json", ".json", ".scene"};
 
 }  // namespace
@@ -217,13 +222,15 @@ void newScene(CommandContext& context, CommandStack& commands) {
 
 namespace {
 
-// D13, REVISED (fix 2.5.1): the two NAME refusals' reasons. Each is the ERROR's reason clause AND the
+// D13, REVISED (fix 2.5.1): the three NAME refusals' reasons. Each is the ERROR's reason clause AND the
 // modal's second line -- one string for both, never a second wording (task E.4.2's D6/AC-20 rule). The
 // taken-name wording says why no Replace prompt appeared: the panel asked about the name the user SAW
 // ("r8.json") or about none at all ("r8"), never about the corrected "r8.scene.json".
 constexpr std::string_view SCENE_NAME_TAKEN_REASON =
     "a file with that name already exists, and the file dialog did not ask about replacing it";
 constexpr std::string_view SCENE_NAME_EMPTY_REASON = "a scene file needs a name before '.scene.json'";
+constexpr std::string_view SCENE_NAME_HIDDEN_REASON =  // a leading '.' -- isHiddenName's rule
+    "a scene name cannot start with a dot (the file would be hidden)";
 
 // task E.4.2: fill the offer a refusal raises, or do nothing at all when the caller supplied none.
 // File-local: the two choke points directly below are its ONLY callers, and a refusal is the ONLY
@@ -353,6 +360,11 @@ bool saveSceneFile(CommandContext& context, CommandStack& commands, SceneSession
         std::string_view refusal;
         if (!isSceneFileName(fileNameOf(target))) {
             refusal = SCENE_NAME_EMPTY_REASON;  // ".json", ".scene", "" -- nothing to call it
+        } else if (isHiddenName(fileNameOf(target))) {
+            // ".r9", ".json.json", ".foo.scene.json": a HIDDEN file. The LISTING's own predicate, so the
+            // refusal and what firstSceneUnder / the browser skip cannot drift. BEFORE the taken test: no
+            // existing file changes whether the name can be seen.
+            refusal = SCENE_NAME_HIDDEN_REASON;
         } else if (target != absolutePathUtf8 && fileExists(target)) {
             refusal = SCENE_NAME_TAKEN_REASON;  // the panel asked about a DIFFERENT name, or none
         }

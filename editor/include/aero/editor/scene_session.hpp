@@ -122,7 +122,10 @@ inline constexpr std::string_view SCENE_EXTENSION = ".scene.json";
 // kept), "r9.txt" becomes "r9.txt.scene.json", and a leaf with nothing before its suffix -- ".json",
 // ".scene.json", ".scene", "" -- becomes exactly ".scene.json", which isSceneFileName REFUSES and so
 // saveSceneFile refuses too. The result always ends in ".scene.json"; it is a scene iff the stem is
-// non-empty. Pure: no filesystem, no logging.
+// non-empty. A stem that itself begins with '.' KEEPS its dot (".r9" -> ".r9.scene.json", ".json.json" ->
+// ".json.scene.json", and ".foo.scene.json" unchanged): such a result is a HIDDEN file (isHiddenName), which
+// firstSceneUnder and the browser never list, so saveSceneFile refuses it as well, with its own reason.
+// Pure: no filesystem, no logging.
 [[nodiscard]] std::string normalizeSceneSavePath(std::string_view pathUtf8);
 
 // ---- THE swap (D2/INV-6/INV-1) -------------------------------------------------------------------
@@ -202,8 +205,8 @@ struct FileDialogHost {
 // walk, at STEP 0 of applyFileRequests (D10 -- step 0 runs BEFORE the modalInputActive refusal in
 // step 2, or the accept is swallowed by the very modal that produced it).
 //
-// fix 2.5.1: it ALSO carries saveSceneFile's two NAME refusals (D13, revised -- a stem-less or a taken
-// corrected name), always in the save shape, so the name is now narrower than what it holds -- as is
+// fix 2.5.1: it ALSO carries saveSceneFile's three NAME refusals (D13, revised -- a stem-less, a hidden or
+// a taken corrected name), always in the save shape, so the name is now narrower than what it holds -- as is
 // EditorApp::sceneContainmentRefusalCount(), which counts both. Stated rather than renamed: the modal,
 // its drain and every rule above apply to a name refusal unchanged.
 struct ContainmentOffer {
@@ -379,7 +382,7 @@ struct FileFlow {
 // the file was written. Logs exactly one ERROR on failure and NOTHING on success.
 // fix 2.5.1 (D13, revised): applies D13's rule (normalizeSceneSavePath) when `appendExtension`, and
 // refuses -- before serialization, one ERROR, and the save-refusal offer -- a normalised name that has no
-// stem or that differs from the answer and already exists.
+// stem, that would be a hidden file, or that differs from the answer and already exists.
 // task E.4.2: refuses BEFORE serialization when `fileContext` says the target is outside the open
 // project (D6/D7) -- the name rule is applied first, so the check runs on the file that will actually
 // be written, and a containment refusal is decided before either name refusal.

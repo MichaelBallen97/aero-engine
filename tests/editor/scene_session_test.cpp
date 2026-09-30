@@ -9,6 +9,7 @@
 #include <aero/editor/console_model.hpp>
 #include <aero/editor/entity_commands.hpp>
 #include <aero/editor/entity_ops.hpp>
+#include <aero/editor/project_files.hpp>      // fix 2.5.1: isHiddenName, the listing's own hidden rule (SS63)
 #include <aero/editor/project_state.hpp>      // fix 2.5.1: isSceneFileName, the predicate SS56 ties to
 #include <aero/editor/scene_containment.hpp>  // task E.4.2: the verdict SS43 asserts directly
 #include <aero/editor/scene_session.hpp>
@@ -2226,4 +2227,101 @@ TEST_CASE("scene_session: a refused Save As name abandons the pending chain, bot
         applyFileRequests(f.ctx, f.commands, session, f.flow, f.host, f.project);
         CHECK(f.projectSession.root() == rootA);
     }
+}
+
+// ---- SS63: fix 2.5.1's code-review round -- a Save As name that would be a HIDDEN file ------------------
+//
+// SS55-SS62 is the block this fix reserved and it is full, so this case takes the next id.
+
+TEST_CASE("scene_session: a Save As name that would be a hidden file is refused (SS63)") {
+    using engine::editor::ContainmentOffer;
+    using engine::editor::fileNameOf;
+    using engine::editor::isHiddenName;
+    using engine::editor::isSceneFileName;
+    using engine::editor::normalizeSceneSavePath;
+    using engine::editor::saveSceneFile;
+    using engine::editor::SceneFileContext;
+
+    // ---- TIER 0, the rule: a stem that itself begins with '.' KEEPS its dot, so the result's leaf is a
+    //      name isSceneFileName accepts (it has a stem) and isHiddenName hides -- firstSceneUnder and the
+    //      browser list with includeHidden=false, so neither would ever see it. That is the leaf the save
+    //      refuses. Expected values are the test's own, never computed from the function under test.
+    CHECK(normalizeSceneSavePath("/d/.r9") == "/d/.r9.scene.json");
+    CHECK(normalizeSceneSavePath("/d/.json.json") == "/d/.json.scene.json");      // ONE suffix stripped
+    CHECK(normalizeSceneSavePath("/d/.R9.JSON") == "/d/.R9.scene.json");          // folded, dot kept
+    CHECK(normalizeSceneSavePath("/d/.foo.scene.json") == "/d/.foo.scene.json");  // the UNCHANGED arm
+    constexpr std::array<std::string_view, 4> HIDDEN{
+        "/d/.r9",
+        "/d/.json.json",
+        "/d/.R9.JSON",
+        "/d/.foo.scene.json",
+    };
+    for (const std::string_view answer : HIDDEN) {
+        CAPTURE(answer);
+        const std::string r = normalizeSceneSavePath(answer);  // NAMED: fileNameOf returns a view into it
+        CHECK(isSceneFileName(fileNameOf(r)));  // it HAS a stem, so the empty-stem refusal cannot catch it
+        CHECK(isHiddenName(fileNameOf(r)));     // ...and the listing would hide it
+    }
+
+    // ---- THE FLOW: each such answer is refused with its OWN reason, before serialization, visibly, and
+    //      nothing is written -- identical in every build configuration.
+    const LogFixture fixture;
+    const TempDir tmp;
+    engine::World world;
+    engine::editor::seedDefaultScene(world);
+    Selection selection;
+    RootOrder roots;
+    CommandStack commands;
+    CommandContext ctx{world, selection, roots};
+    engine::editor::SceneSession session;
+    const engine::editor::LogSinkScope scope;
+    std::vector<engine::editor::LogEntry> records;
+
+    const std::array<std::string, 4> answers{tmp.join(".r9"), tmp.join(".json.json"), tmp.join(".R9.JSON"),
+                                             tmp.join(".foo.scene.json")};
+    for (const std::string& answer : answers) {
+        CAPTURE(answer);
+        records.clear();  // FIRST: LogSink::take asserts its `out` is empty (console_model.cpp)
+        scope.sink()->take(records);
+        records.clear();
+        ContainmentOffer offer;
+        const std::string written = normalizeSceneSavePath(answer);
+        CHECK_FALSE(
+            saveSceneFile(ctx, commands, session, answer, /*appendExtension=*/true, SceneFileContext{"", &offer}));
+        scope.sink()->take(records);
+        CHECK(countAtLevel(records, engine::LogLevel::Error) == 1);
+        const std::string message = firstErrorMessage(records);
+        CHECK(message.find("cannot start with a dot") != std::string::npos);
+        CHECK(message.find("needs a name") == std::string::npos);
+        CHECK(message.find("AERO_REFLECT_TOOLS") == std::string::npos);  // decided BEFORE serialization
+        CHECK(offer.open);
+        CHECK(offer.forSave);
+        CHECK(offer.scenePath == written);
+        CHECK(offer.reason == "a scene name cannot start with a dot (the file would be hidden)");
+        CHECK_FALSE(engine::editor::fileExists(written));  // nothing was written
+        CHECK(session.untitled());
+    }
+
+    // ---- THE ORDER: a hidden name that ALSO exists is refused as HIDDEN, not as taken -- the dot is the
+    //      reason the user can act on, and no rename of an existing file can make the name visible.
+    REQUIRE(engine::editor::writeTextFileAtomic(tmp.join(".r5.scene.json"), "PRE-EXISTING").empty());
+    records.clear();
+    ContainmentOffer both;
+    CHECK_FALSE(saveSceneFile(ctx, commands, session, tmp.join(".r5.json"), /*appendExtension=*/true,
+                              SceneFileContext{"", &both}));
+    scope.sink()->take(records);
+    CHECK(countAtLevel(records, engine::LogLevel::Error) == 1);
+    CHECK(firstErrorMessage(records).find("cannot start with a dot") != std::string::npos);
+    CHECK_FALSE(anyMessageContains(records, "already exists"));
+
+    // ---- AND ONLY A PANEL'S ANSWER IS JUDGED: a literal hidden path (requestSaveSceneAs, a titled Save)
+    //      is the caller's to choose (D15), so no name refusal fires. (It then writes in the full
+    //      configuration or refuses on AERO_REFLECT_TOOLS in the reduced one; this case asserts neither.)
+    records.clear();
+    ContainmentOffer literal;
+    (void)saveSceneFile(ctx, commands, session, tmp.join(".literal.scene.json"), /*appendExtension=*/false,
+                        SceneFileContext{"", &literal});
+    scope.sink()->take(records);
+    CHECK_FALSE(anyMessageContains(records, "cannot start with a dot"));
+    CHECK_FALSE(literal.open);
 }
