@@ -14093,9 +14093,12 @@ TEST_CASE(
     REQUIRE(app->tick());
     REQUIRE(app->keyboardFocusPanelId() == "Hierarchy");
     const std::uint64_t inspectorIdle = app->panelDrawnCount("Inspector");
+    const std::uint64_t materialIdle = app->panelDrawnCount("Material");
     REQUIRE(app->tick());
     REQUIRE(app->panelDrawnCount("Inspector") == inspectorIdle);  // the Inspector is NOT the front tab
-    REQUIRE(app->keyboardFocusPanelId() == "Hierarchy");          // ...and a plain tick moves nothing
+    // ...and Material IS -- without this, the `Material ==` arms below would pass for any other front tab.
+    REQUIRE(app->panelDrawnCount("Material") > materialIdle);
+    REQUIRE(app->keyboardFocusPanelId() == "Hierarchy");  // ...and a plain tick moves nothing
 
     const engine::Entity probe = app->world().create();
     REQUIRE(probe.valid());
@@ -14158,9 +14161,11 @@ TEST_CASE(
     REQUIRE(app->tick());
     REQUIRE(app->keyboardFocusPanelId() == "Material");
     const std::uint64_t inspectorIdle = app->panelDrawnCount("Inspector");
+    const std::uint64_t materialIdle = app->panelDrawnCount("Material");
     REQUIRE(app->tick());
     REQUIRE(app->panelDrawnCount("Inspector") == inspectorIdle);
-    REQUIRE(app->keyboardFocusPanelId() == "Material");
+    REQUIRE(app->panelDrawnCount("Material") > materialIdle);  // Material IS the front tab, so a flip-back
+    REQUIRE(app->keyboardFocusPanelId() == "Material");        // to it below is observable
 
     const engine::Entity probe = app->world().create();
     REQUIRE(probe.valid());
