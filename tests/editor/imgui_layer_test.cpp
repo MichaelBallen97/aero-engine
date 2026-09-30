@@ -13665,7 +13665,9 @@ TEST_CASE("editor imgui: the editor has ONE focus policy, and it is spelled once
         CHECK(namingImGui > 0U);  // anti-vacuity: the reader really finds ImGui tokens where they ARE
 
         // ...and the COUNT within that one file. THREE: the Project Settings menu item, the explicit
-        // focus path, and the route's Apply arm. A fourth is a second focus write in one frame.
+        // focus path, and the route's FocusWindow FALL-BACK arm (a keyboard in a sibling tab, or no tab
+        // bar yet). The automatic route itself no longer calls it (the E.3.2 keyboard fix, I256). A
+        // fourth is a second focus write in one frame.
         const std::vector<std::string> shell = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/shell_ui.cpp");
         REQUIRE_FALSE(shell.empty());
         CHECK(countLinesContaining(shell, "ImGui::SetWindowFocus(") == 3U);
@@ -13769,6 +13771,76 @@ TEST_CASE("editor imgui: the editor has ONE focus policy, and it is spelled once
         // reader failing to find the token at all. SIX public mutators, six bumps -- an exact count,
         // and the one assertion here that a SEVENTH mutator will legitimately move.
         CHECK(countLinesContaining(selection, "++revisionValue;") == 6U);
+    }
+
+    SUBCASE("(g) the route's two ImGui-internal raises are spelled once, and ImGui::FocusWindow nowhere") {
+        // The E.3.2 keyboard fix raises an automatic route's target with TabBarQueueFocus (a docked
+        // target) and BringWindowToDisplayFront (a floating one). Each is spelled in ONE file on ONE line --
+        // a second site would be a second focus policy, (a)'s rule one level down -- and the internal
+        // FocusWindow, a focus write (a)'s SetWindowFocus count cannot see, is spelled NOWHERE. Set claims
+        // over both roots, the I127(b) shape: sorted, de-duplicated file names.
+        std::size_t scanned = 0;
+        const auto filesNaming = [&scanned](std::string_view needle) {
+            std::vector<std::string> naming;
+            const std::array<std::string_view, 2> roots{AERO_EDITOR_SRC_DIR, AERO_EDITOR_INCLUDE_DIR};
+            for (const std::string_view root : roots) {
+                std::error_code ec;
+                const std::filesystem::recursive_directory_iterator walk(std::filesystem::path(root), ec);
+                REQUIRE_FALSE(ec);
+                for (const std::filesystem::directory_entry& entry : walk) {
+                    const std::string extension = entry.path().extension().string();
+                    if (!entry.is_regular_file() || (extension != ".cpp" && extension != ".hpp")) {
+                        continue;
+                    }
+                    ++scanned;
+                    for (const std::string& line : editorSourceCodeLines(entry.path().string())) {
+                        if (line.find(needle) != std::string::npos) {
+                            naming.push_back(entry.path().filename().string());
+                            break;
+                        }
+                    }
+                }
+            }
+            std::sort(naming.begin(), naming.end());
+            naming.erase(std::unique(naming.begin(), naming.end()), naming.end());
+            return naming;
+        };
+        const std::vector<std::string> onlyShell{"shell_ui.cpp"};
+        CHECK(filesNaming("TabBarQueueFocus") == onlyShell);
+        CHECK(scanned > 50U);  // anti-vacuity: the walk really read both roots
+        CHECK(filesNaming("BringWindowToDisplayFront") == onlyShell);
+        CHECK(filesNaming("ImGui::FocusWindow(").empty());
+
+        // ...and ONE line each inside that file. The exact spelling of the queue call pins the
+        // ImGuiTabItem* overload: the const char* one IM_ASSERTs on a dock node's tab bar
+        // (imgui_widgets.cpp:10384-10389) and would abort both Debug lanes.
+        const std::vector<std::string> shell = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/shell_ui.cpp");
+        REQUIRE_FALSE(shell.empty());
+        CHECK(countLinesContaining(shell, "TabBarQueueFocus") == 1U);
+        CHECK(countLinesContaining(shell, "ImGui::TabBarQueueFocus(node->TabBar, tab)") == 1U);
+        CHECK(countLinesContaining(shell, "BringWindowToDisplayFront") == 1U);
+    }
+
+    SUBCASE("(h) the dispatch sits inside the Apply arm and reads the ROOT of NavWindow") {
+        const std::vector<std::string> shell = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/shell_ui.cpp");
+        REQUIRE_FALSE(shell.empty());
+        const std::size_t outcomeAt = soleLineContaining(shell, "routeOutcome(state.routeSource, guards)");
+        const std::size_t applyAt = soleLineContaining(shell, "state.routeOutcome == RouteOutcome::Apply");
+        // The pure decision is read ONCE, below the outcome and inside its Apply arm; the fall-back's
+        // SetWindowFocus is below the switch that selects it.
+        CHECK(countLinesContaining(shell, "routeRaise(") == 1U);
+        const std::size_t switchAt = soleLineContaining(shell, "switch (routeRaise(facts))");
+        CHECK(switchAt > applyAt);
+        CHECK(soleLineContaining(shell, "ImGui::SetWindowFocus(routeTarget)") > switchAt);
+        // The explicit path is untouched and precedes the route.
+        CHECK(soleLineContaining(shell, "ImGui::SetWindowFocus(requestedId.c_str())") < outcomeAt);
+        // THE ONE SEED NO RUNTIME TIER CAN SEE: the sibling-tab fact must read NavWindow's ROOT. A child
+        // window holding the keyboard is not docked in any node, and no tier here can put it there.
+        const std::size_t rootAt = soleLineContaining(shell, "g->NavWindow->RootWindow");
+        CHECK(rootAt > outcomeAt);
+        // The observable is read after the WHOLE draw walk, so it sees every focus write of the frame.
+        CHECK(soleLineContaining(shell, "state.keyboardFocusWindow =") >
+              soleLineContaining(shell, "drawWelcomeWindow(fileMenu);"));
     }
 }
 
@@ -13982,6 +14054,135 @@ TEST_CASE(
 // keyboardFocusPanelId() is the only automated window onto NavWindow; every claim below is a delta on it
 // across one tick. No project, the default scene, no shader and no entt::meta: all three run in every
 // configuration.
+
+TEST_CASE(
+    "editor: an automatic route shows the Inspector and the Hierarchy KEEPS the keyboard "
+    "(fix E.3.2, I256)") {
+    // THE HEADLINE. A click on a Hierarchy row selects an entity; the route must bring the Inspector to
+    // the front of the Right node WITHOUT moving NavWindow, or the Hierarchy's focus-scoped shortcuts
+    // (Delete, Backspace, Ctrl+D, F2 -- NavFocusRoute is built from NavWindow) stop reaching it.
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "route i256", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    std::optional<engine::editor::EditorApp> app = engine::editor::EditorApp::create(
+        *device, *window, ctx, {.persistLayout = false, .unfocusedFrameCapHz = 0.0F, .restoreLastProject = false});
+    REQUIRE(app.has_value());
+
+    REQUIRE(app->tick());  // 1
+    REQUIRE(app->tick());  // 2: settle -- every baseline below is taken after it (E.3.2's measured rule)
+    REQUIRE(app->focusRoutingEnabled());
+
+    // The Right node shows Material, PROVEN; then the keyboard goes to the Hierarchy, PROVEN. Two explicit
+    // requests on two ticks: the Right node keeps Material because nothing holds the keyboard there.
+    app->requestPanelFocus("Material");
+    REQUIRE(app->tick());
+    app->requestPanelFocus("Hierarchy");
+    REQUIRE(app->tick());
+    REQUIRE(app->keyboardFocusPanelId() == "Hierarchy");
+    const std::uint64_t inspectorIdle = app->panelDrawnCount("Inspector");
+    REQUIRE(app->tick());
+    REQUIRE(app->panelDrawnCount("Inspector") == inspectorIdle);  // the Inspector is NOT the front tab
+    REQUIRE(app->keyboardFocusPanelId() == "Hierarchy");          // ...and a plain tick moves nothing
+
+    const engine::Entity probe = app->world().create();
+    REQUIRE(probe.valid());
+    app->selection().set(probe);  // what a Hierarchy row click does; the reconcile latches next tick
+    const std::size_t appliesBefore = app->focusRouteApplyCount();
+    const std::uint64_t inspectorBefore = app->panelDrawnCount("Inspector");
+    const std::uint64_t materialBefore = app->panelDrawnCount("Material");
+    REQUIRE(app->tick());  // latch -> Apply -> the tab is queued -> DockSpaceOverViewport consumes it
+
+    CHECK(app->focusRouteApplyCount() == appliesBefore + 1U);  // a route DID apply (not a no-op)
+    CHECK(app->lastRoutedPanelId() == "Inspector");
+    CHECK(app->panelDrawnCount("Inspector") > inspectorBefore);  // AC-1: raised, in THIS tick
+    CHECK(app->panelDrawnCount("Material") == materialBefore);   // ...and Material is no longer drawn
+    CHECK(app->keyboardFocusPanelId() == "Hierarchy");           // AC-2: the keyboard did not move
+
+    // AC-3: it STAYS raised, and the keyboard stays put, on the tick after -- a one-frame raise would show
+    // here as Material drawing again.
+    const std::uint64_t inspectorAfter = app->panelDrawnCount("Inspector");
+    const std::uint64_t materialAfter = app->panelDrawnCount("Material");
+    REQUIRE(app->tick());
+    CHECK(app->panelDrawnCount("Inspector") > inspectorAfter);
+    CHECK(app->panelDrawnCount("Material") == materialAfter);
+    CHECK(app->keyboardFocusPanelId() == "Hierarchy");
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE(
+    "editor: a route whose keyboard sits in a SIBLING tab still raises stably, and moves the keyboard "
+    "(fix E.3.2, I257)") {
+    // WHY THE FALL-BACK EXISTS. DockNodeUpdateTabBar re-selects NavWindow's tab in its node EVERY frame
+    // (imgui.cpp:19611-19613), so a tab-only raise while the keyboard sits in Material would show the
+    // Inspector for exactly one frame and then put Material back. The route therefore focuses the target
+    // here -- the keyboard was in a tab this raise hides -- and the second tick below is what sees a
+    // flip-back if that ever stops being true.
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "route i257", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    std::optional<engine::editor::EditorApp> app = engine::editor::EditorApp::create(
+        *device, *window, ctx, {.persistLayout = false, .unfocusedFrameCapHz = 0.0F, .restoreLastProject = false});
+    REQUIRE(app.has_value());
+
+    REQUIRE(app->tick());  // 1
+    REQUIRE(app->tick());  // 2: settle
+    REQUIRE(app->focusRoutingEnabled());
+
+    // The keyboard in MATERIAL, a sibling of the Inspector in the Right node, PROVEN; the Inspector idle.
+    app->requestPanelFocus("Material");
+    REQUIRE(app->tick());
+    REQUIRE(app->keyboardFocusPanelId() == "Material");
+    const std::uint64_t inspectorIdle = app->panelDrawnCount("Inspector");
+    REQUIRE(app->tick());
+    REQUIRE(app->panelDrawnCount("Inspector") == inspectorIdle);
+    REQUIRE(app->keyboardFocusPanelId() == "Material");
+
+    const engine::Entity probe = app->world().create();
+    REQUIRE(probe.valid());
+    app->selection().set(probe);
+    const std::size_t appliesBefore = app->focusRouteApplyCount();
+    const std::uint64_t inspectorBefore = app->panelDrawnCount("Inspector");
+    const std::uint64_t materialBefore = app->panelDrawnCount("Material");
+    REQUIRE(app->tick());  // latch -> Apply -> the FocusWindow fall-back
+
+    CHECK(app->focusRouteApplyCount() == appliesBefore + 1U);
+    CHECK(app->lastRoutedPanelId() == "Inspector");
+    CHECK(app->panelDrawnCount("Inspector") > inspectorBefore);
+    CHECK(app->panelDrawnCount("Material") == materialBefore);
+    CHECK(app->keyboardFocusPanelId() == "Inspector");  // AC-4: the keyboard followed the hidden tab's raise
+
+    // THE STABILITY ARM: a flip-back would show here as Material drawing again and the Inspector not.
+    const std::uint64_t inspectorAfter = app->panelDrawnCount("Inspector");
+    const std::uint64_t materialAfter = app->panelDrawnCount("Material");
+    REQUIRE(app->tick());
+    CHECK(app->panelDrawnCount("Inspector") > inspectorAfter);
+    CHECK(app->panelDrawnCount("Material") == materialAfter);
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
 
 TEST_CASE("editor: an EXPLICIT focus request still moves the keyboard (fix E.3.2, I258)") {
     // THE ANTI-VACUITY CONTROL for I256: without it, an accessor stuck on "Hierarchy" would make I256's

@@ -62,7 +62,9 @@ struct RouteGuards {
     bool sourceStillValid = true;         // the thing to show still exists (D6)
     bool targetAvailable = true;          // the panel is registered AND visible (D7)
     bool explicitFocusThisFrame = false;  // requestPanelFocus won this frame (D8)
-    bool textInputActive = false;         // io.WantTextInput -- FocusWindow STEALS the active widget
+    bool textInputActive = false;         // io.WantTextInput -- FocusWindow STEALS the active widget,
+                                          // and a raise that HIDES a tab ends that tab's active widget
+                                          // (imgui.cpp:5795-5798)
     bool dragPayloadLive = false;         // GetDragDropPayload() != nullptr (the PUBLIC drag signal)
     bool gizmoDragActive = false;         // ImGuizmo::IsUsing()
     bool popupOpen = false;               // IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopup)
