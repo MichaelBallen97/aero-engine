@@ -258,7 +258,10 @@ a **human mouse/keyboard pass** recorded per OS in `editor/VALIDATION.md`.
   arm here, clear the roster, not just the field you were thinking about.
 - **A native Save panel's answer is normalised to a `.scene.json` leaf** (`normalizeSceneSavePath`, D13
   revised by fix 2.5.1): `X`, `X.json`, `X.scene` → `X.scene.json`; a leaf `isSceneFileName` accepts is
-  kept byte for byte. **All three name refusals — no stem, a HIDDEN leaf (`isHiddenName`, the listing's own
+  kept byte for byte. **Every trailing suffix is stripped, one at a time, stopping at the first scene name**,
+  because macOS's panel appends its hidden `.json` to WHATEVER is typed (measured: `r11.scene.json` arrives
+  as `r11.scene.json.json`, `R12.JSON` as `R12.JSON.json`) — never assume a panel returns what was typed.
+  **All three name refusals — no stem, a HIDDEN leaf (`isHiddenName`, the listing's own
   rule, so `.r9` or `.foo.scene.json` never becomes a scene the cascade cannot see), or a normalised name
   that differs from the answer and already exists — happen after containment and before serialization**,
   in that order, log one ERROR and raise the save-refusal modal; the panel's own "Replace?" prompt covered
