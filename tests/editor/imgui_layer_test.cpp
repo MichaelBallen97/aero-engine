@@ -17667,10 +17667,13 @@ TEST_CASE("editor imgui: a SAVE refusal's title shares the containment popup's i
     // title that is true of both, "Scene Not Saved". The popup's IDENTITY is its ### suffix: ImHashStr
     // restarts at "###", BeginPopupModal looks the popup up by that id, and the title bar draws whatever
     // label Begin was handed this frame. So the two labels must share ONE suffix: a label with any other
-    // suffix makes BeginPopupModal look for a popup nobody opened, the modal silently never draws, and
-    // I189 -- which drives a refused save through real frames -- stays green, because nothing in this tree
-    // can read which label a popup was drawn under. SOURCE TEXT, I159's shape. A THIRD label must share
-    // the suffix too, and be added here.
+    // suffix makes BeginPopupModal look for a popup nobody opened, the modal never draws, and the draw's
+    // own safety net (the arm that treats a false BeginPopupModal as a programmatic close) dismisses the
+    // offer on the next drain -- the refusal vanishes unseen. I189 sees THAT consequence at runtime (the
+    // offer is no longer open two ticks after a refused save; sabotage seed S10, measured), but nothing in
+    // this tree can read which label a popup was drawn under, so the label's TEXT and the rule that both
+    // spellings share one suffix are pinned here. SOURCE TEXT, I159's shape. A THIRD label must share the
+    // suffix too, and be added here.
     const std::vector<std::string> shell = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/shell_ui.cpp");
     REQUIRE_FALSE(shell.empty());
 
