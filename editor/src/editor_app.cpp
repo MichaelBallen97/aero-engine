@@ -1236,6 +1236,9 @@ bool EditorApp::tick() {
     if (ui.routeOutcome != RouteOutcome::Hold) {
         contextRouter.clearPending();
     }
+    // task E.3.2's keyboard fix: which window holds the keyboard after this tick's draw walk. A plain
+    // string copied out of the shell state, so this file still names no ImGui symbol (I159(c)).
+    keyboardFocusPanel = std::move(ui.keyboardFocusWindow);
     // D3: the offscreen scene pass runs AFTER the draw walk (only it knows this frame's panel size,
     // which is what removes the one-frame resize lag) and BEFORE endFrame (ImGui's command buffer is
     // acquired and submitted there; ours must be submitted first -- F8's ordering guarantee, and F7
@@ -1709,6 +1712,8 @@ bool EditorApp::focusRoutingEnabled() const noexcept { return contextRouter.enab
 int EditorApp::pendingFocusRoute() const noexcept { return static_cast<int>(contextRouter.pending()); }
 
 std::string_view EditorApp::lastRoutedPanelId() const noexcept { return lastRoutedPanel; }
+
+std::string_view EditorApp::keyboardFocusPanelId() const noexcept { return keyboardFocusPanel; }
 
 std::size_t EditorApp::focusRouteApplyCount() const noexcept { return focusRouteApplies; }
 std::size_t EditorApp::focusRouteHoldCount() const noexcept { return focusRouteHolds; }

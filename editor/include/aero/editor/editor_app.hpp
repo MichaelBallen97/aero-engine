@@ -715,6 +715,12 @@ public:
     // panel that has never drawn; ask panels().find(id) first if the difference matters. EVERY
     // routing assertion in this tree reads it as a DELTA across ticks, never as an absolute.
     [[nodiscard]] std::uint64_t panelDrawnCount(const char* id) const noexcept;
+    // The name of the window holding ImGui's keyboard focus after the last tick's draw walk -- NavWindow's
+    // ROOT, so a panel's id for a docked panel, ImGui's internal window name for a popup or a menu -- or ""
+    // when nothing does. A string_view into a member, so compare it, never store it (lastRoutedPanelId's
+    // contract). Exists because "the route raised the Inspector" and "the route took the keyboard" were
+    // indistinguishable at every automated tier.
+    [[nodiscard]] std::string_view keyboardFocusPanelId() const noexcept;
 
     // ---- task E.4.1: the per-project editor state's ONE observable ---------------------------------
     // SUCCESSFUL writes of <projectRoot>/Library/editor-state.json, lifetime, never reset. It is the
@@ -1013,6 +1019,9 @@ private:
     std::size_t focusRouteHolds = 0;
     std::size_t focusRouteDrops = 0;
     std::string lastRoutedPanel;  // "" until the first Apply
+    // keyboardFocusPanelId()'s value, copied out of ShellUiState after every drawShellUi. A distinct name
+    // from its accessor (the databasePtr/database() rule); a std::string, so the noexcept move survives it.
+    std::string keyboardFocusPanel;
 
     // ---- task E.4.1 ------------------------------------------------------------------------------
     // The (project root, recorded scene) pair last known to be on disk. A project CHANGE adopts them

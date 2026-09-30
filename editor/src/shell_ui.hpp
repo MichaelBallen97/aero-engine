@@ -67,6 +67,13 @@ struct ShellUiState {
     // no camera and no Hierarchy, so it only records (D1). Cleared by being rebuilt each tick, never re-armed
     // (the routeToggleRequested shape).
     std::optional<CreateKind> createRequest;
+    // OUT, written as the LAST statement of drawShellUi (task E.3.2's keyboard fix): the NAME of
+    // ImGui's NavWindow's ROOT window after this frame's draw walk, "" when nothing holds the keyboard.
+    // For a docked panel that is its id (a docked window is its own RootWindow, imgui.cpp:7762-7766).
+    // For a popup or a menu it is ImGui's internal window name. A click's focus lands in EndFrame
+    // (imgui.cpp:6321-6322), i.e. AFTER this read -- so a click is seen one tick later. No tier here
+    // can click, so no case depends on that.
+    std::string keyboardFocusWindow;
 };
 
 // task 2.5.1 (plan A14): everything the File menu needs that PanelContext deliberately does NOT

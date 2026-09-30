@@ -13665,7 +13665,9 @@ TEST_CASE("editor imgui: the editor has ONE focus policy, and it is spelled once
         CHECK(namingImGui > 0U);  // anti-vacuity: the reader really finds ImGui tokens where they ARE
 
         // ...and the COUNT within that one file. THREE: the Project Settings menu item, the explicit
-        // focus path, and the route's Apply arm. A fourth is a second focus write in one frame.
+        // focus path, and the route's FocusWindow FALL-BACK arm (a keyboard in a sibling tab, or no tab
+        // bar yet). The automatic route itself no longer calls it (the E.3.2 keyboard fix, I256). A
+        // fourth is a second focus write in one frame.
         const std::vector<std::string> shell = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/shell_ui.cpp");
         REQUIRE_FALSE(shell.empty());
         CHECK(countLinesContaining(shell, "ImGui::SetWindowFocus(") == 3U);
@@ -13686,6 +13688,27 @@ TEST_CASE("editor imgui: the editor has ONE focus policy, and it is spelled once
         CHECK(countLinesContaining(shell, "ImGuiPopupFlags_AnyPopupLevel") == 0U);
         // ...and the guard is what the APPLY arm is gated on, below the decision.
         CHECK(soleLineContaining(shell, "state.routeOutcome == RouteOutcome::Apply") > outcomeAt);
+
+        // THE E.3.2 KEYBOARD FIX's second Hold, found by its validation row 8 on hardware: the popup guard
+        // ALSO holds while NavWindow is still a popup window that has already closed. On the tick a Create
+        // menu click lands, IsPopupOpen is false but NavWindow is still the closed menu; without this term
+        // the route selects the tab, the next NewFrame hands the keyboard back to the Material tab
+        // (imgui.cpp:5949-5950) and ImGui re-selects it. It reads NavWindow's ROOT, so a keyboard in a
+        // child window of the closed popup holds as well (imgui.cpp:7761-7766). No tier here can open a
+        // popup, so this text is the term's only automated witness: exactly one line names the flag, and it
+        // closes the `.popupOpen` initializer, inside the guards struct and above the decision.
+        const std::size_t guardsAt = soleLineContaining(shell, "const RouteGuards guards{");
+        const std::size_t popupGuardAt = soleLineContaining(shell,
+                                                            ".popupOpen = ImGui::IsPopupOpen(nullptr, "
+                                                            "ImGuiPopupFlags_AnyPopup) ||");
+        const std::size_t navNullAt = soleLineContaining(shell, "(g->NavWindow != nullptr &&");
+        const std::size_t closedPopupAt =
+            soleLineContaining(shell, "(g->NavWindow->RootWindow->Flags & ImGuiWindowFlags_Popup) != 0");
+        CHECK(countLinesContaining(shell, "ImGuiWindowFlags_Popup") == 1U);
+        CHECK(popupGuardAt > guardsAt);
+        CHECK(navNullAt == popupGuardAt + 1U);
+        CHECK(closedPopupAt == popupGuardAt + 2U);
+        CHECK(closedPopupAt < outcomeAt);
     }
 
     SUBCASE("(c) editor_app.cpp names NO ImGui or ImGuizmo symbol -- unchanged and re-pinned") {
@@ -13769,6 +13792,127 @@ TEST_CASE("editor imgui: the editor has ONE focus policy, and it is spelled once
         // reader failing to find the token at all. SIX public mutators, six bumps -- an exact count,
         // and the one assertion here that a SEVENTH mutator will legitimately move.
         CHECK(countLinesContaining(selection, "++revisionValue;") == 6U);
+    }
+
+    SUBCASE("(g) the route's two ImGui-internal raises are spelled once, and ImGui::FocusWindow nowhere") {
+        // The E.3.2 keyboard fix raises an automatic route's target with TabBarQueueFocus (a docked
+        // target) and BringWindowToDisplayFront (a floating one). Each is spelled in ONE file on ONE line --
+        // a second site would be a second focus policy, (a)'s rule one level down -- and the internal
+        // FocusWindow, a focus write (a)'s SetWindowFocus count cannot see, is spelled NOWHERE. Set claims
+        // over both roots, the I127(b) shape: sorted, de-duplicated file names.
+        std::size_t scanned = 0;
+        const auto filesNaming = [&scanned](std::string_view needle) {
+            std::vector<std::string> naming;
+            const std::array<std::string_view, 2> roots{AERO_EDITOR_SRC_DIR, AERO_EDITOR_INCLUDE_DIR};
+            for (const std::string_view root : roots) {
+                std::error_code ec;
+                const std::filesystem::recursive_directory_iterator walk(std::filesystem::path(root), ec);
+                REQUIRE_FALSE(ec);
+                for (const std::filesystem::directory_entry& entry : walk) {
+                    const std::string extension = entry.path().extension().string();
+                    if (!entry.is_regular_file() || (extension != ".cpp" && extension != ".hpp")) {
+                        continue;
+                    }
+                    ++scanned;
+                    for (const std::string& line : editorSourceCodeLines(entry.path().string())) {
+                        if (line.find(needle) != std::string::npos) {
+                            naming.push_back(entry.path().filename().string());
+                            break;
+                        }
+                    }
+                }
+            }
+            std::sort(naming.begin(), naming.end());
+            naming.erase(std::unique(naming.begin(), naming.end()), naming.end());
+            return naming;
+        };
+        const std::vector<std::string> onlyShell{"shell_ui.cpp"};
+        CHECK(filesNaming("TabBarQueueFocus") == onlyShell);
+        CHECK(scanned > 50U);  // anti-vacuity: the walk really read both roots
+        CHECK(filesNaming("BringWindowToDisplayFront") == onlyShell);
+        CHECK(filesNaming("ImGui::FocusWindow(").empty());
+
+        // ...and ONE line each inside that file. The exact spelling of the queue call pins the
+        // ImGuiTabItem* overload: the const char* one IM_ASSERTs on a dock node's tab bar
+        // (imgui_widgets.cpp:10384-10389) and would abort both Debug lanes.
+        const std::vector<std::string> shell = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/shell_ui.cpp");
+        REQUIRE_FALSE(shell.empty());
+        CHECK(countLinesContaining(shell, "TabBarQueueFocus") == 1U);
+        CHECK(countLinesContaining(shell, "ImGui::TabBarQueueFocus(node->TabBar, tab)") == 1U);
+        CHECK(countLinesContaining(shell, "BringWindowToDisplayFront") == 1U);
+
+        // ...and the display raise sits DIRECTLY under FocusWindow's own gate, all three flag terms of it.
+        // SABOTAGE-FORCED (seed S8, the code-review round): the gate is NOT redundant for a main-dockspace
+        // target. The DockSpaceOverViewport host is push_front'ed at creation (imgui.cpp:6988-6991), so once
+        // any later window (a menu, a popup, a tooltip) sits at the back of g.Windows, an ungated call moves
+        // the full-viewport host there, and FindHoveredWindowEx (walking g.Windows from the back,
+        // imgui.cpp:6486-6524) resolves every hover to it ahead of each docked panel -- the docked UI stops
+        // taking the mouse for the rest of the session. No tier here can read g.HoveredWindow, and every
+        // route case stayed green with the gate deleted, so the text is the only witness.
+        const std::size_t gateAt = soleLineContaining(shell,
+                                                      "((window->Flags | root->Flags | display->Flags) & "
+                                                      "ImGuiWindowFlags_NoBringToFrontOnFocus) == 0");
+        CHECK(soleLineContaining(shell, "ImGui::BringWindowToDisplayFront(display)") == gateAt + 1U);
+    }
+
+    SUBCASE("(h) the dispatch sits inside the Apply arm and reads the ROOT of NavWindow") {
+        const std::vector<std::string> shell = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/shell_ui.cpp");
+        REQUIRE_FALSE(shell.empty());
+        const std::size_t outcomeAt = soleLineContaining(shell, "routeOutcome(state.routeSource, guards)");
+        const std::size_t applyAt = soleLineContaining(shell, "state.routeOutcome == RouteOutcome::Apply");
+        // The pure decision is read ONCE, below the outcome and inside its Apply arm; the fall-back's
+        // SetWindowFocus is below the switch that selects it.
+        CHECK(countLinesContaining(shell, "routeRaise(") == 1U);
+        const std::size_t switchAt = soleLineContaining(shell, "switch (routeRaise(facts))");
+        CHECK(switchAt > applyAt);
+        CHECK(soleLineContaining(shell, "ImGui::SetWindowFocus(routeTarget)") > switchAt);
+        // The explicit path is untouched and precedes the route.
+        CHECK(soleLineContaining(shell, "ImGui::SetWindowFocus(requestedId.c_str())") < outcomeAt);
+        // THE ONE SEED NO RUNTIME TIER CAN SEE: the sibling-tab fact must read NavWindow's ROOT. A child
+        // window holding the keyboard is not docked in any node, and no tier here can put it there.
+        // The navRoot INITIALIZER's own spelling: the popup Hold in the guards (b) reads
+        // g->NavWindow->RootWindow too, so the bare member chain is no longer one line.
+        const std::size_t rootAt = soleLineContaining(shell, "? g->NavWindow->RootWindow : nullptr");
+        CHECK(rootAt > outcomeAt);
+        // SABOTAGE-FORCED (the code-review round): ...and BOTH of the sibling-tab fact's uses read that
+        // root, inside the gather. Either use spelled on g->NavWindow instead stayed green everywhere.
+        // `g->NavWindow->DockNode == node` brings back the Material flicker: a keyboard in Material's
+        // ##body child has no dock node, so the fact reads false, the route selects the tab only, and
+        // ImGui re-selects Material on the next frame (imgui.cpp:19611-19613). `g->NavWindow != target`
+        // reads a keyboard in a child of the target itself as a sibling and moves it to the target's root.
+        const std::size_t notTargetAt = soleLineContaining(shell, "navRoot != target");
+        const std::size_t sameNodeAt = soleLineContaining(shell, "navRoot->DockNode == node");
+        CHECK(notTargetAt > rootAt);
+        CHECK(notTargetAt < switchAt);
+        CHECK(sameNodeAt > rootAt);
+        CHECK(sameNodeAt < switchAt);
+        // SABOTAGE-FORCED (the code-review round): ...and the gather sets EVERY RouteRaiseFacts field. The
+        // defaults describe the common case, so windowExists, docked and tabQueueable default to TRUE --
+        // exactly the values that select the arms which dereference `target`, `node` and `tab`. Dropping
+        // `.tabQueueable` compiles and stays green, and a route on a frame whose node has no tab bar yet
+        // hands TabBarQueueFocus a null tab, which it dereferences (imgui_widgets.cpp:10379-10382);
+        // dropping `.windowExists` sends a route to a window never submitted into
+        // bringToDisplayFrontOnly(nullptr). One sole line per field, between the root read and the switch.
+        const std::array<std::string_view, 5> initializers{
+            ".windowExists = target != nullptr",
+            ".docked = target != nullptr && target->DockIsActive",
+            ".soleWindowInNode = node != nullptr && node->Windows.Size == 1",
+            ".keyboardInSiblingTab = node != nullptr && navRoot != nullptr",
+            ".tabQueueable = tab != nullptr",
+        };
+        for (const std::string_view initializer : initializers) {
+            CAPTURE(initializer);
+            const std::size_t initializerAt = soleLineContaining(shell, initializer);
+            CHECK(initializerAt > rootAt);
+            CHECK(initializerAt < switchAt);
+        }
+        // The observable is read after the WHOLE draw walk, so it sees every focus write of the frame.
+        const std::size_t observableAt = soleLineContaining(shell, "state.keyboardFocusWindow =");
+        CHECK(observableAt > soleLineContaining(shell, "drawWelcomeWindow(fileMenu);"));
+        // SABOTAGE-FORCED (seed S9): ...and it publishes the ROOT's name. `std::string(nav->Name)` left
+        // I256-I258 green, because every panel those cases focus holds NavWindow at its own root; a
+        // keyboard in a child window would report the child's internal name instead of the panel id.
+        CHECK(soleLineContaining(shell, "nav->RootWindow->Name") == observableAt);
     }
 }
 
@@ -13970,6 +14114,189 @@ TEST_CASE(
     CHECK(app->focusRouteApplyCount() == appliesBefore);
     CHECK(app->panelDrawnCount("Material") == materialIdle);
     CHECK(app->focusRouteHoldCount() == holdsBefore + 3U);  // no further holds once it is gone
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+// ---- I256-I258: the route keeps the keyboard (fix, E.3.2) ------------------------------------------
+// E.3.2's route raised its target through SetWindowFocus, which moves ImGui's NavWindow along with the
+// tab, so the Hierarchy's focus-scoped Delete / Ctrl+D / F2 went nowhere after a click selected a row.
+// keyboardFocusPanelId() is the only automated window onto NavWindow; every claim below is a delta on it
+// across one tick. No project, the default scene, no shader and no entt::meta: all three run in every
+// configuration.
+
+TEST_CASE(
+    "editor: an automatic route shows the Inspector and the Hierarchy KEEPS the keyboard "
+    "(fix E.3.2, I256)") {
+    // THE HEADLINE. A click on a Hierarchy row selects an entity; the route must bring the Inspector to
+    // the front of the Right node WITHOUT moving NavWindow, or the Hierarchy's focus-scoped shortcuts
+    // (Delete, Backspace, Ctrl+D, F2 -- NavFocusRoute is built from NavWindow) stop reaching it.
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "route i256", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    std::optional<engine::editor::EditorApp> app = engine::editor::EditorApp::create(
+        *device, *window, ctx, {.persistLayout = false, .unfocusedFrameCapHz = 0.0F, .restoreLastProject = false});
+    REQUIRE(app.has_value());
+
+    REQUIRE(app->tick());  // 1
+    REQUIRE(app->tick());  // 2: settle -- every baseline below is taken after it (E.3.2's measured rule)
+    REQUIRE(app->focusRoutingEnabled());
+
+    // The Right node shows Material, PROVEN; then the keyboard goes to the Hierarchy, PROVEN. Two explicit
+    // requests on two ticks: the Right node keeps Material because nothing holds the keyboard there.
+    app->requestPanelFocus("Material");
+    REQUIRE(app->tick());
+    app->requestPanelFocus("Hierarchy");
+    REQUIRE(app->tick());
+    REQUIRE(app->keyboardFocusPanelId() == "Hierarchy");
+    const std::uint64_t inspectorIdle = app->panelDrawnCount("Inspector");
+    const std::uint64_t materialIdle = app->panelDrawnCount("Material");
+    REQUIRE(app->tick());
+    REQUIRE(app->panelDrawnCount("Inspector") == inspectorIdle);  // the Inspector is NOT the front tab
+    // ...and Material IS -- without this, the `Material ==` arms below would pass for any other front tab.
+    REQUIRE(app->panelDrawnCount("Material") > materialIdle);
+    REQUIRE(app->keyboardFocusPanelId() == "Hierarchy");  // ...and a plain tick moves nothing
+
+    const engine::Entity probe = app->world().create();
+    REQUIRE(probe.valid());
+    app->selection().set(probe);  // what a Hierarchy row click does; the reconcile latches next tick
+    const std::size_t appliesBefore = app->focusRouteApplyCount();
+    const std::uint64_t inspectorBefore = app->panelDrawnCount("Inspector");
+    const std::uint64_t materialBefore = app->panelDrawnCount("Material");
+    REQUIRE(app->tick());  // latch -> Apply -> the tab is queued -> DockSpaceOverViewport consumes it
+
+    CHECK(app->focusRouteApplyCount() == appliesBefore + 1U);  // a route DID apply (not a no-op)
+    CHECK(app->lastRoutedPanelId() == "Inspector");
+    CHECK(app->panelDrawnCount("Inspector") > inspectorBefore);  // AC-1: raised, in THIS tick
+    CHECK(app->panelDrawnCount("Material") == materialBefore);   // ...and Material is no longer drawn
+    CHECK(app->keyboardFocusPanelId() == "Hierarchy");           // AC-2: the keyboard did not move
+
+    // AC-3: it STAYS raised, and the keyboard stays put, on the tick after -- a one-frame raise would show
+    // here as Material drawing again.
+    const std::uint64_t inspectorAfter = app->panelDrawnCount("Inspector");
+    const std::uint64_t materialAfter = app->panelDrawnCount("Material");
+    REQUIRE(app->tick());
+    CHECK(app->panelDrawnCount("Inspector") > inspectorAfter);
+    CHECK(app->panelDrawnCount("Material") == materialAfter);
+    CHECK(app->keyboardFocusPanelId() == "Hierarchy");
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE(
+    "editor: a route whose keyboard sits in a SIBLING tab still raises stably, and moves the keyboard "
+    "(fix E.3.2, I257)") {
+    // WHY THE FALL-BACK EXISTS. DockNodeUpdateTabBar re-selects NavWindow's tab in its node EVERY frame
+    // (imgui.cpp:19611-19613), so a tab-only raise while the keyboard sits in Material would show the
+    // Inspector for exactly one frame and then put Material back. The route therefore focuses the target
+    // here -- the keyboard was in a tab this raise hides -- and the second tick below is what sees a
+    // flip-back if that ever stops being true.
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "route i257", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    std::optional<engine::editor::EditorApp> app = engine::editor::EditorApp::create(
+        *device, *window, ctx, {.persistLayout = false, .unfocusedFrameCapHz = 0.0F, .restoreLastProject = false});
+    REQUIRE(app.has_value());
+
+    REQUIRE(app->tick());  // 1
+    REQUIRE(app->tick());  // 2: settle
+    REQUIRE(app->focusRoutingEnabled());
+
+    // The keyboard in MATERIAL, a sibling of the Inspector in the Right node, PROVEN; the Inspector idle.
+    app->requestPanelFocus("Material");
+    REQUIRE(app->tick());
+    REQUIRE(app->keyboardFocusPanelId() == "Material");
+    const std::uint64_t inspectorIdle = app->panelDrawnCount("Inspector");
+    const std::uint64_t materialIdle = app->panelDrawnCount("Material");
+    REQUIRE(app->tick());
+    REQUIRE(app->panelDrawnCount("Inspector") == inspectorIdle);
+    REQUIRE(app->panelDrawnCount("Material") > materialIdle);  // Material IS the front tab, so a flip-back
+    REQUIRE(app->keyboardFocusPanelId() == "Material");        // to it below is observable
+
+    const engine::Entity probe = app->world().create();
+    REQUIRE(probe.valid());
+    app->selection().set(probe);
+    const std::size_t appliesBefore = app->focusRouteApplyCount();
+    const std::uint64_t inspectorBefore = app->panelDrawnCount("Inspector");
+    const std::uint64_t materialBefore = app->panelDrawnCount("Material");
+    REQUIRE(app->tick());  // latch -> Apply -> the FocusWindow fall-back
+
+    CHECK(app->focusRouteApplyCount() == appliesBefore + 1U);
+    CHECK(app->lastRoutedPanelId() == "Inspector");
+    CHECK(app->panelDrawnCount("Inspector") > inspectorBefore);
+    CHECK(app->panelDrawnCount("Material") == materialBefore);
+    CHECK(app->keyboardFocusPanelId() == "Inspector");  // AC-4: the keyboard followed the hidden tab's raise
+
+    // THE STABILITY ARM: a flip-back would show here as Material drawing again and the Inspector not.
+    const std::uint64_t inspectorAfter = app->panelDrawnCount("Inspector");
+    const std::uint64_t materialAfter = app->panelDrawnCount("Material");
+    REQUIRE(app->tick());
+    CHECK(app->panelDrawnCount("Inspector") > inspectorAfter);
+    CHECK(app->panelDrawnCount("Material") == materialAfter);
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: an EXPLICIT focus request still moves the keyboard (fix E.3.2, I258)") {
+    // THE ANTI-VACUITY CONTROL for I256: without it, an accessor stuck on "Hierarchy" would make I256's
+    // headline pass for the wrong reason. It passes on the code before the fix as well, which is the
+    // point -- it proves the observable follows a real NavWindow change before anything relies on it.
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "route i258", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    std::optional<engine::editor::EditorApp> app = engine::editor::EditorApp::create(
+        *device, *window, ctx, {.persistLayout = false, .unfocusedFrameCapHz = 0.0F, .restoreLastProject = false});
+    REQUIRE(app.has_value());
+
+    REQUIRE(app->tick());  // 1
+    REQUIRE(app->tick());  // 2: settle -- every baseline below is taken after it
+
+    app->requestPanelFocus("Hierarchy");
+    REQUIRE(app->tick());
+    REQUIRE(app->keyboardFocusPanelId() == "Hierarchy");
+    // The Inspector is NOT the Right node's front tab, PROVEN, so the drawn-count delta below is falsifiable.
+    const std::uint64_t inspectorIdle = app->panelDrawnCount("Inspector");
+    REQUIRE(app->tick());
+    REQUIRE(app->panelDrawnCount("Inspector") == inspectorIdle);
+    REQUIRE(app->keyboardFocusPanelId() == "Hierarchy");  // ...and a plain tick moves nothing
+
+    app->requestPanelFocus("Inspector");
+    REQUIRE(app->tick());
+    CHECK(app->keyboardFocusPanelId() == "Inspector");  // the COMMAND moved the keyboard
+    CHECK(app->panelDrawnCount("Inspector") > inspectorIdle);
 
     app->requestQuit();
     CHECK(app->tick() == false);

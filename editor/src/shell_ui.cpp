@@ -629,6 +629,18 @@ void buildDefaultLayout(ImGuiID dockId, PanelRegistry& panels) {
     ImGui::DockBuilderFinish(dockId);
 }
 
+// FocusWindow's DISPLAY step and nothing else (imgui.cpp:13745-13746, :13770-13771): no SetNavWindow, no
+// ClosePopupsOverWindow, no ClearActiveID, no BringWindowToFocusFront. For a window docked in the main
+// dockspace RootWindowDockTree is the DockSpaceOverViewport host, which carries NoBringToFrontOnFocus
+// (imgui.cpp:20692), so this is a no-op there by the same gate FocusWindow uses.
+void bringToDisplayFrontOnly(ImGuiWindow* window) {
+    ImGuiWindow* const root = window->RootWindow;
+    ImGuiWindow* const display = window->RootWindowDockTree;
+    if (((window->Flags | root->Flags | display->Flags) & ImGuiWindowFlags_NoBringToFrontOnFocus) == 0) {
+        ImGui::BringWindowToDisplayFront(display);
+    }
+}
+
 }  // namespace
 
 void drawShellUi(PanelRegistry& panels, PanelContext& context, ShellUiState& state, FileMenuContext& fileMenu) {
@@ -670,23 +682,36 @@ void drawShellUi(PanelRegistry& panels, PanelContext& context, ShellUiState& sta
     applyHistoryRequests(context, state);  // task 2.4.1, D19/AC-21
     // ---- task E.3.2: THE editor's ONE focus slot. -------------------------------------------------
     // Both paths resolve here, in this order, and ImGui::SetWindowFocus is called AT MOST ONCE per
-    // frame from this block. SetWindowFocus is last-writer-wins for the TAB it selects, but its SIDE
-    // EFFECTS are not idempotent: FocusWindow closes every popup above the focused window
-    // (imgui.cpp:13740) and STEALS the active widget (imgui.cpp:13754-13756, whose own comment at
-    // :13751 names this very slot -- "Focus a window while an InputText in another window is active,
-    // if focus happens before the old InputText can run"). Two calls would pay both costs twice for
-    // one visible result.
+    // frame from this block. Its SIDE EFFECTS are not idempotent: FocusWindow closes every popup above
+    // the focused window (imgui.cpp:13740) and STEALS the active widget (imgui.cpp:13754-13756, whose
+    // own comment at :13751 names this very slot -- "Focus a window while an InputText in another
+    // window is active, if focus happens before the old InputText can run"). Two calls would pay both
+    // costs twice for one visible result.
     //
     // POSITION IS LOAD-BEARING and unchanged from 3.1.3's: BEFORE DockSpaceOverViewport, which runs
-    // immediately below, because dock nodes update INSIDE it -- so the focus lands with no one-frame
-    // lag. SetWindowFocus selects the dock tab through DockNodeUpdateTabBar (imgui.cpp:19611-19613),
-    // NOT through FocusWindow's own "Select in dock node" block, which is commented out in 1.92.8
-    // (imgui.cpp:13763-13766, for issue #2304). An unknown id is a silent no-op.
+    // immediately below, because dock nodes update INSIDE it -- so a raise lands with no one-frame lag.
     //
-    // THE EXPLICIT PATH WINS (D8): it is a COMMAND -- Edit > Project Settings..., and the
-    // requestPanelFocus seam -- while a route is an INFERENCE. Holding the route for the next tick was
+    // THE EXPLICIT PATH WINS (D8), and it MOVES THE KEYBOARD: it is a COMMAND -- Edit > Project
+    // Settings..., and the requestPanelFocus seam -- so it keeps SetWindowFocus, which selects the dock
+    // tab through DockNodeUpdateTabBar's NavWindow reselect (imgui.cpp:19611-19613), NOT through
+    // FocusWindow's own "Select in dock node" block, commented out in 1.92.8 (imgui.cpp:13763-13766,
+    // for issue #2304). An unknown id is a silent no-op. Holding the route for the next tick was
     // rejected: the user asked for a specific panel, and popping a different one 16 ms later is
-    // exactly the behaviour this task exists to remove.
+    // exactly the behaviour E.3.2 exists to remove.
+    //
+    // THE ROUTE SHOWS ITS TARGET AND LEAVES THE KEYBOARD ALONE (the E.3.2 keyboard fix), so a click on
+    // a Hierarchy row keeps its focus-scoped Delete / Ctrl+D / F2 working. The pure routeRaise decides
+    // HOW: normally it SELECTS THE TAB with TabBarQueueFocus, which TabBarLayout consumes and zeroes
+    // (imgui_widgets.cpp:10002-10005) BEFORE DockNodeUpdateTabBar's focus block reads NextSelectedTabId
+    // (imgui.cpp:19740-19751) -- the whole reason the keyboard stays. A tab CLICK queues after layout,
+    // which is why a click does focus. It falls back to SetWindowFocus where the tab and the keyboard
+    // cannot be separated: a keyboard in a SIBLING tab of the target's node, which ImGui re-selects
+    // every frame (:19611-19613), and a node whose tab bar does not exist yet (frames 1-2). A floating
+    // target is only brought to the display front.
+    //
+    // RE-READ AT EVERY ImGui BUMP: imgui.cpp:13740, :13754-13756, :19611-19613 and :19740-19751;
+    // imgui_widgets.cpp:10002-10005 and :10384-10389 (the const char* TabBarQueueFocus overload
+    // IM_ASSERTs on a dock node's tab bar -- only the ImGuiTabItem* one is legal here).
     const bool explicitFocus = !state.focusPanelId.empty();
     if (explicitFocus) {
         const std::string requestedId = std::move(state.focusPanelId);
@@ -699,6 +724,7 @@ void drawShellUi(PanelRegistry& panels, PanelContext& context, ShellUiState& sta
     {
         const char* const routeTarget = routedPanelId(state.routeSource);
         const ImGuiIO& io = ImGui::GetIO();
+        const ImGuiContext* const g = ImGui::GetCurrentContext();  // read once: the guards and the gather
         const RouteGuards guards{
             .enabled = state.routeEnabled,
             // Only the ENTITY arm can be invalidated between the reconcile block and here:
@@ -726,10 +752,62 @@ void drawShellUi(PanelRegistry& panels, PanelContext& context, ShellUiState& sta
             // AnyPopupLevel IM_ASSERTs (:12889) and would abort the Debug lanes. Covers a menu left
             // open in the menu bar -- an open BeginMenu popup persists in g.OpenPopupStack across
             // frames -- and E.2.4's View popover alike.
-            .popupOpen = ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopup)};
+            //
+            // ...OR THE KEYBOARD IS STILL IN A POPUP WINDOW THAT HAS ALREADY CLOSED (the E.3.2 keyboard
+            // fix, measured on row 8 of its validation pass). A menu item's click closes its popup, so on
+            // the tick the create lands IsPopupOpen is false while NavWindow is still the closed menu
+            // (`Create###Menu_00`; menus and popups alike carry ImGuiWindowFlags_Popup, imgui.cpp:13156,
+            // :13186). That window is no dock sibling, so the route would select the tab only -- and the
+            // NEXT frame's NewFrame hands the keyboard back to the top-most active window
+            // (imgui.cpp:5949-5950), the Material tab the user was in, whose tab ImGui then re-selects
+            // (:19611-19613): the Inspector shows for one frame and Material takes the node back. A HOLD,
+            // not a Drop, because ImGui ends it by its own rule on the very next frame; the route then
+            // decides against the window that really holds the keyboard (Material, a sibling:
+            // SetWindowFocus; the Hierarchy: the tab, and the keyboard stays). NavWindow's ROOT, so a
+            // keyboard in a CHILD window of the closed popup holds too: a child takes its parent's
+            // RootWindow unless it is docked or its parent is a dock host (imgui.cpp:7761-7766, linked by
+            // Begin at :7937), and a popup is never a child window, so it is its own root
+            // (imgui_internal.h:2979). A docked panel is its own root as well, so nothing else moves.
+            .popupOpen = ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopup) ||
+                         (g->NavWindow != nullptr &&  // in a closed popup, or in a child window of one
+                          (g->NavWindow->RootWindow->Flags & ImGuiWindowFlags_Popup) != 0)};
         state.routeOutcome = routeOutcome(state.routeSource, guards);
         if (state.routeOutcome == RouteOutcome::Apply) {
-            ImGui::SetWindowFocus(routeTarget);
+            // The facts routeRaise decides on, read off ImGui as NAMED BOOLEANS (context_router.hpp keeps
+            // every ImGui type out of its public surface). NavWindow's ROOT, never NavWindow itself: a
+            // child window holding the keyboard is docked in no node, its root is.
+            ImGuiWindow* const target = ImGui::FindWindowByName(routeTarget);
+            const ImGuiWindow* const navRoot = (g->NavWindow != nullptr) ? g->NavWindow->RootWindow : nullptr;
+            ImGuiDockNode* const node = (target != nullptr) ? target->DockNode : nullptr;
+            ImGuiTabItem* const tab = (node != nullptr && node->TabBar != nullptr)
+                                          ? ImGui::TabBarFindTabByID(node->TabBar, target->TabId)
+                                          : nullptr;
+            const RouteRaiseFacts facts{.windowExists = target != nullptr,
+                                        .docked = target != nullptr && target->DockIsActive,
+                                        .soleWindowInNode = node != nullptr && node->Windows.Size == 1,
+                                        .keyboardInSiblingTab = node != nullptr && navRoot != nullptr &&
+                                                                navRoot != target && navRoot->DockNode == node,
+                                        .tabQueueable = tab != nullptr};
+            // NO default: -- a fifth enumerator is a clang-diagnostic-switch failure on the lint lane.
+            // SelectTab is returned only when tabQueueable, so `tab`, `node` and `target` are non-null
+            // there; DisplayFront only when windowExists.
+            switch (routeRaise(facts)) {
+                case RouteRaise::Nothing:
+                    break;
+                case RouteRaise::SelectTab:
+                    // The ImGuiTabItem* overload ONLY -- the const char* one asserts on a dock node's bar
+                    // (imgui_widgets.cpp:10386). The display step raises a FLOATING dock node's host and is
+                    // a no-op inside the main dockspace (bringToDisplayFrontOnly's own comment).
+                    ImGui::TabBarQueueFocus(node->TabBar, tab);
+                    bringToDisplayFrontOnly(target);
+                    break;
+                case RouteRaise::DisplayFront:
+                    bringToDisplayFrontOnly(target);
+                    break;
+                case RouteRaise::FocusWindow:
+                    ImGui::SetWindowFocus(routeTarget);  // the fall-back: I159(a)'s count stays three
+                    break;
+            }
         }
     }
     const ImGuiID dockId = ImGui::DockSpaceOverViewport(0, ImGui::GetMainViewport());
@@ -746,6 +824,11 @@ void drawShellUi(PanelRegistry& panels, PanelContext& context, ShellUiState& sta
     }
     drawPanels(panels, context);
     drawWelcomeWindow(fileMenu);  // AFTER the dockspace and the panels, so it FLOATS above them
+    // task E.3.2's keyboard fix: which window holds ImGui's keyboard after the WHOLE draw walk -- the
+    // ROOT of NavWindow, so a docked panel reads as its own id. LAST on purpose: every focus write of
+    // this frame has run by now (I159(h) pins the ordering).
+    const ImGuiWindow* const nav = ImGui::GetCurrentContext()->NavWindow;
+    state.keyboardFocusWindow = (nav != nullptr) ? std::string(nav->RootWindow->Name) : std::string();
 }
 
 }  // namespace engine::editor
