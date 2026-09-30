@@ -201,13 +201,19 @@ struct FileDialogHost {
 // read by the modal, two IN one-shots written by the modal's buttons and consumed OUTSIDE the draw
 // walk, at STEP 0 of applyFileRequests (D10 -- step 0 runs BEFORE the modalInputActive refusal in
 // step 2, or the accept is swallowed by the very modal that produced it).
+//
+// fix 2.5.1: it ALSO carries saveSceneFile's two NAME refusals (D13, revised -- a stem-less or a taken
+// corrected name), always in the save shape, so the name is now narrower than what it holds -- as is
+// EditorApp::sceneContainmentRefusalCount(), which counts both. Stated rather than renamed: the modal,
+// its drain and every rule above apply to a name refusal unchanged.
 struct ContainmentOffer {
     // ---- STATE / OUT -- set by openSceneFile/saveSceneFile through SceneFileContext::offer.
     bool open = false;        // the modal is up -> modalInputActive() MUST include this (D10)
     bool forSave = false;     // the refusal was a SAVE: NO project is ever offered (D9)
     std::string scenePath;    // the refused path, verbatim, for the modal's first line
-    std::string reason;       // containmentReason()'s exact bytes -- the SAME string the ERROR
-                              // carried, never a second wording (D6/AC-20)
+    std::string reason;       // the refusal's reason, exactly the bytes its ERROR carried --
+                              // containmentReason()'s for a containment refusal, D13's constant for
+                              // a name refusal (fix 2.5.1); never a second wording (D6/AC-20)
     std::string projectRoot;  // "" when no enclosing project.json was found AND always for a save;
                               // the accept's target
     std::string projectName;  // "" when that manifest did not parse -- the offer is still made
@@ -369,12 +375,14 @@ struct FileFlow {
 [[nodiscard]] bool openSceneFile(CommandContext& context, CommandStack& commands, SceneSession& session,
                                  std::string_view absolutePathUtf8, const SceneFileContext& fileContext);
 
-// Serialize, apply D13's extension rule when `appendExtension`, write atomically, and on success set
-// the path and mark the history CLEAN. Returns true iff the file was written. Logs exactly one ERROR
-// on failure and NOTHING on success.
+// Serialize, write atomically, and on success set the path and mark the history CLEAN. Returns true iff
+// the file was written. Logs exactly one ERROR on failure and NOTHING on success.
+// fix 2.5.1 (D13, revised): applies D13's rule (normalizeSceneSavePath) when `appendExtension`, and
+// refuses -- before serialization, one ERROR, and the save-refusal offer -- a normalised name that has no
+// stem or that differs from the answer and already exists.
 // task E.4.2: refuses BEFORE serialization when `fileContext` says the target is outside the open
-// project (D6/D7) -- the extension rule is applied first, so the check runs on the file that will
-// actually be written.
+// project (D6/D7) -- the name rule is applied first, so the check runs on the file that will actually
+// be written, and a containment refusal is decided before either name refusal.
 [[nodiscard]] bool saveSceneFile(CommandContext& context, CommandStack& commands, SceneSession& session,
                                  std::string_view absolutePathUtf8, bool appendExtension,
                                  const SceneFileContext& fileContext);

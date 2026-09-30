@@ -1954,3 +1954,250 @@ TEST_CASE("scene_session: normalizeSceneSavePath keeps every separator and every
     CHECK(normalizeSceneSavePath("/p/r9.") == "/p/r9..scene.json");  // trailing dot: literal
     CHECK(engine::editor::isSceneFileName("r9..scene.json"));        // ...and it IS a scene
 }
+
+// ---- SS59-SS62: fix 2.5.1 -- both name refusals, at the save choke point ---------------------------
+//
+// NONE OF THESE NEEDS A SUCCESSFUL WRITE, which is what lets them run and assert identically with
+// -DAERO_REFLECT_TOOLS=OFF: the refusals are decided after containment and BEFORE serialization, so in
+// that configuration the ERROR is still the name refusal's and never "built without AERO_REFLECT_TOOLS".
+// A refusal left below sceneToText would be invisible there -- which is where the old D13 check sat.
+
+namespace {
+
+// The message of the FIRST ERROR record, or "" when there is none -- so a message claim never reads an
+// INFO or a DEBUG record by position.
+[[nodiscard]] std::string firstErrorMessage(const std::vector<engine::editor::LogEntry>& records) {
+    const auto it = std::find_if(records.begin(), records.end(),
+                                 [](const engine::editor::LogEntry& e) { return e.level == engine::LogLevel::Error; });
+    return it == records.end() ? std::string() : it->message;
+}
+
+}  // namespace
+
+TEST_CASE("scene_session: a taken Save As name is refused, visibly, before serialization (SS59)") {
+    using engine::editor::ContainmentOffer;
+    using engine::editor::saveSceneFile;
+    using engine::editor::SceneFileContext;
+
+    const LogFixture fixture;
+    const TempDir tmp;
+    const std::string taken = tmp.join("r8.scene.json");
+    REQUIRE(engine::editor::writeTextFileAtomic(taken, "PRE-EXISTING").empty());
+
+    engine::World world;
+    engine::editor::seedDefaultScene(world);
+    Selection selection;
+    RootOrder roots;
+    CommandStack commands;
+    CommandContext ctx{world, selection, roots};
+    // DIRTY, so "setClean was not called" is not vacuous (SS42's shape).
+    const engine::Entity probe = world.create();
+    REQUIRE(commands.push(ctx, std::make_unique<engine::editor::DeleteEntitiesCommand>(
+                                   std::vector<engine::Entity>{probe}, std::vector<engine::Entity>{})));
+    REQUIRE_FALSE(commands.isClean());
+    engine::editor::SceneSession session;
+    session.setPath("/previous/scene.scene.json");
+    const std::string pathBefore(session.path());
+    ContainmentOffer offer;
+
+    const engine::editor::LogSinkScope scope;
+    std::vector<engine::editor::LogEntry> records;
+    scope.sink()->take(records);
+    records.clear();
+
+    // The macOS panel's answer for a typed "r8": "r8.json". NO project (D5 permits), so the name rule is
+    // the only thing that can refuse here.
+    CHECK_FALSE(saveSceneFile(ctx, commands, session, tmp.join("r8.json"), /*appendExtension=*/true,
+                              SceneFileContext{"", &offer}));
+
+    scope.sink()->take(records);
+    CHECK(countAtLevel(records, engine::LogLevel::Error) == 1);
+    const std::string message = firstErrorMessage(records);
+    CHECK(message.find("r8.scene.json'") != std::string::npos);  // the NORMALISED name, closing quote
+    CHECK(message.find("already exists") != std::string::npos);
+    CHECK(message.find("AERO_REFLECT_TOOLS") == std::string::npos);  // decided BEFORE serialization
+    const engine::editor::FileReadResult after = engine::editor::readTextFile(taken);
+    REQUIRE(after.text.has_value());
+    CHECK(*after.text == "PRE-EXISTING");                          // byte-identical
+    CHECK_FALSE(engine::editor::fileExists(tmp.join("r8.json")));  // and nothing else was created
+    CHECK_FALSE(commands.isClean());                               // setClean was NOT called
+    CHECK(session.path() == pathBefore);                           // setPath was NOT called
+    CHECK(offer.open);                                             // VISIBLE: the save-refusal modal
+    CHECK(offer.forSave);                                          // in its SAVE shape (D9)...
+    CHECK(offer.scenePath == taken);                               // ...naming the file it refused
+    CHECK(offer.projectRoot.empty());                              // ...offering no project
+    CHECK(offer.refusalSerial == 1U);
+    CHECK_FALSE(offer.reason.empty());                       // anti-vacuity for the next line
+    CHECK(message.find(offer.reason) != std::string::npos);  // ONE string for the ERROR and the modal
+
+    // ---- THE COUNTER-ARM: the answer "r8.scene.json" ITSELF. The panel asked about THAT exact file and
+    //      the user answered it, so the name rule stays out of the way. (It then writes in the full
+    //      configuration or refuses on AERO_REFLECT_TOOLS in the reduced one; this case asserts neither.)
+    records.clear();
+    ContainmentOffer asked;
+    (void)saveSceneFile(ctx, commands, session, taken, /*appendExtension=*/true, SceneFileContext{"", &asked});
+    scope.sink()->take(records);
+    CHECK_FALSE(anyMessageContains(records, "already exists"));
+    CHECK_FALSE(anyMessageContains(records, "needs a name"));
+}
+
+TEST_CASE("scene_session: a Save As answer with nothing before the suffix is refused (SS60)") {
+    using engine::editor::ContainmentOffer;
+    using engine::editor::saveSceneFile;
+    using engine::editor::SceneFileContext;
+
+    const LogFixture fixture;
+    const TempDir tmp;
+    const std::string hidden = tmp.join(".scene.json");
+
+    engine::World world;
+    engine::editor::seedDefaultScene(world);
+    Selection selection;
+    RootOrder roots;
+    CommandStack commands;
+    CommandContext ctx{world, selection, roots};
+    engine::editor::SceneSession session;
+
+    const engine::editor::LogSinkScope scope;
+    std::vector<engine::editor::LogEntry> records;
+
+    const std::array<std::string, 4> answers{tmp.join(".json"), tmp.join(".scene.json"), tmp.join(".scene"),
+                                             tmp.utf8() + "/"};
+    for (const std::string& answer : answers) {
+        CAPTURE(answer);
+        records.clear();  // FIRST: LogSink::take asserts its `out` is empty (console_model.cpp)
+        scope.sink()->take(records);
+        records.clear();
+        ContainmentOffer offer;
+        CHECK_FALSE(
+            saveSceneFile(ctx, commands, session, answer, /*appendExtension=*/true, SceneFileContext{"", &offer}));
+        scope.sink()->take(records);
+        CHECK(countAtLevel(records, engine::LogLevel::Error) == 1);
+        CHECK(firstErrorMessage(records).find("needs a name") != std::string::npos);
+        CHECK(offer.open);
+        CHECK(offer.forSave);
+        CHECK_FALSE(engine::editor::fileExists(hidden));  // never the hidden ".scene.json"
+        CHECK(session.untitled());
+    }
+}
+
+TEST_CASE("scene_session: containment reads the normalised name, and wins the order (SS61)") {
+    using engine::editor::ContainmentOffer;
+    using engine::editor::saveSceneFile;
+    using engine::editor::SceneFileContext;
+
+    const LogFixture fixture;
+    const TempDir tmp;
+    const std::string root = tmp.join("ProjA");  // lexical root, SS42's posture
+    // The normalised name ALSO exists, so the name refusal WOULD fire if containment did not come first.
+    std::error_code ec;
+    std::filesystem::create_directories(pathOfUtf8(tmp.join("Other")), ec);
+    REQUIRE_FALSE(static_cast<bool>(ec));
+    REQUIRE(engine::editor::writeTextFileAtomic(tmp.join("Other/level3.scene.json"), "PRE-EXISTING").empty());
+
+    engine::World world;
+    engine::editor::seedDefaultScene(world);
+    Selection selection;
+    RootOrder roots;
+    CommandStack commands;
+    CommandContext ctx{world, selection, roots};
+    engine::editor::SceneSession session;
+    ContainmentOffer offer;
+
+    const engine::editor::LogSinkScope scope;
+    std::vector<engine::editor::LogEntry> records;
+    scope.sink()->take(records);
+    records.clear();
+
+    CHECK_FALSE(saveSceneFile(ctx, commands, session, tmp.join("Other/level3.json"), /*appendExtension=*/true,
+                              SceneFileContext{root, &offer}));
+
+    scope.sink()->take(records);
+    CHECK(countAtLevel(records, engine::LogLevel::Error) == 1);
+    const std::string message = firstErrorMessage(records);
+    CHECK(message.find("level3.scene.json'") != std::string::npos);  // containment judged the NORMALISED name
+    CHECK(message.find("level3.json'") == std::string::npos);        // IO20's closing-quote discriminator
+    CHECK(message.find("must be saved inside the open project") != std::string::npos);
+    CHECK(message.find("already exists") == std::string::npos);  // the name refusal never fired
+    CHECK(offer.open);
+    CHECK(offer.forSave);
+}
+
+TEST_CASE("scene_session: a refused Save As name abandons the pending chain, both flow objects cleared (SS62)") {
+    using engine::editor::CreateProblem;
+    using engine::editor::createProject;
+    using engine::editor::DialogKind;
+    using engine::editor::DialogResult;
+    using engine::editor::ProjectCreateOutcome;
+    using engine::editor::ProjectManifest;
+
+    const LogFixture fixture;
+    const TempDir tmp;
+    const std::string rootA = tmp.join("ProjA");
+    const std::string taken = rootA + "/scenes/r8.scene.json";
+    std::error_code ec;
+    std::filesystem::create_directories(pathOfUtf8(rootA + "/scenes"), ec);
+    REQUIRE_FALSE(static_cast<bool>(ec));
+    REQUIRE(engine::editor::writeTextFileAtomic(taken, "PRE-EXISTING").empty());
+    // The panel's answer for a typed "r8": INSIDE ProjA, so containment permits and the TAKEN name refuses.
+    const DialogResult answer{.ready = true, .cancelled = false, .failed = false, .path = rootA + "/scenes/r8.json"};
+
+    // What every arm below must hold after the refusal: nothing written, nothing bound, the modal up in
+    // its save shape, and the pending action abandoned WITH ITS TARGETS, whichever flow object holds them.
+    const auto checkAbandoned = [&taken](const FlowFixture& f, const SceneSession& session) {
+        CHECK(f.flow.containmentOffer.open);
+        CHECK(f.flow.containmentOffer.forSave);
+        CHECK(f.flow.containmentOffer.reason.find("already exists") != std::string::npos);  // a NAME refusal
+        CHECK((f.flow.pending == FileAction::None));
+        CHECK_FALSE(f.flow.saveBeforePending);
+        CHECK(f.flow.requestedPath.empty());
+        CHECK(f.projectFlow.requestedPath.empty());
+        CHECK(session.untitled());
+        const engine::editor::FileReadResult after = engine::editor::readTextFile(taken);
+        REQUIRE(after.text.has_value());
+        CHECK(*after.text == "PRE-EXISTING");
+    };
+
+    SUBCASE("a guarded Quit") {
+        FlowFixture f;
+        SceneSession session;
+        f.projectSession.set(ProjectManifest{}, rootA);
+        // The state AskWhereToSave leaves behind, seeded directly (SS52's shape).
+        f.flow.dialog = DialogKind::Save;
+        f.flow.saveBeforePending = true;
+        f.flow.requestedPath = "stale";
+        f.flow.pending = FileAction::Quit;
+
+        applyDialogResult(f.ctx, f.commands, session, f.flow, f.host, answer, f.project);
+
+        CHECK_FALSE(f.flow.quitConfirmed);  // the editor keeps running
+        checkAbandoned(f, session);
+    }
+
+    SUBCASE("a guarded Open Project") {
+        // A REAL project, so a leaked target would ADOPT rather than fail.
+        const ProjectCreateOutcome b = createProject(tmp.utf8(), "ProjB", "0.1.0");
+        REQUIRE(b.problem == CreateProblem::Ok);
+        FlowFixture f;
+        SceneSession session;
+        f.projectSession.set(ProjectManifest{}, rootA);
+        f.flow.dialog = DialogKind::Save;
+        f.flow.saveBeforePending = true;
+        f.flow.requestedPath = "stale";
+        f.flow.pending = FileAction::OpenProject;
+        f.projectFlow.requestedPath = b.root;
+
+        applyDialogResult(f.ctx, f.commands, session, f.flow, f.host, answer, f.project);
+
+        CHECK(f.projectSession.root() == rootA);  // nothing was adopted by the refusal itself
+        checkAbandoned(f, session);
+
+        // ---- SS52's CONSEQUENCE ARM, verbatim: dismiss, then a later File > Open Project... on the clean
+        //      stack. A leaked target would take performAction's no-dialog seam and adopt ProjB.
+        f.flow.containmentOffer = {};
+        f.flow.requested = FileAction::OpenProject;
+        REQUIRE(f.commands.isClean());
+        applyFileRequests(f.ctx, f.commands, session, f.flow, f.host, f.project);
+        CHECK(f.projectSession.root() == rootA);
+    }
+}

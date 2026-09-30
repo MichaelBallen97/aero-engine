@@ -341,6 +341,13 @@ void drawUnsavedChangesModal(FileMenuContext& fileMenu) {
 // returned, EndMainMenuBar has run, the ID stack is clean and OpenPopup is legal here (2.5.1's F13).
 // The ### form makes the ID stable (imgui.cpp:2539-2545), exactly as UNSAVED_MODAL_ID does above.
 constexpr const char* CONTAINMENT_MODAL_ID = "Scene Outside Project###aero_scene_containment";
+// fix 2.5.1: a SAVE refusal -- containment OR one of D13's name refusals -- under a title that is true of
+// both. The SAME ###aero_scene_containment suffix, so it is the SAME popup: ImHashStr restarts at "###"
+// (imgui.cpp:2539-2545), BeginPopupModal looks the popup up by that id and Begin finds the window by the
+// same hash, while the title bar draws the label handed to Begin this frame (:8640). OpenPopup and
+// IsPopupOpen keep using CONTAINMENT_MODAL_ID. A different suffix would make BeginPopupModal look for a
+// popup nobody opened and draw nothing at all -- I270 pins both spellings.
+constexpr const char* SAVE_REFUSED_MODAL_LABEL = "Scene Not Saved###aero_scene_containment";
 
 void drawSceneContainmentModal(FileMenuContext& fileMenu) {
     ContainmentOffer& offer = fileMenu.flow.containmentOffer;
@@ -373,7 +380,9 @@ void drawSceneContainmentModal(FileMenuContext& fileMenu) {
         return;
     }
     // F13: EndPopup ONLY when BeginPopupModal returned true -- the BeginMenu family, not the Begin one.
-    if (ImGui::BeginPopupModal(CONTAINMENT_MODAL_ID, nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+    // The LABEL follows the offer's shape and the popup does not (SAVE_REFUSED_MODAL_LABEL's comment).
+    if (ImGui::BeginPopupModal(offer.forSave ? SAVE_REFUSED_MODAL_LABEL : CONTAINMENT_MODAL_ID, nullptr,
+                               ImGuiWindowFlags_AlwaysAutoResize)) {
         // A NAMED std::string, never fileNameOf(...).data(): fileNameOf returns a view INTO its
         // argument (scene_session.cpp:124-134), and a string_view carries no terminator guarantee at
         // all -- THIS IS THE SHAPE, not a fix for an overrun observed here. Measured for this call

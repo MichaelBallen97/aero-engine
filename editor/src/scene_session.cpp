@@ -217,6 +217,14 @@ void newScene(CommandContext& context, CommandStack& commands) {
 
 namespace {
 
+// D13, REVISED (fix 2.5.1): the two NAME refusals' reasons. Each is the ERROR's reason clause AND the
+// modal's second line -- one string for both, never a second wording (task E.4.2's D6/AC-20 rule). The
+// taken-name wording says why no Replace prompt appeared: the panel asked about the name the user SAW
+// ("r8.json") or about none at all ("r8"), never about the corrected "r8.scene.json".
+constexpr std::string_view SCENE_NAME_TAKEN_REASON =
+    "a file with that name already exists, and the file dialog did not ask about replacing it";
+constexpr std::string_view SCENE_NAME_EMPTY_REASON = "a scene file needs a name before '.scene.json'";
+
 // task E.4.2: fill the offer a refusal raises, or do nothing at all when the caller supplied none.
 // File-local: the two choke points directly below are its ONLY callers, and a refusal is the ONLY
 // thing that may write these fields -- a second writer anywhere would be a second offer policy with
@@ -331,17 +339,35 @@ bool saveSceneFile(CommandContext& context, CommandStack& commands, SceneSession
         raiseContainmentOffer(fileContext.offer, target, reason, verdict, /*forSave=*/true);
         return false;  // NO setClean, NO setPath -- a save that lies is the worst outcome here (R4)
     }
+    // D13, REVISED (fix 2.5.1): every name refusal is decided HERE, after containment and BEFORE
+    // serialization -- a refusal performs no serialization, and it reads the same in every build
+    // configuration (the old check sat below sceneToText, so -DAERO_REFLECT_TOOLS=OFF could never reach
+    // it). Only a panel's answer is judged: a literal path (requestSaveSceneAs, a titled Save) is the
+    // caller's to choose (D15).
+    //
+    // `target != absolutePathUtf8` is what makes this D13 and not a second overwrite policy: when the rule
+    // changed nothing, the panel itself asked about that exact file and the user answered it; when it
+    // changed something, the panel asked about the name the user SAW, or about none. EXACT comparison, so
+    // a case-only collision on a case-insensitive volume refuses too -- the safe direction.
+    if (appendExtension) {
+        std::string_view refusal;
+        if (!isSceneFileName(fileNameOf(target))) {
+            refusal = SCENE_NAME_EMPTY_REASON;  // ".json", ".scene", "" -- nothing to call it
+        } else if (target != absolutePathUtf8 && fileExists(target)) {
+            refusal = SCENE_NAME_TAKEN_REASON;  // the panel asked about a DIFFERENT name, or none
+        }
+        if (!refusal.empty()) {
+            const std::string reason(refusal);  // ONE string for the ERROR and the modal (D6/AC-20's rule)
+            AERO_LOG_ERROR("editor: could not save scene '{}' -- {}", target, reason);
+            raiseContainmentOffer(fileContext.offer, target, reason, verdict, /*forSave=*/true);
+            return false;  // NO setClean, NO setPath (R4)
+        }
+    }
     const std::optional<std::string> text = sceneToText(context.world);
     if (!text.has_value()) {
-        // task E.4.2: names `target`, not the argument -- `target` now exists above and the D13 refusal
-        // two lines below already names it, so one function would otherwise spell "the file" two ways.
+        // task E.4.2: names `target`, not the argument -- `target` exists above and the D13 refusals above
+        // already name it, so one function would otherwise spell "the file" two ways.
         AERO_LOG_ERROR("editor: could not save scene '{}' -- {}", target, "built without AERO_REFLECT_TOOLS");
-        return false;
-    }
-    // D13's existence check fires ONLY when the extension was actually appended -- if the user typed a
-    // name that already has one, the native panel already asked about overwriting.
-    if (appendExtension && target != absolutePathUtf8 && fileExists(target)) {
-        AERO_LOG_ERROR("editor: could not save scene '{}' -- {}", target, "a file with that name already exists");
         return false;
     }
     const std::string reason = writeTextFileAtomic(target, *text);
@@ -860,8 +886,10 @@ void applyDialogResult(CommandContext& context, CommandStack& commands, SceneSes
         flow.pending = FileAction::None;
         return;
     }
-    // kind == DialogKind::Save. appendExtension is true ONLY here -- a native Save panel is the one
-    // place a user can type a bare name (D13); requestSaveSceneAs(path) hands a path literally.
+    // kind == DialogKind::Save. appendExtension is true ONLY here -- a native Save panel's text field is
+    // the one place a name comes from (D13, revised by fix 2.5.1: saveSceneFile normalises it to a
+    // .scene.json leaf and refuses a corrected name the panel never asked about); requestSaveSceneAs(path)
+    // hands a path literally.
     const bool ok = saveSceneFile(context, commands, session, result.path, /*appendExtension=*/true,
                                   SceneFileContext{project.session.root(), &flow.containmentOffer});
     if (ok && flow.saveBeforePending) {

@@ -17633,16 +17633,13 @@ TEST_CASE("editor: a DRAINED containment offer still closes its popup (task E.4.
         return hits;
     };
 
-    // The modal is entered from TWO places now: the drained arm and the body proper.
-    CHECK(countLinesContaining(shell, "ImGui::BeginPopupModal(CONTAINMENT_MODAL_ID") == 2U);
+    // The modal is entered from TWO places now: the drained arm, which names the ID constant, and the body
+    // proper, which since fix 2.5.1 picks its LABEL by the offer's shape (the same popup: I270). Each is
+    // pinned as a SOLE line, so a third entry of either spelling reddens this case.
+    CHECK(countLinesContaining(shell, "ImGui::BeginPopupModal(CONTAINMENT_MODAL_ID") == 1U);
     const std::size_t notOpenAt = soleLineContaining(shell, "if (!offer.open) {");
-    std::size_t mainBeginAt = shell.size();
-    for (std::size_t i = shell.size(); i-- > 0;) {
-        if (shell[i].find("ImGui::BeginPopupModal(CONTAINMENT_MODAL_ID") != std::string::npos) {
-            mainBeginAt = i;  // the LAST of the two: the body proper
-            break;
-        }
-    }
+    const std::size_t mainBeginAt = soleLineContaining(
+        shell, "ImGui::BeginPopupModal(offer.forSave ? SAVE_REFUSED_MODAL_LABEL : CONTAINMENT_MODAL_ID");
     REQUIRE(mainBeginAt < shell.size());
     REQUIRE(notOpenAt < mainBeginAt);
 
@@ -17663,6 +17660,30 @@ TEST_CASE("editor: a DRAINED containment offer still closes its popup (task E.4.
     // F13's balance, within that arm: exactly one Begin and exactly one End.
     CHECK(countIn("ImGui::BeginPopupModal(", notOpenAt, mainBeginAt) == 1U);
     CHECK(countIn("ImGui::EndPopup();", notOpenAt, mainBeginAt) == 1U);
+}
+
+TEST_CASE("editor imgui: a SAVE refusal's title shares the containment popup's identity (fix 2.5.1, I270)") {
+    // A save refusal -- containment OR one of D13's name refusals -- draws the containment modal under a
+    // title that is true of both, "Scene Not Saved". The popup's IDENTITY is its ### suffix: ImHashStr
+    // restarts at "###", BeginPopupModal looks the popup up by that id, and the title bar draws whatever
+    // label Begin was handed this frame. So the two labels must share ONE suffix: a label with any other
+    // suffix makes BeginPopupModal look for a popup nobody opened, the modal silently never draws, and
+    // I189 -- which drives a refused save through real frames -- stays green, because nothing in this tree
+    // can read which label a popup was drawn under. SOURCE TEXT, I159's shape. A THIRD label must share
+    // the suffix too, and be added here.
+    const std::vector<std::string> shell = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/shell_ui.cpp");
+    REQUIRE_FALSE(shell.empty());
+
+    const std::size_t idAt = soleLineContaining(shell, "\"Scene Outside Project###aero_scene_containment\"");
+    const std::size_t labelAt = soleLineContaining(shell, "\"Scene Not Saved###aero_scene_containment\"");
+    CHECK(countLinesContaining(shell, "###aero_scene_containment") == 2U);
+    // The open arm picks the label by the offer's shape, BELOW both constants...
+    const std::size_t pickAt =
+        soleLineContaining(shell, "offer.forSave ? SAVE_REFUSED_MODAL_LABEL : CONTAINMENT_MODAL_ID");
+    CHECK(idAt < pickAt);
+    CHECK(labelAt < pickAt);
+    // ...while the opener still names the ID constant, so there is one popup and not two.
+    CHECK(countLinesContaining(shell, "ImGui::OpenPopup(CONTAINMENT_MODAL_ID)") == 1U);
 }
 
 // ==================================================================================================
