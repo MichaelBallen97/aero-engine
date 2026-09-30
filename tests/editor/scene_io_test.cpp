@@ -1251,6 +1251,30 @@ TEST_CASE("scene_io: a typed Save As name lands as a scene the startup cascade f
     engine::editor::applyDialogResult(f.ctx, f.commands, session, flow, host, r10, f.project);
     CHECK(session.path() == p.root + "/scenes/R10.scene.json");
     CHECK(engine::editor::fileExists(p.root + "/scenes/R10.scene.json"));
+
+    // ★ THE PANEL'S ANSWERS FOR A TYPED SUFFIX, measured on this fix's macOS pass: NSSavePanel appends
+    //   its hidden ".json" to whatever is typed, so "r11.scene.json" comes back "r11.scene.json.json"
+    //   and "R12.JSON" comes back "R12.JSON.json". Both land on the name the user meant, and nothing
+    //   doubled is written.
+    const std::string scenes = p.root + "/scenes/";
+    const std::string r11Answer = scenes + "r11.scene.json.json";
+    flow.dialog = DialogKind::Save;
+    const DialogResult r11{.ready = true, .cancelled = false, .failed = false, .path = r11Answer};
+    engine::editor::applyDialogResult(f.ctx, f.commands, session, flow, host, r11, f.project);
+    CHECK_FALSE(flow.containmentOffer.open);
+    CHECK(session.path() == scenes + "r11.scene.json");
+    CHECK(engine::editor::fileExists(scenes + "r11.scene.json"));
+    CHECK_FALSE(engine::editor::fileExists(scenes + "r11.scene.json.scene.json"));  // strip-once's name
+    CHECK_FALSE(engine::editor::fileExists(r11Answer));                             // the answer itself
+
+    const std::string r12Answer = scenes + "R12.JSON.json";
+    flow.dialog = DialogKind::Save;
+    const DialogResult r12{.ready = true, .cancelled = false, .failed = false, .path = r12Answer};
+    engine::editor::applyDialogResult(f.ctx, f.commands, session, flow, host, r12, f.project);
+    CHECK_FALSE(flow.containmentOffer.open);
+    CHECK(session.path() == scenes + "R12.scene.json");
+    CHECK(engine::editor::fileExists(scenes + "R12.scene.json"));
+    CHECK_FALSE(engine::editor::fileExists(scenes + "R12.JSON.scene.json"));
 }
 
 TEST_CASE("scene_io: the paths the Save As name rule leaves alone, and a chain it completes (IO23)") {

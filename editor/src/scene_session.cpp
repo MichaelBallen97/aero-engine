@@ -159,7 +159,7 @@ constexpr unsigned char foldAscii(unsigned char c) noexcept {
 
 // Deliberately WITHOUT the stem requirement isSceneFileName carries -- ".json" must match ".json" here, so
 // that it can be stripped to an EMPTY stem and refused as nameless, rather than kept as a stem of its own
-// and turned into the hidden ".json.scene.json". A stem that REALLY begins with a dot (".r9", ".json.json",
+// and turned into the hidden ".json.scene.json". A stem that REALLY begins with a dot (".r9", ".r9.json",
 // ".foo.scene.json") keeps it, and saveSceneFile refuses that result as HIDDEN, with its own reason:
 // firstSceneUnder and the browser list with includeHidden=false (isHiddenName), so neither would ever see
 // such a scene.
@@ -177,30 +177,47 @@ constexpr unsigned char foldAscii(unsigned char c) noexcept {
     return true;
 }
 
-// ORDER MATTERS: ".scene.json" also ends in ".json". Tried second, the leaf ".scene.json" (which
-// isSceneFileName rejects for its empty stem) would strip to ".scene", keep it as a stem and become the
-// hidden ".scene.scene.json" -- refused only for its dot, under the wrong reason; tried first, it strips to
-// "" and is refused as nameless. SS57 pins that input.
+// The suffixes the stripping loop removes, one per iteration. Under the loop their ORDER CHANGES NO RESULT,
+// and the ".scene.json" entry is REDUNDANT: a leaf ending in ".scene.json" with anything before it is
+// already a scene name and never reaches a strip, and on the one leaf that does -- ".scene.json" itself --
+// stripping ".json" and then ".scene" in two iterations lands on the same "" as stripping ".scene.json" in
+// one. It is kept because it is the rule's own wording; a seed that reorders or deletes it is a non-finding.
 constexpr std::array<std::string_view, 3> SAVE_NAME_SUFFIXES{".scene.json", ".json", ".scene"};
+
+// Remove ONE of SAVE_NAME_SUFFIXES from the end of `name`, ASCII-case-folded; false when none matches.
+[[nodiscard]] bool stripOneSaveSuffix(std::string_view& name) noexcept {
+    for (const std::string_view suffix : SAVE_NAME_SUFFIXES) {
+        if (hasSuffixFolded(name, suffix)) {
+            name.remove_suffix(suffix.size());
+            return true;
+        }
+    }
+    return false;
+}
 
 }  // namespace
 
 std::string normalizeSceneSavePath(std::string_view pathUtf8) {
     const std::string_view leaf = fileNameOf(pathUtf8);
-    if (isSceneFileName(leaf)) {  // the SAME predicate the E.4.1 cascade reads (project_state.cpp)
-        return std::string(pathUtf8);
-    }
+    // THE LOOP (fix 2.5.1's macOS pass): NSSavePanel appends its hidden ".json" to WHATEVER is typed, so a
+    // typed "r11.scene.json" comes back "r11.scene.json.json" and "R12.JSON" comes back "R12.JSON.json".
+    // Strip trailing suffixes one at a time, and stop the moment what remains IS a scene name -- the SAME
+    // predicate the E.4.1 cascade reads -- keeping it exactly as the user spelled it. A leaf that is already
+    // a scene name never enters the loop, so it comes back byte for byte.
+    //
+    // TERMINATES: an iteration that strips removes at least five characters (".json", the shortest suffix),
+    // and one that cannot strip ends the loop, so it runs at most leaf.size() / 5 + 1 times.
     std::string_view stem = leaf;
-    for (const std::string_view suffix : SAVE_NAME_SUFFIXES) {
-        if (hasSuffixFolded(stem, suffix)) {
-            stem.remove_suffix(suffix.size());
-            break;  // ONE suffix: "a.json.json" keeps "a.json" as its stem
-        }
+    bool isScene = isSceneFileName(stem);
+    while (!isScene && stripOneSaveSuffix(stem)) {
+        isScene = isSceneFileName(stem);
     }
     // The directory part, verbatim. In range by construction: fileNameOf returns a SUFFIX of its argument.
     std::string result(pathUtf8.substr(0, pathUtf8.size() - leaf.size()));
     result += stem;
-    result += SCENE_EXTENSION;
+    if (!isScene) {
+        result += SCENE_EXTENSION;  // every trailing suffix is gone; "" stays "" and is refused as nameless
+    }
     return result;
 }
 
@@ -361,7 +378,7 @@ bool saveSceneFile(CommandContext& context, CommandStack& commands, SceneSession
         if (!isSceneFileName(fileNameOf(target))) {
             refusal = SCENE_NAME_EMPTY_REASON;  // ".json", ".scene", "" -- nothing to call it
         } else if (isHiddenName(fileNameOf(target))) {
-            // ".r9", ".json.json", ".foo.scene.json": a HIDDEN file. The LISTING's own predicate, so the
+            // ".r9", ".r9.json", ".foo.scene.json": a HIDDEN file. The LISTING's own predicate, so the
             // refusal and what firstSceneUnder / the browser skip cannot drift. BEFORE the taken test: no
             // existing file changes whether the name can be seen.
             refusal = SCENE_NAME_HIDDEN_REASON;

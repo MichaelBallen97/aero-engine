@@ -1886,7 +1886,22 @@ TEST_CASE("scene_session: normalizeSceneSavePath, every arm (SS55)") {
     CHECK(normalizeSceneSavePath("/p/scenes/r9.txt") == "/p/scenes/r9.txt.scene.json");     // always ends in it
     CHECK(normalizeSceneSavePath("/p/my.level.json") == "/p/my.level.scene.json");          // the LAST suffix only
     CHECK(normalizeSceneSavePath("/p/my.level.scene.json") == "/p/my.level.scene.json");
-    CHECK(normalizeSceneSavePath("/p/a.json.json") == "/p/a.json.scene.json");  // ONE suffix, no loop
+    CHECK(normalizeSceneSavePath("/p/a.json.json") == "/p/a.scene.json");  // EVERY trailing suffix, not one
+
+    // ---- THE PANEL APPENDS ITS HIDDEN ".json" TO WHATEVER IS TYPED -- measured on this fix's macOS pass, from
+    //      a signed .app: a typed "r11.scene.json" came back "r11.scene.json.json", "R12.JSON" came back
+    //      "R12.JSON.json", and ".json" came back ".json.json". So the rule strips EVERY trailing suffix, one
+    //      at a time, and keeps the leaf as the user spelled it the moment what remains IS a scene name.
+    CHECK(normalizeSceneSavePath("/p/r11.scene.json.json") == "/p/r11.scene.json");  // validation row 5
+    CHECK(normalizeSceneSavePath("/p/R12.JSON.json") == "/p/R12.scene.json");        // row 6
+    CHECK(normalizeSceneSavePath("/p/.json.json") == "/p/.scene.json");              // row 7: nameless, refused
+    CHECK(normalizeSceneSavePath("/p/r11.scene.json.scene") == "/p/r11.scene.json");
+    CHECK(normalizeSceneSavePath("/p/x.json.json.json") == "/p/x.scene.json");   // a triple
+    CHECK(normalizeSceneSavePath("/p/R.Scene.Json.json") == "/p/R.Scene.Json");  // the user's spelling, kept
+    CHECK(normalizeSceneSavePath("/p/a.b.json") == "/p/a.b.scene.json");         // ".b" is not a suffix
+    CHECK(normalizeSceneSavePath("/p/x.scene") == "/p/x.scene.json");
+    CHECK(normalizeSceneSavePath("/p/json.json") == "/p/json.scene.json");  // "json" is a stem, not a suffix
+    CHECK(normalizeSceneSavePath("/p/.r9.json") == "/p/.r9.scene.json");    // hidden, refused (SS63)
 }
 
 TEST_CASE("scene_session: normalizeSceneSavePath folds exactly as isSceneFileName does (SS56)") {
@@ -1923,11 +1938,11 @@ TEST_CASE("scene_session: an answer with nothing before its suffix becomes the r
     using engine::editor::fileNameOf;
     using engine::editor::isSceneFileName;
     using engine::editor::normalizeSceneSavePath;
-    // ".scene.json" is the row that catches a REORDERED suffix list: tried after ".json" it would strip to
-    // ".scene", keep that as a stem and produce the hidden ".scene.scene.json" -- which the save refuses only
-    // for its dot (SS63), under the wrong reason.
-    constexpr std::array<std::string_view, 6> STEMLESS{"/d/.json", "/d/.scene.json", "/d/.scene", "/d/.JSON", "/d/",
-                                                       ""};
+    // Every trailing suffix is stripped, so ".json.json" -- what macOS's panel returns for a typed ".json" --
+    // is nameless too, and is refused as nameless rather than as the hidden ".json.scene.json".
+    constexpr std::array<std::string_view, 7> STEMLESS{
+        "/d/.json", "/d/.scene.json", "/d/.scene", "/d/.JSON", "/d/", "", "/d/.json.json",
+    };
     for (const std::string_view answer : STEMLESS) {
         CAPTURE(answer);
         // A NAMED std::string: fileNameOf returns a view INTO its argument (scene_session.hpp).
@@ -2089,8 +2104,9 @@ TEST_CASE("scene_session: a Save As answer with nothing before the suffix is ref
     const engine::editor::LogSinkScope scope;
     std::vector<engine::editor::LogEntry> records;
 
-    const std::array<std::string, 4> answers{tmp.join(".json"), tmp.join(".scene.json"), tmp.join(".scene"),
-                                             tmp.utf8() + "/"};
+    // ".json.json" is what macOS's panel returned for a typed ".json" (measured): nameless, like the others.
+    const std::array<std::string, 5> answers{tmp.join(".json"), tmp.join(".scene.json"), tmp.join(".scene"),
+                                             tmp.utf8() + "/", tmp.join(".json.json")};
     for (const std::string& answer : answers) {
         CAPTURE(answer);
         records.clear();  // FIRST: LogSink::take asserts its `out` is empty (console_model.cpp)
@@ -2248,12 +2264,12 @@ TEST_CASE("scene_session: a Save As name that would be a hidden file is refused 
     //      browser list with includeHidden=false, so neither would ever see it. That is the leaf the save
     //      refuses. Expected values are the test's own, never computed from the function under test.
     CHECK(normalizeSceneSavePath("/d/.r9") == "/d/.r9.scene.json");
-    CHECK(normalizeSceneSavePath("/d/.json.json") == "/d/.json.scene.json");      // ONE suffix stripped
+    CHECK(normalizeSceneSavePath("/d/.r9.json") == "/d/.r9.scene.json");          // suffix gone, dot kept
     CHECK(normalizeSceneSavePath("/d/.R9.JSON") == "/d/.R9.scene.json");          // folded, dot kept
     CHECK(normalizeSceneSavePath("/d/.foo.scene.json") == "/d/.foo.scene.json");  // the UNCHANGED arm
     constexpr std::array<std::string_view, 4> HIDDEN{
         "/d/.r9",
-        "/d/.json.json",
+        "/d/.r9.json",
         "/d/.R9.JSON",
         "/d/.foo.scene.json",
     };
@@ -2278,7 +2294,7 @@ TEST_CASE("scene_session: a Save As name that would be a hidden file is refused 
     const engine::editor::LogSinkScope scope;
     std::vector<engine::editor::LogEntry> records;
 
-    const std::array<std::string, 4> answers{tmp.join(".r9"), tmp.join(".json.json"), tmp.join(".R9.JSON"),
+    const std::array<std::string, 4> answers{tmp.join(".r9"), tmp.join(".r9.json"), tmp.join(".R9.JSON"),
                                              tmp.join(".foo.scene.json")};
     for (const std::string& answer : answers) {
         CAPTURE(answer);

@@ -116,16 +116,19 @@ inline constexpr std::string_view SCENE_EXTENSION = ".scene.json";
 // D13, REVISED (fix/2.5.1-save-as-scene-suffix): the file a native Save panel's answer becomes. ONLY THE
 // LAST SEGMENT CHANGES; everything before it -- '/', '\' or mixed -- is kept byte for byte.
 //   * a leaf isSceneFileName accepts          -> the path UNCHANGED, its case kept ("a.Scene.Json" stays)
-//   * otherwise the leaf's STEM is the leaf minus ONE trailing ".scene.json", ".json" or ".scene"
-//     (ASCII-case-folded, tried in that order), and the result is <directory><stem>.scene.json
-// So "r9" and "r9.json" and "R9.JSON" and "r9.scene" all become "r9.scene.json" (the stem's own case
-// kept), "r9.txt" becomes "r9.txt.scene.json", and a leaf with nothing before its suffix -- ".json",
-// ".scene.json", ".scene", "" -- becomes exactly ".scene.json", which isSceneFileName REFUSES and so
-// saveSceneFile refuses too. The result always ends in ".scene.json"; it is a scene iff the stem is
-// non-empty. A stem that itself begins with '.' KEEPS its dot (".r9" -> ".r9.scene.json", ".json.json" ->
-// ".json.scene.json", and ".foo.scene.json" unchanged): such a result is a HIDDEN file (isHiddenName), which
-// firstSceneUnder and the browser never list, so saveSceneFile refuses it as well, with its own reason.
-// Pure: no filesystem, no logging.
+//   * otherwise trailing ".scene.json", ".json" and ".scene" (ASCII-case-folded) are stripped ONE AT A
+//     TIME until what remains is a scene name -- kept exactly as spelled -- or no suffix is left, in which
+//     case the result is <directory><stem>.scene.json
+// The loop exists because macOS's save panel appends its hidden ".json" to WHATEVER is typed (measured): a
+// typed "r11.scene.json" comes back "r11.scene.json.json" and becomes "r11.scene.json"; "R12.JSON" comes
+// back "R12.JSON.json" and becomes "R12.scene.json". So "r9", "r9.json", "R9.JSON" and "r9.scene" all
+// become "r9.scene.json" (the stem's own case kept), "r9.txt" becomes "r9.txt.scene.json", and a leaf with
+// nothing before its suffixes -- ".json", ".json.json", ".scene.json", ".scene", "" -- becomes exactly
+// ".scene.json", which isSceneFileName REFUSES and so saveSceneFile refuses too. The result always ends in
+// ".scene.json", ASCII-case-folded; it is a scene iff the stem is non-empty. A stem that itself begins with
+// '.' KEEPS its dot (".r9" and ".r9.json" -> ".r9.scene.json", and ".foo.scene.json" unchanged): such a
+// result is a HIDDEN file (isHiddenName), which firstSceneUnder and the browser never list, so saveSceneFile
+// refuses it as well, with its own reason. Pure: no filesystem, no logging.
 [[nodiscard]] std::string normalizeSceneSavePath(std::string_view pathUtf8);
 
 // ---- THE swap (D2/INV-6/INV-1) -------------------------------------------------------------------
