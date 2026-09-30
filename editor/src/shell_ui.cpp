@@ -763,9 +763,14 @@ void drawShellUi(PanelRegistry& panels, PanelContext& context, ShellUiState& sta
             // (:19611-19613): the Inspector shows for one frame and Material takes the node back. A HOLD,
             // not a Drop, because ImGui ends it by its own rule on the very next frame; the route then
             // decides against the window that really holds the keyboard (Material, a sibling:
-            // SetWindowFocus; the Hierarchy: the tab, and the keyboard stays).
+            // SetWindowFocus; the Hierarchy: the tab, and the keyboard stays). NavWindow's ROOT, so a
+            // keyboard in a CHILD window of the closed popup holds too: a child takes its parent's
+            // RootWindow unless it is docked or its parent is a dock host (imgui.cpp:7761-7766, linked by
+            // Begin at :7937), and a popup is never a child window, so it is its own root
+            // (imgui_internal.h:2979). A docked panel is its own root as well, so nothing else moves.
             .popupOpen = ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopup) ||
-                         (g->NavWindow != nullptr && (g->NavWindow->Flags & ImGuiWindowFlags_Popup) != 0)};
+                         (g->NavWindow != nullptr &&  // in a closed popup, or in a child window of one
+                          (g->NavWindow->RootWindow->Flags & ImGuiWindowFlags_Popup) != 0)};
         state.routeOutcome = routeOutcome(state.routeSource, guards);
         if (state.routeOutcome == RouteOutcome::Apply) {
             // The facts routeRaise decides on, read off ImGui as NAMED BOOLEANS (context_router.hpp keeps

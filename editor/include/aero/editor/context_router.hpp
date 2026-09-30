@@ -68,7 +68,8 @@ struct RouteGuards {
     bool dragPayloadLive = false;         // GetDragDropPayload() != nullptr (the PUBLIC drag signal)
     bool gizmoDragActive = false;         // ImGuizmo::IsUsing()
     bool popupOpen = false;               // IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopup), or the
-                                          // keyboard still in a popup that just closed (one frame)
+                                          // keyboard still in a popup that just closed, or in a child
+                                          // window of one -- NavWindow's ROOT is the popup (one frame)
 };
 
 enum class RouteOutcome : std::uint8_t {

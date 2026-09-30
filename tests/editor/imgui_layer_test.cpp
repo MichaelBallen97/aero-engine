@@ -13693,18 +13693,21 @@ TEST_CASE("editor imgui: the editor has ONE focus policy, and it is spelled once
         // ALSO holds while NavWindow is still a popup window that has already closed. On the tick a Create
         // menu click lands, IsPopupOpen is false but NavWindow is still the closed menu; without this term
         // the route selects the tab, the next NewFrame hands the keyboard back to the Material tab
-        // (imgui.cpp:5949-5950) and ImGui re-selects it. No tier here can open a popup, so this text is the
-        // term's only automated witness: exactly one line names the flag, and it is the continuation of the
-        // `.popupOpen` initializer, inside the guards struct and above the decision.
+        // (imgui.cpp:5949-5950) and ImGui re-selects it. It reads NavWindow's ROOT, so a keyboard in a
+        // child window of the closed popup holds as well (imgui.cpp:7761-7766). No tier here can open a
+        // popup, so this text is the term's only automated witness: exactly one line names the flag, and it
+        // closes the `.popupOpen` initializer, inside the guards struct and above the decision.
         const std::size_t guardsAt = soleLineContaining(shell, "const RouteGuards guards{");
         const std::size_t popupGuardAt = soleLineContaining(shell,
                                                             ".popupOpen = ImGui::IsPopupOpen(nullptr, "
                                                             "ImGuiPopupFlags_AnyPopup) ||");
+        const std::size_t navNullAt = soleLineContaining(shell, "(g->NavWindow != nullptr &&");
         const std::size_t closedPopupAt =
-            soleLineContaining(shell, "(g->NavWindow->Flags & ImGuiWindowFlags_Popup) != 0");
+            soleLineContaining(shell, "(g->NavWindow->RootWindow->Flags & ImGuiWindowFlags_Popup) != 0");
         CHECK(countLinesContaining(shell, "ImGuiWindowFlags_Popup") == 1U);
         CHECK(popupGuardAt > guardsAt);
-        CHECK(closedPopupAt == popupGuardAt + 1U);
+        CHECK(navNullAt == popupGuardAt + 1U);
+        CHECK(closedPopupAt == popupGuardAt + 2U);
         CHECK(closedPopupAt < outcomeAt);
     }
 
@@ -13867,7 +13870,9 @@ TEST_CASE("editor imgui: the editor has ONE focus policy, and it is spelled once
         CHECK(soleLineContaining(shell, "ImGui::SetWindowFocus(requestedId.c_str())") < outcomeAt);
         // THE ONE SEED NO RUNTIME TIER CAN SEE: the sibling-tab fact must read NavWindow's ROOT. A child
         // window holding the keyboard is not docked in any node, and no tier here can put it there.
-        const std::size_t rootAt = soleLineContaining(shell, "g->NavWindow->RootWindow");
+        // The navRoot INITIALIZER's own spelling: the popup Hold in the guards (b) reads
+        // g->NavWindow->RootWindow too, so the bare member chain is no longer one line.
+        const std::size_t rootAt = soleLineContaining(shell, "? g->NavWindow->RootWindow : nullptr");
         CHECK(rootAt > outcomeAt);
         // SABOTAGE-FORCED (the code-review round): ...and BOTH of the sibling-tab fact's uses read that
         // root, inside the gather. Either use spelled on g->NavWindow instead stayed green everywhere.
