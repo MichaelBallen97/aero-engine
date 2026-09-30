@@ -11,8 +11,8 @@ Two platform matrices, never to be conflated: the **editor** runs on macOS/Windo
 ## Current state — read this first
 
 **Phase E (Editor Experience) is the open front**, executing between Phase 3 and Phase 4. **Twenty of its
-24 tasks are merged: Epics E.1–E.5 are all CLOSED IN CODE, and E.5.2, which closed E.5, is UNRUN on every
-platform. E.6.1–E.6.4 are what is left — four tasks, planning only.** Phase 3 remains OPEN behind it: all
+24 tasks are merged: Epics E.1–E.5 are all CLOSED IN CODE, and E.5.2, which closed E.5, is macOS-validated
+17 / 17. E.6.1–E.6.4 are what is left — four tasks, planning only.** Phase 3 remains OPEN behind it: all
 seven of its epics are closed in code, and what is left is its deliverable gate and the validation debt.
 
 **Phase E is lettered, not fractioned.** `3.5` and `3.5.1`/`3.5.2` are already Phase 3's skeletal-animation
@@ -102,7 +102,7 @@ validation pass exists for any task in any phase.** N-E = not executable, N-R = 
 | E.4.4 Browser ignore rules | #110, fix #111 | `28e9529`, `f215cbb` | **8 / 8**, nothing open — **the first run failed row 2 on two real defects no lane could see**: the UI font drew `?` for every `…` and `—`, and the open Issues list fell below the panel, both fixed by #111. 29 sabotage seeds, no hole (#111 ran 24 more and its CI fix 5, all caught); the code-review round found one blocking defect — an orphan beside an ignored file could never be deleted |
 | E.4.5 Material names & thumbnails | #112, fix #113 | `caf8a74`, `fd4eb40` | **11 / 11** executable rows, row 11 N-E (1× displays); row 6's first run failed one check, fixed by #113 |
 | E.5.1 Primitive material binding fix | #114 | `834bcb3` | **13 / 13**, nothing failed — 17 sabotage seeds, no hole; its row 5 closes E.2.1 row 4's normal-map arm |
-| E.5.2 Create menu + named selector | #115 | `ab3fd72` | **UNRUN on every platform** |
+| E.5.2 Create menu + named selector | #115 | `ab3fd72` | **17 / 17** executable rows, row 18 N-E (1× displays), nothing failed |
 
 **E.3.2 landed before E.3.1** — legal, disjointly id-reserved; the reservation is discharged and the
 numbering is contiguous.
@@ -116,7 +116,7 @@ numbering is contiguous.
 | **Phase 2** — Editor | **COMPLETE, gate met 2026-08-02.** All six epics closed and macOS-validated; Windows/Linux rows pending for every task (`editor/VALIDATION.md`). Gate artifact: `samples/phase-2-editor-scene/` — data, deliberately not `add_subdirectory`'d. |
 | **Phase 3** — Asset Pipeline & 3D Content | **OPEN.** All seven epics (3.1–3.7) **CLOSED in code**. What is left is the gate below and the validation debt. |
 | **Phase 3 gate** | Drop a rigged glTF/FBX in → PBR materials + shadows + a playing animation + **an audible sound**. The audible half exists in code as of 3.7.2 and **has never been heard on any platform.** |
-| **Phase E** — Editor Experience | **OPEN.** Epics E.1–E.5 **CLOSED in code** — 20 of 24, see the index above. **E.6 is the open front: four tasks, planning only.** THREE validation pages are unrun (E.1.5, E.3.2, E.5.2) and are the whole of this OS's remaining Phase E risk. |
+| **Phase E** — Editor Experience | **OPEN.** Epics E.1–E.5 **CLOSED in code** — 20 of 24, see the index above. **E.6 is the open front: four tasks, planning only.** TWO validation pages are unrun (E.1.5, E.3.2) and are the whole of this OS's remaining Phase E risk. |
 | **Phase E gate** | Open a project and land in the scene you were last editing, on a lit grid floor under a sky; create a Cube from the menu, drop a material on it and see it shade; aim a spot light with a visible gizmo; rename, move and delete assets without leaving the editor. Gate artifact: `samples/phase-E-editor/`. |
 
 ### Engine layers, in dependency order
@@ -1012,9 +1012,19 @@ mono 48 kHz 0.5 s, **exactly 48 064 B each**, cut at a whole number of cycles so
 **Validation pages are gitignored, so they enter no commit.** Per-page measurements and method notes are in
 `docs/10`; this is the ledger of what is still owed.
 
-**THREE PAGES HAVE NOT BEEN RUN ON ANY PLATFORM: E.1.5's, E.3.2's AND E.5.2's.** They are the whole of Phase E's
-validation risk on this OS — every other task in E.1–E.5 is macOS-validated (see the index above). E.5.2's
-rows are the only witness of its menus opening, the modal greying them, and the grid in motion.
+**TWO PAGES HAVE NOT BEEN RUN ON ANY PLATFORM: E.1.5's AND E.3.2's.** They are the whole of Phase E's
+validation risk on this OS — every other task in E.1–E.5 is macOS-validated (see the index above).
+**E.5.2's page is RUN, 17 / 17 executable rows, nothing failed** (2026-09-30, row 18 HiDPI not executable on 1×
+displays): the eight creates raising the Inspector, one undo entry per create and per pick, the anchor 9.4 m out
+at the view centre, `7 (out of range)` repaired by a pick, the modal leaving the Create menu inert (0 pixels
+changed), and the Hierarchy scrolling to a created row at the bottom of ~90. Against `e131993` built in its own
+worktree, the viewport rect differs by **0 pixels with the grid off** and by **73 with it on**, all on the 1 px
+contour where the default Cube crosses `y = 0` (a 2-px pan control: 2 586), and `e131993` draws the axis lines
+**dashed** over a Plane at every pose where HEAD draws them solid. **Three method facts from that pass:** this
+machine's `editor_prefs.json` had Focus Follows Selection OFF, which row 1 needs ON (set through View, restored
+after); a project under `/private/tmp` makes E.4.1 record `""` because macOS's panels return `/tmp/…`, so
+validate from a home-directory project; and a click that closes the Edit menu at its first item's position IS
+Edit ▸ Undo — close a menu by re-clicking its header.
 **E.5.1's page is RUN, 13 / 13, nothing failed** (2026-09-29): the headline Cube red in the first capture after
 the drop, Undo restoring the default bytes exactly, a two-sided Plane drawn AND outlined from below while a
 single-sided one is neither, a refused material drawing the exact default with one Console line — and its row 5
@@ -1086,9 +1096,9 @@ closed by E.5.1's pass (the bump reads in the ambient-only shade, the witness it
 Scene` produced **no write and no log line** under synthetic input while New Scene, Reset Layout and Undo all
 worked from the same path — **possibly a real defect, explicitly unresolved** — and rows 10/12 lacked a
 material asset and a Tracy connection. E.1.3 has
-three: row 6's translate/scale-in-ortho arm (blocked by the defect PR #95 fixed, re-runnable now), row 7 (the
-debug LINE grid receives no shadow — **runnable since E.5.2**: Create ▸ Plane lands a solid floor, and E.5.2's
-row 12 runs it) and row 13's cost A/B, which needs a second build at the branch point.
+two: row 6's translate/scale-in-ortho arm (blocked by the defect PR #95 fixed, re-runnable now) and row 13's
+cost A/B, which needs a second build at the branch point. **Its row 7 PASSED on 2026-09-30** through E.5.2's
+row 12: a created Plane receives the directional shadow in ortho, recorded on both pages.
 
 **OUTSTANDING macOS PASSES: 3.5.1's twelve rows, 3.5.2's twelve rows, and 3.7.2's twelve rows.** Each is the
 only cover its task's declared seeds have anywhere. **3.4.2's `S26` cannot be covered from macOS at all** —
@@ -1175,7 +1185,7 @@ button's disabled predicate), each with its pinned-source citation, are in `.cla
 `"Delete orphaned .meta?"` from a real row and confirmed it by click and by **Enter**. Until then, Enter had
 only been argued from identical code.
 
-**THIRTY-TWO UNOWNED HANDOFFS — one per bullet below; re-count the bullets, never the headline.** It read
+**THIRTY-FOUR UNOWNED HANDOFFS — one per bullet below; re-count the bullets, never the headline.** It read
 "NINE" over a list that already held thirteen, because two "smaller" items, the exposure clause and
 `FillMode::Line` were never counted. Handoffs recorded in their own paragraphs elsewhere in this block (fact
 4's four permitted cases, the inspector-row gap, the closed `File` section) are not repeated here.
@@ -1233,6 +1243,15 @@ only been argued from identical code.
 - **`AERO_LABELS` with spaces** (E.5.2).
 - **Create ▸ Audio and ▸ Environment** (E.5.2 D8).
 - **A Tested debug-line producer off the ground plane** (E.5.2).
+- **The context route takes KEYBOARD focus, not just the tab** (found on E.5.2's macOS pass) — with Focus Follows
+  Selection ON, a selection change calls `SetWindowFocus` on the Inspector, so the Hierarchy's focus-scoped
+  Delete / Ctrl+D / F2 fire once and then go nowhere until the Hierarchy is clicked again (a chained Ctrl+D is
+  impossible). E.3.2's design and its unrun page; selecting the dock tab without moving `NavWindow` is the
+  likely shape, and it touches `I159`'s one-focus-slot pin.
+- **Save Scene As on macOS drops `.scene` from a typed name** (found on E.5.2's macOS pass) — the panel selects
+  the whole `Untitled.scene` / `r8.scene` stem, so typing `r9` saves `r9.json`, which E.4.1's `firstSceneUnder`
+  cascade does not treat as a scene. The suggestion is 2.5.1's `saveSuggestion`; nothing refuses or repairs the
+  suffix.
 - **reflect-gen's `parseRangeToken` hex-`F` quirk** — `AERO_RANGE(0, 0x2F)` reads as 2; latent.
 
 **E.1.1's THICK-LINE HANDOFF IS FIRED, NOT CLEARED AND NOT DEFERRED.** E.2.3's macOS pass measured it: icons

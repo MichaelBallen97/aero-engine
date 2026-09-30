@@ -18449,12 +18449,56 @@ Found and left latent: reflect-gen's `parseRangeToken` strips a trailing `f`/`F`
 10. **`RF7`'s `BUILTINS` array (`tests/reflect-gen/meta_test.cpp:534-537`) and `IR21`'s two `== 10` pins
     (`tests/editor/inspector_test.cpp:2536`, `:2545`) are component-count sites** the next built-in updates.
 
-#### Validation and sabotage status — UNRUN on every platform
+#### Validation and sabotage status — macOS 17 / 17 (2026-09-30), Windows and Linux unrun
 
 `editor/validation/E.5.2-create-menu-named-primitive-selector.md` (gitignored) — eighteen rows, every record
 unticked. Its rows are the only witness of the menus opening, the items greyed behind a modal, the Hierarchy
 scrolling to a new row, the dropdown itself, and the grid in motion at 100 m and 500 m; row 12 runs E.1.3's
 row 7 (a directional shadow on a created Plane in ortho), which this task made executable.
+
+**The macOS manual validation pass ran on 2026-09-30: 17 / 17 executable rows, nothing failed, no fix needed.**
+Row 18 (HiDPI) is not executable on the 1× displays attached (3440x1440, 1080x1920). The build was `main` @
+`84579fc` (the merged code) as a signed `.app`, macos-release, Metal; the A/B side was `e131993`, built in its own
+worktree so each side read its own cooked shaders. The load-bearing measurements:
+
+- **Rows 1–3 — the menus.** The eight creates, with the Material tab in front before each and the Inspector in
+  front after it, 8 / 8, at Empty (0, 0, 0), Cube and Sphere (0, 0.5, 0), Plane (0, 0, 0) scale (10, 1, 10),
+  Directional (0, 3, 0) pitch −50, Point (0, 2, 0), Spot (0, 3, 0) pitch −90 and Camera (0, 1, 5). One Cmd+Z
+  removed exactly the last create and one Cmd+Shift+Z restored it at the same row with identical values. A
+  typed create from a row's menu landed at the root, and Create Child still made a child.
+- **Rows 4–5 — the anchor and framing.** After a middle-mouse pan of about 9.4 m, an Empty landed at
+  (8.165, 0, −4.714) at the exact view centre and a Sphere at (8.165, 0.5, −4.714). The Cube fitted, the Plane
+  zoomed out to its tile, and the Point Light recentred without zooming, in perspective and in ortho.
+- **Rows 6–8 — the named selector.** Two picks gave exactly two undo entries and re-picking the current value
+  added none; Reset to default gave Cube. `Environment`'s Solid turned the sky pixel from (189, 200, 214) into a
+  flat (68, 68, 77). A hand-edited `"primitive": 7` read `7 (out of range)` over a Cube and a Sphere pick wrote 1.
+- **Rows 9, 10 and 16 — the nudge, against the branch point.** Over a created Plane, `e131993` draws the red and
+  blue axis lines **dashed** at the fitted pose, at a grazing orbit and at about 98 m, where HEAD draws them solid;
+  no shimmer at about 98 m or 527 m. The contact seam where a created Cube meets the Plane is at most 1 px. In the
+  viewport rect of a fresh default scene the two builds differ by **0 pixels with the grid off** and by **73 with
+  it on**, all on the 1 px contour where the half-sunk default Cube crosses `y = 0` (at most 2 per column); a
+  2-px pan control differs by 2 586.
+- **Rows 11–13 — shadows and the gate.** The created Cube's shadow reads on the Plane in perspective and, as E.1.3
+  row 7, in ortho. A material dragged from Assets shaded a created Cube red; the Spot Light's cone gizmo showed,
+  and a rotate-ring drag from −90 to −43.184 moved its pool across the Plane.
+- **Rows 14, 15 and 17.** Behind the unsaved-changes modal a click on `Create` changed 0 pixels of the menu area,
+  and Create worked again after Cancel. With about 90 rows scrolled to the top, a menu-bar create scrolled the
+  Hierarchy to the new row, and Shift-click made an 11-row range anchored on it. One of each kind survived Save
+  Scene As, quit and an E.4.1 relaunch with all 12 Inspector panels pixel-identical.
+
+**Three method facts, each of which produced a wrong reading first.** This machine's `editor_prefs.json` had
+Focus Follows Selection OFF, which row 1 needs ON — set through the View menu for the pass and restored after. A
+project under `/private/tmp` makes E.4.1 record `""`, because macOS's panels answer `/tmp/…` while the root keeps
+`/private/tmp/…` — the designed "forget" — so the pass moved to a home-directory project. And a click meant to
+close the Edit menu, placed at the menu's first item, IS Edit ▸ Undo: it read as one Cmd+Z undoing two steps until
+temporary `SDL_EVENT_KEY_*` logging showed exactly one shortcut fire per chord (removed afterwards).
+
+**Two findings outside this task, recorded as unowned handoffs in `CLAUDE.md`.** (1) With Focus Follows
+Selection ON, E.3.2's route calls `SetWindowFocus` on the Inspector, which takes KEYBOARD focus from the
+Hierarchy, so its focus-scoped Delete / Ctrl+D / F2 fire once and then go nowhere until the Hierarchy is clicked
+again; row 15's forty Ctrl+D were made by re-focusing the Hierarchy before each one. (2) macOS's Save panel
+selects the whole `X.scene` stem of 2.5.1's suggestion, so a typed name saves as `name.json`, which
+`firstSceneUnder` (`.scene.json` only) does not treat as a scene.
 
 **Build & dependency impact:** no vcpkg or `/vcpkg` change and no new target. New files: `create_menu.{hpp,cpp}`,
 `create_menu_ui.{hpp,cpp}`, `tests/editor/create_menu_test.cpp` and the fixture

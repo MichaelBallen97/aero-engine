@@ -734,8 +734,8 @@ with no `…` — fixed by PR #113 (`fd4eb40`), which also made an unhandled enu
 **Definition of Done:** every built-in entity type is creatable from a menu; a material dropped on a primitive renders with that material.
 **CLOSED IN CODE with E.5.2** (PR #115, `ab3fd72`) — two of two merged, and both clauses of the Definition of
 Done hold: every built-in entity type is creatable from a menu, read as E.5.2's D8 records below, and a material
-dropped on a primitive renders with that material (E.5.1, macOS-validated 13 / 13). E.5.2's page is UNRUN on
-every platform. E.5.1 took `I245`, E.5.2 took `I246`–`I255` and the tier-0 prefixes `CR` and `EC`, so **the next
+dropped on a primitive renders with that material (E.5.1, macOS-validated 13 / 13). E.5.2's page is RUN on
+macOS, 17 / 17 executable rows (2026-09-30). E.5.1 took `I245`, E.5.2 took `I246`–`I255` and the tier-0 prefixes `CR` and `EC`, so **the next
 free ImGui-tier id is `I256`**.
 
 ### E.5.1 Primitive material binding fix · P0 · S · depends: 3.1.5, 3.4.1 · **MERGED** — PR #114, `834bcb3`
@@ -782,7 +782,8 @@ _Outcome:_ **sized M in the roadmap, recorded L before implementation (D0) and l
 (`ab3fd72`, a true merge commit), eighteen commits — the plan's ten, one from the sabotage matrix, six from the
 code-review round and one from CI. The first CI run (`36629991509`) failed on Linux's clang-tidy step alone — a
 nested struct's default member initializer under libstdc++ — fixed by `4831f92`; the second (`36635673835`) was
-6 / 6 green. 52 sabotage runs closed one hole; the eighteen-row validation page is UNRUN on every platform.**
+6 / 6 green. 52 sabotage runs closed one hole; the eighteen-row validation page is RUN on macOS, 17 / 17 executable rows
+(2026-09-30), row 18 not executable on 1× displays, nothing failed.**
 All four subtasks are discharged: the Create menu is in the menu bar and both Hierarchy menus, each kind with a
 per-type transform at the view's ground point; every entry is the existing `CreateEntityCommand` with a seed —
 one undo step, no new direct World write (`I253`); `primitive` is a named dropdown driven by `AERO_LABELS`, the
