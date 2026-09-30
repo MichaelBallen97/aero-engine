@@ -1893,7 +1893,12 @@ dock nodes update inside it, so the focus lands with no one-frame lag. Both path
 explicit `requestPanelFocus` first, then the pending context route. `ImGui::SetWindowFocus` is called
 **at most once per frame** from that block, and `I159` pins that exactly one file names it and calls
 it exactly three times. **A fourth caller elsewhere is a second focus policy with no way to order it
-against the first.**
+against the first.** **An automatic route selects the target's dock TAB and leaves `NavWindow` alone**
+(`TabBarQueueFocus`, decided by the pure `routeRaise`); it moves the keyboard only when the keyboard is
+in a sibling tab of the target's node, which ImGui re-selects every frame (`imgui.cpp:19611-19613`), or
+before the node's tab bar exists. The explicit path keeps `SetWindowFocus`. `I256` is the witness;
+`I159(g)` pins that `TabBarQueueFocus` and `BringWindowToDisplayFront` are each spelled once and
+`ImGui::FocusWindow` nowhere.
 
 **`ImGui::SetWindowFocus` is not free and not idempotent.** `FocusWindow` closes every popup above the
 focused window (`imgui.cpp:13740`) and **steals the active widget** (`imgui.cpp:13754-13756`), with
@@ -1901,7 +1906,15 @@ ImGui's own comment at `:13751` naming exactly our slot: *"Focus a window while 
 another window is active, if focus happens before the old InputText can run."* The edit is **lost**,
 not interrupted — `MaterialPanel`'s name field commits only on `IsItemDeactivatedAfterEdit()`, and the
 panel that lost the tab never draws to observe the edge. **Re-read `:13740` and `:13754` at every ImGui
-bump**, beside the existing `ImGuizmo.cpp:1229-1230` and `imgui.cpp:8848` rules.
+bump**, beside the existing `ImGuizmo.cpp:1229-1230` and `imgui.cpp:8848` rules. **Hiding a tab has the
+same cost for that tab's active widget**: it stops being submitted and `NewFrame` clears it
+(`imgui.cpp:5795-5798`), which is why `textInputActive` stays a Hold.
+
+- **Only the `ImGuiTabItem*` overload of `TabBarQueueFocus`** — the `const char*` one asserts on a dock
+  node's tab bar (`imgui_widgets.cpp:10384-10389`).
+- **`EditorApp::keyboardFocusPanelId()`** is the only automated window onto `NavWindow`; any claim that a
+  panel keeps or loses the keyboard is a delta on it across one tick, with the explicit path as its
+  anti-vacuity control (`I258`).
 
 **Drops are tested before Holds, and the order is the contract.** The five terminal conditions —
 nothing pending, the preference off, the source gone, the target hidden or unregistered, an explicit
