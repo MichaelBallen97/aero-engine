@@ -1200,3 +1200,119 @@ TEST_CASE("scene_io: the project-restore path is Contained BY CONSTRUCTION (IO21
                                    /*findOwningProject=*/false)
                .state == SceneContainment::Contained));
 }
+
+// ---- IO22-IO23: fix 2.5.1 -- the Save As name rule on disk (reflect-ON only) -----------------------
+//
+// Both cases need a SUCCESSFUL write, so they live here, in the gated TU. Every REFUSAL claim of the fix
+// lives in the ungated scene_session_test.cpp instead (SS59-SS62), which is what keeps those claims true
+// in the reflect-tools-OFF configuration too.
+
+TEST_CASE("scene_io: a typed Save As name lands as a scene the startup cascade finds (IO22)") {
+    using engine::editor::DialogKind;
+    using engine::editor::DialogResult;
+    using engine::editor::FileDialogHost;
+    using engine::editor::FileFlow;
+    using engine::editor::firstSceneUnder;
+
+    const TempDir dir;
+    const SceneProject p = makeSceneProject(dir, {});  // NO scenes
+    FlowFixture f;
+    SceneSession session;
+    REQUIRE(engine::editor::openProjectPath(f.ctx, f.commands, session, f.project, p.root));
+    REQUIRE(f.projectSession.manifest().scenesPath == "scenes");
+    // ANTI-VACUITY: the E.4.1 cascade finds nothing before the save, so "it finds r9" below is the save's.
+    REQUIRE(firstSceneUnder(p.root, "scenes").empty());
+
+    // An UNTITLED, DIRTY session -- the ordinary state a first Save Scene As starts from.
+    REQUIRE(session.untitled());
+    const engine::Entity probe = f.world.create();
+    REQUIRE(f.commands.push(f.ctx, std::make_unique<engine::editor::DeleteEntitiesCommand>(
+                                       std::vector<engine::Entity>{probe}, std::vector<engine::Entity>{})));
+    REQUIRE_FALSE(f.commands.isClean());
+
+    // ★ THE macOS ANSWER for a typed "r9": the panel hid ".json" behind the selected "Untitled.scene"
+    //   stem and handed back "r9.json".
+    FileFlow flow;
+    flow.dialog = DialogKind::Save;
+    const FileDialogHost host{};
+    const DialogResult r9{.ready = true, .cancelled = false, .failed = false, .path = p.root + "/scenes/r9.json"};
+    engine::editor::applyDialogResult(f.ctx, f.commands, session, flow, host, r9, f.project);
+
+    CHECK(session.path() == p.root + "/scenes/r9.scene.json");
+    CHECK(engine::editor::fileExists(p.root + "/scenes/r9.scene.json"));
+    CHECK_FALSE(engine::editor::fileExists(p.root + "/scenes/r9.json"));  // the answer itself is NOT written
+    CHECK(f.commands.isClean());
+    // ★ AND THE CONSUMER THAT MOTIVATED THE FIX: the startup cascade now sees it.
+    CHECK(firstSceneUnder(p.root, "scenes") == "scenes/r9.scene.json");
+
+    // A second save, upper-cased: the folded ".JSON" is replaced, the stem's own case kept.
+    flow.dialog = DialogKind::Save;
+    const DialogResult r10{.ready = true, .cancelled = false, .failed = false, .path = p.root + "/scenes/R10.JSON"};
+    engine::editor::applyDialogResult(f.ctx, f.commands, session, flow, host, r10, f.project);
+    CHECK(session.path() == p.root + "/scenes/R10.scene.json");
+    CHECK(engine::editor::fileExists(p.root + "/scenes/R10.scene.json"));
+}
+
+TEST_CASE("scene_io: the paths the Save As name rule leaves alone, and a chain it completes (IO23)") {
+    using engine::editor::DialogKind;
+    using engine::editor::DialogResult;
+    using engine::editor::FileAction;
+    using engine::editor::FileDialogHost;
+    using engine::editor::FileFlow;
+    using engine::editor::openSceneFile;
+    using engine::editor::saveSceneFile;
+    using engine::editor::SceneFileContext;
+
+    const TempDir dir;
+    const SceneProject p = makeSceneProject(dir, {});
+    FlowFixture f;
+    SceneSession session;
+    REQUIRE(engine::editor::openProjectPath(f.ctx, f.commands, session, f.project, p.root));
+    const FileDialogHost host{};
+
+    // ---- (a) THE CHAIN COMPLETES: a guarded Quit waiting on the save, answered "r9.json".
+    {
+        FileFlow flow;
+        flow.dialog = DialogKind::Save;
+        flow.pending = FileAction::Quit;
+        flow.saveBeforePending = true;
+        const DialogResult answer{
+            .ready = true, .cancelled = false, .failed = false, .path = p.root + "/scenes/r9.json"};
+        engine::editor::applyDialogResult(f.ctx, f.commands, session, flow, host, answer, f.project);
+        CHECK(engine::editor::fileExists(p.root + "/scenes/r9.scene.json"));
+        CHECK_FALSE(engine::editor::fileExists(p.root + "/scenes/r9.json"));
+        CHECK(flow.quitConfirmed);  // the pending Quit was PERFORMED
+    }
+
+    // ---- (b) A NAME THE PANEL ITSELF ASKED ABOUT IS STILL OVERWRITTEN: the answer is exactly an existing
+    //          ".scene.json", so the rule changes nothing and the panel's own Replace prompt covered it.
+    {
+        const std::string keep = p.root + "/scenes/keep.scene.json";
+        REQUIRE(engine::editor::writeTextFileAtomic(keep, "PRE-EXISTING").empty());
+        CHECK(saveSceneFile(f.ctx, f.commands, session, keep, /*appendExtension=*/true,
+                            SceneFileContext{p.root, nullptr}));
+        CHECK(session.path() == keep);
+        const engine::editor::FileReadResult written = engine::editor::readTextFile(keep);
+        REQUIRE(written.text.has_value());
+        CHECK(*written.text != "PRE-EXISTING");
+        // ...and it now PARSES as a scene, into a second World so nothing above is disturbed.
+        engine::World probeWorld;
+        Selection probeSelection;
+        RootOrder probeRoots;
+        CommandStack probeCommands;
+        CommandContext probeCtx{probeWorld, probeSelection, probeRoots};
+        CHECK(openSceneText(probeCtx, probeCommands, *written.text).ok);
+    }
+
+    // ---- (c) A LITERAL PATH KEEPS ITS NAME (requestSaveSceneAs, a titled Save: appendExtension=false),
+    //          and Open never looks at the name at all.
+    {
+        const std::string legacy = p.root + "/scenes/legacy.json";
+        CHECK(saveSceneFile(f.ctx, f.commands, session, legacy, /*appendExtension=*/false,
+                            SceneFileContext{p.root, nullptr}));
+        CHECK(engine::editor::fileExists(legacy));
+        CHECK_FALSE(engine::editor::fileExists(p.root + "/scenes/legacy.scene.json"));
+        CHECK(openSceneFile(f.ctx, f.commands, session, legacy, SceneFileContext{p.root, nullptr}));
+        CHECK(session.path() == legacy);
+    }
+}
