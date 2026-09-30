@@ -13819,6 +13819,19 @@ TEST_CASE("editor imgui: the editor has ONE focus policy, and it is spelled once
         CHECK(countLinesContaining(shell, "TabBarQueueFocus") == 1U);
         CHECK(countLinesContaining(shell, "ImGui::TabBarQueueFocus(node->TabBar, tab)") == 1U);
         CHECK(countLinesContaining(shell, "BringWindowToDisplayFront") == 1U);
+
+        // ...and the display raise sits DIRECTLY under FocusWindow's own gate, all three flag terms of it.
+        // SABOTAGE-FORCED (seed S8, the code-review round): the gate is NOT redundant for a main-dockspace
+        // target. The DockSpaceOverViewport host is push_front'ed at creation (imgui.cpp:6988-6991), so once
+        // any later window (a menu, a popup, a tooltip) sits at the back of g.Windows, an ungated call moves
+        // the full-viewport host there, and FindHoveredWindowEx (walking g.Windows from the back,
+        // imgui.cpp:6486-6524) resolves every hover to it ahead of each docked panel -- the docked UI stops
+        // taking the mouse for the rest of the session. No tier here can read g.HoveredWindow, and every
+        // route case stayed green with the gate deleted, so the text is the only witness.
+        const std::size_t gateAt = soleLineContaining(shell,
+                                                      "((window->Flags | root->Flags | display->Flags) & "
+                                                      "ImGuiWindowFlags_NoBringToFrontOnFocus) == 0");
+        CHECK(soleLineContaining(shell, "ImGui::BringWindowToDisplayFront(display)") == gateAt + 1U);
     }
 
     SUBCASE("(h) the dispatch sits inside the Apply arm and reads the ROOT of NavWindow") {
