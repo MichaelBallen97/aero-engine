@@ -746,6 +746,11 @@ void drawShellUi(PanelRegistry& panels, PanelContext& context, ShellUiState& sta
     }
     drawPanels(panels, context);
     drawWelcomeWindow(fileMenu);  // AFTER the dockspace and the panels, so it FLOATS above them
+    // task E.3.2's keyboard fix: which window holds ImGui's keyboard after the WHOLE draw walk -- the
+    // ROOT of NavWindow, so a docked panel reads as its own id. LAST on purpose: every focus write of
+    // this frame has run by now.
+    const ImGuiWindow* const nav = ImGui::GetCurrentContext()->NavWindow;
+    state.keyboardFocusWindow = (nav != nullptr) ? std::string(nav->RootWindow->Name) : std::string();
 }
 
 }  // namespace engine::editor

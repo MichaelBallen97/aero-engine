@@ -13976,6 +13976,55 @@ TEST_CASE(
     app.reset();
 }
 
+// ---- I256-I258: the route keeps the keyboard (fix, E.3.2) ------------------------------------------
+// E.3.2's route raised its target through SetWindowFocus, which moves ImGui's NavWindow along with the
+// tab, so the Hierarchy's focus-scoped Delete / Ctrl+D / F2 went nowhere after a click selected a row.
+// keyboardFocusPanelId() is the only automated window onto NavWindow; every claim below is a delta on it
+// across one tick. No project, the default scene, no shader and no entt::meta: all three run in every
+// configuration.
+
+TEST_CASE("editor: an EXPLICIT focus request still moves the keyboard (fix E.3.2, I258)") {
+    // THE ANTI-VACUITY CONTROL for I256: without it, an accessor stuck on "Hierarchy" would make I256's
+    // headline pass for the wrong reason. It passes on the code before the fix as well, which is the
+    // point -- it proves the observable follows a real NavWindow change before anything relies on it.
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "route i258", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+
+    std::optional<engine::editor::EditorApp> app = engine::editor::EditorApp::create(
+        *device, *window, ctx, {.persistLayout = false, .unfocusedFrameCapHz = 0.0F, .restoreLastProject = false});
+    REQUIRE(app.has_value());
+
+    REQUIRE(app->tick());  // 1
+    REQUIRE(app->tick());  // 2: settle -- every baseline below is taken after it
+
+    app->requestPanelFocus("Hierarchy");
+    REQUIRE(app->tick());
+    REQUIRE(app->keyboardFocusPanelId() == "Hierarchy");
+    // The Inspector is NOT the Right node's front tab, PROVEN, so the drawn-count delta below is falsifiable.
+    const std::uint64_t inspectorIdle = app->panelDrawnCount("Inspector");
+    REQUIRE(app->tick());
+    REQUIRE(app->panelDrawnCount("Inspector") == inspectorIdle);
+    REQUIRE(app->keyboardFocusPanelId() == "Hierarchy");  // ...and a plain tick moves nothing
+
+    app->requestPanelFocus("Inspector");
+    REQUIRE(app->tick());
+    CHECK(app->keyboardFocusPanelId() == "Inspector");  // the COMMAND moved the keyboard
+    CHECK(app->panelDrawnCount("Inspector") > inspectorIdle);
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
 // ---- I142, I145, I146: task E.3.1's two-column inspector rows -------------------------------------
 
 TEST_CASE("editor: the Inspector draws every field kind inside a table without aborting (task E.3.1, I142)") {
