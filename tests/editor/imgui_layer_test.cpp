@@ -13851,6 +13851,18 @@ TEST_CASE("editor imgui: the editor has ONE focus policy, and it is spelled once
         // window holding the keyboard is not docked in any node, and no tier here can put it there.
         const std::size_t rootAt = soleLineContaining(shell, "g->NavWindow->RootWindow");
         CHECK(rootAt > outcomeAt);
+        // SABOTAGE-FORCED (the code-review round): ...and BOTH of the sibling-tab fact's uses read that
+        // root, inside the gather. Either use spelled on g->NavWindow instead stayed green everywhere.
+        // `g->NavWindow->DockNode == node` brings back the Material flicker: a keyboard in Material's
+        // ##body child has no dock node, so the fact reads false, the route selects the tab only, and
+        // ImGui re-selects Material on the next frame (imgui.cpp:19611-19613). `g->NavWindow != target`
+        // reads a keyboard in a child of the target itself as a sibling and moves it to the target's root.
+        const std::size_t notTargetAt = soleLineContaining(shell, "navRoot != target");
+        const std::size_t sameNodeAt = soleLineContaining(shell, "navRoot->DockNode == node");
+        CHECK(notTargetAt > rootAt);
+        CHECK(notTargetAt < switchAt);
+        CHECK(sameNodeAt > rootAt);
+        CHECK(sameNodeAt < switchAt);
         // The observable is read after the WHOLE draw walk, so it sees every focus write of the frame.
         const std::size_t observableAt = soleLineContaining(shell, "state.keyboardFocusWindow =");
         CHECK(observableAt > soleLineContaining(shell, "drawWelcomeWindow(fileMenu);"));
