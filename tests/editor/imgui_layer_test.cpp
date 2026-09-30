@@ -17662,7 +17662,9 @@ TEST_CASE("editor: a DRAINED containment offer still closes its popup (task E.4.
     CHECK(countIn("ImGui::EndPopup();", notOpenAt, mainBeginAt) == 1U);
 }
 
-TEST_CASE("editor imgui: a SAVE refusal's title shares the containment popup's identity (fix 2.5.1, I270)") {
+TEST_CASE(
+    "editor imgui: the save-refusal modal shares the containment popup's identity and answers Return by hand "
+    "(fix 2.5.1, I270)") {
     // A save refusal -- containment OR one of D13's name refusals -- draws the containment modal under a
     // title that is true of both, "Scene Not Saved". The popup's IDENTITY is its ### suffix: ImHashStr
     // restarts at "###", BeginPopupModal looks the popup up by that id, and the title bar draws whatever
@@ -17687,6 +17689,63 @@ TEST_CASE("editor imgui: a SAVE refusal's title shares the containment popup's i
     CHECK(labelAt < pickAt);
     // ...while the opener still names the ID constant, so there is one popup and not two.
     CHECK(countLinesContaining(shell, "ImGui::OpenPopup(CONTAINMENT_MODAL_ID)") == 1U);
+
+    // ---- RETURN, BOUND BY HAND (the code-review round). The save refusal makes this modal an everyday
+    //      path, and with nav off SetItemDefaultFocus carries no key (asset_browser_panel.cpp's
+    //      drawRenameModal cites why), so the default button answers Return only through an IsKeyPressed
+    //      in the body. No tier here can press a key: these pins are its only automated cover, and rows
+    //      12 and 13 of this fix's validation page its only behavioural witness. Every needle is searched
+    //      INSIDE the body -- from the BeginPopupModal line to the body's own EndPopup -- so a binding
+    //      placed anywhere else does not count.
+    const auto firstIn = [&shell](std::string_view needle, std::size_t lo, std::size_t hi) {
+        for (std::size_t i = lo; i < hi && i < shell.size(); ++i) {
+            if (shell[i].find(needle) != std::string::npos) {
+                return i;
+            }
+        }
+        return shell.size();
+    };
+    const auto countIn = [&shell](std::string_view needle, std::size_t lo, std::size_t hi) {
+        std::size_t hits = 0;
+        for (std::size_t i = lo; i < hi && i < shell.size(); ++i) {
+            if (shell[i].find(needle) != std::string::npos) {
+                ++hits;
+            }
+        }
+        return hits;
+    };
+    const std::size_t bodyEnd = firstIn("ImGui::EndPopup();", pickAt, shell.size());
+    REQUIRE(bodyEnd < shell.size());
+
+    // Both keys, each tested on its own (KeypadEnter is a DISTINCT ImGuiKey), and Escape decided FIRST.
+    const std::size_t escapeAt = firstIn("ImGui::IsKeyPressed(ImGuiKey_Escape, false)", pickAt, bodyEnd);
+    const std::size_t enterAt = firstIn("ImGui::IsKeyPressed(ImGuiKey_Enter, false)", pickAt, bodyEnd);
+    const std::size_t keypadAt = firstIn("ImGui::IsKeyPressed(ImGuiKey_KeypadEnter, false)", pickAt, bodyEnd);
+    REQUIRE(escapeAt < bodyEnd);
+    REQUIRE(enterAt < bodyEnd);
+    REQUIRE(keypadAt < bodyEnd);
+    CHECK(escapeAt < enterAt);
+    CHECK(escapeAt < keypadAt);
+
+    // Return shares the button's OWN predicate: its accept is gated on `offerable`, the value that draws
+    // the Open button, and its dismiss on the negation -- never a second copy of either condition.
+    CHECK(countIn("enterPressed && offerable", pickAt, bodyEnd) == 1U);
+    CHECK(countIn("enterPressed && !offerable", pickAt, bodyEnd) == 1U);
+
+    // ONE resolution after every key: the dismiss arm FIRST (dismiss wins over accept in one frame), and
+    // EACH arm closes the popup -- 2.6.1's BLOCKING-1, the g.HoveredWindow trap. Every button and key
+    // reaches CloseCurrentPopup through these two arms and nowhere else in the body.
+    const std::size_t dismissArmAt = firstIn("if (dismiss) {", enterAt, bodyEnd);
+    const std::size_t acceptArmAt = firstIn("} else if (accept) {", dismissArmAt, bodyEnd);
+    REQUIRE(dismissArmAt < acceptArmAt);
+    REQUIRE(acceptArmAt < bodyEnd);
+    CHECK(countIn("offer.dismissRequested = true;", dismissArmAt, acceptArmAt) == 1U);
+    CHECK(countIn("ImGui::CloseCurrentPopup();", dismissArmAt, acceptArmAt) == 1U);
+    CHECK(countIn("offer.acceptRequested = true;", acceptArmAt, bodyEnd) == 1U);
+    CHECK(countIn("ImGui::CloseCurrentPopup();", acceptArmAt, bodyEnd) == 1U);
+    CHECK(countIn("ImGui::CloseCurrentPopup();", pickAt, bodyEnd) == 2U);
+    CHECK(countIn("offer.dismissRequested = true;", pickAt, bodyEnd) == 1U);
+    CHECK(countIn("offer.acceptRequested = true;", pickAt, bodyEnd) == 1U);
 }
 
 // ==================================================================================================
