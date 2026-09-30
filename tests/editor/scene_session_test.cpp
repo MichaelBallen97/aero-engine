@@ -1924,7 +1924,8 @@ TEST_CASE("scene_session: an answer with nothing before its suffix becomes the r
     using engine::editor::isSceneFileName;
     using engine::editor::normalizeSceneSavePath;
     // ".scene.json" is the row that catches a REORDERED suffix list: tried after ".json" it would strip to
-    // ".scene", keep that as a stem and save the hidden file ".scene.scene.json".
+    // ".scene", keep that as a stem and produce the hidden ".scene.scene.json" -- which the save refuses only
+    // for its dot (SS63), under the wrong reason.
     constexpr std::array<std::string_view, 6> STEMLESS{"/d/.json", "/d/.scene.json", "/d/.scene", "/d/.JSON", "/d/",
                                                        ""};
     for (const std::string_view answer : STEMLESS) {
