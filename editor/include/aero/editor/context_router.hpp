@@ -9,7 +9,8 @@
 // panel a PATH belongs to: the router reads the answer each session already wrote (D1). In particular
 // it spells NEITHER isImportableModelName NOR isBlendFileName -- it reads ModelImportSession's own
 // SessionState, one tick later, and that one tick is the whole price of having no second copy of a
-// predicate that would go stale the day a ninth extension lands.
+// predicate that would go stale the day a ninth extension lands. routeRaise decides HOW an applied
+// route raises its target; shell_ui.cpp gathers the facts.
 //
 // NO toString, EVER. doctest's DOCTEST_STRINGIFY expands to an UNQUALIFIED toString(...), so a
 // toString on a type declared here would be found by ADL, beat doctest's own template and hard-error
@@ -84,6 +85,31 @@ enum class RouteOutcome : std::uint8_t {
 // the unqualified name finds this function, the member is reachable only through `state.`. Never call
 // this from a member function of a type that has a routeOutcome member: member lookup would win.
 [[nodiscard]] RouteOutcome routeOutcome(RouteSource source, const RouteGuards& guards) noexcept;
+
+// HOW an Applied route raises its target. Decided by routeRaise below, applied by shell_ui.cpp's focus
+// slot. NEVER serialized and NEVER logged; the explicit type is mandatory, like every engine enum.
+enum class RouteRaise : std::uint8_t {
+    Nothing = 0,   // no window by that name yet, or the only window in a node that hides its tab bar
+    SelectTab,     // TabBarQueueFocus on the node's tab bar -- the keyboard stays where it is
+    DisplayFront,  // a floating, undocked target: z-order only, FocusWindow's display step and nothing else
+    FocusWindow,   // SetWindowFocus, today's behaviour: the keyboard is in a tab this raise hides, or the
+                   // node's tab bar does not exist yet
+};
+
+// What shell_ui.cpp reads off ImGui for the target, as NAMED BOOLEANS (the RouteGuards rule: an ImGui type
+// here would make every consumer of this header ImGui-aware). Defaults describe the common case -- a
+// docked target in a node that shows its tabs -- so a partially-filled aggregate says SelectTab.
+struct RouteRaiseFacts {
+    bool windowExists = true;           // FindWindowByName(id) != nullptr
+    bool docked = true;                 // W->DockIsActive
+    bool soleWindowInNode = false;      // W->DockNode->Windows.Size == 1: W is the node's visible window already
+    bool keyboardInSiblingTab = false;  // NavWindow's root is ANOTHER window docked in W's node
+    bool tabQueueable = true;           // node->TabBar exists and holds W's tab
+};
+
+// THE ORDER IS THE CONTRACT, as it is for routeOutcome: missing, floating, sole, sibling, queueable, and
+// the fall-back last. RT29 pins every adjacent pair.
+[[nodiscard]] RouteRaise routeRaise(const RouteRaiseFacts& facts) noexcept;
 
 // THE LATCH. One slot, highest priority wins, cleared only by the caller. Holds VALUES ONLY: no World,
 // no session, no AssetDatabase, no filesystem -- so EditorApp's own noexcept move survives it (F15),

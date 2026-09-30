@@ -54,6 +54,27 @@ RouteOutcome routeOutcome(RouteSource source, const RouteGuards& guards) noexcep
     return RouteOutcome::Apply;
 }
 
+RouteRaise routeRaise(const RouteRaiseFacts& facts) noexcept {
+    if (!facts.windowExists) {
+        return RouteRaise::Nothing;  // SetWindowFocus's own silent no-op for an unknown name
+    }
+    if (!facts.docked) {
+        return RouteRaise::DisplayFront;  // floating: bring it out from behind, take nothing
+    }
+    if (facts.soleWindowInNode) {
+        // Already the visible window -- and the ONLY shape whose tab bar can be hidden, where a queued id
+        // is never consumed.
+        return RouteRaise::Nothing;
+    }
+    if (facts.keyboardInSiblingTab) {
+        return RouteRaise::FocusWindow;  // imgui.cpp:19611-19613 would flip a tab-only raise back
+    }
+    if (facts.tabQueueable) {
+        return RouteRaise::SelectTab;  // THE automatic path
+    }
+    return RouteRaise::FocusWindow;  // docked, no usable tab bar: frames 1-2 -- today's behaviour
+}
+
 void ContextRouter::setEnabled(bool on) noexcept {
     enabledValue = on;
     if (!on) {

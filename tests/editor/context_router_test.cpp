@@ -1,4 +1,4 @@
-// Aero Engine — the context router's pure decision and its latch (task E.3.2, RT1-RT27). Tier 0:
+// Aero Engine — the context router's pure decision and its latch (task E.3.2, RT1-RT30). Tier 0:
 // aero_editor_shell_test, no ImGui, no GPU, no window, no World. Every case here is a statement about
 // context_router.hpp alone.
 #include <aero/editor/context_router.hpp>
@@ -17,6 +17,9 @@ using engine::editor::routedPanelId;
 using engine::editor::RouteGuards;
 using engine::editor::RouteOutcome;
 using engine::editor::routeOutcome;
+using engine::editor::RouteRaise;
+using engine::editor::routeRaise;
+using engine::editor::RouteRaiseFacts;
 using engine::editor::RouteSource;
 
 namespace {
@@ -512,4 +515,47 @@ TEST_CASE("editor: the routing types' shape, priority values and noexcept contra
     const ContextRouter moved = std::move(source);
     CHECK(moved.latchCount() == 1U);
     CHECK((moved.pending() == RouteSource::MaterialAsset));
+}
+
+TEST_CASE("editor: routeRaise, each arm from the smallest facts that reach it (RT28)") {
+    CHECK((routeRaise(RouteRaiseFacts{.windowExists = false}) == RouteRaise::Nothing));
+    CHECK((routeRaise(RouteRaiseFacts{.docked = false}) == RouteRaise::DisplayFront));
+    CHECK((routeRaise(RouteRaiseFacts{.soleWindowInNode = true}) == RouteRaise::Nothing));
+    CHECK((routeRaise(RouteRaiseFacts{.keyboardInSiblingTab = true}) == RouteRaise::FocusWindow));
+    CHECK((routeRaise(RouteRaiseFacts{}) == RouteRaise::SelectTab));  // THE automatic path
+    CHECK((routeRaise(RouteRaiseFacts{.tabQueueable = false}) == RouteRaise::FocusWindow));
+}
+
+TEST_CASE("editor: routeRaise, every earlier row beats every later one (RT29)") {
+    // Each row sets EVERY later fact to the value that would win on its own, so a reordered chain answers
+    // differently. Written as hand-picked rows -- an exhaustive loop against an oracle would restate the
+    // chain and falsify nothing (E.3.2's RT24 lesson).
+    // Named locals rather than inline braced lists: the wide rows would otherwise sit on a ~120-column
+    // wrap, where the Homebrew and Ubuntu clang-format builds disagree.
+    const RouteRaiseFacts missingRow{.windowExists = false,
+                                     .docked = false,
+                                     .soleWindowInNode = true,
+                                     .keyboardInSiblingTab = true,
+                                     .tabQueueable = false};
+    CHECK((routeRaise(missingRow) == RouteRaise::Nothing));
+    const RouteRaiseFacts floatingRow{
+        .docked = false, .soleWindowInNode = true, .keyboardInSiblingTab = true, .tabQueueable = false};
+    CHECK((routeRaise(floatingRow) == RouteRaise::DisplayFront));
+    const RouteRaiseFacts soleRow{.soleWindowInNode = true, .keyboardInSiblingTab = true, .tabQueueable = false};
+    CHECK((routeRaise(soleRow) == RouteRaise::Nothing));
+    // THE FLICKER ROW: a queueable tab must NOT win while the keyboard is in a sibling tab, or
+    // imgui.cpp:19611-19613 flips the node back to that sibling on the very next frame.
+    CHECK((routeRaise({.keyboardInSiblingTab = true, .tabQueueable = true}) == RouteRaise::FocusWindow));
+    CHECK((routeRaise({.tabQueueable = true}) == RouteRaise::SelectTab));
+}
+
+TEST_CASE("editor: RouteRaise's shape, and RouteRaiseFacts' defaults describe the common case (RT30)") {
+    static_assert(std::is_same_v<std::underlying_type_t<RouteRaise>, std::uint8_t>);
+    static_assert(noexcept(routeRaise(RouteRaiseFacts{})));
+    const RouteRaiseFacts facts{};
+    CHECK(facts.windowExists);  // spelled one by one: a default flipped "for symmetry" changes what a
+    CHECK(facts.docked);        // partially-filled aggregate in RT28 means, and this is where it stops
+    CHECK_FALSE(facts.soleWindowInNode);
+    CHECK_FALSE(facts.keyboardInSiblingTab);
+    CHECK(facts.tabQueueable);
 }
