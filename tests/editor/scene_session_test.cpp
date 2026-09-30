@@ -9,6 +9,7 @@
 #include <aero/editor/console_model.hpp>
 #include <aero/editor/entity_commands.hpp>
 #include <aero/editor/entity_ops.hpp>
+#include <aero/editor/project_state.hpp>      // fix 2.5.1: isSceneFileName, the predicate SS56 ties to
 #include <aero/editor/scene_containment.hpp>  // task E.4.2: the verdict SS43 asserts directly
 #include <aero/editor/scene_session.hpp>
 #include <aero/editor/selection.hpp>
@@ -18,9 +19,11 @@
 #include <doctest/doctest.h>
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <filesystem>
 #include <memory>
+#include <ostream>  // fix 2.5.1: SS57/SS58 CHECK a std::string_view -- MSVC's <ostream> trap
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -159,19 +162,22 @@ TEST_CASE("scene_session: fileNameOf / directoryOf (SS4/S13)") {
     CHECK(directoryOf("") == "");
 }
 
-TEST_CASE("scene_session: hasExtension / withSceneExtension (SS5/S12)") {
+TEST_CASE("scene_session: hasExtension / normalizeSceneSavePath (SS5/S12)") {
     using engine::editor::hasExtension;
-    using engine::editor::withSceneExtension;
+    using engine::editor::normalizeSceneSavePath;
 
     CHECK_FALSE(hasExtension("/a/b"));
-    CHECK(withSceneExtension("/a/b") == "/a/b.scene.json");
+    CHECK(normalizeSceneSavePath("/a/b") == "/a/b.scene.json");
 
     CHECK(hasExtension("/a/b.json"));
-    CHECK(withSceneExtension("/a/b.json") == "/a/b.json");  // unchanged -- S12's discriminator
+    // D13 REVISED (fix/2.5.1-save-as-scene-suffix): macOS's panel hides ".json" and hands back "b.json" for a
+    // typed "b", so the answer's ".json" is REPLACED now, not kept. S12's discriminator is the '.' in a
+    // DIRECTORY segment, below, and it is unchanged.
+    CHECK(normalizeSceneSavePath("/a/b.json") == "/a/b.scene.json");
 
     // A '.' in a DIRECTORY segment, not the last one -- extension-less (SS5's discriminator for S12).
     CHECK_FALSE(hasExtension("/a.b/c"));
-    CHECK(withSceneExtension("/a.b/c") == "/a.b/c.scene.json");
+    CHECK(normalizeSceneSavePath("/a.b/c") == "/a.b/c.scene.json");
 }
 
 TEST_CASE("scene_session: SceneSession defaults and path round trip (SS6)") {
@@ -1861,4 +1867,90 @@ TEST_CASE("scene_session: the drain preserves refusalSerial, so a refusal in the
     applyFileRequests(f.ctx, f.commands, session, f.flow, f.host, f.project);
     CHECK_FALSE(f.flow.containmentOffer.open);
     CHECK(f.flow.containmentOffer.refusalSerial == 2U);
+}
+
+// ---- SS55-SS58: fix 2.5.1 -- the Save As name rule (normalizeSceneSavePath), tier 0 -----------------
+//
+// macOS's NSSavePanel hides ".json" and selects the whole "Untitled.scene" stem of the suggestion, so a
+// typed "r9" came back as "r9.json" -- a file the E.4.1 startup cascade (firstSceneUnder, which reads
+// isSceneFileName) never treats as a scene. Every arm of the rule is asserted here, with no filesystem, so
+// it holds identically in every build configuration.
+
+TEST_CASE("scene_session: normalizeSceneSavePath, every arm (SS55)") {
+    using engine::editor::normalizeSceneSavePath;
+    CHECK(normalizeSceneSavePath("/p/scenes/r9") == "/p/scenes/r9.scene.json");             // append
+    CHECK(normalizeSceneSavePath("/p/scenes/r9.json") == "/p/scenes/r9.scene.json");        // the macOS answer
+    CHECK(normalizeSceneSavePath("/p/scenes/r9.scene.json") == "/p/scenes/r9.scene.json");  // a scene already
+    CHECK(normalizeSceneSavePath("/p/scenes/r9.scene") == "/p/scenes/r9.scene.json");       // the .scene arm
+    CHECK(normalizeSceneSavePath("/p/scenes/r9.txt") == "/p/scenes/r9.txt.scene.json");     // always ends in it
+    CHECK(normalizeSceneSavePath("/p/my.level.json") == "/p/my.level.scene.json");          // the LAST suffix only
+    CHECK(normalizeSceneSavePath("/p/my.level.scene.json") == "/p/my.level.scene.json");
+    CHECK(normalizeSceneSavePath("/p/a.json.json") == "/p/a.json.scene.json");  // ONE suffix, no loop
+}
+
+TEST_CASE("scene_session: normalizeSceneSavePath folds exactly as isSceneFileName does (SS56)") {
+    using engine::editor::normalizeSceneSavePath;
+    CHECK(normalizeSceneSavePath("/p/R9.JSON") == "/p/R9.scene.json");  // folded match; stem case kept
+    CHECK(normalizeSceneSavePath("/p/r9.Json") == "/p/r9.scene.json");
+    CHECK(normalizeSceneSavePath("/p/r9.SCENE") == "/p/r9.scene.json");
+    CHECK(normalizeSceneSavePath("/p/r9.Scene.Json") == "/p/r9.Scene.Json");  // UNCHANGED, byte for byte
+    CHECK(normalizeSceneSavePath("/p/R9.SCENE.JSON") == "/p/R9.SCENE.JSON");
+    // THE TIE: for every leaf, "unchanged" iff isSceneFileName(leaf). Leaves chosen to sit on both sides of
+    // each boundary -- empty stem, folded suffix, a suffix-lookalike -- so a rule that drifted from the
+    // predicate in either direction flips at least one row. Expected values are the test's own
+    // (isSceneFileName is PJ17's to prove), never computed from the function under test.
+    constexpr std::array<std::string_view, 10> LEAVES{
+        "a.scene.json", "A.SCENE.JSON",  "a.Scene.Json", ".scene.json", "scene.json",
+        "a.json",       "a.scene.jsonx", "ascene.json",  "a.scene",     "a"};
+    for (const std::string_view leaf : LEAVES) {
+        CAPTURE(leaf);
+        const std::string path = std::string("/d/") + std::string(leaf);
+        const bool unchanged = normalizeSceneSavePath(path) == path;
+        if (leaf == ".scene.json") {
+            // THE ONE FIXED POINT OUTSIDE THE TIE, and both of its facts are asserted: a stem-less leaf
+            // normalises to exactly ".scene.json" (SS57), so this path comes back UNCHANGED while NOT being
+            // a scene -- which is why saveSceneFile refuses it by name rather than by "unchanged" (SS60).
+            CHECK(unchanged);
+            CHECK_FALSE(engine::editor::isSceneFileName(leaf));
+            continue;
+        }
+        CHECK(unchanged == engine::editor::isSceneFileName(leaf));
+    }
+}
+
+TEST_CASE("scene_session: an answer with nothing before its suffix becomes the refusable '.scene.json' (SS57)") {
+    using engine::editor::fileNameOf;
+    using engine::editor::isSceneFileName;
+    using engine::editor::normalizeSceneSavePath;
+    // ".scene.json" is the row that catches a REORDERED suffix list: tried after ".json" it would strip to
+    // ".scene", keep that as a stem and save the hidden file ".scene.scene.json".
+    constexpr std::array<std::string_view, 6> STEMLESS{"/d/.json", "/d/.scene.json", "/d/.scene", "/d/.JSON", "/d/",
+                                                       ""};
+    for (const std::string_view answer : STEMLESS) {
+        CAPTURE(answer);
+        // A NAMED std::string: fileNameOf returns a view INTO its argument (scene_session.hpp).
+        const std::string r = normalizeSceneSavePath(answer);
+        CHECK(fileNameOf(r) == ".scene.json");
+        CHECK_FALSE(isSceneFileName(fileNameOf(r)));
+    }
+    // THE POST-CONDITION, the other direction: every answer WITH a stem normalises to a real scene name.
+    constexpr std::array<std::string_view, 8> WITH_STEM{
+        "/p/scenes/r9",     "/p/scenes/r9.json", "/p/scenes/r9.scene.json", "/p/scenes/r9.scene",
+        "/p/scenes/r9.txt", "/p/my.level.json",  "/p/my.level.scene.json",  "/p/a.json.json"};
+    for (const std::string_view answer : WITH_STEM) {
+        CAPTURE(answer);
+        const std::string r = normalizeSceneSavePath(answer);
+        CHECK(isSceneFileName(fileNameOf(r)));
+    }
+}
+
+TEST_CASE("scene_session: normalizeSceneSavePath keeps every separator and every directory byte (SS58)") {
+    using engine::editor::normalizeSceneSavePath;
+    CHECK(normalizeSceneSavePath("C:\\p\\scenes\\r9.json") == "C:\\p\\scenes\\r9.scene.json");  // Windows
+    CHECK(normalizeSceneSavePath("C:/p\\scenes/r9") == "C:/p\\scenes/r9.scene.json");           // mixed
+    CHECK(normalizeSceneSavePath("/a.json/r9") == "/a.json/r9.scene.json");                     // a ".json" DIRECTORY
+    CHECK(normalizeSceneSavePath("/x.scene.json/r9") == "/x.scene.json/r9.scene.json");
+    CHECK(normalizeSceneSavePath("r9.json") == "r9.scene.json");     // no directory at all
+    CHECK(normalizeSceneSavePath("/p/r9.") == "/p/r9..scene.json");  // trailing dot: literal
+    CHECK(engine::editor::isSceneFileName("r9..scene.json"));        // ...and it IS a scene
 }

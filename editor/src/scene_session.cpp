@@ -14,6 +14,7 @@
 
 #include "file_dialog.hpp"
 
+#include <array>
 #include <cstddef>
 #include <optional>
 #include <string>
@@ -145,11 +146,55 @@ bool hasExtension(std::string_view pathUtf8) noexcept {
     return fileNameOf(pathUtf8).find('.') != std::string_view::npos;
 }
 
-std::string withSceneExtension(std::string_view pathUtf8) {
-    if (hasExtension(pathUtf8)) {
+namespace {
+
+// A file-local copy of project_state.cpp's foldAscii / endsWithFolded shape, for the reason every copy
+// gives: each lives in its own TU's anonymous namespace (project_state.cpp's banner counts four copies of
+// that PAIR; editor/src holds thirteen foldAscii definitions before this one). ASCII-only and
+// locale-independent -- NEVER std::tolower(char), whose UTF-8 continuation bytes are negative as char.
+constexpr unsigned char foldAscii(unsigned char c) noexcept {
+    return (c >= 'A' && c <= 'Z') ? static_cast<unsigned char>(c + ('a' - 'A')) : c;
+}
+
+// Deliberately WITHOUT the stem requirement isSceneFileName carries -- ".json" must match ".json" here, so
+// that it can be stripped to an EMPTY stem and refused, rather than kept as a stem of its own and saved as
+// the hidden ".json.scene.json".
+[[nodiscard]] bool hasSuffixFolded(std::string_view name, std::string_view suffix) noexcept {
+    if (name.size() < suffix.size()) {
+        return false;
+    }
+    const std::size_t offset = name.size() - suffix.size();
+    for (std::size_t i = 0; i < suffix.size(); ++i) {
+        if (foldAscii(static_cast<unsigned char>(name[offset + i])) !=
+            foldAscii(static_cast<unsigned char>(suffix[i]))) {
+            return false;
+        }
+    }
+    return true;
+}
+
+// ORDER MATTERS: ".scene.json" also ends in ".json". Tried second, the leaf ".scene.json" (which
+// isSceneFileName rejects for its empty stem) would strip to ".scene", keep it as a stem and save the
+// hidden file ".scene.scene.json"; tried first, it strips to "" and is refused. SS57 pins that input.
+constexpr std::array<std::string_view, 3> SAVE_NAME_SUFFIXES{".scene.json", ".json", ".scene"};
+
+}  // namespace
+
+std::string normalizeSceneSavePath(std::string_view pathUtf8) {
+    const std::string_view leaf = fileNameOf(pathUtf8);
+    if (isSceneFileName(leaf)) {  // the SAME predicate the E.4.1 cascade reads (project_state.cpp)
         return std::string(pathUtf8);
     }
-    std::string result(pathUtf8);
+    std::string_view stem = leaf;
+    for (const std::string_view suffix : SAVE_NAME_SUFFIXES) {
+        if (hasSuffixFolded(stem, suffix)) {
+            stem.remove_suffix(suffix.size());
+            break;  // ONE suffix: "a.json.json" keeps "a.json" as its stem
+        }
+    }
+    // The directory part, verbatim. In range by construction: fileNameOf returns a SUFFIX of its argument.
+    std::string result(pathUtf8.substr(0, pathUtf8.size() - leaf.size()));
+    result += stem;
     result += SCENE_EXTENSION;
     return result;
 }
@@ -268,9 +313,10 @@ bool saveSceneFile(CommandContext& context, CommandStack& commands, SceneSession
     // task E.4.2 (D7): the extension rule MOVES ABOVE the serialization, so containment is checked on
     // the file that will actually be WRITTEN rather than on the argument. Both live in the same
     // directory, so today the verdict is the same either way -- but checking the written thing is the
-    // only version of this that stays true if withSceneExtension ever changes. IO20 pins it; S18 seeds
-    // the raw argument back in.
-    const std::string target = appendExtension ? withSceneExtension(absolutePathUtf8) : std::string(absolutePathUtf8);
+    // only version of this that stays true if normalizeSceneSavePath (D13, revised by fix 2.5.1) ever
+    // changes. IO20 pins it; S18 seeds the raw argument back in.
+    const std::string target =
+        appendExtension ? normalizeSceneSavePath(absolutePathUtf8) : std::string(absolutePathUtf8);
     // findOwningProject = FALSE (D9): a refused save NEVER offers a project, because accepting one
     // routes through adoptProject (:259-267) -> newScene (:261) -> World::clear() +
     // CommandStack::clear() and would discard the very work being saved. There is nothing to offer, so
