@@ -2045,6 +2045,26 @@ TEST_CASE("scene_session: a taken Save As name is refused, visibly, before seria
     scope.sink()->take(records);
     CHECK_FALSE(anyMessageContains(records, "already exists"));
     CHECK_FALSE(anyMessageContains(records, "needs a name"));
+
+    // ---- THE MIGRATION ARM: every macOS project the original defect touched already holds an "X.json" --
+    //      the file a typed "X" used to become. Saving "X" again answers "X.json" once more; the corrected
+    //      name "X.scene.json" is FREE, so the save must go ahead and must leave the legacy file alone. A
+    //      taken-name test widened to the ANSWER's existence would refuse this user for ever. (Written in
+    //      the full configuration, refused on AERO_REFLECT_TOOLS in the reduced one; IO23 (d) owns the
+    //      write -- what must hold in EVERY configuration is that no NAME refusal fires.)
+    const std::string legacy = tmp.join("r7.json");
+    REQUIRE(engine::editor::writeTextFileAtomic(legacy, "LEGACY").empty());
+    REQUIRE_FALSE(engine::editor::fileExists(tmp.join("r7.scene.json")));  // the corrected name is FREE
+    records.clear();
+    ContainmentOffer migrated;
+    (void)saveSceneFile(ctx, commands, session, legacy, /*appendExtension=*/true, SceneFileContext{"", &migrated});
+    scope.sink()->take(records);
+    CHECK_FALSE(anyMessageContains(records, "already exists"));
+    CHECK_FALSE(anyMessageContains(records, "needs a name"));
+    CHECK_FALSE(migrated.open);  // no refusal modal either
+    const engine::editor::FileReadResult legacyAfter = engine::editor::readTextFile(legacy);
+    REQUIRE(legacyAfter.text.has_value());
+    CHECK(*legacyAfter.text == "LEGACY");  // byte-identical
 }
 
 TEST_CASE("scene_session: a Save As answer with nothing before the suffix is refused (SS60)") {

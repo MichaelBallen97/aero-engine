@@ -1315,4 +1315,24 @@ TEST_CASE("scene_io: the paths the Save As name rule leaves alone, and a chain i
         CHECK(openSceneFile(f.ctx, f.commands, session, legacy, SceneFileContext{p.root, nullptr}));
         CHECK(session.path() == legacy);
     }
+
+    // ---- (d) THE MIGRATION: a project the original defect touched already holds "r7.json" (what a typed
+    //          "r7" used to become). The same answer again writes the FREE corrected name and leaves the
+    //          legacy file byte-identical -- SS59's migration arm, with the write this configuration can do.
+    {
+        const std::string oldName = p.root + "/scenes/r7.json";
+        const std::string newName = p.root + "/scenes/r7.scene.json";
+        REQUIRE(engine::editor::writeTextFileAtomic(oldName, "LEGACY").empty());
+        REQUIRE_FALSE(engine::editor::fileExists(newName));
+        FileFlow flow;
+        flow.dialog = DialogKind::Save;
+        const DialogResult answer{.ready = true, .cancelled = false, .failed = false, .path = oldName};
+        engine::editor::applyDialogResult(f.ctx, f.commands, session, flow, host, answer, f.project);
+        CHECK_FALSE(flow.containmentOffer.open);  // no refusal
+        CHECK(session.path() == newName);
+        CHECK(engine::editor::fileExists(newName));
+        const engine::editor::FileReadResult legacyAfter = engine::editor::readTextFile(oldName);
+        REQUIRE(legacyAfter.text.has_value());
+        CHECK(*legacyAfter.text == "LEGACY");  // untouched
+    }
 }
