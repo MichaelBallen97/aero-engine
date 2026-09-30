@@ -13863,6 +13863,26 @@ TEST_CASE("editor imgui: the editor has ONE focus policy, and it is spelled once
         CHECK(notTargetAt < switchAt);
         CHECK(sameNodeAt > rootAt);
         CHECK(sameNodeAt < switchAt);
+        // SABOTAGE-FORCED (the code-review round): ...and the gather sets EVERY RouteRaiseFacts field. The
+        // defaults describe the common case, so windowExists, docked and tabQueueable default to TRUE --
+        // exactly the values that select the arms which dereference `target`, `node` and `tab`. Dropping
+        // `.tabQueueable` compiles and stays green, and a route on a frame whose node has no tab bar yet
+        // hands TabBarQueueFocus a null tab, which it dereferences (imgui_widgets.cpp:10379-10382);
+        // dropping `.windowExists` sends a route to a window never submitted into
+        // bringToDisplayFrontOnly(nullptr). One sole line per field, between the root read and the switch.
+        const std::array<std::string_view, 5> initializers{
+            ".windowExists = target != nullptr",
+            ".docked = target != nullptr && target->DockIsActive",
+            ".soleWindowInNode = node != nullptr && node->Windows.Size == 1",
+            ".keyboardInSiblingTab = node != nullptr && navRoot != nullptr",
+            ".tabQueueable = tab != nullptr",
+        };
+        for (const std::string_view initializer : initializers) {
+            CAPTURE(initializer);
+            const std::size_t initializerAt = soleLineContaining(shell, initializer);
+            CHECK(initializerAt > rootAt);
+            CHECK(initializerAt < switchAt);
+        }
         // The observable is read after the WHOLE draw walk, so it sees every focus write of the frame.
         const std::size_t observableAt = soleLineContaining(shell, "state.keyboardFocusWindow =");
         CHECK(observableAt > soleLineContaining(shell, "drawWelcomeWindow(fileMenu);"));
