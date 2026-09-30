@@ -724,6 +724,7 @@ void drawShellUi(PanelRegistry& panels, PanelContext& context, ShellUiState& sta
     {
         const char* const routeTarget = routedPanelId(state.routeSource);
         const ImGuiIO& io = ImGui::GetIO();
+        const ImGuiContext* const g = ImGui::GetCurrentContext();  // read once: the guards and the gather
         const RouteGuards guards{
             .enabled = state.routeEnabled,
             // Only the ENTITY arm can be invalidated between the reconcile block and here:
@@ -751,14 +752,26 @@ void drawShellUi(PanelRegistry& panels, PanelContext& context, ShellUiState& sta
             // AnyPopupLevel IM_ASSERTs (:12889) and would abort the Debug lanes. Covers a menu left
             // open in the menu bar -- an open BeginMenu popup persists in g.OpenPopupStack across
             // frames -- and E.2.4's View popover alike.
-            .popupOpen = ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopup)};
+            //
+            // ...OR THE KEYBOARD IS STILL IN A POPUP WINDOW THAT HAS ALREADY CLOSED (the E.3.2 keyboard
+            // fix, measured on row 8 of its validation pass). A menu item's click closes its popup, so on
+            // the tick the create lands IsPopupOpen is false while NavWindow is still the closed menu
+            // (`Create###Menu_00`; menus and popups alike carry ImGuiWindowFlags_Popup, imgui.cpp:13156,
+            // :13186). That window is no dock sibling, so the route would select the tab only -- and the
+            // NEXT frame's NewFrame hands the keyboard back to the top-most active window
+            // (imgui.cpp:5949-5950), the Material tab the user was in, whose tab ImGui then re-selects
+            // (:19611-19613): the Inspector shows for one frame and Material takes the node back. A HOLD,
+            // not a Drop, because ImGui ends it by its own rule on the very next frame; the route then
+            // decides against the window that really holds the keyboard (Material, a sibling:
+            // SetWindowFocus; the Hierarchy: the tab, and the keyboard stays).
+            .popupOpen = ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopup) ||
+                         (g->NavWindow != nullptr && (g->NavWindow->Flags & ImGuiWindowFlags_Popup) != 0)};
         state.routeOutcome = routeOutcome(state.routeSource, guards);
         if (state.routeOutcome == RouteOutcome::Apply) {
             // The facts routeRaise decides on, read off ImGui as NAMED BOOLEANS (context_router.hpp keeps
             // every ImGui type out of its public surface). NavWindow's ROOT, never NavWindow itself: a
             // child window holding the keyboard is docked in no node, its root is.
             ImGuiWindow* const target = ImGui::FindWindowByName(routeTarget);
-            const ImGuiContext* const g = ImGui::GetCurrentContext();
             const ImGuiWindow* const navRoot = (g->NavWindow != nullptr) ? g->NavWindow->RootWindow : nullptr;
             ImGuiDockNode* const node = (target != nullptr) ? target->DockNode : nullptr;
             ImGuiTabItem* const tab = (node != nullptr && node->TabBar != nullptr)

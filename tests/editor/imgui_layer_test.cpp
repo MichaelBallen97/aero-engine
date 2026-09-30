@@ -13688,6 +13688,24 @@ TEST_CASE("editor imgui: the editor has ONE focus policy, and it is spelled once
         CHECK(countLinesContaining(shell, "ImGuiPopupFlags_AnyPopupLevel") == 0U);
         // ...and the guard is what the APPLY arm is gated on, below the decision.
         CHECK(soleLineContaining(shell, "state.routeOutcome == RouteOutcome::Apply") > outcomeAt);
+
+        // THE E.3.2 KEYBOARD FIX's second Hold, found by its validation row 8 on hardware: the popup guard
+        // ALSO holds while NavWindow is still a popup window that has already closed. On the tick a Create
+        // menu click lands, IsPopupOpen is false but NavWindow is still the closed menu; without this term
+        // the route selects the tab, the next NewFrame hands the keyboard back to the Material tab
+        // (imgui.cpp:5949-5950) and ImGui re-selects it. No tier here can open a popup, so this text is the
+        // term's only automated witness: exactly one line names the flag, and it is the continuation of the
+        // `.popupOpen` initializer, inside the guards struct and above the decision.
+        const std::size_t guardsAt = soleLineContaining(shell, "const RouteGuards guards{");
+        const std::size_t popupGuardAt = soleLineContaining(shell,
+                                                            ".popupOpen = ImGui::IsPopupOpen(nullptr, "
+                                                            "ImGuiPopupFlags_AnyPopup) ||");
+        const std::size_t closedPopupAt =
+            soleLineContaining(shell, "(g->NavWindow->Flags & ImGuiWindowFlags_Popup) != 0");
+        CHECK(countLinesContaining(shell, "ImGuiWindowFlags_Popup") == 1U);
+        CHECK(popupGuardAt > guardsAt);
+        CHECK(closedPopupAt == popupGuardAt + 1U);
+        CHECK(closedPopupAt < outcomeAt);
     }
 
     SUBCASE("(c) editor_app.cpp names NO ImGui or ImGuizmo symbol -- unchanged and re-pinned") {

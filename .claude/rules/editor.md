@@ -1921,6 +1921,11 @@ nothing pending, the preference off, the source gone, the target hidden or unreg
 focus this frame — can each persist indefinitely, so holding on one would hold forever. The four
 transient ones — a text field has the keyboard, a drag payload is live, an ImGuizmo drag is in flight,
 a popup is open — all end on a mouse-up, a click-away or an Escape. Never reorder a Drop below a Hold.
+**"A popup is open" also covers the keyboard still sitting in a popup that has just CLOSED** (`NavWindow`
+carries `ImGuiWindowFlags_Popup`): a menu click closes the menu, but `NavWindow` moves off it only in the
+next frame's `NewFrame` (`imgui.cpp:5949-5950`), so a route decided in between selects the tab while the
+keyboard is about to move, and a Material tab that gets the keyboard back takes the node straight back
+(validation row 8, measured). ImGui ends that Hold by its own rule one frame later; `I159(b)` pins the term.
 
 **A route never re-opens a panel the user closed.** `targetAvailable` is *registered AND visible*, and
 a hidden target is a **Drop**, not a Hold. The explicit path may `setVisible(true)`; the automatic one
