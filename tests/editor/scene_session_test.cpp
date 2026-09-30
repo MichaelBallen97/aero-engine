@@ -1953,6 +1953,12 @@ TEST_CASE("scene_session: normalizeSceneSavePath keeps every separator and every
     CHECK(normalizeSceneSavePath("r9.json") == "r9.scene.json");     // no directory at all
     CHECK(normalizeSceneSavePath("/p/r9.") == "/p/r9..scene.json");  // trailing dot: literal
     CHECK(engine::editor::isSceneFileName("r9..scene.json"));        // ...and it IS a scene
+    // THE ROW THAT SEES A LEAF FOUND BY '/' ALONE (sabotage seed S9). Stripping a suffix and re-joining the
+    // prefix yields the same bytes for every row above whichever separator found the leaf; only the
+    // isSceneFileName test differs. Judged as a WHOLE path, "C:\p\.SCENE.JSON" is a scene with the stem
+    // "C:\p\" and would come back verbatim; judged by its LEAF it has nothing before the suffix and
+    // becomes exactly ".scene.json", with the suffix written canonically (SS57's rule).
+    CHECK(normalizeSceneSavePath("C:\\p\\.SCENE.JSON") == "C:\\p\\.scene.json");
 }
 
 // ---- SS59-SS62: fix 2.5.1 -- both name refusals, at the save choke point ---------------------------
