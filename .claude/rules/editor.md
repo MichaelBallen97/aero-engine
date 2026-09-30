@@ -256,6 +256,14 @@ a **human mouse/keyboard pass** recorded per OS in `editor/VALIDATION.md`.
   `project.flow.requestedPath`, and the next `File ▸ Open Project…` found it, took `performAction`'s
   no-dialog seam and adopted that project with no folder dialog and no click. When you add a new failure
   arm here, clear the roster, not just the field you were thinking about.
+- **A native Save panel's answer is normalised to a `.scene.json` leaf** (`normalizeSceneSavePath`, D13
+  revised by fix 2.5.1): `X`, `X.json`, `X.scene` → `X.scene.json`; a leaf `isSceneFileName` accepts is
+  kept byte for byte. **Both name refusals — no stem, or a normalised name that differs from the answer
+  and already exists — happen after containment and before serialization**, log one ERROR and raise the
+  save-refusal modal; the panel's own "Replace?" prompt covered the name the user saw, never the
+  corrected one. Only `applyDialogResult`'s Save arm passes `appendExtension = true`; a literal path is
+  the caller's. **Two modal labels share `###aero_scene_containment`** — a third label must share it too
+  (`I270`), and `I192` pins both `BeginPopupModal` entries by their spelling.
 
 ## Projects (task 2.6.1)
 
