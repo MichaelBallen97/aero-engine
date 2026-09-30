@@ -13839,8 +13839,12 @@ TEST_CASE("editor imgui: the editor has ONE focus policy, and it is spelled once
         const std::size_t rootAt = soleLineContaining(shell, "g->NavWindow->RootWindow");
         CHECK(rootAt > outcomeAt);
         // The observable is read after the WHOLE draw walk, so it sees every focus write of the frame.
-        CHECK(soleLineContaining(shell, "state.keyboardFocusWindow =") >
-              soleLineContaining(shell, "drawWelcomeWindow(fileMenu);"));
+        const std::size_t observableAt = soleLineContaining(shell, "state.keyboardFocusWindow =");
+        CHECK(observableAt > soleLineContaining(shell, "drawWelcomeWindow(fileMenu);"));
+        // SABOTAGE-FORCED (seed S9): ...and it publishes the ROOT's name. `std::string(nav->Name)` left
+        // I256-I258 green, because every panel those cases focus holds NavWindow at its own root; a
+        // keyboard in a child window would report the child's internal name instead of the panel id.
+        CHECK(soleLineContaining(shell, "nav->RootWindow->Name") == observableAt);
     }
 }
 
