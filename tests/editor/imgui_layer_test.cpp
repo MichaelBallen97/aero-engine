@@ -21491,8 +21491,9 @@ TEST_CASE(
     "editor: the dialog focus repair runs on the main thread, once per result, before the flow "
     "(fix 2.5.1-focus, I276)") {
     // SOURCE TEXT, because no runtime tier can deliver a dialog result through EditorApp::tick() or see
-    // which thread a call ran on. editorSourceCodeLines strips comments, so a citation in prose can neither
-    // satisfy nor break an arm. UNGATED: the source exists in every configuration.
+    // which thread a call ran on. editorSourceCodeLines strips `//` comments, so a citation in a line comment
+    // can neither satisfy nor break an arm (a `/* */` block or a `//` inside a string literal is not
+    // stripped). UNGATED: the source exists in every configuration.
 
     SUBCASE("(a) exactly one editor file raises a window or reads SDL's keyboard focus, once each") {
         // A SET claim and a COUNT claim (I159(a)'s pair): a raise in another file -- a panel, a per-frame
@@ -21537,6 +21538,16 @@ TEST_CASE(
         // Above the flow: applyDialogResult can launch the NEXT sheet in the same call, and a raise after it
         // would act on a sheet that is opening instead of the one that closed.
         CHECK(raiseAt < applyAt);
+        // FIRST and UNCONDITIONAL: the arm's first statement, spelled exactly. A cancelled result is every
+        // Escape close, so a condition on the result here (`!result.cancelled && ...`) would bring half the
+        // defect back while every check above stayed green.
+        CHECK(nextCodeLine(app, takeAt + 1U) == raiseAt);
+        const std::string& raiseLine = app[raiseAt];
+        const std::size_t first = raiseLine.find_first_not_of(" \t");
+        const std::size_t last = raiseLine.find_last_not_of(" \t\r");
+        REQUIRE(first != std::string::npos);
+        CHECK(std::string_view(raiseLine).substr(first, last - first + 1U) ==
+              "if (restoreKeyboardFocusAfterDialog(nativeWindowHandle(window))) {");
     }
 
     SUBCASE("(d) the helper asks the decision I275 tests, with SDL's focus read on that line, before raising") {
