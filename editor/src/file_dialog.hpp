@@ -57,4 +57,26 @@ void launchOpenProjectFolderDialog(const std::shared_ptr<DialogChannel>& channel
 void launchLocateBlenderDialog(const std::shared_ptr<DialogChannel>& channel, void* parentSdlWindow,
                                std::string_view startDirectory);
 
+// fix 2.5.1-focus: THE KEYBOARD AFTER A NATIVE DIALOG CLOSES. On macOS a sheet closed FROM THE KEYBOARD
+// (Return or Escape) leaves NO key window: the editor stays main and the app stays active, but AppKit sends
+// no windowDidBecomeKey:, so SDL's keyboard focus stays NULL and SDL_cocoakeyboard.m:553-559 drops every
+// key until the window is clicked -- measured on hardware in 8 of 8 keyboard closes and 0 of 6 mouse
+// closes. SDL's own ReactivateAfterDialog (SDL_cocoadialog.m:56-63) activates the APP, which restores
+// whichever window was key before; after a keyboard close, none was.
+//
+// The decision, PURE so a test can walk every arm (I275): raise only when there IS a window and it does not
+// already hold SDL's keyboard focus. Both pointers are opaque SDL_Window*s, compared and never dereferenced.
+// The focus comparison is what keeps a platform whose OS hands the focus back by itself a no-op, with no
+// new per-OS branch in editor/.
+[[nodiscard]] constexpr bool dialogCloseNeedsRaise(const void* window, const void* keyboardFocus) noexcept {
+    return window != nullptr && keyboardFocus != window;
+}
+
+// MAIN THREAD ONLY -- SDL_GetKeyboardFocus and SDL_RaiseWindow both say so -- which is why its one caller is
+// EditorApp::tick()'s take arm and never onDialogResult, which runs on an ARBITRARY thread (F2). Reads SDL's
+// keyboard focus and, when dialogCloseNeedsRaise says so, raises `parentSdlWindow` (on macOS: activate the
+// app, then makeKeyAndOrderFront, SDL_cocoawindow.m's Cocoa_RaiseWindow; nothing for a hidden or minimised
+// window). Returns true when it asked SDL to raise. Logs nothing -- this file's posture; the caller logs.
+[[nodiscard]] bool restoreKeyboardFocusAfterDialog(void* parentSdlWindow);
+
 }  // namespace engine::editor

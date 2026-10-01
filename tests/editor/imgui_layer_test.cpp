@@ -57,6 +57,7 @@
 // blender_service_test.cpp reaches blender_process.hpp -- by relative path into editor/src. It names
 // scene_render::MeshBinding, which is why aero::scene_render is on this target's link line.
 #include "../../editor/src/default_font.hpp"     // task E.4.4 validation: the UI font, measured ImGui-free (I230)
+#include "../../editor/src/file_dialog.hpp"      // fix 2.5.1-focus (I275, I276): the dialog focus gate + helper
 #include "../../editor/src/hierarchy_panel.hpp"  // task E.5.2, I249: requestCreate -- the panel-to-drain path
 #include "../../editor/src/material_panel.hpp"   // task E.2.4, I136: previewOutputTarget() -- the same
                                                  // src-private reach the two lines below already make
@@ -21408,4 +21409,41 @@ TEST_CASE("editor: the viewport sets the grid's nudge from the camera it renders
     app->requestQuit();
     CHECK(app->tick() == false);
     app.reset();
+}
+
+// ==================================================================================================
+// fix 2.5.1-focus -- a native dialog closed from the keyboard hands the keyboard back (I275, I276)
+// ==================================================================================================
+//
+// NO TIER IN THIS TREE CAN PRESS A KEY, OPEN A NATIVE DIALOG OR READ AppKit's KEY WINDOW, and DialogChannel
+// is src-private with no EditorApp seam (PJ55's and I185's own comments), so nothing here delivers a result
+// through tick(). What IS decidable: the gate, as a pure table plus the real helper on its one arm that no
+// environment can change (I275), and WHERE the one call sits, as source text (I276) -- the I159 / I192
+// shape. The validation page is the only behavioural witness.
+
+TEST_CASE("editor: a dialog result raises the window only when it lacks the keyboard (fix 2.5.1-focus, I275)") {
+    // UNGATED: no platform context, no window, no GPU. Two distinct live objects stand in for two
+    // SDL_Window*s -- the decision compares addresses and dereferences nothing.
+    const int windowObject = 0;
+    const int otherObject = 0;
+    const void* const window = &windowObject;
+    const void* const other = &otherObject;
+
+    // The defect's shape: SDL's keyboard focus is NULL after a keyboard-closed sheet -> raise.
+    CHECK(engine::editor::dialogCloseNeedsRaise(window, nullptr));
+    // Another window holds it (unreachable while ImGui viewports are OFF, imgui_layer.cpp:82) -> raise.
+    CHECK(engine::editor::dialogCloseNeedsRaise(window, other));
+    // The OS already handed it back -- every measured mouse close -> nothing.
+    CHECK_FALSE(engine::editor::dialogCloseNeedsRaise(window, window));
+    // No window -> nothing, whatever holds the focus.
+    CHECK_FALSE(engine::editor::dialogCloseNeedsRaise(nullptr, nullptr));
+    CHECK_FALSE(engine::editor::dialogCloseNeedsRaise(nullptr, other));
+
+    // THE REAL HELPER, on the one arm whose answer no environment can change: with no window it answers
+    // false and raises nothing, whatever SDL's keyboard focus reads in this process. An ungated raise, or a
+    // gate inverted inside the helper, answers true. It is NEVER called here with a real window: a raise
+    // would pull the test window in front of whatever is being typed into, and what SDL's focus reads after
+    // it is a fact about the window server (a bare executable on macOS, xvfb on Linux, the runner's session
+    // on Windows), not about this code.
+    CHECK_FALSE(engine::editor::restoreKeyboardFocusAfterDialog(nullptr));
 }
