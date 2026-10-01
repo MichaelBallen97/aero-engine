@@ -223,6 +223,25 @@ a **human mouse/keyboard pass** recorded per OS in `editor/VALIDATION.md`.
   it so, and removing the hand-bound check on that assumption without re-verifying against the
   vendored source would silently break AC-27 with no test able to catch it (no tier can press a
   key on a modal; see `editor/validation/2.5.1-save-load-new-from-editor.md` row 14).
+- **A native dialog closed FROM THE KEYBOARD leaves no key window on macOS, so the editor hands the keyboard
+  back itself (fix 2.5.1-focus).** After a sheet closes by Return or Escape, AppKit makes no window key — the
+  editor stays main, the app stays active — so SDL never sees `windowDidBecomeKey:`, its keyboard focus stays
+  NULL, and SDL's Cocoa key handler drops every key until a click (measured: 8 of 8 keyboard closes, 0 of 6
+  mouse closes). The repair is ONE gated call, `restoreKeyboardFocusAfterDialog` (`file_dialog.cpp`), in
+  `EditorApp::tick()`'s `result.ready` arm — the one `dialogChannel->take()` — and **above**
+  `applyDialogResult`, which can launch the next sheet in the same call. Three things a change must keep: it
+  runs on the **main thread**, never in `onDialogResult` (an arbitrary thread on Windows and under zenity, and
+  both SDL calls are main-thread-only); it runs **once per result**, never per frame — anywhere else in
+  `tick()` it pulls the editor in front of every other application for as long as it lacks the keyboard; and
+  the gate is `dialogCloseNeedsRaise` (no window, or the window already holding SDL's focus, raises nothing),
+  which keeps every OS that hands the focus back by itself a no-op with no per-OS branch. **A new native
+  dialog needs nothing as long as its result arrives through `dialogChannel`**; one that bypasses the channel
+  inherits the defect. ImGui viewports are OFF (`imgui_layer.cpp:82`); if that ever changes, the gate must ask
+  whether ANY editor window holds the keyboard, or a result will pull the main window over a focused viewport.
+  Out of reach and recorded: macOS's own "replace?" alert ON a panel, closed with Escape, leaves the panel
+  itself un-key, and the editor sees nothing until the panel closes. `I275` pins the gate and `I276` the
+  placement as source text; no tier can press a key or read AppKit's key window, so the validation page is the
+  only behavioural witness.
 - **Containment is decided at `openSceneFile` and `saveSceneFile` and NOWHERE ELSE (task E.4.2).** Both
   take a **non-defaulted** `const SceneFileContext&` — a default would let a future call site silently
   take the permissive arm, which is a wrong picture with no error and no failing test, while
