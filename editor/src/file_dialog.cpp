@@ -4,6 +4,7 @@
 #include "file_dialog.hpp"
 
 #include <SDL3/SDL_dialog.h>
+#include <SDL3/SDL_keyboard.h>  // fix 2.5.1-focus: SDL_GetKeyboardFocus
 #include <SDL3/SDL_video.h>
 
 #include <array>
@@ -118,6 +119,18 @@ void launchLocateBlenderDialog(const std::shared_ptr<DialogChannel>& channel, vo
     // launchOpenSceneDialog's shape verbatim, including the always-invoked-callback leak-freedom (A22).
     SDL_ShowOpenFileDialog(&onDialogResult, ticket, static_cast<SDL_Window*>(parent), /*filters=*/nullptr,
                            /*nfilters=*/0, dir.empty() ? nullptr : dir.c_str(), /*allow_many=*/false);
+}
+
+// fix 2.5.1-focus (the header states the defect). Called ONCE PER RESULT, from tick()'s take arm (I276) --
+// never per frame: a per-frame raise would pull the editor in front of every other application for as long
+// as it lacked the keyboard.
+bool restoreKeyboardFocusAfterDialog(void* parentSdlWindow) {
+    auto* const window = static_cast<SDL_Window*>(parentSdlWindow);
+    if (!dialogCloseNeedsRaise(window, SDL_GetKeyboardFocus())) {
+        return false;  // no window, or the keyboard is already back (a mouse close in the active editor)
+    }
+    SDL_RaiseWindow(window);  // its bool is not read: it is true even when the window manager refuses
+    return true;
 }
 
 }  // namespace engine::editor

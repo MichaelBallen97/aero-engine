@@ -633,6 +633,15 @@ bool EditorApp::tick() {
     ProjectContext projectContext{project, projectFlow, recents, BUILD_ENGINE_VERSION};
     if (dialogChannel != nullptr) {
         if (const DialogResult result = dialogChannel->take(); result.ready) {
+            // fix 2.5.1-focus: a native dialog has just CLOSED, so hand the editor window the keyboard back
+            // if the OS did not -- on macOS a sheet closed from the keyboard leaves no key window and SDL
+            // drops every key until a click (file_dialog.hpp). Here: the main thread, once per result, and
+            // FIRST -- applyDialogResult can launch the NEXT sheet in this same call (a Save completing a
+            // pending Open), and the raise must act on the dialog that closed, never on one that is opening.
+            // Every result takes it, cancelled, failed and orphaned included: the dialog closed either way.
+            if (restoreKeyboardFocusAfterDialog(nativeWindowHandle(window))) {
+                AERO_LOG_DEBUG("editor: a file dialog closed without returning the keyboard; raised the window");
+            }
             CommandContext cmd{sceneWorld, sceneSelection, rootOrder};
             // task 2.6.1: FileDialogHost::projectRoot is a std::string_view. Binding it DIRECTLY to
             // project.scenesRoot() -- which returns BY VALUE -- leaves it dangling the instant the
