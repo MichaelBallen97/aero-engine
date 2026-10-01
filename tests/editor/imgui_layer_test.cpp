@@ -21447,3 +21447,111 @@ TEST_CASE("editor: a dialog result raises the window only when it lacks the keyb
     // on Windows), not about this code.
     CHECK_FALSE(engine::editor::restoreKeyboardFocusAfterDialog(nullptr));
 }
+
+namespace {
+
+// Every editor .cpp/.hpp whose comment-stripped code names `needle`, as a sorted, de-duplicated set of leaf
+// names, plus how many files the walk read and the set as one line for INFO -- I159(a)'s walk as a function,
+// because I276 asks it three times.
+struct EditorFilesNaming {
+    std::vector<std::string> files;
+    std::string listed;
+    std::size_t scanned = 0;
+};
+
+[[nodiscard]] EditorFilesNaming editorFilesNaming(std::string_view needle) {
+    EditorFilesNaming result;
+    const std::array<std::string_view, 2> roots{AERO_EDITOR_SRC_DIR, AERO_EDITOR_INCLUDE_DIR};
+    for (const std::string_view root : roots) {
+        std::error_code ec;
+        const std::filesystem::recursive_directory_iterator walk(std::filesystem::path(root), ec);
+        REQUIRE_FALSE(ec);
+        for (const std::filesystem::directory_entry& entry : walk) {
+            const std::string extension = entry.path().extension().string();
+            if (!entry.is_regular_file() || (extension != ".cpp" && extension != ".hpp")) {
+                continue;
+            }
+            ++result.scanned;
+            if (countLinesContaining(editorSourceCodeLines(entry.path().string()), needle) > 0U) {
+                result.files.push_back(entry.path().filename().string());
+            }
+        }
+    }
+    std::sort(result.files.begin(), result.files.end());
+    result.files.erase(std::unique(result.files.begin(), result.files.end()), result.files.end());
+    for (const std::string& file : result.files) {
+        result.listed.append(file).append(" ");
+    }
+    return result;
+}
+
+}  // namespace
+
+TEST_CASE(
+    "editor: the dialog focus repair runs on the main thread, once per result, before the flow "
+    "(fix 2.5.1-focus, I276)") {
+    // SOURCE TEXT, because no runtime tier can deliver a dialog result through EditorApp::tick() or see
+    // which thread a call ran on. editorSourceCodeLines strips comments, so a citation in prose can neither
+    // satisfy nor break an arm. UNGATED: the source exists in every configuration.
+
+    SUBCASE("(a) exactly one editor file raises a window or reads SDL's keyboard focus, once each") {
+        // A SET claim and a COUNT claim (I159(a)'s pair): a raise in another file -- a panel, a per-frame
+        // site -- changes the set; a second one in file_dialog.cpp, inside the dialog callback, changes the
+        // count.
+        const std::vector<std::string> expected{"file_dialog.cpp"};
+        const EditorFilesNaming raising = editorFilesNaming("SDL_RaiseWindow(");
+        const EditorFilesNaming reading = editorFilesNaming("SDL_GetKeyboardFocus(");
+        INFO("raising: ", raising.listed, "| reading: ", reading.listed);
+        CHECK(raising.files == expected);
+        CHECK(reading.files == expected);
+        CHECK(raising.scanned > 50U);  // anti-vacuity: the walk really read both roots
+        const std::vector<std::string> dialog = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/file_dialog.cpp");
+        CHECK(countLinesContaining(dialog, "SDL_RaiseWindow(") == 1U);
+        CHECK(countLinesContaining(dialog, "SDL_GetKeyboardFocus(") == 1U);
+    }
+
+    SUBCASE("(b) the helper is declared once, defined once and CALLED once -- from editor_app.cpp") {
+        // Moving the call into onDialogResult -- an arbitrary thread on Windows, where neither SDL call is
+        // allowed -- makes file_dialog.cpp read two lines; moving it to any other file changes the set.
+        const EditorFilesNaming naming = editorFilesNaming("restoreKeyboardFocusAfterDialog(");
+        INFO("naming: ", naming.listed);
+        const std::vector<std::string> expected{"editor_app.cpp", "file_dialog.cpp", "file_dialog.hpp"};
+        CHECK(naming.files == expected);
+        for (const std::string& file : expected) {
+            CAPTURE(file);
+            const std::filesystem::path path = std::filesystem::path(AERO_EDITOR_SRC_DIR) / file;
+            const std::vector<std::string> code = editorSourceCodeLines(path.string());
+            CHECK(countLinesContaining(code, "restoreKeyboardFocusAfterDialog(") == 1U);
+        }
+    }
+
+    SUBCASE("(c) in tick(): inside the take arm, and ABOVE applyDialogResult") {
+        const std::vector<std::string> app = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/editor_app.cpp");
+        const std::size_t takeAt = soleLineContaining(app, "dialogChannel->take(); result.ready) {");
+        const std::size_t raiseAt =
+            soleLineContaining(app, "restoreKeyboardFocusAfterDialog(nativeWindowHandle(window))");
+        const std::size_t applyAt = soleLineContaining(app, "applyDialogResult(");
+        // Below the take: anywhere else in tick() the call runs EVERY frame, and pulls the editor in front of
+        // every other application for as long as it lacks the keyboard.
+        CHECK(takeAt < raiseAt);
+        // Above the flow: applyDialogResult can launch the NEXT sheet in the same call, and a raise after it
+        // would act on a sheet that is opening instead of the one that closed.
+        CHECK(raiseAt < applyAt);
+    }
+
+    SUBCASE("(d) the helper asks the decision I275 tests, with SDL's focus read on that line, before raising") {
+        const std::vector<std::string> dialog = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/file_dialog.cpp");
+        const std::size_t definedAt = soleLineContaining(dialog, "bool restoreKeyboardFocusAfterDialog(");
+        const std::size_t gateAt = soleLineContaining(dialog, "dialogCloseNeedsRaise(");
+        const std::size_t raiseAt = soleLineContaining(dialog, "SDL_RaiseWindow(");
+        // The tested function IS the gate in force -- a re-spelled inline test would leave I275 green over a
+        // function nothing calls -- and a "no" returns before the raise.
+        const std::string_view gate = "if (!dialogCloseNeedsRaise(window, SDL_GetKeyboardFocus())) {";
+        CHECK(dialog[gateAt].find(gate) != std::string::npos);
+        const std::size_t afterGate = nextCodeLine(dialog, gateAt + 1U);
+        REQUIRE(afterGate < dialog.size());
+        CHECK(dialog[afterGate].find("return false;") != std::string::npos);
+        CHECK(definedAt < gateAt);
+        CHECK(gateAt < raiseAt);
+    }
+}
