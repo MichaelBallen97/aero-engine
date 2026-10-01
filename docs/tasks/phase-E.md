@@ -346,8 +346,9 @@ the tonemap params — this task moved the controls, not the state.
 
 **Goal:** the Inspector says what it is showing, follows what you click, and lets you *pick* an asset instead of reading a GUID. All three are missing: a `Vec3` renders as three unlabelled drag boxes, clicking an entity does not raise the Inspector, and an asset reference is a text string plus a `Clear` button.
 **Definition of Done:** every vector field is axis-labelled; selecting anything raises the panel that edits it; every asset reference is a searchable picker with a preview.
-**CLOSED with E.3.4** — all four tasks merged, and E.3.1, E.3.3 and E.3.4 are macOS-validated
-(E.3.2's page remains unrun). The epic's own Definition of Done was met at E.3.3; E.3.4 is the task
+**CLOSED with E.3.4** — all four tasks merged and all four macOS-validated (E.3.2's page was run on
+2026-09-12 and recorded in the log only on 2026-10-01, beside its keyboard fix, PR #116). The epic's own
+Definition of Done was met at E.3.3; E.3.4 is the task
 that made the panel those pickers live in read as a material rather than as a form.
 
 ### E.3.1 Axis-labelled vector fields · P0 · M · depends: 2.2.2

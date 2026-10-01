@@ -18504,3 +18504,306 @@ selects the whole `X.scene` stem of 2.5.1's suggestion, so a typed name saves as
 `create_menu_ui.{hpp,cpp}`, `tests/editor/create_menu_test.cpp` and the fixture
 `tests/reflect-gen/fixtures/component_labels.hpp`; five new ctest process cases; `debug_line.vert.hlsl`'s
 cbuffer grows to 80 bytes.
+
+### E.3.2 — macOS validation pass (2026-09-12, recorded 2026-10-01): 9 PASS / 1 PARTIAL / 2 NOT EXECUTABLE
+
+**The page was run on 2026-09-12 and this log never recorded it.** `CLAUDE.md` carried E.3.2 as "UNRUN on every
+platform" until 2026-10-01, when the planning of the E.3.2 keyboard fix found the page's records.
+- **Build:** `main` @ `b172198` (E.3.2's merge), `macos-release`.
+- **Project:** `/tmp/e32val/project`, holding:
+  - `brick.aeromat` (named "Brushed Copper") and `plain.aeromat`;
+  - `basecolor.png`;
+  - `triangle.gltf`, `cube.obj`, `cube.fbx` and `cube.blend`;
+  - `notes.txt`.
+- **Window:** pinned at 2200×1300, with the layout reset before each row that needed a known dock state.
+
+**The routes (rows 1–4):**
+- **Row 1:** an entity click raised the Inspector 10 times in 10, each from a before-state VERIFIED as Material,
+  including four same-entity repeats (the D2 counter).
+- **Row 2:** a viewport pick raised it too. Empty space and a scene load raised nothing.
+- **Row 3:** `plain.aeromat` raised Material WITH that material loaded, and a texture afterwards raised nothing.
+  Clicking a material that is already the browser selection raises nothing, correctly, because the session
+  does not retarget.
+- **Row 4:** `.gltf`, `.fbx` and `.obj` raised Import Details, and `.blend` did so while the panel still read
+  "Checking the Blender version...". `.txt` and `.png` raised nothing. The latency is bounded below the
+  instrument's ~320 ms floor.
+
+**The seed rows:**
+- **Row 5** (`S24`, a half-typed material name) **PASSED**. "Brushed Copper" became "Brush Copper", the
+  document went dirty, and Apply and Revert were enabled across the raise. The edit was made with Backspace,
+  because synthetic text entry never arrived from the bare executable.
+- **Row 6** (`S14`/`S24`, the drop surface mid-drag) is **NOT EXECUTABLE**: no synthetic release commits a
+  reparent. It also recorded **a finding against the spec's D5 narrative**:
+  - a press on an unselected Hierarchy row selects at PRESS, and the focus slot reads `GetDragDropPayload()`
+    before ImGui's 6-pixel threshold has made a payload, so the Inspector DOES come forward while the button
+    is down;
+  - the guard is not defective (it holds once a payload exists), and the Hierarchy, the drop surface, does not
+    move when the right dock changes tab.
+- **Row 7** (`S18`'s side-effect half) is **PARTIAL by construction**: the `popupOpen` Hold makes a raise while
+  a popup is open unreachable. The File menu stayed byte-identical across a raise.
+- **Row 8** (a gizmo drag across a selection change) is **NOT EXECUTABLE**: the drag works, but no selection
+  command can be issued while the button is held.
+
+**The preference, the closed panel, the explicit request and the cost (rows 9–12):**
+- **Row 9:** the preference file was created only on the first change. It reads exactly 53 bytes with one
+  trailing newline. It was not rewritten across ten further selections, and `editor_tools.json` was never
+  touched.
+- **Row 10:** a closed Inspector stayed closed.
+- **Row 11:** Edit ▸ Project Settings… won, even with an asset click immediately before it.
+- **Row 12:** routing on, routing off and the branch point `8b13b7e` all sat within 0.014 ms of one another,
+  vsync-pinned at 16.67 ms — a bound, not a measurement. With routing off, the viewport was bit-identical to the
+  branch point: 0 of 1 148 100 pixels differed, against a 5 183-pixel control.
+
+**Still uncovered:** `S24`'s drop half, the gizmo-drag Hold and `S18`'s popup-closing half. The 2026-10-01 fix
+below changed two of this page's method facts: a route no longer focuses the right dock, so the eight-reference
+tab-colour set describes the pre-fix build only.
+
+### E.3.2 fix — a context route shows its target and keeps the keyboard (PR #116, `c311626`)
+
+**The defect was found during E.5.2's macOS pass.** With View ▸ Focus Follows Selection ON, a Hierarchy click
+raised the Inspector through `ImGui::SetWindowFocus`. That made the Inspector ImGui's `NavWindow`, and the
+Hierarchy's three focus-scoped `Shortcut`s — Delete/Backspace, Ctrl+D and F2 — fired once and then went nowhere
+until the Hierarchy was clicked again, so a chained Ctrl+D was impossible.
+- `Shortcut` routes to the focus stack built from `NavWindow` (`imgui.cpp:11443-11444`, `:10309-10316`,
+  `:9425-9449`), one frame later (`:10435`). That timing is exactly the "fires once" shape.
+
+**Two corrections to the request, read in the tree:**
+- **The viewport was never affected.** `F`, the gizmo's W/E/R/X and the fly keys are gated on hover or on a
+  live gesture, never on `NavWindow`.
+- **The Asset Browser routes did move `NavWindow`, but nothing is lost there.** The browser has no
+  focus-scoped key; its F2/Del are an unowned handoff.
+
+**What shipped:**
+- **The route selects the tab.** An automatic route now selects the target's dock TAB with
+  `ImGui::TabBarQueueFocus(tabBar, tab)` — the `ImGuiTabItem*` overload, because the `const char*` one
+  asserts it is not on a dock node (`imgui_widgets.cpp:10386`), which seed `S5` measured as a SIGABRT. The
+  queue is consumed by `TabBarLayout` before `DockNodeUpdateTabBar`'s focus block, so the tab changes and
+  `NavWindow` does not.
+- **The pure `routeRaise` decides between three raises:** the tab, a full `SetWindowFocus`, or a display raise.
+  - It falls back to `SetWindowFocus` when the keyboard is in a SIBLING tab of the target's node, because
+    ImGui re-selects the keyboard's tab every frame (`imgui.cpp:19611-19613`); within one node, the tab and
+    the keyboard cannot be separated.
+  - It also falls back when the node has no tab bar yet, on the first frames after startup or a Reset Layout.
+  - A floating target gets `BringWindowToDisplayFront`, gated on `NoBringToFrontOnFocus` so the dockspace
+    host is never lifted over its own panels.
+- **Explicit requests still take the keyboard:** Edit ▸ Project Settings… and `requestPanelFocus`.
+  `I159(a)`'s three `SetWindowFocus` calls in one file are unchanged.
+- **A new tier observable:** `EditorApp::keyboardFocusPanelId()` publishes the root name of `NavWindow`, so the
+  GPU tier can tell "the panel raised" from "the panel took the keyboard" for the first time.
+- **Tests:**
+  - `RT28`–`RT30` cover the decision;
+  - `I256` covers a route that raises while the Hierarchy keeps the keyboard — red before the fix, reading
+    `Inspector`;
+  - `I257` covers the sibling-tab fallback, stable across ticks;
+  - `I258` covers the explicit path;
+  - `I159` (g)/(h) pin the dispatch, the gate and the gather as text.
+- **Totals:** shell 2200 → 2203, imgui 277 → 280.
+
+**The macOS pass found one more defect, and two commits fixed it.** Row 8 failed on `58ae4bb`: with the
+keyboard in Material, Create ▸ Cube left Material in front.
+- On the route frame, `NavWindow` was the just-CLOSED `Create###Menu_00` popup, so the route selected the tab.
+- The next `NewFrame` handed the keyboard back to Material (`imgui.cpp:5949-5950`), and the tab flipped back.
+- `4597e29` and `cc06ab1` extend the router's popup Hold to a keyboard whose ROOT window is a popup. A child
+  window takes its parent's root unless docked (`:7761-7766`), and a popup is its own root.
+
+**Sabotage:** 18 seeds, six of them from the code-review round. Four holes were found and closed:
+- `S9` (the observable read the child window, not the root) — closed by `0d12425`;
+- `S8` (the `NoBringToFrontOnFocus` gate unpinned) — closed by `c2d53c0`. The host is `push_front`ed at
+  creation, so one ungated route after any popup moves it to the back of `g.Windows`, and
+  `FindHoveredWindowEx` then resolves every hover to it;
+- `S13`/`S14` (the sibling fact on `NavWindow` instead of its root) — closed by `aa1ac5a`;
+- `S15`/`S16` (gather initializers deleted) — closed by `58ae4bb`.
+
+The code-review round's other finding was a test defect: `I256` and `I257` never `REQUIRE`d that Material drew
+before the route, so any front tab satisfied them. `40c40dd` fixed it, with a test mutant as proof.
+
+**Gate and merge:**
+- **Gate on `cc06ab1`:** doctest 1428 / 2203 / 280 / 40 / 73 / 14 / 28 in both presets; `ctest` 183/183 in
+  both; shader-OFF 170 and reflect-OFF 93 entries, both green; guards 8/8 byte-identical; `I136` green on 1×
+  displays.
+- **CI:** run `36762798067` was 6/6 green (macOS 26m, Windows 34m, Linux 1h21m). An earlier run on `58ae4bb` was
+  cancelled by the push.
+- **Merged** as `c311626`, with eleven commits.
+- **macOS validation: 10 / 10 on `cc06ab1`** (2026-10-01). The rows covered: chained Cmd+D; Delete, Backspace and
+  F2 after a click; the tab-bar palettes (Right dock unfocused, Hierarchy focused); the Material and Import
+  Details routes; a floating Inspector and one docked alone; the sibling-tab case; a half-typed name surviving
+  a route; and the explicit path still taking the keyboard.
+
+#### The sentences that govern new work
+
+1. **A queued tab selection is consumed by `TabBarLayout` before `DockNodeUpdateTabBar`'s focus block reads it**,
+   which is the whole reason it does not move the keyboard. Queue it after the node updates and it focuses.
+2. **Inside one dock node the tab and the keyboard cannot be separated** (`imgui.cpp:19611-19613`). A raise into
+   the keyboard's own node must move the keyboard or it flips back.
+3. **Only the `ImGuiTabItem*` overload of `TabBarQueueFocus` is legal on a dock node.** The `const char*` one
+   aborts the Debug lanes.
+4. **"The panel raised" and "the panel took the keyboard" are different claims**, and `keyboardFocusPanelId()`
+   is the only tier that tells them apart.
+5. **A frame after a menu closes, `NavWindow` can still be the closed popup.** Any decision keyed on "where is
+   the keyboard" must wait out that frame (the Hold), or it reads a window that is about to hand the keyboard
+   back.
+
+### 2.5.1 fix — Save Scene As always writes a `.scene.json` name (PR #117, `35bb8db`)
+
+**The defect, recorded first by E.4.1's pass and confirmed by E.5.2's:** on macOS, typing `r9` into **File ▸ Save
+Scene As…** saved `r9.json`.
+- The scene filter's `.json` is a hidden extension, and **the panel appends it to WHATEVER is typed**:
+  - `r9` → `r9.json`;
+  - `r11.scene.json` → `r11.scene.json.json`;
+  - `R12.JSON` → `R12.JSON.json`;
+  - `.json` → `.json.json`.
+- 2.5.1's D13 (`withSceneExtension`) appended `.scene.json` only to a leaf with no `.`, so `r9.json` was written
+  as it came.
+- E.4.1's `firstSceneUnder` cascade requires `.scene.json`, so a project saved that way reopened on a new
+  scene.
+
+**Corrections read in the tree:**
+- **(B5) Windows probably returns `…\r9` with no extension at all**: SDL's `IFileSaveDialog` path never calls
+  `SetDefaultExtension`, and the legacy fallback sets `lpstrDefExt = NULL`. Unmeasured.
+- **(B7) The only `appendExtension = true` caller is `applyDialogResult`'s Save arm.**
+- **(B8) D13 already held half the fix**, including the overwrite predicate, so the fix revises it rather than
+  adding a second mechanism.
+- **(B9) D13's existence check sat after `sceneToText`**, so it was unreachable in the reflect-tools-OFF build.
+
+**What shipped:**
+- **`normalizeSceneSavePath`** keeps a leaf `isSceneFileName` accepts byte for byte. Otherwise it strips one
+  trailing `.scene.json`, `.json` or `.scene` at a time (case-insensitive), stopping at the first scene name,
+  then appends `.scene.json`.
+- **Three refusals, after containment and before serialization, in this order:**
+  - no stem: "a scene file needs a name before '.scene.json'";
+  - a hidden leaf, using `isHiddenName` (the listing's own rule): "a scene name cannot start with a dot (the
+    file would be hidden)";
+  - a corrected name that differs from the answer and already exists: "a file with that name already exists,
+    and the file dialog did not ask about replacing it".
+
+  Each logs one ERROR and raises the save-refusal modal under a second label, **Scene Not Saved**, which shares
+  `###aero_scene_containment` and so is the same popup.
+- **A refused save abandons a waiting Quit or Open Project**, clearing both flows' `requestedPath`.
+- **A leftover `X.json` never blocks saving `X` again.**
+- **The modal answers Return and keypad Enter by hand.** The accept is gated on the offer the Open button
+  draws on; the dismiss wins; each arm closes the popup.
+- **Tests:** `SS55`–`SS63`, `IO22`, `IO23` and `I270`; `SS5` and `I192` were edited in place. Totals:
+  shell 2203 → 2214, imgui 280 → 281.
+
+**The macOS pass on `f4fbdea` failed rows 5–7**, which is how the appended `.json` was measured. The loop that
+strips every suffix (`2ff9f92`) fixed them. The code-review round added three things:
+- the hidden-name refusal (`4c329da`);
+- the Return binding (`2c4ee20`);
+- the leftover-`X.json` checks (`5824df0`).
+
+**Sabotage:** 25 seeds, one hole:
+- `S9` (the leaf found with `rfind('/')`) changed no result until `SS58` gained `C:\p\.SCENE.JSON` (`b4b9856`).
+- `S10` (a modal label outside the shared popup id) was also caught by `I189`, which the plan had declared
+  green: more cover, not a hole.
+- `S3r`/`S3d` (the suffix list reordered, or its `.scene.json` entry deleted) are non-findings under the loop,
+  and the code comment says so.
+
+**Gate and merge:**
+- **Gate on `17b0d03`:** doctest 1428 / 2214 / 281 / 40 / 73 / 14 / 28 in both presets; `ctest` 183/183 in
+  both; reduced configurations configured fresh and green (shader-OFF 170, reflect-OFF 93); guards 8/8; lint
+  exit 0.
+- **CI:** run `36840179350` was 6/6 green (macOS 22m, Windows 42m, Linux 44m).
+- **Merged** as `35bb8db`, with thirteen commits.
+- **macOS validation: 15 / 15** (2026-10-01).
+  - The panel asks its OWN "replace?" whenever its literal answer exists (`legacy.json`, `r14.json`).
+    Answering Replace writes the corrected `.scene.json` and leaves the literal file untouched.
+  - **The pass found the next defect.** After a native sheet is closed from the KEYBOARD, the editor has no key
+    window and every key is dropped until a click. Rows 12–13 were therefore run with the panel confirmed by
+    its button. That defect is fixed separately (below).
+
+#### The sentences that govern new work
+
+1. **A native panel's answer is not the name the user saw.** Never assume a panel returns what was typed. The
+   panel's overwrite prompt covers its own answer, never a corrected one, so any rewrite of a dialog's answer
+   must re-check existence itself.
+2. **A refusal that sits below serialization is invisible in the reflect-tools-OFF build.** Put every refusal
+   above it.
+3. **A popup label may change only behind the same `###` suffix**, and `I270` must learn every new one.
+
+### 2.5.1 fix — the keyboard comes back when a native dialog closes from it (PR #118, `df28447`)
+
+**The defect, found by the suffix fix's row 12:** on macOS, after a native file dialog closed by Return or Escape,
+the editor dropped every key until its window was clicked. That covered Save Scene As…, Open Scene…, New Project's
+Browse…, Open Project… and Locate….
+
+**Measured with temporary logging** (the raw SDL event stream, plus a per-frame AppKit probe through the
+Objective-C runtime):
+- **The sheet opens:** SDL gets `windowDidResignKey:` and clears its keyboard focus.
+- **Closed from the keyboard** (8 of 8 across Save, Open Scene and Open Project): AppKit leaves **no key window**.
+  `[NSApp keyWindow]` is nil while the app stays active and frontmost and the editor stays MAIN. No
+  `windowDidBecomeKey:` follows, SDL's focus stays NULL, and `Cocoa_HandleKeyEvent` sends a key only when that
+  focus is non-NULL (`SDL_cocoakeyboard.m:553-559`).
+- **Closed with a mouse click on the panel's own button** (6 of 6): the key window comes back by the frame the
+  result is taken.
+- **The accessibility API misreports this state:** it said the window was focused (`AXFocused` true) while
+  `keyWindow` was nil.
+
+**Why upstream does not cover it.** SDL's own fix for this class, libsdl-org/SDL#12684 (commit `57346f2ba`,
+`ReactivateAfterDialog` at `SDL_cocoadialog.m:56-63`), activates the Dock and then the app. That restores
+whichever window was key before, and after a keyboard close none was. SDL's `windowWillClose:` hack, which makes
+the next window key, returns early for any window SDL does not own, so it never covers a panel. No upstream issue
+for the keyboard-close case was found; no report has been filed.
+
+**What shipped:** `restoreKeyboardFocusAfterDialog` (`file_dialog.cpp`) is called as the FIRST statement of
+`EditorApp::tick()`'s one `dialogChannel->take()` arm, above `applyDialogResult`.
+- **What it does:** it calls `SDL_RaiseWindow` when the editor window does not hold SDL's keyboard focus.
+  `Cocoa_RaiseWindow` activates the app and calls `makeKeyAndOrderFront:`.
+- **The gate** is the pure `dialogCloseNeedsRaise`: no window, or the window already holding the focus, raises
+  nothing. It is a no-op wherever the keyboard is already back when the result is taken.
+- **Main thread, once per result.** The dialog callback may run on another thread (`SDL_dialog.h:125-126`), so
+  the call never runs there.
+- **Placement:** above the flow, because a Save completing a pending Open launches the next sheet in the same call.
+- **A Debug-only Console line** marks each raise.
+- **Tests:** `I275` covers the gate arm by arm, plus the real helper with no window. `I276` pins the placement as
+  source text: one file calls `SDL_RaiseWindow` and `SDL_GetKeyboardFocus`, once each; the helper is called once,
+  from `editor_app.cpp`, as the take arm's first statement, spelled exactly, above `applyDialogResult`; and the
+  helper decides through the tested gate.
+- **Totals:** imgui 281 → 283.
+- **Why no GPU-tier case calls the real helper with a window:** what SDL's focus reads for a test window is a fact
+  about each runner's window server, and a raise would pull the test window in front of the desk.
+
+**Sabotage:** 14 seeds; 13 red where predicted, and `S12` (the Debug text) green by design.
+- `S8` (the call on every tick) was redder than predicted: five "nothing logs per frame" cases saw 2251 lines.
+- `S14`, from the code-review round, was a condition on the result in front of the call (`!result.cancelled &&`).
+  It kept every check green until `d87496c` pinned the exact first statement.
+
+**The code-review round** found ten issues, none blocking:
+- the test gap above;
+- two comments that claimed the gate is a no-op on any OS that hands the focus back itself. SDL pumps D-Bus before
+  video events, so a Linux portal result can arrive before the focus. `e551e2d` states what is measured and what
+  is not;
+- four validation-page rows that would have recorded the wrong thing;
+- an unverified auto-repeat case (row 15, hardware only).
+
+**Gate and merge:**
+- **Gate on `e551e2d`:** doctest 1428 / 2214 / 283 / 40 / 73 / 14 / 28 in both presets; `ctest` 183/183 in both;
+  reduced configurations configured fresh at `908185d` and rebuilt at `e551e2d` (shader-OFF imgui 263/263,
+  reflect-OFF 282/282); guards 8/8; lint exit 0.
+- **CI:** run `36855819913` 6/6 green on `e551e2d` (macOS 23m, Windows 43m, Linux 1h7m); merged as
+  `df28447`, five commits.
+
+**macOS validation: 15 / 15 executable rows** (2026-10-01), on a signed Debug `.app`, counted with the Console filter
+`raised`.
+- **Every dialog kind closed from the keyboard took exactly one raise**, and Cmd+Z, Cmd+O or a focus-scoped Delete
+  then worked with no click. Every mouse close in the active editor took none.
+- **The chained Save → Open sheet took arrow keys with no click.**
+- **Scene Not Saved answered the FIRST Return** after a Return-confirmed panel, and the hidden-name prompt's path no
+  longer loses the keyboard.
+- **Finder kept the front for 10 s** before any dialog and after one.
+- **Two measured limits, both recorded:**
+  - A sheet macOS puts ON a still-open panel (the "replace?" alert closed with Escape, the Go-to-Folder sheet closed
+    with Return) leaves the panel itself un-key. No result exists while the panel is open, so the editor cannot act.
+  - A panel cancelled by a click while another application was active DID take the raise, and the editor came
+    forward, as the click itself implies. "A mouse close raises nothing" holds for the active editor.
+
+#### The sentences that govern new work
+
+1. **On macOS a native sheet closed from the keyboard leaves NO key window**, and SDL drops every key until a click.
+   A native dialog whose result does not arrive through `dialogChannel` inherits the defect.
+2. **The repair runs once per result, on the main thread, first in the take arm.** Never raise from the dialog
+   callback (another thread on Windows and under zenity), and never per frame (it would pull the editor over every
+   other application for as long as it lacked the keyboard).
+3. **The gate reads SDL's focus at the moment the result is taken**, so "a no-op where the OS hands the focus back"
+   is true only where the focus is back by then. Windows' and Linux's timing is unmeasured; their validation rows
+   record a raise line per close.
+4. **AppKit's key window, not the accessibility API's `AXFocused`, is what decides whether SDL gets keys.**

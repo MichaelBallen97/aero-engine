@@ -24,18 +24,22 @@ In Notion its `Phase #` is `3.5` — a sort key, not an identifier.
 (E.2.2). Nothing since E.2.2 has added one, so the five-generation-site rule and the component-count sweep
 have not fired since — **they still apply in full to the next built-in, whenever one arrives.**
 
-**Next free ids, measured by a whole-`tests/` token sweep over every ref after E.5.2's merge: `I256` at the
-ImGui tier**, `AA68`, `AD77`, `AM29`, `AV66`, `BR31`, `BV10`, `CC15`, `CR10`, `DD31`, `DG26`, `DR28`, `EC5`,
-`GR34`, `IR23`, `IX19`, `MB27`, `PX6`, `RF8`, `SQ15`, `TS11`, `X32`. Taken tier-0 prefixes include `MR`
+**Next free ids, measured by a whole-`tests/` token sweep after the three fixes from E.5.2's pass merged
+(#116, #117, #118): `I277` at the ImGui tier**, `AA68`, `AD77`, `AM29`, `AV66`, `BR31`, `BV10`, `CC15`, `CR10`,
+`DD31`, `DG26`, `DR28`, `EC5`, `GR34`, `IO24`, `IR23`, `IX19`, `MB27`, `PX6`, `RF8`, `RT31`, `SQ15`, `SS64`, `TS11`,
+`X32`. Taken tier-0 prefixes include `MR`
 (E.3.4, `MR1`–`MR21`), `PJ` (E.4.1, `PJ1`–`PJ57`), `CN` (E.4.2, `CN1`–`CN25`), `IX` / `BV` (E.4.4,
 `IX1`–`IX18`, `BV1`–`BV9`), `MB` / `CC` (E.4.5, `MB1`–`MB26`, `CC1`–`CC14`) and `CR` / `EC` (E.5.2,
 `CR1`–`CR9`, `EC1`–`EC4`); `MC` is mesh cook's (`MC1`–`MC58`), which is why the card cache took `CC`. The
-other ceilings: `SS` 54, `IO` 21, `TS` 10, `IR` 22. E.4.1 took `I176`–`I185`, E.4.2 `I186`–`I192`, E.4.3
+other ceilings: `SS` 63, `IO` 23, `RT` 30, `TS` 10, `IR` 22. E.4.1 took `I176`–`I185`, E.4.2 `I186`–`I192`, E.4.3
 `I210`–`I226`, E.4.4 `I227`–`I229`, its fix (#111) `I230`–`I231` plus `AV55`–`AV59`, E.4.5 `I232`–`I243` plus
 `AV60`–`AV65`, `TS5`–`TS10` and `IR9`–`IR12`, its follow-ups `I244`, E.5.1 `I245` plus `BR23`–`BR30`,
 `SQ13`–`SQ14` and `PX5`, and E.5.2 `I246`–`I255` plus `IR13`–`IR22`, `X25`–`X31`, `GR27`–`GR33`,
-`DD29`–`DD30`, `DG21`–`DG25` and `RF4`–`RF7`.
-**`I193`–`I209` are FREE and were never claimed by anything that merged** — a
+`DD29`–`DD30`, `DG21`–`DG25` and `RF4`–`RF7`. The E.3.2 keyboard fix (#116) took `I256`–`I258` plus
+`RT28`–`RT30`, the Save As suffix fix (#117) `I270` plus `SS55`–`SS63` and `IO22`–`IO23`, and the dialog keyboard
+fix (#118) `I275`–`I276`.
+**`I193`–`I209`, `I259`–`I269` and `I271`–`I274` are FREE and were never claimed by anything that merged** (the
+last two were reserved by the fix plans and left unused) — a
 gap costs nothing, and renumbering a block into one invites exactly the silent collision this project has
 recorded.
 
@@ -93,7 +97,7 @@ validation pass exists for any task in any phase.** N-E = not executable, N-R = 
 | E.2.3 Light gizmos + viewport icons | #100 | `00e4c7b` | 12 / 12 |
 | E.2.4 Material-preview parity | #101 | `ae817dc` | 12 / 12 |
 | E.3.1 Axis-labelled vector fields | #102 | `a8d963d` | 13 PASS / 1 partial |
-| E.3.2 Selection-follows-focus router | #103 | `b172198` | **UNRUN on every platform** |
+| E.3.2 Selection-follows-focus router | #103, fix #116 | `b172198`, `c311626` | 9 PASS / 1 partial / 2 N-E (2026-09-12, recorded late); the fix **10 / 10** |
 | E.3.3 Asset-reference picker | #104 | `fc77c4b` | 10 PASS / 3 partial / 1 N-E / 1 N-R, nothing failed |
 | E.3.4 Material inspector redesign | #105 | `170ad9b` | 12 PASS / 1 partial / 1 N-E, nothing failed |
 | E.4.1 Reopen the last scene | #106 | `068c45c` | **12 / 12**, nothing failed — and 26 sabotage seeds / 29 runs with **no coverage hole** |
@@ -103,6 +107,8 @@ validation pass exists for any task in any phase.** N-E = not executable, N-R = 
 | E.4.5 Material names & thumbnails | #112, fix #113 | `caf8a74`, `fd4eb40` | **11 / 11** executable rows, row 11 N-E (1× displays); row 6's first run failed one check, fixed by #113 |
 | E.5.1 Primitive material binding fix | #114 | `834bcb3` | **13 / 13**, nothing failed — 17 sabotage seeds, no hole; its row 5 closes E.2.1 row 4's normal-map arm |
 | E.5.2 Create menu + named selector | #115 | `ab3fd72` | **17 / 17** executable rows, row 18 N-E (1× displays), nothing failed |
+| 2.5.1 fix — Save As always writes `.scene.json` | #117 | `35bb8db` | **15 / 15** — the first run failed rows 5–7 (the panel appends its hidden `.json` to whatever is typed) |
+| 2.5.1 fix — the keyboard after a native dialog | #118 | `df28447` | **15 / 15** executable rows, row 15 N-E (a held hardware key) |
 
 **E.3.2 landed before E.3.1** — legal, disjointly id-reserved; the reservation is discharged and the
 numbering is contiguous.
@@ -116,7 +122,7 @@ numbering is contiguous.
 | **Phase 2** — Editor | **COMPLETE, gate met 2026-08-02.** All six epics closed and macOS-validated; Windows/Linux rows pending for every task (`editor/VALIDATION.md`). Gate artifact: `samples/phase-2-editor-scene/` — data, deliberately not `add_subdirectory`'d. |
 | **Phase 3** — Asset Pipeline & 3D Content | **OPEN.** All seven epics (3.1–3.7) **CLOSED in code**. What is left is the gate below and the validation debt. |
 | **Phase 3 gate** | Drop a rigged glTF/FBX in → PBR materials + shadows + a playing animation + **an audible sound**. The audible half exists in code as of 3.7.2 and **has never been heard on any platform.** |
-| **Phase E** — Editor Experience | **OPEN.** Epics E.1–E.5 **CLOSED in code** — 20 of 24, see the index above. **E.6 is the open front: four tasks, planning only.** TWO validation pages are unrun (E.1.5, E.3.2) and are the whole of this OS's remaining Phase E risk. |
+| **Phase E** — Editor Experience | **OPEN.** Epics E.1–E.5 **CLOSED in code** — 20 of 24, see the index above. **E.6 is the open front: four tasks, planning only.** ONE validation page is unrun (E.1.5) and is the whole of this OS's remaining Phase E risk. |
 | **Phase E gate** | Open a project and land in the scene you were last editing, on a lit grid floor under a sky; create a Cube from the menu, drop a material on it and see it shade; aim a spot light with a visible gizmo; rename, move and delete assets without leaving the editor. Gate artifact: `samples/phase-E-editor/`. |
 
 ### Engine layers, in dependency order
@@ -344,7 +350,12 @@ is that **`FocusWindow`'s two side effects are not idempotent**: it closes every
 window (`imgui.cpp:13740`) and **steals the active widget** (`:13754-13756`, whose own comment at `:13751`
 names this very slot) — and a stolen `InputText` edit is **DISCARDED**, not interrupted, because
 `MaterialPanel` commits only on `IsItemDeactivatedAfterEdit()` and the panel that lost the tab never draws to
-observe the edge.
+observe the edge. **An automatic route selects the target's dock TAB and leaves `NavWindow` alone (#116)** —
+`TabBarQueueFocus` with the `ImGuiTabItem*` overload, decided by the pure `routeRaise` — and falls back to
+`SetWindowFocus` only when the keyboard is in a sibling tab of the target's node (ImGui re-selects that tab every
+frame, `imgui.cpp:19611-19613`) or the node has no tab bar yet; the router HOLDS while `NavWindow`'s root is a
+closed popup, which ImGui hands back a frame later. `I256` is the witness, and `keyboardFocusPanelId()` is the only
+tier that tells "raised" from "took the keyboard".
 
 **RE-READ AT EVERY ImGui / ImGuizmo BUMP:** `imgui.cpp:13740` and `:13754` (focus side effects); `:8848`
 (`g.LastItemData = ParentLastItemDataBackup`, so a last-item rect read after a `BeginPopup`/`EndPopup` pair
@@ -352,7 +363,10 @@ names the item *before* the popup); `:3418` (`Begin` sets `DisplayStart` to −1
 popup is never clamped); `:3918` (a label truncates at its first `##`); `imgui_widgets.cpp:6802` +
 `imgui.cpp:8581` (`StateStorage` is per window); `imgui.cpp:6860` + `:12129` + `:437` (`EndChild` → `ItemSize`
 → the spacing recipe); `:1657` vs `:1703-1708` (1.92.8 removed the "a 1 px `Separator` does not move the
-cursor" hack while `SeparatorEx`'s header comment still describes it); `ImGuizmo.cpp:1229-1230`.
+cursor" hack while `SeparatorEx`'s header comment still describes it); `ImGuizmo.cpp:1229-1230`;
+`imgui.cpp:19611-19613` and `:19740-19751` (tab reselect / tab focus), `imgui_widgets.cpp:10002-10005` and
+`:10384-10389` (the queued tab's consumption, and the `const char*` `TabBarQueueFocus` overload's dock-node assert),
+and `imgui.cpp:5949-5950` (`NewFrame` hands the keyboard back from a closed popup).
 
 **★ ImGui's `StateStorage` IS PER WINDOW, SO A BODY THAT IS SOMETIMES A CHILD IS TWO SETS OF WIDGET STATE
 (E.3.4).** A child is a distinct window, so the same `CollapsingHeader` is a different entry inside a body
@@ -448,6 +462,22 @@ anywhere**, so `CN13` pins the early return's **position in the source text**; n
 `adoptProject` → `newScene` → `World::clear()` + `CommandStack::clear()` and would present data loss as
 the remedy for a failed save. `restoreLastScene`'s two sites pass a **permanent `nullptr` offer**: they
 have no `FileFlow` in scope by design, and a modal there would offer the project just opened.
+
+**A NATIVE PANEL'S ANSWER IS NOT THE NAME THE USER SAW (#117).** macOS's Save panel appends its hidden `.json`
+to WHATEVER is typed (`r11.scene.json` → `r11.scene.json.json`), so `normalizeSceneSavePath` strips every
+trailing suffix one at a time and appends `.scene.json`; only `applyDialogResult`'s Save arm normalises. The
+panel's own "replace?" covered ITS answer, never the corrected name, so the three name refusals — no stem, a
+hidden leaf, a corrected name that already exists — run after containment and **before serialization** (below it
+they are invisible in reflect-tools-OFF), and a new label for the refusal modal shares `###aero_scene_containment`
+(`I270`).
+
+**ON macOS A NATIVE SHEET CLOSED FROM THE KEYBOARD LEAVES NO KEY WINDOW, AND SDL DROPS EVERY KEY UNTIL A CLICK
+(#118).** The repair is ONE gated `SDL_RaiseWindow` (`restoreKeyboardFocusAfterDialog`) as the first statement of
+`EditorApp::tick()`'s one `dialogChannel->take()` arm: main thread, once per result, above `applyDialogResult`
+(which can launch the next sheet in the same call) — never in the dialog callback (another thread), never per
+frame. The gate reads SDL's focus when the result is taken, so it is a no-op only where the focus is back by then
+(every mouse close in the active editor, measured); Windows and Linux are unmeasured. **A dialog whose result
+bypasses `dialogChannel` inherits the defect.** `I276` pins the placement as text.
 
 **EVERY ABANDON PATH IN `scene_session.cpp` CLEARS BOTH `flow.requestedPath` AND
 `project.flow.requestedPath` (E.4.2).** A failed write abandons the pending action, so that action's own
@@ -929,13 +959,14 @@ is a configure-time property. **Rebuild before you believe any doctest number, a
 presets so a disagreement is visible.** A recorded total goes stale the same way: `origin/main`'s own shell
 total was one stale at E.1.4's gate. **Read the binary, never the block.**
 
-**At E.5.2's merge (`ab3fd72`)**, measured on `d240cbf` (the merge adds `4831f92`'s one assignment) on both
-presets, rebuilt and agreeing, with both reduced configurations configured fresh:
+**After the three fixes from E.5.2's pass (#116, #117, #118)**, measured on #118's head `e551e2d` (its tree is
+`main` at the merge) on both presets, rebuilt and agreeing, with both reduced configurations configured fresh at
+`908185d` and rebuilt at `e551e2d`:
 
 | Measurement | Value |
 |---|---|
 | `ctest -N` | **183** in both presets (178 + the five `labels_*`); **170** shader-tools-OFF (exactly the 13 `shaderc.*` removed), **93** reflect-tools-OFF (86 `reflect-gen.*` + four doctest binaries removed), nothing added in either; `cooker.*` **70 / 70 / 70** |
-| doctest, seven binaries | **1428 / 2200 / 277 / 40 / 73 / 14 / 28** |
+| doctest, seven binaries | **1428 / 2214 / 283 / 40 / 73 / 14 / 28** |
 | guards | math **541**, platform **92**, rhi **163**, scene **92**, golden-rule **165**, project-no-delete **A=7 B=95** (2 permitted), audio **11-3-55**, probes **6-57** |
 | `git ls-files` | `editor/src/*.cpp` **95**, `editor/include/aero/editor/*.hpp` **66** |
 
@@ -976,11 +1007,11 @@ that peaked at 7.6 GB here. **Each run must name which binaries it built and ran
 **`check-math-boundary.sh` counts `git ls-files`, so it reads a STALE number until new files are `git add`ed**
 — stage first, then measure.
 
-**`I136` IS DISPLAY-DEPENDENT, SO THE LOCAL GPU TIER GATES AT EITHER 276 OR 277 OF 277 AND THE RUN MUST SAY
+**`I136` IS DISPLAY-DEPENDENT, SO THE LOCAL GPU TIER GATES AT EITHER 282 OR 283 OF 283 AND THE RUN MUST SAY
 WHICH.** It fails `REQUIRE(drawExtent.width > 4U)` with value **4** on a 2x display — deterministically at
 E.3.4's and E.4.1's gates and at E.4.4's branch point, on an unmodified `HEAD` — and it **PASSED at E.4.2's,
-E.4.4's, #111's, E.4.5's, E.5.1's and E.5.2's gates** (30 assertions each), the last five measured with only 1x
-displays attached.
+E.4.4's, #111's, E.4.5's, E.5.1's, E.5.2's and the three fixes' gates** (30 assertions each), the last eight
+measured with only 1x displays attached.
 **A green run is therefore not
 evidence it is fixed**; it is pre-existing, it is the DPI story's, and it is handed to E.6.1. **Name it
 either way, with the display configuration; never let a known failure be quietly counted as green, and
@@ -1012,8 +1043,12 @@ mono 48 kHz 0.5 s, **exactly 48 064 B each**, cut at a whole number of cycles so
 **Validation pages are gitignored, so they enter no commit.** Per-page measurements and method notes are in
 `docs/10`; this is the ledger of what is still owed.
 
-**TWO PAGES HAVE NOT BEEN RUN ON ANY PLATFORM: E.1.5's AND E.3.2's.** They are the whole of Phase E's
-validation risk on this OS — every other task in E.1–E.5 is macOS-validated (see the index above).
+**ONE PAGE HAS NOT BEEN RUN ON ANY PLATFORM: E.1.5's.** It is the whole of Phase E's validation risk on this OS
+— every other task in E.1–E.5 is macOS-validated (see the index above). **E.3.2's page WAS run on 2026-09-12**
+(9 PASS / 1 PARTIAL / 2 NOT EXECUTABLE, against `b172198`) and was carried here as unrun until 2026-10-01; its record
+is now in `docs/10`. **The three fixes' pages are RUN on macOS** — #116 10 / 10, #117 15 / 15, #118 15 / 15
+executable — and each pass found the next defect: #116's row 8 a closed popup still holding the keyboard, #117's
+rows 5–7 the panel's appended `.json`, and #117's row 12 the keyboard-closed sheet #118 fixed.
 **E.5.2's page is RUN, 17 / 17 executable rows, nothing failed** (2026-09-30, row 18 HiDPI not executable on 1×
 displays): the eight creates raising the Inspector, one undo entry per create and per pick, the anchor 9.4 m out
 at the view centre, `7 (out of range)` repaired by a pick, the modal leaving the Create menu inert (0 pixels
@@ -1082,10 +1117,11 @@ anywhere.** The recurring pattern is that no tier in this tree can type, click, 
 popup, read ImGuizmo's global state, judge a colour at a glance, or observe a frame-to-frame layout fact — so
 a rect, a colour, a gesture, a wrap or a HiDPI legibility claim has no automated witness. E.3.4's pass alone
 closed **eighteen of nineteen** uncovered seeds across ten rows; E.2.4's closed all six of its own; E.2.3's
-rows 3 and 4 were the only cover its two seeds had. **E.3.2's six seed-only rows are therefore live debt**
-(`editor/validation/E.3.2-selection-follows-focus-router.md`, twelve rows): row 2 for `S17`, rows 5 and 6 for
-`S24` (a raise must not discard a half-typed name or move a drop surface mid-drag), row 7 for `S18`'s
-behavioural half, and row 8 for the gizmo-drag hold.
+rows 3 and 4 were the only cover its two seeds had. **E.3.2's seed rows are closed where synthetic input reaches**
+(row 5, `S24`'s half-typed name, passed — and #116's row 9 re-ran it under the tab-only raise); what stays
+uncovered is row 6 (`S24`'s drop half — no synthetic release commits a reparent), row 8 (the gizmo-drag hold — no
+command can be issued while the button is held) and row 7's popup-closing half (unreachable by construction behind
+the `popupOpen` Hold).
 
 **ONE SEED REMAINS UNCOVERED ON AN OTHERWISE-COMPLETE PAGE AND CANNOT BE COVERED**: E.2.4's `S19`, the
 `SkyPass::create` failure arm, is unreachable at runtime in any build whose shaders cooked, so the source-text
@@ -1133,7 +1169,10 @@ Enter deactivates a single-line `InputText`. **Synthetic drag-and-drop still doe
 panels). **Click window-relative, re-reading the origin every time** — the window can move mid-row.
 **Bind every capture to its launched PID** — two live `aero_editor` processes once made a window lookup
 capture the STALE one and produced three false "0 differing" comparisons, including one that provably
-contained an outline. **Let an anti-vacuity control be what catches that.** Note `screencapture` carries the
+contained an outline. **Let an anti-vacuity control be what catches that.** **While a native sheet is open, the
+first `layer=0 onscreen=1` window of the PID is the SHEET**, so window-relative clicks land elsewhere — click a
+panel in absolute coordinates. And before #118, a key sent right after a native panel closed from the keyboard was
+dropped by the editor itself, not by the input method. Note `screencapture` carries the
 display's ICC profile, and **there is no `renderFrame` Tracy zone in this tree** — the frame-level zones are
 `renderScene` and `render`.
 
@@ -1185,7 +1224,7 @@ button's disabled predicate), each with its pinned-source citation, are in `.cla
 `"Delete orphaned .meta?"` from a real row and confirmed it by click and by **Enter**. Until then, Enter had
 only been argued from identical code.
 
-**THIRTY-FOUR UNOWNED HANDOFFS — one per bullet below; re-count the bullets, never the headline.** It read
+**THIRTY-FIVE UNOWNED HANDOFFS — one per bullet below; re-count the bullets, never the headline.** It read
 "NINE" over a list that already held thirteen, because two "smaller" items, the exposure clause and
 `FillMode::Line` were never counted. Handoffs recorded in their own paragraphs elsewhere in this block (fact
 4's four permitted cases, the inspector-row gap, the closed `File` section) are not repeated here.
@@ -1243,15 +1282,13 @@ only been argued from identical code.
 - **`AERO_LABELS` with spaces** (E.5.2).
 - **Create ▸ Audio and ▸ Environment** (E.5.2 D8).
 - **A Tested debug-line producer off the ground plane** (E.5.2).
-- **The context route takes KEYBOARD focus, not just the tab** (found on E.5.2's macOS pass) — with Focus Follows
-  Selection ON, a selection change calls `SetWindowFocus` on the Inspector, so the Hierarchy's focus-scoped
-  Delete / Ctrl+D / F2 fire once and then go nowhere until the Hierarchy is clicked again (a chained Ctrl+D is
-  impossible). E.3.2's design and its unrun page; selecting the dock tab without moving `NavWindow` is the
-  likely shape, and it touches `I159`'s one-focus-slot pin.
-- **Save Scene As on macOS drops `.scene` from a typed name** (found on E.5.2's macOS pass) — the panel selects
-  the whole `Untitled.scene` / `r8.scene` stem, so typing `r9` saves `r9.json`, which E.4.1's `firstSceneUnder`
-  cascade does not treat as a scene. The suggestion is 2.5.1's `saveSuggestion`; nothing refuses or repairs the
-  suffix.
+- **A sheet macOS puts ON a still-open panel leaves the panel itself un-key** (#118's rows 6 and 12) — its
+  "replace?" alert closed with Escape, its Go-to-Folder sheet closed with Return: the panel then ignores keys until
+  clicked. No result exists while the panel is open, so the editor cannot act; SDL exposes no panel handle.
+- **A held Return past the auto-repeat delay may answer a modal raised after a keyboard-closed panel** (#118 row
+  15, unverified) — SDL never saw the press, so the repeat arrives as a fresh one. Hardware-only to measure.
+- **Report the keyboard-close case upstream** (libsdl-org/SDL) — #12684's fix reactivates the app but cannot recreate
+  a key window that never existed; the editor's gate retires itself if SDL hands the focus back.
 - **reflect-gen's `parseRangeToken` hex-`F` quirk** — `AERO_RANGE(0, 0x2F)` reads as 2; latent.
 
 **E.1.1's THICK-LINE HANDOFF IS FIRED, NOT CLEARED AND NOT DEFERRED.** E.2.3's macOS pass measured it: icons
