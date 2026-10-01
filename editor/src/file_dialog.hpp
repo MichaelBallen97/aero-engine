@@ -66,17 +66,21 @@ void launchLocateBlenderDialog(const std::shared_ptr<DialogChannel>& channel, vo
 //
 // The decision, PURE so a test can walk every arm (I275): raise only when there IS a window and it does not
 // already hold SDL's keyboard focus. Both pointers are opaque SDL_Window*s, compared and never dereferenced.
-// The focus comparison is what keeps a platform whose OS hands the focus back by itself a no-op, with no
-// new per-OS branch in editor/.
+// The focus comparison makes it a no-op wherever the keyboard is ALREADY back when the result is taken --
+// every mouse close in the active editor, measured on macOS -- with no new per-OS branch in editor/. Whether
+// Windows' and Linux's dialogs hand it back before the result is taken is unmeasured; where they do not,
+// this asks for a raise there too (on Wayland that request can surface as an attention hint).
 [[nodiscard]] constexpr bool dialogCloseNeedsRaise(const void* window, const void* keyboardFocus) noexcept {
     return window != nullptr && keyboardFocus != window;
 }
 
 // MAIN THREAD ONLY -- SDL_GetKeyboardFocus and SDL_RaiseWindow both say so -- which is why its one caller is
-// EditorApp::tick()'s take arm and never onDialogResult, which runs on an ARBITRARY thread (F2). Reads SDL's
-// keyboard focus and, when dialogCloseNeedsRaise says so, raises `parentSdlWindow` (on macOS: activate the
-// app, then makeKeyAndOrderFront, SDL_cocoawindow.m's Cocoa_RaiseWindow; nothing for a hidden or minimised
-// window). Returns true when it asked SDL to raise. Logs nothing -- this file's posture; the caller logs.
+// EditorApp::tick()'s take arm and never onDialogResult, which may run on ANOTHER thread
+// (SDL_dialog.h:125-126). Reads SDL's keyboard focus and, when dialogCloseNeedsRaise says so, raises
+// `parentSdlWindow` (on macOS: activate the app, then makeKeyAndOrderFront, SDL_cocoawindow.m's
+// Cocoa_RaiseWindow; nothing for a hidden or minimised window). Returns true when it ASKED SDL to raise --
+// SDL_RaiseWindow answers true whatever the window manager then does (SDL_video.c:3477-3488). Logs nothing
+// -- this file's posture; the caller logs.
 [[nodiscard]] bool restoreKeyboardFocusAfterDialog(void* parentSdlWindow);
 
 }  // namespace engine::editor

@@ -234,12 +234,15 @@ a **human mouse/keyboard pass** recorded per OS in `editor/VALIDATION.md`.
   both SDL calls are main-thread-only); it runs **once per result**, never per frame — anywhere else in
   `tick()` it pulls the editor in front of every other application for as long as it lacks the keyboard; and
   the gate is `dialogCloseNeedsRaise` (no window, or the window already holding SDL's focus, raises nothing),
-  which keeps every OS that hands the focus back by itself a no-op with no per-OS branch. **A new native
+  which makes it a no-op wherever the keyboard is ALREADY back when the result is taken (every mouse close in
+  the active editor, measured) with no per-OS branch — Windows and Linux are unmeasured, and wherever their
+  result arrives before the focus does, it asks for a raise there too. **A new native
   dialog needs nothing as long as its result arrives through `dialogChannel`**; one that bypasses the channel
   inherits the defect. ImGui viewports are OFF (`imgui_layer.cpp:82`); if that ever changes, the gate must ask
   whether ANY editor window holds the keyboard, or a result will pull the main window over a focused viewport.
-  Out of reach and recorded: macOS's own "replace?" alert ON a panel, closed with Escape, leaves the panel
-  itself un-key, and the editor sees nothing until the panel closes. `I275` pins the gate and `I276` the
+  Out of reach and recorded: a sheet macOS puts ON a panel — its "replace?" alert closed with Escape, its
+  Go-to-Folder sheet closed with Return — leaves the panel itself un-key, and the editor sees nothing until
+  the panel closes. `I275` pins the gate and `I276` the
   placement as source text; no tier can press a key or read AppKit's key window, so the validation page is the
   only behavioural witness.
 - **Containment is decided at `openSceneFile` and `saveSceneFile` and NOWHERE ELSE (task E.4.2).** Both

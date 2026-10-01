@@ -127,9 +127,9 @@ void launchLocateBlenderDialog(const std::shared_ptr<DialogChannel>& channel, vo
 bool restoreKeyboardFocusAfterDialog(void* parentSdlWindow) {
     auto* const window = static_cast<SDL_Window*>(parentSdlWindow);
     if (!dialogCloseNeedsRaise(window, SDL_GetKeyboardFocus())) {
-        return false;  // no window, or the OS gave the keyboard back by itself (every mouse close, measured)
+        return false;  // no window, or the keyboard is already back (a mouse close in the active editor)
     }
-    SDL_RaiseWindow(window);  // its bool is not read: a refused raise leaves exactly the state this began in
+    SDL_RaiseWindow(window);  // its bool is not read: it is true even when the window manager refuses
     return true;
 }
 
