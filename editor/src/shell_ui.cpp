@@ -341,6 +341,13 @@ void drawUnsavedChangesModal(FileMenuContext& fileMenu) {
 // returned, EndMainMenuBar has run, the ID stack is clean and OpenPopup is legal here (2.5.1's F13).
 // The ### form makes the ID stable (imgui.cpp:2539-2545), exactly as UNSAVED_MODAL_ID does above.
 constexpr const char* CONTAINMENT_MODAL_ID = "Scene Outside Project###aero_scene_containment";
+// fix 2.5.1: a SAVE refusal -- containment OR one of D13's name refusals -- under a title that is true of
+// both. The SAME ###aero_scene_containment suffix, so it is the SAME popup: ImHashStr restarts at "###"
+// (imgui.cpp:2539-2545), BeginPopupModal looks the popup up by that id and Begin finds the window by the
+// same hash, while the title bar draws the label handed to Begin this frame (:8640). OpenPopup and
+// IsPopupOpen keep using CONTAINMENT_MODAL_ID. A different suffix would make BeginPopupModal look for a
+// popup nobody opened and draw nothing at all -- I270 pins both spellings.
+constexpr const char* SAVE_REFUSED_MODAL_LABEL = "Scene Not Saved###aero_scene_containment";
 
 void drawSceneContainmentModal(FileMenuContext& fileMenu) {
     ContainmentOffer& offer = fileMenu.flow.containmentOffer;
@@ -373,7 +380,9 @@ void drawSceneContainmentModal(FileMenuContext& fileMenu) {
         return;
     }
     // F13: EndPopup ONLY when BeginPopupModal returned true -- the BeginMenu family, not the Begin one.
-    if (ImGui::BeginPopupModal(CONTAINMENT_MODAL_ID, nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+    // The LABEL follows the offer's shape and the popup does not (SAVE_REFUSED_MODAL_LABEL's comment).
+    if (ImGui::BeginPopupModal(offer.forSave ? SAVE_REFUSED_MODAL_LABEL : CONTAINMENT_MODAL_ID, nullptr,
+                               ImGuiWindowFlags_AlwaysAutoResize)) {
         // A NAMED std::string, never fileNameOf(...).data(): fileNameOf returns a view INTO its
         // argument (scene_session.cpp:124-134), and a string_view carries no terminator guarantee at
         // all -- THIS IS THE SHAPE, not a fix for an overrun observed here. Measured for this call
@@ -395,27 +404,23 @@ void drawSceneContainmentModal(FileMenuContext& fileMenu) {
         // for a save, so projectRoot is empty there anyway -- BOTH terms are spelled, because a
         // future resolver change must not silently grow a button.
         const bool offerable = !offer.forSave && !offer.projectRoot.empty();
+        // The asset browser's modal recipe (#109): every button and key only RECORDS an answer here, and
+        // ONE resolution below acts on it -- so dismiss can win over accept, and every path closes the
+        // popup the same way.
+        bool accept = false;
         if (offerable) {
             const std::string label =
                 offer.projectName.empty() ? std::string("Open That Project") : ("Open \"" + offer.projectName + "\"");
-            if (ImGui::Button(label.c_str())) {  // a Button's label is NOT a format string
-                offer.acceptRequested = true;
-                // 2.6.1's BLOCKING-1, on EVERY button: ImGui owns g.OpenPopupStack and never GCs an
-                // entry for a popup that simply stops being submitted, so omitting this sets
-                // g.HoveredWindow = NULL FOREVER AFTER and every menu, panel and dock tab becomes
-                // unclickable (project_ui.cpp:108-117). S16, and validation row 11 is its only
-                // witness.
-                ImGui::CloseCurrentPopup();
-            }
-            ImGui::SetItemDefaultFocus();  // Enter == open that project
+            accept = ImGui::Button(label.c_str());  // a Button's label is NOT a format string
+            // The DEFAULT button when a project is offered. SetItemDefaultFocus only marks it: with nav
+            // off it carries NO key (asset_browser_panel.cpp's drawRenameModal cites why), so Return is
+            // bound by hand below.
+            ImGui::SetItemDefaultFocus();
             ImGui::SameLine();
         }
-        if (ImGui::Button(offerable ? "Cancel" : "OK")) {
-            offer.dismissRequested = true;
-            ImGui::CloseCurrentPopup();
-        }
+        bool dismiss = ImGui::Button(offerable ? "Cancel" : "OK");
         if (!offerable) {
-            ImGui::SetItemDefaultFocus();  // Enter == dismiss, when dismissing is the only option
+            ImGui::SetItemDefaultFocus();  // the DEFAULT button when dismissing is the only answer
         }
         // Esc is HAND-BOUND, and that is deliberate rather than a workaround: NavUpdateCancelRequest's
         // popup branch EXCLUDES ImGuiWindowFlags_Modal (imgui.cpp:15032) and the editor never sets
@@ -423,8 +428,27 @@ void drawSceneContainmentModal(FileMenuContext& fileMenu) {
         // unsaved-changes modal above states the identical reasoning. repeat=false: one press, one
         // dismiss. NO TIER IN THIS TREE CAN PRESS A KEY; validation row 9 is its only witness
         // anywhere.
-        if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
+        dismiss = ImGui::IsKeyPressed(ImGuiKey_Escape, false) || dismiss;
+        // RETURN is hand-bound for the SAME reason (fix 2.5.1's code-review round: the save refusal makes
+        // this modal an everyday path), and answers the DEFAULT button: "Open that project" when one is
+        // offered, the dismiss otherwise. KeypadEnter is a DISTINCT key (imgui.h:1678). Gated on the SAME
+        // `offerable` that draws the Open button, so Return can never accept an offer the modal does not
+        // show -- the step-0 drain re-tests it anyway (SS48). I270 pins this as source text; rows 12 and 13
+        // of editor/validation/2.5.1-fix-save-as-scene-suffix.md are its only behavioural witnesses.
+        const bool enterPressed =
+            ImGui::IsKeyPressed(ImGuiKey_Enter, false) || ImGui::IsKeyPressed(ImGuiKey_KeypadEnter, false);
+        accept = (enterPressed && offerable) || accept;
+        dismiss = (enterPressed && !offerable) || dismiss;
+        // Dismiss WINS over accept in a frame carrying both: the safe answer opens nothing. And 2.6.1's
+        // BLOCKING-1 on EVERY path: ImGui owns g.OpenPopupStack and never GCs an entry for a popup that
+        // simply stops being submitted, so an answer without CloseCurrentPopup sets g.HoveredWindow =
+        // NULL FOREVER AFTER and every menu, panel and dock tab becomes unclickable
+        // (project_ui.cpp:108-117). S16, and validation row 11 is its only witness.
+        if (dismiss) {
             offer.dismissRequested = true;
+            ImGui::CloseCurrentPopup();
+        } else if (accept) {
+            offer.acceptRequested = true;
             ImGui::CloseCurrentPopup();
         }
         ImGui::EndPopup();

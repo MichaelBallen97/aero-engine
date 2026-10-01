@@ -49,7 +49,8 @@ Unknown keys at root or entity level are **tolerated**: WARNed and ignored on lo
 on the next canonical save (a load → save cycle loses them, with a load-time WARN naming each one).
 
 One scene per file. Recommended extension `*.scene.json` — a convention only; loaders never sniff
-file names or extensions.
+file names or extensions. The editor's **Save Scene As** always writes a name ending in `.scene.json`
+(the E.4.1 startup cascade finds scenes by that suffix, §4.10); Open Scene accepts any file.
 
 ### 2.2 Identity & hierarchy
 

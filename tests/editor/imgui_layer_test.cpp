@@ -17633,16 +17633,13 @@ TEST_CASE("editor: a DRAINED containment offer still closes its popup (task E.4.
         return hits;
     };
 
-    // The modal is entered from TWO places now: the drained arm and the body proper.
-    CHECK(countLinesContaining(shell, "ImGui::BeginPopupModal(CONTAINMENT_MODAL_ID") == 2U);
+    // The modal is entered from TWO places now: the drained arm, which names the ID constant, and the body
+    // proper, which since fix 2.5.1 picks its LABEL by the offer's shape (the same popup: I270). Each is
+    // pinned as a SOLE line, so a third entry of either spelling reddens this case.
+    CHECK(countLinesContaining(shell, "ImGui::BeginPopupModal(CONTAINMENT_MODAL_ID") == 1U);
     const std::size_t notOpenAt = soleLineContaining(shell, "if (!offer.open) {");
-    std::size_t mainBeginAt = shell.size();
-    for (std::size_t i = shell.size(); i-- > 0;) {
-        if (shell[i].find("ImGui::BeginPopupModal(CONTAINMENT_MODAL_ID") != std::string::npos) {
-            mainBeginAt = i;  // the LAST of the two: the body proper
-            break;
-        }
-    }
+    const std::size_t mainBeginAt = soleLineContaining(
+        shell, "ImGui::BeginPopupModal(offer.forSave ? SAVE_REFUSED_MODAL_LABEL : CONTAINMENT_MODAL_ID");
     REQUIRE(mainBeginAt < shell.size());
     REQUIRE(notOpenAt < mainBeginAt);
 
@@ -17663,6 +17660,92 @@ TEST_CASE("editor: a DRAINED containment offer still closes its popup (task E.4.
     // F13's balance, within that arm: exactly one Begin and exactly one End.
     CHECK(countIn("ImGui::BeginPopupModal(", notOpenAt, mainBeginAt) == 1U);
     CHECK(countIn("ImGui::EndPopup();", notOpenAt, mainBeginAt) == 1U);
+}
+
+TEST_CASE(
+    "editor imgui: the save-refusal modal shares the containment popup's identity and answers Return by hand "
+    "(fix 2.5.1, I270)") {
+    // A save refusal -- containment OR one of D13's name refusals -- draws the containment modal under a
+    // title that is true of both, "Scene Not Saved". The popup's IDENTITY is its ### suffix: ImHashStr
+    // restarts at "###", BeginPopupModal looks the popup up by that id, and the title bar draws whatever
+    // label Begin was handed this frame. So the two labels must share ONE suffix: a label with any other
+    // suffix makes BeginPopupModal look for a popup nobody opened, the modal never draws, and the draw's
+    // own safety net (the arm that treats a false BeginPopupModal as a programmatic close) dismisses the
+    // offer on the next drain -- the refusal vanishes unseen. I189 sees THAT consequence at runtime (the
+    // offer is no longer open two ticks after a refused save; sabotage seed S10, measured), but nothing in
+    // this tree can read which label a popup was drawn under, so the label's TEXT and the rule that both
+    // spellings share one suffix are pinned here. SOURCE TEXT, I159's shape. A THIRD label must share the
+    // suffix too, and be added here.
+    const std::vector<std::string> shell = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/shell_ui.cpp");
+    REQUIRE_FALSE(shell.empty());
+
+    const std::size_t idAt = soleLineContaining(shell, "\"Scene Outside Project###aero_scene_containment\"");
+    const std::size_t labelAt = soleLineContaining(shell, "\"Scene Not Saved###aero_scene_containment\"");
+    CHECK(countLinesContaining(shell, "###aero_scene_containment") == 2U);
+    // The open arm picks the label by the offer's shape, BELOW both constants...
+    const std::size_t pickAt =
+        soleLineContaining(shell, "offer.forSave ? SAVE_REFUSED_MODAL_LABEL : CONTAINMENT_MODAL_ID");
+    CHECK(idAt < pickAt);
+    CHECK(labelAt < pickAt);
+    // ...while the opener still names the ID constant, so there is one popup and not two.
+    CHECK(countLinesContaining(shell, "ImGui::OpenPopup(CONTAINMENT_MODAL_ID)") == 1U);
+
+    // ---- RETURN, BOUND BY HAND (the code-review round). The save refusal makes this modal an everyday
+    //      path, and with nav off SetItemDefaultFocus carries no key (asset_browser_panel.cpp's
+    //      drawRenameModal cites why), so the default button answers Return only through an IsKeyPressed
+    //      in the body. No tier here can press a key: these pins are its only automated cover, and rows
+    //      12 and 13 of this fix's validation page its only behavioural witness. Every needle is searched
+    //      INSIDE the body -- from the BeginPopupModal line to the body's own EndPopup -- so a binding
+    //      placed anywhere else does not count.
+    const auto firstIn = [&shell](std::string_view needle, std::size_t lo, std::size_t hi) {
+        for (std::size_t i = lo; i < hi && i < shell.size(); ++i) {
+            if (shell[i].find(needle) != std::string::npos) {
+                return i;
+            }
+        }
+        return shell.size();
+    };
+    const auto countIn = [&shell](std::string_view needle, std::size_t lo, std::size_t hi) {
+        std::size_t hits = 0;
+        for (std::size_t i = lo; i < hi && i < shell.size(); ++i) {
+            if (shell[i].find(needle) != std::string::npos) {
+                ++hits;
+            }
+        }
+        return hits;
+    };
+    const std::size_t bodyEnd = firstIn("ImGui::EndPopup();", pickAt, shell.size());
+    REQUIRE(bodyEnd < shell.size());
+
+    // Both keys, each tested on its own (KeypadEnter is a DISTINCT ImGuiKey), and Escape decided FIRST.
+    const std::size_t escapeAt = firstIn("ImGui::IsKeyPressed(ImGuiKey_Escape, false)", pickAt, bodyEnd);
+    const std::size_t enterAt = firstIn("ImGui::IsKeyPressed(ImGuiKey_Enter, false)", pickAt, bodyEnd);
+    const std::size_t keypadAt = firstIn("ImGui::IsKeyPressed(ImGuiKey_KeypadEnter, false)", pickAt, bodyEnd);
+    REQUIRE(escapeAt < bodyEnd);
+    REQUIRE(enterAt < bodyEnd);
+    REQUIRE(keypadAt < bodyEnd);
+    CHECK(escapeAt < enterAt);
+    CHECK(escapeAt < keypadAt);
+
+    // Return shares the button's OWN predicate: its accept is gated on `offerable`, the value that draws
+    // the Open button, and its dismiss on the negation -- never a second copy of either condition.
+    CHECK(countIn("enterPressed && offerable", pickAt, bodyEnd) == 1U);
+    CHECK(countIn("enterPressed && !offerable", pickAt, bodyEnd) == 1U);
+
+    // ONE resolution after every key: the dismiss arm FIRST (dismiss wins over accept in one frame), and
+    // EACH arm closes the popup -- 2.6.1's BLOCKING-1, the g.HoveredWindow trap. Every button and key
+    // reaches CloseCurrentPopup through these two arms and nowhere else in the body.
+    const std::size_t dismissArmAt = firstIn("if (dismiss) {", enterAt, bodyEnd);
+    const std::size_t acceptArmAt = firstIn("} else if (accept) {", dismissArmAt, bodyEnd);
+    REQUIRE(dismissArmAt < acceptArmAt);
+    REQUIRE(acceptArmAt < bodyEnd);
+    CHECK(countIn("offer.dismissRequested = true;", dismissArmAt, acceptArmAt) == 1U);
+    CHECK(countIn("ImGui::CloseCurrentPopup();", dismissArmAt, acceptArmAt) == 1U);
+    CHECK(countIn("offer.acceptRequested = true;", acceptArmAt, bodyEnd) == 1U);
+    CHECK(countIn("ImGui::CloseCurrentPopup();", acceptArmAt, bodyEnd) == 1U);
+    CHECK(countIn("ImGui::CloseCurrentPopup();", pickAt, bodyEnd) == 2U);
+    CHECK(countIn("offer.dismissRequested = true;", pickAt, bodyEnd) == 1U);
+    CHECK(countIn("offer.acceptRequested = true;", pickAt, bodyEnd) == 1U);
 }
 
 // ==================================================================================================

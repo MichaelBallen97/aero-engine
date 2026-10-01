@@ -9,6 +9,8 @@
 #include <aero/editor/console_model.hpp>
 #include <aero/editor/entity_commands.hpp>
 #include <aero/editor/entity_ops.hpp>
+#include <aero/editor/project_files.hpp>      // fix 2.5.1: isHiddenName, the listing's own hidden rule (SS63)
+#include <aero/editor/project_state.hpp>      // fix 2.5.1: isSceneFileName, the predicate SS56 ties to
 #include <aero/editor/scene_containment.hpp>  // task E.4.2: the verdict SS43 asserts directly
 #include <aero/editor/scene_session.hpp>
 #include <aero/editor/selection.hpp>
@@ -18,9 +20,11 @@
 #include <doctest/doctest.h>
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <filesystem>
 #include <memory>
+#include <ostream>  // fix 2.5.1: SS57/SS58 CHECK a std::string_view -- MSVC's <ostream> trap
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -159,19 +163,22 @@ TEST_CASE("scene_session: fileNameOf / directoryOf (SS4/S13)") {
     CHECK(directoryOf("") == "");
 }
 
-TEST_CASE("scene_session: hasExtension / withSceneExtension (SS5/S12)") {
+TEST_CASE("scene_session: hasExtension / normalizeSceneSavePath (SS5/S12)") {
     using engine::editor::hasExtension;
-    using engine::editor::withSceneExtension;
+    using engine::editor::normalizeSceneSavePath;
 
     CHECK_FALSE(hasExtension("/a/b"));
-    CHECK(withSceneExtension("/a/b") == "/a/b.scene.json");
+    CHECK(normalizeSceneSavePath("/a/b") == "/a/b.scene.json");
 
     CHECK(hasExtension("/a/b.json"));
-    CHECK(withSceneExtension("/a/b.json") == "/a/b.json");  // unchanged -- S12's discriminator
+    // D13 REVISED (fix/2.5.1-save-as-scene-suffix): macOS's panel hides ".json" and hands back "b.json" for a
+    // typed "b", so the answer's ".json" is REPLACED now, not kept. S12's discriminator is the '.' in a
+    // DIRECTORY segment, below, and it is unchanged.
+    CHECK(normalizeSceneSavePath("/a/b.json") == "/a/b.scene.json");
 
     // A '.' in a DIRECTORY segment, not the last one -- extension-less (SS5's discriminator for S12).
     CHECK_FALSE(hasExtension("/a.b/c"));
-    CHECK(withSceneExtension("/a.b/c") == "/a.b/c.scene.json");
+    CHECK(normalizeSceneSavePath("/a.b/c") == "/a.b/c.scene.json");
 }
 
 TEST_CASE("scene_session: SceneSession defaults and path round trip (SS6)") {
@@ -1861,4 +1868,477 @@ TEST_CASE("scene_session: the drain preserves refusalSerial, so a refusal in the
     applyFileRequests(f.ctx, f.commands, session, f.flow, f.host, f.project);
     CHECK_FALSE(f.flow.containmentOffer.open);
     CHECK(f.flow.containmentOffer.refusalSerial == 2U);
+}
+
+// ---- SS55-SS58: fix 2.5.1 -- the Save As name rule (normalizeSceneSavePath), tier 0 -----------------
+//
+// macOS's NSSavePanel hides ".json" and selects the whole "Untitled.scene" stem of the suggestion, so a
+// typed "r9" came back as "r9.json" -- a file the E.4.1 startup cascade (firstSceneUnder, which reads
+// isSceneFileName) never treats as a scene. Every arm of the rule is asserted here, with no filesystem, so
+// it holds identically in every build configuration.
+
+TEST_CASE("scene_session: normalizeSceneSavePath, every arm (SS55)") {
+    using engine::editor::normalizeSceneSavePath;
+    CHECK(normalizeSceneSavePath("/p/scenes/r9") == "/p/scenes/r9.scene.json");             // append
+    CHECK(normalizeSceneSavePath("/p/scenes/r9.json") == "/p/scenes/r9.scene.json");        // the macOS answer
+    CHECK(normalizeSceneSavePath("/p/scenes/r9.scene.json") == "/p/scenes/r9.scene.json");  // a scene already
+    CHECK(normalizeSceneSavePath("/p/scenes/r9.scene") == "/p/scenes/r9.scene.json");       // the .scene arm
+    CHECK(normalizeSceneSavePath("/p/scenes/r9.txt") == "/p/scenes/r9.txt.scene.json");     // always ends in it
+    CHECK(normalizeSceneSavePath("/p/my.level.json") == "/p/my.level.scene.json");          // the LAST suffix only
+    CHECK(normalizeSceneSavePath("/p/my.level.scene.json") == "/p/my.level.scene.json");
+    CHECK(normalizeSceneSavePath("/p/a.json.json") == "/p/a.scene.json");  // EVERY trailing suffix, not one
+
+    // ---- THE PANEL APPENDS ITS HIDDEN ".json" TO WHATEVER IS TYPED -- measured on this fix's macOS pass, from
+    //      a signed .app: a typed "r11.scene.json" came back "r11.scene.json.json", "R12.JSON" came back
+    //      "R12.JSON.json", and ".json" came back ".json.json". So the rule strips EVERY trailing suffix, one
+    //      at a time, and keeps the leaf as the user spelled it the moment what remains IS a scene name.
+    CHECK(normalizeSceneSavePath("/p/r11.scene.json.json") == "/p/r11.scene.json");  // validation row 5
+    CHECK(normalizeSceneSavePath("/p/R12.JSON.json") == "/p/R12.scene.json");        // row 6
+    CHECK(normalizeSceneSavePath("/p/.json.json") == "/p/.scene.json");              // row 7: nameless, refused
+    CHECK(normalizeSceneSavePath("/p/r11.scene.json.scene") == "/p/r11.scene.json");
+    CHECK(normalizeSceneSavePath("/p/x.json.json.json") == "/p/x.scene.json");   // a triple
+    CHECK(normalizeSceneSavePath("/p/R.Scene.Json.json") == "/p/R.Scene.Json");  // the user's spelling, kept
+    CHECK(normalizeSceneSavePath("/p/a.b.json") == "/p/a.b.scene.json");         // ".b" is not a suffix
+    CHECK(normalizeSceneSavePath("/p/x.scene") == "/p/x.scene.json");
+    CHECK(normalizeSceneSavePath("/p/json.json") == "/p/json.scene.json");  // "json" is a stem, not a suffix
+    CHECK(normalizeSceneSavePath("/p/.r9.json") == "/p/.r9.scene.json");    // hidden, refused (SS63)
+}
+
+TEST_CASE("scene_session: normalizeSceneSavePath folds exactly as isSceneFileName does (SS56)") {
+    using engine::editor::normalizeSceneSavePath;
+    CHECK(normalizeSceneSavePath("/p/R9.JSON") == "/p/R9.scene.json");  // folded match; stem case kept
+    CHECK(normalizeSceneSavePath("/p/r9.Json") == "/p/r9.scene.json");
+    CHECK(normalizeSceneSavePath("/p/r9.SCENE") == "/p/r9.scene.json");
+    CHECK(normalizeSceneSavePath("/p/r9.Scene.Json") == "/p/r9.Scene.Json");  // UNCHANGED, byte for byte
+    CHECK(normalizeSceneSavePath("/p/R9.SCENE.JSON") == "/p/R9.SCENE.JSON");
+    // THE TIE: for every leaf, "unchanged" iff isSceneFileName(leaf). Leaves chosen to sit on both sides of
+    // each boundary -- empty stem, folded suffix, a suffix-lookalike -- so a rule that drifted from the
+    // predicate in either direction flips at least one row. Expected values are the test's own
+    // (isSceneFileName is PJ17's to prove), never computed from the function under test.
+    constexpr std::array<std::string_view, 10> LEAVES{
+        "a.scene.json", "A.SCENE.JSON",  "a.Scene.Json", ".scene.json", "scene.json",
+        "a.json",       "a.scene.jsonx", "ascene.json",  "a.scene",     "a"};
+    for (const std::string_view leaf : LEAVES) {
+        CAPTURE(leaf);
+        const std::string path = std::string("/d/") + std::string(leaf);
+        const bool unchanged = normalizeSceneSavePath(path) == path;
+        if (leaf == ".scene.json") {
+            // THE ONE FIXED POINT OUTSIDE THE TIE, and both of its facts are asserted: a stem-less leaf
+            // normalises to exactly ".scene.json" (SS57), so this path comes back UNCHANGED while NOT being
+            // a scene -- which is why saveSceneFile refuses it by name rather than by "unchanged" (SS60).
+            CHECK(unchanged);
+            CHECK_FALSE(engine::editor::isSceneFileName(leaf));
+            continue;
+        }
+        CHECK(unchanged == engine::editor::isSceneFileName(leaf));
+    }
+}
+
+TEST_CASE("scene_session: an answer with nothing before its suffix becomes the refusable '.scene.json' (SS57)") {
+    using engine::editor::fileNameOf;
+    using engine::editor::isSceneFileName;
+    using engine::editor::normalizeSceneSavePath;
+    // Every trailing suffix is stripped, so ".json.json" -- what macOS's panel returns for a typed ".json" --
+    // is nameless too, and is refused as nameless rather than as the hidden ".json.scene.json".
+    constexpr std::array<std::string_view, 7> STEMLESS{
+        "/d/.json", "/d/.scene.json", "/d/.scene", "/d/.JSON", "/d/", "", "/d/.json.json",
+    };
+    for (const std::string_view answer : STEMLESS) {
+        CAPTURE(answer);
+        // A NAMED std::string: fileNameOf returns a view INTO its argument (scene_session.hpp).
+        const std::string r = normalizeSceneSavePath(answer);
+        CHECK(fileNameOf(r) == ".scene.json");
+        CHECK_FALSE(isSceneFileName(fileNameOf(r)));
+    }
+    // THE POST-CONDITION, the other direction: every answer WITH a stem normalises to a real scene name.
+    constexpr std::array<std::string_view, 8> WITH_STEM{
+        "/p/scenes/r9",     "/p/scenes/r9.json", "/p/scenes/r9.scene.json", "/p/scenes/r9.scene",
+        "/p/scenes/r9.txt", "/p/my.level.json",  "/p/my.level.scene.json",  "/p/a.json.json"};
+    for (const std::string_view answer : WITH_STEM) {
+        CAPTURE(answer);
+        const std::string r = normalizeSceneSavePath(answer);
+        CHECK(isSceneFileName(fileNameOf(r)));
+    }
+}
+
+TEST_CASE("scene_session: normalizeSceneSavePath keeps every separator and every directory byte (SS58)") {
+    using engine::editor::normalizeSceneSavePath;
+    CHECK(normalizeSceneSavePath("C:\\p\\scenes\\r9.json") == "C:\\p\\scenes\\r9.scene.json");  // Windows
+    CHECK(normalizeSceneSavePath("C:/p\\scenes/r9") == "C:/p\\scenes/r9.scene.json");           // mixed
+    CHECK(normalizeSceneSavePath("/a.json/r9") == "/a.json/r9.scene.json");                     // a ".json" DIRECTORY
+    CHECK(normalizeSceneSavePath("/x.scene.json/r9") == "/x.scene.json/r9.scene.json");
+    CHECK(normalizeSceneSavePath("r9.json") == "r9.scene.json");     // no directory at all
+    CHECK(normalizeSceneSavePath("/p/r9.") == "/p/r9..scene.json");  // trailing dot: literal
+    CHECK(engine::editor::isSceneFileName("r9..scene.json"));        // ...and it IS a scene
+    // THE ROW THAT SEES A LEAF FOUND BY '/' ALONE (sabotage seed S9). Stripping a suffix and re-joining the
+    // prefix yields the same bytes for every row above whichever separator found the leaf; only the
+    // isSceneFileName test differs. Judged as a WHOLE path, "C:\p\.SCENE.JSON" is a scene with the stem
+    // "C:\p\" and would come back verbatim; judged by its LEAF it has nothing before the suffix and
+    // becomes exactly ".scene.json", with the suffix written canonically (SS57's rule).
+    CHECK(normalizeSceneSavePath("C:\\p\\.SCENE.JSON") == "C:\\p\\.scene.json");
+}
+
+// ---- SS59-SS62: fix 2.5.1 -- both name refusals, at the save choke point ---------------------------
+//
+// NONE OF THESE NEEDS A SUCCESSFUL WRITE, which is what lets them run and assert identically with
+// -DAERO_REFLECT_TOOLS=OFF: the refusals are decided after containment and BEFORE serialization, so in
+// that configuration the ERROR is still the name refusal's and never "built without AERO_REFLECT_TOOLS".
+// A refusal left below sceneToText would be invisible there -- which is where the old D13 check sat.
+
+namespace {
+
+// The message of the FIRST ERROR record, or "" when there is none -- so a message claim never reads an
+// INFO or a DEBUG record by position.
+[[nodiscard]] std::string firstErrorMessage(const std::vector<engine::editor::LogEntry>& records) {
+    const auto it = std::find_if(records.begin(), records.end(),
+                                 [](const engine::editor::LogEntry& e) { return e.level == engine::LogLevel::Error; });
+    return it == records.end() ? std::string() : it->message;
+}
+
+}  // namespace
+
+TEST_CASE("scene_session: a taken Save As name is refused, visibly, before serialization (SS59)") {
+    using engine::editor::ContainmentOffer;
+    using engine::editor::saveSceneFile;
+    using engine::editor::SceneFileContext;
+
+    const LogFixture fixture;
+    const TempDir tmp;
+    const std::string taken = tmp.join("r8.scene.json");
+    REQUIRE(engine::editor::writeTextFileAtomic(taken, "PRE-EXISTING").empty());
+
+    engine::World world;
+    engine::editor::seedDefaultScene(world);
+    Selection selection;
+    RootOrder roots;
+    CommandStack commands;
+    CommandContext ctx{world, selection, roots};
+    // DIRTY, so "setClean was not called" is not vacuous (SS42's shape).
+    const engine::Entity probe = world.create();
+    REQUIRE(commands.push(ctx, std::make_unique<engine::editor::DeleteEntitiesCommand>(
+                                   std::vector<engine::Entity>{probe}, std::vector<engine::Entity>{})));
+    REQUIRE_FALSE(commands.isClean());
+    engine::editor::SceneSession session;
+    session.setPath("/previous/scene.scene.json");
+    const std::string pathBefore(session.path());
+    ContainmentOffer offer;
+
+    const engine::editor::LogSinkScope scope;
+    std::vector<engine::editor::LogEntry> records;
+    scope.sink()->take(records);
+    records.clear();
+
+    // The macOS panel's answer for a typed "r8": "r8.json". NO project (D5 permits), so the name rule is
+    // the only thing that can refuse here.
+    CHECK_FALSE(saveSceneFile(ctx, commands, session, tmp.join("r8.json"), /*appendExtension=*/true,
+                              SceneFileContext{"", &offer}));
+
+    scope.sink()->take(records);
+    CHECK(countAtLevel(records, engine::LogLevel::Error) == 1);
+    const std::string message = firstErrorMessage(records);
+    CHECK(message.find("r8.scene.json'") != std::string::npos);  // the NORMALISED name, closing quote
+    CHECK(message.find("already exists") != std::string::npos);
+    CHECK(message.find("AERO_REFLECT_TOOLS") == std::string::npos);  // decided BEFORE serialization
+    const engine::editor::FileReadResult after = engine::editor::readTextFile(taken);
+    REQUIRE(after.text.has_value());
+    CHECK(*after.text == "PRE-EXISTING");                          // byte-identical
+    CHECK_FALSE(engine::editor::fileExists(tmp.join("r8.json")));  // and nothing else was created
+    CHECK_FALSE(commands.isClean());                               // setClean was NOT called
+    CHECK(session.path() == pathBefore);                           // setPath was NOT called
+    CHECK(offer.open);                                             // VISIBLE: the save-refusal modal
+    CHECK(offer.forSave);                                          // in its SAVE shape (D9)...
+    CHECK(offer.scenePath == taken);                               // ...naming the file it refused
+    CHECK(offer.projectRoot.empty());                              // ...offering no project
+    CHECK(offer.refusalSerial == 1U);
+    CHECK_FALSE(offer.reason.empty());                       // anti-vacuity for the next line
+    CHECK(message.find(offer.reason) != std::string::npos);  // ONE string for the ERROR and the modal
+
+    // ---- THE COUNTER-ARM: the answer "r8.scene.json" ITSELF. The panel asked about THAT exact file and
+    //      the user answered it, so the name rule stays out of the way. (It then writes in the full
+    //      configuration or refuses on AERO_REFLECT_TOOLS in the reduced one; this case asserts neither.)
+    records.clear();
+    ContainmentOffer asked;
+    (void)saveSceneFile(ctx, commands, session, taken, /*appendExtension=*/true, SceneFileContext{"", &asked});
+    scope.sink()->take(records);
+    CHECK_FALSE(anyMessageContains(records, "already exists"));
+    CHECK_FALSE(anyMessageContains(records, "needs a name"));
+
+    // ---- THE MIGRATION ARM: every macOS project the original defect touched already holds an "X.json" --
+    //      the file a typed "X" used to become. Saving "X" again answers "X.json" once more; the corrected
+    //      name "X.scene.json" is FREE, so the save must go ahead and must leave the legacy file alone. A
+    //      taken-name test widened to the ANSWER's existence would refuse this user for ever. (Written in
+    //      the full configuration, refused on AERO_REFLECT_TOOLS in the reduced one; IO23 (d) owns the
+    //      write -- what must hold in EVERY configuration is that no NAME refusal fires.)
+    const std::string legacy = tmp.join("r7.json");
+    REQUIRE(engine::editor::writeTextFileAtomic(legacy, "LEGACY").empty());
+    REQUIRE_FALSE(engine::editor::fileExists(tmp.join("r7.scene.json")));  // the corrected name is FREE
+    records.clear();
+    ContainmentOffer migrated;
+    (void)saveSceneFile(ctx, commands, session, legacy, /*appendExtension=*/true, SceneFileContext{"", &migrated});
+    scope.sink()->take(records);
+    CHECK_FALSE(anyMessageContains(records, "already exists"));
+    CHECK_FALSE(anyMessageContains(records, "needs a name"));
+    CHECK_FALSE(migrated.open);  // no refusal modal either
+    const engine::editor::FileReadResult legacyAfter = engine::editor::readTextFile(legacy);
+    REQUIRE(legacyAfter.text.has_value());
+    CHECK(*legacyAfter.text == "LEGACY");  // byte-identical
+}
+
+TEST_CASE("scene_session: a Save As answer with nothing before the suffix is refused (SS60)") {
+    using engine::editor::ContainmentOffer;
+    using engine::editor::saveSceneFile;
+    using engine::editor::SceneFileContext;
+
+    const LogFixture fixture;
+    const TempDir tmp;
+    const std::string hidden = tmp.join(".scene.json");
+
+    engine::World world;
+    engine::editor::seedDefaultScene(world);
+    Selection selection;
+    RootOrder roots;
+    CommandStack commands;
+    CommandContext ctx{world, selection, roots};
+    engine::editor::SceneSession session;
+
+    const engine::editor::LogSinkScope scope;
+    std::vector<engine::editor::LogEntry> records;
+
+    // ".json.json" is what macOS's panel returned for a typed ".json" (measured): nameless, like the others.
+    const std::array<std::string, 5> answers{tmp.join(".json"), tmp.join(".scene.json"), tmp.join(".scene"),
+                                             tmp.utf8() + "/", tmp.join(".json.json")};
+    for (const std::string& answer : answers) {
+        CAPTURE(answer);
+        records.clear();  // FIRST: LogSink::take asserts its `out` is empty (console_model.cpp)
+        scope.sink()->take(records);
+        records.clear();
+        ContainmentOffer offer;
+        CHECK_FALSE(
+            saveSceneFile(ctx, commands, session, answer, /*appendExtension=*/true, SceneFileContext{"", &offer}));
+        scope.sink()->take(records);
+        CHECK(countAtLevel(records, engine::LogLevel::Error) == 1);
+        CHECK(firstErrorMessage(records).find("needs a name") != std::string::npos);
+        CHECK(offer.open);
+        CHECK(offer.forSave);
+        CHECK_FALSE(engine::editor::fileExists(hidden));  // never the hidden ".scene.json"
+        CHECK(session.untitled());
+    }
+}
+
+TEST_CASE("scene_session: containment reads the normalised name, and wins the order (SS61)") {
+    using engine::editor::ContainmentOffer;
+    using engine::editor::saveSceneFile;
+    using engine::editor::SceneFileContext;
+
+    const LogFixture fixture;
+    const TempDir tmp;
+    const std::string root = tmp.join("ProjA");  // lexical root, SS42's posture
+    // The normalised name ALSO exists, so the name refusal WOULD fire if containment did not come first.
+    std::error_code ec;
+    std::filesystem::create_directories(pathOfUtf8(tmp.join("Other")), ec);
+    REQUIRE_FALSE(static_cast<bool>(ec));
+    REQUIRE(engine::editor::writeTextFileAtomic(tmp.join("Other/level3.scene.json"), "PRE-EXISTING").empty());
+
+    engine::World world;
+    engine::editor::seedDefaultScene(world);
+    Selection selection;
+    RootOrder roots;
+    CommandStack commands;
+    CommandContext ctx{world, selection, roots};
+    engine::editor::SceneSession session;
+    ContainmentOffer offer;
+
+    const engine::editor::LogSinkScope scope;
+    std::vector<engine::editor::LogEntry> records;
+    scope.sink()->take(records);
+    records.clear();
+
+    CHECK_FALSE(saveSceneFile(ctx, commands, session, tmp.join("Other/level3.json"), /*appendExtension=*/true,
+                              SceneFileContext{root, &offer}));
+
+    scope.sink()->take(records);
+    CHECK(countAtLevel(records, engine::LogLevel::Error) == 1);
+    const std::string message = firstErrorMessage(records);
+    CHECK(message.find("level3.scene.json'") != std::string::npos);  // containment judged the NORMALISED name
+    CHECK(message.find("level3.json'") == std::string::npos);        // IO20's closing-quote discriminator
+    CHECK(message.find("must be saved inside the open project") != std::string::npos);
+    CHECK(message.find("already exists") == std::string::npos);  // the name refusal never fired
+    CHECK(offer.open);
+    CHECK(offer.forSave);
+}
+
+TEST_CASE("scene_session: a refused Save As name abandons the pending chain, both flow objects cleared (SS62)") {
+    using engine::editor::CreateProblem;
+    using engine::editor::createProject;
+    using engine::editor::DialogKind;
+    using engine::editor::DialogResult;
+    using engine::editor::ProjectCreateOutcome;
+    using engine::editor::ProjectManifest;
+
+    const LogFixture fixture;
+    const TempDir tmp;
+    const std::string rootA = tmp.join("ProjA");
+    const std::string taken = rootA + "/scenes/r8.scene.json";
+    std::error_code ec;
+    std::filesystem::create_directories(pathOfUtf8(rootA + "/scenes"), ec);
+    REQUIRE_FALSE(static_cast<bool>(ec));
+    REQUIRE(engine::editor::writeTextFileAtomic(taken, "PRE-EXISTING").empty());
+    // The panel's answer for a typed "r8": INSIDE ProjA, so containment permits and the TAKEN name refuses.
+    const DialogResult answer{.ready = true, .cancelled = false, .failed = false, .path = rootA + "/scenes/r8.json"};
+
+    // What every arm below must hold after the refusal: nothing written, nothing bound, the modal up in
+    // its save shape, and the pending action abandoned WITH ITS TARGETS, whichever flow object holds them.
+    const auto checkAbandoned = [&taken](const FlowFixture& f, const SceneSession& session) {
+        CHECK(f.flow.containmentOffer.open);
+        CHECK(f.flow.containmentOffer.forSave);
+        CHECK(f.flow.containmentOffer.reason.find("already exists") != std::string::npos);  // a NAME refusal
+        CHECK((f.flow.pending == FileAction::None));
+        CHECK_FALSE(f.flow.saveBeforePending);
+        CHECK(f.flow.requestedPath.empty());
+        CHECK(f.projectFlow.requestedPath.empty());
+        CHECK(session.untitled());
+        const engine::editor::FileReadResult after = engine::editor::readTextFile(taken);
+        REQUIRE(after.text.has_value());
+        CHECK(*after.text == "PRE-EXISTING");
+    };
+
+    SUBCASE("a guarded Quit") {
+        FlowFixture f;
+        SceneSession session;
+        f.projectSession.set(ProjectManifest{}, rootA);
+        // The state AskWhereToSave leaves behind, seeded directly (SS52's shape).
+        f.flow.dialog = DialogKind::Save;
+        f.flow.saveBeforePending = true;
+        f.flow.requestedPath = "stale";
+        f.flow.pending = FileAction::Quit;
+
+        applyDialogResult(f.ctx, f.commands, session, f.flow, f.host, answer, f.project);
+
+        CHECK_FALSE(f.flow.quitConfirmed);  // the editor keeps running
+        checkAbandoned(f, session);
+    }
+
+    SUBCASE("a guarded Open Project") {
+        // A REAL project, so a leaked target would ADOPT rather than fail.
+        const ProjectCreateOutcome b = createProject(tmp.utf8(), "ProjB", "0.1.0");
+        REQUIRE(b.problem == CreateProblem::Ok);
+        FlowFixture f;
+        SceneSession session;
+        f.projectSession.set(ProjectManifest{}, rootA);
+        f.flow.dialog = DialogKind::Save;
+        f.flow.saveBeforePending = true;
+        f.flow.requestedPath = "stale";
+        f.flow.pending = FileAction::OpenProject;
+        f.projectFlow.requestedPath = b.root;
+
+        applyDialogResult(f.ctx, f.commands, session, f.flow, f.host, answer, f.project);
+
+        CHECK(f.projectSession.root() == rootA);  // nothing was adopted by the refusal itself
+        checkAbandoned(f, session);
+
+        // ---- SS52's CONSEQUENCE ARM, verbatim: dismiss, then a later File > Open Project... on the clean
+        //      stack. A leaked target would take performAction's no-dialog seam and adopt ProjB.
+        f.flow.containmentOffer = {};
+        f.flow.requested = FileAction::OpenProject;
+        REQUIRE(f.commands.isClean());
+        applyFileRequests(f.ctx, f.commands, session, f.flow, f.host, f.project);
+        CHECK(f.projectSession.root() == rootA);
+    }
+}
+
+// ---- SS63: fix 2.5.1's code-review round -- a Save As name that would be a HIDDEN file ------------------
+//
+// SS55-SS62 is the block this fix reserved and it is full, so this case takes the next id.
+
+TEST_CASE("scene_session: a Save As name that would be a hidden file is refused (SS63)") {
+    using engine::editor::ContainmentOffer;
+    using engine::editor::fileNameOf;
+    using engine::editor::isHiddenName;
+    using engine::editor::isSceneFileName;
+    using engine::editor::normalizeSceneSavePath;
+    using engine::editor::saveSceneFile;
+    using engine::editor::SceneFileContext;
+
+    // ---- TIER 0, the rule: a stem that itself begins with '.' KEEPS its dot, so the result's leaf is a
+    //      name isSceneFileName accepts (it has a stem) and isHiddenName hides -- firstSceneUnder and the
+    //      browser list with includeHidden=false, so neither would ever see it. That is the leaf the save
+    //      refuses. Expected values are the test's own, never computed from the function under test.
+    CHECK(normalizeSceneSavePath("/d/.r9") == "/d/.r9.scene.json");
+    CHECK(normalizeSceneSavePath("/d/.r9.json") == "/d/.r9.scene.json");          // suffix gone, dot kept
+    CHECK(normalizeSceneSavePath("/d/.R9.JSON") == "/d/.R9.scene.json");          // folded, dot kept
+    CHECK(normalizeSceneSavePath("/d/.foo.scene.json") == "/d/.foo.scene.json");  // the UNCHANGED arm
+    constexpr std::array<std::string_view, 4> HIDDEN{
+        "/d/.r9",
+        "/d/.r9.json",
+        "/d/.R9.JSON",
+        "/d/.foo.scene.json",
+    };
+    for (const std::string_view answer : HIDDEN) {
+        CAPTURE(answer);
+        const std::string r = normalizeSceneSavePath(answer);  // NAMED: fileNameOf returns a view into it
+        CHECK(isSceneFileName(fileNameOf(r)));  // it HAS a stem, so the empty-stem refusal cannot catch it
+        CHECK(isHiddenName(fileNameOf(r)));     // ...and the listing would hide it
+    }
+
+    // ---- THE FLOW: each such answer is refused with its OWN reason, before serialization, visibly, and
+    //      nothing is written -- identical in every build configuration.
+    const LogFixture fixture;
+    const TempDir tmp;
+    engine::World world;
+    engine::editor::seedDefaultScene(world);
+    Selection selection;
+    RootOrder roots;
+    CommandStack commands;
+    CommandContext ctx{world, selection, roots};
+    engine::editor::SceneSession session;
+    const engine::editor::LogSinkScope scope;
+    std::vector<engine::editor::LogEntry> records;
+
+    const std::array<std::string, 4> answers{tmp.join(".r9"), tmp.join(".r9.json"), tmp.join(".R9.JSON"),
+                                             tmp.join(".foo.scene.json")};
+    for (const std::string& answer : answers) {
+        CAPTURE(answer);
+        records.clear();  // FIRST: LogSink::take asserts its `out` is empty (console_model.cpp)
+        scope.sink()->take(records);
+        records.clear();
+        ContainmentOffer offer;
+        const std::string written = normalizeSceneSavePath(answer);
+        CHECK_FALSE(
+            saveSceneFile(ctx, commands, session, answer, /*appendExtension=*/true, SceneFileContext{"", &offer}));
+        scope.sink()->take(records);
+        CHECK(countAtLevel(records, engine::LogLevel::Error) == 1);
+        const std::string message = firstErrorMessage(records);
+        CHECK(message.find("cannot start with a dot") != std::string::npos);
+        CHECK(message.find("needs a name") == std::string::npos);
+        CHECK(message.find("AERO_REFLECT_TOOLS") == std::string::npos);  // decided BEFORE serialization
+        CHECK(offer.open);
+        CHECK(offer.forSave);
+        CHECK(offer.scenePath == written);
+        CHECK(offer.reason == "a scene name cannot start with a dot (the file would be hidden)");
+        CHECK_FALSE(engine::editor::fileExists(written));  // nothing was written
+        CHECK(session.untitled());
+    }
+
+    // ---- THE ORDER: a hidden name that ALSO exists is refused as HIDDEN, not as taken -- the dot is the
+    //      reason the user can act on, and no rename of an existing file can make the name visible.
+    REQUIRE(engine::editor::writeTextFileAtomic(tmp.join(".r5.scene.json"), "PRE-EXISTING").empty());
+    records.clear();
+    ContainmentOffer both;
+    CHECK_FALSE(saveSceneFile(ctx, commands, session, tmp.join(".r5.json"), /*appendExtension=*/true,
+                              SceneFileContext{"", &both}));
+    scope.sink()->take(records);
+    CHECK(countAtLevel(records, engine::LogLevel::Error) == 1);
+    CHECK(firstErrorMessage(records).find("cannot start with a dot") != std::string::npos);
+    CHECK_FALSE(anyMessageContains(records, "already exists"));
+
+    // ---- AND ONLY A PANEL'S ANSWER IS JUDGED: a literal hidden path (requestSaveSceneAs, a titled Save)
+    //      is the caller's to choose (D15), so no name refusal fires. (It then writes in the full
+    //      configuration or refuses on AERO_REFLECT_TOOLS in the reduced one; this case asserts neither.)
+    records.clear();
+    ContainmentOffer literal;
+    (void)saveSceneFile(ctx, commands, session, tmp.join(".literal.scene.json"), /*appendExtension=*/false,
+                        SceneFileContext{"", &literal});
+    scope.sink()->take(records);
+    CHECK_FALSE(anyMessageContains(records, "cannot start with a dot"));
+    CHECK_FALSE(literal.open);
 }

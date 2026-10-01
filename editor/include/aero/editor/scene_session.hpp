@@ -112,7 +112,24 @@ inline constexpr std::string_view SCENE_EXTENSION = ".scene.json";
 [[nodiscard]] std::string_view fileNameOf(std::string_view pathUtf8) noexcept;
 [[nodiscard]] std::string_view directoryOf(std::string_view pathUtf8) noexcept;  // "" when there is none
 [[nodiscard]] bool hasExtension(std::string_view pathUtf8) noexcept;             // a '.' in the LAST segment only
-[[nodiscard]] std::string withSceneExtension(std::string_view pathUtf8);         // D13's append rule
+
+// D13, REVISED (fix/2.5.1-save-as-scene-suffix): the file a native Save panel's answer becomes. ONLY THE
+// LAST SEGMENT CHANGES; everything before it -- '/', '\' or mixed -- is kept byte for byte.
+//   * a leaf isSceneFileName accepts          -> the path UNCHANGED, its case kept ("a.Scene.Json" stays)
+//   * otherwise trailing ".scene.json", ".json" and ".scene" (ASCII-case-folded) are stripped ONE AT A
+//     TIME until what remains is a scene name -- kept exactly as spelled -- or no suffix is left, in which
+//     case the result is <directory><stem>.scene.json
+// The loop exists because macOS's save panel appends its hidden ".json" to WHATEVER is typed (measured): a
+// typed "r11.scene.json" comes back "r11.scene.json.json" and becomes "r11.scene.json"; "R12.JSON" comes
+// back "R12.JSON.json" and becomes "R12.scene.json". So "r9", "r9.json", "R9.JSON" and "r9.scene" all
+// become "r9.scene.json" (the stem's own case kept), "r9.txt" becomes "r9.txt.scene.json", and a leaf with
+// nothing before its suffixes -- ".json", ".json.json", ".scene.json", ".scene", "" -- becomes exactly
+// ".scene.json", which isSceneFileName REFUSES and so saveSceneFile refuses too. The result always ends in
+// ".scene.json", ASCII-case-folded; it is a scene iff the stem is non-empty. A stem that itself begins with
+// '.' KEEPS its dot (".r9" and ".r9.json" -> ".r9.scene.json", and ".foo.scene.json" unchanged): such a
+// result is a HIDDEN file (isHiddenName), which firstSceneUnder and the browser never list, so saveSceneFile
+// refuses it as well, with its own reason. Pure: no filesystem, no logging.
+[[nodiscard]] std::string normalizeSceneSavePath(std::string_view pathUtf8);
 
 // ---- THE swap (D2/INV-6/INV-1) -------------------------------------------------------------------
 // Clears the World, the Selection, the RootOrder and the CommandStack -- all four, in one call, with
@@ -190,13 +207,19 @@ struct FileDialogHost {
 // read by the modal, two IN one-shots written by the modal's buttons and consumed OUTSIDE the draw
 // walk, at STEP 0 of applyFileRequests (D10 -- step 0 runs BEFORE the modalInputActive refusal in
 // step 2, or the accept is swallowed by the very modal that produced it).
+//
+// fix 2.5.1: it ALSO carries saveSceneFile's three NAME refusals (D13, revised -- a stem-less, a hidden or
+// a taken corrected name), always in the save shape, so the name is now narrower than what it holds -- as is
+// EditorApp::sceneContainmentRefusalCount(), which counts both. Stated rather than renamed: the modal,
+// its drain and every rule above apply to a name refusal unchanged.
 struct ContainmentOffer {
     // ---- STATE / OUT -- set by openSceneFile/saveSceneFile through SceneFileContext::offer.
     bool open = false;        // the modal is up -> modalInputActive() MUST include this (D10)
     bool forSave = false;     // the refusal was a SAVE: NO project is ever offered (D9)
     std::string scenePath;    // the refused path, verbatim, for the modal's first line
-    std::string reason;       // containmentReason()'s exact bytes -- the SAME string the ERROR
-                              // carried, never a second wording (D6/AC-20)
+    std::string reason;       // the refusal's reason, exactly the bytes its ERROR carried --
+                              // containmentReason()'s for a containment refusal, D13's constant for
+                              // a name refusal (fix 2.5.1); never a second wording (D6/AC-20)
     std::string projectRoot;  // "" when no enclosing project.json was found AND always for a save;
                               // the accept's target
     std::string projectName;  // "" when that manifest did not parse -- the offer is still made
@@ -358,12 +381,14 @@ struct FileFlow {
 [[nodiscard]] bool openSceneFile(CommandContext& context, CommandStack& commands, SceneSession& session,
                                  std::string_view absolutePathUtf8, const SceneFileContext& fileContext);
 
-// Serialize, apply D13's extension rule when `appendExtension`, write atomically, and on success set
-// the path and mark the history CLEAN. Returns true iff the file was written. Logs exactly one ERROR
-// on failure and NOTHING on success.
+// Serialize, write atomically, and on success set the path and mark the history CLEAN. Returns true iff
+// the file was written. Logs exactly one ERROR on failure and NOTHING on success.
+// fix 2.5.1 (D13, revised): applies D13's rule (normalizeSceneSavePath) when `appendExtension`, and
+// refuses -- before serialization, one ERROR, and the save-refusal offer -- a normalised name that has no
+// stem, that would be a hidden file, or that differs from the answer and already exists.
 // task E.4.2: refuses BEFORE serialization when `fileContext` says the target is outside the open
-// project (D6/D7) -- the extension rule is applied first, so the check runs on the file that will
-// actually be written.
+// project (D6/D7) -- the name rule is applied first, so the check runs on the file that will actually
+// be written, and a containment refusal is decided before either name refusal.
 [[nodiscard]] bool saveSceneFile(CommandContext& context, CommandStack& commands, SceneSession& session,
                                  std::string_view absolutePathUtf8, bool appendExtension,
                                  const SceneFileContext& fileContext);

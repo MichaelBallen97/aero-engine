@@ -4,6 +4,7 @@
 // serialization bridge live in text_file.cpp / scene_io.cpp instead (D19/F17, F9's gate).
 #include <aero/core/log.hpp>
 #include <aero/editor/entity_ops.hpp>
+#include <aero/editor/project_files.hpp>      // fix 2.5.1: isHiddenName, the hidden rule listDirectory applies
 #include <aero/editor/project_state.hpp>      // task E.4.1: the per-project state, its resolver and its
                                               // path arithmetic. ProjectSession itself arrives through
                                               // scene_session.hpp -> project.hpp.
@@ -14,6 +15,7 @@
 
 #include "file_dialog.hpp"
 
+#include <array>
 #include <cstddef>
 #include <optional>
 #include <string>
@@ -145,12 +147,77 @@ bool hasExtension(std::string_view pathUtf8) noexcept {
     return fileNameOf(pathUtf8).find('.') != std::string_view::npos;
 }
 
-std::string withSceneExtension(std::string_view pathUtf8) {
-    if (hasExtension(pathUtf8)) {
-        return std::string(pathUtf8);
+namespace {
+
+// A file-local copy of project_state.cpp's foldAscii / endsWithFolded shape, for the reason every copy
+// gives: each lives in its own TU's anonymous namespace (project_state.cpp's banner counts four copies of
+// that PAIR; editor/src holds thirteen foldAscii definitions before this one). ASCII-only and
+// locale-independent -- NEVER std::tolower(char), whose UTF-8 continuation bytes are negative as char.
+constexpr unsigned char foldAscii(unsigned char c) noexcept {
+    return (c >= 'A' && c <= 'Z') ? static_cast<unsigned char>(c + ('a' - 'A')) : c;
+}
+
+// Deliberately WITHOUT the stem requirement isSceneFileName carries -- ".json" must match ".json" here, so
+// that it can be stripped to an EMPTY stem and refused as nameless, rather than kept as a stem of its own
+// and turned into the hidden ".json.scene.json". A stem that REALLY begins with a dot (".r9", ".r9.json",
+// ".foo.scene.json") keeps it, and saveSceneFile refuses that result as HIDDEN, with its own reason:
+// firstSceneUnder and the browser list with includeHidden=false (isHiddenName), so neither would ever see
+// such a scene.
+[[nodiscard]] bool hasSuffixFolded(std::string_view name, std::string_view suffix) noexcept {
+    if (name.size() < suffix.size()) {
+        return false;
     }
-    std::string result(pathUtf8);
-    result += SCENE_EXTENSION;
+    const std::size_t offset = name.size() - suffix.size();
+    for (std::size_t i = 0; i < suffix.size(); ++i) {
+        if (foldAscii(static_cast<unsigned char>(name[offset + i])) !=
+            foldAscii(static_cast<unsigned char>(suffix[i]))) {
+            return false;
+        }
+    }
+    return true;
+}
+
+// The suffixes the stripping loop removes, one per iteration. Under the loop their ORDER CHANGES NO RESULT,
+// and the ".scene.json" entry is REDUNDANT: a leaf ending in ".scene.json" with anything before it is
+// already a scene name and never reaches a strip, and on the one leaf that does -- ".scene.json" itself --
+// stripping ".json" and then ".scene" in two iterations lands on the same "" as stripping ".scene.json" in
+// one. It is kept because it is the rule's own wording; a seed that reorders or deletes it is a non-finding.
+constexpr std::array<std::string_view, 3> SAVE_NAME_SUFFIXES{".scene.json", ".json", ".scene"};
+
+// Remove ONE of SAVE_NAME_SUFFIXES from the end of `name`, ASCII-case-folded; false when none matches.
+[[nodiscard]] bool stripOneSaveSuffix(std::string_view& name) noexcept {
+    for (const std::string_view suffix : SAVE_NAME_SUFFIXES) {
+        if (hasSuffixFolded(name, suffix)) {
+            name.remove_suffix(suffix.size());
+            return true;
+        }
+    }
+    return false;
+}
+
+}  // namespace
+
+std::string normalizeSceneSavePath(std::string_view pathUtf8) {
+    const std::string_view leaf = fileNameOf(pathUtf8);
+    // THE LOOP (fix 2.5.1's macOS pass): NSSavePanel appends its hidden ".json" to WHATEVER is typed, so a
+    // typed "r11.scene.json" comes back "r11.scene.json.json" and "R12.JSON" comes back "R12.JSON.json".
+    // Strip trailing suffixes one at a time, and stop the moment what remains IS a scene name -- the SAME
+    // predicate the E.4.1 cascade reads -- keeping it exactly as the user spelled it. A leaf that is already
+    // a scene name never enters the loop, so it comes back byte for byte.
+    //
+    // TERMINATES: an iteration that strips removes at least five characters (".json", the shortest suffix),
+    // and one that cannot strip ends the loop, so it runs at most leaf.size() / 5 + 1 times.
+    std::string_view stem = leaf;
+    bool isScene = isSceneFileName(stem);
+    while (!isScene && stripOneSaveSuffix(stem)) {
+        isScene = isSceneFileName(stem);
+    }
+    // The directory part, verbatim. In range by construction: fileNameOf returns a SUFFIX of its argument.
+    std::string result(pathUtf8.substr(0, pathUtf8.size() - leaf.size()));
+    result += stem;
+    if (!isScene) {
+        result += SCENE_EXTENSION;  // every trailing suffix is gone; "" stays "" and is refused as nameless
+    }
     return result;
 }
 
@@ -171,6 +238,16 @@ void newScene(CommandContext& context, CommandStack& commands) {
 // ---- the two logging actions (A30: the ONLY two places this task logs) ---------------------------
 
 namespace {
+
+// D13, REVISED (fix 2.5.1): the three NAME refusals' reasons. Each is the ERROR's reason clause AND the
+// modal's second line -- one string for both, never a second wording (task E.4.2's D6/AC-20 rule). The
+// taken-name wording says why no Replace prompt appeared: the panel asked about the name the user SAW
+// ("r8.json") or about none at all ("r8"), never about the corrected "r8.scene.json".
+constexpr std::string_view SCENE_NAME_TAKEN_REASON =
+    "a file with that name already exists, and the file dialog did not ask about replacing it";
+constexpr std::string_view SCENE_NAME_EMPTY_REASON = "a scene file needs a name before '.scene.json'";
+constexpr std::string_view SCENE_NAME_HIDDEN_REASON =  // a leading '.' -- isHiddenName's rule
+    "a scene name cannot start with a dot (the file would be hidden)";
 
 // task E.4.2: fill the offer a refusal raises, or do nothing at all when the caller supplied none.
 // File-local: the two choke points directly below are its ONLY callers, and a refusal is the ONLY
@@ -268,9 +345,10 @@ bool saveSceneFile(CommandContext& context, CommandStack& commands, SceneSession
     // task E.4.2 (D7): the extension rule MOVES ABOVE the serialization, so containment is checked on
     // the file that will actually be WRITTEN rather than on the argument. Both live in the same
     // directory, so today the verdict is the same either way -- but checking the written thing is the
-    // only version of this that stays true if withSceneExtension ever changes. IO20 pins it; S18 seeds
-    // the raw argument back in.
-    const std::string target = appendExtension ? withSceneExtension(absolutePathUtf8) : std::string(absolutePathUtf8);
+    // only version of this that stays true if normalizeSceneSavePath (D13, revised by fix 2.5.1) ever
+    // changes. IO20 pins it; S18 seeds the raw argument back in.
+    const std::string target =
+        appendExtension ? normalizeSceneSavePath(absolutePathUtf8) : std::string(absolutePathUtf8);
     // findOwningProject = FALSE (D9): a refused save NEVER offers a project, because accepting one
     // routes through adoptProject (:259-267) -> newScene (:261) -> World::clear() +
     // CommandStack::clear() and would discard the very work being saved. There is nothing to offer, so
@@ -285,17 +363,40 @@ bool saveSceneFile(CommandContext& context, CommandStack& commands, SceneSession
         raiseContainmentOffer(fileContext.offer, target, reason, verdict, /*forSave=*/true);
         return false;  // NO setClean, NO setPath -- a save that lies is the worst outcome here (R4)
     }
+    // D13, REVISED (fix 2.5.1): every name refusal is decided HERE, after containment and BEFORE
+    // serialization -- a refusal performs no serialization, and it reads the same in every build
+    // configuration (the old check sat below sceneToText, so -DAERO_REFLECT_TOOLS=OFF could never reach
+    // it). Only a panel's answer is judged: a literal path (requestSaveSceneAs, a titled Save) is the
+    // caller's to choose (D15).
+    //
+    // `target != absolutePathUtf8` is what makes this D13 and not a second overwrite policy: when the rule
+    // changed nothing, the panel itself asked about that exact file and the user answered it; when it
+    // changed something, the panel asked about the name the user SAW, or about none. EXACT comparison, so
+    // a case-only collision on a case-insensitive volume refuses too -- the safe direction.
+    if (appendExtension) {
+        std::string_view refusal;
+        if (!isSceneFileName(fileNameOf(target))) {
+            refusal = SCENE_NAME_EMPTY_REASON;  // ".json", ".scene", "" -- nothing to call it
+        } else if (isHiddenName(fileNameOf(target))) {
+            // ".r9", ".r9.json", ".foo.scene.json": a HIDDEN file. The LISTING's own predicate, so the
+            // refusal and what firstSceneUnder / the browser skip cannot drift. BEFORE the taken test: no
+            // existing file changes whether the name can be seen.
+            refusal = SCENE_NAME_HIDDEN_REASON;
+        } else if (target != absolutePathUtf8 && fileExists(target)) {
+            refusal = SCENE_NAME_TAKEN_REASON;  // the panel asked about a DIFFERENT name, or none
+        }
+        if (!refusal.empty()) {
+            const std::string reason(refusal);  // ONE string for the ERROR and the modal (D6/AC-20's rule)
+            AERO_LOG_ERROR("editor: could not save scene '{}' -- {}", target, reason);
+            raiseContainmentOffer(fileContext.offer, target, reason, verdict, /*forSave=*/true);
+            return false;  // NO setClean, NO setPath (R4)
+        }
+    }
     const std::optional<std::string> text = sceneToText(context.world);
     if (!text.has_value()) {
-        // task E.4.2: names `target`, not the argument -- `target` now exists above and the D13 refusal
-        // two lines below already names it, so one function would otherwise spell "the file" two ways.
+        // task E.4.2: names `target`, not the argument -- `target` exists above and the D13 refusals above
+        // already name it, so one function would otherwise spell "the file" two ways.
         AERO_LOG_ERROR("editor: could not save scene '{}' -- {}", target, "built without AERO_REFLECT_TOOLS");
-        return false;
-    }
-    // D13's existence check fires ONLY when the extension was actually appended -- if the user typed a
-    // name that already has one, the native panel already asked about overwriting.
-    if (appendExtension && target != absolutePathUtf8 && fileExists(target)) {
-        AERO_LOG_ERROR("editor: could not save scene '{}' -- {}", target, "a file with that name already exists");
         return false;
     }
     const std::string reason = writeTextFileAtomic(target, *text);
@@ -814,8 +915,10 @@ void applyDialogResult(CommandContext& context, CommandStack& commands, SceneSes
         flow.pending = FileAction::None;
         return;
     }
-    // kind == DialogKind::Save. appendExtension is true ONLY here -- a native Save panel is the one
-    // place a user can type a bare name (D13); requestSaveSceneAs(path) hands a path literally.
+    // kind == DialogKind::Save. appendExtension is true ONLY here -- a native Save panel's text field is
+    // the one place a name comes from (D13, revised by fix 2.5.1: saveSceneFile normalises it to a
+    // .scene.json leaf and refuses a corrected name the panel never asked about); requestSaveSceneAs(path)
+    // hands a path literally.
     const bool ok = saveSceneFile(context, commands, session, result.path, /*appendExtension=*/true,
                                   SceneFileContext{project.session.root(), &flow.containmentOffer});
     if (ok && flow.saveBeforePending) {
