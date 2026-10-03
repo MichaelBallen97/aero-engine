@@ -504,7 +504,8 @@ add_executable(aero_editor_shell_test editor/shell_test.cpp editor/hierarchy_tes
                editor/material_card_cache_test.cpp     # task E.4.5 — the card cache over a real scan (CC)
                editor/create_menu_test.cpp             # task E.5.2 — the pure create table (CR)
                editor/editor_theme_test.cpp            # task E.6.1 — the one theme (TH)
-               editor/ui_scale_test.cpp)               # task E.6.1 — the UI-scale model (US)
+               editor/ui_scale_test.cpp                # task E.6.1 — the UI-scale model (US)
+               editor/editor_glyphs_test.cpp)          # task E.6.1 — glyphs, icons, literal policy (GL)
 target_link_libraries(aero_editor_shell_test PRIVATE
     doctest::doctest aero::editor_core aero::scene aero::scene_internal aero::core Threads::Threads)
 add_test(NAME aero_editor_shell_test COMMAND aero_editor_shell_test)
@@ -545,7 +546,9 @@ target_compile_definitions(aero_editor_shell_test PRIVATE
     AERO_AUDIO_FIXTURES_DIR="${CMAKE_SOURCE_DIR}/tests/fixtures/audio"
     # task E.6.1: TH10 reads editor_theme.hpp's own text to pin its include set. A path, not a flag: a missing
     # file is a REQUIRE failure, never a silent skip.
-    AERO_EDITOR_INCLUDE_DIR="${CMAKE_SOURCE_DIR}/editor/include")
+    AERO_EDITOR_INCLUDE_DIR="${CMAKE_SOURCE_DIR}/editor/include"
+    # task E.6.1: GL4 pins the icon roster against lucide/codepoints.json. A path, not a flag.
+    AERO_EDITOR_FONTS_DIR="${CMAKE_SOURCE_DIR}/editor/third_party/fonts")
 
 # task 3.2.4 (F13): a real subprocess the process layer can spawn on every CI lane, with NO Blender
 # installed. `cmake -E true|false|sleep|echo|cat|touch|copy_directory` covers start, non-blocking poll,

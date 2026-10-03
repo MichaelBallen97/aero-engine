@@ -5,6 +5,7 @@
 #include <aero/core/math.hpp>
 #include <aero/editor/create_menu.hpp>
 #include <aero/editor/editor_camera.hpp>  // DEFAULT_PIVOT
+#include <aero/editor/editor_icons.hpp>   // task E.6.1 -- the roster the icons come from (CR10-CR12)
 #include <aero/editor/entity_ops.hpp>     // seedDefaultScene, the two shared constants
 #include <aero/editor/scene_bounds.hpp>   // primitiveLocalBounds
 #include <aero/render/debug_grid.hpp>     // DEBUG_GRID_PLANE_HEIGHT
@@ -18,6 +19,7 @@
 
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstddef>
@@ -25,10 +27,12 @@
 #include <cstring>  // std::memcmp -- the bit-for-bit arms
 #include <limits>
 #include <ostream>  // MSVC: a CHECK over std::string_view needs the complete std::ostream (the 0.4.1 trap)
+#include <set>
 #include <string>
 #include <string_view>
 #include <utility>
 #include <variant>
+#include <vector>
 
 namespace {
 
@@ -40,12 +44,16 @@ using engine::World;
 using engine::editor::CREATE_PLANE_EXTENT;
 using engine::editor::createAnchor;
 using engine::editor::CreateKind;
+using engine::editor::createKindIcon;
 using engine::editor::createKindLabel;
 using engine::editor::createMenuEntries;
 using engine::editor::CreateMenuEntry;
 using engine::editor::CreateMenuGroup;
+using engine::editor::createMenuGroupIcon;
 using engine::editor::createMenuGroupLabel;
 using engine::editor::createSeed;
+using engine::editor::EDITOR_ICONS;
+using engine::editor::EditorIcon;
 using engine::editor::EntitySeed;
 using engine::render::PrimitiveId;
 
@@ -344,4 +352,46 @@ TEST_CASE("create menu: an out-of-range kind is Empty's seed (task E.5.2, CR9)")
         CHECK((seed.component == empty.component));
         CHECK(bitsEqual(seed.transform.position, empty.transform.position));
     }
+}
+
+// ---- task E.6.1: the Create menu's icons (CR10-CR12) ------------------------------------------------------
+
+TEST_CASE("create menu: every kind has an icon from the roster (task E.6.1, CR10)") {
+    // Empty is not a table row -- each host spells its own item -- but it carries an icon all the same.
+    std::vector<CreateKind> kinds{CreateKind::Empty};
+    for (const CreateMenuEntry& entry : createMenuEntries()) {
+        kinds.push_back(entry.kind);
+    }
+    REQUIRE(kinds.size() == 8U);
+    for (const CreateKind kind : kinds) {
+        CAPTURE(static_cast<int>(kind));
+        const char* const icon = createKindIcon(kind);
+        REQUIRE(icon != nullptr);
+        const std::string_view bytes{icon};
+        CHECK_FALSE(bytes.empty());
+        const bool inRoster = std::any_of(EDITOR_ICONS.begin(), EDITOR_ICONS.end(),
+                                          [bytes](const EditorIcon& roster) { return roster.utf8 == bytes; });
+        CHECK(inRoster);
+    }
+}
+
+TEST_CASE("create menu: the icons are distinct and the groups have theirs (task E.6.1, CR11)") {
+    std::set<std::string_view> icons;
+    for (const CreateKind kind : ALL_KINDS) {
+        icons.insert(std::string_view{createKindIcon(kind)});
+    }
+    CHECK(icons.size() == ALL_KINDS.size());  // the eight kinds' icons, pairwise distinct
+    CHECK(std::string_view{createMenuGroupIcon(CreateMenuGroup::Object3D)} == AERO_ICON_SHAPES);
+    CHECK(std::string_view{createMenuGroupIcon(CreateMenuGroup::Light)} == AERO_ICON_LIGHTBULB);
+    CHECK(std::string_view{createMenuGroupIcon(CreateMenuGroup::TopLevel)}.empty());
+    // seed S23's pin, by value
+    CHECK(std::string_view{createKindIcon(CreateKind::Sphere)} == AERO_ICON_CIRCLE);
+}
+
+TEST_CASE("create menu: an out-of-range kind has no icon (task E.6.1, CR12)") {
+    static_assert(noexcept(createKindIcon(CreateKind::Empty)));
+    static_assert(noexcept(createMenuGroupIcon(CreateMenuGroup::TopLevel)));
+    CHECK(std::string_view{createKindIcon(CreateKind::Count)}.empty());
+    CHECK(std::string_view{createKindIcon(static_cast<CreateKind>(200))}.empty());
+    CHECK(std::string_view{createMenuGroupIcon(static_cast<CreateMenuGroup>(200))}.empty());
 }

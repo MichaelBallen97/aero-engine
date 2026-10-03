@@ -2,6 +2,7 @@
 // <filesystem>, no GPU, no logging (INV-V8). Every rule here is provable from a std::vector or
 // std::span literal with no context of any kind.
 #include <aero/editor/asset_view.hpp>
+#include <aero/editor/editor_glyphs.hpp>
 #include <aero/editor/editor_theme.hpp>  // task E.6.1 -- iconColorFor's seven colours
 
 #include <algorithm>
@@ -337,7 +338,7 @@ AssetBrowserLayout assetBrowserLayout(const AssetBrowserLayoutMetrics& metrics) 
 // ---- task E.4.5 (the code-review round): caption lines ------------------------------------------------------
 namespace {
 
-constexpr std::string_view CAPTION_ELLIPSIS = "\xE2\x80\xA6";  // U+2026, one glyph in the editor's font
+constexpr std::string_view CAPTION_ELLIPSIS = AERO_GLYPH_ELLIPSIS;  // U+2026, one glyph in the editor's font
 
 [[nodiscard]] bool isUtf8Continuation(char byte) noexcept {
     return (static_cast<unsigned char>(byte) & 0xC0U) == 0x80U;

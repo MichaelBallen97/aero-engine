@@ -13,6 +13,7 @@
 #include <aero/editor/asset_drag.hpp>    // task 3.1.5: the payload, the decode and the routing matrix
 #include <aero/editor/axis_palette.hpp>  // task E.1.2: AXIS_X_LINEAR / AXIS_Z_LINEAR
 #include <aero/editor/command_stack.hpp>
+#include <aero/editor/editor_glyphs.hpp>
 #include <aero/editor/gizmo.hpp>
 #include <aero/editor/gizmo_style.hpp>  // task E.1.5: the pure style + screen-size model
 #include <aero/editor/picking.hpp>
@@ -615,8 +616,9 @@ void ViewportPanel::ensureInitialized([[maybe_unused]] rhi::Extent2D firstExtent
     status = Status::Ready;
 #else  // -DAERO_SHADER_TOOLS=OFF (D12)
     status = Status::Unavailable;
-    unavailableReason = "Viewport unavailable — built without AERO_SHADER_TOOLS";
-    AERO_LOG_WARN("editor: viewport disabled — built with -DAERO_SHADER_TOOLS=OFF (no cooked shaders)");
+    unavailableReason = "Viewport unavailable " AERO_GLYPH_EM_DASH " built without AERO_SHADER_TOOLS";
+    AERO_LOG_WARN("editor: viewport disabled " AERO_GLYPH_EM_DASH
+                  " built with -DAERO_SHADER_TOOLS=OFF (no cooked shaders)");
 #endif
 }
 

@@ -132,6 +132,47 @@ that way.
   read freed memory (ASan: heap-use-after-free) and reported three glyphs as "different" that are
   identical. Copy the values out immediately, as `measureDefaultFont` does.
 
+## The string-literal policy (task E.6.1)
+
+The editor's fonts decide what it can **draw**; what it can safely **spell in source** is a different
+question, answered by the compiler, not the font. **MSVC compiles this tree without `/utf-8`**, so it
+decodes a BOM-less source file as the system code page (CP1252) and encodes narrow literals back to it. A
+raw UTF-8 `…` or `—` survives that round trip **by accident** — every byte of `E2 80 A6` and
+`E2 80 94` is a defined CP1252 character. **Icons do not survive it**: CP1252 leaves `0x81`, `0x8D`,
+`0x8F`, `0x90` and `0x9D` undefined, and thirteen roster icons' UTF-8 contains one (`box` is
+`EE 81 A1`, `save` `EE 85 8D`). A raw icon character in source is mojibake on Windows alone. **A `\u`
+escape is no better**: in a narrow literal it is encoded to the *execution* character set, CP1252 on
+MSVC, where a Private Use Area code point is unrepresentable. The policy:
+
+1. **Editor source files stay 7-bit in every string and character literal.** Comments are unaffected — the
+   tree's comments use `—`, `§`, `★` and `⌘` freely and keep doing so.
+2. **A non-ASCII character in an editor string is spelled ONLY through a named macro** from one of two
+   headers, each a string literal of **hex escapes**, so literal concatenation works
+   (`AERO_ICON_FOLDER " Assets"`):
+   * `editor/include/aero/editor/editor_glyphs.hpp` — `AERO_GLYPH_*`: the typographic marks the editor
+     uses (ellipsis, em dash, en dash, middle dot, multiplication sign, degree sign, bullet, the four
+     arrows, check mark, minus sign), each one Plex Sans **and** Plex Mono draw natively;
+   * `editor/include/aero/editor/editor_icons.hpp` — `AERO_ICON_*`: the Lucide roster.
+3. **Which characters exist** is the union of what Body/Strong draw (Plex Sans's Latin, Latin Extended,
+   Greek, Cyrillic and General Punctuation, plus the roster) and what Mono draws; **icons only in Body and
+   Strong**. A glyph outside the loaded faces draws `U+FFFD` (`�`), not `?` — **user data** (file names,
+   log text from the engine) is drawn as given and may hit it; editor-authored strings may not.
+4. **`⌘`, `⇧`, `⌥` and `⏎` are NOT available** — Plex has none of them. A future shortcut hint spells
+   `Cmd+`, `Shift+` in ASCII, or uses an icon (Lucide has `command`), and that is E.6.2's decision.
+
+- **`GL6` is the enforcement**: a tier-0 lexer over every `editor/src/*.{cpp,hpp}` and
+  `editor/include/aero/editor/*.hpp` that walks string, character and raw-string literals, skipping
+  comments, and fails on a byte ≥ `0x80` inside a literal, a `\x` or octal escape ≥ `0x80` outside the two
+  macro headers, any `\u`/`\U` escape, and an unterminated literal (so a lexer that mis-reads a quote is
+  loud, never silent). Its self-tests carry the tree's own traps: a digit separator (`1'000'000`), a quote
+  character (`'"'`) and a raw string holding a quote (`asset_actions.cpp`'s `R"(*?"<>|:)"`).
+- **A hex escape is greedy — splice a macro BETWEEN two literals, never inside one.** `"\xA6and"` reads
+  `\xA6a`; `AERO_GLYPH_ELLIPSIS "and "` is two literals the compiler joins after escape processing.
+- **`AERO_GLYPH_*` for typographic marks Plex draws in all three faces, `AERO_ICON_*` for Lucide glyphs,
+  which draw in Body and Strong only.** An icon is named by its UPSTREAM Lucide name; what it means is the
+  consumer's own table (`createKindIcon` is the first). A new icon is one macro and one `EDITOR_ICONS` row
+  — `GL2`, `GL3` and `GL4` check the bytes, the name and the upstream code point.
+
 ## Undo/redo
 
 - **`CommandStack::push()` APPLIES the command** (task 2.4.1 D5). A caller must NOT have already

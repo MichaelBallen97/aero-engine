@@ -19,6 +19,7 @@
 #include <aero/editor/asset_drag.hpp>  // task 3.1.5: the payload, its type string and the draggable rule
 #include <aero/editor/asset_meta.hpp>
 #include <aero/editor/asset_watcher.hpp>  // task 3.1.4 -- WatchStatus, read through the reconciled pointer
+#include <aero/editor/editor_glyphs.hpp>
 #include <aero/editor/material_card.hpp>  // task E.4.5 -- the card's subtitle and tint rules, and the separator
 #include <aero/editor/panel_context.hpp>
 #include <aero/editor/project_files.hpp>
@@ -49,7 +50,7 @@ constexpr float TREE_PANE_FONT_MULTIPLE = 14.0F;
 constexpr float SIZE_COLUMN_FONT_MULTIPLE = 6.0F;
 constexpr float INDENT_FONT_MULTIPLE = 0.9F;
 // Shown for a file whose size the OS refused (AC-6/E6). NEVER "0 B" -- that is a lie, not a blank.
-constexpr const char* UNKNOWN_SIZE = "—";
+constexpr const char* UNKNOWN_SIZE = AERO_GLYPH_EM_DASH;
 
 // C7: every dynamic string goes through this or TextUnformatted -- NEVER as a printf format. A file
 // named "%s.txt" passed as the format would read the varargs stack (UB, and the Debug lanes run
@@ -63,7 +64,8 @@ constexpr std::size_t GUID_PREFIX_LENGTH = 8;
 constexpr std::size_t GUID_SUFFIX_LENGTH = 4;
 std::string elideGuid(Guid guid) {
     const std::string full = formatGuid(guid);
-    return full.substr(0, GUID_PREFIX_LENGTH) + "…" + full.substr(full.size() - GUID_SUFFIX_LENGTH);
+    const std::string suffix = full.substr(full.size() - GUID_SUFFIX_LENGTH);
+    return full.substr(0, GUID_PREFIX_LENGTH) + AERO_GLYPH_ELLIPSIS + suffix;
 }
 
 // task E.4.5: a list row's DIMMED document name, on the same line as the file name -- ONE body for both list
@@ -1410,7 +1412,8 @@ void AssetBrowserPanel::drawIssues(float bodyHeight) {
                 ImGui::PopID();         // no continue/break/return between Push and Pop
             }
             if (report.orphanTotal > report.orphans.size()) {
-                labelScratch = "…and " + std::to_string(report.orphanTotal - report.orphans.size()) + " more";
+                const std::size_t unlisted = report.orphanTotal - report.orphans.size();
+                labelScratch = AERO_GLYPH_ELLIPSIS "and " + std::to_string(unlisted) + " more";
                 ImGui::TextUnformatted(labelScratch.c_str());
             }
         }
@@ -1427,7 +1430,8 @@ void AssetBrowserPanel::drawIssues(float bodyHeight) {
                 ImGui::TextUnformatted(line.c_str());  // E20 -- never a format string
             }
             if (totalCount > entries.size()) {
-                labelScratch = "…and " + std::to_string(totalCount - entries.size()) + " more";
+                const std::size_t unlisted = totalCount - entries.size();
+                labelScratch = AERO_GLYPH_ELLIPSIS "and " + std::to_string(unlisted) + " more";
                 ImGui::TextUnformatted(labelScratch.c_str());
             }
         };

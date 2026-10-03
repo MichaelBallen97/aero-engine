@@ -5,6 +5,7 @@
 #include <aero/editor/asset_drag.hpp>  // task E.3.3 -- assetReferenceKindFromToken, DropSurface
 #include <aero/editor/command_stack.hpp>
 #include <aero/editor/component_commands.hpp>
+#include <aero/editor/editor_glyphs.hpp>
 #include <aero/editor/entity_ops.hpp>
 #include <aero/editor/material_card.hpp>
 #include <aero/editor/panel_context.hpp>
@@ -242,7 +243,8 @@ void InspectorPanel::drawComponent(PanelContext& context, Entity primary, const 
 
     if (open) {
         if (!entry.hasFields) {
-            ImGui::TextDisabled("(fields unavailable — built without AERO_REFLECT_TOOLS)");  // D12
+            ImGui::TextDisabled(  // D12
+                "(fields unavailable " AERO_GLYPH_EM_DASH " built without AERO_REFLECT_TOOLS)");
         } else if (entry.fields.empty()) {
             ImGui::TextDisabled("(no fields)");  // a tag component (E13)
         } else if (ImGui::BeginTable("##fields", 2, TABLE_FLAGS)) {

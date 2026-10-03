@@ -529,7 +529,7 @@ void drawPanels(PanelRegistry& panels, PanelContext& context) {
 // this is what keeps a future 5th slot from silently writing out of bounds into `used`.
 constexpr std::size_t DOCK_SLOT_COUNT = 4;
 static_assert(static_cast<std::size_t>(DockSlot::Bottom) + 1U == DOCK_SLOT_COUNT,
-              "DockSlot gained an enumerator — widen DOCK_SLOT_COUNT and add its split below");
+              "DockSlot gained an enumerator -- widen DOCK_SLOT_COUNT and add its split below");
 
 constexpr std::size_t slotIndex(DockSlot slot) noexcept { return static_cast<std::size_t>(slot); }
 

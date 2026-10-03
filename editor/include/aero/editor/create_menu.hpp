@@ -44,6 +44,12 @@ struct CreateMenuEntry {
 [[nodiscard]] const char* createKindLabel(CreateKind kind) noexcept;             // "" for Count and beyond
 [[nodiscard]] const char* createMenuGroupLabel(CreateMenuGroup group) noexcept;  // "" for TopLevel
 
+// task E.6.1: one Lucide glyph per kind and per submenu -- STRING LITERALS of AERO_ICON_* bytes, static
+// storage, "" for Count and beyond (and for TopLevel). Drawn only in the Body/Strong faces. NEVER named
+// toString.
+[[nodiscard]] const char* createKindIcon(CreateKind kind) noexcept;
+[[nodiscard]] const char* createMenuGroupIcon(CreateMenuGroup group) noexcept;
+
 // Placement (D3). TUNING CONSTANTS, judged on the validation page; a change is a recorded amendment.
 inline constexpr float CREATE_PLANE_EXTENT = 10.0F;       // a Plane is a 10 x 10 floor tile
 inline constexpr float CREATE_POINT_LIGHT_HEIGHT = 2.0F;  // a metre above a resting unit Cube's top
