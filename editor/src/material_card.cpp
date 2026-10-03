@@ -1,5 +1,6 @@
 // editor/src/material_card.cpp -- task E.4.5: the material card's pure model. Every rule is stated in
 // material_card.hpp; this file adds none of its own. PURE: no ImGui, no GPU, no <filesystem>, no logging.
+#include <aero/editor/editor_theme.hpp>  // task E.6.1 -- the swatch label's rule (spec D17)
 #include <aero/editor/material_card.hpp>
 #include <aero/render/environment.hpp>
 #include <aero/render/lighting.hpp>
@@ -37,13 +38,6 @@ namespace {
     const float clamped = std::clamp(encoded, 0.0F, 1.0F);
     return static_cast<std::uint8_t>(std::lround(clamped * 255.0F));
 }
-
-// 0.2126 / 0.7152 / 0.0722 in ten-thousandths -- they sum to exactly 10 000, so grey g weighs 10 000 g and
-// the threshold 128 * 10 000 is crossed between 127 and 128 with no rounding anywhere.
-constexpr std::uint32_t LUMA_R = 2126U;
-constexpr std::uint32_t LUMA_G = 7152U;
-constexpr std::uint32_t LUMA_B = 722U;
-constexpr std::uint32_t DARK_LABEL_LUMA_THRESHOLD = 128U * 10000U;
 
 }  // namespace
 
@@ -137,8 +131,11 @@ std::optional<IconColor> materialSwatchColor(const MaterialDocument& document) n
 }
 
 bool materialSwatchWantsDarkLabel(IconColor swatch) noexcept {
-    const std::uint32_t weighted = (LUMA_R * swatch.r) + (LUMA_G * swatch.g) + (LUMA_B * swatch.b);
-    return weighted >= DARK_LABEL_LUMA_THRESHOLD;
+    // task E.6.1: the weights and the threshold are EDITOR_THEME.swatchLabel (spec D17), unchanged.
+    const ThemeSwatchLabel& label = EDITOR_THEME.swatchLabel;
+    const std::uint32_t weighted =  // Rec. 709 luma, in ten-thousandths
+        (label.lumaR * swatch.r) + (label.lumaG * swatch.g) + (label.lumaB * swatch.b);
+    return weighted >= label.darkLabelThreshold;
 }
 
 MaterialCard materialCardFor(const MaterialDocument& document) {

@@ -8,14 +8,14 @@
 // (R12 -- gizmo.hpp's own sentence, unchanged). It exposes sRGB BYTES, like axis_palette.hpp, and the
 // one call site that needs an ImVec4 builds it there.
 //
-// WHAT THIS IS NOT: a theme. E.6.1's EditorTheme is specified to become the central owner of palette
-// values; every constant below is named so that folding it in is a one-line move, and none of them is
-// stated anywhere else in the tree. The three AXIS colours are not stated here either -- they are
-// DERIVED from axis_palette.hpp, which is what makes the gizmo, the grid and the corner widget the same
-// bytes (E.1.2 / E.1.3 handoff).
+// WHAT THIS IS NOT: a theme. Every tuning value below was folded into `EDITOR_THEME` (editor_theme.hpp)
+// at E.6.1 and is an alias of its theme member, so none of them is stated anywhere else in the tree.
+// The three AXIS colours are not stated here either -- they are DERIVED from axis_palette.hpp, which is
+// what makes the gizmo, the grid and the corner widget the same bytes (E.1.2 / E.1.3 handoff).
 
 #include <aero/core/math.hpp>
 #include <aero/editor/axis_palette.hpp>
+#include <aero/editor/editor_theme.hpp>
 
 #include <array>
 #include <cstddef>
@@ -73,31 +73,39 @@ struct GizmoStyle {
 // Judged on the manual validation pass (rows 1-6 and 10 of the page). Each is named so a retune is a
 // one-line change; every tier-0 case asserts a RELATIONSHIP, never a magnitude (gizmo.hpp's rule).
 
-inline constexpr float GIZMO_TRANSLATION_LINE_THICKNESS_POINTS = 4.0F;
-inline constexpr float GIZMO_TRANSLATION_ARROW_SIZE_POINTS = 10.0F;  // a 20 x 20 point cone silhouette
-inline constexpr float GIZMO_ROTATION_LINE_THICKNESS_POINTS = 3.0F;
-inline constexpr float GIZMO_ROTATION_SCREEN_RING_THICKNESS_POINTS = 2.0F;  // thinner than the axis rings
-inline constexpr float GIZMO_SCALE_LINE_THICKNESS_POINTS = 4.0F;
-inline constexpr float GIZMO_SCALE_DISC_RADIUS_POINTS = 7.0F;
-inline constexpr float GIZMO_HATCHED_AXIS_THICKNESS_POINTS = 0.0F;  // dead by construction: flip is off
-inline constexpr float GIZMO_CENTER_DISC_RADIUS_POINTS = 7.0F;
+inline constexpr float GIZMO_TRANSLATION_LINE_THICKNESS_POINTS =  // the three translate shafts
+    EDITOR_THEME.gizmo.translationLineThicknessPoints;
+// a 20 x 20 point cone silhouette
+inline constexpr float GIZMO_TRANSLATION_ARROW_SIZE_POINTS = EDITOR_THEME.gizmo.translationArrowSizePoints;
+inline constexpr float GIZMO_ROTATION_LINE_THICKNESS_POINTS = EDITOR_THEME.gizmo.rotationLineThicknessPoints;
+// thinner than the axis rings
+inline constexpr float GIZMO_ROTATION_SCREEN_RING_THICKNESS_POINTS =
+    EDITOR_THEME.gizmo.rotationScreenRingThicknessPoints;
+inline constexpr float GIZMO_SCALE_LINE_THICKNESS_POINTS = EDITOR_THEME.gizmo.scaleLineThicknessPoints;
+inline constexpr float GIZMO_SCALE_DISC_RADIUS_POINTS = EDITOR_THEME.gizmo.scaleDiscRadiusPoints;
+// dead by construction: flip is off
+inline constexpr float GIZMO_HATCHED_AXIS_THICKNESS_POINTS = EDITOR_THEME.gizmo.hatchedAxisThicknessPoints;
+inline constexpr float GIZMO_CENTER_DISC_RADIUS_POINTS = EDITOR_THEME.gizmo.centerDiscRadiusPoints;
 // NOT a tuning value: the library's hit test for the centre disc is a hard-coded +/-10-point square
 // (ImGuizmo.cpp:1132-1133), so a disc drawn larger than this lies about where it can be grabbed. GS3
 // asserts GIZMO_CENTER_DISC_RADIUS_POINTS <= this. Re-read those two lines at every port bump.
-inline constexpr float GIZMO_CENTER_HIT_HALF_EXTENT_POINTS = 10.0F;
+inline constexpr float GIZMO_CENTER_HIT_HALF_EXTENT_POINTS = EDITOR_THEME.gizmo.centerHitHalfExtentPoints;
 
-inline constexpr std::uint8_t GIZMO_PLANE_FILL_ALPHA = 115;  // the library's 38 % read as absent
+// the library's 38 % read as absent
+inline constexpr std::uint8_t GIZMO_PLANE_FILL_ALPHA = EDITOR_THEME.gizmo.planeFillAlpha;
 // OPAQUE, and deliberately NOT E.1.4's amber (255,176,64): the gizmo's origin sits inside the selected
 // object, so a hot handle in the outline's colour would read as part of the outline. GS2 asserts the
 // gap against SELECTION_OUTLINE_PRIMARY_DEFAULT and against all three axis colours.
-inline constexpr Rgba8 GIZMO_HIGHLIGHT_SRGB{255U, 232U, 64U, 255U};
-inline constexpr std::uint8_t GIZMO_ROTATION_FILL_ALPHA = 96;
-inline constexpr Rgba8 GIZMO_INACTIVE_SRGB{153U, 153U, 153U, 153U};  // achromatic: r == g == b
-inline constexpr Rgba8 GIZMO_TRANSLATION_LINE_SRGB{220U, 220U, 220U, 200U};
-inline constexpr Rgba8 GIZMO_SCALE_LINE_SRGB{150U, 150U, 150U, 255U};  // the library's 0.25 grey vanished
-inline constexpr Rgba8 GIZMO_HATCHED_AXIS_SRGB{0U, 0U, 0U, 128U};      // dead by construction, like above
-inline constexpr Rgba8 GIZMO_TEXT_SRGB{255U, 255U, 255U, 255U};
-inline constexpr Rgba8 GIZMO_TEXT_SHADOW_SRGB{0U, 0U, 0U, 255U};
+inline constexpr Rgba8 GIZMO_HIGHLIGHT_SRGB = EDITOR_THEME.gizmo.highlightSrgb;
+inline constexpr std::uint8_t GIZMO_ROTATION_FILL_ALPHA = EDITOR_THEME.gizmo.rotationFillAlpha;
+inline constexpr Rgba8 GIZMO_INACTIVE_SRGB = EDITOR_THEME.gizmo.inactiveSrgb;  // achromatic: r == g == b
+inline constexpr Rgba8 GIZMO_TRANSLATION_LINE_SRGB = EDITOR_THEME.gizmo.translationLineSrgb;
+// the library's 0.25 grey vanished
+inline constexpr Rgba8 GIZMO_SCALE_LINE_SRGB = EDITOR_THEME.gizmo.scaleLineSrgb;
+// dead by construction, like the hatched thickness above
+inline constexpr Rgba8 GIZMO_HATCHED_AXIS_SRGB = EDITOR_THEME.gizmo.hatchedAxisSrgb;
+inline constexpr Rgba8 GIZMO_TEXT_SRGB = EDITOR_THEME.gizmo.textSrgb;
+inline constexpr Rgba8 GIZMO_TEXT_SHADOW_SRGB = EDITOR_THEME.gizmo.textShadowSrgb;
 
 namespace detail {
 [[nodiscard]] constexpr Rgba8 opaqueRgba(std::array<std::uint8_t, 3> rgb) noexcept {
@@ -146,9 +154,10 @@ namespace detail {
 // screen point is 2 / max(w, h) of its unit in BOTH orientations. Its default, 0.1, is therefore 5 % of
 // the LARGER viewport dimension -- a thumbnail in a narrow dock, a monster when maximised.
 
-inline constexpr float GIZMO_AXIS_LENGTH_POINTS = 90.0F;          // a screen-parallel axis, tip to origin
-inline constexpr float GIZMO_AXIS_MAX_VIEWPORT_FRACTION = 0.15F;  // the knee: below a 600-pt smaller
-                                                                  // dimension the gizmo scales with the dock
+// a screen-parallel axis, tip to origin
+inline constexpr float GIZMO_AXIS_LENGTH_POINTS = EDITOR_THEME.gizmo.axisLengthPoints;
+// the knee: below a 600-pt smaller dimension the gizmo scales with the dock
+inline constexpr float GIZMO_AXIS_MAX_VIEWPORT_FRACTION = EDITOR_THEME.gizmo.axisMaxViewportFraction;
 // The two hide thresholds, as FRACTIONS of the resolved size so the foreshortening at which an axis or
 // a plane disappears is the same in every dock. 0.2 and 0.25 are the library's own default ratios
 // (0.02 / 0.1 and 0.0025 / 0.01, ImGuizmo.cpp:748-749, :782): at the one viewport where the resolved

@@ -2,6 +2,7 @@
 #include <aero/core/math.hpp>              // task E.3.1: degrees/radians/eulerAngles/fromEulerAngles
 #include <aero/editor/asset_database.hpp>  // task 3.1.5: the Guid row resolves a reference to a record
 #include <aero/editor/asset_view.hpp>      // classifyAssetKind, assetKindLabel
+#include <aero/editor/editor_theme.hpp>    // task E.6.1: the out-of-range axis row's neutral
 #include <aero/editor/inspector_model.hpp>
 #include <aero/editor/material_card.hpp>  // task E.4.5: materialCardRowText
 #include <aero/editor/project_files.hpp>  // leafOf
@@ -301,13 +302,6 @@ FieldValue namedSelectorValue(FieldKind kind, std::size_t index) {
 
 namespace {
 
-// ImGui's OWN fourth default colour-channel marker, IM_COL32(140,140,140,255)
-// (imgui_widgets.cpp:2257-2260 at the pinned 1.92.8) -- so the out-of-range answer is borrowed rather
-// than invented. IT HAS NO CALLER TODAY: AXIS_ROW_COMPONENTS is 3 and every loop in the panel stops
-// there. It exists because axisRowColor is TOTAL, and a total function needs an answer for every
-// index; VF3 is what keeps that answer from silently becoming X's red.
-constexpr std::array<std::uint8_t, 3> AXIS_ROW_NEUTRAL_SRGB{140U, 140U, 140U};
-
 // degrees()/radians() are scalar-only (math/constants.hpp) -- applied componentwise for the euler
 // triplet, since there is no Vec3 overload. MOVED here from inspector_panel.cpp at task E.3.1: the
 // arithmetic the Quat row draws through now lives once, on the value side, where a tier-0 case can
@@ -373,7 +367,7 @@ std::array<std::uint8_t, 3> axisRowColor(std::size_t index) noexcept {
         default:
             break;
     }
-    return AXIS_ROW_NEUTRAL_SRGB;
+    return EDITOR_THEME.axis.neutralSrgb;  // task E.6.1: moved to the theme, unchanged (VF3)
 }
 
 std::array<float, 3> axisRowValues(const FieldValue& value, FieldKind kind) {

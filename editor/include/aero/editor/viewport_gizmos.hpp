@@ -16,6 +16,7 @@
 // allocates nothing once its caller-owned scratch is warm.
 
 #include <aero/core/math.hpp>
+#include <aero/editor/editor_theme.hpp>       // ViewportGizmoTints' defaults
 #include <aero/editor/selection_overlay.hpp>  // MAX_HIGHLIGHTED_ENTITIES
 #include <aero/editor/viewport_icons.hpp>
 #include <aero/render/debug_draw.hpp>
@@ -45,14 +46,12 @@ namespace engine::editor {
 // page, and not fixable inside this task -- moving the icons after the tonemap is D2's rejected
 // ImDrawList design.
 struct ViewportGizmoTints {
-    // The NOLINT is not a waiver: 176/255 decoded through the sRGB EOTF is 0.43415, which happens to
-    // sit 9.4e-05 from std::numbers::log10e and trips modernize-use-std-numbers. Every accurate
-    // spelling of this colour does -- it is a coincidence of the constant, not a missed abstraction.
-    // NOLINTNEXTLINE(modernize-use-std-numbers)
-    Vec4 primarySelected{1.0F, 0.4342F, 0.0513F, 1.0F};       // sRGB 255,176,64,255 -- ..._PRIMARY_DEFAULT
-    Vec4 secondarySelected{1.0F, 0.2961F, 0.0144F, 0.7451F};  // sRGB 255,148,32,190 -- ..._SECONDARY_DEFAULT
-    Vec4 unselected{0.62F, 0.64F, 0.68F, 0.90F};              // chrome, brighter than the grid's line colour
-    Vec4 mutedDirectional{0.30F, 0.31F, 0.33F, 0.35F};        // "the bridge ignored this one"
+    // task E.6.1: each default is EDITOR_THEME.viewportTints (editor_theme.hpp), byte-identical; the
+    // literals, their sRGB bytes and the NOLINT that belongs to the first of them moved there.
+    Vec4 primarySelected = EDITOR_THEME.viewportTints.primarySelected;      // ..._PRIMARY_DEFAULT
+    Vec4 secondarySelected = EDITOR_THEME.viewportTints.secondarySelected;  // ..._SECONDARY_DEFAULT
+    Vec4 unselected = EDITOR_THEME.viewportTints.unselected;                // chrome, brighter than the grid
+    Vec4 mutedDirectional = EDITOR_THEME.viewportTints.mutedDirectional;    // "the bridge ignored this one"
     bool operator==(const ViewportGizmoTints&) const = default;
 };
 

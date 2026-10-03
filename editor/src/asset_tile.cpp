@@ -5,6 +5,7 @@
 #include "asset_tile.hpp"
 
 #include <aero/editor/asset_view.hpp>
+#include <aero/editor/editor_theme.hpp>   // task E.6.1 -- the swatch label pair (D17)
 #include <aero/editor/material_card.hpp>  // task E.4.5 -- materialSwatchWantsDarkLabel
 
 #include <cstddef>
@@ -21,7 +22,11 @@ namespace {
 // task E.4.5: the kind label's colour on a PALE swatch. THE ONLY COLOUR LITERAL THIS TASK STATES, and it is a
 // contrast answer rather than a palette choice -- handed to E.6.1 with the theme: when EditorTheme lands this
 // becomes a theme role and materialSwatchWantsDarkLabel's threshold a theme question.
-constexpr ImU32 DARK_SWATCH_LABEL = IM_COL32(24, 24, 24, 255);
+// task E.6.1: now EDITOR_THEME.swatchLabel (D17), both bytes unchanged.
+// Built with ImGui's own IM_COL32 from the theme's bytes, so the packing is the library's.
+[[nodiscard]] constexpr ImU32 labelColor(Srgb8 c) noexcept { return IM_COL32(c.r, c.g, c.b, c.a); }
+constexpr ImU32 SWATCH_LABEL_ON_LIGHT = labelColor(EDITOR_THEME.swatchLabel.onLight);
+constexpr ImU32 SWATCH_LABEL_ON_DARK = labelColor(EDITOR_THEME.swatchLabel.onDark);
 
 // task E.4.5's code-review round: THE caption measurer -- TRUE when `text`, wrapped at `wrapWidth`, is no taller
 // than `budgetHeight`. The explicit end pointer measures a view without copying it; an empty view measures the
@@ -81,7 +86,8 @@ void drawAssetTileFace(ImDrawList* drawList, ImVec2 itemMin, const AssetTileFace
             // .aeromat, AV51) on a pale swatch is unreadable, and a fixed white is right only while every fill
             // happens to be dark -- the "true by accident" shape. Every UNtinted tile keeps white exactly.
             const bool darkLabel = face.tint.has_value() && materialSwatchWantsDarkLabel(color);
-            drawList->AddText(textPos, darkLabel ? DARK_SWATCH_LABEL : IM_COL32_WHITE, scratch.c_str());
+            const ImU32 labelInk = darkLabel ? SWATCH_LABEL_ON_LIGHT : SWATCH_LABEL_ON_DARK;
+            drawList->AddText(textPos, labelInk, scratch.c_str());
         }
     }
 
