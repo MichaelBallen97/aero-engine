@@ -114,25 +114,37 @@ that way.
   `imgui_stdlib.h` "because it's the standard ImGui helper" — it is specifically the one header this
   project cannot link against on one of its three CI lanes.
 
-## The UI font (task E.4.4's validation pass)
+## Fonts, icons and the theme (task E.6.1)
 
-- **The editor draws every string in ONE font — ProggyClean at 13 (`default_font.{hpp,cpp}`) — and it
-  covers ASCII, Latin-1, the 26 remapped Windows-1252 punctuation marks (`DEFAULT_FONT_CP1252_REMAPS`:
-  the ellipsis, the en and em dashes, the curly quotes, the bullet, …) and the euro sign, and NOTHING
-  ELSE.** Any other character in a UI string — or in a log line, which reaches the Console — draws `?`: an
-  arrow, a check mark, a box-drawing character, any CJK text. `I230(d)` and `(e)` measure both halves.
-  Check a non-ASCII character against that set before writing it into a UI string; widening the set (a
-  glyph range, a merged icon font) belongs to E.6.1, which owns the font and theme system.
-- **The font is added EXPLICITLY through `AddFontDefaultBitmap()`, never `AddFontDefault()`.** The latter
-  is a heuristic that returns ProggyForever once the expected font size reaches 15, and the remap table is
-  measured for ProggyClean alone. `I230(f)` pins the call site in `ImGuiLayer::create` and that
-  `default_font.cpp` is the only editor file that adds a font.
+- **Three faces, embedded, IBM Plex** (`editor_fonts.{hpp,cpp}`, data under `editor/third_party/fonts/`):
+  **Body** (Plex Sans Regular, 16) is ImGui's default font; **Strong** (Plex Sans SemiBold, 16) is for
+  headings; **Mono** (Plex Mono Regular, 16) is for log text, paths and numbers and carries **no icons**.
+  Lucide's icons are merged into Body and Strong at 11/16 of the face. Nothing else is added — ProggyClean
+  and its Windows-1252 remap table are retired.
+- **Plex is added BEFORE Lucide in every merge.** 1.92 asks a merge list in order, and Lucide maps `-`, the
+  digits and the lowercase letters to glyphs of zero or icon width, so a Lucide-first merge draws text as
+  icons or nothing. `I277`'s merge-order arm compares every printable ASCII glyph against the same face with
+  no icons merged, exactly.
+- **Every add sets `FontDataOwnedByAtlas = false`** — the data is static and ImGui must never free it
+  (`ImFontConfig` defaults it to `true`). `I286` counts one per `AddFontFromMemoryTTF(`.
+- **`editor_fonts.cpp` is the ONLY editor file that adds a font** (`I286`, a set claim), and `addEditorFonts`
+  failing fails `ImGuiLayer::create` with one ERROR naming the face — **no fallback**: a silent fallback
+  would ship broken fonts with every test green.
+- **`PushFont(face, 0.0F)` keeps the current size; `PushFont(face, EDITOR_THEME.type.<x>Size)` sets an
+  UNSCALED size; `GetFontSize()` (or a multiple of it) is NEVER passed to `PushFont`** — it is already
+  scaled, so the UI scale would apply twice (`imgui.h:529-530`).
+- **A glyph's quad is sized from the font's glyph BOX, which need not be tight, so a claim about where a
+  glyph SITS measures its INK.** Every Lucide 1.49.0 glyph box reaches down to the baseline (`glyf`
+  `yMin = 0`) whatever its outline does, so a quad centre tracks only an icon's top edge — a 2-point spread
+  across the roster at body 16 that no glyph offset fits inside I278's per-icon bound. The harness reports
+  the ink rows of the baked bitmap (`MeasuredGlyph::inkY0`/`inkY1`); `LUCIDE_GLYPH_OFFSET_Y = 1.0F` is
+  measured on them, and its comment records the numbers.
 - **Never hold an `ImFontGlyph*` across another glyph lookup.** A lookup can bake a glyph, which
   `push_back`s into `ImFontBaked::Glyphs` and may reallocate it — an earlier probe that kept the pointer
   read freed memory (ASan: heap-use-after-free) and reported three glyphs as "different" that are
-  identical. Copy the values out immediately, as `measureDefaultFont` does.
+  identical. Copy the values out immediately, as `measureEditorFonts` does.
 
-## The string-literal policy (task E.6.1)
+### The string-literal policy
 
 The editor's fonts decide what it can **draw**; what it can safely **spell in source** is a different
 question, answered by the compiler, not the font. **MSVC compiles this tree without `/utf-8`**, so it

@@ -29,12 +29,15 @@
 #include <aero/editor/create_menu.hpp>    // task E.5.2 (I246-I250): CreateKind, createSeed, createAnchor
 #include <aero/editor/editor_app.hpp>
 #include <aero/editor/editor_camera.hpp>    // task 2.3.1
+#include <aero/editor/editor_glyphs.hpp>    // task E.6.1 (I279): EDITOR_GLYPHS
+#include <aero/editor/editor_icons.hpp>     // task E.6.1 (I278): EDITOR_ICONS
 #include <aero/editor/entity_commands.hpp>  // task 2.4.2
 #include <aero/editor/entity_ops.hpp>
 #include <aero/editor/model_import_session.hpp>  // task 3.2.1: SessionState, named directly (I52-I59)
 #include <aero/editor/panel_registry.hpp>
 #include <aero/editor/picking.hpp>            // task 2.3.2
 #include <aero/editor/project.hpp>            // task 2.6.1
+#include <aero/editor/project_settings.hpp>   // task E.6.1 (I233): PROJECT_SETTINGS_PANEL_ID
 #include <aero/editor/project_state.hpp>      // task E.4.1 (I176-I184): ProjectState + the two file operations
 #include <aero/editor/scene_bounds.hpp>       // task 2.3.1
 #include <aero/editor/scene_containment.hpp>  // task E.4.2 (I187): normalizeForContainment
@@ -56,7 +59,7 @@
 // task 3.1.5 (SL1-SL10): the scene-asset loader is SRC-PRIVATE, so it is reached the way
 // blender_service_test.cpp reaches blender_process.hpp -- by relative path into editor/src. It names
 // scene_render::MeshBinding, which is why aero::scene_render is on this target's link line.
-#include "../../editor/src/default_font.hpp"     // task E.4.4 validation: the UI font, measured ImGui-free (I230)
+#include "../../editor/src/editor_fonts.hpp"     // task E.6.1 (I277-I279): the faces, measured ImGui-free
 #include "../../editor/src/file_dialog.hpp"      // fix 2.5.1-focus (I275, I276): the dialog focus gate + helper
 #include "../../editor/src/hierarchy_panel.hpp"  // task E.5.2, I249: requestCreate -- the panel-to-drain path
 #include "../../editor/src/material_panel.hpp"   // task E.2.4, I136: previewOutputTarget() -- the same
@@ -18829,224 +18832,6 @@ TEST_CASE("editor: Show hidden reveals a dotfile and never an ignored name (task
     app.reset();
 }
 
-// ---- I230: task E.4.4's validation finding 1 -- the UI font's Windows-1252 remaps -------------------------
-//
-// NO GPU and NO window: default_font.hpp's measurement builds a PRIVATE ImGui context with a CPU-side atlas,
-// so this case runs on every lane, in every configuration, and never skips. It lives in THIS binary rather
-// than the tier-0 shell binary because aero_editor_shell_test's recorded contract is that nothing in it
-// builds an ImGui context (tests/CMakeLists.txt, AC-19); the TU stays ImGui-free at source, because
-// default_font.hpp names no ImGui type.
-
-namespace {
-
-[[nodiscard]] bool sameGlyphShape(const engine::editor::DefaultFontGlyph& a,
-                                  const engine::editor::DefaultFontGlyph& b) {
-    // EXACT float equality on purpose: two code points resolving to ONE baked glyph share its numbers bit
-    // for bit, and anything else is a different glyph.
-    return a.x0 == b.x0 && a.x1 == b.x1 && a.y0 == b.y0 && a.y1 == b.y1 && a.advanceX == b.advanceX &&
-           a.visible == b.visible;
-}
-
-}  // namespace
-
-TEST_CASE("editor: the UI font draws UTF-8 punctuation from ProggyClean's own CP1252 glyphs (task E.4.4, I230)") {
-    using engine::editor::DEFAULT_FONT_CP1252_NOT_REMAPPED;
-    using engine::editor::DEFAULT_FONT_CP1252_REMAPS;
-    using engine::editor::DefaultFontGlyph;
-    using engine::editor::DefaultFontMeasurement;
-    using engine::editor::DefaultFontSetup;
-    using engine::editor::measureDefaultFont;
-    constexpr char32_t FALLBACK = U'?';
-
-    SUBCASE("(a) the control: WITHOUT the remaps, an ellipsis and an em dash both fall back to '?'") {
-        constexpr std::array<char32_t, 2> PUNCTUATION{0x2026, 0x2014};
-        constexpr DefaultFontSetup WITHOUT_REMAPS = DefaultFontSetup::BitmapWithoutRemaps;
-        const DefaultFontMeasurement m = measureDefaultFont(WITHOUT_REMAPS, PUNCTUATION, 1.0F);
-        REQUIRE(m.ok);
-        REQUIRE(m.glyphs.size() == PUNCTUATION.size());
-        for (const DefaultFontGlyph& glyph : m.glyphs) {
-            CAPTURE(static_cast<std::uint32_t>(glyph.requested));
-            CHECK_FALSE(glyph.found);
-            CHECK(glyph.drawnCodepoint == FALLBACK);
-        }
-    }
-
-    SUBCASE("(b) WITH the table, every entry draws its CP1252 slot's own glyph, at 1x and at 2x") {
-        const std::size_t count = DEFAULT_FONT_CP1252_REMAPS.size();
-        REQUIRE(count > 0U);
-        std::vector<char32_t> codepoints;
-        codepoints.reserve(2U * count);
-        for (const auto& remap : DEFAULT_FONT_CP1252_REMAPS) {
-            codepoints.push_back(remap.unicode);
-        }
-        for (const auto& remap : DEFAULT_FONT_CP1252_REMAPS) {
-            codepoints.push_back(remap.cp1252Slot);
-        }
-        for (const float scale : {1.0F, 2.0F}) {
-            CAPTURE(scale);
-            const DefaultFontMeasurement m = measureDefaultFont(DefaultFontSetup::Editor, codepoints, scale);
-            REQUIRE(m.ok);
-            REQUIRE(m.glyphs.size() == 2U * count);
-            CHECK(m.bakedSize == m.referenceSize * scale);
-            for (std::size_t i = 0; i < count; ++i) {
-                const DefaultFontGlyph& unicode = m.glyphs[i];
-                const DefaultFontGlyph& slot = m.glyphs[count + i];
-                CAPTURE(static_cast<std::uint32_t>(unicode.requested));
-                CAPTURE(static_cast<std::uint32_t>(slot.requested));
-                CHECK(slot.found);     // the CP1252 slot really carries a glyph ...
-                CHECK(unicode.found);  // ... and the Unicode code point now resolves without falling back
-                CHECK(unicode.drawnCodepoint == unicode.requested);
-                CHECK(unicode.drawnCodepoint != FALLBACK);
-                CHECK(sameGlyphShape(unicode, slot));
-            }
-        }
-    }
-
-    SUBCASE("(c) the table holds the two code points this tree writes, and never the euro sign") {
-        std::vector<char32_t> unicodes;
-        std::vector<char32_t> slots;
-        for (const auto& remap : DEFAULT_FONT_CP1252_REMAPS) {
-            unicodes.push_back(remap.unicode);
-            slots.push_back(remap.cp1252Slot);
-            CAPTURE(static_cast<std::uint32_t>(remap.unicode));
-            CHECK(remap.cp1252Slot >= 0x80U);  // every slot is Windows-1252's 0x80-0x9F punctuation block
-            CHECK(remap.cp1252Slot <= 0x9FU);
-        }
-        // Spelled as code points, never as U'...' literals: this TU is compiled without /utf-8 on MSVC, which
-        // would read a UTF-8 character literal as three CP1252 characters.
-        constexpr char32_t ELLIPSIS = 0x2026;
-        constexpr char32_t EM_DASH = 0x2014;
-        CHECK(std::find(unicodes.begin(), unicodes.end(), ELLIPSIS) != unicodes.end());
-        CHECK(std::find(unicodes.begin(), unicodes.end(), EM_DASH) != unicodes.end());
-        for (const char32_t excluded : DEFAULT_FONT_CP1252_NOT_REMAPPED) {
-            CAPTURE(static_cast<std::uint32_t>(excluded));
-            CHECK(std::find(unicodes.begin(), unicodes.end(), excluded) == unicodes.end());
-        }
-        std::sort(unicodes.begin(), unicodes.end());
-        CHECK(std::adjacent_find(unicodes.begin(), unicodes.end()) == unicodes.end());  // no code point twice
-        std::sort(slots.begin(), slots.end());
-        CHECK(std::adjacent_find(slots.begin(), slots.end()) == slots.end());  // no slot twice
-        // WHY the euro sign is excluded, measured: it already draws natively, and its slot 0x80 is absent.
-        constexpr std::array<char32_t, 2> EURO{0x20AC, 0x80};
-        const DefaultFontMeasurement m = measureDefaultFont(DefaultFontSetup::Editor, EURO, 1.0F);
-        REQUIRE(m.ok);
-        REQUIRE(m.glyphs.size() == EURO.size());
-        CHECK(m.glyphs[0].found);
-        CHECK(m.glyphs[0].drawnCodepoint == EURO[0]);
-        CHECK_FALSE(m.glyphs[1].found);
-    }
-
-    SUBCASE("(d) the explicit font IS the one ImGui picked implicitly, glyph for glyph, ASCII and Latin-1") {
-        std::vector<char32_t> codepoints;
-        for (char32_t c = 0x20; c <= 0x7E; ++c) {
-            codepoints.push_back(c);
-        }
-        for (char32_t c = 0xA0; c <= 0xFF; ++c) {
-            codepoints.push_back(c);
-        }
-        const DefaultFontMeasurement implicitFont =
-            measureDefaultFont(DefaultFontSetup::ImGuiImplicit, codepoints, 1.0F);
-        const DefaultFontMeasurement editorFont = measureDefaultFont(DefaultFontSetup::Editor, codepoints, 1.0F);
-        REQUIRE(implicitFont.ok);
-        REQUIRE(editorFont.ok);
-        CHECK(implicitFont.fontName == "ProggyClean.ttf");  // NOT ProggyForever: the same font as before the fix
-        CHECK(editorFont.fontName == implicitFont.fontName);
-        CHECK(editorFont.referenceSize == 13.0F);
-        CHECK(editorFont.referenceSize == implicitFont.referenceSize);
-        REQUIRE(editorFont.glyphs.size() == codepoints.size());
-        REQUIRE(implicitFont.glyphs.size() == codepoints.size());
-        for (std::size_t i = 0; i < codepoints.size(); ++i) {
-            CAPTURE(static_cast<std::uint32_t>(codepoints[i]));
-            CHECK(editorFont.glyphs[i].found);  // the coverage editor.md's font rule states
-            CHECK(editorFont.glyphs[i].drawnCodepoint == implicitFont.glyphs[i].drawnCodepoint);
-            CHECK(sameGlyphShape(editorFont.glyphs[i], implicitFont.glyphs[i]));
-        }
-    }
-
-    SUBCASE("(e) anything else still draws '?', so the fallback is observable in the editor's own setup") {
-        constexpr std::array<char32_t, 2> ABSENT{0x4E2D, 0x3042};  // a CJK ideograph and a hiragana
-        const DefaultFontMeasurement m = measureDefaultFont(DefaultFontSetup::Editor, ABSENT, 1.0F);
-        REQUIRE(m.ok);
-        REQUIRE(m.glyphs.size() == ABSENT.size());
-        for (const DefaultFontGlyph& glyph : m.glyphs) {
-            CAPTURE(static_cast<std::uint32_t>(glyph.requested));
-            CHECK_FALSE(glyph.found);
-            CHECK(glyph.drawnCodepoint == FALLBACK);
-        }
-    }
-
-    SUBCASE("(f) ImGuiLayer::create adds the font exactly once, after CreateContext and before the backends") {
-        // The measurement above shares addEditorDefaultFont() with the editor, so it cannot see the editor
-        // stop CALLING it; this source-text pin can.
-        const std::vector<std::string> code = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/imgui_layer.cpp");
-        const std::size_t created = soleLineContaining(code, "ImGui::CreateContext()");
-        const std::size_t font = soleLineContaining(code, "addEditorDefaultFont()");
-        const std::size_t backend = soleLineContaining(code, "ImGui_ImplSDL3_InitForSDLGPU(");
-        CHECK(created < font);
-        CHECK(font < backend);
-        // ... and no other editor file adds a font, so the remapped one is the only one there is: a SET
-        // claim over every editor/src/*.cpp (the I110 walk), comment-stripped, with its anti-vacuity count.
-        std::size_t scanned = 0;
-        std::vector<std::string> addingFiles;
-        const std::filesystem::directory_iterator walk{AERO_EDITOR_SRC_DIR};
-        for (const std::filesystem::directory_entry& entry : walk) {
-            if (!entry.is_regular_file() || entry.path().extension() != ".cpp") {
-                continue;
-            }
-            ++scanned;
-            if (countLinesContaining(editorSourceCodeLines(entry.path().string()), "AddFont") > 0U) {
-                addingFiles.push_back(entry.path().filename().string());
-            }
-        }
-        CHECK(scanned > 80U);  // anti-vacuity: the walk really read editor/src
-        CHECK(addingFiles == std::vector<std::string>{"default_font.cpp"});
-        const std::vector<std::string> fontUnit = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/default_font.cpp");
-        CHECK(countLinesContaining(fontUnit, "AddFontDefaultBitmap()") == 1U);
-        CHECK(countLinesContaining(fontUnit, "AddFontDefault()") == 0U);  // never the ProggyForever heuristic
-    }
-
-    SUBCASE("(g) every pair IS the Windows-1252 standard's, and the table is every assigned slot but 0x80") {
-        // (b) cannot see a WRONG pairing: it compares each remapped glyph against the slot the SAME entry
-        // names, so it passes for any pairing at all -- and geometry cannot tell these glyphs apart either:
-        // {0x86, 0x87, 0x9A, 0x9E}, {0x8A, 0x8E} and {0x8B, 0x9B} are exact geometry twins at 13 and 26 px.
-        // Swapping the slots of {0x0160, 0x8A} and {0x017D, 0x8E} keeps (a)-(f) green while every S-caron draws
-        // as a Z-caron and every Z-caron as an S-caron.
-        // So the pairs are pinned against the standard itself, RESTATED here as an independent literal --
-        // Unicode's MICSFT/WINDOWS/CP1252.TXT, rows 0x80-0x9F, 0 where the row is UNDEFINED (the IX3 posture:
-        // a changed table means changing this pin in the same commit).
-        constexpr std::array<char32_t, 32> WINDOWS_1252_80_9F{
-            0x20AC, 0,      0x201A, 0x0192, 0x201E, 0x2026, 0x2020, 0x2021,  // 0x80-0x87
-            0x02C6, 0x2030, 0x0160, 0x2039, 0x0152, 0,      0x017D, 0,       // 0x88-0x8F
-            0,      0x2018, 0x2019, 0x201C, 0x201D, 0x2022, 0x2013, 0x2014,  // 0x90-0x97
-            0x02DC, 0x2122, 0x0161, 0x203A, 0x0153, 0,      0x017E, 0x0178,  // 0x98-0x9F
-        };
-        constexpr char32_t FIRST_SLOT = 0x80;
-        // Every entry is the standard's own pair.
-        std::vector<char32_t> slots;
-        for (const auto& remap : DEFAULT_FONT_CP1252_REMAPS) {
-            CAPTURE(static_cast<std::uint32_t>(remap.unicode));
-            CAPTURE(static_cast<std::uint32_t>(remap.cp1252Slot));
-            REQUIRE(remap.cp1252Slot >= FIRST_SLOT);
-            REQUIRE(remap.cp1252Slot < FIRST_SLOT + WINDOWS_1252_80_9F.size());
-            CHECK(remap.unicode == WINDOWS_1252_80_9F[remap.cp1252Slot - FIRST_SLOT]);
-            slots.push_back(remap.cp1252Slot);
-        }
-        // And the table is EXACTLY the assigned slots minus 0x80, whose code point is the one exclusion.
-        std::vector<char32_t> expectedSlots;
-        for (std::size_t i = 0; i < WINDOWS_1252_80_9F.size(); ++i) {
-            const auto slot = static_cast<char32_t>(FIRST_SLOT + i);
-            if (WINDOWS_1252_80_9F[i] != 0 && slot != FIRST_SLOT) {
-                expectedSlots.push_back(slot);
-            }
-        }
-        std::sort(slots.begin(), slots.end());
-        CHECK(slots == expectedSlots);
-        CHECK(expectedSlots.size() == 26U);  // 32 rows, 5 UNDEFINED, and 0x80 excluded
-        REQUIRE(DEFAULT_FONT_CP1252_NOT_REMAPPED.size() == 1U);
-        CHECK(DEFAULT_FONT_CP1252_NOT_REMAPPED[0] == WINDOWS_1252_80_9F[0]);
-    }
-}
-
 // ---- I231: task E.4.4's validation finding 2 -- the Asset Browser fits its panel with Issues open ------
 //
 // The macOS validation pass (row 2) found the "Issues (N)" header and the footer below the bottom of the
@@ -19439,6 +19224,19 @@ TEST_CASE("editor: one walk spends two budgets, and three older materials starve
     // never vacuously.
     std::optional<engine::editor::EditorApp> app = makeThumbnailApp(*device, *window, ctx, created.root);
     REQUIRE(app.has_value());
+    // task E.6.1 (D23.2(a)): at body 16 a Small tile is 4.5 x 16 = 72 wide and the folder tree
+    // 14 x 16 = 224, so five Small tiles need 5 x (72 + 8) - 8 = 392 of contents width; the CI macOS
+    // runner gave at least 362 at body 13, which the wider tree pane takes down to about 324 at body 16.
+    // Hiding the Left and Right panels lets ImGui's dock tree hand the Bottom node the whole width
+    // (imgui.cpp:20281-20284: a node whose child is invisible gives the visible one its size). The fixture
+    // changes; the case and its final loud counts do not.
+    constexpr std::array<const char*, 5> SIDE_PANELS{"Hierarchy", "Inspector", "Material", "Import Details",
+                                                     engine::editor::PROJECT_SETTINGS_PANEL_ID};
+    for (const char* id : SIDE_PANELS) {
+        if (app->panels().find(id) != nullptr) {
+            app->panels().setVisible(id, false);  // setVisible LOGS AN ERROR for an unknown id: find() first
+        }
+    }
     app->requestAssetBrowserTileSize(engine::editor::TileSize::Small);  // applied by the first tick's draw walk
     for (int i = 0; i < 3; ++i) {
         REQUIRE(app->tick());
@@ -21565,4 +21363,279 @@ TEST_CASE(
         CHECK(definedAt < gateAt);
         CHECK(gateAt < raiseAt);
     }
+}
+
+// ---- I277-I279, I286: task E.6.1 -- the faces, the icons, coverage and the one font writer ---------
+//
+// NO GPU and NO window: editor_fonts.hpp's measurement builds a PRIVATE ImGui context with a CPU-side
+// atlas, so these cases run on every lane, in every configuration, and never skip. The TU stays ImGui-free
+// at source, because editor_fonts.hpp names no ImGui type.
+
+namespace {
+
+using engine::editor::EditorFontFace;
+using engine::editor::EditorFontMeasurement;
+using engine::editor::EditorFontSetup;
+using engine::editor::MeasuredGlyph;
+using engine::editor::measureEditorFonts;
+
+constexpr std::array<float, 2> FONT_SCALES{1.0F, 2.0F};
+// Short aliases for the two setups, so every measuring call stays on one line under the column limit.
+constexpr EditorFontSetup WITH_ICONS = EditorFontSetup::Editor;
+constexpr EditorFontSetup WITHOUT_ICONS = EditorFontSetup::SansWithoutIcons;
+
+[[nodiscard]] std::vector<char32_t> printableAscii() {
+    std::vector<char32_t> points;
+    for (char32_t c = 0x20; c <= 0x7E; ++c) {
+        points.push_back(c);
+    }
+    return points;
+}
+
+[[nodiscard]] std::string_view fontFaceLabel(EditorFontFace face) {
+    switch (face) {
+        case EditorFontFace::Body:
+            return "Body";
+        case EditorFontFace::Strong:
+            return "Strong";
+        case EditorFontFace::Mono:
+            return "Mono";
+    }
+    return "?";
+}
+
+// EXACT float equality on purpose: one baked glyph has one set of numbers, so two lookups that resolve to the
+// same glyph agree bit for bit, and anything else is a different glyph.
+[[nodiscard]] bool sameGeometry(const MeasuredGlyph& a, const MeasuredGlyph& b) {
+    return a.x0 == b.x0 && a.x1 == b.x1 && a.y0 == b.y0 && a.y1 == b.y1 && a.advanceX == b.advanceX &&
+           a.visible == b.visible && a.drawnCodepoint == b.drawnCodepoint;
+}
+
+// Where a glyph SITS: the centre of its INK, never of its quad. ImGui sizes a quad from the font's glyph box,
+// and every Lucide 1.49.0 box reaches down to the baseline whatever the outline does (glyf yMin = 0), so a
+// quad centre tracks only an icon's top edge -- a 2-point spread across the roster at body 16 that no
+// offset could fit inside the per-icon bound.
+[[nodiscard]] float inkCentreY(const MeasuredGlyph& glyph) { return (glyph.inkY0 + glyph.inkY1) * 0.5F; }
+
+// The input to the glyph offset's decision rule: every roster icon's ink delta, named, its quad beside it.
+// `m` measured the roster in EDITOR_ICONS order with 'H' last.
+void dumpIconDeltas(const EditorFontMeasurement& m, float capCentre) {
+    for (std::size_t i = 0; i + 1U < m.glyphs.size(); ++i) {
+        const MeasuredGlyph& icon = m.glyphs[i];
+        const float delta = inkCentreY(icon) - capCentre;
+        const std::string line =
+            std::format("{} delta {} ink {} .. {} quad {} .. {}", engine::editor::EDITOR_ICONS[i].name, delta,
+                        icon.inkY0, icon.inkY1, icon.y0, icon.y1);
+        MESSAGE(line);
+    }
+}
+
+}  // namespace
+
+TEST_CASE("editor: the three faces are IBM Plex, and ASCII never comes from Lucide (task E.6.1, I277)") {
+    struct FaceRow {
+        EditorFontFace face;
+        std::string_view name;  // restated, never read from editor_fonts.hpp
+        float iAdvance;         // 'i' at size 16 -- the one advance that tells all three faces apart
+    };
+    // Plex's ImGui SIZE is ascender - descender = 1300 units, so size 16 scales by 16/1300: Sans Regular 'i'
+    // advances 250 units, SemiBold 276, Mono 600.
+    constexpr std::array<FaceRow, 3> FACES{{
+        {EditorFontFace::Body, "IBM Plex Sans", 3.0769F},
+        {EditorFontFace::Strong, "IBM Plex Sans SemiBold", 3.3969F},
+        {EditorFontFace::Mono, "IBM Plex Mono", 7.3846F},
+    }};
+    const std::vector<char32_t> ascii = printableAscii();
+    REQUIRE(ascii.size() == 95U);
+    const auto iIndex = static_cast<std::size_t>(U'i' - U' ');
+    REQUIRE(ascii[iIndex] == U'i');
+
+    for (const FaceRow& row : FACES) {
+        for (const float scale : FONT_SCALES) {
+            CAPTURE(fontFaceLabel(row.face));
+            CAPTURE(scale);
+            const EditorFontMeasurement m = measureEditorFonts(WITH_ICONS, row.face, ascii, scale);
+            REQUIRE(m.ok);
+            REQUIRE(m.glyphs.size() == ascii.size());
+            CHECK(m.fontName == row.name);
+            CHECK(m.referenceSize == 16.0F);
+            CHECK(m.bakedSize == 16.0F * scale);
+            const float advance = m.glyphs[iIndex].advanceX;
+            CAPTURE(advance);
+            CHECK(std::fabs(advance - (row.iAdvance * scale)) <= 0.02F * scale);
+            for (const MeasuredGlyph& glyph : m.glyphs) {
+                CAPTURE(static_cast<std::uint32_t>(glyph.requested));
+                CHECK(glyph.found);
+                CHECK(glyph.drawnCodepoint == glyph.requested);
+            }
+            if (row.face == EditorFontFace::Mono) {
+                for (const MeasuredGlyph& glyph : m.glyphs) {
+                    CAPTURE(static_cast<std::uint32_t>(glyph.requested));
+                    CHECK(glyph.advanceX == m.glyphs.front().advanceX);  // monospaced, exactly
+                }
+            }
+        }
+    }
+
+    // THE MERGE-ORDER ARM (seed S7). Lucide maps '-', '0'-'9' and 'a'-'z' to glyphs of zero or icon
+    // width, so a Lucide-first merge changes what those code points draw; with Plex first, the merged face
+    // draws printable ASCII EXACTLY as the same face with no icons merged at all.
+    for (const EditorFontFace face : {EditorFontFace::Body, EditorFontFace::Strong}) {
+        for (const float scale : FONT_SCALES) {
+            CAPTURE(fontFaceLabel(face));
+            CAPTURE(scale);
+            const EditorFontMeasurement merged = measureEditorFonts(WITH_ICONS, face, ascii, scale);
+            const EditorFontMeasurement plain = measureEditorFonts(WITHOUT_ICONS, face, ascii, scale);
+            REQUIRE(merged.ok);
+            REQUIRE(plain.ok);
+            REQUIRE(merged.glyphs.size() == plain.glyphs.size());
+            for (std::size_t i = 0; i < merged.glyphs.size(); ++i) {
+                CAPTURE(static_cast<std::uint32_t>(merged.glyphs[i].requested));
+                CHECK(sameGeometry(merged.glyphs[i], plain.glyphs[i]));
+            }
+        }
+    }
+}
+
+TEST_CASE("editor: every roster icon draws in Body and Strong, centred on the capitals (task E.6.1, I278)") {
+    // The roster's code points, then 'H' LAST: the capitals' ink centre is measured in the same baked font.
+    std::vector<char32_t> points;
+    points.reserve(engine::editor::EDITOR_ICONS.size() + 1U);
+    for (const engine::editor::EditorIcon& icon : engine::editor::EDITOR_ICONS) {
+        points.push_back(icon.codepoint);
+    }
+    REQUIRE(points.size() == 67U);
+    points.push_back(U'H');
+    const std::size_t hIndex = points.size() - 1U;
+
+    for (const EditorFontFace face : {EditorFontFace::Body, EditorFontFace::Strong}) {
+        for (const float scale : FONT_SCALES) {
+            CAPTURE(fontFaceLabel(face));
+            CAPTURE(scale);
+            const EditorFontMeasurement m = measureEditorFonts(WITH_ICONS, face, points, scale);
+            REQUIRE(m.ok);
+            REQUIRE(m.glyphs.size() == points.size());
+            const MeasuredGlyph& capital = m.glyphs[hIndex];
+            REQUIRE(capital.found);
+            REQUIRE(capital.visible);
+            const float capCentre = inkCentreY(capital);
+            CAPTURE(capCentre);
+            CAPTURE(capital.inkY0);
+            CAPTURE(capital.inkY1);
+
+            float deltaSum = 0.0F;
+            float deltaMax = 0.0F;
+            bool everyIconCentred = true;
+            for (std::size_t i = 0; i < hIndex; ++i) {
+                const MeasuredGlyph& glyph = m.glyphs[i];
+                CAPTURE(engine::editor::EDITOR_ICONS[i].name);
+                CHECK(glyph.found);
+                CHECK(glyph.visible);
+                CHECK(glyph.drawnCodepoint == glyph.requested);
+                // 11/16 of the face, and every roster icon advances one em
+                CHECK(std::fabs(glyph.advanceX - (11.0F * scale)) <= 0.01F * scale);
+                CHECK(glyph.y1 - glyph.y0 <= m.bakedSize);
+                const float delta = inkCentreY(glyph) - capCentre;
+                CAPTURE(delta);
+                CHECK(std::fabs(delta) <= 0.5F * scale);  // spec D7: centred on the capitals, per icon
+                everyIconCentred = everyIconCentred && std::fabs(delta) <= 0.5F * scale;
+                deltaSum += delta;
+                deltaMax = std::max(deltaMax, std::fabs(delta));
+            }
+            const float meanDelta = deltaSum / static_cast<float>(hIndex);
+            CAPTURE(meanDelta);
+            const std::string summary = std::format("I278 {} at scale {}: mean {}, max |delta| {} (points)",
+                                                    fontFaceLabel(face), scale, meanDelta, deltaMax);
+            MESSAGE(summary);
+            // THE ARM NO WRONG OFFSET PASSES (seed S28): derived from the outlines, an offset of 0 puts the
+            // roster's mean about a point below the capitals' centre and 2 about a point above it.
+            const bool meanCentred = std::fabs(meanDelta) <= 0.25F * scale;
+            CHECK(meanCentred);
+            if (!everyIconCentred || !meanCentred) {
+                dumpIconDeltas(m, capCentre);
+            }
+        }
+    }
+
+    // NO first-font hijack is possible: Plex itself draws none of the roster's code points.
+    for (const EditorFontFace face : {EditorFontFace::Body, EditorFontFace::Strong}) {
+        CAPTURE(fontFaceLabel(face));
+        const EditorFontMeasurement plain = measureEditorFonts(WITHOUT_ICONS, face, points, 1.0F);
+        REQUIRE(plain.ok);
+        for (std::size_t i = 0; i < hIndex; ++i) {
+            CAPTURE(engine::editor::EDITOR_ICONS[i].name);
+            CHECK_FALSE(plain.glyphs[i].found);
+        }
+    }
+
+    // Mono carries NO icons (seed S8): each draws the fallback.
+    const EditorFontMeasurement mono = measureEditorFonts(WITH_ICONS, EditorFontFace::Mono, points, 1.0F);
+    REQUIRE(mono.ok);
+    for (std::size_t i = 0; i < hIndex; ++i) {
+        CAPTURE(engine::editor::EDITOR_ICONS[i].name);
+        CHECK_FALSE(mono.glyphs[i].found);
+        CHECK(mono.glyphs[i].drawnCodepoint == 0xFFFDU);
+    }
+}
+
+TEST_CASE("editor: the typographic glyphs are native and a missing one draws U+FFFD (task E.6.1, I279)") {
+    std::vector<char32_t> points;
+    points.reserve(engine::editor::EDITOR_GLYPHS.size() + 3U);
+    for (const engine::editor::EditorGlyph& glyph : engine::editor::EDITOR_GLYPHS) {
+        points.push_back(glyph.codepoint);
+    }
+    REQUIRE(points.size() == 13U);
+    const std::size_t glyphCount = points.size();
+    points.push_back(0x4E2DU);   // a CJK ideograph -- in no Plex face
+    points.push_back(0x1F600U);  // past the 16-bit ImWchar: text decodes it to U+FFFD before any lookup
+    points.push_back(0x2318U);   // the command key symbol -- spec D19.4: Plex has none of the key symbols
+
+    for (const EditorFontFace face : {EditorFontFace::Body, EditorFontFace::Strong, EditorFontFace::Mono}) {
+        CAPTURE(fontFaceLabel(face));
+        const EditorFontMeasurement m = measureEditorFonts(WITH_ICONS, face, points, 1.0F);
+        REQUIRE(m.ok);
+        REQUIRE(m.glyphs.size() == points.size());
+        for (std::size_t i = 0; i < glyphCount; ++i) {
+            CAPTURE(engine::editor::EDITOR_GLYPHS[i].name);
+            CHECK(m.glyphs[i].found);
+            CHECK(m.glyphs[i].drawnCodepoint == m.glyphs[i].requested);
+        }
+        const MeasuredGlyph& ideograph = m.glyphs[glyphCount];
+        CHECK_FALSE(ideograph.found);
+        CHECK(ideograph.drawnCodepoint == 0xFFFDU);
+        CHECK(m.glyphs[glyphCount + 1U].drawnCodepoint == 0xFFFDU);
+        CHECK_FALSE(m.glyphs[glyphCount + 2U].found);
+        CHECK(m.fallbackChar == 0xFFFDU);
+        CHECK(m.ellipsisChar == 0x2026U);
+    }
+}
+
+TEST_CASE("editor: the font, style and font-push writers each live in their own TUs (task E.6.1, I286)") {
+    // Comment-stripped code lines only (editorSourceCodeLines), so a sentence in a comment never counts.
+    std::vector<std::string> addingFonts;
+    std::size_t scanned = 0;
+    std::error_code ec;
+    for (const std::filesystem::directory_entry& entry :
+         std::filesystem::directory_iterator(std::filesystem::path(AERO_EDITOR_SRC_DIR), ec)) {
+        if (!entry.is_regular_file() || entry.path().extension().string() != ".cpp") {
+            continue;
+        }
+        ++scanned;
+        const std::vector<std::string> code = editorSourceCodeLines(entry.path().string());
+        if (countLinesContaining(code, "AddFont") > 0U) {
+            addingFonts.push_back(entry.path().filename().string());
+        }
+    }
+    REQUIRE_FALSE(ec);
+    REQUIRE(scanned > 80U);  // ANTI-VACUITY: the walk read the editor's sources
+    std::sort(addingFonts.begin(), addingFonts.end());
+    addingFonts.erase(std::unique(addingFonts.begin(), addingFonts.end()), addingFonts.end());
+    CHECK(addingFonts == std::vector<std::string>{"editor_fonts.cpp"});  // a SET claim, I127(b)'s shape
+
+    // Every add hands ImGui static data it must NEVER free (seed S9): one "not owned" per add.
+    const std::vector<std::string> fonts = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/editor_fonts.cpp");
+    const std::size_t notOwned = countLinesContaining(fonts, "FontDataOwnedByAtlas = false");
+    const std::size_t adds = countLinesContaining(fonts, "AddFontFromMemoryTTF(");
+    CHECK(notOwned == adds);
+    CHECK(adds == 2U);
 }
