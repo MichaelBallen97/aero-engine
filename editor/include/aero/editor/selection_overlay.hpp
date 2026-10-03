@@ -49,7 +49,8 @@ struct OverlaySegment {
 // build 120 000 segments PER FRAME; a per-frame log line would be unbounded spam straight into
 // 2.2.5's Console. Capping in the API and asserting it in a test is the honest way to bound coverage.
 inline constexpr std::size_t MAX_HIGHLIGHTED_ENTITIES = 256;
-// The D8 diamond's half-diagonal, in POINTS.
+// The D8 diamond's half-diagonal, in POINTS (dp at uiScale 1; the caller's `uiScale` multiplies it,
+// task E.6.1).
 inline constexpr float POINT_MARKER_HALF_POINTS = 6.0F;
 
 // The builder. CALLER-OWNED SCRATCH (the walkForest / RenderViewScratch precedent): CLEARED ON ENTRY,
@@ -79,7 +80,10 @@ inline constexpr float POINT_MARKER_HALF_POINTS = 6.0F;
 // `mode` (task E.1.3) is NON-DEFAULTED and sits immediately after `viewProj`, because the two describe
 // the same matrix. A default would let a call site silently take the perspective clip gate under an
 // orthographic camera, which drops the marker for anything behind the eye plane and reports nothing.
+//
+// `uiScale` (task E.6.1) is NON-DEFAULTED for the same reason, and multiplies the marker's half-diagonal.
 void buildSelectionOverlay(const World& world, std::span<const Entity> entities, Entity primary, const Mat4& viewProj,
-                           ProjectionMode mode, Vec2 viewportSizePoints, std::vector<OverlaySegment>& scratch);
+                           ProjectionMode mode, Vec2 viewportSizePoints, float uiScale,
+                           std::vector<OverlaySegment>& scratch);
 
 }  // namespace engine::editor

@@ -165,6 +165,15 @@ that way.
 - **`io.ConfigDpiScaleFonts` stays OFF**: ImGui's own path reads the display's CONTENT scale, which is
   1.0 on Cocoa and on default Wayland while the style would be doubled. `I286` pins that exactly one
   file writes it.
+- **The viewport's chrome (D10): a length authored in dp reaches ImGui-unit space multiplied by `uiScale`
+  exactly once, at the viewport's boundary; a length that reaches device-pixel space is additionally
+  multiplied by the framebuffer scale.** A pure function that consumes a dp constant takes a
+  **non-defaulted** `float uiScale` (`resolveGizmoScreenSize`, `scaledGizmoStyle`, `viewAxisLayout`,
+  `viewAxisRect`, `buildSelectionOverlay` -- `US9` pins the set as source text), and a laid-out widget
+  carries its scale (`ViewAxisLayout::uiScale`) so its hit test cannot use another. The panel captures
+  `lastUiScale` in `onDraw` beside `lastFramebufferScale`, and nothing in `renderScene` calls ImGui. A width
+  that holds text is a **font multiple**, never a literal. ImGuizmo's internal hit tolerances are library
+  literals and stay unscaled (R7) -- `GIZMO_CENTER_HIT_HALF_EXTENT_POINTS` names one and is not scaled.
 
 ### The string-literal policy
 

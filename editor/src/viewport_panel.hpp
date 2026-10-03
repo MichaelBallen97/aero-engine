@@ -127,6 +127,14 @@ public:
     // context -- which is the test's main thread.
     [[nodiscard]] static GizmoStyle imGuizmoStyleReadback() noexcept;
 
+    // ---- task E.6.1 -----------------------------------------------------------------------------
+    // Two READ-ONLY seams, each recording the value actually HANDED ON at the last hand-off -- the effect,
+    // never a request (the lastUnresolvedMeshes() shape): the icon size given to emitViewportGizmos, in
+    // framebuffer pixels, and the radius given to the outline composite. Both stay 0 until a hand-off
+    // happens, so an Unavailable panel reads 0 for both. I288 reads them against the live UI scale.
+    [[nodiscard]] float lastIconSizePixels() const noexcept;
+    [[nodiscard]] std::uint32_t lastOutlineRadiusPixels() const noexcept;
+
     // ---- task E.1.2 -------------------------------------------------------------------------------
     // The grid toggle. SESSION STATE, default ON, and PERSISTED NOWHERE -- not to project.json, not
     // to imgui.ini, not anywhere. E.4.1 owns per-project editor state and its scope is the last
@@ -271,8 +279,8 @@ private:
     void updatePick(PanelContext& context, Vec2 imageOrigin, Vec2 avail, bool hovered);
     void drawSelectionOverlay(PanelContext& context, Vec2 imageOrigin, Vec2 avail);
 
-    // task E.1.4: the composite's params, derived from lastFramebufferScale. SANITIZED on the way
-    // out, so no caller can hand the composite an out-of-range radius.
+    // task E.1.4: the composite's params, derived from lastFramebufferScale (and, since task E.6.1, from
+    // lastUiScale). SANITIZED on the way out, so no caller can hand the composite an out-of-range radius.
     [[nodiscard]] render::SelectionOutlineParams selectionOutlineParams() const noexcept;
 
     // Task 2.3.3. Both take POINTS (D18) as engine Vec2, never ImVec2: this header is deliberately
@@ -365,6 +373,12 @@ private:
     // task E.1.4: io.DisplayFramebufferScale.x, captured in onDraw beside the existing toPixels
     // calls, because renderScene MUST NOT call ImGui (2.2.3 INV-3, still in force).
     float lastFramebufferScale = 1.0F;
+    // task E.6.1: the live UI scale (currentUiScale()), captured in onDraw beside lastFramebufferScale
+    // for the same reason -- renderScene, pickAt, the rect accessors and overlayOwnsPress must not call
+    // ImGui. A dp length reaches ImGui units multiplied by it ONCE, here at the viewport's boundary (D10).
+    float lastUiScale = 1.0F;
+    float lastIconSizePixelsValue = 0.0F;             // the member/accessor collision rule
+    std::uint32_t lastOutlineRadiusPixelsValue = 0U;  // likewise
     // task 3.6.3: session state -- never written to project.aero, never to imgui.ini, never persisted
     // anywhere. Default-constructed and SANITIZED on every write, so it is valid even when the panel
     // never initialises. Member/accessor names differ by the house collision rule.

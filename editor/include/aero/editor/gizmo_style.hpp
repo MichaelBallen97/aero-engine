@@ -55,7 +55,8 @@ static_assert(static_cast<std::size_t>(GizmoColor::TextShadow) + 1U == GIZMO_COL
 
 // Mirrors ImGuizmo::Style FIELD FOR FIELD, in our vocabulary and in POINTS -- ImGui's coordinate unit,
 // the same unit SetRect and io.MousePos use (2.3.3 D18), and the unit every hit tolerance in the
-// library is a literal in. The two "circle size" fields are RADII.
+// library is a literal in (dp at uiScale 1; the caller's `uiScale` multiplies it, task E.6.1). The two
+// "circle size" fields are RADII.
 struct GizmoStyle {
     float translationLineThicknessPoints = 0.0F;
     float translationArrowSizePoints = 0.0F;         // the head is 2x this long and 2x this wide
@@ -88,7 +89,8 @@ inline constexpr float GIZMO_HATCHED_AXIS_THICKNESS_POINTS = EDITOR_THEME.gizmo.
 inline constexpr float GIZMO_CENTER_DISC_RADIUS_POINTS = EDITOR_THEME.gizmo.centerDiscRadiusPoints;
 // NOT a tuning value: the library's hit test for the centre disc is a hard-coded +/-10-point square
 // (ImGuizmo.cpp:1132-1133), so a disc drawn larger than this lies about where it can be grabbed. GS3
-// asserts GIZMO_CENTER_DISC_RADIUS_POINTS <= this. Re-read those two lines at every port bump.
+// asserts GIZMO_CENTER_DISC_RADIUS_POINTS <= this. Re-read those two lines at every port bump. NOT scaled
+// by the UI (task E.6.1): ImGuizmo's +/-10 is a library literal and stays unscaled at > 100 % (R7).
 inline constexpr float GIZMO_CENTER_HIT_HALF_EXTENT_POINTS = EDITOR_THEME.gizmo.centerHitHalfExtentPoints;
 
 // the library's 38 % read as absent
@@ -147,6 +149,10 @@ namespace detail {
     return style;
 }
 
+// task E.6.1 (D10): the style at a UI scale -- the eight lengths multiplied by `uiScale`, the colours
+// copied. PURE and TOTAL: a non-finite or non-positive `uiScale` is treated as 1. Bit-equal to `style` at 1.
+[[nodiscard]] GizmoStyle scaledGizmoStyle(const GizmoStyle& style, float uiScale) noexcept;
+
 // ---- screen size --------------------------------------------------------------------------------
 // WHAT THE LIBRARY CALLS A SIZE. ImGuizmo::SetGizmoSizeClipSpace takes the length a unit axis should
 // have in a WIDTH-NORMALISED clip space: GetSegmentLengthClipSpace (ImGuizmo.cpp:863-887) divides y by
@@ -191,10 +197,13 @@ struct GizmoScreenSize {
 }
 
 // PURE and TOTAL. `viewportPoints` is the image rect ImGuizmo::SetRect is given, in POINTS.
-//   L    = min(GIZMO_AXIS_LENGTH_POINTS, GIZMO_AXIS_MAX_VIEWPORT_FRACTION * min(w, h))
+//   L    = min(GIZMO_AXIS_LENGTH_POINTS * uiScale, GIZMO_AXIS_MAX_VIEWPORT_FRACTION * min(w, h))
 //   size = 2 * L / max(w, h)
-// A non-finite or non-positive extent FAILS CLOSED to gizmoLibraryDefaultScreenSize() -- unreachable
-// from the panel (onDraw returns at step 1 for any such rect) and asserted anyway (GS9).
-[[nodiscard]] GizmoScreenSize resolveGizmoScreenSize(Vec2 viewportPoints) noexcept;
+// (GIZMO_AXIS_LENGTH_POINTS is dp at uiScale 1; the caller's `uiScale` multiplies it, task E.6.1. The knee
+// keeps its meaning: pixel-constant above it, proportional to the dock below it.) A non-finite or
+// non-positive extent FAILS CLOSED to gizmoLibraryDefaultScreenSize() -- unreachable from the panel
+// (onDraw returns at step 1 for any such rect) and asserted anyway (GS9). A non-finite or non-positive
+// `uiScale` is treated as 1. NON-defaulted: a call site that forgot the scale is a compile error.
+[[nodiscard]] GizmoScreenSize resolveGizmoScreenSize(Vec2 viewportPoints, float uiScale) noexcept;
 
 }  // namespace engine::editor

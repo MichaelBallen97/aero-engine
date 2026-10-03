@@ -65,9 +65,10 @@ inline constexpr std::uint32_t VIEWPORT_ICON_GUTTER_TEXELS = 2;
 // The thinnest a glyph feature may be, in texels. See the minification note in the banner.
 inline constexpr std::uint32_t VIEWPORT_ICON_MIN_FEATURE_TEXELS = 4;
 
-// The drawn size, in LOGICAL POINTS -- the same unit the mouse arrives in. renderScene multiplies by
-// the panel's framebuffer scale to get DebugBillboard::sizePx, which is in the frame's PIXELS;
-// updatePick uses HALF_POINTS unscaled, because a PickRequest is in points throughout.
+// The drawn size, in LOGICAL POINTS (dp at uiScale 1; the caller's `uiScale` multiplies it, task E.6.1)
+// -- the same unit the mouse arrives in. renderScene multiplies by the panel's framebuffer scale to get
+// DebugBillboard::sizePx, which is in the frame's PIXELS; updatePick uses HALF_POINTS unscaled, because a
+// PickRequest is in points throughout.
 //
 // A TUNING CONSTANT, judged on the validation page: no tier-0 case asserts its VALUE, only its two
 // relationships (VI11), so a retune after that pass is a one-line change that reddens nothing.

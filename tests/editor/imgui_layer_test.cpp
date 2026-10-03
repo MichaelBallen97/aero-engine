@@ -22265,3 +22265,76 @@ TEST_CASE("editor: the panels read their roles from the theme (task E.6.1, I287)
     const std::string whiteCaption = "drawList->AddText(font, size, pos, IM_COL32_WHITE, text)";
     CHECK(std::regex_search(whiteCaption, literals[2]));
 }
+
+// ---- I288: the viewport's chrome reads the live UI scale (task E.6.1, step 7) ----------------------------
+TEST_CASE("editor: the viewport chrome uses the live UI scale (task E.6.1, I288)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "chrome scale i288", .width = 900, .height = 600});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    auto* const viewport = dynamic_cast<engine::editor::ViewportPanel*>(app->panels().find("Viewport"));
+    REQUIRE(viewport != nullptr);
+
+    // The default scene's Cube, selected through the seam the outline cases use, with the gizmos on.
+    engine::World& world = app->world();
+    engine::Entity cube{};
+    world.eachEntity([&](engine::Entity e) {
+        if (world.name(e) == "Cube") {
+            cube = e;
+        }
+    });
+    REQUIRE(cube.valid());
+    app->selection().set(cube);
+    viewport->requestGizmosEnabled(true);
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+
+    if (viewport->debugDraw() == nullptr) {
+        // THE SHADER-TOOLS-OFF ARM, at runtime (I254's idiom, never an #if): the panel is Unavailable, so
+        // nothing is handed on and both observables keep their initial values -- asserted, never skipped.
+        MESSAGE("I288: the viewport is Unavailable (shader tools OFF): nothing is handed on");
+        CHECK(viewport->lastIconSizePixels() == 0.0F);
+        CHECK(viewport->lastOutlineRadiusPixels() == 0U);
+        app->requestQuit();
+        CHECK(app->tick() == false);
+        app.reset();
+        return;
+    }
+
+    // The two scales, each from its own source: the live style's, and the platform layer's own pixel ratio --
+    // independent of the panel under test.
+    const float ui = app->uiScale();
+    const float fb = static_cast<float>(window->pixelSize().width) / static_cast<float>(window->size().width);
+    REQUIRE(viewport->selectionOutlinePass() != nullptr);
+    const std::size_t composites = viewport->selectionOutlinePass()->compositeCount();
+    REQUIRE(app->tick());
+    REQUIRE(viewport->selectionOutlinePass()->compositeCount() > composites);  // the composite really ran
+
+    // What the LIBRARY holds, read back through ImGui's own packing: the theme's style at the live scale --
+    // bit-equal to defaultGizmoStyle() wherever the scale is 1, which is every lane.
+    CHECK((engine::editor::ViewportPanel::imGuizmoStyleReadback() ==
+           engine::editor::scaledGizmoStyle(engine::editor::defaultGizmoStyle(), ui)));
+    // What the panel HANDED ON, in its own operand order, so == is exact.
+    CHECK(viewport->lastIconSizePixels() == engine::editor::VIEWPORT_ICON_SIZE_POINTS * ui * fb);
+    const auto radius = static_cast<std::uint32_t>(std::clamp(std::lround(1.0F * ui * fb), 1L, 8L));
+    CHECK(viewport->lastOutlineRadiusPixels() == radius);
+    CHECK(viewport->lastIconSizePixels() > 0.0F);  // ANTI-VACUITY: a real hand-off, not the initial value
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}

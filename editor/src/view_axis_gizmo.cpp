@@ -22,18 +22,23 @@ namespace {
 // rect is degenerate, and the press claim is empty -- fall out of THIS function rather than out of
 // four comparisons that could drift apart. Written with negated comparisons so a NaN extent takes the
 // invisible branch: `+inf > 0.0F` is TRUE, so the positive form alone lets infinity through.
-[[nodiscard]] bool viewAxisVisible(Vec2 origin, Vec2 size) noexcept {
-    if (!allFinite(origin) || !allFinite(size)) {
+//
+// task E.6.1: the minimum image is multiplied by `uiScale`, and an unusable scale (non-finite or
+// non-positive) is invisible too -- the one predicate keeps all four consequences together for it as well.
+[[nodiscard]] bool viewAxisVisible(Vec2 origin, Vec2 size, float uiScale) noexcept {
+    if (!allFinite(origin) || !allFinite(size) || !(uiScale > 0.0F) || !std::isfinite(uiScale)) {
         return false;
     }
-    return !(size.x < VIEW_AXIS_MIN_IMAGE_POINTS) && !(size.y < VIEW_AXIS_MIN_IMAGE_POINTS);
+    const float minimum = VIEW_AXIS_MIN_IMAGE_POINTS * uiScale;
+    return !(size.x < minimum) && !(size.y < minimum);
 }
 
 // The widget centre, in SCREEN points. Top-right of the image, inset by the margin plus the
-// half-extent so the whole box clears the corner.
-[[nodiscard]] Vec2 viewAxisCenter(Vec2 origin, Vec2 size) noexcept {
-    constexpr float HALF = VIEW_AXIS_HALF_EXTENT_POINTS;
-    return Vec2{origin.x + size.x - VIEW_AXIS_MARGIN_POINTS - HALF, origin.y + VIEW_AXIS_MARGIN_POINTS + HALF};
+// half-extent so the whole box clears the corner -- both multiplied by `uiScale` (task E.6.1).
+[[nodiscard]] Vec2 viewAxisCenter(Vec2 origin, Vec2 size, float uiScale) noexcept {
+    const float half = VIEW_AXIS_HALF_EXTENT_POINTS * uiScale;
+    const float margin = VIEW_AXIS_MARGIN_POINTS * uiScale;
+    return Vec2{origin.x + size.x - margin - half, origin.y + margin + half};
 }
 
 // The six signed world axes, in ViewAxis order.
@@ -77,12 +82,15 @@ namespace {
 
 }  // namespace
 
-ViewAxisLayout viewAxisLayout(const EditorCamera& camera, Vec2 imageOriginPoints, Vec2 imageSizePoints) noexcept {
+ViewAxisLayout viewAxisLayout(const EditorCamera& camera, Vec2 imageOriginPoints, Vec2 imageSizePoints,
+                              float uiScale) noexcept {
     ViewAxisLayout layout{};
-    if (!viewAxisVisible(imageOriginPoints, imageSizePoints)) {
+    if (!viewAxisVisible(imageOriginPoints, imageSizePoints, uiScale)) {
         return layout;  // D16: default-constructed, visible == false -- one predicate, four consequences
     }
-    layout.centerPoints = viewAxisCenter(imageOriginPoints, imageSizePoints);
+    layout.centerPoints = viewAxisCenter(imageOriginPoints, imageSizePoints, uiScale);
+    layout.uiScale = uiScale;  // task E.6.1 (D-6): the hit test reads the scale the picture was laid out at
+    const float ring = VIEW_AXIS_RING_RADIUS_POINTS * uiScale;
 
     // `right`/`up`/`forward` are ORTHONORMAL by INV-2, so the transpose IS the inverse and the axis
     // in the camera's own basis is three dots rather than a matrix inverse.
@@ -100,11 +108,10 @@ ViewAxisLayout viewAxisLayout(const EditorCamera& camera, Vec2 imageOriginPoints
         // viewportNdc performs in the other direction (picking.cpp:56-57: "y is FLIPPED: ImGui's +y
         // is screen-DOWN, NDC's is UP"). VA2 is its discriminator: at the shipped default pose the
         // +Y ball must land ABOVE the widget centre in screen space.
-        layout.balls[i] =
-            ViewAxisBall{.offsetPoints = Vec2{vx * VIEW_AXIS_RING_RADIUS_POINTS, -vy * VIEW_AXIS_RING_RADIUS_POINTS},
-                         .depth = vz,  // LARGER == FARTHER; < 0 == in front of the eye
-                         .axis = axis,
-                         .positive = viewAxisIsPositive(axis)};
+        layout.balls[i] = ViewAxisBall{.offsetPoints = Vec2{vx * ring, -vy * ring},
+                                       .depth = vz,  // LARGER == FARTHER; < 0 == in front of the eye
+                                       .axis = axis,
+                                       .positive = viewAxisIsPositive(axis)};
         layout.drawOrder[i] = static_cast<std::uint8_t>(i);
     }
 
@@ -134,18 +141,18 @@ ViewAxisLayout viewAxisLayout(const EditorCamera& camera, Vec2 imageOriginPoints
     return layout;
 }
 
-void viewAxisRect(Vec2 imageOriginPoints, Vec2 imageSizePoints, Vec2& outMin, Vec2& outMax) noexcept {
-    if (!viewAxisVisible(imageOriginPoints, imageSizePoints)) {
+void viewAxisRect(Vec2 imageOriginPoints, Vec2 imageSizePoints, float uiScale, Vec2& outMin, Vec2& outMax) noexcept {
+    if (!viewAxisVisible(imageOriginPoints, imageSizePoints, uiScale)) {
         // DEGENERATE, which is what makes "an empty rect owns nothing" hold in overlayOwnsPress with
         // no second predicate -- the same shape overlayRowTopLeft/BottomRight already relies on.
         outMin = Vec2::zero();
         outMax = Vec2::zero();
         return;
     }
-    const Vec2 center = viewAxisCenter(imageOriginPoints, imageSizePoints);
-    constexpr float HALF = VIEW_AXIS_HALF_EXTENT_POINTS;
-    outMin = Vec2{center.x - HALF, center.y - HALF};
-    outMax = Vec2{center.x + HALF, center.y + HALF};
+    const Vec2 center = viewAxisCenter(imageOriginPoints, imageSizePoints, uiScale);
+    const float half = VIEW_AXIS_HALF_EXTENT_POINTS * uiScale;
+    outMin = Vec2{center.x - half, center.y - half};
+    outMax = Vec2{center.x + half, center.y + half};
 }
 
 ViewAxisPick viewAxisPickAt(const ViewAxisLayout& layout, Vec2 mousePoints) noexcept {
@@ -156,19 +163,21 @@ ViewAxisPick viewAxisPickAt(const ViewAxisLayout& layout, Vec2 mousePoints) noex
     // is not constexpr. Every comparison is the NEGATED `<=` A10 idiom (picking.cpp:275-277) so a
     // NaN distance takes the REJECT branch rather than the accept one.
     const Vec2 fromCenter = mousePoints - layout.centerPoints;
-    constexpr float CENTER_R2 = VIEW_AXIS_CENTER_RADIUS_POINTS * VIEW_AXIS_CENTER_RADIUS_POINTS;
-    if (lengthSquared(fromCenter) <= CENTER_R2) {
+    // task E.6.1 (D-6): the radii at the scale the LAYOUT was drawn at, squared with it.
+    const float scaleSquared = layout.uiScale * layout.uiScale;
+    const float centerR2 = VIEW_AXIS_CENTER_RADIUS_POINTS * VIEW_AXIS_CENTER_RADIUS_POINTS * scaleSquared;
+    if (lengthSquared(fromCenter) <= centerR2) {
         // D10: THE CENTRE FIRST. CENTER_RADIUS < BALL_RADIUS, so a ball collapsed onto the centre
         // (a canonical view, where the axis you are looking down projects to zero offset) still
         // leaves a 2-point annulus that reaches the ball rather than the badge.
         return ViewAxisPick{.kind = ViewAxisHit::Center};
     }
-    constexpr float BALL_R2 = VIEW_AXIS_BALL_RADIUS_POINTS * VIEW_AXIS_BALL_RADIUS_POINTS;
+    const float ballR2 = VIEW_AXIS_BALL_RADIUS_POINTS * VIEW_AXIS_BALL_RADIUS_POINTS * scaleSquared;
     // NEAR -> FAR, the exact reverse of drawOrder, so the ball drawn on top is the ball you hit.
     for (std::size_t i = VIEW_AXIS_COUNT; i > 0; --i) {
         const ViewAxisBall& ball = layout.balls[layout.drawOrder[i - 1U]];
         const Vec2 delta = mousePoints - (layout.centerPoints + ball.offsetPoints);
-        if (lengthSquared(delta) <= BALL_R2) {
+        if (lengthSquared(delta) <= ballR2) {
             return ViewAxisPick{.kind = ViewAxisHit::Axis, .axis = ball.axis};
         }
     }

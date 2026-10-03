@@ -7,7 +7,31 @@
 
 namespace engine::editor {
 
-GizmoScreenSize resolveGizmoScreenSize(Vec2 viewportPoints) noexcept {
+namespace {
+
+// task E.6.1: an unusable scale is 1 -- the refusal style of the extent guard below, so both functions
+// stay total.
+[[nodiscard]] float usableUiScale(float uiScale) noexcept {
+    return (uiScale > 0.0F && std::isfinite(uiScale)) ? uiScale : 1.0F;
+}
+
+}  // namespace
+
+GizmoStyle scaledGizmoStyle(const GizmoStyle& style, float uiScale) noexcept {
+    const float s = usableUiScale(uiScale);
+    GizmoStyle scaled = style;  // the colours, copied
+    scaled.translationLineThicknessPoints *= s;
+    scaled.translationArrowSizePoints *= s;
+    scaled.rotationLineThicknessPoints *= s;
+    scaled.rotationScreenRingThicknessPoints *= s;
+    scaled.scaleLineThicknessPoints *= s;
+    scaled.scaleDiscRadiusPoints *= s;
+    scaled.hatchedAxisThicknessPoints *= s;
+    scaled.centerDiscRadiusPoints *= s;
+    return scaled;
+}
+
+GizmoScreenSize resolveGizmoScreenSize(Vec2 viewportPoints, float uiScale) noexcept {
     const float w = viewportPoints.x;
     const float h = viewportPoints.y;
     // NaN-safe NEGATED form: every direct comparison with NaN is false, so only `!(x > 0)` fails
@@ -19,8 +43,9 @@ GizmoScreenSize resolveGizmoScreenSize(Vec2 viewportPoints) noexcept {
     const float smaller = std::min(w, h);
     const float larger = std::max(w, h);
     // The knee: pixel-constant above it, proportional to the dock below it. Continuous at the knee by
-    // construction -- both arms evaluate to GIZMO_AXIS_LENGTH_POINTS there.
-    const float axisLengthPoints = std::min(GIZMO_AXIS_LENGTH_POINTS, GIZMO_AXIS_MAX_VIEWPORT_FRACTION * smaller);
+    // construction -- both arms evaluate to the scaled length there.
+    const float scaledLength = GIZMO_AXIS_LENGTH_POINTS * usableUiScale(uiScale);  // task E.6.1 (D10)
+    const float axisLengthPoints = std::min(scaledLength, GIZMO_AXIS_MAX_VIEWPORT_FRACTION * smaller);
     // One point is 2 / max(w, h) of the library's unit in BOTH orientations (header comment).
     const float clipSpaceSize = (2.0F * axisLengthPoints) / larger;
     return GizmoScreenSize{.axisLengthPoints = axisLengthPoints,

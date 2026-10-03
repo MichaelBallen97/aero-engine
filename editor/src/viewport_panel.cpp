@@ -58,9 +58,11 @@ constexpr std::uint32_t VIEWPORT_EXTENT_QUANTUM = 64;
 constexpr float OVERLAY_INSET = 4.0F;
 // task 3.6.3: the two view-option widget widths, chosen so the whole row (T R S Local + combo +
 // slider) fits a 640-point viewport. NOT load-bearing -- a wrap at a narrow dock width is a
-// cosmetic finding for the validation pass, not a correctness one.
-constexpr float OPTIONS_COMBO_WIDTH = 92.0F;
-constexpr float OPTIONS_SLIDER_WIDTH = 130.0F;
+// cosmetic finding for the validation pass, not a correctness one. task E.6.1 (D10): a width that holds
+// text is a FONT MULTIPLE -- 92 and 130 points were 7.08 and 10.0 bodies at 13 -- so it follows the text,
+// and GetFontSize() already carries the UI scale.
+constexpr float OPTIONS_COMBO_FONT_MULTIPLE = 7.0F;
+constexpr float OPTIONS_SLIDER_FONT_MULTIPLE = 10.0F;
 
 // task E.1.2: the grid's look. The GREYS are file-local (they are chosen against the viewport's
 // clear, EDITOR_THEME.clear.viewport since E.6.1); the AXIS colours are NOT -- E.3.1's Inspector
@@ -255,18 +257,21 @@ static_assert([] {
 // gizmo is ENABLED this frame: Enable(false) skips the Handle* block only (:2704) and the four Draw*
 // calls still run (:2722-2725), so the greyed handles during a camera gesture or over the corner
 // widget are drawn with THIS style's thicknesses and INACTIVE colour, not the library's.
-void applyGizmoStyle(const GizmoStyle& style, const GizmoScreenSize& size) {
+// task E.6.1 (D10): the lengths at the live UI scale, through the pure scaledGizmoStyle -- written ONCE
+// here, so the library's style is the theme's at that scale and no second writer exists.
+void applyGizmoStyle(const GizmoStyle& style, const GizmoScreenSize& size, float uiScale) {
+    const GizmoStyle scaled = scaledGizmoStyle(style, uiScale);
     ImGuizmo::Style& target = ImGuizmo::GetStyle();
-    target.TranslationLineThickness = style.translationLineThicknessPoints;
-    target.TranslationLineArrowSize = style.translationArrowSizePoints;
-    target.RotationLineThickness = style.rotationLineThicknessPoints;
-    target.RotationOuterLineThickness = style.rotationScreenRingThicknessPoints;
-    target.ScaleLineThickness = style.scaleLineThicknessPoints;
-    target.ScaleLineCircleSize = style.scaleDiscRadiusPoints;
-    target.HatchedAxisLineThickness = style.hatchedAxisThicknessPoints;
-    target.CenterCircleSize = style.centerDiscRadiusPoints;
+    target.TranslationLineThickness = scaled.translationLineThicknessPoints;
+    target.TranslationLineArrowSize = scaled.translationArrowSizePoints;
+    target.RotationLineThickness = scaled.rotationLineThicknessPoints;
+    target.RotationOuterLineThickness = scaled.rotationScreenRingThicknessPoints;
+    target.ScaleLineThickness = scaled.scaleLineThicknessPoints;
+    target.ScaleLineCircleSize = scaled.scaleDiscRadiusPoints;
+    target.HatchedAxisLineThickness = scaled.hatchedAxisThicknessPoints;
+    target.CenterCircleSize = scaled.centerDiscRadiusPoints;
     for (std::size_t i = 0; i < GIZMO_COLOR_COUNT; ++i) {
-        target.Colors[IMGUIZMO_COLOR_SLOT[i]] = toImVec4(style.colors[i]);
+        target.Colors[IMGUIZMO_COLOR_SLOT[i]] = toImVec4(scaled.colors[i]);
     }
     ImGuizmo::SetGizmoSizeClipSpace(size.clipSpaceSize);
     // +X is +X from every side. Unity, Unreal, Blender and Godot never flip; a foreshortened axis
@@ -406,7 +411,7 @@ bool ViewportPanel::viewAxisOwnsPoint(Vec2 pointPoints, Vec2 imageOrigin, Vec2 i
     }
     Vec2 axisMin{};
     Vec2 axisMax{};
-    viewAxisRect(imageOrigin, imageSize, axisMin, axisMax);
+    viewAxisRect(imageOrigin, imageSize, lastUiScale, axisMin, axisMax);
     return containsHalfOpen(pointPoints, axisMin, axisMax);
 }
 
@@ -423,7 +428,7 @@ Vec2 ViewportPanel::viewAxisRectMin() const noexcept {
     }
     Vec2 rectMin{};
     Vec2 rectMax{};
-    viewAxisRect(Vec2::zero(), lastImageSizePoints, rectMin, rectMax);
+    viewAxisRect(Vec2::zero(), lastImageSizePoints, lastUiScale, rectMin, rectMax);
     return rectMin;
 }
 
@@ -434,7 +439,7 @@ Vec2 ViewportPanel::viewAxisRectMax() const noexcept {
     }
     Vec2 rectMin{};
     Vec2 rectMax{};
-    viewAxisRect(Vec2::zero(), lastImageSizePoints, rectMin, rectMax);
+    viewAxisRect(Vec2::zero(), lastImageSizePoints, lastUiScale, rectMin, rectMax);
     return rectMax;
 }
 
@@ -456,10 +461,13 @@ Entity ViewportPanel::pickAt(const World& world, Vec2 ndc) const {
     // task E.2.3: `.iconRadiusPoints` BEFORE `.meshBounds` -- a designated initialiser must follow
     // declaration order in C++20, and clang only WARNS about a wrong one. Zero when the toggle is off:
     // no icon is drawn, so no icon is clickable.
+    // task E.6.1: both radii at the live UI scale (D10); designated, in declaration order.
+    const float iconRadius = gizmosEnabledValue ? VIEWPORT_ICON_HALF_POINTS * lastUiScale : 0.0F;
     const PickRequest request{.ndc = ndc,
                               .aspect = lastAspect,
                               .viewportSizePoints = lastImageSizePoints,
-                              .iconRadiusPoints = gizmosEnabledValue ? VIEWPORT_ICON_HALF_POINTS : 0.0F,
+                              .pointRadiusPoints = POINT_PICK_RADIUS_POINTS * lastUiScale,
+                              .iconRadiusPoints = iconRadius,
                               .meshBounds = meshBounds};
     return pickEntity(world, editorCamera, request).entity;
 }
@@ -636,6 +644,9 @@ void ViewportPanel::onDraw(PanelContext& context) {
     // task E.1.4: captured HERE and read in renderScene, because renderScene must not call ImGui
     // (2.2.3 INV-3). The same value toPixels already reads, stored rather than recomputed.
     lastFramebufferScale = io.DisplayFramebufferScale.x;
+    // task E.6.1: captured HERE, read in renderScene, pickAt and the rect accessors, which must not call
+    // ImGui (2.2.3 INV-3) -- the E.1.4 pattern.
+    lastUiScale = currentUiScale();
 
     // Step 3 (D11): lazy, latched, one-attempt initialisation.
     ensureInitialized(pixels);
@@ -825,7 +836,8 @@ void ViewportPanel::onDraw(PanelContext& context) {
 
     // Step 9 (D15/C3): the overlay offset is written COMPONENT-WISE -- ImVec2 + ImVec2 does not
     // compile in this codebase (IMGUI_DEFINE_MATH_OPERATORS is defined nowhere).
-    ImGui::SetCursorScreenPos(ImVec2(imageOrigin.x + OVERLAY_INSET, imageOrigin.y + OVERLAY_INSET));
+    const float inset = OVERLAY_INSET * lastUiScale;  // task E.6.1: dp, times the UI scale
+    ImGui::SetCursorScreenPos(ImVec2(imageOrigin.x + inset, imageOrigin.y + inset));
     const ImVec4 overlayColor = toImVec4(EDITOR_THEME.viewport.overlayText);  // task E.6.1: the theme's
     ImGui::TextColored(overlayColor, "%ux%u", drawExtent.width, drawExtent.height);
     if (gesture.gesture == CameraGesture::Fly) {
@@ -960,18 +972,22 @@ void ViewportPanel::updatePick(PanelContext& context, Vec2 imageOrigin, Vec2 ava
     const Vec2 travel = pos - pickPressPos;
     // The negated `>` NaN-safe idiom (viewport_panel.cpp:104): a non-finite delta takes the reject
     // branch. PICK_CLICK_SLOP_POINTS is OURS, deliberately not io.MouseDragThreshold (F24/D10).
-    const bool withinSlop = lengthSquared(travel) <= PICK_CLICK_SLOP_POINTS * PICK_CLICK_SLOP_POINTS;
+    const float slop = PICK_CLICK_SLOP_POINTS * lastUiScale;  // task E.6.1: dp, times the UI scale
+    const bool withinSlop = lengthSquared(travel) <= slop * slop;
     if (!insideRect || !withinSlop) {
         return;
     }
 
+    // task E.6.1: both radii at the live UI scale (D10).
+    const float iconRadius = gizmosEnabledValue ? VIEWPORT_ICON_HALF_POINTS * lastUiScale : 0.0F;
     const PickRequest request{.ndc = viewportNdc(pos, imageOrigin, avail),
                               .aspect = lastAspect,
                               .viewportSizePoints = avail,
+                              .pointRadiusPoints = POINT_PICK_RADIUS_POINTS * lastUiScale,  // task E.6.1
                               // task E.2.3, BEFORE .meshBounds (the declaration-order rule): the
                               // panel's only expression of "the picture and the pick agree about
                               // what is visible".
-                              .iconRadiusPoints = gizmosEnabledValue ? VIEWPORT_ICON_HALF_POINTS : 0.0F,
+                              .iconRadiusPoints = iconRadius,
                               .meshBounds = meshBounds};  // task 3.1.5 -- one of INV-D6's three
     const PickResult result = pickEntity(context.world, editorCamera, request);
     // F30: io.KeyCtrl ALONE is ALREADY "Ctrl on Windows/Linux, Cmd on macOS". Writing
@@ -1051,7 +1067,7 @@ void ViewportPanel::updateGizmo(PanelContext& context, Vec2 imageOrigin, Vec2 av
     // Manipulate is ONE FRAME LATE on every resize and INVISIBLE otherwise, which is why I125 pins the
     // ordering as source text. See applyGizmoStyle above for the four decisions it carries. `avail` is
     // the same rect SetRect was just given, in points.
-    applyGizmoStyle(GIZMO_STYLE, resolveGizmoScreenSize(avail));
+    applyGizmoStyle(GIZMO_STYLE, resolveGizmoScreenSize(avail, lastUiScale), lastUiScale);
 
     // A4/E6-corrected (approved at plan review): a drag ImGuizmo never saw RELEASED (panel hidden,
     // window minimized or the target destroyed while LMB was down) leaves mbUsing latched -- and the
@@ -1232,7 +1248,7 @@ void ViewportPanel::updateViewAxisGizmo(Vec2 imageOrigin, Vec2 avail, bool input
         axisHover = ViewAxisPick{};
         return;
     }
-    axisLayout = viewAxisLayout(editorCamera, imageOrigin, avail);
+    axisLayout = viewAxisLayout(editorCamera, imageOrigin, avail, lastUiScale);
     const ImGuiIO& io = ImGui::GetIO();
     axisHover = inputHovered ? viewAxisPickAt(axisLayout, Vec2{io.MousePos.x, io.MousePos.y}) : ViewAxisPick{};
 
@@ -1275,12 +1291,17 @@ void ViewportPanel::drawViewAxisGizmo() const {
     // go through viewAxisCenter. A code-review round removed a call that passed a SYNTHETIC image
     // rect of 2 * VIEW_AXIS_HALF_EXTENT_POINTS instead: that is below VIEW_AXIS_MIN_IMAGE_POINTS, so
     // the widget read as invisible and the call wrote {0,0}/{0,0} into two locals nothing then read.
-    constexpr float PAD = VIEW_AXIS_BALL_RADIUS_POINTS;
-    drawList->PushClipRect(ImVec2(axisLayout.centerPoints.x - VIEW_AXIS_HALF_EXTENT_POINTS - PAD,
-                                  axisLayout.centerPoints.y - VIEW_AXIS_HALF_EXTENT_POINTS - PAD),
-                           ImVec2(axisLayout.centerPoints.x + VIEW_AXIS_HALF_EXTENT_POINTS + PAD,
-                                  axisLayout.centerPoints.y + VIEW_AXIS_HALF_EXTENT_POINTS + PAD),
-                           true);
+    //
+    // task E.6.1 (D10): every length below is dp times the scale the LAYOUT was laid out at -- the same scale
+    // its hit test reads (D-6), so the picture and the click can never disagree.
+    const float s = axisLayout.uiScale;
+    const float pad = VIEW_AXIS_BALL_RADIUS_POINTS * s;
+    const float half = VIEW_AXIS_HALF_EXTENT_POINTS * s;
+    const float ringThickness = VIEW_AXIS_RING_THICKNESS * s;
+    const ImU32 hoverOutline = toImU32(EDITOR_THEME.viewport.viewAxisHoverOutline);
+    const float reach = half + pad;
+    const Vec2 c = axisLayout.centerPoints;
+    drawList->PushClipRect(ImVec2(c.x - reach, c.y - reach), ImVec2(c.x + reach, c.y + reach), true);
 
     // FAR -> NEAR, so a near ball paints over a far one. THE THREE CHANNELS ARE INDEPENDENT (D3):
     // SIGN is fill-vs-ring, DEPTH is alpha, HOVER is growth plus a white outline plus a forced letter.
@@ -1291,7 +1312,7 @@ void ViewportPanel::drawViewAxisGizmo() const {
         const std::array<std::uint8_t, 3> rgb = axisColorSrgbBytes(viewAxisPaletteKey(ball.axis));
         // depth > 0 is the BACK hemisphere (larger == farther), and it dims rather than hides.
         const float alpha = (ball.depth > 0.0F) ? VIEW_AXIS_BACK_ALPHA : 1.0F;
-        const float radius = VIEW_AXIS_BALL_RADIUS_POINTS * (hot ? VIEW_AXIS_HOVER_GROWTH : 1.0F);
+        const float radius = VIEW_AXIS_BALL_RADIUS_POINTS * s * (hot ? VIEW_AXIS_HOVER_GROWTH : 1.0F);
         // F18: ImVec2 + ImVec2 does not compile here (IMGUI_DEFINE_MATH_OPERATORS is defined
         // nowhere) -- component-wise, always.
         const ImVec2 center(axisLayout.centerPoints.x + ball.offsetPoints.x,
@@ -1302,11 +1323,10 @@ void ViewportPanel::drawViewAxisGizmo() const {
         } else {
             drawList->AddCircleFilled(center, radius,
                                       colorAt(alpha * EDITOR_THEME.viewport.viewAxisNegativeFillAlphaScale));
-            drawList->AddCircle(center, radius, colorAt(alpha), 0, VIEW_AXIS_RING_THICKNESS);
+            drawList->AddCircle(center, radius, colorAt(alpha), 0, ringThickness);
         }
         if (hot) {
-            drawList->AddCircle(center, radius + 1.0F, toImU32(EDITOR_THEME.viewport.viewAxisHoverOutline), 0,
-                                VIEW_AXIS_RING_THICKNESS);
+            drawList->AddCircle(center, radius + s, hoverOutline, 0, ringThickness);
         }
         // A POSITIVE ball is always lettered; a negative one only while hovered, so the ring reads as
         // "the other end of that axis" rather than as a sixth, differently-labelled direction.
@@ -1321,11 +1341,10 @@ void ViewportPanel::drawViewAxisGizmo() const {
     // The centre badge: the projection toggle, and the SECOND place the mode is readable (D15).
     const ImVec2 badgeCenter(axisLayout.centerPoints.x, axisLayout.centerPoints.y);
     const bool centerHot = axisHover.kind == ViewAxisHit::Center;
-    drawList->AddCircleFilled(badgeCenter, VIEW_AXIS_CENTER_RADIUS_POINTS,
-                              toImU32(EDITOR_THEME.viewport.viewAxisCenterFill));
+    const float badgeRadius = VIEW_AXIS_CENTER_RADIUS_POINTS * s;
+    drawList->AddCircleFilled(badgeCenter, badgeRadius, toImU32(EDITOR_THEME.viewport.viewAxisCenterFill));
     if (centerHot) {
-        drawList->AddCircle(badgeCenter, VIEW_AXIS_CENTER_RADIUS_POINTS + 1.0F,
-                            toImU32(EDITOR_THEME.viewport.viewAxisHoverOutline), 0, VIEW_AXIS_RING_THICKNESS);
+        drawList->AddCircle(badgeCenter, badgeRadius + s, hoverOutline, 0, ringThickness);
     }
     const std::array<char, 2> badge{editorCamera.projectionMode() == ProjectionMode::Orthographic ? 'O' : 'P', '\0'};
     const ImVec2 badgeTextSize = ImGui::CalcTextSize(badge.data());
@@ -1459,7 +1478,7 @@ void ViewportPanel::drawViewOptions() {
         render::TonemapParams edited = tonemapParamsValue;
         bool changed = false;
 
-        ImGui::SetNextItemWidth(OPTIONS_COMBO_WIDTH);
+        ImGui::SetNextItemWidth(ImGui::GetFontSize() * OPTIONS_COMBO_FONT_MULTIPLE);
         // ASYMMETRIC pair (like BeginMenu): EndCombo runs ONLY when BeginCombo returned true.
         if (ImGui::BeginCombo("Tonemap", tonemapOperatorLabelCStr(edited.curve))) {
             for (std::size_t i = 0; i < render::TONEMAP_OPERATOR_COUNT; ++i) {
@@ -1475,7 +1494,7 @@ void ViewportPanel::drawViewOptions() {
             }
             ImGui::EndCombo();
         }
-        ImGui::SetNextItemWidth(OPTIONS_SLIDER_WIDTH);
+        ImGui::SetNextItemWidth(ImGui::GetFontSize() * OPTIONS_SLIDER_FONT_MULTIPLE);
         // THE ORDER OF THE `||` IS DELIBERATE: SliderFloat(...) || changed, never the reverse. The
         // second form short-circuits and would SKIP SUBMITTING THE SLIDER ENTIRELY on any frame the
         // combo changed -- and an ImGui item that is not submitted is an item that vanishes for a frame.
@@ -1569,7 +1588,7 @@ void ViewportPanel::drawSelectionOverlay(PanelContext& context, Vec2 imageOrigin
     selectionPrimary = context.selection.primary();
 
     buildSelectionOverlay(context.world, markerScratch, context.selection.primary(), viewProj,
-                          editorCamera.projectionMode(), avail, overlayScratch);
+                          editorCamera.projectionMode(), avail, lastUiScale, overlayScratch);
     if (overlayScratch.empty()) {
         return;  // E1: no PushClipRect at all, so there is no pair left unbalanced
     }
@@ -1590,7 +1609,7 @@ void ViewportPanel::drawSelectionOverlay(PanelContext& context, Vec2 imageOrigin
                           ImVec2(imageOrigin.x + segment.b.x, imageOrigin.y + segment.b.y),
                           selectionImU32(isPrimary ? render::SELECTION_OUTLINE_PRIMARY_DEFAULT
                                                    : render::SELECTION_OUTLINE_SECONDARY_DEFAULT),
-                          isPrimary ? SELECTION_PRIMARY_THICKNESS : SELECTION_THICKNESS);
+                          (isPrimary ? SELECTION_PRIMARY_THICKNESS : SELECTION_THICKNESS) * lastUiScale);
     }
     drawList->PopClipRect();
 }
@@ -1660,13 +1679,16 @@ void ViewportPanel::renderScene(World& world) {
     // gizmo is over the grid for the same reason E.1.2's comment above already anticipated.
     // activeDirectionalLight is resolved HERE, once, and its answer arrives in the params as a plain
     // Entity: viewport_gizmos.hpp may not name a scene_render type, and this TU already does.
+    // task E.6.1: dp, times the UI scale, times the framebuffer scale -- recorded once handed on (I288).
+    const float iconSizePixels = VIEWPORT_ICON_SIZE_POINTS * lastUiScale * lastFramebufferScale;
     if (gizmosEnabledValue) {
         (void)emitViewportGizmos(world,
                                  {.selected = selectionSnapshot,
                                   .primary = selectionPrimary,
                                   .activeDirectional = scene_render::activeDirectionalLight(world),
-                                  .iconSizePixels = VIEWPORT_ICON_SIZE_POINTS * lastFramebufferScale},
+                                  .iconSizePixels = iconSizePixels},
                                  gizmoScratch, debugDrawer->batch());
+        lastIconSizePixelsValue = iconSizePixels;
     }
     // task E.5.2: the grid's coplanar nudge, from the camera being RENDERED (the association flush itself
     // uses, proj * view), for the drawn extent in framebuffer pixels, EVERY frame -- the grid's toggle does
@@ -1699,7 +1721,9 @@ void ViewportPanel::renderScene(World& world) {
     // AFTER the resolve, into the SAME open pass: the outline is editor chrome and must not go
     // through the tone curve (D7). An invalid maskView -- which is what an empty selection returns --
     // records nothing at all and does not move compositeCount().
-    selectionOutline->composite(*outFrame, maskView, selectionOutlineParams());
+    const render::SelectionOutlineParams outlineParams = selectionOutlineParams();
+    lastOutlineRadiusPixelsValue = outlineParams.radiusPixels;  // task E.6.1: recorded as handed on (I288)
+    selectionOutline->composite(*outFrame, maskView, outlineParams);
     target->endFrame(std::move(*outFrame));  // submits B, strictly after A and the mask
     selectionMaskSet = {};                   // D12: never drawn twice, never drawn stale
     selectionSnapshot.clear();               // task E.2.3: markerScratch needs no clear here -- it is
@@ -1707,15 +1731,20 @@ void ViewportPanel::renderScene(World& world) {
 }
 
 // task E.1.4: the two colours are the ENGINE defaults, so the outline and the point marker cannot
-// drift apart (D18). The radius is derived from the framebuffer scale captured in onDraw --
-// renderScene must not call ImGui (2.2.3 INV-3). The 1L/8L literals mirror
+// drift apart (D18). The radius is derived from the UI scale (task E.6.1) and the framebuffer scale, both
+// captured in onDraw -- renderScene must not call ImGui (2.2.3 INV-3). The 1L/8L literals mirror
 // SELECTION_OUTLINE_MIN_RADIUS / _MAX_RADIUS; the sanitize call is what makes the pair authoritative
 // even if they ever drift, which is why it is not redundant.
 render::SelectionOutlineParams ViewportPanel::selectionOutlineParams() const noexcept {
-    const auto radius = static_cast<std::uint32_t>(
-        std::clamp(std::lround(SELECTION_OUTLINE_RADIUS_POINTS * lastFramebufferScale), 1L, 8L));
+    const float points = SELECTION_OUTLINE_RADIUS_POINTS * lastUiScale;  // task E.6.1: dp, times the UI scale
+    const long pixels = std::lround(points * lastFramebufferScale);
+    const auto radius = static_cast<std::uint32_t>(std::clamp(pixels, 1L, 8L));
     return render::sanitizeSelectionOutlineParams({.radiusPixels = radius});
 }
+
+float ViewportPanel::lastIconSizePixels() const noexcept { return lastIconSizePixelsValue; }
+
+std::uint32_t ViewportPanel::lastOutlineRadiusPixels() const noexcept { return lastOutlineRadiusPixelsValue; }
 
 const render::SelectionOutline* ViewportPanel::selectionOutlinePass() const noexcept {
     return selectionOutline ? &*selectionOutline : nullptr;
