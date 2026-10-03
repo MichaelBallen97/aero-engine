@@ -65,12 +65,21 @@ public:
     // layout. Derived from a filesystem check at create() time, not from live node introspection.
     [[nodiscard]] bool wantsDefaultLayout() const noexcept;
 
+    // task E.6.1 (D8/D9): the UI scale the live style was built at -- displayScale / pixelDensity, quantised
+    // to 0.05 and clamped to [0.5, 4] -- i.e. ImGui's style.FontScaleDpi, the one stored copy. 1.0 when
+    // moved-from.
+    [[nodiscard]] float uiScale() const noexcept;
+
 private:
-    ImGuiLayer(rhi::Device* device, platform::Context* ctx, rhi::SwapchainHandle swapchain,
-               std::unique_ptr<std::string> ownedIniPath, bool wantsDefaultLayout) noexcept;
+    ImGuiLayer(rhi::Device* device, platform::Context* ctx, platform::Window* window,  // all three outlive it
+               rhi::SwapchainHandle swapchain, std::unique_ptr<std::string> ownedIniPath,
+               bool wantsDefaultLayout) noexcept;
 
     rhi::Device* device = nullptr;
     platform::Context* ctx = nullptr;
+    // task E.6.1: the window the layer was created for -- an ENGINE type, so this header stays SDL-free; the
+    // .cpp resolves its native handle per frame to re-read the display scale (D8).
+    platform::Window* window = nullptr;
     rhi::SwapchainHandle swapchain{};
     // Heap-stable backing for io.IniFilename (D7): ImGui stores the ini path by pointer, so it must
     // keep a fixed address for the context's life even as ImGuiLayer moves. A unique_ptr keeps the

@@ -239,6 +239,9 @@ public:
     // presentedLastFrame() does (D16): without it, "records are captured while the panel is HIDDEN"
     // (AC-6) is mechanically unprovable and would fall entirely to the human pass.
     [[nodiscard]] std::size_t logRecordCount() const noexcept;
+    // task E.6.1: ImGuiLayer::uiScale() -- the UI scale the live style was built at -- for I281/I288. The
+    // layer is a private member, so this forwarder is the one public path to it.
+    [[nodiscard]] float uiScale() const noexcept;
     // The Viewport's own camera (task 2.3.1, D6). NULL when no Viewport panel is registered
     // (registerDefaultPanels == false, or registration was rejected). Exists for the same reason
     // logRecordCount() does: without it, "the Viewport renders through the EDITOR camera and not

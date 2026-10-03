@@ -144,6 +144,28 @@ that way.
   read freed memory (ASan: heap-use-after-free) and reported three glyphs as "different" that are
   identical. Copy the values out immediately, as `measureEditorFonts` does.
 
+### The theme and the UI scale
+
+- **`EDITOR_THEME` (`editor_theme.hpp`) is the ONE source of every colour, size and type value.** A NEW
+  colour is a theme token, never a file-local constant. Category A (the ImGui chrome and the UI roles)
+  follows the mock; Category B (the viewport's 3D and overlay colours, identity colours, clears) moved in
+  byte-identical and changes only as a stated visual decision. `TextDisabled` is for DISABLED widgets;
+  de-emphasised enabled text is the `textMuted` role.
+- **`buildEditorStyle` is the only style builder and `applyEditorStyle` the only style WRITER**
+  (`editor_theme_ui.cpp`, `I286`). It starts from a fresh `ImGuiStyle{}`, assigns every size member and all
+  63 colour slots from the theme, then `ScaleAllSizes(uiScale)` — so a scale change REBUILDS the style.
+  **Never `ScaleAllSizes` a live style**: it truncates, so applying it twice compounds (`I280`'s
+  idempotence arm). ImGui gaining or losing a colour slot is a `static_assert` failure at the table, never a
+  silently default-coloured widget.
+- **The UI scale is `resolveUiScale(SDL_GetWindowDisplayScale, SDL_GetWindowPixelDensity, previous)`** —
+  quantised to 0.05 by division, clamped to [0.5, 4], with no platform branch. It is 1 on a Retina Mac and
+  on default Wayland, the desktop scale on Windows and X11. **`style.FontScaleDpi` is its ONE stored copy**
+  (`currentUiScale()`), so nothing caches it. `ImGuiLayer::beginFrame` re-resolves it BEFORE every
+  `NewFrame` and rebuilds the style only when it changes, with one INFO line (`I281`, `I282`).
+- **`io.ConfigDpiScaleFonts` stays OFF**: ImGui's own path reads the display's CONTENT scale, which is
+  1.0 on Cocoa and on default Wayland while the style would be doubled. `I286` pins that exactly one
+  file writes it.
+
 ### The string-literal policy
 
 The editor's fonts decide what it can **draw**; what it can safely **spell in source** is a different

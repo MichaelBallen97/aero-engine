@@ -171,6 +171,7 @@ add_library(aero_editor_core STATIC
     src/create_menu_ui.cpp       # task E.5.2 -- the Create menu's ONE ImGui TU; walks the table, no kind literal
     src/editor_theme.cpp         # task E.6.1 -- resolveUiScale; the theme is one constexpr value, header-only
     src/editor_fonts.cpp         # task E.6.1 -- the three faces + the Lucide merges; the ONLY AddFont TU
+    src/editor_theme_ui.cpp      # task E.6.1 -- buildEditorStyle: the ONE style writer
 )
 add_library(aero::editor_core ALIAS aero_editor_core)
 # task E.6.1: the editor's fonts, embedded as DATA (third_party/fonts/README.md) -- one generated TU per font

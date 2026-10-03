@@ -59,7 +59,9 @@
 // task 3.1.5 (SL1-SL10): the scene-asset loader is SRC-PRIVATE, so it is reached the way
 // blender_service_test.cpp reaches blender_process.hpp -- by relative path into editor/src. It names
 // scene_render::MeshBinding, which is why aero::scene_render is on this target's link line.
+#include "../../editor/src/console_panel.hpp"    // task E.6.1 (I281): the Console's own log model
 #include "../../editor/src/editor_fonts.hpp"     // task E.6.1 (I277-I279): the faces, measured ImGui-free
+#include "../../editor/src/editor_theme_ui.hpp"  // task E.6.1 (I280-I282): style snapshots, ImGui-free
 #include "../../editor/src/file_dialog.hpp"      // fix 2.5.1-focus (I275, I276): the dialog focus gate + helper
 #include "../../editor/src/hierarchy_panel.hpp"  // task E.5.2, I249: requestCreate -- the panel-to-drain path
 #include "../../editor/src/material_panel.hpp"   // task E.2.4, I136: previewOutputTarget() -- the same
@@ -84,10 +86,12 @@
 #include <filesystem>
 #include <format>  // task 3.2.2, I65: truncatedFbxText()'s programmatic 257-node fixture
 #include <fstream>
-#include <limits>  // task 3.6.3 regression, I107: a NaN press must be owned by nothing
-#include <memory>  // task 2.4.1: std::make_unique<TransformCommand>
+#include <limits>   // task 3.6.3 regression, I107: a NaN press must be owned by nothing
+#include <memory>   // task 2.4.1: std::make_unique<TransformCommand>
+#include <numbers>  // task E.6.1 (I280): the angled-header angle, ImGui's own expression
 #include <optional>
 #include <ostream>  // MSVC alone needs the complete type to stringify a string_view inside a CHECK
+#include <regex>    // task E.6.1 (I286): the one style writer, as a set claim
 #include <span>     // task 3.2.4, I78: std::as_bytes over the fingerprint's own text
 #include <sstream>
 #include <string>
@@ -21610,9 +21614,26 @@ TEST_CASE("editor: the typographic glyphs are native and a missing one draws U+F
     }
 }
 
+namespace {
+
+[[nodiscard]] bool anyLineMatches(const std::vector<std::string>& code, const std::regex& pattern) {
+    return std::any_of(code.begin(), code.end(),
+                       [&pattern](const std::string& line) { return std::regex_search(line, pattern); });
+}
+
+}  // namespace
+
 TEST_CASE("editor: the font, style and font-push writers each live in their own TUs (task E.6.1, I286)") {
     // Comment-stripped code lines only (editorSourceCodeLines), so a sentence in a comment never counts.
+    // THE STYLE ARM's regex matches an assignment to ImGui's style or to any member or element of it --
+    // `.Colors[i] =` included -- and never a comparison or a read into a local. Its stated limit: a write
+    // through an ImGuiStyle& alias is invisible to it.
+    const std::regex styleWrite(R"(ImGui::GetStyle\(\)[^;=]*=[^=])");
+    const std::regex dpiFlagWrite(R"(ConfigDpiScaleFonts[ \t]*=[^=])");
     std::vector<std::string> addingFonts;
+    std::vector<std::string> writingStyle;
+    std::vector<std::string> namingDpiFlag;
+    std::vector<std::string> writingDpiFlag;
     std::size_t scanned = 0;
     std::error_code ec;
     for (const std::filesystem::directory_entry& entry :
@@ -21621,16 +21642,36 @@ TEST_CASE("editor: the font, style and font-push writers each live in their own 
             continue;
         }
         ++scanned;
+        const std::string name = entry.path().filename().string();
         const std::vector<std::string> code = editorSourceCodeLines(entry.path().string());
         if (countLinesContaining(code, "AddFont") > 0U) {
-            addingFonts.push_back(entry.path().filename().string());
+            addingFonts.push_back(name);
+        }
+        const bool regexHit = anyLineMatches(code, styleWrite);
+        if (regexHit || countLinesContaining(code, "ScaleAllSizes") > 0U ||
+            countLinesContaining(code, "StyleColors") > 0U) {
+            writingStyle.push_back(name);
+        }
+        if (countLinesContaining(code, "ConfigDpiScaleFonts") > 0U) {
+            namingDpiFlag.push_back(name);
+        }
+        const bool flagWrite = anyLineMatches(code, dpiFlagWrite);
+        if (flagWrite) {
+            writingDpiFlag.push_back(name);
         }
     }
     REQUIRE_FALSE(ec);
     REQUIRE(scanned > 80U);  // ANTI-VACUITY: the walk read the editor's sources
-    std::sort(addingFonts.begin(), addingFonts.end());
-    addingFonts.erase(std::unique(addingFonts.begin(), addingFonts.end()), addingFonts.end());
-    CHECK(addingFonts == std::vector<std::string>{"editor_fonts.cpp"});  // a SET claim, I127(b)'s shape
+    for (std::vector<std::string>* set : {&addingFonts, &writingStyle, &namingDpiFlag, &writingDpiFlag}) {
+        std::sort(set->begin(), set->end());
+        set->erase(std::unique(set->begin(), set->end()), set->end());
+    }
+    CHECK(addingFonts == std::vector<std::string>{"editor_fonts.cpp"});      // a SET claim, I127(b)'s shape
+    CHECK(writingStyle == std::vector<std::string>{"editor_theme_ui.cpp"});  // the ONE style writer
+    // The io flag ImGui's own DPI path reads: SWITCHED OFF in exactly one file, and named by no file but that
+    // one and the snapshot that reports it to the tests.
+    CHECK(writingDpiFlag == std::vector<std::string>{"imgui_layer.cpp"});
+    CHECK(namingDpiFlag == std::vector<std::string>{"editor_theme_ui.cpp", "imgui_layer.cpp"});
 
     // Every add hands ImGui static data it must NEVER free (seed S9): one "not owned" per add.
     const std::vector<std::string> fonts = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/editor_fonts.cpp");
@@ -21638,4 +21679,501 @@ TEST_CASE("editor: the font, style and font-push writers each live in their own 
     const std::size_t adds = countLinesContaining(fonts, "AddFontFromMemoryTTF(");
     CHECK(notOwned == adds);
     CHECK(adds == 2U);
+
+    // ANTI-VACUITY of both regexes: each matches the one write it exists for, and not a read.
+    const std::string write = "    ImGui::GetStyle() = buildEditorStyle(EDITOR_THEME, uiScale);";
+    const std::string elementWrite = "    ImGui::GetStyle().Colors[i] = color;";
+    const std::string read = "    const float pad = ImGui::GetStyle().FramePadding.x;";
+    const std::string comparison = "    if (ImGui::GetStyle().Alpha == 1.0F) {";
+    CHECK(std::regex_search(write, styleWrite));
+    CHECK(std::regex_search(elementWrite, styleWrite));
+    CHECK_FALSE(std::regex_search(read, styleWrite));
+    CHECK_FALSE(std::regex_search(comparison, styleWrite));
+    const std::string flagOff = "    io.ConfigDpiScaleFonts = false;";
+    const std::string flagRead = "    snap.configDpiScaleFonts = io.ConfigDpiScaleFonts;";
+    CHECK(std::regex_search(flagOff, dpiFlagWrite));
+    CHECK_FALSE(std::regex_search(flagRead, dpiFlagWrite));
+}
+
+// ---- I280-I282: task E.6.1 -- the style is the theme's, at one UI scale ------------------------------
+
+namespace {
+
+using engine::editor::EditorStyleSnapshot;
+using engine::editor::StyleMemberValue;
+
+struct StyleColorRow {
+    std::string_view name;
+    engine::editor::Srgb8 bytes;
+};
+
+// spec section 6.4's 63 slots, RESTATED in ImGuiCol order with each theme token's bytes (the alphas the mock
+// cannot show stated where not 255). A token changed in the theme changes this table in the same commit.
+constexpr std::array<StyleColorRow, 63> STYLE_COLOR_ROWS{{
+    {"Text", {215U, 219U, 224U, 255U}},                      // text
+    {"TextDisabled", {77U, 84U, 94U, 255U}},                 // textDisabled
+    {"WindowBg", {24U, 27U, 32U, 255U}},                     // panel
+    {"ChildBg", {24U, 27U, 32U, 0U}},                        // panel, alpha 0
+    {"PopupBg", {28U, 32U, 39U, 255U}},                      // raised
+    {"Border", {38U, 43U, 51U, 255U}},                       // border
+    {"BorderShadow", {13U, 15U, 18U, 0U}},                   // canvas, alpha 0
+    {"FrameBg", {18U, 21U, 26U, 255U}},                      // inset
+    {"FrameBgHovered", {28U, 32U, 39U, 255U}},               // raised
+    {"FrameBgActive", {32U, 37U, 45U, 255U}},                // raisedHeader
+    {"TitleBg", {20U, 23U, 27U, 255U}},                      // chrome
+    {"TitleBgActive", {20U, 23U, 27U, 255U}},                // chrome
+    {"TitleBgCollapsed", {20U, 23U, 27U, 255U}},             // chrome
+    {"MenuBarBg", {24U, 27U, 32U, 255U}},                    // panel
+    {"ScrollbarBg", {24U, 27U, 32U, 0U}},                    // panel, alpha 0
+    {"ScrollbarGrab", {43U, 49U, 58U, 255U}},                // active
+    {"ScrollbarGrabHovered", {77U, 84U, 94U, 255U}},         // textDisabled
+    {"ScrollbarGrabActive", {111U, 120U, 131U, 255U}},       // textMuted
+    {"CheckMark", {95U, 184U, 220U, 255U}},                  // accent
+    {"CheckboxSelectedBg", {95U, 184U, 220U, 255U}},         // accent
+    {"SliderGrab", {95U, 184U, 220U, 255U}},                 // accent
+    {"SliderGrabActive", {232U, 234U, 237U, 255U}},          // textBright
+    {"Button", {28U, 32U, 39U, 255U}},                       // raised
+    {"ButtonHovered", {36U, 41U, 50U, 255U}},                // hover
+    {"ButtonActive", {43U, 49U, 58U, 255U}},                 // active
+    {"Header", {31U, 43U, 51U, 255U}},                       // selection
+    {"HeaderHovered", {36U, 41U, 50U, 255U}},                // hover
+    {"HeaderActive", {43U, 49U, 58U, 255U}},                 // active
+    {"Separator", {35U, 39U, 46U, 255U}},                    // divider
+    {"SeparatorHovered", {58U, 111U, 133U, 255U}},           // accentBorder
+    {"SeparatorActive", {95U, 184U, 220U, 255U}},            // accent
+    {"ResizeGrip", {38U, 43U, 51U, 255U}},                   // border
+    {"ResizeGripHovered", {58U, 111U, 133U, 255U}},          // accentBorder
+    {"ResizeGripActive", {95U, 184U, 220U, 255U}},           // accent
+    {"InputTextCursor", {215U, 219U, 224U, 255U}},           // text
+    {"TabHovered", {36U, 41U, 50U, 255U}},                   // hover
+    {"Tab", {20U, 23U, 27U, 255U}},                          // chrome
+    {"TabSelected", {24U, 27U, 32U, 255U}},                  // panel
+    {"TabSelectedOverline", {95U, 184U, 220U, 255U}},        // accent
+    {"TabDimmed", {20U, 23U, 27U, 255U}},                    // chrome
+    {"TabDimmedSelected", {24U, 27U, 32U, 255U}},            // panel
+    {"TabDimmedSelectedOverline", {58U, 111U, 133U, 255U}},  // accentBorder
+    {"DockingPreview", {95U, 184U, 220U, 102U}},             // accent, alpha 102
+    {"DockingEmptyBg", {13U, 15U, 18U, 255U}},               // canvas
+    {"PlotLines", {169U, 177U, 187U, 255U}},                 // textSecondary
+    {"PlotLinesHovered", {216U, 162U, 75U, 255U}},           // warning
+    {"PlotHistogram", {95U, 184U, 220U, 255U}},              // accent
+    {"PlotHistogramHovered", {216U, 162U, 75U, 255U}},       // warning
+    {"TableHeaderBg", {28U, 32U, 39U, 255U}},                // raised
+    {"TableBorderStrong", {38U, 43U, 51U, 255U}},            // border
+    {"TableBorderLight", {35U, 39U, 46U, 255U}},             // divider
+    {"TableRowBg", {24U, 27U, 32U, 0U}},                     // panel, alpha 0
+    {"TableRowBgAlt", {215U, 219U, 224U, 8U}},               // text, alpha 8
+    {"TextLink", {95U, 184U, 220U, 255U}},                   // accent
+    {"TextSelectedBg", {95U, 184U, 220U, 89U}},              // accent, alpha 89
+    {"TreeLines", {35U, 39U, 46U, 255U}},                    // divider
+    {"DragDropTarget", {95U, 184U, 220U, 255U}},             // accent
+    {"DragDropTargetBg", {95U, 184U, 220U, 31U}},            // accent, alpha 31
+    {"UnsavedMarker", {216U, 162U, 75U, 255U}},              // warning
+    {"NavCursor", {95U, 184U, 220U, 255U}},                  // accent
+    {"NavWindowingHighlight", {95U, 184U, 220U, 179U}},      // accent, alpha 179
+    {"NavWindowingDimBg", {13U, 15U, 18U, 128U}},            // canvas, alpha 128
+    {"ModalWindowDimBg", {13U, 15U, 18U, 153U}},             // canvas, alpha 153
+}};
+
+struct StyleMemberRow {
+    std::string_view name;
+    float x;
+    float y;
+};
+
+// EVERY member of the style the builder writes, at uiScale 1, in the constructor's order -- the theme's
+// values restated, plus the five enum and flag members at the constructor's own values (as integers:
+// ImGuiDir_Left 0, ImGuiDir_Right 1, ImGuiTreeNodeFlags_DrawLinesNone 1 << 18, and the two tooltip
+// flag sets).
+constexpr float ANGLED_HEADERS_RADIANS = 35.0F * (std::numbers::pi_v<float> / 180.0F);
+constexpr std::array<StyleMemberRow, 69> STYLE_MEMBER_ROWS{{
+    {"Alpha", 1.0F, 0.0F},
+    {"DisabledAlpha", 0.60F, 0.0F},
+    {"WindowPadding", 8.0F, 8.0F},
+    {"WindowRounding", 0.0F, 0.0F},
+    {"WindowBorderSize", 1.0F, 0.0F},
+    {"WindowBorderHoverPadding", 4.0F, 0.0F},
+    {"WindowMinSize", 32.0F, 32.0F},
+    {"WindowTitleAlign", 0.0F, 0.5F},
+    {"WindowMenuButtonPosition", 0.0F, 0.0F},
+    {"ChildRounding", 6.0F, 0.0F},
+    {"ChildBorderSize", 1.0F, 0.0F},
+    {"PopupRounding", 6.0F, 0.0F},
+    {"PopupBorderSize", 1.0F, 0.0F},
+    {"FramePadding", 8.0F, 4.0F},
+    {"FrameRounding", 4.0F, 0.0F},
+    {"FrameBorderSize", 1.0F, 0.0F},
+    {"ItemSpacing", 8.0F, 6.0F},
+    {"ItemInnerSpacing", 6.0F, 4.0F},
+    {"CellPadding", 6.0F, 3.0F},
+    {"TouchExtraPadding", 0.0F, 0.0F},
+    {"IndentSpacing", 14.0F, 0.0F},
+    {"ColumnsMinSpacing", 6.0F, 0.0F},
+    {"ScrollbarSize", 10.0F, 0.0F},
+    {"ScrollbarRounding", 5.0F, 0.0F},
+    {"ScrollbarPadding", 2.0F, 0.0F},
+    {"GrabMinSize", 10.0F, 0.0F},
+    {"GrabRounding", 3.0F, 0.0F},
+    {"LogSliderDeadzone", 4.0F, 0.0F},
+    {"ImageRounding", 0.0F, 0.0F},
+    {"ImageBorderSize", 0.0F, 0.0F},
+    {"TabRounding", 4.0F, 0.0F},
+    {"TabBorderSize", 0.0F, 0.0F},
+    {"TabMinWidthBase", 1.0F, 0.0F},
+    {"TabMinWidthShrink", 80.0F, 0.0F},
+    {"TabCloseButtonMinWidthSelected", -1.0F, 0.0F},
+    {"TabCloseButtonMinWidthUnselected", 0.0F, 0.0F},
+    {"TabBarBorderSize", 1.0F, 0.0F},
+    {"TabBarOverlineSize", 2.0F, 0.0F},
+    {"TableAngledHeadersAngle", ANGLED_HEADERS_RADIANS, 0.0F},
+    {"TableAngledHeadersTextAlign", 0.5F, 0.0F},
+    {"TreeLinesFlags", 262144.0F, 0.0F},
+    {"TreeLinesSize", 1.0F, 0.0F},
+    {"TreeLinesRounding", 0.0F, 0.0F},
+    {"DragDropTargetRounding", 4.0F, 0.0F},
+    {"DragDropTargetBorderSize", 2.0F, 0.0F},
+    {"DragDropTargetPadding", 3.0F, 0.0F},
+    {"ColorMarkerSize", 3.0F, 0.0F},
+    {"ColorButtonPosition", 1.0F, 0.0F},
+    {"ButtonTextAlign", 0.5F, 0.5F},
+    {"SelectableTextAlign", 0.0F, 0.0F},
+    {"SeparatorSize", 1.0F, 0.0F},
+    {"SeparatorTextBorderSize", 3.0F, 0.0F},
+    {"SeparatorTextAlign", 0.0F, 0.5F},
+    {"SeparatorTextPadding", 20.0F, 3.0F},
+    {"DisplayWindowPadding", 19.0F, 19.0F},
+    {"DisplaySafeAreaPadding", 3.0F, 3.0F},
+    {"DockingNodeHasCloseButton", 1.0F, 0.0F},
+    {"DockingSeparatorSize", 2.0F, 0.0F},
+    {"MouseCursorScale", 1.0F, 0.0F},
+    {"AntiAliasedLines", 1.0F, 0.0F},
+    {"AntiAliasedLinesUseTex", 1.0F, 0.0F},
+    {"AntiAliasedFill", 1.0F, 0.0F},
+    {"CurveTessellationTol", 1.25F, 0.0F},
+    {"CircleTessellationMaxError", 0.30F, 0.0F},
+    {"HoverStationaryDelay", 0.15F, 0.0F},
+    {"HoverDelayShort", 0.15F, 0.0F},
+    {"HoverDelayNormal", 0.40F, 0.0F},
+    {"HoverFlagsForTooltipMouse", 41984.0F, 0.0F},
+    {"HoverFlagsForTooltipNav", 197632.0F, 0.0F},
+}};
+
+// The members ScaleAllSizes scales (imgui.cpp:1602-1650), restated -- the two TabCloseButtonMinWidth
+// sentinels among them, which it leaves alone unless positive (imgui.cpp:1635-1636).
+constexpr std::array<std::string_view, 47> SCALED_STYLE_MEMBERS{{
+    "WindowPadding",
+    "WindowRounding",
+    "WindowBorderSize",
+    "WindowMinSize",
+    "WindowBorderHoverPadding",
+    "ChildRounding",
+    "ChildBorderSize",
+    "PopupRounding",
+    "PopupBorderSize",
+    "FramePadding",
+    "FrameBorderSize",
+    "FrameRounding",
+    "ItemSpacing",
+    "ItemInnerSpacing",
+    "CellPadding",
+    "TouchExtraPadding",
+    "IndentSpacing",
+    "ColumnsMinSpacing",
+    "ScrollbarSize",
+    "ScrollbarRounding",
+    "ScrollbarPadding",
+    "GrabMinSize",
+    "GrabRounding",
+    "LogSliderDeadzone",
+    "ImageRounding",
+    "ImageBorderSize",
+    "TabRounding",
+    "TabBorderSize",
+    "TabMinWidthBase",
+    "TabMinWidthShrink",
+    "TabCloseButtonMinWidthSelected",
+    "TabCloseButtonMinWidthUnselected",
+    "TabBarBorderSize",
+    "TabBarOverlineSize",
+    "TreeLinesSize",
+    "TreeLinesRounding",
+    "DragDropTargetRounding",
+    "DragDropTargetBorderSize",
+    "DragDropTargetPadding",
+    "ColorMarkerSize",
+    "SeparatorSize",
+    "SeparatorTextBorderSize",
+    "SeparatorTextPadding",
+    "DockingSeparatorSize",
+    "DisplayWindowPadding",
+    "DisplaySafeAreaPadding",
+    "MouseCursorScale",
+}};
+
+// Slot by slot and member by member, NAMING what differs -- CHECK((a == b)) over a struct prints
+// CHECK( true ).
+void requireSameStyle(const EditorStyleSnapshot& a, const EditorStyleSnapshot& b) {
+    for (std::size_t i = 0; i < a.colorNames.size(); ++i) {
+        CAPTURE(a.colorNames[i]);
+        CHECK(a.colorNames[i] == b.colorNames[i]);
+        CHECK(static_cast<int>(a.colorBytes[i].r) == static_cast<int>(b.colorBytes[i].r));
+        CHECK(static_cast<int>(a.colorBytes[i].g) == static_cast<int>(b.colorBytes[i].g));
+        CHECK(static_cast<int>(a.colorBytes[i].b) == static_cast<int>(b.colorBytes[i].b));
+        CHECK(static_cast<int>(a.colorBytes[i].a) == static_cast<int>(b.colorBytes[i].a));
+        for (std::size_t k = 0; k < 4U; ++k) {
+            CHECK(a.colorFloats[i][k] == b.colorFloats[i][k]);
+        }
+    }
+    REQUIRE(a.members.size() == b.members.size());
+    for (std::size_t i = 0; i < a.members.size(); ++i) {
+        CAPTURE(a.members[i].name);
+        CHECK(a.members[i].name == b.members[i].name);
+        CHECK(a.members[i].x == b.members[i].x);
+        CHECK(a.members[i].y == b.members[i].y);
+    }
+    CHECK(a.fontSizeBase == b.fontSizeBase);
+    CHECK(a.fontScaleMain == b.fontScaleMain);
+    CHECK(a.fontScaleDpi == b.fontScaleDpi);
+    CHECK(a.configDpiScaleFonts == b.configDpiScaleFonts);
+}
+
+[[nodiscard]] const StyleMemberValue& memberNamed(const EditorStyleSnapshot& snap, std::string_view name) {
+    const auto found = std::find_if(snap.members.begin(), snap.members.end(),
+                                    [name](const StyleMemberValue& member) { return member.name == name; });
+    CAPTURE(name);
+    REQUIRE(found != snap.members.end());
+    return *found;
+}
+
+// The previous non-blank code line before `from` (code.size() when there is none).
+[[nodiscard]] std::size_t previousCodeLine(const std::vector<std::string>& code, std::size_t from) {
+    for (std::size_t i = from; i > 0U; --i) {
+        if (code[i - 1U].find_first_not_of(" \t\r") != std::string::npos) {
+            return i - 1U;
+        }
+    }
+    return code.size();
+}
+
+}  // namespace
+
+TEST_CASE("editor: the style is the theme's at every scale, pure and never compounded (task E.6.1, I280)") {
+    // NO GPU and NO window: every snapshot builds its style in a PRIVATE context through applyEditorStyle.
+    for (const float scale : {1.0F, 1.25F, 1.5F, 2.0F}) {
+        CAPTURE(scale);
+        const EditorStyleSnapshot snap = engine::editor::snapshotEditorStyle(scale);
+        for (std::size_t i = 0; i < STYLE_COLOR_ROWS.size(); ++i) {
+            const StyleColorRow& row = STYLE_COLOR_ROWS[i];
+            CAPTURE(row.name);
+            CHECK(snap.colorNames[i] == row.name);  // the table's ORDER, against ImGui's own slot names
+            const std::array<std::uint8_t, 4> bytes{row.bytes.r, row.bytes.g, row.bytes.b, row.bytes.a};
+            const engine::editor::Srgb8& got = snap.colorBytes[i];
+            const std::array<std::uint8_t, 4> drawn{got.r, got.g, got.b, got.a};
+            for (std::size_t k = 0; k < 4U; ++k) {
+                CAPTURE(k);
+                CHECK(static_cast<int>(drawn[k]) == static_cast<int>(bytes[k]));
+                // BIT-equal to a DIVISION (seed S13): `k * (1 / 255.0F)` differs for 126 byte values, and
+                // ImGui's own byte conversion rounds both back to the same byte -- only this arm sees it.
+                const float expected = static_cast<float>(bytes[k]) / 255.0F;
+                const float held = snap.colorFloats[i][k];
+                CHECK(std::bit_cast<std::uint32_t>(held) == std::bit_cast<std::uint32_t>(expected));
+            }
+        }
+        CHECK(snap.fontSizeBase == 16.0F);
+        CHECK(snap.fontScaleMain == 1.0F);
+        CHECK(snap.fontScaleDpi == scale);
+        CHECK_FALSE(snap.configDpiScaleFonts);
+    }
+
+    // At 1, every member is the theme's (or the constructor's, for the five enum and flag members).
+    const EditorStyleSnapshot one = engine::editor::snapshotEditorStyle(1.0F);
+    REQUIRE(one.members.size() == STYLE_MEMBER_ROWS.size());
+    for (std::size_t i = 0; i < STYLE_MEMBER_ROWS.size(); ++i) {
+        const StyleMemberRow& row = STYLE_MEMBER_ROWS[i];
+        CAPTURE(row.name);
+        CHECK(one.members[i].name == row.name);
+        CHECK(one.members[i].x == row.x);
+        CHECK(one.members[i].y == row.y);
+    }
+
+    // At 2, every scaled member is exactly double (each theme value is an integer, so ImTrunc is the
+    // identity) except the two sentinels, and every other member is unchanged.
+    const EditorStyleSnapshot two = engine::editor::snapshotEditorStyle(2.0F);
+    REQUIRE(two.members.size() == one.members.size());
+    std::size_t scaledSeen = 0;
+    for (std::size_t i = 0; i < one.members.size(); ++i) {
+        const std::string_view name = one.members[i].name;
+        CAPTURE(name);
+        const auto* const scaledEnd = SCALED_STYLE_MEMBERS.end();
+        const bool scaled = std::find(SCALED_STYLE_MEMBERS.begin(), scaledEnd, name) != scaledEnd;
+        const bool sentinel =
+            name == "TabCloseButtonMinWidthSelected" || name == "TabCloseButtonMinWidthUnselected";  // stay
+        const float factor = (scaled && !sentinel) ? 2.0F : 1.0F;
+        CHECK(two.members[i].x == one.members[i].x * factor);
+        CHECK(two.members[i].y == one.members[i].y * factor);
+        scaledSeen += scaled ? 1U : 0U;
+    }
+    CHECK(scaledSeen == SCALED_STYLE_MEMBERS.size());  // every restated name IS a member
+
+    // At 1.25, hand-computed (ScaleAllSizes truncates).
+    const EditorStyleSnapshot quarter = engine::editor::snapshotEditorStyle(1.25F);
+    CHECK(memberNamed(quarter, "FramePadding").x == 10.0F);
+    CHECK(memberNamed(quarter, "FramePadding").y == 5.0F);
+    CHECK(memberNamed(quarter, "ItemSpacing").x == 10.0F);
+    CHECK(memberNamed(quarter, "ItemSpacing").y == 7.0F);
+    CHECK(memberNamed(quarter, "FrameRounding").x == 5.0F);
+    CHECK(memberNamed(quarter, "ScrollbarSize").x == 12.0F);
+    CHECK(memberNamed(quarter, "FrameBorderSize").x == 1.0F);
+
+    // PURITY (seed S10): a builder that started from GetStyle() would inherit the poisoned enum and flag
+    // members.
+    requireSameStyle(engine::editor::snapshotStyleBuiltOverPoison(1.0F), one);
+    // IDEMPOTENCE (seed S11): a rebuild never compounds -- ScaleAllSizes(next / applied) would turn
+    // ItemSpacing.y 9 -> 9.99 -> 9 where a fresh 1.25 gives 7.
+    constexpr std::array<float, 2> DOWN_TO_ONE{2.0F, 1.0F};
+    constexpr std::array<float, 3> UP_TO_TWO{1.5F, 1.25F, 2.0F};
+    requireSameStyle(engine::editor::snapshotStyleAfter(DOWN_TO_ONE), one);
+    requireSameStyle(engine::editor::snapshotStyleAfter(UP_TO_TWO), two);
+}
+
+TEST_CASE(
+    "editor: the live layer holds the theme's style at its own UI scale "
+    "and re-resolves it (task E.6.1, I281)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "ui scale i281", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    const engine::editor::EditorAppConfig config{.persistLayout = false,
+                                                 .seedDefaultScene = true,
+                                                 .unfocusedFrameCapHz = 0.0F,
+                                                 .projectPath = "",
+                                                 .restoreLastProject = false};
+    auto app = engine::editor::EditorApp::create(*device, *window, ctx, config);  // std::optional<EditorApp>
+    REQUIRE(app.has_value());
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+
+    const float real = app->uiScale();
+    CAPTURE(real);
+    REQUIRE(real >= 0.5F);
+    REQUIRE(real <= 4.0F);
+    CHECK(real == std::round(real * 20.0F) / 20.0F);  // a quantised value
+    const EditorStyleSnapshot live = engine::editor::snapshotLiveStyle();
+    requireSameStyle(live, engine::editor::snapshotEditorStyle(real));
+    CHECK_FALSE(live.configDpiScaleFonts);
+    CHECK(live.fontScaleDpi == real);
+
+    // RE-RESOLVE: force a different scale into the live style; the next frame's beginFrame rebuilds it from
+    // the display, once, with one INFO -- read from the Console's OWN log model (no second callback around
+    // an app).
+    auto* const console = dynamic_cast<engine::editor::ConsolePanel*>(app->panels().find("Console"));
+    REQUIRE(console != nullptr);
+    const auto uiScaleRecords = [console]() {
+        std::size_t count = 0;
+        const engine::editor::LogHistory& history = console->history();
+        for (std::size_t i = 0; i < history.visibleCount(); ++i) {
+            count += history.visibleAt(i).message.find("UI scale") != std::string::npos ? 1U : 0U;
+        }
+        return count;
+    };
+    const std::size_t before = uiScaleRecords();
+    const float other = real == 2.0F ? 1.0F : 2.0F;  // never vacuous on a 2x display
+    engine::editor::applyEditorStyle(other);
+    // The force landed:
+    requireSameStyle(engine::editor::snapshotLiveStyle(), engine::editor::snapshotEditorStyle(other));
+    REQUIRE(app->tick());  // beginFrame re-resolves BEFORE NewFrame and rebuilds
+    requireSameStyle(engine::editor::snapshotLiveStyle(), engine::editor::snapshotEditorStyle(real));
+    CHECK(app->uiScale() == real);
+    REQUIRE(app->tick());  // pumpLog runs at the TOP of a tick: the INFO logged above reaches the history now
+    CHECK(uiScaleRecords() == before + 1U);
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE(
+    "editor: fonts, then the style, then the backends; "
+    "the scale is re-read before every NewFrame (task E.6.1, I282)") {
+    // NO GPU: imgui_layer.cpp's own comment-stripped text, so a sentence in a comment never counts.
+    const std::vector<std::string> code = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/imgui_layer.cpp");
+    REQUIRE(code.size() > 100U);
+    const std::size_t created = soleLineContaining(code, "ImGui::CreateContext()");
+    const std::size_t flag = soleLineContaining(code, "ConfigDpiScaleFonts = false");
+    const std::size_t fonts = soleLineContaining(code, "addEditorFonts(");
+    const std::size_t style = soleLineContaining(code, "applyEditorStyle(resolveUiScale(");
+    const std::size_t backend = soleLineContaining(code, "ImGui_ImplSDL3_InitForSDLGPU(");
+    CHECK(created < flag);
+    CHECK(flag < fonts);
+    CHECK(fonts < style);
+    CHECK(style < backend);
+    constexpr std::array<std::string_view, 5> GONE{
+        "StyleColorsDark",
+        "ScaleAllSizes",
+        "addEditorDefaultFont",  // the old setup
+        "ConfigDpiScaleFonts = true",
+        "SDL_GetDisplayContentScale",  // ImGui's own DPI path
+    };
+    for (const std::string_view token : GONE) {  // seeds S1, S24
+        CAPTURE(token);
+        CHECK(countLinesContaining(code, token) == 0U);
+    }
+    CHECK(countLinesContaining(code, "SDL_GetWindowDisplayScale(") == 2U);  // create and beginFrame
+    CHECK(countLinesContaining(code, "SDL_GetWindowPixelDensity(") == 2U);
+
+    // beginFrame re-resolves BEFORE NewFrame (seed S22).
+    const std::size_t begin = soleLineContaining(code, "void ImGuiLayer::beginFrame() {");
+    std::size_t end = begin;
+    while (end < code.size() && code[end] != "}") {
+        ++end;
+    }
+    REQUIRE(end < code.size());
+    std::size_t resolveAt = code.size();
+    std::size_t newFrameAt = code.size();
+    for (std::size_t i = begin; i < end; ++i) {
+        const bool resolves = code[i].find("resolveUiScale(") != std::string::npos;
+        resolveAt = (resolveAt == code.size() && resolves) ? i : resolveAt;
+        newFrameAt = (code[i].find("ImGui::NewFrame()") != std::string::npos) ? i : newFrameAt;
+    }
+    REQUIRE(resolveAt < code.size());
+    REQUIRE(newFrameAt < code.size());
+    CHECK(resolveAt < newFrameAt);
+
+    // Every DestroyContext is IMMEDIATELY preceded by clearEditorFonts (seed S26) -- five of each.
+    std::size_t destroys = 0;
+    for (std::size_t i = 0; i < code.size(); ++i) {
+        if (code[i].find("ImGui::DestroyContext();") == std::string::npos) {
+            continue;
+        }
+        ++destroys;
+        const std::size_t previous = previousCodeLine(code, i);
+        REQUIRE(previous < code.size());
+        CAPTURE(i);
+        CHECK(code[previous].find("clearEditorFonts();") != std::string::npos);
+    }
+    CHECK(destroys == 5U);
+    CHECK(countLinesContaining(code, "clearEditorFonts();") == 5U);
+
+    // A face that cannot be added fails create with ONE error and no layer (seed S29).
+    const std::size_t failAt = soleLineContaining(code, "if (!addEditorFonts(failedFace).has_value()) {");
+    std::size_t closeAt = failAt + 1U;
+    while (closeAt < code.size() && code[closeAt] != "    }") {
+        ++closeAt;
+    }
+    REQUIRE(closeAt < code.size());
+    std::size_t errors = 0;
+    bool returnsNothing = false;
+    for (std::size_t i = failAt + 1U; i < closeAt; ++i) {
+        errors += code[i].find("AERO_LOG_ERROR(") != std::string::npos ? 1U : 0U;
+        returnsNothing = returnsNothing || code[i].find("return std::nullopt;") != std::string::npos;
+    }
+    CHECK(errors == 1U);
+    CHECK(returnsNothing);
 }

@@ -1411,6 +1411,7 @@ bool EditorApp::presentedLastFrame() const noexcept { return presented; }
 std::size_t EditorApp::logRecordCount() const noexcept {
     return consolePanel != nullptr ? consolePanel->history().size() : std::size_t{0};
 }
+float EditorApp::uiScale() const noexcept { return layer.uiScale(); }
 EditorCamera* EditorApp::viewportCamera() noexcept {
     return viewportPanel != nullptr ? &viewportPanel->camera() : nullptr;
 }
