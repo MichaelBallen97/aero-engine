@@ -18860,15 +18860,23 @@ TEST_CASE("editor: the Asset Browser fits its panel with 40 orphans and Issues o
     if (!ctx.valid()) {
         AERO_SKIP_OR_FAIL("no platform context");
     }
-    // 1000 points leaves 187 of avail at 1x here, room for a 74-point body. 600 leaves 87: 23 above the fit
-    // bound, and no room above the one-row floor -- the regime CI's runner produced from the 1000-point
-    // window. A runner can only make a window SHORTER, so the short subcase stays in that regime anywhere.
+    // THE SHORT WINDOW'S REGIME, re-measured 2026-10-03 at task E.6.1's metrics (UI scale 1: body 13 -> 16,
+    // frame 19 -> 24, ItemSpacing.y 4 -> 6). With Issues open, assetBrowserLayout holds the body at its
+    // one-row floor while avail <= 146 (footer 30 + header 30 + spacing 6 + panes 4 x 16 + one row 16) and
+    // fits while avail >= 83 (30 + 30 + 16 + 6 + 1). Measured here, avail = floor((H - 24) / 4) - 71: the
+    // Bottom node's quarter of the work area, less its tab bar, padding and header row. So the regime is
+    // H in [640, 895]: 630 measured avail 80 (the WARN fallback below), 640 avail 83, 890 avail 145, and
+    // 900 avail 148 with an 18-point body. 600, this subcase's height before E.6.1, measured avail 73,
+    // ten under the fit bound, so its CHECK ran nowhere. 768 is avail 115, about 30 inside either bound.
+    // A runner that delivers a SHORTER window than requested (CI's macOS lane can) may still land under 83,
+    // where scrolling is the designed answer and checkFits reports a WARN. 1000 measured avail 152 here,
+    // the same as 920 (the window is held to the display), with a 22-point body.
     bool tallPanel = true;
     int windowHeight = 1000;
     SUBCASE("a TALL panel, where the body has room to grow past one row") {}
     SUBCASE("a SHORT panel, where the body is held at its one-row floor -- the geometry CI hit") {
         tallPanel = false;
-        windowHeight = 600;
+        windowHeight = 768;
     }
     CAPTURE(windowHeight);
     std::optional<engine::platform::Window> window =
@@ -18914,8 +18922,9 @@ TEST_CASE("editor: the Asset Browser fits its panel with 40 orphans and Issues o
 
     // The panel must fit. The TALL panel always; the SHORT one whenever the layout's own budget fits the
     // height the panel recorded, which is the header's contract ("only a panel shorter than the fit bound
-    // can scroll") -- 600 points is inside it at 1x, on every CI lane, but a Retina display doubles the
-    // style and may push it below, where scrolling is the DESIGNED answer. A WARN says so instead.
+    // can scroll") -- the short window is inside it at UI scale 1 (every lane, a Retina display included),
+    // but a runner that shortens the window may push it below, where scrolling is the DESIGNED answer. A
+    // WARN says so instead.
     const auto checkFits = [&app, tallPanel] {
         const AssetBrowserLayoutMetrics m = app->assetBrowserLayoutMetrics();
         const AssetBrowserLayout l = engine::editor::assetBrowserLayout(m);
