@@ -14,6 +14,7 @@
 #include <aero/editor/axis_palette.hpp>  // task E.1.2: AXIS_X_LINEAR / AXIS_Z_LINEAR
 #include <aero/editor/command_stack.hpp>
 #include <aero/editor/editor_glyphs.hpp>
+#include <aero/editor/editor_theme.hpp>
 #include <aero/editor/gizmo.hpp>
 #include <aero/editor/gizmo_style.hpp>  // task E.1.5: the pure style + screen-size model
 #include <aero/editor/picking.hpp>
@@ -25,6 +26,9 @@
 #include <aero/rhi/device.hpp>       // task E.2.3: the atlas's create/upload/destroy calls
 #include <aero/rhi/internal/native_device.hpp>
 #include <aero/scene/mesh_renderer.hpp>  // task 3.1.5: the Material arm asks the LIVE World
+
+#include "editor_theme_imgui.hpp"  // task E.6.1: toImVec4
+#include "editor_theme_ui.hpp"     // task E.6.1: toImU32, toRhiColor
 
 #include <algorithm>
 #include <array>
@@ -49,11 +53,8 @@ namespace engine::editor {
 namespace {
 
 constexpr std::uint32_t VIEWPORT_EXTENT_QUANTUM = 64;
-// ALPHA 1.0 IS LOAD-BEARING (E4): ImGui's pipeline alpha-blends (SrcAlpha/OneMinusSrcAlpha), so a
-// 0-alpha clear would let the editor's chrome show THROUGH the viewport wherever no geometry drew.
-// scene.frag.hlsl already writes alpha 1 (F19) -- the clear is the only alpha we can get wrong.
-constexpr rhi::Color VIEWPORT_CLEAR_COLOR{0.06F, 0.06F, 0.07F, 1.0F};
-constexpr ImVec4 OVERLAY_COLOR{0.7F, 0.7F, 0.75F, 0.8F};
+// task E.6.1: the clear and the overlay colour are EDITOR_THEME.clear.viewport and
+// EDITOR_THEME.viewport.overlayText, values unchanged; the clear's alpha-1 reason (E4) moved with it.
 constexpr float OVERLAY_INSET = 4.0F;
 // task 3.6.3: the two view-option widget widths, chosen so the whole row (T R S Local + combo +
 // slider) fits a 640-point viewport. NOT load-bearing -- a wrap at a narrow dock width is a
@@ -61,8 +62,8 @@ constexpr float OVERLAY_INSET = 4.0F;
 constexpr float OPTIONS_COMBO_WIDTH = 92.0F;
 constexpr float OPTIONS_SLIDER_WIDTH = 130.0F;
 
-// task E.1.2: the grid's look. The GREYS are file-local (they are chosen against
-// VIEWPORT_CLEAR_COLOR, which is also file-local); the AXIS colours are NOT -- E.3.1's Inspector
+// task E.1.2: the grid's look. The GREYS are file-local (they are chosen against the viewport's
+// clear, EDITOR_THEME.clear.viewport since E.6.1); the AXIS colours are NOT -- E.3.1's Inspector
 // rows and E.1.5's gizmo read the same two constants, which is what "sharing E.3.1's axis palette"
 // means. E.6.1's EditorTheme is where all of them eventually live.
 //
@@ -132,10 +133,8 @@ constexpr float SELECTION_PRIMARY_THICKNESS = 2.0F;
 // the ONLY place they become an ImU32, which is the whole point of keeping ViewAxisBall style-free.
 // IM_COL32 is a pure shift/or over its four arguments, so constexpr is valid -- verified against the
 // pinned 1.92.8 header at :99-100 above, not assumed.
-constexpr ImU32 VIEW_AXIS_LABEL_COLOR = IM_COL32(16, 16, 20, 255);  // dark, for legibility on a filled ball
-constexpr ImU32 VIEW_AXIS_HOVER_OUTLINE_COLOR = IM_COL32(255, 255, 255, 255);
-constexpr ImU32 VIEW_AXIS_CENTER_FILL_COLOR = IM_COL32(210, 210, 215, 230);
-constexpr float VIEW_AXIS_NEGATIVE_FILL_ALPHA_SCALE = 0.22F;  // a NEGATIVE ball is a ring, faintly filled
+// task E.6.1: the label, hover-outline and centre-fill colours and the negative fill's alpha scale are
+// EDITOR_THEME.viewport's, values unchanged.
 constexpr float VIEW_AXIS_RING_THICKNESS = 1.5F;
 
 // D7/E9: GetContentRegionAvail() is in LOGICAL units; allocation must be sized in PIXELS. A
@@ -827,16 +826,17 @@ void ViewportPanel::onDraw(PanelContext& context) {
     // Step 9 (D15/C3): the overlay offset is written COMPONENT-WISE -- ImVec2 + ImVec2 does not
     // compile in this codebase (IMGUI_DEFINE_MATH_OPERATORS is defined nowhere).
     ImGui::SetCursorScreenPos(ImVec2(imageOrigin.x + OVERLAY_INSET, imageOrigin.y + OVERLAY_INSET));
-    ImGui::TextColored(OVERLAY_COLOR, "%ux%u", drawExtent.width, drawExtent.height);
+    const ImVec4 overlayColor = toImVec4(EDITOR_THEME.viewport.overlayText);  // task E.6.1: the theme's
+    ImGui::TextColored(overlayColor, "%ux%u", drawExtent.width, drawExtent.height);
     if (gesture.gesture == CameraGesture::Fly) {
-        ImGui::TextColored(OVERLAY_COLOR, "fly %.1f u/s", static_cast<double>(editorCamera.flySpeed()));
+        ImGui::TextColored(overlayColor, "fly %.1f u/s", static_cast<double>(editorCamera.flySpeed()));
     }
     // task E.1.3 (D15): the mode is readable in TWO places -- here, and on the widget's centre badge.
     // A badge letter alone is a glyph 6 points across on a widget the eye is not looking at; a person
     // who wonders "why does nothing get smaller when I fly forward" needs a word, in the place they
     // already read the resolution.
     if (editorCamera.projectionMode() == ProjectionMode::Orthographic) {
-        ImGui::TextColored(OVERLAY_COLOR, "ortho");
+        ImGui::TextColored(overlayColor, "ortho");
     }
     // Step 9b: RECORD THE INTERACTIVE STRIP'S RECT, in the same screen-space POINTS io.MousePos uses,
     // so updatePick's ARM step can refuse a press the strip owns. `rowStart` is captured BEFORE the
@@ -1300,11 +1300,13 @@ void ViewportPanel::drawViewAxisGizmo() const {
         if (ball.positive) {
             drawList->AddCircleFilled(center, radius, colorAt(alpha));
         } else {
-            drawList->AddCircleFilled(center, radius, colorAt(alpha * VIEW_AXIS_NEGATIVE_FILL_ALPHA_SCALE));
+            drawList->AddCircleFilled(center, radius,
+                                      colorAt(alpha * EDITOR_THEME.viewport.viewAxisNegativeFillAlphaScale));
             drawList->AddCircle(center, radius, colorAt(alpha), 0, VIEW_AXIS_RING_THICKNESS);
         }
         if (hot) {
-            drawList->AddCircle(center, radius + 1.0F, VIEW_AXIS_HOVER_OUTLINE_COLOR, 0, VIEW_AXIS_RING_THICKNESS);
+            drawList->AddCircle(center, radius + 1.0F, toImU32(EDITOR_THEME.viewport.viewAxisHoverOutline), 0,
+                                VIEW_AXIS_RING_THICKNESS);
         }
         // A POSITIVE ball is always lettered; a negative one only while hovered, so the ring reads as
         // "the other end of that axis" rather than as a sixth, differently-labelled direction.
@@ -1312,22 +1314,23 @@ void ViewportPanel::drawViewAxisGizmo() const {
             const std::array<char, 2> label{viewAxisLabel(ball.axis), '\0'};
             const ImVec2 textSize = ImGui::CalcTextSize(label.data());
             drawList->AddText(ImVec2(center.x - (textSize.x * 0.5F), center.y - (textSize.y * 0.5F)),
-                              VIEW_AXIS_LABEL_COLOR, label.data());
+                              toImU32(EDITOR_THEME.viewport.viewAxisLabel), label.data());
         }
     }
 
     // The centre badge: the projection toggle, and the SECOND place the mode is readable (D15).
     const ImVec2 badgeCenter(axisLayout.centerPoints.x, axisLayout.centerPoints.y);
     const bool centerHot = axisHover.kind == ViewAxisHit::Center;
-    drawList->AddCircleFilled(badgeCenter, VIEW_AXIS_CENTER_RADIUS_POINTS, VIEW_AXIS_CENTER_FILL_COLOR);
+    drawList->AddCircleFilled(badgeCenter, VIEW_AXIS_CENTER_RADIUS_POINTS,
+                              toImU32(EDITOR_THEME.viewport.viewAxisCenterFill));
     if (centerHot) {
-        drawList->AddCircle(badgeCenter, VIEW_AXIS_CENTER_RADIUS_POINTS + 1.0F, VIEW_AXIS_HOVER_OUTLINE_COLOR, 0,
-                            VIEW_AXIS_RING_THICKNESS);
+        drawList->AddCircle(badgeCenter, VIEW_AXIS_CENTER_RADIUS_POINTS + 1.0F,
+                            toImU32(EDITOR_THEME.viewport.viewAxisHoverOutline), 0, VIEW_AXIS_RING_THICKNESS);
     }
     const std::array<char, 2> badge{editorCamera.projectionMode() == ProjectionMode::Orthographic ? 'O' : 'P', '\0'};
     const ImVec2 badgeTextSize = ImGui::CalcTextSize(badge.data());
     drawList->AddText(ImVec2(badgeCenter.x - (badgeTextSize.x * 0.5F), badgeCenter.y - (badgeTextSize.y * 0.5F)),
-                      VIEW_AXIS_LABEL_COLOR, badge.data());
+                      toImU32(EDITOR_THEME.viewport.viewAxisLabel), badge.data());
 
     drawList->PopClipRect();  // 1:1 with the PushClipRect above -- INV-6
 
@@ -1610,7 +1613,7 @@ void ViewportPanel::renderScene(World& world) {
     // task 3.6.3: the scene now draws into the HDR target `post` owns, and a fullscreen resolve turns
     // that into the 8-bit texture ImGui samples. Command buffer A (the scene) is SUBMITTED before B
     // (the resolve) is acquired, so the queue-ordering guarantee applies with no interleaving at all.
-    std::optional<render::Frame> sceneFrame = post->beginScene(VIEWPORT_CLEAR_COLOR);
+    std::optional<render::Frame> sceneFrame = post->beginScene(toRhiColor(EDITOR_THEME.clear.viewport));
     if (!sceneFrame) {
         selectionMaskSet = {};      // D12: cleared on EVERY exit past the guard chain, never left stale
         selectionSnapshot.clear();  // task E.2.3: the same discipline, one exit at a time
@@ -1685,7 +1688,7 @@ void ViewportPanel::renderScene(World& world) {
         post->sceneDepthTexture(), post->sceneTextureExtent(), post->sceneDrawExtent(), selectionMaskSet.secondary,
         selectionMaskSet.primary);
 
-    std::optional<render::Frame> outFrame = target->beginFrame(VIEWPORT_CLEAR_COLOR);
+    std::optional<render::Frame> outFrame = target->beginFrame(toRhiColor(EDITOR_THEME.clear.viewport));
     if (!outFrame) {
         selectionMaskSet = {};  // D12: this early-return path too -- three exits, three clears
         selectionSnapshot.clear();

@@ -7,6 +7,7 @@
 #include <aero/core/math.hpp>
 #include <aero/editor/asset_view.hpp>    // iconColorFor, IconColor, AssetKind (TH9)
 #include <aero/editor/axis_palette.hpp>  // the AXIS_* aliases (TH3)
+#include <aero/editor/editor_app.hpp>    // EditorAppConfig's clear colour (TH3)
 #include <aero/editor/editor_theme.hpp>
 #include <aero/editor/gizmo_style.hpp>      // the GIZMO_* aliases (TH3)
 #include <aero/editor/material_card.hpp>    // materialSwatchWantsDarkLabel (TH8)
@@ -45,6 +46,13 @@ void checkVec4(const Vec4& actual, const Vec4& expected) {
     CHECK(actual.y == expected.y);
     CHECK(actual.z == expected.z);
     CHECK(actual.w == expected.w);
+}
+
+void checkRgbaf(const ed::Rgbaf& actual, const ed::Rgbaf& expected) {
+    CHECK(actual.r == expected.r);
+    CHECK(actual.g == expected.g);
+    CHECK(actual.b == expected.b);
+    CHECK(actual.a == expected.a);
 }
 
 template <std::size_t N>
@@ -214,6 +222,19 @@ TEST_CASE("theme: Category B is byte-identical to the branch point (task E.6.1, 
     CHECK(t.swatchLabel.lumaG == 7152U);
     CHECK(t.swatchLabel.lumaB == 722U);
     CHECK(t.swatchLabel.darkLabelThreshold == 1280000U);
+
+    // The viewport's overlay and view-axis colours (viewport_panel.cpp:55-56, :135-138 at the branch point).
+    checkRgbaf(t.viewport.overlayText, {0.7F, 0.7F, 0.75F, 0.8F});
+    checkSrgb8(t.viewport.viewAxisLabel, {16U, 16U, 20U, 255U});
+    checkSrgb8(t.viewport.viewAxisHoverOutline, {255U, 255U, 255U, 255U});
+    checkSrgb8(t.viewport.viewAxisCenterFill, {210U, 210U, 215U, 230U});
+    CHECK(t.viewport.viewAxisNegativeFillAlphaScale == 0.22F);
+
+    // The three render-target clears (editor_app.hpp:111, viewport_panel.cpp:55, material_preview.cpp:41 and
+    // material_thumbnail.cpp:34 at the branch point -- the last two already equal).
+    checkRgbaf(t.clear.shell, {0.10F, 0.10F, 0.12F, 1.0F});
+    checkRgbaf(t.clear.viewport, {0.06F, 0.06F, 0.07F, 1.0F});
+    checkRgbaf(t.clear.preview, {0.05F, 0.05F, 0.06F, 1.0F});
 }
 
 TEST_CASE("theme: every alias is the theme (task E.6.1, TH3)") {
@@ -254,6 +275,13 @@ TEST_CASE("theme: every alias is the theme (task E.6.1, TH3)") {
     checkVec4(tints.secondarySelected, theme.secondarySelected);
     checkVec4(tints.unselected, theme.unselected);
     checkVec4(tints.mutedDirectional, theme.mutedDirectional);
+
+    // The shell's clear: EditorAppConfig's default reads the theme.
+    const ed::EditorAppConfig config{};
+    CHECK(config.clearColor.r == ed::EDITOR_THEME.clear.shell.r);
+    CHECK(config.clearColor.g == ed::EDITOR_THEME.clear.shell.g);
+    CHECK(config.clearColor.b == ed::EDITOR_THEME.clear.shell.b);
+    CHECK(config.clearColor.a == ed::EDITOR_THEME.clear.shell.a);
 }
 
 TEST_CASE("theme: the type scale (task E.6.1, TH4)") {

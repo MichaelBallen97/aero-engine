@@ -8,6 +8,8 @@
 #include <aero/editor/editor_theme.hpp>   // task E.6.1 -- the swatch label pair (D17)
 #include <aero/editor/material_card.hpp>  // task E.4.5 -- materialSwatchWantsDarkLabel
 
+#include "editor_theme_ui.hpp"  // task E.6.1: toImU32
+
 #include <cstddef>
 #include <cstdint>
 #include <imgui.h>
@@ -100,26 +102,27 @@ void drawAssetTileFace(ImDrawList* drawList, ImVec2 itemMin, const AssetTileFace
     // task E.4.5: the font and its size, read once as named locals so each AddText below is a single line.
     ImFont* const font = ImGui::GetFont();
     const float fontSize = ImGui::GetFontSize();
+    const ImU32 textInk = toImU32(EDITOR_THEME.palette.text);  // task E.6.1: the caption's colour role
     if (face.subtitle.empty()) {
-        // TODAY'S CAPTION, argument for argument: the caption source wrapped to TILE_CAPTION_LINES.
+        // TODAY'S CAPTION: the caption source wrapped to TILE_CAPTION_LINES, in the theme's text colour (task
+        // E.6.1; it was pure white).
         const std::string caption = elideForCaption(std::string(face.captionSource), wrapWidth);
-        drawList->AddText(font, fontSize, captionPos, IM_COL32_WHITE, caption.c_str(), nullptr, wrapWidth, nullptr);
+        drawList->AddText(font, fontSize, captionPos, textInk, caption.c_str(), nullptr, wrapWidth, nullptr);
         return;
     }
     // task E.4.5: TWO one-line captions in exactly the space the wrapped one had -- the file name first, in
-    // today's white, then the document's name beneath it in the theme's own disabled-text colour (a colour the
-    // theme already owns, E.3.4's D6 precedent). Both are draw-list text, so no format string exists on this
-    // path (D12), and still NO ImGui ITEM is submitted: GetColorU32, GetFont and GetTextLineHeight are reads.
-    // GetColorU32 applies the current style alpha, so the subtitle's exact byte value is context-dependent and
-    // is asserted nowhere as a constant.
+    // the caption's colour, then the document's name beneath it in the theme's textMuted (task E.6.1: text
+    // that is de-emphasised but ENABLED, D16 -- it used to read ImGui's disabled-text slot). Both are
+    // draw-list text, so no format string exists on this path (D12), and still NO ImGui ITEM is submitted:
+    // GetFont and GetTextLineHeight are reads.
     // The code-review round: line one keeps the FILE NAME. A search hit's source is "parent/leaf", and eliding it
     // from the right kept the folder and dropped the name; subtitledTileCaptionLine drops the folder's front first.
     const CaptionLineFits oneLine = captionFitsWithin(wrapWidth, ImGui::GetTextLineHeight());
     const std::string primary = subtitledTileCaptionLine(face.captionSource, face.fileName, oneLine);
-    drawList->AddText(font, fontSize, captionPos, IM_COL32_WHITE, primary.c_str(), nullptr, wrapWidth, nullptr);
+    drawList->AddText(font, fontSize, captionPos, textInk, primary.c_str(), nullptr, wrapWidth, nullptr);
     const std::string secondary = elideForCaption(std::string(face.subtitle), wrapWidth, 1U);
     const ImVec2 subtitlePos(captionPos.x, captionPos.y + ImGui::GetTextLineHeight());
-    const ImU32 dimmed = ImGui::GetColorU32(ImGuiCol_TextDisabled);
+    const ImU32 dimmed = toImU32(EDITOR_THEME.palette.textMuted);
     drawList->AddText(font, fontSize, subtitlePos, dimmed, secondary.c_str(), nullptr, wrapWidth, nullptr);
 }
 

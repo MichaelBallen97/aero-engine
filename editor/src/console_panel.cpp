@@ -23,6 +23,7 @@
 #include <aero/editor/console_model.hpp>
 #include <aero/editor/panel_context.hpp>
 
+#include "editor_theme_imgui.hpp"  // task E.6.1: toImVec4
 #include "text_input.hpp"
 
 #include <array>
@@ -48,33 +49,32 @@ constexpr const char* ELAPSED_COLUMN_SAMPLE = "00:00:00.000";
 constexpr std::array<LogLevel, LOG_LEVEL_RECORD_COUNT> SELECTABLE_LEVELS = {
     LogLevel::Trace, LogLevel::Debug, LogLevel::Info, LogLevel::Warn, LogLevel::Error, LogLevel::Critical};
 
+}  // namespace
+
 // Plan C2: identical arms share ONE label. Separate token-identical case bodies are what
 // bugprone-branch-clone reports, and that check is --warnings-as-errors on the Linux Debug lane.
-// Trace/Debug and Info follow the ACTIVE THEME via GetStyleColorVec4 (imgui.h:563) instead of
-// hardcoding a palette; only the three attention levels carry literal colours.
-ImVec4 logLevelColor(LogLevel level) {
+// Every level reads a role of EDITOR_THEME (task E.6.1).
+Srgb8 logLevelColor(LogLevel level) noexcept {
     switch (level) {
         case LogLevel::Trace:
         case LogLevel::Debug:
-            return ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled);
+            return EDITOR_THEME.palette.textMuted;
         case LogLevel::Info:
         case LogLevel::Off:  // unreachable in practice: Off is a floor value, never a record level
-            return ImGui::GetStyleColorVec4(ImGuiCol_Text);
+            return EDITOR_THEME.palette.text;
         case LogLevel::Warn:
-            return ImVec4(1.00F, 0.80F, 0.35F, 1.00F);
+            return EDITOR_THEME.palette.warning;
         case LogLevel::Error:
-            return ImVec4(1.00F, 0.45F, 0.40F, 1.00F);
+            return EDITOR_THEME.palette.error;
         case LogLevel::Critical:
-            return ImVec4(1.00F, 0.25F, 0.25F, 1.00F);
+            return EDITOR_THEME.palette.critical;
     }
     // Unreachable; keeps GCC's control-reaches-end quiet -- the log.cpp:30 shape. NOTE: this is a
     // CONVENTION, not enforcement. The project enables neither -Wall nor -Wswitch, so a new
     // enumerator would not fail the build; shell_ui.cpp:109-111's static_assert is the pattern to
     // copy if that ever needs to be mechanical. LogLevel is a settled 0.2.4 enum.
-    return ImGui::GetStyleColorVec4(ImGuiCol_Text);
+    return EDITOR_THEME.palette.text;
 }
-
-}  // namespace
 
 ConsolePanel::ConsolePanel(LogSinkScope scope) : sinkScope(std::move(scope)) {}
 
@@ -145,7 +145,7 @@ void ConsolePanel::drawLogChild(float footerHeight) {
     while (clipper.Step()) {
         for (int i = clipper.DisplayStart; i < clipper.DisplayEnd; ++i) {
             const LogEntry& entry = logHistory.visibleAt(static_cast<std::size_t>(i));
-            const ImVec4 color = logLevelColor(entry.level);
+            const ImVec4 color = toImVec4(logLevelColor(entry.level));
             // Plan C6: keyed by SEQUENCE, not by row position -- so hover/tooltip state follows the
             // RECORD when the ring evicts under a stationary mouse. Two simultaneously visible
             // sequences differ by far less than 2^31, so the truncation cannot collide in a frame.
@@ -170,7 +170,7 @@ void ConsolePanel::drawLogChild(float footerHeight) {
                 ImGui::SetTooltip("%s:%u", entry.sourceFile.c_str(), static_cast<unsigned>(entry.line));
             }
             ImGui::SameLine(0.0F, 0.0F);
-            ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+            ImGui::PushStyleColor(ImGuiCol_Text, toImVec4(EDITOR_THEME.palette.textMuted));
             lineScratch = formatElapsed(entry.elapsedMs);
             ImGui::TextUnformatted(lineScratch.c_str());  // NEVER ImGui::Text -- INV-6
             ImGui::PopStyleColor();

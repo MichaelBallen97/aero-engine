@@ -15,7 +15,9 @@
 // pumpLog() is called by EditorApp::tick() EVERY frame, visible or not (D14) -- NEVER from onDraw.
 // shell_ui.cpp:74-79 skips onDraw entirely for a hidden or tabbed-away panel, and Console shares its
 // dock node with Assets, so it is behind another tab a great deal of the time (AC-6).
+#include <aero/core/log.hpp>  // LogLevel
 #include <aero/editor/console_model.hpp>
+#include <aero/editor/editor_theme.hpp>  // Srgb8
 #include <aero/editor/panel.hpp>
 
 #include <cstdint>
@@ -23,6 +25,11 @@
 #include <vector>
 
 namespace engine::editor {
+
+// task E.6.1: the colour a record's level is drawn in -- a role of EDITOR_THEME, returned as the theme's own
+// Srgb8 so the mapping stays ImGui-free and tier-0 testable (I287). Trace and Debug are textMuted, Info is
+// text, and Warn, Error and Critical are their own roles.
+[[nodiscard]] Srgb8 logLevelColor(LogLevel level) noexcept;
 
 class ConsolePanel final : public Panel {
 public:

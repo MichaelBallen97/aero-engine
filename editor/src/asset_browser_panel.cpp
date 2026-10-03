@@ -24,7 +24,8 @@
 #include <aero/editor/panel_context.hpp>
 #include <aero/editor/project_files.hpp>
 
-#include "asset_tile.hpp"         // task E.3.3 -- the tile FACE, shared with the picker
+#include "asset_tile.hpp"  // task E.3.3 -- the tile FACE, shared with the picker
+#include "editor_theme_imgui.hpp"
 #include "text_input.hpp"         // task 3.1.3 (A1): inputTextString -- NEVER imgui_stdlib (Windows Debug LNK2038)
 #include "thumbnail_service.hpp"  // task E.3.3 -- the SHARED ledger/store, borrowed through thumbnailsPtr
 
@@ -99,7 +100,7 @@ void drawMaterialRowSuffix(ThumbnailService* thumbnails, const AssetDatabase* da
     scratch = MATERIAL_CARD_SEPARATOR;
     scratch += subtitle;
     ImGui::SameLine(0.0F, 0.0F);
-    ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+    ImGui::PushStyleColor(ImGuiCol_Text, toImVec4(EDITOR_THEME.palette.textMuted));  // task E.6.1 (D16)
     ImGui::TextUnformatted(scratch.c_str());
     ImGui::PopStyleColor();
 }

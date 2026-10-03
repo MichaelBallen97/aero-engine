@@ -4,6 +4,7 @@
 // drive the style builder and read the live style through ImGui-free snapshots. The ImGui-typed half is
 // editor_theme_imgui.hpp, which only ImGui TUs include.
 #include <aero/editor/editor_theme.hpp>
+#include <aero/rhi/types.hpp>  // rhi::Color, for toRhiColor
 
 #include <array>
 #include <cstddef>
@@ -23,6 +24,10 @@ void applyEditorStyle(float uiScale);
 [[nodiscard]] float currentUiScale();
 // IM_COL32's packing of a theme colour, for ImDrawList calls; declared ImGui-free so any caller can use it.
 [[nodiscard]] std::uint32_t toImU32(Srgb8 color) noexcept;
+// The ONE spelling of a theme clear as a render-target clear colour (rhi::Color is {r, g, b, a} floats).
+[[nodiscard]] constexpr rhi::Color toRhiColor(Rgbaf color) noexcept {
+    return rhi::Color{color.r, color.g, color.b, color.a};
+}
 
 // ---- snapshots, for tests: ImGui-free copies of a style, read through ImGui's own conversions --------
 // A scalar member has y == 0; an enum, flag or bool member is its integer value in x.

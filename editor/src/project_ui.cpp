@@ -8,7 +8,8 @@
 
 #include <aero/editor/project.hpp>
 
-#include "text_input.hpp"  // 2.2.2's inputTextString helper
+#include "editor_theme_imgui.hpp"  // task E.6.1: toImVec4
+#include "text_input.hpp"          // 2.2.2's inputTextString helper
 
 #include <imgui.h>
 #include <string>
@@ -83,7 +84,8 @@ void drawNewProjectModal(FileMenuContext& fileMenu) {
         inputTextString("Name", form.name, ImGuiInputTextFlags_None);  // 2.2.2's helper
         const NameProblem problem = validateProjectName(form.name);    // LIVE, every frame
         if (problem != NameProblem::Ok && !form.name.empty()) {
-            ImGui::TextColored(ImVec4(1.0F, 0.4F, 0.4F, 1.0F), "%s", std::string(nameProblemMessage(problem)).c_str());
+            ImGui::TextColored(toImVec4(EDITOR_THEME.palette.error), "%s",
+                               std::string(nameProblemMessage(problem)).c_str());
         }
         ImGui::TextDisabled("Location");
         ImGui::SameLine();
@@ -98,7 +100,7 @@ void drawNewProjectModal(FileMenuContext& fileMenu) {
             ImGui::TextDisabled("Will create: %s", preview.c_str());  // a read-only preview, so there
         }  // is never a question about where
         if (!form.error.empty()) {  // the folder lands
-            ImGui::TextColored(ImVec4(1.0F, 0.4F, 0.4F, 1.0F), "%s", form.error.c_str());
+            ImGui::TextColored(toImVec4(EDITOR_THEME.palette.error), "%s", form.error.c_str());
         }
         ImGui::Separator();
         const bool canCreate = problem == NameProblem::Ok && !form.location.empty();

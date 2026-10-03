@@ -11252,7 +11252,9 @@ TEST_CASE("editor: the selection-outline wiring's three source-text invariants h
     SUBCASE("(a) the mask pass sits between endScene and beginFrame") {
         const std::size_t maskAt = soleLineContaining(code, "renderSelectionMask(");
         const std::size_t endSceneAt = soleLineContaining(code, "post->endScene(std::move(*sceneFrame))");
-        const std::size_t beginFrameAt = soleLineContaining(code, "target->beginFrame(VIEWPORT_CLEAR_COLOR)");
+        // task E.6.1: the clear moved into EDITOR_THEME; the call, and so its POSITION, did not.
+        const std::size_t beginFrameAt =
+            soleLineContaining(code, "target->beginFrame(toRhiColor(EDITOR_THEME.clear.viewport))");
         // ANTI-VACUITY: soleLineContaining REQUIREs exactly one hit, so all three tokens were found.
         CHECK(endSceneAt < maskAt);    // AFTER A submits, so the depth it reads has been written
         CHECK(maskAt < beginFrameAt);  // BEFORE B is acquired, so nothing has a pass open
@@ -15906,10 +15908,11 @@ TEST_CASE(
     SUBCASE("(d) the Apply emphasis derives from the style -- no colour literal") {
         CHECK(panel.find("GetStyleColorVec4(ImGuiCol_ButtonActive)") != std::string::npos);
         CHECK(panel.find("IM_COL32") == std::string::npos);
-        // The two file-local ImVec4s (WARNING_COLOR / NOTICE_COLOR) stay, UNCHANGED and UNMOVED, and
-        // are E.6.1's candidates. This task adds NONE -- which is why the COUNT is pinned rather than
-        // the absence.
-        CHECK(countOccurrences(panel, "constexpr ImVec4") == 2U);
+        // The two file-local ImVec4s (WARNING_COLOR / NOTICE_COLOR) moved into EDITOR_THEME at E.6.1 --
+        // the count is pinned at zero and the roles' reads are asserted.
+        CHECK(countOccurrences(panel, "constexpr ImVec4") == 0U);
+        CHECK(panel.find("EDITOR_THEME.palette.error") != std::string::npos);
+        CHECK(panel.find("EDITOR_THEME.palette.warning") != std::string::npos);
     }
     SUBCASE("(e) ONE width formula, in ONE place") {
         // Two exact counts over one literal each, NOT "the file does not contain CalcTextSize" --
@@ -22185,4 +22188,80 @@ TEST_CASE(
     }
     CHECK(errors == 1U);
     CHECK(returnsNothing);
+}
+
+// ---- I287: the panels read their colours from the theme's roles (task E.6.1, step 6) -------------------
+namespace {
+
+// Per channel, as integers, so a failure prints numbers rather than a character.
+void checkSameSrgb8(const engine::editor::Srgb8& actual, const engine::editor::Srgb8& expected) {
+    CHECK(static_cast<int>(actual.r) == static_cast<int>(expected.r));
+    CHECK(static_cast<int>(actual.g) == static_cast<int>(expected.g));
+    CHECK(static_cast<int>(actual.b) == static_cast<int>(expected.b));
+    CHECK(static_cast<int>(actual.a) == static_cast<int>(expected.a));
+}
+
+struct LevelColorRow {
+    engine::LogLevel level;
+    std::string_view name;
+    engine::editor::Srgb8 expected;
+};
+
+}  // namespace
+
+TEST_CASE("editor: the panels read their roles from the theme (task E.6.1, I287)") {
+    // NO GPU: logLevelColor is ImGui-free, and the rest is the seven panels' comment-stripped source text.
+    const engine::editor::ThemePalette& p = engine::editor::EDITOR_THEME.palette;
+    const std::array<LevelColorRow, 7> rows{{
+        {engine::LogLevel::Trace, "Trace", p.textMuted},
+        {engine::LogLevel::Debug, "Debug", p.textMuted},
+        {engine::LogLevel::Info, "Info", p.text},
+        {engine::LogLevel::Off, "Off", p.text},
+        {engine::LogLevel::Warn, "Warn", p.warning},
+        {engine::LogLevel::Error, "Error", p.error},
+        {engine::LogLevel::Critical, "Critical", p.critical},
+    }};
+    for (const LevelColorRow& row : rows) {
+        CAPTURE(row.name);
+        checkSameSrgb8(engine::editor::logLevelColor(row.level), row.expected);
+    }
+
+    // No panel states a colour or reads ImGui's disabled slot for enabled text (seed S25). The four
+    // literal patterns are AC-9's; TextDisabled is left to ImGui's own disabled widgets.
+    const std::array<std::regex, 4> literals{
+        std::regex(R"(ImVec4\(\s*[0-9])"),
+        std::regex(R"(IM_COL32\(\s*[0-9])"),
+        std::regex("IM_COL32_WHITE"),
+        std::regex("IM_COL32_BLACK"),
+    };
+    constexpr std::array<std::string_view, 7> PANELS{
+        "console_panel.cpp", "material_panel.cpp",      "import_details_panel.cpp",   "project_ui.cpp",
+        "asset_tile.cpp",    "asset_browser_panel.cpp", "project_settings_panel.cpp",
+    };
+    for (const std::string_view file : PANELS) {
+        CAPTURE(file);
+        const std::string path = std::string(AERO_EDITOR_SRC_DIR "/").append(file);
+        const std::vector<std::string> code = editorSourceCodeLines(path);
+        REQUIRE(code.size() > 20U);
+        for (std::size_t k = 0; k < literals.size(); ++k) {
+            CAPTURE(k);
+            CHECK_FALSE(anyLineMatches(code, literals[k]));
+        }
+        CHECK(countLinesContaining(code, "ImGuiCol_TextDisabled") == 0U);
+    }
+
+    // The roles are READ, not merely the literals gone.
+    const std::string materialPath = AERO_EDITOR_SRC_DIR "/material_panel.cpp";
+    const std::vector<std::string> material = editorSourceCodeLines(materialPath);
+    CHECK(countLinesContaining(material, "EDITOR_THEME.palette.error") > 0U);
+    CHECK(countLinesContaining(material, "EDITOR_THEME.palette.warning") > 0U);
+    const std::vector<std::string> console = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/console_panel.cpp");
+    CHECK(countLinesContaining(console, "logLevelColor(") > 0U);
+    CHECK(countLinesContaining(console, "EDITOR_THEME.palette.textMuted") > 0U);
+
+    // ANTI-VACUITY: the literal patterns match the spellings they exist to refuse.
+    CHECK(std::regex_search(std::string("ImVec4( 1.0F, 0.4F, 0.4F, 1.0F)"), literals[0]));
+    CHECK(std::regex_search(std::string("IM_COL32(16, 16, 20, 255)"), literals[1]));
+    const std::string whiteCaption = "drawList->AddText(font, size, pos, IM_COL32_WHITE, text)";
+    CHECK(std::regex_search(whiteCaption, literals[2]));
 }

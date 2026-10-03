@@ -156,11 +156,14 @@ private:
     return snap;
 }
 
+// NOT a UI colour: the purity poison below, magenta, which no palette token is (TH1 restates all of them).
+constexpr Srgb8 STYLE_POISON_COLOR{255U, 0U, 255U, 255U};
+
 // Everything the builder must overwrite, set to something it would never produce: a builder that started
 // from GetStyle() would carry these through (seed S10).
 void poisonStyle(ImGuiStyle& style) {
     for (ImVec4& color : style.Colors) {
-        color = ImVec4(1.0F, 0.0F, 1.0F, 1.0F);  // magenta
+        color = toImVec4(STYLE_POISON_COLOR);
     }
     style.ScaleAllSizes(999.0F);
     style.FontSizeBase = 999.0F;

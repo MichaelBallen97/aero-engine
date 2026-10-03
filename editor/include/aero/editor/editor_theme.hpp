@@ -248,6 +248,24 @@ struct ThemeSwatchLabel {
     std::uint32_t darkLabelThreshold = 128U * 10000U;
 };
 
+// Moved from viewport_panel.cpp:55-56 and :135-138 at E.6.1, every value unchanged (Category B).
+struct ThemeViewport {
+    Rgbaf overlayText{0.7F, 0.7F, 0.75F, 0.8F};  // the extent / fly speed / ortho chips
+    Srgb8 viewAxisLabel{16U, 16U, 20U, 255U};    // dark, for legibility on a filled ball
+    Srgb8 viewAxisHoverOutline{255U, 255U, 255U, 255U};
+    Srgb8 viewAxisCenterFill{210U, 210U, 215U, 230U};
+    float viewAxisNegativeFillAlphaScale = 0.22F;  // a NEGATIVE ball is a ring, faintly filled
+};
+
+// Moved at E.6.1, every value unchanged (Category B): render-target clears, LINEAR floats. ALPHA 1.0 IS
+// LOAD-BEARING in each (viewport_panel.cpp's E4): ImGui's pipeline alpha-blends, so a 0-alpha clear would
+// let the editor's chrome show THROUGH a target wherever no geometry drew.
+struct ThemeClears {
+    Rgbaf shell{0.10F, 0.10F, 0.12F, 1.0F};     // editor_app.hpp:111 (2.1.1's)
+    Rgbaf viewport{0.06F, 0.06F, 0.07F, 1.0F};  // viewport_panel.cpp:55
+    Rgbaf preview{0.05F, 0.05F, 0.06F, 1.0F};   // material_preview.cpp:41, material_thumbnail.cpp:34 (equal)
+};
+
 struct EditorTheme {
     ThemePalette palette;
     ThemeTypeScale type;
@@ -257,6 +275,8 @@ struct EditorTheme {
     ThemeViewportTints viewportTints;
     ThemeAssetKinds assetKind;
     ThemeSwatchLabel swatchLabel;
+    ThemeViewport viewport;
+    ThemeClears clear;
 };
 
 inline constexpr EditorTheme EDITOR_THEME{};  // THE one value
