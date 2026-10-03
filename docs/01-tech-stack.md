@@ -78,6 +78,8 @@ The project is **MIT**. Every linked dependency must be permissive-compatible.
 | stb_vorbis | MIT / public domain | ✅ Yes (with epic 3.7) |
 | enkiTS | Zlib | ✅ Yes |
 | msdf-atlas-gen | MIT | ⚠️ Editor only |
+| IBM Plex Sans / Plex Mono (font data) | OFL-1.1 (Reserved Font Name "Plex") | ⚠️ Editor only (embedded data) |
+| Lucide (icon font data) | ISC (Feather-derived glyphs MIT) | ⚠️ Editor only (embedded data) |
 | Assimp | BSD-3 | ⚠️ **Editor only** |
 | Tracy | BSD-3 | ⚠️ Dev builds only |
 | KTX / Basis Universal | Apache-2.0 | ✅ Yes |
@@ -87,6 +89,10 @@ The project is **MIT**. Every linked dependency must be permissive-compatible.
 | SPIRV-Cross / SPIRV-Tools / SPIRV-Headers | Apache-2.0 | 🔧 Build-time only (`shaderc`) |
 | esbuild / swc | MIT / Apache-2.0 | 🔧 Build-time only |
 | Blender | GPL | 🔧 **Invoked as an external process only** — not linked, does not contaminate |
+
+> Font data under the OFL is bundled **unmodified** (`editor/third_party/fonts/`); the Reserved Font Name forbids a
+> modified — for example subset — copy from carrying the name, which is why the editor embeds the release files
+> whole.
 
 ### Excluded by license
 

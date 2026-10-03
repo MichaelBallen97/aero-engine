@@ -53,3 +53,13 @@ tests/cooker/determinism.sha256 text eol=lf
 # exactly like a cook bug. Verify with
 # `git check-attr text eol binary -- tests/cooker/fixtures/external.bin`.
 *.bin binary
+# task E.6.1: the editor's vendored font DATA is stored and checked out BYTE-FOR-BYTE, because its README pins
+# every file's SHA-256 against the named upstream. `-text` turns off the blanket `* text=auto eol=lf` above for
+# exactly these two directories: IBM Plex's LICENSE.txt ships CRLF line endings, and normalising them would
+# commit a file that is not upstream's. The README beside them is authored here and stays under the blanket rule.
+# Verify with `git check-attr text eol -- editor/third_party/fonts/ibm-plex/OFL.txt` (text: unset).
+editor/third_party/fonts/ibm-plex/** -text
+editor/third_party/fonts/lucide/** -text
+# A TrueType font is binary. The blanket rule already sniffs one as binary by its NUL bytes; this line makes it
+# explicit, so a narrowing of that rule cannot silently EOL-convert a font.
+*.ttf binary
