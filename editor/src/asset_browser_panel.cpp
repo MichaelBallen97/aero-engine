@@ -20,6 +20,7 @@
 #include <aero/editor/asset_meta.hpp>
 #include <aero/editor/asset_watcher.hpp>  // task 3.1.4 -- WatchStatus, read through the reconciled pointer
 #include <aero/editor/editor_glyphs.hpp>
+#include <aero/editor/editor_icons.hpp>   // task E.6.1: AERO_ICON_CORNER_LEFT_UP
 #include <aero/editor/material_card.hpp>  // task E.4.5 -- the card's subtitle and tint rules, and the separator
 #include <aero/editor/panel_context.hpp>
 #include <aero/editor/project_files.hpp>
@@ -1023,10 +1024,8 @@ void AssetBrowserPanel::drawContentsGrid(float paneHeight) {
         // rest of its row blank -- visibly unlike every real tile beside it, which draws an icon rect
         // and a centred caption. Reported from the 3.1.3 human pass.
         //
-        // "<" and ".." are DELIBERATELY ASCII. An arrow glyph like U+2190 is outside the set the one UI
-        // font covers (.claude/rules/editor.md, "The UI font"), so it would draw as '?' -- a worse
-        // regression than the block it replaces. Widening that set is E.6.1's, which owns the font and
-        // theme system.
+        // task E.6.1: Lucide's corner-left-up icon -- merged into the Body face, so it draws natively; the
+        // literal is a hex-escape macro (.claude/rules/editor.md).
         //
         // Keeping it off the grid flow is UNCHANGED and still load-bearing: sharing a row with the
         // clipper-driven grid below would make the clipper's row math account for one leading cell.
@@ -1035,7 +1034,8 @@ void AssetBrowserPanel::drawContentsGrid(float paneHeight) {
         if (!currentDir.empty()) {
             ImGui::PushID(-1);
             const ImVec2 barSize(ImGui::GetContentRegionAvail().x, 0.0F);  // y == 0 -> one text line
-            if (ImGui::Selectable("<  ..", false, ImGuiSelectableFlags_None, barSize)) {
+            const char* const parentLabel = AERO_ICON_CORNER_LEFT_UP "  ..";
+            if (ImGui::Selectable(parentLabel, false, ImGuiSelectableFlags_None, barSize)) {
                 record(ActionKind::Navigate, parentOf(currentDir));
             }
             ImGui::PopID();

@@ -23,6 +23,7 @@
 #include <aero/editor/console_model.hpp>
 #include <aero/editor/panel_context.hpp>
 
+#include "editor_fonts.hpp"        // task E.6.1: editorFonts().mono
 #include "editor_theme_imgui.hpp"  // task E.6.1: toImVec4
 #include "text_input.hpp"
 
@@ -129,6 +130,7 @@ void ConsolePanel::drawHeader() {
 
 // ---- phase 2: the log child -- strictly READ-ONLY ----------------------------------------------
 void ConsolePanel::drawLogChild(float footerHeight) {
+    messageRowsSubmittedValue = 0;  // task E.6.1: a PER-FRAME count -- what this frame really submitted
     // imgui.h:452-455 -- the NEGATIVE height means "all remaining height minus footerHeight". A
     // hand-computed `avail.y - footerHeight` that evaluated to exactly 0.0f would instead mean "fill
     // the parent" and silently eat the footer. This is the documented reserve-a-footer idiom.
@@ -176,12 +178,20 @@ void ConsolePanel::drawLogChild(float footerHeight) {
             ImGui::PopStyleColor();
             ImGui::SameLine(levelColumnX, 0.0F);
             ImGui::PushStyleColor(ImGuiCol_Text, color);
+            lastLevelFontNameValue = ImGui::GetFont()->GetDebugName();  // task E.6.1: Body, outside the push
             ImGui::TextUnformatted(logLevelLabel(entry.level));
             ImGui::PopStyleColor();
             ImGui::SameLine(messageColumnX, 0.0F);
+            // task E.6.1: the MESSAGE in Mono, at size 0 -- the current size, which is Body's (D6), so the
+            // row the Selectable sized in Body and the clipper's row step stay exact. A copy of the face's
+            // name, taken inside the push, is what I283 reads.
+            ImGui::PushFont(editorFonts().mono, 0.0F);
             ImGui::PushStyleColor(ImGuiCol_Text, color);
+            lastMessageFontNameValue = ImGui::GetFont()->GetDebugName();
             ImGui::TextUnformatted(entry.message.c_str());
             ImGui::PopStyleColor();
+            ImGui::PopFont();
+            ++messageRowsSubmittedValue;
             ImGui::PopID();  // no continue/break/return anywhere between any Push and its Pop
         }
     }

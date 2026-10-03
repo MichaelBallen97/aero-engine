@@ -7,6 +7,8 @@
 
 #include <cstddef>
 #include <imgui.h>
+#include <imgui_internal.h>  // task E.6.1: MenuItemEx / BeginMenuEx (imgui_internal.h:3598-3599) -- the third
+                             // editor TU to include it, after shell_ui.cpp and viewport_panel.cpp
 #include <optional>
 #include <span>
 
@@ -26,21 +28,27 @@ std::optional<CreateKind> drawCreateMenuItems(bool enabled) {
         if (groupLabel[0] == '\0') {
             // TopLevel: the entries sit directly in the caller's menu.
             for (std::size_t k = i; k < runEnd; ++k) {
-                if (ImGui::MenuItem(createKindLabel(entries[k].kind), nullptr, false, enabled)) {
-                    chosen = entries[k].kind;
+                const CreateKind kind = entries[k].kind;
+                if (ImGui::MenuItemEx(createKindLabel(kind), createKindIcon(kind), nullptr, false, enabled)) {
+                    chosen = kind;
                 }
             }
-        } else if (ImGui::BeginMenu(groupLabel, enabled)) {  // EndMenu ONLY when BeginMenu returned true
+        } else if (ImGui::BeginMenuEx(groupLabel, createMenuGroupIcon(group), enabled)) {
             for (std::size_t k = i; k < runEnd; ++k) {
-                if (ImGui::MenuItem(createKindLabel(entries[k].kind), nullptr, false, enabled)) {
-                    chosen = entries[k].kind;
+                const CreateKind kind = entries[k].kind;
+                if (ImGui::MenuItemEx(createKindLabel(kind), createKindIcon(kind), nullptr, false, enabled)) {
+                    chosen = kind;
                 }
             }
-            ImGui::EndMenu();
+            ImGui::EndMenu();  // ONLY when BeginMenuEx returned true
         }
         i = runEnd;
     }
     return chosen;
+}
+
+bool drawCreateKindItem(const char* label, CreateKind kind, bool enabled) {
+    return ImGui::MenuItemEx(label, createKindIcon(kind), nullptr, false, enabled);
 }
 
 }  // namespace engine::editor

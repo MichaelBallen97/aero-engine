@@ -64,6 +64,7 @@
 #include "../../editor/src/editor_theme_ui.hpp"  // task E.6.1 (I280-I282): style snapshots, ImGui-free
 #include "../../editor/src/file_dialog.hpp"      // fix 2.5.1-focus (I275, I276): the dialog focus gate + helper
 #include "../../editor/src/hierarchy_panel.hpp"  // task E.5.2, I249: requestCreate -- the panel-to-drain path
+#include "../../editor/src/inspector_panel.hpp"  // task E.6.1 (I284): the face its headers and labels drew in
 #include "../../editor/src/material_panel.hpp"   // task E.2.4, I136: previewOutputTarget() -- the same
                                                  // src-private reach the two lines below already make
 #include "../../editor/src/scene_asset_loader.hpp"
@@ -21646,6 +21647,8 @@ TEST_CASE("editor: the font, style and font-push writers each live in their own 
     std::vector<std::string> writingStyle;
     std::vector<std::string> namingDpiFlag;
     std::vector<std::string> writingDpiFlag;
+    std::vector<std::string> pushingFonts;  // task E.6.1 step 8: the two panels that switch face
+    std::vector<std::string> poppingFonts;
     std::size_t scanned = 0;
     std::error_code ec;
     for (const std::filesystem::directory_entry& entry :
@@ -21671,10 +21674,17 @@ TEST_CASE("editor: the font, style and font-push writers each live in their own 
         if (flagWrite) {
             writingDpiFlag.push_back(name);
         }
+        if (countLinesContaining(code, "PushFont") > 0U) {
+            pushingFonts.push_back(name);
+        }
+        if (countLinesContaining(code, "PopFont") > 0U) {
+            poppingFonts.push_back(name);
+        }
     }
     REQUIRE_FALSE(ec);
     REQUIRE(scanned > 80U);  // ANTI-VACUITY: the walk read the editor's sources
-    for (std::vector<std::string>* set : {&addingFonts, &writingStyle, &namingDpiFlag, &writingDpiFlag}) {
+    for (std::vector<std::string>* set :
+         {&addingFonts, &writingStyle, &namingDpiFlag, &writingDpiFlag, &pushingFonts, &poppingFonts}) {
         std::sort(set->begin(), set->end());
         set->erase(std::unique(set->begin(), set->end()), set->end());
     }
@@ -21684,6 +21694,11 @@ TEST_CASE("editor: the font, style and font-push writers each live in their own 
     // one and the snapshot that reports it to the tests.
     CHECK(writingDpiFlag == std::vector<std::string>{"imgui_layer.cpp"});
     CHECK(namingDpiFlag == std::vector<std::string>{"editor_theme_ui.cpp", "imgui_layer.cpp"});
+    // The face switches: the Console's messages and the Inspector's headers, and nothing else -- each push
+    // in a file that pops (task E.6.1, step 8).
+    const std::vector<std::string> fontPanels{"console_panel.cpp", "inspector_panel.cpp"};
+    CHECK(pushingFonts == fontPanels);
+    CHECK(poppingFonts == fontPanels);
 
     // Every add hands ImGui static data it must NEVER free (seed S9): one "not owned" per add.
     const std::vector<std::string> fonts = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/editor_fonts.cpp");
@@ -22337,4 +22352,149 @@ TEST_CASE("editor: the viewport chrome uses the live UI scale (task E.6.1, I288)
     app->requestQuit();
     CHECK(app->tick() == false);
     app.reset();
+}
+
+// ---- I283-I285: the faces and icons each consumer drew with (task E.6.1, step 8) ------------------------
+// Every font claim reads what ImGui had CURRENT when the panel drew (GetFont()->GetDebugName(), recorded by
+// the panel at the draw), never a seam's round trip.
+TEST_CASE("editor: Console messages draw in Mono and the other columns in Body (task E.6.1, I283)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "console mono i283", .width = 900, .height = 600});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    auto* const console = dynamic_cast<engine::editor::ConsolePanel*>(app->panels().find("Console"));
+    REQUIRE(console != nullptr);
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+
+    // THE ROUTING BASELINE, independent of which Bottom tab is the default: Assets in front, and the Console
+    // provably NOT drawing before the claim.
+    app->requestPanelFocus("Assets");
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+    const auto idle = app->panelDrawnCount("Console");
+    REQUIRE(app->tick());
+    REQUIRE(app->panelDrawnCount("Console") == idle);
+
+    AERO_LOG_INFO("e61 mono probe");
+    app->requestPanelFocus("Console");
+    REQUIRE(app->tick());  // raises the Console
+    REQUIRE(app->tick());  // draws the record pumpLog took at the top of this tick
+    REQUIRE(app->panelDrawnCount("Console") > idle);
+
+    CHECK(console->messageRowsSubmitted() > 0U);  // a message really was submitted this frame
+    CHECK(console->lastMessageFontName() == "IBM Plex Mono");
+    CHECK(console->lastLevelFontName() == "IBM Plex Sans");  // the Mono push is scoped (seed S19)
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: Inspector component headers draw in SemiBold and labels in Body (task E.6.1, I284)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "inspector strong i284", .width = 900, .height = 600});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    auto* const inspector = dynamic_cast<engine::editor::InspectorPanel*>(app->panels().find("Inspector"));
+    REQUIRE(inspector != nullptr);
+
+    // The default scene's Cube: a Transform and a MeshRenderer, so at least two headers draw.
+    engine::World& world = app->world();
+    engine::Entity cube{};
+    world.eachEntity([&](engine::Entity e) {
+        if (world.name(e) == "Cube") {
+            cube = e;
+        }
+    });
+    REQUIRE(cube.valid());
+    app->selection().set(cube);
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+
+    // THE ROUTING BASELINE in the Right node: Material in front, and the Inspector provably not drawing.
+    app->requestPanelFocus("Material");
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+    const auto idle = app->panelDrawnCount("Inspector");
+    REQUIRE(app->tick());
+    REQUIRE(app->panelDrawnCount("Inspector") == idle);
+    app->requestPanelFocus("Inspector");
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+    REQUIRE(app->panelDrawnCount("Inspector") > idle);
+
+    CHECK(inspector->lastHeaderFontName() == "IBM Plex Sans SemiBold");
+    CHECK(inspector->headersSubmitted() >= 2U);  // Transform + MeshRenderer, this frame
+    if (engine::editor::sceneIoAvailable()) {
+        CHECK(inspector->lastLabelFontName() == "IBM Plex Sans");  // the SemiBold push is scoped (seed S20)
+    } else {
+        // REFLECT TOOLS OFF, at runtime (no #if): components draw no field rows, so no label ever drew.
+        MESSAGE("I284: reflect tools OFF -- no field rows, so the label arm reads empty");
+        CHECK(inspector->lastLabelFontName().empty());
+    }
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: the icon consumers, as source text (task E.6.1, I285)") {
+    // NO GPU: comment-stripped source. No tier can open an ImGui menu, so the menus' behaviour is the
+    // validation page's; this pins that the icons are WIRED, through the ONE ImGui TU for the Create menu.
+    const std::vector<std::string> menuUi = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/create_menu_ui.cpp");
+    const std::string hierarchyPath = AERO_EDITOR_SRC_DIR "/hierarchy_panel.cpp";
+    const std::vector<std::string> hierarchy = editorSourceCodeLines(hierarchyPath);
+    const std::string browserPath = AERO_EDITOR_SRC_DIR "/asset_browser_panel.cpp";
+    const std::vector<std::string> browser = editorSourceCodeLines(browserPath);
+    REQUIRE(menuUi.size() > 20U);
+    REQUIRE(hierarchy.size() > 20U);
+    REQUIRE(browser.size() > 20U);
+
+    std::size_t itemsWithIcons = 0;
+    std::size_t menusWithIcons = 0;
+    for (const std::string& line : menuUi) {
+        const bool item = line.find("MenuItemEx(") != std::string::npos;
+        const bool menu = line.find("BeginMenuEx(") != std::string::npos;
+        itemsWithIcons += (item && line.find("createKindIcon(") != std::string::npos) ? 1U : 0U;
+        menusWithIcons += (menu && line.find("createMenuGroupIcon(") != std::string::npos) ? 1U : 0U;
+    }
+    CHECK(itemsWithIcons >= 3U);  // two in drawCreateMenuItems, one in drawCreateKindItem
+    CHECK(menusWithIcons == 1U);
+    CHECK(countLinesContaining(menuUi, "ImGui::MenuItem(") == 0U);
+    CHECK(countLinesContaining(menuUi, "ImGui::BeginMenu(") == 0U);
+
+    CHECK(countLinesContaining(hierarchy, "drawCreateKindItem(\"Create Empty\", CreateKind::Empty") == 2U);
+    CHECK(countLinesContaining(hierarchy, "MenuItem(\"Create Empty\")") == 0U);
+
+    CHECK(countLinesContaining(browser, "AERO_ICON_CORNER_LEFT_UP") == 1U);
+    CHECK(countLinesContaining(browser, "\"<  ..\"") == 0U);
 }

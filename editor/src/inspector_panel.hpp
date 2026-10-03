@@ -76,6 +76,12 @@ public:
     // accessor is a round trip; this is a consequence the widget produced (E.3.4's materialSamplerRowsDrawn
     // lesson), and it is what tells a selector from a drag.
     [[nodiscard]] std::size_t namedSelectorsDrawn() const noexcept { return namedSelectorsDrawnValue; }
+    // task E.6.1: what ImGui had CURRENT when this panel drew -- the face of the last component header and of
+    // the last field label (copies of GetFont()->GetDebugName(), taken at the draw), and how many headers
+    // this frame submitted. Empty / 0 until one draws.
+    [[nodiscard]] const std::string& lastHeaderFontName() const noexcept { return lastHeaderFontNameValue; }
+    [[nodiscard]] const std::string& lastLabelFontName() const noexcept { return lastLabelFontNameValue; }
+    [[nodiscard]] std::uint32_t headersSubmitted() const noexcept { return headersSubmittedValue; }
 
 private:
     enum class ActionKind : std::uint8_t { None = 0, AddComponent, RemoveComponent };
@@ -147,6 +153,9 @@ private:
 
     std::optional<NamedSelection> pendingNamedSelection;  // task E.5.2 -- the seam writes this
     std::optional<NamedSelection> frameNamedSelection;    // task E.5.2 -- THIS onDraw's copy
+    std::string lastHeaderFontNameValue;                  // task E.6.1 -- member/accessor collision rule
+    std::string lastLabelFontNameValue;                   // likewise
+    std::uint32_t headersSubmittedValue = 0;              // likewise; reset at the top of onDraw
     std::size_t namedSelectorsDrawnValue = 0;             // task E.5.2 -- member/accessor collision rule
 };
 

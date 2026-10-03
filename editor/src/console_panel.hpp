@@ -53,6 +53,14 @@ public:
 
     [[nodiscard]] const LogHistory& history() const noexcept { return logHistory; }
 
+    // task E.6.1: what ImGui had CURRENT when this panel drew -- the face of the last message and of the last
+    // level label (copies of GetFont()->GetDebugName(), taken at the draw), and how many message rows this
+    // frame submitted. Consequences the widget produced, never a request's round trip (the
+    // namedSelectorsDrawn() shape); empty / 0 until a row draws.
+    [[nodiscard]] const std::string& lastMessageFontName() const noexcept { return lastMessageFontNameValue; }
+    [[nodiscard]] const std::string& lastLevelFontName() const noexcept { return lastLevelFontNameValue; }
+    [[nodiscard]] std::uint32_t messageRowsSubmitted() const noexcept { return messageRowsSubmittedValue; }
+
 private:
     enum class ActionKind : std::uint8_t { None = 0, Clear, Copy };  // performance-enum-size (F33)
 
@@ -68,6 +76,9 @@ private:
     std::string lineScratch;            // per-frame scratch, NOT model state (the 2.2.1 idiom)
     ActionKind pending = ActionKind::None;
     bool autoScroll = true;
+    std::string lastMessageFontNameValue;         // task E.6.1 -- member/accessor collision rule
+    std::string lastLevelFontNameValue;           // likewise
+    std::uint32_t messageRowsSubmittedValue = 0;  // likewise; reset at the top of drawLogChild
 };
 
 }  // namespace engine::editor

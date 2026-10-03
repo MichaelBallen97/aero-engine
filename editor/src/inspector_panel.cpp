@@ -15,6 +15,7 @@
 #include <aero/scene/world.hpp>
 
 #include "asset_picker.hpp"  // task E.3.3 -- the ONE asset-reference field widget
+#include "editor_fonts.hpp"  // task E.6.1: editorFonts().strong
 #include "text_input.hpp"
 #include "thumbnail_service.hpp"
 
@@ -143,6 +144,7 @@ void InspectorPanel::onDraw(PanelContext& context) {
     // RESETS the member (a moved-from optional stays engaged -- E.4.3). Overwriting frameNamedSelection
     // also discards whatever the previous onDraw did not consume.
     frameNamedSelection = std::exchange(pendingNamedSelection, std::nullopt);
+    headersSubmittedValue = 0;  // task E.6.1: a PER-FRAME count, taken before any early return below
     // ID discipline (D13/E14): PushID(full registration name) per component, PushID(field name)
     // per row -- so two same-named fields in different components, and two same-short-named types
     // in different namespaces, never collide. Widgets use the "##v" label so only the left column
@@ -229,7 +231,13 @@ void InspectorPanel::drawComponent(PanelContext& context, Entity primary, const 
     ImGui::PushID(entry.name.c_str());
 
     shortNameScratch = std::string(shortComponentName(entry.name));
+    // task E.6.1: the HEADER in SemiBold, at size 0 so the row keeps its height. The push changes no label
+    // text, so the header's ID, flags and open state are untouched; the face's name is copied at the draw.
+    ImGui::PushFont(editorFonts().strong, 0.0F);
+    lastHeaderFontNameValue = ImGui::GetFont()->GetDebugName();
     const bool open = ImGui::CollapsingHeader(shortNameScratch.c_str(), ImGuiTreeNodeFlags_DefaultOpen);
+    ImGui::PopFont();
+    ++headersSubmittedValue;
     if (ImGui::IsItemHovered()) {
         ImGui::SetTooltip("%s", entry.name.c_str());  // the FULL registration name (D13)
     }
@@ -426,6 +434,7 @@ void InspectorPanel::drawField(PanelContext& context, Entity primary, const Comp
     ImGui::TableNextRow();
     ImGui::TableNextColumn();
     ImGui::AlignTextToFramePadding();
+    lastLabelFontNameValue = ImGui::GetFont()->GetDebugName();  // task E.6.1: Body -- the header's push ended
     ImGui::TextUnformatted(field.name.c_str());
     // THE WHOLE-FIELD MENU HANGS OFF THE LABEL CELL, never off a value widget (D6): FieldKind::String
     // keeps an uncommitted buffer whose release is keyed on ImGui::IsItemActive(), so a popup opening
