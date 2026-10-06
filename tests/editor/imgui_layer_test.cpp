@@ -22105,7 +22105,7 @@ TEST_CASE("editor: the style is the theme's at every scale, pure and never compo
     for (std::size_t i = 0; i < one.members.size(); ++i) {
         const std::string_view name = one.members[i].name;
         CAPTURE(name);
-        const auto* const scaledEnd = SCALED_STYLE_MEMBERS.end();
+        const auto scaledEnd = SCALED_STYLE_MEMBERS.end();
         const bool scaled = std::find(SCALED_STYLE_MEMBERS.begin(), scaledEnd, name) != scaledEnd;
         const bool sentinel =
             name == "TabCloseButtonMinWidthSelected" || name == "TabCloseButtonMinWidthUnselected";  // stay
@@ -22130,8 +22130,8 @@ TEST_CASE("editor: the style is the theme's at every scale, pure and never compo
     // reads ScaleAllSizes' truncation floored at 1, and each it states as 0 stays 0. 0.95 is X11 at Xft.dpi
     // 90; 0.5 is UI_SCALE_MIN. The theme values are this case's own restated rows, never the theme's.
     const auto restatedX = [](std::string_view name) {
-        const auto* const row = std::find_if(STYLE_MEMBER_ROWS.begin(), STYLE_MEMBER_ROWS.end(),
-                                             [name](const StyleMemberRow& r) { return r.name == name; });
+        const auto row = std::find_if(STYLE_MEMBER_ROWS.begin(), STYLE_MEMBER_ROWS.end(),
+                                      [name](const StyleMemberRow& r) { return r.name == name; });
         CAPTURE(name);
         REQUIRE(row != STYLE_MEMBER_ROWS.end());
         return row->x;
