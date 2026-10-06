@@ -22355,13 +22355,15 @@ TEST_CASE("editor: the panels read their roles from the theme (task E.6.1, I287)
         checkSameSrgb8(engine::editor::logLevelColor(row.level), row.expected);
     }
 
-    // No panel states a colour or reads ImGui's disabled slot for enabled text (seed S25). The four
-    // literal patterns are AC-9's; TextDisabled is left to ImGui's own disabled widgets.
-    const std::array<std::regex, 4> literals{
-        std::regex(R"(ImVec4\(\s*[0-9])"),
-        std::regex(R"(IM_COL32\(\s*[0-9])"),
-        std::regex("IM_COL32_WHITE"),
-        std::regex("IM_COL32_BLACK"),
+    // No panel states a colour or reads ImGui's disabled slot for enabled text (seed S25). The literal
+    // patterns are AC-9's four, the first widened to the brace spelling, plus any ImColor at all;
+    // TextDisabled is left to ImGui's own disabled widgets.
+    const std::array<std::regex, 5> literals{
+        std::regex(R"(ImVec4[\(\{]\s*[0-9])"),  // k = 0: ImVec4( or ImVec4{, then a digit
+        std::regex(R"(IM_COL32\(\s*[0-9])"),    // k = 1
+        std::regex("IM_COL32_WHITE"),           // k = 2
+        std::regex("IM_COL32_BLACK"),           // k = 3
+        std::regex(R"(ImColor\()"),             // k = 4: any ImColor at all
     };
     constexpr std::array<std::string_view, 7> PANELS{
         "console_panel.cpp", "material_panel.cpp",      "import_details_panel.cpp",   "project_ui.cpp",
@@ -22387,12 +22389,36 @@ TEST_CASE("editor: the panels read their roles from the theme (task E.6.1, I287)
     const std::vector<std::string> console = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/console_panel.cpp");
     CHECK(countLinesContaining(console, "logLevelColor(") > 0U);
     CHECK(countLinesContaining(console, "EDITOR_THEME.palette.textMuted") > 0U);
+    // ... and in the five other panels, each the role it draws with: a read swapped back to an ImGui slot
+    // (S25's site on GetStyleColorVec4(ImGuiCol_Text)) states no literal and names no TextDisabled, so only
+    // the role's ABSENCE can see it. `.text)` keeps textMuted from standing in for asset_tile's text role.
+    struct RoleRead {
+        std::string_view file;
+        std::string_view role;
+    };
+    constexpr std::array<RoleRead, 6> ROLE_READS{{
+        {"asset_browser_panel.cpp", "EDITOR_THEME.palette.textMuted"},
+        {"asset_tile.cpp", "EDITOR_THEME.palette.text)"},
+        {"asset_tile.cpp", "EDITOR_THEME.palette.textMuted"},
+        {"project_ui.cpp", "EDITOR_THEME.palette.error"},
+        {"import_details_panel.cpp", "EDITOR_THEME.palette.error"},
+        {"project_settings_panel.cpp", "EDITOR_THEME.palette.textMuted"},
+    }};
+    for (const RoleRead& read : ROLE_READS) {
+        CAPTURE(read.file);
+        CAPTURE(read.role);
+        const std::string path = std::string(AERO_EDITOR_SRC_DIR "/").append(read.file);
+        CHECK(countLinesContaining(editorSourceCodeLines(path), read.role) > 0U);
+    }
 
     // ANTI-VACUITY: the literal patterns match the spellings they exist to refuse.
     CHECK(std::regex_search(std::string("ImVec4( 1.0F, 0.4F, 0.4F, 1.0F)"), literals[0]));
+    CHECK(std::regex_search(std::string("ImVec4{1.0F, 0.4F, 0.4F, 1.0F}"), literals[0]));
     CHECK(std::regex_search(std::string("IM_COL32(16, 16, 20, 255)"), literals[1]));
     const std::string whiteCaption = "drawList->AddText(font, size, pos, IM_COL32_WHITE, text)";
     CHECK(std::regex_search(whiteCaption, literals[2]));
+    const std::string imColorText = "ImGui::PushStyleColor(ImGuiCol_Text, ImColor(255, 0, 0).Value)";
+    CHECK(std::regex_search(imColorText, literals[4]));
 }
 
 // ---- I288: the viewport's chrome reads the live UI scale (task E.6.1, step 7) ----------------------------
