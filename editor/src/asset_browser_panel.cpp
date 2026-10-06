@@ -1572,9 +1572,9 @@ void AssetBrowserPanel::drawFooter() {
     // task 3.1.4 (AC-36): APPENDED, never replacing -- the watcher's condition, in a fixed precedence
     // order so the most ACTIONABLE condition wins. Omitted entirely when no watcher has been
     // reconciled yet, which is honest: the panel does not know.
-    // ASCII ONLY. The one UI font draws '?' for anything past ASCII, Latin-1 and the Windows-1252
-    // punctuation (.claude/rules/editor.md, "The UI font"). That is 3.1.3's own post-merge fix,
-    // applied here as a rule rather than rediscovered.
+    // ASCII ONLY. That is 3.1.3's own post-merge fix, applied here as a rule rather than rediscovered.
+    // The editor draws IBM Plex, and a non-ASCII mark in a literal goes through AERO_GLYPH_* or
+    // AERO_ICON_* (.claude/rules/editor.md, "Fonts, icons and the theme").
     if (watchStatusPtr != nullptr) {
         if (!labelScratch.empty()) {
             labelScratch += "   |   ";

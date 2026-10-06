@@ -134,7 +134,8 @@ struct AssetPickerLayout {
 [[nodiscard]] AssetPickerLayout assetPickerLayout(const AssetPickerMetrics& metrics, bool withCombo) noexcept;
 
 // "N more not shown -- refine the search" for a truncated walk; "" otherwise. ASCII only (the
-// standing rule: the UI font draws '?' past a small fixed set -- .claude/rules/editor.md, "The UI font").
+// standing rule: a non-ASCII mark in a literal goes through AERO_GLYPH_* or AERO_ICON_* --
+// .claude/rules/editor.md, "Fonts, icons and the theme").
 [[nodiscard]] std::string assetPickerTruncationNotice(const AssetPickerCandidates& candidates);
 
 // THE SEAM KEYS, spelled ONCE (task E.3.3), and the reason is that ComponentEntry::name is the FULL

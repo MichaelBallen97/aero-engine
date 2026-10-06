@@ -75,7 +75,8 @@ inline constexpr MaterialPreviewRig MATERIAL_THUMBNAIL_RIG{.orbitRadius = 2.35F,
 // not elide. The grid tile's own width-driven elision (elideForCaption) happens on top of this.
 inline constexpr std::size_t MAX_MATERIAL_DISPLAY_NAME_BYTES = 96;
 // U+2026 HORIZONTAL ELLIPSIS as its UTF-8 bytes -- the SAME character asset_tile.cpp's elideForCaption
-// appends, which the UI font draws through its CP1252 remap (.claude/rules/editor.md, "The UI font").
+// appends, which IBM Plex draws natively; a non-ASCII mark in a literal goes through AERO_GLYPH_* or
+// AERO_ICON_* (.claude/rules/editor.md, "Fonts, icons and the theme").
 // Spelled as bytes so no compiler's guess at the source character set can change it. One name, one
 // ellipsis, on every surface.
 inline constexpr std::string_view MATERIAL_DISPLAY_NAME_ELLIPSIS = AERO_GLYPH_ELLIPSIS;
