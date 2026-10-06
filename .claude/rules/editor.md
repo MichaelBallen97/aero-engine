@@ -156,7 +156,10 @@ that way.
   63 colour slots from the theme, then `ScaleAllSizes(uiScale)` — so a scale change REBUILDS the style.
   **Never `ScaleAllSizes` a live style**: it truncates, so applying it twice compounds (`I280`'s
   idempotence arm). ImGui gaining or losing a colour slot is a `static_assert` failure at the table, never a
-  silently default-coloured widget.
+  silently default-coloured widget. **A thickness whose theme value is ≥ 1 is floored at 1 after the
+  scaling**: `ScaleAllSizes` truncates, so at any UI scale below 1 every 1-dp border and separator would
+  become 0 and vanish. The floored members are one table in `editor_theme_ui.cpp`; a new border or line
+  member joins it (`I280`'s sub-1 arm).
 - **The UI scale is `resolveUiScale(SDL_GetWindowDisplayScale, SDL_GetWindowPixelDensity, previous)`** —
   quantised to 0.05 by division, clamped to [0.5, 4], with no platform branch. It is 1 on a Retina Mac and
   on default Wayland, the desktop scale on Windows and X11. **`style.FontScaleDpi` is its ONE stored copy**
