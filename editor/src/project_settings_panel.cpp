@@ -16,6 +16,8 @@
 #include <aero/editor/panel_context.hpp>
 #include <aero/editor/project_settings.hpp>
 
+#include "editor_theme_imgui.hpp"  // task E.6.1: toImVec4
+
 #include <algorithm>
 #include <cstddef>
 #include <imgui.h>
@@ -39,7 +41,7 @@ constexpr const char* NO_PROJECT_TEXT = "No project is open. Use File > New Proj
 void drawValue(const std::string& text) { ImGui::TextWrapped("%s", text.c_str()); }
 
 void drawLabel(const std::string& text) {
-    ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+    ImGui::PushStyleColor(ImGuiCol_Text, toImVec4(EDITOR_THEME.palette.textMuted));  // task E.6.1 (D16)
     ImGui::TextWrapped("%s", text.c_str());
     ImGui::PopStyleColor();
 }

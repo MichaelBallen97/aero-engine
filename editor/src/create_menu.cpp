@@ -1,6 +1,7 @@
 // editor/src/create_menu.cpp -- task E.5.2: the Create menu's pure half. No ImGui, no entt, no World access,
 // no logging. createSeed is D3's table; every derived quantity is DERIVED here, never restated.
 #include <aero/editor/create_menu.hpp>
+#include <aero/editor/editor_icons.hpp>  // task E.6.1 -- the roster createKindIcon picks from
 #include <aero/editor/entity_ops.hpp>    // DEFAULT_SCENE_CAMERA_POSITION, DEFAULT_SCENE_SUN_PITCH_RADIANS
 #include <aero/editor/scene_bounds.hpp>  // primitiveLocalBounds -- the render catalog's local boxes
 #include <aero/render/debug_grid.hpp>    // DEBUG_GRID_PLANE_HEIGHT -- the ground, named once
@@ -83,6 +84,45 @@ const char* createMenuGroupLabel(CreateMenuGroup group) noexcept {
             return "3D Object";
         case CreateMenuGroup::Light:
             return "Light";
+        case CreateMenuGroup::TopLevel:
+            break;
+    }
+    return "";
+}
+
+// task E.6.1: what each kind and submenu DRAWS beside its label. The roster names glyphs; this table is
+// what a glyph MEANS here. NO default in either switch: a new kind or group without an icon is a
+// clang-diagnostic-switch error in CI's lint, never a silent blank.
+const char* createKindIcon(CreateKind kind) noexcept {
+    switch (kind) {
+        case CreateKind::Empty:
+            return AERO_ICON_CIRCLE_DASHED;
+        case CreateKind::Cube:
+            return AERO_ICON_BOX;
+        case CreateKind::Sphere:
+            return AERO_ICON_CIRCLE;
+        case CreateKind::Plane:
+            return AERO_ICON_SQUARE;
+        case CreateKind::DirectionalLight:
+            return AERO_ICON_SUN;
+        case CreateKind::PointLight:
+            return AERO_ICON_LIGHTBULB;
+        case CreateKind::SpotLight:
+            return AERO_ICON_LAMP_CEILING;
+        case CreateKind::Camera:
+            return AERO_ICON_CAMERA;
+        case CreateKind::Count:
+            break;
+    }
+    return "";  // Count, and any out-of-range value a cast can produce
+}
+
+const char* createMenuGroupIcon(CreateMenuGroup group) noexcept {
+    switch (group) {
+        case CreateMenuGroup::Object3D:
+            return AERO_ICON_SHAPES;
+        case CreateMenuGroup::Light:
+            return AERO_ICON_LIGHTBULB;
         case CreateMenuGroup::TopLevel:
             break;
     }

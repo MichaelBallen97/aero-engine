@@ -1495,7 +1495,9 @@ TEST_CASE("inspector: the label column's width is clamped, and the clamp cannot 
     // reachable from a tier-0 binary with no ImGui context at all.
     constexpr float FONT = 13.0F;
     constexpr float PADDING = 4.0F;
-    constexpr float FLOOR = FONT * 5.0F;  // 65
+    // task E.6.1: 4 x the font, retuned from 5 -- at the theme's body 16 a 5 x floor (80) out-sized the
+    // labels it served and clipped the axis boxes (TH11 pins 64 at body 16; inspector_model.cpp says why).
+    constexpr float FLOOR = FONT * 4.0F;  // 52
 
     SUBCASE("(a) an ordinary case is the measured width plus both cell paddings") {
         const float width = inspectorLabelColumnWidth(100.0F, PADDING, FONT, 400.0F);
@@ -1526,7 +1528,7 @@ TEST_CASE("inspector: the label column's width is clamped, and the clamp cannot 
     }
 
     SUBCASE("(e) the floor scales with the font, so it is a font-relative rule rather than a constant") {
-        CHECK(inspectorLabelColumnWidth(4.0F, PADDING, 26.0F, 4000.0F) == doctest::Approx(130.0F).epsilon(1e-6));
+        CHECK(inspectorLabelColumnWidth(4.0F, PADDING, 26.0F, 4000.0F) == doctest::Approx(104.0F).epsilon(1e-6));
     }
 }
 

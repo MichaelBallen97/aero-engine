@@ -16,8 +16,9 @@
 // third time): every draw call goes through a named local built with std::format, then passed as a
 // "%s" argument.
 //
-// ASCII ONLY in every literal (3.1.3's post-merge lesson): the one UI font draws '?' for anything past
-// ASCII, Latin-1 and the Windows-1252 punctuation (.claude/rules/editor.md, "The UI font").
+// ASCII ONLY in every literal (3.1.3's post-merge lesson): the editor draws IBM Plex, and a non-ASCII mark
+// in a literal goes through AERO_GLYPH_* or AERO_ICON_* (.claude/rules/editor.md, "Fonts, icons and the
+// theme").
 #include "material_panel.hpp"
 
 #include <aero/core/guid.hpp>
@@ -31,7 +32,8 @@
 #include <aero/reflect/material_format.hpp>
 #include <aero/render/material.hpp>
 
-#include "asset_picker.hpp"  // task E.3.3 -- the ONE asset-reference field widget
+#include "asset_picker.hpp"        // task E.3.3 -- the ONE asset-reference field widget
+#include "editor_theme_imgui.hpp"  // task E.6.1: toImVec4
 #include "text_input.hpp"
 
 #include <algorithm>
@@ -54,8 +56,7 @@ namespace {
 // The header's own restated count, checked rather than trusted.
 static_assert(MaterialPanel::SLOT_COUNT == render::MATERIAL_TEXTURE_SLOT_COUNT);
 
-constexpr ImVec4 WARNING_COLOR{1.0F, 0.4F, 0.4F, 1.0F};  // project_ui.cpp's own error-text colour
-constexpr ImVec4 NOTICE_COLOR{1.0F, 0.8F, 0.4F, 1.0F};   // a warm amber for the non-fatal notices
+// task E.6.1: the error and notice colours are EDITOR_THEME.palette.error and .warning.
 
 // D7/E9's rule from the viewport, verbatim: GetContentRegionAvail() is in LOGICAL units and a GPU
 // allocation must be sized in PIXELS. A non-finite or non-positive scale falls back to 1.0, spelled
@@ -386,7 +387,7 @@ bool MaterialPanel::drawSlotRow(std::size_t index, MaterialDocument& form, const
     // THE NOTICES STAY ON THE CHANNEL, never inside the disclosure: every one of them explains
     // something the user can SEE without opening anything.
     if (row.notice != MaterialSlotNotice::None) {
-        ImGui::PushStyleColor(ImGuiCol_Text, NOTICE_COLOR);
+        ImGui::PushStyleColor(ImGuiCol_Text, toImVec4(EDITOR_THEME.palette.warning));
         ImGui::TextWrapped("%s", materialSlotNoticeText(row.notice).data());
         ImGui::PopStyleColor();
     }
@@ -401,7 +402,7 @@ bool MaterialPanel::drawSlotRow(std::size_t index, MaterialDocument& form, const
             break;
         case PreviewTextureState::Failed:
             labelScratch = std::string(preview.slotNotice(index));
-            ImGui::PushStyleColor(ImGuiCol_Text, NOTICE_COLOR);
+            ImGui::PushStyleColor(ImGuiCol_Text, toImVec4(EDITOR_THEME.palette.warning));
             ImGui::TextWrapped("%s", labelScratch.c_str());
             ImGui::PopStyleColor();
             break;
@@ -413,7 +414,7 @@ bool MaterialPanel::drawSlotRow(std::size_t index, MaterialDocument& form, const
     // consumer honours set 0 and WARNs. The value is STORED for fidelity -- this note is why it looks
     // ignored, and a user who has not opened the sampler node still needs to read it.
     if (slot.has_value() && slot->uvSet != 0) {
-        ImGui::PushStyleColor(ImGuiCol_Text, NOTICE_COLOR);
+        ImGui::PushStyleColor(ImGuiCol_Text, toImVec4(EDITOR_THEME.palette.warning));
         ImGui::TextWrapped("%s", "v1 consumers honour UV set 0; this value is stored, not sampled.");
         ImGui::PopStyleColor();
     }
@@ -508,7 +509,7 @@ void MaterialPanel::drawBody(MaterialDocument& form, const MaterialPanelLayout& 
     // in a fixed-height region -- that is the whole reason it moved. previewHasSunValue is latched in
     // the SERVICE pass and is read here unchanged, so WHEN it is true does not move.
     if (!previewHasSunValue) {
-        ImGui::PushStyleColor(ImGuiCol_Text, NOTICE_COLOR);
+        ImGui::PushStyleColor(ImGuiCol_Text, toImVec4(EDITOR_THEME.palette.warning));
         ImGui::TextWrapped("%s", "No directional light in the scene -- the preview is lit by its environment only.");
         ImGui::PopStyleColor();
     }
@@ -517,7 +518,7 @@ void MaterialPanel::drawBody(MaterialDocument& form, const MaterialPanelLayout& 
     // detail, and it is here rather than in the footer precisely because it wraps.
     if (invalid.has_value()) {
         labelScratch = invalid->message;
-        ImGui::PushStyleColor(ImGuiCol_Text, WARNING_COLOR);
+        ImGui::PushStyleColor(ImGuiCol_Text, toImVec4(EDITOR_THEME.palette.error));
         ImGui::TextWrapped("%s", labelScratch.c_str());
         ImGui::PopStyleColor();
     }
@@ -652,7 +653,7 @@ void MaterialPanel::drawFileSection(float labelWidth) {
     // cell would be clipped rather than wrapped.
     for (const std::string& warning : sessionPtr->warnings()) {
         labelScratch = warning;
-        ImGui::PushStyleColor(ImGuiCol_Text, NOTICE_COLOR);
+        ImGui::PushStyleColor(ImGuiCol_Text, toImVec4(EDITOR_THEME.palette.warning));
         ImGui::TextWrapped("%s", labelScratch.c_str());
         ImGui::PopStyleColor();
     }
@@ -764,7 +765,7 @@ void MaterialPanel::onDraw(PanelContext& /*context*/) {  // no World/Selection/P
                 // material-stage failures put their context (the key path) in the message instead.
                 labelScratch = error->line > 0 ? std::format("{} ({}:{})", error->message, error->line, error->column)
                                                : error->message;
-                ImGui::PushStyleColor(ImGuiCol_Text, WARNING_COLOR);
+                ImGui::PushStyleColor(ImGuiCol_Text, toImVec4(EDITOR_THEME.palette.error));
                 ImGui::TextWrapped("%s", labelScratch.c_str());
                 ImGui::PopStyleColor();
             }
@@ -947,13 +948,13 @@ void MaterialPanel::onDraw(PanelContext& /*context*/) {  // no World/Selection/P
         sessionPtr->externalChangeNoticed(), sessionPtr->warnings().size(), sessionPtr->lastMessage());
     switch (status.severity) {  // NO default: a fourth severity is a -Wswitch error
         case MaterialStatusSeverity::Warning:
-            ImGui::PushStyleColor(ImGuiCol_Text, WARNING_COLOR);
+            ImGui::PushStyleColor(ImGuiCol_Text, toImVec4(EDITOR_THEME.palette.error));
             break;
         case MaterialStatusSeverity::Notice:
-            ImGui::PushStyleColor(ImGuiCol_Text, NOTICE_COLOR);
+            ImGui::PushStyleColor(ImGuiCol_Text, toImVec4(EDITOR_THEME.palette.warning));
             break;
-        case MaterialStatusSeverity::Disabled:
-            ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+        case MaterialStatusSeverity::Disabled:  // de-emphasised ENABLED text (D16), never the disabled slot
+            ImGui::PushStyleColor(ImGuiCol_Text, toImVec4(EDITOR_THEME.palette.textMuted));
             break;
     }
     ImGui::TextUnformatted(status.text.c_str());

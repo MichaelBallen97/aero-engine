@@ -2,6 +2,7 @@
 #include <aero/core/math.hpp>              // task E.3.1: degrees/radians/eulerAngles/fromEulerAngles
 #include <aero/editor/asset_database.hpp>  // task 3.1.5: the Guid row resolves a reference to a record
 #include <aero/editor/asset_view.hpp>      // classifyAssetKind, assetKindLabel
+#include <aero/editor/editor_theme.hpp>    // task E.6.1: the out-of-range axis row's neutral
 #include <aero/editor/inspector_model.hpp>
 #include <aero/editor/material_card.hpp>  // task E.4.5: materialCardRowText
 #include <aero/editor/project_files.hpp>  // leafOf
@@ -301,13 +302,6 @@ FieldValue namedSelectorValue(FieldKind kind, std::size_t index) {
 
 namespace {
 
-// ImGui's OWN fourth default colour-channel marker, IM_COL32(140,140,140,255)
-// (imgui_widgets.cpp:2257-2260 at the pinned 1.92.8) -- so the out-of-range answer is borrowed rather
-// than invented. IT HAS NO CALLER TODAY: AXIS_ROW_COMPONENTS is 3 and every loop in the panel stops
-// there. It exists because axisRowColor is TOTAL, and a total function needs an answer for every
-// index; VF3 is what keeps that answer from silently becoming X's red.
-constexpr std::array<std::uint8_t, 3> AXIS_ROW_NEUTRAL_SRGB{140U, 140U, 140U};
-
 // degrees()/radians() are scalar-only (math/constants.hpp) -- applied componentwise for the euler
 // triplet, since there is no Vec3 overload. MOVED here from inspector_panel.cpp at task E.3.1: the
 // arithmetic the Quat row draws through now lives once, on the value side, where a tier-0 case can
@@ -373,7 +367,7 @@ std::array<std::uint8_t, 3> axisRowColor(std::size_t index) noexcept {
         default:
             break;
     }
-    return AXIS_ROW_NEUTRAL_SRGB;
+    return EDITOR_THEME.axis.neutralSrgb;  // task E.6.1: moved to the theme, unchanged (VF3)
 }
 
 std::array<float, 3> axisRowValues(const FieldValue& value, FieldKind kind) {
@@ -501,14 +495,41 @@ AxisResetAction axisResetAction(std::optional<std::size_t> axis, FieldKind kind,
     return action;
 }
 
+namespace {
+
+// task E.6.1: the label column's floor, in multiples of the font size -- 4, retuned from task E.3.1's 5.
+// The 5 was judged against ProggyClean at 13 (a 65-point floor). At body 16 it is 80, while IBM Plex Sans
+// at 16 draws most labels NARROWER than ProggyClean did at 13 (about 0.8x), so the floor rather than a
+// label took the column and the difference came out of every value cell -- enough, with the theme's wider
+// gaps, to clip "0.000" in a 258-wide dock (TH11, I289). 4 x 16 = 64 is the old 65 again, and the Cube's
+// widest label ("meshIndex": 63 measured, + 2 x 6 of cell padding = 75) decides its column, not the floor.
+constexpr float LABEL_COLUMN_FLOOR_FONT_MULTIPLE = 4.0F;
+
+}  // namespace
+
 float inspectorLabelColumnWidth(float widestLabelPx, float cellPaddingPx, float fontSizePx,
                                 float availableWidthPx) noexcept {
-    const float floorPx = fontSizePx * 5.0F;
+    const float floorPx = fontSizePx * LABEL_COLUMN_FLOOR_FONT_MULTIPLE;
     // std::max, not a bare `availableWidthPx * 0.5F`: a zero- or negative-width dock IS reachable (a
     // panel dragged to its minimum, or the frame a dock split settles), and std::clamp with lo > hi
     // is UNDEFINED BEHAVIOUR. VF15(d) is the arm that drives it under UBSan.
     const float ceilPx = std::max(floorPx, availableWidthPx * 0.5F);
     return std::clamp(widestLabelPx + (2.0F * cellPaddingPx), floorPx, ceilPx);
+}
+
+float inspectorAxisBoxWidth(float cellWidth, float letterWidth, float letterGap, float unitGap) noexcept {
+    // [letter][letterGap][box] x3 with a unit gap between the units: 3*letter + 3*letterGap + 2*unitGap +
+    // 3*box == the cell, with the gaps drawAxisRow's own SameLine calls spell, so the budget fills the cell;
+    // ImGui then truncates each box to a whole point (CalcItemWidth, imgui.cpp:12323), so the row as drawn
+    // ends under 3 points short of the cell's edge and never past it.
+    const float gaps = (3.0F * letterGap) + (2.0F * unitGap);
+    const float budget = (cellWidth - (3.0F * letterWidth) - gaps) / 3.0F;
+    // FINITENESS FIRST: std::max(NaN, 1.0F) is NaN, as std::clamp(NaN, ...) is on libc++, so a NaN or an
+    // infinity in any input -- or a sum that overflows -- would otherwise reach SetNextItemWidth.
+    if (!std::isfinite(budget)) {
+        return 1.0F;
+    }
+    return std::max(budget, 1.0F);
 }
 
 }  // namespace engine::editor

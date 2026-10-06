@@ -306,7 +306,8 @@ bool HierarchyPanel::drawRow(PanelContext& context, Entity entity) {
     if (ImGui::BeginPopupContextItem()) {  // keyed on the current ID scope == this row
         // task E.5.2 (D6): Create Empty is ONE kind through the ONE pipeline -- recorded here, placed,
         // pushed, framed and revealed by EditorApp::applyCreate on the next tick.
-        if (ImGui::MenuItem("Create Empty")) {
+        // task E.6.1: the item draws with its icon.
+        if (drawCreateKindItem("Create Empty", CreateKind::Empty, true)) {
             pendingCreate = CreateKind::Empty;
         }
         if (ImGui::MenuItem("Create Child")) {
@@ -385,7 +386,8 @@ void HierarchyPanel::drawVoidTarget(PanelContext& context) {
         ImGui::EndDragDropTarget();
     }
     if (ImGui::BeginPopupContextItem("##voidmenu")) {
-        if (ImGui::MenuItem("Create Empty")) {
+        // task E.6.1: the item draws with its icon.
+        if (drawCreateKindItem("Create Empty", CreateKind::Empty, true)) {
             pendingCreate = CreateKind::Empty;  // task E.5.2 (D6): through the one pipeline
         }
         ImGui::Separator();

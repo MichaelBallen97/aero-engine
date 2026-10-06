@@ -14,7 +14,8 @@
 #include <aero/rhi/handles.hpp>
 #include <aero/rhi/internal/native_device.hpp>
 
-#include "texture_load.hpp"  // the decode -> cook -> parse -> upload chain; this is its THIRD consumer
+#include "editor_theme_ui.hpp"  // task E.6.1: toRhiColor
+#include "texture_load.hpp"     // the decode -> cook -> parse -> upload chain; this is its THIRD consumer
 
 #include <algorithm>
 #include <array>
@@ -27,11 +28,11 @@ namespace engine::editor {
 
 namespace {
 
-// ALPHA 1.0 IS KEPT for PREVIEW_CLEAR_COLOR's recorded reason -- ImGui's pipeline alpha-blends -- although in
-// this chain it is unobservable twice over: the sky covers every texel of the scene pass, and the resolve
-// writes a literal alpha over every texel of the output. Kept because a frame whose beginScene failed must
-// still clear to something.
-constexpr rhi::Color MATERIAL_THUMBNAIL_CLEAR{0.05F, 0.05F, 0.06F, 1.0F};
+// THE CLEAR is EDITOR_THEME.clear.preview (task E.6.1, value unchanged -- the preview's). ALPHA 1.0 IS KEPT
+// for the preview's recorded reason -- ImGui's pipeline alpha-blends -- although in this chain it is
+// unobservable twice over: the sky covers every texel of the scene pass, and the resolve writes a literal
+// alpha over every texel of the output. Kept because a frame whose beginScene failed must still clear to
+// something.
 
 // The slot textures ONE produce() call loaded. The material registry BORROWS a slot's texture and
 // destroyMaterial never touches one (material.hpp), so they are this call's to release -- on EVERY exit,
@@ -251,7 +252,7 @@ ThumbnailState MaterialThumbnailRenderer::produce(const ThumbnailKey& key, std::
     }
 
     // THE SCENE PASS, MaterialPreview::renderFrame's order: the sky, then the sphere.
-    std::optional<render::Frame> frame = post->beginScene(MATERIAL_THUMBNAIL_CLEAR);
+    std::optional<render::Frame> frame = post->beginScene(toRhiColor(EDITOR_THEME.clear.preview));
     if (!frame) {
         return ThumbnailState::Failed;
     }
@@ -274,7 +275,7 @@ ThumbnailState MaterialThumbnailRenderer::produce(const ThumbnailKey& key, std::
     }
 
     // THE RESOLVE into this key's target (command buffer B, acquired after A was submitted).
-    std::optional<render::Frame> outFrame = output->beginFrame(MATERIAL_THUMBNAIL_CLEAR);
+    std::optional<render::Frame> outFrame = output->beginFrame(toRhiColor(EDITOR_THEME.clear.preview));
     if (!outFrame) {
         return ThumbnailState::Failed;
     }

@@ -19,7 +19,8 @@
 // their pictures -- and otherwise a picture refreshes once the .aeromat's own bytes change, or once its key is
 // evicted and the tile is drawn again.
 #include <aero/core/math.hpp>
-#include <aero/editor/asset_view.hpp>            // IconColor
+#include <aero/editor/asset_view.hpp>  // IconColor
+#include <aero/editor/editor_glyphs.hpp>
 #include <aero/editor/material_preview_rig.hpp>  // MaterialPreviewLighting (task E.2.4, by name)
 #include <aero/reflect/material_format.hpp>      // MaterialDocument
 #include <aero/render/tonemap.hpp>               // TonemapParams
@@ -74,10 +75,11 @@ inline constexpr MaterialPreviewRig MATERIAL_THUMBNAIL_RIG{.orbitRadius = 2.35F,
 // not elide. The grid tile's own width-driven elision (elideForCaption) happens on top of this.
 inline constexpr std::size_t MAX_MATERIAL_DISPLAY_NAME_BYTES = 96;
 // U+2026 HORIZONTAL ELLIPSIS as its UTF-8 bytes -- the SAME character asset_tile.cpp's elideForCaption
-// appends, which the UI font draws through its CP1252 remap (.claude/rules/editor.md, "The UI font").
+// appends, which IBM Plex draws natively; a non-ASCII mark in a literal goes through AERO_GLYPH_* or
+// AERO_ICON_* (.claude/rules/editor.md, "Fonts, icons and the theme").
 // Spelled as bytes so no compiler's guess at the source character set can change it. One name, one
 // ellipsis, on every surface.
-inline constexpr std::string_view MATERIAL_DISPLAY_NAME_ELLIPSIS = "\xE2\x80\xA6";
+inline constexpr std::string_view MATERIAL_DISPLAY_NAME_ELLIPSIS = AERO_GLYPH_ELLIPSIS;
 // The list row's and the Inspector sentence's separator -- ONE spelling, so no host can drift.
 inline constexpr std::string_view MATERIAL_CARD_SEPARATOR = "  -  ";
 

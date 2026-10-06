@@ -3,10 +3,11 @@
 #include <aero/core/log.hpp>
 #include <aero/core/profiler.hpp>
 #include <aero/core/time.hpp>
-#include <aero/editor/asset_actions.hpp>         // task 3.1.3: deleteOrphanMeta/OrphanDeleteResult -- the
-#include <aero/editor/asset_commands.hpp>        // task 3.1.5: InstantiateAssetCommand -- one drop, one command
-#include <aero/editor/component_commands.hpp>    // task 3.1.5: SetFieldCommand -- the material assignment
-#include <aero/editor/component_ops.hpp>         // task 3.1.5: readComponentField, for the assignment's before
+#include <aero/editor/asset_actions.hpp>       // task 3.1.3: deleteOrphanMeta/OrphanDeleteResult -- the
+#include <aero/editor/asset_commands.hpp>      // task 3.1.5: InstantiateAssetCommand -- one drop, one command
+#include <aero/editor/component_commands.hpp>  // task 3.1.5: SetFieldCommand -- the material assignment
+#include <aero/editor/component_ops.hpp>       // task 3.1.5: readComponentField, for the assignment's before
+#include <aero/editor/editor_glyphs.hpp>
 #include <aero/editor/instantiate_plan.hpp>      // task 3.1.5: buildInstantiatePlan + its refusal enum
 #include <aero/editor/material_from_import.hpp>  // task 3.1.5: reached through the loader; named for clarity
 #include <aero/editor/material_preview_rig.hpp>  // task E.2.4: MaterialPreviewLighting
@@ -153,7 +154,7 @@ void logCappedWarn(std::string_view root, std::string_view label, const std::vec
         if (!entries.empty()) {
             body += "; ";
         }
-        body += "…and ";
+        body += AERO_GLYPH_ELLIPSIS "and ";
         body += std::to_string(total - entries.size());
         body += " more";
     }
@@ -1410,6 +1411,7 @@ bool EditorApp::presentedLastFrame() const noexcept { return presented; }
 std::size_t EditorApp::logRecordCount() const noexcept {
     return consolePanel != nullptr ? consolePanel->history().size() : std::size_t{0};
 }
+float EditorApp::uiScale() const noexcept { return layer.uiScale(); }
 EditorCamera* EditorApp::viewportCamera() noexcept {
     return viewportPanel != nullptr ? &viewportPanel->camera() : nullptr;
 }

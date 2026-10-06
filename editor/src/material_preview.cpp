@@ -18,7 +18,8 @@
 #include <aero/rhi/device.hpp>
 #include <aero/rhi/internal/native_device.hpp>
 
-#include "texture_load.hpp"  // task 3.1.5: the decode->cook->parse->upload chain, extracted (§D-14)
+#include "editor_theme_ui.hpp"  // task E.6.1: toRhiColor
+#include "texture_load.hpp"     // task 3.1.5: the decode->cook->parse->upload chain, extracted (§D-14)
 
 #include <array>
 #include <cmath>
@@ -29,18 +30,13 @@
 
 namespace engine::editor {
 
-namespace {
-
-// ALPHA 1.0 IS LOAD-BEARING, exactly as it is for the viewport (2.2.3's E4): ImGui's pipeline
-// alpha-blends, so a 0-alpha clear would let the panel's chrome show THROUGH the preview wherever no
-// geometry drew. A shade darker than the viewport's so the two are distinguishable side by side.
-// task E.2.4: ITS RGB IS NOW UNOBSERVABLE. The sky pass covers the whole frame before the sphere is
-// drawn, on every frame that has a camera -- which this preview always does -- so only the ALPHA
-// still matters. Kept for that alpha, and because a frame whose beginScene failed must still clear to
-// something.
-constexpr rhi::Color PREVIEW_CLEAR_COLOR{0.05F, 0.05F, 0.06F, 1.0F};
-
-}  // namespace
+// THE CLEAR is EDITOR_THEME.clear.preview (task E.6.1, value unchanged). ALPHA 1.0 IS LOAD-BEARING, exactly
+// as it is for the viewport (2.2.3's E4): ImGui's pipeline alpha-blends, so a 0-alpha clear would let the
+// panel's chrome show THROUGH the preview wherever no geometry drew. A shade darker than the viewport's so
+// the two are distinguishable side by side. task E.2.4: ITS RGB IS NOW UNOBSERVABLE. The sky pass covers
+// the whole frame before the sphere is drawn, on every frame that has a camera -- which this preview always
+// does -- so only the ALPHA still matters. Kept for that alpha, and because a frame whose beginScene failed
+// must still clear to something.
 
 MaterialPreview::MaterialPreview(rhi::Device* deviceIn) noexcept : device(deviceIn) {
 #if defined(AERO_EDITOR_SHADERS)
@@ -411,7 +407,7 @@ void MaterialPreview::renderFrame(float deltaSeconds, const render::TonemapParam
     // was settled by prepareFrame, inside the draw walk, before the handle ImGui is about to bind was
     // read -- see prepareFrame's own note for why calling it from this pass is a use-after-free on
     // Vulkan and D3D12 and invisible on Metal.
-    std::optional<render::Frame> frame = post->beginScene(PREVIEW_CLEAR_COLOR);
+    std::optional<render::Frame> frame = post->beginScene(toRhiColor(EDITOR_THEME.clear.preview));
     if (!frame) {
         return;  // a transient command-buffer miss; the next service pass tries again
     }
@@ -447,7 +443,7 @@ void MaterialPreview::renderFrame(float deltaSeconds, const render::TonemapParam
     renderer->draw(*frame, view);
     post->endScene(std::move(*frame));  // submits command buffer A
 
-    std::optional<render::Frame> outFrame = target->beginFrame(PREVIEW_CLEAR_COLOR);
+    std::optional<render::Frame> outFrame = target->beginFrame(toRhiColor(EDITOR_THEME.clear.preview));
     if (!outFrame) {
         return;
     }

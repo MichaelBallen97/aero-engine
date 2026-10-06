@@ -47,6 +47,11 @@ using engine::editor::ViewPose;
 
 namespace {
 
+// task E.6.1: the UI scale every pure call here runs at -- 1, so each case is byte-identical to before. A
+// file-local name keeps the added argument short, and the parameter is NON-defaulted, so a site that
+// forgot it is a compile error rather than a silent default.
+constexpr float UI_1X = 1.0F;
+
 // A generous image, comfortably above VIEW_AXIS_MIN_IMAGE_POINTS in both axes.
 constexpr Vec2 IMAGE_ORIGIN{100.0F, 50.0F};
 constexpr Vec2 IMAGE_SIZE{900.0F, 600.0F};
@@ -100,7 +105,7 @@ TEST_CASE("editor view-axis gizmo: the layout's screen mapping, and the y NEGATI
     // (picking.cpp:56-57). Dropping the `-` puts every ball on the wrong side of the ring and the
     // widget silently becomes a mirror of the camera.
     const EditorCamera camera = cameraAt(engine::radians(30.0F), engine::radians(-20.0F));  // the shipped default pose
-    const ViewAxisLayout layout = viewAxisLayout(camera, IMAGE_ORIGIN, IMAGE_SIZE);
+    const ViewAxisLayout layout = viewAxisLayout(camera, IMAGE_ORIGIN, IMAGE_SIZE, UI_1X);
     REQUIRE(layout.visible);
 
     SUBCASE("six balls, one per enumerator, in ViewAxis order") {
@@ -140,7 +145,7 @@ TEST_CASE("editor view-axis gizmo: the layout's screen mapping, and the y NEGATI
 
 TEST_CASE("editor view-axis gizmo: depth order, the front hemisphere, and their INDEPENDENCE (VA3)") {
     const EditorCamera camera = cameraAt(engine::radians(30.0F), engine::radians(-20.0F));
-    const ViewAxisLayout layout = viewAxisLayout(camera, IMAGE_ORIGIN, IMAGE_SIZE);
+    const ViewAxisLayout layout = viewAxisLayout(camera, IMAGE_ORIGIN, IMAGE_SIZE, UI_1X);
     REQUIRE(layout.visible);
 
     SUBCASE("drawOrder is a PERMUTATION of 0..5") {
@@ -180,7 +185,7 @@ TEST_CASE("editor view-axis gizmo: depth order, the front hemisphere, and their 
         // A widget that dimmed the negative axes instead of the far ones would pass every other
         // subcase in this case and fail here.
         const EditorCamera turned = cameraAt(engine::radians(30.0F) + engine::PI, engine::radians(-20.0F));
-        const ViewAxisLayout after = viewAxisLayout(turned, IMAGE_ORIGIN, IMAGE_SIZE);
+        const ViewAxisLayout after = viewAxisLayout(turned, IMAGE_ORIGIN, IMAGE_SIZE, UI_1X);
         REQUIRE(after.visible);
         for (std::size_t i = 0; i < VIEW_AXIS_COUNT; ++i) {
             CAPTURE(i);
@@ -201,7 +206,7 @@ TEST_CASE("editor view-axis gizmo: the axis you look DOWN collapses onto the cen
     // A Front view: yaw 0, pitch 0 -> forward() is world -Z, so the +Z ball is directly BEHIND the
     // eye's gaze (nearest the viewer) and the -Z ball is directly away from it.
     const EditorCamera camera = cameraAt(0.0F, 0.0F);
-    const ViewAxisLayout layout = viewAxisLayout(camera, IMAGE_ORIGIN, IMAGE_SIZE);
+    const ViewAxisLayout layout = viewAxisLayout(camera, IMAGE_ORIGIN, IMAGE_SIZE, UI_1X);
     REQUIRE(layout.visible);
 
     const ViewAxisBall& posZ = ballFor(layout, ViewAxis::PosZ);
@@ -242,12 +247,12 @@ TEST_CASE("editor view-axis gizmo: ONE visibility predicate, FOUR consequences (
 
     for (const HiddenCase& row : hidden) {
         CAPTURE(row.name);
-        const ViewAxisLayout layout = viewAxisLayout(camera, row.origin, row.size);
+        const ViewAxisLayout layout = viewAxisLayout(camera, row.origin, row.size, UI_1X);
         CHECK_FALSE(layout.visible);
 
         Vec2 rectMin{};
         Vec2 rectMax{};
-        viewAxisRect(row.origin, row.size, rectMin, rectMax);
+        viewAxisRect(row.origin, row.size, UI_1X, rectMin, rectMax);
         CHECK_FALSE(rectMax.x > rectMin.x);  // DEGENERATE -- an empty rect owns nothing
         CHECK_FALSE(rectMax.y > rectMin.y);
 
@@ -260,7 +265,7 @@ TEST_CASE("editor view-axis gizmo: ONE visibility predicate, FOUR consequences (
         // Anti-vacuity for the two sub-threshold rows: a predicate that hid EVERYTHING would satisfy
         // all six rows above and this arm is what says it does not.
         const ViewAxisLayout layout =
-            viewAxisLayout(camera, IMAGE_ORIGIN, Vec2{VIEW_AXIS_MIN_IMAGE_POINTS, VIEW_AXIS_MIN_IMAGE_POINTS});
+            viewAxisLayout(camera, IMAGE_ORIGIN, Vec2{VIEW_AXIS_MIN_IMAGE_POINTS, VIEW_AXIS_MIN_IMAGE_POINTS}, UI_1X);
         CHECK(layout.visible);
     }
     SUBCASE("a POISONED camera hides the widget rather than sorting NaNs") {
@@ -271,7 +276,7 @@ TEST_CASE("editor view-axis gizmo: ONE visibility predicate, FOUR consequences (
         EditorCamera poisoned;
         poisoned.setYaw(NAN_F);
         REQUIRE_FALSE(std::isfinite(poisoned.yaw()));  // anti-vacuity: the poison really landed
-        const ViewAxisLayout layout = viewAxisLayout(poisoned, IMAGE_ORIGIN, IMAGE_SIZE);
+        const ViewAxisLayout layout = viewAxisLayout(poisoned, IMAGE_ORIGIN, IMAGE_SIZE, UI_1X);
         CHECK_FALSE(layout.visible);
         CHECK((viewAxisPickAt(layout, IMAGE_ORIGIN).kind == ViewAxisHit::None));
     }
@@ -279,7 +284,7 @@ TEST_CASE("editor view-axis gizmo: ONE visibility predicate, FOUR consequences (
 
 TEST_CASE("editor view-axis gizmo: the hit test hits what it draws, and refuses what it does not (VA6)") {
     const EditorCamera camera = cameraAt(engine::radians(30.0F), engine::radians(-20.0F));
-    const ViewAxisLayout layout = viewAxisLayout(camera, IMAGE_ORIGIN, IMAGE_SIZE);
+    const ViewAxisLayout layout = viewAxisLayout(camera, IMAGE_ORIGIN, IMAGE_SIZE, UI_1X);
     REQUIRE(layout.visible);
 
     SUBCASE("the exact centre of each ball picks THAT ball") {
@@ -309,7 +314,7 @@ TEST_CASE("editor view-axis gizmo: the hit test hits what it draws, and refuses 
         // half-extent by a whole ball radius.
         Vec2 rectMin{};
         Vec2 rectMax{};
-        viewAxisRect(IMAGE_ORIGIN, IMAGE_SIZE, rectMin, rectMax);
+        viewAxisRect(IMAGE_ORIGIN, IMAGE_SIZE, UI_1X, rectMin, rectMax);
         CHECK((viewAxisPickAt(layout, Vec2{rectMin.x + 0.5F, rectMin.y + 0.5F}).kind == ViewAxisHit::None));
     }
     SUBCASE("a NaN mouse position picks None") {
@@ -329,7 +334,7 @@ TEST_CASE("editor view-axis gizmo: the hit ladder's two orderings (VA7)") {
         // Yaw is chosen so |dot(+X, right())| is small -- the two X balls collapse toward the centre
         // together -- while their DEPTHS stay well separated.
         const EditorCamera camera = cameraAt(engine::HALF_PI, 0.0F);  // looking down world -X
-        const ViewAxisLayout layout = viewAxisLayout(camera, IMAGE_ORIGIN, IMAGE_SIZE);
+        const ViewAxisLayout layout = viewAxisLayout(camera, IMAGE_ORIGIN, IMAGE_SIZE, UI_1X);
         REQUIRE(layout.visible);
         const ViewAxisBall& posX = ballFor(layout, ViewAxis::PosX);
         const ViewAxisBall& negX = ballFor(layout, ViewAxis::NegX);
@@ -347,7 +352,7 @@ TEST_CASE("editor view-axis gizmo: the hit ladder's two orderings (VA7)") {
         // +Z ball is exactly on the widget centre; a ladder that tested balls first would make the
         // projection toggle unreachable forever.
         const EditorCamera camera = cameraAt(0.0F, 0.0F);
-        const ViewAxisLayout layout = viewAxisLayout(camera, IMAGE_ORIGIN, IMAGE_SIZE);
+        const ViewAxisLayout layout = viewAxisLayout(camera, IMAGE_ORIGIN, IMAGE_SIZE, UI_1X);
         REQUIRE(layout.visible);
         REQUIRE(engine::length(ballFor(layout, ViewAxis::PosZ).offsetPoints) <= 1.0e-5F);  // really collapsed
 
@@ -363,7 +368,7 @@ TEST_CASE("editor view-axis gizmo: the hit ladder's two orderings (VA7)") {
 TEST_CASE("editor view-axis gizmo: the rect sits in the image's corner and AGREES with the layout (VA8)") {
     Vec2 rectMin{};
     Vec2 rectMax{};
-    viewAxisRect(IMAGE_ORIGIN, IMAGE_SIZE, rectMin, rectMax);
+    viewAxisRect(IMAGE_ORIGIN, IMAGE_SIZE, UI_1X, rectMin, rectMax);
 
     SUBCASE("wholly inside the image") {
         CHECK(rectMin.x >= IMAGE_ORIGIN.x);
@@ -384,7 +389,7 @@ TEST_CASE("editor view-axis gizmo: the rect sits in the image's corner and AGREE
         // parted company you could click a ball that the rect did not claim, or claim a press where
         // nothing is drawn.
         const EditorCamera camera = cameraAt(engine::radians(30.0F), engine::radians(-20.0F));
-        const ViewAxisLayout layout = viewAxisLayout(camera, IMAGE_ORIGIN, IMAGE_SIZE);
+        const ViewAxisLayout layout = viewAxisLayout(camera, IMAGE_ORIGIN, IMAGE_SIZE, UI_1X);
         REQUIRE(layout.visible);
         CHECK((rectMin.x + rectMax.x) * 0.5F == layout.centerPoints.x);
         CHECK((rectMin.y + rectMax.y) * 0.5F == layout.centerPoints.y);

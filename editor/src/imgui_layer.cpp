@@ -3,6 +3,7 @@
 // directly, and the two engine-side seams (native_window.hpp / native_device.hpp / native_event.hpp)
 // hand it the raw handles it cannot synthesize any other way.
 #include <aero/core/log.hpp>
+#include <aero/editor/editor_theme.hpp>
 #include <aero/editor/imgui_layer.hpp>
 #include <aero/platform/context.hpp>
 #include <aero/platform/internal/native_event.hpp>
@@ -11,7 +12,8 @@
 #include <aero/rhi/device.hpp>
 #include <aero/rhi/internal/native_device.hpp>
 
-#include "default_font.hpp"
+#include "editor_fonts.hpp"
+#include "editor_theme_ui.hpp"
 
 #include <SDL3/SDL_events.h>
 #include <SDL3/SDL_filesystem.h>
@@ -23,6 +25,7 @@
 #include <imgui_impl_sdl3.h>
 #include <imgui_impl_sdlgpu3.h>
 #include <memory>
+#include <string_view>
 #include <utility>
 
 namespace engine::editor {
@@ -80,26 +83,35 @@ std::optional<ImGuiLayer> ImGuiLayer::create(rhi::Device& device, platform::Wind
     ImGui::CreateContext();
     ImGuiIO& io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;  // docking ON, viewports OFF always (D6/AC-10)
-    io.ConfigDpiScaleFonts = true;                     // G3: 1.92 docking DPI font auto-scale
+    // task E.6.1 (D8): the theme is the ONE writer of style.FontScaleDpi -- ImGui's own path reads the
+    // CONTENT scale, wrong on Cocoa and on default Wayland.
+    io.ConfigDpiScaleFonts = false;
     io.IniFilename = persistLayout ? iniPath->c_str() : nullptr;
 
-    ImGui::StyleColorsDark();
-    if (const float scale = SDL_GetWindowDisplayScale(win); scale > 0.0F) {
-        ImGui::GetStyle().ScaleAllSizes(scale);
-    }
-    // task E.4.4 (validation finding 1): the UI font is added EXPLICITLY, before the first NewFrame, so the
-    // Windows-1252 remaps can be applied -- ProggyClean at 13, the same font ImGui picked implicitly, whose
-    // CP1252 punctuation otherwise drew every UTF-8 ellipsis and em dash as '?' (default_font.hpp). Placed
-    // here, below every line other files cite by number, so no citation of this file moves.
-    if (!addEditorDefaultFont()) {
-        AERO_LOG_ERROR("editor: ImGuiLayer::create: the default font could not be added");
+    // task E.6.1 (D2-D4, D22): the editor's three faces, Lucide merged into the two Sans faces AFTER Plex
+    // (editor_fonts.hpp). The data is embedded, so it cannot be missing -- only fail to parse, which is a
+    // build defect every test sees. No fallback: a silent ProggyClean would ship broken fonts with green
+    // tests.
+    std::string_view failedFace;
+    if (!addEditorFonts(failedFace).has_value()) {
+        AERO_LOG_ERROR("editor: ImGuiLayer::create: the font '{}' could not be added", failedFace);
+        clearEditorFonts();
         ImGui::DestroyContext();
         device.destroySwapchain(swapchain);
         return std::nullopt;
     }
 
+    // task E.6.1 (D8, D9): the style is the theme's, BUILT at one UI scale -- the window's display scale over
+    // its pixel density, quantised and clamped -- and rebuilt whole by beginFrame whenever that changes.
+    const float displayScale = SDL_GetWindowDisplayScale(win);
+    const float pixelDensity = SDL_GetWindowPixelDensity(win);
+    applyEditorStyle(resolveUiScale(displayScale, pixelDensity, 1.0F));
+    AERO_LOG_DEBUG("editor: UI scale {:.2f} (display scale {:.2f} / pixel density {:.2f})", currentUiScale(),
+                   displayScale, pixelDensity);
+
     if (!ImGui_ImplSDL3_InitForSDLGPU(win)) {
         AERO_LOG_ERROR("editor: ImGuiLayer::create: ImGui_ImplSDL3_InitForSDLGPU failed");
+        clearEditorFonts();
         ImGui::DestroyContext();
         device.destroySwapchain(swapchain);
         return std::nullopt;
@@ -114,6 +126,7 @@ std::optional<ImGuiLayer> ImGuiLayer::create(rhi::Device& device, platform::Wind
     if (!ImGui_ImplSDLGPU3_Init(&initInfo)) {
         AERO_LOG_ERROR("editor: ImGuiLayer::create: ImGui_ImplSDLGPU3_Init failed");
         ImGui_ImplSDL3_Shutdown();
+        clearEditorFonts();
         ImGui::DestroyContext();
         device.destroySwapchain(swapchain);
         return std::nullopt;
@@ -121,13 +134,15 @@ std::optional<ImGuiLayer> ImGuiLayer::create(rhi::Device& device, platform::Wind
 
     platform::internal::RawEventAccessor::setRawEventSink(ctx, &onRawEvent, nullptr);
 
-    return ImGuiLayer(&device, &ctx, swapchain, std::move(iniPath), wantsDefault);
+    return ImGuiLayer(&device, &ctx, &window, swapchain, std::move(iniPath), wantsDefault);
 }
 
-ImGuiLayer::ImGuiLayer(rhi::Device* device, platform::Context* ctx, rhi::SwapchainHandle swapchain,
-                       std::unique_ptr<std::string> ownedIniPath, bool wantsDefaultLayout) noexcept
+ImGuiLayer::ImGuiLayer(rhi::Device* device, platform::Context* ctx, platform::Window* window,
+                       rhi::SwapchainHandle swapchain, std::unique_ptr<std::string> ownedIniPath,
+                       bool wantsDefaultLayout) noexcept
     : device(device),
       ctx(ctx),
+      window(window),
       swapchain(swapchain),
       ownedIniPath(std::move(ownedIniPath)),
       defaultLayoutWanted(wantsDefaultLayout),
@@ -144,6 +159,7 @@ ImGuiLayer::~ImGuiLayer() {
     device->waitIdle();
     ImGui_ImplSDLGPU3_Shutdown();
     ImGui_ImplSDL3_Shutdown();
+    clearEditorFonts();
     ImGui::DestroyContext();
     device->destroySwapchain(swapchain);
 }
@@ -151,6 +167,7 @@ ImGuiLayer::~ImGuiLayer() {
 ImGuiLayer::ImGuiLayer(ImGuiLayer&& other) noexcept
     : device(other.device),
       ctx(other.ctx),
+      window(other.window),
       swapchain(other.swapchain),
       ownedIniPath(std::move(other.ownedIniPath)),
       defaultLayoutWanted(other.defaultLayoutWanted),
@@ -167,11 +184,13 @@ ImGuiLayer& ImGuiLayer::operator=(ImGuiLayer&& other) noexcept {
         device->waitIdle();
         ImGui_ImplSDLGPU3_Shutdown();
         ImGui_ImplSDL3_Shutdown();
+        clearEditorFonts();
         ImGui::DestroyContext();
         device->destroySwapchain(swapchain);
     }
     device = other.device;
     ctx = other.ctx;
+    window = other.window;
     swapchain = other.swapchain;
     ownedIniPath = std::move(other.ownedIniPath);
     defaultLayoutWanted = other.defaultLayoutWanted;
@@ -181,6 +200,19 @@ ImGuiLayer& ImGuiLayer::operator=(ImGuiLayer&& other) noexcept {
 }
 
 void ImGuiLayer::beginFrame() {
+    // task E.6.1 (D8/D9): re-resolved EVERY frame, BEFORE NewFrame (which reads FontSizeBase/FontScaleDpi in
+    // UpdateFontsNewFrame, imgui.cpp:9617-9640), rebuilt only when the quantised value changes. Exact
+    // comparison on purpose: both sides came out of the quantiser, so a tolerance could only hide a
+    // quantiser bug. A dead handle reads 0 from both SDL calls, which resolveUiScale keeps as `applied`.
+    SDL_Window* const win = platform::internal::NativeWindowAccessor::get(*window);
+    const float applied = currentUiScale();
+    const float displayScale = SDL_GetWindowDisplayScale(win);
+    const float pixelDensity = SDL_GetWindowPixelDensity(win);
+    const float next = resolveUiScale(displayScale, pixelDensity, applied);
+    if (next != applied) {
+        applyEditorStyle(next);
+        AERO_LOG_INFO("editor: UI scale {:.2f} -> {:.2f}", applied, next);
+    }
     ImGui_ImplSDLGPU3_NewFrame();
     ImGui_ImplSDL3_NewFrame();
     ImGui::NewFrame();
@@ -214,5 +246,8 @@ bool ImGuiLayer::endFrame(const rhi::Color& clearColor) {
 }
 
 bool ImGuiLayer::wantsDefaultLayout() const noexcept { return defaultLayoutWanted; }
+
+// currentUiScale() only reads a member of the live context, and a live layer always has one.
+float ImGuiLayer::uiScale() const noexcept { return live ? currentUiScale() : 1.0F; }
 
 }  // namespace engine::editor

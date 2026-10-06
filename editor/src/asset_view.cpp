@@ -2,6 +2,8 @@
 // <filesystem>, no GPU, no logging (INV-V8). Every rule here is provable from a std::vector or
 // std::span literal with no context of any kind.
 #include <aero/editor/asset_view.hpp>
+#include <aero/editor/editor_glyphs.hpp>
+#include <aero/editor/editor_theme.hpp>  // task E.6.1 -- iconColorFor's seven colours
 
 #include <algorithm>
 #include <array>
@@ -21,6 +23,11 @@ namespace {
 // copied TU-locally -- there is no shared header for a two-line function).
 constexpr unsigned char foldAscii(unsigned char c) noexcept {
     return (c >= 'A' && c <= 'Z') ? static_cast<unsigned char>(c + ('a' - 'A')) : c;
+}
+
+// task E.6.1: a theme colour as the browser's icon colour -- designated, in declaration order.
+[[nodiscard]] constexpr IconColor iconColorOf(Srgb8 c) noexcept {
+    return IconColor{.r = c.r, .g = c.g, .b = c.b, .a = c.a};
 }
 
 // The RAW bytes of the extension (no case folding), or empty when there is none, OR when the last
@@ -170,21 +177,22 @@ std::string iconLabelFor(std::string_view fileName) {
 }
 
 IconColor iconColorFor(AssetKind kind) noexcept {
+    // task E.6.1: the seven colours are EDITOR_THEME.assetKind (editor_theme.hpp), byte-identical.
     switch (kind) {
         case AssetKind::Folder:
-            return IconColor{.r = 0xE0U, .g = 0xB0U, .b = 0x30U, .a = 255U};  // a warm gold
+            return iconColorOf(EDITOR_THEME.assetKind.folder);
         case AssetKind::Texture:
-            return IconColor{.r = 0x40U, .g = 0x90U, .b = 0xD0U, .a = 255U};  // a cool blue
+            return iconColorOf(EDITOR_THEME.assetKind.texture);
         case AssetKind::Model:
-            return IconColor{.r = 0x60U, .g = 0xB0U, .b = 0x60U, .a = 255U};  // a green
+            return iconColorOf(EDITOR_THEME.assetKind.model);
         case AssetKind::Audio:
-            return IconColor{.r = 0xA0U, .g = 0x60U, .b = 0xC0U, .a = 255U};  // a violet
+            return iconColorOf(EDITOR_THEME.assetKind.audio);
         case AssetKind::Text:
-            return IconColor{.r = 0x90U, .g = 0x90U, .b = 0x90U, .a = 255U};  // a neutral grey
+            return iconColorOf(EDITOR_THEME.assetKind.text);
         case AssetKind::Material:
-            return IconColor{.r = 0xE0U, .g = 0x70U, .b = 0x45U, .a = 255U};  // a warm coral
+            return iconColorOf(EDITOR_THEME.assetKind.material);
         case AssetKind::Unknown:
-            return IconColor{.r = 0x50U, .g = 0x50U, .b = 0x50U, .a = 255U};  // a darker grey
+            return iconColorOf(EDITOR_THEME.assetKind.unknown);
     }
     return IconColor{};  // unreachable; enumerated so a new AssetKind is a -Wswitch warning
 }
@@ -330,7 +338,7 @@ AssetBrowserLayout assetBrowserLayout(const AssetBrowserLayoutMetrics& metrics) 
 // ---- task E.4.5 (the code-review round): caption lines ------------------------------------------------------
 namespace {
 
-constexpr std::string_view CAPTION_ELLIPSIS = "\xE2\x80\xA6";  // U+2026, one glyph in the editor's font
+constexpr std::string_view CAPTION_ELLIPSIS = AERO_GLYPH_ELLIPSIS;  // U+2026, one glyph in the editor's font
 
 [[nodiscard]] bool isUtf8Continuation(char byte) noexcept {
     return (static_cast<unsigned char>(byte) & 0xC0U) == 0x80U;

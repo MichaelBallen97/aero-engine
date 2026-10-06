@@ -164,14 +164,27 @@ add_library(aero_editor_core STATIC
     src/project_state.cpp        # task E.4.1 -- <projectRoot>/Library/editor-state.json; PURE, no <filesystem>
     src/scene_containment.cpp    # task E.4.2 -- the containment predicate; ALL <filesystem> for this
                                  # pair, never logs, never writes (D1-D4)
-    src/default_font.cpp         # task E.4.4 -- the UI font + its CP1252 remaps (the ONLY font setup)
     src/material_card.cpp        # task E.4.5 -- the material card's model: name, swatch, rig; PURE, no GPU
     src/material_thumbnail.cpp   # task E.4.5 -- the RENDERED material thumbnail; GPU, service pass only
     src/material_card_cache.cpp  # task E.4.5 -- material names + swatches; device-free, capped reads
     src/create_menu.cpp          # task E.5.2 -- the Create menu's table, anchor and seeds; PURE, no ImGui
     src/create_menu_ui.cpp       # task E.5.2 -- the Create menu's ONE ImGui TU; walks the table, no kind literal
+    src/editor_theme.cpp         # task E.6.1 -- resolveUiScale; the theme is one constexpr value, header-only
+    src/editor_fonts.cpp         # task E.6.1 -- the three faces + the Lucide merges; the ONLY AddFont TU
+    src/editor_theme_ui.cpp      # task E.6.1 -- buildEditorStyle: the ONE style writer
 )
 add_library(aero::editor_core ALIAS aero_editor_core)
+# task E.6.1: the editor's fonts, embedded as DATA (third_party/fonts/README.md) -- one generated TU per font
+# under ${CMAKE_CURRENT_BINARY_DIR}/generated, each defining one accessor that editor_font_data.hpp declares.
+include("${CMAKE_SOURCE_DIR}/cmake/embed.cmake")
+aero_embed_binary_files(aero_editor_core
+    HEADER "${CMAKE_CURRENT_SOURCE_DIR}/src/editor_font_data.hpp"
+    NAMESPACE engine::editor::embedded
+    FILES
+        ibmPlexSansRegular=${CMAKE_CURRENT_SOURCE_DIR}/third_party/fonts/ibm-plex/IBMPlexSans-Regular.ttf
+        ibmPlexSansSemiBold=${CMAKE_CURRENT_SOURCE_DIR}/third_party/fonts/ibm-plex/IBMPlexSans-SemiBold.ttf
+        ibmPlexMonoRegular=${CMAKE_CURRENT_SOURCE_DIR}/third_party/fonts/ibm-plex/IBMPlexMono-Regular.ttf
+        lucideIcons=${CMAKE_CURRENT_SOURCE_DIR}/third_party/fonts/lucide/lucide.ttf)
 target_include_directories(aero_editor_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 # SYSTEM so nothing lints or warns on a vendored header we neither own nor may patch. PRIVATE for the
 # same reason imgui is. NOTE (A13): this does NOT confine stb_image.h to one TU -- FindStb resolves to

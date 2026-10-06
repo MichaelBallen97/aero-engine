@@ -1,6 +1,7 @@
 #include "editor_reflection.hpp"
 
 #include <aero/core/log.hpp>
+#include <aero/editor/editor_glyphs.hpp>
 
 #if defined(AERO_EDITOR_REFLECTION)
 // Forward-declared here; DEFINED by the GENERATED aero_editor_core.aggregator.gen.cpp (cmake/reflect.cmake's
@@ -19,7 +20,8 @@ void registerEditorReflection() {
 #if defined(AERO_EDITOR_REFLECTION)
         aero_reflect_register_all_aero_editor_core();
 #else
-        AERO_LOG_WARN("editor: built without AERO_REFLECT_TOOLS — inspector field editing disabled");
+        AERO_LOG_WARN("editor: built without AERO_REFLECT_TOOLS " AERO_GLYPH_EM_DASH
+                      " inspector field editing disabled");
 #endif
         return true;
     }();

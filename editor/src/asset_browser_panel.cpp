@@ -19,11 +19,14 @@
 #include <aero/editor/asset_drag.hpp>  // task 3.1.5: the payload, its type string and the draggable rule
 #include <aero/editor/asset_meta.hpp>
 #include <aero/editor/asset_watcher.hpp>  // task 3.1.4 -- WatchStatus, read through the reconciled pointer
+#include <aero/editor/editor_glyphs.hpp>
+#include <aero/editor/editor_icons.hpp>   // task E.6.1: AERO_ICON_CORNER_LEFT_UP
 #include <aero/editor/material_card.hpp>  // task E.4.5 -- the card's subtitle and tint rules, and the separator
 #include <aero/editor/panel_context.hpp>
 #include <aero/editor/project_files.hpp>
 
-#include "asset_tile.hpp"         // task E.3.3 -- the tile FACE, shared with the picker
+#include "asset_tile.hpp"  // task E.3.3 -- the tile FACE, shared with the picker
+#include "editor_theme_imgui.hpp"
 #include "text_input.hpp"         // task 3.1.3 (A1): inputTextString -- NEVER imgui_stdlib (Windows Debug LNK2038)
 #include "thumbnail_service.hpp"  // task E.3.3 -- the SHARED ledger/store, borrowed through thumbnailsPtr
 
@@ -49,7 +52,7 @@ constexpr float TREE_PANE_FONT_MULTIPLE = 14.0F;
 constexpr float SIZE_COLUMN_FONT_MULTIPLE = 6.0F;
 constexpr float INDENT_FONT_MULTIPLE = 0.9F;
 // Shown for a file whose size the OS refused (AC-6/E6). NEVER "0 B" -- that is a lie, not a blank.
-constexpr const char* UNKNOWN_SIZE = "—";
+constexpr const char* UNKNOWN_SIZE = AERO_GLYPH_EM_DASH;
 
 // C7: every dynamic string goes through this or TextUnformatted -- NEVER as a printf format. A file
 // named "%s.txt" passed as the format would read the varargs stack (UB, and the Debug lanes run
@@ -63,7 +66,8 @@ constexpr std::size_t GUID_PREFIX_LENGTH = 8;
 constexpr std::size_t GUID_SUFFIX_LENGTH = 4;
 std::string elideGuid(Guid guid) {
     const std::string full = formatGuid(guid);
-    return full.substr(0, GUID_PREFIX_LENGTH) + "…" + full.substr(full.size() - GUID_SUFFIX_LENGTH);
+    const std::string suffix = full.substr(full.size() - GUID_SUFFIX_LENGTH);
+    return full.substr(0, GUID_PREFIX_LENGTH) + AERO_GLYPH_ELLIPSIS + suffix;
 }
 
 // task E.4.5: a list row's DIMMED document name, on the same line as the file name -- ONE body for both list
@@ -97,7 +101,7 @@ void drawMaterialRowSuffix(ThumbnailService* thumbnails, const AssetDatabase* da
     scratch = MATERIAL_CARD_SEPARATOR;
     scratch += subtitle;
     ImGui::SameLine(0.0F, 0.0F);
-    ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+    ImGui::PushStyleColor(ImGuiCol_Text, toImVec4(EDITOR_THEME.palette.textMuted));  // task E.6.1 (D16)
     ImGui::TextUnformatted(scratch.c_str());
     ImGui::PopStyleColor();
 }
@@ -1020,10 +1024,8 @@ void AssetBrowserPanel::drawContentsGrid(float paneHeight) {
         // rest of its row blank -- visibly unlike every real tile beside it, which draws an icon rect
         // and a centred caption. Reported from the 3.1.3 human pass.
         //
-        // "<" and ".." are DELIBERATELY ASCII. An arrow glyph like U+2190 is outside the set the one UI
-        // font covers (.claude/rules/editor.md, "The UI font"), so it would draw as '?' -- a worse
-        // regression than the block it replaces. Widening that set is E.6.1's, which owns the font and
-        // theme system.
+        // task E.6.1: Lucide's corner-left-up icon -- merged into the Body face, so it draws natively; the
+        // literal is a hex-escape macro (.claude/rules/editor.md).
         //
         // Keeping it off the grid flow is UNCHANGED and still load-bearing: sharing a row with the
         // clipper-driven grid below would make the clipper's row math account for one leading cell.
@@ -1032,7 +1034,8 @@ void AssetBrowserPanel::drawContentsGrid(float paneHeight) {
         if (!currentDir.empty()) {
             ImGui::PushID(-1);
             const ImVec2 barSize(ImGui::GetContentRegionAvail().x, 0.0F);  // y == 0 -> one text line
-            if (ImGui::Selectable("<  ..", false, ImGuiSelectableFlags_None, barSize)) {
+            const char* const parentLabel = AERO_ICON_CORNER_LEFT_UP "  ..";
+            if (ImGui::Selectable(parentLabel, false, ImGuiSelectableFlags_None, barSize)) {
                 record(ActionKind::Navigate, parentOf(currentDir));
             }
             ImGui::PopID();
@@ -1410,7 +1413,8 @@ void AssetBrowserPanel::drawIssues(float bodyHeight) {
                 ImGui::PopID();         // no continue/break/return between Push and Pop
             }
             if (report.orphanTotal > report.orphans.size()) {
-                labelScratch = "…and " + std::to_string(report.orphanTotal - report.orphans.size()) + " more";
+                const std::size_t unlisted = report.orphanTotal - report.orphans.size();
+                labelScratch = AERO_GLYPH_ELLIPSIS "and " + std::to_string(unlisted) + " more";
                 ImGui::TextUnformatted(labelScratch.c_str());
             }
         }
@@ -1427,7 +1431,8 @@ void AssetBrowserPanel::drawIssues(float bodyHeight) {
                 ImGui::TextUnformatted(line.c_str());  // E20 -- never a format string
             }
             if (totalCount > entries.size()) {
-                labelScratch = "…and " + std::to_string(totalCount - entries.size()) + " more";
+                const std::size_t unlisted = totalCount - entries.size();
+                labelScratch = AERO_GLYPH_ELLIPSIS "and " + std::to_string(unlisted) + " more";
                 ImGui::TextUnformatted(labelScratch.c_str());
             }
         };
@@ -1567,9 +1572,9 @@ void AssetBrowserPanel::drawFooter() {
     // task 3.1.4 (AC-36): APPENDED, never replacing -- the watcher's condition, in a fixed precedence
     // order so the most ACTIONABLE condition wins. Omitted entirely when no watcher has been
     // reconciled yet, which is honest: the panel does not know.
-    // ASCII ONLY. The one UI font draws '?' for anything past ASCII, Latin-1 and the Windows-1252
-    // punctuation (.claude/rules/editor.md, "The UI font"). That is 3.1.3's own post-merge fix,
-    // applied here as a rule rather than rediscovered.
+    // ASCII ONLY. That is 3.1.3's own post-merge fix, applied here as a rule rather than rediscovered.
+    // The editor draws IBM Plex, and a non-ASCII mark in a literal goes through AERO_GLYPH_* or
+    // AERO_ICON_* (.claude/rules/editor.md, "Fonts, icons and the theme").
     if (watchStatusPtr != nullptr) {
         if (!labelScratch.empty()) {
             labelScratch += "   |   ";

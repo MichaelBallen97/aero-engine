@@ -12,15 +12,17 @@
 // second time): every draw call goes through a named local built with std::format, then passed as a
 // "%s" argument.
 //
-// ASCII ONLY in every literal (3.1.3's post-merge lesson): the one UI font draws '?' for anything past
-// ASCII, Latin-1 and the Windows-1252 punctuation (.claude/rules/editor.md, "The UI font") -- "." / "-" /
-// "..." stand in for full-width punctuation.
+// ASCII ONLY in every literal (3.1.3's post-merge lesson): the editor draws IBM Plex, and a non-ASCII mark
+// in a literal goes through AERO_GLYPH_* or AERO_ICON_* (.claude/rules/editor.md, "Fonts, icons and the
+// theme") -- "." / "-" / "..." stand in for full-width punctuation.
 #include "import_details_panel.hpp"
 
 #include <aero/editor/blender_service.hpp>  // task 3.2.4: the Blender section reads it, never writes it
 #include <aero/editor/model_import.hpp>
 #include <aero/editor/panel_context.hpp>
 #include <aero/editor/project_files.hpp>  // task 3.2.2 (§A-2): leafOf, for the importer-identity fix
+
+#include "editor_theme_imgui.hpp"  // task E.6.1: toImVec4
 
 #include <cstddef>
 #include <cstdint>
@@ -35,7 +37,7 @@ namespace engine::editor {
 
 namespace {
 
-constexpr ImVec4 WARNING_COLOR{1.0F, 0.4F, 0.4F, 1.0F};  // project_ui.cpp's own error-text colour
+// task E.6.1: the error-text colour is EDITOR_THEME.palette.error, as it is in project_ui.cpp.
 
 [[nodiscard]] const char* alphaModeLabel(AlphaMode mode) noexcept {
     switch (mode) {
@@ -202,7 +204,7 @@ void drawSettingsForm(const ModelImportSession& session, bool& applyRequested, b
         revertRequested = true;
     }
     if (!session.applyError().empty()) {
-        ImGui::TextColored(WARNING_COLOR, "%s", session.applyError().c_str());
+        ImGui::TextColored(toImVec4(EDITOR_THEME.palette.error), "%s", session.applyError().c_str());
     }
 }
 
@@ -341,7 +343,7 @@ void drawTextureSlot(const ImportedModel& model, const char* slotName, const std
     const ImportedImage& image = model.images[slot->imageIndex];
     if (!image.refusal.empty()) {  // D14: what makes a broken texture reference visible, not mysterious
         const std::string line = std::format("{}: {}", slotName, image.refusal);
-        ImGui::TextColored(WARNING_COLOR, "%s", line.c_str());
+        ImGui::TextColored(toImVec4(EDITOR_THEME.palette.error), "%s", line.c_str());
         return;
     }
     if (!image.relativePath.empty()) {
@@ -589,7 +591,7 @@ void drawBlenderSection(const ModelImportSession& session, bool& convertRequeste
             return;
         case BlenderState::ToolUnusable:
             scratch = std::format("Blender at '{}' cannot be used.", blender.binaryPath());
-            ImGui::TextColored(WARNING_COLOR, "%s", scratch.c_str());
+            ImGui::TextColored(toImVec4(EDITOR_THEME.palette.error), "%s", scratch.c_str());
             if (!blender.message().empty()) {
                 ImGui::TextWrapped("%s", blender.message().c_str());
             }
@@ -637,12 +639,12 @@ void drawBlenderSection(const ModelImportSession& session, bool& convertRequeste
     // D14's "attempt, never refuse" band: a version below the recommended floor still converts, and the
     // warning says so rather than blocking.
     if (blender.state() == BlenderState::Ready && !blender.message().empty()) {
-        ImGui::TextColored(WARNING_COLOR, "%s", blender.message().c_str());
+        ImGui::TextColored(toImVec4(EDITOR_THEME.palette.error), "%s", blender.message().c_str());
     }
 
     if (session.state() == SessionState::ConversionFailed) {
         if (!blender.message().empty()) {
-            ImGui::TextColored(WARNING_COLOR, "%s", blender.message().c_str());
+            ImGui::TextColored(toImVec4(EDITOR_THEME.palette.error), "%s", blender.message().c_str());
         }
         drawBlenderLog(blender, scratch);
         if (ImGui::Button("Retry")) {
@@ -686,7 +688,7 @@ void drawBlenderSection(const ModelImportSession& session, bool& convertRequeste
 void drawFailed(const ModelImportSession& session) {
     const ImportResult& result = session.result();
     const std::string statusLine = std::format("Status: {}", importStatusLabel(result.status));
-    ImGui::TextColored(WARNING_COLOR, "%s", statusLine.c_str());
+    ImGui::TextColored(toImVec4(EDITOR_THEME.palette.error), "%s", statusLine.c_str());
     if (!result.message.empty()) {
         ImGui::TextWrapped("%s", result.message.c_str());
     }

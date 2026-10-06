@@ -76,6 +76,20 @@ public:
     // accessor is a round trip; this is a consequence the widget produced (E.3.4's materialSamplerRowsDrawn
     // lesson), and it is what tells a selector from a drag.
     [[nodiscard]] std::size_t namedSelectorsDrawn() const noexcept { return namedSelectorsDrawnValue; }
+    // task E.6.1: what ImGui had CURRENT when this panel drew -- the face of the last component header and of
+    // the last field label (copies of GetFont()->GetDebugName(), taken at the draw), and how many headers
+    // this frame submitted. Empty / 0 until one draws.
+    [[nodiscard]] const std::string& lastHeaderFontName() const noexcept { return lastHeaderFontNameValue; }
+    [[nodiscard]] const std::string& lastLabelFontName() const noexcept { return lastLabelFontNameValue; }
+    [[nodiscard]] std::uint32_t headersSubmitted() const noexcept { return headersSubmittedValue; }
+    // task E.6.1 (I289): the axis rows as ImGui LAID THEM OUT on the last onDraw -- the panel's content
+    // width (GetContentRegionAvail at the top of onDraw), the last axis box's width (GetItemRectSize after
+    // its DragScalar), and the last axis row's slack: its value cell's width minus the row's own rect
+    // (EndGroup's), negative when the row overruns the cell. The box and the slack are 0 on a frame that
+    // drew no axis row.
+    [[nodiscard]] float lastContentWidth() const noexcept { return lastContentWidthValue; }
+    [[nodiscard]] float lastAxisBoxWidth() const noexcept { return lastAxisBoxWidthValue; }
+    [[nodiscard]] float lastAxisRowSlack() const noexcept { return lastAxisRowSlackValue; }
 
 private:
     enum class ActionKind : std::uint8_t { None = 0, AddComponent, RemoveComponent };
@@ -147,6 +161,12 @@ private:
 
     std::optional<NamedSelection> pendingNamedSelection;  // task E.5.2 -- the seam writes this
     std::optional<NamedSelection> frameNamedSelection;    // task E.5.2 -- THIS onDraw's copy
+    std::string lastHeaderFontNameValue;                  // task E.6.1 -- member/accessor collision rule
+    std::string lastLabelFontNameValue;                   // likewise
+    std::uint32_t headersSubmittedValue = 0;              // likewise; reset at the top of onDraw
+    float lastContentWidthValue = 0.0F;                   // task E.6.1 (I289) -- written at the top of onDraw
+    float lastAxisBoxWidthValue = 0.0F;                   // likewise; reset at the top of onDraw
+    float lastAxisRowSlackValue = 0.0F;                   // likewise; reset at the top of onDraw
     std::size_t namedSelectorsDrawnValue = 0;             // task E.5.2 -- member/accessor collision rule
 };
 

@@ -29,12 +29,15 @@
 #include <aero/editor/create_menu.hpp>    // task E.5.2 (I246-I250): CreateKind, createSeed, createAnchor
 #include <aero/editor/editor_app.hpp>
 #include <aero/editor/editor_camera.hpp>    // task 2.3.1
+#include <aero/editor/editor_glyphs.hpp>    // task E.6.1 (I279): EDITOR_GLYPHS
+#include <aero/editor/editor_icons.hpp>     // task E.6.1 (I278): EDITOR_ICONS
 #include <aero/editor/entity_commands.hpp>  // task 2.4.2
 #include <aero/editor/entity_ops.hpp>
 #include <aero/editor/model_import_session.hpp>  // task 3.2.1: SessionState, named directly (I52-I59)
 #include <aero/editor/panel_registry.hpp>
 #include <aero/editor/picking.hpp>            // task 2.3.2
 #include <aero/editor/project.hpp>            // task 2.6.1
+#include <aero/editor/project_settings.hpp>   // task E.6.1 (I233): PROJECT_SETTINGS_PANEL_ID
 #include <aero/editor/project_state.hpp>      // task E.4.1 (I176-I184): ProjectState + the two file operations
 #include <aero/editor/scene_bounds.hpp>       // task 2.3.1
 #include <aero/editor/scene_containment.hpp>  // task E.4.2 (I187): normalizeForContainment
@@ -56,9 +59,12 @@
 // task 3.1.5 (SL1-SL10): the scene-asset loader is SRC-PRIVATE, so it is reached the way
 // blender_service_test.cpp reaches blender_process.hpp -- by relative path into editor/src. It names
 // scene_render::MeshBinding, which is why aero::scene_render is on this target's link line.
-#include "../../editor/src/default_font.hpp"     // task E.4.4 validation: the UI font, measured ImGui-free (I230)
+#include "../../editor/src/console_panel.hpp"    // task E.6.1 (I281): the Console's own log model
+#include "../../editor/src/editor_fonts.hpp"     // task E.6.1 (I277-I279): the faces, measured ImGui-free
+#include "../../editor/src/editor_theme_ui.hpp"  // task E.6.1 (I280-I282): style snapshots, ImGui-free
 #include "../../editor/src/file_dialog.hpp"      // fix 2.5.1-focus (I275, I276): the dialog focus gate + helper
 #include "../../editor/src/hierarchy_panel.hpp"  // task E.5.2, I249: requestCreate -- the panel-to-drain path
+#include "../../editor/src/inspector_panel.hpp"  // task E.6.1 (I284): the face its headers and labels drew in
 #include "../../editor/src/material_panel.hpp"   // task E.2.4, I136: previewOutputTarget() -- the same
                                                  // src-private reach the two lines below already make
 #include "../../editor/src/scene_asset_loader.hpp"
@@ -81,10 +87,13 @@
 #include <filesystem>
 #include <format>  // task 3.2.2, I65: truncatedFbxText()'s programmatic 257-node fixture
 #include <fstream>
-#include <limits>  // task 3.6.3 regression, I107: a NaN press must be owned by nothing
-#include <memory>  // task 2.4.1: std::make_unique<TransformCommand>
+#include <initializer_list>  // task E.6.1 (I289): std::max over the three axis letters
+#include <limits>            // task 3.6.3 regression, I107: a NaN press must be owned by nothing
+#include <memory>            // task 2.4.1: std::make_unique<TransformCommand>
+#include <numbers>           // task E.6.1 (I280): the angled-header angle, ImGui's own expression
 #include <optional>
 #include <ostream>  // MSVC alone needs the complete type to stringify a string_view inside a CHECK
+#include <regex>    // task E.6.1 (I286): the one style writer, as a set claim
 #include <span>     // task 3.2.4, I78: std::as_bytes over the fingerprint's own text
 #include <sstream>
 #include <string>
@@ -11245,7 +11254,9 @@ TEST_CASE("editor: the selection-outline wiring's three source-text invariants h
     SUBCASE("(a) the mask pass sits between endScene and beginFrame") {
         const std::size_t maskAt = soleLineContaining(code, "renderSelectionMask(");
         const std::size_t endSceneAt = soleLineContaining(code, "post->endScene(std::move(*sceneFrame))");
-        const std::size_t beginFrameAt = soleLineContaining(code, "target->beginFrame(VIEWPORT_CLEAR_COLOR)");
+        // task E.6.1: the clear moved into EDITOR_THEME; the call, and so its POSITION, did not.
+        const std::size_t beginFrameAt =
+            soleLineContaining(code, "target->beginFrame(toRhiColor(EDITOR_THEME.clear.viewport))");
         // ANTI-VACUITY: soleLineContaining REQUIREs exactly one hit, so all three tokens were found.
         CHECK(endSceneAt < maskAt);    // AFTER A submits, so the depth it reads has been written
         CHECK(maskAt < beginFrameAt);  // BEFORE B is acquired, so nothing has a pass open
@@ -15899,10 +15910,11 @@ TEST_CASE(
     SUBCASE("(d) the Apply emphasis derives from the style -- no colour literal") {
         CHECK(panel.find("GetStyleColorVec4(ImGuiCol_ButtonActive)") != std::string::npos);
         CHECK(panel.find("IM_COL32") == std::string::npos);
-        // The two file-local ImVec4s (WARNING_COLOR / NOTICE_COLOR) stay, UNCHANGED and UNMOVED, and
-        // are E.6.1's candidates. This task adds NONE -- which is why the COUNT is pinned rather than
-        // the absence.
-        CHECK(countOccurrences(panel, "constexpr ImVec4") == 2U);
+        // The two file-local ImVec4s (WARNING_COLOR / NOTICE_COLOR) moved into EDITOR_THEME at E.6.1 --
+        // the count is pinned at zero and the roles' reads are asserted.
+        CHECK(countOccurrences(panel, "constexpr ImVec4") == 0U);
+        CHECK(panel.find("EDITOR_THEME.palette.error") != std::string::npos);
+        CHECK(panel.find("EDITOR_THEME.palette.warning") != std::string::npos);
     }
     SUBCASE("(e) ONE width formula, in ONE place") {
         // Two exact counts over one literal each, NOT "the file does not contain CalcTextSize" --
@@ -18829,224 +18841,6 @@ TEST_CASE("editor: Show hidden reveals a dotfile and never an ignored name (task
     app.reset();
 }
 
-// ---- I230: task E.4.4's validation finding 1 -- the UI font's Windows-1252 remaps -------------------------
-//
-// NO GPU and NO window: default_font.hpp's measurement builds a PRIVATE ImGui context with a CPU-side atlas,
-// so this case runs on every lane, in every configuration, and never skips. It lives in THIS binary rather
-// than the tier-0 shell binary because aero_editor_shell_test's recorded contract is that nothing in it
-// builds an ImGui context (tests/CMakeLists.txt, AC-19); the TU stays ImGui-free at source, because
-// default_font.hpp names no ImGui type.
-
-namespace {
-
-[[nodiscard]] bool sameGlyphShape(const engine::editor::DefaultFontGlyph& a,
-                                  const engine::editor::DefaultFontGlyph& b) {
-    // EXACT float equality on purpose: two code points resolving to ONE baked glyph share its numbers bit
-    // for bit, and anything else is a different glyph.
-    return a.x0 == b.x0 && a.x1 == b.x1 && a.y0 == b.y0 && a.y1 == b.y1 && a.advanceX == b.advanceX &&
-           a.visible == b.visible;
-}
-
-}  // namespace
-
-TEST_CASE("editor: the UI font draws UTF-8 punctuation from ProggyClean's own CP1252 glyphs (task E.4.4, I230)") {
-    using engine::editor::DEFAULT_FONT_CP1252_NOT_REMAPPED;
-    using engine::editor::DEFAULT_FONT_CP1252_REMAPS;
-    using engine::editor::DefaultFontGlyph;
-    using engine::editor::DefaultFontMeasurement;
-    using engine::editor::DefaultFontSetup;
-    using engine::editor::measureDefaultFont;
-    constexpr char32_t FALLBACK = U'?';
-
-    SUBCASE("(a) the control: WITHOUT the remaps, an ellipsis and an em dash both fall back to '?'") {
-        constexpr std::array<char32_t, 2> PUNCTUATION{0x2026, 0x2014};
-        constexpr DefaultFontSetup WITHOUT_REMAPS = DefaultFontSetup::BitmapWithoutRemaps;
-        const DefaultFontMeasurement m = measureDefaultFont(WITHOUT_REMAPS, PUNCTUATION, 1.0F);
-        REQUIRE(m.ok);
-        REQUIRE(m.glyphs.size() == PUNCTUATION.size());
-        for (const DefaultFontGlyph& glyph : m.glyphs) {
-            CAPTURE(static_cast<std::uint32_t>(glyph.requested));
-            CHECK_FALSE(glyph.found);
-            CHECK(glyph.drawnCodepoint == FALLBACK);
-        }
-    }
-
-    SUBCASE("(b) WITH the table, every entry draws its CP1252 slot's own glyph, at 1x and at 2x") {
-        const std::size_t count = DEFAULT_FONT_CP1252_REMAPS.size();
-        REQUIRE(count > 0U);
-        std::vector<char32_t> codepoints;
-        codepoints.reserve(2U * count);
-        for (const auto& remap : DEFAULT_FONT_CP1252_REMAPS) {
-            codepoints.push_back(remap.unicode);
-        }
-        for (const auto& remap : DEFAULT_FONT_CP1252_REMAPS) {
-            codepoints.push_back(remap.cp1252Slot);
-        }
-        for (const float scale : {1.0F, 2.0F}) {
-            CAPTURE(scale);
-            const DefaultFontMeasurement m = measureDefaultFont(DefaultFontSetup::Editor, codepoints, scale);
-            REQUIRE(m.ok);
-            REQUIRE(m.glyphs.size() == 2U * count);
-            CHECK(m.bakedSize == m.referenceSize * scale);
-            for (std::size_t i = 0; i < count; ++i) {
-                const DefaultFontGlyph& unicode = m.glyphs[i];
-                const DefaultFontGlyph& slot = m.glyphs[count + i];
-                CAPTURE(static_cast<std::uint32_t>(unicode.requested));
-                CAPTURE(static_cast<std::uint32_t>(slot.requested));
-                CHECK(slot.found);     // the CP1252 slot really carries a glyph ...
-                CHECK(unicode.found);  // ... and the Unicode code point now resolves without falling back
-                CHECK(unicode.drawnCodepoint == unicode.requested);
-                CHECK(unicode.drawnCodepoint != FALLBACK);
-                CHECK(sameGlyphShape(unicode, slot));
-            }
-        }
-    }
-
-    SUBCASE("(c) the table holds the two code points this tree writes, and never the euro sign") {
-        std::vector<char32_t> unicodes;
-        std::vector<char32_t> slots;
-        for (const auto& remap : DEFAULT_FONT_CP1252_REMAPS) {
-            unicodes.push_back(remap.unicode);
-            slots.push_back(remap.cp1252Slot);
-            CAPTURE(static_cast<std::uint32_t>(remap.unicode));
-            CHECK(remap.cp1252Slot >= 0x80U);  // every slot is Windows-1252's 0x80-0x9F punctuation block
-            CHECK(remap.cp1252Slot <= 0x9FU);
-        }
-        // Spelled as code points, never as U'...' literals: this TU is compiled without /utf-8 on MSVC, which
-        // would read a UTF-8 character literal as three CP1252 characters.
-        constexpr char32_t ELLIPSIS = 0x2026;
-        constexpr char32_t EM_DASH = 0x2014;
-        CHECK(std::find(unicodes.begin(), unicodes.end(), ELLIPSIS) != unicodes.end());
-        CHECK(std::find(unicodes.begin(), unicodes.end(), EM_DASH) != unicodes.end());
-        for (const char32_t excluded : DEFAULT_FONT_CP1252_NOT_REMAPPED) {
-            CAPTURE(static_cast<std::uint32_t>(excluded));
-            CHECK(std::find(unicodes.begin(), unicodes.end(), excluded) == unicodes.end());
-        }
-        std::sort(unicodes.begin(), unicodes.end());
-        CHECK(std::adjacent_find(unicodes.begin(), unicodes.end()) == unicodes.end());  // no code point twice
-        std::sort(slots.begin(), slots.end());
-        CHECK(std::adjacent_find(slots.begin(), slots.end()) == slots.end());  // no slot twice
-        // WHY the euro sign is excluded, measured: it already draws natively, and its slot 0x80 is absent.
-        constexpr std::array<char32_t, 2> EURO{0x20AC, 0x80};
-        const DefaultFontMeasurement m = measureDefaultFont(DefaultFontSetup::Editor, EURO, 1.0F);
-        REQUIRE(m.ok);
-        REQUIRE(m.glyphs.size() == EURO.size());
-        CHECK(m.glyphs[0].found);
-        CHECK(m.glyphs[0].drawnCodepoint == EURO[0]);
-        CHECK_FALSE(m.glyphs[1].found);
-    }
-
-    SUBCASE("(d) the explicit font IS the one ImGui picked implicitly, glyph for glyph, ASCII and Latin-1") {
-        std::vector<char32_t> codepoints;
-        for (char32_t c = 0x20; c <= 0x7E; ++c) {
-            codepoints.push_back(c);
-        }
-        for (char32_t c = 0xA0; c <= 0xFF; ++c) {
-            codepoints.push_back(c);
-        }
-        const DefaultFontMeasurement implicitFont =
-            measureDefaultFont(DefaultFontSetup::ImGuiImplicit, codepoints, 1.0F);
-        const DefaultFontMeasurement editorFont = measureDefaultFont(DefaultFontSetup::Editor, codepoints, 1.0F);
-        REQUIRE(implicitFont.ok);
-        REQUIRE(editorFont.ok);
-        CHECK(implicitFont.fontName == "ProggyClean.ttf");  // NOT ProggyForever: the same font as before the fix
-        CHECK(editorFont.fontName == implicitFont.fontName);
-        CHECK(editorFont.referenceSize == 13.0F);
-        CHECK(editorFont.referenceSize == implicitFont.referenceSize);
-        REQUIRE(editorFont.glyphs.size() == codepoints.size());
-        REQUIRE(implicitFont.glyphs.size() == codepoints.size());
-        for (std::size_t i = 0; i < codepoints.size(); ++i) {
-            CAPTURE(static_cast<std::uint32_t>(codepoints[i]));
-            CHECK(editorFont.glyphs[i].found);  // the coverage editor.md's font rule states
-            CHECK(editorFont.glyphs[i].drawnCodepoint == implicitFont.glyphs[i].drawnCodepoint);
-            CHECK(sameGlyphShape(editorFont.glyphs[i], implicitFont.glyphs[i]));
-        }
-    }
-
-    SUBCASE("(e) anything else still draws '?', so the fallback is observable in the editor's own setup") {
-        constexpr std::array<char32_t, 2> ABSENT{0x4E2D, 0x3042};  // a CJK ideograph and a hiragana
-        const DefaultFontMeasurement m = measureDefaultFont(DefaultFontSetup::Editor, ABSENT, 1.0F);
-        REQUIRE(m.ok);
-        REQUIRE(m.glyphs.size() == ABSENT.size());
-        for (const DefaultFontGlyph& glyph : m.glyphs) {
-            CAPTURE(static_cast<std::uint32_t>(glyph.requested));
-            CHECK_FALSE(glyph.found);
-            CHECK(glyph.drawnCodepoint == FALLBACK);
-        }
-    }
-
-    SUBCASE("(f) ImGuiLayer::create adds the font exactly once, after CreateContext and before the backends") {
-        // The measurement above shares addEditorDefaultFont() with the editor, so it cannot see the editor
-        // stop CALLING it; this source-text pin can.
-        const std::vector<std::string> code = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/imgui_layer.cpp");
-        const std::size_t created = soleLineContaining(code, "ImGui::CreateContext()");
-        const std::size_t font = soleLineContaining(code, "addEditorDefaultFont()");
-        const std::size_t backend = soleLineContaining(code, "ImGui_ImplSDL3_InitForSDLGPU(");
-        CHECK(created < font);
-        CHECK(font < backend);
-        // ... and no other editor file adds a font, so the remapped one is the only one there is: a SET
-        // claim over every editor/src/*.cpp (the I110 walk), comment-stripped, with its anti-vacuity count.
-        std::size_t scanned = 0;
-        std::vector<std::string> addingFiles;
-        const std::filesystem::directory_iterator walk{AERO_EDITOR_SRC_DIR};
-        for (const std::filesystem::directory_entry& entry : walk) {
-            if (!entry.is_regular_file() || entry.path().extension() != ".cpp") {
-                continue;
-            }
-            ++scanned;
-            if (countLinesContaining(editorSourceCodeLines(entry.path().string()), "AddFont") > 0U) {
-                addingFiles.push_back(entry.path().filename().string());
-            }
-        }
-        CHECK(scanned > 80U);  // anti-vacuity: the walk really read editor/src
-        CHECK(addingFiles == std::vector<std::string>{"default_font.cpp"});
-        const std::vector<std::string> fontUnit = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/default_font.cpp");
-        CHECK(countLinesContaining(fontUnit, "AddFontDefaultBitmap()") == 1U);
-        CHECK(countLinesContaining(fontUnit, "AddFontDefault()") == 0U);  // never the ProggyForever heuristic
-    }
-
-    SUBCASE("(g) every pair IS the Windows-1252 standard's, and the table is every assigned slot but 0x80") {
-        // (b) cannot see a WRONG pairing: it compares each remapped glyph against the slot the SAME entry
-        // names, so it passes for any pairing at all -- and geometry cannot tell these glyphs apart either:
-        // {0x86, 0x87, 0x9A, 0x9E}, {0x8A, 0x8E} and {0x8B, 0x9B} are exact geometry twins at 13 and 26 px.
-        // Swapping the slots of {0x0160, 0x8A} and {0x017D, 0x8E} keeps (a)-(f) green while every S-caron draws
-        // as a Z-caron and every Z-caron as an S-caron.
-        // So the pairs are pinned against the standard itself, RESTATED here as an independent literal --
-        // Unicode's MICSFT/WINDOWS/CP1252.TXT, rows 0x80-0x9F, 0 where the row is UNDEFINED (the IX3 posture:
-        // a changed table means changing this pin in the same commit).
-        constexpr std::array<char32_t, 32> WINDOWS_1252_80_9F{
-            0x20AC, 0,      0x201A, 0x0192, 0x201E, 0x2026, 0x2020, 0x2021,  // 0x80-0x87
-            0x02C6, 0x2030, 0x0160, 0x2039, 0x0152, 0,      0x017D, 0,       // 0x88-0x8F
-            0,      0x2018, 0x2019, 0x201C, 0x201D, 0x2022, 0x2013, 0x2014,  // 0x90-0x97
-            0x02DC, 0x2122, 0x0161, 0x203A, 0x0153, 0,      0x017E, 0x0178,  // 0x98-0x9F
-        };
-        constexpr char32_t FIRST_SLOT = 0x80;
-        // Every entry is the standard's own pair.
-        std::vector<char32_t> slots;
-        for (const auto& remap : DEFAULT_FONT_CP1252_REMAPS) {
-            CAPTURE(static_cast<std::uint32_t>(remap.unicode));
-            CAPTURE(static_cast<std::uint32_t>(remap.cp1252Slot));
-            REQUIRE(remap.cp1252Slot >= FIRST_SLOT);
-            REQUIRE(remap.cp1252Slot < FIRST_SLOT + WINDOWS_1252_80_9F.size());
-            CHECK(remap.unicode == WINDOWS_1252_80_9F[remap.cp1252Slot - FIRST_SLOT]);
-            slots.push_back(remap.cp1252Slot);
-        }
-        // And the table is EXACTLY the assigned slots minus 0x80, whose code point is the one exclusion.
-        std::vector<char32_t> expectedSlots;
-        for (std::size_t i = 0; i < WINDOWS_1252_80_9F.size(); ++i) {
-            const auto slot = static_cast<char32_t>(FIRST_SLOT + i);
-            if (WINDOWS_1252_80_9F[i] != 0 && slot != FIRST_SLOT) {
-                expectedSlots.push_back(slot);
-            }
-        }
-        std::sort(slots.begin(), slots.end());
-        CHECK(slots == expectedSlots);
-        CHECK(expectedSlots.size() == 26U);  // 32 rows, 5 UNDEFINED, and 0x80 excluded
-        REQUIRE(DEFAULT_FONT_CP1252_NOT_REMAPPED.size() == 1U);
-        CHECK(DEFAULT_FONT_CP1252_NOT_REMAPPED[0] == WINDOWS_1252_80_9F[0]);
-    }
-}
-
 // ---- I231: task E.4.4's validation finding 2 -- the Asset Browser fits its panel with Issues open ------
 //
 // The macOS validation pass (row 2) found the "Issues (N)" header and the footer below the bottom of the
@@ -19071,15 +18865,23 @@ TEST_CASE("editor: the Asset Browser fits its panel with 40 orphans and Issues o
     if (!ctx.valid()) {
         AERO_SKIP_OR_FAIL("no platform context");
     }
-    // 1000 points leaves 187 of avail at 1x here, room for a 74-point body. 600 leaves 87: 23 above the fit
-    // bound, and no room above the one-row floor -- the regime CI's runner produced from the 1000-point
-    // window. A runner can only make a window SHORTER, so the short subcase stays in that regime anywhere.
+    // THE SHORT WINDOW'S REGIME, re-measured 2026-10-03 at task E.6.1's metrics (UI scale 1: body 13 -> 16,
+    // frame 19 -> 24, ItemSpacing.y 4 -> 6). With Issues open, assetBrowserLayout holds the body at its
+    // one-row floor while avail <= 146 (footer 30 + header 30 + spacing 6 + panes 4 x 16 + one row 16) and
+    // fits while avail >= 83 (30 + 30 + 16 + 6 + 1). Measured here, avail = floor((H - 24) / 4) - 71: the
+    // Bottom node's quarter of the work area, less its tab bar, padding and header row. So the regime is
+    // H in [640, 895]: 630 measured avail 80 (the WARN fallback below), 640 avail 83, 890 avail 145, and
+    // 900 avail 148 with an 18-point body. 600, this subcase's height before E.6.1, measured avail 73,
+    // ten under the fit bound, so its CHECK ran nowhere. 768 is avail 115, about 30 inside either bound.
+    // A runner that delivers a SHORTER window than requested (CI's macOS lane can) may still land under 83,
+    // where scrolling is the designed answer and checkFits reports a WARN. 1000 measured avail 152 here,
+    // the same as 920 (the window is held to the display), with a 22-point body.
     bool tallPanel = true;
     int windowHeight = 1000;
     SUBCASE("a TALL panel, where the body has room to grow past one row") {}
     SUBCASE("a SHORT panel, where the body is held at its one-row floor -- the geometry CI hit") {
         tallPanel = false;
-        windowHeight = 600;
+        windowHeight = 768;
     }
     CAPTURE(windowHeight);
     std::optional<engine::platform::Window> window =
@@ -19123,17 +18925,26 @@ TEST_CASE("editor: the Asset Browser fits its panel with 40 orphans and Issues o
     // longer than any body this panel can reserve.
     REQUIRE(app->assetOrphanCount() == static_cast<std::size_t>(ORPHANS));
 
-    // The panel must fit. The TALL panel always; the SHORT one whenever the layout's own budget fits the
-    // height the panel recorded, which is the header's contract ("only a panel shorter than the fit bound
-    // can scroll") -- 600 points is inside it at 1x, on every CI lane, but a Retina display doubles the
-    // style and may push it below, where scrolling is the DESIGNED answer. A WARN says so instead.
-    const auto checkFits = [&app, tallPanel] {
+    // The panel must fit whenever the layout's own budget fits the height the panel RECORDED -- in BOTH
+    // subcases. `budget <= avail` is assetBrowserLayout's answer for those metrics, and it holds exactly when
+    // the recorded avail is at least the layout's fit bound (footer + header [+ one row + spacing] + 1: the
+    // header's contract, "only a panel shorter than the fit bound can scroll"). Below the bound, scrolling is
+    // the DESIGNED answer, and a WARN says so instead.
+    //
+    // The TALL subcase used to assert no scroll unconditionally, which held only while its runner's panel
+    // cleared the bound. E.6.1 raised the open bound from 64 (23 + 23 + 13 + 4 + 1 at ProggyClean's
+    // metrics) to 83 and cut the avail a given window yields by 14 (600 points measured 87, now 73), and
+    // CI's macOS runner delivers a SHORTER window than requested: its `13 > 13` failure placed that
+    // runner's tall avail, at the old metrics, only somewhere in [64, 115] -- above the old bound, inside
+    // the old floored regime -- which the new metrics move to about [50, 101], across 83. Locally the tall
+    // panel clears the bound, so the CHECK runs here with no WARN line.
+    const auto checkFits = [&app] {
         const AssetBrowserLayoutMetrics m = app->assetBrowserLayoutMetrics();
         const AssetBrowserLayout l = engine::editor::assetBrowserLayout(m);
         const float budget = l.paneHeight + l.issuesHeight + l.footerHeight;
         const float scrollMax = app->assetBrowserScrollMaxY();
         INFO("avail " << m.availHeight << ", budget " << budget << ", scroll max " << scrollMax);
-        if (tallPanel || budget <= m.availHeight) {
+        if (budget <= m.availHeight) {
             CHECK(scrollMax == 0.0F);
         } else {
             WARN(budget <= m.availHeight);
@@ -19439,6 +19250,19 @@ TEST_CASE("editor: one walk spends two budgets, and three older materials starve
     // never vacuously.
     std::optional<engine::editor::EditorApp> app = makeThumbnailApp(*device, *window, ctx, created.root);
     REQUIRE(app.has_value());
+    // task E.6.1 (D23.2(a)): at body 16 a Small tile is 4.5 x 16 = 72 wide and the folder tree
+    // 14 x 16 = 224, so five Small tiles need 5 x (72 + 8) - 8 = 392 of contents width; the CI macOS
+    // runner gave at least 362 at body 13, which the wider tree pane takes down to about 324 at body 16.
+    // Hiding the Left and Right panels lets ImGui's dock tree hand the Bottom node the whole width
+    // (imgui.cpp:20281-20284: a node whose child is invisible gives the visible one its size). The fixture
+    // changes; the case and its final loud counts do not.
+    constexpr std::array<const char*, 5> SIDE_PANELS{"Hierarchy", "Inspector", "Material", "Import Details",
+                                                     engine::editor::PROJECT_SETTINGS_PANEL_ID};
+    for (const char* id : SIDE_PANELS) {
+        if (app->panels().find(id) != nullptr) {
+            app->panels().setVisible(id, false);  // setVisible LOGS AN ERROR for an unknown id: find() first
+        }
+    }
     app->requestAssetBrowserTileSize(engine::editor::TileSize::Small);  // applied by the first tick's draw walk
     for (int i = 0; i < 3; ++i) {
         REQUIRE(app->tick());
@@ -21261,7 +21085,10 @@ TEST_CASE("editor: the Create glue no tier can click holds as source text (task 
         REQUIRE(end < shell.size());
         std::size_t checked = 0;
         for (std::size_t i = start + 1U; i < end; ++i) {
+            // task E.6.1: the Empty item is drawn through drawCreateKindItem( (its icon, I285), so that
+            // spelling is an item too -- without it the Empty item drops out of this walk (REQUIRE reads 1).
             if (shell[i].find("MenuItem(") != std::string::npos ||
+                shell[i].find("drawCreateKindItem(") != std::string::npos ||
                 shell[i].find("drawCreateMenuItems(") != std::string::npos) {
                 CAPTURE(shell[i]);
                 CHECK(shell[i].find("fileEnabled") != std::string::npos);
@@ -21565,4 +21392,1476 @@ TEST_CASE(
         CHECK(definedAt < gateAt);
         CHECK(gateAt < raiseAt);
     }
+}
+
+// ---- I277-I279, I286: task E.6.1 -- the faces, the icons, coverage and the one font writer ---------
+//
+// NO GPU and NO window: editor_fonts.hpp's measurement builds a PRIVATE ImGui context with a CPU-side
+// atlas, so these cases run on every lane, in every configuration, and never skip. The TU stays ImGui-free
+// at source, because editor_fonts.hpp names no ImGui type.
+
+namespace {
+
+using engine::editor::EditorFontFace;
+using engine::editor::EditorFontMeasurement;
+using engine::editor::EditorFontSetup;
+using engine::editor::MeasuredGlyph;
+using engine::editor::measureEditorFonts;
+
+constexpr std::array<float, 2> FONT_SCALES{1.0F, 2.0F};
+// Short aliases for the two setups, so every measuring call stays on one line under the column limit.
+constexpr EditorFontSetup WITH_ICONS = EditorFontSetup::Editor;
+constexpr EditorFontSetup WITHOUT_ICONS = EditorFontSetup::SansWithoutIcons;
+
+[[nodiscard]] std::vector<char32_t> printableAscii() {
+    std::vector<char32_t> points;
+    for (char32_t c = 0x20; c <= 0x7E; ++c) {
+        points.push_back(c);
+    }
+    return points;
+}
+
+[[nodiscard]] std::string_view fontFaceLabel(EditorFontFace face) {
+    switch (face) {
+        case EditorFontFace::Body:
+            return "Body";
+        case EditorFontFace::Strong:
+            return "Strong";
+        case EditorFontFace::Mono:
+            return "Mono";
+    }
+    return "?";
+}
+
+// EXACT float equality on purpose: one baked glyph has one set of numbers, so two lookups that resolve to the
+// same glyph agree bit for bit, and anything else is a different glyph.
+[[nodiscard]] bool sameGeometry(const MeasuredGlyph& a, const MeasuredGlyph& b) {
+    return a.x0 == b.x0 && a.x1 == b.x1 && a.y0 == b.y0 && a.y1 == b.y1 && a.advanceX == b.advanceX &&
+           a.visible == b.visible && a.drawnCodepoint == b.drawnCodepoint;
+}
+
+// Where a glyph SITS: the centre of its INK, never of its quad. ImGui sizes a quad from the font's glyph box,
+// and every Lucide 1.49.0 box reaches down to the baseline whatever the outline does (glyf yMin = 0), so a
+// quad centre tracks only an icon's top edge -- a 2-point spread across the roster at body 16 that no
+// offset could fit inside the per-icon bound.
+[[nodiscard]] float inkCentreY(const MeasuredGlyph& glyph) { return (glyph.inkY0 + glyph.inkY1) * 0.5F; }
+
+// The input to the glyph offset's decision rule: every roster icon's ink delta, named, its quad beside it.
+// `m` measured the roster in EDITOR_ICONS order with 'H' last.
+void dumpIconDeltas(const EditorFontMeasurement& m, float capCentre) {
+    for (std::size_t i = 0; i + 1U < m.glyphs.size(); ++i) {
+        const MeasuredGlyph& icon = m.glyphs[i];
+        const float delta = inkCentreY(icon) - capCentre;
+        const std::string line =
+            std::format("{} delta {} ink {} .. {} quad {} .. {}", engine::editor::EDITOR_ICONS[i].name, delta,
+                        icon.inkY0, icon.inkY1, icon.y0, icon.y1);
+        MESSAGE(line);
+    }
+}
+
+}  // namespace
+
+TEST_CASE("editor: the three faces are IBM Plex, and ASCII never comes from Lucide (task E.6.1, I277)") {
+    struct FaceRow {
+        EditorFontFace face;
+        std::string_view name;  // restated, never read from editor_fonts.hpp
+        float iAdvance;         // 'i' at size 16 -- the one advance that tells all three faces apart
+    };
+    // Plex's ImGui SIZE is ascender - descender = 1300 units, so size 16 scales by 16/1300: Sans Regular 'i'
+    // advances 250 units, SemiBold 276, Mono 600.
+    constexpr std::array<FaceRow, 3> FACES{{
+        {EditorFontFace::Body, "IBM Plex Sans", 3.0769F},
+        {EditorFontFace::Strong, "IBM Plex Sans SemiBold", 3.3969F},
+        {EditorFontFace::Mono, "IBM Plex Mono", 7.3846F},
+    }};
+    const std::vector<char32_t> ascii = printableAscii();
+    REQUIRE(ascii.size() == 95U);
+    const auto iIndex = static_cast<std::size_t>(U'i' - U' ');
+    REQUIRE(ascii[iIndex] == U'i');
+
+    for (const FaceRow& row : FACES) {
+        for (const float scale : FONT_SCALES) {
+            CAPTURE(fontFaceLabel(row.face));
+            CAPTURE(scale);
+            const EditorFontMeasurement m = measureEditorFonts(WITH_ICONS, row.face, ascii, scale);
+            REQUIRE(m.ok);
+            REQUIRE(m.glyphs.size() == ascii.size());
+            CHECK(m.fontName == row.name);
+            CHECK(m.referenceSize == 16.0F);
+            CHECK(m.bakedSize == 16.0F * scale);
+            const float advance = m.glyphs[iIndex].advanceX;
+            CAPTURE(advance);
+            CHECK(std::fabs(advance - (row.iAdvance * scale)) <= 0.02F * scale);
+            for (const MeasuredGlyph& glyph : m.glyphs) {
+                CAPTURE(static_cast<std::uint32_t>(glyph.requested));
+                CHECK(glyph.found);
+                CHECK(glyph.drawnCodepoint == glyph.requested);
+            }
+            if (row.face == EditorFontFace::Mono) {
+                for (const MeasuredGlyph& glyph : m.glyphs) {
+                    CAPTURE(static_cast<std::uint32_t>(glyph.requested));
+                    CHECK(glyph.advanceX == m.glyphs.front().advanceX);  // monospaced, exactly
+                }
+            }
+        }
+    }
+
+    // THE MERGE-ORDER ARM (seed S7). Lucide maps '-', '0'-'9' and 'a'-'z' to glyphs of zero or icon
+    // width, so a Lucide-first merge changes what those code points draw; with Plex first, the merged face
+    // draws printable ASCII EXACTLY as the same face with no icons merged at all.
+    for (const EditorFontFace face : {EditorFontFace::Body, EditorFontFace::Strong}) {
+        for (const float scale : FONT_SCALES) {
+            CAPTURE(fontFaceLabel(face));
+            CAPTURE(scale);
+            const EditorFontMeasurement merged = measureEditorFonts(WITH_ICONS, face, ascii, scale);
+            const EditorFontMeasurement plain = measureEditorFonts(WITHOUT_ICONS, face, ascii, scale);
+            REQUIRE(merged.ok);
+            REQUIRE(plain.ok);
+            REQUIRE(merged.glyphs.size() == plain.glyphs.size());
+            for (std::size_t i = 0; i < merged.glyphs.size(); ++i) {
+                CAPTURE(static_cast<std::uint32_t>(merged.glyphs[i].requested));
+                CHECK(sameGeometry(merged.glyphs[i], plain.glyphs[i]));
+            }
+        }
+    }
+}
+
+TEST_CASE("editor: every roster icon draws in Body and Strong, centred on the capitals (task E.6.1, I278)") {
+    // The roster's code points, then 'H' LAST: the capitals' ink centre is measured in the same baked font.
+    std::vector<char32_t> points;
+    points.reserve(engine::editor::EDITOR_ICONS.size() + 1U);
+    for (const engine::editor::EditorIcon& icon : engine::editor::EDITOR_ICONS) {
+        points.push_back(icon.codepoint);
+    }
+    REQUIRE(points.size() == 67U);
+    points.push_back(U'H');
+    const std::size_t hIndex = points.size() - 1U;
+
+    for (const EditorFontFace face : {EditorFontFace::Body, EditorFontFace::Strong}) {
+        for (const float scale : FONT_SCALES) {
+            CAPTURE(fontFaceLabel(face));
+            CAPTURE(scale);
+            const EditorFontMeasurement m = measureEditorFonts(WITH_ICONS, face, points, scale);
+            REQUIRE(m.ok);
+            REQUIRE(m.glyphs.size() == points.size());
+            const MeasuredGlyph& capital = m.glyphs[hIndex];
+            REQUIRE(capital.found);
+            REQUIRE(capital.visible);
+            // The ink was MEASURED: a scan that found no row, or never ran, leaves both edges at y0, and
+            // every delta below would then compare quad tops while reading as a claim about ink.
+            REQUIRE(capital.inkY1 > capital.inkY0);
+            const float capCentre = inkCentreY(capital);
+            CAPTURE(capCentre);
+            CAPTURE(capital.inkY0);
+            CAPTURE(capital.inkY1);
+
+            float deltaSum = 0.0F;
+            float deltaMax = 0.0F;
+            bool everyIconCentred = true;
+            for (std::size_t i = 0; i < hIndex; ++i) {
+                const MeasuredGlyph& glyph = m.glyphs[i];
+                CAPTURE(engine::editor::EDITOR_ICONS[i].name);
+                CHECK(glyph.found);
+                CHECK(glyph.visible);
+                CHECK(glyph.drawnCodepoint == glyph.requested);
+                CHECK(glyph.inkY1 > glyph.inkY0);  // this icon's ink was measured, as the capital's was
+                // 11/16 of the face, and every roster icon advances one em
+                CHECK(std::fabs(glyph.advanceX - (11.0F * scale)) <= 0.01F * scale);
+                CHECK(glyph.y1 - glyph.y0 <= m.bakedSize);
+                const float delta = inkCentreY(glyph) - capCentre;
+                CAPTURE(delta);
+                CHECK(std::fabs(delta) <= 0.5F * scale);  // spec D7: centred on the capitals, per icon
+                everyIconCentred = everyIconCentred && std::fabs(delta) <= 0.5F * scale;
+                deltaSum += delta;
+                deltaMax = std::max(deltaMax, std::fabs(delta));
+            }
+            const float meanDelta = deltaSum / static_cast<float>(hIndex);
+            CAPTURE(meanDelta);
+            const std::string summary = std::format("I278 {} at scale {}: mean {}, max |delta| {} (points)",
+                                                    fontFaceLabel(face), scale, meanDelta, deltaMax);
+            MESSAGE(summary);
+            // THE ARM NO WRONG OFFSET PASSES (seed S28): derived from the outlines, an offset of 0 puts the
+            // roster's mean about a point below the capitals' centre and 2 about a point above it.
+            const bool meanCentred = std::fabs(meanDelta) <= 0.25F * scale;
+            CHECK(meanCentred);
+            if (!everyIconCentred || !meanCentred) {
+                dumpIconDeltas(m, capCentre);
+            }
+        }
+    }
+
+    // NO first-font hijack is possible: Plex itself draws none of the roster's code points.
+    for (const EditorFontFace face : {EditorFontFace::Body, EditorFontFace::Strong}) {
+        CAPTURE(fontFaceLabel(face));
+        const EditorFontMeasurement plain = measureEditorFonts(WITHOUT_ICONS, face, points, 1.0F);
+        REQUIRE(plain.ok);
+        for (std::size_t i = 0; i < hIndex; ++i) {
+            CAPTURE(engine::editor::EDITOR_ICONS[i].name);
+            CHECK_FALSE(plain.glyphs[i].found);
+        }
+    }
+
+    // Mono carries NO icons (seed S8): each draws the fallback.
+    const EditorFontMeasurement mono = measureEditorFonts(WITH_ICONS, EditorFontFace::Mono, points, 1.0F);
+    REQUIRE(mono.ok);
+    for (std::size_t i = 0; i < hIndex; ++i) {
+        CAPTURE(engine::editor::EDITOR_ICONS[i].name);
+        CHECK_FALSE(mono.glyphs[i].found);
+        CHECK(mono.glyphs[i].drawnCodepoint == 0xFFFDU);
+    }
+}
+
+TEST_CASE("editor: the typographic glyphs are native and a missing one draws U+FFFD (task E.6.1, I279)") {
+    std::vector<char32_t> points;
+    points.reserve(engine::editor::EDITOR_GLYPHS.size() + 3U);
+    for (const engine::editor::EditorGlyph& glyph : engine::editor::EDITOR_GLYPHS) {
+        points.push_back(glyph.codepoint);
+    }
+    REQUIRE(points.size() == 13U);
+    const std::size_t glyphCount = points.size();
+    points.push_back(0x4E2DU);   // a CJK ideograph -- in no Plex face
+    points.push_back(0x1F600U);  // past the 16-bit ImWchar: text decodes it to U+FFFD before any lookup
+    points.push_back(0x2318U);   // the command key symbol -- spec D19.4: Plex has none of the key symbols
+
+    for (const EditorFontFace face : {EditorFontFace::Body, EditorFontFace::Strong, EditorFontFace::Mono}) {
+        CAPTURE(fontFaceLabel(face));
+        const EditorFontMeasurement m = measureEditorFonts(WITH_ICONS, face, points, 1.0F);
+        REQUIRE(m.ok);
+        REQUIRE(m.glyphs.size() == points.size());
+        for (std::size_t i = 0; i < glyphCount; ++i) {
+            CAPTURE(engine::editor::EDITOR_GLYPHS[i].name);
+            CHECK(m.glyphs[i].found);
+            CHECK(m.glyphs[i].drawnCodepoint == m.glyphs[i].requested);
+        }
+        const MeasuredGlyph& ideograph = m.glyphs[glyphCount];
+        CHECK_FALSE(ideograph.found);
+        CHECK(ideograph.drawnCodepoint == 0xFFFDU);
+        CHECK(m.glyphs[glyphCount + 1U].drawnCodepoint == 0xFFFDU);
+        CHECK_FALSE(m.glyphs[glyphCount + 2U].found);
+        CHECK(m.fallbackChar == 0xFFFDU);
+        CHECK(m.ellipsisChar == 0x2026U);
+    }
+
+    // COVERAGE, exactly as measured through this harness when the faces landed (spec F8: Mono lacks Greek).
+    // All three faces draw Latin-1 (U+00A0-U+00FF), Latin Extended-A (U+0100-U+017F) and basic Cyrillic
+    // (U+0400-U+045F); Body and Strong draw every Greek letter, and Mono only pi (U+03C0) -- a Delta or an
+    // alpha in Mono draws U+FFFD. .claude/rules/editor.md's coverage sentence states exactly this.
+    std::vector<char32_t> everyFace;
+    for (char32_t c = 0xA0U; c <= 0x17FU; ++c) {  // Latin-1 Supplement, then Latin Extended-A
+        everyFace.push_back(c);
+    }
+    for (char32_t c = 0x400U; c <= 0x45FU; ++c) {
+        everyFace.push_back(c);
+    }
+    REQUIRE(everyFace.size() == 320U);  // 96 + 128 + 96
+    std::vector<char32_t> greekLetters;
+    for (char32_t c = 0x391U; c <= 0x3A9U; ++c) {
+        if (c != 0x3A2U) {  // unassigned: the capital final sigma does not exist
+            greekLetters.push_back(c);
+        }
+    }
+    for (char32_t c = 0x3B1U; c <= 0x3C9U; ++c) {
+        greekLetters.push_back(c);
+    }
+    REQUIRE(greekLetters.size() == 49U);
+    for (const EditorFontFace face : {EditorFontFace::Body, EditorFontFace::Strong, EditorFontFace::Mono}) {
+        CAPTURE(fontFaceLabel(face));
+        const EditorFontMeasurement shared = measureEditorFonts(WITH_ICONS, face, everyFace, 1.0F);
+        REQUIRE(shared.ok);
+        REQUIRE(shared.glyphs.size() == everyFace.size());
+        for (const MeasuredGlyph& glyph : shared.glyphs) {
+            CAPTURE(static_cast<std::uint32_t>(glyph.requested));
+            CHECK(glyph.found);
+            CHECK(glyph.drawnCodepoint == glyph.requested);
+        }
+        const EditorFontMeasurement greek = measureEditorFonts(WITH_ICONS, face, greekLetters, 1.0F);
+        REQUIRE(greek.ok);
+        REQUIRE(greek.glyphs.size() == greekLetters.size());
+        for (const MeasuredGlyph& glyph : greek.glyphs) {
+            CAPTURE(static_cast<std::uint32_t>(glyph.requested));
+            const bool drawn = face != EditorFontFace::Mono || glyph.requested == 0x3C0U;
+            CHECK(glyph.found == drawn);
+            CHECK(glyph.drawnCodepoint == (drawn ? glyph.requested : 0xFFFDU));
+        }
+    }
+}
+
+namespace {
+
+[[nodiscard]] bool anyLineMatches(const std::vector<std::string>& code, const std::regex& pattern) {
+    return std::any_of(code.begin(), code.end(),
+                       [&pattern](const std::string& line) { return std::regex_search(line, pattern); });
+}
+
+}  // namespace
+
+TEST_CASE("editor: the font, style and font-push writers each live in their own TUs (task E.6.1, I286)") {
+    // Comment-stripped code lines only (editorSourceCodeLines), so a sentence in a comment never counts.
+    // THE STYLE ARM's regex matches an assignment to ImGui's style or to any member or element of it --
+    // `.Colors[i] =` included -- and never a comparison or a read into a local. Its stated limit: a write
+    // through an ImGuiStyle& alias is invisible to it.
+    const std::regex styleWrite(R"(ImGui::GetStyle\(\)[^;=]*=[^=])");
+    const std::regex dpiFlagWrite(R"(ConfigDpiScaleFonts[ \t]*=[^=])");
+    std::vector<std::string> addingFonts;
+    std::vector<std::string> writingStyle;
+    std::vector<std::string> namingDpiFlag;
+    std::vector<std::string> writingDpiFlag;
+    std::vector<std::string> pushingFonts;  // task E.6.1 step 8: the two panels that switch face
+    std::vector<std::string> poppingFonts;
+    std::size_t scanned = 0;
+    std::error_code ec;
+    for (const std::filesystem::directory_entry& entry :
+         std::filesystem::directory_iterator(std::filesystem::path(AERO_EDITOR_SRC_DIR), ec)) {
+        if (!entry.is_regular_file() || entry.path().extension().string() != ".cpp") {
+            continue;
+        }
+        ++scanned;
+        const std::string name = entry.path().filename().string();
+        const std::vector<std::string> code = editorSourceCodeLines(entry.path().string());
+        if (countLinesContaining(code, "AddFont") > 0U) {
+            addingFonts.push_back(name);
+        }
+        const bool regexHit = anyLineMatches(code, styleWrite);
+        if (regexHit || countLinesContaining(code, "ScaleAllSizes") > 0U ||
+            countLinesContaining(code, "StyleColors") > 0U) {
+            writingStyle.push_back(name);
+        }
+        if (countLinesContaining(code, "ConfigDpiScaleFonts") > 0U) {
+            namingDpiFlag.push_back(name);
+        }
+        const bool flagWrite = anyLineMatches(code, dpiFlagWrite);
+        if (flagWrite) {
+            writingDpiFlag.push_back(name);
+        }
+        if (countLinesContaining(code, "PushFont") > 0U) {
+            pushingFonts.push_back(name);
+        }
+        if (countLinesContaining(code, "PopFont") > 0U) {
+            poppingFonts.push_back(name);
+        }
+    }
+    REQUIRE_FALSE(ec);
+    REQUIRE(scanned > 80U);  // ANTI-VACUITY: the walk read the editor's sources
+    for (std::vector<std::string>* set :
+         {&addingFonts, &writingStyle, &namingDpiFlag, &writingDpiFlag, &pushingFonts, &poppingFonts}) {
+        std::sort(set->begin(), set->end());
+        set->erase(std::unique(set->begin(), set->end()), set->end());
+    }
+    CHECK(addingFonts == std::vector<std::string>{"editor_fonts.cpp"});      // a SET claim, I127(b)'s shape
+    CHECK(writingStyle == std::vector<std::string>{"editor_theme_ui.cpp"});  // the ONE style writer
+    // The io flag ImGui's own DPI path reads: SWITCHED OFF in exactly one file, and named by no file but that
+    // one and the snapshot that reports it to the tests.
+    CHECK(writingDpiFlag == std::vector<std::string>{"imgui_layer.cpp"});
+    CHECK(namingDpiFlag == std::vector<std::string>{"editor_theme_ui.cpp", "imgui_layer.cpp"});
+    // The face switches: the Console's messages and the Inspector's headers, and nothing else -- each push
+    // in a file that pops (task E.6.1, step 8).
+    const std::vector<std::string> fontPanels{"console_panel.cpp", "inspector_panel.cpp"};
+    CHECK(pushingFonts == fontPanels);
+    CHECK(poppingFonts == fontPanels);
+
+    // Every add hands ImGui static data it must NEVER free (seed S9): one "not owned" per add.
+    const std::vector<std::string> fonts = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/editor_fonts.cpp");
+    const std::size_t notOwned = countLinesContaining(fonts, "FontDataOwnedByAtlas = false");
+    const std::size_t adds = countLinesContaining(fonts, "AddFontFromMemoryTTF(");
+    CHECK(notOwned == adds);
+    CHECK(adds == 2U);
+
+    // ANTI-VACUITY of both regexes: each matches the one write it exists for, and not a read.
+    const std::string write = "    ImGui::GetStyle() = buildEditorStyle(EDITOR_THEME, uiScale);";
+    const std::string elementWrite = "    ImGui::GetStyle().Colors[i] = color;";
+    const std::string read = "    const float pad = ImGui::GetStyle().FramePadding.x;";
+    const std::string comparison = "    if (ImGui::GetStyle().Alpha == 1.0F) {";
+    CHECK(std::regex_search(write, styleWrite));
+    CHECK(std::regex_search(elementWrite, styleWrite));
+    CHECK_FALSE(std::regex_search(read, styleWrite));
+    CHECK_FALSE(std::regex_search(comparison, styleWrite));
+    const std::string flagOff = "    io.ConfigDpiScaleFonts = false;";
+    const std::string flagRead = "    snap.configDpiScaleFonts = io.ConfigDpiScaleFonts;";
+    CHECK(std::regex_search(flagOff, dpiFlagWrite));
+    CHECK_FALSE(std::regex_search(flagRead, dpiFlagWrite));
+}
+
+// ---- I280-I282: task E.6.1 -- the style is the theme's, at one UI scale ------------------------------
+
+namespace {
+
+using engine::editor::EditorStyleSnapshot;
+using engine::editor::StyleMemberValue;
+
+struct StyleColorRow {
+    std::string_view name;
+    engine::editor::Srgb8 bytes;
+};
+
+// spec section 6.4's 63 slots, RESTATED in ImGuiCol order with each theme token's bytes (the alphas the mock
+// cannot show stated where not 255). A token changed in the theme changes this table in the same commit.
+constexpr std::array<StyleColorRow, 63> STYLE_COLOR_ROWS{{
+    {"Text", {215U, 219U, 224U, 255U}},                      // text
+    {"TextDisabled", {77U, 84U, 94U, 255U}},                 // textDisabled
+    {"WindowBg", {24U, 27U, 32U, 255U}},                     // panel
+    {"ChildBg", {24U, 27U, 32U, 0U}},                        // panel, alpha 0
+    {"PopupBg", {28U, 32U, 39U, 255U}},                      // raised
+    {"Border", {38U, 43U, 51U, 255U}},                       // border
+    {"BorderShadow", {13U, 15U, 18U, 0U}},                   // canvas, alpha 0
+    {"FrameBg", {18U, 21U, 26U, 255U}},                      // inset
+    {"FrameBgHovered", {28U, 32U, 39U, 255U}},               // raised
+    {"FrameBgActive", {32U, 37U, 45U, 255U}},                // raisedHeader
+    {"TitleBg", {20U, 23U, 27U, 255U}},                      // chrome
+    {"TitleBgActive", {20U, 23U, 27U, 255U}},                // chrome
+    {"TitleBgCollapsed", {20U, 23U, 27U, 255U}},             // chrome
+    {"MenuBarBg", {24U, 27U, 32U, 255U}},                    // panel
+    {"ScrollbarBg", {24U, 27U, 32U, 0U}},                    // panel, alpha 0
+    {"ScrollbarGrab", {43U, 49U, 58U, 255U}},                // active
+    {"ScrollbarGrabHovered", {77U, 84U, 94U, 255U}},         // textDisabled
+    {"ScrollbarGrabActive", {111U, 120U, 131U, 255U}},       // textMuted
+    {"CheckMark", {95U, 184U, 220U, 255U}},                  // accent
+    {"CheckboxSelectedBg", {95U, 184U, 220U, 255U}},         // accent
+    {"SliderGrab", {95U, 184U, 220U, 255U}},                 // accent
+    {"SliderGrabActive", {232U, 234U, 237U, 255U}},          // textBright
+    {"Button", {28U, 32U, 39U, 255U}},                       // raised
+    {"ButtonHovered", {36U, 41U, 50U, 255U}},                // hover
+    {"ButtonActive", {43U, 49U, 58U, 255U}},                 // active
+    {"Header", {31U, 43U, 51U, 255U}},                       // selection
+    {"HeaderHovered", {36U, 41U, 50U, 255U}},                // hover
+    {"HeaderActive", {43U, 49U, 58U, 255U}},                 // active
+    {"Separator", {35U, 39U, 46U, 255U}},                    // divider
+    {"SeparatorHovered", {58U, 111U, 133U, 255U}},           // accentBorder
+    {"SeparatorActive", {95U, 184U, 220U, 255U}},            // accent
+    {"ResizeGrip", {38U, 43U, 51U, 255U}},                   // border
+    {"ResizeGripHovered", {58U, 111U, 133U, 255U}},          // accentBorder
+    {"ResizeGripActive", {95U, 184U, 220U, 255U}},           // accent
+    {"InputTextCursor", {215U, 219U, 224U, 255U}},           // text
+    {"TabHovered", {36U, 41U, 50U, 255U}},                   // hover
+    {"Tab", {20U, 23U, 27U, 255U}},                          // chrome
+    {"TabSelected", {24U, 27U, 32U, 255U}},                  // panel
+    {"TabSelectedOverline", {95U, 184U, 220U, 255U}},        // accent
+    {"TabDimmed", {20U, 23U, 27U, 255U}},                    // chrome
+    {"TabDimmedSelected", {24U, 27U, 32U, 255U}},            // panel
+    {"TabDimmedSelectedOverline", {58U, 111U, 133U, 255U}},  // accentBorder
+    {"DockingPreview", {95U, 184U, 220U, 102U}},             // accent, alpha 102
+    {"DockingEmptyBg", {13U, 15U, 18U, 255U}},               // canvas
+    {"PlotLines", {169U, 177U, 187U, 255U}},                 // textSecondary
+    {"PlotLinesHovered", {216U, 162U, 75U, 255U}},           // warning
+    {"PlotHistogram", {95U, 184U, 220U, 255U}},              // accent
+    {"PlotHistogramHovered", {216U, 162U, 75U, 255U}},       // warning
+    {"TableHeaderBg", {28U, 32U, 39U, 255U}},                // raised
+    {"TableBorderStrong", {38U, 43U, 51U, 255U}},            // border
+    {"TableBorderLight", {35U, 39U, 46U, 255U}},             // divider
+    {"TableRowBg", {24U, 27U, 32U, 0U}},                     // panel, alpha 0
+    {"TableRowBgAlt", {215U, 219U, 224U, 8U}},               // text, alpha 8
+    {"TextLink", {95U, 184U, 220U, 255U}},                   // accent
+    {"TextSelectedBg", {95U, 184U, 220U, 89U}},              // accent, alpha 89
+    {"TreeLines", {35U, 39U, 46U, 255U}},                    // divider
+    {"DragDropTarget", {95U, 184U, 220U, 255U}},             // accent
+    {"DragDropTargetBg", {95U, 184U, 220U, 31U}},            // accent, alpha 31
+    {"UnsavedMarker", {216U, 162U, 75U, 255U}},              // warning
+    {"NavCursor", {95U, 184U, 220U, 255U}},                  // accent
+    {"NavWindowingHighlight", {95U, 184U, 220U, 179U}},      // accent, alpha 179
+    {"NavWindowingDimBg", {13U, 15U, 18U, 128U}},            // canvas, alpha 128
+    {"ModalWindowDimBg", {13U, 15U, 18U, 153U}},             // canvas, alpha 153
+}};
+
+struct StyleMemberRow {
+    std::string_view name;
+    float x;
+    float y;
+};
+
+// EVERY member of the style the builder writes, at uiScale 1, in the constructor's order -- the theme's
+// values restated, plus the five enum and flag members at the constructor's own values (as integers:
+// ImGuiDir_Left 0, ImGuiDir_Right 1, ImGuiTreeNodeFlags_DrawLinesNone 1 << 18, and the two tooltip
+// flag sets).
+constexpr float ANGLED_HEADERS_RADIANS = 35.0F * (std::numbers::pi_v<float> / 180.0F);
+constexpr std::array<StyleMemberRow, 69> STYLE_MEMBER_ROWS{{
+    {"Alpha", 1.0F, 0.0F},
+    {"DisabledAlpha", 0.60F, 0.0F},
+    {"WindowPadding", 8.0F, 8.0F},
+    {"WindowRounding", 0.0F, 0.0F},
+    {"WindowBorderSize", 1.0F, 0.0F},
+    {"WindowBorderHoverPadding", 4.0F, 0.0F},
+    {"WindowMinSize", 32.0F, 32.0F},
+    {"WindowTitleAlign", 0.0F, 0.5F},
+    {"WindowMenuButtonPosition", 0.0F, 0.0F},
+    {"ChildRounding", 6.0F, 0.0F},
+    {"ChildBorderSize", 1.0F, 0.0F},
+    {"PopupRounding", 6.0F, 0.0F},
+    {"PopupBorderSize", 1.0F, 0.0F},
+    {"FramePadding", 8.0F, 4.0F},
+    {"FrameRounding", 4.0F, 0.0F},
+    {"FrameBorderSize", 1.0F, 0.0F},
+    {"ItemSpacing", 8.0F, 6.0F},
+    {"ItemInnerSpacing", 6.0F, 4.0F},
+    {"CellPadding", 6.0F, 3.0F},
+    {"TouchExtraPadding", 0.0F, 0.0F},
+    {"IndentSpacing", 14.0F, 0.0F},
+    {"ColumnsMinSpacing", 6.0F, 0.0F},
+    {"ScrollbarSize", 10.0F, 0.0F},
+    {"ScrollbarRounding", 5.0F, 0.0F},
+    {"ScrollbarPadding", 2.0F, 0.0F},
+    {"GrabMinSize", 10.0F, 0.0F},
+    {"GrabRounding", 3.0F, 0.0F},
+    {"LogSliderDeadzone", 4.0F, 0.0F},
+    {"ImageRounding", 0.0F, 0.0F},
+    {"ImageBorderSize", 0.0F, 0.0F},
+    {"TabRounding", 4.0F, 0.0F},
+    {"TabBorderSize", 0.0F, 0.0F},
+    {"TabMinWidthBase", 1.0F, 0.0F},
+    {"TabMinWidthShrink", 80.0F, 0.0F},
+    {"TabCloseButtonMinWidthSelected", -1.0F, 0.0F},
+    {"TabCloseButtonMinWidthUnselected", 0.0F, 0.0F},
+    {"TabBarBorderSize", 1.0F, 0.0F},
+    {"TabBarOverlineSize", 2.0F, 0.0F},
+    {"TableAngledHeadersAngle", ANGLED_HEADERS_RADIANS, 0.0F},
+    {"TableAngledHeadersTextAlign", 0.5F, 0.0F},
+    {"TreeLinesFlags", 262144.0F, 0.0F},
+    {"TreeLinesSize", 1.0F, 0.0F},
+    {"TreeLinesRounding", 0.0F, 0.0F},
+    {"DragDropTargetRounding", 4.0F, 0.0F},
+    {"DragDropTargetBorderSize", 2.0F, 0.0F},
+    {"DragDropTargetPadding", 3.0F, 0.0F},
+    {"ColorMarkerSize", 3.0F, 0.0F},
+    {"ColorButtonPosition", 1.0F, 0.0F},
+    {"ButtonTextAlign", 0.5F, 0.5F},
+    {"SelectableTextAlign", 0.0F, 0.0F},
+    {"SeparatorSize", 1.0F, 0.0F},
+    {"SeparatorTextBorderSize", 3.0F, 0.0F},
+    {"SeparatorTextAlign", 0.0F, 0.5F},
+    {"SeparatorTextPadding", 20.0F, 3.0F},
+    {"DisplayWindowPadding", 19.0F, 19.0F},
+    {"DisplaySafeAreaPadding", 3.0F, 3.0F},
+    {"DockingNodeHasCloseButton", 1.0F, 0.0F},
+    {"DockingSeparatorSize", 2.0F, 0.0F},
+    {"MouseCursorScale", 1.0F, 0.0F},
+    {"AntiAliasedLines", 1.0F, 0.0F},
+    {"AntiAliasedLinesUseTex", 1.0F, 0.0F},
+    {"AntiAliasedFill", 1.0F, 0.0F},
+    {"CurveTessellationTol", 1.25F, 0.0F},
+    {"CircleTessellationMaxError", 0.30F, 0.0F},
+    {"HoverStationaryDelay", 0.15F, 0.0F},
+    {"HoverDelayShort", 0.15F, 0.0F},
+    {"HoverDelayNormal", 0.40F, 0.0F},
+    {"HoverFlagsForTooltipMouse", 41984.0F, 0.0F},
+    {"HoverFlagsForTooltipNav", 197632.0F, 0.0F},
+}};
+
+// The members ScaleAllSizes scales (imgui.cpp:1602-1650), restated -- the two TabCloseButtonMinWidth
+// sentinels among them, which it leaves alone unless positive (imgui.cpp:1635-1636).
+constexpr std::array<std::string_view, 47> SCALED_STYLE_MEMBERS{{
+    "WindowPadding",
+    "WindowRounding",
+    "WindowBorderSize",
+    "WindowMinSize",
+    "WindowBorderHoverPadding",
+    "ChildRounding",
+    "ChildBorderSize",
+    "PopupRounding",
+    "PopupBorderSize",
+    "FramePadding",
+    "FrameBorderSize",
+    "FrameRounding",
+    "ItemSpacing",
+    "ItemInnerSpacing",
+    "CellPadding",
+    "TouchExtraPadding",
+    "IndentSpacing",
+    "ColumnsMinSpacing",
+    "ScrollbarSize",
+    "ScrollbarRounding",
+    "ScrollbarPadding",
+    "GrabMinSize",
+    "GrabRounding",
+    "LogSliderDeadzone",
+    "ImageRounding",
+    "ImageBorderSize",
+    "TabRounding",
+    "TabBorderSize",
+    "TabMinWidthBase",
+    "TabMinWidthShrink",
+    "TabCloseButtonMinWidthSelected",
+    "TabCloseButtonMinWidthUnselected",
+    "TabBarBorderSize",
+    "TabBarOverlineSize",
+    "TreeLinesSize",
+    "TreeLinesRounding",
+    "DragDropTargetRounding",
+    "DragDropTargetBorderSize",
+    "DragDropTargetPadding",
+    "ColorMarkerSize",
+    "SeparatorSize",
+    "SeparatorTextBorderSize",
+    "SeparatorTextPadding",
+    "DockingSeparatorSize",
+    "DisplayWindowPadding",
+    "DisplaySafeAreaPadding",
+    "MouseCursorScale",
+}};
+
+// The THICKNESS members, restated: ScaleAllSizes truncates each (imgui.cpp:1607-1648), so below 1 a 1-dp
+// border or line would truncate to 0 and vanish, and the builder floors at 1 every one the theme states as
+// >= 1. ImageBorderSize and TabBorderSize are the theme's two zeros, which must stay 0.
+constexpr std::array<std::string_view, 13> FLOORED_THICKNESS_MEMBERS{{
+    "WindowBorderSize",
+    "ChildBorderSize",
+    "PopupBorderSize",
+    "FrameBorderSize",
+    "ImageBorderSize",
+    "TabBorderSize",
+    "TabBarBorderSize",
+    "TabBarOverlineSize",
+    "TreeLinesSize",
+    "DragDropTargetBorderSize",
+    "SeparatorSize",
+    "SeparatorTextBorderSize",
+    "DockingSeparatorSize",
+}};
+
+// Slot by slot and member by member, NAMING what differs -- CHECK((a == b)) over a struct prints
+// CHECK( true ).
+void requireSameStyle(const EditorStyleSnapshot& a, const EditorStyleSnapshot& b) {
+    for (std::size_t i = 0; i < a.colorNames.size(); ++i) {
+        CAPTURE(a.colorNames[i]);
+        CHECK(a.colorNames[i] == b.colorNames[i]);
+        CHECK(static_cast<int>(a.colorBytes[i].r) == static_cast<int>(b.colorBytes[i].r));
+        CHECK(static_cast<int>(a.colorBytes[i].g) == static_cast<int>(b.colorBytes[i].g));
+        CHECK(static_cast<int>(a.colorBytes[i].b) == static_cast<int>(b.colorBytes[i].b));
+        CHECK(static_cast<int>(a.colorBytes[i].a) == static_cast<int>(b.colorBytes[i].a));
+        for (std::size_t k = 0; k < 4U; ++k) {
+            CHECK(a.colorFloats[i][k] == b.colorFloats[i][k]);
+        }
+    }
+    REQUIRE(a.members.size() == b.members.size());
+    for (std::size_t i = 0; i < a.members.size(); ++i) {
+        CAPTURE(a.members[i].name);
+        CHECK(a.members[i].name == b.members[i].name);
+        CHECK(a.members[i].x == b.members[i].x);
+        CHECK(a.members[i].y == b.members[i].y);
+    }
+    CHECK(a.fontSizeBase == b.fontSizeBase);
+    CHECK(a.fontScaleMain == b.fontScaleMain);
+    CHECK(a.fontScaleDpi == b.fontScaleDpi);
+    CHECK(a.configDpiScaleFonts == b.configDpiScaleFonts);
+}
+
+[[nodiscard]] const StyleMemberValue& memberNamed(const EditorStyleSnapshot& snap, std::string_view name) {
+    const auto found = std::find_if(snap.members.begin(), snap.members.end(),
+                                    [name](const StyleMemberValue& member) { return member.name == name; });
+    CAPTURE(name);
+    REQUIRE(found != snap.members.end());
+    return *found;
+}
+
+// The previous non-blank code line before `from` (code.size() when there is none).
+[[nodiscard]] std::size_t previousCodeLine(const std::vector<std::string>& code, std::size_t from) {
+    for (std::size_t i = from; i > 0U; --i) {
+        if (code[i - 1U].find_first_not_of(" \t\r") != std::string::npos) {
+            return i - 1U;
+        }
+    }
+    return code.size();
+}
+
+}  // namespace
+
+TEST_CASE("editor: the style is the theme's at every scale, pure and never compounded (task E.6.1, I280)") {
+    // NO GPU and NO window: every snapshot builds its style in a PRIVATE context through applyEditorStyle.
+    for (const float scale : {1.0F, 1.25F, 1.5F, 2.0F}) {
+        CAPTURE(scale);
+        const EditorStyleSnapshot snap = engine::editor::snapshotEditorStyle(scale);
+        for (std::size_t i = 0; i < STYLE_COLOR_ROWS.size(); ++i) {
+            const StyleColorRow& row = STYLE_COLOR_ROWS[i];
+            CAPTURE(row.name);
+            CHECK(snap.colorNames[i] == row.name);  // the table's ORDER, against ImGui's own slot names
+            const std::array<std::uint8_t, 4> bytes{row.bytes.r, row.bytes.g, row.bytes.b, row.bytes.a};
+            const engine::editor::Srgb8& got = snap.colorBytes[i];
+            const std::array<std::uint8_t, 4> drawn{got.r, got.g, got.b, got.a};
+            for (std::size_t k = 0; k < 4U; ++k) {
+                CAPTURE(k);
+                CHECK(static_cast<int>(drawn[k]) == static_cast<int>(bytes[k]));
+                // BIT-equal to a DIVISION (seed S13): `k * (1 / 255.0F)` differs for 126 byte values, and
+                // ImGui's own byte conversion rounds both back to the same byte -- only this arm sees it.
+                const float expected = static_cast<float>(bytes[k]) / 255.0F;
+                const float held = snap.colorFloats[i][k];
+                CHECK(std::bit_cast<std::uint32_t>(held) == std::bit_cast<std::uint32_t>(expected));
+            }
+        }
+        CHECK(snap.fontSizeBase == 16.0F);
+        CHECK(snap.fontScaleMain == 1.0F);
+        CHECK(snap.fontScaleDpi == scale);
+        CHECK_FALSE(snap.configDpiScaleFonts);
+    }
+
+    // At 1, every member is the theme's (or the constructor's, for the five enum and flag members).
+    const EditorStyleSnapshot one = engine::editor::snapshotEditorStyle(1.0F);
+    REQUIRE(one.members.size() == STYLE_MEMBER_ROWS.size());
+    for (std::size_t i = 0; i < STYLE_MEMBER_ROWS.size(); ++i) {
+        const StyleMemberRow& row = STYLE_MEMBER_ROWS[i];
+        CAPTURE(row.name);
+        CHECK(one.members[i].name == row.name);
+        CHECK(one.members[i].x == row.x);
+        CHECK(one.members[i].y == row.y);
+    }
+
+    // At 2, every scaled member is exactly double (each theme value is an integer, so ImTrunc is the
+    // identity) except the two sentinels, and every other member is unchanged.
+    const EditorStyleSnapshot two = engine::editor::snapshotEditorStyle(2.0F);
+    REQUIRE(two.members.size() == one.members.size());
+    std::size_t scaledSeen = 0;
+    for (std::size_t i = 0; i < one.members.size(); ++i) {
+        const std::string_view name = one.members[i].name;
+        CAPTURE(name);
+        const auto scaledEnd = SCALED_STYLE_MEMBERS.end();
+        const bool scaled = std::find(SCALED_STYLE_MEMBERS.begin(), scaledEnd, name) != scaledEnd;
+        const bool sentinel =
+            name == "TabCloseButtonMinWidthSelected" || name == "TabCloseButtonMinWidthUnselected";  // stay
+        const float factor = (scaled && !sentinel) ? 2.0F : 1.0F;
+        CHECK(two.members[i].x == one.members[i].x * factor);
+        CHECK(two.members[i].y == one.members[i].y * factor);
+        scaledSeen += scaled ? 1U : 0U;
+    }
+    CHECK(scaledSeen == SCALED_STYLE_MEMBERS.size());  // every restated name IS a member
+
+    // At 1.25, hand-computed (ScaleAllSizes truncates).
+    const EditorStyleSnapshot quarter = engine::editor::snapshotEditorStyle(1.25F);
+    CHECK(memberNamed(quarter, "FramePadding").x == 10.0F);
+    CHECK(memberNamed(quarter, "FramePadding").y == 5.0F);
+    CHECK(memberNamed(quarter, "ItemSpacing").x == 10.0F);
+    CHECK(memberNamed(quarter, "ItemSpacing").y == 7.0F);
+    CHECK(memberNamed(quarter, "FrameRounding").x == 5.0F);
+    CHECK(memberNamed(quarter, "ScrollbarSize").x == 12.0F);
+    CHECK(memberNamed(quarter, "FrameBorderSize").x == 1.0F);
+
+    // BELOW 1, a border or line that exists at 1x never vanishes: each thickness the theme states as >= 1
+    // reads ScaleAllSizes' truncation floored at 1, and each it states as 0 stays 0. 0.95 is X11 at Xft.dpi
+    // 90; 0.5 is UI_SCALE_MIN. The theme values are this case's own restated rows, never the theme's.
+    const auto restatedX = [](std::string_view name) {
+        const auto row = std::find_if(STYLE_MEMBER_ROWS.begin(), STYLE_MEMBER_ROWS.end(),
+                                      [name](const StyleMemberRow& r) { return r.name == name; });
+        CAPTURE(name);
+        REQUIRE(row != STYLE_MEMBER_ROWS.end());
+        return row->x;
+    };
+    for (const float scale : {0.5F, 0.75F, 0.95F}) {
+        CAPTURE(scale);
+        const EditorStyleSnapshot low = engine::editor::snapshotEditorStyle(scale);
+        std::size_t floorDecides = 0;  // members whose truncation alone would read 0 at this scale
+        for (const std::string_view name : FLOORED_THICKNESS_MEMBERS) {
+            CAPTURE(name);
+            const float themeValue = restatedX(name);
+            REQUIRE((themeValue == 0.0F || themeValue >= 1.0F));
+            const float truncated = std::trunc(themeValue * scale);
+            const float expected = themeValue >= 1.0F ? std::max(truncated, 1.0F) : 0.0F;
+            CHECK(memberNamed(low, name).x == expected);
+            CHECK(memberNamed(low, name).y == 0.0F);
+            floorDecides += (themeValue >= 1.0F && truncated < 1.0F) ? 1U : 0U;
+        }
+        CHECK(floorDecides > 0U);  // ANTI-VACUITY: at each of these scales some border truncates to 0
+
+        // THE UNIVERSAL, over every member ScaleAllSizes scales -- a Dp2 member per component -- rather
+        // than over a list of the floored ones: a size whose value at 1 is >= 1 is still >= 1 here, and one
+        // that is 0 at 1 is still 0. MouseCursorScale truncating to 0 put every tooltip under the cursor
+        // (imgui.cpp:12777, :13503-13518); a member the theme later gives a value below 2 is covered here
+        // without a new row.
+        REQUIRE(low.members.size() == one.members.size());
+        std::size_t scaledMembers = 0;
+        std::size_t truncationWouldDrop = 0;  // components ScaleAllSizes alone would take below 1 here
+        for (std::size_t i = 0; i < one.members.size(); ++i) {
+            const std::string_view name = one.members[i].name;
+            const auto scaledEnd = SCALED_STYLE_MEMBERS.end();
+            if (std::find(SCALED_STYLE_MEMBERS.begin(), scaledEnd, name) == scaledEnd) {
+                continue;
+            }
+            CAPTURE(name);
+            ++scaledMembers;
+            REQUIRE(low.members[i].name == name);
+            const std::array<float, 2> atOne{one.members[i].x, one.members[i].y};
+            const std::array<float, 2> atLow{low.members[i].x, low.members[i].y};
+            for (std::size_t component = 0; component < atOne.size(); ++component) {
+                CAPTURE(component);
+                if (atOne[component] >= 1.0F) {
+                    CHECK(atLow[component] >= 1.0F);
+                    truncationWouldDrop += std::trunc(atOne[component] * scale) < 1.0F ? 1U : 0U;
+                } else if (atOne[component] == 0.0F) {
+                    CHECK(atLow[component] == 0.0F);
+                }
+            }
+        }
+        // The walk met every restated name, and (ANTI-VACUITY) the floor decides something at this scale.
+        CHECK(scaledMembers == SCALED_STYLE_MEMBERS.size());
+        CHECK(truncationWouldDrop > 0U);
+    }
+
+    // PURITY (seed S10): a builder that started from GetStyle() would inherit the poisoned enum and flag
+    // members.
+    requireSameStyle(engine::editor::snapshotStyleBuiltOverPoison(1.0F), one);
+    // IDEMPOTENCE (seed S11): a rebuild never compounds -- ScaleAllSizes(next / applied) would turn
+    // ItemSpacing.y 9 -> 9.99 -> 9 where a fresh 1.25 gives 7.
+    constexpr std::array<float, 2> DOWN_TO_ONE{2.0F, 1.0F};
+    constexpr std::array<float, 3> UP_TO_TWO{1.5F, 1.25F, 2.0F};
+    requireSameStyle(engine::editor::snapshotStyleAfter(DOWN_TO_ONE), one);
+    requireSameStyle(engine::editor::snapshotStyleAfter(UP_TO_TWO), two);
+}
+
+TEST_CASE(
+    "editor: the live layer holds the theme's style at its own UI scale "
+    "and re-resolves it (task E.6.1, I281)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "ui scale i281", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    const engine::editor::EditorAppConfig config{.persistLayout = false,
+                                                 .seedDefaultScene = true,
+                                                 .unfocusedFrameCapHz = 0.0F,
+                                                 .projectPath = "",
+                                                 .restoreLastProject = false};
+    auto app = engine::editor::EditorApp::create(*device, *window, ctx, config);  // std::optional<EditorApp>
+    REQUIRE(app.has_value());
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+
+    const float real = app->uiScale();
+    CAPTURE(real);
+    REQUIRE(real >= 0.5F);
+    REQUIRE(real <= 4.0F);
+    CHECK(real == std::round(real * 20.0F) / 20.0F);  // a quantised value
+    const EditorStyleSnapshot live = engine::editor::snapshotLiveStyle();
+    requireSameStyle(live, engine::editor::snapshotEditorStyle(real));
+    CHECK_FALSE(live.configDpiScaleFonts);
+    CHECK(live.fontScaleDpi == real);
+
+    // RE-RESOLVE: force a different scale into the live style; the next frame's beginFrame rebuilds it from
+    // the display, once, with one INFO -- read from the Console's OWN log model (no second callback around
+    // an app).
+    auto* const console = dynamic_cast<engine::editor::ConsolePanel*>(app->panels().find("Console"));
+    REQUIRE(console != nullptr);
+    const auto uiScaleRecords = [console]() {
+        std::size_t count = 0;
+        const engine::editor::LogHistory& history = console->history();
+        for (std::size_t i = 0; i < history.visibleCount(); ++i) {
+            count += history.visibleAt(i).message.find("UI scale") != std::string::npos ? 1U : 0U;
+        }
+        return count;
+    };
+    const std::size_t before = uiScaleRecords();
+    const float other = real == 2.0F ? 1.0F : 2.0F;  // never vacuous on a 2x display
+    engine::editor::applyEditorStyle(other);
+    // The force landed:
+    requireSameStyle(engine::editor::snapshotLiveStyle(), engine::editor::snapshotEditorStyle(other));
+    REQUIRE(app->tick());  // beginFrame re-resolves BEFORE NewFrame and rebuilds
+    requireSameStyle(engine::editor::snapshotLiveStyle(), engine::editor::snapshotEditorStyle(real));
+    CHECK(app->uiScale() == real);
+    REQUIRE(app->tick());  // pumpLog runs at the TOP of a tick: the INFO logged above reaches the history now
+    CHECK(uiScaleRecords() == before + 1U);
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE(
+    "editor: fonts, then the style, then the backends; "
+    "the scale is re-read before every NewFrame (task E.6.1, I282)") {
+    // NO GPU: imgui_layer.cpp's own comment-stripped text, so a sentence in a comment never counts.
+    const std::vector<std::string> code = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/imgui_layer.cpp");
+    REQUIRE(code.size() > 100U);
+    const std::size_t created = soleLineContaining(code, "ImGui::CreateContext()");
+    const std::size_t flag = soleLineContaining(code, "ConfigDpiScaleFonts = false");
+    const std::size_t fonts = soleLineContaining(code, "addEditorFonts(");
+    const std::size_t style = soleLineContaining(code, "applyEditorStyle(resolveUiScale(");
+    const std::size_t backend = soleLineContaining(code, "ImGui_ImplSDL3_InitForSDLGPU(");
+    CHECK(created < flag);
+    CHECK(flag < fonts);
+    CHECK(fonts < style);
+    CHECK(style < backend);
+    constexpr std::array<std::string_view, 5> GONE{
+        "StyleColorsDark",
+        "ScaleAllSizes",
+        "addEditorDefaultFont",  // the old setup
+        "ConfigDpiScaleFonts = true",
+        "SDL_GetDisplayContentScale",  // ImGui's own DPI path
+    };
+    for (const std::string_view token : GONE) {  // seeds S1, S24
+        CAPTURE(token);
+        CHECK(countLinesContaining(code, token) == 0U);
+    }
+    CHECK(countLinesContaining(code, "SDL_GetWindowDisplayScale(") == 2U);  // create and beginFrame
+    CHECK(countLinesContaining(code, "SDL_GetWindowPixelDensity(") == 2U);
+    // THE ARGUMENT ORDER, at both sites. resolveUiScale divides its first argument by its second, two floats
+    // swap with no diagnostic, and on every display whose two inputs are equal (every CI lane, a 1x desktop,
+    // a Retina Mac) a swap changes nothing observable -- so each input is named where it is read and passed
+    // by that name.
+    CHECK(countLinesContaining(code, "const float displayScale = SDL_GetWindowDisplayScale(") == 2U);
+    CHECK(countLinesContaining(code, "const float pixelDensity = SDL_GetWindowPixelDensity(") == 2U);
+    CHECK(countLinesContaining(code, "resolveUiScale(displayScale, pixelDensity,") == 2U);
+
+    // beginFrame re-resolves AND rebuilds BEFORE NewFrame (seed S22): a rebuild below NewFrame would leave
+    // this frame's fonts and layout at the old scale, which I281 cannot see -- it reads the style after the
+    // whole tick, and either order has rebuilt it by then.
+    const std::size_t begin = soleLineContaining(code, "void ImGuiLayer::beginFrame() {");
+    std::size_t end = begin;
+    while (end < code.size() && code[end] != "}") {
+        ++end;
+    }
+    REQUIRE(end < code.size());
+    std::size_t resolveAt = code.size();
+    std::size_t lastApplyAt = code.size();
+    std::size_t newFrameAt = code.size();
+    for (std::size_t i = begin; i < end; ++i) {
+        const bool resolves = code[i].find("resolveUiScale(") != std::string::npos;
+        resolveAt = (resolveAt == code.size() && resolves) ? i : resolveAt;
+        lastApplyAt = (code[i].find("applyEditorStyle(") != std::string::npos) ? i : lastApplyAt;
+        newFrameAt = (code[i].find("ImGui::NewFrame()") != std::string::npos) ? i : newFrameAt;
+    }
+    REQUIRE(resolveAt < code.size());
+    REQUIRE(lastApplyAt < code.size());
+    REQUIRE(newFrameAt < code.size());
+    CHECK(resolveAt < newFrameAt);
+    CHECK(lastApplyAt < newFrameAt);  // every rebuild in beginFrame, not only the read
+
+    // Every DestroyContext is IMMEDIATELY preceded by clearEditorFonts (seed S26) -- five of each.
+    std::size_t destroys = 0;
+    for (std::size_t i = 0; i < code.size(); ++i) {
+        if (code[i].find("ImGui::DestroyContext();") == std::string::npos) {
+            continue;
+        }
+        ++destroys;
+        const std::size_t previous = previousCodeLine(code, i);
+        REQUIRE(previous < code.size());
+        CAPTURE(i);
+        CHECK(code[previous].find("clearEditorFonts();") != std::string::npos);
+    }
+    CHECK(destroys == 5U);
+    CHECK(countLinesContaining(code, "clearEditorFonts();") == 5U);
+
+    // A face that cannot be added fails create with ONE error and no layer (seed S29).
+    const std::size_t failAt = soleLineContaining(code, "if (!addEditorFonts(failedFace).has_value()) {");
+    std::size_t closeAt = failAt + 1U;
+    while (closeAt < code.size() && code[closeAt] != "    }") {
+        ++closeAt;
+    }
+    REQUIRE(closeAt < code.size());
+    std::size_t errors = 0;
+    bool returnsNothing = false;
+    for (std::size_t i = failAt + 1U; i < closeAt; ++i) {
+        errors += code[i].find("AERO_LOG_ERROR(") != std::string::npos ? 1U : 0U;
+        returnsNothing = returnsNothing || code[i].find("return std::nullopt;") != std::string::npos;
+    }
+    CHECK(errors == 1U);
+    CHECK(returnsNothing);
+}
+
+// ---- I287: the panels read their colours from the theme's roles (task E.6.1, step 6) -------------------
+namespace {
+
+// Per channel, as integers, so a failure prints numbers rather than a character.
+void checkSameSrgb8(const engine::editor::Srgb8& actual, const engine::editor::Srgb8& expected) {
+    CHECK(static_cast<int>(actual.r) == static_cast<int>(expected.r));
+    CHECK(static_cast<int>(actual.g) == static_cast<int>(expected.g));
+    CHECK(static_cast<int>(actual.b) == static_cast<int>(expected.b));
+    CHECK(static_cast<int>(actual.a) == static_cast<int>(expected.a));
+}
+
+struct LevelColorRow {
+    engine::LogLevel level;
+    std::string_view name;
+    engine::editor::Srgb8 expected;
+};
+
+// How many times the code reads EDITOR_THEME.palette.<role>, the role ending at a non-identifier byte -- so
+// "text" never counts a "textMuted" read. Every READ, not every line: two reads on one line count twice. An
+// empty role counts every palette read of any role.
+[[nodiscard]] std::size_t countPaletteReads(const std::vector<std::string>& code, std::string_view role) {
+    constexpr std::string_view PREFIX = "EDITOR_THEME.palette.";
+    const auto identifierByte = [](unsigned char c) { return std::isalnum(c) != 0 || c == '_'; };
+    std::size_t reads = 0;
+    for (const std::string_view line : code) {
+        for (std::size_t at = line.find(PREFIX); at != std::string_view::npos;
+             at = line.find(PREFIX, at + PREFIX.size())) {
+            const std::size_t begin = at + PREFIX.size();
+            std::size_t end = begin;
+            while (end < line.size() && identifierByte(static_cast<unsigned char>(line[end]))) {
+                ++end;
+            }
+            reads += (role.empty() || line.substr(begin, end - begin) == role) ? 1U : 0U;
+        }
+    }
+    return reads;
+}
+
+struct RoleReads {
+    std::string_view file;
+    std::string_view role;
+    std::size_t reads;
+};
+
+}  // namespace
+
+TEST_CASE("editor: the panels read their roles from the theme (task E.6.1, I287)") {
+    // NO GPU: logLevelColor is ImGui-free, and the rest is the seven panels' comment-stripped source text.
+    const engine::editor::ThemePalette& p = engine::editor::EDITOR_THEME.palette;
+    const std::array<LevelColorRow, 7> rows{{
+        {engine::LogLevel::Trace, "Trace", p.textMuted},
+        {engine::LogLevel::Debug, "Debug", p.textMuted},
+        {engine::LogLevel::Info, "Info", p.text},
+        {engine::LogLevel::Off, "Off", p.text},
+        {engine::LogLevel::Warn, "Warn", p.warning},
+        {engine::LogLevel::Error, "Error", p.error},
+        {engine::LogLevel::Critical, "Critical", p.critical},
+    }};
+    for (const LevelColorRow& row : rows) {
+        CAPTURE(row.name);
+        checkSameSrgb8(engine::editor::logLevelColor(row.level), row.expected);
+    }
+
+    // No panel states a colour or reads ImGui's disabled slot for enabled text (seed S25). The literal
+    // patterns are AC-9's four, the first widened to the brace spelling, plus any ImColor at all;
+    // TextDisabled is left to ImGui's own disabled widgets.
+    const std::array<std::regex, 5> literals{
+        std::regex(R"(ImVec4[\(\{]\s*[0-9])"),  // k = 0: ImVec4( or ImVec4{, then a digit
+        std::regex(R"(IM_COL32\(\s*[0-9])"),    // k = 1
+        std::regex("IM_COL32_WHITE"),           // k = 2
+        std::regex("IM_COL32_BLACK"),           // k = 3
+        std::regex(R"(ImColor\()"),             // k = 4: any ImColor at all
+    };
+    constexpr std::array<std::string_view, 7> PANELS{
+        "console_panel.cpp", "material_panel.cpp",      "import_details_panel.cpp",   "project_ui.cpp",
+        "asset_tile.cpp",    "asset_browser_panel.cpp", "project_settings_panel.cpp",
+    };
+    // The roles are READ, not merely the literals gone -- each (file, role) at its EXACT count of reads
+    // in the comment-stripped code. One read swapped back to an ImGui slot (S25's site on
+    // GetStyleColorVec4(ImGuiCol_Text)) states no literal and names no TextDisabled, and a "> 0" stays
+    // green while any other read of that role remains: only the count moves. A set claim needs a set
+    // assertion, so each file's TOTAL of palette reads is pinned as well, and a read of a role a file has
+    // no row for is red too. Counted from the code at E.6.1's second code-review round.
+    constexpr std::array<RoleReads, 14> ROLE_READS{{
+        {"console_panel.cpp", "critical", 1U},   // logLevelColor's Critical arm
+        {"console_panel.cpp", "error", 1U},      // its Error arm
+        {"console_panel.cpp", "text", 2U},       // its Info/Off arm and the fallback after the switch
+        {"console_panel.cpp", "textMuted", 2U},  // its Trace/Debug arm and the timestamp column
+        {"console_panel.cpp", "warning", 1U},    // its Warn arm
+        {"material_panel.cpp", "error", 3U},
+        {"material_panel.cpp", "textMuted", 1U},  // the status line's Disabled arm (D16)
+        {"material_panel.cpp", "warning", 6U},
+        {"import_details_panel.cpp", "error", 6U},
+        {"project_ui.cpp", "error", 2U},
+        {"asset_tile.cpp", "text", 1U},  // one read, held for both captions
+        {"asset_tile.cpp", "textMuted", 1U},
+        {"asset_browser_panel.cpp", "textMuted", 1U},
+        {"project_settings_panel.cpp", "textMuted", 1U},
+    }};
+    std::size_t rowsRead = 0;
+    for (const std::string_view file : PANELS) {
+        CAPTURE(file);
+        const std::string path = std::string(AERO_EDITOR_SRC_DIR "/").append(file);
+        const std::vector<std::string> code = editorSourceCodeLines(path);
+        REQUIRE(code.size() > 20U);
+        for (std::size_t k = 0; k < literals.size(); ++k) {
+            CAPTURE(k);
+            CHECK_FALSE(anyLineMatches(code, literals[k]));
+        }
+        CHECK(countLinesContaining(code, "ImGuiCol_TextDisabled") == 0U);
+        std::size_t listed = 0;
+        for (const RoleReads& row : ROLE_READS) {
+            if (row.file == file) {
+                CAPTURE(row.role);
+                CHECK(countPaletteReads(code, row.role) == row.reads);
+                listed += row.reads;
+                ++rowsRead;
+            }
+        }
+        CHECK(listed > 0U);                            // every one of the seven reads a role
+        CHECK(countPaletteReads(code, "") == listed);  // ... and no role it has no row for
+    }
+    CHECK(rowsRead == ROLE_READS.size());  // no row names a file outside the seven, so none is skipped
+    // The Console's levels reach the draw through logLevelColor: its definition and its one call.
+    std::size_t levelColorCalls = 0;
+    for (const std::string& line : editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/console_panel.cpp")) {
+        levelColorCalls += countOccurrences(line, "logLevelColor(");
+    }
+    CHECK(levelColorCalls == 2U);
+    // ANTI-VACUITY for the counter: a role ends at an identifier boundary, and the empty role counts all.
+    const std::vector<std::string> probe{"f(EDITOR_THEME.palette.textMuted, EDITOR_THEME.palette.text);"};
+    CHECK(countPaletteReads(probe, "text") == 1U);
+    CHECK(countPaletteReads(probe, "textMuted") == 1U);
+    CHECK(countPaletteReads(probe, "") == 2U);
+
+    // ANTI-VACUITY: the literal patterns match the spellings they exist to refuse.
+    CHECK(std::regex_search(std::string("ImVec4( 1.0F, 0.4F, 0.4F, 1.0F)"), literals[0]));
+    CHECK(std::regex_search(std::string("ImVec4{1.0F, 0.4F, 0.4F, 1.0F}"), literals[0]));
+    CHECK(std::regex_search(std::string("IM_COL32(16, 16, 20, 255)"), literals[1]));
+    const std::string whiteCaption = "drawList->AddText(font, size, pos, IM_COL32_WHITE, text)";
+    CHECK(std::regex_search(whiteCaption, literals[2]));
+    const std::string imColorText = "ImGui::PushStyleColor(ImGuiCol_Text, ImColor(255, 0, 0).Value)";
+    CHECK(std::regex_search(imColorText, literals[4]));
+}
+
+// ---- I288: the viewport's chrome reads the live UI scale (task E.6.1, step 7) ----------------------------
+TEST_CASE("editor: the viewport chrome uses the live UI scale (task E.6.1, I288)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "chrome scale i288", .width = 900, .height = 600});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    auto* const viewport = dynamic_cast<engine::editor::ViewportPanel*>(app->panels().find("Viewport"));
+    REQUIRE(viewport != nullptr);
+
+    // The default scene's Cube, selected through the seam the outline cases use, with the gizmos on.
+    engine::World& world = app->world();
+    engine::Entity cube{};
+    world.eachEntity([&](engine::Entity e) {
+        if (world.name(e) == "Cube") {
+            cube = e;
+        }
+    });
+    REQUIRE(cube.valid());
+    app->selection().set(cube);
+    viewport->requestGizmosEnabled(true);
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+
+    if (viewport->debugDraw() == nullptr) {
+        // THE SHADER-TOOLS-OFF ARM, at runtime (I254's idiom, never an #if): the panel is Unavailable, so
+        // nothing is handed on and both observables keep their initial values -- asserted, never skipped.
+        MESSAGE("I288: the viewport is Unavailable (shader tools OFF): nothing is handed on");
+        CHECK(viewport->lastIconSizePixels() == 0.0F);
+        CHECK(viewport->lastOutlineRadiusPixels() == 0U);
+        app->requestQuit();
+        CHECK(app->tick() == false);
+        app.reset();
+        return;
+    }
+
+    // The two scales, each from its own source: the live style's, and the platform layer's own pixel ratio --
+    // independent of the panel under test.
+    const float ui = app->uiScale();
+    const float fb = static_cast<float>(window->pixelSize().width) / static_cast<float>(window->size().width);
+    REQUIRE(viewport->selectionOutlinePass() != nullptr);
+    const std::size_t composites = viewport->selectionOutlinePass()->compositeCount();
+    REQUIRE(app->tick());
+    REQUIRE(viewport->selectionOutlinePass()->compositeCount() > composites);  // the composite really ran
+
+    // What the LIBRARY holds, read back through ImGui's own packing: the theme's style at the live scale --
+    // bit-equal to defaultGizmoStyle() wherever the scale is 1, which is every lane.
+    CHECK((engine::editor::ViewportPanel::imGuizmoStyleReadback() ==
+           engine::editor::scaledGizmoStyle(engine::editor::defaultGizmoStyle(), ui)));
+    // What the panel HANDED ON, in its own operand order, so == is exact.
+    CHECK(viewport->lastIconSizePixels() == engine::editor::VIEWPORT_ICON_SIZE_POINTS * ui * fb);
+    const auto radius = static_cast<std::uint32_t>(std::clamp(std::lround(1.0F * ui * fb), 1L, 8L));
+    CHECK(viewport->lastOutlineRadiusPixels() == radius);
+    CHECK(viewport->lastIconSizePixels() > 0.0F);  // ANTI-VACUITY: a real hand-off, not the initial value
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+// ---- I283-I285: the faces and icons each consumer drew with (task E.6.1, step 8) ------------------------
+// Every font claim reads what ImGui had CURRENT when the panel drew (GetFont()->GetDebugName(), recorded by
+// the panel at the draw), never a seam's round trip.
+TEST_CASE("editor: Console messages draw in Mono and the other columns in Body (task E.6.1, I283)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "console mono i283", .width = 900, .height = 600});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    auto* const console = dynamic_cast<engine::editor::ConsolePanel*>(app->panels().find("Console"));
+    REQUIRE(console != nullptr);
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+
+    // THE ROUTING BASELINE, independent of which Bottom tab is the default: Assets in front, and the Console
+    // provably NOT drawing before the claim.
+    app->requestPanelFocus("Assets");
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+    const auto idle = app->panelDrawnCount("Console");
+    REQUIRE(app->tick());
+    REQUIRE(app->panelDrawnCount("Console") == idle);
+
+    AERO_LOG_INFO("e61 mono probe");
+    app->requestPanelFocus("Console");
+    REQUIRE(app->tick());  // raises the Console
+    REQUIRE(app->tick());  // draws the record pumpLog took at the top of this tick
+    REQUIRE(app->panelDrawnCount("Console") > idle);
+
+    CHECK(console->messageRowsSubmitted() > 0U);  // a message really was submitted this frame
+    CHECK(console->lastMessageFontName() == "IBM Plex Mono");
+    CHECK(console->lastLevelFontName() == "IBM Plex Sans");  // the Mono push is scoped (seed S19)
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: Inspector component headers draw in SemiBold and labels in Body (task E.6.1, I284)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "inspector strong i284", .width = 900, .height = 600});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    auto* const inspector = dynamic_cast<engine::editor::InspectorPanel*>(app->panels().find("Inspector"));
+    REQUIRE(inspector != nullptr);
+
+    // The default scene's Cube: a Transform and a MeshRenderer, so at least two headers draw.
+    engine::World& world = app->world();
+    engine::Entity cube{};
+    world.eachEntity([&](engine::Entity e) {
+        if (world.name(e) == "Cube") {
+            cube = e;
+        }
+    });
+    REQUIRE(cube.valid());
+    app->selection().set(cube);
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+
+    // THE ROUTING BASELINE in the Right node: Material in front, and the Inspector provably not drawing.
+    app->requestPanelFocus("Material");
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+    const auto idle = app->panelDrawnCount("Inspector");
+    REQUIRE(app->tick());
+    REQUIRE(app->panelDrawnCount("Inspector") == idle);
+    app->requestPanelFocus("Inspector");
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+    REQUIRE(app->panelDrawnCount("Inspector") > idle);
+
+    CHECK(inspector->lastHeaderFontName() == "IBM Plex Sans SemiBold");
+    CHECK(inspector->headersSubmitted() >= 2U);  // Transform + MeshRenderer, this frame
+    if (engine::editor::sceneIoAvailable()) {
+        CHECK(inspector->lastLabelFontName() == "IBM Plex Sans");  // the SemiBold push is scoped (seed S20)
+    } else {
+        // REFLECT TOOLS OFF, at runtime (no #if): components draw no field rows, so no label ever drew.
+        MESSAGE("I284: reflect tools OFF -- no field rows, so the label arm reads empty");
+        CHECK(inspector->lastLabelFontName().empty());
+    }
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: the icon consumers, as source text (task E.6.1, I285)") {
+    // NO GPU: comment-stripped source. No tier can open an ImGui menu, so the menus' behaviour is the
+    // validation page's; this pins that the icons are WIRED, through the ONE ImGui TU for the Create menu.
+    const std::vector<std::string> menuUi = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/create_menu_ui.cpp");
+    const std::string hierarchyPath = AERO_EDITOR_SRC_DIR "/hierarchy_panel.cpp";
+    const std::vector<std::string> hierarchy = editorSourceCodeLines(hierarchyPath);
+    const std::string browserPath = AERO_EDITOR_SRC_DIR "/asset_browser_panel.cpp";
+    const std::vector<std::string> browser = editorSourceCodeLines(browserPath);
+    REQUIRE(menuUi.size() > 20U);
+    REQUIRE(hierarchy.size() > 20U);
+    REQUIRE(browser.size() > 20U);
+
+    std::size_t itemsWithIcons = 0;
+    std::size_t menusWithIcons = 0;
+    for (const std::string& line : menuUi) {
+        const bool item = line.find("MenuItemEx(") != std::string::npos;
+        const bool menu = line.find("BeginMenuEx(") != std::string::npos;
+        itemsWithIcons += (item && line.find("createKindIcon(") != std::string::npos) ? 1U : 0U;
+        menusWithIcons += (menu && line.find("createMenuGroupIcon(") != std::string::npos) ? 1U : 0U;
+    }
+    CHECK(itemsWithIcons >= 3U);  // two in drawCreateMenuItems, one in drawCreateKindItem
+    CHECK(menusWithIcons == 1U);
+    CHECK(countLinesContaining(menuUi, "ImGui::MenuItem(") == 0U);
+    CHECK(countLinesContaining(menuUi, "ImGui::BeginMenu(") == 0U);
+
+    CHECK(countLinesContaining(hierarchy, "drawCreateKindItem(\"Create Empty\", CreateKind::Empty") == 2U);
+    CHECK(countLinesContaining(hierarchy, "MenuItem(\"Create Empty\")") == 0U);
+
+    // The menu bar's Create > Empty is the third host-labelled item and goes through the same helper, so
+    // it carries Empty's icon too. It was a plain MenuItem, with no icon, until the manual validation
+    // pass saw it.
+    const std::vector<std::string> shell = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/shell_ui.cpp");
+    REQUIRE(shell.size() > 20U);
+    CHECK(countLinesContaining(shell, "drawCreateKindItem(\"Empty\", CreateKind::Empty") == 1U);
+    CHECK(countLinesContaining(shell, "MenuItem(\"Empty\"") == 0U);
+
+    CHECK(countLinesContaining(browser, "AERO_ICON_CORNER_LEFT_UP") == 1U);
+    CHECK(countLinesContaining(browser, "\"<  ..\"") == 0U);
+}
+
+// ---- I289: the Inspector's axis boxes at the new metrics (task E.6.1, the manual validation pass) ---------
+// The pass measured the X/Y/Z boxes clipping "0.000" to "0.00" in a 258-wide right dock where the branch
+// point showed it whole. TH11 holds the arithmetic at tier 0; this case holds what ImGui LAID OUT.
+TEST_CASE("editor: the Inspector's axis boxes hold a three-decimal value (task E.6.1, I289)") {
+    // NO GPU first: drawAxisRow takes its box width from the pure budget, handed the gaps its SameLine calls
+    // spell -- the slack arms below see a disagreement only on a lane wide enough to draw the row.
+    const std::vector<std::string> panel = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/inspector_panel.cpp");
+    REQUIRE(panel.size() > 100U);
+    CHECK(countLinesContaining(panel, "inspectorAxisBoxWidth(") == 1U);
+    CHECK(countLinesContaining(panel, "boxWidth = inspectorAxisBoxWidth(total, letterWidth, letterGap, gap)") == 1U);
+    CHECK(countLinesContaining(panel, "SameLine(0.0F, letterGap)") == 1U);
+    CHECK(countLinesContaining(panel, "SameLine(0.0F, gap)") == 1U);
+    CHECK(countLinesContaining(panel, "letterGap = AXIS_LETTER_GAP_DP * currentUiScale()") == 1U);
+
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    // 1206 wide, because that is the width whose DEFAULT layout builds a 241-wide right dock -- content 225,
+    // the narrowest at which the branch point showed "0.000" whole (TH11 derives it): buildDefaultLayout gives
+    // the left dock 20% and then the right 25% of what is left, each split truncated after the 2-point
+    // separator, so trunc(1204 x 0.2) = 240 leaves 964 and 962 - trunc(962 x 0.75) = 241. (1294 builds the
+    // 258-wide dock the pass measured; a 1080-wide window builds a 216-wide one, content 200.)
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "inspector axis boxes i289", .width = 1206, .height = 1600});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    auto* const inspector = dynamic_cast<engine::editor::InspectorPanel*>(app->panels().find("Inspector"));
+    REQUIRE(inspector != nullptr);
+
+    // The default scene's Cube: Transform's position, rotation and scale are three axis rows.
+    engine::World& world = app->world();
+    engine::Entity cube{};
+    world.eachEntity([&](engine::Entity e) {
+        if (world.name(e) == "Cube") {
+            cube = e;
+        }
+    });
+    REQUIRE(cube.valid());
+    app->selection().set(cube);
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+
+    // THE ROUTING BASELINE in the Right node: Material in front, and the Inspector provably not drawing.
+    app->requestPanelFocus("Material");
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+    const auto idle = app->panelDrawnCount("Inspector");
+    REQUIRE(app->tick());
+    REQUIRE(app->panelDrawnCount("Inspector") == idle);
+    app->requestPanelFocus("Inspector");
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+    REQUIRE(app->panelDrawnCount("Inspector") > idle);
+
+    // What "0.000" occupies in Body at the LIVE UI scale -- ImGui's own advances, measured, never a restated
+    // literal. measureEditorFonts restores the current context, so it is safe beside the live app (I288 reads
+    // the scale the same way). DragScalar draws its value with RenderTextClipped over the bare frame (no frame
+    // padding), centred and clipped once it is wider, so a box at least this wide shows the value whole.
+    const float uiScale = app->uiScale();
+    CAPTURE(uiScale);
+    const std::array<char32_t, 5> points{U'0', U'.', U'X', U'Y', U'Z'};  // "0.000" is 4 x '0' + '.'
+    const EditorFontMeasurement body = measureEditorFonts(WITH_ICONS, EditorFontFace::Body, points, uiScale);
+    REQUIRE(body.ok);
+    REQUIRE(body.glyphs.size() == points.size());
+    for (const MeasuredGlyph& glyph : body.glyphs) {
+        REQUIRE(glyph.found);
+    }
+    const float threeDecimals = (4.0F * body.glyphs[0].advanceX) + body.glyphs[1].advanceX;
+    CAPTURE(threeDecimals);
+    REQUIRE(threeDecimals > 0.0F);
+    // The row's own slack budget: drawAxisRow budgets three of the WIDEST letter as CalcTextSize measures it
+    // (IM_TRUNC(w + 0.99999f), a whole point) while each Text item takes its own width, and ImGui truncates
+    // each of the three boxes to a whole point -- so the row as drawn ends at most 3 points, plus the letters'
+    // difference from the widest, inside its cell. At most UI scales other than 1 the three letters round to
+    // different widths (X, Y and Z are 613, 593 and 580 units), so the difference is measured at the live scale.
+    std::array<float, 3> letters{};
+    for (std::size_t i = 0; i < letters.size(); ++i) {
+        letters[i] = std::trunc(body.glyphs[2U + i].advanceX + 0.99999F);
+    }
+    const float widestLetter = std::max({letters[0], letters[1], letters[2]});
+    const float letterSlack = (3.0F * widestLetter) - (letters[0] + letters[1] + letters[2]);
+    CAPTURE(widestLetter);
+    CAPTURE(letterSlack);
+
+    const float content = inspector->lastContentWidth();
+    const float box = inspector->lastAxisBoxWidth();
+    const float slack = inspector->lastAxisRowSlack();
+    CAPTURE(content);
+    CAPTURE(box);
+    CAPTURE(slack);
+    if (!engine::editor::sceneIoAvailable()) {
+        // REFLECT TOOLS OFF, at runtime (no #if): components draw no field rows, so no axis row drew.
+        MESSAGE("I289: reflect tools OFF -- no field rows, so no axis row drew");
+        CHECK(box == 0.0F);
+        CHECK(slack == 0.0F);
+    } else {
+        REQUIRE(box > 0.0F);  // an axis row really drew this frame
+        // THE ROW FILLS ITS CELL, at ANY width where the budget is above its floor of 1: the SameLine gaps
+        // and inspectorAxisBoxWidth's budget agree. Below, the last box overruns the cell (a gap drawn wider
+        // than budgeted); above, the boxes are narrower than the cell pays for (a budget with a gap the row
+        // does not draw). Half a point absorbs the float sums of three boxes and five gaps.
+        if (box >= 2.0F) {
+            CHECK(slack >= -0.5F);
+            CHECK(slack < 3.0F + letterSlack + 0.5F);
+        } else {
+            MESSAGE("I289: the box is at its floor (" << box << "), so the row cannot fill its cell");
+            WARN(box >= 2.0F);
+        }
+        // THE GEOMETRY GATE, for the fit alone: 225 is the content of the 241-wide dock (241 - 2 x 8 of
+        // window padding), the branch point's threshold -- a derivation AT UI SCALE 1 (TH11). The claim is made
+        // only there, at that width or wider, because CI's macOS runner delivers windows narrower than
+        // requested (I233, I231), a narrower dock has a narrower cell by design, and at another scale every
+        // length in the row moves.
+        constexpr float THRESHOLD_CONTENT = 225.0F;
+        if (uiScale == 1.0F && content >= THRESHOLD_CONTENT) {
+            CHECK(box >= threeDecimals);
+        } else {
+            MESSAGE("I289: no fit asserted at UI scale " << uiScale << ", content " << content << " (the claim is "
+                                                         << "scale 1 and >= " << THRESHOLD_CONTENT << ")");
+            WARN((uiScale == 1.0F && content >= THRESHOLD_CONTENT));
+        }
+    }
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
 }

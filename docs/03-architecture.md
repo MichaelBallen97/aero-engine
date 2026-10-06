@@ -88,6 +88,8 @@ A CI test that fails if any `#include` under `/engine` or `/runtime` points to `
 /runtime       game loop, .pak loading, per-platform entry points        [5 platforms]
 
 /editor        ImGui, panels, undo/redo, gizmos, IMPORTERS, exporter     [3 platforms]
+  /third_party   vendored, unmodified, editor-only: ufbx/ (code, task 3.2.2) and fonts/ (IBM Plex + Lucide,
+                 embedded data, task E.6.1)
 
 /tools
   /reflect-gen   libclang → meta registrations + bindings + .d.ts
@@ -109,6 +111,7 @@ A CI test that fails if any `#include` under `/engine` or `/runtime` points to `
 | SDL3, EnTT, Jolt, miniaudio, quickjs-ng, GLM | ✅ | ✅ | ✅ | |
 | Dear ImGui, ImGuizmo | ❌ | ❌ | ✅ | |
 | Assimp, ufbx, tinyobjloader, stb_image | ❌ | ❌ | ✅ | ✅ |
+| IBM Plex, Lucide (font data) | ❌ | ❌ | ✅ | |
 | libclang | ❌ | ❌ | ❌ | ✅ |
 | esbuild / swc | ❌ | ❌ | ✅ | ✅ |
 | Tracy | ⚠️ dev builds | ⚠️ dev builds | ⚠️ | |

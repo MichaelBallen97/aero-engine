@@ -30,6 +30,7 @@
                                            // ImGui-free, entt-free, World-free, so this header's
                                            // ImGui-FREE-BY-RULE contract is intact.
 #include <aero/editor/create_menu.hpp>     // task E.5.2 -- CreateKind by value in two seams; PURE
+#include <aero/editor/editor_theme.hpp>    // task E.6.1 -- EditorAppConfig's clear reads the theme; PURE
 #include <aero/editor/entity_ops.hpp>      // a VALUE member (rootOrder) needs RootOrder's definition
 #include <aero/editor/imgui_layer.hpp>
 #include <aero/editor/material_session.hpp>      // task 3.4.2 -- a VALUE member (materialSession) needs
@@ -108,9 +109,11 @@ class SceneAssetLoader;    // task 3.1.5: src-private (editor/src/scene_asset_lo
                            // is in scope. The same reason DialogChannel above can be a shared_ptr.
 
 struct EditorAppConfig {
-    rhi::Color clearColor{0.10F, 0.10F, 0.12F, 1.0F};  // unchanged from 2.1.1
-    bool persistLayout = true;                         // -> ImGuiLayer (imgui.ini); false in tests
-    bool registerDefaultPanels = true;                 // the five 2.2.x placeholders (D8)
+    // task E.6.1: the theme's shell clear, value unchanged from 2.1.1.
+    rhi::Color clearColor{EDITOR_THEME.clear.shell.r, EDITOR_THEME.clear.shell.g, EDITOR_THEME.clear.shell.b,
+                          EDITOR_THEME.clear.shell.a};
+    bool persistLayout = true;          // -> ImGuiLayer (imgui.ini); false in tests
+    bool registerDefaultPanels = true;  // the five 2.2.x placeholders (D8)
     // The default new-scene contents (D9): Main Camera + Directional Light + Cube, so a freshly
     // launched editor is not an empty box and 2.2.3's viewport has something to render. Tests that
     // want a clean World set it false.
@@ -239,6 +242,9 @@ public:
     // presentedLastFrame() does (D16): without it, "records are captured while the panel is HIDDEN"
     // (AC-6) is mechanically unprovable and would fall entirely to the human pass.
     [[nodiscard]] std::size_t logRecordCount() const noexcept;
+    // task E.6.1: ImGuiLayer::uiScale() -- the UI scale the live style was built at -- for I281/I288. The
+    // layer is a private member, so this forwarder is the one public path to it.
+    [[nodiscard]] float uiScale() const noexcept;
     // The Viewport's own camera (task 2.3.1, D6). NULL when no Viewport panel is registered
     // (registerDefaultPanels == false, or registration was rejected). Exists for the same reason
     // logRecordCount() does: without it, "the Viewport renders through the EDITOR camera and not

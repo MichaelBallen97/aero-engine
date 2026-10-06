@@ -5,6 +5,7 @@
 #include <aero/editor/asset_drag.hpp>  // task E.3.3 -- assetReferenceKindFromToken, DropSurface
 #include <aero/editor/command_stack.hpp>
 #include <aero/editor/component_commands.hpp>
+#include <aero/editor/editor_glyphs.hpp>
 #include <aero/editor/entity_ops.hpp>
 #include <aero/editor/material_card.hpp>
 #include <aero/editor/panel_context.hpp>
@@ -13,7 +14,9 @@
 #include <aero/editor/thumbnail_cache.hpp>
 #include <aero/scene/world.hpp>
 
-#include "asset_picker.hpp"  // task E.3.3 -- the ONE asset-reference field widget
+#include "asset_picker.hpp"     // task E.3.3 -- the ONE asset-reference field widget
+#include "editor_fonts.hpp"     // task E.6.1: editorFonts().strong
+#include "editor_theme_ui.hpp"  // task E.6.1: currentUiScale(), for the axis row's letter gap
 #include "text_input.hpp"
 #include "thumbnail_service.hpp"
 
@@ -142,6 +145,12 @@ void InspectorPanel::onDraw(PanelContext& context) {
     // RESETS the member (a moved-from optional stays engaged -- E.4.3). Overwriting frameNamedSelection
     // also discards whatever the previous onDraw did not consume.
     frameNamedSelection = std::exchange(pendingNamedSelection, std::nullopt);
+    headersSubmittedValue = 0;  // task E.6.1: a PER-FRAME count, taken before any early return below
+    // task E.6.1 (I289): this frame's geometry, likewise before any early return. drawAxisRow writes the two
+    // axis values, so a frame that draws no axis row reads 0 for both.
+    lastContentWidthValue = ImGui::GetContentRegionAvail().x;
+    lastAxisBoxWidthValue = 0.0F;
+    lastAxisRowSlackValue = 0.0F;
     // ID discipline (D13/E14): PushID(full registration name) per component, PushID(field name)
     // per row -- so two same-named fields in different components, and two same-short-named types
     // in different namespaces, never collide. Widgets use the "##v" label so only the left column
@@ -228,7 +237,13 @@ void InspectorPanel::drawComponent(PanelContext& context, Entity primary, const 
     ImGui::PushID(entry.name.c_str());
 
     shortNameScratch = std::string(shortComponentName(entry.name));
+    // task E.6.1: the HEADER in SemiBold, at size 0 so the row keeps its height. The push changes no label
+    // text, so the header's ID, flags and open state are untouched; the face's name is copied at the draw.
+    ImGui::PushFont(editorFonts().strong, 0.0F);
+    lastHeaderFontNameValue = ImGui::GetFont()->GetDebugName();
     const bool open = ImGui::CollapsingHeader(shortNameScratch.c_str(), ImGuiTreeNodeFlags_DefaultOpen);
+    ImGui::PopFont();
+    ++headersSubmittedValue;
     if (ImGui::IsItemHovered()) {
         ImGui::SetTooltip("%s", entry.name.c_str());  // the FULL registration name (D13)
     }
@@ -242,7 +257,8 @@ void InspectorPanel::drawComponent(PanelContext& context, Entity primary, const 
 
     if (open) {
         if (!entry.hasFields) {
-            ImGui::TextDisabled("(fields unavailable — built without AERO_REFLECT_TOOLS)");  // D12
+            ImGui::TextDisabled(  // D12
+                "(fields unavailable " AERO_GLYPH_EM_DASH " built without AERO_REFLECT_TOOLS)");
         } else if (entry.fields.empty()) {
             ImGui::TextDisabled("(no fields)");  // a tag component (E13)
         } else if (ImGui::BeginTable("##fields", 2, TABLE_FLAGS)) {
@@ -336,9 +352,15 @@ bool InspectorPanel::drawAxisRow(PanelContext& context, Entity primary, const Co
         const std::string_view label = axisRowLabel(i);
         letterWidth = std::max(letterWidth, ImGui::CalcTextSize(label.data(), label.data() + label.size()).x);
     }
-    // [letter][gap][box] x3, with one gap between units: 3*letter + 5*gap + 3*box == the cell.
+    // task E.6.1: [letter][letterGap][box] x3, with a WHOLE gap between the units: a letter labels its own
+    // box, so the pair reads as one unit, AXIS_LETTER_GAP_DP apart at the UI scale. 3*letter + 3*letterGap +
+    // 2*gap + 3*box == the cell -- the budget is inspector_model's pure inspectorAxisBoxWidth (TH11), handed
+    // the two gaps the SameLine calls below spell, so the last box cannot overrun the cell (I289's slack
+    // arms). Before, every gap was whole (3*letter + 5*gap + 3*box); at the theme's 6-point spacing, and with
+    // the label column's old 5 x floor, that clipped "0.000" in a 258-wide dock.
+    const float letterGap = AXIS_LETTER_GAP_DP * currentUiScale();
     const float total = ImGui::GetContentRegionAvail().x;
-    const float boxWidth = std::max((total - (3.0F * letterWidth) - (5.0F * gap)) / 3.0F, 1.0F);
+    const float boxWidth = inspectorAxisBoxWidth(total, letterWidth, letterGap, gap);
 
     bool edited = false;
     ImGui::BeginGroup();  // 1:1 with EndGroup below -- nothing between them can return
@@ -360,7 +382,8 @@ bool InspectorPanel::drawAxisRow(PanelContext& context, Entity primary, const Co
         // whole cell's width.
         ImGui::TextUnformatted(label.data(), label.data() + label.size());
         ImGui::PopStyleColor();  // 1:1 with PushStyleColor
-        ImGui::SameLine(0.0F, gap);
+        // task E.6.1: the letter and ITS box are one unit, AXIS_LETTER_GAP_DP apart.
+        ImGui::SameLine(0.0F, letterGap);
         ImGui::SetNextItemWidth(boxWidth);
         // nullptr for p_min/p_max/format is EXACTLY DragFloat3's behaviour: it passes two pointers to
         // 0.0f, which DragBehaviorT treats as unbounded, and DragScalar falls back to
@@ -369,6 +392,7 @@ bool InspectorPanel::drawAxisRow(PanelContext& context, Entity primary, const Co
         edited = ImGui::DragScalar("##a", ImGuiDataType_Float, &shown[i], speed, nullptr, nullptr, nullptr,
                                    ImGuiSliderFlags_None) ||
                  edited;
+        lastAxisBoxWidthValue = ImGui::GetItemRectSize().x;  // task E.6.1 (I289): the box ImGui laid out
         // NO str_id: DragScalar reads mouse button 0 only, so right-click is unclaimed, and the axis's
         // own drag id is non-zero and makes a perfectly good popup id. NEVER call this with nullptr
         // after EndGroup() -- a group's ItemAdd uses id 0 and only overwrites LastItemData.ID when the
@@ -378,6 +402,9 @@ bool InspectorPanel::drawAxisRow(PanelContext& context, Entity primary, const Co
         ImGui::PopID();
     }
     ImGui::EndGroup();
+    // task E.6.1 (I289): EndGroup's item is the whole row, so this is the cell minus the row as DRAWN --
+    // negative when the gaps spelled above and the budget disagree and the last box overruns the cell.
+    lastAxisRowSlackValue = total - ImGui::GetItemRectSize().x;
     return edited;
 }
 
@@ -424,6 +451,7 @@ void InspectorPanel::drawField(PanelContext& context, Entity primary, const Comp
     ImGui::TableNextRow();
     ImGui::TableNextColumn();
     ImGui::AlignTextToFramePadding();
+    lastLabelFontNameValue = ImGui::GetFont()->GetDebugName();  // task E.6.1: Body -- the header's push ended
     ImGui::TextUnformatted(field.name.c_str());
     // THE WHOLE-FIELD MENU HANGS OFF THE LABEL CELL, never off a value widget (D6): FieldKind::String
     // keeps an uncommitted buffer whose release is keyed on ImGui::IsItemActive(), so a popup opening

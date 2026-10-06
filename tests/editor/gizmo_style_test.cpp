@@ -26,6 +26,11 @@
 
 namespace {
 
+// task E.6.1: the UI scale every pure call here runs at -- 1, so each case is byte-identical to before. A
+// file-local name keeps the added argument short, and the parameter is NON-defaulted, so a site that
+// forgot it is a compile error rather than a silent default.
+constexpr float UI_1X = 1.0F;
+
 namespace ed = engine::editor;
 
 // A COMPARISON STRUCT IN THE FILE'S ANONYMOUS NAMESPACE, NOT INSIDE A TEST_CASE. [class.friend]/6
@@ -89,7 +94,7 @@ std::ostream& operator<<(std::ostream& out, const Size4& value) {
 }
 
 [[nodiscard]] Size4 resolved(float w, float h) noexcept {
-    return asSize4(ed::resolveGizmoScreenSize(engine::Vec2{w, h}));
+    return asSize4(ed::resolveGizmoScreenSize(engine::Vec2{w, h}, UI_1X));
 }
 
 // ULPs between two finite floats, as an integer, so an assertion can say "two ulps" and PRINT the
@@ -523,7 +528,7 @@ TEST_CASE("editor gizmo style: operator== discriminates on every field (task E.1
     }
 
     SUBCASE("a GizmoScreenSize differing by one ulp of one field is unequal") {
-        const engine::editor::GizmoScreenSize base = ed::resolveGizmoScreenSize(engine::Vec2{1440.0F, 900.0F});
+        const engine::editor::GizmoScreenSize base = ed::resolveGizmoScreenSize(engine::Vec2{1440.0F, 900.0F}, UI_1X);
         engine::editor::GizmoScreenSize mutated = base;
         mutated.planeHideClipArea = std::nextafter(base.planeHideClipArea, 1000.0F);
         const bool oneUlpIsUnequal = !(mutated == base);

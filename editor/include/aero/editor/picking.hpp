@@ -42,6 +42,7 @@ struct Ray {
 };
 
 // ---- tuning constants (D5/D10/D18) -- LOGICAL POINTS, judged by the human pass -------------------
+// Each is dp at uiScale 1; the caller's `uiScale` multiplies it (task E.6.1).
 // "The mouse did not move." OURS, deliberately independent of io.MouseDragThreshold (6.0f, F24):
 // that is a DRAG threshold for widgets that drag, nothing in the Viewport reads it, and keeping this
 // independent is what lets the gate take a plain float instead of an ImGui global.

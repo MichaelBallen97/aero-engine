@@ -190,12 +190,32 @@ struct AxisResetAction {
                                               const std::optional<FieldValue>& defaultValue);
 
 // The label column's width, as ARITHMETIC. Pure so the clamp is tier-0 testable: the panel measures
-// the four inputs with ImGui and this decides. floorPx = fontSizePx * 5; ceilPx = max(floorPx,
+// the four inputs with ImGui and this decides. floorPx = fontSizePx * 4 (task E.6.1 retuned it from 5 --
+// inspector_model.cpp's LABEL_COLUMN_FLOOR_FONT_MULTIPLE says why); ceilPx = max(floorPx,
 // availableWidthPx * 0.5) -- the max is what keeps std::clamp's range from crossing, which is UB,
 // and a zero- or negative-width dock IS reachable (a panel dragged to its minimum, or the frame a
 // dock split settles). The two multipliers are TUNING VALUES, judged on hardware; changing one is a
-// one-line edit here plus a VF15 expectation.
+// one-line edit in inspector_model.cpp plus a VF15 and a TH11 expectation.
 [[nodiscard]] float inspectorLabelColumnWidth(float widestLabelPx, float cellPaddingPx, float fontSizePx,
                                               float availableWidthPx) noexcept;
+
+// task E.6.1: the gap between an axis letter and ITS OWN box, in dp (drawAxisRow multiplies it by the UI
+// scale once). One point: the letter labels the box beside it, and the mock goes further and draws it INSIDE
+// the box (E.6.3's restyle). At this width the row shows a five-character value ("0.000", "1.000") whole from
+// the same content width as the branch point did -- 225, TH11 and I289. A LONGER value still needs more than
+// it did there: 3 more points of content with two or three integer digits (3 x this gap), and 6 or more from
+// four, as IBM Plex's digits at 16 are wider than ProggyClean's at 13. A negative value under 10 000 needs 3
+// to 6 fewer (Plex's minus is narrower), and from five integer digits the wider digits cancel that. Recorded
+// on E.6.1's validation page and handed to E.6.3, whose restyle re-derives the whole row.
+inline constexpr float AXIS_LETTER_GAP_DP = 1.0F;
+
+// task E.6.1: the width of each of an axis row's three boxes, as ARITHMETIC. The row is
+//   [letter][letterGap][box] [unitGap] [letter][letterGap][box] [unitGap] [letter][letterGap][box]
+// so 3*letter + 3*letterGap + 2*unitGap + 3*box == the cell, and
+//   box = max((cellWidth - 3*letterWidth - 3*letterGap - 2*unitGap) / 3, 1).
+// The two gaps are PARAMETERS so drawAxisRow passes this budget the very values its SameLine calls spell.
+// TOTAL: a NaN or an infinity in any input, or a sum that overflows, answers the floor, 1 -- std::max(NaN, 1)
+// is NaN, and a NaN width would reach SetNextItemWidth. Pure so TH11 reaches it from tier 0.
+[[nodiscard]] float inspectorAxisBoxWidth(float cellWidth, float letterWidth, float letterGap, float unitGap) noexcept;
 
 }  // namespace engine::editor

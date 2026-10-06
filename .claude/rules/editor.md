@@ -114,23 +114,116 @@ that way.
   `imgui_stdlib.h` "because it's the standard ImGui helper" — it is specifically the one header this
   project cannot link against on one of its three CI lanes.
 
-## The UI font (task E.4.4's validation pass)
+## Fonts, icons and the theme (task E.6.1)
 
-- **The editor draws every string in ONE font — ProggyClean at 13 (`default_font.{hpp,cpp}`) — and it
-  covers ASCII, Latin-1, the 26 remapped Windows-1252 punctuation marks (`DEFAULT_FONT_CP1252_REMAPS`:
-  the ellipsis, the en and em dashes, the curly quotes, the bullet, …) and the euro sign, and NOTHING
-  ELSE.** Any other character in a UI string — or in a log line, which reaches the Console — draws `?`: an
-  arrow, a check mark, a box-drawing character, any CJK text. `I230(d)` and `(e)` measure both halves.
-  Check a non-ASCII character against that set before writing it into a UI string; widening the set (a
-  glyph range, a merged icon font) belongs to E.6.1, which owns the font and theme system.
-- **The font is added EXPLICITLY through `AddFontDefaultBitmap()`, never `AddFontDefault()`.** The latter
-  is a heuristic that returns ProggyForever once the expected font size reaches 15, and the remap table is
-  measured for ProggyClean alone. `I230(f)` pins the call site in `ImGuiLayer::create` and that
-  `default_font.cpp` is the only editor file that adds a font.
+- **Three faces, embedded, IBM Plex** (`editor_fonts.{hpp,cpp}`, data under `editor/third_party/fonts/`):
+  **Body** (Plex Sans Regular, 16) is ImGui's default font; **Strong** (Plex Sans SemiBold, 16) is for
+  headings; **Mono** (Plex Mono Regular, 16) is for log text, paths and numbers and carries **no icons**.
+  Lucide's icons are merged into Body and Strong at 11/16 of the face. Nothing else is added — ProggyClean
+  and its Windows-1252 remap table are retired.
+- **Plex is added BEFORE Lucide in every merge.** 1.92 asks a merge list in order, and Lucide maps `-`, the
+  digits and the lowercase letters to glyphs of zero or icon width, so a Lucide-first merge draws text as
+  icons or nothing. `I277`'s merge-order arm compares every printable ASCII glyph against the same face with
+  no icons merged, exactly.
+- **Every add sets `FontDataOwnedByAtlas = false`** — the data is static and ImGui must never free it
+  (`ImFontConfig` defaults it to `true`). `I286` counts one per `AddFontFromMemoryTTF(`.
+- **`editor_fonts.cpp` is the ONLY editor file that adds a font** (`I286`, a set claim), and `addEditorFonts`
+  failing fails `ImGuiLayer::create` with one ERROR naming the face — **no fallback**: a silent fallback
+  would ship broken fonts with every test green.
+- **`PushFont(face, 0.0F)` keeps the current size; `PushFont(face, EDITOR_THEME.type.<x>Size)` sets an
+  UNSCALED size; `GetFontSize()` (or a multiple of it) is NEVER passed to `PushFont`** — it is already
+  scaled, so the UI scale would apply twice (`imgui.h:529-530`).
+- **A glyph's quad is sized from the font's glyph BOX, which need not be tight, so a claim about where a
+  glyph SITS measures its INK.** Every Lucide 1.49.0 glyph box reaches down to the baseline (`glyf`
+  `yMin = 0`) whatever its outline does, so a quad centre tracks only an icon's top edge — a 2-point spread
+  across the roster at body 16 that no glyph offset fits inside I278's per-icon bound. The harness reports
+  the ink rows of the baked bitmap (`MeasuredGlyph::inkY0`/`inkY1`); `LUCIDE_GLYPH_OFFSET_Y = 1.0F` is
+  measured on them, and its comment records the numbers.
 - **Never hold an `ImFontGlyph*` across another glyph lookup.** A lookup can bake a glyph, which
   `push_back`s into `ImFontBaked::Glyphs` and may reallocate it — an earlier probe that kept the pointer
   read freed memory (ASan: heap-use-after-free) and reported three glyphs as "different" that are
-  identical. Copy the values out immediately, as `measureDefaultFont` does.
+  identical. Copy the values out immediately, as `measureEditorFonts` does.
+
+### The theme and the UI scale
+
+- **`EDITOR_THEME` (`editor_theme.hpp`) is the ONE source of every colour, size and type value.** A NEW
+  colour is a theme token, never a file-local constant. Category A (the ImGui chrome and the UI roles)
+  follows the mock; Category B (the viewport's 3D and overlay colours, identity colours, clears) moved in
+  byte-identical and changes only as a stated visual decision. `TextDisabled` is for DISABLED widgets;
+  de-emphasised enabled text is the `textMuted` role.
+- **`buildEditorStyle` is the only style builder and `applyEditorStyle` the only style WRITER**
+  (`editor_theme_ui.cpp`, `I286`). It starts from a fresh `ImGuiStyle{}`, assigns every size member and all
+  63 colour slots from the theme, then `ScaleAllSizes(uiScale)` — so a scale change REBUILDS the style.
+  **Never `ScaleAllSizes` a live style**: it truncates, so applying it twice compounds (`I280`'s
+  idempotence arm). ImGui gaining or losing a colour slot is a `static_assert` failure at the table, never a
+  silently default-coloured widget. **No member `ScaleAllSizes` scales whose theme value is ≥ 1 is ever
+  truncated below 1**: it truncates, so at any UI scale below 1 a theme value in [1, 2) would become 0 — a
+  1-dp border or separator vanishes, a 0 `MouseCursorScale` puts every tooltip and drag preview under the
+  cursor, a 0 `TabMinWidthBase` drops the minimum tab width. The floored members are one table in
+  `editor_theme_ui.cpp`, floored at 1 after the scaling (a theme value of 0 stays 0; a scale ≥ 1 is
+  untouched). A scaled member whose theme value moves into [1, 2) joins it — `I280`'s sub-1 arm is a
+  universal over every scaled member, not a list, so it is red until that member does.
+- **The UI scale is `resolveUiScale(SDL_GetWindowDisplayScale, SDL_GetWindowPixelDensity, previous)`** —
+  quantised to 0.05 by division, clamped to [0.5, 4], with no platform branch. It is 1 on a Retina Mac and
+  on default Wayland, the desktop scale on Windows and X11. **`style.FontScaleDpi` is its ONE stored copy**
+  (`currentUiScale()`), so nothing caches it. `ImGuiLayer::beginFrame` re-resolves it BEFORE every
+  `NewFrame` and rebuilds the style only when it changes, with one INFO line (`I281`, `I282`).
+- **`io.ConfigDpiScaleFonts` stays OFF**: ImGui's own path reads the display's CONTENT scale, which is
+  1.0 on Cocoa and on default Wayland while the style would be doubled. `I286` pins that exactly one
+  file writes it.
+- **The viewport's chrome (D10): a length authored in dp reaches ImGui-unit space multiplied by `uiScale`
+  exactly once, at the viewport's boundary; a length that reaches device-pixel space is additionally
+  multiplied by the framebuffer scale.** A pure function that consumes a dp constant takes a
+  **non-defaulted** `float uiScale` (`resolveGizmoScreenSize`, `scaledGizmoStyle`, `viewAxisLayout`,
+  `viewAxisRect`, `buildSelectionOverlay` -- `US9` pins the set as source text), and a laid-out widget
+  carries its scale (`ViewAxisLayout::uiScale`) so its hit test cannot use another. The panel captures
+  `lastUiScale` in `onDraw` beside `lastFramebufferScale`, and nothing in `renderScene` calls ImGui. A width
+  that holds text is a **font multiple**, never a literal. ImGuizmo's internal hit tolerances are library
+  literals and stay unscaled (R7) -- `GIZMO_CENTER_HIT_HALF_EXTENT_POINTS` names one and is not scaled.
+
+### The string-literal policy
+
+The editor's fonts decide what it can **draw**; what it can safely **spell in source** is a different
+question, answered by the compiler, not the font. **MSVC compiles this tree without `/utf-8`**, so it
+decodes a BOM-less source file as the system code page (CP1252) and encodes narrow literals back to it. A
+raw UTF-8 `…` or `—` survives that round trip **by accident** — every byte of `E2 80 A6` and
+`E2 80 94` is a defined CP1252 character. **Icons do not survive it**: CP1252 leaves `0x81`, `0x8D`,
+`0x8F`, `0x90` and `0x9D` undefined, and thirteen roster icons' UTF-8 contains one (`box` is
+`EE 81 A1`, `save` `EE 85 8D`). A raw icon character in source is mojibake on Windows alone. **A `\u`
+escape is no better**: in a narrow literal it is encoded to the *execution* character set, CP1252 on
+MSVC, where a Private Use Area code point is unrepresentable. The policy:
+
+1. **Editor source files stay 7-bit in every string and character literal.** Comments are unaffected — the
+   tree's comments use `—`, `§`, `★` and `⌘` freely and keep doing so.
+2. **A non-ASCII character in an editor string is spelled ONLY through a named macro** from one of two
+   headers, each a string literal of **hex escapes**, so literal concatenation works
+   (`AERO_ICON_FOLDER " Assets"`):
+   * `editor/include/aero/editor/editor_glyphs.hpp` — `AERO_GLYPH_*`: the typographic marks the editor
+     uses (ellipsis, em dash, en dash, middle dot, multiplication sign, degree sign, bullet, the four
+     arrows, check mark, minus sign), each one Plex Sans **and** Plex Mono draw natively;
+   * `editor/include/aero/editor/editor_icons.hpp` — `AERO_ICON_*`: the Lucide roster.
+3. **Which characters exist**, exactly as `I279` asserts per face: all three faces draw Latin-1
+   (U+00A0–U+00FF), Latin Extended-A (U+0100–U+017F), basic Cyrillic (U+0400–U+045F) and every
+   `AERO_GLYPH_*` mark; Body and Strong draw every Greek letter (U+0391–U+03A9, U+03B1–U+03C9), and
+   Mono only `π` (U+03C0) — a `Δ` or an `α` in Mono draws `U+FFFD`. **Icons only in Body and
+   Strong** (`I278`). A glyph outside the loaded faces draws `U+FFFD` (`�`), not `?` — **user data**
+   (file names, log text from the engine) is drawn as given and may hit it; editor-authored strings
+   may not.
+4. **`⌘`, `⇧`, `⌥` and `⏎` are NOT available** — Plex has none of them. A future shortcut hint spells
+   `Cmd+`, `Shift+` in ASCII, or uses an icon (Lucide has `command`), and that is E.6.2's decision.
+
+- **`GL6` is the enforcement**: a tier-0 lexer over every `editor/src/*.{cpp,hpp}` and
+  `editor/include/aero/editor/*.hpp` that walks string, character and raw-string literals, skipping
+  comments, and fails on a byte ≥ `0x80` inside a literal, a `\x` or octal escape ≥ `0x80` outside the two
+  macro headers, any `\u`/`\U` escape, and an unterminated literal (so a lexer that mis-reads a quote is
+  loud, never silent). Its self-tests carry the tree's own traps: a digit separator (`1'000'000`), a quote
+  character (`'"'`) and a raw string holding a quote (`asset_actions.cpp`'s `R"(*?"<>|:)"`).
+- **A hex escape is greedy — splice a macro BETWEEN two literals, never inside one.** `"\xA6and"` reads
+  `\xA6a`; `AERO_GLYPH_ELLIPSIS "and "` is two literals the compiler joins after escape processing.
+- **`AERO_GLYPH_*` for typographic marks Plex draws in all three faces, `AERO_ICON_*` for Lucide glyphs,
+  which draw in Body and Strong only.** An icon is named by its UPSTREAM Lucide name; what it means is the
+  consumer's own table (`createKindIcon` is the first). A new icon is one macro and one `EDITOR_ICONS` row
+  — `GL2`, `GL3` and `GL4` check the bytes, the name and the upstream code point.
 
 ## Undo/redo
 

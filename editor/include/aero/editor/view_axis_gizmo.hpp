@@ -35,7 +35,8 @@ enum class ViewAxisHit : std::uint8_t { None = 0, Axis, Center };
 // ---- tuning constants (D3/D10/D16) -- LOGICAL POINTS, judged by the manual validation pass -------
 // Every value is a TUNING value; each is named so a retune is a one-line change, and every tier-0
 // case asserts a RELATIONSHIP (an ordering, a sign, an inclusion) rather than a magnitude -- the
-// 2.3.1 rule, so retuning reddens nothing.
+// 2.3.1 rule, so retuning reddens nothing. Each length is dp at uiScale 1; the caller's `uiScale`
+// multiplies it (task E.6.1).
 inline constexpr float VIEW_AXIS_RING_RADIUS_POINTS = 30.0F;   // widget centre -> a ball's centre
 inline constexpr float VIEW_AXIS_BALL_RADIUS_POINTS = 8.0F;    // hit radius AND the un-hovered draw radius
 inline constexpr float VIEW_AXIS_CENTER_RADIUS_POINTS = 6.0F;  // < BALL, so a collapsed ball keeps an annulus (D10)
@@ -61,6 +62,9 @@ struct ViewAxisLayout {
     std::array<ViewAxisBall, VIEW_AXIS_COUNT> balls{};      // in ViewAxis order
     std::array<std::uint8_t, VIEW_AXIS_COUNT> drawOrder{};  // indices into `balls`, FAR -> NEAR
     bool visible = false;                                   // false => nothing draws and nothing is hit
+    // task E.6.1 (decision D-6): the UI scale this layout was laid out at. viewAxisPickAt reads it, so a
+    // hit test can never use a scale other than the one its picture was drawn at.
+    float uiScale = 1.0F;
 };
 
 struct ViewAxisPick {
@@ -69,17 +73,21 @@ struct ViewAxisPick {
 };
 
 // TOTAL. `visible` is false -- and every other field defaulted -- for a non-finite or non-positive
-// image rect, and for one smaller than VIEW_AXIS_MIN_IMAGE_POINTS in either axis (D16).
-[[nodiscard]] ViewAxisLayout viewAxisLayout(const EditorCamera& camera, Vec2 imageOriginPoints,
-                                            Vec2 imageSizePoints) noexcept;
+// image rect, for one smaller than VIEW_AXIS_MIN_IMAGE_POINTS * uiScale in either axis (D16), and for a
+// non-finite or non-positive `uiScale`. task E.6.1: every length is multiplied by `uiScale`, which the
+// layout records; NON-defaulted, so a call site that forgot the scale is a compile error.
+[[nodiscard]] ViewAxisLayout viewAxisLayout(const EditorCamera& camera, Vec2 imageOriginPoints, Vec2 imageSizePoints,
+                                            float uiScale) noexcept;
 
 // The widget's screen rect, a PURE function of the image rect -- so overlayOwnsPress can ask about
 // THIS frame rather than the last drawn one (D9). DEGENERATE (max.x <= min.x) when the widget is not
-// visible, which is what makes "an empty rect owns nothing" hold with no second predicate.
-void viewAxisRect(Vec2 imageOriginPoints, Vec2 imageSizePoints, Vec2& outMin, Vec2& outMax) noexcept;
+// visible, which is what makes "an empty rect owns nothing" hold with no second predicate. Laid out at
+// `uiScale` exactly as viewAxisLayout is (task E.6.1).
+void viewAxisRect(Vec2 imageOriginPoints, Vec2 imageSizePoints, float uiScale, Vec2& outMin, Vec2& outMax) noexcept;
 
 // Centre first, then balls NEAR -> FAR; the first within its radius wins (D10). `None` for a
-// non-finite point, for an invisible layout, and for a point inside the rect but on no target.
+// non-finite point, for an invisible layout, and for a point inside the rect but on no target. The
+// radii are scaled by the LAYOUT's own `uiScale` (task E.6.1, decision D-6).
 [[nodiscard]] ViewAxisPick viewAxisPickAt(const ViewAxisLayout& layout, Vec2 mousePoints) noexcept;
 
 // ---- the canonical poses ------------------------------------------------------------------------

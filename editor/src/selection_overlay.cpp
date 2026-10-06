@@ -18,16 +18,16 @@ namespace {
 // INVISIBLE until you hit it -- and the always-on alternative is really the first step of a
 // gizmo-icon system, which is not this task's deliverable (Handoffs).
 void appendPointMarker(const Mat4& viewProj, ProjectionMode mode, Vec3 worldPoint, Vec2 viewportSizePoints,
-                       OverlayRole role, std::vector<OverlaySegment>& out) {
+                       float uiScale, OverlayRole role, std::vector<OverlaySegment>& out) {
     Vec2 center{};
     if (!projectToViewport(viewProj, mode, worldPoint, viewportSizePoints, center)) {
         return;  // at or behind the eye, or non-finite (E4/E7)
     }
-    constexpr float H = POINT_MARKER_HALF_POINTS;
-    const Vec2 top{center.x, center.y - H};
-    const Vec2 right{center.x + H, center.y};
-    const Vec2 bottom{center.x, center.y + H};
-    const Vec2 left{center.x - H, center.y};
+    const float h = POINT_MARKER_HALF_POINTS * uiScale;  // task E.6.1: dp, times the UI scale
+    const Vec2 top{center.x, center.y - h};
+    const Vec2 right{center.x + h, center.y};
+    const Vec2 bottom{center.x, center.y + h};
+    const Vec2 left{center.x - h, center.y};
     out.push_back(OverlaySegment{.a = top, .b = right, .role = role});
     out.push_back(OverlaySegment{.a = right, .b = bottom, .role = role});
     out.push_back(OverlaySegment{.a = bottom, .b = left, .role = role});
@@ -37,7 +37,8 @@ void appendPointMarker(const Mat4& viewProj, ProjectionMode mode, Vec3 worldPoin
 }  // namespace
 
 void buildSelectionOverlay(const World& world, std::span<const Entity> entities, Entity primary, const Mat4& viewProj,
-                           ProjectionMode mode, Vec2 viewportSizePoints, std::vector<OverlaySegment>& scratch) {
+                           ProjectionMode mode, Vec2 viewportSizePoints, float uiScale,
+                           std::vector<OverlaySegment>& scratch) {
     scratch.clear();  // CALLER-OWNED SCRATCH: cleared on entry, reused across frames (D6/AC-18)
     std::size_t drawn = 0;
     for (const Entity entity : entities) {
@@ -62,7 +63,8 @@ void buildSelectionOverlay(const World& world, std::span<const Entity> entities,
         // finite point, which is informative and exactly what a user who typed scale = 0 should see.
         // You cannot CLICK a zero-volume object, but you should still SEE what you selected -- so
         // there is no determinant guard here.
-        appendPointMarker(viewProj, mode, transformPoint(model, Vec3::zero()), viewportSizePoints, role, scratch);
+        const Vec3 origin = transformPoint(model, Vec3::zero());
+        appendPointMarker(viewProj, mode, origin, viewportSizePoints, uiScale, role, scratch);
     }
 }
 
