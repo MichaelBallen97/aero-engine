@@ -259,8 +259,22 @@ TEST_CASE("ui scale: the view-axis widget follows the UI, hit test included (tas
     CHECK((hit.kind == ed::ViewAxisHit::Axis));
     CHECK((hit.axis == ed::ViewAxis::PosX));
     CHECK((ed::viewAxisPickAt(two, outside).kind == ed::ViewAxisHit::None));
-    // The SAME point against the scale-1 layout misses: the scale reached the hit test (seed S21).
-    CHECK((ed::viewAxisPickAt(one, inside).kind == ed::ViewAxisHit::None));
+    // At scale 1 the SAME distance from the scale-1 layout's OWN +X ball misses -- 15.2 is outside the
+    // unscaled 8 -- so only a hit test that reads the layout's scale answers None here (seed S21). A point
+    // taken from the scale-2 ball would miss at scale 1 whatever radius the hit test used: that ball is not
+    // where the scale-1 layout drew it, which is how this arm used to pass under exactly that seed.
+    const Vec2 o1 = one.balls[static_cast<std::size_t>(ed::ViewAxis::PosX)].offsetPoints;
+    const float length1 = std::sqrt((o1.x * o1.x) + (o1.y * o1.y));
+    REQUIRE(length1 > 0.0F);
+    const Vec2 u1{o1.x / length1, o1.y / length1};
+    const Vec2 b1 = one.centerPoints + o1;
+    const Vec2 within1{b1.x + (u1.x * 7.6F), b1.y + (u1.y * 7.6F)};
+    const Vec2 beyond1{b1.x + (u1.x * 15.2F), b1.y + (u1.y * 15.2F)};
+    // ANTI-VACUITY: the probe sits on the scale-1 ball -- inside its unscaled radius it is a hit.
+    const ed::ViewAxisPick onBall = ed::viewAxisPickAt(one, within1);
+    CHECK((onBall.kind == ed::ViewAxisHit::Axis));
+    CHECK((onBall.axis == ed::ViewAxis::PosX));
+    CHECK((ed::viewAxisPickAt(one, beyond1).kind == ed::ViewAxisHit::None));
 }
 
 TEST_CASE(
