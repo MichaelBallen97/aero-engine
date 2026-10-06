@@ -448,8 +448,10 @@ TEST_CASE("glyphs: no editor literal carries a non-ASCII byte (task E.6.1, GL6)"
         CHECK(v[0].rule == 'a');
         CHECK(v[0].line == 1U);
     }
-    CHECK(violationsOf("// " + ellipsisBytes, false).empty());
-    CHECK(violationsOf("/* " + ellipsisBytes + " */", false).empty());
+    // Each comment holds a QUOTE, so a lexer that stopped skipping that comment kind would open a literal
+    // on it and report the byte inside -- without one, a comment-blind lexer sees no literal and passes.
+    CHECK(violationsOf("// a \"" + ellipsisBytes + "\" in prose", false).empty());
+    CHECK(violationsOf("/* a \"" + ellipsisBytes + "\" in prose */", false).empty());
     CHECK(violationsOf("s = R\"x(" + ellipsisBytes + ")x\";", false).size() == 1U);
     {
         const std::vector<Violation> v = violationsOf(R"(c = '\xE2';)", false);
@@ -464,6 +466,19 @@ TEST_CASE("glyphs: no editor literal carries a non-ASCII byte (task E.6.1, GL6)"
         const LiteralScan allowed = scanLiterals(escaped, true);
         CHECK(allowed.violations.empty());
         CHECK(allowed.highEscapeLiterals == 1U);
+    }
+    {
+        // The same ellipsis in OCTAL escapes is a numeric escape >= 0x80 too: one finding, rule (b).
+        const std::vector<Violation> v = violationsOf(R"(s = "\342\200\246";)", false);
+        REQUIRE(v.size() == 1U);
+        CHECK(v[0].rule == 'b');
+    }
+    {
+        // A quoted literal a NEWLINE ends is unterminated -- the rule that keeps a mis-read quote loud.
+        const std::vector<Violation> v = violationsOf("s = \"abc\nx = 1;", false);
+        REQUIRE(v.size() == 1U);
+        CHECK(v[0].rule == 'u');
+        CHECK(v[0].line == 1U);
     }
     {
         // The six-character universal-character-name escape. "\\u" below is an escaped BACKSLASH and a "u",
@@ -492,7 +507,8 @@ TEST_CASE("glyphs: no editor literal carries a non-ASCII byte (task E.6.1, GL6)"
     // asset_actions.cpp's shape: a raw string holding a quote ends at )" and nowhere earlier.
     const std::string rawWithQuote = R"x(bad = R"(*?"<>|:)";)x";
     CHECK(violationsOf(rawWithQuote + "\n" + rawInString, false).size() == 1U);
-    CHECK(violationsOf("#include <foo/bar.h>", false).empty());
+    // An include's angle brackets are not a literal, so a non-ASCII byte between them is not the policy's.
+    CHECK(violationsOf("#include <foo/" + ellipsisBytes + ".h>", false).empty());
 
     // ---- then the tree ----
     std::vector<std::pair<std::string, std::string>> files;  // (display name, absolute path)
