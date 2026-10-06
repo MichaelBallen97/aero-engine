@@ -557,7 +557,7 @@ TEST_CASE("theme: the Inspector's axis box holds a three-decimal value at these 
     // right dock where the branch point showed it whole. Two task E.3.1 tuning values met this theme: the
     // label column's floor of 5 x the font (80 at body 16, where ProggyClean 13 gave 65) and five WHOLE
     // ItemInnerSpacing gaps per row (6 here, 4 before). Every number below is a RESTATED measurement (this
-    // file's posture) taken in that dock by I289's window, so a change to any of them is re-measured here.
+    // file's posture) taken by I289's windows, so a change to any of them is re-measured here.
     //
     // The metrics the measurement was taken at, pinned to the theme: changing one invalidates the numbers.
     constexpr float BODY = 16.0F;
@@ -581,6 +581,9 @@ TEST_CASE("theme: the Inspector's axis box holds a three-decimal value at these 
     // The same cell before this fix, measured: the 80-point floor took the column, so 242 - 12 - 80 = 150.
     constexpr float CELL_BEFORE = 150.0F;
     constexpr float CONTENT = 242.0F;
+    // The letter gap at scale 1: one point (inspector_model.hpp says why), and the unit gap is the inner spacing.
+    constexpr float LETTER_GAP = 1.0F;
+    CHECK(ed::AXIS_LETTER_GAP_DP == LETTER_GAP);
 
     SUBCASE("the label column's floor is 4 x the font: 64 at body 16") {
         // A Transform-only entity's widest label, "position" (44.38 -> 45), plus both cell paddings is 57 --
@@ -594,8 +597,8 @@ TEST_CASE("theme: the Inspector's axis box holds a three-decimal value at these 
     }
 
     SUBCASE("the box at the measured cell holds the value with a point to spare") {
-        // 36.667 here; ImGui truncates an item width to a whole point, so it lays the box out at 36 (I289).
-        const float box = ed::inspectorAxisBoxWidth(CELL, LETTER, INNER);
+        // 38.667 here; ImGui truncates an item width to a whole point, so it lays the box out at 38.
+        const float box = ed::inspectorAxisBoxWidth(CELL, LETTER, LETTER_GAP, INNER);
         CAPTURE(box);
         CHECK(box >= THREE_DECIMALS + 1.0F);
         // ANTI-VACUITY -- the defect, reproduced: the budget before this fix (five WHOLE gaps), in the cell
@@ -605,34 +608,61 @@ TEST_CASE("theme: the Inspector's axis box holds a three-decimal value at these 
         CHECK(before < THREE_DECIMALS);
     }
 
-    SUBCASE("the budget fills the cell: three letters, three half gaps, two whole gaps and three boxes") {
-        const float box = ed::inspectorAxisBoxWidth(CELL, LETTER, INNER);
-        const float row = (3.0F * LETTER) + (3.0F * (INNER * 0.5F)) + (2.0F * INNER) + (3.0F * box);
+    SUBCASE("a five-character value fits from the content width the branch point needed: 225") {
+        // DERIVED, not measured: the branch point drew ProggyClean at 13 (every character 7 wide, so "0.000"
+        // is 35), with 4-point inner spacing and cell padding, and the Cube's column 63 + 2 x 4 = 71. Its box
+        // was (content - 71 - 8 - 3 x 7 - 5 x 4) / 3 = (content - 120) / 3, so "0.000" was whole from content
+        // 225 -- a 241-wide dock, I289's window. Here the cell at that content is 225 - 12 - 75 = 138.
+        constexpr float BRANCH_POINT_CONTENT = 225.0F;
+        constexpr float BRANCH_POINT_BOX = (BRANCH_POINT_CONTENT - 120.0F) / 3.0F;
+        CHECK(BRANCH_POINT_BOX == 35.0F);
+        constexpr float CELL_AT_THRESHOLD = BRANCH_POINT_CONTENT - (2.0F * CELL_PADDING) - 75.0F;
+        // 33 exactly: every input is a whole point (CalcTextSize rounds widths up), so ImGui lays out 33.
+        const float box = ed::inspectorAxisBoxWidth(CELL_AT_THRESHOLD, LETTER, LETTER_GAP, INNER);
+        CAPTURE(box);
+        CHECK(box == 33.0F);
+        CHECK(std::trunc(box) >= THREE_DECIMALS);
+        // ANTI-VACUITY: with half the inner spacing as the letter gap -- this fix's first round -- the box
+        // there is 31, and "0.000" clipped in a dock the branch point showed it whole in.
+        const float halfGap = ed::inspectorAxisBoxWidth(CELL_AT_THRESHOLD, LETTER, INNER * 0.5F, INNER);
+        CAPTURE(halfGap);
+        CHECK(std::trunc(halfGap) < THREE_DECIMALS);
+    }
+
+    SUBCASE("the budget fills the cell: three letters, three letter gaps, two unit gaps and three boxes") {
+        const float box = ed::inspectorAxisBoxWidth(CELL, LETTER, LETTER_GAP, INNER);
+        const float row = (3.0F * LETTER) + (3.0F * LETTER_GAP) + (2.0F * INNER) + (3.0F * box);
         CAPTURE(row);
         CHECK(row == doctest::Approx(CELL).epsilon(1e-6));
+        // The two gaps are distinct parameters: swapping them moves the answer, so neither is ignored.
+        const float swapped = ed::inspectorAxisBoxWidth(CELL, LETTER, INNER, LETTER_GAP);
+        CHECK(swapped != box);
     }
 
     SUBCASE("total: NaN, the infinities, zero, negatives and an overflow all answer a finite width >= 1") {
-        static_assert(noexcept(ed::inspectorAxisBoxWidth(0.0F, 0.0F, 0.0F)));
+        static_assert(noexcept(ed::inspectorAxisBoxWidth(0.0F, 0.0F, 0.0F, 0.0F)));
         // From quiet_NaN(), never a signalling one: MSVC quiets an sNaN that passes through a float lvalue.
         constexpr float NAN_F = std::numeric_limits<float>::quiet_NaN();
         constexpr float INF_F = std::numeric_limits<float>::infinity();
         constexpr float MAX_F = std::numeric_limits<float>::max();
         for (const float bad : {NAN_F, INF_F, -INF_F}) {
             CAPTURE(bad);
-            CHECK(ed::inspectorAxisBoxWidth(bad, LETTER, INNER) == 1.0F);
-            CHECK(ed::inspectorAxisBoxWidth(CELL, bad, INNER) == 1.0F);
-            CHECK(ed::inspectorAxisBoxWidth(CELL, LETTER, bad) == 1.0F);
+            CHECK(ed::inspectorAxisBoxWidth(bad, LETTER, LETTER_GAP, INNER) == 1.0F);
+            CHECK(ed::inspectorAxisBoxWidth(CELL, bad, LETTER_GAP, INNER) == 1.0F);
+            CHECK(ed::inspectorAxisBoxWidth(CELL, LETTER, bad, INNER) == 1.0F);
+            CHECK(ed::inspectorAxisBoxWidth(CELL, LETTER, LETTER_GAP, bad) == 1.0F);
         }
-        CHECK(ed::inspectorAxisBoxWidth(MAX_F, -MAX_F, 0.0F) == 1.0F);     // 3 x -MAX overflows to -inf
-        CHECK(ed::inspectorAxisBoxWidth(0.0F, 0.0F, 0.0F) == 1.0F);        // a zero-width cell
-        CHECK(ed::inspectorAxisBoxWidth(-250.0F, LETTER, INNER) == 1.0F);  // a negative cell
+        CHECK(ed::inspectorAxisBoxWidth(MAX_F, -MAX_F, 0.0F, 0.0F) == 1.0F);           // 3 x -MAX overflows
+        CHECK(ed::inspectorAxisBoxWidth(0.0F, 0.0F, 0.0F, 0.0F) == 1.0F);              // a zero-width cell
+        CHECK(ed::inspectorAxisBoxWidth(-250.0F, LETTER, LETTER_GAP, INNER) == 1.0F);  // a negative cell
         // A negative letter or gap is finite arithmetic: it widens the box, and the answer stays finite.
-        const float negativeLetter = ed::inspectorAxisBoxWidth(CELL, -LETTER, INNER);
-        const float negativeGap = ed::inspectorAxisBoxWidth(CELL, LETTER, -INNER);
-        CHECK(std::isfinite(negativeLetter));
-        CHECK(negativeLetter >= 1.0F);
-        CHECK(std::isfinite(negativeGap));
-        CHECK(negativeGap >= 1.0F);
+        const float negativeLetter = ed::inspectorAxisBoxWidth(CELL, -LETTER, LETTER_GAP, INNER);
+        const float negativeLetterGap = ed::inspectorAxisBoxWidth(CELL, LETTER, -LETTER_GAP, INNER);
+        const float negativeUnitGap = ed::inspectorAxisBoxWidth(CELL, LETTER, LETTER_GAP, -INNER);
+        for (const float widened : {negativeLetter, negativeLetterGap, negativeUnitGap}) {
+            CAPTURE(widened);
+            CHECK(std::isfinite(widened));
+            CHECK(widened >= 1.0F);
+        }
     }
 }

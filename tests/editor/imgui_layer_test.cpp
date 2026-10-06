@@ -87,9 +87,10 @@
 #include <filesystem>
 #include <format>  // task 3.2.2, I65: truncatedFbxText()'s programmatic 257-node fixture
 #include <fstream>
-#include <limits>   // task 3.6.3 regression, I107: a NaN press must be owned by nothing
-#include <memory>   // task 2.4.1: std::make_unique<TransformCommand>
-#include <numbers>  // task E.6.1 (I280): the angled-header angle, ImGui's own expression
+#include <initializer_list>  // task E.6.1 (I289): std::max over the three axis letters
+#include <limits>            // task 3.6.3 regression, I107: a NaN press must be owned by nothing
+#include <memory>            // task 2.4.1: std::make_unique<TransformCommand>
+#include <numbers>           // task E.6.1 (I280): the angled-header angle, ImGui's own expression
 #include <optional>
 #include <ostream>  // MSVC alone needs the complete type to stringify a string_view inside a CHECK
 #include <regex>    // task E.6.1 (I286): the one style writer, as a set claim
@@ -22730,29 +22731,53 @@ TEST_CASE("editor: the icon consumers, as source text (task E.6.1, I285)") {
 // The pass measured the X/Y/Z boxes clipping "0.000" to "0.00" in a 258-wide right dock where the branch
 // point showed it whole. TH11 holds the arithmetic at tier 0; this case holds what ImGui LAID OUT.
 TEST_CASE("editor: the Inspector's axis boxes hold a three-decimal value (task E.6.1, I289)") {
+    // NO GPU first: drawAxisRow takes its box width from the pure budget, handed the gaps its SameLine calls
+    // spell -- the slack arms below see a disagreement only on a lane wide enough to draw the row.
+    const std::vector<std::string> panel = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/inspector_panel.cpp");
+    REQUIRE(panel.size() > 100U);
+    CHECK(countLinesContaining(panel, "inspectorAxisBoxWidth(") == 1U);
+    CHECK(countLinesContaining(panel, "boxWidth = inspectorAxisBoxWidth(total, letterWidth, letterGap, gap)") == 1U);
+    CHECK(countLinesContaining(panel, "SameLine(0.0F, letterGap)") == 1U);
+    CHECK(countLinesContaining(panel, "SameLine(0.0F, gap)") == 1U);
+    CHECK(countLinesContaining(panel, "letterGap = AXIS_LETTER_GAP_DP * currentUiScale()") == 1U);
+
     // What "0.000" occupies in Body at scale 1 -- ImGui's own advances, measured, never a restated literal.
-    // DragScalar draws its value with RenderTextClipped over the bare frame (no frame padding), left-aligned
+    // DragScalar draws its value with RenderTextClipped over the bare frame (no frame padding), centred
     // and clipped once it is wider, so a box at least this wide shows the value whole.
-    const std::array<char32_t, 2> points{U'0', U'.'};  // "0.000" is four of the first and one of the second
+    const std::array<char32_t, 5> points{U'0', U'.', U'X', U'Y', U'Z'};  // "0.000" is 4 x '0' + '.'
     const EditorFontMeasurement body = measureEditorFonts(WITH_ICONS, EditorFontFace::Body, points, 1.0F);
     REQUIRE(body.ok);
-    REQUIRE(body.glyphs.size() == 2U);
-    REQUIRE(body.glyphs[0].found);
-    REQUIRE(body.glyphs[1].found);
+    REQUIRE(body.glyphs.size() == points.size());
+    for (const MeasuredGlyph& glyph : body.glyphs) {
+        REQUIRE(glyph.found);
+    }
     const float threeDecimals = (4.0F * body.glyphs[0].advanceX) + body.glyphs[1].advanceX;
     CAPTURE(threeDecimals);
     REQUIRE(threeDecimals > 0.0F);
+    // The row's own slack budget: drawAxisRow budgets three of the WIDEST letter as CalcTextSize measures it
+    // (IM_TRUNC(w + 0.99999f), a whole point) while each Text item takes its own width, and ImGui truncates
+    // each of the three boxes to a whole point -- so the row as drawn ends at most 3 points, plus the letters'
+    // difference from the widest, inside its cell. A box narrower than the budget leaves more.
+    std::array<float, 3> letters{};
+    for (std::size_t i = 0; i < letters.size(); ++i) {
+        letters[i] = std::trunc(body.glyphs[2U + i].advanceX + 0.99999F);
+    }
+    const float widestLetter = std::max({letters[0], letters[1], letters[2]});
+    const float letterSlack = (3.0F * widestLetter) - (letters[0] + letters[1] + letters[2]);
+    CAPTURE(widestLetter);
+    CAPTURE(letterSlack);
 
     engine::platform::Context ctx;
     if (!ctx.valid()) {
         AERO_SKIP_OR_FAIL("no platform context");
     }
-    // 1294 wide, because that is the width whose DEFAULT layout builds the 258-wide right dock the pass
-    // measured: buildDefaultLayout gives the left dock 20% and then the right 25% of what is left, each split
-    // truncated after the 2-point separator, so trunc(1292 x 0.2) = 258 leaves 1034 and 1032 - trunc(1032 x
-    // 0.75) = 258. A 1080-wide window builds a 216-wide dock (content 200, cell 108, measured).
+    // 1206 wide, because that is the width whose DEFAULT layout builds a 241-wide right dock -- content 225,
+    // the narrowest at which the branch point showed "0.000" whole (TH11 derives it): buildDefaultLayout gives
+    // the left dock 20% and then the right 25% of what is left, each split truncated after the 2-point
+    // separator, so trunc(1204 x 0.2) = 240 leaves 964 and 962 - trunc(962 x 0.75) = 241. (1294 builds the
+    // 258-wide dock the pass measured; a 1080-wide window builds a 216-wide one, content 200.)
     std::optional<engine::platform::Window> window =
-        ctx.createWindow({.title = "inspector axis boxes i289", .width = 1294, .height = 1600});
+        ctx.createWindow({.title = "inspector axis boxes i289", .width = 1206, .height = 1600});
     REQUIRE(window.has_value());
     std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
     if (!device) {
@@ -22806,19 +22831,27 @@ TEST_CASE("editor: the Inspector's axis boxes hold a three-decimal value (task E
         CHECK(slack == 0.0F);
     } else {
         REQUIRE(box > 0.0F);  // an axis row really drew this frame
-        // THE GEOMETRY GATE: 242 is the measured content width of the 258-wide dock (258 - 2 x 8 of
-        // window padding). The claim is made only there or wider, because CI's macOS runner delivers
-        // windows narrower than requested (I233, I231) and a narrower dock has a narrower cell by design.
-        constexpr float MEASURED_CONTENT = 242.0F;
-        if (content >= MEASURED_CONTENT) {
-            CHECK(box >= threeDecimals);
-            // The row as DRAWN ends inside its cell, so the SameLine gaps and inspectorAxisBoxWidth's
-            // budget agree. Half a point absorbs the float sums of three boxes and five gaps; a disagreement
-            // costs whole points (a whole gap where the budget has a half is 3 per letter, 9 per row).
+        // THE ROW FILLS ITS CELL, at ANY width where the budget is above its floor of 1: the SameLine gaps
+        // and inspectorAxisBoxWidth's budget agree. Below, the last box overruns the cell (a gap drawn wider
+        // than budgeted); above, the boxes are narrower than the cell pays for (a budget with a gap the row
+        // does not draw). Half a point absorbs the float sums of three boxes and five gaps.
+        if (box >= 2.0F) {
             CHECK(slack >= -0.5F);
+            CHECK(slack < 3.0F + letterSlack + 0.5F);
         } else {
-            MESSAGE("I289: no fit asserted, the content is " << content << " < " << MEASURED_CONTENT);
-            WARN(content >= MEASURED_CONTENT);
+            MESSAGE("I289: the box is at its floor (" << box << "), so the row cannot fill its cell");
+            WARN(box >= 2.0F);
+        }
+        // THE GEOMETRY GATE, for the fit alone: 225 is the content of the 241-wide dock (241 - 2 x 8 of
+        // window padding), the branch point's threshold. The claim is made only there or wider, because CI's
+        // macOS runner delivers windows narrower than requested (I233, I231), and a narrower dock has a
+        // narrower cell by design.
+        constexpr float THRESHOLD_CONTENT = 225.0F;
+        if (content >= THRESHOLD_CONTENT) {
+            CHECK(box >= threeDecimals);
+        } else {
+            MESSAGE("I289: no fit asserted, the content is " << content << " < " << THRESHOLD_CONTENT);
+            WARN(content >= THRESHOLD_CONTENT);
         }
     }
 

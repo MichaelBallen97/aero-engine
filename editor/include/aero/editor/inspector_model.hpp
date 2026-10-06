@@ -199,14 +199,20 @@ struct AxisResetAction {
 [[nodiscard]] float inspectorLabelColumnWidth(float widestLabelPx, float cellPaddingPx, float fontSizePx,
                                               float availableWidthPx) noexcept;
 
+// task E.6.1: the gap between an axis letter and ITS OWN box, in dp (drawAxisRow multiplies it by the UI
+// scale once). One point: the letter labels the box beside it, and the mock goes further and draws it INSIDE
+// the box (E.6.3's restyle). At this width the row shows a five-character value ("0.000", "1.000") whole from
+// the same content width as the branch point did -- 225, TH11 and I289 -- because IBM Plex's digits at 16 are
+// wider than ProggyClean's at 13, and every point the gaps keep is a point a box cannot have.
+inline constexpr float AXIS_LETTER_GAP_DP = 1.0F;
+
 // task E.6.1: the width of each of an axis row's three boxes, as ARITHMETIC. The row is
-//   [letter][gap/2][box] [gap] [letter][gap/2][box] [gap] [letter][gap/2][box]
-// with gap = ItemInnerSpacing.x: a letter labels ITS OWN box, so the pair reads as one unit half a gap apart,
-// and only the two gaps BETWEEN units stay whole. So 3*letter + 3*(gap/2) + 2*gap + 3*box == the cell, and
-//   box = max((cellWidth - 3*letterWidth - 3*(itemInnerSpacing/2) - 2*itemInnerSpacing) / 3, 1).
+//   [letter][letterGap][box] [unitGap] [letter][letterGap][box] [unitGap] [letter][letterGap][box]
+// so 3*letter + 3*letterGap + 2*unitGap + 3*box == the cell, and
+//   box = max((cellWidth - 3*letterWidth - 3*letterGap - 2*unitGap) / 3, 1).
+// The two gaps are PARAMETERS so drawAxisRow passes this budget the very values its SameLine calls spell.
 // TOTAL: a NaN or an infinity in any input, or a sum that overflows, answers the floor, 1 -- std::max(NaN, 1)
-// is NaN, and a NaN width would reach SetNextItemWidth. Pure so TH11 reaches it from tier 0; drawAxisRow
-// measures the three inputs with ImGui, calls this, and spells the same two gaps in its SameLine calls.
-[[nodiscard]] float inspectorAxisBoxWidth(float cellWidth, float letterWidth, float itemInnerSpacing) noexcept;
+// is NaN, and a NaN width would reach SetNextItemWidth. Pure so TH11 reaches it from tier 0.
+[[nodiscard]] float inspectorAxisBoxWidth(float cellWidth, float letterWidth, float letterGap, float unitGap) noexcept;
 
 }  // namespace engine::editor

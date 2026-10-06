@@ -517,13 +517,12 @@ float inspectorLabelColumnWidth(float widestLabelPx, float cellPaddingPx, float 
     return std::clamp(widestLabelPx + (2.0F * cellPaddingPx), floorPx, ceilPx);
 }
 
-float inspectorAxisBoxWidth(float cellWidth, float letterWidth, float itemInnerSpacing) noexcept {
-    // [letter][gap/2][box] x3 with a whole gap between the units: 3*letter + 3*(gap/2) + 2*gap + 3*box ==
-    // the cell. The half gap is spelled exactly as drawAxisRow spells it, so the budget fills the cell; ImGui
-    // then truncates each box to a whole point (CalcItemWidth, imgui.cpp:12323), so the row as drawn ends
-    // under 3 points short of the cell's edge and never past it.
-    const float letterGap = itemInnerSpacing * 0.5F;
-    const float gaps = (3.0F * letterGap) + (2.0F * itemInnerSpacing);
+float inspectorAxisBoxWidth(float cellWidth, float letterWidth, float letterGap, float unitGap) noexcept {
+    // [letter][letterGap][box] x3 with a unit gap between the units: 3*letter + 3*letterGap + 2*unitGap +
+    // 3*box == the cell, with the gaps drawAxisRow's own SameLine calls spell, so the budget fills the cell;
+    // ImGui then truncates each box to a whole point (CalcItemWidth, imgui.cpp:12323), so the row as drawn
+    // ends under 3 points short of the cell's edge and never past it.
+    const float gaps = (3.0F * letterGap) + (2.0F * unitGap);
     const float budget = (cellWidth - (3.0F * letterWidth) - gaps) / 3.0F;
     // FINITENESS FIRST: std::max(NaN, 1.0F) is NaN, as std::clamp(NaN, ...) is on libc++, so a NaN or an
     // infinity in any input -- or a sum that overflows -- would otherwise reach SetNextItemWidth.

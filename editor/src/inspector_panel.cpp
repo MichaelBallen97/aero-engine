@@ -14,8 +14,9 @@
 #include <aero/editor/thumbnail_cache.hpp>
 #include <aero/scene/world.hpp>
 
-#include "asset_picker.hpp"  // task E.3.3 -- the ONE asset-reference field widget
-#include "editor_fonts.hpp"  // task E.6.1: editorFonts().strong
+#include "asset_picker.hpp"     // task E.3.3 -- the ONE asset-reference field widget
+#include "editor_fonts.hpp"     // task E.6.1: editorFonts().strong
+#include "editor_theme_ui.hpp"  // task E.6.1: currentUiScale(), for the axis row's letter gap
 #include "text_input.hpp"
 #include "thumbnail_service.hpp"
 
@@ -351,15 +352,15 @@ bool InspectorPanel::drawAxisRow(PanelContext& context, Entity primary, const Co
         const std::string_view label = axisRowLabel(i);
         letterWidth = std::max(letterWidth, ImGui::CalcTextSize(label.data(), label.data() + label.size()).x);
     }
-    // task E.6.1: [letter][gap/2][box] x3, with a WHOLE gap between the units: a letter labels its own box,
-    // so the pair reads as one unit half a gap apart. 3*letter + 3*(gap/2) + 2*gap + 3*box == the cell --
-    // the budget is inspector_model's pure inspectorAxisBoxWidth (TH11), and the two SameLine gaps below
-    // must spell the same halves, or the last box overruns the cell (I289's slack arm). Before, every gap
-    // was whole (3*letter + 5*gap + 3*box); at the theme's 6-point spacing, and with the label column's old
-    // 5 x floor, that clipped "0.000" in a 258-wide dock.
-    const float letterGap = gap * 0.5F;
+    // task E.6.1: [letter][letterGap][box] x3, with a WHOLE gap between the units: a letter labels its own
+    // box, so the pair reads as one unit, AXIS_LETTER_GAP_DP apart at the UI scale. 3*letter + 3*letterGap +
+    // 2*gap + 3*box == the cell -- the budget is inspector_model's pure inspectorAxisBoxWidth (TH11), handed
+    // the two gaps the SameLine calls below spell, so the last box cannot overrun the cell (I289's slack
+    // arms). Before, every gap was whole (3*letter + 5*gap + 3*box); at the theme's 6-point spacing, and with
+    // the label column's old 5 x floor, that clipped "0.000" in a 258-wide dock.
+    const float letterGap = AXIS_LETTER_GAP_DP * currentUiScale();
     const float total = ImGui::GetContentRegionAvail().x;
-    const float boxWidth = inspectorAxisBoxWidth(total, letterWidth, gap);
+    const float boxWidth = inspectorAxisBoxWidth(total, letterWidth, letterGap, gap);
 
     bool edited = false;
     ImGui::BeginGroup();  // 1:1 with EndGroup below -- nothing between them can return
@@ -381,7 +382,7 @@ bool InspectorPanel::drawAxisRow(PanelContext& context, Entity primary, const Co
         // whole cell's width.
         ImGui::TextUnformatted(label.data(), label.data() + label.size());
         ImGui::PopStyleColor();  // 1:1 with PushStyleColor
-        // task E.6.1: the letter and ITS box are one unit, half a gap apart.
+        // task E.6.1: the letter and ITS box are one unit, AXIS_LETTER_GAP_DP apart.
         ImGui::SameLine(0.0F, letterGap);
         ImGui::SetNextItemWidth(boxWidth);
         // nullptr for p_min/p_max/format is EXACTLY DragFloat3's behaviour: it passes two pointers to
