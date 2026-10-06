@@ -302,7 +302,42 @@ TEST_CASE("theme: every ImGuiStyle size member is stated (task E.6.1, TH5)") {
     // (3 after dockingNodeHasCloseButton, 1 after antiAliasedFill), alignment 4 on every target. A member
     // added without a row below, or removed, is a build error here rather than a silent gap.
     static_assert(sizeof(ed::ThemeMetrics) == 308U);
+    // THE TWO PADDING GAPS, pinned by offset: sizeof cannot see a member that lands IN padding, so each bool
+    // and the float after it are pinned. Derived from the struct: the 53 members before
+    // dockingNodeHasCloseButton are 38 floats and 15 Dp2s, 38 x 4 + 15 x 8 = 272; that bool is followed by 3
+    // padding bytes (276), then two floats (280, 284); the three bools sit at 284, 285 and 286, followed by 1
+    // padding byte (288); five floats then end the struct at 288 + 5 x 4 = 308.
+    static_assert(offsetof(ed::ThemeMetrics, dockingNodeHasCloseButton) == 272U);
+    static_assert(offsetof(ed::ThemeMetrics, dockingSeparatorSize) == 276U);  // 272 + 1 + 3 padding
+    static_assert(offsetof(ed::ThemeMetrics, antiAliasedLines) == 284U);      // after mouseCursorScale at 280
+    static_assert(offsetof(ed::ThemeMetrics, antiAliasedLinesUseTex) == 285U);
+    static_assert(offsetof(ed::ThemeMetrics, antiAliasedFill) == 286U);
+    static_assert(offsetof(ed::ThemeMetrics, curveTessellationTol) == 288U);  // 286 + 1 + 1 padding
     const ed::ThemeMetrics& m = ed::EDITOR_THEME.metrics;
+    // ... but a member that lands INSIDE a gap moves no offset at all: a bool after antiAliasedFill takes
+    // the free byte at 287 and every pin above, sizeof included, still holds (measured). So the member
+    // COUNT is pinned too: this binding names exactly 64 members, and a 65th is a build error. The names
+    // are the members' own, in declaration order, for reading -- the binding checks the count, and the
+    // CHECK below that its LAST name is the last member (which also keeps the binding from being unused).
+    const auto& [alpha, disabledAlpha, windowPadding, windowRounding, windowBorderSize,           // 5
+                 windowBorderHoverPadding, windowMinSize, windowTitleAlign, childRounding,        // 9
+                 childBorderSize, popupRounding, popupBorderSize, framePadding, frameRounding,    // 14
+                 frameBorderSize, itemSpacing, itemInnerSpacing, cellPadding, touchExtraPadding,  // 19
+                 indentSpacing, columnsMinSpacing, scrollbarSize, scrollbarRounding,              // 23
+                 scrollbarPadding, grabMinSize, grabRounding, logSliderDeadzone, imageRounding,   // 28
+                 imageBorderSize, tabRounding, tabBorderSize, tabMinWidthBase,                    // 32
+                 tabMinWidthShrink, tabCloseButtonMinWidthSelected,                               // 34
+                 tabCloseButtonMinWidthUnselected, tabBarBorderSize, tabBarOverlineSize,          // 37
+                 tableAngledHeadersAngleDegrees, tableAngledHeadersTextAlign, treeLinesSize,      // 40
+                 treeLinesRounding, dragDropTargetRounding, dragDropTargetBorderSize,             // 43
+                 dragDropTargetPadding, colorMarkerSize, buttonTextAlign, selectableTextAlign,    // 47
+                 separatorSize, separatorTextBorderSize, separatorTextAlign,                      // 50
+                 separatorTextPadding, displayWindowPadding, displaySafeAreaPadding,              // 53
+                 dockingNodeHasCloseButton, dockingSeparatorSize, mouseCursorScale,               // 56
+                 antiAliasedLines, antiAliasedLinesUseTex, antiAliasedFill,                       // 59
+                 curveTessellationTol, circleTessellationMaxError, hoverStationaryDelay,          // 62
+                 hoverDelayShort, hoverDelayNormal] = m;                                          // 64
+    CHECK(&hoverDelayNormal == &m.hoverDelayNormal);
     CHECK(m.alpha == 1.0F);
     CHECK(m.disabledAlpha == 0.60F);
     CHECK(m.windowPadding.x == 8.0F);
