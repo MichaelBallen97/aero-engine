@@ -22336,6 +22336,33 @@ struct LevelColorRow {
     engine::editor::Srgb8 expected;
 };
 
+// How many times the code reads EDITOR_THEME.palette.<role>, the role ending at a non-identifier byte -- so
+// "text" never counts a "textMuted" read. Every READ, not every line: two reads on one line count twice. An
+// empty role counts every palette read of any role.
+[[nodiscard]] std::size_t countPaletteReads(const std::vector<std::string>& code, std::string_view role) {
+    constexpr std::string_view PREFIX = "EDITOR_THEME.palette.";
+    const auto identifierByte = [](unsigned char c) { return std::isalnum(c) != 0 || c == '_'; };
+    std::size_t reads = 0;
+    for (const std::string_view line : code) {
+        for (std::size_t at = line.find(PREFIX); at != std::string_view::npos;
+             at = line.find(PREFIX, at + PREFIX.size())) {
+            const std::size_t begin = at + PREFIX.size();
+            std::size_t end = begin;
+            while (end < line.size() && identifierByte(static_cast<unsigned char>(line[end]))) {
+                ++end;
+            }
+            reads += (role.empty() || line.substr(begin, end - begin) == role) ? 1U : 0U;
+        }
+    }
+    return reads;
+}
+
+struct RoleReads {
+    std::string_view file;
+    std::string_view role;
+    std::size_t reads;
+};
+
 }  // namespace
 
 TEST_CASE("editor: the panels read their roles from the theme (task E.6.1, I287)") {
@@ -22369,6 +22396,29 @@ TEST_CASE("editor: the panels read their roles from the theme (task E.6.1, I287)
         "console_panel.cpp", "material_panel.cpp",      "import_details_panel.cpp",   "project_ui.cpp",
         "asset_tile.cpp",    "asset_browser_panel.cpp", "project_settings_panel.cpp",
     };
+    // The roles are READ, not merely the literals gone -- each (file, role) at its EXACT count of reads
+    // in the comment-stripped code. One read swapped back to an ImGui slot (S25's site on
+    // GetStyleColorVec4(ImGuiCol_Text)) states no literal and names no TextDisabled, and a "> 0" stays
+    // green while any other read of that role remains: only the count moves. A set claim needs a set
+    // assertion, so each file's TOTAL of palette reads is pinned as well, and a read of a role a file has
+    // no row for is red too. Counted from the code at E.6.1's second code-review round.
+    constexpr std::array<RoleReads, 14> ROLE_READS{{
+        {"console_panel.cpp", "critical", 1U},   // logLevelColor's Critical arm
+        {"console_panel.cpp", "error", 1U},      // its Error arm
+        {"console_panel.cpp", "text", 2U},       // its Info/Off arm and the fallback after the switch
+        {"console_panel.cpp", "textMuted", 2U},  // its Trace/Debug arm and the timestamp column
+        {"console_panel.cpp", "warning", 1U},    // its Warn arm
+        {"material_panel.cpp", "error", 3U},
+        {"material_panel.cpp", "textMuted", 1U},  // the status line's Disabled arm (D16)
+        {"material_panel.cpp", "warning", 6U},
+        {"import_details_panel.cpp", "error", 6U},
+        {"project_ui.cpp", "error", 2U},
+        {"asset_tile.cpp", "text", 1U},  // one read, held for both captions
+        {"asset_tile.cpp", "textMuted", 1U},
+        {"asset_browser_panel.cpp", "textMuted", 1U},
+        {"project_settings_panel.cpp", "textMuted", 1U},
+    }};
+    std::size_t rowsRead = 0;
     for (const std::string_view file : PANELS) {
         CAPTURE(file);
         const std::string path = std::string(AERO_EDITOR_SRC_DIR "/").append(file);
@@ -22379,37 +22429,30 @@ TEST_CASE("editor: the panels read their roles from the theme (task E.6.1, I287)
             CHECK_FALSE(anyLineMatches(code, literals[k]));
         }
         CHECK(countLinesContaining(code, "ImGuiCol_TextDisabled") == 0U);
+        std::size_t listed = 0;
+        for (const RoleReads& row : ROLE_READS) {
+            if (row.file == file) {
+                CAPTURE(row.role);
+                CHECK(countPaletteReads(code, row.role) == row.reads);
+                listed += row.reads;
+                ++rowsRead;
+            }
+        }
+        CHECK(listed > 0U);                            // every one of the seven reads a role
+        CHECK(countPaletteReads(code, "") == listed);  // ... and no role it has no row for
     }
-
-    // The roles are READ, not merely the literals gone.
-    const std::string materialPath = AERO_EDITOR_SRC_DIR "/material_panel.cpp";
-    const std::vector<std::string> material = editorSourceCodeLines(materialPath);
-    CHECK(countLinesContaining(material, "EDITOR_THEME.palette.error") > 0U);
-    CHECK(countLinesContaining(material, "EDITOR_THEME.palette.warning") > 0U);
-    const std::vector<std::string> console = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/console_panel.cpp");
-    CHECK(countLinesContaining(console, "logLevelColor(") > 0U);
-    CHECK(countLinesContaining(console, "EDITOR_THEME.palette.textMuted") > 0U);
-    // ... and in the five other panels, each the role it draws with: a read swapped back to an ImGui slot
-    // (S25's site on GetStyleColorVec4(ImGuiCol_Text)) states no literal and names no TextDisabled, so only
-    // the role's ABSENCE can see it. `.text)` keeps textMuted from standing in for asset_tile's text role.
-    struct RoleRead {
-        std::string_view file;
-        std::string_view role;
-    };
-    constexpr std::array<RoleRead, 6> ROLE_READS{{
-        {"asset_browser_panel.cpp", "EDITOR_THEME.palette.textMuted"},
-        {"asset_tile.cpp", "EDITOR_THEME.palette.text)"},
-        {"asset_tile.cpp", "EDITOR_THEME.palette.textMuted"},
-        {"project_ui.cpp", "EDITOR_THEME.palette.error"},
-        {"import_details_panel.cpp", "EDITOR_THEME.palette.error"},
-        {"project_settings_panel.cpp", "EDITOR_THEME.palette.textMuted"},
-    }};
-    for (const RoleRead& read : ROLE_READS) {
-        CAPTURE(read.file);
-        CAPTURE(read.role);
-        const std::string path = std::string(AERO_EDITOR_SRC_DIR "/").append(read.file);
-        CHECK(countLinesContaining(editorSourceCodeLines(path), read.role) > 0U);
+    CHECK(rowsRead == ROLE_READS.size());  // no row names a file outside the seven, so none is skipped
+    // The Console's levels reach the draw through logLevelColor: its definition and its one call.
+    std::size_t levelColorCalls = 0;
+    for (const std::string& line : editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/console_panel.cpp")) {
+        levelColorCalls += countOccurrences(line, "logLevelColor(");
     }
+    CHECK(levelColorCalls == 2U);
+    // ANTI-VACUITY for the counter: a role ends at an identifier boundary, and the empty role counts all.
+    const std::vector<std::string> probe{"f(EDITOR_THEME.palette.textMuted, EDITOR_THEME.palette.text);"};
+    CHECK(countPaletteReads(probe, "text") == 1U);
+    CHECK(countPaletteReads(probe, "textMuted") == 1U);
+    CHECK(countPaletteReads(probe, "") == 2U);
 
     // ANTI-VACUITY: the literal patterns match the spellings they exist to refuse.
     CHECK(std::regex_search(std::string("ImVec4( 1.0F, 0.4F, 0.4F, 1.0F)"), literals[0]));
