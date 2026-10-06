@@ -32,24 +32,31 @@ namespace {
     return color;
 }
 
-// Every THICKNESS member ScaleAllSizes truncates (imgui.cpp:1607-1648 at the pinned 1.92.8), paired with the
-// theme member it is built from -- the ONE spelling of the set. ScaleAllSizes rounds each size DOWN to a
-// whole point, so at any UI scale in [0.5, 1) a 1-dp border or line becomes 0 and ImGui then draws no border
-// and no separator at all -- the case imgui.cpp:1599-1600 warns about ("Consider not calling this if your
-// initial scale factor if <1.0"). A scale below 1 is reachable (X11 at Xft.dpi 90 resolves to 0.95, and
-// UI_SCALE_MIN is 0.5), so buildEditorStyle floors each of these at 1 when the THEME states it as >= 1; a
-// thickness the theme states as 0 stays 0. At a scale >= 1 the floor changes nothing.
-struct FlooredThickness {
+// THE FLOOR: no member ScaleAllSizes scales whose theme value is >= 1 is ever truncated below 1.
+// ScaleAllSizes (imgui.cpp:1602-1651 at the pinned 1.92.8) rounds each size DOWN to a whole point, so at any
+// UI scale in [0.5, 1) a theme value in [1, 2) becomes 0 -- the case imgui.cpp:1599-1600 warns about
+// ("Consider not calling this if your initial scale factor if <1.0"). A scale below 1 is reachable (X11 at
+// Xft.dpi 90 resolves to 0.95, and UI_SCALE_MIN is 0.5), and a 0 there is a defect rather than a smaller
+// size: a 1-dp border or separator vanishes, a 0 MouseCursorScale puts every tooltip and drag preview under
+// the cursor (imgui.cpp:12777, :13503-13518), and a 0 TabMinWidthBase drops the minimum tab width. So
+// buildEditorStyle floors each member below at 1 when the THEME states it as >= 1; one the theme states as 0
+// stays 0, and at a scale >= 1 the floor changes nothing. The set is every scaled scalar whose theme value is
+// in [1, 2) -- the members that CAN truncate below 1 at 0.5 or more -- plus the borders and lines that held
+// the floor first, each paired with the theme member it is built from: the ONE spelling of the set. No Dp2
+// component is in [1, 2) today. I280's universal reads every scaled member at 0.5, 0.75 and 0.95, so a
+// theme change that puts a member there is red until it joins this table.
+struct FlooredSize {
     float ImGuiStyle::*style;
     float ThemeMetrics::*theme;
 };
-constexpr std::array<FlooredThickness, 13> FLOORED_THICKNESSES{{
+constexpr std::array<FlooredSize, 15> FLOORED_SIZES{{
     {&ImGuiStyle::WindowBorderSize, &ThemeMetrics::windowBorderSize},
     {&ImGuiStyle::ChildBorderSize, &ThemeMetrics::childBorderSize},
     {&ImGuiStyle::PopupBorderSize, &ThemeMetrics::popupBorderSize},
     {&ImGuiStyle::FrameBorderSize, &ThemeMetrics::frameBorderSize},
     {&ImGuiStyle::ImageBorderSize, &ThemeMetrics::imageBorderSize},
     {&ImGuiStyle::TabBorderSize, &ThemeMetrics::tabBorderSize},
+    {&ImGuiStyle::TabMinWidthBase, &ThemeMetrics::tabMinWidthBase},
     {&ImGuiStyle::TabBarBorderSize, &ThemeMetrics::tabBarBorderSize},
     {&ImGuiStyle::TabBarOverlineSize, &ThemeMetrics::tabBarOverlineSize},
     {&ImGuiStyle::TreeLinesSize, &ThemeMetrics::treeLinesSize},
@@ -57,6 +64,7 @@ constexpr std::array<FlooredThickness, 13> FLOORED_THICKNESSES{{
     {&ImGuiStyle::SeparatorSize, &ThemeMetrics::separatorSize},
     {&ImGuiStyle::SeparatorTextBorderSize, &ThemeMetrics::separatorTextBorderSize},
     {&ImGuiStyle::DockingSeparatorSize, &ThemeMetrics::dockingSeparatorSize},
+    {&ImGuiStyle::MouseCursorScale, &ThemeMetrics::mouseCursorScale},
 }};
 
 // A private ImGui context for the length of a scope -- the E.4.4 font harness's pattern: no window, no GPU,
@@ -371,9 +379,10 @@ ImGuiStyle buildEditorStyle(const EditorTheme& theme, float uiScale) {
         style.Colors[slot] = toImVec4(color);
     }
     style.ScaleAllSizes(uiScale);  // on a FRESH style, so it never compounds (imgui.cpp:1599-1601)
-    for (const FlooredThickness& thickness : FLOORED_THICKNESSES) {  // a border that exists at 1x survives
-        if (m.*thickness.theme >= 1.0F) {
-            style.*thickness.style = std::max(style.*thickness.style, 1.0F);
+    // THE FLOOR: a size that is >= 1 at 1x is never truncated below 1 (FLOORED_SIZES' comment).
+    for (const FlooredSize& floored : FLOORED_SIZES) {
+        if (m.*floored.theme >= 1.0F) {
+            style.*floored.style = std::max(style.*floored.style, 1.0F);
         }
     }
     style.FontSizeBase = theme.type.bodySize;

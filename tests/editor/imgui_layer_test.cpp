@@ -22151,6 +22151,39 @@ TEST_CASE("editor: the style is the theme's at every scale, pure and never compo
             floorDecides += (themeValue >= 1.0F && truncated < 1.0F) ? 1U : 0U;
         }
         CHECK(floorDecides > 0U);  // ANTI-VACUITY: at each of these scales some border truncates to 0
+
+        // THE UNIVERSAL, over every member ScaleAllSizes scales -- a Dp2 member per component -- rather
+        // than over a list of the floored ones: a size whose value at 1 is >= 1 is still >= 1 here, and one
+        // that is 0 at 1 is still 0. MouseCursorScale truncating to 0 put every tooltip under the cursor
+        // (imgui.cpp:12777, :13503-13518); a member the theme later gives a value below 2 is covered here
+        // without a new row.
+        REQUIRE(low.members.size() == one.members.size());
+        std::size_t scaledMembers = 0;
+        std::size_t truncationWouldDrop = 0;  // components ScaleAllSizes alone would take below 1 here
+        for (std::size_t i = 0; i < one.members.size(); ++i) {
+            const std::string_view name = one.members[i].name;
+            const auto scaledEnd = SCALED_STYLE_MEMBERS.end();
+            if (std::find(SCALED_STYLE_MEMBERS.begin(), scaledEnd, name) == scaledEnd) {
+                continue;
+            }
+            CAPTURE(name);
+            ++scaledMembers;
+            REQUIRE(low.members[i].name == name);
+            const std::array<float, 2> atOne{one.members[i].x, one.members[i].y};
+            const std::array<float, 2> atLow{low.members[i].x, low.members[i].y};
+            for (std::size_t component = 0; component < atOne.size(); ++component) {
+                CAPTURE(component);
+                if (atOne[component] >= 1.0F) {
+                    CHECK(atLow[component] >= 1.0F);
+                    truncationWouldDrop += std::trunc(atOne[component] * scale) < 1.0F ? 1U : 0U;
+                } else if (atOne[component] == 0.0F) {
+                    CHECK(atLow[component] == 0.0F);
+                }
+            }
+        }
+        // The walk met every restated name, and (ANTI-VACUITY) the floor decides something at this scale.
+        CHECK(scaledMembers == SCALED_STYLE_MEMBERS.size());
+        CHECK(truncationWouldDrop > 0U);
     }
 
     // PURITY (seed S10): a builder that started from GetStyle() would inherit the poisoned enum and flag

@@ -156,10 +156,13 @@ that way.
   63 colour slots from the theme, then `ScaleAllSizes(uiScale)` — so a scale change REBUILDS the style.
   **Never `ScaleAllSizes` a live style**: it truncates, so applying it twice compounds (`I280`'s
   idempotence arm). ImGui gaining or losing a colour slot is a `static_assert` failure at the table, never a
-  silently default-coloured widget. **A thickness whose theme value is ≥ 1 is floored at 1 after the
-  scaling**: `ScaleAllSizes` truncates, so at any UI scale below 1 every 1-dp border and separator would
-  become 0 and vanish. The floored members are one table in `editor_theme_ui.cpp`; a new border or line
-  member joins it (`I280`'s sub-1 arm).
+  silently default-coloured widget. **No member `ScaleAllSizes` scales whose theme value is ≥ 1 is ever
+  truncated below 1**: it truncates, so at any UI scale below 1 a theme value in [1, 2) would become 0 — a
+  1-dp border or separator vanishes, a 0 `MouseCursorScale` puts every tooltip and drag preview under the
+  cursor, a 0 `TabMinWidthBase` drops the minimum tab width. The floored members are one table in
+  `editor_theme_ui.cpp`, floored at 1 after the scaling (a theme value of 0 stays 0; a scale ≥ 1 is
+  untouched). A scaled member whose theme value moves into [1, 2) joins it — `I280`'s sub-1 arm is a
+  universal over every scaled member, not a list, so it is red until that member does.
 - **The UI scale is `resolveUiScale(SDL_GetWindowDisplayScale, SDL_GetWindowPixelDensity, previous)`** —
   quantised to 0.05 by division, clamped to [0.5, 4], with no platform branch. It is 1 on a Retina Mac and
   on default Wayland, the desktop scale on Windows and X11. **`style.FontScaleDpi` is its ONE stored copy**
