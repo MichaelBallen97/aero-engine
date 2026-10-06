@@ -202,8 +202,10 @@ struct AxisResetAction {
 // task E.6.1: the gap between an axis letter and ITS OWN box, in dp (drawAxisRow multiplies it by the UI
 // scale once). One point: the letter labels the box beside it, and the mock goes further and draws it INSIDE
 // the box (E.6.3's restyle). At this width the row shows a five-character value ("0.000", "1.000") whole from
-// the same content width as the branch point did -- 225, TH11 and I289 -- because IBM Plex's digits at 16 are
-// wider than ProggyClean's at 13, and every point the gaps keep is a point a box cannot have.
+// the same content width as the branch point did -- 225, TH11 and I289. A LONGER value still needs more than
+// it did there: 3 more points of content with two or three integer digits (3 x this gap), and 6 or more from
+// four, as IBM Plex's digits at 16 are wider than ProggyClean's at 13; a negative value needs 3 to 6 fewer.
+// Recorded on E.6.1's validation page and handed to E.6.3, whose restyle re-derives the whole row.
 inline constexpr float AXIS_LETTER_GAP_DP = 1.0F;
 
 // task E.6.1: the width of each of an axis row's three boxes, as ARITHMETIC. The row is

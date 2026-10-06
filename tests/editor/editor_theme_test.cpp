@@ -634,7 +634,8 @@ TEST_CASE("theme: the Inspector's axis box holds a three-decimal value at these 
         const float row = (3.0F * LETTER) + (3.0F * LETTER_GAP) + (2.0F * INNER) + (3.0F * box);
         CAPTURE(row);
         CHECK(row == doctest::Approx(CELL).epsilon(1e-6));
-        // The two gaps are distinct parameters: swapping them moves the answer, so neither is ignored.
+        // The two gaps are distinct parameters: swapping them moves the answer. (Ignoring one gap is the row
+        // check above's to catch; this one catches a budget that weighs the two the same.)
         const float swapped = ed::inspectorAxisBoxWidth(CELL, LETTER, INNER, LETTER_GAP);
         CHECK(swapped != box);
     }

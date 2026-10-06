@@ -22741,32 +22741,6 @@ TEST_CASE("editor: the Inspector's axis boxes hold a three-decimal value (task E
     CHECK(countLinesContaining(panel, "SameLine(0.0F, gap)") == 1U);
     CHECK(countLinesContaining(panel, "letterGap = AXIS_LETTER_GAP_DP * currentUiScale()") == 1U);
 
-    // What "0.000" occupies in Body at scale 1 -- ImGui's own advances, measured, never a restated literal.
-    // DragScalar draws its value with RenderTextClipped over the bare frame (no frame padding), centred
-    // and clipped once it is wider, so a box at least this wide shows the value whole.
-    const std::array<char32_t, 5> points{U'0', U'.', U'X', U'Y', U'Z'};  // "0.000" is 4 x '0' + '.'
-    const EditorFontMeasurement body = measureEditorFonts(WITH_ICONS, EditorFontFace::Body, points, 1.0F);
-    REQUIRE(body.ok);
-    REQUIRE(body.glyphs.size() == points.size());
-    for (const MeasuredGlyph& glyph : body.glyphs) {
-        REQUIRE(glyph.found);
-    }
-    const float threeDecimals = (4.0F * body.glyphs[0].advanceX) + body.glyphs[1].advanceX;
-    CAPTURE(threeDecimals);
-    REQUIRE(threeDecimals > 0.0F);
-    // The row's own slack budget: drawAxisRow budgets three of the WIDEST letter as CalcTextSize measures it
-    // (IM_TRUNC(w + 0.99999f), a whole point) while each Text item takes its own width, and ImGui truncates
-    // each of the three boxes to a whole point -- so the row as drawn ends at most 3 points, plus the letters'
-    // difference from the widest, inside its cell. A box narrower than the budget leaves more.
-    std::array<float, 3> letters{};
-    for (std::size_t i = 0; i < letters.size(); ++i) {
-        letters[i] = std::trunc(body.glyphs[2U + i].advanceX + 0.99999F);
-    }
-    const float widestLetter = std::max({letters[0], letters[1], letters[2]});
-    const float letterSlack = (3.0F * widestLetter) - (letters[0] + letters[1] + letters[2]);
-    CAPTURE(widestLetter);
-    CAPTURE(letterSlack);
-
     engine::platform::Context ctx;
     if (!ctx.valid()) {
         AERO_SKIP_OR_FAIL("no platform context");
@@ -22818,6 +22792,36 @@ TEST_CASE("editor: the Inspector's axis boxes hold a three-decimal value (task E
     REQUIRE(app->tick());
     REQUIRE(app->panelDrawnCount("Inspector") > idle);
 
+    // What "0.000" occupies in Body at the LIVE UI scale -- ImGui's own advances, measured, never a restated
+    // literal. measureEditorFonts restores the current context, so it is safe beside the live app (I288 reads
+    // the scale the same way). DragScalar draws its value with RenderTextClipped over the bare frame (no frame
+    // padding), centred and clipped once it is wider, so a box at least this wide shows the value whole.
+    const float uiScale = app->uiScale();
+    CAPTURE(uiScale);
+    const std::array<char32_t, 5> points{U'0', U'.', U'X', U'Y', U'Z'};  // "0.000" is 4 x '0' + '.'
+    const EditorFontMeasurement body = measureEditorFonts(WITH_ICONS, EditorFontFace::Body, points, uiScale);
+    REQUIRE(body.ok);
+    REQUIRE(body.glyphs.size() == points.size());
+    for (const MeasuredGlyph& glyph : body.glyphs) {
+        REQUIRE(glyph.found);
+    }
+    const float threeDecimals = (4.0F * body.glyphs[0].advanceX) + body.glyphs[1].advanceX;
+    CAPTURE(threeDecimals);
+    REQUIRE(threeDecimals > 0.0F);
+    // The row's own slack budget: drawAxisRow budgets three of the WIDEST letter as CalcTextSize measures it
+    // (IM_TRUNC(w + 0.99999f), a whole point) while each Text item takes its own width, and ImGui truncates
+    // each of the three boxes to a whole point -- so the row as drawn ends at most 3 points, plus the letters'
+    // difference from the widest, inside its cell. At most UI scales other than 1 the three letters round to
+    // different widths (X, Y and Z are 613, 593 and 580 units), so the difference is measured at the live scale.
+    std::array<float, 3> letters{};
+    for (std::size_t i = 0; i < letters.size(); ++i) {
+        letters[i] = std::trunc(body.glyphs[2U + i].advanceX + 0.99999F);
+    }
+    const float widestLetter = std::max({letters[0], letters[1], letters[2]});
+    const float letterSlack = (3.0F * widestLetter) - (letters[0] + letters[1] + letters[2]);
+    CAPTURE(widestLetter);
+    CAPTURE(letterSlack);
+
     const float content = inspector->lastContentWidth();
     const float box = inspector->lastAxisBoxWidth();
     const float slack = inspector->lastAxisRowSlack();
@@ -22843,15 +22847,17 @@ TEST_CASE("editor: the Inspector's axis boxes hold a three-decimal value (task E
             WARN(box >= 2.0F);
         }
         // THE GEOMETRY GATE, for the fit alone: 225 is the content of the 241-wide dock (241 - 2 x 8 of
-        // window padding), the branch point's threshold. The claim is made only there or wider, because CI's
-        // macOS runner delivers windows narrower than requested (I233, I231), and a narrower dock has a
-        // narrower cell by design.
+        // window padding), the branch point's threshold -- a derivation AT UI SCALE 1 (TH11). The claim is made
+        // only there, at that width or wider, because CI's macOS runner delivers windows narrower than
+        // requested (I233, I231), a narrower dock has a narrower cell by design, and at another scale every
+        // length in the row moves.
         constexpr float THRESHOLD_CONTENT = 225.0F;
-        if (content >= THRESHOLD_CONTENT) {
+        if (uiScale == 1.0F && content >= THRESHOLD_CONTENT) {
             CHECK(box >= threeDecimals);
         } else {
-            MESSAGE("I289: no fit asserted, the content is " << content << " < " << THRESHOLD_CONTENT);
-            WARN(content >= THRESHOLD_CONTENT);
+            MESSAGE("I289: no fit asserted at UI scale " << uiScale << ", content " << content << " (the claim is "
+                                                         << "scale 1 and >= " << THRESHOLD_CONTENT << ")");
+            WARN((uiScale == 1.0F && content >= THRESHOLD_CONTENT));
         }
     }
 
