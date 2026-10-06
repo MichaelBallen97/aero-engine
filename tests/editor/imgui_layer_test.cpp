@@ -22200,8 +22200,17 @@ TEST_CASE(
     }
     CHECK(countLinesContaining(code, "SDL_GetWindowDisplayScale(") == 2U);  // create and beginFrame
     CHECK(countLinesContaining(code, "SDL_GetWindowPixelDensity(") == 2U);
+    // THE ARGUMENT ORDER, at both sites. resolveUiScale divides its first argument by its second, two floats
+    // swap with no diagnostic, and on every display whose two inputs are equal (every CI lane, a 1x desktop,
+    // a Retina Mac) a swap changes nothing observable -- so each input is named where it is read and passed
+    // by that name.
+    CHECK(countLinesContaining(code, "const float displayScale = SDL_GetWindowDisplayScale(") == 2U);
+    CHECK(countLinesContaining(code, "const float pixelDensity = SDL_GetWindowPixelDensity(") == 2U);
+    CHECK(countLinesContaining(code, "resolveUiScale(displayScale, pixelDensity,") == 2U);
 
-    // beginFrame re-resolves BEFORE NewFrame (seed S22).
+    // beginFrame re-resolves AND rebuilds BEFORE NewFrame (seed S22): a rebuild below NewFrame would leave
+    // this frame's fonts and layout at the old scale, which I281 cannot see -- it reads the style after the
+    // whole tick, and either order has rebuilt it by then.
     const std::size_t begin = soleLineContaining(code, "void ImGuiLayer::beginFrame() {");
     std::size_t end = begin;
     while (end < code.size() && code[end] != "}") {
@@ -22209,15 +22218,19 @@ TEST_CASE(
     }
     REQUIRE(end < code.size());
     std::size_t resolveAt = code.size();
+    std::size_t lastApplyAt = code.size();
     std::size_t newFrameAt = code.size();
     for (std::size_t i = begin; i < end; ++i) {
         const bool resolves = code[i].find("resolveUiScale(") != std::string::npos;
         resolveAt = (resolveAt == code.size() && resolves) ? i : resolveAt;
+        lastApplyAt = (code[i].find("applyEditorStyle(") != std::string::npos) ? i : lastApplyAt;
         newFrameAt = (code[i].find("ImGui::NewFrame()") != std::string::npos) ? i : newFrameAt;
     }
     REQUIRE(resolveAt < code.size());
+    REQUIRE(lastApplyAt < code.size());
     REQUIRE(newFrameAt < code.size());
     CHECK(resolveAt < newFrameAt);
+    CHECK(lastApplyAt < newFrameAt);  // every rebuild in beginFrame, not only the read
 
     // Every DestroyContext is IMMEDIATELY preceded by clearEditorFonts (seed S26) -- five of each.
     std::size_t destroys = 0;
