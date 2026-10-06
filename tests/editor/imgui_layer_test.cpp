@@ -21535,6 +21535,9 @@ TEST_CASE("editor: every roster icon draws in Body and Strong, centred on the ca
             const MeasuredGlyph& capital = m.glyphs[hIndex];
             REQUIRE(capital.found);
             REQUIRE(capital.visible);
+            // The ink was MEASURED: a scan that found no row, or never ran, leaves both edges at y0, and
+            // every delta below would then compare quad tops while reading as a claim about ink.
+            REQUIRE(capital.inkY1 > capital.inkY0);
             const float capCentre = inkCentreY(capital);
             CAPTURE(capCentre);
             CAPTURE(capital.inkY0);
@@ -21549,6 +21552,7 @@ TEST_CASE("editor: every roster icon draws in Body and Strong, centred on the ca
                 CHECK(glyph.found);
                 CHECK(glyph.visible);
                 CHECK(glyph.drawnCodepoint == glyph.requested);
+                CHECK(glyph.inkY1 > glyph.inkY0);  // this icon's ink was measured, as the capital's was
                 // 11/16 of the face, and every roster icon advances one em
                 CHECK(std::fabs(glyph.advanceX - (11.0F * scale)) <= 0.01F * scale);
                 CHECK(glyph.y1 - glyph.y0 <= m.bakedSize);
@@ -21624,6 +21628,49 @@ TEST_CASE("editor: the typographic glyphs are native and a missing one draws U+F
         CHECK_FALSE(m.glyphs[glyphCount + 2U].found);
         CHECK(m.fallbackChar == 0xFFFDU);
         CHECK(m.ellipsisChar == 0x2026U);
+    }
+
+    // COVERAGE, exactly as measured through this harness when the faces landed (spec F8: Mono lacks Greek).
+    // All three faces draw Latin-1 (U+00A0-U+00FF), Latin Extended-A (U+0100-U+017F) and basic Cyrillic
+    // (U+0400-U+045F); Body and Strong draw every Greek letter, and Mono only pi (U+03C0) -- a Delta or an
+    // alpha in Mono draws U+FFFD. .claude/rules/editor.md's coverage sentence states exactly this.
+    std::vector<char32_t> everyFace;
+    for (char32_t c = 0xA0U; c <= 0x17FU; ++c) {  // Latin-1 Supplement, then Latin Extended-A
+        everyFace.push_back(c);
+    }
+    for (char32_t c = 0x400U; c <= 0x45FU; ++c) {
+        everyFace.push_back(c);
+    }
+    REQUIRE(everyFace.size() == 320U);  // 96 + 128 + 96
+    std::vector<char32_t> greekLetters;
+    for (char32_t c = 0x391U; c <= 0x3A9U; ++c) {
+        if (c != 0x3A2U) {  // unassigned: the capital final sigma does not exist
+            greekLetters.push_back(c);
+        }
+    }
+    for (char32_t c = 0x3B1U; c <= 0x3C9U; ++c) {
+        greekLetters.push_back(c);
+    }
+    REQUIRE(greekLetters.size() == 49U);
+    for (const EditorFontFace face : {EditorFontFace::Body, EditorFontFace::Strong, EditorFontFace::Mono}) {
+        CAPTURE(fontFaceLabel(face));
+        const EditorFontMeasurement shared = measureEditorFonts(WITH_ICONS, face, everyFace, 1.0F);
+        REQUIRE(shared.ok);
+        REQUIRE(shared.glyphs.size() == everyFace.size());
+        for (const MeasuredGlyph& glyph : shared.glyphs) {
+            CAPTURE(static_cast<std::uint32_t>(glyph.requested));
+            CHECK(glyph.found);
+            CHECK(glyph.drawnCodepoint == glyph.requested);
+        }
+        const EditorFontMeasurement greek = measureEditorFonts(WITH_ICONS, face, greekLetters, 1.0F);
+        REQUIRE(greek.ok);
+        REQUIRE(greek.glyphs.size() == greekLetters.size());
+        for (const MeasuredGlyph& glyph : greek.glyphs) {
+            CAPTURE(static_cast<std::uint32_t>(glyph.requested));
+            const bool drawn = face != EditorFontFace::Mono || glyph.requested == 0x3C0U;
+            CHECK(glyph.found == drawn);
+            CHECK(glyph.drawnCodepoint == (drawn ? glyph.requested : 0xFFFDU));
+        }
     }
 }
 

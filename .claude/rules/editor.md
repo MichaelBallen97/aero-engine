@@ -196,10 +196,13 @@ MSVC, where a Private Use Area code point is unrepresentable. The policy:
      uses (ellipsis, em dash, en dash, middle dot, multiplication sign, degree sign, bullet, the four
      arrows, check mark, minus sign), each one Plex Sans **and** Plex Mono draw natively;
    * `editor/include/aero/editor/editor_icons.hpp` — `AERO_ICON_*`: the Lucide roster.
-3. **Which characters exist** is the union of what Body/Strong draw (Plex Sans's Latin, Latin Extended,
-   Greek, Cyrillic and General Punctuation, plus the roster) and what Mono draws; **icons only in Body and
-   Strong**. A glyph outside the loaded faces draws `U+FFFD` (`�`), not `?` — **user data** (file names,
-   log text from the engine) is drawn as given and may hit it; editor-authored strings may not.
+3. **Which characters exist**, exactly as `I279` asserts per face: all three faces draw Latin-1
+   (U+00A0–U+00FF), Latin Extended-A (U+0100–U+017F), basic Cyrillic (U+0400–U+045F) and every
+   `AERO_GLYPH_*` mark; Body and Strong draw every Greek letter (U+0391–U+03A9, U+03B1–U+03C9), and
+   Mono only `π` (U+03C0) — a `Δ` or an `α` in Mono draws `U+FFFD`. **Icons only in Body and
+   Strong** (`I278`). A glyph outside the loaded faces draws `U+FFFD` (`�`), not `?` — **user data**
+   (file names, log text from the engine) is drawn as given and may hit it; editor-authored strings
+   may not.
 4. **`⌘`, `⇧`, `⌥` and `⏎` are NOT available** — Plex has none of them. A future shortcut hint spells
    `Cmd+`, `Shift+` in ASCII, or uses an icon (Lucide has `command`), and that is E.6.2's decision.
 
