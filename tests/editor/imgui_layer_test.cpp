@@ -21937,6 +21937,25 @@ constexpr std::array<std::string_view, 47> SCALED_STYLE_MEMBERS{{
     "MouseCursorScale",
 }};
 
+// The THICKNESS members, restated: ScaleAllSizes truncates each (imgui.cpp:1607-1648), so below 1 a 1-dp
+// border or line would truncate to 0 and vanish, and the builder floors at 1 every one the theme states as
+// >= 1. ImageBorderSize and TabBorderSize are the theme's two zeros, which must stay 0.
+constexpr std::array<std::string_view, 13> FLOORED_THICKNESS_MEMBERS{{
+    "WindowBorderSize",
+    "ChildBorderSize",
+    "PopupBorderSize",
+    "FrameBorderSize",
+    "ImageBorderSize",
+    "TabBorderSize",
+    "TabBarBorderSize",
+    "TabBarOverlineSize",
+    "TreeLinesSize",
+    "DragDropTargetBorderSize",
+    "SeparatorSize",
+    "SeparatorTextBorderSize",
+    "DockingSeparatorSize",
+}};
+
 // Slot by slot and member by member, NAMING what differs -- CHECK((a == b)) over a struct prints
 // CHECK( true ).
 void requireSameStyle(const EditorStyleSnapshot& a, const EditorStyleSnapshot& b) {
@@ -22051,6 +22070,33 @@ TEST_CASE("editor: the style is the theme's at every scale, pure and never compo
     CHECK(memberNamed(quarter, "FrameRounding").x == 5.0F);
     CHECK(memberNamed(quarter, "ScrollbarSize").x == 12.0F);
     CHECK(memberNamed(quarter, "FrameBorderSize").x == 1.0F);
+
+    // BELOW 1, a border or line that exists at 1x never vanishes: each thickness the theme states as >= 1
+    // reads ScaleAllSizes' truncation floored at 1, and each it states as 0 stays 0. 0.95 is X11 at Xft.dpi
+    // 90; 0.5 is UI_SCALE_MIN. The theme values are this case's own restated rows, never the theme's.
+    const auto restatedX = [](std::string_view name) {
+        const auto* const row = std::find_if(STYLE_MEMBER_ROWS.begin(), STYLE_MEMBER_ROWS.end(),
+                                             [name](const StyleMemberRow& r) { return r.name == name; });
+        CAPTURE(name);
+        REQUIRE(row != STYLE_MEMBER_ROWS.end());
+        return row->x;
+    };
+    for (const float scale : {0.5F, 0.75F, 0.95F}) {
+        CAPTURE(scale);
+        const EditorStyleSnapshot low = engine::editor::snapshotEditorStyle(scale);
+        std::size_t floorDecides = 0;  // members whose truncation alone would read 0 at this scale
+        for (const std::string_view name : FLOORED_THICKNESS_MEMBERS) {
+            CAPTURE(name);
+            const float themeValue = restatedX(name);
+            REQUIRE((themeValue == 0.0F || themeValue >= 1.0F));
+            const float truncated = std::trunc(themeValue * scale);
+            const float expected = themeValue >= 1.0F ? std::max(truncated, 1.0F) : 0.0F;
+            CHECK(memberNamed(low, name).x == expected);
+            CHECK(memberNamed(low, name).y == 0.0F);
+            floorDecides += (themeValue >= 1.0F && truncated < 1.0F) ? 1U : 0U;
+        }
+        CHECK(floorDecides > 0U);  // ANTI-VACUITY: at each of these scales some border truncates to 0
+    }
 
     // PURITY (seed S10): a builder that started from GetStyle() would inherit the poisoned enum and flag
     // members.

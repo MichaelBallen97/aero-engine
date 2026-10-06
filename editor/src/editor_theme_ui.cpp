@@ -6,6 +6,7 @@
 
 #include "editor_theme_imgui.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -30,6 +31,33 @@ namespace {
     color.a = alpha;
     return color;
 }
+
+// Every THICKNESS member ScaleAllSizes truncates (imgui.cpp:1607-1648 at the pinned 1.92.8), paired with the
+// theme member it is built from -- the ONE spelling of the set. ScaleAllSizes rounds each size DOWN to a
+// whole point, so at any UI scale in [0.5, 1) a 1-dp border or line becomes 0 and ImGui then draws no border
+// and no separator at all -- the case imgui.cpp:1599-1600 warns about ("Consider not calling this if your
+// initial scale factor if <1.0"). A scale below 1 is reachable (X11 at Xft.dpi 90 resolves to 0.95, and
+// UI_SCALE_MIN is 0.5), so buildEditorStyle floors each of these at 1 when the THEME states it as >= 1; a
+// thickness the theme states as 0 stays 0. At a scale >= 1 the floor changes nothing.
+struct FlooredThickness {
+    float ImGuiStyle::*style;
+    float ThemeMetrics::*theme;
+};
+constexpr std::array<FlooredThickness, 13> FLOORED_THICKNESSES{{
+    {&ImGuiStyle::WindowBorderSize, &ThemeMetrics::windowBorderSize},
+    {&ImGuiStyle::ChildBorderSize, &ThemeMetrics::childBorderSize},
+    {&ImGuiStyle::PopupBorderSize, &ThemeMetrics::popupBorderSize},
+    {&ImGuiStyle::FrameBorderSize, &ThemeMetrics::frameBorderSize},
+    {&ImGuiStyle::ImageBorderSize, &ThemeMetrics::imageBorderSize},
+    {&ImGuiStyle::TabBorderSize, &ThemeMetrics::tabBorderSize},
+    {&ImGuiStyle::TabBarBorderSize, &ThemeMetrics::tabBarBorderSize},
+    {&ImGuiStyle::TabBarOverlineSize, &ThemeMetrics::tabBarOverlineSize},
+    {&ImGuiStyle::TreeLinesSize, &ThemeMetrics::treeLinesSize},
+    {&ImGuiStyle::DragDropTargetBorderSize, &ThemeMetrics::dragDropTargetBorderSize},
+    {&ImGuiStyle::SeparatorSize, &ThemeMetrics::separatorSize},
+    {&ImGuiStyle::SeparatorTextBorderSize, &ThemeMetrics::separatorTextBorderSize},
+    {&ImGuiStyle::DockingSeparatorSize, &ThemeMetrics::dockingSeparatorSize},
+}};
 
 // A private ImGui context for the length of a scope -- the E.4.4 font harness's pattern: no window, no GPU,
 // no ini or log file -- restoring whichever context was current, so a snapshot is safe beside a live app.
@@ -343,6 +371,11 @@ ImGuiStyle buildEditorStyle(const EditorTheme& theme, float uiScale) {
         style.Colors[slot] = toImVec4(color);
     }
     style.ScaleAllSizes(uiScale);  // on a FRESH style, so it never compounds (imgui.cpp:1599-1601)
+    for (const FlooredThickness& thickness : FLOORED_THICKNESSES) {  // a border that exists at 1x survives
+        if (m.*thickness.theme >= 1.0F) {
+            style.*thickness.style = std::max(style.*thickness.style, 1.0F);
+        }
+    }
     style.FontSizeBase = theme.type.bodySize;
     style.FontScaleMain = 1.0F;
     style.FontScaleDpi = uiScale;  // the ONE stored copy of the UI scale (D8)
