@@ -13,8 +13,13 @@
 # initialiser, and replacing one font then recompiles one TU. The array is an INTEGER initialiser, never a
 # string literal -- MSVC caps one string literal at 16 380 bytes and a concatenated one at 65 535 (C2026).
 #
-# The HEADER is passed ABSOLUTE and the generated TU includes it by that path, because the TU lives in the
-# build tree and the header's directory is not on <target>'s include path.
+# The HEADER is passed ABSOLUTE, but the generated TU includes it by NAME, and only the generated sources get
+# the header's directory as an include directory (set_source_files_properties below) -- the tree's generator
+# precedent, cmake/reflect.cmake, whose generated TUs include their header by basename: the TU lives in the
+# build tree and the header's directory is not on <target>'s include path. Never by absolute path inside the
+# file: MSVC builds this tree without /utf-8, so it decodes a source file through the system code page, and a
+# non-ASCII checkout path spelled in an #include (C:/Users/<a name with an umlaut>/...) fails there with
+# C1083. On the command line the directory travels exactly as every source path of the build does.
 
 function(aero_embed_binary_files target)
     cmake_parse_arguments(PARSE_ARGV 1 arg "" "HEADER;NAMESPACE" "FILES")
@@ -27,6 +32,10 @@ function(aero_embed_binary_files target)
     if(NOT arg_HEADER OR NOT IS_ABSOLUTE "${arg_HEADER}")
         message(FATAL_ERROR "embed: HEADER must be an absolute path (got '${arg_HEADER}')")
     endif()
+    if(NOT EXISTS "${arg_HEADER}")
+        message(FATAL_ERROR "embed: HEADER '${arg_HEADER}' does not exist")
+    endif()
+    get_filename_component(headerDir "${arg_HEADER}" DIRECTORY)
     if(NOT arg_NAMESPACE)
         message(FATAL_ERROR "embed: NAMESPACE is required")
     endif()
@@ -63,5 +72,7 @@ function(aero_embed_binary_files target)
             COMMENT "embed: ${accessor}"
             VERBATIM)
         target_sources(${target} PRIVATE "${output}")
+        # The header's directory for THIS source only, so <target>'s own include path is unchanged.
+        set_source_files_properties("${output}" PROPERTIES INCLUDE_DIRECTORIES "${headerDir}")
     endforeach()
 endfunction()
