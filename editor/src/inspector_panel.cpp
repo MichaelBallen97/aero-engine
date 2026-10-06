@@ -145,6 +145,11 @@ void InspectorPanel::onDraw(PanelContext& context) {
     // also discards whatever the previous onDraw did not consume.
     frameNamedSelection = std::exchange(pendingNamedSelection, std::nullopt);
     headersSubmittedValue = 0;  // task E.6.1: a PER-FRAME count, taken before any early return below
+    // task E.6.1 (I289): this frame's geometry, likewise before any early return. drawAxisRow writes the two
+    // axis values, so a frame that draws no axis row reads 0 for both.
+    lastContentWidthValue = ImGui::GetContentRegionAvail().x;
+    lastAxisBoxWidthValue = 0.0F;
+    lastAxisRowSlackValue = 0.0F;
     // ID discipline (D13/E14): PushID(full registration name) per component, PushID(field name)
     // per row -- so two same-named fields in different components, and two same-short-named types
     // in different namespaces, never collide. Widgets use the "##v" label so only the left column
@@ -346,9 +351,15 @@ bool InspectorPanel::drawAxisRow(PanelContext& context, Entity primary, const Co
         const std::string_view label = axisRowLabel(i);
         letterWidth = std::max(letterWidth, ImGui::CalcTextSize(label.data(), label.data() + label.size()).x);
     }
-    // [letter][gap][box] x3, with one gap between units: 3*letter + 5*gap + 3*box == the cell.
+    // task E.6.1: [letter][gap/2][box] x3, with a WHOLE gap between the units: a letter labels its own box,
+    // so the pair reads as one unit half a gap apart. 3*letter + 3*(gap/2) + 2*gap + 3*box == the cell --
+    // the budget is inspector_model's pure inspectorAxisBoxWidth (TH11), and the two SameLine gaps below
+    // must spell the same halves, or the last box overruns the cell (I289's slack arm). Before, every gap
+    // was whole (3*letter + 5*gap + 3*box); at the theme's 6-point spacing, and with the label column's old
+    // 5 x floor, that clipped "0.000" in a 258-wide dock.
+    const float letterGap = gap * 0.5F;
     const float total = ImGui::GetContentRegionAvail().x;
-    const float boxWidth = std::max((total - (3.0F * letterWidth) - (5.0F * gap)) / 3.0F, 1.0F);
+    const float boxWidth = inspectorAxisBoxWidth(total, letterWidth, gap);
 
     bool edited = false;
     ImGui::BeginGroup();  // 1:1 with EndGroup below -- nothing between them can return
@@ -370,7 +381,8 @@ bool InspectorPanel::drawAxisRow(PanelContext& context, Entity primary, const Co
         // whole cell's width.
         ImGui::TextUnformatted(label.data(), label.data() + label.size());
         ImGui::PopStyleColor();  // 1:1 with PushStyleColor
-        ImGui::SameLine(0.0F, gap);
+        // task E.6.1: the letter and ITS box are one unit, half a gap apart.
+        ImGui::SameLine(0.0F, letterGap);
         ImGui::SetNextItemWidth(boxWidth);
         // nullptr for p_min/p_max/format is EXACTLY DragFloat3's behaviour: it passes two pointers to
         // 0.0f, which DragBehaviorT treats as unbounded, and DragScalar falls back to
@@ -379,6 +391,7 @@ bool InspectorPanel::drawAxisRow(PanelContext& context, Entity primary, const Co
         edited = ImGui::DragScalar("##a", ImGuiDataType_Float, &shown[i], speed, nullptr, nullptr, nullptr,
                                    ImGuiSliderFlags_None) ||
                  edited;
+        lastAxisBoxWidthValue = ImGui::GetItemRectSize().x;  // task E.6.1 (I289): the box ImGui laid out
         // NO str_id: DragScalar reads mouse button 0 only, so right-click is unclaimed, and the axis's
         // own drag id is non-zero and makes a perfectly good popup id. NEVER call this with nullptr
         // after EndGroup() -- a group's ItemAdd uses id 0 and only overwrites LastItemData.ID when the
@@ -388,6 +401,9 @@ bool InspectorPanel::drawAxisRow(PanelContext& context, Entity primary, const Co
         ImGui::PopID();
     }
     ImGui::EndGroup();
+    // task E.6.1 (I289): EndGroup's item is the whole row, so this is the cell minus the row as DRAWN --
+    // negative when the gaps spelled above and the budget disagree and the last box overruns the cell.
+    lastAxisRowSlackValue = total - ImGui::GetItemRectSize().x;
     return edited;
 }
 

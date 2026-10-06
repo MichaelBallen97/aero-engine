@@ -82,6 +82,14 @@ public:
     [[nodiscard]] const std::string& lastHeaderFontName() const noexcept { return lastHeaderFontNameValue; }
     [[nodiscard]] const std::string& lastLabelFontName() const noexcept { return lastLabelFontNameValue; }
     [[nodiscard]] std::uint32_t headersSubmitted() const noexcept { return headersSubmittedValue; }
+    // task E.6.1 (I289): the axis rows as ImGui LAID THEM OUT on the last onDraw -- the panel's content
+    // width (GetContentRegionAvail at the top of onDraw), the last axis box's width (GetItemRectSize after
+    // its DragScalar), and the last axis row's slack: its value cell's width minus the row's own rect
+    // (EndGroup's), negative when the row overruns the cell. The box and the slack are 0 on a frame that
+    // drew no axis row.
+    [[nodiscard]] float lastContentWidth() const noexcept { return lastContentWidthValue; }
+    [[nodiscard]] float lastAxisBoxWidth() const noexcept { return lastAxisBoxWidthValue; }
+    [[nodiscard]] float lastAxisRowSlack() const noexcept { return lastAxisRowSlackValue; }
 
 private:
     enum class ActionKind : std::uint8_t { None = 0, AddComponent, RemoveComponent };
@@ -156,6 +164,9 @@ private:
     std::string lastHeaderFontNameValue;                  // task E.6.1 -- member/accessor collision rule
     std::string lastLabelFontNameValue;                   // likewise
     std::uint32_t headersSubmittedValue = 0;              // likewise; reset at the top of onDraw
+    float lastContentWidthValue = 0.0F;                   // task E.6.1 (I289) -- written at the top of onDraw
+    float lastAxisBoxWidthValue = 0.0F;                   // likewise; reset at the top of onDraw
+    float lastAxisRowSlackValue = 0.0F;                   // likewise; reset at the top of onDraw
     std::size_t namedSelectorsDrawnValue = 0;             // task E.5.2 -- member/accessor collision rule
 };
 

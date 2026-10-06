@@ -190,12 +190,23 @@ struct AxisResetAction {
                                               const std::optional<FieldValue>& defaultValue);
 
 // The label column's width, as ARITHMETIC. Pure so the clamp is tier-0 testable: the panel measures
-// the four inputs with ImGui and this decides. floorPx = fontSizePx * 5; ceilPx = max(floorPx,
+// the four inputs with ImGui and this decides. floorPx = fontSizePx * 4 (task E.6.1 retuned it from 5 --
+// inspector_model.cpp's LABEL_COLUMN_FLOOR_FONT_MULTIPLE says why); ceilPx = max(floorPx,
 // availableWidthPx * 0.5) -- the max is what keeps std::clamp's range from crossing, which is UB,
 // and a zero- or negative-width dock IS reachable (a panel dragged to its minimum, or the frame a
 // dock split settles). The two multipliers are TUNING VALUES, judged on hardware; changing one is a
-// one-line edit here plus a VF15 expectation.
+// one-line edit in inspector_model.cpp plus a VF15 and a TH11 expectation.
 [[nodiscard]] float inspectorLabelColumnWidth(float widestLabelPx, float cellPaddingPx, float fontSizePx,
                                               float availableWidthPx) noexcept;
+
+// task E.6.1: the width of each of an axis row's three boxes, as ARITHMETIC. The row is
+//   [letter][gap/2][box] [gap] [letter][gap/2][box] [gap] [letter][gap/2][box]
+// with gap = ItemInnerSpacing.x: a letter labels ITS OWN box, so the pair reads as one unit half a gap apart,
+// and only the two gaps BETWEEN units stay whole. So 3*letter + 3*(gap/2) + 2*gap + 3*box == the cell, and
+//   box = max((cellWidth - 3*letterWidth - 3*(itemInnerSpacing/2) - 2*itemInnerSpacing) / 3, 1).
+// TOTAL: a NaN or an infinity in any input, or a sum that overflows, answers the floor, 1 -- std::max(NaN, 1)
+// is NaN, and a NaN width would reach SetNextItemWidth. Pure so TH11 reaches it from tier 0; drawAxisRow
+// measures the three inputs with ImGui, calls this, and spells the same two gaps in its SameLine calls.
+[[nodiscard]] float inspectorAxisBoxWidth(float cellWidth, float letterWidth, float itemInnerSpacing) noexcept;
 
 }  // namespace engine::editor

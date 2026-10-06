@@ -1,4 +1,5 @@
-// tests/editor/editor_theme_test.cpp -- task E.6.1: the editor's one theme (TH1-TH10).
+// tests/editor/editor_theme_test.cpp -- task E.6.1: the editor's one theme (TH1-TH10), and the Inspector's
+// axis row at its metrics (TH11).
 // TIER 0, EVERY CONFIGURATION: editor_theme.hpp is pure, so nothing here needs a device, a window or
 // generated meta. NO #if of any kind (the 3.6.3 rule). Every table below is an INDEPENDENTLY RESTATED
 // literal (the IX3 / I230(g) posture): a value changed in the theme is changed here in the same commit,
@@ -10,6 +11,7 @@
 #include <aero/editor/editor_app.hpp>    // EditorAppConfig's clear colour (TH3)
 #include <aero/editor/editor_theme.hpp>
 #include <aero/editor/gizmo_style.hpp>      // the GIZMO_* aliases (TH3)
+#include <aero/editor/inspector_model.hpp>  // inspectorAxisBoxWidth, inspectorLabelColumnWidth (TH11)
 #include <aero/editor/material_card.hpp>    // materialSwatchWantsDarkLabel (TH8)
 #include <aero/editor/text_file.hpp>        // readTextFile (TH10)
 #include <aero/editor/viewport_gizmos.hpp>  // ViewportGizmoTints (TH3)
@@ -21,6 +23,8 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <initializer_list>
+#include <limits>
 #include <ostream>  // MSVC: a CAPTURE over std::string_view needs the complete std::ostream (the 0.4.1 trap)
 #include <set>
 #include <string>
@@ -546,4 +550,89 @@ TEST_CASE("theme: the header is pure (task E.6.1, TH10)") {
     }
     // Positive control: a reader that read nothing cannot pass.
     CHECK(sawTheValue);
+}
+
+TEST_CASE("theme: the Inspector's axis box holds a three-decimal value at these metrics (task E.6.1, TH11)") {
+    // The manual validation pass found the Inspector's X/Y/Z boxes clipping "0.000" to "0.00" in a 258-wide
+    // right dock where the branch point showed it whole. Two task E.3.1 tuning values met this theme: the
+    // label column's floor of 5 x the font (80 at body 16, where ProggyClean 13 gave 65) and five WHOLE
+    // ItemInnerSpacing gaps per row (6 here, 4 before). Every number below is a RESTATED measurement (this
+    // file's posture) taken in that dock by I289's window, so a change to any of them is re-measured here.
+    //
+    // The metrics the measurement was taken at, pinned to the theme: changing one invalidates the numbers.
+    constexpr float BODY = 16.0F;
+    constexpr float INNER = 6.0F;         // ItemInnerSpacing.x
+    constexpr float CELL_PADDING = 6.0F;  // CellPadding.x
+    CHECK(ed::EDITOR_THEME.type.bodySize == BODY);
+    CHECK(ed::EDITOR_THEME.metrics.itemInnerSpacing.x == INNER);
+    CHECK(ed::EDITOR_THEME.metrics.cellPadding.x == CELL_PADDING);
+
+    // "0.000" in IBM Plex Sans Regular at 16: (4 x 600 + 272) units of advance x 16 / 1300 (ImGui's size is
+    // ascender - descender, 1025 + 275) = 32.886 points; I289 measures the same 32.8862 off the baked font.
+    constexpr float THREE_DECIMALS = 32.8862F;
+    // The widest of X, Y and Z as drawAxisRow measures it: CalcTextSize rounds every width UP
+    // (IM_TRUNC(w + 0.99999f)), so the 7.545 points of 'X' measure 8.
+    constexpr float LETTER = 8.0F;
+    // The value cell in the 258-wide dock, measured (drawAxisRow's GetContentRegionAvail in I289's window).
+    // The Inspector's content is 242 (258 - 2 x 8 of window padding); the borderless two-column table spends
+    // 2 x CellPadding.x = 12 between its columns; the label column is 75 -- the Cube's widest label,
+    // "meshIndex" (62.535 -> 63), plus 2 x 6 -- so 242 - 12 - 75 = 155.
+    constexpr float CELL = 155.0F;
+    // The same cell before this fix, measured: the 80-point floor took the column, so 242 - 12 - 80 = 150.
+    constexpr float CELL_BEFORE = 150.0F;
+    constexpr float CONTENT = 242.0F;
+
+    SUBCASE("the label column's floor is 4 x the font: 64 at body 16") {
+        // A Transform-only entity's widest label, "position" (44.38 -> 45), plus both cell paddings is 57 --
+        // under the floor, so the floor IS the column: VF15's rule at this theme's body size.
+        CHECK(ed::inspectorLabelColumnWidth(45.0F, CELL_PADDING, BODY, CONTENT) == 64.0F);
+        // The Cube's widest label decides its column now; under the 5 x floor, the floor did.
+        const float column = ed::inspectorLabelColumnWidth(63.0F, CELL_PADDING, BODY, CONTENT);
+        CHECK(column == 75.0F);
+        // The two measured cells differ by exactly the column's change: 80 under the old floor, `column` now.
+        CHECK((CELL - CELL_BEFORE) == ((5.0F * BODY) - column));
+    }
+
+    SUBCASE("the box at the measured cell holds the value with a point to spare") {
+        // 36.667 here; ImGui truncates an item width to a whole point, so it lays the box out at 36 (I289).
+        const float box = ed::inspectorAxisBoxWidth(CELL, LETTER, INNER);
+        CAPTURE(box);
+        CHECK(box >= THREE_DECIMALS + 1.0F);
+        // ANTI-VACUITY -- the defect, reproduced: the budget before this fix (five WHOLE gaps), in the cell
+        // the 80-point floor left, is narrower than the value. 32 is also what I289 saw ImGui lay out there.
+        const float before = (CELL_BEFORE - (3.0F * LETTER) - (5.0F * INNER)) / 3.0F;
+        CAPTURE(before);
+        CHECK(before < THREE_DECIMALS);
+    }
+
+    SUBCASE("the budget fills the cell: three letters, three half gaps, two whole gaps and three boxes") {
+        const float box = ed::inspectorAxisBoxWidth(CELL, LETTER, INNER);
+        const float row = (3.0F * LETTER) + (3.0F * (INNER * 0.5F)) + (2.0F * INNER) + (3.0F * box);
+        CAPTURE(row);
+        CHECK(row == doctest::Approx(CELL).epsilon(1e-6));
+    }
+
+    SUBCASE("total: NaN, the infinities, zero, negatives and an overflow all answer a finite width >= 1") {
+        static_assert(noexcept(ed::inspectorAxisBoxWidth(0.0F, 0.0F, 0.0F)));
+        // From quiet_NaN(), never a signalling one: MSVC quiets an sNaN that passes through a float lvalue.
+        constexpr float NAN_F = std::numeric_limits<float>::quiet_NaN();
+        constexpr float INF_F = std::numeric_limits<float>::infinity();
+        constexpr float MAX_F = std::numeric_limits<float>::max();
+        for (const float bad : {NAN_F, INF_F, -INF_F}) {
+            CAPTURE(bad);
+            CHECK(ed::inspectorAxisBoxWidth(bad, LETTER, INNER) == 1.0F);
+            CHECK(ed::inspectorAxisBoxWidth(CELL, bad, INNER) == 1.0F);
+            CHECK(ed::inspectorAxisBoxWidth(CELL, LETTER, bad) == 1.0F);
+        }
+        CHECK(ed::inspectorAxisBoxWidth(MAX_F, -MAX_F, 0.0F) == 1.0F);     // 3 x -MAX overflows to -inf
+        CHECK(ed::inspectorAxisBoxWidth(0.0F, 0.0F, 0.0F) == 1.0F);        // a zero-width cell
+        CHECK(ed::inspectorAxisBoxWidth(-250.0F, LETTER, INNER) == 1.0F);  // a negative cell
+        // A negative letter or gap is finite arithmetic: it widens the box, and the answer stays finite.
+        const float negativeLetter = ed::inspectorAxisBoxWidth(CELL, -LETTER, INNER);
+        const float negativeGap = ed::inspectorAxisBoxWidth(CELL, LETTER, -INNER);
+        CHECK(std::isfinite(negativeLetter));
+        CHECK(negativeLetter >= 1.0F);
+        CHECK(std::isfinite(negativeGap));
+        CHECK(negativeGap >= 1.0F);
+    }
 }

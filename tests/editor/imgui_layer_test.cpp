@@ -22725,3 +22725,104 @@ TEST_CASE("editor: the icon consumers, as source text (task E.6.1, I285)") {
     CHECK(countLinesContaining(browser, "AERO_ICON_CORNER_LEFT_UP") == 1U);
     CHECK(countLinesContaining(browser, "\"<  ..\"") == 0U);
 }
+
+// ---- I289: the Inspector's axis boxes at the new metrics (task E.6.1, the manual validation pass) ---------
+// The pass measured the X/Y/Z boxes clipping "0.000" to "0.00" in a 258-wide right dock where the branch
+// point showed it whole. TH11 holds the arithmetic at tier 0; this case holds what ImGui LAID OUT.
+TEST_CASE("editor: the Inspector's axis boxes hold a three-decimal value (task E.6.1, I289)") {
+    // What "0.000" occupies in Body at scale 1 -- ImGui's own advances, measured, never a restated literal.
+    // DragScalar draws its value with RenderTextClipped over the bare frame (no frame padding), left-aligned
+    // and clipped once it is wider, so a box at least this wide shows the value whole.
+    const std::array<char32_t, 2> points{U'0', U'.'};  // "0.000" is four of the first and one of the second
+    const EditorFontMeasurement body = measureEditorFonts(WITH_ICONS, EditorFontFace::Body, points, 1.0F);
+    REQUIRE(body.ok);
+    REQUIRE(body.glyphs.size() == 2U);
+    REQUIRE(body.glyphs[0].found);
+    REQUIRE(body.glyphs[1].found);
+    const float threeDecimals = (4.0F * body.glyphs[0].advanceX) + body.glyphs[1].advanceX;
+    CAPTURE(threeDecimals);
+    REQUIRE(threeDecimals > 0.0F);
+
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    // 1294 wide, because that is the width whose DEFAULT layout builds the 258-wide right dock the pass
+    // measured: buildDefaultLayout gives the left dock 20% and then the right 25% of what is left, each split
+    // truncated after the 2-point separator, so trunc(1292 x 0.2) = 258 leaves 1034 and 1032 - trunc(1032 x
+    // 0.75) = 258. A 1080-wide window builds a 216-wide dock (content 200, cell 108, measured).
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "inspector axis boxes i289", .width = 1294, .height = 1600});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    auto* const inspector = dynamic_cast<engine::editor::InspectorPanel*>(app->panels().find("Inspector"));
+    REQUIRE(inspector != nullptr);
+
+    // The default scene's Cube: Transform's position, rotation and scale are three axis rows.
+    engine::World& world = app->world();
+    engine::Entity cube{};
+    world.eachEntity([&](engine::Entity e) {
+        if (world.name(e) == "Cube") {
+            cube = e;
+        }
+    });
+    REQUIRE(cube.valid());
+    app->selection().set(cube);
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+
+    // THE ROUTING BASELINE in the Right node: Material in front, and the Inspector provably not drawing.
+    app->requestPanelFocus("Material");
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+    const auto idle = app->panelDrawnCount("Inspector");
+    REQUIRE(app->tick());
+    REQUIRE(app->panelDrawnCount("Inspector") == idle);
+    app->requestPanelFocus("Inspector");
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+    REQUIRE(app->panelDrawnCount("Inspector") > idle);
+
+    const float content = inspector->lastContentWidth();
+    const float box = inspector->lastAxisBoxWidth();
+    const float slack = inspector->lastAxisRowSlack();
+    CAPTURE(content);
+    CAPTURE(box);
+    CAPTURE(slack);
+    if (!engine::editor::sceneIoAvailable()) {
+        // REFLECT TOOLS OFF, at runtime (no #if): components draw no field rows, so no axis row drew.
+        MESSAGE("I289: reflect tools OFF -- no field rows, so no axis row drew");
+        CHECK(box == 0.0F);
+        CHECK(slack == 0.0F);
+    } else {
+        REQUIRE(box > 0.0F);  // an axis row really drew this frame
+        // THE GEOMETRY GATE: 242 is the measured content width of the 258-wide dock (258 - 2 x 8 of
+        // window padding). The claim is made only there or wider, because CI's macOS runner delivers
+        // windows narrower than requested (I233, I231) and a narrower dock has a narrower cell by design.
+        constexpr float MEASURED_CONTENT = 242.0F;
+        if (content >= MEASURED_CONTENT) {
+            CHECK(box >= threeDecimals);
+            // The row as DRAWN ends inside its cell, so the SameLine gaps and inspectorAxisBoxWidth's
+            // budget agree. Half a point absorbs the float sums of three boxes and five gaps; a disagreement
+            // costs whole points (a whole gap where the budget has a half is 3 per letter, 9 per row).
+            CHECK(slack >= -0.5F);
+        } else {
+            MESSAGE("I289: no fit asserted, the content is " << content << " < " << MEASURED_CONTENT);
+            WARN(content >= MEASURED_CONTENT);
+        }
+    }
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}

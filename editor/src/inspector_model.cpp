@@ -495,14 +495,42 @@ AxisResetAction axisResetAction(std::optional<std::size_t> axis, FieldKind kind,
     return action;
 }
 
+namespace {
+
+// task E.6.1: the label column's floor, in multiples of the font size -- 4, retuned from task E.3.1's 5.
+// The 5 was judged against ProggyClean at 13 (a 65-point floor). At body 16 it is 80, while IBM Plex Sans
+// at 16 draws most labels NARROWER than ProggyClean did at 13 (about 0.8x), so the floor rather than a
+// label took the column and the difference came out of every value cell -- enough, with the theme's wider
+// gaps, to clip "0.000" in a 258-wide dock (TH11, I289). 4 x 16 = 64 is the old 65 again, and the Cube's
+// widest label ("meshIndex": 63 measured, + 2 x 6 of cell padding = 75) decides its column, not the floor.
+constexpr float LABEL_COLUMN_FLOOR_FONT_MULTIPLE = 4.0F;
+
+}  // namespace
+
 float inspectorLabelColumnWidth(float widestLabelPx, float cellPaddingPx, float fontSizePx,
                                 float availableWidthPx) noexcept {
-    const float floorPx = fontSizePx * 5.0F;
+    const float floorPx = fontSizePx * LABEL_COLUMN_FLOOR_FONT_MULTIPLE;
     // std::max, not a bare `availableWidthPx * 0.5F`: a zero- or negative-width dock IS reachable (a
     // panel dragged to its minimum, or the frame a dock split settles), and std::clamp with lo > hi
     // is UNDEFINED BEHAVIOUR. VF15(d) is the arm that drives it under UBSan.
     const float ceilPx = std::max(floorPx, availableWidthPx * 0.5F);
     return std::clamp(widestLabelPx + (2.0F * cellPaddingPx), floorPx, ceilPx);
+}
+
+float inspectorAxisBoxWidth(float cellWidth, float letterWidth, float itemInnerSpacing) noexcept {
+    // [letter][gap/2][box] x3 with a whole gap between the units: 3*letter + 3*(gap/2) + 2*gap + 3*box ==
+    // the cell. The half gap is spelled exactly as drawAxisRow spells it, so the budget fills the cell; ImGui
+    // then truncates each box to a whole point (CalcItemWidth, imgui.cpp:12323), so the row as drawn ends
+    // under 3 points short of the cell's edge and never past it.
+    const float letterGap = itemInnerSpacing * 0.5F;
+    const float gaps = (3.0F * letterGap) + (2.0F * itemInnerSpacing);
+    const float budget = (cellWidth - (3.0F * letterWidth) - gaps) / 3.0F;
+    // FINITENESS FIRST: std::max(NaN, 1.0F) is NaN, as std::clamp(NaN, ...) is on libc++, so a NaN or an
+    // infinity in any input -- or a sum that overflows -- would otherwise reach SetNextItemWidth.
+    if (!std::isfinite(budget)) {
+        return 1.0F;
+    }
+    return std::max(budget, 1.0F);
 }
 
 }  // namespace engine::editor
