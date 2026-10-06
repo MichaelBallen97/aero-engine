@@ -18807,3 +18807,201 @@ for the keyboard-close case was found; no report has been filed.
    is true only where the focus is back by then. Windows' and Linux's timing is unmeasured; their validation rows
    record a raise line per close.
 4. **AppKit's key window, not the accessibility API's `AXFocused`, is what decides whether SDL gets keys.**
+
+### E.6.1 — Font, icon set and theme system — OPENS Epic E.6: three Plex faces, one theme, one UI scale
+
+The editor stops drawing in ImGui's embedded ProggyClean and gets a visual system. This entry covers four things: the fonts, the theme, the UI scale, and the literal policy that keeps all of it portable.
+
+**The fonts.** The faces are IBM Plex Sans Regular (body, ImGui size 16), Plex Sans SemiBold (strong) and Plex Mono Regular (mono).
+- **Vendored** byte-identical under `editor/third_party/fonts/` (OFL-1.1, Reserved Font Name "Plex", never subset), with Lucide 1.49.0 alongside (ISC; Feather-derived glyphs MIT).
+- **Embedded at build time.** `cmake/embed.cmake` runs `cmake -P cmake/embed_run.cmake` once per TTF. Each generated translation unit holds an anonymous-namespace array and one `std::span<const std::uint8_t>` accessor declared in `editor/src/editor_font_data.hpp`, includes that header **by name**, and gets the header's directory through a source-file `INCLUDE_DIRECTORIES` property scoped to the generated files.
+- **Loaded in one place.** `editor_fonts.cpp` is the only `AddFont` TU. Lucide is merged into Body and Strong **after** Plex, at `SizePixels = 11` against 16 and `GlyphOffset.y = 1.0`. Every add sets `FontDataOwnedByAtlas = false`. A face that fails to add fails `ImGuiLayer::create` with one ERROR, and there is no fallback.
+- **Consumers.** The Console pushes Mono for its message column, the Inspector pushes Strong for component headers, and both push at size 0 so a row keeps its height. The Create menu draws icons through `MenuItemEx`/`BeginMenuEx`, and the Hierarchy's two Create Empty items go through `drawCreateKindItem`. The asset browser's parent bar shows `corner-left-up`.
+
+**The theme and the UI scale.** One constexpr `EDITOR_THEME`, in a pure public header (`editor_theme.hpp`), owns:
+- the 28-token palette sampled from the mocks;
+- the type scale;
+- every `ImGuiStyle` size, alignment and behaviour member (64, `sizeof(ThemeMetrics) == 308`, its padding and member count pinned in `TH5`);
+- the per-role colours;
+- every Category-B value, moved byte-identical: the axis trio, the gizmo style, the light-gizmo tints, the asset-kind colours, the swatch-label rule, the viewport overlay and view-axis colours, and the three clears.
+
+The builder and the scale work like this:
+- **The builder.** `buildEditorStyle(theme, uiScale)` is pure: a fresh `ImGuiStyle{}`, every member and all 63 colour slots from the theme, `ScaleAllSizes(uiScale)`, then a floor that keeps every scaled member whose theme value is ≥ 1 at ≥ 1. `applyEditorStyle` is the one writer.
+- **The scale.** `uiScale = resolveUiScale(SDL_GetWindowDisplayScale, SDL_GetWindowPixelDensity, previous)`: total, quantised to 0.05 by division, clamped to [0.5, 4], with no platform branch. `style.FontScaleDpi` is its one stored copy, and `io.ConfigDpiScaleFonts` is off.
+- **The rebuild.** `ImGuiLayer::beginFrame` re-resolves the scale before every `NewFrame` and rebuilds the style, never scaling it in place, only when the scale changes, logging one INFO line.
+- **The viewport.** Every point-authored length is multiplied by the scale once at the boundary, through non-defaulted `uiScale` parameters on `resolveGizmoScreenSize`, `viewAxisLayout`, `viewAxisRect` and `buildSelectionOverlay`, plus a pure `scaledGizmoStyle`. `ViewAxisLayout` carries its own scale, so `viewAxisPickAt` cannot use a different one.
+
+**The literal policy.** Editor string and character literals stay 7-bit, because MSVC builds this tree without `/utf-8` and Lucide's UTF-8 hits CP1252-undefined bytes. A non-ASCII mark comes only from `AERO_GLYPH_*` (13 typographic marks) or `AERO_ICON_*` (67 Lucide icons, named by upstream name and pinned against `codepoints.json`). `GL6` is a tier-0 lexer over every editor source and header that enforces it.
+
+**The built-in component count stays TEN. No `engine/`, shader, `docs/09`, prefs or default-scene byte changed.**
+
+**Thirty commits** on `feat/E.6.1-font-icon-theme`, branch point `9932823`:
+- **The plan's eight:** `aa2608c` vendoring, `750f303` the theme, `f2e7b06` glyphs and icons, `40d911a` fonts, `0e80764` the style, `ad4fc32` the panels, `c6b8bc5` viewport chrome, `bb8b8f7` the consumers.
+- **One measured fixture fix:** `70561d3` (I231).
+- **One from the sabotage matrix:** `31e7e74`.
+- **Fifteen from the code-review round**, `aa54461` through `60eb798`.
+- **Five from the manual validation pass:** `263e820` (V1), `585cf83` (V2), and `30c64e6`, `cc1fcf2` and `8f16a2c`, which closed what the code-review rounds of V2's fix found it had left.
+
+Merged as **`2b1971e`** (PR #119, a true merge commit). CI: three runs, all 6 / 6 green — `37453412216` on `60eb798` (the first push, after the code-review round), `37471820600` on `585cf83`, and `37494052494` on `8f16a2c`, the merged head (the runs on `30c64e6` and `cc1fcf2` were superseded by later pushes).
+
+**Measured at `cc1fcf2`**, whose tree differs from the merged head only by one header comment (both presets rebuilt and agreeing):
+- **Doctest totals:** 1428 / 2214 / 283 / 40 / 73 / 14 / 28 → **1428 / 2244 / 295 / 40 / 73 / 14 / 28**.
+  - Shell +30: TH1–TH11, US1–US9, GL1–GL7, CR10–CR12.
+  - Imgui +12: I277–I289 added, I230 deleted.
+- **`ctest -N`:** 183 / 170 / 93 unchanged as **sets**, with both reduced configurations configured fresh; both presets pass 183 / 183.
+- **Guards:**
+  - math 541 → **552**;
+  - project-no-delete B 95 → **97**;
+  - audio-boundary 55 → **57** and boundary-probes 57 → **59** "other CMake files swept", because both sweep the two new `cmake/embed*.cmake` (the plan predicted only math and no-delete to move);
+  - golden, platform, rhi and scene byte-identical.
+- **Lint:** clang-format exits 0 over 61 files, also under CI's exact 18.1.3 (installed from PyPI into a scratch virtualenv); clang-tidy (macosx15.4) exits 0 over 37 TUs.
+- **Warning sweep:** 59 TUs recompiled, no warnings.
+- **`git ls-files`:** `editor/src/*.cpp` 97, `editor/include/aero/editor/*.hpp` 69.
+- **Display:** I136 passed on 1× externals. With the built-in Liquid Retina XDR panel attached (3024×1964, 2×), the whole GPU tier passed, I136 included — **AC-14, measured.**
+
+#### ★ The spec and plan corrections that changed a shape
+
+1. **The window-creating GPU population is 229 cases, one window each.** That is 194 at 320×180, 21 at 900×600, 13 at 1280×800 and 1 at 640×480. The spec said 117; the plan's first re-count said 143 / 177. Both numbers came out of reading, and the awk walk in the plan's step 0 is the measurement.
+2. **Default Wayland doubled only the STYLE.** The display content scale is set to the output scale only under `SDL_HINT_VIDEO_WAYLAND_SCALE_TO_DISPLAY` (`SDL_waylandvideo.c:1044`), so today's Wayland font was ×1.
+3. **Font data sits behind accessor functions, not `extern const` UPPER_CASE arrays.** `.clang-tidy` has `VariableCase: camelBack` and no `GlobalConstantCase`, so such an array is a naming error on the Linux lint lane.
+4. **The ImGui half is two headers:** an ImGui-free `editor_theme_ui.hpp` and an ImGui-including `editor_theme_imgui.hpp`. This avoids an incomplete-type return the Linux tidy lane might judge.
+5. **`ImGuiLayer` stores `platform::Window*`,** because its header promises no SDL type.
+6. **`buildSelectionOverlay` takes `uiScale`,** because `appendPointMarker` consumes the marker constant.
+7. **Lucide's lowercase and digit glyphs advance 0 or 1000 units,** so a Lucide-first merge breaks text. `I277`'s merge-order arm is the witness.
+8. **IBM Plex's `LICENSE.txt` (vendored as `OFL.txt`) ships CRLF (93 `\r`).** The tree's blanket `* text=auto eol=lf` would have committed a file that is not upstream's, so both font directories are `-text`, `*.ttf` is `binary`, and the vendoring check hashes the committed **blobs** rather than the working files.
+9. **`I278` measures icon INK, not the glyph quad.** Every Lucide 1.49.0 glyph box reaches the baseline (`yMin = 0`), so a quad-centre metric cannot pass at any offset. The offset is snapped to whole points per baked size (`imgui_draw.cpp:4819-4820`), and 1.0 measures mean −0.022 / max 0.5 dp at 1×.
+10. **This build's `ImWchar` is 16-bit,** so a code point above U+FFFF reaches the font as U+FFFD (`ImTextCharFromUtf8`). The harness measures it that way.
+
+#### Where the implementation departed from the plan
+
+- **`I231`'s short window moved 600 → 768.** At the new metrics (body 13 → 16, frame 19 → 24, `ItemSpacing.y` 4 → 6) its floored-and-fitting regime is H ∈ [640, 895], and 600 had sent every frame to the WARN fallback, so the subcase's main CHECK ran nowhere. The **tall** subcase now asserts the layout's own answer for the recorded metrics (CHECK where the recorded avail fits, WARN otherwise), because CI's short macOS runner cannot be assumed to fit the new fit bound of 83.
+- **`I233` hides the side panels.** Five Small tiles need 392 dp at body 16, against roughly 324 on CI's runner. At width 985 it passes with the hide and fails without it.
+- **`I286`'s `ConfigDpiScaleFonts` arm is two sets.** The writer set is `{imgui_layer.cpp}` and the naming set is `{editor_theme_ui.cpp, imgui_layer.cpp}`, because the I280 snapshot reads the flag.
+- **The step-7 call-site check could not hold as written.** 25 of the 47 `buildSelectionOverlay` calls span two lines or name their vector differently, so a bracket-depth parse proved all 47 instead of the literal grep.
+
+#### Traps found, each measured
+
+- **MSVC's `std::array` iterator is a class, not a pointer.** `const auto* x = arr.begin()` is C3535 on Windows alone, while libc++ and libstdc++ accept it. Write `const auto`.
+- **A generated TU that `#include`s an absolute path breaks MSVC on a non-ASCII checkout.** MSVC decodes the source through the code page. Include by name and give the directory on the command line.
+- **ImGui 1.92.8's `ScaleAllSizes` truncates EVERY size, borders and separators included** (`imgui.cpp:1602-1651`). Any UI scale in [0.5, 1) — X11 at `Xft.dpi` 90 resolves to 0.95 — would zero every 1-dp border, `SeparatorSize`, `TreeLinesSize`, `TabMinWidthBase` and `MouseCursorScale`, putting every tooltip under the cursor. The pre-E.6.1 editor had the same defect.
+- **ImGui 1.92.8 ignores `GlyphRanges` on dynamic glyph loads** (it reads them only on the legacy preload path, `imgui_draw.cpp:3538`). Restricting a face takes `GlyphExcludeRanges`.
+- **`git grep -E` on macOS reads `\s` (like `\b`) as a literal.** A guard written with it can never fire. The plan's "no defaulted `uiScale` parameter" check was vacuous until it used `[[:space:]]`. **And `grep -P` works in the session shell only through the ugrep wrapper**: under BSD `grep` it errors out and prints nothing, which reads as the expected "nothing".
+- **A `\u` escape inside a generated plan or edit can arrive DECODED.** GL6's rule-(c) self-test came back as a raw `é` twice, and both were caught by an ASCII scan of the file.
+- **A digit-separator self-test with an even separator count cannot fail** (`1'000'000`), because a broken lexer pairs the quotes. Seed S16 was green until `1'000` / `0xFF'FF` were added.
+
+#### ★ The code-review round
+
+Two passes (production, tests), then two re-review passes, ending in APPROVE. Each fix lands in its own commit with a seed proof.
+
+**Production fixes:**
+- the absolute `#include` (`aa54461`);
+- the sub-1 truncation, first for thicknesses (`2be8921`) and then generalised to every scaled member with a theme value ≥ 1, `MouseCursorScale` included (`60eb798`);
+- six stale ProggyClean comments (`9fa6282`, `b4888d8`);
+- the MSVC `auto*`-from-iterator lines (`5309a22`).
+
+**Test fixes:**
+- GL6 self-tests that could not fail, plus octal, unterminated and newline arms (`c5a2ad6`, `03e8db8`);
+- I282 pins the rebuild before `NewFrame` and the `resolveUiScale(displayScale, pixelDensity, …)` argument order at both sites (`2c03a8e`);
+- I278 proves the ink was measured, and I279 pins per-face coverage (`bee7420`): Latin-1, Latin Extended-A and Cyrillic in all three faces; Greek in the Sans faces; only π in Mono;
+- I231's tall arm (`f8e2d33`);
+- I287 pins every panel's role reads at exact per-(file, role) counts (`7094c8b`, `663ca94`);
+- US8's scale-1 arm (`7630021`);
+- TH5's padding and member count (`7a15356`).
+
+#### ★ The sabotage matrix — 33 seeds, one hole, closed
+
+- **S16 was the hole:** a lexer that opens a char literal at a post-digit quote passed both the self-test and the tree scan, because the tree's only separator literal also has an even count. Closed by `31e7e74` and re-seeded red.
+- **S6 is red through `US3` alone.** `US6`'s grid never reaches the final clamp, so this is a non-finding.
+- **S7 and S11 were adapted to the real code** (no generic merge helper; a "built" check keyed on the live style).
+- **S27, S31 and S1's behavioural half are manual-only by design.** No lane runs at a UI scale other than 1, and no tier measures a widget rect.
+
+#### What was deliberately left out (D25), and which task holds each
+
+**Not built:** no light theme, theme selection, user theme file or per-user UI-scale preference (`editor_prefs` is untouched); no per-panel restyle; no Category-B value change; no engine change; no thick lines; no CJK or emoji coverage; no FreeType; no kerning; no `/utf-8` (the two macro headers make it unnecessary); no licences panel.
+
+**Who holds each piece:**
+- **E.6.2**
+  - The toolbar's glyphs are in the roster (`mouse-pointer-2`, `move`, `rotate-cw`, `scaling`, `magnet`, `globe`, `play`, `pause`, `step-forward`, `undo-2`, `redo-2`).
+  - An accent-filled active tool needs `onAccent` text.
+  - Shortcut hints are ASCII or an icon: Plex has no `⌘ ⇧ ⌥ ⏎`.
+- **E.6.3**
+  - The per-panel restyles.
+  - The component → icon mapping.
+  - The first consumers of the `small` size.
+  - The Category-B decisions: the mock's axis hues and grey folders against today's identity colours.
+  - `textFaint` is decorative only.
+- **E.6.4:** `dialog`, `accentBorder`, `success` and `onAccent` are in the palette.
+- **Unowned:**
+  - `THUMBNAIL_EDGE_TEXELS` 128 → 256 if validation row 9 judges 2× insufficient.
+  - `PREVIEW_MAX_EXTENT` 512 → 768 if row 10 does.
+  - FreeType hinting at 1×.
+  - A light or user theme, and a UI-scale preference.
+  - A CJK/emoji fallback face merged after Plex.
+  - Licence notices beside a packaged editor.
+  - A theme answer for `ImGuiItemFlags_MixedValue`.
+  - ImGuizmo's hit tolerances above 100 %.
+  - E.1.1's thick lines (still FIRED, still unowned).
+
+#### The sentences that govern new work
+
+- **`EDITOR_THEME` is the one source of every colour, size and type value.** A new colour is a theme token, never a file-local constant (`TH1`–`TH10`, `I287`).
+- **`buildEditorStyle` is the only builder and `applyEditorStyle` the only writer.** Rebuild, never `ScaleAllSizes` a live style. A scaled member with a theme value ≥ 1 is floored at 1 (`I280`, `I286`).
+- **The UI scale is `displayScale ÷ pixelDensity`, with no platform branch.** `FontScaleDpi` is its one copy, and `ConfigDpiScaleFonts` stays off (`US1`–`US6`, `I281`, `I282`).
+- **A pure function that consumes a dp constant takes a non-defaulted `float uiScale`,** and a laid-out widget carries its scale (`US7`–`US9`, `I288`).
+- **`editor_fonts.cpp` is the only `AddFont` TU.** Plex before Lucide in every merge, `FontDataOwnedByAtlas = false` on every add, never `GetFontSize()` passed to `PushFont` (`I277`, `I286`).
+- **An editor literal stays 7-bit.** Non-ASCII goes only through `AERO_GLYPH_*` / `AERO_ICON_*`, and a hex escape is spliced between literals, never inside one (`GL6`).
+- **Never deduce `auto*` from a standard-library iterator** (MSVC).
+- **A generated TU includes its header BY NAME.** Its directory is passed on the command line, scoped to the generated sources: MSVC reads source text through the code page, so an absolute non-ASCII path breaks the include.
+- **A tuning constant written in font units is calibrated to one face.** A font change re-measures every one that binds (label floors, tile multiples, panel layouts) against the previous build at the same size; a failing-test sweep cannot see them.
+
+#### ★ The manual validation pass found two defects that no automated tier could see
+
+**Result:** RUN on macOS 2026-10-06/07, **11 / 11 executable rows**, after five fix commits (two defects, and what the code-review round of their fixes found).
+- **The rig:** a signed `.app` driven on the second screen (1080×1920 portrait), with a branch-point `.app` built in its own worktree for the A/B rows.
+- **Not executable on this hardware:**
+  - rows 2, 9, 10 and 18 (no 2× panel attached during the pass). Row 18's automated half had been measured green at step 5 with the Retina panel attached.
+  - rows 14–16, which belong to Windows and Linux.
+
+**V1 — the menu bar's Create ▸ Empty had no icon.** `shell_ui.cpp:235` still called a plain `MenuItem`, a third host the plan never listed. It is fixed by `263e820` and pinned by `I285`. **A source-text pin over the TUs a plan names cannot see a host it did not name.**
+
+**V2 — the Inspector's X/Y/Z values clipped where the branch point showed them whole.**
+- **The symptom:** at a 258-px dock, the box was 32 px against the 32.89 px `0.000` needs in Plex at 16; the branch point's was 40.
+- **The cause:** E.3.1's two tuning values. The label floor of `5 × fontSize` was tuned on ProggyClean and binds at 80 px at body 16. The letter-to-box gap became the theme's 6.
+- **The fix, in `585cf83`:** the floor is now 4 × font, and each letter sits half an `ItemInnerSpacing` from its own box, through the pure `inspectorAxisBoxWidth`. Its tests are `TH11` (tier 0) and `I289` (GPU, with three read-only seams).
+- **What that fix's code-review round found, closed by `30c64e6`:**
+  - **The band:** the half gap still left `0.000` whole only from content 231, against the branch point's 225 (a 241–246-px dock). Each letter now sits one point from its box (`AXIS_LETTER_GAP_DP`), and the budget takes both gaps as parameters, so `drawAxisRow` hands it what its `SameLine` calls spell. The box at content 225 is exactly 33 against the 32.89 `0.000` needs, and the branch point's was 35 against ProggyClean's 35.
+  - **The tests:** `I289` passed a seed that restored the old formula, and its slack check sat behind a width gate CI's narrow runner never reaches. It now opens a 1206-wide window (a 241 dock), bounds the slack on both sides at any width where the box clears its floor, and pins `drawAxisRow` to the budget; six seeds are red.
+  - **On screen:** both builds with the dock dragged to exactly 241 px show `0.000` and `1.000` whole and `-0.000` clipped.
+  - **What stays, derived at scale 1** for an entity whose label column ties (every mesh or primitive entity):
+    - a two- or three-integer-digit value (`10.000`, `180.000`) needs 3 more points of content than at the branch point, which is 3 × the letter gap;
+    - four digits and up need 6 or more, from Plex's 7.385-point digits against ProggyClean's 7;
+    - a negative value under 10 000 needs 3 to 6 fewer (Plex's minus is narrower), and from five integer digits the wider digits cancel that.
+
+    The validation page carries the table and E.6.3 inherits it.
+  - **A second code-review pass on `30c64e6` found one more test hole, closed by `cc1fcf2`:** `I289` measured its fonts at scale 1 while the panel draws at the live scale, so its slack bound could go red on a correct tree at 150 or 200 percent. It now measures at `app->uiScale()` and asserts the fit only at scale 1. That pass also caught an over-broad clause about negative values in the gap's own comment, corrected by `8f16a2c`.
+- **The lesson: a font-unit tuning constant calibrated on one face is miscalibrated on another.** The plan's D23 procedure reads only failing tests, and nothing failed. Only the branch-point A/B (row 8) saw it.
+
+**What the pass measured:**
+- **Row 3, the palette:** every fill within ±1; the accent exact; every text ink equal to its token at one coverage across all three channels.
+- **Row 4:** a 24-px frame, menu bar and tab bar; the Material mode switch sits between window heights 360 and 340, with a 160-px preview on both sides of it.
+- **Row 12, the viewport:** **0 / 0 differing pixels against the branch point** (grid off / on), with the extent chip and the T/R/S/World/View buttons masked. The two windows were sized so both extent chips read 565×1338. The control gives 12,714.
+- **Row 13:** moving between displays logs no `UI scale` line, and the chrome differs by 0 pixels.
+- **Row 17, cost:** the same zone set; `renderScene` 0.369 / 0.381 ms against 0.386 / 0.385 at the branch point.
+
+**Two of the page's own expectations were wrong:**
+- **The Size `—`** belongs to search hits and to unknown sizes; a folder's Size cell is empty.
+- **The ERROR line** came from a read-only Save Scene. A non-PNG asset is "unavailable", and a broken model is a WARN.
+
+**Not regressions** (truncated at the branch point too): the Assets header clipping the List radio, search, sort and size controls in a 566-px dock; the Console's Auto-scroll; the Material Tint values; the right dock's front tab off its strip.
+
+**For E.6.3:** the View popover's "Display" and "Overlays" headings use `TextDisabled`, at 2.26:1 contrast.
+
+**Build & dependency impact:** no vcpkg or `/vcpkg` change, no `find_package`, no new target and no link-line
+change. New data: `editor/third_party/fonts/` — three Plex TTFs, Lucide's TTF and `codepoints.json`, both
+licences and a README with every upstream hash (1 483 160 bytes of font data, `-text` in `.gitattributes`,
+`*.ttf` binary). New build scripts: `cmake/embed.cmake` and `cmake/embed_run.cmake`, which turn each TTF into a
+generated TU under the build tree's `editor/generated/`, regenerated when its TTF changes; `aero_editor_core`
+gains those four sources. `docs/01` and `docs/03` gain the two licence rows. **Windows' `Configure & build`
+steps grew** by 2m04s (Debug, 12m03s → 14m07s) and 1m42s (Release, 8m05s → 9m47s) on the merged head's run
+(`37494052494`) against `main`'s last green run at the branch point (`36863422906`), inside the plan's
+three-minute rule (the two earlier complete runs grew 2m14s to 2m46s), with no C1060, C1128, C1091 or C2026 in the log.

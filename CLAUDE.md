@@ -10,10 +10,11 @@ Two platform matrices, never to be conflated: the **editor** runs on macOS/Windo
 
 ## Current state — read this first
 
-**Phase E (Editor Experience) is the open front**, executing between Phase 3 and Phase 4. **Twenty of its
-24 tasks are merged: Epics E.1–E.5 are all CLOSED IN CODE, and E.5.2, which closed E.5, is macOS-validated
-17 / 17. E.6.1–E.6.4 are what is left — four tasks, planning only.** Phase 3 remains OPEN behind it: all
-seven of its epics are closed in code, and what is left is its deliverable gate and the validation debt.
+**Phase E (Editor Experience) is the open front**, executing between Phase 3 and Phase 4. **Twenty-one of
+its 24 tasks are merged: Epics E.1–E.5 are all CLOSED IN CODE, and E.6.1, which opened Epic E.6 (IBM Plex
+fonts, Lucide icons, one `EDITOR_THEME`, one UI scale), is macOS-validated 11 / 11 executable rows. E.6.2–E.6.4
+are what is left — three tasks, planning only.** Phase 3 remains OPEN behind it: all seven of its epics are
+closed in code, and what is left is its deliverable gate and the validation debt.
 
 **Phase E is lettered, not fractioned.** `3.5` and `3.5.1`/`3.5.2` are already Phase 3's skeletal-animation
 epic and its tasks, and numbering is append-only, so a "Phase 3.5" would collide with referenced numbers.
@@ -24,20 +25,20 @@ In Notion its `Phase #` is `3.5` — a sort key, not an identifier.
 (E.2.2). Nothing since E.2.2 has added one, so the five-generation-site rule and the component-count sweep
 have not fired since — **they still apply in full to the next built-in, whenever one arrives.**
 
-**Next free ids, measured by a whole-`tests/` token sweep after the three fixes from E.5.2's pass merged
-(#116, #117, #118): `I277` at the ImGui tier**, `AA68`, `AD77`, `AM29`, `AV66`, `BR31`, `BV10`, `CC15`, `CR10`,
-`DD31`, `DG26`, `DR28`, `EC5`, `GR34`, `IO24`, `IR23`, `IX19`, `MB27`, `PX6`, `RF8`, `RT31`, `SQ15`, `SS64`, `TS11`,
-`X32`. Taken tier-0 prefixes include `MR`
-(E.3.4, `MR1`–`MR21`), `PJ` (E.4.1, `PJ1`–`PJ57`), `CN` (E.4.2, `CN1`–`CN25`), `IX` / `BV` (E.4.4,
-`IX1`–`IX18`, `BV1`–`BV9`), `MB` / `CC` (E.4.5, `MB1`–`MB26`, `CC1`–`CC14`) and `CR` / `EC` (E.5.2,
-`CR1`–`CR9`, `EC1`–`EC4`); `MC` is mesh cook's (`MC1`–`MC58`), which is why the card cache took `CC`. The
-other ceilings: `SS` 63, `IO` 23, `RT` 30, `TS` 10, `IR` 22. E.4.1 took `I176`–`I185`, E.4.2 `I186`–`I192`, E.4.3
-`I210`–`I226`, E.4.4 `I227`–`I229`, its fix (#111) `I230`–`I231` plus `AV55`–`AV59`, E.4.5 `I232`–`I243` plus
-`AV60`–`AV65`, `TS5`–`TS10` and `IR9`–`IR12`, its follow-ups `I244`, E.5.1 `I245` plus `BR23`–`BR30`,
-`SQ13`–`SQ14` and `PX5`, and E.5.2 `I246`–`I255` plus `IR13`–`IR22`, `X25`–`X31`, `GR27`–`GR33`,
-`DD29`–`DD30`, `DG21`–`DG25` and `RF4`–`RF7`. The E.3.2 keyboard fix (#116) took `I256`–`I258` plus
-`RT28`–`RT30`, the Save As suffix fix (#117) `I270` plus `SS55`–`SS63` and `IO22`–`IO23`, and the dialog keyboard
-fix (#118) `I275`–`I276`.
+**Next free ids, measured by a whole-`tests/` token sweep on E.6.1's merged tree: `I290` at the ImGui tier**,
+`AA68`, `AD77`, `AM29`, `AV66`, `BR31`, `BV10`, `CC15`, `CR13`, `DD31`, `DG26`, `DR28`, `EC5`, `GL8`, `GR34`, `IO24`,
+`IR23`, `IX19`, `MB27`, `PX6`, `RF8`, `RT31`, `SQ15`, `SS64`, `TH12`, `TS11`, `US10`, `X32`. Taken tier-0 prefixes
+include `MR` (E.3.4, `MR1`–`MR21`), `PJ` (E.4.1, `PJ1`–`PJ57`), `CN` (E.4.2, `CN1`–`CN25`), `IX` / `BV` (E.4.4,
+`IX1`–`IX18`, `BV1`–`BV9`), `MB` / `CC` (E.4.5, `MB1`–`MB26`, `CC1`–`CC14`), `CR` / `EC` (E.5.2, `CR1`–`CR9`,
+`EC1`–`EC4`) and `TH` / `US` / `GL` (E.6.1, `TH1`–`TH11`, `US1`–`US9`, `GL1`–`GL7`); `MC` is mesh cook's
+(`MC1`–`MC58`), which is why the card cache took `CC`. The other ceilings: `SS` 63, `IO` 23, `RT` 30, `TS` 10,
+`IR` 22. E.4.1 took `I176`–`I185`, E.4.2 `I186`–`I192`, E.4.3 `I210`–`I226`, E.4.4 `I227`–`I229`, its fix (#111)
+`I230`–`I231` plus `AV55`–`AV59`, E.4.5 `I232`–`I243` plus `AV60`–`AV65`, `TS5`–`TS10` and `IR9`–`IR12`, its
+follow-ups `I244`, E.5.1 `I245` plus `BR23`–`BR30`, `SQ13`–`SQ14` and `PX5`, and E.5.2 `I246`–`I255` plus
+`IR13`–`IR22`, `X25`–`X31`, `GR27`–`GR33`, `DD29`–`DD30`, `DG21`–`DG25` and `RF4`–`RF7`. The E.3.2 keyboard fix
+(#116) took `I256`–`I258` plus `RT28`–`RT30`, the Save As suffix fix (#117) `I270` plus `SS55`–`SS63` and
+`IO22`–`IO23`, the dialog keyboard fix (#118) `I275`–`I276`, and E.6.1 `I277`–`I289` plus `CR10`–`CR12`.
+**E.6.1 DELETED `I230`** with the ProggyClean remap table it pinned — the id is retired, never reused.
 **`I193`–`I209`, `I259`–`I269` and `I271`–`I274` are FREE and were never claimed by anything that merged** (the
 last two were reserved by the fix plans and left unused) — a
 gap costs nothing, and renumbering a block into one invites exactly the silent collision this project has
@@ -69,7 +70,7 @@ it is one line plus a cost measurement), `<root>/Library/` as a save destination
 or created, anywhere. Those four are the unowned handoffs, not a gap in the predicate.
 
 > **Per-task history — what each task shipped, what it deliberately left out, every trap and every dead end —
-> lives in `docs/10-engineering-log.md`**, which carries a `### <task>` entry for every task through E.5.2,
+> lives in `docs/10-engineering-log.md`**, which carries a `### <task>` entry for every task through E.6.1,
 > each with its own `#### The sentences that govern new work` subsection. **Grep it before re-deriving
 > anything.**
 >
@@ -109,6 +110,7 @@ validation pass exists for any task in any phase.** N-E = not executable, N-R = 
 | E.5.2 Create menu + named selector | #115 | `ab3fd72` | **17 / 17** executable rows, row 18 N-E (1× displays), nothing failed |
 | 2.5.1 fix — Save As always writes `.scene.json` | #117 | `35bb8db` | **15 / 15** — the first run failed rows 5–7 (the panel appends its hidden `.json` to whatever is typed) |
 | 2.5.1 fix — the keyboard after a native dialog | #118 | `df28447` | **15 / 15** executable rows, row 15 N-E (a held hardware key) |
+| E.6.1 Font, icon set and theme system | #119 | `2b1971e` | **11 / 11** executable rows; rows 2, 9, 10, 18 N-E (1× displays), 14–16 are Windows/Linux. **The pass found two defects no tier could see**, both fixed in the PR: the menu bar's Create ▸ Empty had no icon, and the Inspector's X/Y/Z values clipped where the branch point showed them whole |
 
 **E.3.2 landed before E.3.1** — legal, disjointly id-reserved; the reservation is discharged and the
 numbering is contiguous.
@@ -122,7 +124,7 @@ numbering is contiguous.
 | **Phase 2** — Editor | **COMPLETE, gate met 2026-08-02.** All six epics closed and macOS-validated; Windows/Linux rows pending for every task (`editor/VALIDATION.md`). Gate artifact: `samples/phase-2-editor-scene/` — data, deliberately not `add_subdirectory`'d. |
 | **Phase 3** — Asset Pipeline & 3D Content | **OPEN.** All seven epics (3.1–3.7) **CLOSED in code**. What is left is the gate below and the validation debt. |
 | **Phase 3 gate** | Drop a rigged glTF/FBX in → PBR materials + shadows + a playing animation + **an audible sound**. The audible half exists in code as of 3.7.2 and **has never been heard on any platform.** |
-| **Phase E** — Editor Experience | **OPEN.** Epics E.1–E.5 **CLOSED in code** — 20 of 24, see the index above. **E.6 is the open front: four tasks, planning only.** ONE validation page is unrun (E.1.5) and is the whole of this OS's remaining Phase E risk. |
+| **Phase E** — Editor Experience | **OPEN.** Epics E.1–E.5 **CLOSED in code** — 21 of 24, see the index above. **E.6 is the open front: E.6.1 merged, three tasks left, planning only.** ONE validation page is unrun (E.1.5) and is the whole of this OS's remaining Phase E risk. |
 | **Phase E gate** | Open a project and land in the scene you were last editing, on a lit grid floor under a sky; create a Cube from the menu, drop a material on it and see it shade; aim a spot light with a visible gizmo; rename, move and delete assets without leaving the editor. Gate artifact: `samples/phase-E-editor/`. |
 
 ### Engine layers, in dependency order
@@ -150,11 +152,12 @@ numbering is contiguous.
   `editor_prefs` (E.3.2), `material_preview_rig` (E.2.4), `viewport_icons`, `viewport_gizmos` (E.2.3) —
   plus `project_state` (E.4.1), `scene_containment` (E.4.2) and `material_card` (E.4.5) in Epic E.4, all
   three PURE and all three tier-0 reachable in all three build configurations, and `create_menu` (E.5.2 —
-  ImGui-free: the create table, the anchor and the seeds).
+  ImGui-free: the create table, the anchor and the seeds), and E.6.1's `editor_theme` (PURE, constexpr) plus the
+  macro-only `editor_glyphs.hpp` / `editor_icons.hpp`; its font bytes are four generated TUs, never tracked.
   **DO NOT record a "pair count" here — it is not reproducible**: E.2.4 measured the tree six ways looking
   for the figure this line used to carry and none of the six was it. The two figures anyone can re-run are
-  `git ls-files`: **`editor/src/*.cpp` = 95** and **`editor/include/aero/editor/*.hpp` = 66** at E.5.2
-  (`ab3fd72`), which added the public `create_menu` pair and the src-private `create_menu_ui` pair.
+  `git ls-files`: **`editor/src/*.cpp` = 97** and **`editor/include/aero/editor/*.hpp` = 69** at E.6.1
+  (`2b1971e`).
   `/tools` links `aero::assets` and `aero::editor_core` through `aero_cooker`, which is legal because
   `tools/` is enumerated by neither half of the golden rule.
 
@@ -250,11 +253,15 @@ comments as anti-vacuity canaries (deleting one is a loud exit 2).
 **does not word-split under zsh**: one bogus pathspec, no matches, exit 1 — and a `&& … || echo "none (ok)"`
 idiom **reports a clean result on a dirty tree**. Use `${=F}` or literal paths. Same species as the POSIX `\b`
 degradation on BSD, and 3.7.2's `echo "exit=$(basename $X) $?"` reading the *command substitution's* status.
+**E.6.1 found two more:** `git grep -E` on macOS reads **`\s` as a literal**, exactly as it reads `\b`, so a
+guard spelled with it can never fire (use `[[:space:]]`); and **`grep -P` works in this machine's shell only
+through its ugrep wrapper** — under BSD `grep` it errors out and prints nothing, which reads as the expected
+"nothing". Use `-E`/`-F`, or `command grep` to see what a script will see.
 **Check every guard grep in BOTH directions: a guard command that cannot fail is worse than no guard command.**
 
 **AND A SOURCE-TEXT TOKEN SCAN IS BLIND TO INTEGER-LITERAL SUFFIXES (E.3.1).** The pin guarding "the panel
 restates no axis colour" missed `226U` — digits followed by an identifier character — which is exactly how
-`axis_palette.hpp` spells its own bytes.
+`editor_theme.hpp` spells the axis bytes (`axis_palette.hpp`'s names are aliases into `EDITOR_THEME` since E.6.1).
 
 **clang-tidy NEEDS THE PINNED SDK.** With `SDKROOT=$(xcrun --sdk macosx --show-sdk-path)` it exits 1 with tens
 of thousands of errors inside system libc++ headers (`__builtin_clzg` and friends) — **a red verdict on a
@@ -291,6 +298,19 @@ must stay exhaustive keeps having none.
 `4831f92`)**, so libstdc++ refuses a no-argument `optional<Nested>::emplace()` inside that class — seen only by
 CI's Linux clang-tidy step; libc++ (the local tidy), GCC and MSVC accept it. Build such a value whole and
 assign it.
+
+**NEVER DEDUCE `auto*` FROM A STANDARD-LIBRARY ITERATOR (E.6.1, `5309a22`).** MSVC's `std::array` iterator is a
+class, so `const auto* x = arr.begin()` (or `std::find_if(…)` over an array) is C3535 **on Windows alone** —
+libc++ and libstdc++ hand back a raw pointer and accept it. Write `const auto`.
+
+**A GENERATED TU INCLUDES ITS HEADER BY NAME (E.6.1, `aa54461`).** MSVC builds this tree without `/utf-8` and
+decodes source text through the code page, so an absolute `#include "…"` spelling a non-ASCII checkout path
+breaks there. `cmake/embed.cmake` writes `#include "editor_font_data.hpp"` and passes the directory through a
+source-file `INCLUDE_DIRECTORIES` property scoped to the generated files; any future generator does the same.
+
+**A NEW `cmake/*.cmake` MOVES TWO GUARD FIGURES ON A TASK THAT ADDS NO TARGET (E.6.1).** audio-boundary's and
+boundary-probes' last figure count every CMake file they sweep, `*.cmake` included, so `embed.cmake` + `embed_run.cmake` moved them
+55 → 57 and 57 → 59. That move is expected; a move in any other guard is still a stop-and-find-out.
 
 #### Components, reflection and serialization
 
@@ -357,7 +377,15 @@ frame, `imgui.cpp:19611-19613`) or the node has no tab bar yet; the router HOLDS
 closed popup, which ImGui hands back a frame later. `I256` is the witness, and `keyboardFocusPanelId()` is the only
 tier that tells "raised" from "took the keyboard".
 
-**RE-READ AT EVERY ImGui / ImGuizmo BUMP:** `imgui.cpp:13740` and `:13754` (focus side effects); `:8848`
+**RE-READ AT EVERY ImGui / ImGuizmo BUMP:** E.6.1's — `imgui.cpp:1512-1590` (`ImGuiStyle`'s members; `TH5` pins
+`sizeof(ThemeMetrics) == 308`, so a new member is theme work) and `:1602-1651` (`ScaleAllSizes` truncates EVERY
+size); `imgui.h:1886` (`ImGuiCol_COUNT`, `static_assert`ed at 63); `imgui.h:529-530` (never `PushFont` a
+`GetFontSize()`); `imgui.cpp:9743` (`FontScaleDpi` multiplies every font size) and `:16701` (what
+`ConfigDpiScaleFonts` would overwrite); `imgui_internal.h:3598-3599` (`BeginMenuEx`/`MenuItemEx`, the Create
+menu's icons); `imgui_draw.cpp:3538` (`GlyphRanges` is read only on the legacy preload path — a dynamic face is
+restricted with `GlyphExcludeRanges`), `:4819-4820` (a merged `GlyphOffset` is snapped to whole points per baked
+size) and `:3743-3744` (the one free of `FontData`, gated on `FontDataOwnedByAtlas`). And: `imgui.cpp:13740` and
+`:13754` (focus side effects); `:8848`
 (`g.LastItemData = ParentLastItemDataBackup`, so a last-item rect read after a `BeginPopup`/`EndPopup` pair
 names the item *before* the popup); `:3418` (`Begin` sets `DisplayStart` to −1); `:8279` (an API-positioned
 popup is never clamped); `:3918` (a label truncates at its first `##`); `imgui_widgets.cpp:6802` +
@@ -387,8 +415,10 @@ DECISION.** `ImGuizmo::GetStyle()` returns `gContext.mStyle` by reference and `B
 it, so the viewport's per-frame write is idempotent and self-healing — **so a task that wants a different
 gizmo style must change `defaultGizmoStyle()`, never write the global from a second site.** `I125(e)` asserts
 `ImGuizmo::GetStyle()` appears exactly **twice** in `viewport_panel.cpp`. Its colours are DERIVED from
-`axis_palette.hpp` and `viewport_panel.cpp` states no gizmo colour literal at all, because **a restated
-literal one byte off is invisible to every automated tier** (E.1.4's sabotage row 20).
+`axis_palette.hpp` (aliases into `EDITOR_THEME` since E.6.1) and `viewport_panel.cpp` states no gizmo colour
+literal at all, because **a restated literal one byte off is invisible to every automated tier** (E.1.4's
+sabotage row 20). Since E.6.1 its LENGTHS pass through the pure `scaledGizmoStyle(style, uiScale)` once, at
+that one write.
 
 **A CHROME WIDGET THAT SUBMITS NO ImGui ITEM IS INVISIBLE TO ImGuizmo'S OWN PROTECTION (E.1.3).**
 `CanActivate()` is `IsMouseClicked(0) && !IsAnyItemHovered() && !IsAnyItemActive()`, so a widget drawn with
@@ -553,28 +583,48 @@ before constructing an `EditorApp` is silently displaced by the Console panel's 
 when the app clears the slot at teardown. **Any case observing a log record around an `EditorApp` lifetime
 must install its callback AFTER the last `app.reset()`**, inside the scope that still owns the device.
 
-**THE STYLE IS DOUBLED ON A RETINA DISPLAY AND THE FONT IS NOT (E.3.4) — E.6.1 OWNS THIS, AND BY THE CODE
-PATH IT IS macOS-ONLY.** The style takes `SDL_GetWindowDisplayScale` (`imgui_layer.cpp:87-89`), which is
-pixel density × content scale — **2.0** on Retina (`SDL_video.c:1905-1908`). The font takes `FontScaleDpi`,
-which `ConfigDpiScaleFonts` rewrites EVERY frame (`imgui.cpp:16701-16702`, re-armed at `:6293`) from
-`SDL_GetDisplayContentScale` (`imgui_impl_sdl3.cpp:963`). SDL's Cocoa backend never sets that, so it is
-**1.0** (`SDL_video.c:879-880`). Windows, X11 and Wayland do set it, so at 200% the font should scale there
-too — read from source, unmeasured. Measured at scale 2.0 in a 320x180 window: `availHeight`
-**98** (`windowHeight − 82`), `fontSize` 13, `frameHeight` **25**, `textLineHeight` 13, `itemSpacingY` **8**,
-`SeparatorSize` **2** — so fixed chrome costing 71 points at 1x costs **103 against 98**. A layout with one
-mode answers that with a zero-height element, **failing on every Retina Mac while the three 1x CI lanes stay
-green.** Any panel with fixed chrome needs a MODE, a floor, and a threshold chosen to make the derived height
-**continuous** across the boundary — **and must RESERVE that chrome before sizing its flexible region**
-(`assetBrowserLayout`, #111: `Issues` and the footer had fallen off the panel at every size measured).
+**ONE UI SCALE SIZES THE STYLE, THE FONTS AND THE VIEWPORT'S CHROME (E.6.1, closing E.3.4's doubled style).**
+`resolveUiScale(SDL_GetWindowDisplayScale, SDL_GetWindowPixelDensity, previous)` — quantised to 0.05 **by
+division**, clamped to [0.5, 4], **no platform branch** — is 1 on a Retina Mac (the style used to be doubled
+there, the font not) and on default Wayland (style doubled too), the desktop scale on Windows and X11.
+**`style.FontScaleDpi` is its ONE stored copy; `io.ConfigDpiScaleFonts` stays OFF** (it reads the content scale,
+1.0 on Cocoa). The style is **REBUILT, never rescaled**: `buildEditorStyle` (pure) → fresh `ImGuiStyle{}` →
+`ScaleAllSizes` → every scaled member with a theme value ≥ 1 floored at 1, because `ScaleAllSizes` truncates and
+below scale 1 would zero a border, `TabMinWidthBase` or `MouseCursorScale` (`I280`'s universal). `applyEditorStyle`
+is the one writer; the scale is re-resolved **before every `NewFrame`**, rebuilding only on a change (`I282`). **A dp length reaches ImGui units ×
+`uiScale` exactly ONCE, at the viewport's boundary**: a pure function consuming a dp constant takes a
+**non-defaulted** `float uiScale` (`US9` pins the five), and a laid-out widget carries its scale. **A width that
+holds text is a font multiple, never a literal.** **Still binding from the 2.0 measurement**: a panel with fixed
+chrome needs a MODE, a floor, and a threshold that keeps the derived height **continuous** across the boundary —
+**and must RESERVE that chrome before sizing its flexible region** (`assetBrowserLayout`, #111).
 
-**THE UI FONT IS ProggyClean AT 13, ADDED EXPLICITLY, AND IT DRAWS `?` PAST ASCII, LATIN-1 AND 26 REMAPPED
-WINDOWS-1252 MARKS (#111).** `addEditorDefaultFont()` uses `AddFontDefaultBitmap()`, never
-`AddFontDefault()`, which picks ProggyForever from an expected size of 15. It remaps U+2026, U+2014 and 24
-more onto the CP1252 slots the font carries; U+20AC is drawn natively. Before this, every `…` and `—` drew
-`?` with every test green. **A new UI symbol draws `?` unless it is on that list, and a font change
-invalidates the table.** `I230(g)` pins the table to Unicode's `CP1252.TXT`, because `{† ‡ š ž}`, `{Š Ž}`
-and `{‹ ›}` are geometry twins. **Never hold an `ImFontGlyph*` across another lookup**: a bake reallocates
-the array.
+**A TUNING CONSTANT WRITTEN IN FONT UNITS IS CALIBRATED TO ONE FACE (E.6.1's validation pass).** E.3.1's label
+floor, `5 × fontSize`, was tuned on ProggyClean at 13; in Plex at 16 it bound at 80 px and clipped the
+Inspector's `0.000` in a 258-px dock where the branch point showed it whole — with every test green, because a
+plan that re-measures what FAILS cannot see a constant nothing asserts. Fixed as `4 ×` plus a one-point
+letter gap (`AXIS_LETTER_GAP_DP`) through the pure `inspectorAxisBoxWidth` (`TH11`, `I289`). **A font change re-measures every
+font-unit constant that binds (label floors, tile multiples, layout thresholds) against the previous build at
+the same dock size** — a branch-point A/B is the only witness.
+
+**THE EDITOR DRAWS IBM PLEX WITH LUCIDE ICONS, AND AN EDITOR LITERAL STAYS 7-BIT (E.6.1, retiring ProggyClean
+and #111's remap table).** Body (Plex Sans, ImGui size 16), Strong (SemiBold) and Mono (Plex Mono, no icons),
+vendored unmodified (OFL-1.1, RFN "Plex"; `-text`, because the licence ships CRLF) and embedded through span
+accessors; Lucide merged into Body and Strong **AFTER Plex** — Lucide maps `-`, digits and lowercase to icon-width
+glyphs (`I277`). `editor_fonts.cpp` is the only `AddFont` TU, every add sets `FontDataOwnedByAtlas = false`, a
+failed face fails `ImGuiLayer::create` with no fallback (`I286`), and `GetFontSize()` is never passed to
+`PushFont`. **MSVC builds without `/utf-8`, so a narrow literal round-trips through CP1252**, where icon bytes are
+undefined and a `\u` escape is unrepresentable: every `editor/` literal stays 7-bit and non-ASCII comes ONLY
+through the hex-escape macros `AERO_GLYPH_*` (13 marks, all faces) and `AERO_ICON_*` (Body and Strong), spliced
+BETWEEN literals — `GL6`'s lexer enforces it; comments are free. **`⌘ ⇧ ⌥ ⏎` do not exist in Plex**; a missing
+glyph draws `U+FFFD`. **Never hold an `ImFontGlyph*` across another lookup** (a bake reallocates), and a claim
+about where a glyph SITS measures its ink, not its box (`I278`). Full rules: `.claude/rules/editor.md`.
+
+**`EDITOR_THEME` IS THE ONE SOURCE OF EVERY COLOUR, SIZE AND TYPE VALUE (E.6.1)** — a constexpr value in a PURE
+public header; all 63 ImGui colour slots are mapped (a slot ImGui adds is a `static_assert`). **A new colour is a
+theme token, never a file-local constant** (`I287` pins every panel's role reads). Category A (chrome, UI roles)
+follows the mock; **Category B** (the viewport's colours, the axis trio, identity colours, clears) moved in
+**byte-identical** (0 / 0 differing viewport pixels) and changes only as a stated decision — E.6.3's.
+`TextDisabled` is for disabled widgets; de-emphasis is `textMuted`.
 
 **A NON-DEFAULTED PARAMETER ON A WIDELY-CALLED EDITOR FUNCTION IS A 57-LINE EDIT, AND IT IS STILL THE RIGHT
 CALL.** `buildSelectionOverlay` has **38 call sites, 37 in `selection_overlay_test.cpp`**; `projectToViewport`
@@ -834,6 +884,12 @@ per-line string accumulator could not express a set claim at all. A third file n
 (both directions proven). Note an `#include <aero/render/sky_pass.hpp>` line is invisible to that sweep by
 construction — it spells `sky_pass`, not `SkyPass`.
 
+**A PIN OVER THE HOSTS A PLAN NAMES CANNOT SEE A HOST IT DID NOT NAME (E.6.1's validation pass).** The Create
+menu's icon pins covered the two Hierarchy menus the plan listed, and the menu bar's `Create ▸ Empty` — a third
+host, a plain `MenuItem` in `shell_ui.cpp` — drew no icon with every test green. **Find the hosts by sweeping
+for the BEHAVIOUR's call (`grep` for every `"Empty"` menu item), never by reading the plan's list**; `I285` now
+pins the third.
+
 **`PanelRegistry::noteDrawn` IS WHAT MAKES A TAB ASSERTABLE AT ALL (E.3.2).** `ImGui::Begin` returns false for
 a docked window that is not the selected tab and `drawPanels` skips `onDraw` entirely, so "the Inspector
 raised" was **unfalsifiable at every automated tier** before it — 3.1.3's log records two attempts that passed
@@ -907,10 +963,12 @@ assertion vacuously true for every type in the language (`HE17`'s shape).
 **CI'S macOS RUNNER FITS FOUR MEDIUM TILE COLUMNS IN THE ASSETS GRID, SO A GPU CASE THAT NEEDS SEVERAL TILES
 IN ONE ROW DRAWS THEM SMALL (E.4.5).** Run `36238862338` failed `I233` alone: the runner's contents width was
 at least 362 and under 454.5, so the fifth Medium tile wrapped to a second row its short panel never showed
-and was never drawn — `d - decodes == 2U` read 1, twice. A Small tile is 58.5 wide and five need 324.5;
+and was never drawn — `d - decodes == 2U` read 1, twice. A Small tile was 58.5 wide and five needed 324.5;
 `EditorApp::requestAssetBrowserTileSize` is the seam, and `I233` and `I243` use it. A case that needs tiles
 drawn keeps its row short and ends in a loud final count, so a still-narrower runner fails with a clear value,
-never vacuously.
+never vacuously. **Tile widths are font multiples, so E.6.1's body 16 made five Small tiles need 392 dp against
+roughly 324 on the runner** — `I233` now also hides the side panels (green at width 985 with the hide, red
+without it). **Re-derive every tile-count fixture at a font change.**
 
 #### Sabotage method
 
@@ -959,16 +1017,16 @@ is a configure-time property. **Rebuild before you believe any doctest number, a
 presets so a disagreement is visible.** A recorded total goes stale the same way: `origin/main`'s own shell
 total was one stale at E.1.4's gate. **Read the binary, never the block.**
 
-**After the three fixes from E.5.2's pass (#116, #117, #118)**, measured on #118's head `e551e2d` (its tree is
-`main` at the merge) on both presets, rebuilt and agreeing, with both reduced configurations configured fresh at
-`908185d` and rebuilt at `e551e2d`:
+**After E.6.1 (#119)**, measured on `cc1fcf2` (the merged head `8f16a2c` changes one header comment) on both
+presets, rebuilt and agreeing, with both reduced configurations configured fresh at `b8d3d02` and rebuilt at
+`cc1fcf2`:
 
 | Measurement | Value |
 |---|---|
 | `ctest -N` | **183** in both presets (178 + the five `labels_*`); **170** shader-tools-OFF (exactly the 13 `shaderc.*` removed), **93** reflect-tools-OFF (86 `reflect-gen.*` + four doctest binaries removed), nothing added in either; `cooker.*` **70 / 70 / 70** |
-| doctest, seven binaries | **1428 / 2214 / 283 / 40 / 73 / 14 / 28** |
-| guards | math **541**, platform **92**, rhi **163**, scene **92**, golden-rule **165**, project-no-delete **A=7 B=95** (2 permitted), audio **11-3-55**, probes **6-57** |
-| `git ls-files` | `editor/src/*.cpp` **95**, `editor/include/aero/editor/*.hpp` **66** |
+| doctest, seven binaries | **1428 / 2244 / 295 / 40 / 73 / 14 / 28** |
+| guards | math **552**, platform **92**, rhi **163**, scene **92**, golden-rule **165**, project-no-delete **A=7 B=97** (2 permitted), audio **11-3-57**, probes **6-59** |
+| `git ls-files` | `editor/src/*.cpp` **97**, `editor/include/aero/editor/*.hpp` **69** |
 
 The seven doctest binaries, in order: `aero_tests`, `aero_editor_shell_test`, `aero_editor_imgui_test`,
 `aero_scene_serialize_test`, `aero_editor_inspector_test`, `aero_reflect_meta_test`, `aero_reflect_json_test`.
@@ -1007,15 +1065,12 @@ that peaked at 7.6 GB here. **Each run must name which binaries it built and ran
 **`check-math-boundary.sh` counts `git ls-files`, so it reads a STALE number until new files are `git add`ed**
 — stage first, then measure.
 
-**`I136` IS DISPLAY-DEPENDENT, SO THE LOCAL GPU TIER GATES AT EITHER 282 OR 283 OF 283 AND THE RUN MUST SAY
-WHICH.** It fails `REQUIRE(drawExtent.width > 4U)` with value **4** on a 2x display — deterministically at
-E.3.4's and E.4.1's gates and at E.4.4's branch point, on an unmodified `HEAD` — and it **PASSED at E.4.2's,
-E.4.4's, #111's, E.4.5's, E.5.1's, E.5.2's and the three fixes' gates** (30 assertions each), the last eight
-measured with only 1x displays attached.
-**A green run is therefore not
-evidence it is fixed**; it is pre-existing, it is the DPI story's, and it is handed to E.6.1. **Name it
-either way, with the display configuration; never let a known failure be quietly counted as green, and
-never let it hide a new one.**
+**`I136` IS NO LONGER DISPLAY-DEPENDENT (E.6.1, AC-14).** It failed `REQUIRE(drawExtent.width > 4U)` with value
+**4** on a 2x display from E.3.4 to E.4.4's branch point, because the style was doubled on Retina; with one UI
+scale (1 on a Retina Mac) the whole GPU tier, `I136` included, passed with the built-in Retina panel attached
+at E.6.1's step 5, and on 1× externals at every later gate. **The local GPU tier gates at 295 of 295 whatever
+is attached** — still name the display configuration in a gate record, because a 2× run is the only local
+witness that the UI scale stays 1 on Retina.
 
 **COUNTS DIVERGE BY OS, so never assume one.** Windows skips **FOUR** e2e cases —
 `golden-rule.include_scan_e2e`, **`project-no-delete.no_delete_e2e`**, `audio-boundary.guard_e2e` and
@@ -1044,7 +1099,10 @@ mono 48 kHz 0.5 s, **exactly 48 064 B each**, cut at a whole number of cycles so
 `docs/10`; this is the ledger of what is still owed.
 
 **ONE PAGE HAS NOT BEEN RUN ON ANY PLATFORM: E.1.5's.** It is the whole of Phase E's validation risk on this OS
-— every other task in E.1–E.5 is macOS-validated (see the index above). **E.3.2's page WAS run on 2026-09-12**
+— every other task in E.1–E.5, and E.6.1, is macOS-validated (see the index above). **E.6.1's page is RUN, 11 / 11
+executable rows** (2026-10-07); its row 8 (a branch-point A/B) and row 6 each found a defect no tier could see,
+both fixed in the PR. **Its 2× rows (2, 9, 10, 18) need a Retina panel attached**, and rows 9 and 10 decide two
+unowned handoffs below. **E.3.2's page WAS run on 2026-09-12**
 (9 PASS / 1 PARTIAL / 2 NOT EXECUTABLE, against `b172198`) and was carried here as unrun until 2026-10-01; its record
 is now in `docs/10`. **The three fixes' pages are RUN on macOS** — #116 10 / 10, #117 15 / 15, #118 15 / 15
 executable — and each pass found the next defect: #116's row 8 a closed popup still holding the keyboard, #117's
@@ -1178,8 +1236,8 @@ display's ICC profile, and **there is no `renderFrame` Tracy zone in this tree**
 
 ### Next
 
-**E.6 is the open front: four tasks, planning only** — E.6.1–E.6.4.
-See `docs/tasks/phase-E.md`, and `docs/tasks/phase-3.md` for what Phase 3 still owes.
+**E.6 is the open front: three tasks, planning only** — E.6.2–E.6.4, each building on E.6.1's theme, fonts and
+icons. See `docs/tasks/phase-E.md`, and `docs/tasks/phase-3.md` for what Phase 3 still owes.
 
 **Ownership of the open work.** **E.4.3 IS MERGED, and it did NOT use `directoryWithin` /
 `normalizeForContainment` — deliberately, and the reason generalises.** Those answer *"is this ABSOLUTE
@@ -1198,15 +1256,19 @@ document's name on four surfaces — what it left out, and its handoffs, are in 
 theme or DPI change moves the Inspector's reference row and the material slot's together. **E.5.1 and E.5.2
 are MERGED** (`834bcb3`, `ab3fd72`), closing Epic E.5; what each left out is in `docs/10`. The default scene
 is deliberately unchanged by every Phase E task so far, and its seventeen `entityCount() == 4` pins are
-byte-identical. **E.6.1** owns the DPI
-story E.1.5 deferred, plus the two measurements E.3.4 handed it (the style/font scale gap and `I136`), E.4.5's
-three: the dark swatch label (`DARK_SWATCH_LABEL`, the one colour literal E.4.5 states) and
-`ImGuiCol_TextDisabled` as theme roles, and whether a 128² thumbnail is enough at 2× — and E.5.2's icons for
-the Create entries. **E.6.2** moves `T R S` and `Local/World`
-into the main toolbar and leaves `View` on the viewport — it is per-view, not per-shell. **E.6.3** splits
-E.2.4's popover into the mock's header dropdowns; the grouping is already the mock's, so it restyles rather
-than regroups. **8.2** inherits IBL/HDRI and the after-opaque sky variant (`SB9`/`SB16` are in place to catch
-a wrong ordering), plus physical light units, IES profiles and area lights.
+byte-identical. **E.6.1 is MERGED** (`2b1971e`) and discharged what E.1.5, E.3.4, E.4.5 and E.5.2 handed it,
+except E.4.5's 128²-at-2× judgement, which is its validation row 9. **E.6.2** moves `T R S` and `Local/World`
+into the main toolbar and leaves `View` on the viewport — it is per-view, not per-shell; its glyphs are already in the icon roster, an accent-filled active
+tool reads `onAccent`, and a shortcut hint is ASCII (`Cmd+Z`) or an icon, because Plex has no `⌘`. **E.6.3**
+splits E.2.4's popover into the mock's header dropdowns; the grouping is already the mock's, so it restyles
+rather than regroups — and it owns the per-panel restyles, the component → icon mapping, the first consumers of
+the `small` type size, the Category-B decisions (the mock's axis hues and grey folders against today's identity
+colours), the View popover's two `TextDisabled` headings (2.26:1, measured), and the Inspector's axis row — the
+mock draws the letter inside its box, and today a value with two or more integer digits needs 3–6 more points of
+content than at the branch point (E.6.1's validation page). **E.6.4** finds `dialog`,
+`accentBorder`, `success` and `onAccent` in the palette. **8.2** inherits IBL/HDRI and the after-opaque sky
+variant (`SB9`/`SB16` are in place to catch a wrong ordering), plus physical light units, IES profiles and area
+lights.
 
 **ONE INSPECTOR-ROW GAP IS OPEN** — E.2.2's **unit-aware row** (`SpotLight`'s cone angles are raw radians
 clamped to `[0, 1.5708]`), a reflect-gen surface first. E.2.1's **enum-aware row is CLOSED by E.5.2's
@@ -1224,7 +1286,7 @@ button's disabled predicate), each with its pinned-source citation, are in `.cla
 `"Delete orphaned .meta?"` from a real row and confirmed it by click and by **Enter**. Until then, Enter had
 only been argued from identical code.
 
-**THIRTY-FIVE UNOWNED HANDOFFS — one per bullet below; re-count the bullets, never the headline.** It read
+**FORTY-THREE UNOWNED HANDOFFS — one per bullet below; re-count the bullets, never the headline.** It read
 "NINE" over a list that already held thirteen, because two "smaller" items, the exposure clause and
 `FillMode::Line` were never counted. Handoffs recorded in their own paragraphs elsewhere in this block (fact
 4's four permitted cases, the inspector-row gap, the closed `File` section) are not repeated here.
@@ -1290,6 +1352,17 @@ only been argued from identical code.
 - **Report the keyboard-close case upstream** (libsdl-org/SDL) — #12684's fix reactivates the app but cannot recreate
   a key window that never existed; the editor's gate retires itself if SDL hands the focus back.
 - **reflect-gen's `parseRangeToken` hex-`F` quirk** — `AERO_RANGE(0, 0x2F)` reads as 2; latent.
+- **`THUMBNAIL_EDGE_TEXELS` 128 → 256** (with the resident budget halved) **if** E.6.1's row 9 judges 128² too
+  soft at 2× — a judgement no 1× display can make.
+- **`PREVIEW_MAX_EXTENT` 512 → 768 if E.6.1's row 10 does** the same for the Material preview.
+- **FreeType hinting at 1×** (E.6.1 D5), on a named legibility complaint — stb_truetype rasterises today.
+- **A light theme, a user theme file, a per-user UI-scale preference** (E.6.1) — `editor_prefs` is their home;
+  `EDITOR_THEME` is one constexpr value today.
+- **A CJK / emoji fallback face merged after Plex** (E.6.1) — user text in those scripts draws `U+FFFD`.
+- **Licence notices shipped beside a PACKAGED editor binary** (E.6.1 D24) — Plex's OFL and Lucide's ISC/MIT
+  texts live under `editor/third_party/fonts/` only.
+- **A theme decision for `ImGuiItemFlags_MixedValue`**, the day a multi-selection edit draws one (E.6.1 D13).
+- **ImGuizmo's hit tolerances above a 100 % UI scale** (E.6.1 R7) — library literals, deliberately unscaled.
 
 **E.1.1's THICK-LINE HANDOFF IS FIRED, NOT CLEARED AND NOT DEFERRED.** E.2.3's macOS pass measured it: icons
 scale exactly 2x and hold 22 points, but **387 of 441 sampled runs across the gizmo are ONE DEVICE PIXEL** —

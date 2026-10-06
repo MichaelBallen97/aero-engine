@@ -820,6 +820,31 @@ Subtasks:
 - `EditorTheme`: palette, rounding, spacing, per-role colours; the scattered panel constants adopt it
 - The dependency lands editor-only, per the dependency-placement invariant
 
+_Outcome:_ **sized L in the roadmap, confirmed L before implementation (D0) and landed L. Merged as PR #119
+(`2b1971e`, a true merge commit), thirty commits — the plan's eight, one measured fixture fix (`I231`), one
+from the sabotage matrix, fifteen from the code-review round and five from the manual validation pass. CI was 6 / 6
+green on `37453412216` (the first push), `37471820600` (`585cf83`) and `37494052494` (`8f16a2c`, the merged head). 33 sabotage
+seeds closed one hole; the validation page is RUN on macOS, 11 / 11 executable rows (2026-10-07), with the 2×
+rows (2, 9, 10, 18) not executable on 1× displays and rows 14–16 owed by Windows and Linux.**
+All four subtasks are discharged. IBM Plex Sans (body, ImGui size 16), Plex Sans SemiBold and Plex Mono are
+vendored unmodified (OFL-1.1, Reserved Font Name "Plex") and embedded at build time, one generated TU per font
+behind span accessors; **the HiDPI story is re-checked on all three OSes** by reading SDL 3.4.12's scale
+arithmetic per backend and measured on macOS, where one UI scale — display scale ÷ pixel density — now sizes the
+style, the fonts and the viewport chrome: it is 1 on a Retina Mac, where the style is no longer doubled and `I136`
+no longer depends on the display. Lucide 1.49.0 (ISC) is merged into the two Sans faces after Plex, and the
+literal policy is stated and enforced: editor literals stay 7-bit and non-ASCII comes only through `AERO_GLYPH_*`
+/ `AERO_ICON_*`, which `GL6`'s lexer checks. `EDITOR_THEME` is one constexpr value owning the mock's 28-token
+palette, all 63 colour slots, every style size and the per-role colours; the panels read it, and the viewport's
+colours moved in byte-identical (0 / 0 differing pixels against the branch point). The dependency is editor-only:
+the golden-rule guard is byte-identical. **The plan's text corrected the spec** in the shapes that mattered — per-font
+TUs and span accessors (the Linux lint naming check), the split ImGui header, `scaledGizmoStyle`, the view-axis
+layout carrying its scale, `buildSelectionOverlay`'s new parameter, and a fixed-window population of 229 cases, not
+117. **The validation pass found two defects no tier could see**, both fixed in the PR: the menu bar's
+Create ▸ Empty had no icon, and the Inspector's X/Y/Z values clipped in a narrow dock because E.3.1's label floor
+was tuned in ProggyClean's font units. **E.6.2, E.6.3 and E.6.4 inherit** the toolbar's glyphs in the roster,
+`onAccent` for accent-filled buttons, the unconsumed `small` size, the Category-B decisions (the mock's axis hues,
+grey folders) and the View popover's `TextDisabled` headings, which are E.6.3's.
+
 ### E.6.2 Main toolbar, breadcrumb and status bar · P0 · M · depends: E.6.1, 2.3.3
 **Goal:** the shell's chrome. There is no toolbar, no status bar and no indication of which
 project or scene is open beyond the window title.
