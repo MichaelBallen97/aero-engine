@@ -474,11 +474,16 @@ TEST_CASE("glyphs: no editor literal carries a non-ASCII byte (task E.6.1, GL6)"
         CHECK(v[0].rule == 'b');
     }
     {
-        // A quoted literal a NEWLINE ends is unterminated -- the rule that keeps a mis-read quote loud.
-        const std::vector<Violation> v = violationsOf("s = \"abc\nx = 1;", false);
-        REQUIRE(v.size() == 1U);
+        // A quoted literal a NEWLINE ends is unterminated -- the rule that keeps a mis-read quote loud. The
+        // next line holds a REAL literal, so this arm can see the newline rule: a lexer that let the first
+        // literal run on would close it at the next line's opening quote, report the ellipsis nowhere, and
+        // read the closing quote as the start of an unterminated literal -- one finding, still on line 1.
+        const std::vector<Violation> v = violationsOf("s = \"abc\nt = \"" + ellipsisBytes + "\";", false);
+        REQUIRE(v.size() == 2U);
         CHECK(v[0].rule == 'u');
         CHECK(v[0].line == 1U);
+        CHECK(v[1].rule == 'a');
+        CHECK(v[1].line == 2U);
     }
     {
         // The six-character universal-character-name escape. "\\u" below is an escaped BACKSLASH and a "u",
