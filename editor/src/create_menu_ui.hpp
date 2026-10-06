@@ -17,8 +17,9 @@ namespace engine::editor {
 [[nodiscard]] std::optional<CreateKind> drawCreateMenuItems(bool enabled);
 
 // task E.6.1: one host-labelled item with `kind`'s icon -- MenuItemEx(label, createKindIcon(kind), nullptr,
-// false, enabled) -- so a host that labels an entry itself (the Hierarchy's two Create Empty items) shows
-// the same icon WITHOUT including imgui_internal.h (decision D-10). True on the frame it was clicked.
+// false, enabled) -- so a host that labels an entry itself (the menu bar's Create > Empty and the Hierarchy's
+// two Create Empty items) shows the same icon WITHOUT including imgui_internal.h (decision D-10). True on the
+// frame it was clicked.
 [[nodiscard]] bool drawCreateKindItem(const char* label, CreateKind kind, bool enabled);
 
 }  // namespace engine::editor

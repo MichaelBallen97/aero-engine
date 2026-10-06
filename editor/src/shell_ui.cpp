@@ -11,7 +11,7 @@
                                       // context.selection.empty(), and panel_context.hpp only
                                       // FORWARD-DECLARES Selection. PUBLIC and ImGui-free.
 
-#include "create_menu_ui.hpp"  // task E.5.2: drawCreateMenuItems -- the ONE drawing helper
+#include "create_menu_ui.hpp"  // tasks E.5.2, E.6.1: drawCreateMenuItems, drawCreateKindItem
 #include "project_ui.hpp"      // task 2.6.1: drawWelcomeWindow / drawNewProjectModal
 
 #include <array>
@@ -232,7 +232,9 @@ void drawMenuBar(PanelRegistry& panels, PanelContext& context, ShellUiState& sta
     // refusal. The menu RECORDS a kind and applies nothing: EditorApp::applyCreate places, pushes, frames
     // and reveals (D1).
     if (ImGui::BeginMenu("Create")) {  // EndMenu ONLY when BeginMenu returned true
-        if (ImGui::MenuItem("Empty", nullptr, false, fileEnabled)) {
+        // task E.6.1: through drawCreateKindItem, like the Hierarchy's two Create Empty items, so Empty
+        // carries its icon here too (I285).
+        if (drawCreateKindItem("Empty", CreateKind::Empty, fileEnabled)) {
             state.createRequest = CreateKind::Empty;
         }
         ImGui::Separator();

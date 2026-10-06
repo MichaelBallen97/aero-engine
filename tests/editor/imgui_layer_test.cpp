@@ -21084,7 +21084,10 @@ TEST_CASE("editor: the Create glue no tier can click holds as source text (task 
         REQUIRE(end < shell.size());
         std::size_t checked = 0;
         for (std::size_t i = start + 1U; i < end; ++i) {
+            // task E.6.1: the Empty item is drawn through drawCreateKindItem( (its icon, I285), so that
+            // spelling is an item too -- without it the Empty item drops out of this walk (REQUIRE reads 1).
             if (shell[i].find("MenuItem(") != std::string::npos ||
+                shell[i].find("drawCreateKindItem(") != std::string::npos ||
                 shell[i].find("drawCreateMenuItems(") != std::string::npos) {
                 CAPTURE(shell[i]);
                 CHECK(shell[i].find("fileEnabled") != std::string::npos);
@@ -22710,6 +22713,14 @@ TEST_CASE("editor: the icon consumers, as source text (task E.6.1, I285)") {
 
     CHECK(countLinesContaining(hierarchy, "drawCreateKindItem(\"Create Empty\", CreateKind::Empty") == 2U);
     CHECK(countLinesContaining(hierarchy, "MenuItem(\"Create Empty\")") == 0U);
+
+    // The menu bar's Create > Empty is the third host-labelled item and goes through the same helper, so
+    // it carries Empty's icon too. It was a plain MenuItem, with no icon, until the manual validation
+    // pass saw it.
+    const std::vector<std::string> shell = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/shell_ui.cpp");
+    REQUIRE(shell.size() > 20U);
+    CHECK(countLinesContaining(shell, "drawCreateKindItem(\"Empty\", CreateKind::Empty") == 1U);
+    CHECK(countLinesContaining(shell, "MenuItem(\"Empty\"") == 0U);
 
     CHECK(countLinesContaining(browser, "AERO_ICON_CORNER_LEFT_UP") == 1U);
     CHECK(countLinesContaining(browser, "\"<  ..\"") == 0U);
