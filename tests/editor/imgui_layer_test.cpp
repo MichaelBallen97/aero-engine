@@ -18924,18 +18924,26 @@ TEST_CASE("editor: the Asset Browser fits its panel with 40 orphans and Issues o
     // longer than any body this panel can reserve.
     REQUIRE(app->assetOrphanCount() == static_cast<std::size_t>(ORPHANS));
 
-    // The panel must fit. The TALL panel always; the SHORT one whenever the layout's own budget fits the
-    // height the panel recorded, which is the header's contract ("only a panel shorter than the fit bound
-    // can scroll") -- the short window is inside it at UI scale 1 (every lane, a Retina display included),
-    // but a runner that shortens the window may push it below, where scrolling is the DESIGNED answer. A
-    // WARN says so instead.
-    const auto checkFits = [&app, tallPanel] {
+    // The panel must fit whenever the layout's own budget fits the height the panel RECORDED -- in BOTH
+    // subcases. `budget <= avail` is assetBrowserLayout's answer for those metrics, and it holds exactly when
+    // the recorded avail is at least the layout's fit bound (footer + header [+ one row + spacing] + 1: the
+    // header's contract, "only a panel shorter than the fit bound can scroll"). Below the bound, scrolling is
+    // the DESIGNED answer, and a WARN says so instead.
+    //
+    // The TALL subcase used to assert no scroll unconditionally, which held only while its runner's panel
+    // cleared the bound. E.6.1 raised the open bound from 64 (23 + 23 + 13 + 4 + 1 at ProggyClean's
+    // metrics) to 83 and cut the avail a given window yields by 14 (600 points measured 87, now 73), and
+    // CI's macOS runner delivers a SHORTER window than requested: its `13 > 13` failure placed that
+    // runner's tall avail, at the old metrics, only somewhere in [64, 115] -- above the old bound, inside
+    // the old floored regime -- which the new metrics move to about [50, 101], across 83. Locally the tall
+    // panel clears the bound, so the CHECK runs here with no WARN line.
+    const auto checkFits = [&app] {
         const AssetBrowserLayoutMetrics m = app->assetBrowserLayoutMetrics();
         const AssetBrowserLayout l = engine::editor::assetBrowserLayout(m);
         const float budget = l.paneHeight + l.issuesHeight + l.footerHeight;
         const float scrollMax = app->assetBrowserScrollMaxY();
         INFO("avail " << m.availHeight << ", budget " << budget << ", scroll max " << scrollMax);
-        if (tallPanel || budget <= m.availHeight) {
+        if (budget <= m.availHeight) {
             CHECK(scrollMax == 0.0F);
         } else {
             WARN(budget <= m.availHeight);
