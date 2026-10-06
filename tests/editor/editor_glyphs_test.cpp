@@ -480,6 +480,14 @@ TEST_CASE("glyphs: no editor literal carries a non-ASCII byte (task E.6.1, GL6)"
         REQUIRE(v.size() == 1U);
         CHECK(v[0].line == 2U);
     }
+    {
+        // AN ODD NUMBER of separators (seed S16). A lexer that opened a character literal at a separator
+        // would pair the two quotes of 1'000'000 into a closed '000' and report nothing; a lone separator
+        // runs to the end of its line instead, so only this arm can tell the two lexers apart.
+        const std::vector<Violation> v = violationsOf("x = 1'000;\ny = 0xFF'FF;\n" + rawInString, false);
+        REQUIRE(v.size() == 1U);
+        CHECK(v[0].line == 3U);
+    }
     CHECK(violationsOf("c = '\"';\n" + rawInString, false).size() == 1U);  // a quote CHARACTER opens nothing
     // asset_actions.cpp's shape: a raw string holding a quote ends at )" and nowhere earlier.
     const std::string rawWithQuote = R"x(bad = R"(*?"<>|:)";)x";
