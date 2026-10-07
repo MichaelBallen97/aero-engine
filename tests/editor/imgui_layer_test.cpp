@@ -22471,7 +22471,7 @@ TEST_CASE("editor: the panels read their roles from the theme (task E.6.1, I287)
     // green while any other read of that role remains: only the count moves. A set claim needs a set
     // assertion, so each file's TOTAL of palette reads is pinned as well, and a read of a role a file has
     // no row for is red too. Counted from the code at E.6.1's second code-review round.
-    constexpr std::array<RoleReads, 28> ROLE_READS{{
+    constexpr std::array<RoleReads, 29> ROLE_READS{{
         {"console_panel.cpp", "critical", 1U},   // logLevelColor's Critical arm
         {"console_panel.cpp", "error", 1U},      // its Error arm
         {"console_panel.cpp", "text", 2U},       // its Info/Off arm and the fallback after the switch
@@ -22491,6 +22491,7 @@ TEST_CASE("editor: the panels read their roles from the theme (task E.6.1, I287)
         {"shell_chrome_ui.cpp", "border", 1U},         // task E.6.2: chromeColors(), each role read once
         {"shell_chrome_ui.cpp", "chrome", 1U},         // task E.6.2: chromeColors(), each role read once
         {"shell_chrome_ui.cpp", "divider", 1U},        // task E.6.2: chromeColors(), each role read once
+        {"shell_chrome_ui.cpp", "hover", 1U},          // task E.6.2: chromeColors(), each role read once
         {"shell_chrome_ui.cpp", "onAccent", 1U},       // task E.6.2: chromeColors(), each role read once
         {"shell_chrome_ui.cpp", "raised", 1U},         // task E.6.2: chromeColors(), each role read once
         {"shell_chrome_ui.cpp", "text", 1U},           // task E.6.2: chromeColors(), each role read once
@@ -23665,6 +23666,14 @@ TEST_CASE("editor: a toolbar request does only what a click on that control coul
     }
     SUBCASE("under Select the step field refuses (seed S21, the snap-step arm; seed S54)") {
         std::optional<engine::editor::EditorApp> app = e62App(*device, *window, ctx);
+        // ANTI-VACUITY, from ImGui's own flag: under Move the field is LIVE, snap off and on alike -- the step is
+        // editable before the toggle is (a record that defaults to false proves nothing by reading false).
+        REQUIRE((app->toolState().mode.tool == TransformTool::Move));
+        CHECK(app->shellChromeRecord().snapField.enabled);
+        app->requestToolbarSnapToggle();
+        e62Ticks(*app, 2);
+        REQUIRE(app->toolState().snap.enabled);
+        CHECK(app->shellChromeRecord().snapField.enabled);
         app->requestToolbarTool(TransformTool::Select);
         e62Ticks(*app, 2);
         CHECK_FALSE(app->shellChromeRecord().snapField.enabled);
@@ -23885,10 +23894,11 @@ TEST_CASE("editor: the toolbar's snap reaches Manipulate per tool, and survives 
         CHECK(r.snapToggle.drawnActive);
         CHECK(r.snapFormat == "%.4g m");  // independent literals, never snapStepFormat's answer
         CHECK(r.snapValue == 0.5F);
-        // The field holds its widest step text in its own face (Mono), whatever the Body/Mono rounding at this
-        // UI scale; the 4-em floor alone clips "0.001234 m" at some fractional scales.
+        // The field is wider than its widest step text by an inset, whatever the Body/Mono rounding at this UI scale
+        // (the 4-em floor alone clips "0.001234 m" at some fractional scales). Both widths come from the chrome's
+        // one measure, so THAT it is taken in Mono is I307(k)'s source pin, not this check.
         CHECK(r.snapFieldTextWidth > 0.0F);
-        CHECK(r.metrics.snapField >= r.snapFieldTextWidth);
+        CHECK(r.metrics.snapField > r.snapFieldTextWidth);
         CHECK(r.metrics.snapField >= 4.0F * r.metrics.fontSize);
         if (ready) {
             CHECK(snapIs(viewport->lastManipulateSnap(), 0.5F));
@@ -24359,11 +24369,12 @@ TEST_CASE("editor: the chrome's pushes, flags, roles and format safety as source
         }
         CHECK(chipAt < stepAt);
         CHECK(stepAt < popAt);
-        const std::string_view widthLine = "metrics.snapField = std::max(SNAP_FIELD_WIDTH_EM * fontSize, widestStep)";
+        const std::string_view widthLine =
+            "metrics.snapField = std::max(SNAP_FIELD_WIDTH_EM * fontSize, widestStep + (2.0F * style.FramePadding.x))";
         CHECK(countLinesContaining(code, widthLine) == 1U);
         // D19: a raised fill, not the theme's inset input fill; one pop for the three slots.
         const std::size_t fillAt = soleLineContaining(code, "PushStyleColor(ImGuiCol_FrameBg, c.raised)");
-        CHECK(soleLineContaining(code, "PushStyleColor(ImGuiCol_FrameBgHovered,") == fillAt + 1U);
+        CHECK(soleLineContaining(code, "PushStyleColor(ImGuiCol_FrameBgHovered, c.hover)") == fillAt + 1U);
         CHECK(soleLineContaining(code, "PushStyleColor(ImGuiCol_FrameBgActive, c.active)") == fillAt + 2U);
         CHECK(countLinesContaining(code, "PopStyleColor(3)") == 1U);
         // ONE spelling of "Scale forces Local": the gizmo's own effectiveSpace, never a second tool comparison.
@@ -24394,11 +24405,12 @@ TEST_CASE("editor: the chrome's pushes, flags, roles and format safety as source
             std::string_view role;
             std::size_t count;
         };
-        constexpr std::array<RoleCount, 14> COUNTS{{{"chrome", 2U},
+        constexpr std::array<RoleCount, 15> COUNTS{{{"chrome", 2U},
                                                     {"raised", 3U},
                                                     {"border", 2U},
                                                     {"active", 3U},
                                                     {"textBright", 2U},
+                                                    {"hover", 1U},
                                                     {"accent", 2U},
                                                     {"onAccent", 1U},
                                                     {"textSecondary", 3U},

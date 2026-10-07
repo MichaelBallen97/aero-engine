@@ -267,6 +267,10 @@ TEST_CASE("status bar: the Assets footer adopted the classification and owns no 
     CHECK(linesWith(code, "deferredSweeps >") == 0U);
     CHECK(linesWith(code, "const WatchState footerState = classifyWatchState(true, watch);") == 1U);
     CHECK(linesWith(code, "footerState") == 2U);  // declared, then handed to assetFooterWatchText -- nothing else
+    // ...and handed WHOLE: no condition between the classification and the words.
+    const std::string_view footerCall =
+        "labelScratch += assetFooterWatchText(footerState, watch.deferredSweeps, watch.unreadableDirs);";
+    CHECK(linesWith(code, footerCall) == 1U);
     for (const std::string_view literal : {"Auto-refresh off", "Watch paused", "Watching (partial",
                                            "Watching -- settling", "folder(s) unreadable", "\"Watching\""}) {
         CAPTURE(literal);

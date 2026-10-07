@@ -47,6 +47,7 @@ struct ChromeColors {
     ImVec4 border;
     ImVec4 active;
     ImVec4 textBright;
+    ImVec4 hover;
     ImVec4 accent;
     ImVec4 onAccent;
     ImVec4 textSecondary;
@@ -64,6 +65,7 @@ struct ChromeColors {
                         .border = toImVec4(EDITOR_THEME.palette.border),
                         .active = toImVec4(EDITOR_THEME.palette.active),
                         .textBright = toImVec4(EDITOR_THEME.palette.textBright),
+                        .hover = toImVec4(EDITOR_THEME.palette.hover),
                         .accent = toImVec4(EDITOR_THEME.palette.accent),
                         .onAccent = toImVec4(EDITOR_THEME.palette.onAccent),
                         .textSecondary = toImVec4(EDITOR_THEME.palette.textSecondary),
@@ -218,10 +220,11 @@ void drawToolbar(ShellUiState& state, const CommandStack& commands, bool fileEna
         const float monoFrame = ImGui::GetFrameHeight();
         // The step field draws in Mono too, so its width is measured in Mono: a FLOOR of SNAP_FIELD_WIDTH_EM Body
         // em, widened to the widest text its formats produce. Body and Mono sizes round independently (IM_ROUND),
-        // so at a fractional UI scale a Body-em width alone clips a ten-glyph "0.001234 m".
+        // so at a fractional UI scale a Body-em width alone clips a ten-glyph "0.001234 m". Plus the frame
+        // padding every other frame keeps, so no glyph's ink lands on the field's border.
         const float widestStep = currentTextWidth(SNAP_FIELD_WIDEST_TEXT);
         ImGui::PopFont();
-        metrics.snapField = std::max(SNAP_FIELD_WIDTH_EM * fontSize, widestStep);
+        metrics.snapField = std::max(SNAP_FIELD_WIDTH_EM * fontSize, widestStep + (2.0F * style.FramePadding.x));
         rec.snapFieldTextWidth = widestStep;
         metrics.itemSpacing = style.ItemSpacing.x;
         metrics.groupPadding = pad;
@@ -320,10 +323,10 @@ void drawToolbar(ShellUiState& state, const CommandStack& commands, bool fileEna
         ImGui::SetCursorScreenPos(ImVec2(groupX + (2.0F * pad) + toggleWidth + style.ItemSpacing.x, monoY));
         ImGui::SetNextItemWidth(metrics.snapField);
         ImGui::BeginDisabled(!fieldEnabled);
-        // D19: the field is a `raised` box like the chip beside it, not the theme's `inset` input fill; hover and
-        // active follow the button slots, so the three states stay distinct.
+        // D19: the field is a `raised` box like the chip and the tool groups, not the theme's `inset` input fill;
+        // hover and active take the button slots' roles, so the three states stay distinct.
         ImGui::PushStyleColor(ImGuiCol_FrameBg, c.raised);
-        ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, ImGui::GetStyleColorVec4(ImGuiCol_ButtonHovered));
+        ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, c.hover);
         ImGui::PushStyleColor(ImGuiCol_FrameBgActive, c.active);
         // Speed 0 with Logarithmic moves ~1 % of the log span per pixel (imgui_widgets.cpp:2573), so six decades
         // take ~100 px; double-click or Cmd/Ctrl-click types a value, which snapStepUpdate clamps.
