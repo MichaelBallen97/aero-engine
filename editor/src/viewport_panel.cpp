@@ -1006,13 +1006,25 @@ void ViewportPanel::updateGizmo(PanelContext& context, Vec2 imageOrigin, Vec2 av
 
     // 2. Mode keys. The third gate removes every overlap with fly's W/A/S/D/Q/E (D7): fly's
     // `keysLive` is `flying && !io.WantTextInput` and fly requires RMB held => gesture == Fly, so
-    // the two gates are mutually exclusive by construction. X is unbound anywhere else in the tree.
-    const bool keysLive = hovered && !io.WantTextInput && gesture.gesture == CameraGesture::None;
-    gizmoMode = nextGizmoMode(
-        gizmoMode, GizmoModeInput{.translatePressed = keysLive && ImGui::IsKeyPressed(ImGuiKey_W, /*repeat=*/false),
-                                  .rotatePressed = keysLive && ImGui::IsKeyPressed(ImGuiKey_E, /*repeat=*/false),
-                                  .scalePressed = keysLive && ImGui::IsKeyPressed(ImGuiKey_R, /*repeat=*/false),
-                                  .spaceTogglePressed = keysLive && ImGui::IsKeyPressed(ImGuiKey_X, /*repeat=*/false)});
+    // the two gates are mutually exclusive by construction -- for task E.6.2's Q exactly as for W and E.
+    // X is unbound anywhere else in the tree.
+    // task E.6.2 (D5): INERT MID-DRAG -- `!ImGuizmo::IsUsing()` asks "was a drag in flight as of the last
+    // Manipulate", the deliberate pre-Manipulate reading item 4 already makes, never the F8 mistake -- and INERT
+    // UNDER A COMMAND MODIFIER, a rule nextGizmoMode owns: IsKeyPressed ignores modifiers, so Ctrl+Q would
+    // otherwise both request the guarded quit and switch to Select. io.KeyCtrl is Cmd on macOS after ImGui's swap
+    // and KeySuper the other physical key, so EITHER held is a chord here (unlike the snap modifier below).
+    const bool keysLive =
+        hovered && !io.WantTextInput && gesture.gesture == CameraGesture::None && !ImGuizmo::IsUsing();
+    if (toolStatePtr != nullptr) {
+        toolStatePtr->mode = nextGizmoMode(
+            toolStatePtr->mode,
+            GizmoModeInput{.selectPressed = keysLive && ImGui::IsKeyPressed(ImGuiKey_Q, /*repeat=*/false),
+                           .translatePressed = keysLive && ImGui::IsKeyPressed(ImGuiKey_W, /*repeat=*/false),
+                           .rotatePressed = keysLive && ImGui::IsKeyPressed(ImGuiKey_E, /*repeat=*/false),
+                           .scalePressed = keysLive && ImGui::IsKeyPressed(ImGuiKey_R, /*repeat=*/false),
+                           .spaceTogglePressed = keysLive && ImGui::IsKeyPressed(ImGuiKey_X, /*repeat=*/false),
+                           .commandModifierHeld = io.KeyCtrl || io.KeySuper});
+    }
 
     // 3. Target resolution (D11: PRIMARY only).
     const Entity target = context.selection.primary();
@@ -1038,6 +1050,24 @@ void ViewportPanel::updateGizmo(PanelContext& context, Vec2 imageOrigin, Vec2 av
         return;  // AC-14: no ImGuizmo call at all
     }
     gizmoHasTarget = true;
+
+    // 3b. task E.6.2 (D4): SELECT DRAWS NO GIZMO -- and a null tool state gives the same answer, never a crash
+    // and never a private copy. AFTER target resolution, so a missing target takes its own return first; the
+    // no-target return's shape exactly: this drag's own End edge only (INV-3, I290/I291), both latches cleared,
+    // and Enable(false), so a drag cut short by a switch to Select ends at its current value as ONE undoable
+    // entry -- like a drag whose target vanished.
+    const TransformToolState* const tools = toolStatePtr;
+    const std::optional<GizmoOperation> operation =
+        (tools != nullptr) ? gizmoOperationFor(tools->mode.tool) : std::nullopt;
+    if (tools == nullptr || !operation.has_value()) {
+        if (gizmoWasUsing) {
+            context.commands.breakMergeChain();
+        }
+        gizmoWasUsing = false;
+        gizmoWarnLatched = false;
+        ImGuizmo::Enable(false);
+        return;
+    }
 
     // 4. The behind-camera skip (D9/F5).
     const Mat4 viewProj = editorCamera.projectionMatrix(lastAspect) * editorCamera.viewMatrix();
@@ -1137,10 +1167,10 @@ void ViewportPanel::updateGizmo(PanelContext& context, Vec2 imageOrigin, Vec2 av
     ImGuizmo::Enable(gesture.gesture == CameraGesture::None && !widgetOwnsCursor && !viewOptionsOpenValue);
 
     // 6. Arguments.
-    const GizmoSpace space = effectiveSpace(gizmoMode.operation, gizmoMode.space);
+    const GizmoSpace space = effectiveSpace(*operation, tools->mode.space);
     // F30/D8: io.KeyCtrl IS ALREADY "Ctrl on Windows/Linux, Cmd on macOS". Writing
     // `io.KeyCtrl || io.KeySuper` would ALSO fire on physical Ctrl on macOS -- identical to :181-182.
-    const std::optional<Vec3> snap = gizmoSnapStep(gizmoMode.operation, io.KeyCtrl);
+    const std::optional<Vec3> snap = gizmoSnapStep(*operation, io.KeyCtrl);
     Mat4 matrix = *model;  // Manipulate mutates in place; never pass model->
     const Mat4 view = editorCamera.viewMatrix();
     const Mat4 proj = editorCamera.projectionMatrix(lastAspect);
@@ -1155,7 +1185,13 @@ void ViewportPanel::updateGizmo(PanelContext& context, Vec2 imageOrigin, Vec2 av
     // asserts for Vec3 -- vec3.hpp:34 (is_standard_layout_v) and :36 (sizeof == 3*sizeof(float)).
     // ImGuizmo's Translate path reads snap[0..2] (ImGuizmo.cpp:1259-1264); Rotate and Scale read
     // only snap[0] (:2482 DEGREES, :2372 replicated) -- gizmoSnapStep fills all three regardless.
-    const bool changed = ImGuizmo::Manipulate(view.data(), proj.data(), toImGuizmoOperation(gizmoMode.operation),
+    // task E.6.2 (D21): what THIS call receives, recorded from the same locals it is handed -- `snap` is the
+    // optional snapPtr points into, so a null pointer records nullopt.
+    ++manipulateCallCount;
+    lastManipulateOperationValue = operation;
+    lastManipulateSpaceValue = space;
+    lastManipulateSnapValue = snap;
+    const bool changed = ImGuizmo::Manipulate(view.data(), proj.data(), toImGuizmoOperation(*operation),
                                               toImGuizmoMode(space), matrix.data(), /*deltaMatrix=*/nullptr, snapPtr,
                                               /*localBounds=*/nullptr, /*boundsSnap=*/nullptr);  // D14
 
@@ -1193,7 +1229,7 @@ void ViewportPanel::updateGizmo(PanelContext& context, Vec2 imageOrigin, Vec2 av
     // reason: whatever happens inside it, the chain-close after it still runs.
     if (changed) {
         const GizmoWrite write =
-            gizmoWriteFromWorld(gizmoParentMatrix(context.world, target), matrix, *before, gizmoMode.operation);
+            gizmoWriteFromWorld(gizmoParentMatrix(context.world, target), matrix, *before, *operation);
         switch (write.status) {
             case GizmoWriteStatus::Applied: {
                 // Task 2.4.1 D5: push() APPLIES the command. The direct transform write this replaces
@@ -1372,15 +1408,20 @@ void ViewportPanel::drawViewAxisGizmo() const {
 }
 
 void ViewportPanel::drawGizmoBar() {
-    // A6: IsItemHovered(AllowWhenDisabled) + SetTooltip, NEVER SetItemTooltip -- its ForTooltip flags
-    // exclude disabled items and the tooltip would silently never appear (shell_ui.cpp's
-    // menuItemStub idiom). Checked per-button (IsItemHovered only ever answers about the LAST
-    // submitted item), so hovering ANY button in a no-target row explains why (E5).
+    // task E.6.2: the tool state is the shell's now and this strip writes it through toolStatePtr -- an interim
+    // shape the toolbar replaces in this task's sixth step, which deletes this function. A null pointer draws
+    // nothing (PushID/PopID are never reached, so the balance holds).
+    if (toolStatePtr == nullptr) {
+        return;
+    }
+    TransformToolState& tools = *toolStatePtr;
+    // A6: IsItemHovered(AllowWhenDisabled) + SetTooltip, NEVER SetItemTooltip (shell_ui.cpp's menuItemStub
+    // idiom). Checked per-button (IsItemHovered only ever answers about the LAST submitted item).
     ImGui::PushID("gizmobar");  // 1:1 with PopID below -- INV-6
     ImGui::BeginDisabled(!gizmoHasTarget);
 
-    const auto opButton = [this](const char* label, GizmoOperation op) {
-        const bool active = gizmoMode.operation == op;
+    const auto toolButton = [this, &tools](const char* label, TransformTool tool) {
+        const bool active = tools.mode.tool == tool;
         if (active) {
             ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
         }
@@ -1392,19 +1433,17 @@ void ViewportPanel::drawGizmoBar() {
             ImGui::SetTooltip("No gizmo target -- select an entity with a Transform");
         }
         if (clicked) {
-            gizmoMode.operation = op;
+            tools.mode.tool = tool;
         }
         ImGui::SameLine();
     };
-    opButton("T", GizmoOperation::Translate);
-    opButton("R", GizmoOperation::Rotate);
-    opButton("S", GizmoOperation::Scale);
+    toolButton("T", TransformTool::Move);
+    toolButton("R", TransformTool::Rotate);
+    toolButton("S", TransformTool::Scale);
 
-    // AC-4/D3: the label always shows effectiveSpace, so it reads "Local" for Scale and cannot claim
-    // otherwise, even though this one button is only conditionally disabled (nested inside the row's
-    // own BeginDisabled).
-    const GizmoSpace effective = effectiveSpace(gizmoMode.operation, gizmoMode.space);
-    const bool scaleForcesLocal = gizmoMode.operation == GizmoOperation::Scale;
+    // AC-4/D3: the label always shows the effective space, so it reads "Local" for Scale.
+    const bool scaleForcesLocal = tools.mode.tool == TransformTool::Scale;
+    const GizmoSpace effective = scaleForcesLocal ? GizmoSpace::Local : tools.mode.space;
     if (scaleForcesLocal) {
         ImGui::BeginDisabled();
     }
@@ -1420,7 +1459,7 @@ void ViewportPanel::drawGizmoBar() {
         }
     }
     if (spaceClicked) {
-        gizmoMode.space = (gizmoMode.space == GizmoSpace::Local) ? GizmoSpace::World : GizmoSpace::Local;
+        tools.mode.space = (tools.mode.space == GizmoSpace::Local) ? GizmoSpace::World : GizmoSpace::Local;
     }
 
     ImGui::EndDisabled();

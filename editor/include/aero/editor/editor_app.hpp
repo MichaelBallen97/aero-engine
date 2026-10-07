@@ -32,6 +32,7 @@
 #include <aero/editor/create_menu.hpp>     // task E.5.2 -- CreateKind by value in two seams; PURE
 #include <aero/editor/editor_theme.hpp>    // task E.6.1 -- EditorAppConfig's clear reads the theme; PURE
 #include <aero/editor/entity_ops.hpp>      // a VALUE member (rootOrder) needs RootOrder's definition
+#include <aero/editor/gizmo.hpp>           // task E.6.2 -- a VALUE member (transformTools); PURE and ImGui-free
 #include <aero/editor/imgui_layer.hpp>
 #include <aero/editor/material_session.hpp>      // task 3.4.2 -- a VALUE member (materialSession) needs
                                                  // the definition, the asset_database.hpp precedent.
@@ -750,6 +751,11 @@ public:
     // separated by a dismiss inside ONE tick are two counts, not one.
     [[nodiscard]] std::size_t sceneContainmentRefusalCount() const noexcept;
 
+    // ---- task E.6.2 -----------------------------------------------------------------------------------
+    // THE transform-tool state (D3). READ-ONLY here: the toolbar and the Viewport's keys are its writers, and a
+    // test drives it through the toolbar's request seams, never by writing it.
+    [[nodiscard]] const TransformToolState& toolState() const noexcept { return transformTools; }
+
 private:
     // task 3.2.4: the two file-scope-shaped helpers §D-12 names, as members because both touch
     // importSession and toolPrefsPath. THE ONLY PLACE THIS TASK LOGS (INV-B10).
@@ -907,6 +913,10 @@ private:
     // is address-stable and this pointer survives an EditorApp move (F21). Null when
     // registerDefaultPanels == false (E13) or if registration was rejected (E14) -- ALWAYS null-check.
     ViewportPanel* viewportPanel = nullptr;
+    // task E.6.2 (D3): THE transform-tool state -- a VALUE, so it moves with the app. The Viewport's pointer to it
+    // is re-handed every tick above the draw walk; ShellUiState's is rebuilt in the designated initializer. Named
+    // apart from its accessor toolState() (the frameClock / clock() precedent).
+    TransformToolState transformTools;
     // Non-owning; owned by `registry` (unique_ptr -> address-stable, survives an EditorApp move --
     // F17, the same reason viewportPanel above is legal). Null when registerDefaultPanels == false or
     // if registration was rejected -- ALWAYS null-check.

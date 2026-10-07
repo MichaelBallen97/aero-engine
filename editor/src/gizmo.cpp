@@ -79,20 +79,39 @@ inline constexpr float GIZMO_ORTHOGONALITY_EPSILON = 1.0e-4F;
 }  // namespace
 
 GizmoMode nextGizmoMode(GizmoMode current, const GizmoModeInput& in) noexcept {
-    GizmoMode next = current;
-    if (in.translatePressed) {
-        next.operation = GizmoOperation::Translate;
-    } else if (in.rotatePressed) {
-        next.operation = GizmoOperation::Rotate;
-    } else if (in.scalePressed) {
-        next.operation = GizmoOperation::Scale;
+    if (in.commandModifierHeld) {
+        return current;  // task E.6.2 (D5): a chord is never a mode key
     }
-    // Deliberately NOT an `else if`: W and X in the same frame is a legal, unambiguous combination
+    GizmoMode next = current;
+    if (in.selectPressed) {
+        next.tool = TransformTool::Select;
+    } else if (in.translatePressed) {
+        next.tool = TransformTool::Move;
+    } else if (in.rotatePressed) {
+        next.tool = TransformTool::Rotate;
+    } else if (in.scalePressed) {
+        next.tool = TransformTool::Scale;
+    }
+    // Deliberately NOT an `else if`: a tool key and X in the same frame is a legal, unambiguous combination
     // (two fingers) and both should apply.
     if (in.spaceTogglePressed) {
         next.space = (next.space == GizmoSpace::Local) ? GizmoSpace::World : GizmoSpace::Local;
     }
     return next;
+}
+
+std::optional<GizmoOperation> gizmoOperationFor(TransformTool tool) noexcept {
+    switch (tool) {  // NO default: (the header's note)
+        case TransformTool::Select:
+            return std::nullopt;
+        case TransformTool::Move:
+            return GizmoOperation::Translate;
+        case TransformTool::Rotate:
+            return GizmoOperation::Rotate;
+        case TransformTool::Scale:
+            return GizmoOperation::Scale;
+    }
+    return std::nullopt;  // an out-of-range value (a corrupted byte) draws no gizmo rather than a wrong one
 }
 
 GizmoSpace effectiveSpace(GizmoOperation op, GizmoSpace requested) noexcept {

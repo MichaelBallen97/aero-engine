@@ -7,7 +7,7 @@
 #include <aero/core/vfs.hpp>
 #include <aero/editor/asset_drag.hpp>  // task 3.1.5: AssetDragPayload, ViewportAssetDrop
 #include <aero/editor/editor_camera.hpp>
-#include <aero/editor/gizmo.hpp>        // task 2.3.3: GizmoMode, for the latched mode member
+#include <aero/editor/gizmo.hpp>        // task 2.3.3 / E.6.2: TransformToolState and the operation records
 #include <aero/editor/gizmo_style.hpp>  // task E.1.5: GizmoStyle, for the read-back seam
 #include <aero/editor/panel.hpp>
 #include <aero/editor/scene_bounds.hpp>       // task 3.1.5: MeshBoundsLookup, borrowed by the three consumers
@@ -266,6 +266,24 @@ public:
         pendingAssetDrop = ViewportAssetDrop{.payload = payload, .ndc = ndc};
     }
 
+    // ---- task E.6.2 -------------------------------------------------------------------------------
+    // The transform-tool state is the SHELL's (D3): EditorApp holds the one value and hands this panel a
+    // non-owning pointer EVERY TICK, above the draw walk -- never once in create(), because EditorApp is moved
+    // out of create()'s optional and a pointer bound there would dangle into the moved-from object. NULL means
+    // no gizmo at all (updateGizmo's Select arm) -- never a crash, never a private fallback copy.
+    void setToolState(TransformToolState* state) noexcept { toolStatePtr = state; }
+
+    // What the LAST ImGuizmo::Manipulate call received, recorded from the very locals it is handed -- the
+    // effect, never a request (D21). A Select frame calls nothing, so "no gizmo" is a zero DELTA of
+    // manipulateCalls(), and an Unavailable panel never calls it at all. lastManipulateSnap() is nullopt when
+    // the call received a null snap pointer -- and before the first call, so read manipulateCalls() first.
+    [[nodiscard]] std::uint64_t manipulateCalls() const noexcept { return manipulateCallCount; }
+    [[nodiscard]] std::optional<GizmoOperation> lastManipulateOperation() const noexcept {
+        return lastManipulateOperationValue;
+    }
+    [[nodiscard]] std::optional<GizmoSpace> lastManipulateSpace() const noexcept { return lastManipulateSpaceValue; }
+    [[nodiscard]] std::optional<Vec3> lastManipulateSnap() const noexcept { return lastManipulateSnapValue; }
+
 private:
     enum class Status : std::uint8_t { Uninitialized, Ready, Unavailable };
 
@@ -411,7 +429,9 @@ private:
     std::vector<OverlaySegment> overlayScratch;  // caller-owned, cleared and reused every frame (D6)
 
     // Task 2.3.3.
-    GizmoMode gizmoMode{};          // LATCHED across frames; W/E/R/X and the overlay bar both write it
+    // task E.6.2 (D3): EditorApp's tool state, re-handed every tick by setToolState; never owned, never copied.
+    // Q/W/E/R/X write it here, and (until the toolbar replaces it) the overlay bar.
+    TransformToolState* toolStatePtr = nullptr;
     bool gizmoActive = false;       // D10: THIS frame's "the gizmo owns the cursor". Assigned on EVERY
                                     // updateGizmo entry (INV-4) -- false whenever no Manipulate was
                                     // called, because ImGuizmo::IsOver() would answer from stale
@@ -421,6 +441,11 @@ private:
                                     // with whether a gizmo actually drew.
     bool gizmoWasUsing = false;     // previous frame's IsUsing(), for gizmoDragEdge (D22)
     bool gizmoWarnLatched = false;  // D12: one WARN per drag, not one per frame
+    // task E.6.2 (D21): the four Manipulate records, each named apart from its accessor (the house rule).
+    std::uint64_t manipulateCallCount = 0;
+    std::optional<GizmoOperation> lastManipulateOperationValue;
+    std::optional<GizmoSpace> lastManipulateSpaceValue;
+    std::optional<Vec3> lastManipulateSnapValue;
 
     // The interactive overlay row's screen rect in POINTS, written at onDraw's step 9b and read by
     // overlayOwnsPress() on the NEXT frame's step 8b. ONE FRAME OLD BY CONSTRUCTION, and that is

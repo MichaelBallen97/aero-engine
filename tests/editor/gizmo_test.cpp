@@ -44,6 +44,7 @@ using engine::editor::GizmoMode;
 using engine::editor::GizmoModeInput;
 using engine::editor::gizmoModelMatrix;
 using engine::editor::GizmoOperation;
+using engine::editor::gizmoOperationFor;
 using engine::editor::gizmoOriginBehindCamera;
 using engine::editor::gizmoParentMatrix;
 using engine::editor::gizmoSnapStep;
@@ -52,6 +53,8 @@ using engine::editor::GizmoWrite;
 using engine::editor::gizmoWriteFromWorld;
 using engine::editor::GizmoWriteStatus;
 using engine::editor::nextGizmoMode;
+using engine::editor::TransformTool;
+using engine::editor::TransformToolState;
 
 namespace {
 
@@ -66,24 +69,32 @@ constexpr auto PERSP = engine::editor::ProjectionMode::Perspective;
 constexpr std::array<GizmoOperation, 3> ALL_OPERATIONS = {GizmoOperation::Translate, GizmoOperation::Rotate,
                                                           GizmoOperation::Scale};
 constexpr std::array<GizmoSpace, 2> ALL_SPACES = {GizmoSpace::Local, GizmoSpace::World};
+// task E.6.2: the four tools, in enum order -- ALL_OPERATIONS keeps its three (GizmoOperation did not grow).
+constexpr std::array<TransformTool, 4> ALL_TOOLS = {
+    TransformTool::Select,
+    TransformTool::Move,
+    TransformTool::Rotate,
+    TransformTool::Scale,
+};
 constexpr float TIGHT_EPS = 1.0e-4F;
 }  // namespace
 
 TEST_CASE("gizmo: nextGizmoMode operation keys (G1)") {
-    for (const GizmoOperation start : ALL_OPERATIONS) {
+    // task E.6.2: over every TOOL as the starting state (Select included) -- the W/E/R arms are 2.3.3's.
+    for (const TransformTool start : ALL_TOOLS) {
         for (const GizmoSpace space : ALL_SPACES) {
-            const GizmoMode current{.operation = start, .space = space};
+            const GizmoMode current{.tool = start, .space = space};
 
             const GizmoMode afterW = nextGizmoMode(current, GizmoModeInput{.translatePressed = true});
-            CHECK(afterW.operation == GizmoOperation::Translate);
+            CHECK(afterW.tool == TransformTool::Move);
             CHECK(afterW.space == space);
 
             const GizmoMode afterE = nextGizmoMode(current, GizmoModeInput{.rotatePressed = true});
-            CHECK(afterE.operation == GizmoOperation::Rotate);
+            CHECK(afterE.tool == TransformTool::Rotate);
             CHECK(afterE.space == space);
 
             const GizmoMode afterR = nextGizmoMode(current, GizmoModeInput{.scalePressed = true});
-            CHECK(afterR.operation == GizmoOperation::Scale);
+            CHECK(afterR.tool == TransformTool::Scale);
             CHECK(afterR.space == space);
 
             // Nothing pressed -- current returned unchanged, both fields.
@@ -93,24 +104,28 @@ TEST_CASE("gizmo: nextGizmoMode operation keys (G1)") {
     }
 
     SUBCASE("W and X in the same frame apply BOTH") {
-        const GizmoMode current{.operation = GizmoOperation::Rotate, .space = GizmoSpace::World};
+        const GizmoMode current{.tool = TransformTool::Rotate, .space = GizmoSpace::World};
         const GizmoMode next =
             nextGizmoMode(current, GizmoModeInput{.translatePressed = true, .spaceTogglePressed = true});
-        CHECK(next.operation == GizmoOperation::Translate);
+        CHECK(next.tool == TransformTool::Move);
         CHECK(next.space == GizmoSpace::Local);
     }
 }
 
 TEST_CASE("gizmo: nextGizmoMode space toggle is an involution (G2)") {
-    for (const GizmoSpace start : ALL_SPACES) {
-        const GizmoMode current{.operation = GizmoOperation::Scale, .space = start};
-        const GizmoMode once = nextGizmoMode(current, GizmoModeInput{.spaceTogglePressed = true});
-        CHECK(once.space != start);
-        CHECK(once.operation == current.operation);  // X never touches operation
+    // task E.6.2: every TOOL x every space -- X flips the space, a second X restores it, the tool never changes.
+    for (const TransformTool tool : ALL_TOOLS) {
+        for (const GizmoSpace start : ALL_SPACES) {
+            CAPTURE(static_cast<int>(tool));
+            const GizmoMode current{.tool = tool, .space = start};
+            const GizmoMode once = nextGizmoMode(current, GizmoModeInput{.spaceTogglePressed = true});
+            CHECK(once.space != start);
+            CHECK(once.tool == current.tool);  // X never touches the tool
 
-        const GizmoMode twice = nextGizmoMode(once, GizmoModeInput{.spaceTogglePressed = true});
-        CHECK(twice.space == start);
-        CHECK(twice.operation == current.operation);
+            const GizmoMode twice = nextGizmoMode(once, GizmoModeInput{.spaceTogglePressed = true});
+            CHECK(twice.space == start);
+            CHECK(twice.tool == current.tool);
+        }
     }
 }
 
@@ -685,4 +700,77 @@ TEST_CASE("gizmo: the ortho near-band at the SHIPPED depth range keeps its gizmo
             gizmoOriginBehindCamera(perspViewProj, PERSP, translation(Vec3{0.0F, 0.0F, pastNear}), viewportSize));
         CHECK_FALSE(gizmoOriginBehindCamera(perspViewProj, PERSP, translation(Vec3::zero()), viewportSize));
     }
+}
+
+TEST_CASE("gizmo: four tools, and only three draw a gizmo (task E.6.2, G20)") {
+    REQUIRE(ALL_TOOLS.size() == 4U);
+    for (const TransformTool tool : ALL_TOOLS) {
+        CAPTURE(static_cast<int>(tool));
+        // An exhaustive switch in the TEST, no default: -- a fifth tool is red on the lint lane here too.
+        std::optional<GizmoOperation> expected;
+        switch (tool) {
+            case TransformTool::Select:
+                expected = std::nullopt;
+                break;
+            case TransformTool::Move:
+                expected = GizmoOperation::Translate;
+                break;
+            case TransformTool::Rotate:
+                expected = GizmoOperation::Rotate;
+                break;
+            case TransformTool::Scale:
+                expected = GizmoOperation::Scale;
+                break;
+        }
+        const std::optional<GizmoOperation> actual = gizmoOperationFor(tool);
+        CHECK(actual.has_value() == expected.has_value());
+        if (expected.has_value() && actual.has_value()) {
+            CHECK(*actual == *expected);
+        }
+    }
+    // Restated literals, so a reordered enum cannot hide behind the table above.
+    CHECK_FALSE(gizmoOperationFor(TransformTool::Select).has_value());
+    CHECK(gizmoOperationFor(TransformTool::Move) == std::optional<GizmoOperation>{GizmoOperation::Translate});
+    CHECK(static_cast<int>(TransformTool::Select) == 0);
+    CHECK(static_cast<int>(TransformTool::Scale) == 3);
+}
+
+TEST_CASE("gizmo: Q W E R in that order, X apart, and nothing under a command modifier (task E.6.2, G21)") {
+    for (const TransformTool start : ALL_TOOLS) {
+        for (const GizmoSpace space : ALL_SPACES) {
+            CAPTURE(static_cast<int>(start));
+            const GizmoMode current{.tool = start, .space = space};
+            CHECK(nextGizmoMode(current, GizmoModeInput{.selectPressed = true}).tool == TransformTool::Select);
+            // Q is FIRST: Q + W chooses Select, W + E chooses Move (first match wins, Q W E R).
+            CHECK(nextGizmoMode(current, GizmoModeInput{.selectPressed = true, .translatePressed = true}).tool ==
+                  TransformTool::Select);
+            CHECK(nextGizmoMode(current, GizmoModeInput{.translatePressed = true, .rotatePressed = true}).tool ==
+                  TransformTool::Move);
+            // Q and X together: both apply.
+            const GizmoMode both =
+                nextGizmoMode(current, GizmoModeInput{.selectPressed = true, .spaceTogglePressed = true});
+            CHECK(both.tool == TransformTool::Select);
+            CHECK(both.space != space);
+            // No key: unchanged.
+            CHECK(nextGizmoMode(current, GizmoModeInput{}) == current);
+            // THE MODIFIER (D5, seed S4): each key, and X, with Cmd/Ctrl held -> exactly `current`.
+            CHECK(nextGizmoMode(current, GizmoModeInput{.selectPressed = true, .commandModifierHeld = true}) ==
+                  current);
+            CHECK(nextGizmoMode(current, GizmoModeInput{.translatePressed = true, .commandModifierHeld = true}) ==
+                  current);
+            CHECK(nextGizmoMode(current, GizmoModeInput{.rotatePressed = true, .commandModifierHeld = true}) ==
+                  current);
+            CHECK(nextGizmoMode(current, GizmoModeInput{.scalePressed = true, .commandModifierHeld = true}) == current);
+            CHECK(nextGizmoMode(current, GizmoModeInput{.spaceTogglePressed = true, .commandModifierHeld = true}) ==
+                  current);
+        }
+    }
+}
+
+TEST_CASE("gizmo: the editor starts in Move, in World (task E.6.2, G22)") {
+    const GizmoMode mode{};
+    CHECK(mode.tool == TransformTool::Move);  // D4: Select is opt-in
+    CHECK(mode.space == GizmoSpace::World);
+    const TransformToolState state{};
+    CHECK(state.mode == GizmoMode{});
 }

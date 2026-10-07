@@ -36,26 +36,46 @@ enum class GizmoSpace : std::uint8_t { Local = 0, World };
 // to hook instead of reverse-engineering one out of ImGuizmo's internals (D22).
 enum class GizmoDragEdge : std::uint8_t { None = 0, Begin, Continue, End };
 
+// task E.6.2 (D4): the four tools the toolbar offers, in its left-to-right order and the Q/W/E/R key order.
+// Select draws NO gizmo -- picking still works -- which is why a tool is not an operation: gizmoOperationFor maps
+// the three that draw one, and GizmoOperation keeps its three values (toImGuizmoOperation, gizmoSnapStep and
+// gizmoWriteFromWorld each switch over exactly those, with no default:).
+enum class TransformTool : std::uint8_t { Select = 0, Move, Rotate, Scale };
+
+// task E.6.2: WIDENED -- `operation` became `tool`, because Select has no operation. The editor STARTS in Move
+// (D4), so selecting an entity shows the translate gizmo exactly as before Select existed.
 struct GizmoMode {
-    GizmoOperation operation = GizmoOperation::Translate;
+    TransformTool tool = TransformTool::Move;
     GizmoSpace space = GizmoSpace::World;
     bool operator==(const GizmoMode&) const noexcept = default;
 };
 
 // One frame of raw key state, as the panel reads it from ImGui. `...Pressed` means the key went
 // !down -> down THIS frame (ImGui::IsKeyPressed(key, /*repeat=*/false)). The panel has ALREADY
-// applied the hover / WantTextInput / no-camera-gesture gates (D7) -- this function is unconditional.
+// applied the hover / WantTextInput / no-camera-gesture / no-gizmo-drag gates (D7, task E.6.2 D5) --
+// this function owns only the modifier rule, so tier 0 can witness it (G21).
 struct GizmoModeInput {
+    bool selectPressed = false;       // Q -- task E.6.2
     bool translatePressed = false;    // W
     bool rotatePressed = false;       // E
     bool scalePressed = false;        // R
     bool spaceTogglePressed = false;  // X
+    // task E.6.2 (D5): Cmd/Ctrl or Super is held. ImGui::IsKeyPressed ignores modifiers, so without this Ctrl+Q
+    // over the viewport would request the guarded quit AND switch to Select -- a switch that survives a Cancel
+    // in the unsaved-changes modal -- and Cmd+W would switch to Move. While it is set NOTHING changes.
+    bool commandModifierHeld = false;
 };
 
-// PURE. First match wins among the three OPERATION keys; the space toggle is deliberately NOT in
-// that chain, because W and X in the same frame is a legal, unambiguous combination (two fingers)
-// and both should apply. An unchanged `current` is returned when nothing is pressed.
+// PURE. `current` unchanged while the command modifier is held. Otherwise the FIRST of Q, W, E, R pressed
+// chooses the tool (2.3.3's first-match rule, extended at the front); the space toggle is deliberately NOT in
+// that chain, because a tool key and X in the same frame is a legal, unambiguous combination (two fingers) and
+// both apply. An unchanged `current` is returned when nothing is pressed.
 [[nodiscard]] GizmoMode nextGizmoMode(GizmoMode current, const GizmoModeInput& in) noexcept;
+
+// task E.6.2: the operation a tool's gizmo performs, or nullopt for Select, which draws none (D4). The ONE
+// switch over the four tools, with no default: -- a fifth tool is a clang-diagnostic-switch failure on the
+// Linux lint lane, never a silent "no gizmo".
+[[nodiscard]] std::optional<GizmoOperation> gizmoOperationFor(TransformTool tool) noexcept;
 
 // ImGuizmo forces LOCAL for SCALE internally: ComputeContext is called with
 // `(operation & SCALE) ? LOCAL : mode` ("Scale is always local or matrix will be skewed when
@@ -78,6 +98,14 @@ inline constexpr float GIZMO_SNAP_SCALE = 0.1F;            // scale factor
 // components of the Rotate/Scale results are filled with the same value rather than left garbage,
 // so a future ImGuizmo that starts reading them cannot surprise us.
 [[nodiscard]] std::optional<Vec3> gizmoSnapStep(GizmoOperation op, bool snapHeld) noexcept;
+
+// task E.6.2 (D3): THE transform-tool state. EditorApp holds the only value; the toolbar and the Viewport's keys
+// reach it through two non-owning pointers rebuilt EVERY tick, so an EditorApp move can never strand either. At
+// namespace scope, never nested (the libstdc++ NSDMI trap, E.5.2).
+struct TransformToolState {
+    GizmoMode mode;
+    bool operator==(const TransformToolState&) const noexcept = default;
+};
 
 // PURE drag-edge derivation (D22). `wasUsing` is the previous frame's latched value.
 [[nodiscard]] GizmoDragEdge gizmoDragEdge(bool wasUsing, bool isUsing) noexcept;

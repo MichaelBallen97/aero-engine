@@ -11632,7 +11632,7 @@ TEST_CASE(
     REQUIRE_FALSE(code.empty());
 
     SUBCASE("2.4.1's merge-chain edges and the one undoable write keep their counts") {
-        CHECK(countLinesContaining(code, "breakMergeChain(") == 4U);
+        CHECK(countLinesContaining(code, "breakMergeChain(") == 5U);  // task E.6.2: + the Select return's (D4)
         CHECK(countLinesContaining(code, "context.commands.push(") == 1U);
         CHECK(countLinesContaining(code, "gizmoWriteFromWorld(") == 1U);
         CHECK(countLinesContaining(code, "std::make_unique<TransformCommand>") == 1U);
@@ -23049,7 +23049,7 @@ TEST_CASE("editor: every gizmo-return break sits under its own drag's guard (tas
         }
     }
     CHECK(edges == 2U);    // the Begin and End edges, unchanged since 2.4.1
-    CHECK(guarded == 2U);  // the no-target and behind-camera returns (step 2 adds the Select return: 3)
+    CHECK(guarded == 3U);  // the no-target, Select and behind-camera returns
     CHECK(breaks == guarded + edges);
     // ...and the guard is READ before the latch is cleared: within each early return, the guarded break comes
     // first and `gizmoWasUsing = false;` after it.
@@ -23066,4 +23066,168 @@ TEST_CASE("editor: every gizmo-return break sits under its own drag's guard (tas
         }
     }
     CHECK(orderedReturns == guarded);
+}
+
+namespace {
+
+// The editor files (src and public headers) whose comment-stripped code names `token` as a whole identifier --
+// a NAMING set, sorted. Spelling-based "who writes" pins cannot converge (the DELETE_RE lesson); who may NAME a
+// thing can.
+[[nodiscard]] std::vector<std::string> e62FilesNaming(std::string_view token) {
+    const auto identifierByte = [](char c) { return std::isalnum(static_cast<unsigned char>(c)) != 0 || c == '_'; };
+    std::vector<std::string> names;
+    for (const std::string_view directory :
+         {std::string_view(AERO_EDITOR_SRC_DIR), std::string_view(AERO_EDITOR_INCLUDE_DIR "/aero/editor")}) {
+        std::error_code ec;
+        for (const auto& entry : std::filesystem::directory_iterator(std::filesystem::path(directory), ec)) {
+            const std::string ext = entry.path().extension().string();
+            if (!entry.is_regular_file() || (ext != ".cpp" && ext != ".hpp")) {
+                continue;
+            }
+            for (const std::string& line : editorSourceCodeLines(entry.path().string())) {
+                bool hit = false;
+                for (std::size_t at = line.find(token); at != std::string::npos; at = line.find(token, at + 1U)) {
+                    const bool startOk = at == 0U || !identifierByte(line[at - 1U]);
+                    const std::size_t end = at + token.size();
+                    const bool endOk = end >= line.size() || !identifierByte(line[end]);
+                    hit = hit || (startOk && endOk);
+                }
+                if (hit) {
+                    names.push_back(entry.path().filename().string());
+                    break;
+                }
+            }
+        }
+        REQUIRE_FALSE(ec);
+    }
+    std::sort(names.begin(), names.end());
+    return names;
+}
+
+}  // namespace
+
+TEST_CASE("editor: the viewport's keys, its Select return and the tool state's names (task E.6.2, I292)") {
+    // UNGATED source text: no tier can press a key or hold a modifier, so the gate's terms are pinned
+    // where they are written; nextGizmoMode's own rule is G21.
+    const std::vector<std::string> code = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/viewport_panel.cpp");
+    const std::vector<std::string> header = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/viewport_panel.hpp");
+    REQUIRE_FALSE(code.empty());
+
+    SUBCASE("(a) the gate: inert mid-drag (seed S3), and the input carries Q and both modifiers (seed S5)") {
+        // onDraw's fly block spells its own `const bool keysLive =` above this one, so the search starts at
+        // updateGizmo's definition (soleLineContaining would REQUIRE-fail on the two hits).
+        const std::size_t fnAt = soleLineContaining(code, "void ViewportPanel::updateGizmo(");
+        std::size_t gateAt = code.size();
+        for (std::size_t i = fnAt; i < code.size(); ++i) {
+            if (code[i].find("const bool keysLive =") != std::string::npos) {
+                gateAt = i;
+                break;
+            }
+        }
+        REQUIRE(gateAt < code.size());
+        bool usingTerm = false;
+        for (std::size_t i = gateAt; i < std::min(code.size(), gateAt + 3U); ++i) {
+            usingTerm = usingTerm || code[i].find("!ImGuizmo::IsUsing()") != std::string::npos;
+        }
+        CHECK(usingTerm);
+        const std::size_t selectAt = soleLineContaining(code, ".selectPressed =");
+        CHECK(code[selectAt].find("ImGuiKey_Q") != std::string::npos);
+        const std::size_t modifierAt = soleLineContaining(code, ".commandModifierHeld =");
+        CHECK(code[modifierAt].find("io.KeyCtrl") != std::string::npos);
+        CHECK(code[modifierAt].find("io.KeySuper") != std::string::npos);
+    }
+    SUBCASE("(b) the mode is written through the shell's pointer, and the panel holds no copy (seed S44)") {
+        const std::size_t nextAt = soleLineContaining(code, "nextGizmoMode(");
+        CHECK(code[nextAt].find("toolStatePtr->mode =") != std::string::npos);
+        const std::regex member(R"(GizmoMode[ \t]+[A-Za-z_])");
+        CHECK_FALSE(anyLineMatches(header, member));
+        CHECK(std::regex_search(std::string("    GizmoMode gizmoMode{};"), member));  // ANTI-VACUITY
+    }
+    SUBCASE("(c) the Select return disables the gizmo, after the target and before the call (seed S2)") {
+        CHECK(countLinesContaining(code, "ImGuizmo::Enable(false)") == 3U);  // no-target, Select, the release guard
+        const std::size_t operationAt = soleLineContaining(code, "gizmoOperationFor(");
+        const std::size_t targetAt = soleLineContaining(code, "gizmoModelMatrix(context.world, target)");
+        const std::size_t manipulateAt = soleLineContaining(code, "ImGuizmo::Manipulate(");
+        CHECK(targetAt < operationAt);
+        std::size_t betweenEnables = 0;
+        for (std::size_t i = operationAt; i < manipulateAt; ++i) {
+            betweenEnables += code[i].find("ImGuizmo::Enable(false)") != std::string::npos ? 1U : 0U;
+        }
+        CHECK(betweenEnables == 2U);  // the Select return's, and the stale-latch release guard (item 5)
+    }
+    SUBCASE("(d) the naming sets") {
+        CHECK(e62FilesNaming("transformTools") == std::vector<std::string>{"editor_app.cpp", "editor_app.hpp"});
+        CHECK(e62FilesNaming("toolStatePtr") == std::vector<std::string>{"viewport_panel.cpp", "viewport_panel.hpp"});
+        CHECK(e62FilesNaming("setToolState") == std::vector<std::string>{"editor_app.cpp", "viewport_panel.hpp"});
+        CHECK(e62FilesNaming("TransformToolState") ==
+              std::vector<std::string>{"editor_app.hpp", "gizmo.hpp", "viewport_panel.cpp", "viewport_panel.hpp"});
+    }
+    SUBCASE("(e) the reconcile is per tick and above the draw walk (seed S43)") {
+        const std::vector<std::string> app = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/editor_app.cpp");
+        const std::size_t reconcileAt = soleLineContaining(app, "setToolState(&transformTools)");
+        const std::size_t tickAt = soleLineContaining(app, "bool EditorApp::tick()");
+        const std::size_t drawAt = soleLineContaining(app, "drawShellUi(registry, panelContext, ui, fileMenu)");
+        CHECK(tickAt < reconcileAt);
+        CHECK(reconcileAt < drawAt);
+    }
+}
+
+TEST_CASE("editor: Move reaches Manipulate through the shell's tool state (task E.6.2, I293)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "tool state i293", .width = E62_WINDOW_WIDTH, .height = E62_WINDOW_HEIGHT});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = e62App(*device, *window, ctx);
+    auto* const viewport = dynamic_cast<engine::editor::ViewportPanel*>(app->panels().find("Viewport"));
+    REQUIRE(viewport != nullptr);
+    CHECK((app->toolState().mode == engine::editor::GizmoMode{}));  // D4: the editor starts in Move
+    const engine::Entity cube = e62EntityNamed(app->world(), "Cube");
+    REQUIRE(cube.valid());
+    app->selection().set(cube);
+
+    if (viewport->debugDraw() == nullptr) {
+        // THE SHADER-TOOLS-OFF ARM, asserted: Unavailable, so nothing reaches Manipulate whatever the tool.
+        REQUIRE(app->tick());
+        REQUIRE(app->tick());
+        CHECK(viewport->manipulateCalls() == 0U);
+        app->requestQuit();
+        CHECK(app->tick() == false);
+        app.reset();
+        return;
+    }
+    e62SettleViewport(*app, *viewport);
+    REQUIRE(app->tick());
+
+    const std::uint64_t before = viewport->manipulateCalls();
+    for (int i = 0; i < 3; ++i) {
+        REQUIRE(app->tick());
+    }
+    CHECK(viewport->manipulateCalls() >= before + 3U);  // one call per drawn frame with a target in view
+    CHECK((viewport->lastManipulateOperation() == engine::editor::GizmoOperation::Translate));
+    CHECK((viewport->lastManipulateSpace() == engine::editor::GizmoSpace::World));
+    CHECK_FALSE(viewport->lastManipulateSnap().has_value());  // no modifier held, nothing to snap
+
+    // No across-a-move arm here: before step 6 nothing can write a tool different from the
+    // moved-from bytes, so a stale pointer reads the same {Move, World} and no step-2 GPU arm can tell a re-hand
+    // from a stale pointer. I292(e) pins the per-tick reconcile as text; I297's move arm (step 6) is behavioural.
+    SUBCASE("ANTI-VACUITY: with nothing selected the counter stops -- it counts real calls") {
+        app->selection().clear();
+        REQUIRE(app->tick());
+        const std::uint64_t idle = viewport->manipulateCalls();
+        for (int i = 0; i < 3; ++i) {
+            REQUIRE(app->tick());
+        }
+        CHECK(viewport->manipulateCalls() == idle);
+    }
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
 }

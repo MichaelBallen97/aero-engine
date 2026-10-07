@@ -1170,6 +1170,13 @@ bool EditorApp::tick() {
         }
     }
 
+    // task E.6.2 (D3): the Viewport's pointer to THE transform-tool state, re-handed EVERY tick -- never once in
+    // create(), because this app is moved out of create()'s optional and a pointer bound there would dangle into
+    // the moved-from object (the setDatabase posture). ABOVE drawShellUi, so the panel's updateGizmo reads this
+    // tick's state in this tick's draw walk; outside the reconcile block's Asset Browser arm on purpose.
+    if (viewportPanel != nullptr) {
+        viewportPanel->setToolState(&transformTools);
+    }
     layer.beginFrame();
     ShellUiState ui{.applyDefaultLayout = applyDefaultLayout,
                     .placeUnplacedPanels = placeUnplacedPanels,
