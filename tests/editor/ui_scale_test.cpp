@@ -5,12 +5,15 @@
 // assertions throughout: the quantiser DIVIDES, so every expected value below is exact arithmetic, and a
 // length times 2 is exact in float.
 #include <aero/core/math.hpp>
+#include <aero/editor/breadcrumb.hpp>
 #include <aero/editor/editor_camera.hpp>
 #include <aero/editor/editor_theme.hpp>
 #include <aero/editor/gizmo_style.hpp>
 #include <aero/editor/picking.hpp>  // projectToViewport, ProjectionMode
 #include <aero/editor/selection_overlay.hpp>
+#include <aero/editor/status_bar.hpp>
 #include <aero/editor/text_file.hpp>  // readTextFile (US9's source-text claim)
+#include <aero/editor/toolbar_model.hpp>
 #include <aero/editor/view_axis_gizmo.hpp>
 #include <aero/scene/scene.hpp>
 
@@ -360,8 +363,10 @@ TEST_CASE(
     REQUIRE_FALSE(ec);
     CHECK(read > 60U);  // ANTI-VACUITY: the walk really read the public headers
     const std::map<std::string, std::string> expected{
-        {"gizmo_style.hpp", "PP"},
-        {"selection_overlay.hpp", "P"},
+        {"breadcrumb.hpp", "P"},  // task E.6.2: breadcrumbLayout
+        {"gizmo_style.hpp", "PP"},      {"selection_overlay.hpp", "P"},
+        {"status_bar.hpp", "P"},      // task E.6.2: statusBarLayout
+        {"toolbar_model.hpp", "PP"},  // task E.6.2: shellBarHeight, toolbarLayout
         {"view_axis_gizmo.hpp", "MPP"},
     };
     CHECK(found.size() == expected.size());
@@ -372,5 +377,42 @@ TEST_CASE(
         std::string sorted = it->second;
         std::sort(sorted.begin(), sorted.end());
         CHECK(sorted == kinds);
+    }
+}
+
+TEST_CASE("ui scale: each E.6.2 layout treats a bad scale as 1 (task E.6.2, US10)") {
+    const ed::ToolbarWidths full{
+        .tools = 200.0F,
+        .space = 100.0F,
+        .snap = 120.0F,
+        .play = 150.0F,
+        .undo = 250.0F,
+    };
+    const ed::ToolbarWidths compact{
+        .tools = 100.0F,
+        .space = 100.0F,
+        .snap = 120.0F,
+        .play = 80.0F,
+        .undo = 150.0F,
+    };
+    const auto width = [](std::string_view t) { return 10.0F * static_cast<float>(t.size()); };
+    const ed::BreadcrumbText crumb = ed::breadcrumbText("Game", "a.scene.json", true);
+    const ed::BreadcrumbMeasure crumbMeasure{.body = width, .strong = width};
+    const ed::StatusBarText status{
+        .projectOpen = true,
+        .root = "~/x",
+        .watch = "watching",
+        .frame = "f",
+        .backend = "b",
+    };
+    for (const float bad : {NAN_F, INF_F, -INF_F, 0.0F, -2.0F}) {
+        CAPTURE(bad);
+        const ed::ToolbarLayout toolbarBad = ed::toolbarLayout(1000.0F, full, compact, bad);
+        CHECK((toolbarBad == ed::toolbarLayout(1000.0F, full, compact, 1.0F)));
+        const ed::BreadcrumbLayout crumbBad = ed::breadcrumbLayout(0.0F, 1300.0F, 500.0F, crumb, crumbMeasure, bad);
+        CHECK((crumbBad == ed::breadcrumbLayout(0.0F, 1300.0F, 500.0F, crumb, crumbMeasure, 1.0F)));
+        const ed::StatusBarLayout statusBad = ed::statusBarLayout(600.0F, status, width, bad);
+        CHECK((statusBad == ed::statusBarLayout(600.0F, status, width, 1.0F)));
+        CHECK(ed::shellBarHeight(44.0F, bad) == 44.0F);
     }
 }

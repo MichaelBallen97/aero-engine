@@ -172,6 +172,9 @@ add_library(aero_editor_core STATIC
     src/editor_theme.cpp         # task E.6.1 -- resolveUiScale; the theme is one constexpr value, header-only
     src/editor_fonts.cpp         # task E.6.1 -- the three faces + the Lucide merges; the ONLY AddFont TU
     src/shortcut_hint.cpp        # task E.6.2 -- the one chord spelling (Cmd on macOS); PURE, the ONLY modifier literals
+    src/toolbar_model.cpp        # task E.6.2 -- the toolbar's tables, snap field, undo slot and layout; PURE
+    src/breadcrumb.cpp           # task E.6.2 -- the menu bar's breadcrumb and its elision; PURE
+    src/status_bar.cpp           # task E.6.2 -- the watcher's classification, root, count, readout, layout; PURE
     src/editor_theme_ui.cpp      # task E.6.1 -- buildEditorStyle: the ONE style writer
 )
 add_library(aero::editor_core ALIAS aero_editor_core)
