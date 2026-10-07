@@ -305,9 +305,8 @@ private:
     // ImGui-free -- every ImGui value is converted at the ONE call site in onDraw (the 2.3.2
     // precedent). updateGizmo is a member because it needs lastAspect, editorCamera and `gesture`.
     void updateGizmo(PanelContext& context, Vec2 imageOrigin, Vec2 avail, bool hovered);
-    void drawGizmoBar();  // takes nothing: everything it needs is a member (A13)
 
-    // Task E.1.3, mirroring the updateGizmo / drawGizmoBar pairing. updateViewAxisGizmo computes the
+    // Task E.1.3, mirroring 2.3.3's update / draw pairing for the gizmo. updateViewAxisGizmo computes the
     // layout ONCE per frame at step 8b'''' and routes the click; drawViewAxisGizmo reads that same
     // layout at step 9x, so the picture and the hit test cannot disagree (AC-16). beginViewSnap is
     // the one path both the click and requestViewSnap take.
@@ -323,8 +322,8 @@ private:
 
     // task E.2.4: the `View` button and its popup. The BUTTON's rect max is what step 9b records; the
     // popup's contents are D10's two groups -- Display (Projection, Tonemap, Exposure) above Overlays
-    // (Grid, Gizmos, View axis). Called on the SAME LINE as drawGizmoBar() but OUTSIDE its
-    // BeginDisabled(!gizmoHasTarget) scope, so every control stays live with nothing selected.
+    // (Grid, Gizmos, View axis). Since task E.6.2 it is the strip's ONLY control -- the toolbar took the gizmo
+    // bar -- and it opens no disabled scope, so every control stays live with nothing selected.
     void drawViewOptions();
 
     // task 3.1.5: the custom drop target's whole body, a member so the ImGui glue stays in one place.
@@ -430,15 +429,12 @@ private:
 
     // Task 2.3.3.
     // task E.6.2 (D3): EditorApp's tool state, re-handed every tick by setToolState; never owned, never copied.
-    // Q/W/E/R/X write it here, and (until the toolbar replaces it) the overlay bar.
+    // Q/W/E/R/X (this panel) and the shell toolbar (through ShellUiState::tools) write it.
     TransformToolState* toolStatePtr = nullptr;
     bool gizmoActive = false;       // D10: THIS frame's "the gizmo owns the cursor". Assigned on EVERY
                                     // updateGizmo entry (INV-4) -- false whenever no Manipulate was
                                     // called, because ImGuizmo::IsOver() would answer from stale
                                     // gContext state on such a frame (F8).
-    bool gizmoHasTarget = false;    // A13: assigned every frame beside gizmoActive; the ONLY thing the
-                                    // overlay bar's enabled state reads, so the bar can never disagree
-                                    // with whether a gizmo actually drew.
     bool gizmoWasUsing = false;     // previous frame's IsUsing(), for gizmoDragEdge (D22)
     bool gizmoWarnLatched = false;  // D12: one WARN per drag, not one per frame
     // task E.6.2 (D21): the four Manipulate records, each named apart from its accessor (the house rule).
@@ -448,10 +444,10 @@ private:
     std::optional<Vec3> lastManipulateSnapValue;
 
     // The interactive overlay row's screen rect in POINTS, written at onDraw's step 9b and read by
-    // overlayOwnsPress() on the NEXT frame's step 8b. ONE FRAME OLD BY CONSTRUCTION, and that is
-    // sound rather than tolerated: the strip's origin is imageOrigin + OVERLAY_INSET and its extent
-    // is fixed by the widgets on it, so it only moves when the dock does. Empty until the first
-    // frame that reaches step 9b, and an empty rect owns nothing.
+    // overlayOwnsPress() on the NEXT frame's step 8b. ONE FRAME OLD BY CONSTRUCTION. It moves when the dock
+    // does AND when the readout above it gains or loses a line (`fly`, `ortho`) -- task E.6.2 corrected the
+    // earlier "only when the dock does"; a one-frame-old rect across such a change can own or miss one press
+    // at the old row. Empty until the first frame that reaches step 9b, and an empty rect owns nothing.
     Vec2 overlayRowTopLeft{};
     Vec2 overlayRowBottomRight{};
     // task E.2.4: the `View` BUTTON's screen rect max, captured BEFORE the popup. Step 9b records the

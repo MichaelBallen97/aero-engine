@@ -12,8 +12,9 @@
                                           // FORWARD-DECLARES Selection. PUBLIC and ImGui-free.
 #include <aero/editor/shortcut_hint.hpp>  // task E.6.2: chordHint + currentHostOs -- every menu hint's ONE spelling
 
-#include "create_menu_ui.hpp"  // tasks E.5.2, E.6.1: drawCreateMenuItems, drawCreateKindItem
-#include "project_ui.hpp"      // task 2.6.1: drawWelcomeWindow / drawNewProjectModal
+#include "create_menu_ui.hpp"   // tasks E.5.2, E.6.1: drawCreateMenuItems, drawCreateKindItem
+#include "project_ui.hpp"       // task 2.6.1: drawWelcomeWindow / drawNewProjectModal
+#include "shell_chrome_ui.hpp"  // task E.6.2: the toolbar, the status bar, the breadcrumb
 
 #include <array>
 #include <cstddef>
@@ -54,21 +55,10 @@ void ioTooltip(bool available) {
     }
 }
 
-void drawMenuBar(PanelRegistry& panels, PanelContext& context, ShellUiState& state, FileMenuContext& fileMenu) {
+void drawMenuBar(PanelRegistry& panels, PanelContext& context, ShellUiState& state, FileMenuContext& fileMenu,
+                 bool fileEnabled) {
     // Editor shortcuts go through ImGui's routing, NEVER ctx.input() (D7/E9): a focused InputText
     // must be able to swallow the chord. ImGuiMod_Ctrl is Cmd on macOS automatically (F8).
-    //
-    // D8/AC-5, widened by BLOCKING-2 (the 2.5.1 code-review round) and again by task 2.6.1:
-    // `fileEnabled` gates every File chord AND every File menu item below -- while a native dialog is
-    // in flight, the unsaved-changes modal is up, OR the New Project modal is up, the whole menu
-    // behaves as disabled at the input layer too, not only visually. Before BLOCKING-2 widened this,
-    // the modal being up alone did not stop a chord (e.g. Ctrl+S) from reaching AskWhereToSave and
-    // launching a SECOND, native dialog on top of the still-open modal -- `scene_session.cpp`'s
-    // `applyFileRequests` mirrors this exact same widening for the request path itself (defence in
-    // depth: the chords stay quiet AND the state machine refuses the request even if something else
-    // got past this check, e.g. a raw `request*()` call). The 2.5.1 code-review round's BLOCKING-2 is
-    // the standing evidence of what a disagreement between the two definitions costs.
-    const bool fileEnabled = !modalInputActive(fileMenu.flow, fileMenu.project.flow);
     if (fileEnabled && ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_Q, FILE_SHORTCUT_FLAGS)) {
         fileMenu.flow.requested = FileAction::Quit;  // D1: the GUARDED quit
     }
@@ -279,6 +269,9 @@ void drawMenuBar(PanelRegistry& panels, PanelContext& context, ShellUiState& sta
         }
         ImGui::EndMenu();
     }
+    // task E.6.2 (D11): `Project / scene` and the dirty dot, in the menu bar's free span -- after the last menu, so
+    // its end is the cursor, and before EndMainMenuBar, so it never runs when BeginMainMenuBar returned false.
+    drawBreadcrumb(fileMenu.project.session, fileMenu.session, context.commands, state.chromeRecord);
     ImGui::EndMainMenuBar();
 }
 
@@ -693,15 +686,34 @@ void drawShellUi(PanelRegistry& panels, PanelContext& context, ShellUiState& sta
     // byte-identical for eight tasks) because THIS is the ImGui frame-composition TU.
     ImGuizmo::BeginFrame();
 
-    drawMenuBar(panels, context, state, fileMenu);  // reserves the viewport work area (F9) and is
-                                                    // where Reset Layout can still affect THIS frame
-                                                    // -- the first REAL window, after the
-                                                    // transparent, NoInputs "gizmo" window
-    drawUnsavedChangesModal(fileMenu);              // may set fileMenu.flow.choice
-    drawNewProjectModal(fileMenu);                  // the SAME slot as the unsaved-changes modal: drawMenuBar has
-                                                    // returned, EndMainMenuBar has run, the ID stack is clean and
-                                                    // OpenPopup is legal here (2.5.1's F13)
-    drawSceneContainmentModal(fileMenu);            // task E.4.2 -- the THIRD modal, same slot, same rules (D11)
+    // D8/AC-5, widened by BLOCKING-2 (the 2.5.1 code-review round) and again by task 2.6.1:
+    // `fileEnabled` gates every File chord AND every File menu item below -- while a native dialog is
+    // in flight, the unsaved-changes modal is up, OR the New Project modal is up, the whole menu
+    // behaves as disabled at the input layer too, not only visually. Before BLOCKING-2 widened this,
+    // the modal being up alone did not stop a chord (e.g. Ctrl+S) from reaching AskWhereToSave and
+    // launching a SECOND, native dialog on top of the still-open modal -- `scene_session.cpp`'s
+    // `applyFileRequests` mirrors this exact same widening for the request path itself (defence in
+    // depth: the chords stay quiet AND the state machine refuses the request even if something else
+    // got past this check, e.g. a raw `request*()` call). The 2.5.1 code-review round's BLOCKING-2 is
+    // the standing evidence of what a disagreement between the two definitions costs.
+    // task E.6.2 (D9): HOISTED, so the menu bar and the toolbar read ONE value -- it cannot change between the two
+    // calls (a menu click sets only flow.requested or undoRequested, which modalInputActive does not read).
+    const bool fileEnabled = !modalInputActive(fileMenu.flow, fileMenu.project.flow);
+    drawMenuBar(panels, context, state, fileMenu, fileEnabled);  // reserves the viewport work area (F9) and is
+                                                                 // where Reset Layout can still affect THIS frame
+                                                                 // -- the first REAL window, after the
+                                                                 // transparent, NoInputs "gizmo" window
+    // task E.6.2 (D1): the toolbar, an Up side bar, AFTER the menu bar (Up bars stack in submission order) and
+    // BEFORE applyHistoryRequests (an Undo click applies this frame), DockSpaceOverViewport and drawPanels (a tool
+    // click reaches updateGizmo this frame). The status bar's place beside it is a convention with no behavioural
+    // consequence -- an inset lands next frame either way, and it is the only Down bar -- kept for drift's sake.
+    drawToolbar(state, context.commands, fileEnabled);
+    drawStatusBar(state);
+    drawUnsavedChangesModal(fileMenu);    // may set fileMenu.flow.choice
+    drawNewProjectModal(fileMenu);        // the SAME slot as the unsaved-changes modal: drawMenuBar has
+                                          // returned, EndMainMenuBar has run, the ID stack is clean and
+                                          // OpenPopup is legal here (2.5.1's F13)
+    drawSceneContainmentModal(fileMenu);  // task E.4.2 -- the THIRD modal, same slot, same rules (D11)
     {
         // applyFileRequests runs BEFORE applyHistoryRequests, on purpose (plan A32/E22): if one frame
         // carries both a scene swap and an undo request, the undo must be evaluated against the stack

@@ -200,6 +200,9 @@ struct ProjectCreateOutcome {
 // resolved path rather than resolving it. A UI taste is a property of a MACHINE and of a USER, not of
 // a project, which is why it lives here beside the recents list and never in project.json.
 [[nodiscard]] std::string defaultEditorPrefsPath();  // E.3.2: pref -> base -> CWD
+// task E.6.2 (D16): the user's home directory, for the status bar's "~" -- "" when the OS has none to give, which
+// simply disables the abbreviation. UTF-8, with a trailing separator.
+[[nodiscard]] std::string defaultHomeDirectory();
 [[nodiscard]] RecentProjects readRecentProjects(std::string_view pathUtf8);
 void writeRecentProjects(std::string_view pathUtf8, const RecentProjects& recents);
 

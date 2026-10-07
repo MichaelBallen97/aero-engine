@@ -352,3 +352,13 @@ TEST_CASE("status bar: the layout's fixed order over a 1-dp sweep, at scale 1 an
         CHECK(narrow.watch.ends_with(AERO_GLYPH_ELLIPSIS));
     }
 }
+
+TEST_CASE("status bar: the chrome draws the layouts' answers and elides nothing itself (task E.6.2, FT15)") {
+    const std::vector<std::string> code = codeLinesIn(AERO_EDITOR_SRC_DIR "/shell_chrome_ui.cpp");
+    REQUIRE(code.size() > 100U);
+    CHECK(linesWith(code, "statusBarLayout(") == 1U);
+    CHECK(linesWith(code, "breadcrumbLayout(") == 1U);
+    CHECK(linesWith(code, "toolbarLayout(") == 1U);
+    CHECK(linesWith(code, "elidePathLeft(") == 0U);  // seed S50's shape: a second elision in the draw code
+    CHECK(linesWith(code, "elideCaptionRight(") == 0U);
+}

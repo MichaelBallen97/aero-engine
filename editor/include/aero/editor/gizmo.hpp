@@ -80,7 +80,7 @@ struct GizmoModeInput {
 // ImGuizmo forces LOCAL for SCALE internally: ComputeContext is called with
 // `(operation & SCALE) ? LOCAL : mode` ("Scale is always local or matrix will be skewed when
 // applying world scale or oriented matrix", ImGuizmo.cpp:2684-2685). Mirroring it HERE is what stops
-// the overlay bar from displaying "World" while the library silently did something else (AC-4).
+// the toolbar's space segment from displaying "World" while the library silently did something else (AC-4).
 [[nodiscard]] GizmoSpace effectiveSpace(GizmoOperation op, GizmoSpace requested) noexcept;
 
 // TUNING values, judged by the human pass (editor/VALIDATION.md). Each is named so retuning is a

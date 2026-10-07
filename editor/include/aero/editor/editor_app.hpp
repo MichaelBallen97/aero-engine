@@ -35,6 +35,8 @@
 #include <aero/editor/gizmo.hpp>           // task E.6.2 -- a VALUE member (transformTools); PURE and ImGui-free
 #include <aero/editor/imgui_layer.hpp>
 #include <aero/editor/material_session.hpp>      // task 3.4.2 -- a VALUE member (materialSession) needs
+#include <aero/editor/shell_chrome_record.hpp>   // task E.6.2 -- a VALUE member (chromeRecord); PURE
+#include <aero/editor/status_bar.hpp>            // task E.6.2 -- a VALUE member (frameReadout); PURE
                                                  // the definition, the asset_database.hpp precedent.
                                                  // ImGui-free, render-free and GPU-free, so this
                                                  // header's ImGui-FREE-BY-RULE contract is intact; it
@@ -170,6 +172,11 @@ struct EditorAppConfig {
     // sweeps instead of two seconds -- the ONLY way an in-process test can exercise this without
     // sleeping.
     AssetWatchConfig assetWatch{};
+    // task E.6.2 (D16, the recentProjectsPath / layoutIniPath / toolPrefsPath / editorPrefsPath shape, a FIFTH
+    // instance): the user's home, which the status bar shows as "~". EMPTY => defaultHomeDirectory(), resolved
+    // ONCE in create(). An owning string, like every sibling path field. Tests pass a scratch parent so the root
+    // reads ~/<project> without depending on the machine.
+    std::string homeDirectory;
 };
 
 // Sleep applied when the window is not presentable (minimized) — inherited verbatim from 2.1.1.
@@ -759,6 +766,17 @@ public:
     // re-written file is byte-identical, so only a counter can tell "written once per commit" from "written per
     // drag frame". 0 for an instance with no preferences path.
     [[nodiscard]] std::size_t editorPrefsWriteCount() const noexcept { return editorPrefsWrites; }
+    // The toolbar's click-equivalents (D21): each writes a pending member the next tick copies into ShellUiState
+    // and then clears -- the requestUndo() shape. A request does exactly what a click on its control could do that
+    // frame: nothing while the control is drawn disabled or an ImGui modal is open, and a refused one is DROPPED,
+    // never deferred. No tier in this tree can click.
+    void requestToolbarTool(TransformTool tool) noexcept { pendingToolbarTool = tool; }
+    void requestToolbarSpace(GizmoSpace space) noexcept { pendingToolbarSpace = space; }
+    void requestToolbarSnapToggle() noexcept { pendingToolbarSnapToggle = true; }
+    void requestToolbarSnapStep(float step) noexcept { pendingToolbarSnapStep = step; }
+    void requestToolbarUndo() noexcept { pendingToolbarUndo = true; }
+    // What the chrome DREW last frame (shell_chrome_record.hpp) -- the GPU tier's window onto the three strips.
+    [[nodiscard]] const ShellChromeRecord& shellChromeRecord() const noexcept { return chromeRecord; }
 
 private:
     // task 3.2.4: the two file-scope-shaped helpers §D-12 names, as members because both touch
@@ -1034,6 +1052,16 @@ private:
     // when a value changed, never per frame.
     bool editorPrefsDirty = false;
     std::size_t editorPrefsWrites = 0;  // task E.6.2: editorPrefsWriteCount()'s value, named apart from it
+    // ---- task E.6.2 -----------------------------------------------------------------------------------
+    FrameTimeReadout frameReadout;  // D14: fed once per tick, on the statement after frameClock.tick()
+    std::string backendLabel;       // D15: backendDisplayName(device.backendName()), read ONCE in create()
+    std::string homeDirectory;      // D16: resolved ONCE in create(); "" disables the "~"
+    std::optional<TransformTool> pendingToolbarTool;  // D21: the five seams' pending values, cleared every tick
+    std::optional<GizmoSpace> pendingToolbarSpace;
+    bool pendingToolbarSnapToggle = false;
+    std::optional<float> pendingToolbarSnapStep;
+    bool pendingToolbarUndo = false;
+    ShellChromeRecord chromeRecord;  // shellChromeRecord()'s value, named apart from it
     // DISTINCT NAMES from their accessors, the databasePtr/database() rule -- matching
     // ContextRouter::latches/latchCount() and sceneAssetDirectives/sceneAssetDirectiveCount() above.
     std::size_t focusRouteApplies = 0;
