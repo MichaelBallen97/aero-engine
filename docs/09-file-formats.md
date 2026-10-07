@@ -1102,12 +1102,16 @@ would hand every teammate a taste. It is a **separate file from `editor_tools.js
 second key in it, because `BlenderService::setOverridePath` writes that file whole from a fresh
 struct, so any second key there is reset to its default by every `Locate…` and every `Re-detect`.
 
-**Envelope.** Two root keys, in this exact order on save.
+**Envelope.** Six root keys, in this exact order on save.
 
 | Key | Kind | Required | Rule |
 |---|---|---|---|
 | `version` | number, integral | yes | must equal `1`; validated first |
 | `focusFollowsSelection` | bool | no | absent means `true` — the shipping behaviour. A non-bool is a parse failure, never a coerced value |
+| `snapEnabled` | bool | no | absent means `false` (task E.6.2): the gizmo snaps only while Cmd/Ctrl is held. While `true`, holding the modifier releases the snap instead. A non-bool is a parse failure |
+| `snapTranslateStep` | number | no | absent means `0.5` (world units). Must be finite and in `[0.001, 1000]`; an out-of-range, zero, negative or non-number value is a parse failure, never a clamped value |
+| `snapRotateStepDegrees` | number | no | absent means `15` (degrees). Must be finite and in `[0.1, 180]`; otherwise a parse failure |
+| `snapScaleStep` | number | no | absent means `0.1`. Must be finite and in `[0.001, 100]`; otherwise a parse failure |
 
 A **missing file** is default preferences, **silently** — the normal state on a machine where the
 user has never opened the View menu. A file that **exists but does not parse**, or carries a wrong
@@ -1115,6 +1119,12 @@ user has never opened the View menu. A file that **exists but does not parse**, 
 else. An **absent key** is its default and is not a failure, which is what makes appending a key to
 this file a non-breaking change with no version bump: E.6.1's editor theme and the standing
 "persist the viewport toggles per user" handoff both land here as one key each.
+
+A parse failure is all-or-nothing: one bad snap step resets **every** preference to its default,
+`focusFollowsSelection` included, with the one warning — the editor's own toolbar clamps a step into
+its range before it commits, so a file this build wrote never holds one. The toggle is written when it
+is clicked; a step when its edit ENDS (a request, or the field's deactivation-after-edit), never on a
+live drag frame.
 
 **A file is only read and written by an editor instance that owns the user's persisted UI state** —
 `EditorAppConfig::persistLayout`. With `persistLayout` false the path resolves to `""`, and an empty

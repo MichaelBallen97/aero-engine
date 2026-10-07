@@ -85,25 +85,79 @@ struct GizmoModeInput {
 
 // TUNING values, judged by the human pass (editor/VALIDATION.md). Each is named so retuning is a
 // one-line change; every tier-0 case asserts a RELATIONSHIP, never a magnitude.
+// task E.6.2 (D7): these are the DEFAULT per-tool steps now, unchanged, so hold-to-snap behaves bit-identically
+// for anyone who never touches the toolbar's step field.
 inline constexpr float GIZMO_SNAP_TRANSLATE = 0.5F;        // world units
 inline constexpr float GIZMO_SNAP_ROTATE_DEGREES = 15.0F;  // DEGREES -- the suffix is load-bearing
 inline constexpr float GIZMO_SNAP_SCALE = 0.1F;            // scale factor
 
-// The three snap steps, or nullopt when `snapHeld` is false.
+// task E.6.2 (D7): the range every step that reaches ImGuizmo lies in. The toolbar's field and gizmoSnapStep
+// CLAMP into it (sanitizeSnapStep); editor_prefs.json VALIDATES against it and refuses the whole document
+// instead (docs/09 section 8.5's "never a coerced value").
+inline constexpr float GIZMO_SNAP_TRANSLATE_MIN = 0.001F;
+inline constexpr float GIZMO_SNAP_TRANSLATE_MAX = 1000.0F;
+inline constexpr float GIZMO_SNAP_ROTATE_DEGREES_MIN = 0.1F;
+inline constexpr float GIZMO_SNAP_ROTATE_DEGREES_MAX = 180.0F;
+inline constexpr float GIZMO_SNAP_SCALE_MIN = 0.001F;
+inline constexpr float GIZMO_SNAP_SCALE_MAX = 100.0F;
+
+struct SnapRange {
+    float min = 0.0F;
+    float max = 0.0F;
+};
+
+// task E.6.2 (D7): the snap toggle and the three per-tool steps -- session state the toolbar edits and
+// editor_prefs.json persists. At namespace scope (the libstdc++ NSDMI trap).
+struct SnapSettings {
+    bool enabled = false;
+    float translateStep = GIZMO_SNAP_TRANSLATE;           // world units, shown "m"
+    float rotateStepDegrees = GIZMO_SNAP_ROTATE_DEGREES;  // DEGREES
+    float scaleStep = GIZMO_SNAP_SCALE;                   // a scale factor
+    bool operator==(const SnapSettings&) const noexcept = default;
+};
+
+// task E.6.2 (D7): the modifier INVERTS the toggle while held -- the toggle off is 2.3.3's hold-to-snap
+// exactly; the toggle on makes the modifier release the snap (the Blender / Godot convention).
+[[nodiscard]] constexpr bool snapActive(bool toggle, bool modifierHeld) noexcept { return toggle != modifierHeld; }
+
+// The operation's range; the one switch over GizmoOperation the snap model adds, no default:.
+[[nodiscard]] SnapRange snapStepRange(GizmoOperation op) noexcept;
+
+// The operation's DEFAULT step for a non-finite value (the finiteness arm FIRST -- std::clamp(NaN, ...) is NaN
+// on libc++), else `value` clamped to snapStepRange(op). Zero and negative land on the range's minimum.
+[[nodiscard]] float sanitizeSnapStep(GizmoOperation op, float value) noexcept;
+
+// The stored step for `op`, unsanitized -- the field's own value.
+[[nodiscard]] float snapStepFor(GizmoOperation op, const SnapSettings& snap) noexcept;
+
+// The three snap components ImGuizmo reads, or nullopt when snapping is not `active`.
 // UNITS ARE NOT UNIFORM and are dictated by ImGuizmo (verified at source, F12):
 //   Translate -- all three components used, WORLD UNITS, per axis (ImGuizmo.cpp:1259-1264 loops 0..2).
 //   Rotate    -- ONLY .x is read, and it is in DEGREES (ImGuizmo.cpp:2482 multiplies by DEG2RAD).
 //   Scale     -- ONLY .x is read; ImGuizmo replicates it to all three axes (ImGuizmo.cpp:2372).
-// A Vec3 is returned for all three so the panel has ONE `const float*` to hand over; the y/z
-// components of the Rotate/Scale results are filled with the same value rather than left garbage,
-// so a future ImGuizmo that starts reading them cannot surprise us.
-[[nodiscard]] std::optional<Vec3> gizmoSnapStep(GizmoOperation op, bool snapHeld) noexcept;
+// A Vec3 is returned for all three so the panel has ONE `const float*` to hand over, every component the same
+// SANITIZED step: no step outside its range and no non-finite step ever reaches the library.
+[[nodiscard]] std::optional<Vec3> gizmoSnapStep(GizmoOperation op, bool active, const SnapSettings& snap) noexcept;
+
+// task E.6.2 (D7): THE commit rule, pure. `fieldValue` is the step field's value on a frame it CHANGED,
+// `fieldDeactivatedAfterEdit` ImGui's own end-of-edit edge, `request` the toolbar's click-equivalent seam (only
+// passed while the field is enabled). `next` takes the operation's step = sanitizeSnapStep(op, request, else the
+// field value) when either is present; the request wins. `commit` -- write editor_prefs.json -- is a request or
+// the end of an edit, NEVER a live drag frame: the value applies to snapping at once and only the write waits.
+struct SnapStepUpdate {
+    SnapSettings next;
+    bool commit = false;
+};
+[[nodiscard]] SnapStepUpdate snapStepUpdate(const SnapSettings& current, GizmoOperation op,
+                                            std::optional<float> fieldValue, bool fieldDeactivatedAfterEdit,
+                                            std::optional<float> request) noexcept;
 
 // task E.6.2 (D3): THE transform-tool state. EditorApp holds the only value; the toolbar and the Viewport's keys
 // reach it through two non-owning pointers rebuilt EVERY tick, so an EditorApp move can never strand either. At
 // namespace scope, never nested (the libstdc++ NSDMI trap, E.5.2).
 struct TransformToolState {
     GizmoMode mode;
+    SnapSettings snap;
     bool operator==(const TransformToolState&) const noexcept = default;
 };
 

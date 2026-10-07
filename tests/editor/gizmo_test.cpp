@@ -36,8 +36,14 @@ using engine::Vec4;
 using engine::World;
 using engine::editor::effectiveSpace;
 using engine::editor::GIZMO_SNAP_ROTATE_DEGREES;
+using engine::editor::GIZMO_SNAP_ROTATE_DEGREES_MAX;
+using engine::editor::GIZMO_SNAP_ROTATE_DEGREES_MIN;
 using engine::editor::GIZMO_SNAP_SCALE;
+using engine::editor::GIZMO_SNAP_SCALE_MAX;
+using engine::editor::GIZMO_SNAP_SCALE_MIN;
 using engine::editor::GIZMO_SNAP_TRANSLATE;
+using engine::editor::GIZMO_SNAP_TRANSLATE_MAX;
+using engine::editor::GIZMO_SNAP_TRANSLATE_MIN;
 using engine::editor::GizmoDragEdge;
 using engine::editor::gizmoDragEdge;
 using engine::editor::GizmoMode;
@@ -53,6 +59,12 @@ using engine::editor::GizmoWrite;
 using engine::editor::gizmoWriteFromWorld;
 using engine::editor::GizmoWriteStatus;
 using engine::editor::nextGizmoMode;
+using engine::editor::sanitizeSnapStep;
+using engine::editor::snapActive;
+using engine::editor::SnapSettings;
+using engine::editor::snapStepRange;
+using engine::editor::SnapStepUpdate;
+using engine::editor::snapStepUpdate;
 using engine::editor::TransformTool;
 using engine::editor::TransformToolState;
 
@@ -138,18 +150,20 @@ TEST_CASE("gizmo: effectiveSpace forces Local for Scale (G3)") {
 }
 
 TEST_CASE("gizmo: gizmoSnapStep (G4)") {
+    // task E.6.2: (op, active, snap). Inactive -> nullopt; active with the DEFAULT settings -> 2.3.3's constants.
+    const SnapSettings defaults{};
     for (const GizmoOperation op : ALL_OPERATIONS) {
-        CHECK_FALSE(gizmoSnapStep(op, /*snapHeld=*/false).has_value());
+        CHECK_FALSE(gizmoSnapStep(op, /*active=*/false, defaults).has_value());
     }
 
-    const auto translate = gizmoSnapStep(GizmoOperation::Translate, /*snapHeld=*/true);
+    const auto translate = gizmoSnapStep(GizmoOperation::Translate, /*active=*/true, defaults);
     REQUIRE(translate.has_value());
     CHECK(translate->x == GIZMO_SNAP_TRANSLATE);
     CHECK(translate->y == GIZMO_SNAP_TRANSLATE);
     CHECK(translate->z == GIZMO_SNAP_TRANSLATE);
     CHECK(translate->x > 0.0F);  // relationship only -- retuning the constant reddens nothing here
 
-    const auto rotate = gizmoSnapStep(GizmoOperation::Rotate, /*snapHeld=*/true);
+    const auto rotate = gizmoSnapStep(GizmoOperation::Rotate, /*active=*/true, defaults);
     REQUIRE(rotate.has_value());
     CHECK(rotate->x == GIZMO_SNAP_ROTATE_DEGREES);
     CHECK(rotate->y == GIZMO_SNAP_ROTATE_DEGREES);
@@ -157,7 +171,7 @@ TEST_CASE("gizmo: gizmoSnapStep (G4)") {
     CHECK(rotate->x > 0.0F);
     CHECK(rotate->x < 90.0F);  // it is DEGREES, not radians
 
-    const auto scale = gizmoSnapStep(GizmoOperation::Scale, /*snapHeld=*/true);
+    const auto scale = gizmoSnapStep(GizmoOperation::Scale, /*active=*/true, defaults);
     REQUIRE(scale.has_value());
     CHECK(scale->x == GIZMO_SNAP_SCALE);
     CHECK(scale->y == GIZMO_SNAP_SCALE);
@@ -773,4 +787,139 @@ TEST_CASE("gizmo: the editor starts in Move, in World (task E.6.2, G22)") {
     CHECK(mode.space == GizmoSpace::World);
     const TransformToolState state{};
     CHECK(state.mode == GizmoMode{});
+}
+
+TEST_CASE("gizmo: the modifier inverts the toggle (task E.6.2, G23)") {
+    CHECK_FALSE(snapActive(false, false));  // off, no modifier: free
+    CHECK(snapActive(false, true));         // off, modifier: 2.3.3's hold-to-snap
+    CHECK(snapActive(true, false));         // on, no modifier: snaps
+    CHECK_FALSE(snapActive(true, true));    // on, modifier: released (seed S6 reads true here)
+}
+
+TEST_CASE("gizmo: each operation reads its OWN step (task E.6.2, G24)") {
+    // Three DISTINCT non-default steps, so a field read for the wrong operation (seed S7) is visible.
+    const SnapSettings s{.enabled = true, .translateStep = 2.5F, .rotateStepDegrees = 30.0F, .scaleStep = 0.25F};
+    for (const GizmoOperation op : ALL_OPERATIONS) {
+        CHECK_FALSE(gizmoSnapStep(op, /*active=*/false, s).has_value());  // `active` decides, not s.enabled
+    }
+    const auto t = gizmoSnapStep(GizmoOperation::Translate, true, s);
+    const auto r = gizmoSnapStep(GizmoOperation::Rotate, true, s);
+    const auto k = gizmoSnapStep(GizmoOperation::Scale, true, s);
+    REQUIRE(t.has_value());
+    REQUIRE(r.has_value());
+    REQUIRE(k.has_value());
+    CHECK(t->x == 2.5F);
+    CHECK(t->y == 2.5F);
+    CHECK(t->z == 2.5F);
+    CHECK(r->x == 30.0F);
+    CHECK(r->y == 30.0F);
+    CHECK(r->z == 30.0F);
+    CHECK(k->x == 0.25F);
+    CHECK(k->y == 0.25F);
+    CHECK(k->z == 0.25F);
+}
+
+TEST_CASE("gizmo: sanitizeSnapStep -- finiteness first, then the operation's range (task E.6.2, G25)") {
+    struct Row {
+        GizmoOperation op;
+        float fallback;
+        float min;
+        float max;
+        float inside;
+    };
+    const std::array<Row, 3> rows{{
+        {GizmoOperation::Translate, 0.5F, 0.001F, 1000.0F, 2.5F},
+        {GizmoOperation::Rotate, 15.0F, 0.1F, 180.0F, 45.0F},
+        {GizmoOperation::Scale, 0.1F, 0.001F, 100.0F, 2.0F},
+    }};
+    for (const Row& row : rows) {
+        CAPTURE(static_cast<int>(row.op));
+        CHECK(snapStepRange(row.op).min == row.min);
+        CHECK(snapStepRange(row.op).max == row.max);
+        CHECK(sanitizeSnapStep(row.op, std::numeric_limits<float>::quiet_NaN()) == row.fallback);
+        CHECK(sanitizeSnapStep(row.op, std::numeric_limits<float>::infinity()) == row.fallback);
+        CHECK(sanitizeSnapStep(row.op, -std::numeric_limits<float>::infinity()) == row.fallback);
+        CHECK(sanitizeSnapStep(row.op, row.min * 0.5F) == row.min);  // below
+        CHECK(sanitizeSnapStep(row.op, row.min) == row.min);         // at min
+        CHECK(sanitizeSnapStep(row.op, row.inside) == row.inside);   // in range: verbatim
+        CHECK(sanitizeSnapStep(row.op, row.max) == row.max);         // at max
+        CHECK(sanitizeSnapStep(row.op, row.max * 2.0F) == row.max);  // above
+        CHECK(sanitizeSnapStep(row.op, 0.0F) == row.min);            // zero -> min
+        CHECK(sanitizeSnapStep(row.op, -3.0F) == row.min);           // negative -> min
+    }
+    // The ranges are per operation, not one shared range.
+    CHECK(GIZMO_SNAP_TRANSLATE_MAX != GIZMO_SNAP_SCALE_MAX);
+    CHECK(GIZMO_SNAP_ROTATE_DEGREES_MIN != GIZMO_SNAP_TRANSLATE_MIN);
+    CHECK(GIZMO_SNAP_ROTATE_DEGREES_MAX == 180.0F);
+    CHECK(GIZMO_SNAP_SCALE_MIN == 0.001F);
+}
+
+TEST_CASE("gizmo: no non-finite or out-of-range step ever reaches the library (task E.6.2, G26)") {
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    const float inf = std::numeric_limits<float>::infinity();
+    const std::array<SnapSettings, 4> hostile{{
+        {.enabled = true, .translateStep = nan, .rotateStepDegrees = nan, .scaleStep = nan},
+        {.enabled = true, .translateStep = inf, .rotateStepDegrees = -inf, .scaleStep = inf},
+        {.enabled = true, .translateStep = 1.0e30F, .rotateStepDegrees = 1.0e30F, .scaleStep = 1.0e30F},
+        {.enabled = true, .translateStep = -1.0F, .rotateStepDegrees = 0.0F, .scaleStep = -0.0F},
+    }};
+    for (const SnapSettings& s : hostile) {
+        for (const GizmoOperation op : ALL_OPERATIONS) {
+            const std::optional<Vec3> step = gizmoSnapStep(op, true, s);
+            REQUIRE(step.has_value());
+            CHECK(std::isfinite(step->x));
+            CHECK(step->x >= snapStepRange(op).min);
+            CHECK(step->x <= snapStepRange(op).max);
+            CHECK(step->y == step->x);
+            CHECK(step->z == step->x);
+        }
+    }
+}
+
+TEST_CASE("gizmo: snapStepUpdate -- a live drag frame never commits (task E.6.2, G27)") {
+    const SnapSettings current{};
+    const std::optional<float> none = std::nullopt;  // no field value, or no request, this frame
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    // THE RULE (seed S9): changed WITHOUT deactivation -> the value moves, nothing is written.
+    const SnapStepUpdate live = snapStepUpdate(current, GizmoOperation::Translate, 2.0F, false, none);
+    CHECK(live.next.translateStep == 2.0F);
+    CHECK_FALSE(live.commit);
+    // The end of the edit commits, with or without a value on that frame.
+    const SnapStepUpdate released = snapStepUpdate(current, GizmoOperation::Translate, none, true, none);
+    CHECK(released.commit);
+    CHECK((released.next == current));
+    const SnapStepUpdate both = snapStepUpdate(current, GizmoOperation::Translate, 2.0F, true, none);
+    CHECK(both.commit);
+    CHECK(both.next.translateStep == 2.0F);
+    // A request commits and WINS over the field's value.
+    const SnapStepUpdate requested = snapStepUpdate(current, GizmoOperation::Translate, 2.0F, false, 3.0F);
+    CHECK(requested.commit);
+    CHECK(requested.next.translateStep == 3.0F);
+    // Nothing present: unchanged, no commit.
+    const SnapStepUpdate idle = snapStepUpdate(current, GizmoOperation::Translate, none, false, none);
+    CHECK_FALSE(idle.commit);
+    CHECK((idle.next == current));
+    // Each operation writes ONLY its own field, sanitized.
+    const SnapStepUpdate rotate = snapStepUpdate(current, GizmoOperation::Rotate, 1.0e9F, false, none);
+    CHECK(rotate.next.rotateStepDegrees == 180.0F);
+    CHECK(rotate.next.translateStep == current.translateStep);
+    CHECK(rotate.next.scaleStep == current.scaleStep);
+    CHECK(snapStepUpdate(current, GizmoOperation::Translate, 1.0e9F, false, none).next.translateStep == 1000.0F);
+    CHECK(snapStepUpdate(current, GizmoOperation::Scale, 1.0e9F, false, none).next.scaleStep == 100.0F);
+    CHECK(snapStepUpdate(current, GizmoOperation::Scale, -3.0F, false, none).next.scaleStep == 0.001F);
+    CHECK(snapStepUpdate(current, GizmoOperation::Rotate, 0.0F, false, none).next.rotateStepDegrees == 0.1F);
+    CHECK(snapStepUpdate(current, GizmoOperation::Translate, nan, false, none).next.translateStep == 0.5F);
+    CHECK(snapStepUpdate(current, GizmoOperation::Translate, none, false, -3.0F).next.translateStep == 0.001F);
+    CHECK(rotate.next.enabled == current.enabled);  // the toggle is not the field's
+}
+
+TEST_CASE("gizmo: SnapSettings and TransformToolState defaults (task E.6.2, G28)") {
+    const SnapSettings s{};
+    CHECK_FALSE(s.enabled);
+    CHECK(s.translateStep == 0.5F);  // restated literals, never GIZMO_SNAP_* -- a retune is a decision here
+    CHECK(s.rotateStepDegrees == 15.0F);
+    CHECK(s.scaleStep == 0.1F);
+    const TransformToolState state{};
+    CHECK((state.snap == SnapSettings{}));
+    CHECK(state.mode.tool == TransformTool::Move);
 }

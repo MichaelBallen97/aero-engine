@@ -755,6 +755,10 @@ public:
     // THE transform-tool state (D3). READ-ONLY here: the toolbar and the Viewport's keys are its writers, and a
     // test drives it through the toolbar's request seams, never by writing it.
     [[nodiscard]] const TransformToolState& toolState() const noexcept { return transformTools; }
+    // How many times editor_prefs.json was WRITTEN, successfully -- the projectStateWriteCount() posture: a
+    // re-written file is byte-identical, so only a counter can tell "written once per commit" from "written per
+    // drag frame". 0 for an instance with no preferences path.
+    [[nodiscard]] std::size_t editorPrefsWriteCount() const noexcept { return editorPrefsWrites; }
 
 private:
     // task 3.2.4: the two file-scope-shaped helpers §D-12 names, as members because both touch
@@ -1029,6 +1033,7 @@ private:
     // The recentsDirty idiom (projectFlow.recentsDirty), a second instance: the file is written ONLY
     // when a value changed, never per frame.
     bool editorPrefsDirty = false;
+    std::size_t editorPrefsWrites = 0;  // task E.6.2: editorPrefsWriteCount()'s value, named apart from it
     // DISTINCT NAMES from their accessors, the databasePtr/database() rule -- matching
     // ContextRouter::latches/latchCount() and sceneAssetDirectives/sceneAssetDirectiveCount() above.
     std::size_t focusRouteApplies = 0;

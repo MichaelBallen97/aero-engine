@@ -3,11 +3,13 @@
 // NO logging. The path this reads and writes is resolved by the caller (project_file.cpp owns the SDL
 // half) and the one WARN lives in editor_app.cpp.
 #include <aero/editor/editor_prefs.hpp>
+#include <aero/editor/gizmo.hpp>  // task E.6.2: the snap ranges and defaults
 #include <aero/editor/text_file.hpp>
 #include <aero/reflect/json_reader.hpp>
 #include <aero/reflect/json_value.hpp>
 #include <aero/reflect/json_writer.hpp>
 
+#include <cmath>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -22,6 +24,16 @@ namespace {
 // through the enclosing namespace exactly as blender_tool.cpp's codec does.
 constexpr std::string_view VERSION_KEY = "version";
 constexpr std::string_view FOCUS_FOLLOWS_SELECTION_KEY = "focusFollowsSelection";
+constexpr std::string_view SNAP_ENABLED_KEY = "snapEnabled";                        // task E.6.2
+constexpr std::string_view SNAP_TRANSLATE_STEP_KEY = "snapTranslateStep";           // task E.6.2
+constexpr std::string_view SNAP_ROTATE_STEP_DEGREES_KEY = "snapRotateStepDegrees";  // task E.6.2
+constexpr std::string_view SNAP_SCALE_STEP_KEY = "snapScaleStep";                   // task E.6.2
+
+// The header restates gizmo.hpp's defaults to stay include-light; these keep the two from drifting.
+static_assert(EditorPrefs{}.snapTranslateStep == GIZMO_SNAP_TRANSLATE);
+static_assert(EditorPrefs{}.snapRotateStepDegrees == GIZMO_SNAP_ROTATE_DEGREES);
+static_assert(EditorPrefs{}.snapScaleStep == GIZMO_SNAP_SCALE);
+static_assert(!EditorPrefs{}.snapEnabled);
 
 // The three readers below are FILE-LOCAL COPIES of blender_tool.cpp's shape (:409, :419, :443), which
 // lives in THAT TU's anonymous namespace and is not reachable from here. optionalBool has no
@@ -64,6 +76,26 @@ constexpr std::string_view FOCUS_FOLLOWS_SELECTION_KEY = "focusFollowsSelection"
     return true;
 }
 
+// task E.6.2: an OPTIONAL snap step. ABSENT leaves `out` untouched and succeeds. PRESENT must be a JSON number
+// (an integral `15` is one: JsonValue::asF32 parses any number lexeme), finite, and inside the operation's own
+// range, boundaries included -- anything else is a MISS for the whole document, never a clamped value.
+[[nodiscard]] bool optionalStepInRange(const JsonValue& root, std::string_view key, GizmoOperation op, float& out) {
+    const JsonValue* field = root.find(key);
+    if (field == nullptr) {
+        return true;
+    }
+    const std::optional<float> value = field->asF32();
+    if (!value.has_value() || !std::isfinite(*value)) {
+        return false;
+    }
+    const SnapRange range = snapStepRange(op);
+    if (!(*value >= range.min && *value <= range.max)) {
+        return false;
+    }
+    out = *value;
+    return true;
+}
+
 }  // namespace
 
 std::optional<EditorPrefs> parseEditorPrefs(std::string_view text) {
@@ -73,7 +105,12 @@ std::optional<EditorPrefs> parseEditorPrefs(std::string_view text) {
         return std::nullopt;
     }
     EditorPrefs prefs;
-    if (!optionalBool(*root, FOCUS_FOLLOWS_SELECTION_KEY, prefs.focusFollowsSelection)) {
+    if (!optionalBool(*root, FOCUS_FOLLOWS_SELECTION_KEY, prefs.focusFollowsSelection) ||
+        !optionalBool(*root, SNAP_ENABLED_KEY, prefs.snapEnabled) ||
+        !optionalStepInRange(*root, SNAP_TRANSLATE_STEP_KEY, GizmoOperation::Translate, prefs.snapTranslateStep) ||
+        !optionalStepInRange(*root, SNAP_ROTATE_STEP_DEGREES_KEY, GizmoOperation::Rotate,
+                             prefs.snapRotateStepDegrees) ||
+        !optionalStepInRange(*root, SNAP_SCALE_STEP_KEY, GizmoOperation::Scale, prefs.snapScaleStep)) {
         return std::nullopt;
     }
     return prefs;
@@ -87,6 +124,16 @@ std::string writeEditorPrefsText(const EditorPrefs& prefs) {
     writer.value(static_cast<long long>(EDITOR_PREFS_FORMAT_VERSION));
     writer.key(FOCUS_FOLLOWS_SELECTION_KEY);
     writer.value(prefs.focusFollowsSelection);
+    // task E.6.2: the four snap keys, after it, in this fixed order (docs/09 section 8.5). value(float) is
+    // shortest-round-trip, so 0.5F writes 0.5 and 15.0F writes 15.
+    writer.key(SNAP_ENABLED_KEY);
+    writer.value(prefs.snapEnabled);
+    writer.key(SNAP_TRANSLATE_STEP_KEY);
+    writer.value(prefs.snapTranslateStep);
+    writer.key(SNAP_ROTATE_STEP_DEGREES_KEY);
+    writer.value(prefs.snapRotateStepDegrees);
+    writer.key(SNAP_SCALE_STEP_KEY);
+    writer.value(prefs.snapScaleStep);
     writer.endObject();
     std::string text = writer.str();
     text += '\n';  // exactly ONE trailing newline (the writer itself has none; parseJson accepts it)

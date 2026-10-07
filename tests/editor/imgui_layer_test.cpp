@@ -31,6 +31,7 @@
 #include <aero/editor/editor_camera.hpp>    // task 2.3.1
 #include <aero/editor/editor_glyphs.hpp>    // task E.6.1 (I279): EDITOR_GLYPHS
 #include <aero/editor/editor_icons.hpp>     // task E.6.1 (I278): EDITOR_ICONS
+#include <aero/editor/editor_prefs.hpp>     // task E.6.2 (I294, I302): writeEditorPrefs / readEditorPrefs
 #include <aero/editor/entity_commands.hpp>  // task 2.4.2
 #include <aero/editor/entity_ops.hpp>
 #include <aero/editor/model_import_session.hpp>  // task 3.2.1: SessionState, named directly (I52-I59)
@@ -23230,4 +23231,81 @@ TEST_CASE("editor: Move reaches Manipulate through the shell's tool state (task 
     app->requestQuit();
     CHECK(app->tick() == false);
     app.reset();
+}
+
+TEST_CASE("editor: a saved snap toggle and step reach Manipulate on the next launch (task E.6.2, I294)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "snap prefs i294", .width = E62_WINDOW_WIDTH, .height = E62_WINDOW_HEIGHT});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    const std::string prefsFile = uniqueEditorPrefsFile();
+    const std::string iniPath = prefsFile + ".ini";  // persistLayout TRUE writes a layout: scratch too
+    for (const bool snapOn : {true, false}) {
+        CAPTURE(snapOn);
+        std::error_code ec;
+        std::filesystem::remove(std::filesystem::path(iniPath), ec);
+        // The file a previous session left: three DISTINCT non-default steps.
+        const engine::editor::EditorPrefs saved{.focusFollowsSelection = true,
+                                                .snapEnabled = snapOn,
+                                                .snapTranslateStep = 2.5F,
+                                                .snapRotateStepDegrees = 30.0F,
+                                                .snapScaleStep = 0.25F};
+        REQUIRE(engine::editor::writeEditorPrefs(prefsFile, saved).empty());
+        std::optional<engine::editor::EditorApp> app =
+            engine::editor::EditorApp::create(*device, *window, ctx,
+                                              {.persistLayout = true,
+                                               .unfocusedFrameCapHz = 0.0F,
+                                               .restoreLastProject = false,
+                                               .recentProjectsPath = uniqueRecentsFile(),
+                                               .layoutIniPath = iniPath,
+                                               .editorPrefsPath = prefsFile});
+        REQUIRE(app.has_value());
+        // Restored in create(), before any tick.
+        CHECK(app->toolState().snap.enabled == snapOn);
+        CHECK(app->toolState().snap.translateStep == 2.5F);
+        CHECK(app->toolState().snap.rotateStepDegrees == 30.0F);
+        CHECK(app->toolState().snap.scaleStep == 0.25F);
+        auto* const viewport = dynamic_cast<engine::editor::ViewportPanel*>(app->panels().find("Viewport"));
+        REQUIRE(viewport != nullptr);
+        const engine::Entity cube = e62EntityNamed(app->world(), "Cube");
+        REQUIRE(cube.valid());
+        app->selection().set(cube);
+        REQUIRE(app->tick());
+        if (viewport->debugDraw() != nullptr) {
+            e62SettleViewport(*app, *viewport);
+            const std::uint64_t before = viewport->manipulateCalls();
+            REQUIRE(app->tick());
+            REQUIRE(viewport->manipulateCalls() > before);  // ANTI-VACUITY: Manipulate really ran
+            const std::optional<engine::Vec3> snap = viewport->lastManipulateSnap();
+            if (snapOn) {
+                // THE EFFECT: the toggle with no modifier snaps, at the FILE's translate step (Move is the tool).
+                REQUIRE(snap.has_value());
+                CHECK(snap->x == 2.5F);
+                CHECK(snap->y == 2.5F);
+                CHECK(snap->z == 2.5F);
+            } else {
+                CHECK_FALSE(snap.has_value());  // the control: off and no modifier -> free
+            }
+        } else {
+            // THE SHADER-TOOLS-OFF ARM: the restore is a fact; nothing reaches Manipulate.
+            REQUIRE(app->tick());
+            CHECK(viewport->manipulateCalls() == 0U);
+        }
+        CHECK(app->editorPrefsWriteCount() == 0U);  // a launch that commits nothing writes nothing
+        app->requestQuit();
+        CHECK(app->tick() == false);
+        app.reset();
+    }
+    // The I158 hygiene: uniqueEditorPrefsFile() names a path by a per-process counter, so a later run that reaches
+    // the same counter value would read this case's file.
+    std::error_code cleanup;
+    std::filesystem::remove(std::filesystem::path(prefsFile), cleanup);
+    std::filesystem::remove(std::filesystem::path(iniPath), cleanup);
 }

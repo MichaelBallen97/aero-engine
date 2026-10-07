@@ -1170,7 +1170,9 @@ void ViewportPanel::updateGizmo(PanelContext& context, Vec2 imageOrigin, Vec2 av
     const GizmoSpace space = effectiveSpace(*operation, tools->mode.space);
     // F30/D8: io.KeyCtrl IS ALREADY "Ctrl on Windows/Linux, Cmd on macOS". Writing
     // `io.KeyCtrl || io.KeySuper` would ALSO fire on physical Ctrl on macOS -- identical to :181-182.
-    const std::optional<Vec3> snap = gizmoSnapStep(*operation, io.KeyCtrl);
+    // task E.6.2 (D7): the toggle, INVERTED while the modifier is held, at the operation's own stored step.
+    const bool snapOn = snapActive(tools->snap.enabled, io.KeyCtrl);
+    const std::optional<Vec3> snap = gizmoSnapStep(*operation, snapOn, tools->snap);
     Mat4 matrix = *model;  // Manipulate mutates in place; never pass model->
     const Mat4 view = editorCamera.viewMatrix();
     const Mat4 proj = editorCamera.projectionMatrix(lastAspect);

@@ -413,6 +413,12 @@ std::optional<EditorApp> EditorApp::create(rhi::Device& device, platform::Window
             AERO_LOG_WARN("editor: preferences '{}' are corrupt or unsupported; using defaults", app.editorPrefsPath);
         }
         app.contextRouter.setEnabled(prefs.focusFollowsSelection);
+        // task E.6.2 (D7): the snap toggle and steps -- the file's, or EditorPrefs{}'s when it is missing or refused,
+        // which are GIZMO_SNAP_*. The app's own write of the tool state; the toolbar and the keys are the others.
+        app.transformTools.snap = SnapSettings{.enabled = prefs.snapEnabled,
+                                               .translateStep = prefs.snapTranslateStep,
+                                               .rotateStepDegrees = prefs.snapRotateStepDegrees,
+                                               .scaleStep = prefs.snapScaleStep};
     }
     if (config.restoreLastProject) {
         app.recents = readRecentProjects(app.recentsPath);  // D15: NOT read at all when false (AC-34/E23)
@@ -1163,9 +1169,15 @@ bool EditorApp::tick() {
     if (editorPrefsDirty) {
         editorPrefsDirty = false;
         if (!editorPrefsPath.empty()) {
-            const EditorPrefs prefs{.focusFollowsSelection = contextRouter.enabled()};
+            const EditorPrefs prefs{.focusFollowsSelection = contextRouter.enabled(),
+                                    .snapEnabled = transformTools.snap.enabled,
+                                    .snapTranslateStep = transformTools.snap.translateStep,
+                                    .snapRotateStepDegrees = transformTools.snap.rotateStepDegrees,
+                                    .snapScaleStep = transformTools.snap.scaleStep};
             if (const std::string reason = writeEditorPrefs(editorPrefsPath, prefs); !reason.empty()) {
                 AERO_LOG_WARN("editor: could not write preferences '{}' -- {}", editorPrefsPath, reason);
+            } else {
+                ++editorPrefsWrites;  // task E.6.2: SUCCESSFUL writes only -- an assertion about the disk
             }
         }
     }
