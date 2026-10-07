@@ -219,9 +219,9 @@ void drawToolbar(ShellUiState& state, const CommandStack& commands, bool fileEna
         metrics.undoChip = buttonWidth(chip);
         const float monoFrame = ImGui::GetFrameHeight();
         // The step field draws in Mono too, so its width is measured in Mono: a FLOOR of SNAP_FIELD_WIDTH_EM Body
-        // em, widened to the widest text its formats produce. Body and Mono sizes round independently (IM_ROUND),
-        // so at a fractional UI scale a Body-em width alone clips a ten-glyph "0.001234 m". Plus the frame
-        // padding every other frame keeps, so no glyph's ink lands on the field's border.
+        // em, widened to the widest text its formats produce: a ten-glyph "0.001234 m" is 65 points of Mono at UI
+        // scale 1 against the floor's 64, and Body and Mono sizes round independently (IM_ROUND), so the gap moves
+        // with the scale. Plus the frame padding every other frame keeps, so no glyph's ink lands on the border.
         const float widestStep = currentTextWidth(SNAP_FIELD_WIDEST_TEXT);
         ImGui::PopFont();
         metrics.snapField = std::max(SNAP_FIELD_WIDTH_EM * fontSize, widestStep + (2.0F * style.FramePadding.x));

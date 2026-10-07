@@ -271,6 +271,19 @@ TEST_CASE("status bar: the Assets footer adopted the classification and owns no 
     const std::string_view footerCall =
         "labelScratch += assetFooterWatchText(footerState, watch.deferredSweeps, watch.unreadableDirs);";
     CHECK(linesWith(code, footerCall) == 1U);
+    // ...on the line right after the classification, so no condition can sit between them on a line of its own.
+    std::size_t classifyAt = code.size();
+    std::size_t callAt = code.size();
+    for (std::size_t i = 0; i < code.size(); ++i) {
+        if (code[i].find("const WatchState footerState = classifyWatchState(true, watch);") != std::string::npos) {
+            classifyAt = i;
+        }
+        if (code[i].find(footerCall) != std::string::npos) {
+            callAt = i;
+        }
+    }
+    REQUIRE(classifyAt < code.size());
+    CHECK(callAt == classifyAt + 1U);
     for (const std::string_view literal : {"Auto-refresh off", "Watch paused", "Watching (partial",
                                            "Watching -- settling", "folder(s) unreadable", "\"Watching\""}) {
         CAPTURE(literal);

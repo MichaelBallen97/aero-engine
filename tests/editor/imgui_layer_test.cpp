@@ -23894,11 +23894,14 @@ TEST_CASE("editor: the toolbar's snap reaches Manipulate per tool, and survives 
         CHECK(r.snapToggle.drawnActive);
         CHECK(r.snapFormat == "%.4g m");  // independent literals, never snapStepFormat's answer
         CHECK(r.snapValue == 0.5F);
-        // The field is wider than its widest step text by an inset, whatever the Body/Mono rounding at this UI scale
-        // (the 4-em floor alone clips "0.001234 m" at some fractional scales). Both widths come from the chrome's
-        // one measure, so THAT it is taken in Mono is I307(k)'s source pin, not this check.
+        // The field holds its widest step text plus the frame padding on both sides at whatever UI scale this lane
+        // runs (the 4-em floor alone clips "0.001234 m" -- 65 points against 64 at scale 1). The padding is the
+        // THEME's, truncated as ScaleAllSizes truncates it; THAT the text is measured in Mono is I307(k)'s pin.
         CHECK(r.snapFieldTextWidth > 0.0F);
-        CHECK(r.metrics.snapField > r.snapFieldTextWidth);
+        const float padX = engine::editor::EDITOR_THEME.metrics.framePadding.x;
+        const float inset = 2.0F * std::trunc(padX * r.uiScaleAtDraw);
+        CHECK(inset > 0.0F);
+        CHECK(r.metrics.snapField >= r.snapFieldTextWidth + inset);
         CHECK(r.metrics.snapField >= 4.0F * r.metrics.fontSize);
         if (ready) {
             CHECK(snapIs(viewport->lastManipulateSnap(), 0.5F));

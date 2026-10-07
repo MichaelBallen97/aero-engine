@@ -57,7 +57,8 @@ inline constexpr std::string_view NOTHING_TO_UNDO_TOOLTIP = "Nothing to undo";
 
 // Font multiples (D9, D20 -- "a width that holds text is a font multiple"): the undo label's FIXED slot, so the
 // toolbar's mode can never change with the user's last action, and the snap step field's FLOOR, which holds
-// "0.001 m". The chrome widens the field to SNAP_FIELD_WIDEST_TEXT measured in Mono, the face it draws in.
+// "0.001 m". The chrome widens the field to SNAP_FIELD_WIDEST_TEXT measured in Mono, the face it draws in, plus
+// the frame padding on both sides (81 points at UI scale 1).
 inline constexpr float UNDO_LABEL_SLOT_EM = 10.0F;
 inline constexpr float SNAP_FIELD_WIDTH_EM = 4.0F;
 // The widest text a step format can produce, in code points: "%.4g m" of a value in [0.001, 0.01) with four
