@@ -22865,3 +22865,205 @@ TEST_CASE("editor: the Inspector's axis boxes hold a three-decimal value (task E
     CHECK(app->tick() == false);
     app.reset();
 }
+
+// ==================================================================================================
+// task E.6.2 -- the toolbar, the breadcrumb and the status bar (I290-I308)
+// ==================================================================================================
+
+namespace {
+
+// Every E.6.2 GPU case draws at 900 x 600. From step 6 the bars take 70 dp off every dock, and a case whose
+// observable needs the Viewport's Ready path (updateGizmo, Manipulate) needs a non-empty content region on CI's
+// short macOS runner too (I231 / I233). A case about the chrome reads its geometry off the record, never off this
+// requested size.
+constexpr int E62_WINDOW_WIDTH = 900;
+constexpr int E62_WINDOW_HEIGHT = 600;
+
+[[nodiscard]] std::optional<engine::editor::EditorApp> e62App(engine::rhi::Device& device,
+                                                              engine::platform::Window& window,
+                                                              engine::platform::Context& ctx) {
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(device, window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    for (int i = 0; i < 3; ++i) {
+        REQUIRE(app->tick());
+    }
+    return app;
+}
+
+// The seeded default scene's entity of that name; an invalid Entity when there is none.
+[[nodiscard]] engine::Entity e62EntityNamed(const engine::World& world, std::string_view name) {
+    engine::Entity found{};
+    world.eachEntity([&](engine::Entity e) {
+        if (world.name(e) == name) {
+            found = e;
+        }
+    });
+    return found;
+}
+
+// A BOUNDED settle until the Viewport has really rendered -- the I254 shape. Call only on the Ready arm.
+void e62SettleViewport(engine::editor::EditorApp& app, const engine::editor::ViewportPanel& viewport) {
+    const engine::render::PostProcess* const post = viewport.postProcess();
+    REQUIRE(post != nullptr);
+    constexpr int MAX_SETTLE_TICKS = 32;
+    int ticks = 0;
+    while (ticks < MAX_SETTLE_TICKS && post->sceneDrawExtent().width == 0U) {
+        REQUIRE(app.tick());
+        ++ticks;
+    }
+    REQUIRE(ticks < MAX_SETTLE_TICKS);  // the predicate ended the loop, never the bound
+}
+
+// The first non-blank comment-stripped line BEFORE `from`, trimmed -- what a statement sits under.
+[[nodiscard]] std::string e62PreviousCodeLine(const std::vector<std::string>& code, std::size_t from) {
+    for (std::size_t i = from; i > 0U; --i) {
+        const std::string& line = code[i - 1U];
+        const std::size_t first = line.find_first_not_of(" \t");
+        if (first != std::string::npos) {
+            const std::size_t last = line.find_last_not_of(" \t\r");
+            return line.substr(first, last - first + 1U);
+        }
+    }
+    return {};
+}
+
+// How far the history grows across "push, ONE tick, push" of two CONTIGUOUS TransformCommands on `pushed`,
+// with `selected` primary: 1 when the chain survived the tick (the second merged), 2 when something closed it.
+// The chain is global, so the pushed entity need not be the selected one -- which is exactly the Inspector-drag
+// shape the defect broke (an edit on one entity while the Viewport looks at the selection). TransformCommand
+// merges with NO reflection (transform_command.cpp's mergeWith), so this runs in every configuration.
+[[nodiscard]] std::size_t e62HistoryGrowth(engine::editor::EditorApp& app, engine::Entity selected,
+                                           engine::Entity pushed, bool breakBetween) {
+    app.selection().set(selected);
+    REQUIRE(app.tick());
+    REQUIRE(app.tick());
+    app.commands().breakMergeChain();  // each arm starts its own chain
+    const std::optional<engine::Transform> t0 = engine::editor::readTransform(app.world(), pushed);
+    REQUIRE(t0.has_value());
+    engine::Transform t1 = *t0;
+    t1.position = t0->position + engine::Vec3{0.25F, 0.0F, 0.0F};
+    engine::Transform t2 = t1;
+    t2.position = t1.position + engine::Vec3{0.25F, 0.0F, 0.0F};
+    engine::editor::CommandContext cmd{app.world(), app.selection(), app.roots()};
+    const std::size_t before = app.commands().count();
+    REQUIRE(app.commands().push(cmd, std::make_unique<engine::editor::TransformCommand>(pushed, *t0, t1)));
+    REQUIRE(app.tick());  // ONE whole frame between the two pushes: the Viewport's updateGizmo runs in it
+    if (breakBetween) {
+        app.commands().breakMergeChain();
+    }
+    REQUIRE(app.commands().push(cmd, std::make_unique<engine::editor::TransformCommand>(pushed, t1, t2)));
+    return app.commands().count() - before;
+}
+
+}  // namespace
+
+TEST_CASE("editor: a gizmo return leaves another panel's merge chain open (task E.6.2, I290)") {
+    // AC-15. THE EFFECT: the undo history's own count, across a tick whose Viewport frame takes an early return.
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "merge chain i290", .width = E62_WINDOW_WIDTH, .height = E62_WINDOW_HEIGHT});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = e62App(*device, *window, ctx);
+    auto* const viewport = dynamic_cast<engine::editor::ViewportPanel*>(app->panels().find("Viewport"));
+    REQUIRE(viewport != nullptr);
+    const engine::Entity environment = e62EntityNamed(app->world(), "Environment");
+    const engine::Entity cube = e62EntityNamed(app->world(), "Cube");
+    REQUIRE(environment.valid());
+    REQUIRE(cube.valid());
+    REQUIRE_FALSE(app->world().has<engine::Transform>(environment));  // the precondition: no gizmo target
+
+    if (viewport->debugDraw() == nullptr) {
+        // THE SHADER-TOOLS-OFF ARM, at runtime (the I254 idiom), asserted and never skipped: the panel is
+        // Unavailable, onDraw returns before updateGizmo, and no gizmo return can run -- so the chain survives
+        // the tick here whatever the returns do, and only the explicit break splits it.
+        CHECK(viewport->sceneForwardRenderer() == nullptr);
+        CHECK(e62HistoryGrowth(*app, environment, cube, false) == 1U);
+        CHECK(e62HistoryGrowth(*app, environment, cube, true) == 2U);  // ANTI-VACUITY: the measure can read 2
+        app->requestQuit();
+        CHECK(app->tick() == false);
+        app.reset();
+        return;
+    }
+    e62SettleViewport(*app, *viewport);
+
+    SUBCASE("the no-target return: the Environment entity is primary") {
+        CHECK(e62HistoryGrowth(*app, environment, cube, false) == 1U);  // red before the fix: 2
+        CHECK(e62HistoryGrowth(*app, environment, cube, true) == 2U);   // ANTI-VACUITY: a break between splits
+    }
+    SUBCASE("the behind-camera return: the Cube is primary and behind the eye") {
+        // forward() is rotation * (0,0,-1): at yaw 0 / pitch 0 the eye at pivot + 5 z looks down -Z, so the Cube
+        // at the origin is 45 units BEHIND it and gizmoOriginBehindCamera answers true.
+        engine::editor::EditorCamera* const camera = app->viewportCamera();
+        REQUIRE(camera != nullptr);
+        camera->setYaw(0.0F);
+        camera->setPitch(0.0F);
+        camera->setPivot(engine::Vec3{0.0F, 0.0F, -50.0F});
+        camera->setDistance(5.0F);
+        CHECK(e62HistoryGrowth(*app, cube, cube, false) == 1U);  // red before the fix: 2
+        CHECK(e62HistoryGrowth(*app, cube, cube, true) == 2U);   // ANTI-VACUITY
+    }
+    SUBCASE("the positive control: the Cube is primary, in view, the gizmo drawn and idle") {
+        CHECK(e62HistoryGrowth(*app, cube, cube, false) == 1U);  // no early return runs; no drag edge either
+    }
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: every gizmo-return break sits under its own drag's guard (task E.6.2, I291)") {
+    // UNGATED source text: INV-3 as it was meant -- a return breaks the chain ONLY when a gizmo drag was in flight.
+    // A break the returns run unconditionally is seed S1, and on the shader-tools-OFF lane no runtime case can see
+    // it (updateGizmo never runs there), so this is that lane's witness.
+    const std::vector<std::string> code = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/viewport_panel.cpp");
+    REQUIRE_FALSE(code.empty());
+    std::size_t guarded = 0;
+    std::size_t edges = 0;
+    std::size_t breaks = 0;
+    for (std::size_t i = 0; i < code.size(); ++i) {
+        if (code[i].find("breakMergeChain(") == std::string::npos) {
+            continue;
+        }
+        ++breaks;
+        const std::string above = e62PreviousCodeLine(code, i);
+        CAPTURE(i);
+        CAPTURE(above);
+        if (above == "if (gizmoWasUsing) {") {
+            ++guarded;
+        } else if (above == "if (edge == GizmoDragEdge::Begin) {" || above == "if (edge == GizmoDragEdge::End) {") {
+            ++edges;
+        } else {
+            FAIL_CHECK("a breakMergeChain() that is neither a drag edge nor under if (gizmoWasUsing)");
+        }
+    }
+    CHECK(edges == 2U);    // the Begin and End edges, unchanged since 2.4.1
+    CHECK(guarded == 2U);  // the no-target and behind-camera returns (step 2 adds the Select return: 3)
+    CHECK(breaks == guarded + edges);
+    // ...and the guard is READ before the latch is cleared: within each early return, the guarded break comes
+    // first and `gizmoWasUsing = false;` after it.
+    std::size_t orderedReturns = 0;
+    for (std::size_t i = 0; i < code.size(); ++i) {
+        if (code[i].find("if (gizmoWasUsing) {") == std::string::npos) {
+            continue;
+        }
+        for (std::size_t j = i + 1U; j < std::min(code.size(), i + 8U); ++j) {
+            if (code[j].find("gizmoWasUsing = false;") != std::string::npos) {
+                ++orderedReturns;
+                break;
+            }
+        }
+    }
+    CHECK(orderedReturns == guarded);
+}

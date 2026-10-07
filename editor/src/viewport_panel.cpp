@@ -1023,12 +1023,19 @@ void ViewportPanel::updateGizmo(PanelContext& context, Vec2 imageOrigin, Vec2 av
         // gizmoWasUsing while ImGuizmo's OWN mbUsing latch can still be set (the target vanished,
         // e.g. destroyed, mid-drag) -- so the same moment must clear ImGuizmo's latch too, exactly
         // like item 5's guard below. gizmoHasTarget stays false, so the bar draws disabled (E5/D19).
+        //
+        // task E.6.2 -- INV-3 as it was meant: every site that clears a TRUE gizmoWasUsing breaks the chain,
+        // because this return then delivers that drag's missing End edge. A frame with NO drag in flight
+        // leaves alone a chain another panel opened: this return runs on EVERY Viewport frame while the
+        // primary has no Transform (the seeded Environment), and the unconditional break it used to make
+        // split an Inspector drag into one undo entry per frame (I290). READ before the latch is cleared.
+        if (gizmoWasUsing) {
+            context.commands.breakMergeChain();
+        }
         gizmoWasUsing = false;
         gizmoWarnLatched = false;
         ImGuizmo::Enable(false);
-        context.commands.breakMergeChain();  // INV-3: every site that clears gizmoWasUsing also
-                                             // breaks the chain -- this return delivers no End edge
-        return;                              // AC-14: no ImGuizmo call at all
+        return;  // AC-14: no ImGuizmo call at all
     }
     gizmoHasTarget = true;
 
@@ -1041,9 +1048,11 @@ void ViewportPanel::updateGizmo(PanelContext& context, Vec2 imageOrigin, Vec2 av
         // consulting IsOver()/IsUsing() about THIS frame's cursor; here we want exactly "was a drag
         // in flight as of the last Manipulate", which mirrors ImGuizmo's own `&& !gContext.mbUsing`
         // (ImGuizmo.cpp:2697) so an in-flight drag is never cut off mid-gesture (A10).
+        if (gizmoWasUsing) {  // task E.6.2: only this drag's own End edge (INV-3, the no-target return's note)
+            context.commands.breakMergeChain();
+        }
         gizmoWasUsing = false;
         gizmoWarnLatched = false;
-        context.commands.breakMergeChain();  // INV-3: this return also delivers no End edge
         return;
     }
 
