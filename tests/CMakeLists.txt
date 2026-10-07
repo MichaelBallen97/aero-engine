@@ -505,7 +505,8 @@ add_executable(aero_editor_shell_test editor/shell_test.cpp editor/hierarchy_tes
                editor/create_menu_test.cpp             # task E.5.2 — the pure create table (CR)
                editor/editor_theme_test.cpp            # task E.6.1 — the one theme (TH)
                editor/ui_scale_test.cpp                # task E.6.1 — the UI-scale model (US)
-               editor/editor_glyphs_test.cpp)          # task E.6.1 — glyphs, icons, literal policy (GL)
+               editor/editor_glyphs_test.cpp           # task E.6.1 — glyphs, icons, literal policy (GL)
+               editor/shortcut_hint_test.cpp)          # task E.6.2 — the one chord spelling (HK)
 target_link_libraries(aero_editor_shell_test PRIVATE
     doctest::doctest aero::editor_core aero::scene aero::scene_internal aero::core Threads::Threads)
 add_test(NAME aero_editor_shell_test COMMAND aero_editor_shell_test)

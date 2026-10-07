@@ -7,9 +7,10 @@
 #include <aero/editor/panel.hpp>
 #include <aero/editor/project_settings.hpp>
 #include <aero/editor/scene_session.hpp>
-#include <aero/editor/selection.hpp>  // task E.3.2: the focus slot's sourceStillValid guard calls
-                                      // context.selection.empty(), and panel_context.hpp only
-                                      // FORWARD-DECLARES Selection. PUBLIC and ImGui-free.
+#include <aero/editor/selection.hpp>      // task E.3.2: the focus slot's sourceStillValid guard calls
+                                          // context.selection.empty(), and panel_context.hpp only
+                                          // FORWARD-DECLARES Selection. PUBLIC and ImGui-free.
+#include <aero/editor/shortcut_hint.hpp>  // task E.6.2: chordHint + currentHostOs -- every menu hint's ONE spelling
 
 #include "create_menu_ui.hpp"  // tasks E.5.2, E.6.1: drawCreateMenuItems, drawCreateKindItem
 #include "project_ui.hpp"      // task 2.6.1: drawWelcomeWindow / drawNewProjectModal
@@ -117,6 +118,9 @@ void drawMenuBar(PanelRegistry& panels, PanelContext& context, ShellUiState& sta
     if (!ImGui::BeginMainMenuBar()) {
         return;  // F7: End only when Begin returned true
     }
+    // task E.6.2 (D10): every hint for an ImGuiMod_Ctrl chord reads the HOST's spelling -- Cmd on macOS, Ctrl
+    // elsewhere -- because ImGuiMod_Ctrl binds Cmd there. A runtime call, never a platform branch in this file.
+    const HostOs host = currentHostOs();
     if (ImGui::BeginMenu("File")) {
         // task 2.6.1: New/Open Project, Open Recent, then a separator, before the existing scene
         // items. NONE of the four is ever disabled for sceneIoAvailable() -- the project flow is
@@ -152,10 +156,10 @@ void drawMenuBar(PanelRegistry& panels, PanelContext& context, ShellUiState& sta
             ImGui::EndMenu();
         }
         ImGui::Separator();
-        if (ImGui::MenuItem("New Scene", "Ctrl+N", false, fileEnabled)) {
+        if (ImGui::MenuItem("New Scene", chordHint(host, {.ctrl = true}, "N").c_str(), false, fileEnabled)) {
             fileMenu.flow.requested = FileAction::NewScene;
         }
-        if (ImGui::MenuItem("Open Scene...", "Ctrl+O", false, io)) {
+        if (ImGui::MenuItem("Open Scene...", chordHint(host, {.ctrl = true}, "O").c_str(), false, io)) {
             fileMenu.flow.requested = FileAction::OpenScene;
         }
         // D18/AC-6: the tooltip names ONLY the AERO_REFLECT_TOOLS reason (finding 8 of the 2.5.1
@@ -166,16 +170,17 @@ void drawMenuBar(PanelRegistry& panels, PanelContext& context, ShellUiState& sta
         ioTooltip(sceneIoAvailable());
         // AC-4: nothing to write when the document is clean AND has a path.
         const bool canSave = io && (!context.commands.isClean() || fileMenu.session.untitled());
-        if (ImGui::MenuItem("Save Scene", "Ctrl+S", false, canSave)) {
+        if (ImGui::MenuItem("Save Scene", chordHint(host, {.ctrl = true}, "S").c_str(), false, canSave)) {
             fileMenu.flow.requested = FileAction::SaveScene;
         }
         ioTooltip(sceneIoAvailable());
-        if (ImGui::MenuItem("Save Scene As...", "Ctrl+Shift+S", false, io)) {
+        const std::string saveAsHint = chordHint(host, {.ctrl = true, .shift = true}, "S");
+        if (ImGui::MenuItem("Save Scene As...", saveAsHint.c_str(), false, io)) {
             fileMenu.flow.requested = FileAction::SaveSceneAs;
         }
         ioTooltip(sceneIoAvailable());
         ImGui::Separator();
-        if (ImGui::MenuItem("Exit", "Ctrl+Q", false, fileEnabled)) {
+        if (ImGui::MenuItem("Exit", chordHint(host, {.ctrl = true}, "Q").c_str(), false, fileEnabled)) {
             fileMenu.flow.requested = FileAction::Quit;  // D1: the GUARDED quit
         }
         ImGui::EndMenu();
@@ -191,9 +196,10 @@ void drawMenuBar(PanelRegistry& panels, PanelContext& context, ShellUiState& sta
             undoText += ' ';
             undoText += label;
         }
+        const std::string undoHint = chordHint(host, {.ctrl = true}, "Z");
         // `fileEnabled` for the same reason the chords take it (Phase 2 audit): a modal owns the
         // input, so the history must not move underneath it. Drawn disabled rather than hidden.
-        if (ImGui::MenuItem(undoText.c_str(), "Ctrl+Z", false, fileEnabled && commands.canUndo())) {
+        if (ImGui::MenuItem(undoText.c_str(), undoHint.c_str(), false, fileEnabled && commands.canUndo())) {
             state.undoRequested = true;
         }
         std::string redoText = "Redo";
@@ -201,7 +207,8 @@ void drawMenuBar(PanelRegistry& panels, PanelContext& context, ShellUiState& sta
             redoText += ' ';
             redoText += label;
         }
-        if (ImGui::MenuItem(redoText.c_str(), "Ctrl+Shift+Z", false, fileEnabled && commands.canRedo())) {
+        const std::string redoHint = chordHint(host, {.ctrl = true, .shift = true}, "Z");
+        if (ImGui::MenuItem(redoText.c_str(), redoHint.c_str(), false, fileEnabled && commands.canRedo())) {
             state.redoRequested = true;
         }
         ImGui::Separator();

@@ -4,7 +4,8 @@
 #include <aero/editor/entity_commands.hpp>
 #include <aero/editor/panel_context.hpp>
 #include <aero/editor/selection.hpp>
-#include <aero/scene/mesh_renderer.hpp>  // task 3.1.5: the row arm asks the LIVE World, never the payload
+#include <aero/editor/shortcut_hint.hpp>  // task E.6.2: Duplicate's hint
+#include <aero/scene/mesh_renderer.hpp>   // task 3.1.5: the row arm asks the LIVE World, never the payload
 #include <aero/scene/world.hpp>
 
 #include "create_menu_ui.hpp"  // task E.5.2: drawCreateMenuItems -- the ONE drawing helper
@@ -322,7 +323,7 @@ bool HierarchyPanel::drawRow(PanelContext& context, Entity entity) {
         if (ImGui::MenuItem("Rename", "F2")) {
             pending = PendingAction{.kind = ActionKind::BeginRename, .target = entity};
         }
-        if (ImGui::MenuItem("Duplicate", "Ctrl+D")) {
+        if (ImGui::MenuItem("Duplicate", chordHint(currentHostOs(), {.ctrl = true}, "D").c_str())) {
             pending = PendingAction{.kind = ActionKind::Duplicate, .target = entity};
         }
         if (ImGui::MenuItem("Delete", "Del")) {
