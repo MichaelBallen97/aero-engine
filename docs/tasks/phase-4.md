@@ -163,7 +163,9 @@ Subtasks:
 
 ### 4.7.1 Play/stop state machine + toolbar · P0 · M · depends: 4.4.1
 **Goal:** the edit/play/pause mode spine and its UI.
-**Deliverable:** toolbar Play/Pause/Stop; input routed to the game in play mode, to the editor otherwise.
+**Deliverable:** toolbar Play/Pause/Step/Stop -- Step advances one frame while paused; input routed to the game in play
+mode, to the editor otherwise. Task E.6.2 ships Play, Pause and Step as disabled placeholders in the shell toolbar, each
+with the tooltip "Not implemented yet -- task 4.7.1"; this task enables them and adds Stop.
 Subtasks:
 - Mode state machine (edit/play/pause) + toolbar
 - Input routing per mode; viewport takes game focus in play
