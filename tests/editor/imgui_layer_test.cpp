@@ -23186,6 +23186,11 @@ TEST_CASE("editor: the viewport's keys, its Select return and the tool state's n
         CHECK(usingTerm);
         const std::size_t selectAt = soleLineContaining(code, ".selectPressed =");
         CHECK(code[selectAt].find("ImGuiKey_Q") != std::string::npos);
+        // The SNAP modifier is Cmd on macOS / Ctrl elsewhere ALONE (io.KeyCtrl after ImGui's swap) -- never Super,
+        // which would make the physical Ctrl key on a Mac invert the snap. No tier can hold a key.
+        const std::size_t snapAt = soleLineContaining(code, "snapActive(");
+        CHECK(code[snapAt].find("snapActive(tools->snap.enabled, io.KeyCtrl)") != std::string::npos);
+        CHECK(code[snapAt].find("KeySuper") == std::string::npos);
         const std::size_t modifierAt = soleLineContaining(code, ".commandModifierHeld =");
         CHECK(code[modifierAt].find("io.KeyCtrl") != std::string::npos);
         CHECK(code[modifierAt].find("io.KeySuper") != std::string::npos);
@@ -23438,7 +23443,7 @@ TEST_CASE("editor: the two bars reserve their space, in whole points, out of Ctr
     CHECK(r.toolbarMax.y == r.workPos.y);                        // the dockspace starts where the toolbar ends
     CHECK(r.statusMin.y == r.workPos.y + r.workSize.y);          // ...and ends where the status bar starts
     CHECK(r.statusMax.y == r.viewportPos.y + r.viewportSize.y);  // at the window's bottom edge
-    CHECK(r.toolbarMax.y - r.toolbarMin.y == r.toolbarAxis);     // no truncated, unpainted row (seed S48)
+    CHECK(r.toolbarMax.y - r.toolbarMin.y == r.toolbarAxis);     // no truncated, unpainted row
     CHECK(r.statusMax.y - r.statusMin.y == r.statusAxis);
     CHECK(r.toolbarMax.x - r.toolbarMin.x == r.viewportSize.x);
     CHECK(r.statusMax.x - r.statusMin.x == r.viewportSize.x);
@@ -23662,7 +23667,7 @@ TEST_CASE("editor: a toolbar request does only what a click on that control coul
         std::optional<engine::editor::EditorApp> app = e62App(*device, *window, ctx);
         app->requestToolbarTool(TransformTool::Select);
         e62Ticks(*app, 2);
-        CHECK_FALSE(app->shellChromeRecord().snapFieldEnabled);
+        CHECK_FALSE(app->shellChromeRecord().snapField.enabled);
         app->requestToolbarSnapStep(2.5F);
         e62Ticks(*app, 2);
         CHECK(app->toolState().snap.translateStep == 0.5F);
@@ -23766,7 +23771,12 @@ TEST_CASE("editor: every toolbar request lives one tick (task E.6.2, I300)") {
         app->requestToolbarSnapToggle();
         e62Ticks(*app, 5);
         CHECK(app->editorPrefsWriteCount() == 1U);  // the commit, written by the next tick's flush, ONCE
-        CHECK(app->toolState().snap.enabled);       // toggled once, not every tick
+        // Toggled ONCE, not every tick: a re-applied request flips it each tick, so two consecutive reads differ
+        // (an odd tick count alone would end ON either way).
+        const bool afterOne = app->toolState().snap.enabled;
+        REQUIRE(app->tick());
+        CHECK(afterOne);
+        CHECK(app->toolState().snap.enabled == afterOne);
         app->requestQuit();
         CHECK(app->tick() == false);
         app.reset();
@@ -23908,7 +23918,7 @@ TEST_CASE("editor: the toolbar's snap reaches Manipulate per tool, and survives 
         // Under Select the field is disabled and shows Move's step; the toggle still flips (seed S54).
         app->requestToolbarTool(TransformTool::Select);
         e62Ticks(*app, 2);
-        CHECK_FALSE(r.snapFieldEnabled);
+        CHECK_FALSE(r.snapField.enabled);
         CHECK(r.snapFormat == "%.4g m");
         CHECK(r.snapValue == 0.25F);
         app->requestToolbarSnapToggle();
@@ -24090,6 +24100,8 @@ TEST_CASE("editor: the status bar -- ~ root, watcher, count, readout and backend
         const engine::editor::ShellChromeRecord& r = app->shellChromeRecord();
         // The root, ~ + the root's own separator + the project folder -- spelled from the fixture, not the model.
         const std::string expectedRoot = std::string("~") + project.root[project.location.size()] + "MyGame";
+        // At ANY width: the unelided text the bar was handed (seed S49 -- entriesSeen -- reads "2 assets" or more).
+        CHECK(r.statusWatchInput == "watching \xC2\xB7 1 asset");
         if (r.statusBarWidth >= 900.0F) {
             CHECK(r.statusRoot == expectedRoot);
             CHECK(r.statusWatch == "watching \xC2\xB7 1 asset");
@@ -24107,6 +24119,7 @@ TEST_CASE("editor: the status bar -- ~ root, watcher, count, readout and backend
         // Auto-refresh off: the watcher's own words change.
         app->requestAssetWatchToggle(false);
         e62Ticks(*app, 2);
+        CHECK(r.statusWatchInput == "auto-refresh off \xC2\xB7 1 asset");
         if (r.statusBarWidth >= 900.0F) {
             CHECK(r.statusWatch == "auto-refresh off \xC2\xB7 1 asset");
         }
@@ -24165,17 +24178,43 @@ TEST_CASE(
         CHECK(total(r.fullWidths, true) > total(r.compactWidths, true));
         CHECK(total(r.compactWidths, true) > total(r.compactWidths, false));
         CHECK(total(r.compactWidths, false) > 0.0F);
-        // No drawn rects overlap: tools, space, the snap toggle, and Undo, left to right.
+        // What ImGui DREW sits where the layout put it: each group's first item one group padding in from the
+        // group's x, Undo at undoX, each button exactly its measured width. Sums on both sides, in the chrome's own
+        // order, never a subtraction ((a + b) - a is not b in float).
+        const bool fullMode = r.layout.mode == engine::editor::ToolbarMode::Full;
+        const float barX = r.toolbarMin.x;
+        const float pad = r.metrics.groupPadding;
+        CHECK(r.tools[0].min.x == barX + r.layout.toolsX + pad);
+        CHECK(r.space[0].min.x == barX + r.layout.spaceX + pad);
+        CHECK(r.snapToggle.min.x == barX + r.layout.snapX + pad);
+        CHECK(r.undo.min.x == barX + r.layout.undoX);
+        for (std::size_t i = 0; i < r.tools.size(); ++i) {
+            CAPTURE(i);
+            const float measured = fullMode ? r.metrics.toolFull[i] : r.metrics.toolCompact[i];
+            CHECK(r.tools[i].max.x == r.tools[i].min.x + measured);
+        }
+        CHECK(r.undo.max.x == r.undo.min.x + r.metrics.undoButton);
+        const float toggleWidth = fullMode ? r.metrics.snapToggleFull : r.metrics.snapToggleCompact;
+        CHECK(r.snapField.min.x == barX + r.layout.snapX + (2.0F * pad) + toggleWidth + r.metrics.itemSpacing);
+        CHECK(r.snapField.max.x == r.snapField.min.x + r.metrics.snapField);
+        // No drawn rects overlap, left to right: tools, space, the snap toggle, its field, play, Undo.
         CHECK(r.tools[3].max.x <= r.space[0].min.x);
         CHECK(r.space[1].max.x <= r.snapToggle.min.x);
-        CHECK(r.snapToggle.max.x <= r.undo.min.x);
+        CHECK(r.snapToggle.max.x <= r.snapField.min.x);
+        if (r.playGroupDrawn) {
+            CHECK(r.play[0].min.x == barX + r.layout.playX);
+            CHECK(r.snapField.max.x <= r.play[0].min.x);
+            CHECK(r.play[2].max.x <= r.undo.min.x);
+        } else {
+            CHECK(r.snapField.max.x <= r.undo.min.x);
+        }
         if (width == 320) {
             CHECK((r.layout.mode == engine::editor::ToolbarMode::Minimal));  // a runner only narrows
         }
         if (r.layout.playDrawn) {
             CHECK(r.playGroupDrawn);
-            for (const bool disabled : r.playDisabled) {
-                CHECK(disabled);  // seed S39
+            for (const engine::editor::ToolbarButtonRecord& button : r.play) {
+                CHECK_FALSE(button.enabled);  // seed S39: ImGui's own Disabled flag on each drawn button
             }
         } else if (width >= 900) {
             WARN(r.layout.playDrawn);  // a runner narrower than Compact: geometry, not a defect
@@ -24232,6 +24271,12 @@ TEST_CASE("editor: the chrome's pushes, flags, roles and format safety as source
         }
         CHECK(countLinesContaining(code, "BeginViewportSideBar(") == 1U);
         CHECK(countLinesContaining(code, "ImGui::End();") == 2U);
+        // Both heights are WHOLE points through shellBarHeight (TB11 is its rounding's witness): a bar height
+        // spelled `xHeightDp(...) * s` is the same number at UI scale 1, so no runtime case on a 1x or Retina
+        // lane can see it (seed S48b).
+        CHECK(countLinesContaining(code, "= shellBarHeight(toolbarHeightDp(EDITOR_THEME), s)") == 1U);
+        CHECK(countLinesContaining(code, "= shellBarHeight(statusBarHeightDp(EDITOR_THEME), s)") == 1U);
+        CHECK(countLinesContaining(code, "HeightDp(EDITOR_THEME) *") == 0U);
     }
     SUBCASE("(e) the play group: one disabled pair, AllowWhenDisabled, the one tooltip (seed S40, drift)") {
         CHECK(countLinesContaining(code, "ImGui::BeginDisabled();") == 1U);
@@ -24324,6 +24369,52 @@ TEST_CASE("editor: the chrome's pushes, flags, roles and format safety as source
         // ONE spelling of "Scale forces Local": the gizmo's own effectiveSpace, never a second tool comparison.
         CHECK(countLinesContaining(code, "effectiveSpace(") == 2U);
         CHECK(countLinesContaining(code, "TransformTool::Scale") == 0U);
+    }
+    SUBCASE("(l) each role is read where D19 puts it -- exact c.<role> counts (I287 sees only chromeColors)") {
+        // chromeColors() reads each palette role ONCE (I287's rows), so a draw site that swaps one role for another
+        // is invisible there; these counts are the role-to-element map's witness. Identifier boundaries on both
+        // sides, so `c.text` never counts `c.textMuted` and `rec.undo` never counts as `c.`.
+        const auto identifierByte = [](char ch) {
+            return std::isalnum(static_cast<unsigned char>(ch)) != 0 || ch == '_';
+        };
+        const auto reads = [&](std::string_view role) {
+            const std::string needle = "c." + std::string(role);
+            std::size_t n = 0;
+            for (const std::string& line : code) {
+                for (std::size_t at = line.find(needle); at != std::string::npos; at = line.find(needle, at + 1U)) {
+                    const bool startOk = at == 0U || !identifierByte(line[at - 1U]);
+                    const std::size_t end = at + needle.size();
+                    const bool endOk = end >= line.size() || !identifierByte(line[end]);
+                    n += (startOk && endOk) ? 1U : 0U;
+                }
+            }
+            return n;
+        };
+        struct RoleCount {
+            std::string_view role;
+            std::size_t count;
+        };
+        constexpr std::array<RoleCount, 14> COUNTS{{{"chrome", 2U},
+                                                    {"raised", 3U},
+                                                    {"border", 2U},
+                                                    {"active", 3U},
+                                                    {"textBright", 2U},
+                                                    {"accent", 2U},
+                                                    {"onAccent", 1U},
+                                                    {"textSecondary", 3U},
+                                                    {"textMuted", 6U},
+                                                    {"textLabel", 1U},
+                                                    {"text", 1U},
+                                                    {"textFaint", 1U},
+                                                    {"warning", 1U},
+                                                    {"divider", 2U}}};
+        for (const RoleCount& row : COUNTS) {
+            CAPTURE(row.role);
+            CHECK(reads(row.role) == row.count);
+        }
+        // The pairs whose contrast TH13 floors, at the sites that draw them.
+        CHECK(countLinesContaining(code, "groupButton(label, active, c.accent, c.onAccent, c.textSecondary") == 1U);
+        CHECK(countLinesContaining(code, "drawText(layout.backend, layout.backendX, c.accent)") == 1U);
     }
     SUBCASE("(i) the naming sets after the chrome") {
         CHECK(e62FilesNaming("TransformToolState") ==

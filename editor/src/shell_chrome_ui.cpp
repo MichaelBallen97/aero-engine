@@ -315,7 +315,6 @@ void drawToolbar(ShellUiState& state, const CommandStack& commands, bool fileEna
         float fieldValue = snapStepValue(tool, tools.snap);
         rec.snapFormat = snapStepFormat(tool);  // what DragFloat is HANDED (the record's stated exception)
         rec.snapValue = fieldValue;
-        rec.snapFieldEnabled = fieldEnabled;
         const float monoY = buttonY + ((frame - monoFrame) * 0.5F);  // a Mono frame centred on the group's buttons
         ImGui::PushFont(editorFonts().mono, EDITOR_THEME.type.smallSize);
         ImGui::SetCursorScreenPos(ImVec2(groupX + (2.0F * pad) + toggleWidth + style.ItemSpacing.x, monoY));
@@ -331,6 +330,7 @@ void drawToolbar(ShellUiState& state, const CommandStack& commands, bool fileEna
         const bool changed = ImGui::DragFloat("##snapstep", &fieldValue, 0.0F, range.min, range.max,
                                               snapStepFormat(tool), ImGuiSliderFlags_Logarithmic);
         const bool deactivatedAfterEdit = ImGui::IsItemDeactivatedAfterEdit();
+        recordItem(rec.snapField, false);  // its rect and ImGui's own Disabled flag, never `fieldEnabled` read back
         ImGui::PopStyleColor(3);
         ImGui::EndDisabled();
         ImGui::PopFont();
@@ -358,7 +358,7 @@ void drawToolbar(ShellUiState& state, const CommandStack& commands, bool fileEna
                     ImGui::SameLine();
                 }
                 ImGui::Button(full ? control.iconLabel.data() : control.icon.data());
-                rec.playDisabled[i] = (ImGui::GetItemFlags() & ImGuiItemFlags_Disabled) != 0;
+                recordItem(rec.play[i], false);
                 if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
                     ImGui::SetTooltip("%s", PLAY_CONTROLS_TOOLTIP.data());
                 }
@@ -454,6 +454,7 @@ void drawStatusBar(ShellUiState& state) {
             rec.statusFont = ImGui::GetFont()->GetDebugName();
             rec.statusFontSize = ImGui::GetFontSize();
             rec.statusBarWidth = size.x;
+            rec.statusWatchInput = text.watch;  // the unelided input, so a case can check it at ANY width
             const StatusBarLayout layout = statusBarLayout(size.x, text, currentTextWidth, s);
             const float textY = pos.y + ((size.y - ImGui::GetFontSize()) * 0.5F);
             const auto drawText = [textY, &pos](const std::string& value, float x, const ImVec4& colour) {

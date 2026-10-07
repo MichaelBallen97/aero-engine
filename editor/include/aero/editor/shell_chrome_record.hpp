@@ -54,12 +54,12 @@ struct ShellChromeRecord {
     std::array<ToolbarButtonRecord, 4> tools{};  // TOOLBAR_TOOLS order
     std::array<ToolbarButtonRecord, 2> space{};  // Local, World
     ToolbarButtonRecord snapToggle{};
-    bool snapFieldEnabled = false;
+    ToolbarButtonRecord snapField{};  // the step DragFloat, read back like a button (rect, Disabled flag)
     float snapFieldTextWidth = 0.0F;  // SNAP_FIELD_WIDEST_TEXT measured in the field's own face (Mono, smallSize)
     std::string snapFormat;           // HANDED to DragFloat (the header's one stated exception)
     float snapValue = 0.0F;           // likewise
     bool playGroupDrawn = false;
-    std::array<bool, 3> playDisabled{};  // GetItemFlags() & ImGuiItemFlags_Disabled after each play button
+    std::array<ToolbarButtonRecord, 3> play{};  // TOOLBAR_PLAY_CONTROLS order; drawn only while playGroupDrawn
     ToolbarButtonRecord undo{};
     std::string undoChip;   // the chip's text as drawn
     std::string undoLabel;  // the label as drawn; "" when none was drawn
@@ -81,6 +81,7 @@ struct ShellChromeRecord {
     float statusBarWidth = 0.0F;  // the width statusBarLayout received
     std::string statusRoot;       // each string as drawn
     std::string statusWatch;
+    std::string statusWatchInput;  // the unelided watcher text the bar was handed (StatusBarText::watch)
     std::string statusFrame;
     std::string statusBackend;
     std::string statusFont;

@@ -261,6 +261,12 @@ TEST_CASE("status bar: the Assets footer adopted the classification and owns no 
     CHECK(linesWith(code, "watchStatusPtr->truncated") == 0U);
     CHECK(linesWith(code, "watchStatusPtr->deferredSweeps > 0") == 0U);
     CHECK(linesWith(code, "!watchStatusPtr->enabled") == 0U);  // :264's checkbox reads it un-negated, legitimately
+    // ...whatever the spelling (seed S37d: a chain grown against a local alias). `rootUnreadable` and `deferredSweeps
+    // >` have no other reader in the file; the classification is ONE line whose answer feeds only the text.
+    CHECK(linesWith(code, "rootUnreadable") == 0U);
+    CHECK(linesWith(code, "deferredSweeps >") == 0U);
+    CHECK(linesWith(code, "const WatchState footerState = classifyWatchState(true, watch);") == 1U);
+    CHECK(linesWith(code, "footerState") == 2U);  // declared, then handed to assetFooterWatchText -- nothing else
     for (const std::string_view literal : {"Auto-refresh off", "Watch paused", "Watching (partial",
                                            "Watching -- settling", "folder(s) unreadable", "\"Watching\""}) {
         CAPTURE(literal);
@@ -314,6 +320,17 @@ TEST_CASE("status bar: the layout's fixed order over a 1-dp sweep, at scale 1 an
             }
             // the left zone ends a zone gap before the right one, and only shrinks as the bar does.
             CHECK(l.leftEnd + gap <= l.rightStart);
+            // ...and its parts sit where the layout's rule puts them: the root at the padding, the watcher one zone
+            // gap after the root, the zone ending where the watcher does.
+            if (!l.root.empty()) {
+                CHECK(l.rootX == pad);
+            }
+            if (!l.root.empty() && !l.watch.empty()) {
+                CHECK(l.watchX == pad + measure(l.root) + gap);
+            }
+            if (!l.watch.empty()) {
+                CHECK(l.leftEnd == l.watchX + measure(l.watch));
+            }
             CHECK(l.leftEnd <= previousLeftEnd);
             previousLeftEnd = l.leftEnd;
             // (2) before (3): the watcher stays whole until the root is at its floor (ellipsis + "SampleProject").
