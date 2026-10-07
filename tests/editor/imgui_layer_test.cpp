@@ -23875,6 +23875,11 @@ TEST_CASE("editor: the toolbar's snap reaches Manipulate per tool, and survives 
         CHECK(r.snapToggle.drawnActive);
         CHECK(r.snapFormat == "%.4g m");  // independent literals, never snapStepFormat's answer
         CHECK(r.snapValue == 0.5F);
+        // The field holds its widest step text in its own face (Mono), whatever the Body/Mono rounding at this
+        // UI scale; the 4-em floor alone clips "0.001234 m" at some fractional scales.
+        CHECK(r.snapFieldTextWidth > 0.0F);
+        CHECK(r.metrics.snapField >= r.snapFieldTextWidth);
+        CHECK(r.metrics.snapField >= 4.0F * r.metrics.fontSize);
         if (ready) {
             CHECK(snapIs(viewport->lastManipulateSnap(), 0.5F));
         }
@@ -24295,6 +24300,30 @@ TEST_CASE("editor: the chrome's pushes, flags, roles and format safety as source
         CHECK(countLinesContaining(code, "toolsEnabled && noModal") == 1U);
         CHECK(countLinesContaining(code, "spaceEnabled && noModal") == 1U);
         CHECK(countLinesContaining(code, "fieldEnabled && noModal") == 1U);
+    }
+    SUBCASE("(k) the step field: measured in its own face, a raised box; the space shown by effectiveSpace") {
+        // Both Mono measures sit INSIDE the one measuring Mono push: the chip and the step field draw in Mono, so
+        // a Body measure of either is a width that does not hold what is drawn.
+        const std::size_t chipAt = soleLineContaining(code, "metrics.undoChip = buttonWidth(chip);");
+        const std::size_t stepAt = soleLineContaining(code, "= currentTextWidth(SNAP_FIELD_WIDEST_TEXT);");
+        REQUIRE(chipAt > 0U);
+        CHECK(code[chipAt - 1U].find("PushFont(editorFonts().mono") != std::string::npos);
+        std::size_t popAt = chipAt;
+        while (popAt < code.size() && code[popAt].find("PopFont()") == std::string::npos) {
+            ++popAt;
+        }
+        CHECK(chipAt < stepAt);
+        CHECK(stepAt < popAt);
+        const std::string_view widthLine = "metrics.snapField = std::max(SNAP_FIELD_WIDTH_EM * fontSize, widestStep)";
+        CHECK(countLinesContaining(code, widthLine) == 1U);
+        // D19: a raised fill, not the theme's inset input fill; one pop for the three slots.
+        const std::size_t fillAt = soleLineContaining(code, "PushStyleColor(ImGuiCol_FrameBg, c.raised)");
+        CHECK(soleLineContaining(code, "PushStyleColor(ImGuiCol_FrameBgHovered,") == fillAt + 1U);
+        CHECK(soleLineContaining(code, "PushStyleColor(ImGuiCol_FrameBgActive, c.active)") == fillAt + 2U);
+        CHECK(countLinesContaining(code, "PopStyleColor(3)") == 1U);
+        // ONE spelling of "Scale forces Local": the gizmo's own effectiveSpace, never a second tool comparison.
+        CHECK(countLinesContaining(code, "effectiveSpace(") == 2U);
+        CHECK(countLinesContaining(code, "TransformTool::Scale") == 0U);
     }
     SUBCASE("(i) the naming sets after the chrome") {
         CHECK(e62FilesNaming("TransformToolState") ==

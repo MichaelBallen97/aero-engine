@@ -207,7 +207,6 @@ void drawToolbar(ShellUiState& state, const CommandStack& commands, bool fileEna
         metrics.worldSegment = buttonWidth(WORLD_SEGMENT_LABEL);
         metrics.snapToggleFull = buttonWidth(SNAP_TOGGLE_LABEL);
         metrics.snapToggleCompact = buttonWidth(SNAP_TOGGLE_ICON);
-        metrics.snapField = SNAP_FIELD_WIDTH_EM * fontSize;
         for (std::size_t i = 0; i < TOOLBAR_PLAY_CONTROLS.size(); ++i) {
             metrics.playFull[i] = buttonWidth(TOOLBAR_PLAY_CONTROLS[i].iconLabel);
             metrics.playCompact[i] = buttonWidth(TOOLBAR_PLAY_CONTROLS[i].icon);
@@ -217,7 +216,13 @@ void drawToolbar(ShellUiState& state, const CommandStack& commands, bool fileEna
         ImGui::PushFont(editorFonts().mono, EDITOR_THEME.type.smallSize);
         metrics.undoChip = buttonWidth(chip);
         const float monoFrame = ImGui::GetFrameHeight();
+        // The step field draws in Mono too, so its width is measured in Mono: a FLOOR of SNAP_FIELD_WIDTH_EM Body
+        // em, widened to the widest text its formats produce. Body and Mono sizes round independently (IM_ROUND),
+        // so at a fractional UI scale a Body-em width alone clips a ten-glyph "0.001234 m".
+        const float widestStep = currentTextWidth(SNAP_FIELD_WIDEST_TEXT);
         ImGui::PopFont();
+        metrics.snapField = std::max(SNAP_FIELD_WIDTH_EM * fontSize, widestStep);
+        rec.snapFieldTextWidth = widestStep;
         metrics.itemSpacing = style.ItemSpacing.x;
         metrics.groupPadding = pad;
         metrics.fontSize = fontSize;
@@ -261,8 +266,13 @@ void drawToolbar(ShellUiState& state, const CommandStack& commands, bool fileEna
         groupX = pos.x + layout.spaceX;
         groupBackground(list, groupX, groupTop, w.space, groupHeight, c);
         ImGui::SetCursorScreenPos(ImVec2(groupX + pad, buttonY));
-        const bool scaleForcesLocal = tools.mode.tool == TransformTool::Scale;
-        const GizmoSpace shown = scaleForcesLocal ? GizmoSpace::Local : tools.mode.space;
+        // The space Manipulate receives, by the SAME rule (effectiveSpace): the segment can never show a space the
+        // gizmo does not use. Select draws no gizmo, so it shows the stored space.
+        const std::optional<GizmoOperation> toolOperation = gizmoOperationFor(tools.mode.tool);
+        const bool scaleForcesLocal =
+            toolOperation.has_value() && effectiveSpace(*toolOperation, GizmoSpace::World) == GizmoSpace::Local;
+        const GizmoSpace shown =
+            toolOperation.has_value() ? effectiveSpace(*toolOperation, tools.mode.space) : tools.mode.space;
         const std::optional<GizmoSpace> spaceRequest = state.toolbarSpaceRequest;
         const bool spaceEnabled = haveTools && !scaleForcesLocal;  // D21: the segments' predicate
         ImGui::BeginDisabled(!spaceEnabled);
@@ -311,11 +321,17 @@ void drawToolbar(ShellUiState& state, const CommandStack& commands, bool fileEna
         ImGui::SetCursorScreenPos(ImVec2(groupX + (2.0F * pad) + toggleWidth + style.ItemSpacing.x, monoY));
         ImGui::SetNextItemWidth(metrics.snapField);
         ImGui::BeginDisabled(!fieldEnabled);
+        // D19: the field is a `raised` box like the chip beside it, not the theme's `inset` input fill; hover and
+        // active follow the button slots, so the three states stay distinct.
+        ImGui::PushStyleColor(ImGuiCol_FrameBg, c.raised);
+        ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, ImGui::GetStyleColorVec4(ImGuiCol_ButtonHovered));
+        ImGui::PushStyleColor(ImGuiCol_FrameBgActive, c.active);
         // Speed 0 with Logarithmic moves ~1 % of the log span per pixel (imgui_widgets.cpp:2573), so six decades
         // take ~100 px; double-click or Cmd/Ctrl-click types a value, which snapStepUpdate clamps.
         const bool changed = ImGui::DragFloat("##snapstep", &fieldValue, 0.0F, range.min, range.max,
                                               snapStepFormat(tool), ImGuiSliderFlags_Logarithmic);
         const bool deactivatedAfterEdit = ImGui::IsItemDeactivatedAfterEdit();
+        ImGui::PopStyleColor(3);
         ImGui::EndDisabled();
         ImGui::PopFont();
         if (tool == TransformTool::Select) {

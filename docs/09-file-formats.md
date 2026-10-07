@@ -1124,7 +1124,8 @@ A parse failure is all-or-nothing: one bad snap step resets **every** preference
 `focusFollowsSelection` included, with the one warning — the editor's own toolbar clamps a step into
 its range before it commits, so a file this build wrote never holds one. The toggle is written when it
 is clicked; a step when its edit ENDS (a request, or the field's deactivation-after-edit), never on a
-live drag frame.
+live drag frame. A step still being typed or dragged when the editor quits is discarded, like any uncommitted
+field: its edit never ended, so it was never committed.
 
 **A file is only read and written by an editor instance that owns the user's persisted UI state** —
 `EditorAppConfig::persistLayout`. With `persistLayout` false the path resolves to `""`, and an empty

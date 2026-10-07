@@ -55,8 +55,9 @@ struct ShellChromeRecord {
     std::array<ToolbarButtonRecord, 2> space{};  // Local, World
     ToolbarButtonRecord snapToggle{};
     bool snapFieldEnabled = false;
-    std::string snapFormat;  // HANDED to DragFloat (the header's one stated exception)
-    float snapValue = 0.0F;  // likewise
+    float snapFieldTextWidth = 0.0F;  // SNAP_FIELD_WIDEST_TEXT measured in the field's own face (Mono, smallSize)
+    std::string snapFormat;           // HANDED to DragFloat (the header's one stated exception)
+    float snapValue = 0.0F;           // likewise
     bool playGroupDrawn = false;
     std::array<bool, 3> playDisabled{};  // GetItemFlags() & ImGuiItemFlags_Disabled after each play button
     ToolbarButtonRecord undo{};

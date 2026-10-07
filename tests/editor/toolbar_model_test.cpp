@@ -1,4 +1,4 @@
-// tests/editor/toolbar_model_test.cpp -- task E.6.2: the toolbar's pure model (TB1-TB11). A TU of
+// tests/editor/toolbar_model_test.cpp -- task E.6.2: the toolbar's pure model (TB1-TB12). A TU of
 // aero_editor_shell_test (main() is shell_test.cpp's). Tier 0, every configuration, no #if of any kind. Expected
 // values are INDEPENDENT literals -- never recomputed by the function under test -- and the theme's shell metrics
 // (toolbarPaddingX 12, toolbarGroupGap 14) are restated as literals so a retune is a visible decision here.
@@ -280,4 +280,36 @@ TEST_CASE("toolbar: bar heights are whole points at every quantised scale (task 
     for (const float bad : {std::numeric_limits<float>::quiet_NaN(), 0.0F, -1.0F}) {
         CHECK(ed::shellBarHeight(44.0F, bad) == 44.0F);
     }
+}
+
+TEST_CASE("toolbar: no step value formats wider than the field's widest text (task E.6.2, TB12)") {
+    // The chrome sizes the field to SNAP_FIELD_WIDEST_TEXT in Mono, one advance per code point, so the claim is a
+    // code-point count: every value a tool's range holds, formatted as DragFloat formats it, fits in that many.
+    const auto codePoints = [](std::string_view text) {
+        const auto leads = [](char c) { return (static_cast<unsigned char>(c) & 0xC0U) != 0x80U; };
+        return static_cast<std::size_t>(std::count_if(text.begin(), text.end(), leads));
+    };
+    const std::size_t widest = codePoints(ed::SNAP_FIELD_WIDEST_TEXT);
+    REQUIRE(widest == 10U);
+    std::size_t reached = 0;
+    for (const TransformTool tool : {TransformTool::Move, TransformTool::Rotate, TransformTool::Scale}) {
+        CAPTURE(static_cast<int>(tool));
+        const ed::SnapRange range = ed::snapStepRange(ed::snapFieldOperation(tool));
+        constexpr int STEPS = 4000;
+        for (int k = 0; k <= STEPS; ++k) {
+            // A logarithmic sweep of the range -- the field's own mapping -- through every decade it spans.
+            const auto t = static_cast<double>(k) / STEPS;
+            const auto span = static_cast<double>(range.max / range.min);
+            const double v = static_cast<double>(range.min) * std::pow(span, t);
+            ed::SnapSettings s{};
+            s.translateStep = static_cast<float>(v);
+            s.rotateStepDegrees = static_cast<float>(v);
+            s.scaleStep = static_cast<float>(v);
+            const std::string text = ed::snapStepText(tool, s);
+            CAPTURE(text);
+            CHECK(codePoints(text) <= widest);
+            reached = std::max(reached, codePoints(text));
+        }
+    }
+    CHECK(reached == widest);  // ANTI-VACUITY: some value really formats as wide as the field's text
 }

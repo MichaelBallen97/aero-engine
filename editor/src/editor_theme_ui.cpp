@@ -260,8 +260,9 @@ EditorStyleColors editorStyleColors(const ThemePalette& palette) {
         {ImGuiCol_SliderGrabActive, p.textBright},
         {ImGuiCol_Button, p.raised},
         {ImGuiCol_ButtonHovered, p.hover},
-        // D13: two sites read ButtonActive as an EMPHASIS fill under light text (the Material panel's Apply
-        // and the viewport's active tool) -- the mock's light-text emphasis surface, never an accent fill.
+        // D13: the Material panel's Apply reads ButtonActive as an EMPHASIS fill under light text -- the mock's
+        // light-text emphasis surface, never an accent fill. (The viewport's tool buttons that read it too were
+        // replaced by the shell toolbar in task E.6.2, whose active segment pushes `active` itself.)
         {ImGuiCol_ButtonActive, p.active},
         {ImGuiCol_Header, p.selection},
         {ImGuiCol_HeaderHovered, p.hover},
