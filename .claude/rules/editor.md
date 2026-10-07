@@ -2199,10 +2199,11 @@ state.
 - **A toolbar button never takes the keyboard**: every enabled button is wrapped in
   `PushItemFlag(ImGuiItemFlags_NoFocus, true)` / `PopItemFlag()`, 1:1, so the Hierarchy's focus-scoped Delete /
   Cmd+D / F2 survive a tool click. Stated residuals: the snap field (`DragScalar` focuses), a disabled button, empty bar
-  space and the whole status bar DO focus their bar, and so does the FIRST click on an enabled button while another
-  widget is active (a Hierarchy rename, an Inspector text field): ImGui skips the button's hover while another item
-  is active, the click only ends that widget, and the empty-space path focuses the bar; a second click acts. No
-  hand-back call exists, because it would be a second focus writer against E.3.2's one slot.
+  space and the whole status bar DO focus their bar. A click on an enabled button while another widget is active (a
+  Hierarchy rename) ends that widget AND acts, and the keyboard stays in the panel -- MEASURED on macOS (E.6.2's
+  validation row 3, three tools, three times), against a reading of ImGui's hover rule that predicted a second click
+  would be needed: trust the measurement, re-measure at an ImGui bump. No hand-back call exists, because it would be
+  a second focus writer against E.3.2's one slot.
 - **THE TRANSFORM-TOOL STATE HAS ONE HOME AND TWO RECONCILED POINTERS.** `EditorApp::transformTools`
   (`TransformToolState`: the tool, the space, the snap settings) is the only value; the Viewport's `toolStatePtr` is
   re-handed every tick above `layer.beginFrame()` and `ShellUiState::tools` is rebuilt in the designated initializer —
