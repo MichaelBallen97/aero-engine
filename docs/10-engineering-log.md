@@ -19005,3 +19005,131 @@ gains those four sources. `docs/01` and `docs/03` gain the two licence rows. **W
 steps grew** by 2m04s (Debug, 12m03s → 14m07s) and 1m42s (Release, 8m05s → 9m47s) on the merged head's run
 (`37494052494`) against `main`'s last green run at the branch point (`36863422906`), inside the plan's
 three-minute rule (the two earlier complete runs grew 2m14s to 2m46s), with no C1060, C1128, C1091 or C2026 in the log.
+
+### E.6.2 — Main toolbar, breadcrumb and status bar — the shell's chrome, and the merge-chain defect fixed first
+
+The shell gets the mock's chrome. Every decision it draws is a pure function tested at tier 0; ImGui only measures,
+draws and records what it drew.
+
+**The bars.** The toolbar (`"##AeroToolbar"`, `ImGuiDir_Up`, 44 dp) and the status bar (`"##AeroStatusBar"`,
+`ImGuiDir_Down`, 26 dp) are `BeginViewportSideBar` windows on the main viewport, drawn from `shell_chrome_ui.cpp` —
+the chrome's one ImGui TU — with six flags each (`NoSavedSettings`, `NoScrollbar`, `NoScrollWithMouse`,
+`NoFocusOnAppearing`, `NoNavFocus`, `NoNavInputs`). Heights are whole points through `shellBarHeight(dp, uiScale)`;
+each bar's 1-dp `divider` rule is drawn inside it, so they measure 44 and 26 where the mock's chrome plus rule is 45
+and 27. Order in `drawShellUi`: the hoisted `fileEnabled`, `drawMenuBar` (the breadcrumb after View), `drawToolbar`
+(before `applyHistoryRequests` and `drawPanels`), `drawStatusBar`.
+
+**The toolbar.** `Select / Move / Rotate / Scale` (Select is a third early return in `updateGizmo` — no gizmo, picking
+unchanged; `Q` chooses it; the editor starts in Move), `Local | World` (the shown space and its Scale-forces-Local
+disable both come from `effectiveSpace`, the rule `Manipulate` receives), the Snap toggle and the active tool's step
+(`SnapSettings` in the one `TransformToolState`; the modifier inverts the toggle; `sanitizeSnapStep` tests finiteness
+first, then clamps; `snapStepUpdate` is the pure commit rule — a live drag frame never commits), `Play / Pause / Step`
+drawn disabled with `Not implemented yet -- task 4.7.1`, and the Undo affordance (button, `chordHint` chip, the
+existing undo label verbatim in a fixed 10-em slot). Full / Compact / Minimal from the pure `toolbarLayout`.
+
+**The breadcrumb and the status bar.** `breadcrumbLayout` centres `Project / scene` (+ a 6-dp `warning` dot while
+dirty, centred on the text line) in the free span after the menus and elides project-first on code-point boundaries.
+`statusBarLayout` keeps the right zone (`fps · ms`, the backend in `accent`) whole and elides the root from the left,
+then the watcher, then the root's last segment. `classifyWatchState` is ONE classification for the status bar and the
+Assets footer, whose words moved to `assetFooterWatchText` byte-identical. `abbreviateHome` is the sixth home of the
+segment-wise prefix rule. `FrameTimeReadout` publishes a 0.5-s window of RAW deltas.
+
+**The tool state.** `EditorApp::transformTools` is the only value; the Viewport's `toolStatePtr` is re-handed every tick
+above `layer.beginFrame()`, `ShellUiState::tools` is rebuilt in the designated initializer — never bound in `create()`,
+because the app is moved out of its optional. `PanelContext` is untouched. Requests obey their control
+(`pressed || (requested && enabled && noModal)`) and die with their tick.
+
+**One chord spelling.** `chordHint(currentHostOs(), …)` / `modifierName`: `Cmd+Z` on macOS, `Ctrl+Z` elsewhere, in
+every menu and the toolbar chip; `shortcut_hint.cpp` is the only editor source whose literals say `Ctrl` or `Cmd`.
+
+**The built-in component count stays TEN. No `engine/`, shader or default-scene byte changed.** `docs/09` §8.5 gains
+four optional prefs keys (validated, never clamped; an unfinished step edit is discarded at quit); task 4.7.1's
+deliverable gains Step.
+
+**Thirteen commits on the branch**, branch point `3a3985a` (E.6.1's docs commit, which rode along):
+- **The plan's seven:** `77a8323` the merge-chain fix, `e6bd411` Select / Q / one tool state, `9b3dc8b` snap,
+  `f9174f3` Cmd hints, `7f44f1f` the pure models, `4b239f8` the bars, `2b98ea7` rules + 4.7.1 Step.
+- **From the code-review round, the sabotage matrix and their re-reviews:** `3313dfd`, `0784f11`, `ff8e13d`,
+  `e194680`.
+- **From the manual validation pass:** `27bad9d` (the measured focus behaviour in the rules).
+
+Merged as **`761cc49`** (PR #120, a true merge commit). CI: the PR's run, 6 / 6 green — `37701676400` on `27bad9d`, the
+merged head. `main`'s push run on `761cc49` (`37706151268`, a tree identical to `27bad9d`'s) lost its Windows lane to a
+Chocolatey 503 in `Install LLVM 18` on its first attempt, before anything was built, and was 6 / 6 green on its second.
+
+**Measured at `27bad9d`** (both presets rebuilt and agreeing):
+- **Doctest totals:** 1428 / 2244 / 295 / 40 / 73 / 14 / 28 → **1428 / 2300 / 314 / 40 / 73 / 14 / 28**. Shell +56
+  (G20–G28, EP14–EP18, HK1–HK5, TB1–TB12, BD1–BD7, FT1–FT15, TH12–TH13, US10); imgui +19 (I290–I308).
+- **`ctest -N`:** 183 / 170 / 93, identical entry SETS to the branch point's in all four configurations; both reduced
+  configurations configured fresh; everything passes.
+- **Guards:** math 552 → **567**, project-no-delete B 97 → **102**; the other six byte-identical.
+- **`git ls-files`:** `editor/src/*.cpp` **102**, `editor/include/aero/editor/*.hpp` **74**.
+- **D22: no existing GPU fixture moved.** The 70 dp come out of the central dock node; a docked side or bottom panel
+  keeps its height (`imgui.cpp:20321-20325`), so I231's measured regime is unchanged and its comment says so.
+
+#### ★ The pre-existing defect, and why it went first
+
+`updateGizmo`'s no-target and behind-camera returns called `breakMergeChain()` on EVERY frame they ran, and they run on
+every Viewport frame while the primary has no `Transform` (the seeded Environment) or sits behind the camera. An
+Inspector drag pushes one `SetFieldCommand` per frame and merges only while the chain is open, so it recorded one undo
+entry per frame. A Select return written the same way would have made it the common case. Each return now breaks the
+chain only `if (gizmoWasUsing)`, read before the latch clears. I290 read `CHECK( 2 == 1 )` on both returns before the
+fix; on hardware, the branch point's build reverted a 2-s `ambientIntensity` drag 4.3 → 4.2 per undo, this branch 4.3 →
+0.5 in one.
+
+#### ★ The plan review, the code-review round and the sabotage matrix
+
+- **The plan review** (each finding verified independently): 41 of 42 held — chiefly a source pin that would have
+  REQUIRE-failed on two `keysLive` lines, a GPU case that read a previous run's prefs file, a struct move that put an
+  existing comment back into the diff, `substr` in a `noexcept` function (`bugprone-exception-escape`), UPPER_CASE
+  names on non-constexpr globals, and validation rows that could not fail.
+- **The code-review round:** no blocking finding. It found a step field 4 Body em wide drawing Mono text (clipped at
+  fractional scales), the field drawing `inset` where D19 says `raised`, the Scale→Local rule spelled twice, I306
+  re-running the pure layout on its own inputs, I287 blind to role swaps behind `chromeColors()`, and I305 checking the
+  watcher only on a ≥ 900-point bar. Every fix commit was re-reviewed; the re-reviews found the field's missing inset,
+  a hover colour read back from an ImGui slot, three pins weaker than their comments, and three comments that said the
+  clip happens only at fractional scales (it happens at scale 1: 65 points against 64).
+- **The sabotage matrix:** 62 / 62 planned seeds caught; S26 and S40 are drift pins and S8's NaN half is equivalent, as
+  planned. Two holes found and closed: **S48b** (a bar height spelled `xHeightDp(…) * s` is the same number at UI scale
+  1, so no runtime case on a 1× or Retina lane sees it — I307(d) pins both heights to `shellBarHeight`) and **S37d**
+  (the footer re-growing a chain against its local `watch` alias while FT12 banned only the `watchStatusPtr->`
+  spelling). 19 follow-up seeds against the new pins all caught.
+
+#### Traps found, each measured
+
+- **A seam's flag read back is not what ImGui drew** — `snapFieldEnabled` stored the computed predicate, so a seeded
+  `BeginDisabled(!haveTools)` left the field live under Select with every case green. The record now reads
+  `GetItemFlags()` after the DragFloat, and I299 reads it TRUE under Move before FALSE under Select.
+- **A record that defaults to false proves nothing by reading false** — the same lesson from the other side.
+- **Synthetic modifier chords need a flags-changed event that carries every held modifier.** A key event stamped with
+  `maskCommand` alone is plain `D` to SDL (it tracks modifiers from flags-changed events), and a Shift flags-changed
+  carrying only Shift releases Cmd. The validation driver's `moddown`/`modup` take the other held modifiers.
+- **Cmd+W closes the window on macOS** through SDL's built-in Cocoa Window ▸ Close (`SDL_cocoaevents.m:488`), which the
+  editor treats as its guarded quit — pre-existing, not a tool key.
+- **A click on a rename field's own row keeps the rename open**; end a rename with Return in a validation script.
+
+#### What was deliberately left out (spec D23), and which task holds each
+
+The `macos-debug` label, the `Aero` logo, the Help menu and the mock's `phase 6` caption (none earns its place yet);
+richer undo labels (`Move Cube` — the command layer's naming, unowned); a key-binding registry (the asset browser's F2/Del
+handoff stays open); a 38-point menu bar (E.6.3); enabling Play / Pause / Step and adding Stop (4.7.1).
+
+#### The sentences that govern new work
+
+- **A toolbar click while a panel is editing acts at once** — measured on macOS (validation row 3, three tools, three
+  times) against a reading of ImGui's hover rule that predicted a second click; the rules file states the measurement.
+  Re-measure at an ImGui bump.
+- **A width that holds Mono text is measured in Mono**, plus the frame padding: Body and Mono sizes round independently.
+- **A rule the gizmo applies is read through the gizmo's own function** (`effectiveSpace`), never re-spelled by a
+  second consumer.
+- **A chrome record reads back what ImGui did** (`GetItemFlags`, item rects), never the predicate the chrome computed.
+
+#### Validation and sabotage status — macOS 18 / 18 (2026-10-08), Windows and Linux unrun
+
+Run as a signed `.app` (fresh bundle id, a `Contents/Resources/` directory so the layout ini is written) on
+`~/e62val/MyGame`, 1× displays (UI scale 1), every capture PID-bound and sRGB-converted, every pixel claim read by
+script. Highlights: bars 44 / 26 with the rule inside; fills exact to the token; toolbar clicks keep the keyboard in
+the Hierarchy; the snap matrix (on/off × Cmd) all four ways; `editor_prefs.json` untouched during a 4.8-s field drag
+and written once 0.14 s after release; the dragged layout and the snap state survive a relaunch; elision order at 300 /
+270 / 240 / 210 points; the branch-point A/B for the strip and for the merge-chain defect. Row 19 (2×) is not
+executable on 1× displays; rows 20–21 are Windows and Linux.

@@ -10,10 +10,10 @@ Two platform matrices, never to be conflated: the **editor** runs on macOS/Windo
 
 ## Current state — read this first
 
-**Phase E (Editor Experience) is the open front**, executing between Phase 3 and Phase 4. **Twenty-one of
-its 24 tasks are merged: Epics E.1–E.5 are all CLOSED IN CODE, and E.6.1, which opened Epic E.6 (IBM Plex
-fonts, Lucide icons, one `EDITOR_THEME`, one UI scale), is macOS-validated 11 / 11 executable rows. E.6.2–E.6.4
-are what is left — three tasks, planning only.** Phase 3 remains OPEN behind it: all seven of its epics are
+**Phase E (Editor Experience) is the open front**, executing between Phase 3 and Phase 4. **Twenty-two of
+its 24 tasks are merged: Epics E.1–E.5 are all CLOSED IN CODE; in Epic E.6, E.6.1 (IBM Plex fonts, Lucide
+icons, one `EDITOR_THEME`, one UI scale) is macOS-validated 11 / 11 executable rows and E.6.2 (the toolbar, the
+breadcrumb and the status bar) 18 / 18. E.6.3–E.6.4 are what is left — two tasks, planning only.** Phase 3 remains OPEN behind it: all seven of its epics are
 closed in code, and what is left is its deliverable gate and the validation debt.
 
 **Phase E is lettered, not fractioned.** `3.5` and `3.5.1`/`3.5.2` are already Phase 3's skeletal-animation
@@ -25,9 +25,10 @@ In Notion its `Phase #` is `3.5` — a sort key, not an identifier.
 (E.2.2). Nothing since E.2.2 has added one, so the five-generation-site rule and the component-count sweep
 have not fired since — **they still apply in full to the next built-in, whenever one arrives.**
 
-**Next free ids, measured by a whole-`tests/` token sweep on E.6.1's merged tree: `I290` at the ImGui tier**,
-`AA68`, `AD77`, `AM29`, `AV66`, `BR31`, `BV10`, `CC15`, `CR13`, `DD31`, `DG26`, `DR28`, `EC5`, `GL8`, `GR34`, `IO24`,
-`IR23`, `IX19`, `MB27`, `PX6`, `RF8`, `RT31`, `SQ15`, `SS64`, `TH12`, `TS11`, `US10`, `X32`. Taken tier-0 prefixes
+**Next free ids, measured by a whole-`tests/` token sweep on E.6.2's merged tree: `I309` at the ImGui tier**,
+`AA68`, `AD77`, `AM29`, `AV66`, `BD8`, `BR31`, `BV10`, `CC15`, `CR13`, `DD31`, `DG26`, `DR28`, `EC5`, `EP19`, `FT16`,
+`G29`, `GL8`, `GR34`, `HK6`, `IO24`, `IR23`, `IX19`, `MB27`, `PX6`, `RF8`, `RT31`, `SQ15`, `SS64`, `TB13`, `TH14`, `TS11`,
+`US11`, `X32`. Taken tier-0 prefixes
 include `MR` (E.3.4, `MR1`–`MR21`), `PJ` (E.4.1, `PJ1`–`PJ57`), `CN` (E.4.2, `CN1`–`CN25`), `IX` / `BV` (E.4.4,
 `IX1`–`IX18`, `BV1`–`BV9`), `MB` / `CC` (E.4.5, `MB1`–`MB26`, `CC1`–`CC14`), `CR` / `EC` (E.5.2, `CR1`–`CR9`,
 `EC1`–`EC4`) and `TH` / `US` / `GL` (E.6.1, `TH1`–`TH11`, `US1`–`US9`, `GL1`–`GL7`); `MC` is mesh cook's
@@ -35,7 +36,9 @@ include `MR` (E.3.4, `MR1`–`MR21`), `PJ` (E.4.1, `PJ1`–`PJ57`), `CN` (E.4.2,
 `IR` 22. E.4.1 took `I176`–`I185`, E.4.2 `I186`–`I192`, E.4.3 `I210`–`I226`, E.4.4 `I227`–`I229`, its fix (#111)
 `I230`–`I231` plus `AV55`–`AV59`, E.4.5 `I232`–`I243` plus `AV60`–`AV65`, `TS5`–`TS10` and `IR9`–`IR12`, its
 follow-ups `I244`, E.5.1 `I245` plus `BR23`–`BR30`, `SQ13`–`SQ14` and `PX5`, and E.5.2 `I246`–`I255` plus
-`IR13`–`IR22`, `X25`–`X31`, `GR27`–`GR33`, `DD29`–`DD30`, `DG21`–`DG25` and `RF4`–`RF7`. The E.3.2 keyboard fix
+`IR13`–`IR22`, `X25`–`X31`, `GR27`–`GR33`, `DD29`–`DD30`, `DG21`–`DG25` and `RF4`–`RF7`. E.6.2 took `I290`–`I308`
+plus the new tier-0 prefixes `HK` (`HK1`–`HK5`), `TB` (`TB1`–`TB12`), `BD` (`BD1`–`BD7`) and `FT` (`FT1`–`FT15`), and
+`G20`–`G28`, `EP14`–`EP18`, `TH12`–`TH13`, `US10`. The E.3.2 keyboard fix
 (#116) took `I256`–`I258` plus `RT28`–`RT30`, the Save As suffix fix (#117) `I270` plus `SS55`–`SS63` and
 `IO22`–`IO23`, the dialog keyboard fix (#118) `I275`–`I276`, and E.6.1 `I277`–`I289` plus `CR10`–`CR12`.
 **E.6.1 DELETED `I230`** with the ProggyClean remap table it pinned — the id is retired, never reused.
@@ -110,6 +113,7 @@ validation pass exists for any task in any phase.** N-E = not executable, N-R = 
 | E.5.2 Create menu + named selector | #115 | `ab3fd72` | **17 / 17** executable rows, row 18 N-E (1× displays), nothing failed |
 | 2.5.1 fix — Save As always writes `.scene.json` | #117 | `35bb8db` | **15 / 15** — the first run failed rows 5–7 (the panel appends its hidden `.json` to whatever is typed) |
 | 2.5.1 fix — the keyboard after a native dialog | #118 | `df28447` | **15 / 15** executable rows, row 15 N-E (a held hardware key) |
+| E.6.2 Main toolbar, breadcrumb and status bar | #120 | `761cc49` | **18 / 18** executable rows; row 19 N-E (1× displays), 20–21 Windows/Linux. **The pass measured one behaviour better than the plan's reading of ImGui** (a toolbar click during a rename acts at once) and the branch-point A/B reproduced the merge-chain defect the task fixed first |
 | E.6.1 Font, icon set and theme system | #119 | `2b1971e` | **11 / 11** executable rows; rows 2, 9, 10, 18 N-E (1× displays), 14–16 are Windows/Linux. **The pass found two defects no tier could see**, both fixed in the PR: the menu bar's Create ▸ Empty had no icon, and the Inspector's X/Y/Z values clipped where the branch point showed them whole |
 
 **E.3.2 landed before E.3.1** — legal, disjointly id-reserved; the reservation is discharged and the
@@ -124,7 +128,7 @@ numbering is contiguous.
 | **Phase 2** — Editor | **COMPLETE, gate met 2026-08-02.** All six epics closed and macOS-validated; Windows/Linux rows pending for every task (`editor/VALIDATION.md`). Gate artifact: `samples/phase-2-editor-scene/` — data, deliberately not `add_subdirectory`'d. |
 | **Phase 3** — Asset Pipeline & 3D Content | **OPEN.** All seven epics (3.1–3.7) **CLOSED in code**. What is left is the gate below and the validation debt. |
 | **Phase 3 gate** | Drop a rigged glTF/FBX in → PBR materials + shadows + a playing animation + **an audible sound**. The audible half exists in code as of 3.7.2 and **has never been heard on any platform.** |
-| **Phase E** — Editor Experience | **OPEN.** Epics E.1–E.5 **CLOSED in code** — 21 of 24, see the index above. **E.6 is the open front: E.6.1 merged, three tasks left, planning only.** ONE validation page is unrun (E.1.5) and is the whole of this OS's remaining Phase E risk. |
+| **Phase E** — Editor Experience | **OPEN.** Epics E.1–E.5 **CLOSED in code** — 22 of 24, see the index above. **E.6 is the open front: E.6.1 and E.6.2 merged, two tasks left, planning only.** ONE validation page is unrun (E.1.5) and is the whole of this OS's remaining Phase E risk. |
 | **Phase E gate** | Open a project and land in the scene you were last editing, on a lit grid floor under a sky; create a Cube from the menu, drop a material on it and see it shade; aim a spot light with a visible gizmo; rename, move and delete assets without leaving the editor. Gate artifact: `samples/phase-E-editor/`. |
 
 ### Engine layers, in dependency order
@@ -156,7 +160,7 @@ numbering is contiguous.
   macro-only `editor_glyphs.hpp` / `editor_icons.hpp`; its font bytes are four generated TUs, never tracked.
   **DO NOT record a "pair count" here — it is not reproducible**: E.2.4 measured the tree six ways looking
   for the figure this line used to carry and none of the six was it. The two figures anyone can re-run are
-  `git ls-files`: **`editor/src/*.cpp` = 97** and **`editor/include/aero/editor/*.hpp` = 69** at E.6.1
+  `git ls-files`: **`editor/src/*.cpp` = 102** and **`editor/include/aero/editor/*.hpp` = 74** at E.6.2
   (`2b1971e`).
   `/tools` links `aero::assets` and `aero::editor_core` through `aero_cooker`, which is legal because
   `tools/` is enumerated by neither half of the golden rule.
@@ -1017,16 +1021,15 @@ is a configure-time property. **Rebuild before you believe any doctest number, a
 presets so a disagreement is visible.** A recorded total goes stale the same way: `origin/main`'s own shell
 total was one stale at E.1.4's gate. **Read the binary, never the block.**
 
-**After E.6.1 (#119)**, measured on `cc1fcf2` (the merged head `8f16a2c` changes one header comment) on both
-presets, rebuilt and agreeing, with both reduced configurations configured fresh at `b8d3d02` and rebuilt at
-`cc1fcf2`:
+**After E.6.2 (#120)**, measured on `27bad9d` (the merged head) on both presets, rebuilt and agreeing, with both
+reduced configurations configured fresh at `27bad9d`:
 
 | Measurement | Value |
 |---|---|
 | `ctest -N` | **183** in both presets (178 + the five `labels_*`); **170** shader-tools-OFF (exactly the 13 `shaderc.*` removed), **93** reflect-tools-OFF (86 `reflect-gen.*` + four doctest binaries removed), nothing added in either; `cooker.*` **70 / 70 / 70** |
-| doctest, seven binaries | **1428 / 2244 / 295 / 40 / 73 / 14 / 28** |
-| guards | math **552**, platform **92**, rhi **163**, scene **92**, golden-rule **165**, project-no-delete **A=7 B=97** (2 permitted), audio **11-3-57**, probes **6-59** |
-| `git ls-files` | `editor/src/*.cpp` **97**, `editor/include/aero/editor/*.hpp` **69** |
+| doctest, seven binaries | **1428 / 2300 / 314 / 40 / 73 / 14 / 28** |
+| guards | math **567**, platform **92**, rhi **163**, scene **92**, golden-rule **165**, project-no-delete **A=7 B=102** (2 permitted), audio **11-3-57**, probes **6-59** |
+| `git ls-files` | `editor/src/*.cpp` **102**, `editor/include/aero/editor/*.hpp` **74** |
 
 The seven doctest binaries, in order: `aero_tests`, `aero_editor_shell_test`, `aero_editor_imgui_test`,
 `aero_scene_serialize_test`, `aero_editor_inspector_test`, `aero_reflect_meta_test`, `aero_reflect_json_test`.
@@ -1099,10 +1102,13 @@ mono 48 kHz 0.5 s, **exactly 48 064 B each**, cut at a whole number of cycles so
 `docs/10`; this is the ledger of what is still owed.
 
 **ONE PAGE HAS NOT BEEN RUN ON ANY PLATFORM: E.1.5's.** It is the whole of Phase E's validation risk on this OS
-— every other task in E.1–E.5, and E.6.1, is macOS-validated (see the index above). **E.6.1's page is RUN, 11 / 11
+— every other task in E.1–E.5, and E.6.1 and E.6.2, is macOS-validated (see the index above). **E.6.1's page is RUN, 11 / 11
 executable rows** (2026-10-07); its row 8 (a branch-point A/B) and row 6 each found a defect no tier could see,
 both fixed in the PR. **Its 2× rows (2, 9, 10, 18) need a Retina panel attached**, and rows 9 and 10 decide two
-unowned handoffs below. **E.3.2's page WAS run on 2026-09-12**
+unowned handoffs below. **E.6.2's page is RUN, 18 / 18 executable rows** (2026-10-08, 1× displays; its 2× row 19
+needs a Retina panel): bars 44 / 26 with fills exact to the token, the snap matrix all four ways, one prefs write per
+committed edit, and a branch-point A/B that reproduced the merge-chain defect the task fixed first (one undo reverted
+4.3 → 4.2 there, 4.3 → 0.5 here). **E.3.2's page WAS run on 2026-09-12**
 (9 PASS / 1 PARTIAL / 2 NOT EXECUTABLE, against `b172198`) and was carried here as unrun until 2026-10-01; its record
 is now in `docs/10`. **The three fixes' pages are RUN on macOS** — #116 10 / 10, #117 15 / 15, #118 15 / 15
 executable — and each pass found the next defect: #116's row 8 a closed popup still holding the keyboard, #117's
@@ -1236,8 +1242,8 @@ display's ICC profile, and **there is no `renderFrame` Tracy zone in this tree**
 
 ### Next
 
-**E.6 is the open front: three tasks, planning only** — E.6.2–E.6.4, each building on E.6.1's theme, fonts and
-icons. See `docs/tasks/phase-E.md`, and `docs/tasks/phase-3.md` for what Phase 3 still owes.
+**E.6 is the open front: two tasks, planning only** — E.6.3–E.6.4, each building on E.6.1's theme, fonts and
+icons and E.6.2's shell chrome. See `docs/tasks/phase-E.md`, and `docs/tasks/phase-3.md` for what Phase 3 still owes.
 
 **Ownership of the open work.** **E.4.3 IS MERGED, and it did NOT use `directoryWithin` /
 `normalizeForContainment` — deliberately, and the reason generalises.** Those answer *"is this ABSOLUTE
@@ -1257,9 +1263,10 @@ theme or DPI change moves the Inspector's reference row and the material slot's 
 are MERGED** (`834bcb3`, `ab3fd72`), closing Epic E.5; what each left out is in `docs/10`. The default scene
 is deliberately unchanged by every Phase E task so far, and its seventeen `entityCount() == 4` pins are
 byte-identical. **E.6.1 is MERGED** (`2b1971e`) and discharged what E.1.5, E.3.4, E.4.5 and E.5.2 handed it,
-except E.4.5's 128²-at-2× judgement, which is its validation row 9. **E.6.2** moves `T R S` and `Local/World`
-into the main toolbar and leaves `View` on the viewport — it is per-view, not per-shell; its glyphs are already in the icon roster, an accent-filled active
-tool reads `onAccent`, and a shortcut hint is ASCII (`Cmd+Z`) or an icon, because Plex has no `⌘`. **E.6.3**
+except E.4.5's 128²-at-2× judgement, which is its validation row 9. **E.6.2 is MERGED** (`761cc49`): the
+toolbar and the status bar are viewport side bars drawn from `shell_chrome_ui.cpp`, the breadcrumb sits in the menu
+bar, `T R S` and `Local/World` left the viewport (which keeps `View`, per-view), and every Ctrl chord's hint is
+`chordHint`'s — its rules are in `.claude/rules/editor.md`'s shell-chrome section, its history in `docs/10`. **E.6.3**
 splits E.2.4's popover into the mock's header dropdowns; the grouping is already the mock's, so it restyles
 rather than regroups — and it owns the per-panel restyles, the component → icon mapping, the first consumers of
 the `small` type size, the Category-B decisions (the mock's axis hues and grey folders against today's identity
@@ -1286,16 +1293,18 @@ button's disabled predicate), each with its pinned-source citation, are in `.cla
 `"Delete orphaned .meta?"` from a real row and confirmed it by click and by **Enter**. Until then, Enter had
 only been argued from identical code.
 
-**FORTY-THREE UNOWNED HANDOFFS — one per bullet below; re-count the bullets, never the headline.** It read
+**FORTY-FOUR UNOWNED HANDOFFS — one per bullet below; re-count the bullets, never the headline.** It read
 "NINE" over a list that already held thirteen, because two "smaller" items, the exposure clause and
 `FillMode::Line` were never counted. Handoffs recorded in their own paragraphs elsewhere in this block (fact
 4's four permitted cases, the inspector-row gap, the closed `File` section) are not repeated here.
 
 - **Asset-browser keyboard shortcuts (F2, Del)** — E.4.3 dropped both bindings AND their accelerator text:
   the gating needs a THIRD condition (`!io.WantTextInput`, because the browser's header carries an `InputText`
-  search box), nothing in `tests/` can press a key, and there is no key-binding registry. **E.6.2 is the
-  nearest owner**, but nothing in the roadmap claims it.
+  search box), nothing in `tests/` can press a key, and there is no key-binding registry. E.6.2, the nearest
+  candidate, built no registry (its D23), so nothing in the roadmap claims it.
   E.5.2's Create entries have no shortcut either.
+- **Richer undo labels** (`Move Cube` rather than `Transform`, the mock's wording) — E.6.2 shows the existing labels
+  verbatim by decision; a label is the command layer's, and nothing owns renaming them.
 - **Spot and point shadows** — the shadow pass is directional-only (3.6.2); Phase E's non-goals name
   cascaded/soft shadows as 8.2.1's, and nothing owns omni or spot shadow maps.
 - **A camera FRUSTUM gizmo** — E.2.3 draws the camera an icon and no gizmo; a natural fit for 4.7.
