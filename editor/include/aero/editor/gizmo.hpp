@@ -36,48 +36,130 @@ enum class GizmoSpace : std::uint8_t { Local = 0, World };
 // to hook instead of reverse-engineering one out of ImGuizmo's internals (D22).
 enum class GizmoDragEdge : std::uint8_t { None = 0, Begin, Continue, End };
 
+// task E.6.2 (D4): the four tools the toolbar offers, in its left-to-right order and the Q/W/E/R key order.
+// Select draws NO gizmo -- picking still works -- which is why a tool is not an operation: gizmoOperationFor maps
+// the three that draw one, and GizmoOperation keeps its three values (toImGuizmoOperation, gizmoSnapStep and
+// gizmoWriteFromWorld each switch over exactly those, with no default:).
+enum class TransformTool : std::uint8_t { Select = 0, Move, Rotate, Scale };
+
+// task E.6.2: WIDENED -- `operation` became `tool`, because Select has no operation. The editor STARTS in Move
+// (D4), so selecting an entity shows the translate gizmo exactly as before Select existed.
 struct GizmoMode {
-    GizmoOperation operation = GizmoOperation::Translate;
+    TransformTool tool = TransformTool::Move;
     GizmoSpace space = GizmoSpace::World;
     bool operator==(const GizmoMode&) const noexcept = default;
 };
 
 // One frame of raw key state, as the panel reads it from ImGui. `...Pressed` means the key went
 // !down -> down THIS frame (ImGui::IsKeyPressed(key, /*repeat=*/false)). The panel has ALREADY
-// applied the hover / WantTextInput / no-camera-gesture gates (D7) -- this function is unconditional.
+// applied the hover / WantTextInput / no-camera-gesture / no-gizmo-drag gates (D7, task E.6.2 D5) --
+// this function owns only the modifier rule, so tier 0 can witness it (G21).
 struct GizmoModeInput {
+    bool selectPressed = false;       // Q -- task E.6.2
     bool translatePressed = false;    // W
     bool rotatePressed = false;       // E
     bool scalePressed = false;        // R
     bool spaceTogglePressed = false;  // X
+    // task E.6.2 (D5): Cmd/Ctrl or Super is held. ImGui::IsKeyPressed ignores modifiers, so without this Ctrl+Q
+    // over the viewport would request the guarded quit AND switch to Select -- a switch that survives a Cancel
+    // in the unsaved-changes modal -- and Cmd+W would switch to Move. While it is set NOTHING changes.
+    bool commandModifierHeld = false;
 };
 
-// PURE. First match wins among the three OPERATION keys; the space toggle is deliberately NOT in
-// that chain, because W and X in the same frame is a legal, unambiguous combination (two fingers)
-// and both should apply. An unchanged `current` is returned when nothing is pressed.
+// PURE. `current` unchanged while the command modifier is held. Otherwise the FIRST of Q, W, E, R pressed
+// chooses the tool (2.3.3's first-match rule, extended at the front); the space toggle is deliberately NOT in
+// that chain, because a tool key and X in the same frame is a legal, unambiguous combination (two fingers) and
+// both apply. An unchanged `current` is returned when nothing is pressed.
 [[nodiscard]] GizmoMode nextGizmoMode(GizmoMode current, const GizmoModeInput& in) noexcept;
+
+// task E.6.2: the operation a tool's gizmo performs, or nullopt for Select, which draws none (D4). The ONE
+// switch over the four tools, with no default: -- a fifth tool is a clang-diagnostic-switch failure on the
+// Linux lint lane, never a silent "no gizmo".
+[[nodiscard]] std::optional<GizmoOperation> gizmoOperationFor(TransformTool tool) noexcept;
 
 // ImGuizmo forces LOCAL for SCALE internally: ComputeContext is called with
 // `(operation & SCALE) ? LOCAL : mode` ("Scale is always local or matrix will be skewed when
 // applying world scale or oriented matrix", ImGuizmo.cpp:2684-2685). Mirroring it HERE is what stops
-// the overlay bar from displaying "World" while the library silently did something else (AC-4).
+// the toolbar's space segment from displaying "World" while the library silently did something else (AC-4).
 [[nodiscard]] GizmoSpace effectiveSpace(GizmoOperation op, GizmoSpace requested) noexcept;
 
 // TUNING values, judged by the human pass (editor/VALIDATION.md). Each is named so retuning is a
 // one-line change; every tier-0 case asserts a RELATIONSHIP, never a magnitude.
+// task E.6.2 (D7): these are the DEFAULT per-tool steps now, unchanged, so hold-to-snap behaves bit-identically
+// for anyone who never touches the toolbar's step field.
 inline constexpr float GIZMO_SNAP_TRANSLATE = 0.5F;        // world units
 inline constexpr float GIZMO_SNAP_ROTATE_DEGREES = 15.0F;  // DEGREES -- the suffix is load-bearing
 inline constexpr float GIZMO_SNAP_SCALE = 0.1F;            // scale factor
 
-// The three snap steps, or nullopt when `snapHeld` is false.
+// task E.6.2 (D7): the range every step that reaches ImGuizmo lies in. The toolbar's field and gizmoSnapStep
+// CLAMP into it (sanitizeSnapStep); editor_prefs.json VALIDATES against it and refuses the whole document
+// instead (docs/09 section 8.5's "never a coerced value").
+inline constexpr float GIZMO_SNAP_TRANSLATE_MIN = 0.001F;
+inline constexpr float GIZMO_SNAP_TRANSLATE_MAX = 1000.0F;
+inline constexpr float GIZMO_SNAP_ROTATE_DEGREES_MIN = 0.1F;
+inline constexpr float GIZMO_SNAP_ROTATE_DEGREES_MAX = 180.0F;
+inline constexpr float GIZMO_SNAP_SCALE_MIN = 0.001F;
+inline constexpr float GIZMO_SNAP_SCALE_MAX = 100.0F;
+
+struct SnapRange {
+    float min = 0.0F;
+    float max = 0.0F;
+};
+
+// task E.6.2 (D7): the snap toggle and the three per-tool steps -- session state the toolbar edits and
+// editor_prefs.json persists. At namespace scope (the libstdc++ NSDMI trap).
+struct SnapSettings {
+    bool enabled = false;
+    float translateStep = GIZMO_SNAP_TRANSLATE;           // world units, shown "m"
+    float rotateStepDegrees = GIZMO_SNAP_ROTATE_DEGREES;  // DEGREES
+    float scaleStep = GIZMO_SNAP_SCALE;                   // a scale factor
+    bool operator==(const SnapSettings&) const noexcept = default;
+};
+
+// task E.6.2 (D7): the modifier INVERTS the toggle while held -- the toggle off is 2.3.3's hold-to-snap
+// exactly; the toggle on makes the modifier release the snap (the Blender / Godot convention).
+[[nodiscard]] constexpr bool snapActive(bool toggle, bool modifierHeld) noexcept { return toggle != modifierHeld; }
+
+// The operation's range; the one switch over GizmoOperation the snap model adds, no default:.
+[[nodiscard]] SnapRange snapStepRange(GizmoOperation op) noexcept;
+
+// The operation's DEFAULT step for a non-finite value (the finiteness arm FIRST -- std::clamp(NaN, ...) is NaN
+// on libc++), else `value` clamped to snapStepRange(op). Zero and negative land on the range's minimum.
+[[nodiscard]] float sanitizeSnapStep(GizmoOperation op, float value) noexcept;
+
+// The stored step for `op`, unsanitized -- the field's own value.
+[[nodiscard]] float snapStepFor(GizmoOperation op, const SnapSettings& snap) noexcept;
+
+// The three snap components ImGuizmo reads, or nullopt when snapping is not `active`.
 // UNITS ARE NOT UNIFORM and are dictated by ImGuizmo (verified at source, F12):
 //   Translate -- all three components used, WORLD UNITS, per axis (ImGuizmo.cpp:1259-1264 loops 0..2).
 //   Rotate    -- ONLY .x is read, and it is in DEGREES (ImGuizmo.cpp:2482 multiplies by DEG2RAD).
 //   Scale     -- ONLY .x is read; ImGuizmo replicates it to all three axes (ImGuizmo.cpp:2372).
-// A Vec3 is returned for all three so the panel has ONE `const float*` to hand over; the y/z
-// components of the Rotate/Scale results are filled with the same value rather than left garbage,
-// so a future ImGuizmo that starts reading them cannot surprise us.
-[[nodiscard]] std::optional<Vec3> gizmoSnapStep(GizmoOperation op, bool snapHeld) noexcept;
+// A Vec3 is returned for all three so the panel has ONE `const float*` to hand over, every component the same
+// SANITIZED step: no step outside its range and no non-finite step ever reaches the library.
+[[nodiscard]] std::optional<Vec3> gizmoSnapStep(GizmoOperation op, bool active, const SnapSettings& snap) noexcept;
+
+// task E.6.2 (D7): THE commit rule, pure. `fieldValue` is the step field's value on a frame it CHANGED,
+// `fieldDeactivatedAfterEdit` ImGui's own end-of-edit edge, `request` the toolbar's click-equivalent seam (only
+// passed while the field is enabled). `next` takes the operation's step = sanitizeSnapStep(op, request, else the
+// field value) when either is present; the request wins. `commit` -- write editor_prefs.json -- is a request or
+// the end of an edit, NEVER a live drag frame: the value applies to snapping at once and only the write waits.
+struct SnapStepUpdate {
+    SnapSettings next;
+    bool commit = false;
+};
+[[nodiscard]] SnapStepUpdate snapStepUpdate(const SnapSettings& current, GizmoOperation op,
+                                            std::optional<float> fieldValue, bool fieldDeactivatedAfterEdit,
+                                            std::optional<float> request) noexcept;
+
+// task E.6.2 (D3): THE transform-tool state. EditorApp holds the only value; the toolbar and the Viewport's keys
+// reach it through two non-owning pointers rebuilt EVERY tick, so an EditorApp move can never strand either. At
+// namespace scope, never nested (the libstdc++ NSDMI trap, E.5.2).
+struct TransformToolState {
+    GizmoMode mode;
+    SnapSettings snap;
+    bool operator==(const TransformToolState&) const noexcept = default;
+};
 
 // PURE drag-edge derivation (D22). `wasUsing` is the previous frame's latched value.
 [[nodiscard]] GizmoDragEdge gizmoDragEdge(bool wasUsing, bool isUsing) noexcept;

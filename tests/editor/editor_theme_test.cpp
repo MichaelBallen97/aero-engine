@@ -667,3 +667,50 @@ TEST_CASE("theme: the Inspector's axis box holds a three-decimal value at these 
         }
     }
 }
+
+TEST_CASE("theme: the shell metrics, and the two bar heights they derive (task E.6.2, TH12)") {
+    const ed::ThemeShell& s = ed::EDITOR_THEME.shell;
+    CHECK(s.toolbarPaddingY == 6.0F);
+    CHECK(s.toolbarGroupPadding == 4.0F);
+    CHECK(s.toolbarGroupGap == 14.0F);
+    CHECK(s.toolbarPaddingX == 12.0F);
+    CHECK(s.statusBarPaddingY == 6.0F);
+    CHECK(s.statusBarPaddingX == 14.0F);
+    CHECK(s.statusBarZoneGap == 20.0F);
+    CHECK(s.breadcrumbDotDiameter == 6.0F);
+    CHECK(s.breadcrumbGap == 8.0F);
+    CHECK(s.breadcrumbMinGap == 24.0F);
+    CHECK(s.ruleThickness == 1.0F);
+    // INDEPENDENT literals -- the mock's two chrome heights; the derivation is what is under test.
+    CHECK(ed::toolbarHeightDp(ed::EDITOR_THEME) == 44.0F);
+    CHECK(ed::statusBarHeightDp(ed::EDITOR_THEME) == 26.0F);
+    static_assert(ed::toolbarHeightDp(ed::EDITOR_THEME) == 44.0F);  // constexpr, as stated
+}
+
+TEST_CASE("theme: every pair the chrome draws meets its role's floor (task E.6.2, TH13)") {
+    // WCAG 2 from the bytes, the TH7 helper. textFaint (the breadcrumb's separator) carries NO floor -- its role is
+    // decorative, and this case says so by leaving it out. textMuted is the mock's de-emphasised status text: it
+    // is floored at 3.0 to stop a regression, without claiming AA body contrast (4.02 and 3.65, measured).
+    const ed::ThemePalette& p = ed::EDITOR_THEME.palette;
+    const std::vector<FloorRow> rows{
+        {"onAccent on accent (the active tool)", p.onAccent, p.accent, 4.5},             // 8.74
+        {"textBright on active (the active segment)", p.textBright, p.active, 4.5},      // 10.87
+        {"textSecondary on raised (an inactive tool)", p.textSecondary, p.raised, 4.5},  // 7.54
+        {"accent on chrome (the backend)", p.accent, p.chrome, 4.5},                     // 8.03
+        {"textLabel on panel (the project)", p.textLabel, p.panel, 4.5},                 // 5.56
+        {"text on panel (the scene)", p.text, p.panel, 7.0},                             // 12.41
+        {"textMuted on chrome (the status text)", p.textMuted, p.chrome, 3.0},           // 4.02
+        {"textMuted on raised (a muted label in a group)", p.textMuted, p.raised, 3.0},  // 3.65
+        {"warning on panel (the dirty dot, a graphic)", p.warning, p.panel, 3.0},        // 7.55
+    };
+    REQUIRE(rows.size() == 9U);
+    for (const FloorRow& row : rows) {
+        CAPTURE(row.name);
+        const double ratio = contrastRatio(row.foreground, row.background);
+        CAPTURE(ratio);
+        CHECK(ratio >= row.floor);
+    }
+    // ...and the two states the three-slot push exists to avoid (D19): onAccent on hover / active is unreadable.
+    CHECK(contrastRatio(p.onAccent, p.hover) < 1.5);
+    CHECK(contrastRatio(p.onAccent, p.active) < 1.5);
+}

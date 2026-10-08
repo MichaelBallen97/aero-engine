@@ -391,6 +391,12 @@ std::optional<EditorApp> EditorApp::create(rhi::Device& device, platform::Window
     // CONSUMES it yet; that is deliberate, so the seam exists before anything can accidentally bypass
     // it (§S step 3).
     app.toolPrefsPath = config.toolPrefsPath.empty() ? defaultToolPrefsPath() : std::string(config.toolPrefsPath);
+    // task E.6.2 (D16): the same shape, a fifth time -- one resolution, one member, no call site that can reach the
+    // machine's real home when a test supplied its own.
+    app.homeDirectory = config.homeDirectory.empty() ? defaultHomeDirectory() : config.homeDirectory;
+    // task E.6.2 (D15): the backend's name, read ONCE, here, on the thread that owns the device (backendName()
+    // asserts it) -- engine-owned "metal" / "vulkan" / "direct3d12", shown capitalised.
+    app.backendLabel = backendDisplayName(device.backendName());
     // task E.3.2 (D14): the SAME shape, one line down, and resolved here for the same reason -- one
     // resolution, one member, no call site able to fall through to the real machine-wide file. The
     // DIFFERENCE from its three siblings is the persistLayout gate, and it is deliberate:
@@ -413,6 +419,12 @@ std::optional<EditorApp> EditorApp::create(rhi::Device& device, platform::Window
             AERO_LOG_WARN("editor: preferences '{}' are corrupt or unsupported; using defaults", app.editorPrefsPath);
         }
         app.contextRouter.setEnabled(prefs.focusFollowsSelection);
+        // task E.6.2 (D7): the snap toggle and steps -- the file's, or EditorPrefs{}'s when it is missing or refused,
+        // which are GIZMO_SNAP_*. The app's own write of the tool state; the toolbar and the keys are the others.
+        app.transformTools.snap = SnapSettings{.enabled = prefs.snapEnabled,
+                                               .translateStep = prefs.snapTranslateStep,
+                                               .rotateStepDegrees = prefs.snapRotateStepDegrees,
+                                               .scaleStep = prefs.snapScaleStep};
     }
     if (config.restoreLastProject) {
         app.recents = readRecentProjects(app.recentsPath);  // D15: NOT read at all when false (AC-34/E23)
@@ -615,6 +627,9 @@ bool EditorApp::tick() {
         return false;
     }
     frameClock.tick();
+    // task E.6.2 (D14): the RAW delta -- a stall shown honestly, not the 0.25-s clamp -- on the statement after the
+    // clock's own tick (I308 pins the adjacency).
+    frameReadout.add(frameClock.rawDeltaSeconds());
 
     // Task 2.2.5 (D14): drain the sink EVERY frame, visible or not -- shell_ui.cpp:74-79 never calls
     // onDraw for a hidden or tabbed-away panel, and Console shares its dock node with Assets. Not an
@@ -1163,13 +1178,33 @@ bool EditorApp::tick() {
     if (editorPrefsDirty) {
         editorPrefsDirty = false;
         if (!editorPrefsPath.empty()) {
-            const EditorPrefs prefs{.focusFollowsSelection = contextRouter.enabled()};
+            const EditorPrefs prefs{.focusFollowsSelection = contextRouter.enabled(),
+                                    .snapEnabled = transformTools.snap.enabled,
+                                    .snapTranslateStep = transformTools.snap.translateStep,
+                                    .snapRotateStepDegrees = transformTools.snap.rotateStepDegrees,
+                                    .snapScaleStep = transformTools.snap.scaleStep};
             if (const std::string reason = writeEditorPrefs(editorPrefsPath, prefs); !reason.empty()) {
                 AERO_LOG_WARN("editor: could not write preferences '{}' -- {}", editorPrefsPath, reason);
+            } else {
+                ++editorPrefsWrites;  // task E.6.2: SUCCESSFUL writes only -- an assertion about the disk
             }
         }
     }
 
+    // task E.6.2 (D3): the Viewport's pointer to THE transform-tool state, re-handed EVERY tick -- never once in
+    // create(), because this app is moved out of create()'s optional and a pointer bound there would dangle into
+    // the moved-from object (the setDatabase posture). ABOVE drawShellUi, so the panel's updateGizmo reads this
+    // tick's state in this tick's draw walk; outside the reconcile block's Asset Browser arm on purpose.
+    if (viewportPanel != nullptr) {
+        viewportPanel->setToolState(&transformTools);
+    }
+    // task E.6.2 (D12-D17): the status bar's words, composed by the pure model every tick -- a LOCAL, because
+    // drawShellUi reads it through a pointer inside this tick and nowhere after.
+    const std::string projectRoot(project.root());
+    const WatchState watchState = classifyWatchState(project.isOpen(), assetWatcher.status());
+    const StatusBarText statusText =
+        statusBarText(project.isOpen(), abbreviateHome(projectRoot, homeDirectory), projectRoot, watchState,
+                      assetWatcher.status().unreadableDirs, assetCount(), frameReadout, backendLabel);
     layer.beginFrame();
     ShellUiState ui{.applyDefaultLayout = applyDefaultLayout,
                     .placeUnplacedPanels = placeUnplacedPanels,
@@ -1180,13 +1215,29 @@ bool EditorApp::tick() {
                     // tick is carried into THIS tick's frame. routeToggleRequested and routeOutcome
                     // are OUT-only and take their defaults.
                     .routeSource = contextRouter.pending(),
-                    .routeEnabled = contextRouter.enabled()};
+                    .routeEnabled = contextRouter.enabled(),
+                    // task E.6.2 (D21): COPIES of the toolbar requests, and the three pointers (D3, D12, D21).
+                    .toolbarToolRequest = pendingToolbarTool,
+                    .toolbarSpaceRequest = pendingToolbarSpace,
+                    .toolbarSnapToggleRequest = pendingToolbarSnapToggle,
+                    .toolbarSnapStepRequest = pendingToolbarSnapStep,
+                    .toolbarUndoRequest = pendingToolbarUndo,
+                    .tools = &transformTools,
+                    .statusText = &statusText,
+                    .chromeRecord = &chromeRecord};
     // Consumed: a request never survives the tick that carried it. Unlike applyDefaultLayout below,
     // these are NOT read back out of `ui` -- drawShellUi clears them as it applies them, and reading
     // them back would re-arm the request every frame (task 2.4.1).
     undoRequested = false;
     redoRequested = false;
     requestedPanelFocus.clear();  // code-review BLOCKING-1 test seam -- the SAME "never re-armed" rule
+    // task E.6.2 (D21): the toolbar's requests, drained HERE on EditorApp -- clearing `ui`'s copies would make
+    // nothing one-shot, because `ui` is rebuilt every tick (the E.4.3 one-shot trap, one layer up).
+    pendingToolbarTool.reset();
+    pendingToolbarSpace.reset();
+    pendingToolbarSnapToggle = false;
+    pendingToolbarSnapStep.reset();
+    pendingToolbarUndo = false;
     // rebuilt per frame (D7); deltaSeconds is this frame's SPIKE-CLAMPED delta (task 2.3.1);
     // commandStack is the editor's ONE undo history (task 2.4.1 D7); rootOrder is the editor's ONE
     // display order among root entities (task 2.4.2 D10); project is the open project (task 2.6.2
@@ -1204,6 +1255,10 @@ bool EditorApp::tick() {
     applyDefaultLayout = ui.applyDefaultLayout;         // drawShellUi clears it once consumed, and re-sets
                                                         // it for View > Reset Layout
     placeUnplacedPanels = ui.placeUnplacedPanels;       // cleared once consumed; nothing ever re-arms it
+    // task E.6.2 (D7): a committed snap toggle or step is written by the NEXT tick's flush (above), once.
+    if (ui.snapCommitted) {
+        editorPrefsDirty = true;
+    }
     // task E.5.2: the menu bar's Create click, carried to the NEXT tick's drain. A copy, never a move:
     // std::optional<CreateKind> is trivially copyable (performance-move-const-arg, the drop drain's own
     // note).

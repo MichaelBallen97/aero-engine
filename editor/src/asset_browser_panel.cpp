@@ -24,6 +24,7 @@
 #include <aero/editor/material_card.hpp>  // task E.4.5 -- the card's subtitle and tint rules, and the separator
 #include <aero/editor/panel_context.hpp>
 #include <aero/editor/project_files.hpp>
+#include <aero/editor/status_bar.hpp>  // task E.6.2: classifyWatchState + assetFooterWatchText
 
 #include "asset_tile.hpp"  // task E.3.3 -- the tile FACE, shared with the picker
 #include "editor_theme_imgui.hpp"
@@ -1579,19 +1580,12 @@ void AssetBrowserPanel::drawFooter() {
         if (!labelScratch.empty()) {
             labelScratch += "   |   ";
         }
-        if (!watchStatusPtr->enabled) {
-            labelScratch += "Auto-refresh off";
-        } else if (watchStatusPtr->rootUnreadable) {
-            labelScratch += "Watch paused -- assets folder unreadable";
-        } else if (watchStatusPtr->truncated) {
-            labelScratch += "Watching (partial -- tree exceeds the scan limit)";
-        } else if (watchStatusPtr->deferredSweeps > 0) {
-            labelScratch += "Watching -- settling (" + std::to_string(watchStatusPtr->deferredSweeps) + ")";
-        } else if (watchStatusPtr->unreadableDirs > 0) {
-            labelScratch += "Watching (" + std::to_string(watchStatusPtr->unreadableDirs) + " folder(s) unreadable)";
-        } else {
-            labelScratch += "Watching";
-        }
+        // task E.6.2 (D13): ONE classification for the footer and the status bar -- two surfaces comparing one key
+        // by two chains is the 3.7.2 lesson -- and the footer's own words, byte-identical, now in status_bar.cpp.
+        // `true`: the footer never draws without a project.
+        const WatchStatus& watch = *watchStatusPtr;
+        const WatchState footerState = classifyWatchState(true, watch);
+        labelScratch += assetFooterWatchText(footerState, watch.deferredSweeps, watch.unreadableDirs);
     }
 
     if (labelScratch.empty()) {

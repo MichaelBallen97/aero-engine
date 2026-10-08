@@ -180,6 +180,9 @@ struct AssetBrowserLayout {
 // each rule a tier-0 table over a code-point budget and leaves the ImGui half one lambda (asset_tile.cpp).
 // Neither ever cuts inside a UTF-8 sequence, and both spend the caption's own ellipsis, U+2026.
 using CaptionLineFits = std::function<bool(std::string_view)>;
+// task E.6.2: a host's width measurer -- the width `text` draws at, in the host's units. The shell's chrome
+// layouts (breadcrumb.hpp, status_bar.hpp) take one, as these two rules take a CaptionLineFits.
+using TextWidth = std::function<float(std::string_view)>;
 
 // `text` when it fits; else the LONGEST byte prefix whose (prefix + ellipsis) fits, stepped back to a UTF-8
 // boundary; the ellipsis alone when not even one code point does. elideForCaption's rule, moved here so it can be

@@ -4,6 +4,7 @@
 #include <aero/editor/picking.hpp>  // projectToViewport + CLIP_W_EPSILON (step 3)
 #include <aero/scene/world.hpp>     // (step 3)
 
+#include <algorithm>
 #include <cmath>
 
 namespace engine::editor {
@@ -79,15 +80,20 @@ inline constexpr float GIZMO_ORTHOGONALITY_EPSILON = 1.0e-4F;
 }  // namespace
 
 GizmoMode nextGizmoMode(GizmoMode current, const GizmoModeInput& in) noexcept {
-    GizmoMode next = current;
-    if (in.translatePressed) {
-        next.operation = GizmoOperation::Translate;
-    } else if (in.rotatePressed) {
-        next.operation = GizmoOperation::Rotate;
-    } else if (in.scalePressed) {
-        next.operation = GizmoOperation::Scale;
+    if (in.commandModifierHeld) {
+        return current;  // task E.6.2 (D5): a chord is never a mode key
     }
-    // Deliberately NOT an `else if`: W and X in the same frame is a legal, unambiguous combination
+    GizmoMode next = current;
+    if (in.selectPressed) {
+        next.tool = TransformTool::Select;
+    } else if (in.translatePressed) {
+        next.tool = TransformTool::Move;
+    } else if (in.rotatePressed) {
+        next.tool = TransformTool::Rotate;
+    } else if (in.scalePressed) {
+        next.tool = TransformTool::Scale;
+    }
+    // Deliberately NOT an `else if`: a tool key and X in the same frame is a legal, unambiguous combination
     // (two fingers) and both should apply.
     if (in.spaceTogglePressed) {
         next.space = (next.space == GizmoSpace::Local) ? GizmoSpace::World : GizmoSpace::Local;
@@ -95,27 +101,102 @@ GizmoMode nextGizmoMode(GizmoMode current, const GizmoModeInput& in) noexcept {
     return next;
 }
 
+std::optional<GizmoOperation> gizmoOperationFor(TransformTool tool) noexcept {
+    switch (tool) {  // NO default: (the header's note)
+        case TransformTool::Select:
+            return std::nullopt;
+        case TransformTool::Move:
+            return GizmoOperation::Translate;
+        case TransformTool::Rotate:
+            return GizmoOperation::Rotate;
+        case TransformTool::Scale:
+            return GizmoOperation::Scale;
+    }
+    return std::nullopt;  // an out-of-range value (a corrupted byte) draws no gizmo rather than a wrong one
+}
+
 GizmoSpace effectiveSpace(GizmoOperation op, GizmoSpace requested) noexcept {
     return (op == GizmoOperation::Scale) ? GizmoSpace::Local : requested;
 }
 
-std::optional<Vec3> gizmoSnapStep(GizmoOperation op, bool snapHeld) noexcept {
-    if (!snapHeld) {
+SnapRange snapStepRange(GizmoOperation op) noexcept {
+    switch (op) {  // NO default:
+        case GizmoOperation::Translate:
+            return SnapRange{.min = GIZMO_SNAP_TRANSLATE_MIN, .max = GIZMO_SNAP_TRANSLATE_MAX};
+        case GizmoOperation::Rotate:
+            return SnapRange{.min = GIZMO_SNAP_ROTATE_DEGREES_MIN, .max = GIZMO_SNAP_ROTATE_DEGREES_MAX};
+        case GizmoOperation::Scale:
+            return SnapRange{.min = GIZMO_SNAP_SCALE_MIN, .max = GIZMO_SNAP_SCALE_MAX};
+    }
+    return SnapRange{.min = GIZMO_SNAP_TRANSLATE_MIN, .max = GIZMO_SNAP_TRANSLATE_MAX};
+}
+
+namespace {
+
+[[nodiscard]] float defaultSnapStep(GizmoOperation op) noexcept {
+    switch (op) {  // NO default:
+        case GizmoOperation::Translate:
+            return GIZMO_SNAP_TRANSLATE;
+        case GizmoOperation::Rotate:
+            return GIZMO_SNAP_ROTATE_DEGREES;
+        case GizmoOperation::Scale:
+            return GIZMO_SNAP_SCALE;
+    }
+    return GIZMO_SNAP_TRANSLATE;
+}
+
+void setSnapStepFor(SnapSettings& snap, GizmoOperation op, float value) noexcept {
+    switch (op) {  // NO default:
+        case GizmoOperation::Translate:
+            snap.translateStep = value;
+            return;
+        case GizmoOperation::Rotate:
+            snap.rotateStepDegrees = value;
+            return;
+        case GizmoOperation::Scale:
+            snap.scaleStep = value;
+            return;
+    }
+}
+
+}  // namespace
+
+float sanitizeSnapStep(GizmoOperation op, float value) noexcept {
+    if (!std::isfinite(value)) {
+        return defaultSnapStep(op);  // FIRST: std::clamp(NaN, lo, hi) returns NaN on libc++
+    }
+    const SnapRange range = snapStepRange(op);
+    return std::clamp(value, range.min, range.max);
+}
+
+float snapStepFor(GizmoOperation op, const SnapSettings& snap) noexcept {
+    switch (op) {  // NO default:
+        case GizmoOperation::Translate:
+            return snap.translateStep;
+        case GizmoOperation::Rotate:
+            return snap.rotateStepDegrees;
+        case GizmoOperation::Scale:
+            return snap.scaleStep;
+    }
+    return snap.translateStep;
+}
+
+std::optional<Vec3> gizmoSnapStep(GizmoOperation op, bool active, const SnapSettings& snap) noexcept {
+    if (!active) {
         return std::nullopt;
     }
-    float s = GIZMO_SNAP_TRANSLATE;
-    switch (op) {
-        case GizmoOperation::Translate:
-            s = GIZMO_SNAP_TRANSLATE;
-            break;
-        case GizmoOperation::Rotate:
-            s = GIZMO_SNAP_ROTATE_DEGREES;
-            break;
-        case GizmoOperation::Scale:
-            s = GIZMO_SNAP_SCALE;
-            break;
-    }
+    const float s = sanitizeSnapStep(op, snapStepFor(op, snap));
     return Vec3{s, s, s};
+}
+
+SnapStepUpdate snapStepUpdate(const SnapSettings& current, GizmoOperation op, std::optional<float> fieldValue,
+                              bool fieldDeactivatedAfterEdit, std::optional<float> request) noexcept {
+    SnapStepUpdate out{.next = current, .commit = request.has_value() || fieldDeactivatedAfterEdit};
+    const std::optional<float> incoming = request.has_value() ? request : fieldValue;
+    if (incoming.has_value()) {
+        setSnapStepFor(out.next, op, sanitizeSnapStep(op, *incoming));
+    }
+    return out;
 }
 
 GizmoDragEdge gizmoDragEdge(bool wasUsing, bool isUsing) noexcept {

@@ -7,7 +7,7 @@
 #include <aero/core/vfs.hpp>
 #include <aero/editor/asset_drag.hpp>  // task 3.1.5: AssetDragPayload, ViewportAssetDrop
 #include <aero/editor/editor_camera.hpp>
-#include <aero/editor/gizmo.hpp>        // task 2.3.3: GizmoMode, for the latched mode member
+#include <aero/editor/gizmo.hpp>        // task 2.3.3 / E.6.2: TransformToolState and the operation records
 #include <aero/editor/gizmo_style.hpp>  // task E.1.5: GizmoStyle, for the read-back seam
 #include <aero/editor/panel.hpp>
 #include <aero/editor/scene_bounds.hpp>       // task 3.1.5: MeshBoundsLookup, borrowed by the three consumers
@@ -266,6 +266,24 @@ public:
         pendingAssetDrop = ViewportAssetDrop{.payload = payload, .ndc = ndc};
     }
 
+    // ---- task E.6.2 -------------------------------------------------------------------------------
+    // The transform-tool state is the SHELL's (D3): EditorApp holds the one value and hands this panel a
+    // non-owning pointer EVERY TICK, above the draw walk -- never once in create(), because EditorApp is moved
+    // out of create()'s optional and a pointer bound there would dangle into the moved-from object. NULL means
+    // no gizmo at all (updateGizmo's Select arm) -- never a crash, never a private fallback copy.
+    void setToolState(TransformToolState* state) noexcept { toolStatePtr = state; }
+
+    // What the LAST ImGuizmo::Manipulate call received, recorded from the very locals it is handed -- the
+    // effect, never a request (D21). A Select frame calls nothing, so "no gizmo" is a zero DELTA of
+    // manipulateCalls(), and an Unavailable panel never calls it at all. lastManipulateSnap() is nullopt when
+    // the call received a null snap pointer -- and before the first call, so read manipulateCalls() first.
+    [[nodiscard]] std::uint64_t manipulateCalls() const noexcept { return manipulateCallCount; }
+    [[nodiscard]] std::optional<GizmoOperation> lastManipulateOperation() const noexcept {
+        return lastManipulateOperationValue;
+    }
+    [[nodiscard]] std::optional<GizmoSpace> lastManipulateSpace() const noexcept { return lastManipulateSpaceValue; }
+    [[nodiscard]] std::optional<Vec3> lastManipulateSnap() const noexcept { return lastManipulateSnapValue; }
+
 private:
     enum class Status : std::uint8_t { Uninitialized, Ready, Unavailable };
 
@@ -287,9 +305,8 @@ private:
     // ImGui-free -- every ImGui value is converted at the ONE call site in onDraw (the 2.3.2
     // precedent). updateGizmo is a member because it needs lastAspect, editorCamera and `gesture`.
     void updateGizmo(PanelContext& context, Vec2 imageOrigin, Vec2 avail, bool hovered);
-    void drawGizmoBar();  // takes nothing: everything it needs is a member (A13)
 
-    // Task E.1.3, mirroring the updateGizmo / drawGizmoBar pairing. updateViewAxisGizmo computes the
+    // Task E.1.3, mirroring 2.3.3's update / draw pairing for the gizmo. updateViewAxisGizmo computes the
     // layout ONCE per frame at step 8b'''' and routes the click; drawViewAxisGizmo reads that same
     // layout at step 9x, so the picture and the hit test cannot disagree (AC-16). beginViewSnap is
     // the one path both the click and requestViewSnap take.
@@ -305,8 +322,8 @@ private:
 
     // task E.2.4: the `View` button and its popup. The BUTTON's rect max is what step 9b records; the
     // popup's contents are D10's two groups -- Display (Projection, Tonemap, Exposure) above Overlays
-    // (Grid, Gizmos, View axis). Called on the SAME LINE as drawGizmoBar() but OUTSIDE its
-    // BeginDisabled(!gizmoHasTarget) scope, so every control stays live with nothing selected.
+    // (Grid, Gizmos, View axis). Since task E.6.2 it is the strip's ONLY control -- the toolbar took the gizmo
+    // bar -- and it opens no disabled scope, so every control stays live with nothing selected.
     void drawViewOptions();
 
     // task 3.1.5: the custom drop target's whole body, a member so the ImGui glue stays in one place.
@@ -411,22 +428,26 @@ private:
     std::vector<OverlaySegment> overlayScratch;  // caller-owned, cleared and reused every frame (D6)
 
     // Task 2.3.3.
-    GizmoMode gizmoMode{};          // LATCHED across frames; W/E/R/X and the overlay bar both write it
+    // task E.6.2 (D3): EditorApp's tool state, re-handed every tick by setToolState; never owned, never copied.
+    // Q/W/E/R/X (this panel) and the shell toolbar (through ShellUiState::tools) write it.
+    TransformToolState* toolStatePtr = nullptr;
     bool gizmoActive = false;       // D10: THIS frame's "the gizmo owns the cursor". Assigned on EVERY
                                     // updateGizmo entry (INV-4) -- false whenever no Manipulate was
                                     // called, because ImGuizmo::IsOver() would answer from stale
                                     // gContext state on such a frame (F8).
-    bool gizmoHasTarget = false;    // A13: assigned every frame beside gizmoActive; the ONLY thing the
-                                    // overlay bar's enabled state reads, so the bar can never disagree
-                                    // with whether a gizmo actually drew.
     bool gizmoWasUsing = false;     // previous frame's IsUsing(), for gizmoDragEdge (D22)
     bool gizmoWarnLatched = false;  // D12: one WARN per drag, not one per frame
+    // task E.6.2 (D21): the four Manipulate records, each named apart from its accessor (the house rule).
+    std::uint64_t manipulateCallCount = 0;
+    std::optional<GizmoOperation> lastManipulateOperationValue;
+    std::optional<GizmoSpace> lastManipulateSpaceValue;
+    std::optional<Vec3> lastManipulateSnapValue;
 
     // The interactive overlay row's screen rect in POINTS, written at onDraw's step 9b and read by
-    // overlayOwnsPress() on the NEXT frame's step 8b. ONE FRAME OLD BY CONSTRUCTION, and that is
-    // sound rather than tolerated: the strip's origin is imageOrigin + OVERLAY_INSET and its extent
-    // is fixed by the widgets on it, so it only moves when the dock does. Empty until the first
-    // frame that reaches step 9b, and an empty rect owns nothing.
+    // overlayOwnsPress() on the NEXT frame's step 8b. ONE FRAME OLD BY CONSTRUCTION. It moves when the dock
+    // does AND when the readout above it gains or loses a line (`fly`, `ortho`) -- task E.6.2 corrected the
+    // earlier "only when the dock does"; a one-frame-old rect across such a change can own or miss one press
+    // at the old row. Empty until the first frame that reaches step 9b, and an empty rect owns nothing.
     Vec2 overlayRowTopLeft{};
     Vec2 overlayRowBottomRight{};
     // task E.2.4: the `View` BUTTON's screen rect max, captured BEFORE the popup. Step 9b records the

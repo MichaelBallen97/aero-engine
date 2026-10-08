@@ -82,8 +82,8 @@ public:
     // The exact strings, character for character (SS7): "Untitled - Aero Editor",
     // "*Untitled - Aero Editor", "level1.scene.json - Aero Editor",
     // "*level1.scene.json - Aero Editor". Separator is " - " (space hyphen space), an ASCII hyphen,
-    // NEVER an em dash -- this goes through SDL_SetWindowTitle and into a native title bar. The '*' is
-    // the ONLY dirty affordance outside the Edit menu, so it leads.
+    // NEVER an em dash -- this goes through SDL_SetWindowTitle and into a native title bar. The '*' leads;
+    // since task E.6.2 the menu bar's breadcrumb dot is the other dirty affordance outside the Edit menu.
     //
     // Task 2.6.1 (AC-27/AC-28): with a non-empty `projectName` the title becomes
     // "[*]<doc> - <ProjectName> - Aero Editor". An EMPTY projectName -- the parameter's DEFAULT --

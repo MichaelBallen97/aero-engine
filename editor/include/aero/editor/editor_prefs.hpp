@@ -37,9 +37,18 @@ struct EditorPrefs {
     // MISSING FILE and an ABSENT KEY both mean, so a machine that has never opened the View menu
     // behaves exactly like one that ticked the box.
     bool focusFollowsSelection = true;
+    // task E.6.2 (D7): the snap toggle and the three per-tool steps. The defaults are gizmo.hpp's GIZMO_SNAP_*,
+    // restated so this header stays include-light and tied to them by static_assert in editor_prefs.cpp. A
+    // PRESENT step outside its range, zero, negative, non-finite or of the wrong JSON type refuses the WHOLE
+    // document -- this file validates, never clamps; the field that writes it clamps first.
+    bool snapEnabled = false;
+    float snapTranslateStep = 0.5F;
+    float snapRotateStepDegrees = 15.0F;
+    float snapScaleStep = 0.1F;
 };
 
-// nullopt on unparseable JSON, a non-object root, a wrong "version", or a PRESENT-but-non-bool value.
+// nullopt on unparseable JSON, a non-object root, a wrong "version", a PRESENT-but-non-bool value, or (task
+// E.6.2) a PRESENT snap step that is not a number inside its range.
 // An ABSENT "focusFollowsSelection" is the DEFAULT, not a miss -- the blenderPath rule
 // (blender_tool.cpp's optionalString), which is what makes appending a key a non-breaking change.
 [[nodiscard]] std::optional<EditorPrefs> parseEditorPrefs(std::string_view text);

@@ -234,8 +234,12 @@ MSVC, where a Private Use Area code point is unrepresentable. The policy:
 - **The merge chain** is open only between one continuous gesture's start and end. It is broken by
   `undo()`, `redo()`, `clear()`, `setClean()` and the explicit `breakMergeChain()`, and opened by any
   push that records a new entry. A panel driving a continuous edit breaks the chain at **both**
-  boundaries and at **every** path that abandons the gesture — `ViewportPanel::updateGizmo`'s two
-  early returns are the precedent, and they deliver no end edge at all.
+  boundaries and at **every** path that abandons the gesture — `ViewportPanel::updateGizmo`'s three
+  early returns are the precedent, and they deliver no end edge at all. **But a return that runs while
+  no drag of its own is in flight must leave the chain alone** (task E.6.2's `fix(editor):`): the returns
+  run on EVERY Viewport frame while the primary has no `Transform` or sits behind the camera (and, since
+  E.6.2, under Select), so an unconditional break there split every Inspector drag into one undo entry per
+  frame. Each return breaks only `if (gizmoWasUsing)`, read before the latch is cleared (`I290`, `I291`).
 - **The gate pair is asymmetric by which side of the push it sits on, and the two edges cannot share a
   call site (task 2.4.2 D17).** An OPEN edge (`IsItemActivated`, `GizmoDragEdge::Begin`) breaks the
   chain **before** that frame's push; a CLOSE edge (`IsItemDeactivated`, `GizmoDragEdge::End`) breaks it
@@ -2172,3 +2176,61 @@ split the undo). Every typed create is at the **root**; Create Child is the one 
 camera's **second writer** and runs from the reconcile block, **before the draw walk** — never from
 `renderScene` (INV-3). Undo does not move the camera back and redo does not re-frame: the camera is tool
 state.
+
+## Shell chrome (task E.6.2)
+
+- **The toolbar and the status bar are viewport side bars**, `ImGui::BeginViewportSideBar` on the main viewport
+  (`"##AeroToolbar"`, `ImGuiDir_Up`; `"##AeroStatusBar"`, `ImGuiDir_Down`), drawn every frame from
+  `shell_chrome_ui.cpp` — the chrome's ONE ImGui TU. They reserve their space through the work area exactly as the
+  menu bar does, with the same one-frame settle; never "fix" it with a manual offset. **`BeginViewportSideBar` does
+  not call `End()`**: the caller ends the window unconditionally (only `BeginMainMenuBar` wraps it). Neither is a
+  `Panel` (no View-menu entry, no ini key; the `panels().count() == 8` pins stand).
+- **Six flags on both bars, and each has a reason**: `NoSavedSettings` (not forced by the side bar — without it a bar
+  enters `aero_editor.ini`), `NoScrollbar`, `NoScrollWithMouse`, `NoFocusOnAppearing`, `NoNavFocus` (Ctrl+Tab runs
+  even with `NavEnableKeyboard` off and would list a bar as "(Untitled)") and `NoNavInputs` (Tab-to-focus is always
+  on). `I307(d)` pins the set.
+- **Order in `drawShellUi`**: the hoisted `fileEnabled`, then `drawMenuBar` (which draws the breadcrumb after the View
+  menu), then `drawToolbar` — after the menu bar (Up bars stack in submission order), before `applyHistoryRequests`
+  (an Undo click applies this frame) and before `drawPanels` (a tool click reaches `updateGizmo` this frame) — then
+  `drawStatusBar` (its position is a convention: the inset lands next frame either way). `I308` pins it.
+- **Bar heights are whole points**: `shellBarHeight(heightDp, uiScale)` rounds, because the side bar insets the raw
+  float while `Begin` truncates `Pos`/`SizeFull`. The heights are DERIVED in dp (`toolbarHeightDp`, `statusBarHeightDp`
+  — 44 and 26); each bar's 1-dp rule is drawn inside it.
+- **A toolbar button never takes the keyboard**: every enabled button is wrapped in
+  `PushItemFlag(ImGuiItemFlags_NoFocus, true)` / `PopItemFlag()`, 1:1, so the Hierarchy's focus-scoped Delete /
+  Cmd+D / F2 survive a tool click. Stated residuals: the snap field (`DragScalar` focuses), a disabled button, empty bar
+  space and the whole status bar DO focus their bar. A click on an enabled button while another widget is active (a
+  Hierarchy rename) ends that widget AND acts, and the keyboard stays in the panel -- MEASURED on macOS (E.6.2's
+  validation row 3, three tools, three times), against a reading of ImGui's hover rule that predicted a second click
+  would be needed: trust the measurement, re-measure at an ImGui bump. No hand-back call exists, because it would be
+  a second focus writer against E.3.2's one slot.
+- **THE TRANSFORM-TOOL STATE HAS ONE HOME AND TWO RECONCILED POINTERS.** `EditorApp::transformTools`
+  (`TransformToolState`: the tool, the space, the snap settings) is the only value; the Viewport's `toolStatePtr` is
+  re-handed every tick above `layer.beginFrame()` and `ShellUiState::tools` is rebuilt in the designated initializer —
+  never bound once in `create()`, because the app is moved out of `create()`'s optional. `PanelContext` is untouched
+  (2.6.2's append bar). Writers: the toolbar, the Viewport's keys, and `create()`'s snap restore. `I292(d)` and
+  `I307(i)` pin who may NAME each piece.
+- **Select draws no gizmo**, through a third early return in `updateGizmo`, shaped like the no-target one; the keys
+  are inert mid-drag (`!ImGuizmo::IsUsing()`) and under Cmd/Ctrl or Super (`GizmoModeInput::commandModifierHeld`,
+  decided in the pure model so `G21` can witness it).
+- **A REQUEST SEAM OBEYS ITS CONTROL.** Every toolbar control is written in one shape — the enabled predicate as a
+  named local, the request read on its own statement, the widget ALWAYS submitted, then
+  `pressed || (requested && enabled && noModal)` with `noModal = ImGui::GetTopMostPopupModal() == nullptr`. Never
+  `enabled && (Button(…) || request)`: the short-circuit skips the widget. A refused request is DROPPED, never
+  deferred. The pending members live on `EditorApp` and are cleared right after the `ShellUiState` build — clearing
+  `ui`'s copy would make nothing one-shot (`I300`).
+- **The snap commit rule is pure** (`snapStepUpdate`): a live drag frame changes the step and NEVER commits; the field's
+  `IsItemDeactivatedAfterEdit()` or a request commits; the chrome calls it once per frame. A commit marks
+  `editor_prefs.json` dirty and the NEXT tick's flush writes it, once (`editorPrefsWriteCount()`).
+- **One chord spelling**: every hint for an `ImGuiMod_Ctrl` chord comes from `chordHint(currentHostOs(), …)` —
+  `Cmd+Z` on macOS, `Ctrl+Z` elsewhere — and `modifierName` for prose. `shortcut_hint.cpp` is the ONLY editor source
+  whose literals say `Ctrl` or `Cmd` (`HK4`), and no call site spells a `HostOs::` value (`HK5`).
+- **The breadcrumb is one frame behind a save, an undo or a scene swap**: the menu bar draws before `applyFileRequests`
+  and `applyHistoryRequests`. A GPU case asserting it ticks twice after the change.
+- **User strings in the chrome are drawn format-safe** — `TextUnformatted`, `ImDrawList::AddText`, or a `"%s"` format
+  (`I307(h)` runs `I242(e)`'s parser over the chrome) — and elided only through the pure layouts, on code-point
+  boundaries (`FT15`).
+- **The chrome reads every palette role once, in `chromeColors()`**, and never `textDisabled`; an active segment or
+  tool pushes all THREE button slots plus the text slot (onAccent on `hover` is 1.34:1). `I287` pins the reads.
+- **`US9`'s map** now includes `breadcrumb.hpp` (`P`), `status_bar.hpp` (`P`) and `toolbar_model.hpp` (`PP`): a new
+  pure layout that consumes a dp metric takes a non-defaulted `float uiScale` and joins the map.

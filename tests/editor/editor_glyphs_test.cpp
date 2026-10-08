@@ -136,6 +136,8 @@ struct LiteralScan {
     std::size_t highEscapeLiterals = 0;
     std::vector<Violation> violations;
     std::size_t line = 1;  // the line the lexer is on -- the scan's cursor while it runs
+    // task E.6.2 (HK4): every literal's BODY as written in source (escapes unprocessed), in file order.
+    std::vector<std::string> bodies;
 };
 
 // One literal's findings: at most ONE violation per rule, carrying every offending byte, so a raw
@@ -260,6 +262,7 @@ std::size_t scanQuoted(std::string_view text, std::size_t open, bool allowHigh, 
         found.add('u', scan.line, text.substr(open, std::min<std::size_t>(i - open, 24U)));
     }
     found.flushInto(scan);
+    scan.bodies.emplace_back(text.substr(open + 1U, (closed ? i - 1U : i) - (open + 1U)));
     return i;
 }
 
@@ -289,6 +292,7 @@ std::size_t scanRaw(std::string_view text, std::size_t open, LiteralScan& scan) 
         found.add('u', scan.line, text.substr(open, 1U));
     }
     found.flushInto(scan);
+    scan.bodies.emplace_back(text.substr(paren + 1U, stop - paren - 1U));
     return end == std::string_view::npos ? text.size() : end + closing.size();
 }
 
@@ -590,4 +594,100 @@ TEST_CASE("glyphs: the elision constants are the ellipsis (task E.6.1, GL7)") {
         spelled += line.find("CAPTION_ELLIPSIS = AERO_GLYPH_ELLIPSIS;") != std::string::npos ? 1U : 0U;
     }
     CHECK(spelled == 1U);
+}
+
+namespace {
+
+// Does a literal BODY name a modifier? "Ctrl" or "Cmd" anywhere -- which also catches a hint embedded
+// mid-literal ("Undo (Ctrl+Z)") and prose ("Ctrl-click").
+[[nodiscard]] bool namesModifier(std::string_view body) {
+    return body.find("Ctrl") != std::string_view::npos || body.find("Cmd") != std::string_view::npos;
+}
+
+[[nodiscard]] bool snippetNamesModifier(const std::string& snippet) {
+    for (const std::string& body : scanLiterals(snippet, false).bodies) {
+        if (namesModifier(body)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// GL6's walk, copied (scaffolding is copied, the assertion is not): (display name, absolute path) of every
+// editor/src *.cpp/*.hpp and every public editor header, sorted.
+[[nodiscard]] std::vector<std::pair<std::string, std::string>> editorSourceFiles() {
+    std::vector<std::pair<std::string, std::string>> files;
+    const auto collect = [&files](const std::string& directory, std::string_view prefix, bool takeCpp) {
+        std::error_code ec;
+        for (const auto& entry : std::filesystem::directory_iterator(directory, ec)) {
+            if (!entry.is_regular_file(ec)) {
+                continue;
+            }
+            const std::string name = entry.path().filename().string();
+            if (name.ends_with(".hpp") || (takeCpp && name.ends_with(".cpp"))) {
+                files.emplace_back(std::string(prefix) + name, entry.path().string());
+            }
+        }
+        CAPTURE(directory);
+        REQUIRE_FALSE(ec);
+    };
+    collect(AERO_EDITOR_SRC_DIR, "editor/src/", true);
+    collect(AERO_EDITOR_INCLUDE_DIR "/aero/editor", "editor/include/aero/editor/", false);
+    std::sort(files.begin(), files.end());
+    return files;
+}
+
+}  // namespace
+
+TEST_CASE("glyphs: only shortcut_hint.cpp names a modifier in a literal (task E.6.2, HK4)") {
+    // ---- the rule's own arms, first: comments are prose, literals are not ----
+    CHECK(snippetNamesModifier("s = \"Undo (Ctrl+Z)\";"));  // seed S33's shape
+    CHECK(snippetNamesModifier("s = \"Ctrl-click\";"));
+    CHECK(snippetNamesModifier("s = \"Cmd+Z\";"));
+    CHECK(snippetNamesModifier("MenuItem(\"Duplicate\", \"Ctrl+D\")"));
+    CHECK_FALSE(snippetNamesModifier("// \"Ctrl+Z\" in prose"));
+    CHECK_FALSE(snippetNamesModifier("/* \"Cmd+Z\" */"));
+    CHECK_FALSE(snippetNamesModifier("s = \"Control\";"));
+
+    // ---- then the tree ----
+    std::vector<std::string> naming;
+    bool hintCtrl = false;
+    bool hintCmd = false;
+    const std::vector<std::pair<std::string, std::string>> files = editorSourceFiles();
+    for (const auto& [file, path] : files) {
+        const LiteralScan scan = scanLiterals(readOrFail(path), true);
+        bool named = false;
+        for (const std::string& body : scan.bodies) {
+            named = named || namesModifier(body);
+            if (file == "editor/src/shortcut_hint.cpp") {
+                hintCtrl = hintCtrl || body == "Ctrl";
+                hintCmd = hintCmd || body == "Cmd";
+            }
+        }
+        if (named) {
+            naming.push_back(file);
+        }
+    }
+    CHECK(naming == std::vector<std::string>{"editor/src/shortcut_hint.cpp"});
+    CHECK(hintCtrl);  // ANTI-VACUITY: the lexer sees the two spellings where they live
+    CHECK(hintCmd);
+    CHECK(files.size() > 180U);
+}
+
+TEST_CASE("glyphs: three editor sources branch on the host (task E.6.2, HK5)") {
+    // A menu hint that passed a literal HostOs (seed S34) would add its file here; a call site passes
+    // currentHostOs(), which never spells `HostOs::`.
+    std::vector<std::string> branching;
+    for (const auto& [file, path] : editorSourceFiles()) {
+        if (!file.starts_with("editor/src/")) {
+            continue;
+        }
+        for (const std::string& line : codeLinesOf(readOrFail(path))) {
+            if (line.find("HostOs::") != std::string::npos) {
+                branching.push_back(std::filesystem::path(path).filename().string());
+                break;
+            }
+        }
+    }
+    CHECK(branching == std::vector<std::string>{"blender_service.cpp", "blender_tool.cpp", "shortcut_hint.cpp"});
 }

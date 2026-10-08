@@ -333,6 +333,15 @@ std::string defaultEditorPrefsPath() {
     return std::string(EDITOR_PREFS_FILE_NAME);
 }
 
+// task E.6.2 (D16): SDL CACHES the string SDL_GetUserFolder returns and the caller must NOT free it
+// (SDL_filesystem.c:498-511) -- SDL_GetBasePath's rule above, NOT SDL_GetPrefPath's. macOS and Linux read $HOME;
+// Windows reads the profile folder, which can differ from %USERPROFILE% only in the safe direction (a full path
+// shown). Null gives "" and no WARN: the full path is a correct display. No remove, rename or copy (Check A).
+std::string defaultHomeDirectory() {
+    const char* const home = SDL_GetUserFolder(SDL_FOLDER_HOME);
+    return home != nullptr ? std::string(home) : std::string();
+}
+
 RecentProjects readRecentProjects(std::string_view pathUtf8) {
     const FileReadResult read = readTextFile(pathUtf8);
     if (!read.text.has_value()) {

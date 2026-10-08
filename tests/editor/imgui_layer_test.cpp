@@ -31,6 +31,7 @@
 #include <aero/editor/editor_camera.hpp>    // task 2.3.1
 #include <aero/editor/editor_glyphs.hpp>    // task E.6.1 (I279): EDITOR_GLYPHS
 #include <aero/editor/editor_icons.hpp>     // task E.6.1 (I278): EDITOR_ICONS
+#include <aero/editor/editor_prefs.hpp>     // task E.6.2 (I294, I302): writeEditorPrefs / readEditorPrefs
 #include <aero/editor/entity_commands.hpp>  // task 2.4.2
 #include <aero/editor/entity_ops.hpp>
 #include <aero/editor/model_import_session.hpp>  // task 3.2.1: SessionState, named directly (I52-I59)
@@ -43,11 +44,14 @@
 #include <aero/editor/scene_containment.hpp>  // task E.4.2 (I187): normalizeForContainment
 #include <aero/editor/scene_session.hpp>
 #include <aero/editor/selection.hpp>
-#include <aero/editor/selection_overlay.hpp>  // task 2.3.2
-#include <aero/editor/text_file.hpp>          // task 2.6.1: writeTextFileAtomic, for I23/I24's recents file
-#include <aero/editor/thumbnail_cache.hpp>    // task 3.1.3: MAX_THUMBNAIL_DECODES_PER_TICK, MAX_THUMBNAILS_RESIDENT
-#include <aero/editor/transform_command.hpp>  // task 2.4.1
-#include <aero/editor/transform_ops.hpp>      // task 2.4.1
+#include <aero/editor/selection_overlay.hpp>    // task 2.3.2
+#include <aero/editor/shell_chrome_record.hpp>  // task E.6.2 (I295-I306): what the chrome drew
+#include <aero/editor/status_bar.hpp>           // task E.6.2 (I305): the status bar's pure model
+#include <aero/editor/text_file.hpp>            // task 2.6.1: writeTextFileAtomic, for I23/I24's recents file
+#include <aero/editor/thumbnail_cache.hpp>      // task 3.1.3: MAX_THUMBNAIL_DECODES_PER_TICK, MAX_THUMBNAILS_RESIDENT
+#include <aero/editor/toolbar_model.hpp>        // task E.6.2 (I306): toolbarLayout / toolbarWidths, the pure answer
+#include <aero/editor/transform_command.hpp>    // task 2.4.1
+#include <aero/editor/transform_ops.hpp>        // task 2.4.1
 #include <aero/platform/platform.hpp>
 #include <aero/reflect/material_format.hpp>  // task 3.4.2: MaterialDocument, named directly (I84)
 #include <aero/render/debug_grid.hpp>        // task E.5.2 (I254): debugGridDepthNudge
@@ -80,6 +84,7 @@
 #include <array>   // the frozen panel-id roster; reached transitively on libc++, not on MSVC (813bc4d)
 #include <bit>     // task E.5.2 (I247): std::bit_cast -- the camera state, bit for bit
 #include <cctype>  // task E.3.1, I143: std::isalnum over the panel's own source text
+#include <chrono>  // task E.6.2 (I305): the readout publishes after half a second of REAL time
 #include <cmath>   // task E.2.4, I136: std::lround / std::abs over the readback's byte oracle
 #include <cstddef>
 #include <cstdint>
@@ -8605,16 +8610,28 @@ TEST_CASE("editor: the tonemap wiring's three source-text invariants hold (task 
         CHECK(forwardsViewportParams);
     }
 
-    SUBCASE("(b) drawViewOptions is a SIBLING of drawGizmoBar and opens no disabled scope") {
-        // A PARTIAL PIN, and it is recorded as one. The property that actually matters -- "the call is
-        // outside drawGizmoBar's BeginDisabled scope" -- is not decidable from source text at the call
-        // site, because the scope lives inside another function. What IS decidable is that
-        // drawViewOptions is called AFTER drawGizmoBar rather than from inside it, and that its own
-        // body opens no BeginDisabled. Validation row 2 (the controls are live with nothing selected)
-        // is the real witness; claiming otherwise here would be a pin certifying what it is blind to.
-        const std::size_t barCallAt = soleLineContaining(viewportCode, "drawGizmoBar();");
+    SUBCASE("(b) drawViewOptions follows the row's start, the gizmo bar is gone, and it opens no disabled scope") {
+        // task E.6.2 (D18): the toolbar took T / R / S and Local / World, so the row is `View` alone. Decidable from
+        // source text: the call is the first statement after the row's start is captured, and NO editor source
+        // names drawGizmoBar any more (a set claim of zero files, comment-stripped). Validation row 15 is the
+        // behavioural witness.
+        const std::size_t rowStartAt = soleLineContaining(viewportCode, "const ImVec2 rowStart");
         const std::size_t optionsCallAt = soleLineContaining(viewportCode, "drawViewOptions();");
-        CHECK(barCallAt < optionsCallAt);
+        CHECK(nextCodeLine(viewportCode, rowStartAt + 1U) == optionsCallAt);
+        const auto namesGizmoBar = [](const std::string& l) { return l.find("drawGizmoBar") != std::string::npos; };
+        std::size_t namingGizmoBar = 0;
+        std::error_code walkError;
+        for (const auto& entry :
+             std::filesystem::directory_iterator(std::filesystem::path(AERO_EDITOR_SRC_DIR), walkError)) {
+            if (!entry.is_regular_file()) {
+                continue;
+            }
+            if (std::ranges::any_of(editorSourceCodeLines(entry.path().string()), namesGizmoBar)) {
+                ++namingGizmoBar;
+            }
+        }
+        REQUIRE_FALSE(walkError);
+        CHECK(namingGizmoBar == 0U);
 
         // The body: from `void ViewportPanel::drawViewOptions() {` to the next column-0 `}`.
         const std::size_t bodyStart = soleLineContaining(viewportCode, "void ViewportPanel::drawViewOptions()");
@@ -8780,7 +8797,7 @@ TEST_CASE("editor: the overlay claims its own strip and NOTHING else (task 3.6.3
     // exactly the silent way this fix could rot. The rect must be REAL.
     CHECK(rowMax.x > rowMin.x);
     CHECK(rowMax.y > rowMin.y);
-    CHECK(rowMax.x - rowMin.x >= 40.0F);  // T R S Local + a combo + a slider is never this narrow
+    CHECK(rowMax.x - rowMin.x >= 40.0F);  // task E.6.2: `View` alone, ~50 points in Plex 16 -- never narrower
     CHECK(rowMax.y - rowMin.y >= 8.0F);
 
     // (1) THE STRIP OWNS ITS OWN CLICKS. Its centre, and a point just inside each corner.
@@ -11632,7 +11649,7 @@ TEST_CASE(
     REQUIRE_FALSE(code.empty());
 
     SUBCASE("2.4.1's merge-chain edges and the one undoable write keep their counts") {
-        CHECK(countLinesContaining(code, "breakMergeChain(") == 4U);
+        CHECK(countLinesContaining(code, "breakMergeChain(") == 5U);  // task E.6.2: + the Select return's (D4)
         CHECK(countLinesContaining(code, "context.commands.push(") == 1U);
         CHECK(countLinesContaining(code, "gizmoWriteFromWorld(") == 1U);
         CHECK(countLinesContaining(code, "std::make_unique<TransformCommand>") == 1U);
@@ -12829,10 +12846,8 @@ TEST_CASE("editor: hiding the view-axis widget hides its PRESS CLAIM too (task E
 }
 
 TEST_CASE("editor: the viewport strip carries only MODE controls (task E.2.4, I141)") {
-    // I107 bounds the recorded row from BELOW (>= 40 points) and its comment names the PRE-E.2.4 row,
-    // "T R S Local + a combo + a slider". The row is now `T R S | Local | View`, so I107's assertions
-    // all still hold and only its comment went stale -- it is left BYTE-IDENTICAL on purpose, because
-    // "green unedited" is a stronger gate step as a hard diff than as "unedited except a comment".
+    // I107 bounds the recorded row from BELOW (>= 40 points). Since task E.6.2 the row is `View` alone
+    // -- the toolbar took T / R / S and Local / World -- and I107's comment says so.
     //
     // THIS case bounds it from ABOVE, which is the direction a regression that put the 130-point
     // exposure slider and the 92-point combo back on the strip would break.
@@ -12873,12 +12888,10 @@ TEST_CASE("editor: the viewport strip carries only MODE controls (task E.2.4, I1
     CHECK(width >= 40.0F);
     CHECK(height >= 8.0F);
     // THE UPPER BOUND, DERIVED FROM A MEASUREMENT rather than chosen. Measured on this row when the
-    // case was written: 156 x 13 points for `T R S | Local | View` at the default font (the MESSAGE
-    // above prints it on every run of every lane, so the next reader does not have to re-derive it).
-    // The bound is TWICE that width, rounded up to a round number -- loose enough that a font or
-    // padding change does not redden it, tight enough that putting the 92-point combo and the
-    // 130-point exposure slider back on the strip (~240 more points with their spacings) does.
-    CHECK(width < 320.0F);
+    // case was RE-measured at task E.6.2: 43 x 16 points for `View` alone in Plex 16 (the MESSAGE above prints it on
+    // every run of every lane). The bound, 100, is a little over twice that width -- tight enough that any widget
+    // put back on the strip reddens it.
+    CHECK(width < 100.0F);
     // ONE ROW HIGH. A second row of widgets would push this past the bound while leaving the width
     // alone, which is the other shape the regression can take.
     CHECK(height <= 40.0F);
@@ -18874,8 +18887,11 @@ TEST_CASE("editor: the Asset Browser fits its panel with 40 orphans and Issues o
     // 900 avail 148 with an 18-point body. 600, this subcase's height before E.6.1, measured avail 73,
     // ten under the fit bound, so its CHECK ran nowhere. 768 is avail 115, about 30 inside either bound.
     // A runner that delivers a SHORTER window than requested (CI's macOS lane can) may still land under 83,
-    // where scrolling is the designed answer and checkFits reports a WARN. 1000 measured avail 152 here,
-    // the same as 920 (the window is held to the display), with a 22-point body.
+    // where scrolling is the designed answer and checkFits reports a WARN. Re-measured at task E.6.2 with the
+    // toolbar and status bar present, every value above is unchanged: their 70 dp come out of the central node
+    // (the Viewport), because ImGui keeps a split sibling's size and hands the central node the remainder
+    // (imgui.cpp:20321-20325). 1000 measured avail 152 at E.6.1 on a display that held the window to about 920;
+    // on a taller one it is avail 173 with a 43-point body, and 920 is avail 153 with a 23-point body.
     bool tallPanel = true;
     int windowHeight = 1000;
     SUBCASE("a TALL panel, where the body has room to grow past one row") {}
@@ -19906,6 +19922,54 @@ TEST_CASE("editor: the Inspector's material row asks for its own card and carrie
     app.reset();
 }
 
+namespace {
+
+// I242(e)'s format-safety predicates, hoisted so I307 runs the SAME parser over the chrome (task E.6.2). The first
+// argument of a call that starts at `argAt` on line `i` -- or, for a call broken after its paren, the next line's
+// first non-blank character -- must open a string literal.
+[[nodiscard]] bool formatFirstArgumentOpensLiteral(const std::vector<std::string>& code, std::size_t i,
+                                                   std::size_t argAt) {
+    std::string_view rest = std::string_view(code[i]).substr(argAt);
+    while (!rest.empty() && rest.front() == ' ') {
+        rest.remove_prefix(1);
+    }
+    if (rest.empty() && i + 1U < code.size()) {
+        rest = code[i + 1U];
+        while (!rest.empty() && rest.front() == ' ') {
+            rest.remove_prefix(1);
+        }
+    }
+    return !rest.empty() && rest.front() == '"';
+}
+
+// TextColored(col, fmt, ...) / LabelText(label, fmt, ...): the first comma at parenthesis depth 0, OUTSIDE a string
+// literal (honouring an escaped quote), ends the first argument; the second must open a literal.
+[[nodiscard]] bool formatSecondArgumentOpensLiteral(std::string_view call) {
+    int depth = 0;
+    bool inLiteral = false;
+    for (std::size_t c = 0; c < call.size(); ++c) {
+        if (inLiteral) {
+            if (call[c] == '\\') {
+                ++c;  // an escaped character -- a quote included -- never ends the literal
+            } else if (call[c] == '"') {
+                inLiteral = false;
+            }
+        } else if (call[c] == '"') {
+            inLiteral = true;
+        } else if (call[c] == '(') {
+            ++depth;
+        } else if (call[c] == ')') {
+            --depth;
+        } else if (call[c] == ',' && depth == 0) {
+            const std::size_t next = call.find_first_not_of(' ', c + 1U);
+            return next != std::string_view::npos && call[next] == '"';
+        }
+    }
+    return false;  // no second argument on these three lines: not a call this pin can clear
+}
+
+}  // namespace
+
 TEST_CASE("editor: E.4.5's structure holds as source text -- routing, release, gate, hosts (task E.4.5, I242)") {
     // Each clause is structural: no runtime tier can see it violated until a later edit makes it matter. Comment-
     // stripped code lines only (editorSourceCodeLines), so a sentence in a comment never counts. NO #if.
@@ -20045,19 +20109,9 @@ TEST_CASE("editor: E.4.5's structure holds as source text -- routing, release, g
                     ++formatCalls;
                     // The first argument: the rest of this line, or -- for a call broken after its paren -- the
                     // next line's first non-blank character. It must OPEN A STRING LITERAL.
-                    std::string_view rest = std::string_view(code[i]).substr(at + function.size());
-                    while (!rest.empty() && rest.front() == ' ') {
-                        rest.remove_prefix(1);
-                    }
-                    if (rest.empty() && i + 1U < code.size()) {
-                        rest = code[i + 1U];
-                        while (!rest.empty() && rest.front() == ' ') {
-                            rest.remove_prefix(1);
-                        }
-                    }
                     CAPTURE(host);
                     CAPTURE(code[i]);
-                    CHECK((!rest.empty() && rest.front() == '"'));
+                    CHECK(formatFirstArgumentOpensLiteral(code, i, at + function.size()));
                 }
             }
         }
@@ -20073,39 +20127,16 @@ TEST_CASE("editor: E.4.5's structure holds as source text -- routing, release, g
             "ImGui::TextColored(",  // TextColored(col, fmt, ...)
             "ImGui::LabelText(",    // LabelText(label, fmt, ...)
         };
-        const auto secondArgumentOpensLiteral = [](std::string_view call) {
-            int depth = 0;
-            bool inLiteral = false;
-            for (std::size_t c = 0; c < call.size(); ++c) {
-                if (inLiteral) {
-                    if (call[c] == '\\') {
-                        ++c;  // an escaped character -- a quote included -- never ends the literal
-                    } else if (call[c] == '"') {
-                        inLiteral = false;
-                    }
-                } else if (call[c] == '"') {
-                    inLiteral = true;
-                } else if (call[c] == '(') {
-                    ++depth;
-                } else if (call[c] == ')') {
-                    --depth;
-                } else if (call[c] == ',' && depth == 0) {
-                    const std::size_t next = call.find_first_not_of(' ', c + 1U);
-                    return next != std::string_view::npos && call[next] == '"';
-                }
-            }
-            return false;  // no second argument on these three lines: not a call this pin can clear
-        };
         // The rule's own arms, so a broken parser cannot pass every host vacuously. Hoisted: a string holding an
         // escaped quote stays out of a doctest macro's argument list (the MSVC preprocessor rule).
         const std::string_view literalSecond = "ImGui::GetStyleColorVec4(ImGuiCol_Text, 1), \"%s\", name);";
         const std::string_view variableSecond = "ImGui::GetStyleColorVec4(ImGuiCol_Text), scratch.c_str());";
         const std::string_view commaInLabel = R"x("Size, bytes", "%zu", n);)x";
         const std::string_view escapedQuoteInLabel = R"x("a \", b", "%s", name);)x";
-        CHECK(secondArgumentOpensLiteral(literalSecond));
-        CHECK_FALSE(secondArgumentOpensLiteral(variableSecond));
-        CHECK(secondArgumentOpensLiteral(commaInLabel));
-        CHECK(secondArgumentOpensLiteral(escapedQuoteInLabel));
+        CHECK(formatSecondArgumentOpensLiteral(literalSecond));
+        CHECK_FALSE(formatSecondArgumentOpensLiteral(variableSecond));
+        CHECK(formatSecondArgumentOpensLiteral(commaInLabel));
+        CHECK(formatSecondArgumentOpensLiteral(escapedQuoteInLabel));
         for (const std::string_view host : HOSTS) {
             const std::vector<std::string> code = codeOf(host);
             for (std::size_t i = 0; i < code.size(); ++i) {
@@ -20121,7 +20152,7 @@ TEST_CASE("editor: E.4.5's structure holds as source text -- routing, release, g
                     }
                     CAPTURE(host);
                     CAPTURE(code[i]);
-                    CHECK(secondArgumentOpensLiteral(call));
+                    CHECK(formatSecondArgumentOpensLiteral(call));
                 }
             }
         }
@@ -21753,9 +21784,10 @@ TEST_CASE("editor: the font, style and font-push writers each live in their own 
     // one and the snapshot that reports it to the tests.
     CHECK(writingDpiFlag == std::vector<std::string>{"imgui_layer.cpp"});
     CHECK(namingDpiFlag == std::vector<std::string>{"editor_theme_ui.cpp", "imgui_layer.cpp"});
-    // The face switches: the Console's messages and the Inspector's headers, and nothing else -- each push
-    // in a file that pops (task E.6.1, step 8).
-    const std::vector<std::string> fontPanels{"console_panel.cpp", "inspector_panel.cpp"};
+    // The face switches: the Console's messages, the Inspector's headers and the shell's chrome (task E.6.2: the status
+    // bar, the chip, the snap field, the breadcrumb's scene), and nothing else -- each push in a file that pops
+    // (task E.6.1, step 8).
+    const std::vector<std::string> fontPanels{"console_panel.cpp", "inspector_panel.cpp", "shell_chrome_ui.cpp"};
     CHECK(pushingFonts == fontPanels);
     CHECK(poppingFonts == fontPanels);
 
@@ -22403,7 +22435,7 @@ struct RoleReads {
 }  // namespace
 
 TEST_CASE("editor: the panels read their roles from the theme (task E.6.1, I287)") {
-    // NO GPU: logLevelColor is ImGui-free, and the rest is the seven panels' comment-stripped source text.
+    // NO GPU: logLevelColor is ImGui-free, and the rest is the eight files' comment-stripped source text.
     const engine::editor::ThemePalette& p = engine::editor::EDITOR_THEME.palette;
     const std::array<LevelColorRow, 7> rows{{
         {engine::LogLevel::Trace, "Trace", p.textMuted},
@@ -22429,9 +22461,9 @@ TEST_CASE("editor: the panels read their roles from the theme (task E.6.1, I287)
         std::regex("IM_COL32_BLACK"),           // k = 3
         std::regex(R"(ImColor\()"),             // k = 4: any ImColor at all
     };
-    constexpr std::array<std::string_view, 7> PANELS{
+    constexpr std::array<std::string_view, 8> PANELS{
         "console_panel.cpp", "material_panel.cpp",      "import_details_panel.cpp",   "project_ui.cpp",
-        "asset_tile.cpp",    "asset_browser_panel.cpp", "project_settings_panel.cpp",
+        "asset_tile.cpp",    "asset_browser_panel.cpp", "project_settings_panel.cpp", "shell_chrome_ui.cpp",
     };
     // The roles are READ, not merely the literals gone -- each (file, role) at its EXACT count of reads
     // in the comment-stripped code. One read swapped back to an ImGui slot (S25's site on
@@ -22439,7 +22471,7 @@ TEST_CASE("editor: the panels read their roles from the theme (task E.6.1, I287)
     // green while any other read of that role remains: only the count moves. A set claim needs a set
     // assertion, so each file's TOTAL of palette reads is pinned as well, and a read of a role a file has
     // no row for is red too. Counted from the code at E.6.1's second code-review round.
-    constexpr std::array<RoleReads, 14> ROLE_READS{{
+    constexpr std::array<RoleReads, 29> ROLE_READS{{
         {"console_panel.cpp", "critical", 1U},   // logLevelColor's Critical arm
         {"console_panel.cpp", "error", 1U},      // its Error arm
         {"console_panel.cpp", "text", 2U},       // its Info/Off arm and the fallback after the switch
@@ -22454,6 +22486,21 @@ TEST_CASE("editor: the panels read their roles from the theme (task E.6.1, I287)
         {"asset_tile.cpp", "textMuted", 1U},
         {"asset_browser_panel.cpp", "textMuted", 1U},
         {"project_settings_panel.cpp", "textMuted", 1U},
+        {"shell_chrome_ui.cpp", "accent", 1U},         // task E.6.2: chromeColors(), each role read once
+        {"shell_chrome_ui.cpp", "active", 1U},         // task E.6.2: chromeColors(), each role read once
+        {"shell_chrome_ui.cpp", "border", 1U},         // task E.6.2: chromeColors(), each role read once
+        {"shell_chrome_ui.cpp", "chrome", 1U},         // task E.6.2: chromeColors(), each role read once
+        {"shell_chrome_ui.cpp", "divider", 1U},        // task E.6.2: chromeColors(), each role read once
+        {"shell_chrome_ui.cpp", "hover", 1U},          // task E.6.2: chromeColors(), each role read once
+        {"shell_chrome_ui.cpp", "onAccent", 1U},       // task E.6.2: chromeColors(), each role read once
+        {"shell_chrome_ui.cpp", "raised", 1U},         // task E.6.2: chromeColors(), each role read once
+        {"shell_chrome_ui.cpp", "text", 1U},           // task E.6.2: chromeColors(), each role read once
+        {"shell_chrome_ui.cpp", "textBright", 1U},     // task E.6.2: chromeColors(), each role read once
+        {"shell_chrome_ui.cpp", "textFaint", 1U},      // task E.6.2: chromeColors(), each role read once
+        {"shell_chrome_ui.cpp", "textLabel", 1U},      // task E.6.2: chromeColors(), each role read once
+        {"shell_chrome_ui.cpp", "textMuted", 1U},      // task E.6.2: chromeColors(), each role read once
+        {"shell_chrome_ui.cpp", "textSecondary", 1U},  // task E.6.2: chromeColors(), each role read once
+        {"shell_chrome_ui.cpp", "warning", 1U},        // task E.6.2: chromeColors(), each role read once
     }};
     std::size_t rowsRead = 0;
     for (const std::string_view file : PANELS) {
@@ -22475,10 +22522,10 @@ TEST_CASE("editor: the panels read their roles from the theme (task E.6.1, I287)
                 ++rowsRead;
             }
         }
-        CHECK(listed > 0U);                            // every one of the seven reads a role
+        CHECK(listed > 0U);                            // every one of the eight reads a role
         CHECK(countPaletteReads(code, "") == listed);  // ... and no role it has no row for
     }
-    CHECK(rowsRead == ROLE_READS.size());  // no row names a file outside the seven, so none is skipped
+    CHECK(rowsRead == ROLE_READS.size());  // no row names a file outside the eight, so none is skipped
     // The Console's levels reach the draw through logLevelColor: its definition and its one call.
     std::size_t levelColorCalls = 0;
     for (const std::string& line : editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/console_panel.cpp")) {
@@ -22864,4 +22911,1556 @@ TEST_CASE("editor: the Inspector's axis boxes hold a three-decimal value (task E
     app->requestQuit();
     CHECK(app->tick() == false);
     app.reset();
+}
+
+// ==================================================================================================
+// task E.6.2 -- the toolbar, the breadcrumb and the status bar (I290-I308)
+// ==================================================================================================
+
+namespace {
+
+// Every E.6.2 GPU case draws at 900 x 600. From step 6 the bars take 70 dp off every dock, and a case whose
+// observable needs the Viewport's Ready path (updateGizmo, Manipulate) needs a non-empty content region on CI's
+// short macOS runner too (I231 / I233). A case about the chrome reads its geometry off the record, never off this
+// requested size.
+constexpr int E62_WINDOW_WIDTH = 900;
+constexpr int E62_WINDOW_HEIGHT = 600;
+
+[[nodiscard]] std::optional<engine::editor::EditorApp> e62App(engine::rhi::Device& device,
+                                                              engine::platform::Window& window,
+                                                              engine::platform::Context& ctx) {
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(device, window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    for (int i = 0; i < 3; ++i) {
+        REQUIRE(app->tick());
+    }
+    return app;
+}
+
+// The seeded default scene's entity of that name; an invalid Entity when there is none.
+[[nodiscard]] engine::Entity e62EntityNamed(const engine::World& world, std::string_view name) {
+    engine::Entity found{};
+    world.eachEntity([&](engine::Entity e) {
+        if (world.name(e) == name) {
+            found = e;
+        }
+    });
+    return found;
+}
+
+// A BOUNDED settle until the Viewport has really rendered -- the I254 shape. Call only on the Ready arm.
+void e62SettleViewport(engine::editor::EditorApp& app, const engine::editor::ViewportPanel& viewport) {
+    const engine::render::PostProcess* const post = viewport.postProcess();
+    REQUIRE(post != nullptr);
+    constexpr int MAX_SETTLE_TICKS = 32;
+    int ticks = 0;
+    while (ticks < MAX_SETTLE_TICKS && post->sceneDrawExtent().width == 0U) {
+        REQUIRE(app.tick());
+        ++ticks;
+    }
+    REQUIRE(ticks < MAX_SETTLE_TICKS);  // the predicate ended the loop, never the bound
+}
+
+// The first non-blank comment-stripped line BEFORE `from`, trimmed -- what a statement sits under.
+[[nodiscard]] std::string e62PreviousCodeLine(const std::vector<std::string>& code, std::size_t from) {
+    for (std::size_t i = from; i > 0U; --i) {
+        const std::string& line = code[i - 1U];
+        const std::size_t first = line.find_first_not_of(" \t");
+        if (first != std::string::npos) {
+            const std::size_t last = line.find_last_not_of(" \t\r");
+            return line.substr(first, last - first + 1U);
+        }
+    }
+    return {};
+}
+
+// How far the history grows across "push, ONE tick, push" of two CONTIGUOUS TransformCommands on `pushed`,
+// with `selected` primary: 1 when the chain survived the tick (the second merged), 2 when something closed it.
+// The chain is global, so the pushed entity need not be the selected one -- which is exactly the Inspector-drag
+// shape the defect broke (an edit on one entity while the Viewport looks at the selection). TransformCommand
+// merges with NO reflection (transform_command.cpp's mergeWith), so this runs in every configuration.
+[[nodiscard]] std::size_t e62HistoryGrowth(engine::editor::EditorApp& app, engine::Entity selected,
+                                           engine::Entity pushed, bool breakBetween) {
+    app.selection().set(selected);
+    REQUIRE(app.tick());
+    REQUIRE(app.tick());
+    app.commands().breakMergeChain();  // each arm starts its own chain
+    const std::optional<engine::Transform> t0 = engine::editor::readTransform(app.world(), pushed);
+    REQUIRE(t0.has_value());
+    engine::Transform t1 = *t0;
+    t1.position = t0->position + engine::Vec3{0.25F, 0.0F, 0.0F};
+    engine::Transform t2 = t1;
+    t2.position = t1.position + engine::Vec3{0.25F, 0.0F, 0.0F};
+    engine::editor::CommandContext cmd{app.world(), app.selection(), app.roots()};
+    const std::size_t before = app.commands().count();
+    REQUIRE(app.commands().push(cmd, std::make_unique<engine::editor::TransformCommand>(pushed, *t0, t1)));
+    REQUIRE(app.tick());  // ONE whole frame between the two pushes: the Viewport's updateGizmo runs in it
+    if (breakBetween) {
+        app.commands().breakMergeChain();
+    }
+    REQUIRE(app.commands().push(cmd, std::make_unique<engine::editor::TransformCommand>(pushed, t1, t2)));
+    return app.commands().count() - before;
+}
+
+}  // namespace
+
+TEST_CASE("editor: a gizmo return leaves another panel's merge chain open (task E.6.2, I290)") {
+    // AC-15. THE EFFECT: the undo history's own count, across a tick whose Viewport frame takes an early return.
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "merge chain i290", .width = E62_WINDOW_WIDTH, .height = E62_WINDOW_HEIGHT});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = e62App(*device, *window, ctx);
+    auto* const viewport = dynamic_cast<engine::editor::ViewportPanel*>(app->panels().find("Viewport"));
+    REQUIRE(viewport != nullptr);
+    const engine::Entity environment = e62EntityNamed(app->world(), "Environment");
+    const engine::Entity cube = e62EntityNamed(app->world(), "Cube");
+    REQUIRE(environment.valid());
+    REQUIRE(cube.valid());
+    REQUIRE_FALSE(app->world().has<engine::Transform>(environment));  // the precondition: no gizmo target
+
+    if (viewport->debugDraw() == nullptr) {
+        // THE SHADER-TOOLS-OFF ARM, at runtime (the I254 idiom), asserted and never skipped: the panel is
+        // Unavailable, onDraw returns before updateGizmo, and no gizmo return can run -- so the chain survives
+        // the tick here whatever the returns do, and only the explicit break splits it.
+        CHECK(viewport->sceneForwardRenderer() == nullptr);
+        CHECK(e62HistoryGrowth(*app, environment, cube, false) == 1U);
+        CHECK(e62HistoryGrowth(*app, environment, cube, true) == 2U);  // ANTI-VACUITY: the measure can read 2
+        app->requestQuit();
+        CHECK(app->tick() == false);
+        app.reset();
+        return;
+    }
+    e62SettleViewport(*app, *viewport);
+
+    SUBCASE("the no-target return: the Environment entity is primary") {
+        CHECK(e62HistoryGrowth(*app, environment, cube, false) == 1U);  // red before the fix: 2
+        CHECK(e62HistoryGrowth(*app, environment, cube, true) == 2U);   // ANTI-VACUITY: a break between splits
+    }
+    SUBCASE("the behind-camera return: the Cube is primary and behind the eye") {
+        // forward() is rotation * (0,0,-1): at yaw 0 / pitch 0 the eye at pivot + 5 z looks down -Z, so the Cube
+        // at the origin is 45 units BEHIND it and gizmoOriginBehindCamera answers true.
+        engine::editor::EditorCamera* const camera = app->viewportCamera();
+        REQUIRE(camera != nullptr);
+        camera->setYaw(0.0F);
+        camera->setPitch(0.0F);
+        camera->setPivot(engine::Vec3{0.0F, 0.0F, -50.0F});
+        camera->setDistance(5.0F);
+        CHECK(e62HistoryGrowth(*app, cube, cube, false) == 1U);  // red before the fix: 2
+        CHECK(e62HistoryGrowth(*app, cube, cube, true) == 2U);   // ANTI-VACUITY
+    }
+    SUBCASE("the positive control: the Cube is primary, in view, the gizmo drawn and idle") {
+        CHECK(e62HistoryGrowth(*app, cube, cube, false) == 1U);  // no early return runs; no drag edge either
+    }
+    SUBCASE("the Select return (task E.6.2): the Cube is primary and the tool is Select") {
+        app->requestToolbarTool(engine::editor::TransformTool::Select);
+        REQUIRE(app->tick());
+        REQUIRE(app->tick());
+        REQUIRE((app->toolState().mode.tool == engine::editor::TransformTool::Select));
+        CHECK(e62HistoryGrowth(*app, cube, cube, false) == 1U);  // seed S1 on the Select return reads 2
+        CHECK(e62HistoryGrowth(*app, cube, cube, true) == 2U);
+    }
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: every gizmo-return break sits under its own drag's guard (task E.6.2, I291)") {
+    // UNGATED source text: INV-3 as it was meant -- a return breaks the chain ONLY when a gizmo drag was in flight.
+    // A break the returns run unconditionally is seed S1, and on the shader-tools-OFF lane no runtime case can see
+    // it (updateGizmo never runs there), so this is that lane's witness.
+    const std::vector<std::string> code = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/viewport_panel.cpp");
+    REQUIRE_FALSE(code.empty());
+    std::size_t guarded = 0;
+    std::size_t edges = 0;
+    std::size_t breaks = 0;
+    for (std::size_t i = 0; i < code.size(); ++i) {
+        if (code[i].find("breakMergeChain(") == std::string::npos) {
+            continue;
+        }
+        ++breaks;
+        const std::string above = e62PreviousCodeLine(code, i);
+        CAPTURE(i);
+        CAPTURE(above);
+        if (above == "if (gizmoWasUsing) {") {
+            ++guarded;
+        } else if (above == "if (edge == GizmoDragEdge::Begin) {" || above == "if (edge == GizmoDragEdge::End) {") {
+            ++edges;
+        } else {
+            FAIL_CHECK("a breakMergeChain() that is neither a drag edge nor under if (gizmoWasUsing)");
+        }
+    }
+    CHECK(edges == 2U);    // the Begin and End edges, unchanged since 2.4.1
+    CHECK(guarded == 3U);  // the no-target, Select and behind-camera returns
+    CHECK(breaks == guarded + edges);
+    // ...and the guard is READ before the latch is cleared: within each early return, the guarded break comes
+    // first and `gizmoWasUsing = false;` after it.
+    std::size_t orderedReturns = 0;
+    for (std::size_t i = 0; i < code.size(); ++i) {
+        if (code[i].find("if (gizmoWasUsing) {") == std::string::npos) {
+            continue;
+        }
+        for (std::size_t j = i + 1U; j < std::min(code.size(), i + 8U); ++j) {
+            if (code[j].find("gizmoWasUsing = false;") != std::string::npos) {
+                ++orderedReturns;
+                break;
+            }
+        }
+    }
+    CHECK(orderedReturns == guarded);
+}
+
+namespace {
+
+// The editor files (src and public headers) whose comment-stripped code names `token` as a whole identifier --
+// a NAMING set, sorted. Spelling-based "who writes" pins cannot converge (the DELETE_RE lesson); who may NAME a
+// thing can.
+[[nodiscard]] std::vector<std::string> e62FilesNaming(std::string_view token) {
+    const auto identifierByte = [](char c) { return std::isalnum(static_cast<unsigned char>(c)) != 0 || c == '_'; };
+    std::vector<std::string> names;
+    for (const std::string_view directory :
+         {std::string_view(AERO_EDITOR_SRC_DIR), std::string_view(AERO_EDITOR_INCLUDE_DIR "/aero/editor")}) {
+        std::error_code ec;
+        for (const auto& entry : std::filesystem::directory_iterator(std::filesystem::path(directory), ec)) {
+            const std::string ext = entry.path().extension().string();
+            if (!entry.is_regular_file() || (ext != ".cpp" && ext != ".hpp")) {
+                continue;
+            }
+            for (const std::string& line : editorSourceCodeLines(entry.path().string())) {
+                bool hit = false;
+                for (std::size_t at = line.find(token); at != std::string::npos; at = line.find(token, at + 1U)) {
+                    const bool startOk = at == 0U || !identifierByte(line[at - 1U]);
+                    const std::size_t end = at + token.size();
+                    const bool endOk = end >= line.size() || !identifierByte(line[end]);
+                    hit = hit || (startOk && endOk);
+                }
+                if (hit) {
+                    names.push_back(entry.path().filename().string());
+                    break;
+                }
+            }
+        }
+        REQUIRE_FALSE(ec);
+    }
+    std::sort(names.begin(), names.end());
+    return names;
+}
+
+}  // namespace
+
+TEST_CASE("editor: the viewport's keys, its Select return and the tool state's names (task E.6.2, I292)") {
+    // UNGATED source text: no tier can press a key or hold a modifier, so the gate's terms are pinned
+    // where they are written; nextGizmoMode's own rule is G21.
+    const std::vector<std::string> code = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/viewport_panel.cpp");
+    const std::vector<std::string> header = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/viewport_panel.hpp");
+    REQUIRE_FALSE(code.empty());
+
+    SUBCASE("(a) the gate: inert mid-drag (seed S3), and the input carries Q and both modifiers (seed S5)") {
+        // onDraw's fly block spells its own `const bool keysLive =` above this one, so the search starts at
+        // updateGizmo's definition (soleLineContaining would REQUIRE-fail on the two hits).
+        const std::size_t fnAt = soleLineContaining(code, "void ViewportPanel::updateGizmo(");
+        std::size_t gateAt = code.size();
+        for (std::size_t i = fnAt; i < code.size(); ++i) {
+            if (code[i].find("const bool keysLive =") != std::string::npos) {
+                gateAt = i;
+                break;
+            }
+        }
+        REQUIRE(gateAt < code.size());
+        bool usingTerm = false;
+        for (std::size_t i = gateAt; i < std::min(code.size(), gateAt + 3U); ++i) {
+            usingTerm = usingTerm || code[i].find("!ImGuizmo::IsUsing()") != std::string::npos;
+        }
+        CHECK(usingTerm);
+        const std::size_t selectAt = soleLineContaining(code, ".selectPressed =");
+        CHECK(code[selectAt].find("ImGuiKey_Q") != std::string::npos);
+        // The SNAP modifier is Cmd on macOS / Ctrl elsewhere ALONE (io.KeyCtrl after ImGui's swap) -- never Super,
+        // which would make the physical Ctrl key on a Mac invert the snap. No tier can hold a key.
+        const std::size_t snapAt = soleLineContaining(code, "snapActive(");
+        CHECK(code[snapAt].find("snapActive(tools->snap.enabled, io.KeyCtrl)") != std::string::npos);
+        CHECK(code[snapAt].find("KeySuper") == std::string::npos);
+        const std::size_t modifierAt = soleLineContaining(code, ".commandModifierHeld =");
+        CHECK(code[modifierAt].find("io.KeyCtrl") != std::string::npos);
+        CHECK(code[modifierAt].find("io.KeySuper") != std::string::npos);
+    }
+    SUBCASE("(b) the mode is written through the shell's pointer, and the panel holds no copy (seed S44)") {
+        const std::size_t nextAt = soleLineContaining(code, "nextGizmoMode(");
+        CHECK(code[nextAt].find("toolStatePtr->mode =") != std::string::npos);
+        const std::regex member(R"(GizmoMode[ \t]+[A-Za-z_])");
+        CHECK_FALSE(anyLineMatches(header, member));
+        CHECK(std::regex_search(std::string("    GizmoMode gizmoMode{};"), member));  // ANTI-VACUITY
+    }
+    SUBCASE("(c) the Select return disables the gizmo, after the target and before the call (seed S2)") {
+        CHECK(countLinesContaining(code, "ImGuizmo::Enable(false)") == 3U);  // no-target, Select, the release guard
+        const std::size_t operationAt = soleLineContaining(code, "gizmoOperationFor(");
+        const std::size_t targetAt = soleLineContaining(code, "gizmoModelMatrix(context.world, target)");
+        const std::size_t manipulateAt = soleLineContaining(code, "ImGuizmo::Manipulate(");
+        CHECK(targetAt < operationAt);
+        std::size_t betweenEnables = 0;
+        for (std::size_t i = operationAt; i < manipulateAt; ++i) {
+            betweenEnables += code[i].find("ImGuizmo::Enable(false)") != std::string::npos ? 1U : 0U;
+        }
+        CHECK(betweenEnables == 2U);  // the Select return's, and the stale-latch release guard (item 5)
+    }
+    SUBCASE("(d) the naming sets") {
+        CHECK(e62FilesNaming("transformTools") == std::vector<std::string>{"editor_app.cpp", "editor_app.hpp"});
+        CHECK(e62FilesNaming("toolStatePtr") == std::vector<std::string>{"viewport_panel.cpp", "viewport_panel.hpp"});
+        CHECK(e62FilesNaming("setToolState") == std::vector<std::string>{"editor_app.cpp", "viewport_panel.hpp"});
+    }
+    SUBCASE("(e) the reconcile is per tick and above the draw walk (seed S43)") {
+        const std::vector<std::string> app = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/editor_app.cpp");
+        const std::size_t reconcileAt = soleLineContaining(app, "setToolState(&transformTools)");
+        const std::size_t tickAt = soleLineContaining(app, "bool EditorApp::tick()");
+        const std::size_t drawAt = soleLineContaining(app, "drawShellUi(registry, panelContext, ui, fileMenu)");
+        CHECK(tickAt < reconcileAt);
+        CHECK(reconcileAt < drawAt);
+    }
+}
+
+TEST_CASE("editor: Move reaches Manipulate through the shell's tool state (task E.6.2, I293)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "tool state i293", .width = E62_WINDOW_WIDTH, .height = E62_WINDOW_HEIGHT});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = e62App(*device, *window, ctx);
+    auto* const viewport = dynamic_cast<engine::editor::ViewportPanel*>(app->panels().find("Viewport"));
+    REQUIRE(viewport != nullptr);
+    CHECK((app->toolState().mode == engine::editor::GizmoMode{}));  // D4: the editor starts in Move
+    const engine::Entity cube = e62EntityNamed(app->world(), "Cube");
+    REQUIRE(cube.valid());
+    app->selection().set(cube);
+
+    if (viewport->debugDraw() == nullptr) {
+        // THE SHADER-TOOLS-OFF ARM, asserted: Unavailable, so nothing reaches Manipulate whatever the tool.
+        REQUIRE(app->tick());
+        REQUIRE(app->tick());
+        CHECK(viewport->manipulateCalls() == 0U);
+        app->requestQuit();
+        CHECK(app->tick() == false);
+        app.reset();
+        return;
+    }
+    e62SettleViewport(*app, *viewport);
+    REQUIRE(app->tick());
+
+    const std::uint64_t before = viewport->manipulateCalls();
+    for (int i = 0; i < 3; ++i) {
+        REQUIRE(app->tick());
+    }
+    CHECK(viewport->manipulateCalls() >= before + 3U);  // one call per drawn frame with a target in view
+    CHECK((viewport->lastManipulateOperation() == engine::editor::GizmoOperation::Translate));
+    CHECK((viewport->lastManipulateSpace() == engine::editor::GizmoSpace::World));
+    CHECK_FALSE(viewport->lastManipulateSnap().has_value());  // no modifier held, nothing to snap
+
+    // No across-a-move arm here: before step 6 nothing can write a tool different from the
+    // moved-from bytes, so a stale pointer reads the same {Move, World} and no step-2 GPU arm can tell a re-hand
+    // from a stale pointer. I292(e) pins the per-tick reconcile as text; I297's move arm (step 6) is behavioural.
+    SUBCASE("ANTI-VACUITY: with nothing selected the counter stops -- it counts real calls") {
+        app->selection().clear();
+        REQUIRE(app->tick());
+        const std::uint64_t idle = viewport->manipulateCalls();
+        for (int i = 0; i < 3; ++i) {
+            REQUIRE(app->tick());
+        }
+        CHECK(viewport->manipulateCalls() == idle);
+    }
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: a saved snap toggle and step reach Manipulate on the next launch (task E.6.2, I294)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "snap prefs i294", .width = E62_WINDOW_WIDTH, .height = E62_WINDOW_HEIGHT});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    const std::string prefsFile = uniqueEditorPrefsFile();
+    const std::string iniPath = prefsFile + ".ini";  // persistLayout TRUE writes a layout: scratch too
+    for (const bool snapOn : {true, false}) {
+        CAPTURE(snapOn);
+        std::error_code ec;
+        std::filesystem::remove(std::filesystem::path(iniPath), ec);
+        // The file a previous session left: three DISTINCT non-default steps.
+        const engine::editor::EditorPrefs saved{.focusFollowsSelection = true,
+                                                .snapEnabled = snapOn,
+                                                .snapTranslateStep = 2.5F,
+                                                .snapRotateStepDegrees = 30.0F,
+                                                .snapScaleStep = 0.25F};
+        REQUIRE(engine::editor::writeEditorPrefs(prefsFile, saved).empty());
+        std::optional<engine::editor::EditorApp> app =
+            engine::editor::EditorApp::create(*device, *window, ctx,
+                                              {.persistLayout = true,
+                                               .unfocusedFrameCapHz = 0.0F,
+                                               .restoreLastProject = false,
+                                               .recentProjectsPath = uniqueRecentsFile(),
+                                               .layoutIniPath = iniPath,
+                                               .editorPrefsPath = prefsFile});
+        REQUIRE(app.has_value());
+        // Restored in create(), before any tick.
+        CHECK(app->toolState().snap.enabled == snapOn);
+        CHECK(app->toolState().snap.translateStep == 2.5F);
+        CHECK(app->toolState().snap.rotateStepDegrees == 30.0F);
+        CHECK(app->toolState().snap.scaleStep == 0.25F);
+        auto* const viewport = dynamic_cast<engine::editor::ViewportPanel*>(app->panels().find("Viewport"));
+        REQUIRE(viewport != nullptr);
+        const engine::Entity cube = e62EntityNamed(app->world(), "Cube");
+        REQUIRE(cube.valid());
+        app->selection().set(cube);
+        REQUIRE(app->tick());
+        if (viewport->debugDraw() != nullptr) {
+            e62SettleViewport(*app, *viewport);
+            const std::uint64_t before = viewport->manipulateCalls();
+            REQUIRE(app->tick());
+            REQUIRE(viewport->manipulateCalls() > before);  // ANTI-VACUITY: Manipulate really ran
+            const std::optional<engine::Vec3> snap = viewport->lastManipulateSnap();
+            if (snapOn) {
+                // THE EFFECT: the toggle with no modifier snaps, at the FILE's translate step (Move is the tool).
+                REQUIRE(snap.has_value());
+                CHECK(snap->x == 2.5F);
+                CHECK(snap->y == 2.5F);
+                CHECK(snap->z == 2.5F);
+            } else {
+                CHECK_FALSE(snap.has_value());  // the control: off and no modifier -> free
+            }
+        } else {
+            // THE SHADER-TOOLS-OFF ARM: the restore is a fact; nothing reaches Manipulate.
+            REQUIRE(app->tick());
+            CHECK(viewport->manipulateCalls() == 0U);
+        }
+        CHECK(app->editorPrefsWriteCount() == 0U);  // a launch that commits nothing writes nothing
+        app->requestQuit();
+        CHECK(app->tick() == false);
+        app.reset();
+    }
+    // The I158 hygiene: uniqueEditorPrefsFile() names a path by a per-process counter, so a later run that reaches
+    // the same counter value would read this case's file.
+    std::error_code cleanup;
+    std::filesystem::remove(std::filesystem::path(prefsFile), cleanup);
+    std::filesystem::remove(std::filesystem::path(iniPath), cleanup);
+}
+
+namespace {
+
+// A project whose root reads ~/MyGame through the injected home, holding ONE asset, so the status bar's count is not
+// 0 and differs from the watcher's entriesSeen (assets + sidecars + directories) -- seed S49's witness.
+struct E62Project {
+    std::string location;
+    std::string root;
+};
+[[nodiscard]] E62Project e62ProjectWithOneAsset() {
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    REQUIRE(writeBinaryFixture(created.root + "/assets/red.png", TINY_PNG_RED.data(), TINY_PNG_RED.size()).empty());
+    return E62Project{.location = location, .root = created.root};
+}
+
+[[nodiscard]] std::optional<engine::editor::EditorApp> e62ProjectApp(engine::rhi::Device& device,
+                                                                     engine::platform::Window& window,
+                                                                     engine::platform::Context& ctx,
+                                                                     const E62Project& project) {
+    std::optional<engine::editor::EditorApp> app = engine::editor::EditorApp::create(
+        device, window, ctx,
+        {.persistLayout = false,
+         .unfocusedFrameCapHz = 0.0F,
+         .projectPath = project.root,
+         .restoreLastProject = false,
+         .recentProjectsPath = uniqueRecentsFile(),
+         .assetWatch = {.enabled = true, .dirsPerPoll = 64, .cooldownMs = 0, .settleMs = 0},
+         .homeDirectory = project.location});
+    REQUIRE(app.has_value());
+    for (int i = 0; i < 3; ++i) {
+        REQUIRE(app->tick());
+    }
+    return app;
+}
+
+void e62Ticks(engine::editor::EditorApp& app, int n) {
+    for (int i = 0; i < n; ++i) {
+        REQUIRE(app.tick());
+    }
+}
+
+[[nodiscard]] std::string e62ExpectedChip() {
+    return engine::editor::currentHostOs() == engine::editor::HostOs::MacOs ? "Cmd+Z" : "Ctrl+Z";  // a literal pair
+}
+
+}  // namespace
+
+TEST_CASE("editor: the two bars reserve their space, in whole points, out of Ctrl+Tab (task E.6.2, I295)") {
+    // AC-1, CLOSED from what ImGui laid out -- never from the requested size: the menu bar, the toolbar, the work
+    // area and the status bar tile the viewport's height exactly.
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "bars i295", .width = 1280, .height = 800});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = e62App(*device, *window, ctx);
+    e62Ticks(*app, 3);  // the work area settles one frame after each inset
+    const engine::editor::ShellChromeRecord& r = app->shellChromeRecord();
+    REQUIRE(r.framesRecorded > 0U);  // ANTI-VACUITY: the chrome drew
+    REQUIRE(r.toolbarDrawn);
+    REQUIRE(r.statusDrawn);
+    const float s = r.uiScaleAtDraw;
+    REQUIRE(s > 0.0F);
+    CHECK(r.toolbarAxis == std::round(44.0F * s));  // shellBarHeight(44, s), restated
+    CHECK(r.statusAxis == std::round(26.0F * s));
+    CHECK(r.menuMin.y == r.viewportPos.y);
+    CHECK(r.toolbarMin.y == r.menuMax.y);                        // flush under the menu bar
+    CHECK(r.toolbarMax.y == r.workPos.y);                        // the dockspace starts where the toolbar ends
+    CHECK(r.statusMin.y == r.workPos.y + r.workSize.y);          // ...and ends where the status bar starts
+    CHECK(r.statusMax.y == r.viewportPos.y + r.viewportSize.y);  // at the window's bottom edge
+    CHECK(r.toolbarMax.y - r.toolbarMin.y == r.toolbarAxis);     // no truncated, unpainted row
+    CHECK(r.statusMax.y - r.statusMin.y == r.statusAxis);
+    CHECK(r.toolbarMax.x - r.toolbarMin.x == r.viewportSize.x);
+    CHECK(r.statusMax.x - r.statusMin.x == r.viewportSize.x);
+    // Ctrl+Tab can never list a bar (seed S28); the menu bar, which has no NoNavFocus, is the positive control.
+    CHECK_FALSE(r.toolbarNavFocusable);
+    CHECK_FALSE(r.statusNavFocusable);
+    CHECK(r.menuNavFocusable);
+    CHECK(app->panels().count() == 8U);  // the bars are not panels
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: neither bar enters the layout ini (task E.6.2, I296)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "ini i296", .width = 900, .height = 600});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    const std::string prefsFile = uniqueEditorPrefsFile();
+    const std::string iniPath = prefsFile + ".ini";
+    std::error_code ec;
+    std::filesystem::remove(std::filesystem::path(iniPath), ec);
+    {
+        std::optional<engine::editor::EditorApp> app =
+            engine::editor::EditorApp::create(*device, *window, ctx,
+                                              {.persistLayout = true,
+                                               .unfocusedFrameCapHz = 0.0F,
+                                               .restoreLastProject = false,
+                                               .recentProjectsPath = uniqueRecentsFile(),
+                                               .layoutIniPath = iniPath,
+                                               .editorPrefsPath = prefsFile});
+        REQUIRE(app.has_value());
+        e62Ticks(*app, 4);
+        app->requestQuit();
+        CHECK(app->tick() == false);
+    }  // ImGui writes the ini as the layer goes
+    const engine::editor::FileReadResult ini = engine::editor::readTextFile(iniPath);
+    REQUIRE(ini.text.has_value());
+    REQUIRE(ini.text->find("[Window][Viewport]") != std::string::npos);  // ANTI-VACUITY: windows were saved
+    CHECK(ini.text->find("AeroToolbar") == std::string::npos);           // seed S27
+    CHECK(ini.text->find("AeroStatusBar") == std::string::npos);
+    CHECK(ini.text->find("ID=0x08BD597D") != std::string::npos);  // the dockspace id did not move (I26)
+}
+
+TEST_CASE("editor: Select draws no gizmo, Move brings it back, across an EditorApp move (task E.6.2, I297)") {
+    // AC-3, THE EFFECT: Manipulate's own call count -- a zero delta under Select, with Move as the anti-vacuity.
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "select i297", .width = E62_WINDOW_WIDTH, .height = E62_WINDOW_HEIGHT});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = e62App(*device, *window, ctx);
+    auto* const viewport = dynamic_cast<engine::editor::ViewportPanel*>(app->panels().find("Viewport"));
+    REQUIRE(viewport != nullptr);
+    app->selection().set(e62EntityNamed(app->world(), "Cube"));
+    using engine::editor::TransformTool;
+
+    if (viewport->debugDraw() == nullptr) {
+        // THE SHADER-TOOLS-OFF ARM: the chrome half, asserted -- the request lands and Select is DRAWN active.
+        app->requestToolbarTool(TransformTool::Select);
+        e62Ticks(*app, 2);
+        CHECK((app->toolState().mode.tool == TransformTool::Select));
+        CHECK(app->shellChromeRecord().tools[0].drawnActive);
+        CHECK_FALSE(app->shellChromeRecord().tools[1].drawnActive);
+        CHECK(viewport->manipulateCalls() == 0U);
+        app->requestQuit();
+        CHECK(app->tick() == false);
+        app.reset();
+        return;
+    }
+    e62SettleViewport(*app, *viewport);
+    const std::uint64_t underMove = viewport->manipulateCalls();
+    e62Ticks(*app, 3);
+    REQUIRE(viewport->manipulateCalls() > underMove);  // ANTI-VACUITY: Move draws one
+
+    app->requestToolbarTool(TransformTool::Select);
+    REQUIRE(app->tick());  // the toolbar draws BEFORE the panels: this very tick already takes the Select return
+    const std::uint64_t underSelect = viewport->manipulateCalls();
+    e62Ticks(*app, 3);
+    CHECK(viewport->manipulateCalls() == underSelect);
+    CHECK(app->shellChromeRecord().tools[0].drawnActive);
+
+    SUBCASE("Move brings it back") {
+        app->requestToolbarTool(TransformTool::Move);
+        e62Ticks(*app, 3);
+        CHECK(viewport->manipulateCalls() > underSelect);
+    }
+    SUBCASE("across a move, the reconciled pointer follows the app (seed S43)") {
+        app->requestToolbarTool(TransformTool::Move);
+        e62Ticks(*app, 2);
+        std::optional<engine::editor::EditorApp> moved;
+        moved.emplace(std::move(*app));
+        app.reset();
+        moved->requestToolbarTool(TransformTool::Select);
+        REQUIRE(moved->tick());
+        const std::uint64_t atMove = viewport->manipulateCalls();
+        e62Ticks(*moved, 3);
+        CHECK(viewport->manipulateCalls() == atMove);  // the panel reads the MOVED app's Select
+        moved->requestQuit();
+        CHECK(moved->tick() == false);
+        moved.reset();
+        return;
+    }
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: the space and the operation reach the gizmo; Scale shows and uses Local (task E.6.2, I298)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "space i298", .width = E62_WINDOW_WIDTH, .height = E62_WINDOW_HEIGHT});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = e62App(*device, *window, ctx);
+    auto* const viewport = dynamic_cast<engine::editor::ViewportPanel*>(app->panels().find("Viewport"));
+    REQUIRE(viewport != nullptr);
+    app->selection().set(e62EntityNamed(app->world(), "Cube"));
+    using engine::editor::GizmoOperation;
+    using engine::editor::GizmoSpace;
+    using engine::editor::TransformTool;
+    const bool ready = viewport->debugDraw() != nullptr;
+    if (ready) {
+        e62SettleViewport(*app, *viewport);
+    }
+    const auto step = [&](auto request) {
+        request();
+        e62Ticks(*app, 2);
+    };
+    step([&] { app->requestToolbarSpace(GizmoSpace::Local); });
+    CHECK((app->toolState().mode.space == GizmoSpace::Local));
+    CHECK(app->shellChromeRecord().space[0].drawnActive);
+    if (ready) {
+        CHECK((viewport->lastManipulateSpace() == GizmoSpace::Local));
+        CHECK((viewport->lastManipulateOperation() == GizmoOperation::Translate));
+    }
+    step([&] { app->requestToolbarSpace(GizmoSpace::World); });
+    if (ready) {
+        CHECK((viewport->lastManipulateSpace() == GizmoSpace::World));  // seed S42: a fixed space reads Local
+    }
+    step([&] { app->requestToolbarTool(TransformTool::Rotate); });
+    if (ready) {
+        CHECK((viewport->lastManipulateOperation() == GizmoOperation::Rotate));
+        CHECK((viewport->lastManipulateSpace() == GizmoSpace::World));  // the space survives the tool change
+    }
+    step([&] { app->requestToolbarTool(TransformTool::Scale); });
+    const engine::editor::ShellChromeRecord& r = app->shellChromeRecord();
+    CHECK(r.space[0].drawnActive);  // Local SHOWN active under Scale, whatever is stored (seed S41)
+    CHECK_FALSE(r.space[1].drawnActive);
+    CHECK_FALSE(r.space[0].enabled);
+    CHECK_FALSE(r.space[1].enabled);
+    CHECK((app->toolState().mode.space == GizmoSpace::World));  // the stored space is untouched
+    if (ready) {
+        CHECK((viewport->lastManipulateOperation() == GizmoOperation::Scale));
+        CHECK((viewport->lastManipulateSpace() == GizmoSpace::Local));
+    }
+    step([&] { app->requestToolbarTool(TransformTool::Move); });
+    CHECK(app->shellChromeRecord().space[1].drawnActive);  // leaving Scale restores the user's World
+    if (ready) {
+        CHECK((viewport->lastManipulateSpace() == GizmoSpace::World));
+    } else {
+        CHECK(viewport->manipulateCalls() == 0U);
+    }
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: a toolbar request does only what a click on that control could do (task E.6.2, I299)") {
+    // D21: a request obeys its control's enabled predicate AND no ImGui modal, and a refused one is DROPPED.
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "refusals i299", .width = E62_WINDOW_WIDTH, .height = E62_WINDOW_HEIGHT});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    using engine::editor::GizmoSpace;
+    using engine::editor::TransformTool;
+
+    SUBCASE("under Scale the segments refuse (seed S21, the space arm)") {
+        std::optional<engine::editor::EditorApp> app = e62App(*device, *window, ctx);
+        app->requestToolbarSpace(GizmoSpace::Local);
+        e62Ticks(*app, 2);
+        REQUIRE((app->toolState().mode.space == GizmoSpace::Local));  // ANTI-VACUITY: under Move it lands
+        app->requestToolbarTool(TransformTool::Scale);
+        e62Ticks(*app, 2);
+        app->requestToolbarSpace(GizmoSpace::World);
+        e62Ticks(*app, 2);
+        CHECK((app->toolState().mode.space == GizmoSpace::Local));  // refused
+        app->requestToolbarTool(TransformTool::Move);
+        e62Ticks(*app, 3);
+        CHECK((app->toolState().mode.space == GizmoSpace::Local));  // DROPPED, never deferred (seed S24)
+        app->requestQuit();
+        CHECK(app->tick() == false);
+    }
+    SUBCASE("under Select the step field refuses (seed S21, the snap-step arm; seed S54)") {
+        std::optional<engine::editor::EditorApp> app = e62App(*device, *window, ctx);
+        // ANTI-VACUITY, from ImGui's own flag: under Move the field is LIVE, snap off and on alike -- the step is
+        // editable before the toggle is (a record that defaults to false proves nothing by reading false).
+        REQUIRE((app->toolState().mode.tool == TransformTool::Move));
+        CHECK(app->shellChromeRecord().snapField.enabled);
+        app->requestToolbarSnapToggle();
+        e62Ticks(*app, 2);
+        REQUIRE(app->toolState().snap.enabled);
+        CHECK(app->shellChromeRecord().snapField.enabled);
+        app->requestToolbarTool(TransformTool::Select);
+        e62Ticks(*app, 2);
+        CHECK_FALSE(app->shellChromeRecord().snapField.enabled);
+        app->requestToolbarSnapStep(2.5F);
+        e62Ticks(*app, 2);
+        CHECK(app->toolState().snap.translateStep == 0.5F);
+        app->requestToolbarTool(TransformTool::Move);
+        e62Ticks(*app, 2);
+        CHECK(app->toolState().snap.translateStep == 0.5F);  // dropped, not deferred
+        app->requestToolbarSnapStep(2.5F);
+        e62Ticks(*app, 2);
+        CHECK(app->toolState().snap.translateStep == 2.5F);  // ANTI-VACUITY: under Move it lands
+        app->requestQuit();
+        CHECK(app->tick() == false);
+    }
+    SUBCASE("behind a modal nothing lands, and after it nothing arrives late (seeds S20, S22, S24)") {
+        const std::string rootA = makeNamedProject("ProjA");
+        const std::string rootB = makeNamedProject("ProjB");
+        const std::string sceneInB = rootB + "/x.scene.json";
+        REQUIRE(engine::editor::writeTextFileAtomic(sceneInB, startupSceneText(3)).empty());
+        std::optional<engine::editor::EditorApp> app =
+            engine::editor::EditorApp::create(*device, *window, ctx,
+                                              {.persistLayout = false,
+                                               .unfocusedFrameCapHz = 0.0F,
+                                               .projectPath = rootA,
+                                               .restoreLastProject = false,
+                                               .recentProjectsPath = uniqueRecentsFile()});
+        REQUIRE(app.has_value());
+        e62Ticks(*app, 2);
+        app->requestCreateEntity(engine::editor::CreateKind::Cube);  // something to undo
+        e62Ticks(*app, 2);
+        REQUIRE(app->commands().canUndo());
+        app->commands().setClean();       // CLEAN, so the open is not stopped by the unsaved-changes guard first
+        app->requestOpenScene(sceneInB);  // out of project A: the containment modal (E.4.2)
+        e62Ticks(*app, 2);
+        REQUIRE(app->sceneContainmentOfferOpen());
+        const std::size_t applied = app->commands().appliedCount();
+        app->requestToolbarUndo();
+        app->requestToolbarTool(TransformTool::Rotate);
+        app->requestToolbarSpace(GizmoSpace::Local);
+        REQUIRE(app->tick());
+        CHECK(app->commands().appliedCount() == applied);
+        CHECK((app->toolState().mode.tool == TransformTool::Move));
+        CHECK((app->toolState().mode.space == GizmoSpace::World));
+        CHECK_FALSE(app->shellChromeRecord().undo.enabled);  // drawn disabled: fileEnabled is false behind it
+        app->requestSceneContainmentDismiss();
+        e62Ticks(*app, 3);
+        REQUIRE_FALSE(app->sceneContainmentOfferOpen());
+        CHECK(app->commands().appliedCount() == applied);  // refused, never deferred
+        CHECK((app->toolState().mode.tool == TransformTool::Move));
+        CHECK((app->toolState().mode.space == GizmoSpace::World));
+        app->requestQuit();
+        CHECK(app->tick() == false);
+    }
+}
+
+TEST_CASE("editor: every toolbar request lives one tick (task E.6.2, I300)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "one-shot i300", .width = E62_WINDOW_WIDTH, .height = E62_WINDOW_HEIGHT});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    SUBCASE("one Undo request undoes ONE command") {
+        std::optional<engine::editor::EditorApp> app = e62App(*device, *window, ctx);
+        app->requestCreateEntity(engine::editor::CreateKind::Cube);
+        e62Ticks(*app, 2);
+        const std::string afterFirst(app->commands().undoLabel());
+        app->requestCreateEntity(engine::editor::CreateKind::Sphere);
+        e62Ticks(*app, 2);
+        const std::size_t applied = app->commands().appliedCount();
+        app->requestToolbarUndo();
+        e62Ticks(*app, 4);
+        CHECK(app->commands().appliedCount() == applied - 1U);  // seed S23: a never-cleared request undoes all
+        CHECK(app->commands().canUndo());
+        CHECK(std::string(app->commands().undoLabel()) == afterFirst);
+        app->requestQuit();
+        CHECK(app->tick() == false);
+    }
+    SUBCASE("one snap toggle is ONE write") {
+        const std::string prefsFile = uniqueEditorPrefsFile();
+        // A previous run of this binary reaches the same counter value, so its file would restore snap ON and
+        // the toggle would turn it OFF: remove both files first (I158 / I302's shape).
+        std::error_code ec;
+        std::filesystem::remove(std::filesystem::path(prefsFile), ec);
+        std::filesystem::remove(std::filesystem::path(prefsFile + ".ini"), ec);
+        std::optional<engine::editor::EditorApp> app =
+            engine::editor::EditorApp::create(*device, *window, ctx,
+                                              {.persistLayout = true,
+                                               .unfocusedFrameCapHz = 0.0F,
+                                               .restoreLastProject = false,
+                                               .recentProjectsPath = uniqueRecentsFile(),
+                                               .layoutIniPath = prefsFile + ".ini",
+                                               .editorPrefsPath = prefsFile});
+        REQUIRE(app.has_value());
+        e62Ticks(*app, 2);
+        REQUIRE(app->editorPrefsWriteCount() == 0U);
+        REQUIRE_FALSE(app->toolState().snap.enabled);  // ANTI-VACUITY: a fresh file, so the toggle turns it ON
+        app->requestToolbarSnapToggle();
+        e62Ticks(*app, 5);
+        CHECK(app->editorPrefsWriteCount() == 1U);  // the commit, written by the next tick's flush, ONCE
+        // Toggled ONCE, not every tick: a re-applied request flips it each tick, so two consecutive reads differ
+        // (an odd tick count alone would end ON either way).
+        const bool afterOne = app->toolState().snap.enabled;
+        REQUIRE(app->tick());
+        CHECK(afterOne);
+        CHECK(app->toolState().snap.enabled == afterOne);
+        app->requestQuit();
+        CHECK(app->tick() == false);
+        app.reset();
+        std::filesystem::remove(std::filesystem::path(prefsFile), ec);
+        std::filesystem::remove(std::filesystem::path(prefsFile + ".ini"), ec);
+    }
+    // No "a tool request does not outlive its tick" behaviour arm: a never-cleared tool request
+    // re-applies the LAST request, which is always the tool the next check expects, so such an arm is green on
+    // its own regression. The witnesses are the source-text subcase below (each drain on one line, between the
+    // struct and the draw) and I299's modal arm (a request refused behind a modal is never applied later).
+    SUBCASE("each pending member is drained on exactly one line, after the struct is built (I218's shape)") {
+        const std::vector<std::string> code = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/editor_app.cpp");
+        const std::size_t builtAt = soleLineContaining(code, ".chromeRecord = &chromeRecord");
+        const std::size_t drawAt = soleLineContaining(code, "drawShellUi(registry, panelContext, ui, fileMenu)");
+        for (const std::string_view drain :
+             {"pendingToolbarTool.reset()", "pendingToolbarSpace.reset()", "pendingToolbarSnapToggle = false",
+              "pendingToolbarSnapStep.reset()", "pendingToolbarUndo = false"}) {
+            CAPTURE(drain);
+            const std::size_t at = soleLineContaining(code, drain);
+            CHECK(builtAt < at);
+            CHECK(at < drawAt);
+        }
+    }
+}
+
+TEST_CASE("editor: the undo affordance -- chip, label, a same-tick undo, nothing to undo (task E.6.2, I301)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "undo i301", .width = 1280, .height = 800});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = e62App(*device, *window, ctx);
+    REQUIRE_FALSE(app->commands().canUndo());  // the seeded scene has no history
+    const engine::editor::ShellChromeRecord& r = app->shellChromeRecord();
+    CHECK_FALSE(r.undo.enabled);             // nothing to undo: disabled ...
+    CHECK(r.undoLabel.empty());              // ... no label ...
+    CHECK(r.undoChip == e62ExpectedChip());  // ... and the chip still documents the binding
+    app->requestCreateEntity(engine::editor::CreateKind::Cube);
+    e62Ticks(*app, 2);
+    REQUIRE(app->commands().canUndo());
+    CHECK(r.undo.enabled);
+    CHECK(r.undoChip == e62ExpectedChip());
+    if (r.layout.mode == engine::editor::ToolbarMode::Full) {
+        CHECK(r.undoLabel == std::string(app->commands().undoLabel()));  // VERBATIM (R4)
+    } else {
+        WARN(r.undoLabel.empty());  // a narrower runner drops the slot: geometry, not a defect (#111)
+    }
+    const float undoXBefore = r.layout.undoX;
+    // A different label at the same width moves nothing -- drift prevention against a chrome-side change that
+    // feeds the drawn label into the metrics (TB9 is seed S45's witness; S45 cannot move this arm).
+    const engine::Entity cube = e62EntityNamed(app->world(), "Cube");
+    const std::optional<engine::Transform> t0 = engine::editor::readTransform(app->world(), cube);
+    REQUIRE(t0.has_value());
+    engine::Transform t1 = *t0;
+    t1.position = t0->position + engine::Vec3{1.0F, 0.0F, 0.0F};
+    engine::editor::CommandContext cmd{app->world(), app->selection(), app->roots()};
+    REQUIRE(app->commands().push(cmd, std::make_unique<engine::editor::TransformCommand>(cube, *t0, t1)));
+    e62Ticks(*app, 2);
+    CHECK(r.layout.undoX == undoXBefore);
+    // THE SAME TICK: the click's flag is applied by the one applyHistoryRequests later in that drawShellUi.
+    const std::size_t applied = app->commands().appliedCount();
+    app->requestToolbarUndo();
+    REQUIRE(app->tick());
+    CHECK(app->commands().appliedCount() == applied - 1U);  // seed S25: a toolbar after the apply lags a tick
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: the toolbar's snap reaches Manipulate per tool, and survives a relaunch (task E.6.2, I302)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "snap i302", .width = E62_WINDOW_WIDTH, .height = E62_WINDOW_HEIGHT});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    using engine::editor::TransformTool;
+    const auto snapIs = [](const std::optional<engine::Vec3>& snap, float step) {
+        return snap.has_value() && snap->x == step && snap->y == step && snap->z == step;
+    };
+
+    SUBCASE("the toggle and each tool's step reach the gizmo, and the field is HANDED one source") {
+        std::optional<engine::editor::EditorApp> app = e62App(*device, *window, ctx);
+        auto* const viewport = dynamic_cast<engine::editor::ViewportPanel*>(app->panels().find("Viewport"));
+        REQUIRE(viewport != nullptr);
+        app->selection().set(e62EntityNamed(app->world(), "Cube"));
+        const bool ready = viewport->debugDraw() != nullptr;
+        if (ready) {
+            e62SettleViewport(*app, *viewport);
+        }
+        const engine::editor::ShellChromeRecord& r = app->shellChromeRecord();
+        app->requestToolbarSnapToggle();
+        e62Ticks(*app, 2);
+        CHECK(app->toolState().snap.enabled);
+        CHECK(r.snapToggle.drawnActive);
+        CHECK(r.snapFormat == "%.4g m");  // independent literals, never snapStepFormat's answer
+        CHECK(r.snapValue == 0.5F);
+        // The field holds its widest step text plus the frame padding on both sides at whatever UI scale this lane
+        // runs (the 4-em floor alone clips "0.001234 m" -- 65 points against 64 at scale 1). The padding is the
+        // THEME's, truncated as ScaleAllSizes truncates it; THAT the text is measured in Mono is I307(k)'s pin.
+        CHECK(r.snapFieldTextWidth > 0.0F);
+        const float padX = engine::editor::EDITOR_THEME.metrics.framePadding.x;
+        const float inset = 2.0F * std::trunc(padX * r.uiScaleAtDraw);
+        CHECK(inset > 0.0F);
+        CHECK(r.metrics.snapField >= r.snapFieldTextWidth + inset);
+        CHECK(r.metrics.snapField >= 4.0F * r.metrics.fontSize);
+        if (ready) {
+            CHECK(snapIs(viewport->lastManipulateSnap(), 0.5F));
+        }
+        app->requestToolbarTool(TransformTool::Rotate);
+        e62Ticks(*app, 2);
+        CHECK(r.snapFormat == "%.4g\xC2\xB0");
+        CHECK(r.snapValue == 15.0F);
+        if (ready) {
+            CHECK(snapIs(viewport->lastManipulateSnap(), 15.0F));
+        }
+        app->requestToolbarTool(TransformTool::Scale);
+        e62Ticks(*app, 2);
+        CHECK(r.snapFormat == "%.4g");
+        CHECK(r.snapValue == 0.1F);
+        if (ready) {
+            CHECK(snapIs(viewport->lastManipulateSnap(), 0.1F));
+        }
+        app->requestToolbarTool(TransformTool::Move);
+        e62Ticks(*app, 1);
+        app->requestToolbarSnapStep(0.25F);
+        e62Ticks(*app, 2);
+        CHECK(r.snapValue == 0.25F);
+        if (ready) {
+            CHECK(snapIs(viewport->lastManipulateSnap(), 0.25F));
+        }
+        // Under Select the field is disabled and shows Move's step; the toggle still flips (seed S54).
+        app->requestToolbarTool(TransformTool::Select);
+        e62Ticks(*app, 2);
+        CHECK_FALSE(r.snapField.enabled);
+        CHECK(r.snapFormat == "%.4g m");
+        CHECK(r.snapValue == 0.25F);
+        app->requestToolbarSnapToggle();
+        e62Ticks(*app, 2);
+        CHECK_FALSE(app->toolState().snap.enabled);
+        app->requestQuit();
+        CHECK(app->tick() == false);
+    }
+    SUBCASE("the toggle and three steps persist, beside the routing preference (seed S36)") {
+        const std::string prefsFile = uniqueEditorPrefsFile();
+        const std::string iniPath = prefsFile + ".ini";
+        std::error_code ec;
+        std::filesystem::remove(std::filesystem::path(prefsFile), ec);
+        std::filesystem::remove(std::filesystem::path(iniPath), ec);
+        const engine::editor::EditorAppConfig config{.persistLayout = true,
+                                                     .unfocusedFrameCapHz = 0.0F,
+                                                     .restoreLastProject = false,
+                                                     .recentProjectsPath = uniqueRecentsFile(),
+                                                     .layoutIniPath = iniPath,
+                                                     .editorPrefsPath = prefsFile};
+        using engine::editor::EditorApp;
+        {
+            std::optional<EditorApp> app = EditorApp::create(*device, *window, ctx, config);
+            REQUIRE(app.has_value());
+            app->setFocusRoutingEnabled(false);  // a non-default neighbour the snap write must not clobber
+            e62Ticks(*app, 2);
+            app->requestToolbarSnapToggle();
+            e62Ticks(*app, 2);
+            app->requestToolbarSnapStep(2.5F);
+            e62Ticks(*app, 2);
+            app->requestToolbarTool(TransformTool::Rotate);
+            e62Ticks(*app, 1);
+            app->requestToolbarSnapStep(30.0F);
+            e62Ticks(*app, 2);
+            app->requestToolbarTool(TransformTool::Scale);
+            e62Ticks(*app, 1);
+            app->requestToolbarSnapStep(0.25F);
+            e62Ticks(*app, 3);  // the last commit is written by the NEXT tick's flush
+            app->requestQuit();
+            CHECK(app->tick() == false);
+        }
+        bool corrupt = true;
+        const engine::editor::EditorPrefs saved = engine::editor::readEditorPrefs(prefsFile, corrupt);
+        CHECK_FALSE(corrupt);
+        CHECK_FALSE(saved.focusFollowsSelection);
+        CHECK(saved.snapEnabled);
+        CHECK(saved.snapTranslateStep == 2.5F);
+        CHECK(saved.snapRotateStepDegrees == 30.0F);
+        CHECK(saved.snapScaleStep == 0.25F);
+        std::optional<EditorApp> app = EditorApp::create(*device, *window, ctx, config);
+        REQUIRE(app.has_value());
+        CHECK((app->toolState().snap ==
+               engine::editor::SnapSettings{
+                   .enabled = true, .translateStep = 2.5F, .rotateStepDegrees = 30.0F, .scaleStep = 0.25F}));
+        e62Ticks(*app, 2);
+        CHECK(app->shellChromeRecord().snapToggle.drawnActive);
+        CHECK(app->shellChromeRecord().snapValue == 2.5F);  // Move, the startup tool, shows its step
+        app->requestQuit();
+        CHECK(app->tick() == false);
+    }
+}
+
+TEST_CASE("editor: under Select the space segments stay live (task E.6.2, I303)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "space select i303", .width = E62_WINDOW_WIDTH, .height = E62_WINDOW_HEIGHT});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = e62App(*device, *window, ctx);
+    app->requestToolbarTool(engine::editor::TransformTool::Select);
+    e62Ticks(*app, 2);
+    const engine::editor::ShellChromeRecord& r = app->shellChromeRecord();
+    CHECK(r.space[0].enabled);  // seed S55 disables them here
+    CHECK(r.space[1].enabled);
+    app->requestToolbarSpace(engine::editor::GizmoSpace::Local);
+    e62Ticks(*app, 2);
+    CHECK((app->toolState().mode.space == engine::editor::GizmoSpace::Local));
+    CHECK(r.space[0].drawnActive);
+    app->requestToolbarTool(engine::editor::TransformTool::Move);
+    e62Ticks(*app, 2);
+    CHECK((app->toolState().mode.space == engine::editor::GizmoSpace::Local));  // the next gizmo tool's space
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: the breadcrumb names the project and scene and dots a dirty one (task E.6.2, I304)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "breadcrumb i304", .width = 1280, .height = 800});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    SUBCASE("a project: segments, faces, the dot, and both ways back to clean") {
+        const E62Project project = e62ProjectWithOneAsset();
+        std::optional<engine::editor::EditorApp> app = e62ProjectApp(*device, *window, ctx, project);
+        const engine::editor::ShellChromeRecord& r = app->shellChromeRecord();
+        CHECK(r.breadcrumbProject == "MyGame");
+        CHECK(r.breadcrumbSeparatorDrawn);
+        CHECK(r.breadcrumbScene == "Untitled");
+        CHECK_FALSE(r.dirtyDotDrawn);
+        CHECK(r.breadcrumbProjectFont == "IBM Plex Sans");
+        CHECK(r.breadcrumbSceneFont == "IBM Plex Sans SemiBold");
+        CHECK(r.breadcrumbProjectX >= r.breadcrumbMenusEnd + (24.0F * r.uiScaleAtDraw));  // never over the menus
+        CHECK(r.breadcrumbSceneX > r.breadcrumbProjectX);
+        // Dirty: the dot after TWO ticks (the menu bar draws before this tick's requests apply -- D11's lag).
+        app->requestCreateEntity(engine::editor::CreateKind::Cube);
+        e62Ticks(*app, 2);
+        CHECK(r.dirtyDotDrawn);  // seed S17 draws it while clean
+        // D11: the dot sits on the text line's centre, not FramePadding.y above it.
+        CHECK(std::abs(r.breadcrumbDotCenterY - r.breadcrumbSceneCenterY) <= 0.5F);
+        // Undo back to clean: gone.
+        app->requestUndo();
+        e62Ticks(*app, 2);
+        REQUIRE(app->commands().isClean());
+        CHECK_FALSE(r.dirtyDotDrawn);
+        // Save: gone, and the scene is the file's leaf -- where scene I/O exists (reflect tools ON).
+        app->requestCreateEntity(engine::editor::CreateKind::Cube);
+        e62Ticks(*app, 2);
+        REQUIRE(r.dirtyDotDrawn);
+        app->requestSaveSceneAs(project.root + "/scenes/b.scene.json");
+        e62Ticks(*app, 3);
+        if (engine::editor::sceneIoAvailable()) {
+            CHECK(r.breadcrumbScene == "b.scene.json");
+            CHECK_FALSE(r.dirtyDotDrawn);
+        } else {
+            CHECK(r.dirtyDotDrawn);  // nothing was written, so nothing became clean
+        }
+        app->requestQuit();
+        CHECK(app->tick() == false);
+    }
+    SUBCASE("no project: the scene alone") {
+        std::optional<engine::editor::EditorApp> app = e62App(*device, *window, ctx);
+        const engine::editor::ShellChromeRecord& r = app->shellChromeRecord();
+        CHECK(r.breadcrumbProject.empty());
+        CHECK_FALSE(r.breadcrumbSeparatorDrawn);
+        CHECK(r.breadcrumbScene == "Untitled");
+        app->requestQuit();
+        CHECK(app->tick() == false);
+    }
+}
+
+TEST_CASE("editor: the status bar -- ~ root, watcher, count, readout and backend (task E.6.2, I305)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "status i305", .width = 1280, .height = 800});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    SUBCASE("a project with one asset") {
+        const E62Project project = e62ProjectWithOneAsset();
+        std::optional<engine::editor::EditorApp> app = e62ProjectApp(*device, *window, ctx, project);
+        constexpr int MAX_TICKS = 64;
+        int ticks = 0;
+        while (ticks < MAX_TICKS && (app->assetWatchSweepCount() < 2U || app->assetCount() == 0U)) {
+            REQUIRE(app->tick());
+            ++ticks;
+        }
+        REQUIRE(ticks < MAX_TICKS);
+        REQUIRE(app->assetCount() == 1U);
+        REQUIRE(app->assetWatchEntryCount() != app->assetCount());  // so an entriesSeen seed is visible (S49)
+        e62Ticks(*app, 2);
+        const engine::editor::ShellChromeRecord& r = app->shellChromeRecord();
+        // The root, ~ + the root's own separator + the project folder -- spelled from the fixture, not the model.
+        const std::string expectedRoot = std::string("~") + project.root[project.location.size()] + "MyGame";
+        // At ANY width: the unelided text the bar was handed (seed S49 -- entriesSeen -- reads "2 assets" or more).
+        CHECK(r.statusWatchInput == "watching \xC2\xB7 1 asset");
+        if (r.statusBarWidth >= 900.0F) {
+            CHECK(r.statusRoot == expectedRoot);
+            CHECK(r.statusWatch == "watching \xC2\xB7 1 asset");
+        } else {
+            WARN(r.statusRoot == expectedRoot);  // a narrow runner may elide: geometry, not a defect (#111)
+        }
+        // The backend, against an independent table keyed on the device's own engine-owned name.
+        const std::string_view backend = device->backendName();
+        REQUIRE((backend == "metal" || backend == "vulkan" || backend == "direct3d12"));
+        const std::string expectedBackend =
+            backend == "metal" ? "Metal" : (backend == "vulkan" ? "Vulkan" : "Direct3D 12");
+        CHECK(r.statusBackend == expectedBackend);  // seed S16 passes "metal" through
+        CHECK(r.statusFont == "IBM Plex Mono");
+        CHECK(r.statusFontSize == std::round(14.0F * r.uiScaleAtDraw));  // ImGui rounds a font size (IM_ROUND)
+        // Auto-refresh off: the watcher's own words change.
+        app->requestAssetWatchToggle(false);
+        e62Ticks(*app, 2);
+        CHECK(r.statusWatchInput == "auto-refresh off \xC2\xB7 1 asset");
+        if (r.statusBarWidth >= 900.0F) {
+            CHECK(r.statusWatch == "auto-refresh off \xC2\xB7 1 asset");
+        }
+        // The readout publishes once half a second of REAL time has passed.
+        const auto start = std::chrono::steady_clock::now();
+        int frames = 0;
+        while (frames < 600 && std::chrono::steady_clock::now() - start < std::chrono::milliseconds(700)) {
+            REQUIRE(app->tick());
+            ++frames;
+        }
+        e62Ticks(*app, 2);
+        CHECK(r.statusFrame != "-- fps \xC2\xB7 -- ms");
+        CHECK(r.statusFrame.find(" fps \xC2\xB7 ") != std::string::npos);
+        CHECK(r.statusFrame.ends_with(" ms"));
+        app->requestQuit();
+        CHECK(app->tick() == false);
+    }
+    SUBCASE("no project") {
+        std::optional<engine::editor::EditorApp> app = e62App(*device, *window, ctx);
+        const engine::editor::ShellChromeRecord& r = app->shellChromeRecord();
+        CHECK(r.statusRoot.empty());
+        CHECK(r.statusWatch == "No project open");
+        app->requestQuit();
+        CHECK(app->tick() == false);
+    }
+}
+
+TEST_CASE(
+    "editor: the toolbar's mode is the layout's answer for what it measured; play is disabled (task E.6.2, I306)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    for (const int width : {320, 900, 1280}) {
+        CAPTURE(width);
+        std::optional<engine::platform::Window> window =
+            ctx.createWindow({.title = "toolbar i306", .width = width, .height = 600});
+        REQUIRE(window.has_value());
+        // One device per window, as every case does.
+        std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+        if (!device) {
+            AERO_SKIP_OR_FAIL("no GPU device");
+        }
+        std::optional<engine::editor::EditorApp> app = e62App(*device, *window, ctx);
+        const engine::editor::ShellChromeRecord& r = app->shellChromeRecord();
+        // GEOMETRY-INDEPENDENT: whatever width the runner delivered, the drawn layout is the pure answer for it.
+        const engine::editor::ToolbarLayout answer =
+            engine::editor::toolbarLayout(r.toolbarAvailableWidth, r.fullWidths, r.compactWidths, r.uiScaleAtDraw);
+        CHECK((r.layout == answer));
+        const engine::editor::ToolbarWidthPair widths = engine::editor::toolbarWidths(r.metrics);
+        CHECK((r.fullWidths == widths.full));
+        CHECK((r.compactWidths == widths.compact));
+        const auto total = [](const engine::editor::ToolbarWidths& w, bool play) {
+            return w.tools + w.space + w.snap + (play ? w.play : 0.0F) + w.undo;
+        };
+        CHECK(total(r.fullWidths, true) > total(r.compactWidths, true));
+        CHECK(total(r.compactWidths, true) > total(r.compactWidths, false));
+        CHECK(total(r.compactWidths, false) > 0.0F);
+        // What ImGui DREW sits where the layout put it: each group's first item one group padding in from the
+        // group's x, Undo at undoX, each button exactly its measured width. Sums on both sides, in the chrome's own
+        // order, never a subtraction ((a + b) - a is not b in float).
+        const bool fullMode = r.layout.mode == engine::editor::ToolbarMode::Full;
+        const float barX = r.toolbarMin.x;
+        const float pad = r.metrics.groupPadding;
+        CHECK(r.tools[0].min.x == barX + r.layout.toolsX + pad);
+        CHECK(r.space[0].min.x == barX + r.layout.spaceX + pad);
+        CHECK(r.snapToggle.min.x == barX + r.layout.snapX + pad);
+        CHECK(r.undo.min.x == barX + r.layout.undoX);
+        for (std::size_t i = 0; i < r.tools.size(); ++i) {
+            CAPTURE(i);
+            const float measured = fullMode ? r.metrics.toolFull[i] : r.metrics.toolCompact[i];
+            CHECK(r.tools[i].max.x == r.tools[i].min.x + measured);
+        }
+        CHECK(r.undo.max.x == r.undo.min.x + r.metrics.undoButton);
+        const float toggleWidth = fullMode ? r.metrics.snapToggleFull : r.metrics.snapToggleCompact;
+        CHECK(r.snapField.min.x == barX + r.layout.snapX + (2.0F * pad) + toggleWidth + r.metrics.itemSpacing);
+        CHECK(r.snapField.max.x == r.snapField.min.x + r.metrics.snapField);
+        // No drawn rects overlap, left to right: tools, space, the snap toggle, its field, play, Undo.
+        CHECK(r.tools[3].max.x <= r.space[0].min.x);
+        CHECK(r.space[1].max.x <= r.snapToggle.min.x);
+        CHECK(r.snapToggle.max.x <= r.snapField.min.x);
+        if (r.playGroupDrawn) {
+            CHECK(r.play[0].min.x == barX + r.layout.playX);
+            CHECK(r.snapField.max.x <= r.play[0].min.x);
+            CHECK(r.play[2].max.x <= r.undo.min.x);
+        } else {
+            CHECK(r.snapField.max.x <= r.undo.min.x);
+        }
+        if (width == 320) {
+            CHECK((r.layout.mode == engine::editor::ToolbarMode::Minimal));  // a runner only narrows
+        }
+        if (r.layout.playDrawn) {
+            CHECK(r.playGroupDrawn);
+            for (const engine::editor::ToolbarButtonRecord& button : r.play) {
+                CHECK_FALSE(button.enabled);  // seed S39: ImGui's own Disabled flag on each drawn button
+            }
+        } else if (width >= 900) {
+            WARN(r.layout.playDrawn);  // a runner narrower than Compact: geometry, not a defect
+        }
+        if (width == 1280) {
+            WARN((r.layout.mode == engine::editor::ToolbarMode::Full));
+        }
+        app->requestQuit();
+        CHECK(app->tick() == false);
+        app.reset();
+    }
+}
+
+TEST_CASE("editor: the chrome's pushes, flags, roles and format safety as source text (task E.6.2, I307)") {
+    const std::vector<std::string> code = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/shell_chrome_ui.cpp");
+    REQUIRE(code.size() > 200U);
+    SUBCASE("(a) NoFocus pushes balance and exist (seed S31; validation row 3 is the behaviour)") {
+        const std::size_t pushes = countLinesContaining(code, "PushItemFlag(ImGuiItemFlags_NoFocus");
+        CHECK(pushes == countLinesContaining(code, "PopItemFlag("));
+        CHECK(pushes == 2U);  // groupButton and Undo
+    }
+    SUBCASE("(b) each FrameBorderSize push is popped on its own button (seed S30)") {
+        std::size_t pushes = 0;
+        for (std::size_t i = 0; i < code.size(); ++i) {
+            if (code[i].find("ImGuiStyleVar_FrameBorderSize") == std::string::npos) {
+                continue;
+            }
+            ++pushes;
+            bool popped = false;
+            for (std::size_t j = i + 1U; j < std::min(code.size(), i + 5U); ++j) {
+                popped = popped || code[j].find("PopStyleVar()") != std::string::npos;
+            }
+            CAPTURE(i);
+            CHECK(popped);
+        }
+        CHECK(pushes == 2U);
+    }
+    SUBCASE("(c) the active set pushes all three button slots (seed S29)") {
+        const std::size_t fillAt = soleLineContaining(code, "PushStyleColor(ImGuiCol_Button, activeFill)");
+        CHECK(soleLineContaining(code, "PushStyleColor(ImGuiCol_ButtonHovered, activeFill)") == fillAt + 1U);
+        CHECK(soleLineContaining(code, "PushStyleColor(ImGuiCol_ButtonActive, activeFill)") == fillAt + 2U);
+    }
+    SUBCASE("(d) both bars carry all six flags, and each window is ended") {
+        const std::size_t flagsAt = soleLineContaining(code, "constexpr ImGuiWindowFlags BAR_FLAGS");
+        std::string joined;
+        for (std::size_t i = flagsAt; i < std::min(code.size(), flagsAt + 4U); ++i) {
+            joined += code[i];
+        }
+        constexpr std::array<std::string_view, 6> FLAGS{"NoSavedSettings",    "NoScrollbar", "NoScrollWithMouse",
+                                                        "NoFocusOnAppearing", "NoNavFocus",  "NoNavInputs"};
+        for (const std::string_view flag : FLAGS) {
+            CAPTURE(flag);
+            CHECK(joined.find(flag) != std::string::npos);  // seeds S27, S28
+        }
+        CHECK(countLinesContaining(code, "BeginViewportSideBar(") == 1U);
+        CHECK(countLinesContaining(code, "ImGui::End();") == 2U);
+        // Both heights are WHOLE points through shellBarHeight (TB11 is its rounding's witness): a bar height
+        // spelled `xHeightDp(...) * s` is the same number at UI scale 1, so no runtime case on a 1x or Retina
+        // lane can see it (seed S48b).
+        CHECK(countLinesContaining(code, "= shellBarHeight(toolbarHeightDp(EDITOR_THEME), s)") == 1U);
+        CHECK(countLinesContaining(code, "= shellBarHeight(statusBarHeightDp(EDITOR_THEME), s)") == 1U);
+        CHECK(countLinesContaining(code, "HeightDp(EDITOR_THEME) *") == 0U);
+    }
+    SUBCASE("(e) the play group: one disabled pair, AllowWhenDisabled, the one tooltip (seed S40, drift)") {
+        CHECK(countLinesContaining(code, "ImGui::BeginDisabled();") == 1U);
+        CHECK(countLinesContaining(code, "SetTooltip(\"%s\", PLAY_CONTROLS_TOOLTIP") == 1U);
+        CHECK(countLinesContaining(code, "SetItemTooltip(") == 0U);
+    }
+    SUBCASE("(f) the snap commit comes from the pure rule, called once with ImGui's own edge (seed S9)") {
+        const std::size_t edgeAt = soleLineContaining(code, "= ImGui::IsItemDeactivatedAfterEdit();");
+        const std::size_t callAt = soleLineContaining(code, "snapStepUpdate(");
+        std::string call;
+        for (std::size_t i = callAt; i < std::min(code.size(), callAt + 3U); ++i) {
+            call += code[i];
+        }
+        CHECK(edgeAt < callAt);
+        CHECK(call.find("deactivatedAfterEdit") != std::string::npos);
+        const std::size_t commitAt = soleLineContaining(code, "state.snapCommitted =");
+        CHECK(code[commitAt].find("update.commit") != std::string::npos);
+    }
+    SUBCASE("(g) roles: no disabled-text slot, no modal predicate of its own (seeds S51, S20)") {
+        CHECK(countLinesContaining(code, "TextDisabled") == 0U);
+        CHECK(countLinesContaining(code, "textDisabled") == 0U);
+        CHECK(countLinesContaining(code, "modalInputActive(") == 0U);
+        CHECK(countLinesContaining(code, "GetTopMostPopupModal()") == 1U);  // noModal, computed ONCE
+    }
+    SUBCASE("(h) every user string is drawn format-safe -- I242(e)'s parser (seed S52)") {
+        constexpr std::array<std::string_view, 6> FIRST{"ImGui::Text(",        "ImGui::TextDisabled(",
+                                                        "ImGui::TextWrapped(", "ImGui::SetTooltip(",
+                                                        "ImGui::BulletText(",  "ImGui::SetItemTooltip("};
+        constexpr std::array<std::string_view, 2> SECOND{"ImGui::TextColored(", "ImGui::LabelText("};
+        std::size_t calls = 0;
+        for (std::size_t i = 0; i < code.size(); ++i) {
+            for (const std::string_view function : FIRST) {
+                const std::size_t at = code[i].find(function);
+                if (at != std::string::npos) {
+                    ++calls;
+                    CAPTURE(code[i]);
+                    CHECK(formatFirstArgumentOpensLiteral(code, i, at + function.size()));
+                }
+            }
+            for (const std::string_view function : SECOND) {
+                const std::size_t at = code[i].find(function);
+                if (at != std::string::npos) {
+                    ++calls;
+                    std::string call = code[i].substr(at + function.size());
+                    for (std::size_t more = i + 1U; more < code.size() && more <= i + 2U; ++more) {
+                        call += ' ';
+                        call += code[more];
+                    }
+                    CAPTURE(code[i]);
+                    CHECK(formatSecondArgumentOpensLiteral(call));
+                }
+            }
+        }
+        CHECK(calls >= 2U);  // ANTI-VACUITY: itemTooltip's and the play group's SetTooltip
+        CHECK(countLinesContaining(code, "TextUnformatted(") >= 6U);  // every user string goes this way
+    }
+    SUBCASE("(j) every request is gated on its control's predicate AND no modal (seeds S21, S22)") {
+        // The UNDO arm's `undoEnabled` term is redundant with noModal on every path a test can reach (fileEnabled is
+        // false without an ImGui modal only while a NATIVE dialog is in flight, and no tier can open one), so this
+        // pin is that term's only automated witness.
+        const std::size_t undoGate = soleLineContaining(code, "state.toolbarUndoRequest &&");
+        CHECK(code[undoGate].find("undoEnabled") != std::string::npos);
+        CHECK(code[undoGate].find("noModal") != std::string::npos);
+        const std::size_t toggleGate = soleLineContaining(code, "state.toolbarSnapToggleRequest &&");
+        CHECK(code[toggleGate].find("noModal") != std::string::npos);
+        CHECK(countLinesContaining(code, "toolsEnabled && noModal") == 1U);
+        CHECK(countLinesContaining(code, "spaceEnabled && noModal") == 1U);
+        CHECK(countLinesContaining(code, "fieldEnabled && noModal") == 1U);
+    }
+    SUBCASE("(k) the step field: measured in its own face, a raised box; the space shown by effectiveSpace") {
+        // Both Mono measures sit INSIDE the one measuring Mono push: the chip and the step field draw in Mono, so
+        // a Body measure of either is a width that does not hold what is drawn.
+        const std::size_t chipAt = soleLineContaining(code, "metrics.undoChip = buttonWidth(chip);");
+        const std::size_t stepAt = soleLineContaining(code, "= currentTextWidth(SNAP_FIELD_WIDEST_TEXT);");
+        REQUIRE(chipAt > 0U);
+        CHECK(code[chipAt - 1U].find("PushFont(editorFonts().mono") != std::string::npos);
+        std::size_t popAt = chipAt;
+        while (popAt < code.size() && code[popAt].find("PopFont()") == std::string::npos) {
+            ++popAt;
+        }
+        CHECK(chipAt < stepAt);
+        CHECK(stepAt < popAt);
+        const std::string_view widthLine =
+            "metrics.snapField = std::max(SNAP_FIELD_WIDTH_EM * fontSize, widestStep + (2.0F * style.FramePadding.x))";
+        CHECK(countLinesContaining(code, widthLine) == 1U);
+        // D19: a raised fill, not the theme's inset input fill; one pop for the three slots.
+        const std::size_t fillAt = soleLineContaining(code, "PushStyleColor(ImGuiCol_FrameBg, c.raised)");
+        CHECK(soleLineContaining(code, "PushStyleColor(ImGuiCol_FrameBgHovered, c.hover)") == fillAt + 1U);
+        CHECK(soleLineContaining(code, "PushStyleColor(ImGuiCol_FrameBgActive, c.active)") == fillAt + 2U);
+        CHECK(countLinesContaining(code, "PopStyleColor(3)") == 1U);
+        // ONE spelling of "Scale forces Local": the gizmo's own effectiveSpace, never a second tool comparison.
+        CHECK(countLinesContaining(code, "effectiveSpace(") == 2U);
+        CHECK(countLinesContaining(code, "TransformTool::Scale") == 0U);
+    }
+    SUBCASE("(l) each role is read where D19 puts it -- exact c.<role> counts (I287 sees only chromeColors)") {
+        // chromeColors() reads each palette role ONCE (I287's rows), so a draw site that swaps one role for another
+        // is invisible there; these counts are the role-to-element map's witness. Identifier boundaries on both
+        // sides, so `c.text` never counts `c.textMuted` and `rec.undo` never counts as `c.`.
+        const auto identifierByte = [](char ch) {
+            return std::isalnum(static_cast<unsigned char>(ch)) != 0 || ch == '_';
+        };
+        const auto reads = [&](std::string_view role) {
+            const std::string needle = "c." + std::string(role);
+            std::size_t n = 0;
+            for (const std::string& line : code) {
+                for (std::size_t at = line.find(needle); at != std::string::npos; at = line.find(needle, at + 1U)) {
+                    const bool startOk = at == 0U || !identifierByte(line[at - 1U]);
+                    const std::size_t end = at + needle.size();
+                    const bool endOk = end >= line.size() || !identifierByte(line[end]);
+                    n += (startOk && endOk) ? 1U : 0U;
+                }
+            }
+            return n;
+        };
+        struct RoleCount {
+            std::string_view role;
+            std::size_t count;
+        };
+        constexpr std::array<RoleCount, 15> COUNTS{{{"chrome", 2U},
+                                                    {"raised", 3U},
+                                                    {"border", 2U},
+                                                    {"active", 3U},
+                                                    {"textBright", 2U},
+                                                    {"hover", 1U},
+                                                    {"accent", 2U},
+                                                    {"onAccent", 1U},
+                                                    {"textSecondary", 3U},
+                                                    {"textMuted", 6U},
+                                                    {"textLabel", 1U},
+                                                    {"text", 1U},
+                                                    {"textFaint", 1U},
+                                                    {"warning", 1U},
+                                                    {"divider", 2U}}};
+        for (const RoleCount& row : COUNTS) {
+            CAPTURE(row.role);
+            CHECK(reads(row.role) == row.count);
+        }
+        // The pairs whose contrast TH13 floors, at the sites that draw them.
+        CHECK(countLinesContaining(code, "groupButton(label, active, c.accent, c.onAccent, c.textSecondary") == 1U);
+        CHECK(countLinesContaining(code, "drawText(layout.backend, layout.backendX, c.accent)") == 1U);
+    }
+    SUBCASE("(i) the naming sets after the chrome") {
+        CHECK(e62FilesNaming("TransformToolState") ==
+              std::vector<std::string>{"editor_app.hpp", "gizmo.hpp", "shell_chrome_ui.cpp", "shell_ui.hpp",
+                                       "viewport_panel.cpp", "viewport_panel.hpp"});
+        CHECK(e62FilesNaming("transformTools") == std::vector<std::string>{"editor_app.cpp", "editor_app.hpp"});
+        CHECK(e62FilesNaming("drawGizmoBar").empty());
+    }
+}
+
+TEST_CASE("editor: the shell draws its chrome in the order the frame needs (task E.6.2, I308)") {
+    const std::vector<std::string> shell = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/shell_ui.cpp");
+    const std::vector<std::string> app = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/editor_app.cpp");
+    const std::size_t hoistAt = soleLineContaining(shell, "const bool fileEnabled = !modalInputActive(");
+    const std::string_view menuCall = "drawMenuBar(panels, context, state, fileMenu, fileEnabled)";
+    const std::size_t menuAt = soleLineContaining(shell, menuCall);
+    const std::size_t toolbarAt = soleLineContaining(shell, "drawToolbar(");
+    const std::size_t statusAt = soleLineContaining(shell, "drawStatusBar(");
+    CHECK(hoistAt < menuAt);
+    CHECK(menuAt < toolbarAt);  // Up bars stack in submission order
+    CHECK(toolbarAt < soleLineContaining(shell, "applyHistoryRequests(context, state);"));  // seed S25
+    CHECK(toolbarAt < soleLineContaining(shell, "DockSpaceOverViewport("));
+    CHECK(toolbarAt < soleLineContaining(shell, "drawPanels(panels, context);"));
+    CHECK(toolbarAt < statusAt);  // DRIFT PREVENTION only (seed S26): an inset lands next frame either way
+    CHECK(statusAt < soleLineContaining(shell, "DockSpaceOverViewport("));  // seed S26 as defined
+    const std::size_t crumbAt = soleLineContaining(shell, "drawBreadcrumb(");
+    CHECK(soleLineContaining(shell, "BeginMenu(\"View\")") < crumbAt);
+    CHECK(crumbAt < soleLineContaining(shell, "ImGui::EndMainMenuBar()"));
+    // The readout is fed the RAW delta on the statement after the clock's own tick (seed S14).
+    const std::size_t clockAt = soleLineContaining(app, "frameClock.tick();");
+    const std::size_t feedAt = nextCodeLine(app, clockAt + 1U);
+    REQUIRE(feedAt < app.size());
+    CHECK(app[feedAt].find("frameReadout.add(frameClock.rawDeltaSeconds())") != std::string::npos);
 }

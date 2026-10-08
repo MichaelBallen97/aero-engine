@@ -32,8 +32,11 @@
 #include <aero/editor/create_menu.hpp>     // task E.5.2 -- CreateKind by value in two seams; PURE
 #include <aero/editor/editor_theme.hpp>    // task E.6.1 -- EditorAppConfig's clear reads the theme; PURE
 #include <aero/editor/entity_ops.hpp>      // a VALUE member (rootOrder) needs RootOrder's definition
+#include <aero/editor/gizmo.hpp>           // task E.6.2 -- a VALUE member (transformTools); PURE and ImGui-free
 #include <aero/editor/imgui_layer.hpp>
 #include <aero/editor/material_session.hpp>      // task 3.4.2 -- a VALUE member (materialSession) needs
+#include <aero/editor/shell_chrome_record.hpp>   // task E.6.2 -- a VALUE member (chromeRecord); PURE
+#include <aero/editor/status_bar.hpp>            // task E.6.2 -- a VALUE member (frameReadout); PURE
                                                  // the definition, the asset_database.hpp precedent.
                                                  // ImGui-free, render-free and GPU-free, so this
                                                  // header's ImGui-FREE-BY-RULE contract is intact; it
@@ -169,6 +172,11 @@ struct EditorAppConfig {
     // sweeps instead of two seconds -- the ONLY way an in-process test can exercise this without
     // sleeping.
     AssetWatchConfig assetWatch{};
+    // task E.6.2 (D16, the recentProjectsPath / layoutIniPath / toolPrefsPath / editorPrefsPath shape, a FIFTH
+    // instance): the user's home, which the status bar shows as "~". EMPTY => defaultHomeDirectory(), resolved
+    // ONCE in create(). An owning string, like every sibling path field. Tests pass a scratch parent so the root
+    // reads ~/<project> without depending on the machine.
+    std::string homeDirectory;
 };
 
 // Sleep applied when the window is not presentable (minimized) — inherited verbatim from 2.1.1.
@@ -750,6 +758,26 @@ public:
     // separated by a dismiss inside ONE tick are two counts, not one.
     [[nodiscard]] std::size_t sceneContainmentRefusalCount() const noexcept;
 
+    // ---- task E.6.2 -----------------------------------------------------------------------------------
+    // THE transform-tool state (D3). READ-ONLY here: the toolbar and the Viewport's keys are its writers, and a
+    // test drives it through the toolbar's request seams, never by writing it.
+    [[nodiscard]] const TransformToolState& toolState() const noexcept { return transformTools; }
+    // How many times editor_prefs.json was WRITTEN, successfully -- the projectStateWriteCount() posture: a
+    // re-written file is byte-identical, so only a counter can tell "written once per commit" from "written per
+    // drag frame". 0 for an instance with no preferences path.
+    [[nodiscard]] std::size_t editorPrefsWriteCount() const noexcept { return editorPrefsWrites; }
+    // The toolbar's click-equivalents (D21): each writes a pending member the next tick copies into ShellUiState
+    // and then clears -- the requestUndo() shape. A request does exactly what a click on its control could do that
+    // frame: nothing while the control is drawn disabled or an ImGui modal is open, and a refused one is DROPPED,
+    // never deferred. No tier in this tree can click.
+    void requestToolbarTool(TransformTool tool) noexcept { pendingToolbarTool = tool; }
+    void requestToolbarSpace(GizmoSpace space) noexcept { pendingToolbarSpace = space; }
+    void requestToolbarSnapToggle() noexcept { pendingToolbarSnapToggle = true; }
+    void requestToolbarSnapStep(float step) noexcept { pendingToolbarSnapStep = step; }
+    void requestToolbarUndo() noexcept { pendingToolbarUndo = true; }
+    // What the chrome DREW last frame (shell_chrome_record.hpp) -- the GPU tier's window onto the three strips.
+    [[nodiscard]] const ShellChromeRecord& shellChromeRecord() const noexcept { return chromeRecord; }
+
 private:
     // task 3.2.4: the two file-scope-shaped helpers §D-12 names, as members because both touch
     // importSession and toolPrefsPath. THE ONLY PLACE THIS TASK LOGS (INV-B10).
@@ -907,6 +935,10 @@ private:
     // is address-stable and this pointer survives an EditorApp move (F21). Null when
     // registerDefaultPanels == false (E13) or if registration was rejected (E14) -- ALWAYS null-check.
     ViewportPanel* viewportPanel = nullptr;
+    // task E.6.2 (D3): THE transform-tool state -- a VALUE, so it moves with the app. The Viewport's pointer to it
+    // is re-handed every tick above the draw walk; ShellUiState's is rebuilt in the designated initializer. Named
+    // apart from its accessor toolState() (the frameClock / clock() precedent).
+    TransformToolState transformTools;
     // Non-owning; owned by `registry` (unique_ptr -> address-stable, survives an EditorApp move --
     // F17, the same reason viewportPanel above is legal). Null when registerDefaultPanels == false or
     // if registration was rejected -- ALWAYS null-check.
@@ -1019,6 +1051,17 @@ private:
     // The recentsDirty idiom (projectFlow.recentsDirty), a second instance: the file is written ONLY
     // when a value changed, never per frame.
     bool editorPrefsDirty = false;
+    std::size_t editorPrefsWrites = 0;  // task E.6.2: editorPrefsWriteCount()'s value, named apart from it
+    // ---- task E.6.2 -----------------------------------------------------------------------------------
+    FrameTimeReadout frameReadout;  // D14: fed once per tick, on the statement after frameClock.tick()
+    std::string backendLabel;       // D15: backendDisplayName(device.backendName()), read ONCE in create()
+    std::string homeDirectory;      // D16: resolved ONCE in create(); "" disables the "~"
+    std::optional<TransformTool> pendingToolbarTool;  // D21: the five seams' pending values, cleared every tick
+    std::optional<GizmoSpace> pendingToolbarSpace;
+    bool pendingToolbarSnapToggle = false;
+    std::optional<float> pendingToolbarSnapStep;
+    bool pendingToolbarUndo = false;
+    ShellChromeRecord chromeRecord;  // shellChromeRecord()'s value, named apart from it
     // DISTINCT NAMES from their accessors, the databasePtr/database() rule -- matching
     // ContextRouter::latches/latchCount() and sceneAssetDirectives/sceneAssetDirectiveCount() above.
     std::size_t focusRouteApplies = 0;

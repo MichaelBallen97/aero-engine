@@ -6,8 +6,11 @@
                                            // PURE and ImGui-free, so this header's own ImGui-free
                                            // contract (which editor_app.cpp depends on) is intact.
 #include <aero/editor/create_menu.hpp>     // task E.5.2: CreateKind, BY VALUE below -- PUBLIC and PURE
+#include <aero/editor/gizmo.hpp>           // task E.6.2: TransformTool, GizmoSpace, TransformToolState -- PURE
 #include <aero/editor/panel_registry.hpp>
-#include <aero/editor/scene_session.hpp>  // task 2.5.1: FileMenuContext names FileFlow/FileDialogHost
+#include <aero/editor/scene_session.hpp>        // task 2.5.1: FileMenuContext names FileFlow/FileDialogHost
+#include <aero/editor/shell_chrome_record.hpp>  // task E.6.2: the OUT target -- PURE
+#include <aero/editor/status_bar.hpp>           // task E.6.2: StatusBarText, by pointer below -- PURE
 
 #include <optional>  // task E.5.2: ShellUiState::createRequest
 #include <string>    // code-review BLOCKING-1: ShellUiState::focusPanelId
@@ -74,6 +77,25 @@ struct ShellUiState {
     // (imgui.cpp:6321-6322), i.e. AFTER this read -- so a click is seen one tick later. No tier here
     // can click, so no case depends on that.
     std::string keyboardFocusWindow;
+    // ---- task E.6.2 ------------------------------------------------------------------------------
+    // IN, per-tick COPIES of EditorApp's pending toolbar requests (D21): each does exactly what a click on its
+    // control could do THIS frame -- nothing while the control is drawn disabled or while an ImGui modal is open --
+    // and a refused one dies with the tick, as a click on a disabled button is lost. Copies, never moves: every
+    // type here is trivially copyable, and EditorApp clears its own members after building this struct.
+    std::optional<TransformTool> toolbarToolRequest;
+    std::optional<GizmoSpace> toolbarSpaceRequest;
+    bool toolbarSnapToggleRequest = false;
+    std::optional<float> toolbarSnapStepRequest;
+    bool toolbarUndoRequest = false;
+    // OUT, one-shot: the snap toggle or step COMMITTED this frame (D7) -- EditorApp marks editor_prefs.json dirty.
+    bool snapCommitted = false;
+    // IN: THE transform-tool state (EditorApp's), rebuilt into this struct every tick so a move cannot strand it.
+    // Null draws the tool, space and snap groups disabled -- never a crash.
+    TransformToolState* tools = nullptr;
+    // IN: the status bar's words, composed by the pure statusBarText every tick. Null draws an empty bar.
+    const StatusBarText* statusText = nullptr;
+    // OUT target: what the chrome drew (D21). Null records nothing.
+    ShellChromeRecord* chromeRecord = nullptr;
 };
 
 // task 2.5.1 (plan A14): everything the File menu needs that PanelContext deliberately does NOT

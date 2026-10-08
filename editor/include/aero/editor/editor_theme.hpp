@@ -85,7 +85,7 @@ struct ThemePalette {
 // row mixes Mono and Body.
 struct ThemeTypeScale {
     float bodySize = 16.0F;               // the default font; a body line is exactly 16 dp at 1x
-    float smallSize = 14.0F;              // first consumer E.6.3
+    float smallSize = 14.0F;              // first consumer E.6.2: the status bar, the snap field, the undo chip
     float strongSize = 16.0F;             // SemiBold
     float monoSize = 16.0F;               // Plex Mono
     float iconSizeRatio = 11.0F / 16.0F;  // spec D7: Lucide merged at 11/16 of its face; exactly 0.6875F
@@ -266,6 +266,23 @@ struct ThemeClears {
     Rgbaf preview{0.05F, 0.05F, 0.06F, 1.0F};   // material_preview.cpp:41, material_thumbnail.cpp:34 (equal)
 };
 
+// task E.6.2 (D19): the shell's chrome -- the toolbar, the status bar and the breadcrumb -- in dp, Category A.
+// Every value measured on the mock (2884 x 1864 at 2x, sRGB; window content from x = 2 px), each comment saying
+// where. The two bar heights are DERIVED below, never stated.
+struct ThemeShell {
+    float toolbarPaddingY = 6.0F;        // chrome above the tool group: 12 px
+    float toolbarGroupPadding = 4.0F;    // a group's outer edge to its button: the 1-dp border + 3 dp of `raised`
+    float toolbarGroupGap = 14.0F;       // the tool group's border to the space group's: 28 px
+    float toolbarPaddingX = 12.0F;       // the window's edge to the tool group: 24 px
+    float statusBarPaddingY = 6.0F;      // (26 - 14) / 2: the backend's ink sits centred on the bar
+    float statusBarPaddingX = 14.0F;     // the window's edge to the root's ink: 29 px
+    float statusBarZoneGap = 20.0F;      // root -> watcher and readout -> backend: 42 px of ink, ~20 dp of advance
+    float breadcrumbDotDiameter = 6.0F;  // the dirty dot: 12 px
+    float breadcrumbGap = 8.0F;          // either side of "/" and the scene name -> the dot: 17-19 px of ink
+    float breadcrumbMinGap = 24.0F;      // the menus' end to the breadcrumb, at the least (spec D11)
+    float ruleThickness = 1.0F;          // the toolbar's bottom rule and the status bar's top rule: 2 px
+};
+
 struct EditorTheme {
     ThemePalette palette;
     ThemeTypeScale type;
@@ -277,9 +294,22 @@ struct EditorTheme {
     ThemeSwatchLabel swatchLabel;
     ThemeViewport viewport;
     ThemeClears clear;
+    ThemeShell shell;  // task E.6.2
 };
 
 inline constexpr EditorTheme EDITOR_THEME{};  // THE one value
+
+// task E.6.2 (D19): the two bars' heights in dp -- 44 and 26, the mock's chrome heights, which is the check that
+// the derivation is right. A frame (body + 2 x framePadding.y) inside a group (+ 2 x groupPadding) inside the
+// toolbar's padding; the small type size inside the status bar's. Each bar's 1-dp rule is drawn INSIDE it, on
+// its outer row. dp only: shellBarHeight (toolbar_model.hpp) is the one conversion to points.
+[[nodiscard]] constexpr float toolbarHeightDp(const EditorTheme& theme) noexcept {
+    return theme.type.bodySize + (2.0F * theme.metrics.framePadding.y) + (2.0F * theme.shell.toolbarGroupPadding) +
+           (2.0F * theme.shell.toolbarPaddingY);
+}
+[[nodiscard]] constexpr float statusBarHeightDp(const EditorTheme& theme) noexcept {
+    return theme.type.smallSize + (2.0F * theme.shell.statusBarPaddingY);
+}
 
 inline constexpr float UI_SCALE_MIN = 0.5F;
 inline constexpr float UI_SCALE_MAX = 4.0F;              // "a 400 % display"; nothing is designed past it

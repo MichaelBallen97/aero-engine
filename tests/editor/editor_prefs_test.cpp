@@ -339,3 +339,81 @@ TEST_CASE("editor: a file that EXISTS and cannot be READ is corrupt, not 'missin
     CHECK(missing.focusFollowsSelection);
     CHECK_FALSE(missingCorrupt);
 }
+
+TEST_CASE("editor: absent snap keys are their defaults, beside a read focusFollowsSelection (task E.6.2, EP14)") {
+    const std::optional<EditorPrefs> parsed = parseEditorPrefs(R"({"version":1,"focusFollowsSelection":false})");
+    REQUIRE(parsed.has_value());
+    CHECK_FALSE(parsed->focusFollowsSelection);
+    CHECK_FALSE(parsed->snapEnabled);
+    CHECK(parsed->snapTranslateStep == 0.5F);
+    CHECK(parsed->snapRotateStepDegrees == 15.0F);
+    CHECK(parsed->snapScaleStep == 0.1F);
+}
+
+TEST_CASE("editor: the snap keys round-trip as these exact bytes, in this order (task E.6.2, EP15)") {
+    const EditorPrefs written{.focusFollowsSelection = false,
+                              .snapEnabled = true,
+                              .snapTranslateStep = 2.5F,
+                              .snapRotateStepDegrees = 30.0F,
+                              .snapScaleStep = 0.25F};
+    const std::string text = writeEditorPrefsText(written);
+    // The canonical form EP2 pins in fragments, whole: pretty, 2-space, ", " never -- JsonWriter's ",\n".
+    const std::string expected =
+        "{\n  \"version\": 1,\n  \"focusFollowsSelection\": false,\n  \"snapEnabled\": true,\n"
+        "  \"snapTranslateStep\": 2.5,\n  \"snapRotateStepDegrees\": 30,\n  \"snapScaleStep\": 0.25\n}\n";
+    CHECK(text == expected);
+    const std::optional<EditorPrefs> read = parseEditorPrefs(text);
+    REQUIRE(read.has_value());
+    CHECK_FALSE(read->focusFollowsSelection);
+    CHECK(read->snapEnabled);
+    CHECK(read->snapTranslateStep == 2.5F);
+    CHECK(read->snapRotateStepDegrees == 30.0F);
+    CHECK(read->snapScaleStep == 0.25F);
+}
+
+TEST_CASE("editor: a snap key of the wrong JSON type is a MISS for the document (task E.6.2, EP16)") {
+    CHECK_FALSE(parseEditorPrefs(R"({"version":1,"snapEnabled":"true"})").has_value());
+    CHECK_FALSE(parseEditorPrefs(R"({"version":1,"snapEnabled":1})").has_value());
+    CHECK_FALSE(parseEditorPrefs(R"({"version":1,"snapTranslateStep":"0.5"})").has_value());
+    CHECK_FALSE(parseEditorPrefs(R"({"version":1,"snapTranslateStep":true})").has_value());
+    CHECK_FALSE(parseEditorPrefs(R"({"version":1,"snapRotateStepDegrees":null})").has_value());
+    CHECK_FALSE(parseEditorPrefs(R"({"version":1,"snapScaleStep":[0.1]})").has_value());
+    // ANTI-VACUITY: the same keys with the right types parse.
+    CHECK(parseEditorPrefs(R"({"version":1,"snapEnabled":true,"snapScaleStep":0.1})").has_value());
+}
+
+TEST_CASE("editor: an out-of-range, zero or negative step is a MISS; both boundaries are legal (task E.6.2, EP17)") {
+    CHECK_FALSE(parseEditorPrefs(R"({"version":1,"snapTranslateStep":0})").has_value());
+    CHECK_FALSE(parseEditorPrefs(R"({"version":1,"snapTranslateStep":-3})").has_value());
+    CHECK_FALSE(parseEditorPrefs(R"({"version":1,"snapTranslateStep":1000.5})").has_value());
+    CHECK_FALSE(parseEditorPrefs(R"({"version":1,"snapTranslateStep":0.0009})").has_value());
+    CHECK_FALSE(parseEditorPrefs(R"({"version":1,"snapRotateStepDegrees":180.5})").has_value());
+    CHECK_FALSE(parseEditorPrefs(R"({"version":1,"snapRotateStepDegrees":0.05})").has_value());
+    CHECK_FALSE(parseEditorPrefs(R"({"version":1,"snapScaleStep":100.5})").has_value());
+    CHECK_FALSE(parseEditorPrefs(R"({"version":1,"snapScaleStep":1e40})").has_value());  // rounds to inf
+    // One bad key costs EVERY preference: focusFollowsSelection's false is not kept (seed S35's other half).
+    CHECK_FALSE(parseEditorPrefs(R"({"version":1,"focusFollowsSelection":false,"snapScaleStep":0})").has_value());
+    const std::string_view lowText =
+        R"({"version":1,"snapTranslateStep":0.001,"snapRotateStepDegrees":0.1,"snapScaleStep":0.001})";
+    const std::optional<EditorPrefs> low = parseEditorPrefs(lowText);
+    REQUIRE(low.has_value());
+    CHECK(low->snapTranslateStep == 0.001F);
+    CHECK(low->snapRotateStepDegrees == 0.1F);
+    CHECK(low->snapScaleStep == 0.001F);
+    const std::string_view highText =
+        R"({"version":1,"snapTranslateStep":1000,"snapRotateStepDegrees":180,"snapScaleStep":100})";
+    const std::optional<EditorPrefs> high = parseEditorPrefs(highText);
+    REQUIRE(high.has_value());
+    CHECK(high->snapTranslateStep == 1000.0F);
+    CHECK(high->snapRotateStepDegrees == 180.0F);
+    CHECK(high->snapScaleStep == 100.0F);
+}
+
+TEST_CASE("editor: an integral number is legal for a step (task E.6.2, EP18)") {
+    const std::optional<EditorPrefs> parsed =
+        parseEditorPrefs(R"({"version":1,"snapTranslateStep":1,"snapRotateStepDegrees":30,"snapScaleStep":2})");
+    REQUIRE(parsed.has_value());
+    CHECK(parsed->snapTranslateStep == 1.0F);
+    CHECK(parsed->snapRotateStepDegrees == 30.0F);
+    CHECK(parsed->snapScaleStep == 2.0F);
+}
