@@ -34,6 +34,7 @@
 
 #include "asset_picker.hpp"        // task E.3.3 -- the ONE asset-reference field widget
 #include "editor_theme_imgui.hpp"  // task E.6.1: toImVec4
+#include "panel_chrome_ui.hpp"     // task E.6.3: cards, roles, the primary and ghost buttons
 #include "text_input.hpp"
 
 #include <algorithm>
@@ -150,7 +151,7 @@ template <typename Enum, std::size_t N, typename LabelFn>
     ImGui::TableNextRow();
     ImGui::TableNextColumn();
     ImGui::AlignTextToFramePadding();
-    ImGui::TextUnformatted(label);
+    roleText(ChromeRole::TextLabel, label);
     ImGui::TableNextColumn();
     ImGui::SetNextItemWidth(-1.0F);
     return tokenCombo(id, value, values, labelOf, scratch);
@@ -368,21 +369,21 @@ bool MaterialPanel::drawSlotRow(std::size_t index, MaterialDocument& form, const
             break;
     }
 
-    // `Clear` SHARES the row now. A SmallButton has no FramePadding.y, so on a tall picker button it
-    // sits at the row's baseline rather than its middle -- AlignTextToFramePadding aligns to the
-    // DEFAULT frame height and would fight the tall button, so this is SameLine and nothing else.
+    // `Clear` SHARES the row: SameLine and nothing else (task E.6.3: a ghost Button, a full frame tall like the
+    // picker's text line).
     ImGui::SameLine();
     ImGui::BeginDisabled(!row.clearEnabled);  // 1:1 with EndDisabled; nothing exits between them
-    if (ImGui::SmallButton("Clear")) {
-        slot.reset();  // AC-20: the WHOLE slot, never a nil guid
+    if (ghostButton("Clear")) {  // task E.6.3 (D4): a body's buttons are ghost-styled; the width is still Clear's
+        slot.reset();            // AC-20: the WHOLE slot, never a nil guid
         changed = true;
     }
     ImGui::EndDisabled();
+    cardRecordValue.lastSlotClearMaxX = ImGui::GetItemRectMax().x;  // task E.6.3: the narrowed edge's witness (I331)
 
     // The colour-space note, composed from materialSlotIsSrgb by the model. A DYNAMIC string is never a
     // format string -- and a static one goes through "%s" too, so there is ONE rule here rather than a
     // judgement at every call.
-    ImGui::TextDisabled("%s", materialColorSpaceNote(index).data());
+    mutedText(materialColorSpaceNote(index));
 
     // THE NOTICES STAY ON THE CHANNEL, never inside the disclosure: every one of them explains
     // something the user can SEE without opening anything.
@@ -398,7 +399,7 @@ bool MaterialPanel::drawSlotRow(std::size_t index, MaterialDocument& form, const
     // nothing.
     switch (preview.slotTextureState(index)) {
         case PreviewTextureState::Loading:
-            ImGui::TextDisabled("%s", "Loading the preview texture...");
+            mutedText("Loading the preview texture...");
             break;
         case PreviewTextureState::Failed:
             labelScratch = std::string(preview.slotNotice(index));
@@ -461,7 +462,7 @@ void MaterialPanel::drawSamplerDisclosure(std::size_t index, MaterialDocument& f
         ImGui::TableNextRow();
         ImGui::TableNextColumn();
         ImGui::AlignTextToFramePadding();
-        ImGui::TextUnformatted("UV set");
+        roleText(ChromeRole::TextLabel, "UV set");
         ImGui::TableNextColumn();
         ImGui::SetNextItemWidth(-1.0F);
         int uvSet = static_cast<int>(slot->uvSet);
@@ -531,20 +532,21 @@ void MaterialPanel::drawBody(MaterialDocument& form, const MaterialPanelLayout& 
     std::size_t sectionIndex = 0;
     for (const MaterialSection& section : materialSections()) {
         ImGui::PushID(static_cast<int>(sectionIndex));  // 1:1 with the PopID at the bottom, EVERY path
-        // THE PANEL OWNS THE OPEN BIT, not ImGui's storage -- drawSamplerDisclosure's idiom, and for a
-        // sharper reason. ImGui keeps a CollapsingHeader's state in the SUBMITTING WINDOW's
-        // StateStorage, so the same header is a different entry in the `##body` child than it is in
-        // the Material window, and a mode flip therefore restored every section to DefaultOpen. The
-        // array is a member, so it is the same eight bits whichever window draws them.
+        // THE PANEL OWNS THE OPEN BIT (handed to the card painter, task E.6.3), not ImGui's storage --
+        // drawSamplerDisclosure's idiom, and for a sharper reason. ImGui keeps a CollapsingHeader's state in the
+        // SUBMITTING WINDOW's StateStorage, so the same header is a different entry in the `##body` child than it
+        // is in the Material window, and a mode flip therefore restored every section to DefaultOpen. The array is
+        // a member, so it is the same eight bits whichever window draws them.
         //
         // ImGuiCond_Always and NOT Once: Once hands the decision back to the per-window storage this
         // exists to bypass, which is the whole defect again (and is seed S26 one widget over).
-        ImGui::SetNextItemOpen(sectionOpen[sectionIndex], ImGuiCond_Always);
-        const bool sectionDrawn = ImGui::CollapsingHeader(section.title.data(), ImGuiTreeNodeFlags_DefaultOpen);
-        if (ImGui::IsItemToggledOpen()) {
-            sectionOpen[sectionIndex] = !sectionOpen[sectionIndex];
-        }
-        if (sectionDrawn) {
+        // task E.6.3 (D4, D10): the section is a CARD, its icon from the pure table. The painter does exactly the
+        // trio this replaced -- SetNextItemOpen(*bit, Always), then the IsItemToggledOpen flip -- on the bit handed
+        // to it, so the open state is still the PANEL's and survives the ##body mode flip (I170, I175).
+        const PanelCard card(*cardPainter, "##section",
+                             CardSpec{.title = section.title, .icon = materialSectionIcon(section.id)},
+                             &sectionOpen[sectionIndex], &cardRecordValue);
+        if (card.header().open) {
             // materialSlotRow is computed ONCE per section, before the row, and the SAME value
             // reaches drawSlotRow and drawSamplerDisclosure. Computing it twice is not wrong, it is a
             // second place to pass the wrong record.
@@ -584,12 +586,17 @@ void MaterialPanel::drawBody(MaterialDocument& form, const MaterialPanelLayout& 
                         ImGui::TableNextRow();
                         ImGui::TableNextColumn();
                         ImGui::AlignTextToFramePadding();
-                        ImGui::TextUnformatted(materialFieldLabel(field).data());
+                        // task E.6.3 (D10): labels textLabel
+                        roleText(ChromeRole::TextLabel, materialFieldLabel(field));
                         ImGui::TableNextColumn();
                         ImGui::SetNextItemWidth(-1.0F);
                         changed = drawFieldRow(field, form, nameDraft, nameEditing, labelScratch) || changed;
                     }
                     ImGui::EndTable();
+                    // task E.6.3: EndTable's item is the table's OuterRect (I331) -- where ImGui PLACED it (I331 (c))
+                    cardRecordValue.lastBodyTableMaxX = ImGui::GetItemRectMax().x;
+                    cardRecordValue.lastBodyTableMinY = ImGui::GetItemRectMin().y;
+                    cardRecordValue.lastBodyTableMaxY = ImGui::GetItemRectMax().y;
                 }
             }
             if (section.id == MaterialSectionId::File) {
@@ -626,7 +633,7 @@ void MaterialPanel::drawFileSection(float labelWidth) {
         ImGui::TableNextRow();
         ImGui::TableNextColumn();
         ImGui::AlignTextToFramePadding();
-        ImGui::TextUnformatted("Path");
+        roleText(ChromeRole::TextLabel, "Path");
         ImGui::TableNextColumn();
         labelScratch = std::string(sessionPtr->targetPath());
         ImGui::TextWrapped("%s", labelScratch.c_str());
@@ -638,11 +645,11 @@ void MaterialPanel::drawFileSection(float labelWidth) {
             ImGui::TableNextRow();
             ImGui::TableNextColumn();
             ImGui::AlignTextToFramePadding();
-            ImGui::TextUnformatted("GUID");
+            roleText(ChromeRole::TextLabel, "GUID");
             ImGui::TableNextColumn();
             labelScratch =
                 record == nullptr || !record->guid.valid() ? std::string("no .meta yet") : formatGuid(record->guid);
-            ImGui::TextDisabled("%s", labelScratch.c_str());
+            mutedText(labelScratch);
         }
         ImGui::EndTable();
     }
@@ -659,7 +666,8 @@ void MaterialPanel::drawFileSection(float labelWidth) {
     }
 }
 
-MaterialPanel::MaterialPanel(rhi::Device& device) noexcept : preview(&device) {}
+MaterialPanel::MaterialPanel(rhi::Device& device) : cardPainter(std::make_unique<CardPainter>()), preview(&device) {}
+MaterialPanel::~MaterialPanel() = default;
 
 // ---- the preview strip (AC-28/AC-32) --------------------------------------------------------------
 // Records a request, APPLIES THE RESIZE and reads a native handle -- in that order, which is the whole
@@ -706,7 +714,8 @@ void MaterialPanel::drawPreview(float previewHeight) {
         // The ONE line AC-32 asks for in a tools-OFF build, and the same line for every other reason a
         // preview is not on screen. Never an empty string: an empty TextDisabled is a blank gap that
         // reads as a rendering bug.
-        ImGui::TextDisabled("%s", (why != nullptr && *why != '\0') ? why : "Preview unavailable.");
+        const bool hasReason = why != nullptr && *why != '\0';
+        mutedText(hasReason ? std::string_view(why) : std::string_view("Preview unavailable."));
         return;
     }
     // The UV sub-rect (the viewport's D5/D6): textureExtent() >= drawExtent() on both axes, always, so
@@ -745,16 +754,18 @@ void MaterialPanel::onDraw(PanelContext& /*context*/) {  // no World/Selection/P
     // drop driven at an UNTARGETED panel survive until some later material was selected and then bind
     // a slot nobody asked for, which is the one thing this channel must never do (found by DP12).
     const std::optional<MaterialSlotTextureDrop> slotDrop = std::exchange(pendingSlotDrop, std::nullopt);
+    // task E.6.3 (D14): one recorded frame per onDraw, opened before any early return.
+    beginCardRecordFrame(cardRecordValue);
     if (sessionPtr == nullptr) {
         // The very first frame of a session's life: EditorApp::tick() reconciles BEFORE drawShellUi,
         // so in practice this is reached only with no panel registration at all -- but a null pointer
         // is always checked here rather than assumed away.
-        ImGui::TextDisabled("Select a material in the Assets panel.");
+        mutedText("Select a material in the Assets panel.");
         return;
     }
     switch (sessionPtr->state()) {
         case MaterialSessionState::Untargeted:
-            ImGui::TextDisabled("Select a material in the Assets panel.");
+            mutedText("Select a material in the Assets panel.");
             return;
         case MaterialSessionState::Error: {
             labelScratch = std::string(sessionPtr->targetPath());
@@ -771,7 +782,7 @@ void MaterialPanel::onDraw(PanelContext& /*context*/) {  // no World/Selection/P
             }
             // Nothing editable, and no Apply or Revert drawn at all (AC-9): the file may hold a
             // hand-recoverable value one `git checkout` away, and this editor never "repairs" one.
-            ImGui::TextDisabled("This file cannot be edited until it parses.");
+            mutedText("This file cannot be edited until it parses.");
             // NO IMAGE HERE, and the section says so rather than going missing. Calling drawPreview()
             // would blit the LAST GOOD MATERIAL's picture under this error text: the render target
             // keeps whatever was last rendered into it, and service() refuses to render with no
@@ -779,7 +790,7 @@ void MaterialPanel::onDraw(PanelContext& /*context*/) {  // no World/Selection/P
             // it were this file. The code-review round's finding 9; materialPreviewImageCount() is what
             // pins it, because a stale picture and a correct one look identical to every tier here.
             ImGui::SeparatorText("Preview");
-            ImGui::TextDisabled("%s", "Nothing to preview until this file parses.");
+            mutedText("Nothing to preview until this file parses.");
             return;
         }
         case MaterialSessionState::Ready:
@@ -789,7 +800,7 @@ void MaterialPanel::onDraw(PanelContext& /*context*/) {  // no World/Selection/P
     if (document == nullptr) {
         // Unreachable through state() == Ready, which already implies an engaged session copy --
         // bugprone-unchecked-optional-access's sibling problem, and a null deref is never assumed away.
-        ImGui::TextDisabled("Select a material in the Assets panel.");
+        mutedText("Select a material in the Assets panel.");
         return;
     }
 
@@ -898,20 +909,12 @@ void MaterialPanel::onDraw(PanelContext& /*context*/) {  // no World/Selection/P
     ImGui::Separator();
     const bool dirty = sessionPtr->dirty();
     const bool applyEnabled = dirty && !invalid.has_value();
-    if (applyEnabled) {
-        // viewport_panel.cpp's emphasis idiom -- a colour the STYLE already owns, so E.6.1's
-        // EditorTheme inherits it for free and this task states no colour literal at all. ENABLED
-        // ONLY: BeginDisabled pushes ALPHA, so an unconditional push would paint a FADED primary.
-        ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
-    }
-    ImGui::BeginDisabled(!applyEnabled);  // 1:1 with EndDisabled; nothing exits between them
-    if (ImGui::Button("Apply")) {
+    // task E.6.3 (D10): THE primary button -- accent fill, onAccent text, the pair kept on hover and press (TH13's
+    // floors); disabled, BeginDisabled (inside the helper) fades it. The tooltip below still reads this item.
+    if (primaryButton("Apply", applyEnabled)) {
         applyRequested = true;
     }
-    ImGui::EndDisabled();
-    if (applyEnabled) {
-        ImGui::PopStyleColor();  // 1:1, on the SAME condition, evaluated once above
-    }
+    ++cardRecordValue.primaryButtonsDrawn;
     // A DISABLED item is not hovered without ImGuiHoveredFlags_AllowWhenDisabled, and SetItemTooltip
     // carries ForTooltip flags that skip a disabled item outright -- IsItemHovered + SetTooltip is the
     // pair this tree uses (viewport_panel.cpp's A6 note).

@@ -156,8 +156,8 @@ std::string_view materialSectionIcon(MaterialSectionId id) noexcept {
     return AERO_ICON_SHAPES;
 }
 
-// Today's seven CollapsingHeader labels, verbatim (import_details_panel.cpp:481-498, :715) -- each is also the
-// card's ImGui id, so the ImGui-owned open state keeps its key across the restyle.
+// Today's seven CollapsingHeader labels, verbatim (import_details_panel.cpp:481-498, :715) -- drawn as the
+// card's TITLE; the card's ImGui id is the host's own ("##card" under the section's PushID, "##blender").
 std::string_view importDetailsSectionTitle(ImportDetailsSection section) noexcept {
     switch (section) {
         case ImportDetailsSection::Overview:

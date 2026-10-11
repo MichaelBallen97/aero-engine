@@ -23,7 +23,9 @@
 #include <aero/editor/project_files.hpp>  // task 3.2.2 (§A-2): leafOf, for the importer-identity fix
 
 #include "editor_theme_imgui.hpp"  // task E.6.1: toImVec4
+#include "panel_chrome_ui.hpp"     // task E.6.3: cards, roles, the primary and ghost buttons
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <format>
@@ -97,7 +99,7 @@ void drawWarnings(const ImportResult& result) {
     }
     if (result.warningTotal > result.warnings.size()) {
         const std::string more = std::format("... and {} more", result.warningTotal - result.warnings.size());
-        ImGui::TextDisabled("%s", more.c_str());
+        mutedText(more);
     }
 }
 
@@ -163,7 +165,7 @@ void drawOverview(const ModelImportSession& session) {
         ImGui::TextUnformatted(maxLine.c_str());
         ImGui::TextUnformatted(sizeLine2.c_str());
     } else {
-        ImGui::TextDisabled("Bounds: --");
+        mutedText("Bounds: --");
     }
 
     if (!result.message.empty()) {  // a Truncated Ok still carries a message naming the cap it hit
@@ -177,7 +179,7 @@ void drawOverview(const ModelImportSession& session) {
 // reference from onDraw() -- this function RECORDS a request; it never calls into `session` to change
 // anything (INV-M12/D17: the write happens in EditorApp::tick(), never inside onDraw()).
 void drawSettingsForm(const ModelImportSession& session, bool& applyRequested, bool& revertRequested,
-                      std::optional<ImportSettings>& editedSettings) {
+                      std::optional<ImportSettings>& editedSettings, CardRecord& record) {
     // Rebuilt from the session's OWN pending copy every frame (never a member) -- the session is the
     // single source of truth, and EditorApp::tick() drains `editedSettings` into it exactly one tick
     // after this function records an edit, so the value read back here always matches what was last
@@ -194,13 +196,13 @@ void drawSettingsForm(const ModelImportSession& session, bool& applyRequested, b
     }
 
     const bool canApply = session.canApply();
-    ImGui::BeginDisabled(!canApply);  // 1:1 with EndDisabled; no continue/return between (project_ui.cpp's rule)
-    if (ImGui::Button("Apply")) {
+    // task E.6.3 (D10): THE primary button (the disabled scope is the helper's); Revert, a body button, ghosted (D4).
+    if (primaryButton("Apply", canApply)) {
         applyRequested = true;
     }
-    ImGui::EndDisabled();
+    ++record.primaryButtonsDrawn;
     ImGui::SameLine();
-    if (ImGui::Button("Revert")) {
+    if (ghostButton("Revert")) {
         revertRequested = true;
     }
     if (!session.applyError().empty()) {
@@ -231,7 +233,7 @@ struct HierarchyFrame {
 };
 
 void drawNodeTree(const ImportedModel& model, const std::unordered_map<std::uint32_t, std::uint32_t>& indexByLocalId,
-                  std::uint32_t rootLocalId, std::vector<HierarchyFrame>& stack) {
+                  std::uint32_t rootLocalId, std::vector<HierarchyFrame>& stack, CardRecord& record) {
     stack.clear();
     stack.push_back(HierarchyFrame{.nodeLocalId = rootLocalId});
     while (!stack.empty()) {
@@ -261,6 +263,9 @@ void drawNodeTree(const ImportedModel& model, const std::unordered_map<std::uint
                 flags |= ImGuiTreeNodeFlags_Leaf;
             }
             top.opened = ImGui::TreeNodeEx("##row", flags, "%s", label.c_str());
+            // task E.6.3 (D4): a SpanFullWidth row's fill starts at WorkRect.Min.x -- the card's narrowed body edge,
+            // never its outer edge (I332). Recorded off ImGui's own item, every row; the last one drawn is read.
+            record.lastSpanFullWidthMinX = ImGui::GetItemRectMin().x;
         }
         const ImportedNode& current = model.nodes[nodeIndex];
         if (top.opened && top.childCursor < current.children.size()) {
@@ -277,9 +282,9 @@ void drawNodeTree(const ImportedModel& model, const std::unordered_map<std::uint
     }
 }
 
-void drawHierarchy(const ImportedModel& model) {
+void drawHierarchy(const ImportedModel& model, CardRecord& record) {
     if (model.roots.empty()) {
-        ImGui::TextDisabled("(no nodes)");
+        mutedText("(no nodes)");
         return;
     }
     // Built ONCE per call -- fbx_import.cpp's own nodeIndexByLocalId shape, restated on the READ side.
@@ -290,14 +295,14 @@ void drawHierarchy(const ImportedModel& model) {
     }
     std::vector<HierarchyFrame> stack;  // local: this panel shows one model at a time, not a hot loop
     for (const std::uint32_t root : model.roots) {
-        drawNodeTree(model, indexByLocalId, root, stack);
+        drawNodeTree(model, indexByLocalId, root, stack, record);
     }
 }
 
 // ---- section 4: Meshes -------------------------------------------------------------------------------
 void drawMeshes(const ImportedModel& model) {
     if (model.meshes.empty()) {
-        ImGui::TextDisabled("(no meshes)");
+        mutedText("(no meshes)");
         return;
     }
     for (std::size_t m = 0; m < model.meshes.size(); ++m) {
@@ -332,12 +337,12 @@ void drawMeshes(const ImportedModel& model) {
 void drawTextureSlot(const ImportedModel& model, const char* slotName, const std::optional<ImportedTextureRef>& slot) {
     if (!slot.has_value()) {
         const std::string line = std::format("{}: (none)", slotName);
-        ImGui::TextDisabled("%s", line.c_str());
+        mutedText(line);
         return;
     }
     if (slot->imageIndex >= model.images.size()) {
         const std::string line = std::format("{}: (unresolved)", slotName);
-        ImGui::TextDisabled("%s", line.c_str());
+        mutedText(line);
         return;
     }
     const ImportedImage& image = model.images[slot->imageIndex];
@@ -357,7 +362,7 @@ void drawTextureSlot(const ImportedModel& model, const char* slotName, const std
 
 void drawMaterials(const ImportedModel& model) {
     if (model.materials.empty()) {
-        ImGui::TextDisabled("(no materials)");
+        mutedText("(no materials)");
         return;
     }
     for (std::size_t i = 0; i < model.materials.size(); ++i) {
@@ -399,7 +404,7 @@ void drawMaterials(const ImportedModel& model) {
 // nodes.size() and still name the WRONG node).
 void drawSkeletonAndAnimation(const ImportedModel& model) {
     if (model.skins.empty() && model.animations.empty()) {
-        ImGui::TextDisabled("(no skins or animations)");
+        mutedText("(no skins or animations)");
         return;
     }
     std::unordered_map<std::uint32_t, std::uint32_t> indexByLocalId;
@@ -470,31 +475,52 @@ void drawSkeletonAndAnimation(const ImportedModel& model) {
     }
 }
 
-// ---- the Imported state's six CollapsingHeader sections, in order -----------------------------------
+// ---- the Imported state's six section CARDS, in order (task E.6.3, D10) -----------------------------
 // ALL SIX default OPEN (the Inspector's own per-component CollapsingHeader precedent,
 // inspector_panel.cpp:186, applied uniformly): a user who just selected an asset sees everything about
 // it immediately, with no extra click to discover content -- and, structurally, a section that
 // defaulted CLOSED would be unreachable by this project's entire GPU-tier testing methodology (no
 // tier anywhere in this tree can synthesize a CollapsingHeader click), leaving it permanently unproven.
 void drawImported(const ModelImportSession& session, bool& applyRequested, bool& revertRequested,
-                  std::optional<ImportSettings>& editedSettings) {
-    if (ImGui::CollapsingHeader("Overview", ImGuiTreeNodeFlags_DefaultOpen)) {
-        drawOverview(session);
-    }
-    if (ImGui::CollapsingHeader("Import Settings", ImGuiTreeNodeFlags_DefaultOpen)) {
-        drawSettingsForm(session, applyRequested, revertRequested, editedSettings);
-    }
-    if (ImGui::CollapsingHeader("Hierarchy", ImGuiTreeNodeFlags_DefaultOpen)) {
-        drawHierarchy(session.result().model);
-    }
-    if (ImGui::CollapsingHeader("Meshes", ImGuiTreeNodeFlags_DefaultOpen)) {
-        drawMeshes(session.result().model);
-    }
-    if (ImGui::CollapsingHeader("Materials", ImGuiTreeNodeFlags_DefaultOpen)) {
-        drawMaterials(session.result().model);
-    }
-    if (ImGui::CollapsingHeader("Skeleton & Animation", ImGuiTreeNodeFlags_DefaultOpen)) {
-        drawSkeletonAndAnimation(session.result().model);
+                  std::optional<ImportSettings>& editedSettings, CardPainter& painter, CardRecord& record) {
+    using Section = ImportDetailsSection;
+    constexpr std::array<Section, 6> SECTIONS{
+        Section::Overview, Section::ImportSettings, Section::Hierarchy,
+        Section::Meshes,   Section::Materials,      Section::SkeletonAnimation,
+    };
+    for (const ImportDetailsSection section : SECTIONS) {
+        ImGui::PushID(static_cast<int>(section));  // 1:1 with the PopID below; the card's scope closes first
+        {
+            const PanelCard card(
+                painter, "##card",
+                CardSpec{.title = importDetailsSectionTitle(section), .icon = importDetailsSectionIcon(section)},
+                nullptr, &record);
+            if (card.header().open) {
+                switch (section) {  // no default: -- a new section is a clang-diagnostic-switch failure
+                    case ImportDetailsSection::Overview:
+                        drawOverview(session);
+                        break;
+                    case ImportDetailsSection::ImportSettings:
+                        drawSettingsForm(session, applyRequested, revertRequested, editedSettings, record);
+                        break;
+                    case ImportDetailsSection::Hierarchy:
+                        drawHierarchy(session.result().model, record);
+                        break;
+                    case ImportDetailsSection::Meshes:
+                        drawMeshes(session.result().model);
+                        break;
+                    case ImportDetailsSection::Materials:
+                        drawMaterials(session.result().model);
+                        break;
+                    case ImportDetailsSection::SkeletonAnimation:
+                        drawSkeletonAndAnimation(session.result().model);
+                        break;
+                    case ImportDetailsSection::Blender:
+                        break;  // drawn ABOVE onDraw's state switch, for every .blend state (AC-37)
+                }
+            }
+        }
+        ImGui::PopID();
     }
 }
 
@@ -538,10 +564,10 @@ void drawSearchedPaths(const BlenderService& blender) {
     if (blender.searchedPaths().empty()) {
         return;
     }
-    ImGui::TextDisabled("Searched:");
+    mutedText("Searched:");
     // A scrolling region rather than an unbounded list: a long PATH can contribute hundreds of entries.
-    if (ImGui::BeginChild("blender-searched", ImVec2(0.0F, ImGui::GetTextLineHeightWithSpacing() * 6.0F),
-                          ImGuiChildFlags_Borders)) {
+    const float searchedHeight = ImGui::GetTextLineHeightWithSpacing() * IMPORT_DETAILS_SEARCHED_VISIBLE_ROWS;
+    if (ImGui::BeginChild("blender-searched", ImVec2(0.0F, searchedHeight), ImGuiChildFlags_Borders)) {
         for (const std::string& path : blender.searchedPaths()) {
             ImGui::TextUnformatted(path.c_str());
         }
@@ -560,7 +586,7 @@ void drawBlenderSection(const ModelImportSession& session, bool& convertRequeste
             "This file has no valid .meta identity, so there is nowhere to cache a conversion. "
             "Reimport the project's assets to repair it.");
         ImGui::BeginDisabled(true);
-        if (ImGui::Button("Import with Blender")) {
+        if (ghostButton("Import with Blender")) {
             convertRequested = true;  // unreachable while disabled; kept so enabling it is one edit
         }
         ImGui::EndDisabled();
@@ -572,7 +598,7 @@ void drawBlenderSection(const ModelImportSession& session, bool& convertRequeste
             // A CHILD PROCESS is in flight and there is nothing to offer until it answers. This arm is
             // for Probing ALONE -- see the fall-through group below for why Unknown is not the same
             // thing (code-review B1).
-            ImGui::TextDisabled("Checking the Blender version...");
+            mutedText("Checking the Blender version...");
             return;
         case BlenderState::ToolMissing:
             ImGui::TextWrapped("Blender was not found.");
@@ -580,12 +606,12 @@ void drawBlenderSection(const ModelImportSession& session, bool& convertRequeste
             scratch =
                 std::format("Blender {}.{} or newer is recommended; {}.{} is the minimum.", BLENDER_MIN_SUPPORTED.major,
                             BLENDER_MIN_SUPPORTED.minor, BLENDER_ABSOLUTE_MIN.major, BLENDER_ABSOLUTE_MIN.minor);
-            ImGui::TextDisabled("%s", scratch.c_str());
-            if (ImGui::Button("Locate...")) {
+            mutedTextWrapped(scratch);
+            if (ghostButton("Locate...")) {
                 locateRequested = true;
             }
             ImGui::SameLine();
-            if (ImGui::Button("Re-detect")) {
+            if (ghostButton("Re-detect")) {
                 redetectRequested = true;
             }
             return;
@@ -596,18 +622,18 @@ void drawBlenderSection(const ModelImportSession& session, bool& convertRequeste
                 ImGui::TextWrapped("%s", blender.message().c_str());
             }
             drawBlenderLog(blender, scratch);
-            if (ImGui::Button("Locate...")) {
+            if (ghostButton("Locate...")) {
                 locateRequested = true;
             }
             ImGui::SameLine();
-            if (ImGui::Button("Re-detect")) {
+            if (ghostButton("Re-detect")) {
                 redetectRequested = true;
             }
             return;
         case BlenderState::Converting:
             scratch = std::format("Running Blender... {:.1f} s", static_cast<double>(blender.elapsedSeconds()));
             ImGui::TextUnformatted(scratch.c_str());
-            if (ImGui::Button("Cancel")) {
+            if (ghostButton("Cancel")) {
                 cancelRequested = true;
             }
             return;
@@ -639,7 +665,8 @@ void drawBlenderSection(const ModelImportSession& session, bool& convertRequeste
     // D14's "attempt, never refuse" band: a version below the recommended floor still converts, and the
     // warning says so rather than blocking.
     if (blender.state() == BlenderState::Ready && !blender.message().empty()) {
-        ImGui::TextColored(toImVec4(EDITOR_THEME.palette.error), "%s", blender.message().c_str());
+        // task E.6.3 (D10): a non-blocking warning, F22
+        ImGui::TextColored(toImVec4(EDITOR_THEME.palette.warning), "%s", blender.message().c_str());
     }
 
     if (session.state() == SessionState::ConversionFailed) {
@@ -647,8 +674,11 @@ void drawBlenderSection(const ModelImportSession& session, bool& convertRequeste
             ImGui::TextColored(toImVec4(EDITOR_THEME.palette.error), "%s", blender.message().c_str());
         }
         drawBlenderLog(blender, scratch);
-        if (ImGui::Button("Retry")) {
-            convertRequested = true;
+        {
+            const GhostStyle ghost;  // task E.6.3 (D10): a body button; the line itself stays an ImGui::Button
+            if (ImGui::Button("Retry")) {
+                convertRequested = true;
+            }
         }
     } else if (session.state() == SessionState::Imported) {
         // THE ARTIFACT'S OWN provenance, never blender().versionString() (code-review S4). That accessor
@@ -667,20 +697,23 @@ void drawBlenderSection(const ModelImportSession& session, bool& convertRequeste
         }
         ImGui::TextUnformatted(scratch.c_str());
         drawBlenderLog(blender, scratch);
-        if (ImGui::Button("Re-import")) {
-            convertRequested = true;
+        {
+            const GhostStyle ghost;  // task E.6.3 (D10): a body button; the line itself is I77's
+            if (ImGui::Button("Re-import")) {
+                convertRequested = true;
+            }
         }
     } else {
-        if (ImGui::Button("Import with Blender")) {
+        if (ghostButton("Import with Blender")) {
             convertRequested = true;
         }
     }
     ImGui::SameLine();
-    if (ImGui::Button("Re-detect")) {
+    if (ghostButton("Re-detect")) {
         redetectRequested = true;
     }
     ImGui::SameLine();
-    if (ImGui::Button("Locate...")) {
+    if (ghostButton("Locate...")) {
         locateRequested = true;
     }
 }
@@ -697,13 +730,18 @@ void drawFailed(const ModelImportSession& session) {
 
 }  // namespace
 
+ImportDetailsPanel::ImportDetailsPanel() : cardPainter(std::make_unique<CardPainter>()) {}
+ImportDetailsPanel::~ImportDetailsPanel() = default;
+
 void ImportDetailsPanel::onDraw(PanelContext& /*context*/) {  // no World/Selection/Project read (D18's
                                                               // "context is ignored" precedent)
+    // task E.6.3 (D14): one recorded frame per onDraw, opened before any early return.
+    beginCardRecordFrame(cardRecordValue);
     if (sessionPtr == nullptr) {
         // The very first frame of a session's life: EditorApp::tick() reconciles and services the
         // session AFTER drawShellUi (INV-M12), so onDraw() can run once before setSession() ever has.
         // Indistinguishable from Idle, and correctly so -- nothing has been selected yet either way.
-        ImGui::TextDisabled("Select an asset in the Assets panel.");
+        mutedText("Select an asset in the Assets panel.");
         return;
     }
     // task 3.2.4 (AC-37): FIRST, and BEFORE the switch. Every arm below returns, so a section placed
@@ -712,14 +750,19 @@ void ImportDetailsPanel::onDraw(PanelContext& /*context*/) {  // no World/Select
     // on the TARGET's name alone, so no other asset type ever shows it and the existing six sections
     // stay exactly six for everything else.
     if (isBlendFileName(sessionPtr->target())) {
-        if (ImGui::CollapsingHeader("Blender", ImGuiTreeNodeFlags_DefaultOpen)) {
+        // task E.6.3 (D10): a card, ImGui-owned open state (this window never flips), DefaultOpen like every card.
+        const PanelCard card(*cardPainter, "##blender",
+                             CardSpec{.title = importDetailsSectionTitle(ImportDetailsSection::Blender),
+                                      .icon = importDetailsSectionIcon(ImportDetailsSection::Blender)},
+                             nullptr, &cardRecordValue);
+        if (card.header().open) {
             drawBlenderSection(*sessionPtr, convertRequested, cancelRequested, locateRequested, redetectRequested,
                                labelScratch);
         }
     }
     switch (sessionPtr->state()) {
         case SessionState::Idle:
-            ImGui::TextDisabled("Select an asset in the Assets panel.");
+            mutedText("Select an asset in the Assets panel.");
             return;
         case SessionState::NotImportable: {
             labelScratch = std::format("'{}': no importer claims this file type.", sessionPtr->target());
@@ -730,7 +773,7 @@ void ImportDetailsPanel::onDraw(PanelContext& /*context*/) {  // no World/Select
             drawFailed(*sessionPtr);
             return;
         case SessionState::Imported:
-            drawImported(*sessionPtr, applyRequested, revertRequested, editedSettings);
+            drawImported(*sessionPtr, applyRequested, revertRequested, editedSettings, *cardPainter, cardRecordValue);
             return;
         case SessionState::NeedsConversion:
         case SessionState::Converting:

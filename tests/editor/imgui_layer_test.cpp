@@ -67,15 +67,17 @@
 // task 3.1.5 (SL1-SL10): the scene-asset loader is SRC-PRIVATE, so it is reached the way
 // blender_service_test.cpp reaches blender_process.hpp -- by relative path into editor/src. It names
 // scene_render::MeshBinding, which is why aero::scene_render is on this target's link line.
-#include "../../editor/src/asset_browser_panel.hpp"  // task E.6.3 (I323-I326): the Assets chrome record
-#include "../../editor/src/console_panel.hpp"        // task E.6.1 (I281): the Console's own log model
-#include "../../editor/src/editor_fonts.hpp"         // task E.6.1 (I277-I279): the faces, measured ImGui-free
-#include "../../editor/src/editor_theme_ui.hpp"      // task E.6.1 (I280-I282): style snapshots, ImGui-free
-#include "../../editor/src/file_dialog.hpp"          // fix 2.5.1-focus (I275, I276): the dialog focus gate + helper
-#include "../../editor/src/hierarchy_panel.hpp"      // task E.5.2, I249: requestCreate -- the panel-to-drain path
-#include "../../editor/src/inspector_panel.hpp"      // task E.6.1 (I284): the face its headers and labels drew in
-#include "../../editor/src/material_panel.hpp"       // task E.2.4, I136: previewOutputTarget() -- the same
-                                                     // src-private reach the two lines below already make
+#include "../../editor/src/asset_browser_panel.hpp"     // task E.6.3 (I323-I326): the Assets chrome record
+#include "../../editor/src/console_panel.hpp"           // task E.6.1 (I281): the Console's own log model
+#include "../../editor/src/editor_fonts.hpp"            // task E.6.1 (I277-I279): the faces, measured ImGui-free
+#include "../../editor/src/editor_theme_ui.hpp"         // task E.6.1 (I280-I282): style snapshots, ImGui-free
+#include "../../editor/src/file_dialog.hpp"             // fix 2.5.1-focus (I275, I276): the dialog focus gate + helper
+#include "../../editor/src/hierarchy_panel.hpp"         // task E.5.2, I249: requestCreate -- the panel-to-drain path
+#include "../../editor/src/import_details_panel.hpp"    // task E.6.3 (I332)
+#include "../../editor/src/inspector_panel.hpp"         // task E.6.1 (I284): the face its headers and labels drew in
+#include "../../editor/src/material_panel.hpp"          // task E.2.4, I136: previewOutputTarget() -- the same
+                                                        // src-private reach the two lines below already make
+#include "../../editor/src/project_settings_panel.hpp"  // task E.6.3 (I332)
 #include "../../editor/src/scene_asset_loader.hpp"
 #include "../../editor/src/viewport_panel.hpp"  // task 3.6.3: ViewportPanel's three test seams --
                                                 // postProcess(), tonemapParams(), requestTonemapParams().
@@ -15987,7 +15989,8 @@ TEST_CASE(
         // inside any longer number. The constant this clause is about was spelled `180.0F`.
     }
     SUBCASE("(d) the Apply emphasis derives from the style -- no colour literal") {
-        CHECK(panel.find("GetStyleColorVec4(ImGuiCol_ButtonActive)") != std::string::npos);
+        CHECK(panel.find("primaryButton(\"Apply\"") != std::string::npos);  // task E.6.3 (D10): the primary helper
+        CHECK(panel.find("GetStyleColorVec4(ImGuiCol_ButtonActive)") == std::string::npos);
         CHECK(panel.find("IM_COL32") == std::string::npos);
         // The two file-local ImVec4s (WARNING_COLOR / NOTICE_COLOR) moved into EDITOR_THEME at E.6.1 --
         // the count is pinned at zero and the roles' reads are asserted.
@@ -22553,13 +22556,13 @@ TEST_CASE("editor: the panels read their roles from the theme (task E.6.1, I287)
         {"material_panel.cpp", 10U},
         {"import_details_panel.cpp", 6U},
         {"project_ui.cpp", 2U},
-        {"asset_tile.cpp", 0U},           // task E.6.3: the captions read roles
-        {"asset_browser_panel.cpp", 0U},  // task E.6.3: mutedText
-        {"project_settings_panel.cpp", 1U},
-        {"shell_chrome_ui.cpp", 13U},     // task E.6.3: 15 - textBright - onAccent (the segments' roles moved)
-        {"panel_chrome_model.cpp", 26U},  // task E.6.3: chromeRoleColor, each role ONCE
-        {"panel_chrome_ui.cpp", 0U},      // task E.6.3: every colour through the role map
-        {"viewport_panel.cpp", 0U},       // task E.6.3: the HUD reads roles
+        {"asset_tile.cpp", 0U},              // task E.6.3: the captions read roles
+        {"asset_browser_panel.cpp", 0U},     // task E.6.3: mutedText
+        {"project_settings_panel.cpp", 0U},  // task E.6.3: labels through the role map
+        {"shell_chrome_ui.cpp", 13U},        // task E.6.3: 15 - textBright - onAccent (the segments' roles moved)
+        {"panel_chrome_model.cpp", 26U},     // task E.6.3: chromeRoleColor, each role ONCE
+        {"panel_chrome_ui.cpp", 0U},         // task E.6.3: every colour through the role map
+        {"viewport_panel.cpp", 0U},          // task E.6.3: the HUD reads roles
     }};
     // The roles are READ, not merely the literals gone -- each (file, role) at its EXACT count of reads
     // in the comment-stripped code. One read swapped back to an ImGui slot (S25's site on
@@ -22571,9 +22574,9 @@ TEST_CASE("editor: the panels read their roles from the theme (task E.6.1, I287)
         {"material_panel.cpp", "error", 3U},
         {"material_panel.cpp", "textMuted", 1U},  // the status line's Disabled arm (D16)
         {"material_panel.cpp", "warning", 6U},
-        {"import_details_panel.cpp", "error", 6U},
+        {"import_details_panel.cpp", "error", 5U},
+        {"import_details_panel.cpp", "warning", 1U},  // task E.6.3: the Blender advisory (C13)
         {"project_ui.cpp", "error", 2U},
-        {"project_settings_panel.cpp", "textMuted", 1U},
         {"shell_chrome_ui.cpp", "accent", 1U},            // task E.6.2: chromeColors(), each role read once
         {"shell_chrome_ui.cpp", "active", 1U},            // task E.6.2: chromeColors(), each role read once
         {"shell_chrome_ui.cpp", "border", 1U},            // task E.6.2: chromeColors(), each role read once
@@ -26240,4 +26243,295 @@ TEST_CASE("editor: the triangle stat end to end -- N cubes in view, M behind, N 
     app->requestQuit();
     CHECK(app->tick() == false);
     app.reset();
+}
+
+// ---- task E.6.3, step 8: the Material, Import Details and Project Settings cards --------------------------------
+
+TEST_CASE("editor: Material cards -- eight, panel-owned bits, Apply primary, both modes (task E.6.3, I331)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "material cards i331", .width = 1280, .height = 1000});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    const std::string assetsRoot = created.root + "/assets";
+    REQUIRE(engine::editor::writeTextFileAtomic(assetsRoot + "/full.aeromat", FULL_AEROMAT_TEXT).empty());
+    REQUIRE(writeBinaryFixture(assetsRoot + "/wood.png", TINY_PNG_RED.data(), TINY_PNG_RED.size()).empty());
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = created.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    app->panels().setVisible("Console", false);
+    app->panels().setVisible("Inspector", false);  // so Material wins the Right dock tab (I170's fixture)
+    REQUIRE(app->tick());
+    app->requestAssetBrowserSelectEntry("full.aeromat");
+    e62Ticks(*app, 4);
+    REQUIRE(app->materialTargetPath() == "full.aeromat");
+    auto* const material = dynamic_cast<engine::editor::MaterialPanel*>(app->panels().find("Material"));
+    REQUIRE(material != nullptr);
+    const engine::editor::CardRecord& r = material->cardRecord();
+    const std::uint64_t before = r.framesRecorded;
+    REQUIRE(app->tick());
+    REQUIRE(r.framesRecorded > before);
+
+    // (a) eight cards, every body open (the bits ship true), Apply through the primary helper.
+    CHECK(r.cardsDrawn == 8U);
+    CHECK(r.bodiesSubmitted == 8U);
+    CHECK(r.primaryButtonsDrawn == 1U);
+    app->requestMaterialSectionOpen(2, false);  // through the PANEL's bit -- I175's seam
+    e62Ticks(*app, 2);
+    CHECK(r.cardsDrawn == 8U);
+    CHECK(r.bodiesSubmitted == 7U);
+    REQUIRE(r.cards.size() == 8U);
+    CHECK_FALSE(r.cards[2].open);
+    CHECK_FALSE(r.cards[2].headerRuleDrawn);  // a CLOSED card draws no rule (I336's closed-card arm)
+
+    // (b) I318's Material half: one right edge for every card (a leaked narrowing moves every LATER card -- S5), the
+    // last ##rows table on the narrowed edge, and the slot row's Clear ending on it.
+    const engine::editor::CardEntryRecord& first = r.cards.front();
+    REQUIRE(first.open);
+    for (const engine::editor::CardEntryRecord& card : r.cards) {
+        CHECK(std::abs(card.outerMin.x - first.outerMin.x) <= 0.5F);
+        CHECK(std::abs(card.outerMax.x - first.outerMax.x) <= 0.5F);
+        if (card.open) {
+            CHECK(std::abs(card.bodyMax.x - first.bodyMax.x) <= 0.5F);
+            CHECK(card.bodyMax.x < card.outerMax.x);  // ANTI-VACUITY: the body IS narrowed
+        }
+    }
+    REQUIRE(r.lastBodyTableMaxX > 0.0F);
+    CHECK(std::abs(r.lastBodyTableMaxX - first.bodyMax.x) <= 1.0F);  // ImTrunc(CalcItemSize) at a fractional scale
+    REQUIRE(r.lastSlotClearMaxX > 0.0F);
+    CHECK(std::abs(r.lastSlotClearMaxX - first.bodyMax.x) <= 0.5F);  // assetReferenceFieldWidth leaves Clear's width
+
+    // (c) I336's Material half: the header item is the span plus this host's overhang -- IM_TRUNC(WindowPadding.x x
+    // 0.5) in the panel window, 0 inside the FixedRegions ##body child (D4). The strip and the outline are ONE recorded
+    // span and the title x ONE pure layout (PC10's), so neither is re-derived here: that would compare the record
+    // with itself. The placed-body table arms are the Inspector half's, where ##fields is a body's ONLY item -- here a
+    // slot section's ##rows follows its slot row and precedes its sampler disclosure, so the frame's LAST table need
+    // not bound its body.
+    const float s = app->uiScale();
+    const float windowOverhang = std::trunc(e63StyleX(s, "WindowPadding") * 0.5F);
+    const float overhangA = first.stripMinX - first.headerItemMin.x;
+    CHECK((std::abs(overhangA) <= 0.5F || std::abs(overhangA - windowOverhang) <= 0.5F));
+    for (std::size_t i = 0; i < r.cards.size(); ++i) {
+        CAPTURE(i);
+        const engine::editor::CardEntryRecord& card = r.cards[i];
+        CHECK(std::abs((card.stripMinX - card.headerItemMin.x) - overhangA) <= 0.5F);
+        CHECK(std::abs((card.headerItemMax.x - card.stripMaxX) - overhangA) <= 0.5F);
+        CHECK(card.headerRuleDrawn == card.open);  // the rule's vertices reached the list iff the card is open
+        // The chevron's INK at its drawn size, both glyphs (card 2 is CLOSED: chevron-right, ink 334..666 of a 0..666
+        // box), as the Inspector half checks the open one.
+        CHECK(card.chevronInkWidth < card.chevronBoxWidth);
+        CHECK(std::abs(card.chevronInkWidth - (3.5F * s)) <= 1.0F);
+        if (card.open) {
+            // The values handed to SetCursorScreenPos and to the fill and outline, against D4's literal: they catch
+            // a mutated formula, never a draw that ignores them.
+            CHECK(std::abs(card.topPadding - (10.0F * s)) <= 1.0F);
+            CHECK(std::abs(card.bottomPadding - (10.0F * s)) <= 1.0F);
+        }
+        if (i + 1U < r.cards.size()) {
+            CHECK(std::abs(card.gapAfter - (12.0F * s)) <= 1.0F);
+        }
+    }
+
+    // (d) THE MODE FLIP at ONE dock width: only the height changes, so the reset layout gives the Right node the same
+    // width, and the Material panel crosses its FixedRegions / Scrolling boundary (D4). The bit survives the flip.
+    const engine::Vec2 outerMinA = first.outerMin;
+    const engine::Vec2 outerMaxA = first.outerMax;
+    const float bodyInsetA = first.outerMax.x - first.bodyMax.x;
+    window->setSize(1280, 420);
+    e62Ticks(*app, 3);
+    app->requestLayoutReset();
+    e62Ticks(*app, 6);
+    const std::uint64_t flippedFrames = r.framesRecorded;
+    REQUIRE(app->tick());
+    REQUIRE(r.framesRecorded > flippedFrames);  // the reads below are a POST-flip frame, never a stale one
+    CHECK_FALSE(app->materialSectionOpen(2));
+    CHECK(r.bodiesSubmitted == 7U);
+    REQUIRE_FALSE(r.cards.empty());
+    const engine::editor::CardEntryRecord& flipped = r.cards.front();
+    const float overhangB = flipped.stripMinX - flipped.headerItemMin.x;
+    MESSAGE("I331 overhangs: " << overhangA << " at 1280x1000, " << overhangB << " at 1280x420");
+    if (std::abs(overhangA - overhangB) > 0.5F) {
+        // The two hosts really differed: the card's x span is the SAME (the child sits inside the panel's padding),
+        // less a scrollbar on the right when one shows; the body's inset from the outer edge is the same.
+        CHECK(std::abs(flipped.outerMin.x - outerMinA.x) <= 0.5F);
+        CHECK(std::abs(flipped.outerMax.x - outerMaxA.x) <= e63StyleX(s, "ScrollbarSize") + 0.5F);
+        CHECK(std::abs((flipped.outerMax.x - flipped.bodyMax.x) - bodyInsetA) <= 0.5F);
+        CHECK((std::abs(overhangB) <= 0.5F || std::abs(overhangB - windowOverhang) <= 0.5F));  // one of the hosts
+    } else {
+        WARN(std::abs(overhangA - overhangB) > 0.5F);  // this display did not cross the boundary: geometry
+    }
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: Import Details and Project Settings draw as cards; the row fill is narrowed (task E.6.3, I332)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "import and settings cards i332", .width = 1280, .height = 900});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+
+    SUBCASE("a cached .blend: the Blender card and the six import cards") {
+        // I78's staging, copied in full (the suite's "scaffolding is copied" rule): its project, its OPAQUE_BLEND_TEXT,
+        // the sidecar read and the provenance pair under Library/.../blender-export.
+        const std::string blendPath = created.root + "/assets/statue.blend";
+        REQUIRE(engine::editor::writeTextFileAtomic(blendPath, OPAQUE_BLEND_TEXT).empty());
+
+        std::optional<engine::editor::EditorApp> app =
+            engine::editor::EditorApp::create(*device, *window, ctx,
+                                              {.persistLayout = false,
+                                               .unfocusedFrameCapHz = 0.0F,
+                                               .projectPath = created.root,
+                                               .restoreLastProject = false,
+                                               .recentProjectsPath = uniqueRecentsFile(),
+                                               .toolPrefsPath = uniqueToolPrefsFile()});
+        REQUIRE(app.has_value());
+        app->panels().setVisible("Console", false);
+        REQUIRE(app->tick());  // the initial scan MINTS the sidecar, which is where the GUID comes from
+        REQUIRE(app->tick());
+        app->requestPanelFocus("Import Details");
+
+        // Stage the cache hit from OUTSIDE the app, exactly as a previous session would have left it: the
+        // GUID comes from the sidecar the scan just wrote, and the source hash from the same primitive the
+        // scan itself uses.
+        const engine::editor::FileReadResult metaText = engine::editor::readTextFile(blendPath + ".meta");
+        REQUIRE(metaText.text.has_value());
+        const engine::editor::MetaParseResult meta = engine::editor::parseMeta(*metaText.text);
+        REQUIRE(meta.guid.has_value());
+        const engine::editor::FileHashResult sourceHash = engine::editor::hashFileContents(blendPath);
+        REQUIRE(sourceHash.hash.has_value());
+
+        const std::string exportDir = created.root + '/' + std::string(engine::editor::ASSET_CACHE_DIR_NAME) + '/' +
+                                      std::string(engine::editor::BLENDER_EXPORT_DIR_NAME);
+        std::error_code ec;
+        std::filesystem::create_directories(std::filesystem::path(exportDir), ec);
+        REQUIRE_FALSE(ec);
+        engine::editor::ExportProvenance record;
+        record.guid = *meta.guid;
+        record.sourcePath = "assets/statue.blend";
+        record.blenderPath = "/nonexistent/blender";
+        record.blenderVersion = "4.2.1";
+        record.scriptVersion = engine::editor::BLENDER_SCRIPT_VERSION;
+        // The fingerprint RE-DERIVED from the two public primitives rather than by calling the production
+        // helper, so a change to what goes into it reddens this case instead of moving with it.
+        const std::string defaultSettingsMeta =
+            engine::editor::writeMetaText(engine::Guid{}, engine::editor::ImportSettings{});
+        record.settingsFingerprint =
+            engine::formatContentHash(engine::hashBytes(std::as_bytes(std::span<const char>(defaultSettingsMeta))));
+        record.sourceHash = *sourceHash.hash;
+        const std::string guidText = engine::formatGuid(*meta.guid);
+        REQUIRE(engine::editor::writeTextFileAtomic(exportDir + '/' + guidText + ".glb", blenderTestGlb()).empty());
+        REQUIRE(engine::editor::writeTextFileAtomic(exportDir + '/' + guidText + ".json",
+                                                    engine::editor::writeExportProvenanceText(record))
+                    .empty());
+        app->requestAssetBrowserSelectEntry("statue.blend");
+        e62Ticks(*app, 2);
+        REQUIRE(app->modelImportState() == static_cast<int>(engine::editor::SessionState::Imported));
+        e63Front(*app, "Import Details", "Inspector");
+        auto* const details = dynamic_cast<engine::editor::ImportDetailsPanel*>(app->panels().find("Import Details"));
+        REQUIRE(details != nullptr);
+        const engine::editor::CardRecord& r = details->cardRecord();
+        REQUIRE(r.framesRecorded > 0U);
+        CHECK(r.cardsDrawn == 7U);
+        CHECK(r.primaryButtonsDrawn == 1U);  // Import Settings is open, so Apply drew
+        app->requestQuit();
+        CHECK(app->tick() == false);
+        app.reset();
+    }
+    SUBCASE("a .gltf with a node chain: six cards, and a row's fill starts on the NARROWED body edge") {
+        REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/chain.gltf", HIERARCHY_GLTF_TEXT).empty());
+        std::optional<engine::editor::EditorApp> app =
+            engine::editor::EditorApp::create(*device, *window, ctx,
+                                              {.persistLayout = false,
+                                               .unfocusedFrameCapHz = 0.0F,
+                                               .projectPath = created.root,
+                                               .restoreLastProject = false,
+                                               .recentProjectsPath = uniqueRecentsFile()});
+        REQUIRE(app.has_value());
+        app->panels().setVisible("Console", false);
+        REQUIRE(app->tick());
+        app->requestAssetBrowserSelectEntry("chain.gltf");
+        e62Ticks(*app, 3);
+        REQUIRE(app->modelImportState() == static_cast<int>(engine::editor::SessionState::Imported));
+        e63Front(*app, "Import Details", "Inspector");
+        auto* const details = dynamic_cast<engine::editor::ImportDetailsPanel*>(app->panels().find("Import Details"));
+        REQUIRE(details != nullptr);
+        const engine::editor::CardRecord& r = details->cardRecord();
+        CHECK(r.cardsDrawn == 6U);
+        REQUIRE(r.cards.size() == 6U);
+        const engine::editor::CardEntryRecord& hierarchy = r.cards[2];  // Overview, Import Settings, Hierarchy, ...
+        REQUIRE(hierarchy.open);
+        REQUIRE(r.lastSpanFullWidthMinX > 0.0F);  // the Root row drew (C29: a depth-0 row; no tier opens a node)
+        CHECK(std::abs(r.lastSpanFullWidthMinX - hierarchy.bodyMin.x) <= 0.5F);  // the narrowed WorkRect.Min.x...
+        CHECK(r.lastSpanFullWidthMinX > hierarchy.outerMin.x + 0.5F);            // ...never the card's outer edge
+        app->requestQuit();
+        CHECK(app->tick() == false);
+        app.reset();
+    }
+    SUBCASE("Project Settings: two read-only cards, each over its table") {
+        std::optional<engine::editor::EditorApp> app =
+            engine::editor::EditorApp::create(*device, *window, ctx,
+                                              {.persistLayout = false,
+                                               .unfocusedFrameCapHz = 0.0F,
+                                               .projectPath = created.root,
+                                               .restoreLastProject = false,
+                                               .recentProjectsPath = uniqueRecentsFile()});
+        REQUIRE(app.has_value());
+        e62Ticks(*app, 3);
+        e63Front(*app, engine::editor::PROJECT_SETTINGS_PANEL_ID, "Inspector");
+        auto* const settings = dynamic_cast<engine::editor::ProjectSettingsPanel*>(
+            app->panels().find(engine::editor::PROJECT_SETTINGS_PANEL_ID));
+        REQUIRE(settings != nullptr);
+        const engine::editor::CardRecord& r = settings->cardRecord();
+        CHECK(r.cardsDrawn == 2U);
+        REQUIRE(r.cards.size() == 2U);
+        CHECK_FALSE(r.cards[0].overflowDrawn);  // the painter drew no overflow (its own answer)
+        // READ-ONLY, as source: nothing in this panel bumps primaryButtonsDrawn, so a count of it could never go red.
+        const std::vector<std::string> settingsCode =
+            editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/project_settings_panel.cpp");
+        CHECK(countLinesContaining(settingsCode, "Button(") == 0U);    // no button of any kind
+        CHECK(countLinesContaining(settingsCode, ".overflow") == 0U);  // no card asks for an overflow
+        CHECK(std::abs(r.lastBodyTableMaxX - r.cards[1].bodyMax.x) <= 1.0F);
+        app->requestQuit();
+        CHECK(app->tick() == false);
+        app.reset();
+    }
+
+    // SOURCE (every subcase runs it): Re-import is still ONE ImGui::Button line, inside a GhostStyle scope; the
+    // Blender advisory reads `warning`; the searched list's height is the named constant; Apply is the primary helper.
+    const std::vector<std::string> code = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/import_details_panel.cpp");
+    const std::size_t reimportAt = soleLineContaining(code, R"(ImGui::Button("Re-import"))");
+    CHECK(code[reimportAt - 1U].find("const GhostStyle ghost;") != std::string::npos);
+    const std::size_t advisoryAt =
+        soleLineContaining(code, "blender.state() == BlenderState::Ready && !blender.message().empty()");
+    CHECK(code[nextCodeLine(code, advisoryAt + 1U)].find("EDITOR_THEME.palette.warning") != std::string::npos);
+    CHECK(countLinesContaining(code, "IMPORT_DETAILS_SEARCHED_VISIBLE_ROWS") == 1U);
+    CHECK(countLinesContaining(code, "* 6.0F") == 0U);
+    CHECK(countLinesContaining(code, "primaryButton(\"Apply\"") == 1U);
+    CHECK(countLinesContaining(code, "TextDisabled") == 0U);
 }

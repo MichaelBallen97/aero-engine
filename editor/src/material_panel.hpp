@@ -20,12 +20,14 @@
 #include <aero/editor/material_inspector_model.hpp>
 #include <aero/editor/material_session.hpp>
 #include <aero/editor/panel.hpp>
+#include <aero/editor/panel_chrome_model.hpp>  // task E.6.3: CardRecord (pure)
 
 #include "material_preview.hpp"
 
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -42,6 +44,7 @@ namespace engine::editor {
 // clang does not warn under -Wmismatched-tags (task E.3.3).
 struct AssetPickerState;
 class ThumbnailService;
+class CardPainter;  // task E.6.3: panel_chrome_ui.hpp's, held by pointer so this header stays ImGui-free
 
 class AssetDatabase;  // a reconciled POINTER, never a reference member (3.1.1's D13 / A-2 / INV-4):
                       // EditorApp is movable, so a reference binds to a pre-move address.
@@ -51,7 +54,8 @@ public:
     // The device arrives AT CONSTRUCTION, exactly like ViewportPanel's and AssetBrowserPanel's (3.1.3's
     // A17): unlike the project root it can never change during a session, so there is nothing to
     // reconcile. It is stored by the preview alone; this class never touches the GPU.
-    explicit MaterialPanel(rhi::Device& device) noexcept;
+    explicit MaterialPanel(rhi::Device& device);  // task E.6.3: allocates the card painter, so no longer noexcept
+    ~MaterialPanel() override;                    // out of line: CardPainter is incomplete here
 
     // render::MATERIAL_TEXTURE_SLOT_COUNT, restated so this header stays out of the render umbrella.
     // material_panel.cpp static_asserts the two equal, so a disagreement is a COMPILE ERROR rather
@@ -193,6 +197,9 @@ public:
     [[nodiscard]] bool sectionIsOpen(std::size_t section) const noexcept {
         return section < MATERIAL_SECTION_COUNT && sectionOpen[section];
     }
+    // task E.6.3 (D10, D14): what the last onDraw's cards DREW -- eight sections, their spans, paddings and gaps,
+    // the Apply button, the last table and the slot row's Clear.
+    [[nodiscard]] const CardRecord& cardRecord() const noexcept { return cardRecordValue; }
 
     // task E.3.3: both set ONCE in EditorApp::create (the viewportPanel posture), not reconciled --
     // each points at a heap object EditorApp holds through a unique_ptr, so the address survives the
@@ -253,6 +260,8 @@ private:
     // All TRUE: the eight sections ship DefaultOpen. See setSectionOpen for why ImGui's own storage
     // cannot be the authority here.
     std::array<bool, MATERIAL_SECTION_COUNT> sectionOpen{};
+    std::unique_ptr<CardPainter> cardPainter;  // task E.6.3 -- ONE painter for every section card, persistent
+    CardRecord cardRecordValue;                // cardRecord()'s member (the collision rule)
     // task E.3.3: borrowed, never owned, set once -- see setAssetPicker/setThumbnails above.
     AssetPickerState* assetPicker = nullptr;
     ThumbnailService* thumbnails = nullptr;
