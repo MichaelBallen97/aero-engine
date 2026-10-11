@@ -231,8 +231,8 @@ TEST_CASE("theme: Category B is byte-identical to the branch point (task E.6.1, 
     CHECK(t.swatchLabel.lumaB == 722U);
     CHECK(t.swatchLabel.darkLabelThreshold == 1280000U);
 
-    // The viewport's overlay and view-axis colours (viewport_panel.cpp:55-56, :135-138 at the branch point).
-    checkRgbaf(t.viewport.overlayText, {0.7F, 0.7F, 0.75F, 0.8F});
+    // The viewport's view-axis colours (viewport_panel.cpp:135-138 at the branch point); task E.6.3 retired the overlay
+    // text colour with its three lines (D9).
     checkSrgb8(t.viewport.viewAxisLabel, {16U, 16U, 20U, 255U});
     checkSrgb8(t.viewport.viewAxisHoverOutline, {255U, 255U, 255U, 255U});
     checkSrgb8(t.viewport.viewAxisCenterFill, {210U, 210U, 215U, 230U});

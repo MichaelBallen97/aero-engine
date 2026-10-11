@@ -251,9 +251,9 @@ struct ThemeSwatchLabel {
 };
 
 // Moved from viewport_panel.cpp:55-56 and :135-138 at E.6.1, every value unchanged (Category B).
+// task E.6.3 (D9): overlayText retired with the three TextColored lines it coloured (a stated Category-B decision).
 struct ThemeViewport {
-    Rgbaf overlayText{0.7F, 0.7F, 0.75F, 0.8F};  // the extent / fly speed / ortho chips
-    Srgb8 viewAxisLabel{16U, 16U, 20U, 255U};    // dark, for legibility on a filled ball
+    Srgb8 viewAxisLabel{16U, 16U, 20U, 255U};  // dark, for legibility on a filled ball
     Srgb8 viewAxisHoverOutline{255U, 255U, 255U, 255U};
     Srgb8 viewAxisCenterFill{210U, 210U, 215U, 230U};
     float viewAxisNegativeFillAlphaScale = 0.22F;  // a NEGATIVE ball is a ring, faintly filled

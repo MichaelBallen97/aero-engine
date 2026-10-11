@@ -10,10 +10,12 @@
 #include <aero/core/math.hpp>
 #include <aero/core/profiler.hpp>
 #include <aero/core/vfs.hpp>
-#include <aero/editor/asset_drag.hpp>    // task 3.1.5: the payload, the decode and the routing matrix
-#include <aero/editor/axis_palette.hpp>  // task E.1.2: AXIS_X_LINEAR / AXIS_Z_LINEAR
+#include <aero/editor/asset_drag.hpp>          // task 3.1.5: the payload, the decode and the routing matrix
+#include <aero/editor/asset_picker_model.hpp>  // task E.6.3: assetPickerAnchor, the popover's clamp
+#include <aero/editor/axis_palette.hpp>        // task E.1.2: AXIS_X_LINEAR / AXIS_Z_LINEAR
 #include <aero/editor/command_stack.hpp>
 #include <aero/editor/editor_glyphs.hpp>
+#include <aero/editor/editor_icons.hpp>  // task E.6.3: AERO_ICON_CHEVRON_DOWN
 #include <aero/editor/editor_theme.hpp>
 #include <aero/editor/gizmo.hpp>
 #include <aero/editor/gizmo_style.hpp>  // task E.1.5: the pure style + screen-size model
@@ -29,6 +31,7 @@
 
 #include "editor_theme_imgui.hpp"  // task E.6.1: toImVec4
 #include "editor_theme_ui.hpp"     // task E.6.1: toImU32, toRhiColor
+#include "panel_chrome_ui.hpp"     // task E.6.3: chips, roles, faces, the card fills
 
 #include <algorithm>
 #include <array>
@@ -53,16 +56,7 @@ namespace engine::editor {
 namespace {
 
 constexpr std::uint32_t VIEWPORT_EXTENT_QUANTUM = 64;
-// task E.6.1: the clear and the overlay colour are EDITOR_THEME.clear.viewport and
-// EDITOR_THEME.viewport.overlayText, values unchanged; the clear's alpha-1 reason (E4) moved with it.
-constexpr float OVERLAY_INSET = 4.0F;
-// task 3.6.3: the two view-option widget widths, chosen so the whole row (T R S Local + combo +
-// slider) fits a 640-point viewport. NOT load-bearing -- a wrap at a narrow dock width is a
-// cosmetic finding for the validation pass, not a correctness one. task E.6.1 (D10): a width that holds
-// text is a FONT MULTIPLE -- 92 and 130 points were 7.08 and 10.0 bodies at 13 -- so it follows the text,
-// and GetFontSize() already carries the UI scale.
-constexpr float OPTIONS_COMBO_FONT_MULTIPLE = 7.0F;
-constexpr float OPTIONS_SLIDER_FONT_MULTIPLE = 10.0F;
+// task E.6.1: the clear is EDITOR_THEME.clear.viewport, value unchanged; the clear's alpha-1 reason (E4) moved with it.
 
 // task E.1.2: the grid's look. The GREYS are file-local (they are chosen against the viewport's
 // clear, EDITOR_THEME.clear.viewport since E.6.1); the AXIS colours are NOT -- E.3.1's Inspector
@@ -387,6 +381,9 @@ GizmoStyle ViewportPanel::imGuizmoStyleReadback() noexcept {
 // branch), and the half-open `< max` matches the FIRE step's own image-rect test one screen below.
 bool ViewportPanel::overlayOwnsPress(Vec2 pressPoints, Vec2 imageOrigin, Vec2 imageSize) const noexcept {
     if (containsHalfOpen(pressPoints, overlayRowTopLeft, overlayRowBottomRight)) {
+        return true;
+    }
+    if (hudOwnsPoint(latchedHudLayout, pressPoints)) {  // task E.6.3 (D9): the HUD's SCREEN rects, as last drawn
         return true;
     }
     return viewAxisOwnsPoint(pressPoints, imageOrigin, imageSize);
@@ -714,6 +711,13 @@ void ViewportPanel::onDraw(PanelContext& context) {
     // regardless of id) but SetItemKeyOwner does NOT (it returns false for id 0) -- the wheel is
     // claimed by ImGuiWindowFlags_NoScrollWithMouse in options() instead. See plan C1.
     const bool hovered = ImGui::IsItemHovered();
+    // task E.6.3 (D9): the image rect as ImGui LAID IT OUT -- the item, inset by ImageBorderSize (the theme's is 0) --
+    // read here, before any later item replaces the last-item data. The HUD lays out against this, never `avail`.
+    const float imageBorder = ImGui::GetStyle().ImageBorderSize;
+    const ImVec2 imageItemMin = ImGui::GetItemRectMin();
+    const ImVec2 imageItemMax = ImGui::GetItemRectMax();
+    const Vec2 hudImageMin{imageItemMin.x + imageBorder, imageItemMin.y + imageBorder};
+    const Vec2 hudImageMax{imageItemMax.x - imageBorder, imageItemMax.y - imageBorder};
     lastImageSizePoints = Vec2{avail.x, avail.y};  // task 3.1.5: what pickAt needs, latched here
 
     // --- 8b-drop (task 3.1.5). BEFORE the gesture block, so a live payload suppresses the very
@@ -834,22 +838,19 @@ void ViewportPanel::onDraw(PanelContext& context) {
     // (INV-2). Drawing here also puts it UNDER the size readout below and OVER the Image above.
     drawSelectionOverlay(context, Vec2{imageOrigin.x, imageOrigin.y}, Vec2{avail.x, avail.y});
 
-    // Step 9 (D15/C3): the overlay offset is written COMPONENT-WISE -- ImVec2 + ImVec2 does not
-    // compile in this codebase (IMGUI_DEFINE_MATH_OPERATORS is defined nowhere).
-    const float inset = OVERLAY_INSET * lastUiScale;  // task E.6.1: dp, times the UI scale
-    ImGui::SetCursorScreenPos(ImVec2(imageOrigin.x + inset, imageOrigin.y + inset));
-    const ImVec4 overlayColor = toImVec4(EDITOR_THEME.viewport.overlayText);  // task E.6.1: the theme's
-    ImGui::TextColored(overlayColor, "%ux%u", drawExtent.width, drawExtent.height);
-    if (gesture.gesture == CameraGesture::Fly) {
-        ImGui::TextColored(overlayColor, "fly %.1f u/s", static_cast<double>(editorCamera.flySpeed()));
+    // Step 9 (task E.6.3, D9): THE HUD. requestStatsVisible's drain first -- held while the chip, the popover's only
+    // door, is dropped or a modal is up, the gate the Stats checkbox has (I337) -- then the layout from the RECORDED
+    // image rect, latched for next frame's press claims; drawHud draws the stats card and the hints (or the fly chip)
+    // and leaves the cursor at the chip's laid-out min. The extent text, the fly line and `ortho` are gone: the card
+    // shows the extent, the fly chip the speed, and the chip the projection -- with the widget's badge, E.1.3 D15's
+    // "two places" still.
+    const bool noModal = ImGui::GetTopMostPopupModal() == nullptr;
+    const bool statsControlReachable = latchedHudLayout.chip.shown;
+    if (pendingStatsVisible.has_value() && statsControlReachable && noModal) {
+        statsVisibleValue = *pendingStatsVisible;
+        pendingStatsVisible.reset();
     }
-    // task E.1.3 (D15): the mode is readable in TWO places -- here, and on the widget's centre badge.
-    // A badge letter alone is a glyph 6 points across on a widget the eye is not looking at; a person
-    // who wonders "why does nothing get smaller when I fly forward" needs a word, in the place they
-    // already read the resolution.
-    if (editorCamera.projectionMode() == ProjectionMode::Orthographic) {
-        ImGui::TextColored(overlayColor, "ortho");
-    }
+    drawHud(context, hudImageMin, hudImageMax, drawExtent);
     // Step 9b: RECORD THE INTERACTIVE STRIP'S RECT, in the same screen-space POINTS io.MousePos uses,
     // so updatePick's ARM step can refuse a press the strip owns. `rowStart` is captured before `View`,
     // the row's only control since task E.6.2; the row ENDS at the button's rect max, which
@@ -871,9 +872,8 @@ void ViewportPanel::onDraw(PanelContext& context) {
     // (Spelled without the accessor's own name so the gate grep for it reads exactly ONE line, the
     // capture inside drawViewOptions.)
     //
-    // ONLY THE INTERACTIVE ROW. The size readout and the fly line above it are TextColored, which
-    // submits nothing clickable, so a press there has always fallen through to the scene pick and
-    // still does -- this records what it is about, not the whole overlay.
+    // ONLY THE INTERACTIVE ROW -- the view chip. The stats card and the hint chips are draw-list chrome whose
+    // presses hudOwnsPoint claims (task E.6.3, D9); this rect is the chip's, and a dropped chip's is empty.
     const ImVec2 rowStart = ImGui::GetCursorScreenPos();
     // task E.6.2 (D18): `View` alone -- T / R / S and Local / World are the shell toolbar's now.
     drawViewOptions();  // task 3.6.3
@@ -1141,8 +1141,11 @@ void ViewportPanel::updateGizmo(PanelContext& context, Vec2 imageOrigin, Vec2 av
     // force-clears mbUsing (:1070-1077), which would drop it at its current value. `hovered` keeps
     // the claim to frames where the cursor is really on this image, and viewAxisOwnsPoint answers
     // with a DEGENERATE rect -- owning nothing -- whenever the widget is not visible.
+    // task E.6.3 (D9): the HUD claims its presses here too -- the SAME latched rects overlayOwnsPress reads.
+    const Vec2 cursorPoints{io.MousePos.x, io.MousePos.y};
     const bool widgetOwnsCursor =
-        hovered && !ImGuizmo::IsUsing() && viewAxisOwnsPoint(Vec2{io.MousePos.x, io.MousePos.y}, imageOrigin, avail);
+        hovered && !ImGuizmo::IsUsing() &&
+        (viewAxisOwnsPoint(cursorPoints, imageOrigin, avail) || hudOwnsPoint(latchedHudLayout, cursorPoints));
     // D20: an RMB-fly begun mid-drag ends the drag cleanly at its current value.
     // task E.2.4 (D11): while the popover is open, ImGuizmo must be told what ImGui already knows.
     // A focused non-modal popup inhibits item hovering on every OTHER window (IsWindowContentHoverable,
@@ -1316,7 +1319,7 @@ void ViewportPanel::updateViewAxisGizmo(Vec2 imageOrigin, Vec2 avail, bool input
     }
 }
 
-void ViewportPanel::drawViewAxisGizmo() const {
+void ViewportPanel::drawViewAxisGizmo() {
     if (!axisLayout.visible) {
         return;  // D16: nothing draws, and no PushClipRect is left unbalanced
     }
@@ -1342,6 +1345,15 @@ void ViewportPanel::drawViewAxisGizmo() const {
     const float reach = half + pad;
     const Vec2 c = axisLayout.centerPoints;
     drawList->PushClipRect(ImVec2(c.x - reach, c.y - reach), ImVec2(c.x + reach, c.y + reach), true);
+    // task E.6.3 (D9): the divider circle the balls sit in, viewAxisCircleRadius (43) -- clear of every in-plane ball
+    // and of a hovered one (VIEW_AXIS_HOVER_GROWTH draws it at 10), its edge 18 in from the image's corner. FIRST, so
+    // every ball paints over it; inside the clip (reach = half + one ball radius = 46 >= 43 + the rule).
+    const float circleRadius = viewAxisCircleRadius(s);
+    drawList->AddCircle(ImVec2(c.x, c.y), circleRadius, roleU32(ChromeRole::Divider), 0, ruleHeight());
+    hudRecordValue.viewAxisCircleCenter = c;
+    hudRecordValue.viewAxisCircleRadius = circleRadius;
+    hudRecordValue.viewAxisCornerMin = Vec2{c.x - half, c.y - half};
+    hudRecordValue.viewAxisCornerMax = Vec2{c.x + half, c.y + half};
 
     // FAR -> NEAR, so a near ball paints over a far one. THE THREE CHANNELS ARE INDEPENDENT (D3):
     // SIGN is fill-vs-ring, DEPTH is alpha, HOVER is growth plus a white outline plus a forced letter.
@@ -1402,6 +1414,101 @@ void ViewportPanel::drawViewAxisGizmo() const {
     }
 }
 
+// task E.6.3 (D9): the HUD. Every text is measured in the face it draws in; the layout places and drops; the draws
+// read the layout and nothing else, and record what they drew.
+void ViewportPanel::drawHud(const PanelContext& context, Vec2 imageMin, Vec2 imageMax, rhi::Extent2D extent) {
+    const float s = lastUiScale;
+    beginViewportHudRecordFrame(hudRecordValue);
+    hudRecordValue.imageMin = imageMin;
+    hudRecordValue.imageMax = imageMax;
+    hudRecordValue.imageAvail = lastImageSizePoints;
+    hudRecordValue.drawCounts = latchedDrawCounts;
+    viewChipLabel(editorCamera.projectionMode(), editorCamera.fovYRadians(), chipLabelScratch);
+    flySpeedText(editorCamera.flySpeed(), flyTextScratch);
+    const FrameTimeReadout unpublished{};
+    const std::size_t drawCalls = viewportDrawCalls(latchedDrawCounts);
+    viewportStatsRows(frameReadoutPtr != nullptr ? *frameReadoutPtr : unpublished, drawCalls, latchedTriangles,
+                      context.world.entityCount(), extent.width, extent.height, statsRowsScratch);
+    float labelWidth = 0.0F;
+    float valueWidth = 0.0F;
+    for (const ViewportStatsRow& row : statsRowsScratch) {
+        labelWidth = std::max(labelWidth, faceTextWidth(PanelFace::BodySmall, row.label));
+        valueWidth = std::max(valueWidth, faceTextWidth(PanelFace::MonoSmall, row.value));
+    }
+    const float paddingX = EDITOR_THEME.panels.statsPaddingX * s;
+    const auto toVec2 = [](ImVec2 v) { return Vec2{v.x, v.y}; };
+    ViewportHudInputs in;
+    in.chipSize = toVec2(chipSize(chipLabelScratch, AERO_ICON_CHEVRON_DOWN));
+    in.statsContentSize =
+        Vec2{(2.0F * paddingX) + labelWidth + (EDITOR_THEME.panels.statsValueGap * s) + valueWidth, 0.0F};
+    in.hintSizes = {toVec2(chipSize(HINT_FLY, {})), toVec2(chipSize(HINT_FRAME, {}))};
+    in.flyChipSize = toVec2(chipSize(flyTextScratch, {}));
+    in.statsVisible = statsVisibleValue;
+    in.flying = gesture.gesture == CameraGesture::Fly;
+    in.viewAxisVisible = viewAxisEnabledValue;
+    in.statsRows = statsRowsScratch.size();
+    latchedHudLayout = viewportHudLayout(imageMin, imageMax, in, s);
+    const ViewportHudLayout& hud = latchedHudLayout;
+    hudRecordValue.layout = hud;
+    ImDrawList* const list = ImGui::GetWindowDrawList();
+
+    // The stats card: opaque `canvas` (legibility over geometry, D9), a `divider` outline, labels textLabel in
+    // BodySmall, values `text` in MonoSmall right-aligned at width - statsPaddingX.
+    if (hud.stats.shown) {
+        constexpr std::size_t GPU_ROW = 4;  // viewportStatsRows' order: Frame, Draw calls, Triangles, Entities, GPU
+        const ImVec2 cardMin(hud.stats.min.x, hud.stats.min.y);
+        const ImVec2 cardMax(hud.stats.max.x, hud.stats.max.y);
+        const float rounding = EDITOR_THEME.metrics.childRounding * s;
+        roleFill(list, cardMin, cardMax, ChromeRole::Canvas, rounding);
+        roleOutline(list, cardMin, cardMax, ChromeRole::Divider, rounding, ruleHeight());
+        const float pitch = EDITOR_THEME.panels.statsRowPitch * s;
+        const float top = cardMin.y + (EDITOR_THEME.panels.statsPaddingY * s);
+        for (std::size_t i = 0; i < statsRowsScratch.size(); ++i) {
+            const ViewportStatsRow& row = statsRowsScratch[i];
+            const float y = top + (static_cast<float>(i) * pitch);
+            const float labelX = cardMin.x + paddingX;
+            drawRoleText(list, PanelFace::BodySmall, ImVec2(labelX, y), ChromeRole::TextLabel, row.label);
+            const float valueX = cardMax.x - paddingX - faceTextWidth(PanelFace::MonoSmall, row.value);
+            drawRoleText(list, PanelFace::MonoSmall, ImVec2(valueX, y), ChromeRole::Text, row.value);
+        }
+        hudRecordValue.statsRows = statsRowsScratch;
+        // The GPU row says why it is a dash; the rest of the card, that every number is one frame old.
+        if (ImGui::IsWindowHovered() && ImGui::IsMouseHoveringRect(cardMin, cardMax)) {
+            const float mouseY = ImGui::GetIO().MousePos.y;
+            const float gpuY = top + (static_cast<float>(GPU_ROW) * pitch);
+            const bool onGpu = mouseY >= gpuY && mouseY < gpuY + pitch;
+            ImGui::SetTooltip("%s", onGpu ? GPU_TIME_UNAVAILABLE_TOOLTIP.data() : STATS_STALENESS_TOOLTIP.data());
+        }
+    }
+    // The hints (or the fly chip): non-interactive chips -- the view chip's resting look (chipButton: a `canvas` frame
+    // with a divider outline), BodySmall textSecondary.
+    const auto drawHint = [&](const HudRect& rect, std::string_view text) {
+        const ImVec2 min(rect.min.x, rect.min.y);
+        chipFrame(list, min, ImVec2(rect.max.x, rect.max.y), ChromeRole::Canvas);
+        const float padX = EDITOR_THEME.panels.chipPaddingX * s;
+        const float padY = EDITOR_THEME.panels.chipPaddingY * s;
+        const ImVec2 at(min.x + padX, min.y + padY);
+        drawRoleText(list, PanelFace::BodySmall, at, ChromeRole::TextSecondary, text);
+        hudRecordValue.hintTexts.emplace_back(text);
+    };
+    if (hud.flyChip.shown) {
+        drawHint(hud.flyChip, flyTextScratch);
+    }
+    if (hud.hints[0].shown) {
+        drawHint(hud.hints[0], HINT_FLY);
+    }
+    if (hud.hints[1].shown) {
+        drawHint(hud.hints[1], HINT_FRAME);
+    }
+    // The view chip is drawViewOptions', at the cursor this leaves: its laid-out min (I106(b)'s capture follows). ONLY
+    // when it is shown: a dropped chip submits no item, and a bare SetCursorScreenPos past the window's content with no
+    // item after it asserts at End() (imgui.cpp:8839-8840, :11533-11543) -- so a dropped chip's empty rect sits at the
+    // cursor the Image left.
+    if (hud.chip.shown) {
+        ImGui::SetCursorScreenPos(ImVec2(hud.chip.min.x, hud.chip.min.y));
+    }
+}
+
 void ViewportPanel::drawViewOptions() {
     // The strip's only control (task E.6.2), and it opens NO disabled scope: view options that grey out
     // because nothing is selected would be a defect (3.6.3). I106(b) pins both.
@@ -1409,19 +1516,31 @@ void ViewportPanel::drawViewOptions() {
 
     // task E.2.4 (D10): ONE button. Everything the row carried -- Grid, Gizmos, the tonemap combo and
     // the exposure slider -- now lives in the popup below, grouped the way the mock groups the
-    // viewport's header dropdowns. The HEADER-ROW placement itself is E.6.3's: nothing in this tree
-    // can put a widget in a docked panel's tab row.
-    if (ImGui::SmallButton("View")) {
-        ImGui::OpenPopup("##viewoptions");
+    // viewport's header dropdowns. The HEADER-ROW placement itself stays out of scope (task E.6.3): the pinned ImGui
+    // has DockNodeBeginAmendTabBar (imgui_internal.h:3734-3735), the route that handoff would take.
+    // task E.6.3 (D9): ONE chip naming the live projection, a chevron after it, in PanelFace::BodySmall -- never Mono,
+    // which carries no icons and would draw U+FFFD. drawHud left the cursor at a shown chip's laid-out min; a chip the
+    // layout DROPPED draws nothing and owns nothing: its rect collapses to the cursor, so the row rect is empty.
+    const ImVec2 chipOrigin = ImGui::GetCursorScreenPos();
+    ChipDraw chip{};
+    chip.min = chipOrigin;
+    chip.max = chipOrigin;
+    if (latchedHudLayout.chip.shown) {
+        chip = chipButton("##viewoptions_chip", chipLabelScratch, AERO_ICON_CHEVRON_DOWN);
+        if (chip.pressed) {
+            ImGui::OpenPopup("##viewoptions");
+        }
+        // A6: IsItemHovered + SetTooltip, NEVER SetItemTooltip (shell_ui.cpp's ioTooltip idiom); chip.hovered IS the
+        // InvisibleButton's IsItemHovered, read inside chipButton before anything else was submitted.
+        if (chip.hovered) {
+            ImGui::SetTooltip("View options");
+        }
+        hudRecordValue.chipLabel = chipLabelScratch;
+        hudRecordValue.chipFontName = chip.font != nullptr ? chip.font->GetDebugName() : "";
+        hudRecordValue.chipFontSize = chip.fontSize;
     }
-    // A6: IsItemHovered + SetTooltip, NEVER SetItemTooltip -- its ForTooltip flags exclude disabled
-    // items (shell_ui.cpp's ioTooltip idiom). Read BEFORE the rects below, which SetTooltip cannot disturb:
-    // it submits no item, so the last item is still the button.
-    if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("View options");
-    }
-    const ImVec2 buttonMin = ImGui::GetItemRectMin();
-    const ImVec2 buttonMax = ImGui::GetItemRectMax();
+    const ImVec2 buttonMin = chip.min;
+    const ImVec2 buttonMax = chip.max;
     // THE ROW ENDS HERE, and this capture is what step 9b reads. Taken BEFORE the popup so the
     // recorded rect is identical whether the popup is open or closed (I138) WITHOUT depending on
     // ImGui restoring the parent's last item at EndPopup -- which, measured, it does today
@@ -1431,20 +1550,29 @@ void ViewportPanel::drawViewOptions() {
     if (pendingViewOptionsOpen == true) {  // the seam's OPEN arm; no tier here can click a button
         ImGui::OpenPopup("##viewoptions");
     }
-    // Anchored UNDER the button, like a dropdown. OpenPopup's default position is the MOUSE, which is
-    // a context menu's posture, not a dropdown's. Setting this unconditionally is LEGAL while the
-    // popup is closed: BeginPopupEx consumes NextWindowData when the popup is not open ("We behave
-    // like Begin() and need to consume those").
-    ImGui::SetNextWindowPos(ImVec2(buttonMin.x, buttonMax.y), ImGuiCond_Always);
+    // task E.6.3 (D9): anchored under the chip by E.3.3's TESTED clamp (assetPickerAnchor, MP1-MP13), inside the
+    // image: the popover can now be opened at the image's edge, and it flips above or shifts left as the picker's
+    // does. Its size is the LAST draw's -- zero on its first frame, when the clamp only keeps the anchor inside. Set
+    // unconditionally: BeginPopupEx consumes NextWindowData when the popup is not open.
+    const AssetPickerAnchor anchor =
+        assetPickerAnchor(Vec2{buttonMin.x, buttonMin.y}, Vec2{buttonMax.x, buttonMax.y}, viewOptionsPopoverSize,
+                          hudRecordValue.imageMin, hudRecordValue.imageMax);
+    ImGui::SetNextWindowPos(ImVec2(anchor.pos.x, anchor.pos.y), ImGuiCond_Always,
+                            ImVec2(anchor.pivot.x, anchor.pivot.y));
 
     bool open = false;
     // ASYMMETRIC pair (the BeginMenu family): EndPopup runs ONLY when BeginPopup returned true.
     // Getting that backwards is an IM_ASSERT abort in the Debug build, not a visual glitch.
     if (ImGui::BeginPopup("##viewoptions")) {
         open = true;
+        const ImVec2 popoverSize = ImGui::GetWindowSize();
+        viewOptionsPopoverSize = Vec2{popoverSize.x, popoverSize.y};  // task E.6.3: the next frame's clamp
 
         // ---- Display: the mock's `Shaded` and `Perspective 60` -------------------------------------
-        ImGui::TextDisabled("Display");
+        {
+            const ScopedFace heading(PanelFace::StrongSmall);  // task E.6.3 (D9): textMuted, Strong, small (D11)
+            roleText(ChromeRole::TextMuted, "Display");
+        }
         // The projection row exists because the view-axis widget's centre badge is today's ONLY
         // projection toggle, and this task lets that widget be hidden (D12). It routes through the
         // SAME member requestProjectionMode and the badge both use, so the seam, the badge and this
@@ -1461,7 +1589,7 @@ void ViewportPanel::drawViewOptions() {
         render::TonemapParams edited = tonemapParamsValue;
         bool changed = false;
 
-        ImGui::SetNextItemWidth(ImGui::GetFontSize() * OPTIONS_COMBO_FONT_MULTIPLE);
+        ImGui::SetNextItemWidth(ImGui::GetFontSize() * VIEW_OPTIONS_COMBO_FONT_MULTIPLE);
         // ASYMMETRIC pair (like BeginMenu): EndCombo runs ONLY when BeginCombo returned true.
         if (ImGui::BeginCombo("Tonemap", tonemapOperatorLabelCStr(edited.curve))) {
             for (std::size_t i = 0; i < render::TONEMAP_OPERATOR_COUNT; ++i) {
@@ -1477,7 +1605,7 @@ void ViewportPanel::drawViewOptions() {
             }
             ImGui::EndCombo();
         }
-        ImGui::SetNextItemWidth(ImGui::GetFontSize() * OPTIONS_SLIDER_FONT_MULTIPLE);
+        ImGui::SetNextItemWidth(ImGui::GetFontSize() * VIEW_OPTIONS_SLIDER_FONT_MULTIPLE);
         // THE ORDER OF THE `||` IS DELIBERATE: SliderFloat(...) || changed, never the reverse. The
         // second form short-circuits and would SKIP SUBMITTING THE SLIDER ENTIRELY on any frame the
         // combo changed -- and an ImGui item that is not submitted is an item that vanishes for a frame.
@@ -1495,7 +1623,10 @@ void ViewportPanel::drawViewOptions() {
         ImGui::Separator();
 
         // ---- Overlays: the mock's `Gizmos on` ------------------------------------------------------
-        ImGui::TextDisabled("Overlays");
+        {
+            const ScopedFace heading(PanelFace::StrongSmall);  // task E.6.3 (D9): textMuted, Strong, small (D11)
+            roleText(ChromeRole::TextMuted, "Overlays");
+        }
         bool gridChecked = gridEnabledValue;
         if (ImGui::Checkbox("Grid", &gridChecked)) {
             gridEnabledValue = gridChecked;  // ONE toggle covers the grid AND the world axes (E.1.2)
@@ -1507,6 +1638,10 @@ void ViewportPanel::drawViewOptions() {
         bool axisChecked = viewAxisEnabledValue;
         if (ImGui::Checkbox("View axis", &axisChecked)) {
             viewAxisEnabledValue = axisChecked;  // E.1.3's handoff (D12)
+        }
+        bool statsChecked = statsVisibleValue;
+        if (ImGui::Checkbox("Stats", &statsChecked)) {
+            statsVisibleValue = statsChecked;  // task E.6.3 (D9): the stats card, session state, default ON
         }
 
         // The seam's CLOSE arm, and Escape BY HAND. NavUpdateCancelRequest returns before doing
@@ -1607,6 +1742,10 @@ void ViewportPanel::renderScene(World& world) {
         !selectionOutline) {
         return;
     }
+    // task E.6.3 (D9): the three LIFETIME counters before this frame's passes, so the frame's draws are deltas.
+    const std::size_t skyBefore = sceneRenderer->skyPass().drawCount();
+    const std::size_t resolveBefore = post->resolveCount();
+    const std::size_t compositeBefore = selectionOutline->compositeCount();
     // INV-3: no ImGui call, no World mutation -- and, from task 2.3.1, no CAMERA mutation either. The
     // camera is WRITTEN in onDraw and, before the draw walk, by frameCreatedEntity -- never here; it is
     // READ here. Moving the update here would work today and break the moment 2.3.3 needs the
@@ -1708,9 +1847,20 @@ void ViewportPanel::renderScene(World& world) {
     lastOutlineRadiusPixelsValue = outlineParams.radiusPixels;  // task E.6.1: recorded as handed on (I288)
     selectionOutline->composite(*outFrame, maskView, outlineParams);
     target->endFrame(std::move(*outFrame));  // submits B, strictly after A and the mask
-    selectionMaskSet = {};                   // D12: never drawn twice, never drawn stale
-    selectionSnapshot.clear();               // task E.2.3: markerScratch needs no clear here -- it is
-    selectionPrimary = {};                   // filled and consumed inside drawSelectionOverlay alone
+    // task E.6.3 (D9): the frame's per-pass draws and the main pass's triangles, LATCHED for the stats card the NEXT
+    // draw walk shows -- one frame old, as its tooltip says. An early return above leaves last frame's latch.
+    const render::ForwardRenderer& forward = sceneRenderer->renderer();
+    latchedDrawCounts = ViewportDrawCounts{.forward = forward.lastFrameDrawn(),
+                                           .shadow = forward.lastFrameShadowDrawn(),
+                                           .selectionMask = forward.lastFrameSelectionMaskDrawn(),
+                                           .debug = debugDrawer->lastFrameDrawCalls(),
+                                           .sky = sceneRenderer->skyPass().drawCount() - skyBefore,
+                                           .resolve = post->resolveCount() - resolveBefore,
+                                           .composite = selectionOutline->compositeCount() - compositeBefore};
+    latchedTriangles = forward.lastFrameTriangles();
+    selectionMaskSet = {};      // D12: never drawn twice, never drawn stale
+    selectionSnapshot.clear();  // task E.2.3: markerScratch needs no clear here -- it is
+    selectionPrimary = {};      // filled and consumed inside drawSelectionOverlay alone
 }
 
 // task E.1.4: the two colours are the ENGINE defaults, so the outline and the point marker cannot

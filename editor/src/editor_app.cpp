@@ -1197,6 +1197,7 @@ bool EditorApp::tick() {
     // tick's state in this tick's draw walk; outside the reconcile block's Asset Browser arm on purpose.
     if (viewportPanel != nullptr) {
         viewportPanel->setToolState(&transformTools);
+        viewportPanel->setFrameReadout(&frameReadout);  // task E.6.3 (D9): the ONE readout's second consumer
     }
     // task E.6.2 (D12-D17): the status bar's words, composed by the pure model every tick -- a LOCAL, because
     // drawShellUi reads it through a pointer inside this tick and nowhere after.

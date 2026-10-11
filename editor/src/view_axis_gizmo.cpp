@@ -33,12 +33,12 @@ namespace {
     return !(size.x < minimum) && !(size.y < minimum);
 }
 
-// The widget centre, in SCREEN points. Top-right of the image, inset by the margin plus the
-// half-extent so the whole box clears the corner -- both multiplied by `uiScale` (task E.6.1).
+// The widget centre, in SCREEN points. BOTTOM-right of the image since task E.6.3 (D9: the stats card took the top-
+// right), inset by the margin plus the half-extent so the whole box clears the corner -- both times `uiScale`.
 [[nodiscard]] Vec2 viewAxisCenter(Vec2 origin, Vec2 size, float uiScale) noexcept {
     const float half = VIEW_AXIS_HALF_EXTENT_POINTS * uiScale;
     const float margin = VIEW_AXIS_MARGIN_POINTS * uiScale;
-    return Vec2{origin.x + size.x - margin - half, origin.y + margin + half};
+    return Vec2{origin.x + size.x - margin - half, origin.y + size.y - margin - half};
 }
 
 // The six signed world axes, in ViewAxis order.

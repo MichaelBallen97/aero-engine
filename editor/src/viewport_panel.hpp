@@ -14,6 +14,7 @@
 #include <aero/editor/selection_overlay.hpp>  // task 2.3.2: OverlaySegment, for the scratch member
 #include <aero/editor/view_axis_gizmo.hpp>    // task E.1.3: the corner widget's layout, poses and snap
 #include <aero/editor/viewport_gizmos.hpp>    // task E.2.3: the icon/gizmo walk (carries viewport_icons.hpp)
+#include <aero/editor/viewport_hud.hpp>       // task E.6.3: the HUD's layout, counts, record (pure)
 #include <aero/render/debug_draw.hpp>         // task E.1.1: the panel's own world-space line renderer
 #include <aero/render/post_process.hpp>       // task 3.6.3: the owned HDR target + the fullscreen resolve
 #include <aero/render/render_target.hpp>
@@ -22,6 +23,7 @@
 
 #include <cstdint>
 #include <optional>
+#include <string>
 #include <utility>  // std::exchange -- the one-shot taker's own idiom
 #include <vector>
 
@@ -273,6 +275,17 @@ public:
     // no gizmo at all (updateGizmo's Select arm) -- never a crash, never a private fallback copy.
     void setToolState(TransformToolState* state) noexcept { toolStatePtr = state; }
 
+    // ---- task E.6.3: the HUD (D9) -----------------------------------------------------------------------------
+    // EditorApp's ONE FrameTimeReadout, re-handed every tick (setToolState's shape, the same dangling argument): the
+    // stats card's Frame row is its SECOND consumer, never a second readout. NULL draws "-- ms".
+    void setFrameReadout(const FrameTimeReadout* readout) noexcept { frameReadoutPtr = readout; }
+    // Session state, default ON. A request is held until a frame finds the view chip shown -- the popover's only door,
+    // so the gate the Stats checkbox has -- and no modal up; then it lands, exactly as the checkbox would.
+    [[nodiscard]] bool statsVisible() const noexcept { return statsVisibleValue; }
+    void requestStatsVisible(bool visible) noexcept { pendingStatsVisible = visible; }
+    // What the last onDraw DREW: the image rect, every HUD rect, the chip, the stats rows, the counts, the widget.
+    [[nodiscard]] const ViewportHudRecord& hudRecord() const noexcept { return hudRecordValue; }
+
     // What the LAST ImGuizmo::Manipulate call received, recorded from the very locals it is handed -- the
     // effect, never a request (D21). A Select frame calls nothing, so "no gizmo" is a zero DELTA of
     // manipulateCalls(), and an Unavailable panel never calls it at all. lastManipulateSnap() is nullopt when
@@ -312,7 +325,7 @@ private:
     // the one path both the click and requestViewSnap take.
     void beginViewSnap(ViewAxis axis) noexcept;
     void updateViewAxisGizmo(Vec2 imageOrigin, Vec2 avail, bool inputHovered);
-    void drawViewAxisGizmo() const;
+    void drawViewAxisGizmo();  // task E.6.3: records the circle it draws
 
     // Task E.1.3, code-review round: ONE definition of "the view-axis widget owns this point", with
     // TWO consumers -- overlayOwnsPress (which keeps the press off the scene pick) and updateGizmo
@@ -325,6 +338,9 @@ private:
     // (Grid, Gizmos, View axis). Since task E.6.2 it is the strip's ONLY control -- the toolbar took the gizmo
     // bar -- and it opens no disabled scope, so every control stays live with nothing selected.
     void drawViewOptions();
+    // task E.6.3 (D9): lays the HUD out from the RECORDED image rect, latches it for the next frame's press claims,
+    // draws the stats card and the hints / fly chip, and leaves the cursor at the view chip's laid-out min.
+    void drawHud(const PanelContext& context, Vec2 imageMin, Vec2 imageMax, rhi::Extent2D extent);
 
     // task 3.1.5: the custom drop target's whole body, a member so the ImGui glue stays in one place.
     // PEEK -> classify -> only then accept, so an illegal drop draws no highlight rect.
@@ -456,6 +472,21 @@ private:
     // EndPopup, which the pinned tree does do (imgui.cpp:8848). Step 9b's comment carries the
     // measurement; I138 pins the rect equal open and closed as a regression guard.
     Vec2 viewOptionsButtonMax{};
+
+    // ---- task E.6.3 (D9) --------------------------------------------------------------------------------------
+    const FrameTimeReadout* frameReadoutPtr = nullptr;  // EditorApp's, re-handed every tick; never owned
+    bool statsVisibleValue = true;                      // session state -- the grid toggle's rule
+    std::optional<bool> pendingStatsVisible;            // requestStatsVisible's, drained under the checkbox's gate
+    // The LAST DRAWN frame's HUD rects, in SCREEN points: overlayOwnsPress and updateGizmo read these one frame
+    // later, the row rect's own staleness argument (the pick's arm runs before this frame's HUD is submitted).
+    ViewportHudLayout latchedHudLayout{};
+    ViewportDrawCounts latchedDrawCounts{};  // renderScene's, read by the NEXT draw walk's stats card
+    std::size_t latchedTriangles = 0;        // likewise
+    Vec2 viewOptionsPopoverSize{};           // the popover's last drawn size, for its clamp (zero before the first)
+    ViewportHudRecord hudRecordValue;        // hudRecord()'s member (the collision rule)
+    std::string chipLabelScratch;            // per-frame scratch
+    std::string flyTextScratch;              // per-frame scratch
+    std::vector<ViewportStatsRow> statsRowsScratch;  // per-frame scratch, capacity reused
 
     // Task E.1.3. UNLIKE overlayRowTopLeft/BottomRight above, these two are written at step 8b'''' and
     // read at step 9x IN THE SAME FRAME -- there is no staleness argument to make, because the layout

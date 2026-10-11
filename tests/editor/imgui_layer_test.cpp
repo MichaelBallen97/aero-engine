@@ -8747,6 +8747,18 @@ TEST_CASE("editor: the tonemap wiring's three source-text invariants hold (task 
     }
 }
 
+namespace {
+
+// task E.6.3 (D9): true when `p` is in no HUD rect the viewport's LAST frame showed. The HUD claims SCREEN-space
+// presses that a zero or image-space rect cannot switch off (a zero image rect switches off only the view-axis arm),
+// so every "owned by nothing" probe in I107 / I116 / I139 asserts this FIRST -- or a CHECK_FALSE could pass by a
+// coincidence of spaces and assert nothing about the arm it names.
+[[nodiscard]] bool e63OutsideHud(const engine::editor::ViewportPanel& viewport, engine::Vec2 p) {
+    return !engine::editor::hudOwnsPoint(viewport.hudRecord().layout, p);
+}
+
+}  // namespace
+
 TEST_CASE("editor: the overlay claims its own strip and NOTHING else (task 3.6.3 regression, I107)") {
     // THE CASE THAT WOULD HAVE CAUGHT THE SHIPPED REGRESSION, and the reason it can is that it asks
     // about the EFFECT -- would a press at this point arm a scene pick? -- rather than about the
@@ -8801,16 +8813,29 @@ TEST_CASE("editor: the overlay claims its own strip and NOTHING else (task 3.6.3
     constexpr engine::Vec2 NO_WIDGET_SIZE{};
 
 #if AERO_SHADER_TOOLS_ENABLED
+    // task E.6.3 (D9): the HUD claims its own SCREEN rects, which a zero image rect does not switch off. So the stats
+    // card is hidden first (shown at the default pose -- a WARN, since a runner's short window may lay it out of the
+    // image), and every "owned by nothing" probe below is derived from the RECORDED rects and REQUIRED outside every
+    // shown one before its CHECK_FALSE. I327 owns the positive "the card draws, and the toggle hides it" claim.
+    WARN(viewport->hudRecord().layout.stats.shown);
+    viewport->requestStatsVisible(false);
+    REQUIRE(app->tick());  // drained under its gate, then laid out without the card
+    REQUIRE(app->tick());  // ...and that layout latched for the press claims
+    REQUIRE_FALSE(viewport->statsVisible());
+    const engine::editor::ViewportHudRecord& hud = viewport->hudRecord();
+    REQUIRE_FALSE(hud.layout.stats.shown);
+
     const engine::Vec2 rowMin = viewport->overlayRowMin();
     const engine::Vec2 rowMax = viewport->overlayRowMax();
-
-    // ANTI-VACUITY, and it is the half that matters most: an EMPTY rect owns nothing, so every
-    // "does not own" assertion below would pass on a panel that never recorded anything -- which is
-    // exactly the silent way this fix could rot. The rect must be REAL.
+    // ANTI-VACUITY: an EMPTY rect owns nothing, so every "does not own" below would pass on a panel that recorded
+    // nothing. The rect must be REAL -- and it IS the view chip's (the overlay claims its own strip and the HUD's
+    // shown rects, and nothing else).
     CHECK(rowMax.x > rowMin.x);
     CHECK(rowMax.y > rowMin.y);
-    CHECK(rowMax.x - rowMin.x >= 40.0F);  // task E.6.2: `View` alone, ~50 points in Plex 16 -- never narrower
+    CHECK(rowMax.x - rowMin.x >= 40.0F);  // task E.6.3: the view chip, "Perspective 60" + a chevron
     CHECK(rowMax.y - rowMin.y >= 8.0F);
+    CHECK((rowMin == hud.layout.chip.min));
+    CHECK((rowMax == hud.layout.chip.max));
 
     // (1) THE STRIP OWNS ITS OWN CLICKS. Its centre, and a point just inside each corner.
     const engine::Vec2 centre{(rowMin.x + rowMax.x) * 0.5F, (rowMin.y + rowMax.y) * 0.5F};
@@ -8819,28 +8844,33 @@ TEST_CASE("editor: the overlay claims its own strip and NOTHING else (task 3.6.3
                                      NO_WIDGET_SIZE));  // half-open at min: the top-left corner IS inside
     CHECK(viewport->overlayOwnsPress(engine::Vec2{rowMax.x - 1.0F, rowMax.y - 1.0F}, NO_WIDGET_ORIGIN, NO_WIDGET_SIZE));
 
-    // (2) AND NOTHING ELSE -- the half the shipped regression got wrong. A press below the strip, to
-    // its right, and above it must all fall through to the scene pick. `rowMax` itself is OUTSIDE:
-    // the test is half-open at max, matching the FIRE step's own image-rect test.
-    CHECK_FALSE(viewport->overlayOwnsPress(rowMax, NO_WIDGET_ORIGIN, NO_WIDGET_SIZE));
-    CHECK_FALSE(
-        viewport->overlayOwnsPress(engine::Vec2{centre.x, rowMax.y + 200.0F}, NO_WIDGET_ORIGIN, NO_WIDGET_SIZE));
-    CHECK_FALSE(
-        viewport->overlayOwnsPress(engine::Vec2{rowMax.x + 200.0F, centre.y}, NO_WIDGET_ORIGIN, NO_WIDGET_SIZE));
-    CHECK_FALSE(
-        viewport->overlayOwnsPress(engine::Vec2{centre.x, rowMin.y - 200.0F}, NO_WIDGET_ORIGIN, NO_WIDGET_SIZE));
-    CHECK_FALSE(
-        viewport->overlayOwnsPress(engine::Vec2{rowMin.x - 200.0F, centre.y}, NO_WIDGET_ORIGIN, NO_WIDGET_SIZE));
+    // (2) AND NOTHING ELSE. Each probe from the RECORDED geometry: rowMax itself (half-open); between the chip and the
+    // image's right edge at the row's centre y; between the row and the hints below it; above and left of the image.
+    const auto ownedByNothing = [&](engine::Vec2 p) {
+        REQUIRE(e63OutsideHud(*viewport, p));
+        CHECK_FALSE(viewport->overlayOwnsPress(p, NO_WIDGET_ORIGIN, NO_WIDGET_SIZE));
+    };
+    ownedByNothing(rowMax);
+    ownedByNothing(engine::Vec2{(rowMax.x + hud.imageMax.x) * 0.5F, centre.y});
+    float hintsTop = hud.imageMax.y;
+    for (const engine::editor::HudRect& hint : hud.layout.hints) {
+        if (hint.shown) {
+            hintsTop = std::min(hintsTop, hint.min.y);
+        }
+    }
+    if (hintsTop - rowMax.y >= 2.0F) {
+        ownedByNothing(engine::Vec2{centre.x, (rowMax.y + hintsTop) * 0.5F});
+    } else {
+        WARN(hintsTop - rowMax.y >= 2.0F);  // #111's rule: a recorded gap too small to hold a probe is geometry
+    }
+    ownedByNothing(engine::Vec2{centre.x, hud.imageMin.y - 50.0F});  // above the image
+    ownedByNothing(engine::Vec2{hud.imageMin.x - 50.0F, centre.y});  // left of the image
 
-    // (3) THE ORDINARY PICK, which is what actually broke. The viewport is CENTER-docked in a 900x600
-    // window, so a point well below and right of the strip is inside the image and is exactly where a
-    // user clicks empty space to clear a selection. Under the shipped guard this press was refused;
-    // it must be admitted.
-    CHECK_FALSE(viewport->overlayOwnsPress(engine::Vec2{rowMin.x + 300.0F, rowMin.y + 300.0F}, NO_WIDGET_ORIGIN,
-                                           NO_WIDGET_SIZE));
+    // (3) THE ORDINARY PICK, which is what actually broke: the image's centre, inside the image and outside the HUD,
+    // is exactly where a user clicks empty space to clear a selection. It must be admitted.
+    ownedByNothing(engine::Vec2{(hud.imageMin.x + hud.imageMax.x) * 0.5F, (hud.imageMin.y + hud.imageMax.y) * 0.5F});
 
-    // (4) TOTAL and NaN-safe: a non-finite press is owned by nothing rather than crashing or
-    // answering true (the negated `>` idiom this file's step 1 already uses).
+    // (4) TOTAL and NaN-safe.
     const float nan = std::numeric_limits<float>::quiet_NaN();
     CHECK_FALSE(viewport->overlayOwnsPress(engine::Vec2{nan, nan}, NO_WIDGET_ORIGIN, NO_WIDGET_SIZE));
     CHECK_FALSE(viewport->overlayOwnsPress(engine::Vec2{centre.x, nan}, NO_WIDGET_ORIGIN, NO_WIDGET_SIZE));
@@ -10892,7 +10922,10 @@ TEST_CASE("editor: the widget's press claim and the SetOrthographic call site (t
         // The image rect that PRODUCES this widget rect: the widget is inset by MARGIN from the
         // image's right edge, so the image's width is rectMax.x + MARGIN. Reconstructed rather than
         // hard-coded, so retuning MARGIN reddens nothing here (AC-21).
-        const engine::Vec2 size{rectMax.x + engine::editor::VIEW_AXIS_MARGIN_POINTS, 600.0F};
+        // ...the widget is inset by MARGIN from the image's BOTTOM-right corner (task E.6.3), so the image is
+        // rectMax + MARGIN on both axes.
+        const engine::Vec2 size{rectMax.x + engine::editor::VIEW_AXIS_MARGIN_POINTS,
+                                rectMax.y + engine::editor::VIEW_AXIS_MARGIN_POINTS};
         const engine::Vec2 centre{(rectMin.x + rectMax.x) * 0.5F, (rectMin.y + rectMax.y) * 0.5F};
         CHECK(viewport->overlayOwnsPress(centre, origin, size));
         // The rect's own top-left CORNER: inside the square, but on no ball and not on the badge --
@@ -10903,7 +10936,10 @@ TEST_CASE("editor: the widget's press claim and the SetOrthographic call site (t
     }
     SUBCASE("...and NOT one point outside its left edge") {
         const engine::Vec2 origin{};
-        const engine::Vec2 size{rectMax.x + engine::editor::VIEW_AXIS_MARGIN_POINTS, 600.0F};
+        // ...the widget is inset by MARGIN from the image's BOTTOM-right corner (task E.6.3), so the image is
+        // rectMax + MARGIN on both axes.
+        const engine::Vec2 size{rectMax.x + engine::editor::VIEW_AXIS_MARGIN_POINTS,
+                                rectMax.y + engine::editor::VIEW_AXIS_MARGIN_POINTS};
         const engine::Vec2 centreY{0.0F, (rectMin.y + rectMax.y) * 0.5F};
         const engine::Vec2 justOutside{rectMin.x - 1.0F, centreY.y};
 
@@ -10927,6 +10963,11 @@ TEST_CASE("editor: the widget's press claim and the SetOrthographic call site (t
         };
         CHECK(outsideRow(justOutside));
         CHECK(outsideRow(rectMax));
+        // task E.6.3 (D9): and outside every HUD rect -- the HUD's arm answers in SCREEN space too.
+        const engine::editor::ViewportHudRecord& hud = viewport->hudRecord();
+        REQUIRE((hud.layout.chip.shown || hud.layout.stats.shown || hud.layout.hints[0].shown));  // anti-vacuity
+        CHECK(e63OutsideHud(*viewport, justOutside));
+        CHECK(e63OutsideHud(*viewport, rectMax));
 
         CHECK_FALSE(viewport->overlayOwnsPress(justOutside, origin, size));
         CHECK_FALSE(viewport->overlayOwnsPress(rectMax, origin, size));  // half-open at max
@@ -12628,7 +12669,7 @@ TEST_CASE(
         const std::vector<std::string> body(code.begin() + static_cast<std::ptrdiff_t>(bodyStart),
                                             code.begin() + static_cast<std::ptrdiff_t>(bodyEnd));
 
-        const std::array<std::string_view, 14> needles{"SmallButton(\"View\")",
+        const std::array<std::string_view, 14> needles{"chipButton(\"##viewoptions_chip\"",
                                                        "OpenPopup(\"##viewoptions\")",
                                                        "SetNextWindowPos(",
                                                        "BeginPopup(\"##viewoptions\")",
@@ -12799,7 +12840,8 @@ TEST_CASE("editor: hiding the view-axis widget hides its PRESS CLAIM too (task E
 
     // I116's exact shape, with the real image rect reconstructed from the widget's own margin.
     const engine::Vec2 origin{};
-    const engine::Vec2 size{shownMax.x + engine::editor::VIEW_AXIS_MARGIN_POINTS, 600.0F};
+    const engine::Vec2 size{shownMax.x + engine::editor::VIEW_AXIS_MARGIN_POINTS,
+                            shownMax.y + engine::editor::VIEW_AXIS_MARGIN_POINTS};
     const engine::Vec2 centre{(shownMin.x + shownMax.x) * 0.5F, (shownMin.y + shownMax.y) * 0.5F};
     CHECK(viewport->overlayOwnsPress(centre, origin, size));
 
@@ -12809,6 +12851,7 @@ TEST_CASE("editor: hiding the view-axis widget hides its PRESS CLAIM too (task E
         CHECK_FALSE(viewport->viewAxisEnabled());
         CHECK(viewport->viewAxisRectMin() == viewport->viewAxisRectMax());
         CHECK(viewport->viewAxisRectMin() == engine::Vec2{});
+        REQUIRE(e63OutsideHud(*viewport, centre));  // task E.6.3: the HUD's screen arm must not answer for the widget's
         CHECK_FALSE(viewport->overlayOwnsPress(centre, origin, size));
 
         // ...and BACK, so the arm above is a statement about the toggle rather than about a widget
@@ -12854,6 +12897,7 @@ TEST_CASE("editor: hiding the view-axis widget hides its PRESS CLAIM too (task E
     CHECK_FALSE(viewport->viewAxisEnabled());
     CHECK(viewport->viewAxisRectMin() == viewport->viewAxisRectMax());
     CHECK_FALSE(viewport->overlayOwnsPress(engine::Vec2{10.0F, 10.0F}, engine::Vec2{}, engine::Vec2{900.0F, 600.0F}));
+    CHECK(e63OutsideHud(*viewport, engine::Vec2{10.0F, 10.0F}));  // no HUD was ever laid out
 #endif
 }
 
@@ -12900,10 +12944,14 @@ TEST_CASE("editor: the viewport strip carries only MODE controls (task E.2.4, I1
     CHECK(width >= 40.0F);
     CHECK(height >= 8.0F);
     // THE UPPER BOUND, DERIVED FROM A MEASUREMENT rather than chosen. Measured on this row when the
-    // case was RE-measured at task E.6.2: 43 x 16 points for `View` alone in Plex 16 (the MESSAGE above prints it on
-    // every run of every lane). The bound, 100, is a little over twice that width -- tight enough that any widget
-    // put back on the strip reddens it.
-    CHECK(width < 100.0F);
+    // case was RE-measured at task E.6.2: `View` alone measured 43 x 16 at E.6.2; the chip replaced it at E.6.3 (the
+    // MESSAGE above prints it on every run of every lane).
+    // task E.6.3 (D9): the row IS the view chip -- its recorded rect, exactly -- and nothing else. Measured at E.6.3's
+    // step 7: 113 x 24 for "Perspective 60" + a chevron in BodySmall (the MESSAGE above prints it). 200 is under the
+    // old combo + slider (92 + 130 at body 13, 112 + 160 at 16), so any widget put back on the strip reddens it.
+    const engine::editor::ViewportHudRecord& hud = viewport->hudRecord();
+    CHECK(std::abs(width - (hud.layout.chip.max.x - hud.layout.chip.min.x)) <= 0.5F);
+    CHECK(width < 200.0F);
     // ONE ROW HIGH. A second row of widgets would push this past the bound while leaving the width
     // alone, which is the other shape the regression can take.
     CHECK(height <= 40.0F);
@@ -22497,7 +22545,7 @@ TEST_CASE("editor: the panels read their roles from the theme (task E.6.1, I287)
         std::string_view file;
         std::size_t totalReads;
     };
-    constexpr std::array<PanelFile, 13> PANELS{{
+    constexpr std::array<PanelFile, 14> PANELS{{
         {"console_panel.cpp", 0U},    // task E.6.3: every colour a ChromeRole
         {"hierarchy_panel.cpp", 0U},  // task E.6.3: every colour a ChromeRole
         {"inspector_panel.cpp", 0U},  // task E.6.3: every colour a ChromeRole
@@ -22511,6 +22559,7 @@ TEST_CASE("editor: the panels read their roles from the theme (task E.6.1, I287)
         {"shell_chrome_ui.cpp", 13U},     // task E.6.3: 15 - textBright - onAccent (the segments' roles moved)
         {"panel_chrome_model.cpp", 26U},  // task E.6.3: chromeRoleColor, each role ONCE
         {"panel_chrome_ui.cpp", 0U},      // task E.6.3: every colour through the role map
+        {"viewport_panel.cpp", 0U},       // task E.6.3: the HUD reads roles
     }};
     // The roles are READ, not merely the literals gone -- each (file, role) at its EXACT count of reads
     // in the comment-stripped code. One read swapped back to an ImGui slot (S25's site on
@@ -24633,6 +24682,20 @@ void e63Front(engine::editor::EditorApp& app, const char* panelId, const char* s
 // editor_theme_ui.hpp's ImGui-FREE toImU32 (IM_COL32's packing): this TU never sees imgui.h.
 [[nodiscard]] std::uint32_t e63Packed(const engine::editor::Srgb8& c) { return engine::editor::toImU32(c); }
 
+// The shader-tools-OFF arm every viewport HUD case shares (§7.8): Unavailable returns before the HUD, so its record
+// never moves, its layout owns nothing, and ticking stays safe. TRUE when the case must stop here.
+[[nodiscard]] bool e63HudUnavailable(engine::editor::EditorApp& app, engine::editor::ViewportPanel& viewport) {
+    if (viewport.sceneForwardRenderer() != nullptr) {
+        return false;
+    }
+    MESSAGE("shader tools OFF: the viewport is Unavailable and draws no HUD");
+    REQUIRE(app.tick());
+    CHECK(viewport.hudRecord().framesRecorded == 0U);
+    CHECK_FALSE(engine::editor::hudOwnsPoint(viewport.hudRecord().layout, engine::Vec2{20.0F, 20.0F}));
+    CHECK_FALSE(viewport.overlayOwnsPress(engine::Vec2{20.0F, 20.0F}, engine::Vec2{}, engine::Vec2{}));
+    return true;
+}
+
 // A project for an Assets case: `files` written under assets/ (folders created first), opened with the watcher OFF --
 // a watcher rescan bumps the generation on wall-clock time (F18) -- and the Console hidden, so Assets owns the Bottom
 // slot (2.2.4's C5) and draws every frame.
@@ -25047,6 +25110,13 @@ TEST_CASE("editor: every E.6.3 request is drained under its control's predicate 
         CHECK(code[drainAt].find("noModal") != std::string::npos);
         CHECK(countLinesContaining(code, "GetTopMostPopupModal()") == 1U);
         CHECK(countLinesContaining(code, "BeginDisabled(!crumbsEnabled)") == 1U);  // the crumbs read the same term
+    }
+    SUBCASE("the Viewport's stats toggle") {
+        const std::vector<std::string> code = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/viewport_panel.cpp");
+        const std::size_t drainAt = soleLineContaining(code, "pendingStatsVisible.has_value() &&");
+        CHECK(code[drainAt].find("statsControlReachable") != std::string::npos);  // the chip: the popover's door
+        CHECK(code[drainAt].find("noModal") != std::string::npos);
+        CHECK(countLinesContaining(code, "GetTopMostPopupModal()") == 1U);
     }
 }
 
@@ -25859,6 +25929,314 @@ TEST_CASE("editor: the Assets footer -- the path elided from the left, the right
     const std::vector<std::string> code = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/asset_browser_panel.cpp");
     CHECK(countLinesContaining(code, "footerText.watcher = assetFooterWatchText(") == 1U);
 
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+// ---- task E.6.3, step 7: the Viewport's view chip, stats card, hint chips and corner widget ----------------------
+
+TEST_CASE("editor: the viewport HUD -- placed off the recorded image, stats from fresh reads (task E.6.3, I327)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "viewport hud i327", .width = 1280, .height = 800});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = e62App(*device, *window, ctx);
+    auto* const viewport = dynamic_cast<engine::editor::ViewportPanel*>(app->panels().find("Viewport"));
+    REQUIRE(viewport != nullptr);
+    if (e63HudUnavailable(*app, *viewport)) {
+        return;
+    }
+    const std::uint64_t before = viewport->hudRecord().framesRecorded;
+    e62Ticks(*app, 3);  // rendered at least twice, so the latch the HUD draws holds a real frame
+    const engine::editor::ViewportHudRecord& r = viewport->hudRecord();
+    REQUIRE(r.framesRecorded > before);
+    const float s = app->uiScale();
+    const float inset = 14.0F * s;  // hudInset, restated
+    // THE IMAGE: the recorded item rect IS the size the Image was handed (I306's identity shape).
+    CHECK(std::abs((r.imageMax.x - r.imageMin.x) - r.imageAvail.x) <= 0.5F);
+    CHECK(std::abs((r.imageMax.y - r.imageMin.y) - r.imageAvail.y) <= 0.5F);
+    // Every shown rect's outer edges on the recorded image's corner, hudInset in.
+    REQUIRE(r.layout.chip.shown);
+    CHECK(std::abs(r.layout.chip.min.x - (r.imageMin.x + inset)) <= 0.5F);
+    CHECK(std::abs(r.layout.chip.min.y - (r.imageMin.y + inset)) <= 0.5F);
+    for (const engine::editor::HudRect& hint : r.layout.hints) {
+        if (hint.shown) {
+            CHECK(std::abs(hint.max.y - (r.imageMax.y - inset)) <= 0.5F);
+        }
+    }
+    CHECK(std::abs(r.layout.hints[0].min.x - (r.imageMin.x + inset)) <= 0.5F);
+    // THE CHIP: the live projection, in Plex Sans at the small size.
+    CHECK(r.chipLabel == "Perspective 60" AERO_GLYPH_DEGREE);
+    CHECK(r.chipFontName == "IBM Plex Sans");  // BodySmall: never Mono, which carries no icons
+    CHECK(std::abs(r.chipFontSize - std::floor((14.0F * s) + 0.5F)) <= 0.5F);  // smallSize, rounded as ImGui does
+
+    // THE PER-PASS COUNTS against INDEPENDENT reads, on two consecutive frames that must agree -- a lifetime total
+    // would grow and fail the second. Two Cubes BEHIND the camera (the default scene draws one, entity_ops.cpp:242-273)
+    // make lastFrameDrawn (1) != lastFrameCulled (2) -- ONE behind would read 1 == 1.
+    const engine::editor::EditorCamera* const camera = app->viewportCamera();
+    REQUIRE(camera != nullptr);
+    for (const float back : {5.0F, 7.0F}) {
+        const engine::Entity behind = app->world().create();
+        engine::Transform behindTransform{};
+        behindTransform.position = camera->position() - (camera->forward() * back);
+        REQUIRE(app->world().add<engine::Transform>(behind, behindTransform) != nullptr);
+        REQUIRE(app->world().add<engine::MeshRenderer>(behind, engine::MeshRenderer{}) != nullptr);
+    }
+    e62Ticks(*app, 3);
+    const engine::render::ForwardRenderer* const forward = viewport->sceneForwardRenderer();
+    REQUIRE(forward->lastFrameDrawn() >= 1U);  // ANTI-VACUITY: the default Cube drew
+    REQUIRE(forward->lastFrameCulled() >= 2U);
+    REQUIRE(forward->lastFrameDrawn() != forward->lastFrameCulled());
+    for (int frame = 0; frame < 2; ++frame) {
+        CAPTURE(frame);
+        const std::size_t resolveBefore = viewport->postProcess()->resolveCount();
+        const std::size_t compositeBefore = viewport->selectionOutlinePass()->compositeCount();
+        REQUIRE(app->tick());
+        const engine::editor::ViewportDrawCounts& c = r.drawCounts;
+        CHECK(c.forward == forward->lastFrameDrawn());
+        CHECK(c.shadow == forward->lastFrameShadowDrawn());
+        CHECK(c.selectionMask == forward->lastFrameSelectionMaskDrawn());
+        CHECK(c.debug == viewport->debugDraw()->lastFrameDrawCalls());
+        CHECK(c.resolve == 1U);
+        CHECK(viewport->postProcess()->resolveCount() == resolveBefore + 1U);  // one resolve per tick
+        CHECK(c.sky == 1U);        // the default Environment draws the sky once per frame (F21; no panel accessor)
+        CHECK(c.composite == 0U);  // an empty selection composites nothing...
+        CHECK(viewport->selectionOutlinePass()->compositeCount() == compositeBefore);  // ...and moves nothing
+    }
+    // THE ROWS, when the card is laid out (a WARN otherwise: a runner's window decides).
+    WARN(r.layout.stats.shown);
+    if (r.layout.stats.shown) {
+        REQUIRE(r.statsRows.size() == engine::editor::VIEWPORT_STATS_ROW_COUNT);
+        CHECK(r.statsRows[3].label == "Entities");
+        CHECK(r.statsRows[3].value == std::to_string(app->world().entityCount()));
+        CHECK(r.statsRows[2].label == "Triangles");
+        CHECK(r.statsRows[2].value == std::to_string(forward->lastFrameTriangles()));  // the previous frame's
+        CHECK(r.statsRows[4].value == AERO_GLYPH_EM_DASH);
+        std::string drawCalls;
+        engine::editor::abbreviateCount(engine::editor::viewportDrawCalls(r.drawCounts), drawCalls);
+        CHECK(r.statsRows[1].value == drawCalls);                                       // the formatting arm
+        CHECK(engine::editor::viewportDrawCalls(r.drawCounts) > r.drawCounts.forward);  // anti-vacuity: a SUM
+        // THE FRAME ROW is the ONE readout's ms half -- the status bar's own text, the same tick.
+        const auto start = std::chrono::steady_clock::now();
+        int frames = 0;
+        while (frames < 600 && std::chrono::steady_clock::now() - start < std::chrono::milliseconds(700)) {
+            REQUIRE(app->tick());
+            ++frames;
+        }
+        REQUIRE(app->tick());
+        const std::string& status = app->shellChromeRecord().statusFrame;
+        const std::string_view dot = AERO_GLYPH_MIDDLE_DOT " ";
+        REQUIRE(status.find(dot) != std::string::npos);
+        CHECK(r.statsRows[0].value == status.substr(status.find(dot) + dot.size()));
+        CHECK(r.statsRows[0].value != "-- ms");
+    }
+    // THE TOGGLE: the card goes, and its old centre is claimed by nothing.
+    const engine::editor::HudRect oldStats = r.layout.stats;
+    viewport->requestStatsVisible(false);
+    e62Ticks(*app, 2);
+    CHECK_FALSE(viewport->statsVisible());
+    CHECK_FALSE(r.layout.stats.shown);
+    const engine::Vec2 oldCentre{(oldStats.min.x + oldStats.max.x) * 0.5F, (oldStats.min.y + oldStats.max.y) * 0.5F};
+    CHECK_FALSE(engine::editor::hudOwnsPoint(r.layout, oldCentre));
+
+    // SOURCE: the readout is borrowed, never owned; the HUD draws between the selection overlay and the widget.
+    const std::vector<std::string> code = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/viewport_panel.cpp");
+    const std::vector<std::string> header = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/viewport_panel.hpp");
+    CHECK(countLinesContaining(header, "FrameTimeReadout") == countLinesContaining(header, "const FrameTimeReadout*"));
+    CHECK(countLinesContaining(code, "FrameTimeReadout ") == countLinesContaining(code, "const FrameTimeReadout "));
+    const std::size_t hudAt = soleLineContaining(code, "drawHud(context, hudImageMin, hudImageMax, drawExtent);");
+    CHECK(soleLineContaining(code, "drawSelectionOverlay(context,") < hudAt);
+    CHECK(hudAt < soleLineContaining(code, "drawViewAxisGizmo();"));
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: every drawn HUD rect claims its presses, and nothing else does (task E.6.3, I328)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "viewport hud i328", .width = 1280, .height = 800});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = e62App(*device, *window, ctx);
+    auto* const viewport = dynamic_cast<engine::editor::ViewportPanel*>(app->panels().find("Viewport"));
+    REQUIRE(viewport != nullptr);
+    if (e63HudUnavailable(*app, *viewport)) {
+        return;
+    }
+    e62Ticks(*app, 3);
+    const engine::editor::ViewportHudRecord& r = viewport->hudRecord();
+    REQUIRE(r.framesRecorded > 0U);
+    // NO WIDGET arm (a zero image rect), so only the row and the HUD can answer -- the claims under test.
+    std::size_t shown = 0;
+    for (const engine::editor::HudRect* rect :
+         {&r.layout.chip, &r.layout.stats, &r.layout.hints[0], &r.layout.hints[1], &r.layout.flyChip}) {
+        if (!rect->shown) {
+            continue;
+        }
+        ++shown;
+        const engine::Vec2 centre{(rect->min.x + rect->max.x) * 0.5F, (rect->min.y + rect->max.y) * 0.5F};
+        CHECK(viewport->overlayOwnsPress(centre, engine::Vec2{}, engine::Vec2{}));
+    }
+    REQUIRE(shown >= 2U);  // ANTI-VACUITY: the chip and at least one more rect really drew
+    const engine::Vec2 middle{(r.imageMin.x + r.imageMax.x) * 0.5F, (r.imageMin.y + r.imageMax.y) * 0.5F};
+    REQUIRE_FALSE(engine::editor::hudOwnsPoint(r.layout, middle));
+    CHECK_FALSE(viewport->overlayOwnsPress(middle, engine::Vec2{}, engine::Vec2{}));  // the ordinary pick survives
+
+    // SOURCE: the free function on exactly two code lines (the pick's claim and ImGuizmo's), no member wrapper, the
+    // view-axis count unmoved (I118), and the Enable line byte-identical to the branch point's.
+    const std::vector<std::string> code = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/viewport_panel.cpp");
+    CHECK(countLinesContaining(code, "hudOwnsPoint(") == 2U);
+    CHECK(countLinesContaining(code, "ViewportPanel::hudOwnsPoint") == 0U);
+    CHECK(countLinesContaining(code, "viewAxisOwnsPoint") == 3U);
+    const std::size_t enableAt = soleLineContaining(code, "ImGuizmo::Enable(gesture.gesture");
+    CHECK(code[enableAt].find("ImGuizmo::Enable(gesture.gesture == CameraGesture::None && !widgetOwnsCursor && "
+                              "!viewOptionsOpenValue);") != std::string::npos);
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: the view-axis widget sits 23 in from the bottom-right, inside its circle (task E.6.3, I329)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "viewport axis i329", .width = 1280, .height = 800});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = e62App(*device, *window, ctx);
+    auto* const viewport = dynamic_cast<engine::editor::ViewportPanel*>(app->panels().find("Viewport"));
+    REQUIRE(viewport != nullptr);
+    if (e63HudUnavailable(*app, *viewport)) {
+        return;
+    }
+    e62Ticks(*app, 3);
+    const engine::editor::ViewportHudRecord& r = viewport->hudRecord();
+    REQUIRE(r.framesRecorded > 0U);
+    REQUIRE(r.viewAxisCircleRadius > 0.0F);  // ANTI-VACUITY: the widget drew this frame
+    const float s = app->uiScale();
+    // Against the RECORDED image -- never rebuilt from the widget's own rect.
+    CHECK(std::abs(r.viewAxisCornerMax.x - (r.imageMax.x - (23.0F * s))) <= 0.5F);
+    CHECK(std::abs(r.viewAxisCornerMax.y - (r.imageMax.y - (23.0F * s))) <= 0.5F);
+    CHECK(std::abs(r.viewAxisCircleRadius - (43.0F * s)) <= 1e-3F);  // half-extent 38 + gap 5
+    // The circle's outer edge 18 in from the image's corner, on both axes -- the mock's inset.
+    CHECK(std::abs((r.imageMax.x - (r.viewAxisCircleCenter.x + r.viewAxisCircleRadius)) - (18.0F * s)) <= 0.5F);
+    CHECK(std::abs((r.imageMax.y - (r.viewAxisCircleCenter.y + r.viewAxisCircleRadius)) - (18.0F * s)) <= 0.5F);
+    // ...and no HUD rect over it.
+    for (const engine::editor::HudRect* rect :
+         {&r.layout.chip, &r.layout.stats, &r.layout.hints[0], &r.layout.hints[1]}) {
+        if (rect->shown) {
+            const bool apart = rect->max.x <= r.viewAxisCornerMin.x || r.viewAxisCornerMax.x <= rect->min.x ||
+                               rect->max.y <= r.viewAxisCornerMin.y || r.viewAxisCornerMax.y <= rect->min.y;
+            CHECK(apart);
+        }
+    }
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: the View popover as source text -- the chip, the headings, Stats, the clamp (task E.6.3, I330)") {
+    const std::vector<std::string> code = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/viewport_panel.cpp");
+    REQUIRE(code.size() > 100U);  // ANTI-VACUITY: the file was really read
+    CHECK(countLinesContaining(code, "chipButton(") == 1U);
+    CHECK(countLinesContaining(code, "SmallButton(\"View\")") == 0U);
+    CHECK(countLinesContaining(code, "roleText(ChromeRole::TextMuted") == 2U);  // Display and Overlays (D11)
+    CHECK(countLinesContaining(code, "TextDisabled") == 0U);
+    CHECK(countLinesContaining(code, "Checkbox(\"Stats\"") == 1U);
+    // The popover's position comes from E.3.3's TESTED clamp, named -- never a hand-placed corner.
+    const std::size_t anchorAt = soleLineContaining(code, "assetPickerAnchor(");
+    const std::size_t positionAt = soleLineContaining(code, "ImGui::SetNextWindowPos(ImVec2(anchor.pos.x");
+    CHECK(anchorAt < positionAt);
+    // The widths through the moved constants; the old names survive only INSIDE the new ones.
+    CHECK(countLinesContaining(code, "VIEW_OPTIONS_COMBO_FONT_MULTIPLE") == 1U);
+    CHECK(countLinesContaining(code, "VIEW_OPTIONS_SLIDER_FONT_MULTIPLE") == 1U);
+    CHECK(countLinesContaining(code, "OPTIONS_COMBO_FONT_MULTIPLE") == 1U);
+    CHECK(countLinesContaining(code, "OPTIONS_SLIDER_FONT_MULTIPLE") == 1U);
+    // The chip draws in BodySmall: its body in panel_chrome_ui.cpp names no Mono face (Mono carries no icons, D9).
+    const std::vector<std::string> chrome = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/panel_chrome_ui.cpp");
+    const std::size_t begin = soleLineContaining(chrome, "ChipDraw chipButton(");
+    std::size_t end = begin;
+    while (end < chrome.size() && chrome[end] != "}") {
+        ++end;
+    }
+    REQUIRE(end < chrome.size());
+    REQUIRE(end - begin >= 5U);  // a real body
+    for (std::size_t i = begin; i < end; ++i) {
+        CAPTURE(chrome[i]);
+        CHECK(chrome[i].find("editorFonts().mono") == std::string::npos);
+        CHECK(chrome[i].find("PanelFace::Mono") == std::string::npos);  // MonoSmall included
+    }
+}
+
+TEST_CASE("editor: the triangle stat end to end -- N cubes in view, M behind, N x 12 (task E.6.3, I335)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "triangle stat i335", .width = 1280, .height = 800});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = e62App(*device, *window, ctx);
+    auto* const viewport = dynamic_cast<engine::editor::ViewportPanel*>(app->panels().find("Viewport"));
+    REQUIRE(viewport != nullptr);
+    if (e63HudUnavailable(*app, *viewport)) {
+        return;
+    }
+    const engine::editor::EditorCamera* const camera = app->viewportCamera();
+    REQUIRE(camera != nullptr);
+    // The default scene's Cube counts IN N: two more beside it in view (the default pose frames a unit cube from 8
+    // units at 60 degrees), and M behind the eye. A primitive cube is 36 indices -- 12 triangles, restated.
+    constexpr std::size_t N = 3;
+    constexpr std::size_t M = 2;
+    const auto addCube = [&app](engine::Vec3 position) {
+        const engine::Entity cube = app->world().create();
+        engine::Transform transform{};
+        transform.position = position;
+        REQUIRE(app->world().add<engine::Transform>(cube, transform) != nullptr);
+        REQUIRE(app->world().add<engine::MeshRenderer>(cube, engine::MeshRenderer{}) != nullptr);
+    };
+    addCube(engine::Vec3{1.5F, 0.0F, 0.0F});
+    addCube(engine::Vec3{-1.5F, 0.0F, 0.0F});
+    for (std::size_t i = 0; i < M; ++i) {
+        addCube(camera->position() - (camera->forward() * (4.0F + (2.0F * static_cast<float>(i)))));
+    }
+    e62Ticks(*app, 3);
+    const engine::render::ForwardRenderer* const forward = viewport->sceneForwardRenderer();
+    CHECK(forward->lastFrameDrawn() == N);   // the cull agrees: N drawn...
+    CHECK(forward->lastFrameCulled() == M);  // ...M culled (S30's witness, with CD12)
+    CHECK(forward->lastFrameTriangles() == N * 12U);
+    const engine::editor::ViewportHudRecord& r = viewport->hudRecord();
+    WARN(r.layout.stats.shown);
+    if (r.layout.stats.shown) {
+        REQUIRE(r.statsRows.size() == engine::editor::VIEWPORT_STATS_ROW_COUNT);
+        CHECK(r.statsRows[2].value == std::to_string(N * 12U));  // the frame after the render
+    }
     app->requestQuit();
     CHECK(app->tick() == false);
     app.reset();

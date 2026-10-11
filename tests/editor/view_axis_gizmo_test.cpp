@@ -376,9 +376,12 @@ TEST_CASE("editor view-axis gizmo: the rect sits in the image's corner and AGREE
         CHECK(rectMax.x <= IMAGE_ORIGIN.x + IMAGE_SIZE.x);
         CHECK(rectMax.y <= IMAGE_ORIGIN.y + IMAGE_SIZE.y);
     }
-    SUBCASE("inset by exactly MARGIN from the top-right corner") {
+    SUBCASE("inset by exactly MARGIN from the BOTTOM-right corner (task E.6.3, D9)") {
         CHECK(rectMax.x == IMAGE_ORIGIN.x + IMAGE_SIZE.x - VIEW_AXIS_MARGIN_POINTS);
-        CHECK(rectMin.y == IMAGE_ORIGIN.y + VIEW_AXIS_MARGIN_POINTS);
+        CHECK(rectMax.y == IMAGE_ORIGIN.y + IMAGE_SIZE.y - VIEW_AXIS_MARGIN_POINTS);
+        // The circle the panel draws is five beyond the rect (viewport_hud.hpp's viewAxisCircleRadius, 43), so the
+        // margin is 23 and the circle's edge 18 in -- the mock's inset, restated.
+        CHECK(VIEW_AXIS_MARGIN_POINTS == 23.0F);
     }
     SUBCASE("square, 2 x HALF_EXTENT on a side") {
         CHECK(rectMax.x - rectMin.x == 2.0F * VIEW_AXIS_HALF_EXTENT_POINTS);
