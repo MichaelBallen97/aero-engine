@@ -181,6 +181,7 @@ add_library(aero_editor_core STATIC
     src/console_view.cpp         # task E.6.3 -- the Console's channel, stamp, tags, tints, columns, footer; PURE
     src/entity_presentation.cpp  # task E.6.3 -- entity kind, component icons, humanised labels, the id text; PURE
     src/hierarchy_view.cpp       # task E.6.3 -- the Hierarchy's search, badge, row and header layouts; PURE
+    src/asset_browser_chrome.cpp  # task E.6.3 -- the Assets header modes, crumbs, counts, footer zones; PURE
     src/editor_theme_ui.cpp      # task E.6.1 -- buildEditorStyle: the ONE style writer
 )
 add_library(aero::editor_core ALIAS aero_editor_core)

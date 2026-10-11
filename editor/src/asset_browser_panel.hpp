@@ -7,9 +7,9 @@
 // FRAME SHAPE (D8, the hierarchy_panel.hpp:6-16 discipline) -- onDraw is exactly five phases:
 //   1. reconcile  IsWindowAppearing -> drop the cache; fill the cache for "" / currentDir / openDirs;
 //                 rebuild visibleRows when dirty. THE ONLY PLACE I/O HAPPENS (D7).
-//   2. header     Refresh, Show hidden, breadcrumb -- RECORDED only
+//   2. header     New Material, search, kind, Grid | List, Refresh, Auto-refresh, the overflow -- RECORDED only
 //   3. left pane  the directory tree, strictly READ-ONLY
-//   4. right pane the current directory's contents, strictly READ-ONLY
+//   4. right pane ONE group: the crumb row (RECORDED only) over the grid or list, strictly READ-ONLY (task E.6.3)
 //   5. footer     the selection / status line, strictly READ-ONLY
 //   apply         one switch over `pending` -- the ONLY place currentDir, openDirs, cache,
 //                 showHidden or selectedEntry is written (INV-5)
@@ -18,9 +18,10 @@
 // EVERY walk is an explicit stack, never a recursive function (INV-4/F23).
 //
 // READ-ONLY BY CONTRACT (D19): this panel creates, renames, moves, deletes and opens nothing.
-#include <aero/core/guid.hpp>             // task 3.1.4 -- abstainingScratch's element type, used DIRECTLY
-#include <aero/editor/asset_actions.hpp>  // task E.4.3 -- AssetOpRefusal, AssetNameRefusal (pure)
-#include <aero/editor/asset_view.hpp>     // task 3.1.3 -- AssetViewMode, TileSize (pure enums, ImGui-free)
+#include <aero/core/guid.hpp>                    // task 3.1.4 -- abstainingScratch's element type, used DIRECTLY
+#include <aero/editor/asset_actions.hpp>         // task E.4.3 -- AssetOpRefusal, AssetNameRefusal (pure)
+#include <aero/editor/asset_browser_chrome.hpp>  // task E.6.3 -- the chrome's layouts, counts and record (pure)
+#include <aero/editor/asset_view.hpp>            // task 3.1.3 -- AssetViewMode, TileSize (pure enums, ImGui-free)
 #include <aero/editor/panel.hpp>
 #include <aero/editor/project_files.hpp>
 #include <aero/editor/thumbnail_cache.hpp>  // task 3.1.3 -- ThumbnailKey/ThumbnailLedger (pure, GPU-free)
@@ -325,6 +326,14 @@ public:
     [[nodiscard]] std::size_t dropTargetsAccepted() const noexcept { return dropTargetsAcceptedCount; }
     [[nodiscard]] const std::string& contextMenuTarget() const noexcept { return contextTarget; }
 
+    // ---- task E.6.3: the chrome (D8, D14) ---------------------------------------------------------------------
+    // What the last onDraw DREW -- the header's rects, the crumbs, the tree, the tiles, the footer -- every member
+    // written from ImGui's answers at the draw, never copied from a layout's input.
+    [[nodiscard]] const AssetChromeRecord& chromeRecord() const noexcept { return chrome; }
+    // Queues EXACTLY the ActionKind::Navigate a crumb or a tree-row click records. Held until an onDraw finds the
+    // crumbs enabled and no modal up -- the gate a real click has -- then recorded for that frame's applyPending().
+    void requestNavigate(std::string relativeDir);
+
 private:
     // performance-enum-size: the explicit underlying type is mandatory, like every engine enum.
     enum class ActionKind : std::uint8_t {
@@ -390,6 +399,12 @@ private:
     // drawContentsPane, renamed and otherwise BYTE-IDENTICAL (D3/AC-2); drawContentsGrid is new.
     void drawContentsList(float paneHeight);
     void drawContentsGrid(float paneHeight);
+    // task E.6.3 (D8): phase 4 is ONE group -- the crumb row, its divider rule, then ##contents (Grid or List) -- so
+    // the SameLine after the tree pane carries the whole right side, and the group is exactly paneHeight tall.
+    void drawContentsPane(float paneHeight);
+    void drawCrumbRow(float rowHeight);
+    // The header's inline rect for `control`, read off the item JUST submitted (GetItemRectMin/Max).
+    void noteHeaderRect(AssetHeaderControl control);
     // task 3.1.3, Step 8: `isSearchHit` changes the double-click semantics (RevealPath instead of
     // Navigate -- a search hit is always a file, never a folder) and folds the parent folder into the
     // caption so a project-wide result stays identifiable outside its own directory.
@@ -454,9 +469,11 @@ private:
     std::string selectedEntry;  // relative; "" == nothing selected
     std::set<std::string> openDirs;
     std::unordered_map<std::string, DirectoryListing> cache;
-    std::vector<TreeRow> visibleRows;     // rebuilt ONLY when treeDirty; capacity reused (D15)
-    std::vector<std::string> breadcrumb;  // per-frame scratch, NOT model state
-    std::string labelScratch;             // per-frame scratch, NOT model state (the 2.2.1 idiom)
+    std::vector<TreeRow> visibleRows;  // rebuilt ONLY when treeDirty; capacity reused (D15)
+    std::vector<AssetCrumb> crumbs;    // per-frame scratch, NOT model state (task E.6.3: the crumb row's)
+    std::string itemsScratch;          // per-frame scratch: the crumb row's items text
+    std::string countScratch;          // per-frame scratch: a tree row's count
+    std::string labelScratch;          // per-frame scratch, NOT model state (the 2.2.1 idiom)
     PendingAction pending;
     bool showHidden = false;
     bool treeDirty = true;
@@ -496,6 +513,11 @@ private:
     float issuesBodyDrawnHeight = 0.0F;             // reset at the TOP of every onDraw
     AssetBrowserLayoutMetrics layoutMetricsAtDraw;  // written by every onDraw, as assetBrowserLayout read it
     float scrollMaxYAtDraw = 0.0F;                  // written at the END of every onDraw
+    // ---- task E.6.3 ------------------------------------------------------------------------------------------
+    AssetChromeRecord chrome;                    // opened at the TOP of every onDraw
+    FolderCountCache folderCounts;               // the tree's, the crumb row's and the folder tiles' ONE count
+    std::optional<std::string> navigateRequest;  // requestNavigate's; "" is the root, so it is an optional
+    ItemRectRecord segmentScratch;               // the Grid | List segments' rects (segmentButton's out-parameter)
 
     // ---- task 3.1.4 ---------------------------------------------------------------------------
     // Reconciled, never owned (the databasePtr/reportPtr precedent, a third instance). NULL until

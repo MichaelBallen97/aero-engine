@@ -495,6 +495,10 @@ public:
     // EXACTLY what a real single click on an Assets row/tile records (ActionKind::SelectEntry) -- ""
     // selects nothing, exactly like Navigate clearing it.
     void requestAssetBrowserSelectEntry(std::string_view relativePath);
+    // task E.6.3 (D8): the crumb / tree-row seam, the requestAssetBrowserSelectEntry shape -- it queues EXACTLY the
+    // ActionKind::Navigate a crumb or a tree row records, drained by the panel's next onDraw under the click's own
+    // gate. A no-op when no Asset Browser panel is registered.
+    void requestAssetBrowserNavigate(std::string_view relativeDir);
 
     // task E.4.4: the `Show hidden` checkbox's seam -- the requestAssetBrowserCreateMaterial() forward
     // verbatim. It queues the SAME ActionKind::ToggleHidden the checkbox queues, drained by the next

@@ -5,6 +5,7 @@
 // assertions throughout: the quantiser DIVIDES, so every expected value below is exact arithmetic, and a
 // length times 2 is exact in float.
 #include <aero/core/math.hpp>
+#include <aero/editor/asset_browser_chrome.hpp>  // task E.6.3 (US11)
 #include <aero/editor/breadcrumb.hpp>
 #include <aero/editor/console_view.hpp>  // task E.6.3 (US9, US11)
 #include <aero/editor/editor_camera.hpp>
@@ -367,8 +368,9 @@ TEST_CASE(
     REQUIRE_FALSE(ec);
     CHECK(read > 60U);  // ANTI-VACUITY: the walk really read the public headers
     const std::map<std::string, std::string> expected{
-        {"breadcrumb.hpp", "P"},     // task E.6.2: breadcrumbLayout
-        {"console_view.hpp", "PP"},  // task E.6.3: consoleRowLayout, consoleSegmentGap
+        {"asset_browser_chrome.hpp", "PPPPPP"},  // task E.6.3: header, floor, pane, crumb row, tree row, footer
+        {"breadcrumb.hpp", "P"},                 // task E.6.2: breadcrumbLayout
+        {"console_view.hpp", "PP"},              // task E.6.3: consoleRowLayout, consoleSegmentGap
         {"gizmo_style.hpp", "PP"},
         {"hierarchy_view.hpp", "PP"},    // task E.6.3: hierarchyRowLayout, hierarchyHeaderLayout
         {"inspector_model.hpp", "PPP"},  // task E.6.3: inspectorAxisLayout, inspectorHeaderLayout, addComponentLayout
@@ -449,5 +451,22 @@ TEST_CASE("ui scale: each E.6.3 layout treats a bad scale as 1 (task E.6.3, US11
         const ed::InspectorHeaderLayout inspectorBad = ed::inspectorHeaderLayout(0.0F, 300.0F, 10.0F, 40.0F, bad);
         CHECK((inspectorBad == ed::inspectorHeaderLayout(0.0F, 300.0F, 10.0F, 40.0F, 1.0F)));
         CHECK((ed::addComponentLayout(0.0F, 300.0F, 92.0F, bad) == ed::addComponentLayout(0.0F, 300.0F, 92.0F, 1.0F)));
+        const ed::AssetHeaderWidths headerWidths{110.0F, 192.0F, 96.0F, 128.0F, 90.0F, 70.0F, 120.0F, 24.0F};
+        const ed::AssetHeaderLayout assetHeaderBad = ed::assetHeaderLayout(0.0F, 700.0F, headerWidths, bad);
+        CHECK((assetHeaderBad == ed::assetHeaderLayout(0.0F, 700.0F, headerWidths, 1.0F)));
+        CHECK(ed::assetHeaderMinimalFloor(headerWidths, bad) == ed::assetHeaderMinimalFloor(headerWidths, 1.0F));
+        const ed::AssetContentsPaneLayout paneBad = ed::assetContentsPaneLayout(300.0F, 24.0F, 1.0F, 6.0F, bad);
+        CHECK((paneBad == ed::assetContentsPaneLayout(300.0F, 24.0F, 1.0F, 6.0F, 1.0F)));
+        const ed::AssetCrumbRowLayout crumbBad = ed::assetCrumbRowLayout(0.0F, 500.0F, 150.0F, 4U, 120.0F, bad);
+        CHECK((crumbBad == ed::assetCrumbRowLayout(0.0F, 500.0F, 150.0F, 4U, 120.0F, 1.0F)));
+        const ed::AssetTreeRowLayout treeBad = ed::assetTreeRowLayout(20.0F, 220.0F, 30.0F, bad);
+        CHECK((treeBad == ed::assetTreeRowLayout(20.0F, 220.0F, 30.0F, 1.0F)));
+        ed::AssetFooterText footerText;
+        footerText.thumbnailsBudget = 256U;
+        footerText.watcher = "watching";
+        const ed::AssetFooterLayout badFooter = ed::assetFooterLayout(0.0F, 400.0F, footerText, 8.0F, bad);
+        const ed::AssetFooterLayout oneFooter = ed::assetFooterLayout(0.0F, 400.0F, footerText, 8.0F, 1.0F);
+        REQUIRE(badFooter.right.size() == 2U);
+        CHECK(badFooter.right[0].x == oneFooter.right[0].x);  // the segment gap is the one scaled length
     }
 }

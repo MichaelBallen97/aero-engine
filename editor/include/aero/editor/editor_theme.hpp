@@ -226,13 +226,14 @@ struct ThemeViewportTints {
 // Moved from asset_view.cpp:175-187 at E.6.1, unchanged -- the hex spelling kept. iconColorFor returns
 // these.
 struct ThemeAssetKinds {
-    Srgb8 folder{0xE0U, 0xB0U, 0x30U, 255U};    // a warm gold
+    Srgb8 folder{92U, 102U, 114U, 255U};        // task E.6.3 (D3, Category B, ADOPTED): the mock's grey body
     Srgb8 texture{0x40U, 0x90U, 0xD0U, 255U};   // a cool blue
     Srgb8 model{0x60U, 0xB0U, 0x60U, 255U};     // a green
     Srgb8 audio{0xA0U, 0x60U, 0xC0U, 255U};     // a violet
     Srgb8 text{0x90U, 0x90U, 0x90U, 255U};      // a neutral grey
     Srgb8 material{0xE0U, 0x70U, 0x45U, 255U};  // a warm coral
     Srgb8 unknown{0x50U, 0x50U, 0x50U, 255U};   // a darker grey
+    Srgb8 folderTab{107U, 118U, 134U, 255U};    // task E.6.3 (D3): the folder's lighter tab, above the body
 };
 
 // Moved from asset_tile.cpp:24/:84 and material_card.cpp:41-46 at E.6.1 (spec D17), every value

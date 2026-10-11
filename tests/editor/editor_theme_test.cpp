@@ -212,8 +212,10 @@ TEST_CASE("theme: Category B is byte-identical to the branch point (task E.6.1, 
     checkVec4(t.viewportTints.unselected, Vec4{0.62F, 0.64F, 0.68F, 0.90F});
     checkVec4(t.viewportTints.mutedDirectional, Vec4{0.30F, 0.31F, 0.33F, 0.35F});
 
-    // The seven asset-kind colours, as the hex bytes asset_view.cpp wrote (:175-187).
-    checkSrgb8(t.assetKind.folder, {0xE0U, 0xB0U, 0x30U, 255U});
+    // The asset-kind colours, as the hex bytes asset_view.cpp wrote (:175-187) -- except the folder pair, which task
+    // E.6.3 ADOPTED from the mock as a stated Category-B decision (D3): a grey body and a lighter tab.
+    checkSrgb8(t.assetKind.folder, {92U, 102U, 114U, 255U});
+    checkSrgb8(t.assetKind.folderTab, {107U, 118U, 134U, 255U});
     checkSrgb8(t.assetKind.texture, {0x40U, 0x90U, 0xD0U, 255U});
     checkSrgb8(t.assetKind.model, {0x60U, 0xB0U, 0x60U, 255U});
     checkSrgb8(t.assetKind.audio, {0xA0U, 0x60U, 0xC0U, 255U});
@@ -492,7 +494,7 @@ TEST_CASE("theme: iconColorFor reads the theme (task E.6.1, TH9)") {
     };
     const ed::ThemeAssetKinds& k = ed::EDITOR_THEME.assetKind;
     const std::vector<KindRow> rows{
-        {ed::AssetKind::Folder, k.folder},      // a warm gold
+        {ed::AssetKind::Folder, k.folder},      // grey since task E.6.3 (D3)
         {ed::AssetKind::Texture, k.texture},    // a cool blue
         {ed::AssetKind::Model, k.model},        // a green
         {ed::AssetKind::Audio, k.audio},        // a violet

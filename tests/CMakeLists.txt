@@ -513,7 +513,8 @@ add_executable(aero_editor_shell_test editor/shell_test.cpp editor/hierarchy_tes
                editor/panel_chrome_model_test.cpp      # task E.6.3 — the role map and card geometry (PC)
                editor/console_view_test.cpp            # task E.6.3 — the Console model (CS)
                editor/entity_presentation_test.cpp     # task E.6.3 — entity presentation (EK)
-               editor/hierarchy_view_test.cpp)         # task E.6.3 — the Hierarchy model (HY)
+               editor/hierarchy_view_test.cpp          # task E.6.3 — the Hierarchy model (HY)
+               editor/asset_browser_chrome_test.cpp)   # task E.6.3 — the Assets model (AH)
 target_link_libraries(aero_editor_shell_test PRIVATE
     doctest::doctest aero::editor_core aero::scene aero::scene_internal aero::core Threads::Threads)
 add_test(NAME aero_editor_shell_test COMMAND aero_editor_shell_test)

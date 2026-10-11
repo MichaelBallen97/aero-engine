@@ -21,6 +21,7 @@
 #include <aero/editor/asset_cache.hpp>    // task 3.1.2: ImportChange, ASSET_CACHE_DIR_NAME/FILE_NAME/
                                           // GITIGNORE_NAME -- I31's index-path/gitignore-path assertions
 #include <aero/editor/asset_actions.hpp>  // task E.4.3: AssetOpRefusal, for the drop-peek verdicts
+#include <aero/editor/asset_browser_chrome.hpp>
 #include <aero/editor/asset_meta.hpp>     // task 3.1.3: writeMetaText, for I39/I41's orphan fixtures
 #include <aero/editor/blender_tool.hpp>   // task 3.2.4: ExportProvenance + BLENDER_EXPORT_DIR_NAME (I78)
 #include <aero/editor/command_stack.hpp>  // task 2.4.1
@@ -66,14 +67,15 @@
 // task 3.1.5 (SL1-SL10): the scene-asset loader is SRC-PRIVATE, so it is reached the way
 // blender_service_test.cpp reaches blender_process.hpp -- by relative path into editor/src. It names
 // scene_render::MeshBinding, which is why aero::scene_render is on this target's link line.
-#include "../../editor/src/console_panel.hpp"    // task E.6.1 (I281): the Console's own log model
-#include "../../editor/src/editor_fonts.hpp"     // task E.6.1 (I277-I279): the faces, measured ImGui-free
-#include "../../editor/src/editor_theme_ui.hpp"  // task E.6.1 (I280-I282): style snapshots, ImGui-free
-#include "../../editor/src/file_dialog.hpp"      // fix 2.5.1-focus (I275, I276): the dialog focus gate + helper
-#include "../../editor/src/hierarchy_panel.hpp"  // task E.5.2, I249: requestCreate -- the panel-to-drain path
-#include "../../editor/src/inspector_panel.hpp"  // task E.6.1 (I284): the face its headers and labels drew in
-#include "../../editor/src/material_panel.hpp"   // task E.2.4, I136: previewOutputTarget() -- the same
-                                                 // src-private reach the two lines below already make
+#include "../../editor/src/asset_browser_panel.hpp"  // task E.6.3 (I323-I326): the Assets chrome record
+#include "../../editor/src/console_panel.hpp"        // task E.6.1 (I281): the Console's own log model
+#include "../../editor/src/editor_fonts.hpp"         // task E.6.1 (I277-I279): the faces, measured ImGui-free
+#include "../../editor/src/editor_theme_ui.hpp"      // task E.6.1 (I280-I282): style snapshots, ImGui-free
+#include "../../editor/src/file_dialog.hpp"          // fix 2.5.1-focus (I275, I276): the dialog focus gate + helper
+#include "../../editor/src/hierarchy_panel.hpp"      // task E.5.2, I249: requestCreate -- the panel-to-drain path
+#include "../../editor/src/inspector_panel.hpp"      // task E.6.1 (I284): the face its headers and labels drew in
+#include "../../editor/src/material_panel.hpp"       // task E.2.4, I136: previewOutputTarget() -- the same
+                                                     // src-private reach the two lines below already make
 #include "../../editor/src/scene_asset_loader.hpp"
 #include "../../editor/src/viewport_panel.hpp"  // task 3.6.3: ViewportPanel's three test seams --
                                                 // postProcess(), tonemapParams(), requestTonemapParams().
@@ -18897,17 +18899,15 @@ TEST_CASE("editor: the Asset Browser fits its panel with 40 orphans and Issues o
     // THE SHORT WINDOW'S REGIME, re-measured 2026-10-03 at task E.6.1's metrics (UI scale 1: body 13 -> 16,
     // frame 19 -> 24, ItemSpacing.y 4 -> 6). With Issues open, assetBrowserLayout holds the body at its
     // one-row floor while avail <= 146 (footer 30 + header 30 + spacing 6 + panes 4 x 16 + one row 16) and
-    // fits while avail >= 83 (30 + 30 + 16 + 6 + 1). Measured here, avail = floor((H - 24) / 4) - 71: the
+    // fits while avail >= 83 (30 + 30 + 16 + 6 + 1). Measured here, avail = floor((H - 24) / 4) - 65: the
     // Bottom node's quarter of the work area, less its tab bar, padding and header row. So the regime is
-    // H in [640, 895]: 630 measured avail 80 (the WARN fallback below), 640 avail 83, 890 avail 145, and
-    // 900 avail 148 with an 18-point body. 600, this subcase's height before E.6.1, measured avail 73,
-    // ten under the fit bound, so its CHECK ran nowhere. 768 is avail 115, about 30 inside either bound.
+    // H in [616, 871]. Below H = 616 the WARN fallback below runs. 768 is avail 121, about 30 inside either bound.
     // A runner that delivers a SHORTER window than requested (CI's macOS lane can) may still land under 83,
     // where scrolling is the designed answer and checkFits reports a WARN. Re-measured at task E.6.2 with the
     // toolbar and status bar present, every value above is unchanged: their 70 dp come out of the central node
     // (the Viewport), because ImGui keeps a split sibling's size and hands the central node the remainder
-    // (imgui.cpp:20321-20325). 1000 measured avail 152 at E.6.1 on a display that held the window to about 920;
-    // on a taller one it is avail 173 with a 43-point body, and 920 is avail 153 with a 23-point body.
+    // (imgui.cpp:20321-20325). Re-measured at task E.6.3's step 5: the header row is 31 points, 6 fewer than
+    // E.6.2's; the other heights' figures were dropped, not carried.
     bool tallPanel = true;
     int windowHeight = 1000;
     SUBCASE("a TALL panel, where the body has room to grow past one row") {}
@@ -19299,6 +19299,11 @@ TEST_CASE("editor: one walk spends two budgets, and three older materials starve
     for (int i = 0; i < 3; ++i) {
         REQUIRE(app->tick());
     }
+    // task E.6.3 (D8): the crumb row takes 30 dp + its rule + one ItemSpacing.y from the contents pane; the tiles
+    // still sit in a child that drew (the final counts below are the witness that its first row did).
+    const auto* const assets = dynamic_cast<const engine::editor::AssetBrowserPanel*>(app->panels().find("Assets"));
+    REQUIRE(assets != nullptr);
+    REQUIRE(assets->chromeRecord().contentsChildMax.y > assets->chromeRecord().contentsChildMin.y);
     // THE ORDER IS THE FIXTURE. All five tiles are drawn in one frame, so they share lastTouched and the ledger
     // offers them in GUID order: the three materials take the three LOWEST GUIDs, so any walk that looks at
     // only the three oldest keys (the spec's sum) or at two per-budget prefixes (seed S5) finds no image.
@@ -20132,10 +20137,8 @@ TEST_CASE("editor: E.4.5's structure holds as source text -- routing, release, g
                 }
             }
         }
-        CHECK(formatCalls >= 15U);  // ANTI-VACUITY: 16 such calls at E.6.3's step 4: the browser's 13 (TextWrapped 6,
-                                    // SetTooltip 4, TextDisabled 3), the picker's SetTooltip, and the Inspector's two
-                                    // SetTooltip (the registration name and the e# generation) -- the picker's and the
-                                    // Inspector's four TextDisabled went to mutedText
+        CHECK(formatCalls >= 12U);  // ANTI-VACUITY: 12 at E.6.3's step 5 -- the browser's 9 (TextWrapped 6, SetTooltip
+                                    // 3), the picker's SetTooltip and the Inspector's two
         // THE SECOND-ARGUMENT FORMAT FUNCTIONS, the code-review round: TextColored(col, fmt, ...) and
         // LabelText(label, fmt, ...) take their format string SECOND, so the first-argument rule above cannot see
         // them. Their second argument must open a string literal: the call is joined with the next two lines and
@@ -20314,6 +20317,11 @@ TEST_CASE("editor: a material renders only while its tile is on screen -- the vi
     for (int i = 0; i < 3; ++i) {
         REQUIRE(app->tick());
     }
+    // task E.6.3 (D8): the crumb row takes 30 dp + its rule + one ItemSpacing.y from the contents pane; the tiles
+    // still sit in a child that drew (the final counts below are the witness that its first row did).
+    const auto* const assets = dynamic_cast<const engine::editor::AssetBrowserPanel*>(app->panels().find("Assets"));
+    REQUIRE(assets != nullptr);
+    REQUIRE(assets->chromeRecord().contentsChildMax.y > assets->chromeRecord().contentsChildMin.y);
     REQUIRE(app->materialThumbnailRenderCount() == 0U);  // no material tile drawn yet, so no render at all
     const std::optional<engine::Guid> blue = app->assetGuidForPath("blues/blue.aeromat");
     REQUIRE(blue.has_value());
@@ -22497,8 +22505,8 @@ TEST_CASE("editor: the panels read their roles from the theme (task E.6.1, I287)
         {"material_panel.cpp", 10U},
         {"import_details_panel.cpp", 6U},
         {"project_ui.cpp", 2U},
-        {"asset_tile.cpp", 2U},
-        {"asset_browser_panel.cpp", 1U},
+        {"asset_tile.cpp", 0U},           // task E.6.3: the captions read roles
+        {"asset_browser_panel.cpp", 0U},  // task E.6.3: mutedText
         {"project_settings_panel.cpp", 1U},
         {"shell_chrome_ui.cpp", 13U},     // task E.6.3: 15 - textBright - onAccent (the segments' roles moved)
         {"panel_chrome_model.cpp", 26U},  // task E.6.3: chromeRoleColor, each role ONCE
@@ -22510,15 +22518,12 @@ TEST_CASE("editor: the panels read their roles from the theme (task E.6.1, I287)
     // green while any other read of that role remains: only the count moves. A set claim needs a set
     // assertion, so each file's TOTAL of palette reads is pinned as well, and a read of a role a file has
     // no row for is red too. Counted from the code at E.6.1's second code-review round.
-    constexpr std::array<RoleReads, 48> ROLE_READS{{
+    constexpr std::array<RoleReads, 45> ROLE_READS{{
         {"material_panel.cpp", "error", 3U},
         {"material_panel.cpp", "textMuted", 1U},  // the status line's Disabled arm (D16)
         {"material_panel.cpp", "warning", 6U},
         {"import_details_panel.cpp", "error", 6U},
         {"project_ui.cpp", "error", 2U},
-        {"asset_tile.cpp", "text", 1U},  // one read, held for both captions
-        {"asset_tile.cpp", "textMuted", 1U},
-        {"asset_browser_panel.cpp", "textMuted", 1U},
         {"project_settings_panel.cpp", "textMuted", 1U},
         {"shell_chrome_ui.cpp", "accent", 1U},            // task E.6.2: chromeColors(), each role read once
         {"shell_chrome_ui.cpp", "active", 1U},            // task E.6.2: chromeColors(), each role read once
@@ -22850,7 +22855,9 @@ TEST_CASE("editor: the icon consumers, as source text (task E.6.1, I285)") {
     CHECK(countLinesContaining(shell, "drawCreateKindItem(\"Empty\", CreateKind::Empty") == 1U);
     CHECK(countLinesContaining(shell, "MenuItem(\"Empty\"") == 0U);
 
-    CHECK(countLinesContaining(browser, "AERO_ICON_CORNER_LEFT_UP") == 1U);
+    // task E.6.3 (D8): the ".." bar is gone -- the crumbs navigate up -- and every crumb has one submission site.
+    CHECK(countLinesContaining(browser, "AERO_ICON_CORNER_LEFT_UP") == 0U);
+    CHECK(countLinesContaining(browser, "ImGui::InvisibleButton(\"##crumb\"") == 1U);
     CHECK(countLinesContaining(browser, "\"<  ..\"") == 0U);
 }
 
@@ -24622,6 +24629,44 @@ void e63Front(engine::editor::EditorApp& app, const char* panelId, const char* s
     return 0.0F;
 }
 
+// A palette byte quadruple as ImGui packs it -- read off the THEME, never off the role map under test. Through
+// editor_theme_ui.hpp's ImGui-FREE toImU32 (IM_COL32's packing): this TU never sees imgui.h.
+[[nodiscard]] std::uint32_t e63Packed(const engine::editor::Srgb8& c) { return engine::editor::toImU32(c); }
+
+// A project for an Assets case: `files` written under assets/ (folders created first), opened with the watcher OFF --
+// a watcher rescan bumps the generation on wall-clock time (F18) -- and the Console hidden, so Assets owns the Bottom
+// slot (2.2.4's C5) and draws every frame.
+[[nodiscard]] std::optional<engine::editor::EditorApp> e63AssetsApp(engine::rhi::Device& device,
+                                                                    engine::platform::Window& window,
+                                                                    engine::platform::Context& ctx,
+                                                                    std::initializer_list<std::string_view> files) {
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    for (const std::string_view relative : files) {
+        const std::filesystem::path path = std::filesystem::path(created.root + "/assets") / std::string(relative);
+        std::error_code ec;
+        std::filesystem::create_directories(path.parent_path(), ec);
+        REQUIRE_FALSE(ec);
+        REQUIRE(engine::editor::writeTextFileAtomic(path.string(), "x").empty());
+    }
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(device, window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = created.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile(),
+                                           .assetWatch = {.enabled = false}});
+    REQUIRE(app.has_value());
+    app->panels().setVisible("Console", false);
+    REQUIRE(app->tick());  // 1: the first rescan runs inside this tick, before the frame draws
+    REQUIRE(app->tick());  // 2: the default dock layout settles
+    const int settled = settleAssetBrowser(*app);
+    REQUIRE(settled < E44_MAX_SETTLE_TICKS);
+    return app;
+}
+
 // The meta a Hierarchy row drew this frame, by HANDLE; nullopt when the row drew none.
 [[nodiscard]] std::optional<std::string> e63MetaOf(const engine::editor::HierarchyDrawRecord& r, engine::Entity e) {
     for (const engine::editor::HierarchyRowMeta& meta : r.rowMetas) {
@@ -24994,6 +25039,14 @@ TEST_CASE("editor: every E.6.3 request is drained under its control's predicate 
         CHECK(code[drainAt].find("matches(entry.name)") != std::string::npos);  // this card's own menu
         CHECK(code[drainAt].find("noModal") != std::string::npos);
         CHECK(countLinesContaining(code, "GetTopMostPopupModal()") == 1U);
+    }
+    SUBCASE("the Assets panel's navigation") {
+        const std::vector<std::string> code = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/asset_browser_panel.cpp");
+        const std::size_t drainAt = soleLineContaining(code, "navigateRequest.has_value() &&");
+        CHECK(code[drainAt].find("crumbsEnabled") != std::string::npos);
+        CHECK(code[drainAt].find("noModal") != std::string::npos);
+        CHECK(countLinesContaining(code, "GetTopMostPopupModal()") == 1U);
+        CHECK(countLinesContaining(code, "BeginDisabled(!crumbsEnabled)") == 1U);  // the crumbs read the same term
     }
 }
 
@@ -25481,6 +25534,331 @@ TEST_CASE("editor: card geometry -- one span, the framed overhang, paddings and 
     const std::size_t rightAt = soleLineContaining(chrome, "IsMouseReleased(ImGuiMouseButton_Right)");
     CHECK(chrome[rightAt + 1U].find("ImGuiHoveredFlags_AllowWhenBlockedByPopup") != std::string::npos);
     CHECK(countLinesContaining(chrome, "IsItemClicked(ImGuiMouseButton_Right)") == 0U);
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+// ---- task E.6.3, step 5: the Assets header modes, the crumb row, the tree, the tiles and the footer ---------------
+
+TEST_CASE("editor: the Assets header draws the layout's x's, never overlapping, monotone in width (task E.6.3, I323)") {
+    // Three windows, each a fresh app at the default layout with Assets in front of the Console. The record is compared
+    // with the layout's own answer for the record's own inputs, so nothing here depends on the runner's geometry.
+    // std::int32_t: WindowConfig::width's own type (window.hpp:30) -- a std::uint32_t narrowed inside the braced
+    // config is ill-formed on every lane.
+    const auto measure = [](std::int32_t width, engine::editor::AssetChromeRecord& out) {
+        engine::platform::Context ctx;
+        if (!ctx.valid()) {
+            AERO_SKIP_OR_FAIL("no platform context");
+        }
+        std::optional<engine::platform::Window> window =
+            ctx.createWindow({.title = "assets header i323", .width = width, .height = 600});
+        REQUIRE(window.has_value());
+        std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+        if (!device) {
+            AERO_SKIP_OR_FAIL("no GPU device");
+        }
+        std::optional<engine::editor::EditorApp> app = e62App(*device, *window, ctx);
+        auto* const browser = dynamic_cast<engine::editor::AssetBrowserPanel*>(app->panels().find("Assets"));
+        REQUIRE(browser != nullptr);
+        e63Front(*app, "Assets", "Console");
+        const std::uint64_t before = browser->chromeRecord().framesRecorded;
+        REQUIRE(app->tick());
+        REQUIRE(browser->chromeRecord().framesRecorded > before);  // a frame really recorded
+        out = browser->chromeRecord();
+        app->requestQuit();
+        CHECK(app->tick() == false);
+        app.reset();
+    };
+    using engine::editor::AssetHeaderControl;
+    std::array<engine::editor::AssetChromeRecord, 3> records{};
+    constexpr std::array<std::int32_t, 3> WIDTHS{1600, 900, 520};
+    for (std::size_t i = 0; i < WIDTHS.size(); ++i) {
+        measure(WIDTHS[i], records[i]);
+    }
+    if (records[0].framesRecorded == 0U) {
+        return;  // no GPU on a lane that does not require one: measure() already said so
+    }
+    for (std::size_t i = 0; i < records.size(); ++i) {
+        CAPTURE(WIDTHS[i]);
+        const engine::editor::AssetChromeRecord& r = records[i];
+        const engine::editor::AssetHeaderLayout& l = r.headerLayout;
+        const engine::editor::AssetHeaderWidths& w = r.headerWidths;
+        // (a) THE IDENTITY: the panel drew what the layout answers for the inputs the panel recorded.
+        CHECK((l == engine::editor::assetHeaderLayout(r.headerRowMinX, r.headerRowWidth, w, r.headerUiScale)));
+        CHECK(r.headerRuleDrawn);
+        // (b) every inline control's DRAWN rect at the layout's x, as wide as the panel measured -- sums both sides.
+        struct Expect {
+            AssetHeaderControl control;
+            bool inlined;
+            float x;
+            float width;
+        };
+        const std::array<Expect, 7> expects{{
+            {AssetHeaderControl::NewMaterial, true, l.newMaterialX, w.newMaterial},
+            {AssetHeaderControl::Search, true, l.searchX, l.searchWidth},
+            {AssetHeaderControl::Kind, l.kindInline, l.kindX, w.kind},
+            {AssetHeaderControl::ViewToggle, true, l.viewToggleX, w.viewToggle},
+            {AssetHeaderControl::Refresh, l.refreshInline, l.refreshX, w.refresh},
+            {AssetHeaderControl::AutoRefresh, l.autoRefreshInline, l.autoRefreshX, w.autoRefresh},
+            {AssetHeaderControl::Overflow, true, l.overflowX, w.overflow},
+        }};
+        std::vector<std::pair<float, float>> drawn;
+        for (const Expect& e : expects) {
+            CAPTURE(static_cast<int>(e.control));
+            const engine::editor::AssetDrawnRect& rect = r.headerRects[static_cast<std::size_t>(e.control)];
+            CHECK(rect.drawn == e.inlined);
+            const bool folded =
+                std::find(r.overflowDrawn.begin(), r.overflowDrawn.end(), e.control) != r.overflowDrawn.end();
+            CHECK(folded == !e.inlined);  // (c) every folded control is in the overflow, and only those
+            if (rect.drawn) {
+                CHECK(std::abs(rect.min.x - e.x) <= 0.5F);
+                CHECK(std::abs(rect.max.x - (rect.min.x + e.width)) <= 0.5F);
+                drawn.emplace_back(rect.min.x, rect.max.x);
+            }
+        }
+        std::sort(drawn.begin(), drawn.end());
+        for (std::size_t k = 1; k < drawn.size(); ++k) {
+            CHECK(drawn[k - 1].second <= drawn[k].first + 0.5F);  // (c) no two drawn inline rects overlap
+        }
+        // (d) at or above the floor, the row never clips.
+        if (r.headerRowWidth >= engine::editor::assetHeaderMinimalFloor(w, r.headerUiScale)) {
+            REQUIRE_FALSE(drawn.empty());
+            CHECK(drawn.back().second <= r.headerRowMinX + r.headerRowWidth + 0.5F);
+        }
+    }
+    // (e) a narrower window never yields a wider mode (Full < Compact < Minimal); three DISTINCT modes is geometry.
+    CHECK(static_cast<int>(records[2].headerMode) >= static_cast<int>(records[1].headerMode));
+    CHECK(static_cast<int>(records[1].headerMode) >= static_cast<int>(records[0].headerMode));
+    WARN((records[0].headerMode == engine::editor::AssetHeaderMode::Full));
+    WARN((records[2].headerMode == engine::editor::AssetHeaderMode::Minimal));
+}
+
+TEST_CASE("editor: the Assets crumbs, the recursive items text, the tree and the grouped pane (task E.6.3, I324)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "assets crumbs i324", .width = 1280, .height = 800});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app =
+        e63AssetsApp(*device, *window, ctx,
+                     {"top.txt", "models/e.txt", "models/props/a.txt", "models/props/b.txt", "models/props/sub/c.txt",
+                      "models/props/sub/d.txt"});
+    auto* const browser = dynamic_cast<engine::editor::AssetBrowserPanel*>(app->panels().find("Assets"));
+    REQUIRE(browser != nullptr);
+    REQUIRE(browser->database() != nullptr);
+    const auto records = [&browser]() { return browser->database()->records(); };
+    const auto settleOn = [&app](std::size_t entries) {
+        for (int i = 0; i < E44_MAX_SETTLE_TICKS && app->assetBrowserVisibleEntryCount() != entries; ++i) {
+            REQUIRE(app->tick());
+        }
+        REQUIRE(app->assetBrowserVisibleEntryCount() == entries);
+    };
+
+    // Navigate through the NEW seam -- it records exactly the ActionKind::Navigate a crumb or a tree row records.
+    app->requestAssetBrowserNavigate("models/props");
+    settleOn(3U);  // a.txt, b.txt and the sub folder
+    REQUIRE(app->tick());
+    const std::size_t recursive = engine::editor::countRecordsUnder(records(), "models/props");
+    REQUIRE(recursive == 4U);
+    REQUIRE(recursive != app->assetBrowserVisibleEntryCount());  // ANTI-VACUITY: N is not the listing's size (S66)
+    std::string expected;
+    engine::editor::assetItemsText(recursive, expected);
+    const engine::editor::AssetChromeRecord& r = browser->chromeRecord();
+    CHECK(r.crumbsDrawn == 3U);  // assets / models / props
+    CHECK(r.crumbDropTargets == 3U);
+    CHECK(r.itemsText == expected);
+    // A query changes nothing about N (D8).
+    app->requestAssetBrowserSearch("a");
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+    REQUIRE(app->assetBrowserSearchHitCount() > 0U);  // the query really committed
+    CHECK(browser->chromeRecord().itemsText == expected);
+    app->requestAssetBrowserSearch("");
+    REQUIRE(app->tick());
+
+    // The pane, side by side, in Grid AND List: the group beside the tree, the crumb row on top, the group as tall.
+    const float spacingX = e63StyleX(app->uiScale(), "ItemSpacing");
+    for (const engine::editor::AssetViewMode mode :
+         {engine::editor::AssetViewMode::Grid, engine::editor::AssetViewMode::List}) {
+        CAPTURE(static_cast<int>(mode));
+        app->requestAssetBrowserViewMode(mode);
+        REQUIRE(app->tick());
+        REQUIRE(app->tick());
+        CHECK(app->assetBrowserListViewActive() == (mode == engine::editor::AssetViewMode::List));
+        const engine::editor::AssetChromeRecord& pane = browser->chromeRecord();
+        CHECK(std::abs(pane.contentsChildMin.x - (pane.treeChildMax.x + spacingX)) <= 0.5F);
+        CHECK(pane.contentsChildMin.y >= pane.treeChildMin.y + pane.crumbRowHeight);
+        CHECK(std::abs(pane.contentsGroupMaxY - pane.treeChildMax.y) <= 0.5F);
+        CHECK(pane.crumbsDrawn == 3U);  // the row is in the group in both modes
+    }
+
+    // The tree, drawn the Hierarchy way: root, models (opened by the navigation) and props at least.
+    const engine::editor::AssetChromeRecord& tree = browser->chromeRecord();
+    CHECK(tree.treeRowsDrawn >= 3U);
+    CHECK(tree.treeCurrentLabelColor == e63Packed(engine::editor::EDITOR_THEME.palette.accent));
+    CHECK(tree.treeArrowTextColor == e63Packed(engine::editor::EDITOR_THEME.palette.textFaint));
+    CHECK(tree.treeSelectionRounding > 0.0F);
+
+    // The root: N changes to the whole project's count.
+    app->requestAssetBrowserNavigate("");
+    settleOn(2U);  // top.txt and models
+    REQUIRE(app->tick());
+    std::string atRoot;
+    engine::editor::assetItemsText(records().size(), atRoot);
+    CHECK(browser->chromeRecord().itemsText == atRoot);
+    CHECK(atRoot != expected);
+    CHECK(browser->chromeRecord().crumbsDrawn == 1U);
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: Assets tiles -- counts once a generation, hatched labels, rings, the tab (task E.6.3, I325)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "assets tiles i325", .width = 1280, .height = 800});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = e63AssetsApp(
+        *device, *window, ctx, {"note.txt", "blob.bin", "f1/a.txt", "f2/b.txt", "f2/c.txt", "f3/sub/d.txt"});
+    // I233's runner rule: Small tiles, and the side panels hidden so the Bottom node takes the whole width -- five
+    // tiles in one row need 5 x (72 + 8) - 8 = 392 of contents width at body 16.
+    for (const char* id :
+         {"Hierarchy", "Inspector", "Material", "Import Details", engine::editor::PROJECT_SETTINGS_PANEL_ID}) {
+        if (app->panels().find(id) != nullptr) {
+            app->panels().setVisible(id, false);
+        }
+    }
+    app->requestAssetBrowserTileSize(engine::editor::TileSize::Small);
+    for (int i = 0; i < 3; ++i) {
+        REQUIRE(app->tick());
+    }
+    auto* const browser = dynamic_cast<engine::editor::AssetBrowserPanel*>(app->panels().find("Assets"));
+    REQUIRE(browser != nullptr);
+    REQUIRE(browser->database() != nullptr);
+    REQUIRE(app->assetBrowserVisibleEntryCount() == 5U);  // f1, f2, f3, blob.bin, note.txt
+    const engine::editor::AssetChromeRecord& r = browser->chromeRecord();
+    CHECK(r.foldersCounted == 3U);
+    REQUIRE(r.folderTileCounts.size() == 3U);
+    for (const engine::editor::AssetFolderTileCount& folder : r.folderTileCounts) {
+        CAPTURE(folder.relative);
+        CHECK(folder.count == engine::editor::countRecordsUnder(browser->database()->records(), folder.relative));
+    }
+    // Idle ticks recompute nothing; one explicit rescan recomputes exactly once (S23's witness, every lane).
+    REQUIRE(app->assetWatchTriggerCount() == 0U);
+    const std::uint64_t idle = r.folderCountRecomputations;
+    REQUIRE(idle >= 1U);
+    for (int i = 0; i < 10; ++i) {
+        REQUIRE(app->tick());
+    }
+    CHECK(browser->chromeRecord().folderCountRecomputations == idle);
+    CHECK(app->assetWatchTriggerCount() == 0U);
+    const std::uint64_t generation = browser->database()->generation();
+    app->requestAssetRescan();
+    REQUIRE(app->tick());
+    CHECK(browser->database()->generation() == generation + 1U);
+    CHECK(browser->chromeRecord().folderCountRecomputations == idle + 1U);
+    // The hatched wells: textSecondary labels, never a kind colour (the kinds carry no contrast floor, D8).
+    CHECK(r.hatchedWells >= 2U);  // note.txt (Text) and blob.bin (Unknown)
+    CHECK(r.lastHatchLabelColor == e63Packed(engine::editor::EDITOR_THEME.palette.textSecondary));
+    CHECK(r.lastHatchLabelColor != e63Packed(engine::editor::EDITOR_THEME.assetKind.text));
+    CHECK(r.lastHatchLabelColor != e63Packed(engine::editor::EDITOR_THEME.assetKind.unknown));
+    // The rings: resting `hover` (an exact match, D3); selected `accentBorder`.
+    CHECK(r.lastRestingRingColor == e63Packed(engine::editor::EDITOR_THEME.palette.hover));
+    app->requestAssetBrowserSelectEntry("note.txt");
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+    CHECK(browser->chromeRecord().tilesRinged >= 5U);
+    CHECK(browser->chromeRecord().lastSelectedRingColor ==
+          e63Packed(engine::editor::EDITOR_THEME.palette.accentBorder));
+    // The folder's tab in its OWN colour -- the old tab sat inside the body in the body's colour (S50).
+    CHECK(r.lastFolderTabColor == e63Packed(engine::editor::EDITOR_THEME.assetKind.folderTab));
+    CHECK(r.lastFolderTabColor != e63Packed(engine::editor::EDITOR_THEME.assetKind.folder));
+
+    // SOURCE: in BOTH tile hosts the clear scope opens on the line before Selectable("##tile" and closes after it.
+    for (const char* host : {"/asset_browser_panel.cpp", "/asset_picker.cpp"}) {
+        CAPTURE(host);
+        const std::vector<std::string> code = editorSourceCodeLines(std::string(AERO_EDITOR_SRC_DIR) + host);
+        const std::size_t at = soleLineContaining(code, "Selectable(\"##tile\"");
+        REQUIRE(at > 0U);
+        REQUIRE(at + 1U < code.size());
+        CHECK(code[at - 1U].find("const ClearHeaderStyle ") != std::string::npos);
+        CHECK(code[at + 1U].find_first_not_of(" }") == std::string::npos);  // the scope's closing brace, alone
+        CHECK(code[at + 1U].find('}') != std::string::npos);
+    }
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: the Assets footer -- the path elided from the left, the right zone whole (task E.6.3, I326)") {
+    // A 1600 x 600 window: the side panels are hidden below, so the footer is at most 1584 wide and its left zone
+    // keeps at most ~208 Mono-small cells (6.46 points each at small 14 -- ImGui sizes Plex Mono by its 1300-unit
+    // ascent-to-descent height, measured). The deep path's ~41-cell last segment (the name and its size, GUID and
+    // import segments) fits with room to spare on any runner that delivers >= 1100, and the whole ~245-cell line
+    // does not.
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "assets footer i326", .width = 1600, .height = 600});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    const std::string deep =
+        "f00_folder_level/f01_folder_level/f02_folder_level/f03_folder_level/f04_folder_level/"
+        "f05_folder_level/f06_folder_level/f07_folder_level/f08_folder_level/f09_folder_level/"
+        "f10_folder_level/f11_folder_level/model.txt";
+    std::optional<engine::editor::EditorApp> app = e63AssetsApp(*device, *window, ctx, {"top.txt", deep});
+    for (const char* id :
+         {"Hierarchy", "Inspector", "Material", "Import Details", engine::editor::PROJECT_SETTINGS_PANEL_ID}) {
+        if (app->panels().find(id) != nullptr) {
+            app->panels().setVisible(id, false);
+        }
+    }
+    auto* const browser = dynamic_cast<engine::editor::AssetBrowserPanel*>(app->panels().find("Assets"));
+    REQUIRE(browser != nullptr);
+    app->requestAssetBrowserSelectEntry(deep);  // a database record, so the footer resolves it from the root listing
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+    const engine::editor::AssetChromeRecord& r = browser->chromeRecord();
+    REQUIRE_FALSE(r.footerLeftText.empty());
+    CHECK(r.footerLeftText.starts_with(AERO_GLYPH_ELLIPSIS));
+    CHECK(r.footerLeftText.find("model.txt") != std::string::npos);  // the name survives; the folders went
+    REQUIRE(r.footerRightTexts.size() >= 2U);                        // thumbnails and the watcher word, at least
+    CHECK(std::find(r.footerRightTexts.begin(), r.footerRightTexts.end(), "Auto-refresh off") !=
+          r.footerRightTexts.end());  // the watcher is OFF in this fixture, handed whole
+    // A scan issue: an orphaned sidecar, then a rescan.
+    const engine::Guid orphan = engine::GuidGenerator{0xE63A326ULL}.next();
+    const std::string orphanMeta = engine::editor::writeMetaText(orphan);
+    REQUIRE(engine::editor::writeTextFileAtomic(browser->root() + "/ghost.png.meta", orphanMeta).empty());
+    app->requestAssetRescan();
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+    const std::vector<std::string>& right = browser->chromeRecord().footerRightTexts;
+    CHECK(std::find(right.begin(), right.end(), "1 issue") != right.end());
+    // FT12's re-pinned line, from this side: the word reaches the footer's field whole.
+    const std::vector<std::string> code = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/asset_browser_panel.cpp");
+    CHECK(countLinesContaining(code, "footerText.watcher = assetFooterWatchText(") == 1U);
+
     app->requestQuit();
     CHECK(app->tick() == false);
     app.reset();

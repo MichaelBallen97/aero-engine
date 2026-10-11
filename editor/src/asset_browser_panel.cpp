@@ -20,14 +20,15 @@
 #include <aero/editor/asset_meta.hpp>
 #include <aero/editor/asset_watcher.hpp>  // task 3.1.4 -- WatchStatus, read through the reconciled pointer
 #include <aero/editor/editor_glyphs.hpp>
-#include <aero/editor/editor_icons.hpp>   // task E.6.1: AERO_ICON_CORNER_LEFT_UP
+#include <aero/editor/editor_icons.hpp>   // task E.6.3: AERO_ICON_ELLIPSIS, the header's overflow
 #include <aero/editor/material_card.hpp>  // task E.4.5 -- the card's subtitle and tint rules, and the separator
 #include <aero/editor/panel_context.hpp>
 #include <aero/editor/project_files.hpp>
 #include <aero/editor/status_bar.hpp>  // task E.6.2: classifyWatchState + assetFooterWatchText
 
-#include "asset_tile.hpp"  // task E.3.3 -- the tile FACE, shared with the picker
-#include "editor_theme_imgui.hpp"
+#include "asset_tile.hpp"         // task E.3.3 -- the tile FACE, shared with the picker
+#include "editor_theme_ui.hpp"    // task E.6.3: currentUiScale
+#include "panel_chrome_ui.hpp"    // task E.6.3: roles, faces, the ghost and segment buttons, the clear scopes
 #include "text_input.hpp"         // task 3.1.3 (A1): inputTextString -- NEVER imgui_stdlib (Windows Debug LNK2038)
 #include "thumbnail_service.hpp"  // task E.3.3 -- the SHARED ledger/store, borrowed through thumbnailsPtr
 
@@ -37,6 +38,7 @@
 #include <cstdint>
 #include <cstring>  // task 3.1.5: std::memset over the payload's tail padding
 #include <imgui.h>
+#include <imgui_internal.h>  // task E.6.3: GetTopMostPopupModal, the navigate request's modal gate (I337)
 #include <optional>
 #include <string>
 #include <string_view>
@@ -47,11 +49,14 @@ namespace engine::editor {
 
 namespace {
 
-// DPI-proportional, never a pixel constant. ImGuiChildFlags_ResizeX persists the user's own width in
-// the ini for free (F11), so this is only the first-run default.
-constexpr float TREE_PANE_FONT_MULTIPLE = 14.0F;
-constexpr float SIZE_COLUMN_FONT_MULTIPLE = 6.0F;
-constexpr float INDENT_FONT_MULTIPLE = 0.9F;
+// task E.6.3 (D1): the tree pane's and the List size column's first-run widths moved to asset_browser_chrome.hpp
+// (ASSET_TREE_PANE_FONT_MULTIPLE, ASSET_SIZE_COLUMN_FONT_MULTIPLE); the tree's indent is the theme's IndentSpacing.
+// The header's three field widths, in FONT units like every other width here.
+constexpr float SEARCH_FONT_MULTIPLE = 12.0F;      // the search field's preferred width (today's)
+constexpr float SEARCH_MIN_FONT_MULTIPLE = 6.0F;   // the narrowest Minimal shrinks it to
+constexpr float KIND_FILTER_FONT_MULTIPLE = 8.0F;  // the kind combo (today's)
+constexpr const char* HEADER_OVERFLOW_POPUP = "##assetsOverflow";
+constexpr std::string_view CRUMB_SEPARATOR = "/";
 // Shown for a file whose size the OS refused (AC-6/E6). NEVER "0 B" -- that is a lie, not a blank.
 constexpr const char* UNKNOWN_SIZE = AERO_GLYPH_EM_DASH;
 
@@ -76,11 +81,11 @@ std::string elideGuid(Guid guid) {
 // where the row shows a full path. Composes exactly materialCardRowText's sentence (file name, then
 // MATERIAL_CARD_SEPARATOR and the name), drawn in two colours.
 //
-// PushStyleColor + TextUnformatted, NEVER ImGui::TextDisabled: that is a variadic FORMAT function, and a
-// document name is arbitrary user-authored JSON text, so a name containing "%s" would read an absent vararg
-// (D12; seed S9). TextUnformatted takes no format string at all, so the class is unreachable rather than
-// merely absent. PushStyleColor/PopStyleColor are 1:1 with no return between them: an unbalanced style stack
-// is an IM_ASSERT abort in the Debug build (seed S30).
+// mutedText (a TextUnformatted under a pushed role), NEVER ImGui::TextDisabled: that is a variadic FORMAT function, and
+// a document name is arbitrary user-authored JSON text, so a name containing "%s" would read an absent vararg (D12;
+// seed S9). TextUnformatted takes no format string at all, so the class is unreachable rather than merely absent.
+// PushStyleColor/PopStyleColor are 1:1 with no return between them: an unbalanced style stack is an IM_ASSERT abort in
+// the Debug build (seed S30).
 void drawMaterialRowSuffix(ThumbnailService* thumbnails, const AssetDatabase* database, const std::string& rel,
                            std::string_view leaf, std::string& scratch) {
     if (thumbnails == nullptr || database == nullptr) {
@@ -102,9 +107,7 @@ void drawMaterialRowSuffix(ThumbnailService* thumbnails, const AssetDatabase* da
     scratch = MATERIAL_CARD_SEPARATOR;
     scratch += subtitle;
     ImGui::SameLine(0.0F, 0.0F);
-    ImGui::PushStyleColor(ImGuiCol_Text, toImVec4(EDITOR_THEME.palette.textMuted));  // task E.6.1 (D16)
-    ImGui::TextUnformatted(scratch.c_str());
-    ImGui::PopStyleColor();
+    mutedText(scratch);  // task E.6.3 (D11): TextUnformatted under the textMuted role, still no format string
 }
 
 }  // namespace
@@ -118,6 +121,7 @@ void AssetBrowserPanel::setRoot(std::string rootPath) {
     openDirs.clear();
     cache.clear();
     visibleRows.clear();
+    navigateRequest.reset();  // task E.6.3: a queued navigation belongs to the old root
     pending = PendingAction{};
     treeDirty = true;
     // task 3.1.1: a rescan request recorded against the OLD root is meaningless against the new one --
@@ -205,46 +209,55 @@ void AssetBrowserPanel::reconcile() {
     }
 }
 
-// ---- phase 2: header (Refresh, Show hidden, breadcrumb) ----------------------------------------
+// ---- phase 2: the header row -- RECORDED only (task E.6.3, D8) --------------------------------------------------
+// UNFILLED, on `panel` (ImGui's tab bar already paints the chrome band), over a 1-dp divider rule. New Material at the
+// left; the cluster right-aligned by assetHeaderLayout, which folds Refresh and Auto-refresh (Compact) and the kind
+// filter (Minimal) into the overflow; Reimport All, Show hidden and the tile size live there always. Every control
+// records the ActionKind it recorded before; applyPending() is still the only writer (INV-5).
 void AssetBrowserPanel::drawHeader() {
-    if (ImGui::Button("Refresh")) {
-        record(ActionKind::Refresh, {});  // D9: manual. A watcher is 3.1.4's deliverable.
-    }
-    // task 3.1.2 (§D-11): a second button, beside Refresh -- Reimport All is a strict superset (it also
-    // discards the committed import cache, AC-39). The panel still performs NO I/O (D7): the rescan
-    // itself runs in EditorApp::tick(), outside this draw walk, exactly like Refresh.
-    ImGui::SameLine();
-    if (ImGui::Button("Reimport All")) {
-        record(ActionKind::ReimportAll, {});
-    }
-    if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("Discard the import cache and re-hash every asset. Use this if the editor missed a change.");
-    }
-    // task 3.4.2 (D9/AC-5): a THIRD button on the same row. The click RECORDS and nothing else -- this
-    // panel is read-only by contract (D19) and performs no I/O (D7), so the file is written by
-    // EditorApp::tick(), outside the draw walk, exactly like Refresh's rescan. The orphan-delete drain
-    // shape, a second application: a create inside the draw walk would write a file, request a scan and
-    // mutate the selection while ImGui holds this frame's tree open.
-    ImGui::SameLine();
-    // DISABLED WITH NO PROJECT (plan D-6, the code-review round's finding 5). The drain already refuses
-    // an empty root with one WARN, but a live-looking button whose only feedback is a Console line reads
-    // as a broken button; the disabled state is what says "not yet" before the click. 1:1 with
-    // EndDisabled -- nothing returns or continues between them.
+    const ImGuiStyle& style = ImGui::GetStyle();
+    const float s = currentUiScale();
+    const float frame = ImGui::GetFrameHeight();
+    const float padY = EDITOR_THEME.panels.panelHeaderPaddingY * s;
+    const ImVec2 rowMin = ImGui::GetCursorScreenPos();
+    const float rowWidth = ImGui::GetContentRegionAvail().x;
+    const float rowY = rowMin.y + padY;
+    // MEASURED at the live font, exactly as each widget sizes itself: a button is its label (to the "##") plus two
+    // frame paddings (ImGui::ButtonEx), a checkbox its square, ItemInnerSpacing.x and its label (ImGui::Checkbox).
+    const auto buttonWidth = [&style](const char* label) {
+        return ImGui::CalcTextSize(label, nullptr, true).x + (2.0F * style.FramePadding.x);
+    };
+    AssetHeaderWidths widths;
+    widths.newMaterial = buttonWidth("New Material");
+    widths.search = ImGui::GetFontSize() * SEARCH_FONT_MULTIPLE;
+    widths.searchMin = ImGui::GetFontSize() * SEARCH_MIN_FONT_MULTIPLE;
+    widths.kind = ImGui::GetFontSize() * KIND_FILTER_FONT_MULTIPLE;
+    widths.viewToggle = buttonWidth("Grid") + buttonWidth("List");
+    widths.refresh = buttonWidth("Refresh");
+    widths.autoRefresh = frame + style.ItemInnerSpacing.x + ImGui::CalcTextSize("Auto-refresh").x;
+    widths.overflow = frame;
+    const AssetHeaderLayout layout = assetHeaderLayout(rowMin.x, rowWidth, widths, s);
+    chrome.headerMode = layout.mode;
+    chrome.headerLayout = layout;
+    chrome.headerRowMinX = rowMin.x;
+    chrome.headerRowWidth = rowWidth;
+    chrome.headerWidths = widths;
+    chrome.headerUiScale = s;
+
+    // New Material, at the row's left. DISABLED WITH NO PROJECT (plan D-6, the code-review round's finding 5): the
+    // drain refuses an empty root with one WARN, and the disabled state is what says "not yet" before the click.
+    ImGui::SetCursorScreenPos(ImVec2(layout.newMaterialX, rowY));
     const bool canCreate = !rootUtf8.empty();
     ImGui::BeginDisabled(!canCreate);
     if (ImGui::Button("New Material")) {
         record(ActionKind::CreateMaterial, {});
     }
     ImGui::EndDisabled();
-    // AllowWhenDisabled, or the tooltip that explains the disabled state is the one tooltip nobody can
-    // ever see (viewport_panel.cpp's A6 note, and the Apply button one panel over). The enabled text
-    // NAMES THE TARGET DIRECTORY, because "this folder" is ambiguous the moment the tree selection and
-    // the contents pane disagree about what the user is looking at.
+    noteHeaderRect(AssetHeaderControl::NewMaterial);
+    // AllowWhenDisabled, or the tooltip that explains the disabled state is the one nobody can see. The enabled text
+    // NAMES THE TARGET DIRECTORY -- a NAMED LOCAL passed as a "%s" argument, never as the format string itself.
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
         if (canCreate) {
-            // Concatenated rather than std::format'ed only to keep <format> out of this TU; the rule
-            // that matters is unchanged -- a NAMED LOCAL, passed as a "%s" argument, never as the
-            // format string itself.
             labelScratch = "Create a new material in '";
             labelScratch += currentDir.empty() ? rootDisplayName(rootUtf8) : currentDir;
             labelScratch += "' and select it.";
@@ -253,190 +266,255 @@ void AssetBrowserPanel::drawHeader() {
         }
         ImGui::SetTooltip("%s", labelScratch.c_str());
     }
-    // task 3.1.4 (D10/AC-35): SESSION state, deliberately not persisted -- 3.1.3's D4 posture
-    // verbatim (view mode and tile size take the same one, with the same documented "resets on
-    // relaunch" limitation). EditorAppConfig is per-launch; project.json is a shared, committed,
-    // per-PROJECT file and the wrong home for a per-MACHINE performance escape hatch; and there is no
-    // editor preference store to put it in.
-    ImGui::SameLine();
-    // A LOCAL copy, never a member: INV-5 says only applyPending() writes model state. The TRUTH
-    // lives on EditorApp's AssetWatcher; this reads it through the reconciled pointer and, when that
-    // pointer is null (no watcher pushed yet), renders a DISABLED, unchecked box rather than lying.
-    bool autoUi = watchStatusPtr != nullptr && watchStatusPtr->enabled;
-    ImGui::BeginDisabled(watchStatusPtr == nullptr);  // 1:1 with EndDisabled; no continue/return between
-    if (ImGui::Checkbox("Auto-refresh", &autoUi)) {
-        record(ActionKind::SetAutoRefresh, autoUi ? "1" : "0");
-    }
-    ImGui::EndDisabled();
-    if (ImGui::IsItemHovered()) {
-        // A DISABLED item is not hovered without ImGuiHoveredFlags_AllowWhenDisabled, so this tooltip
-        // correctly does not appear before a watcher has been reconciled.
-        ImGui::SetTooltip(
-            "Watch the assets folder and rescan automatically when files change.\n"
-            "Turn this off on very large projects or network drives.");
-    }
-    ImGui::SameLine();
-    // A LOCAL copy, never the member: INV-5 says only applyPending() writes showHidden.
-    bool hiddenUi = showHidden;
-    if (ImGui::Checkbox("Show hidden", &hiddenUi)) {
-        record(ActionKind::ToggleHidden, {});
-    }
 
-    // task 3.1.3, Step 6: the view toggle and the tile-size combo, on the SAME wrapping row (§D-7).
-    // Each records ONE action; applyPending() is the only writer (INV-5 unchanged).
-    ImGui::SameLine();
-    if (ImGui::RadioButton("Grid", viewMode == AssetViewMode::Grid)) {
-        record(ActionKind::SetViewMode, "grid");
-    }
-    ImGui::SameLine();
-    if (ImGui::RadioButton("List", viewMode == AssetViewMode::List)) {
-        record(ActionKind::SetViewMode, "list");
-    }
-    if (viewMode == AssetViewMode::Grid) {
-        ImGui::SameLine();
-        ImGui::SetNextItemWidth(ImGui::GetFontSize() * 6.0F);
-        constexpr std::array<const char*, 3> SIZE_LABELS{"Small", "Medium", "Large"};
-        int sizeIndex = static_cast<int>(tileSize);
-        if (ImGui::Combo("##tileSize", &sizeIndex, SIZE_LABELS.data(), static_cast<int>(SIZE_LABELS.size()))) {
-            switch (static_cast<TileSize>(sizeIndex)) {
-                case TileSize::Small:
-                    record(ActionKind::SetTileSize, "small");
-                    break;
-                case TileSize::Medium:
-                    record(ActionKind::SetTileSize, "medium");
-                    break;
-                case TileSize::Large:
-                    record(ActionKind::SetTileSize, "large");
-                    break;
-            }
-        }
-    }
-
-    // task 3.1.3, Step 8: the search box and the kind filter, on the SAME wrapping row (§D-7).
-    // `queryScratch` is a local copy the InputText widget edits directly (A1's inputTextString) --
-    // reseeded from the COMMITTED value first, so a query cleared/changed by anything OTHER than
-    // typing (ClearSearch, RevealPath) is reflected here too. A SetQuery action is recorded only when
-    // the buffer diverges from the committed value, the same "record, never write" discipline every
-    // other control on this row already follows (INV-5).
-    ImGui::SameLine();
+    // The search, with ImGui's own placeholder (the hint overload) -- reseeded from the COMMITTED value first, so a
+    // query cleared by anything other than typing is reflected; a SetQuery is recorded only when the buffer diverges.
+    // Escape clears it (EscapeClearsAll), which replaces the old "x" button (D8 lists no clear control).
+    ImGui::SetCursorScreenPos(ImVec2(layout.searchX, rowY));
     queryScratch = filter.query;
-    ImGui::SetNextItemWidth(ImGui::GetFontSize() * 12.0F);
-    engine::editor::inputTextString("##search", queryScratch, ImGuiInputTextFlags_None);
+    ImGui::SetNextItemWidth(layout.searchWidth);
+    inputTextString("##search", "Search assets", queryScratch, ImGuiInputTextFlags_EscapeClearsAll);
     if (queryScratch != filter.query) {
         record(ActionKind::SetQuery, queryScratch);
     }
-    ImGui::SameLine();
-    if (ImGui::SmallButton("x")) {
-        record(ActionKind::ClearSearch, {});
-    }
-    if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("Clear the search");
-    }
+    noteHeaderRect(AssetHeaderControl::Search);
 
-    ImGui::SameLine();
-    ImGui::SetNextItemWidth(ImGui::GetFontSize() * 8.0F);
-    // task 3.4.2: the list lives in asset_view.hpp beside the enum, NOT here. A copy in this function
-    // is invisible to every test tier -- seed S2 dropped Material from the local copy this line used
-    // to hold and the whole suite stayed green, because no tier can read a combo's contents. AV53
-    // pins the shared constant instead, which only works while this is the sole reader.
-    labelScratch = filter.anyKind ? std::string("All") : std::string(assetKindLabel(filter.kind));
-    if (ImGui::BeginCombo("##kindFilter", labelScratch.c_str())) {
-        if (ImGui::Selectable("All", filter.anyKind)) {
-            record(ActionKind::SetKindFilter, "all");
-        }
-        for (const AssetKind kind : ASSET_KIND_FILTER_OPTIONS) {
-            const bool selected = !filter.anyKind && filter.kind == kind;
-            labelScratch = std::string(assetKindLabel(kind));
-            ImGui::PushID(static_cast<int>(kind));
-            if (ImGui::Selectable(labelScratch.c_str(), selected)) {
-                record(ActionKind::SetKindFilter, std::to_string(static_cast<int>(kind)));
+    // The kind filter, inline unless Minimal folded it. ASSET_KIND_FILTER_OPTIONS is the sole list (AV53).
+    if (layout.kindInline) {
+        ImGui::SetCursorScreenPos(ImVec2(layout.kindX, rowY));
+        ImGui::SetNextItemWidth(widths.kind);
+        labelScratch = filter.anyKind ? std::string("All") : std::string(assetKindLabel(filter.kind));
+        if (ImGui::BeginCombo("##kindFilter", labelScratch.c_str())) {  // EndCombo ONLY when this returned true
+            if (ImGui::Selectable("All", filter.anyKind)) {
+                record(ActionKind::SetKindFilter, "all");
             }
-            ImGui::PopID();  // no continue/break/return between Push and Pop
+            for (const AssetKind kind : ASSET_KIND_FILTER_OPTIONS) {
+                labelScratch = std::string(assetKindLabel(kind));
+                ImGui::PushID(static_cast<int>(kind));
+                if (ImGui::Selectable(labelScratch.c_str(), !filter.anyKind && filter.kind == kind)) {
+                    record(ActionKind::SetKindFilter, std::to_string(static_cast<int>(kind)));
+                }
+                ImGui::PopID();  // no continue/break/return between Push and Pop
+            }
+            ImGui::EndCombo();
         }
-        ImGui::EndCombo();
+        noteHeaderRect(AssetHeaderControl::Kind);  // EndCombo hands LastItemData back to the combo (imgui.cpp:8848)
+    } else {
+        chrome.overflowDrawn.push_back(AssetHeaderControl::Kind);
     }
 
-    // The breadcrumb: root / a / b, every segment clickable (AC-3).
-    ImGui::SameLine();
-    ImGui::TextUnformatted("|");
-    breadcrumb = splitSegments(currentDir);
-    labelScratch = rootDisplayName(rootUtf8);
-    ImGui::SameLine();
-    ImGui::PushID(-1);  // the root crumb; the segment crumbs use 0..n-1, so this cannot collide
-    if (ImGui::SmallButton(labelScratch.c_str())) {
-        record(ActionKind::Navigate, {});
+    // Grid | List: the hoisted segmented group (task E.6.2's, panel_chrome_ui), its `raised` body drawn first.
+    ImDrawList* const list = ImGui::GetWindowDrawList();
+    segmentGroupBackground(list, ImVec2(layout.viewToggleX, rowY),
+                           ImVec2(layout.viewToggleX + widths.viewToggle, rowY + frame));
+    ImGui::SetCursorScreenPos(ImVec2(layout.viewToggleX, rowY));
+    const bool grid = viewMode == AssetViewMode::Grid;
+    if (segmentButton("Grid", grid, ChromeRole::Active, ChromeRole::TextBright, ChromeRole::TextSecondary,
+                      segmentScratch)) {
+        record(ActionKind::SetViewMode, "grid");
     }
-    // task E.4.3 (code-review G1) -- site 5: the ROOT crumb. Without it no widget anywhere carries
-    // folderRelative == "", the contents pane lists no "..", and an asset in ANY top-level folder
-    // could never be moved back to the assets root from the editor at all. "" is a LEGAL destination
-    // (rung 3 accepts it explicitly); it is the one the breadcrumb loop below structurally cannot
-    // produce, because that loop starts at the first real segment.
-    attachFolderDropTarget(std::string{});
-    ImGui::PopID();
-    std::string accumulated;
-    for (std::size_t i = 0; i < breadcrumb.size(); ++i) {
-        accumulated = joinRelative(accumulated, breadcrumb[i]);
-        ImGui::SameLine();
-        ImGui::TextUnformatted("/");
-        ImGui::SameLine();
-        ImGui::PushID(static_cast<int>(i));  // two segments CAN share a name ("a/x/x") -- F26/E9
-        // KNOWN AND RECORDED, not an oversight (review gap 4): SmallButton/Button have NO format
-        // overload, so a crumb literally named "sprites##old" displays as "sprites" -- Button runs its
-        // label through FindRenderedTextEnd(). The tree and the contents table, which are what a user
-        // actually reads a name from, ARE fixed; navigation here is unaffected because the id comes
-        // from PushID(i), not the label. Closing it needs an InvisibleButton plus hand-placed
-        // draw-list text with its own hover/active styling -- disproportionate for a stub, and new
-        // ImGui surface with its own bug potential. Recorded in editor/VALIDATION.md instead.
-        if (ImGui::SmallButton(breadcrumb[i].c_str())) {
-            record(ActionKind::Navigate, accumulated);
+    const Vec2 viewMin = segmentScratch.min;
+    ImGui::SameLine(0.0F, 0.0F);
+    if (segmentButton("List", !grid, ChromeRole::Active, ChromeRole::TextBright, ChromeRole::TextSecondary,
+                      segmentScratch)) {
+        record(ActionKind::SetViewMode, "list");
+    }
+    AssetDrawnRect& viewRect = chrome.headerRects[static_cast<std::size_t>(AssetHeaderControl::ViewToggle)];
+    viewRect = AssetDrawnRect{true, viewMin, segmentScratch.max};
+
+    if (layout.refreshInline) {
+        ImGui::SetCursorScreenPos(ImVec2(layout.refreshX, rowY));
+        if (ghostButton("Refresh")) {
+            record(ActionKind::Refresh, {});  // D9: manual; the watcher is 3.1.4's
         }
-        // task E.4.3 -- site 4: the breadcrumb segment. It is the affordance that makes "move up one
-        // level" possible at all, and the one a tree-only implementation silently omits.
-        attachFolderDropTarget(accumulated);
-        ImGui::PopID();  // no continue/break/return between Push and Pop
+        noteHeaderRect(AssetHeaderControl::Refresh);
+    } else {
+        chrome.overflowDrawn.push_back(AssetHeaderControl::Refresh);
     }
-    ImGui::Separator();
+
+    // Auto-refresh: a LOCAL copy, never a member (INV-5). The truth lives on EditorApp's AssetWatcher; a null pointer
+    // (no watcher pushed yet) renders a DISABLED, unchecked box rather than lying.
+    bool autoUi = watchStatusPtr != nullptr && watchStatusPtr->enabled;
+    if (layout.autoRefreshInline) {
+        ImGui::SetCursorScreenPos(ImVec2(layout.autoRefreshX, rowY));
+        ImGui::BeginDisabled(watchStatusPtr == nullptr);  // 1:1 with EndDisabled; no continue/return between
+        if (ImGui::Checkbox("Auto-refresh", &autoUi)) {
+            record(ActionKind::SetAutoRefresh, autoUi ? "1" : "0");
+        }
+        ImGui::EndDisabled();
+        noteHeaderRect(AssetHeaderControl::AutoRefresh);
+        if (ImGui::IsItemHovered()) {  // a DISABLED item is not hovered without AllowWhenDisabled -- correct here
+            ImGui::SetTooltip(
+                "Watch the assets folder and rescan automatically when files change.\n"
+                "Turn this off on very large projects or network drives.");
+        }
+    } else {
+        chrome.overflowDrawn.push_back(AssetHeaderControl::AutoRefresh);
+    }
+
+    // The overflow: the folded controls first, in header order, then the three that always live here.
+    ImGui::SetCursorScreenPos(ImVec2(layout.overflowX, rowY));
+    if (ghostButton(AERO_ICON_ELLIPSIS "##assetsMore", ImVec2(widths.overflow, frame))) {
+        ImGui::OpenPopup(HEADER_OVERFLOW_POPUP);
+    }
+    noteHeaderRect(AssetHeaderControl::Overflow);
+    if (ImGui::BeginPopup(HEADER_OVERFLOW_POPUP)) {  // EndPopup ONLY when this returned true
+        if (!layout.kindInline && ImGui::BeginMenu("Kind")) {
+            if (ImGui::MenuItem("All", nullptr, filter.anyKind)) {
+                record(ActionKind::SetKindFilter, "all");
+            }
+            for (const AssetKind kind : ASSET_KIND_FILTER_OPTIONS) {
+                labelScratch = std::string(assetKindLabel(kind));
+                ImGui::PushID(static_cast<int>(kind));
+                if (ImGui::MenuItem(labelScratch.c_str(), nullptr, !filter.anyKind && filter.kind == kind)) {
+                    record(ActionKind::SetKindFilter, std::to_string(static_cast<int>(kind)));
+                }
+                ImGui::PopID();
+            }
+            ImGui::EndMenu();
+        }
+        if (!layout.refreshInline && ImGui::MenuItem("Refresh")) {
+            record(ActionKind::Refresh, {});
+        }
+        if (!layout.autoRefreshInline && ImGui::MenuItem("Auto-refresh", nullptr, autoUi, watchStatusPtr != nullptr)) {
+            record(ActionKind::SetAutoRefresh, autoUi ? "0" : "1");  // the item shows the state; a click flips it
+        }
+        if (!chrome.overflowDrawn.empty()) {
+            ImGui::Separator();
+        }
+        // task 3.1.2 (§D-11): a strict superset of Refresh -- it also discards the committed import cache (AC-39).
+        if (ImGui::MenuItem("Reimport All")) {
+            record(ActionKind::ReimportAll, {});
+        }
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip(
+                "Discard the import cache and re-hash every asset. Use this if the editor missed a change.");
+        }
+        if (ImGui::MenuItem("Show hidden", nullptr, showHidden)) {
+            record(ActionKind::ToggleHidden, {});
+        }
+        if (viewMode == AssetViewMode::Grid) {  // the tile size, as the old combo: Grid only
+            ImGui::Separator();
+            if (ImGui::MenuItem("Small tiles", nullptr, tileSize == TileSize::Small)) {
+                record(ActionKind::SetTileSize, "small");
+            }
+            if (ImGui::MenuItem("Medium tiles", nullptr, tileSize == TileSize::Medium)) {
+                record(ActionKind::SetTileSize, "medium");
+            }
+            if (ImGui::MenuItem("Large tiles", nullptr, tileSize == TileSize::Large)) {
+                record(ActionKind::SetTileSize, "large");
+            }
+        }
+        ImGui::EndPopup();
+    }
+
+    // The divider rule under the row, across the full content width; the panes start on the row below it.
+    const float ruleY = rowMin.y + frame + (2.0F * padY);
+    const int ruleVertices = list->VtxBuffer.Size;  // what the list RECEIVES, never a flag set beside the call
+    horizontalRule(list, rowMin.x, rowMin.x + rowWidth, ruleY, ChromeRole::Divider);
+    chrome.headerRuleDrawn = list->VtxBuffer.Size > ruleVertices;       // AddRectFilled adds none at alpha 0
+    ImGui::SetCursorScreenPos(ImVec2(rowMin.x, ruleY + ruleHeight()));  // the tree pane is the item that follows
 }
 
-// ---- phase 3: the left pane (the directory tree) ------------------------------------------------
+void AssetBrowserPanel::noteHeaderRect(AssetHeaderControl control) {
+    const ImVec2 min = ImGui::GetItemRectMin();
+    const ImVec2 max = ImGui::GetItemRectMax();
+    AssetDrawnRect& rect = chrome.headerRects[static_cast<std::size_t>(control)];
+    rect = AssetDrawnRect{true, Vec2{min.x, min.y}, Vec2{max.x, max.y}};
+}
+
+// ---- phase 3: the left pane (the directory tree) -- task E.6.3 (D8): drawn the Hierarchy way -------------------
 void AssetBrowserPanel::drawTreePane(float paneHeight) {
-    const float indentStep = ImGui::GetFontSize() * INDENT_FONT_MULTIPLE;
-    const float treeWidth = ImGui::GetFontSize() * TREE_PANE_FONT_MULTIPLE;
-    // ImGuiChildFlags_ResizeX enables .ini saving for this child (F11), so the splitter position
-    // persists across restarts with NO splitter code and NO state of our own (AC-13).
+    const ImGuiStyle& style = ImGui::GetStyle();
+    const float s = currentUiScale();
+    const float indentStep = style.IndentSpacing;  // D1: the theme's indent, never a font multiple
+    const float treeWidth = ImGui::GetFontSize() * ASSET_TREE_PANE_FONT_MULTIPLE;
+    // ImGuiChildFlags_ResizeX enables .ini saving for this child (F11), so the splitter position persists across
+    // restarts with NO splitter code and NO state of our own (AC-13). D8: NO border -- a divider rule on its right.
     const ImVec2 treeSize(treeWidth, paneHeight);
-    const ImGuiChildFlags treeFlags = ImGuiChildFlags_Borders | ImGuiChildFlags_ResizeX;
-    const bool treeVisible = ImGui::BeginChild("##dirs", treeSize, treeFlags);
+    const bool treeVisible = ImGui::BeginChild("##dirs", treeSize, ImGuiChildFlags_ResizeX);
     // C2 -- LOAD-BEARING, not an optimisation. A collapsed or fully-clipped child sets SkipItems, and
-    // TreeNodeBehavior's FIRST statement is `if (window->SkipItems) return false;`. Submitting rows
-    // here would make every OPEN directory report "closed" and record a ToggleDir, silently
-    // collapsing the user's whole tree. imgui.h:457-459 documents this early-out; here it is required.
+    // TreeNodeBehavior's FIRST statement is `if (window->SkipItems) return false;`. Submitting rows here would make
+    // every OPEN directory report "closed" and record a ToggleDir, silently collapsing the user's whole tree.
     if (treeVisible) {
-        // The root row. _Leaf draws no arrow (its children are the rows below); its RETURN VALUE IS
-        // DELIBERATELY UNUSED -- _Leaf always returns true and ignores SetNextItemOpen entirely
-        // (imgui_widgets.cpp, TreeNodeUpdateNextOpen). We read IsItemClicked() instead.
-        labelScratch = rootDisplayName(rootUtf8);
+        ImDrawList* const list = ImGui::GetWindowDrawList();
+        list->ChannelsSplit(2);  // 0: the rounded fills, 1: ImGui's arrows and the hand-drawn text. Merged below.
+        list->ChannelsSetCurrent(1);
+        const float rounding = EDITOR_THEME.metrics.frameRounding * s;
+        const std::span<const AssetRecord> records =
+            databasePtr != nullptr ? databasePtr->records() : std::span<const AssetRecord>{};
+        const std::uint64_t generation = databasePtr != nullptr ? databasePtr->generation() : 0U;
+        // One row, drawn after ImGui submitted its node: the fill (channel 0), then the label and the count.
+        const auto drawRowChrome = [&](ImVec2 rowCursor, ImVec2 rowMin, ImVec2 rowMax, bool hovered, bool current,
+                                       std::string_view label, std::string_view folder) {
+            if (current || hovered) {
+                list->ChannelsSetCurrent(0);
+                roleFill(list, rowMin, rowMax, current ? ChromeRole::Selection : ChromeRole::Hover, rounding);
+                list->ChannelsSetCurrent(1);
+            }
+            // The label at the x ImGui would have drawn it: the arrow's width plus two frame paddings
+            // (imgui_widgets.cpp:6894, text_offset_x for an unframed node).
+            const float labelX = rowCursor.x + ImGui::GetFontSize() + (2.0F * style.FramePadding.x);
+            countScratch.clear();
+            if (databasePtr != nullptr) {
+                countScratch = groupThousands(folderCounts.countUnder(records, generation, folder));
+            }
+            const AssetTreeRowLayout row =
+                assetTreeRowLayout(labelX, rowMax.x, faceTextWidth(PanelFace::MonoSmall, countScratch), s);
+            const float budget = row.labelMaxX - labelX;
+            labelScratch = elideCaptionRight(
+                label, [budget](std::string_view t) { return faceTextWidth(PanelFace::Body, t) <= budget; });
+            // Packed ONCE and handed to the draw, so the record below is the colour the label RECEIVED (I324).
+            const ImU32 labelColor = roleU32(current ? ChromeRole::Accent : ChromeRole::Text);
+            const ImVec2 labelAt(labelX, rowMin.y);
+            list->AddText(panelFaceFont(PanelFace::Body), panelFacePoints(PanelFace::Body), labelAt, labelColor,
+                          labelScratch.c_str());
+            if (row.countShown) {
+                const float countY = rowMin.y + ((ImGui::GetFontSize() - panelFacePoints(PanelFace::MonoSmall)) * 0.5F);
+                const ImVec2 countAt(row.countX, countY);
+                drawRoleText(list, PanelFace::MonoSmall, countAt, ChromeRole::TextFaint, countScratch);
+            }
+            if (current) {
+                chrome.treeCurrentLabelColor = labelColor;
+                chrome.treeSelectionRounding = rounding;
+            }
+            ++chrome.treeRowsDrawn;
+        };
+
+        // The root row. _Leaf draws no arrow (its children are the rows below); its RETURN VALUE IS DELIBERATELY
+        // UNUSED -- _Leaf always returns true and ignores SetNextItemOpen entirely (TreeNodeUpdateNextOpen). We read
+        // IsItemClicked() instead.
         ImGui::PushID(-1);
         ImGuiTreeNodeFlags rootFlags =
             ImGuiTreeNodeFlags_NoTreePushOnOpen | ImGuiTreeNodeFlags_Leaf | ImGuiTreeNodeFlags_SpanFullWidth;
         if (currentDir.empty()) {
-            rootFlags |= ImGuiTreeNodeFlags_Selected;
+            rootFlags |= ImGuiTreeNodeFlags_Selected;  // kept for its nav semantics; ImGui's fill never shows
         }
-        ImGui::TreeNodeEx(labelScratch.c_str(), rootFlags);
-        // task E.4.3 (code-review G1) -- site 6: the root TREE row, the same destination reached the
-        // other way. Attached before IsItemClicked reads the item, like every other site.
+        const ImVec2 rootCursor = ImGui::GetCursorScreenPos();
+        {
+            const ClearHeaderStyle clearRowFill(ChromeRole::Panel);
+            ImGui::PushStyleColor(ImGuiCol_Text, roleVec4(ChromeRole::TextFaint));  // ImGui draws only the arrow
+            chrome.treeArrowTextColor = ImGui::GetColorU32(ImGuiCol_Text);          // the live slot the arrow reads
+            ImGui::TreeNodeEx("##dir", rootFlags, "%s", "");
+            ImGui::PopStyleColor();
+        }
+        const ImVec2 rootMin = ImGui::GetItemRectMin();
+        const ImVec2 rootMax = ImGui::GetItemRectMax();
+        const bool rootHovered = ImGui::IsItemHovered();
+        // task E.4.3 (code-review G1) -- site 6: the root TREE row, the same destination reached the other way.
+        // Attached before IsItemClicked reads the item, like every other site.
         attachFolderDropTarget(std::string{});
         if (ImGui::IsItemClicked()) {
             record(ActionKind::Navigate, {});
         }
         ImGui::PopID();
+        drawRowChrome(rootCursor, rootMin, rootMax, rootHovered, currentDir.empty(), rootDisplayName(rootUtf8), {});
 
         for (std::size_t i = 0; i < visibleRows.size(); ++i) {
             const TreeRow& row = visibleRows[i];
             ImGui::PushID(static_cast<int>(i));  // two directories CAN share a leaf name (E9/S11)
-            // C3 -- Indent(0.0f) indents by the DEFAULT IndentSpacing, not by zero
-            // (imgui.cpp: `(indent_w != 0.0f) ? indent_w : g.Style.IndentSpacing`). Compute the
-            // amount ONCE so the Indent/Unindent pair can never desync.
+            // C3 -- Indent(0.0f) indents by the DEFAULT IndentSpacing, not by zero. Compute the amount ONCE so the
+            // Indent/Unindent pair can never desync.
             const float indentAmount = indentStep * static_cast<float>(row.depth);
             const bool indented = indentAmount > 0.0F;
             if (indented) {
@@ -447,60 +525,164 @@ void AssetBrowserPanel::drawTreePane(float paneHeight) {
             if (row.knownLeaf) {
                 flags |= ImGuiTreeNodeFlags_Leaf;
             }
-            if (row.path == currentDir) {
+            const bool current = row.path == currentDir;
+            if (current) {
                 flags |= ImGuiTreeNodeFlags_Selected;
             }
-            labelScratch = std::string(leafOf(row.path));
-            // D5: our openDirs is AUTHORITATIVE over ImGui's storage. ImGuiCond_Always means the two
-            // can never desync -- except for a _Leaf node, which ignores this entirely (see below).
+            // D5: our openDirs is AUTHORITATIVE over ImGui's storage (ImGuiCond_Always), except for a _Leaf node.
             ImGui::SetNextItemOpen(row.open, ImGuiCond_Always);
-            // The (str_id, flags, fmt, ...) OVERLOAD, never (label, flags) -- review gap 4, the same
-            // class C7 closed for printf formats. A directory literally named "sprites##old" would
-            // otherwise display as "sprites": the single-argument form runs the label through
-            // FindRenderedTextEnd(), which stops at the first "##". Verified at upstream
-            // v1.92.8-docking: TreeNodeExV(str_id, ...) builds the label with
-            // ImFormatStringToTempBufferV and hands TreeNodeBehavior an EXPLICIT label_end, and
-            // TreeNodeBehavior only falls back to FindRenderedTextEnd when label_end is null -- so the
-            // "##" renders literally. "%s" also keeps it printf-safe, exactly as C7 requires.
-            // The id now comes from the constant str_id, which is unique per row via PushID(i) above,
-            // and is stable frame to frame; ImGui's own open state is irrelevant anyway (D5).
-            const bool nowOpen = ImGui::TreeNodeEx("##dir", flags, "%s", labelScratch.c_str());
-            // C1 -- LOAD-BEARING. _Leaf makes TreeNodeEx return TRUE unconditionally and skips the
-            // whole toggle block (`if (!is_leaf)` in TreeNodeBehavior), so a leaf's return value
-            // carries NO open/closed information. Comparing it would record a spurious ToggleDir on
-            // every leaf row every frame -- which would also CLOBBER a genuine click recorded by an
-            // earlier row, because `pending` is one last-writer-wins slot.
-            // task E.4.3 -- site 1: the tree row, a folder by construction. Inside the
-            // Indent/Unindent and PushID/PopID pairs, with no continue/break/return between them.
+            // The constant str_id "##dir", unique per row via PushID(i), and an EMPTY display label (task E.6.3): the
+            // name is drawn by hand below, so a "##" in it renders literally there -- review gap 4 stays closed.
+            const ImVec2 rowCursor = ImGui::GetCursorScreenPos();
+            bool nowOpen = false;
+            {
+                const ClearHeaderStyle clearRowFill(ChromeRole::Panel);
+                ImGui::PushStyleColor(ImGuiCol_Text, roleVec4(ChromeRole::TextFaint));  // ImGui draws only the arrow
+                chrome.treeArrowTextColor = ImGui::GetColorU32(ImGuiCol_Text);          // the live slot the arrow reads
+                nowOpen = ImGui::TreeNodeEx("##dir", flags, "%s", "");
+                ImGui::PopStyleColor();
+            }
+            const ImVec2 rowMin = ImGui::GetItemRectMin();
+            const ImVec2 rowMax = ImGui::GetItemRectMax();
+            const bool rowHovered = ImGui::IsItemHovered();
+            // C1 -- LOAD-BEARING. _Leaf makes TreeNodeEx return TRUE unconditionally, so a leaf's return value
+            // carries NO open/closed information; comparing it would record a spurious ToggleDir every frame.
+            // task E.4.3 -- site 1: the tree row, a folder by construction.
             attachFolderDropTarget(row.path);
-            // task E.4.3: the right-click recorder, IMMEDIATELY after the item and inside the
-            // PushID/PopID pair -- there is no continue/break/return between them (F13). It is
-            // IsItemClicked(Right), never BeginPopupContextItem: a per-item popup would be keyed on
-            // PushID(i), an INDEX that changes the moment a directory above it opens.
+            // task E.4.3: the right-click recorder, IMMEDIATELY after the item and inside the PushID/PopID pair. It is
+            // IsItemClicked(Right), never BeginPopupContextItem: PushID(i) is an INDEX that changes as rows open.
             if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) {
                 record(ActionKind::OpenContextMenu, row.path);
             }
             if (!row.knownLeaf && nowOpen != row.open) {
                 record(ActionKind::ToggleDir, row.path);
             } else if (ImGui::IsItemClicked()) {
-                // With _OpenOnArrow, a click on the LABEL never toggles (verified at source), so this
-                // branch is unambiguously "make me the current directory".
+                // With _OpenOnArrow, a click on the LABEL never toggles, so this is "make me the current directory".
                 record(ActionKind::Navigate, row.path);
             }
+            drawRowChrome(rowCursor, rowMin, rowMax, rowHovered, current, leafOf(row.path), row.path);
             if (indented) {
                 ImGui::Unindent(indentAmount);
             }
             ImGui::PopID();  // no continue/break/return anywhere between Push and Pop
         }
+        list->ChannelsMerge();  // BEFORE EndChild, on every path through this block
     }
     ImGui::EndChild();  // UNCONDITIONAL -- F9, and the opposite of the table rule below
+    const ImVec2 treeMin = ImGui::GetItemRectMin();
+    const ImVec2 treeMax = ImGui::GetItemRectMax();
+    chrome.treeChildMin = Vec2{treeMin.x, treeMin.y};
+    chrome.treeChildMax = Vec2{treeMax.x, treeMax.y};
+    // D8: the divider rule on the pane's right, in place of the child border.
+    roleFill(ImGui::GetWindowDrawList(), ImVec2(treeMax.x, treeMin.y), ImVec2(treeMax.x + ruleHeight(), treeMax.y),
+             ChromeRole::Divider, 0.0F);
+}
+
+// ---- phase 4: the right pane -- task E.6.3 (D8): ONE group, so the SameLine after the tree carries all of it -----
+// SameLine carries over to exactly ONE item (ItemSize puts the cursor back at the indent, imgui.cpp:12122-12125): a
+// crumb row submitted on its own would sit beside the tree and push the grid below it. The group's height is
+// crumbRowHeight + the rule + ItemSpacing.y + the child's, which assetContentsPaneLayout makes paneHeight exactly.
+void AssetBrowserPanel::drawContentsPane(float paneHeight) {
+    const AssetContentsPaneLayout pane = assetContentsPaneLayout(paneHeight, ImGui::GetFrameHeight(), ruleHeight(),
+                                                                 ImGui::GetStyle().ItemSpacing.y, currentUiScale());
+    chrome.crumbRowHeight = pane.crumbRowHeight;
+    ImGui::BeginGroup();
+    drawCrumbRow(pane.crumbRowHeight);
+    if (viewMode == AssetViewMode::Grid) {  // task 3.1.3, Step 6 -- one child, two bodies (§D-7)
+        drawContentsGrid(pane.contentsHeight);
+    } else {
+        drawContentsList(pane.contentsHeight);
+    }
+    const ImVec2 contentsMin = ImGui::GetItemRectMin();  // EndChild's item: the ##contents child
+    const ImVec2 contentsMax = ImGui::GetItemRectMax();
+    ImGui::EndGroup();
+    chrome.contentsChildMin = Vec2{contentsMin.x, contentsMin.y};
+    chrome.contentsChildMax = Vec2{contentsMax.x, contentsMax.y};
+    chrome.contentsGroupMaxY = ImGui::GetItemRectMax().y;  // EndGroup's item: the whole group
+}
+
+// The breadcrumb, at the top of the group: InvisibleButton crumbs with hand-drawn labels (so a "##" in a folder name
+// draws, closing the old SmallButton gap), every crumb a folder drop target, the RECURSIVE item count at the right.
+void AssetBrowserPanel::drawCrumbRow(float rowHeight) {
+    const float s = currentUiScale();
+    const float frame = ImGui::GetFrameHeight();
+    const ImVec2 rowMin = ImGui::GetCursorScreenPos();
+    const float rowWidth = ImGui::GetContentRegionAvail().x;
+    ImDrawList* const list = ImGui::GetWindowDrawList();
+    assetBreadcrumbCrumbs(rootDisplayName(rootUtf8), currentDir, crumbs);
+    // N is the RECURSIVE record count under the current folder -- the tree's number for it, and its folder tile's --
+    // whatever the search, the kind filter or Show hidden do (D8; seed S66 hands it the listing's size instead).
+    std::size_t items = 0;
+    if (databasePtr != nullptr) {
+        items = folderCounts.countUnder(databasePtr->records(), databasePtr->generation(), currentDir);
+    }
+    assetItemsText(items, itemsScratch);
+    const float separatorWidth = faceTextWidth(PanelFace::Body, CRUMB_SEPARATOR);
+    float ink = separatorWidth * static_cast<float>(crumbs.size() - 1U);  // assetBreadcrumbCrumbs yields >= 1
+    for (std::size_t i = 0; i < crumbs.size(); ++i) {
+        ink += faceTextWidth(i + 1U == crumbs.size() ? PanelFace::Strong : PanelFace::Body, crumbs[i].label);
+    }
+    const AssetCrumbRowLayout row = assetCrumbRowLayout(rowMin.x, rowWidth, ink, 2U * (crumbs.size() - 1U),
+                                                        faceTextWidth(PanelFace::MonoSmall, itemsScratch), s);
+    const float frameTop = rowMin.y + row.labelOffsetY;
+    const float labelY = frameTop + ((frame - panelFacePoints(PanelFace::Body)) * 0.5F);
+    const bool crumbsEnabled = !rootUtf8.empty();
+    ImGui::BeginDisabled(!crumbsEnabled);  // 1:1 with EndDisabled; no continue/return between
+    float x = row.firstCrumbX;
+    for (std::size_t i = 0; i < crumbs.size(); ++i) {
+        const bool current = i + 1U == crumbs.size();
+        const PanelFace face = current ? PanelFace::Strong : PanelFace::Body;
+        const float width = faceTextWidth(face, crumbs[i].label);
+        if (i > 0U) {
+            drawRoleText(list, PanelFace::Body, ImVec2(x, labelY), ChromeRole::TextFaint, CRUMB_SEPARATOR);
+            x += separatorWidth + row.crumbGap;
+        }
+        ImGui::SetCursorScreenPos(ImVec2(x, frameTop));
+        ImGui::PushID(static_cast<int>(i));  // two segments CAN share a name ("a/x/x") -- F26/E9
+        const bool pressed = ImGui::InvisibleButton("##crumb", ImVec2(std::max(width, 1.0F), frame));
+        if (i == 0U) {
+            // task E.4.3 (code-review G1) -- site 5: the ROOT crumb, the one "" destination the segment arm below
+            // structurally cannot produce. "" is LEGAL (rung 3 accepts it).
+            attachFolderDropTarget(std::string{});
+        } else {
+            attachFolderDropTarget(crumbs[i].relative);  // task E.4.3 -- site 4: "move up one level"
+        }
+        ++chrome.crumbDropTargets;
+        const bool hovered = ImGui::IsItemHovered();
+        if (pressed) {
+            record(ActionKind::Navigate, crumbs[i].relative);
+        }
+        ImGui::PopID();                           // no continue/break/return between Push and Pop
+        ChromeRole role = ChromeRole::TextLabel;  // an ancestor; `text` while hovered
+        if (current) {
+            role = ChromeRole::TextBright;
+        } else if (hovered) {
+            role = ChromeRole::Text;
+        }
+        drawRoleText(list, face, ImVec2(x, labelY), role, crumbs[i].label);
+        ++chrome.crumbsDrawn;
+        x += width + row.crumbGap;
+    }
+    ImGui::EndDisabled();
+    // The items text, Mono small textFaint, right-aligned and clipped at the row's end -- never over a crumb.
+    const float itemsY = frameTop + ((frame - panelFacePoints(PanelFace::MonoSmall)) * 0.5F);
+    list->PushClipRect(ImVec2(row.itemsX, rowMin.y), ImVec2(row.itemsClipMaxX, rowMin.y + rowHeight), true);
+    drawRoleText(list, PanelFace::MonoSmall, ImVec2(row.itemsX, itemsY), ChromeRole::TextFaint, itemsScratch);
+    list->PopClipRect();
+    chrome.itemsText = itemsScratch;
+    // The rule under the row, then ONE layout item spanning row + rule, so ItemSize adds the one ItemSpacing.y the
+    // pane layout subtracted and the ##contents child starts exactly there.
+    horizontalRule(list, rowMin.x, rowMin.x + rowWidth, rowMin.y + rowHeight, ChromeRole::Divider);
+    ImGui::SetCursorScreenPos(rowMin);
+    ImGui::Dummy(ImVec2(rowWidth, rowHeight + ruleHeight()));
 }
 
 // ---- phase 4: the right pane (the current directory's contents) ---------------------------------
 // task 3.1.3, Step 6: renamed from drawContentsPane -- BYTE-IDENTICAL otherwise (D3/AC-2). The
 // caller now chooses between this and drawContentsGrid below.
 void AssetBrowserPanel::drawContentsList(float paneHeight) {
-    ImGui::BeginChild("##contents", ImVec2(0.0F, paneHeight), ImGuiChildFlags_Borders);
+    // task E.6.3 (D8): borderless -- the crumb row's rule frames it.
+    ImGui::BeginChild("##contents", ImVec2(0.0F, paneHeight), ImGuiChildFlags_None);
     if (!filter.query.empty()) {
         // task 3.1.3, Step 8 (AC-14/E15/E16): the SAME "No assets match" / two-column shape as the
         // directory listing below, over searchRows instead. The Name column shows the FULL relative
@@ -513,7 +695,7 @@ void AssetBrowserPanel::drawContentsList(float paneHeight) {
             const ImGuiTableFlags tableFlags = ImGuiTableFlags_ScrollY | ImGuiTableFlags_RowBg |
                                                ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_Resizable;
             if (ImGui::BeginTable("##search-entries", 2, tableFlags, tableSize)) {  // F10: End ONLY if true
-                const float sizeColumnWidth = ImGui::GetFontSize() * SIZE_COLUMN_FONT_MULTIPLE;
+                const float sizeColumnWidth = ImGui::GetFontSize() * ASSET_SIZE_COLUMN_FONT_MULTIPLE;
                 ImGui::TableSetupColumn("Name");
                 ImGui::TableSetupColumn("Size", ImGuiTableColumnFlags_WidthFixed, sizeColumnWidth);
                 ImGui::TableSetupScrollFreeze(0, 1);
@@ -588,30 +770,20 @@ void AssetBrowserPanel::drawContentsList(float paneHeight) {
         const ImGuiTableFlags tableFlags = ImGuiTableFlags_ScrollY | ImGuiTableFlags_RowBg |
                                            ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_Resizable;
         if (ImGui::BeginTable("##entries", 2, tableFlags, tableSize)) {  // F10: End ONLY if true
-            const float sizeColumnWidth = ImGui::GetFontSize() * SIZE_COLUMN_FONT_MULTIPLE;
+            const float sizeColumnWidth = ImGui::GetFontSize() * ASSET_SIZE_COLUMN_FONT_MULTIPLE;
             ImGui::TableSetupColumn("Name");
             ImGui::TableSetupColumn("Size", ImGuiTableColumnFlags_WidthFixed, sizeColumnWidth);
             ImGui::TableSetupScrollFreeze(0, 1);
             ImGui::TableHeadersRow();
 
-            // The ".." row, OUTSIDE the clipper: it is always visible and always first (AC-3).
-            if (!currentDir.empty()) {
-                ImGui::TableNextRow();
-                ImGui::TableSetColumnIndex(0);
-                ImGui::PushID(-1);  // clipper rows use 0..n-1
-                if (ImGui::Selectable("..", false, ImGuiSelectableFlags_SpanAllColumns)) {
-                    record(ActionKind::Navigate, parentOf(currentDir));
-                }
-                ImGui::PopID();
-                ImGui::TableSetColumnIndex(1);  // the size cell stays empty
-            }
+            // task E.6.3 (D8): no ".." row -- the crumb row navigates up AND accepts drops.
 
             // code-review BLOCKING-2 (AC-13): filters by the kind combo ALONE -- `filter.query` is
             // guaranteed empty here (the branch above returns for a non-empty query), so
             // matchesFilter's own substring clause is always a no-op and this call is exactly "apply
             // the kind filter". `filter.anyKind == true` (the default) returns every index, so this
             // costs nothing extra in the common case beyond one small per-frame scratch vector -- the
-            // SAME "not persisted, rebuilt every frame" posture `breadcrumb` already has above.
+            // SAME "not persisted, rebuilt every frame" posture `crumbs` already has above.
             const std::vector<std::size_t> kindFiltered = filterEntriesByKind(listing->entries, filter);
             ImGuiListClipper clipper;  // F14 -- only the visible rows are submitted (AC-12)
             clipper.Begin(static_cast<int>(kindFiltered.size()));
@@ -869,7 +1041,18 @@ void AssetBrowserPanel::drawTile(const FileEntry& entry, const std::string& rel,
     // file named "readme##v2.png" hit-testable as one item with one id, while the caption below is
     // drawn on the draw list (never through Selectable's own label), so "##" renders literally (E19).
     const ImGuiSelectableFlags selFlags = ImGuiSelectableFlags_AllowDoubleClick;
-    if (ImGui::Selectable("##tile", rel == selectedEntry, selFlags, tileDims)) {
+    const bool selected = rel == selectedEntry;
+    // task E.6.3 (D8): ImGui paints no tile fill -- a Selectable fills a SQUARE over its half-spacing-widened box
+    // (imgui_widgets.cpp:7387-7397) -- so the three Header slots are cleared around this ONE call; the drag source's
+    // tooltip and the face after it keep the normal palette. The face draws every state.
+    bool tilePressed = false;
+    {
+        const ClearHeaderStyle clearTileFill(ChromeRole::Panel);  // the pane's own ground
+        tilePressed = ImGui::Selectable("##tile", selected, selFlags, tileDims);
+    }
+    const bool tileHovered = ImGui::IsItemHovered();
+    const bool tileHeld = ImGui::IsItemActive();
+    if (tilePressed) {
         // task 3.1.3 (AC-15): a search hit is ALWAYS a file (searchAssets never matches a folder), so
         // its double-click semantics are RevealPath, not Navigate.
         if (isSearchHit) {
@@ -919,6 +1102,11 @@ void AssetBrowserPanel::drawTile(const FileEntry& entry, const std::string& rel,
     // folder into the SAME caption (the plan's own "subtitled" requirement), so it stays identifiable
     // outside the directory the user is currently browsing (AC-15). `captionSource` is a NAMED LOCAL
     // because the face holds a view into it, alive until the call returns.
+    // task E.6.3 (D8): a folder tile carries its RECURSIVE count -- the tree's number for it, from the ONE cache.
+    std::size_t folderCount = 0;
+    if (entry.isDirectory && databasePtr != nullptr) {
+        folderCount = folderCounts.countUnder(databasePtr->records(), databasePtr->generation(), rel);
+    }
     std::string captionSource = entry.name;
     if (isSearchHit) {
         const std::string parent = parentOf(rel);
@@ -939,12 +1127,37 @@ void AssetBrowserPanel::drawTile(const FileEntry& entry, const std::string& rel,
                              // task E.4.5, in DECLARATION order. Rule 4 runs HERE against entry.name -- the leaf,
                              // search hit or not -- never against captionSource, which folds in the parent.
                              .subtitle = materialCardSubtitle(card, entry.name),
-                             .tint = materialCardTint(card)};
-    drawAssetTileFace(ImGui::GetWindowDrawList(), itemMin, face, labelScratch);
+                             .tint = materialCardTint(card),
+                             .folderCount = folderCount,
+                             .hovered = tileHovered,
+                             .selected = selected,
+                             .held = tileHeld};
+    const AssetTileDrawn drawn = drawAssetTileFace(ImGui::GetWindowDrawList(), itemMin, face, labelScratch);
+    // task E.6.3 (D14): what the face handed to its draw calls, for the GPU tier.
+    if (drawn.ringed) {
+        ++chrome.tilesRinged;
+        if (selected) {
+            chrome.lastSelectedRingColor = drawn.ringColor;
+        } else if (!tileHovered && !tileHeld) {
+            chrome.lastRestingRingColor = drawn.ringColor;
+        }
+    }
+    if (drawn.hatched) {
+        ++chrome.hatchedWells;
+        chrome.lastHatchLabelColor = drawn.hatchLabelColor;
+    }
+    if (entry.isDirectory) {
+        chrome.lastFolderTabColor = drawn.folderTabColor;
+    }
+    if (drawn.folderCounted) {
+        ++chrome.foldersCounted;
+        chrome.folderTileCounts.push_back(AssetFolderTileCount{rel, folderCount});
+    }
 }
 
 void AssetBrowserPanel::drawContentsGrid(float paneHeight) {
-    ImGui::BeginChild("##contents", ImVec2(0.0F, paneHeight), ImGuiChildFlags_Borders);
+    // task E.6.3 (D8): borderless -- the crumb row's rule frames it.
+    ImGui::BeginChild("##contents", ImVec2(0.0F, paneHeight), ImGuiChildFlags_None);
     const bool searching = !filter.query.empty();
     const DirectoryListing* const listing = searching ? nullptr : cached(currentDir);
     if (searching) {
@@ -1018,29 +1231,7 @@ void AssetBrowserPanel::drawContentsGrid(float paneHeight) {
         const float rowHeight = tileH + ImGui::GetStyle().ItemSpacing.y;  // A16 -- EXACT, not a guess
         const int columns = gridColumnsFor(ImGui::GetContentRegionAvail().x, tileW, spacing);
 
-        // The parent-directory affordance, when not at the root -- outside the clipper, always visible,
-        // always first. It is a FULL-WIDTH BAR ONE TEXT LINE TALL, not a tile: as a tile it was a bare
-        // Selectable sized tileW x tileH with ImGui drawing the label at its top-left corner, so it
-        // rendered as a large empty rectangle (a solid accent-coloured block once hovered) with the
-        // rest of its row blank -- visibly unlike every real tile beside it, which draws an icon rect
-        // and a centred caption. Reported from the 3.1.3 human pass.
-        //
-        // task E.6.1: Lucide's corner-left-up icon -- merged into the Body face, so it draws natively; the
-        // literal is a hex-escape macro (.claude/rules/editor.md).
-        //
-        // Keeping it off the grid flow is UNCHANGED and still load-bearing: sharing a row with the
-        // clipper-driven grid below would make the clipper's row math account for one leading cell.
-        // A full-width bar is off that flow just as the old full-row tile was, so `rowHeight` and
-        // `rows` below are untouched by this change.
-        if (!currentDir.empty()) {
-            ImGui::PushID(-1);
-            const ImVec2 barSize(ImGui::GetContentRegionAvail().x, 0.0F);  // y == 0 -> one text line
-            const char* const parentLabel = AERO_ICON_CORNER_LEFT_UP "  ..";
-            if (ImGui::Selectable(parentLabel, false, ImGuiSelectableFlags_None, barSize)) {
-                record(ActionKind::Navigate, parentOf(currentDir));
-            }
-            ImGui::PopID();
-        }
+        // task E.6.3 (D8): no ".." bar -- the crumb row navigates up AND accepts drops, which the bar never did.
 
         // code-review BLOCKING-2 (AC-13): the drawContentsList precedent immediately above, applied
         // here too -- `filter.query` is guaranteed empty in this branch, so filterEntriesByKind is
@@ -1258,7 +1449,7 @@ void AssetBrowserPanel::drawAssetDeleteModal() {
         const AssetDeletePrompt prompt = assetDeletePromptFor(pendingDelete, isDirectory, indexed);
         ImGui::TextWrapped("%s", prompt.title.c_str());
         ImGui::TextWrapped("%s", prompt.detail.c_str());
-        ImGui::TextDisabled("%s", prompt.footer.c_str());
+        mutedText(prompt.footer);
         ImGui::Separator();
         bool commit = ImGui::Button("Delete");
         ImGui::SetItemDefaultFocus();
@@ -1325,8 +1516,8 @@ void AssetBrowserPanel::drawIssues(float bodyHeight) {
             // task E.4.4 (validation finding 4): an orphan is EITHER a sidecar whose file is gone OR one whose
             // file is now on the ignore list (docs/09 section 5.10) and still on disk, so the text names both
             // and says what is deleted. ASCII only, as the footer's watcher text is.
-            ImGui::TextDisabled("No asset uses this sidecar any more -- its file is gone or now on the ignore list");
-            ImGui::TextDisabled("(docs/09 section 5.10). Only the .meta file is deleted.");
+            mutedText("No asset uses this sidecar any more -- its file is gone or now on the ignore list");
+            mutedText("(docs/09 section 5.10). Only the .meta file is deleted.");
             ImGui::Separator();
             bool commit = ImGui::Button("Delete");
             ImGui::SetItemDefaultFocus();
@@ -1384,7 +1575,12 @@ void AssetBrowserPanel::drawIssues(float bodyHeight) {
     // -- WITHOUT this, ImGui's own per-id open/closed persistence would silently reset to closed on
     // every such change, because a new id has no memory of the old one's state.
     ImGui::SetNextItemOpen(issuesOpen, ImGuiCond_Always);
+    // task E.6.3 (D8): the card header's colours, at the header's existing height (validation row 12 looks at it).
+    ImGui::PushStyleColor(ImGuiCol_Header, roleVec4(ChromeRole::RaisedHeader));
+    ImGui::PushStyleColor(ImGuiCol_HeaderHovered, roleVec4(ChromeRole::Hover));
+    ImGui::PushStyleColor(ImGuiCol_HeaderActive, roleVec4(ChromeRole::Active));
     issuesOpen = ImGui::CollapsingHeader(labelScratch.c_str());
+    ImGui::PopStyleColor(3);
     if (issuesOpenRequest.has_value()) {  // task E.4.4 -- the seam lands exactly where a click lands
         issuesOpen = *issuesOpenRequest;
         issuesOpenRequest.reset();
@@ -1453,145 +1649,106 @@ void AssetBrowserPanel::drawIssues(float bodyHeight) {
     ImGui::EndChild();  // UNCONDITIONAL -- F9
 }
 
-// ---- phase 5: footer ---------------------------------------------------------------------------
+// ---- phase 5: the footer -- two zones, Mono small (task E.6.3, D8) ---------------------------------------------
+// INSIDE today's reservation (assetBrowserLayout's footerHeight = spacing + frame, so AV55, AV59 and I231 hold): the
+// left zone is the selection, elided from the LEFT; the right zone -- the listing's notice, the matches, the issues,
+// the thumbnails, the watcher word -- is always drawn whole (assetFooterLayout).
 void AssetBrowserPanel::drawFooter() {
     const DirectoryListing* const listing = cached(currentDir);
     if (listing == nullptr) {
         return;
     }
-    // The COUNTS ARE BUILT FIRST AND ALWAYS (review gap 3 / AC-8). They used to live behind an early
-    // return that a selection pre-empted, so clicking any file in a >10 000-entry directory made the
-    // truncation notice VANISH -- which is precisely the "a silent cap reads as 'this is everything'"
-    // failure D12 exists to prevent. A selection now APPENDS to this line; it never replaces it.
-    labelScratch.clear();
+    AssetFooterText footerText;
+    // The listing's notices are BUILT FIRST AND ALWAYS (review gap 3 / AC-8): a selection once pre-empted them, so
+    // clicking any file in a >10 000-entry directory made the truncation notice vanish -- "a silent cap reads as
+    // 'this is everything'". BOTH caps are named, because either can fire (review gap 2).
     if (listing->status == ScanStatus::Ok) {
-        labelScratch = std::to_string(listing->entries.size()) + " items";
         if (listing->skipped > 0) {
-            labelScratch += "  -  " + std::to_string(listing->skipped) + " skipped";  // AC-8/E5
+            footerText.notice = std::to_string(listing->skipped) + " skipped";  // AC-8/E5
         }
         if (listing->truncated) {
-            // AC-8/D12/E8 -- surfaced, never silent. BOTH caps are named because either can fire
-            // (review gap 2), and "showing the first 10000" would be a LIE when the scan cap is what
-            // stopped us: a directory of dotfiles browsed with `Show hidden` off can be truncated
-            // with far fewer than 10 000 entries listed.
-            labelScratch += "  -  truncated (caps: " + std::to_string(MAX_ENTRIES_PER_DIRECTORY) + " listed, " +
-                            std::to_string(MAX_ENTRIES_EXAMINED) + " scanned)";
+            if (!footerText.notice.empty()) {
+                footerText.notice += "  -  ";
+            }
+            footerText.notice += "truncated (caps: " + std::to_string(MAX_ENTRIES_PER_DIRECTORY) + " listed, " +
+                                 std::to_string(MAX_ENTRIES_EXAMINED) + " scanned)";
         }
     }
-    // A non-Ok status contributes NOTHING here: the right pane already explains it, and duplicating
-    // the message in the footer was never wanted.
+    // A non-Ok status contributes NOTHING here: the right pane already explains it.
     if (!selectedEntry.empty()) {
-        // code-review BLOCKING-3: matched by the FULL relative path, never by leaf name alone -- a
-        // leaf-only lookup either misses every search hit (selectedEntry is a path outside currentDir)
-        // or, on a same-leaf-name collision, silently pairs one file's identity with a DIFFERENT
-        // file's size. `rec` is looked up unconditionally (when a database exists) so a search hit
-        // whose parent directory was never navigated to can still resolve its identity even though it
-        // is not a member of THIS listing.
+        // code-review BLOCKING-3: matched by the FULL relative path, never by leaf name alone.
         const std::size_t idx = findEntryByRelativePath(listing->entries, currentDir, selectedEntry);
         const bool inCurrentListing = idx < listing->entries.size();
         const AssetRecord* const rec = databasePtr != nullptr ? databasePtr->findByPath(selectedEntry) : nullptr;
-        // E10, preserved: a selection that is NEITHER a member of the current listing NOR known to the
-        // database has simply vanished (deleted outside the editor, then rescanned) -- nothing renders,
-        // exactly as before. AC-15 is what ADDS the `rec != nullptr` half: a search hit's record still
-        // exists in the database even though its directory was never navigated to.
+        // E10, preserved: a selection in neither the listing nor the database has vanished -- nothing renders.
         if (inCurrentListing || rec != nullptr) {
-            if (!labelScratch.empty()) {
-                labelScratch += "   |   ";
-            }
-            labelScratch += selectedEntry;
-            // D5: a record NEVER describes a directory (AssetDatabase records only files), so
-            // `rec != nullptr` alone already implies a file; `selectedIsDirectory` only matters for the
-            // inCurrentListing branch.
+            std::string& selection = footerText.selection;
+            selection = selectedEntry;
+            // D5: a record NEVER describes a directory, so `selectedIsDirectory` matters only for a listing member.
             const bool selectedIsDirectory = inCurrentListing && listing->entries[idx].isDirectory;
             if (!selectedIsDirectory) {
                 if (inCurrentListing) {
                     const FileEntry& entry = listing->entries[idx];
-                    labelScratch +=
+                    selection +=
                         entry.sizeKnown ? ("  -  " + formatFileSize(entry.size)) : std::string("  -  ") + UNKNOWN_SIZE;
                 } else {
-                    // code-review BLOCKING-3: NEVER another file's size -- the exact bug this fixes. A
-                    // search hit's size is simply unknown from here; AssetRecord tracks identity and
-                    // content, never bytes (Step 8's own rule for the search table).
-                    labelScratch += std::string("  -  ") + UNKNOWN_SIZE;
+                    selection += std::string("  -  ") + UNKNOWN_SIZE;  // never another file's size (BLOCKING-3)
                 }
-                // task 3.1.1 (§D-7): the selected file's identity, appended after the size segment.
-                // databasePtr is reconciled by EditorApp::tick() (D12/D13) -- nullptr before the first
-                // scan, never a dangling reference.
+                // task 3.1.1 (§D-7): the identity; task 3.1.2 (§D-11): the import state, in the SAME block.
                 if (databasePtr != nullptr) {
-                    labelScratch += "  -  ";
+                    selection += "  -  ";
                     if (rec == nullptr) {
-                        labelScratch += "no .meta";
+                        selection += "no .meta";
                     } else if (rec->state == AssetMetaState::Invalid) {
-                        labelScratch += "invalid .meta";
+                        selection += "invalid .meta";
                     } else {
-                        labelScratch += elideGuid(rec->guid);
+                        selection += elideGuid(rec->guid);
                     }
-                    // task 3.1.2 (§D-11): the import state, appended after the GUID segment -- STILL
-                    // inside this SAME `databasePtr != nullptr` block (a null database appends neither
-                    // segment, exactly as before). An invalid record has no identity, so it has no
-                    // import state either -- the footer already says "invalid .meta" for it above.
-                    // Code-review finding 3 (task 3.1.2): a write-failed record (state still
-                    // Created/Repaired/Reattached) never got a `change` assigned either -- its default
-                    // UpToDate would otherwise render "up to date" for a file with no sidecar on disk,
-                    // so the segment is omitted for it exactly as it already is for Invalid.
                     if (rec != nullptr && rec->state != AssetMetaState::Invalid && !rec->metaWriteFailed) {
-                        labelScratch += "  -  ";
-                        labelScratch += importChangeLabel(rec->change);
+                        selection += "  -  ";
+                        selection += importChangeLabel(rec->change);
                     }
                 }
             }
         }
     }
-    // task 3.1.3, Step 8 (AC-14/AC-28): APPENDED, never replacing -- the search summary, shown only
-    // while a query is committed. `total` is the UNCAPPED match count (seed S15); `truncated` names
-    // the cap explicitly rather than letting "showing the first 2000" read as "this is everything".
+    // task 3.1.3, Step 8 (AC-14/AC-28): the search summary, only while a query is committed; `total` is UNCAPPED.
     if (!filter.query.empty()) {
-        if (!labelScratch.empty()) {
-            labelScratch += "   |   ";
-        }
-        labelScratch += std::to_string(searchRows.total) + " matches";
+        footerText.matches = std::to_string(searchRows.total) + " matches";
         if (searchRows.truncated) {
-            labelScratch += "  -  truncated (cap: " + std::to_string(MAX_SEARCH_RESULTS) + ")";
+            footerText.matches += "  -  truncated (cap: " + std::to_string(MAX_SEARCH_RESULTS) + ")";
         }
     }
-    // task 3.1.3 (AC-28): APPENDED, never replacing -- the thumbnail summary, shown only when
-    // non-zero. task E.3.3: the counts come off the SHARED service now, so the footer reports the
-    // whole editor's thumbnails rather than this panel's -- which is what they always meant, since
-    // there was only ever one ledger. A panel with no service lent reports zero and shows nothing.
-    const std::size_t readyThumbnails = thumbnailsPtr != nullptr ? thumbnailsPtr->readyCount() : 0;
-    const std::size_t unavailableThumbnails = thumbnailsPtr != nullptr ? thumbnailsPtr->unavailableCount() : 0;
-    if (readyThumbnails > 0 || unavailableThumbnails > 0) {
-        if (!labelScratch.empty()) {
-            labelScratch += "   |   ";
-        }
-        labelScratch += std::to_string(readyThumbnails) + " thumbnails";
-        if (unavailableThumbnails > 0) {
-            labelScratch += ", " + std::to_string(unavailableThumbnails) + " unavailable";
-        }
-    }
-
-    // task 3.1.4 (AC-36): APPENDED, never replacing -- the watcher's condition, in a fixed precedence
-    // order so the most ACTIONABLE condition wins. Omitted entirely when no watcher has been
-    // reconciled yet, which is honest: the panel does not know.
-    // ASCII ONLY. That is 3.1.3's own post-merge fix, applied here as a rule rather than rediscovered.
-    // The editor draws IBM Plex, and a non-ASCII mark in a literal goes through AERO_GLYPH_* or
-    // AERO_ICON_* (.claude/rules/editor.md, "Fonts, icons and the theme").
+    footerText.issues = reportPtr != nullptr ? issueTotal(*reportPtr) : 0U;
+    // task E.3.3: the SHARED service's counts; task E.6.3: shown against the resident budget (the mock's R/256).
+    footerText.thumbnailsReady = thumbnailsPtr != nullptr ? thumbnailsPtr->readyCount() : 0U;
+    footerText.thumbnailsBudget = thumbnailsPtr != nullptr ? MAX_THUMBNAILS_RESIDENT : 0U;
+    // task 3.1.4 (AC-36): the watcher's condition, omitted when no watcher has been reconciled -- honest: the panel
+    // does not know. ASCII ONLY (3.1.3's post-merge fix, as a rule).
     if (watchStatusPtr != nullptr) {
-        if (!labelScratch.empty()) {
-            labelScratch += "   |   ";
-        }
-        // task E.6.2 (D13): ONE classification for the footer and the status bar -- two surfaces comparing one key
-        // by two chains is the 3.7.2 lesson -- and the footer's own words, byte-identical, now in status_bar.cpp.
-        // `true`: the footer never draws without a project.
+        // task E.6.2 (D13): ONE classification for the footer and the status bar. `true`: the footer never draws
+        // without a project. task E.6.3: the word is handed WHOLE into the footer's own field.
         const WatchStatus& watch = *watchStatusPtr;
         const WatchState footerState = classifyWatchState(true, watch);
-        labelScratch += assetFooterWatchText(footerState, watch.deferredSweeps, watch.unreadableDirs);
+        footerText.watcher = assetFooterWatchText(footerState, watch.deferredSweeps, watch.unreadableDirs);
     }
 
-    if (labelScratch.empty()) {
-        return;  // an unusable directory with nothing selected -- the right pane carries the message
+    const ImVec2 rowMin = ImGui::GetCursorScreenPos();
+    const float rowWidth = ImGui::GetContentRegionAvail().x;
+    const float monoAdvance = faceTextWidth(PanelFace::MonoSmall, "0");  // Mono is monospaced: one cell's advance
+    const AssetFooterLayout footer = assetFooterLayout(rowMin.x, rowWidth, footerText, monoAdvance, currentUiScale());
+    ImDrawList* const list = ImGui::GetWindowDrawList();
+    const float textY = rowMin.y + ((ImGui::GetFrameHeight() - panelFacePoints(PanelFace::MonoSmall)) * 0.5F);
+    if (!footer.left.empty()) {
+        drawRoleText(list, PanelFace::MonoSmall, ImVec2(footer.leftX, textY), ChromeRole::TextMuted, footer.left);
     }
-    ImGui::TextUnformatted(labelScratch.c_str());
+    for (const AssetFooterSegment& segment : footer.right) {
+        drawRoleText(list, PanelFace::MonoSmall, ImVec2(segment.x, textY), segment.role, segment.text);
+        chrome.footerRightTexts.push_back(segment.text);
+    }
+    chrome.footerLeftText = footer.left;
+    // ONE layout item, the height of the TextUnformatted it replaces, inside the reserved band.
+    ImGui::Dummy(ImVec2(rowWidth, ImGui::GetTextLineHeight()));
 }
 
 // ---- apply: the ONE mutating switch (D8/INV-5) --------------------------------------------------
@@ -1839,6 +1996,8 @@ void AssetBrowserPanel::requestDeleteOrphanClick(std::string relativeMetaPath) {
 void AssetBrowserPanel::requestSelectEntry(std::string relativePath) {
     record(ActionKind::SelectEntry, std::move(relativePath));
 }
+// task E.6.3: a crumb or tree-row click's seam -- queued, then recorded by onDraw under the click's own gate (I337).
+void AssetBrowserPanel::requestNavigate(std::string relativeDir) { navigateRequest = std::move(relativeDir); }
 // task 3.4.2: the requestReimportAll() shape verbatim -- record(ActionKind::CreateMaterial, {}) is
 // exactly what drawHeader() calls when the New Material button returns true, so the request travels
 // the SAME applyPending() arm and picks up the SAME currentDir a click would.
@@ -1917,6 +2076,15 @@ void AssetBrowserPanel::onDraw(PanelContext& /*context*/) {  // D18: the context
     dropTargetsAcceptedCount = 0;
     issueRowsDrawnCount = 0;
     issuesBodyDrawnHeight = 0.0F;
+    beginAssetChromeRecordFrame(chrome);  // task E.6.3 (D14): one recorded frame per onDraw
+    // task E.6.3: requestNavigate's drain -- the crumbs' own enabled term and no modal, the gate a real click has
+    // (a modal blocks every click, imgui.cpp:5620). Recorded for THIS frame's applyPending().
+    const bool noModal = ImGui::GetTopMostPopupModal() == nullptr;
+    const bool crumbsEnabled = !rootUtf8.empty();
+    if (navigateRequest.has_value() && crumbsEnabled && noModal) {
+        record(ActionKind::Navigate, std::move(*navigateRequest));
+        navigateRequest.reset();  // a moved-from optional is still ENGAGED -- the move is not a drain
+    }
     reconcile();   // 1 -- the only I/O
     drawHeader();  // 2
     // task E.4.4 (validation finding 2): the footer AND the Issues region are reserved BEFORE the panes
@@ -1939,11 +2107,7 @@ void AssetBrowserPanel::onDraw(PanelContext& /*context*/) {  // D18: the context
     layoutMetricsAtDraw = metrics;    // task E.4.4 -- EXACTLY what the layout read (layoutMetrics())
     drawTreePane(layout.paneHeight);  // 3
     ImGui::SameLine();
-    if (viewMode == AssetViewMode::Grid) {  // task 3.1.3, Step 6 -- one child, two bodies (§D-7)
-        drawContentsGrid(layout.paneHeight);
-    } else {
-        drawContentsList(layout.paneHeight);
-    }
+    drawContentsPane(layout.paneHeight);  // 4 -- task E.6.3: the crumb row over the grid or list, ONE group (D8)
     // task E.4.3: the pane BACKGROUND is a legal context target ("" -- New Folder and New Asset
     // apply there). Recorded only when the click landed on no item at all, so it can never steal a
     // row's own right-click.
@@ -1965,6 +2129,7 @@ void AssetBrowserPanel::onDraw(PanelContext& /*context*/) {  // D18: the context
     // task E.4.4: read AFTER every child has ended, so the current window is the panel's own. ImGui set it
     // in this frame's Begin from the previous frame's content, so a steady layout reads its steady value.
     scrollMaxYAtDraw = ImGui::GetScrollMaxY();
+    chrome.folderCountRecomputations = folderCounts.recomputations();
     applyPending();  // the ONLY place anything mutates
 }
 

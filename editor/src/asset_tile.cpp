@@ -4,11 +4,14 @@
 // Everything else, comments included, is drawTile's own body.
 #include "asset_tile.hpp"
 
+#include <aero/editor/asset_browser_chrome.hpp>  // task E.6.3: folderGlyphRects
 #include <aero/editor/asset_view.hpp>
 #include <aero/editor/editor_theme.hpp>   // task E.6.1 -- the swatch label pair (D17)
 #include <aero/editor/material_card.hpp>  // task E.4.5 -- materialSwatchWantsDarkLabel
+#include <aero/editor/status_bar.hpp>     // task E.6.3: groupThousands
 
-#include "editor_theme_ui.hpp"  // task E.6.1: toImU32
+#include "editor_theme_ui.hpp"  // task E.6.1: toImU32; task E.6.3: currentUiScale
+#include "panel_chrome_ui.hpp"  // task E.6.3: roles, faces, the hatch
 
 #include <cstddef>
 #include <cstdint>
@@ -40,6 +43,20 @@ constexpr ImU32 SWATCH_LABEL_ON_DARK = labelColor(EDITOR_THEME.swatchLabel.onDar
     };
 }
 
+// task E.6.3 (D8): the well's state, as roles. Selected wins over hovered, which wins over rest.
+[[nodiscard]] ChromeRole wellFillRole(const AssetTileFace& face) noexcept {
+    if (face.selected) {
+        return ChromeRole::Selection;
+    }
+    return (face.hovered || face.held) ? ChromeRole::RaisedHeader : ChromeRole::Tile;
+}
+[[nodiscard]] ChromeRole wellRingRole(const AssetTileFace& face) noexcept {
+    if (face.selected) {
+        return ChromeRole::AccentBorder;
+    }
+    return (face.hovered || face.held) ? ChromeRole::Active : ChromeRole::Hover;  // D3: the resting ring IS hover
+}
+
 }  // namespace
 
 // A15: ImGui's own text wrapping has no ellipsis and no "how many lines would this take" query for
@@ -53,10 +70,13 @@ std::string elideForCaption(const std::string& name, float wrapWidth, std::size_
     return elideCaptionRight(name, captionFitsWithin(wrapWidth, budgetHeight));
 }
 
-void drawAssetTileFace(ImDrawList* drawList, ImVec2 itemMin, const AssetTileFace& face, std::string& scratch) {
+AssetTileDrawn drawAssetTileFace(ImDrawList* drawList, ImVec2 itemMin, const AssetTileFace& face,
+                                 std::string& scratch) {
+    AssetTileDrawn drawn;
     const ImVec2 iconMin(itemMin.x + face.pad, itemMin.y + face.pad);
     const ImVec2 iconMax(iconMin.x + face.tileEdge, iconMin.y + face.tileEdge);
-    const float rounding = ImGui::GetStyle().FrameRounding;
+    const float s = currentUiScale();
+    const float rounding = EDITOR_THEME.panels.wellRounding * s;  // task E.6.3: the well's corner (D8)
 
     if (face.nativeTexture != nullptr) {
         // F7 (A6): the SDL_GPU ImGui backend takes the native texture pointer directly as the id; a
@@ -64,34 +84,64 @@ void drawAssetTileFace(ImDrawList* drawList, ImVec2 itemMin, const AssetTileFace
         // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
         const auto texId = static_cast<ImTextureID>(reinterpret_cast<std::uintptr_t>(face.nativeTexture));
         drawList->AddImage(texId, iconMin, iconMax);
-    } else {
-        // The generated type icon -- what a Skipped/Failed/no-database entry, or an undecodable
-        // extension, falls back to FOREVER.
-        // task E.4.5: the caller's tint wins over the kind colour, and NOTHING ELSE about this branch changes: a
-        // material with a parsed, finite base colour paints its OWN colour; every other tile paints its kind's.
-        const IconColor color = face.tint.value_or(iconColorFor(face.kind));
-        const ImU32 fillColor = IM_COL32(color.r, color.g, color.b, color.a);
-        drawList->AddRectFilled(iconMin, iconMax, fillColor, rounding);
-        if (face.isDirectory) {
-            // D6: a folder is a two-rect glyph in a fixed colour -- a small "tab" atop the body, both
-            // in the SAME icon colour so it reads as one shape rather than two overlapping tiles.
-            const float tabWidth = (iconMax.x - iconMin.x) * 0.45F;
-            const float tabHeight = (iconMax.y - iconMin.y) * 0.18F;
-            const ImU32 tabColor = IM_COL32(color.r, color.g, color.b, 255U);
-            drawList->AddRectFilled(iconMin, ImVec2(iconMin.x + tabWidth, iconMin.y + tabHeight), tabColor, rounding);
-        } else {
-            scratch = iconLabelFor(face.fileName);
-            const ImVec2 textSize = ImGui::CalcTextSize(scratch.c_str());
-            const ImVec2 textPos((iconMin.x + iconMax.x - textSize.x) * 0.5F,
-                                 (iconMin.y + iconMax.y - textSize.y) * 0.5F);
-            // task E.4.5: THE LABEL'S CONTRAST FOLLOWS THE FILL. A white "AERT" (iconLabelFor's label for
-            // .aeromat, AV51) on a pale swatch is unreadable, and a fixed white is right only while every fill
-            // happens to be dark -- the "true by accident" shape. Every UNtinted tile keeps white exactly.
-            const bool darkLabel = face.tint.has_value() && materialSwatchWantsDarkLabel(color);
-            const ImU32 labelInk = darkLabel ? SWATCH_LABEL_ON_LIGHT : SWATCH_LABEL_ON_DARK;
-            drawList->AddText(textPos, labelInk, scratch.c_str());
+    } else if (face.isDirectory) {
+        // task E.6.3 (D3, D8): the well carries the state, and on it the mock's two-tone folder -- a grey body and a
+        // lighter tab ABOVE it. The tab used to sit INSIDE the body in the body's own colour, where it could not be
+        // seen (seed S50 restores exactly that).
+        roleFill(drawList, iconMin, iconMax, wellFillRole(face), rounding);
+        const FolderGlyph glyph = folderGlyphRects(Vec2{iconMin.x, iconMin.y}, Vec2{iconMax.x, iconMax.y});
+        const IconColor body = iconColorFor(AssetKind::Folder);
+        const float glyphRounding = rounding * 0.5F;
+        drawn.folderTabColor = toImU32(EDITOR_THEME.assetKind.folderTab);
+        drawList->AddRectFilled(ImVec2(glyph.tabMin.x, glyph.tabMin.y), ImVec2(glyph.tabMax.x, glyph.tabMax.y),
+                                drawn.folderTabColor, glyphRounding);
+        drawList->AddRectFilled(ImVec2(glyph.bodyMin.x, glyph.bodyMin.y), ImVec2(glyph.bodyMax.x, glyph.bodyMax.y),
+                                IM_COL32(body.r, body.g, body.b, body.a), glyphRounding);
+        if (face.folderCount > 0U) {
+            // The folder's RECURSIVE count at the well's bottom-right, Mono small textMuted (D8).
+            scratch = groupThousands(face.folderCount);
+            const float inset = EDITOR_THEME.panels.rowMetaInsetX * s;
+            const ImVec2 at(iconMax.x - inset - faceTextWidth(PanelFace::MonoSmall, scratch),
+                            iconMax.y - inset - panelFacePoints(PanelFace::MonoSmall));
+            drawRoleText(drawList, PanelFace::MonoSmall, at, ChromeRole::TextMuted, scratch);
+            drawn.folderCounted = true;
         }
+    } else if (face.tint.has_value()) {
+        // task E.4.5: a material with a parsed, finite base colour paints its OWN colour, unchanged by E.6.3 -- the
+        // swatch IS its preview, so it is not hatched.
+        const IconColor color = *face.tint;
+        drawList->AddRectFilled(iconMin, iconMax, IM_COL32(color.r, color.g, color.b, color.a), rounding);
+        scratch = iconLabelFor(face.fileName);
+        const ImVec2 textSize = ImGui::CalcTextSize(scratch.c_str());
+        const ImVec2 textPos((iconMin.x + iconMax.x - textSize.x) * 0.5F, (iconMin.y + iconMax.y - textSize.y) * 0.5F);
+        // task E.4.5: THE LABEL'S CONTRAST FOLLOWS THE FILL -- a pale swatch takes the dark label.
+        const ImU32 labelInk = materialSwatchWantsDarkLabel(color) ? SWATCH_LABEL_ON_LIGHT : SWATCH_LABEL_ON_DARK;
+        drawList->AddText(textPos, labelInk, scratch.c_str());
+    } else {
+        // task E.6.3 (D8): a file with no preview -- a HATCHED well, its extension label in textSecondary (6.75:1 on
+        // the stripe, 7.81:1 on `tile`, TH16), the kind colour kept on a non-text mark: a kindDotSize dot, the label
+        // kindDotGap after it. A kind colour carries no contrast floor (`unknown` is 1.81:1 on the stripe), which is
+        // why the label never draws in one.
+        hatchedWell(drawList, iconMin, iconMax, rounding);
+        scratch = iconLabelFor(face.fileName);
+        const float dot = EDITOR_THEME.panels.kindDotSize * s;
+        const float gap = EDITOR_THEME.panels.kindDotGap * s;
+        const float line = panelFacePoints(PanelFace::BodySmall);
+        const float left = (iconMin.x + iconMax.x - (dot + gap + faceTextWidth(PanelFace::BodySmall, scratch))) * 0.5F;
+        const float top = (iconMin.y + iconMax.y - line) * 0.5F;
+        const IconColor kind = iconColorFor(face.kind);
+        drawList->AddCircleFilled(ImVec2(left + (dot * 0.5F), top + (line * 0.5F)), dot * 0.5F,
+                                  IM_COL32(kind.r, kind.g, kind.b, kind.a));
+        // Packed ONCE and handed to the draw, as the folder tab's is: the record is what the label RECEIVED.
+        drawn.hatchLabelColor = roleU32(ChromeRole::TextSecondary);
+        drawList->AddText(panelFaceFont(PanelFace::BodySmall), panelFacePoints(PanelFace::BodySmall),
+                          ImVec2(left + dot + gap, top), drawn.hatchLabelColor, scratch.c_str());
+        drawn.hatched = true;
     }
+    // The ring, LAST over the well, so it frames whatever the well holds (D3: the resting ring IS `hover`).
+    drawn.ringColor = roleU32(wellRingRole(face));
+    drawList->AddRect(iconMin, iconMax, drawn.ringColor, rounding, 0, tileRingHeight());
+    drawn.ringed = true;
 
     // The caption: leaf name, wrapped to at most TILE_CAPTION_LINES and ellipsised beyond that (A15).
     // A15's 8-argument AddText overload -- imgui.h:3477 -- is the only one with a wrap width. A search
@@ -102,19 +152,17 @@ void drawAssetTileFace(ImDrawList* drawList, ImVec2 itemMin, const AssetTileFace
     // task E.4.5: the font and its size, read once as named locals so each AddText below is a single line.
     ImFont* const font = ImGui::GetFont();
     const float fontSize = ImGui::GetFontSize();
-    const ImU32 textInk = toImU32(EDITOR_THEME.palette.text);  // task E.6.1: the caption's colour role
+    // task E.6.3 (D8): textBright on a selected tile, `text` otherwise -- roles, never palette reads (I287).
+    const ImU32 textInk = roleU32(face.selected ? ChromeRole::TextBright : ChromeRole::Text);
     if (face.subtitle.empty()) {
-        // TODAY'S CAPTION: the caption source wrapped to TILE_CAPTION_LINES, in the theme's text colour (task
-        // E.6.1; it was pure white).
+        // TODAY'S CAPTION: the caption source wrapped to TILE_CAPTION_LINES.
         const std::string caption = elideForCaption(std::string(face.captionSource), wrapWidth);
         drawList->AddText(font, fontSize, captionPos, textInk, caption.c_str(), nullptr, wrapWidth, nullptr);
-        return;
+        return drawn;
     }
-    // task E.4.5: TWO one-line captions in exactly the space the wrapped one had -- the file name first, in
-    // the caption's colour, then the document's name beneath it in the theme's textMuted (task E.6.1: text
-    // that is de-emphasised but ENABLED, D16 -- it used to read ImGui's disabled-text slot). Both are
-    // draw-list text, so no format string exists on this path (D12), and still NO ImGui ITEM is submitted:
-    // GetFont and GetTextLineHeight are reads.
+    // task E.4.5: TWO one-line captions in exactly the space the wrapped one had -- the file name first, then the
+    // document's name beneath it in textMuted (task E.6.1: de-emphasised but ENABLED, D16). Both are draw-list text,
+    // so no format string exists on this path (D12), and still NO ImGui ITEM is submitted.
     // The code-review round: line one keeps the FILE NAME. A search hit's source is "parent/leaf", and eliding it
     // from the right kept the folder and dropped the name; subtitledTileCaptionLine drops the folder's front first.
     const CaptionLineFits oneLine = captionFitsWithin(wrapWidth, ImGui::GetTextLineHeight());
@@ -122,8 +170,9 @@ void drawAssetTileFace(ImDrawList* drawList, ImVec2 itemMin, const AssetTileFace
     drawList->AddText(font, fontSize, captionPos, textInk, primary.c_str(), nullptr, wrapWidth, nullptr);
     const std::string secondary = elideForCaption(std::string(face.subtitle), wrapWidth, 1U);
     const ImVec2 subtitlePos(captionPos.x, captionPos.y + ImGui::GetTextLineHeight());
-    const ImU32 dimmed = toImU32(EDITOR_THEME.palette.textMuted);
-    drawList->AddText(font, fontSize, subtitlePos, dimmed, secondary.c_str(), nullptr, wrapWidth, nullptr);
+    drawList->AddText(font, fontSize, subtitlePos, roleU32(ChromeRole::TextMuted), secondary.c_str(), nullptr,
+                      wrapWidth, nullptr);
+    return drawn;
 }
 
 }  // namespace engine::editor

@@ -474,7 +474,18 @@ AssetFieldResult drawAssetReferenceField(const AssetFieldInputs& in, AssetPicker
                     // the tile it belongs to by (ItemSpacing.x/2, ItemSpacing.y/2).
                     const ImVec2 itemMin = ImGui::GetCursorScreenPos();
                     const bool selected = static_cast<std::size_t>(index) == state.cursor;
-                    if (ImGui::Selectable("##tile", selected, ImGuiSelectableFlags_None, ImVec2(tileW, tileH))) {
+                    // task E.6.3 (D8): ImGui paints no tile fill -- the face draws every state -- so the three
+                    // Header slots are cleared around this ONE call and nothing else (the face and the tooltip
+                    // after it keep the normal palette).
+                    const ImVec2 tileSize(tileW, tileH);
+                    bool tilePressed = false;
+                    {
+                        const ClearHeaderStyle clearTileFill(ChromeRole::Raised);  // the popup's own ground
+                        tilePressed = ImGui::Selectable("##tile", selected, ImGuiSelectableFlags_None, tileSize);
+                    }
+                    const bool tileHovered = ImGui::IsItemHovered();
+                    const bool tileHeld = ImGui::IsItemActive();
+                    if (tilePressed) {
                         state.cursor = static_cast<std::size_t>(index);
                         commitRequested = true;  // ONE commit path, below
                     }
@@ -485,6 +496,9 @@ AssetFieldResult drawAssetReferenceField(const AssetFieldInputs& in, AssetPicker
                     face.tileW = tileW;
                     face.tileEdge = tileEdge;
                     face.pad = pad;
+                    face.hovered = tileHovered;  // task E.6.3 (D8): the face draws the states ImGui no longer fills
+                    face.selected = selected;
+                    face.held = tileHeld;
                     if (index == 0) {
                         face.fileName = "None";
                         face.captionSource = "None";

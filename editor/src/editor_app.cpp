@@ -2387,6 +2387,12 @@ void EditorApp::requestAssetBrowserSelectEntry(std::string_view relativePath) {
     }
 }
 
+void EditorApp::requestAssetBrowserNavigate(std::string_view relativeDir) {
+    if (assetBrowserPanel != nullptr) {
+        assetBrowserPanel->requestNavigate(std::string(relativeDir));
+    }
+}
+
 // task E.4.4: the requestAssetBrowserCreateMaterial() forward, for the `Show hidden` checkbox.
 void EditorApp::requestAssetBrowserToggleHidden() noexcept {
     if (assetBrowserPanel != nullptr) {
