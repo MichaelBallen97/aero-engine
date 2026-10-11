@@ -178,6 +178,7 @@ add_library(aero_editor_core STATIC
     src/shell_chrome_ui.cpp      # task E.6.2 -- the toolbar, status bar and breadcrumb: the chrome's ONE ImGui TU
     src/panel_chrome_model.cpp   # task E.6.3 -- the role map, card geometry, hairline, icon tables, records; PURE
     src/panel_chrome_ui.cpp      # task E.6.3 -- the panels' shared chrome: cards, chips, buttons; the ONE ImGui TU
+    src/console_view.cpp         # task E.6.3 -- the Console's channel, stamp, tags, tints, columns, footer; PURE
     src/editor_theme_ui.cpp      # task E.6.1 -- buildEditorStyle: the ONE style writer
 )
 add_library(aero::editor_core ALIAS aero_editor_core)

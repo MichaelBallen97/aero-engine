@@ -510,7 +510,8 @@ add_executable(aero_editor_shell_test editor/shell_test.cpp editor/hierarchy_tes
                editor/toolbar_model_test.cpp           # task E.6.2 — the toolbar model (TB)
                editor/breadcrumb_test.cpp              # task E.6.2 — the breadcrumb (BD)
                editor/status_bar_test.cpp              # task E.6.2 — the status bar (FT)
-               editor/panel_chrome_model_test.cpp)     # task E.6.3 — the role map and card geometry (PC)
+               editor/panel_chrome_model_test.cpp      # task E.6.3 — the role map and card geometry (PC)
+               editor/console_view_test.cpp)           # task E.6.3 — the Console model (CS)
 target_link_libraries(aero_editor_shell_test PRIVATE
     doctest::doctest aero::editor_core aero::scene aero::scene_internal aero::core Threads::Threads)
 add_test(NAME aero_editor_shell_test COMMAND aero_editor_shell_test)

@@ -26,6 +26,7 @@
 #include <aero/editor/command_stack.hpp>  // task 2.4.1
 #include <aero/editor/component_ops.hpp>
 #include <aero/editor/console_model.hpp>  // DEFAULT_LOG_HISTORY_CAPACITY (case C)
+#include <aero/editor/console_view.hpp>   // task E.6.3 (I287, I313, I314)
 #include <aero/editor/create_menu.hpp>    // task E.5.2 (I246-I250): CreateKind, createSeed, createAnchor
 #include <aero/editor/editor_app.hpp>
 #include <aero/editor/editor_camera.hpp>    // task 2.3.1
@@ -771,6 +772,8 @@ TEST_CASE("editor: a full Console ring stays balanced and clipped (task 2.2.5, A
     std::optional<engine::editor::EditorApp> app = engine::editor::EditorApp::create(
         *device, *window, ctx, {.persistLayout = false, .unfocusedFrameCapHz = 0.0F, .restoreLastProject = false});
     REQUIRE(app.has_value());
+    auto* const console = dynamic_cast<engine::editor::ConsolePanel*>(app->panels().find("Console"));
+    REQUIRE(console != nullptr);
 
     constexpr int BATCH_COUNT = 4;
     constexpr int BATCH_SIZE = 3000;  // comfortably under DEFAULT_LOG_STAGING_CAPACITY (4096), so
@@ -783,11 +786,16 @@ TEST_CASE("editor: a full Console ring stays balanced and clipped (task 2.2.5, A
         CHECK(app->presentedLastFrame());
     }
     CHECK(app->logRecordCount() == engine::editor::DEFAULT_LOG_HISTORY_CAPACITY);
+    const std::uint64_t ringFrames = console->drawRecord().framesRecorded;
     window->setSize(200, 120);  // BeginChild can return false; the header row clips
     for (int i = 0; i < 3; ++i) {
         REQUIRE(app->tick());
         CHECK(app->presentedLastFrame());
     }
+    // task E.6.3 (I314's small arm): the restyled header and footer draw at 200 x 120 with no assert. The dock is
+    // shorter than header + footer there, so the scroll range is recorded, not asserted.
+    MESSAGE("I314 small window: Console scroll max " << console->drawRecord().windowScrollMaxY);
+    WARN(console->drawRecord().framesRecorded > ringFrames);  // geometry: a fully collapsed dock skips onDraw
     window->setSize(480, 300);
     for (int i = 0; i < 2; ++i) {
         REQUIRE(app->tick());
@@ -22393,20 +22401,6 @@ TEST_CASE(
 // ---- I287: the panels read their colours from the theme's roles (task E.6.1, step 6) -------------------
 namespace {
 
-// Per channel, as integers, so a failure prints numbers rather than a character.
-void checkSameSrgb8(const engine::editor::Srgb8& actual, const engine::editor::Srgb8& expected) {
-    CHECK(static_cast<int>(actual.r) == static_cast<int>(expected.r));
-    CHECK(static_cast<int>(actual.g) == static_cast<int>(expected.g));
-    CHECK(static_cast<int>(actual.b) == static_cast<int>(expected.b));
-    CHECK(static_cast<int>(actual.a) == static_cast<int>(expected.a));
-}
-
-struct LevelColorRow {
-    engine::LogLevel level;
-    std::string_view name;
-    engine::editor::Srgb8 expected;
-};
-
 // How many times the code reads EDITOR_THEME.palette.<role>, the role ending at a non-identifier byte -- so
 // "text" never counts a "textMuted" read. Every READ, not every line: two reads on one line count twice. An
 // empty role counts every palette read of any role.
@@ -22437,20 +22431,26 @@ struct RoleReads {
 }  // namespace
 
 TEST_CASE("editor: the panels read their roles from the theme (task E.6.1, I287)") {
-    // NO GPU: logLevelColor is ImGui-free, and the rest is the eight files' comment-stripped source text.
-    const engine::editor::ThemePalette& p = engine::editor::EDITOR_THEME.palette;
-    const std::array<LevelColorRow, 7> rows{{
-        {engine::LogLevel::Trace, "Trace", p.textMuted},
-        {engine::LogLevel::Debug, "Debug", p.textMuted},
-        {engine::LogLevel::Info, "Info", p.text},
-        {engine::LogLevel::Off, "Off", p.text},
-        {engine::LogLevel::Warn, "Warn", p.warning},
-        {engine::LogLevel::Error, "Error", p.error},
-        {engine::LogLevel::Critical, "Critical", p.critical},
+    // NO GPU: logLevelTagRole is pure, and the rest is the ten files' comment-stripped source text.
+    // task E.6.3 (D7): a level reaches the draw as its TAG's role -- the message is `text` on every level.
+    struct LevelRoleRow {
+        engine::LogLevel level;
+        std::string_view name;
+        engine::editor::ChromeRole role;
+    };
+    using engine::editor::ChromeRole;
+    const std::array<LevelRoleRow, 7> rows{{
+        {engine::LogLevel::Trace, "Trace", ChromeRole::TextFaint},
+        {engine::LogLevel::Debug, "Debug", ChromeRole::TextMuted},
+        {engine::LogLevel::Info, "Info", ChromeRole::TextLabel},
+        {engine::LogLevel::Off, "Off", ChromeRole::TextFaint},
+        {engine::LogLevel::Warn, "Warn", ChromeRole::Warning},
+        {engine::LogLevel::Error, "Error", ChromeRole::Error},
+        {engine::LogLevel::Critical, "Critical", ChromeRole::Critical},
     }};
-    for (const LevelColorRow& row : rows) {
+    for (const LevelRoleRow& row : rows) {
         CAPTURE(row.name);
-        checkSameSrgb8(engine::editor::logLevelColor(row.level), row.expected);
+        CHECK((engine::editor::logLevelTagRole(row.level) == row.role));
     }
 
     // No panel states a colour or reads ImGui's disabled slot for enabled text (seed S25). The literal
@@ -22473,7 +22473,7 @@ TEST_CASE("editor: the panels read their roles from the theme (task E.6.1, I287)
         std::size_t totalReads;
     };
     constexpr std::array<PanelFile, 10> PANELS{{
-        {"console_panel.cpp", 7U},
+        {"console_panel.cpp", 0U},  // task E.6.3: every colour a ChromeRole
         {"material_panel.cpp", 10U},
         {"import_details_panel.cpp", 6U},
         {"project_ui.cpp", 2U},
@@ -22490,12 +22490,7 @@ TEST_CASE("editor: the panels read their roles from the theme (task E.6.1, I287)
     // green while any other read of that role remains: only the count moves. A set claim needs a set
     // assertion, so each file's TOTAL of palette reads is pinned as well, and a read of a role a file has
     // no row for is red too. Counted from the code at E.6.1's second code-review round.
-    constexpr std::array<RoleReads, 53> ROLE_READS{{
-        {"console_panel.cpp", "critical", 1U},   // logLevelColor's Critical arm
-        {"console_panel.cpp", "error", 1U},      // its Error arm
-        {"console_panel.cpp", "text", 2U},       // its Info/Off arm and the fallback after the switch
-        {"console_panel.cpp", "textMuted", 2U},  // its Trace/Debug arm and the timestamp column
-        {"console_panel.cpp", "warning", 1U},    // its Warn arm
+    constexpr std::array<RoleReads, 48> ROLE_READS{{
         {"material_panel.cpp", "error", 3U},
         {"material_panel.cpp", "textMuted", 1U},  // the status line's Disabled arm (D16)
         {"material_panel.cpp", "warning", 6U},
@@ -22570,12 +22565,9 @@ TEST_CASE("editor: the panels read their roles from the theme (task E.6.1, I287)
         CHECK(countPaletteReads(code, "") == panel.totalReads);  // ... and no role it has no row for
     }
     CHECK(rowsRead == ROLE_READS.size());  // no row names a file outside the eight, so none is skipped
-    // The Console's levels reach the draw through logLevelColor: its definition and its one call.
-    std::size_t levelColorCalls = 0;
-    for (const std::string& line : editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/console_panel.cpp")) {
-        levelColorCalls += countOccurrences(line, "logLevelColor(");
-    }
-    CHECK(levelColorCalls == 2U);
+    // The Console's levels reach the draw through logLevelTagRole: one call, in the row loop (task E.6.3).
+    const std::vector<std::string> consoleCode = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/console_panel.cpp");
+    CHECK(countLinesContaining(consoleCode, "logLevelTagRole(") == 1U);
     // ANTI-VACUITY for the counter: a role ends at an identifier boundary, and the empty role counts all.
     const std::vector<std::string> probe{"f(EDITOR_THEME.palette.textMuted, EDITOR_THEME.palette.text);"};
     CHECK(countPaletteReads(probe, "text") == 1U);
@@ -22674,7 +22666,7 @@ TEST_CASE("editor: the viewport chrome uses the live UI scale (task E.6.1, I288)
 // ---- I283-I285: the faces and icons each consumer drew with (task E.6.1, step 8) ------------------------
 // Every font claim reads what ImGui had CURRENT when the panel drew (GetFont()->GetDebugName(), recorded by
 // the panel at the draw), never a seam's round trip.
-TEST_CASE("editor: Console messages draw in Mono and the other columns in Body (task E.6.1, I283)") {
+TEST_CASE("editor: Console messages draw in Mono, tags in Mono small, and the push stays scoped (task E.6.1, I283)") {
     engine::platform::Context ctx;
     if (!ctx.valid()) {
         AERO_SKIP_OR_FAIL("no platform context");
@@ -22708,14 +22700,32 @@ TEST_CASE("editor: Console messages draw in Mono and the other columns in Body (
     REQUIRE(app->panelDrawnCount("Console") == idle);
 
     AERO_LOG_INFO("e61 mono probe");
+    AERO_LOG_INFO("e63 second row");  // two rows: the witness below is read between rows, so it needs >= 2
     app->requestPanelFocus("Console");
     REQUIRE(app->tick());  // raises the Console
-    REQUIRE(app->tick());  // draws the record pumpLog took at the top of this tick
+    REQUIRE(app->tick());  // draws the records pumpLog took at the top of this tick
     REQUIRE(app->panelDrawnCount("Console") > idle);
 
-    CHECK(console->messageRowsSubmitted() > 0U);  // a message really was submitted this frame
+    CHECK(console->messageRowsSubmitted() >= 2U);  // ANTI-VACUITY for the scoped-push witness
     CHECK(console->lastMessageFontName() == "IBM Plex Mono");
-    CHECK(console->lastLevelFontName() == "IBM Plex Sans");  // the Mono push is scoped (seed S19)
+    // task E.6.3 (D7): the TAG is Mono at the small size now -- the face it was drawn in, never a push witness.
+    CHECK(console->lastLevelFontName() == "IBM Plex Mono");
+    CHECK(console->lastLevelFontSize() == std::floor((14.0F * app->uiScale()) + 0.5F));
+    // THE SCOPED-PUSH WITNESS (seed S19), read INSIDE the row right after the message's PopFont: any read outside the
+    // row is blind, because the child's own End() pops a leaked font before anything after EndChild runs (F10).
+    CHECK(console->lastAfterMessageFontName() == "IBM Plex Sans");
+    // ...and the push and pop share one row-loop body with no exit between them.
+    const std::vector<std::string> code = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/console_panel.cpp");
+    const std::size_t pushAt = soleLineContaining(code, "PushFont(");
+    const std::size_t popAt = soleLineContaining(code, "PopFont(");
+    REQUIRE(pushAt < popAt);
+    for (std::size_t i = pushAt; i <= popAt; ++i) {
+        CAPTURE(code[i]);
+        CHECK(code[i].find("continue") == std::string::npos);
+        CHECK(code[i].find("break") == std::string::npos);
+        CHECK(code[i].find("return") == std::string::npos);
+    }
+    CHECK(soleLineContaining(code, "lastAfterMessageFontName = ImGui::GetFont()") == popAt + 1U);
 
     app->requestQuit();
     CHECK(app->tick() == false);
@@ -24545,4 +24555,191 @@ TEST_CASE("editor: the shell draws its chrome in the order the frame needs (task
     const std::size_t feedAt = nextCodeLine(app, clockAt + 1U);
     REQUIRE(feedAt < app.size());
     CHECK(app[feedAt].find("frameReadout.add(frameClock.rawDeltaSeconds())") != std::string::npos);
+}
+
+// =====================================================================================================================
+// task E.6.3 -- the panel chrome pass. Every record is read only after its framesRecorded moved across the ticks under
+// test; a panel sharing a dock node is put in FRONT and proven NOT drawing first (E.3.2's baseline); geometry that
+// depends on the runner's display is a WARN at most (#111's rule); the reduced configurations take their stated arm by
+// a RUNTIME predicate, never #if.
+// =====================================================================================================================
+namespace {
+
+// Puts `panelId` in front of its node and proves it draws from there: `sibling` in front first, `panelId` provably
+// idle, then the claim. A panel already drawing would satisfy "> idle" with or without the request.
+void e63Front(engine::editor::EditorApp& app, const char* panelId, const char* sibling) {
+    app.requestPanelFocus(sibling);
+    e62Ticks(app, 2);
+    const std::uint64_t idle = app.panelDrawnCount(panelId);
+    REQUIRE(app.tick());
+    REQUIRE(app.panelDrawnCount(panelId) == idle);
+    app.requestPanelFocus(panelId);
+    e62Ticks(app, 2);
+    REQUIRE(app.panelDrawnCount(panelId) > idle);
+}
+
+// A live style member's y, read off the pure style the layer was built from (I281 proves the live style equals it).
+[[nodiscard]] float e63StyleY(float uiScale, std::string_view member) {
+    const engine::editor::EditorStyleSnapshot style = engine::editor::snapshotEditorStyle(uiScale);
+    for (const engine::editor::StyleMemberValue& value : style.members) {
+        if (value.name == member) {
+            return value.y;
+        }
+    }
+    FAIL("no style member " << member);
+    return 0.0F;
+}
+
+}  // namespace
+
+TEST_CASE("editor: Console rows -- the tint, the columns, the channel stripped for display (task E.6.3, I313)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "console rows i313", .width = 900, .height = 600});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = e62App(*device, *window, ctx);
+    auto* const console = dynamic_cast<engine::editor::ConsolePanel*>(app->panels().find("Console"));
+    REQUIRE(console != nullptr);
+    e63Front(*app, "Console", "Assets");
+    // NO reduced arm: the Console needs neither shaders nor reflection, so every configuration draws it.
+    AERO_LOG_WARN("e63probe: tinted");
+    const std::uint64_t before = console->drawRecord().framesRecorded;
+    e62Ticks(*app, 2);  // pumped at the top of a tick, drawn in it; auto-scroll keeps the newest row in view
+    const engine::editor::ConsoleDrawRecord& r = console->drawRecord();
+    REQUIRE(r.framesRecorded > before);  // ANTI-VACUITY: these reads are this test's frames
+    const engine::editor::LogHistory& history = console->history();
+    REQUIRE(history.visibleCount() > 0U);
+    const engine::editor::LogEntry& newest = history.visibleAt(history.visibleCount() - 1U);
+    REQUIRE(newest.message == "e63probe: tinted");  // nothing logged after it: the LAST row drawn is this one
+    CHECK(r.rowsTinted >= 1U);
+    CHECK(r.lastChannelDrawn == "e63probe");
+    CHECK(r.lastMessageDrawn == "tinted");  // the prefix stripped for DISPLAY (the model keeps the whole message: the
+                                            // REQUIRE above; the filter reads it, and Copy is pinned below as source)
+    CHECK((r.lastTagRole == engine::editor::ChromeRole::Warning));
+    CHECK(r.lastTagText == "WARN");
+    std::string stamp;
+    engine::editor::formatConsoleStamp(newest.elapsedMs, stamp);
+    CHECK(r.lastStampDrawn == stamp);
+    CHECK(r.lastStampDrawn.size() == 9U);  // mm:ss.mmm: this record is under an hour old
+    CHECK(r.lastStampDrawn != engine::editor::formatElapsed(newest.elapsedMs));
+    CHECK(r.lastLevelFontName == "IBM Plex Mono");
+    CHECK(r.lastLevelFontSize == std::floor((14.0F * app->uiScale()) + 0.5F));
+    // The APPLIED border: a theme childBorderSize of 0 would make this read 0 whatever flags were passed, so the
+    // positive control comes first.
+    REQUIRE(engine::editor::EDITOR_THEME.metrics.childBorderSize > 0.0F);
+    CHECK_FALSE(r.logChildBordered);
+    // SOURCE: the tint's draw call precedes the row's Selectable (seed S18), so the hover paints on top.
+    const std::vector<std::string> code = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/console_panel.cpp");
+    const std::size_t tintAt = soleLineContaining(code, "consoleRowTint(entry.level)");
+    const std::size_t rowAt = soleLineContaining(code, "Selectable(\"##row\"");
+    CHECK(tintAt < rowAt);
+    REQUIRE(tintAt + 1U < code.size());
+    CHECK(code[tintAt + 1U].find("AddRectFilled(") != std::string::npos);
+    // The message cell draws the SPLIT (seed S16): entry.message is splitLogChannel's argument alone, and the one
+    // TextUnformatted reads split.message. The record arm above cannot see a draw-only edit -- it reads the split.
+    CHECK(countLinesContaining(code, "entry.message") == 1U);
+    CHECK(countLinesContaining(code, "TextUnformatted(split.message.data(),") == 1U);
+    // Copy keeps the WHOLE message (seed S17): no tier can press Copy or read the clipboard, so the Copy arm is
+    // pinned as source, and validation row 9 pastes it.
+    CHECK(countLinesContaining(code, "buildClipboardText(logHistory)") == 1U);
+    CHECK(countLinesContaining(code, "splitLogChannel(") == 1U);  // the split is display-only: never the Copy arm
+    // Every cell draws the face the record names (a tag drawn in another face would leave the record green).
+    CHECK(countLinesContaining(code, "drawRoleText(list, CELL_FACE,") == 3U);
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: the Console's footer band, reservation and header (task E.6.3, I314)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "console footer i314", .width = 900, .height = 600});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = e62App(*device, *window, ctx);
+    auto* const console = dynamic_cast<engine::editor::ConsolePanel*>(app->panels().find("Console"));
+    REQUIRE(console != nullptr);
+    e63Front(*app, "Console", "Assets");
+    AERO_LOG_INFO("e63 footer probe");
+    const std::uint64_t before = console->drawRecord().framesRecorded;
+    e62Ticks(*app, 2);
+    const engine::editor::ConsoleDrawRecord& r = console->drawRecord();
+    REQUIRE(r.framesRecorded > before);
+    const float s = app->uiScale();
+    const float band = std::round(26.0F * s);  // shellBarHeight(26, s): a WHOLE point, restated (TB11)
+    const float spacingY = e63StyleY(s, "ItemSpacing");
+    CHECK(r.footerHeight == band + spacingY);  // the reservation: the band PLUS EndChild's spacing
+    CHECK(r.footerBandMaxY - r.footerBandMinY == band);
+    // the DRAWN band is a whole point
+    CHECK(std::round(r.footerBandMaxY - r.footerBandMinY) == r.footerBandMaxY - r.footerBandMinY);
+    CHECK(r.footerBandMinY == r.logChildMaxY + spacingY);  // the band starts where EndChild's ItemSize left it
+    // The footer comes from the SAME counts the panel read: the drawn segments equal the model's, text for text.
+    const engine::editor::LogHistory& history = console->history();
+    std::vector<engine::editor::ConsoleFooterSegment> expected;
+    engine::editor::consoleFooterSegments({.held = history.size(),
+                                           .visible = history.visibleCount(),
+                                           .filtered = !(history.filter() == engine::editor::LogFilter{}),
+                                           .warnings = history.levelCount(engine::LogLevel::Warn),
+                                           .errors = history.levelCount(engine::LogLevel::Error),
+                                           .critical = history.levelCount(engine::LogLevel::Critical),
+                                           .engineFloor = engine::logLevel(),
+                                           .agedOut = history.evictedCount(),
+                                           .dropped = history.droppedCount()},
+                                          expected);
+    CHECK(r.footerSegmentsDrawn == expected.size());
+    std::string expectedText;
+    for (const engine::editor::ConsoleFooterSegment& segment : expected) {
+        expectedText += segment.text;
+        expectedText += '|';
+    }
+    CHECK(r.footerTextDrawn == expectedText);
+    CHECK(r.headerRuleDrawn);  // the rule's vertices reached the list
+    // The header cluster as ImGui PLACED it: inside the row, and right-aligned wherever the row fits it (the fit test
+    // reads the panel's own recorded metrics, #111's rule -- a dock narrower than the cluster clamps it left).
+    CHECK(r.headerControlsMinX >= r.headerRowMinX);
+    if (r.headerClusterWidth < r.headerRowMaxX - r.headerRowMinX) {
+        CHECK(r.headerControlsMaxX <= r.headerRowMaxX + 0.5F);  // inside the row (a clamped cluster overruns it)
+        CHECK(r.headerControlsMinX > r.headerRowMinX);          // not drawn from the left edge
+        // right-aligned within two points: CalcItemWidth truncates the combo's and the filter's widths
+        // (imgui.cpp:12323)
+        CHECK(r.headerControlsMaxX > r.headerRowMaxX - 2.0F);
+    } else {
+        MESSAGE("I314: the header cluster (" << r.headerClusterWidth << ") does not fit the row here");
+        WARN(r.headerClusterWidth < r.headerRowMaxX - r.headerRowMinX);
+    }
+    // No scrollbar from the footer -- wherever the log child was NOT clamped. BeginChild's negative height goes
+    // through CalcItemSize, which clamps the child to at least 4 (imgui.cpp:12345), so the child's drawn height cannot
+    // reveal a dock too short for header + footer (CI's short macOS runner, #111's rule): the request read before
+    // BeginChild can.
+    if (r.logChildRequestedY >= 4.0F) {
+        CHECK(r.windowScrollMaxY == 0.0F);
+    } else {
+        MESSAGE("I314: the log child was clamped (requested " << r.logChildRequestedY << ")");
+        MESSAGE("I314: scroll max " << r.windowScrollMaxY);
+        WARN(r.logChildRequestedY >= 4.0F);
+    }
+    // SOURCE (seed S19): the band is E.6.2's one conversion, never a restated product or literal.
+    const std::vector<std::string> code = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/console_panel.cpp");
+    CHECK(countLinesContaining(code, "shellBarHeight(statusBarHeightDp(") == 1U);
+    CHECK(countLinesContaining(code, "HeightDp(EDITOR_THEME) *") == 0U);
+    CHECK(countLinesContaining(code, "26.0F") == 0U);
+    CHECK(countLinesContaining(code, "GetFrameHeightWithSpacing()") == 0U);  // the old reservation is gone
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
 }

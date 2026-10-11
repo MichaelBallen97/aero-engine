@@ -6,6 +6,7 @@
 // length times 2 is exact in float.
 #include <aero/core/math.hpp>
 #include <aero/editor/breadcrumb.hpp>
+#include <aero/editor/console_view.hpp>  // task E.6.3 (US9, US11)
 #include <aero/editor/editor_camera.hpp>
 #include <aero/editor/editor_theme.hpp>
 #include <aero/editor/gizmo_style.hpp>
@@ -364,7 +365,8 @@ TEST_CASE(
     REQUIRE_FALSE(ec);
     CHECK(read > 60U);  // ANTI-VACUITY: the walk really read the public headers
     const std::map<std::string, std::string> expected{
-        {"breadcrumb.hpp", "P"},  // task E.6.2: breadcrumbLayout
+        {"breadcrumb.hpp", "P"},     // task E.6.2: breadcrumbLayout
+        {"console_view.hpp", "PP"},  // task E.6.3: consoleRowLayout, consoleSegmentGap
         {"gizmo_style.hpp", "PP"},
         {"selection_overlay.hpp", "P"},
         {"panel_chrome_model.hpp", "PPPPPP"},  // task E.6.3: card, header, chip, hairline, face size, chevron
@@ -432,5 +434,8 @@ TEST_CASE("ui scale: each E.6.3 layout treats a bad scale as 1 (task E.6.3, US11
         CHECK(ed::hairline(1.0F, bad, 2.0F) == ed::hairline(1.0F, 1.0F, 2.0F));
         CHECK(ed::faceSizePoints(14.0F, bad) == ed::faceSizePoints(14.0F, 1.0F));
         CHECK(ed::chevronFaceSize(16.0F, 7.0F, bad) == ed::chevronFaceSize(16.0F, 7.0F, 1.0F));
+        const ed::ConsoleRowLayout rowBad = ed::consoleRowLayout(0.0F, 6.462F, 12.0F, 10.5F, bad);
+        CHECK((rowBad == ed::consoleRowLayout(0.0F, 6.462F, 12.0F, 10.5F, 1.0F)));
+        CHECK(ed::consoleSegmentGap(bad) == ed::consoleSegmentGap(1.0F));
     }
 }

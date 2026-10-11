@@ -21,28 +21,31 @@
 
 #include <aero/core/log.hpp>
 #include <aero/editor/console_model.hpp>
+#include <aero/editor/console_view.hpp>
+#include <aero/editor/editor_icons.hpp>
+#include <aero/editor/editor_theme.hpp>
 #include <aero/editor/panel_context.hpp>
+#include <aero/editor/toolbar_model.hpp>  // shellBarHeight: the ONE dp -> point conversion
 
-#include "editor_fonts.hpp"        // task E.6.1: editorFonts().mono
-#include "editor_theme_imgui.hpp"  // task E.6.1: toImVec4
+#include "editor_fonts.hpp"     // task E.6.1: editorFonts().mono
+#include "editor_theme_ui.hpp"  // currentUiScale, toImU32
+#include "panel_chrome_ui.hpp"
 #include "text_input.hpp"
 
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <imgui.h>
+#include <imgui_internal.h>  // task E.6.3: GetCurrentWindow -- the log child's APPLIED border (I313)
+#include <optional>
 #include <string>
+#include <string_view>
 #include <utility>
 
 namespace engine::editor {
 
 namespace {
-
-// DPI-proportional, never a pixel constant.
-constexpr float LEVEL_COMBO_FONT_MULTIPLE = 8.0F;
-constexpr float FILTER_INPUT_FONT_MULTIPLE = 14.0F;
-// The widest elapsed stamp the column must reserve before it starts widening (D7 / formatElapsed).
-constexpr const char* ELAPSED_COLUMN_SAMPLE = "00:00:00.000";
 
 // Plan C4: the levels a record can carry, and therefore the only ones the filter offers. `Off` is a
 // FLOOR value (log.hpp:22-24), so selecting it would mean "show nothing" -- excluded structurally
@@ -51,31 +54,6 @@ constexpr std::array<LogLevel, LOG_LEVEL_RECORD_COUNT> SELECTABLE_LEVELS = {
     LogLevel::Trace, LogLevel::Debug, LogLevel::Info, LogLevel::Warn, LogLevel::Error, LogLevel::Critical};
 
 }  // namespace
-
-// Plan C2: identical arms share ONE label. Separate token-identical case bodies are what
-// bugprone-branch-clone reports, and that check is --warnings-as-errors on the Linux Debug lane.
-// Every level reads a role of EDITOR_THEME (task E.6.1).
-Srgb8 logLevelColor(LogLevel level) noexcept {
-    switch (level) {
-        case LogLevel::Trace:
-        case LogLevel::Debug:
-            return EDITOR_THEME.palette.textMuted;
-        case LogLevel::Info:
-        case LogLevel::Off:  // unreachable in practice: Off is a floor value, never a record level
-            return EDITOR_THEME.palette.text;
-        case LogLevel::Warn:
-            return EDITOR_THEME.palette.warning;
-        case LogLevel::Error:
-            return EDITOR_THEME.palette.error;
-        case LogLevel::Critical:
-            return EDITOR_THEME.palette.critical;
-    }
-    // Unreachable; keeps GCC's control-reaches-end quiet -- the log.cpp:30 shape. NOTE: this is a
-    // CONVENTION, not enforcement. The project enables neither -Wall nor -Wswitch, so a new
-    // enumerator would not fail the build; shell_ui.cpp:109-111's static_assert is the pattern to
-    // copy if that ever needs to be mechanical. LogLevel is a settled 0.2.4 enum.
-    return EDITOR_THEME.palette.text;
-}
 
 ConsolePanel::ConsolePanel(LogSinkScope scope) : sinkScope(std::move(scope)) {}
 
@@ -89,144 +67,205 @@ void ConsolePanel::pumpLog() {
     logHistory.appendAll(pumpScratch);                // moves each element, then clears
 }
 
-// ---- phase 1: header (Clear, Copy, level, filter, auto-scroll) -- RECORDED only ----------------
+// ---- phase 1: header -- RECORDED only. D7: an UNFILLED row (ImGui's own tab bar already paints the chrome band
+// above it) over a divider rule, its controls right-aligned: Clear, Copy, the level combo, the filter, Auto-scroll.
 void ConsolePanel::drawHeader() {
-    if (ImGui::Button("Clear")) {
+    const ImGuiStyle& style = ImGui::GetStyle();
+    const float s = currentUiScale();
+    const ImVec2 rowMin = ImGui::GetCursorScreenPos();
+    const float rowWidth = ImGui::GetContentRegionAvail().x;
+    const float padY = EDITOR_THEME.panels.panelHeaderPaddingY * s;
+    const float frame = ImGui::GetFrameHeight();
+    // The cluster's width, measured in the faces it draws in (no decision here: consoleHeaderClusterX places it).
+    const float clearWidth = ImGui::CalcTextSize("Clear").x + (2.0F * style.FramePadding.x);
+    const float copyWidth = ImGui::CalcTextSize("Copy").x + (2.0F * style.FramePadding.x);
+    const float comboWidth = ImGui::CalcTextSize("Critical " AERO_ICON_CHEVRON_DOWN).x + (2.0F * style.FramePadding.x);
+    const float filterWidth = ImGui::GetFontSize() * CONSOLE_FILTER_FONT_MULTIPLE;
+    const float checkboxWidth = frame + style.ItemInnerSpacing.x + ImGui::CalcTextSize("Auto-scroll").x;
+    const float controls = clearWidth + copyWidth + comboWidth + filterWidth + checkboxWidth;
+    const float cluster = controls + (4.0F * style.ItemSpacing.x);  // four SameLine gaps between five controls
+    const float clusterX = consoleHeaderClusterX(rowMin.x, rowWidth, cluster);
+    drawRecordValue.headerRowMinX = rowMin.x;
+    drawRecordValue.headerRowMaxX = rowMin.x + rowWidth;
+    drawRecordValue.headerClusterWidth = cluster;
+
+    ImGui::SetCursorScreenPos(ImVec2(clusterX, rowMin.y + padY));
+    const bool clearPressed = ghostButton("Clear");
+    drawRecordValue.headerControlsMinX = ImGui::GetItemRectMin().x;  // where ImGui PLACED the cluster (I314)
+    if (clearPressed) {
         pending = ActionKind::Clear;
     }
     ImGui::SameLine();
-    if (ImGui::Button("Copy")) {
+    if (ghostButton("Copy")) {
         pending = ActionKind::Copy;
     }
     ImGui::SameLine();
-    // Plan C8: the combo's preview is "WARN", not ">= WARN", so the >= semantics need this static
-    // prefix. Cheaper than a second label helper, and it keeps logLevelLabel the single tier-0-tested
-    // label function. Symmetric with "Filter" below.
-    ImGui::TextUnformatted("Level >=");
-    ImGui::SameLine();
-    ImGui::SetNextItemWidth(ImGui::GetFontSize() * LEVEL_COMBO_FONT_MULTIPLE);
+    // D7: the combo names the level in title case with the chevron icon, and states its meaning in a tooltip rather
+    // than in a "Level >=" label beside it.
+    levelPreviewScratch.assign(logLevelName(editedFilter.minLevel));
+    levelPreviewScratch += " " AERO_ICON_CHEVRON_DOWN;
+    ImGui::SetNextItemWidth(comboWidth);
     // imgui.h:670 -- EndCombo ONLY when BeginCombo returned true. The OPPOSITE of EndChild below.
-    if (ImGui::BeginCombo("##level", logLevelLabel(editedFilter.minLevel))) {
+    if (ImGui::BeginCombo("##level", levelPreviewScratch.c_str(), ImGuiComboFlags_NoArrowButton)) {
         for (const LogLevel level : SELECTABLE_LEVELS) {
-            // logLevelLabel returns a string literal, so these labels are unique and stable -- no
-            // PushID needed here.
-            if (ImGui::Selectable(logLevelLabel(level), level == editedFilter.minLevel)) {
+            // logLevelName returns views of string literals, so .data() is NUL-terminated and the labels unique.
+            if (ImGui::Selectable(logLevelName(level).data(), level == editedFilter.minLevel)) {
                 editedFilter.minLevel = level;  // UI mirror ONLY; applied in applyPending()
             }
         }
         ImGui::EndCombo();
     }
+    if (ImGui::IsItemHovered()) {  // the combo: EndCombo hands LastItemData back to it (imgui.cpp:8848)
+        ImGui::SetTooltip("%s", CONSOLE_LEVEL_TOOLTIP.data());
+    }
     ImGui::SameLine();
-    ImGui::TextUnformatted("Filter");
-    ImGui::SameLine();
-    ImGui::SetNextItemWidth(ImGui::GetFontSize() * FILTER_INPUT_FONT_MULTIPLE);
-    // Reused AS IS from task 2.2.2 -- no hint variant is added, so text_input.{hpp,cpp} stays
-    // byte-identical (it is shared with two other panels). The return value is deliberately unused:
-    // applyPending() diffs editedFilter against logHistory.filter() unconditionally.
-    inputTextString("##filter", editedFilter.text, ImGuiInputTextFlags_None);
+    ImGui::SetNextItemWidth(filterWidth);
+    // The hint overload (task E.6.3): ImGui draws "Filter" in its own placeholder slot. The return value is
+    // deliberately unused: applyPending() diffs editedFilter against logHistory.filter() unconditionally.
+    inputTextString("##filter", "Filter", editedFilter.text, ImGuiInputTextFlags_None);
     ImGui::SameLine();
     ImGui::Checkbox("Auto-scroll", &autoScroll);
+    drawRecordValue.headerControlsMaxX = ImGui::GetItemRectMax().x;  // where the cluster's last item ENDED (I314)
+    // The divider rule under the row, across the full content width; the log child starts on the row below it. The
+    // record reads what the list RECEIVED (AddRectFilled adds no vertex at alpha 0), never a flag set beside it.
+    const float ruleY = rowMin.y + frame + (2.0F * padY);
+    ImDrawList* const headerList = ImGui::GetWindowDrawList();
+    const int ruleVertices = headerList->VtxBuffer.Size;
+    horizontalRule(headerList, rowMin.x, rowMin.x + rowWidth, ruleY, ChromeRole::Divider);
+    drawRecordValue.headerRuleDrawn = headerList->VtxBuffer.Size > ruleVertices;
+    drawRecordValue.headerRuleY = ruleY;
+    ImGui::SetCursorScreenPos(ImVec2(rowMin.x, ruleY + ruleHeight()));  // the log child is the item that follows
 }
 
-// ---- phase 2: the log child -- strictly READ-ONLY ----------------------------------------------
-void ConsolePanel::drawLogChild(float footerHeight) {
-    messageRowsSubmittedValue = 0;  // task E.6.1: a PER-FRAME count -- what this frame really submitted
-    // imgui.h:452-455 -- the NEGATIVE height means "all remaining height minus footerHeight". A
-    // hand-computed `avail.y - footerHeight` that evaluated to exactly 0.0f would instead mean "fill
-    // the parent" and silently eat the footer. This is the documented reserve-a-footer idiom.
-    const ImVec2 logSize(0.0F, -footerHeight);
-    ImGui::BeginChild("##log", logSize, ImGuiChildFlags_Borders, ImGuiWindowFlags_HorizontalScrollbar);
+// ---- phase 2: the log child -- strictly READ-ONLY. D7: borderless; per row the tint, the empty Selectable, the
+// stamp / tag / channel in small Mono on the draw list, and the message in Mono at the body size, `text` on every
+// level (the tag carries the level).
+void ConsolePanel::drawLogChild(float footerReserve) {
+    // imgui.h:452-455 -- the NEGATIVE height means "all remaining height minus footerReserve". A hand-computed
+    // `avail.y - footerReserve` that evaluated to exactly 0.0f would instead mean "fill the parent".
+    const ImVec2 logSize(0.0F, -footerReserve);
+    // The request BEFORE CalcItemSize clamps the child to at least 4 (imgui.cpp:12345): a dock too short for header
+    // + footer shows here, never in the child's drawn height (I314).
+    drawRecordValue.logChildRequestedY = ImGui::GetContentRegionAvail().y - footerReserve;
+    constexpr ImGuiChildFlags LOG_CHILD_FLAGS = ImGuiChildFlags_None;  // D7: no bordered child
+    ImGui::BeginChild("##log", logSize, LOG_CHILD_FLAGS, ImGuiWindowFlags_HorizontalScrollbar);
+    // What Begin APPLIED, not what was passed: BeginChildEx zeroes ChildBorderSize for a borderless child
+    // (imgui.cpp:6807-6809) and Begin copies it into the child (imgui.cpp:8123); the theme's childBorderSize is 1.
+    drawRecordValue.logChildBordered = ImGui::GetCurrentWindow()->WindowBorderSize > 0.0F;
 
-    // Column offsets from CalcTextSize, not from a padded string: alignment must not silently depend
-    // on the default font being monospaced (F30's is; a future Unicode font would not be). D18.
-    const float levelColumnX = ImGui::CalcTextSize(ELAPSED_COLUMN_SAMPLE).x + ImGui::GetFontSize();
-    const float messageColumnX = levelColumnX + ImGui::CalcTextSize("CRITICAL").x + ImGui::GetFontSize();
+    ImDrawList* const list = ImGui::GetWindowDrawList();
+    ImFont* const mono = editorFonts().mono;
+    const float s = currentUiScale();
+    // The stamp, tag and channel cells' ONE face: every cell draw AND the record read this constant, so the record
+    // names the face the draws were handed (I313 pins the three draws to it).
+    constexpr PanelFace CELL_FACE = PanelFace::MonoSmall;
+    const float smallPoints = panelFacePoints(CELL_FACE);
+    // The columns are advances of the SMALL Mono face, constant per glyph; the small cells sit on the body-size
+    // message's baseline (two ascents of ONE face, each copied at once -- a bake can reallocate).
+    const float smallAdvance = faceTextWidth(CELL_FACE, "0");
+    const float bodyAscent = mono != nullptr ? mono->GetFontBaked(panelFacePoints(PanelFace::Mono))->Ascent : 0.0F;
+    const float smallAscent = mono != nullptr ? mono->GetFontBaked(smallPoints)->Ascent : 0.0F;
+    const float rowMinX = ImGui::GetCursorScreenPos().x;
+    const float rowMaxX = rowMinX + ImGui::GetContentRegionAvail().x;
+    const ConsoleRowLayout layout = consoleRowLayout(rowMinX, smallAdvance, bodyAscent, smallAscent, s);
+    const float spacingY = ImGui::GetStyle().ItemSpacing.y;
+    const float spacingUp = std::trunc(spacingY * 0.5F);  // the Selectable's own half-spacing split (IM_TRUNC)
+    const ImFont* const smallFace = panelFaceFont(CELL_FACE);
+    const char* const smallFaceName = smallFace != nullptr ? smallFace->GetDebugName() : "";
 
     ImGuiListClipper clipper;  // imgui.h:2994-3012 -- only the visible rows are submitted (AC-13)
     clipper.Begin(static_cast<int>(logHistory.visibleCount()));
     while (clipper.Step()) {
         for (int i = clipper.DisplayStart; i < clipper.DisplayEnd; ++i) {
             const LogEntry& entry = logHistory.visibleAt(static_cast<std::size_t>(i));
-            const ImVec4 color = toImVec4(logLevelColor(entry.level));
-            // Plan C6: keyed by SEQUENCE, not by row position -- so hover/tooltip state follows the
-            // RECORD when the ring evicts under a stationary mouse. Two simultaneously visible
-            // sequences differ by far less than 2^31, so the truncation cannot collide in a frame.
+            const LogChannelSplit split = splitLogChannel(entry.message);  // DISPLAY only: Copy keeps the whole
+            // Plan C6: keyed by SEQUENCE, not by row position (2.2.5's comment, unchanged in substance).
             ImGui::PushID(static_cast<int>(entry.sequence));
-            // An EMPTY label plus separate TextUnformatted segments -- the fix commit cd4caab shipped
-            // for 2.2.4's filenames, applied to content FAR more likely to contain "##". Selectable
-            // has no format overload and runs its label through FindRenderedTextEnd(), so a message
-            // containing "##" would display truncated; TextUnformatted goes through TextEx, which
-            // never calls FindRenderedTextEnd and renders "##" literally (both verified at upstream
-            // v1.92.8-docking). The layout is exact, not approximate: Selectable calls ItemSize()
-            // with the LABEL-derived size before the span widening, and CalcTextSize returns
-            // (0, fontSize) for an empty display range -- so the row keeps full height while
-            // CursorPosPrevLine.x stays at the row origin, and SameLine(0,0) puts the first segment
-            // exactly where Selectable would have drawn its label. The return value is unused:
-            // a selected log line has nothing to do (D18).
+            const float rowTop = ImGui::GetCursorScreenPos().y;
+            const float lineHeight = ImGui::GetTextLineHeight();
+            // D7: the tint BEFORE the Selectable, over the Selectable's own half-spacing-widened box
+            // (imgui_widgets.cpp:7387-7397) -- so the hover fill paints on top of it.
+            if (const std::optional<Srgb8> tint = consoleRowTint(entry.level); tint.has_value()) {
+                list->AddRectFilled(ImVec2(rowMinX, rowTop - spacingUp),
+                                    ImVec2(rowMaxX, rowTop + lineHeight + (spacingY - spacingUp)), toImU32(*tint));
+                ++drawRecordValue.rowsTinted;
+            }
+            // An EMPTY label (2.2.5's cd4caab fix: a message containing "##" must never reach a label).
             ImGui::Selectable("##row", false);
-            // imgui_internal.h:1034,1036 -- DelayNormal IS inside AllowedMaskForIsItemHovered, so
-            // this cannot trip IsItemHovered's IM_ASSERT. SetTooltip (imgui.h:835) needs NO
-            // balancing, unlike BeginItemTooltip/EndTooltip (:842/:834) -- that is why it is used.
-            // The format string is a LITERAL; the runtime string is an argument (INV-6).
             if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal) && !entry.sourceFile.empty()) {
                 ImGui::SetTooltip("%s:%u", entry.sourceFile.c_str(), static_cast<unsigned>(entry.line));
             }
-            ImGui::SameLine(0.0F, 0.0F);
-            ImGui::PushStyleColor(ImGuiCol_Text, toImVec4(EDITOR_THEME.palette.textMuted));
-            lineScratch = formatElapsed(entry.elapsedMs);
-            ImGui::TextUnformatted(lineScratch.c_str());  // NEVER ImGui::Text -- INV-6
-            ImGui::PopStyleColor();
-            ImGui::SameLine(levelColumnX, 0.0F);
-            ImGui::PushStyleColor(ImGuiCol_Text, color);
-            lastLevelFontNameValue = ImGui::GetFont()->GetDebugName();  // task E.6.1: Body, outside the push
-            ImGui::TextUnformatted(logLevelLabel(entry.level));
-            ImGui::PopStyleColor();
-            ImGui::SameLine(messageColumnX, 0.0F);
-            // task E.6.1: the MESSAGE in Mono, at size 0 -- the current size, which is Body's (D6), so the
-            // row the Selectable sized in Body and the clipper's row step stay exact. A copy of the face's
-            // name, taken inside the push, is what I283 reads.
-            ImGui::PushFont(editorFonts().mono, 0.0F);
-            ImGui::PushStyleColor(ImGuiCol_Text, color);
-            lastMessageFontNameValue = ImGui::GetFont()->GetDebugName();
-            ImGui::TextUnformatted(entry.message.c_str());
+            const float smallY = rowTop + layout.smallTextOffsetY;
+            formatConsoleStamp(entry.elapsedMs, stampScratch);
+            drawRoleText(list, CELL_FACE, ImVec2(layout.stampX, smallY), ChromeRole::TextFaint, stampScratch);
+            const std::string_view tag = logLevelLabel(entry.level);
+            const ChromeRole tagRole = logLevelTagRole(entry.level);
+            drawRoleText(list, CELL_FACE, ImVec2(layout.tagX, smallY), tagRole, tag);
+            list->PushClipRect(ImVec2(layout.channelX, rowTop), ImVec2(layout.messageX, rowTop + lineHeight), true);
+            drawRoleText(list, CELL_FACE, ImVec2(layout.channelX, smallY), ChromeRole::TextMuted, split.channel);
+            list->PopClipRect();
+            ImGui::SameLine(0.0F, 0.0F);  // back onto the row's line, then to the message column
+            ImGui::SetCursorScreenPos(ImVec2(layout.messageX, ImGui::GetCursorScreenPos().y));
+            // The MESSAGE in Mono at size 0 -- the current size, Body's (E.6.1 D6) -- so the row the Selectable sized
+            // and the clipper's step stay exact. NO continue, break or return between this push and its pop (I283).
+            ImGui::PushFont(mono, 0.0F);
+            ImGui::PushStyleColor(ImGuiCol_Text, roleVec4(ChromeRole::Text));
+            drawRecordValue.lastMessageFontName = ImGui::GetFont()->GetDebugName();
+            ImGui::TextUnformatted(split.message.data(), split.message.data() + split.message.size());
             ImGui::PopStyleColor();
             ImGui::PopFont();
-            ++messageRowsSubmittedValue;
+            drawRecordValue.lastAfterMessageFontName = ImGui::GetFont()->GetDebugName();  // the push's scope (F10)
+            drawRecordValue.lastTagRole = tagRole;
+            drawRecordValue.lastTagText.assign(tag);
+            drawRecordValue.lastStampDrawn = stampScratch;
+            drawRecordValue.lastChannelDrawn.assign(split.channel);
+            drawRecordValue.lastMessageDrawn.assign(split.message);
+            drawRecordValue.lastLevelFontName = smallFaceName;
+            drawRecordValue.lastLevelFontSize = smallPoints;
+            ++drawRecordValue.messageRowsSubmitted;
             ImGui::PopID();  // no continue/break/return anywhere between any Push and its Pop
         }
     }
-    // imgui.h:505,509,511 -- pin to the bottom ONLY when the user is ALREADY there, so scrolling up
-    // to read history is never yanked away. Must run after the last submitted item (the clipper has
-    // seeked the cursor past the whole virtual list by now) and before EndChild.
+    // imgui.h:505,509,511 -- pin to the bottom ONLY when the user is ALREADY there.
     if (autoScroll && ImGui::GetScrollY() >= ImGui::GetScrollMaxY()) {
         ImGui::SetScrollHereY(1.0F);
     }
     ImGui::EndChild();  // UNCONDITIONAL -- imgui.h:458-463, and the opposite of the combo rule above
+    drawRecordValue.logChildMaxY = ImGui::GetItemRectMax().y;
 }
 
-// ---- phase 3: footer -- the honest-truncation surface, strictly READ-ONLY ----------------------
-void ConsolePanel::drawFooter() {
-    // Plan C7: ASCII separators only -- the default font is ASCII/Latin-1 (F30) and this task already
-    // owes one ?-glyph validation row for message text; a second one for our own chrome would be
-    // self-inflicted. Same shape as asset_browser_panel.cpp:349-361.
-    lineScratch = "showing " + std::to_string(logHistory.visibleCount()) + " of " + std::to_string(logHistory.size());
-    lineScratch += " | warn " + std::to_string(logHistory.levelCount(LogLevel::Warn));
-    lineScratch += " | err " + std::to_string(logHistory.levelCount(LogLevel::Error));
-    lineScratch += " | crit " + std::to_string(logHistory.levelCount(LogLevel::Critical));
-    // Read FRESH every frame so it can never go stale, and stated at all so an empty >= Trace view in
-    // a Release build is explained rather than mysterious (D9/AC-9: Trace and Debug emit no code at
-    // all under NDEBUG -- log.hpp:137-143 -- so they can NEVER appear there).
-    lineScratch += " | engine floor ";
-    lineScratch += logLevelLabel(engine::logLevel());
-    // Two DISTINCT causes, reported separately and never silently (D11): aging out is a long session,
-    // dropping is something spewing.
-    if (logHistory.evictedCount() > 0) {
-        lineScratch += " | " + std::to_string(logHistory.evictedCount()) + " aged out";
+// ---- phase 3: footer -- strictly READ-ONLY. D7: ONE band shellBarHeight(statusBarHeightDp) tall under a divider
+// rule; the counted segments from the pure model, consoleSegmentGap apart, with no separator glyph.
+void ConsolePanel::drawFooter(float band) {
+    ImDrawList* const list = ImGui::GetWindowDrawList();
+    const ImVec2 bandMin = ImGui::GetCursorScreenPos();
+    const float bandMaxX = bandMin.x + ImGui::GetContentRegionAvail().x;
+    horizontalRule(list, bandMin.x, bandMaxX, bandMin.y, ChromeRole::Divider);
+    // Read FRESH every frame (the engine floor explains an empty Trace view in a Release build, 2.2.5's D9/AC-9).
+    const ConsoleFooterCounts counts{.held = logHistory.size(),
+                                     .visible = logHistory.visibleCount(),
+                                     .filtered = !(logHistory.filter() == LogFilter{}),
+                                     .warnings = logHistory.levelCount(LogLevel::Warn),
+                                     .errors = logHistory.levelCount(LogLevel::Error),
+                                     .critical = logHistory.levelCount(LogLevel::Critical),
+                                     .engineFloor = engine::logLevel(),
+                                     .agedOut = logHistory.evictedCount(),
+                                     .dropped = logHistory.droppedCount()};
+    consoleFooterSegments(counts, footerScratch);
+    const float textY = bandMin.y + ((band - panelFacePoints(PanelFace::MonoSmall)) * 0.5F);
+    const float gap = consoleSegmentGap(currentUiScale());
+    float x = bandMin.x;
+    for (const ConsoleFooterSegment& segment : footerScratch) {
+        drawRoleText(list, PanelFace::MonoSmall, ImVec2(x, textY), segment.role, segment.text);
+        drawRecordValue.footerTextDrawn += segment.text;  // the text the draw was handed (I314 joins the model's)
+        drawRecordValue.footerTextDrawn += '|';
+        x += faceTextWidth(PanelFace::MonoSmall, segment.text) + gap;
+        ++drawRecordValue.footerSegmentsDrawn;
     }
-    if (logHistory.droppedCount() > 0) {
-        lineScratch += " | " + std::to_string(logHistory.droppedCount()) + " dropped (burst)";
-    }
-    ImGui::TextDisabled("%s", lineScratch.c_str());  // a LITERAL format with a %s -- INV-6
+    // The band as ONE item: it ends exactly at the content region's bottom, so the window never scrolls.
+    ImGui::Dummy(ImVec2(0.0F, band));
+    drawRecordValue.footerBandMinY = bandMin.y;
+    drawRecordValue.footerBandMaxY = ImGui::GetItemRectMax().y;
 }
 
 // ---- apply: the ONE mutating step (D17/INV-4) ---------------------------------------------------
@@ -259,13 +298,22 @@ void ConsolePanel::applyPending() {
 
 // ---- the frame ---------------------------------------------------------------------------------
 void ConsolePanel::onDraw(PanelContext& /*context*/) {  // the context is IGNORED, by design
+    ++drawRecordValue.framesRecorded;
+    drawRecordValue.messageRowsSubmitted = 0;  // PER-FRAME counts -- what this frame really drew
+    drawRecordValue.rowsTinted = 0;
+    drawRecordValue.footerSegmentsDrawn = 0;
+    drawRecordValue.footerTextDrawn.clear();
     drawHeader();  // 1 -- records an action or edits the UI-side filter mirror only
-    // Reserve one framed line for the footer. GetFrameHeightWithSpacing() (imgui.h:600) is more than
-    // a text line, so the footer always fits and the outer window never grows a scrollbar.
-    const float footerHeight = ImGui::GetFrameHeightWithSpacing();
-    drawLogChild(footerHeight);  // 2 -- strictly read-only
-    drawFooter();                // 3 -- strictly read-only
-    applyPending();              // the ONLY place logHistory is mutated during a frame
+    // D7: the band is E.6.2's ONE dp -> point conversion, never restated. EndChild's ItemSize adds ItemSpacing.y after
+    // the child (imgui.cpp:6858, :12129), so the reservation is the band PLUS that spacing -- the band alone would
+    // leave 20 of its 26 dp and push the footer into a scrollbar.
+    const float band = shellBarHeight(statusBarHeightDp(EDITOR_THEME), currentUiScale());
+    const float footerReserve = band + ImGui::GetStyle().ItemSpacing.y;
+    drawRecordValue.footerHeight = footerReserve;
+    drawLogChild(footerReserve);  // 2 -- strictly read-only
+    drawFooter(band);             // 3 -- strictly read-only
+    drawRecordValue.windowScrollMaxY = ImGui::GetScrollMaxY();
+    applyPending();  // the ONLY place logHistory is mutated during a frame
 }
 
 }  // namespace engine::editor
