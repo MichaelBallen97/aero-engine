@@ -2234,3 +2234,42 @@ state.
   tool pushes all THREE button slots plus the text slot (onAccent on `hover` is 1.34:1). `I287` pins the reads.
 - **`US9`'s map** now includes `breadcrumb.hpp` (`P`), `status_bar.hpp` (`P`) and `toolbar_model.hpp` (`PP`): a new
   pure layout that consumes a dp metric takes a non-defaulted `float uiScale` and joins the map.
+
+## Panel chrome (task E.6.3)
+
+- **ONE CARD PAINTER, `panel_chrome_ui.cpp`, and its four rules.** A card's header item is a framed `TreeNodeEx`
+  submitted under `Header*` and `Text` cleared through `clearOver` and `FrameBorderSize 0` (a framed node strokes
+  `ImGuiCol_Border` otherwise, `imgui.cpp:4063-4074`); the painter draws its own chevron, icon and title from ONE pure
+  `cardHeaderLayout`, never from ImGui's arrow box. Every fill, rule and outline is drawn from the x span recorded at
+  `begin` -- never `GetItemRectMin/Max`, which includes the framed overhang `IM_TRUNC(WindowPadding.x x 0.5)`
+  (`imgui_widgets.cpp:6906-6911`). The vertical layout is NET of `ItemSpacing.y` (`imgui.cpp:12129`): the first body
+  item is placed `cardPaddingY` below the strip and the next card is reached by ONE `Dummy` of the net height, never a
+  bare `SetCursorScreenPos` (`:8839-8840`). The body is narrowed on BOTH edges -- `WorkRect.Min.x`, `WorkRect.Max.x`,
+  `ContentRegionRect.Max.x` -- and all three are restored at `end`: the TU's one internal write. No `BeginChild` and no
+  `BeginGroup` per card (E.3.4's per-window `StateStorage` rule). A host answers a header's hover or right-click only
+  through `CardHeaderResult` -- after `begin`, the last item may be the overflow button.
+- **A panel header that must stay ImGui-free holds the painter by `std::unique_ptr<CardPainter>`**, with the class
+  forward-declared and the host's constructor and destructor defined out of line.
+- **EVERY COLOUR A PANEL DRAWS IS A `ChromeRole`**, through `chromeRoleColor` (`panel_chrome_model.cpp` reads each
+  palette role ONCE); a transparent fill is `clearOver(surface)` -- the ONE alpha spelling (`I333` counts it). Never
+  `ImVec4()`, `ImVec4{}`, `IM_COL32_BLACK_TRANS` or a `withAlpha(` in a panel TU (`I287`'s sixth pattern).
+- **De-emphasis is `mutedText` / `mutedTextWrapped`** -- string-only, so format-safe by construction;
+  `ImGui::TextDisabled` and `ImGuiCol_TextDisabled` are banned in every panel TU (`project_ui.cpp` is E.6.4's and
+  excepted). A disabled widget greys through `BeginDisabled`.
+- **The ONE face switch is `ScopedFace`** (`panel_chrome_ui.cpp` spells the `PushFont`); a draw-list text takes
+  `panelFaceFont` + `panelFacePoints` -- the FINAL size, `faceSizePoints(dp, s) = floor(dp x s + 0.5)`, ImGui's own
+  rounding. Measure with `faceTextWidth` (exact advances), never `ImGui::CalcTextSize` for a column of advances.
+- **A tile or tree `Selectable` / node paints no fill**: both tile hosts submit their `Selectable("##tile"` inside a
+  `ClearHeaderStyle` that wraps that one call, and the face draws every state from the `Selectable`'s answers.
+- **THE VIEWPORT HUD CLAIMS SCREEN-SPACE PRESSES** through the free `hudOwnsPoint(latchedHudLayout, p)`, on exactly two
+  lines -- the pick's `overlayOwnsPress` and ImGuizmo's `widgetOwnsCursor` -- beside `viewAxisOwnsPoint`. A case driving
+  `overlayOwnsPress` with a zero or image-space rect asserts its probes are outside every recorded HUD rect first: a
+  zero image rect switches off only the view-axis arm.
+- **A request seam obeys its control** (the shell chrome's rule, again): the Hierarchy's search query, the Inspector's
+  component menu, the Assets navigation and the Viewport's stats toggle are each drained on ONE line naming the
+  control's enabled predicate and `noModal`, computed once from `GetTopMostPopupModal()` (`I337`).
+- **The Inspector's axis thresholds are per entity and stated before any layout change**: the Cube's `"0.000"` is whole
+  from a content width of 266, the Main Camera's from 279, the Directional Light's from 316 (`I289`, geometry-
+  independent); the default right split is 0.30. A label-column, letter-inset or split change re-measures all three.
+- **`componentIconTable()` and `entityKindFor` are two more sites the next built-in sweeps**, beside `RF7` and `IR21`:
+  `EK5` pins the ten rows and `EK1` / `EK2` the kinds.
