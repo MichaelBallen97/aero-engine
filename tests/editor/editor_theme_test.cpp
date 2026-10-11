@@ -388,7 +388,7 @@ TEST_CASE("theme: every ImGuiStyle size member is stated (task E.6.1, TH5)") {
     CHECK(m.tabBorderSize == 0.0F);
     CHECK(m.tabMinWidthBase == 1.0F);
     CHECK(m.tabMinWidthShrink == 80.0F);
-    CHECK(m.tabCloseButtonMinWidthSelected == -1.0F);
+    CHECK(m.tabCloseButtonMinWidthSelected == 0.0F);  // task E.6.3 (D3)
     CHECK(m.tabCloseButtonMinWidthUnselected == 0.0F);
     CHECK(m.tabBarBorderSize == 1.0F);
     CHECK(m.tabBarOverlineSize == 2.0F);
@@ -415,7 +415,7 @@ TEST_CASE("theme: every ImGuiStyle size member is stated (task E.6.1, TH5)") {
     CHECK(m.displayWindowPadding.y == 19.0F);
     CHECK(m.displaySafeAreaPadding.x == 3.0F);
     CHECK(m.displaySafeAreaPadding.y == 3.0F);
-    CHECK(m.dockingNodeHasCloseButton);
+    CHECK_FALSE(m.dockingNodeHasCloseButton);  // task E.6.3 (D3)
     CHECK(m.dockingSeparatorSize == 2.0F);
     CHECK(m.mouseCursorScale == 1.0F);
     CHECK(m.antiAliasedLines);

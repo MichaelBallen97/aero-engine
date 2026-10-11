@@ -132,7 +132,7 @@ struct ThemeMetrics {
     float tabBorderSize = 0.0F;
     float tabMinWidthBase = 1.0F;
     float tabMinWidthShrink = 80.0F;
-    float tabCloseButtonMinWidthSelected = -1.0F;   // a sentinel: ScaleAllSizes scales only a positive value
+    float tabCloseButtonMinWidthSelected = 0.0F;    // task E.6.3 (D3): the selected tab's X on hover only (ImGui's 0)
     float tabCloseButtonMinWidthUnselected = 0.0F;  // a sentinel
     float tabBarBorderSize = 1.0F;
     float tabBarOverlineSize = 2.0F;  // ★ the active tab's 2-dp accent overline
@@ -153,7 +153,7 @@ struct ThemeMetrics {
     Dp2 separatorTextPadding{20.0F, 3.0F};
     Dp2 displayWindowPadding{19.0F, 19.0F};
     Dp2 displaySafeAreaPadding{3.0F, 3.0F};
-    bool dockingNodeHasCloseButton = true;
+    bool dockingNodeHasCloseButton = false;  // task E.6.3 (D3): no node X; each panel keeps its own
     float dockingSeparatorSize = 2.0F;
     float mouseCursorScale = 1.0F;
     bool antiAliasedLines = true;

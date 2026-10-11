@@ -22025,7 +22025,7 @@ constexpr std::array<StyleMemberRow, 69> STYLE_MEMBER_ROWS{{
     {"TabBorderSize", 0.0F, 0.0F},
     {"TabMinWidthBase", 1.0F, 0.0F},
     {"TabMinWidthShrink", 80.0F, 0.0F},
-    {"TabCloseButtonMinWidthSelected", -1.0F, 0.0F},
+    {"TabCloseButtonMinWidthSelected", 0.0F, 0.0F},  // task E.6.3 (D3): 0 is scale-invariant, still a sentinel
     {"TabCloseButtonMinWidthUnselected", 0.0F, 0.0F},
     {"TabBarBorderSize", 1.0F, 0.0F},
     {"TabBarOverlineSize", 2.0F, 0.0F},
@@ -22047,7 +22047,7 @@ constexpr std::array<StyleMemberRow, 69> STYLE_MEMBER_ROWS{{
     {"SeparatorTextPadding", 20.0F, 3.0F},
     {"DisplayWindowPadding", 19.0F, 19.0F},
     {"DisplaySafeAreaPadding", 3.0F, 3.0F},
-    {"DockingNodeHasCloseButton", 1.0F, 0.0F},
+    {"DockingNodeHasCloseButton", 0.0F, 0.0F},  // task E.6.3 (D3)
     {"DockingSeparatorSize", 2.0F, 0.0F},
     {"MouseCursorScale", 1.0F, 0.0F},
     {"AntiAliasedLines", 1.0F, 0.0F},
@@ -22640,6 +22640,13 @@ TEST_CASE("editor: the panels read their roles from the theme (task E.6.1, I287)
         }
         CHECK(listed == panel.totalReads);                       // the rows add up to the file's stated total
         CHECK(countPaletteReads(code, "") == panel.totalReads);  // ... and no role it has no row for
+        // task E.6.3 (D11): de-emphasis is mutedText (a string-only helper); a disabled widget greys through
+        // BeginDisabled. project_ui.cpp -- the Welcome window and the New Project dialog, E.6.4's surfaces -- is the
+        // stated exception, so E.6.4 inherits a one-line widening. (ImGuiCol_TextDisabled is banned above, in every
+        // listed file and project_ui.cpp too, since E.6.1.)
+        if (file != "project_ui.cpp") {
+            CHECK(countLinesContaining(code, "ImGui::TextDisabled(") == 0U);
+        }
     }
     CHECK(rowsRead == ROLE_READS.size());  // no row names a file outside the eight, so none is skipped
     // The Console's levels reach the draw through logLevelTagRole: one call, in the row loop (task E.6.3).
@@ -26534,4 +26541,148 @@ TEST_CASE("editor: Import Details and Project Settings draw as cards; the row fi
     CHECK(countLinesContaining(code, "* 6.0F") == 0U);
     CHECK(countLinesContaining(code, "primaryButton(\"Apply\"") == 1U);
     CHECK(countLinesContaining(code, "TextDisabled") == 0U);
+}
+
+// ---- task E.6.3, step 9: the TextDisabled ban, and every panel at its narrowest ---------------------------------
+
+TEST_CASE("editor: no panel spells TextDisabled, and transparency has ONE spelling (task E.6.3, I333)") {
+    const auto codeOf = [](std::string_view leaf) {
+        std::string path = AERO_EDITOR_SRC_DIR;
+        path += "/";
+        path += leaf;
+        const std::vector<std::string> code = editorSourceCodeLines(path);
+        REQUIRE(code.size() > 20U);  // ANTI-VACUITY: the file was really read
+        return code;
+    };
+    // I287's list, less project_ui.cpp (the stated exception, D11).
+    constexpr std::array<std::string_view, 13> PANEL_TUS{
+        "asset_browser_panel.cpp", "asset_picker.cpp",           "asset_tile.cpp",
+        "console_panel.cpp",       "hierarchy_panel.cpp",        "import_details_panel.cpp",
+        "inspector_panel.cpp",     "material_panel.cpp",         "panel_chrome_model.cpp",
+        "panel_chrome_ui.cpp",     "project_settings_panel.cpp", "shell_chrome_ui.cpp",
+        "viewport_panel.cpp"};
+    const std::regex defaultVec4(R"(ImVec4[\(\{]\s*[\)\}])");
+    for (const std::string_view tu : PANEL_TUS) {
+        CAPTURE(tu);
+        const std::vector<std::string> code = codeOf(tu);
+        CHECK(countLinesContaining(code, "ImGui::TextDisabled(") == 0U);
+        CHECK(countLinesContaining(code, "ImGuiCol_TextDisabled") == 0U);
+        CHECK(countLinesContaining(code, "IM_COL32_BLACK_TRANS") == 0U);
+        CHECK(countLinesContaining(code, "withAlpha(") == 0U);
+        for (const std::string& line : code) {
+            CHECK_FALSE(std::regex_search(line, defaultVec4));  // ImVec4() / ImVec4{}: a transparent fill by accident
+        }
+    }
+    // The stated scope, counted EXACTLY so a regression either way reddens.
+    CHECK(countLinesContaining(codeOf("project_ui.cpp"), "ImGui::TextDisabled(") == 4U);
+    CHECK(countLinesContaining(codeOf("shell_ui.cpp"), "ImGui::TextDisabled(") == 2U);
+    // The text helpers take no format string: the header declares no variadic function.
+    const std::vector<std::string> header = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/panel_chrome_ui.hpp");
+    REQUIRE(header.size() > 20U);
+    CHECK(countLinesContaining(header, "...") == 0U);
+    // ONE transparent spelling: chromeRoleColor's alpha overload, once, inside clearOver -- every clear push's.
+    const std::vector<std::string> chrome = codeOf("panel_chrome_ui.cpp");
+    CHECK(countLinesContaining(chrome, "chromeRoleColor(") == 3U);  // roleVec4, roleU32, clearOver
+    CHECK(countLinesContaining(chrome, "chromeRoleColor(surface, 0U)") == 1U);
+    CHECK(countLinesContaining(chrome, "clearOver(") == 15U);  // its definition + GhostStyle 1, ClearHeaderStyle 3,
+                                                               // ClearFrameStyle 3, the card header 4, the overflow 3
+    CHECK(countLinesContaining(codeOf("inspector_panel.cpp"), "chromeRoleColor(") == 0U);  // its drag: ClearFrameStyle
+}
+
+TEST_CASE("editor: every panel draws at 320 x 180 -- the HUD dropped, the Assets header Minimal (task E.6.3, I334)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "every panel i334", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = e62App(*device, *window, ctx);
+    const float s = app->uiScale();
+    auto* const hierarchy = dynamic_cast<engine::editor::HierarchyPanel*>(app->panels().find("Hierarchy"));
+    auto* const console = dynamic_cast<engine::editor::ConsolePanel*>(app->panels().find("Console"));
+    auto* const assets = dynamic_cast<engine::editor::AssetBrowserPanel*>(app->panels().find("Assets"));
+    auto* const inspector = dynamic_cast<engine::editor::InspectorPanel*>(app->panels().find("Inspector"));
+    auto* const material = dynamic_cast<engine::editor::MaterialPanel*>(app->panels().find("Material"));
+    auto* const details = dynamic_cast<engine::editor::ImportDetailsPanel*>(app->panels().find("Import Details"));
+    auto* const settings = dynamic_cast<engine::editor::ProjectSettingsPanel*>(
+        app->panels().find(engine::editor::PROJECT_SETTINGS_PANEL_ID));
+    auto* const viewport = dynamic_cast<engine::editor::ViewportPanel*>(app->panels().find("Viewport"));
+    REQUIRE(hierarchy != nullptr);
+    REQUIRE(console != nullptr);
+    REQUIRE(assets != nullptr);
+    REQUIRE(inspector != nullptr);
+    REQUIRE(material != nullptr);
+    REQUIRE(details != nullptr);
+    REQUIRE(settings != nullptr);
+    REQUIRE(viewport != nullptr);
+
+    // Each panel in front in turn, with no assert, and its record moved (D16) -- every draw the case makes is the
+    // panel's narrowest real frame.
+    const auto movedInFront = [&app](const char* id, const char* sibling, const auto& framesOf) {
+        if (sibling != nullptr) {
+            e63Front(*app, id, sibling);
+        }
+        const std::uint64_t before = framesOf();
+        REQUIRE(app->tick());
+        return framesOf() > before;
+    };
+    CHECK(movedInFront("Hierarchy", nullptr, [&] { return hierarchy->drawRecord().framesRecorded; }));
+    CHECK(movedInFront("Console", "Assets", [&] { return console->drawRecord().framesRecorded; }));
+    CHECK(movedInFront("Assets", "Console", [&] { return assets->chromeRecord().framesRecorded; }));
+    CHECK(movedInFront("Inspector", "Material", [&] { return inspector->drawRecord().framesRecorded; }));
+    CHECK(movedInFront("Material", "Inspector", [&] { return material->cardRecord().framesRecorded; }));
+    CHECK(movedInFront("Import Details", "Inspector", [&] { return details->cardRecord().framesRecorded; }));
+    CHECK(movedInFront(engine::editor::PROJECT_SETTINGS_PANEL_ID, "Inspector",
+                       [&] { return settings->cardRecord().framesRecorded; }));
+
+    // The Hierarchy's search floored at one frame height (hierarchyHeaderLayout's floor).
+    const engine::editor::HierarchyDrawRecord& h = hierarchy->drawRecord();
+    const float frame = std::floor((16.0F * s) + 0.5F) + (2.0F * e63StyleY(s, "FramePadding"));
+    CHECK(h.searchFieldMax.x - h.searchFieldMin.x >= frame - 0.5F);
+
+    // The Assets header in Minimal, BELOW its floor: the order kept, only the right end crossing (D8).
+    e63Front(*app, "Assets", "Console");
+    REQUIRE(app->tick());
+    const engine::editor::AssetChromeRecord& a = assets->chromeRecord();
+    CHECK((a.headerMode == engine::editor::AssetHeaderMode::Minimal));
+    const float floor = engine::editor::assetHeaderMinimalFloor(a.headerWidths, a.headerUiScale);
+    WARN(a.headerRowWidth < floor);  // a 320-point window leaves the Bottom node far narrower than the floor
+    if (a.headerRowWidth < floor) {
+        float previousMax = -std::numeric_limits<float>::infinity();
+        for (const engine::editor::AssetHeaderControl control :
+             {engine::editor::AssetHeaderControl::NewMaterial, engine::editor::AssetHeaderControl::Search,
+              engine::editor::AssetHeaderControl::ViewToggle, engine::editor::AssetHeaderControl::Overflow}) {
+            const engine::editor::AssetDrawnRect& rect = a.headerRects[static_cast<std::size_t>(control)];
+            REQUIRE(rect.drawn);
+            CHECK(rect.min.x >= previousMax - 0.5F);  // the order kept
+            previousMax = rect.max.x;
+        }
+        CHECK(previousMax > a.headerRowMinX + a.headerRowWidth);  // the right end crossed, clipped by the window
+    }
+
+    // The HUD in its fully-dropped mode -- when the viewport has an image at all at this size.
+    const std::uint64_t hudBefore = viewport->hudRecord().framesRecorded;
+    REQUIRE(app->tick());
+    const engine::editor::ViewportHudRecord& hud = viewport->hudRecord();
+    if (viewport->sceneForwardRenderer() == nullptr) {
+        CHECK(hud.framesRecorded == hudBefore);  // shader tools OFF: Unavailable, no HUD (§7.8)
+    } else if (hud.framesRecorded > hudBefore) {
+        CHECK_FALSE(hud.layout.stats.shown);
+        CHECK_FALSE(hud.layout.hints[0].shown);
+        CHECK_FALSE(hud.layout.hints[1].shown);
+        const float imageW = hud.imageMax.x - hud.imageMin.x;
+        const float imageH = hud.imageMax.y - hud.imageMin.y;
+        MESSAGE("I334 viewport image: " << imageW << " x " << imageH << ", chip shown " << hud.layout.chip.shown);
+    } else {
+        WARN(hud.framesRecorded > hudBefore);  // the viewport's content region was empty at 320 x 180: geometry
+    }
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
 }
