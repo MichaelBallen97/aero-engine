@@ -626,7 +626,11 @@ void buildDefaultLayout(ImGuiID dockId, PanelRegistry& panels) {
         left = ImGui::DockBuilderSplitNode(center, ImGuiDir_Left, 0.20F, nullptr, &center);
     }
     if (used[slotIndex(DockSlot::Right)]) {
-        right = ImGui::DockBuilderSplitNode(center, ImGuiDir_Right, 0.25F, nullptr, &center);
+        // task E.6.3 (D5): 0.30 -- the mock's measured proportion (a 344-dp Inspector beside the ~1150 dp the 0.20
+        // left dock leaves). At the 1280-wide launch it builds a 307-wide dock (content 291), which holds a three-
+        // decimal axis value whole for the Cube and the Main Camera; an existing imgui.ini keeps its own split until
+        // View > Reset Layout.
+        right = ImGui::DockBuilderSplitNode(center, ImGuiDir_Right, 0.30F, nullptr, &center);
     }
     if (used[slotIndex(DockSlot::Bottom)]) {
         bottom = ImGui::DockBuilderSplitNode(center, ImGuiDir_Down, 0.25F, nullptr, &center);

@@ -4,8 +4,10 @@
 // header comment for how "entt-free" is actually verified (a comment-stripped grep, not a bare one --
 // review finding 9): this file's own O1 note below cites `entt::` types in prose too.
 
-#include <aero/editor/axis_palette.hpp>   // task E.3.1: the ONE spelling of the axis colours
-#include <aero/editor/component_ops.hpp>  // FieldValue, FieldKind
+#include <aero/core/math.hpp>                  // Vec2 (the header and Add Component layouts)
+#include <aero/editor/axis_palette.hpp>        // task E.3.1: the ONE spelling of the axis colours
+#include <aero/editor/component_ops.hpp>       // FieldValue, FieldKind
+#include <aero/editor/panel_chrome_model.hpp>  // task E.6.3: CardRecord, ChromeRole (InspectorDrawRecord)
 #include <aero/scene/entity.hpp>
 #include <aero/scene/world.hpp>  // engine::ComponentTypeId
 
@@ -39,6 +41,10 @@ struct FieldEntry {
     // namedSelectorRow below is the only thing that judges it.
     std::string labels;
     FieldValue value;
+    // task E.6.3 (D5): the label the panel DRAWS -- humanizeIdentifier(name), filled IN PLACE every rebuild: cleared,
+    // never move-assigned, so its capacity survives (KP3's rule, above). `name` stays the ImGui id, the tooltip and
+    // the reset menu's spelling.
+    std::string label;
 };
 
 // One present, registered component on the inspected entity.
@@ -47,6 +53,11 @@ struct ComponentEntry {
     std::string name;  // full registration name (World::componentTypeName)
     bool hasFields = false;
     std::vector<FieldEntry> fields;
+    // task E.6.3 (D5): the card's title -- the short name humanised ("Mesh Renderer"), filled in place like `label`
+    // -- and its icon, componentIconFor(name): a view of a static literal. The panel draws these two and names no
+    // component (I253(e)).
+    std::string title;
+    std::string_view icon;
 };
 
 struct InspectorModel {
@@ -192,30 +203,76 @@ struct AxisResetAction {
 // The label column's width, as ARITHMETIC. Pure so the clamp is tier-0 testable: the panel measures
 // the four inputs with ImGui and this decides. floorPx = fontSizePx * 4 (task E.6.1 retuned it from 5 --
 // inspector_model.cpp's LABEL_COLUMN_FLOOR_FONT_MULTIPLE says why); ceilPx = max(floorPx,
-// availableWidthPx * 0.5) -- the max is what keeps std::clamp's range from crossing, which is UB,
-// and a zero- or negative-width dock IS reachable (a panel dragged to its minimum, or the frame a
-// dock split settles). The two multipliers are TUNING VALUES, judged on hardware; changing one is a
-// one-line edit in inspector_model.cpp plus a VF15 and a TH11 expectation.
+// availableWidthPx * LABEL_COLUMN_CEILING_FRACTION (0.5)) -- the max is what keeps std::clamp's range
+// from crossing, which is UB, and a zero- or negative-width dock IS reachable (a panel dragged to its
+// minimum, or the frame a dock split settles). The two multipliers are TUNING VALUES, judged on hardware;
+// changing one is a one-line edit in inspector_model.cpp plus a VF15 and a TH11 expectation.
 [[nodiscard]] float inspectorLabelColumnWidth(float widestLabelPx, float cellPaddingPx, float fontSizePx,
                                               float availableWidthPx) noexcept;
 
-// task E.6.1: the gap between an axis letter and ITS OWN box, in dp (drawAxisRow multiplies it by the UI
-// scale once). One point: the letter labels the box beside it, and the mock goes further and draws it INSIDE
-// the box (E.6.3's restyle). At this width the row shows a five-character value ("0.000", "1.000") whole from
-// the same content width as the branch point did -- 225, TH11 and I289. A LONGER value still needs more than
-// it did there: 3 more points of content with two or three integer digits (3 x this gap), and 6 or more from
-// four, as IBM Plex's digits at 16 are wider than ProggyClean's at 13. A negative value under 10 000 needs 3
-// to 6 fewer (Plex's minus is narrower), and from five integer digits the wider digits cancel that. Recorded
-// on E.6.1's validation page and handed to E.6.3, whose restyle re-derives the whole row.
-inline constexpr float AXIS_LETTER_GAP_DP = 1.0F;
+// task E.6.3 (D5): an axis row is three UNITS, each an `inset` frame holding its coloured letter and a frameless value
+// region: [inset | letter | letterGap | value] x 3 with the unit gap between units, so
+//   3 * unitWidth + 2 * unitGap == the cell, letterX = axisLetterInset x s, valueX = letterX + letterWidth +
+//   axisLetterGap x s, valueWidth = unitWidth - valueX.
+// The letter inset and gap are ThemePanels dp (the compact metrics D5 states); the letter width is the caller's
+// measurement (the widest of X / Y / Z in the small face, rounded up to a whole point). TOTAL: a NaN or an infinity in
+// any input, or an overflow, answers unitWidth 1 and valueWidth 1 -- never a non-finite width at SetNextItemWidth.
+// THE THRESHOLD this implies is per ENTITY, because the label column spans the whole entity: content 266 for the
+// Cube ("Mesh Index"), 279 for the Main Camera ("Fov Y Radians"), 316 for the Directional Light ("Shadow Normal
+// Bias") -- against E.6.1's 225 / 231 / 270 (TH11, I289; docs/10 records the move as stated).
+struct InspectorAxisLayout {
+    float unitWidth = 1.0F;   // each unit's frame
+    float letterX = 0.0F;     // the letter's x from the unit's left edge
+    float valueX = 0.0F;      // the value region's x from the unit's left edge
+    float valueWidth = 1.0F;  // the frameless drag's width, >= 1
+    friend constexpr bool operator==(const InspectorAxisLayout&, const InspectorAxisLayout&) = default;
+};
+[[nodiscard]] InspectorAxisLayout inspectorAxisLayout(float cellWidth, float letterWidth, float unitGap,
+                                                      float uiScale) noexcept;
 
-// task E.6.1: the width of each of an axis row's three boxes, as ARITHMETIC. The row is
-//   [letter][letterGap][box] [unitGap] [letter][letterGap][box] [unitGap] [letter][letterGap][box]
-// so 3*letter + 3*letterGap + 2*unitGap + 3*box == the cell, and
-//   box = max((cellWidth - 3*letterWidth - 3*letterGap - 2*unitGap) / 3, 1).
-// The two gaps are PARAMETERS so drawAxisRow passes this budget the very values its SameLine calls spell.
-// TOTAL: a NaN or an infinity in any input, or a sum that overflows, answers the floor, 1 -- std::max(NaN, 1)
-// is NaN, and a NaN width would reach SetNextItemWidth. Pure so TH11 reaches it from tier 0.
-[[nodiscard]] float inspectorAxisBoxWidth(float cellWidth, float letterWidth, float letterGap, float unitGap) noexcept;
+// task E.6.3 (D5): the entity header row -- the kind swatch, the name, and `e#<index>` right-aligned.
+struct InspectorHeaderLayout {
+    Vec2 swatchMin{};
+    Vec2 swatchMax{};
+    float nameX = 0.0F;
+    float nameMaxX = 0.0F;  // the name elides before this
+    float idX = 0.0F;       // the id text's left edge (right-aligned to rowMaxX)
+    friend constexpr bool operator==(const InspectorHeaderLayout&, const InspectorHeaderLayout&) = default;
+};
+[[nodiscard]] InspectorHeaderLayout inspectorHeaderLayout(float rowMinX, float rowMaxX, float rowMidY,
+                                                          float idTextWidth, float uiScale) noexcept;
+
+// task E.6.3 (D5): Add Component -- 2 x addComponentPaddingX + the label's width wide, one card header tall, centred
+// in the content region (at its left edge when the region is narrower than the button).
+struct AddComponentLayout {
+    float minX = 0.0F;
+    float width = 0.0F;
+    float height = 0.0F;
+    friend constexpr bool operator==(const AddComponentLayout&, const AddComponentLayout&) = default;
+};
+[[nodiscard]] AddComponentLayout addComponentLayout(float contentMinX, float contentWidth, float labelWidth,
+                                                    float uiScale) noexcept;
+
+// task E.6.3 (D14): what the Inspector DREW this frame, read back for the GPU tier.
+struct InspectorDrawRecord {
+    std::uint64_t framesRecorded = 0;
+    CardRecord cards;  // every component card (beginCardRecordFrame per onDraw)
+    std::uint32_t cardsOpen = 0;
+    std::string lastTitleDrawn;
+    std::string lastIconDrawn;
+    std::string lastLabelDrawn;
+    float labelColumnWidth = 0.0F;
+    std::string entityNameFontName;  // the face the entity name was drawn in
+    float entityNameFontSize = 0.0F;
+    std::string idText;
+    ChromeRole swatchRole = ChromeRole::TextFaint;
+    float axisUnitWidth = 0.0F;
+    float axisValueWidth = 0.0F;
+    bool referenceSwatchDrawn = false;  // a bound material's colour swatch drew in a reference row
+    bool referenceWellDrawn = false;    // an unbound (or non-material) row drew its empty well
+    Vec2 addComponentMin{};
+    Vec2 addComponentMax{};
+    bool addComponentDashed = false;
+};
 
 }  // namespace engine::editor

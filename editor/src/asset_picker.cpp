@@ -20,6 +20,7 @@
 #include <aero/editor/thumbnail_cache.hpp>
 
 #include "asset_tile.hpp"
+#include "panel_chrome_ui.hpp"
 #include "text_input.hpp"
 #include "thumbnail_service.hpp"
 
@@ -39,6 +40,7 @@ namespace engine::editor {
 namespace {
 
 constexpr const char* POPUP_ID = "##assetpicker";
+constexpr std::string_view PICK_HINT = "pick";  // task E.6.3 (D5)
 
 // The one-per-TU peek (material_panel.cpp's shape, one TU over). It never decodes by hand: every byte
 // goes to decodeAssetDragPayload, which is what keeps DR18 green by construction.
@@ -113,7 +115,13 @@ AssetFieldResult drawAssetReferenceField(const AssetFieldInputs& in, AssetPicker
     //    target, one popup anchor. A zero edge yields the literal 0.0F this line has always passed, so
     //    the Inspector's row is byte-identical BY CONSTRUCTION.
     const float buttonHeight = in.thumbnailEdge > 0.0F ? in.thumbnailEdge + (2.0F * style.FramePadding.y) : 0.0F;
+    // task E.6.3 (D5): the field is an `inset` frame like every text field -- `raised`, the Button slot's own role,
+    // would vanish on a raised card. Hover and press keep the frame ladder: inset -> hover -> active.
+    ImGui::PushStyleColor(ImGuiCol_Button, roleVec4(ChromeRole::Inset));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, roleVec4(ChromeRole::Hover));
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive, roleVec4(ChromeRole::Active));
     const bool pressed = ImGui::Button(in.idSuffix, ImVec2(in.buttonWidth, buttonHeight));
+    ImGui::PopStyleColor(3);
 
     // 2. THE BUTTON'S GEOMETRY, captured BEFORE the popup is touched. End() restores the parent's
     //    last-item data at EndPopup (imgui.cpp:8848), so reading these afterwards names the button
@@ -171,28 +179,60 @@ AssetFieldResult drawAssetReferenceField(const AssetFieldInputs& in, AssetPicker
                           state.tileScratch);
     }
 
+    // task E.6.3 (D5): the zero-thumbnail row (the Inspector's) leads with a SWATCH one text line square -- a bound
+    // material's own colour through its card (materialCardTint, the tile's rule), or an empty `inset` well. The edge is
+    // the frame's text line height, derived from the font, so it scales with it and needs no token. No item.
+    bool swatchDrawn = false;  // handed to the result just before its `return result;`: three arms reassign it whole
+    bool wellDrawn = false;
+    const float swatchEdge = in.thumbnailEdge > 0.0F ? 0.0F : ImGui::GetTextLineHeight();
+    if (swatchEdge > 0.0F) {
+        const ImVec2 swatchMin(buttonMin.x + style.FramePadding.x, buttonMin.y + style.FramePadding.y);
+        const ImVec2 swatchMax(swatchMin.x + swatchEdge, swatchMin.y + swatchEdge);
+        std::optional<IconColor> tint;
+        if (in.current.valid() && in.database != nullptr && in.thumbnails != nullptr) {
+            if (const AssetRecord* const record = in.database->findByGuid(in.current); record != nullptr) {
+                if (const std::optional<ThumbnailKey> key = thumbnailKeyForRecord(*record); key.has_value()) {
+                    in.thumbnails->noteCardWanted(*key);
+                    tint = materialCardTint(in.thumbnails->cardFor(*key));
+                }
+            }
+        }
+        ImDrawList* const swatchList = ImGui::GetWindowDrawList();
+        const float swatchRounding = style.FrameRounding * 0.5F;
+        if (tint.has_value()) {
+            const ImU32 swatchColor = IM_COL32(tint->r, tint->g, tint->b, tint->a);
+            swatchList->AddRectFilled(swatchMin, swatchMax, swatchColor, swatchRounding);
+            swatchDrawn = true;
+        } else {
+            roleOutline(swatchList, swatchMin, swatchMax, ChromeRole::Border, swatchRounding, ruleHeight());
+            wellDrawn = true;
+        }
+    }
+
     if (!in.valueText.empty()) {
         ImDrawList* const drawList = ImGui::GetWindowDrawList();
         drawList->PushClipRect(buttonMin, buttonMax, /*intersect_with_current_clip_rect=*/true);
-        // task E.3.4. The zero-thumbnail arm is TODAY'S EXPRESSION, character for character, and it is
-        // a BRANCH rather than a formula that reduces to it: (buttonHeight - fontSize) * 0.5F is only
-        // ARITHMETICALLY FramePadding.y, and GetFrameHeight() is a rounded sum, so an unbranched
-        // "generalisation" could move the Inspector's text by an ulp for no reason at all. The
-        // Inspector is byte-identical BY CONSTRUCTION here, not by a test -- nothing in this tree
-        // measures a widget rect or reads rendered text.
+        // task E.3.4 / E.6.3: the zero-thumbnail arm starts after the swatch now, and the branch stays a branch for the
+        // textY rounding reason alone -- (buttonHeight - fontSize) * 0.5F is only ARITHMETICALLY FramePadding.y, and
+        // GetFrameHeight() is a rounded sum, so an unbranched formula could move the text by an ulp. The fitting path
+        // still draws the raw bytes.
         const float textX = in.thumbnailEdge > 0.0F
                                 ? buttonMin.x + style.FramePadding.x + in.thumbnailEdge + style.ItemInnerSpacing.x
-                                : buttonMin.x + style.FramePadding.x;
+                                : buttonMin.x + style.FramePadding.x + swatchEdge + style.ItemInnerSpacing.x;
         const float textY = in.thumbnailEdge > 0.0F
                                 ? buttonMin.y + (((buttonMax.y - buttonMin.y) - ImGui::GetFontSize()) * 0.5F)
                                 : buttonMin.y + style.FramePadding.y;
-        // task E.4.5's validation pass (row 6): A SENTENCE THAT OVERFLOWS IS ELIDED, NOT MERELY CLIPPED. The clip
-        // alone cut a long name mid-glyph at the frame edge and lost the "(Material)" suffix with no sign that
-        // anything was cut. The width is the frame's inner edge, the same FramePadding.x the text starts after.
-        // A sentence that fits takes the else arm -- the SAME AddText on the SAME bytes as before, so the row is
-        // unchanged -- and only the overflow arm allocates. elideCaptionRight is asset_view.hpp's pure rule: the
-        // longest prefix that fits beside an ellipsis, cut on a UTF-8 boundary. I244 pins the call.
-        const float textAvail = buttonMax.x - style.FramePadding.x - textX;
+        // task E.6.3 (D5): the faint "pick" hint at the frame's right, small, ONE draw call before the guard (no third
+        // AddText in this file, I244); the budget below excludes it, so a long name elides BEFORE it, never over it.
+        const float hintX = buttonMax.x - style.FramePadding.x - faceTextWidth(PanelFace::BodySmall, PICK_HINT);
+        if (in.pickHint) {
+            const float hintY = textY + ((ImGui::GetFontSize() - panelFacePoints(PanelFace::BodySmall)) * 0.5F);
+            drawRoleText(drawList, PanelFace::BodySmall, ImVec2(hintX, hintY), ChromeRole::TextFaint, PICK_HINT);
+        }
+        // task E.4.5's validation pass (row 6): A SENTENCE THAT OVERFLOWS IS ELIDED, NOT MERELY CLIPPED -- the width is
+        // the frame's inner edge, or (task E.6.3) the hint's left edge less ItemInnerSpacing.x when the hint draws.
+        const float textAvail =
+            in.pickHint ? hintX - style.ItemInnerSpacing.x - textX : buttonMax.x - style.FramePadding.x - textX;
         if (ImGui::CalcTextSize(in.valueText.data(), in.valueText.data() + in.valueText.size()).x > textAvail) {
             // An empty view measures the literal "", so ImGui is never handed a null pointer (asset_tile.cpp's
             // measurer does the same).
@@ -276,7 +316,7 @@ AssetFieldResult drawAssetReferenceField(const AssetFieldInputs& in, AssetPicker
     const bool open = ImGui::BeginPopup(POPUP_ID);
     if (open) {
         const std::string heading = assetPickerHeading(in.rules);
-        ImGui::TextDisabled("%s", heading.c_str());  // a DYNAMIC string is never a format string
+        mutedText(heading);  // task E.6.3 (D11): string-only, so format-safe by construction
 
         // THE KEYBOARD, on the frame it opens. SetKeyboardFocusHere is ignored while a drag is live
         // (imgui.cpp:9491-9494), which cannot be the open frame. The Hierarchy rename's exact idiom,
@@ -487,7 +527,7 @@ AssetFieldResult drawAssetReferenceField(const AssetFieldInputs& in, AssetPicker
         }
         // The truncation notice line is ALWAYS drawn, empty when nothing was truncated, so the popup's
         // size -- and therefore its anchor -- cannot change because a notice appeared.
-        ImGui::TextDisabled("%s", assetPickerTruncationNotice(state.candidates).c_str());
+        mutedText(assetPickerTruncationNotice(state.candidates));
         ImGui::EndChild();  // UNCONDITIONAL -- BeginChild/EndChild are 1:1
         state.cursorMovedByKeyboard = false;
 
@@ -541,6 +581,8 @@ AssetFieldResult drawAssetReferenceField(const AssetFieldInputs& in, AssetPicker
         state.openHostId.clear();
         state.openFieldKey.clear();
     }
+    result.swatchDrawn = swatchDrawn;
+    result.wellDrawn = wellDrawn;
     return result;
 }
 

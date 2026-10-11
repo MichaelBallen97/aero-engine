@@ -80,6 +80,10 @@ enum class AssetFieldOutcome : std::uint8_t { None = 0, Picked, Cleared, Dropped
 struct AssetFieldResult {
     AssetFieldOutcome outcome = AssetFieldOutcome::None;
     Guid guid;
+    // task E.6.3 (D5), APPENDED: what the zero-thumbnail row drew in front of its sentence -- a bound material's own
+    // colour swatch, or the empty `inset` well -- for the host's draw record (I321).
+    bool swatchDrawn = false;
+    bool wellDrawn = false;
 };
 
 // Everything the widget needs, as ONE aggregate -- eleven parameters is where a signature stops being
@@ -105,6 +109,8 @@ struct AssetFieldInputs {
     // Inspector's row and is TODAY's behaviour exactly: the button's height argument stays the 0.0F
     // it already is.
     float thumbnailEdge = 0.0F;
+    // task E.6.3 (D5), APPENDED LAST: a faint "pick" hint at the frame's right; the sentence elides BEFORE it.
+    bool pickHint = true;
 };
 
 // Draws [button][popup] inside the CALLER's PushID scope and reports what happened. The host decides

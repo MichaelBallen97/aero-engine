@@ -11,7 +11,7 @@
 #include <aero/editor/editor_app.hpp>    // EditorAppConfig's clear colour (TH3)
 #include <aero/editor/editor_theme.hpp>
 #include <aero/editor/gizmo_style.hpp>         // the GIZMO_* aliases (TH3)
-#include <aero/editor/inspector_model.hpp>     // inspectorAxisBoxWidth, inspectorLabelColumnWidth (TH11)
+#include <aero/editor/inspector_model.hpp>     // inspectorAxisLayout, inspectorLabelColumnWidth (TH11)
 #include <aero/editor/material_card.hpp>       // materialSwatchWantsDarkLabel (TH8)
 #include <aero/editor/panel_chrome_model.hpp>  // cardGeometry (TH15)
 #include <aero/editor/text_file.hpp>           // readTextFile (TH10)
@@ -30,6 +30,7 @@
 #include <set>
 #include <string>
 #include <string_view>
+#include <utility>  // std::pair (TH11)
 #include <vector>
 
 namespace {
@@ -554,119 +555,94 @@ TEST_CASE("theme: the header is pure (task E.6.1, TH10)") {
     CHECK(sawTheValue);
 }
 
-TEST_CASE("theme: the Inspector's axis box holds a three-decimal value at these metrics (task E.6.1, TH11)") {
-    // The manual validation pass found the Inspector's X/Y/Z boxes clipping "0.000" to "0.00" in a 258-wide
-    // right dock where the branch point showed it whole. Two task E.3.1 tuning values met this theme: the
-    // label column's floor of 5 x the font (80 at body 16, where ProggyClean 13 gave 65) and five WHOLE
-    // ItemInnerSpacing gaps per row (6 here, 4 before). Every number below is a RESTATED measurement (this
-    // file's posture) taken by I289's windows, so a change to any of them is re-measured here.
-    //
-    // The metrics the measurement was taken at, pinned to the theme: changing one invalidates the numbers.
-    constexpr float BODY = 16.0F;
-    constexpr float INNER = 6.0F;         // ItemInnerSpacing.x
-    constexpr float CELL_PADDING = 6.0F;  // CellPadding.x
-    CHECK(ed::EDITOR_THEME.type.bodySize == BODY);
+TEST_CASE("theme: the Inspector's axis unit holds a three-decimal value at these metrics (task E.6.1, TH11)") {
+    // task E.6.3 (D5) re-derived this case: the letter moved INSIDE an `inset` frame (axisLetterInset 4, axisLetterGap
+    // 3, the letter in the SMALL face), the card body pads the row by cardPaddingX on both sides, and the label column
+    // shows the humanised label. Every number is RESTATED (this file's posture) and re-measured by I289 in ImGui.
+    constexpr float INNER = 6.0F;          // ItemInnerSpacing.x: the gap between units
+    constexpr float CELL_PADDING = 6.0F;   // CellPadding.x
+    constexpr float CARD_PADDING = 12.0F;  // ThemePanels::cardPaddingX, each side
+    constexpr float INSET = 4.0F;          // ThemePanels::axisLetterInset
+    constexpr float LETTER_GAP = 3.0F;     // ThemePanels::axisLetterGap
     CHECK(ed::EDITOR_THEME.metrics.itemInnerSpacing.x == INNER);
     CHECK(ed::EDITOR_THEME.metrics.cellPadding.x == CELL_PADDING);
-
-    // "0.000" in IBM Plex Sans Regular at 16: (4 x 600 + 272) units of advance x 16 / 1300 (ImGui's size is
-    // ascender - descender, 1025 + 275) = 32.886 points; I289 measures the same 32.8862 off the baked font.
+    CHECK(ed::EDITOR_THEME.panels.cardPaddingX == CARD_PADDING);
+    CHECK(ed::EDITOR_THEME.panels.axisLetterInset == INSET);
+    CHECK(ed::EDITOR_THEME.panels.axisLetterGap == LETTER_GAP);
+    // "0.000" in IBM Plex Sans Regular at 16: (4 x 600 + 272) / 1300 x 16 = 32.886 (E.6.1's measurement, unchanged).
     constexpr float THREE_DECIMALS = 32.8862F;
-    // The widest of X, Y and Z as drawAxisRow measures it: CalcTextSize rounds every width UP
-    // (IM_TRUNC(w + 0.99999f)), so the 7.545 points of 'X' measure 8.
-    constexpr float LETTER = 8.0F;
-    // The value cell in the 258-wide dock, measured (drawAxisRow's GetContentRegionAvail in I289's window).
-    // The Inspector's content is 242 (258 - 2 x 8 of window padding); the borderless two-column table spends
-    // 2 x CellPadding.x = 12 between its columns; the label column is 75 -- the Cube's widest label,
-    // "meshIndex" (62.535 -> 63), plus 2 x 6 -- so 242 - 12 - 75 = 155.
-    constexpr float CELL = 155.0F;
-    // The same cell before this fix, measured: the 80-point floor took the column, so 242 - 12 - 80 = 150.
-    constexpr float CELL_BEFORE = 150.0F;
-    constexpr float CONTENT = 242.0F;
-    // The letter gap at scale 1: one point (inspector_model.hpp says why), and the unit gap is the inner spacing.
-    constexpr float LETTER_GAP = 1.0F;
-    CHECK(ed::AXIS_LETTER_GAP_DP == LETTER_GAP);
+    // The widest of X / Y / Z in the SMALL face (14): 6.60 / 6.39 / 6.25, rounded UP to a whole point by drawAxisRow.
+    constexpr float LETTER = 7.0F;
+    // content -> cell: the card's two paddings, the label column, and the borderless table's 2 x CellPadding.x of
+    // inner spacing (its last column's work edge IS the table's, imgui_tables.cpp:508-519, :1150).
+    const auto cellFor = [](float content, float column) { return content - (2.0F * CARD_PADDING) - column - 12.0F; };
+    // The value region ImGui lays out: CalcItemWidth truncates to a whole point (imgui.cpp:12323).
+    const auto drawnValue = [&](float cell) {
+        return std::trunc(ed::inspectorAxisLayout(cell, LETTER, INNER, 1.0F).valueWidth);
+    };
 
-    SUBCASE("the label column's floor is 4 x the font: 64 at body 16") {
-        // A Transform-only entity's widest label, "position" (44.38 -> 45), plus both cell paddings is 57 --
-        // under the floor, so the floor IS the column: VF15's rule at this theme's body size.
-        CHECK(ed::inspectorLabelColumnWidth(45.0F, CELL_PADDING, BODY, CONTENT) == 64.0F);
-        // The Cube's widest label decides its column now; under the 5 x floor, the floor did.
-        const float column = ed::inspectorLabelColumnWidth(63.0F, CELL_PADDING, BODY, CONTENT);
-        CHECK(column == 75.0F);
-        // The two measured cells differ by exactly the column's change: 80 under the old floor, `column` now.
-        CHECK((CELL - CELL_BEFORE) == ((5.0F * BODY) - column));
+    SUBCASE("the layout's arithmetic, restated") {
+        const ed::InspectorAxisLayout axis = ed::inspectorAxisLayout(153.0F, LETTER, INNER, 1.0F);
+        CHECK(axis.unitWidth == 47.0F);   // (153 - 2 x 6) / 3
+        CHECK(axis.letterX == 4.0F);      // the inset
+        CHECK(axis.valueX == 14.0F);      // 4 + 7 + 3
+        CHECK(axis.valueWidth == 33.0F);  // 47 - 14
+        const ed::InspectorAxisLayout two = ed::inspectorAxisLayout(306.0F, 2.0F * LETTER, 2.0F * INNER, 2.0F);
+        CHECK(two.letterX == 8.0F);  // the inset and the gap double with the scale; the letter is the caller's
+        CHECK(two.valueX == 28.0F);
+        CHECK(two.unitWidth == 94.0F);
     }
 
-    SUBCASE("the box at the measured cell holds the value with a point to spare") {
-        // 38.667 here; ImGui truncates an item width to a whole point, so it lays the box out at 38.
-        const float box = ed::inspectorAxisBoxWidth(CELL, LETTER, LETTER_GAP, INNER);
-        CAPTURE(box);
-        CHECK(box >= THREE_DECIMALS + 1.0F);
-        // ANTI-VACUITY -- the defect, reproduced: the budget before this fix (five WHOLE gaps), in the cell
-        // the 80-point floor left, is narrower than the value. 32 is also what I289 saw ImGui lay out there.
-        const float before = (CELL_BEFORE - (3.0F * LETTER) - (5.0F * INNER)) / 3.0F;
-        CAPTURE(before);
-        CHECK(before < THREE_DECIMALS);
+    SUBCASE("the Cube: whole from content 266, clipped at 265 -- E.6.1's 225 is the deliberate before") {
+        // "Mesh Index" at Body 16: 64.689 -> CalcTextSize's 65, + 2 x 6 of cell padding = a 77-point column.
+        const float column = ed::inspectorLabelColumnWidth(65.0F, CELL_PADDING, 16.0F, 266.0F - (2.0F * CARD_PADDING));
+        CHECK(column == 77.0F);
+        CHECK(cellFor(266.0F, column) == 153.0F);
+        CHECK(drawnValue(cellFor(266.0F, column)) >= THREE_DECIMALS);  // whole at 266
+        CHECK(drawnValue(cellFor(265.0F, column)) < THREE_DECIMALS);   // ANTI-VACUITY: clipped one point narrower
+        // E.6.1's threshold, restated as the before: content 225 now leaves the value far short.
+        CHECK(drawnValue(cellFor(225.0F, column)) < THREE_DECIMALS);
     }
 
-    SUBCASE("a five-character value fits from the content width the branch point needed: 225") {
-        // DERIVED, not measured: the branch point drew ProggyClean at 13 (every character 7 wide, so "0.000"
-        // is 35), with 4-point inner spacing and cell padding, and the Cube's column 63 + 2 x 4 = 71. Its box
-        // was (content - 71 - 8 - 3 x 7 - 5 x 4) / 3 = (content - 120) / 3, so "0.000" was whole from content
-        // 225 -- a 241-wide dock, I289's window. Here the cell at that content is 225 - 12 - 75 = 138.
-        constexpr float BRANCH_POINT_CONTENT = 225.0F;
-        constexpr float BRANCH_POINT_BOX = (BRANCH_POINT_CONTENT - 120.0F) / 3.0F;
-        CHECK(BRANCH_POINT_BOX == 35.0F);
-        constexpr float CELL_AT_THRESHOLD = BRANCH_POINT_CONTENT - (2.0F * CELL_PADDING) - 75.0F;
-        // 33 exactly: every input is a whole point (CalcTextSize rounds widths up), so ImGui lays out 33.
-        const float box = ed::inspectorAxisBoxWidth(CELL_AT_THRESHOLD, LETTER, LETTER_GAP, INNER);
-        CAPTURE(box);
-        CHECK(box == 33.0F);
-        CHECK(std::trunc(box) >= THREE_DECIMALS);
-        // ANTI-VACUITY: with half the inner spacing as the letter gap -- this fix's first round -- the box
-        // there is 31, and "0.000" clipped in a dock the branch point showed it whole in.
-        const float halfGap = ed::inspectorAxisBoxWidth(CELL_AT_THRESHOLD, LETTER, INNER * 0.5F, INNER);
-        CAPTURE(halfGap);
-        CHECK(std::trunc(halfGap) < THREE_DECIMALS);
+    SUBCASE("a wider widest label raises the threshold one-for-one through the column") {
+        // The column spans the WHOLE entity, so the threshold is per entity: "Fov Y Radians" (78 -> column 90, the
+        // Main Camera) and "Shadow Normal Bias" (115 -> column 127, the Directional Light).
+        for (const auto& [column, threshold] : {std::pair{90.0F, 279.0F}, std::pair{127.0F, 316.0F}}) {
+            CAPTURE(column);
+            CHECK(threshold - 266.0F == column - 77.0F);  // one-for-one
+            CHECK(drawnValue(cellFor(threshold, column)) >= THREE_DECIMALS);
+            CHECK(drawnValue(cellFor(threshold - 1.0F, column)) < THREE_DECIMALS);
+        }
     }
 
-    SUBCASE("the budget fills the cell: three letters, three letter gaps, two unit gaps and three boxes") {
-        const float box = ed::inspectorAxisBoxWidth(CELL, LETTER, LETTER_GAP, INNER);
-        const float row = (3.0F * LETTER) + (3.0F * LETTER_GAP) + (2.0F * INNER) + (3.0F * box);
-        CAPTURE(row);
-        CHECK(row == doctest::Approx(CELL).epsilon(1e-6));
-        // The two gaps are distinct parameters: swapping them moves the answer. (Ignoring one gap is the row
-        // check above's to catch; this one catches a budget that weighs the two the same.)
-        const float swapped = ed::inspectorAxisBoxWidth(CELL, LETTER, INNER, LETTER_GAP);
-        CHECK(swapped != box);
-    }
-
-    SUBCASE("total: NaN, the infinities, zero, negatives and an overflow all answer a finite width >= 1") {
-        static_assert(noexcept(ed::inspectorAxisBoxWidth(0.0F, 0.0F, 0.0F, 0.0F)));
+    SUBCASE("total: NaN, the infinities, zero, negatives and an overflow all answer finite widths >= 1") {
+        static_assert(noexcept(ed::inspectorAxisLayout(0.0F, 0.0F, 0.0F, 1.0F)));
         // From quiet_NaN(), never a signalling one: MSVC quiets an sNaN that passes through a float lvalue.
         constexpr float NAN_F = std::numeric_limits<float>::quiet_NaN();
         constexpr float INF_F = std::numeric_limits<float>::infinity();
         constexpr float MAX_F = std::numeric_limits<float>::max();
         for (const float bad : {NAN_F, INF_F, -INF_F}) {
             CAPTURE(bad);
-            CHECK(ed::inspectorAxisBoxWidth(bad, LETTER, LETTER_GAP, INNER) == 1.0F);
-            CHECK(ed::inspectorAxisBoxWidth(CELL, bad, LETTER_GAP, INNER) == 1.0F);
-            CHECK(ed::inspectorAxisBoxWidth(CELL, LETTER, bad, INNER) == 1.0F);
-            CHECK(ed::inspectorAxisBoxWidth(CELL, LETTER, LETTER_GAP, bad) == 1.0F);
+            // One element per line (the trailing comma holds them there), so no formatter can pack the list.
+            const std::array<ed::InspectorAxisLayout, 4> layouts{
+                ed::inspectorAxisLayout(bad, LETTER, INNER, 1.0F),
+                ed::inspectorAxisLayout(153.0F, bad, INNER, 1.0F),
+                ed::inspectorAxisLayout(153.0F, LETTER, bad, 1.0F),
+                ed::inspectorAxisLayout(153.0F, LETTER, INNER, bad),
+            };
+            for (const ed::InspectorAxisLayout& axis : layouts) {
+                CHECK(std::isfinite(axis.unitWidth));
+                CHECK(std::isfinite(axis.valueWidth));
+                CHECK(axis.unitWidth >= 1.0F);
+                CHECK(axis.valueWidth >= 1.0F);
+            }
         }
-        CHECK(ed::inspectorAxisBoxWidth(MAX_F, -MAX_F, 0.0F, 0.0F) == 1.0F);           // 3 x -MAX overflows
-        CHECK(ed::inspectorAxisBoxWidth(0.0F, 0.0F, 0.0F, 0.0F) == 1.0F);              // a zero-width cell
-        CHECK(ed::inspectorAxisBoxWidth(-250.0F, LETTER, LETTER_GAP, INNER) == 1.0F);  // a negative cell
-        // A negative letter or gap is finite arithmetic: it widens the box, and the answer stays finite.
-        const float negativeLetter = ed::inspectorAxisBoxWidth(CELL, -LETTER, LETTER_GAP, INNER);
-        const float negativeLetterGap = ed::inspectorAxisBoxWidth(CELL, LETTER, -LETTER_GAP, INNER);
-        const float negativeUnitGap = ed::inspectorAxisBoxWidth(CELL, LETTER, LETTER_GAP, -INNER);
-        for (const float widened : {negativeLetter, negativeLetterGap, negativeUnitGap}) {
-            CAPTURE(widened);
-            CHECK(std::isfinite(widened));
-            CHECK(widened >= 1.0F);
-        }
+        CHECK(ed::inspectorAxisLayout(MAX_F, LETTER, -MAX_F, 1.0F).unitWidth == 1.0F);   // MAX + 2 x MAX overflows
+        CHECK(ed::inspectorAxisLayout(0.0F, LETTER, INNER, 1.0F).valueWidth == 1.0F);    // a zero-width cell
+        CHECK(ed::inspectorAxisLayout(-250.0F, LETTER, INNER, 1.0F).unitWidth == 1.0F);  // a negative cell
+        // A bad scale lays out at 1.
+        const ed::InspectorAxisLayout badScale = ed::inspectorAxisLayout(153.0F, LETTER, INNER, NAN_F);
+        CHECK((badScale == ed::inspectorAxisLayout(153.0F, LETTER, INNER, 1.0F)));
     }
 }
 

@@ -1270,6 +1270,7 @@ bool EditorApp::tick() {
     // can never apply on a later frame -- the thing a real click cannot do either.
     if (inspectorPanel != nullptr) {
         inspectorPanel->expireNamedSelection();
+        inspectorPanel->expireComponentMenuAction();  // task E.6.3: the overflow menu's seam, the same one-tick rule
     }
     // task E.3.2. The toggle is adopted ONLY when the checkbox was actually flipped -- routeEnabled is
     // an in/out field, and adopting it unconditionally would be harmless today and a silent

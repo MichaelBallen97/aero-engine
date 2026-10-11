@@ -14642,7 +14642,13 @@ TEST_CASE("editor: the axis row's gate is read AFTER the group closes (task E.3.
         // NOTHING until this clause existed.
         const std::size_t beginAt = soleLineContaining(code, "ImGui::BeginGroup()");
         const std::size_t endAt = soleLineContaining(code, "ImGui::EndGroup()");
-        CHECK(countInRange(code, "IsItemActive", beginAt, endAt) == 0);
+        // task E.6.3 (D5): ONE read inside the group, and it only strokes the unit's held outline -- never the Quat
+        // cache's latch, which the arm below still pins after the call.
+        CHECK(countInRange(code, "IsItemActive", beginAt, endAt) == 1);
+        const std::size_t outlineAt = firstLineContaining(code, "IsItemActive", beginAt);
+        REQUIRE(outlineAt < endAt);
+        CHECK(code[outlineAt + 1U].find("roleOutline(") != std::string::npos);
+        CHECK(code[outlineAt + 1U].find("AccentBorder") != std::string::npos);
 
         const std::size_t quatAt = soleLineContaining(code, "case FieldKind::Quat:");
         const std::size_t callAt = firstLineContaining(code, "drawAxisRow(", quatAt);
@@ -20064,7 +20070,7 @@ TEST_CASE("editor: E.4.5's structure holds as source text -- routing, release, g
     }
     SUBCASE("(d) every host asks through noteCardWanted and answers through materialCardSubtitle") {
         CHECK(countLinesContaining(codeOf("asset_browser_panel.cpp"), "noteCardWanted(") == 2U);  // tile + row helper
-        CHECK(countLinesContaining(codeOf("asset_picker.cpp"), "noteCardWanted(") == 1U);         // the popup tile
+        CHECK(countLinesContaining(codeOf("asset_picker.cpp"), "noteCardWanted(") == 2U);         // tile + swatch
         const std::vector<std::string> inspector = codeOf("inspector_panel.cpp");
         CHECK(countLinesContaining(inspector, "noteCardWanted(") == 1U);
         const std::size_t call = soleLineContaining(inspector, "guidFieldRow(");
@@ -20079,7 +20085,8 @@ TEST_CASE("editor: E.4.5's structure holds as source text -- routing, release, g
         // the browser's grid tile and the picker's popup tile. The Inspector's row has no icon rect, and the FACE
         // paints whatever tint it is handed. A tile host that stopped asking (seed S54) leaves every material in
         // it the kind colour, which no runtime tier reads.
-        constexpr std::array<std::size_t, 4> TINT_CALLS{1U, 1U, 0U, 0U};
+        // task E.6.3: the picker's reference-field swatch is its second.
+        constexpr std::array<std::size_t, 4> TINT_CALLS{1U, 2U, 0U, 0U};
         static_assert(TINT_CALLS.size() == HOSTS.size());
         for (std::size_t h = 0; h < HOSTS.size(); ++h) {
             CAPTURE(HOSTS[h]);
@@ -20125,7 +20132,10 @@ TEST_CASE("editor: E.4.5's structure holds as source text -- routing, release, g
                 }
             }
         }
-        CHECK(formatCalls >= 15U);  // ANTI-VACUITY: 19 such calls exist at c95dc78, one of them broken after "("
+        CHECK(formatCalls >= 15U);  // ANTI-VACUITY: 16 such calls at E.6.3's step 4: the browser's 13 (TextWrapped 6,
+                                    // SetTooltip 4, TextDisabled 3), the picker's SetTooltip, and the Inspector's two
+                                    // SetTooltip (the registration name and the e# generation) -- the picker's and the
+                                    // Inspector's four TextDisabled went to mutedText
         // THE SECOND-ARGUMENT FORMAT FUNCTIONS, the code-review round: TextColored(col, fmt, ...) and
         // LabelText(label, fmt, ...) take their format string SECOND, so the first-argument rule above cannot see
         // them. Their second argument must open a string literal: the call is joined with the next two lines and
@@ -20420,8 +20430,8 @@ TEST_CASE("editor: an asset field's overflowing value sentence is elided with an
     CHECK(countLinesContaining(code, "AddText(") == calls.size());  // the file draws text only in this block
 
     // (c) Two paths, two calls. The FITTING path's AddText still names in.valueText -- the same call on the same
-    // bytes, which is what keeps the Inspector byte-identical whenever the sentence fits -- and the overflow path's
-    // names the elided text, never the raw sentence.
+    // bytes: the fitting path draws the raw bytes -- and the overflow path's names the elided text, never the raw
+    // sentence.
     REQUIRE(calls.size() == 2U);
     constexpr std::string_view RAW = "in.valueText.data()";
     constexpr std::string_view ELIDED = "elided.data()";
@@ -20438,9 +20448,12 @@ TEST_CASE("editor: an asset field's overflowing value sentence is elided with an
     // the whole frame: a slot row's text starts after its thumbnail, so its sentence would still be cut, with no
     // ellipsis, by up to thumbnailEdge + ItemInnerSpacing.x. So the width, the guard and the measurer are pinned as
     // the expressions they are, in the order they must run.
-    const std::size_t width = soleLineContaining(block, "const float textAvail = ");
-    CAPTURE(block[width]);
-    CHECK(block[width].find("= buttonMax.x - style.FramePadding.x - textX;") != std::string::npos);
+    const std::size_t width = soleLineContaining(block, "const float textAvail =");
+    REQUIRE(width + 1U < block.size());
+    CAPTURE(block[width + 1U]);
+    // task E.6.3 (D5): with the hint, the budget ends ItemInnerSpacing.x before it (seed S61).
+    CHECK(block[width + 1U].find("in.pickHint ? hintX - style.ItemInnerSpacing.x - textX : "
+                                 "buttonMax.x - style.FramePadding.x - textX;") != std::string::npos);
     const std::size_t guard = soleLineContaining(block, "if (ImGui::CalcTextSize(in.valueText.data(), ");
     CAPTURE(block[guard]);
     CHECK(block[guard].find(").x > textAvail) {") != std::string::npos);
@@ -20463,6 +20476,9 @@ TEST_CASE("editor: an asset field's overflowing value sentence is elided with an
             CHECK(line < elseArm);
         }
     }
+    // task E.6.3: the "pick" hint is drawn by ONE drawRoleText, BEFORE the guard -- never a third AddText.
+    CHECK(countLinesContaining(code, "drawRoleText(") == 1U);
+    CHECK(soleLineContaining(block, "drawRoleText(") < guard);
 }
 
 // ---- task E.5.2: the named selector, driven through the real Inspector (I251, I252) ----------------------
@@ -21794,12 +21810,11 @@ TEST_CASE("editor: the font, style and font-push writers each live in their own 
     // one and the snapshot that reports it to the tests.
     CHECK(writingDpiFlag == std::vector<std::string>{"imgui_layer.cpp"});
     CHECK(namingDpiFlag == std::vector<std::string>{"editor_theme_ui.cpp", "imgui_layer.cpp"});
-    // The face switches: the Console's messages, the Inspector's headers, the shell's chrome (task E.6.2: the status
-    // bar, the chip, the snap field, the breadcrumb's scene) and the panels' shared chrome (task E.6.3: ScopedFace;
-    // every other new face is drawn with AddText(font, size), which switches nothing), and nothing else -- each push
-    // in a file that pops (task E.6.1, step 8).
-    const std::vector<std::string> fontPanels{"console_panel.cpp", "inspector_panel.cpp", "panel_chrome_ui.cpp",
-                                              "shell_chrome_ui.cpp"};
+    // The face switches: the Console's messages, the Inspector's card titles (drawn by panel_chrome_ui.cpp since
+    // E.6.3's step 4), the shell's chrome (task E.6.2: the status bar, the chip, the snap field, the breadcrumb's
+    // scene) and the panels' shared chrome (task E.6.3: ScopedFace; every other new face is drawn with AddText(font,
+    // size), which switches nothing), and nothing else -- each push in a file that pops (task E.6.1, step 8).
+    const std::vector<std::string> fontPanels{"console_panel.cpp", "panel_chrome_ui.cpp", "shell_chrome_ui.cpp"};
     CHECK(pushingFonts == fontPanels);
     CHECK(poppingFonts == fontPanels);
 
@@ -22474,9 +22489,11 @@ TEST_CASE("editor: the panels read their roles from the theme (task E.6.1, I287)
         std::string_view file;
         std::size_t totalReads;
     };
-    constexpr std::array<PanelFile, 11> PANELS{{
+    constexpr std::array<PanelFile, 13> PANELS{{
         {"console_panel.cpp", 0U},    // task E.6.3: every colour a ChromeRole
         {"hierarchy_panel.cpp", 0U},  // task E.6.3: every colour a ChromeRole
+        {"inspector_panel.cpp", 0U},  // task E.6.3: every colour a ChromeRole
+        {"asset_picker.cpp", 0U},     // task E.6.3: every colour a ChromeRole
         {"material_panel.cpp", 10U},
         {"import_details_panel.cpp", 6U},
         {"project_ui.cpp", 2U},
@@ -22840,140 +22857,141 @@ TEST_CASE("editor: the icon consumers, as source text (task E.6.1, I285)") {
 // ---- I289: the Inspector's axis boxes at the new metrics (task E.6.1, the manual validation pass) ---------
 // The pass measured the X/Y/Z boxes clipping "0.000" to "0.00" in a 258-wide right dock where the branch
 // point showed it whole. TH11 holds the arithmetic at tier 0; this case holds what ImGui LAID OUT.
-TEST_CASE("editor: the Inspector's axis boxes hold a three-decimal value (task E.6.1, I289)") {
-    // NO GPU first: drawAxisRow takes its box width from the pure budget, handed the gaps its SameLine calls
-    // spell -- the slack arms below see a disagreement only on a lane wide enough to draw the row.
+TEST_CASE("editor: the Inspector's axis units hold a three-decimal value (task E.6.1, I289)") {
+    // NO GPU first: drawAxisRow takes its units from the pure layout, handed the gap its SameLine call spells.
     const std::vector<std::string> panel = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/inspector_panel.cpp");
     REQUIRE(panel.size() > 100U);
-    CHECK(countLinesContaining(panel, "inspectorAxisBoxWidth(") == 1U);
-    CHECK(countLinesContaining(panel, "boxWidth = inspectorAxisBoxWidth(total, letterWidth, letterGap, gap)") == 1U);
-    CHECK(countLinesContaining(panel, "SameLine(0.0F, letterGap)") == 1U);
+    CHECK(countLinesContaining(panel, "inspectorAxisLayout(") == 1U);
+    CHECK(countLinesContaining(panel, "axis = inspectorAxisLayout(total, letterWidth, gap, currentUiScale())") == 1U);
     CHECK(countLinesContaining(panel, "SameLine(0.0F, gap)") == 1U);
-    CHECK(countLinesContaining(panel, "letterGap = AXIS_LETTER_GAP_DP * currentUiScale()") == 1U);
+    CHECK(countLinesContaining(panel, "SetNextItemWidth(axis.valueWidth)") == 1U);
+    CHECK(countLinesContaining(panel, "inspectorAxisBoxWidth(") == 0U);
+    CHECK(countLinesContaining(panel, "AXIS_LETTER_GAP_DP") == 0U);
 
-    engine::platform::Context ctx;
-    if (!ctx.valid()) {
-        AERO_SKIP_OR_FAIL("no platform context");
-    }
-    // 1206 wide, because that is the width whose DEFAULT layout builds a 241-wide right dock -- content 225,
-    // the narrowest at which the branch point showed "0.000" whole (TH11 derives it): buildDefaultLayout gives
-    // the left dock 20% and then the right 25% of what is left, each split truncated after the 2-point
-    // separator, so trunc(1204 x 0.2) = 240 leaves 964 and 962 - trunc(962 x 0.75) = 241. (1294 builds the
-    // 258-wide dock the pass measured; a 1080-wide window builds a 216-wide one, content 200.)
-    std::optional<engine::platform::Window> window =
-        ctx.createWindow({.title = "inspector axis boxes i289", .width = 1206, .height = 1600});
-    REQUIRE(window.has_value());
-    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
-    if (!device) {
-        AERO_SKIP_OR_FAIL("no GPU device");
-    }
-    std::optional<engine::editor::EditorApp> app =
-        engine::editor::EditorApp::create(*device, *window, ctx,
-                                          {.persistLayout = false,
-                                           .unfocusedFrameCapHz = 0.0F,
-                                           .restoreLastProject = false,
-                                           .recentProjectsPath = uniqueRecentsFile()});
-    REQUIRE(app.has_value());
-    auto* const inspector = dynamic_cast<engine::editor::InspectorPanel*>(app->panels().find("Inspector"));
-    REQUIRE(inspector != nullptr);
-
-    // The default scene's Cube: Transform's position, rotation and scale are three axis rows.
-    engine::World& world = app->world();
-    engine::Entity cube{};
-    world.eachEntity([&](engine::Entity e) {
-        if (world.name(e) == "Cube") {
-            cube = e;
+    // The default layout is BUILT at the window's size (F25): left = trunc((W-2) x 0.2), B = W-2-left-2, right =
+    // B - trunc(B x 0.7) (task E.6.3's 0.30 split), content = right - 16. 1206 -> 289 / content 273 (WHOLE: the
+    // Cube's threshold is 266); 1080 -> 259 / content 243 (CLIPPED -- the deliberate before, anti-vacuity).
+    // std::int32_t: WindowConfig::width is std::int32_t (window.hpp:30), and a non-constant std::uint32_t narrowed
+    // inside the brace-initialised config is ill-formed (-Wc++11-narrowing on clang, C2397 on MSVC).
+    const auto runWindow = [](std::int32_t width, bool whole) {
+        engine::platform::Context ctx;
+        if (!ctx.valid()) {
+            AERO_SKIP_OR_FAIL("no platform context");
         }
-    });
-    REQUIRE(cube.valid());
-    app->selection().set(cube);
-    REQUIRE(app->tick());
-    REQUIRE(app->tick());
+        std::optional<engine::platform::Window> window =
+            ctx.createWindow({.title = "inspector axis units i289", .width = width, .height = 1600});
+        REQUIRE(window.has_value());
+        std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+        if (!device) {
+            AERO_SKIP_OR_FAIL("no GPU device");
+        }
+        std::optional<engine::editor::EditorApp> app =
+            engine::editor::EditorApp::create(*device, *window, ctx,
+                                              {.persistLayout = false,
+                                               .unfocusedFrameCapHz = 0.0F,
+                                               .restoreLastProject = false,
+                                               .recentProjectsPath = uniqueRecentsFile()});
+        REQUIRE(app.has_value());
+        auto* const inspector = dynamic_cast<engine::editor::InspectorPanel*>(app->panels().find("Inspector"));
+        REQUIRE(inspector != nullptr);
+        engine::World& world = app->world();
+        const auto named = [&world](std::string_view name) {
+            engine::Entity found{};
+            world.eachEntity([&](engine::Entity e) {
+                if (world.name(e) == name) {
+                    found = e;
+                }
+            });
+            return found;
+        };
+        const engine::Entity cube = named("Cube");
+        REQUIRE(cube.valid());
+        app->selection().set(cube);
+        REQUIRE(app->tick());
+        REQUIRE(app->tick());
+        // THE ROUTING BASELINE in the Right node: Material in front, and the Inspector provably not drawing.
+        app->requestPanelFocus("Material");
+        REQUIRE(app->tick());
+        REQUIRE(app->tick());
+        const auto idle = app->panelDrawnCount("Inspector");
+        REQUIRE(app->tick());
+        REQUIRE(app->panelDrawnCount("Inspector") == idle);
+        app->requestPanelFocus("Inspector");
+        REQUIRE(app->tick());
+        REQUIRE(app->tick());
+        REQUIRE(app->panelDrawnCount("Inspector") > idle);
 
-    // THE ROUTING BASELINE in the Right node: Material in front, and the Inspector provably not drawing.
-    app->requestPanelFocus("Material");
-    REQUIRE(app->tick());
-    REQUIRE(app->tick());
-    const auto idle = app->panelDrawnCount("Inspector");
-    REQUIRE(app->tick());
-    REQUIRE(app->panelDrawnCount("Inspector") == idle);
-    app->requestPanelFocus("Inspector");
-    REQUIRE(app->tick());
-    REQUIRE(app->tick());
-    REQUIRE(app->panelDrawnCount("Inspector") > idle);
-
-    // What "0.000" occupies in Body at the LIVE UI scale -- ImGui's own advances, measured, never a restated
-    // literal. measureEditorFonts restores the current context, so it is safe beside the live app (I288 reads
-    // the scale the same way). DragScalar draws its value with RenderTextClipped over the bare frame (no frame
-    // padding), centred and clipped once it is wider, so a box at least this wide shows the value whole.
-    const float uiScale = app->uiScale();
-    CAPTURE(uiScale);
-    const std::array<char32_t, 5> points{U'0', U'.', U'X', U'Y', U'Z'};  // "0.000" is 4 x '0' + '.'
-    const EditorFontMeasurement body = measureEditorFonts(WITH_ICONS, EditorFontFace::Body, points, uiScale);
-    REQUIRE(body.ok);
-    REQUIRE(body.glyphs.size() == points.size());
-    for (const MeasuredGlyph& glyph : body.glyphs) {
-        REQUIRE(glyph.found);
-    }
-    const float threeDecimals = (4.0F * body.glyphs[0].advanceX) + body.glyphs[1].advanceX;
-    CAPTURE(threeDecimals);
-    REQUIRE(threeDecimals > 0.0F);
-    // The row's own slack budget: drawAxisRow budgets three of the WIDEST letter as CalcTextSize measures it
-    // (IM_TRUNC(w + 0.99999f), a whole point) while each Text item takes its own width, and ImGui truncates
-    // each of the three boxes to a whole point -- so the row as drawn ends at most 3 points, plus the letters'
-    // difference from the widest, inside its cell. At most UI scales other than 1 the three letters round to
-    // different widths (X, Y and Z are 613, 593 and 580 units), so the difference is measured at the live scale.
-    std::array<float, 3> letters{};
-    for (std::size_t i = 0; i < letters.size(); ++i) {
-        letters[i] = std::trunc(body.glyphs[2U + i].advanceX + 0.99999F);
-    }
-    const float widestLetter = std::max({letters[0], letters[1], letters[2]});
-    const float letterSlack = (3.0F * widestLetter) - (letters[0] + letters[1] + letters[2]);
-    CAPTURE(widestLetter);
-    CAPTURE(letterSlack);
-
-    const float content = inspector->lastContentWidth();
-    const float box = inspector->lastAxisBoxWidth();
-    const float slack = inspector->lastAxisRowSlack();
-    CAPTURE(content);
-    CAPTURE(box);
-    CAPTURE(slack);
-    if (!engine::editor::sceneIoAvailable()) {
-        // REFLECT TOOLS OFF, at runtime (no #if): components draw no field rows, so no axis row drew.
-        MESSAGE("I289: reflect tools OFF -- no field rows, so no axis row drew");
-        CHECK(box == 0.0F);
-        CHECK(slack == 0.0F);
-    } else {
-        REQUIRE(box > 0.0F);  // an axis row really drew this frame
-        // THE ROW FILLS ITS CELL, at ANY width where the budget is above its floor of 1: the SameLine gaps
-        // and inspectorAxisBoxWidth's budget agree. Below, the last box overruns the cell (a gap drawn wider
-        // than budgeted); above, the boxes are narrower than the cell pays for (a budget with a gap the row
-        // does not draw). Half a point absorbs the float sums of three boxes and five gaps.
-        if (box >= 2.0F) {
-            CHECK(slack >= -0.5F);
-            CHECK(slack < 3.0F + letterSlack + 0.5F);
+        // What "0.000" occupies in Body at the LIVE scale -- ImGui's own advances (E.6.1's measurement, unchanged).
+        const float uiScale = app->uiScale();
+        CAPTURE(uiScale);
+        const std::array<char32_t, 2> points{U'0', U'.'};
+        const EditorFontMeasurement body = measureEditorFonts(WITH_ICONS, EditorFontFace::Body, points, uiScale);
+        REQUIRE(body.ok);
+        REQUIRE(body.glyphs.size() == points.size());
+        const float threeDecimals = (4.0F * body.glyphs[0].advanceX) + body.glyphs[1].advanceX;
+        REQUIRE(threeDecimals > 0.0F);
+        const float content = inspector->lastContentWidth();
+        const float value = inspector->lastAxisBoxWidth();
+        CAPTURE(content);
+        CAPTURE(value);
+        if (!engine::editor::sceneIoAvailable()) {
+            // REFLECT TOOLS OFF, at runtime (no #if): no field rows, so no axis row drew.
+            MESSAGE("I289: reflect tools OFF -- no field rows, so no axis row drew");
+            CHECK(value == 0.0F);
+            return;
+        }
+        REQUIRE(value > 0.0F);                          // an axis row really drew this frame
+        CHECK(inspector->lastAxisRowSlack() >= -0.5F);  // the row never overruns its cell
+        if (whole) {
+            if (uiScale == 1.0F && content >= 267.0F) {
+                CHECK(value >= threeDecimals);  // the Cube whole at 1206
+            } else {
+                WARN((uiScale == 1.0F && content >= 267.0F));  // a narrower runner, or another scale
+            }
+            // THE PER-ENTITY THRESHOLDS, geometry-INDEPENDENT: the three value regions share the cell and are each
+            // truncated, so content - 3 x (value - "0.000") is where the value would exactly fit (+- 3 for the three
+            // truncations). The cell is the body width minus the label column, so that extrapolation tracks the
+            // COLUMN: below twice the column the ceiling (half the content) clamps it, and the recorded column's
+            // shortfall is added back. Valid at any content where the row is above its floor, with the column folded
+            // in -- CI's narrow runner (the Directional Light's 127 clamps below content 254) included.
+            struct Probe {
+                std::string_view name;
+                float threshold;
+                float column;  // the label column at the threshold (TH11): 77 / 90 / 127
+            };
+            for (const Probe& probe : {Probe{"Cube", 266.0F, 77.0F}, Probe{"Main Camera", 279.0F, 90.0F},
+                                       Probe{"Directional Light", 316.0F, 127.0F}}) {
+                CAPTURE(probe.name);
+                const engine::Entity e = named(probe.name);
+                REQUIRE(e.valid());
+                app->selection().set(e);
+                REQUIRE(app->tick());
+                REQUIRE(app->tick());
+                const float c = inspector->lastContentWidth();
+                const float v = inspector->lastAxisBoxWidth();
+                REQUIRE(v > 1.0F);  // above the floor, where the arithmetic holds
+                const float col = inspector->drawRecord().labelColumnWidth;
+                CAPTURE(col);
+                const float measured = c - (3.0F * (v - threeDecimals)) + (probe.column - col);
+                MESSAGE("I289 " << probe.name << ": " << measured << " at content " << c << ", column " << col);
+                if (uiScale == 1.0F) {
+                    // The recorded column is the clamp of the probe's (floor 4 x 16, ceiling half the content), so a
+                    // wrong column constant cannot hide behind the folded-in term.
+                    CHECK(std::abs(col - std::min(probe.column, std::max(64.0F, c * 0.5F))) <= 0.5F);
+                    CHECK(std::abs(measured - probe.threshold) <= 4.0F);
+                }
+            }
+        } else if (uiScale == 1.0F && content <= 262.0F) {
+            CHECK(value < threeDecimals);  // the Cube clipped at 1080: a runner only ever delivers narrower
         } else {
-            MESSAGE("I289: the box is at its floor (" << box << "), so the row cannot fill its cell");
-            WARN(box >= 2.0F);
+            WARN((uiScale == 1.0F && content <= 262.0F));
         }
-        // THE GEOMETRY GATE, for the fit alone: 225 is the content of the 241-wide dock (241 - 2 x 8 of
-        // window padding), the branch point's threshold -- a derivation AT UI SCALE 1 (TH11). The claim is made
-        // only there, at that width or wider, because CI's macOS runner delivers windows narrower than
-        // requested (I233, I231), a narrower dock has a narrower cell by design, and at another scale every
-        // length in the row moves.
-        constexpr float THRESHOLD_CONTENT = 225.0F;
-        if (uiScale == 1.0F && content >= THRESHOLD_CONTENT) {
-            CHECK(box >= threeDecimals);
-        } else {
-            MESSAGE("I289: no fit asserted at UI scale " << uiScale << ", content " << content << " (the claim is "
-                                                         << "scale 1 and >= " << THRESHOLD_CONTENT << ")");
-            WARN((uiScale == 1.0F && content >= THRESHOLD_CONTENT));
-        }
-    }
-
-    app->requestQuit();
-    CHECK(app->tick() == false);
-    app.reset();
+        app->requestQuit();
+        CHECK(app->tick() == false);
+        app.reset();
+    };
+    SUBCASE("1206: the Cube whole, and every entity's threshold measured") { runWindow(1206, true); }
+    SUBCASE("1080: the Cube clipped") { runWindow(1080, false); }
 }
 
 // ==================================================================================================
@@ -24593,6 +24611,17 @@ void e63Front(engine::editor::EditorApp& app, const char* panelId, const char* s
     return 0.0F;
 }
 
+[[nodiscard]] float e63StyleX(float uiScale, std::string_view member) {
+    const engine::editor::EditorStyleSnapshot style = engine::editor::snapshotEditorStyle(uiScale);
+    for (const engine::editor::StyleMemberValue& value : style.members) {
+        if (value.name == member) {
+            return value.x;
+        }
+    }
+    FAIL("no style member " << member);
+    return 0.0F;
+}
+
 // The meta a Hierarchy row drew this frame, by HANDLE; nullopt when the row drew none.
 [[nodiscard]] std::optional<std::string> e63MetaOf(const engine::editor::HierarchyDrawRecord& r, engine::Entity e) {
     for (const engine::editor::HierarchyRowMeta& meta : r.rowMetas) {
@@ -24959,4 +24988,500 @@ TEST_CASE("editor: every E.6.3 request is drained under its control's predicate 
         CHECK(countLinesContaining(code, "GetTopMostPopupModal()") == 1U);
         CHECK(countLinesContaining(code, "BeginDisabled(!searchEnabled)") == 1U);  // the control reads the same term
     }
+    SUBCASE("the Inspector's component menu") {
+        const std::vector<std::string> code = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/inspector_panel.cpp");
+        const std::size_t drainAt = soleLineContaining(code, "frameComponentMenu.has_value() &&");
+        CHECK(code[drainAt].find("matches(entry.name)") != std::string::npos);  // this card's own menu
+        CHECK(code[drainAt].find("noModal") != std::string::npos);
+        CHECK(countLinesContaining(code, "GetTopMostPopupModal()") == 1U);
+    }
+}
+
+// ---- task E.6.3, step 4: the Inspector's cards, header, labels, axis units, reference field and Add Component ----
+
+TEST_CASE("editor: the Inspector's entity header -- kind swatch, title face, e#<index> (task E.6.3, I315)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "inspector header i315", .width = 1280, .height = 800});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = e62App(*device, *window, ctx);
+    auto* const inspector = dynamic_cast<engine::editor::InspectorPanel*>(app->panels().find("Inspector"));
+    REQUIRE(inspector != nullptr);
+    // const: every case on this fixture only READS the World (e62EntityNamed, World::has), and
+    // misc-const-correctness flags a reference that is never mutated (imgui_layer_test.cpp:933 and :1211 bind it
+    // const too). I321, which writes through world.get<MeshRenderer>, writes out its own non-const fixture.
+    const engine::World& world = app->world();
+    const engine::Entity cube = e62EntityNamed(world, "Cube");
+    REQUIRE(cube.valid());
+    app->selection().set(cube);
+    e63Front(*app, "Inspector", "Material");
+    const std::uint64_t before = inspector->drawRecord().framesRecorded;
+    e62Ticks(*app, 2);
+    const engine::editor::InspectorDrawRecord& r = inspector->drawRecord();
+    REQUIRE(r.framesRecorded > before);
+    CHECK((r.swatchRole == engine::editor::ChromeRole::Info));  // the Cube is a mesh: its kind's role, not accent
+    CHECK(r.entityNameFontName == "IBM Plex Sans SemiBold");
+    CHECK(r.entityNameFontSize == std::floor((20.0F * app->uiScale()) + 0.5F));  // titleSize, as ImGui rounds it
+    CHECK(r.idText == "e#" + std::to_string(cube.index));                        // decimal, never 0x...
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: the Inspector draws each component as a card with its icon and overflow (task E.6.3, I316)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "inspector cards i316", .width = 1280, .height = 800});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = e62App(*device, *window, ctx);
+    auto* const inspector = dynamic_cast<engine::editor::InspectorPanel*>(app->panels().find("Inspector"));
+    REQUIRE(inspector != nullptr);
+    // const: every case on this fixture only READS the World (e62EntityNamed, World::has), and
+    // misc-const-correctness flags a reference that is never mutated (imgui_layer_test.cpp:933 and :1211 bind it
+    // const too). I321, which writes through world.get<MeshRenderer>, writes out its own non-const fixture.
+    const engine::World& world = app->world();
+    const engine::Entity cube = e62EntityNamed(world, "Cube");
+    REQUIRE(cube.valid());
+    app->selection().set(cube);
+    e63Front(*app, "Inspector", "Material");
+    const std::uint64_t before = inspector->drawRecord().framesRecorded;
+    e62Ticks(*app, 2);
+    const engine::editor::InspectorDrawRecord& r = inspector->drawRecord();
+    REQUIRE(r.framesRecorded > before);
+    // The Cube carries Transform and MeshRenderer -- in every configuration: cards draw from the World's component
+    // list, so reflect-tools-OFF draws the same two cards (their bodies say "fields unavailable").
+    CHECK(r.cards.cardsDrawn == 2U);
+    CHECK(r.cardsOpen == 2U);  // DefaultOpen, as CollapsingHeader(..., DefaultOpen) was
+    REQUIRE(r.cards.cards.size() == 2U);
+    // The overflow as the PAINTER drew it (set only inside its `if (spec.overflow)`), never a count the host bumps.
+    const auto drewOverflow = [](const engine::editor::CardEntryRecord& c) { return c.overflowDrawn; };
+    CHECK(std::count_if(r.cards.cards.begin(), r.cards.cards.end(), drewOverflow) == std::ptrdiff_t{2});
+    CHECK(r.lastTitleDrawn == "Mesh Renderer");
+    CHECK(r.lastIconDrawn == std::string(AERO_ICON_BOX));
+    CHECK(r.cards.titleFontName == "IBM Plex Sans SemiBold");  // I284's claim, through the painter
+    CHECK(inspector->lastHeaderFontName() == "IBM Plex Sans SemiBold");
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: the overflow's Remove Component is one undoable entry (task E.6.3, I317)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "inspector remove i317", .width = 1280, .height = 800});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = e62App(*device, *window, ctx);
+    auto* const inspector = dynamic_cast<engine::editor::InspectorPanel*>(app->panels().find("Inspector"));
+    REQUIRE(inspector != nullptr);
+    // const: every case on this fixture only READS the World (e62EntityNamed, World::has), and
+    // misc-const-correctness flags a reference that is never mutated (imgui_layer_test.cpp:933 and :1211 bind it
+    // const too). I321, which writes through world.get<MeshRenderer>, writes out its own non-const fixture.
+    const engine::World& world = app->world();
+    const engine::Entity cube = e62EntityNamed(world, "Cube");
+    REQUIRE(cube.valid());
+    app->selection().set(cube);
+    e63Front(*app, "Inspector", "Material");
+    const std::uint64_t before = inspector->drawRecord().framesRecorded;
+    e62Ticks(*app, 2);
+    const engine::editor::InspectorDrawRecord& r = inspector->drawRecord();
+    REQUIRE(r.framesRecorded > before);
+    REQUIRE(world.has<engine::MeshRenderer>(cube));
+    const std::size_t entries = app->commands().count();
+    inspector->requestComponentMenuAction("engine::MeshRenderer",
+                                          engine::editor::InspectorPanel::ComponentMenuAction::Remove);
+    REQUIRE(app->tick());
+    CHECK_FALSE(world.has<engine::MeshRenderer>(cube));
+    CHECK(app->commands().count() == entries + 1U);  // exactly one history entry
+    REQUIRE(app->tick());
+    CHECK(r.cards.cardsDrawn == 1U);  // the next frame draws one card
+    app->requestUndo();
+    e62Ticks(*app, 2);
+    CHECK(world.has<engine::MeshRenderer>(cube));  // one undo restores the component...
+    CHECK(r.cards.cardsDrawn == 2U);               // ...and its card
+    // A request naming a component the entity lacks changes nothing.
+    const std::size_t settled = app->commands().count();
+    inspector->requestComponentMenuAction("engine::Camera",
+                                          engine::editor::InspectorPanel::ComponentMenuAction::Remove);
+    e62Ticks(*app, 2);
+    CHECK(app->commands().count() == settled);
+    CHECK(world.has<engine::MeshRenderer>(cube));
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: a card body hosts a table, and every card shares one right edge (task E.6.3, I318)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "inspector card body i318", .width = 1280, .height = 800});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = e62App(*device, *window, ctx);
+    auto* const inspector = dynamic_cast<engine::editor::InspectorPanel*>(app->panels().find("Inspector"));
+    REQUIRE(inspector != nullptr);
+    // const: every case on this fixture only READS the World (e62EntityNamed, World::has), and
+    // misc-const-correctness flags a reference that is never mutated (imgui_layer_test.cpp:933 and :1211 bind it
+    // const too). I321, which writes through world.get<MeshRenderer>, writes out its own non-const fixture.
+    const engine::World& world = app->world();
+    const engine::Entity cube = e62EntityNamed(world, "Cube");
+    REQUIRE(cube.valid());
+    app->selection().set(cube);
+    e63Front(*app, "Inspector", "Material");
+    const std::uint64_t before = inspector->drawRecord().framesRecorded;
+    e62Ticks(*app, 2);
+    const engine::editor::InspectorDrawRecord& r = inspector->drawRecord();
+    REQUIRE(r.framesRecorded > before);
+    REQUIRE(r.cards.cards.size() == 2U);
+    // (b) S5's / S54's witness: a leaked narrowing moves every LATER card, so only a cross-card comparison sees it.
+    const engine::editor::CardEntryRecord& first = r.cards.cards.front();
+    for (const engine::editor::CardEntryRecord& card : r.cards.cards) {
+        CHECK(std::abs(card.outerMax.x - first.outerMax.x) <= 0.5F);
+        CHECK(std::abs(card.outerMin.x - first.outerMin.x) <= 0.5F);
+        if (card.open) {
+            CHECK(std::abs(card.bodyMax.x - first.bodyMax.x) <= 0.5F);
+            CHECK(card.bodyMax.x < card.outerMax.x);  // ANTI-VACUITY: the body IS narrowed
+        }
+    }
+    if (engine::editor::sceneIoAvailable()) {
+        // (a) the ##fields table submitted inside a card on this lane with no IM_ASSERT (its presence is the claim);
+        // (c) its outer rect ends on the narrowed body edge (BeginTable sizes from GetContentRegionAvail).
+        REQUIRE(r.cards.lastBodyTableMaxX > 0.0F);
+        CHECK(std::abs(r.cards.lastBodyTableMaxX - r.cards.cards.back().bodyMax.x) <= 1.0F);
+    } else {
+        // REFLECT TOOLS OFF (runtime predicate): every body drew its fields-unavailable line and no table.
+        MESSAGE("I318: reflect tools OFF -- no table drew");
+        CHECK(r.cards.lastBodyTableMaxX == 0.0F);
+        CHECK(r.cards.bodiesSubmitted == 2U);
+    }
+    // SOURCE: no child and no group per card (E.3.4's per-window rule), and the three edges written and restored.
+    const std::vector<std::string> chrome = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/panel_chrome_ui.cpp");
+    CHECK(countLinesContaining(chrome, "BeginChild") == 0U);  // seed S6
+    CHECK(countLinesContaining(chrome, "BeginGroup") == 0U);
+    CHECK(countLinesContaining(chrome, "window->WorkRect.Min.x = ") == 2U);        // narrow + restore
+    CHECK(countLinesContaining(chrome, "window->ContentRegionRect.Max.x") == 4U);  // save, narrow, restore, bodyMax
+    CHECK(countLinesContaining(chrome, "window->WorkRect.Max.x") == 3U);           // save, narrow, restore
+    CHECK(countLinesContaining(chrome, "window->ContentRegionRect.Max.x = savedContentMaxX;") == 1U);
+    CHECK(countLinesContaining(chrome, "window->WorkRect.Max.x = savedWorkMaxX;") == 1U);
+    CHECK(countLinesContaining(chrome, "window->WorkRect.Min.x = savedWorkMinX;") == 1U);
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: Inspector labels are humanised and the column measures them (task E.6.3, I319)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "inspector labels i319", .width = 1280, .height = 800});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = e62App(*device, *window, ctx);
+    auto* const inspector = dynamic_cast<engine::editor::InspectorPanel*>(app->panels().find("Inspector"));
+    REQUIRE(inspector != nullptr);
+    // const: every case on this fixture only READS the World (e62EntityNamed, World::has), and
+    // misc-const-correctness flags a reference that is never mutated (imgui_layer_test.cpp:933 and :1211 bind it
+    // const too). I321, which writes through world.get<MeshRenderer>, writes out its own non-const fixture.
+    const engine::World& world = app->world();
+    const engine::Entity cube = e62EntityNamed(world, "Cube");
+    REQUIRE(cube.valid());
+    app->selection().set(cube);
+    e63Front(*app, "Inspector", "Material");
+    const std::uint64_t before = inspector->drawRecord().framesRecorded;
+    e62Ticks(*app, 2);
+    const engine::editor::InspectorDrawRecord& r = inspector->drawRecord();
+    REQUIRE(r.framesRecorded > before);
+    if (!engine::editor::sceneIoAvailable()) {
+        MESSAGE("I319: reflect tools OFF -- no field row, so no label drew");
+        CHECK(r.lastLabelDrawn.empty());
+    } else {
+        const std::array<std::string_view, 8> labels{"Position", "Rotation", "Scale",      "Primitive",
+                                                     "Color",    "Mesh",     "Mesh Index", "Material"};
+        CHECK(std::find(labels.begin(), labels.end(), std::string_view(r.lastLabelDrawn)) != labels.end());
+        // The column measures what is drawn: "Mesh Index" (the Cube's widest humanised label), CalcTextSize's
+        // whole-point round-up of its advances, plus both cell paddings, clamped by inspectorLabelColumnWidth.
+        const float s = app->uiScale();
+        const std::u32string_view text = U"Mesh Index";
+        const std::vector<char32_t> codepoints(text.begin(), text.end());
+        const EditorFontMeasurement body = measureEditorFonts(WITH_ICONS, EditorFontFace::Body, codepoints, s);
+        REQUIRE(body.ok);
+        float advance = 0.0F;
+        for (const MeasuredGlyph& glyph : body.glyphs) {
+            advance += glyph.advanceX;
+        }
+        const float measured = std::trunc(advance + 0.99999F);
+        const float expected = engine::editor::inspectorLabelColumnWidth(
+            measured, e63StyleX(s, "CellPadding"), std::floor((16.0F * s) + 0.5F), inspector->lastContentWidth());
+        CHECK(std::abs(r.labelColumnWidth - expected) <= 0.5F);
+    }
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: the axis unit -- letter inside the frame, frameless drag, outline states (task E.6.3, I320)") {
+    const std::vector<std::string> code = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/inspector_panel.cpp");
+    REQUIRE(code.size() > 200U);
+    CHECK(countLinesContaining(code, "IM_COL32(") == 1U);     // still I143's one line (seed S43)
+    CHECK(countLinesContaining(code, "BeginGroup(") == 1U);   // I144
+    CHECK(countLinesContaining(code, "drawAxisRow(") == 3U);  // I144
+    CHECK(countLinesContaining(code, "inspectorAxisLayout(") == 1U);
+    const std::size_t setAt = soleLineContaining(code, "SetNextItemWidth(axis.valueWidth)");
+    const std::size_t clearAt = soleLineContaining(code, "const ClearFrameStyle clear(ChromeRole::Inset);");
+    const std::size_t dragAt = soleLineContaining(code, "DragScalar(\"##a\"");
+    CHECK(setAt < clearAt);
+    CHECK(clearAt < dragAt);
+    CHECK(dragAt - setAt <= 3U);  // nothing but the scope's brace between the width and the drag
+    // After the drag: the WHOLE unit's outline from IsItemActive / IsItemHovered -- never a fill on the value region.
+    std::size_t activeAt = code.size();
+    std::size_t hoveredAt = code.size();
+    for (std::size_t i = dragAt; i < std::min(code.size(), dragAt + 12U); ++i) {
+        activeAt = code[i].find("IsItemActive()") != std::string::npos ? std::min(activeAt, i) : activeAt;
+        hoveredAt = code[i].find("IsItemHovered()") != std::string::npos ? std::min(hoveredAt, i) : hoveredAt;
+    }
+    CHECK(activeAt < code.size());
+    CHECK(hoveredAt < code.size());
+    const std::size_t rowAt = soleLineContaining(code, "bool InspectorPanel::drawAxisRow(");
+    std::size_t rowEnd = rowAt;
+    while (rowEnd < code.size() && code[rowEnd] != "}") {
+        ++rowEnd;
+    }
+    const std::vector<std::string> row(code.begin() + static_cast<std::ptrdiff_t>(rowAt),
+                                       code.begin() + static_cast<std::ptrdiff_t>(rowEnd));
+    CHECK(countLinesContaining(row, "roleFill(") == 1U);     // the unit's inset fill, before the drag
+    CHECK(countLinesContaining(row, "roleOutline(") == 3U);  // the border, then held / hovered
+    // In panel_chrome_ui.cpp, ClearFrameStyle clears all THREE frame slots (seed S62) and the border, 1:1.
+    const std::vector<std::string> chrome = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/panel_chrome_ui.cpp");
+    const std::size_t ctorAt = soleLineContaining(chrome, "ClearFrameStyle::ClearFrameStyle(");
+    CHECK(chrome[ctorAt + 1U].find("PushStyleColor(ImGuiCol_FrameBg, clearOver(surface))") != std::string::npos);
+    CHECK(chrome[ctorAt + 2U].find("PushStyleColor(ImGuiCol_FrameBgHovered, clearOver(surface))") != std::string::npos);
+    CHECK(chrome[ctorAt + 3U].find("PushStyleColor(ImGuiCol_FrameBgActive, clearOver(surface))") != std::string::npos);
+    CHECK(chrome[ctorAt + 4U].find("ImGuiStyleVar_FrameBorderSize") != std::string::npos);
+    const std::size_t dtorAt = soleLineContaining(chrome, "ClearFrameStyle::~ClearFrameStyle()");
+    CHECK(chrome[dtorAt + 1U].find("PopStyleVar()") != std::string::npos);
+    CHECK(chrome[dtorAt + 2U].find("PopStyleColor(3)") != std::string::npos);
+}
+
+TEST_CASE("editor: the reference field -- an inset frame, a swatch or a well, and Clear (task E.6.3, I321)") {
+    // SOURCE half, every configuration.
+    const std::vector<std::string> picker = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/asset_picker.cpp");
+    CHECK(countLinesContaining(picker, "PushStyleColor(ImGuiCol_Button, roleVec4(ChromeRole::Inset))") == 1U);
+    CHECK(countLinesContaining(picker, "AddText(") == 2U);  // I244's two
+    const std::vector<std::string> panel = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/inspector_panel.cpp");
+    CHECK(countLinesContaining(panel, "assetReferenceFieldWidth(\"Clear\")") == 1U);  // I172(e)
+    CHECK(countLinesContaining(panel, "ghostButton(\"Clear\")") == 1U);               // Clear stays, ghost-styled
+    // GPU half: a project holding one material, bound to the Cube.
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "inspector reference i321", .width = 1280, .height = 800});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/swatch.aeromat",
+                                                materialText("Swatch", engine::Vec3{0.8F, 0.1F, 0.1F}))
+                .empty());
+    std::optional<engine::editor::EditorApp> app = makeThumbnailApp(*device, *window, ctx, created.root);
+    REQUIRE(app.has_value());
+    e62Ticks(*app, 3);
+    auto* const inspector = dynamic_cast<engine::editor::InspectorPanel*>(app->panels().find("Inspector"));
+    REQUIRE(inspector != nullptr);
+    engine::World& world = app->world();
+    const engine::Entity cube = e62EntityNamed(world, "Cube");
+    REQUIRE(cube.valid());
+    app->selection().set(cube);
+    e63Front(*app, "Inspector", "Material");
+    e62Ticks(*app, 2);
+    const engine::editor::InspectorDrawRecord& r = inspector->drawRecord();
+    if (!engine::editor::sceneIoAvailable()) {
+        MESSAGE("I321: reflect tools OFF -- no field row, so no reference row drew");
+        CHECK_FALSE(r.referenceSwatchDrawn);
+        CHECK_FALSE(r.referenceWellDrawn);
+    } else {
+        CHECK(r.referenceWellDrawn);  // the Cube's material is NIL: the empty well
+        CHECK_FALSE(r.referenceSwatchDrawn);
+        const std::optional<engine::Guid> swatch = app->assetGuidForPath("swatch.aeromat");
+        REQUIRE(swatch.has_value());
+        auto* const renderer = world.get<engine::MeshRenderer>(cube);
+        REQUIRE(renderer != nullptr);
+        renderer->material = *swatch;
+        // The card is read on the thumbnail service's own queue: tick until the row can tint.
+        REQUIRE(tickUntil(*app, [&] { return inspector->drawRecord().referenceSwatchDrawn; }));
+        CHECK(r.referenceSwatchDrawn);
+    }
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: Add Component is centred, one card header tall, and dashed (task E.6.3, I322)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "inspector add component i322", .width = 1280, .height = 800});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = e62App(*device, *window, ctx);
+    auto* const inspector = dynamic_cast<engine::editor::InspectorPanel*>(app->panels().find("Inspector"));
+    REQUIRE(inspector != nullptr);
+    // const: every case on this fixture only READS the World (e62EntityNamed, World::has), and
+    // misc-const-correctness flags a reference that is never mutated (imgui_layer_test.cpp:933 and :1211 bind it
+    // const too). I321, which writes through world.get<MeshRenderer>, writes out its own non-const fixture.
+    const engine::World& world = app->world();
+    const engine::Entity cube = e62EntityNamed(world, "Cube");
+    REQUIRE(cube.valid());
+    app->selection().set(cube);
+    e63Front(*app, "Inspector", "Material");
+    const std::uint64_t before = inspector->drawRecord().framesRecorded;
+    e62Ticks(*app, 2);
+    const engine::editor::InspectorDrawRecord& r = inspector->drawRecord();
+    REQUIRE(r.framesRecorded > before);
+    const float s = app->uiScale();
+    const float contentMin = r.cards.cards.front().outerMin.x;  // the content region's left edge (the card span)
+    const float contentMax = r.cards.cards.front().outerMax.x;
+    const float centre = (r.addComponentMin.x + r.addComponentMax.x) * 0.5F;
+    CHECK(std::abs(centre - ((contentMin + contentMax) * 0.5F)) <= 0.5F);
+    CHECK(r.addComponentMax.y - r.addComponentMin.y == doctest::Approx(32.0F * s).epsilon(1e-5));
+    CHECK(r.addComponentDashed);
+    // SOURCE: an InvisibleButton -- no ghost or plain Button, whose RenderFrame(..., true, ...) would stroke a solid
+    // border through the dash gaps (imgui_widgets.cpp:812).
+    const std::vector<std::string> code = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/inspector_panel.cpp");
+    const std::size_t buttonAt = soleLineContaining(code, "InvisibleButton(\"##addComponentButton\"");
+    CHECK(code[buttonAt].find("ghostButton(") == std::string::npos);
+    CHECK(countLinesContaining(code, "ADD_COMPONENT_LABEL") >= 2U);  // measured and drawn, never a Button label
+    CHECK(countLinesContaining(code, "Button(\"+ Add Component\")") == 0U);
+    CHECK(countLinesContaining(code, "GhostStyle") == 0U);
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: card geometry -- one span, the framed overhang, paddings and gaps (task E.6.3, I336)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "inspector card geometry i336", .width = 1280, .height = 800});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = e62App(*device, *window, ctx);
+    auto* const inspector = dynamic_cast<engine::editor::InspectorPanel*>(app->panels().find("Inspector"));
+    REQUIRE(inspector != nullptr);
+    // const: every case on this fixture only READS the World (e62EntityNamed, World::has), and
+    // misc-const-correctness flags a reference that is never mutated (imgui_layer_test.cpp:933 and :1211 bind it
+    // const too). I321, which writes through world.get<MeshRenderer>, writes out its own non-const fixture.
+    const engine::World& world = app->world();
+    const engine::Entity cube = e62EntityNamed(world, "Cube");
+    REQUIRE(cube.valid());
+    app->selection().set(cube);
+    e63Front(*app, "Inspector", "Material");
+    const std::uint64_t before = inspector->drawRecord().framesRecorded;
+    e62Ticks(*app, 2);
+    const engine::editor::InspectorDrawRecord& r = inspector->drawRecord();
+    REQUIRE(r.framesRecorded > before);
+    const float s = app->uiScale();
+    const float overhang = std::trunc(e63StyleX(s, "WindowPadding") * 0.5F);  // imgui_widgets.cpp:6906-6911
+    REQUIRE(overhang > 0.0F);  // ANTI-VACUITY: a panel window pads, so the overhang is real
+    const std::vector<engine::editor::CardEntryRecord>& cards = r.cards.cards;
+    REQUIRE(cards.size() == 2U);
+    // Every arm reads ImGui's answer or what a draw call was HANDED, against an independent literal. The strip, the
+    // outline and the chevron / icon / title x's are ONE recorded span through ONE pure layout (PC10 owns
+    // cardHeaderLayout's arithmetic), so re-deriving them here would compare the record with itself.
+    for (std::size_t i = 0; i < cards.size(); ++i) {
+        CAPTURE(i);
+        const engine::editor::CardEntryRecord& card = cards[i];
+        CHECK(std::abs(card.headerItemMin.x - (card.stripMinX - overhang)) <= 0.5F);  // read off ImGui's item
+        CHECK(std::abs(card.headerItemMax.x - (card.stripMaxX + overhang)) <= 0.5F);
+        CHECK(card.headerRuleDrawn == card.open);  // the rule's vertices reached the list iff the card is open
+        // The chevron's INK, re-measured off the atlas at the size AddText was handed (plan section 0.4 item 13):
+        // narrower than the glyph's box (a box reading makes the two equal), 3.5 dp wide and starting 10 dp in from the
+        // strip, each within the slack of a partly covered raster column at either edge.
+        CHECK(card.chevronInkWidth > 0.0F);  // ANTI-VACUITY: the atlas held the glyph's pixels
+        CHECK(card.chevronInkWidth < card.chevronBoxWidth);
+        CHECK(std::abs(card.chevronInkWidth - (3.5F * s)) <= 1.0F);
+        CHECK(std::abs(card.chevronInkMinX - (card.stripMinX + (10.0F * s))) <= 0.75F);
+        if (card.open) {
+            // The values handed to SetCursorScreenPos and to the fill and outline, against D4's literal. They cannot
+            // see a draw that ignores them -- the table arms below read the item ImGui PLACED.
+            CHECK(std::abs(card.topPadding - (10.0F * s)) <= 1.0F);
+            CHECK(std::abs(card.bottomPadding - (10.0F * s)) <= 1.0F);
+        }
+        if (i + 1U < cards.size()) {
+            CHECK(std::abs(card.gapAfter - (12.0F * s)) <= 1.0F);  // the Dummy's net-height arithmetic
+        }
+    }
+    if (engine::editor::sceneIoAvailable()) {
+        // The paddings as ImGui PLACED the body: the last card's ##fields table (its OuterRect, read after EndTable)
+        // starts 10 dp under the strip and ends 10 dp above the card's bottom.
+        REQUIRE(r.cards.lastBodyTableMaxY > r.cards.lastBodyTableMinY);  // ANTI-VACUITY: a table body was submitted
+        REQUIRE(cards.back().open);
+        CHECK(std::abs((r.cards.lastBodyTableMinY - cards.back().stripBottomY) - (10.0F * s)) <= 1.0F);
+        CHECK(std::abs((cards.back().outerMax.y - r.cards.lastBodyTableMaxY) - (10.0F * s)) <= 1.0F);
+    } else {
+        MESSAGE("I336: reflect tools OFF -- no table drew, so the placed-body arms have no item to read");
+        CHECK(r.cards.lastBodyTableMaxY == 0.0F);
+    }
+    // SOURCE: the header and the overflow each bracketed by their FrameBorderSize push/pop; the header's Text clear;
+    // the release-rule right-click; no IsItemClicked(Right).
+    const std::vector<std::string> chrome = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/panel_chrome_ui.cpp");
+    const std::size_t nodeAt = soleLineContaining(chrome, "TreeNodeEx(strId, CARD_HEADER_FLAGS");
+    CHECK(chrome[nodeAt - 1U].find("ImGuiStyleVar_FrameBorderSize, 0.0F") != std::string::npos);
+    CHECK(chrome[nodeAt + 1U].find("PopStyleVar(2)") != std::string::npos);
+    const std::size_t moreAt = soleLineContaining(chrome, "\"##more\"");
+    CHECK(chrome[moreAt - 1U].find("ImGuiStyleVar_FrameBorderSize, 0.0F") != std::string::npos);
+    CHECK(chrome[moreAt + 1U].find("PopStyleVar()") != std::string::npos);
+    CHECK(countLinesContaining(chrome, "PushStyleColor(ImGuiCol_Text, clearOver(ChromeRole::TextFaint))") == 1U);
+    const std::size_t rightAt = soleLineContaining(chrome, "IsMouseReleased(ImGuiMouseButton_Right)");
+    CHECK(chrome[rightAt + 1U].find("ImGuiHoveredFlags_AllowWhenBlockedByPopup") != std::string::npos);
+    CHECK(countLinesContaining(chrome, "IsItemClicked(ImGuiMouseButton_Right)") == 0U);
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
 }
