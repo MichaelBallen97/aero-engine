@@ -1093,6 +1093,87 @@ TEST_CASE("render culling: a WIDE depth range still culls, and never latches the
     CHECK_FALSE(forward->hasWarnedDegenerateFrustum());
 }
 
+TEST_CASE("render culling: the main pass counts its triangles, culled instances none (task E.6.3, CD12)") {
+    AERO_CULL_TIER1_PREAMBLE();
+
+    const engine::render::CameraView camera = makeCamera();
+    const std::vector<MeshInstance> instances = cullMixView(camera.proj * camera.view);
+    engine::render::RenderView view;
+    view.camera = camera;
+    view.instances = instances;
+    drawOnce(*target, *forward, view);
+    REQUIRE(forward->lastFrameDrawn() == 5);
+    // RESTATED LITERALS, never recomputed from the primitives (src-private, so a recomputation would share a source
+    // with the renderer): cube 12 + sphere 512 (16 x 16 x 2) + plane 2 + the mirrored cube 12 + the distant cube 12.
+    // The two OFFSCREEN instances are culled and add nothing (seed S30).
+    CHECK(forward->lastFrameTriangles() == 550);
+}
+
+TEST_CASE("render culling: the submesh path counts its submesh's indexCount / 3 (task E.6.3, CD13)") {
+    AERO_CULL_TIER1_PREAMBLE();
+
+    const std::array<engine::assets::MeshCookPrimitive, 2> primitives{triangleAt(TRI_AT_ORIGIN, 0),
+                                                                      triangleAt(TRI_FAR_OUT, 1)};
+    const std::vector<std::byte> bytes = cookTriangles(primitives);
+    const engine::assets::CookedMeshParseResult parse = engine::assets::parseCookedMesh(bytes);
+    REQUIRE(parse.status == engine::assets::CookedMeshStatus::Ok);
+    REQUIRE(parse.mesh.submeshes.size() == 2);
+    const engine::render::MeshHandle mesh = forward->createMesh(parse.mesh);
+    REQUIRE(mesh.valid());
+
+    const engine::render::CameraView camera = makeCamera();
+    const Mat4 viewProj = camera.proj * camera.view;
+    engine::render::RenderView view;
+    view.camera = camera;
+    // Submesh 0 on screen, submesh 1 at x ~ 100 (culled on its own box, CD8): only submesh 0's triangles count.
+    const std::array<MeshInstance, 2> both{meshInstance(mesh, 0, Mat4::identity(), viewProj),
+                                           meshInstance(mesh, 1, Mat4::identity(), viewProj)};
+    view.instances = both;
+    drawOnce(*target, *forward, view);
+    REQUIRE(forward->lastFrameDrawn() == 1);
+    // The expected count comes from the cook output THIS case built, never from the renderer.
+    const std::size_t expected = parse.mesh.submeshes[0].indexCount / 3U;
+    REQUIRE(expected == 1U);  // one triangle: the arithmetic is exact and the arm is not vacuous
+    CHECK(forward->lastFrameTriangles() == expected);
+}
+
+TEST_CASE("render culling: the triangle counter resets per draw, moves, and zeroes its source (task E.6.3, CD14)") {
+    AERO_CULL_TIER1_PREAMBLE();
+
+    const engine::render::CameraView camera = makeCamera();
+    const std::vector<MeshInstance> instances = cullMixView(camera.proj * camera.view);
+    engine::render::RenderView populated;
+    populated.camera = camera;
+    populated.instances = instances;
+    drawOnce(*target, *forward, populated);
+    REQUIRE(forward->lastFrameTriangles() == 550);
+    drawOnce(*target, *forward, populated);
+    CHECK(forward->lastFrameTriangles() == 550);  // PER-FRAME: an identical second draw is not 1100
+
+    // Zeroed at the top of EVERY draw(), the no-camera early return included (CD5's shape).
+    engine::render::RenderView blank;
+    blank.hasCamera = false;
+    blank.instances = instances;
+    drawOnce(*target, *forward, blank);
+    CHECK(forward->lastFrameTriangles() == 0);
+    drawOnce(*target, *forward, populated);
+    REQUIRE(forward->lastFrameTriangles() > 0);  // the move below carries a NON-zero value
+
+    SUBCASE("the move constructor carries it, and the source reads 0 (reset() is the moved-from contract)") {
+        const engine::render::ForwardRenderer moved(std::move(*forward));
+        CHECK(moved.lastFrameTriangles() == 550);   // seed S32 drops this one initializer
+        CHECK(forward->lastFrameTriangles() == 0);  // NOLINT(bugprone-use-after-move) -- reset() is the contract
+    }
+    SUBCASE("move assignment carries it, and the source reads 0") {
+        std::optional<engine::render::ForwardRenderer> other = makeForwardRenderer(*device, *target);
+        REQUIRE(other.has_value());
+        REQUIRE(other->lastFrameTriangles() == 0);  // a fresh renderer drew nothing
+        *other = std::move(*forward);
+        CHECK(other->lastFrameTriangles() == 550);
+        CHECK(forward->lastFrameTriangles() == 0);  // NOLINT(bugprone-use-after-move) -- reset() is the contract
+    }
+}
+
     #undef AERO_CULL_TIER1_PREAMBLE
 
 #endif  // AERO_SHADER_TOOLS_ENABLED

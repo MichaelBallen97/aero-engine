@@ -256,6 +256,11 @@ public:
     // construction rather than by bookkeeping that could drift.
     [[nodiscard]] std::size_t lastFrameDrawn() const noexcept;
     [[nodiscard]] std::size_t lastFrameCulled() const noexcept;
+    // task E.6.3 (D15): the main pass's TRIANGLES, per frame, after culling -- indexCount / 3 per issued drawIndexed,
+    // at the same two sites as lastFrameDrawn and nowhere else. The pass is triangle-list only (the default
+    // PrimitiveType, descriptors.hpp:174; the renderer sets no other), so the division is exact for every cooked or
+    // built-in mesh. Reset, moved and zeroed exactly as lastFrameDrawn is.
+    [[nodiscard]] std::size_t lastFrameTriangles() const noexcept;
     // How many times the material-change block ran (fragment uniform push + five-texture bind),
     // renderer lifetime. Added for the same reason pipelineBindCount was in 3.5.1: that block
     // executing for a CULLED instance is otherwise unobservable, and it is exactly what culling
@@ -449,6 +454,7 @@ private:
     std::size_t pipelineBinds = 0;         // every bindGraphicsPipeline draw() issues, renderer lifetime
     std::size_t lastDrawn = 0;             // task 3.6.1 -- PER-FRAME; reset at the top of draw()
     std::size_t lastCulled = 0;            // task 3.6.1 -- PER-FRAME; reset at the top of draw()
+    std::size_t lastTriangles = 0;         // task E.6.3 -- PER-FRAME; reset at the top of draw()
     std::size_t materialBinds = 0;         // task 3.6.1 -- material-change blocks run, renderer lifetime
     bool warnedBlendOnce = false;          // D9's latch: once per renderer lifetime, never per frame
     bool warnedDroppedAttributes = false;  // task 3.5.1 — TexCoord1/Color0 dropped at repack, latched once
