@@ -18,5 +18,8 @@ namespace engine::editor {
 
 // Mirrors ImGui::InputText(const char*, std::string*, ...) from misc/cpp/imgui_stdlib.cpp.
 bool inputTextString(const char* label, std::string& str, ImGuiInputTextFlags flags);
+// task E.6.3 (D2): the same wrapper with a hint, drawn by ImGui in its own disabled-text slot
+// (imgui_widgets.cpp:5528) -- exactly the mock's placeholder bytes, the one place that slot is the mock's answer.
+bool inputTextString(const char* label, const char* hint, std::string& str, ImGuiInputTextFlags flags);
 
 }  // namespace engine::editor

@@ -21784,10 +21784,12 @@ TEST_CASE("editor: the font, style and font-push writers each live in their own 
     // one and the snapshot that reports it to the tests.
     CHECK(writingDpiFlag == std::vector<std::string>{"imgui_layer.cpp"});
     CHECK(namingDpiFlag == std::vector<std::string>{"editor_theme_ui.cpp", "imgui_layer.cpp"});
-    // The face switches: the Console's messages, the Inspector's headers and the shell's chrome (task E.6.2: the status
-    // bar, the chip, the snap field, the breadcrumb's scene), and nothing else -- each push in a file that pops
-    // (task E.6.1, step 8).
-    const std::vector<std::string> fontPanels{"console_panel.cpp", "inspector_panel.cpp", "shell_chrome_ui.cpp"};
+    // The face switches: the Console's messages, the Inspector's headers, the shell's chrome (task E.6.2: the status
+    // bar, the chip, the snap field, the breadcrumb's scene) and the panels' shared chrome (task E.6.3: ScopedFace;
+    // every other new face is drawn with AddText(font, size), which switches nothing), and nothing else -- each push
+    // in a file that pops (task E.6.1, step 8).
+    const std::vector<std::string> fontPanels{"console_panel.cpp", "inspector_panel.cpp", "panel_chrome_ui.cpp",
+                                              "shell_chrome_ui.cpp"};
     CHECK(pushingFonts == fontPanels);
     CHECK(poppingFonts == fontPanels);
 
@@ -21836,8 +21838,8 @@ constexpr std::array<StyleColorRow, 63> STYLE_COLOR_ROWS{{
     {"Border", {38U, 43U, 51U, 255U}},                       // border
     {"BorderShadow", {13U, 15U, 18U, 0U}},                   // canvas, alpha 0
     {"FrameBg", {18U, 21U, 26U, 255U}},                      // inset
-    {"FrameBgHovered", {28U, 32U, 39U, 255U}},               // raised
-    {"FrameBgActive", {32U, 37U, 45U, 255U}},                // raisedHeader
+    {"FrameBgHovered", {36U, 41U, 50U, 255U}},               // hover (task E.6.3, D3)
+    {"FrameBgActive", {43U, 49U, 58U, 255U}},                // active (task E.6.3, D3)
     {"TitleBg", {20U, 23U, 27U, 255U}},                      // chrome
     {"TitleBgActive", {20U, 23U, 27U, 255U}},                // chrome
     {"TitleBgCollapsed", {20U, 23U, 27U, 255U}},             // chrome
@@ -22452,26 +22454,43 @@ TEST_CASE("editor: the panels read their roles from the theme (task E.6.1, I287)
     }
 
     // No panel states a colour or reads ImGui's disabled slot for enabled text (seed S25). The literal
-    // patterns are AC-9's four, the first widened to the brace spelling, plus any ImColor at all;
+    // patterns are AC-9's four, the first widened to the brace spelling, plus any ImColor at all, plus (task E.6.3,
+    // D1) a DEFAULT-CONSTRUCTED ImVec4: a transparent fill is chromeRoleColor(role, 0), never ImVec4() or ImVec4{}.
     // TextDisabled is left to ImGui's own disabled widgets.
-    const std::array<std::regex, 5> literals{
-        std::regex(R"(ImVec4[\(\{]\s*[0-9])"),  // k = 0: ImVec4( or ImVec4{, then a digit
-        std::regex(R"(IM_COL32\(\s*[0-9])"),    // k = 1
-        std::regex("IM_COL32_WHITE"),           // k = 2
-        std::regex("IM_COL32_BLACK"),           // k = 3
-        std::regex(R"(ImColor\()"),             // k = 4: any ImColor at all
+    const std::array<std::regex, 6> literals{
+        std::regex(R"(ImVec4[\(\{]\s*[0-9])"),   // k = 0: ImVec4( or ImVec4{, then a digit
+        std::regex(R"(IM_COL32\(\s*[0-9])"),     // k = 1
+        std::regex("IM_COL32_WHITE"),            // k = 2
+        std::regex("IM_COL32_BLACK"),            // k = 3: IM_COL32_BLACK_TRANS too, by substring -- on purpose
+        std::regex(R"(ImColor\()"),              // k = 4: any ImColor at all
+        std::regex(R"(ImVec4[\(\{]\s*[\)\}])"),  // k = 5 (task E.6.3): ImVec4() / ImVec4{}, a default-constructed fill
     };
-    constexpr std::array<std::string_view, 8> PANELS{
-        "console_panel.cpp", "material_panel.cpp",      "import_details_panel.cpp",   "project_ui.cpp",
-        "asset_tile.cpp",    "asset_browser_panel.cpp", "project_settings_panel.cpp", "shell_chrome_ui.cpp",
+    // Each file with its EXACT total of palette reads (task E.6.3): the rows below must add up to it, and the file may
+    // read no role it has no row for. A stated 0 is legal -- panel_chrome_ui.cpp takes every colour through
+    // chromeRoleColor and spells no palette member at all -- which a `listed > 0` claim could not express.
+    struct PanelFile {
+        std::string_view file;
+        std::size_t totalReads;
     };
+    constexpr std::array<PanelFile, 10> PANELS{{
+        {"console_panel.cpp", 7U},
+        {"material_panel.cpp", 10U},
+        {"import_details_panel.cpp", 6U},
+        {"project_ui.cpp", 2U},
+        {"asset_tile.cpp", 2U},
+        {"asset_browser_panel.cpp", 1U},
+        {"project_settings_panel.cpp", 1U},
+        {"shell_chrome_ui.cpp", 13U},     // task E.6.3: 15 - textBright - onAccent (the segments' roles moved)
+        {"panel_chrome_model.cpp", 26U},  // task E.6.3: chromeRoleColor, each role ONCE
+        {"panel_chrome_ui.cpp", 0U},      // task E.6.3: every colour through the role map
+    }};
     // The roles are READ, not merely the literals gone -- each (file, role) at its EXACT count of reads
     // in the comment-stripped code. One read swapped back to an ImGui slot (S25's site on
     // GetStyleColorVec4(ImGuiCol_Text)) states no literal and names no TextDisabled, and a "> 0" stays
     // green while any other read of that role remains: only the count moves. A set claim needs a set
     // assertion, so each file's TOTAL of palette reads is pinned as well, and a read of a role a file has
     // no row for is red too. Counted from the code at E.6.1's second code-review round.
-    constexpr std::array<RoleReads, 29> ROLE_READS{{
+    constexpr std::array<RoleReads, 53> ROLE_READS{{
         {"console_panel.cpp", "critical", 1U},   // logLevelColor's Critical arm
         {"console_panel.cpp", "error", 1U},      // its Error arm
         {"console_panel.cpp", "text", 2U},       // its Info/Off arm and the fallback after the switch
@@ -22486,24 +22505,49 @@ TEST_CASE("editor: the panels read their roles from the theme (task E.6.1, I287)
         {"asset_tile.cpp", "textMuted", 1U},
         {"asset_browser_panel.cpp", "textMuted", 1U},
         {"project_settings_panel.cpp", "textMuted", 1U},
-        {"shell_chrome_ui.cpp", "accent", 1U},         // task E.6.2: chromeColors(), each role read once
-        {"shell_chrome_ui.cpp", "active", 1U},         // task E.6.2: chromeColors(), each role read once
-        {"shell_chrome_ui.cpp", "border", 1U},         // task E.6.2: chromeColors(), each role read once
-        {"shell_chrome_ui.cpp", "chrome", 1U},         // task E.6.2: chromeColors(), each role read once
-        {"shell_chrome_ui.cpp", "divider", 1U},        // task E.6.2: chromeColors(), each role read once
-        {"shell_chrome_ui.cpp", "hover", 1U},          // task E.6.2: chromeColors(), each role read once
-        {"shell_chrome_ui.cpp", "onAccent", 1U},       // task E.6.2: chromeColors(), each role read once
-        {"shell_chrome_ui.cpp", "raised", 1U},         // task E.6.2: chromeColors(), each role read once
-        {"shell_chrome_ui.cpp", "text", 1U},           // task E.6.2: chromeColors(), each role read once
-        {"shell_chrome_ui.cpp", "textBright", 1U},     // task E.6.2: chromeColors(), each role read once
-        {"shell_chrome_ui.cpp", "textFaint", 1U},      // task E.6.2: chromeColors(), each role read once
-        {"shell_chrome_ui.cpp", "textLabel", 1U},      // task E.6.2: chromeColors(), each role read once
-        {"shell_chrome_ui.cpp", "textMuted", 1U},      // task E.6.2: chromeColors(), each role read once
-        {"shell_chrome_ui.cpp", "textSecondary", 1U},  // task E.6.2: chromeColors(), each role read once
-        {"shell_chrome_ui.cpp", "warning", 1U},        // task E.6.2: chromeColors(), each role read once
+        {"shell_chrome_ui.cpp", "accent", 1U},            // task E.6.2: chromeColors(), each role read once
+        {"shell_chrome_ui.cpp", "active", 1U},            // task E.6.2: chromeColors(), each role read once
+        {"shell_chrome_ui.cpp", "border", 1U},            // task E.6.2: chromeColors(), each role read once
+        {"shell_chrome_ui.cpp", "chrome", 1U},            // task E.6.2: chromeColors(), each role read once
+        {"shell_chrome_ui.cpp", "divider", 1U},           // task E.6.2: chromeColors(), each role read once
+        {"shell_chrome_ui.cpp", "hover", 1U},             // task E.6.2: chromeColors(), each role read once
+        {"shell_chrome_ui.cpp", "raised", 1U},            // task E.6.2: chromeColors(), each role read once
+        {"shell_chrome_ui.cpp", "text", 1U},              // task E.6.2: chromeColors(), each role read once
+        {"shell_chrome_ui.cpp", "textFaint", 1U},         // task E.6.2: chromeColors(), each role read once
+        {"shell_chrome_ui.cpp", "textLabel", 1U},         // task E.6.2: chromeColors(), each role read once
+        {"shell_chrome_ui.cpp", "textMuted", 1U},         // task E.6.2: chromeColors(), each role read once
+        {"shell_chrome_ui.cpp", "textSecondary", 1U},     // task E.6.2: chromeColors(), each role read once
+        {"shell_chrome_ui.cpp", "warning", 1U},           // task E.6.2: chromeColors(), each role read once
+        {"panel_chrome_model.cpp", "canvas", 1U},         // chromeRoleColor
+        {"panel_chrome_model.cpp", "inset", 1U},          // chromeRoleColor
+        {"panel_chrome_model.cpp", "chrome", 1U},         // chromeRoleColor
+        {"panel_chrome_model.cpp", "panel", 1U},          // chromeRoleColor
+        {"panel_chrome_model.cpp", "tile", 1U},           // chromeRoleColor
+        {"panel_chrome_model.cpp", "raised", 1U},         // chromeRoleColor
+        {"panel_chrome_model.cpp", "raisedHeader", 1U},   // chromeRoleColor
+        {"panel_chrome_model.cpp", "hover", 1U},          // chromeRoleColor
+        {"panel_chrome_model.cpp", "active", 1U},         // chromeRoleColor
+        {"panel_chrome_model.cpp", "selection", 1U},      // chromeRoleColor
+        {"panel_chrome_model.cpp", "border", 1U},         // chromeRoleColor
+        {"panel_chrome_model.cpp", "divider", 1U},        // chromeRoleColor
+        {"panel_chrome_model.cpp", "accentBorder", 1U},   // chromeRoleColor
+        {"panel_chrome_model.cpp", "textBright", 1U},     // chromeRoleColor
+        {"panel_chrome_model.cpp", "text", 1U},           // chromeRoleColor
+        {"panel_chrome_model.cpp", "textSecondary", 1U},  // chromeRoleColor
+        {"panel_chrome_model.cpp", "textLabel", 1U},      // chromeRoleColor
+        {"panel_chrome_model.cpp", "textMuted", 1U},      // chromeRoleColor
+        {"panel_chrome_model.cpp", "textFaint", 1U},      // chromeRoleColor
+        {"panel_chrome_model.cpp", "onAccent", 1U},       // chromeRoleColor
+        {"panel_chrome_model.cpp", "accent", 1U},         // chromeRoleColor
+        {"panel_chrome_model.cpp", "warning", 1U},        // chromeRoleColor
+        {"panel_chrome_model.cpp", "error", 1U},          // chromeRoleColor
+        {"panel_chrome_model.cpp", "success", 1U},        // chromeRoleColor
+        {"panel_chrome_model.cpp", "info", 1U},           // chromeRoleColor
+        {"panel_chrome_model.cpp", "critical", 1U},       // chromeRoleColor
     }};
     std::size_t rowsRead = 0;
-    for (const std::string_view file : PANELS) {
+    for (const PanelFile& panel : PANELS) {
+        const std::string_view file = panel.file;
         CAPTURE(file);
         const std::string path = std::string(AERO_EDITOR_SRC_DIR "/").append(file);
         const std::vector<std::string> code = editorSourceCodeLines(path);
@@ -22522,8 +22566,8 @@ TEST_CASE("editor: the panels read their roles from the theme (task E.6.1, I287)
                 ++rowsRead;
             }
         }
-        CHECK(listed > 0U);                            // every one of the eight reads a role
-        CHECK(countPaletteReads(code, "") == listed);  // ... and no role it has no row for
+        CHECK(listed == panel.totalReads);                       // the rows add up to the file's stated total
+        CHECK(countPaletteReads(code, "") == panel.totalReads);  // ... and no role it has no row for
     }
     CHECK(rowsRead == ROLE_READS.size());  // no row names a file outside the eight, so none is skipped
     // The Console's levels reach the draw through logLevelColor: its definition and its one call.
@@ -22546,6 +22590,12 @@ TEST_CASE("editor: the panels read their roles from the theme (task E.6.1, I287)
     CHECK(std::regex_search(whiteCaption, literals[2]));
     const std::string imColorText = "ImGui::PushStyleColor(ImGuiCol_Text, ImColor(255, 0, 0).Value)";
     CHECK(std::regex_search(imColorText, literals[4]));
+    // task E.6.3: the natural transparent spellings ARE refused, and the one legal spelling is not.
+    CHECK(std::regex_search(std::string("ImVec4(0, 0, 0, 0)"), literals[0]));
+    CHECK(std::regex_search(std::string("drawList->AddRect(a, b, IM_COL32_BLACK_TRANS)"), literals[3]));
+    CHECK(std::regex_search(std::string("ImGui::PushStyleColor(ImGuiCol_Header, ImVec4{})"), literals[5]));
+    CHECK(std::regex_search(std::string("ImGui::PushStyleColor(ImGuiCol_Header, ImVec4( ))"), literals[5]));
+    CHECK_FALSE(std::regex_search(std::string("return toImVec4(chromeRoleColor(surface, 0U));"), literals[5]));
 }
 
 // ---- I288: the viewport's chrome reads the live UI scale (task E.6.1, step 7) ----------------------------
@@ -24247,7 +24297,7 @@ TEST_CASE("editor: the chrome's pushes, flags, roles and format safety as source
     SUBCASE("(a) NoFocus pushes balance and exist (seed S31; validation row 3 is the behaviour)") {
         const std::size_t pushes = countLinesContaining(code, "PushItemFlag(ImGuiItemFlags_NoFocus");
         CHECK(pushes == countLinesContaining(code, "PopItemFlag("));
-        CHECK(pushes == 2U);  // groupButton and Undo
+        CHECK(pushes == 1U);  // the Undo button's -- segmentButton's moved to panel_chrome_ui.cpp (task E.6.3), (m)
     }
     SUBCASE("(b) each FrameBorderSize push is popped on its own button (seed S30)") {
         std::size_t pushes = 0;
@@ -24263,12 +24313,16 @@ TEST_CASE("editor: the chrome's pushes, flags, roles and format safety as source
             CAPTURE(i);
             CHECK(popped);
         }
-        CHECK(pushes == 2U);
+        CHECK(pushes == 1U);  // the Undo button's; segmentButton's is (m)'s
     }
-    SUBCASE("(c) the active set pushes all three button slots (seed S29)") {
-        const std::size_t fillAt = soleLineContaining(code, "PushStyleColor(ImGuiCol_Button, activeFill)");
-        CHECK(soleLineContaining(code, "PushStyleColor(ImGuiCol_ButtonHovered, activeFill)") == fillAt + 1U);
-        CHECK(soleLineContaining(code, "PushStyleColor(ImGuiCol_ButtonActive, activeFill)") == fillAt + 2U);
+    SUBCASE("(c) the active set pushes all three button slots (seed S29) -- segmentButton's, since task E.6.3") {
+        const std::vector<std::string> chrome = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/panel_chrome_ui.cpp");
+        REQUIRE(chrome.size() > 100U);
+        const std::size_t fillAt = soleLineContaining(chrome, "PushStyleColor(ImGuiCol_Button, fill)");
+        CHECK(soleLineContaining(chrome, "PushStyleColor(ImGuiCol_ButtonHovered, fill)") == fillAt + 1U);
+        CHECK(soleLineContaining(chrome, "PushStyleColor(ImGuiCol_ButtonActive, fill)") == fillAt + 2U);
+        REQUIRE(fillAt > 0U);
+        CHECK(chrome[fillAt - 1U].find("const ImVec4 fill = roleVec4(activeFill);") != std::string::npos);
     }
     SUBCASE("(d) both bars carry all six flags, and each window is ended") {
         const std::size_t flagsAt = soleLineContaining(code, "constexpr ImGuiWindowFlags BAR_FLAGS");
@@ -24408,16 +24462,17 @@ TEST_CASE("editor: the chrome's pushes, flags, roles and format safety as source
             std::string_view role;
             std::size_t count;
         };
-        constexpr std::array<RoleCount, 15> COUNTS{{{"chrome", 2U},
-                                                    {"raised", 3U},
-                                                    {"border", 2U},
-                                                    {"active", 3U},
-                                                    {"textBright", 2U},
+        // task E.6.3: the segmented group's reads moved to panel_chrome_ui.cpp with segmentButton and
+        // segmentGroupBackground -- raised 3 -> 2, border 2 -> 1, active 3 -> 1, accent 2 -> 1, textSecondary 3 -> 1,
+        // textMuted 6 -> 5 -- and textBright and onAccent left this file (asserted 0 below).
+        constexpr std::array<RoleCount, 13> COUNTS{{{"chrome", 2U},
+                                                    {"raised", 2U},
+                                                    {"border", 1U},
+                                                    {"active", 1U},
                                                     {"hover", 1U},
-                                                    {"accent", 2U},
-                                                    {"onAccent", 1U},
-                                                    {"textSecondary", 3U},
-                                                    {"textMuted", 6U},
+                                                    {"accent", 1U},
+                                                    {"textSecondary", 1U},
+                                                    {"textMuted", 5U},
                                                     {"textLabel", 1U},
                                                     {"text", 1U},
                                                     {"textFaint", 1U},
@@ -24427,9 +24482,36 @@ TEST_CASE("editor: the chrome's pushes, flags, roles and format safety as source
             CAPTURE(row.role);
             CHECK(reads(row.role) == row.count);
         }
+        CHECK(reads("textBright") == 0U);
+        CHECK(reads("onAccent") == 0U);
         // The pairs whose contrast TH13 floors, at the sites that draw them.
-        CHECK(countLinesContaining(code, "groupButton(label, active, c.accent, c.onAccent, c.textSecondary") == 1U);
+        // The call wraps after its fourth argument (120 columns), so the needle is its first line.
+        constexpr std::string_view TOOL_CALL = "segmentButton(label, active, ChromeRole::Accent, ChromeRole::OnAccent,";
+        CHECK(countLinesContaining(code, TOOL_CALL) == 1U);
         CHECK(countLinesContaining(code, "drawText(layout.backend, layout.backendX, c.accent)") == 1U);
+    }
+    SUBCASE("(m) the shared chrome's own NoFocus and FrameBorderSize pushes balance (task E.6.3, the hoist)") {
+        const std::vector<std::string> chrome = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/panel_chrome_ui.cpp");
+        REQUIRE(chrome.size() > 100U);
+        const std::size_t noFocus = countLinesContaining(chrome, "PushItemFlag(ImGuiItemFlags_NoFocus");
+        CHECK(noFocus == countLinesContaining(chrome, "PopItemFlag("));
+        CHECK(noFocus == 1U);  // segmentButton's
+        // Every FrameBorderSize push is popped within four lines: segmentButton's, the card header's and the
+        // overflow's inline, ClearFrameStyle's in the destructor that follows its constructor.
+        std::size_t pushes = 0;
+        for (std::size_t i = 0; i < chrome.size(); ++i) {
+            if (chrome[i].find("ImGuiStyleVar_FrameBorderSize") == std::string::npos) {
+                continue;
+            }
+            ++pushes;
+            bool popped = false;
+            for (std::size_t j = i + 1U; j < std::min(chrome.size(), i + 5U); ++j) {
+                popped = popped || chrome[j].find("PopStyleVar(") != std::string::npos;
+            }
+            CAPTURE(i);
+            CHECK(popped);
+        }
+        CHECK(pushes == 4U);
     }
     SUBCASE("(i) the naming sets after the chrome") {
         CHECK(e62FilesNaming("TransformToolState") ==

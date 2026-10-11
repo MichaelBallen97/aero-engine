@@ -7,6 +7,7 @@
 // NOTHING here is a request read back. The one stated exception: snapFormat/snapValue are what was HANDED to
 // DragFloat, because a DragFloat formats into a stack buffer that nothing can read back.
 #include <aero/core/math.hpp>
+#include <aero/editor/panel_chrome_model.hpp>  // ItemRectRecord (task E.6.3)
 #include <aero/editor/toolbar_model.hpp>
 
 #include <array>
@@ -15,12 +16,9 @@
 
 namespace engine::editor {
 
-struct ToolbarButtonRecord {
-    Vec2 min{};
-    Vec2 max{};
-    bool drawnActive = false;  // drawn with the active push set (accent + onAccent, or active + textBright)
-    bool enabled = false;      // ImGuiItemFlags_Disabled was CLEAR on the item, read back with GetItemFlags()
-};
+// task E.6.3: MOVED to panel_chrome_model.hpp as ItemRectRecord (the segmented group's record, shared with the
+// panels); the old name stays so no E.6.2 member, case or line changes spelling (PC8).
+using ToolbarButtonRecord = ItemRectRecord;
 
 struct ShellChromeRecord {
     std::uint64_t framesRecorded = 0;  // + 1 per drawToolbar: every read below is vacuous while this is 0

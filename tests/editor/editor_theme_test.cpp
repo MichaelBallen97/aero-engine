@@ -10,11 +10,12 @@
 #include <aero/editor/axis_palette.hpp>  // the AXIS_* aliases (TH3)
 #include <aero/editor/editor_app.hpp>    // EditorAppConfig's clear colour (TH3)
 #include <aero/editor/editor_theme.hpp>
-#include <aero/editor/gizmo_style.hpp>      // the GIZMO_* aliases (TH3)
-#include <aero/editor/inspector_model.hpp>  // inspectorAxisBoxWidth, inspectorLabelColumnWidth (TH11)
-#include <aero/editor/material_card.hpp>    // materialSwatchWantsDarkLabel (TH8)
-#include <aero/editor/text_file.hpp>        // readTextFile (TH10)
-#include <aero/editor/viewport_gizmos.hpp>  // ViewportGizmoTints (TH3)
+#include <aero/editor/gizmo_style.hpp>         // the GIZMO_* aliases (TH3)
+#include <aero/editor/inspector_model.hpp>     // inspectorAxisBoxWidth, inspectorLabelColumnWidth (TH11)
+#include <aero/editor/material_card.hpp>       // materialSwatchWantsDarkLabel (TH8)
+#include <aero/editor/panel_chrome_model.hpp>  // cardGeometry (TH15)
+#include <aero/editor/text_file.hpp>           // readTextFile (TH10)
+#include <aero/editor/viewport_gizmos.hpp>     // ViewportGizmoTints (TH3)
 
 #include <doctest/doctest.h>
 
@@ -299,6 +300,7 @@ TEST_CASE("theme: the type scale (task E.6.1, TH4)") {
     CHECK(type.monoSize == type.bodySize);
     CHECK(type.strongSize == type.bodySize);
     CHECK(type.iconSizeRatio == 0.6875F);  // 11/16 is exact in binary
+    CHECK(type.titleSize == 20.0F);        // task E.6.3 (D3): the Inspector's entity name
 }
 
 TEST_CASE("theme: every ImGuiStyle size member is stated (task E.6.1, TH5)") {
@@ -713,4 +715,92 @@ TEST_CASE("theme: every pair the chrome draws meets its role's floor (task E.6.2
     // ...and the two states the three-slot push exists to avoid (D19): onAccent on hover / active is unreadable.
     CHECK(contrastRatio(p.onAccent, p.hover) < 1.5);
     CHECK(contrastRatio(p.onAccent, p.active) < 1.5);
+}
+
+TEST_CASE("theme: the panel metrics and colours, as measured (task E.6.3, TH14)") {
+    // 32 floats + four Srgb8 (4 bytes each, alignment 1): 32 x 4 + 4 x 4 = 144, alignment 4 on every target. A member
+    // added or removed moves the size, and this case restates every value beside it.
+    static_assert(sizeof(ed::ThemePanels) == 144U);
+    static_assert(alignof(ed::ThemePanels) == 4U);
+    const ed::ThemePanels& p = ed::EDITOR_THEME.panels;
+    CHECK(p.cardPaddingX == 12.0F);
+    CHECK(p.cardPaddingY == 10.0F);
+    CHECK(p.cardGap == 12.0F);
+    CHECK(p.cardHeaderPaddingY == 8.0F);
+    CHECK(p.cardHeaderPaddingX == 10.0F);
+    CHECK(p.cardChevronWidth == 3.5F);
+    CHECK(p.cardIconGap == 8.0F);
+    CHECK(p.chipPaddingX == 10.0F);
+    CHECK(p.chipPaddingY == 5.0F);
+    CHECK(p.hudInset == 14.0F);
+    CHECK(p.hudGap == 8.0F);
+    CHECK(p.statsPaddingX == 12.0F);
+    CHECK(p.statsPaddingY == 10.0F);
+    CHECK(p.statsRowPitch == 19.0F);
+    CHECK(p.statsCardWidth == 209.0F);
+    CHECK(p.statsValueGap == 16.0F);
+    CHECK(p.panelHeaderPaddingY == 3.0F);
+    CHECK(p.kindDotSize == 6.0F);
+    CHECK(p.kindDotGap == 8.0F);
+    CHECK(p.rowMetaInsetX == 6.0F);
+    CHECK(p.entitySwatchSize == 15.0F);
+    CHECK(p.axisLetterInset == 4.0F);
+    CHECK(p.axisLetterGap == 3.0F);
+    CHECK(p.addComponentPaddingX == 17.0F);
+    CHECK(p.dashLength == 2.5F);
+    CHECK(p.dashGap == 2.5F);
+    CHECK(p.tileRing == 1.0F);
+    CHECK(p.wellRounding == 3.0F);
+    CHECK(p.hatchPeriod == 20.0F);
+    CHECK(p.hatchStripeWidth == 10.0F);
+    CHECK(p.viewAxisCircleGap == 5.0F);
+    CHECK(p.consoleColumnGap == 16.0F);
+    checkSrgb8(p.consoleWarnRowTint, {35U, 35U, 35U, 255U});
+    checkSrgb8(p.consoleErrorRowTint, {38U, 33U, 37U, 255U});
+    checkSrgb8(p.hatchStripe, {37U, 41U, 46U, 255U});
+    checkSrgb8(p.addComponentDash, {53U, 80U, 94U, 255U});
+}
+
+TEST_CASE("theme: the panel heights derive the mock's (task E.6.3, TH15)") {
+    // INDEPENDENT literals -- the mock's heights; the derivation is what is under test.
+    CHECK(ed::cardHeaderHeightDp(ed::EDITOR_THEME) == 32.0F);
+    CHECK(ed::chipHeightDp(ed::EDITOR_THEME) == 24.0F);
+    CHECK(ed::statusBarHeightDp(ed::EDITOR_THEME) == 26.0F);       // the Console footer's band, E.6.2's derivation
+    CHECK(ed::statsCardHeightDp(ed::EDITOR_THEME, 5U) == 110.0F);  // the mock's card
+    CHECK(ed::statsCardHeightDp(ed::EDITOR_THEME, 6U) == 129.0F);  // the shipped card; a whole pitch per row reads 134
+    CHECK(ed::statsCardHeightDp(ed::EDITOR_THEME, 1U) == 34.0F);   // one row: 2 x 10 + one small line
+    CHECK(ed::statsCardHeightDp(ed::EDITOR_THEME, 0U) == 34.0F);   // no row is laid out as one, never an underflow
+    static_assert(ed::cardHeaderHeightDp(ed::EDITOR_THEME) == 32.0F);  // constexpr, as stated
+    // The model and the theme derive ONE number.
+    for (const float s : {1.0F, 1.5F, 2.0F}) {
+        CAPTURE(s);
+        CHECK(ed::cardGeometry(s).headerHeight == ed::cardHeaderHeightDp(ed::EDITOR_THEME) * s);
+        CHECK(ed::chipHeight(s) == ed::chipHeightDp(ed::EDITOR_THEME) * s);
+    }
+}
+
+TEST_CASE("theme: every text the panels draw on a ThemePanels ground meets its floor (task E.6.3, TH16)") {
+    // WCAG 2 from the bytes, TH7's helper. The values beside each row are this helper's own output for the bytes.
+    // textFaint (the Console stamp, every count) and the asset-kind colours carry NO floor, by stated decision (D8),
+    // as TH7 leaves textFaint out: the hatched label draws in textSecondary for exactly that reason.
+    const ed::ThemePalette& p = ed::EDITOR_THEME.palette;
+    const ed::ThemePanels& k = ed::EDITOR_THEME.panels;
+    const std::vector<FloorRow> rows{
+        {"text on the warn tint (a message)", p.text, k.consoleWarnRowTint, 7.0},                 // ~11.3
+        {"text on the error tint (a message)", p.text, k.consoleErrorRowTint, 7.0},               // ~11.4
+        {"warning on the warn tint (WARN)", p.warning, k.consoleWarnRowTint, 4.5},                // ~6.87
+        {"error on the error tint (ERROR)", p.error, k.consoleErrorRowTint, 4.5},                 // ~4.66
+        {"critical on the error tint (CRITICAL)", p.critical, k.consoleErrorRowTint, 4.5},        // ~4.57
+        {"textSecondary on hatchStripe (a hatched label)", p.textSecondary, k.hatchStripe, 4.5},  // ~6.75
+        {"textSecondary on tile (a hatched label)", p.textSecondary, p.tile, 4.5},                // ~7.81
+        {"accent on hover (Add Component, hovered)", p.accent, p.hover, 4.5},                     // ~6.52
+        {"accent on active (Add Component, held)", p.accent, p.active, 4.5},                      // ~5.85
+    };
+    REQUIRE(rows.size() == 9U);
+    for (const FloorRow& row : rows) {
+        CAPTURE(row.name);
+        const double ratio = contrastRatio(row.foreground, row.background);
+        CAPTURE(ratio);
+        CHECK(ratio >= row.floor);
+    }
 }

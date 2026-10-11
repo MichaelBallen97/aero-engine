@@ -9,7 +9,8 @@
 #include <aero/editor/editor_camera.hpp>
 #include <aero/editor/editor_theme.hpp>
 #include <aero/editor/gizmo_style.hpp>
-#include <aero/editor/picking.hpp>  // projectToViewport, ProjectionMode
+#include <aero/editor/panel_chrome_model.hpp>  // task E.6.3 (US9, US11)
+#include <aero/editor/picking.hpp>             // projectToViewport, ProjectionMode
 #include <aero/editor/selection_overlay.hpp>
 #include <aero/editor/status_bar.hpp>
 #include <aero/editor/text_file.hpp>  // readTextFile (US9's source-text claim)
@@ -364,9 +365,11 @@ TEST_CASE(
     CHECK(read > 60U);  // ANTI-VACUITY: the walk really read the public headers
     const std::map<std::string, std::string> expected{
         {"breadcrumb.hpp", "P"},  // task E.6.2: breadcrumbLayout
-        {"gizmo_style.hpp", "PP"},      {"selection_overlay.hpp", "P"},
-        {"status_bar.hpp", "P"},      // task E.6.2: statusBarLayout
-        {"toolbar_model.hpp", "PP"},  // task E.6.2: shellBarHeight, toolbarLayout
+        {"gizmo_style.hpp", "PP"},
+        {"selection_overlay.hpp", "P"},
+        {"panel_chrome_model.hpp", "PPPPPP"},  // task E.6.3: card, header, chip, hairline, face size, chevron
+        {"status_bar.hpp", "P"},               // task E.6.2: statusBarLayout
+        {"toolbar_model.hpp", "PP"},           // task E.6.2: shellBarHeight, toolbarLayout
         {"view_axis_gizmo.hpp", "MPP"},
     };
     CHECK(found.size() == expected.size());
@@ -414,5 +417,20 @@ TEST_CASE("ui scale: each E.6.2 layout treats a bad scale as 1 (task E.6.2, US10
         const ed::StatusBarLayout statusBad = ed::statusBarLayout(600.0F, status, width, bad);
         CHECK((statusBad == ed::statusBarLayout(600.0F, status, width, 1.0F)));
         CHECK(ed::shellBarHeight(44.0F, bad) == 44.0F);
+    }
+}
+
+TEST_CASE("ui scale: each E.6.3 layout treats a bad scale as 1 (task E.6.3, US11)") {
+    // One arm per E.6.3 model, each landing with its model: a NaN, an infinity, zero or a negative scale lays out
+    // exactly as 1 -- US10's rule, the pure half of every panel's HiDPI claim.
+    for (const float bad : {NAN_F, INF_F, -INF_F, 0.0F, -2.0F}) {
+        CAPTURE(bad);
+        CHECK((ed::cardGeometry(bad) == ed::cardGeometry(1.0F)));
+        CHECK((ed::cardHeaderLayout(0.0F, 300.0F, 11.0F, 24.0F, bad) ==
+               ed::cardHeaderLayout(0.0F, 300.0F, 11.0F, 24.0F, 1.0F)));
+        CHECK(ed::chipHeight(bad) == ed::chipHeight(1.0F));
+        CHECK(ed::hairline(1.0F, bad, 2.0F) == ed::hairline(1.0F, 1.0F, 2.0F));
+        CHECK(ed::faceSizePoints(14.0F, bad) == ed::faceSizePoints(14.0F, 1.0F));
+        CHECK(ed::chevronFaceSize(16.0F, 7.0F, bad) == ed::chevronFaceSize(16.0F, 7.0F, 1.0F));
     }
 }

@@ -89,6 +89,7 @@ struct ThemeTypeScale {
     float strongSize = 16.0F;             // SemiBold
     float monoSize = 16.0F;               // Plex Mono
     float iconSizeRatio = 11.0F / 16.0F;  // spec D7: Lucide merged at 11/16 of its face; exactly 0.6875F
+    float titleSize = 20.0F;              // task E.6.3 (D3): the Inspector's entity name, Strong; ~20 on the mock
 };
 
 // spec D14: EVERY ImGuiStyle size, alignment and behaviour member, in dp at uiScale 1 -- one member per
@@ -283,6 +284,49 @@ struct ThemeShell {
     float ruleThickness = 1.0F;          // the toolbar's bottom rule and the status bar's top rule: 2 px
 };
 
+// task E.6.3 (D3): the panels' chrome -- cards, chips, the HUD, rows, the tile face -- in dp, Category A, plus the
+// four colours the mock shows that no palette token matches. Every value is a mock measurement (2884 x 1864 at 2x,
+// sRGB; 1 dp = 2 px), a derivation, or a stated choice -- each comment says which. Radii that equal an existing
+// metric reuse it (childRounding, frameRounding); every rule and outline is shell.ruleThickness through hairline().
+struct ThemePanels {
+    float cardPaddingX = 12.0F;          // the body's inset, left and right
+    float cardPaddingY = 10.0F;          // the body's DRAWN top and bottom padding, net of ItemSpacing.y (D4)
+    float cardGap = 12.0F;               // card to card, drawn
+    float cardHeaderPaddingY = 8.0F;     // derived: body 16 + 2 x 8 = 32, the 31-dp strip plus its rule
+    float cardHeaderPaddingX = 10.0F;    // the chevron's ink 10 dp from the card's edge
+    float cardChevronWidth = 3.5F;       // the chevron's INK: 7 x 7 px (x 2244-2250)
+    float cardIconGap = 8.0F;            // chevron -> icon, and icon -> title (chosen)
+    float chipPaddingX = 10.0F;          // "RMB + WASD to fly": 111.5 dp = 90.9 in BodySmall + 2 x 10.3 (10)
+    float chipPaddingY = 5.0F;           // small 14 + 2 x 5 = 24, the chip's outer height
+    float hudInset = 14.0F;              // chip and stats card from the image's edges
+    float hudGap = 8.0F;                 // hint chip to hint chip
+    float statsPaddingX = 12.0F;         // the stats card's inner inset
+    float statsPaddingY = 10.0F;         // (110 - 4 x 19 - 14) / 2
+    float statsRowPitch = 19.0F;         // a 38-px pitch: a smallSize line + 5
+    float statsCardWidth = 209.0F;       // the card's outline, x 1745-2163: FIXED, so it never resizes (D9)
+    float statsValueGap = 16.0F;         // chosen: the least label -> value gap, inside the width's max arm only
+    float panelHeaderPaddingY = 3.0F;    // derived: frame 24 + 2 x 3 = 30, the in-panel header rows
+    float kindDotSize = 6.0F;            // the Hierarchy's kind dot, and the hatched label's dot
+    float kindDotGap = 8.0F;             // the label 14 dp after the dot's left edge
+    float rowMetaInsetX = 6.0F;          // a row's meta from the content edge
+    float entitySwatchSize = 15.0F;      // the Inspector header's kind swatch
+    float axisLetterInset = 4.0F;        // chosen, compact: the axis letter inside its frame (D5)
+    float axisLetterGap = 3.0F;          // chosen, compact: letter -> value (replaces AXIS_LETTER_GAP_DP)
+    float addComponentPaddingX = 17.0F;  // derived: (126 - 92 "Add Component" in Strong 16) / 2
+    float dashLength = 2.5F;             // 5 px on
+    float dashGap = 2.5F;                // 5 px off
+    float tileRing = 1.0F;               // the tile ring's thickness, handed to hairline()
+    float wellRounding = 3.0F;           // the tile well's corner
+    float hatchPeriod = 20.0F;           // 39-40 px along a row
+    float hatchStripeWidth = 10.0F;      // 19-20 px along a row
+    float viewAxisCircleGap = 5.0F;      // the circle's 37.75 dp radius against the balls' 32.7 (D9)
+    float consoleColumnGap = 16.0F;      // tag -> channel; the stamp column's +9 dp is a stated departure (D7)
+    Srgb8 consoleWarnRowTint{35U, 35U, 35U, 255U};   // opaque over `panel`
+    Srgb8 consoleErrorRowTint{38U, 33U, 37U, 255U};  // opaque over `panel`; Critical uses it too
+    Srgb8 hatchStripe{37U, 41U, 46U, 255U};          // the most frequent stripe byte over `tile`
+    Srgb8 addComponentDash{53U, 80U, 94U, 255U};     // the dashed outline
+};
+
 struct EditorTheme {
     ThemePalette palette;
     ThemeTypeScale type;
@@ -294,7 +338,8 @@ struct EditorTheme {
     ThemeSwatchLabel swatchLabel;
     ThemeViewport viewport;
     ThemeClears clear;
-    ThemeShell shell;  // task E.6.2
+    ThemeShell shell;    // task E.6.2
+    ThemePanels panels;  // task E.6.3
 };
 
 inline constexpr EditorTheme EDITOR_THEME{};  // THE one value
@@ -309,6 +354,20 @@ inline constexpr EditorTheme EDITOR_THEME{};  // THE one value
 }
 [[nodiscard]] constexpr float statusBarHeightDp(const EditorTheme& theme) noexcept {
     return theme.type.smallSize + (2.0F * theme.shell.statusBarPaddingY);
+}
+
+// task E.6.3 (D3): heights the panels DERIVE, each matching the mock -- which is the check that the derivation is
+// right: a card header 32 (a body line inside cardHeaderPaddingY), a chip 24 (a small line inside chipPaddingY), and
+// the stats card at `rows` rows: the last row adds one small line, not a whole pitch (110 at the mock's 5, 129 at 6).
+[[nodiscard]] constexpr float cardHeaderHeightDp(const EditorTheme& theme) noexcept {
+    return theme.type.bodySize + (2.0F * theme.panels.cardHeaderPaddingY);
+}
+[[nodiscard]] constexpr float chipHeightDp(const EditorTheme& theme) noexcept {
+    return theme.type.smallSize + (2.0F * theme.panels.chipPaddingY);
+}
+[[nodiscard]] constexpr float statsCardHeightDp(const EditorTheme& theme, std::uint32_t rows) noexcept {
+    const float pitches = rows > 0U ? static_cast<float>(rows - 1U) : 0.0F;
+    return (2.0F * theme.panels.statsPaddingY) + (pitches * theme.panels.statsRowPitch) + theme.type.smallSize;
 }
 
 inline constexpr float UI_SCALE_MIN = 0.5F;
