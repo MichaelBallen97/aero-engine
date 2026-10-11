@@ -1,14 +1,19 @@
 #include "hierarchy_panel.hpp"
 
+#include <aero/editor/asset_view.hpp>  // elideCaptionRight
 #include <aero/editor/command_stack.hpp>
+#include <aero/editor/editor_theme.hpp>
 #include <aero/editor/entity_commands.hpp>
+#include <aero/editor/entity_presentation.hpp>
 #include <aero/editor/panel_context.hpp>
 #include <aero/editor/selection.hpp>
 #include <aero/editor/shortcut_hint.hpp>  // task E.6.2: Duplicate's hint
 #include <aero/scene/mesh_renderer.hpp>   // task 3.1.5: the row arm asks the LIVE World, never the payload
 #include <aero/scene/world.hpp>
 
-#include "create_menu_ui.hpp"  // task E.5.2: drawCreateMenuItems -- the ONE drawing helper
+#include "create_menu_ui.hpp"   // task E.5.2: drawCreateMenuItems -- the ONE drawing helper
+#include "editor_theme_ui.hpp"  // currentUiScale
+#include "panel_chrome_ui.hpp"
 #include "text_input.hpp"
 
 #include <algorithm>
@@ -16,6 +21,7 @@
 #include <cstddef>
 #include <cstring>  // std::memcpy -- the payload read (C6: the ImGui payload is alignas(1))
 #include <imgui.h>
+#include <imgui_internal.h>  // GetTopMostPopupModal -- the request seam's noModal (I337)
 #include <memory>
 #include <optional>
 #include <span>
@@ -102,12 +108,27 @@ void HierarchyPanel::onDraw(PanelContext& context) {
     rows.clear();
     childArena.clear();
     stack.clear();
+    beginHierarchyRecordFrame(drawRecordValue);  // task E.6.3: one recorded frame per onDraw
     pending = PendingAction{};
 
-    // -- phase 2: shortcuts. DEFAULT (focus-scoped) routing, never RouteGlobal: an active InputText
-    //    owns the keys it consumes (E25) and an unfocused panel sees nothing (E26). Contrast 2.1.3's
-    //    deliberately global Ctrl/Cmd+Q.
-    if (!renaming.valid()) {
+    // -- task E.6.3: the search request, drained under the field's own predicate and no modal (I337) --
+    searchEnabled = !renaming.valid();  // a rename owns the keyboard: the field is disabled meanwhile
+    const bool noModal = ImGui::GetTopMostPopupModal() == nullptr;
+    if (pendingSearchQuery.has_value() && searchEnabled && noModal) {
+        searchText = std::move(*pendingSearchQuery);
+    }
+    pendingSearchQuery.reset();  // a moved-from optional stays ENGAGED (E.4.3's one-shot rule)
+
+    // -- phase 1b: the header row. The badge counts the PREVIOUS frame's matches: the list is built in the child
+    //    below, after the badge draws (stated, D6; the breadcrumb's precedent).
+    hierarchyBadgeText(world.entityCount(), searchText.empty() ? std::nullopt : lastMatchCount, badgeScratch);
+    drawHeaderRow();
+
+    // -- phase 2: shortcuts. DEFAULT (focus-scoped) routing, never RouteGlobal (E25/E26) -- and GATED while the search
+    //    field is active: it owns only the arrows, Delete, Backspace, Home and End (imgui_widgets.cpp:4923-4925), so
+    //    Cmd+D and F2 would otherwise act on the selection while the user types (D6). The child below routes these
+    //    because the panel window is on its focus route.
+    if (hierarchyShortcutsLive(renaming.valid(), searchActive)) {
         if (ImGui::Shortcut(ImGuiKey_Delete) || ImGui::Shortcut(ImGuiKey_Backspace)) {
             pending = PendingAction{.kind = ActionKind::Delete};
         }
@@ -119,12 +140,53 @@ void HierarchyPanel::onDraw(PanelContext& context) {
         }
     }
 
-    // -- phase 3 --
+    // -- phases 3 and 4, inside the ALWAYS-present ##tree child (D6): a 90-row scene scrolls under a fixed header. The
+    //    reveal scroll (SetScrollHereY acts on the current window), the void target and both context menus move with
+    //    the tree; keyboardFocusPanelId reads the ROOT window's name, so E.3.2's router sees no difference.
+    ImGui::BeginChild("##tree", ImVec2(0.0F, 0.0F), ImGuiChildFlags_None);
+    const ImVec2 treePos = ImGui::GetWindowPos();
+    const ImVec2 treeSize = ImGui::GetWindowSize();
+    drawRecordValue.treeChildMin = Vec2{treePos.x, treePos.y};
+    drawRecordValue.treeChildMax = Vec2{treePos.x + treeSize.x, treePos.y + treeSize.y};
     drawTree(context);
-    // -- phase 4 --
     drawVoidTarget(context);
+    ImGui::EndChild();  // UNCONDITIONAL -- 1:1 with BeginChild whatever it returned
     // -- phase 5 --
     applyPending(context);
+}
+
+// task E.6.3 (D6): an UNFILLED header row (the window's own `panel` ground) over a divider rule: the search field
+// with its hint filling the row, the count badge right-aligned. The field's IsItemActive() is read HERE -- before
+// the shortcut phase, on the same frame (I312's order arm).
+void HierarchyPanel::drawHeaderRow() {
+    const float s = currentUiScale();
+    const ImVec2 rowMin = ImGui::GetCursorScreenPos();
+    const float rowWidth = ImGui::GetContentRegionAvail().x;
+    const float padY = EDITOR_THEME.panels.panelHeaderPaddingY * s;
+    const float frame = ImGui::GetFrameHeight();
+    const HierarchyHeaderLayout layout =
+        hierarchyHeaderLayout(rowMin.x, rowWidth, faceTextWidth(PanelFace::MonoSmall, badgeScratch), s);
+    ImGui::SetCursorScreenPos(ImVec2(rowMin.x, rowMin.y + padY));
+    ImGui::SetNextItemWidth(layout.searchWidth);
+    ImGui::BeginDisabled(!searchEnabled);
+    inputTextString("##search", "Search entities", searchText, ImGuiInputTextFlags_None);
+    searchActive = ImGui::IsItemActive();
+    drawRecordValue.searchActive = searchActive;
+    drawRecordValue.searchFieldMin = Vec2{ImGui::GetItemRectMin().x, ImGui::GetItemRectMin().y};
+    drawRecordValue.searchFieldMax = Vec2{ImGui::GetItemRectMax().x, ImGui::GetItemRectMax().y};
+    ImGui::EndDisabled();
+    // The badge, its small Mono line centred on the field.
+    const float smallPoints = panelFacePoints(PanelFace::MonoSmall);
+    ImGui::SetCursorScreenPos(ImVec2(layout.badgeX, rowMin.y + padY + ((frame - smallPoints) * 0.5F)));
+    countBadge(badgeScratch);
+    drawRecordValue.badgeText = badgeScratch;
+    const float ruleY = rowMin.y + frame + (2.0F * padY);
+    // The record reads what the list RECEIVED: AddRectFilled adds no vertex at alpha 0 (imgui_draw.cpp:1532).
+    ImDrawList* const headerList = ImGui::GetWindowDrawList();
+    const int ruleVertices = headerList->VtxBuffer.Size;
+    horizontalRule(headerList, rowMin.x, rowMin.x + rowWidth, ruleY, ChromeRole::Divider);
+    drawRecordValue.headerRuleDrawn = headerList->VtxBuffer.Size > ruleVertices;
+    ImGui::SetCursorScreenPos(ImVec2(rowMin.x, ruleY + ruleHeight()));  // the ##tree child is the item that follows
 }
 
 void HierarchyPanel::drawTree(PanelContext& context) {
@@ -144,19 +206,35 @@ void HierarchyPanel::drawTree(PanelContext& context) {
     scrollTarget = revealTarget;  // task E.5.2 -- consumed by drawRow, or dropped below
     revealTarget = {};
 
-    // The actual walk is the pure, ImGui-free engine::editor::walkForest (review round 2, Gap 1):
-    // `enter` draws the row and reports whether it is open; `unwind` owes ImGui the matching
-    // TreePop/PopID pair (I3) -- TreePop only when `open`, PopID unconditionally, mirroring
-    // TreeNodeEx's own contract (leaf nodes always report `open == true`, imgui.h:1360).
-    const auto enter = [this, &context](Entity e) { return drawRow(context, e); };
-    const auto unwind = [](Entity /*entity*/, bool open) {
-        if (open) {
-            ImGui::TreePop();
+    if (!searchText.empty()) {
+        // task E.6.3 (D6): a FLAT pre-order list of every match -- no forced expansion of the user's tree. Each row is
+        // the same row widget drawn Leaf | NoTreePushOnOpen, so the unwind owes ImGui its two PopIDs and no TreePop.
+        collectHierarchyMatches(world, context.roots.entities(), searchText, matches, stack, childArena, labelScratch);
+        lastMatchCount = matches.size();
+        drawRecordValue.flatMode = true;
+        flatRow = true;
+        for (const Entity entity : matches) {
+            (void)drawRow(context, entity);  // a NoTreePushOnOpen leaf pushes no tree level
+            ImGui::PopID();
+            ImGui::PopID();
         }
-        ImGui::PopID();
-        ImGui::PopID();
-    };
-    walkForest(world, context.roots.entities(), stack, childArena, enter, unwind);
+        flatRow = false;
+    } else {
+        lastMatchCount.reset();
+        // The actual walk is the pure, ImGui-free engine::editor::walkForest (review round 2, Gap 1):
+        // `enter` draws the row and reports whether it is open; `unwind` owes ImGui the matching
+        // TreePop/PopID pair (I3) -- TreePop only when `open`, PopID unconditionally, mirroring
+        // TreeNodeEx's own contract (leaf nodes always report `open == true`, imgui.h:1360).
+        const auto enter = [this, &context](Entity e) { return drawRow(context, e); };
+        const auto unwind = [](Entity /*entity*/, bool open) {
+            if (open) {
+                ImGui::TreePop();
+            }
+            ImGui::PopID();
+            ImGui::PopID();
+        };
+        walkForest(world, context.roots.entities(), stack, childArena, enter, unwind);
+    }
 
     revealPath.clear();  // consumed -- ImGui's own per-ID storage now remembers the open state
     scrollTarget = {};   // task E.5.2: a reveal whose row was never drawn does not scroll on a later frame
@@ -184,6 +262,9 @@ bool HierarchyPanel::drawRow(PanelContext& context, Entity entity) {
     if (selection.contains(entity)) {
         flags |= ImGuiTreeNodeFlags_Selected;
     }
+    if (flatRow) {
+        flags |= ImGuiTreeNodeFlags_Leaf | ImGuiTreeNodeFlags_NoTreePushOnOpen;  // D6: the flat list's row
+    }
 
     // Review round 2, Gap 2: force this row open if it sits on the path to `revealTarget` -- MUST run
     // before TreeNodeEx, which is the "next" widget call SetNextItemOpen affects. `ImGuiCond_Always`
@@ -194,7 +275,13 @@ bool HierarchyPanel::drawRow(PanelContext& context, Entity entity) {
     }
     // The label goes through the "%s" FORMAT argument, never as the format string: the str_id
     // overload is IM_FMTARGS(3), and an entity named "%s" would otherwise be a format-string bug.
-    const bool open = ImGui::TreeNodeEx("##row", flags, "%s", isRenaming ? "" : labelScratch.c_str());
+    // task E.6.3 (D6): ImGui draws the arrow (textFaint) and its own square selection fill (Header = selection, KEPT
+    // for the Hierarchy alone); the label is drawn below at the x ImGui would have used, after the kind dot.
+    const float rowCursorX = ImGui::GetCursorScreenPos().x;
+    ImGui::PushStyleColor(ImGuiCol_Text, roleVec4(ChromeRole::TextFaint));
+    const bool open = ImGui::TreeNodeEx("##row", flags, "%s", "");
+    ImGui::PopStyleColor();
+    drawRowChrome(world, entity, selection.contains(entity), isRenaming, rowCursorX);
     // task E.5.2 (D7): the revealed row is scrolled into view when it is NOT visible -- a root create is
     // appended at the bottom of the root order, so in a long scene the new selection would otherwise be off
     // screen. IsItemVisible and SetScrollHereY both read the item JUST submitted (SetScrollHereY targets
@@ -280,8 +367,9 @@ bool HierarchyPanel::drawRow(PanelContext& context, Entity entity) {
     }
     // The RELEASE half: resolves the ONE candidate armed above, on whatever later frame the mouse
     // button actually comes back up. `GetDragDropPayload() != nullptr` is the PUBLIC-API drag signal
-    // (ImGui::IsDragDropActive() is internal-only, declared in imgui_internal.h, which this TU does not
-    // include) -- and it is accurate here specifically because this function unconditionally calls
+    // (ImGui::IsDragDropActive() is internal-only, declared in imgui_internal.h; this TU includes that header
+    // only for GetTopMostPopupModal and keeps the public signal) -- and it is accurate here specifically because
+    // this function unconditionally calls
     // BeginDragDropSource() + SetDragDropPayload() every frame for every row above: the payload is live
     // the instant this row's own press crosses ImGui's drag threshold, and per imgui.cpp's own "Elapse
     // payload" bookkeeping (EndFrame), it is NOT cleared until the frame AFTER release even when
@@ -352,6 +440,53 @@ bool HierarchyPanel::drawRow(PanelContext& context, Entity entity) {
         }
     }
     return open;
+}
+
+// task E.6.3 (D6): the row's dot, label and meta, on the draw list -- NO item, so the node stays the last item for
+// the drag, drop, click and context-menu reads after it. Every x from hierarchyRowLayout.
+void HierarchyPanel::drawRowChrome(const World& world, Entity entity, bool selected, bool renaming, float rowCursorX) {
+    ImDrawList* const list = ImGui::GetWindowDrawList();
+    const ImGuiStyle& style = ImGui::GetStyle();
+    const ImVec2 itemMin = ImGui::GetItemRectMin();
+    const ImVec2 itemMax = ImGui::GetItemRectMax();
+    // Where ImGui would have put an unframed node's label: the arrow box (FontSize) and two FramePadding.x
+    // (imgui_widgets.cpp:6893's unframed text_offset_x).
+    const float labelStartX = rowCursorX + ImGui::GetFontSize() + (2.0F * style.FramePadding.x);
+    const float rowMidY = (itemMin.y + itemMax.y) * 0.5F;
+    const std::size_t children = world.childCount(entity);
+    metaScratch.clear();
+    if (children > 0U) {
+        metaScratch = std::to_string(children);  // the DIRECT child count (D6), never the descendants
+    }
+    const HierarchyRowLayout layout =
+        hierarchyRowLayout(labelStartX, itemMax.x, rowMidY, faceTextWidth(PanelFace::MonoSmall, metaScratch),
+                           children > 0U, currentUiScale());
+    const ChromeRole role = entityKindRole(entityKindFor(world, entity), selected);
+    // The dot is counted off the vertices the list RECEIVED, never beside the call: AddCircleFilled adds none at
+    // alpha 0 or a radius under 0.5 (imgui_draw.cpp:1634), and a deleted call adds none either (I309).
+    const int dotVertices = list->VtxBuffer.Size;
+    const ImVec2 dotCenter((layout.dotMin.x + layout.dotMax.x) * 0.5F, rowMidY);
+    roleDot(list, dotCenter, layout.dotMax.x - layout.dotMin.x, role);
+    ++drawRecordValue.rowsDrawn;
+    if (list->VtxBuffer.Size > dotVertices) {
+        ++drawRecordValue.dotsDrawn;
+    }
+    drawRecordValue.rowRoles.push_back(HierarchyRowRole{.entity = entity, .role = role});
+    if (!renaming) {
+        const float maxWidth = layout.labelMaxX - layout.labelX;
+        const std::string drawn = elideCaptionRight(labelScratch, [maxWidth](std::string_view text) {
+            return faceTextWidth(PanelFace::Body, text) <= maxWidth;
+        });
+        const float textY = rowMidY - (panelFacePoints(PanelFace::Body) * 0.5F);
+        drawRoleText(list, PanelFace::Body, ImVec2(layout.labelX, textY),
+                     selected ? ChromeRole::Accent : ChromeRole::Text, drawn);
+    }
+    if (layout.metaShown) {
+        const float smallY = rowMidY - (panelFacePoints(PanelFace::MonoSmall) * 0.5F);
+        drawRoleText(list, PanelFace::MonoSmall, ImVec2(layout.metaX, smallY), ChromeRole::TextFaint, metaScratch);
+        ++drawRecordValue.metasDrawn;
+        drawRecordValue.rowMetas.push_back(HierarchyRowMeta{.entity = entity, .text = metaScratch});
+    }
 }
 
 void HierarchyPanel::drawVoidTarget(PanelContext& context) {
@@ -448,6 +583,7 @@ void HierarchyPanel::applyPending(PanelContext& context) {
                     cmd, std::make_unique<CreateEntityCommand>(parent, std::string_view{}, selection.entities()))) {
                 rangeAnchor = selection.primary();
                 revealTarget = rangeAnchor;  // Gap 2: open a collapsed parent to show it, next frame
+                searchText.clear();          // task E.6.3 (D6)
             }
             break;
         }
@@ -482,6 +618,7 @@ void HierarchyPanel::applyPending(PanelContext& context) {
                 // AC-13/E9/E13: the command has already selected the copies (D5).
                 rangeAnchor = selection.primary();
                 revealTarget = rangeAnchor;  // Gap 2: reveal the primary copy too
+                searchText.clear();          // task E.6.3 (D6)
             }
             break;
         }

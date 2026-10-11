@@ -35,6 +35,8 @@
 #include <aero/editor/editor_prefs.hpp>     // task E.6.2 (I294, I302): writeEditorPrefs / readEditorPrefs
 #include <aero/editor/entity_commands.hpp>  // task 2.4.2
 #include <aero/editor/entity_ops.hpp>
+#include <aero/editor/entity_presentation.hpp>
+#include <aero/editor/hierarchy_view.hpp>
 #include <aero/editor/model_import_session.hpp>  // task 3.2.1: SessionState, named directly (I52-I59)
 #include <aero/editor/panel_registry.hpp>
 #include <aero/editor/picking.hpp>            // task 2.3.2
@@ -22472,8 +22474,9 @@ TEST_CASE("editor: the panels read their roles from the theme (task E.6.1, I287)
         std::string_view file;
         std::size_t totalReads;
     };
-    constexpr std::array<PanelFile, 10> PANELS{{
-        {"console_panel.cpp", 0U},  // task E.6.3: every colour a ChromeRole
+    constexpr std::array<PanelFile, 11> PANELS{{
+        {"console_panel.cpp", 0U},    // task E.6.3: every colour a ChromeRole
+        {"hierarchy_panel.cpp", 0U},  // task E.6.3: every colour a ChromeRole
         {"material_panel.cpp", 10U},
         {"import_details_panel.cpp", 6U},
         {"project_ui.cpp", 2U},
@@ -24590,6 +24593,26 @@ void e63Front(engine::editor::EditorApp& app, const char* panelId, const char* s
     return 0.0F;
 }
 
+// The meta a Hierarchy row drew this frame, by HANDLE; nullopt when the row drew none.
+[[nodiscard]] std::optional<std::string> e63MetaOf(const engine::editor::HierarchyDrawRecord& r, engine::Entity e) {
+    for (const engine::editor::HierarchyRowMeta& meta : r.rowMetas) {
+        if (meta.entity == e) {
+            return meta.text;
+        }
+    }
+    return std::nullopt;
+}
+// The role a Hierarchy row's dot was handed this frame, by HANDLE; nullopt when the row was not drawn.
+[[nodiscard]] std::optional<engine::editor::ChromeRole> e63RoleOf(const engine::editor::HierarchyDrawRecord& r,
+                                                                  engine::Entity e) {
+    for (const engine::editor::HierarchyRowRole& row : r.rowRoles) {
+        if (row.entity == e) {
+            return row.role;
+        }
+    }
+    return std::nullopt;
+}
+
 }  // namespace
 
 TEST_CASE("editor: Console rows -- the tint, the columns, the channel stripped for display (task E.6.3, I313)") {
@@ -24742,4 +24765,198 @@ TEST_CASE("editor: the Console's footer band, reservation and header (task E.6.3
     app->requestQuit();
     CHECK(app->tick() == false);
     app.reset();
+}
+
+TEST_CASE("editor: Hierarchy rows -- a dot on every row, a direct-child meta on parents only (task E.6.3, I309)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "hierarchy rows i309", .width = 900, .height = 600});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = e62App(*device, *window, ctx);
+    auto* const hierarchy = dynamic_cast<engine::editor::HierarchyPanel*>(app->panels().find("Hierarchy"));
+    REQUIRE(hierarchy != nullptr);
+    // The default scene has four roots and NO child (F11), so a parent is seeded: Group > {Child A > Nested Probe,
+    // Child B}. No node is DefaultOpen, so Group starts collapsed.
+    engine::World& world = app->world();
+    const engine::Entity group = engine::editor::createEntity(world, {}, "Group");
+    const engine::Entity childA = engine::editor::createEntity(world, group, "Child A");
+    const engine::Entity childB = engine::editor::createEntity(world, group, "Child B");
+    const engine::Entity nested = engine::editor::createEntity(world, childA, "Nested Probe");
+    const std::uint64_t before = hierarchy->drawRecord().framesRecorded;
+    e62Ticks(*app, 2);
+    const engine::editor::HierarchyDrawRecord& r = hierarchy->drawRecord();
+    REQUIRE(r.framesRecorded > before);
+    REQUIRE(world.entityCount() == 8U);
+    // COLLAPSED: the four default roots and Group -- the children provably hidden.
+    CHECK(r.rowsDrawn == 5U);
+    CHECK(r.dotsDrawn == r.rowsDrawn);
+    CHECK(r.metasDrawn == 1U);
+    CHECK(e63MetaOf(r, group) == std::optional<std::string>("2"));
+    CHECK(r.badgeText == std::to_string(world.entityCount()));  // "8": the hidden rows are counted
+    CHECK(r.searchFieldMax.x > r.searchFieldMin.x);             // the search field drew
+    CHECK(r.headerRuleDrawn);
+    CHECK_FALSE(r.flatMode);
+    // EXPANDED through the reveal path (it opens the ancestor chain, F11).
+    hierarchy->revealEntity(nested);
+    e62Ticks(*app, 2);
+    CHECK(r.rowsDrawn == 8U);
+    CHECK(r.metasDrawn == 2U);
+    CHECK(e63MetaOf(r, group) == std::optional<std::string>("2"));  // DIRECT children, never Group's three (S59)
+    CHECK(e63MetaOf(r, childA) == std::optional<std::string>("1"));
+    for (const engine::Entity leaf : {childB, nested}) {
+        CHECK_FALSE(e63MetaOf(r, leaf).has_value());  // no meta on a leaf (S58)
+    }
+    std::size_t parents = 0;
+    for (const engine::editor::HierarchyRowRole& row : r.rowRoles) {
+        parents += world.childCount(row.entity) > 0U ? 1U : 0U;
+        if (world.childCount(row.entity) == 0U) {
+            CHECK_FALSE(e63MetaOf(r, row.entity).has_value());  // the four default roots too
+        }
+    }
+    REQUIRE(parents == 2U);  // ANTI-VACUITY: this scene has parents to count
+    CHECK(r.metasDrawn == parents);
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: Hierarchy search -- a flat list over every entity, the badge m / n (task E.6.3, I310)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "hierarchy search i310", .width = 900, .height = 600});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = e62App(*device, *window, ctx);
+    auto* const hierarchy = dynamic_cast<engine::editor::HierarchyPanel*>(app->panels().find("Hierarchy"));
+    REQUIRE(hierarchy != nullptr);
+    engine::World& world = app->world();
+    const engine::Entity group = engine::editor::createEntity(world, {}, "Group");
+    const engine::Entity childA = engine::editor::createEntity(world, group, "Child A");
+    (void)engine::editor::createEntity(world, group, "Child B");
+    const engine::Entity nested = engine::editor::createEntity(world, childA, "Nested Probe");
+    e62Ticks(*app, 2);
+    const engine::editor::HierarchyDrawRecord& r = hierarchy->drawRecord();
+    REQUIRE(r.rowsDrawn == 5U);
+    REQUIRE_FALSE(e63RoleOf(r, nested).has_value());  // ANTI-VACUITY: hidden under a collapsed parent
+    hierarchy->requestSearchQuery("nested");
+    e62Ticks(*app, 2);  // the badge counts the previous frame's matches: two ticks (D6)
+    CHECK(r.flatMode);
+    CHECK(r.rowsDrawn == 1U);
+    CHECK(e63RoleOf(r, nested).has_value());  // the walk is TOTAL: a match under a collapsed parent is listed (S10)
+    CHECK(r.badgeText == "1 / 8");
+    hierarchy->requestSearchQuery("cu");
+    e62Ticks(*app, 2);
+    CHECK(r.rowsDrawn == 1U);  // only "Cube" among the eight labels
+    CHECK(r.badgeText == "1 / 8");
+    hierarchy->requestSearchQuery("zzz");
+    e62Ticks(*app, 2);
+    CHECK(r.rowsDrawn == 0U);
+    CHECK(r.badgeText == "0 / 8");
+    hierarchy->requestSearchQuery("");
+    e62Ticks(*app, 2);
+    CHECK_FALSE(r.flatMode);
+    CHECK(r.rowsDrawn == 5U);  // the user's expansion state untouched: Group still collapsed
+    CHECK(r.badgeText == "8");
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: a create while searching clears the query and selects the new row (task E.6.3, I311)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "hierarchy create i311", .width = 900, .height = 600});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = e62App(*device, *window, ctx);
+    auto* const hierarchy = dynamic_cast<engine::editor::HierarchyPanel*>(app->panels().find("Hierarchy"));
+    REQUIRE(hierarchy != nullptr);
+    const engine::World& world = app->world();
+    const engine::Entity originalCube = e62EntityNamed(world, "Cube");
+    const engine::Entity camera = e62EntityNamed(world, "Main Camera");
+    REQUIRE(originalCube.valid());
+    REQUIRE(camera.valid());
+    hierarchy->requestSearchQuery("cube");
+    e62Ticks(*app, 2);
+    const engine::editor::HierarchyDrawRecord& r = hierarchy->drawRecord();
+    REQUIRE(r.flatMode);
+    hierarchy->requestCreate(engine::editor::CreateKind::Cube);
+    e62Ticks(*app, 3);  // the drain creates, selects and reveals; the next draw shows the forest
+    const engine::Entity created = app->selection().primary();
+    REQUIRE(created.valid());
+    REQUIRE_FALSE((created == originalCube));
+    CHECK_FALSE(r.flatMode);  // the query is empty: a revealed row must be visible (S12)
+    // Roles BY HANDLE, each present first (the record lists every drawn row).
+    REQUIRE(e63RoleOf(r, created).has_value());
+    REQUIRE(e63RoleOf(r, originalCube).has_value());
+    REQUIRE(e63RoleOf(r, camera).has_value());
+    CHECK((*e63RoleOf(r, created) == engine::editor::ChromeRole::Accent));        // selected (S14)
+    CHECK((*e63RoleOf(r, originalCube) == engine::editor::ChromeRole::Info));     // an unselected mesh
+    CHECK((*e63RoleOf(r, camera) == engine::editor::ChromeRole::TextSecondary));  // control
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: the Hierarchy's search gate and tree child as source text (task E.6.3, I312)") {
+    const std::vector<std::string> code = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/hierarchy_panel.cpp");
+    REQUIRE(code.size() > 200U);
+    CHECK(countLinesContaining(code, "hierarchyShortcutsLive(") == 1U);
+    // THE ORDER (seed S9): the header row -- where the field's IsItemActive() is read -- runs before the gate, both
+    // inside onDraw, and the tree after them. One frame late is the defect this arm exists for.
+    const std::size_t onDrawAt = soleLineContaining(code, "void HierarchyPanel::onDraw(");
+    const std::size_t headerAt = soleLineContaining(code, "drawHeaderRow();");
+    const std::size_t gateAt = soleLineContaining(code, "hierarchyShortcutsLive(");
+    const std::size_t treeAt = soleLineContaining(code, "drawTree(context);");
+    CHECK(onDrawAt < headerAt);
+    CHECK(headerAt < gateAt);
+    CHECK(gateAt < treeAt);
+    const std::size_t headerDefAt = soleLineContaining(code, "void HierarchyPanel::drawHeaderRow(");
+    const std::size_t activeAt = soleLineContaining(code, "searchActive = ImGui::IsItemActive();");
+    const std::size_t treeDefAt = soleLineContaining(code, "void HierarchyPanel::drawTree(");
+    CHECK(headerDefAt < activeAt);
+    CHECK(activeAt < treeDefAt);  // the read is drawHeaderRow's own
+    // ALWAYS a child: the BeginChild statement opens its line, so no `if` guards it.
+    const std::size_t childAt = soleLineContaining(code, "BeginChild(\"##tree\"");
+    CHECK(code[childAt].find_first_not_of(' ') == code[childAt].find("ImGui::BeginChild"));
+    // The flat list's rows push no tree level.
+    CHECK(countLinesContaining(code, "ImGuiTreeNodeFlags_Leaf | ImGuiTreeNodeFlags_NoTreePushOnOpen") == 1U);
+    // No new create path (I253(d), (h)).
+    CHECK(countLinesContaining(code, "pendingCreate = ") == 4U);
+    CHECK(countLinesContaining(code, "make_unique<CreateEntityCommand>") == 1U);
+}
+
+TEST_CASE("editor: every E.6.3 request is drained under its control's predicate and no modal (task E.6.3, I337)") {
+    // I307(j)'s shape: each request's drain line names the predicate the control's own BeginDisabled reads AND
+    // noModal, computed ONCE per function from GetTopMostPopupModal() (a modal blocks every click, imgui.cpp:5620).
+    SUBCASE("the Hierarchy's search query") {
+        const std::vector<std::string> code = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/hierarchy_panel.cpp");
+        const std::size_t drainAt = soleLineContaining(code, "pendingSearchQuery.has_value() &&");
+        CHECK(code[drainAt].find("searchEnabled") != std::string::npos);
+        CHECK(code[drainAt].find("noModal") != std::string::npos);
+        CHECK(countLinesContaining(code, "GetTopMostPopupModal()") == 1U);
+        CHECK(countLinesContaining(code, "BeginDisabled(!searchEnabled)") == 1U);  // the control reads the same term
+    }
 }

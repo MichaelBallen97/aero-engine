@@ -5,8 +5,10 @@
 //
 // FRAME SHAPE (D12) -- onDraw is exactly five phases, in this order:
 //   1. reconcile  prune the selection, reconcile the root order, drop dead rename/anchor handles
-//   2. shortcuts  Delete / Backspace / Ctrl-Cmd+D / F2, focus-routed, RECORDED only
+//   1b. header    task E.6.3: the search field (its IsItemActive read HERE) and the count badge
+//   2. shortcuts  Delete / Backspace / Ctrl-Cmd+D / F2, focus-routed, gated by hierarchyShortcutsLive, RECORDED only
 //   3. walk       the tree, strictly READ-ONLY -- no World and no Selection mutation (I1)
+//                 (inside the always-present ##tree child; the flat match list while a query is set)
 //   4. void       the "click empty space to clear / drop here to unparent" target
 //   5. apply      one switch over `pending` -- the ONLY place anything mutates
 // Phases 1 and 5 bracket the ImGui work so that mutating mid-walk (which would invalidate
@@ -16,6 +18,7 @@
 #include <aero/editor/asset_drag.hpp>   // task 3.1.5 -- AssetDragPayload, HierarchyAssetDrop
 #include <aero/editor/create_menu.hpp>  // task E.5.2 -- CreateKind, by value below; PUBLIC and PURE
 #include <aero/editor/entity_ops.hpp>
+#include <aero/editor/hierarchy_view.hpp>  // task E.6.3 -- HierarchyDrawRecord; PUBLIC and PURE
 #include <aero/editor/panel.hpp>
 #include <aero/editor/tree_walk.hpp>
 #include <aero/scene/entity.hpp>
@@ -68,7 +71,14 @@ public:
     void revealEntity(Entity entity) noexcept {
         rangeAnchor = entity;
         revealTarget = entity;
+        searchText.clear();  // task E.6.3 (D6): a revealed row must be VISIBLE, so a create leaves the flat list
     }
+
+    // ---- task E.6.3: the search field's seam and the draw record (D14) ----------------------------------------
+    // The SEAM writes the query the field would hold; it is applied at the next draw, and only while the field is
+    // enabled (no rename in progress) and no modal is up -- the field's own predicate (I337).
+    void requestSearchQuery(std::string query) { pendingSearchQuery = std::move(query); }
+    [[nodiscard]] const HierarchyDrawRecord& drawRecord() const noexcept { return drawRecordValue; }
 
 private:
     // performance-enum-size: the explicit underlying type is mandatory, like every engine enum.
@@ -95,8 +105,10 @@ private:
 
     void drawTree(PanelContext& context);
     [[nodiscard]] bool drawRow(PanelContext& context, Entity entity);
+    void drawRowChrome(const World& world, Entity entity, bool selected, bool renaming, float rowCursorX);
     void drawVoidTarget(PanelContext& context);
     void applyPending(PanelContext& context);
+    void drawHeaderRow();
 
     // Task 2.4.2, D10: the root order (RootOrder) moved to EditorApp (accessor context.roots) so a
     // structural command can restore a deleted root to the row it occupied. This panel still
@@ -131,6 +143,17 @@ private:
     PendingAction pending{};
     std::optional<HierarchyAssetDrop> pendingAssetDrop;  // task 3.1.5 -- drained by tick(), never here
     std::optional<CreateKind> pendingCreate;             // task E.5.2 -- drained by tick(), never here
+    // task E.6.3 (D6): the search and the header row.
+    std::string searchText;                         // the field's buffer; non-empty = the flat match list
+    std::optional<std::string> pendingSearchQuery;  // requestSearchQuery's one-shot, drained in onDraw
+    bool searchEnabled = true;                      // !renaming, set in onDraw before the header draws
+    bool searchActive = false;                      // the field's IsItemActive(), read in drawHeaderRow
+    bool flatRow = false;                           // drawRow is drawing a flat-list row (Leaf | NoTreePushOnOpen)
+    std::vector<Entity> matches;                    // this frame's flat list, in pre-order
+    std::optional<std::size_t> lastMatchCount;      // the badge counts the PREVIOUS frame's matches (it draws first)
+    std::string badgeScratch;
+    std::string metaScratch;
+    HierarchyDrawRecord drawRecordValue;  // drawRecord()'s value, named apart from it
 };
 
 }  // namespace engine::editor

@@ -10,6 +10,7 @@
 #include <aero/editor/editor_camera.hpp>
 #include <aero/editor/editor_theme.hpp>
 #include <aero/editor/gizmo_style.hpp>
+#include <aero/editor/hierarchy_view.hpp>
 #include <aero/editor/panel_chrome_model.hpp>  // task E.6.3 (US9, US11)
 #include <aero/editor/picking.hpp>             // projectToViewport, ProjectionMode
 #include <aero/editor/selection_overlay.hpp>
@@ -368,6 +369,7 @@ TEST_CASE(
         {"breadcrumb.hpp", "P"},     // task E.6.2: breadcrumbLayout
         {"console_view.hpp", "PP"},  // task E.6.3: consoleRowLayout, consoleSegmentGap
         {"gizmo_style.hpp", "PP"},
+        {"hierarchy_view.hpp", "PP"},  // task E.6.3: hierarchyRowLayout, hierarchyHeaderLayout
         {"selection_overlay.hpp", "P"},
         {"panel_chrome_model.hpp", "PPPPPP"},  // task E.6.3: card, header, chip, hairline, face size, chevron
         {"status_bar.hpp", "P"},               // task E.6.2: statusBarLayout
@@ -437,5 +439,9 @@ TEST_CASE("ui scale: each E.6.3 layout treats a bad scale as 1 (task E.6.3, US11
         const ed::ConsoleRowLayout rowBad = ed::consoleRowLayout(0.0F, 6.462F, 12.0F, 10.5F, bad);
         CHECK((rowBad == ed::consoleRowLayout(0.0F, 6.462F, 12.0F, 10.5F, 1.0F)));
         CHECK(ed::consoleSegmentGap(bad) == ed::consoleSegmentGap(1.0F));
+        const ed::HierarchyRowLayout rowLayoutBad = ed::hierarchyRowLayout(100.0F, 400.0F, 50.0F, 20.0F, true, bad);
+        CHECK((rowLayoutBad == ed::hierarchyRowLayout(100.0F, 400.0F, 50.0F, 20.0F, true, 1.0F)));
+        const ed::HierarchyHeaderLayout headerBad = ed::hierarchyHeaderLayout(10.0F, 300.0F, 40.0F, bad);
+        CHECK((headerBad == ed::hierarchyHeaderLayout(10.0F, 300.0F, 40.0F, 1.0F)));
     }
 }
