@@ -25103,9 +25103,38 @@ TEST_CASE("editor: the Hierarchy's search gate and tree child as source text (ta
     CHECK(heldAt < releasedAt);
     CHECK(releasedAt < ownsAt);
     CHECK(code[gateAt].find("hierarchyShortcutsLive(renaming.valid(), searchOwnsKeys)") != std::string::npos);
-    // ALWAYS a child: the BeginChild statement opens its line, so no `if` guards it.
+    // The line closing the block a `{`-ended line opens: the first later line that is exactly its indentation and `}`.
+    const auto blockCloseAt = [&code](std::size_t openAt) {
+        const std::string close = code[openAt].substr(0, code[openAt].find_first_not_of(' ')) + "}";
+        std::size_t at = openAt + 1U;
+        while (at < code.size() && code[at].substr(0, code[at].find_last_not_of(" \t\r") + 1U) != close) {
+            ++at;  // npos + 1 is 0, so a blank line reads "" and never matches
+        }
+        return at;
+    };
+    // ALWAYS a child, and its ANSWER is used (the code-review round's finding 6): the statement binding `treeVisible`
+    // opens its line and EndChild opens its own at the same indentation, so no `if` guards the pair; the walk and the
+    // void target sit inside `if (treeVisible) {`, which closes before EndChild, so a skipped child consumes no reveal
+    // (I340); and the match count runs in onDraw ahead of that `if`, so the badge stays current over a skipped child.
     const std::size_t childAt = soleLineContaining(code, "BeginChild(\"##tree\"");
-    CHECK(code[childAt].find_first_not_of(' ') == code[childAt].find("ImGui::BeginChild"));
+    const std::size_t childIndent = code[childAt].find_first_not_of(' ');
+    CHECK(childIndent == code[childAt].find("const bool treeVisible = ImGui::BeginChild(\"##tree\""));
+    const std::size_t endChildAt = soleLineContaining(code, "ImGui::EndChild();");
+    CHECK(childAt < endChildAt);
+    CHECK(code[endChildAt].find("ImGui::EndChild();") == childIndent);
+    CHECK(code[endChildAt].find_first_not_of(' ') == childIndent);
+    const std::size_t visibleAt = soleLineContaining(code, "if (treeVisible) {");
+    const std::size_t visibleCloseAt = blockCloseAt(visibleAt);
+    const std::size_t voidAt = soleLineContaining(code, "drawVoidTarget(context);");
+    CHECK(childAt < visibleAt);
+    CHECK(visibleAt < treeAt);
+    CHECK(treeAt < visibleCloseAt);
+    CHECK(visibleAt < voidAt);
+    CHECK(voidAt < visibleCloseAt);
+    CHECK(visibleCloseAt < endChildAt);
+    const std::size_t countAt = soleLineContaining(code, "lastMatchCount = matches.size();");
+    CHECK(onDrawAt < countAt);
+    CHECK(countAt < visibleAt);
     // THE GATE THE KEYS OBEY: I339 reads the RECORDED verdict, so the `if` every Shortcut() runs behind reads that same
     // local, with no code between the verdict, its record and the `if`, and every Shortcut() sits inside that `if`
     // block, which closes before the tree child opens. A careless `if` (one that drops the field's term) is otherwise
@@ -25114,12 +25143,7 @@ TEST_CASE("editor: the Hierarchy's search gate and tree child as source text (ta
     const std::size_t ifAt = soleLineContaining(code, "if (shortcutsLive) {");
     CHECK(nextCodeLine(code, gateAt + 1U) == recordAt);
     CHECK(nextCodeLine(code, recordAt + 1U) == ifAt);
-    const std::string ifClose = code[ifAt].substr(0, code[ifAt].find_first_not_of(' ')) + "}";
-    std::size_t ifCloseAt = ifAt + 1U;
-    while (ifCloseAt < code.size() &&
-           code[ifCloseAt].substr(0, code[ifCloseAt].find_last_not_of(" \t\r") + 1U) != ifClose) {
-        ++ifCloseAt;  // npos + 1 is 0, so a blank line reads "" and never matches
-    }
+    const std::size_t ifCloseAt = blockCloseAt(ifAt);
     REQUIRE(ifCloseAt < childAt);
     CHECK(countLinesContaining(code, "ImGui::Shortcut(") == 3U);  // Delete or Backspace, Ctrl+D, F2
     for (std::size_t i = 0; i < code.size(); ++i) {
@@ -27016,6 +27040,118 @@ TEST_CASE("editor: the Hierarchy's shortcuts stay gated while its search field k
     REQUIRE(r.searchFocused);
     REQUIRE_FALSE(r.searchActive);
     CHECK(r.shortcutsLive);
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: a skipped Hierarchy tree child keeps a pending reveal (task E.6.3, I340)") {
+    // The code-review round's finding 6. BeginChild clips the ##tree child with the panel's ClipRect
+    // (imgui.cpp:8434-8440), and a child clipped away entirely -- a dock cut down to its header row -- is SKIPPED
+    // (:8733-8738, :8764-8768): TreeNodeBehavior returns at its first statement (imgui_widgets.cpp:6879-6880), before
+    // TreeNodeUpdateNextOpen, so a reveal walked there was consumed and never applied, and the parent stayed collapsed
+    // once the dock was tall again. This TU never sees imgui.h, so the dock is cut by the OS window's height: the
+    // Hierarchy's Left node spans the dockspace between the toolbar and the status bar.
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "hierarchy skipped tree i340", .width = 900, .height = 600});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = e62App(*device, *window, ctx);
+    auto* const hierarchy = dynamic_cast<engine::editor::HierarchyPanel*>(app->panels().find("Hierarchy"));
+    REQUIRE(hierarchy != nullptr);
+    engine::World& world = app->world();
+    const engine::Entity group = engine::editor::createEntity(world, {}, "Group");
+    const engine::Entity child = engine::editor::createEntity(world, group, "Child");
+    e62Ticks(*app, 2);
+    const engine::editor::HierarchyDrawRecord& r = hierarchy->drawRecord();
+    REQUIRE(world.entityCount() == 6U);
+    REQUIRE(r.rowsDrawn == 5U);                      // the four default roots and Group
+    REQUIRE_FALSE(e63RoleOf(r, child).has_value());  // ANTI-VACUITY: Child is hidden under a collapsed Group
+    REQUIRE(r.treeChildMin.y < r.panelClipMaxY);     // the control: at full height the child is visible
+    REQUIRE(r.searchFieldMax.y < r.treeChildMin.y);  // the field sits above the child
+
+    // THE CUT: the panel's clip bottom lands mid-field, so the panel draws (its header row is cut) and the child does
+    // not. The panel's clip bottom follows the window's height one for one; what lies below it is the status bar.
+    const engine::platform::WindowSize full = window->size();
+    const float belowClip = static_cast<float>(full.height) - r.panelClipMaxY;
+    const float fieldMidY = (r.searchFieldMin.y + r.searchFieldMax.y) * 0.5F;
+    const auto cutHeight = static_cast<std::int32_t>(std::lround(fieldMidY + belowClip));
+    window->setSize(full.width, cutHeight);
+    e62Ticks(*app, 3);
+    if (window->size().height != cutHeight) {
+        MESSAGE("I340: the window took height " << window->size().height << ", not " << cutHeight);
+        WARN(window->size().height == cutHeight);  // geometry: a platform minimum refused the cut -- skip the rest
+        app->requestQuit();
+        CHECK(app->tick() == false);
+        app.reset();
+        return;
+    }
+    const std::uint64_t cutFrames = r.framesRecorded;
+    REQUIRE(app->tick());
+    REQUIRE(r.framesRecorded > cutFrames);         // the PANEL drew: its onDraw ran this frame
+    REQUIRE(r.treeChildMin.y >= r.panelClipMaxY);  // ANTI-VACUITY: the child's top at or below the clip -- skipped
+    CHECK(r.rowsDrawn == 0U);                      // a skipped child submits no row
+
+    // The badge stays current over a skipped child: the match count runs whether or not the tree draws.
+    hierarchy->requestSearchQuery("child");
+    e62Ticks(*app, 2);  // the badge counts the previous frame's matches (D6)
+    CHECK(r.badgeText == "1 / 6");
+    hierarchy->requestSearchQuery("");
+    e62Ticks(*app, 2);
+    CHECK(r.badgeText == "6");
+
+    // THE REVEAL, due while the child is skipped, waits for the first frame it is visible.
+    hierarchy->revealEntity(child);
+    e62Ticks(*app, 2);
+    REQUIRE(r.treeChildMin.y >= r.panelClipMaxY);  // still skipped on the frames the reveal was due
+    window->setSize(full.width, full.height);
+    for (int i = 0; i < 8 && r.treeChildMin.y >= r.panelClipMaxY; ++i) {
+        REQUIRE(app->tick());
+    }
+    REQUIRE(r.treeChildMin.y < r.panelClipMaxY);  // visible again: the predicate ended the loop, never the bound
+    REQUIRE(app->tick());
+    CHECK(e63RoleOf(r, child).has_value());  // Group opened: the reveal landed
+    CHECK(r.rowsDrawn == 6U);
+
+    // A QUERY TYPED WHILE THE REVEAL WAITS defers it again: only the tree walk takes it. A flat row is Leaf, and
+    // TreeNodeUpdateNextOpen returns before it reads SetNextItemOpen (imgui_widgets.cpp:6808-6809), so the flat list
+    // drawing the ancestor's row opened nothing and, before this, used the reveal up.
+    const engine::Entity folder = engine::editor::createEntity(world, {}, "Folder");
+    const engine::Entity item = engine::editor::createEntity(world, folder, "Item");
+    e62Ticks(*app, 2);
+    REQUIRE(e63RoleOf(r, folder).has_value());
+    REQUIRE_FALSE(e63RoleOf(r, item).has_value());  // ANTI-VACUITY: Item is hidden under a collapsed Folder
+    window->setSize(full.width, cutHeight);
+    for (int i = 0; i < 8 && r.treeChildMin.y < r.panelClipMaxY; ++i) {
+        REQUIRE(app->tick());
+    }
+    REQUIRE(r.treeChildMin.y >= r.panelClipMaxY);  // ANTI-VACUITY: skipped again
+    hierarchy->revealEntity(item);
+    hierarchy->requestSearchQuery("folder");  // the field typed into over the skipped child
+    e62Ticks(*app, 2);
+    REQUIRE(r.treeChildMin.y >= r.panelClipMaxY);  // the reveal and the query both arrived while skipped
+    window->setSize(full.width, full.height);
+    for (int i = 0; i < 8 && r.treeChildMin.y >= r.panelClipMaxY; ++i) {
+        REQUIRE(app->tick());
+    }
+    REQUIRE(r.treeChildMin.y < r.panelClipMaxY);
+    REQUIRE(app->tick());
+    REQUIRE(r.flatMode);                        // ANTI-VACUITY: the flat list walked a VISIBLE child
+    REQUIRE(e63RoleOf(r, folder).has_value());  // and drew the ancestor's row -- as a Leaf
+    REQUIRE_FALSE(e63RoleOf(r, item).has_value());
+    hierarchy->requestSearchQuery("");
+    e62Ticks(*app, 2);
+    REQUIRE_FALSE(r.flatMode);
+    CHECK(e63RoleOf(r, item).has_value());  // Folder opened: the reveal waited out the query
+    CHECK(r.rowsDrawn == 8U);               // the four default roots, Group, Child, Folder and Item
 
     app->requestQuit();
     CHECK(app->tick() == false);

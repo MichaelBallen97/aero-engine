@@ -84,6 +84,9 @@ struct HierarchyDrawRecord {
     Vec2 searchFieldMax{};
     Vec2 treeChildMin{};
     Vec2 treeChildMax{};
+    // The panel window's ClipRect bottom as the ##tree child begins: BeginChild clips the child's rect with it
+    // (imgui.cpp:8434-8440), so a child whose top is at or below it is SKIPPED (:8733-8738). Written every frame.
+    float panelClipMaxY = 0.0F;
 };
 // Opens one recorded frame: + 1 frame, the counts zeroed, the two lists cleared (capacity kept).
 void beginHierarchyRecordFrame(HierarchyDrawRecord& record) noexcept;

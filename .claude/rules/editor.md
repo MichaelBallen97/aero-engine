@@ -2296,6 +2296,16 @@ state.
   Enter move or commit the popup's own cursor over the list its search box filters, and are gated on `IsItemActive()`
   alone -- the box takes `NavId` on the frame the popup opens (`SetKeyboardFocusHere`) and can still hold it once it
   stops editing, which is exactly when those keys are meant to fire.
+- **A TREE WALKED INSIDE A CHILD WALKS ONLY WHILE `BeginChild` RETURNED TRUE**, and `EndChild` stays unconditional --
+  the Assets tree's C2 and the Hierarchy's `##tree` (`I312`, `I340`). `BeginChild` clips the child with its parent's
+  `ClipRect` (`imgui.cpp:8434-8440`); a child clipped away entirely -- a dock cut down to its header row -- is skipped
+  (`:8733-8738`), and `TreeNodeBehavior` then returns at its first statement (`imgui_widgets.cpp:6879-6880`), before
+  `TreeNodeUpdateNextOpen`: every node reads closed (an unguarded Assets tree would record a collapse for each, 2.2.4's
+  C2) and a `SetNextItemOpen` is never applied, so a one-shot the walk consumes -- the Hierarchy's reveal -- was lost
+  for good (the code-review round's finding 6). A `Leaf` row drops it too (`TreeNodeUpdateNextOpen` returns before it
+  reads it, `imgui_widgets.cpp:6808-6809`), so only the Hierarchy's TREE walk takes the reveal, never the flat match
+  list: a query typed while it waits defers it. Anything the panel shows OUTSIDE the child (the badge's `m / n`) is
+  computed ahead of the gate.
 - **The Inspector's axis thresholds are per entity and stated before any layout change**: the Cube's `"0.000"` is whole
   from a content width of 266, the Main Camera's from 279, the Directional Light's from 316 (`I289`, geometry-
   independent); the default right split is 0.30. A label-column, letter-inset or split change re-measures all three.

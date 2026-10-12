@@ -123,8 +123,8 @@ void HierarchyPanel::onDraw(PanelContext& context) {
     }
     pendingSearchFocus = false;
 
-    // -- phase 1b: the header row. The badge counts the PREVIOUS frame's matches: the list is built in the child
-    //    below, after the badge draws (stated, D6; the breadcrumb's precedent).
+    // -- phase 1b: the header row. The badge counts the PREVIOUS frame's matches: the list is built below, after the
+    //    badge draws (stated, D6; the breadcrumb's precedent).
     hierarchyBadgeText(world.entityCount(), searchText.empty() ? std::nullopt : lastMatchCount, badgeScratch);
     drawHeaderRow();
 
@@ -148,16 +148,36 @@ void HierarchyPanel::onDraw(PanelContext& context) {
         }
     }
 
+    // -- phase 3's match list, built whether or not the tree below draws, so the badge's m / n stays current while
+    //    the field is typed into over a skipped child. drawTree's flat list draws these.
+    if (searchText.empty()) {
+        lastMatchCount.reset();
+    } else {
+        collectHierarchyMatches(world, context.roots.entities(), searchText, matches, stack, childArena, labelScratch);
+        lastMatchCount = matches.size();
+    }
+
     // -- phases 3 and 4, inside the ALWAYS-present ##tree child (D6): a 90-row scene scrolls under a fixed header. The
     //    reveal scroll (SetScrollHereY acts on the current window), the void target and both context menus move with
     //    the tree; keyboardFocusPanelId reads the ROOT window's name, so E.3.2's router sees no difference.
-    ImGui::BeginChild("##tree", ImVec2(0.0F, 0.0F), ImGuiChildFlags_None);
+    //    Both run only while BeginChild says the child is visible -- the Assets tree's C2 (the code-review round's
+    //    finding 6). BeginChild clips the child with the panel's ClipRect (imgui.cpp:8434-8440), and a child clipped
+    //    away entirely -- a dock cut down to its header row -- is skipped (:8733-8738, :8764-8768): TreeNodeBehavior
+    //    then returns at its first statement (imgui_widgets.cpp:6879-6880), before TreeNodeUpdateNextOpen applies
+    //    the reveal's SetNextItemOpen, so a walk there would CONSUME revealTarget and open nothing. Skipping the walk
+    //    leaves it pending until the child is visible, and drawTree hands it to the tree walk alone (I340).
+    //    The record's clip bottom is what BeginChild clips with: ImGui::PushClipRect and PopClipRect keep the window's
+    //    ClipRect equal to its draw list's top clip rect (imgui.cpp:6114-6126), so the public read is that value.
+    drawRecordValue.panelClipMaxY = ImGui::GetWindowDrawList()->GetClipRectMax().y;
+    const bool treeVisible = ImGui::BeginChild("##tree", ImVec2(0.0F, 0.0F), ImGuiChildFlags_None);
     const ImVec2 treePos = ImGui::GetWindowPos();
     const ImVec2 treeSize = ImGui::GetWindowSize();
     drawRecordValue.treeChildMin = Vec2{treePos.x, treePos.y};
     drawRecordValue.treeChildMax = Vec2{treePos.x + treeSize.x, treePos.y + treeSize.y};
-    drawTree(context);
-    drawVoidTarget(context);
+    if (treeVisible) {
+        drawTree(context);
+        drawVoidTarget(context);
+    }
     ImGui::EndChild();  // UNCONDITIONAL -- 1:1 with BeginChild whatever it returned
     // -- phase 5 --
     applyPending(context);
@@ -227,24 +247,30 @@ void HierarchyPanel::drawTree(PanelContext& context) {
     const World& world = context.world;
 
     // Review round 2, Gap 2: the ancestor chain of `revealTarget` (a just-created/duplicated entity
-    // set by the PREVIOUS frame's applyPending), forced open below so a collapsed parent does not
-    // hide the row the user just asked for. ITERATIVE (misc-no-recursion is --warnings-as-errors on
-    // the Linux lane, D13/I7). Computed here, not in applyPending, so a `revealTarget` that died
-    // before this frame is simply ignored rather than dereferenced.
+    // set by the PREVIOUS frame's applyPending -- or an earlier one's, when the reveal had to wait),
+    // forced open below so a collapsed parent does not hide the row the user just asked for.
+    // ITERATIVE (misc-no-recursion is --warnings-as-errors on the Linux lane, D13/I7). Computed here,
+    // not in applyPending, so a `revealTarget` that died before this frame is simply ignored rather
+    // than dereferenced. Only the TREE walk takes it: a flat row is Leaf, and TreeNodeUpdateNextOpen
+    // returns before it reads SetNextItemOpen (imgui_widgets.cpp:6808-6809), so the flat list would
+    // use the reveal up and open nothing. A query typed while it waits -- over a skipped ##tree child
+    // (this function runs only while the child is visible), or on the frame after a create -- defers
+    // it to the first tree walk (I340).
     revealPath.clear();
-    if (revealTarget.valid() && world.alive(revealTarget)) {
-        for (Entity cur = world.parent(revealTarget); cur.valid(); cur = world.parent(cur)) {
-            revealPath.push_back(cur);
+    if (searchText.empty()) {
+        if (revealTarget.valid() && world.alive(revealTarget)) {
+            for (Entity cur = world.parent(revealTarget); cur.valid(); cur = world.parent(cur)) {
+                revealPath.push_back(cur);
+            }
         }
+        scrollTarget = revealTarget;  // task E.5.2 -- consumed by drawRow, or dropped below
+        revealTarget = {};
     }
-    scrollTarget = revealTarget;  // task E.5.2 -- consumed by drawRow, or dropped below
-    revealTarget = {};
 
     if (!searchText.empty()) {
-        // task E.6.3 (D6): a FLAT pre-order list of every match -- no forced expansion of the user's tree. Each row is
-        // the same row widget drawn Leaf | NoTreePushOnOpen, so the unwind owes ImGui its two PopIDs and no TreePop.
-        collectHierarchyMatches(world, context.roots.entities(), searchText, matches, stack, childArena, labelScratch);
-        lastMatchCount = matches.size();
+        // task E.6.3 (D6): a FLAT pre-order list of every match -- onDraw collected this frame's -- with no forced
+        // expansion of the user's tree. Each row is the same row widget drawn Leaf | NoTreePushOnOpen, so the unwind
+        // owes ImGui its two PopIDs and no TreePop.
         drawRecordValue.flatMode = true;
         flatRow = true;
         for (const Entity entity : matches) {
@@ -254,7 +280,6 @@ void HierarchyPanel::drawTree(PanelContext& context) {
         }
         flatRow = false;
     } else {
-        lastMatchCount.reset();
         // The actual walk is the pure, ImGui-free engine::editor::walkForest (review round 2, Gap 1):
         // `enter` draws the row and reports whether it is open; `unwind` owes ImGui the matching
         // TreePop/PopID pair (I3) -- TreePop only when `open`, PopID unconditionally, mirroring

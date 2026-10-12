@@ -10,6 +10,7 @@
 //   3. walk       the tree, strictly READ-ONLY -- no World and no Selection mutation (I1)
 //                 (inside the always-present ##tree child; the flat match list while a query is set)
 //   4. void       the "click empty space to clear / drop here to unparent" target
+//                 (3 and 4 run only while BeginChild says the child is visible -- a skipped child consumes no reveal)
 //   5. apply      one switch over `pending` -- the ONLY place anything mutates
 // Phases 1 and 5 bracket the ImGui work so that mutating mid-walk (which would invalidate
 // eachChild's cursor -- world.hpp:157-163 -- and unbalance TreeNodeEx/TreePop) is impossible by
@@ -143,12 +144,14 @@ private:
     // (EditorApp's create drain) and consumed (turned into `revealPath`, the
     // ancestor chain, then cleared) by the VERY NEXT drawTree -- one frame after creation, since the
     // entity does not exist yet during the frame that creates it (drawTree runs before applyPending,
-    // D12's phase order).
+    // D12's phase order). drawTree runs only while the ##tree child is visible, and only its TREE walk takes
+    // the reveal (a flat row is Leaf and drops SetNextItemOpen), so a reveal due while the child is skipped, or
+    // while a query is set, waits for the first tree walk (the code-review round's finding 6, I340).
     Entity revealTarget{};
     std::vector<Entity> revealPath;
     // task E.5.2: the row to scroll into view on THIS walk -- copied from revealTarget at the top of drawTree
-    // and cleared when that row is drawn, or unconditionally at the end of drawTree, so a target whose row is
-    // never drawn cannot scroll on a later frame.
+    // when the tree (never the flat list) is walked, and cleared when that row is drawn, or unconditionally at
+    // the end of drawTree, so a target whose row is never drawn cannot scroll on a later frame.
     Entity scrollTarget{};
     bool renameFocusPending = false;
     PendingAction pending{};
