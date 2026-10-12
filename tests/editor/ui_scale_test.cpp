@@ -369,9 +369,11 @@ TEST_CASE(
     REQUIRE_FALSE(ec);
     CHECK(read > 60U);  // ANTI-VACUITY: the walk really read the public headers
     const std::map<std::string, std::string> expected{
-        {"asset_browser_chrome.hpp", "PPPPPP"},  // task E.6.3: header, floor, pane, crumb row, tree row, footer
-        {"breadcrumb.hpp", "P"},                 // task E.6.2: breadcrumbLayout
-        {"console_view.hpp", "PP"},              // task E.6.3: consoleRowLayout, consoleSegmentGap
+        // task E.6.3: header, floor, pane, crumb row, tree row, footer -- and, since the code-review round, the pane's
+        // chrome (assetContentsPaneChromeHeight), the height the Assets budget reserves.
+        {"asset_browser_chrome.hpp", "PPPPPPP"},
+        {"breadcrumb.hpp", "P"},     // task E.6.2: breadcrumbLayout
+        {"console_view.hpp", "PP"},  // task E.6.3: consoleRowLayout, consoleSegmentGap
         {"gizmo_style.hpp", "PP"},
         {"hierarchy_view.hpp", "PP"},    // task E.6.3: hierarchyRowLayout, hierarchyHeaderLayout
         {"inspector_model.hpp", "PPP"},  // task E.6.3: inspectorAxisLayout, inspectorHeaderLayout, addComponentLayout
@@ -459,6 +461,8 @@ TEST_CASE("ui scale: each E.6.3 layout treats a bad scale as 1 (task E.6.3, US11
         CHECK(ed::assetHeaderMinimalFloor(headerWidths, bad) == ed::assetHeaderMinimalFloor(headerWidths, 1.0F));
         const ed::AssetContentsPaneLayout paneBad = ed::assetContentsPaneLayout(300.0F, 24.0F, 1.0F, 6.0F, bad);
         CHECK((paneBad == ed::assetContentsPaneLayout(300.0F, 24.0F, 1.0F, 6.0F, 1.0F)));
+        const float chromeBad = ed::assetContentsPaneChromeHeight(24.0F, 1.0F, 6.0F, bad);
+        CHECK(chromeBad == ed::assetContentsPaneChromeHeight(24.0F, 1.0F, 6.0F, 1.0F));
         const ed::AssetCrumbRowLayout crumbBad = ed::assetCrumbRowLayout(0.0F, 500.0F, 150.0F, 4U, 120.0F, bad);
         CHECK((crumbBad == ed::assetCrumbRowLayout(0.0F, 500.0F, 150.0F, 4U, 120.0F, 1.0F)));
         const ed::AssetTreeRowLayout treeBad = ed::assetTreeRowLayout(20.0F, 220.0F, 30.0F, bad);

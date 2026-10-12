@@ -12,7 +12,12 @@ namespace engine::editor {
 
 namespace {
 
-constexpr float CONTENTS_MIN_HEIGHT = 1.0F;          // assetBrowserLayout's paneHeight floor, for the same reason
+// The ##contents child's height never goes under ImGui's own: Begin clamps every child window to
+// IMGUI_WINDOW_HARD_MIN_SIZE, 4 points at every scale (imgui_internal.h:2813; CalcWindowMinSize, imgui.cpp:7007-7028,
+// applied at :8219 -- its WindowRounding term is 0 while the theme's windowRounding is 0). A child asked for 1 is
+// drawn 4 tall, so 1 here made the group 3 points taller than a pane at its floor (I231). It is also the "+ 4" in
+// assetBrowserLayout's pane floor, for that reason.
+constexpr float CONTENTS_MIN_HEIGHT = 4.0F;
 constexpr float FOOTER_SEGMENT_GAP_SPACINGS = 2.0F;  // footer segment to segment: two itemSpacing.x (16 dp)
 
 [[nodiscard]] float layoutScale(float uiScale) noexcept {
@@ -21,6 +26,10 @@ constexpr float FOOTER_SEGMENT_GAP_SPACINGS = 2.0F;  // footer segment to segmen
 // A measured length that is not a finite, positive number counts as 0 (assetBrowserLayout's usableMetric rule).
 [[nodiscard]] float usableLength(float value) noexcept { return (std::isfinite(value) && value > 0.0F) ? value : 0.0F; }
 [[nodiscard]] float finiteOr(float value, float fallback) noexcept { return std::isfinite(value) ? value : fallback; }
+// The crumb row: a frame-height row with panelHeaderPaddingY above and below it, 30 at 1x.
+[[nodiscard]] float crumbRowHeightFor(float frameHeight, float uiScale) noexcept {
+    return usableLength(frameHeight) + (2.0F * EDITOR_THEME.panels.panelHeaderPaddingY * layoutScale(uiScale));
+}
 
 [[nodiscard]] AssetHeaderWidths usableWidths(const AssetHeaderWidths& in) noexcept {
     AssetHeaderWidths out;
@@ -120,12 +129,16 @@ AssetHeaderLayout assetHeaderLayout(float rowMinX, float rowWidth, const AssetHe
 AssetContentsPaneLayout assetContentsPaneLayout(float paneHeight, float frameHeight, float dividerHeight,
                                                 float itemSpacingY, float uiScale) noexcept {
     AssetContentsPaneLayout out;
-    out.crumbRowHeight =
-        usableLength(frameHeight) + (2.0F * EDITOR_THEME.panels.panelHeaderPaddingY * layoutScale(uiScale));
-    const float rest =
-        usableLength(paneHeight) - out.crumbRowHeight - usableLength(dividerHeight) - usableLength(itemSpacingY);
-    out.contentsHeight = std::max(rest, CONTENTS_MIN_HEIGHT);
+    out.crumbRowHeight = crumbRowHeightFor(frameHeight, uiScale);
+    // ONE chrome for the group and the budget: the child is the pane less what the panel records as paneChromeHeight.
+    const float chrome = assetContentsPaneChromeHeight(frameHeight, dividerHeight, itemSpacingY, uiScale);
+    out.contentsHeight = std::max(usableLength(paneHeight) - chrome, CONTENTS_MIN_HEIGHT);
     return out;
+}
+
+float assetContentsPaneChromeHeight(float frameHeight, float dividerHeight, float itemSpacingY,
+                                    float uiScale) noexcept {
+    return crumbRowHeightFor(frameHeight, uiScale) + usableLength(dividerHeight) + usableLength(itemSpacingY);
 }
 
 void assetBreadcrumbCrumbs(std::string_view rootLabel, std::string_view currentDir, std::vector<AssetCrumb>& out) {

@@ -73,13 +73,20 @@ struct AssetHeaderLayout {
 // ---- the grouped contents pane (D8) -----------------------------------------------------------------------------
 struct AssetContentsPaneLayout {
     float crumbRowHeight = 0.0F;  // frameHeight + 2 x panelHeaderPaddingY x uiScale: 30 at 1x
-    float contentsHeight = 1.0F;  // the ##contents child, >= 1: BeginChild reads <= 0 as "fill"
+    float contentsHeight = 4.0F;  // the ##contents child, >= 4: ImGui draws no child shorter (and 0 is "fill")
     friend constexpr bool operator==(const AssetContentsPaneLayout&, const AssetContentsPaneLayout&) = default;
 };
-// crumbRowHeight + dividerHeight + itemSpacingY + contentsHeight == paneHeight for a pane tall enough, so the group
-// is exactly the tree pane's height and assetBrowserLayout's budget does not move (AV55, AV59, I231).
+// crumbRowHeight + dividerHeight + itemSpacingY + contentsHeight == paneHeight for every pane of at least that chrome
+// + 4 -- and assetBrowserLayout hands out no shorter pane, since the panel records assetContentsPaneChromeHeight as
+// its paneChromeHeight -- so the group is exactly the tree pane's height (AV66's identity; drawn, I324 at a tall pane
+// and I231's 640-point subcase at the floor).
 [[nodiscard]] AssetContentsPaneLayout assetContentsPaneLayout(float paneHeight, float frameHeight, float dividerHeight,
                                                               float itemSpacingY, float uiScale) noexcept;
+// task E.6.3 (the code-review round): the pane's FIXED chrome above the child -- crumbRowHeight + dividerHeight +
+// itemSpacingY, from assetContentsPaneLayout's own inputs (37 at 1x). The panel records it before the budget is sized,
+// so the crumb row is reserved rather than carved out of a pane too short to hold it.
+[[nodiscard]] float assetContentsPaneChromeHeight(float frameHeight, float dividerHeight, float itemSpacingY,
+                                                  float uiScale) noexcept;
 
 // ---- the crumb row (D8) -----------------------------------------------------------------------------------------
 struct AssetCrumb {

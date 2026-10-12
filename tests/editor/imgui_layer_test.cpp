@@ -18948,23 +18948,43 @@ TEST_CASE("editor: the Asset Browser fits its panel with 40 orphans and Issues o
         AERO_SKIP_OR_FAIL("no platform context");
     }
     // THE SHORT WINDOW'S REGIME, re-measured 2026-10-03 at task E.6.1's metrics (UI scale 1: body 13 -> 16,
-    // frame 19 -> 24, ItemSpacing.y 4 -> 6). With Issues open, assetBrowserLayout holds the body at its
-    // one-row floor while avail <= 146 (footer 30 + header 30 + spacing 6 + panes 4 x 16 + one row 16) and
-    // fits while avail >= 83 (30 + 30 + 16 + 6 + 1). Measured here, avail = floor((H - 24) / 4) - 65: the
-    // Bottom node's quarter of the work area, less its tab bar, padding and header row. So the regime is
-    // H in [616, 871]. Below H = 616 the WARN fallback below runs. 768 is avail 121, about 30 inside either bound.
-    // A runner that delivers a SHORTER window than requested (CI's macOS lane can) may still land under 83,
-    // where scrolling is the designed answer and checkFits reports a WARN. Re-measured at task E.6.2 with the
-    // toolbar and status bar present, every value above is unchanged: their 70 dp come out of the central node
-    // (the Viewport), because ImGui keeps a split sibling's size and hands the central node the remainder
-    // (imgui.cpp:20321-20325). Re-measured at task E.6.3's step 5: the header row is 31 points, 6 fewer than
-    // E.6.2's; the other heights' figures were dropped, not carried.
+    // frame 19 -> 24, ItemSpacing.y 4 -> 6). With Issues open, assetBrowserLayout holds the body at its one-row floor
+    // while avail <= 146 (footer 30 + header 30 + spacing 6 + panes 4 x 16 + one row 16) and fits while
+    // avail >= 123 (30 + 30 + 16 + 6 + 41, the panes' floor since the code-review round below; 101 with it closed).
+    // Measured here, avail = floor((H - 24) / 4) - 65: the Bottom node's quarter of the work area, less its tab bar,
+    // padding and header row. So the regime is H in [776, 871]. Below H = 776 the open arm's WARN fallback below
+    // runs (the closed arm's below H = 688). The short subcase runs 824: avail 135, measured, 12 inside the open
+    // bound and 11 inside the body floor's. A runner that delivers a SHORTER window than requested (CI's macOS lane
+    // can) may still land under 123, where scrolling is the designed answer and checkFits reports a WARN.
+    // Re-measured at task E.6.2 with the toolbar and status bar present, every value above is unchanged: their 70 dp
+    // come out of the central node (the Viewport), because ImGui keeps a split sibling's size and hands the central
+    // node the remainder (imgui.cpp:20321-20325). Re-measured at task E.6.3's step 5: the header row is 31 points, 6
+    // fewer than E.6.2's; the other heights' figures were dropped, not carried.
+    //
+    // RE-MEASURED AT TASK E.6.3's CODE-REVIEW ROUND, which reserves the contents pane's chrome -- the crumb row 30,
+    // its rule 1 and ItemSpacing.y 6 -- above a ##contents child ImGui never draws shorter than 4 points
+    // (IMGUI_WINDOW_HARD_MIN_SIZE), so the panes never go below 37 + 4 = 41. That moved the fit bounds from 83 open
+    // and 61 closed to the 123 and 101 above, and the short subcase from 768 (avail 121, now 2 under the open bound)
+    // to 824, so its fit CHECK still runs. The third subcase, 640 (avail 89, measured), sits under both bounds --
+    // the band where the crumb row used to overflow a panel the budget claimed it fit: red there before the
+    // reservation (budget 89 in both arms; scroll max 4 closed, 26 open), a WARN in both arms since. Its panes are AT
+    // their floor in both Issues states, which is what checkFits' group arm needs to be a witness: drawn at the
+    // floor, the contents group must end where the tree pane does (I324 checks that only at a tall pane). Red before
+    // the reservation (tree 29, group 41, Issues closed) and under a floor of chrome + 1 (tree 38, group 41: ImGui drew
+    // the child asked for 1 at 4). The editor's own 1280 x 720 launch is in the open band: avail 109, measured, so
+    // with the Issues list open its panel scrolls (by 6, measured) where main's fit -- AV66 records the cost.
     bool tallPanel = true;
+    bool paneAtFloor = false;
     int windowHeight = 1000;
     SUBCASE("a TALL panel, where the body has room to grow past one row") {}
     SUBCASE("a SHORT panel, where the body is held at its one-row floor -- the geometry CI hit") {
         tallPanel = false;
-        windowHeight = 768;
+        windowHeight = 824;
+    }
+    SUBCASE("a panel under both fit bounds, where the crumb row once overflowed a claimed fit") {
+        tallPanel = false;
+        paneAtFloor = true;
+        windowHeight = 640;
     }
     CAPTURE(windowHeight);
     std::optional<engine::platform::Window> window =
@@ -18997,6 +19017,8 @@ TEST_CASE("editor: the Asset Browser fits its panel with 40 orphans and Issues o
                                            .restoreLastProject = false,
                                            .recentProjectsPath = uniqueRecentsFile()});
     REQUIRE(app.has_value());
+    auto* const browser = dynamic_cast<engine::editor::AssetBrowserPanel*>(app->panels().find("Assets"));
+    REQUIRE(browser != nullptr);
     REQUIRE(app->tick());  // 1: the first rescan runs inside this tick, BEFORE the frame draws
     REQUIRE(app->tick());  // 2: the default dock layout settles
     app->requestPanelFocus("Assets");
@@ -19010,9 +19032,9 @@ TEST_CASE("editor: the Asset Browser fits its panel with 40 orphans and Issues o
 
     // The panel must fit whenever the layout's own budget fits the height the panel RECORDED -- in BOTH
     // subcases. `budget <= avail` is assetBrowserLayout's answer for those metrics, and it holds exactly when
-    // the recorded avail is at least the layout's fit bound (footer + header [+ one row + spacing] + 1: the
-    // header's contract, "only a panel shorter than the fit bound can scroll"). Below the bound, scrolling is
-    // the DESIGNED answer, and a WARN says so instead.
+    // the recorded avail is at least the layout's fit bound (footer + header [+ one row + spacing] + the pane's
+    // recorded chrome + 4: the header's contract, "only a panel whose sum exceeds it can scroll").
+    // Below the bound, scrolling is the DESIGNED answer, and a WARN says so instead.
     //
     // The TALL subcase used to assert no scroll unconditionally, which held only while its runner's panel
     // cleared the bound. E.6.1 raised the open bound from 64 (23 + 23 + 13 + 4 + 1 at ProggyClean's
@@ -19020,17 +19042,35 @@ TEST_CASE("editor: the Asset Browser fits its panel with 40 orphans and Issues o
     // CI's macOS runner delivers a SHORTER window than requested: its `13 > 13` failure placed that
     // runner's tall avail, at the old metrics, only somewhere in [64, 115] -- above the old bound, inside
     // the old floored regime -- which the new metrics move to about [50, 101], across 83. Locally the tall
-    // panel clears the bound, so the CHECK runs here with no WARN line.
-    const auto checkFits = [&app] {
+    // panel clears the bound, so the CHECK runs here with no WARN line. E.6.3's code-review round moved the
+    // bounds again, to 101 closed and 123 open, by reserving the crumb row the budget had not counted.
+    //
+    // THE GROUP ARM, geometry-free and so asserted in every subcase: the contents group (the crumb row, its rule,
+    // one ItemSpacing.y and the ##contents child) ends where the tree pane beside it does -- for EVERY pane the
+    // layout hands out, which is what makes the budget's sum the drawn height. Where the pane is at its floor
+    // (the 640 subcase) the tree must also be exactly the recorded chrome + 4 tall -- the 4 is ImGui's shortest
+    // child window, IMGUI_WINDOW_HARD_MIN_SIZE -- the anti-vacuity half, without which the group arm would only
+    // repeat I324's tall-pane check. The 0.5 is BeginChild's whole-point truncation, the I324 arm's tolerance; at
+    // UI scale 1 both sides are whole and the arms compare exactly.
+    const auto checkFits = [&app, browser, paneAtFloor] {
         const AssetBrowserLayoutMetrics m = app->assetBrowserLayoutMetrics();
         const AssetBrowserLayout l = engine::editor::assetBrowserLayout(m);
         const float budget = l.paneHeight + l.issuesHeight + l.footerHeight;
         const float scrollMax = app->assetBrowserScrollMaxY();
-        INFO("avail " << m.availHeight << ", budget " << budget << ", scroll max " << scrollMax);
+        const engine::editor::AssetChromeRecord& r = browser->chromeRecord();
+        const float treeHeight = r.treeChildMax.y - r.treeChildMin.y;
+        INFO("avail " << m.availHeight << ", budget " << budget << ", scroll max " << scrollMax << ", pane chrome "
+                      << m.paneChromeHeight << ", tree " << treeHeight << ", group "
+                      << r.contentsGroupMaxY - r.treeChildMin.y);
         if (budget <= m.availHeight) {
             CHECK(scrollMax == 0.0F);
         } else {
             WARN(budget <= m.availHeight);
+        }
+        REQUIRE(m.paneChromeHeight > 0.0F);  // the panel really recorded its chrome
+        CHECK(std::abs(r.contentsGroupMaxY - r.treeChildMax.y) <= 0.5F);
+        if (paneAtFloor) {
+            CHECK(std::abs(treeHeight - (m.paneChromeHeight + 4.0F)) <= 0.5F);
         }
     };
 

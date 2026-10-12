@@ -581,7 +581,9 @@ void AssetBrowserPanel::drawTreePane(float paneHeight) {
 // ---- phase 4: the right pane -- task E.6.3 (D8): ONE group, so the SameLine after the tree carries all of it -----
 // SameLine carries over to exactly ONE item (ItemSize puts the cursor back at the indent, imgui.cpp:12122-12125): a
 // crumb row submitted on its own would sit beside the tree and push the grid below it. The group's height is
-// crumbRowHeight + the rule + ItemSpacing.y + the child's, which assetContentsPaneLayout makes paneHeight exactly.
+// crumbRowHeight + the rule + ItemSpacing.y + the child's, which assetContentsPaneLayout makes paneHeight exactly --
+// for every pane, since onDraw records that chrome and assetBrowserLayout never hands out less than it + 4 (ImGui
+// draws no child shorter than 4 points).
 void AssetBrowserPanel::drawContentsPane(float paneHeight) {
     const AssetContentsPaneLayout pane = assetContentsPaneLayout(paneHeight, ImGui::GetFrameHeight(), ruleHeight(),
                                                                  ImGui::GetStyle().ItemSpacing.y, currentUiScale());
@@ -2102,6 +2104,10 @@ void AssetBrowserPanel::onDraw(PanelContext& /*context*/) {  // D18: the context
     metrics.frameHeight = ImGui::GetFrameHeight();
     metrics.textLineHeight = ImGui::GetTextLineHeight();
     metrics.itemSpacingY = style.ItemSpacing.y;
+    // task E.6.3 (the code-review round): the contents pane's crumb row, rule and spacing are drawn INSIDE
+    // paneHeight, so they are RESERVED before the panes are sized (the #111 rule), from drawContentsPane's inputs.
+    metrics.paneChromeHeight =
+        assetContentsPaneChromeHeight(metrics.frameHeight, ruleHeight(), metrics.itemSpacingY, currentUiScale());
     metrics.issuesShown = reportPtr != nullptr && issueTotal(*reportPtr) > 0;
     metrics.issuesOpen = issuesOpen;
     metrics.issuesContentHeight = issuesContentHeight;

@@ -149,15 +149,19 @@ struct AssetBrowserLayoutMetrics {
     float frameHeight = 0.0F;     // GetFrameHeight(): the Issues header's height, and the footer's line
     float textLineHeight = 0.0F;  // GetTextLineHeight(): one body row, which is the body's floor
     float itemSpacingY = 0.0F;    // style.ItemSpacing.y
-    bool issuesShown = false;     // the scan reported at least one issue, so the header draws
-    bool issuesOpen = false;      // the header is open, so the body child draws
+    // task E.6.3 (the code-review round): the contents pane's fixed chrome -- its crumb row, the rule under it and
+    // the one ItemSpacing.y below them (assetContentsPaneChromeHeight, asset_browser_chrome.hpp) -- drawn INSIDE
+    // paneHeight, above a ##contents child ImGui never draws shorter than 4 (IMGUI_WINDOW_HARD_MIN_SIZE). 37 at 1x.
+    float paneChromeHeight = 0.0F;
+    bool issuesShown = false;  // the scan reported at least one issue, so the header draws
+    bool issuesOpen = false;   // the header is open, so the body child draws
     // The body's NATURAL height, measured inside the child on the last frame it drew (one frame late, the
     // shape of ImGui's own auto-resize). 0 before the first measurement; the body is then one row tall.
     float issuesContentHeight = 0.0F;
 };
 
 struct AssetBrowserLayout {
-    float paneHeight = 1.0F;        // the two panes' shared height, >= 1: BeginChild reads 0 as "fill"
+    float paneHeight = 4.0F;        // the two panes' shared height, >= paneChromeHeight + 4 (so never 0: "fill")
     float issuesHeight = 0.0F;      // header + spacing [+ body + spacing]; 0 when no issue is shown
     float issuesBodyHeight = 0.0F;  // the body child's height; 0 iff the body is not drawn, else >= 1
     float footerHeight = 0.0F;      // spacing below the region above + the footer's line (frame height)
@@ -168,9 +172,17 @@ struct AssetBrowserLayout {
 //
 // THE BUDGET. footer and header are fixed. The body wants its measured content height, at least one text
 // row and at most floor(ASSET_ISSUES_BODY_MAX_FRACTION * avail); it YIELDS first, so the panes keep
-// ASSET_PANES_MIN_FONT * fontSize, but never below one row. The panes take what is left, never below 1.
-// So paneHeight + issuesHeight + footerHeight == availHeight whenever availHeight is at least
-// footer + header + one row + one spacing + 1, and only a panel shorter than that can scroll.
+// max(ASSET_PANES_MIN_FONT * fontSize, paneChromeHeight + 4), but never below one row. The panes take what
+// is left, never below paneChromeHeight + 4: the contents pane draws that chrome and its child inside
+// paneHeight, and ImGui draws no child window shorter than 4 points (IMGUI_WINDOW_HARD_MIN_SIZE), so a
+// shorter pane would push the Issues region and the footer past the panel's bottom while this sum still
+// claimed a fit (task E.6.3's code-review round, the #111 rule). So
+// paneHeight + issuesHeight + footerHeight == availHeight whenever availHeight is at least
+// footer + header + one row + one spacing + paneChromeHeight + 4 (123 with the body open at 1x, 101 closed) --
+// in every state, whenever availHeight - footerHeight - issuesHeight >= paneChromeHeight + 4 -- and otherwise
+// the sum EXCEEDS availHeight, so only a panel whose sum exceeds it can scroll (AV66) -- and it need not by
+// the whole excess: the footer's one text line sits inside its frame-height band (I231 measured a sum 12
+// points over its 640-point panel scrolling 4).
 [[nodiscard]] AssetBrowserLayout assetBrowserLayout(const AssetBrowserLayoutMetrics& metrics) noexcept;
 
 // ---- task E.4.5 (the code-review round): a caption LINE that keeps the file name -------------------------

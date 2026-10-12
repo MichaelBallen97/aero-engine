@@ -314,6 +314,11 @@ AssetBrowserLayout assetBrowserLayout(const AssetBrowserLayoutMetrics& metrics) 
     const float avail = usableMetric(metrics.availHeight);
     const float frame = usableMetric(metrics.frameHeight);
     const float spacing = usableMetric(metrics.itemSpacingY);
+    // task E.6.3 (the code-review round): the contents pane draws its crumb row, rule and spacing above its child
+    // INSIDE paneHeight, and ImGui draws no child shorter than 4 points (IMGUI_WINDOW_HARD_MIN_SIZE, the tree's child
+    // too), so this is the shortest pane that does not push everything below it down.
+    constexpr float CHILD_MIN_HEIGHT = 4.0F;  // asset_browser_chrome.cpp's CONTENTS_MIN_HEIGHT, for its reason
+    const float paneFloor = usableMetric(metrics.paneChromeHeight) + CHILD_MIN_HEIGHT;
     AssetBrowserLayout layout;
     // The footer's reservation is today's GetFrameHeightWithSpacing(): the spacing after the region above
     // it plus a frame-height line, which the footer's one text line fits inside.
@@ -325,13 +330,13 @@ AssetBrowserLayout assetBrowserLayout(const AssetBrowserLayoutMetrics& metrics) 
             // Whole points, so every height here stays exact for whole-point metrics.
             const float cap = std::max(std::floor(ASSET_ISSUES_BODY_MAX_FRACTION * avail), bodyFloor);
             const float wanted = std::min(std::max(usableMetric(metrics.issuesContentHeight), bodyFloor), cap);
-            const float paneMin = ASSET_PANES_MIN_FONT * usableMetric(metrics.fontSize);
+            const float paneMin = std::max(ASSET_PANES_MIN_FONT * usableMetric(metrics.fontSize), paneFloor);
             const float room = avail - layout.footerHeight - layout.issuesHeight - spacing - paneMin;
             layout.issuesBodyHeight = std::max(std::min(wanted, room), bodyFloor);
             layout.issuesHeight += layout.issuesBodyHeight + spacing;
         }
     }
-    layout.paneHeight = std::max(avail - layout.footerHeight - layout.issuesHeight, 1.0F);
+    layout.paneHeight = std::max(avail - layout.footerHeight - layout.issuesHeight, paneFloor);
     return layout;
 }
 

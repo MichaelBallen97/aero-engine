@@ -2132,12 +2132,22 @@ A fixed region's height is a **pure function** with a tier-0 battery, never arit
 walk. The scrolling body is `BeginChild(id, ImVec2(0, -footerHeight))` — a **negative** height, so
 `CalcItemSize` resolves it as `ImMax(4.0f, avail.y + size.y)` (`imgui.cpp:12344-12345`) and ImGui's own
 remainder is authoritative: a one-pixel error costs the child a pixel instead of clipping a button off
-the bottom. (The Asset Browser's panes are floored at `1.0F` for the **opposite** requirement — two
-side-by-side panes sharing one explicit height — and both are right. Since E.4.4's validation fix that
-floor lives in `assetBrowserLayout` (`asset_view.hpp`), which reserves the footer AND the Issues region
-before sizing the panes and caps the Issues body in a scrollable child — this section's second
-instance.) **Never pass a zero height meaning "nothing"**: `CalcItemSize` reads zero as *use the whole
-remaining region*.
+the bottom. (The Asset Browser's panes are floored at a positive explicit height for the **opposite**
+requirement — two side-by-side panes sharing one explicit height — and both are right. Since E.4.4's
+validation fix that floor lives in `assetBrowserLayout` (`asset_view.hpp`), which reserves the footer AND
+the Issues region before sizing the panes and caps the Issues body in a scrollable child — this section's
+second instance. Since E.6.3's code-review round the floor is the recorded `paneChromeHeight` + `4.0F`.)
+**A fixed row drawn INSIDE a flexible region's height is chrome too**: E.6.3's crumb row, its rule and their
+spacing sit inside the contents pane above a child, so a pane shorter than them grew the row and pushed
+the Issues region and the footer off the panel while the budget still claimed a fit. Record such a row's
+height as a metric the budget reads and floor the region at it + the child's minimum (`AV66`, `I231`).
+**And that minimum is ImGui's, not the one you asked for**: `Begin` clamps every child window to
+`IMGUI_WINDOW_HARD_MIN_SIZE`, 4 points at every scale while the theme's `windowRounding` is 0
+(`imgui_internal.h:2813`, `CalcWindowMinSize` at `imgui.cpp:7007-7028`), so a child asked for 1 is drawn
+4 tall — a floor of chrome + 1 left the group 3 points taller than its pane, which only a drawn comparison
+at the floor could see (`I231`'s 640 subcase).
+**Never pass a zero height meaning "nothing"**: `CalcItemSize` reads zero as *use the whole remaining
+region*.
 
 **Nothing that wraps may live in a fixed-height region.** A wrapped line makes the region's height a
 function of the panel's *width*, which makes every derived size a function of the panel's width — and if

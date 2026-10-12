@@ -347,13 +347,21 @@ TEST_CASE("assets chrome: the footer's segments, their roles and a bad scale (ta
 
 TEST_CASE("assets chrome: the pane, the crumb row and the tree row -- the three geometries (task E.6.3, AH13)") {
     const ed::AssetContentsPaneLayout pane = ed::assetContentsPaneLayout(300.0F, 24.0F, 1.0F, 6.0F, 1.0F);
-    CHECK(pane.crumbRowHeight == 30.0F);                                                        // 24 + 2 x 3
-    CHECK(pane.crumbRowHeight + 1.0F + 6.0F + pane.contentsHeight == 300.0F);                   // the group IS the pane
-    CHECK(ed::assetContentsPaneLayout(20.0F, 24.0F, 1.0F, 6.0F, 1.0F).contentsHeight == 1.0F);  // never <= 0: "fill"
+    CHECK(pane.crumbRowHeight == 30.0F);                                       // 24 + 2 x 3
+    CHECK(pane.crumbRowHeight + 1.0F + 6.0F + pane.contentsHeight == 300.0F);  // the group IS the pane
+    // Never under ImGui's 4 (IMGUI_WINDOW_HARD_MIN_SIZE: it draws no child shorter, and reads <= 0 as "fill"); 1
+    // until task E.6.3's code-review round, which ImGui drew 4 tall.
+    CHECK(ed::assetContentsPaneLayout(20.0F, 24.0F, 1.0F, 6.0F, 1.0F).contentsHeight == 4.0F);
     CHECK(ed::assetContentsPaneLayout(600.0F, 48.0F, 2.0F, 12.0F, 2.0F).crumbRowHeight == 60.0F);  // doubles at 2
     const float nan = std::numeric_limits<float>::quiet_NaN();
     CHECK(ed::assetContentsPaneLayout(300.0F, 24.0F, 1.0F, 6.0F, nan).crumbRowHeight == 30.0F);  // a bad scale is 1
-    CHECK(ed::assetContentsPaneLayout(nan, nan, nan, nan, 1.0F).contentsHeight == 1.0F);
+    CHECK(ed::assetContentsPaneLayout(nan, nan, nan, nan, 1.0F).contentsHeight == 4.0F);
+    // task E.6.3's code-review round: the pane's FIXED chrome, which the panel records for assetBrowserLayout to
+    // reserve -- the crumb row + the rule + the spacing, so pane - chrome is the child for any pane above it (AV66).
+    CHECK(ed::assetContentsPaneChromeHeight(24.0F, 1.0F, 6.0F, 1.0F) == 37.0F);   // 30 + 1 + 6
+    CHECK(ed::assetContentsPaneChromeHeight(48.0F, 2.0F, 12.0F, 2.0F) == 74.0F);  // 60 + 2 + 12: doubles at 2
+    CHECK(ed::assetContentsPaneChromeHeight(24.0F, 1.0F, 6.0F, 1.0F) + pane.contentsHeight == 300.0F);
+    CHECK(ed::assetContentsPaneChromeHeight(nan, -1.0F, nan, nan) == 6.0F);  // bad lengths count 0, a bad scale 1
     // The crumb row: crumbs from framePadding.x, inkWidth + 4 gaps of itemInnerSpacing.x; the items text right-aligned,
     // never left of the crumbs' end + itemSpacing.x.
     const ed::AssetCrumbRowLayout row = ed::assetCrumbRowLayout(100.0F, 500.0F, 150.0F, 4U, 120.0F, 1.0F);

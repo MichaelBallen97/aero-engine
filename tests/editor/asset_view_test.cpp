@@ -8,6 +8,7 @@
 // PRESENT and PASSING in all three build configurations -- prove it with --list-test-cases. Tier-0: no
 // GPU, no window, no ImGui context, no entropy source, and no disk I/O except BV9's read of the editor's
 // own source text through AERO_EDITOR_SRC_DIR (task E.4.4; the DR18 precedent in asset_drag_test.cpp).
+#include <aero/editor/asset_browser_chrome.hpp>  // task E.6.3 (AV66): the contents pane's group
 #include <aero/editor/asset_meta.hpp>
 #include <aero/editor/asset_view.hpp>
 #include <aero/editor/project_files.hpp>
@@ -771,10 +772,12 @@ constexpr AssetBrowserLayoutMetrics METRICS_1X{
 constexpr AssetBrowserLayoutMetrics METRICS_2X{
     .availHeight = 0.0F, .fontSize = 13.0F, .frameHeight = 25.0F, .textLineHeight = 13.0F, .itemSpacingY = 8.0F};
 // The smallest panel the budget fits with the body open: footer (spacing + frame) + header (frame +
-// spacing) + one text row + the spacing after it + a one-point pane. Spelled as LITERALS so this is the
-// header's stated contract, never the implementation's arithmetic re-run.
-constexpr float FIT_BOUND_1X = 64.0F;  // 23 + 23 + 13 + 4 + 1
-constexpr float FIT_BOUND_2X = 88.0F;  // 33 + 33 + 13 + 8 + 1
+// spacing) + one text row + the spacing after it + a four-point pane -- ImGui's smallest child window
+// (IMGUI_WINDOW_HARD_MIN_SIZE) since task E.6.3's code-review round, a one-point pane (64 and 88) before, which
+// ImGui drew 4 tall. Spelled as LITERALS so this is the header's stated contract, never the implementation's
+// arithmetic re-run.
+constexpr float FIT_BOUND_1X = 67.0F;  // 23 + 23 + 13 + 4 + 4
+constexpr float FIT_BOUND_2X = 91.0F;  // 33 + 33 + 13 + 8 + 4
 
 [[nodiscard]] AssetBrowserLayoutMetrics withState(AssetBrowserLayoutMetrics metrics, float avail, bool shown, bool open,
                                                   float content) {
@@ -845,7 +848,7 @@ TEST_CASE("asset view: panes + Issues + footer fill the panel exactly whenever t
     }
 }
 
-TEST_CASE("asset view: the floors -- the body yields first, never below one row; the panes never below 1 (AV56)") {
+TEST_CASE("asset view: the floors -- the body yields first, never below one row; the panes never below 4 (AV56)") {
     constexpr float CONTENT = 5000.0F;  // 40 orphans' worth and more: the body always WANTS its cap
     // (a) The panes keep ASSET_PANES_MIN_FONT font heights while the body can yield: at 150 the cap
     // (floor(0.4 * 150) = 60) would leave the panes 40, so the body gives up 12 and the panes keep 52.
@@ -859,12 +862,13 @@ TEST_CASE("asset view: the floors -- the body yields first, never below one row;
     CHECK(oneRow.issuesBodyHeight == 13.0F);
     CHECK(oneRow.paneHeight == 37.0F);
     CHECK(budgetSum(oneRow) == 100.0F);
-    // (c) Below the fit bound nothing can fit, and the floors hold: the panes are 1 (BeginChild reads 0 as
-    // "fill the window"), the body one row, and only here does the budget exceed the panel.
+    // (c) Below the fit bound nothing can fit, and the floors hold: the panes are 4 (BeginChild reads 0 as
+    // "fill the window", and ImGui draws no child shorter than 4 -- 1 until task E.6.3's code-review round, which
+    // ImGui drew 4 tall), the body one row, and only here does the budget exceed the panel.
     for (const float avail : {0.0F, 1.0F, 10.0F, FIT_BOUND_1X - 1.0F}) {
         CAPTURE(avail);
         const AssetBrowserLayout tiny = assetBrowserLayout(withState(METRICS_1X, avail, true, true, CONTENT));
-        CHECK(tiny.paneHeight == 1.0F);
+        CHECK(tiny.paneHeight == 4.0F);
         CHECK(tiny.issuesBodyHeight == 13.0F);
         CHECK(tiny.issuesHeight == 23.0F + 13.0F + 4.0F);
         CHECK(tiny.footerHeight == 23.0F);
@@ -897,12 +901,14 @@ TEST_CASE("asset view: a NaN, negative or infinite metric counts as zero (AV58)"
     const float nan = std::numeric_limits<float>::quiet_NaN();
     const float inf = std::numeric_limits<float>::infinity();
     const AssetBrowserLayoutMetrics base = withState(METRICS_1X, 600.0F, true, true, 170.0F);
-    // Each field, replaced one at a time: the answer must be EXACTLY the one for a 0 in that field.
+    // Each field, replaced one at a time: the answer must be EXACTLY the one for a 0 in that field. Seven since task
+    // E.6.3's code-review round recorded paneChromeHeight (AV66 drives it at short heights, where its floor binds).
     using Field = float AssetBrowserLayoutMetrics::*;
-    constexpr std::array<Field, 6> FIELDS{
-        &AssetBrowserLayoutMetrics::availHeight,  &AssetBrowserLayoutMetrics::fontSize,
-        &AssetBrowserLayoutMetrics::frameHeight,  &AssetBrowserLayoutMetrics::textLineHeight,
-        &AssetBrowserLayoutMetrics::itemSpacingY, &AssetBrowserLayoutMetrics::issuesContentHeight,
+    constexpr std::array<Field, 7> FIELDS{
+        &AssetBrowserLayoutMetrics::availHeight,         &AssetBrowserLayoutMetrics::fontSize,
+        &AssetBrowserLayoutMetrics::frameHeight,         &AssetBrowserLayoutMetrics::textLineHeight,
+        &AssetBrowserLayoutMetrics::itemSpacingY,        &AssetBrowserLayoutMetrics::paneChromeHeight,
+        &AssetBrowserLayoutMetrics::issuesContentHeight,
     };
     std::size_t checked = 0;
     for (std::size_t f = 0; f < FIELDS.size(); ++f) {
@@ -925,12 +931,12 @@ TEST_CASE("asset view: a NaN, negative or infinite metric counts as zero (AV58)"
             ++checked;
         }
     }
-    CHECK(checked == 30U);
+    CHECK(checked == 35U);  // 7 fields x 5 bad values
     // Anti-vacuity: the zeroed answers really differ from the healthy one, so "same as zero" is a claim.
     AssetBrowserLayoutMetrics zeroAvail = base;
     zeroAvail.availHeight = 0.0F;
     CHECK_FALSE(sameLayout(assetBrowserLayout(zeroAvail), assetBrowserLayout(base)));
-    CHECK(assetBrowserLayout(zeroAvail).paneHeight == 1.0F);
+    CHECK(assetBrowserLayout(zeroAvail).paneHeight == 4.0F);  // the floor: ImGui's smallest child (AV56)
 }
 
 TEST_CASE("asset view: no Issues means no reservation, and a closed header costs one line (AV59)") {
@@ -951,6 +957,218 @@ TEST_CASE("asset view: no Issues means no reservation, and a closed header costs
     const AssetBrowserLayout open = assetBrowserLayout(withState(METRICS_1X, 300.0F, true, true, 47.0F));
     CHECK(open.issuesHeight == 23.0F + 47.0F + 4.0F);
     CHECK(open.paneHeight == 300.0F - 23.0F - 74.0F);
+}
+
+// ---- AV66: task E.6.3's code-review round (findings 7 and 19) -- the contents pane's chrome is RESERVED -----------
+//
+// E.6.3 moved the breadcrumb into the contents pane: ONE group beside the tree -- the crumb row, its rule, one
+// ItemSpacing.y, then the ##contents child, which ImGui never draws shorter than 4 points (IMGUI_WINDOW_HARD_MIN_SIZE)
+// -- so the group is never shorter than that chrome + 4. The budget used to floor the panes at 1 with no term for it,
+// so a pane below 41 points (1x) pushed the Issues region and the footer past the bottom of the panel while the sum
+// still claimed a fit -- the #111 defect again. The panel now RECORDS the chrome and the budget reserves it, with the
+// child's 4: a floor of chrome + 1 still left a pane in [38, 41) up to 3 points short of its group (I231's 640
+// subcase drew tree 38, group 41). The chrome is spelled as a literal here (37 = the crumb row's 24 + 2 x 3, a 1-point
+// rule, 6) and tied to assetContentsPaneChromeHeight once per set; the child's minimum is a literal too.
+namespace {
+
+constexpr float CHILD_MIN = 4.0F;  // IMGUI_WINDOW_HARD_MIN_SIZE (imgui_internal.h): ImGui's shortest child window
+
+using engine::editor::assetContentsPaneChromeHeight;
+using engine::editor::AssetContentsPaneLayout;
+using engine::editor::assetContentsPaneLayout;
+
+struct ChromeCase {
+    std::string_view name;
+    AssetBrowserLayoutMetrics metrics;
+    float frame;  // assetContentsPaneLayout's inputs, as drawContentsPane passes them
+    float rule;
+    float spacing;
+    float scale;
+};
+
+// Plex at 1x and 2x (E.6.1's metrics: body 16, frame 24, ItemSpacing.y 6, every one doubled at 2), and one set where
+// the chrome + 4 is taller than ASSET_PANES_MIN_FONT font heights, so the body's yield must honour the chrome too.
+constexpr AssetBrowserLayoutMetrics PLEX_1X{.availHeight = 0.0F,
+                                            .fontSize = 16.0F,
+                                            .frameHeight = 24.0F,
+                                            .textLineHeight = 16.0F,
+                                            .itemSpacingY = 6.0F,
+                                            .paneChromeHeight = 37.0F};
+constexpr AssetBrowserLayoutMetrics PLEX_2X{.availHeight = 0.0F,
+                                            .fontSize = 32.0F,
+                                            .frameHeight = 48.0F,
+                                            .textLineHeight = 32.0F,
+                                            .itemSpacingY = 12.0F,
+                                            .paneChromeHeight = 74.0F};
+constexpr AssetBrowserLayoutMetrics SMALL_FONT{.availHeight = 0.0F,
+                                               .fontSize = 5.0F,  // 4 x 5 = 20 < 37 + 4
+                                               .frameHeight = 24.0F,
+                                               .textLineHeight = 16.0F,
+                                               .itemSpacingY = 6.0F,
+                                               .paneChromeHeight = 37.0F};
+
+[[nodiscard]] AssetBrowserLayoutMetrics withChrome(AssetBrowserLayoutMetrics metrics, float chrome) {
+    metrics.paneChromeHeight = chrome;
+    return metrics;
+}
+
+}  // namespace
+
+TEST_CASE("asset view: the panes hold the crumb row's chrome; the budget overflows exactly when it must (AV66)") {
+    std::vector<float> avails;
+    for (float avail = 0.0F; avail <= 600.0F; avail += 1.0F) {
+        avails.push_back(avail);
+    }
+    for (const float fractional : {195.25F, 333.5F, 1000.75F, 4096.0F}) {
+        avails.push_back(fractional);
+    }
+    struct State {
+        bool shown;
+        bool open;
+    };
+    constexpr std::array<State, 4> STATES{{{false, false}, {false, true}, {true, false}, {true, true}}};
+    const std::array<ChromeCase, 3> cases{ChromeCase{"plex 1x", PLEX_1X, 24.0F, 1.0F, 6.0F, 1.0F},
+                                          ChromeCase{"plex 2x", PLEX_2X, 48.0F, 2.0F, 12.0F, 2.0F},
+                                          ChromeCase{"small font", SMALL_FONT, 24.0F, 1.0F, 6.0F, 1.0F}};
+    for (const ChromeCase& c : cases) {
+        CAPTURE(c.name);
+        const float chrome = c.metrics.paneChromeHeight;
+        // The recorded metric is the group's own chrome: what the panel records is what the pane subtracts.
+        CHECK(assetContentsPaneChromeHeight(c.frame, c.rule, c.spacing, c.scale) == chrome);
+        const float bodyFloor = c.metrics.textLineHeight;
+        std::size_t checked = 0;
+        std::size_t fits = 0;
+        std::size_t overflows = 0;
+        std::size_t yielded = 0;  // open, with a body taller than its floor
+        std::size_t misses = 0;
+        float firstMiss = -1.0F;
+        for (const State& s : STATES) {
+            for (const float content : {0.0F, 16.0F, 47.0F, 170.0F, 5000.0F}) {
+                for (const float avail : avails) {
+                    const AssetBrowserLayout layout =
+                        assetBrowserLayout(withState(c.metrics, avail, s.shown, s.open, content));
+                    ++checked;
+                    const bool fitsHere = avail - layout.footerHeight - layout.issuesHeight >= chrome + CHILD_MIN;
+                    bool ok = layout.paneHeight >= chrome + CHILD_MIN;
+                    if (fitsHere) {
+                        ok = ok && budgetSum(layout) == avail;  // the panes absorb the remainder exactly
+                        ++fits;
+                    } else {
+                        // Only here can the panel scroll, and the budget says so: the panes sit AT their floor.
+                        ok = ok && budgetSum(layout) > avail && layout.paneHeight == chrome + CHILD_MIN;
+                        ++overflows;
+                    }
+                    if (s.shown && s.open && layout.issuesBodyHeight > bodyFloor) {
+                        ok = ok && fitsHere;  // the body YIELDS before the panes' floor can bind
+                        ++yielded;
+                    }
+                    // The group: crumb row + rule + spacing + the child IS the pane the budget handed out.
+                    const AssetContentsPaneLayout group =
+                        assetContentsPaneLayout(layout.paneHeight, c.frame, c.rule, c.spacing, c.scale);
+                    const float groupHeight = group.crumbRowHeight + c.rule + c.spacing + group.contentsHeight;
+                    ok = ok && groupHeight == layout.paneHeight;
+                    if (!ok) {
+                        ++misses;
+                        if (firstMiss < 0.0F) {
+                            firstMiss = avail;
+                        }
+                    }
+                }
+            }
+        }
+        CAPTURE(firstMiss);
+        CHECK(misses == 0U);
+        CHECK(checked == 4U * 5U * 605U);
+        CHECK(fits > 0U);       // anti-vacuity: both regimes were visited ...
+        CHECK(overflows > 0U);  // ... including panes at the floor, where the group was taller before the fix
+        CHECK(yielded > 0U);    // ... and an open body above its floor
+    }
+
+    // THE FIT BOUNDS at 1x, as literals -- the header's stated contract, never the arithmetic re-run. At the bound the
+    // panes are exactly the chrome + 4 and the sum is the panel; one point below, the sum is still the bound.
+    struct Bound {
+        bool shown;
+        bool open;
+        float avail;
+    };
+    for (const Bound b : {Bound{false, false, 71.0F},    // footer 30 + 37 + 4
+                          Bound{true, false, 101.0F},    // + the closed header 30
+                          Bound{true, true, 123.0F}}) {  // + one row 16 + spacing 6
+        CAPTURE(b.shown);
+        CAPTURE(b.open);
+        const AssetBrowserLayout at = assetBrowserLayout(withState(PLEX_1X, b.avail, b.shown, b.open, 5000.0F));
+        const float under = b.avail - 1.0F;
+        const AssetBrowserLayout below = assetBrowserLayout(withState(PLEX_1X, under, b.shown, b.open, 5000.0F));
+        CHECK(at.paneHeight == 41.0F);
+        CHECK(budgetSum(at) == b.avail);
+        CHECK(below.paneHeight == 41.0F);
+        CHECK(budgetSum(below) == b.avail);  // one point over a panel one point shorter
+    }
+    // The heights the finding named: CI's likely avail 104 with Issues open (the panes were 22), I231's 640-point
+    // window here (avail 89, closed: the panes were 29), and the 768-point one it used to run (avail 121, open: now 2
+    // under the bound, which is why its short subcase runs 824, avail 135).
+    const AssetBrowserLayout ci = assetBrowserLayout(withState(PLEX_1X, 104.0F, true, true, 5000.0F));
+    CHECK(ci.paneHeight == 41.0F);
+    CHECK(budgetSum(ci) == 123.0F);
+    const AssetBrowserLayout short640 = assetBrowserLayout(withState(PLEX_1X, 89.0F, true, false, 0.0F));
+    CHECK(short640.paneHeight == 41.0F);
+    CHECK(budgetSum(short640) == 101.0F);
+    const AssetBrowserLayout short768 = assetBrowserLayout(withState(PLEX_1X, 121.0F, true, true, 5000.0F));
+    CHECK(short768.paneHeight == 41.0F);
+    CHECK(budgetSum(short768) == 123.0F);
+    const AssetBrowserLayout short824 = assetBrowserLayout(withState(PLEX_1X, 135.0F, true, true, 5000.0F));
+    CHECK(short824.issuesBodyHeight == 16.0F);  // still the one-row floor the subcase exists for
+    CHECK(short824.paneHeight == 53.0F);
+    CHECK(budgetSum(short824) == 135.0F);
+    // THE COST, recorded: the editor's own 1280 x 720 launch (editor/src/main.cpp) gives the default layout's panel
+    // avail 109 (measured through I231's fixture). Closed it fits; with the Issues list open the sum is 14 over and
+    // the panel scrolls (by 6, measured), where main's fit: avail 103 by main's own recorded formula, against an open
+    // bound of 83. The price of reserving the crumb row the budget used to overflow with.
+    const AssetBrowserLayout launchClosed = assetBrowserLayout(withState(PLEX_1X, 109.0F, true, false, 0.0F));
+    CHECK(launchClosed.paneHeight == 49.0F);
+    CHECK(budgetSum(launchClosed) == 109.0F);
+    const AssetBrowserLayout launchOpen = assetBrowserLayout(withState(PLEX_1X, 109.0F, true, true, 5000.0F));
+    CHECK(launchOpen.paneHeight == 41.0F);
+    CHECK(budgetSum(launchOpen) == 123.0F);
+    // The chrome term in the panes' minimum: at 130 the body yields to 23, leaving the panes exactly 41 -- without the
+    // term it would take 44 and leave 20, floored back to 41 and overflowing by 21.
+    const AssetBrowserLayout yielding = assetBrowserLayout(withState(SMALL_FONT, 130.0F, true, true, 5000.0F));
+    CHECK(yielding.issuesBodyHeight == 23.0F);
+    CHECK(yielding.paneHeight == 41.0F);
+    CHECK(budgetSum(yielding) == 130.0F);
+
+    // A TALL panel is unchanged: the chrome is drawn INSIDE the panes, never subtracted from them.
+    for (const State& s : STATES) {
+        CAPTURE(s.shown);
+        CAPTURE(s.open);
+        const AssetBrowserLayoutMetrics tall = withState(PLEX_1X, 600.0F, s.shown, s.open, 170.0F);
+        CHECK(sameLayout(assetBrowserLayout(tall), assetBrowserLayout(withChrome(tall, 0.0F))));
+    }
+
+    // A NaN, negative or infinite chrome counts as 0 -- a floor of 4, the child's own -- at heights where it binds.
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    const float inf = std::numeric_limits<float>::infinity();
+    std::size_t badChecked = 0;
+    for (const float bad : {nan, -nan, -5.0F, inf, -inf}) {
+        for (const float avail : {0.0F, 10.0F, 50.0F, 89.0F, 104.0F, 600.0F}) {
+            for (const State& s : STATES) {
+                CAPTURE(bad);
+                CAPTURE(avail);
+                CAPTURE(s.shown);
+                CAPTURE(s.open);
+                const AssetBrowserLayoutMetrics m = withState(PLEX_1X, avail, s.shown, s.open, 170.0F);
+                const AssetBrowserLayout layout = assetBrowserLayout(withChrome(m, bad));
+                CHECK(std::isfinite(layout.paneHeight));
+                CHECK(sameLayout(layout, assetBrowserLayout(withChrome(m, 0.0F))));
+                ++badChecked;
+            }
+        }
+    }
+    CHECK(badChecked == 5U * 6U * 4U);
+    // Anti-vacuity: at 10 points the chrome really moves the floor (4 without it, 41 with it).
+    const AssetBrowserLayoutMetrics tiny = withState(PLEX_1X, 10.0F, false, false, 0.0F);
+    CHECK(assetBrowserLayout(withChrome(tiny, 0.0F)).paneHeight == CHILD_MIN);
+    CHECK(assetBrowserLayout(tiny).paneHeight == 41.0F);
 }
 
 // ---- task E.4.5 (the code-review round): a SUBTITLED tile's first line keeps the FILE NAME ------------------
