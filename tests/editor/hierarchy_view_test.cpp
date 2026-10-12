@@ -146,10 +146,16 @@ TEST_CASE("hierarchy view: an unwritten record is vacuous, and a frame resets it
     CHECK(record.rowRoles.empty());
     CHECK(record.rowMetas.empty());
     CHECK(record.badgeText.empty());
+    CHECK_FALSE(record.shortcutsLive);  // unwritten reads "gated": a case asserting it live must see a drawn frame
+    CHECK_FALSE(record.searchFocused);
     record.rowsDrawn = 4U;
     record.rowRoles.push_back(ed::HierarchyRowRole{});
+    record.shortcutsLive = true;
+    record.searchFocused = true;
     ed::beginHierarchyRecordFrame(record);
     CHECK(record.framesRecorded == 1U);
     CHECK(record.rowsDrawn == 0U);
     CHECK(record.rowRoles.empty());
+    CHECK_FALSE(record.shortcutsLive);
+    CHECK_FALSE(record.searchFocused);
 }

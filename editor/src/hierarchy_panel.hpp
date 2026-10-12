@@ -5,7 +5,7 @@
 //
 // FRAME SHAPE (D12) -- onDraw is exactly five phases, in this order:
 //   1. reconcile  prune the selection, reconcile the root order, drop dead rename/anchor handles
-//   1b. header    task E.6.3: the search field (its IsItemActive read HERE) and the count badge
+//   1b. header    task E.6.3: the search field (whether it owns the keys is read HERE) and the count badge
 //   2. shortcuts  Delete / Backspace / Ctrl-Cmd+D / F2, focus-routed, gated by hierarchyShortcutsLive, RECORDED only
 //   3. walk       the tree, strictly READ-ONLY -- no World and no Selection mutation (I1)
 //                 (inside the always-present ##tree child; the flat match list while a query is set)
@@ -81,6 +81,14 @@ public:
     // (I338).
     void requestSearchQuery(std::string query) { pendingSearchQuery = std::move(query); }
     void expireSearchQuery() noexcept { pendingSearchQuery.reset(); }
+    // The SEAM for a click on the field (the code-review round's finding 20), since nothing in tests/ can click: the
+    // next draw calls SetKeyboardFocusHere on the field -- the rename field's idiom -- and InputTextEx activates it one
+    // frame later through its nav-activation path (input_requested_by_nav, imgui_widgets.cpp:4823), which shares a
+    // click's init_make_active block -- SetActiveID, SetFocusID, FocusWindow, :4913-4915 -- and may additionally
+    // select all (:4899-4900). It obeys the field exactly as requestSearchQuery does -- enabled, no modal, ONE tick
+    // (I337, I338).
+    void requestSearchFieldFocus() noexcept { pendingSearchFocus = true; }
+    void expireSearchFieldFocus() noexcept { pendingSearchFocus = false; }
     [[nodiscard]] const HierarchyDrawRecord& drawRecord() const noexcept { return drawRecordValue; }
 
 private:
@@ -150,7 +158,10 @@ private:
     std::string searchText;                         // the field's buffer; non-empty = the flat match list
     std::optional<std::string> pendingSearchQuery;  // requestSearchQuery's one-shot, drained in onDraw
     bool searchEnabled = true;                      // !renaming, set in onDraw before the header draws
-    bool searchActive = false;                      // the field's IsItemActive(), read in drawHeaderRow
+    bool searchHeldKeys = false;                    // the field's own activation holds its NavId (the latch)
+    bool searchOwnsKeys = false;                    // IsItemActive() || (held && IsItemFocused()), in drawHeaderRow
+    bool pendingSearchFocus = false;                // requestSearchFieldFocus's one-shot, drained in onDraw
+    bool searchFocusThisFrame = false;              // the drain's verdict: drawHeaderRow's SetKeyboardFocusHere
     bool flatRow = false;                           // drawRow is drawing a flat-list row (Leaf | NoTreePushOnOpen)
     std::vector<Entity> matches;                    // this frame's flat list, in pre-order
     std::optional<std::size_t> lastMatchCount;      // the badge counts the PREVIOUS frame's matches (it draws first)

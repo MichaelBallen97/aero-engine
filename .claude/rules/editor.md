@@ -2265,16 +2265,37 @@ state.
   lines -- the pick's `overlayOwnsPress` and ImGuizmo's `widgetOwnsCursor` -- beside `viewAxisOwnsPoint`. A case driving
   `overlayOwnsPress` with a zero or image-space rect asserts its probes are outside every recorded HUD rect first: a
   zero image rect switches off only the view-axis arm.
-- **A request seam obeys its control** (the shell chrome's rule, again): the Hierarchy's search query, the Inspector's
-  component menu, the Assets navigation and the Viewport's stats toggle are each drained on ONE line naming the
-  control's enabled predicate and `noModal`, computed once from `GetTopMostPopupModal()` (`I337`). **A request HELD ON
-  A PANEL lives one tick too**, by its own mechanism, since the shell chrome's clear after the `ShellUiState` build
-  reaches only `EditorApp`'s members: the panel resets it on the first statement after its drain's closing brace,
-  whichever way the gate answered (`I337`; the Inspector's menu instead moves it into a per-frame copy at the top of
-  `onDraw`, E.5.2's shape), and gives it a `noexcept` `expire...()` that `EditorApp::tick` calls after
-  `drawShellUi`, beside `expireComponentMenuAction()`, so a request issued while the panel does not draw at all is
-  dropped as well (`I338`). A new panel seam adds BOTH, an `I337` arm and an `I338`-shaped hidden-panel arm: no source
-  pin sees a missing expire call, and the deferral it leaves is invisible until the panel is hidden.
+- **A request seam obeys its control** (the shell chrome's rule, again): the Hierarchy's search query and search-field
+  focus, the Inspector's component menu, the Assets navigation and the Viewport's stats toggle are each drained on ONE
+  line naming the control's enabled predicate and `noModal`, computed once from `GetTopMostPopupModal()` (`I337`). **A
+  request HELD ON A PANEL lives one tick too**, by its own mechanism, since the shell chrome's clear after the
+  `ShellUiState` build reaches only `EditorApp`'s members: the panel resets it on the first statement after its
+  drain's closing brace, whichever way the gate answered (`I337`; the Inspector's menu instead moves it into a
+  per-frame copy at the top of `onDraw`, E.5.2's shape), and gives it a `noexcept` `expire...()` that
+  `EditorApp::tick` calls after `drawShellUi`, beside `expireComponentMenuAction()`, so a request issued while the
+  panel does not draw at all is dropped as well (`I338`). A new panel seam adds BOTH, an `I337` arm and an
+  `I338`-shaped hidden-panel arm: no source pin sees a missing expire call, and the deferral it leaves is invisible
+  until the panel is hidden.
+- **A SELECTION SHORTCUT BESIDE A TEXT FIELD IS GATED ON THE FIELD'S KEYBOARD, NOT ITS ACTIVITY** -- the Hierarchy's
+  Delete, Backspace, Duplicate and Rename, which act on the panel's selection rather than on the field's own list. The
+  field owns them while `IsItemActive()`, or while `IsItemFocused()` holds a focus the field's OWN activation gave it:
+  a latch set by `IsItemActive()` and released only while the keyboard is in the panel
+  (`IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows)`, the `##tree` child included) on another item or on none,
+  all read right after the field (`I312`, `I339`). Enter and Escape end the activation (`ClearActiveID`,
+  `imgui_widgets.cpp:5452-5453`) and leave `NavId` on the field, so a gate on `IsItemActive()` alone -- or on
+  `io.WantTextInput`, set only while an InputText is active (`:5656-5660`) -- opens on the very Backspace meant for the
+  query, and the Hierarchy's Delete-on-Backspace deleted its selection (the code-review round's finding 20). A tab
+  click or a focus command restores the window's last `NavId` (`imgui.cpp:13733`) -- the field's, once it was
+  activated -- so after a search the gate holds until a row takes the focus: the safe direction, by decision. **And
+  `IsItemFocused()` without the latch over-closes**: ImGui hands a field `NavId` with no click -- a tab or title-bar
+  click that restores no `NavId` runs `NavInitWindow` (`imgui.cpp:19750-19752`), so does a docked window reappearing
+  with no modal up (`:8616-8619`, re-initialised by `:14402-14409`), and NavInit picks the root window's first item,
+  the Hierarchy's field since its rows live in the child -- which left Delete dead after a plain tab click until a row
+  was clicked. A re-initialised `NavId` starts from 0 with the keyboard in the panel, so it releases the latch; only a
+  restore keeps it. **The deliberate exception is the asset picker** (`asset_picker.cpp`): its Left/Right/Home/End and
+  Enter move or commit the popup's own cursor over the list its search box filters, and are gated on `IsItemActive()`
+  alone -- the box takes `NavId` on the frame the popup opens (`SetKeyboardFocusHere`) and can still hold it once it
+  stops editing, which is exactly when those keys are meant to fire.
 - **The Inspector's axis thresholds are per entity and stated before any layout change**: the Cube's `"0.000"` is whole
   from a content width of 266, the Main Camera's from 279, the Directional Light's from 316 (`I289`, geometry-
   independent); the default right split is 0.30. A label-column, letter-inset or split change re-measures all three.

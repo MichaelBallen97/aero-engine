@@ -1273,11 +1273,12 @@ bool EditorApp::tick() {
         inspectorPanel->expireNamedSelection();
         inspectorPanel->expireComponentMenuAction();  // task E.6.3: the overflow menu's seam, the same one-tick rule
     }
-    // task E.6.3 (D14): the three requests that live on a panel, the same one-tick rule. Each panel drops a request
-    // its gate refuses as it drains; one issued while the panel did not draw at all (closed, or another tab in front,
-    // so onDraw never ran) is dropped HERE, so it can never land on the frame the panel next draws (I338).
+    // task E.6.3 (D14): the requests that live on a panel, the same one-tick rule. Each panel drops a request its gate
+    // refuses as it drains; one issued while the panel did not draw at all (closed, or another tab in front, so onDraw
+    // never ran) is dropped HERE, so it can never land on the frame the panel next draws (I338).
     if (hierarchyPanel != nullptr) {
         hierarchyPanel->expireSearchQuery();
+        hierarchyPanel->expireSearchFieldFocus();
     }
     if (assetBrowserPanel != nullptr) {
         assetBrowserPanel->expireNavigate();

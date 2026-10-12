@@ -80,7 +80,7 @@ HierarchyHeaderLayout hierarchyHeaderLayout(float rowMinX, float rowWidth, float
     return out;
 }
 
-bool hierarchyShortcutsLive(bool renaming, bool searchActive) noexcept { return !renaming && !searchActive; }
+bool hierarchyShortcutsLive(bool renaming, bool searchOwnsKeys) noexcept { return !renaming && !searchOwnsKeys; }
 
 void beginHierarchyRecordFrame(HierarchyDrawRecord& record) noexcept {
     ++record.framesRecorded;
@@ -90,6 +90,8 @@ void beginHierarchyRecordFrame(HierarchyDrawRecord& record) noexcept {
     record.rowRoles.clear();
     record.rowMetas.clear();
     record.searchActive = false;
+    record.searchFocused = false;
+    record.shortcutsLive = false;
     record.flatMode = false;
     record.headerRuleDrawn = false;
 }

@@ -25071,7 +25071,7 @@ TEST_CASE("editor: the Hierarchy's search gate and tree child as source text (ta
     const std::vector<std::string> code = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/hierarchy_panel.cpp");
     REQUIRE(code.size() > 200U);
     CHECK(countLinesContaining(code, "hierarchyShortcutsLive(") == 1U);
-    // THE ORDER (seed S9): the header row -- where the field's IsItemActive() is read -- runs before the gate, both
+    // THE ORDER (seed S9): the header row -- where the field's hold on the keys is read -- runs before the gate, both
     // inside onDraw, and the tree after them. One frame late is the defect this arm exists for.
     const std::size_t onDrawAt = soleLineContaining(code, "void HierarchyPanel::onDraw(");
     const std::size_t headerAt = soleLineContaining(code, "drawHeaderRow();");
@@ -25081,13 +25081,54 @@ TEST_CASE("editor: the Hierarchy's search gate and tree child as source text (ta
     CHECK(headerAt < gateAt);
     CHECK(gateAt < treeAt);
     const std::size_t headerDefAt = soleLineContaining(code, "void HierarchyPanel::drawHeaderRow(");
-    const std::size_t activeAt = soleLineContaining(code, "searchActive = ImGui::IsItemActive();");
+    const std::size_t ownsAt = soleLineContaining(code, "searchOwnsKeys = ImGui::IsItemActive()");
     const std::size_t treeDefAt = soleLineContaining(code, "void HierarchyPanel::drawTree(");
-    CHECK(headerDefAt < activeAt);
-    CHECK(activeAt < treeDefAt);  // the read is drawHeaderRow's own
+    CHECK(headerDefAt < ownsAt);
+    CHECK(ownsAt < treeDefAt);  // the read is drawHeaderRow's own
+    // THE TERM (the code-review round's finding 20): the field's KEYBOARD, not its activity -- but only the keyboard
+    // its own activation gave it. Enter and Escape end the activation and leave the focus on the field, so
+    // IsItemActive() alone opens the gate on the next Backspace; NavInit hands the field NavId with no click, so
+    // IsItemFocused() alone shuts it on a plain tab click. The field's activation sets a latch, the latch is released
+    // only while the keyboard is in this panel on another item or none -- the ##tree child included, where a row
+    // click puts it -- and one line reads the activity and the latched focus. I339 is the behaviour; a row click is
+    // not reachable from here, so the child term is pinned as text.
+    CHECK(code[ownsAt].find("|| (searchHeldKeys && ImGui::IsItemFocused())") != std::string::npos);
+    const std::size_t heldAt = soleLineContaining(code, "searchHeldKeys = true;");
+    const std::size_t releasedAt = soleLineContaining(code, "searchHeldKeys = false;");
+    CHECK(code[heldAt - 1U].find("if (ImGui::IsItemActive()) {") != std::string::npos);
+    const std::string& releaseLine = code[releasedAt - 1U];
+    CHECK(releaseLine.find("} else if (!ImGui::IsItemFocused() &&") != std::string::npos);
+    CHECK(releaseLine.find("ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows)") != std::string::npos);
+    CHECK(headerDefAt < heldAt);
+    CHECK(heldAt < releasedAt);
+    CHECK(releasedAt < ownsAt);
+    CHECK(code[gateAt].find("hierarchyShortcutsLive(renaming.valid(), searchOwnsKeys)") != std::string::npos);
     // ALWAYS a child: the BeginChild statement opens its line, so no `if` guards it.
     const std::size_t childAt = soleLineContaining(code, "BeginChild(\"##tree\"");
     CHECK(code[childAt].find_first_not_of(' ') == code[childAt].find("ImGui::BeginChild"));
+    // THE GATE THE KEYS OBEY: I339 reads the RECORDED verdict, so the `if` every Shortcut() runs behind reads that same
+    // local, with no code between the verdict, its record and the `if`, and every Shortcut() sits inside that `if`
+    // block, which closes before the tree child opens. A careless `if` (one that drops the field's term) is otherwise
+    // invisible: the record would still say "gated" while the keys fire.
+    const std::size_t recordAt = soleLineContaining(code, "drawRecordValue.shortcutsLive = shortcutsLive;");
+    const std::size_t ifAt = soleLineContaining(code, "if (shortcutsLive) {");
+    CHECK(nextCodeLine(code, gateAt + 1U) == recordAt);
+    CHECK(nextCodeLine(code, recordAt + 1U) == ifAt);
+    const std::string ifClose = code[ifAt].substr(0, code[ifAt].find_first_not_of(' ')) + "}";
+    std::size_t ifCloseAt = ifAt + 1U;
+    while (ifCloseAt < code.size() &&
+           code[ifCloseAt].substr(0, code[ifCloseAt].find_last_not_of(" \t\r") + 1U) != ifClose) {
+        ++ifCloseAt;  // npos + 1 is 0, so a blank line reads "" and never matches
+    }
+    REQUIRE(ifCloseAt < childAt);
+    CHECK(countLinesContaining(code, "ImGui::Shortcut(") == 3U);  // Delete or Backspace, Ctrl+D, F2
+    for (std::size_t i = 0; i < code.size(); ++i) {
+        if (code[i].find("ImGui::Shortcut(") != std::string::npos) {
+            CAPTURE(code[i]);
+            CHECK(ifAt < i);
+            CHECK(i < ifCloseAt);
+        }
+    }
     // The flat list's rows push no tree level.
     CHECK(countLinesContaining(code, "ImGuiTreeNodeFlags_Leaf | ImGuiTreeNodeFlags_NoTreePushOnOpen") == 1U);
     // No new create path (I253(d), (h)).
@@ -25129,6 +25170,14 @@ TEST_CASE("editor: every E.6.3 request is drained under its control's predicate 
         CHECK(countLinesContaining(code, "GetTopMostPopupModal()") == 1U);
         CHECK(countLinesContaining(code, "BeginDisabled(!searchEnabled)") == 1U);  // the control reads the same term
         resetFollowsGate(code, drainAt, "pendingSearchQuery.reset();");
+    }
+    SUBCASE("the Hierarchy's search-field focus") {
+        // The seam that stands in for a click on the field (finding 20's I339): the field's own predicate again.
+        const std::vector<std::string> code = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/hierarchy_panel.cpp");
+        const std::size_t drainAt = soleLineContaining(code, "pendingSearchFocus &&");
+        CHECK(code[drainAt].find("searchEnabled") != std::string::npos);
+        CHECK(code[drainAt].find("noModal") != std::string::npos);
+        resetFollowsGate(code, drainAt, "pendingSearchFocus = false;");
     }
     SUBCASE("the Inspector's component menu") {
         const std::vector<std::string> code = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/inspector_panel.cpp");
@@ -26861,6 +26910,112 @@ TEST_CASE("editor: a panel request its gate refuses, or its panel never draws, i
         e62Ticks(*app, 2);
         CHECK_FALSE(viewport->statsVisible());
     }
+    // The Hierarchy's search-field focus (finding 20's seam), closed again. A held request would call
+    // SetKeyboardFocusHere on the first drawn frame and the field would be active on the next -- the frame
+    // tickUntilDrawn's extra tick records.
+    app->panels().setVisible("Hierarchy", false);
+    REQUIRE(app->tick());
+    const std::uint64_t focusIdle = tree.framesRecorded;
+    hierarchy->requestSearchFieldFocus();
+    REQUIRE(app->tick());
+    REQUIRE(tree.framesRecorded == focusIdle);  // ANTI-VACUITY: no onDraw ran over that tick
+    app->panels().setVisible("Hierarchy", true);
+    tickUntilDrawn(tree.framesRecorded, focusIdle);
+    CHECK_FALSE(tree.searchActive);
+    hierarchy->requestSearchFieldFocus();  // control: the same request, the panel drawing
+    for (int i = 0; i < 4 && !tree.searchActive; ++i) {
+        REQUIRE(app->tick());
+    }
+    CHECK(tree.searchActive);
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: the Hierarchy's shortcuts stay gated while its search field keeps the keyboard (task E.6.3, I339)") {
+    // The code-review round's finding 20. Nothing here can press Backspace, so the witness is the gate's own recorded
+    // verdict, frame by frame, across the states the field's keyboard can be in. The field owns the keys while it is
+    // active, or while it keeps the NavId its OWN activation gave it: Enter and Escape leave it exactly there, and so
+    // does coming back to the panel by its tab or a focus command, which restores that NavId (d). A NavId ImGui hands
+    // the field by itself -- NavInit, on a reappearing window or a tab click that restores nothing -- owns nothing
+    // (a, f): the gate shut on it would leave Delete dead with nothing on screen to say why.
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "hierarchy search keys i339", .width = 900, .height = 600});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = e62App(*device, *window, ctx);
+    auto* const hierarchy = dynamic_cast<engine::editor::HierarchyPanel*>(app->panels().find("Hierarchy"));
+    REQUIRE(hierarchy != nullptr);
+    const engine::editor::HierarchyDrawRecord& r = hierarchy->drawRecord();
+    REQUIRE(r.shortcutsLive);  // ANTI-VACUITY: a fresh editor's gate is open, so every false below is the field's
+    REQUIRE_FALSE(r.searchActive);
+
+    // (a) NavInit's NavId, on a field never activated. A docked window shown again runs FocusWindow and NavInitWindow
+    //     (imgui.cpp:8616-8619) -- a tab or title-bar click that restores no NavId does the same (:19750-19752) --
+    //     and NavInit picks the root window's first item: the field, since the rows live in the ##tree child.
+    app->panels().setVisible("Hierarchy", false);
+    REQUIRE(app->tick());
+    app->panels().setVisible("Hierarchy", true);
+    e62Ticks(*app, 2);
+    REQUIRE(app->keyboardFocusPanelId() == "Hierarchy");
+    REQUIRE(r.searchFocused);  // ANTI-VACUITY: the field holds NavId -- what a focus-only gate shuts on
+    REQUIRE_FALSE(r.searchActive);
+    CHECK(r.shortcutsLive);
+
+    // (b) Active -- what a click does: the seam's SetKeyboardFocusHere, then InputTextEx's nav activation one frame
+    //     later, which shares a click's SetActiveID, SetFocusID and FocusWindow (imgui_widgets.cpp:4913-4915).
+    hierarchy->requestSearchFieldFocus();
+    for (int i = 0; i < 4 && !r.searchActive; ++i) {
+        REQUIRE(app->tick());
+    }
+    REQUIRE(r.searchActive);
+    REQUIRE(app->keyboardFocusPanelId() == "Hierarchy");
+    CHECK_FALSE(r.shortcutsLive);
+
+    // (c) The keyboard in another panel: FocusWindow ends the field's activation (imgui.cpp:13754-13756) and NavId
+    //     becomes the Inspector's, so the field owns nothing. (The Hierarchy's Shortcut() calls would not route here
+    //     either; the verdict is the gate's alone.)
+    app->requestPanelFocus("Inspector");
+    e62Ticks(*app, 2);
+    REQUIRE(app->keyboardFocusPanelId() == "Inspector");
+    REQUIRE_FALSE(r.searchActive);
+    CHECK(r.shortcutsLive);
+
+    // (d) Back in the Hierarchy: FocusWindow restores the window's last NavId (imgui.cpp:13733) -- the field's, written
+    //     by (b)'s activation -- with nothing active. The keyboard is in this panel, so Backspace would route here, and
+    //     an IsItemActive()-only gate would let it delete the selection. DECIDED: the hold survives the round trip.
+    app->requestPanelFocus("Hierarchy");
+    e62Ticks(*app, 2);
+    REQUIRE(app->keyboardFocusPanelId() == "Hierarchy");
+    REQUIRE(r.searchFocused);
+    REQUIRE_FALSE(r.searchActive);
+    CHECK_FALSE(r.shortcutsLive);
+
+    // (e) Away again opens it, so (d)'s false is the field's NavId and not a gate stuck shut.
+    app->requestPanelFocus("Inspector");
+    e62Ticks(*app, 2);
+    REQUIRE(app->keyboardFocusPanelId() == "Inspector");
+    CHECK(r.shortcutsLive);
+
+    // (f) Shown again after (b)'s search: a RE-INITIALISED NavId is not a restored one. NavInitWindow sets NavId to 0
+    //     on the reappearing frame (imgui.cpp:14409) with the keyboard in this panel, which ends the field's hold, and
+    //     the NavId NavInit hands the field back on the next frame owns nothing -- (a)'s state. (d) is the restore.
+    app->panels().setVisible("Hierarchy", false);
+    REQUIRE(app->tick());
+    app->panels().setVisible("Hierarchy", true);
+    e62Ticks(*app, 2);
+    REQUIRE(app->keyboardFocusPanelId() == "Hierarchy");
+    REQUIRE(r.searchFocused);
+    REQUIRE_FALSE(r.searchActive);
+    CHECK(r.shortcutsLive);
 
     app->requestQuit();
     CHECK(app->tick() == false);

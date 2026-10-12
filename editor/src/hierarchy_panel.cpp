@@ -118,6 +118,10 @@ void HierarchyPanel::onDraw(PanelContext& context) {
         searchText = std::move(*pendingSearchQuery);
     }
     pendingSearchQuery.reset();  // a moved-from optional stays ENGAGED (E.4.3's one-shot rule)
+    if (pendingSearchFocus && searchEnabled && noModal) {
+        searchFocusThisFrame = true;  // the click's effect: drawHeaderRow puts the keyboard in the field
+    }
+    pendingSearchFocus = false;
 
     // -- phase 1b: the header row. The badge counts the PREVIOUS frame's matches: the list is built in the child
     //    below, after the badge draws (stated, D6; the breadcrumb's precedent).
@@ -125,10 +129,14 @@ void HierarchyPanel::onDraw(PanelContext& context) {
     drawHeaderRow();
 
     // -- phase 2: shortcuts. DEFAULT (focus-scoped) routing, never RouteGlobal (E25/E26) -- and GATED while the search
-    //    field is active: it owns only the arrows, Delete, Backspace, Home and End (imgui_widgets.cpp:4923-4925), so
-    //    Cmd+D and F2 would otherwise act on the selection while the user types (D6). The child below routes these
+    //    field owns the keys (D6). Active, it owns only the arrows, Delete, Backspace, Home and End
+    //    (imgui_widgets.cpp:4923-4925), so Cmd+D and F2 would act on the selection while the user types; deactivated by
+    //    Enter or Escape, it keeps the keyboard focus, and the next Backspace -- meant for the query -- would delete
+    //    the selection (the code-review round's finding 20). The verdict is recorded. The child below routes these
     //    because the panel window is on its focus route.
-    if (hierarchyShortcutsLive(renaming.valid(), searchActive)) {
+    const bool shortcutsLive = hierarchyShortcutsLive(renaming.valid(), searchOwnsKeys);
+    drawRecordValue.shortcutsLive = shortcutsLive;
+    if (shortcutsLive) {
         if (ImGui::Shortcut(ImGuiKey_Delete) || ImGui::Shortcut(ImGuiKey_Backspace)) {
             pending = PendingAction{.kind = ActionKind::Delete};
         }
@@ -156,7 +164,7 @@ void HierarchyPanel::onDraw(PanelContext& context) {
 }
 
 // task E.6.3 (D6): an UNFILLED header row (the window's own `panel` ground) over a divider rule: the search field
-// with its hint filling the row, the count badge right-aligned. The field's IsItemActive() is read HERE -- before
+// with its hint filling the row, the count badge right-aligned. Whether the field owns the keys is read HERE -- before
 // the shortcut phase, on the same frame (I312's order arm).
 void HierarchyPanel::drawHeaderRow() {
     const float s = currentUiScale();
@@ -169,9 +177,35 @@ void HierarchyPanel::drawHeaderRow() {
     ImGui::SetCursorScreenPos(ImVec2(rowMin.x, rowMin.y + padY));
     ImGui::SetNextItemWidth(layout.searchWidth);
     ImGui::BeginDisabled(!searchEnabled);
+    if (searchFocusThisFrame) {
+        ImGui::SetKeyboardFocusHere();  // the seam's click: the field activates on the next frame
+        searchFocusThisFrame = false;
+    }
     inputTextString("##search", "Search entities", searchText, ImGuiInputTextFlags_None);
-    searchActive = ImGui::IsItemActive();
-    drawRecordValue.searchActive = searchActive;
+    // The field OWNS THE KEYS while it is active, or while it keeps the keyboard focus its OWN activation gave it (the
+    // code-review round's finding 20). Activating it -- a click, or the seam above -- runs SetActiveID, SetFocusID and
+    // FocusWindow (imgui_widgets.cpp:4913-4915); Enter and Escape undo only the first (clear_active_id at :5180 /
+    // :5212, then ClearActiveID at :5452-5453, which is SetActiveID(0, NULL) and touches no NavId,
+    // imgui.cpp:4863-4866). So IsItemFocused -- NavId is this item (imgui.cpp:6568-6572) -- stays true until another
+    // item takes the focus: a row's or the void target's ButtonBehavior calls SetFocusID (imgui_widgets.cpp:632, :650)
+    // on the ##tree child. DECIDED: a tab click or a focus command restores the window's last NavId (FocusWindow,
+    // imgui.cpp:13733), which is the field's once it was activated, so after a search the hold survives a round trip
+    // and lasts until a row is clicked -- the safe direction.
+    // But ImGui ALSO hands the field NavId by itself: a tab or title-bar click that restores no NavId runs
+    // NavInitWindow (imgui.cpp:19750-19752), so does a docked window reappearing with no modal up (:8616-8619,
+    // :14402-14409), and NavInit picks the root window's first item -- this field, since the rows live in the child.
+    // That focus owns nothing, or Delete would be dead after a plain tab click until a row is clicked. Hence the
+    // LATCH: set by the field's activation, released whenever the keyboard is in this panel (the child included) but
+    // not on the field -- a row click, or the NavId 0 a re-initialising window starts from. A NavId restored while
+    // the keyboard was elsewhere keeps it.
+    if (ImGui::IsItemActive()) {
+        searchHeldKeys = true;
+    } else if (!ImGui::IsItemFocused() && ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows)) {
+        searchHeldKeys = false;
+    }
+    searchOwnsKeys = ImGui::IsItemActive() || (searchHeldKeys && ImGui::IsItemFocused());
+    drawRecordValue.searchActive = ImGui::IsItemActive();
+    drawRecordValue.searchFocused = ImGui::IsItemFocused();
     drawRecordValue.searchFieldMin = Vec2{ImGui::GetItemRectMin().x, ImGui::GetItemRectMin().y};
     drawRecordValue.searchFieldMax = Vec2{ImGui::GetItemRectMax().x, ImGui::GetItemRectMax().y};
     ImGui::EndDisabled();

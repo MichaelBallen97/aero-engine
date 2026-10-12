@@ -53,9 +53,10 @@ struct HierarchyHeaderLayout {
 [[nodiscard]] HierarchyHeaderLayout hierarchyHeaderLayout(float rowMinX, float rowWidth, float badgeWidth,
                                                           float uiScale) noexcept;
 
-// D6: Delete, Backspace, Cmd/Ctrl+D and F2 are live only when neither a rename nor the search field is active -- an
+// D6: Delete, Backspace, Cmd/Ctrl+D and F2 are live only when neither a rename nor the search field owns the keys --
+// active, or holding the keyboard focus after Enter or Escape deactivated it (the code-review round's finding 20). An
 // active InputText owns only the arrows, Delete, Backspace, Home and End (imgui_widgets.cpp:4923-4925).
-[[nodiscard]] bool hierarchyShortcutsLive(bool renaming, bool searchActive) noexcept;
+[[nodiscard]] bool hierarchyShortcutsLive(bool renaming, bool searchOwnsKeys) noexcept;
 
 // What the Hierarchy DREW this frame (D14) -- its FIRST draw seam.
 struct HierarchyRowRole {
@@ -74,7 +75,9 @@ struct HierarchyDrawRecord {
     std::vector<HierarchyRowRole> rowRoles;  // this frame, one per drawn row: look a role up BY HANDLE
     std::vector<HierarchyRowMeta> rowMetas;  // this frame, one per drawn meta
     std::string badgeText;
-    bool searchActive = false;
+    bool searchActive = false;   // the field's IsItemActive(): it is being edited
+    bool searchFocused = false;  // the field's IsItemFocused(): it holds NavId, whoever gave it
+    bool shortcutsLive = false;  // hierarchyShortcutsLive's verdict this frame -- the gate the shortcuts ran behind
     bool flatMode = false;
     bool headerRuleDrawn = false;  // the rule's AddRectFilled added vertices to the list
     Vec2 searchFieldMin{};
