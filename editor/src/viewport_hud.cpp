@@ -57,8 +57,8 @@ ViewportHudLayout viewportHudLayout(Vec2 imageMin, Vec2 imageMax, const Viewport
     const Vec2 areaMax{imageMax.x - inset, imageMax.y - inset};
     Vec2 axisMin{};
     Vec2 axisMax{};
-    if (inputs.viewAxisVisible) {
-        viewAxisRect(imageMin, Vec2{imageMax.x - imageMin.x, imageMax.y - imageMin.y}, s, axisMin, axisMax);
+    if (inputs.viewAxisVisible) {  // the CIRCLE's box: the circle reaches five past viewAxisRect and draws last
+        viewAxisCircleRect(imageMin, Vec2{imageMax.x - imageMin.x, imageMax.y - imageMin.y}, s, axisMin, axisMax);
     }
     const auto keep = [&](const HudRect& r) {
         return nonEmpty(r) && inside(r, areaMin, areaMax) && !overlaps(r, axisMin, axisMax);
@@ -101,6 +101,17 @@ bool hudOwnsPoint(const ViewportHudLayout& layout, Vec2 point) noexcept {
 
 float viewAxisCircleRadius(float uiScale) noexcept {
     return (VIEW_AXIS_HALF_EXTENT_POINTS + EDITOR_THEME.panels.viewAxisCircleGap) * layoutScale(uiScale);
+}
+
+void viewAxisCircleRect(Vec2 imageOriginPoints, Vec2 imageSizePoints, float uiScale, Vec2& outMin,
+                        Vec2& outMax) noexcept {
+    viewAxisRect(imageOriginPoints, imageSizePoints, uiScale, outMin, outMax);
+    if (!(outMax.x > outMin.x)) {
+        return;  // hidden: viewAxisRect's degenerate (0,0)-(0,0), kept -- a hidden widget's circle owns nothing
+    }
+    const float grow = EDITOR_THEME.panels.viewAxisCircleGap * uiScale;  // visible, so the scale is finite and > 0
+    outMin = Vec2{outMin.x - grow, outMin.y - grow};
+    outMax = Vec2{outMax.x + grow, outMax.y + grow};
 }
 
 std::size_t viewportDrawCalls(const ViewportDrawCounts& counts) noexcept {

@@ -397,7 +397,10 @@ bool ViewportPanel::overlayOwnsPress(Vec2 pressPoints, Vec2 imageOrigin, Vec2 im
 //
 // The claim is on the whole RECT, not on the balls: a press on the widget's empty space -- inside the
 // square, on no ball and not on the badge -- is still chrome and must not deselect the scene entity
-// behind it. A press one point outside the rect picks normally.
+// behind it. task E.6.3 (the code-review round): the rect is the divider CIRCLE's bounding square
+// (viewAxisCircleRect -- viewAxisRect grown by viewAxisCircleGap, degenerate exactly when it is), because
+// the circle reaches five past the half-extent rect at the middle of each side and is drawn over the
+// scene; the HUD's keep test reads the same box. A press one point outside it picks normally.
 //
 // TWO CONSUMERS, ONE RECT: overlayOwnsPress above (the scene pick) and updateGizmo's ImGuizmo::Enable
 // term (the transform handles). Both presses belong to the widget, and a rule written twice is a rule
@@ -408,7 +411,7 @@ bool ViewportPanel::viewAxisOwnsPoint(Vec2 pointPoints, Vec2 imageOrigin, Vec2 i
     }
     Vec2 axisMin{};
     Vec2 axisMax{};
-    viewAxisRect(imageOrigin, imageSize, lastUiScale, axisMin, axisMax);
+    viewAxisCircleRect(imageOrigin, imageSize, lastUiScale, axisMin, axisMax);
     return containsHalfOpen(pointPoints, axisMin, axisMax);
 }
 
@@ -1347,7 +1350,8 @@ void ViewportPanel::drawViewAxisGizmo() {
     drawList->PushClipRect(ImVec2(c.x - reach, c.y - reach), ImVec2(c.x + reach, c.y + reach), true);
     // task E.6.3 (D9): the divider circle the balls sit in, viewAxisCircleRadius (43) -- clear of every in-plane ball
     // and of a hovered one (VIEW_AXIS_HOVER_GROWTH draws it at 10), its edge 18 in from the image's corner. FIRST, so
-    // every ball paints over it; inside the clip (reach = half + one ball radius = 46 >= 43 + the rule).
+    // every ball paints over it; inside the clip (reach = half + one ball radius = 46 >= 43 + the rule). Its bounding
+    // square, viewAxisCircleRect, is what the press claim and the HUD's keep test read.
     const float circleRadius = viewAxisCircleRadius(s);
     drawList->AddCircle(ImVec2(c.x, c.y), circleRadius, roleU32(ChromeRole::Divider), 0, ruleHeight());
     hudRecordValue.viewAxisCircleCenter = c;

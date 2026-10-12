@@ -1,4 +1,4 @@
-// tests/editor/viewport_hud_test.cpp -- task E.6.3 (D9): the Viewport HUD model, VO1-VO13. A TU of
+// tests/editor/viewport_hud_test.cpp -- task E.6.3 (D9): the Viewport HUD model, VO1-VO14. A TU of
 // aero_editor_shell_test. Tier 0, every configuration, no #if. Metrics are RESTATED: inset 14, gap 8, stats 209 wide
 // and 129 high at six rows (110 at five).
 #include <aero/editor/editor_glyphs.hpp>
@@ -94,7 +94,8 @@ TEST_CASE("viewport hud: shrinking drops the stats, then the hints, then the chi
         const ed::ViewportHudLayout l = ed::viewportHudLayout(IMAGE_MIN, max, in, 1.0F);
         Vec2 axisMin{};
         Vec2 axisMax{};
-        ed::viewAxisRect(IMAGE_MIN, Vec2{w, h}, 1.0F, axisMin, axisMax);
+        // The view-axis CIRCLE's box (the code-review round): the circle reaches five past viewAxisRect and draws last.
+        ed::viewAxisCircleRect(IMAGE_MIN, Vec2{w, h}, 1.0F, axisMin, axisMax);
         const ed::HudRect axis{axisMin, axisMax, axisMax.x > axisMin.x};
         const std::array<const ed::HudRect*, 4> kept{&l.chip, &l.stats, &l.hints[0], &l.hints[1]};
         for (std::size_t i = 0; i < kept.size(); ++i) {
@@ -104,7 +105,7 @@ TEST_CASE("viewport hud: shrinking drops the stats, then the hints, then the chi
             CHECK(kept[i]->min.x >= IMAGE_MIN.x + 14.0F);  // inside the inset image
             CHECK(kept[i]->max.y <= max.y - 14.0F + 1e-3F);
             if (axis.shown) {
-                CHECK_FALSE(overlap(*kept[i], axis));  // never over the view-axis widget
+                CHECK_FALSE(overlap(*kept[i], axis));  // never under the view-axis widget's circle
             }
             for (std::size_t j = i + 1; j < kept.size(); ++j) {
                 if (kept[j]->shown) {
@@ -308,4 +309,94 @@ TEST_CASE("viewport hud: the stats card is sized by the layout, never by its val
     REQUIRE(big.stats.shown);
     CHECK(big.stats.max.y - big.stats.min.y == 258.0F);  // exactly doubled at 2
     CHECK(big.stats.max.x - big.stats.min.x == 418.0F);
+}
+
+TEST_CASE("viewport hud: the HUD keeps off the view-axis CIRCLE's box (task E.6.3, VO14)") {
+    // The divider circle (viewAxisCircleRadius, 43 at 1) reaches five past viewAxisRect at the middle of each side and
+    // is drawn LAST, over the HUD. At scale 1 the six-row card's bottom sits 14 + 129 = 143 below the image's top and
+    // the circle's top 23 + 38 + 43 = 104 above its bottom, inside the card's x range: the card must go below a
+    // 247-point image. The half-extent rect (99 above the bottom) kept it down to 242, and the arc crossed it.
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    const float inf = std::numeric_limits<float>::infinity();
+
+    // 1. The box: viewAxisRect grown by the gap on every side, which IS centre +- the radius (exact at 1 and 2).
+    for (const float s : {1.0F, 2.0F}) {
+        CAPTURE(s);
+        const Vec2 size{900.0F * s, 600.0F * s};
+        Vec2 rectMin{};
+        Vec2 rectMax{};
+        Vec2 boxMin{};
+        Vec2 boxMax{};
+        ed::viewAxisRect(IMAGE_MIN, size, s, rectMin, rectMax);
+        ed::viewAxisCircleRect(IMAGE_MIN, size, s, boxMin, boxMax);
+        REQUIRE(rectMax.x > rectMin.x);  // ANTI-VACUITY: the widget is visible at this size
+        const float gap = 5.0F * s;      // viewAxisCircleGap, restated
+        CHECK((boxMin == Vec2{rectMin.x - gap, rectMin.y - gap}));
+        CHECK((boxMax == Vec2{rectMax.x + gap, rectMax.y + gap}));
+        const Vec2 centre{(rectMin.x + rectMax.x) * 0.5F, (rectMin.y + rectMax.y) * 0.5F};
+        const float radius = ed::viewAxisCircleRadius(s);
+        CHECK((boxMin == Vec2{centre.x - radius, centre.y - radius}));
+        CHECK((boxMax == Vec2{centre.x + radius, centre.y + radius}));
+    }
+
+    // 2. DEGENERATE exactly when viewAxisRect is: too small, non-finite, or a bad scale -- the widget draws nothing
+    // there (viewAxisRect's own rule, not US11's "a bad scale is 1"), so its circle owns nothing either.
+    struct Hidden {
+        Vec2 origin;
+        Vec2 size;
+        float scale;
+    };
+    const Vec2 full{900.0F, 600.0F};
+    const std::initializer_list<Hidden> hiddenRows{
+        Hidden{IMAGE_MIN, Vec2{139.0F, 600.0F}, 1.0F},  // under VIEW_AXIS_MIN_IMAGE_POINTS wide
+        Hidden{IMAGE_MIN, Vec2{900.0F, 139.0F}, 1.0F},  // ...and tall
+        Hidden{Vec2{nan, 0.0F}, full, 1.0F},
+        Hidden{IMAGE_MIN, Vec2{inf, 600.0F}, 1.0F},
+        Hidden{IMAGE_MIN, full, nan},
+        Hidden{IMAGE_MIN, full, 0.0F},
+        Hidden{IMAGE_MIN, full, -1.0F},
+        Hidden{IMAGE_MIN, full, inf},
+    };
+    for (const Hidden& row : hiddenRows) {
+        CAPTURE(row.size.x);
+        CAPTURE(row.scale);
+        Vec2 boxMin{1.0F, 1.0F};  // stale values the call must overwrite
+        Vec2 boxMax{2.0F, 2.0F};
+        ed::viewAxisCircleRect(row.origin, row.size, row.scale, boxMin, boxMax);
+        CHECK((boxMin == Vec2{}));
+        CHECK((boxMax == Vec2{}));
+    }
+
+    // 3. The keep test at scale 1, 900 wide, across the band. Nothing but the widget can drop the card at these
+    // heights (the anti-vacuity REQUIRE: with the widget hidden it is shown), and the half-extent rect clears it from
+    // 242 -- so a keep test on that rect shows the card under the arc at 242..246, and 244 and 248 sit either side.
+    const ed::ViewportHudInputs in = inputs();
+    ed::ViewportHudInputs noWidget = in;
+    noWidget.viewAxisVisible = false;
+    for (int h = 240; h <= 250; ++h) {
+        CAPTURE(h);
+        const auto height = static_cast<float>(h);  // auto: a bare cast (modernize-use-auto)
+        const Vec2 max = imageMaxOf(900.0F, height);
+        REQUIRE(ed::viewportHudLayout(IMAGE_MIN, max, noWidget, 1.0F).stats.shown);
+        Vec2 rectMin{};
+        Vec2 rectMax{};
+        ed::viewAxisRect(IMAGE_MIN, Vec2{900.0F, height}, 1.0F, rectMin, rectMax);
+        REQUIRE(rectMax.x > rectMin.x);  // the widget is visible
+        const ed::ViewportHudLayout l = ed::viewportHudLayout(IMAGE_MIN, max, in, 1.0F);
+        CHECK(l.stats.shown == (h >= 247));
+        if (h >= 242) {
+            CHECK(l.stats.max.y <= rectMin.y);  // clear of the half-extent rect: only the circle drops it
+        }
+    }
+
+    // 4. Scale 2 doubles the band: the card goes below a 494-point image.
+    ed::ViewportHudInputs two = in;
+    two.chipSize = Vec2{280.0F, 48.0F};
+    two.statsContentSize = Vec2{360.0F, 0.0F};
+    two.hintSizes = {Vec2{224.0F, 48.0F}, Vec2{160.0F, 48.0F}};
+    ed::ViewportHudInputs twoNoWidget = two;
+    twoNoWidget.viewAxisVisible = false;
+    REQUIRE(ed::viewportHudLayout(IMAGE_MIN, imageMaxOf(1800.0F, 492.0F), twoNoWidget, 2.0F).stats.shown);
+    CHECK_FALSE(ed::viewportHudLayout(IMAGE_MIN, imageMaxOf(1800.0F, 492.0F), two, 2.0F).stats.shown);
+    CHECK(ed::viewportHudLayout(IMAGE_MIN, imageMaxOf(1800.0F, 494.0F), two, 2.0F).stats.shown);
 }

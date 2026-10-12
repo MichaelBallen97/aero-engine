@@ -382,7 +382,9 @@ TEST_CASE(
         {"status_bar.hpp", "P"},               // task E.6.2: statusBarLayout
         {"toolbar_model.hpp", "PP"},           // task E.6.2: shellBarHeight, toolbarLayout
         {"view_axis_gizmo.hpp", "MPP"},
-        {"viewport_hud.hpp", "PP"},  // task E.6.3: viewportHudLayout, viewAxisCircleRadius
+        // task E.6.3: viewportHudLayout, viewAxisCircleRadius -- and, since the code-review round, viewAxisCircleRect,
+        // the circle's box the HUD's keep test and the press claim share.
+        {"viewport_hud.hpp", "PPP"},
     };
     CHECK(found.size() == expected.size());
     for (const auto& [file, kinds] : expected) {

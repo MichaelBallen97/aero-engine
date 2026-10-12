@@ -201,6 +201,8 @@ public:
     // The widget's screen rect, as THIS frame's image rect implies it -- a PURE function, unlike
     // overlayRowMin/Max below, which report what the LAST DRAWN frame recorded. Exposed so a test can
     // check it is a real, non-degenerate square inside the image rather than trusting it was computed.
+    // task E.6.3 (the code-review round): the half-extent rect; the press claim is its divider circle's
+    // box, this rect grown by viewAxisCircleGap x the scale on every side (viewAxisCircleRect).
     [[nodiscard]] Vec2 viewAxisRectMin() const noexcept;
     [[nodiscard]] Vec2 viewAxisRectMax() const noexcept;
 
@@ -223,8 +225,9 @@ public:
     // strip" -- rather than a global that conflates a widget with the window background.
     //
     // task E.1.3: it now ORs a SECOND rect -- the view-axis widget's, through viewAxisOwnsPoint below
-    // -- and takes the image rect to compute it. That rect is PURE (viewAxisRect), so unlike the
-    // row's it describes THIS frame and needs no staleness argument at all. Both arms go through one
+    // -- and takes the image rect to compute it. That rect is PURE (viewAxisRect; since task E.6.3's
+    // code-review round, its divider circle's box viewAxisCircleRect), so unlike the row's it
+    // describes THIS frame and needs no staleness argument at all. Both arms go through one
     // containsHalfOpen helper, which is what stops the second rect acquiring a subtly different
     // containment rule. Its one production caller is updatePick, which already has both values.
     [[nodiscard]] bool overlayOwnsPress(Vec2 pressPoints, Vec2 imageOrigin, Vec2 imageSize) const noexcept;

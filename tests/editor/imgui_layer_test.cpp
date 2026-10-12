@@ -10935,15 +10935,37 @@ TEST_CASE("editor: the widget's press claim and the SetOrthographic call site (t
         // is still chrome" claim, which is the half a ball-shaped claim would miss.
         CHECK(viewport->overlayOwnsPress(engine::Vec2{rectMin.x + 0.5F, rectMin.y + 0.5F}, origin, size));
         CHECK(viewport->overlayOwnsPress(rectMin, origin, size));  // half-open at min
+        // task E.6.3 (the code-review round): the divider circle reaches viewAxisCircleGap past the rect at the middle
+        // of each side, drawn over the scene -- a press there, half the gap out, is chrome too. Each probe is asserted
+        // outside the row and every HUD rect first, so only the widget's arm can own it.
+        const float gap = engine::editor::EDITOR_THEME.panels.viewAxisCircleGap * app->uiScale();
+        const engine::Vec2 rowMin = viewport->overlayRowMin();
+        const engine::Vec2 rowMax = viewport->overlayRowMax();
+        REQUIRE(rowMax.x > rowMin.x);  // anti-vacuity: an empty row rect proves nothing about the row's arm
+        const auto outsideRow = [rowMin, rowMax](engine::Vec2 point) {
+            return point.x < rowMin.x || point.x >= rowMax.x || point.y < rowMin.y || point.y >= rowMax.y;
+        };
+        const engine::Vec2 leftOfRect{rectMin.x - (0.5F * gap), centre.y};
+        const engine::Vec2 aboveRect{centre.x, rectMin.y - (0.5F * gap)};
+        for (const engine::Vec2 inCircle : {leftOfRect, aboveRect}) {
+            CAPTURE(inCircle.x);
+            CAPTURE(inCircle.y);
+            REQUIRE(outsideRow(inCircle));
+            REQUIRE(e63OutsideHud(*viewport, inCircle));
+            CHECK(viewport->overlayOwnsPress(inCircle, origin, size));
+        }
     }
-    SUBCASE("...and NOT one point outside its left edge") {
+    SUBCASE("...and NOT one point outside the circle's left edge") {
         const engine::Vec2 origin{};
         // ...the widget is inset by MARGIN from the image's BOTTOM-right corner (task E.6.3), so the image is
         // rectMax + MARGIN on both axes.
         const engine::Vec2 size{rectMax.x + engine::editor::VIEW_AXIS_MARGIN_POINTS,
                                 rectMax.y + engine::editor::VIEW_AXIS_MARGIN_POINTS};
         const engine::Vec2 centreY{0.0F, (rectMin.y + rectMax.y) * 0.5F};
-        const engine::Vec2 justOutside{rectMin.x - 1.0F, centreY.y};
+        // task E.6.3 (the code-review round): the claim is the divider circle's box, viewAxisCircleGap past the rect.
+        const float gap = engine::editor::EDITOR_THEME.panels.viewAxisCircleGap * app->uiScale();
+        const engine::Vec2 justOutside{rectMin.x - gap - 1.0F, centreY.y};
+        const engine::Vec2 circleBoxMax{rectMax.x + gap, rectMax.y + gap};  // the claim's max, inside the image
 
         // THE TWO ARMS OF overlayOwnsPress REPORT IN DIFFERENT SPACES HERE, AND THAT IS WHY THIS
         // GUARD EXISTS. viewAxisRectMin/Max are IMAGE-RELATIVE (the accessors say so: no image origin
@@ -10964,15 +10986,16 @@ TEST_CASE("editor: the widget's press claim and the SetOrthographic call site (t
             return point.x < rowMin.x || point.x >= rowMax.x || point.y < rowMin.y || point.y >= rowMax.y;
         };
         CHECK(outsideRow(justOutside));
-        CHECK(outsideRow(rectMax));
+        CHECK(outsideRow(circleBoxMax));
         // task E.6.3 (D9): and outside every HUD rect -- the HUD's arm answers in SCREEN space too.
         const engine::editor::ViewportHudRecord& hud = viewport->hudRecord();
         REQUIRE((hud.layout.chip.shown || hud.layout.stats.shown || hud.layout.hints[0].shown));  // anti-vacuity
         CHECK(e63OutsideHud(*viewport, justOutside));
-        CHECK(e63OutsideHud(*viewport, rectMax));
+        CHECK(e63OutsideHud(*viewport, circleBoxMax));
 
         CHECK_FALSE(viewport->overlayOwnsPress(justOutside, origin, size));
-        CHECK_FALSE(viewport->overlayOwnsPress(rectMax, origin, size));  // half-open at max
+        // Half-open at max -- the circle's box's since the code-review round (rectMax itself is inside it now).
+        CHECK_FALSE(viewport->overlayOwnsPress(circleBoxMax, origin, size));
     }
 #else
     // -DAERO_SHADER_TOOLS=OFF: the viewport latches Unavailable at step 4, so no image was ever laid
@@ -26308,12 +26331,18 @@ TEST_CASE("editor: the view-axis widget sits 23 in from the bottom-right, inside
     // The circle's outer edge 18 in from the image's corner, on both axes -- the mock's inset.
     CHECK(std::abs((r.imageMax.x - (r.viewAxisCircleCenter.x + r.viewAxisCircleRadius)) - (18.0F * s)) <= 0.5F);
     CHECK(std::abs((r.imageMax.y - (r.viewAxisCircleCenter.y + r.viewAxisCircleRadius)) - (18.0F * s)) <= 0.5F);
-    // ...and no HUD rect over it.
+    // ...and no HUD rect under the CIRCLE it drew (the code-review round): the circle reaches viewAxisCircleGap past
+    // the half-extent corners and draws last, so the recorded centre +- radius is the box a shown rect must clear.
+    const engine::Vec2 circleMin{r.viewAxisCircleCenter.x - r.viewAxisCircleRadius,
+                                 r.viewAxisCircleCenter.y - r.viewAxisCircleRadius};
+    const engine::Vec2 circleMax{r.viewAxisCircleCenter.x + r.viewAxisCircleRadius,
+                                 r.viewAxisCircleCenter.y + r.viewAxisCircleRadius};
     for (const engine::editor::HudRect* rect :
          {&r.layout.chip, &r.layout.stats, &r.layout.hints[0], &r.layout.hints[1]}) {
         if (rect->shown) {
-            const bool apart = rect->max.x <= r.viewAxisCornerMin.x || r.viewAxisCornerMax.x <= rect->min.x ||
-                               rect->max.y <= r.viewAxisCornerMin.y || r.viewAxisCornerMax.y <= rect->min.y;
+            const bool besideX = rect->max.x <= circleMin.x || circleMax.x <= rect->min.x;
+            const bool besideY = rect->max.y <= circleMin.y || circleMax.y <= rect->min.y;
+            const bool apart = besideX || besideY;
             CHECK(apart);
         }
     }

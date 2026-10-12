@@ -1,6 +1,6 @@
 #pragma once
 // Aero Engine -- the Viewport's HUD as VALUES (task E.6.3, spec D9). PUBLIC and PURE: no ImGui, no GPU, so tier 0 walks
-// the layout, its drop order, the press claim, the draw-call sum, the count abbreviation and every text (VO1-VO13) that
+// the layout, its drop order, the press claim, the draw-call sum, the count abbreviation and every text (VO1-VO14) that
 // viewport_panel.cpp only measures and draws. The record at the bottom is what the panel DREW.
 #include <aero/core/math.hpp>             // Vec2
 #include <aero/editor/editor_camera.hpp>  // ProjectionMode
@@ -48,8 +48,8 @@ struct ViewportHudLayout {
 // when a value changes width.
 // PRIORITY, which IS the drop order when the image shrinks: the chip is placed first, the hints next, the stats card
 // last; a rect is shown only when it fits inside the inset image and overlaps neither a SHOWN rect placed before it
-// nor the view-axis widget's rect (viewAxisRect at the same scale, when the widget is visible). A non-finite or empty
-// image shows nothing; a bad scale is 1.
+// nor the view-axis widget's circle (viewAxisCircleRect at the same scale, when the widget is visible -- the circle is
+// drawn last, over the HUD). A non-finite or empty image shows nothing; a bad scale is 1.
 [[nodiscard]] ViewportHudLayout viewportHudLayout(Vec2 imageMin, Vec2 imageMax, const ViewportHudInputs& inputs,
                                                   float uiScale) noexcept;
 // True when `point` lies in a SHOWN rect, half-open (max excluded); a NaN point is owned by nothing. A FREE function:
@@ -57,6 +57,18 @@ struct ViewportHudLayout {
 [[nodiscard]] bool hudOwnsPoint(const ViewportHudLayout& layout, Vec2 point) noexcept;
 // The circle the view-axis balls sit in: VIEW_AXIS_HALF_EXTENT_POINTS + viewAxisCircleGap, times the scale (43 at 1).
 [[nodiscard]] float viewAxisCircleRadius(float uiScale) noexcept;
+// That circle's bounding SQUARE in screen points: viewAxisRect grown by viewAxisCircleGap x uiScale on every side, i.e.
+// centre +- viewAxisCircleRadius. The circle reaches five past the half-extent rect at the middle of each side, so
+// this is the ONE extent the widget claims: viewportHudLayout's keep test and ViewportPanel's press claim (the scene
+// pick and ImGuizmo's Enable term) both read it. DEGENERATE (0,0)-(0,0) exactly when viewAxisRect is -- a hidden
+// widget, a bad scale included (viewAxisRect's rule: nothing draws there, so nothing is claimed).
+// The box is the circle's NOMINAL extent, exact at and below scale 1 only. AddCircle strokes its path at radius - 0.5
+// (imgui_draw.cpp:1616) and a stroke under one point draws one point thick (:841), so there the rule's outer edge is
+// the box's edge. The rule is ruleHeight(), s points thick above scale 1, so its outer edge sits 0.5 x (s - 1) points
+// past the box (half a point at 2x), plus the anti-aliasing fringe. That overhang is neither claimed nor kept clear:
+// every roleOutline overhangs its rect the same way (AddRect strokes from min + 0.5, :1524), the stats card's too.
+void viewAxisCircleRect(Vec2 imageOriginPoints, Vec2 imageSizePoints, float uiScale, Vec2& outMin,
+                        Vec2& outMax) noexcept;
 
 // ---- the stats card (D9, D15) -----------------------------------------------------------------------------------
 // The viewport frame's draw calls, pass by pass, as the panel latched them after its render (F21).

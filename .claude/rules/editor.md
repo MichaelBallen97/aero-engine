@@ -2275,6 +2275,12 @@ state.
   lines -- the pick's `overlayOwnsPress` and ImGuizmo's `widgetOwnsCursor` -- beside `viewAxisOwnsPoint`. A case driving
   `overlayOwnsPress` with a zero or image-space rect asserts its probes are outside every recorded HUD rect first: a
   zero image rect switches off only the view-axis arm.
+- **THE VIEW-AXIS WIDGET CLAIMS ITS DIVIDER CIRCLE'S BOUNDING SQUARE** -- `viewAxisCircleRect`, `viewAxisRect` grown
+  by `viewAxisCircleGap`, degenerate exactly when it is -- and the HUD's keep test and `viewAxisOwnsPoint` (the pick
+  and ImGuizmo's `Enable` term) both read it: the circle reaches five past the half-extent rect and draws last.
+  Chrome drawn around a claimed shape grows the ONE claimed extent with it (`VO14`, `I116`). The box is the circle's
+  NOMINAL extent, exact at and below scale 1: above it the `ruleHeight()` stroke (s points) overhangs the box by
+  0.5 x (s - 1) points, plus the AA fringe, as every `roleOutline` overhangs its rect -- neither claimed nor cleared.
 - **A request seam obeys its control** (the shell chrome's rule, again): the Hierarchy's search query and search-field
   focus, the Inspector's component menu, the Assets navigation and the Viewport's stats toggle are each drained on ONE
   line naming the control's enabled predicate and `noModal`, computed once from `GetTopMostPopupModal()` (`I337`). **A
