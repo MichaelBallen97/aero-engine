@@ -25098,6 +25098,29 @@ TEST_CASE("editor: the Hierarchy's search gate and tree child as source text (ta
 TEST_CASE("editor: every E.6.3 request is drained under its control's predicate and no modal (task E.6.3, I337)") {
     // I307(j)'s shape: each request's drain line names the predicate the control's own BeginDisabled reads AND
     // noModal, computed ONCE per function from GetTopMostPopupModal() (a modal blocks every click, imgui.cpp:5620).
+    // A panel-held request is DROPPED when its gate refuses it, never deferred (the code-review round's finding 1):
+    // the seam's reset is the first statement after the drain's closing brace, so it runs whichever way the gate
+    // answered, and no reset sits inside the gate. I338 is the behaviour; this is where the line sits.
+    const auto resetFollowsGate = [](const std::vector<std::string>& code, std::size_t drainAt,
+                                     std::string_view reset) {
+        const auto isClosingBrace = [](const std::string& line) {
+            const std::size_t first = line.find_first_not_of(" \t\r");
+            return first != std::string::npos && line.find_last_not_of(" \t\r") == first && line[first] == '}';
+        };
+        std::size_t closeAt = drainAt + 1U;
+        while (closeAt < code.size() && !isClosingBrace(code[closeAt])) {
+            ++closeAt;
+        }
+        REQUIRE(closeAt < code.size());
+        for (std::size_t i = drainAt; i < closeAt; ++i) {
+            CAPTURE(code[i]);
+            CHECK(code[i].find(reset) == std::string::npos);  // never inside the gate
+        }
+        const std::size_t after = nextCodeLine(code, closeAt + 1U);
+        REQUIRE(after < code.size());
+        CAPTURE(code[after]);
+        CHECK(code[after].find(reset) != std::string::npos);  // the very next statement
+    };
     SUBCASE("the Hierarchy's search query") {
         const std::vector<std::string> code = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/hierarchy_panel.cpp");
         const std::size_t drainAt = soleLineContaining(code, "pendingSearchQuery.has_value() &&");
@@ -25105,6 +25128,7 @@ TEST_CASE("editor: every E.6.3 request is drained under its control's predicate 
         CHECK(code[drainAt].find("noModal") != std::string::npos);
         CHECK(countLinesContaining(code, "GetTopMostPopupModal()") == 1U);
         CHECK(countLinesContaining(code, "BeginDisabled(!searchEnabled)") == 1U);  // the control reads the same term
+        resetFollowsGate(code, drainAt, "pendingSearchQuery.reset();");
     }
     SUBCASE("the Inspector's component menu") {
         const std::vector<std::string> code = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/inspector_panel.cpp");
@@ -25120,6 +25144,7 @@ TEST_CASE("editor: every E.6.3 request is drained under its control's predicate 
         CHECK(code[drainAt].find("noModal") != std::string::npos);
         CHECK(countLinesContaining(code, "GetTopMostPopupModal()") == 1U);
         CHECK(countLinesContaining(code, "BeginDisabled(!crumbsEnabled)") == 1U);  // the crumbs read the same term
+        resetFollowsGate(code, drainAt, "navigateRequest.reset();");
     }
     SUBCASE("the Viewport's stats toggle") {
         const std::vector<std::string> code = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/viewport_panel.cpp");
@@ -25127,6 +25152,7 @@ TEST_CASE("editor: every E.6.3 request is drained under its control's predicate 
         CHECK(code[drainAt].find("statsControlReachable") != std::string::npos);  // the chip: the popover's door
         CHECK(code[drainAt].find("noModal") != std::string::npos);
         CHECK(countLinesContaining(code, "GetTopMostPopupModal()") == 1U);
+        resetFollowsGate(code, drainAt, "pendingStatsVisible.reset();");
     }
 }
 
@@ -26680,6 +26706,160 @@ TEST_CASE("editor: every panel draws at 320 x 180 -- the HUD dropped, the Assets
         MESSAGE("I334 viewport image: " << imageW << " x " << imageH << ", chip shown " << hud.layout.chip.shown);
     } else {
         WARN(hud.framesRecorded > hudBefore);  // the viewport's content region was empty at 320 x 180: geometry
+    }
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+// ---- task E.6.3, the code-review round: a panel request lives ONE tick ------------------------------------------
+
+TEST_CASE("editor: a panel request its gate refuses, or its panel never draws, is dropped (task E.6.3, I338)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "one-tick requests i338", .width = 1280, .height = 800});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app =
+        e63AssetsApp(*device, *window, ctx, {"top.txt", "other.txt", "models/e.txt"});
+    auto* const browser = dynamic_cast<engine::editor::AssetBrowserPanel*>(app->panels().find("Assets"));
+    auto* const viewport = dynamic_cast<engine::editor::ViewportPanel*>(app->panels().find("Viewport"));
+    auto* const hierarchy = dynamic_cast<engine::editor::HierarchyPanel*>(app->panels().find("Hierarchy"));
+    REQUIRE(browser != nullptr);
+    REQUIRE(viewport != nullptr);
+    REQUIRE(hierarchy != nullptr);
+    const engine::editor::AssetChromeRecord& assets = browser->chromeRecord();
+    const engine::editor::ViewportHudRecord& hud = viewport->hudRecord();
+    const engine::editor::HierarchyDrawRecord& tree = hierarchy->drawRecord();
+    // The reduced arm, by a RUNTIME predicate: with shader tools OFF the Viewport is Unavailable and returns before its
+    // stats drain, so neither Viewport arm has a gate to test there.
+    const bool hudAvailable = viewport->sceneForwardRenderer() != nullptr;
+    // The asset Delete modal, raised through its request hook: once its body has drawn, every drain at the top of a
+    // later frame reads it off GetTopMostPopupModal(). requestAssetBrowserDeleteConfirm closes it (deleting `path`).
+    const auto raiseDeleteModal = [&app](std::string path) {
+        app->requestAssetBrowserDelete(std::move(path));
+        for (int i = 0; i < 4 && app->assetBrowserDeleteModalDrawnCount() == 0U; ++i) {
+            REQUIRE(app->tick());
+        }
+        REQUIRE(app->assetBrowserDeleteModalDrawnCount() > 0U);
+    };
+    // Ticks until a record's frame count moves past `idle` (a re-shown or re-fronted panel draws again), then once
+    // more, so a request applied on that first drawn frame has a whole frame to show in the record.
+    const auto tickUntilDrawn = [&app](const std::uint64_t& frames, std::uint64_t idle) {
+        for (int i = 0; i < 4 && frames == idle; ++i) {
+            REQUIRE(app->tick());
+        }
+        REQUIRE(frames > idle);
+        REQUIRE(app->tick());
+    };
+    REQUIRE(assets.crumbsDrawn == 1U);  // at the root: "assets" alone
+
+    // (a) The Assets navigation, refused by the modal, is dropped: closing the modal replays nothing.
+    raiseDeleteModal("top.txt");
+    app->requestAssetBrowserNavigate("models");
+    REQUIRE(app->tick());
+    REQUIRE(app->assetBrowserDeleteModalDrawnCount() > 0U);  // ANTI-VACUITY: the modal was up over that drain
+    CHECK(assets.crumbsDrawn == 1U);
+    app->requestAssetBrowserDeleteConfirm();
+    // The body is no longer submitted, so the next NewFrame focuses away from the inactive modal and FocusWindow
+    // closes it (imgui.cpp:5950-5951, :13740): a held request would land on that frame and draw on the one after.
+    REQUIRE(app->tick());
+    // An effect, never the seam's own state (requestDeleteConfirm empties pendingDelete before any tick runs): the
+    // counter resets at the top of every onDraw and counts only inside BeginPopupModal, so 0 says the panel drew this
+    // frame and submitted no body. That the modal then LEFT OpenPopupStack is the control's proof, below, not this.
+    REQUIRE(app->assetBrowserDeleteModalDrawnCount() == 0U);
+    e62Ticks(*app, 2);  // measured at b6fb1c8: crumbs 1 on the first of these, 2 on the second
+    CHECK(assets.crumbsDrawn == 1U);
+    // Control: with no modal up the same request lands -- which also proves the modal left ImGui's popup stack.
+    app->requestAssetBrowserNavigate("models");
+    e62Ticks(*app, 2);
+    CHECK(assets.crumbsDrawn == 2U);
+    app->requestAssetBrowserNavigate("");
+    e62Ticks(*app, 2);
+    REQUIRE(assets.crumbsDrawn == 1U);
+
+    // (b) The Viewport's stats toggle, refused by the same modal, is dropped.
+    if (hudAvailable) {
+        REQUIRE(viewport->statsVisible());
+        REQUIRE(hud.layout.chip.shown);  // ANTI-VACUITY: the gate's control term is open, so only the modal refuses
+        raiseDeleteModal("other.txt");
+        viewport->requestStatsVisible(false);
+        REQUIRE(app->tick());
+        REQUIRE(app->assetBrowserDeleteModalDrawnCount() > 0U);  // ANTI-VACUITY: the modal was up over that drain
+        CHECK(viewport->statsVisible());
+        app->requestAssetBrowserDeleteConfirm();
+        REQUIRE(app->tick());                                     // no body this frame; the next NewFrame closes it
+        REQUIRE(app->assetBrowserDeleteModalDrawnCount() == 0U);  // the effect (a) reads, for the same reason
+        e62Ticks(*app, 2);
+        REQUIRE(hud.layout.chip.shown);   // the whole gate open again: a held request would have landed
+        CHECK(viewport->statsVisible());  // ...and nothing did
+        // Control: the same request with no modal up lands -- the proof the modal left ImGui's popup stack.
+        viewport->requestStatsVisible(false);
+        e62Ticks(*app, 2);
+        CHECK_FALSE(viewport->statsVisible());
+        viewport->requestStatsVisible(true);
+        e62Ticks(*app, 2);
+        REQUIRE(viewport->statsVisible());
+    } else {
+        MESSAGE("shader tools OFF: the viewport is Unavailable and never reaches its stats drain -- (b) skipped");
+    }
+
+    // (c) A request issued while its panel does not draw at all is dropped by EditorApp after the shell draw (E.5.2's
+    // expireNamedSelection shape), so the panel drawing again later replays nothing.
+    // The Hierarchy, closed -- it is alone in its node.
+    app->panels().setVisible("Hierarchy", false);
+    REQUIRE(app->tick());
+    REQUIRE_FALSE(tree.flatMode);
+    const std::uint64_t treeIdle = tree.framesRecorded;
+    hierarchy->requestSearchQuery("cube");
+    REQUIRE(app->tick());
+    REQUIRE(tree.framesRecorded == treeIdle);  // ANTI-VACUITY: no onDraw ran over that tick
+    app->panels().setVisible("Hierarchy", true);
+    tickUntilDrawn(tree.framesRecorded, treeIdle);
+    CHECK_FALSE(tree.flatMode);             // a held query would have landed on the first drawn frame
+    hierarchy->requestSearchQuery("cube");  // control: the same request, the panel drawing
+    e62Ticks(*app, 2);
+    CHECK(tree.flatMode);
+    hierarchy->requestSearchQuery("");
+    e62Ticks(*app, 2);
+    REQUIRE_FALSE(tree.flatMode);
+    // The Assets panel, behind the Console's tab in the Bottom node.
+    app->panels().setVisible("Console", true);
+    e62Ticks(*app, 3);  // the Console's first appearance docks it into the Bottom node
+    e63Front(*app, "Console", "Assets");
+    const std::uint64_t assetsIdle = assets.framesRecorded;
+    app->requestAssetBrowserNavigate("models");
+    REQUIRE(app->tick());
+    REQUIRE(assets.framesRecorded == assetsIdle);  // ANTI-VACUITY: Begin answered false, so no onDraw ran
+    app->requestPanelFocus("Assets");
+    tickUntilDrawn(assets.framesRecorded, assetsIdle);
+    CHECK(assets.crumbsDrawn == 1U);
+    app->requestAssetBrowserNavigate("models");  // control
+    e62Ticks(*app, 2);
+    CHECK(assets.crumbsDrawn == 2U);
+    // The Viewport, closed -- it is alone in its node.
+    if (hudAvailable) {
+        REQUIRE(viewport->statsVisible());
+        app->panels().setVisible("Viewport", false);
+        REQUIRE(app->tick());
+        const std::uint64_t hudIdle = hud.framesRecorded;
+        viewport->requestStatsVisible(false);
+        REQUIRE(app->tick());
+        REQUIRE(hud.framesRecorded == hudIdle);  // ANTI-VACUITY: no onDraw reached the HUD over that tick
+        app->panels().setVisible("Viewport", true);
+        tickUntilDrawn(hud.framesRecorded, hudIdle);
+        REQUIRE(hud.layout.chip.shown);  // ANTI-VACUITY: the drain's control term is open again
+        CHECK(viewport->statsVisible());
+        viewport->requestStatsVisible(false);  // control
+        e62Ticks(*app, 2);
+        CHECK_FALSE(viewport->statsVisible());
     }
 
     app->requestQuit();

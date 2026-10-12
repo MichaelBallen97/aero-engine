@@ -75,9 +75,12 @@ public:
     }
 
     // ---- task E.6.3: the search field's seam and the draw record (D14) ----------------------------------------
-    // The SEAM writes the query the field would hold; it is applied at the next draw, and only while the field is
-    // enabled (no rename in progress) and no modal is up -- the field's own predicate (I337).
+    // The SEAM writes the query the field would hold. It lives ONE tick: the next draw applies it only while the field
+    // is enabled (no rename in progress) and no modal is up -- the field's own predicate (I337) -- and drops it
+    // otherwise; EditorApp calls expireSearchQuery() after drawShellUi, so a tick the panel did not draw drops it too
+    // (I338).
     void requestSearchQuery(std::string query) { pendingSearchQuery = std::move(query); }
+    void expireSearchQuery() noexcept { pendingSearchQuery.reset(); }
     [[nodiscard]] const HierarchyDrawRecord& drawRecord() const noexcept { return drawRecordValue; }
 
 private:

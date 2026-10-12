@@ -330,9 +330,12 @@ public:
     // What the last onDraw DREW -- the header's rects, the crumbs, the tree, the tiles, the footer -- every member
     // written from ImGui's answers at the draw, never copied from a layout's input.
     [[nodiscard]] const AssetChromeRecord& chromeRecord() const noexcept { return chrome; }
-    // Queues EXACTLY the ActionKind::Navigate a crumb or a tree-row click records. Held until an onDraw finds the
-    // crumbs enabled and no modal up -- the gate a real click has -- then recorded for that frame's applyPending().
+    // Queues EXACTLY the ActionKind::Navigate a crumb or a tree-row click records. It lives ONE tick: the next onDraw
+    // records it for that frame's applyPending() only while the crumbs are enabled and no modal is up -- the gate a
+    // real click has -- and drops it otherwise; EditorApp calls expireNavigate() after drawShellUi, so a tick the panel
+    // did not draw (closed, or another tab in front) drops it too (I338).
     void requestNavigate(std::string relativeDir);
+    void expireNavigate() noexcept { navigateRequest.reset(); }
 
 private:
     // performance-enum-size: the explicit underlying type is mandatory, like every engine enum.

@@ -838,18 +838,18 @@ void ViewportPanel::onDraw(PanelContext& context) {
     // (INV-2). Drawing here also puts it UNDER the size readout below and OVER the Image above.
     drawSelectionOverlay(context, Vec2{imageOrigin.x, imageOrigin.y}, Vec2{avail.x, avail.y});
 
-    // Step 9 (task E.6.3, D9): THE HUD. requestStatsVisible's drain first -- held while the chip, the popover's only
-    // door, is dropped or a modal is up, the gate the Stats checkbox has (I337) -- then the layout from the RECORDED
-    // image rect, latched for next frame's press claims; drawHud draws the stats card and the hints (or the fly chip)
-    // and leaves the cursor at the chip's laid-out min. The extent text, the fly line and `ortho` are gone: the card
-    // shows the extent, the fly chip the speed, and the chip the projection -- with the widget's badge, E.1.3 D15's
-    // "two places" still.
+    // Step 9 (task E.6.3, D9): THE HUD. requestStatsVisible's drain first -- applied only while the chip, the
+    // popover's only door, is laid out and no modal is up, the gate the Stats checkbox has (I337), and DROPPED
+    // otherwise, as a swallowed click is (I338) -- then the layout from the RECORDED image rect, latched for next
+    // frame's press claims; drawHud draws the stats card and the hints (or the fly chip) and leaves the cursor at the
+    // chip's laid-out min. The extent text, the fly line and `ortho` are gone: the card shows the extent, the fly chip
+    // the speed, and the chip the projection -- with the widget's badge, E.1.3 D15's "two places" still.
     const bool noModal = ImGui::GetTopMostPopupModal() == nullptr;
     const bool statsControlReachable = latchedHudLayout.chip.shown;
     if (pendingStatsVisible.has_value() && statsControlReachable && noModal) {
         statsVisibleValue = *pendingStatsVisible;
-        pendingStatsVisible.reset();
     }
+    pendingStatsVisible.reset();  // one tick: the reset runs whichever way the gate answered
     drawHud(context, hudImageMin, hudImageMax, drawExtent);
     // Step 9b: RECORD THE INTERACTIVE STRIP'S RECT, in the same screen-space POINTS io.MousePos uses,
     // so updatePick's ARM step can refuse a press the strip owns. `rowStart` is captured before `View`,

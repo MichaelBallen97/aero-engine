@@ -2078,13 +2078,15 @@ void AssetBrowserPanel::onDraw(PanelContext& /*context*/) {  // D18: the context
     issuesBodyDrawnHeight = 0.0F;
     beginAssetChromeRecordFrame(chrome);  // task E.6.3 (D14): one recorded frame per onDraw
     // task E.6.3: requestNavigate's drain -- the crumbs' own enabled term and no modal, the gate a real click has
-    // (a modal blocks every click, imgui.cpp:5620). Recorded for THIS frame's applyPending().
+    // (a modal blocks every click, imgui.cpp:5620). Recorded for THIS frame's applyPending(). A refused request is
+    // DROPPED, never deferred, as a swallowed click is: the reset runs whichever way the gate answered (I337, I338).
     const bool noModal = ImGui::GetTopMostPopupModal() == nullptr;
     const bool crumbsEnabled = !rootUtf8.empty();
     if (navigateRequest.has_value() && crumbsEnabled && noModal) {
         record(ActionKind::Navigate, std::move(*navigateRequest));
-        navigateRequest.reset();  // a moved-from optional is still ENGAGED -- the move is not a drain
     }
+    navigateRequest.reset();  // a moved-from optional is still ENGAGED -- the move is not a drain
+
     reconcile();   // 1 -- the only I/O
     drawHeader();  // 2
     // task E.4.4 (validation finding 2): the footer AND the Issues region are reserved BEFORE the panes

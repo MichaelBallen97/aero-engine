@@ -1273,6 +1273,18 @@ bool EditorApp::tick() {
         inspectorPanel->expireNamedSelection();
         inspectorPanel->expireComponentMenuAction();  // task E.6.3: the overflow menu's seam, the same one-tick rule
     }
+    // task E.6.3 (D14): the three requests that live on a panel, the same one-tick rule. Each panel drops a request
+    // its gate refuses as it drains; one issued while the panel did not draw at all (closed, or another tab in front,
+    // so onDraw never ran) is dropped HERE, so it can never land on the frame the panel next draws (I338).
+    if (hierarchyPanel != nullptr) {
+        hierarchyPanel->expireSearchQuery();
+    }
+    if (assetBrowserPanel != nullptr) {
+        assetBrowserPanel->expireNavigate();
+    }
+    if (viewportPanel != nullptr) {
+        viewportPanel->expireStatsVisible();
+    }
     // task E.3.2. The toggle is adopted ONLY when the checkbox was actually flipped -- routeEnabled is
     // an in/out field, and adopting it unconditionally would be harmless today and a silent
     // re-introduction of a stale value the moment anything else writes it.

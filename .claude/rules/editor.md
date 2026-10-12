@@ -2267,7 +2267,14 @@ state.
   zero image rect switches off only the view-axis arm.
 - **A request seam obeys its control** (the shell chrome's rule, again): the Hierarchy's search query, the Inspector's
   component menu, the Assets navigation and the Viewport's stats toggle are each drained on ONE line naming the
-  control's enabled predicate and `noModal`, computed once from `GetTopMostPopupModal()` (`I337`).
+  control's enabled predicate and `noModal`, computed once from `GetTopMostPopupModal()` (`I337`). **A request HELD ON
+  A PANEL lives one tick too**, by its own mechanism, since the shell chrome's clear after the `ShellUiState` build
+  reaches only `EditorApp`'s members: the panel resets it on the first statement after its drain's closing brace,
+  whichever way the gate answered (`I337`; the Inspector's menu instead moves it into a per-frame copy at the top of
+  `onDraw`, E.5.2's shape), and gives it a `noexcept` `expire...()` that `EditorApp::tick` calls after
+  `drawShellUi`, beside `expireComponentMenuAction()`, so a request issued while the panel does not draw at all is
+  dropped as well (`I338`). A new panel seam adds BOTH, an `I337` arm and an `I338`-shaped hidden-panel arm: no source
+  pin sees a missing expire call, and the deferral it leaves is invisible until the panel is hidden.
 - **The Inspector's axis thresholds are per entity and stated before any layout change**: the Cube's `"0.000"` is whole
   from a content width of 266, the Main Camera's from 279, the Directional Light's from 316 (`I289`, geometry-
   independent); the default right split is 0.30. A label-column, letter-inset or split change re-measures all three.

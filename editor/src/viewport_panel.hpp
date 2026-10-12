@@ -279,10 +279,13 @@ public:
     // EditorApp's ONE FrameTimeReadout, re-handed every tick (setToolState's shape, the same dangling argument): the
     // stats card's Frame row is its SECOND consumer, never a second readout. NULL draws "-- ms".
     void setFrameReadout(const FrameTimeReadout* readout) noexcept { frameReadoutPtr = readout; }
-    // Session state, default ON. A request is held until a frame finds the view chip shown -- the popover's only door,
-    // so the gate the Stats checkbox has -- and no modal up; then it lands, exactly as the checkbox would.
+    // Session state, default ON. A request lives ONE tick: the next draw applies it, exactly as the checkbox would,
+    // only while the view chip -- the popover's only door, so the gate the Stats checkbox has -- is laid out and no
+    // modal is up, and drops it otherwise; EditorApp calls expireStatsVisible() after drawShellUi, so a tick the panel
+    // did not draw drops it too (I338).
     [[nodiscard]] bool statsVisible() const noexcept { return statsVisibleValue; }
     void requestStatsVisible(bool visible) noexcept { pendingStatsVisible = visible; }
+    void expireStatsVisible() noexcept { pendingStatsVisible.reset(); }
     // What the last onDraw DREW: the image rect, every HUD rect, the chip, the stats rows, the counts, the widget.
     [[nodiscard]] const ViewportHudRecord& hudRecord() const noexcept { return hudRecordValue; }
 
