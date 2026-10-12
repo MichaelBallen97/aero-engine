@@ -26026,26 +26026,42 @@ TEST_CASE("editor: Assets tiles -- counts once a generation, hatched labels, rin
 }
 
 TEST_CASE("editor: the Assets footer -- the path elided from the left, the right zone whole (task E.6.3, I326)") {
-    // A 1600 x 600 window: the side panels are hidden below, so the footer is at most 1584 wide and its left zone
-    // keeps at most ~208 Mono-small cells (6.46 points each at small 14 -- ImGui sizes Plex Mono by its 1300-unit
-    // ascent-to-descent height, measured). The deep path's ~41-cell last segment (the name and its size, GUID and
-    // import segments) fits with room to spare on any runner that delivers >= 1100, and the whole ~245-cell line
-    // does not.
+    // A 1100 x 600 window, measured at uiScale 1: the side panels are hidden below, so the footer row is 1084 points
+    // wide (1074 on a frame whose panel scrolls), and a Mono-small cell advances 6.4615 points at small 14 (ImGui
+    // sizes Plex Mono by its 1300-unit ascent-to-descent height). The right zone, "thumbnails 0/256" and
+    // "Auto-refresh off", is 32 cells and one 16-point gap (222.8 points), so the left zone keeps 130 cells. The
+    // selection line is 160 cells -- the 128-character path, then its unknown size (an em dash), the elided GUID (13
+    // cells) and "new", each after a five-cell separator -- so it elides by 30 cells, while its 41-cell last segment
+    // (the name and those three) fits in any window at least ~520 wide. The WINDOW forces the elision, not the depth:
+    // at 1600 wide the left zone keeps 208 cells and the same line fits whole.
+    const std::string deep =
+        "f00_folder_level/f01_folder_level/f02_folder_level/f03_folder_level/f04_folder_level/"
+        "f05_folder_level/f06_folder_level/model.txt";
+    // WINDOWS' PATH LIMITS, asserted on every lane so a deeper fixture fails here and not on the Windows lane alone.
+    // MS STL's <filesystem> calls CreateDirectoryW / CreateFileW without a "\\?\" prefix and no target ships a
+    // longPathAware manifest, so a folder must stay under 248 characters and a file under MAX_PATH (260, its NUL
+    // included). The root allowance covers the worst Windows root this fixture lands under, through `assets\`:
+    // C:\Users\runneradmin\AppData\Local\Temp\ (40; RUNNER~1, 37) + aero_imgui_layer_project_NNN\ (29, a three-digit
+    // counter) + MyGame\assets\ (14) = 83, taken as 90. The longest file the fixture makes is the sidecar's atomic
+    // temp, `model.txt.meta.aero-tmp` (writeTextFileAtomic, the scan's sidecar write).
+    constexpr std::size_t WINDOWS_ROOT_ALLOWANCE = 90;
+    const std::size_t deepestFolder = WINDOWS_ROOT_ALLOWANCE + deep.rfind('/');
+    const std::size_t sidecar = WINDOWS_ROOT_ALLOWANCE + deep.size() + engine::editor::ASSET_META_SUFFIX.size();
+    const std::size_t sidecarTemp = sidecar + engine::editor::ATOMIC_TEMP_SUFFIX.size();
+    CHECK(deepestFolder < 248U);
+    CHECK(sidecar < 260U);
+    REQUIRE(sidecarTemp < 260U);
     engine::platform::Context ctx;
     if (!ctx.valid()) {
         AERO_SKIP_OR_FAIL("no platform context");
     }
     std::optional<engine::platform::Window> window =
-        ctx.createWindow({.title = "assets footer i326", .width = 1600, .height = 600});
+        ctx.createWindow({.title = "assets footer i326", .width = 1100, .height = 600});
     REQUIRE(window.has_value());
     std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
     if (!device) {
         AERO_SKIP_OR_FAIL("no GPU device");
     }
-    const std::string deep =
-        "f00_folder_level/f01_folder_level/f02_folder_level/f03_folder_level/f04_folder_level/"
-        "f05_folder_level/f06_folder_level/f07_folder_level/f08_folder_level/f09_folder_level/"
-        "f10_folder_level/f11_folder_level/model.txt";
     std::optional<engine::editor::EditorApp> app = e63AssetsApp(*device, *window, ctx, {"top.txt", deep});
     for (const char* id :
          {"Hierarchy", "Inspector", "Material", "Import Details", engine::editor::PROJECT_SETTINGS_PANEL_ID}) {
