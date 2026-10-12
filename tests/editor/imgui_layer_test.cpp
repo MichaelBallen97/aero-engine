@@ -26477,6 +26477,107 @@ TEST_CASE("editor: the View popover as source text -- the chip, the headings, St
     }
 }
 
+TEST_CASE("editor: a re-opened View popover is clamped from its first shown frame (task E.6.3, I342)") {
+    // The code-review round's finding 17. BeginPopup is AlwaysAutoResize (imgui.cpp:13201), and an opening's first
+    // frame is Appearing (:7864): ImGui hides it and resets its size and content to zero (:8098-8107), so the size read
+    // there is an auto-fit of NO content. Latched, it overwrote the previous opening's real size, and the first SHOWN
+    // frame was placed under the chip unclamped -- past a short image's bottom -- before jumping into place a frame
+    // later. This TU never sees imgui.h, so the image is cut by the OS window's height: the Viewport is the dockspace's
+    // central node, which takes every point the window gains or loses (imgui.cpp:20321-20331).
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "view popover i342", .width = 900, .height = 600});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = e62App(*device, *window, ctx);
+    auto* const viewport = dynamic_cast<engine::editor::ViewportPanel*>(app->panels().find("Viewport"));
+    REQUIRE(viewport != nullptr);
+    if (e63HudUnavailable(*app, *viewport)) {
+        return;
+    }
+    const engine::editor::ViewportHudRecord& r = viewport->hudRecord();
+    REQUIRE(r.layout.chip.shown);
+
+    // THE FIRST OPENING measures the popover. Its appearing frame is hidden, so it records no rect.
+    viewport->requestViewOptionsOpen(true);
+    REQUIRE(app->tick());
+    REQUIRE(viewport->viewOptionsOpen());
+    CHECK(r.viewOptionsMax == engine::Vec2{});
+    e62Ticks(*app, 2);
+    const float popoverHeight = r.viewOptionsMax.y - r.viewOptionsMin.y;
+    REQUIRE(popoverHeight > 0.0F);  // shown, and recorded
+    // The chip's bottom, below the image's top: the room the clamp can give back by placing over the chip.
+    const float chipDrop = r.layout.chip.max.y - r.imageMin.y;
+    REQUIRE(chipDrop > 0.0F);
+    viewport->requestViewOptionsOpen(false);
+    e62Ticks(*app, 2);
+    REQUIRE_FALSE(viewport->viewOptionsOpen());
+    CHECK(r.viewOptionsMax == engine::Vec2{});  // closed: nothing recorded
+
+    // THE CUT: the image as tall as the popover plus half the chip's drop -- room for the popover inside the image, and
+    // none for it under the chip.
+    const engine::platform::WindowSize full = window->size();
+    const float imageHeight = r.imageMax.y - r.imageMin.y;
+    const float wanted = popoverHeight + (chipDrop * 0.5F);
+    // The image takes the whole change, the central node's rule above.
+    const float cutPoints = static_cast<float>(full.height) + wanted - imageHeight;
+    const auto cutHeight = static_cast<std::int32_t>(std::lround(cutPoints));
+    window->setSize(full.width, cutHeight);
+    e62Ticks(*app, 3);
+    const float cutImage = r.imageMax.y - r.imageMin.y;
+    const bool popoverFits = popoverHeight <= cutImage;
+    const bool belowOverflows = r.layout.chip.max.y + popoverHeight > r.imageMax.y;
+    if (!(popoverFits && belowOverflows && r.layout.chip.shown)) {
+        MESSAGE("I342: the window took height " << window->size().height << " (asked " << cutHeight << "), image "
+                                                << cutImage << " for a popover " << popoverHeight << " tall");
+        WARN(popoverFits);  // geometry: the image is not in the band the claim needs -- skip the rest
+        WARN(belowOverflows);
+        app->requestQuit();
+        CHECK(app->tick() == false);
+        app.reset();
+        return;
+    }
+
+    // THE RE-OPEN: hidden first, then shown INSIDE the image on its first shown frame, placed with the previous
+    // opening's size.
+    viewport->requestViewOptionsOpen(true);
+    REQUIRE(app->tick());
+    REQUIRE(viewport->viewOptionsOpen());
+    CHECK(r.viewOptionsMax == engine::Vec2{});  // the appearing frame: hidden, nothing recorded
+    REQUIRE(app->tick());
+    const engine::Vec2 shownMin = r.viewOptionsMin;
+    const engine::Vec2 shownMax = r.viewOptionsMax;
+    CAPTURE(shownMin.y);
+    CAPTURE(shownMax.y);
+    CAPTURE(r.imageMax.y);
+    // ANTI-VACUITY: the popover is taller than the room under the chip, so the unclamped anchor would overflow.
+    REQUIRE(shownMax.y - shownMin.y > r.imageMax.y - r.layout.chip.max.y);
+    // ImGui truncates a window's position (imgui.cpp:9128), so a min edge may sit up to a point outside.
+    CHECK(shownMin.x > r.imageMin.x - 1.0F);
+    CHECK(shownMin.y > r.imageMin.y - 1.0F);
+    CHECK(shownMax.x <= r.imageMax.x);
+    CHECK(shownMax.y <= r.imageMax.y);
+    // ...and the next frame places it where the first did: no jump.
+    REQUIRE(app->tick());
+    CHECK(r.viewOptionsMin.x == shownMin.x);
+    CHECK(r.viewOptionsMin.y == shownMin.y);
+    CHECK(r.viewOptionsMax.x == shownMax.x);
+    CHECK(r.viewOptionsMax.y == shownMax.y);
+
+    viewport->requestViewOptionsOpen(false);
+    e62Ticks(*app, 2);
+    REQUIRE_FALSE(viewport->viewOptionsOpen());
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
 TEST_CASE("editor: the triangle stat end to end -- N cubes in view, M behind, N x 12 (task E.6.3, I335)") {
     engine::platform::Context ctx;
     if (!ctx.valid()) {

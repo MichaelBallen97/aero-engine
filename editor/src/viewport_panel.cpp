@@ -1556,8 +1556,11 @@ void ViewportPanel::drawViewOptions() {
     }
     // task E.6.3 (D9): anchored under the chip by E.3.3's TESTED clamp (assetPickerAnchor, MP1-MP13), inside the
     // image: the popover can now be opened at the image's edge, and it flips above or shifts left as the picker's
-    // does. Its size is the LAST draw's -- zero on its first frame, when the clamp only keeps the anchor inside. Set
-    // unconditionally: BeginPopupEx consumes NextWindowData when the popup is not open.
+    // does. Its size is the last SHOWN frame's. An opening's first frame is Appearing, hidden and auto-fit from zero
+    // content, and is never latched, so a re-open places its first shown frame with the previous opening's size. Only
+    // the very first open has none: its first shown frame places from a zero size, when the clamp only keeps the
+    // anchor inside, and the frame after is clamped. Set unconditionally: BeginPopupEx consumes NextWindowData when the
+    // popup is not open.
     const AssetPickerAnchor anchor =
         assetPickerAnchor(Vec2{buttonMin.x, buttonMin.y}, Vec2{buttonMax.x, buttonMax.y}, viewOptionsPopoverSize,
                           hudRecordValue.imageMin, hudRecordValue.imageMax);
@@ -1569,8 +1572,17 @@ void ViewportPanel::drawViewOptions() {
     // Getting that backwards is an IM_ASSERT abort in the Debug build, not a visual glitch.
     if (ImGui::BeginPopup("##viewoptions")) {
         open = true;
-        const ImVec2 popoverSize = ImGui::GetWindowSize();
-        viewOptionsPopoverSize = Vec2{popoverSize.x, popoverSize.y};  // task E.6.3: the next frame's clamp
+        // task E.6.3: the next frame's clamp, and the record -- NEVER on the appearing frame. ImGui hides a popup on
+        // the frame it opens and resets its size and content to zero (imgui.cpp:7864, :8098-8107), so the size read
+        // there is an auto-fit of no content; latched, it overwrote the previous opening's real size and the first
+        // shown frame was placed under the chip unclamped (I342).
+        if (!ImGui::IsWindowAppearing()) {
+            const ImVec2 popoverPos = ImGui::GetWindowPos();
+            const ImVec2 popoverSize = ImGui::GetWindowSize();
+            viewOptionsPopoverSize = Vec2{popoverSize.x, popoverSize.y};
+            hudRecordValue.viewOptionsMin = Vec2{popoverPos.x, popoverPos.y};
+            hudRecordValue.viewOptionsMax = Vec2{popoverPos.x + popoverSize.x, popoverPos.y + popoverSize.y};
+        }
 
         // ---- Display: the mock's `Shaded` and `Perspective 60` -------------------------------------
         {

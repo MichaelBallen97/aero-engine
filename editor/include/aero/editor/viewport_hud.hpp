@@ -133,9 +133,13 @@ struct ViewportHudRecord {
     Vec2 viewAxisCornerMax{};
     Vec2 viewAxisCircleCenter{};
     float viewAxisCircleRadius = 0.0F;  // as handed to the circle's draw call
+    // The View popover's window rect (GetWindowPos, + GetWindowSize) on a frame it is SHOWN. Zero while it is closed
+    // and on an opening's appearing frame, which ImGui hides and auto-fits from zero content (imgui.cpp:8098-8107).
+    Vec2 viewOptionsMin{};
+    Vec2 viewOptionsMax{};
 };
 // Opens one recorded frame: + 1 frame, the per-frame lists and texts cleared (capacity kept), every rect hidden, and
-// every view-axis widget field zeroed (the widget re-fills them only on a frame it draws).
+// every view-axis widget and View popover field zeroed (each is re-filled only on a frame it draws).
 void beginViewportHudRecordFrame(ViewportHudRecord& record) noexcept;
 
 }  // namespace engine::editor

@@ -212,6 +212,8 @@ void beginViewportHudRecordFrame(ViewportHudRecord& record) noexcept {
     record.viewAxisCornerMax = Vec2{};
     record.viewAxisCircleCenter = Vec2{};
     record.viewAxisCircleRadius = 0.0F;  // drawViewAxisGizmo re-fills these only on a frame it draws
+    record.viewOptionsMin = Vec2{};
+    record.viewOptionsMax = Vec2{};  // drawViewOptions re-fills these only on a frame the popover is shown
 }
 
 }  // namespace engine::editor

@@ -488,7 +488,7 @@ private:
     ViewportHudLayout latchedHudLayout{};
     ViewportDrawCounts latchedDrawCounts{};  // renderScene's, read by the NEXT draw walk's stats card
     std::size_t latchedTriangles = 0;        // likewise
-    Vec2 viewOptionsPopoverSize{};           // the popover's last drawn size, for its clamp (zero before the first)
+    Vec2 viewOptionsPopoverSize{};           // the popover's last SHOWN size, for its clamp (zero until one shows)
     ViewportHudRecord hudRecordValue;        // hudRecord()'s member (the collision rule)
     std::string chipLabelScratch;            // per-frame scratch
     std::string flyTextScratch;              // per-frame scratch

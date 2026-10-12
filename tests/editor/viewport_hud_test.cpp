@@ -274,15 +274,20 @@ TEST_CASE("viewport hud: a default record is vacuous -- the guard every GPU case
     CHECK(r.hintTexts.empty());
     CHECK((r.drawCounts == ed::ViewportDrawCounts{}));
     CHECK(r.viewAxisCircleRadius == 0.0F);
+    CHECK(r.viewOptionsMax == Vec2{});
     ed::ViewportHudRecord opened;
     opened.chipLabel = "x";
     opened.statsRows.push_back(ed::ViewportStatsRow{"Frame", "1 ms"});
     opened.viewAxisCircleRadius = 43.0F;  // a frame the widget drew, before one it does not
+    opened.viewOptionsMin = Vec2{51.0F, 129.0F};
+    opened.viewOptionsMax = Vec2{311.0F, 396.0F};  // a frame the popover was shown, before one it is not
     ed::beginViewportHudRecordFrame(opened);
     CHECK(opened.framesRecorded == 1U);
     CHECK(opened.chipLabel.empty());
     CHECK(opened.statsRows.empty());
     CHECK(opened.viewAxisCircleRadius == 0.0F);  // so I329's anti-vacuity read is THIS frame's
+    CHECK(opened.viewOptionsMin == Vec2{});
+    CHECK(opened.viewOptionsMax == Vec2{});  // so I342's hidden appearing frame reads empty
 }
 
 TEST_CASE("viewport hud: the stats card is sized by the layout, never by its values (task E.6.3, VO13)") {
