@@ -91,6 +91,10 @@ struct ConsoleDrawRecord {
     std::uint64_t framesRecorded = 0;        // + 1 per onDraw
     std::uint32_t messageRowsSubmitted = 0;  // this frame
     std::uint32_t rowsTinted = 0;            // this frame
+    float lastTintMaxX = 0.0F;               // the last tint's right edge, read off the vertices the list RECEIVED
+    float lastTintedRowItemMaxX = 0.0F;      // GetItemRectMax().x of that row's Selectable: the box ImGui gave it
+    float logVisibleWidth = 0.0F;            // GetContentRegionAvail().x at the log child's top: what it shows
+    float logContentWidth = 0.0F;            // the log child's ContentSize.x: the width its rows spanned
     ChromeRole lastTagRole = ChromeRole::TextFaint;
     std::string lastTagText;               // the upper-case label the tag drew
     std::string lastStampDrawn;            // the stamp text drawn

@@ -152,6 +152,8 @@ void ConsolePanel::drawLogChild(float footerReserve) {
     // What Begin APPLIED, not what was passed: BeginChildEx zeroes ChildBorderSize for a borderless child
     // (imgui.cpp:6807-6809) and Begin copies it into the child (imgui.cpp:8123); the theme's childBorderSize is 1.
     drawRecordValue.logChildBordered = ImGui::GetCurrentWindow()->WindowBorderSize > 0.0F;
+    drawRecordValue.logVisibleWidth = ImGui::GetContentRegionAvail().x;
+    drawRecordValue.logContentWidth = ImGui::GetCurrentWindow()->ContentSize.x;  // the previous frame's rows (I341)
 
     ImDrawList* const list = ImGui::GetWindowDrawList();
     ImFont* const mono = editorFonts().mono;
@@ -166,7 +168,12 @@ void ConsolePanel::drawLogChild(float footerReserve) {
     const float bodyAscent = mono != nullptr ? mono->GetFontBaked(panelFacePoints(PanelFace::Mono))->Ascent : 0.0F;
     const float smallAscent = mono != nullptr ? mono->GetFontBaked(smallPoints)->Ascent : 0.0F;
     const float rowMinX = ImGui::GetCursorScreenPos().x;
-    const float rowMaxX = rowMinX + ImGui::GetContentRegionAvail().x;
+    // The tint's right edge is the Selectable's: its max_x, the WorkRect's right edge, plus its right half-spacing
+    // (imgui_widgets.cpp:7382, :7393, :7397). Under the horizontal scrollbar the WorkRect spans the CONTENT while the
+    // content region spans only the visible width (imgui.cpp:8531, :8546), so a GetContentRegionAvail() edge stopped
+    // short by the overhang, and moved left with the scroll (I341).
+    const float spacingX = ImGui::GetStyle().ItemSpacing.x;
+    const float rowMaxX = ImGui::GetCurrentWindow()->WorkRect.Max.x + (spacingX - std::trunc(spacingX * 0.5F));
     const ConsoleRowLayout layout = consoleRowLayout(rowMinX, smallAdvance, bodyAscent, smallAscent, s);
     const float spacingY = ImGui::GetStyle().ItemSpacing.y;
     const float spacingUp = std::trunc(spacingY * 0.5F);  // the Selectable's own half-spacing split (IM_TRUNC)
@@ -183,15 +190,26 @@ void ConsolePanel::drawLogChild(float footerReserve) {
             ImGui::PushID(static_cast<int>(entry.sequence));
             const float rowTop = ImGui::GetCursorScreenPos().y;
             const float lineHeight = ImGui::GetTextLineHeight();
-            // D7: the tint BEFORE the Selectable, over the Selectable's own half-spacing-widened box
-            // (imgui_widgets.cpp:7387-7397) -- so the hover fill paints on top of it.
+            // D7: the tint BEFORE the Selectable, so the hover fill paints on top of it, over the Selectable's own
+            // half-spacing-widened box (imgui_widgets.cpp:7388-7398) -- less its left half-spacing, which this
+            // borderless child clips anyway (no WindowPadding, imgui.cpp:8127-8128, so it lies left of the clip rect).
+            const int tintVertex = list->VtxBuffer.Size;
+            bool rowTinted = false;
             if (const std::optional<Srgb8> tint = consoleRowTint(entry.level); tint.has_value()) {
                 list->AddRectFilled(ImVec2(rowMinX, rowTop - spacingUp),
                                     ImVec2(rowMaxX, rowTop + lineHeight + (spacingY - spacingUp)), toImU32(*tint));
+                // The edge the list RECEIVED: PrimRect's second vertex is (p_max.x, p_min.y) (imgui_draw.cpp:772,
+                // :777), and AddRectFilled adds none at alpha 0 (:1532-1533), which records 0.
+                const bool tintDrawn = list->VtxBuffer.Size == tintVertex + 4;
+                drawRecordValue.lastTintMaxX = tintDrawn ? list->VtxBuffer[tintVertex + 1].pos.x : 0.0F;
                 ++drawRecordValue.rowsTinted;
+                rowTinted = true;
             }
             // An EMPTY label (2.2.5's cd4caab fix: a message containing "##" must never reach a label).
             ImGui::Selectable("##row", false);
+            if (rowTinted) {  // the box ItemAdd recorded for it (imgui.cpp:11979), clipped or not
+                drawRecordValue.lastTintedRowItemMaxX = ImGui::GetItemRectMax().x;
+            }
             if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal) && !entry.sourceFile.empty()) {
                 ImGui::SetTooltip("%s:%u", entry.sourceFile.c_str(), static_cast<unsigned>(entry.line));
             }

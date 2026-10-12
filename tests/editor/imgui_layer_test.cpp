@@ -24977,6 +24977,59 @@ TEST_CASE("editor: the Console's footer band, reservation and header (task E.6.3
     app.reset();
 }
 
+TEST_CASE("editor: the Console's row tint spans the Selectable's row under a wide line (task E.6.3, I341)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "console tint i341", .width = 900, .height = 600});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = e62App(*device, *window, ctx);
+    auto* const console = dynamic_cast<engine::editor::ConsolePanel*>(app->panels().find("Console"));
+    REQUIRE(console != nullptr);
+    e63Front(*app, "Console", "Assets");
+    // ONE tinted row far wider than any dock (400 Mono advances): the row that widens the content is the row the CHECK
+    // reads, so a single submitted row -- the newest, where auto-scroll sits -- serves both, and a short log child has
+    // no second row to keep on screen. The log child scrolls horizontally, so its WorkRect -- the Selectable's max_x
+    // (imgui_widgets.cpp:7382) -- spans the CONTENT width (imgui.cpp:8531), while the content region a
+    // GetContentRegionAvail() reads spans only the VISIBLE one (:8546).
+    const std::string wide(400U, 'x');
+    AERO_LOG_WARN("e63wide: {}", wide);
+    const std::uint64_t before = console->drawRecord().framesRecorded;
+    // THREE ticks, measured: the first appends the row below the scrolled region (auto-scroll's SetScrollHereY lands
+    // at the next Begin), the second draws it, and a window's ContentSize is the PREVIOUS frame's extent
+    // (imgui_internal.h:2891), so the wide row reaches the WorkRect on the third.
+    e62Ticks(*app, 3);
+    const engine::editor::ConsoleDrawRecord& r = console->drawRecord();
+    REQUIRE(r.framesRecorded > before);  // ANTI-VACUITY: these reads are this test's frames
+    const engine::editor::LogHistory& history = console->history();
+    REQUIRE(history.visibleCount() >= 1U);
+    // Nothing logged after it: the wide tinted row is the newest.
+    REQUIRE(history.visibleAt(history.visibleCount() - 1U).message == "e63wide: " + wide);
+    REQUIRE(r.rowsTinted >= 1U);  // a tinted row drew THIS frame, so both edges below are this frame's, one row's
+    CAPTURE(r.logVisibleWidth);
+    CAPTURE(r.logContentWidth);
+    // ANTI-VACUITY: the row is wider than the child shows. At or under the visible width the WorkRect ends where the
+    // content region does, and a tint sized to the visible width plus the half-spacing would pass the CHECK below.
+    REQUIRE(r.logContentWidth > r.logVisibleWidth);
+    // The tint ends EXACTLY at the Selectable's box edge, WorkRect.Max.x + (ItemSpacing.x - IM_TRUNC(ItemSpacing.x *
+    // 0.5)) (imgui_widgets.cpp:7382-7397). Two sources: lastTintMaxX is read off the vertices the draw list received,
+    // lastTintedRowItemMaxX off the box ImGui itself recorded for that row's Selectable. Exact: every term is a whole
+    // point here (ImTrunc'd rect edges, an ImTrunc64'd content size, a whole-point spacing), so the Selectable's
+    // `min_x + (max_x - min_x)` is `max_x`. The visible-width edge it replaced read 664 against 3408 here (visible
+    // 475, content 3215).
+    CHECK(r.lastTintMaxX == r.lastTintedRowItemMaxX);
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
 TEST_CASE("editor: Hierarchy rows -- a dot on every row, a direct-child meta on parents only (task E.6.3, I309)") {
     engine::platform::Context ctx;
     if (!ctx.valid()) {
