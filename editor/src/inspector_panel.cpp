@@ -156,12 +156,17 @@ void InspectorPanel::requestComponentMenuAction(std::string registrationName, Co
     pendingComponentMenu = ComponentMenuRequest{.registrationName = std::move(registrationName), .action = action};
 }
 
+void InspectorPanel::requestCardOpen(std::string registrationName, bool open) {
+    pendingCardOpen = CardOpenRequest{.registrationName = std::move(registrationName), .open = open};
+}
+
 void InspectorPanel::onDraw(PanelContext& context) {
     // task E.5.2: the seam's request is taken HERE, before any early return below, and std::exchange
     // RESETS the member (a moved-from optional stays engaged -- E.4.3). Overwriting frameNamedSelection
     // also discards whatever the previous onDraw did not consume.
     frameNamedSelection = std::exchange(pendingNamedSelection, std::nullopt);
     frameComponentMenu = std::exchange(pendingComponentMenu, std::nullopt);  // task E.6.3: E.5.2's one-shot shape
+    frameCardOpen = std::exchange(pendingCardOpen, std::nullopt);            // task E.6.3 (fix 7): the same shape
     ++drawRecordValue.framesRecorded;  // task E.6.3: per-frame counts, before any early return below
     beginCardRecordFrame(drawRecordValue.cards);
     drawRecordValue.cardsOpen = 0;
@@ -271,6 +276,12 @@ void InspectorPanel::drawComponent(PanelContext& context, Entity primary, const 
     ImGui::PushID(entry.name.c_str());
     // task E.6.3 (I337): a modal blocks every click on the card, so it blocks the seam too -- computed ONCE.
     const bool noModal = ImGui::GetTopMostPopupModal() == nullptr;
+    // The header toggle's seam: the next item is the card's TreeNodeEx (begin submits nothing before it), and a modal
+    // blocks the click it stands in for.
+    if (frameCardOpen.has_value() && frameCardOpen->matches(entry.name) && noModal) {
+        ImGui::SetNextItemOpen(frameCardOpen->open, ImGuiCond_Always);
+        frameCardOpen.reset();
+    }
     {
         // D4: the card. Its strip, chevron, icon and title are the painter's; the open state is ImGui's own (no
         // panel bit: this panel is one window, so no mode flip can reset it). The title is drawn, never a label, so

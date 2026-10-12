@@ -1272,6 +1272,7 @@ bool EditorApp::tick() {
     if (inspectorPanel != nullptr) {
         inspectorPanel->expireNamedSelection();
         inspectorPanel->expireComponentMenuAction();  // task E.6.3: the overflow menu's seam, the same one-tick rule
+        inspectorPanel->expireCardOpen();             // task E.6.3 (fix 7): the card header toggle's seam, likewise
     }
     // task E.6.3 (D14): the requests that live on a panel, the same one-tick rule. Each panel drops a request its gate
     // refuses as it drains; one issued while the panel did not draw at all (closed, or another tab in front, so onDraw

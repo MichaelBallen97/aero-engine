@@ -25273,6 +25273,16 @@ TEST_CASE("editor: every E.6.3 request is drained under its control's predicate 
         CHECK(code[drainAt].find("noModal") != std::string::npos);
         CHECK(countLinesContaining(code, "GetTopMostPopupModal()") == 1U);
     }
+    SUBCASE("the Inspector's card header toggle") {
+        // Fix 7's seam (I336 drives it, I338 drops it while the panel does not draw): the header is always enabled, so
+        // the gate is this card's own name and noModal -- a modal blocks the click the seam stands in for. Its frame
+        // copy is overwritten at the top of every onDraw, the component menu's shape.
+        const std::vector<std::string> code = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/inspector_panel.cpp");
+        const std::size_t drainAt = soleLineContaining(code, "frameCardOpen.has_value() &&");
+        CHECK(code[drainAt].find("matches(entry.name)") != std::string::npos);  // this card's own header
+        CHECK(code[drainAt].find("noModal") != std::string::npos);
+        CHECK(countLinesContaining(code, "frameCardOpen = std::exchange(pendingCardOpen, std::nullopt);") == 1U);
+    }
     SUBCASE("the Assets panel's navigation") {
         const std::vector<std::string> code = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/asset_browser_panel.cpp");
         const std::size_t drainAt = soleLineContaining(code, "navigateRequest.has_value() &&");
@@ -25717,6 +25727,9 @@ TEST_CASE("editor: card geometry -- one span, the framed overhang, paddings and 
     REQUIRE(cube.valid());
     app->selection().set(cube);
     e63Front(*app, "Inspector", "Material");
+    // One card CLOSED through the header toggle's seam, so every arm below reads both chevrons (the code-review round's
+    // finding 9). The Transform card: the last card, the MeshRenderer's, keeps its ##fields table for the body arms.
+    inspector->requestCardOpen("engine::Transform", false);
     const std::uint64_t before = inspector->drawRecord().framesRecorded;
     e62Ticks(*app, 2);
     const engine::editor::InspectorDrawRecord& r = inspector->drawRecord();
@@ -25726,6 +25739,29 @@ TEST_CASE("editor: card geometry -- one span, the framed overhang, paddings and 
     REQUIRE(overhang > 0.0F);  // ANTI-VACUITY: a panel window pads, so the overhang is real
     const std::vector<engine::editor::CardEntryRecord>& cards = r.cards.cards;
     REQUIRE(cards.size() == 2U);
+    const engine::editor::CardEntryRecord& closedCard = cards.front();
+    const engine::editor::CardEntryRecord& openCard = cards.back();
+    REQUIRE_FALSE(closedCard.open);  // ANTI-VACUITY: the seam closed the Transform card...
+    REQUIRE(openCard.open);          // ...and one record of each state is drawn
+    // ONE chevron face size for both states, from the OPEN chevron's ink: the closed chevron is the same stroke
+    // rotated, never re-normalised to its own ink (measured at b6fb1c8, body 16: 12.4444 closed against 7.46667 open).
+    // Both cards hand chevronFaceSize the same inputs, so the two sizes are equal bit for bit.
+    CHECK(closedCard.chevronSize == openCard.chevronSize);
+    // The open chevron is the mock's: 3.5 dp of ink, starting 10 dp in from the strip. The closed one's ink is
+    // chevron-right's 332 of chevron-down's 582 font units (lucide.ttf's glyf outlines) at that size, 3.5 x 332 / 582
+    // = 2.0 dp, centred in the same 3.5-dp column. Each width is within the slack of a partly covered raster column,
+    // and both draw a little wide: RenderText draws the bake at IM_ROUND(7.47) = 7 scaled by 7.47 / 7 (the quad arms
+    // below hold the record to that). It also draws from a whole-point pen (IM_TRUNC, imgui_draw.cpp:5791), so the
+    // painter rounds its pen and a centre can miss by half a point: the closed bound. The open start's 0.75 covers
+    // that half point plus half the 0.23 the open ink overhangs its column. Measured at scale 1: both inks 0.083 left
+    // of the column's centre, 3.73 and 2.67 wide, the open one starting 0.20 left of chevronX. A glyph placed by its
+    // BOX at chevronX reads +0.917 and +0.80 (both red). A closed ink left-aligned at chevronX moves the unrounded pen
+    // by only 0.42 and rounds to the SAME whole point here: the same pixels, which no reading can tell apart.
+    CHECK(std::abs(openCard.chevronInkWidth - (3.5F * s)) <= 1.0F);
+    CHECK(std::abs(openCard.chevronInkMinX - (openCard.stripMinX + (10.0F * s))) <= 0.75F);
+    CHECK(std::abs(closedCard.chevronInkWidth - (2.0F * s)) <= 1.0F);
+    const float closedInkCentre = closedCard.chevronInkMinX + (closedCard.chevronInkWidth * 0.5F);
+    CHECK(std::abs(closedInkCentre - (closedCard.stripMinX + (10.0F * s) + (1.75F * s))) <= 0.5F);
     // Every arm reads ImGui's answer or what a draw call was HANDED, against an independent literal. The strip, the
     // outline and the chevron / icon / title x's are ONE recorded span through ONE pure layout (PC10 owns
     // cardHeaderLayout's arithmetic), so re-deriving them here would compare the record with itself.
@@ -25735,13 +25771,17 @@ TEST_CASE("editor: card geometry -- one span, the framed overhang, paddings and 
         CHECK(std::abs(card.headerItemMin.x - (card.stripMinX - overhang)) <= 0.5F);  // read off ImGui's item
         CHECK(std::abs(card.headerItemMax.x - (card.stripMaxX + overhang)) <= 0.5F);
         CHECK(card.headerRuleDrawn == card.open);  // the rule's vertices reached the list iff the card is open
-        // The chevron's INK, re-measured off the atlas at the size AddText was handed (plan section 0.4 item 13):
-        // narrower than the glyph's box (a box reading makes the two equal), 3.5 dp wide and starting 10 dp in from the
-        // strip, each within the slack of a partly covered raster column at either edge.
+        // The chevron's INK, read off the atlas as RenderText draws it (plan section 0.4 item 13): narrower than the
+        // glyph's box (a box reading makes the two equal). Its width and place, per state, above.
         CHECK(card.chevronInkWidth > 0.0F);  // ANTI-VACUITY: the atlas held the glyph's pixels
         CHECK(card.chevronInkWidth < card.chevronBoxWidth);
-        CHECK(std::abs(card.chevronInkWidth - (3.5F * s)) <= 1.0F);
-        CHECK(std::abs(card.chevronInkMinX - (card.stripMinX + (10.0F * s))) <= 0.75F);
+        // ...and the record IS the drawing: the box it places the ink in is the quad the list RECEIVED, off AddText's
+        // four vertices. A fractional pen (RenderText draws from IM_TRUNC(pos.x), imgui_draw.cpp:5791) moves the quad
+        // off the record by its fraction; a bake read unscaled (the quad is scaled by size / IM_ROUND(size), :5802)
+        // narrows the record's box by 1 - 7 / 7.47 at body 16. The slack is float rounding only.
+        REQUIRE(card.chevronQuadMaxX > card.chevronQuadMinX);  // ANTI-VACUITY: the glyph's quad reached the list
+        CHECK(std::abs(card.chevronBoxMinX - card.chevronQuadMinX) <= 1e-3F);
+        CHECK(std::abs((card.chevronBoxMinX + card.chevronBoxWidth) - card.chevronQuadMaxX) <= 1e-3F);
         if (card.open) {
             // The values handed to SetCursorScreenPos and to the fill and outline, against D4's literal. They cannot
             // see a draw that ignores them -- the table arms below read the item ImGui PLACED.
@@ -26516,26 +26556,46 @@ TEST_CASE("editor: Material cards -- eight, panel-owned bits, Apply primary, bot
     const float windowOverhang = std::trunc(e63StyleX(s, "WindowPadding") * 0.5F);
     const float overhangA = first.stripMinX - first.headerItemMin.x;
     CHECK((std::abs(overhangA) <= 0.5F || std::abs(overhangA - windowOverhang) <= 0.5F));
+    REQUIRE_FALSE(r.cards[2].open);  // ANTI-VACUITY: one CLOSED record; `first` is REQUIREd open in (b)
     for (std::size_t i = 0; i < r.cards.size(); ++i) {
         CAPTURE(i);
         const engine::editor::CardEntryRecord& card = r.cards[i];
         CHECK(std::abs((card.stripMinX - card.headerItemMin.x) - overhangA) <= 0.5F);
         CHECK(std::abs((card.headerItemMax.x - card.stripMaxX) - overhangA) <= 0.5F);
         CHECK(card.headerRuleDrawn == card.open);  // the rule's vertices reached the list iff the card is open
-        // The chevron's INK at its drawn size, both glyphs (card 2 is CLOSED: chevron-right, ink 334..666 of a 0..666
-        // box), as the Inspector half checks the open one.
+        // The chevron's INK at its drawn size, both glyphs, as the Inspector half checks them (the code-review round's
+        // finding 9): ONE face size, from the open chevron's ink, so card 2's chevron-right (ink 334..666 of a 0..666
+        // box) is the open stroke rotated -- 3.5 x 332 / 582 = 2.0 dp wide, centred in the 3.5-dp column to I336's
+        // half point.
         CHECK(card.chevronInkWidth < card.chevronBoxWidth);
-        CHECK(std::abs(card.chevronInkWidth - (3.5F * s)) <= 1.0F);
+        // The record IS the drawing (I336's arm), wherever the glyph reached the list: a card below the panel's clip
+        // rect draws no glyph -- RenderText returns before its first vertex (imgui_draw.cpp:5793-5794) -- and records
+        // no quad (measured: cards 4 to 7 here).
+        if (card.chevronQuadMaxX > card.chevronQuadMinX) {
+            CHECK(std::abs(card.chevronBoxMinX - card.chevronQuadMinX) <= 1e-3F);
+            CHECK(std::abs((card.chevronBoxMinX + card.chevronBoxWidth) - card.chevronQuadMaxX) <= 1e-3F);
+        }
+        CHECK(card.chevronSize == first.chevronSize);
         if (card.open) {
+            CHECK(std::abs(card.chevronInkWidth - (3.5F * s)) <= 1.0F);
             // The values handed to SetCursorScreenPos and to the fill and outline, against D4's literal: they catch
             // a mutated formula, never a draw that ignores them.
             CHECK(std::abs(card.topPadding - (10.0F * s)) <= 1.0F);
             CHECK(std::abs(card.bottomPadding - (10.0F * s)) <= 1.0F);
+        } else {
+            CHECK(std::abs(card.chevronInkWidth - (2.0F * s)) <= 1.0F);
+            const float inkCentre = card.chevronInkMinX + (card.chevronInkWidth * 0.5F);
+            CHECK(std::abs(inkCentre - (card.stripMinX + (10.0F * s) + (1.75F * s))) <= 0.5F);
         }
         if (i + 1U < r.cards.size()) {
             CHECK(std::abs(card.gapAfter - (12.0F * s)) <= 1.0F);
         }
     }
+    // ANTI-VACUITY: the first card's glyph, at the top of the cards, reached the list. Whether the closed card's did
+    // depends on the window the display allows (measured: its header at y 752..784 of a 1000-tall window), so it is
+    // a WARN; I336 holds both states against their quads at the top of the Inspector.
+    REQUIRE(first.chevronQuadMaxX > first.chevronQuadMinX);
+    WARN(r.cards[2].chevronQuadMaxX > r.cards[2].chevronQuadMinX);
 
     // (d) THE MODE FLIP at ONE dock width: only the height changes, so the reset layout gives the Right node the same
     // width, and the Material panel crosses its FixedRegions / Scrolling boundary (D4). The bit survives the flip.
@@ -26886,7 +26946,7 @@ TEST_CASE("editor: a panel request its gate refuses, or its panel never draws, i
         AERO_SKIP_OR_FAIL("no GPU device");
     }
     std::optional<engine::editor::EditorApp> app =
-        e63AssetsApp(*device, *window, ctx, {"top.txt", "other.txt", "models/e.txt"});
+        e63AssetsApp(*device, *window, ctx, {"top.txt", "other.txt", "card.txt", "models/e.txt"});
     auto* const browser = dynamic_cast<engine::editor::AssetBrowserPanel*>(app->panels().find("Assets"));
     auto* const viewport = dynamic_cast<engine::editor::ViewportPanel*>(app->panels().find("Viewport"));
     auto* const hierarchy = dynamic_cast<engine::editor::HierarchyPanel*>(app->panels().find("Hierarchy"));
@@ -27019,6 +27079,48 @@ TEST_CASE("editor: a panel request its gate refuses, or its panel never draws, i
         e62Ticks(*app, 2);
         CHECK_FALSE(viewport->statsVisible());
     }
+    // The Inspector's card header toggle (fix 7's seam): refused by the modal with the panel in front, then issued
+    // while it sits behind the Material tab in the Right node. A held request would close the Transform card on the
+    // first frame the gate opens.
+    auto* const inspector = dynamic_cast<engine::editor::InspectorPanel*>(app->panels().find("Inspector"));
+    REQUIRE(inspector != nullptr);
+    const engine::editor::InspectorDrawRecord& inspected = inspector->drawRecord();
+    const engine::Entity cube = e62EntityNamed(app->world(), "Cube");
+    REQUIRE(cube.valid());
+    app->selection().set(cube);
+    e63Front(*app, "Inspector", "Material");
+    const std::uint32_t cardsOpen = inspected.cardsOpen;
+    REQUIRE(cardsOpen >= 2U);  // ANTI-VACUITY: the Transform card and at least one more, every one open
+    REQUIRE(inspected.cards.cardsDrawn == cardsOpen);
+    // First (a)'s shape, the Inspector in front: the toggle, refused by the modal, is dropped -- a click on the header
+    // cannot reach it under a modal either. The Assets panel still fronts the Bottom node, so it can raise its modal.
+    raiseDeleteModal("card.txt");
+    const std::uint64_t underModal = inspected.framesRecorded;
+    inspector->requestCardOpen("engine::Transform", false);
+    REQUIRE(app->tick());
+    REQUIRE(app->assetBrowserDeleteModalDrawnCount() > 0U);  // ANTI-VACUITY: the modal was up over that drain...
+    REQUIRE(inspected.framesRecorded > underModal);          // ...and the Inspector drew, so only the gate refused
+    REQUIRE(inspected.cards.cardsDrawn == cardsOpen);
+    CHECK(inspected.cardsOpen == cardsOpen);
+    app->requestAssetBrowserDeleteConfirm();
+    REQUIRE(app->tick());                                     // no body this frame; the next NewFrame closes it
+    REQUIRE(app->assetBrowserDeleteModalDrawnCount() == 0U);  // the effect (a) reads, for the same reason
+    e62Ticks(*app, 2);
+    CHECK(inspected.cardsOpen == cardsOpen);  // nothing held: the control after the hidden-panel arm below lands
+    // Then the hidden panel: the Inspector behind the Material tab.
+    e63Front(*app, "Material", "Inspector");
+    const std::uint64_t inspectorIdle = inspected.framesRecorded;
+    inspector->requestCardOpen("engine::Transform", false);
+    REQUIRE(app->tick());
+    REQUIRE(inspected.framesRecorded == inspectorIdle);  // ANTI-VACUITY: Begin answered false, so no onDraw ran
+    app->requestPanelFocus("Inspector");
+    tickUntilDrawn(inspected.framesRecorded, inspectorIdle);
+    CHECK(inspected.cardsOpen == cardsOpen);
+    // Control for both arms: the same request, the panel drawing and no modal up, lands -- which also proves the
+    // modal left ImGui's popup stack.
+    inspector->requestCardOpen("engine::Transform", false);
+    e62Ticks(*app, 2);
+    CHECK(inspected.cardsOpen == cardsOpen - 1U);
     // The Hierarchy's search-field focus (finding 20's seam), closed again. A held request would call
     // SetKeyboardFocusHere on the first drawn frame and the field would be active on the next -- the frame
     // tickUntilDrawn's extra tick records.

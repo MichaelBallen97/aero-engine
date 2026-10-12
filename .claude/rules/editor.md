@@ -2257,7 +2257,14 @@ state.
   bare `SetCursorScreenPos` (`:8839-8840`). The body is narrowed on BOTH edges -- `WorkRect.Min.x`, `WorkRect.Max.x`,
   `ContentRegionRect.Max.x` -- and all three are restored at `end`: the TU's one internal write. No `BeginChild` and no
   `BeginGroup` per card (E.3.4's per-window `StateStorage` rule). A host answers a header's hover or right-click only
-  through `CardHeaderResult` -- after `begin`, the last item may be the overflow button.
+  through `CardHeaderResult` -- after `begin`, the last item may be the overflow button. **The chevron has ONE face
+  size for both states**, sized off the OPEN chevron's ink (the mock's 3.5 dp); the glyph drawn is measured only to
+  centre its ink in that column. Lucide's two chevrons are one stroke rotated, so a size per glyph draws the closed one
+  larger, stroke and all (`I336`, `I331`). **A glyph read at a fractional size is read as `RenderText` draws it**: off
+  the bake at `IM_ROUND(size)` (`imgui_draw.cpp:5415`), scaled by size / that bake's `Size` (`:5802`), from a pen the
+  painter rounds to a whole point because `RenderText` truncates it (`:5791`) -- read raw, the chevron's record sat
+  0.2 right of the quad it drew and 6.25 % narrow at body 16. `I336` holds the record's box to the quad the list
+  received, off `AddText`'s four vertices.
 - **A panel header that must stay ImGui-free holds the painter by `std::unique_ptr<CardPainter>`**, with the class
   forward-declared and the host's constructor and destructor defined out of line.
 - **EVERY COLOUR A PANEL DRAWS IS A `ChromeRole`**, through `chromeRoleColor` (`panel_chrome_model.cpp` reads each
@@ -2282,16 +2289,16 @@ state.
   NOMINAL extent, exact at and below scale 1: above it the `ruleHeight()` stroke (s points) overhangs the box by
   0.5 x (s - 1) points, plus the AA fringe, as every `roleOutline` overhangs its rect -- neither claimed nor cleared.
 - **A request seam obeys its control** (the shell chrome's rule, again): the Hierarchy's search query and search-field
-  focus, the Inspector's component menu, the Assets navigation and the Viewport's stats toggle are each drained on ONE
-  line naming the control's enabled predicate and `noModal`, computed once from `GetTopMostPopupModal()` (`I337`). **A
-  request HELD ON A PANEL lives one tick too**, by its own mechanism, since the shell chrome's clear after the
-  `ShellUiState` build reaches only `EditorApp`'s members: the panel resets it on the first statement after its
-  drain's closing brace, whichever way the gate answered (`I337`; the Inspector's menu instead moves it into a
-  per-frame copy at the top of `onDraw`, E.5.2's shape), and gives it a `noexcept` `expire...()` that
-  `EditorApp::tick` calls after `drawShellUi`, beside `expireComponentMenuAction()`, so a request issued while the
-  panel does not draw at all is dropped as well (`I338`). A new panel seam adds BOTH, an `I337` arm and an
-  `I338`-shaped hidden-panel arm: no source pin sees a missing expire call, and the deferral it leaves is invisible
-  until the panel is hidden.
+  focus, the Inspector's component menu and card header toggle, the Assets navigation and the Viewport's stats toggle
+  are each drained on ONE line naming the control's enabled predicate and `noModal`, computed once from
+  `GetTopMostPopupModal()` (`I337`). **A request HELD ON A PANEL lives one tick too**, by its own mechanism, since the
+  shell chrome's clear after the `ShellUiState` build reaches only `EditorApp`'s members: the panel resets it on the
+  first statement after its drain's closing brace, whichever way the gate answered (`I337`; the Inspector's two seams
+  instead move theirs into a per-frame copy at the top of `onDraw`, E.5.2's shape), and gives it a `noexcept`
+  `expire...()` that `EditorApp::tick` calls after `drawShellUi`, beside `expireComponentMenuAction()`, so a request
+  issued while the panel does not draw at all is dropped as well (`I338`). A new panel seam adds BOTH, an `I337` arm
+  and an `I338`-shaped hidden-panel arm: no source pin sees a missing expire call, and the deferral it leaves is
+  invisible until the panel is hidden.
 - **A SELECTION SHORTCUT BESIDE A TEXT FIELD IS GATED ON THE FIELD'S KEYBOARD, NOT ITS ACTIVITY** -- the Hierarchy's
   Delete, Backspace, Duplicate and Rename, which act on the panel's selection rather than on the field's own list. The
   field owns them while `IsItemActive()`, or while `IsItemFocused()` holds a focus the field's OWN activation gave it:

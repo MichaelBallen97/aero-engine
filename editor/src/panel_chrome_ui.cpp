@@ -49,15 +49,18 @@ void recordItemRect(ItemRectRecord& record, bool drawnActive) {
     record.enabled = (ImGui::GetItemFlags() & ImGuiItemFlags_Disabled) == 0;
 }
 
-// A glyph's INK at `points`: the COLUMNS of its baked bitmap that hold any coverage, mapped onto its quad -- the
-// column twin of editor_fonts.cpp's measureInk. X1 - X0 is the glyph BOX, and Lucide's glyf boxes start at x = 0
-// whatever the outline does (chevron-right: box 0..666, ink 334..666 of 1000). X0, X1 and PackId are copied at once
-// (a lookup can bake, and a bake can reallocate the glyph table -- E.6.1's rule); GetCustomRect resolves the pack id
-// against the CURRENT texture. {0, 0} when the face has no such glyph or the atlas holds no pixels.
+// A glyph's INK at `points`, as RenderText DRAWS it: the COLUMNS of its baked bitmap that hold any coverage, mapped
+// onto its quad -- the column twin of editor_fonts.cpp's measureInk. RenderText bakes at IM_ROUND(size)
+// (GetFontBaked, imgui_draw.cpp:5415) and scales the quad by size / that bake's Size (:5800-5802, :5907), so a
+// fractional size is read off the same bake, scaled the same way. X1 - X0 is the glyph BOX, and Lucide's glyf boxes
+// start at x = 0 whatever the outline does (chevron-right: box 0..666, ink 334..666 of 1000). X0, X1 and PackId are
+// copied at once (a lookup can bake, and a bake can reallocate the glyph table -- E.6.1's rule); GetCustomRect
+// resolves the pack id against the CURRENT texture. {} when the face has no such glyph or the atlas holds no pixels.
 struct GlyphInk {
-    float left = 0.0F;   // the ink's left edge, relative to the pen x, at `points`
-    float width = 0.0F;  // the ink's width at `points`
-    float box = 0.0F;    // the glyph BOX's width (X1 - X0) at `points` -- what a chevron is never sized by
+    float left = 0.0F;     // the ink's left edge, relative to the pen x, at `points`
+    float width = 0.0F;    // the ink's width at `points`
+    float boxLeft = 0.0F;  // the glyph BOX's left edge (X0), relative to the pen x, at `points`
+    float box = 0.0F;      // the glyph BOX's width (X1 - X0) at `points` -- what a chevron is never sized by
 };
 [[nodiscard]] GlyphInk glyphInk(ImFont* font, float points, std::string_view glyph) {
     if (font == nullptr || glyph.empty()) {
@@ -66,13 +69,17 @@ struct GlyphInk {
     unsigned int codepoint = 0;
     ImTextCharFromUtf8(&codepoint, glyph.data(), glyph.data() + glyph.size());
     ImFontBaked* const baked = font->GetFontBaked(points);
-    const ImFontGlyph* const found =
-        baked != nullptr ? baked->FindGlyphNoFallback(static_cast<ImWchar>(codepoint)) : nullptr;
+    if (baked == nullptr || !(baked->Size > 0.0F)) {
+        return {};
+    }
+    const float bakedSize = baked->Size;
+    const ImFontGlyph* const found = baked->FindGlyphNoFallback(static_cast<ImWchar>(codepoint));
     if (found == nullptr || found->Visible == 0U) {
         return {};
     }
-    const float x0 = found->X0;
-    const float x1 = found->X1;
+    const float scale = points / bakedSize;  // RenderText's own expression (imgui_draw.cpp:5802)
+    const float x0 = found->X0 * scale;
+    const float x1 = found->X1 * scale;
     const int packId = found->PackId;
     const ImFontAtlas* const atlas = ImGui::GetIO().Fonts;  // the atlas every editor face is loaded into
     const ImTextureData* const texture = atlas != nullptr ? atlas->TexData : nullptr;
@@ -102,6 +109,7 @@ struct GlyphInk {
     const float columnWidth = (x1 - x0) / static_cast<float>(rect.w);
     return GlyphInk{.left = x0 + (static_cast<float>(first) * columnWidth),
                     .width = static_cast<float>(last + 1 - first) * columnWidth,
+                    .boxLeft = x0,
                     .box = x1 - x0};
 }
 
@@ -474,19 +482,30 @@ CardHeaderResult CardPainter::begin(const char* strId, const CardSpec& spec, boo
     splitter.SetCurrentChannel(list, 1);
     ImFont* const body = panelFaceFont(PanelFace::Body);
     const float bodyPoints = panelFacePoints(PanelFace::Body);
+    // ONE face size for both states, from ONE reference glyph: the OPEN chevron, whose ink is the mock's 3.5 dp.
+    // Lucide's two chevrons are one stroke rotated (chevron-down's ink is 582 x 332 of 1000, chevron-right's 332 x
+    // 582), so sizing each glyph by its own ink width drew the closed one larger, stroke and all: 12.4 points against
+    // the open one's 7.5 at body 16. The glyph drawn is measured only to place its ink.
+    const GlyphInk referenceInk = glyphInk(body, bodyPoints, AERO_ICON_CHEVRON_DOWN);
+    const float chevronSize = chevronFaceSize(bodyPoints, referenceInk.width, s);
     const std::string_view chevron =
         open ? std::string_view(AERO_ICON_CHEVRON_DOWN) : std::string_view(AERO_ICON_CHEVRON_RIGHT);
-    const GlyphInk inkAtBody = glyphInk(body, bodyPoints, chevron);
-    const float chevronSize = chevronFaceSize(bodyPoints, inkAtBody.width, s);
-    // The pen sits the ink's left offset (scaled to the drawn size) left of chevronX, so the INK -- not the box --
-    // starts there.
-    const float penX = layout.chevronX - (inkAtBody.left * chevronSize / bodyPoints);
+    // The glyph drawn, read as RenderText draws it at chevronSize (glyphInk's bake and scale). Its INK -- not the box
+    // -- is centred in the chevronWidth column at chevronX: open it fills the column, closed it is the narrower rotated
+    // stroke. RenderText truncates the pen to a whole point (imgui_draw.cpp:5791), so the pen is ROUNDED to one here:
+    // the truncation is then the identity, the ink lands exactly where the record says, and the centre misses the
+    // column's by at most half a point.
+    const GlyphInk ink = glyphInk(body, chevronSize, chevron);
+    const float penX = std::round(layout.chevronX + ((geometry.chevronWidth - ink.width) * 0.5F) - ink.left);
     const float midY = (topY + stripBottomY) * 0.5F;
+    const int glyphVertex = list->VtxBuffer.Size;  // the channels share ONE VtxBuffer (see end())
     list->AddText(body, chevronSize, ImVec2(penX, midY - (chevronSize * 0.5F)), roleU32(ChromeRole::TextFaint),
                   chevron.data(), chevron.data() + chevron.size());
-    // Re-measured at the size AddText was handed -- a second bake, not the body-size reading above -- so I336 sees
-    // the ink that was DRAWN.
-    const GlyphInk inkDrawn = glyphInk(body, chevronSize, chevron);
+    // The quad the list RECEIVED: one glyph is four vertices, the first two its top-left and top-right x
+    // (imgui_draw.cpp:5954-5955), and a clipped glyph adds none (:5984). I336 holds the record's box against it.
+    const bool glyphDrawn = list->VtxBuffer.Size == glyphVertex + 4;
+    const float quadMinX = glyphDrawn ? list->VtxBuffer[glyphVertex].pos.x : 0.0F;
+    const float quadMaxX = glyphDrawn ? list->VtxBuffer[glyphVertex + 1].pos.x : 0.0F;
     const float textY = midY - (bodyPoints * 0.5F);
     const ChromeRole iconRole = open ? ChromeRole::Accent : ChromeRole::TextLabel;
     drawRoleText(list, PanelFace::Body, ImVec2(layout.iconX, textY), iconRole, spec.icon);
@@ -507,9 +526,12 @@ CardHeaderResult CardPainter::begin(const char* strId, const CardSpec& spec, boo
     entry.iconAdvance = iconAdvance;
     entry.overflowWidth = geometry.overflowWidth;
     entry.chevronSize = chevronSize;
-    entry.chevronInkMinX = penX + inkDrawn.left;
-    entry.chevronInkWidth = inkDrawn.width;
-    entry.chevronBoxWidth = inkDrawn.box;
+    entry.chevronInkMinX = penX + ink.left;
+    entry.chevronInkWidth = ink.width;
+    entry.chevronBoxMinX = penX + ink.boxLeft;
+    entry.chevronBoxWidth = ink.box;
+    entry.chevronQuadMinX = quadMinX;
+    entry.chevronQuadMaxX = quadMaxX;
     entry.open = open;
     if (record != nullptr) {
         const ImFont* const strong = panelFaceFont(PanelFace::Strong);

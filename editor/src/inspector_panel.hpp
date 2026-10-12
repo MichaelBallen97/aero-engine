@@ -91,6 +91,17 @@ public:
         pendingComponentMenu.reset();
         frameComponentMenu.reset();
     }
+    // ---- task E.6.3 (fix 7): a card header's toggle, as a seam ---------------------------------------------------
+    // The header's click. The card whose FULL registration name matches is submitted after SetNextItemOpen(open,
+    // ImGuiCond_Always), which writes ImGui's OWN open bit (imgui_widgets.cpp:6819-6822) where the click writes it
+    // (:7076), so the card stays as the request left it. The component menu's shape: taken at the top of the next
+    // onDraw, applied only while no modal is up, and ONE tick long -- EditorApp calls expireCardOpen() after
+    // drawShellUi, beside expireComponentMenuAction().
+    void requestCardOpen(std::string registrationName, bool open);
+    void expireCardOpen() noexcept {
+        pendingCardOpen.reset();
+        frameCardOpen.reset();
+    }
     [[nodiscard]] const InspectorDrawRecord& drawRecord() const noexcept { return drawRecordValue; }
     // Cumulative count of named-selector rows the panel SUBMITTED (one per BeginCombo call). A seam's own
     // accessor is a round trip; this is a consequence the widget produced (E.3.4's materialSamplerRowsDrawn
@@ -150,6 +161,11 @@ private:
         ComponentMenuAction action = ComponentMenuAction::Remove;
         [[nodiscard]] bool matches(std::string_view component) const noexcept { return registrationName == component; }
     };
+    struct CardOpenRequest {
+        std::string registrationName;
+        bool open = true;
+        [[nodiscard]] bool matches(std::string_view component) const noexcept { return registrationName == component; }
+    };
 
     void drawComponent(PanelContext& context, Entity primary, const ComponentEntry& entry, float labelWidth);
     void drawEntityHeader(PanelContext& context, Entity primary);
@@ -198,6 +214,8 @@ private:
     std::unique_ptr<CardPainter> cardPainter;                  // task E.6.3 -- ONE painter for every card, persistent
     std::optional<ComponentMenuRequest> pendingComponentMenu;  // task E.6.3 -- the seam writes this
     std::optional<ComponentMenuRequest> frameComponentMenu;    // task E.6.3 -- THIS onDraw's copy
+    std::optional<CardOpenRequest> pendingCardOpen;            // task E.6.3 (fix 7) -- the seam writes this
+    std::optional<CardOpenRequest> frameCardOpen;              // task E.6.3 (fix 7) -- THIS onDraw's copy
     InspectorDrawRecord drawRecordValue;                       // task E.6.3 -- drawRecord()'s value
     std::string idScratch;                                     // task E.6.3 -- e#<index> and its tooltip
 };

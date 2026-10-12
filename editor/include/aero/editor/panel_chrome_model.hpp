@@ -67,7 +67,7 @@ struct CardGeometry {
     float paddingY = 0.0F;        // the body's DRAWN top and bottom padding: 10
     float gap = 0.0F;             // card to card, drawn: 12
     float rounding = 0.0F;        // childRounding: 6
-    float chevronWidth = 0.0F;    // the chevron's INK width: 3.5
+    float chevronWidth = 0.0F;    // the chevron's column, the OPEN chevron's INK width: 3.5 (closed: centred)
     float iconGap = 0.0F;         // chevron -> icon and icon -> title: 8
     float overflowWidth = 0.0F;   // the square overflow button, one frame height (body + 2 x framePadding.y): 24
     friend constexpr bool operator==(const CardGeometry&, const CardGeometry&) = default;
@@ -95,7 +95,8 @@ struct CardHeaderLayout {
 // AddText(font, faceSizePoints(dp, s), ...) binds exactly the face PushFont(font, dp) would. Never below 1.
 [[nodiscard]] float faceSizePoints(float sizeDp, float uiScale) noexcept;
 // The face size whose chevron INK is cardChevronWidth x s wide, scaled from the glyph's ink at the body size (spec
-// section 15 item 13). Falls back to bodyPoints when either measurement is not a finite positive number.
+// section 15 item 13). Falls back to bodyPoints when either measurement is not a finite positive number. The painter
+// hands it the OPEN chevron's ink in both states, so the closed chevron is the same face rotated, never re-normalised.
 [[nodiscard]] float chevronFaceSize(float bodyPoints, float inkAtBody, float uiScale) noexcept;
 
 // ---- the section icon tables (D10): roster glyphs only, as views of the AERO_ICON_* literals -----------------
@@ -140,12 +141,17 @@ struct CardEntryRecord {
     float chevronX = 0.0F;  // as drawn
     float iconX = 0.0F;
     float titleX = 0.0F;
-    float iconAdvance = 0.0F;      // what cardHeaderLayout was handed
-    float overflowWidth = 0.0F;    // likewise
-    float chevronSize = 0.0F;      // the face size the chevron was drawn at
-    float chevronInkMinX = 0.0F;   // the chevron's INK left edge as drawn: re-measured off the atlas at chevronSize
-    float chevronInkWidth = 0.0F;  // its ink width, likewise -- never the glyph's X1 - X0 box (I336)
-    float chevronBoxWidth = 0.0F;  // that glyph's X1 - X0 box at chevronSize: the ink must be narrower (I336)
+    float iconAdvance = 0.0F;    // what cardHeaderLayout was handed
+    float overflowWidth = 0.0F;  // likewise
+    float chevronSize = 0.0F;    // the face size the chevron was drawn at: ONE for both states (I336)
+    // The chevron's INK and BOX as RenderText draws them: the bake at IM_ROUND(chevronSize) scaled by chevronSize /
+    // that bake's Size, from the whole-point pen the painter hands AddText.
+    float chevronInkMinX = 0.0F;   // the ink's left edge
+    float chevronInkWidth = 0.0F;  // its ink width -- never the glyph's X1 - X0 box (I336)
+    float chevronBoxMinX = 0.0F;   // that glyph's X0 edge, where this record places it
+    float chevronBoxWidth = 0.0F;  // that glyph's X1 - X0 box: the ink must be narrower (I336)
+    float chevronQuadMinX = 0.0F;  // the glyph's quad as the list RECEIVED it, off AddText's vertices: the box must
+    float chevronQuadMaxX = 0.0F;  // be this quad, or the ink above is not what was drawn (I336); 0 when clipped
     float topPadding = 0.0F;       // the y handed to SetCursorScreenPos for the body - stripBottomY
     float bottomPadding = 0.0F;    // the bottomY handed to the fill and the outline - the last body item's bottom
     float gapAfter = -1.0F;        // the next card's top - this card's bottom; -1 when no card follows this frame
