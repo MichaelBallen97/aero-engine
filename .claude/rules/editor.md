@@ -2136,16 +2136,40 @@ the bottom. (The Asset Browser's panes are floored at a positive explicit height
 requirement — two side-by-side panes sharing one explicit height — and both are right. Since E.4.4's
 validation fix that floor lives in `assetBrowserLayout` (`asset_view.hpp`), which reserves the footer AND
 the Issues region before sizing the panes and caps the Issues body in a scrollable child — this section's
-second instance. Since E.6.3's code-review round the floor is the recorded `paneChromeHeight` + `4.0F`.)
+second instance. Since E.6.3's code-review round the floor is ImGui's 4-point child — see the fold below.)
 **A fixed row drawn INSIDE a flexible region's height is chrome too**: E.6.3's crumb row, its rule and their
 spacing sit inside the contents pane above a child, so a pane shorter than them grew the row and pushed
 the Issues region and the footer off the panel while the budget still claimed a fit. Record such a row's
-height as a metric the budget reads and floor the region at it + the child's minimum (`AV66`, `I231`).
-**And that minimum is ImGui's, not the one you asked for**: `Begin` clamps every child window to
-`IMGUI_WINDOW_HARD_MIN_SIZE`, 4 points at every scale while the theme's `windowRounding` is 0
-(`imgui_internal.h:2813`, `CalcWindowMinSize` at `imgui.cpp:7007-7028`), so a child asked for 1 is drawn
-4 tall — a floor of chrome + 1 left the group 3 points taller than its pane, which only a drawn comparison
-at the floor could see (`I231`'s 640 subcase).
+height as a metric the budget reads, so the budget knows the shortest region that holds it: that chrome +
+the child's minimum (`AV66`, `I231`).
+**And below that height the row FOLDS, rather than the region being floored at it** (E.6.3's code-review
+round, round 2): flooring the Assets panes at chrome + 4 left the editor's own 1280 x 720 launch scrolling
+with the Issues list open and no fit anywhere in 640-776-point windows. `assetBrowserLayout` answers
+`crumbRowShown == (R >= paneChromeHeight + 4)` and `paneHeight == max(R, 4)` in BOTH modes, `R` the
+remainder after the footer and the Issues region, so the mode moves no height in the budget and the pane
+height is **continuous** across the fold (at the threshold both modes answer exactly the chrome + 4); folded,
+the panel submits no crumb, no crumb drop target and no rule, the `##contents` child takes the whole pane,
+and the tree still navigates. The Issues body yields to the same `max(ASSET_PANES_MIN_FONT x fontSize,
+chrome + 4)` in both modes, since a body that grew on the fold would take the row's height straight back
+(`AV67`). **Only the pane is continuous**: the `##contents` child is the pane less the chrome while the row
+shows and the whole pane once it folds, so it steps by the chrome at the threshold — at any threshold — and
+where the row shows with the Issues list closed and folds with it open (avail in [101, 123) at 1x, one body
+row + one spacing wide) closing the list SHRINKS it: 27 points open and 12 closed at the 1280 x 720 launch
+(`AV67`).
+`assetContentsPaneLayout`'s `crumbRowShown` is non-defaulted. The row shows from 71 / 101 / 123 points at 1x
+(no Issues / closed / open) and the panel fits from 34 / 64 / 86 — the pre-E.6.3 bounds + 3 (`AV67`, `AH18`,
+`I231`).
+**And that minimum is ImGui's, not the one you asked for**: `CalcWindowMinSize` (`imgui.cpp:7007-7029`,
+applied at `:8219`) holds a child window WITHOUT `ImGuiChildFlags_ResizeY` to at least
+`IMGUI_WINDOW_HARD_MIN_SIZE` (`imgui_internal.h:2813`), 4 points at every scale, and to at least the
+rounding term `max(0, style.WindowRounding - 1)` (`:7027` — the WINDOW rounding, even for a child;
+`BeginChild` always sets `NoTitleBar` (`imgui.cpp:6744`); a child given `ImGuiWindowFlags_MenuBar` adds its
+`MenuBarHeight` to the minimum too (`:8134`)), so for a child with no menu bar the 4 holds while the scaled
+`WindowRounding` is at most 5 (the theme's is 0; `asset_browser_panel.cpp` static_asserts the macro and the
+term at `UI_SCALE_MAX`). **A `ResizeY` child's minimum is `style.WindowMinSize.y`** (32 dp) instead
+(`:7017`) — chrome reserved above one is floored at that, not at 4. So a child asked for 1 is drawn 4 tall
+— a floor of chrome + 1 left the group 3 points taller than its pane, which only a drawn comparison at the
+floor could see (`I231`'s 640 subcase).
 **Never pass a zero height meaning "nothing"**: `CalcItemSize` reads zero as *use the whole remaining
 region*.
 

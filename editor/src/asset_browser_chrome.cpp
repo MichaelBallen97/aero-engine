@@ -12,11 +12,15 @@ namespace engine::editor {
 
 namespace {
 
-// The ##contents child's height never goes under ImGui's own: Begin clamps every child window to
-// IMGUI_WINDOW_HARD_MIN_SIZE, 4 points at every scale (imgui_internal.h:2813; CalcWindowMinSize, imgui.cpp:7007-7028,
-// applied at :8219 -- its WindowRounding term is 0 while the theme's windowRounding is 0). A child asked for 1 is
-// drawn 4 tall, so 1 here made the group 3 points taller than a pane at its floor (I231). It is also the "+ 4" in
-// assetBrowserLayout's pane floor, for that reason.
+// The ##contents child's height never goes under ImGui's own. Begin clamps a child window WITHOUT
+// ImGuiChildFlags_ResizeY -- ##contents has none -- to IMGUI_WINDOW_HARD_MIN_SIZE, 4 points at every scale
+// (imgui_internal.h:2813; CalcWindowMinSize, imgui.cpp:7016-7017, applied at :8219), or to the rounding term
+// max(0, style.WindowRounding - 1) if that is larger (:7027 -- the WINDOW rounding, even for a child). BeginChild
+// always sets NoTitleBar (imgui.cpp:6744); a child given ImGuiWindowFlags_MenuBar adds its MenuBarHeight to the
+// minimum too (:8134), and ##contents has no menu bar. So the 4 holds while the scaled WindowRounding is at most 5:
+// the theme's is 0, and asset_browser_panel.cpp static_asserts both facts. A ResizeY child's minimum is
+// style.WindowMinSize.y (32 dp) instead. A child asked for 1 is drawn 4 tall, so 1 here made the group 3 points
+// taller than a pane at its floor (I231). It is also the 4 in assetBrowserLayout's floors, for that reason.
 constexpr float CONTENTS_MIN_HEIGHT = 4.0F;
 constexpr float FOOTER_SEGMENT_GAP_SPACINGS = 2.0F;  // footer segment to segment: two itemSpacing.x (16 dp)
 
@@ -127,8 +131,14 @@ AssetHeaderLayout assetHeaderLayout(float rowMinX, float rowWidth, const AssetHe
 }
 
 AssetContentsPaneLayout assetContentsPaneLayout(float paneHeight, float frameHeight, float dividerHeight,
-                                                float itemSpacingY, float uiScale) noexcept {
+                                                float itemSpacingY, float uiScale, bool crumbRowShown) noexcept {
     AssetContentsPaneLayout out;
+    if (!crumbRowShown) {
+        // FOLDED (assetBrowserLayout's crumbRowShown): no row, rule or spacing above the child, so it is the pane.
+        out.crumbRowHeight = 0.0F;
+        out.contentsHeight = std::max(usableLength(paneHeight), CONTENTS_MIN_HEIGHT);
+        return out;
+    }
     out.crumbRowHeight = crumbRowHeightFor(frameHeight, uiScale);
     // ONE chrome for the group and the budget: the child is the pane less what the panel records as paneChromeHeight.
     const float chrome = assetContentsPaneChromeHeight(frameHeight, dividerHeight, itemSpacingY, uiScale);

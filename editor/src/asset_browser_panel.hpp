@@ -403,8 +403,9 @@ private:
     void drawContentsList(float paneHeight);
     void drawContentsGrid(float paneHeight);
     // task E.6.3 (D8): phase 4 is ONE group -- the crumb row, its divider rule, then ##contents (Grid or List) -- so
-    // the SameLine after the tree pane carries the whole right side, and the group is exactly paneHeight tall.
-    void drawContentsPane(float paneHeight);
+    // the SameLine after the tree pane carries the whole right side, and the group is exactly paneHeight tall. With
+    // `crumbRowShown` false (the layout's FOLD) the group is ##contents alone, the whole pane.
+    void drawContentsPane(float paneHeight, bool crumbRowShown);
     void drawCrumbRow(float rowHeight);
     // The header's inline rect for `control`, read off the item JUST submitted (GetItemRectMin/Max).
     void noteHeaderRect(AssetHeaderControl control);

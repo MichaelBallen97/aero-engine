@@ -161,10 +161,14 @@ struct AssetBrowserLayoutMetrics {
 };
 
 struct AssetBrowserLayout {
-    float paneHeight = 4.0F;        // the two panes' shared height, >= paneChromeHeight + 4 (so never 0: "fill")
+    float paneHeight = 4.0F;        // the two panes' shared height, >= 4 (so never 0: "fill"); see crumbRowShown
     float issuesHeight = 0.0F;      // header + spacing [+ body + spacing]; 0 when no issue is shown
     float issuesBodyHeight = 0.0F;  // the body child's height; 0 iff the body is not drawn, else >= 1
     float footerHeight = 0.0F;      // spacing below the region above + the footer's line (frame height)
+    // task E.6.3 (the code-review round, round 2): true while R = availHeight - footerHeight - issuesHeight >=
+    // paneChromeHeight + 4 (paneHeight is then R), so the contents pane draws its crumb row; false is
+    // THE FOLD -- no row, and the ##contents child takes the whole pane.
+    bool crumbRowShown = true;
 };
 
 // TOTAL: a metric that is not a finite, positive number counts as 0, so no NaN and no negative reaches
@@ -173,16 +177,34 @@ struct AssetBrowserLayout {
 // THE BUDGET. footer and header are fixed. The body wants its measured content height, at least one text
 // row and at most floor(ASSET_ISSUES_BODY_MAX_FRACTION * avail); it YIELDS first, so the panes keep
 // max(ASSET_PANES_MIN_FONT * fontSize, paneChromeHeight + 4), but never below one row. The panes take what
-// is left, never below paneChromeHeight + 4: the contents pane draws that chrome and its child inside
-// paneHeight, and ImGui draws no child window shorter than 4 points (IMGUI_WINDOW_HARD_MIN_SIZE), so a
-// shorter pane would push the Issues region and the footer past the panel's bottom while this sum still
-// claimed a fit (task E.6.3's code-review round, the #111 rule). So
-// paneHeight + issuesHeight + footerHeight == availHeight whenever availHeight is at least
-// footer + header + one row + one spacing + paneChromeHeight + 4 (123 with the body open at 1x, 101 closed) --
-// in every state, whenever availHeight - footerHeight - issuesHeight >= paneChromeHeight + 4 -- and otherwise
-// the sum EXCEEDS availHeight, so only a panel whose sum exceeds it can scroll (AV66) -- and it need not by
-// the whole excess: the footer's one text line sits inside its frame-height band (I231 measured a sum 12
-// points over its 640-point panel scrolling 4).
+// is left, R = availHeight - footerHeight - issuesHeight, never below 4: ImGui draws no child window shorter
+// (IMGUI_WINDOW_HARD_MIN_SIZE), so a shorter pane would push the Issues region and the footer past the panel's
+// bottom while this sum still claimed a fit (the #111 rule).
+//
+// THE FOLD (task E.6.3's code-review round, round 2). The contents pane draws paneChromeHeight -- its crumb row, the
+// rule and one ItemSpacing.y -- above its 4-point child INSIDE paneHeight, so a pane under paneChromeHeight + 4
+// cannot hold the row. There the row FOLDS: the child takes the whole pane, and the tree beside it still navigates.
+// In BOTH modes
+//     crumbRowShown == (R >= paneChromeHeight + 4)     and     paneHeight == max(R, 4),
+// so the mode moves no height in this budget, and paneHeight -- the tree pane's -- is continuous in availHeight
+// across the fold: at R = paneChromeHeight + 4 both modes answer exactly that. With the Issues list open the fold
+// fires only with the body at its one-row floor -- a body above the floor leaves R at the panes' minimum or more,
+// which is at least paneChromeHeight + 4 -- and the body keeps that minimum in both modes: a body that grew on the
+// fold would take the row's height straight back, a 21-point jump at a 5-point font, where 4 font heights are under
+// paneChromeHeight + 4 (AV67). Closed, or with no Issues, there is no body, and R alone decides.
+//
+// ONLY THE PANE IS CONTINUOUS. The ##contents child is R - paneChromeHeight while the row shows and R once it
+// folds, so it steps by paneChromeHeight at the threshold, at any threshold -- at 1x, 4 points at R = 41 and 40 at
+// R = 40. Where the row shows with the Issues list closed and folds with it open -- availHeight in [101, 123) at 1x,
+// a band one body row + one spacing wide -- closing the list therefore SHRINKS the child: at the 1280 x 720 launch
+// (avail 109) it is 27 points with the list open and 12 with it closed (AV67).
+//
+// So paneHeight + issuesHeight + footerHeight == availHeight whenever R >= 4, i.e. whenever availHeight is at least
+// footer + header + one row + one spacing + 4 (86 with the body open at 1x, 64 closed, 34 with no Issues: the bounds
+// before E.6.3 at a 1-point floor, + 3), and the row shows from 123 open, 101 closed, 71 with no Issues. Below the fit
+// bound the panes are 4 and the sum EXCEEDS availHeight, so only such a panel can scroll (AV67) -- and it need not by
+// the whole excess: the footer's one text line sits inside its frame-height band (a sum 12 points over a 640-point
+// panel scrolled it 4, measured before the fold).
 [[nodiscard]] AssetBrowserLayout assetBrowserLayout(const AssetBrowserLayoutMetrics& metrics) noexcept;
 
 // ---- task E.4.5 (the code-review round): a caption LINE that keeps the file name -------------------------

@@ -57,6 +57,19 @@ constexpr std::string_view CRUMB_SEPARATOR = "/";
 // Shown for a file whose size the OS refused (AC-6/E6). NEVER "0 B" -- that is a lie, not a blank.
 constexpr const char* UNKNOWN_SIZE = AERO_GLYPH_EM_DASH;
 
+// task E.6.3 (the code-review round, round 2): the pure Assets layout sees no ImGui, so it spells ImGui's shortest
+// child as a literal 4 -- asset_browser_chrome.cpp's CONTENTS_MIN_HEIGHT and asset_view.cpp's CHILD_MIN_HEIGHT --
+// and these make a port bump or a theme edit that moves the real minimum a compile error, never a pane silently
+// shorter than its group. CalcWindowMinSize (imgui.cpp:7007-7029) holds a child without ImGuiChildFlags_ResizeY to at
+// least IMGUI_WINDOW_HARD_MIN_SIZE (:7017) ...
+static_assert(IMGUI_WINDOW_HARD_MIN_SIZE == 4.0F,
+              "CONTENTS_MIN_HEIGHT (asset_browser_chrome.cpp) and CHILD_MIN_HEIGHT (asset_view.cpp) mirror it");
+// ... and to at least max(0, style.WindowRounding - 1) (:7027, the WINDOW rounding even for a child), so 4 holds only
+// while that term stays within it at the largest UI scale (WindowRounding is the theme's, x the scale, truncated).
+constexpr float LARGEST_ROUNDING_TERM = std::max(0.0F, (EDITOR_THEME.metrics.windowRounding * UI_SCALE_MAX) - 1.0F);
+static_assert(LARGEST_ROUNDING_TERM <= IMGUI_WINDOW_HARD_MIN_SIZE,
+              "the theme's windowRounding would raise ImGui's shortest child above the Assets layout's 4");
+
 // C7: every dynamic string goes through this or TextUnformatted -- NEVER as a printf format. A file
 // named "%s.txt" passed as the format would read the varargs stack (UB, and the Debug lanes run
 // ASan/UBSan).
@@ -579,14 +592,20 @@ void AssetBrowserPanel::drawTreePane(float paneHeight) {
 // SameLine carries over to exactly ONE item (ItemSize puts the cursor back at the indent, imgui.cpp:12128): a
 // crumb row submitted on its own would sit beside the tree and push the grid below it. The group's height is
 // crumbRowHeight + the rule + ItemSpacing.y + the child's, which assetContentsPaneLayout makes paneHeight exactly --
-// for every pane, since onDraw records that chrome and assetBrowserLayout never hands out less than it + 4 (ImGui
-// draws no child shorter than 4 points).
-void AssetBrowserPanel::drawContentsPane(float paneHeight) {
-    const AssetContentsPaneLayout pane = assetContentsPaneLayout(paneHeight, ImGui::GetFrameHeight(), ruleHeight(),
-                                                                 ImGui::GetStyle().ItemSpacing.y, currentUiScale());
+// for every pane the row shows in, since onDraw records that chrome and assetBrowserLayout shows the row only in a pane
+// of at least it + 4 (ImGui draws no child shorter than 4 points). In a shorter pane the row FOLDS (task E.6.3's
+// code-review round, round 2): no crumb, no crumb drop target, no rule -- the group is the ##contents child alone,
+// the whole pane, and the tree beside it still navigates.
+void AssetBrowserPanel::drawContentsPane(float paneHeight, bool crumbRowShown) {
+    const AssetContentsPaneLayout pane =
+        assetContentsPaneLayout(paneHeight, ImGui::GetFrameHeight(), ruleHeight(), ImGui::GetStyle().ItemSpacing.y,
+                                currentUiScale(), crumbRowShown);
+    chrome.crumbRowShown = crumbRowShown;
     chrome.crumbRowHeight = pane.crumbRowHeight;
     ImGui::BeginGroup();
-    drawCrumbRow(pane.crumbRowHeight);
+    if (crumbRowShown) {
+        drawCrumbRow(pane.crumbRowHeight);
+    }
     if (viewMode == AssetViewMode::Grid) {  // task 3.1.3, Step 6 -- one child, two bodies (§D-7)
         drawContentsGrid(pane.contentsHeight);
     } else {
@@ -2120,7 +2139,7 @@ void AssetBrowserPanel::onDraw(PanelContext& /*context*/) {  // D18: the context
     layoutMetricsAtDraw = metrics;    // task E.4.4 -- EXACTLY what the layout read (layoutMetrics())
     drawTreePane(layout.paneHeight);  // 3
     ImGui::SameLine();
-    drawContentsPane(layout.paneHeight);  // 4 -- task E.6.3: the crumb row over the grid or list, ONE group (D8)
+    drawContentsPane(layout.paneHeight, layout.crumbRowShown);  // 4 -- task E.6.3: crumbs over the contents (D8)
     // task E.4.3: the pane BACKGROUND is a legal context target ("" -- New Folder and New Asset
     // apply there). Recorded only when the click landed on no item at all, so it can never steal a
     // row's own right-click.

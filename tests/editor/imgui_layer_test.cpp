@@ -18973,40 +18973,39 @@ TEST_CASE("editor: the Asset Browser fits its panel with 40 orphans and Issues o
     // THE SHORT WINDOW'S REGIME, re-measured 2026-10-03 at task E.6.1's metrics (UI scale 1: body 13 -> 16,
     // frame 19 -> 24, ItemSpacing.y 4 -> 6). With Issues open, assetBrowserLayout holds the body at its one-row floor
     // while avail <= 146 (footer 30 + header 30 + spacing 6 + panes 4 x 16 + one row 16) and fits while
-    // avail >= 123 (30 + 30 + 16 + 6 + 41, the panes' floor since the code-review round below; 101 with it closed).
-    // Measured here, avail = floor((H - 24) / 4) - 65: the Bottom node's quarter of the work area, less its tab bar,
-    // padding and header row. So the regime is H in [776, 871]. Below H = 776 the open arm's WARN fallback below
-    // runs (the closed arm's below H = 688). The short subcase runs 824: avail 135, measured, 12 inside the open
-    // bound and 11 inside the body floor's. A runner that delivers a SHORTER window than requested (CI's macOS lane
-    // can) may still land under 123, where scrolling is the designed answer and checkFits reports a WARN.
-    // Re-measured at task E.6.2 with the toolbar and status bar present, every value above is unchanged: their 70 dp
-    // come out of the central node (the Viewport), because ImGui keeps a split sibling's size and hands the central
-    // node the remainder (imgui.cpp:20321-20325). Re-measured at task E.6.3's step 5: the header row is 31 points, 6
-    // fewer than E.6.2's; the other heights' figures were dropped, not carried.
+    // avail >= 86 (30 + 30 + 16 + 6 + ImGui's 4-point child, since the code-review round's fold below; 64 with it
+    // closed). Measured here, avail = floor((H - 24) / 4) - 65: the Bottom node's quarter of the work area, less its
+    // tab bar, padding and header row. So the regime is H in [628, 871]. Below H = 628 the open arm's WARN fallback
+    // below runs (the closed arm's below H = 540). The short subcase runs 768: avail 121, measured, 35 inside the open
+    // bound and 25 inside the body floor's. A runner that delivers a SHORTER window than requested (CI's macOS lane
+    // can) may still land under 86, where scrolling is the designed answer and checkFits reports a WARN. Re-measured at
+    // task E.6.2 with the toolbar and status bar present, every value above is unchanged: their 70 dp come out of the
+    // central node (the Viewport), because ImGui keeps a split sibling's size and hands the central node the remainder
+    // (imgui.cpp:20321-20325). Re-measured at task E.6.3's step 5: the header row is 31 points, 6 fewer than E.6.2's;
+    // the other heights' figures were dropped, not carried.
     //
-    // RE-MEASURED AT TASK E.6.3's CODE-REVIEW ROUND, which reserves the contents pane's chrome -- the crumb row 30,
+    // RE-MEASURED AT TASK E.6.3's CODE-REVIEW ROUND, which RESERVES the contents pane's chrome -- the crumb row 30,
     // its rule 1 and ItemSpacing.y 6 -- above a ##contents child ImGui never draws shorter than 4 points
-    // (IMGUI_WINDOW_HARD_MIN_SIZE), so the panes never go below 37 + 4 = 41. That moved the fit bounds from 83 open
-    // and 61 closed to the 123 and 101 above, and the short subcase from 768 (avail 121, now 2 under the open bound)
-    // to 824, so its fit CHECK still runs. The third subcase, 640 (avail 89, measured), sits under both bounds --
-    // the band where the crumb row used to overflow a panel the budget claimed it fit: red there before the
-    // reservation (budget 89 in both arms; scroll max 4 closed, 26 open), a WARN in both arms since. Its panes are AT
-    // their floor in both Issues states, which is what checkFits' group arm needs to be a witness: drawn at the
-    // floor, the contents group must end where the tree pane does (I324 checks that only at a tall pane). Red before
-    // the reservation (tree 29, group 41, Issues closed) and under a floor of chrome + 1 (tree 38, group 41: ImGui drew
-    // the child asked for 1 at 4). The editor's own 1280 x 720 launch is in the open band: avail 109, measured, so
-    // with the Issues list open its panel scrolls (by 6, measured) where main's fit -- AV66 records the cost.
+    // (IMGUI_WINDOW_HARD_MIN_SIZE), so the row needs a pane of 37 + 4 = 41. Its first round floored the panes there:
+    // the fit bounds moved from 83 open and 61 closed to 123 and 101, the short subcase from 768 (avail 121, then 2
+    // under the open bound) to 824, and the editor's own 1280 x 720 launch (avail 109, measured) scrolled by 6 with
+    // the Issues list open. Its second round FOLDS the row in a pane under 41 instead (asset_view.hpp's THE FOLD): the
+    // ##contents child takes the whole pane, the panes floor at ImGui's 4 again, the bounds are the 86 and 64 above --
+    // the pre-E.6.3 bounds + 3 -- and the short subcase is back at 768, where the open arm folds (pane 39, measured)
+    // and the closed arm shows the row (pane 61). The 640 subcase (avail 89, measured) folds in BOTH Issues states
+    // (panes 7 and 29) and fits: before the reservation it scrolled (budget 89 in both arms; scroll max 4 closed, 26
+    // open) with its tree at 29 or 7 and the group drawn 41 beside it.
     bool tallPanel = true;
-    bool paneAtFloor = false;
+    bool foldBand = false;
     int windowHeight = 1000;
     SUBCASE("a TALL panel, where the body has room to grow past one row") {}
     SUBCASE("a SHORT panel, where the body is held at its one-row floor -- the geometry CI hit") {
         tallPanel = false;
-        windowHeight = 824;
+        windowHeight = 768;
     }
-    SUBCASE("a panel under both fit bounds, where the crumb row once overflowed a claimed fit") {
+    SUBCASE("a panel under both of the crumb row's bounds, where the row folds") {
         tallPanel = false;
-        paneAtFloor = true;
+        foldBand = true;
         windowHeight = 640;
     }
     CAPTURE(windowHeight);
@@ -19053,11 +19052,14 @@ TEST_CASE("editor: the Asset Browser fits its panel with 40 orphans and Issues o
     // longer than any body this panel can reserve.
     REQUIRE(app->assetOrphanCount() == static_cast<std::size_t>(ORPHANS));
 
-    // The panel must fit whenever the layout's own budget fits the height the panel RECORDED -- in BOTH
-    // subcases. `budget <= avail` is assetBrowserLayout's answer for those metrics, and it holds exactly when
-    // the recorded avail is at least the layout's fit bound (footer + header [+ one row + spacing] + the pane's
-    // recorded chrome + 4: the header's contract, "only a panel whose sum exceeds it can scroll").
-    // Below the bound, scrolling is the DESIGNED answer, and a WARN says so instead.
+    // The panel must fit whenever the layout's own budget fits the height the panel RECORDED -- in EVERY
+    // subcase. `budget <= avail` is assetBrowserLayout's answer for those metrics, and it holds exactly when
+    // the recorded avail is at least the layout's fit bound (footer + header [+ one row + spacing] + ImGui's 4-point
+    // child, the row folded: the header's contract, "only such a panel can scroll"). Below the bound, scrolling is
+    // the DESIGNED answer, and a WARN says so instead. THE BOUND ITSELF is asserted too, still geometry-free: wherever
+    // the recorded avail clears footer + Issues + 4, the layout must fit -- the pre-E.6.3 bound + 3, which the
+    // code-review round's first floor (chrome + 4) broke at the 768 subcase's avail 121 with the list open (a sum of
+    // 123).
     //
     // The TALL subcase used to assert no scroll unconditionally, which held only while its runner's panel
     // cleared the bound. E.6.1 raised the open bound from 64 (23 + 23 + 13 + 4 + 1 at ProggyClean's
@@ -19066,34 +19068,52 @@ TEST_CASE("editor: the Asset Browser fits its panel with 40 orphans and Issues o
     // runner's tall avail, at the old metrics, only somewhere in [64, 115] -- above the old bound, inside
     // the old floored regime -- which the new metrics move to about [50, 101], across 83. Locally the tall
     // panel clears the bound, so the CHECK runs here with no WARN line. E.6.3's code-review round moved the
-    // bounds again, to 101 closed and 123 open, by reserving the crumb row the budget had not counted.
+    // bounds again, to 101 closed and 123 open, by reserving the crumb row the budget had not counted, and its
+    // second round back to 64 and 86, by folding that row in a pane too short for it.
     //
-    // THE GROUP ARM, geometry-free and so asserted in every subcase: the contents group (the crumb row, its rule,
-    // one ItemSpacing.y and the ##contents child) ends where the tree pane beside it does -- for EVERY pane the
-    // layout hands out, which is what makes the budget's sum the drawn height. Where the pane is at its floor
-    // (the 640 subcase) the tree must also be exactly the recorded chrome + 4 tall -- the 4 is ImGui's shortest
-    // child window, IMGUI_WINDOW_HARD_MIN_SIZE -- the anti-vacuity half, without which the group arm would only
-    // repeat I324's tall-pane check. The 0.5 is BeginChild's whole-point truncation, the I324 arm's tolerance; at
+    // THE PANE AND GROUP ARMS, geometry-free and so asserted in every subcase: the tree pane is the layout's own pane
+    // for the recorded metrics, and the contents group -- the crumb row, its rule, one ItemSpacing.y and the
+    // ##contents child, or the child alone when the row folds -- ends where the tree pane beside it does, for EVERY
+    // pane the layout hands out, which is what makes the budget's sum the drawn height. THE FOLD ARM reads the mode
+    // off the RECORD, never off the window size: the panel drew in the layout's mode; folded, it drew no crumb and no
+    // crumb drop target, and the ##contents child is the whole pane; shown, at least one crumb drew. Whether a
+    // subcase reaches the fold is the display's geometry, so the 640 subcase only REPORTS that its pane fell under the
+    // row's floor (a WARN, the #111 rule). The 0.5 is BeginChild's whole-point truncation, the I324 arm's tolerance; at
     // UI scale 1 both sides are whole and the arms compare exactly.
-    const auto checkFits = [&app, browser, paneAtFloor] {
+    const auto checkFits = [&app, browser, foldBand] {
         const AssetBrowserLayoutMetrics m = app->assetBrowserLayoutMetrics();
         const AssetBrowserLayout l = engine::editor::assetBrowserLayout(m);
         const float budget = l.paneHeight + l.issuesHeight + l.footerHeight;
         const float scrollMax = app->assetBrowserScrollMaxY();
         const engine::editor::AssetChromeRecord& r = browser->chromeRecord();
         const float treeHeight = r.treeChildMax.y - r.treeChildMin.y;
+        const float contentsHeight = r.contentsChildMax.y - r.contentsChildMin.y;
         INFO("avail " << m.availHeight << ", budget " << budget << ", scroll max " << scrollMax << ", pane chrome "
-                      << m.paneChromeHeight << ", tree " << treeHeight << ", group "
-                      << r.contentsGroupMaxY - r.treeChildMin.y);
+                      << m.paneChromeHeight << ", layout pane " << l.paneHeight << ", row shown " << l.crumbRowShown
+                      << ", tree " << treeHeight << ", group " << r.contentsGroupMaxY - r.treeChildMin.y
+                      << ", contents " << contentsHeight << ", crumbs " << r.crumbsDrawn);
         if (budget <= m.availHeight) {
             CHECK(scrollMax == 0.0F);
         } else {
             WARN(budget <= m.availHeight);
         }
+        const float foldedBound = l.footerHeight + l.issuesHeight + 4.0F;  // ImGui's 4-point child, the row folded
+        if (m.availHeight >= foldedBound) {
+            CHECK(budget <= m.availHeight);
+        }
         REQUIRE(m.paneChromeHeight > 0.0F);  // the panel really recorded its chrome
+        CHECK(std::abs(treeHeight - l.paneHeight) <= 0.5F);
         CHECK(std::abs(r.contentsGroupMaxY - r.treeChildMax.y) <= 0.5F);
-        if (paneAtFloor) {
-            CHECK(std::abs(treeHeight - (m.paneChromeHeight + 4.0F)) <= 0.5F);
+        CHECK(r.crumbRowShown == l.crumbRowShown);
+        if (l.crumbRowShown) {
+            CHECK(r.crumbsDrawn >= 1U);
+        } else {
+            CHECK(r.crumbsDrawn == 0U);
+            CHECK(r.crumbDropTargets == 0U);
+            CHECK(std::abs(contentsHeight - l.paneHeight) <= 0.5F);
+        }
+        if (foldBand) {
+            WARN(treeHeight < m.paneChromeHeight + 4.0F);  // under the row's floor: the fold arm ran folded
         }
     };
 
@@ -26206,6 +26226,9 @@ TEST_CASE("editor: the Assets crumbs, the recursive items text, the tree and the
     std::string expected;
     engine::editor::assetItemsText(recursive, expected);
     const engine::editor::AssetChromeRecord& r = browser->chromeRecord();
+    // The crumb row draws only in a pane that holds it (asset_view.hpp's THE FOLD; 71 points of panel with no Issues
+    // at 1x): a runner too short for that stops here, loudly, rather than at a crumb count of 0.
+    REQUIRE(r.crumbRowShown);
     CHECK(r.crumbsDrawn == 3U);  // assets / models / props
     CHECK(r.crumbDropTargets == 3U);
     CHECK(r.itemsText == expected);
@@ -27350,6 +27373,7 @@ TEST_CASE("editor: a panel request its gate refuses, or its panel never draws, i
         REQUIRE(frames > idle);
         REQUIRE(app->tick());
     };
+    REQUIRE(assets.crumbRowShown);      // the row draws (THE FOLD, asset_view.hpp): every crumb count reads it
     REQUIRE(assets.crumbsDrawn == 1U);  // at the root: "assets" alone
 
     // (a) The Assets navigation, refused by the modal, is dropped: closing the modal replays nothing.

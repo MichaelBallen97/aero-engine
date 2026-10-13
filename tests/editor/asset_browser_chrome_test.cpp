@@ -365,16 +365,19 @@ TEST_CASE("assets chrome: the footer's segments, their roles and a bad scale (ta
 }
 
 TEST_CASE("assets chrome: the pane, the crumb row and the tree row -- the three geometries (task E.6.3, AH13)") {
-    const ed::AssetContentsPaneLayout pane = ed::assetContentsPaneLayout(300.0F, 24.0F, 1.0F, 6.0F, 1.0F);
+    // The row SHOWN -- assetBrowserLayout's crumbRowShown; AH18 is the folded arm.
+    constexpr bool SHOWN = true;
+    const ed::AssetContentsPaneLayout pane = ed::assetContentsPaneLayout(300.0F, 24.0F, 1.0F, 6.0F, 1.0F, SHOWN);
     CHECK(pane.crumbRowHeight == 30.0F);                                       // 24 + 2 x 3
     CHECK(pane.crumbRowHeight + 1.0F + 6.0F + pane.contentsHeight == 300.0F);  // the group IS the pane
     // Never under ImGui's 4 (IMGUI_WINDOW_HARD_MIN_SIZE: it draws no child shorter, and reads <= 0 as "fill"); 1
     // until task E.6.3's code-review round, which ImGui drew 4 tall.
-    CHECK(ed::assetContentsPaneLayout(20.0F, 24.0F, 1.0F, 6.0F, 1.0F).contentsHeight == 4.0F);
-    CHECK(ed::assetContentsPaneLayout(600.0F, 48.0F, 2.0F, 12.0F, 2.0F).crumbRowHeight == 60.0F);  // doubles at 2
+    CHECK(ed::assetContentsPaneLayout(20.0F, 24.0F, 1.0F, 6.0F, 1.0F, SHOWN).contentsHeight == 4.0F);
+    CHECK(ed::assetContentsPaneLayout(600.0F, 48.0F, 2.0F, 12.0F, 2.0F, SHOWN).crumbRowHeight == 60.0F);  // doubles
     const float nan = std::numeric_limits<float>::quiet_NaN();
-    CHECK(ed::assetContentsPaneLayout(300.0F, 24.0F, 1.0F, 6.0F, nan).crumbRowHeight == 30.0F);  // a bad scale is 1
-    CHECK(ed::assetContentsPaneLayout(nan, nan, nan, nan, 1.0F).contentsHeight == 4.0F);
+    // A bad scale is 1.
+    CHECK(ed::assetContentsPaneLayout(300.0F, 24.0F, 1.0F, 6.0F, nan, SHOWN).crumbRowHeight == 30.0F);
+    CHECK(ed::assetContentsPaneLayout(nan, nan, nan, nan, 1.0F, SHOWN).contentsHeight == 4.0F);
     // task E.6.3's code-review round: the pane's FIXED chrome, which the panel records for assetBrowserLayout to
     // reserve -- the crumb row + the rule + the spacing, so pane - chrome is the child for any pane above it (AV66).
     CHECK(ed::assetContentsPaneChromeHeight(24.0F, 1.0F, 6.0F, 1.0F) == 37.0F);   // 30 + 1 + 6
@@ -576,4 +579,38 @@ TEST_CASE("assets chrome: a recorded frame clears every per-frame count, list an
     CHECK(record.footerRightTexts.empty());
     ed::beginAssetChromeRecordFrame(record);
     CHECK(record.framesRecorded == 2U);  // one per frame, never reset
+}
+
+// task E.6.3's code-review round, round 2: THE FOLD. A pane too short for the crumb row's chrome + ImGui's 4-point
+// child draws no row -- assetBrowserLayout answers crumbRowShown false and the panel passes it on -- so the child
+// takes the WHOLE pane: no row, no rule, no spacing, whatever the chrome inputs say, and never under ImGui's 4.
+TEST_CASE("assets chrome: a folded pane is its child alone; a shown one is unchanged (task E.6.3, AH18)") {
+    constexpr bool FOLDED = false;
+    constexpr bool SHOWN = true;
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    const float inf = std::numeric_limits<float>::infinity();
+    // I231's 640-point window with Issues closed: a 29-point pane, 12 under the 41 the row needs at 1x.
+    const ed::AssetContentsPaneLayout folded = ed::assetContentsPaneLayout(29.0F, 24.0F, 1.0F, 6.0F, 1.0F, FOLDED);
+    CHECK(folded.crumbRowHeight == 0.0F);
+    CHECK(folded.contentsHeight == 29.0F);  // the child IS the pane
+    // ... at 2x too, and with any chrome input, healthy or not: a folded pane reads none of them.
+    CHECK((ed::assetContentsPaneLayout(29.0F, 48.0F, 2.0F, 12.0F, 2.0F, FOLDED) == folded));
+    CHECK((ed::assetContentsPaneLayout(29.0F, nan, -1.0F, inf, nan, FOLDED) == folded));
+    // A tall pane folded is still the whole pane -- the mode, not the height, decides.
+    CHECK(ed::assetContentsPaneLayout(300.0F, 24.0F, 1.0F, 6.0F, 1.0F, FOLDED).contentsHeight == 300.0F);
+    // ImGui's 4 (IMGUI_WINDOW_HARD_MIN_SIZE): never shorter, and never the <= 0 BeginChild reads as "fill".
+    for (const float pane : {3.0F, 1.0F, 0.0F, -5.0F, nan, -inf}) {
+        CAPTURE(pane);
+        const ed::AssetContentsPaneLayout tiny = ed::assetContentsPaneLayout(pane, 24.0F, 1.0F, 6.0F, 1.0F, FOLDED);
+        CHECK(tiny.crumbRowHeight == 0.0F);
+        CHECK(tiny.contentsHeight == 4.0F);
+    }
+    CHECK(ed::assetContentsPaneLayout(4.0F, 24.0F, 1.0F, 6.0F, 1.0F, FOLDED).contentsHeight == 4.0F);
+    CHECK(ed::assetContentsPaneLayout(4.5F, 24.0F, 1.0F, 6.0F, 1.0F, FOLDED).contentsHeight == 4.5F);
+    // The SHOWN arm is AH13's, unchanged: the row, the rule and the spacing above a child of the rest.
+    const ed::AssetContentsPaneLayout shown = ed::assetContentsPaneLayout(300.0F, 24.0F, 1.0F, 6.0F, 1.0F, SHOWN);
+    CHECK(shown.crumbRowHeight == 30.0F);
+    CHECK(shown.contentsHeight == 263.0F);  // 300 - 30 - 1 - 6
+    // Anti-vacuity: the two modes really differ at one pane -- the flag is read.
+    CHECK_FALSE((ed::assetContentsPaneLayout(300.0F, 24.0F, 1.0F, 6.0F, 1.0F, FOLDED) == shown));
 }

@@ -80,16 +80,20 @@ struct AssetHeaderLayout {
 
 // ---- the grouped contents pane (D8) -----------------------------------------------------------------------------
 struct AssetContentsPaneLayout {
-    float crumbRowHeight = 0.0F;  // frameHeight + 2 x panelHeaderPaddingY x uiScale: 30 at 1x
+    float crumbRowHeight = 0.0F;  // frameHeight + 2 x panelHeaderPaddingY x uiScale: 30 at 1x; 0 when folded
     float contentsHeight = 4.0F;  // the ##contents child, >= 4: ImGui draws no child shorter (and 0 is "fill")
     friend constexpr bool operator==(const AssetContentsPaneLayout&, const AssetContentsPaneLayout&) = default;
 };
-// crumbRowHeight + dividerHeight + itemSpacingY + contentsHeight == paneHeight for every pane of at least that chrome
-// + 4 -- and assetBrowserLayout hands out no shorter pane, since the panel records assetContentsPaneChromeHeight as
-// its paneChromeHeight -- so the group is exactly the tree pane's height (AV66's identity; drawn, I324 at a tall pane
-// and I231's 640-point subcase at the floor).
+// `crumbRowShown` is assetBrowserLayout's answer for the same pane, and NON-DEFAULTED: a default would let a future
+// site draw the other mode silently. Shown, crumbRowHeight + dividerHeight + itemSpacingY + contentsHeight ==
+// paneHeight for every pane of at least that chrome + 4 -- which is every pane assetBrowserLayout shows the row in,
+// since the panel records assetContentsPaneChromeHeight as its paneChromeHeight. Folded (task E.6.3's code-review
+// round, round 2), crumbRowHeight is 0 and contentsHeight is max(paneHeight, 4): the child IS the pane. Either way
+// the group is exactly the tree pane's height (AV66's identity and AH18; drawn, I324 at a tall pane, I231 in both
+// modes).
 [[nodiscard]] AssetContentsPaneLayout assetContentsPaneLayout(float paneHeight, float frameHeight, float dividerHeight,
-                                                              float itemSpacingY, float uiScale) noexcept;
+                                                              float itemSpacingY, float uiScale,
+                                                              bool crumbRowShown) noexcept;
 // task E.6.3 (the code-review round): the pane's FIXED chrome above the child -- crumbRowHeight + dividerHeight +
 // itemSpacingY, from assetContentsPaneLayout's own inputs (37 at 1x). The panel records it before the budget is sized,
 // so the crumb row is reserved rather than carved out of a pane too short to hold it.
@@ -222,6 +226,9 @@ struct AssetChromeRecord {
     std::uint32_t folderDropTargetsAttached = 0;
     std::uint32_t crumbDropTargets = 0;  // folder drop targets attached in the crumb row this frame
     std::string itemsText;               // the string handed to the items text's draw call
+    // The mode the contents pane drew in: true with the crumb row, false FOLDED (assetBrowserLayout's crumbRowShown,
+    // as the panel used it) -- then crumbsDrawn, crumbDropTargets and crumbRowHeight are 0 and itemsText is empty.
+    bool crumbRowShown = false;
     float crumbRowHeight = 0.0F;
     Vec2 treeChildMin{};
     Vec2 treeChildMax{};

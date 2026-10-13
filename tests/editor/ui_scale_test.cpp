@@ -461,8 +461,9 @@ TEST_CASE("ui scale: each E.6.3 layout treats a bad scale as 1 (task E.6.3, US11
         const ed::AssetHeaderLayout assetHeaderBad = ed::assetHeaderLayout(0.0F, 700.0F, headerWidths, bad);
         CHECK((assetHeaderBad == ed::assetHeaderLayout(0.0F, 700.0F, headerWidths, 1.0F)));
         CHECK(ed::assetHeaderMinimalFloor(headerWidths, bad) == ed::assetHeaderMinimalFloor(headerWidths, 1.0F));
-        const ed::AssetContentsPaneLayout paneBad = ed::assetContentsPaneLayout(300.0F, 24.0F, 1.0F, 6.0F, bad);
-        CHECK((paneBad == ed::assetContentsPaneLayout(300.0F, 24.0F, 1.0F, 6.0F, 1.0F)));
+        // The row shown (true): the arm that reads the scale -- a folded pane reads none of it (AH18).
+        const auto paneBad = ed::assetContentsPaneLayout(300.0F, 24.0F, 1.0F, 6.0F, bad, true);
+        CHECK((paneBad == ed::assetContentsPaneLayout(300.0F, 24.0F, 1.0F, 6.0F, 1.0F, true)));
         const float chromeBad = ed::assetContentsPaneChromeHeight(24.0F, 1.0F, 6.0F, bad);
         CHECK(chromeBad == ed::assetContentsPaneChromeHeight(24.0F, 1.0F, 6.0F, 1.0F));
         const ed::AssetCrumbRowLayout crumbBad = ed::assetCrumbRowLayout(0.0F, 500.0F, 150.0F, 4U, 120.0F, bad);
