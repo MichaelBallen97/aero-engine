@@ -32,6 +32,7 @@
 #include "panel_chrome_ui.hpp"
 #include "text_input.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstddef>
@@ -52,6 +53,15 @@ namespace {
 // rather than by an off-by-one loop bound, and sized by the same constant the counters use.
 constexpr std::array<LogLevel, LOG_LEVEL_RECORD_COUNT> SELECTABLE_LEVELS = {
     LogLevel::Trace, LogLevel::Debug, LogLevel::Info, LogLevel::Warn, LogLevel::Error, LogLevel::Critical};
+
+// task E.6.3: the scroll a requestLogScrollX may set -- the scrollbar's reach as last drawn, [0, scrollMaxX], the only
+// values a drag can produce. Begin clamps a target into ScrollMax too, but only AFTER ImRound64 has cast it to a
+// 64-bit integer (imgui.cpp:12539-12541, imgui_internal.h:544), which an infinite or huge target would overflow. A
+// non-finite request answers -1, which SetNextWindowScroll reads as "keep this axis" (imgui.cpp:8005).
+[[nodiscard]] float logScrollTarget(float wanted, float scrollMaxX) noexcept {
+    const float reach = std::isfinite(scrollMaxX) ? std::max(scrollMaxX, 0.0F) : 0.0F;
+    return std::isfinite(wanted) ? std::clamp(wanted, 0.0F, reach) : -1.0F;
+}
 
 }  // namespace
 
@@ -148,12 +158,27 @@ void ConsolePanel::drawLogChild(float footerReserve) {
     // + footer shows here, never in the child's drawn height (I314).
     drawRecordValue.logChildRequestedY = ImGui::GetContentRegionAvail().y - footerReserve;
     constexpr ImGuiChildFlags LOG_CHILD_FLAGS = ImGuiChildFlags_None;  // D7: no bordered child
+    // requestLogScrollX's drain, the request-seam rule's shape: the scrollbar has no disabled state, so the gate is
+    // noModal alone -- a modal blocks the drag the seam stands in for (imgui.cpp:5620-5623) -- and the target is the
+    // scrollbar's reach as last drawn. SetNextWindowScroll lands in the very next Begin, the child's
+    // (imgui.cpp:8003-8008), so this frame's rows draw scrolled. DROPPED when refused, never deferred: the reset runs
+    // whichever way the gate answered (I337), and EditorApp's expireLogScrollX() drops one issued while the panel did
+    // not draw (I338).
+    const bool noModal = ImGui::GetTopMostPopupModal() == nullptr;
+    if (pendingLogScrollX.has_value() && noModal) {
+        ImGui::SetNextWindowScroll(ImVec2(logScrollTarget(*pendingLogScrollX, latchedLogScrollMaxX), -1.0F));
+    }
+    pendingLogScrollX.reset();  // one tick: the reset runs whichever way the gate answered
     ImGui::BeginChild("##log", logSize, LOG_CHILD_FLAGS, ImGuiWindowFlags_HorizontalScrollbar);
     // What Begin APPLIED, not what was passed: BeginChildEx zeroes ChildBorderSize for a borderless child
     // (imgui.cpp:6807-6809) and Begin copies it into the child (imgui.cpp:8123); the theme's childBorderSize is 1.
     drawRecordValue.logChildBordered = ImGui::GetCurrentWindow()->WindowBorderSize > 0.0F;
     drawRecordValue.logVisibleWidth = ImGui::GetContentRegionAvail().x;
     drawRecordValue.logContentWidth = ImGui::GetCurrentWindow()->ContentSize.x;  // the previous frame's rows (I341)
+    // The scroll Begin APPLIED, read off the child (I341 scrolls it), and the reach the next request is bounded to.
+    drawRecordValue.logScrollX = ImGui::GetScrollX();
+    latchedLogScrollMaxX = ImGui::GetScrollMaxX();
+    drawRecordValue.logScrollMaxX = latchedLogScrollMaxX;
 
     ImDrawList* const list = ImGui::GetWindowDrawList();
     ImFont* const mono = editorFonts().mono;

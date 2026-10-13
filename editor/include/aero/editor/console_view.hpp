@@ -96,6 +96,8 @@ struct ConsoleDrawRecord {
     float lastTintedRowItemMaxX = 0.0F;      // GetItemRectMax().x of that row's Selectable: the box ImGui gave it
     float logVisibleWidth = 0.0F;            // GetContentRegionAvail().x at the log child's top: what it shows
     float logContentWidth = 0.0F;            // the log child's ContentSize.x: the width its rows spanned
+    float logScrollX = 0.0F;                 // the log child's Scroll.x as its Begin applied it (GetScrollX inside)
+    float logScrollMaxX = 0.0F;              // ...and its ScrollMax.x: how far its horizontal scrollbar reaches
     ChromeRole lastTagRole = ChromeRole::TextFaint;
     std::string lastTagText;               // the upper-case label the tag drew
     std::string lastStampDrawn;            // the stamp text drawn

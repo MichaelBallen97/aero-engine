@@ -1288,6 +1288,9 @@ bool EditorApp::tick() {
     if (viewportPanel != nullptr) {
         viewportPanel->expireStatsVisible();
     }
+    if (consolePanel != nullptr) {
+        consolePanel->expireLogScrollX();
+    }
     // task E.3.2. The toggle is adopted ONLY when the checkbox was actually flipped -- routeEnabled is
     // an in/out field, and adopting it unconditionally would be harmless today and a silent
     // re-introduction of a stale value the moment anything else writes it.

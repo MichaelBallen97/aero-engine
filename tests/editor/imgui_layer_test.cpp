@@ -19381,6 +19381,28 @@ TEST_CASE("editor: a material thumbnail is RENDERED, never decoded, and the avai
     app.reset();
 }
 
+namespace {
+
+// I233's runner rule, derived rather than listed (task E.6.3's code-review round, round 2): every registered panel
+// whose DEFAULT slot is Left or Right is hidden, so ImGui's dock tree hands the Bottom node the whole width
+// (imgui.cpp:20281-20284: a node whose child is invisible gives the visible one its size). A copied list of names went
+// stale silently the day a panel took a side slot -- its node stayed, the Bottom row narrowed, and a fit-gated arm fell
+// to its WARN on every lane. setVisibleAt by index, so no id is ever looked up (setVisible logs an unknown one).
+void e63HideSidePanels(engine::editor::EditorApp& app) {
+    engine::editor::PanelRegistry& panels = app.panels();
+    std::size_t hidden = 0;
+    for (std::size_t i = 0; i < panels.count(); ++i) {
+        const engine::editor::DockSlot slot = panels.panelAt(i).defaultDockSlot();
+        if (slot == engine::editor::DockSlot::Left || slot == engine::editor::DockSlot::Right) {
+            panels.setVisibleAt(i, false);
+            ++hidden;
+        }
+    }
+    REQUIRE(hidden >= 1U);  // ANTI-VACUITY: the walk found a side panel to hide
+}
+
+}  // namespace
+
 TEST_CASE("editor: one walk spends two budgets, and three older materials starve no image (task E.4.5, I233)") {
     engine::platform::Context ctx;
     if (!ctx.valid()) {
@@ -19421,14 +19443,8 @@ TEST_CASE("editor: one walk spends two budgets, and three older materials starve
     // runner gave at least 362 at body 13, which the wider tree pane takes down to about 324 at body 16.
     // Hiding the Left and Right panels lets ImGui's dock tree hand the Bottom node the whole width
     // (imgui.cpp:20281-20284: a node whose child is invisible gives the visible one its size). The fixture
-    // changes; the case and its final loud counts do not.
-    constexpr std::array<const char*, 5> SIDE_PANELS{"Hierarchy", "Inspector", "Material", "Import Details",
-                                                     engine::editor::PROJECT_SETTINGS_PANEL_ID};
-    for (const char* id : SIDE_PANELS) {
-        if (app->panels().find(id) != nullptr) {
-            app->panels().setVisible(id, false);  // setVisible LOGS AN ERROR for an unknown id: find() first
-        }
-    }
+    // changes; the case and its final loud counts do not. The side panels come off the registry (e63HideSidePanels).
+    e63HideSidePanels(*app);
     app->requestAssetBrowserTileSize(engine::editor::TileSize::Small);  // applied by the first tick's draw walk
     for (int i = 0; i < 3; ++i) {
         REQUIRE(app->tick());
@@ -24959,12 +24975,7 @@ TEST_CASE("editor: the Console's footer band, reservation and header (task E.6.3
     // The footer and scroll arms do not depend on the row's width: they read heights, the Bottom node's height does not
     // depend on the sides, drawFooter draws and records every segment with no width test, and the header rule is one
     // AddRectFilled, which tests only the colour's alpha (imgui_draw.cpp:1532).
-    for (const char* id :
-         {"Hierarchy", "Inspector", "Material", "Import Details", engine::editor::PROJECT_SETTINGS_PANEL_ID}) {
-        if (app->panels().find(id) != nullptr) {
-            app->panels().setVisible(id, false);  // setVisible LOGS AN ERROR for an unknown id: find() first
-        }
-    }
+    e63HideSidePanels(*app);
     e63Front(*app, "Console", "Assets");
     AERO_LOG_INFO("e63 footer probe");
     const std::uint64_t before = console->drawRecord().framesRecorded;
@@ -25082,6 +25093,17 @@ TEST_CASE("editor: the Console's row tint spans the Selectable's row under a wid
     // point here (ImTrunc'd rect edges, an ImTrunc64'd content size, a whole-point spacing), so the Selectable's
     // `min_x + (max_x - min_x)` is `max_x`. The visible-width edge it replaced read 664 against 3408 here (visible
     // 475, content 3215).
+    CHECK(r.lastTintMaxX == r.lastTintedRowItemMaxX);
+    // SCROLLED: the same row with the child scrolled by half its reach. The WorkRect moves left with the scroll
+    // (imgui.cpp:8533: its left edge is InnerRect.Min.x - Scroll.x), so an edge taken from an UNSCROLLED origin -- the
+    // window's position plus the content width -- agrees with the box above at a scroll of 0 and only here departs.
+    // The scroll is ImRound64'd to a whole point (imgui.cpp:12539), so the edges stay exact.
+    REQUIRE(r.logScrollMaxX > 0.0F);
+    console->requestLogScrollX(r.logScrollMaxX * 0.5F);
+    REQUIRE(app->tick());
+    REQUIRE(r.rowsTinted >= 1U);   // the tinted row drew THIS frame, scrolled
+    REQUIRE(r.logScrollX > 0.0F);  // ANTI-VACUITY, read off the child: Begin applied the scroll
+    CAPTURE(r.logScrollX);
     CHECK(r.lastTintMaxX == r.lastTintedRowItemMaxX);
 
     app->requestQuit();
@@ -25354,9 +25376,16 @@ TEST_CASE("editor: every E.6.3 request is drained under its control's predicate 
     // noModal, computed ONCE per function from GetTopMostPopupModal() (a modal blocks every click, imgui.cpp:5620).
     // A panel-held request is DROPPED when its gate refuses it, never deferred (the code-review round's finding 1):
     // the seam's reset is the first statement after the drain's closing brace, so it runs whichever way the gate
-    // answered, and no reset sits inside the gate. I338 is the behaviour; this is where the line sits.
-    const auto resetFollowsGate = [](const std::vector<std::string>& code, std::size_t drainAt,
-                                     std::string_view reset) {
+    // answered, and no reset sits inside the gate. I338 is the behaviour; this is where the line sits. The line IS the
+    // reset, trimmed, never a line containing it: `if (statsControlReachable) pendingStatsVisible.reset();` -- one
+    // line, no braces, legal here (no lane enables readability-braces-around-statements) -- would re-gate the reset.
+    const auto trimmed = [](const std::string& line) {
+        const std::size_t first = line.find_first_not_of(" \t\r");
+        return first == std::string::npos ? std::string{}
+                                          : line.substr(first, line.find_last_not_of(" \t\r") - first + 1U);
+    };
+    const auto resetFollowsGate = [&trimmed](const std::vector<std::string>& code, std::size_t drainAt,
+                                             std::string_view reset) {
         const auto isClosingBrace = [](const std::string& line) {
             const std::size_t first = line.find_first_not_of(" \t\r");
             return first != std::string::npos && line.find_last_not_of(" \t\r") == first && line[first] == '}';
@@ -25373,7 +25402,7 @@ TEST_CASE("editor: every E.6.3 request is drained under its control's predicate 
         const std::size_t after = nextCodeLine(code, closeAt + 1U);
         REQUIRE(after < code.size());
         CAPTURE(code[after]);
-        CHECK(code[after].find(reset) != std::string::npos);  // the very next statement
+        CHECK(trimmed(code[after]) == reset);  // the very next statement, and nothing else on its line
     };
     SUBCASE("the Hierarchy's search query") {
         const std::vector<std::string> code = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/hierarchy_panel.cpp");
@@ -25435,6 +25464,26 @@ TEST_CASE("editor: every E.6.3 request is drained under its control's predicate 
         CHECK(code[drainAt].find("noModal") != std::string::npos);
         CHECK(countLinesContaining(code, "GetTopMostPopupModal()") == 1U);
         resetFollowsGate(code, drainAt, "pendingStatsVisible.reset();");
+    }
+    SUBCASE("the Console's log scroll") {
+        // The seam that stands in for a drag of the log child's horizontal scrollbar (I341 scrolls through it). The
+        // scrollbar has no disabled state, so noModal is the whole gate; the drain hands the scroll to the child's own
+        // Begin -- the next window begun -- bounded to the scrollbar's reach as last drawn.
+        const std::vector<std::string> code = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/console_panel.cpp");
+        const std::size_t drainAt = soleLineContaining(code, "pendingLogScrollX.has_value() &&");
+        CHECK(code[drainAt].find("noModal") != std::string::npos);
+        CHECK(countLinesContaining(code, "GetTopMostPopupModal()") == 1U);
+        const std::size_t scrollAt = soleLineContaining(code, "SetNextWindowScroll(");
+        CHECK(scrollAt == nextCodeLine(code, drainAt + 1U));  // inside the gate, its only statement
+        constexpr std::string_view BOUNDED = "logScrollTarget(*pendingLogScrollX, latchedLogScrollMaxX)";
+        CHECK(code[scrollAt].find(BOUNDED) != std::string::npos);
+        const std::size_t childAt = soleLineContaining(code, "BeginChild(\"##log\"");
+        CHECK(scrollAt < childAt);
+        for (std::size_t i = scrollAt + 1U; i < childAt; ++i) {
+            CAPTURE(code[i]);
+            CHECK(code[i].find("Begin") == std::string::npos);  // no other window takes the scroll first
+        }
+        resetFollowsGate(code, drainAt, "pendingLogScrollX.reset();");
     }
 }
 
@@ -26215,10 +26264,13 @@ TEST_CASE("editor: the Assets crumbs, the recursive items text, the tree and the
         REQUIRE(code.size() > 100U);  // ANTI-VACUITY: the file was really read
         CHECK(countLinesContaining(code, "TREE_PANE_FONT_MULTIPLE") == 1U);
         CHECK(countLinesContaining(code, "SIZE_COLUMN_FONT_MULTIPLE") == 2U);
-        // The tree pane: one read, into the width the ##dirs child is sized by.
+        // The tree pane: one read, into the width the ##dirs child is sized by -- the chain pinned end to end, since a
+        // `treeSize` left behind as dead code beside an inline ImVec2 warns on no lane (ImVec2's constructor is
+        // user-provided, so -Wunused-variable stays silent).
         const std::size_t treeAt = soleLineContaining(code, "ASSET_TREE_PANE_FONT_MULTIPLE");
         CHECK(code[treeAt].find("const float treeWidth = ImGui::GetFontSize() * ") != std::string::npos);
         CHECK(countLinesContaining(code, "treeSize(treeWidth, ") == 1U);
+        CHECK(countLinesContaining(code, "BeginChild(\"##dirs\", treeSize, ") == 1U);
         // The size column: one read per table that has one -- the search hits and the List view -- each into the
         // width that table's Size column is set up with.
         std::size_t sizeReads = 0;
@@ -26233,7 +26285,11 @@ TEST_CASE("editor: the Assets crumbs, the recursive items text, the tree and the
         // Each crumb's drop target binds to ITS crumb (finding 14's second half): BeginDragDropTarget binds to
         // g.LastItemData, the item submitted last (imgui.cpp, ImGui::BeginDragDropTarget), so both attach calls sit
         // between the crumb's InvisibleButton and the hover read of that same item. A call moved above the button
-        // binds to the item before it and still counts 3 in crumbDropTargets below; no tier here can drop.
+        // binds to the item before it and still counts 3 in crumbDropTargets below; no tier here can drop, so the GPU
+        // arm compares the bound ids instead, which also sees any item submitted between a crumb and its call --
+        // because the crumb's side is the id its button was GIVEN, its label hashed on the same ID stack
+        // (imgui_widgets.cpp:854), pinned here. Read with GetItemID() instead, both sides are g.LastItemData.ID, and
+        // an id'd item slipped in before the record line matches itself, green.
         const std::size_t rowAt = soleLineContaining(code, "void AssetBrowserPanel::drawCrumbRow(");
         const std::size_t rowEnd = functionBodyEnd(code, rowAt);
         REQUIRE(rowEnd < code.size());  // the body was delimited, not run off the end
@@ -26244,6 +26300,9 @@ TEST_CASE("editor: the Assets crumbs, the recursive items text, the tree and the
         REQUIRE(hoverAt < rowEnd);
         CHECK(countInRange(code, "attachFolderDropTarget(", rowAt, rowEnd) == 2U);
         CHECK(countInRange(code, "attachFolderDropTarget(", crumbAt + 1U, hoverAt) == 2U);
+        constexpr std::string_view GIVEN_ID = "chrome.crumbItemIds.push_back(ImGui::GetID(\"##crumb\"));";
+        CHECK(countLinesContaining(code, "crumbItemIds.push_back(") == 1U);
+        CHECK(countInRange(code, GIVEN_ID, crumbAt, hoverAt) == 1U);  // between the button and its hover read
     }
     engine::platform::Context ctx;
     if (!ctx.valid()) {
@@ -26286,6 +26345,18 @@ TEST_CASE("editor: the Assets crumbs, the recursive items text, the tree and the
     REQUIRE(r.crumbRowShown);
     CHECK(r.crumbsDrawn == 3U);  // assets / models / props
     CHECK(r.crumbDropTargets == 3U);
+    // ...each bound to ITS crumb, as ImGui saw it (the source arm above is the GPU-free half): the id
+    // BeginDragDropTarget reads, against the id the crumb's button was given. An item submitted between the two -- a
+    // Dummy (id 0) or a second button (its own id) alike -- rebinds the target, moves neither count, and reads here as
+    // a mismatch.
+    CHECK(r.folderDropTargetItemIds.size() == r.folderDropTargetsAttached);
+    REQUIRE(r.crumbItemIds.size() == 3U);
+    REQUIRE(r.crumbDropTargetItemIds.size() == r.crumbItemIds.size());
+    for (std::size_t i = 0; i < r.crumbItemIds.size(); ++i) {
+        CAPTURE(i);
+        CHECK(r.crumbItemIds[i] != 0U);  // ANTI-VACUITY: a real id, so the match below is never 0 == 0
+        CHECK(r.crumbDropTargetItemIds[i] == r.crumbItemIds[i]);
+    }
     CHECK(r.itemsText == expected);
     // A query changes nothing about N (D8).
     app->requestAssetBrowserSearch("a");
@@ -26350,12 +26421,7 @@ TEST_CASE("editor: Assets tiles -- counts once a generation, hatched labels, rin
         *device, *window, ctx, {"note.txt", "blob.bin", "f1/a.txt", "f2/b.txt", "f2/c.txt", "f3/sub/d.txt"});
     // I233's runner rule: Small tiles, and the side panels hidden so the Bottom node takes the whole width -- five
     // tiles in one row need 5 x (72 + 8) - 8 = 392 of contents width at body 16.
-    for (const char* id :
-         {"Hierarchy", "Inspector", "Material", "Import Details", engine::editor::PROJECT_SETTINGS_PANEL_ID}) {
-        if (app->panels().find(id) != nullptr) {
-            app->panels().setVisible(id, false);
-        }
-    }
+    e63HideSidePanels(*app);
     app->requestAssetBrowserTileSize(engine::editor::TileSize::Small);
     for (int i = 0; i < 3; ++i) {
         REQUIRE(app->tick());
@@ -26457,12 +26523,7 @@ TEST_CASE("editor: the Assets footer -- the path elided from the left, the right
         AERO_SKIP_OR_FAIL("no GPU device");
     }
     std::optional<engine::editor::EditorApp> app = e63AssetsApp(*device, *window, ctx, {"top.txt", deep});
-    for (const char* id :
-         {"Hierarchy", "Inspector", "Material", "Import Details", engine::editor::PROJECT_SETTINGS_PANEL_ID}) {
-        if (app->panels().find(id) != nullptr) {
-            app->panels().setVisible(id, false);
-        }
-    }
+    e63HideSidePanels(*app);
     auto* const browser = dynamic_cast<engine::editor::AssetBrowserPanel*>(app->panels().find("Assets"));
     REQUIRE(browser != nullptr);
     app->requestAssetBrowserSelectEntry(deep);  // a database record, so the footer resolves it from the root listing
@@ -27477,6 +27538,45 @@ TEST_CASE("editor: a panel request its gate refuses, or its panel never draws, i
         viewport->requestStatsVisible(true);
         e62Ticks(*app, 2);
         REQUIRE(viewport->statsVisible());
+        // The same toggle refused by its CONTROL term, no modal up: the image cut shorter than the chip and its two
+        // insets, so the chip -- the popover's only door -- is not laid out and the Stats checkbox is out of reach.
+        // The drain reads the layout latched by the previous frame, which the record holds after every tick. The
+        // image takes the whole height change: the Viewport is the dockspace's central node (I342's rule).
+        const engine::platform::WindowSize full = window->size();
+        const float chipHeight = hud.layout.chip.max.y - hud.layout.chip.min.y;
+        const float imageHeight = hud.imageMax.y - hud.imageMin.y;
+        const float cutImage = chipHeight + (engine::editor::EDITOR_THEME.panels.hudInset * app->uiScale());
+        const float cutPoints = static_cast<float>(full.height) - imageHeight + cutImage;
+        const auto cutHeight = static_cast<std::int32_t>(std::lround(cutPoints));
+        window->setSize(full.width, cutHeight);
+        e62Ticks(*app, 3);
+        if (window->size().height == cutHeight) {
+            REQUIRE_FALSE(hud.layout.chip.shown);  // ANTI-VACUITY: the drain's control term is shut
+            const std::uint64_t cutFrames = hud.framesRecorded;
+            viewport->requestStatsVisible(false);
+            REQUIRE(app->tick());
+            REQUIRE(hud.framesRecorded > cutFrames);  // the HUD drew, so the drain ran and only its control refused
+            REQUIRE_FALSE(hud.layout.chip.shown);
+            CHECK(viewport->statsVisible());
+            window->setSize(full.width, full.height);
+            for (int i = 0; i < 8 && !hud.layout.chip.shown; ++i) {
+                REQUIRE(app->tick());
+            }
+            REQUIRE(hud.layout.chip.shown);  // the predicate ended the loop, never the bound
+            REQUIRE(app->tick());            // a whole frame with the gate open: a held request would land here
+            CHECK(viewport->statsVisible());
+            viewport->requestStatsVisible(false);  // control: the chip laid out again, the same request lands
+            e62Ticks(*app, 2);
+            CHECK_FALSE(viewport->statsVisible());
+            viewport->requestStatsVisible(true);
+            e62Ticks(*app, 2);
+            REQUIRE(viewport->statsVisible());
+        } else {
+            MESSAGE("I338: the window took height " << window->size().height << ", not " << cutHeight);
+            WARN(window->size().height == cutHeight);  // geometry: a platform minimum refused the cut
+            window->setSize(full.width, full.height);
+            e62Ticks(*app, 3);
+        }
     } else {
         MESSAGE("shader tools OFF: the viewport is Unavailable and never reaches its stats drain -- (b) skipped");
     }
@@ -27514,6 +27614,35 @@ TEST_CASE("editor: a panel request its gate refuses, or its panel never draws, i
     app->requestAssetBrowserNavigate("models");  // control
     e62Ticks(*app, 2);
     CHECK(assets.crumbsDrawn == 2U);
+    // The Console's log scroll, behind the Assets tab. A held request would scroll the log child on the first frame
+    // the Console draws again -- only if the child can scroll, so a row wider than it is drawn first, with the Console
+    // in front (I341's three ticks: appended, drawn, then in ContentSize), and the request is half the reach.
+    auto* const console = dynamic_cast<engine::editor::ConsolePanel*>(app->panels().find("Console"));
+    REQUIRE(console != nullptr);
+    const engine::editor::ConsoleDrawRecord& logged = console->drawRecord();
+    AERO_LOG_WARN("e63wide: {}", std::string(400U, 'x'));
+    app->requestPanelFocus("Console");
+    e62Ticks(*app, 3);
+    // The Console draws three more frames in front -- e63Front's two ticks and its idle tick, measured -- then Assets
+    // takes the node.
+    e63Front(*app, "Assets", "Console");
+    // ANTI-VACUITY: the Console's LAST drawn frame could scroll -- the reach a held request is bounded to -- yet had
+    // not scrolled.
+    REQUIRE(logged.logScrollMaxX > 0.0F);
+    REQUIRE(logged.logScrollX == 0.0F);
+    const float halfReach = logged.logScrollMaxX * 0.5F;
+    const std::uint64_t consoleIdle = logged.framesRecorded;
+    console->requestLogScrollX(halfReach);
+    REQUIRE(app->tick());
+    REQUIRE(logged.framesRecorded == consoleIdle);  // ANTI-VACUITY: Begin answered false, so no onDraw ran
+    app->requestPanelFocus("Console");
+    tickUntilDrawn(logged.framesRecorded, consoleIdle);
+    CHECK(logged.logScrollX == 0.0F);       // a held request would have scrolled the first drawn frame
+    console->requestLogScrollX(halfReach);  // control: the same request, the panel drawing
+    e62Ticks(*app, 2);
+    CHECK(logged.logScrollX > 0.0F);
+    app->requestPanelFocus("Assets");  // the Assets panel fronts the Bottom node again, as the arms below expect
+    e62Ticks(*app, 2);
     // The Viewport, closed -- it is alone in its node.
     if (hudAvailable) {
         REQUIRE(viewport->statsVisible());

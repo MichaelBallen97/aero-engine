@@ -232,8 +232,18 @@ struct AssetChromeRecord {
     std::uint32_t folderDropTargetsAttached = 0;
     std::uint32_t crumbDropTargets = 0;  // folder drop targets attached in the crumb row this frame
     std::string itemsText;               // the string handed to the items text's draw call
+    // The item each attachFolderDropTarget call bound to -- GetItemID() at the callee's entry, the g.LastItemData.ID
+    // BeginDragDropTarget binds to (imgui.cpp, ImGui::BeginDragDropTarget) -- every site, in call order; the crumb
+    // row's share of it; and the id each crumb button was GIVEN, GetID() of its label on the button's own ID stack
+    // (the hash InvisibleButton takes), never the last item's. I324 matches the last two crumb by crumb: an item
+    // submitted between a crumb and its call, whatever its id, rebinds the target, moves no count and reads there as
+    // a mismatch.
+    std::vector<std::uint32_t> folderDropTargetItemIds;
+    std::vector<std::uint32_t> crumbDropTargetItemIds;
+    std::vector<std::uint32_t> crumbItemIds;
     // The mode the contents pane drew in: true with the crumb row, false FOLDED (assetBrowserLayout's crumbRowShown,
-    // as the panel used it) -- then crumbsDrawn, crumbDropTargets and crumbRowHeight are 0 and itemsText is empty.
+    // as the panel used it) -- then crumbsDrawn, crumbDropTargets and crumbRowHeight are 0, and itemsText and the two
+    // crumb id lists are empty.
     bool crumbRowShown = false;
     float crumbRowHeight = 0.0F;
     Vec2 treeChildMin{};

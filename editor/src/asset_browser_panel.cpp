@@ -39,6 +39,7 @@
 #include <cstring>  // task 3.1.5: std::memset over the payload's tail padding
 #include <imgui.h>
 #include <imgui_internal.h>  // task E.6.3: GetTopMostPopupModal, the navigate request's modal gate (I337)
+#include <iterator>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -662,6 +663,10 @@ void AssetBrowserPanel::drawCrumbRow(float rowHeight) {
         ImGui::SetCursorScreenPos(ImVec2(x, frameTop));
         ImGui::PushID(static_cast<int>(i));  // two segments CAN share a name ("a/x/x") -- F26/E9
         const bool pressed = ImGui::InvisibleButton("##crumb", ImVec2(std::max(width, 1.0F), frame));
+        // The item this crumb's drop target must bind to (I324): the id the button was GIVEN -- its label hashed on
+        // this same ID stack, as InvisibleButton hashes it (imgui_widgets.cpp:854) -- never GetItemID(), which reads
+        // whatever item was submitted last and would match an item slipped in before the attach call below.
+        chrome.crumbItemIds.push_back(ImGui::GetID("##crumb"));
         if (i == 0U) {
             // task E.4.3 (code-review G1) -- site 5: the ROOT crumb, the one "" destination the segment arm below
             // structurally cannot produce. "" is LEGAL (rung 3 accepts it).
@@ -685,6 +690,9 @@ void AssetBrowserPanel::drawCrumbRow(float rowHeight) {
         x += width + row.crumbGap;
     }
     chrome.crumbDropTargets = chrome.folderDropTargetsAttached - targetsBefore;
+    const auto rowTargets = static_cast<std::ptrdiff_t>(targetsBefore);
+    chrome.crumbDropTargetItemIds.assign(std::next(chrome.folderDropTargetItemIds.begin(), rowTargets),
+                                         chrome.folderDropTargetItemIds.end());
     ImGui::EndDisabled();
     // The items text, Mono small textFaint, right-aligned and clipped at the row's end -- never over a crumb.
     const float itemsY = frameTop + ((frame - panelFacePoints(PanelFace::MonoSmall)) * 0.5F);
@@ -953,8 +961,10 @@ void AssetBrowserPanel::beginAssetMoveBranch(const std::string& relativePath, co
 // side effect of Accept, so calling it and then deciding is a visible promise the editor then breaks.
 void AssetBrowserPanel::attachFolderDropTarget(const std::string& folderRelative) {
     // task E.6.3: counted HERE, first, before BeginDragDropTarget's early return -- no test can put a payload in
-    // flight, so the call is the furthest point a record can observe. drawCrumbRow reads its share as a delta.
+    // flight, so the call is the furthest point a record can observe. drawCrumbRow reads its share as a delta. The
+    // item it binds to is recorded with it: BeginDragDropTarget reads g.LastItemData.ID, which GetItemID() returns.
     ++chrome.folderDropTargetsAttached;
+    chrome.folderDropTargetItemIds.push_back(ImGui::GetItemID());
     if (!ImGui::BeginDragDropTarget()) {
         return;  // EndDragDropTarget is owed ONLY when this returned true (F18)
     }

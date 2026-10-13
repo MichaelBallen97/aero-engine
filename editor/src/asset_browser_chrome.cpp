@@ -336,6 +336,9 @@ void beginAssetChromeRecordFrame(AssetChromeRecord& record) noexcept {
     record.crumbsDrawn = 0;
     record.folderDropTargetsAttached = 0;
     record.crumbDropTargets = 0;
+    record.folderDropTargetItemIds.clear();
+    record.crumbDropTargetItemIds.clear();
+    record.crumbItemIds.clear();
     record.itemsText.clear();
     record.treeRowsDrawn = 0;
     record.tilesRinged = 0;

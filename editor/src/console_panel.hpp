@@ -21,6 +21,7 @@
 #include <aero/editor/panel.hpp>
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -63,6 +64,14 @@ public:
     [[nodiscard]] std::uint32_t messageRowsSubmitted() const noexcept { return drawRecordValue.messageRowsSubmitted; }
     [[nodiscard]] const ConsoleDrawRecord& drawRecord() const noexcept { return drawRecordValue; }
 
+    // task E.6.3: the horizontal scroll a drag of the log child's scrollbar sets -- nothing in tests/ can drag one.
+    // A request lives ONE tick: the next onDraw applies it before the child's Begin, bounded to the scrollbar's reach
+    // as last drawn, only while no modal is up (the scrollbar has no disabled state, so that is its whole gate), and
+    // drops it otherwise; EditorApp calls expireLogScrollX() after drawShellUi, so a tick the panel did not draw
+    // (another tab in front, or closed) drops it too (I338).
+    void requestLogScrollX(float scrollX) noexcept { pendingLogScrollX = scrollX; }
+    void expireLogScrollX() noexcept { pendingLogScrollX.reset(); }
+
 private:
     enum class ActionKind : std::uint8_t { None = 0, Clear, Copy };  // performance-enum-size (F33)
 
@@ -81,6 +90,8 @@ private:
     std::vector<ConsoleFooterSegment> footerScratch;  // task E.6.3 -- per-frame scratch, capacity kept
     std::string stampScratch;                         // task E.6.3 -- formatConsoleStamp's out string
     std::string levelPreviewScratch;                  // task E.6.3 -- the combo's "Name <chevron>" preview
+    std::optional<float> pendingLogScrollX;           // task E.6.3 -- requestLogScrollX's, drained under noModal
+    float latchedLogScrollMaxX = 0.0F;                // task E.6.3 -- the log child's ScrollMax.x as last drawn
 };
 
 }  // namespace engine::editor

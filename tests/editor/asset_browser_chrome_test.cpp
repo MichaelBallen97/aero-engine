@@ -568,9 +568,10 @@ TEST_CASE("assets chrome: header, tree pane and size column widths are named fon
 }
 
 TEST_CASE("assets chrome: a recorded frame clears every per-frame count, list and text (task E.6.3, AH17)") {
-    // The panel only APPENDS to the three lists and BUMPS the counts, so a missing reset grows a list by every folded
-    // control, folder tile or footer segment, every frame -- and the GPU cases' membership reads stay green on the
-    // duplicates (the code-review round's finding 13). Every per-frame member is written, as a drawn frame leaves it.
+    // The panel only APPENDS to the lists and BUMPS the counts, so a missing reset grows a list by every folded
+    // control, folder tile, footer segment, drop target or crumb, every frame -- and the GPU cases' membership reads
+    // stay green on the duplicates (the code-review round's finding 13). Every per-frame member is written, as a drawn
+    // frame leaves it.
     ed::AssetChromeRecord record{};
     CHECK(record.framesRecorded == 0U);
     record.headerRects[static_cast<std::size_t>(ed::AssetHeaderControl::Search)] =
@@ -580,6 +581,9 @@ TEST_CASE("assets chrome: a recorded frame clears every per-frame count, list an
     record.crumbsDrawn = 3U;
     record.folderDropTargetsAttached = 7U;
     record.crumbDropTargets = 3U;
+    record.folderDropTargetItemIds.push_back(11U);
+    record.crumbDropTargetItemIds.push_back(12U);
+    record.crumbItemIds.push_back(12U);
     record.itemsText = "4 items";
     record.treeRowsDrawn = 5U;
     record.tilesRinged = 6U;
@@ -600,6 +604,9 @@ TEST_CASE("assets chrome: a recorded frame clears every per-frame count, list an
     CHECK(record.crumbsDrawn == 0U);
     CHECK(record.folderDropTargetsAttached == 0U);
     CHECK(record.crumbDropTargets == 0U);
+    CHECK(record.folderDropTargetItemIds.empty());
+    CHECK(record.crumbDropTargetItemIds.empty());
+    CHECK(record.crumbItemIds.empty());
     CHECK(record.itemsText.empty());
     CHECK(record.treeRowsDrawn == 0U);
     CHECK(record.tilesRinged == 0U);
