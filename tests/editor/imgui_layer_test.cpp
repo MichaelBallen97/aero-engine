@@ -18991,16 +18991,23 @@ TEST_CASE("editor: the Asset Browser fits its panel with 40 orphans and Issues o
     // under the open bound) to 824, and the editor's own 1280 x 720 launch (avail 109, measured) scrolled by 6 with
     // the Issues list open. Its second round FOLDS the row in a pane under 41 instead (asset_view.hpp's THE FOLD): the
     // ##contents child takes the whole pane, the panes floor at ImGui's 4 again, the bounds are the 86 and 64 above --
-    // the pre-E.6.3 bounds + 3 -- and the short subcase is back at 768, where the open arm folds (pane 39, measured)
-    // and the closed arm shows the row (pane 61). The 640 subcase (avail 89, measured) folds in BOTH Issues states
+    // the pre-E.6.3 bounds + 3 -- and the short subcase is back at 768, where the open arm folded (pane 39, measured)
+    // and the closed arm showed the row (pane 61, its ##contents child 24). Its third round decides the mode at the
+    // pane the list would leave OPEN at its one-row floor, against the chrome + one frame (61 at 1x): the row shows
+    // from avail 143 with Issues, in both states, and from 91 without. So the 768 subcase now folds in BOTH Issues
+    // states -- open over 39, closed over 61, a pane that would hold the row and one frame and folds because the open
+    // list's would not -- and witnesses the fold arm in both states, the toggle arm with a closed pane above the row's
+    // round-2 floor, and the body's one-row floor. The 640 subcase (avail 89, measured) folds in BOTH Issues states
     // (panes 7 and 29) and fits: before the reservation it scrolled (budget 89 in both arms; scroll max 4 closed, 26
-    // open) with its tree at 29 or 7 and the group drawn 41 beside it.
+    // open) with its tree at 29 or 7 and the group drawn 41 beside it. The tall subcase shows the row in both states
+    // here (avail 158: panes 64 open and 98 closed), and folds on a runner that delivers its panel under 143.
     bool tallPanel = true;
     bool foldBand = false;
     int windowHeight = 1000;
     SUBCASE("a TALL panel, where the body has room to grow past one row") {}
     SUBCASE("a SHORT panel, where the body is held at its one-row floor -- the geometry CI hit") {
         tallPanel = false;
+        foldBand = true;  // since the third round: under 143 the row folds in both Issues states
         windowHeight = 768;
     }
     SUBCASE("a panel under both of the crumb row's bounds, where the row folds") {
@@ -19077,9 +19084,10 @@ TEST_CASE("editor: the Asset Browser fits its panel with 40 orphans and Issues o
     // pane the layout hands out, which is what makes the budget's sum the drawn height. THE FOLD ARM reads the mode
     // off the RECORD, never off the window size: the panel drew in the layout's mode; folded, it drew no crumb and no
     // crumb drop target, and the ##contents child is the whole pane; shown, at least one crumb drew. Whether a
-    // subcase reaches the fold is the display's geometry, so the 640 subcase only REPORTS that its pane fell under the
-    // row's floor (a WARN, the #111 rule). The 0.5 is BeginChild's whole-point truncation, the I324 arm's tolerance; at
-    // UI scale 1 both sides are whole and the arms compare exactly.
+    // subcase reaches the fold is the display's geometry, so the 768 and 640 subcases only REPORT that the layout
+    // folded (a WARN, the #111 rule; until the third round the 640 subcase reported its tree under the chrome + 4,
+    // which a closed list's folded pane no longer is). The 0.5 is BeginChild's whole-point truncation, the I324 arm's
+    // tolerance; at UI scale 1 both sides are whole and the arms compare exactly.
     const auto checkFits = [&app, browser, foldBand] {
         const AssetBrowserLayoutMetrics m = app->assetBrowserLayoutMetrics();
         const AssetBrowserLayout l = engine::editor::assetBrowserLayout(m);
@@ -19113,7 +19121,7 @@ TEST_CASE("editor: the Asset Browser fits its panel with 40 orphans and Issues o
             CHECK(std::abs(contentsHeight - l.paneHeight) <= 0.5F);
         }
         if (foldBand) {
-            WARN(treeHeight < m.paneChromeHeight + 4.0F);  // under the row's floor: the fold arm ran folded
+            WARN_FALSE(l.crumbRowShown);  // the layout folded, so the fold arm above ran folded
         }
     };
 
@@ -19129,6 +19137,11 @@ TEST_CASE("editor: the Asset Browser fits its panel with 40 orphans and Issues o
     CHECK(app->assetBrowserIssueRowsDrawn() == 0U);  // closed: the body submitted nothing
     CHECK(app->assetBrowserIssuesBodyHeight() == 0.0F);
     checkFits();
+    // The closed state's panel height, mode and ##contents child, for the toggle arm once the list is open.
+    const float closedAvail = app->assetBrowserLayoutMetrics().availHeight;
+    const engine::editor::AssetChromeRecord& closedRecord = browser->chromeRecord();
+    const bool closedShown = closedRecord.crumbRowShown;
+    const float closedContents = closedRecord.contentsChildMax.y - closedRecord.contentsChildMin.y;
 
     // (b) OPENING. The seam lands where a click on the header lands -- after the panes were sized with the
     // header closed -- so the first frame must draw NO body (a body child of height 0 would fill the panel
@@ -19146,6 +19159,20 @@ TEST_CASE("editor: the Asset Browser fits its panel with 40 orphans and Issues o
     // (the scan caps the list at MAX_REPORTED_PER_CATEGORY) -- and still nothing overflows.
     CHECK(app->assetBrowserIssueRowsDrawn() == engine::editor::MAX_REPORTED_PER_CATEGORY);
     checkFits();
+    {
+        // THE TOGGLE, geometry-free: opening the list showed or folded no crumb row and grew no ##contents child. The
+        // mode reads the open list's remainder in both states (asset_view.hpp's THE FOLD), and closed, the pane is the
+        // open one plus the body and its spacing. Until the code-review round's third round each state decided its own
+        // mode: at 768 the row showed closed over a 24-point child and folded open over 39, so closing the list shrank
+        // the asset list.
+        const engine::editor::AssetChromeRecord& r = browser->chromeRecord();
+        const float openContents = r.contentsChildMax.y - r.contentsChildMin.y;
+        INFO("avail " << closedAvail << ", closed: row shown " << closedShown << ", contents " << closedContents
+                      << "; open: row shown " << r.crumbRowShown << ", contents " << openContents);
+        REQUIRE(app->assetBrowserLayoutMetrics().availHeight == closedAvail);  // one panel height in both states
+        CHECK(r.crumbRowShown == closedShown);
+        CHECK(openContents <= closedContents + 0.5F);
+    }
     {
         // THE BODY, independent of the geometry. What the panel recorded is what the layout read; the body
         // child must have been given the layout's answer for exactly that; and the rows' height must have been
@@ -26340,9 +26367,16 @@ TEST_CASE("editor: the Assets crumbs, the recursive items text, the tree and the
     std::string expected;
     engine::editor::assetItemsText(recursive, expected);
     const engine::editor::AssetChromeRecord& r = browser->chromeRecord();
-    // The crumb row draws only in a pane that holds it (asset_view.hpp's THE FOLD; 71 points of panel with no Issues
-    // at 1x): a runner too short for that stops here, loudly, rather than at a crumb count of 0.
-    REQUIRE(r.crumbRowShown);
+    // The crumb row draws only where the layout shows it (asset_view.hpp's THE FOLD): with no Issues -- this fixture
+    // has none -- from a recorded avail of footer 30 + chrome 37 + one frame 24 = 91 at 1x. Measured here, avail =
+    // floor((H - 24) / 4) - 65 (I231's relation): this 800-point window records 129, 38 over; a runner that delivers a
+    // ~712-point window records 107, 16 over, and one under 648 points folds the row. Such a runner stops here, loudly,
+    // rather than at a crumb count of 0 -- the INFO names its avail -- and the fix is then a dock-size seam, never a
+    // weaker assertion.
+    {
+        INFO("recorded avail " << app->assetBrowserLayoutMetrics().availHeight);
+        REQUIRE(r.crumbRowShown);
+    }
     CHECK(r.crumbsDrawn == 3U);  // assets / models / props
     CHECK(r.crumbDropTargets == 3U);
     // ...each bound to ITS crumb, as ImGui saw it (the source arm above is the GPU-free half): the id
@@ -27490,7 +27524,14 @@ TEST_CASE("editor: a panel request its gate refuses, or its panel never draws, i
         REQUIRE(frames > idle);
         REQUIRE(app->tick());
     };
-    REQUIRE(assets.crumbRowShown);      // the row draws (THE FOLD, asset_view.hpp): every crumb count reads it
+    // The row draws (THE FOLD, asset_view.hpp), and every crumb count below reads it. No Issues here, so it shows from
+    // a recorded avail of 91 at 1x; this 800-point window records 129 (measured), and a runner's ~712-point window
+    // about 107 by I231's relation, avail = floor((H - 24) / 4) - 65 -- the row folds under 648 points (I324 says why a
+    // runner short of that is a dock-size seam, never a weaker assertion).
+    {
+        INFO("recorded avail " << app->assetBrowserLayoutMetrics().availHeight);
+        REQUIRE(assets.crumbRowShown);
+    }
     REQUIRE(assets.crumbsDrawn == 1U);  // at the root: "assets" alone
 
     // (a) The Assets navigation, refused by the modal, is dropped: closing the modal replays nothing.

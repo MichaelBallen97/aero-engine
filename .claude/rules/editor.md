@@ -2143,22 +2143,29 @@ the Issues region and the footer off the panel while the budget still claimed a 
 height as a metric the budget reads, so the budget knows the shortest region that holds it: that chrome +
 the child's minimum (`AV66`, `I231`).
 **And below that height the row FOLDS, rather than the region being floored at it** (E.6.3's code-review
-round, round 2): flooring the Assets panes at chrome + 4 left the editor's own 1280 x 720 launch scrolling
+round, rounds 2 and 3): flooring the Assets panes at chrome + 4 left the editor's own 1280 x 720 launch scrolling
 with the Issues list open and no fit anywhere in 640-776-point windows. `assetBrowserLayout` answers
-`crumbRowShown == (R >= paneChromeHeight + 4)` and `paneHeight == max(R, 4)` in BOTH modes, `R` the
-remainder after the footer and the Issues region, so the mode moves no height in the budget and the pane
-height is **continuous** across the fold (at the threshold both modes answer exactly the chrome + 4); folded,
-the panel submits no crumb, no crumb drop target and no rule, the `##contents` child takes the whole pane,
-and the tree still navigates. The Issues body yields to the same `max(ASSET_PANES_MIN_FONT x fontSize,
-chrome + 4)` in both modes, since a body that grew on the fold would take the row's height straight back
-(`AV67`). **Only the pane is continuous**: the `##contents` child is the pane less the chrome while the row
-shows and the whole pane once it folds, so it steps by the chrome at the threshold — at any threshold — and
-where the row shows with the Issues list closed and folds with it open (avail in [101, 123) at 1x, one body
-row + one spacing wide) closing the list SHRINKS it: 27 points open and 12 closed at the 1280 x 720 launch
-(`AV67`).
-`assetContentsPaneLayout`'s `crumbRowShown` is non-defaulted. The row shows from 71 / 101 / 123 points at 1x
-(no Issues / closed / open) and the panel fits from 34 / 64 / 86 — the pre-E.6.3 bounds + 3 (`AV67`, `AH18`,
-`I231`).
+`crumbRowShown == (R* >= paneChromeHeight + frameHeight)` and `paneHeight == max(R, 4)` in BOTH modes, `R` the
+remainder after the footer and the Issues region and `R*` the remainder the Issues list would leave OPEN at its
+one-row floor, **whatever its state**. So **the row never shows over less than one frame height of contents**,
+**the mode is the same for both Issues states**, and closing the list never shrinks the asset list. One frame is
+a height, not a whole entry: in List view the `##contents` child opens with its frozen column-header row
+(`FontSize + 2 x CellPadding.y`, `imgui_tables.cpp:3118`, 22 at 1x), so at the threshold it shows the headers and
+the top 2 points of the first entry; in Grid view, the top of the first tile row. The frame term is
+`max(frameHeight, 4)`, ImGui's child, so a frame that reads 0 never shows the row over a group taller than its
+pane (`AV66`).
+A threshold of the floor itself (round 2's `R >= chrome + 4`, read off each state's own `R`) showed the row over a
+4-point list and, at the launch, over a 12-point list with the Issues list closed where the open list folded it
+over 27. The mode moves no height in the budget, so the pane height is **continuous** across the fold; folded,
+the panel submits no crumb, no crumb drop target and no rule, the `##contents` child takes the whole pane, and the
+tree still navigates. The Issues body yields to the same `max(ASSET_PANES_MIN_FONT x fontSize, chrome +
+frameHeight)` in both modes, since a body that grew on the fold would take the row's height straight back
+(`AV67`). **Only the pane is continuous**: the `##contents` child is the pane less the chrome while the row shows
+and the whole pane once it folds, so it steps by the chrome at the threshold — by construction, at any threshold
+(24 → 60 points at 1x with the list open, `AV67`).
+`assetContentsPaneLayout`'s `crumbRowShown` is non-defaulted. The row shows from 143 points at 1x with Issues, open
+or closed, and from 91 without; the panel fits from 34 / 64 / 86 (no Issues / closed / open) — the pre-E.6.3
+bounds + 3 (`AV67`, `AH18`, `I231`).
 **And that minimum is ImGui's, not the one you asked for**: `CalcWindowMinSize` (`imgui.cpp:7007-7029`,
 applied at `:8219`) holds a child window WITHOUT `ImGuiChildFlags_ResizeY` to at least
 `IMGUI_WINDOW_HARD_MIN_SIZE` (`imgui_internal.h:2813`), 4 points at every scale, and to at least the

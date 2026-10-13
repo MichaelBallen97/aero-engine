@@ -974,6 +974,10 @@ TEST_CASE("asset view: no Issues means no reservation, and a closed header costs
 //
 // ROUND 2: a pane under the chrome + 4 no longer overflows -- the row FOLDS there (AV67), so every claim below about
 // the panes' chrome floor is the SHOWN mode's, and each arm the fold changed says what it read before.
+//
+// ROUND 3: the row shows only over one frame of contents -- the mode reads the pane the Issues list would leave OPEN
+// at its one-row floor against the chrome + frameHeight, the same answer for both Issues states (AV67) -- so the
+// shown mode's floor is the chrome + one frame, and each arm that moved says what it read in round 2.
 namespace {
 
 constexpr float CHILD_MIN = 4.0F;  // IMGUI_WINDOW_HARD_MIN_SIZE (imgui_internal.h): ImGui's shortest child window
@@ -992,7 +996,8 @@ struct ChromeCase {
 };
 
 // Plex at 1x and 2x (E.6.1's metrics: body 16, frame 24, ItemSpacing.y 6, every one doubled at 2), and one set where
-// the chrome + 4 is taller than ASSET_PANES_MIN_FONT font heights, so the body's yield must honour the chrome too.
+// the chrome + one frame is taller than ASSET_PANES_MIN_FONT font heights, so the body's yield must honour the chrome
+// too.
 constexpr AssetBrowserLayoutMetrics PLEX_1X{.availHeight = 0.0F,
                                             .fontSize = 16.0F,
                                             .frameHeight = 24.0F,
@@ -1006,7 +1011,7 @@ constexpr AssetBrowserLayoutMetrics PLEX_2X{.availHeight = 0.0F,
                                             .itemSpacingY = 12.0F,
                                             .paneChromeHeight = 74.0F};
 constexpr AssetBrowserLayoutMetrics SMALL_FONT{.availHeight = 0.0F,
-                                               .fontSize = 5.0F,  // 4 x 5 = 20 < 37 + 4
+                                               .fontSize = 5.0F,  // 4 x 5 = 20 < 37 + 24
                                                .frameHeight = 24.0F,
                                                .textLineHeight = 16.0F,
                                                .itemSpacingY = 6.0F,
@@ -1041,6 +1046,8 @@ TEST_CASE("asset view: the panes hold the crumb row's chrome; the budget overflo
         // The recorded metric is the group's own chrome: what the panel records is what the pane subtracts.
         CHECK(assetContentsPaneChromeHeight(c.frame, c.rule, c.spacing, c.scale) == chrome);
         const float bodyFloor = c.metrics.textLineHeight;
+        const float frame = c.metrics.frameHeight;
+        const float spacing = c.metrics.itemSpacingY;
         std::size_t checked = 0;
         std::size_t shown = 0;
         std::size_t folded = 0;
@@ -1053,16 +1060,19 @@ TEST_CASE("asset view: the panes hold the crumb row's chrome; the budget overflo
                     const AssetBrowserLayout layout =
                         assetBrowserLayout(withState(c.metrics, avail, s.shown, s.open, content));
                     ++checked;
-                    const bool rowFits = avail - layout.footerHeight - layout.issuesHeight >= chrome + CHILD_MIN;
+                    // The mode reads the pane the Issues list would leave OPEN at its one-row floor, whatever its
+                    // state (AV67). Until round 3 it read this state's own remainder against the chrome + 4.
+                    const float issuesAtFloor = s.shown ? frame + spacing + bodyFloor + spacing : 0.0F;
+                    const bool rowFits = avail - layout.footerHeight - issuesAtFloor >= chrome + frame;
                     bool ok = layout.crumbRowShown == rowFits;
                     if (rowFits) {
-                        // SHOWN: the panes hold the chrome + 4 and absorb the remainder exactly.
-                        ok = ok && layout.paneHeight >= chrome + CHILD_MIN && budgetSum(layout) == avail;
+                        // SHOWN: the panes hold the chrome + one frame of contents and absorb the remainder exactly.
+                        ok = ok && layout.paneHeight >= chrome + frame && budgetSum(layout) == avail;
                         ++shown;
                     } else {
-                        // FOLDED, under the row's floor (AV67). Until round 2 this arm read "the panes sit AT the
-                        // chrome + 4 and the sum exceeds the panel" -- the scroll the fold removes.
-                        ok = ok && layout.paneHeight < chrome + CHILD_MIN;
+                        // FOLDED (AV67). Until round 2 this arm read "the panes sit AT the chrome + 4 and the sum
+                        // exceeds the panel" -- the scroll the fold removes; in round 2, "the pane is under the
+                        // chrome + 4", which a closed list's folded pane no longer is (61 at 1x, avail 121).
                         ++folded;
                     }
                     if (s.shown && s.open && layout.issuesBodyHeight > bodyFloor) {
@@ -1088,31 +1098,35 @@ TEST_CASE("asset view: the panes hold the crumb row's chrome; the budget overflo
         CHECK(misses == 0U);
         CHECK(checked == 4U * 5U * 605U);
         CHECK(shown > 0U);    // anti-vacuity: both modes were visited ...
-        CHECK(folded > 0U);   // ... including panes under the row's floor, where the group once overflowed
+        CHECK(folded > 0U);   // ... including folded panes, where the group once overflowed
         CHECK(yielded > 0U);  // ... and an open body above its floor
     }
 
     // THE ROW'S BOUNDS at 1x, as literals -- the header's stated contract, never the arithmetic re-run. At the bound
-    // the row shows over panes of exactly the chrome + 4 and the sum is the panel; one point below, the row FOLDS over
-    // panes one point shorter and the sum is still the panel (until round 2 the panes stayed 41 there, one point over).
+    // the row shows -- over a pane of exactly the chrome + one frame with the list open (at its one-row floor) or with
+    // no Issues, one body row + one spacing taller closed -- and the sum is the panel; one point below, the row FOLDS
+    // over a pane one point shorter and the sum is still the panel. Round 2's bounds were 71 / 101 / 123, each over a
+    // 41-point pane (the chrome + 4), and the closed list's sat 22 below the open one's: round 3 decides both Issues
+    // states at the open list's remainder, so they share one bound.
     struct Bound {
         bool shown;
         bool open;
         float avail;
+        float pane;
     };
-    for (const Bound b : {Bound{false, false, 71.0F},    // footer 30 + 37 + 4
-                          Bound{true, false, 101.0F},    // + the closed header 30
-                          Bound{true, true, 123.0F}}) {  // + one row 16 + spacing 6
+    for (const Bound b : {Bound{false, false, 91.0F, 61.0F},    // footer 30 + chrome 37 + one frame 24
+                          Bound{true, false, 143.0F, 83.0F},    // + header 30 + one row 16 + spacing 6, open or not
+                          Bound{true, true, 143.0F, 61.0F}}) {  // the open body at its one-row floor
         CAPTURE(b.shown);
         CAPTURE(b.open);
         const AssetBrowserLayout at = assetBrowserLayout(withState(PLEX_1X, b.avail, b.shown, b.open, 5000.0F));
         const float under = b.avail - 1.0F;
         const AssetBrowserLayout below = assetBrowserLayout(withState(PLEX_1X, under, b.shown, b.open, 5000.0F));
         CHECK(at.crumbRowShown);
-        CHECK(at.paneHeight == 41.0F);
+        CHECK(at.paneHeight == b.pane);
         CHECK(budgetSum(at) == b.avail);
         CHECK_FALSE(below.crumbRowShown);
-        CHECK(below.paneHeight == 40.0F);
+        CHECK(below.paneHeight == b.pane - 1.0F);
         CHECK(budgetSum(below) == under);  // the panel, one point shorter -- no longer one point over it
     }
     // The heights the findings named, every one FOLDED and fitting since round 2: CI's likely avail 104 with Issues
@@ -1131,31 +1145,35 @@ TEST_CASE("asset view: the panes hold the crumb row's chrome; the budget overflo
     CHECK_FALSE(short768.crumbRowShown);
     CHECK(short768.paneHeight == 39.0F);
     CHECK(budgetSum(short768) == 121.0F);
-    // The 824-point window the short subcase ran at in between: the row shows there, over the one-row body.
+    // The 824-point window the short subcase ran at in between: the row showed there in round 2, over the one-row
+    // body; since round 3 it folds -- the 53-point pane holds the chrome but only 16 points of contents below it.
     const AssetBrowserLayout short824 = assetBrowserLayout(withState(PLEX_1X, 135.0F, true, true, 5000.0F));
-    CHECK(short824.crumbRowShown);
+    CHECK_FALSE(short824.crumbRowShown);
     CHECK(short824.issuesBodyHeight == 16.0F);
     CHECK(short824.paneHeight == 53.0F);
     CHECK(budgetSum(short824) == 135.0F);
     // THE COST the reservation had, and the fold removed: the editor's own 1280 x 720 launch (editor/src/main.cpp)
-    // gives the default layout's panel avail 109 (measured through I231's fixture). Closed it fits with the row shown;
-    // with the Issues list open the sum was 14 over and the panel scrolled (by 6, measured) where main's fit. Now the
-    // row folds there and the panes take the 27 points left (AV67 pins both arms beside its fit bounds).
+    // gives the default layout's panel avail 109 (measured through I231's fixture). With the Issues list open the sum
+    // was 14 over and the panel scrolled (by 6, measured) where main's fit; round 2 folded the row there (27 points of
+    // pane) and SHOWED it closed over a 12-point list, so closing the list shrank the list. Since round 3 the row folds
+    // in both states and closing the list grows the pane from 27 to 49 (AV67 pins both arms beside its fit bounds).
     const AssetBrowserLayout launchClosed = assetBrowserLayout(withState(PLEX_1X, 109.0F, true, false, 0.0F));
-    CHECK(launchClosed.crumbRowShown);
+    CHECK_FALSE(launchClosed.crumbRowShown);
     CHECK(launchClosed.paneHeight == 49.0F);
     CHECK(budgetSum(launchClosed) == 109.0F);
     const AssetBrowserLayout launchOpen = assetBrowserLayout(withState(PLEX_1X, 109.0F, true, true, 5000.0F));
     CHECK_FALSE(launchOpen.crumbRowShown);
     CHECK(launchOpen.paneHeight == 27.0F);
     CHECK(budgetSum(launchOpen) == 109.0F);
-    // The chrome term in the panes' minimum: at 130 the body yields to 23, leaving the panes exactly 41 with the row
-    // shown -- without the term it would take 44 and leave 20, and fold the row the body could have made room for.
-    const AssetBrowserLayout yielding = assetBrowserLayout(withState(SMALL_FONT, 130.0F, true, true, 5000.0F));
+    // The chrome term in the panes' minimum: at 150 the open-at-floor remainder (68) shows the row, and the body yields
+    // to 23, leaving the panes exactly the chrome + one frame (61) -- without the term it would take 60 and leave 24, a
+    // shown row over a pane 13 points short of the chrome itself. Round 2 read this at 130 (body 23, pane 41, shown);
+    // since round 3, 130 folds (its open-at-floor remainder is 48).
+    const AssetBrowserLayout yielding = assetBrowserLayout(withState(SMALL_FONT, 150.0F, true, true, 5000.0F));
     CHECK(yielding.crumbRowShown);
     CHECK(yielding.issuesBodyHeight == 23.0F);
-    CHECK(yielding.paneHeight == 41.0F);
-    CHECK(budgetSum(yielding) == 130.0F);
+    CHECK(yielding.paneHeight == 61.0F);
+    CHECK(budgetSum(yielding) == 150.0F);
 
     // A TALL panel is unchanged: the chrome is drawn INSIDE the panes, never subtracted from them.
     for (const State& s : STATES) {
@@ -1165,9 +1183,10 @@ TEST_CASE("asset view: the panes hold the crumb row's chrome; the budget overflo
         CHECK(sameLayout(assetBrowserLayout(tall), assetBrowserLayout(withChrome(tall, 0.0F))));
     }
 
-    // A NaN, negative or infinite chrome counts as 0 -- the row shows from a 4-point remainder -- at heights where the
-    // mode turns on it: 32 (round 2) leaves a 2-point remainder with no Issues, folded at 0 and shown under a -5 read
-    // raw.
+    // A NaN, negative or infinite chrome counts as 0 -- the row shows from one frame of open-at-floor remainder (24) --
+    // at heights where the mode turns on it: with no Issues, 50 leaves a 20-point remainder, folded at 0 and shown
+    // under a -5 read raw (19); a -inf read raw would show the row at every height. (Round 2 named 32 here: a 2-point
+    // remainder against its 4-point threshold.)
     const float nan = std::numeric_limits<float>::quiet_NaN();
     const float inf = std::numeric_limits<float>::infinity();
     std::size_t badChecked = 0;
@@ -1187,30 +1206,90 @@ TEST_CASE("asset view: the panes hold the crumb row's chrome; the budget overflo
         }
     }
     CHECK(badChecked == 5U * 7U * 4U);
-    // Anti-vacuity: the chrome really moves the MODE -- at 50 points with no Issues (a 20-point remainder) the row
-    // shows without it and folds with it, over the same 20-point pane. Until round 2 it moved the floor instead: at 10
-    // points the panes were 4 without it and 41 with it; folded, both are ImGui's 4.
-    const AssetBrowserLayoutMetrics fifty = withState(PLEX_1X, 50.0F, false, false, 0.0F);
-    CHECK(assetBrowserLayout(withChrome(fifty, 0.0F)).crumbRowShown);
-    CHECK_FALSE(assetBrowserLayout(fifty).crumbRowShown);
-    CHECK(assetBrowserLayout(fifty).paneHeight == 20.0F);
+    // Anti-vacuity: the chrome really moves the MODE -- at 60 points with no Issues (a 30-point remainder) the row
+    // shows without it (30 >= one frame, 24) and folds with it (30 < 61), over the same 30-point pane. Round 2 read
+    // this at 50, a 20-point remainder over its 4-point threshold, which no longer shows the row without the chrome.
+    // Until round 2 it moved the floor instead: at 10 points the panes were 4 without it and 41 with it; folded, both
+    // are ImGui's 4.
+    const AssetBrowserLayoutMetrics sixty = withState(PLEX_1X, 60.0F, false, false, 0.0F);
+    CHECK(assetBrowserLayout(withChrome(sixty, 0.0F)).crumbRowShown);
+    CHECK_FALSE(assetBrowserLayout(sixty).crumbRowShown);
+    CHECK(assetBrowserLayout(sixty).paneHeight == 30.0F);
     const AssetBrowserLayoutMetrics tiny = withState(PLEX_1X, 10.0F, false, false, 0.0F);
     CHECK(assetBrowserLayout(withChrome(tiny, 0.0F)).paneHeight == CHILD_MIN);
     CHECK(assetBrowserLayout(tiny).paneHeight == CHILD_MIN);
+
+    // A DEGENERATE FRAME -- frameHeight 0, or a NaN that counts as 0 -- with the chrome the panel records for it: the
+    // crumb row's 2 x 3 padding, the 1-point rule and the 6-point spacing, 13. ImGui still draws the ##contents child
+    // 4 tall, so the row's floor is the chrome + max(frameHeight, 4): read raw, chrome + frameHeight would show the row
+    // over any pane in [13, 17) and the group (13 + ImGui's 4) would stand up to 4 points taller than its pane -- the
+    // #111 overflow the identity above refuses. At avail 21 with no Issues the footer is the spacing alone (6) and the
+    // pane 15: over the chrome, under the chrome + 4, so the row folds and the child is the whole pane.
+    constexpr float DEGENERATE_CHROME = 13.0F;
+    for (const float badFrame : {0.0F, nan}) {
+        CAPTURE(badFrame);
+        REQUIRE(assetContentsPaneChromeHeight(badFrame, 1.0F, 6.0F, 1.0F) == DEGENERATE_CHROME);
+        AssetBrowserLayoutMetrics degenerate = PLEX_1X;  // body 16, one row 16, ItemSpacing.y 6
+        degenerate.frameHeight = badFrame;
+        degenerate.paneChromeHeight = DEGENERATE_CHROME;
+        // The group drawContentsPane submits for a layout, fed the same degenerate frame.
+        const auto groupOf = [badFrame](const AssetBrowserLayout& l) {
+            return assetContentsPaneLayout(l.paneHeight, badFrame, 1.0F, 6.0F, 1.0F, l.crumbRowShown);
+        };
+        const AssetBrowserLayout at21 = assetBrowserLayout(withState(degenerate, 21.0F, false, false, 0.0F));
+        CHECK(at21.footerHeight == 6.0F);
+        CHECK_FALSE(at21.crumbRowShown);
+        CHECK(at21.paneHeight == 15.0F);
+        CHECK(groupOf(at21).contentsHeight == 15.0F);
+        // The identity over every Issues state, swept through the band: crumb row + rule + spacing (when shown) + the
+        // child is the pane the budget handed out.
+        std::size_t degenerateMisses = 0;
+        std::size_t degenerateShown = 0;
+        std::size_t heldByChromeAlone = 0;  // folded, with an R* that holds the chrome alone
+        float firstDegenerateMiss = -1.0F;
+        for (const State& s : STATES) {
+            for (const float content : {0.0F, 170.0F}) {
+                for (float avail = 0.0F; avail <= 80.0F; avail += 1.0F) {
+                    const AssetBrowserLayout layout =
+                        assetBrowserLayout(withState(degenerate, avail, s.shown, s.open, content));
+                    const AssetContentsPaneLayout group = groupOf(layout);
+                    const float rowChrome = layout.crumbRowShown ? group.crumbRowHeight + 1.0F + 6.0F : 0.0F;
+                    if (rowChrome + group.contentsHeight != layout.paneHeight) {
+                        ++degenerateMisses;
+                        firstDegenerateMiss = firstDegenerateMiss < 0.0F ? avail : firstDegenerateMiss;
+                    }
+                    // The open-at-floor remainder: the header (0 + 6) and one row (16 + 6) whenever Issues are shown.
+                    const float remainderAtFloor = avail - layout.footerHeight - (s.shown ? 28.0F : 0.0F);
+                    degenerateShown += layout.crumbRowShown ? 1U : 0U;
+                    heldByChromeAlone += (!layout.crumbRowShown && remainderAtFloor >= DEGENERATE_CHROME) ? 1U : 0U;
+                }
+            }
+        }
+        CAPTURE(firstDegenerateMiss);
+        CHECK(degenerateMisses == 0U);
+        CHECK(degenerateShown > 0U);    // anti-vacuity: the row shows somewhere in the sweep ...
+        CHECK(heldByChromeAlone > 0U);  // ... and folds in the band a raw chrome + frameHeight would show it in
+    }
 }
 
-// ---- AV67: task E.6.3's code-review round, round 2 -- the crumb row FOLDS in a pane too short for it --------------
+// ---- AV67: task E.6.3's code-review round, rounds 2 and 3 -- the crumb row FOLDS in a pane too short for it -------
 //
 // AV66's reservation made the budget honest and left the editor's own 1280 x 720 launch (avail 109) scrolling with
-// the Issues list open where main fit, and no fit at all in 640-776-point windows with the list open. Below the crumb
-// row's chrome + 4 the row now FOLDS: the ##contents child takes the whole pane and the tree still navigates
-// (asset_view.hpp's THE FOLD). With R = avail - footer - issues, in both modes
-//     crumbRowShown == (R >= chrome + 4)     and     paneHeight == max(R, 4),
-// so the pane is continuous in avail across the fold, and the sum is the panel down to the FOLDED fit bound,
-// footer + header [+ one row + spacing] + ImGui's 4 -- main's 1-point-floor bounds + 3. Those bounds are LITERALS,
-// per metric set and Issues state (content-independent: with the Issues list open the fold fires only with the body
-// at its one-row floor; closed, or with no Issues, there is no body). The ##contents child is NOT continuous: it
-// steps by the chrome at the threshold, and closing the list shrinks it in a band at 1x (the last block).
+// the Issues list open where main fit, and no fit at all in 640-776-point windows with the list open. Round 2 FOLDED
+// the row below the chrome + 4: the ##contents child takes the whole pane and the tree still navigates
+// (asset_view.hpp's THE FOLD). That threshold showed the row over a 4-point list, and -- read off each Issues state's
+// own remainder -- showed it with the list closed and folded it open in a band one body row + one spacing wide, so
+// closing the list SHRANK the asset list there (the launch: 12 points closed, 27 open). Round 3 decides the mode at
+// R* = avail - footer - the Issues region the list would take OPEN at its one-row floor, whatever its state, against
+// the chrome + one frame height (frameHeight: a height, not a whole entry -- asset_view.hpp). With R = avail -
+// footer - issues, this state's own remainder,
+//     crumbRowShown == (R* >= chrome + frameHeight)     and     paneHeight == max(R, 4),
+// so the mode is the same for both Issues states, closing the list never shrinks the contents, and the row never
+// shows over less than one frame of contents. The pane is still continuous in avail, and the sum is the panel down to
+// the FOLDED fit bound, footer + header [+ one row + spacing] + ImGui's 4 -- main's 1-point-floor bounds + 3. Those
+// bounds are LITERALS, per metric set and Issues state (content-independent: open, the list is at its one-row floor
+// there; closed, or with no Issues, there is no body). The ##contents child is NOT continuous: it steps by the chrome
+// at the threshold, by construction at any threshold (the last block).
 namespace {
 
 struct FoldedBounds {
@@ -1246,22 +1325,42 @@ TEST_CASE("asset view: a pane under the crumb row's floor folds the row, continu
         std::string_view name;
         AssetBrowserLayoutMetrics metrics;
         FoldedBounds bounds;
+        float rule;  // assetContentsPaneLayout's other inputs, as drawContentsPane passes them (AV66's ChromeCase)
+        float scale;
     };
     // 1x and the small font: footer 6 + 24 = 30, header 30, row 16, spacing 6. 2x: every one doubled.
-    const std::array<FoldCase, 3> cases{FoldCase{"plex 1x", PLEX_1X, {34.0F, 64.0F, 86.0F}},
-                                        FoldCase{"plex 2x", PLEX_2X, {64.0F, 124.0F, 168.0F}},
-                                        FoldCase{"small font", SMALL_FONT, {34.0F, 64.0F, 86.0F}}};
+    const std::array<FoldCase, 3> cases{FoldCase{"plex 1x", PLEX_1X, {34.0F, 64.0F, 86.0F}, 1.0F, 1.0F},
+                                        FoldCase{"plex 2x", PLEX_2X, {64.0F, 124.0F, 168.0F}, 2.0F, 2.0F},
+                                        FoldCase{"small font", SMALL_FONT, {34.0F, 64.0F, 86.0F}, 1.0F, 1.0F}};
     for (const FoldCase& c : cases) {
         CAPTURE(c.name);
-        const float rowFloor = c.metrics.paneChromeHeight + CHILD_MIN;
+        const float frame = c.metrics.frameHeight;
+        const float spacing = c.metrics.itemSpacingY;
+        const float rowFloor = c.metrics.paneChromeHeight + frame;  // the chrome + one frame height
+        // The panel's ##contents child for a layout: assetContentsPaneLayout, fed what drawContentsPane feeds it.
+        REQUIRE(assetContentsPaneChromeHeight(frame, c.rule, spacing, c.scale) == c.metrics.paneChromeHeight);
+        const auto contentsOf = [&c, frame, spacing](const AssetBrowserLayout& layout) {
+            const AssetContentsPaneLayout group =
+                assetContentsPaneLayout(layout.paneHeight, frame, c.rule, spacing, c.scale, layout.crumbRowShown);
+            return group.contentsHeight;
+        };
+        const float issuesAtFloor = frame + spacing + c.metrics.textLineHeight + spacing;  // header + one row, open
         std::size_t checked = 0;
+        std::size_t shown = 0;
         std::size_t folded = 0;
         std::size_t foldedFits = 0;  // folded AND fitting: the band the reservation used to scroll in
+        std::size_t heldFolded = 0;  // folded over a pane that would hold the row: the open list decided
         std::size_t crossings = 0;   // adjacent points on either side of the fold
         std::size_t misses = 0;
         std::size_t jumps = 0;
+        std::size_t modeSplits = 0;      // the other Issues state answered the other mode
+        std::size_t thinRows = 0;        // a shown row over less than one frame of contents
+        std::size_t closingShrinks = 0;  // closing the list left a SHORTER ##contents child
         float firstMiss = -1.0F;
         float firstJump = -1.0F;
+        float firstSplit = -1.0F;
+        float firstThin = -1.0F;
+        float firstShrink = -1.0F;
         for (const State& s : STATES) {
             for (const float content : {0.0F, 16.0F, 47.0F, 170.0F, 5000.0F}) {
                 const float bound = foldedBoundFor(c.bounds, s.shown, s.open);
@@ -1271,14 +1370,21 @@ TEST_CASE("asset view: a pane under the crumb row's floor folds the row, continu
                 for (const float avail : avails) {
                     const AssetBrowserLayout layout =
                         assetBrowserLayout(withState(c.metrics, avail, s.shown, s.open, content));
+                    // The same panel with the list in the OTHER state, as one click on its header leaves it.
+                    const AssetBrowserLayout toggled =
+                        assetBrowserLayout(withState(c.metrics, avail, s.shown, !s.open, content));
                     ++checked;
                     const float remainder = avail - layout.footerHeight - layout.issuesHeight;
-                    // The mode is decided by the remainder alone, and the pane is max(remainder, 4) in both.
-                    bool ok = layout.crumbRowShown == (remainder >= rowFloor);
+                    const float remainderAtFloor = avail - layout.footerHeight - (s.shown ? issuesAtFloor : 0.0F);
+                    // The mode is decided by the open-at-floor remainder, and the pane is max(remainder, 4) in both.
+                    bool ok = layout.crumbRowShown == (remainderAtFloor >= rowFloor);
                     ok = ok && layout.paneHeight == std::max(remainder, CHILD_MIN);
-                    if (!layout.crumbRowShown) {
-                        ok = ok && layout.paneHeight >= CHILD_MIN && layout.paneHeight < rowFloor;
+                    if (layout.crumbRowShown) {
+                        ++shown;
+                    } else {
+                        ok = ok && layout.paneHeight >= CHILD_MIN;
                         ++folded;
+                        heldFolded += layout.paneHeight >= rowFloor ? 1U : 0U;
                     }
                     // THE FIT: the sum is the panel from the folded bound up; below it the panes are ImGui's 4 and
                     // only there does the sum exceed the panel.
@@ -1290,9 +1396,22 @@ TEST_CASE("asset view: a pane under the crumb row's floor folds the row, continu
                     }
                     if (!ok) {
                         ++misses;
-                        if (firstMiss < 0.0F) {
-                            firstMiss = avail;
-                        }
+                        firstMiss = firstMiss < 0.0F ? avail : firstMiss;
+                    }
+                    // ONE MODE FOR BOTH ISSUES STATES: opening or closing the list never shows or folds the row.
+                    if (toggled.crumbRowShown != layout.crumbRowShown) {
+                        ++modeSplits;
+                        firstSplit = firstSplit < 0.0F ? avail : firstSplit;
+                    }
+                    // ONE FRAME OF CONTENTS under every shown row -- round 2 showed it over ImGui's 4.
+                    if (layout.crumbRowShown && contentsOf(layout) < frame) {
+                        ++thinRows;
+                        firstThin = firstThin < 0.0F ? avail : firstThin;
+                    }
+                    // CLOSING NEVER SHRINKS THE CONTENTS: from the open state, the closed one's child is no shorter.
+                    if (s.open && contentsOf(toggled) < contentsOf(layout)) {
+                        ++closingShrinks;
+                        firstShrink = firstShrink < 0.0F ? avail : firstShrink;
                     }
                     // CONTINUITY: one point of panel moves the pane by at most one point -- across the fold included.
                     if (havePrevious) {
@@ -1313,32 +1432,44 @@ TEST_CASE("asset view: a pane under the crumb row's floor folds the row, continu
         }
         CAPTURE(firstMiss);
         CAPTURE(firstJump);
+        CAPTURE(firstSplit);
+        CAPTURE(firstThin);
+        CAPTURE(firstShrink);
         CHECK(misses == 0U);
         CHECK(jumps == 0U);
+        CHECK(modeSplits == 0U);
+        CHECK(thinRows == 0U);
+        CHECK(closingShrinks == 0U);
         CHECK(checked == 4U * 5U * 605U);
-        CHECK(folded > 0U);      // anti-vacuity: the fold was reached ...
+        CHECK(shown > 0U);       // anti-vacuity: both modes were visited ...
+        CHECK(folded > 0U);      // ... the fold was reached ...
         CHECK(foldedFits > 0U);  // ... with the panel fitting folded ...
+        CHECK(heldFolded > 0U);  // ... and folded with the list closed where its own pane would hold the row ...
         CHECK(crossings > 0U);   // ... and the continuity arm stepped across it
     }
 
-    // The 1x literals. The row shows from 71 with no Issues, 101 closed and 123 open, and folds one point below --
-    // where the pane is one point shorter, not 21 (the open body keeps its one-row floor across the fold).
+    // The 1x literals. With no Issues the row shows from 91 -- footer 30 + chrome 37 + one frame 24 -- and with Issues
+    // from 143 in BOTH states -- + the header 30, one row 16 and its spacing 6, the open list at its floor -- and folds
+    // one point below, where the pane is one point shorter (the open body keeps its one-row floor across the fold).
+    // Round 2's were 71 with no Issues, 101 closed and 123 open.
     const auto at = [](const AssetBrowserLayoutMetrics& metrics, float avail, bool shown, bool open) {
         return assetBrowserLayout(withState(metrics, avail, shown, open, 5000.0F));
     };
-    CHECK(at(PLEX_1X, 71.0F, false, false).crumbRowShown);
-    CHECK_FALSE(at(PLEX_1X, 70.0F, false, false).crumbRowShown);
-    CHECK(at(PLEX_1X, 101.0F, true, false).crumbRowShown);
-    CHECK_FALSE(at(PLEX_1X, 100.0F, true, false).crumbRowShown);
-    CHECK(at(PLEX_1X, 123.0F, true, true).crumbRowShown);
-    CHECK(at(PLEX_1X, 123.0F, true, true).paneHeight == 41.0F);
-    CHECK_FALSE(at(PLEX_1X, 122.0F, true, true).crumbRowShown);
-    CHECK(at(PLEX_1X, 122.0F, true, true).paneHeight == 40.0F);
-    // ... the same at the small font, where 4 font heights (20) are under the chrome + 4 (41): a body that grew on the
-    // fold, yielding only to 20, would leave a 20-point pane at 122 -- the jump the continuity arm refuses.
-    CHECK(at(SMALL_FONT, 123.0F, true, true).paneHeight == 41.0F);
-    CHECK(at(SMALL_FONT, 122.0F, true, true).paneHeight == 40.0F);
-    CHECK(at(SMALL_FONT, 122.0F, true, true).issuesBodyHeight == 16.0F);
+    CHECK(at(PLEX_1X, 91.0F, false, false).crumbRowShown);
+    CHECK_FALSE(at(PLEX_1X, 90.0F, false, false).crumbRowShown);
+    for (const bool open : {false, true}) {
+        CAPTURE(open);
+        CHECK(at(PLEX_1X, 143.0F, true, open).crumbRowShown);
+        CHECK_FALSE(at(PLEX_1X, 142.0F, true, open).crumbRowShown);
+    }
+    CHECK(at(PLEX_1X, 143.0F, true, true).paneHeight == 61.0F);
+    CHECK(at(PLEX_1X, 142.0F, true, true).paneHeight == 60.0F);
+    // ... the same at the small font, where 4 font heights (20) are under the chrome + one frame (61): a body that grew
+    // on the fold, yielding only to 20, would leave a 20-point pane at 142 -- a 41-point jump the continuity arm
+    // refuses.
+    CHECK(at(SMALL_FONT, 143.0F, true, true).paneHeight == 61.0F);
+    CHECK(at(SMALL_FONT, 142.0F, true, true).paneHeight == 60.0F);
+    CHECK(at(SMALL_FONT, 142.0F, true, true).issuesBodyHeight == 16.0F);
     // The folded fit bounds at 1x: the sum is the panel AT them with ImGui's 4-point panes, one point over below them.
     for (const float bound : {34.0F, 64.0F, 86.0F}) {
         CAPTURE(bound);
@@ -1352,45 +1483,51 @@ TEST_CASE("asset view: a pane under the crumb row's floor folds the row, continu
         CHECK(over.paneHeight == CHILD_MIN);
         CHECK(budgetSum(over) == bound);
     }
-    // THE LAUNCH: the editor's 1280 x 720 window, avail 109 (I231's fixture, measured). Open, the row folds and the
-    // panel fits; closed, the row shows and the panel fits.
-    const AssetBrowserLayout launchOpen = at(PLEX_1X, 109.0F, true, true);
-    CHECK_FALSE(launchOpen.crumbRowShown);
-    CHECK(launchOpen.paneHeight == 27.0F);
-    CHECK(budgetSum(launchOpen) == 109.0F);
-    const AssetBrowserLayout launchClosed = at(PLEX_1X, 109.0F, true, false);
-    CHECK(launchClosed.crumbRowShown);
-    CHECK(launchClosed.paneHeight == 49.0F);
-    CHECK(budgetSum(launchClosed) == 109.0F);
-
-    // ONLY THE PANE IS CONTINUOUS (asset_view.hpp): the ##contents child is the pane less the chrome while the row
-    // shows and the whole pane once it folds, so it steps by the chrome at the threshold -- 4 points at 123 with the
-    // list open, 40 at 122. Closing the list SHRINKS it exactly where the row shows closed and folds open, [101, 123)
-    // at 1x: one body row (16) + one spacing (6) wide. The launch's 109 is inside: 27 points open, 12 closed.
+    // The ##contents child at 1x, as drawContentsPane sizes it.
     const auto contentsOf = [](const AssetBrowserLayout& layout) {
         const AssetContentsPaneLayout group =
             assetContentsPaneLayout(layout.paneHeight, 24.0F, 1.0F, 6.0F, 1.0F, layout.crumbRowShown);
         return group.contentsHeight;
     };
-    CHECK(contentsOf(at(PLEX_1X, 123.0F, true, true)) == 4.0F);
-    CHECK(contentsOf(at(PLEX_1X, 122.0F, true, true)) == 40.0F);
+    // THE LAUNCH: the editor's 1280 x 720 window, avail 109 (I231's fixture, measured). With Issues the row folds in
+    // both states and the panel fits: 27 points of contents open, 49 closed -- round 2 showed the row closed, over a
+    // 12-point list. With no Issues it shows, over 42.
+    const AssetBrowserLayout launchOpen = at(PLEX_1X, 109.0F, true, true);
+    CHECK_FALSE(launchOpen.crumbRowShown);
+    CHECK(launchOpen.paneHeight == 27.0F);
     CHECK(contentsOf(launchOpen) == 27.0F);
-    CHECK(contentsOf(launchClosed) == 12.0F);
-    std::size_t shrinks = 0;
-    std::size_t bandMisses = 0;
-    float firstBandMiss = -1.0F;
-    for (float avail = 0.0F; avail <= 600.0F; avail += 1.0F) {
-        const float open = contentsOf(at(PLEX_1X, avail, true, true));
-        const bool closingShrinks = contentsOf(at(PLEX_1X, avail, true, false)) < open;
-        if (closingShrinks != (avail >= 101.0F && avail < 123.0F)) {
-            ++bandMisses;
-            firstBandMiss = firstBandMiss < 0.0F ? avail : firstBandMiss;
-        }
-        shrinks += closingShrinks ? 1U : 0U;
-    }
-    CAPTURE(firstBandMiss);
-    CHECK(bandMisses == 0U);
-    CHECK(shrinks == 22U);  // anti-vacuity: the band was walked, every whole point of it
+    CHECK(budgetSum(launchOpen) == 109.0F);
+    const AssetBrowserLayout launchClosed = at(PLEX_1X, 109.0F, true, false);
+    CHECK_FALSE(launchClosed.crumbRowShown);
+    CHECK(launchClosed.paneHeight == 49.0F);
+    CHECK(contentsOf(launchClosed) == 49.0F);
+    CHECK(budgetSum(launchClosed) == 109.0F);
+    const AssetBrowserLayout launchNone = at(PLEX_1X, 109.0F, false, false);
+    CHECK(launchNone.crumbRowShown);
+    CHECK(launchNone.paneHeight == 79.0F);
+    CHECK(contentsOf(launchNone) == 42.0F);
+    CHECK(budgetSum(launchNone) == 109.0F);
+    // I231's 768-point window, avail 121: with Issues the row folds in both states -- open over 39 points, closed over
+    // 61, a pane that would hold the chrome and one frame (37 + 24) and folds because the mode reads the open list's
+    // 39 -- and with no Issues it shows, over 54.
+    const AssetBrowserLayout short768Open = at(PLEX_1X, 121.0F, true, true);
+    CHECK_FALSE(short768Open.crumbRowShown);
+    CHECK(contentsOf(short768Open) == 39.0F);
+    const AssetBrowserLayout short768Closed = at(PLEX_1X, 121.0F, true, false);
+    CHECK_FALSE(short768Closed.crumbRowShown);
+    CHECK(short768Closed.paneHeight == 61.0F);
+    CHECK(contentsOf(short768Closed) == 61.0F);
+    const AssetBrowserLayout short768None = at(PLEX_1X, 121.0F, false, false);
+    CHECK(short768None.crumbRowShown);
+    CHECK(short768None.paneHeight == 91.0F);
+    CHECK(contentsOf(short768None) == 54.0F);
+
+    // ONLY THE PANE IS CONTINUOUS (asset_view.hpp): the ##contents child is the pane less the chrome while the row
+    // shows and the whole pane once it folds, so it steps by the chrome at the threshold, by construction at any
+    // threshold -- 24 points at 143 with the list open (one frame, the least a shown row sits over) and 60 at 142.
+    // Round 2's step was 4 at 123 and 40 at 122.
+    CHECK(contentsOf(at(PLEX_1X, 143.0F, true, true)) == 24.0F);
+    CHECK(contentsOf(at(PLEX_1X, 142.0F, true, true)) == 60.0F);
 }
 
 // ---- task E.4.5 (the code-review round): a SUBTITLED tile's first line keeps the FILE NAME ------------------

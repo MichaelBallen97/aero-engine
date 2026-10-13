@@ -619,15 +619,17 @@ TEST_CASE("assets chrome: a recorded frame clears every per-frame count, list an
     CHECK(record.framesRecorded == 2U);  // one per frame, never reset
 }
 
-// task E.6.3's code-review round, round 2: THE FOLD. A pane too short for the crumb row's chrome + ImGui's 4-point
-// child draws no row -- assetBrowserLayout answers crumbRowShown false and the panel passes it on -- so the child
-// takes the WHOLE pane: no row, no rule, no spacing, whatever the chrome inputs say, and never under ImGui's 4.
+// task E.6.3's code-review round, rounds 2 and 3: THE FOLD. Where the pane the Issues list would leave open at its
+// one-row floor cannot hold the crumb row's chrome over one frame of contents, assetBrowserLayout answers
+// crumbRowShown false and the panel passes it on, so the child takes the WHOLE pane: no row, no rule, no spacing,
+// whatever the chrome inputs say, and never under ImGui's 4.
 TEST_CASE("assets chrome: a folded pane is its child alone; a shown one is unchanged (task E.6.3, AH18)") {
     constexpr bool FOLDED = false;
     constexpr bool SHOWN = true;
     const float nan = std::numeric_limits<float>::quiet_NaN();
     const float inf = std::numeric_limits<float>::infinity();
-    // I231's 640-point window with Issues closed: a 29-point pane, 12 under the 41 the row needs at 1x.
+    // I231's 640-point window with Issues closed: a 29-point pane, folded -- the open list would leave 7 of the 61 the
+    // row needs at 1x (the chrome 37 + one frame 24).
     const ed::AssetContentsPaneLayout folded = ed::assetContentsPaneLayout(29.0F, 24.0F, 1.0F, 6.0F, 1.0F, FOLDED);
     CHECK(folded.crumbRowHeight == 0.0F);
     CHECK(folded.contentsHeight == 29.0F);  // the child IS the pane

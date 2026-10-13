@@ -594,9 +594,9 @@ void AssetBrowserPanel::drawTreePane(float paneHeight) {
 // crumb row submitted on its own would sit beside the tree and push the grid below it. The group's height is
 // crumbRowHeight + the rule + ItemSpacing.y + the child's, which assetContentsPaneLayout makes paneHeight exactly --
 // for every pane the row shows in, since onDraw records that chrome and assetBrowserLayout shows the row only in a pane
-// of at least it + 4 (ImGui draws no child shorter than 4 points). In a shorter pane the row FOLDS (task E.6.3's
-// code-review round, round 2): no crumb, no crumb drop target, no rule -- the group is the ##contents child alone,
-// the whole pane, and the tree beside it still navigates.
+// of at least it + one frame of contents (ImGui draws no child shorter than 4 points). Elsewhere the row FOLDS (task
+// E.6.3's code-review round, rounds 2 and 3 -- decided for both Issues states alike): no crumb, no crumb drop target,
+// no rule -- the group is the ##contents child alone, the whole pane, and the tree beside it still navigates.
 void AssetBrowserPanel::drawContentsPane(float paneHeight, bool crumbRowShown) {
     const AssetContentsPaneLayout pane =
         assetContentsPaneLayout(paneHeight, ImGui::GetFrameHeight(), ruleHeight(), ImGui::GetStyle().ItemSpacing.y,
