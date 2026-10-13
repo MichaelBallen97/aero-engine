@@ -25934,22 +25934,70 @@ TEST_CASE("editor: card geometry -- one span, the framed overhang, paddings and 
     REQUIRE(cube.valid());
     app->selection().set(cube);
     e63Front(*app, "Inspector", "Material");
-    // One card CLOSED through the header toggle's seam, so every arm below reads both chevrons (the code-review round's
-    // finding 9). The Transform card: the last card, the MeshRenderer's, keeps its ##fields table for the body arms.
+    const float s = app->uiScale();
+    const float overhang = std::trunc(e63StyleX(s, "WindowPadding") * 0.5F);  // imgui_widgets.cpp:6906-6911
+    REQUIRE(overhang > 0.0F);  // ANTI-VACUITY: a panel window pads, so the overhang is real
+    // THE PLACED GEOMETRY, run on both reads below. Every arm reads ImGui's answer or what a draw call was HANDED,
+    // against an independent literal. The strip, the outline and the chevron / icon / title x's are ONE recorded span
+    // through ONE pure layout (PC10 owns cardHeaderLayout's arithmetic), so re-deriving them here would compare the
+    // record with itself.
+    const auto checkPlaced = [&](std::string_view read, const engine::editor::CardRecord& cardRecord) {
+        CAPTURE(read);
+        const std::vector<engine::editor::CardEntryRecord>& placed = cardRecord.cards;
+        for (std::size_t i = 0; i < placed.size(); ++i) {
+            CAPTURE(i);
+            const engine::editor::CardEntryRecord& card = placed[i];
+            CHECK(std::abs(card.headerItemMin.x - (card.stripMinX - overhang)) <= 0.5F);  // read off ImGui's item
+            CHECK(std::abs(card.headerItemMax.x - (card.stripMaxX + overhang)) <= 0.5F);
+            CHECK(card.headerRuleDrawn == card.open);  // the rule's vertices reached the list iff the card is open
+            if (card.open) {
+                // The values handed to SetCursorScreenPos and to the fill and outline, against D4's literal. They
+                // cannot see a draw that ignores them -- the table arms below read the item ImGui PLACED.
+                CHECK(std::abs(card.topPadding - (10.0F * s)) <= 1.0F);
+                CHECK(std::abs(card.bottomPadding - (10.0F * s)) <= 1.0F);
+            }
+            if (i + 1U < placed.size()) {
+                CHECK(std::abs(card.gapAfter - (12.0F * s)) <= 1.0F);  // the Dummy's net-height arithmetic
+            }
+        }
+        if (engine::editor::sceneIoAvailable()) {
+            // The paddings as ImGui PLACED the body: the last card's ##fields table (its OuterRect, read after
+            // EndTable) starts 10 dp under the strip and ends 10 dp above the card's bottom.
+            REQUIRE(cardRecord.lastBodyTableMaxY > cardRecord.lastBodyTableMinY);  // ANTI-VACUITY: a table drew
+            REQUIRE(placed.back().open);
+            CHECK(std::abs((cardRecord.lastBodyTableMinY - placed.back().stripBottomY) - (10.0F * s)) <= 1.0F);
+            CHECK(std::abs((placed.back().outerMax.y - cardRecord.lastBodyTableMaxY) - (10.0F * s)) <= 1.0F);
+        } else {
+            CHECK(cardRecord.lastBodyTableMaxY == 0.0F);  // reflect tools OFF: no table drew
+        }
+    };
+    // (1) BOTH cards open, read off a COPY taken before the seam closes one: the gap after the Transform card is then
+    // measured from an OPEN body ending in its ##fields table (its muted line with reflect tools OFF) -- the
+    // Inspector's one gap that follows a body, not a strip, and one the closed read below cannot reach (its first
+    // card is the closed one).
+    const std::uint64_t openBefore = inspector->drawRecord().framesRecorded;
+    e62Ticks(*app, 2);
+    REQUIRE(inspector->drawRecord().framesRecorded > openBefore);
+    const engine::editor::CardRecord bothOpen = inspector->drawRecord().cards;  // a copy, kept past the ticks
+    REQUIRE(bothOpen.cards.size() == 2U);
+    REQUIRE(bothOpen.cards.front().open);  // ANTI-VACUITY: the first gap follows an OPEN card...
+    REQUIRE(bothOpen.cards.back().open);   // ...and the placed-body arms read the last card's table
+    checkPlaced("both open", bothOpen);
+    // (2) One card CLOSED through the header toggle's seam, so the chevron arms read both chevrons (the code-review
+    // round's finding 9). The Transform card: the last card, the MeshRenderer's, keeps its ##fields table for the body
+    // arms.
     inspector->requestCardOpen("engine::Transform", false);
     const std::uint64_t before = inspector->drawRecord().framesRecorded;
     e62Ticks(*app, 2);
     const engine::editor::InspectorDrawRecord& r = inspector->drawRecord();
     REQUIRE(r.framesRecorded > before);
-    const float s = app->uiScale();
-    const float overhang = std::trunc(e63StyleX(s, "WindowPadding") * 0.5F);  // imgui_widgets.cpp:6906-6911
-    REQUIRE(overhang > 0.0F);  // ANTI-VACUITY: a panel window pads, so the overhang is real
     const std::vector<engine::editor::CardEntryRecord>& cards = r.cards.cards;
     REQUIRE(cards.size() == 2U);
     const engine::editor::CardEntryRecord& closedCard = cards.front();
     const engine::editor::CardEntryRecord& openCard = cards.back();
     REQUIRE_FALSE(closedCard.open);  // ANTI-VACUITY: the seam closed the Transform card...
     REQUIRE(openCard.open);          // ...and one record of each state is drawn
+    checkPlaced("one closed", r.cards);
     // ONE chevron face size for both states, from the OPEN chevron's ink: the closed chevron is the same stroke
     // rotated, never re-normalised to its own ink (measured at b6fb1c8, body 16: 12.4444 closed against 7.46667 open).
     // Both cards hand chevronFaceSize the same inputs, so the two sizes are equal bit for bit.
@@ -25960,24 +26008,23 @@ TEST_CASE("editor: card geometry -- one span, the framed overhang, paddings and 
     // and both draw a little wide: RenderText draws the bake at IM_ROUND(7.47) = 7 scaled by 7.47 / 7 (the quad arms
     // below hold the record to that). It also draws from a whole-point pen (IM_TRUNC, imgui_draw.cpp:5791), so the
     // painter rounds its pen and a centre can miss by half a point: the closed bound. The open start's 0.75 covers
-    // that half point plus half the 0.23 the open ink overhangs its column. Measured at scale 1: both inks 0.083 left
-    // of the column's centre, 3.73 and 2.67 wide, the open one starting 0.20 left of chevronX. A glyph placed by its
-    // BOX at chevronX reads +0.917 and +0.80 (both red). A closed ink left-aligned at chevronX moves the unrounded pen
-    // by only 0.42 and rounds to the SAME whole point here: the same pixels, which no reading can tell apart.
+    // that half point plus half of what the open ink overhangs its column. Measured at scale 1 on a 1x display: both
+    // inks 0.083 left of the column's centre, 3.73 and 2.67 wide, the open one starting 0.20 left of chevronX; on a 2x
+    // display (the font baked at density 2): 3.89 and 2.33 wide, the closed centre 0.028 off, the open start 0.22
+    // left. A glyph placed by its BOX at chevronX reads +0.917 and +0.80 on the 1x display (both red). An ink
+    // LEFT-ALIGNED at chevronX moves the unrounded pen by the centring term alone: on the 1x display +0.12 (open) and
+    // -0.42 (closed), both rounding to the SAME whole point -- the same pixels, which no reading can tell apart; on
+    // the 2x display the closed pen lands a whole point off (centre 1.03, red) while the open one (+0.19) still
+    // rounds the same. So these arms are the integration check, and whether they see the centring depends on the
+    // display: PC11 witnesses it as arithmetic, and the source arm below pins the pen as cardChevronPenX's answer.
     CHECK(std::abs(openCard.chevronInkWidth - (3.5F * s)) <= 1.0F);
     CHECK(std::abs(openCard.chevronInkMinX - (openCard.stripMinX + (10.0F * s))) <= 0.75F);
     CHECK(std::abs(closedCard.chevronInkWidth - (2.0F * s)) <= 1.0F);
     const float closedInkCentre = closedCard.chevronInkMinX + (closedCard.chevronInkWidth * 0.5F);
     CHECK(std::abs(closedInkCentre - (closedCard.stripMinX + (10.0F * s) + (1.75F * s))) <= 0.5F);
-    // Every arm reads ImGui's answer or what a draw call was HANDED, against an independent literal. The strip, the
-    // outline and the chevron / icon / title x's are ONE recorded span through ONE pure layout (PC10 owns
-    // cardHeaderLayout's arithmetic), so re-deriving them here would compare the record with itself.
     for (std::size_t i = 0; i < cards.size(); ++i) {
         CAPTURE(i);
         const engine::editor::CardEntryRecord& card = cards[i];
-        CHECK(std::abs(card.headerItemMin.x - (card.stripMinX - overhang)) <= 0.5F);  // read off ImGui's item
-        CHECK(std::abs(card.headerItemMax.x - (card.stripMaxX + overhang)) <= 0.5F);
-        CHECK(card.headerRuleDrawn == card.open);  // the rule's vertices reached the list iff the card is open
         // The chevron's INK, read off the atlas as RenderText draws it (plan section 0.4 item 13): narrower than the
         // glyph's box (a box reading makes the two equal). Its width and place, per state, above.
         CHECK(card.chevronInkWidth > 0.0F);  // ANTI-VACUITY: the atlas held the glyph's pixels
@@ -25989,26 +26036,9 @@ TEST_CASE("editor: card geometry -- one span, the framed overhang, paddings and 
         REQUIRE(card.chevronQuadMaxX > card.chevronQuadMinX);  // ANTI-VACUITY: the glyph's quad reached the list
         CHECK(std::abs(card.chevronBoxMinX - card.chevronQuadMinX) <= 1e-3F);
         CHECK(std::abs((card.chevronBoxMinX + card.chevronBoxWidth) - card.chevronQuadMaxX) <= 1e-3F);
-        if (card.open) {
-            // The values handed to SetCursorScreenPos and to the fill and outline, against D4's literal. They cannot
-            // see a draw that ignores them -- the table arms below read the item ImGui PLACED.
-            CHECK(std::abs(card.topPadding - (10.0F * s)) <= 1.0F);
-            CHECK(std::abs(card.bottomPadding - (10.0F * s)) <= 1.0F);
-        }
-        if (i + 1U < cards.size()) {
-            CHECK(std::abs(card.gapAfter - (12.0F * s)) <= 1.0F);  // the Dummy's net-height arithmetic
-        }
     }
-    if (engine::editor::sceneIoAvailable()) {
-        // The paddings as ImGui PLACED the body: the last card's ##fields table (its OuterRect, read after EndTable)
-        // starts 10 dp under the strip and ends 10 dp above the card's bottom.
-        REQUIRE(r.cards.lastBodyTableMaxY > r.cards.lastBodyTableMinY);  // ANTI-VACUITY: a table body was submitted
-        REQUIRE(cards.back().open);
-        CHECK(std::abs((r.cards.lastBodyTableMinY - cards.back().stripBottomY) - (10.0F * s)) <= 1.0F);
-        CHECK(std::abs((cards.back().outerMax.y - r.cards.lastBodyTableMaxY) - (10.0F * s)) <= 1.0F);
-    } else {
+    if (!engine::editor::sceneIoAvailable()) {
         MESSAGE("I336: reflect tools OFF -- no table drew, so the placed-body arms have no item to read");
-        CHECK(r.cards.lastBodyTableMaxY == 0.0F);
     }
     // SOURCE: the header and the overflow each bracketed by their FrameBorderSize push/pop; the header's Text clear;
     // the release-rule right-click; no IsItemClicked(Right).
@@ -26023,6 +26053,17 @@ TEST_CASE("editor: card geometry -- one span, the framed overhang, paddings and 
     const std::size_t rightAt = soleLineContaining(chrome, "IsMouseReleased(ImGuiMouseButton_Right)");
     CHECK(chrome[rightAt + 1U].find("ImGuiHoveredFlags_AllowWhenBlockedByPopup") != std::string::npos);
     CHECK(countLinesContaining(chrome, "IsItemClicked(ImGuiMouseButton_Right)") == 0U);
+    // The chevron's pen IS cardChevronPenX's answer (PC11 owns the centring, which no pixel arm above sees on
+    // every display): assigned once, from the call, handed to the chevron's AddText as is, and no centring term
+    // restated in the ImGui TU.
+    const std::string_view pen = "cardChevronPenX(layout.chevronX, geometry.chevronWidth, ink.left, ink.width);";
+    const std::size_t penAt = soleLineContaining(chrome, "const float penX = ");
+    CHECK(chrome[penAt].find(pen) != std::string::npos);
+    CHECK(countLinesContaining(chrome, "penX = ") == 1U);
+    const std::size_t chevronTextAt = soleLineContaining(chrome, "AddText(body, chevronSize, ");
+    CHECK(chrome[chevronTextAt].find("ImVec2(penX, ") != std::string::npos);
+    CHECK(chevronTextAt > penAt);
+    CHECK(countLinesContaining(chrome, "chevronWidth - ink.width") == 0U);
     app->requestQuit();
     CHECK(app->tick() == false);
     app.reset();

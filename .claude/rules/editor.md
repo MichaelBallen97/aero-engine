@@ -2288,7 +2288,10 @@ state.
   the bake at `IM_ROUND(size)` (`imgui_draw.cpp:5415`), scaled by size / that bake's `Size` (`:5802`), from a pen the
   painter rounds to a whole point because `RenderText` truncates it (`:5791`) -- read raw, the chevron's record sat
   0.2 right of the quad it drew and 6.25 % narrow at body 16. `I336` holds the record's box to the quad the list
-  received, off `AddText`'s four vertices.
+  received, off `AddText`'s four vertices. **The pen is the pure `cardChevronPenX`'s answer** (`PC11`; `I336` pins the
+  call): at a whole-point pen a centred and a left-aligned ink often draw the same pixels (measured at body 16, scale
+  1: both states on a 1x display, the open one on a 2x display), so only tier 0 witnesses the centring on every
+  display -- keep the arithmetic there.
 - **A panel header that must stay ImGui-free holds the painter by `std::unique_ptr<CardPainter>`**, with the class
   forward-declared and the host's constructor and destructor defined out of line.
 - **EVERY CHROME COLOUR A PANEL DRAWS IS A THEME TOKEN, never a literal.** A PALETTE colour is reached as a

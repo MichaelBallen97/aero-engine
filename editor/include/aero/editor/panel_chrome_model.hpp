@@ -99,6 +99,14 @@ struct CardHeaderLayout {
 // section 15 item 13). Falls back to bodyPoints when either measurement is not a finite positive number. The painter
 // hands it the OPEN chevron's ink in both states, so the closed chevron is the same face rotated, never re-normalised.
 [[nodiscard]] float chevronFaceSize(float bodyPoints, float inkAtBody, float uiScale) noexcept;
+// The whole-point pen x that centres a chevron's INK in its column: round(chevronX + (columnWidth - inkWidth) / 2 -
+// inkLeft), with the ink as the painter reads it at the drawn size (inkLeft relative to the pen). RenderText draws
+// from IM_TRUNC(pen x) (imgui_draw.cpp:5791), so a whole pen draws exactly here and the centre misses the column's by
+// at most half a point. That rounding is why the centring is witnessed HERE (PC11): at a whole pen a centred and a
+// left-aligned ink often land on the same point, so no pixel reading can be relied on. TOTAL: a non-finite input
+// counts as 0 -- the answer the painter's ink reading gives when it measures nothing -- and a sum past the float range
+// answers 0, so the pen is always a finite whole point.
+[[nodiscard]] float cardChevronPenX(float chevronX, float columnWidth, float inkLeft, float inkWidth) noexcept;
 
 // ---- the section icon tables (D10): roster glyphs only, as views of the AERO_ICON_* literals -----------------
 [[nodiscard]] std::string_view materialSectionIcon(MaterialSectionId id) noexcept;

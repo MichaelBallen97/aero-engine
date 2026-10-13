@@ -133,6 +133,13 @@ float chevronFaceSize(float bodyPoints, float inkAtBody, float uiScale) noexcept
     return (std::isfinite(size) && size > 0.0F) ? size : body;
 }
 
+float cardChevronPenX(float chevronX, float columnWidth, float inkLeft, float inkWidth) noexcept {
+    const auto finiteOrZero = [](float v) noexcept { return std::isfinite(v) ? v : 0.0F; };
+    const float centring = (finiteOrZero(columnWidth) - finiteOrZero(inkWidth)) * 0.5F;
+    const float pen = std::round(finiteOrZero(chevronX) + centring - finiteOrZero(inkLeft));
+    return std::isfinite(pen) ? pen : 0.0F;
+}
+
 // D10: a roster glyph per section, chosen for what the section holds (the plan's §21 records the choice).
 std::string_view materialSectionIcon(MaterialSectionId id) noexcept {
     switch (id) {

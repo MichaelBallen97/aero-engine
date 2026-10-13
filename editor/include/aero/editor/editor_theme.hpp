@@ -294,7 +294,7 @@ struct ThemePanels {
     float cardPaddingY = 10.0F;          // the body's DRAWN top and bottom padding, net of ItemSpacing.y (D4)
     float cardGap = 12.0F;               // card to card, drawn
     float cardHeaderPaddingY = 8.0F;     // derived: body 16 + 2 x 8 = 32, the 31-dp strip plus its rule
-    float cardHeaderPaddingX = 10.0F;    // the chevron's ink 10 dp from the card's edge
+    float cardHeaderPaddingX = 10.0F;    // the chevron COLUMN, 10 dp in: the open ink fills it, the closed is centred
     float cardChevronWidth = 3.5F;       // the chevron's INK: 7 x 7 px (x 2244-2250)
     float cardIconGap = 8.0F;            // chevron -> icon, and icon -> title (chosen)
     float chipPaddingX = 10.0F;          // "RMB + WASD to fly": 111.5 dp = 90.9 in BodySmall + 2 x 10.3 (10)

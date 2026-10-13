@@ -492,11 +492,12 @@ CardHeaderResult CardPainter::begin(const char* strId, const CardSpec& spec, boo
         open ? std::string_view(AERO_ICON_CHEVRON_DOWN) : std::string_view(AERO_ICON_CHEVRON_RIGHT);
     // The glyph drawn, read as RenderText draws it at chevronSize (glyphInk's bake and scale). Its INK -- not the box
     // -- is centred in the chevronWidth column at chevronX: open it fills the column, closed it is the narrower rotated
-    // stroke. RenderText truncates the pen to a whole point (imgui_draw.cpp:5791), so the pen is ROUNDED to one here:
-    // the truncation is then the identity, the ink lands exactly where the record says, and the centre misses the
-    // column's by at most half a point.
+    // stroke. RenderText truncates the pen to a whole point (imgui_draw.cpp:5791), so the pen is ROUNDED to one: the
+    // truncation is then the identity, the ink lands exactly where the record says, and the centre misses the column's
+    // by at most half a point. The arithmetic is the pure cardChevronPenX's (PC11), the one place a test can tell a
+    // centred ink from a left-aligned one on every display; I336 pins this line as its call.
     const GlyphInk ink = glyphInk(body, chevronSize, chevron);
-    const float penX = std::round(layout.chevronX + ((geometry.chevronWidth - ink.width) * 0.5F) - ink.left);
+    const float penX = cardChevronPenX(layout.chevronX, geometry.chevronWidth, ink.left, ink.width);
     const float midY = (topY + stripBottomY) * 0.5F;
     const int glyphVertex = list->VtxBuffer.Size;  // the channels share ONE VtxBuffer (see end())
     list->AddText(body, chevronSize, ImVec2(penX, midY - (chevronSize * 0.5F)), roleU32(ChromeRole::TextFaint),

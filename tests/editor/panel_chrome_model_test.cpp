@@ -1,4 +1,4 @@
-// Aero Engine -- task E.6.3: the panels' shared chrome as VALUES (PC1-PC10). Tier 0: no ImGui, no GPU, no #if.
+// Aero Engine -- task E.6.3: the panels' shared chrome as VALUES (PC1-PC11). Tier 0: no ImGui, no GPU, no #if.
 // Every expected value is a RESTATED literal (the mock's bytes, the theme's dp), never recomputed by the function
 // under test.
 #include <aero/editor/editor_icons.hpp>
@@ -340,4 +340,39 @@ TEST_CASE("panel chrome: the header's x positions and face sizes are arithmetic 
     CHECK(ed::chevronFaceSize(16.0F, 0.0F, 1.0F) == 16.0F);  // no ink measured: the body size
     CHECK(ed::chevronFaceSize(16.0F, NAN_F, 1.0F) == 16.0F);
     CHECK(ed::chevronFaceSize(NAN_F, 7.0F, 1.0F) == 8.0F);  // a bad body is the theme's body, 16
+}
+
+TEST_CASE("panel chrome: the chevron's pen centres its ink, a whole point, total (task E.6.3, PC11)") {
+    // round(chevronX + (column - ink width) / 2 - ink left). The GPU tier cannot be relied on to witness the centring:
+    // RenderText draws from a whole-point pen, and at I336's geometry a left-aligned ink rounds to the SAME point (on
+    // a 1x display both states; on a 2x one the open state). So these inputs are chosen where the centred and the
+    // left-aligned pens round to DIFFERENT points.
+    CHECK(ed::cardChevronPenX(100.0F, 3.5F, 0.0F, 2.0F) == 101.0F);  // 100.75; left-aligned: 100
+    CHECK(ed::cardChevronPenX(200.0F, 3.5F, 2.5F, 1.0F) == 199.0F);  // 198.75; left-aligned: 197.5 -> 198
+    // The open chevron: its ink overhangs the column (3.75 in 3.5), so the centring term is NEGATIVE.
+    CHECK(ed::cardChevronPenX(100.35F, 3.5F, 1.8F, 3.75F) == 98.0F);  // 98.425; left-aligned: 98.55 -> 99
+    // An ink that fills the column exactly has no centring term: its ink starts at the column's start, less the
+    // rounding (108 + 1.75 = 109.75 for a column at 110).
+    CHECK(ed::cardChevronPenX(110.0F, 3.5F, 1.75F, 3.5F) == 108.0F);  // 108.25
+    // I336's geometry at body 16, scale 1, on a 1x display (a column at 991): the open ink {1.8, 3.73} and the closed
+    // {2.33, 2.67} both give 989.08 -> 989, and left-aligned 989.2 and 988.67 -> 989 too: the same pixels.
+    CHECK(ed::cardChevronPenX(991.0F, 3.5F, 1.8F, 3.73333F) == 989.0F);
+    CHECK(ed::cardChevronPenX(991.0F, 3.5F, 2.33333F, 2.66667F) == 989.0F);
+    // TOTAL: a non-finite input counts as 0 (the ink reading's answer when it measures nothing), so every answer is a
+    // finite whole point.
+    for (const float bad : {NAN_F, INF_F, -INF_F}) {
+        CAPTURE(bad);
+        const float noChevronX = ed::cardChevronPenX(bad, 3.5F, 0.0F, 2.0F);
+        const float noColumn = ed::cardChevronPenX(100.0F, bad, 0.0F, 2.0F);
+        const float noInkLeft = ed::cardChevronPenX(100.0F, 3.5F, bad, 2.0F);
+        const float noInkWidth = ed::cardChevronPenX(100.0F, 3.5F, 0.0F, bad);
+        CHECK(noChevronX == 1.0F);    // 0 + 0.75
+        CHECK(noColumn == 99.0F);     // 100 + (0 - 2) / 2
+        CHECK(noInkLeft == 101.0F);   // 100 + 0.75 - 0
+        CHECK(noInkWidth == 102.0F);  // 100 + 1.75 = 101.75
+    }
+    // ...and a sum past the float range answers 0, never an infinity.
+    constexpr float MAX_F = std::numeric_limits<float>::max();
+    CHECK(ed::cardChevronPenX(MAX_F, MAX_F, 0.0F, 0.0F) == 0.0F);
+    CHECK(ed::cardChevronPenX(-MAX_F, 0.0F, MAX_F, 0.0F) == 0.0F);
 }
