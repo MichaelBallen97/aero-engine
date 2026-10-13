@@ -25292,12 +25292,16 @@ TEST_CASE("editor: the Hierarchy's search gate and tree child as source text (ta
         return at;
     };
     // ALWAYS a child, and its ANSWER is used (the code-review round's finding 6): the statement binding `treeVisible`
-    // opens its line and EndChild opens its own at the same indentation, so no `if` guards the pair; the walk and the
-    // void target sit inside `if (treeVisible) {`, which closes before EndChild, so a skipped child consumes no reveal
-    // (I340); and the match count runs in onDraw ahead of that `if`, so the badge stays current over a skipped child.
+    // opens its line at onDraw's BODY indentation -- its first statement's -- and EndChild opens its own at the same
+    // one, so no `if` guards the pair. The body anchor is what says so (the code-review round, round 2): an `if`
+    // wrapped round the pair re-indents BOTH lines, which keeps them equal to each other and would leave the child --
+    // and the whole tree -- undrawn whenever its condition is false. The walk and the void target sit inside `if
+    // (treeVisible) {`, which closes before EndChild, so a skipped child consumes no reveal (I340); and the match count
+    // runs in onDraw ahead of that `if`, so the badge stays current over a skipped child.
     const std::size_t childAt = soleLineContaining(code, "BeginChild(\"##tree\"");
     const std::size_t childIndent = code[childAt].find_first_not_of(' ');
     CHECK(childIndent == code[childAt].find("const bool treeVisible = ImGui::BeginChild(\"##tree\""));
+    CHECK(childIndent == code[nextCodeLine(code, onDrawAt + 1U)].find_first_not_of(' '));  // onDraw's own body
     const std::size_t endChildAt = soleLineContaining(code, "ImGui::EndChild();");
     CHECK(childAt < endChildAt);
     CHECK(code[endChildAt].find("ImGui::EndChild();") == childIndent);
@@ -25387,6 +25391,16 @@ TEST_CASE("editor: every E.6.3 request is drained under its control's predicate 
         CHECK(code[drainAt].find("searchEnabled") != std::string::npos);
         CHECK(code[drainAt].find("noModal") != std::string::npos);
         resetFollowsGate(code, drainAt, "pendingSearchFocus = false;");
+    }
+    SUBCASE("the Hierarchy's rename request") {
+        // The seam that stands in for the Rename entry (I344): F2's gate -- the shortcut verdict every Hierarchy key
+        // obeys, so no rename in progress and the search field not owning the keys -- and noModal.
+        const std::vector<std::string> code = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/hierarchy_panel.cpp");
+        const std::size_t drainAt = soleLineContaining(code, "pendingBeginRename.has_value() &&");
+        CHECK(code[drainAt].find("shortcutsLive") != std::string::npos);
+        CHECK(code[drainAt].find("noModal") != std::string::npos);
+        CHECK(countLinesContaining(code, "if (shortcutsLive) {") == 1U);  // F2 reads the same verdict (I312)
+        resetFollowsGate(code, drainAt, "pendingBeginRename.reset();");
     }
     SUBCASE("the Inspector's component menu") {
         const std::vector<std::string> code = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/inspector_panel.cpp");
@@ -27535,6 +27549,28 @@ TEST_CASE("editor: a panel request its gate refuses, or its panel never draws, i
         REQUIRE(app->tick());
     }
     CHECK(tree.searchActive);
+    // The Hierarchy's rename request (I344's seam), closed again. A held request would begin the rename on the first
+    // drawn frame, whose gate is open: the reappearing window re-initialises its NavId, which releases the
+    // search field's hold (I339 (f)), so that frame's recorded verdict is asserted before anything else is read.
+    app->panels().setVisible("Hierarchy", false);
+    REQUIRE(app->tick());
+    const std::uint64_t renameIdle = tree.framesRecorded;
+    hierarchy->requestBeginRename(cube);
+    REQUIRE(app->tick());
+    REQUIRE(tree.framesRecorded == renameIdle);  // ANTI-VACUITY: no onDraw ran over that tick
+    app->panels().setVisible("Hierarchy", true);
+    for (int i = 0; i < 4 && tree.framesRecorded == renameIdle; ++i) {
+        REQUIRE(app->tick());
+    }
+    REQUIRE(tree.framesRecorded > renameIdle);
+    REQUIRE(tree.shortcutsLive);                       // ANTI-VACUITY: the first drawn frame's drain gate was open
+    CHECK_FALSE(hierarchy->renamingEntity().valid());  // a held request would have begun the rename on that frame
+    hierarchy->requestBeginRename(cube);               // control: the same request, the panel drawing
+    for (int i = 0; i < 4 && !tree.renameActive; ++i) {
+        REQUIRE(app->tick());
+    }
+    CHECK(tree.renameActive);
+    CHECK(hierarchy->renamingEntity() == cube);
 
     app->requestQuit();
     CHECK(app->tick() == false);
@@ -27736,6 +27772,235 @@ TEST_CASE("editor: a skipped Hierarchy tree child keeps a pending reveal (task E
     REQUIRE_FALSE(r.flatMode);
     CHECK(e63RoleOf(r, item).has_value());  // Folder opened: the reveal waited out the query
     CHECK(r.rowsDrawn == 8U);               // the four default roots, Group, Child, Folder and Item
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: a rename whose field stops drawing ends as the field would (task E.6.3, I344)") {
+    // Task E.6.3's code-review round, round 2. The inline rename's ##rename field is a row's, so it lives in the ##tree
+    // child, and a child SKIPPED under an active field -- a dock cut down to its header row (I340's way; at main the
+    // rows lived in the panel window, where ItemAdd's KeepAliveID kept the field alive, imgui.cpp:11987) -- or a panel
+    // that does not draw at all (closed, or behind another tab: the stuck state main already had) submits no field.
+    // NewFrame then drops its ActiveId (imgui.cpp:5795-5799) and the deactivation it records lapses (:5818-5819)
+    // before the field draws again, so IsItemDeactivated never fired and `renaming` stayed set: the search field
+    // disabled, and Delete, Backspace, Ctrl+D and F2 dead until the field was clicked and left. DECIDED: a rename whose
+    // field was not drawn on the previous frame ENDS on the next drawn one, as the field's own deactivation would --
+    // committed when the buffer differs from the name the rename began with (an edit), cancelled otherwise -- and is
+    // never re-armed, which would steal the keyboard back from wherever it went meanwhile. Only typing makes the
+    // buffer differ from that name, and nothing here can type, so every arm below is the cancel and the commit half
+    // is pinned as source text; a manual pass is its behavioural witness. (d) is the cancel a decision read against
+    // the World's CURRENT name got wrong: the entity renamed elsewhere while the field is gone.
+    //
+    // THE SOURCE ARM -- the stale-field check and the two arms share ONE commit and ONE cancel path. It is a plain
+    // block, never a SUBCASE: doctest discovers a sibling SUBCASE only by reaching it, so a SUBCASE that returns early
+    // -- as a source-only one must, ahead of the GPU set-up -- hides every later sibling and they never run (measured:
+    // one traversal, the source assertions alone). It runs once per GPU SUBCASE below.
+    {
+        const std::vector<std::string> code = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/hierarchy_panel.cpp");
+        REQUIRE(code.size() > 200U);
+        CHECK(countLinesContaining(code, "void HierarchyPanel::commitRename(") == 1U);
+        CHECK(countLinesContaining(code, "void HierarchyPanel::cancelRename(") == 1U);
+        CHECK(countLinesContaining(code, "make_unique<RenameEntityCommand>") == 1U);  // the commit helper's push
+        // The arms: each case label's first statement is its helper.
+        const std::size_t beginCaseAt = soleLineContaining(code, "case ActionKind::BeginRename:");
+        const std::size_t commitCaseAt = soleLineContaining(code, "case ActionKind::CommitRename:");
+        const std::size_t cancelCaseAt = soleLineContaining(code, "case ActionKind::CancelRename:");
+        CHECK(code[nextCodeLine(code, commitCaseAt + 1U)].find("commitRename(context, pending.target);") !=
+              std::string::npos);
+        CHECK(code[nextCodeLine(code, cancelCaseAt + 1U)].find("cancelRename();") != std::string::npos);
+        // The check: in onDraw, after the E24 drop and BEFORE the search field's predicate and the shortcut verdict
+        // read `renaming`, deciding on the buffer against the name the rename began with, through the same two helpers.
+        const std::size_t onDrawAt = soleLineContaining(code, "void HierarchyPanel::onDraw(");
+        const std::size_t e24At = soleLineContaining(code, "!world.alive(renaming)");
+        const std::size_t staleAt = soleLineContaining(code, "renameFieldFrame != ImGui::GetFrameCount() - 1");
+        const std::size_t enabledAt = soleLineContaining(code, "searchEnabled = !renaming.valid();");
+        CHECK(onDrawAt < e24At);
+        CHECK(e24At < staleAt);
+        CHECK(staleAt < enabledAt);
+        CHECK(code[staleAt].find("if (renaming.valid() && ") != std::string::npos);
+        const std::size_t decideAt = soleLineContaining(code, "renameBuffer != renameOriginal");
+        CHECK(nextCodeLine(code, staleAt + 1U) == decideAt);
+        CHECK(code[decideAt].find("if (renameBuffer != renameOriginal) {") != std::string::npos);
+        // ...against the name the rename began with, which the BeginRename arm alone writes, beside the buffer: a
+        // second writer (a refresh from the World's name) would bring back the commit (d) refuses.
+        CHECK(countLinesContaining(code, "renameOriginal = ") == 1U);
+        const std::size_t originalAt = soleLineContaining(code, "renameOriginal = renameBuffer;");
+        CHECK(beginCaseAt < originalAt);
+        CHECK(originalAt < commitCaseAt);
+        const std::size_t commitAt = nextCodeLine(code, decideAt + 1U);
+        CHECK(code[commitAt].find("commitRename(context, renaming);") != std::string::npos);
+        const std::size_t elseAt = nextCodeLine(code, commitAt + 1U);
+        CHECK(code[elseAt].find("} else {") != std::string::npos);
+        CHECK(code[nextCodeLine(code, elseAt + 1U)].find("cancelRename();") != std::string::npos);
+        CHECK(countLinesContaining(code, "commitRename(context, ") == 2U);  // the arm and the check, nothing else
+        CHECK(countLinesContaining(code, "cancelRename();") == 2U);
+        // The frame is written where the field is submitted -- the statement after its call -- and by the BeginRename
+        // arm, and nowhere else: a third writer could keep a field that no longer draws looking fresh.
+        CHECK(countLinesContaining(code, "renameFieldFrame = ImGui::GetFrameCount();") == 2U);
+        const std::size_t fieldAt = soleLineContaining(code, "\"##rename\"");
+        CHECK(code[nextCodeLine(code, fieldAt + 1U)].find("renameFieldFrame = ImGui::GetFrameCount();") !=
+              std::string::npos);
+        std::size_t armWrites = 0;
+        for (std::size_t i = beginCaseAt; i < commitCaseAt; ++i) {
+            armWrites += code[i].find("renameFieldFrame = ImGui::GetFrameCount();") != std::string::npos ? 1U : 0U;
+        }
+        CHECK(armWrites == 1U);
+    }
+
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "hierarchy stale rename i344", .width = 900, .height = 600});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = e62App(*device, *window, ctx);
+    auto* const hierarchy = dynamic_cast<engine::editor::HierarchyPanel*>(app->panels().find("Hierarchy"));
+    REQUIRE(hierarchy != nullptr);
+    const engine::editor::HierarchyDrawRecord& r = hierarchy->drawRecord();
+    const engine::World& world = app->world();
+    const engine::Entity cube = e62EntityNamed(world, "Cube");
+    REQUIRE(cube.valid());
+    REQUIRE(r.shortcutsLive);  // ANTI-VACUITY: a fresh editor's gate is open, so the rename is what shuts it below
+    // Begin the rename as F2 would: the keyboard in the Hierarchy, then the seam. The field activates through
+    // SetKeyboardFocusHere one frame after it is first drawn.
+    app->requestPanelFocus("Hierarchy");
+    e62Ticks(*app, 2);
+    REQUIRE(app->keyboardFocusPanelId() == "Hierarchy");
+    const std::size_t commandsBefore = app->commands().count();
+    hierarchy->requestBeginRename(cube);
+    for (int i = 0; i < 4 && !r.renameActive; ++i) {
+        REQUIRE(app->tick());
+    }
+    REQUIRE(r.renameActive);
+    REQUIRE(r.renameFieldDrawn);
+    REQUIRE(hierarchy->renamingEntity() == cube);
+    REQUIRE_FALSE(r.shortcutsLive);
+    // The witness for "the search field is enabled" is a query landing: during the rename the field is disabled, and
+    // the same request is dropped -- so a query that lands below says the rename no longer holds the field.
+    hierarchy->requestSearchQuery("cube");
+    REQUIRE(app->tick());
+    REQUIRE_FALSE(r.flatMode);
+    REQUIRE(r.renameActive);
+    // What "ended" means, read after each interruption: no rename, no field, the name and the history untouched (an
+    // unedited field cancels), the gate live and the search field taking a query again.
+    const auto checkEnded = [&]() {
+        CHECK_FALSE(hierarchy->renamingEntity().valid());
+        CHECK_FALSE(r.renameFieldDrawn);
+        CHECK(world.name(cube) == "Cube");
+        CHECK(app->commands().count() == commandsBefore);
+        CHECK(r.shortcutsLive);
+        hierarchy->requestSearchQuery("cube");
+        e62Ticks(*app, 2);
+        CHECK(r.flatMode);
+    };
+
+    SUBCASE("(a) the ##tree child skipped under the active field, then visible again") {
+        // THE CUT, I340's: the panel's clip bottom lands mid search field, so the panel draws and the child does not.
+        REQUIRE(r.treeChildMin.y < r.panelClipMaxY);  // the control: at full height the child is visible
+        const engine::platform::WindowSize full = window->size();
+        const float belowClip = static_cast<float>(full.height) - r.panelClipMaxY;
+        const float fieldMidY = (r.searchFieldMin.y + r.searchFieldMax.y) * 0.5F;
+        const auto cutHeight = static_cast<std::int32_t>(std::lround(fieldMidY + belowClip));
+        window->setSize(full.width, cutHeight);
+        e62Ticks(*app, 3);
+        // No early return on a refused cut: a SUBCASE that returns hides its later siblings from doctest (above).
+        const bool cutTaken = window->size().height == cutHeight;
+        if (!cutTaken) {
+            MESSAGE("I344: the window took height " << window->size().height << ", not " << cutHeight);
+            WARN(cutTaken);  // geometry: a platform minimum refused the cut -- (a) is skipped
+        } else {
+            const std::uint64_t cutFrames = r.framesRecorded;
+            REQUIRE(app->tick());
+            REQUIRE(r.framesRecorded > cutFrames);         // the PANEL drew: its onDraw ran this frame
+            REQUIRE(r.treeChildMin.y >= r.panelClipMaxY);  // ANTI-VACUITY: the child's top at or below the clip
+            REQUIRE_FALSE(r.renameFieldDrawn);             // ...so the field was not submitted
+            e62Ticks(*app, 2);
+            window->setSize(full.width, full.height);
+            for (int i = 0; i < 8 && r.treeChildMin.y >= r.panelClipMaxY; ++i) {
+                REQUIRE(app->tick());
+            }
+            REQUIRE(r.treeChildMin.y < r.panelClipMaxY);  // visible again: the predicate ended the loop
+            e62Ticks(*app, 2);
+            checkEnded();
+        }
+    }
+    SUBCASE("(b) the Hierarchy closed under the active field, then shown again") {
+        app->panels().setVisible("Hierarchy", false);
+        REQUIRE(app->tick());
+        const std::uint64_t idle = r.framesRecorded;
+        e62Ticks(*app, 2);
+        REQUIRE(r.framesRecorded == idle);  // ANTI-VACUITY: no onDraw ran, so the field was not submitted
+        app->panels().setVisible("Hierarchy", true);
+        e62Ticks(*app, 2);
+        REQUIRE(r.framesRecorded > idle);  // the panel drew again
+        checkEnded();
+    }
+    SUBCASE("(c) control: an uninterrupted rename stays active") {
+        // The field drawn on every frame keeps the check quiet: one frame late or early in its arithmetic would end
+        // the rename here.
+        for (int i = 0; i < 4; ++i) {
+            REQUIRE(app->tick());
+            CHECK(r.renameFieldDrawn);
+            CHECK(r.renameActive);
+            CHECK(hierarchy->renamingEntity() == cube);
+            CHECK_FALSE(r.shortcutsLive);
+        }
+    }
+    SUBCASE("(d) the entity renamed elsewhere while the field is gone: an undo's name stands") {
+        // The cancel a decision read against the World's CURRENT name got wrong: Edit > Undo (requestUndo, its own
+        // substitute) of an earlier rename, run while the Hierarchy is closed under an unedited field. The buffer --
+        // still the name the rename began with -- then differs from the World's name, so such a decision COMMITTED
+        // it: the undone rename re-applied and the redo branch dropped, where the field's own deactivation of an
+        // unedited field cancels. The preamble's rename ends first, the (b) way, so the history can take a rename of
+        // the Cube to undo before a second rename begins on its new name.
+        app->panels().setVisible("Hierarchy", false);
+        e62Ticks(*app, 2);
+        app->panels().setVisible("Hierarchy", true);
+        e62Ticks(*app, 2);
+        REQUIRE_FALSE(hierarchy->renamingEntity().valid());
+        engine::editor::CommandContext cmd{app->world(), app->selection(), app->roots()};
+        auto earlier = std::make_unique<engine::editor::RenameEntityCommand>(cube, "Cube", "Crate");
+        REQUIRE(app->commands().push(cmd, std::move(earlier)));
+        REQUIRE(app->tick());
+        REQUIRE(world.name(cube) == "Crate");
+        const std::size_t history = app->commands().count();
+        app->requestPanelFocus("Hierarchy");
+        e62Ticks(*app, 2);
+        REQUIRE(app->keyboardFocusPanelId() == "Hierarchy");
+        hierarchy->requestBeginRename(cube);
+        for (int i = 0; i < 4 && !r.renameActive; ++i) {
+            REQUIRE(app->tick());
+        }
+        REQUIRE(r.renameActive);
+        REQUIRE(hierarchy->renamingEntity() == cube);
+        app->panels().setVisible("Hierarchy", false);
+        REQUIRE(app->tick());
+        const std::uint64_t idle = r.framesRecorded;
+        app->requestUndo();
+        REQUIRE(app->tick());
+        REQUIRE(r.framesRecorded == idle);    // ANTI-VACUITY: the undo ran while no field was drawn
+        REQUIRE(world.name(cube) == "Cube");  // ...and it took: the buffer, "Crate", now differs from the World
+        REQUIRE(app->commands().canRedo());
+        app->panels().setVisible("Hierarchy", true);
+        e62Ticks(*app, 2);
+        REQUIRE(r.framesRecorded > idle);  // the panel drew again, so the check ran
+        CHECK_FALSE(hierarchy->renamingEntity().valid());
+        CHECK_FALSE(r.renameFieldDrawn);
+        CHECK(world.name(cube) == "Cube");  // the undo's name stands
+        CHECK(app->commands().count() == history);
+        CHECK(app->commands().canRedo());  // the redo branch is kept...
+        CHECK(r.shortcutsLive);
+        app->requestRedo();
+        REQUIRE(app->tick());
+        CHECK(world.name(cube) == "Crate");  // ...and it is the earlier rename
+    }
 
     app->requestQuit();
     CHECK(app->tick() == false);

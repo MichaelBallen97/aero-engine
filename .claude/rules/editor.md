@@ -2328,9 +2328,10 @@ state.
   Chrome drawn around a claimed shape grows the ONE claimed extent with it (`VO14`, `I116`). The box is the circle's
   NOMINAL extent, exact at and below scale 1: above it the `ruleHeight()` stroke (s points) overhangs the box by
   0.5 x (s - 1) points, plus the AA fringe, as every `roleOutline` overhangs its rect -- neither claimed nor cleared.
-- **A request seam obeys its control** (the shell chrome's rule, again): the Hierarchy's search query and search-field
-  focus, the Inspector's component menu and card header toggle, the Assets navigation and the Viewport's stats toggle
-  are each drained on ONE line naming the control's enabled predicate and `noModal`, computed once from
+- **A request seam obeys its control** (the shell chrome's rule, again): the Hierarchy's search query, search-field
+  focus and rename request (F2's gate, the `shortcutsLive` verdict), the Inspector's component menu and card header
+  toggle, the Assets navigation and the Viewport's stats toggle are each drained on ONE line naming the control's
+  enabled predicate and `noModal`, computed once from
   `GetTopMostPopupModal()` (`I337`). **A request HELD ON A PANEL lives one tick too**, by its own mechanism, since the
   shell chrome's clear after the `ShellUiState` build reaches only `EditorApp`'s members: the panel resets it on the
   first statement after its drain's closing brace, whichever way the gate answered (`I337`; the Inspector's two seams
@@ -2378,6 +2379,25 @@ state.
   reads it, `imgui_widgets.cpp:6808-6809`), so only the Hierarchy's TREE walk takes the reveal, never the flat match
   list: a query typed while it waits defers it. Anything the panel shows OUTSIDE the child (the badge's `m / n`) is
   computed ahead of the gate.
+- **A RENAME WHOSE FIELD STOPS DRAWING ENDS AS THE FIELD WOULD** (E.6.3's code-review round, round 2; `I344`). The
+  Hierarchy's `##rename` field is a row's, so it lives in the `##tree` child: a child skipped under an active field (a
+  dock cut to its header row -- at `main` the rows lived in the panel window, where `ItemAdd`'s `KeepAliveID` kept the
+  field alive, `imgui.cpp:11987`), a renamed row no longer walked, or a panel that does not draw at all (closed, or
+  behind another tab -- `main`'s own stuck state) submits no field. `NewFrame` drops its `ActiveId`
+  (`imgui.cpp:5795-5799`) and the deactivation recorded then lapses two frames on (`:4807`, `:5818-5819`), so
+  `IsItemDeactivated` never fires once the field is back and `renaming` would stay set: the search field disabled and
+  Delete / Backspace / Ctrl+D / F2 dead. `renameFieldFrame` is the ImGui frame the field was last submitted (written
+  beside its `inputTextString` call, and by the BeginRename arm with the frame that arm runs in), and phase 1 --
+  after the E24 drop, before `searchEnabled` and the shortcut verdict -- ends a rename whose field was not submitted
+  on the previous frame: committed when `renameBuffer != renameOriginal` -- the name the BeginRename arm captured, its
+  only writer, so an edit -- cancelled otherwise, through `commitRename` / `cancelRename`, the ONE commit and ONE
+  cancel path the two action arms call too. **Never against the World's CURRENT name**: something else can rename the
+  entity while the field is gone (an Edit > Undo of an earlier rename), and an unedited buffer would then commit,
+  re-applying the rename the undo removed and dropping the redo branch (`I344 (d)`). **Never re-armed**:
+  a fresh `SetKeyboardFocusHere` would steal the keyboard back from wherever it went meanwhile. A row merely scrolled
+  out of the child is still submitted, and `ItemAdd` keeps an active item alive before its clip test
+  (`:12025-12029`), so it keeps its rename. A new place the field is drawn writes the frame beside it; a third writer
+  elsewhere would keep a field that no longer draws looking fresh (`I344` counts two).
 - **The Inspector's axis thresholds are per entity and stated before any layout change**: the Cube's `"0.000"` is whole
   from a content width of 266, the Main Camera's from 279, the Directional Light's from 316 (`I289`, geometry-
   independent); the default right split is 0.30. A label-column, letter-inset or split change re-measures all three.

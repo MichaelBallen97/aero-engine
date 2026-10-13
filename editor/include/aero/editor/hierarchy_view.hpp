@@ -79,7 +79,9 @@ struct HierarchyDrawRecord {
     bool searchFocused = false;  // the field's IsItemFocused(): it holds NavId, whoever gave it
     bool shortcutsLive = false;  // hierarchyShortcutsLive's verdict this frame -- the gate the shortcuts ran behind
     bool flatMode = false;
-    bool headerRuleDrawn = false;  // the rule's AddRectFilled added vertices to the list
+    bool headerRuleDrawn = false;   // the rule's AddRectFilled added vertices to the list
+    bool renameFieldDrawn = false;  // the ##rename field was submitted: a rename is in progress and its row walked
+    bool renameActive = false;      // that field's IsItemActive(), read right after it: it is being edited
     Vec2 searchFieldMin{};
     Vec2 searchFieldMax{};
     Vec2 treeChildMin{};

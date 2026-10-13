@@ -1280,6 +1280,7 @@ bool EditorApp::tick() {
     if (hierarchyPanel != nullptr) {
         hierarchyPanel->expireSearchQuery();
         hierarchyPanel->expireSearchFieldFocus();
+        hierarchyPanel->expireBeginRename();
     }
     if (assetBrowserPanel != nullptr) {
         assetBrowserPanel->expireNavigate();

@@ -94,6 +94,8 @@ void beginHierarchyRecordFrame(HierarchyDrawRecord& record) noexcept {
     record.shortcutsLive = false;
     record.flatMode = false;
     record.headerRuleDrawn = false;
+    record.renameFieldDrawn = false;
+    record.renameActive = false;
 }
 
 }  // namespace engine::editor

@@ -91,6 +91,39 @@ void HierarchyPanel::onDraw(PanelContext& context) {
         renaming = {};  // E24: the renamed entity was deleted mid-rename
         renameFocusPending = false;
     }
+    // A rename whose ##rename field was NOT SUBMITTED on the previous frame ends here, as the field's own
+    // deactivation would: committed when the buffer differs from the name the rename began with (an edit,
+    // IsItemDeactivatedAfterEdit's case), cancelled otherwise -- through the two helpers phase 5's arms call (task
+    // E.6.3's code-review round, round 2; I344). It runs before `searchEnabled` and the shortcut verdict read
+    // `renaming`, so both are live on this same frame. Never re-armed: a fresh SetKeyboardFocusHere would steal the
+    // keyboard back from wherever it went meanwhile.
+    // NEVER against the World's CURRENT name: something else can rename the entity while the field is gone -- an
+    // Edit > Undo of an earlier rename -- and an unedited buffer would then differ and commit, re-applying the name
+    // the undo removed and dropping the redo branch (I344 (d)). The one departure from the field's own path: a buffer
+    // edited and typed back to the original cancels here, where IsItemDeactivatedAfterEdit commits it (an edit at any
+    // point of the activation, HasBeenEditedBefore -- imgui.cpp:4808, :4898, :6561-6565). The outcome is the same,
+    // since commitRename pushes nothing for an unchanged name -- unless the World's name moved meanwhile, where
+    // keeping the other writer's name is the safe direction.
+    // Why: the field lives in the ##tree child, and once it is not submitted ImGui drops its ActiveId at the next
+    // NewFrame (imgui.cpp:5795-5799); the deactivation recorded then lapses two frames on (SetActiveID's ElapseFrame,
+    // :4807, cleared at :5818-5819) unless the field is submitted again (:12063-12064). So a field gone for longer
+    // never reports IsItemDeactivated, and `renaming` stayed set with no active field -- the search field disabled,
+    // and Delete / Backspace / Ctrl+D / F2 dead until the field was clicked and left.
+    // The frame arithmetic. renameFieldFrame is written beside the field's inputTextString call, and by the
+    // BeginRename arm with the frame that arm runs in: a rename begun in phase 5 of frame N reads N here on N + 1 --
+    // its first walk, which submits the field -- and passes, and a field drawn on every frame reads the frame before
+    // this one every time. A ##tree child skipped on frame K (a dock cut to its header row), or a renamed row not
+    // walked on K (a collapsed ancestor, a query), leaves K - 1, so the rename ends on K + 1. A panel that did not
+    // draw at all (a hidden tab, a panel closed and re-opened) leaves at most M - 2 on its first drawn frame M, so it
+    // ends there. A row merely scrolled out of the child is still submitted -- and ItemAdd keeps an active field
+    // alive before its clip test (imgui.cpp:11987, :12025-12029) -- so it keeps its rename.
+    if (renaming.valid() && renameFieldFrame != ImGui::GetFrameCount() - 1) {
+        if (renameBuffer != renameOriginal) {
+            commitRename(context, renaming);
+        } else {
+            cancelRename();
+        }
+    }
     if (rangeAnchor.valid() && !world.alive(rangeAnchor)) {
         rangeAnchor = {};  // E19
     }
@@ -147,6 +180,12 @@ void HierarchyPanel::onDraw(PanelContext& context) {
             pending = PendingAction{.kind = ActionKind::BeginRename, .target = primary};
         }
     }
+    // The rename request (requestBeginRename): F2's own gate and no modal, drained here and dropped either way (I337,
+    // I338).
+    if (pendingBeginRename.has_value() && shortcutsLive && noModal) {
+        pending = PendingAction{.kind = ActionKind::BeginRename, .target = *pendingBeginRename};
+    }
+    pendingBeginRename.reset();
 
     // -- phase 3's match list, built whether or not the tree below draws, so the badge's m / n stays current while
     //    the field is typed into over a skipped child. drawTree's flat list draws these.
@@ -490,6 +529,9 @@ bool HierarchyPanel::drawRow(PanelContext& context, Entity entity) {
         // F19/C5: the std::string overload -- no fixed buffer, no truncation rule.
         const bool committed = inputTextString(
             "##rename", renameBuffer, ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_AutoSelectAll);
+        renameFieldFrame = ImGui::GetFrameCount();  // submitted this frame -- what onDraw's stale-field check reads
+        drawRecordValue.renameFieldDrawn = true;
+        drawRecordValue.renameActive = ImGui::IsItemActive();
         if (committed || ImGui::IsItemDeactivatedAfterEdit()) {
             pending = PendingAction{.kind = ActionKind::CommitRename, .target = entity};
         } else if (ImGui::IsItemDeactivated()) {
@@ -593,6 +635,24 @@ void HierarchyPanel::drawVoidTarget(PanelContext& context) {
     }
 }
 
+void HierarchyPanel::commitRename(PanelContext& context, Entity target) {
+    const World& world = context.world;
+    // D19: compare first -- an unchanged name pushes nothing. The std::string(...) copy is MANDATORY, not
+    // defensive: world.name()'s view is invalidated by the very rename commit this command is about to perform.
+    if (world.alive(target) && world.name(target) != renameBuffer) {
+        CommandContext cmd = toCommandContext(context);
+        context.commands.push(
+            cmd, std::make_unique<RenameEntityCommand>(target, std::string(world.name(target)), renameBuffer));
+    }
+    renaming = {};
+    renameFocusPending = false;
+}
+
+void HierarchyPanel::cancelRename() noexcept {
+    renaming = {};  // the name is left untouched
+    renameFocusPending = false;
+}
+
 void HierarchyPanel::applyPending(PanelContext& context) {
     // Every mutation now flows through a Command's redo() (task 2.4.2) -- this function only ever
     // READS the World directly (alive()/name(), and reparentTargets()'s own const query).
@@ -685,25 +745,16 @@ void HierarchyPanel::applyPending(PanelContext& context) {
             if (world.alive(pending.target)) {
                 renaming = pending.target;
                 renameBuffer.assign(world.name(pending.target));  // D18: materialise the view
+                renameOriginal = renameBuffer;  // what onDraw's stale-field check compares the buffer with
                 renameFocusPending = true;
+                renameFieldFrame = ImGui::GetFrameCount();  // so the next frame's stale-field check passes
             }
             break;
-        case ActionKind::CommitRename: {
-            // D19: compare first -- an unchanged name pushes nothing. The std::string(...) copy is
-            // MANDATORY, not defensive: world.name()'s view is invalidated by the very rename commit
-            // this command is about to perform.
-            if (world.alive(pending.target) && world.name(pending.target) != renameBuffer) {
-                CommandContext cmd = toCommandContext(context);
-                context.commands.push(cmd, std::make_unique<RenameEntityCommand>(
-                                               pending.target, std::string(world.name(pending.target)), renameBuffer));
-            }
-            renaming = {};
-            renameFocusPending = false;
+        case ActionKind::CommitRename:
+            commitRename(context, pending.target);
             break;
-        }
         case ActionKind::CancelRename:
-            renaming = {};  // the name is left untouched
-            renameFocusPending = false;
+            cancelRename();
             break;
         case ActionKind::Reparent: {
             // D19's consistency extension to the drag-drop path (review round 2, Gap 4):

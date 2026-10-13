@@ -148,6 +148,8 @@ TEST_CASE("hierarchy view: an unwritten record is vacuous, and a frame resets it
     CHECK(record.badgeText.empty());
     CHECK_FALSE(record.shortcutsLive);  // unwritten reads "gated": a case asserting it live must see a drawn frame
     CHECK_FALSE(record.searchFocused);
+    CHECK_FALSE(record.renameFieldDrawn);
+    CHECK_FALSE(record.renameActive);
     // Every per-frame member written, as a drawn frame leaves it: the panel only APPENDS to the two lists, so a
     // missing clear grows each by every row it records, every frame. HY8 pins the clear at tier 0; I309's size and
     // parent arms see it at the GPU tier (the code-review round's finding 13).
@@ -161,6 +163,8 @@ TEST_CASE("hierarchy view: an unwritten record is vacuous, and a frame resets it
     record.searchFocused = true;
     record.flatMode = true;
     record.headerRuleDrawn = true;
+    record.renameFieldDrawn = true;
+    record.renameActive = true;
     ed::beginHierarchyRecordFrame(record);
     CHECK(record.framesRecorded == 1U);
     CHECK(record.rowsDrawn == 0U);
@@ -173,4 +177,8 @@ TEST_CASE("hierarchy view: an unwritten record is vacuous, and a frame resets it
     CHECK_FALSE(record.searchFocused);
     CHECK_FALSE(record.flatMode);
     CHECK_FALSE(record.headerRuleDrawn);
+    // The rename field's two members (the code-review round, round 2): written only while a rename's row is walked,
+    // so a missing reset keeps "drawn" and "active" true over every frame the field is gone -- the state I344 reads.
+    CHECK_FALSE(record.renameFieldDrawn);
+    CHECK_FALSE(record.renameActive);
 }
