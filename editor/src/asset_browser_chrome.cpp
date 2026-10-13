@@ -245,7 +245,8 @@ std::size_t FolderCountCache::countUnder(std::span<const AssetRecord> records, s
 AssetFooterLayout assetFooterLayout(float rowMinX, float rowWidth, const AssetFooterText& text, float monoSmallAdvance,
                                     float uiScale) {
     const float minX = finiteOr(rowMinX, 0.0F);
-    const float maxX = minX + usableLength(rowWidth);
+    const float rowLength = usableLength(rowWidth);
+    const float maxX = minX + rowLength;
     const float advance = usableLength(monoSmallAdvance);
     const float gap = FOOTER_SEGMENT_GAP_SPACINGS * EDITOR_THEME.metrics.itemSpacing.x * layoutScale(uiScale);
     const auto widthOf = [advance](std::string_view t) { return static_cast<float>(codePointCount(t)) * advance; };
@@ -262,19 +263,39 @@ AssetFooterLayout assetFooterLayout(float rowMinX, float rowWidth, const AssetFo
         issues += text.issues == 1U ? " issue" : " issues";
         out.right.push_back(AssetFooterSegment{std::move(issues), ChromeRole::Warning, 0.0F});
     }
-    if (text.thumbnailsBudget > 0U) {
+    const bool hasThumbnails = text.thumbnailsBudget > 0U;
+    if (hasThumbnails) {
         std::string thumbnails = "thumbnails " + std::to_string(text.thumbnailsReady);
         thumbnails += "/" + std::to_string(text.thumbnailsBudget);
         out.right.push_back(AssetFooterSegment{std::move(thumbnails), ChromeRole::TextFaint, 0.0F});
     }
-    if (!text.watcher.empty()) {
+    const bool hasWatcher = !text.watcher.empty();
+    if (hasWatcher) {
         out.right.push_back(AssetFooterSegment{text.watcher, ChromeRole::TextFaint, 0.0F});
     }
-    float total = 0.0F;
-    for (std::size_t i = 0; i < out.right.size(); ++i) {
-        total += widthOf(out.right[i].text) + (i > 0U ? gap : 0.0F);
+    const auto zoneWidth = [&out, &widthOf, gap] {
+        float total = 0.0F;
+        for (std::size_t i = 0; i < out.right.size(); ++i) {
+            total += widthOf(out.right[i].text) + (i > 0U ? gap : 0.0F);
+        }
+        return total;
+    };
+    // task E.6.3's code-review round: a zone wider than the row sheds the thumbnails first, then the watcher word (the
+    // status bar shows the same classifyWatchState), and never the notice, the matches or the issues. The thumbnails
+    // were pushed just before the watcher, which is last when present.
+    float total = zoneWidth();
+    if (hasThumbnails && total > rowLength) {
+        out.right.erase(out.right.end() - (hasWatcher ? 2 : 1));
+        total = zoneWidth();
     }
-    float x = maxX - total;  // ALWAYS whole: a row too narrow for it lets it cross rowMinX, never cut it
+    if (hasWatcher && total > rowLength) {
+        out.right.pop_back();
+        total = zoneWidth();
+    }
+    // Right-aligned when it fits; else anchored AT rowMinX, so the notice leads and the window clips the tail past the
+    // row's right end, as the footer's one left-aligned line before task E.6.3 did. Never left of rowMinX: the window
+    // would clip the notice there first, and a cap is surfaced, never silent (AC-8).
+    float x = std::max(maxX - total, minX);
     for (AssetFooterSegment& segment : out.right) {
         segment.x = x;
         x += widthOf(segment.text) + gap;

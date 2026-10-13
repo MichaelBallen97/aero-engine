@@ -1,4 +1,4 @@
-// tests/editor/asset_browser_chrome_test.cpp -- task E.6.3 (D8): the Assets panel's chrome model, AH1-AH14. A TU of
+// tests/editor/asset_browser_chrome_test.cpp -- task E.6.3 (D8): the Assets panel's chrome model, AH1-AH15. A TU of
 // aero_editor_shell_test. Tier 0, every configuration, no #if. Widths are RESTATED literals: Compact needs 576, Full
 // 782, the Minimal floor is 344 (the arithmetic is in each case).
 #include <aero/editor/asset_actions.hpp>  // countRecordsUnder -- the cache's oracle
@@ -300,12 +300,30 @@ TEST_CASE("assets chrome: the footer's right zone is whole, the left elided from
     CHECK(l.right[1].x + monoX8(l.right[1].text) == 392.0F);  // right-aligned, whole
     CHECK(l.left == AERO_GLYPH_ELLIPSIS "/props/crate_a.gltf");
     CHECK(l.leftX == 0.0F);
-    // A row too narrow for the right zone: still whole, crossing rowMinX, and the left zone empty.
+    // A row too narrow for the right zone (task E.6.3's code-review round; it used to cross rowMinX whole): the
+    // thumbnails go first, and the 64 left fits in 100, so the watcher word stays right-aligned and the left zone
+    // keeps 36 - 16 = 20 -- two cells.
     const ed::AssetFooterLayout narrow = ed::assetFooterLayout(0.0F, 100.0F, text, 8.0F, 1.0F);
-    REQUIRE(narrow.right.size() == 2U);
-    CHECK(narrow.right[1].x + monoX8(narrow.right[1].text) == 100.0F);
-    CHECK(narrow.right[0].x < 0.0F);
-    CHECK(narrow.left.empty());
+    REQUIRE(narrow.right.size() == 1U);
+    CHECK(narrow.right[0].text == "watching");
+    CHECK(narrow.right[0].x + monoX8(narrow.right[0].text) == 100.0F);
+    CHECK_FALSE(narrow.left.empty());
+    CHECK(monoX8(narrow.left) <= 20.0F);
+    // With the listing's notice, 360 alone and wider than the row: the watcher goes too, the notice is anchored AT
+    // rowMinX and never left of it, and what follows it overflows the row's RIGHT end, where the window clips it.
+    ed::AssetFooterText capped = text;
+    capped.notice = "truncated (caps: 10000 listed, 20000 scanned)";  // 45 code points: 360 at advance 8
+    capped.matches = "3 matches";                                     // never shed
+    const ed::AssetFooterLayout clipped = ed::assetFooterLayout(40.0F, 100.0F, capped, 8.0F, 1.0F);
+    REQUIRE(clipped.right.size() == 2U);
+    CHECK(clipped.right[0].text == capped.notice);
+    CHECK(clipped.right[0].x == 40.0F);
+    CHECK(clipped.right[1].text == "3 matches");
+    CHECK(clipped.right[1].x == 40.0F + 360.0F + 16.0F);  // whole, in order, after one gap
+    for (const ed::AssetFooterSegment& segment : clipped.right) {
+        CHECK(segment.x >= 40.0F);
+    }
+    CHECK(clipped.left.empty());
     // Room for everything: the selection verbatim.
     CHECK(ed::assetFooterLayout(0.0F, 1000.0F, text, 8.0F, 1.0F).left == "models/props/crate_a.gltf");
 }
@@ -395,4 +413,104 @@ TEST_CASE("assets chrome: the Minimal floor restated; the right end at it and 1 
     const ed::AssetHeaderLayout below = ed::assetHeaderLayout(0.0F, 343.0F, W, 1.0F);
     CHECK(below.overflowX + W.overflow > 343.0F);   // the right end crosses
     CHECK(below.overflowX + W.overflow == 344.0F);  // left-anchored at the controls' own widths
+}
+
+TEST_CASE("assets chrome: a narrow footer sheds thumbnails, then the watcher -- never the notice (task E.6.3, AH15)") {
+    // The code-review round's shape: the default layout's ~701-point Assets row at the Mono-small advance (6.462), a
+    // truncated listing, and the Partial watcher word a truncated listing also produces (the watcher's sweep is cut by
+    // the same caps). Widths: the notice 45 cells (290.79), "thumbnails 0/256" 16 (103.392), the watcher 49
+    // (316.638), and a 16-point gap between two segments.
+    constexpr float ADVANCE = 6.462F;
+    constexpr float MIN_X = 8.0F;
+    const auto cells = [](float n) { return n * ADVANCE; };
+    ed::AssetFooterText text;
+    text.selection = "tex/a.png";                                   // 9 cells: 58.158
+    text.notice = "truncated (caps: 10000 listed, 20000 scanned)";  // drawFooter's sentence at today's caps
+    text.thumbnailsReady = 0U;
+    text.thumbnailsBudget = 256U;
+    text.watcher = "Watching (partial -- tree exceeds the scan limit)";  // assetFooterWatchText(Partial), verbatim
+    // (a) 701: all three are 110 cells + 2 gaps = 742.82, wider than the row, so the thumbnails go; the notice and the
+    // watcher are 94 cells + 1 gap = 623.428, which fits, so the watcher stays and the zone is right-aligned. The left
+    // zone keeps 701 - 623.428 - 16 = 61.572 -- nine cells, so the short selection is drawn whole.
+    const ed::AssetFooterLayout l = ed::assetFooterLayout(MIN_X, 701.0F, text, ADVANCE, 1.0F);
+    REQUIRE(l.right.size() == 2U);
+    CHECK(l.right[0].text == text.notice);
+    CHECK(l.right[1].text == text.watcher);
+    CHECK(l.right[0].x >= MIN_X);
+    CHECK(l.right[0].x == doctest::Approx(MIN_X + 701.0F - (cells(94.0F) + 16.0F)).epsilon(1e-5));
+    CHECK(l.right[1].x + cells(49.0F) == doctest::Approx(MIN_X + 701.0F).epsilon(1e-5));  // right-aligned
+    CHECK(l.left == "tex/a.png");
+    CHECK(l.leftX == MIN_X);
+    // (b) The thumbnails' boundary, 742.82: at 743 nothing is shed, at 742 the thumbnails are.
+    const ed::AssetFooterLayout fits = ed::assetFooterLayout(MIN_X, 743.0F, text, ADVANCE, 1.0F);
+    REQUIRE(fits.right.size() == 3U);
+    CHECK(fits.right[1].text == "thumbnails 0/256");
+    CHECK(ed::assetFooterLayout(MIN_X, 742.0F, text, ADVANCE, 1.0F).right.size() == 2U);
+    // (c) The watcher's boundary, 623.428: at 624 it stays, at 623 it goes and the notice is alone, right-aligned.
+    CHECK(ed::assetFooterLayout(MIN_X, 624.0F, text, ADVANCE, 1.0F).right.size() == 2U);
+    const ed::AssetFooterLayout alone = ed::assetFooterLayout(MIN_X, 623.0F, text, ADVANCE, 1.0F);
+    REQUIRE(alone.right.size() == 1U);
+    CHECK(alone.right[0].text == text.notice);
+    CHECK(alone.right[0].x == doctest::Approx(MIN_X + 623.0F - cells(45.0F)).epsilon(1e-5));
+    CHECK(alone.left == "tex/a.png");
+    // (d) Narrower than the notice alone: nothing else to shed, so it is anchored AT rowMinX and the window clips what
+    // overflows the row's right end -- never pushed off the left edge, where the sentence's head would vanish first.
+    const ed::AssetFooterLayout cut = ed::assetFooterLayout(MIN_X, 250.0F, text, ADVANCE, 1.0F);
+    REQUIRE(cut.right.size() == 1U);
+    CHECK(cut.right[0].text == text.notice);
+    CHECK(cut.right[0].x == MIN_X);
+    CHECK(cut.left.empty());
+    // (e) The matches and the issues are never shed: they follow the notice whole, in order, right of rowMinX.
+    ed::AssetFooterText all = text;
+    all.matches = "12 matches";
+    all.issues = 2U;
+    const ed::AssetFooterLayout kept = ed::assetFooterLayout(MIN_X, 250.0F, all, ADVANCE, 1.0F);
+    REQUIRE(kept.right.size() == 3U);
+    CHECK(kept.right[0].text == all.notice);
+    CHECK(kept.right[0].x == MIN_X);
+    CHECK(kept.right[1].text == "12 matches");
+    CHECK(kept.right[2].text == "2 issues");
+    for (const ed::AssetFooterSegment& segment : kept.right) {
+        CHECK(segment.x >= MIN_X);
+    }
+    // (f) No notice, and neither shed segment fits (16 cells + 1 gap + 49 cells = 436.03, then 316.638, against 300):
+    // the right zone is empty and the selection takes the whole row.
+    ed::AssetFooterText quiet = text;
+    quiet.notice.clear();
+    const ed::AssetFooterLayout bare = ed::assetFooterLayout(MIN_X, 300.0F, quiet, ADVANCE, 1.0F);
+    CHECK(bare.right.empty());
+    CHECK(bare.left == "tex/a.png");
+    // (g) No watcher word (a host with no reconciled watcher omits it): the thumbnails are then the LAST segment, and
+    // the one shed. The notice, "2 issues" and the thumbnails are 45 + 8 + 16 cells + 2 gaps = 477.878, wider than
+    // 400; without the thumbnails 358.486, which fits, so exactly one segment goes and the rest is right-aligned.
+    ed::AssetFooterText unwatched = text;
+    unwatched.watcher.clear();
+    unwatched.issues = 2U;
+    REQUIRE(ed::assetFooterLayout(MIN_X, 2000.0F, unwatched, ADVANCE, 1.0F).right.size() == 3U);
+    const ed::AssetFooterLayout shed = ed::assetFooterLayout(MIN_X, 400.0F, unwatched, ADVANCE, 1.0F);
+    REQUIRE(shed.right.size() == 2U);
+    CHECK(shed.right[0].text == unwatched.notice);
+    CHECK(shed.right[1].text == "2 issues");
+    for (const ed::AssetFooterSegment& segment : shed.right) {
+        CHECK(segment.text.find("thumbnails") == std::string::npos);
+    }
+    CHECK(shed.right[1].x + cells(8.0F) == doctest::Approx(MIN_X + 400.0F).epsilon(1e-5));  // right-aligned
+    // (h) The thumbnails alone, wider than the row (16 cells, 103.392, against 80): they go, the right zone is empty,
+    // and the selection takes the row whole.
+    ed::AssetFooterText thumbnailsOnly;
+    thumbnailsOnly.selection = "tex/a.png";
+    thumbnailsOnly.thumbnailsBudget = 256U;
+    REQUIRE(ed::assetFooterLayout(MIN_X, 2000.0F, thumbnailsOnly, ADVANCE, 1.0F).right.size() == 1U);
+    const ed::AssetFooterLayout emptied = ed::assetFooterLayout(MIN_X, 80.0F, thumbnailsOnly, ADVANCE, 1.0F);
+    CHECK(emptied.right.empty());
+    CHECK(emptied.left == "tex/a.png");
+    // (i) THE COST, recorded: the shedding reads the right zone's width alone, so the selection gets only what the
+    // kept segments leave. 749 (about the default layout's Assets row in a window 1366 wide) keeps all three, since
+    // 742.82 fits, and leaves the left zone 749 - 742.82 - 16 = -9.82, under one cell: the selection is not drawn.
+    // It is drawn again from one gap plus one cell above the kept zone, 765.282; the same band sits above 623.428
+    // (the notice and the watcher) and 290.79 (the notice alone).
+    const ed::AssetFooterLayout band = ed::assetFooterLayout(MIN_X, 749.0F, text, ADVANCE, 1.0F);
+    REQUIRE(band.right.size() == 3U);
+    CHECK(band.left.empty());
+    CHECK_FALSE(ed::assetFooterLayout(MIN_X, 766.0F, text, ADVANCE, 1.0F).left.empty());
 }

@@ -1654,7 +1654,8 @@ void AssetBrowserPanel::drawIssues(float bodyHeight) {
 // ---- phase 5: the footer -- two zones, Mono small (task E.6.3, D8) ---------------------------------------------
 // INSIDE today's reservation (assetBrowserLayout's footerHeight = spacing + frame, so AV55, AV59 and I231 hold): the
 // left zone is the selection, elided from the LEFT; the right zone -- the listing's notice, the matches, the issues,
-// the thumbnails, the watcher word -- is always drawn whole (assetFooterLayout).
+// the thumbnails, the watcher word -- draws each segment whole, a narrow row shedding the thumbnails and then the
+// watcher word and never pushing the notice left of the row (assetFooterLayout).
 void AssetBrowserPanel::drawFooter() {
     const DirectoryListing* const listing = cached(currentDir);
     if (listing == nullptr) {

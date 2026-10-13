@@ -172,11 +172,16 @@ struct AssetFooterSegment {
 struct AssetFooterLayout {
     std::string left;  // the selection elided from the LEFT (elidePathLeft); "" when no room is left
     float leftX = 0.0F;
-    std::vector<AssetFooterSegment> right;  // ALWAYS whole, right-aligned at the row's max
+    std::vector<AssetFooterSegment> right;  // each segment whole, never cut; see below for which ones are kept
 };
 // Mono small is monospaced, so a width is code points x `monoSmallAdvance`. Right zone, in order: the listing's
 // notice (warning), the matches (textFaint), "N issues" (warning, omitted at 0), "thumbnails R/B" (textFaint), the
-// watcher word (textFaint).
+// watcher word (textFaint). While the zone is wider than the row it sheds "thumbnails R/B" first, then the watcher
+// word (the status bar shows the same watch state) -- NEVER the notice, the matches or the issues. What is left is
+// right-aligned at the row's max when it fits, else anchored AT rowMinX (never left of it), so the notice stays on
+// screen and the window clips the overflow at the row's right end. The left zone takes what the right one leaves,
+// and the shedding reads the right zone's width ALONE, so that can be nothing: in a row less than one gap plus one
+// Mono cell wider than the kept segments, the selection is not drawn at all (AH15 records it).
 [[nodiscard]] AssetFooterLayout assetFooterLayout(float rowMinX, float rowWidth, const AssetFooterText& text,
                                                   float monoSmallAdvance, float uiScale);
 
