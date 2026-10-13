@@ -172,7 +172,10 @@ void InspectorPanel::onDraw(PanelContext& context) {
     drawRecordValue.cardsOpen = 0;
     drawRecordValue.referenceSwatchDrawn = false;
     drawRecordValue.referenceWellDrawn = false;
+    drawRecordValue.addComponentDashVertices = 0;
     drawRecordValue.addComponentDashed = false;
+    drawRecordValue.addComponentFirstDashWidth = 0.0F;
+    drawRecordValue.addComponentFirstDashGap = 0.0F;
     headersSubmittedValue = 0;  // task E.6.1: a PER-FRAME count, taken before any early return below
     // task E.6.1 (I289): this frame's geometry, likewise before any early return. drawAxisRow writes the two
     // axis values, so a frame that draws no axis row reads 0 for both.
@@ -837,13 +840,25 @@ void InspectorPanel::drawAddComponent(PanelContext& context, Entity primary) {
     } else if (ImGui::IsItemHovered()) {
         roleFill(list, min, max, ChromeRole::Hover, rounding);
     }
+    // What the list RECEIVES across the outline, never a flag set beside the call (the code-review round's finding
+    // 11): each dash is one AddRectFilled at alpha 255 with no rounding, four vertices (imgui_draw.cpp:1530-1538).
+    const int dashVertices = list->VtxBuffer.Size;
     dashedRect(list, min, max);
+    drawRecordValue.addComponentDashVertices = list->VtxBuffer.Size - dashVertices;
+    // The gaps stay open (D5), read off the same vertices: PrimRect writes a, (b.x, a.y), b, (a.x, b.y)
+    // (imgui_draw.cpp:776-779) and the top run draws first, so [0]-[1] spans the first dash and [4] starts the next.
+    if (drawRecordValue.addComponentDashVertices >= 8) {
+        const float dashFrom = list->VtxBuffer[dashVertices].pos.x;
+        const float dashTo = list->VtxBuffer[dashVertices + 1].pos.x;
+        drawRecordValue.addComponentFirstDashWidth = dashTo - dashFrom;
+        drawRecordValue.addComponentFirstDashGap = list->VtxBuffer[dashVertices + 4].pos.x - dashTo;
+    }
     const float labelY = min.y + ((max.y - min.y - panelFacePoints(PanelFace::Strong)) * 0.5F);
     drawRoleText(list, PanelFace::Strong, ImVec2(min.x + (EDITOR_THEME.panels.addComponentPaddingX * s), labelY),
                  ChromeRole::Accent, ADD_COMPONENT_LABEL);
     drawRecordValue.addComponentMin = Vec2{min.x, min.y};
     drawRecordValue.addComponentMax = Vec2{max.x, max.y};
-    drawRecordValue.addComponentDashed = true;
+    drawRecordValue.addComponentDashed = drawRecordValue.addComponentDashVertices > 0;
     if (pressed) {
         ImGui::OpenPopup("##addComponent");
     }

@@ -1,6 +1,6 @@
 #pragma once
 // Aero Engine -- the Assets panel's chrome as VALUES (task E.6.3, spec D8). PUBLIC and PURE: no ImGui, no GPU, no
-// <filesystem>, no logging, so tier 0 walks every width, scale and count (AH1-AH16) that asset_browser_panel.cpp only
+// <filesystem>, no logging, so tier 0 walks every width, scale and count (AH1-AH17) that asset_browser_panel.cpp only
 // measures and draws. The record at the bottom is what the panel DREW, for the GPU tier.
 #include <aero/core/math.hpp>                  // Vec2
 #include <aero/editor/asset_meta.hpp>          // AssetRecord
@@ -217,6 +217,9 @@ struct AssetChromeRecord {
     std::vector<AssetHeaderControl> overflowDrawn;                         // the controls folded into the overflow
     bool headerRuleDrawn = false;  // the rule's AddRectFilled added vertices to the list
     std::uint32_t crumbsDrawn = 0;
+    // attachFolderDropTarget's calls this frame, every site, counted inside the callee; crumbDropTargets is the crumb
+    // loop's share of it, never a bump beside the call (the code-review round's finding 14).
+    std::uint32_t folderDropTargetsAttached = 0;
     std::uint32_t crumbDropTargets = 0;  // folder drop targets attached in the crumb row this frame
     std::string itemsText;               // the string handed to the items text's draw call
     float crumbRowHeight = 0.0F;
@@ -241,8 +244,9 @@ struct AssetChromeRecord {
     std::vector<std::string> footerRightTexts;
     std::uint64_t folderCountRecomputations = 0;  // the cache's, copied every frame
 };
-// Opens one recorded frame: + 1 frame, the counts zeroed, the per-frame lists and texts cleared (capacity kept). The
-// colours, rects and layouts are overwritten by the draw that produces them.
+// Opens one recorded frame: + 1 frame, the counts zeroed, the header rects hidden, the per-frame lists and texts
+// cleared (capacity kept); AH17 pins each. The other colours, rects and layouts are overwritten by the draw that
+// produces them.
 void beginAssetChromeRecordFrame(AssetChromeRecord& record) noexcept;
 
 }  // namespace engine::editor

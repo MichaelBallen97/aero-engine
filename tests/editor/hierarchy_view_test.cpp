@@ -148,14 +148,29 @@ TEST_CASE("hierarchy view: an unwritten record is vacuous, and a frame resets it
     CHECK(record.badgeText.empty());
     CHECK_FALSE(record.shortcutsLive);  // unwritten reads "gated": a case asserting it live must see a drawn frame
     CHECK_FALSE(record.searchFocused);
+    // Every per-frame member written, as a drawn frame leaves it: the panel only APPENDS to the two lists, so a
+    // missing clear grows each by every row it records, every frame. HY8 pins the clear at tier 0; I309's size and
+    // parent arms see it at the GPU tier (the code-review round's finding 13).
     record.rowsDrawn = 4U;
+    record.dotsDrawn = 4U;
+    record.metasDrawn = 1U;
     record.rowRoles.push_back(ed::HierarchyRowRole{});
+    record.rowMetas.push_back(ed::HierarchyRowMeta{.entity = {}, .text = "2"});
+    record.searchActive = true;
     record.shortcutsLive = true;
     record.searchFocused = true;
+    record.flatMode = true;
+    record.headerRuleDrawn = true;
     ed::beginHierarchyRecordFrame(record);
     CHECK(record.framesRecorded == 1U);
     CHECK(record.rowsDrawn == 0U);
+    CHECK(record.dotsDrawn == 0U);
+    CHECK(record.metasDrawn == 0U);
     CHECK(record.rowRoles.empty());
+    CHECK(record.rowMetas.empty());
+    CHECK_FALSE(record.searchActive);
     CHECK_FALSE(record.shortcutsLive);
     CHECK_FALSE(record.searchFocused);
+    CHECK_FALSE(record.flatMode);
+    CHECK_FALSE(record.headerRuleDrawn);
 }

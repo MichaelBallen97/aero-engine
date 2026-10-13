@@ -318,6 +318,7 @@ void beginAssetChromeRecordFrame(AssetChromeRecord& record) noexcept {
     record.overflowDrawn.clear();
     record.headerRuleDrawn = false;
     record.crumbsDrawn = 0;
+    record.folderDropTargetsAttached = 0;
     record.crumbDropTargets = 0;
     record.itemsText.clear();
     record.treeRowsDrawn = 0;

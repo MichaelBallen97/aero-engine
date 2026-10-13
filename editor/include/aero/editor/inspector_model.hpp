@@ -272,7 +272,12 @@ struct InspectorDrawRecord {
     bool referenceWellDrawn = false;    // an unbound (or non-material) row drew its empty well
     Vec2 addComponentMin{};
     Vec2 addComponentMax{};
-    bool addComponentDashed = false;
+    int addComponentDashVertices = 0;  // what the draw list RECEIVED across dashedRect: 4 per dash
+    bool addComponentDashed = false;   // addComponentDashVertices > 0
+    // The top run's first dash and the gap after it, off the same received vertices; 0 for both while fewer than
+    // two dashes drew. A dash stretched over its gap keeps the count and reads a gap of 0.
+    float addComponentFirstDashWidth = 0.0F;
+    float addComponentFirstDashGap = 0.0F;
 };
 
 }  // namespace engine::editor

@@ -276,15 +276,31 @@ TEST_CASE("viewport hud: a default record is vacuous -- the guard every GPU case
     CHECK(r.viewAxisCircleRadius == 0.0F);
     CHECK(r.viewOptionsMax == Vec2{});
     ed::ViewportHudRecord opened;
+    opened.layout.chip.shown = true;
     opened.chipLabel = "x";
+    opened.chipFontName = "IBM Plex Sans";
+    opened.chipFontSize = 14.0F;
     opened.statsRows.push_back(ed::ViewportStatsRow{"Frame", "1 ms"});
+    // The panel only APPENDS a hint, so a missing clear grows the list by every hint drawn, every frame, with every GPU
+    // case green (the code-review round's finding 13: no GPU case reads it).
+    opened.hintTexts.emplace_back("x");
+    opened.viewAxisCornerMin = Vec2{1.0F, 2.0F};
+    opened.viewAxisCornerMax = Vec2{3.0F, 4.0F};
+    opened.viewAxisCircleCenter = Vec2{2.0F, 3.0F};
     opened.viewAxisCircleRadius = 43.0F;  // a frame the widget drew, before one it does not
     opened.viewOptionsMin = Vec2{51.0F, 129.0F};
     opened.viewOptionsMax = Vec2{311.0F, 396.0F};  // a frame the popover was shown, before one it is not
     ed::beginViewportHudRecordFrame(opened);
     CHECK(opened.framesRecorded == 1U);
+    CHECK_FALSE(opened.layout.chip.shown);
     CHECK(opened.chipLabel.empty());
+    CHECK(opened.chipFontName.empty());
+    CHECK(opened.chipFontSize == 0.0F);
     CHECK(opened.statsRows.empty());
+    CHECK(opened.hintTexts.empty());
+    CHECK(opened.viewAxisCornerMin == Vec2{});
+    CHECK(opened.viewAxisCornerMax == Vec2{});
+    CHECK(opened.viewAxisCircleCenter == Vec2{});
     CHECK(opened.viewAxisCircleRadius == 0.0F);  // so I329's anti-vacuity read is THIS frame's
     CHECK(opened.viewOptionsMin == Vec2{});
     CHECK(opened.viewOptionsMax == Vec2{});  // so I342's hidden appearing frame reads empty

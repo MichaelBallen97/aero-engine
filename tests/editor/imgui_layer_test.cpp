@@ -25083,6 +25083,9 @@ TEST_CASE("editor: Hierarchy rows -- a dot on every row, a direct-child meta on 
     CHECK(r.rowsDrawn == 5U);
     CHECK(r.dotsDrawn == r.rowsDrawn);
     CHECK(r.metasDrawn == 1U);
+    // ONE entry per meta drawn THIS frame: e63MetaOf finds the first match, so a list a missing per-frame clear let
+    // grow would keep every read above green (the code-review round's finding 13; HY8 pins the clear itself).
+    CHECK(r.rowMetas.size() == r.metasDrawn);
     CHECK(e63MetaOf(r, group) == std::optional<std::string>("2"));
     CHECK(r.badgeText == std::to_string(world.entityCount()));  // "8": the hidden rows are counted
     CHECK(r.searchFieldMax.x > r.searchFieldMin.x);             // the search field drew
@@ -25093,6 +25096,7 @@ TEST_CASE("editor: Hierarchy rows -- a dot on every row, a direct-child meta on 
     e62Ticks(*app, 2);
     CHECK(r.rowsDrawn == 8U);
     CHECK(r.metasDrawn == 2U);
+    CHECK(r.rowMetas.size() == r.metasDrawn);
     CHECK(e63MetaOf(r, group) == std::optional<std::string>("2"));  // DIRECT children, never Group's three (S59)
     CHECK(e63MetaOf(r, childA) == std::optional<std::string>("1"));
     for (const engine::Entity leaf : {childB, nested}) {
@@ -25804,6 +25808,32 @@ TEST_CASE("editor: Add Component is centred, one card header tall, and dashed (t
     CHECK(std::abs(centre - ((contentMin + contentMax) * 0.5F)) <= 0.5F);
     CHECK(r.addComponentMax.y - r.addComponentMin.y == doctest::Approx(32.0F * s).epsilon(1e-5));
     CHECK(r.addComponentDashed);
+    // THE DASHES, as the draw list RECEIVED them (the code-review round's finding 11): four runs of whole dash + gap
+    // steps from the theme -- top and bottom along the width, left and right along the height, spelled in dashRun's
+    // own order so a quantised scale rounds alike -- each dash one AddRectFilled at alpha 255 with no rounding, which
+    // is PrimReserve(6, 4): four vertices (imgui_draw.cpp:1530-1538). A deleted outline reads 0 and a run collapsed
+    // into one solid stroke reads 16.
+    const engine::editor::ThemePanels& panels = engine::editor::EDITOR_THEME.panels;
+    REQUIRE(panels.addComponentDash.a == 255U);  // an alpha-0 colour adds no vertex (imgui_draw.cpp:1532)
+    const float dash = panels.dashLength * s;
+    const float dashStep = dash + (panels.dashGap * s);
+    REQUIRE(dashStep > 0.0F);
+    const auto runs = [dashStep](float length) { return static_cast<int>(std::ceil(length / dashStep)); };
+    const int widthRuns = runs(r.addComponentMax.x - r.addComponentMin.x);
+    const int heightRuns = runs(r.addComponentMax.y - r.addComponentMin.y);
+    REQUIRE(widthRuns > 1);  // ANTI-VACUITY: more than one dash along each edge, so a solid stroke differs
+    REQUIRE(heightRuns > 1);
+    CHECK(r.addComponentDashVertices == 4 * ((2 * widthRuns) + (2 * heightRuns)));
+    // THE GAPS STAY OPEN (D5): the top run's first dash and the gap after it, off the vertices the list received. A
+    // dash stretched over its own gap draws the count above exactly and is a solid stroke; here its dash reads one
+    // gap too wide and its gap 0. The vertices are absolute positions under 2048 points in this 1280-point window,
+    // where a float's spacing is 2^-13, so a difference of two carries at most 2^-13 of rounding: the tolerance is
+    // about eight times that, and 2500 times under the 2.5-point miss at scale 1.
+    constexpr float DASH_TOLERANCE = 1.0e-3F;
+    CAPTURE(r.addComponentFirstDashWidth);
+    CAPTURE(r.addComponentFirstDashGap);
+    CHECK(std::abs(r.addComponentFirstDashWidth - dash) <= DASH_TOLERANCE);
+    CHECK(std::abs(r.addComponentFirstDashGap - (panels.dashGap * s)) <= DASH_TOLERANCE);
     // SOURCE: an InvisibleButton -- no ghost or plain Button, whose RenderFrame(..., true, ...) would stroke a solid
     // border through the dash gaps (imgui_widgets.cpp:812).
     const std::vector<std::string> code = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/inspector_panel.cpp");
@@ -26035,6 +26065,7 @@ TEST_CASE("editor: the Assets header draws the layout's x's, never overlapping, 
             {AssetHeaderControl::Overflow, true, l.overflowX, w.overflow},
         }};
         std::vector<std::pair<float, float>> drawn;
+        std::size_t foldedCount = 0;
         for (const Expect& e : expects) {
             CAPTURE(static_cast<int>(e.control));
             const engine::editor::AssetDrawnRect& rect = r.headerRects[static_cast<std::size_t>(e.control)];
@@ -26042,12 +26073,16 @@ TEST_CASE("editor: the Assets header draws the layout's x's, never overlapping, 
             const bool folded =
                 std::find(r.overflowDrawn.begin(), r.overflowDrawn.end(), e.control) != r.overflowDrawn.end();
             CHECK(folded == !e.inlined);  // (c) every folded control is in the overflow, and only those
+            foldedCount += e.inlined ? 0U : 1U;
             if (rect.drawn) {
                 CHECK(std::abs(rect.min.x - e.x) <= 0.5F);
                 CHECK(std::abs(rect.max.x - (rect.min.x + e.width)) <= 0.5F);
                 drawn.emplace_back(rect.min.x, rect.max.x);
             }
         }
+        // ...and each ONCE, this frame's: membership alone stays green on a list a missing per-frame clear let grow
+        // (the code-review round's finding 13; AH17 pins the clear itself). Full folds nothing, so 0 == 0 there.
+        CHECK(r.overflowDrawn.size() == foldedCount);
         std::sort(drawn.begin(), drawn.end());
         for (std::size_t k = 1; k < drawn.size(); ++k) {
             CHECK(drawn[k - 1].second <= drawn[k].first + 0.5F);  // (c) no two drawn inline rects overlap
@@ -26090,6 +26125,20 @@ TEST_CASE("editor: the Assets crumbs, the recursive items text, the tree and the
         }
         CHECK(sizeReads == 2U);
         CHECK(countLinesContaining(code, "\"Size\", ImGuiTableColumnFlags_WidthFixed, sizeColumnWidth)") == 2U);
+        // Each crumb's drop target binds to ITS crumb (finding 14's second half): BeginDragDropTarget binds to
+        // g.LastItemData, the item submitted last (imgui.cpp, ImGui::BeginDragDropTarget), so both attach calls sit
+        // between the crumb's InvisibleButton and the hover read of that same item. A call moved above the button
+        // binds to the item before it and still counts 3 in crumbDropTargets below; no tier here can drop.
+        const std::size_t rowAt = soleLineContaining(code, "void AssetBrowserPanel::drawCrumbRow(");
+        const std::size_t rowEnd = functionBodyEnd(code, rowAt);
+        REQUIRE(rowEnd < code.size());  // the body was delimited, not run off the end
+        const std::size_t crumbAt = soleLineContaining(code, "InvisibleButton(\"##crumb\"");
+        constexpr std::string_view HOVER_READ = "const bool hovered = ImGui::IsItemHovered();";
+        const std::size_t hoverAt = firstLineContaining(code, HOVER_READ, crumbAt);
+        CHECK(rowAt < crumbAt);
+        REQUIRE(hoverAt < rowEnd);
+        CHECK(countInRange(code, "attachFolderDropTarget(", rowAt, rowEnd) == 2U);
+        CHECK(countInRange(code, "attachFolderDropTarget(", crumbAt + 1U, hoverAt) == 2U);
     }
     engine::platform::Context ctx;
     if (!ctx.valid()) {
@@ -26318,6 +26367,14 @@ TEST_CASE("editor: the Assets footer -- the path elided from the left, the right
     REQUIRE(r.footerRightTexts.size() >= 2U);                        // thumbnails and the watcher word, at least
     CHECK(std::find(r.footerRightTexts.begin(), r.footerRightTexts.end(), "Auto-refresh off") !=
           r.footerRightTexts.end());  // the watcher is OFF in this fixture, handed whole
+    // Every segment ONCE, this frame's: the right zone's texts are distinct by construction, so a duplicate is a
+    // list a missing per-frame clear let grow -- which the size floor and the find above would read as green (the
+    // code-review round's finding 13; AH17 pins the clear itself).
+    const auto distinct = [](std::vector<std::string> texts) {
+        std::sort(texts.begin(), texts.end());
+        return std::adjacent_find(texts.begin(), texts.end()) == texts.end();
+    };
+    CHECK(distinct(r.footerRightTexts));
     // A scan issue: an orphaned sidecar, then a rescan.
     const engine::Guid orphan = engine::GuidGenerator{0xE63A326ULL}.next();
     const std::string orphanMeta = engine::editor::writeMetaText(orphan);
@@ -26327,6 +26384,7 @@ TEST_CASE("editor: the Assets footer -- the path elided from the left, the right
     REQUIRE(app->tick());
     const std::vector<std::string>& right = browser->chromeRecord().footerRightTexts;
     CHECK(std::find(right.begin(), right.end(), "1 issue") != right.end());
+    CHECK(distinct(right));
     // FT12's re-pinned line, from this side: the word reaches the footer's field whole.
     const std::vector<std::string> code = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/asset_browser_panel.cpp");
     CHECK(countLinesContaining(code, "footerText.watcher = assetFooterWatchText(") == 1U);

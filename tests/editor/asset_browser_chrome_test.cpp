@@ -1,4 +1,4 @@
-// tests/editor/asset_browser_chrome_test.cpp -- task E.6.3 (D8): the Assets panel's chrome model, AH1-AH16. A TU of
+// tests/editor/asset_browser_chrome_test.cpp -- task E.6.3 (D8): the Assets panel's chrome model, AH1-AH17. A TU of
 // aero_editor_shell_test. Tier 0, every configuration, no #if. Widths are RESTATED literals: Compact needs 576, Full
 // 782, the Minimal floor is 344 (the arithmetic is in each case). W's search, searchMin and kind are the shipped font
 // multiples at the 16-point body size, which AH16 checks.
@@ -531,4 +531,49 @@ TEST_CASE("assets chrome: header, tree pane and size column widths are named fon
     // branch point, where they read 14 and 6. No other tier sees either value; I324 pins where the panel reads them.
     CHECK(ed::ASSET_TREE_PANE_FONT_MULTIPLE == 14.0F);
     CHECK(ed::ASSET_SIZE_COLUMN_FONT_MULTIPLE == 6.0F);
+}
+
+TEST_CASE("assets chrome: a recorded frame clears every per-frame count, list and text (task E.6.3, AH17)") {
+    // The panel only APPENDS to the three lists and BUMPS the counts, so a missing reset grows a list by every folded
+    // control, folder tile or footer segment, every frame -- and the GPU cases' membership reads stay green on the
+    // duplicates (the code-review round's finding 13). Every per-frame member is written, as a drawn frame leaves it.
+    ed::AssetChromeRecord record{};
+    CHECK(record.framesRecorded == 0U);
+    record.headerRects[static_cast<std::size_t>(ed::AssetHeaderControl::Search)] =
+        ed::AssetDrawnRect{.drawn = true, .min = Vec2{1.0F, 2.0F}, .max = Vec2{3.0F, 4.0F}};
+    record.overflowDrawn.push_back(ed::AssetHeaderControl::Kind);
+    record.headerRuleDrawn = true;
+    record.crumbsDrawn = 3U;
+    record.folderDropTargetsAttached = 7U;
+    record.crumbDropTargets = 3U;
+    record.itemsText = "4 items";
+    record.treeRowsDrawn = 5U;
+    record.tilesRinged = 6U;
+    record.foldersCounted = 2U;
+    record.folderTileCounts.push_back(ed::AssetFolderTileCount{.relative = "models", .count = 4U});
+    record.hatchedWells = 1U;
+    record.footerLeftText = "models/a.txt";
+    record.footerRightTexts.emplace_back("1 issue");
+    ed::beginAssetChromeRecordFrame(record);
+    CHECK(record.framesRecorded == 1U);
+    for (const ed::AssetDrawnRect& rect : record.headerRects) {
+        CHECK_FALSE(rect.drawn);
+        CHECK(rect.min == Vec2{});
+        CHECK(rect.max == Vec2{});
+    }
+    CHECK(record.overflowDrawn.empty());
+    CHECK_FALSE(record.headerRuleDrawn);
+    CHECK(record.crumbsDrawn == 0U);
+    CHECK(record.folderDropTargetsAttached == 0U);
+    CHECK(record.crumbDropTargets == 0U);
+    CHECK(record.itemsText.empty());
+    CHECK(record.treeRowsDrawn == 0U);
+    CHECK(record.tilesRinged == 0U);
+    CHECK(record.foldersCounted == 0U);
+    CHECK(record.folderTileCounts.empty());
+    CHECK(record.hatchedWells == 0U);
+    CHECK(record.footerLeftText.empty());
+    CHECK(record.footerRightTexts.empty());
+    ed::beginAssetChromeRecordFrame(record);
+    CHECK(record.framesRecorded == 2U);  // one per frame, never reset
 }

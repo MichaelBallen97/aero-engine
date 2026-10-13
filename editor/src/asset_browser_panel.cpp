@@ -627,6 +627,10 @@ void AssetBrowserPanel::drawCrumbRow(float rowHeight) {
     const float labelY = frameTop + ((frame - panelFacePoints(PanelFace::Body)) * 0.5F);
     const bool crumbsEnabled = !rootUtf8.empty();
     ImGui::BeginDisabled(!crumbsEnabled);  // 1:1 with EndDisabled; no continue/return between
+    // The crumbs' drop targets are what attachFolderDropTarget counted across the loop: the tree's rows draw first and
+    // count too, so the row's share is the delta (the code-review round's finding 14 -- a bump beside the call
+    // counted iterations, and a crumb that lost its target still read 3).
+    const std::uint32_t targetsBefore = chrome.folderDropTargetsAttached;
     float x = row.firstCrumbX;
     for (std::size_t i = 0; i < crumbs.size(); ++i) {
         const bool current = i + 1U == crumbs.size();
@@ -646,7 +650,6 @@ void AssetBrowserPanel::drawCrumbRow(float rowHeight) {
         } else {
             attachFolderDropTarget(crumbs[i].relative);  // task E.4.3 -- site 4: "move up one level"
         }
-        ++chrome.crumbDropTargets;
         const bool hovered = ImGui::IsItemHovered();
         if (pressed) {
             record(ActionKind::Navigate, crumbs[i].relative);
@@ -662,6 +665,7 @@ void AssetBrowserPanel::drawCrumbRow(float rowHeight) {
         ++chrome.crumbsDrawn;
         x += width + row.crumbGap;
     }
+    chrome.crumbDropTargets = chrome.folderDropTargetsAttached - targetsBefore;
     ImGui::EndDisabled();
     // The items text, Mono small textFaint, right-aligned and clipped at the row's end -- never over a crumb.
     const float itemsY = frameTop + ((frame - panelFacePoints(PanelFace::MonoSmall)) * 0.5F);
@@ -929,6 +933,9 @@ void AssetBrowserPanel::beginAssetMoveBranch(const std::string& relativePath, co
 // BEFORE AcceptDragDropPayload, so an illegal drop draws NO HIGHLIGHT. ImGui draws the highlight as a
 // side effect of Accept, so calling it and then deciding is a visible promise the editor then breaks.
 void AssetBrowserPanel::attachFolderDropTarget(const std::string& folderRelative) {
+    // task E.6.3: counted HERE, first, before BeginDragDropTarget's early return -- no test can put a payload in
+    // flight, so the call is the furthest point a record can observe. drawCrumbRow reads its share as a delta.
+    ++chrome.folderDropTargetsAttached;
     if (!ImGui::BeginDragDropTarget()) {
         return;  // EndDragDropTarget is owed ONLY when this returned true (F18)
     }
