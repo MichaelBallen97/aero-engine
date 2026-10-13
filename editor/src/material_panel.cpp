@@ -888,6 +888,7 @@ void MaterialPanel::onDraw(PanelContext& /*context*/) {  // no World/Selection/P
         // clipping Apply off the bottom of the panel. The Asset Browser's assetBrowserLayout (asset_view.hpp)
         // floors its panes at 1.0F for the OPPOSITE requirement -- two side-by-side panes must share ONE
         // explicit height -- and both are right; here the child is alone and ImGui's remainder is the point.
+        cardRecordValue.bodyInChild = true;  // task E.6.3: the host the cards are drawn in (I331's per-host arms)
         ImGui::BeginChild("##body", ImVec2(0.0F, -layout.footerHeight));
         drawBody(form, layout, invalid, changed);
         ImGui::EndChild();  // 1:1 with the BeginChild above, same block, nothing exits between them

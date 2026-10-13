@@ -24913,6 +24913,11 @@ TEST_CASE("editor: the Console's footer band, reservation and header (task E.6.3
         const std::size_t filterAt = soleLineContaining(code, "CONSOLE_FILTER_FONT_MULTIPLE");
         CHECK(code[filterAt].find("const float filterWidth = ImGui::GetFontSize() * ") != std::string::npos);
         CHECK(countLinesContaining(code, "SetNextItemWidth(filterWidth)") == 1U);
+        // D7's right alignment as source text (the code-review round's finding 10), which no display can switch off:
+        // the pure placement takes the row and the measured cluster, and the cluster's first item is drawn at its
+        // answer -- never at the row's left edge. The GPU arm below sees the same placement wherever the row fits.
+        CHECK(countLinesContaining(code, "consoleHeaderClusterX(rowMin.x, rowWidth, cluster)") == 1U);
+        CHECK(countLinesContaining(code, "SetCursorScreenPos(ImVec2(clusterX,") == 1U);
     }
     engine::platform::Context ctx;
     if (!ctx.valid()) {
@@ -24928,6 +24933,18 @@ TEST_CASE("editor: the Console's footer band, reservation and header (task E.6.3
     std::optional<engine::editor::EditorApp> app = e62App(*device, *window, ctx);
     auto* const console = dynamic_cast<engine::editor::ConsolePanel*>(app->panels().find("Console"));
     REQUIRE(console != nullptr);
+    // I233's runner rule, before the settle ticks (finding 10): the 0.30 Right split leaves the Bottom row 485 wide
+    // here against a 506-wide header cluster, so the placement arm below never ran. With the side panels hidden,
+    // ImGui's dock tree hands the Bottom node the whole width (imgui.cpp:20281-20284) and the row holds the cluster.
+    // The footer and scroll arms do not depend on the row's width: they read heights, the Bottom node's height does not
+    // depend on the sides, drawFooter draws and records every segment with no width test, and the header rule is one
+    // AddRectFilled, which tests only the colour's alpha (imgui_draw.cpp:1532).
+    for (const char* id :
+         {"Hierarchy", "Inspector", "Material", "Import Details", engine::editor::PROJECT_SETTINGS_PANEL_ID}) {
+        if (app->panels().find(id) != nullptr) {
+            app->panels().setVisible(id, false);  // setVisible LOGS AN ERROR for an unknown id: find() first
+        }
+    }
     e63Front(*app, "Console", "Assets");
     AERO_LOG_INFO("e63 footer probe");
     const std::uint64_t before = console->drawRecord().framesRecorded;
@@ -26884,11 +26901,15 @@ TEST_CASE("editor: Material cards -- eight, panel-owned bits, Apply primary, bot
     // span and the title x ONE pure layout (PC10's), so neither is re-derived here: that would compare the record
     // with itself. The placed-body table arms are the Inspector half's, where ##fields is a body's ONLY item -- here a
     // slot section's ##rows follows its slot row and precedes its sampler disclosure, so the frame's LAST table need
-    // not bound its body.
+    // not bound its body. The host is the one the panel RECORDED beside its BeginChild (the code-review round's finding
+    // 12), so each host's overhang is asserted from the host, never inferred from the overhang itself: a ##body child
+    // that gained window padding overhangs by the panel window's amount and would satisfy either reading.
     const float s = app->uiScale();
     const float windowOverhang = std::trunc(e63StyleX(s, "WindowPadding") * 0.5F);
+    REQUIRE(windowOverhang > 0.5F);  // ANTI-VACUITY: the hosts' overhangs differ, so the per-host check can fail
+    const bool childHostA = r.bodyInChild;
     const float overhangA = first.stripMinX - first.headerItemMin.x;
-    CHECK((std::abs(overhangA) <= 0.5F || std::abs(overhangA - windowOverhang) <= 0.5F));
+    CHECK(std::abs(overhangA - (childHostA ? 0.0F : windowOverhang)) <= 0.5F);
     REQUIRE_FALSE(r.cards[2].open);  // ANTI-VACUITY: one CLOSED record; `first` is REQUIREd open in (b)
     for (std::size_t i = 0; i < r.cards.size(); ++i) {
         CAPTURE(i);
@@ -26931,11 +26952,16 @@ TEST_CASE("editor: Material cards -- eight, panel-owned bits, Apply primary, bot
     WARN(r.cards[2].chevronQuadMaxX > r.cards[2].chevronQuadMinX);
 
     // (d) THE MODE FLIP at ONE dock width: only the height changes, so the reset layout gives the Right node the same
-    // width, and the Material panel crosses its FixedRegions / Scrolling boundary (D4). The bit survives the flip.
+    // width, and the Material panel crosses its FixedRegions / Scrolling boundary (D4). The boundary depends on the
+    // window height alone (the Right dock spans the work area; the faces and the UI scale are the same on every lane),
+    // and at UI scale 1 it sits between heights 381 and 400 (measured: the ##body child at 1000, 420 and 400, the panel
+    // window at 380 and every height down to 200). A display only ever delivers a SHORTER window than requested, so
+    // 1280 x 300 is the panel-window host everywhere, and the cross-host arm runs wherever the 1000 request was the
+    // ##body child (it WARNs otherwise). The bit survives the flip.
     const engine::Vec2 outerMinA = first.outerMin;
     const engine::Vec2 outerMaxA = first.outerMax;
     const float bodyInsetA = first.outerMax.x - first.bodyMax.x;
-    window->setSize(1280, 420);
+    window->setSize(1280, 300);
     e62Ticks(*app, 3);
     app->requestLayoutReset();
     e62Ticks(*app, 6);
@@ -26945,18 +26971,19 @@ TEST_CASE("editor: Material cards -- eight, panel-owned bits, Apply primary, bot
     CHECK_FALSE(app->materialSectionOpen(2));
     CHECK(r.bodiesSubmitted == 7U);
     REQUIRE_FALSE(r.cards.empty());
+    CHECK_FALSE(r.bodyInChild);  // the Scrolling mode: the cards are the panel window's own items
     const engine::editor::CardEntryRecord& flipped = r.cards.front();
     const float overhangB = flipped.stripMinX - flipped.headerItemMin.x;
-    MESSAGE("I331 overhangs: " << overhangA << " at 1280x1000, " << overhangB << " at 1280x420");
-    if (std::abs(overhangA - overhangB) > 0.5F) {
+    MESSAGE("I331 overhangs: " << overhangA << " at 1280x1000 (in ##body: " << childHostA << "), " << overhangB
+                               << " at 1280x300");
+    CHECK(std::abs(overhangB - windowOverhang) <= 0.5F);  // the panel-window host's overhang
+    WARN(childHostA);  // this display started in the Scrolling mode too: geometry, so the cross-host arm cannot run
+    if (childHostA) {
         // The two hosts really differed: the card's x span is the SAME (the child sits inside the panel's padding),
         // less a scrollbar on the right when one shows; the body's inset from the outer edge is the same.
         CHECK(std::abs(flipped.outerMin.x - outerMinA.x) <= 0.5F);
         CHECK(std::abs(flipped.outerMax.x - outerMaxA.x) <= e63StyleX(s, "ScrollbarSize") + 0.5F);
         CHECK(std::abs((flipped.outerMax.x - flipped.bodyMax.x) - bodyInsetA) <= 0.5F);
-        CHECK((std::abs(overhangB) <= 0.5F || std::abs(overhangB - windowOverhang) <= 0.5F));  // one of the hosts
-    } else {
-        WARN(std::abs(overhangA - overhangB) > 0.5F);  // this display did not cross the boundary: geometry
     }
 
     app->requestQuit();

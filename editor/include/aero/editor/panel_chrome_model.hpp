@@ -175,6 +175,10 @@ struct CardRecord {
     float lastBodyTableMaxY = 0.0F;      // ... and its outer max y
     float lastSlotClearMaxX = 0.0F;      // the Material slot row's trailing Clear, max x
     float lastSpanFullWidthMinX = 0.0F;  // the min x of the last SpanFullWidth row a body submitted
+    // This frame: the cards were submitted inside the Material panel's ##body child -- set in its FixedRegions arm,
+    // beside the BeginChild, so it reports the host ImGui drew in. False in the Scrolling mode and for every other
+    // host (I331 asserts each host's overhang from it, never from the overhang itself).
+    bool bodyInChild = false;
 };
 // Opens one recorded frame: + 1 frame, the per-frame counts zeroed and `cards` cleared (capacity kept).
 void beginCardRecordFrame(CardRecord& record) noexcept;

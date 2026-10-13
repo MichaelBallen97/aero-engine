@@ -219,6 +219,7 @@ void beginCardRecordFrame(CardRecord& record) noexcept {
     record.lastBodyTableMaxY = 0.0F;
     record.lastSlotClearMaxX = 0.0F;
     record.lastSpanFullWidthMinX = 0.0F;
+    record.bodyInChild = false;
 }
 
 }  // namespace engine::editor
