@@ -292,13 +292,19 @@ AssetFooterLayout assetFooterLayout(float rowMinX, float rowWidth, const AssetFo
     };
     // task E.6.3's code-review round: a zone wider than the row sheds the thumbnails first, then the watcher word (the
     // status bar shows the same classifyWatchState), and never the notice, the matches or the issues. The thumbnails
-    // were pushed just before the watcher, which is last when present.
+    // were pushed just before the watcher, which is last when present. Its round 2: with a selection both checks also
+    // count one gap and the selection's cells, up to ASSET_FOOTER_SELECTION_MIN_CELLS, for it, so neither segment is
+    // kept unless the row also holds that much for the selection -- reading the zone alone dropped the selection in a
+    // 749-point row (a window about 1366 wide) while "thumbnails R/B" stayed. Never more than the selection's own
+    // cells, so a shorter one costs no segment the row holds beside it whole. No selection, no reserve.
+    const std::size_t reserved = std::min(codePointCount(text.selection), ASSET_FOOTER_SELECTION_MIN_CELLS);
+    const float selectionReserve = text.selection.empty() ? 0.0F : gap + (static_cast<float>(reserved) * advance);
     float total = zoneWidth();
-    if (hasThumbnails && total > rowLength) {
+    if (hasThumbnails && total + selectionReserve > rowLength) {
         out.right.erase(out.right.end() - (hasWatcher ? 2 : 1));
         total = zoneWidth();
     }
-    if (hasWatcher && total > rowLength) {
+    if (hasWatcher && total + selectionReserve > rowLength) {
         out.right.pop_back();
         total = zoneWidth();
     }

@@ -1678,7 +1678,8 @@ void AssetBrowserPanel::drawIssues(float bodyHeight) {
 // INSIDE today's reservation (assetBrowserLayout's footerHeight = spacing + frame, so AV55, AV59 and I231 hold): the
 // left zone is the selection, elided from the LEFT; the right zone -- the listing's notice, the matches, the issues,
 // the thumbnails, the watcher word -- draws each segment whole, a narrow row shedding the thumbnails and then the
-// watcher word and never pushing the notice left of the row (assetFooterLayout).
+// watcher word (sooner while a selection is shown: the row reserves its cells, up to ASSET_FOOTER_SELECTION_MIN_CELLS,
+// for it) and never pushing the notice left of the row (assetFooterLayout).
 void AssetBrowserPanel::drawFooter() {
     const DirectoryListing* const listing = cached(currentDir);
     if (listing == nullptr) {

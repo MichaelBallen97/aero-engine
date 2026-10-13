@@ -1,6 +1,6 @@
 #pragma once
 // Aero Engine -- the Assets panel's chrome as VALUES (task E.6.3, spec D8). PUBLIC and PURE: no ImGui, no GPU, no
-// <filesystem>, no logging, so tier 0 walks every width, scale and count (AH1-AH17) that asset_browser_panel.cpp only
+// <filesystem>, no logging, so tier 0 walks every width, scale and count (AH1-AH19) that asset_browser_panel.cpp only
 // measures and draws. The record at the bottom is what the panel DREW, for the GPU tier.
 #include <aero/core/math.hpp>                  // Vec2
 #include <aero/editor/asset_meta.hpp>          // AssetRecord
@@ -167,6 +167,9 @@ private:
 };
 
 // ---- the footer (D8) --------------------------------------------------------------------------------------------
+// The most Mono cells assetFooterLayout reserves for a selection before it keeps "thumbnails R/B" or the watcher word:
+// the ellipsis plus a fifteen-character file name. A shorter selection reserves up to that -- its own cells.
+inline constexpr std::size_t ASSET_FOOTER_SELECTION_MIN_CELLS = 16;
 struct AssetFooterText {
     std::string selection;  // the selected path and its segments, as today's line composed them
     std::string notice;     // the listing's "N skipped" / truncation sentence (AC-8: never silent); "" omits it
@@ -188,12 +191,15 @@ struct AssetFooterLayout {
 };
 // Mono small is monospaced, so a width is code points x `monoSmallAdvance`. Right zone, in order: the listing's
 // notice (warning), the matches (textFaint), "N issues" (warning, omitted at 0), "thumbnails R/B" (textFaint), the
-// watcher word (textFaint). While the zone is wider than the row it sheds "thumbnails R/B" first, then the watcher
-// word (the status bar shows the same watch state) -- NEVER the notice, the matches or the issues. What is left is
-// right-aligned at the row's max when it fits, else anchored AT rowMinX (never left of it), so the notice stays on
-// screen and the window clips the overflow at the row's right end. The left zone takes what the right one leaves,
-// and the shedding reads the right zone's width ALONE, so that can be nothing: in a row less than one gap plus one
-// Mono cell wider than the kept segments, the selection is not drawn at all (AH15 records it).
+// watcher word (textFaint). While the zone is wider than the row -- with a selection, wider than the row less one gap
+// and the selection's cells, up to ASSET_FOOTER_SELECTION_MIN_CELLS, for it -- it sheds "thumbnails R/B" first, then
+// the watcher word (the status bar shows the same watch state); NEVER the notice, the matches or the issues. What is
+// left is right-aligned at the row's max when it fits, else anchored AT rowMinX (never left of it), so the notice
+// stays on screen and the window clips the overflow at the row's right end. The left zone takes what the right one
+// leaves. Beside a kept thumbnails or watcher segment that is at least the selection's cells up to
+// ASSET_FOOTER_SELECTION_MIN_CELLS, so a shorter selection is drawn whole (short of it only by float rounding, at a
+// row width exactly on the threshold); the three segments never shed can leave it less -- or nothing, in a row less
+// than one gap plus one Mono cell wider than they are (AH19 records that band).
 [[nodiscard]] AssetFooterLayout assetFooterLayout(float rowMinX, float rowWidth, const AssetFooterText& text,
                                                   float monoSmallAdvance, float uiScale);
 
