@@ -20251,8 +20251,9 @@ TEST_CASE("editor: E.4.5's structure holds as source text -- routing, release, g
                 }
             }
         }
-        CHECK(formatCalls >= 12U);  // ANTI-VACUITY: 12 at E.6.3's step 5 -- the browser's 9 (TextWrapped 6, SetTooltip
-                                    // 3), the picker's SetTooltip and the Inspector's two
+        CHECK(formatCalls >= 13U);  // ANTI-VACUITY: 13 since E.6.3's label tooltip (I343) -- the browser's 9
+                                    // (TextWrapped 6, SetTooltip 3), the picker's SetTooltip and the Inspector's
+                                    // three (the e# id, the card's registration name, the label's raw name)
         // THE SECOND-ARGUMENT FORMAT FUNCTIONS, the code-review round: TextColored(col, fmt, ...) and
         // LabelText(label, fmt, ...) take their format string SECOND, so the first-argument rule above cannot see
         // them. Their second argument must open a string literal: the call is joined with the next two lines and
@@ -25606,6 +25607,44 @@ TEST_CASE("editor: Inspector labels are humanised and the column measures them (
     app->requestQuit();
     CHECK(app->tick() == false);
     app.reset();
+}
+
+TEST_CASE("editor: an Inspector field's label shows its reflected name on hover (task E.6.3, I343)") {
+    // SOURCE PIN, the code-review round's findings 2 and 21. D5 draws a title-cased label (castsShadows -> Casts
+    // Shadows) and keeps the raw reflected name -- the scene JSON's spelling, and the one ADR-004's script bindings
+    // will use -- in the label's tooltip; the reset menu never spelled it. Nothing in tests/ can hover (the backend
+    // rewrites io.MousePos every NewFrame), so the PLACEMENT is the pin: the guard asks IsItemHovered of the label, so
+    // nothing but comments may sit between the label and the guard; and the tooltip sits above the reset menu, which
+    // BeginPopupContextItem anchors on the last item -- still the label, because the tooltip window's End restores
+    // LastItemData (imgui.cpp:8848). The hover itself is validation row 6.
+    const std::vector<std::string> code = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/inspector_panel.cpp");
+    REQUIRE(code.size() > 100U);
+    const std::size_t bodyStart = soleLineContaining(code, "void InspectorPanel::drawField(");
+    const std::size_t bodyEnd = functionBodyEnd(code, bodyStart);
+    const std::size_t labelAt = soleLineContaining(code, "roleText(ChromeRole::TextLabel, field.label)");
+    const std::size_t menuAt = soleLineContaining(code, "\"##fieldmenu\"");
+    REQUIRE(bodyStart < labelAt);
+    REQUIRE(labelAt < menuAt);
+    REQUIRE(menuAt < bodyEnd);
+    // Exactly ONE such line in the file: the name is the ARGUMENT, never the format string (I242(e)).
+    constexpr std::string_view TOOLTIP = "ImGui::SetTooltip(\"%s\", field.name.c_str())";
+    REQUIRE(countInRange(code, TOOLTIP, 0U, code.size()) == 1U);
+    const std::size_t tooltipAt = firstLineContaining(code, TOOLTIP, 0U);
+    CHECK(labelAt < tooltipAt);
+    CHECK(tooltipAt < menuAt);
+    // The guard is the line directly above, pinned WHOLE: only when the label differs from the name, and only on the
+    // label's hover. Two substrings would also pass `||` (a tooltip on every row, every frame, left on screen with the
+    // last field's name) and `!ImGui::IsItemHovered()`, which contains the hover read.
+    REQUIRE(tooltipAt > labelAt + 1U);
+    REQUIRE(code[tooltipAt - 1U].find_first_not_of(" \t\r") != std::string::npos);
+    CHECK(e62PreviousCodeLine(code, tooltipAt) == "if (field.label != field.name && ImGui::IsItemHovered()) {");
+    // Nothing but comments between the label and the guard, so the hover read is the LABEL's. Not only no `ImGui::`
+    // call: roleText, mutedText, countBadge and ghostButton submit items without spelling it, and one of them here
+    // would move IsItemHovered, and the reset menu's anchor, onto its own item.
+    for (std::size_t i = labelAt + 1U; i + 1U < tooltipAt; ++i) {
+        CAPTURE(code[i]);
+        CHECK(code[i].find_first_not_of(" \t\r") == std::string::npos);
+    }
 }
 
 TEST_CASE("editor: the axis unit -- letter inside the frame, frameless drag, outline states (task E.6.3, I320)") {

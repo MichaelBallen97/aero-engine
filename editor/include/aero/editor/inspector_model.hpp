@@ -42,8 +42,8 @@ struct FieldEntry {
     std::string labels;
     FieldValue value;
     // task E.6.3 (D5): the label the panel DRAWS -- humanizeIdentifier(name), filled IN PLACE every rebuild: cleared,
-    // never move-assigned, so its capacity survives (KP3's rule, above). `name` stays the ImGui id, the tooltip and
-    // the reset menu's spelling.
+    // never move-assigned, so its capacity survives (KP3's rule, above). `name` stays the ImGui id and the label's
+    // hover tooltip (I343); the reset menu never spelled it.
     std::string label;
 };
 

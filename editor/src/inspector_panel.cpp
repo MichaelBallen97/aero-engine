@@ -517,6 +517,12 @@ void InspectorPanel::drawField(PanelContext& context, Entity primary, const Comp
     ImGui::AlignTextToFramePadding();
     lastLabelFontNameValue = ImGui::GetFont()->GetDebugName();  // task E.6.1: Body
     roleText(ChromeRole::TextLabel, field.label);  // task E.6.3 (D5): the humanised label; the raw name is the id
+    // D5: the raw reflected name -- the scene JSON's spelling, and the one ADR-004's script bindings will use -- is
+    // the label's tooltip. roleText ends in TextUnformatted, so the hover read is the label's; the tooltip window's
+    // End restores LastItemData (imgui.cpp:8848), so the reset menu below still anchors on the label (I343).
+    if (field.label != field.name && ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("%s", field.name.c_str());  // a runtime string is never a format string (I242(e))
+    }
     drawRecordValue.lastLabelDrawn = field.label;
     // THE WHOLE-FIELD MENU HANGS OFF THE LABEL CELL, never off a value widget (D6): FieldKind::String
     // keeps an uncommitted buffer whose release is keyed on ImGui::IsItemActive(), so a popup opening
