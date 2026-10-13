@@ -2329,8 +2329,9 @@ state.
   by `viewAxisCircleGap`, degenerate exactly when it is -- and the HUD's keep test and `viewAxisOwnsPoint` (the pick
   and ImGuizmo's `Enable` term) both read it: the circle reaches five past the half-extent rect and draws last.
   Chrome drawn around a claimed shape grows the ONE claimed extent with it (`VO14`, `I116`). The box is the circle's
-  NOMINAL extent, exact at and below scale 1: above it the `ruleHeight()` stroke (s points) overhangs the box by
-  0.5 x (s - 1) points, plus the AA fringe, as every `roleOutline` overhangs its rect -- neither claimed nor cleared.
+  NOMINAL extent: the stroke's nominal outer edge is the box's edge at and below scale 1, and 0.5 x (s - 1) points
+  past it above (the `ruleHeight()` stroke is s points); at EVERY scale the AA fringe (up to one point,
+  `imgui_draw.cpp:887`) lies past that -- neither claimed nor kept clear, as every `roleOutline`'s is.
 - **A request seam obeys its control** (the shell chrome's rule, again): the Hierarchy's search query, search-field
   focus and rename request (F2's gate, the `shortcutsLive` verdict), the Inspector's component menu and card header
   toggle, the Assets navigation, the Viewport's stats toggle and the Console's log scroll are each drained on ONE line

@@ -274,8 +274,11 @@ struct InspectorDrawRecord {
     Vec2 addComponentMax{};
     int addComponentDashVertices = 0;  // what the draw list RECEIVED across dashedRect: 4 per dash
     bool addComponentDashed = false;   // addComponentDashVertices > 0
-    // The top run's first dash and the gap after it, off the same received vertices; 0 for both while fewer than
-    // two dashes drew. A dash stretched over its gap keeps the count and reads a gap of 0.
+    // The top run's first dash and the gap after it, off the same received vertices. Written while the OUTLINE drew
+    // two or more dashes (8 or more vertices -- drawAddComponent's guard counts the whole outline, not the top run),
+    // 0 for both while it drew fewer. The reading is the top run's only while THAT run drew two or more, which the
+    // width always gives: 2 x addComponentPaddingX alone is 34 x s against a 5 x s dash + gap step, seven dashes
+    // before the label adds any. A dash stretched over its gap keeps the count and reads a gap of 0.
     float addComponentFirstDashWidth = 0.0F;
     float addComponentFirstDashGap = 0.0F;
 };

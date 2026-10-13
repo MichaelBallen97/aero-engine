@@ -26773,7 +26773,8 @@ TEST_CASE("editor: the view-axis widget sits 23 in from the bottom-right, inside
     CHECK(std::abs((r.imageMax.x - (r.viewAxisCircleCenter.x + r.viewAxisCircleRadius)) - (18.0F * s)) <= 0.5F);
     CHECK(std::abs((r.imageMax.y - (r.viewAxisCircleCenter.y + r.viewAxisCircleRadius)) - (18.0F * s)) <= 0.5F);
     // ...and no HUD rect under the CIRCLE it drew (the code-review round): the circle reaches viewAxisCircleGap past
-    // the half-extent corners and draws last, so the recorded centre +- radius is the box a shown rect must clear.
+    // the half-extent rect at the middle of each SIDE (43 against 38 at scale 1; the rect's corners, 38 x sqrt(2) =
+    // 53.7 out, lie outside it) and draws last, so the recorded centre +- radius is the box a shown rect must clear.
     const engine::Vec2 circleMin{r.viewAxisCircleCenter.x - r.viewAxisCircleRadius,
                                  r.viewAxisCircleCenter.y - r.viewAxisCircleRadius};
     const engine::Vec2 circleMax{r.viewAxisCircleCenter.x + r.viewAxisCircleRadius,
