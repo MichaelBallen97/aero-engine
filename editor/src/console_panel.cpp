@@ -323,7 +323,7 @@ void ConsolePanel::onDraw(PanelContext& /*context*/) {  // the context is IGNORE
     drawRecordValue.footerTextDrawn.clear();
     drawHeader();  // 1 -- records an action or edits the UI-side filter mirror only
     // D7: the band is E.6.2's ONE dp -> point conversion, never restated. EndChild's ItemSize adds ItemSpacing.y after
-    // the child (imgui.cpp:6858, :12129), so the reservation is the band PLUS that spacing -- the band alone would
+    // the child (imgui.cpp:6860, :12129), so the reservation is the band PLUS that spacing -- the band alone would
     // leave 20 of its 26 dp and push the footer into a scrollbar.
     const float band = shellBarHeight(statusBarHeightDp(EDITOR_THEME), currentUiScale());
     const float footerReserve = band + ImGui::GetStyle().ItemSpacing.y;

@@ -14,7 +14,7 @@
 //
 // A dynamic string is NEVER a format argument (project_settings_panel.cpp's own rule, applied here a
 // third time): every draw call goes through a named local built with std::format, then passed as a
-// "%s" argument.
+// "%s" argument -- or, since task E.6.3, to a string-only helper (roleText, mutedText) that takes no format.
 //
 // ASCII ONLY in every literal (3.1.3's post-merge lesson): the editor draws IBM Plex, and a non-ASCII mark
 // in a literal goes through AERO_GLYPH_* or AERO_ICON_* (.claude/rules/editor.md, "Fonts, icons and the
@@ -380,9 +380,8 @@ bool MaterialPanel::drawSlotRow(std::size_t index, MaterialDocument& form, const
     ImGui::EndDisabled();
     cardRecordValue.lastSlotClearMaxX = ImGui::GetItemRectMax().x;  // task E.6.3: the narrowed edge's witness (I331)
 
-    // The colour-space note, composed from materialSlotIsSrgb by the model. A DYNAMIC string is never a
-    // format string -- and a static one goes through "%s" too, so there is ONE rule here rather than a
-    // judgement at every call.
+    // The colour-space note, composed from materialSlotIsSrgb by the model, drawn through mutedText -- string-only,
+    // so no format string exists on this path at all (D11).
     mutedText(materialColorSpaceNote(index));
 
     // THE NOTICES STAY ON THE CHANNEL, never inside the disclosure: every one of them explains
@@ -712,7 +711,7 @@ void MaterialPanel::drawPreview(float previewHeight) {
     if (!renderable || native == nullptr || textureExtent.width == 0 || textureExtent.height == 0) {
         const char* const why = preview.unavailableReason();
         // The ONE line AC-32 asks for in a tools-OFF build, and the same line for every other reason a
-        // preview is not on screen. Never an empty string: an empty TextDisabled is a blank gap that
+        // preview is not on screen. Never an empty string: an empty mutedText line is a blank gap that
         // reads as a rendering bug.
         const bool hasReason = why != nullptr && *why != '\0';
         mutedText(hasReason ? std::string_view(why) : std::string_view("Preview unavailable."));

@@ -69,7 +69,7 @@ inline constexpr std::size_t MATERIAL_SECTION_COUNT = 8;
 
 struct MaterialSection {
     MaterialSectionId id = MaterialSectionId::Material;
-    std::string_view title;                   // the CollapsingHeader's label, ASCII
+    std::string_view title;                   // the section card's title, ASCII
     std::optional<std::size_t> slot;          // the paired texture slot, in materialSlotAt's order
     std::span<const MaterialFieldId> fields;  // the scalar rows, in draw order
 };

@@ -65,10 +65,12 @@ struct AssetTileDrawn {
     ImU32 folderTabColor = 0;    // folderTab, never folder's
 };
 
-// drawTile's face, drawn at `itemMin`: the WELL (the icon rect) -- filled `tile`, `raisedHeader` hovered or held,
-// `selection` selected -- holding the thumbnail image, a material's own colour, the two-tone folder with its count, or
-// a hatched well with the kind dot and the extension label; then the ring (hover / active / accentBorder,
-// tileRingHeight() thick); then the caption, `textBright` when selected.
+// drawTile's face, drawn at `itemMin`: the WELL (the icon rect). A folder's well is filled `tile`, `raisedHeader`
+// hovered or held, `selection` selected, under the two-tone folder and its count. The other three contents cover the
+// well and carry NO state fill: a ready thumbnail's image, a material's own colour, or a hatched well (`hatchStripe`
+// over `tile`) with the kind dot and the extension label -- on those three, hover and selection read through the
+// ring and the caption alone. Then the ring (hover / active / accentBorder, tileRingHeight() thick); then the
+// caption, `textBright` when selected.
 //
 // IT SUBMITS NO ImGui ITEM -- it draws into `drawList` and nothing else, so it never disturbs the
 // caller's last-item data. That is load-bearing for both hosts: the browser's Selectable and the

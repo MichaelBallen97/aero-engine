@@ -163,7 +163,7 @@ public:
     void requestGizmosEnabled(bool enabled) noexcept { gizmosEnabledValue = enabled; }
 
     // ---- task E.2.4 -------------------------------------------------------------------------------
-    // The view-options popover: ONE button on the strip, `View`, opening a popup that holds every
+    // The view-options popover: ONE button on the strip, the view chip, opening a popup that holds every
     // control the row used to carry (Grid, Gizmos, the tonemap combo, the exposure slider) plus the two
     // this task adds (Projection, View axis). `viewOptionsOpen()` reads the latch drawViewOptions
     // writes from BeginPopup's OWN answer -- so it reports the LAST DRAWN frame, exactly as
@@ -339,10 +339,11 @@ private:
     // exactly what a second hand-written comparison would eventually do.
     [[nodiscard]] bool viewAxisOwnsPoint(Vec2 pointPoints, Vec2 imageOrigin, Vec2 imageSize) const noexcept;
 
-    // task E.2.4: the `View` button and its popup. The BUTTON's rect max is what step 9b records; the
-    // popup's contents are D10's two groups -- Display (Projection, Tonemap, Exposure) above Overlays
-    // (Grid, Gizmos, View axis). Since task E.6.2 it is the strip's ONLY control -- the toolbar took the gizmo
-    // bar -- and it opens no disabled scope, so every control stays live with nothing selected.
+    // task E.2.4: the view chip (the `View` button until task E.6.3) and its popup. The CHIP's rect max is what
+    // step 9b records; the popup's contents are D10's two groups -- Display (Projection, Tonemap, Exposure) above
+    // Overlays (Grid, Gizmos, View axis; task E.6.3 adds Stats). Since task E.6.2 it is the strip's ONLY control
+    // -- the toolbar took the gizmo bar -- and it opens no disabled scope, so every control stays live with nothing
+    // selected.
     void drawViewOptions();
     // task E.6.3 (D9): lays the HUD out from the RECORDED image rect, latches it for the next frame's press claims,
     // draws the stats card and the hints / fly chip, and leaves the cursor at the view chip's laid-out min.
@@ -465,18 +466,21 @@ private:
     std::optional<GizmoSpace> lastManipulateSpaceValue;
     std::optional<Vec3> lastManipulateSnapValue;
 
-    // The interactive overlay row's screen rect in POINTS, written at onDraw's step 9b and read by
-    // overlayOwnsPress() on the NEXT frame's step 8b. ONE FRAME OLD BY CONSTRUCTION. It moves when the dock
-    // does AND when the readout above it gains or loses a line (`fly`, `ortho`) -- task E.6.2 corrected the
-    // earlier "only when the dock does"; a one-frame-old rect across such a change can own or miss one press
-    // at the old row. Empty until the first frame that reaches step 9b, and an empty rect owns nothing.
+    // The interactive overlay row's screen rect in POINTS -- the view chip's -- written at onDraw's step 9b and
+    // read by overlayOwnsPress() on the NEXT frame's step 8b. ONE FRAME OLD BY CONSTRUCTION. Since task E.6.3 the
+    // chip sits at the recorded image rect's top-left, hudInset in (viewportHudLayout), so the rect moves when the
+    // dock does, changes width when the chip's label does (a projection toggle: "Perspective 60" <-> "Orthographic",
+    // made in the popover after drawHud has drawn), and collapses to empty on a frame whose layout dropped the chip;
+    // a one-frame-old rect across such a change can own or miss one press at the old extent. hudOwnsPoint claims the
+    // same chip rect from latchedHudLayout under the same argument. Empty until the first frame that reaches step
+    // 9b, and an empty rect owns nothing.
     Vec2 overlayRowTopLeft{};
     Vec2 overlayRowBottomRight{};
-    // task E.2.4: the `View` BUTTON's screen rect max, captured BEFORE the popup. Step 9b records the
-    // interactive row from THIS rather than from ImGui's last-item rect, so the recorded row cannot
-    // move when the popover opens -- and it does not rest on ImGui restoring the parent's last item at
-    // EndPopup, which the pinned tree does do (imgui.cpp:8848). Step 9b's comment carries the
-    // measurement; I138 pins the rect equal open and closed as a regression guard.
+    // task E.2.4: the view chip's screen rect max (the `View` BUTTON's until task E.6.3), captured BEFORE the
+    // popup. Step 9b records the interactive row from THIS rather than from ImGui's last-item rect, so the recorded
+    // row cannot move when the popover opens -- and it does not rest on ImGui restoring the parent's last item at
+    // EndPopup, which the pinned tree does do (imgui.cpp:8848). Step 9b's comment carries the measurement; I138 pins
+    // the rect equal open and closed as a regression guard.
     Vec2 viewOptionsButtonMax{};
 
     // ---- task E.6.3 (D9) --------------------------------------------------------------------------------------

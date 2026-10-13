@@ -2,8 +2,9 @@
 // Aero Engine -- the panels' shared chrome as VALUES (task E.6.3, spec D1-D4, D10, D14). PUBLIC and PURE: no ImGui,
 // no entt, no SDL, no logging, so tier 0 reaches every decision the shared ImGui TU (panel_chrome_ui.cpp) only draws.
 //
-// THE ROLE MAP (D2): a panel never names a colour -- it names a ChromeRole, and chromeRoleColor reads the palette
-// member of the same name, each ONCE (I287). A TRANSPARENT fill is chromeRoleColor(role, 0), the role naming the
+// THE ROLE MAP (D2): a panel names a palette colour as a ChromeRole, and chromeRoleColor reads the palette member of
+// the same name, each ONCE (I287); D2's retained direct palette reads stay, pinned per file by I287, and a colour
+// outside the palette is its own theme member. A TRANSPARENT fill is chromeRoleColor(role, 0), the role naming the
 // surface the item sits on (D1 rule 1) -- never a literal, never IM_COL32_BLACK_TRANS, never a copy of the theme
 // builder's file-local withAlpha.
 //

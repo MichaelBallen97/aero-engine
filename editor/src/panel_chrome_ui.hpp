@@ -9,8 +9,10 @@
 //     constructor and pop in their destructor, and PanelCard ends its card in its destructor.
 //   * No helper takes a format string: roleText, mutedText, mutedTextWrapped, countBadge and drawRoleText draw
 //     their string UNFORMATTED, so the D11 sweep is format-safe by construction (I333: nothing here is variadic).
-//   * Every colour is a ChromeRole through chromeRoleColor; a slot that must paint nothing is clearOver(surface) --
-//     the surface's role at alpha 0, the ONE transparent spelling (I333). The one face switch is ScopedFace (I286).
+//   * Every palette colour is a ChromeRole through chromeRoleColor, and the two ThemePanels colours this TU draws
+//     (hatchStripe, addComponentDash) are read directly; a slot that must paint nothing is clearOver(surface) --
+//     the surface's role at alpha 0, the ONE transparent spelling (I333). Every new face switch is ScopedFace; the
+//     Console's size-0 message push is the one panel exception (I286's set also holds E.6.2's shell_chrome_ui.cpp).
 #include <aero/editor/panel_chrome_model.hpp>
 
 #include <cstddef>
@@ -30,7 +32,8 @@ enum class PanelFace : std::uint8_t { Body, Strong, Mono, BodySmall, StrongSmall
 // whole-point round-up (imgui.cpp:6456) -- a column of advances must not accumulate it.
 [[nodiscard]] float faceTextWidth(PanelFace face, std::string_view text);
 
-// The one PushFont / PopFont pair a panel uses (I286): the face at its UNSCALED size, which ImGui scales and rounds.
+// The PushFont / PopFont pair every new panel face switch uses (I286; the Console's message push is the exception):
+// the face at its UNSCALED size, which ImGui scales and rounds.
 class ScopedFace {
 public:
     explicit ScopedFace(PanelFace face);
@@ -66,7 +69,8 @@ public:
     GhostStyle& operator=(GhostStyle&&) = delete;
 };
 [[nodiscard]] bool ghostButton(const char* label, ImVec2 size = ImVec2(0.0F, 0.0F));
-// Header / HeaderHovered / HeaderActive at clearOver(surface): a tile or tree Selectable / node paints no fill (D8).
+// Header / HeaderHovered / HeaderActive at clearOver(surface): a tile Selectable or an Assets tree node paints no
+// ImGui fill (D8). The Hierarchy's rows keep ImGui's own (D6) and never take one (I312).
 class ClearHeaderStyle {
 public:
     explicit ClearHeaderStyle(ChromeRole surface);

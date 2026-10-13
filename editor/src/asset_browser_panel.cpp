@@ -576,7 +576,7 @@ void AssetBrowserPanel::drawTreePane(float paneHeight) {
 }
 
 // ---- phase 4: the right pane -- task E.6.3 (D8): ONE group, so the SameLine after the tree carries all of it -----
-// SameLine carries over to exactly ONE item (ItemSize puts the cursor back at the indent, imgui.cpp:12122-12125): a
+// SameLine carries over to exactly ONE item (ItemSize puts the cursor back at the indent, imgui.cpp:12128): a
 // crumb row submitted on its own would sit beside the tree and push the grid below it. The group's height is
 // crumbRowHeight + the rule + ItemSpacing.y + the child's, which assetContentsPaneLayout makes paneHeight exactly --
 // for every pane, since onDraw records that chrome and assetBrowserLayout never hands out less than it + 4 (ImGui

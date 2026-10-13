@@ -61,8 +61,8 @@ constexpr ImGuiTableFlags TABLE_FLAGS = ImGuiTableFlags_SizingFixedFit | ImGuiTa
 // task E.6.3 (D5): the dashed button's one label, drawn on the draw list in Strong `accent`.
 constexpr std::string_view ADD_COMPONENT_LABEL = "Add Component";
 
-// The short display name for a CollapsingHeader label ("Transform" from "engine::Transform"); the
-// full registration name is shown as an IsItemHovered tooltip instead (D13/E14).
+// The short display name for an Add Component menu entry ("Transform" from "engine::Transform"). A card's title is
+// the model's humanised entry.title, and its full-name tooltip is read off CardHeaderResult::headerHovered.
 std::string_view shortComponentName(std::string_view fullName) {
     const std::size_t pos = fullName.rfind("::");
     return pos == std::string_view::npos ? fullName : fullName.substr(pos + 2);

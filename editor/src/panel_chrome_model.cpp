@@ -156,8 +156,8 @@ std::string_view materialSectionIcon(MaterialSectionId id) noexcept {
     return AERO_ICON_SHAPES;
 }
 
-// Today's seven CollapsingHeader labels, verbatim (import_details_panel.cpp:481-498, :715) -- drawn as the
-// card's TITLE; the card's ImGui id is the host's own ("##card" under the section's PushID, "##blender").
+// The seven section titles -- verbatim the branch point's CollapsingHeader labels -- drawn as the card's TITLE; the
+// card's ImGui id is the host's own ("##card" under the section's PushID in drawImported, "##blender").
 std::string_view importDetailsSectionTitle(ImportDetailsSection section) noexcept {
     switch (section) {
         case ImportDetailsSection::Overview:

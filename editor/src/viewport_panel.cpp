@@ -29,9 +29,8 @@
 #include <aero/rhi/internal/native_device.hpp>
 #include <aero/scene/mesh_renderer.hpp>  // task 3.1.5: the Material arm asks the LIVE World
 
-#include "editor_theme_imgui.hpp"  // task E.6.1: toImVec4
-#include "editor_theme_ui.hpp"     // task E.6.1: toImU32, toRhiColor
-#include "panel_chrome_ui.hpp"     // task E.6.3: chips, roles, faces, the card fills
+#include "editor_theme_ui.hpp"  // task E.6.1: toImU32, toRhiColor
+#include "panel_chrome_ui.hpp"  // task E.6.3: chips, roles, faces, the card fills
 
 #include <algorithm>
 #include <array>
@@ -838,7 +837,8 @@ void ViewportPanel::onDraw(PanelContext& context) {
     // --- 8e. the selection highlight (task 2.3.2). LAST of the new phases so it projects through the
     // POST-F camera: F moves the eye in this same frame and renderScene will submit that moved
     // camera, so building the overlay any earlier would put the box one frame behind the pixels
-    // (INV-2). Drawing here also puts it UNDER the size readout below and OVER the Image above.
+    // (INV-2). Drawing here also puts it UNDER the HUD drawn below (the stats card and the hint or fly chips, then
+    // the view chip) and OVER the Image above.
     drawSelectionOverlay(context, Vec2{imageOrigin.x, imageOrigin.y}, Vec2{avail.x, avail.y});
 
     // Step 9 (task E.6.3, D9): THE HUD. requestStatsVisible's drain first -- applied only while the chip, the
@@ -855,9 +855,9 @@ void ViewportPanel::onDraw(PanelContext& context) {
     pendingStatsVisible.reset();  // one tick: the reset runs whichever way the gate answered
     drawHud(context, hudImageMin, hudImageMax, drawExtent);
     // Step 9b: RECORD THE INTERACTIVE STRIP'S RECT, in the same screen-space POINTS io.MousePos uses,
-    // so updatePick's ARM step can refuse a press the strip owns. `rowStart` is captured before `View`,
-    // the row's only control since task E.6.2; the row ENDS at the button's rect max, which
-    // drawViewOptions captured before it touched the popup.
+    // so updatePick's ARM step can refuse a press the strip owns. `rowStart` is captured before the view chip,
+    // the row's only control since task E.6.2 (the `View` button until task E.6.3); the row ENDS at the chip's
+    // rect max, which drawViewOptions captured before it touched the popup.
     //
     // task E.2.4: the BUTTON's own rect, captured inside drawViewOptions before it touches the popup
     // -- NOT ImGui's last-item rect read here.
@@ -878,7 +878,8 @@ void ViewportPanel::onDraw(PanelContext& context) {
     // ONLY THE INTERACTIVE ROW -- the view chip. The stats card and the hint chips are draw-list chrome whose
     // presses hudOwnsPoint claims (task E.6.3, D9); this rect is the chip's, and a dropped chip's is empty.
     const ImVec2 rowStart = ImGui::GetCursorScreenPos();
-    // task E.6.2 (D18): `View` alone -- T / R / S and Local / World are the shell toolbar's now.
+    // task E.6.2 (D18): the view chip alone (`View` until task E.6.3) -- T / R / S and Local / World are the shell
+    // toolbar's now.
     drawViewOptions();  // task 3.6.3
     const Vec2 rowEnd = viewOptionsButtonMax;
     overlayRowTopLeft = Vec2{rowStart.x, rowStart.y};
@@ -1118,15 +1119,14 @@ void ViewportPanel::updateGizmo(PanelContext& context, Vec2 imageOrigin, Vec2 av
     // task E.1.3 (code-review round): THE VIEW-AXIS WIDGET OWNS ITS OWN PRESSES, AND ImGuizmo HAS TO
     // BE TOLD. ImGuizmo's CanActivate() is `IsMouseClicked(0) && !IsAnyItemHovered() &&
     // !IsAnyItemActive()` (ImGuizmo.cpp:1670-1677) and GetMoveType gates only on mbMouseOver, i.e.
-    // "the cursor is over this window" (:2108-2113). The interactive overlay row is protected from
-    // that only INCIDENTALLY -- its SmallButton (View; task E.6.2 moved T/R/S and Local/World to the toolbar) is
-    // a real ImGui item, so IsAnyItemHovered() is true over it; E.2.4 moved the row's Checkbox,
-    // Combo and SliderFloat into the View popover, and the incidental protection survived the move
-    // unchanged because a SmallButton is an item too -- while the widget deliberately submits NO item at all,
-    // which makes it invisible to exactly that protection. So a click on a ball whose box the
-    // translate arrows happened to cross BOTH started the snap and latched a drag against a plane
-    // captured in the PRE-snap view; the camera then rotated every frame and the release translated
-    // the entity, through TransformCommand, as a real undoable scene edit.
+    // "the cursor is over this window" (:2108-2113). The interactive overlay row's one control is a real ImGui
+    // item -- the view chip, chipButton's InvisibleButton, since task E.6.3 (E.2.4's SmallButton `View` before it)
+    // -- so IsAnyItemHovered() is true over it; and since task E.6.3 hudOwnsPoint claims the chip below as well,
+    // with the stats card and the hint chips, which submit no item. A chip the HUD layout drops submits nothing and
+    // owns nothing. The widget deliberately submits NO item at all, which makes it invisible to IsAnyItemHovered().
+    // So a click on a ball whose box the translate arrows happened to cross BOTH started the snap and latched a
+    // drag against a plane captured in the PRE-snap view; the camera then rotated every frame and the release
+    // translated the entity, through TransformCommand, as a real undoable scene edit.
     //
     // WHY Enable() RATHER THAN AN EARLY RETURN OR AN IsOver() TEST IN THE WIDGET'S OWN GUARD. This is
     // the arbitration this file already uses: the D20 term in the same call says exactly the same
@@ -1158,9 +1158,9 @@ void ViewportPanel::updateGizmo(PanelContext& context, Vec2 imageOrigin, Vec2 av
     // HoveredIdPreviousFrame != 0` and is ZERO under that inhibition, and its mbMouseOver reads
     // g.HoveredWindow, which ImGui clears only behind a MODAL. So on the frame a click OUTSIDE
     // dismisses the popup, a handle under the cursor would start a drag.
-    // THE OPENING CLICK NEEDS NO TERM: `View` is a real ImGui item, so HoveredIdPreviousFrame is its id
-    // when the press lands and CanActivate is already false. It is the DISMISSING click, over the
-    // image, that ImGui does not cover -- E.1.3's class of defect by name.
+    // THE OPENING CLICK NEEDS NO TERM: the view chip (an InvisibleButton) is a real ImGui item, so
+    // HoveredIdPreviousFrame is its id when the press lands and CanActivate is already false. It is the
+    // DISMISSING click, over the image, that ImGui does not cover -- E.1.3's class of defect by name.
     // The latch is LAST frame's answer, which is the RIGHT one: the popup closes at EndFrame, after
     // this draw walk.
     ImGuizmo::Enable(gesture.gesture == CameraGesture::None && !widgetOwnsCursor && !viewOptionsOpenValue);

@@ -332,8 +332,8 @@ bool HierarchyPanel::drawRow(PanelContext& context, Entity entity) {
     if (!revealPath.empty() && std::find(revealPath.begin(), revealPath.end(), entity) != revealPath.end()) {
         ImGui::SetNextItemOpen(true, ImGuiCond_Always);
     }
-    // The label goes through the "%s" FORMAT argument, never as the format string: the str_id
-    // overload is IM_FMTARGS(3), and an entity named "%s" would otherwise be a format-string bug.
+    // The node's own label is EMPTY: the entity's name is drawn by drawRowChrome (elideCaptionRight, then
+    // drawRoleText, never formatted). "%s" stays the format, so nothing user-named can reach the format slot.
     // task E.6.3 (D6): ImGui draws the arrow (textFaint) and its own square selection fill (Header = selection, KEPT
     // for the Hierarchy alone); the label is drawn below at the x ImGui would have used, after the kind dot.
     const float rowCursorX = ImGui::GetCursorScreenPos().x;
@@ -509,7 +509,7 @@ void HierarchyPanel::drawRowChrome(const World& world, Entity entity, bool selec
     const ImVec2 itemMin = ImGui::GetItemRectMin();
     const ImVec2 itemMax = ImGui::GetItemRectMax();
     // Where ImGui would have put an unframed node's label: the arrow box (FontSize) and two FramePadding.x
-    // (imgui_widgets.cpp:6893's unframed text_offset_x).
+    // (imgui_widgets.cpp:6894's unframed text_offset_x).
     const float labelStartX = rowCursorX + ImGui::GetFontSize() + (2.0F * style.FramePadding.x);
     const float rowMidY = (itemMin.y + itemMax.y) * 0.5F;
     const std::size_t children = world.childCount(entity);

@@ -22571,7 +22571,7 @@ struct RoleReads {
 }  // namespace
 
 TEST_CASE("editor: the panels read their roles from the theme (task E.6.1, I287)") {
-    // NO GPU: logLevelTagRole is pure, and the rest is the ten files' comment-stripped source text.
+    // NO GPU: logLevelTagRole is pure, and the rest is the listed files' comment-stripped source text.
     // task E.6.3 (D7): a level reaches the draw as its TAG's role -- the message is `text` on every level.
     struct LevelRoleRow {
         engine::LogLevel level;
@@ -22606,17 +22606,17 @@ TEST_CASE("editor: the panels read their roles from the theme (task E.6.1, I287)
         std::regex(R"(ImVec4[\(\{]\s*[\)\}])"),  // k = 5 (task E.6.3): ImVec4() / ImVec4{}, a default-constructed fill
     };
     // Each file with its EXACT total of palette reads (task E.6.3): the rows below must add up to it, and the file may
-    // read no role it has no row for. A stated 0 is legal -- panel_chrome_ui.cpp takes every colour through
+    // read no role it has no row for. A stated 0 is legal -- panel_chrome_ui.cpp takes every palette colour through
     // chromeRoleColor and spells no palette member at all -- which a `listed > 0` claim could not express.
     struct PanelFile {
         std::string_view file;
         std::size_t totalReads;
     };
     constexpr std::array<PanelFile, 14> PANELS{{
-        {"console_panel.cpp", 0U},    // task E.6.3: every colour a ChromeRole
+        {"console_panel.cpp", 0U},    // task E.6.3: every palette colour a ChromeRole
         {"hierarchy_panel.cpp", 0U},  // task E.6.3: every colour a ChromeRole
-        {"inspector_panel.cpp", 0U},  // task E.6.3: every colour a ChromeRole
-        {"asset_picker.cpp", 0U},     // task E.6.3: every colour a ChromeRole
+        {"inspector_panel.cpp", 0U},  // task E.6.3: every palette colour a ChromeRole
+        {"asset_picker.cpp", 0U},     // task E.6.3: every palette colour a ChromeRole
         {"material_panel.cpp", 10U},
         {"import_details_panel.cpp", 6U},
         {"project_ui.cpp", 2U},
@@ -22625,7 +22625,7 @@ TEST_CASE("editor: the panels read their roles from the theme (task E.6.1, I287)
         {"project_settings_panel.cpp", 0U},  // task E.6.3: labels through the role map
         {"shell_chrome_ui.cpp", 13U},        // task E.6.3: 15 - textBright - onAccent (the segments' roles moved)
         {"panel_chrome_model.cpp", 26U},     // task E.6.3: chromeRoleColor, each role ONCE
-        {"panel_chrome_ui.cpp", 0U},         // task E.6.3: every colour through the role map
+        {"panel_chrome_ui.cpp", 0U},         // task E.6.3: every palette colour through the role map
         {"viewport_panel.cpp", 0U},          // task E.6.3: the HUD reads roles
     }};
     // The roles are READ, not merely the literals gone -- each (file, role) at its EXACT count of reads
@@ -22712,7 +22712,7 @@ TEST_CASE("editor: the panels read their roles from the theme (task E.6.1, I287)
             CHECK(countLinesContaining(code, "ImGui::TextDisabled(") == 0U);
         }
     }
-    CHECK(rowsRead == ROLE_READS.size());  // no row names a file outside the eight, so none is skipped
+    CHECK(rowsRead == ROLE_READS.size());  // no row names a file outside PANELS, so none is skipped
     // The Console's levels reach the draw through logLevelTagRole: one call, in the row loop (task E.6.3).
     const std::vector<std::string> consoleCode = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/console_panel.cpp");
     CHECK(countLinesContaining(consoleCode, "logLevelTagRole(") == 1U);
@@ -25314,6 +25314,12 @@ TEST_CASE("editor: the Hierarchy's search gate and tree child as source text (ta
     }
     // The flat list's rows push no tree level.
     CHECK(countLinesContaining(code, "ImGuiTreeNodeFlags_Leaf | ImGuiTreeNodeFlags_NoTreePushOnOpen") == 1U);
+    // The rows keep ImGui's OWN square selection fill (D6, a stated decision for the Hierarchy alone), and
+    // drawRowChrome draws no fill of its own: a ClearHeaderStyle around the node -- the Assets tree's and the tiles'
+    // D8 shape -- would leave a selected row only its accent label and dot, and a Header slot pushed by hand clears
+    // or recolours D6's fill. Both arms pin a spelling; no case here observes the fill as drawn.
+    CHECK(countLinesContaining(code, "ClearHeaderStyle") == 0U);
+    CHECK(countLinesContaining(code, "ImGuiCol_Header") == 0U);  // Header, HeaderHovered and HeaderActive alike
     // No new create path (I253(d), (h)).
     CHECK(countLinesContaining(code, "pendingCreate = ") == 4U);
     CHECK(countLinesContaining(code, "make_unique<CreateEntityCommand>") == 1U);
@@ -25416,8 +25422,9 @@ TEST_CASE("editor: the Inspector's entity header -- kind swatch, title face, e#<
     auto* const inspector = dynamic_cast<engine::editor::InspectorPanel*>(app->panels().find("Inspector"));
     REQUIRE(inspector != nullptr);
     // const: every case on this fixture only READS the World (e62EntityNamed, World::has), and
-    // misc-const-correctness flags a reference that is never mutated (imgui_layer_test.cpp:933 and :1211 bind it
-    // const too). I321, which writes through world.get<MeshRenderer>, writes out its own non-const fixture.
+    // misc-const-correctness flags a reference that is never mutated (the "programmatic camera navigation" and
+    // "driving the Selection" AC-19 cases bind it const too). I321, which writes through world.get<MeshRenderer>,
+    // writes out its own non-const fixture.
     const engine::World& world = app->world();
     const engine::Entity cube = e62EntityNamed(world, "Cube");
     REQUIRE(cube.valid());
@@ -25452,8 +25459,9 @@ TEST_CASE("editor: the Inspector draws each component as a card with its icon an
     auto* const inspector = dynamic_cast<engine::editor::InspectorPanel*>(app->panels().find("Inspector"));
     REQUIRE(inspector != nullptr);
     // const: every case on this fixture only READS the World (e62EntityNamed, World::has), and
-    // misc-const-correctness flags a reference that is never mutated (imgui_layer_test.cpp:933 and :1211 bind it
-    // const too). I321, which writes through world.get<MeshRenderer>, writes out its own non-const fixture.
+    // misc-const-correctness flags a reference that is never mutated (the "programmatic camera navigation" and
+    // "driving the Selection" AC-19 cases bind it const too). I321, which writes through world.get<MeshRenderer>,
+    // writes out its own non-const fixture.
     const engine::World& world = app->world();
     const engine::Entity cube = e62EntityNamed(world, "Cube");
     REQUIRE(cube.valid());
@@ -25496,8 +25504,9 @@ TEST_CASE("editor: the overflow's Remove Component is one undoable entry (task E
     auto* const inspector = dynamic_cast<engine::editor::InspectorPanel*>(app->panels().find("Inspector"));
     REQUIRE(inspector != nullptr);
     // const: every case on this fixture only READS the World (e62EntityNamed, World::has), and
-    // misc-const-correctness flags a reference that is never mutated (imgui_layer_test.cpp:933 and :1211 bind it
-    // const too). I321, which writes through world.get<MeshRenderer>, writes out its own non-const fixture.
+    // misc-const-correctness flags a reference that is never mutated (the "programmatic camera navigation" and
+    // "driving the Selection" AC-19 cases bind it const too). I321, which writes through world.get<MeshRenderer>,
+    // writes out its own non-const fixture.
     const engine::World& world = app->world();
     const engine::Entity cube = e62EntityNamed(world, "Cube");
     REQUIRE(cube.valid());
@@ -25548,8 +25557,9 @@ TEST_CASE("editor: a card body hosts a table, and every card shares one right ed
     auto* const inspector = dynamic_cast<engine::editor::InspectorPanel*>(app->panels().find("Inspector"));
     REQUIRE(inspector != nullptr);
     // const: every case on this fixture only READS the World (e62EntityNamed, World::has), and
-    // misc-const-correctness flags a reference that is never mutated (imgui_layer_test.cpp:933 and :1211 bind it
-    // const too). I321, which writes through world.get<MeshRenderer>, writes out its own non-const fixture.
+    // misc-const-correctness flags a reference that is never mutated (the "programmatic camera navigation" and
+    // "driving the Selection" AC-19 cases bind it const too). I321, which writes through world.get<MeshRenderer>,
+    // writes out its own non-const fixture.
     const engine::World& world = app->world();
     const engine::Entity cube = e62EntityNamed(world, "Cube");
     REQUIRE(cube.valid());
@@ -25612,8 +25622,9 @@ TEST_CASE("editor: Inspector labels are humanised and the column measures them (
     auto* const inspector = dynamic_cast<engine::editor::InspectorPanel*>(app->panels().find("Inspector"));
     REQUIRE(inspector != nullptr);
     // const: every case on this fixture only READS the World (e62EntityNamed, World::has), and
-    // misc-const-correctness flags a reference that is never mutated (imgui_layer_test.cpp:933 and :1211 bind it
-    // const too). I321, which writes through world.get<MeshRenderer>, writes out its own non-const fixture.
+    // misc-const-correctness flags a reference that is never mutated (the "programmatic camera navigation" and
+    // "driving the Selection" AC-19 cases bind it const too). I321, which writes through world.get<MeshRenderer>,
+    // writes out its own non-const fixture.
     const engine::World& world = app->world();
     const engine::Entity cube = e62EntityNamed(world, "Cube");
     REQUIRE(cube.valid());
@@ -25807,8 +25818,9 @@ TEST_CASE("editor: Add Component is centred, one card header tall, and dashed (t
     auto* const inspector = dynamic_cast<engine::editor::InspectorPanel*>(app->panels().find("Inspector"));
     REQUIRE(inspector != nullptr);
     // const: every case on this fixture only READS the World (e62EntityNamed, World::has), and
-    // misc-const-correctness flags a reference that is never mutated (imgui_layer_test.cpp:933 and :1211 bind it
-    // const too). I321, which writes through world.get<MeshRenderer>, writes out its own non-const fixture.
+    // misc-const-correctness flags a reference that is never mutated (the "programmatic camera navigation" and
+    // "driving the Selection" AC-19 cases bind it const too). I321, which writes through world.get<MeshRenderer>,
+    // writes out its own non-const fixture.
     const engine::World& world = app->world();
     const engine::Entity cube = e62EntityNamed(world, "Cube");
     REQUIRE(cube.valid());
@@ -25880,8 +25892,9 @@ TEST_CASE("editor: card geometry -- one span, the framed overhang, paddings and 
     auto* const inspector = dynamic_cast<engine::editor::InspectorPanel*>(app->panels().find("Inspector"));
     REQUIRE(inspector != nullptr);
     // const: every case on this fixture only READS the World (e62EntityNamed, World::has), and
-    // misc-const-correctness flags a reference that is never mutated (imgui_layer_test.cpp:933 and :1211 bind it
-    // const too). I321, which writes through world.get<MeshRenderer>, writes out its own non-const fixture.
+    // misc-const-correctness flags a reference that is never mutated (the "programmatic camera navigation" and
+    // "driving the Selection" AC-19 cases bind it const too). I321, which writes through world.get<MeshRenderer>,
+    // writes out its own non-const fixture.
     const engine::World& world = app->world();
     const engine::Entity cube = e62EntityNamed(world, "Cube");
     REQUIRE(cube.valid());

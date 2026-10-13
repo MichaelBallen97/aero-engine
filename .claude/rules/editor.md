@@ -2267,17 +2267,33 @@ state.
   received, off `AddText`'s four vertices.
 - **A panel header that must stay ImGui-free holds the painter by `std::unique_ptr<CardPainter>`**, with the class
   forward-declared and the host's constructor and destructor defined out of line.
-- **EVERY COLOUR A PANEL DRAWS IS A `ChromeRole`**, through `chromeRoleColor` (`panel_chrome_model.cpp` reads each
-  palette role ONCE); a transparent fill is `clearOver(surface)` -- the ONE alpha spelling (`I333` counts it). Never
-  `ImVec4()`, `ImVec4{}`, `IM_COL32_BLACK_TRANS` or a `withAlpha(` in a panel TU (`I287`'s sixth pattern).
+- **EVERY CHROME COLOUR A PANEL DRAWS IS A THEME TOKEN, never a literal.** A PALETTE colour is reached as a
+  `ChromeRole` through `chromeRoleColor` (`panel_chrome_model.cpp` reads each palette role ONCE); a colour outside the
+  palette is its own theme member, read directly -- `ThemePanels`' `hatchStripe` and `addComponentDash`
+  (`panel_chrome_ui.cpp`), its `consoleWarnRowTint` / `consoleErrorRowTint` (`console_view.cpp`), and the other
+  `EditorTheme` colour groups' members (`axis`, `assetKind`, `swatchLabel`, `viewport`, `clear`, ...). The direct
+  `EDITOR_THEME.palette.*` reads that remain -- `material_panel.cpp`, `import_details_panel.cpp`, `project_ui.cpp`,
+  `shell_chrome_ui.cpp` -- are pinned at exact per-file counts by `I287` (the role map at one read per role, every
+  other panel TU it lists at 0), so a new one, or one converted to a role, is a pin edit. A transparent fill is
+  `clearOver(surface)` -- the ONE alpha spelling (`I333` counts it). Never `ImVec4()` / `ImVec4{}` (`I287`'s k = 5),
+  `IM_COL32_BLACK_TRANS` (`I287`'s k = 3, by substring) or `withAlpha(` in a panel TU; `I333` refuses all four. A
+  document's own colours -- a material's swatch, a thumbnail -- are content, not chrome.
 - **De-emphasis is `mutedText` / `mutedTextWrapped`** -- string-only, so format-safe by construction;
   `ImGui::TextDisabled` and `ImGuiCol_TextDisabled` are banned in every panel TU (`project_ui.cpp` is E.6.4's and
   excepted). A disabled widget greys through `BeginDisabled`.
-- **The ONE face switch is `ScopedFace`** (`panel_chrome_ui.cpp` spells the `PushFont`); a draw-list text takes
+- **Every NEW face switch is `ScopedFace`** (`panel_chrome_ui.cpp` spells its `PushFont`). The one deliberate panel
+  exception is the Console's message push, `PushFont(mono, 0.0F)` in `console_panel.cpp`: it keeps the CURRENT size,
+  so the row the `Selectable` sized and the clipper's step stay exact, and `I283` pins it as that file's one push,
+  scoped to its row. `I286` pins the set of `editor/src` TUs spelling `PushFont` as `{console_panel.cpp,
+  panel_chrome_ui.cpp, shell_chrome_ui.cpp}` (the last is E.6.2's shell chrome). A draw-list text takes
   `panelFaceFont` + `panelFacePoints` -- the FINAL size, `faceSizePoints(dp, s) = floor(dp x s + 0.5)`, ImGui's own
   rounding. Measure with `faceTextWidth` (exact advances), never `ImGui::CalcTextSize` for a column of advances.
-- **A tile or tree `Selectable` / node paints no fill**: both tile hosts submit their `Selectable("##tile"` inside a
-  `ClearHeaderStyle` that wraps that one call, and the face draws every state from the `Selectable`'s answers.
+- **A tile `Selectable` and the Assets tree's node paint no ImGui fill (D8)**: both tile hosts submit their
+  `Selectable("##tile"` inside a `ClearHeaderStyle` that wraps that one call, and the face draws every state from the
+  `Selectable`'s answers; the Assets tree's `TreeNodeEx("##dir"` rows sit inside one too and draw their own rounded
+  `selection` / `hover` fill. **The Hierarchy is the stated exception (D6)**: its `TreeNodeEx("##row"` keeps ImGui's
+  own square `Header` = `selection` fill and draws none of its own, so it never takes a `ClearHeaderStyle` or a
+  hand-pushed `Header` slot (`I312`).
 - **THE VIEWPORT HUD CLAIMS SCREEN-SPACE PRESSES** through the free `hudOwnsPoint(latchedHudLayout, p)`, on exactly two
   lines -- the pick's `overlayOwnsPress` and ImGuizmo's `widgetOwnsCursor` -- beside `viewAxisOwnsPoint`. A case driving
   `overlayOwnsPress` with a zero or image-space rect asserts its probes are outside every recorded HUD rect first: a
@@ -2299,6 +2315,15 @@ state.
   issued while the panel does not draw at all is dropped as well (`I338`). A new panel seam adds BOTH, an `I337` arm
   and an `I338`-shaped hidden-panel arm: no source pin sees a missing expire call, and the deferral it leaves is
   invisible until the panel is hidden.
+- **THE HIERARCHY'S SHORTCUTS RUN BEHIND ONE GATE**, the ONE `hierarchyShortcutsLive(renaming.valid(),
+  searchOwnsKeys)` call (`HY7` is its truth table). An ACTIVE `InputText` owns only Left, Right, Delete, Backspace,
+  Home and End (`imgui_widgets.cpp:4923-4925`), so without the gate Cmd/Ctrl+D and F2 would act on the selection
+  while the user types. `searchOwnsKeys` is read in `drawHeaderRow()`, right after the field, and the header row runs
+  BEFORE the shortcut phase on the same frame -- a read one frame late is the defect (`I312`'s order arm). The verdict
+  is recorded, the next line's `if (shortcutsLive) {` reads it, and every `ImGui::Shortcut(` the panel spells sits
+  inside that block, which closes before the `##tree` child opens (`I312` counts their three lines). **A new
+  Hierarchy shortcut goes INSIDE that block** and moves `I312`'s count; what the field term reads is the next
+  bullet's.
 - **A SELECTION SHORTCUT BESIDE A TEXT FIELD IS GATED ON THE FIELD'S KEYBOARD, NOT ITS ACTIVITY** -- the Hierarchy's
   Delete, Backspace, Duplicate and Rename, which act on the panel's selection rather than on the field's own list. The
   field owns them while `IsItemActive()`, or while `IsItemFocused()` holds a focus the field's OWN activation gave it:

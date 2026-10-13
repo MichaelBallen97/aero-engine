@@ -10,7 +10,7 @@
 //
 // A dynamic string is NEVER a format argument (project_settings_panel.cpp's own rule, applied here a
 // second time): every draw call goes through a named local built with std::format, then passed as a
-// "%s" argument.
+// "%s" argument -- or, since task E.6.3, to a string-only helper (mutedText, mutedTextWrapped) that takes no format.
 //
 // ASCII ONLY in every literal (3.1.3's post-merge lesson): the editor draws IBM Plex, and a non-ASCII mark
 // in a literal goes through AERO_GLYPH_* or AERO_ICON_* (.claude/rules/editor.md, "Fonts, icons and the
@@ -476,11 +476,11 @@ void drawSkeletonAndAnimation(const ImportedModel& model) {
 }
 
 // ---- the Imported state's six section CARDS, in order (task E.6.3, D10) -----------------------------
-// ALL SIX default OPEN (the Inspector's own per-component CollapsingHeader precedent,
-// inspector_panel.cpp:186, applied uniformly): a user who just selected an asset sees everything about
+// ALL SIX default OPEN (the Inspector's own per-component card precedent -- PanelCard's header is
+// DefaultOpen -- applied uniformly): a user who just selected an asset sees everything about
 // it immediately, with no extra click to discover content -- and, structurally, a section that
 // defaulted CLOSED would be unreachable by this project's entire GPU-tier testing methodology (no
-// tier anywhere in this tree can synthesize a CollapsingHeader click), leaving it permanently unproven.
+// tier anywhere in this tree can synthesize a card-header click), leaving it permanently unproven.
 void drawImported(const ModelImportSession& session, bool& applyRequested, bool& revertRequested,
                   std::optional<ImportSettings>& editedSettings, CardPainter& painter, CardRecord& record) {
     using Section = ImportDetailsSection;
