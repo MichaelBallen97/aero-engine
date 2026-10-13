@@ -1,6 +1,7 @@
-// tests/editor/asset_browser_chrome_test.cpp -- task E.6.3 (D8): the Assets panel's chrome model, AH1-AH15. A TU of
+// tests/editor/asset_browser_chrome_test.cpp -- task E.6.3 (D8): the Assets panel's chrome model, AH1-AH16. A TU of
 // aero_editor_shell_test. Tier 0, every configuration, no #if. Widths are RESTATED literals: Compact needs 576, Full
-// 782, the Minimal floor is 344 (the arithmetic is in each case).
+// 782, the Minimal floor is 344 (the arithmetic is in each case). W's search, searchMin and kind are the shipped font
+// multiples at the 16-point body size, which AH16 checks.
 #include <aero/editor/asset_actions.hpp>  // countRecordsUnder -- the cache's oracle
 #include <aero/editor/asset_browser_chrome.hpp>
 #include <aero/editor/asset_meta.hpp>
@@ -513,4 +514,21 @@ TEST_CASE("assets chrome: a narrow footer sheds thumbnails, then the watcher -- 
     REQUIRE(band.right.size() == 3U);
     CHECK(band.left.empty());
     CHECK_FALSE(ed::assetFooterLayout(MIN_X, 766.0F, text, ADVANCE, 1.0F).left.empty());
+}
+
+TEST_CASE("assets chrome: header, tree pane and size column widths are named font multiples (task E.6.3, AH16)") {
+    // D1 (the code-review round's finding 3): the panel sets the search, its Minimal floor and the kind filter to
+    // GetFontSize() times these, so a changed multiple moves every mode boundary and the floor -- pinned here, where
+    // tier 0 reads them, since I323's identity holds for any value.
+    CHECK(ed::ASSET_HEADER_SEARCH_FONT_MULTIPLE == 12.0F);
+    CHECK(ed::ASSET_HEADER_SEARCH_MIN_FONT_MULTIPLE == 6.0F);
+    CHECK(ed::ASSET_HEADER_KIND_FONT_MULTIPLE == 8.0F);
+    // W's restated widths are those multiples at the 16-point body size, so the two cannot drift apart unseen.
+    CHECK(W.search == 16.0F * ed::ASSET_HEADER_SEARCH_FONT_MULTIPLE);
+    CHECK(W.searchMin == 16.0F * ed::ASSET_HEADER_SEARCH_MIN_FONT_MULTIPLE);
+    CHECK(W.kind == 16.0F * ed::ASSET_HEADER_KIND_FONT_MULTIPLE);
+    // The tree pane's first-run width and the List size column, moved by D1 from asset_browser_panel.cpp:52-53 at the
+    // branch point, where they read 14 and 6. No other tier sees either value; I324 pins where the panel reads them.
+    CHECK(ed::ASSET_TREE_PANE_FONT_MULTIPLE == 14.0F);
+    CHECK(ed::ASSET_SIZE_COLUMN_FONT_MULTIPLE == 6.0F);
 }

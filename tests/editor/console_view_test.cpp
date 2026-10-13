@@ -159,6 +159,9 @@ TEST_CASE("console view: the four columns are advances plus a scaled gap (task E
     CHECK(14.0F * a > one.tagX);
     // The header cluster: right-aligned, or at the row's left edge when the row is narrower than it.
     CHECK(ed::consoleHeaderClusterX(10.0F, 500.0F, 300.0F) == 210.0F);
+    // ...and its filter field's width, moved by D1 from console_panel.cpp:43, where it read 14 at the branch point. No
+    // other tier sees the value (I314's cluster checks hold for any width); I314 pins where the panel reads it.
+    CHECK(ed::CONSOLE_FILTER_FONT_MULTIPLE == 14.0F);
     CHECK(ed::consoleHeaderClusterX(10.0F, 200.0F, 300.0F) == 10.0F);
     CHECK(ed::consoleHeaderClusterX(10.0F, NAN_F, 300.0F) == 10.0F);
 }

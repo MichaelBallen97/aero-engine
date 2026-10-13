@@ -45,7 +45,8 @@ inline constexpr float CONSOLE_STAMP_COLUMN_ADVANCES = 11.0F;    // "9:59:59.999
                                                                  // it the stamp runs into the gap, never the tag
 inline constexpr float CONSOLE_TAG_COLUMN_ADVANCES = 8.0F;       // "CRITICAL" (LOG_LEVEL_LABEL_WIDTH)
 inline constexpr float CONSOLE_CHANNEL_COLUMN_ADVANCES = 14.0F;  // "component_ops" and one to spare
-// D1: the filter field's width, a NAMED font multiple (moved from console_panel.cpp:43).
+// D1: the filter field's width, a NAMED font multiple (moved from console_panel.cpp:43). CS8 pins the value, I314
+// where the panel reads it.
 inline constexpr float CONSOLE_FILTER_FONT_MULTIPLE = 14.0F;
 inline constexpr std::string_view CONSOLE_LEVEL_TOOLTIP = "Show records at or above this level";
 

@@ -24893,6 +24893,27 @@ TEST_CASE("editor: Console rows -- the tint, the columns, the channel stripped f
 }
 
 TEST_CASE("editor: the Console's footer band, reservation and header (task E.6.3, I314)") {
+    // D1 as source text (finding 3's residual), first so it runs on a lane with no GPU: the filter field's width is a
+    // NAMED font multiple in the pure model (console_view.hpp; CS8 pins the value). The ImGui TU defines no font
+    // multiple, the old file-local name is gone, and the named one -- the only font multiple the TU reads -- is read
+    // once, into the width the field is drawn at.
+    {
+        const std::vector<std::string> code = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/console_panel.cpp");
+        REQUIRE(code.size() > 100U);  // ANTI-VACUITY: the file was really read
+        std::size_t defined = 0;
+        for (const std::string& line : code) {
+            const bool constant = line.find("constexpr") != std::string::npos;
+            if (constant && line.find("FONT_MULTIPLE") != std::string::npos) {
+                ++defined;
+            }
+        }
+        CHECK(defined == 0U);
+        CHECK(countLinesContaining(code, "FILTER_INPUT_FONT_MULTIPLE") == 0U);
+        CHECK(countLinesContaining(code, "FONT_MULTIPLE") == 1U);
+        const std::size_t filterAt = soleLineContaining(code, "CONSOLE_FILTER_FONT_MULTIPLE");
+        CHECK(code[filterAt].find("const float filterWidth = ImGui::GetFontSize() * ") != std::string::npos);
+        CHECK(countLinesContaining(code, "SetNextItemWidth(filterWidth)") == 1U);
+    }
     engine::platform::Context ctx;
     if (!ctx.valid()) {
         AERO_SKIP_OR_FAIL("no platform context");
@@ -25916,6 +25937,35 @@ TEST_CASE("editor: card geometry -- one span, the framed overhang, paddings and 
 // ---- task E.6.3, step 5: the Assets header modes, the crumb row, the tree, the tiles and the footer ---------------
 
 TEST_CASE("editor: the Assets header draws the layout's x's, never overlapping, monotone in width (task E.6.3, I323)") {
+    // D1 as source text (the code-review round's finding 3), first so it runs on a lane with no GPU: the header's
+    // three field widths are NAMED font multiples in the pure model (asset_browser_chrome.hpp; AH16 pins the values).
+    // The ImGui TU defines no font multiple, reads each named one on exactly one line -- the width it sets -- and the
+    // old file-local names survive only INSIDE the new ones.
+    {
+        const std::vector<std::string> code = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/asset_browser_panel.cpp");
+        REQUIRE(code.size() > 100U);  // ANTI-VACUITY: the file was really read
+        std::size_t defined = 0;
+        for (const std::string& line : code) {
+            const bool constant = line.find("constexpr") != std::string::npos;
+            if (constant && line.find("FONT_MULTIPLE") != std::string::npos) {
+                ++defined;
+            }
+        }
+        CHECK(defined == 0U);
+        CHECK(countLinesContaining(code, "SEARCH_FONT_MULTIPLE") == 1U);
+        CHECK(countLinesContaining(code, "SEARCH_MIN_FONT_MULTIPLE") == 1U);
+        CHECK(countLinesContaining(code, "KIND_FILTER_FONT_MULTIPLE") == 0U);
+        const std::array<std::pair<std::string_view, std::string_view>, 3> reads{{
+            {"ASSET_HEADER_SEARCH_FONT_MULTIPLE", "widths.search = "},
+            {"ASSET_HEADER_SEARCH_MIN_FONT_MULTIPLE", "widths.searchMin = "},
+            {"ASSET_HEADER_KIND_FONT_MULTIPLE", "widths.kind = "},
+        }};
+        for (const auto& [name, width] : reads) {
+            CAPTURE(name);
+            const std::size_t at = soleLineContaining(code, name);
+            CHECK(code[at].find(width) != std::string::npos);
+        }
+    }
     // Three windows, each a fresh app at the default layout with Assets in front of the Console. The record is compared
     // with the layout's own answer for the record's own inputs, so nothing here depends on the runner's geometry.
     // std::int32_t: WindowConfig::width's own type (window.hpp:30) -- a std::uint32_t narrowed inside the braced
@@ -25953,6 +26003,7 @@ TEST_CASE("editor: the Assets header draws the layout's x's, never overlapping, 
     if (records[0].framesRecorded == 0U) {
         return;  // no GPU on a lane that does not require one: measure() already said so
     }
+    const float bodyDp = engine::editor::EDITOR_THEME.type.bodySize;  // the face the header draws in, unpushed
     for (std::size_t i = 0; i < records.size(); ++i) {
         CAPTURE(WIDTHS[i]);
         const engine::editor::AssetChromeRecord& r = records[i];
@@ -25961,6 +26012,12 @@ TEST_CASE("editor: the Assets header draws the layout's x's, never overlapping, 
         // (a) THE IDENTITY: the panel drew what the layout answers for the inputs the panel recorded.
         CHECK((l == engine::editor::assetHeaderLayout(r.headerRowMinX, r.headerRowWidth, w, r.headerUiScale)));
         CHECK(r.headerRuleDrawn);
+        // ...and three of those inputs are the pure model's NAMED multiples (D1) of the body face the header drew at:
+        // faceSizePoints rounds as GetFontSize() does (imgui.cpp:9760), so each product is the panel's own, exactly.
+        const float body = engine::editor::faceSizePoints(bodyDp, r.headerUiScale);
+        CHECK(w.search == body * engine::editor::ASSET_HEADER_SEARCH_FONT_MULTIPLE);
+        CHECK(w.searchMin == body * engine::editor::ASSET_HEADER_SEARCH_MIN_FONT_MULTIPLE);
+        CHECK(w.kind == body * engine::editor::ASSET_HEADER_KIND_FONT_MULTIPLE);
         // (b) every inline control's DRAWN rect at the layout's x, as wide as the panel measured -- sums both sides.
         struct Expect {
             AssetHeaderControl control;
@@ -26009,6 +26066,31 @@ TEST_CASE("editor: the Assets header draws the layout's x's, never overlapping, 
 }
 
 TEST_CASE("editor: the Assets crumbs, the recursive items text, the tree and the grouped pane (task E.6.3, I324)") {
+    // D1 as source text (finding 3's residual), first so it runs on a lane with no GPU: the tree pane's first-run width
+    // and the List size column are NAMED font multiples in the pure model (asset_browser_chrome.hpp; AH16 pins the
+    // values, I323 refuses any constexpr font multiple in this TU). The old file-local names survive only INSIDE the
+    // new ones, and each named one is read only as a font multiple, into the width its child or column is given.
+    {
+        const std::vector<std::string> code = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/asset_browser_panel.cpp");
+        REQUIRE(code.size() > 100U);  // ANTI-VACUITY: the file was really read
+        CHECK(countLinesContaining(code, "TREE_PANE_FONT_MULTIPLE") == 1U);
+        CHECK(countLinesContaining(code, "SIZE_COLUMN_FONT_MULTIPLE") == 2U);
+        // The tree pane: one read, into the width the ##dirs child is sized by.
+        const std::size_t treeAt = soleLineContaining(code, "ASSET_TREE_PANE_FONT_MULTIPLE");
+        CHECK(code[treeAt].find("const float treeWidth = ImGui::GetFontSize() * ") != std::string::npos);
+        CHECK(countLinesContaining(code, "treeSize(treeWidth, ") == 1U);
+        // The size column: one read per table that has one -- the search hits and the List view -- each into the
+        // width that table's Size column is set up with.
+        std::size_t sizeReads = 0;
+        for (const std::string& line : code) {
+            if (line.find("ASSET_SIZE_COLUMN_FONT_MULTIPLE") != std::string::npos) {
+                ++sizeReads;
+                CHECK(line.find("const float sizeColumnWidth = ImGui::GetFontSize() * ") != std::string::npos);
+            }
+        }
+        CHECK(sizeReads == 2U);
+        CHECK(countLinesContaining(code, "\"Size\", ImGuiTableColumnFlags_WidthFixed, sizeColumnWidth)") == 2U);
+    }
     engine::platform::Context ctx;
     if (!ctx.valid()) {
         AERO_SKIP_OR_FAIL("no platform context");

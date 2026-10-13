@@ -1,6 +1,6 @@
 #pragma once
 // Aero Engine -- the Assets panel's chrome as VALUES (task E.6.3, spec D8). PUBLIC and PURE: no ImGui, no GPU, no
-// <filesystem>, no logging, so tier 0 walks every width, scale and count (AH1-AH14) that asset_browser_panel.cpp only
+// <filesystem>, no logging, so tier 0 walks every width, scale and count (AH1-AH16) that asset_browser_panel.cpp only
 // measures and draws. The record at the bottom is what the panel DREW, for the GPU tier.
 #include <aero/core/math.hpp>                  // Vec2
 #include <aero/editor/asset_meta.hpp>          // AssetRecord
@@ -20,20 +20,28 @@
 namespace engine::editor {
 
 // Moved from asset_browser_panel.cpp:52-53 (D1): first-run widths in FONT units, so a DPI change moves them with the
-// font. The tree pane's child is ResizeX, so the user's own width persists in the ini.
+// font. The tree pane's child is ResizeX, so the user's own width persists in the ini. AH16 pins the values, I324 where
+// the panel reads them.
 inline constexpr float ASSET_TREE_PANE_FONT_MULTIPLE = 14.0F;
 inline constexpr float ASSET_SIZE_COLUMN_FONT_MULTIPLE = 6.0F;
 
 // ---- the header row (D8) ----------------------------------------------------------------------------------------
+// Moved from asset_browser_panel.cpp (D1, the code-review round): the header's three field widths in FONT units, so a
+// DPI change moves them with the font. The panel sets AssetHeaderWidths' search, searchMin and kind to GetFontSize()
+// times each; AH16 pins the values and I323 ties the widths the panel recorded to them.
+inline constexpr float ASSET_HEADER_SEARCH_FONT_MULTIPLE = 12.0F;     // the search field's preferred width
+inline constexpr float ASSET_HEADER_SEARCH_MIN_FONT_MULTIPLE = 6.0F;  // the narrowest Minimal shrinks it to
+inline constexpr float ASSET_HEADER_KIND_FONT_MULTIPLE = 8.0F;        // the kind combo
+
 // Declared widest first, so "a narrower row never yields a wider mode" reads as an ordering (I323(e)).
 enum class AssetHeaderMode : std::uint8_t { Full, Compact, Minimal };
 
 // The controls' widths in POINTS, MEASURED by the panel at the live font (a frame's padding included).
 struct AssetHeaderWidths {
     float newMaterial = 0.0F;
-    float search = 0.0F;     // the search field's preferred width
-    float searchMin = 0.0F;  // the narrowest Minimal may shrink it to
-    float kind = 0.0F;
+    float search = 0.0F;      // the search field's preferred width: ASSET_HEADER_SEARCH_FONT_MULTIPLE em
+    float searchMin = 0.0F;   // the narrowest Minimal may shrink it to: ASSET_HEADER_SEARCH_MIN_FONT_MULTIPLE em
+    float kind = 0.0F;        // ASSET_HEADER_KIND_FONT_MULTIPLE em
     float viewToggle = 0.0F;  // Grid | List, both segments
     float refresh = 0.0F;
     float autoRefresh = 0.0F;

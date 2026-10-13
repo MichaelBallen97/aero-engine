@@ -51,10 +51,7 @@ namespace {
 
 // task E.6.3 (D1): the tree pane's and the List size column's first-run widths moved to asset_browser_chrome.hpp
 // (ASSET_TREE_PANE_FONT_MULTIPLE, ASSET_SIZE_COLUMN_FONT_MULTIPLE); the tree's indent is the theme's IndentSpacing.
-// The header's three field widths, in FONT units like every other width here.
-constexpr float SEARCH_FONT_MULTIPLE = 12.0F;      // the search field's preferred width (today's)
-constexpr float SEARCH_MIN_FONT_MULTIPLE = 6.0F;   // the narrowest Minimal shrinks it to
-constexpr float KIND_FILTER_FONT_MULTIPLE = 8.0F;  // the kind combo (today's)
+// The header's three field widths are named there too (ASSET_HEADER_*_FONT_MULTIPLE); this TU defines none.
 constexpr const char* HEADER_OVERFLOW_POPUP = "##assetsOverflow";
 constexpr std::string_view CRUMB_SEPARATOR = "/";
 // Shown for a file whose size the OS refused (AC-6/E6). NEVER "0 B" -- that is a lie, not a blank.
@@ -229,9 +226,9 @@ void AssetBrowserPanel::drawHeader() {
     };
     AssetHeaderWidths widths;
     widths.newMaterial = buttonWidth("New Material");
-    widths.search = ImGui::GetFontSize() * SEARCH_FONT_MULTIPLE;
-    widths.searchMin = ImGui::GetFontSize() * SEARCH_MIN_FONT_MULTIPLE;
-    widths.kind = ImGui::GetFontSize() * KIND_FILTER_FONT_MULTIPLE;
+    widths.search = ImGui::GetFontSize() * ASSET_HEADER_SEARCH_FONT_MULTIPLE;
+    widths.searchMin = ImGui::GetFontSize() * ASSET_HEADER_SEARCH_MIN_FONT_MULTIPLE;
+    widths.kind = ImGui::GetFontSize() * ASSET_HEADER_KIND_FONT_MULTIPLE;
     widths.viewToggle = buttonWidth("Grid") + buttonWidth("List");
     widths.refresh = buttonWidth("Refresh");
     widths.autoRefresh = frame + style.ItemInnerSpacing.x + ImGui::CalcTextSize("Auto-refresh").x;
