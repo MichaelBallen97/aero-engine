@@ -82,10 +82,14 @@ struct HierarchyDrawRecord {
     bool headerRuleDrawn = false;   // the rule's AddRectFilled added vertices to the list
     bool renameFieldDrawn = false;  // the ##rename field was submitted: a rename is in progress and its row walked
     bool renameActive = false;      // that field's IsItemActive(), read right after it: it is being edited
+    // ...and its IsItemVisible(): its rect overlaps the ##tree child's clip. False with the field drawn is a renamed
+    // row scrolled out of view -- ItemAdd keeps an active item alive and submitted past its clip test (I344 (e)).
+    bool renameFieldVisible = false;
     Vec2 searchFieldMin{};
     Vec2 searchFieldMax{};
     Vec2 treeChildMin{};
     Vec2 treeChildMax{};
+    float treeScrollY = 0.0F;  // the ##tree child's GetScrollY() as it begins. Written every frame.
     // The panel window's ClipRect bottom as the ##tree child begins: BeginChild clips the child's rect with it
     // (imgui.cpp:8434-8440), so a child whose top is at or below it is SKIPPED (:8733-8738). Written every frame.
     float panelClipMaxY = 0.0F;

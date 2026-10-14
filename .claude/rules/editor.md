@@ -2415,8 +2415,10 @@ state.
   re-applying the rename the undo removed and dropping the redo branch (`I344 (d)`). **Never re-armed**:
   a fresh `SetKeyboardFocusHere` would steal the keyboard back from wherever it went meanwhile. A row merely scrolled
   out of the child is still submitted, and `ItemAdd` keeps an active item alive before its clip test
-  (`:12025-12029`), so it keeps its rename. A new place the field is drawn writes the frame beside it; a third writer
-  elsewhere would keep a field that no longer draws looking fresh (`I344` counts two).
+  (`:12025-12029`), so it keeps its rename (`I344 (e)`, sixty roots and a reveal of the last): a clipper added over the
+  tree must keep submitting the renamed row, or a wheel scroll ends the rename. A new place the field is drawn writes
+  the frame beside it; a third writer elsewhere would keep a field that no longer draws looking fresh (`I344` counts
+  two).
 - **The Inspector's axis thresholds are per entity and stated before any layout change**: the Cube's `"0.000"` is whole
   from a content width of 266, the Main Camera's from 279, the Directional Light's from 316 (`I289`, geometry-
   independent); the default right split is 0.30. A label-column, letter-inset or split change re-measures all three.

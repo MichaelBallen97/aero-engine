@@ -96,6 +96,7 @@ void beginHierarchyRecordFrame(HierarchyDrawRecord& record) noexcept {
     record.headerRuleDrawn = false;
     record.renameFieldDrawn = false;
     record.renameActive = false;
+    record.renameFieldVisible = false;
 }
 
 }  // namespace engine::editor

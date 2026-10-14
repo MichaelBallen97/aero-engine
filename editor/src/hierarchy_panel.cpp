@@ -116,7 +116,8 @@ void HierarchyPanel::onDraw(PanelContext& context) {
     // walked on K (a collapsed ancestor, a query), leaves K - 1, so the rename ends on K + 1. A panel that did not
     // draw at all (a hidden tab, a panel closed and re-opened) leaves at most M - 2 on its first drawn frame M, so it
     // ends there. A row merely scrolled out of the child is still submitted -- and ItemAdd keeps an active field
-    // alive before its clip test (imgui.cpp:11987, :12025-12029) -- so it keeps its rename.
+    // alive before its clip test (imgui.cpp:11987, :12025-12029) -- so it keeps its rename (I344 (e)): a clipper
+    // over the tree must keep submitting the renamed row.
     if (renaming.valid() && renameFieldFrame != ImGui::GetFrameCount() - 1) {
         if (renameBuffer != renameOriginal) {
             commitRename(context, renaming);
@@ -213,6 +214,7 @@ void HierarchyPanel::onDraw(PanelContext& context) {
     const ImVec2 treeSize = ImGui::GetWindowSize();
     drawRecordValue.treeChildMin = Vec2{treePos.x, treePos.y};
     drawRecordValue.treeChildMax = Vec2{treePos.x + treeSize.x, treePos.y + treeSize.y};
+    drawRecordValue.treeScrollY = ImGui::GetScrollY();  // the child's: BeginChild made it the current window
     if (treeVisible) {
         drawTree(context);
         drawVoidTarget(context);
@@ -532,6 +534,7 @@ bool HierarchyPanel::drawRow(PanelContext& context, Entity entity) {
         renameFieldFrame = ImGui::GetFrameCount();  // submitted this frame -- what onDraw's stale-field check reads
         drawRecordValue.renameFieldDrawn = true;
         drawRecordValue.renameActive = ImGui::IsItemActive();
+        drawRecordValue.renameFieldVisible = ImGui::IsItemVisible();  // false: scrolled out, still submitted (I344)
         if (committed || ImGui::IsItemDeactivatedAfterEdit()) {
             pending = PendingAction{.kind = ActionKind::CommitRename, .target = entity};
         } else if (ImGui::IsItemDeactivated()) {

@@ -28003,7 +28003,8 @@ TEST_CASE("editor: a rename whose field stops drawing ends as the field would (t
     // never re-armed, which would steal the keyboard back from wherever it went meanwhile. Only typing makes the
     // buffer differ from that name, and nothing here can type, so every arm below is the cancel and the commit half
     // is pinned as source text; a manual pass is its behavioural witness. (d) is the cancel a decision read against
-    // the World's CURRENT name got wrong: the entity renamed elsewhere while the field is gone.
+    // the World's CURRENT name got wrong: the entity renamed elsewhere while the field is gone. (e) is the other side:
+    // a renamed row scrolled out of view still draws its field, so the rename stays.
     //
     // THE SOURCE ARM -- the stale-field check and the two arms share ONE commit and ONE cancel path. It is a plain
     // block, never a SUBCASE: doctest discovers a sibling SUBCASE only by reaching it, so a SUBCASE that returns early
@@ -28212,6 +28213,42 @@ TEST_CASE("editor: a rename whose field stops drawing ends as the field would (t
         app->requestRedo();
         REQUIRE(app->tick());
         CHECK(world.name(cube) == "Crate");  // ...and it is the earlier rename
+    }
+    SUBCASE("(e) the renamed row scrolled out of the ##tree child keeps its rename") {
+        // Task E.6.3's code-review round, round 3. A row merely scrolled out of the child is still walked, so its field
+        // is still submitted, and ItemAdd keeps an active item alive past its clip test (imgui.cpp:11987,
+        // :12025-12029): a wheel scroll during a rename keeps it. That holds only while every row is walked -- the tree
+        // has no clipper -- so a clipper that skipped the rows outside the child's clip would submit no field once the
+        // row left the view, and the check would end the rename with no click. Sixty roots below the default four make
+        // the child scroll; a reveal of the last scrolls its row into view (SetScrollHereY, applied as the child begins
+        // a frame later), which takes the Cube's row -- one of the four at the top -- out of it.
+        engine::World& scene = app->world();
+        engine::Entity last{};
+        for (int i = 0; i < 60; ++i) {
+            last = engine::editor::createEntity(scene, {}, "Row " + std::to_string(i));
+        }
+        e62Ticks(*app, 2);
+        REQUIRE(r.renameActive);        // the creates left the rename alone
+        REQUIRE(r.renameFieldVisible);  // ANTI-VACUITY: the renamed row is in view before the reveal
+        const float topScroll = r.treeScrollY;
+        hierarchy->revealEntity(last);
+        e62Ticks(*app, 3);
+        REQUIRE(r.treeScrollY > topScroll);  // ANTI-VACUITY: the reveal scrolled the child
+        CHECK(r.renameFieldDrawn);
+        CHECK_FALSE(r.renameFieldVisible);  // the renamed row out of view, and its field submitted all the same
+        CHECK(r.renameActive);
+        CHECK(hierarchy->renamingEntity() == cube);
+        CHECK_FALSE(r.shortcutsLive);
+        // ...and back: the row returns to view under the same rename.
+        const float bottomScroll = r.treeScrollY;
+        hierarchy->revealEntity(cube);
+        e62Ticks(*app, 3);
+        REQUIRE(r.treeScrollY < bottomScroll);  // ANTI-VACUITY: scrolled back up
+        CHECK(r.renameFieldVisible);
+        CHECK(r.renameActive);
+        CHECK(hierarchy->renamingEntity() == cube);
+        CHECK(world.name(cube) == "Cube");
+        CHECK(app->commands().count() == commandsBefore);
     }
 
     app->requestQuit();

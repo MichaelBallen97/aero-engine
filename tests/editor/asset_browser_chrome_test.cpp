@@ -660,7 +660,8 @@ TEST_CASE("assets chrome: a folded pane is its child alone; a shown one is uncha
 // watcher stay only where the row also holds that much for the selection -- the whole of a shorter one; with none,
 // the thresholds are the zone's width alone, as before. The notice, the matches and the issues are still never shed,
 // so the one band left is the notice's own. AH15's text, with a long selection: the notice 45 cells (290.79),
-// "thumbnails 0/256" 16 (103.392), the watcher 49 (316.638), the gap 16.
+// "thumbnails 0/256" 16 (103.392), the watcher 49 (316.638), the gap 16. Round 3 adds the reserve's two units: it
+// counts code points, never bytes (e), and its gap is scaled with the zone's (f).
 TEST_CASE("assets chrome: a kept footer segment leaves the selection its minimum; a bad row (task E.6.3, AH19)") {
     constexpr float ADVANCE = 6.462F;
     constexpr float MIN_X = 8.0F;
@@ -832,4 +833,37 @@ TEST_CASE("assets chrome: a kept footer segment leaves the selection its minimum
         CHECK(thumbnailsPoints == static_cast<std::size_t>((1000.0F - sweep.thumbnailsFrom) * 4.0F) + 1U);
         CHECK(shortPoints == 0U);
     }
+
+    // (e) The reserve counts CODE POINTS -- the Mono cells drawn -- never bytes (round 3). The footer's selections
+    // carry multi-byte glyphs: a file whose size is unknown appends "  -  " and UNKNOWN_SIZE, an em dash, and the
+    // GUID segment splices an ellipsis. "a" with an unknown size is 7 cells in 9 bytes, so the watcher stays from
+    // 623.428 + 16 + 7 x 6.462 = 684.662; a byte count would move it to 697.586 and shed the watcher at 690.
+    ed::AssetFooterText glyph = text;
+    glyph.selection = "a  -  " AERO_GLYPH_EM_DASH;
+    REQUIRE(codePointsOf(glyph.selection) == 7U);
+    REQUIRE(glyph.selection.size() == 9U);  // ANTI-VACUITY: the bytes and the cells differ
+    const ed::AssetFooterLayout at690 = ed::assetFooterLayout(MIN_X, 690.0F, glyph, ADVANCE, 1.0F);
+    REQUIRE_FALSE(at690.right.empty());
+    CHECK(at690.right.size() == 2U);
+    CHECK(at690.right.back().text == text.watcher);
+    CHECK(at690.left == glyph.selection);  // drawn whole beside it
+    CHECK(keptAt(684.0F, glyph) == 1U);
+
+    // (f) The reserve's gap is the SCALED one (round 3): at uiScale 2 every gap is 32, the zone's and the reserve's
+    // alike. The advance is held at 6.462, so the gap is the only length that moves: the notice and the watcher take
+    // 290.79 + 32 + 316.638 = 639.428, the reserve 32 + 103.392 = 135.392, so the watcher stays from 774.82 -- a
+    // literal 16 in the reserve would keep it from 758.82, at 770 beside a selection under its 16 cells. The
+    // thumbnails stay from 774.82 + 32 + 103.392 = 910.212.
+    const auto keptAt2x = [](float width, const ed::AssetFooterText& t) {
+        return ed::assetFooterLayout(MIN_X, width, t, ADVANCE, 2.0F).right.size();
+    };
+    CHECK(keptAt2x(770.0F, text) == 1U);
+    CHECK(keptAt2x(775.0F, text) == 2U);
+    CHECK(keptAt2x(910.0F, text) == 2U);
+    CHECK(keptAt2x(911.0F, text) == 3U);
+    const ed::AssetFooterLayout at775 = ed::assetFooterLayout(MIN_X, 775.0F, text, ADVANCE, 2.0F);
+    REQUIRE_FALSE(at775.right.empty());
+    CHECK(at775.right.back().text == text.watcher);
+    CHECK(codePointsOf(at775.left) == ed::ASSET_FOOTER_SELECTION_MIN_CELLS);  // 775 - 639.428 - 32 = 103.572
+    CHECK(at775.right.front().x == doctest::Approx(MIN_X + 775.0F - 639.428F).epsilon(1e-5));  // right-aligned
 }
