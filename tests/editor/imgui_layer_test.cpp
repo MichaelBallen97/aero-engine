@@ -20642,11 +20642,29 @@ TEST_CASE("editor: an asset field's overflowing value sentence is elided with an
     // ellipsis, by up to thumbnailEdge + ItemInnerSpacing.x. So the width, the guard and the measurer are pinned as
     // the expressions they are, in the order they must run.
     const std::size_t width = soleLineContaining(block, "const float textAvail =");
-    REQUIRE(width + 1U < block.size());
-    CAPTURE(block[width + 1U]);
-    // task E.6.3 (D5): with the hint, the budget ends ItemInnerSpacing.x before it (seed S61).
-    CHECK(block[width + 1U].find("in.pickHint ? hintX - style.ItemInnerSpacing.x - textX : "
-                                 "buttonMax.x - style.FramePadding.x - textX;") != std::string::npos);
+    CAPTURE(block[width]);
+    // task E.6.3 (D5): with the hint, the budget ends ItemInnerSpacing.x before it (seed S61) -- and since fix 31 that
+    // arithmetic is referenceFieldParts' (PC14), so the width is its answer, the name starts where it says, and the
+    // call is handed the WHOLE frame, the caller's hint switch as the hint's width (0: no hint, no room reserved) and
+    // the thumbnail's edge, so a slot row's name still starts after its thumbnail.
+    CHECK(block[width].find("const float textAvail = parts.textAvail;") != std::string::npos);
+    CHECK(soleLineContaining(block, "const float textX = buttonMin.x + parts.textX;") < width);
+    const std::size_t partsAt = soleLineContaining(code, "referenceFieldParts(");
+    CHECK(partsAt < begin);  // decided before the value block draws anything
+    const auto squeezed = [](std::string text) {
+        std::erase_if(text, [](char c) { return c == ' ' || c == '\t'; });
+        return text;
+    };
+    std::string call;  // the call's whole argument list, however clang-format breaks it
+    for (std::size_t i = partsAt; i < code.size() && call.find(';') == std::string::npos; ++i) {
+        call += squeezed(code[i]);
+    }
+    CAPTURE(call);
+    CHECK(call == squeezed("referenceFieldParts(buttonMax.x - buttonMin.x, style.FramePadding.x, "
+                           "style.ItemInnerSpacing.x, swatchEdge, hintWidth, ellipsisWidth, in.thumbnailEdge);"));
+    CHECK(countLinesContaining(code,
+                               "const float hintWidth = in.pickHint ? faceTextWidth(PanelFace::BodySmall, "
+                               "PICK_HINT) : 0.0F;") == 1U);
     const std::size_t guard = soleLineContaining(block, "if (ImGui::CalcTextSize(in.valueText.data(), ");
     CAPTURE(block[guard]);
     CHECK(block[guard].find(").x > textAvail) {") != std::string::npos);
@@ -20658,7 +20676,14 @@ TEST_CASE("editor: an asset field's overflowing value sentence is elided with an
     CHECK(elision < measurer);
 
     // (e) THE ARMS. The elided AddText is inside the overflow arm, and the raw one is in the else arm after it.
+    // task E.6.3 (fix 31): and the elided one only where the elision fits its budget -- elideCaptionRight answers
+    // the ellipsis even where none fits. I347's 640 x 400 band is that arm's effect at a real width; a refused
+    // layout (referenceFieldParts' zero budget at the frame's left edge) has no window that reaches it, so this
+    // source pin is its one witness.
     const std::size_t elseArm = soleLineContaining(block, "} else {");
+    const std::size_t fits = soleLineContaining(block, "if (elidedWidth <= textAvail) {");
+    CHECK(soleLineContaining(block, "const float elidedWidth = currentFontWidth(elided);") + 1U == fits);
+    CHECK(measurer < fits);
     for (const std::pair<std::size_t, std::string>& entry : calls) {
         const std::size_t line = entry.first;
         CAPTURE(entry.second);
@@ -20667,11 +20692,22 @@ TEST_CASE("editor: an asset field's overflowing value sentence is elided with an
         } else {
             CHECK(guard < line);
             CHECK(line < elseArm);
+            CHECK(fits + 1U == line);
         }
     }
-    // task E.6.3: the "pick" hint is drawn by ONE drawRoleText, BEFORE the guard -- never a third AddText.
+    // task E.6.3: the "pick" hint is drawn by ONE drawRoleText, BEFORE the guard -- never a third AddText -- and only
+    // inside the arm where referenceFieldParts kept it (fix 31): the arm's third line, after the face it draws in
+    // (the record measures the drawn hint in that same face) and the hint's y.
     CHECK(countLinesContaining(code, "drawRoleText(") == 1U);
-    CHECK(soleLineContaining(block, "drawRoleText(") < guard);
+    const std::size_t hintAt = soleLineContaining(block, "drawRoleText(");
+    CHECK(hintAt < guard);
+    const std::size_t hintArm = soleLineContaining(block, "if (parts.hint) {");
+    CHECK(hintArm + 3U == hintAt);
+    CHECK(block[hintArm + 1U].find("constexpr PanelFace HINT_FACE = PanelFace::BodySmall;") != std::string::npos);
+    CHECK(block[hintAt].find("drawRoleText(drawList, HINT_FACE, ") != std::string::npos);
+    // I347's hint-in-the-padding arm has an independent side only while the record measures the DRAWN hint: written
+    // as hintX + hintWidth, it would restate the placement and could not fail.
+    CHECK(countLinesContaining(block, "drawn.hintMaxX = hintX + faceTextWidth(HINT_FACE, PICK_HINT);") == 1U);
 }
 
 // ---- task E.5.2: the named selector, driven through the real Inspector (I251, I252) ----------------------
@@ -25921,6 +25957,148 @@ TEST_CASE("editor: the reference field -- an inset frame, a swatch or a well, an
     app->requestQuit();
     CHECK(app->tick() == false);
     app.reset();
+}
+
+TEST_CASE("editor: a reference field drops its hint, then its well, before they overlap (task E.6.3, I347)") {
+    // V3, the macOS manual pass's row 17: at 900 x 600 each of the Inspector's two MeshRenderer reference rows is a
+    // narrow field (34 points here, content 200 -- the pass read ~33 off the screen), and 88a2b8f drew its faint
+    // "pick" hint ON the empty well (the hint was placed whatever the width) and the name's ellipsis past the well,
+    // cut by the frame to its first dot; at 1024 wide (63 points) its ellipsis ran under the hint. referenceFieldParts
+    // now drops the hint, then the well, so the name keeps one whole ellipsis inside the frame while either stays,
+    // and the widget draws no name its budget cannot hold (PC14 is the arithmetic). This case reads what the widget
+    // DREW off its own record -- each member set where its draw call is made, never the decision -- against the rule
+    // restated over the widths the widget RECORDED, at whatever width the display delivered. One window per band at
+    // 1x, measured on this tree: 640 x 400 (24, the width's floor: the frame alone), 900 x 600 (34: the name alone,
+    // 8..18), 1024 x 640 (63: the well and the name) and 1280 x 640 (125: all three). All are under the ~657 points
+    // of height CI's macOS runner delivered for a 1000-point request (I231's record); its width is unmeasured, so a
+    // band the two wider windows miss is a WARN, never a failure.
+    // What a field holds at 1x, narrowest first.
+    enum class Band : std::uint8_t { Frame, Name, WellAndName, All };
+    const auto run = [](int width, int height, Band band, bool exact) {
+        engine::platform::Context ctx;
+        if (!ctx.valid()) {
+            AERO_SKIP_OR_FAIL("no platform context");
+        }
+        std::optional<engine::platform::Window> window =
+            ctx.createWindow({.title = "reference field parts i347", .width = width, .height = height});
+        REQUIRE(window.has_value());
+        std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+        if (!device) {
+            AERO_SKIP_OR_FAIL("no GPU device");
+        }
+        std::optional<engine::editor::EditorApp> app = e62App(*device, *window, ctx);
+        auto* const inspector = dynamic_cast<engine::editor::InspectorPanel*>(app->panels().find("Inspector"));
+        REQUIRE(inspector != nullptr);
+        const engine::Entity cube = e62EntityNamed(app->world(), "Cube");
+        REQUIRE(cube.valid());
+        app->selection().set(cube);
+        e63Front(*app, "Inspector", "Material");
+        const std::uint64_t before = inspector->drawRecord().framesRecorded;
+        e62Ticks(*app, 2);
+        const engine::editor::InspectorDrawRecord& r = inspector->drawRecord();
+        REQUIRE(r.framesRecorded > before);
+        if (!engine::editor::sceneIoAvailable()) {
+            MESSAGE("I347: reflect tools OFF -- no field row, so no reference row drew");
+            CHECK(r.referenceFields.empty());
+        } else {
+            // The default Cube's MeshRenderer: `mesh` and `material`, both NIL, so each row's lead is the empty well
+            // and its name "None" -- wider than one ellipsis, so the name draws exactly where one ellipsis fits.
+            REQUIRE(r.referenceFields.size() == 2U);
+            const float s = app->uiScale();
+            const float padX = e63StyleX(s, "FramePadding");
+            const float gapX = e63StyleX(s, "ItemInnerSpacing");
+            CAPTURE(s);
+            CAPTURE(inspector->lastContentWidth());
+            for (const engine::editor::ReferenceFieldRecord& f : r.referenceFields) {
+                const float frame = f.frameMaxX - f.frameMinX;
+                CAPTURE(frame);
+                CAPTURE(f.swatchEdge);
+                CAPTURE(f.hintWidth);
+                CAPTURE(f.ellipsisWidth);
+                CHECK_FALSE(f.swatchDrawn);    // nothing is bound, so no material colour
+                REQUIRE(f.swatchEdge > 0.0F);  // the Inspector's row leads with a swatch, never a thumbnail
+                CHECK(f.hintWidth > 0.0F);     // the Inspector wants the hint: a missing one is the layout's drop
+                CHECK(f.ellipsisWidth > 0.0F);
+                // WHAT THE FRAME HOLDS, the rule restated over the recorded widths (never called): the name, where one
+                // ellipsis fits between the paddings; the well, where it still fits beside the well and its spacing;
+                // the hint, where it still fits before the hint's spacing too.
+                const float nameNeeds = (2.0F * padX) + f.ellipsisWidth;
+                const float wellNeeds = nameNeeds + f.swatchEdge + gapX;
+                const float hintNeeds = wellNeeds + gapX + f.hintWidth;
+                CAPTURE(wellNeeds);
+                CAPTURE(hintNeeds);
+                CHECK(f.textDrawn == (frame >= nameNeeds));
+                CHECK(f.wellDrawn == (frame >= wellNeeds));
+                CHECK(f.hintDrawn == (frame >= hintNeeds));
+                // NO DRAWN PART LEAVES THE FRAME'S PADDING, AND NO TWO SHARE AN X SPAN: the name sits inside the
+                // frame's inner edges, one ItemInnerSpacing.x after the well and one before the hint.
+                if (f.textDrawn) {
+                    CHECK(f.textMinX >= f.frameMinX + padX - 0.01F);
+                    CHECK(f.textMaxX <= f.frameMaxX - padX + 0.01F);
+                }
+                if (f.wellDrawn) {
+                    CHECK(f.swatchMinX >= f.frameMinX + padX - 0.01F);
+                }
+                if (f.wellDrawn && f.textDrawn) {
+                    CHECK(f.textMinX - f.swatchMaxX >= gapX - 0.01F);
+                }
+                if (f.hintDrawn && f.textDrawn) {
+                    CHECK(f.hintMinX - f.textMaxX >= gapX - 0.01F);
+                }
+                if (f.hintDrawn) {
+                    CHECK((f.hintMinX >= f.swatchMaxX || !f.wellDrawn));
+                    // The layout placed the hint with hintWidth; its right edge is measured at the draw, in the face
+                    // drawRoleText was handed. A hint measured narrower than it draws runs into the right padding.
+                    CHECK(f.hintMaxX <= f.frameMaxX - padX + 0.01F);
+                }
+                if (s != 1.0F) {
+                    WARN(s == 1.0F);  // another scale lays the dock out at other widths: the bands below are 1x's
+                    continue;
+                }
+                const Band landed = frame < nameNeeds   ? Band::Frame
+                                    : frame < wellNeeds ? Band::Name
+                                    : frame < hintNeeds ? Band::WellAndName
+                                                        : Band::All;
+                if (exact) {
+                    REQUIRE((landed == band));
+                } else if (landed != band) {
+                    WARN((landed == band));  // a display that narrowed the window: the arms above still held
+                    continue;
+                }
+                // ANTI-VACUITY, per band: what the earlier rules drew over something at this very width.
+                switch (band) {
+                    case Band::Frame:
+                        // elideCaptionRight still answers the ellipsis, which would run into the right padding.
+                        CHECK(frame - (2.0F * padX) < f.ellipsisWidth);
+                        break;
+                    case Band::Name:
+                        // V3's width: a well kept wherever 2 x padding + its edge fits stays here and leaves the name
+                        // under one ellipsis -- one dot at the frame's edge -- and 88a2b8f's hint sat ON the well.
+                        CHECK(frame >= (2.0F * padX) + f.swatchEdge);
+                        CHECK(frame - (2.0F * padX) - f.swatchEdge - gapX < f.ellipsisWidth);
+                        CHECK(frame - padX - f.hintWidth < padX + f.swatchEdge);
+                        break;
+                    case Band::WellAndName:
+                        // 88a2b8f's unconditional hint started before the name's one ellipsis ended.
+                        CHECK(frame - padX - f.hintWidth < padX + f.swatchEdge + gapX + f.ellipsisWidth);
+                        break;
+                    case Band::All:
+                        break;
+                }
+            }
+        }
+        app->requestQuit();
+        CHECK(app->tick() == false);
+        app.reset();
+    };
+    SUBCASE("640 x 400: the field at its floor draws its frame alone, no lone ellipsis") {
+        run(640, 400, Band::Frame, true);
+    }
+    SUBCASE("900 x 600: the hint and the well dropped, one whole ellipsis inside the frame") {
+        run(E62_WINDOW_WIDTH, E62_WINDOW_HEIGHT, Band::Name, true);
+    }
+    SUBCASE("1024 x 640: no hint, the well beside the name") { run(1024, 640, Band::WellAndName, false); }
+    SUBCASE("1280 x 640: the hint kept beside the well and the name") { run(1280, 640, Band::All, false); }
 }
 
 TEST_CASE("editor: Add Component is centred, one card header tall, and dashed (task E.6.3, I322)") {

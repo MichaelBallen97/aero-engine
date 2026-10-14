@@ -270,6 +270,9 @@ struct InspectorDrawRecord {
     float axisValueWidth = 0.0F;
     bool referenceSwatchDrawn = false;  // a bound material's colour swatch drew in a reference row
     bool referenceWellDrawn = false;    // an unbound (or non-material) row drew its empty well
+    // Every reference row's own record this frame, in draw order (cleared per onDraw, capacity kept): what its draw
+    // calls drew and the x span each took (I347).
+    std::vector<ReferenceFieldRecord> referenceFields;
     Vec2 addComponentMin{};
     Vec2 addComponentMax{};
     int addComponentDashVertices = 0;  // what the draw list RECEIVED across dashedRect: 4 per dash

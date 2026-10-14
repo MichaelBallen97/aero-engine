@@ -172,6 +172,7 @@ void InspectorPanel::onDraw(PanelContext& context) {
     drawRecordValue.cardsOpen = 0;
     drawRecordValue.referenceSwatchDrawn = false;
     drawRecordValue.referenceWellDrawn = false;
+    drawRecordValue.referenceFields.clear();
     drawRecordValue.addComponentDashVertices = 0;
     drawRecordValue.addComponentDashed = false;
     drawRecordValue.addComponentFirstDashWidth = 0.0F;
@@ -771,8 +772,10 @@ void InspectorPanel::drawField(PanelContext& context, Entity primary, const Comp
                                               .database = database,
                                               .thumbnails = thumbnails};
                 picked = drawAssetReferenceField(inputs, *assetPicker);
-                drawRecordValue.referenceSwatchDrawn = drawRecordValue.referenceSwatchDrawn || picked.swatchDrawn;
-                drawRecordValue.referenceWellDrawn = drawRecordValue.referenceWellDrawn || picked.wellDrawn;
+                const ReferenceFieldRecord& drew = picked.drawn;  // task E.6.3: what the field drew
+                drawRecordValue.referenceSwatchDrawn = drawRecordValue.referenceSwatchDrawn || drew.swatchDrawn;
+                drawRecordValue.referenceWellDrawn = drawRecordValue.referenceWellDrawn || drew.wellDrawn;
+                drawRecordValue.referenceFields.push_back(drew);
             } else {
                 ImGui::TextUnformatted(row.text.c_str());  // no picker lent (a bare panel): 3.1.5's row
             }

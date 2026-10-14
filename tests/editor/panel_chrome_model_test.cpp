@@ -1,5 +1,5 @@
-// Aero Engine -- task E.6.3: the panels' shared chrome as VALUES (PC1-PC13; PC12 is the default layout's Bottom
-// split, PC13 the hatched well's clip). Tier 0: no ImGui, no GPU, no #if.
+// Aero Engine -- task E.6.3: the panels' shared chrome as VALUES (PC1-PC14; PC12 is the default layout's Bottom
+// split, PC13 the hatched well's clip, PC14 the reference field's parts). Tier 0: no ImGui, no GPU, no #if.
 // Every expected value is a RESTATED literal (the mock's bytes, the theme's dp), never recomputed by the function
 // under test.
 #include <aero/editor/editor_app.hpp>  // PC12: resolveBottomDockFraction, pure -- no app is constructed here
@@ -596,4 +596,116 @@ TEST_CASE("panel chrome: a convex clip keeps a hatch stripe inside the well's ro
     CHECK_FALSE(ed::hatchPieceTakesFringe(segment));
     CHECK_FALSE(ed::hatchPieceTakesFringe(repeated));
     CHECK_FALSE(ed::hatchPieceTakesFringe(notFinite));
+}
+
+namespace {
+
+// PC14's inputs, RESTATED at 1x: the theme's FramePadding.x (8) and ItemInnerSpacing.x (6), the body's text line (16)
+// as the swatch's edge, and a hint and an ellipsis width chosen dyadic (the fonts measure near these), so every sum
+// below is exact in float and every expectation is a literal.
+constexpr float REF_PAD = 8.0F;
+constexpr float REF_GAP = 6.0F;
+constexpr float REF_SWATCH = 16.0F;
+constexpr float REF_HINT = 24.5F;
+constexpr float REF_ELLIPSIS = 11.75F;
+constexpr float REF_THUMB = 48.0F;
+
+// One expectation per member, so a failure prints the member that moved (a whole-struct == prints `true`).
+void checkParts(const ed::ReferenceFieldParts& actual, bool hint, bool swatch, float textX, float textAvail) {
+    CHECK(actual.hint == hint);
+    CHECK(actual.swatch == swatch);
+    CHECK(actual.textX == textX);
+    CHECK(actual.textAvail == textAvail);
+}
+
+// The Inspector's row (a swatch, no thumbnail) and a Material slot's (a thumbnail, swatchEdge 0) at frame width w.
+[[nodiscard]] ed::ReferenceFieldParts inspectorRow(float w) {
+    return ed::referenceFieldParts(w, REF_PAD, REF_GAP, REF_SWATCH, REF_HINT, REF_ELLIPSIS, 0.0F);
+}
+[[nodiscard]] ed::ReferenceFieldParts slotRow(float w) {
+    return ed::referenceFieldParts(w, REF_PAD, REF_GAP, 0.0F, REF_HINT, REF_ELLIPSIS, REF_THUMB);
+}
+
+}  // namespace
+
+TEST_CASE("panel chrome: a reference field drops its hint, then its swatch, as it narrows (task E.6.3, PC14)") {
+    // The macOS pass's row 17: a 34-point Inspector field (900 x 600, I347) drew its "pick" hint ON the empty well
+    // and its name's ellipsis cut to one dot at the frame's edge -- the hint and the swatch were placed whatever the
+    // width. Left to right a field holds padding, [thumbnail + gap], [swatch + gap], the name, [gap + hint], padding,
+    // and the name keeps one whole ellipsis beside whatever optional part is kept.
+    SUBCASE("wide: the hint and the swatch kept, the name between them") {
+        checkParts(inspectorRow(200.0F), true, true, 30.0F, 131.5F);  // 8 + 16 + 6; 200 - 8 - 24.5 - 6 - 30
+    }
+    SUBCASE("the hint's threshold: the name keeps one ellipsis width, exactly") {
+        // 2 x 8 + 16 + 2 x 6 + 11.75 + 24.5 = 80.25: the name's room is exactly one ellipsis there.
+        checkParts(inspectorRow(80.25F), true, true, 30.0F, 11.75F);
+        checkParts(inspectorRow(92.0F), true, true, 30.0F, 23.5F);  // one ellipsis width above: two of them
+        // A quarter point short, and one ellipsis width short: no hint, and its spacing is no longer reserved.
+        checkParts(inspectorRow(80.0F), false, true, 30.0F, 42.0F);  // 80 - 8 - 30
+        checkParts(inspectorRow(68.5F), false, true, 30.0F, 30.5F);
+    }
+    SUBCASE("narrower: no hint, the swatch kept while the name keeps one ellipsis beside it") {
+        // 2 x 8 + 16 + 6 + 11.75 = 49.75: the name's room beside the swatch is exactly one ellipsis there.
+        checkParts(inspectorRow(61.5F), false, true, 30.0F, 23.5F);  // one ellipsis width above: two of them
+        checkParts(inspectorRow(49.75F), false, true, 30.0F, 11.75F);
+        // A quarter point short: the swatch goes, and the name starts at the padding, its column the name's.
+        checkParts(inspectorRow(49.5F), false, false, 8.0F, 33.5F);  // 49.5 - 8 - 8
+    }
+    SUBCASE("narrower than the swatch and one ellipsis: neither, the name from the padding") {
+        // A swatch kept wherever 2 x 8 + 16 = 32 fits would leave I347's 900 x 600 field (34) a name budget of
+        // 34 - 8 - 30 = -4, clamped to 0 -- under one ellipsis, so the elision's lone ellipsis would run past the
+        // inner edge.
+        checkParts(inspectorRow(40.0F), false, false, 8.0F, 24.0F);
+        checkParts(inspectorRow(34.0F), false, false, 8.0F, 18.0F);  // I347's 900 x 600 field: one ellipsis fits
+        checkParts(inspectorRow(32.0F), false, false, 8.0F, 16.0F);  // 2 x 8 + 16, exactly
+        checkParts(inspectorRow(31.75F), false, false, 8.0F, 15.75F);
+        // 2 x 8 + 11.75 = 27.75: one ellipsis between the paddings, exactly. Below it not one fits, and the widget
+        // draws no name (I347's narrowest band) -- the budget still says what is left.
+        checkParts(inspectorRow(27.75F), false, false, 8.0F, 11.75F);
+        checkParts(inspectorRow(24.0F), false, false, 8.0F, 8.0F);  // the width's floor, one frame height
+        checkParts(inspectorRow(0.0F), false, false, 8.0F, 0.0F);
+    }
+    SUBCASE("a thumbnail row: the hint rule alone, after the thumbnail's column") {
+        // 2 x 8 + 48 + 2 x 6 + 11.75 + 24.5 = 112.25; the name starts at 8 + 48 + 6 = 62 whatever the width.
+        checkParts(slotRow(300.0F), true, false, 62.0F, 199.5F);
+        checkParts(slotRow(112.25F), true, false, 62.0F, 11.75F);
+        checkParts(slotRow(112.0F), false, false, 62.0F, 42.0F);
+        checkParts(slotRow(24.0F), false, false, 62.0F, 0.0F);
+        // A swatch is never kept beside a thumbnail: a row has one or the other.
+        const ed::ReferenceFieldParts both =
+            ed::referenceFieldParts(300.0F, REF_PAD, REF_GAP, REF_SWATCH, REF_HINT, REF_ELLIPSIS, REF_THUMB);
+        checkParts(both, true, false, 62.0F, 199.5F);
+        // Neither a thumbnail nor a swatch: 2 x 8 + 6 + 11.75 + 24.5 = 58.25, the name from the padding.
+        const auto bare = [](float w) {
+            return ed::referenceFieldParts(w, REF_PAD, REF_GAP, 0.0F, REF_HINT, REF_ELLIPSIS, 0.0F);
+        };
+        checkParts(bare(58.25F), true, false, 8.0F, 11.75F);
+        checkParts(bare(58.0F), false, false, 8.0F, 42.0F);
+    }
+    SUBCASE("a zero hint width is no hint: never kept, and no room reserved") {
+        const auto noHint = [](float w) {
+            return ed::referenceFieldParts(w, REF_PAD, REF_GAP, REF_SWATCH, 0.0F, REF_ELLIPSIS, 0.0F);
+        };
+        checkParts(noHint(200.0F), false, true, 30.0F, 162.0F);  // 200 - 8 - 30: the frame's inner edge
+        checkParts(noHint(49.75F), false, true, 30.0F, 11.75F);  // the swatch's threshold: no hint moves it
+        checkParts(noHint(34.0F), false, false, 8.0F, 18.0F);
+    }
+    SUBCASE("every input in ImGui units: twice every length is twice every answer") {
+        const ed::ReferenceFieldParts twice = ed::referenceFieldParts(
+            160.5F, 2.0F * REF_PAD, 2.0F * REF_GAP, 2.0F * REF_SWATCH, 2.0F * REF_HINT, 2.0F * REF_ELLIPSIS, 0.0F);
+        checkParts(twice, true, true, 60.0F, 23.5F);  // 80.25 x 2: the threshold, exactly
+    }
+    SUBCASE("a non-finite or negative input keeps nothing optional") {
+        for (std::size_t at = 0; at < 7U; ++at) {
+            for (const float bad : {NAN_F, INF_F, -INF_F, -0.25F}) {
+                CAPTURE(at);
+                CAPTURE(bad);
+                std::array<float, 7> in{200.0F, REF_PAD, REF_GAP, REF_SWATCH, REF_HINT, REF_ELLIPSIS, 0.0F};
+                in.at(at) = bad;
+                const ed::ReferenceFieldParts got =
+                    ed::referenceFieldParts(in[0], in[1], in[2], in[3], in[4], in[5], in[6]);
+                checkParts(got, false, false, 0.0F, 0.0F);
+            }
+        }
+    }
 }

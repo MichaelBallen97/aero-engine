@@ -3,6 +3,7 @@
 #include <aero/editor/panel_chrome_model.hpp>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <numbers>
@@ -282,6 +283,33 @@ bool hatchPieceTakesFringe(std::span<const Vec2> piece) noexcept {
         }
     }
     return true;
+}
+
+ReferenceFieldParts referenceFieldParts(float frameWidth, float framePaddingX, float innerSpacingX, float swatchEdge,
+                                        float hintWidth, float ellipsisWidth, float thumbnailEdge) noexcept {
+    const std::array<float, 7> inputs{frameWidth, framePaddingX, innerSpacingX, swatchEdge,
+                                      hintWidth,  ellipsisWidth, thumbnailEdge};
+    if (!std::all_of(inputs.begin(), inputs.end(), [](float v) { return std::isfinite(v) && v >= 0.0F; })) {
+        return ReferenceFieldParts{};  // nothing optional, and a zero budget
+    }
+    // The thumbnail's column is always kept (it is the slot's identity and sets the frame's height); a swatch is a
+    // row's other lead, never drawn beside a thumbnail.
+    const bool thumbnailRow = thumbnailEdge > 0.0F;
+    const bool swatchRow = !thumbnailRow && swatchEdge > 0.0F;
+    const float leadEnd = framePaddingX + (thumbnailRow ? thumbnailEdge + innerSpacingX : 0.0F);
+    const float swatchColumn = swatchRow ? swatchEdge + innerSpacingX : 0.0F;
+    // 1. The hint, beside the row's swatch and its spacing: the name keeps one ellipsis before the hint's spacing.
+    const float hintX = frameWidth - framePaddingX - hintWidth;
+    const float nameRoomBesideHint = hintX - innerSpacingX - (leadEnd + swatchColumn);
+    ReferenceFieldParts parts{};
+    parts.hint = hintWidth > 0.0F && nameRoomBesideHint >= ellipsisWidth;
+    // 2. The swatch, where the name keeps one ellipsis beside it and its spacing, before the frame's inner edge.
+    parts.swatch = swatchRow && frameWidth - framePaddingX - (leadEnd + swatchColumn) >= ellipsisWidth;
+    // 3. The name, after what is kept, up to the hint's spacing or the frame's inner edge -- never a negative budget.
+    parts.textX = leadEnd + (parts.swatch ? swatchColumn : 0.0F);
+    const float textEnd = parts.hint ? hintX - innerSpacingX : frameWidth - framePaddingX;
+    parts.textAvail = std::max(0.0F, textEnd - parts.textX);
+    return parts;
 }
 
 // D10: a roster glyph per section, chosen for what the section holds (the plan's §21 records the choice).

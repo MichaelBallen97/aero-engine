@@ -133,6 +133,39 @@ inline constexpr float CLIP_MERGE_EPSILON = 1.0F / 64.0F;
 // coordinate or a zero-length edge: a piece that cannot be measured takes no fringe.
 [[nodiscard]] bool hatchPieceTakesFringe(std::span<const Vec2> piece) noexcept;
 
+// ---- the asset-reference field's optional parts (D5), as ARITHMETIC ---------------------------------------------
+// What one reference field's frame holds, left to right: padding, the thumbnail and its spacing (a Material slot's
+// row: always kept), the swatch or its empty well and its spacing (the Inspector's row), the name, the faint "pick"
+// hint behind its spacing, padding. Decided in this order, so the hint goes first and the swatch next as the frame
+// narrows -- neither is ever drawn over the other or over the name, and the name keeps one whole ellipsis inside
+// the frame's inner edge for as long as either is kept (the macOS pass's row 17 found a 34-point field drawing the
+// hint ON the well and the name's ellipsis cut to its first dot at the frame's right edge):
+//   1. the HINT is kept only when, beside the row's swatch (when it has one) and its spacing, the name keeps at least
+//      `ellipsisWidth` before the hint's spacing. A zero `hintWidth` is no hint -- never kept, and no room reserved for
+//      it -- which is how the caller's own switch (AssetFieldInputs::pickHint) reaches the budget;
+//   2. the SWATCH is kept only when, beside it and its spacing, the name keeps at least `ellipsisWidth` before the
+//      frame's inner edge -- the hint's rule without the hint, so the frame holds 2 x framePaddingX + swatchEdge and
+//      a whole ellipsis after it -- and never beside a thumbnail (a row has one or the other; the widget hands
+//      swatchEdge 0 with a thumbnail). The hint's threshold is the swatch's plus the hint and its spacing, so a kept
+//      hint always has its swatch;
+//   3. the name's textX / textAvail follow from what is kept; textAvail is never negative. Below 2 x framePaddingX +
+//      ellipsisWidth nothing optional is left and the budget is under one ellipsis: the widget draws no name whose
+//      elision does not fit its budget, so a refused input (below) draws none at all.
+// UI-SCALE-FREE, unlike the lengths above, because every input is already in ImGui units: the live style's
+// FramePadding.x and ItemInnerSpacing.x, the text line height, and widths measured off the scaled fonts. TOTAL: a
+// non-finite or negative input keeps nothing optional and answers ReferenceFieldParts{} -- no hint, no swatch, a
+// zero textX and a zero textAvail.
+struct ReferenceFieldParts {
+    bool hint = false;       // the faint "pick" hint draws at the frame's right
+    bool swatch = false;     // the swatch (or its empty well) draws after the left padding
+    float textX = 0.0F;      // the name's left edge, from the frame's left edge
+    float textAvail = 0.0F;  // the name's budget: the frame's inner right edge, or the hint's spacing when it draws
+    friend constexpr bool operator==(const ReferenceFieldParts&, const ReferenceFieldParts&) = default;
+};
+[[nodiscard]] ReferenceFieldParts referenceFieldParts(float frameWidth, float framePaddingX, float innerSpacingX,
+                                                      float swatchEdge, float hintWidth, float ellipsisWidth,
+                                                      float thumbnailEdge) noexcept;
+
 // ---- the section icon tables (D10): roster glyphs only, as views of the AERO_ICON_* literals -----------------
 [[nodiscard]] std::string_view materialSectionIcon(MaterialSectionId id) noexcept;
 enum class ImportDetailsSection : std::uint8_t {
@@ -166,6 +199,29 @@ struct ItemRectRecord {
 struct DrawnVertex {
     Vec2 pos{};
     std::uint32_t color = 0;
+};
+
+// One asset-reference field as DRAWN this frame (D5): which optional part each draw call drew, and the x span it was
+// handed, SCREEN space -- a part that did not draw keeps 0 / 0. Set where each draw call is made, never from
+// referenceFieldParts' answer.
+struct ReferenceFieldRecord {
+    float frameMinX = 0.0F;  // the button's item rect
+    float frameMaxX = 0.0F;
+    float swatchMinX = 0.0F;  // the swatch's or the empty well's rect, whichever drew
+    float swatchMaxX = 0.0F;
+    float textMinX = 0.0F;  // the name: AddText's x, and that x + CalcTextSize of the bytes AddText was handed
+    float textMaxX = 0.0F;
+    // The hint: drawRoleText's x, and that x + the width of PICK_HINT measured AT THE DRAW in the face drawRoleText
+    // was handed -- never `hintWidth`, the layout's input, so a hint measured one way and drawn another shows here.
+    float hintMinX = 0.0F;
+    float hintMaxX = 0.0F;
+    float swatchEdge = 0.0F;     // handed to referenceFieldParts, drawn or not (0: a thumbnail row's)
+    float hintWidth = 0.0F;      // likewise (0: no hint wanted)
+    float ellipsisWidth = 0.0F;  // likewise: the one ellipsis the name keeps beside the swatch and the hint
+    bool swatchDrawn = false;    // a bound material's colour swatch
+    bool wellDrawn = false;      // the empty well
+    bool textDrawn = false;
+    bool hintDrawn = false;
 };
 
 // One card as drawn this frame. Every x/y is SCREEN space, read off ImGui at the draw.

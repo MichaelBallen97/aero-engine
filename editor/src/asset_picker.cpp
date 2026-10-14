@@ -15,6 +15,7 @@
 #include <aero/editor/asset_database.hpp>
 #include <aero/editor/asset_drag.hpp>
 #include <aero/editor/asset_view.hpp>     // elideCaptionRight -- an overflowing value sentence
+#include <aero/editor/editor_glyphs.hpp>  // AERO_GLYPH_ELLIPSIS -- the width the name must keep beside the hint
 #include <aero/editor/material_card.hpp>  // task E.4.5 -- the card's subtitle and tint
 #include <aero/editor/project_files.hpp>
 #include <aero/editor/thumbnail_cache.hpp>
@@ -50,6 +51,13 @@ constexpr std::string_view PICK_HINT = "pick";  // task E.6.3 (D5)
         return std::nullopt;
     }
     return decodeAssetDragPayload(payload->Data, payload->DataSize);
+}
+
+// task E.6.3: a text's width in the CURRENT font, as AddText draws it -- the reference field's record of the name it
+// drew, and the ellipsis the name must keep beside the hint. An empty view measures "", never a null pointer.
+[[nodiscard]] float currentFontWidth(std::string_view text) {
+    const char* const begin = text.empty() ? "" : text.data();
+    return ImGui::CalcTextSize(begin, begin + text.size()).x;
 }
 
 [[nodiscard]] Vec2 toVec2(ImVec2 v) noexcept { return Vec2{v.x, v.y}; }
@@ -182,10 +190,27 @@ AssetFieldResult drawAssetReferenceField(const AssetFieldInputs& in, AssetPicker
     // task E.6.3 (D5): the zero-thumbnail row (the Inspector's) leads with a SWATCH one text line square -- a bound
     // material's own colour through its card (materialCardTint, the tile's rule), or an empty `inset` well. The edge is
     // the frame's text line height, derived from the font, so it scales with it and needs no token. No item.
-    bool swatchDrawn = false;  // handed to the result just before its `return result;`: three arms reassign it whole
-    bool wellDrawn = false;
+    //
+    // WHAT THE FRAME HOLDS is referenceFieldParts' decision (panel_chrome_model), from the frame's width and the live
+    // style: the hint drops first, then the swatch, so neither is ever drawn over the other or over the name, and the
+    // name keeps one whole ellipsis while either stays -- the macOS pass's row 17 found a 34-point Inspector field
+    // (900 x 600) drawing the hint ON the well and the name's ellipsis cut to one dot at the frame's edge. The pickHint
+    // switch reaches it as a zero hint width: no hint, and no room reserved for one. The ellipsis is measured as the
+    // elision's own measurer measures (CalcTextSize in the current font), so "the name keeps one ellipsis" is that.
+    // `drawn` is handed to the result just before its `return result;`: three arms reassign the result whole.
+    ReferenceFieldRecord drawn{};
     const float swatchEdge = in.thumbnailEdge > 0.0F ? 0.0F : ImGui::GetTextLineHeight();
-    if (swatchEdge > 0.0F) {
+    const float hintWidth = in.pickHint ? faceTextWidth(PanelFace::BodySmall, PICK_HINT) : 0.0F;
+    const float ellipsisWidth = currentFontWidth(AERO_GLYPH_ELLIPSIS);
+    const ReferenceFieldParts parts =
+        referenceFieldParts(buttonMax.x - buttonMin.x, style.FramePadding.x, style.ItemInnerSpacing.x, swatchEdge,
+                            hintWidth, ellipsisWidth, in.thumbnailEdge);
+    drawn.frameMinX = buttonMin.x;
+    drawn.frameMaxX = buttonMax.x;
+    drawn.swatchEdge = swatchEdge;
+    drawn.hintWidth = hintWidth;
+    drawn.ellipsisWidth = ellipsisWidth;
+    if (parts.swatch) {
         const ImVec2 swatchMin(buttonMin.x + style.FramePadding.x, buttonMin.y + style.FramePadding.y);
         const ImVec2 swatchMax(swatchMin.x + swatchEdge, swatchMin.y + swatchEdge);
         std::optional<IconColor> tint;
@@ -202,37 +227,41 @@ AssetFieldResult drawAssetReferenceField(const AssetFieldInputs& in, AssetPicker
         if (tint.has_value()) {
             const ImU32 swatchColor = IM_COL32(tint->r, tint->g, tint->b, tint->a);
             swatchList->AddRectFilled(swatchMin, swatchMax, swatchColor, swatchRounding);
-            swatchDrawn = true;
+            drawn.swatchDrawn = true;
         } else {
             roleOutline(swatchList, swatchMin, swatchMax, ChromeRole::Border, swatchRounding, ruleHeight());
-            wellDrawn = true;
+            drawn.wellDrawn = true;
         }
+        drawn.swatchMinX = swatchMin.x;
+        drawn.swatchMaxX = swatchMax.x;
     }
 
     if (!in.valueText.empty()) {
         ImDrawList* const drawList = ImGui::GetWindowDrawList();
         drawList->PushClipRect(buttonMin, buttonMax, /*intersect_with_current_clip_rect=*/true);
-        // task E.3.4 / E.6.3: the zero-thumbnail arm starts after the swatch now, and the branch stays a branch for the
-        // textY rounding reason alone -- (buttonHeight - fontSize) * 0.5F is only ARITHMETICALLY FramePadding.y, and
-        // GetFrameHeight() is a rounded sum, so an unbranched formula could move the text by an ulp. The fitting path
-        // still draws the raw bytes.
-        const float textX = in.thumbnailEdge > 0.0F
-                                ? buttonMin.x + style.FramePadding.x + in.thumbnailEdge + style.ItemInnerSpacing.x
-                                : buttonMin.x + style.FramePadding.x + swatchEdge + style.ItemInnerSpacing.x;
+        // task E.3.4 / E.6.3: the name starts after the thumbnail, or after the swatch when it is kept (parts.textX).
+        // textY stays a branch for the rounding reason alone -- (buttonHeight - fontSize) * 0.5F is only
+        // ARITHMETICALLY FramePadding.y, and GetFrameHeight() is a rounded sum, so an unbranched formula could move
+        // the text by an ulp. The fitting path still draws the raw bytes.
+        const float textX = buttonMin.x + parts.textX;
         const float textY = in.thumbnailEdge > 0.0F
                                 ? buttonMin.y + (((buttonMax.y - buttonMin.y) - ImGui::GetFontSize()) * 0.5F)
                                 : buttonMin.y + style.FramePadding.y;
         // task E.6.3 (D5): the faint "pick" hint at the frame's right, small, ONE draw call before the guard (no third
-        // AddText in this file, I244); the budget below excludes it, so a long name elides BEFORE it, never over it.
-        const float hintX = buttonMax.x - style.FramePadding.x - faceTextWidth(PanelFace::BodySmall, PICK_HINT);
-        if (in.pickHint) {
-            const float hintY = textY + ((ImGui::GetFontSize() - panelFacePoints(PanelFace::BodySmall)) * 0.5F);
-            drawRoleText(drawList, PanelFace::BodySmall, ImVec2(hintX, hintY), ChromeRole::TextFaint, PICK_HINT);
+        // AddText in this file, I244), and only where parts.hint kept it; the budget below excludes it, so a long name
+        // elides BEFORE it, never over it.
+        const float hintX = buttonMax.x - style.FramePadding.x - hintWidth;
+        if (parts.hint) {
+            constexpr PanelFace HINT_FACE = PanelFace::BodySmall;  // drawn in, and measured in for the record
+            const float hintY = textY + ((ImGui::GetFontSize() - panelFacePoints(HINT_FACE)) * 0.5F);
+            drawRoleText(drawList, HINT_FACE, ImVec2(hintX, hintY), ChromeRole::TextFaint, PICK_HINT);
+            drawn.hintDrawn = true;
+            drawn.hintMinX = hintX;
+            drawn.hintMaxX = hintX + faceTextWidth(HINT_FACE, PICK_HINT);  // as drawn, never hintWidth
         }
         // task E.4.5's validation pass (row 6): A SENTENCE THAT OVERFLOWS IS ELIDED, NOT MERELY CLIPPED -- the width is
         // the frame's inner edge, or (task E.6.3) the hint's left edge less ItemInnerSpacing.x when the hint draws.
-        const float textAvail =
-            in.pickHint ? hintX - style.ItemInnerSpacing.x - textX : buttonMax.x - style.FramePadding.x - textX;
+        const float textAvail = parts.textAvail;
         if (ImGui::CalcTextSize(in.valueText.data(), in.valueText.data() + in.valueText.size()).x > textAvail) {
             // An empty view measures the literal "", so ImGui is never handed a null pointer (asset_tile.cpp's
             // measurer does the same).
@@ -240,11 +269,24 @@ AssetFieldResult drawAssetReferenceField(const AssetFieldInputs& in, AssetPicker
                 const char* const first = text.empty() ? "" : text.data();
                 return ImGui::CalcTextSize(first, first + text.size()).x <= textAvail;
             });
-            drawList->AddText(ImVec2(textX, textY), ImGui::GetColorU32(ImGuiCol_Text), elided.data(),
-                              elided.data() + elided.size());
+            // task E.6.3: elideCaptionRight answers at least the ellipsis, even where the budget cannot hold one --
+            // a frame under 2 x FramePadding.x + one ellipsis, or referenceFieldParts' refusal (a zero budget at
+            // the frame's own left edge). Such a name is not drawn: it would run into the padding, onto the outline
+            // or over a slot row's thumbnail.
+            const float elidedWidth = currentFontWidth(elided);
+            if (elidedWidth <= textAvail) {
+                drawList->AddText(ImVec2(textX, textY), ImGui::GetColorU32(ImGuiCol_Text), elided.data(),
+                                  elided.data() + elided.size());
+                drawn.textDrawn = true;
+                drawn.textMinX = textX;
+                drawn.textMaxX = textX + elidedWidth;
+            }
         } else {
             drawList->AddText(ImVec2(textX, textY), ImGui::GetColorU32(ImGuiCol_Text), in.valueText.data(),
                               in.valueText.data() + in.valueText.size());
+            drawn.textDrawn = true;
+            drawn.textMinX = textX;
+            drawn.textMaxX = textX + currentFontWidth(in.valueText);
         }
         drawList->PopClipRect();
     }
@@ -595,8 +637,7 @@ AssetFieldResult drawAssetReferenceField(const AssetFieldInputs& in, AssetPicker
         state.openHostId.clear();
         state.openFieldKey.clear();
     }
-    result.swatchDrawn = swatchDrawn;
-    result.wellDrawn = wellDrawn;
+    result.drawn = drawn;
     return result;
 }
 
