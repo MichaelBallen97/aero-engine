@@ -25944,6 +25944,25 @@ TEST_CASE("editor: the reference field -- an inset frame, a swatch or a well, an
         CHECK_FALSE(r.referenceSwatchDrawn);
         CHECK_FALSE(r.referenceWellDrawn);
     } else {
+        // THE WIDTH THE WELL AND THE SWATCH NEED. Since the reference field drops its hint, then its well or swatch,
+        // before they overlap (referenceFieldParts, PC14, I347), a row draws either only where its frame holds both
+        // paddings, the swatch's edge, its spacing and one ellipsis for the name -- 48 points at 1x, a window about
+        // 960 wide. 1280 asks for that with room to spare (the field is 125 points there at 1x, and 34 at 900 --
+        // measured), but a display that delivers a narrower window would fail the checks below as a false well and a
+        // tickUntil timeout; this REQUIRE fails first and names the width.
+        REQUIRE_FALSE(r.referenceFields.empty());
+        const float s = app->uiScale();
+        const float padX = e63StyleX(s, "FramePadding");
+        const float gapX = e63StyleX(s, "ItemInnerSpacing");
+        CAPTURE(s);
+        CAPTURE(inspector->lastContentWidth());
+        for (const engine::editor::ReferenceFieldRecord& f : r.referenceFields) {
+            const float frame = f.frameMaxX - f.frameMinX;
+            const float swatchNeeds = (2.0F * padX) + f.ellipsisWidth + f.swatchEdge + gapX;
+            CAPTURE(frame);
+            CAPTURE(swatchNeeds);
+            REQUIRE(frame >= swatchNeeds);
+        }
         CHECK(r.referenceWellDrawn);  // the Cube's material is NIL: the empty well
         CHECK_FALSE(r.referenceSwatchDrawn);
         const std::optional<engine::Guid> swatch = app->assetGuidForPath("swatch.aeromat");
@@ -26845,6 +26864,78 @@ TEST_CASE("editor: Assets tiles -- a hatched well's stripes stay inside its roun
     INFO(stripeFringe << " of the " << stripeVertices << " stripe vertices at alpha 0");
     CHECK(stripeFringe > 0U);
     CHECK(stripeFringe * 2U == stripeVertices);
+
+    // THE OUTLINE'S PATH IS CLEARED. hatchedWell reads PathRect's points off the list's path and clears it before the
+    // first band. Left there, the first piece's PathLineTo calls append to the outline's points and PathFillConvex
+    // fans them all (imgui.h:3502; AddConvexPolyFilled's fill indices, imgui_draw.cpp:1100-1104), so every well
+    // paints SOLID stripe colour -- with every vertex still within AA_SIZE of the outline, every coloured one inside
+    // it, and half the stripes' still at alpha 0, which no arm above tells apart (measured with the clear removed:
+    // every arm above stays green). So this arm reads the TRIANGLES the well appended: a point in the gap after the
+    // band at well-local x + y = period .. period + stripe -- x + y = period + (period + stripe) / 2, nearest the
+    // well's centre -- lies in no triangle whose three vertices all carry the stripe's colour, while the middle of that
+    // band, x + y = period + stripe / 2, lies in at least one (ANTI-VACUITY: the arm sees a stripe). Measured at 1x: 22
+    // stripe triangles, none holding the gap and one the band's middle; with the clear removed, one holds the gap --
+    // the fan over the outline.
+    const std::vector<std::uint32_t>& indices = r.lastHatchedWellIndices;
+    INFO(indices.size() << " indices");
+    REQUIRE_FALSE(indices.empty());  // none would mean ImGui moved the list's vertex offset inside the well
+    REQUIRE(indices.size() % 3U == 0U);
+    REQUIRE((stripe >> ALPHA_SHIFT) != 0U);  // the stripe's colour is drawn at all (a zero alpha draws nothing)
+    const float period = engine::editor::EDITOR_THEME.panels.hatchPeriod * app->uiScale();
+    // The point of the well-local line x + y = sum nearest the well's centre.
+    const auto nearCentre = [&](float sum) {
+        const float halfSkew = (width - height) * 0.5F;
+        return engine::Vec2{wellMin.x + ((sum + halfSkew) * 0.5F), wellMin.y + ((sum - halfSkew) * 0.5F)};
+    };
+    const engine::Vec2 gap = nearCentre(period + ((period + stripeWidth) * 0.5F));
+    const engine::Vec2 inBand = nearCentre(period + (stripeWidth * 0.5F));
+    INFO("gap " << gap.x << "," << gap.y << ", in the band " << inBand.x << "," << inBand.y);
+    REQUIRE(outside(gap) < -AA_SIZE);  // both well inside the outline, past every fringe
+    REQUIRE(outside(inBand) < -AA_SIZE);
+    // TRUE when `p` lies in the triangle a b c or on its edge; a triangle with no area holds nothing.
+    const auto holds = [](engine::Vec2 a, engine::Vec2 b, engine::Vec2 c, engine::Vec2 p) {
+        const auto cross = [](engine::Vec2 o, engine::Vec2 u, engine::Vec2 v) {
+            return ((u.x - o.x) * (v.y - o.y)) - ((u.y - o.y) * (v.x - o.x));
+        };
+        if (!(std::abs(cross(a, b, c)) > 0.0F)) {
+            return false;
+        }
+        const float ab = cross(a, b, p);
+        const float bc = cross(b, c, p);
+        const float ca = cross(c, a, p);
+        const bool clockwise = ab >= 0.0F && bc >= 0.0F && ca >= 0.0F;
+        const bool counter = ab <= 0.0F && bc <= 0.0F && ca <= 0.0F;
+        return clockwise || counter;
+    };
+    std::size_t outOfRange = 0;
+    std::size_t stripeTriangles = 0;
+    std::size_t holdingGap = 0;
+    std::size_t holdingBand = 0;
+    for (std::size_t t = 0; t < indices.size(); t += 3U) {
+        const std::array<std::uint32_t, 3> corner{indices[t], indices[t + 1U], indices[t + 2U]};
+        if (std::any_of(corner.begin(), corner.end(), [&](std::uint32_t i) { return i >= vertices.size(); })) {
+            ++outOfRange;
+            continue;
+        }
+        const bool striped =
+            std::all_of(corner.begin(), corner.end(), [&](std::uint32_t i) { return vertices[i].color == stripe; });
+        if (!striped) {
+            continue;
+        }
+        ++stripeTriangles;
+        const engine::Vec2 a = vertices[corner[0]].pos;
+        const engine::Vec2 b = vertices[corner[1]].pos;
+        const engine::Vec2 c = vertices[corner[2]].pos;
+        holdingGap += holds(a, b, c, gap) ? 1U : 0U;
+        holdingBand += holds(a, b, c, inBand) ? 1U : 0U;
+    }
+    INFO(stripeTriangles << " stripe triangles; " << holdingGap << " hold the gap, " << holdingBand
+                         << " the band's middle");
+    CHECK(outOfRange == 0U);
+    CHECK(stripeTriangles > 0U);
+    CHECK(holdingBand >= 1U);
+    CHECK(holdingGap == 0U);
+
     // SOURCE: the refusal arm and its restore, which no lane reaches (at the geometry above no piece is refused, so a
     // dropped restore moves no vertex). The list's flags saved, the anti-aliased fill cleared ONLY under
     // !hatchPieceTakesFringe(piece), and the saved flags written back on the line after the piece's fill, inside the

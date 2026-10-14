@@ -480,6 +480,7 @@ void beginAssetChromeRecordFrame(AssetChromeRecord& record) noexcept {
     record.hatchedWells = 0;
     record.lastHatchedWellVertices.clear();
     record.lastHatchedWellStripesBegin = 0;
+    record.lastHatchedWellIndices.clear();
     record.footerLeftText.clear();
     record.footerRightTexts.clear();
 }

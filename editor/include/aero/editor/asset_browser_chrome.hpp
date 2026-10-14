@@ -299,14 +299,17 @@ struct AssetChromeRecord {
     std::uint32_t lastHatchLabelColor = 0;
     // The LAST hatched well drawn, as hatchedWell handed it to the list (I346): the rect and rounding its fill was
     // given, and every vertex it appended, read off the list's VtxBuffer at the draw -- the fill's first, the stripes'
-    // from lastHatchedWellStripesBegin. Only the vertex list and its stripes index are cleared each frame, so a frame
-    // with no hatched well leaves no vertex; the rect and rounding keep the last well drawn, overwritten by the draw
+    // from lastHatchedWellStripesBegin -- and every index it appended to the IdxBuffer, as a position in that vertex
+    // list, three per triangle (none when ImGui moved the list's vertex offset inside the well, which a position
+    // cannot express). Only the two lists and the stripes index are cleared each frame, so a frame with no hatched
+    // well leaves no vertex and no triangle; the rect and rounding keep the last well drawn, overwritten by the draw
     // as lastHatchLabelColor is (beginAssetChromeRecordFrame's rule for the colours and rects).
     Vec2 lastHatchedWellMin{};
     Vec2 lastHatchedWellMax{};
     float lastHatchedWellRounding = 0.0F;
     std::vector<DrawnVertex> lastHatchedWellVertices;
     std::size_t lastHatchedWellStripesBegin = 0;
+    std::vector<std::uint32_t> lastHatchedWellIndices;
     std::uint32_t lastFolderTabColor = 0;
     std::string footerLeftText;
     std::vector<std::string> footerRightTexts;

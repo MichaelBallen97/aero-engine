@@ -387,9 +387,12 @@ void roleDot(ImDrawList* list, ImVec2 center, float diameter, ChromeRole role) {
 HatchedWellDrawn hatchedWell(ImDrawList* list, ImVec2 min, ImVec2 max, float rounding) {
     HatchedWellDrawn drawn{};
     drawn.vertexBegin = list->VtxBuffer.Size;
+    drawn.indexBegin = list->IdxBuffer.Size;
     list->AddRectFilled(min, max, roleU32(ChromeRole::Tile), rounding);
     drawn.stripesBegin = list->VtxBuffer.Size;
     drawn.vertexEnd = drawn.stripesBegin;
+    drawn.indexEnd = list->IdxBuffer.Size;
+    drawn.vertexOffset = list->_CmdHeader.VtxOffset;
     const float s = currentUiScale();
     const float period = EDITOR_THEME.panels.hatchPeriod * s;
     const float stripe = EDITOR_THEME.panels.hatchStripeWidth * s;
@@ -433,6 +436,8 @@ HatchedWellDrawn hatchedWell(ImDrawList* list, ImVec2 min, ImVec2 max, float rou
         list->Flags = flags;
     }
     drawn.vertexEnd = list->VtxBuffer.Size;
+    drawn.indexEnd = list->IdxBuffer.Size;
+    drawn.vertexOffset = list->_CmdHeader.VtxOffset;
     return drawn;
 }
 

@@ -623,6 +623,7 @@ TEST_CASE("assets chrome: a recorded frame clears every per-frame count, list an
     record.hatchedWells = 1U;
     record.lastHatchedWellVertices.push_back(ed::DrawnVertex{.pos = Vec2{1.0F, 2.0F}, .color = 0xFF000000U});
     record.lastHatchedWellStripesBegin = 1U;
+    record.lastHatchedWellIndices = {0U, 0U, 0U};
     record.footerLeftText = "models/a.txt";
     record.footerRightTexts.emplace_back("1 issue");
     ed::beginAssetChromeRecordFrame(record);
@@ -648,6 +649,7 @@ TEST_CASE("assets chrome: a recorded frame clears every per-frame count, list an
     CHECK(record.hatchedWells == 0U);
     CHECK(record.lastHatchedWellVertices.empty());  // a frame with no hatched well leaves no stale vertex
     CHECK(record.lastHatchedWellStripesBegin == 0U);
+    CHECK(record.lastHatchedWellIndices.empty());  // ...and no triangle naming one
     CHECK(record.footerLeftText.empty());
     CHECK(record.footerRightTexts.empty());
     ed::beginAssetChromeRecordFrame(record);
@@ -1092,6 +1094,62 @@ TEST_CASE("assets chrome: the footer elides the path and sheds the details in or
     CHECK(readme(19U) == ellipsis + "README  -  changed");
     CHECK(readme(18U) == ellipsis + "/README");
     CHECK(readme(6U) == ellipsis + "EADME");
+
+    // A HIDDEN leaf: ".gitignore"'s one '.' is its first character, so it has no extension, and (5) keeps all of it
+    // beside the state -- the state goes before any of the name, which (6) then cuts as a whole tail. 17 cells and
+    // 42 of details, each arm at its boundary, one cell either side.
+    const std::string hidden = "models/.gitignore";
+    const ed::AssetFooterDetails hiddenDetails{"12 B", guid, "up to date"};
+    const auto hiddenAt = [&](std::size_t n) { return ed::elideFooterSelection(hidden, hiddenDetails, within(n)); };
+    CHECK(hiddenAt(59U) == hidden + "  -  12 B  -  " + guid + "  -  up to date");
+    CHECK(hiddenAt(58U) == ellipsis + "/.gitignore  -  12 B  -  " + guid + "  -  up to date");
+    CHECK(hiddenAt(54U) == ellipsis + "/.gitignore  -  12 B  -  " + guid + "  -  up to date");
+    CHECK(hiddenAt(53U) == ellipsis + "/.gitignore  -  12 B  -  up to date");
+    CHECK(hiddenAt(36U) == ellipsis + "/.gitignore  -  12 B  -  up to date");
+    CHECK(hiddenAt(35U) == ellipsis + "/.gitignore  -  up to date");
+    CHECK(hiddenAt(27U) == ellipsis + "/.gitignore  -  up to date");
+    CHECK(hiddenAt(26U) == ellipsis + ".gitignore  -  up to date");  // (5): the whole name, never a part of it
+    CHECK(hiddenAt(25U) == ellipsis + "/.gitignore");                // (6): the state gone, the name whole
+    CHECK(hiddenAt(12U) == ellipsis + "/.gitignore");
+    CHECK(hiddenAt(11U) == ellipsis + ".gitignore");
+    CHECK(hiddenAt(10U) == ellipsis + "gitignore");
+    CHECK(hiddenAt(2U) == ellipsis + "e");
+    for (std::size_t n = 0; n <= 60U; ++n) {
+        CAPTURE(n);
+        const std::string got = hiddenAt(n);
+        CHECK(codePointsOf(got) <= n);
+        // The state never stands beside less than the whole name.
+        const bool stated = got.find("up to date") != std::string::npos;
+        CHECK((!stated || got.find(".gitignore") != std::string::npos));
+    }
+
+    // A MULTI-DOT leaf: "a.scene.json"'s extension is ".json", from its LAST '.', so (5) cuts through ".scene" and
+    // keeps ".json" beside the state; the state goes, then the name grows back. 19 cells and 44 of details.
+    const std::string scene = "scenes/a.scene.json";
+    const auto sceneAt = [&](std::size_t n) { return ed::elideFooterSelection(scene, details, within(n)); };
+    CHECK(sceneAt(63U) == scene + all);
+    CHECK(sceneAt(62U) == ellipsis + "/a.scene.json" + all);
+    CHECK(sceneAt(58U) == ellipsis + "/a.scene.json" + all);
+    CHECK(sceneAt(57U) == ellipsis + "/a.scene.json  -  1.2 KB  -  up to date");
+    CHECK(sceneAt(40U) == ellipsis + "/a.scene.json  -  1.2 KB  -  up to date");
+    CHECK(sceneAt(39U) == ellipsis + "/a.scene.json  -  up to date");
+    CHECK(sceneAt(29U) == ellipsis + "/a.scene.json  -  up to date");
+    CHECK(sceneAt(28U) == ellipsis + "a.scene.json  -  up to date");
+    CHECK(sceneAt(27U) == ellipsis + ".scene.json  -  up to date");
+    CHECK(sceneAt(22U) == ellipsis + "e.json  -  up to date");  // through ".scene": it is the stem's
+    CHECK(sceneAt(21U) == ellipsis + ".json  -  up to date");   // the extension, never cut
+    CHECK(sceneAt(20U) == ellipsis + "/a.scene.json");          // (6): the state gone, the name back
+    CHECK(sceneAt(14U) == ellipsis + "/a.scene.json");
+    CHECK(sceneAt(13U) == ellipsis + "a.scene.json");
+    CHECK(sceneAt(6U) == ellipsis + ".json");
+    CHECK(sceneAt(5U) == ellipsis + "json");
+    for (std::size_t n = 0; n <= 64U; ++n) {
+        CAPTURE(n);
+        const std::string got = sceneAt(n);
+        CHECK(codePointsOf(got) <= n);
+        const bool stated = got.find("up to date") != std::string::npos;
+        CHECK((!stated || got.find(".json") != std::string::npos));  // never the state beside a cut extension
+    }
 
     // A multi-byte path never splits a code point: "tex/" + "ete" with two e-acutes + "/" + one CJK ideograph +
     // "_cafe.png" with one e-acute -- 18 cells, the name 10 -- and details carrying the em dash and the GUID's

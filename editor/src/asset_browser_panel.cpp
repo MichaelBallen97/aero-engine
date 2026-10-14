@@ -1192,6 +1192,15 @@ void AssetBrowserPanel::drawTile(const FileEntry& entry, const std::string& rel,
         }
         const int fillVertices = drawn.hatch.stripesBegin - drawn.hatch.vertexBegin;
         chrome.lastHatchedWellStripesBegin = static_cast<std::size_t>(fillVertices);
+        // ...and its triangles, each index moved from the list's vertex offset to a position in the list above.
+        chrome.lastHatchedWellIndices.clear();
+        const auto vertexBegin = static_cast<std::uint32_t>(drawn.hatch.vertexBegin);
+        if (drawn.hatch.vertexOffset <= vertexBegin) {
+            const std::uint32_t shift = vertexBegin - drawn.hatch.vertexOffset;
+            for (int i = drawn.hatch.indexBegin; i < drawn.hatch.indexEnd; ++i) {
+                chrome.lastHatchedWellIndices.push_back(static_cast<std::uint32_t>(tileList->IdxBuffer[i]) - shift);
+            }
+        }
     }
     if (entry.isDirectory) {
         chrome.lastFolderTabColor = drawn.folderTabColor;

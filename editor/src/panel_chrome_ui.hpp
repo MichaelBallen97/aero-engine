@@ -117,10 +117,16 @@ void roleOutline(ImDrawList* list, ImVec2 min, ImVec2 max, ChromeRole role, floa
 void roleDot(ImDrawList* list, ImVec2 center, float diameter, ChromeRole role);
 // What hatchedWell appended to the list's VtxBuffer: [vertexBegin, vertexEnd), the fill's first and the stripes'
 // from stripesBegin -- VtxBuffer.Size read around each draw, so a host's record copies what ImGui RECEIVED (I346).
+// And to its IdxBuffer, [indexBegin, indexEnd): ImGui writes each index relative to the command's VtxOffset, which it
+// moves only to the VtxBuffer's size at a PrimReserve (imgui_draw.cpp:737-744), so where `vertexOffset` -- the list's
+// when the well ended -- is at most vertexBegin, every index names the vertex vertexOffset + index.
 struct HatchedWellDrawn {
     int vertexBegin = 0;
     int stripesBegin = 0;
     int vertexEnd = 0;
+    int indexBegin = 0;
+    int indexEnd = 0;
+    unsigned int vertexOffset = 0;
 };
 // A `tile` fill under 45-degree hatchStripe bands, each band clipped to the fill's rounded outline as geometry.
 [[nodiscard]] HatchedWellDrawn hatchedWell(ImDrawList* list, ImVec2 min, ImVec2 max, float rounding);
