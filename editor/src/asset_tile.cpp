@@ -122,7 +122,10 @@ AssetTileDrawn drawAssetTileFace(ImDrawList* drawList, ImVec2 itemMin, const Ass
         // the stripe, 7.81:1 on `tile`, TH16), the kind colour kept on a non-text mark: a kindDotSize dot, the label
         // kindDotGap after it. A kind colour carries no contrast floor (`unknown` is 1.81:1 on the stripe), which is
         // why the label never draws in one.
-        hatchedWell(drawList, iconMin, iconMax, rounding);
+        drawn.hatch = hatchedWell(drawList, iconMin, iconMax, rounding);
+        drawn.wellMin = iconMin;
+        drawn.wellMax = iconMax;
+        drawn.wellRounding = rounding;
         scratch = iconLabelFor(face.fileName);
         const float dot = EDITOR_THEME.panels.kindDotSize * s;
         const float gap = EDITOR_THEME.panels.kindDotGap * s;

@@ -4,6 +4,10 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
+#include <numbers>
+#include <span>
+#include <vector>
 
 namespace engine::editor {
 
@@ -12,6 +16,43 @@ namespace {
 // US10's rule, restated per TU (toolbar_model.cpp's shape): a non-finite or non-positive scale lays out at 1.
 [[nodiscard]] float layoutScale(float uiScale) noexcept {
     return (std::isfinite(uiScale) && uiScale > 0.0F) ? uiScale : 1.0F;
+}
+
+// The clip's own arithmetic is double; its inputs and its answer are float.
+struct ClipPoint {
+    double x = 0.0;
+    double y = 0.0;
+};
+
+[[nodiscard]] bool allFinite(std::span<const Vec2> polygon) noexcept {
+    return std::all_of(polygon.begin(), polygon.end(), [](Vec2 p) { return std::isfinite(p.x) && std::isfinite(p.y); });
+}
+
+[[nodiscard]] std::vector<ClipPoint> toClipPoints(std::span<const Vec2> polygon) {
+    std::vector<ClipPoint> points;
+    points.reserve(polygon.size());
+    for (const Vec2 p : polygon) {
+        points.push_back(ClipPoint{p.x, p.y});
+    }
+    return points;
+}
+
+// Twice the signed area, the shoelace sum: POSITIVE for a polygon wound clockwise on a y-down screen.
+template <typename Point>
+[[nodiscard]] double twiceSignedArea(const std::vector<Point>& polygon) noexcept {
+    double sum = 0.0;
+    for (std::size_t i = 0; i < polygon.size(); ++i) {
+        const Point a = polygon[i];
+        const Point b = polygon[(i + 1U) % polygon.size()];
+        sum += (static_cast<double>(a.x) * b.y) - (static_cast<double>(b.x) * a.y);
+    }
+    return sum;
+}
+
+[[nodiscard]] bool withinMergeEpsilon(Vec2 a, Vec2 b) noexcept {
+    const float dx = a.x - b.x;
+    const float dy = a.y - b.y;
+    return (dx * dx) + (dy * dy) <= CLIP_MERGE_EPSILON * CLIP_MERGE_EPSILON;
 }
 
 }  // namespace
@@ -138,6 +179,109 @@ float cardChevronPenX(float chevronX, float columnWidth, float inkLeft, float in
     const float centring = (finiteOrZero(columnWidth) - finiteOrZero(inkWidth)) * 0.5F;
     const float pen = std::round(finiteOrZero(chevronX) + centring - finiteOrZero(inkLeft));
     return std::isfinite(pen) ? pen : 0.0F;
+}
+
+std::vector<Vec2> clipConvexPolygon(std::span<const Vec2> subject, std::span<const Vec2> clipper) {
+    if (!allFinite(subject) || !allFinite(clipper) || subject.size() < 3U || clipper.size() < 3U) {
+        return {};
+    }
+    const std::vector<ClipPoint> clip = toClipPoints(clipper);
+    // The clipper's own sign: +1 clockwise on a y-down screen (ImGui's winding), -1 counter-clockwise, and no area
+    // at all is refused -- with no inside, Sutherland-Hodgman has nothing to keep.
+    const double area = twiceSignedArea(clip);
+    if (!(std::abs(area) > 0.0)) {
+        return {};
+    }
+    const double orientation = area > 0.0 ? 1.0 : -1.0;
+    const std::size_t n = clip.size();
+    // CONVEX, or refused: at a reflex corner a half-plane walk keeps what the clipper does not hold. A turn may
+    // lean the wrong way by rounding alone -- 1e-6 of its two edges' lengths -- where the corner is straight.
+    for (std::size_t i = 0; i < n; ++i) {
+        const ClipPoint previous = clip[(i + n - 1U) % n];
+        const ClipPoint at = clip[i];
+        const ClipPoint next = clip[(i + 1U) % n];
+        const double inX = at.x - previous.x;
+        const double inY = at.y - previous.y;
+        const double outX = next.x - at.x;
+        const double outY = next.y - at.y;
+        const double turn = orientation * ((inX * outY) - (inY * outX));
+        if (turn < -1.0e-6 * std::hypot(inX, inY) * std::hypot(outX, outY)) {
+            return {};
+        }
+    }
+    // Sutherland-Hodgman: the subject cut by each clipper edge's inner half-plane in turn, its order kept.
+    std::vector<ClipPoint> kept = toClipPoints(subject);
+    std::vector<ClipPoint> cut;
+    for (std::size_t i = 0; i < n && !kept.empty(); ++i) {
+        const ClipPoint from = clip[i];
+        const ClipPoint to = clip[(i + 1U) % n];
+        const double edgeX = to.x - from.x;
+        const double edgeY = to.y - from.y;
+        // >= 0 inside the edge (on it counts as inside), < 0 outside.
+        const auto side = [&](ClipPoint p) noexcept {
+            return orientation * ((edgeX * (p.y - from.y)) - (edgeY * (p.x - from.x)));
+        };
+        cut.clear();
+        for (std::size_t j = 0; j < kept.size(); ++j) {
+            const ClipPoint p = kept[j];
+            const ClipPoint q = kept[(j + 1U) % kept.size()];
+            const double sideP = side(p);
+            const double sideQ = side(q);
+            if (sideP >= 0.0) {
+                cut.push_back(p);
+            }
+            if ((sideP >= 0.0) != (sideQ >= 0.0)) {
+                const double t = sideP / (sideP - sideQ);  // the signs differ, so the divisor is never 0
+                cut.push_back(ClipPoint{p.x + (t * (q.x - p.x)), p.y + (t * (q.y - p.y))});
+            }
+        }
+        kept.swap(cut);
+    }
+    // In float, with a near-repeat merged into the vertex before it (and the last into the first).
+    std::vector<Vec2> out;
+    out.reserve(kept.size());
+    for (const ClipPoint p : kept) {
+        const Vec2 v{static_cast<float>(p.x), static_cast<float>(p.y)};
+        if (out.empty() || !withinMergeEpsilon(out.back(), v)) {
+            out.push_back(v);
+        }
+    }
+    while (out.size() > 1U && withinMergeEpsilon(out.front(), out.back())) {
+        out.pop_back();
+    }
+    const double minArea = static_cast<double>(CLIP_MERGE_EPSILON) * CLIP_MERGE_EPSILON;
+    if (out.size() < 3U || !(std::abs(twiceSignedArea(out)) * 0.5 > minArea)) {
+        return {};
+    }
+    return out;
+}
+
+bool hatchPieceTakesFringe(std::span<const Vec2> piece) noexcept {
+    if (piece.size() < 3U || !allFinite(piece)) {
+        return false;
+    }
+    // A stripe's own corner is EXACTLY 45 degrees, so the 1e-3 only absorbs rounding. The next sharper corner a
+    // band can meet is 41.25 degrees: PathArcToFast's segments run at multiples of 3.75 degrees, half the step of
+    // its 48-sample table (IM_DRAWLIST_ARCFAST_TABLE_SIZE, imgui_internal.h:869; imgui_draw.cpp:406-410).
+    const double sharpestCosine = (std::numbers::sqrt2 * 0.5) + 1.0e-3;
+    const std::size_t n = piece.size();
+    for (std::size_t i = 0; i < n; ++i) {
+        const Vec2 previous = piece[(i + n - 1U) % n];
+        const Vec2 at = piece[i];
+        const Vec2 next = piece[(i + 1U) % n];
+        const double backX = static_cast<double>(previous.x) - at.x;
+        const double backY = static_cast<double>(previous.y) - at.y;
+        const double onX = static_cast<double>(next.x) - at.x;
+        const double onY = static_cast<double>(next.y) - at.y;
+        const double lengths = std::hypot(backX, backY) * std::hypot(onX, onY);
+        if (!(lengths > 0.0)) {
+            return false;  // a zero-length edge has no corner to measure
+        }
+        if (((backX * onX) + (backY * onY)) / lengths > sharpestCosine) {
+            return false;
+        }
+    }
+    return true;
 }
 
 // D10: a roster glyph per section, chosen for what the section holds (the plan's §21 records the choice).

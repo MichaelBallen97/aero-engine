@@ -26535,6 +26535,167 @@ TEST_CASE("editor: Assets tiles -- counts once a generation, hatched labels, rin
     app.reset();
 }
 
+TEST_CASE("editor: Assets tiles -- a hatched well's stripes stay inside its rounded outline (task E.6.3, I346)") {
+    // The code-review round, round 6 (the macOS manual pass, rows 11 and 12): hatchedWell clipped its stripes with a
+    // SQUARE scissor, so every stripe crossing a corner painted the square corner outside the rounded fill -- in the
+    // grid at the top-left, in the picker at all four. Each stripe is clipped to the fill's own rounded outline as
+    // geometry now (clipConvexPolygon, PC13), and this case reads every vertex the well appended to the list -- what
+    // ImGui RECEIVED, off its VtxBuffer at the draw -- against that outline, computed HERE from the rect and the
+    // rounding the fill was given: the exact rounded rect, which holds ImGui's tessellation of it (every PathRect
+    // vertex lies on a corner circle, every segment inside it).
+    //
+    // THE FRINGE. An anti-aliased fill (the theme's antiAliasedFill) appends two vertices a corner, the inner one in
+    // the fill's colour and the outer one at alpha 0, each AA_SIZE / 2 along the corner's miter (imgui_draw.cpp:
+    // 1121-1134). AA_SIZE is the list's _FringeScale (imgui_draw.cpp:1092), reset every frame to InitialFringeScale,
+    // which is 1.0 (imgui_draw.cpp:483, imgui.cpp:5707): ONE POINT, whatever the UI scale. So every vertex stays
+    // within AA_SIZE of the outline -- the worst measured here is 0.5412, AA_SIZE / 2 / sin 67.5 at a 135-degree
+    // corner -- and every vertex that carries colour stays inside it. At 88a2b8f the stripe quads ran a whole tile
+    // height past the well, cut only by the scissor (87.3 points out, measured).
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "assets hatch i346", .width = 1280, .height = 800});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app =
+        e63AssetsApp(*device, *window, ctx, {"note.txt", "blob.bin"}, engine::editor::DEFAULT_BOTTOM_DOCK_FRACTION);
+    // I325's shape: Small tiles, the side panels hidden. A Small well is 4 font sizes, 64 points at body 16, and the
+    // stripes sit at x + y = 20k .. 20k + 10 from its top-left corner: all four corner arcs lie inside a stripe.
+    e63HideSidePanels(*app);
+    app->requestAssetBrowserTileSize(engine::editor::TileSize::Small);
+    for (int i = 0; i < 3; ++i) {
+        REQUIRE(app->tick());
+    }
+    auto* const browser = dynamic_cast<engine::editor::AssetBrowserPanel*>(app->panels().find("Assets"));
+    REQUIRE(browser != nullptr);
+    const engine::editor::AssetChromeRecord& r = browser->chromeRecord();
+    REQUIRE(r.hatchedWells >= 2U);  // note.txt and blob.bin, this frame: the last one's vertices are recorded
+    const std::vector<engine::editor::DrawnVertex>& vertices = r.lastHatchedWellVertices;
+    const std::size_t stripesBegin = r.lastHatchedWellStripesBegin;
+    REQUIRE(stripesBegin > 0U);               // ANTI-VACUITY: the fill's vertices came first...
+    REQUIRE(vertices.size() > stripesBegin);  // ...and stripes followed
+    const engine::Vec2 wellMin = r.lastHatchedWellMin;
+    const engine::Vec2 wellMax = r.lastHatchedWellMax;
+    const float width = wellMax.x - wellMin.x;
+    const float height = wellMax.y - wellMin.y;
+    // PathRect's own clamp (imgui_draw.cpp:1452-1458): a rounding never past half a side less one.
+    const float radius = std::min({r.lastHatchedWellRounding, (width * 0.5F) - 1.0F, (height * 0.5F) - 1.0F});
+    INFO("well " << wellMin.x << "," << wellMin.y << " .. " << wellMax.x << "," << wellMax.y << ", rounding "
+                 << r.lastHatchedWellRounding);
+    INFO(vertices.size() << " vertices, the stripes' from " << stripesBegin);
+    REQUIRE(radius >= 0.5F);  // ROUNDED: under 0.5 PathRect draws the square corners (imgui_draw.cpp:1460)
+    // How far `p` lies outside the rounded rect: its distance from the rect inset by the radius, less the radius.
+    const auto outside = [&](engine::Vec2 p) {
+        const float nearX = std::clamp(p.x, wellMin.x + radius, wellMax.x - radius);
+        const float nearY = std::clamp(p.y, wellMin.y + radius, wellMax.y - radius);
+        return std::hypot(p.x - nearX, p.y - nearY) - radius;
+    };
+    constexpr float AA_SIZE = 1.0F;
+    constexpr float FLOAT_EPSILON = 1.0e-3F;    // float rounding at screen coordinates in the thousands
+    constexpr std::uint32_t ALPHA_SHIFT = 24U;  // IM_COL32_A_SHIFT, in both of ImGui's packings (imgui.h)
+    std::size_t pastFringe = 0;                 // a vertex further out than AA_SIZE -- a NaN counts
+    std::size_t opaqueOutside = 0;              // a vertex that carries colour, outside the outline at all
+    float worst = 0.0F;
+    float worstOpaque = 0.0F;
+    for (const engine::editor::DrawnVertex& vertex : vertices) {
+        const float out = outside(vertex.pos);
+        const bool fringe = (vertex.color >> ALPHA_SHIFT) == 0U;
+        if (!(out <= AA_SIZE)) {
+            ++pastFringe;
+        }
+        if (!fringe && !(out <= FLOAT_EPSILON)) {
+            ++opaqueOutside;
+        }
+        worst = std::max(worst, out);
+        worstOpaque = fringe ? worstOpaque : std::max(worstOpaque, out);
+    }
+    INFO("furthest out: " << worst << " (a vertex with colour: " << worstOpaque << ")");
+    CHECK(pastFringe == 0U);
+    CHECK(opaqueOutside == 0U);
+    // ANTI-VACUITY. The range is the well's: the fill's vertices carry `tile`, the stripes' `hatchStripe`.
+    const std::uint32_t tile = e63Packed(engine::editor::EDITOR_THEME.palette.tile);
+    const std::uint32_t stripe = e63Packed(engine::editor::EDITOR_THEME.panels.hatchStripe);
+    CHECK(vertices.front().color == tile);
+    CHECK(vertices[stripesBegin].color == stripe);
+    // ...and a corner is EXERCISED: a stripe vertex within one stripe width of a corner arc, and -- so a stripe that
+    // stops short of the corner reads as a failure, not a pass -- a vertex with colour within AA_SIZE of one, in that
+    // arc's quadrant. Counted per corner, TL, TR, BR, BL: one each, measured at 1x on a 64-point well.
+    const float stripeWidth = engine::editor::EDITOR_THEME.panels.hatchStripeWidth * app->uiScale();
+    const std::array<engine::Vec2, 4> centres{{{wellMin.x + radius, wellMin.y + radius},
+                                               {wellMax.x - radius, wellMin.y + radius},
+                                               {wellMax.x - radius, wellMax.y - radius},
+                                               {wellMin.x + radius, wellMax.y - radius}}};
+    const std::array<engine::Vec2, 4> quadrant{{{-1.0F, -1.0F}, {1.0F, -1.0F}, {1.0F, 1.0F}, {-1.0F, 1.0F}}};
+    std::size_t nearArc = 0;
+    std::array<std::size_t, 4> reached{};
+    for (std::size_t i = stripesBegin; i < vertices.size(); ++i) {
+        const engine::Vec2 p = vertices[i].pos;
+        for (std::size_t c = 0; c < centres.size(); ++c) {
+            const float dx = p.x - centres[c].x;
+            const float dy = p.y - centres[c].y;
+            if (dx * quadrant[c].x < 0.0F || dy * quadrant[c].y < 0.0F) {
+                continue;  // not in this arc's quadrant
+            }
+            const float fromArc = std::abs(std::hypot(dx, dy) - radius);
+            nearArc += fromArc <= stripeWidth ? 1U : 0U;
+            const bool opaque = (vertices[i].color >> ALPHA_SHIFT) != 0U;
+            reached[c] += (opaque && fromArc <= AA_SIZE) ? 1U : 0U;
+        }
+    }
+    INFO("stripe vertices reaching the arcs: TL " << reached[0] << ", TR " << reached[1] << ", BR " << reached[2]
+                                                  << ", BL " << reached[3]);
+    CHECK(nearArc >= 1U);
+    CHECK(std::count_if(reached.begin(), reached.end(), [](std::size_t n) { return n > 0U; }) >= 1);
+
+    // THE FRINGE IS DRAWN. AddConvexPolyFilled's anti-aliased arm appends a piece's n points as n pairs, the inner
+    // vertex in the fill's colour and the outer one at alpha 0 (imgui_draw.cpp:1133-1134); its plain arm appends n
+    // vertices, every one in the colour (:1152). No piece of a Small well is refused its fringe (hatchPieceTakesFringe,
+    // PC13 -- measured at 1x; a model of ImGui's tessellation over UI scales 0.5 to 4 refuses one piece, at 0.55 on a
+    // Large well), so EXACTLY half the stripes' vertices carry alpha 0. The refusal inverted would draw every ordinary
+    // stripe without its fringe -- jagged, with every vertex on the piece, so no arm above can see it -- and break it.
+    std::size_t stripeFringe = 0;
+    for (std::size_t i = stripesBegin; i < vertices.size(); ++i) {
+        stripeFringe += (vertices[i].color >> ALPHA_SHIFT) == 0U ? 1U : 0U;
+    }
+    const std::size_t stripeVertices = vertices.size() - stripesBegin;
+    INFO(stripeFringe << " of the " << stripeVertices << " stripe vertices at alpha 0");
+    CHECK(stripeFringe > 0U);
+    CHECK(stripeFringe * 2U == stripeVertices);
+    // SOURCE: the refusal arm and its restore, which no lane reaches (at the geometry above no piece is refused, so a
+    // dropped restore moves no vertex). The list's flags saved, the anti-aliased fill cleared ONLY under
+    // !hatchPieceTakesFringe(piece), and the saved flags written back on the line after the piece's fill, inside the
+    // band loop -- so a refused sliver never takes the next band's fringe, or the rest of the window's, with it.
+    const std::vector<std::string> chrome = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/panel_chrome_ui.cpp");
+    const auto loneBrace = [](const std::string& line) {
+        return line.find('}') != std::string::npos && line.find_first_not_of(" }") == std::string::npos;
+    };
+    const std::size_t loopAt = soleLineContaining(chrome, "for (int k = 0; k < bands; ++k)");
+    const std::size_t saveAt = soleLineContaining(chrome, "const ImDrawListFlags flags = list->Flags;");
+    const std::size_t clearAt = soleLineContaining(chrome, "ImDrawListFlags_AntiAliasedFill");
+    const std::size_t fillAt = soleLineContaining(chrome, "PathFillConvex(color)");
+    const std::size_t restoreAt = soleLineContaining(chrome, "list->Flags = flags;");
+    REQUIRE(restoreAt + 2U < chrome.size());
+    CHECK(loopAt < saveAt);
+    CHECK(saveAt + 2U == clearAt);
+    CHECK(chrome[clearAt - 1U].find("if (!hatchPieceTakesFringe(piece)) {") != std::string::npos);
+    CHECK(chrome[clearAt].find("list->Flags &= ~ImDrawListFlags_AntiAliasedFill;") != std::string::npos);
+    CHECK(loneBrace(chrome[clearAt + 1U]));  // the refusal's own scope closes on the next line
+    CHECK(fillAt > clearAt);
+    CHECK(restoreAt == fillAt + 1U);
+    CHECK(loneBrace(chrome[restoreAt + 1U]));  // the band loop closes here, and the well's range ends after it
+    CHECK(chrome[restoreAt + 2U].find("drawn.vertexEnd = list->VtxBuffer.Size;") != std::string::npos);
+    CHECK(countLinesContaining(chrome, "list->Flags") == 3U);  // the save, the clear, the restore: no other write
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
 TEST_CASE("editor: the Assets footer -- the path elided from the left, the right zone whole (task E.6.3, I326)") {
     // A 1100 x 600 window, measured at uiScale 1: the side panels are hidden below, so the footer row is 1084 points
     // wide (1074 on a frame whose panel scrolls), and a Mono-small cell advances 6.4615 points at small 14 (ImGui

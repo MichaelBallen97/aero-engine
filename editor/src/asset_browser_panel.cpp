@@ -1167,7 +1167,8 @@ void AssetBrowserPanel::drawTile(const FileEntry& entry, const std::string& rel,
                              .hovered = tileHovered,
                              .selected = selected,
                              .held = tileHeld};
-    const AssetTileDrawn drawn = drawAssetTileFace(ImGui::GetWindowDrawList(), itemMin, face, labelScratch);
+    ImDrawList* const tileList = ImGui::GetWindowDrawList();
+    const AssetTileDrawn drawn = drawAssetTileFace(tileList, itemMin, face, labelScratch);
     // task E.6.3 (D14): what the face handed to its draw calls, for the GPU tier.
     if (drawn.ringed) {
         ++chrome.tilesRinged;
@@ -1180,6 +1181,17 @@ void AssetBrowserPanel::drawTile(const FileEntry& entry, const std::string& rel,
     if (drawn.hatched) {
         ++chrome.hatchedWells;
         chrome.lastHatchLabelColor = drawn.hatchLabelColor;
+        // The well's vertices as the list RECEIVED them (I346), overwritten by every hatched tile: the last one's.
+        chrome.lastHatchedWellMin = Vec2{drawn.wellMin.x, drawn.wellMin.y};
+        chrome.lastHatchedWellMax = Vec2{drawn.wellMax.x, drawn.wellMax.y};
+        chrome.lastHatchedWellRounding = drawn.wellRounding;
+        chrome.lastHatchedWellVertices.clear();
+        for (int i = drawn.hatch.vertexBegin; i < drawn.hatch.vertexEnd; ++i) {
+            const ImDrawVert& vertex = tileList->VtxBuffer[i];
+            chrome.lastHatchedWellVertices.push_back(DrawnVertex{Vec2{vertex.pos.x, vertex.pos.y}, vertex.col});
+        }
+        const int fillVertices = drawn.hatch.stripesBegin - drawn.hatch.vertexBegin;
+        chrome.lastHatchedWellStripesBegin = static_cast<std::size_t>(fillVertices);
     }
     if (entry.isDirectory) {
         chrome.lastFolderTabColor = drawn.folderTabColor;

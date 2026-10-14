@@ -4,6 +4,8 @@
 // the browser paint ONE tile rather than two that drift by a pixel of padding a year later.
 #include <aero/editor/asset_view.hpp>  // AssetKind
 
+#include "panel_chrome_ui.hpp"  // task E.6.3: HatchedWellDrawn
+
 #include <cstddef>  // task E.4.5 -- elideForCaption's maxLines
 #include <imgui.h>
 #include <optional>  // task E.4.5 -- AssetTileFace::tint
@@ -63,6 +65,12 @@ struct AssetTileDrawn {
     ImU32 ringColor = 0;         // hover at rest, active hovered or held, accentBorder selected
     ImU32 hatchLabelColor = 0;   // textSecondary, never a kind colour
     ImU32 folderTabColor = 0;    // folderTab, never folder's
+    // A hatched well's rect and rounding, as its fill was given them, and the VtxBuffer range hatchedWell appended
+    // to the face's draw list (I346); zero for every other face.
+    ImVec2 wellMin{};
+    ImVec2 wellMax{};
+    float wellRounding = 0.0F;
+    HatchedWellDrawn hatch{};
 };
 
 // drawTile's face, drawn at `itemMin`: the WELL (the icon rect). A folder's well is filled `tile`, `raisedHeader`

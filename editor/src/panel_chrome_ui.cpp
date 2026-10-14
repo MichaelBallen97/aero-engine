@@ -27,10 +27,12 @@
 #include "editor_theme_ui.hpp"     // currentUiScale, toImU32
 
 #include <algorithm>
+#include <array>
 #include <cfloat>  // FLT_MAX -- ImFont::CalcTextSizeA's "no limit" width
 #include <cmath>
 #include <exception>         // std::terminate (~PanelCard)
 #include <imgui_internal.h>  // ImGuiWindow (the body's edges), ImTextCharFromUtf8, GetItemFlags, ImGuiItemFlags_*
+#include <vector>
 
 namespace engine::editor {
 
@@ -357,26 +359,60 @@ void roleDot(ImDrawList* list, ImVec2 center, float diameter, ChromeRole role) {
 }
 
 // The tile fill under 45-degree hatchStripe bands rising to the right: a band that starts at x on the bottom edge
-// ends at x + height on the top. Clipped to the well; an INTEGER band count (E.1.2's float-lattice trap).
-void hatchedWell(ImDrawList* list, ImVec2 min, ImVec2 max, float rounding) {
+// ends at x + height on the top; an INTEGER band count (E.1.2's float-lattice trap). Each band is clipped to the
+// fill's ROUNDED outline as geometry (clipConvexPolygon) -- a square scissor let every band crossing a corner paint
+// the square corner outside the curve (the macOS manual pass, rows 11 and 12) -- and a band that misses the well
+// draws nothing. A rounding of 0 is a square outline, so such a well still hatches edge to edge.
+HatchedWellDrawn hatchedWell(ImDrawList* list, ImVec2 min, ImVec2 max, float rounding) {
+    HatchedWellDrawn drawn{};
+    drawn.vertexBegin = list->VtxBuffer.Size;
     list->AddRectFilled(min, max, roleU32(ChromeRole::Tile), rounding);
+    drawn.stripesBegin = list->VtxBuffer.Size;
+    drawn.vertexEnd = drawn.stripesBegin;
     const float s = currentUiScale();
     const float period = EDITOR_THEME.panels.hatchPeriod * s;
     const float stripe = EDITOR_THEME.panels.hatchStripeWidth * s;
     const float height = max.y - min.y;
     const float width = max.x - min.x;
     if (!(period > 0.0F) || !(height > 0.0F) || !(width > 0.0F) || !std::isfinite(width + height)) {
-        return;
+        return drawn;
     }
+    // The outline the fill was tessellated from: PathRect's own points -- AddRectFilled's call for a rounding of 0.5
+    // or more, the four corners its PrimRect fills below that (imgui_draw.cpp:1530-1544) -- read off the list's path
+    // and cleared again (no draw leaves a path behind: every Path fill and stroke empties it, imgui.h:3502-3504), so
+    // a band meets the fill's own edge.
+    list->PathRect(min, max, rounding);
+    std::vector<Vec2> outline;
+    outline.reserve(static_cast<std::size_t>(list->_Path.Size));
+    for (const ImVec2& point : list->_Path) {
+        outline.push_back(toVec2(point));
+    }
+    list->PathClear();
     const ImU32 color = toImU32(EDITOR_THEME.panels.hatchStripe);
     const int bands = static_cast<int>(std::ceil((width + height) / period)) + 1;
-    list->PushClipRect(min, max, true);
     for (int k = 0; k < bands; ++k) {
         const float x0 = min.x - height + (static_cast<float>(k) * period);
-        list->AddQuadFilled(ImVec2(x0 + height, min.y), ImVec2(x0 + stripe + height, min.y), ImVec2(x0 + stripe, max.y),
-                            ImVec2(x0, max.y), color);  // clockwise (imgui.h:3497)
+        // Clockwise (imgui.h:3497), and the clip keeps the band's winding, so ImGui's fringe still faces out.
+        const std::array<Vec2, 4> band{Vec2{x0 + height, min.y}, Vec2{x0 + stripe + height, min.y},
+                                       Vec2{x0 + stripe, max.y}, Vec2{x0, max.y}};
+        const std::vector<Vec2> piece = clipConvexPolygon(band, outline);
+        if (piece.empty()) {
+            continue;
+        }
+        // A sliver sharper than the band's own corner takes no fringe (hatchPieceTakesFringe): the list's flags are
+        // ImGui's per-primitive anti-aliasing switch (imgui.h:3424), restored at once.
+        const ImDrawListFlags flags = list->Flags;
+        if (!hatchPieceTakesFringe(piece)) {
+            list->Flags &= ~ImDrawListFlags_AntiAliasedFill;
+        }
+        for (const Vec2 point : piece) {
+            list->PathLineTo(ImVec2(point.x, point.y));
+        }
+        list->PathFillConvex(color);  // AddConvexPolyFilled over the path, which it then clears (imgui.h:3502)
+        list->Flags = flags;
     }
-    list->PopClipRect();
+    drawn.vertexEnd = list->VtxBuffer.Size;
+    return drawn;
 }
 
 void dashedRect(ImDrawList* list, ImVec2 min, ImVec2 max) {

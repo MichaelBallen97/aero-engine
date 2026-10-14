@@ -345,6 +345,8 @@ void beginAssetChromeRecordFrame(AssetChromeRecord& record) noexcept {
     record.foldersCounted = 0;
     record.folderTileCounts.clear();
     record.hatchedWells = 0;
+    record.lastHatchedWellVertices.clear();
+    record.lastHatchedWellStripesBegin = 0;
     record.footerLeftText.clear();
     record.footerRightTexts.clear();
 }

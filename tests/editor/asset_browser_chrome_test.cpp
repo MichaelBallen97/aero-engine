@@ -590,6 +590,8 @@ TEST_CASE("assets chrome: a recorded frame clears every per-frame count, list an
     record.foldersCounted = 2U;
     record.folderTileCounts.push_back(ed::AssetFolderTileCount{.relative = "models", .count = 4U});
     record.hatchedWells = 1U;
+    record.lastHatchedWellVertices.push_back(ed::DrawnVertex{.pos = Vec2{1.0F, 2.0F}, .color = 0xFF000000U});
+    record.lastHatchedWellStripesBegin = 1U;
     record.footerLeftText = "models/a.txt";
     record.footerRightTexts.emplace_back("1 issue");
     ed::beginAssetChromeRecordFrame(record);
@@ -613,6 +615,8 @@ TEST_CASE("assets chrome: a recorded frame clears every per-frame count, list an
     CHECK(record.foldersCounted == 0U);
     CHECK(record.folderTileCounts.empty());
     CHECK(record.hatchedWells == 0U);
+    CHECK(record.lastHatchedWellVertices.empty());  // a frame with no hatched well leaves no stale vertex
+    CHECK(record.lastHatchedWellStripesBegin == 0U);
     CHECK(record.footerLeftText.empty());
     CHECK(record.footerRightTexts.empty());
     ed::beginAssetChromeRecordFrame(record);

@@ -115,8 +115,16 @@ void chipFrame(ImDrawList* list, ImVec2 min, ImVec2 max, ChromeRole fill);  // +
 void roleFill(ImDrawList* list, ImVec2 min, ImVec2 max, ChromeRole role, float rounding);
 void roleOutline(ImDrawList* list, ImVec2 min, ImVec2 max, ChromeRole role, float rounding, float thickness);
 void roleDot(ImDrawList* list, ImVec2 center, float diameter, ChromeRole role);
-void hatchedWell(ImDrawList* list, ImVec2 min, ImVec2 max, float rounding);  // tile + 45-degree hatchStripe bands
-void dashedRect(ImDrawList* list, ImVec2 min, ImVec2 max);                   // addComponentDash, ThemePanels dashes
+// What hatchedWell appended to the list's VtxBuffer: [vertexBegin, vertexEnd), the fill's first and the stripes'
+// from stripesBegin -- VtxBuffer.Size read around each draw, so a host's record copies what ImGui RECEIVED (I346).
+struct HatchedWellDrawn {
+    int vertexBegin = 0;
+    int stripesBegin = 0;
+    int vertexEnd = 0;
+};
+// A `tile` fill under 45-degree hatchStripe bands, each band clipped to the fill's rounded outline as geometry.
+[[nodiscard]] HatchedWellDrawn hatchedWell(ImDrawList* list, ImVec2 min, ImVec2 max, float rounding);
+void dashedRect(ImDrawList* list, ImVec2 min, ImVec2 max);  // addComponentDash, ThemePanels dashes
 void horizontalRule(ImDrawList* list, float minX, float maxX, float y, ChromeRole role);  // ruleHeight() thick
 [[nodiscard]] float ruleHeight();      // hairline(shell.ruleThickness, live scale, framebuffer scale)
 [[nodiscard]] float tileRingHeight();  // hairline(panels.tileRing, live scale, framebuffer scale)

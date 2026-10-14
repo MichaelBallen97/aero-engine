@@ -16,6 +16,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -108,6 +109,30 @@ struct CardHeaderLayout {
 // answers 0, so the pen is always a finite whole point.
 [[nodiscard]] float cardChevronPenX(float chevronX, float columnWidth, float inkLeft, float inkWidth) noexcept;
 
+// ---- the hatched well's stripes (D8), as GEOMETRY ---------------------------------------------------------------
+// The intersection of the convex `subject` with the convex `clipper` (Sutherland-Hodgman), so a hatch stripe stays
+// inside the well's ROUNDED outline -- a square scissor let every stripe crossing a corner paint the square corner
+// outside the curve. Each polygon is its vertices in order, closed implicitly. The result keeps the SUBJECT's winding
+// and its vertex order (a subject wholly inside comes back vertex for vertex). The clipper may wind EITHER way:
+// ImGui's PathRect winds clockwise on a y-down screen (a positive shoelace sum), and a counter-clockwise clipper is
+// read from its own sign and clips the same. Computed in double, returned in float; consecutive result vertices
+// within CLIP_MERGE_EPSILON of each other are merged, so ImGui never receives a near-zero edge (its normal would be
+// noise, and AddConvexPolyFilled's fringe miter with it). TOTAL, and refused rather than guessed: EMPTY when a
+// coordinate of either input is not finite (tested first), when either has under three vertices, when the clipper
+// has no area or a reflex corner, and when what is left has under three vertices or no more area than
+// CLIP_MERGE_EPSILON squared. Units are the caller's: points, here.
+// In points, whatever the UI scale, so framebufferScale / 64 of a device pixel (one device pixel is
+// 1 / framebufferScale points, hairline's reading): 1/64 at a framebuffer scale of 1, 1/32 on a Retina Mac, 1/16 at 4.
+inline constexpr float CLIP_MERGE_EPSILON = 1.0F / 64.0F;
+[[nodiscard]] std::vector<Vec2> clipConvexPolygon(std::span<const Vec2> subject, std::span<const Vec2> clipper);
+// TRUE when no corner of the convex `piece` is sharper than a hatch stripe's own 45-degree corner (its cosine at
+// most cos 45 + 1e-3). ImGui's fill fringe moves each vertex AA_SIZE / 2 / sin(corner / 2) along its miter, out for
+// the fringe and in for the fill (imgui_draw.cpp:1121-1134), so a sharper corner -- the sliver a stripe's edge cuts
+// from a top-left or bottom-right corner arc, whose segments run nearly parallel to the stripes -- pushes both past
+// the outline; hatchedWell draws such a piece without the fringe. FALSE for under three vertices, a non-finite
+// coordinate or a zero-length edge: a piece that cannot be measured takes no fringe.
+[[nodiscard]] bool hatchPieceTakesFringe(std::span<const Vec2> piece) noexcept;
+
 // ---- the section icon tables (D10): roster glyphs only, as views of the AERO_ICON_* literals -----------------
 [[nodiscard]] std::string_view materialSectionIcon(MaterialSectionId id) noexcept;
 enum class ImportDetailsSection : std::uint8_t {
@@ -134,6 +159,13 @@ struct ItemRectRecord {
     Vec2 max{};
     bool drawnActive = false;  // drawn with the active push set
     bool enabled = false;      // ImGuiItemFlags_Disabled was CLEAR on the item, read back with GetItemFlags()
+};
+
+// One vertex as a draw list RECEIVED it, copied off its VtxBuffer: the position, and the colour as ImGui packed it
+// (alpha in the top byte, IM_COL32_A_SHIFT 24) -- an anti-aliased fill's outer FRINGE vertex carries alpha 0.
+struct DrawnVertex {
+    Vec2 pos{};
+    std::uint32_t color = 0;
 };
 
 // One card as drawn this frame. Every x/y is SCREEN space, read off ImGui at the draw.

@@ -1,5 +1,5 @@
-// Aero Engine -- task E.6.3: the panels' shared chrome as VALUES (PC1-PC12; PC12 is the default layout's Bottom
-// split). Tier 0: no ImGui, no GPU, no #if.
+// Aero Engine -- task E.6.3: the panels' shared chrome as VALUES (PC1-PC13; PC12 is the default layout's Bottom
+// split, PC13 the hatched well's clip). Tier 0: no ImGui, no GPU, no #if.
 // Every expected value is a RESTATED literal (the mock's bytes, the theme's dp), never recomputed by the function
 // under test.
 #include <aero/editor/editor_app.hpp>  // PC12: resolveBottomDockFraction, pure -- no app is constructed here
@@ -20,8 +20,10 @@
 #include <initializer_list>
 #include <limits>
 #include <ostream>  // MSVC: a CHECK over a std::string_view needs the complete std::ostream (the 0.4.1 trap)
+#include <span>     // PC13: the polygons, as clipConvexPolygon takes them
 #include <string_view>
 #include <type_traits>
+#include <vector>  // PC13: the polygons
 
 namespace {
 
@@ -397,4 +399,201 @@ TEST_CASE("panel chrome: the Bottom dock fraction passes a sane value and refuse
         CAPTURE(refused);
         CHECK(ed::resolveBottomDockFraction(refused) == 0.25F);
     }
+}
+
+// ---- PC13: the hatched well's stripes, clipped as geometry (the code-review round, round 6) ------------------
+namespace {
+
+using engine::Vec2;
+
+// Twice the signed area: POSITIVE for a polygon wound clockwise on a y-down screen, as ImGui's are (imgui.h:3497).
+[[nodiscard]] double twiceArea(std::span<const Vec2> polygon) {
+    double sum = 0.0;
+    for (std::size_t i = 0; i < polygon.size(); ++i) {
+        const Vec2 a = polygon[i];
+        const Vec2 b = polygon[(i + 1U) % polygon.size()];
+        sum += (static_cast<double>(a.x) * b.y) - (static_cast<double>(b.x) * a.y);
+    }
+    return sum;
+}
+
+// Point-in-convex for a CLOCKWISE (y-down) polygon: `p` is no further than `epsilon` outside any edge's line.
+[[nodiscard]] bool insideConvex(Vec2 p, std::span<const Vec2> polygon, double epsilon) {
+    for (std::size_t i = 0; i < polygon.size(); ++i) {
+        const Vec2 a = polygon[i];
+        const Vec2 b = polygon[(i + 1U) % polygon.size()];
+        const double ex = static_cast<double>(b.x) - a.x;
+        const double ey = static_cast<double>(b.y) - a.y;
+        const double cross = (ex * (static_cast<double>(p.y) - a.y)) - (ey * (static_cast<double>(p.x) - a.x));
+        if (!(cross / std::hypot(ex, ey) >= -epsilon)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+[[nodiscard]] bool hasVertexNear(std::span<const Vec2> polygon, Vec2 p, float epsilon) {
+    return std::any_of(polygon.begin(), polygon.end(), [p, epsilon](Vec2 v) {
+        return std::abs(v.x - p.x) <= epsilon && std::abs(v.y - p.y) <= epsilon;
+    });
+}
+
+// Each expected vertex is in `polygon` (to `epsilon`), and `polygon` holds nothing else.
+void checkVertexSet(std::span<const Vec2> polygon, std::span<const Vec2> expected, float epsilon) {
+    CHECK(polygon.size() == expected.size());
+    for (const Vec2 v : expected) {
+        CAPTURE(v.x);
+        CAPTURE(v.y);
+        CHECK(hasVertexNear(polygon, v, epsilon));
+    }
+}
+void checkVertexSet(std::span<const Vec2> polygon, std::initializer_list<Vec2> expected, float epsilon) {
+    checkVertexSet(polygon, std::span<const Vec2>(expected.begin(), expected.size()), epsilon);
+}
+
+// A 64-point well at the origin with a 3-point rounding, as ImGui's PathRect tessellates that radius (1x): two
+// segments a corner -- IM_DRAWLIST_CIRCLE_AUTO_SEGMENT_CALC(3, 0.30) is 8 a circle, so _PathArcToFastEx steps 6 of
+// its 48 samples -- clockwise from the top-left arc's left end. 0.87868 is 3 - 3 cos 45, 63.12132 is 64 less that.
+constexpr std::array<Vec2, 12> WELL{{{0.0F, 3.0F},
+                                     {0.87868F, 0.87868F},
+                                     {3.0F, 0.0F},
+                                     {61.0F, 0.0F},
+                                     {63.12132F, 0.87868F},
+                                     {64.0F, 3.0F},
+                                     {64.0F, 61.0F},
+                                     {63.12132F, 63.12132F},
+                                     {61.0F, 64.0F},
+                                     {3.0F, 64.0F},
+                                     {0.87868F, 63.12132F},
+                                     {0.0F, 61.0F}}};
+constexpr std::array<Vec2, 4> SQUARE{{{0.0F, 0.0F}, {10.0F, 0.0F}, {10.0F, 10.0F}, {0.0F, 10.0F}}};
+// hatchedWell's band over the well's top-left corner, at stripe 10: the k = 0 quad, (x0 + h, min.y), (x0 + stripe +
+// h, min.y), (x0 + stripe, max.y), (x0, max.y) with x0 = min.x - h -- its first vertex IS the square corner.
+constexpr std::array<Vec2, 4> CORNER_BAND{{{0.0F, 0.0F}, {10.0F, 0.0F}, {-54.0F, 64.0F}, {-64.0F, 64.0F}}};
+// The same band moved 2.5 along: its left edge, x + y = 2.5, crosses the top-left arc between its ends (x + y = 3)
+// and its middle vertex (x + y = 1.757).
+constexpr std::array<Vec2, 4> CROSSING_BAND{{{2.5F, 0.0F}, {12.5F, 0.0F}, {-51.5F, 64.0F}, {-61.5F, 64.0F}}};
+// ...and the band ending there, x + y <= 2.5: inside the well it is only the CAP the line cuts from the arc.
+constexpr std::array<Vec2, 4> CAP_BAND{{{-7.5F, 0.0F}, {2.5F, 0.0F}, {-61.5F, 64.0F}, {-71.5F, 64.0F}}};
+
+constexpr float CLIP_EPSILON = 1.0e-4F;  // float rounding at these magnitudes (64 points: one ulp is 7.6e-6)
+
+}  // namespace
+
+TEST_CASE("panel chrome: a convex clip keeps a hatch stripe inside the well's rounded outline (task E.6.3, PC13)") {
+    // A square scissor let every stripe crossing a corner paint the square corner outside the rounded fill (the
+    // macOS manual pass, rows 11 and 12); hatchedWell clips each stripe to the fill's own outline as geometry.
+    REQUIRE(twiceArea(WELL) > 0.0);         // the clockwise winding ImGui's PathRect has
+    REQUIRE(twiceArea(CORNER_BAND) > 0.0);  // ...and hatchedWell's stripe quad
+    // A subject wholly inside comes back vertex for vertex, in its own order.
+    const std::vector<Vec2> inner{{4.0F, 1.0F}, {6.0F, 1.0F}, {3.0F, 4.0F}, {1.0F, 4.0F}};
+    const std::vector<Vec2> kept = ed::clipConvexPolygon(inner, SQUARE);
+    REQUIRE(kept.size() == inner.size());
+    for (std::size_t i = 0; i < inner.size(); ++i) {
+        CAPTURE(i);
+        CHECK(kept[i] == inner[i]);
+    }
+    // A disjoint subject leaves nothing.
+    const std::vector<Vec2> disjoint{{20.0F, 20.0F}, {30.0F, 20.0F}, {30.0F, 30.0F}, {20.0F, 30.0F}};
+    CHECK(ed::clipConvexPolygon(disjoint, SQUARE).empty());
+    // A rounding of 0 is a square outline, and a stripe still hatches it edge to edge: x + y in [4, 8] meets the top
+    // edge at x = 4 and 8 and the left at y = 4 and 8.
+    const std::vector<Vec2> squareBand{{4.0F, 0.0F}, {8.0F, 0.0F}, {-2.0F, 10.0F}, {-6.0F, 10.0F}};
+    const std::vector<Vec2> squareCut = ed::clipConvexPolygon(squareBand, SQUARE);
+    checkVertexSet(squareCut, {{4.0F, 0.0F}, {8.0F, 0.0F}, {0.0F, 8.0F}, {0.0F, 4.0F}}, CLIP_EPSILON);
+
+    // THE CORNER. The band's first vertex is the square corner, outside the rounded outline...
+    REQUIRE_FALSE(insideConvex(CORNER_BAND[0], WELL, CLIP_EPSILON));
+    const std::vector<Vec2> corner = ed::clipConvexPolygon(CORNER_BAND, WELL);
+    // ...and the clipped band holds every vertex inside it, REACHES the arc -- its three vertices are the band's --
+    // and keeps the band's two edge crossings: (10, 0) on the top edge, (0, 10) on the left.
+    for (const Vec2 v : corner) {
+        CAPTURE(v.x);
+        CAPTURE(v.y);
+        CHECK(insideConvex(v, WELL, CLIP_EPSILON));
+    }
+    checkVertexSet(corner, {{0.0F, 3.0F}, {0.87868F, 0.87868F}, {3.0F, 0.0F}, {10.0F, 0.0F}, {0.0F, 10.0F}},
+                   CLIP_EPSILON);
+    CHECK(twiceArea(corner) > 0.0);  // the subject's winding, so ImGui's fringe still faces out
+    // A band edge that crosses the arc cuts it where x + y = 2.5 meets its two segments: (sqrt 2 / 4, 2.5 - that).
+    const std::vector<Vec2> crossing = ed::clipConvexPolygon(CROSSING_BAND, WELL);
+    for (const Vec2 v : crossing) {
+        CAPTURE(v.x);
+        CAPTURE(v.y);
+        CHECK(insideConvex(v, WELL, CLIP_EPSILON));
+    }
+    checkVertexSet(
+        crossing,
+        {{0.0F, 3.0F}, {0.35355F, 2.14645F}, {2.14645F, 0.35355F}, {3.0F, 0.0F}, {12.5F, 0.0F}, {0.0F, 12.5F}},
+        CLIP_EPSILON);
+
+    // THE WINDING. A counter-clockwise clipper is read from its own sign and clips the same; the result keeps the
+    // SUBJECT's winding either way.
+    const std::vector<Vec2> reversedWell(WELL.rbegin(), WELL.rend());
+    REQUIRE(twiceArea(reversedWell) < 0.0);
+    const std::vector<Vec2> fromReversed = ed::clipConvexPolygon(CORNER_BAND, reversedWell);
+    checkVertexSet(fromReversed, corner, CLIP_EPSILON);
+    CHECK(twiceArea(fromReversed) > 0.0);
+    const std::vector<Vec2> reversedBand(CORNER_BAND.rbegin(), CORNER_BAND.rend());
+    const std::vector<Vec2> reversedCut = ed::clipConvexPolygon(reversedBand, WELL);
+    checkVertexSet(reversedCut, corner, CLIP_EPSILON);
+    CHECK(twiceArea(reversedCut) < 0.0);
+
+    // MERGED. A subject edge through a clipper vertex leaves that vertex twice, once per clip edge; ImGui would
+    // receive a zero-length edge. The diamond |x - 5| + |y - 5| <= 10 holds the square, touching all four corners.
+    const std::vector<Vec2> diamond{{-5.0F, 5.0F}, {5.0F, -5.0F}, {15.0F, 5.0F}, {5.0F, 15.0F}};
+    checkVertexSet(ed::clipConvexPolygon(diamond, SQUARE), SQUARE, CLIP_EPSILON);
+
+    // REFUSED, never guessed: empty.
+    const std::vector<Vec2> segment{{0.0F, 0.0F}, {10.0F, 0.0F}};
+    CHECK(ed::clipConvexPolygon(segment, SQUARE).empty());  // under three vertices, either input
+    CHECK(ed::clipConvexPolygon(inner, segment).empty());
+    const std::vector<Vec2> flat{{0.0F, 0.0F}, {5.0F, 0.0F}, {10.0F, 0.0F}};
+    CHECK(ed::clipConvexPolygon(inner, flat).empty());  // a clipper with no area
+    // A reflex corner at (5, 4): Sutherland-Hodgman would answer a wrong polygon, so the clipper is refused --
+    // though `inner` lies inside its convex hull.
+    const std::vector<Vec2> reflex{{0.0F, 0.0F}, {10.0F, 0.0F}, {10.0F, 10.0F}, {5.0F, 4.0F}, {0.0F, 10.0F}};
+    REQUIRE(twiceArea(reflex) > 0.0);
+    CHECK(ed::clipConvexPolygon(inner, reflex).empty());
+    // What is left with no area: a square touching this one along x = 10 shares only that edge.
+    const std::vector<Vec2> touching{{10.0F, 0.0F}, {20.0F, 0.0F}, {20.0F, 10.0F}, {10.0F, 10.0F}};
+    CHECK(ed::clipConvexPolygon(touching, SQUARE).empty());
+    // A non-finite coordinate in either input, wherever it sits.
+    for (const float bad : {NAN_F, INF_F, -INF_F}) {
+        CAPTURE(bad);
+        for (std::size_t i = 0; i < SQUARE.size(); ++i) {
+            CAPTURE(i);
+            std::array<Vec2, 4> badX = SQUARE;
+            badX[i].x = bad;
+            std::array<Vec2, 4> badY = SQUARE;
+            badY[i].y = bad;
+            CHECK(ed::clipConvexPolygon(badX, SQUARE).empty());
+            CHECK(ed::clipConvexPolygon(badY, SQUARE).empty());
+            CHECK(ed::clipConvexPolygon(inner, badX).empty());
+            CHECK(ed::clipConvexPolygon(inner, badY).empty());
+        }
+    }
+
+    // THE FRINGE. A piece no sharper than the stripe's own 45-degree corner takes ImGui's fringe; the CAP a band's
+    // edge cuts from the arc -- corners of 22.5 degrees, where the arc's segments run nearly parallel to the band --
+    // does not: its miter, AA_SIZE / 2 / sin 11.25, would push the fringe 2.6 points out and the fill's own
+    // vertices as far in, past the cap's far side and out of the outline.
+    CHECK(ed::hatchPieceTakesFringe(corner));
+    CHECK(ed::hatchPieceTakesFringe(crossing));
+    CHECK(ed::hatchPieceTakesFringe(CORNER_BAND));  // the unclipped stripe: 45 and 135 degrees
+    CHECK(ed::hatchPieceTakesFringe(SQUARE));
+    const std::vector<Vec2> cap = ed::clipConvexPolygon(CAP_BAND, WELL);
+    checkVertexSet(cap, {{2.14645F, 0.35355F}, {0.35355F, 2.14645F}, {0.87868F, 0.87868F}}, CLIP_EPSILON);
+    CHECK_FALSE(ed::hatchPieceTakesFringe(cap));
+    // The boundary: a 45-degree corner takes it, a 44-degree one (10 tan 44 = 9.65689) does not.
+    const std::vector<Vec2> at45{{0.0F, 0.0F}, {10.0F, 0.0F}, {10.0F, 10.0F}};
+    const std::vector<Vec2> at44{{0.0F, 0.0F}, {10.0F, 0.0F}, {10.0F, 9.65689F}};
+    CHECK(ed::hatchPieceTakesFringe(at45));
+    CHECK_FALSE(ed::hatchPieceTakesFringe(at44));
+    // A piece that cannot be measured takes none: under three vertices, a zero-length edge, a non-finite vertex.
+    const std::vector<Vec2> repeated{{0.0F, 0.0F}, {10.0F, 0.0F}, {10.0F, 0.0F}, {0.0F, 10.0F}};
+    const std::vector<Vec2> notFinite{{0.0F, 0.0F}, {10.0F, 0.0F}, {NAN_F, 10.0F}};
+    CHECK_FALSE(ed::hatchPieceTakesFringe(segment));
+    CHECK_FALSE(ed::hatchPieceTakesFringe(repeated));
+    CHECK_FALSE(ed::hatchPieceTakesFringe(notFinite));
 }
