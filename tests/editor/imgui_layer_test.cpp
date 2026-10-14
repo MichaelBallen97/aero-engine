@@ -28283,6 +28283,9 @@ TEST_CASE("editor: the Bottom dock takes its configured share of the delivered w
     // 0.325 x (H - 2) - 71, its lengths scaled with the UI, is a ratio of the delivered geometry: the 0.4 layout clears
     // it and the default does not, each by about 0.075 x (H - 2) -- 60 points at 800, 53 after its reset, 49 at 656 --
     // so the comparison holds at whatever height a runner delivers, with a margin that shrinks with the window.
+    // A third app asks for 0.96, a share DockBuilderSplitNode builds (it only saturates the ratio, imgui.cpp:20972)
+    // and resolveBottomDockFraction refuses, and lays out exactly the shipping dock, first and after a reset: the value
+    // create() stores, and every layout reads, is the RESOLVED one.
     engine::platform::Context ctx;
     if (!ctx.valid()) {
         AERO_SKIP_OR_FAIL("no platform context");
@@ -28295,6 +28298,12 @@ TEST_CASE("editor: the Bottom dock takes its configured share of the delivered w
         AERO_SKIP_OR_FAIL("no GPU device");
     }
     constexpr float TALL = 0.4F;
+    // Refused, yet ImGui accepts it and builds the split, though not as asked: DockNodeTreeUpdatePosSize keeps a
+    // WindowMinSize.y central node (imgui.cpp:20292, :20327-20330), so at 1x in an 800-point window the raw share lays
+    // out 672 of the 704 points the separator leaves under the bars, avail 601, in both builds. Never NaN or 0 here:
+    // unresolved, either reaches the split's own arithmetic (imgui.cpp:20192-20193 -- a NaN ratio meets ImTrunc's int
+    // cast, a 0 builds a zero-height node), and what that does is ImGui's failure mode rather than this case's CHECK.
+    constexpr float REFUSED = 0.96F;
     constexpr float MIDPOINT_FRACTION = 0.5F * (TALL + engine::editor::DEFAULT_BOTTOM_DOCK_FRACTION);
     struct DockReading {
         float uiScale = 0.0F;
@@ -28331,9 +28340,14 @@ TEST_CASE("editor: the Bottom dock takes its configured share of the delivered w
     };
     const DockReading tall = readFraction(TALL);
     const DockReading shipped = readFraction(engine::editor::DEFAULT_BOTTOM_DOCK_FRACTION);
+    const DockReading refused = readFraction(REFUSED);
     REQUIRE(tall.firstSplit > 0.0F);
     REQUIRE(shipped.firstSplit == tall.firstSplit);  // one delivered window under both layouts
     REQUIRE(shipped.resetSplit == tall.resetSplit);
+    REQUIRE(refused.firstSplit == tall.firstSplit);  // ...and under the refused one
+    REQUIRE(refused.resetSplit == tall.resetSplit);
+    REQUIRE(shipped.uiScale == tall.uiScale);  // ...at one UI scale, the s in every avail's 71 x s
+    REQUIRE(refused.uiScale == tall.uiScale);
     const float s = tall.uiScale;
     const auto midpoint = [s](float split) { return (MIDPOINT_FRACTION * (split - (2.0F * s))) - (71.0F * s); };
     INFO("window " << window->size().height << ", viewport " << tall.firstSplit << ", work " << tall.resetSplit
@@ -28346,4 +28360,7 @@ TEST_CASE("editor: the Bottom dock takes its configured share of the delivered w
     // ANTI-VACUITY: the same comparison FAILS for the shipping layout at the same window, in both builds.
     CHECK_FALSE(shipped.firstAvail > midpoint(shipped.firstSplit));
     CHECK_FALSE(shipped.resetAvail > midpoint(shipped.resetSplit));
+    // The refused 0.96 builds the shipping dock, exactly: both apps lay out one layout on one window.
+    CHECK(refused.firstAvail == shipped.firstAvail);
+    CHECK(refused.resetAvail == shipped.resetAvail);
 }
