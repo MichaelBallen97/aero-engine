@@ -14,6 +14,11 @@
 //     starts at WorkRect.Min.x (imgui_widgets.cpp:6902) -- saved at begin and restored at end. Begin rewrites
 //     ContentRegionRect every frame (imgui.cpp:8544-8547), so a missed restore leaks for the rest of THIS frame,
 //     where I318's cross-card comparison sees it.
+//   * the body is CLIPPED to that narrowed width (V4, I348): ImGui::PushClipRect, never the list's own, because only
+//     it also sets window->ClipRect (imgui.cpp:6114-6119), which items cull and hover against and a body's table
+//     takes as its host clip (imgui_tables.cpp:467) -- pushed on the content channel at begin, popped FIRST at end.
+//     A popup, a combo or a tooltip a body opens is its own window, clipped to the viewport, never to its parent's
+//     ClipRect (imgui.cpp:8434, :8491), so none is cut by it.
 //   * every vertical position is PLACED, net of ItemSpacing.y: ItemSize adds it (imgui.cpp:12129), so the body
 //     starts at a SetCursorScreenPos and the next card is reached by ONE Dummy of the net height -- a bare
 //     SetCursorScreenPos with no item after it asserts at End() (imgui.cpp:8839-8840, :11533-11543).
@@ -132,6 +137,22 @@ void dashRun(ImDrawList* list, ImVec2 start, float length, bool horizontal, floa
         const ImVec2 b =
             horizontal ? ImVec2(start.x + to, start.y + thickness) : ImVec2(start.x + thickness, start.y + to);
         list->AddRectFilled(a, b, color);
+    }
+}
+
+// A card body's commands as the list RECEIVED them (CardEntryRecord's body clip): every command of the current
+// channel from `begin` on that drew, counted, with the least and greatest ClipRect x among them. A table in the body
+// runs its own splitter over this channel and merges back into it before the body ends, so its commands are here too.
+void recordBodyCommands(const ImDrawList& list, int begin, CardEntryRecord& entry) {
+    for (int i = std::max(begin, 0); i < list.CmdBuffer.Size; ++i) {
+        const ImDrawCmd& command = list.CmdBuffer[i];
+        if (command.ElemCount == 0U) {
+            continue;  // an empty command draws nothing
+        }
+        const bool first = entry.bodyDrawCommands == 0U;
+        entry.bodyClipMinX = first ? command.ClipRect.x : std::min(entry.bodyClipMinX, command.ClipRect.x);
+        entry.bodyClipMaxX = first ? command.ClipRect.z : std::max(entry.bodyClipMaxX, command.ClipRect.z);
+        ++entry.bodyDrawCommands;
     }
 }
 
@@ -589,6 +610,12 @@ CardHeaderResult CardPainter::begin(const char* strId, const CardSpec& spec, boo
         window->WorkRect.Max.x -= geometry.paddingX;
         entry.bodyMin = Vec2{window->DC.CursorPos.x, stripBottomY};
         entry.topPadding = window->DC.CursorPos.y - stripBottomY;  // where ImGui places the first body item
+        // ...and CLIPPED to that width (V4): a line or a button row that does not wrap ignores the three edges, and
+        // ImGui clips it only to the window's ClipRect -- through the right padding and over the outline. Vertically
+        // the window's own clip. Pushed with the content channel current; end() pops it first (see there).
+        ImGui::PushClipRect(ImVec2(entry.bodyMin.x, window->ClipRect.Min.y),
+                            ImVec2(window->ContentRegionRect.Max.x, window->ClipRect.Max.y), true);
+        bodyCommandBegin = list->CmdBuffer.Size - 1;  // the command the push left current: the body's first
     }
     return result;
 }
@@ -598,6 +625,11 @@ void CardPainter::end() {
     ImGuiWindow* const window = ImGui::GetCurrentWindow();
     float bottomY = stripBottomY;
     if (open) {
+        // The body's clip goes FIRST -- read as the list received it, then popped before the work-rect restore and
+        // before any channel switch: a clip is the LIST's, and SetCurrentChannel carries it into the channel it makes
+        // current (imgui_draw.cpp:2270-2277), so a switch under it would clip the fill, the rule and the outline.
+        recordBodyCommands(*list, bodyCommandBegin, entry);
+        ImGui::PopClipRect();
         const float lastItemBottom = ImGui::GetItemRectMax().y;  // the last BODY item (a table's is its OuterRect)
         bottomY = lastItemBottom + geometry.paddingY;            // never the raw cursor after a spacing item
         entry.bottomPadding = bottomY - lastItemBottom;
@@ -612,6 +644,7 @@ void CardPainter::end() {
     if (open) {
         list->AddRectFilled(ImVec2(spanMinX, stripBottomY), ImVec2(spanMaxX, bottomY), roleU32(ChromeRole::Raised),
                             geometry.rounding, ImDrawFlags_RoundCornersBottom);
+        entry.fillClipMaxX = list->CmdBuffer.back().ClipRect.z;  // the command that received it
     }
     splitter.SetCurrentChannel(list, 1);
     if (open) {
@@ -625,6 +658,7 @@ void CardPainter::end() {
     }
     list->AddRect(ImVec2(spanMinX, topY), ImVec2(spanMaxX, bottomY), roleU32(ChromeRole::Border), geometry.rounding, 0,
                   rule);
+    entry.outlineClipMaxX = list->CmdBuffer.back().ClipRect.z;  // likewise
     splitter.Merge(list);
     // The next card's top lands exactly `gap` below this card's bottom: ONE Dummy of the NET height -- ItemSize adds
     // ItemSpacing.y after it (imgui.cpp:12129) -- never a bare SetCursorScreenPos (imgui.cpp:8839-8840).

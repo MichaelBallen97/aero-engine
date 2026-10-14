@@ -397,6 +397,9 @@ void beginCardRecordFrame(CardRecord& record) noexcept {
     record.lastBodyTableMinY = 0.0F;
     record.lastBodyTableMaxY = 0.0F;
     record.lastSlotClearMaxX = 0.0F;
+    record.slotNoteCard = -1;
+    record.slotNoteMinX = 0.0F;
+    record.slotNoteMaxX = 0.0F;
     record.lastSpanFullWidthMinX = 0.0F;
     record.bodyInChild = false;
 }

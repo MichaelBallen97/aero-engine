@@ -252,6 +252,15 @@ struct CardEntryRecord {
     float topPadding = 0.0F;       // the y handed to SetCursorScreenPos for the body - stripBottomY
     float bottomPadding = 0.0F;    // the bottomY handed to the fill and the outline - the last body item's bottom
     float gapAfter = -1.0F;        // the next card's top - this card's bottom; -1 when no card follows this frame
+    // The body's clip as the list RECEIVED it (V4): end() reads, before it pops that clip, the content channel's
+    // commands from the one the push left current to the last, keeping those that drew (ElemCount > 0): how many, and
+    // the least and greatest ClipRect x among them. Their values, never their indices -- the splitter's Merge appends
+    // the content channel after the background one and renumbers it (imgui_draw.cpp:2185-2229). A closed card: 0.
+    std::uint32_t bodyDrawCommands = 0;
+    float bodyClipMinX = 0.0F;
+    float bodyClipMaxX = 0.0F;
+    float fillClipMaxX = 0.0F;     // ClipRect.z of the command that received the body's fill (an open card's)...
+    float outlineClipMaxX = 0.0F;  // ...and the outline's: drawn after the pop, so each keeps the window's clip
     bool headerRuleDrawn = false;  // the rule's AddRectFilled added vertices (it adds none at alpha 0)
     bool open = false;
     bool overflowDrawn = false;
@@ -271,6 +280,12 @@ struct CardRecord {
     float lastBodyTableMinY = 0.0F;      // ... and its outer min y, read off ImGui's item after EndTable
     float lastBodyTableMaxY = 0.0F;      // ... and its outer max y
     float lastSlotClearMaxX = 0.0F;      // the Material slot row's trailing Clear, max x
+    // The Material slot row's colour-space note, the LAST one ItemAdd let through this frame (IsItemVisible: on
+    // screen, so it was rendered): the index in `cards` of the card it sits in, and its item rect -- TextEx's
+    // position + CalcTextSize, the text's UNCLIPPED extent (imgui_widgets.cpp:177-186). -1 / 0 / 0: none drew.
+    int slotNoteCard = -1;
+    float slotNoteMinX = 0.0F;
+    float slotNoteMaxX = 0.0F;
     float lastSpanFullWidthMinX = 0.0F;  // the min x of the last SpanFullWidth row a body submitted
     // This frame: the cards were submitted inside the Material panel's ##body child -- set in its FixedRegions arm,
     // beside the BeginChild, so it reports the host ImGui drew in. False in the Scrolling mode and for every other

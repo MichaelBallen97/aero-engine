@@ -383,6 +383,11 @@ bool MaterialPanel::drawSlotRow(std::size_t index, MaterialDocument& form, const
     // The colour-space note, composed from materialSlotIsSrgb by the model, drawn through mutedText -- string-only,
     // so no format string exists on this path at all (D11).
     mutedText(materialColorSpaceNote(index));
+    if (ImGui::IsItemVisible()) {  // task E.6.3 (I348): a note ItemAdd let through, so it was drawn
+        cardRecordValue.slotNoteCard = static_cast<int>(cardRecordValue.cards.size());  // end() appends this card
+        cardRecordValue.slotNoteMinX = ImGui::GetItemRectMin().x;
+        cardRecordValue.slotNoteMaxX = ImGui::GetItemRectMax().x;  // TextEx: its position + CalcTextSize, unclipped
+    }
 
     // THE NOTICES STAY ON THE CHANNEL, never inside the disclosure: every one of them explains
     // something the user can SEE without opening anything.

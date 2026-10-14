@@ -2286,7 +2286,12 @@ state.
   (`imgui_widgets.cpp:6906-6911`). The vertical layout is NET of `ItemSpacing.y` (`imgui.cpp:12129`): the first body
   item is placed `cardPaddingY` below the strip and the next card is reached by ONE `Dummy` of the net height, never a
   bare `SetCursorScreenPos` (`:8839-8840`). The body is narrowed on BOTH edges -- `WorkRect.Min.x`, `WorkRect.Max.x`,
-  `ContentRegionRect.Max.x` -- and all three are restored at `end`: the TU's one internal write. No `BeginChild` and no
+  `ContentRegionRect.Max.x` -- and all three are restored at `end`: the TU's one internal write. The body is also
+  CLIPPED to that width, because a line or a button row that does not wrap ignores all three and drew through the
+  padding and over the outline (V4, `I348`): `ImGui::PushClipRect` -- never the list's own, since only it also sets
+  `window->ClipRect`, which items cull and hover against and a body's table takes as its host clip -- pushed on the
+  content channel and popped FIRST at `end`, before any channel switch: a clip is the list's, and `SetCurrentChannel`
+  carries it into the channel it makes current (`imgui_draw.cpp:2270-2277`). No `BeginChild` and no
   `BeginGroup` per card (E.3.4's per-window `StateStorage` rule). A host answers a header's hover or right-click only
   through `CardHeaderResult` -- after `begin`, the last item may be the overflow button. **The chevron has ONE face
   size for both states**, sized off the OPEN chevron's ink (the mock's 3.5 dp); the glyph drawn is measured only to

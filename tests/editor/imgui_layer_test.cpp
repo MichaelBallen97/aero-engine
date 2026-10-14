@@ -25752,9 +25752,10 @@ TEST_CASE("editor: a card body hosts a table, and every card shares one right ed
     const std::vector<std::string> chrome = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/panel_chrome_ui.cpp");
     CHECK(countLinesContaining(chrome, "BeginChild") == 0U);  // seed S6
     CHECK(countLinesContaining(chrome, "BeginGroup") == 0U);
-    CHECK(countLinesContaining(chrome, "window->WorkRect.Min.x = ") == 2U);        // narrow + restore
-    CHECK(countLinesContaining(chrome, "window->ContentRegionRect.Max.x") == 4U);  // save, narrow, restore, bodyMax
-    CHECK(countLinesContaining(chrome, "window->WorkRect.Max.x") == 3U);           // save, narrow, restore
+    CHECK(countLinesContaining(chrome, "window->WorkRect.Min.x = ") == 2U);  // narrow + restore
+    // save, narrow, restore, bodyMax -- and, since V4, the body's clip push reads the narrowed edge (I348)
+    CHECK(countLinesContaining(chrome, "window->ContentRegionRect.Max.x") == 5U);
+    CHECK(countLinesContaining(chrome, "window->WorkRect.Max.x") == 3U);  // save, narrow, restore
     CHECK(countLinesContaining(chrome, "window->ContentRegionRect.Max.x = savedContentMaxX;") == 1U);
     CHECK(countLinesContaining(chrome, "window->WorkRect.Max.x = savedWorkMaxX;") == 1U);
     CHECK(countLinesContaining(chrome, "window->WorkRect.Min.x = savedWorkMinX;") == 1U);
@@ -27611,6 +27612,117 @@ TEST_CASE("editor: Material cards -- eight, panel-owned bits, Apply primary, bot
         CHECK(std::abs((flipped.outerMax.x - flipped.bodyMax.x) - bodyInsetA) <= 0.5F);
     }
 
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: a card's body is clipped to its padded width (task E.6.3, I348)") {
+    // V4: a line that does not wrap ignores the body's narrowed WorkRect / ContentRegionRect, and ImGui clipped it only
+    // to the window's ClipRect -- through the card's right padding and over its outline. The Material host, where the
+    // validation pass saw a slot's colour-space note run to the ##body child's edge. MEASURED at 640 x 650, UI scale 1
+    // (this machine's built-in Retina panel): the panel in its FixedRegions mode (I331's boundary is 381..400 tall),
+    // every card's span 495..622 and its body 507..610; with section 0 closed, the Base Color card's note draws at x
+    // 507..675 -- 65 points past the body's edge and 53 past the outline -- and y 495..511, 46 points above the
+    // ##body child's bottom (557). The note's width is the font's advance sum at body 16, the same on every display.
+    // THE HEIGHT (a) NEEDS, measured with a fresh 640-wide window per height (650..560 by tens, then 559..550 by ones):
+    // the note draws at every one down to 553 and at none of 552, 551, 550. ItemAdd lets it through while its TOP is
+    // above the child's bottom, and the preview takes MATERIAL_PREVIEW_FRACTION (0.38) of the panel's height, so the
+    // note rises as the window shortens (y 476..492 at 600). 650 is under the ~657 points of height CI's macOS runner
+    // delivered for a 1000-point request (I231's record, as I347 restates), so every lane on record delivers it. A
+    // display that delivers less makes the note's presence geometry: a WARN, never a REQUIRE (#111's rule), and (b)
+    // still holds the push through the bodies that drew -- at least one did at every height that sweep measured.
+    constexpr std::int32_t ASKED_HEIGHT = 650;
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "card body clip i348", .width = 640, .height = ASKED_HEIGHT});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/full.aeromat", FULL_AEROMAT_TEXT).empty());
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = created.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    app->panels().setVisible("Console", false);
+    app->panels().setVisible("Inspector", false);  // so Material wins the Right dock tab (I331's fixture)
+    REQUIRE(app->tick());
+    app->requestAssetBrowserSelectEntry("full.aeromat");
+    e62Ticks(*app, 4);
+    REQUIRE(app->materialTargetPath() == "full.aeromat");
+    auto* const material = dynamic_cast<engine::editor::MaterialPanel*>(app->panels().find("Material"));
+    REQUIRE(material != nullptr);
+    app->requestMaterialSectionOpen(0, false);  // through the PANEL's bit (I175's seam): Base Color's note moves up
+    e62Ticks(*app, 2);
+    const engine::editor::CardRecord& r = material->cardRecord();
+    const std::uint64_t before = r.framesRecorded;
+    REQUIRE(app->tick());
+    REQUIRE(r.framesRecorded > before);  // the reads below are this frame's
+    REQUIRE(r.cards.size() == 8U);
+    REQUIRE_FALSE(r.cards.front().open);  // ANTI-VACUITY: one CLOSED card for the closed arm below
+
+    // (a) ANTI-VACUITY: a slot's colour-space note DREW (ItemAdd let it through) inside an open card's body, and its
+    // UNCLIPPED extent -- TextEx's position + CalcTextSize -- runs past the body's padded edge and over the outline:
+    // V4's picture, so the clip has work to do here. Whether it drew is the delivered height's (the header): a REQUIRE
+    // at the height asked for, a WARN below it, and the arm runs wherever the note drew.
+    const engine::platform::WindowSize delivered = window->size();
+    MESSAGE("I348: delivered " << delivered.width << " x " << delivered.height << ", asked 640 x " << ASKED_HEIGHT);
+    const bool noteDrew = r.slotNoteCard >= 0;
+    if (delivered.height >= ASKED_HEIGHT) {
+        REQUIRE(noteDrew);
+    } else {
+        WARN(noteDrew);  // geometry: a shorter window (the note draws down to a delivered 553)
+    }
+    if (noteDrew) {
+        const auto noteCard = static_cast<std::size_t>(r.slotNoteCard);
+        REQUIRE(noteCard < r.cards.size());
+        const engine::editor::CardEntryRecord& noted = r.cards[noteCard];
+        MESSAGE("I348: note " << r.slotNoteMinX << ".." << r.slotNoteMaxX << " in card " << noteCard << ", body "
+                              << noted.bodyMin.x << ".." << noted.bodyMax.x << ", outline to " << noted.outerMax.x
+                              << ", body clip " << noted.bodyClipMinX << ".." << noted.bodyClipMaxX);
+        REQUIRE(noted.open);
+        REQUIRE(noted.bodyDrawCommands > 0U);
+        CHECK(r.slotNoteMinX >= noted.bodyMin.x - 0.5F);  // it starts inside the body...
+        CHECK(r.slotNoteMaxX > noted.bodyMax.x + 0.5F);   // ...runs past its padded edge...
+        CHECK(r.slotNoteMaxX > noted.outerMax.x);         // ...and past the outline
+        // The note's command carries the body's clip WHOLE: its edges sit ON the body's, never inside them.
+        CHECK(std::abs(noted.bodyClipMinX - noted.bodyMin.x) <= 0.5F);
+        CHECK(std::abs(noted.bodyClipMaxX - noted.bodyMax.x) <= 0.5F);
+    }
+
+    // (b) EVERY card: the commands its body drew, as the list RECEIVED them, carry the body's clip -- never the
+    // window's, 495..622 with no push (the red) -- and the fill and the outline, drawn after the pop, keep the
+    // window's: its ClipRect.Max.x is ImFloor'd (imgui.cpp:8469) and sits on or past the span's edge. A body under
+    // the child's bottom draws no command; the closed card submits no body at all.
+    std::uint32_t bodiesThatDrew = 0;
+    for (std::size_t i = 0; i < r.cards.size(); ++i) {
+        CAPTURE(i);
+        const engine::editor::CardEntryRecord& card = r.cards[i];
+        CHECK(card.outlineClipMaxX >= card.outerMax.x - 1.0F);
+        if (!card.open) {
+            CHECK(card.bodyDrawCommands == 0U);
+            continue;
+        }
+        CHECK(card.fillClipMaxX >= card.outerMax.x - 1.0F);
+        if (card.bodyDrawCommands > 0U) {
+            ++bodiesThatDrew;
+            CHECK(card.bodyClipMaxX <= card.bodyMax.x + 0.5F);
+            CHECK(card.bodyClipMinX >= card.bodyMin.x - 0.5F);
+        }
+    }
+    REQUIRE(bodiesThatDrew > 0U);  // ANTI-VACUITY: (b) read a body's commands, whatever height (a) was given
     app->requestQuit();
     CHECK(app->tick() == false);
     app.reset();

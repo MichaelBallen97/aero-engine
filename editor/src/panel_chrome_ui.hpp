@@ -164,6 +164,7 @@ private:
     float savedWorkMinX = 0.0F;
     float savedContentMaxX = 0.0F;
     float savedWorkMaxX = 0.0F;
+    int bodyCommandBegin = 0;  // the content channel's command the body's clip push left current
     bool active = false;
     bool open = false;
 };
