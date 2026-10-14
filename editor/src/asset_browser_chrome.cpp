@@ -1,12 +1,14 @@
 // Aero Engine -- the Assets panel's chrome as values (task E.6.3, spec D8). PURE: see asset_browser_chrome.hpp.
 #include <aero/editor/asset_browser_chrome.hpp>
-#include <aero/editor/editor_glyphs.hpp>  // AERO_GLYPH_MIDDLE_DOT
+#include <aero/editor/editor_glyphs.hpp>  // AERO_GLYPH_MIDDLE_DOT, AERO_GLYPH_ELLIPSIS
 #include <aero/editor/editor_theme.hpp>
-#include <aero/editor/status_bar.hpp>  // elidePathLeft, groupThousands
+#include <aero/editor/status_bar.hpp>  // groupThousands
 
 #include <algorithm>
 #include <cmath>
+#include <optional>
 #include <utility>
+#include <vector>
 
 namespace engine::editor {
 
@@ -52,12 +54,68 @@ constexpr float FOOTER_SEGMENT_GAP_SPACINGS = 2.0F;  // footer segment to segmen
     return EDITOR_THEME.metrics.itemSpacing.x * layoutScale(uiScale);
 }
 
+[[nodiscard]] bool isUtf8Continuation(char byte) noexcept {
+    return (static_cast<unsigned char>(byte) & 0xC0U) == 0x80U;
+}
+
 [[nodiscard]] std::size_t codePointCount(std::string_view text) noexcept {
     std::size_t count = 0;
     for (const char byte : text) {
-        count += (static_cast<unsigned char>(byte) & 0xC0U) != 0x80U ? 1U : 0U;
+        count += isUtf8Continuation(byte) ? 0U : 1U;
     }
     return count;
+}
+
+constexpr std::string_view FOOTER_ELLIPSIS = AERO_GLYPH_ELLIPSIS;  // U+2026, one Mono cell
+constexpr std::string_view FOOTER_PART_SEPARATOR = "  -  ";        // before each of a selection's details
+
+// The parts that are present, in AssetFooterDetails' order, each after FOOTER_PART_SEPARATOR: what the panel's one
+// string carried before the details had fields of their own.
+[[nodiscard]] std::string composeFooterDetails(std::string_view size, std::string_view identity,
+                                               std::string_view state) {
+    std::string out;
+    for (const std::string_view part : {size, identity, state}) {
+        if (!part.empty()) {
+            out += FOOTER_PART_SEPARATOR;
+            out += part;
+        }
+    }
+    return out;
+}
+
+// The ellipsis, the longest tail of `name` that starts at or before byte `lastStart` and fits with `after` beside it,
+// then `after`; nullopt when none fits. Every start is a UTF-8 boundary -- the name's first byte included -- and a
+// later start is never harder to fit, so the first that fits is found by bisection over the boundaries.
+[[nodiscard]] std::optional<std::string> longestFooterTail(std::string_view name, std::size_t lastStart,
+                                                           std::string_view after, const CaptionLineFits& fits) {
+    std::vector<std::size_t> starts;
+    for (std::size_t at = 0; at <= lastStart && at <= name.size(); ++at) {
+        if (at == name.size() || !isUtf8Continuation(name[at])) {
+            starts.push_back(at);
+        }
+    }
+    std::string candidate;
+    const auto build = [&](std::size_t start) {
+        candidate.assign(FOOTER_ELLIPSIS);
+        candidate += name.substr(start);
+        candidate += after;
+    };
+    std::size_t lo = 0;
+    std::size_t hi = starts.size();  // starts.size() == no start fits
+    while (lo < hi) {
+        const std::size_t mid = lo + ((hi - lo) / 2);
+        build(starts[mid]);
+        if (fits(candidate)) {
+            hi = mid;
+        } else {
+            lo = mid + 1U;
+        }
+    }
+    if (lo == starts.size()) {
+        return std::nullopt;
+    }
+    build(starts[lo]);
+    return candidate;
 }
 
 }  // namespace
@@ -296,8 +354,13 @@ AssetFooterLayout assetFooterLayout(float rowMinX, float rowWidth, const AssetFo
     // count one gap and the selection's cells, up to ASSET_FOOTER_SELECTION_MIN_CELLS, for it, so neither segment is
     // kept unless the row also holds that much for the selection -- reading the zone alone dropped the selection in a
     // 749-point row (a window about 1366 wide) while "thumbnails R/B" stayed. Never more than the selection's own
-    // cells, so a shorter one costs no segment the row holds beside it whole. No selection, no reserve.
-    const std::size_t reserved = std::min(codePointCount(text.selection), ASSET_FOOTER_SELECTION_MIN_CELLS);
+    // cells, so a shorter one costs no segment the row holds beside it whole. No selection, no reserve. The macOS
+    // pass's V2 split the selection's path from its details; its cells are still both together, the details composed
+    // with their separators, as they were when one string carried them.
+    const AssetFooterDetails& details = text.selectionDetails;
+    const std::string allDetails = composeFooterDetails(details.size, details.identity, details.state);
+    const std::size_t selectionCells = codePointCount(text.selection) + codePointCount(allDetails);
+    const std::size_t reserved = std::min(selectionCells, ASSET_FOOTER_SELECTION_MIN_CELLS);
     const float selectionReserve = text.selection.empty() ? 0.0F : gap + (static_cast<float>(reserved) * advance);
     float total = zoneWidth();
     if (hasThumbnails && total + selectionReserve > rowLength) {
@@ -318,14 +381,84 @@ AssetFooterLayout assetFooterLayout(float rowMinX, float rowWidth, const AssetFo
     }
     const float leftMaxX = out.right.empty() ? maxX : out.right.front().x - gap;
     const float budget = leftMaxX - minX;
-    // elidePathLeft's own rule: a budget below the ellipsis (one Mono cell) returns an ellipsis that does not fit.
+    // A budget below the ellipsis (one Mono cell) draws nothing: elideFooterSelection's own (4), gated here as well.
     if (!text.selection.empty() && advance > 0.0F && budget >= advance) {
         const auto fits = [&widthOf, budget](std::string_view t) { return widthOf(t) <= budget; };
-        out.left = elidePathLeft(text.selection, fits);
+        out.left = elideFooterSelection(text.selection, text.selectionDetails, fits);
     } else if (!text.selection.empty() && advance == 0.0F) {
-        out.left = text.selection;  // nothing measurable: every width is 0 and everything fits
+        out.left = text.selection + allDetails;  // nothing measurable: every width is 0, all fits
     }
     return out;
+}
+
+std::string elideFooterSelection(std::string_view path, const AssetFooterDetails& details,
+                                 const CaptionLineFits& fits) {
+    if (path.empty()) {
+        return {};  // no selection
+    }
+    const std::string all = composeFooterDetails(details.size, details.identity, details.state);
+    std::string candidate(path);
+    candidate += all;
+    if (fits(candidate)) {
+        return candidate;  // (1) whole
+    }
+    if (!fits(FOOTER_ELLIPSIS)) {
+        return {};  // (7) an ellipsis that does not fit is never drawn
+    }
+    // The leaf: what follows the path's last '/', or the whole path when nothing does -- no '/', or a trailing one.
+    const std::size_t lastSlash = path.rfind('/');
+    const bool hasFolders = lastSlash != std::string_view::npos && lastSlash + 1U < path.size();
+    const std::size_t leafStart = hasFolders ? lastSlash + 1U : 0U;
+    const std::string_view leaf = path.substr(leafStart);
+    // (2) The folders, WHOLE segments, longest first: the ellipsis and '/' stand for the folders dropped, and the tail
+    // after each '/' up to the leaf's own is tried with every detail beside it. A longer tail is never easier to fit,
+    // so the first that fits is the longest; the paths are short, so a walk rather than a bisection.
+    if (hasFolders) {
+        for (std::size_t slash = path.find('/'); slash <= lastSlash; slash = path.find('/', slash + 1U)) {
+            candidate.assign(FOOTER_ELLIPSIS);
+            candidate += '/';
+            candidate += path.substr(slash + 1U);
+            candidate += all;
+            if (fits(candidate)) {
+                return candidate;
+            }
+        }
+    }
+    // From here the folders stay gone: the leaf follows the ellipsis and '/', or stands bare when there were none, as
+    // nothing on its left was cut. (3) the identity, then (4) the size; an absent part is no arm.
+    std::string leafAlone(hasFolders ? FOOTER_ELLIPSIS : std::string_view());
+    if (hasFolders) {
+        leafAlone += '/';
+    }
+    leafAlone += leaf;
+    if (!details.identity.empty()) {
+        candidate = leafAlone + composeFooterDetails(details.size, {}, details.state);
+        if (fits(candidate)) {
+            return candidate;
+        }
+    }
+    const std::string stateOnly = composeFooterDetails({}, {}, details.state);
+    if (!details.size.empty()) {
+        candidate = leafAlone + stateOnly;
+        if (fits(candidate)) {
+            return candidate;
+        }
+    }
+    // (5) The name's front, beside the state, cut no further than its extension: the leaf from its last '.' after its
+    // first byte, or all of the leaf when it has none -- so the import state never stands beside no name at all.
+    // (6) Then the state goes, and the name alone takes the zone: the leaf as above, else the ellipsis and its longest
+    // tail -- the empty one included, the ellipsis alone, which (7) has measured.
+    if (!details.state.empty()) {
+        const std::size_t dot = leaf.rfind('.');
+        const std::size_t extensionStart = dot != std::string_view::npos && dot > 0U ? dot : 0U;
+        if (std::optional<std::string> kept = longestFooterTail(leaf, extensionStart, stateOnly, fits)) {
+            return *std::move(kept);
+        }
+    }
+    if (fits(leafAlone)) {
+        return leafAlone;
+    }
+    return longestFooterTail(leaf, leaf.size(), {}, fits).value_or(std::string(FOOTER_ELLIPSIS));
 }
 
 void beginAssetChromeRecordFrame(AssetChromeRecord& record) noexcept {

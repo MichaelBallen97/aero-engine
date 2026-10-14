@@ -26702,12 +26702,21 @@ TEST_CASE("editor: the Assets footer -- the path elided from the left, the right
     // sizes Plex Mono by its 1300-unit ascent-to-descent height). The right zone, "thumbnails 0/256" and
     // "Auto-refresh off", is 32 cells and one 16-point gap (222.8 points), so the left zone keeps 130 cells. The
     // selection line is 160 cells -- the 128-character path, then its unknown size (an em dash), the elided GUID (13
-    // cells) and "new", each after a five-cell separator -- so it elides by 30 cells, while its 41-cell last segment
-    // (the name and those three) fits in any window at least ~520 wide. The WINDOW forces the elision, not the depth:
-    // at 1600 wide the left zone keeps 208 cells and the same line fits whole.
+    // cells) and "new", each after a five-cell separator -- so it elides by 30 cells, while its shortest whole-segment
+    // form, the ellipsis, '/' and "model.txt" with those three (43 cells), fits in any window at least ~533 wide (~543
+    // on a frame whose panel scrolls). The WINDOW forces the elision, not the depth: at 1600 wide the left zone keeps
+    // 208 cells and the same line fits whole. Since the macOS pass's V2 fix the footer drops WHOLE segments
+    // (elideFooterSelection), so at this width the deep line reads the ellipsis, '/', and the folders from f02 on (128
+    // cells). The case asserts the whole segments and the state, never which folder leads: that moves with the font,
+    // the theme's gap and the state's label ("up to date" would need 135 cells and lead with f03). `wideName` is V2's
+    // own shape at this width: a 107-character name in one folder, whose name and details (139 cells) do not fit
+    // beside the ellipsis -- where the composed line lost its ellipsis and then its import state.
     const std::string deep =
         "f00_folder_level/f01_folder_level/f02_folder_level/f03_folder_level/f04_folder_level/"
         "f05_folder_level/f06_folder_level/model.txt";
+    const std::string wideName =
+        "f00_folder_level/an_asset_name_wider_than_the_footer_left_zone_once_its_size_its_identity_and_its_import_"
+        "state_follow_it.txt";
     // WINDOWS' PATH LIMITS, asserted on every lane so a deeper fixture fails here and not on the Windows lane alone.
     // MS STL's <filesystem> calls CreateDirectoryW / CreateFileW without a "\\?\" prefix and no target ships a
     // longPathAware manifest, so a folder must stay under 248 characters and a file under MAX_PATH (260, its NUL
@@ -26722,6 +26731,10 @@ TEST_CASE("editor: the Assets footer -- the path elided from the left, the right
     CHECK(deepestFolder < 248U);
     CHECK(sidecar < 260U);
     REQUIRE(sidecarTemp < 260U);
+    const std::size_t wideSidecarTemp = WINDOWS_ROOT_ALLOWANCE + wideName.size() +
+                                        engine::editor::ASSET_META_SUFFIX.size() +
+                                        engine::editor::ATOMIC_TEMP_SUFFIX.size();
+    REQUIRE(wideSidecarTemp < 260U);  // the wide name's folder is deep's first, already checked above
     engine::platform::Context ctx;
     if (!ctx.valid()) {
         AERO_SKIP_OR_FAIL("no platform context");
@@ -26733,11 +26746,21 @@ TEST_CASE("editor: the Assets footer -- the path elided from the left, the right
     if (!device) {
         AERO_SKIP_OR_FAIL("no GPU device");
     }
+    const std::initializer_list<std::string_view> files{"top.txt", deep, wideName};
     std::optional<engine::editor::EditorApp> app =
-        e63AssetsApp(*device, *window, ctx, {"top.txt", deep}, engine::editor::DEFAULT_BOTTOM_DOCK_FRACTION);
+        e63AssetsApp(*device, *window, ctx, files, engine::editor::DEFAULT_BOTTOM_DOCK_FRACTION);
     e63HideSidePanels(*app);
     auto* const browser = dynamic_cast<engine::editor::AssetBrowserPanel*>(app->panels().find("Assets"));
     REQUIRE(browser != nullptr);
+    REQUIRE(browser->database() != nullptr);
+    // The import state the footer shows last, read off the selection's own record: the label its details end with.
+    const auto stateOf = [&browser](const std::string& path) {
+        const engine::editor::AssetRecord* const rec = browser->database()->findByPath(path);
+        REQUIRE(rec != nullptr);
+        REQUIRE((rec->state != engine::editor::AssetMetaState::Invalid));
+        REQUIRE_FALSE(rec->metaWriteFailed);
+        return "  -  " + std::string(engine::editor::importChangeLabel(rec->change));
+    };
     app->requestAssetBrowserSelectEntry(deep);  // a database record, so the footer resolves it from the root listing
     REQUIRE(app->tick());
     REQUIRE(app->tick());
@@ -26745,7 +26768,28 @@ TEST_CASE("editor: the Assets footer -- the path elided from the left, the right
     REQUIRE_FALSE(r.footerLeftText.empty());
     CHECK(r.footerLeftText.starts_with(AERO_GLYPH_ELLIPSIS));
     CHECK(r.footerLeftText.find("model.txt") != std::string::npos);  // the name survives; the folders went
-    REQUIRE(r.footerRightTexts.size() >= 2U);                        // thumbnails and the watcher word, at least
+    // The macOS pass's V2: what drawFooter DREW, at this fixture's real width. WHOLE segments follow the ellipsis (the
+    // composed line split "f01_folder_level" mid-word, "...el/f02_folder_level/"), and the details end it whole, the
+    // import state last. Whole segments without the geometry: the ellipsis, then '/' and a "fNN_folder_level/" folder,
+    // and everything from that '/' to the name is a TAIL of the path -- the cut fell on a '/', whichever folder leads.
+    {
+        INFO("drawn: " << r.footerLeftText);
+        const std::string_view ellipsis = AERO_GLYPH_ELLIPSIS;
+        const std::string_view folder = "_folder_level/";
+        CHECK(r.footerLeftText.starts_with(AERO_GLYPH_ELLIPSIS "/f0"));
+        REQUIRE(r.footerLeftText.size() >= ellipsis.size() + 1U + 3U + folder.size());
+        const std::string_view lead = std::string_view(r.footerLeftText).substr(ellipsis.size() + 1U);
+        CHECK(lead[0] == 'f');
+        CHECK(std::isdigit(static_cast<unsigned char>(lead[1])) != 0);
+        CHECK(std::isdigit(static_cast<unsigned char>(lead[2])) != 0);
+        CHECK(lead.substr(3U, folder.size()) == folder);
+        const std::size_t leafAt = r.footerLeftText.find("/model.txt  -  ");
+        REQUIRE(leafAt != std::string::npos);
+        const std::size_t pathEnd = leafAt + std::string_view("/model.txt").size();
+        CHECK(deep.ends_with(r.footerLeftText.substr(ellipsis.size(), pathEnd - ellipsis.size())));
+        CHECK(r.footerLeftText.ends_with(stateOf(deep)));
+    }
+    REQUIRE(r.footerRightTexts.size() >= 2U);  // thumbnails and the watcher word, at least
     CHECK(std::find(r.footerRightTexts.begin(), r.footerRightTexts.end(), "Auto-refresh off") !=
           r.footerRightTexts.end());  // the watcher is OFF in this fixture, handed whole
     // Every segment ONCE, this frame's: the right zone's texts are distinct by construction, so a duplicate is a
@@ -26756,6 +26800,44 @@ TEST_CASE("editor: the Assets footer -- the path elided from the left, the right
         return std::adjacent_find(texts.begin(), texts.end()) == texts.end();
     };
     CHECK(distinct(r.footerRightTexts));
+    // V2's own shape: the name and its details do not fit beside the ellipsis, so the composed line drew the name's
+    // front with NO leading ellipsis and cut the identity and the import state. Now the folder goes, then the identity
+    // (the GUID), then the size, before the name is cut -- and only down to its extension while the state is drawn.
+    // "/" + the name + every detail is 141 cells, more than this 1100 window's left zone (130 cells, above) holds at
+    // a UI scale of 1 or more, so the GUID is gone at ANY width a runner gives it; which of the three shapes below is
+    // drawn is the zone's own -- 123 cells keep the size, 117 the whole name -- and a narrower display (CI's macOS
+    // runner) can move it, so the case pins the three, never one. Measured here: the first, "/" + the name + "  -  "
+    // + the em dash + "  -  new".
+    app->requestAssetBrowserSelectEntry(wideName);
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+    const std::string& wide = browser->chromeRecord().footerLeftText;
+    REQUIRE_FALSE(wide.empty());
+    {
+        INFO("drawn: " << wide);
+        CHECK(wide.starts_with(AERO_GLYPH_ELLIPSIS));
+        CHECK(wide.ends_with(stateOf(wideName)));
+        CHECK(wide.find("_follow_it.txt  -  ") != std::string::npos);  // the extension kept, a detail after it
+        CHECK(wide.find("f00_folder_level") == std::string::npos);     // ANTI-VACUITY: elided, the folder gone
+        const engine::editor::AssetRecord* const wideRec = browser->database()->findByPath(wideName);
+        REQUIRE(wideRec != nullptr);
+        const std::string guidHead = engine::formatGuid(wideRec->guid).substr(0, 8);
+        CHECK(wide.find(guidHead) == std::string::npos);  // the identity shed before the name is cut
+        // Exactly one of the shapes arms (3)-(5) allow: the name whole after "/" with the size and the state; the name
+        // whole with the state; or the ellipsis, a tail of the name ending in its extension, and the state.
+        const std::string leaf = wideName.substr(wideName.rfind('/') + 1U);
+        const std::string state = stateOf(wideName);
+        const std::string withSize = AERO_GLYPH_ELLIPSIS "/" + leaf + "  -  " AERO_GLYPH_EM_DASH + state;
+        const std::string withState = AERO_GLYPH_ELLIPSIS "/" + leaf + state;
+        const std::string_view ellipsis = AERO_GLYPH_ELLIPSIS;
+        const bool framed = wide.size() >= ellipsis.size() + state.size();
+        const std::string_view nameTail =
+            framed ? std::string_view(wide).substr(ellipsis.size(), wide.size() - ellipsis.size() - state.size())
+                   : std::string_view();
+        const bool cutName = framed && std::string_view(leaf).ends_with(nameTail) && nameTail.ends_with(".txt");
+        const bool oneShape = wide == withSize || wide == withState || cutName;
+        CHECK(oneShape);
+    }
     // A scan issue: an orphaned sidecar, then a rescan.
     const engine::Guid orphan = engine::GuidGenerator{0xE63A326ULL}.next();
     const std::string orphanMeta = engine::editor::writeMetaText(orphan);

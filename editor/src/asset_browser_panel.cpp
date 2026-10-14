@@ -1698,10 +1698,12 @@ void AssetBrowserPanel::drawIssues(float bodyHeight) {
 
 // ---- phase 5: the footer -- two zones, Mono small (task E.6.3, D8) ---------------------------------------------
 // INSIDE today's reservation (assetBrowserLayout's footerHeight = spacing + frame, so AV55, AV59 and I231 hold): the
-// left zone is the selection, elided from the LEFT; the right zone -- the listing's notice, the matches, the issues,
-// the thumbnails, the watcher word -- draws each segment whole, a narrow row shedding the thumbnails and then the
-// watcher word (sooner while a selection is shown: the row reserves its cells, up to ASSET_FOOTER_SELECTION_MIN_CELLS,
-// for it) and never pushing the notice left of the row (assetFooterLayout).
+// left zone is the selection's path elided from the LEFT beside its details (size, identity, import state) -- the
+// folders go first as whole segments, then the identity, then the size, then the name's front down to its extension,
+// and only then the import state (elideFooterSelection's drop order); the right zone -- the listing's notice,
+// the matches, the issues, the thumbnails, the watcher word -- draws each segment whole, a narrow row shedding the
+// thumbnails and then the watcher word (sooner while a selection is shown: the row reserves its cells, up to
+// ASSET_FOOTER_SELECTION_MIN_CELLS, for it) and never pushing the notice left of the row (assetFooterLayout).
 void AssetBrowserPanel::drawFooter() {
     const DirectoryListing* const listing = cached(currentDir);
     if (listing == nullptr) {
@@ -1731,31 +1733,32 @@ void AssetBrowserPanel::drawFooter() {
         const AssetRecord* const rec = databasePtr != nullptr ? databasePtr->findByPath(selectedEntry) : nullptr;
         // E10, preserved: a selection in neither the listing nor the database has vanished -- nothing renders.
         if (inCurrentListing || rec != nullptr) {
-            std::string& selection = footerText.selection;
-            selection = selectedEntry;
+            footerText.selection = selectedEntry;
+            // task E.6.3's macOS pass (V2): the details are their OWN fields, which keeps `selection` a path, and one
+            // field per part, because the footer sheds them one at a time -- the identity, then the size -- before it
+            // cuts the name (elideFooterSelection's drop order). Composed into the path and handed to elidePathLeft,
+            // they were its last segment. Each part is the value the one string carried; the chrome composes "  -  ".
+            AssetFooterDetails& details = footerText.selectionDetails;
             // D5: a record NEVER describes a directory, so `selectedIsDirectory` matters only for a listing member.
             const bool selectedIsDirectory = inCurrentListing && listing->entries[idx].isDirectory;
             if (!selectedIsDirectory) {
                 if (inCurrentListing) {
                     const FileEntry& entry = listing->entries[idx];
-                    selection +=
-                        entry.sizeKnown ? ("  -  " + formatFileSize(entry.size)) : std::string("  -  ") + UNKNOWN_SIZE;
+                    details.size = entry.sizeKnown ? formatFileSize(entry.size) : std::string(UNKNOWN_SIZE);
                 } else {
-                    selection += std::string("  -  ") + UNKNOWN_SIZE;  // never another file's size (BLOCKING-3)
+                    details.size = UNKNOWN_SIZE;  // never another file's size (BLOCKING-3)
                 }
                 // task 3.1.1 (§D-7): the identity; task 3.1.2 (§D-11): the import state, in the SAME block.
                 if (databasePtr != nullptr) {
-                    selection += "  -  ";
                     if (rec == nullptr) {
-                        selection += "no .meta";
+                        details.identity = "no .meta";
                     } else if (rec->state == AssetMetaState::Invalid) {
-                        selection += "invalid .meta";
+                        details.identity = "invalid .meta";
                     } else {
-                        selection += elideGuid(rec->guid);
+                        details.identity = elideGuid(rec->guid);
                     }
                     if (rec != nullptr && rec->state != AssetMetaState::Invalid && !rec->metaWriteFailed) {
-                        selection += "  -  ";
-                        selection += importChangeLabel(rec->change);
+                        details.state = importChangeLabel(rec->change);
                     }
                 }
             }

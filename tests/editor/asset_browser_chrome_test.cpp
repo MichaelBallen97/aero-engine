@@ -1,4 +1,4 @@
-// tests/editor/asset_browser_chrome_test.cpp -- task E.6.3 (D8): the Assets panel's chrome model, AH1-AH19. A TU of
+// tests/editor/asset_browser_chrome_test.cpp -- task E.6.3 (D8): the Assets panel's chrome model, AH1-AH20. A TU of
 // aero_editor_shell_test. Tier 0, every configuration, no #if. Widths are RESTATED literals: Compact needs 576, Full
 // 782, the Minimal floor is 344 (the arithmetic is in each case). W's search, searchMin and kind are the shipped font
 // multiples at the 16-point body size, which AH16 checks.
@@ -6,6 +6,7 @@
 #include <aero/editor/asset_browser_chrome.hpp>
 #include <aero/editor/asset_meta.hpp>
 #include <aero/editor/editor_glyphs.hpp>
+#include <aero/editor/status_bar.hpp>  // elidePathLeft: the composed call AH20 sets beside its replacement
 
 #include <doctest/doctest.h>
 
@@ -86,6 +87,34 @@ struct Span {
         n += (static_cast<unsigned char>(c) & 0xC0U) != 0x80U ? 1U : 0U;
     }
     return n;
+}
+
+// Every sequence whole: a lead byte's length, then exactly that many continuation bytes (AH20).
+[[nodiscard]] bool validUtf8(std::string_view t) {
+    std::size_t at = 0;
+    while (at < t.size()) {
+        const auto lead = static_cast<unsigned char>(t[at]);
+        std::size_t length = 0;
+        if (lead < 0x80U) {
+            length = 1U;
+        } else if ((lead & 0xE0U) == 0xC0U) {
+            length = 2U;
+        } else if ((lead & 0xF0U) == 0xE0U) {
+            length = 3U;
+        } else if ((lead & 0xF8U) == 0xF0U) {
+            length = 4U;
+        }
+        if (length == 0U || length > t.size() - at) {
+            return false;  // a continuation byte where a sequence starts, or a sequence cut at the end
+        }
+        for (std::size_t k = 1; k < length; ++k) {
+            if ((static_cast<unsigned char>(t[at + k]) & 0xC0U) != 0x80U) {
+                return false;
+            }
+        }
+        at += length;
+    }
+    return true;
 }
 
 }  // namespace
@@ -313,10 +342,12 @@ TEST_CASE("assets chrome: the footer's right zone is whole, the left elided from
     // with a selection a segment stays only where the row also holds one gap and the selection's cells for it, up to
     // ASSET_FOOTER_SELECTION_MIN_CELLS -- all 16 here, as this one is 25 (16 + 128 = 144) -- so at 100 the thumbnails
     // AND the watcher go (64 + 144 = 208 > 100) -- before, the watcher stayed and left the selection two cells -- and
-    // the selection takes the row: the name beside the ellipsis is 13 cells (104), so the name alone (96) is drawn.
+    // the selection takes the row: 12 cells, where the name beside the ellipsis is 13 (104), so the ellipsis and the
+    // name's last eleven are drawn. Until the macOS pass's V2 fix this read the bare name, "crate_a.gltf" (96), which
+    // hid that the folders went -- the shape row 12 caught; a leading ellipsis says so, and the extension stays (AH20).
     const ed::AssetFooterLayout narrow = ed::assetFooterLayout(0.0F, 100.0F, text, 8.0F, 1.0F);
     CHECK(narrow.right.empty());
-    CHECK(narrow.left == "crate_a.gltf");
+    CHECK(narrow.left == AERO_GLYPH_ELLIPSIS "rate_a.gltf");
     // At 240 the thumbnails go first (216 + 144 = 360 > 240) and the watcher stays (208 fits), right-aligned, so the
     // selection keeps 240 - 64 - 16 = 160: twenty cells, as in the 392 row.
     const ed::AssetFooterLayout watched = ed::assetFooterLayout(0.0F, 240.0F, text, 8.0F, 1.0F);
@@ -683,15 +714,16 @@ TEST_CASE("assets chrome: a kept footer segment leaves the selection its minimum
     // be shed stayed: 742.82-765.28 (all three kept), 623.43-645.89 (the notice and the watcher) and 290.79-313.25
     // (the notice alone). Re-derived for the reserve (one gap and 16 cells, 119.392, as this selection is longer): the
     // thumbnails now need 862.212 and the watcher 742.82. At 749 the thumbnails go and the watcher stays, leaving the
-    // selection 749 - 623.428 - 16 = 109.572: 16 cells, the name's front and the ellipsis. At 630 the watcher goes too,
-    // and the notice alone leaves 630 - 290.79 - 16 = 323.21: the path whole.
+    // selection 749 - 623.428 - 16 = 109.572: 16 cells, the ellipsis and the name's last fifteen (its front and a
+    // trailing ellipsis until the macOS pass's V2 fix, AH20). At 630 the watcher goes too, and the notice alone leaves
+    // 630 - 290.79 - 16 = 323.21: the path whole.
     struct Band {
         float width;
         std::size_t kept;  // the notice, then the watcher where it stays
         std::string_view left;
     };
     const std::array<Band, 2> bands{
-        Band{749.0F, 2U, "crate_large_dam" AERO_GLYPH_ELLIPSIS},
+        Band{749.0F, 2U, AERO_GLYPH_ELLIPSIS "_damaged_b.gltf"},
         Band{630.0F, 1U, text.selection},
     };
     for (const Band& band : bands) {
@@ -838,10 +870,11 @@ TEST_CASE("assets chrome: a kept footer segment leaves the selection its minimum
         CHECK(shortPoints == 0U);
     }
 
-    // (e) The reserve counts CODE POINTS -- the Mono cells drawn -- never bytes (round 3). The footer's selections
-    // carry multi-byte glyphs: a file whose size is unknown appends "  -  " and UNKNOWN_SIZE, an em dash, and the
-    // GUID segment splices an ellipsis. "a" with an unknown size is 7 cells in 9 bytes, so the watcher stays from
-    // 623.428 + 16 + 7 x 6.462 = 684.662; a byte count would move it to 697.586 and shed the watcher at 690.
+    // (e) The reserve counts CODE POINTS -- the Mono cells drawn -- never bytes (round 3), here over the selection's
+    // PATH: a file name may hold any multi-byte character, and "a  -  " with an em dash is 7 cells in 9 bytes, so the
+    // watcher stays from 623.428 + 16 + 7 x 6.462 = 684.662; a byte count would move it to 697.586 and shed the watcher
+    // at 690. The panel's own em dash (UNKNOWN_SIZE) and the GUID's ellipsis sit in selectionDetails since the macOS
+    // pass's V2 fix; AH20 pins the same thresholds with the em dash there.
     ed::AssetFooterText glyph = text;
     glyph.selection = "a  -  " AERO_GLYPH_EM_DASH;
     REQUIRE(codePointsOf(glyph.selection) == 7U);
@@ -870,4 +903,278 @@ TEST_CASE("assets chrome: a kept footer segment leaves the selection its minimum
     CHECK(at775.right.back().text == text.watcher);
     CHECK(codePointsOf(at775.left) == ed::ASSET_FOOTER_SELECTION_MIN_CELLS);  // 775 - 639.428 - 32 = 103.572
     CHECK(at775.right.front().x == doctest::Approx(MIN_X + 775.0F - 639.428F).epsilon(1e-5));  // right-aligned
+
+    // (g) The minimum WITH DETAILS, as the panel hands every file in an open database (the code-review round of the
+    // macOS pass's V2 fix): the same path with its size, identity and import state, 44 cells more. The reserve is the
+    // same 16 cells, so the bands are (a)'s; at 749 the zone holds 16 cells, and the details go before the name is cut
+    // past its extension, so the minimum draws the name's last fifteen -- where the fix's first build drew the details'
+    // tail, "...  -  up to date", and no name. At 630 (50 cells) the identity and the size have gone, the name whole.
+    ed::AssetFooterText detailed = text;
+    const std::string guid = "23b110d9" AERO_GLYPH_ELLIPSIS "d5c1";
+    detailed.selectionDetails = ed::AssetFooterDetails{"1.2 KB", guid, "up to date"};
+    const ed::AssetFooterLayout detailed749 = ed::assetFooterLayout(MIN_X, 749.0F, detailed, ADVANCE, 1.0F);
+    REQUIRE(detailed749.right.size() == 2U);  // the notice and the watcher, as in (a)
+    CHECK(detailed749.left == AERO_GLYPH_ELLIPSIS "_damaged_b.gltf");
+    CHECK(ed::assetFooterLayout(MIN_X, 630.0F, detailed, ADVANCE, 1.0F).left == AERO_GLYPH_ELLIPSIS
+          "/crate_large_damaged_b.gltf  -  up to date");
+    // Over (a)'s quarter-point sweep: the same 1029 points keep a segment that can be shed, and at every one of them
+    // the selection draws at least the minimum and the name's extension.
+    std::size_t detailedKept = 0;
+    std::size_t noExtension = 0;
+    std::size_t detailedShort = 0;
+    for (int step = 0; step <= 3000; ++step) {
+        const float width = 250.0F + (0.25F * static_cast<float>(step));
+        const ed::AssetFooterLayout l = ed::assetFooterLayout(MIN_X, width, detailed, ADVANCE, 1.0F);
+        if (l.right.size() > 1U) {
+            ++detailedKept;
+            noExtension += l.left.find(".gltf") == std::string::npos ? 1U : 0U;
+            detailedShort += codePointsOf(l.left) < ed::ASSET_FOOTER_SELECTION_MIN_CELLS ? 1U : 0U;
+        }
+    }
+    CHECK(detailedKept == 1029U);
+    CHECK(noExtension == 0U);
+    CHECK(detailedShort == 0U);
+}
+
+// task E.6.3's macOS pass, V2 (row 12): THE SELECTION'S DETAILS ARE NOT PART OF ITS PATH. The panel composed
+// "path  -  size  -  guid  -  state" into one string and elided THAT as a path, so the details were its "last
+// segment": where the ellipsis and that segment did not fit, the folders went with NO leading ellipsis and the import
+// state was cut ("a-rather-long-...-path.gltf  -  1.2 KB  -  23b110d9...d5c1  -  ..." in an 805-point dock). The
+// details are their own fields now, and elideFooterSelection drops, in order, the folders (whole segments), the
+// identity, the size, the name's front down to its extension, then the import state -- the name's front coming back
+// once the state is gone. Its first build cut the name before any detail, so V2's own short case drew no name at all
+// and the 16-cell minimum drew "...  -  up to date" (the fix's code-review round). Mono cells, as AH11 measures them: a
+// text fits n cells when it is at most n code points.
+TEST_CASE("assets chrome: the footer elides the path and sheds the details in order (task E.6.3, AH20)") {
+    const auto within = [](std::size_t n) { return [n](std::string_view t) { return codePointsOf(t) <= n; }; };
+    const std::string name = "a-rather-long-file-name-for-the-footer-path.gltf";
+    const std::string path = "models/props/deep/deeper/deepest/" + name;
+    const std::string guid = "23b110d9" AERO_GLYPH_ELLIPSIS "d5c1";
+    const ed::AssetFooterDetails details{"1.2 KB", guid, "up to date"};
+    const std::string all = "  -  1.2 KB  -  " + guid + "  -  up to date";
+    REQUIRE(codePointsOf(path) == 81U);
+    REQUIRE(codePointsOf(name) == 48U);
+    REQUIRE(codePointsOf(all) == 44U);
+    const std::string whole = path + all;  // 125 cells
+    const auto at = [&](std::size_t n) { return ed::elideFooterSelection(path, details, within(n)); };
+    const std::string ellipsis = AERO_GLYPH_ELLIPSIS;
+
+    // (1) Whole where it fits.
+    CHECK(at(125U) == whole);
+    CHECK(at(500U) == whole);
+    // (2) The folders: the ellipsis, '/', and the longest tail of WHOLE segments that fits beside every detail:
+    // "props/..." takes 120 cells, "deep/..." 114, "deeper/..." 109, "deepest/..." 102, the name alone 94.
+    const std::string fromProps = ellipsis + "/props/deep/deeper/deepest/" + name + all;
+    const std::string fromDeep = ellipsis + "/deep/deeper/deepest/" + name + all;
+    const std::string fromDeeper = ellipsis + "/deeper/deepest/" + name + all;
+    const std::string fromDeepest = ellipsis + "/deepest/" + name + all;
+    const std::string nameOnly = ellipsis + "/" + name + all;
+    CHECK(at(124U) == fromProps);
+    CHECK(at(120U) == fromProps);
+    CHECK(at(119U) == fromDeep);
+    CHECK(at(114U) == fromDeep);
+    CHECK(at(113U) == fromDeeper);
+    CHECK(at(109U) == fromDeeper);
+    // Whole segments: the cells to spare at 108 stay unused rather than splitting "deeper".
+    for (std::size_t n = 102U; n <= 108U; ++n) {
+        CAPTURE(n);
+        CHECK(at(n) == fromDeepest);
+    }
+    CHECK(at(101U) == nameOnly);
+    CHECK(at(94U) == nameOnly);
+    // (3) The identity: from 93 cells down to 76 the name stays whole beside its size and its state. 83 is the width
+    // the pass measured (row 12, the 805-point dock): the first build drew the name's front cut there and the GUID
+    // kept.
+    const std::string noIdentity = ellipsis + "/" + name + "  -  1.2 KB  -  up to date";
+    CHECK(at(93U) == noIdentity);
+    CHECK(at(83U) == ellipsis + "/a-rather-long-file-name-for-the-footer-path.gltf  -  1.2 KB  -  up to date");
+    CHECK(at(76U) == noIdentity);
+    // (4) The size: 75 down to 65.
+    const std::string stateOnly = ellipsis + "/" + name + "  -  up to date";
+    CHECK(at(75U) == stateOnly);
+    CHECK(at(65U) == stateOnly);
+    // (5) The name's front, down to its extension, beside the state: every width from 64 (the whole name beside the
+    // ellipsis, without the '/') to 21 spends exactly its budget, and 21 is the ellipsis, ".gltf" and the state.
+    CHECK(at(64U) == ellipsis + name + "  -  up to date");
+    CHECK(at(63U) == ellipsis + "-rather-long-file-name-for-the-footer-path.gltf  -  up to date");
+    CHECK(at(22U) == ellipsis + "h.gltf  -  up to date");
+    CHECK(at(21U) == ellipsis + ".gltf  -  up to date");
+    // (6) The state: the name alone. "/" and the name need 50, so the ellipsis and the name's longest tail -- at the
+    // footer's 16-cell minimum, its last fifteen. Beside a short state the extension keeps it company there instead.
+    CHECK(at(20U) == ellipsis + "he-footer-path.gltf");
+    CHECK(at(16U) == ellipsis + "ooter-path.gltf");
+    CHECK(at(6U) == ellipsis + ".gltf");
+    CHECK(at(5U) == ellipsis + "gltf");
+    CHECK(at(1U) == ellipsis);
+    const ed::AssetFooterDetails newDetails{"1.2 KB", guid, "new"};
+    CHECK(ed::elideFooterSelection(path, newDetails, within(16U)) == ellipsis + "th.gltf  -  new");
+    // (7) Under one cell nothing is drawn, never an ellipsis that does not fit; no path is no selection.
+    CHECK(at(0U).empty());
+    CHECK(ed::elideFooterSelection("", details, within(500U)).empty());
+    // ANTI-VACUITY: the composed call this replaces answers the pass's own capture at 83, and splits a segment at 104.
+    CHECK(ed::elidePathLeft(whole, within(83U)) == name + "  -  1.2 KB  -  23b110d9" AERO_GLYPH_ELLIPSIS
+                                                          "d5c1  -  " AERO_GLYPH_ELLIPSIS);
+    CHECK(ed::elidePathLeft(whole, within(104U)) == ellipsis + "er/deepest/" + name + all);
+
+    // Every budget from 0 to 126: the answer fits and never shrinks as the budget grows; short of whole it leads with
+    // the ellipsis; and each part is drawn exactly from its own arm's width up -- the folder "deepest" from 102, the
+    // identity from 94, the size from 76, the whole name from 64, the state (last) from 21, the extension from 6.
+    std::size_t previous = 0;
+    for (std::size_t n = 0; n <= 126U; ++n) {
+        CAPTURE(n);
+        const std::string got = at(n);
+        CHECK(codePointsOf(got) <= n);
+        CHECK(codePointsOf(got) >= previous);
+        previous = codePointsOf(got);
+        if (n >= 1U && n < 125U) {
+            CHECK(got.starts_with(ellipsis));
+        }
+        CHECK((got.find("/deepest/") != std::string::npos) == (n >= 102U));
+        CHECK((got.find(guid) != std::string::npos) == (n >= 94U));
+        CHECK((got.find("1.2 KB") != std::string::npos) == (n >= 76U));
+        CHECK((got.find(name) != std::string::npos) == (n >= 64U));
+        CHECK(got.ends_with("  -  up to date") == (n >= 21U));
+        CHECK((got.find(".gltf") != std::string::npos) == (n >= 6U));
+    }
+
+    // V2's short case (the pass's 900 x 600 window, a bottom dock about 510 wide): models/triangle.gltf, outside the
+    // folder shown (its size the em dash), in a 37-cell zone. The first build drew the ellipsis, the em dash, the GUID
+    // and the state there -- no name at all; now the GUID goes and the name stays whole, the state last.
+    const std::string tri = "models/triangle.gltf";
+    const std::string triGuid = "e00525f9" AERO_GLYPH_ELLIPSIS "ee6a";
+    const ed::AssetFooterDetails triDetails{AERO_GLYPH_EM_DASH, triGuid, "up to date"};
+    const auto triAt = [&](std::size_t n) { return ed::elideFooterSelection(tri, triDetails, within(n)); };
+    const std::string triName = ellipsis + "/triangle.gltf";
+    CHECK(triAt(59U) == tri + "  -  " AERO_GLYPH_EM_DASH "  -  " + triGuid + "  -  up to date");
+    CHECK(triAt(54U) == triName + "  -  " AERO_GLYPH_EM_DASH "  -  " + triGuid + "  -  up to date");
+    CHECK(triAt(53U) == triName + "  -  " AERO_GLYPH_EM_DASH "  -  up to date");
+    CHECK(triAt(37U) == ellipsis + "/triangle.gltf  -  " AERO_GLYPH_EM_DASH "  -  up to date");
+    CHECK(triAt(36U) == triName + "  -  " AERO_GLYPH_EM_DASH "  -  up to date");
+    CHECK(triAt(35U) == triName + "  -  up to date");
+    CHECK(triAt(29U) == ellipsis + "triangle.gltf  -  up to date");
+    CHECK(triAt(21U) == ellipsis + ".gltf  -  up to date");
+    CHECK(triAt(20U) == triName);
+    CHECK(triAt(16U) == triName);  // the minimum: the name whole
+    CHECK(triAt(14U) == ellipsis + "triangle.gltf");
+    const ed::AssetFooterDetails triNew{AERO_GLYPH_EM_DASH, triGuid, "new"};
+    CHECK(ed::elideFooterSelection(tri, triNew, within(37U)) == triName + "  -  " AERO_GLYPH_EM_DASH "  -  new");
+
+    // A part that is absent is skipped. "no .meta" has no state: the identity goes, then the size, then the name is
+    // cut as a folder's is. No database: the size alone. A path with no folder keeps its bare leaf -- no ellipsis,
+    // since nothing on its left was cut. A name with no extension keeps all of itself beside the state, so the state
+    // goes before any of it.
+    const std::string crate = "models/props/crate_a.gltf";
+    const auto noMeta = [&](std::size_t n) {
+        return ed::elideFooterSelection(crate, ed::AssetFooterDetails{"1.2 KB", "no .meta", ""}, within(n));
+    };
+    CHECK(noMeta(49U) == crate + "  -  1.2 KB  -  no .meta");
+    CHECK(noMeta(38U) == ellipsis + "/crate_a.gltf  -  1.2 KB  -  no .meta");
+    CHECK(noMeta(37U) == ellipsis + "/crate_a.gltf  -  1.2 KB");
+    CHECK(noMeta(24U) == ellipsis + "/crate_a.gltf");
+    CHECK(noMeta(13U) == ellipsis + "crate_a.gltf");
+    CHECK(noMeta(6U) == ellipsis + ".gltf");
+    const auto noDatabase = [&](std::size_t n) {
+        return ed::elideFooterSelection(crate, ed::AssetFooterDetails{"1.2 KB", "", ""}, within(n));
+    };
+    CHECK(noDatabase(36U) == crate + "  -  1.2 KB");
+    CHECK(noDatabase(25U) == ellipsis + "/crate_a.gltf  -  1.2 KB");
+    CHECK(noDatabase(24U) == ellipsis + "/crate_a.gltf");
+    const auto root = [&](std::size_t n) { return ed::elideFooterSelection("a.gltf", newDetails, within(n)); };
+    CHECK(root(43U) == "a.gltf  -  1.2 KB  -  " + guid + "  -  new");
+    CHECK(root(42U) == "a.gltf  -  1.2 KB  -  new");
+    CHECK(root(24U) == "a.gltf  -  new");
+    CHECK(root(13U) == "a.gltf");
+    CHECK(root(5U) == ellipsis + "gltf");
+    const auto readme = [&](std::size_t n) {
+        return ed::elideFooterSelection("notes/README", ed::AssetFooterDetails{"2 KB", "", "changed"}, within(n));
+    };
+    CHECK(readme(28U) == ellipsis + "/README  -  changed");
+    CHECK(readme(19U) == ellipsis + "README  -  changed");
+    CHECK(readme(18U) == ellipsis + "/README");
+    CHECK(readme(6U) == ellipsis + "EADME");
+
+    // A multi-byte path never splits a code point: "tex/" + "ete" with two e-acutes + "/" + one CJK ideograph +
+    // "_cafe.png" with one e-acute -- 18 cells, the name 10 -- and details carrying the em dash and the GUID's
+    // ellipsis, 32 cells. Every answer from 0 to 51 cells is valid UTF-8 and fits; every width from 1 to 19 -- the
+    // name's arms -- spends exactly its budget. Pinned: each arm, a cut after the ideograph, one before it, and one
+    // that keeps the e-acute whole.
+    const std::string wide = "tex/\xC3\xA9t\xC3\xA9/\xE6\x97\xA5_caf\xC3\xA9.png";
+    const std::string wideName = "\xE6\x97\xA5_caf\xC3\xA9.png";
+    const ed::AssetFooterDetails wideDetails{AERO_GLYPH_EM_DASH, guid, "new"};
+    const std::string wideAll = "  -  " AERO_GLYPH_EM_DASH "  -  " + guid + "  -  new";
+    REQUIRE(codePointsOf(wide) == 18U);
+    REQUIRE(codePointsOf(wideName) == 10U);
+    REQUIRE(codePointsOf(wideAll) == 32U);
+    REQUIRE(wide.size() > codePointsOf(wide));  // ANTI-VACUITY: multi-byte
+    const auto wideAt = [&](std::size_t n) { return ed::elideFooterSelection(wide, wideDetails, within(n)); };
+    for (std::size_t n = 0; n <= 51U; ++n) {
+        CAPTURE(n);
+        const std::string got = wideAt(n);
+        CHECK(validUtf8(got));
+        CHECK(codePointsOf(got) <= n);
+        if (n >= 1U && n < 50U) {
+            CHECK(got.starts_with(ellipsis));
+        }
+        if (n >= 1U && n <= 19U) {
+            CHECK(codePointsOf(got) == n);
+        }
+    }
+    CHECK(wideAt(50U) == wide + wideAll);
+    CHECK(wideAt(48U) == ellipsis + "/\xC3\xA9t\xC3\xA9/" + wideName + wideAll);
+    CHECK(wideAt(44U) == ellipsis + "/" + wideName + wideAll);
+    CHECK(wideAt(43U) == ellipsis + "/" + wideName + "  -  " AERO_GLYPH_EM_DASH "  -  new");
+    CHECK(wideAt(25U) == ellipsis + "/" + wideName + "  -  new");
+    CHECK(wideAt(19U) == ellipsis + wideName + "  -  new");
+    CHECK(wideAt(18U) == ellipsis + "_caf\xC3\xA9.png  -  new");
+    CHECK(wideAt(14U) == ellipsis + "\xC3\xA9.png  -  new");
+    CHECK(wideAt(13U) == ellipsis + ".png  -  new");
+    CHECK(wideAt(12U) == ellipsis + "/" + wideName);
+    CHECK(wideAt(11U) == ellipsis + wideName);
+    CHECK(wideAt(10U) == ellipsis + "_caf\xC3\xA9.png");
+
+    // A folder has no details, and reads as AH11's selection does: whole, then whole segments, then the ellipsis and
+    // the leaf's tail -- never the bare leaf, which would hide that the folders went.
+    const auto bare = [&](std::string_view p, std::size_t n) {
+        return ed::elideFooterSelection(p, ed::AssetFooterDetails{}, within(n));
+    };
+    CHECK(bare("models/props/crate_a.gltf", 25U) == "models/props/crate_a.gltf");
+    CHECK(bare("models/props/crate_a.gltf", 20U) == AERO_GLYPH_ELLIPSIS "/props/crate_a.gltf");
+    CHECK(bare("models/props/crate_a.gltf", 14U) == AERO_GLYPH_ELLIPSIS "/crate_a.gltf");
+    CHECK(bare("models/props/crate_a.gltf", 13U) == AERO_GLYPH_ELLIPSIS "crate_a.gltf");
+    CHECK(bare("models/props/crate_a.gltf", 12U) == AERO_GLYPH_ELLIPSIS "rate_a.gltf");
+    CHECK(bare("models/props", 12U) == "models/props");
+    CHECK(bare("models/props", 7U) == AERO_GLYPH_ELLIPSIS "/props");
+    CHECK(bare("models/props", 5U) == AERO_GLYPH_ELLIPSIS "rops");
+    CHECK(bare("models", 3U) == AERO_GLYPH_ELLIPSIS "ls");  // no folder to drop: the name's tail at once
+
+    // THE LAYOUT carries the fields to it, at advance 8 with no right zone: 664 points is 83 cells, 832 is 104.
+    ed::AssetFooterText split;
+    split.selection = path;
+    split.selectionDetails = details;
+    const std::string at664 = ed::assetFooterLayout(0.0F, 664.0F, split, 8.0F, 1.0F).left;
+    CHECK(at664 == ellipsis + "/a-rather-long-file-name-for-the-footer-path.gltf  -  1.2 KB  -  up to date");
+    CHECK(ed::assetFooterLayout(0.0F, 832.0F, split, 8.0F, 1.0F).left == fromDeepest);
+    CHECK(ed::assetFooterLayout(0.0F, 1000.0F, split, 8.0F, 1.0F).left == whole);
+    CHECK(ed::assetFooterLayout(0.0F, 1000.0F, split, 0.0F, 1.0F).left == whole);  // nothing measurable: all fits
+    // ... and its reserve counts the path's cells AND the composed details', separators included, as it counted the
+    // one string: AH19 (e)'s shape, "a" and an unknown size, 7 cells together, keeps the watcher from 623.428 + 16 + 7
+    // x 6.462 = 684.662 -- the path's one cell alone would keep it from 645.89, beside a selection it then cannot draw
+    // whole.
+    constexpr float ADVANCE = 6.462F;
+    ed::AssetFooterText seven;
+    seven.selection = "a";
+    seven.selectionDetails.size = AERO_GLYPH_EM_DASH;
+    seven.notice = "truncated (caps: 10000 listed, 20000 scanned)";
+    seven.thumbnailsBudget = 256U;
+    seven.watcher = "Watching (partial -- tree exceeds the scan limit)";
+    const ed::AssetFooterLayout at690 = ed::assetFooterLayout(8.0F, 690.0F, seven, ADVANCE, 1.0F);
+    REQUIRE_FALSE(at690.right.empty());
+    CHECK(at690.right.size() == 2U);
+    CHECK(at690.left == "a  -  " AERO_GLYPH_EM_DASH);  // drawn whole beside the watcher
+    CHECK(ed::assetFooterLayout(8.0F, 684.0F, seven, ADVANCE, 1.0F).right.size() == 1U);
+    // No path is no selection, whatever the details: no reserve and nothing drawn.
+    ed::AssetFooterText detailsOnly = seven;
+    detailsOnly.selection.clear();
+    CHECK(ed::assetFooterLayout(8.0F, 684.0F, detailsOnly, ADVANCE, 1.0F).right.size() == 2U);
+    CHECK(ed::assetFooterLayout(8.0F, 684.0F, detailsOnly, ADVANCE, 1.0F).left.empty());
 }
