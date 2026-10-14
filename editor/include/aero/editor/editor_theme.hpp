@@ -306,7 +306,13 @@ struct ThemePanels {
                                          // on a release off the arrow band, for a press made with none held: the
                                          // modifiers are read at the press, and the release does not read them again
                                          // (imgui_widgets.cpp:619, :746-755, :6994-6996, :7033-7034; :7011-7016 leave
-                                         // PressedOnClickRelease off on a frame the mouse is over the arrow band)
+                                         // PressedOnClickRelease off on a frame the mouse is over the arrow band).
+                                         // A release toggles only over the header: the release path reads its hover
+                                         // (imgui_widgets.cpp:746). And a press ON the band released off it, still
+                                         // over the header, toggles BACK on the release, with or without a modifier:
+                                         // the header holds the active id from the press (imgui_widgets.cpp:640-646),
+                                         // the overflow cannot hover while it does (imgui.cpp:5091), and the release
+                                         // reads the release frame's flags (imgui_widgets.cpp:746-755, :7013-7016)
     float cardChevronWidth = 3.5F;       // the chevron's INK: 7 x 7 px (x 2244-2250)
     float cardIconGap = 8.0F;            // chevron -> icon, and icon -> title (chosen)
     float chipPaddingX = 10.0F;          // "RMB + WASD to fly": 111.5 dp = 90.9 in BodySmall + 2 x 10.3 (10)

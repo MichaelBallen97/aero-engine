@@ -19001,6 +19001,12 @@ TEST_CASE("editor: the Asset Browser fits its panel with 40 orphans and Issues o
     // (panes 7 and 29) and fits: before the reservation it scrolled (budget 89 in both arms; scroll max 4 closed, 26
     // open) with its tree at 29 or 7 and the group drawn 41 beside it. The tall subcase shows the row in both states
     // here (avail 158: panes 64 open and 98 closed), and folds on a runner that delivers its panel under 143.
+    // Its fifth round corrects the relation above: at 1x the default quarter is exactly avail = ceil((H - 2) / 4) - 71,
+    // the 2-point docking separator coming off the height before the split (imgui.cpp:20188-20193; I345 measures it),
+    // so floor((H - 24) / 4) - 65 reads one point low whenever H is 3 mod 4 (647 measured 91, where it gives 90). The
+    // H at each edge -- 627, 871 and 539 -- is 3 mod 4, so the regime is H in [627, 870], not [628, 871]: the open
+    // arm's WARN fallback runs below H = 627 and the closed arm's below H = 539, not 540 (measured: 626 -> 85,
+    // 627 -> 86, 870 -> 146, 871 -> 147, 538 -> 63, 539 -> 64). The 768 and 640 figures above hold under both forms.
     bool tallPanel = true;
     bool foldBand = false;
     int windowHeight = 1000;
