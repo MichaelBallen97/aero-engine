@@ -166,10 +166,11 @@ struct AssetBrowserLayout {
     float issuesBodyHeight = 0.0F;  // the body child's height; 0 iff the body is not drawn, else >= 1
     float footerHeight = 0.0F;      // spacing below the region above + the footer's line (frame height)
     // task E.6.3 (the code-review round, rounds 2 and 3): true while R* = availHeight - footerHeight - the Issues
-    // region the list takes OPEN at its one-row floor (0 with no Issues) >= paneChromeHeight + max(frameHeight, 4) --
-    // the frame term never under ImGui's 4-point child -- so the contents pane draws its crumb row over at least one
-    // frame of contents; false is THE FOLD -- no row, and the ##contents child takes the whole pane. The same answer
-    // for both Issues states.
+    // region the list takes OPEN at its one-row floor (0 with no Issues) >= paneChromeHeight + max(frameHeight, 4),
+    // as assetBrowserLayout computes it: the frame term is never under ImGui's 4-point child
+    // (IMGUI_WINDOW_HARD_MIN_SIZE): with a frame of 0 or NaN the threshold is the chrome + 4, never the chrome alone
+    // (AV66). So the contents pane draws its crumb row over at least one frame of contents; false is THE FOLD -- no
+    // row, and the ##contents child takes the whole pane. The same answer for both Issues states.
     bool crumbRowShown = true;
 };
 

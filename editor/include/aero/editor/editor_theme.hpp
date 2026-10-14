@@ -301,8 +301,12 @@ struct ThemePanels {
                                          // invisibly, the label is empty), but it sets ImGui's arrow hit band, the
                                          // strip's left FontSize + 2 x this (36 dp at body 16): a press there toggles
                                          // on mouse-down, even with Ctrl, Shift or Alt held; elsewhere on the strip
-                                         // it toggles on release, and only with none held (imgui_widgets.cpp:619,
-                                         // :6994-6996, :7011-7012, :7033-7034)
+                                         // -- the overflow aside, where one is drawn: it takes its own press, since
+                                         // the header is an AllowOverlap item (imgui.cpp:5114-5118) -- it toggles
+                                         // on a release off the arrow band, for a press made with none held: the
+                                         // modifiers are read at the press, and the release does not read them again
+                                         // (imgui_widgets.cpp:619, :746-755, :6994-6996, :7033-7034; :7011-7016 leave
+                                         // PressedOnClickRelease off on a frame the mouse is over the arrow band)
     float cardChevronWidth = 3.5F;       // the chevron's INK: 7 x 7 px (x 2244-2250)
     float cardIconGap = 8.0F;            // chevron -> icon, and icon -> title (chosen)
     float chipPaddingX = 10.0F;          // "RMB + WASD to fly": 111.5 dp = 90.9 in BodySmall + 2 x 10.3 (10)

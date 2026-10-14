@@ -14,9 +14,10 @@
 //   4. void       the "click empty space to clear / drop here to unparent" target
 //                 (the walk and the void target run only while BeginChild says the child is visible; the match list
 //                 -- and the badge's count -- is built ahead of that gate)
-//   5. apply      one switch over `pending` -- where the panel applies its own gestures, except the create and
-//                 asset-drop requests: those are one-shots EditorApp::tick drains and applies, never here. Phase 1's
-//                 ended rename is the panel's one other push, and it lands before the walk
+//   5. apply      one switch over `pending` -- where the panel's World and Selection gestures apply (Create Child
+//                 included), except Create Empty, the typed creates (`pendingCreate`) and the asset drop
+//                 (`pendingAssetDrop`): one-shots EditorApp::tick drains and applies, never here. Phase 1's ended
+//                 rename is the panel's one other push, and it lands before the walk
 // Phases 1 and 5 bracket the ImGui work so that mutating mid-walk (which would invalidate
 // eachChild's cursor -- world.hpp:157-163 -- and unbalance TreeNodeEx/TreePop) is impossible by
 // construction. EVERY walk here is an explicit stack, never a recursive function: misc-no-recursion
