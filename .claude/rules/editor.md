@@ -2343,14 +2343,18 @@ state.
   focus and rename request (F2's gate, the `shortcutsLive` verdict), the Inspector's component menu and card header
   toggle, the Assets navigation, the Viewport's stats toggle and the Console's log scroll are each drained on ONE line
   naming the control's enabled predicate and `noModal`, computed once from
-  `GetTopMostPopupModal()` (`I337`). A control with no disabled state -- the card header, the log child's scrollbar --
-  is gated by `noModal` alone. The log scroll's value is bounded to the scrollbar's last-drawn `ScrollMax.x` before
+  `GetTopMostPopupModal()` (`I337`). A control with no disabled state -- the card header, the component menu's Remove
+  Component item, the log child's scrollbar -- is gated by `noModal` (and, for the two Inspector seams, the card's own
+  name) alone. The log scroll's value is bounded to the scrollbar's last-drawn `ScrollMax.x` before
   ImGui's 64-bit round can see it; the navigation and search-query seams pass their value through unvalidated, as test
   seams (`applyPending` writes the requested folder into `currentDir` as given, existing or not). Two control terms
-  are witnessed by their own refusal, not only the modal's: the stats toggle's (`I338` cuts the image until the chip
-  is not laid out) and the search query's (`I344`'s rename arm refuses a query while the rename disables the field);
-  the Assets navigation's `crumbsEnabled` term has only `I337`'s source pin. **A request HELD ON A PANEL lives one
-  tick too**, by its own mechanism, since the
+  are witnessed by their own refusal: the stats toggle's `statsControlReachable` (`I338` cuts the image until the
+  chip is not laid out) and the search query's `searchEnabled` (`I344`'s rename arm refuses a query while the rename
+  disables the field). The Assets navigation's `crumbsEnabled`, the search-field focus's `searchEnabled` (the same
+  term, read again on its own drain line) and the rename request's `shortcutsLive` have only `I337`'s source pin.
+  `noModal` is refused behaviourally for three seams alone -- the Assets navigation, the stats toggle and the card
+  header (`I338`); the Hierarchy's three seams, the component menu and the log scroll have only `I337`'s pin for it.
+  **A request HELD ON A PANEL lives one tick too**, by its own mechanism, since the
   shell chrome's clear after the `ShellUiState` build reaches only `EditorApp`'s members: the panel resets it on the
   first statement after its drain's closing brace -- that statement and nothing else on its line, so no condition can
   ride along -- whichever way the gate answered (`I337`; the Inspector's two seams

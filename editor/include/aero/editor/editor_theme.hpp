@@ -294,7 +294,15 @@ struct ThemePanels {
     float cardPaddingY = 10.0F;          // the body's DRAWN top and bottom padding, net of ItemSpacing.y (D4)
     float cardGap = 12.0F;               // card to card, drawn
     float cardHeaderPaddingY = 8.0F;     // derived: body 16 + 2 x 8 = 32, the 31-dp strip plus its rule
-    float cardHeaderPaddingX = 10.0F;    // the chevron COLUMN, 10 dp in: the open ink fills it, the closed is centred
+    float cardHeaderPaddingX = 10.0F;    // the strip's inner inset, BOTH edges: the chevron COLUMN starts 10 dp in
+                                         // (the open ink fills it, the closed is centred), and the overflow -- or,
+                                         // with none, the title's clip -- ends 10 dp before the right edge. As the
+                                         // header item's FramePadding.x it draws nothing (ImGui's own arrow is drawn
+                                         // invisibly, the label is empty), but it sets ImGui's arrow hit band, the
+                                         // strip's left FontSize + 2 x this (36 dp at body 16): a press there toggles
+                                         // on mouse-down, even with Ctrl, Shift or Alt held; elsewhere on the strip
+                                         // it toggles on release, and only with none held (imgui_widgets.cpp:619,
+                                         // :6994-6996, :7011-7012, :7033-7034)
     float cardChevronWidth = 3.5F;       // the chevron's INK: 7 x 7 px (x 2244-2250)
     float cardIconGap = 8.0F;            // chevron -> icon, and icon -> title (chosen)
     float chipPaddingX = 10.0F;          // "RMB + WASD to fly": 111.5 dp = 90.9 in BodySmall + 2 x 10.3 (10)

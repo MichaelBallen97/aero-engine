@@ -19412,9 +19412,10 @@ namespace {
 
 // I233's runner rule, derived rather than listed (task E.6.3's code-review round, round 2): every registered panel
 // whose DEFAULT slot is Left or Right is hidden, so ImGui's dock tree hands the Bottom node the whole width
-// (imgui.cpp:20281-20284: a node whose child is invisible gives the visible one its size). A copied list of names went
-// stale silently the day a panel took a side slot -- its node stayed, the Bottom row narrowed, and a fit-gated arm fell
-// to its WARN on every lane. setVisibleAt by index, so no id is ever looked up (setVisible logs an unknown one).
+// (imgui.cpp:20281-20284: a node whose child is invisible gives the visible one its size). A copied list of names
+// would go stale silently the day a panel takes a side slot -- its node would stay, the Bottom row narrow, and a
+// fit-gated arm fall to its WARN on every lane. setVisibleAt by index, so no id is ever looked up (setVisible logs an
+// unknown one).
 void e63HideSidePanels(engine::editor::EditorApp& app) {
     engine::editor::PanelRegistry& panels = app.panels();
     std::size_t hidden = 0;
