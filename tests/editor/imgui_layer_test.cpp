@@ -24836,11 +24836,14 @@ void e63Front(engine::editor::EditorApp& app, const char* panelId, const char* s
 
 // A project for an Assets case: `files` written under assets/ (folders created first), opened with the watcher OFF --
 // a watcher rescan bumps the generation on wall-clock time (F18) -- and the Console hidden, so Assets owns the Bottom
-// slot (2.2.4's C5) and draws every frame.
+// slot (2.2.4's C5) and draws every frame. `bottomDockFraction` is NON-DEFAULTED (the code-review round, round 4): a
+// case whose assertion needs a pane of a known proportion of the window names its fraction, and a case whose literals
+// were measured on the shipping layout names DEFAULT_BOTTOM_DOCK_FRACTION -- no caller inherits either silently.
 [[nodiscard]] std::optional<engine::editor::EditorApp> e63AssetsApp(engine::rhi::Device& device,
                                                                     engine::platform::Window& window,
                                                                     engine::platform::Context& ctx,
-                                                                    std::initializer_list<std::string_view> files) {
+                                                                    std::initializer_list<std::string_view> files,
+                                                                    float bottomDockFraction) {
     const std::string location = uniqueProjectLocation();
     const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
     REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
@@ -24858,7 +24861,8 @@ void e63Front(engine::editor::EditorApp& app, const char* panelId, const char* s
                                            .projectPath = created.root,
                                            .restoreLastProject = false,
                                            .recentProjectsPath = uniqueRecentsFile(),
-                                           .assetWatch = {.enabled = false}});
+                                           .assetWatch = {.enabled = false},
+                                           .bottomDockFraction = bottomDockFraction});
     REQUIRE(app.has_value());
     app->panels().setVisible("Console", false);
     REQUIRE(app->tick());  // 1: the first rescan runs inside this tick, before the frame draws
@@ -26346,7 +26350,8 @@ TEST_CASE("editor: the Assets crumbs, the recursive items text, the tree and the
     std::optional<engine::editor::EditorApp> app =
         e63AssetsApp(*device, *window, ctx,
                      {"top.txt", "models/e.txt", "models/props/a.txt", "models/props/b.txt", "models/props/sub/c.txt",
-                      "models/props/sub/d.txt"});
+                      "models/props/sub/d.txt"},
+                     0.4F);
     auto* const browser = dynamic_cast<engine::editor::AssetBrowserPanel*>(app->panels().find("Assets"));
     REQUIRE(browser != nullptr);
     REQUIRE(browser->database() != nullptr);
@@ -26369,11 +26374,14 @@ TEST_CASE("editor: the Assets crumbs, the recursive items text, the tree and the
     engine::editor::assetItemsText(recursive, expected);
     const engine::editor::AssetChromeRecord& r = browser->chromeRecord();
     // The crumb row draws only where the layout shows it (asset_view.hpp's THE FOLD): with no Issues -- this fixture
-    // has none -- from a recorded avail of footer 30 + chrome 37 + one frame 24 = 91 at 1x. Measured here, avail =
-    // floor((H - 24) / 4) - 65 (I231's relation): this 800-point window records 129, 38 over; a runner that delivers a
-    // ~712-point window records 107, 16 over, and one under 648 points folds the row. Such a runner stops here, loudly,
-    // rather than at a crumb count of 0 -- the INFO names its avail -- and the fix is then a dock-size seam, never a
-    // weaker assertion.
+    // has none -- from a recorded avail of footer 30 + chrome 37 + one frame 24 = 91 at 1x. A quarter of whatever
+    // window a runner delivers is a guess about its display, so this case sizes the Bottom dock itself: 0.4, through
+    // e63AssetsApp's bottomDockFraction (I345 witnesses that ImGui obeys it). Measured here at 0.4, the recorded avail
+    // is ceil(0.4 x (H - 2)) less 71 -- the first frame's whole viewport less the 2-point docking separator, then the
+    // tab bar, padding and header row -- exact at every height read (H = 405, 640, 656, 712 and 800 record 91, 185,
+    // 191, 213 and 249). This 800-point window records 249, 158 over (129 under the default quarter), and the row
+    // folds only in a window delivered under 405 points. A runner that does stop here stops loudly, rather than at a
+    // crumb count of 0, and the INFO prints its recorded avail.
     {
         INFO("recorded avail " << app->assetBrowserLayoutMetrics().availHeight);
         REQUIRE(r.crumbRowShown);
@@ -26453,7 +26461,8 @@ TEST_CASE("editor: Assets tiles -- counts once a generation, hatched labels, rin
         AERO_SKIP_OR_FAIL("no GPU device");
     }
     std::optional<engine::editor::EditorApp> app = e63AssetsApp(
-        *device, *window, ctx, {"note.txt", "blob.bin", "f1/a.txt", "f2/b.txt", "f2/c.txt", "f3/sub/d.txt"});
+        *device, *window, ctx, {"note.txt", "blob.bin", "f1/a.txt", "f2/b.txt", "f2/c.txt", "f3/sub/d.txt"},
+        engine::editor::DEFAULT_BOTTOM_DOCK_FRACTION);
     // I233's runner rule: Small tiles, and the side panels hidden so the Bottom node takes the whole width -- five
     // tiles in one row need 5 x (72 + 8) - 8 = 392 of contents width at body 16.
     e63HideSidePanels(*app);
@@ -26557,7 +26566,8 @@ TEST_CASE("editor: the Assets footer -- the path elided from the left, the right
     if (!device) {
         AERO_SKIP_OR_FAIL("no GPU device");
     }
-    std::optional<engine::editor::EditorApp> app = e63AssetsApp(*device, *window, ctx, {"top.txt", deep});
+    std::optional<engine::editor::EditorApp> app =
+        e63AssetsApp(*device, *window, ctx, {"top.txt", deep}, engine::editor::DEFAULT_BOTTOM_DOCK_FRACTION);
     e63HideSidePanels(*app);
     auto* const browser = dynamic_cast<engine::editor::AssetBrowserPanel*>(app->panels().find("Assets"));
     REQUIRE(browser != nullptr);
@@ -27494,7 +27504,7 @@ TEST_CASE("editor: a panel request its gate refuses, or its panel never draws, i
         AERO_SKIP_OR_FAIL("no GPU device");
     }
     std::optional<engine::editor::EditorApp> app =
-        e63AssetsApp(*device, *window, ctx, {"top.txt", "other.txt", "card.txt", "models/e.txt"});
+        e63AssetsApp(*device, *window, ctx, {"top.txt", "other.txt", "card.txt", "models/e.txt"}, 0.4F);
     auto* const browser = dynamic_cast<engine::editor::AssetBrowserPanel*>(app->panels().find("Assets"));
     auto* const viewport = dynamic_cast<engine::editor::ViewportPanel*>(app->panels().find("Viewport"));
     auto* const hierarchy = dynamic_cast<engine::editor::HierarchyPanel*>(app->panels().find("Hierarchy"));
@@ -27526,9 +27536,11 @@ TEST_CASE("editor: a panel request its gate refuses, or its panel never draws, i
         REQUIRE(app->tick());
     };
     // The row draws (THE FOLD, asset_view.hpp), and every crumb count below reads it. No Issues here, so it shows from
-    // a recorded avail of 91 at 1x; this 800-point window records 129 (measured), and a runner's ~712-point window
-    // about 107 by I231's relation, avail = floor((H - 24) / 4) - 65 -- the row folds under 648 points (I324 says why a
-    // runner short of that is a dock-size seam, never a weaker assertion).
+    // a recorded avail of 91 at 1x. The Bottom dock is sized at 0.4 (I324 says why; I345 is the seam's witness): this
+    // 800-point window records 249, measured (129 under the default quarter), and by I324's measured relation,
+    // ceil(0.4 x (H - 2)) less 71, the row folds only in a window delivered under 405 points. The INFO prints the
+    // recorded avail. The central node keeps the rest, 0.6 of the height less the three bars -- a 360-point image here,
+    // measured -- so (b)'s HUD and cut-image arms still run.
     {
         INFO("recorded avail " << app->assetBrowserLayoutMetrics().availHeight);
         REQUIRE(assets.crumbRowShown);
@@ -28255,4 +28267,83 @@ TEST_CASE("editor: a rename whose field stops drawing ends as the field would (t
     app->requestQuit();
     CHECK(app->tick() == false);
     app.reset();
+}
+
+TEST_CASE("editor: the Bottom dock takes its configured share of the delivered window (task E.6.3, I345)") {
+    // The code-review round, round 4: I324 and I338 size the Bottom dock through EditorAppConfig's bottomDockFraction
+    // (0.4), so their crumb-row REQUIREs read a pane of a known share of the window rather than a quarter of whatever
+    // height a runner delivers. This is the seam's EFFECT -- the avail ImGui laid out, never the config read back.
+    // A default layout splits the work area of the frame it is built in, H points tall: the Bottom node takes
+    // ceil(f x (H - 2)), the 2-point docking separator off first (imgui.cpp:20188-20193), and keeps that height beside
+    // the central node afterwards (:20321). The first build runs while the work area is still the whole main viewport
+    // -- a bar's inset lands at the NEXT NewFrame (imgui_widgets.cpp:9271-9275, imgui.cpp:16987-16997) -- and a View >
+    // Reset Layout splits the work area under the menu bar, the toolbar and the status bar. Measured here, the recorded
+    // avail is that node less 71 at 1x, for both fractions and both builds (an 800-point window: 249 and 129 first,
+    // 211 and 105 after a reset; a 656-point one: 191 and 93 first). So the midpoint of the two predictions,
+    // 0.325 x (H - 2) - 71, its lengths scaled with the UI, is a ratio of the delivered geometry: the 0.4 layout clears
+    // it and the default does not, each by about 0.075 x (H - 2) -- 60 points at 800, 53 after its reset, 49 at 656 --
+    // so the comparison holds at whatever height a runner delivers, with a margin that shrinks with the window.
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "bottom dock i345", .width = 1280, .height = 800});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    constexpr float TALL = 0.4F;
+    constexpr float MIDPOINT_FRACTION = 0.5F * (TALL + engine::editor::DEFAULT_BOTTOM_DOCK_FRACTION);
+    struct DockReading {
+        float uiScale = 0.0F;
+        // The main viewport's height after the settle -- the first build's H while the delivered window keeps its size
+        // from its first frame. The REQUIREs in readFraction hold it from the settle on; the frames before are unread.
+        float firstSplit = 0.0F;
+        float firstAvail = 0.0F;
+        float resetSplit = 0.0F;  // the reset's H: the work area under the menu bar, the toolbar and the status bar
+        float resetAvail = 0.0F;
+    };
+    // One app per fraction on the SAME window, each read after e63AssetsApp's settle, then again after a reset.
+    const auto readFraction = [&device, &window, &ctx](float fraction) {
+        std::optional<engine::editor::EditorApp> app = e63AssetsApp(*device, *window, ctx, {"top.txt"}, fraction);
+        const engine::editor::ShellChromeRecord& shell = app->shellChromeRecord();
+        REQUIRE(shell.framesRecorded > 0U);  // ANTI-VACUITY: the viewport geometry below was recorded
+        DockReading reading;
+        reading.uiScale = app->uiScale();
+        reading.firstSplit = shell.viewportSize.y;
+        reading.firstAvail = app->assetBrowserLayoutMetrics().availHeight;
+        // The viewport is SDL_GetWindowSize as of the last NewFrame (imgui_impl_sdl3.cpp:972-990 and :1002,
+        // imgui.cpp:16937), so the window reports the recorded height before the reset and after it: a resize
+        // mid-case fails here, loudly, rather than judging an avail against another window's midpoint.
+        REQUIRE(static_cast<float>(window->size().height) == reading.firstSplit);
+        app->requestLayoutReset();
+        e62Ticks(*app, 3);
+        REQUIRE(shell.viewportSize.y == reading.firstSplit);
+        REQUIRE(static_cast<float>(window->size().height) == reading.firstSplit);
+        reading.resetSplit = shell.workSize.y;
+        reading.resetAvail = app->assetBrowserLayoutMetrics().availHeight;
+        app->requestQuit();
+        CHECK(app->tick() == false);
+        app.reset();
+        return reading;
+    };
+    const DockReading tall = readFraction(TALL);
+    const DockReading shipped = readFraction(engine::editor::DEFAULT_BOTTOM_DOCK_FRACTION);
+    REQUIRE(tall.firstSplit > 0.0F);
+    REQUIRE(shipped.firstSplit == tall.firstSplit);  // one delivered window under both layouts
+    REQUIRE(shipped.resetSplit == tall.resetSplit);
+    const float s = tall.uiScale;
+    const auto midpoint = [s](float split) { return (MIDPOINT_FRACTION * (split - (2.0F * s))) - (71.0F * s); };
+    INFO("window " << window->size().height << ", viewport " << tall.firstSplit << ", work " << tall.resetSplit
+                   << ", scale " << s << "; first build: 0.4 -> " << tall.firstAvail << ", default -> "
+                   << shipped.firstAvail << " against " << midpoint(tall.firstSplit) << "; reset: 0.4 -> "
+                   << tall.resetAvail << ", default -> " << shipped.resetAvail << " against "
+                   << midpoint(tall.resetSplit));
+    CHECK(tall.firstAvail > midpoint(tall.firstSplit));
+    CHECK(tall.resetAvail > midpoint(tall.resetSplit));  // View > Reset Layout rebuilds with the same value
+    // ANTI-VACUITY: the same comparison FAILS for the shipping layout at the same window, in both builds.
+    CHECK_FALSE(shipped.firstAvail > midpoint(shipped.firstSplit));
+    CHECK_FALSE(shipped.resetAvail > midpoint(shipped.resetSplit));
 }

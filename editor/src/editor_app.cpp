@@ -294,6 +294,18 @@ std::uint32_t framePaceSleepMs(bool presented, bool focused, float unfocusedCapH
     return static_cast<std::uint32_t>(std::lround(remaining));
 }
 
+float resolveBottomDockFraction(float requested) noexcept {
+    constexpr float LEAST = 0.05F;
+    constexpr float MOST = 0.95F;
+    if (!std::isfinite(requested)) {  // FIRST: a NaN fails both comparisons below, so the range test would pass it
+        return DEFAULT_BOTTOM_DOCK_FRACTION;
+    }
+    if (requested < LEAST || requested > MOST) {
+        return DEFAULT_BOTTOM_DOCK_FRACTION;  // the shipping layout, never a clamp to the nearest bound
+    }
+    return requested;
+}
+
 EditorApp::EditorApp(ImGuiLayer layer, platform::Context& ctx, EditorAppConfig config)
     : layer(std::move(layer)), ctx(&ctx), config(std::move(config)) {}
 
@@ -394,6 +406,8 @@ std::optional<EditorApp> EditorApp::create(rhi::Device& device, platform::Window
     // task E.6.2 (D16): the same shape, a fifth time -- one resolution, one member, no call site that can reach the
     // machine's real home when a test supplied its own.
     app.homeDirectory = config.homeDirectory.empty() ? defaultHomeDirectory() : config.homeDirectory;
+    // task E.6.3 (round 4): the Bottom split, resolved once -- every default layout and every reset reads this member.
+    app.bottomDockFraction = resolveBottomDockFraction(config.bottomDockFraction);
     // task E.6.2 (D15): the backend's name, read ONCE, here, on the thread that owns the device (backendName()
     // asserts it) -- engine-owned "metal" / "vulkan" / "direct3d12", shown capitalised.
     app.backendLabel = backendDisplayName(device.backendName());
@@ -1209,6 +1223,7 @@ bool EditorApp::tick() {
     layer.beginFrame();
     ShellUiState ui{.applyDefaultLayout = applyDefaultLayout,
                     .placeUnplacedPanels = placeUnplacedPanels,
+                    .bottomDockFraction = bottomDockFraction,  // task E.6.3 (round 4): create()'s resolved value
                     .undoRequested = undoRequested,
                     .redoRequested = redoRequested,
                     .focusPanelId = requestedPanelFocus,

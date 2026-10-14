@@ -1,6 +1,8 @@
-// Aero Engine -- task E.6.3: the panels' shared chrome as VALUES (PC1-PC11). Tier 0: no ImGui, no GPU, no #if.
+// Aero Engine -- task E.6.3: the panels' shared chrome as VALUES (PC1-PC12; PC12 is the default layout's Bottom
+// split). Tier 0: no ImGui, no GPU, no #if.
 // Every expected value is a RESTATED literal (the mock's bytes, the theme's dp), never recomputed by the function
 // under test.
+#include <aero/editor/editor_app.hpp>  // PC12: resolveBottomDockFraction, pure -- no app is constructed here
 #include <aero/editor/editor_icons.hpp>
 #include <aero/editor/editor_theme.hpp>
 #include <aero/editor/material_inspector_model.hpp>
@@ -11,6 +13,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>  // PC12: std::bit_cast, the pass-through arm's bit-for-bit claim
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -375,4 +378,23 @@ TEST_CASE("panel chrome: the chevron's pen centres its ink, a whole point, total
     constexpr float MAX_F = std::numeric_limits<float>::max();
     CHECK(ed::cardChevronPenX(MAX_F, MAX_F, 0.0F, 0.0F) == 0.0F);
     CHECK(ed::cardChevronPenX(-MAX_F, 0.0F, MAX_F, 0.0F) == 0.0F);
+}
+
+TEST_CASE("panel chrome: the Bottom dock fraction passes a sane value and refuses the rest (task E.6.3, PC12)") {
+    // The code-review round, round 4: the seam that sizes the Assets / Console node (EditorAppConfig's
+    // bottomDockFraction), resolved once in EditorApp::create. The shipping value, restated.
+    CHECK(ed::DEFAULT_BOTTOM_DOCK_FRACTION == 0.25F);
+    static_assert(noexcept(ed::resolveBottomDockFraction(0.25F)));
+    // A value inside [0.05, 0.95] passes through bit for bit -- the default, a test's 0.4, and both bounds.
+    for (const float sane : {0.25F, 0.4F, 0.05F, 0.95F}) {
+        CAPTURE(sane);
+        const auto resolvedBits = std::bit_cast<std::uint32_t>(ed::resolveBottomDockFraction(sane));
+        CHECK(resolvedBits == std::bit_cast<std::uint32_t>(sane));
+    }
+    // Anything else falls back to the shipping 0.25 -- never a clamp to the nearer bound (0.05 for 0.0 and 0.04,
+    // 0.95 for 0.96 and 1.0), and never a NaN let through by a range test that a NaN fails both halves of.
+    for (const float refused : {0.0F, 0.04F, 0.96F, 1.0F, -0.5F, NAN_F, INF_F, -INF_F}) {
+        CAPTURE(refused);
+        CHECK(ed::resolveBottomDockFraction(refused) == 0.25F);
+    }
 }

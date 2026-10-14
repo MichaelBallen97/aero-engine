@@ -21,6 +21,11 @@ enum class DockSlot : std::uint8_t {
     Bottom,
 };
 
+// task E.6.3 (the code-review round, round 4): the default layout's Bottom split -- the share of the dockspace's
+// height the Assets / Console node takes. The shipping value, and the one place it is spelled. Beside DockSlot so the
+// shell's src-private headers reach it through panel_registry.hpp rather than through the whole of editor_app.hpp.
+inline constexpr float DEFAULT_BOTTOM_DOCK_FRACTION = 0.25F;
+
 // Per-panel window preferences, translated to ImGui window flags / style vars by shell_ui.cpp.
 // NAMED BOOLEANS, never a raw ImGui flag int — an ImGui type here would make every consumer of this
 // header ImGui-aware and break D9.

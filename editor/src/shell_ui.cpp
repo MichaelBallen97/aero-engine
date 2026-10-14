@@ -608,7 +608,10 @@ void placeUnplacedPanels(ImGuiID dockId, PanelRegistry& panels) {
 
 // D3 + F10: the default/reset dock layout. Only splits a slot at least one registered panel asks
 // for — an empty ImGui dock node is not pruned, it renders as a dead grey rectangle.
-void buildDefaultLayout(ImGuiID dockId, PanelRegistry& panels) {
+// task E.6.3 (the code-review round, round 4): `bottomFraction` is NON-DEFAULTED -- EditorApp's resolved value
+// (DEFAULT_BOTTOM_DOCK_FRACTION unless a test's config set another), so no call site can build a different Bottom
+// split from the one the app resolved.
+void buildDefaultLayout(ImGuiID dockId, PanelRegistry& panels, float bottomFraction) {
     std::array<bool, DOCK_SLOT_COUNT> used{};  // value-initialised: all false
     for (std::size_t i = 0; i < panels.count(); ++i) {
         used[slotIndex(panels.panelAt(i).defaultDockSlot())] = true;
@@ -633,7 +636,7 @@ void buildDefaultLayout(ImGuiID dockId, PanelRegistry& panels) {
         right = ImGui::DockBuilderSplitNode(center, ImGuiDir_Right, 0.30F, nullptr, &center);
     }
     if (used[slotIndex(DockSlot::Bottom)]) {
-        bottom = ImGui::DockBuilderSplitNode(center, ImGuiDir_Down, 0.25F, nullptr, &center);
+        bottom = ImGui::DockBuilderSplitNode(center, ImGuiDir_Down, bottomFraction, nullptr, &center);
     }
 
     for (std::size_t i = 0; i < panels.count(); ++i) {
@@ -862,7 +865,8 @@ void drawShellUi(PanelRegistry& panels, PanelContext& context, ShellUiState& sta
     const ImGuiID dockId = ImGui::DockSpaceOverViewport(0, ImGui::GetMainViewport());
     if (state.applyDefaultLayout) {
         state.applyDefaultLayout = false;
-        buildDefaultLayout(dockId, panels);  // must run AFTER the dockspace exists this frame (E17)
+        // Must run AFTER the dockspace exists this frame (E17), with the app's resolved Bottom split.
+        buildDefaultLayout(dockId, panels, state.bottomDockFraction);
     } else if (state.placeUnplacedPanels) {
         // `else if`, not a second `if`: a default layout has just placed every panel by definition,
         // so there is nothing unplaced left and running both would be redundant work on the same
