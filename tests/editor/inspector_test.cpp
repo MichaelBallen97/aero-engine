@@ -2108,6 +2108,14 @@ TEST_CASE("KP3: the new member survives D15's scratch reuse -- capacity AND the 
     const std::size_t tokenCapacity = tokenField->assetKindToken.capacity();
     REQUIRE(tokenCapacity >= 256);  // ANTI-VACUITY: the buffer really is off SSO now
 
+    // task E.6.3 (D5): the two new strings follow the same rule -- humanizeIdentifier clears and appends, so each
+    // slot's buffer survives a same-shape rebuild. Forced off SSO first, exactly as the token above.
+    tokenField->label.reserve(256);
+    const void* labelData = tokenField->label.c_str();
+    REQUIRE(tokenField->label.capacity() >= 256);
+    model.components[0].title.reserve(256);
+    const void* titleData = model.components[0].title.c_str();
+    REQUIRE(model.components[0].title.capacity() >= 256);
     buildInspectorModel(world, e, model);
     CHECK(model.components[0].fields.size() == 16);
     CHECK(model.components[0].fields.data() == fieldsData);
@@ -2116,6 +2124,10 @@ TEST_CASE("KP3: the new member survives D15's scratch reuse -- capacity AND the 
     CHECK(rebuilt.assetKindToken == "texture");
     CHECK(rebuilt.assetKindToken.capacity() == tokenCapacity);
     CHECK(static_cast<const void*>(rebuilt.assetKindToken.c_str()) == tokenData);
+    CHECK(static_cast<const void*>(rebuilt.label.c_str()) == labelData);
+    CHECK(rebuilt.label == "Texture Ref");  // the humanised "textureRef", written into the surviving buffer
+    CHECK(static_cast<const void*>(model.components[0].title.c_str()) == titleData);
+    CHECK(model.components[0].title == "Inspector Probe");  // the humanised registration "InspectorProbe"
 }
 
 TEST_CASE("KP4: an ANNOTATED Guid field round-trips through the seam exactly as an unannotated one") {

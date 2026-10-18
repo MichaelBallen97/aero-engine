@@ -1,8 +1,9 @@
 #include <aero/core/log.hpp>
-#include <aero/core/math.hpp>              // task E.3.1: degrees/radians/eulerAngles/fromEulerAngles
-#include <aero/editor/asset_database.hpp>  // task 3.1.5: the Guid row resolves a reference to a record
-#include <aero/editor/asset_view.hpp>      // classifyAssetKind, assetKindLabel
-#include <aero/editor/editor_theme.hpp>    // task E.6.1: the out-of-range axis row's neutral
+#include <aero/core/math.hpp>                   // task E.3.1: degrees/radians/eulerAngles/fromEulerAngles
+#include <aero/editor/asset_database.hpp>       // task 3.1.5: the Guid row resolves a reference to a record
+#include <aero/editor/asset_view.hpp>           // classifyAssetKind, assetKindLabel
+#include <aero/editor/editor_theme.hpp>         // task E.6.1: the out-of-range axis row's neutral
+#include <aero/editor/entity_presentation.hpp>  // humanizeIdentifier, componentIconFor
 #include <aero/editor/inspector_model.hpp>
 #include <aero/editor/material_card.hpp>  // task E.4.5: materialCardRowText
 #include <aero/editor/project_files.hpp>  // leafOf
@@ -109,6 +110,14 @@ DispatchedValue readEntryValue(const entt::meta_data& data, entt::meta_any& hand
     return true;
 }
 
+// "Transform" from "engine::Transform" -- inspector_panel.cpp's and component_commands.cpp's helper, restated per
+// layer. Pointer + size, never substr (which is not noexcept).
+[[nodiscard]] std::string_view shortTypeName(std::string_view fullName) noexcept {
+    const std::size_t pos = fullName.rfind("::");
+    return pos == std::string_view::npos ? fullName
+                                         : std::string_view(fullName.data() + pos + 2U, fullName.size() - pos - 2U);
+}
+
 }  // namespace
 
 void buildInspectorModel(const World& world, Entity entity, InspectorModel& out) {
@@ -134,6 +143,10 @@ void buildInspectorModel(const World& world, Entity entity, InspectorModel& out)
             ComponentEntry& entry = out.components[writeIndex];
             entry.typeId = id;
             entry.name = world.componentTypeName(id);  // std::string::operator= reuses its own capacity
+            // task E.6.3 (D5): the card's title and icon, IN PLACE -- humanizeIdentifier clears and appends, so the
+            // slot's buffer survives a same-shape rebuild (KP3). Every component gets both, reflected or not.
+            humanizeIdentifier(shortTypeName(entry.name), entry.title);
+            entry.icon = componentIconFor(entry.name);
 
             const entt::meta_type metaType = resolveComponentMeta(entry.name);
             entry.hasFields = static_cast<bool>(metaType);
@@ -162,6 +175,7 @@ void buildInspectorModel(const World& world, Entity entity, InspectorModel& out)
                     }
                     FieldEntry& field = entry.fields[fieldWriteIndex];
                     field.name = data.name();
+                    humanizeIdentifier(field.name, field.label);  // task E.6.3 (D5): in place, never `= ...`
                     field.kind = dispatched.kind;
                     field.value = dispatched.value;
                     field.hasRange = false;
@@ -504,6 +518,8 @@ namespace {
 // gaps, to clip "0.000" in a 258-wide dock (TH11, I289). 4 x 16 = 64 is the old 65 again, and the Cube's
 // widest label ("meshIndex": 63 measured, + 2 x 6 of cell padding = 75) decides its column, not the floor.
 constexpr float LABEL_COLUMN_FLOOR_FONT_MULTIPLE = 4.0F;
+// task E.6.3 (D1): the column's ceiling, half the content -- a named value where it was an inline `* 0.5F`.
+constexpr float LABEL_COLUMN_CEILING_FRACTION = 0.5F;
 
 }  // namespace
 
@@ -513,23 +529,59 @@ float inspectorLabelColumnWidth(float widestLabelPx, float cellPaddingPx, float 
     // std::max, not a bare `availableWidthPx * 0.5F`: a zero- or negative-width dock IS reachable (a
     // panel dragged to its minimum, or the frame a dock split settles), and std::clamp with lo > hi
     // is UNDEFINED BEHAVIOUR. VF15(d) is the arm that drives it under UBSan.
-    const float ceilPx = std::max(floorPx, availableWidthPx * 0.5F);
+    const float ceilPx = std::max(floorPx, availableWidthPx * LABEL_COLUMN_CEILING_FRACTION);
     return std::clamp(widestLabelPx + (2.0F * cellPaddingPx), floorPx, ceilPx);
 }
 
-float inspectorAxisBoxWidth(float cellWidth, float letterWidth, float letterGap, float unitGap) noexcept {
-    // [letter][letterGap][box] x3 with a unit gap between the units: 3*letter + 3*letterGap + 2*unitGap +
-    // 3*box == the cell, with the gaps drawAxisRow's own SameLine calls spell, so the budget fills the cell;
-    // ImGui then truncates each box to a whole point (CalcItemWidth, imgui.cpp:12323), so the row as drawn
-    // ends under 3 points short of the cell's edge and never past it.
-    const float gaps = (3.0F * letterGap) + (2.0F * unitGap);
-    const float budget = (cellWidth - (3.0F * letterWidth) - gaps) / 3.0F;
-    // FINITENESS FIRST: std::max(NaN, 1.0F) is NaN, as std::clamp(NaN, ...) is on libc++, so a NaN or an
-    // infinity in any input -- or a sum that overflows -- would otherwise reach SetNextItemWidth.
-    if (!std::isfinite(budget)) {
-        return 1.0F;
-    }
-    return std::max(budget, 1.0F);
+namespace {
+
+[[nodiscard]] float layoutScale(float uiScale) noexcept {
+    return (std::isfinite(uiScale) && uiScale > 0.0F) ? uiScale : 1.0F;
+}
+
+}  // namespace
+
+InspectorAxisLayout inspectorAxisLayout(float cellWidth, float letterWidth, float unitGap, float uiScale) noexcept {
+    const float s = layoutScale(uiScale);
+    InspectorAxisLayout out{};
+    out.letterX = EDITOR_THEME.panels.axisLetterInset * s;
+    const float letter = std::isfinite(letterWidth) ? std::max(letterWidth, 0.0F) : 0.0F;
+    out.valueX = out.letterX + letter + (EDITOR_THEME.panels.axisLetterGap * s);
+    // FINITENESS FIRST: std::max(NaN, 1.0F) is NaN, as std::clamp(NaN, ...) is on libc++ (3.7.2, E.6.1's rule).
+    const float unit = (cellWidth - (2.0F * unitGap)) / 3.0F;
+    out.unitWidth = std::isfinite(unit) ? std::max(unit, 1.0F) : 1.0F;
+    const float value = out.unitWidth - out.valueX;
+    out.valueWidth = std::isfinite(value) ? std::max(value, 1.0F) : 1.0F;
+    return out;
+}
+
+InspectorHeaderLayout inspectorHeaderLayout(float rowMinX, float rowMaxX, float rowMidY, float idTextWidth,
+                                            float uiScale) noexcept {
+    const float s = layoutScale(uiScale);
+    const float swatch = EDITOR_THEME.panels.entitySwatchSize * s;
+    const float gap = EDITOR_THEME.panels.kindDotGap * s;
+    const float minX = std::isfinite(rowMinX) ? rowMinX : 0.0F;
+    const float maxX = std::isfinite(rowMaxX) ? rowMaxX : minX;
+    const float midY = std::isfinite(rowMidY) ? rowMidY : 0.0F;
+    InspectorHeaderLayout out{};
+    out.swatchMin = Vec2{minX, midY - (swatch * 0.5F)};
+    out.swatchMax = Vec2{minX + swatch, midY + (swatch * 0.5F)};
+    out.nameX = out.swatchMax.x + gap;
+    out.idX = maxX - (std::isfinite(idTextWidth) ? std::max(idTextWidth, 0.0F) : 0.0F);
+    out.nameMaxX = std::max(out.nameX, out.idX - gap);
+    return out;
+}
+
+AddComponentLayout addComponentLayout(float contentMinX, float contentWidth, float labelWidth, float uiScale) noexcept {
+    const float s = layoutScale(uiScale);
+    const float minX = std::isfinite(contentMinX) ? contentMinX : 0.0F;
+    const float width = std::isfinite(contentWidth) ? std::max(contentWidth, 0.0F) : 0.0F;
+    AddComponentLayout out{};
+    out.width = (2.0F * EDITOR_THEME.panels.addComponentPaddingX * s) +
+                (std::isfinite(labelWidth) ? std::max(labelWidth, 0.0F) : 0.0F);
+    out.height = cardHeaderHeightDp(EDITOR_THEME) * s;
+    out.minX = minX + std::max(0.0F, (width - out.width) * 0.5F);
+    return out;
 }
 
 }  // namespace engine::editor

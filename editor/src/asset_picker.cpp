@@ -15,11 +15,13 @@
 #include <aero/editor/asset_database.hpp>
 #include <aero/editor/asset_drag.hpp>
 #include <aero/editor/asset_view.hpp>     // elideCaptionRight -- an overflowing value sentence
+#include <aero/editor/editor_glyphs.hpp>  // AERO_GLYPH_ELLIPSIS -- the width the name must keep beside the hint
 #include <aero/editor/material_card.hpp>  // task E.4.5 -- the card's subtitle and tint
 #include <aero/editor/project_files.hpp>
 #include <aero/editor/thumbnail_cache.hpp>
 
 #include "asset_tile.hpp"
+#include "panel_chrome_ui.hpp"
 #include "text_input.hpp"
 #include "thumbnail_service.hpp"
 
@@ -39,6 +41,7 @@ namespace engine::editor {
 namespace {
 
 constexpr const char* POPUP_ID = "##assetpicker";
+constexpr std::string_view PICK_HINT = "pick";  // task E.6.3 (D5)
 
 // The one-per-TU peek (material_panel.cpp's shape, one TU over). It never decodes by hand: every byte
 // goes to decodeAssetDragPayload, which is what keeps DR18 green by construction.
@@ -48,6 +51,13 @@ constexpr const char* POPUP_ID = "##assetpicker";
         return std::nullopt;
     }
     return decodeAssetDragPayload(payload->Data, payload->DataSize);
+}
+
+// task E.6.3: a text's width in the CURRENT font, as AddText draws it -- the reference field's record of the name it
+// drew, and the ellipsis the name must keep beside the hint. An empty view measures "", never a null pointer.
+[[nodiscard]] float currentFontWidth(std::string_view text) {
+    const char* const begin = text.empty() ? "" : text.data();
+    return ImGui::CalcTextSize(begin, begin + text.size()).x;
 }
 
 [[nodiscard]] Vec2 toVec2(ImVec2 v) noexcept { return Vec2{v.x, v.y}; }
@@ -113,7 +123,13 @@ AssetFieldResult drawAssetReferenceField(const AssetFieldInputs& in, AssetPicker
     //    target, one popup anchor. A zero edge yields the literal 0.0F this line has always passed, so
     //    the Inspector's row is byte-identical BY CONSTRUCTION.
     const float buttonHeight = in.thumbnailEdge > 0.0F ? in.thumbnailEdge + (2.0F * style.FramePadding.y) : 0.0F;
+    // task E.6.3 (D5): the field is an `inset` frame like every text field -- `raised`, the Button slot's own role,
+    // would vanish on a raised card. Hover and press keep the frame ladder: inset -> hover -> active.
+    ImGui::PushStyleColor(ImGuiCol_Button, roleVec4(ChromeRole::Inset));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, roleVec4(ChromeRole::Hover));
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive, roleVec4(ChromeRole::Active));
     const bool pressed = ImGui::Button(in.idSuffix, ImVec2(in.buttonWidth, buttonHeight));
+    ImGui::PopStyleColor(3);
 
     // 2. THE BUTTON'S GEOMETRY, captured BEFORE the popup is touched. End() restores the parent's
     //    last-item data at EndPopup (imgui.cpp:8848), so reading these afterwards names the button
@@ -171,28 +187,81 @@ AssetFieldResult drawAssetReferenceField(const AssetFieldInputs& in, AssetPicker
                           state.tileScratch);
     }
 
+    // task E.6.3 (D5): the zero-thumbnail row (the Inspector's) leads with a SWATCH one text line square -- a bound
+    // material's own colour through its card (materialCardTint, the tile's rule), or an empty `inset` well. The edge is
+    // the frame's text line height, derived from the font, so it scales with it and needs no token. No item.
+    //
+    // WHAT THE FRAME HOLDS is referenceFieldParts' decision (panel_chrome_model), from the frame's width and the live
+    // style: the hint drops first, then the swatch, so neither is ever drawn over the other or over the name, and the
+    // name keeps one whole ellipsis while either stays -- the macOS pass's row 17 found a 34-point Inspector field
+    // (900 x 600) drawing the hint ON the well and the name's ellipsis cut to one dot at the frame's edge. The pickHint
+    // switch reaches it as a zero hint width: no hint, and no room reserved for one. The ellipsis is measured as the
+    // elision's own measurer measures (CalcTextSize in the current font), so "the name keeps one ellipsis" is that.
+    // `drawn` is handed to the result just before its `return result;`: three arms reassign the result whole.
+    ReferenceFieldRecord drawn{};
+    const float swatchEdge = in.thumbnailEdge > 0.0F ? 0.0F : ImGui::GetTextLineHeight();
+    const float hintWidth = in.pickHint ? faceTextWidth(PanelFace::BodySmall, PICK_HINT) : 0.0F;
+    const float ellipsisWidth = currentFontWidth(AERO_GLYPH_ELLIPSIS);
+    const ReferenceFieldParts parts =
+        referenceFieldParts(buttonMax.x - buttonMin.x, style.FramePadding.x, style.ItemInnerSpacing.x, swatchEdge,
+                            hintWidth, ellipsisWidth, in.thumbnailEdge);
+    drawn.frameMinX = buttonMin.x;
+    drawn.frameMaxX = buttonMax.x;
+    drawn.swatchEdge = swatchEdge;
+    drawn.hintWidth = hintWidth;
+    drawn.ellipsisWidth = ellipsisWidth;
+    if (parts.swatch) {
+        const ImVec2 swatchMin(buttonMin.x + style.FramePadding.x, buttonMin.y + style.FramePadding.y);
+        const ImVec2 swatchMax(swatchMin.x + swatchEdge, swatchMin.y + swatchEdge);
+        std::optional<IconColor> tint;
+        if (in.current.valid() && in.database != nullptr && in.thumbnails != nullptr) {
+            if (const AssetRecord* const record = in.database->findByGuid(in.current); record != nullptr) {
+                if (const std::optional<ThumbnailKey> key = thumbnailKeyForRecord(*record); key.has_value()) {
+                    in.thumbnails->noteCardWanted(*key);
+                    tint = materialCardTint(in.thumbnails->cardFor(*key));
+                }
+            }
+        }
+        ImDrawList* const swatchList = ImGui::GetWindowDrawList();
+        const float swatchRounding = style.FrameRounding * 0.5F;
+        if (tint.has_value()) {
+            const ImU32 swatchColor = IM_COL32(tint->r, tint->g, tint->b, tint->a);
+            swatchList->AddRectFilled(swatchMin, swatchMax, swatchColor, swatchRounding);
+            drawn.swatchDrawn = true;
+        } else {
+            roleOutline(swatchList, swatchMin, swatchMax, ChromeRole::Border, swatchRounding, ruleHeight());
+            drawn.wellDrawn = true;
+        }
+        drawn.swatchMinX = swatchMin.x;
+        drawn.swatchMaxX = swatchMax.x;
+    }
+
     if (!in.valueText.empty()) {
         ImDrawList* const drawList = ImGui::GetWindowDrawList();
         drawList->PushClipRect(buttonMin, buttonMax, /*intersect_with_current_clip_rect=*/true);
-        // task E.3.4. The zero-thumbnail arm is TODAY'S EXPRESSION, character for character, and it is
-        // a BRANCH rather than a formula that reduces to it: (buttonHeight - fontSize) * 0.5F is only
-        // ARITHMETICALLY FramePadding.y, and GetFrameHeight() is a rounded sum, so an unbranched
-        // "generalisation" could move the Inspector's text by an ulp for no reason at all. The
-        // Inspector is byte-identical BY CONSTRUCTION here, not by a test -- nothing in this tree
-        // measures a widget rect or reads rendered text.
-        const float textX = in.thumbnailEdge > 0.0F
-                                ? buttonMin.x + style.FramePadding.x + in.thumbnailEdge + style.ItemInnerSpacing.x
-                                : buttonMin.x + style.FramePadding.x;
+        // task E.3.4 / E.6.3: the name starts after the thumbnail, or after the swatch when it is kept (parts.textX).
+        // textY stays a branch for the rounding reason alone -- (buttonHeight - fontSize) * 0.5F is only
+        // ARITHMETICALLY FramePadding.y, and GetFrameHeight() is a rounded sum, so an unbranched formula could move
+        // the text by an ulp. The fitting path still draws the raw bytes.
+        const float textX = buttonMin.x + parts.textX;
         const float textY = in.thumbnailEdge > 0.0F
                                 ? buttonMin.y + (((buttonMax.y - buttonMin.y) - ImGui::GetFontSize()) * 0.5F)
                                 : buttonMin.y + style.FramePadding.y;
-        // task E.4.5's validation pass (row 6): A SENTENCE THAT OVERFLOWS IS ELIDED, NOT MERELY CLIPPED. The clip
-        // alone cut a long name mid-glyph at the frame edge and lost the "(Material)" suffix with no sign that
-        // anything was cut. The width is the frame's inner edge, the same FramePadding.x the text starts after.
-        // A sentence that fits takes the else arm -- the SAME AddText on the SAME bytes as before, so the row is
-        // unchanged -- and only the overflow arm allocates. elideCaptionRight is asset_view.hpp's pure rule: the
-        // longest prefix that fits beside an ellipsis, cut on a UTF-8 boundary. I244 pins the call.
-        const float textAvail = buttonMax.x - style.FramePadding.x - textX;
+        // task E.6.3 (D5): the faint "pick" hint at the frame's right, small, ONE draw call before the guard (no third
+        // AddText in this file, I244), and only where parts.hint kept it; the budget below excludes it, so a long name
+        // elides BEFORE it, never over it.
+        const float hintX = buttonMax.x - style.FramePadding.x - hintWidth;
+        if (parts.hint) {
+            constexpr PanelFace HINT_FACE = PanelFace::BodySmall;  // drawn in, and measured in for the record
+            const float hintY = textY + ((ImGui::GetFontSize() - panelFacePoints(HINT_FACE)) * 0.5F);
+            drawRoleText(drawList, HINT_FACE, ImVec2(hintX, hintY), ChromeRole::TextFaint, PICK_HINT);
+            drawn.hintDrawn = true;
+            drawn.hintMinX = hintX;
+            drawn.hintMaxX = hintX + faceTextWidth(HINT_FACE, PICK_HINT);  // as drawn, never hintWidth
+        }
+        // task E.4.5's validation pass (row 6): A SENTENCE THAT OVERFLOWS IS ELIDED, NOT MERELY CLIPPED -- the width is
+        // the frame's inner edge, or (task E.6.3) the hint's left edge less ItemInnerSpacing.x when the hint draws.
+        const float textAvail = parts.textAvail;
         if (ImGui::CalcTextSize(in.valueText.data(), in.valueText.data() + in.valueText.size()).x > textAvail) {
             // An empty view measures the literal "", so ImGui is never handed a null pointer (asset_tile.cpp's
             // measurer does the same).
@@ -200,11 +269,24 @@ AssetFieldResult drawAssetReferenceField(const AssetFieldInputs& in, AssetPicker
                 const char* const first = text.empty() ? "" : text.data();
                 return ImGui::CalcTextSize(first, first + text.size()).x <= textAvail;
             });
-            drawList->AddText(ImVec2(textX, textY), ImGui::GetColorU32(ImGuiCol_Text), elided.data(),
-                              elided.data() + elided.size());
+            // task E.6.3: elideCaptionRight answers at least the ellipsis, even where the budget cannot hold one --
+            // a frame under 2 x FramePadding.x + one ellipsis, or referenceFieldParts' refusal (a zero budget at
+            // the frame's own left edge). Such a name is not drawn: it would run into the padding, onto the outline
+            // or over a slot row's thumbnail.
+            const float elidedWidth = currentFontWidth(elided);
+            if (elidedWidth <= textAvail) {
+                drawList->AddText(ImVec2(textX, textY), ImGui::GetColorU32(ImGuiCol_Text), elided.data(),
+                                  elided.data() + elided.size());
+                drawn.textDrawn = true;
+                drawn.textMinX = textX;
+                drawn.textMaxX = textX + elidedWidth;
+            }
         } else {
             drawList->AddText(ImVec2(textX, textY), ImGui::GetColorU32(ImGuiCol_Text), in.valueText.data(),
                               in.valueText.data() + in.valueText.size());
+            drawn.textDrawn = true;
+            drawn.textMinX = textX;
+            drawn.textMaxX = textX + currentFontWidth(in.valueText);
         }
         drawList->PopClipRect();
     }
@@ -276,7 +358,7 @@ AssetFieldResult drawAssetReferenceField(const AssetFieldInputs& in, AssetPicker
     const bool open = ImGui::BeginPopup(POPUP_ID);
     if (open) {
         const std::string heading = assetPickerHeading(in.rules);
-        ImGui::TextDisabled("%s", heading.c_str());  // a DYNAMIC string is never a format string
+        mutedText(heading);  // task E.6.3 (D11): string-only, so format-safe by construction
 
         // THE KEYBOARD, on the frame it opens. SetKeyboardFocusHere is ignored while a drag is live
         // (imgui.cpp:9491-9494), which cannot be the open frame. The Hierarchy rename's exact idiom,
@@ -434,7 +516,18 @@ AssetFieldResult drawAssetReferenceField(const AssetFieldInputs& in, AssetPicker
                     // the tile it belongs to by (ItemSpacing.x/2, ItemSpacing.y/2).
                     const ImVec2 itemMin = ImGui::GetCursorScreenPos();
                     const bool selected = static_cast<std::size_t>(index) == state.cursor;
-                    if (ImGui::Selectable("##tile", selected, ImGuiSelectableFlags_None, ImVec2(tileW, tileH))) {
+                    // task E.6.3 (D8): ImGui paints no tile fill -- the face draws every state -- so the three
+                    // Header slots are cleared around this ONE call and nothing else (the face and the tooltip
+                    // after it keep the normal palette).
+                    const ImVec2 tileSize(tileW, tileH);
+                    bool tilePressed = false;
+                    {
+                        const ClearHeaderStyle clearTileFill(ChromeRole::Raised);  // the popup's own ground
+                        tilePressed = ImGui::Selectable("##tile", selected, ImGuiSelectableFlags_None, tileSize);
+                    }
+                    const bool tileHovered = ImGui::IsItemHovered();
+                    const bool tileHeld = ImGui::IsItemActive();
+                    if (tilePressed) {
                         state.cursor = static_cast<std::size_t>(index);
                         commitRequested = true;  // ONE commit path, below
                     }
@@ -445,6 +538,9 @@ AssetFieldResult drawAssetReferenceField(const AssetFieldInputs& in, AssetPicker
                     face.tileW = tileW;
                     face.tileEdge = tileEdge;
                     face.pad = pad;
+                    face.hovered = tileHovered;  // task E.6.3 (D8): the face draws the states ImGui no longer fills
+                    face.selected = selected;
+                    face.held = tileHeld;
                     if (index == 0) {
                         face.fileName = "None";
                         face.captionSource = "None";
@@ -487,7 +583,7 @@ AssetFieldResult drawAssetReferenceField(const AssetFieldInputs& in, AssetPicker
         }
         // The truncation notice line is ALWAYS drawn, empty when nothing was truncated, so the popup's
         // size -- and therefore its anchor -- cannot change because a notice appeared.
-        ImGui::TextDisabled("%s", assetPickerTruncationNotice(state.candidates).c_str());
+        mutedText(assetPickerTruncationNotice(state.candidates));
         ImGui::EndChild();  // UNCONDITIONAL -- BeginChild/EndChild are 1:1
         state.cursorMovedByKeyboard = false;
 
@@ -541,6 +637,7 @@ AssetFieldResult drawAssetReferenceField(const AssetFieldInputs& in, AssetPicker
         state.openHostId.clear();
         state.openFieldKey.clear();
     }
+    result.drawn = drawn;
     return result;
 }
 

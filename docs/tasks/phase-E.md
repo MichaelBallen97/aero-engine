@@ -870,7 +870,8 @@ Subtasks:
 - **The viewport's `View` popover is E.2.4's and is already grouped the way the mock groups its header
   dropdowns** — `Display` (Projection, Tonemap, Exposure) above `Overlays` (Grid, Gizmos, View axis) —
   so this task **restyles it rather than regrouping it**. Moving those groups into a docked panel's tab
-  row is the part nothing in the tree can do today, which is why E.2.4 stopped at a popover
+  row is out of this task's scope — the pinned ImGui has DockNodeBeginAmendTabBar
+  (imgui_internal.h:3734-3735), the route that handoff would take; E.2.4 stopped at a popover and E.6.3 restyled it
 - The viewport stats overlay (frame time, draw calls, triangles, entities, GPU time) and hint chips
 - **Panel ids stay frozen** — they are the `imgui.ini` settings keys, and the existing pin covers them
 - Every panel re-checked at HiDPI and at a small window size

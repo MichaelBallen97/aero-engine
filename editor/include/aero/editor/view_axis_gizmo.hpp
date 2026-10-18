@@ -40,10 +40,12 @@ enum class ViewAxisHit : std::uint8_t { None = 0, Axis, Center };
 inline constexpr float VIEW_AXIS_RING_RADIUS_POINTS = 30.0F;   // widget centre -> a ball's centre
 inline constexpr float VIEW_AXIS_BALL_RADIUS_POINTS = 8.0F;    // hit radius AND the un-hovered draw radius
 inline constexpr float VIEW_AXIS_CENTER_RADIUS_POINTS = 6.0F;  // < BALL, so a collapsed ball keeps an annulus (D10)
-inline constexpr float VIEW_AXIS_MARGIN_POINTS = 10.0F;        // inset from the image's top-right corner
-inline constexpr float VIEW_AXIS_HOVER_GROWTH = 1.25F;         // DRAW only -- never the hit radius (D10)
-inline constexpr float VIEW_AXIS_BACK_ALPHA = 0.55F;           // the back hemisphere's alpha multiplier
-inline constexpr float VIEW_AXIS_MIN_IMAGE_POINTS = 140.0F;    // below this, in EITHER axis, the widget hides (D16)
+// task E.6.3 (D9): from the image's BOTTOM-right corner to the half-extent rect. The panel's divider circle is five
+// beyond that rect (viewAxisCircleRadius, 43), so its edge lands 23 - 5 = 18 in -- the mock's inset to the circle.
+inline constexpr float VIEW_AXIS_MARGIN_POINTS = 23.0F;
+inline constexpr float VIEW_AXIS_HOVER_GROWTH = 1.25F;       // DRAW only -- never the hit radius (D10)
+inline constexpr float VIEW_AXIS_BACK_ALPHA = 0.55F;         // the back hemisphere's alpha multiplier
+inline constexpr float VIEW_AXIS_MIN_IMAGE_POINTS = 140.0F;  // below this, in EITHER axis, the widget hides (D16)
 
 // The widget's half-extent: the ring plus one ball radius. The box is 2x this on each side.
 inline constexpr float VIEW_AXIS_HALF_EXTENT_POINTS = VIEW_AXIS_RING_RADIUS_POINTS + VIEW_AXIS_BALL_RADIUS_POINTS;

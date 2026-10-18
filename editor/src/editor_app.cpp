@@ -294,6 +294,18 @@ std::uint32_t framePaceSleepMs(bool presented, bool focused, float unfocusedCapH
     return static_cast<std::uint32_t>(std::lround(remaining));
 }
 
+float resolveBottomDockFraction(float requested) noexcept {
+    constexpr float LEAST = 0.05F;
+    constexpr float MOST = 0.95F;
+    if (!std::isfinite(requested)) {  // FIRST: a NaN fails both comparisons below, so the range test would pass it
+        return DEFAULT_BOTTOM_DOCK_FRACTION;
+    }
+    if (requested < LEAST || requested > MOST) {
+        return DEFAULT_BOTTOM_DOCK_FRACTION;  // the shipping layout, never a clamp to the nearest bound
+    }
+    return requested;
+}
+
 EditorApp::EditorApp(ImGuiLayer layer, platform::Context& ctx, EditorAppConfig config)
     : layer(std::move(layer)), ctx(&ctx), config(std::move(config)) {}
 
@@ -394,6 +406,8 @@ std::optional<EditorApp> EditorApp::create(rhi::Device& device, platform::Window
     // task E.6.2 (D16): the same shape, a fifth time -- one resolution, one member, no call site that can reach the
     // machine's real home when a test supplied its own.
     app.homeDirectory = config.homeDirectory.empty() ? defaultHomeDirectory() : config.homeDirectory;
+    // task E.6.3 (round 4): the Bottom split, resolved once -- every default layout and every reset reads this member.
+    app.bottomDockFraction = resolveBottomDockFraction(config.bottomDockFraction);
     // task E.6.2 (D15): the backend's name, read ONCE, here, on the thread that owns the device (backendName()
     // asserts it) -- engine-owned "metal" / "vulkan" / "direct3d12", shown capitalised.
     app.backendLabel = backendDisplayName(device.backendName());
@@ -1197,6 +1211,7 @@ bool EditorApp::tick() {
     // tick's state in this tick's draw walk; outside the reconcile block's Asset Browser arm on purpose.
     if (viewportPanel != nullptr) {
         viewportPanel->setToolState(&transformTools);
+        viewportPanel->setFrameReadout(&frameReadout);  // task E.6.3 (D9): the ONE readout's second consumer
     }
     // task E.6.2 (D12-D17): the status bar's words, composed by the pure model every tick -- a LOCAL, because
     // drawShellUi reads it through a pointer inside this tick and nowhere after.
@@ -1208,6 +1223,7 @@ bool EditorApp::tick() {
     layer.beginFrame();
     ShellUiState ui{.applyDefaultLayout = applyDefaultLayout,
                     .placeUnplacedPanels = placeUnplacedPanels,
+                    .bottomDockFraction = bottomDockFraction,  // task E.6.3 (round 4): create()'s resolved value
                     .undoRequested = undoRequested,
                     .redoRequested = redoRequested,
                     .focusPanelId = requestedPanelFocus,
@@ -1270,6 +1286,25 @@ bool EditorApp::tick() {
     // can never apply on a later frame -- the thing a real click cannot do either.
     if (inspectorPanel != nullptr) {
         inspectorPanel->expireNamedSelection();
+        inspectorPanel->expireComponentMenuAction();  // task E.6.3: the overflow menu's seam, the same one-tick rule
+        inspectorPanel->expireCardOpen();             // task E.6.3 (fix 7): the card header toggle's seam, likewise
+    }
+    // task E.6.3 (D14): the requests that live on a panel, the same one-tick rule. Each panel drops a request its gate
+    // refuses as it drains; one issued while the panel did not draw at all (closed, or another tab in front, so onDraw
+    // never ran) is dropped HERE, so it can never land on the frame the panel next draws (I338).
+    if (hierarchyPanel != nullptr) {
+        hierarchyPanel->expireSearchQuery();
+        hierarchyPanel->expireSearchFieldFocus();
+        hierarchyPanel->expireBeginRename();
+    }
+    if (assetBrowserPanel != nullptr) {
+        assetBrowserPanel->expireNavigate();
+    }
+    if (viewportPanel != nullptr) {
+        viewportPanel->expireStatsVisible();
+    }
+    if (consolePanel != nullptr) {
+        consolePanel->expireLogScrollX();
     }
     // task E.3.2. The toggle is adopted ONLY when the checkbox was actually flipped -- routeEnabled is
     // an in/out field, and adopting it unconditionally would be harmless today and a silent
@@ -2383,6 +2418,12 @@ void EditorApp::requestAssetBrowserDeleteOrphanClick(std::string_view relativeMe
 void EditorApp::requestAssetBrowserSelectEntry(std::string_view relativePath) {
     if (assetBrowserPanel != nullptr) {
         assetBrowserPanel->requestSelectEntry(std::string(relativePath));
+    }
+}
+
+void EditorApp::requestAssetBrowserNavigate(std::string_view relativeDir) {
+    if (assetBrowserPanel != nullptr) {
+        assetBrowserPanel->requestNavigate(std::string(relativeDir));
     }
 }
 

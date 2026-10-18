@@ -10,6 +10,7 @@
 #include <aero/core/guid.hpp>
 #include <aero/editor/asset_picker_model.hpp>
 #include <aero/editor/asset_view.hpp>
+#include <aero/editor/panel_chrome_model.hpp>  // task E.6.3: ReferenceFieldRecord, pure (no ImGui type)
 
 #include <cstddef>
 #include <cstdint>
@@ -80,6 +81,10 @@ enum class AssetFieldOutcome : std::uint8_t { None = 0, Picked, Cleared, Dropped
 struct AssetFieldResult {
     AssetFieldOutcome outcome = AssetFieldOutcome::None;
     Guid guid;
+    // task E.6.3 (D5), APPENDED: what the field DREW, for the host's draw record -- the zero-thumbnail row's swatch (a
+    // bound material's own colour) or empty `inset` well (I321), the faint "pick" hint, the name, and the x span each
+    // was drawn over (I347). Each member is set where its draw call is made.
+    ReferenceFieldRecord drawn;
 };
 
 // Everything the widget needs, as ONE aggregate -- eleven parameters is where a signature stops being
@@ -105,6 +110,9 @@ struct AssetFieldInputs {
     // Inspector's row and is TODAY's behaviour exactly: the button's height argument stays the 0.0F
     // it already is.
     float thumbnailEdge = 0.0F;
+    // task E.6.3 (D5), APPENDED LAST: a faint "pick" hint at the frame's right; the sentence elides BEFORE it. The
+    // CALLER's switch: the hint draws only where referenceFieldParts also keeps it (a narrow frame drops it).
+    bool pickHint = true;
 };
 
 // Draws [button][popup] inside the CALLER's PushID scope and reports what happened. The host decides

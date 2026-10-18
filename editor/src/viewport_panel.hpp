@@ -14,6 +14,7 @@
 #include <aero/editor/selection_overlay.hpp>  // task 2.3.2: OverlaySegment, for the scratch member
 #include <aero/editor/view_axis_gizmo.hpp>    // task E.1.3: the corner widget's layout, poses and snap
 #include <aero/editor/viewport_gizmos.hpp>    // task E.2.3: the icon/gizmo walk (carries viewport_icons.hpp)
+#include <aero/editor/viewport_hud.hpp>       // task E.6.3: the HUD's layout, counts, record (pure)
 #include <aero/render/debug_draw.hpp>         // task E.1.1: the panel's own world-space line renderer
 #include <aero/render/post_process.hpp>       // task 3.6.3: the owned HDR target + the fullscreen resolve
 #include <aero/render/render_target.hpp>
@@ -22,6 +23,7 @@
 
 #include <cstdint>
 #include <optional>
+#include <string>
 #include <utility>  // std::exchange -- the one-shot taker's own idiom
 #include <vector>
 
@@ -161,7 +163,7 @@ public:
     void requestGizmosEnabled(bool enabled) noexcept { gizmosEnabledValue = enabled; }
 
     // ---- task E.2.4 -------------------------------------------------------------------------------
-    // The view-options popover: ONE button on the strip, `View`, opening a popup that holds every
+    // The view-options popover: ONE button on the strip, the view chip, opening a popup that holds every
     // control the row used to carry (Grid, Gizmos, the tonemap combo, the exposure slider) plus the two
     // this task adds (Projection, View axis). `viewOptionsOpen()` reads the latch drawViewOptions
     // writes from BeginPopup's OWN answer -- so it reports the LAST DRAWN frame, exactly as
@@ -199,6 +201,8 @@ public:
     // The widget's screen rect, as THIS frame's image rect implies it -- a PURE function, unlike
     // overlayRowMin/Max below, which report what the LAST DRAWN frame recorded. Exposed so a test can
     // check it is a real, non-degenerate square inside the image rather than trusting it was computed.
+    // task E.6.3 (the code-review round): the half-extent rect; the press claim is its divider circle's
+    // box, this rect grown by viewAxisCircleGap x the scale on every side (viewAxisCircleRect).
     [[nodiscard]] Vec2 viewAxisRectMin() const noexcept;
     [[nodiscard]] Vec2 viewAxisRectMax() const noexcept;
 
@@ -221,8 +225,9 @@ public:
     // strip" -- rather than a global that conflates a widget with the window background.
     //
     // task E.1.3: it now ORs a SECOND rect -- the view-axis widget's, through viewAxisOwnsPoint below
-    // -- and takes the image rect to compute it. That rect is PURE (viewAxisRect), so unlike the
-    // row's it describes THIS frame and needs no staleness argument at all. Both arms go through one
+    // -- and takes the image rect to compute it. That rect is PURE (viewAxisRect; since task E.6.3's
+    // code-review round, its divider circle's box viewAxisCircleRect), so unlike the row's it
+    // describes THIS frame and needs no staleness argument at all. Both arms go through one
     // containsHalfOpen helper, which is what stops the second rect acquiring a subtly different
     // containment rule. Its one production caller is updatePick, which already has both values.
     [[nodiscard]] bool overlayOwnsPress(Vec2 pressPoints, Vec2 imageOrigin, Vec2 imageSize) const noexcept;
@@ -273,6 +278,20 @@ public:
     // no gizmo at all (updateGizmo's Select arm) -- never a crash, never a private fallback copy.
     void setToolState(TransformToolState* state) noexcept { toolStatePtr = state; }
 
+    // ---- task E.6.3: the HUD (D9) -----------------------------------------------------------------------------
+    // EditorApp's ONE FrameTimeReadout, re-handed every tick (setToolState's shape, the same dangling argument): the
+    // stats card's Frame row is its SECOND consumer, never a second readout. NULL draws "-- ms".
+    void setFrameReadout(const FrameTimeReadout* readout) noexcept { frameReadoutPtr = readout; }
+    // Session state, default ON. A request lives ONE tick: the next draw applies it, exactly as the checkbox would,
+    // only while the view chip -- the popover's only door, so the gate the Stats checkbox has -- is laid out and no
+    // modal is up, and drops it otherwise; EditorApp calls expireStatsVisible() after drawShellUi, so a tick the panel
+    // did not draw drops it too (I338).
+    [[nodiscard]] bool statsVisible() const noexcept { return statsVisibleValue; }
+    void requestStatsVisible(bool visible) noexcept { pendingStatsVisible = visible; }
+    void expireStatsVisible() noexcept { pendingStatsVisible.reset(); }
+    // What the last onDraw DREW: the image rect, every HUD rect, the chip, the stats rows, the counts, the widget.
+    [[nodiscard]] const ViewportHudRecord& hudRecord() const noexcept { return hudRecordValue; }
+
     // What the LAST ImGuizmo::Manipulate call received, recorded from the very locals it is handed -- the
     // effect, never a request (D21). A Select frame calls nothing, so "no gizmo" is a zero DELTA of
     // manipulateCalls(), and an Unavailable panel never calls it at all. lastManipulateSnap() is nullopt when
@@ -312,7 +331,7 @@ private:
     // the one path both the click and requestViewSnap take.
     void beginViewSnap(ViewAxis axis) noexcept;
     void updateViewAxisGizmo(Vec2 imageOrigin, Vec2 avail, bool inputHovered);
-    void drawViewAxisGizmo() const;
+    void drawViewAxisGizmo();  // task E.6.3: records the circle it draws
 
     // Task E.1.3, code-review round: ONE definition of "the view-axis widget owns this point", with
     // TWO consumers -- overlayOwnsPress (which keeps the press off the scene pick) and updateGizmo
@@ -320,11 +339,15 @@ private:
     // exactly what a second hand-written comparison would eventually do.
     [[nodiscard]] bool viewAxisOwnsPoint(Vec2 pointPoints, Vec2 imageOrigin, Vec2 imageSize) const noexcept;
 
-    // task E.2.4: the `View` button and its popup. The BUTTON's rect max is what step 9b records; the
-    // popup's contents are D10's two groups -- Display (Projection, Tonemap, Exposure) above Overlays
-    // (Grid, Gizmos, View axis). Since task E.6.2 it is the strip's ONLY control -- the toolbar took the gizmo
-    // bar -- and it opens no disabled scope, so every control stays live with nothing selected.
+    // task E.2.4: the view chip (the `View` button until task E.6.3) and its popup. The CHIP's rect max is what
+    // step 9b records; the popup's contents are D10's two groups -- Display (Projection, Tonemap, Exposure) above
+    // Overlays (Grid, Gizmos, View axis; task E.6.3 adds Stats). Since task E.6.2 it is the strip's ONLY control
+    // -- the toolbar took the gizmo bar -- and it opens no disabled scope, so every control stays live with nothing
+    // selected.
     void drawViewOptions();
+    // task E.6.3 (D9): lays the HUD out from the RECORDED image rect, latches it for the next frame's press claims,
+    // draws the stats card and the hints / fly chip, and leaves the cursor at the view chip's laid-out min.
+    void drawHud(const PanelContext& context, Vec2 imageMin, Vec2 imageMax, rhi::Extent2D extent);
 
     // task 3.1.5: the custom drop target's whole body, a member so the ImGui glue stays in one place.
     // PEEK -> classify -> only then accept, so an illegal drop draws no highlight rect.
@@ -443,19 +466,37 @@ private:
     std::optional<GizmoSpace> lastManipulateSpaceValue;
     std::optional<Vec3> lastManipulateSnapValue;
 
-    // The interactive overlay row's screen rect in POINTS, written at onDraw's step 9b and read by
-    // overlayOwnsPress() on the NEXT frame's step 8b. ONE FRAME OLD BY CONSTRUCTION. It moves when the dock
-    // does AND when the readout above it gains or loses a line (`fly`, `ortho`) -- task E.6.2 corrected the
-    // earlier "only when the dock does"; a one-frame-old rect across such a change can own or miss one press
-    // at the old row. Empty until the first frame that reaches step 9b, and an empty rect owns nothing.
+    // The interactive overlay row's screen rect in POINTS -- the view chip's -- written at onDraw's step 9b and
+    // read by overlayOwnsPress() on the NEXT frame's step 8b. ONE FRAME OLD BY CONSTRUCTION. Since task E.6.3 the
+    // chip sits at the recorded image rect's top-left, hudInset in (viewportHudLayout), so the rect moves when the
+    // dock does, changes width when the chip's label does (a projection toggle: "Perspective 60" <-> "Orthographic",
+    // made in the popover after drawHud has drawn), and collapses to empty on a frame whose layout dropped the chip;
+    // a one-frame-old rect across such a change can own or miss one press at the old extent. hudOwnsPoint claims the
+    // same chip rect from latchedHudLayout under the same argument. Empty until the first frame that reaches step
+    // 9b, and an empty rect owns nothing.
     Vec2 overlayRowTopLeft{};
     Vec2 overlayRowBottomRight{};
-    // task E.2.4: the `View` BUTTON's screen rect max, captured BEFORE the popup. Step 9b records the
-    // interactive row from THIS rather than from ImGui's last-item rect, so the recorded row cannot
-    // move when the popover opens -- and it does not rest on ImGui restoring the parent's last item at
-    // EndPopup, which the pinned tree does do (imgui.cpp:8848). Step 9b's comment carries the
-    // measurement; I138 pins the rect equal open and closed as a regression guard.
+    // task E.2.4: the view chip's screen rect max (the `View` BUTTON's until task E.6.3), captured BEFORE the
+    // popup. Step 9b records the interactive row from THIS rather than from ImGui's last-item rect, so the recorded
+    // row cannot move when the popover opens -- and it does not rest on ImGui restoring the parent's last item at
+    // EndPopup, which the pinned tree does do (imgui.cpp:8848). Step 9b's comment carries the measurement; I138 pins
+    // the rect equal open and closed as a regression guard.
     Vec2 viewOptionsButtonMax{};
+
+    // ---- task E.6.3 (D9) --------------------------------------------------------------------------------------
+    const FrameTimeReadout* frameReadoutPtr = nullptr;  // EditorApp's, re-handed every tick; never owned
+    bool statsVisibleValue = true;                      // session state -- the grid toggle's rule
+    std::optional<bool> pendingStatsVisible;            // requestStatsVisible's, drained under the checkbox's gate
+    // The LAST DRAWN frame's HUD rects, in SCREEN points: overlayOwnsPress and updateGizmo read these one frame
+    // later, the row rect's own staleness argument (the pick's arm runs before this frame's HUD is submitted).
+    ViewportHudLayout latchedHudLayout{};
+    ViewportDrawCounts latchedDrawCounts{};  // renderScene's, read by the NEXT draw walk's stats card
+    std::size_t latchedTriangles = 0;        // likewise
+    Vec2 viewOptionsPopoverSize{};           // the popover's last SHOWN size, for its clamp (zero until one shows)
+    ViewportHudRecord hudRecordValue;        // hudRecord()'s member (the collision rule)
+    std::string chipLabelScratch;            // per-frame scratch
+    std::string flyTextScratch;              // per-frame scratch
+    std::vector<ViewportStatsRow> statsRowsScratch;  // per-frame scratch, capacity reused
 
     // Task E.1.3. UNLIKE overlayRowTopLeft/BottomRight above, these two are written at step 8b'''' and
     // read at step 9x IN THE SAME FRAME -- there is no staleness argument to make, because the layout

@@ -27,6 +27,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -37,6 +38,7 @@ namespace engine::editor {
 // asset_picker.hpp is src-private. `AssetPickerState` is a STRUCT -- declared with the matching tag so
 // clang does not warn under -Wmismatched-tags.
 struct AssetPickerState;
+class CardPainter;
 class ThumbnailService;
 
 class InspectorPanel final : public Panel {
@@ -45,6 +47,12 @@ public:
     // renaming it orphans every existing user's saved layout for this panel (F16).
     [[nodiscard]] const char* id() const noexcept override { return "Inspector"; }
     [[nodiscard]] DockSlot defaultDockSlot() const noexcept override { return DockSlot::Right; }
+    InspectorPanel();            // task E.6.3: creates the card painter (its type is ImGui's, so it lives in the .cpp)
+    ~InspectorPanel() override;  // out of line: CardPainter is incomplete here
+    InspectorPanel(const InspectorPanel&) = delete;
+    InspectorPanel& operator=(const InspectorPanel&) = delete;
+    InspectorPanel(InspectorPanel&&) = delete;
+    InspectorPanel& operator=(InspectorPanel&&) = delete;
     void onDraw(PanelContext& context) override;
 
     // task 3.1.5: a reconciled POINTER, never a reference member -- MaterialPanel's exact shape and
@@ -72,6 +80,29 @@ public:
         pendingNamedSelection.reset();
         frameNamedSelection.reset();
     }
+    // ---- task E.6.3: the component card's overflow menu, as a seam (D14) ---------------------------------------
+    // The menu's one action today. The SEAM records the action for the card whose FULL registration name matches
+    // ("engine::MeshRenderer"); it is taken at the top of the next onDraw, applied by that card exactly where the menu
+    // item's click writes `pending` -- only while no modal is up -- and lives ONE tick: EditorApp calls
+    // expireComponentMenuAction() after drawShellUi, beside expireNamedSelection().
+    enum class ComponentMenuAction : std::uint8_t { Remove };
+    void requestComponentMenuAction(std::string registrationName, ComponentMenuAction action);
+    void expireComponentMenuAction() noexcept {
+        pendingComponentMenu.reset();
+        frameComponentMenu.reset();
+    }
+    // ---- task E.6.3 (fix 7): a card header's toggle, as a seam ---------------------------------------------------
+    // The header's click. The card whose FULL registration name matches is submitted after SetNextItemOpen(open,
+    // ImGuiCond_Always), which writes ImGui's OWN open bit (imgui_widgets.cpp:6819-6822) where the click writes it
+    // (:7076), so the card stays as the request left it. The component menu's shape: taken at the top of the next
+    // onDraw, applied only while no modal is up, and ONE tick long -- EditorApp calls expireCardOpen() after
+    // drawShellUi, beside expireComponentMenuAction().
+    void requestCardOpen(std::string registrationName, bool open);
+    void expireCardOpen() noexcept {
+        pendingCardOpen.reset();
+        frameCardOpen.reset();
+    }
+    [[nodiscard]] const InspectorDrawRecord& drawRecord() const noexcept { return drawRecordValue; }
     // Cumulative count of named-selector rows the panel SUBMITTED (one per BeginCombo call). A seam's own
     // accessor is a round trip; this is a consequence the widget produced (E.3.4's materialSamplerRowsDrawn
     // lesson), and it is what tells a selector from a drag.
@@ -83,10 +114,10 @@ public:
     [[nodiscard]] const std::string& lastLabelFontName() const noexcept { return lastLabelFontNameValue; }
     [[nodiscard]] std::uint32_t headersSubmitted() const noexcept { return headersSubmittedValue; }
     // task E.6.1 (I289): the axis rows as ImGui LAID THEM OUT on the last onDraw -- the panel's content
-    // width (GetContentRegionAvail at the top of onDraw), the last axis box's width (GetItemRectSize after
-    // its DragScalar), and the last axis row's slack: its value cell's width minus the row's own rect
-    // (EndGroup's), negative when the row overruns the cell. The box and the slack are 0 on a frame that
-    // drew no axis row.
+    // width (GetContentRegionAvail at the top of onDraw), the last axis VALUE region's width (GetItemRectSize
+    // after its frameless DragScalar, task E.6.3), and the last axis row's slack: its value cell's width minus
+    // the row's own rect (EndGroup's), negative when the row overruns the cell. The box and the slack are 0 on
+    // a frame that drew no axis row.
     [[nodiscard]] float lastContentWidth() const noexcept { return lastContentWidthValue; }
     [[nodiscard]] float lastAxisBoxWidth() const noexcept { return lastAxisBoxWidthValue; }
     [[nodiscard]] float lastAxisRowSlack() const noexcept { return lastAxisRowSlackValue; }
@@ -125,8 +156,20 @@ private:
             return componentName == component && fieldName == field;
         }
     };
+    struct ComponentMenuRequest {
+        std::string registrationName;
+        ComponentMenuAction action = ComponentMenuAction::Remove;
+        [[nodiscard]] bool matches(std::string_view component) const noexcept { return registrationName == component; }
+    };
+    struct CardOpenRequest {
+        std::string registrationName;
+        bool open = true;
+        [[nodiscard]] bool matches(std::string_view component) const noexcept { return registrationName == component; }
+    };
 
     void drawComponent(PanelContext& context, Entity primary, const ComponentEntry& entry, float labelWidth);
+    void drawEntityHeader(PanelContext& context, Entity primary);
+    void drawAddComponent(PanelContext& context, Entity primary);
     void drawField(PanelContext& context, Entity primary, const ComponentEntry& entry, const FieldEntry& field);
     // task E.3.1: what DragScalarN does internally, opened up -- three DragScalars with a coloured
     // axis letter before each, inside ONE BeginGroup/EndGroup so a single gateForLastItem() read
@@ -159,15 +202,22 @@ private:
     ThumbnailService* thumbnails = nullptr;
     std::string fieldKeyScratch;  // labelScratch's idiom -- no per-frame allocation once warm
 
-    std::optional<NamedSelection> pendingNamedSelection;  // task E.5.2 -- the seam writes this
-    std::optional<NamedSelection> frameNamedSelection;    // task E.5.2 -- THIS onDraw's copy
-    std::string lastHeaderFontNameValue;                  // task E.6.1 -- member/accessor collision rule
-    std::string lastLabelFontNameValue;                   // likewise
-    std::uint32_t headersSubmittedValue = 0;              // likewise; reset at the top of onDraw
-    float lastContentWidthValue = 0.0F;                   // task E.6.1 (I289) -- written at the top of onDraw
-    float lastAxisBoxWidthValue = 0.0F;                   // likewise; reset at the top of onDraw
-    float lastAxisRowSlackValue = 0.0F;                   // likewise; reset at the top of onDraw
-    std::size_t namedSelectorsDrawnValue = 0;             // task E.5.2 -- member/accessor collision rule
+    std::optional<NamedSelection> pendingNamedSelection;       // task E.5.2 -- the seam writes this
+    std::optional<NamedSelection> frameNamedSelection;         // task E.5.2 -- THIS onDraw's copy
+    std::string lastHeaderFontNameValue;                       // task E.6.1 -- member/accessor collision rule
+    std::string lastLabelFontNameValue;                        // likewise
+    std::uint32_t headersSubmittedValue = 0;                   // likewise; reset at the top of onDraw
+    float lastContentWidthValue = 0.0F;                        // task E.6.1 (I289) -- written at the top of onDraw
+    float lastAxisBoxWidthValue = 0.0F;                        // likewise; reset at the top of onDraw
+    float lastAxisRowSlackValue = 0.0F;                        // likewise; reset at the top of onDraw
+    std::size_t namedSelectorsDrawnValue = 0;                  // task E.5.2 -- member/accessor collision rule
+    std::unique_ptr<CardPainter> cardPainter;                  // task E.6.3 -- ONE painter for every card, persistent
+    std::optional<ComponentMenuRequest> pendingComponentMenu;  // task E.6.3 -- the seam writes this
+    std::optional<ComponentMenuRequest> frameComponentMenu;    // task E.6.3 -- THIS onDraw's copy
+    std::optional<CardOpenRequest> pendingCardOpen;            // task E.6.3 (fix 7) -- the seam writes this
+    std::optional<CardOpenRequest> frameCardOpen;              // task E.6.3 (fix 7) -- THIS onDraw's copy
+    InspectorDrawRecord drawRecordValue;                       // task E.6.3 -- drawRecord()'s value
+    std::string idScratch;                                     // task E.6.3 -- e#<index> and its tooltip
 };
 
 }  // namespace engine::editor

@@ -3,10 +3,13 @@
 #include <aero/core/math.hpp>
 #include <aero/editor/asset_database.hpp>
 #include <aero/editor/asset_drag.hpp>  // task E.3.3 -- assetReferenceKindFromToken, DropSurface
+#include <aero/editor/asset_view.hpp>  // elideCaptionRight
 #include <aero/editor/command_stack.hpp>
 #include <aero/editor/component_commands.hpp>
 #include <aero/editor/editor_glyphs.hpp>
+#include <aero/editor/editor_theme.hpp>
 #include <aero/editor/entity_ops.hpp>
+#include <aero/editor/entity_presentation.hpp>
 #include <aero/editor/material_card.hpp>
 #include <aero/editor/panel_context.hpp>
 #include <aero/editor/project_files.hpp>
@@ -15,16 +18,18 @@
 #include <aero/scene/world.hpp>
 
 #include "asset_picker.hpp"     // task E.3.3 -- the ONE asset-reference field widget
-#include "editor_fonts.hpp"     // task E.6.1: editorFonts().strong
 #include "editor_theme_ui.hpp"  // task E.6.1: currentUiScale(), for the axis row's letter gap
+#include "panel_chrome_ui.hpp"  // task E.6.3: the card painter, faces and roles -- the header push moved into it (I286)
 #include "text_input.hpp"
 #include "thumbnail_service.hpp"
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <imgui.h>
+#include <imgui_internal.h>  // GetTopMostPopupModal (I337) and MenuItemEx (the Add Component popup's icons)
 #include <limits>
 #include <memory>
 #include <optional>
@@ -53,8 +58,11 @@ namespace {
 // project_settings_panel.cpp takes the OPPOSITE choice for its own stated reasons. Do not unify them.
 constexpr ImGuiTableFlags TABLE_FLAGS = ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_NoSavedSettings;
 
-// The short display name for a CollapsingHeader label ("Transform" from "engine::Transform"); the
-// full registration name is shown as an IsItemHovered tooltip instead (D13/E14).
+// task E.6.3 (D5): the dashed button's one label, drawn on the draw list in Strong `accent`.
+constexpr std::string_view ADD_COMPONENT_LABEL = "Add Component";
+
+// The short display name for an Add Component menu entry ("Transform" from "engine::Transform"). A card's title is
+// the model's humanised entry.title, and its full-name tooltip is read off CardHeaderResult::headerHovered.
 std::string_view shortComponentName(std::string_view fullName) {
     const std::size_t pos = fullName.rfind("::");
     return pos == std::string_view::npos ? fullName : fullName.substr(pos + 2);
@@ -131,7 +139,8 @@ float measuredLabelColumnWidth(const InspectorModel& model) {
     float widest = 0.0F;
     for (const ComponentEntry& entry : model.components) {
         for (const FieldEntry& field : entry.fields) {
-            widest = std::max(widest, ImGui::CalcTextSize(field.name.c_str()).x);
+            // task E.6.3: the humanised label it draws.
+            widest = std::max(widest, ImGui::CalcTextSize(field.label.c_str()).x);
         }
     }
     return inspectorLabelColumnWidth(widest, ImGui::GetStyle().CellPadding.x, ImGui::GetFontSize(),
@@ -140,11 +149,34 @@ float measuredLabelColumnWidth(const InspectorModel& model) {
 
 }  // namespace
 
+InspectorPanel::InspectorPanel() : cardPainter(std::make_unique<CardPainter>()) {}
+InspectorPanel::~InspectorPanel() = default;
+
+void InspectorPanel::requestComponentMenuAction(std::string registrationName, ComponentMenuAction action) {
+    pendingComponentMenu = ComponentMenuRequest{.registrationName = std::move(registrationName), .action = action};
+}
+
+void InspectorPanel::requestCardOpen(std::string registrationName, bool open) {
+    pendingCardOpen = CardOpenRequest{.registrationName = std::move(registrationName), .open = open};
+}
+
 void InspectorPanel::onDraw(PanelContext& context) {
     // task E.5.2: the seam's request is taken HERE, before any early return below, and std::exchange
     // RESETS the member (a moved-from optional stays engaged -- E.4.3). Overwriting frameNamedSelection
     // also discards whatever the previous onDraw did not consume.
     frameNamedSelection = std::exchange(pendingNamedSelection, std::nullopt);
+    frameComponentMenu = std::exchange(pendingComponentMenu, std::nullopt);  // task E.6.3: E.5.2's one-shot shape
+    frameCardOpen = std::exchange(pendingCardOpen, std::nullopt);            // task E.6.3 (fix 7): the same shape
+    ++drawRecordValue.framesRecorded;  // task E.6.3: per-frame counts, before any early return below
+    beginCardRecordFrame(drawRecordValue.cards);
+    drawRecordValue.cardsOpen = 0;
+    drawRecordValue.referenceSwatchDrawn = false;
+    drawRecordValue.referenceWellDrawn = false;
+    drawRecordValue.referenceFields.clear();
+    drawRecordValue.addComponentDashVertices = 0;
+    drawRecordValue.addComponentDashed = false;
+    drawRecordValue.addComponentFirstDashWidth = 0.0F;
+    drawRecordValue.addComponentFirstDashGap = 0.0F;
     headersSubmittedValue = 0;  // task E.6.1: a PER-FRAME count, taken before any early return below
     // task E.6.1 (I289): this frame's geometry, likewise before any early return. drawAxisRow writes the two
     // axis values, so a frame that draws no axis row reads 0 for both.
@@ -184,96 +216,130 @@ void InspectorPanel::onDraw(PanelContext& context) {
     buildInspectorModel(context.world, primary, model);
 
     // -- phase 3: draw --
-    entityLabel(context.world, primary, labelScratch);
-    if (context.selection.entities().size() > 1) {
-        labelScratch += " (" + std::to_string(context.selection.entities().size()) + " selected)";
-    }
-    ImGui::TextUnformatted(labelScratch.c_str());
-    ImGui::Separator();
+    drawEntityHeader(context, primary);
 
     // ONE width for the whole panel, measured before the loop (task E.3.1).
     const float labelWidth = measuredLabelColumnWidth(model);
+    drawRecordValue.labelColumnWidth = labelWidth;
     for (const ComponentEntry& entry : model.components) {
         drawComponent(context, primary, entry, labelWidth);
     }
-
-    ImGui::Separator();
-    if (ImGui::Button("+ Add Component")) {
-        ImGui::OpenPopup("##addComponent");
-    }
-    if (ImGui::BeginPopup("##addComponent")) {
-        bool anyAbsent = false;
-        const std::size_t count = context.world.componentTypeCount();
-        for (std::size_t i = 0; i < count; ++i) {
-            const ComponentTypeId candidateId = context.world.componentTypeAt(i);
-            if (context.world.hasRaw(candidateId, primary)) {
-                continue;
-            }
-            anyAbsent = true;
-            shortNameScratch = std::string(shortComponentName(context.world.componentTypeName(candidateId)));
-            // Review finding 4: MenuItem derives its ID from its LABEL, and two registered types can
-            // share a short name (e.g. engine::Camera vs a project game::Camera) -- the same D13/E14
-            // discipline drawComponent already applies via PushID(entry.name.c_str()) at :146, just
-            // missing here. Keyed on the loop index, which is stable for the popup's own lifetime
-            // (componentTypeAt's registration order never reorders mid-frame).
-            ImGui::PushID(static_cast<int>(i));
-            if (ImGui::MenuItem(shortNameScratch.c_str())) {
-                pending = PendingAction{.kind = ActionKind::AddComponent, .type = candidateId};
-            }
-            ImGui::PopID();
-        }
-        if (!anyAbsent) {
-            ImGui::MenuItem("(none)", nullptr, false, false);  // E12: disabled, never omitted
-        }
-        ImGui::EndPopup();
-    }
+    drawAddComponent(context, primary);
 
     // -- phase 4: apply -- the ONLY place a component is added or removed --
     applyPending(context, primary);
 }
 
+// task E.6.3 (D5): the entity header row -- a kind swatch (the entity's kind role: the mock paints accent, which the
+// Inspector, always showing the selection, would paint for every entity), the name in Strong at titleSize with
+// " (N selected)" kept for a multi-selection, and e#<index> in Mono small textFaint right-aligned with the generation
+// in a tooltip. Read-only: renaming stays the Hierarchy's.
+void InspectorPanel::drawEntityHeader(PanelContext& context, Entity primary) {
+    entityLabel(context.world, primary, labelScratch);
+    if (context.selection.entities().size() > 1) {
+        labelScratch += " (" + std::to_string(context.selection.entities().size()) + " selected)";
+    }
+    entityIdText(primary, idScratch);
+    drawRecordValue.idText = idScratch;
+    const float s = currentUiScale();
+    const ImVec2 rowMin = ImGui::GetCursorScreenPos();
+    const float rowWidth = ImGui::GetContentRegionAvail().x;
+    // The name's ONE face: the measure, the draw and the record all read it, so they cannot diverge (I315).
+    constexpr PanelFace NAME_FACE = PanelFace::StrongTitle;
+    const float titlePoints = panelFacePoints(NAME_FACE);
+    const float rowMidY = rowMin.y + (titlePoints * 0.5F);
+    const InspectorHeaderLayout layout = inspectorHeaderLayout(rowMin.x, rowMin.x + rowWidth, rowMidY,
+                                                               faceTextWidth(PanelFace::MonoSmall, idScratch), s);
+    ImDrawList* const list = ImGui::GetWindowDrawList();
+    const ChromeRole swatch = entityKindRole(entityKindFor(context.world, primary), false);
+    roleFill(list, ImVec2(layout.swatchMin.x, layout.swatchMin.y), ImVec2(layout.swatchMax.x, layout.swatchMax.y),
+             swatch, EDITOR_THEME.panels.wellRounding * s);
+    drawRecordValue.swatchRole = swatch;
+    const float nameWidth = layout.nameMaxX - layout.nameX;
+    const std::string name = elideCaptionRight(
+        labelScratch, [nameWidth](std::string_view text) { return faceTextWidth(NAME_FACE, text) <= nameWidth; });
+    drawRoleText(list, NAME_FACE, ImVec2(layout.nameX, rowMin.y), ChromeRole::TextBright, name);
+    const ImFont* const titleFace = panelFaceFont(NAME_FACE);
+    drawRecordValue.entityNameFontName = titleFace != nullptr ? titleFace->GetDebugName() : "";
+    drawRecordValue.entityNameFontSize = titlePoints;
+    const float smallPoints = panelFacePoints(PanelFace::MonoSmall);
+    const ImVec2 idMin(layout.idX, rowMidY - (smallPoints * 0.5F));
+    drawRoleText(list, PanelFace::MonoSmall, idMin, ChromeRole::TextFaint, idScratch);
+    ImGui::Dummy(ImVec2(rowWidth, titlePoints));  // the row as ONE item: the first card starts below it
+    // IsItemHovered (the row's Dummy) first: IsMouseHoveringRect alone ignores window order and popup blocking
+    // (imgui.h:1147), so a popup or a modal over the header would still raise the tooltip.
+    const ImVec2 idMax(rowMin.x + rowWidth, idMin.y + smallPoints);
+    if (ImGui::IsItemHovered() && ImGui::IsMouseHoveringRect(idMin, idMax)) {
+        entityIdTooltip(primary, idScratch);
+        ImGui::SetTooltip("%s", idScratch.c_str());  // a runtime string is never a format string (I242(e))
+    }
+}
+
 void InspectorPanel::drawComponent(PanelContext& context, Entity primary, const ComponentEntry& entry,
                                    float labelWidth) {
     ImGui::PushID(entry.name.c_str());
-
-    shortNameScratch = std::string(shortComponentName(entry.name));
-    // task E.6.1: the HEADER in SemiBold, at size 0 so the row keeps its height. The push changes no label
-    // text, so the header's ID, flags and open state are untouched; the face's name is copied at the draw.
-    ImGui::PushFont(editorFonts().strong, 0.0F);
-    lastHeaderFontNameValue = ImGui::GetFont()->GetDebugName();
-    const bool open = ImGui::CollapsingHeader(shortNameScratch.c_str(), ImGuiTreeNodeFlags_DefaultOpen);
-    ImGui::PopFont();
-    ++headersSubmittedValue;
-    if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("%s", entry.name.c_str());  // the FULL registration name (D13)
+    // task E.6.3 (I337): a modal blocks every click on the card, so it blocks the seam too -- computed ONCE.
+    const bool noModal = ImGui::GetTopMostPopupModal() == nullptr;
+    // The header toggle's seam: the next item is the card's TreeNodeEx (begin submits nothing before it), and a modal
+    // blocks the click it stands in for.
+    if (frameCardOpen.has_value() && frameCardOpen->matches(entry.name) && noModal) {
+        ImGui::SetNextItemOpen(frameCardOpen->open, ImGuiCond_Always);
+        frameCardOpen.reset();
     }
-    if (ImGui::BeginPopupContextItem()) {
-        if (ImGui::MenuItem("Remove Component")) {
-            pending = PendingAction{.kind = ActionKind::RemoveComponent, .type = entry.typeId};
+    {
+        // D4: the card. Its strip, chevron, icon and title are the painter's; the open state is ImGui's own (no
+        // panel bit: this panel is one window, so no mode flip can reset it). The title is drawn, never a label, so
+        // no `##` in it can truncate it.
+        const PanelCard card(*cardPainter, "##card",
+                             CardSpec{.title = entry.title, .icon = entry.icon, .overflow = true}, nullptr,
+                             &drawRecordValue.cards);
+        const CardHeaderResult& header = card.header();
+        ++headersSubmittedValue;
+        lastHeaderFontNameValue = drawRecordValue.cards.titleFontName;  // the face the painter DREW the title in
+        drawRecordValue.cardsOpen += header.open ? 1U : 0U;
+        drawRecordValue.lastTitleDrawn = entry.title;
+        drawRecordValue.lastIconDrawn.assign(entry.icon);
+        // The full registration name, as today's header carried it -- read off the header's OWN answer: after the
+        // card's begin the last item is the overflow button, never the header (D4).
+        if (header.headerHovered) {
+            ImGui::SetTooltip("%s", entry.name.c_str());  // the FULL registration name (D13)
         }
-        ImGui::EndPopup();  // ONLY when BeginPopupContextItem returned true
-    }
-    // NO TreePop: CollapsingHeader uses NoTreePushOnOpen (C7/§DN-10).
-
-    if (open) {
-        if (!entry.hasFields) {
-            ImGui::TextDisabled(  // D12
-                "(fields unavailable " AERO_GLYPH_EM_DASH " built without AERO_REFLECT_TOOLS)");
-        } else if (entry.fields.empty()) {
-            ImGui::TextDisabled("(no fields)");  // a tag component (E13)
-        } else if (ImGui::BeginTable("##fields", 2, TABLE_FLAGS)) {
-            // ASYMMETRIC: EndTable ONLY when BeginTable returned true. An unbalanced call is an
-            // IM_ASSERT abort in Debug, not a glitch. The CollapsingHeader above stays OUTSIDE the
-            // table, the SeparatorText precedent from project_settings_panel.cpp.
-            ImGui::TableSetupColumn("##label", ImGuiTableColumnFlags_WidthFixed, labelWidth);
-            ImGui::TableSetupColumn("##value", ImGuiTableColumnFlags_WidthStretch);
-            for (const FieldEntry& field : entry.fields) {
-                drawField(context, primary, entry, field);
+        // ONE popup, opened by the overflow or by a right-click on the header -- the release rule
+        // BeginPopupContextItem used (imgui.cpp:13280-13285), so a right-click on a second header while this menu is
+        // open closes it on the press and opens the second on the release, as before.
+        if (header.overflowPressed || header.headerRightClicked) {
+            ImGui::OpenPopup("##componentMenu");
+        }
+        if (ImGui::BeginPopup("##componentMenu")) {
+            if (ImGui::MenuItem("Remove Component")) {
+                pending = PendingAction{.kind = ActionKind::RemoveComponent, .type = entry.typeId};
             }
-            ImGui::EndTable();
+            ImGui::EndPopup();  // ONLY when BeginPopup returned true
         }
-    }
-
+        if (frameComponentMenu.has_value() && frameComponentMenu->matches(entry.name) && noModal) {
+            pending = PendingAction{.kind = ActionKind::RemoveComponent, .type = entry.typeId};  // the item's write
+            frameComponentMenu.reset();
+        }
+        if (header.open) {
+            if (!entry.hasFields) {
+                mutedText("(fields unavailable " AERO_GLYPH_EM_DASH " built without AERO_REFLECT_TOOLS)");  // D12
+            } else if (entry.fields.empty()) {
+                mutedText("(no fields)");  // a tag component (E13)
+            } else if (ImGui::BeginTable("##fields", 2, TABLE_FLAGS)) {
+                // ASYMMETRIC: EndTable ONLY when BeginTable returned true. The table runs its own splitter on top of
+                // the card's content channel (imgui.h:3532-3533): legal, I318.
+                ImGui::TableSetupColumn("##label", ImGuiTableColumnFlags_WidthFixed, labelWidth);
+                ImGui::TableSetupColumn("##value", ImGuiTableColumnFlags_WidthStretch);
+                for (const FieldEntry& field : entry.fields) {
+                    drawField(context, primary, entry, field);
+                }
+                ImGui::EndTable();
+                drawRecordValue.cards.lastBodyTableMaxX = ImGui::GetItemRectMax().x;  // EndTable's item: OuterRect
+                drawRecordValue.cards.lastBodyTableMinY = ImGui::GetItemRectMin().y;  // where ImGui PLACED it (I336)
+                drawRecordValue.cards.lastBodyTableMaxY = ImGui::GetItemRectMax().y;
+            }
+        }
+    }  // ~PanelCard: the card ends on every path
     ImGui::PopID();
 }
 
@@ -338,29 +404,27 @@ void InspectorPanel::requestNamedSelection(std::string component, std::string fi
 
 bool InspectorPanel::drawAxisRow(PanelContext& context, Entity primary, const ComponentEntry& entry,
                                  const FieldEntry& field, std::array<float, 3>& shown, float speed) {
-    // WHAT DragScalarN DOES INTERNALLY (imgui_widgets.cpp:2814), opened up: BeginGroup, then per
-    // component PushID(i) / SameLine(0, ItemInnerSpacing.x) / DragScalar / PopID, then EndGroup. The
-    // reason to hand-roll it is that each axis needs its OWN item to carry a label, a colour and (from
-    // task E.3.1's next step) a context menu -- DragFloat3 exposes none of the three.
+    // WHAT DragScalarN DOES INTERNALLY (imgui_widgets.cpp:2814), opened up -- each axis needs its OWN item to carry a
+    // colour and a context menu. task E.6.3 (D5): each axis is a UNIT -- an `inset` frame with its 1-dp border, the
+    // coloured letter INSIDE it in the small face (draw-list text: no item, no font push), and the value region as a
+    // FRAMELESS DragScalar. The units are laid out by inspector_model's pure inspectorAxisLayout (TH11), handed the
+    // unit gap the SameLine call below spells.
     const float gap = ImGui::GetStyle().ItemInnerSpacing.x;
-
-    // The MAX over the three letters, not CalcTextSize("X").x: with a proportional font the three
-    // differ by a fraction of a pixel, and taking the max means the width budget can never
-    // UNDER-allocate and the last box can never overrun the cell.
+    // The widest letter in the small face, rounded UP to a whole point (CalcTextSize's convention), so every unit
+    // budgets the same letter cell.
     float letterWidth = 0.0F;
     for (std::size_t i = 0; i < AXIS_ROW_COMPONENTS; ++i) {
-        const std::string_view label = axisRowLabel(i);
-        letterWidth = std::max(letterWidth, ImGui::CalcTextSize(label.data(), label.data() + label.size()).x);
+        letterWidth = std::max(letterWidth, std::ceil(faceTextWidth(PanelFace::BodySmall, axisRowLabel(i))));
     }
-    // task E.6.1: [letter][letterGap][box] x3, with a WHOLE gap between the units: a letter labels its own
-    // box, so the pair reads as one unit, AXIS_LETTER_GAP_DP apart at the UI scale. 3*letter + 3*letterGap +
-    // 2*gap + 3*box == the cell -- the budget is inspector_model's pure inspectorAxisBoxWidth (TH11), handed
-    // the two gaps the SameLine calls below spell, so the last box cannot overrun the cell (I289's slack
-    // arms). Before, every gap was whole (3*letter + 5*gap + 3*box); at the theme's 6-point spacing, and with
-    // the label column's old 5 x floor, that clipped "0.000" in a 258-wide dock.
-    const float letterGap = AXIS_LETTER_GAP_DP * currentUiScale();
     const float total = ImGui::GetContentRegionAvail().x;
-    const float boxWidth = inspectorAxisBoxWidth(total, letterWidth, letterGap, gap);
+    const InspectorAxisLayout axis = inspectorAxisLayout(total, letterWidth, gap, currentUiScale());
+    drawRecordValue.axisUnitWidth = axis.unitWidth;
+    const float rounding = ImGui::GetStyle().FrameRounding;
+    const float frame = ImGui::GetFrameHeight();
+    const float rule = ruleHeight();
+    ImFont* const letterFace = panelFaceFont(PanelFace::BodySmall);
+    const float letterPoints = panelFacePoints(PanelFace::BodySmall);
+    ImDrawList* const list = ImGui::GetWindowDrawList();
 
     bool edited = false;
     ImGui::BeginGroup();  // 1:1 with EndGroup below -- nothing between them can return
@@ -369,41 +433,45 @@ bool InspectorPanel::drawAxisRow(PanelContext& context, Entity primary, const Co
         if (i > 0) {
             ImGui::SameLine(0.0F, gap);
         }
-        // THE ONE PLACE AN ImU32 IS BUILT. The colour is DERIVED from axis_palette.hpp through
-        // axisRowColor -- this file states no colour literal of its own, which I143 pins, because a
-        // restated literal one byte off is invisible to every automated tier (E.1.4's sabotage row 20).
+        const ImVec2 unitMin = ImGui::GetCursorScreenPos();
+        const ImVec2 unitMax(unitMin.x + axis.unitWidth, unitMin.y + frame);
+        // The unit's frame FIRST, under the frameless drag: the inset fill and its 1-dp border.
+        roleFill(list, unitMin, unitMax, ChromeRole::Inset, rounding);
+        roleOutline(list, unitMin, unitMax, ChromeRole::Border, rounding, rule);
+        // THE ONE PLACE AN ImU32 IS BUILT (I143): the colour DERIVED from axis_palette.hpp through axisRowColor.
         const std::array<std::uint8_t, 3> rgb = axisRowColor(i);
+        const ImU32 letterColor = IM_COL32(rgb[0], rgb[1], rgb[2], 255);
         const std::string_view label = axisRowLabel(i);
-        ImGui::AlignTextToFramePadding();  // idempotent (ImMax-based); once per letter
-        ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(rgb[0], rgb[1], rgb[2], 255));
-        // THE LETTER BEFORE THE BOX IS LOAD-BEARING, NOT COSMETIC: ItemAdd clears the pending
-        // NextItemData, so drawField's SetNextItemWidth(-1.0F) is consumed by this Text -- the first
-        // item submitted here -- rather than by the first DragScalar, which would otherwise take the
-        // whole cell's width.
-        ImGui::TextUnformatted(label.data(), label.data() + label.size());
-        ImGui::PopStyleColor();  // 1:1 with PushStyleColor
-        // task E.6.1: the letter and ITS box are one unit, AXIS_LETTER_GAP_DP apart.
-        ImGui::SameLine(0.0F, letterGap);
-        ImGui::SetNextItemWidth(boxWidth);
-        // nullptr for p_min/p_max/format is EXACTLY DragFloat3's behaviour: it passes two pointers to
-        // 0.0f, which DragBehaviorT treats as unbounded, and DragScalar falls back to
-        // ImGuiDataType_Float's PrintFmt, "%.3f" -- DragFloat3's own default. The display is
-        // byte-identical to what this row showed before.
-        edited = ImGui::DragScalar("##a", ImGuiDataType_Float, &shown[i], speed, nullptr, nullptr, nullptr,
-                                   ImGuiSliderFlags_None) ||
-                 edited;
-        lastAxisBoxWidthValue = ImGui::GetItemRectSize().x;  // task E.6.1 (I289): the box ImGui laid out
-        // NO str_id: DragScalar reads mouse button 0 only, so right-click is unclaimed, and the axis's
-        // own drag id is non-zero and makes a perfectly good popup id. NEVER call this with nullptr
-        // after EndGroup() -- a group's ItemAdd uses id 0 and only overwrites LastItemData.ID when the
-        // group contains the active or deactivated id, so that call is an IM_ASSERT abort on any frame
-        // nothing inside the group is active.
+        const ImVec2 letterAt(unitMin.x + axis.letterX, unitMin.y + ((frame - letterPoints) * 0.5F));
+        list->AddText(letterFace, letterPoints, letterAt, letterColor, label.data(), label.data() + label.size());
+        // The value region: frameless on ALL THREE frame slots (DragScalar fills FrameBgActive / FrameBgHovered /
+        // FrameBg by state, imgui_widgets.cpp:2787-2789), so a hovered or held box paints no block over its value.
+        // SetNextItemWidth overwrites drawField's pending -1 (the letter is no longer an item to consume it).
+        ImGui::SetCursorScreenPos(ImVec2(unitMin.x + axis.valueX, unitMin.y));
+        // nullptr for p_min/p_max/format is EXACTLY DragFloat3's behaviour ("%.3f", unbounded). Stated HERE, above the
+        // width: I320 pins the drag at most three lines below SetNextItemWidth (a comment line still counts).
+        ImGui::SetNextItemWidth(axis.valueWidth);
+        {
+            const ClearFrameStyle clear(ChromeRole::Inset);
+            edited = ImGui::DragScalar("##a", ImGuiDataType_Float, &shown[i], speed, nullptr, nullptr, nullptr,
+                                       ImGuiSliderFlags_None) ||
+                     edited;
+        }
+        lastAxisBoxWidthValue = ImGui::GetItemRectSize().x;  // the value region ImGui laid out (I289)
+        drawRecordValue.axisValueWidth = lastAxisBoxWidthValue;
+        // Hover and active are an OUTLINE on the WHOLE unit, never a fill on the value region (D5).
+        if (ImGui::IsItemActive()) {
+            roleOutline(list, unitMin, unitMax, ChromeRole::AccentBorder, rounding, rule);
+        } else if (ImGui::IsItemHovered()) {
+            roleOutline(list, unitMin, unitMax, ChromeRole::Hover, rounding, rule);
+        }
+        // NO str_id: DragScalar reads mouse button 0 only, so right-click is unclaimed and the drag's own id is the
+        // popup id. NEVER call this with nullptr after EndGroup() (a group's ItemAdd uses id 0 -- an IM_ASSERT).
         drawFieldResetMenu(context, primary, entry, field, i, /*strId=*/nullptr);
         ImGui::PopID();
     }
     ImGui::EndGroup();
-    // task E.6.1 (I289): EndGroup's item is the whole row, so this is the cell minus the row as DRAWN --
-    // negative when the gaps spelled above and the budget disagree and the last box overruns the cell.
+    // EndGroup's item is the whole row, so this is the cell minus the row as DRAWN -- negative on an overrun.
     lastAxisRowSlackValue = total - ImGui::GetItemRectSize().x;
     return edited;
 }
@@ -451,8 +519,15 @@ void InspectorPanel::drawField(PanelContext& context, Entity primary, const Comp
     ImGui::TableNextRow();
     ImGui::TableNextColumn();
     ImGui::AlignTextToFramePadding();
-    lastLabelFontNameValue = ImGui::GetFont()->GetDebugName();  // task E.6.1: Body -- the header's push ended
-    ImGui::TextUnformatted(field.name.c_str());
+    lastLabelFontNameValue = ImGui::GetFont()->GetDebugName();  // task E.6.1: Body
+    roleText(ChromeRole::TextLabel, field.label);  // task E.6.3 (D5): the humanised label; the raw name is the id
+    // D5: the raw reflected name -- the scene JSON's spelling, and the one ADR-004's script bindings will use -- is
+    // the label's tooltip. roleText ends in TextUnformatted, so the hover read is the label's; the tooltip window's
+    // End restores LastItemData (imgui.cpp:8848), so the reset menu below still anchors on the label (I343).
+    if (field.label != field.name && ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("%s", field.name.c_str());  // a runtime string is never a format string (I242(e))
+    }
+    drawRecordValue.lastLabelDrawn = field.label;
     // THE WHOLE-FIELD MENU HANGS OFF THE LABEL CELL, never off a value widget (D6): FieldKind::String
     // keeps an uncommitted buffer whose release is keyed on ImGui::IsItemActive(), so a popup opening
     // over it steals ActiveId and silently discards whatever the user was typing. An explicit str_id
@@ -697,12 +772,17 @@ void InspectorPanel::drawField(PanelContext& context, Entity primary, const Comp
                                               .database = database,
                                               .thumbnails = thumbnails};
                 picked = drawAssetReferenceField(inputs, *assetPicker);
+                const ReferenceFieldRecord& drew = picked.drawn;  // task E.6.3: what the field drew
+                drawRecordValue.referenceSwatchDrawn = drawRecordValue.referenceSwatchDrawn || drew.swatchDrawn;
+                drawRecordValue.referenceWellDrawn = drawRecordValue.referenceWellDrawn || drew.wellDrawn;
+                drawRecordValue.referenceFields.push_back(drew);
             } else {
                 ImGui::TextUnformatted(row.text.c_str());  // no picker lent (a bare panel): 3.1.5's row
             }
             ImGui::SameLine();
             ImGui::BeginDisabled(!row.clearEnabled);
-            const bool cleared = ImGui::SmallButton("Clear");
+            // task E.6.3 (D5): Clear stays -- a real one-click action -- in the ghost style.
+            const bool cleared = ghostButton("Clear");
             ImGui::EndDisabled();  // 1:1 with BeginDisabled -- nothing between them can return
             // A button press-releases within one frame, so the gate is harmless here; applied anyway
             // so no arm is the odd one out (task 2.4.2 D17).
@@ -741,6 +821,75 @@ void InspectorPanel::drawField(PanelContext& context, Entity primary, const Comp
     }
 
     ImGui::PopID();
+}
+
+// task E.6.3 (D5): outside every card, centred on the `panel` ground. An InvisibleButton whose ONLY outline is
+// dashedRect -- never ghostButton, GhostStyle or a plain Button, whose RenderFrame(..., true, ...) strokes a solid
+// border through the dash gaps (imgui_widgets.cpp:812). Hovered a `hover` fill, held an `active` fill, under the
+// dashes.
+void InspectorPanel::drawAddComponent(PanelContext& context, Entity primary) {
+    const float s = currentUiScale();
+    const ImVec2 start = ImGui::GetCursorScreenPos();
+    const AddComponentLayout layout = addComponentLayout(start.x, ImGui::GetContentRegionAvail().x,
+                                                         faceTextWidth(PanelFace::Strong, ADD_COMPONENT_LABEL), s);
+    ImGui::SetCursorScreenPos(ImVec2(layout.minX, start.y));
+    const bool pressed = ImGui::InvisibleButton("##addComponentButton", ImVec2(layout.width, layout.height));
+    const ImVec2 min = ImGui::GetItemRectMin();
+    const ImVec2 max = ImGui::GetItemRectMax();
+    ImDrawList* const list = ImGui::GetWindowDrawList();
+    const float rounding = ImGui::GetStyle().FrameRounding;
+    if (ImGui::IsItemActive()) {
+        roleFill(list, min, max, ChromeRole::Active, rounding);
+    } else if (ImGui::IsItemHovered()) {
+        roleFill(list, min, max, ChromeRole::Hover, rounding);
+    }
+    // What the list RECEIVES across the outline, never a flag set beside the call (the code-review round's finding
+    // 11): each dash is one AddRectFilled at alpha 255 with no rounding, four vertices (imgui_draw.cpp:1530-1538).
+    const int dashVertices = list->VtxBuffer.Size;
+    dashedRect(list, min, max);
+    drawRecordValue.addComponentDashVertices = list->VtxBuffer.Size - dashVertices;
+    // The gaps stay open (D5), read off the same vertices: PrimRect writes a, (b.x, a.y), b, (a.x, b.y)
+    // (imgui_draw.cpp:776-779) and the top run draws first, so [0]-[1] spans the first dash and [4] starts the next.
+    if (drawRecordValue.addComponentDashVertices >= 8) {
+        const float dashFrom = list->VtxBuffer[dashVertices].pos.x;
+        const float dashTo = list->VtxBuffer[dashVertices + 1].pos.x;
+        drawRecordValue.addComponentFirstDashWidth = dashTo - dashFrom;
+        drawRecordValue.addComponentFirstDashGap = list->VtxBuffer[dashVertices + 4].pos.x - dashTo;
+    }
+    const float labelY = min.y + ((max.y - min.y - panelFacePoints(PanelFace::Strong)) * 0.5F);
+    drawRoleText(list, PanelFace::Strong, ImVec2(min.x + (EDITOR_THEME.panels.addComponentPaddingX * s), labelY),
+                 ChromeRole::Accent, ADD_COMPONENT_LABEL);
+    drawRecordValue.addComponentMin = Vec2{min.x, min.y};
+    drawRecordValue.addComponentMax = Vec2{max.x, max.y};
+    drawRecordValue.addComponentDashed = drawRecordValue.addComponentDashVertices > 0;
+    if (pressed) {
+        ImGui::OpenPopup("##addComponent");
+    }
+    if (ImGui::BeginPopup("##addComponent")) {
+        bool anyAbsent = false;
+        const std::size_t count = context.world.componentTypeCount();
+        for (std::size_t i = 0; i < count; ++i) {
+            const ComponentTypeId candidateId = context.world.componentTypeAt(i);
+            if (context.world.hasRaw(candidateId, primary)) {
+                continue;
+            }
+            anyAbsent = true;
+            const std::string_view fullName = context.world.componentTypeName(candidateId);
+            shortNameScratch = std::string(shortComponentName(fullName));
+            // Review finding 4: keyed on the loop index -- two registered types can share a short name.
+            ImGui::PushID(static_cast<int>(i));
+            // task E.6.3 (D5): each entry with its component's icon (componentIconFor: a view of a literal, so
+            // .data() is NUL-terminated; an unknown type answers the fallback glyph).
+            if (ImGui::MenuItemEx(shortNameScratch.c_str(), componentIconFor(fullName).data())) {
+                pending = PendingAction{.kind = ActionKind::AddComponent, .type = candidateId};
+            }
+            ImGui::PopID();
+        }
+        if (!anyAbsent) {
+            ImGui::MenuItem("(none)", nullptr, false, false);  // E12: disabled, never omitted
+        }
+        ImGui::EndPopup();
+    }
 }
 
 void InspectorPanel::applyPending(PanelContext& context, Entity primary) {

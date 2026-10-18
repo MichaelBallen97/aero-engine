@@ -2132,12 +2132,53 @@ A fixed region's height is a **pure function** with a tier-0 battery, never arit
 walk. The scrolling body is `BeginChild(id, ImVec2(0, -footerHeight))` — a **negative** height, so
 `CalcItemSize` resolves it as `ImMax(4.0f, avail.y + size.y)` (`imgui.cpp:12344-12345`) and ImGui's own
 remainder is authoritative: a one-pixel error costs the child a pixel instead of clipping a button off
-the bottom. (The Asset Browser's panes are floored at `1.0F` for the **opposite** requirement — two
-side-by-side panes sharing one explicit height — and both are right. Since E.4.4's validation fix that
-floor lives in `assetBrowserLayout` (`asset_view.hpp`), which reserves the footer AND the Issues region
-before sizing the panes and caps the Issues body in a scrollable child — this section's second
-instance.) **Never pass a zero height meaning "nothing"**: `CalcItemSize` reads zero as *use the whole
-remaining region*.
+the bottom. (The Asset Browser's panes are floored at a positive explicit height for the **opposite**
+requirement — two side-by-side panes sharing one explicit height — and both are right. Since E.4.4's
+validation fix that floor lives in `assetBrowserLayout` (`asset_view.hpp`), which reserves the footer AND
+the Issues region before sizing the panes and caps the Issues body in a scrollable child — this section's
+second instance. Since E.6.3's code-review round the floor is ImGui's 4-point child — see the fold below.)
+**A fixed row drawn INSIDE a flexible region's height is chrome too**: E.6.3's crumb row, its rule and their
+spacing sit inside the contents pane above a child, so a pane shorter than them grew the row and pushed
+the Issues region and the footer off the panel while the budget still claimed a fit. Record such a row's
+height as a metric the budget reads, so the budget knows the shortest region that holds it: that chrome +
+the child's minimum (`AV66`, `I231`).
+**And below that height the row FOLDS, rather than the region being floored at it** (E.6.3's code-review
+round, rounds 2 and 3): flooring the Assets panes at chrome + 4 left the editor's own 1280 x 720 launch scrolling
+with the Issues list open and no fit anywhere in 640-776-point windows. `assetBrowserLayout` answers
+`crumbRowShown == (R* >= paneChromeHeight + frameHeight)` and `paneHeight == max(R, 4)` in BOTH modes, `R` the
+remainder after the footer and the Issues region and `R*` the remainder the Issues list would leave OPEN at its
+one-row floor, **whatever its state**. So **the row never shows over less than one frame height of contents**,
+**the mode is the same for both Issues states**, and closing the list never shrinks the asset list. One frame is
+a height, not a whole entry: in List view the `##contents` child opens with its frozen column-header row
+(`FontSize + 2 x CellPadding.y`, `imgui_tables.cpp:3118`, 22 at 1x), so at the threshold it shows the headers and
+the top 2 points of the first entry; in Grid view, the top of the first tile row. The frame term is
+`max(frameHeight, 4)`, ImGui's child, so a frame that reads 0 never shows the row over a group taller than its
+pane (`AV66`).
+A threshold of the floor itself (round 2's `R >= chrome + 4`, read off each state's own `R`) showed the row over a
+4-point list and, at the launch, over a 12-point list with the Issues list closed where the open list folded it
+over 27. The mode moves no height in the budget, so the pane height is **continuous** across the fold; folded,
+the panel submits no crumb, no crumb drop target and no rule, the `##contents` child takes the whole pane, and the
+tree still navigates. The Issues body yields to the same `max(ASSET_PANES_MIN_FONT x fontSize, chrome +
+frameHeight)` in both modes, since a body that grew on the fold would take the row's height straight back
+(`AV67`). **Only the pane is continuous**: the `##contents` child is the pane less the chrome while the row shows
+and the whole pane once it folds, so it steps by the chrome at the threshold — by construction, at any threshold
+(24 → 60 points at 1x with the list open, `AV67`).
+`assetContentsPaneLayout`'s `crumbRowShown` is non-defaulted. The row shows from 143 points at 1x with Issues, open
+or closed, and from 91 without; the panel fits from 34 / 64 / 86 (no Issues / closed / open) — the pre-E.6.3
+bounds + 3 (`AV67`, `AH18`, `I231`).
+**And that minimum is ImGui's, not the one you asked for**: `CalcWindowMinSize` (`imgui.cpp:7007-7029`,
+applied at `:8219`) holds a child window WITHOUT `ImGuiChildFlags_ResizeY` to at least
+`IMGUI_WINDOW_HARD_MIN_SIZE` (`imgui_internal.h:2813`), 4 points at every scale, and to at least the
+rounding term `max(0, style.WindowRounding - 1)` (`:7027` — the WINDOW rounding, even for a child;
+`BeginChild` always sets `NoTitleBar` (`imgui.cpp:6744`); a child given `ImGuiWindowFlags_MenuBar` adds its
+`MenuBarHeight` to the minimum too (`:8134`)), so for a child with no menu bar the 4 holds while the scaled
+`WindowRounding` is at most 5 (the theme's is 0; `asset_browser_panel.cpp` static_asserts the macro and the
+term at `UI_SCALE_MAX`). **A `ResizeY` child's minimum is `style.WindowMinSize.y`** (32 dp) instead
+(`:7017`) — chrome reserved above one is floored at that, not at 4. So a child asked for 1 is drawn 4 tall
+— a floor of chrome + 1 left the group 3 points taller than its pane, which only a drawn comparison at the
+floor could see (`I231`'s 640 subcase).
+**Never pass a zero height meaning "nothing"**: `CalcItemSize` reads zero as *use the whole remaining
+region*.
 
 **Nothing that wraps may live in a fixed-height region.** A wrapped line makes the region's height a
 function of the panel's *width*, which makes every derived size a function of the panel's width — and if
@@ -2234,3 +2275,161 @@ state.
   tool pushes all THREE button slots plus the text slot (onAccent on `hover` is 1.34:1). `I287` pins the reads.
 - **`US9`'s map** now includes `breadcrumb.hpp` (`P`), `status_bar.hpp` (`P`) and `toolbar_model.hpp` (`PP`): a new
   pure layout that consumes a dp metric takes a non-defaulted `float uiScale` and joins the map.
+
+## Panel chrome (task E.6.3)
+
+- **ONE CARD PAINTER, `panel_chrome_ui.cpp`, and its four rules.** A card's header item is a framed `TreeNodeEx`
+  submitted under `Header*` and `Text` cleared through `clearOver` and `FrameBorderSize 0` (a framed node strokes
+  `ImGuiCol_Border` otherwise, `imgui.cpp:4063-4074`); the painter draws its own chevron, icon and title from ONE pure
+  `cardHeaderLayout`, never from ImGui's arrow box. Every fill, rule and outline is drawn from the x span recorded at
+  `begin` -- never `GetItemRectMin/Max`, which includes the framed overhang `IM_TRUNC(WindowPadding.x x 0.5)`
+  (`imgui_widgets.cpp:6906-6911`). The vertical layout is NET of `ItemSpacing.y` (`imgui.cpp:12129`): the first body
+  item is placed `cardPaddingY` below the strip and the next card is reached by ONE `Dummy` of the net height, never a
+  bare `SetCursorScreenPos` (`:8839-8840`). The body is narrowed on BOTH edges -- `WorkRect.Min.x`, `WorkRect.Max.x`,
+  `ContentRegionRect.Max.x` -- and all three are restored at `end`: the TU's one internal write. The body is also
+  CLIPPED to that width, because a line or a button row that does not wrap ignores all three and drew through the
+  padding and over the outline (V4, `I348`): `ImGui::PushClipRect` -- never the list's own, since only it also sets
+  `window->ClipRect`, which items cull and hover against and a body's table takes as its host clip -- pushed on the
+  content channel and popped FIRST at `end`, before any channel switch: a clip is the list's, and `SetCurrentChannel`
+  carries it into the channel it makes current (`imgui_draw.cpp:2270-2277`). No `BeginChild` and no
+  `BeginGroup` per card (E.3.4's per-window `StateStorage` rule). A host answers a header's hover or right-click only
+  through `CardHeaderResult` -- after `begin`, the last item may be the overflow button. **The chevron has ONE face
+  size for both states**, sized off the OPEN chevron's ink (the mock's 3.5 dp); the glyph drawn is measured only to
+  centre its ink in that column. Lucide's two chevrons are one stroke rotated, so a size per glyph draws the closed one
+  larger, stroke and all (`I336`, `I331`). **A glyph read at a fractional size is read as `RenderText` draws it**: off
+  the bake at `IM_ROUND(size)` (`imgui_draw.cpp:5415`), scaled by size / that bake's `Size` (`:5802`), from a pen the
+  painter rounds to a whole point because `RenderText` truncates it (`:5791`) -- read raw, the chevron's record sat
+  0.2 right of the quad it drew and 6.25 % narrow at body 16. `I336` holds the record's box to the quad the list
+  received, off `AddText`'s four vertices. **The pen is the pure `cardChevronPenX`'s answer** (`PC11`; `I336` pins the
+  call): at a whole-point pen a centred and a left-aligned ink often draw the same pixels (measured at body 16, scale
+  1: both states on a 1x display, the open one on a 2x display), so only tier 0 witnesses the centring on every
+  display -- keep the arithmetic there.
+- **A panel header that must stay ImGui-free holds the painter by `std::unique_ptr<CardPainter>`**, with the class
+  forward-declared and the host's constructor and destructor defined out of line.
+- **EVERY CHROME COLOUR A PANEL DRAWS IS A THEME TOKEN, never a literal.** A PALETTE colour is reached as a
+  `ChromeRole` through `chromeRoleColor` (`panel_chrome_model.cpp` reads each palette role ONCE); a colour outside the
+  palette is its own theme member, read directly -- `ThemePanels`' `hatchStripe` and `addComponentDash`
+  (`panel_chrome_ui.cpp`), its `consoleWarnRowTint` / `consoleErrorRowTint` (`console_view.cpp`), and the other
+  `EditorTheme` colour groups' members (`axis`, `assetKind`, `swatchLabel`, `viewport`, `clear`, ...). The direct
+  `EDITOR_THEME.palette.*` reads that remain -- `material_panel.cpp`, `import_details_panel.cpp`, `project_ui.cpp`,
+  `shell_chrome_ui.cpp` -- are pinned at exact per-file counts by `I287` (the role map at one read per role, every
+  other panel TU it lists at 0), so a new one, or one converted to a role, is a pin edit. A transparent fill is
+  `clearOver(surface)` -- the ONE alpha spelling (`I333` counts it). Never `ImVec4()` / `ImVec4{}` (`I287`'s k = 5),
+  `IM_COL32_BLACK_TRANS` (`I287`'s k = 3, by substring) or `withAlpha(` in a panel TU; `I333` refuses all four. A
+  document's own colours -- a material's swatch, a thumbnail -- are content, not chrome.
+- **De-emphasis is `mutedText` / `mutedTextWrapped`** -- string-only, so format-safe by construction;
+  `ImGui::TextDisabled` and `ImGuiCol_TextDisabled` are banned in every panel TU (`project_ui.cpp` is E.6.4's and
+  excepted). A disabled widget greys through `BeginDisabled`.
+- **Every NEW face switch is `ScopedFace`** (`panel_chrome_ui.cpp` spells its `PushFont`). The one deliberate panel
+  exception is the Console's message push, `PushFont(mono, 0.0F)` in `console_panel.cpp`: it keeps the CURRENT size,
+  so the row the `Selectable` sized and the clipper's step stay exact, and `I283` pins it as that file's one push,
+  scoped to its row. `I286` pins the set of `editor/src` TUs spelling `PushFont` as `{console_panel.cpp,
+  panel_chrome_ui.cpp, shell_chrome_ui.cpp}` (the last is E.6.2's shell chrome). A draw-list text takes
+  `panelFaceFont` + `panelFacePoints` -- the FINAL size, `faceSizePoints(dp, s) = floor(dp x s + 0.5)`, ImGui's own
+  rounding. Measure with `faceTextWidth` (exact advances), never `ImGui::CalcTextSize` for a column of advances.
+- **A tile `Selectable` and the Assets tree's node paint no ImGui fill (D8)**: both tile hosts submit their
+  `Selectable("##tile"` inside a `ClearHeaderStyle` that wraps that one call, and the face draws every state from the
+  `Selectable`'s answers; the Assets tree's `TreeNodeEx("##dir"` rows sit inside one too and draw their own rounded
+  `selection` / `hover` fill. **The Hierarchy is the stated exception (D6)**: its `TreeNodeEx("##row"` keeps ImGui's
+  own square `Header` = `selection` fill and draws none of its own, so it never takes a `ClearHeaderStyle` or a
+  hand-pushed `Header` slot (`I312`).
+- **THE VIEWPORT HUD CLAIMS SCREEN-SPACE PRESSES** through the free `hudOwnsPoint(latchedHudLayout, p)`, on exactly two
+  lines -- the pick's `overlayOwnsPress` and ImGuizmo's `widgetOwnsCursor` -- beside `viewAxisOwnsPoint`. A case driving
+  `overlayOwnsPress` with a zero or image-space rect asserts its probes are outside every recorded HUD rect first: a
+  zero image rect switches off only the view-axis arm.
+- **THE VIEW-AXIS WIDGET CLAIMS ITS DIVIDER CIRCLE'S BOUNDING SQUARE** -- `viewAxisCircleRect`, `viewAxisRect` grown
+  by `viewAxisCircleGap`, degenerate exactly when it is -- and the HUD's keep test and `viewAxisOwnsPoint` (the pick
+  and ImGuizmo's `Enable` term) both read it: the circle reaches five past the half-extent rect and draws last.
+  Chrome drawn around a claimed shape grows the ONE claimed extent with it (`VO14`, `I116`). The box is the circle's
+  NOMINAL extent: the stroke's nominal outer edge is the box's edge at and below scale 1, and 0.5 x (s - 1) points
+  past it above (the `ruleHeight()` stroke is s points); at EVERY scale the AA fringe (up to one point,
+  `imgui_draw.cpp:887`) lies past that -- neither claimed nor kept clear, as every `roleOutline`'s is.
+- **A request seam obeys its control** (the shell chrome's rule, again): the Hierarchy's search query, search-field
+  focus and rename request (F2's gate, the `shortcutsLive` verdict), the Inspector's component menu and card header
+  toggle, the Assets navigation, the Viewport's stats toggle and the Console's log scroll are each drained on ONE line
+  naming the control's enabled predicate and `noModal`, computed once from
+  `GetTopMostPopupModal()` (`I337`). A control with no disabled state -- the card header, the component menu's Remove
+  Component item, the log child's scrollbar -- is gated by `noModal` (and, for the two Inspector seams, the card's own
+  name) alone. The log scroll's value is bounded to the scrollbar's last-drawn `ScrollMax.x` before
+  ImGui's 64-bit round can see it; the navigation and search-query seams pass their value through unvalidated, as test
+  seams (`applyPending` writes the requested folder into `currentDir` as given, existing or not). Two control terms
+  are witnessed by their own refusal: the stats toggle's `statsControlReachable` (`I338` cuts the image until the
+  chip is not laid out) and the search query's `searchEnabled` (`I344`'s rename arm refuses a query while the rename
+  disables the field). The Assets navigation's `crumbsEnabled`, the search-field focus's `searchEnabled` (the same
+  term, read again on its own drain line) and the rename request's `shortcutsLive` have only `I337`'s source pin.
+  `noModal` is refused behaviourally for three seams alone -- the Assets navigation, the stats toggle and the card
+  header (`I338`); the Hierarchy's three seams, the component menu and the log scroll have only `I337`'s pin for it.
+  **A request HELD ON A PANEL lives one tick too**, by its own mechanism, since the
+  shell chrome's clear after the `ShellUiState` build reaches only `EditorApp`'s members: the panel resets it on the
+  first statement after its drain's closing brace -- that statement and nothing else on its line, so no condition can
+  ride along -- whichever way the gate answered (`I337`; the Inspector's two seams
+  instead move theirs into a per-frame copy at the top of `onDraw`, E.5.2's shape), and gives it a `noexcept`
+  `expire...()` that `EditorApp::tick` calls after `drawShellUi`, beside `expireComponentMenuAction()`, so a request
+  issued while the panel does not draw at all is dropped as well (`I338`). A new panel seam adds BOTH, an `I337` arm
+  and an `I338`-shaped hidden-panel arm: no source pin sees a missing expire call, and the deferral it leaves is
+  invisible until the panel is hidden.
+- **THE HIERARCHY'S SHORTCUTS RUN BEHIND ONE GATE**, the ONE `hierarchyShortcutsLive(renaming.valid(),
+  searchOwnsKeys)` call (`HY7` is its truth table). An ACTIVE `InputText` owns only Left, Right, Delete, Backspace,
+  Home and End (`imgui_widgets.cpp:4923-4925`), so without the gate Cmd/Ctrl+D and F2 would act on the selection
+  while the user types. `searchOwnsKeys` is read in `drawHeaderRow()`, right after the field, and the header row runs
+  BEFORE the shortcut phase on the same frame -- a read one frame late is the defect (`I312`'s order arm). The verdict
+  is recorded, the next line's `if (shortcutsLive) {` reads it, and every `ImGui::Shortcut(` the panel spells sits
+  inside that block, which closes before the `##tree` child opens (`I312` counts their three lines). **A new
+  Hierarchy shortcut goes INSIDE that block** and moves `I312`'s count; what the field term reads is the next
+  bullet's.
+- **A SELECTION SHORTCUT BESIDE A TEXT FIELD IS GATED ON THE FIELD'S KEYBOARD, NOT ITS ACTIVITY** -- the Hierarchy's
+  Delete, Backspace, Duplicate and Rename, which act on the panel's selection rather than on the field's own list. The
+  field owns them while `IsItemActive()`, or while `IsItemFocused()` holds a focus the field's OWN activation gave it:
+  a latch set by `IsItemActive()` and released only while the keyboard is in the panel
+  (`IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows)`, the `##tree` child included) on another item or on none,
+  all read right after the field (`I312`, `I339`). Enter and Escape end the activation (`ClearActiveID`,
+  `imgui_widgets.cpp:5452-5453`) and leave `NavId` on the field, so a gate on `IsItemActive()` alone -- or on
+  `io.WantTextInput`, set only while an InputText is active (`:5656-5660`) -- opens on the very Backspace meant for the
+  query, and the Hierarchy's Delete-on-Backspace deleted its selection (the code-review round's finding 20). A tab
+  click or a focus command restores the window's last `NavId` (`imgui.cpp:13733`) -- the field's, once it was
+  activated -- so after a search the gate holds until a row takes the focus: the safe direction, by decision. **And
+  `IsItemFocused()` without the latch over-closes**: ImGui hands a field `NavId` with no click -- a tab or title-bar
+  click that restores no `NavId` runs `NavInitWindow` (`imgui.cpp:19750-19752`), so does a docked window reappearing
+  with no modal up (`:8616-8619`, re-initialised by `:14402-14409`), and NavInit picks the root window's first item,
+  the Hierarchy's field since its rows live in the child -- which left Delete dead after a plain tab click until a row
+  was clicked. A re-initialised `NavId` starts from 0 with the keyboard in the panel, so it releases the latch; only a
+  restore keeps it. **The deliberate exception is the asset picker** (`asset_picker.cpp`): its Left/Right/Home/End and
+  Enter move or commit the popup's own cursor over the list its search box filters, and are gated on `IsItemActive()`
+  alone -- the box takes `NavId` on the frame the popup opens (`SetKeyboardFocusHere`) and can still hold it once it
+  stops editing, which is exactly when those keys are meant to fire.
+- **A TREE WALKED INSIDE A CHILD WALKS ONLY WHILE `BeginChild` RETURNED TRUE**, and `EndChild` stays unconditional --
+  the Assets tree's C2 and the Hierarchy's `##tree` (`I312`, `I340`). `BeginChild` clips the child with its parent's
+  `ClipRect` (`imgui.cpp:8434-8440`); a child clipped away entirely -- a dock cut down to its header row -- is skipped
+  (`:8733-8738`), and `TreeNodeBehavior` then returns at its first statement (`imgui_widgets.cpp:6879-6880`), before
+  `TreeNodeUpdateNextOpen`: every node reads closed (an unguarded Assets tree would record a collapse for each, 2.2.4's
+  C2) and a `SetNextItemOpen` is never applied, so a one-shot the walk consumes -- the Hierarchy's reveal -- was lost
+  for good (the code-review round's finding 6). A `Leaf` row drops it too (`TreeNodeUpdateNextOpen` returns before it
+  reads it, `imgui_widgets.cpp:6808-6809`), so only the Hierarchy's TREE walk takes the reveal, never the flat match
+  list: a query typed while it waits defers it. Anything the panel shows OUTSIDE the child (the badge's `m / n`) is
+  computed ahead of the gate.
+- **A RENAME WHOSE FIELD STOPS DRAWING ENDS AS THE FIELD WOULD** (E.6.3's code-review round, round 2; `I344`). The
+  Hierarchy's `##rename` field is a row's, so it lives in the `##tree` child: a child skipped under an active field (a
+  dock cut to its header row -- at `main` the rows lived in the panel window, where `ItemAdd`'s `KeepAliveID` kept the
+  field alive, `imgui.cpp:11987`), a renamed row no longer walked, or a panel that does not draw at all (closed, or
+  behind another tab -- `main`'s own stuck state) submits no field. `NewFrame` drops its `ActiveId`
+  (`imgui.cpp:5795-5799`) and the deactivation recorded then lapses two frames on (`:4807`, `:5818-5819`), so
+  `IsItemDeactivated` never fires once the field is back and `renaming` would stay set: the search field disabled and
+  Delete / Backspace / Ctrl+D / F2 dead. `renameFieldFrame` is the ImGui frame the field was last submitted (written
+  beside its `inputTextString` call, and by the BeginRename arm with the frame that arm runs in), and phase 1 --
+  after the E24 drop, before `searchEnabled` and the shortcut verdict -- ends a rename whose field was not submitted
+  on the previous frame: committed when `renameBuffer != renameOriginal` -- the name the BeginRename arm captured, its
+  only writer, so an edit -- cancelled otherwise, through `commitRename` / `cancelRename`, the ONE commit and ONE
+  cancel path the two action arms call too. **Never against the World's CURRENT name**: something else can rename the
+  entity while the field is gone (an Edit > Undo of an earlier rename), and an unedited buffer would then commit,
+  re-applying the rename the undo removed and dropping the redo branch (`I344 (d)`). **Never re-armed**:
+  a fresh `SetKeyboardFocusHere` would steal the keyboard back from wherever it went meanwhile. A row merely scrolled
+  out of the child is still submitted, and `ItemAdd` keeps an active item alive before its clip test
+  (`:12025-12029`), so it keeps its rename (`I344 (e)`, sixty roots and a reveal of the last): a clipper added over the
+  tree must keep submitting the renamed row, or a wheel scroll ends the rename. A new place the field is drawn writes
+  the frame beside it; a third writer elsewhere would keep a field that no longer draws looking fresh (`I344` counts
+  two).
+- **The Inspector's axis thresholds are per entity and stated before any layout change**: the Cube's `"0.000"` is whole
+  from a content width of 266, the Main Camera's from 279, the Directional Light's from 316 (`I289`, geometry-
+  independent); the default right split is 0.30. A label-column, letter-inset or split change re-measures all three.
+- **`componentIconTable()` and `entityKindFor` are two more sites the next built-in sweeps**, beside `RF7` and `IR21`:
+  `EK5` pins the ten rows and `EK1` / `EK2` the kinds.

@@ -25,6 +25,10 @@ struct ShellUiState {
     // Mutually exclusive with applyDefaultLayout by construction (EditorApp seeds one as the other's
     // negation): a default layout places every panel already, so there is nothing left unplaced.
     bool placeUnplacedPanels = false;
+    // task E.6.3 (the code-review round, round 4) -- IN: the Bottom split every default layout builds, View > Reset
+    // Layout's included: EditorApp's member, resolved once in create() (resolveBottomDockFraction). The default is
+    // the shipping value, so a state built without it lays out exactly as the editor ships.
+    float bottomDockFraction = DEFAULT_BOTTOM_DOCK_FRACTION;
     // `quitRequested` is DELETED (task 2.5.1, plan A10/A15): after D1, both Ctrl+Q and File > Exit
     // are FileAction::Quit, routed through FileMenuContext's flow -- nothing writes this field any
     // more, and a field nobody writes is a trap. The confirmed OUTPUT of a GUARDED quit is

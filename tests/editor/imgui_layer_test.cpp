@@ -21,11 +21,13 @@
 #include <aero/editor/asset_cache.hpp>    // task 3.1.2: ImportChange, ASSET_CACHE_DIR_NAME/FILE_NAME/
                                           // GITIGNORE_NAME -- I31's index-path/gitignore-path assertions
 #include <aero/editor/asset_actions.hpp>  // task E.4.3: AssetOpRefusal, for the drop-peek verdicts
+#include <aero/editor/asset_browser_chrome.hpp>
 #include <aero/editor/asset_meta.hpp>     // task 3.1.3: writeMetaText, for I39/I41's orphan fixtures
 #include <aero/editor/blender_tool.hpp>   // task 3.2.4: ExportProvenance + BLENDER_EXPORT_DIR_NAME (I78)
 #include <aero/editor/command_stack.hpp>  // task 2.4.1
 #include <aero/editor/component_ops.hpp>
 #include <aero/editor/console_model.hpp>  // DEFAULT_LOG_HISTORY_CAPACITY (case C)
+#include <aero/editor/console_view.hpp>   // task E.6.3 (I287, I313, I314)
 #include <aero/editor/create_menu.hpp>    // task E.5.2 (I246-I250): CreateKind, createSeed, createAnchor
 #include <aero/editor/editor_app.hpp>
 #include <aero/editor/editor_camera.hpp>    // task 2.3.1
@@ -34,10 +36,13 @@
 #include <aero/editor/editor_prefs.hpp>     // task E.6.2 (I294, I302): writeEditorPrefs / readEditorPrefs
 #include <aero/editor/entity_commands.hpp>  // task 2.4.2
 #include <aero/editor/entity_ops.hpp>
+#include <aero/editor/entity_presentation.hpp>
+#include <aero/editor/hierarchy_view.hpp>
 #include <aero/editor/model_import_session.hpp>  // task 3.2.1: SessionState, named directly (I52-I59)
 #include <aero/editor/panel_registry.hpp>
 #include <aero/editor/picking.hpp>            // task 2.3.2
 #include <aero/editor/project.hpp>            // task 2.6.1
+#include <aero/editor/project_files.hpp>      // task E.6.3 (I326): formatFileSize, the footer's in-listing size
 #include <aero/editor/project_settings.hpp>   // task E.6.1 (I233): PROJECT_SETTINGS_PANEL_ID
 #include <aero/editor/project_state.hpp>      // task E.4.1 (I176-I184): ProjectState + the two file operations
 #include <aero/editor/scene_bounds.hpp>       // task 2.3.1
@@ -63,14 +68,17 @@
 // task 3.1.5 (SL1-SL10): the scene-asset loader is SRC-PRIVATE, so it is reached the way
 // blender_service_test.cpp reaches blender_process.hpp -- by relative path into editor/src. It names
 // scene_render::MeshBinding, which is why aero::scene_render is on this target's link line.
-#include "../../editor/src/console_panel.hpp"    // task E.6.1 (I281): the Console's own log model
-#include "../../editor/src/editor_fonts.hpp"     // task E.6.1 (I277-I279): the faces, measured ImGui-free
-#include "../../editor/src/editor_theme_ui.hpp"  // task E.6.1 (I280-I282): style snapshots, ImGui-free
-#include "../../editor/src/file_dialog.hpp"      // fix 2.5.1-focus (I275, I276): the dialog focus gate + helper
-#include "../../editor/src/hierarchy_panel.hpp"  // task E.5.2, I249: requestCreate -- the panel-to-drain path
-#include "../../editor/src/inspector_panel.hpp"  // task E.6.1 (I284): the face its headers and labels drew in
-#include "../../editor/src/material_panel.hpp"   // task E.2.4, I136: previewOutputTarget() -- the same
-                                                 // src-private reach the two lines below already make
+#include "../../editor/src/asset_browser_panel.hpp"     // task E.6.3 (I323-I326): the Assets chrome record
+#include "../../editor/src/console_panel.hpp"           // task E.6.1 (I281): the Console's own log model
+#include "../../editor/src/editor_fonts.hpp"            // task E.6.1 (I277-I279): the faces, measured ImGui-free
+#include "../../editor/src/editor_theme_ui.hpp"         // task E.6.1 (I280-I282): style snapshots, ImGui-free
+#include "../../editor/src/file_dialog.hpp"             // fix 2.5.1-focus (I275, I276): the dialog focus gate + helper
+#include "../../editor/src/hierarchy_panel.hpp"         // task E.5.2, I249: requestCreate -- the panel-to-drain path
+#include "../../editor/src/import_details_panel.hpp"    // task E.6.3 (I332)
+#include "../../editor/src/inspector_panel.hpp"         // task E.6.1 (I284): the face its headers and labels drew in
+#include "../../editor/src/material_panel.hpp"          // task E.2.4, I136: previewOutputTarget() -- the same
+                                                        // src-private reach the two lines below already make
+#include "../../editor/src/project_settings_panel.hpp"  // task E.6.3 (I332)
 #include "../../editor/src/scene_asset_loader.hpp"
 #include "../../editor/src/viewport_panel.hpp"  // task 3.6.3: ViewportPanel's three test seams --
                                                 // postProcess(), tonemapParams(), requestTonemapParams().
@@ -771,6 +779,8 @@ TEST_CASE("editor: a full Console ring stays balanced and clipped (task 2.2.5, A
     std::optional<engine::editor::EditorApp> app = engine::editor::EditorApp::create(
         *device, *window, ctx, {.persistLayout = false, .unfocusedFrameCapHz = 0.0F, .restoreLastProject = false});
     REQUIRE(app.has_value());
+    auto* const console = dynamic_cast<engine::editor::ConsolePanel*>(app->panels().find("Console"));
+    REQUIRE(console != nullptr);
 
     constexpr int BATCH_COUNT = 4;
     constexpr int BATCH_SIZE = 3000;  // comfortably under DEFAULT_LOG_STAGING_CAPACITY (4096), so
@@ -783,11 +793,16 @@ TEST_CASE("editor: a full Console ring stays balanced and clipped (task 2.2.5, A
         CHECK(app->presentedLastFrame());
     }
     CHECK(app->logRecordCount() == engine::editor::DEFAULT_LOG_HISTORY_CAPACITY);
+    const std::uint64_t ringFrames = console->drawRecord().framesRecorded;
     window->setSize(200, 120);  // BeginChild can return false; the header row clips
     for (int i = 0; i < 3; ++i) {
         REQUIRE(app->tick());
         CHECK(app->presentedLastFrame());
     }
+    // task E.6.3 (I314's small arm): the restyled header and footer draw at 200 x 120 with no assert. The dock is
+    // shorter than header + footer there, so the scroll range is recorded, not asserted.
+    MESSAGE("I314 small window: Console scroll max " << console->drawRecord().windowScrollMaxY);
+    WARN(console->drawRecord().framesRecorded > ringFrames);  // geometry: a fully collapsed dock skips onDraw
     window->setSize(480, 300);
     for (int i = 0; i < 2; ++i) {
         REQUIRE(app->tick());
@@ -8735,6 +8750,18 @@ TEST_CASE("editor: the tonemap wiring's three source-text invariants hold (task 
     }
 }
 
+namespace {
+
+// task E.6.3 (D9): true when `p` is in no HUD rect the viewport's LAST frame showed. The HUD claims SCREEN-space
+// presses that a zero or image-space rect cannot switch off (a zero image rect switches off only the view-axis arm),
+// so every "owned by nothing" probe in I107 / I116 / I139 asserts this FIRST -- or a CHECK_FALSE could pass by a
+// coincidence of spaces and assert nothing about the arm it names.
+[[nodiscard]] bool e63OutsideHud(const engine::editor::ViewportPanel& viewport, engine::Vec2 p) {
+    return !engine::editor::hudOwnsPoint(viewport.hudRecord().layout, p);
+}
+
+}  // namespace
+
 TEST_CASE("editor: the overlay claims its own strip and NOTHING else (task 3.6.3 regression, I107)") {
     // THE CASE THAT WOULD HAVE CAUGHT THE SHIPPED REGRESSION, and the reason it can is that it asks
     // about the EFFECT -- would a press at this point arm a scene pick? -- rather than about the
@@ -8789,16 +8816,29 @@ TEST_CASE("editor: the overlay claims its own strip and NOTHING else (task 3.6.3
     constexpr engine::Vec2 NO_WIDGET_SIZE{};
 
 #if AERO_SHADER_TOOLS_ENABLED
+    // task E.6.3 (D9): the HUD claims its own SCREEN rects, which a zero image rect does not switch off. So the stats
+    // card is hidden first (shown at the default pose -- a WARN, since a runner's short window may lay it out of the
+    // image), and every "owned by nothing" probe below is derived from the RECORDED rects and REQUIRED outside every
+    // shown one before its CHECK_FALSE. I327 owns the positive "the card draws, and the toggle hides it" claim.
+    WARN(viewport->hudRecord().layout.stats.shown);
+    viewport->requestStatsVisible(false);
+    REQUIRE(app->tick());  // drained under its gate, then laid out without the card
+    REQUIRE(app->tick());  // ...and that layout latched for the press claims
+    REQUIRE_FALSE(viewport->statsVisible());
+    const engine::editor::ViewportHudRecord& hud = viewport->hudRecord();
+    REQUIRE_FALSE(hud.layout.stats.shown);
+
     const engine::Vec2 rowMin = viewport->overlayRowMin();
     const engine::Vec2 rowMax = viewport->overlayRowMax();
-
-    // ANTI-VACUITY, and it is the half that matters most: an EMPTY rect owns nothing, so every
-    // "does not own" assertion below would pass on a panel that never recorded anything -- which is
-    // exactly the silent way this fix could rot. The rect must be REAL.
+    // ANTI-VACUITY: an EMPTY rect owns nothing, so every "does not own" below would pass on a panel that recorded
+    // nothing. The rect must be REAL -- and it IS the view chip's (the overlay claims its own strip and the HUD's
+    // shown rects, and nothing else).
     CHECK(rowMax.x > rowMin.x);
     CHECK(rowMax.y > rowMin.y);
-    CHECK(rowMax.x - rowMin.x >= 40.0F);  // task E.6.2: `View` alone, ~50 points in Plex 16 -- never narrower
+    CHECK(rowMax.x - rowMin.x >= 40.0F);  // task E.6.3: the view chip, "Perspective 60" + a chevron
     CHECK(rowMax.y - rowMin.y >= 8.0F);
+    CHECK((rowMin == hud.layout.chip.min));
+    CHECK((rowMax == hud.layout.chip.max));
 
     // (1) THE STRIP OWNS ITS OWN CLICKS. Its centre, and a point just inside each corner.
     const engine::Vec2 centre{(rowMin.x + rowMax.x) * 0.5F, (rowMin.y + rowMax.y) * 0.5F};
@@ -8807,28 +8847,33 @@ TEST_CASE("editor: the overlay claims its own strip and NOTHING else (task 3.6.3
                                      NO_WIDGET_SIZE));  // half-open at min: the top-left corner IS inside
     CHECK(viewport->overlayOwnsPress(engine::Vec2{rowMax.x - 1.0F, rowMax.y - 1.0F}, NO_WIDGET_ORIGIN, NO_WIDGET_SIZE));
 
-    // (2) AND NOTHING ELSE -- the half the shipped regression got wrong. A press below the strip, to
-    // its right, and above it must all fall through to the scene pick. `rowMax` itself is OUTSIDE:
-    // the test is half-open at max, matching the FIRE step's own image-rect test.
-    CHECK_FALSE(viewport->overlayOwnsPress(rowMax, NO_WIDGET_ORIGIN, NO_WIDGET_SIZE));
-    CHECK_FALSE(
-        viewport->overlayOwnsPress(engine::Vec2{centre.x, rowMax.y + 200.0F}, NO_WIDGET_ORIGIN, NO_WIDGET_SIZE));
-    CHECK_FALSE(
-        viewport->overlayOwnsPress(engine::Vec2{rowMax.x + 200.0F, centre.y}, NO_WIDGET_ORIGIN, NO_WIDGET_SIZE));
-    CHECK_FALSE(
-        viewport->overlayOwnsPress(engine::Vec2{centre.x, rowMin.y - 200.0F}, NO_WIDGET_ORIGIN, NO_WIDGET_SIZE));
-    CHECK_FALSE(
-        viewport->overlayOwnsPress(engine::Vec2{rowMin.x - 200.0F, centre.y}, NO_WIDGET_ORIGIN, NO_WIDGET_SIZE));
+    // (2) AND NOTHING ELSE. Each probe from the RECORDED geometry: rowMax itself (half-open); between the chip and the
+    // image's right edge at the row's centre y; between the row and the hints below it; above and left of the image.
+    const auto ownedByNothing = [&](engine::Vec2 p) {
+        REQUIRE(e63OutsideHud(*viewport, p));
+        CHECK_FALSE(viewport->overlayOwnsPress(p, NO_WIDGET_ORIGIN, NO_WIDGET_SIZE));
+    };
+    ownedByNothing(rowMax);
+    ownedByNothing(engine::Vec2{(rowMax.x + hud.imageMax.x) * 0.5F, centre.y});
+    float hintsTop = hud.imageMax.y;
+    for (const engine::editor::HudRect& hint : hud.layout.hints) {
+        if (hint.shown) {
+            hintsTop = std::min(hintsTop, hint.min.y);
+        }
+    }
+    if (hintsTop - rowMax.y >= 2.0F) {
+        ownedByNothing(engine::Vec2{centre.x, (rowMax.y + hintsTop) * 0.5F});
+    } else {
+        WARN(hintsTop - rowMax.y >= 2.0F);  // #111's rule: a recorded gap too small to hold a probe is geometry
+    }
+    ownedByNothing(engine::Vec2{centre.x, hud.imageMin.y - 50.0F});  // above the image
+    ownedByNothing(engine::Vec2{hud.imageMin.x - 50.0F, centre.y});  // left of the image
 
-    // (3) THE ORDINARY PICK, which is what actually broke. The viewport is CENTER-docked in a 900x600
-    // window, so a point well below and right of the strip is inside the image and is exactly where a
-    // user clicks empty space to clear a selection. Under the shipped guard this press was refused;
-    // it must be admitted.
-    CHECK_FALSE(viewport->overlayOwnsPress(engine::Vec2{rowMin.x + 300.0F, rowMin.y + 300.0F}, NO_WIDGET_ORIGIN,
-                                           NO_WIDGET_SIZE));
+    // (3) THE ORDINARY PICK, which is what actually broke: the image's centre, inside the image and outside the HUD,
+    // is exactly where a user clicks empty space to clear a selection. It must be admitted.
+    ownedByNothing(engine::Vec2{(hud.imageMin.x + hud.imageMax.x) * 0.5F, (hud.imageMin.y + hud.imageMax.y) * 0.5F});
 
-    // (4) TOTAL and NaN-safe: a non-finite press is owned by nothing rather than crashing or
-    // answering true (the negated `>` idiom this file's step 1 already uses).
+    // (4) TOTAL and NaN-safe.
     const float nan = std::numeric_limits<float>::quiet_NaN();
     CHECK_FALSE(viewport->overlayOwnsPress(engine::Vec2{nan, nan}, NO_WIDGET_ORIGIN, NO_WIDGET_SIZE));
     CHECK_FALSE(viewport->overlayOwnsPress(engine::Vec2{centre.x, nan}, NO_WIDGET_ORIGIN, NO_WIDGET_SIZE));
@@ -10880,7 +10925,10 @@ TEST_CASE("editor: the widget's press claim and the SetOrthographic call site (t
         // The image rect that PRODUCES this widget rect: the widget is inset by MARGIN from the
         // image's right edge, so the image's width is rectMax.x + MARGIN. Reconstructed rather than
         // hard-coded, so retuning MARGIN reddens nothing here (AC-21).
-        const engine::Vec2 size{rectMax.x + engine::editor::VIEW_AXIS_MARGIN_POINTS, 600.0F};
+        // ...the widget is inset by MARGIN from the image's BOTTOM-right corner (task E.6.3), so the image is
+        // rectMax + MARGIN on both axes.
+        const engine::Vec2 size{rectMax.x + engine::editor::VIEW_AXIS_MARGIN_POINTS,
+                                rectMax.y + engine::editor::VIEW_AXIS_MARGIN_POINTS};
         const engine::Vec2 centre{(rectMin.x + rectMax.x) * 0.5F, (rectMin.y + rectMax.y) * 0.5F};
         CHECK(viewport->overlayOwnsPress(centre, origin, size));
         // The rect's own top-left CORNER: inside the square, but on no ball and not on the badge --
@@ -10888,12 +10936,37 @@ TEST_CASE("editor: the widget's press claim and the SetOrthographic call site (t
         // is still chrome" claim, which is the half a ball-shaped claim would miss.
         CHECK(viewport->overlayOwnsPress(engine::Vec2{rectMin.x + 0.5F, rectMin.y + 0.5F}, origin, size));
         CHECK(viewport->overlayOwnsPress(rectMin, origin, size));  // half-open at min
+        // task E.6.3 (the code-review round): the divider circle reaches viewAxisCircleGap past the rect at the middle
+        // of each side, drawn over the scene -- a press there, half the gap out, is chrome too. Each probe is asserted
+        // outside the row and every HUD rect first, so only the widget's arm can own it.
+        const float gap = engine::editor::EDITOR_THEME.panels.viewAxisCircleGap * app->uiScale();
+        const engine::Vec2 rowMin = viewport->overlayRowMin();
+        const engine::Vec2 rowMax = viewport->overlayRowMax();
+        REQUIRE(rowMax.x > rowMin.x);  // anti-vacuity: an empty row rect proves nothing about the row's arm
+        const auto outsideRow = [rowMin, rowMax](engine::Vec2 point) {
+            return point.x < rowMin.x || point.x >= rowMax.x || point.y < rowMin.y || point.y >= rowMax.y;
+        };
+        const engine::Vec2 leftOfRect{rectMin.x - (0.5F * gap), centre.y};
+        const engine::Vec2 aboveRect{centre.x, rectMin.y - (0.5F * gap)};
+        for (const engine::Vec2 inCircle : {leftOfRect, aboveRect}) {
+            CAPTURE(inCircle.x);
+            CAPTURE(inCircle.y);
+            REQUIRE(outsideRow(inCircle));
+            REQUIRE(e63OutsideHud(*viewport, inCircle));
+            CHECK(viewport->overlayOwnsPress(inCircle, origin, size));
+        }
     }
-    SUBCASE("...and NOT one point outside its left edge") {
+    SUBCASE("...and NOT one point outside the circle's left edge") {
         const engine::Vec2 origin{};
-        const engine::Vec2 size{rectMax.x + engine::editor::VIEW_AXIS_MARGIN_POINTS, 600.0F};
+        // ...the widget is inset by MARGIN from the image's BOTTOM-right corner (task E.6.3), so the image is
+        // rectMax + MARGIN on both axes.
+        const engine::Vec2 size{rectMax.x + engine::editor::VIEW_AXIS_MARGIN_POINTS,
+                                rectMax.y + engine::editor::VIEW_AXIS_MARGIN_POINTS};
         const engine::Vec2 centreY{0.0F, (rectMin.y + rectMax.y) * 0.5F};
-        const engine::Vec2 justOutside{rectMin.x - 1.0F, centreY.y};
+        // task E.6.3 (the code-review round): the claim is the divider circle's box, viewAxisCircleGap past the rect.
+        const float gap = engine::editor::EDITOR_THEME.panels.viewAxisCircleGap * app->uiScale();
+        const engine::Vec2 justOutside{rectMin.x - gap - 1.0F, centreY.y};
+        const engine::Vec2 circleBoxMax{rectMax.x + gap, rectMax.y + gap};  // the claim's max, inside the image
 
         // THE TWO ARMS OF overlayOwnsPress REPORT IN DIFFERENT SPACES HERE, AND THAT IS WHY THIS
         // GUARD EXISTS. viewAxisRectMin/Max are IMAGE-RELATIVE (the accessors say so: no image origin
@@ -10914,10 +10987,16 @@ TEST_CASE("editor: the widget's press claim and the SetOrthographic call site (t
             return point.x < rowMin.x || point.x >= rowMax.x || point.y < rowMin.y || point.y >= rowMax.y;
         };
         CHECK(outsideRow(justOutside));
-        CHECK(outsideRow(rectMax));
+        CHECK(outsideRow(circleBoxMax));
+        // task E.6.3 (D9): and outside every HUD rect -- the HUD's arm answers in SCREEN space too.
+        const engine::editor::ViewportHudRecord& hud = viewport->hudRecord();
+        REQUIRE((hud.layout.chip.shown || hud.layout.stats.shown || hud.layout.hints[0].shown));  // anti-vacuity
+        CHECK(e63OutsideHud(*viewport, justOutside));
+        CHECK(e63OutsideHud(*viewport, circleBoxMax));
 
         CHECK_FALSE(viewport->overlayOwnsPress(justOutside, origin, size));
-        CHECK_FALSE(viewport->overlayOwnsPress(rectMax, origin, size));  // half-open at max
+        // Half-open at max -- the circle's box's since the code-review round (rectMax itself is inside it now).
+        CHECK_FALSE(viewport->overlayOwnsPress(circleBoxMax, origin, size));
     }
 #else
     // -DAERO_SHADER_TOOLS=OFF: the viewport latches Unavailable at step 4, so no image was ever laid
@@ -12616,7 +12695,7 @@ TEST_CASE(
         const std::vector<std::string> body(code.begin() + static_cast<std::ptrdiff_t>(bodyStart),
                                             code.begin() + static_cast<std::ptrdiff_t>(bodyEnd));
 
-        const std::array<std::string_view, 14> needles{"SmallButton(\"View\")",
+        const std::array<std::string_view, 14> needles{"chipButton(\"##viewoptions_chip\"",
                                                        "OpenPopup(\"##viewoptions\")",
                                                        "SetNextWindowPos(",
                                                        "BeginPopup(\"##viewoptions\")",
@@ -12787,7 +12866,8 @@ TEST_CASE("editor: hiding the view-axis widget hides its PRESS CLAIM too (task E
 
     // I116's exact shape, with the real image rect reconstructed from the widget's own margin.
     const engine::Vec2 origin{};
-    const engine::Vec2 size{shownMax.x + engine::editor::VIEW_AXIS_MARGIN_POINTS, 600.0F};
+    const engine::Vec2 size{shownMax.x + engine::editor::VIEW_AXIS_MARGIN_POINTS,
+                            shownMax.y + engine::editor::VIEW_AXIS_MARGIN_POINTS};
     const engine::Vec2 centre{(shownMin.x + shownMax.x) * 0.5F, (shownMin.y + shownMax.y) * 0.5F};
     CHECK(viewport->overlayOwnsPress(centre, origin, size));
 
@@ -12797,6 +12877,7 @@ TEST_CASE("editor: hiding the view-axis widget hides its PRESS CLAIM too (task E
         CHECK_FALSE(viewport->viewAxisEnabled());
         CHECK(viewport->viewAxisRectMin() == viewport->viewAxisRectMax());
         CHECK(viewport->viewAxisRectMin() == engine::Vec2{});
+        REQUIRE(e63OutsideHud(*viewport, centre));  // task E.6.3: the HUD's screen arm must not answer for the widget's
         CHECK_FALSE(viewport->overlayOwnsPress(centre, origin, size));
 
         // ...and BACK, so the arm above is a statement about the toggle rather than about a widget
@@ -12842,6 +12923,7 @@ TEST_CASE("editor: hiding the view-axis widget hides its PRESS CLAIM too (task E
     CHECK_FALSE(viewport->viewAxisEnabled());
     CHECK(viewport->viewAxisRectMin() == viewport->viewAxisRectMax());
     CHECK_FALSE(viewport->overlayOwnsPress(engine::Vec2{10.0F, 10.0F}, engine::Vec2{}, engine::Vec2{900.0F, 600.0F}));
+    CHECK(e63OutsideHud(*viewport, engine::Vec2{10.0F, 10.0F}));  // no HUD was ever laid out
 #endif
 }
 
@@ -12888,10 +12970,14 @@ TEST_CASE("editor: the viewport strip carries only MODE controls (task E.2.4, I1
     CHECK(width >= 40.0F);
     CHECK(height >= 8.0F);
     // THE UPPER BOUND, DERIVED FROM A MEASUREMENT rather than chosen. Measured on this row when the
-    // case was RE-measured at task E.6.2: 43 x 16 points for `View` alone in Plex 16 (the MESSAGE above prints it on
-    // every run of every lane). The bound, 100, is a little over twice that width -- tight enough that any widget
-    // put back on the strip reddens it.
-    CHECK(width < 100.0F);
+    // case was RE-measured at task E.6.2: `View` alone measured 43 x 16 at E.6.2; the chip replaced it at E.6.3 (the
+    // MESSAGE above prints it on every run of every lane).
+    // task E.6.3 (D9): the row IS the view chip -- its recorded rect, exactly -- and nothing else. Measured at E.6.3's
+    // step 7: 113 x 24 for "Perspective 60" + a chevron in BodySmall (the MESSAGE above prints it). 200 is under the
+    // old combo + slider (92 + 130 at body 13, 112 + 160 at 16), so any widget put back on the strip reddens it.
+    const engine::editor::ViewportHudRecord& hud = viewport->hudRecord();
+    CHECK(std::abs(width - (hud.layout.chip.max.x - hud.layout.chip.min.x)) <= 0.5F);
+    CHECK(width < 200.0F);
     // ONE ROW HIGH. A second row of widgets would push this past the bound while leaving the width
     // alone, which is the other shape the regression can take.
     CHECK(height <= 40.0F);
@@ -14632,7 +14718,13 @@ TEST_CASE("editor: the axis row's gate is read AFTER the group closes (task E.3.
         // NOTHING until this clause existed.
         const std::size_t beginAt = soleLineContaining(code, "ImGui::BeginGroup()");
         const std::size_t endAt = soleLineContaining(code, "ImGui::EndGroup()");
-        CHECK(countInRange(code, "IsItemActive", beginAt, endAt) == 0);
+        // task E.6.3 (D5): ONE read inside the group, and it only strokes the unit's held outline -- never the Quat
+        // cache's latch, which the arm below still pins after the call.
+        CHECK(countInRange(code, "IsItemActive", beginAt, endAt) == 1);
+        const std::size_t outlineAt = firstLineContaining(code, "IsItemActive", beginAt);
+        REQUIRE(outlineAt < endAt);
+        CHECK(code[outlineAt + 1U].find("roleOutline(") != std::string::npos);
+        CHECK(code[outlineAt + 1U].find("AccentBorder") != std::string::npos);
 
         const std::size_t quatAt = soleLineContaining(code, "case FieldKind::Quat:");
         const std::size_t callAt = firstLineContaining(code, "drawAxisRow(", quatAt);
@@ -15921,7 +16013,8 @@ TEST_CASE(
         // inside any longer number. The constant this clause is about was spelled `180.0F`.
     }
     SUBCASE("(d) the Apply emphasis derives from the style -- no colour literal") {
-        CHECK(panel.find("GetStyleColorVec4(ImGuiCol_ButtonActive)") != std::string::npos);
+        CHECK(panel.find("primaryButton(\"Apply\"") != std::string::npos);  // task E.6.3 (D10): the primary helper
+        CHECK(panel.find("GetStyleColorVec4(ImGuiCol_ButtonActive)") == std::string::npos);
         CHECK(panel.find("IM_COL32") == std::string::npos);
         // The two file-local ImVec4s (WARNING_COLOR / NOTICE_COLOR) moved into EDITOR_THEME at E.6.1 --
         // the count is pinned at zero and the roles' reads are asserted.
@@ -18879,25 +18972,55 @@ TEST_CASE("editor: the Asset Browser fits its panel with 40 orphans and Issues o
         AERO_SKIP_OR_FAIL("no platform context");
     }
     // THE SHORT WINDOW'S REGIME, re-measured 2026-10-03 at task E.6.1's metrics (UI scale 1: body 13 -> 16,
-    // frame 19 -> 24, ItemSpacing.y 4 -> 6). With Issues open, assetBrowserLayout holds the body at its
-    // one-row floor while avail <= 146 (footer 30 + header 30 + spacing 6 + panes 4 x 16 + one row 16) and
-    // fits while avail >= 83 (30 + 30 + 16 + 6 + 1). Measured here, avail = floor((H - 24) / 4) - 71: the
-    // Bottom node's quarter of the work area, less its tab bar, padding and header row. So the regime is
-    // H in [640, 895]: 630 measured avail 80 (the WARN fallback below), 640 avail 83, 890 avail 145, and
-    // 900 avail 148 with an 18-point body. 600, this subcase's height before E.6.1, measured avail 73,
-    // ten under the fit bound, so its CHECK ran nowhere. 768 is avail 115, about 30 inside either bound.
-    // A runner that delivers a SHORTER window than requested (CI's macOS lane can) may still land under 83,
-    // where scrolling is the designed answer and checkFits reports a WARN. Re-measured at task E.6.2 with the
-    // toolbar and status bar present, every value above is unchanged: their 70 dp come out of the central node
-    // (the Viewport), because ImGui keeps a split sibling's size and hands the central node the remainder
-    // (imgui.cpp:20321-20325). 1000 measured avail 152 at E.6.1 on a display that held the window to about 920;
-    // on a taller one it is avail 173 with a 43-point body, and 920 is avail 153 with a 23-point body.
+    // frame 19 -> 24, ItemSpacing.y 4 -> 6). With Issues open, assetBrowserLayout holds the body at its one-row floor
+    // while avail <= 146 (footer 30 + header 30 + spacing 6 + panes 4 x 16 + one row 16) and fits while
+    // avail >= 86 (30 + 30 + 16 + 6 + ImGui's 4-point child, since the code-review round's fold below; 64 with it
+    // closed). Measured here, avail = floor((H - 24) / 4) - 65: the Bottom node's quarter of the work area, less its
+    // tab bar, padding and header row. So the regime is H in [628, 871]. Below H = 628 the open arm's WARN fallback
+    // below runs (the closed arm's below H = 540). The short subcase runs 768: avail 121, measured, 35 inside the open
+    // bound and 25 inside the body floor's. A runner that delivers a SHORTER window than requested (CI's macOS lane
+    // can) may still land under 86, where scrolling is the designed answer and checkFits reports a WARN. Re-measured at
+    // task E.6.2 with the toolbar and status bar present, every value above is unchanged: their 70 dp come out of the
+    // central node (the Viewport), because ImGui keeps a split sibling's size and hands the central node the remainder
+    // (imgui.cpp:20321-20325). Re-measured at task E.6.3's step 5: the header row is 31 points, 6 fewer than E.6.2's;
+    // the other heights' figures were dropped, not carried.
+    //
+    // RE-MEASURED AT TASK E.6.3's CODE-REVIEW ROUND, which RESERVES the contents pane's chrome -- the crumb row 30,
+    // its rule 1 and ItemSpacing.y 6 -- above a ##contents child ImGui never draws shorter than 4 points
+    // (IMGUI_WINDOW_HARD_MIN_SIZE), so the row needs a pane of 37 + 4 = 41. Its first round floored the panes there:
+    // the fit bounds moved from 83 open and 61 closed to 123 and 101, the short subcase from 768 (avail 121, then 2
+    // under the open bound) to 824, and the editor's own 1280 x 720 launch (avail 109, measured) scrolled by 6 with
+    // the Issues list open. Its second round FOLDS the row in a pane under 41 instead (asset_view.hpp's THE FOLD): the
+    // ##contents child takes the whole pane, the panes floor at ImGui's 4 again, the bounds are the 86 and 64 above --
+    // the pre-E.6.3 bounds + 3 -- and the short subcase is back at 768, where the open arm folded (pane 39, measured)
+    // and the closed arm showed the row (pane 61, its ##contents child 24). Its third round decides the mode at the
+    // pane the list would leave OPEN at its one-row floor, against the chrome + one frame (61 at 1x): the row shows
+    // from avail 143 with Issues, in both states, and from 91 without. So the 768 subcase now folds in BOTH Issues
+    // states -- open over 39, closed over 61, a pane that would hold the row and one frame and folds because the open
+    // list's would not -- and witnesses the fold arm in both states, the toggle arm with a closed pane above the row's
+    // round-2 floor, and the body's one-row floor. The 640 subcase (avail 89, measured) folds in BOTH Issues states
+    // (panes 7 and 29) and fits: before the reservation it scrolled (budget 89 in both arms; scroll max 4 closed, 26
+    // open) with its tree at 29 or 7 and the group drawn 41 beside it. The tall subcase shows the row in both states
+    // here (avail 158: panes 64 open and 98 closed), and folds on a runner that delivers its panel under 143.
+    // Its fifth round corrects the relation above: at 1x the default quarter is exactly avail = ceil((H - 2) / 4) - 71,
+    // the 2-point docking separator coming off the height before the split (imgui.cpp:20188-20193; I345 measures it),
+    // so floor((H - 24) / 4) - 65 reads one point low whenever H is 3 mod 4 (647 measured 91, where it gives 90). The
+    // H at each edge -- 627, 871 and 539 -- is 3 mod 4, so the regime is H in [627, 870], not [628, 871]: the open
+    // arm's WARN fallback runs below H = 627 and the closed arm's below H = 539, not 540 (measured: 626 -> 85,
+    // 627 -> 86, 870 -> 146, 871 -> 147, 538 -> 63, 539 -> 64). The 768 and 640 figures above hold under both forms.
     bool tallPanel = true;
+    bool foldBand = false;
     int windowHeight = 1000;
     SUBCASE("a TALL panel, where the body has room to grow past one row") {}
     SUBCASE("a SHORT panel, where the body is held at its one-row floor -- the geometry CI hit") {
         tallPanel = false;
+        foldBand = true;  // since the third round: under 143 the row folds in both Issues states
         windowHeight = 768;
+    }
+    SUBCASE("a panel under both of the crumb row's bounds, where the row folds") {
+        tallPanel = false;
+        foldBand = true;
+        windowHeight = 640;
     }
     CAPTURE(windowHeight);
     std::optional<engine::platform::Window> window =
@@ -18930,6 +19053,8 @@ TEST_CASE("editor: the Asset Browser fits its panel with 40 orphans and Issues o
                                            .restoreLastProject = false,
                                            .recentProjectsPath = uniqueRecentsFile()});
     REQUIRE(app.has_value());
+    auto* const browser = dynamic_cast<engine::editor::AssetBrowserPanel*>(app->panels().find("Assets"));
+    REQUIRE(browser != nullptr);
     REQUIRE(app->tick());  // 1: the first rescan runs inside this tick, BEFORE the frame draws
     REQUIRE(app->tick());  // 2: the default dock layout settles
     app->requestPanelFocus("Assets");
@@ -18941,11 +19066,14 @@ TEST_CASE("editor: the Asset Browser fits its panel with 40 orphans and Issues o
     // longer than any body this panel can reserve.
     REQUIRE(app->assetOrphanCount() == static_cast<std::size_t>(ORPHANS));
 
-    // The panel must fit whenever the layout's own budget fits the height the panel RECORDED -- in BOTH
-    // subcases. `budget <= avail` is assetBrowserLayout's answer for those metrics, and it holds exactly when
-    // the recorded avail is at least the layout's fit bound (footer + header [+ one row + spacing] + 1: the
-    // header's contract, "only a panel shorter than the fit bound can scroll"). Below the bound, scrolling is
-    // the DESIGNED answer, and a WARN says so instead.
+    // The panel must fit whenever the layout's own budget fits the height the panel RECORDED -- in EVERY
+    // subcase. `budget <= avail` is assetBrowserLayout's answer for those metrics, and it holds exactly when
+    // the recorded avail is at least the layout's fit bound (footer + header [+ one row + spacing] + ImGui's 4-point
+    // child, the row folded: the header's contract, "only such a panel can scroll"). Below the bound, scrolling is
+    // the DESIGNED answer, and a WARN says so instead. THE BOUND ITSELF is asserted too, still geometry-free: wherever
+    // the recorded avail clears footer + Issues + 4, the layout must fit -- the pre-E.6.3 bound + 3, which the
+    // code-review round's first floor (chrome + 4) broke at the 768 subcase's avail 121 with the list open (a sum of
+    // 123).
     //
     // The TALL subcase used to assert no scroll unconditionally, which held only while its runner's panel
     // cleared the bound. E.6.1 raised the open bound from 64 (23 + 23 + 13 + 4 + 1 at ProggyClean's
@@ -18953,17 +19081,54 @@ TEST_CASE("editor: the Asset Browser fits its panel with 40 orphans and Issues o
     // CI's macOS runner delivers a SHORTER window than requested: its `13 > 13` failure placed that
     // runner's tall avail, at the old metrics, only somewhere in [64, 115] -- above the old bound, inside
     // the old floored regime -- which the new metrics move to about [50, 101], across 83. Locally the tall
-    // panel clears the bound, so the CHECK runs here with no WARN line.
-    const auto checkFits = [&app] {
+    // panel clears the bound, so the CHECK runs here with no WARN line. E.6.3's code-review round moved the
+    // bounds again, to 101 closed and 123 open, by reserving the crumb row the budget had not counted, and its
+    // second round back to 64 and 86, by folding that row in a pane too short for it.
+    //
+    // THE PANE AND GROUP ARMS, geometry-free and so asserted in every subcase: the tree pane is the layout's own pane
+    // for the recorded metrics, and the contents group -- the crumb row, its rule, one ItemSpacing.y and the
+    // ##contents child, or the child alone when the row folds -- ends where the tree pane beside it does, for EVERY
+    // pane the layout hands out, which is what makes the budget's sum the drawn height. THE FOLD ARM reads the mode
+    // off the RECORD, never off the window size: the panel drew in the layout's mode; folded, it drew no crumb and no
+    // crumb drop target, and the ##contents child is the whole pane; shown, at least one crumb drew. Whether a
+    // subcase reaches the fold is the display's geometry, so the 768 and 640 subcases only REPORT that the layout
+    // folded (a WARN, the #111 rule; until the third round the 640 subcase reported its tree under the chrome + 4,
+    // which a closed list's folded pane no longer is). The 0.5 is BeginChild's whole-point truncation, the I324 arm's
+    // tolerance; at UI scale 1 both sides are whole and the arms compare exactly.
+    const auto checkFits = [&app, browser, foldBand] {
         const AssetBrowserLayoutMetrics m = app->assetBrowserLayoutMetrics();
         const AssetBrowserLayout l = engine::editor::assetBrowserLayout(m);
         const float budget = l.paneHeight + l.issuesHeight + l.footerHeight;
         const float scrollMax = app->assetBrowserScrollMaxY();
-        INFO("avail " << m.availHeight << ", budget " << budget << ", scroll max " << scrollMax);
+        const engine::editor::AssetChromeRecord& r = browser->chromeRecord();
+        const float treeHeight = r.treeChildMax.y - r.treeChildMin.y;
+        const float contentsHeight = r.contentsChildMax.y - r.contentsChildMin.y;
+        INFO("avail " << m.availHeight << ", budget " << budget << ", scroll max " << scrollMax << ", pane chrome "
+                      << m.paneChromeHeight << ", layout pane " << l.paneHeight << ", row shown " << l.crumbRowShown
+                      << ", tree " << treeHeight << ", group " << r.contentsGroupMaxY - r.treeChildMin.y
+                      << ", contents " << contentsHeight << ", crumbs " << r.crumbsDrawn);
         if (budget <= m.availHeight) {
             CHECK(scrollMax == 0.0F);
         } else {
             WARN(budget <= m.availHeight);
+        }
+        const float foldedBound = l.footerHeight + l.issuesHeight + 4.0F;  // ImGui's 4-point child, the row folded
+        if (m.availHeight >= foldedBound) {
+            CHECK(budget <= m.availHeight);
+        }
+        REQUIRE(m.paneChromeHeight > 0.0F);  // the panel really recorded its chrome
+        CHECK(std::abs(treeHeight - l.paneHeight) <= 0.5F);
+        CHECK(std::abs(r.contentsGroupMaxY - r.treeChildMax.y) <= 0.5F);
+        CHECK(r.crumbRowShown == l.crumbRowShown);
+        if (l.crumbRowShown) {
+            CHECK(r.crumbsDrawn >= 1U);
+        } else {
+            CHECK(r.crumbsDrawn == 0U);
+            CHECK(r.crumbDropTargets == 0U);
+            CHECK(std::abs(contentsHeight - l.paneHeight) <= 0.5F);
+        }
+        if (foldBand) {
+            WARN_FALSE(l.crumbRowShown);  // the layout folded, so the fold arm above ran folded
         }
     };
 
@@ -18979,6 +19144,11 @@ TEST_CASE("editor: the Asset Browser fits its panel with 40 orphans and Issues o
     CHECK(app->assetBrowserIssueRowsDrawn() == 0U);  // closed: the body submitted nothing
     CHECK(app->assetBrowserIssuesBodyHeight() == 0.0F);
     checkFits();
+    // The closed state's panel height, mode and ##contents child, for the toggle arm once the list is open.
+    const float closedAvail = app->assetBrowserLayoutMetrics().availHeight;
+    const engine::editor::AssetChromeRecord& closedRecord = browser->chromeRecord();
+    const bool closedShown = closedRecord.crumbRowShown;
+    const float closedContents = closedRecord.contentsChildMax.y - closedRecord.contentsChildMin.y;
 
     // (b) OPENING. The seam lands where a click on the header lands -- after the panes were sized with the
     // header closed -- so the first frame must draw NO body (a body child of height 0 would fill the panel
@@ -18996,6 +19166,20 @@ TEST_CASE("editor: the Asset Browser fits its panel with 40 orphans and Issues o
     // (the scan caps the list at MAX_REPORTED_PER_CATEGORY) -- and still nothing overflows.
     CHECK(app->assetBrowserIssueRowsDrawn() == engine::editor::MAX_REPORTED_PER_CATEGORY);
     checkFits();
+    {
+        // THE TOGGLE, geometry-free: opening the list showed or folded no crumb row and grew no ##contents child. The
+        // mode reads the open list's remainder in both states (asset_view.hpp's THE FOLD), and closed, the pane is the
+        // open one plus the body and its spacing. Until the code-review round's third round each state decided its own
+        // mode: at 768 the row showed closed over a 24-point child and folded open over 39, so closing the list shrank
+        // the asset list.
+        const engine::editor::AssetChromeRecord& r = browser->chromeRecord();
+        const float openContents = r.contentsChildMax.y - r.contentsChildMin.y;
+        INFO("avail " << closedAvail << ", closed: row shown " << closedShown << ", contents " << closedContents
+                      << "; open: row shown " << r.crumbRowShown << ", contents " << openContents);
+        REQUIRE(app->assetBrowserLayoutMetrics().availHeight == closedAvail);  // one panel height in both states
+        CHECK(r.crumbRowShown == closedShown);
+        CHECK(openContents <= closedContents + 0.5F);
+    }
     {
         // THE BODY, independent of the geometry. What the panel recorded is what the layout read; the body
         // child must have been given the layout's answer for exactly that; and the rows' height must have been
@@ -19231,6 +19415,29 @@ TEST_CASE("editor: a material thumbnail is RENDERED, never decoded, and the avai
     app.reset();
 }
 
+namespace {
+
+// I233's runner rule, derived rather than listed (task E.6.3's code-review round, round 2): every registered panel
+// whose DEFAULT slot is Left or Right is hidden, so ImGui's dock tree hands the Bottom node the whole width
+// (imgui.cpp:20281-20284: a node whose child is invisible gives the visible one its size). A copied list of names
+// would go stale silently the day a panel takes a side slot -- its node would stay, the Bottom row narrow, and a
+// fit-gated arm fall to its WARN on every lane. setVisibleAt by index, so no id is ever looked up (setVisible logs an
+// unknown one).
+void e63HideSidePanels(engine::editor::EditorApp& app) {
+    engine::editor::PanelRegistry& panels = app.panels();
+    std::size_t hidden = 0;
+    for (std::size_t i = 0; i < panels.count(); ++i) {
+        const engine::editor::DockSlot slot = panels.panelAt(i).defaultDockSlot();
+        if (slot == engine::editor::DockSlot::Left || slot == engine::editor::DockSlot::Right) {
+            panels.setVisibleAt(i, false);
+            ++hidden;
+        }
+    }
+    REQUIRE(hidden >= 1U);  // ANTI-VACUITY: the walk found a side panel to hide
+}
+
+}  // namespace
+
 TEST_CASE("editor: one walk spends two budgets, and three older materials starve no image (task E.4.5, I233)") {
     engine::platform::Context ctx;
     if (!ctx.valid()) {
@@ -19271,18 +19478,17 @@ TEST_CASE("editor: one walk spends two budgets, and three older materials starve
     // runner gave at least 362 at body 13, which the wider tree pane takes down to about 324 at body 16.
     // Hiding the Left and Right panels lets ImGui's dock tree hand the Bottom node the whole width
     // (imgui.cpp:20281-20284: a node whose child is invisible gives the visible one its size). The fixture
-    // changes; the case and its final loud counts do not.
-    constexpr std::array<const char*, 5> SIDE_PANELS{"Hierarchy", "Inspector", "Material", "Import Details",
-                                                     engine::editor::PROJECT_SETTINGS_PANEL_ID};
-    for (const char* id : SIDE_PANELS) {
-        if (app->panels().find(id) != nullptr) {
-            app->panels().setVisible(id, false);  // setVisible LOGS AN ERROR for an unknown id: find() first
-        }
-    }
+    // changes; the case and its final loud counts do not. The side panels come off the registry (e63HideSidePanels).
+    e63HideSidePanels(*app);
     app->requestAssetBrowserTileSize(engine::editor::TileSize::Small);  // applied by the first tick's draw walk
     for (int i = 0; i < 3; ++i) {
         REQUIRE(app->tick());
     }
+    // task E.6.3 (D8): the crumb row takes 30 dp + its rule + one ItemSpacing.y from the contents pane; the tiles
+    // still sit in a child that drew (the final counts below are the witness that its first row did).
+    const auto* const assets = dynamic_cast<const engine::editor::AssetBrowserPanel*>(app->panels().find("Assets"));
+    REQUIRE(assets != nullptr);
+    REQUIRE(assets->chromeRecord().contentsChildMax.y > assets->chromeRecord().contentsChildMin.y);
     // THE ORDER IS THE FIXTURE. All five tiles are drawn in one frame, so they share lastTouched and the ledger
     // offers them in GUID order: the three materials take the three LOWEST GUIDs, so any walk that looks at
     // only the three oldest keys (the spec's sum) or at two per-budget prefixes (seed S5) finds no image.
@@ -20054,7 +20260,7 @@ TEST_CASE("editor: E.4.5's structure holds as source text -- routing, release, g
     }
     SUBCASE("(d) every host asks through noteCardWanted and answers through materialCardSubtitle") {
         CHECK(countLinesContaining(codeOf("asset_browser_panel.cpp"), "noteCardWanted(") == 2U);  // tile + row helper
-        CHECK(countLinesContaining(codeOf("asset_picker.cpp"), "noteCardWanted(") == 1U);         // the popup tile
+        CHECK(countLinesContaining(codeOf("asset_picker.cpp"), "noteCardWanted(") == 2U);         // tile + swatch
         const std::vector<std::string> inspector = codeOf("inspector_panel.cpp");
         CHECK(countLinesContaining(inspector, "noteCardWanted(") == 1U);
         const std::size_t call = soleLineContaining(inspector, "guidFieldRow(");
@@ -20069,7 +20275,8 @@ TEST_CASE("editor: E.4.5's structure holds as source text -- routing, release, g
         // the browser's grid tile and the picker's popup tile. The Inspector's row has no icon rect, and the FACE
         // paints whatever tint it is handed. A tile host that stopped asking (seed S54) leaves every material in
         // it the kind colour, which no runtime tier reads.
-        constexpr std::array<std::size_t, 4> TINT_CALLS{1U, 1U, 0U, 0U};
+        // task E.6.3: the picker's reference-field swatch is its second.
+        constexpr std::array<std::size_t, 4> TINT_CALLS{1U, 2U, 0U, 0U};
         static_assert(TINT_CALLS.size() == HOSTS.size());
         for (std::size_t h = 0; h < HOSTS.size(); ++h) {
             CAPTURE(HOSTS[h]);
@@ -20115,7 +20322,9 @@ TEST_CASE("editor: E.4.5's structure holds as source text -- routing, release, g
                 }
             }
         }
-        CHECK(formatCalls >= 15U);  // ANTI-VACUITY: 19 such calls exist at c95dc78, one of them broken after "("
+        CHECK(formatCalls >= 13U);  // ANTI-VACUITY: 13 since E.6.3's label tooltip (I343) -- the browser's 9
+                                    // (TextWrapped 6, SetTooltip 3), the picker's SetTooltip and the Inspector's
+                                    // three (the e# id, the card's registration name, the label's raw name)
         // THE SECOND-ARGUMENT FORMAT FUNCTIONS, the code-review round: TextColored(col, fmt, ...) and
         // LabelText(label, fmt, ...) take their format string SECOND, so the first-argument rule above cannot see
         // them. Their second argument must open a string literal: the call is joined with the next two lines and
@@ -20294,6 +20503,11 @@ TEST_CASE("editor: a material renders only while its tile is on screen -- the vi
     for (int i = 0; i < 3; ++i) {
         REQUIRE(app->tick());
     }
+    // task E.6.3 (D8): the crumb row takes 30 dp + its rule + one ItemSpacing.y from the contents pane; the tiles
+    // still sit in a child that drew (the final counts below are the witness that its first row did).
+    const auto* const assets = dynamic_cast<const engine::editor::AssetBrowserPanel*>(app->panels().find("Assets"));
+    REQUIRE(assets != nullptr);
+    REQUIRE(assets->chromeRecord().contentsChildMax.y > assets->chromeRecord().contentsChildMin.y);
     REQUIRE(app->materialThumbnailRenderCount() == 0U);  // no material tile drawn yet, so no render at all
     const std::optional<engine::Guid> blue = app->assetGuidForPath("blues/blue.aeromat");
     REQUIRE(blue.has_value());
@@ -20410,8 +20624,8 @@ TEST_CASE("editor: an asset field's overflowing value sentence is elided with an
     CHECK(countLinesContaining(code, "AddText(") == calls.size());  // the file draws text only in this block
 
     // (c) Two paths, two calls. The FITTING path's AddText still names in.valueText -- the same call on the same
-    // bytes, which is what keeps the Inspector byte-identical whenever the sentence fits -- and the overflow path's
-    // names the elided text, never the raw sentence.
+    // bytes: the fitting path draws the raw bytes -- and the overflow path's names the elided text, never the raw
+    // sentence.
     REQUIRE(calls.size() == 2U);
     constexpr std::string_view RAW = "in.valueText.data()";
     constexpr std::string_view ELIDED = "elided.data()";
@@ -20428,9 +20642,30 @@ TEST_CASE("editor: an asset field's overflowing value sentence is elided with an
     // the whole frame: a slot row's text starts after its thumbnail, so its sentence would still be cut, with no
     // ellipsis, by up to thumbnailEdge + ItemInnerSpacing.x. So the width, the guard and the measurer are pinned as
     // the expressions they are, in the order they must run.
-    const std::size_t width = soleLineContaining(block, "const float textAvail = ");
+    const std::size_t width = soleLineContaining(block, "const float textAvail =");
     CAPTURE(block[width]);
-    CHECK(block[width].find("= buttonMax.x - style.FramePadding.x - textX;") != std::string::npos);
+    // task E.6.3 (D5): with the hint, the budget ends ItemInnerSpacing.x before it (seed S61) -- and since fix 31 that
+    // arithmetic is referenceFieldParts' (PC14), so the width is its answer, the name starts where it says, and the
+    // call is handed the WHOLE frame, the caller's hint switch as the hint's width (0: no hint, no room reserved) and
+    // the thumbnail's edge, so a slot row's name still starts after its thumbnail.
+    CHECK(block[width].find("const float textAvail = parts.textAvail;") != std::string::npos);
+    CHECK(soleLineContaining(block, "const float textX = buttonMin.x + parts.textX;") < width);
+    const std::size_t partsAt = soleLineContaining(code, "referenceFieldParts(");
+    CHECK(partsAt < begin);  // decided before the value block draws anything
+    const auto squeezed = [](std::string text) {
+        std::erase_if(text, [](char c) { return c == ' ' || c == '\t'; });
+        return text;
+    };
+    std::string call;  // the call's whole argument list, however clang-format breaks it
+    for (std::size_t i = partsAt; i < code.size() && call.find(';') == std::string::npos; ++i) {
+        call += squeezed(code[i]);
+    }
+    CAPTURE(call);
+    CHECK(call == squeezed("referenceFieldParts(buttonMax.x - buttonMin.x, style.FramePadding.x, "
+                           "style.ItemInnerSpacing.x, swatchEdge, hintWidth, ellipsisWidth, in.thumbnailEdge);"));
+    CHECK(countLinesContaining(code,
+                               "const float hintWidth = in.pickHint ? faceTextWidth(PanelFace::BodySmall, "
+                               "PICK_HINT) : 0.0F;") == 1U);
     const std::size_t guard = soleLineContaining(block, "if (ImGui::CalcTextSize(in.valueText.data(), ");
     CAPTURE(block[guard]);
     CHECK(block[guard].find(").x > textAvail) {") != std::string::npos);
@@ -20442,7 +20677,14 @@ TEST_CASE("editor: an asset field's overflowing value sentence is elided with an
     CHECK(elision < measurer);
 
     // (e) THE ARMS. The elided AddText is inside the overflow arm, and the raw one is in the else arm after it.
+    // task E.6.3 (fix 31): and the elided one only where the elision fits its budget -- elideCaptionRight answers
+    // the ellipsis even where none fits. I347's 640 x 400 band is that arm's effect at a real width; a refused
+    // layout (referenceFieldParts' zero budget at the frame's left edge) has no window that reaches it, so this
+    // source pin is its one witness.
     const std::size_t elseArm = soleLineContaining(block, "} else {");
+    const std::size_t fits = soleLineContaining(block, "if (elidedWidth <= textAvail) {");
+    CHECK(soleLineContaining(block, "const float elidedWidth = currentFontWidth(elided);") + 1U == fits);
+    CHECK(measurer < fits);
     for (const std::pair<std::size_t, std::string>& entry : calls) {
         const std::size_t line = entry.first;
         CAPTURE(entry.second);
@@ -20451,8 +20693,22 @@ TEST_CASE("editor: an asset field's overflowing value sentence is elided with an
         } else {
             CHECK(guard < line);
             CHECK(line < elseArm);
+            CHECK(fits + 1U == line);
         }
     }
+    // task E.6.3: the "pick" hint is drawn by ONE drawRoleText, BEFORE the guard -- never a third AddText -- and only
+    // inside the arm where referenceFieldParts kept it (fix 31): the arm's third line, after the face it draws in
+    // (the record measures the drawn hint in that same face) and the hint's y.
+    CHECK(countLinesContaining(code, "drawRoleText(") == 1U);
+    const std::size_t hintAt = soleLineContaining(block, "drawRoleText(");
+    CHECK(hintAt < guard);
+    const std::size_t hintArm = soleLineContaining(block, "if (parts.hint) {");
+    CHECK(hintArm + 3U == hintAt);
+    CHECK(block[hintArm + 1U].find("constexpr PanelFace HINT_FACE = PanelFace::BodySmall;") != std::string::npos);
+    CHECK(block[hintAt].find("drawRoleText(drawList, HINT_FACE, ") != std::string::npos);
+    // The record measures the DRAWN hint, so I347 sees a face mismatch in either direction -- a wider draw through its
+    // padding arm, any mismatch through its width arm; written as hintX + hintWidth, it could see none.
+    CHECK(countLinesContaining(block, "drawn.hintMaxX = hintX + faceTextWidth(HINT_FACE, PICK_HINT);") == 1U);
 }
 
 // ---- task E.5.2: the named selector, driven through the real Inspector (I251, I252) ----------------------
@@ -21784,10 +22040,11 @@ TEST_CASE("editor: the font, style and font-push writers each live in their own 
     // one and the snapshot that reports it to the tests.
     CHECK(writingDpiFlag == std::vector<std::string>{"imgui_layer.cpp"});
     CHECK(namingDpiFlag == std::vector<std::string>{"editor_theme_ui.cpp", "imgui_layer.cpp"});
-    // The face switches: the Console's messages, the Inspector's headers and the shell's chrome (task E.6.2: the status
-    // bar, the chip, the snap field, the breadcrumb's scene), and nothing else -- each push in a file that pops
-    // (task E.6.1, step 8).
-    const std::vector<std::string> fontPanels{"console_panel.cpp", "inspector_panel.cpp", "shell_chrome_ui.cpp"};
+    // The face switches: the Console's messages, the Inspector's card titles (drawn by panel_chrome_ui.cpp since
+    // E.6.3's step 4), the shell's chrome (task E.6.2: the status bar, the chip, the snap field, the breadcrumb's
+    // scene) and the panels' shared chrome (task E.6.3: ScopedFace; every other new face is drawn with AddText(font,
+    // size), which switches nothing), and nothing else -- each push in a file that pops (task E.6.1, step 8).
+    const std::vector<std::string> fontPanels{"console_panel.cpp", "panel_chrome_ui.cpp", "shell_chrome_ui.cpp"};
     CHECK(pushingFonts == fontPanels);
     CHECK(poppingFonts == fontPanels);
 
@@ -21836,8 +22093,8 @@ constexpr std::array<StyleColorRow, 63> STYLE_COLOR_ROWS{{
     {"Border", {38U, 43U, 51U, 255U}},                       // border
     {"BorderShadow", {13U, 15U, 18U, 0U}},                   // canvas, alpha 0
     {"FrameBg", {18U, 21U, 26U, 255U}},                      // inset
-    {"FrameBgHovered", {28U, 32U, 39U, 255U}},               // raised
-    {"FrameBgActive", {32U, 37U, 45U, 255U}},                // raisedHeader
+    {"FrameBgHovered", {36U, 41U, 50U, 255U}},               // hover (task E.6.3, D3)
+    {"FrameBgActive", {43U, 49U, 58U, 255U}},                // active (task E.6.3, D3)
     {"TitleBg", {20U, 23U, 27U, 255U}},                      // chrome
     {"TitleBgActive", {20U, 23U, 27U, 255U}},                // chrome
     {"TitleBgCollapsed", {20U, 23U, 27U, 255U}},             // chrome
@@ -21939,7 +22196,7 @@ constexpr std::array<StyleMemberRow, 69> STYLE_MEMBER_ROWS{{
     {"TabBorderSize", 0.0F, 0.0F},
     {"TabMinWidthBase", 1.0F, 0.0F},
     {"TabMinWidthShrink", 80.0F, 0.0F},
-    {"TabCloseButtonMinWidthSelected", -1.0F, 0.0F},
+    {"TabCloseButtonMinWidthSelected", 0.0F, 0.0F},  // task E.6.3 (D3): 0 is scale-invariant, still a sentinel
     {"TabCloseButtonMinWidthUnselected", 0.0F, 0.0F},
     {"TabBarBorderSize", 1.0F, 0.0F},
     {"TabBarOverlineSize", 2.0F, 0.0F},
@@ -21961,7 +22218,7 @@ constexpr std::array<StyleMemberRow, 69> STYLE_MEMBER_ROWS{{
     {"SeparatorTextPadding", 20.0F, 3.0F},
     {"DisplayWindowPadding", 19.0F, 19.0F},
     {"DisplaySafeAreaPadding", 3.0F, 3.0F},
-    {"DockingNodeHasCloseButton", 1.0F, 0.0F},
+    {"DockingNodeHasCloseButton", 0.0F, 0.0F},  // task E.6.3 (D3)
     {"DockingSeparatorSize", 2.0F, 0.0F},
     {"MouseCursorScale", 1.0F, 0.0F},
     {"AntiAliasedLines", 1.0F, 0.0F},
@@ -22391,20 +22648,6 @@ TEST_CASE(
 // ---- I287: the panels read their colours from the theme's roles (task E.6.1, step 6) -------------------
 namespace {
 
-// Per channel, as integers, so a failure prints numbers rather than a character.
-void checkSameSrgb8(const engine::editor::Srgb8& actual, const engine::editor::Srgb8& expected) {
-    CHECK(static_cast<int>(actual.r) == static_cast<int>(expected.r));
-    CHECK(static_cast<int>(actual.g) == static_cast<int>(expected.g));
-    CHECK(static_cast<int>(actual.b) == static_cast<int>(expected.b));
-    CHECK(static_cast<int>(actual.a) == static_cast<int>(expected.a));
-}
-
-struct LevelColorRow {
-    engine::LogLevel level;
-    std::string_view name;
-    engine::editor::Srgb8 expected;
-};
-
 // How many times the code reads EDITOR_THEME.palette.<role>, the role ending at a non-identifier byte -- so
 // "text" never counts a "textMuted" read. Every READ, not every line: two reads on one line count twice. An
 // empty role counts every palette read of any role.
@@ -22435,75 +22678,119 @@ struct RoleReads {
 }  // namespace
 
 TEST_CASE("editor: the panels read their roles from the theme (task E.6.1, I287)") {
-    // NO GPU: logLevelColor is ImGui-free, and the rest is the eight files' comment-stripped source text.
-    const engine::editor::ThemePalette& p = engine::editor::EDITOR_THEME.palette;
-    const std::array<LevelColorRow, 7> rows{{
-        {engine::LogLevel::Trace, "Trace", p.textMuted},
-        {engine::LogLevel::Debug, "Debug", p.textMuted},
-        {engine::LogLevel::Info, "Info", p.text},
-        {engine::LogLevel::Off, "Off", p.text},
-        {engine::LogLevel::Warn, "Warn", p.warning},
-        {engine::LogLevel::Error, "Error", p.error},
-        {engine::LogLevel::Critical, "Critical", p.critical},
+    // NO GPU: logLevelTagRole is pure, and the rest is the listed files' comment-stripped source text.
+    // task E.6.3 (D7): a level reaches the draw as its TAG's role -- the message is `text` on every level.
+    struct LevelRoleRow {
+        engine::LogLevel level;
+        std::string_view name;
+        engine::editor::ChromeRole role;
+    };
+    using engine::editor::ChromeRole;
+    const std::array<LevelRoleRow, 7> rows{{
+        {engine::LogLevel::Trace, "Trace", ChromeRole::TextFaint},
+        {engine::LogLevel::Debug, "Debug", ChromeRole::TextMuted},
+        {engine::LogLevel::Info, "Info", ChromeRole::TextLabel},
+        {engine::LogLevel::Off, "Off", ChromeRole::TextFaint},
+        {engine::LogLevel::Warn, "Warn", ChromeRole::Warning},
+        {engine::LogLevel::Error, "Error", ChromeRole::Error},
+        {engine::LogLevel::Critical, "Critical", ChromeRole::Critical},
     }};
-    for (const LevelColorRow& row : rows) {
+    for (const LevelRoleRow& row : rows) {
         CAPTURE(row.name);
-        checkSameSrgb8(engine::editor::logLevelColor(row.level), row.expected);
+        CHECK((engine::editor::logLevelTagRole(row.level) == row.role));
     }
 
     // No panel states a colour or reads ImGui's disabled slot for enabled text (seed S25). The literal
-    // patterns are AC-9's four, the first widened to the brace spelling, plus any ImColor at all;
+    // patterns are AC-9's four, the first widened to the brace spelling, plus any ImColor at all, plus (task E.6.3,
+    // D1) a DEFAULT-CONSTRUCTED ImVec4: a transparent fill is chromeRoleColor(role, 0), never ImVec4() or ImVec4{}.
     // TextDisabled is left to ImGui's own disabled widgets.
-    const std::array<std::regex, 5> literals{
-        std::regex(R"(ImVec4[\(\{]\s*[0-9])"),  // k = 0: ImVec4( or ImVec4{, then a digit
-        std::regex(R"(IM_COL32\(\s*[0-9])"),    // k = 1
-        std::regex("IM_COL32_WHITE"),           // k = 2
-        std::regex("IM_COL32_BLACK"),           // k = 3
-        std::regex(R"(ImColor\()"),             // k = 4: any ImColor at all
+    const std::array<std::regex, 6> literals{
+        std::regex(R"(ImVec4[\(\{]\s*[0-9])"),   // k = 0: ImVec4( or ImVec4{, then a digit
+        std::regex(R"(IM_COL32\(\s*[0-9])"),     // k = 1
+        std::regex("IM_COL32_WHITE"),            // k = 2
+        std::regex("IM_COL32_BLACK"),            // k = 3: IM_COL32_BLACK_TRANS too, by substring -- on purpose
+        std::regex(R"(ImColor\()"),              // k = 4: any ImColor at all
+        std::regex(R"(ImVec4[\(\{]\s*[\)\}])"),  // k = 5 (task E.6.3): ImVec4() / ImVec4{}, a default-constructed fill
     };
-    constexpr std::array<std::string_view, 8> PANELS{
-        "console_panel.cpp", "material_panel.cpp",      "import_details_panel.cpp",   "project_ui.cpp",
-        "asset_tile.cpp",    "asset_browser_panel.cpp", "project_settings_panel.cpp", "shell_chrome_ui.cpp",
+    // Each file with its EXACT total of palette reads (task E.6.3): the rows below must add up to it, and the file may
+    // read no role it has no row for. A stated 0 is legal -- panel_chrome_ui.cpp takes every palette colour through
+    // chromeRoleColor and spells no palette member at all -- which a `listed > 0` claim could not express.
+    struct PanelFile {
+        std::string_view file;
+        std::size_t totalReads;
     };
+    constexpr std::array<PanelFile, 14> PANELS{{
+        {"console_panel.cpp", 0U},    // task E.6.3: every palette colour a ChromeRole
+        {"hierarchy_panel.cpp", 0U},  // task E.6.3: every colour a ChromeRole
+        {"inspector_panel.cpp", 0U},  // task E.6.3: every palette colour a ChromeRole
+        {"asset_picker.cpp", 0U},     // task E.6.3: every palette colour a ChromeRole
+        {"material_panel.cpp", 10U},
+        {"import_details_panel.cpp", 6U},
+        {"project_ui.cpp", 2U},
+        {"asset_tile.cpp", 0U},              // task E.6.3: the captions read roles
+        {"asset_browser_panel.cpp", 0U},     // task E.6.3: mutedText
+        {"project_settings_panel.cpp", 0U},  // task E.6.3: labels through the role map
+        {"shell_chrome_ui.cpp", 13U},        // task E.6.3: 15 - textBright - onAccent (the segments' roles moved)
+        {"panel_chrome_model.cpp", 26U},     // task E.6.3: chromeRoleColor, each role ONCE
+        {"panel_chrome_ui.cpp", 0U},         // task E.6.3: every palette colour through the role map
+        {"viewport_panel.cpp", 0U},          // task E.6.3: the HUD reads roles
+    }};
     // The roles are READ, not merely the literals gone -- each (file, role) at its EXACT count of reads
     // in the comment-stripped code. One read swapped back to an ImGui slot (S25's site on
     // GetStyleColorVec4(ImGuiCol_Text)) states no literal and names no TextDisabled, and a "> 0" stays
     // green while any other read of that role remains: only the count moves. A set claim needs a set
     // assertion, so each file's TOTAL of palette reads is pinned as well, and a read of a role a file has
     // no row for is red too. Counted from the code at E.6.1's second code-review round.
-    constexpr std::array<RoleReads, 29> ROLE_READS{{
-        {"console_panel.cpp", "critical", 1U},   // logLevelColor's Critical arm
-        {"console_panel.cpp", "error", 1U},      // its Error arm
-        {"console_panel.cpp", "text", 2U},       // its Info/Off arm and the fallback after the switch
-        {"console_panel.cpp", "textMuted", 2U},  // its Trace/Debug arm and the timestamp column
-        {"console_panel.cpp", "warning", 1U},    // its Warn arm
+    constexpr std::array<RoleReads, 45> ROLE_READS{{
         {"material_panel.cpp", "error", 3U},
         {"material_panel.cpp", "textMuted", 1U},  // the status line's Disabled arm (D16)
         {"material_panel.cpp", "warning", 6U},
-        {"import_details_panel.cpp", "error", 6U},
+        {"import_details_panel.cpp", "error", 5U},
+        {"import_details_panel.cpp", "warning", 1U},  // task E.6.3: the Blender advisory (C13)
         {"project_ui.cpp", "error", 2U},
-        {"asset_tile.cpp", "text", 1U},  // one read, held for both captions
-        {"asset_tile.cpp", "textMuted", 1U},
-        {"asset_browser_panel.cpp", "textMuted", 1U},
-        {"project_settings_panel.cpp", "textMuted", 1U},
-        {"shell_chrome_ui.cpp", "accent", 1U},         // task E.6.2: chromeColors(), each role read once
-        {"shell_chrome_ui.cpp", "active", 1U},         // task E.6.2: chromeColors(), each role read once
-        {"shell_chrome_ui.cpp", "border", 1U},         // task E.6.2: chromeColors(), each role read once
-        {"shell_chrome_ui.cpp", "chrome", 1U},         // task E.6.2: chromeColors(), each role read once
-        {"shell_chrome_ui.cpp", "divider", 1U},        // task E.6.2: chromeColors(), each role read once
-        {"shell_chrome_ui.cpp", "hover", 1U},          // task E.6.2: chromeColors(), each role read once
-        {"shell_chrome_ui.cpp", "onAccent", 1U},       // task E.6.2: chromeColors(), each role read once
-        {"shell_chrome_ui.cpp", "raised", 1U},         // task E.6.2: chromeColors(), each role read once
-        {"shell_chrome_ui.cpp", "text", 1U},           // task E.6.2: chromeColors(), each role read once
-        {"shell_chrome_ui.cpp", "textBright", 1U},     // task E.6.2: chromeColors(), each role read once
-        {"shell_chrome_ui.cpp", "textFaint", 1U},      // task E.6.2: chromeColors(), each role read once
-        {"shell_chrome_ui.cpp", "textLabel", 1U},      // task E.6.2: chromeColors(), each role read once
-        {"shell_chrome_ui.cpp", "textMuted", 1U},      // task E.6.2: chromeColors(), each role read once
-        {"shell_chrome_ui.cpp", "textSecondary", 1U},  // task E.6.2: chromeColors(), each role read once
-        {"shell_chrome_ui.cpp", "warning", 1U},        // task E.6.2: chromeColors(), each role read once
+        {"shell_chrome_ui.cpp", "accent", 1U},            // task E.6.2: chromeColors(), each role read once
+        {"shell_chrome_ui.cpp", "active", 1U},            // task E.6.2: chromeColors(), each role read once
+        {"shell_chrome_ui.cpp", "border", 1U},            // task E.6.2: chromeColors(), each role read once
+        {"shell_chrome_ui.cpp", "chrome", 1U},            // task E.6.2: chromeColors(), each role read once
+        {"shell_chrome_ui.cpp", "divider", 1U},           // task E.6.2: chromeColors(), each role read once
+        {"shell_chrome_ui.cpp", "hover", 1U},             // task E.6.2: chromeColors(), each role read once
+        {"shell_chrome_ui.cpp", "raised", 1U},            // task E.6.2: chromeColors(), each role read once
+        {"shell_chrome_ui.cpp", "text", 1U},              // task E.6.2: chromeColors(), each role read once
+        {"shell_chrome_ui.cpp", "textFaint", 1U},         // task E.6.2: chromeColors(), each role read once
+        {"shell_chrome_ui.cpp", "textLabel", 1U},         // task E.6.2: chromeColors(), each role read once
+        {"shell_chrome_ui.cpp", "textMuted", 1U},         // task E.6.2: chromeColors(), each role read once
+        {"shell_chrome_ui.cpp", "textSecondary", 1U},     // task E.6.2: chromeColors(), each role read once
+        {"shell_chrome_ui.cpp", "warning", 1U},           // task E.6.2: chromeColors(), each role read once
+        {"panel_chrome_model.cpp", "canvas", 1U},         // chromeRoleColor
+        {"panel_chrome_model.cpp", "inset", 1U},          // chromeRoleColor
+        {"panel_chrome_model.cpp", "chrome", 1U},         // chromeRoleColor
+        {"panel_chrome_model.cpp", "panel", 1U},          // chromeRoleColor
+        {"panel_chrome_model.cpp", "tile", 1U},           // chromeRoleColor
+        {"panel_chrome_model.cpp", "raised", 1U},         // chromeRoleColor
+        {"panel_chrome_model.cpp", "raisedHeader", 1U},   // chromeRoleColor
+        {"panel_chrome_model.cpp", "hover", 1U},          // chromeRoleColor
+        {"panel_chrome_model.cpp", "active", 1U},         // chromeRoleColor
+        {"panel_chrome_model.cpp", "selection", 1U},      // chromeRoleColor
+        {"panel_chrome_model.cpp", "border", 1U},         // chromeRoleColor
+        {"panel_chrome_model.cpp", "divider", 1U},        // chromeRoleColor
+        {"panel_chrome_model.cpp", "accentBorder", 1U},   // chromeRoleColor
+        {"panel_chrome_model.cpp", "textBright", 1U},     // chromeRoleColor
+        {"panel_chrome_model.cpp", "text", 1U},           // chromeRoleColor
+        {"panel_chrome_model.cpp", "textSecondary", 1U},  // chromeRoleColor
+        {"panel_chrome_model.cpp", "textLabel", 1U},      // chromeRoleColor
+        {"panel_chrome_model.cpp", "textMuted", 1U},      // chromeRoleColor
+        {"panel_chrome_model.cpp", "textFaint", 1U},      // chromeRoleColor
+        {"panel_chrome_model.cpp", "onAccent", 1U},       // chromeRoleColor
+        {"panel_chrome_model.cpp", "accent", 1U},         // chromeRoleColor
+        {"panel_chrome_model.cpp", "warning", 1U},        // chromeRoleColor
+        {"panel_chrome_model.cpp", "error", 1U},          // chromeRoleColor
+        {"panel_chrome_model.cpp", "success", 1U},        // chromeRoleColor
+        {"panel_chrome_model.cpp", "info", 1U},           // chromeRoleColor
+        {"panel_chrome_model.cpp", "critical", 1U},       // chromeRoleColor
     }};
     std::size_t rowsRead = 0;
-    for (const std::string_view file : PANELS) {
+    for (const PanelFile& panel : PANELS) {
+        const std::string_view file = panel.file;
         CAPTURE(file);
         const std::string path = std::string(AERO_EDITOR_SRC_DIR "/").append(file);
         const std::vector<std::string> code = editorSourceCodeLines(path);
@@ -22522,16 +22809,20 @@ TEST_CASE("editor: the panels read their roles from the theme (task E.6.1, I287)
                 ++rowsRead;
             }
         }
-        CHECK(listed > 0U);                            // every one of the eight reads a role
-        CHECK(countPaletteReads(code, "") == listed);  // ... and no role it has no row for
+        CHECK(listed == panel.totalReads);                       // the rows add up to the file's stated total
+        CHECK(countPaletteReads(code, "") == panel.totalReads);  // ... and no role it has no row for
+        // task E.6.3 (D11): de-emphasis is mutedText (a string-only helper); a disabled widget greys through
+        // BeginDisabled. project_ui.cpp -- the Welcome window and the New Project dialog, E.6.4's surfaces -- is the
+        // stated exception, so E.6.4 inherits a one-line widening. (ImGuiCol_TextDisabled is banned above, in every
+        // listed file and project_ui.cpp too, since E.6.1.)
+        if (file != "project_ui.cpp") {
+            CHECK(countLinesContaining(code, "ImGui::TextDisabled(") == 0U);
+        }
     }
-    CHECK(rowsRead == ROLE_READS.size());  // no row names a file outside the eight, so none is skipped
-    // The Console's levels reach the draw through logLevelColor: its definition and its one call.
-    std::size_t levelColorCalls = 0;
-    for (const std::string& line : editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/console_panel.cpp")) {
-        levelColorCalls += countOccurrences(line, "logLevelColor(");
-    }
-    CHECK(levelColorCalls == 2U);
+    CHECK(rowsRead == ROLE_READS.size());  // no row names a file outside PANELS, so none is skipped
+    // The Console's levels reach the draw through logLevelTagRole: one call, in the row loop (task E.6.3).
+    const std::vector<std::string> consoleCode = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/console_panel.cpp");
+    CHECK(countLinesContaining(consoleCode, "logLevelTagRole(") == 1U);
     // ANTI-VACUITY for the counter: a role ends at an identifier boundary, and the empty role counts all.
     const std::vector<std::string> probe{"f(EDITOR_THEME.palette.textMuted, EDITOR_THEME.palette.text);"};
     CHECK(countPaletteReads(probe, "text") == 1U);
@@ -22546,6 +22837,12 @@ TEST_CASE("editor: the panels read their roles from the theme (task E.6.1, I287)
     CHECK(std::regex_search(whiteCaption, literals[2]));
     const std::string imColorText = "ImGui::PushStyleColor(ImGuiCol_Text, ImColor(255, 0, 0).Value)";
     CHECK(std::regex_search(imColorText, literals[4]));
+    // task E.6.3: the natural transparent spellings ARE refused, and the one legal spelling is not.
+    CHECK(std::regex_search(std::string("ImVec4(0, 0, 0, 0)"), literals[0]));
+    CHECK(std::regex_search(std::string("drawList->AddRect(a, b, IM_COL32_BLACK_TRANS)"), literals[3]));
+    CHECK(std::regex_search(std::string("ImGui::PushStyleColor(ImGuiCol_Header, ImVec4{})"), literals[5]));
+    CHECK(std::regex_search(std::string("ImGui::PushStyleColor(ImGuiCol_Header, ImVec4( ))"), literals[5]));
+    CHECK_FALSE(std::regex_search(std::string("return toImVec4(chromeRoleColor(surface, 0U));"), literals[5]));
 }
 
 // ---- I288: the viewport's chrome reads the live UI scale (task E.6.1, step 7) ----------------------------
@@ -22624,7 +22921,7 @@ TEST_CASE("editor: the viewport chrome uses the live UI scale (task E.6.1, I288)
 // ---- I283-I285: the faces and icons each consumer drew with (task E.6.1, step 8) ------------------------
 // Every font claim reads what ImGui had CURRENT when the panel drew (GetFont()->GetDebugName(), recorded by
 // the panel at the draw), never a seam's round trip.
-TEST_CASE("editor: Console messages draw in Mono and the other columns in Body (task E.6.1, I283)") {
+TEST_CASE("editor: Console messages draw in Mono, tags in Mono small, and the push stays scoped (task E.6.1, I283)") {
     engine::platform::Context ctx;
     if (!ctx.valid()) {
         AERO_SKIP_OR_FAIL("no platform context");
@@ -22658,14 +22955,32 @@ TEST_CASE("editor: Console messages draw in Mono and the other columns in Body (
     REQUIRE(app->panelDrawnCount("Console") == idle);
 
     AERO_LOG_INFO("e61 mono probe");
+    AERO_LOG_INFO("e63 second row");  // two rows: the witness below is read between rows, so it needs >= 2
     app->requestPanelFocus("Console");
     REQUIRE(app->tick());  // raises the Console
-    REQUIRE(app->tick());  // draws the record pumpLog took at the top of this tick
+    REQUIRE(app->tick());  // draws the records pumpLog took at the top of this tick
     REQUIRE(app->panelDrawnCount("Console") > idle);
 
-    CHECK(console->messageRowsSubmitted() > 0U);  // a message really was submitted this frame
+    CHECK(console->messageRowsSubmitted() >= 2U);  // ANTI-VACUITY for the scoped-push witness
     CHECK(console->lastMessageFontName() == "IBM Plex Mono");
-    CHECK(console->lastLevelFontName() == "IBM Plex Sans");  // the Mono push is scoped (seed S19)
+    // task E.6.3 (D7): the TAG is Mono at the small size now -- the face it was drawn in, never a push witness.
+    CHECK(console->lastLevelFontName() == "IBM Plex Mono");
+    CHECK(console->lastLevelFontSize() == std::floor((14.0F * app->uiScale()) + 0.5F));
+    // THE SCOPED-PUSH WITNESS (seed S19), read INSIDE the row right after the message's PopFont: any read outside the
+    // row is blind, because the child's own End() pops a leaked font before anything after EndChild runs (F10).
+    CHECK(console->lastAfterMessageFontName() == "IBM Plex Sans");
+    // ...and the push and pop share one row-loop body with no exit between them.
+    const std::vector<std::string> code = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/console_panel.cpp");
+    const std::size_t pushAt = soleLineContaining(code, "PushFont(");
+    const std::size_t popAt = soleLineContaining(code, "PopFont(");
+    REQUIRE(pushAt < popAt);
+    for (std::size_t i = pushAt; i <= popAt; ++i) {
+        CAPTURE(code[i]);
+        CHECK(code[i].find("continue") == std::string::npos);
+        CHECK(code[i].find("break") == std::string::npos);
+        CHECK(code[i].find("return") == std::string::npos);
+    }
+    CHECK(soleLineContaining(code, "lastAfterMessageFontName = ImGui::GetFont()") == popAt + 1U);
 
     app->requestQuit();
     CHECK(app->tick() == false);
@@ -22770,147 +23085,150 @@ TEST_CASE("editor: the icon consumers, as source text (task E.6.1, I285)") {
     CHECK(countLinesContaining(shell, "drawCreateKindItem(\"Empty\", CreateKind::Empty") == 1U);
     CHECK(countLinesContaining(shell, "MenuItem(\"Empty\"") == 0U);
 
-    CHECK(countLinesContaining(browser, "AERO_ICON_CORNER_LEFT_UP") == 1U);
+    // task E.6.3 (D8): the ".." bar is gone -- the crumbs navigate up -- and every crumb has one submission site.
+    CHECK(countLinesContaining(browser, "AERO_ICON_CORNER_LEFT_UP") == 0U);
+    CHECK(countLinesContaining(browser, "ImGui::InvisibleButton(\"##crumb\"") == 1U);
     CHECK(countLinesContaining(browser, "\"<  ..\"") == 0U);
 }
 
 // ---- I289: the Inspector's axis boxes at the new metrics (task E.6.1, the manual validation pass) ---------
 // The pass measured the X/Y/Z boxes clipping "0.000" to "0.00" in a 258-wide right dock where the branch
 // point showed it whole. TH11 holds the arithmetic at tier 0; this case holds what ImGui LAID OUT.
-TEST_CASE("editor: the Inspector's axis boxes hold a three-decimal value (task E.6.1, I289)") {
-    // NO GPU first: drawAxisRow takes its box width from the pure budget, handed the gaps its SameLine calls
-    // spell -- the slack arms below see a disagreement only on a lane wide enough to draw the row.
+TEST_CASE("editor: the Inspector's axis units hold a three-decimal value (task E.6.1, I289)") {
+    // NO GPU first: drawAxisRow takes its units from the pure layout, handed the gap its SameLine call spells.
     const std::vector<std::string> panel = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/inspector_panel.cpp");
     REQUIRE(panel.size() > 100U);
-    CHECK(countLinesContaining(panel, "inspectorAxisBoxWidth(") == 1U);
-    CHECK(countLinesContaining(panel, "boxWidth = inspectorAxisBoxWidth(total, letterWidth, letterGap, gap)") == 1U);
-    CHECK(countLinesContaining(panel, "SameLine(0.0F, letterGap)") == 1U);
+    CHECK(countLinesContaining(panel, "inspectorAxisLayout(") == 1U);
+    CHECK(countLinesContaining(panel, "axis = inspectorAxisLayout(total, letterWidth, gap, currentUiScale())") == 1U);
     CHECK(countLinesContaining(panel, "SameLine(0.0F, gap)") == 1U);
-    CHECK(countLinesContaining(panel, "letterGap = AXIS_LETTER_GAP_DP * currentUiScale()") == 1U);
+    CHECK(countLinesContaining(panel, "SetNextItemWidth(axis.valueWidth)") == 1U);
+    CHECK(countLinesContaining(panel, "inspectorAxisBoxWidth(") == 0U);
+    CHECK(countLinesContaining(panel, "AXIS_LETTER_GAP_DP") == 0U);
 
-    engine::platform::Context ctx;
-    if (!ctx.valid()) {
-        AERO_SKIP_OR_FAIL("no platform context");
-    }
-    // 1206 wide, because that is the width whose DEFAULT layout builds a 241-wide right dock -- content 225,
-    // the narrowest at which the branch point showed "0.000" whole (TH11 derives it): buildDefaultLayout gives
-    // the left dock 20% and then the right 25% of what is left, each split truncated after the 2-point
-    // separator, so trunc(1204 x 0.2) = 240 leaves 964 and 962 - trunc(962 x 0.75) = 241. (1294 builds the
-    // 258-wide dock the pass measured; a 1080-wide window builds a 216-wide one, content 200.)
-    std::optional<engine::platform::Window> window =
-        ctx.createWindow({.title = "inspector axis boxes i289", .width = 1206, .height = 1600});
-    REQUIRE(window.has_value());
-    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
-    if (!device) {
-        AERO_SKIP_OR_FAIL("no GPU device");
-    }
-    std::optional<engine::editor::EditorApp> app =
-        engine::editor::EditorApp::create(*device, *window, ctx,
-                                          {.persistLayout = false,
-                                           .unfocusedFrameCapHz = 0.0F,
-                                           .restoreLastProject = false,
-                                           .recentProjectsPath = uniqueRecentsFile()});
-    REQUIRE(app.has_value());
-    auto* const inspector = dynamic_cast<engine::editor::InspectorPanel*>(app->panels().find("Inspector"));
-    REQUIRE(inspector != nullptr);
-
-    // The default scene's Cube: Transform's position, rotation and scale are three axis rows.
-    engine::World& world = app->world();
-    engine::Entity cube{};
-    world.eachEntity([&](engine::Entity e) {
-        if (world.name(e) == "Cube") {
-            cube = e;
+    // The default layout is BUILT at the window's size (F25): left = trunc((W-2) x 0.2), B = W-2-left-2, right =
+    // B - trunc(B x 0.7) (task E.6.3's 0.30 split), content = right - 16. 1206 -> 289 / content 273 (WHOLE: the
+    // Cube's threshold is 266); 1080 -> 259 / content 243 (CLIPPED -- the deliberate before, anti-vacuity).
+    // std::int32_t: WindowConfig::width is std::int32_t (window.hpp:30), and a non-constant std::uint32_t narrowed
+    // inside the brace-initialised config is ill-formed (-Wc++11-narrowing on clang, C2397 on MSVC).
+    const auto runWindow = [](std::int32_t width, bool whole) {
+        engine::platform::Context ctx;
+        if (!ctx.valid()) {
+            AERO_SKIP_OR_FAIL("no platform context");
         }
-    });
-    REQUIRE(cube.valid());
-    app->selection().set(cube);
-    REQUIRE(app->tick());
-    REQUIRE(app->tick());
+        std::optional<engine::platform::Window> window =
+            ctx.createWindow({.title = "inspector axis units i289", .width = width, .height = 1600});
+        REQUIRE(window.has_value());
+        std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+        if (!device) {
+            AERO_SKIP_OR_FAIL("no GPU device");
+        }
+        std::optional<engine::editor::EditorApp> app =
+            engine::editor::EditorApp::create(*device, *window, ctx,
+                                              {.persistLayout = false,
+                                               .unfocusedFrameCapHz = 0.0F,
+                                               .restoreLastProject = false,
+                                               .recentProjectsPath = uniqueRecentsFile()});
+        REQUIRE(app.has_value());
+        auto* const inspector = dynamic_cast<engine::editor::InspectorPanel*>(app->panels().find("Inspector"));
+        REQUIRE(inspector != nullptr);
+        engine::World& world = app->world();
+        const auto named = [&world](std::string_view name) {
+            engine::Entity found{};
+            world.eachEntity([&](engine::Entity e) {
+                if (world.name(e) == name) {
+                    found = e;
+                }
+            });
+            return found;
+        };
+        const engine::Entity cube = named("Cube");
+        REQUIRE(cube.valid());
+        app->selection().set(cube);
+        REQUIRE(app->tick());
+        REQUIRE(app->tick());
+        // THE ROUTING BASELINE in the Right node: Material in front, and the Inspector provably not drawing.
+        app->requestPanelFocus("Material");
+        REQUIRE(app->tick());
+        REQUIRE(app->tick());
+        const auto idle = app->panelDrawnCount("Inspector");
+        REQUIRE(app->tick());
+        REQUIRE(app->panelDrawnCount("Inspector") == idle);
+        app->requestPanelFocus("Inspector");
+        REQUIRE(app->tick());
+        REQUIRE(app->tick());
+        REQUIRE(app->panelDrawnCount("Inspector") > idle);
 
-    // THE ROUTING BASELINE in the Right node: Material in front, and the Inspector provably not drawing.
-    app->requestPanelFocus("Material");
-    REQUIRE(app->tick());
-    REQUIRE(app->tick());
-    const auto idle = app->panelDrawnCount("Inspector");
-    REQUIRE(app->tick());
-    REQUIRE(app->panelDrawnCount("Inspector") == idle);
-    app->requestPanelFocus("Inspector");
-    REQUIRE(app->tick());
-    REQUIRE(app->tick());
-    REQUIRE(app->panelDrawnCount("Inspector") > idle);
-
-    // What "0.000" occupies in Body at the LIVE UI scale -- ImGui's own advances, measured, never a restated
-    // literal. measureEditorFonts restores the current context, so it is safe beside the live app (I288 reads
-    // the scale the same way). DragScalar draws its value with RenderTextClipped over the bare frame (no frame
-    // padding), centred and clipped once it is wider, so a box at least this wide shows the value whole.
-    const float uiScale = app->uiScale();
-    CAPTURE(uiScale);
-    const std::array<char32_t, 5> points{U'0', U'.', U'X', U'Y', U'Z'};  // "0.000" is 4 x '0' + '.'
-    const EditorFontMeasurement body = measureEditorFonts(WITH_ICONS, EditorFontFace::Body, points, uiScale);
-    REQUIRE(body.ok);
-    REQUIRE(body.glyphs.size() == points.size());
-    for (const MeasuredGlyph& glyph : body.glyphs) {
-        REQUIRE(glyph.found);
-    }
-    const float threeDecimals = (4.0F * body.glyphs[0].advanceX) + body.glyphs[1].advanceX;
-    CAPTURE(threeDecimals);
-    REQUIRE(threeDecimals > 0.0F);
-    // The row's own slack budget: drawAxisRow budgets three of the WIDEST letter as CalcTextSize measures it
-    // (IM_TRUNC(w + 0.99999f), a whole point) while each Text item takes its own width, and ImGui truncates
-    // each of the three boxes to a whole point -- so the row as drawn ends at most 3 points, plus the letters'
-    // difference from the widest, inside its cell. At most UI scales other than 1 the three letters round to
-    // different widths (X, Y and Z are 613, 593 and 580 units), so the difference is measured at the live scale.
-    std::array<float, 3> letters{};
-    for (std::size_t i = 0; i < letters.size(); ++i) {
-        letters[i] = std::trunc(body.glyphs[2U + i].advanceX + 0.99999F);
-    }
-    const float widestLetter = std::max({letters[0], letters[1], letters[2]});
-    const float letterSlack = (3.0F * widestLetter) - (letters[0] + letters[1] + letters[2]);
-    CAPTURE(widestLetter);
-    CAPTURE(letterSlack);
-
-    const float content = inspector->lastContentWidth();
-    const float box = inspector->lastAxisBoxWidth();
-    const float slack = inspector->lastAxisRowSlack();
-    CAPTURE(content);
-    CAPTURE(box);
-    CAPTURE(slack);
-    if (!engine::editor::sceneIoAvailable()) {
-        // REFLECT TOOLS OFF, at runtime (no #if): components draw no field rows, so no axis row drew.
-        MESSAGE("I289: reflect tools OFF -- no field rows, so no axis row drew");
-        CHECK(box == 0.0F);
-        CHECK(slack == 0.0F);
-    } else {
-        REQUIRE(box > 0.0F);  // an axis row really drew this frame
-        // THE ROW FILLS ITS CELL, at ANY width where the budget is above its floor of 1: the SameLine gaps
-        // and inspectorAxisBoxWidth's budget agree. Below, the last box overruns the cell (a gap drawn wider
-        // than budgeted); above, the boxes are narrower than the cell pays for (a budget with a gap the row
-        // does not draw). Half a point absorbs the float sums of three boxes and five gaps.
-        if (box >= 2.0F) {
-            CHECK(slack >= -0.5F);
-            CHECK(slack < 3.0F + letterSlack + 0.5F);
+        // What "0.000" occupies in Body at the LIVE scale -- ImGui's own advances (E.6.1's measurement, unchanged).
+        const float uiScale = app->uiScale();
+        CAPTURE(uiScale);
+        const std::array<char32_t, 2> points{U'0', U'.'};
+        const EditorFontMeasurement body = measureEditorFonts(WITH_ICONS, EditorFontFace::Body, points, uiScale);
+        REQUIRE(body.ok);
+        REQUIRE(body.glyphs.size() == points.size());
+        const float threeDecimals = (4.0F * body.glyphs[0].advanceX) + body.glyphs[1].advanceX;
+        REQUIRE(threeDecimals > 0.0F);
+        const float content = inspector->lastContentWidth();
+        const float value = inspector->lastAxisBoxWidth();
+        CAPTURE(content);
+        CAPTURE(value);
+        if (!engine::editor::sceneIoAvailable()) {
+            // REFLECT TOOLS OFF, at runtime (no #if): no field rows, so no axis row drew.
+            MESSAGE("I289: reflect tools OFF -- no field rows, so no axis row drew");
+            CHECK(value == 0.0F);
+            return;
+        }
+        REQUIRE(value > 0.0F);                          // an axis row really drew this frame
+        CHECK(inspector->lastAxisRowSlack() >= -0.5F);  // the row never overruns its cell
+        if (whole) {
+            if (uiScale == 1.0F && content >= 267.0F) {
+                CHECK(value >= threeDecimals);  // the Cube whole at 1206
+            } else {
+                WARN((uiScale == 1.0F && content >= 267.0F));  // a narrower runner, or another scale
+            }
+            // THE PER-ENTITY THRESHOLDS, geometry-INDEPENDENT: the three value regions share the cell and are each
+            // truncated, so content - 3 x (value - "0.000") is where the value would exactly fit (+- 3 for the three
+            // truncations). The cell is the body width minus the label column, so that extrapolation tracks the
+            // COLUMN: below twice the column the ceiling (half the content) clamps it, and the recorded column's
+            // shortfall is added back. Valid at any content where the row is above its floor, with the column folded
+            // in -- CI's narrow runner (the Directional Light's 127 clamps below content 254) included.
+            struct Probe {
+                std::string_view name;
+                float threshold;
+                float column;  // the label column at the threshold (TH11): 77 / 90 / 127
+            };
+            for (const Probe& probe : {Probe{"Cube", 266.0F, 77.0F}, Probe{"Main Camera", 279.0F, 90.0F},
+                                       Probe{"Directional Light", 316.0F, 127.0F}}) {
+                CAPTURE(probe.name);
+                const engine::Entity e = named(probe.name);
+                REQUIRE(e.valid());
+                app->selection().set(e);
+                REQUIRE(app->tick());
+                REQUIRE(app->tick());
+                const float c = inspector->lastContentWidth();
+                const float v = inspector->lastAxisBoxWidth();
+                REQUIRE(v > 1.0F);  // above the floor, where the arithmetic holds
+                const float col = inspector->drawRecord().labelColumnWidth;
+                CAPTURE(col);
+                const float measured = c - (3.0F * (v - threeDecimals)) + (probe.column - col);
+                MESSAGE("I289 " << probe.name << ": " << measured << " at content " << c << ", column " << col);
+                if (uiScale == 1.0F) {
+                    // The recorded column is the clamp of the probe's (floor 4 x 16, ceiling half the content), so a
+                    // wrong column constant cannot hide behind the folded-in term.
+                    CHECK(std::abs(col - std::min(probe.column, std::max(64.0F, c * 0.5F))) <= 0.5F);
+                    CHECK(std::abs(measured - probe.threshold) <= 4.0F);
+                }
+            }
+        } else if (uiScale == 1.0F && content <= 262.0F) {
+            CHECK(value < threeDecimals);  // the Cube clipped at 1080: a runner only ever delivers narrower
         } else {
-            MESSAGE("I289: the box is at its floor (" << box << "), so the row cannot fill its cell");
-            WARN(box >= 2.0F);
+            WARN((uiScale == 1.0F && content <= 262.0F));
         }
-        // THE GEOMETRY GATE, for the fit alone: 225 is the content of the 241-wide dock (241 - 2 x 8 of
-        // window padding), the branch point's threshold -- a derivation AT UI SCALE 1 (TH11). The claim is made
-        // only there, at that width or wider, because CI's macOS runner delivers windows narrower than
-        // requested (I233, I231), a narrower dock has a narrower cell by design, and at another scale every
-        // length in the row moves.
-        constexpr float THRESHOLD_CONTENT = 225.0F;
-        if (uiScale == 1.0F && content >= THRESHOLD_CONTENT) {
-            CHECK(box >= threeDecimals);
-        } else {
-            MESSAGE("I289: no fit asserted at UI scale " << uiScale << ", content " << content << " (the claim is "
-                                                         << "scale 1 and >= " << THRESHOLD_CONTENT << ")");
-            WARN((uiScale == 1.0F && content >= THRESHOLD_CONTENT));
-        }
-    }
-
-    app->requestQuit();
-    CHECK(app->tick() == false);
-    app.reset();
+        app->requestQuit();
+        CHECK(app->tick() == false);
+        app.reset();
+    };
+    SUBCASE("1206: the Cube whole, and every entity's threshold measured") { runWindow(1206, true); }
+    SUBCASE("1080: the Cube clipped") { runWindow(1080, false); }
 }
 
 // ==================================================================================================
@@ -24247,7 +24565,7 @@ TEST_CASE("editor: the chrome's pushes, flags, roles and format safety as source
     SUBCASE("(a) NoFocus pushes balance and exist (seed S31; validation row 3 is the behaviour)") {
         const std::size_t pushes = countLinesContaining(code, "PushItemFlag(ImGuiItemFlags_NoFocus");
         CHECK(pushes == countLinesContaining(code, "PopItemFlag("));
-        CHECK(pushes == 2U);  // groupButton and Undo
+        CHECK(pushes == 1U);  // the Undo button's -- segmentButton's moved to panel_chrome_ui.cpp (task E.6.3), (m)
     }
     SUBCASE("(b) each FrameBorderSize push is popped on its own button (seed S30)") {
         std::size_t pushes = 0;
@@ -24263,12 +24581,16 @@ TEST_CASE("editor: the chrome's pushes, flags, roles and format safety as source
             CAPTURE(i);
             CHECK(popped);
         }
-        CHECK(pushes == 2U);
+        CHECK(pushes == 1U);  // the Undo button's; segmentButton's is (m)'s
     }
-    SUBCASE("(c) the active set pushes all three button slots (seed S29)") {
-        const std::size_t fillAt = soleLineContaining(code, "PushStyleColor(ImGuiCol_Button, activeFill)");
-        CHECK(soleLineContaining(code, "PushStyleColor(ImGuiCol_ButtonHovered, activeFill)") == fillAt + 1U);
-        CHECK(soleLineContaining(code, "PushStyleColor(ImGuiCol_ButtonActive, activeFill)") == fillAt + 2U);
+    SUBCASE("(c) the active set pushes all three button slots (seed S29) -- segmentButton's, since task E.6.3") {
+        const std::vector<std::string> chrome = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/panel_chrome_ui.cpp");
+        REQUIRE(chrome.size() > 100U);
+        const std::size_t fillAt = soleLineContaining(chrome, "PushStyleColor(ImGuiCol_Button, fill)");
+        CHECK(soleLineContaining(chrome, "PushStyleColor(ImGuiCol_ButtonHovered, fill)") == fillAt + 1U);
+        CHECK(soleLineContaining(chrome, "PushStyleColor(ImGuiCol_ButtonActive, fill)") == fillAt + 2U);
+        REQUIRE(fillAt > 0U);
+        CHECK(chrome[fillAt - 1U].find("const ImVec4 fill = roleVec4(activeFill);") != std::string::npos);
     }
     SUBCASE("(d) both bars carry all six flags, and each window is ended") {
         const std::size_t flagsAt = soleLineContaining(code, "constexpr ImGuiWindowFlags BAR_FLAGS");
@@ -24408,16 +24730,17 @@ TEST_CASE("editor: the chrome's pushes, flags, roles and format safety as source
             std::string_view role;
             std::size_t count;
         };
-        constexpr std::array<RoleCount, 15> COUNTS{{{"chrome", 2U},
-                                                    {"raised", 3U},
-                                                    {"border", 2U},
-                                                    {"active", 3U},
-                                                    {"textBright", 2U},
+        // task E.6.3: the segmented group's reads moved to panel_chrome_ui.cpp with segmentButton and
+        // segmentGroupBackground -- raised 3 -> 2, border 2 -> 1, active 3 -> 1, accent 2 -> 1, textSecondary 3 -> 1,
+        // textMuted 6 -> 5 -- and textBright and onAccent left this file (asserted 0 below).
+        constexpr std::array<RoleCount, 13> COUNTS{{{"chrome", 2U},
+                                                    {"raised", 2U},
+                                                    {"border", 1U},
+                                                    {"active", 1U},
                                                     {"hover", 1U},
-                                                    {"accent", 2U},
-                                                    {"onAccent", 1U},
-                                                    {"textSecondary", 3U},
-                                                    {"textMuted", 6U},
+                                                    {"accent", 1U},
+                                                    {"textSecondary", 1U},
+                                                    {"textMuted", 5U},
                                                     {"textLabel", 1U},
                                                     {"text", 1U},
                                                     {"textFaint", 1U},
@@ -24427,9 +24750,36 @@ TEST_CASE("editor: the chrome's pushes, flags, roles and format safety as source
             CAPTURE(row.role);
             CHECK(reads(row.role) == row.count);
         }
+        CHECK(reads("textBright") == 0U);
+        CHECK(reads("onAccent") == 0U);
         // The pairs whose contrast TH13 floors, at the sites that draw them.
-        CHECK(countLinesContaining(code, "groupButton(label, active, c.accent, c.onAccent, c.textSecondary") == 1U);
+        // The call wraps after its fourth argument (120 columns), so the needle is its first line.
+        constexpr std::string_view TOOL_CALL = "segmentButton(label, active, ChromeRole::Accent, ChromeRole::OnAccent,";
+        CHECK(countLinesContaining(code, TOOL_CALL) == 1U);
         CHECK(countLinesContaining(code, "drawText(layout.backend, layout.backendX, c.accent)") == 1U);
+    }
+    SUBCASE("(m) the shared chrome's own NoFocus and FrameBorderSize pushes balance (task E.6.3, the hoist)") {
+        const std::vector<std::string> chrome = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/panel_chrome_ui.cpp");
+        REQUIRE(chrome.size() > 100U);
+        const std::size_t noFocus = countLinesContaining(chrome, "PushItemFlag(ImGuiItemFlags_NoFocus");
+        CHECK(noFocus == countLinesContaining(chrome, "PopItemFlag("));
+        CHECK(noFocus == 1U);  // segmentButton's
+        // Every FrameBorderSize push is popped within four lines: segmentButton's, the card header's and the
+        // overflow's inline, ClearFrameStyle's in the destructor that follows its constructor.
+        std::size_t pushes = 0;
+        for (std::size_t i = 0; i < chrome.size(); ++i) {
+            if (chrome[i].find("ImGuiStyleVar_FrameBorderSize") == std::string::npos) {
+                continue;
+            }
+            ++pushes;
+            bool popped = false;
+            for (std::size_t j = i + 1U; j < std::min(chrome.size(), i + 5U); ++j) {
+                popped = popped || chrome[j].find("PopStyleVar(") != std::string::npos;
+            }
+            CAPTURE(i);
+            CHECK(popped);
+        }
+        CHECK(pushes == 4U);
     }
     SUBCASE("(i) the naming sets after the chrome") {
         CHECK(e62FilesNaming("TransformToolState") ==
@@ -24463,4 +24813,4274 @@ TEST_CASE("editor: the shell draws its chrome in the order the frame needs (task
     const std::size_t feedAt = nextCodeLine(app, clockAt + 1U);
     REQUIRE(feedAt < app.size());
     CHECK(app[feedAt].find("frameReadout.add(frameClock.rawDeltaSeconds())") != std::string::npos);
+}
+
+// =====================================================================================================================
+// task E.6.3 -- the panel chrome pass. Every record is read only after its framesRecorded moved across the ticks under
+// test; a panel sharing a dock node is put in FRONT and proven NOT drawing first (E.3.2's baseline); geometry that
+// depends on the runner's display is a WARN at most (#111's rule); the reduced configurations take their stated arm by
+// a RUNTIME predicate, never #if.
+// =====================================================================================================================
+namespace {
+
+// Puts `panelId` in front of its node and proves it draws from there: `sibling` in front first, `panelId` provably
+// idle, then the claim. A panel already drawing would satisfy "> idle" with or without the request.
+void e63Front(engine::editor::EditorApp& app, const char* panelId, const char* sibling) {
+    app.requestPanelFocus(sibling);
+    e62Ticks(app, 2);
+    const std::uint64_t idle = app.panelDrawnCount(panelId);
+    REQUIRE(app.tick());
+    REQUIRE(app.panelDrawnCount(panelId) == idle);
+    app.requestPanelFocus(panelId);
+    e62Ticks(app, 2);
+    REQUIRE(app.panelDrawnCount(panelId) > idle);
+}
+
+// A live style member's y, read off the pure style the layer was built from (I281 proves the live style equals it).
+[[nodiscard]] float e63StyleY(float uiScale, std::string_view member) {
+    const engine::editor::EditorStyleSnapshot style = engine::editor::snapshotEditorStyle(uiScale);
+    for (const engine::editor::StyleMemberValue& value : style.members) {
+        if (value.name == member) {
+            return value.y;
+        }
+    }
+    FAIL("no style member " << member);
+    return 0.0F;
+}
+
+[[nodiscard]] float e63StyleX(float uiScale, std::string_view member) {
+    const engine::editor::EditorStyleSnapshot style = engine::editor::snapshotEditorStyle(uiScale);
+    for (const engine::editor::StyleMemberValue& value : style.members) {
+        if (value.name == member) {
+            return value.x;
+        }
+    }
+    FAIL("no style member " << member);
+    return 0.0F;
+}
+
+// A palette byte quadruple as ImGui packs it -- read off the THEME, never off the role map under test. Through
+// editor_theme_ui.hpp's ImGui-FREE toImU32 (IM_COL32's packing): this TU never sees imgui.h.
+[[nodiscard]] std::uint32_t e63Packed(const engine::editor::Srgb8& c) { return engine::editor::toImU32(c); }
+
+// The shader-tools-OFF arm every viewport HUD case shares (§7.8): Unavailable returns before the HUD, so its record
+// never moves, its layout owns nothing, and ticking stays safe. TRUE when the case must stop here.
+[[nodiscard]] bool e63HudUnavailable(engine::editor::EditorApp& app, engine::editor::ViewportPanel& viewport) {
+    if (viewport.sceneForwardRenderer() != nullptr) {
+        return false;
+    }
+    MESSAGE("shader tools OFF: the viewport is Unavailable and draws no HUD");
+    REQUIRE(app.tick());
+    CHECK(viewport.hudRecord().framesRecorded == 0U);
+    CHECK_FALSE(engine::editor::hudOwnsPoint(viewport.hudRecord().layout, engine::Vec2{20.0F, 20.0F}));
+    CHECK_FALSE(viewport.overlayOwnsPress(engine::Vec2{20.0F, 20.0F}, engine::Vec2{}, engine::Vec2{}));
+    return true;
+}
+
+// A project for an Assets case: `files` written under assets/ (folders created first), opened with the watcher OFF --
+// a watcher rescan bumps the generation on wall-clock time (F18) -- and the Console hidden, so Assets owns the Bottom
+// slot (2.2.4's C5) and draws every frame. `bottomDockFraction` is NON-DEFAULTED (the code-review round, round 4): a
+// case whose assertion needs a pane of a known proportion of the window names its fraction, and a case whose literals
+// were measured on the shipping layout names DEFAULT_BOTTOM_DOCK_FRACTION -- no caller inherits either silently.
+[[nodiscard]] std::optional<engine::editor::EditorApp> e63AssetsApp(engine::rhi::Device& device,
+                                                                    engine::platform::Window& window,
+                                                                    engine::platform::Context& ctx,
+                                                                    std::initializer_list<std::string_view> files,
+                                                                    float bottomDockFraction) {
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    for (const std::string_view relative : files) {
+        const std::filesystem::path path = std::filesystem::path(created.root + "/assets") / std::string(relative);
+        std::error_code ec;
+        std::filesystem::create_directories(path.parent_path(), ec);
+        REQUIRE_FALSE(ec);
+        REQUIRE(engine::editor::writeTextFileAtomic(path.string(), "x").empty());
+    }
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(device, window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = created.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile(),
+                                           .assetWatch = {.enabled = false},
+                                           .bottomDockFraction = bottomDockFraction});
+    REQUIRE(app.has_value());
+    app->panels().setVisible("Console", false);
+    REQUIRE(app->tick());  // 1: the first rescan runs inside this tick, before the frame draws
+    REQUIRE(app->tick());  // 2: the default dock layout settles
+    const int settled = settleAssetBrowser(*app);
+    REQUIRE(settled < E44_MAX_SETTLE_TICKS);
+    return app;
+}
+
+// The meta a Hierarchy row drew this frame, by HANDLE; nullopt when the row drew none.
+[[nodiscard]] std::optional<std::string> e63MetaOf(const engine::editor::HierarchyDrawRecord& r, engine::Entity e) {
+    for (const engine::editor::HierarchyRowMeta& meta : r.rowMetas) {
+        if (meta.entity == e) {
+            return meta.text;
+        }
+    }
+    return std::nullopt;
+}
+// The role a Hierarchy row's dot was handed this frame, by HANDLE; nullopt when the row was not drawn.
+[[nodiscard]] std::optional<engine::editor::ChromeRole> e63RoleOf(const engine::editor::HierarchyDrawRecord& r,
+                                                                  engine::Entity e) {
+    for (const engine::editor::HierarchyRowRole& row : r.rowRoles) {
+        if (row.entity == e) {
+            return row.role;
+        }
+    }
+    return std::nullopt;
+}
+
+}  // namespace
+
+TEST_CASE("editor: Console rows -- the tint, the columns, the channel stripped for display (task E.6.3, I313)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "console rows i313", .width = 900, .height = 600});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = e62App(*device, *window, ctx);
+    auto* const console = dynamic_cast<engine::editor::ConsolePanel*>(app->panels().find("Console"));
+    REQUIRE(console != nullptr);
+    e63Front(*app, "Console", "Assets");
+    // NO reduced arm: the Console needs neither shaders nor reflection, so every configuration draws it.
+    AERO_LOG_WARN("e63probe: tinted");
+    const std::uint64_t before = console->drawRecord().framesRecorded;
+    e62Ticks(*app, 2);  // pumped at the top of a tick, drawn in it; auto-scroll keeps the newest row in view
+    const engine::editor::ConsoleDrawRecord& r = console->drawRecord();
+    REQUIRE(r.framesRecorded > before);  // ANTI-VACUITY: these reads are this test's frames
+    const engine::editor::LogHistory& history = console->history();
+    REQUIRE(history.visibleCount() > 0U);
+    const engine::editor::LogEntry& newest = history.visibleAt(history.visibleCount() - 1U);
+    REQUIRE(newest.message == "e63probe: tinted");  // nothing logged after it: the LAST row drawn is this one
+    CHECK(r.rowsTinted >= 1U);
+    CHECK(r.lastChannelDrawn == "e63probe");
+    CHECK(r.lastMessageDrawn == "tinted");  // the prefix stripped for DISPLAY (the model keeps the whole message: the
+                                            // REQUIRE above; the filter reads it, and Copy is pinned below as source)
+    CHECK((r.lastTagRole == engine::editor::ChromeRole::Warning));
+    CHECK(r.lastTagText == "WARN");
+    std::string stamp;
+    engine::editor::formatConsoleStamp(newest.elapsedMs, stamp);
+    CHECK(r.lastStampDrawn == stamp);
+    CHECK(r.lastStampDrawn.size() == 9U);  // mm:ss.mmm: this record is under an hour old
+    CHECK(r.lastStampDrawn != engine::editor::formatElapsed(newest.elapsedMs));
+    CHECK(r.lastLevelFontName == "IBM Plex Mono");
+    CHECK(r.lastLevelFontSize == std::floor((14.0F * app->uiScale()) + 0.5F));
+    // The APPLIED border: a theme childBorderSize of 0 would make this read 0 whatever flags were passed, so the
+    // positive control comes first.
+    REQUIRE(engine::editor::EDITOR_THEME.metrics.childBorderSize > 0.0F);
+    CHECK_FALSE(r.logChildBordered);
+    // SOURCE: the tint's draw call precedes the row's Selectable (seed S18), so the hover paints on top.
+    const std::vector<std::string> code = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/console_panel.cpp");
+    const std::size_t tintAt = soleLineContaining(code, "consoleRowTint(entry.level)");
+    const std::size_t rowAt = soleLineContaining(code, "Selectable(\"##row\"");
+    CHECK(tintAt < rowAt);
+    REQUIRE(tintAt + 1U < code.size());
+    CHECK(code[tintAt + 1U].find("AddRectFilled(") != std::string::npos);
+    // The message cell draws the SPLIT (seed S16): entry.message is splitLogChannel's argument alone, and the one
+    // TextUnformatted reads split.message. The record arm above cannot see a draw-only edit -- it reads the split.
+    CHECK(countLinesContaining(code, "entry.message") == 1U);
+    CHECK(countLinesContaining(code, "TextUnformatted(split.message.data(),") == 1U);
+    // Copy keeps the WHOLE message (seed S17): no tier can press Copy or read the clipboard, so the Copy arm is
+    // pinned as source, and validation row 9 pastes it.
+    CHECK(countLinesContaining(code, "buildClipboardText(logHistory)") == 1U);
+    CHECK(countLinesContaining(code, "splitLogChannel(") == 1U);  // the split is display-only: never the Copy arm
+    // Every cell draws the face the record names (a tag drawn in another face would leave the record green).
+    CHECK(countLinesContaining(code, "drawRoleText(list, CELL_FACE,") == 3U);
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: the Console's footer band, reservation and header (task E.6.3, I314)") {
+    // D1 as source text (finding 3's residual), first so it runs on a lane with no GPU: the filter field's width is a
+    // NAMED font multiple in the pure model (console_view.hpp; CS8 pins the value). The ImGui TU defines no font
+    // multiple, the old file-local name is gone, and the named one -- the only font multiple the TU reads -- is read
+    // once, into the width the field is drawn at.
+    {
+        const std::vector<std::string> code = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/console_panel.cpp");
+        REQUIRE(code.size() > 100U);  // ANTI-VACUITY: the file was really read
+        std::size_t defined = 0;
+        for (const std::string& line : code) {
+            const bool constant = line.find("constexpr") != std::string::npos;
+            if (constant && line.find("FONT_MULTIPLE") != std::string::npos) {
+                ++defined;
+            }
+        }
+        CHECK(defined == 0U);
+        CHECK(countLinesContaining(code, "FILTER_INPUT_FONT_MULTIPLE") == 0U);
+        CHECK(countLinesContaining(code, "FONT_MULTIPLE") == 1U);
+        const std::size_t filterAt = soleLineContaining(code, "CONSOLE_FILTER_FONT_MULTIPLE");
+        CHECK(code[filterAt].find("const float filterWidth = ImGui::GetFontSize() * ") != std::string::npos);
+        CHECK(countLinesContaining(code, "SetNextItemWidth(filterWidth)") == 1U);
+        // D7's right alignment as source text (the code-review round's finding 10), which no display can switch off:
+        // the pure placement takes the row and the measured cluster, and the cluster's first item is drawn at its
+        // answer -- never at the row's left edge. The GPU arm below sees the same placement wherever the row fits.
+        CHECK(countLinesContaining(code, "consoleHeaderClusterX(rowMin.x, rowWidth, cluster)") == 1U);
+        CHECK(countLinesContaining(code, "SetCursorScreenPos(ImVec2(clusterX,") == 1U);
+    }
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "console footer i314", .width = 900, .height = 600});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = e62App(*device, *window, ctx);
+    auto* const console = dynamic_cast<engine::editor::ConsolePanel*>(app->panels().find("Console"));
+    REQUIRE(console != nullptr);
+    // I233's runner rule, before the settle ticks (finding 10): the 0.30 Right split leaves the Bottom row 485 wide
+    // here against a 506-wide header cluster, so the placement arm below never ran. With the side panels hidden,
+    // ImGui's dock tree hands the Bottom node the whole width (imgui.cpp:20281-20284) and the row holds the cluster.
+    // The footer and scroll arms do not depend on the row's width: they read heights, the Bottom node's height does not
+    // depend on the sides, drawFooter draws and records every segment with no width test, and the header rule is one
+    // AddRectFilled, which tests only the colour's alpha (imgui_draw.cpp:1532).
+    e63HideSidePanels(*app);
+    e63Front(*app, "Console", "Assets");
+    AERO_LOG_INFO("e63 footer probe");
+    const std::uint64_t before = console->drawRecord().framesRecorded;
+    e62Ticks(*app, 2);
+    const engine::editor::ConsoleDrawRecord& r = console->drawRecord();
+    REQUIRE(r.framesRecorded > before);
+    const float s = app->uiScale();
+    const float band = std::round(26.0F * s);  // shellBarHeight(26, s): a WHOLE point, restated (TB11)
+    const float spacingY = e63StyleY(s, "ItemSpacing");
+    CHECK(r.footerHeight == band + spacingY);  // the reservation: the band PLUS EndChild's spacing
+    CHECK(r.footerBandMaxY - r.footerBandMinY == band);
+    // the DRAWN band is a whole point
+    CHECK(std::round(r.footerBandMaxY - r.footerBandMinY) == r.footerBandMaxY - r.footerBandMinY);
+    CHECK(r.footerBandMinY == r.logChildMaxY + spacingY);  // the band starts where EndChild's ItemSize left it
+    // The footer comes from the SAME counts the panel read: the drawn segments equal the model's, text for text.
+    const engine::editor::LogHistory& history = console->history();
+    std::vector<engine::editor::ConsoleFooterSegment> expected;
+    engine::editor::consoleFooterSegments({.held = history.size(),
+                                           .visible = history.visibleCount(),
+                                           .filtered = !(history.filter() == engine::editor::LogFilter{}),
+                                           .warnings = history.levelCount(engine::LogLevel::Warn),
+                                           .errors = history.levelCount(engine::LogLevel::Error),
+                                           .critical = history.levelCount(engine::LogLevel::Critical),
+                                           .engineFloor = engine::logLevel(),
+                                           .agedOut = history.evictedCount(),
+                                           .dropped = history.droppedCount()},
+                                          expected);
+    CHECK(r.footerSegmentsDrawn == expected.size());
+    std::string expectedText;
+    for (const engine::editor::ConsoleFooterSegment& segment : expected) {
+        expectedText += segment.text;
+        expectedText += '|';
+    }
+    CHECK(r.footerTextDrawn == expectedText);
+    CHECK(r.headerRuleDrawn);  // the rule's vertices reached the list
+    // The header cluster as ImGui PLACED it: inside the row, and right-aligned wherever the row fits it (the fit test
+    // reads the panel's own recorded metrics, #111's rule -- a dock narrower than the cluster clamps it left).
+    CHECK(r.headerControlsMinX >= r.headerRowMinX);
+    if (r.headerClusterWidth < r.headerRowMaxX - r.headerRowMinX) {
+        CHECK(r.headerControlsMaxX <= r.headerRowMaxX + 0.5F);  // inside the row (a clamped cluster overruns it)
+        CHECK(r.headerControlsMinX > r.headerRowMinX);          // not drawn from the left edge
+        // right-aligned within two points: CalcItemWidth truncates the combo's and the filter's widths
+        // (imgui.cpp:12323)
+        CHECK(r.headerControlsMaxX > r.headerRowMaxX - 2.0F);
+    } else {
+        MESSAGE("I314: the header cluster (" << r.headerClusterWidth << ") does not fit the row here");
+        WARN(r.headerClusterWidth < r.headerRowMaxX - r.headerRowMinX);
+    }
+    // No scrollbar from the footer -- wherever the log child was NOT clamped. BeginChild's negative height goes
+    // through CalcItemSize, which clamps the child to at least 4 (imgui.cpp:12345), so the child's drawn height cannot
+    // reveal a dock too short for header + footer (CI's short macOS runner, #111's rule): the request read before
+    // BeginChild can.
+    if (r.logChildRequestedY >= 4.0F) {
+        CHECK(r.windowScrollMaxY == 0.0F);
+    } else {
+        MESSAGE("I314: the log child was clamped (requested " << r.logChildRequestedY << ")");
+        MESSAGE("I314: scroll max " << r.windowScrollMaxY);
+        WARN(r.logChildRequestedY >= 4.0F);
+    }
+    // SOURCE (seed S19): the band is E.6.2's one conversion, never a restated product or literal.
+    const std::vector<std::string> code = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/console_panel.cpp");
+    CHECK(countLinesContaining(code, "shellBarHeight(statusBarHeightDp(") == 1U);
+    CHECK(countLinesContaining(code, "HeightDp(EDITOR_THEME) *") == 0U);
+    CHECK(countLinesContaining(code, "26.0F") == 0U);
+    CHECK(countLinesContaining(code, "GetFrameHeightWithSpacing()") == 0U);  // the old reservation is gone
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: the Console's row tint spans the Selectable's row under a wide line (task E.6.3, I341)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "console tint i341", .width = 900, .height = 600});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = e62App(*device, *window, ctx);
+    auto* const console = dynamic_cast<engine::editor::ConsolePanel*>(app->panels().find("Console"));
+    REQUIRE(console != nullptr);
+    e63Front(*app, "Console", "Assets");
+    // ONE tinted row far wider than any dock (400 Mono advances): the row that widens the content is the row the CHECK
+    // reads, so a single submitted row -- the newest, where auto-scroll sits -- serves both, and a short log child has
+    // no second row to keep on screen. The log child scrolls horizontally, so its WorkRect -- the Selectable's max_x
+    // (imgui_widgets.cpp:7382) -- spans the CONTENT width (imgui.cpp:8531), while the content region a
+    // GetContentRegionAvail() reads spans only the VISIBLE one (:8546).
+    const std::string wide(400U, 'x');
+    AERO_LOG_WARN("e63wide: {}", wide);
+    const std::uint64_t before = console->drawRecord().framesRecorded;
+    // THREE ticks, measured: the first appends the row below the scrolled region (auto-scroll's SetScrollHereY lands
+    // at the next Begin), the second draws it, and a window's ContentSize is the PREVIOUS frame's extent
+    // (imgui_internal.h:2891), so the wide row reaches the WorkRect on the third.
+    e62Ticks(*app, 3);
+    const engine::editor::ConsoleDrawRecord& r = console->drawRecord();
+    REQUIRE(r.framesRecorded > before);  // ANTI-VACUITY: these reads are this test's frames
+    const engine::editor::LogHistory& history = console->history();
+    REQUIRE(history.visibleCount() >= 1U);
+    // Nothing logged after it: the wide tinted row is the newest.
+    REQUIRE(history.visibleAt(history.visibleCount() - 1U).message == "e63wide: " + wide);
+    REQUIRE(r.rowsTinted >= 1U);  // a tinted row drew THIS frame, so both edges below are this frame's, one row's
+    CAPTURE(r.logVisibleWidth);
+    CAPTURE(r.logContentWidth);
+    // ANTI-VACUITY: the row is wider than the child shows. At or under the visible width the WorkRect ends where the
+    // content region does, and a tint sized to the visible width plus the half-spacing would pass the CHECK below.
+    REQUIRE(r.logContentWidth > r.logVisibleWidth);
+    // The tint ends EXACTLY at the Selectable's box edge, WorkRect.Max.x + (ItemSpacing.x - IM_TRUNC(ItemSpacing.x *
+    // 0.5)) (imgui_widgets.cpp:7382-7397). Two sources: lastTintMaxX is read off the vertices the draw list received,
+    // lastTintedRowItemMaxX off the box ImGui itself recorded for that row's Selectable. Exact: every term is a whole
+    // point here (ImTrunc'd rect edges, an ImTrunc64'd content size, a whole-point spacing), so the Selectable's
+    // `min_x + (max_x - min_x)` is `max_x`. The visible-width edge it replaced read 664 against 3408 here (visible
+    // 475, content 3215).
+    CHECK(r.lastTintMaxX == r.lastTintedRowItemMaxX);
+    // SCROLLED: the same row with the child scrolled by half its reach. The WorkRect moves left with the scroll
+    // (imgui.cpp:8533: its left edge is InnerRect.Min.x - Scroll.x), so an edge taken from an UNSCROLLED origin -- the
+    // window's position plus the content width -- agrees with the box above at a scroll of 0 and only here departs.
+    // The scroll is ImRound64'd to a whole point (imgui.cpp:12539), so the edges stay exact.
+    REQUIRE(r.logScrollMaxX > 0.0F);
+    console->requestLogScrollX(r.logScrollMaxX * 0.5F);
+    REQUIRE(app->tick());
+    REQUIRE(r.rowsTinted >= 1U);   // the tinted row drew THIS frame, scrolled
+    REQUIRE(r.logScrollX > 0.0F);  // ANTI-VACUITY, read off the child: Begin applied the scroll
+    CAPTURE(r.logScrollX);
+    CHECK(r.lastTintMaxX == r.lastTintedRowItemMaxX);
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: Hierarchy rows -- a dot on every row, a direct-child meta on parents only (task E.6.3, I309)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "hierarchy rows i309", .width = 900, .height = 600});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = e62App(*device, *window, ctx);
+    auto* const hierarchy = dynamic_cast<engine::editor::HierarchyPanel*>(app->panels().find("Hierarchy"));
+    REQUIRE(hierarchy != nullptr);
+    // The default scene has four roots and NO child (F11), so a parent is seeded: Group > {Child A > Nested Probe,
+    // Child B}. No node is DefaultOpen, so Group starts collapsed.
+    engine::World& world = app->world();
+    const engine::Entity group = engine::editor::createEntity(world, {}, "Group");
+    const engine::Entity childA = engine::editor::createEntity(world, group, "Child A");
+    const engine::Entity childB = engine::editor::createEntity(world, group, "Child B");
+    const engine::Entity nested = engine::editor::createEntity(world, childA, "Nested Probe");
+    const std::uint64_t before = hierarchy->drawRecord().framesRecorded;
+    e62Ticks(*app, 2);
+    const engine::editor::HierarchyDrawRecord& r = hierarchy->drawRecord();
+    REQUIRE(r.framesRecorded > before);
+    REQUIRE(world.entityCount() == 8U);
+    // COLLAPSED: the four default roots and Group -- the children provably hidden.
+    CHECK(r.rowsDrawn == 5U);
+    CHECK(r.dotsDrawn == r.rowsDrawn);
+    CHECK(r.metasDrawn == 1U);
+    // ONE entry per meta drawn THIS frame: e63MetaOf finds the first match, so a list a missing per-frame clear let
+    // grow would keep every read above green (the code-review round's finding 13; HY8 pins the clear itself).
+    CHECK(r.rowMetas.size() == r.metasDrawn);
+    CHECK(e63MetaOf(r, group) == std::optional<std::string>("2"));
+    CHECK(r.badgeText == std::to_string(world.entityCount()));  // "8": the hidden rows are counted
+    CHECK(r.searchFieldMax.x > r.searchFieldMin.x);             // the search field drew
+    CHECK(r.headerRuleDrawn);
+    CHECK_FALSE(r.flatMode);
+    // EXPANDED through the reveal path (it opens the ancestor chain, F11).
+    hierarchy->revealEntity(nested);
+    e62Ticks(*app, 2);
+    CHECK(r.rowsDrawn == 8U);
+    CHECK(r.metasDrawn == 2U);
+    CHECK(r.rowMetas.size() == r.metasDrawn);
+    CHECK(e63MetaOf(r, group) == std::optional<std::string>("2"));  // DIRECT children, never Group's three (S59)
+    CHECK(e63MetaOf(r, childA) == std::optional<std::string>("1"));
+    for (const engine::Entity leaf : {childB, nested}) {
+        CHECK_FALSE(e63MetaOf(r, leaf).has_value());  // no meta on a leaf (S58)
+    }
+    std::size_t parents = 0;
+    for (const engine::editor::HierarchyRowRole& row : r.rowRoles) {
+        parents += world.childCount(row.entity) > 0U ? 1U : 0U;
+        if (world.childCount(row.entity) == 0U) {
+            CHECK_FALSE(e63MetaOf(r, row.entity).has_value());  // the four default roots too
+        }
+    }
+    REQUIRE(parents == 2U);  // ANTI-VACUITY: this scene has parents to count
+    CHECK(r.metasDrawn == parents);
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: Hierarchy search -- a flat list over every entity, the badge m / n (task E.6.3, I310)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "hierarchy search i310", .width = 900, .height = 600});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = e62App(*device, *window, ctx);
+    auto* const hierarchy = dynamic_cast<engine::editor::HierarchyPanel*>(app->panels().find("Hierarchy"));
+    REQUIRE(hierarchy != nullptr);
+    engine::World& world = app->world();
+    const engine::Entity group = engine::editor::createEntity(world, {}, "Group");
+    const engine::Entity childA = engine::editor::createEntity(world, group, "Child A");
+    (void)engine::editor::createEntity(world, group, "Child B");
+    const engine::Entity nested = engine::editor::createEntity(world, childA, "Nested Probe");
+    e62Ticks(*app, 2);
+    const engine::editor::HierarchyDrawRecord& r = hierarchy->drawRecord();
+    REQUIRE(r.rowsDrawn == 5U);
+    REQUIRE_FALSE(e63RoleOf(r, nested).has_value());  // ANTI-VACUITY: hidden under a collapsed parent
+    hierarchy->requestSearchQuery("nested");
+    e62Ticks(*app, 2);  // the badge counts the previous frame's matches: two ticks (D6)
+    CHECK(r.flatMode);
+    CHECK(r.rowsDrawn == 1U);
+    CHECK(e63RoleOf(r, nested).has_value());  // the walk is TOTAL: a match under a collapsed parent is listed (S10)
+    CHECK(r.badgeText == "1 / 8");
+    hierarchy->requestSearchQuery("cu");
+    e62Ticks(*app, 2);
+    CHECK(r.rowsDrawn == 1U);  // only "Cube" among the eight labels
+    CHECK(r.badgeText == "1 / 8");
+    hierarchy->requestSearchQuery("zzz");
+    e62Ticks(*app, 2);
+    CHECK(r.rowsDrawn == 0U);
+    CHECK(r.badgeText == "0 / 8");
+    hierarchy->requestSearchQuery("");
+    e62Ticks(*app, 2);
+    CHECK_FALSE(r.flatMode);
+    CHECK(r.rowsDrawn == 5U);  // the user's expansion state untouched: Group still collapsed
+    CHECK(r.badgeText == "8");
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: a create while searching clears the query and selects the new row (task E.6.3, I311)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "hierarchy create i311", .width = 900, .height = 600});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = e62App(*device, *window, ctx);
+    auto* const hierarchy = dynamic_cast<engine::editor::HierarchyPanel*>(app->panels().find("Hierarchy"));
+    REQUIRE(hierarchy != nullptr);
+    const engine::World& world = app->world();
+    const engine::Entity originalCube = e62EntityNamed(world, "Cube");
+    const engine::Entity camera = e62EntityNamed(world, "Main Camera");
+    REQUIRE(originalCube.valid());
+    REQUIRE(camera.valid());
+    hierarchy->requestSearchQuery("cube");
+    e62Ticks(*app, 2);
+    const engine::editor::HierarchyDrawRecord& r = hierarchy->drawRecord();
+    REQUIRE(r.flatMode);
+    hierarchy->requestCreate(engine::editor::CreateKind::Cube);
+    e62Ticks(*app, 3);  // the drain creates, selects and reveals; the next draw shows the forest
+    const engine::Entity created = app->selection().primary();
+    REQUIRE(created.valid());
+    REQUIRE_FALSE((created == originalCube));
+    CHECK_FALSE(r.flatMode);  // the query is empty: a revealed row must be visible (S12)
+    // Roles BY HANDLE, each present first (the record lists every drawn row).
+    REQUIRE(e63RoleOf(r, created).has_value());
+    REQUIRE(e63RoleOf(r, originalCube).has_value());
+    REQUIRE(e63RoleOf(r, camera).has_value());
+    CHECK((*e63RoleOf(r, created) == engine::editor::ChromeRole::Accent));        // selected (S14)
+    CHECK((*e63RoleOf(r, originalCube) == engine::editor::ChromeRole::Info));     // an unselected mesh
+    CHECK((*e63RoleOf(r, camera) == engine::editor::ChromeRole::TextSecondary));  // control
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: the Hierarchy's search gate and tree child as source text (task E.6.3, I312)") {
+    const std::vector<std::string> code = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/hierarchy_panel.cpp");
+    REQUIRE(code.size() > 200U);
+    CHECK(countLinesContaining(code, "hierarchyShortcutsLive(") == 1U);
+    // THE ORDER (seed S9): the header row -- where the field's hold on the keys is read -- runs before the gate, both
+    // inside onDraw, and the tree after them. One frame late is the defect this arm exists for.
+    const std::size_t onDrawAt = soleLineContaining(code, "void HierarchyPanel::onDraw(");
+    const std::size_t headerAt = soleLineContaining(code, "drawHeaderRow();");
+    const std::size_t gateAt = soleLineContaining(code, "hierarchyShortcutsLive(");
+    const std::size_t treeAt = soleLineContaining(code, "drawTree(context);");
+    CHECK(onDrawAt < headerAt);
+    CHECK(headerAt < gateAt);
+    CHECK(gateAt < treeAt);
+    const std::size_t headerDefAt = soleLineContaining(code, "void HierarchyPanel::drawHeaderRow(");
+    const std::size_t ownsAt = soleLineContaining(code, "searchOwnsKeys = ImGui::IsItemActive()");
+    const std::size_t treeDefAt = soleLineContaining(code, "void HierarchyPanel::drawTree(");
+    CHECK(headerDefAt < ownsAt);
+    CHECK(ownsAt < treeDefAt);  // the read is drawHeaderRow's own
+    // THE TERM (the code-review round's finding 20): the field's KEYBOARD, not its activity -- but only the keyboard
+    // its own activation gave it. Enter and Escape end the activation and leave the focus on the field, so
+    // IsItemActive() alone opens the gate on the next Backspace; NavInit hands the field NavId with no click, so
+    // IsItemFocused() alone shuts it on a plain tab click. The field's activation sets a latch, the latch is released
+    // only while the keyboard is in this panel on another item or none -- the ##tree child included, where a row
+    // click puts it -- and one line reads the activity and the latched focus. I339 is the behaviour; a row click is
+    // not reachable from here, so the child term is pinned as text.
+    CHECK(code[ownsAt].find("|| (searchHeldKeys && ImGui::IsItemFocused())") != std::string::npos);
+    const std::size_t heldAt = soleLineContaining(code, "searchHeldKeys = true;");
+    const std::size_t releasedAt = soleLineContaining(code, "searchHeldKeys = false;");
+    CHECK(code[heldAt - 1U].find("if (ImGui::IsItemActive()) {") != std::string::npos);
+    const std::string& releaseLine = code[releasedAt - 1U];
+    CHECK(releaseLine.find("} else if (!ImGui::IsItemFocused() &&") != std::string::npos);
+    CHECK(releaseLine.find("ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows)") != std::string::npos);
+    CHECK(headerDefAt < heldAt);
+    CHECK(heldAt < releasedAt);
+    CHECK(releasedAt < ownsAt);
+    CHECK(code[gateAt].find("hierarchyShortcutsLive(renaming.valid(), searchOwnsKeys)") != std::string::npos);
+    // The line closing the block a `{`-ended line opens: the first later line that is exactly its indentation and `}`.
+    const auto blockCloseAt = [&code](std::size_t openAt) {
+        const std::string close = code[openAt].substr(0, code[openAt].find_first_not_of(' ')) + "}";
+        std::size_t at = openAt + 1U;
+        while (at < code.size() && code[at].substr(0, code[at].find_last_not_of(" \t\r") + 1U) != close) {
+            ++at;  // npos + 1 is 0, so a blank line reads "" and never matches
+        }
+        return at;
+    };
+    // ALWAYS a child, and its ANSWER is used (the code-review round's finding 6): the statement binding `treeVisible`
+    // opens its line at onDraw's BODY indentation -- its first statement's -- and EndChild opens its own at the same
+    // one, so no `if` guards the pair. The body anchor is what says so (the code-review round, round 2): an `if`
+    // wrapped round the pair re-indents BOTH lines, which keeps them equal to each other and would leave the child --
+    // and the whole tree -- undrawn whenever its condition is false. The walk and the void target sit inside `if
+    // (treeVisible) {`, which closes before EndChild, so a skipped child consumes no reveal (I340); and the match count
+    // runs in onDraw ahead of that `if`, so the badge stays current over a skipped child.
+    const std::size_t childAt = soleLineContaining(code, "BeginChild(\"##tree\"");
+    const std::size_t childIndent = code[childAt].find_first_not_of(' ');
+    CHECK(childIndent == code[childAt].find("const bool treeVisible = ImGui::BeginChild(\"##tree\""));
+    CHECK(childIndent == code[nextCodeLine(code, onDrawAt + 1U)].find_first_not_of(' '));  // onDraw's own body
+    const std::size_t endChildAt = soleLineContaining(code, "ImGui::EndChild();");
+    CHECK(childAt < endChildAt);
+    CHECK(code[endChildAt].find("ImGui::EndChild();") == childIndent);
+    CHECK(code[endChildAt].find_first_not_of(' ') == childIndent);
+    const std::size_t visibleAt = soleLineContaining(code, "if (treeVisible) {");
+    const std::size_t visibleCloseAt = blockCloseAt(visibleAt);
+    const std::size_t voidAt = soleLineContaining(code, "drawVoidTarget(context);");
+    CHECK(childAt < visibleAt);
+    CHECK(visibleAt < treeAt);
+    CHECK(treeAt < visibleCloseAt);
+    CHECK(visibleAt < voidAt);
+    CHECK(voidAt < visibleCloseAt);
+    CHECK(visibleCloseAt < endChildAt);
+    const std::size_t countAt = soleLineContaining(code, "lastMatchCount = matches.size();");
+    CHECK(onDrawAt < countAt);
+    CHECK(countAt < visibleAt);
+    // THE GATE THE KEYS OBEY: I339 reads the RECORDED verdict, so the `if` every Shortcut() runs behind reads that same
+    // local, with no code between the verdict, its record and the `if`, and every Shortcut() sits inside that `if`
+    // block, which closes before the tree child opens. A careless `if` (one that drops the field's term) is otherwise
+    // invisible: the record would still say "gated" while the keys fire.
+    const std::size_t recordAt = soleLineContaining(code, "drawRecordValue.shortcutsLive = shortcutsLive;");
+    const std::size_t ifAt = soleLineContaining(code, "if (shortcutsLive) {");
+    CHECK(nextCodeLine(code, gateAt + 1U) == recordAt);
+    CHECK(nextCodeLine(code, recordAt + 1U) == ifAt);
+    const std::size_t ifCloseAt = blockCloseAt(ifAt);
+    REQUIRE(ifCloseAt < childAt);
+    CHECK(countLinesContaining(code, "ImGui::Shortcut(") == 3U);  // Delete or Backspace, Ctrl+D, F2
+    for (std::size_t i = 0; i < code.size(); ++i) {
+        if (code[i].find("ImGui::Shortcut(") != std::string::npos) {
+            CAPTURE(code[i]);
+            CHECK(ifAt < i);
+            CHECK(i < ifCloseAt);
+        }
+    }
+    // The flat list's rows push no tree level.
+    CHECK(countLinesContaining(code, "ImGuiTreeNodeFlags_Leaf | ImGuiTreeNodeFlags_NoTreePushOnOpen") == 1U);
+    // The rows keep ImGui's OWN square selection fill (D6, a stated decision for the Hierarchy alone), and
+    // drawRowChrome draws no fill of its own: a ClearHeaderStyle around the node -- the Assets tree's and the tiles'
+    // D8 shape -- would leave a selected row only its accent label and dot, and a Header slot pushed by hand clears
+    // or recolours D6's fill. Both arms pin a spelling; no case here observes the fill as drawn.
+    CHECK(countLinesContaining(code, "ClearHeaderStyle") == 0U);
+    CHECK(countLinesContaining(code, "ImGuiCol_Header") == 0U);  // Header, HeaderHovered and HeaderActive alike
+    // No new create path (I253(d), (h)).
+    CHECK(countLinesContaining(code, "pendingCreate = ") == 4U);
+    CHECK(countLinesContaining(code, "make_unique<CreateEntityCommand>") == 1U);
+}
+
+TEST_CASE("editor: every E.6.3 request is drained under its control's predicate and no modal (task E.6.3, I337)") {
+    // I307(j)'s shape: each request's drain line names the predicate the control's own BeginDisabled reads AND
+    // noModal, computed ONCE per function from GetTopMostPopupModal() (a modal blocks every click, imgui.cpp:5620).
+    // A panel-held request is DROPPED when its gate refuses it, never deferred (the code-review round's finding 1):
+    // the seam's reset is the first statement after the drain's closing brace, so it runs whichever way the gate
+    // answered, and no reset sits inside the gate. I338 is the behaviour; this is where the line sits. The line IS the
+    // reset, trimmed, never a line containing it: `if (statsControlReachable) pendingStatsVisible.reset();` -- one
+    // line, no braces, legal here (no lane enables readability-braces-around-statements) -- would re-gate the reset.
+    const auto trimmed = [](const std::string& line) {
+        const std::size_t first = line.find_first_not_of(" \t\r");
+        return first == std::string::npos ? std::string{}
+                                          : line.substr(first, line.find_last_not_of(" \t\r") - first + 1U);
+    };
+    const auto resetFollowsGate = [&trimmed](const std::vector<std::string>& code, std::size_t drainAt,
+                                             std::string_view reset) {
+        const auto isClosingBrace = [](const std::string& line) {
+            const std::size_t first = line.find_first_not_of(" \t\r");
+            return first != std::string::npos && line.find_last_not_of(" \t\r") == first && line[first] == '}';
+        };
+        std::size_t closeAt = drainAt + 1U;
+        while (closeAt < code.size() && !isClosingBrace(code[closeAt])) {
+            ++closeAt;
+        }
+        REQUIRE(closeAt < code.size());
+        for (std::size_t i = drainAt; i < closeAt; ++i) {
+            CAPTURE(code[i]);
+            CHECK(code[i].find(reset) == std::string::npos);  // never inside the gate
+        }
+        const std::size_t after = nextCodeLine(code, closeAt + 1U);
+        REQUIRE(after < code.size());
+        CAPTURE(code[after]);
+        CHECK(trimmed(code[after]) == reset);  // the very next statement, and nothing else on its line
+    };
+    SUBCASE("the Hierarchy's search query") {
+        const std::vector<std::string> code = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/hierarchy_panel.cpp");
+        const std::size_t drainAt = soleLineContaining(code, "pendingSearchQuery.has_value() &&");
+        CHECK(code[drainAt].find("searchEnabled") != std::string::npos);
+        CHECK(code[drainAt].find("noModal") != std::string::npos);
+        CHECK(countLinesContaining(code, "GetTopMostPopupModal()") == 1U);
+        CHECK(countLinesContaining(code, "BeginDisabled(!searchEnabled)") == 1U);  // the control reads the same term
+        resetFollowsGate(code, drainAt, "pendingSearchQuery.reset();");
+    }
+    SUBCASE("the Hierarchy's search-field focus") {
+        // The seam that stands in for a click on the field (finding 20's I339): the field's own predicate again.
+        const std::vector<std::string> code = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/hierarchy_panel.cpp");
+        const std::size_t drainAt = soleLineContaining(code, "pendingSearchFocus &&");
+        CHECK(code[drainAt].find("searchEnabled") != std::string::npos);
+        CHECK(code[drainAt].find("noModal") != std::string::npos);
+        resetFollowsGate(code, drainAt, "pendingSearchFocus = false;");
+    }
+    SUBCASE("the Hierarchy's rename request") {
+        // The seam that stands in for the Rename entry (I344): F2's gate -- the shortcut verdict every Hierarchy key
+        // obeys, so no rename in progress and the search field not owning the keys -- and noModal.
+        const std::vector<std::string> code = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/hierarchy_panel.cpp");
+        const std::size_t drainAt = soleLineContaining(code, "pendingBeginRename.has_value() &&");
+        CHECK(code[drainAt].find("shortcutsLive") != std::string::npos);
+        CHECK(code[drainAt].find("noModal") != std::string::npos);
+        CHECK(countLinesContaining(code, "if (shortcutsLive) {") == 1U);  // F2 reads the same verdict (I312)
+        resetFollowsGate(code, drainAt, "pendingBeginRename.reset();");
+    }
+    SUBCASE("the Inspector's component menu") {
+        const std::vector<std::string> code = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/inspector_panel.cpp");
+        const std::size_t drainAt = soleLineContaining(code, "frameComponentMenu.has_value() &&");
+        CHECK(code[drainAt].find("matches(entry.name)") != std::string::npos);  // this card's own menu
+        CHECK(code[drainAt].find("noModal") != std::string::npos);
+        CHECK(countLinesContaining(code, "GetTopMostPopupModal()") == 1U);
+    }
+    SUBCASE("the Inspector's card header toggle") {
+        // Fix 7's seam (I336 drives it, I338 drops it while the panel does not draw): the header is always enabled, so
+        // the gate is this card's own name and noModal -- a modal blocks the click the seam stands in for. Its frame
+        // copy is overwritten at the top of every onDraw, the component menu's shape.
+        const std::vector<std::string> code = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/inspector_panel.cpp");
+        const std::size_t drainAt = soleLineContaining(code, "frameCardOpen.has_value() &&");
+        CHECK(code[drainAt].find("matches(entry.name)") != std::string::npos);  // this card's own header
+        CHECK(code[drainAt].find("noModal") != std::string::npos);
+        CHECK(countLinesContaining(code, "frameCardOpen = std::exchange(pendingCardOpen, std::nullopt);") == 1U);
+    }
+    SUBCASE("the Assets panel's navigation") {
+        const std::vector<std::string> code = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/asset_browser_panel.cpp");
+        const std::size_t drainAt = soleLineContaining(code, "navigateRequest.has_value() &&");
+        CHECK(code[drainAt].find("crumbsEnabled") != std::string::npos);
+        CHECK(code[drainAt].find("noModal") != std::string::npos);
+        CHECK(countLinesContaining(code, "GetTopMostPopupModal()") == 1U);
+        CHECK(countLinesContaining(code, "BeginDisabled(!crumbsEnabled)") == 1U);  // the crumbs read the same term
+        resetFollowsGate(code, drainAt, "navigateRequest.reset();");
+    }
+    SUBCASE("the Viewport's stats toggle") {
+        const std::vector<std::string> code = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/viewport_panel.cpp");
+        const std::size_t drainAt = soleLineContaining(code, "pendingStatsVisible.has_value() &&");
+        CHECK(code[drainAt].find("statsControlReachable") != std::string::npos);  // the chip: the popover's door
+        CHECK(code[drainAt].find("noModal") != std::string::npos);
+        CHECK(countLinesContaining(code, "GetTopMostPopupModal()") == 1U);
+        resetFollowsGate(code, drainAt, "pendingStatsVisible.reset();");
+    }
+    SUBCASE("the Console's log scroll") {
+        // The seam that stands in for a drag of the log child's horizontal scrollbar (I341 scrolls through it). The
+        // scrollbar has no disabled state, so noModal is the whole gate; the drain hands the scroll to the child's own
+        // Begin -- the next window begun -- bounded to the scrollbar's reach as last drawn.
+        const std::vector<std::string> code = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/console_panel.cpp");
+        const std::size_t drainAt = soleLineContaining(code, "pendingLogScrollX.has_value() &&");
+        CHECK(code[drainAt].find("noModal") != std::string::npos);
+        CHECK(countLinesContaining(code, "GetTopMostPopupModal()") == 1U);
+        const std::size_t scrollAt = soleLineContaining(code, "SetNextWindowScroll(");
+        CHECK(scrollAt == nextCodeLine(code, drainAt + 1U));  // inside the gate, its only statement
+        constexpr std::string_view BOUNDED = "logScrollTarget(*pendingLogScrollX, latchedLogScrollMaxX)";
+        CHECK(code[scrollAt].find(BOUNDED) != std::string::npos);
+        const std::size_t childAt = soleLineContaining(code, "BeginChild(\"##log\"");
+        CHECK(scrollAt < childAt);
+        for (std::size_t i = scrollAt + 1U; i < childAt; ++i) {
+            CAPTURE(code[i]);
+            CHECK(code[i].find("Begin") == std::string::npos);  // no other window takes the scroll first
+        }
+        resetFollowsGate(code, drainAt, "pendingLogScrollX.reset();");
+    }
+}
+
+// ---- task E.6.3, step 4: the Inspector's cards, header, labels, axis units, reference field and Add Component ----
+
+TEST_CASE("editor: the Inspector's entity header -- kind swatch, title face, e#<index> (task E.6.3, I315)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "inspector header i315", .width = 1280, .height = 800});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = e62App(*device, *window, ctx);
+    auto* const inspector = dynamic_cast<engine::editor::InspectorPanel*>(app->panels().find("Inspector"));
+    REQUIRE(inspector != nullptr);
+    // const: every case on this fixture only READS the World (e62EntityNamed, World::has), and
+    // misc-const-correctness flags a reference that is never mutated (the "programmatic camera navigation" and
+    // "driving the Selection" AC-19 cases bind it const too). I321, which writes through world.get<MeshRenderer>,
+    // writes out its own non-const fixture.
+    const engine::World& world = app->world();
+    const engine::Entity cube = e62EntityNamed(world, "Cube");
+    REQUIRE(cube.valid());
+    app->selection().set(cube);
+    e63Front(*app, "Inspector", "Material");
+    const std::uint64_t before = inspector->drawRecord().framesRecorded;
+    e62Ticks(*app, 2);
+    const engine::editor::InspectorDrawRecord& r = inspector->drawRecord();
+    REQUIRE(r.framesRecorded > before);
+    CHECK((r.swatchRole == engine::editor::ChromeRole::Info));  // the Cube is a mesh: its kind's role, not accent
+    CHECK(r.entityNameFontName == "IBM Plex Sans SemiBold");
+    CHECK(r.entityNameFontSize == std::floor((20.0F * app->uiScale()) + 0.5F));  // titleSize, as ImGui rounds it
+    CHECK(r.idText == "e#" + std::to_string(cube.index));                        // decimal, never 0x...
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: the Inspector draws each component as a card with its icon and overflow (task E.6.3, I316)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "inspector cards i316", .width = 1280, .height = 800});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = e62App(*device, *window, ctx);
+    auto* const inspector = dynamic_cast<engine::editor::InspectorPanel*>(app->panels().find("Inspector"));
+    REQUIRE(inspector != nullptr);
+    // const: every case on this fixture only READS the World (e62EntityNamed, World::has), and
+    // misc-const-correctness flags a reference that is never mutated (the "programmatic camera navigation" and
+    // "driving the Selection" AC-19 cases bind it const too). I321, which writes through world.get<MeshRenderer>,
+    // writes out its own non-const fixture.
+    const engine::World& world = app->world();
+    const engine::Entity cube = e62EntityNamed(world, "Cube");
+    REQUIRE(cube.valid());
+    app->selection().set(cube);
+    e63Front(*app, "Inspector", "Material");
+    const std::uint64_t before = inspector->drawRecord().framesRecorded;
+    e62Ticks(*app, 2);
+    const engine::editor::InspectorDrawRecord& r = inspector->drawRecord();
+    REQUIRE(r.framesRecorded > before);
+    // The Cube carries Transform and MeshRenderer -- in every configuration: cards draw from the World's component
+    // list, so reflect-tools-OFF draws the same two cards (their bodies say "fields unavailable").
+    CHECK(r.cards.cardsDrawn == 2U);
+    CHECK(r.cardsOpen == 2U);  // DefaultOpen, as CollapsingHeader(..., DefaultOpen) was
+    REQUIRE(r.cards.cards.size() == 2U);
+    // The overflow as the PAINTER drew it (set only inside its `if (spec.overflow)`), never a count the host bumps.
+    const auto drewOverflow = [](const engine::editor::CardEntryRecord& c) { return c.overflowDrawn; };
+    CHECK(std::count_if(r.cards.cards.begin(), r.cards.cards.end(), drewOverflow) == std::ptrdiff_t{2});
+    CHECK(r.lastTitleDrawn == "Mesh Renderer");
+    CHECK(r.lastIconDrawn == std::string(AERO_ICON_BOX));
+    CHECK(r.cards.titleFontName == "IBM Plex Sans SemiBold");  // I284's claim, through the painter
+    CHECK(inspector->lastHeaderFontName() == "IBM Plex Sans SemiBold");
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: the overflow's Remove Component is one undoable entry (task E.6.3, I317)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "inspector remove i317", .width = 1280, .height = 800});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = e62App(*device, *window, ctx);
+    auto* const inspector = dynamic_cast<engine::editor::InspectorPanel*>(app->panels().find("Inspector"));
+    REQUIRE(inspector != nullptr);
+    // const: every case on this fixture only READS the World (e62EntityNamed, World::has), and
+    // misc-const-correctness flags a reference that is never mutated (the "programmatic camera navigation" and
+    // "driving the Selection" AC-19 cases bind it const too). I321, which writes through world.get<MeshRenderer>,
+    // writes out its own non-const fixture.
+    const engine::World& world = app->world();
+    const engine::Entity cube = e62EntityNamed(world, "Cube");
+    REQUIRE(cube.valid());
+    app->selection().set(cube);
+    e63Front(*app, "Inspector", "Material");
+    const std::uint64_t before = inspector->drawRecord().framesRecorded;
+    e62Ticks(*app, 2);
+    const engine::editor::InspectorDrawRecord& r = inspector->drawRecord();
+    REQUIRE(r.framesRecorded > before);
+    REQUIRE(world.has<engine::MeshRenderer>(cube));
+    const std::size_t entries = app->commands().count();
+    inspector->requestComponentMenuAction("engine::MeshRenderer",
+                                          engine::editor::InspectorPanel::ComponentMenuAction::Remove);
+    REQUIRE(app->tick());
+    CHECK_FALSE(world.has<engine::MeshRenderer>(cube));
+    CHECK(app->commands().count() == entries + 1U);  // exactly one history entry
+    REQUIRE(app->tick());
+    CHECK(r.cards.cardsDrawn == 1U);  // the next frame draws one card
+    app->requestUndo();
+    e62Ticks(*app, 2);
+    CHECK(world.has<engine::MeshRenderer>(cube));  // one undo restores the component...
+    CHECK(r.cards.cardsDrawn == 2U);               // ...and its card
+    // A request naming a component the entity lacks changes nothing.
+    const std::size_t settled = app->commands().count();
+    inspector->requestComponentMenuAction("engine::Camera",
+                                          engine::editor::InspectorPanel::ComponentMenuAction::Remove);
+    e62Ticks(*app, 2);
+    CHECK(app->commands().count() == settled);
+    CHECK(world.has<engine::MeshRenderer>(cube));
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: a card body hosts a table, and every card shares one right edge (task E.6.3, I318)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "inspector card body i318", .width = 1280, .height = 800});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = e62App(*device, *window, ctx);
+    auto* const inspector = dynamic_cast<engine::editor::InspectorPanel*>(app->panels().find("Inspector"));
+    REQUIRE(inspector != nullptr);
+    // const: every case on this fixture only READS the World (e62EntityNamed, World::has), and
+    // misc-const-correctness flags a reference that is never mutated (the "programmatic camera navigation" and
+    // "driving the Selection" AC-19 cases bind it const too). I321, which writes through world.get<MeshRenderer>,
+    // writes out its own non-const fixture.
+    const engine::World& world = app->world();
+    const engine::Entity cube = e62EntityNamed(world, "Cube");
+    REQUIRE(cube.valid());
+    app->selection().set(cube);
+    e63Front(*app, "Inspector", "Material");
+    const std::uint64_t before = inspector->drawRecord().framesRecorded;
+    e62Ticks(*app, 2);
+    const engine::editor::InspectorDrawRecord& r = inspector->drawRecord();
+    REQUIRE(r.framesRecorded > before);
+    REQUIRE(r.cards.cards.size() == 2U);
+    // (b) S5's / S54's witness: a leaked narrowing moves every LATER card, so only a cross-card comparison sees it.
+    const engine::editor::CardEntryRecord& first = r.cards.cards.front();
+    for (const engine::editor::CardEntryRecord& card : r.cards.cards) {
+        CHECK(std::abs(card.outerMax.x - first.outerMax.x) <= 0.5F);
+        CHECK(std::abs(card.outerMin.x - first.outerMin.x) <= 0.5F);
+        if (card.open) {
+            CHECK(std::abs(card.bodyMax.x - first.bodyMax.x) <= 0.5F);
+            CHECK(card.bodyMax.x < card.outerMax.x);  // ANTI-VACUITY: the body IS narrowed
+        }
+    }
+    if (engine::editor::sceneIoAvailable()) {
+        // (a) the ##fields table submitted inside a card on this lane with no IM_ASSERT (its presence is the claim);
+        // (c) its outer rect ends on the narrowed body edge (BeginTable sizes from GetContentRegionAvail).
+        REQUIRE(r.cards.lastBodyTableMaxX > 0.0F);
+        CHECK(std::abs(r.cards.lastBodyTableMaxX - r.cards.cards.back().bodyMax.x) <= 1.0F);
+    } else {
+        // REFLECT TOOLS OFF (runtime predicate): every body drew its fields-unavailable line and no table.
+        MESSAGE("I318: reflect tools OFF -- no table drew");
+        CHECK(r.cards.lastBodyTableMaxX == 0.0F);
+        CHECK(r.cards.bodiesSubmitted == 2U);
+    }
+    // SOURCE: no child and no group per card (E.3.4's per-window rule), and the three edges written and restored.
+    const std::vector<std::string> chrome = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/panel_chrome_ui.cpp");
+    CHECK(countLinesContaining(chrome, "BeginChild") == 0U);  // seed S6
+    CHECK(countLinesContaining(chrome, "BeginGroup") == 0U);
+    CHECK(countLinesContaining(chrome, "window->WorkRect.Min.x = ") == 2U);  // narrow + restore
+    // save, narrow, restore, bodyMax -- and, since V4, the body's clip push reads the narrowed edge (I348)
+    CHECK(countLinesContaining(chrome, "window->ContentRegionRect.Max.x") == 5U);
+    CHECK(countLinesContaining(chrome, "window->WorkRect.Max.x") == 3U);  // save, narrow, restore
+    CHECK(countLinesContaining(chrome, "window->ContentRegionRect.Max.x = savedContentMaxX;") == 1U);
+    CHECK(countLinesContaining(chrome, "window->WorkRect.Max.x = savedWorkMaxX;") == 1U);
+    CHECK(countLinesContaining(chrome, "window->WorkRect.Min.x = savedWorkMinX;") == 1U);
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: Inspector labels are humanised and the column measures them (task E.6.3, I319)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "inspector labels i319", .width = 1280, .height = 800});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = e62App(*device, *window, ctx);
+    auto* const inspector = dynamic_cast<engine::editor::InspectorPanel*>(app->panels().find("Inspector"));
+    REQUIRE(inspector != nullptr);
+    // const: every case on this fixture only READS the World (e62EntityNamed, World::has), and
+    // misc-const-correctness flags a reference that is never mutated (the "programmatic camera navigation" and
+    // "driving the Selection" AC-19 cases bind it const too). I321, which writes through world.get<MeshRenderer>,
+    // writes out its own non-const fixture.
+    const engine::World& world = app->world();
+    const engine::Entity cube = e62EntityNamed(world, "Cube");
+    REQUIRE(cube.valid());
+    app->selection().set(cube);
+    e63Front(*app, "Inspector", "Material");
+    const std::uint64_t before = inspector->drawRecord().framesRecorded;
+    e62Ticks(*app, 2);
+    const engine::editor::InspectorDrawRecord& r = inspector->drawRecord();
+    REQUIRE(r.framesRecorded > before);
+    if (!engine::editor::sceneIoAvailable()) {
+        MESSAGE("I319: reflect tools OFF -- no field row, so no label drew");
+        CHECK(r.lastLabelDrawn.empty());
+    } else {
+        const std::array<std::string_view, 8> labels{"Position", "Rotation", "Scale",      "Primitive",
+                                                     "Color",    "Mesh",     "Mesh Index", "Material"};
+        CHECK(std::find(labels.begin(), labels.end(), std::string_view(r.lastLabelDrawn)) != labels.end());
+        // The column measures what is drawn: "Mesh Index" (the Cube's widest humanised label), CalcTextSize's
+        // whole-point round-up of its advances, plus both cell paddings, clamped by inspectorLabelColumnWidth.
+        const float s = app->uiScale();
+        const std::u32string_view text = U"Mesh Index";
+        const std::vector<char32_t> codepoints(text.begin(), text.end());
+        const EditorFontMeasurement body = measureEditorFonts(WITH_ICONS, EditorFontFace::Body, codepoints, s);
+        REQUIRE(body.ok);
+        float advance = 0.0F;
+        for (const MeasuredGlyph& glyph : body.glyphs) {
+            advance += glyph.advanceX;
+        }
+        const float measured = std::trunc(advance + 0.99999F);
+        const float expected = engine::editor::inspectorLabelColumnWidth(
+            measured, e63StyleX(s, "CellPadding"), std::floor((16.0F * s) + 0.5F), inspector->lastContentWidth());
+        CHECK(std::abs(r.labelColumnWidth - expected) <= 0.5F);
+    }
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: an Inspector field's label shows its reflected name on hover (task E.6.3, I343)") {
+    // SOURCE PIN, the code-review round's findings 2 and 21. D5 draws a title-cased label (castsShadows -> Casts
+    // Shadows) and keeps the raw reflected name -- the scene JSON's spelling, and the one ADR-004's script bindings
+    // will use -- in the label's tooltip; the reset menu never spelled it. Nothing in tests/ can hover (the backend
+    // rewrites io.MousePos every NewFrame), so the PLACEMENT is the pin: the guard asks IsItemHovered of the label, so
+    // nothing but comments may sit between the label and the guard; and the tooltip sits above the reset menu, which
+    // BeginPopupContextItem anchors on the last item -- still the label, because the tooltip window's End restores
+    // LastItemData (imgui.cpp:8848). The hover itself is validation row 6.
+    const std::vector<std::string> code = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/inspector_panel.cpp");
+    REQUIRE(code.size() > 100U);
+    const std::size_t bodyStart = soleLineContaining(code, "void InspectorPanel::drawField(");
+    const std::size_t bodyEnd = functionBodyEnd(code, bodyStart);
+    const std::size_t labelAt = soleLineContaining(code, "roleText(ChromeRole::TextLabel, field.label)");
+    const std::size_t menuAt = soleLineContaining(code, "\"##fieldmenu\"");
+    REQUIRE(bodyStart < labelAt);
+    REQUIRE(labelAt < menuAt);
+    REQUIRE(menuAt < bodyEnd);
+    // Exactly ONE such line in the file: the name is the ARGUMENT, never the format string (I242(e)).
+    constexpr std::string_view TOOLTIP = "ImGui::SetTooltip(\"%s\", field.name.c_str())";
+    REQUIRE(countInRange(code, TOOLTIP, 0U, code.size()) == 1U);
+    const std::size_t tooltipAt = firstLineContaining(code, TOOLTIP, 0U);
+    CHECK(labelAt < tooltipAt);
+    CHECK(tooltipAt < menuAt);
+    // The guard is the line directly above, pinned WHOLE: only when the label differs from the name, and only on the
+    // label's hover. Two substrings would also pass `||` (a tooltip on every row, every frame, left on screen with the
+    // last field's name) and `!ImGui::IsItemHovered()`, which contains the hover read.
+    REQUIRE(tooltipAt > labelAt + 1U);
+    REQUIRE(code[tooltipAt - 1U].find_first_not_of(" \t\r") != std::string::npos);
+    CHECK(e62PreviousCodeLine(code, tooltipAt) == "if (field.label != field.name && ImGui::IsItemHovered()) {");
+    // Nothing but comments between the label and the guard, so the hover read is the LABEL's. Not only no `ImGui::`
+    // call: roleText, mutedText, countBadge and ghostButton submit items without spelling it, and one of them here
+    // would move IsItemHovered, and the reset menu's anchor, onto its own item.
+    for (std::size_t i = labelAt + 1U; i + 1U < tooltipAt; ++i) {
+        CAPTURE(code[i]);
+        CHECK(code[i].find_first_not_of(" \t\r") == std::string::npos);
+    }
+}
+
+TEST_CASE("editor: the axis unit -- letter inside the frame, frameless drag, outline states (task E.6.3, I320)") {
+    const std::vector<std::string> code = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/inspector_panel.cpp");
+    REQUIRE(code.size() > 200U);
+    CHECK(countLinesContaining(code, "IM_COL32(") == 1U);     // still I143's one line (seed S43)
+    CHECK(countLinesContaining(code, "BeginGroup(") == 1U);   // I144
+    CHECK(countLinesContaining(code, "drawAxisRow(") == 3U);  // I144
+    CHECK(countLinesContaining(code, "inspectorAxisLayout(") == 1U);
+    const std::size_t setAt = soleLineContaining(code, "SetNextItemWidth(axis.valueWidth)");
+    const std::size_t clearAt = soleLineContaining(code, "const ClearFrameStyle clear(ChromeRole::Inset);");
+    const std::size_t dragAt = soleLineContaining(code, "DragScalar(\"##a\"");
+    CHECK(setAt < clearAt);
+    CHECK(clearAt < dragAt);
+    CHECK(dragAt - setAt <= 3U);  // nothing but the scope's brace between the width and the drag
+    // After the drag: the WHOLE unit's outline from IsItemActive / IsItemHovered -- never a fill on the value region.
+    std::size_t activeAt = code.size();
+    std::size_t hoveredAt = code.size();
+    for (std::size_t i = dragAt; i < std::min(code.size(), dragAt + 12U); ++i) {
+        activeAt = code[i].find("IsItemActive()") != std::string::npos ? std::min(activeAt, i) : activeAt;
+        hoveredAt = code[i].find("IsItemHovered()") != std::string::npos ? std::min(hoveredAt, i) : hoveredAt;
+    }
+    CHECK(activeAt < code.size());
+    CHECK(hoveredAt < code.size());
+    const std::size_t rowAt = soleLineContaining(code, "bool InspectorPanel::drawAxisRow(");
+    std::size_t rowEnd = rowAt;
+    while (rowEnd < code.size() && code[rowEnd] != "}") {
+        ++rowEnd;
+    }
+    const std::vector<std::string> row(code.begin() + static_cast<std::ptrdiff_t>(rowAt),
+                                       code.begin() + static_cast<std::ptrdiff_t>(rowEnd));
+    CHECK(countLinesContaining(row, "roleFill(") == 1U);     // the unit's inset fill, before the drag
+    CHECK(countLinesContaining(row, "roleOutline(") == 3U);  // the border, then held / hovered
+    // In panel_chrome_ui.cpp, ClearFrameStyle clears all THREE frame slots (seed S62) and the border, 1:1.
+    const std::vector<std::string> chrome = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/panel_chrome_ui.cpp");
+    const std::size_t ctorAt = soleLineContaining(chrome, "ClearFrameStyle::ClearFrameStyle(");
+    CHECK(chrome[ctorAt + 1U].find("PushStyleColor(ImGuiCol_FrameBg, clearOver(surface))") != std::string::npos);
+    CHECK(chrome[ctorAt + 2U].find("PushStyleColor(ImGuiCol_FrameBgHovered, clearOver(surface))") != std::string::npos);
+    CHECK(chrome[ctorAt + 3U].find("PushStyleColor(ImGuiCol_FrameBgActive, clearOver(surface))") != std::string::npos);
+    CHECK(chrome[ctorAt + 4U].find("ImGuiStyleVar_FrameBorderSize") != std::string::npos);
+    const std::size_t dtorAt = soleLineContaining(chrome, "ClearFrameStyle::~ClearFrameStyle()");
+    CHECK(chrome[dtorAt + 1U].find("PopStyleVar()") != std::string::npos);
+    CHECK(chrome[dtorAt + 2U].find("PopStyleColor(3)") != std::string::npos);
+}
+
+TEST_CASE("editor: the reference field -- an inset frame, a swatch or a well, and Clear (task E.6.3, I321)") {
+    // SOURCE half, every configuration.
+    const std::vector<std::string> picker = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/asset_picker.cpp");
+    CHECK(countLinesContaining(picker, "PushStyleColor(ImGuiCol_Button, roleVec4(ChromeRole::Inset))") == 1U);
+    CHECK(countLinesContaining(picker, "AddText(") == 2U);  // I244's two
+    const std::vector<std::string> panel = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/inspector_panel.cpp");
+    CHECK(countLinesContaining(panel, "assetReferenceFieldWidth(\"Clear\")") == 1U);  // I172(e)
+    CHECK(countLinesContaining(panel, "ghostButton(\"Clear\")") == 1U);               // Clear stays, ghost-styled
+    // GPU half: a project holding one material, bound to the Cube.
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "inspector reference i321", .width = 1280, .height = 800});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/swatch.aeromat",
+                                                materialText("Swatch", engine::Vec3{0.8F, 0.1F, 0.1F}))
+                .empty());
+    std::optional<engine::editor::EditorApp> app = makeThumbnailApp(*device, *window, ctx, created.root);
+    REQUIRE(app.has_value());
+    e62Ticks(*app, 3);
+    auto* const inspector = dynamic_cast<engine::editor::InspectorPanel*>(app->panels().find("Inspector"));
+    REQUIRE(inspector != nullptr);
+    engine::World& world = app->world();
+    const engine::Entity cube = e62EntityNamed(world, "Cube");
+    REQUIRE(cube.valid());
+    app->selection().set(cube);
+    e63Front(*app, "Inspector", "Material");
+    e62Ticks(*app, 2);
+    const engine::editor::InspectorDrawRecord& r = inspector->drawRecord();
+    if (!engine::editor::sceneIoAvailable()) {
+        MESSAGE("I321: reflect tools OFF -- no field row, so no reference row drew");
+        CHECK_FALSE(r.referenceSwatchDrawn);
+        CHECK_FALSE(r.referenceWellDrawn);
+    } else {
+        // THE WIDTH THE WELL AND THE SWATCH NEED. Since the reference field drops its hint, then its well or swatch,
+        // before they overlap (referenceFieldParts, PC14, I347), a row draws either only where its frame holds both
+        // paddings, the swatch's edge, its spacing and one ellipsis for the name -- 48 points at 1x, a window about
+        // 960 wide. 1280 asks for that with room to spare (the field is 125 points there at 1x, and 34 at 900 --
+        // measured), but a display that delivers a narrower window would fail the checks below as a false well and a
+        // tickUntil timeout; this REQUIRE fails first and names the width.
+        REQUIRE_FALSE(r.referenceFields.empty());
+        const float s = app->uiScale();
+        const float padX = e63StyleX(s, "FramePadding");
+        const float gapX = e63StyleX(s, "ItemInnerSpacing");
+        CAPTURE(s);
+        CAPTURE(inspector->lastContentWidth());
+        for (const engine::editor::ReferenceFieldRecord& f : r.referenceFields) {
+            const float frame = f.frameMaxX - f.frameMinX;
+            const float swatchNeeds = (2.0F * padX) + f.ellipsisWidth + f.swatchEdge + gapX;
+            CAPTURE(frame);
+            CAPTURE(swatchNeeds);
+            REQUIRE(frame >= swatchNeeds);
+        }
+        CHECK(r.referenceWellDrawn);  // the Cube's material is NIL: the empty well
+        CHECK_FALSE(r.referenceSwatchDrawn);
+        const std::optional<engine::Guid> swatch = app->assetGuidForPath("swatch.aeromat");
+        REQUIRE(swatch.has_value());
+        auto* const renderer = world.get<engine::MeshRenderer>(cube);
+        REQUIRE(renderer != nullptr);
+        renderer->material = *swatch;
+        // The card is read on the thumbnail service's own queue: tick until the row can tint.
+        REQUIRE(tickUntil(*app, [&] { return inspector->drawRecord().referenceSwatchDrawn; }));
+        CHECK(r.referenceSwatchDrawn);
+    }
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: a reference field drops its hint, then its well, before they overlap (task E.6.3, I347)") {
+    // V3, the macOS manual pass's row 17: at 900 x 600 each of the Inspector's two MeshRenderer reference rows is a
+    // narrow field (34 points here, content 200 -- the pass read ~33 off the screen), and 88a2b8f drew its faint
+    // "pick" hint ON the empty well (the hint was placed whatever the width) and the name's ellipsis past the well,
+    // cut by the frame to its first dot; at 1024 wide (63 points) its ellipsis ran under the hint. referenceFieldParts
+    // now drops the hint, then the well, so the name keeps one whole ellipsis inside the frame while either stays,
+    // and the widget draws no name its budget cannot hold (PC14 is the arithmetic). This case reads what the widget
+    // DREW off its own record -- each member set where its draw call is made, never the decision -- against the rule
+    // restated over the widths the widget RECORDED, at whatever width the display delivered. One window per band at
+    // 1x, measured on this tree: 640 x 400 (24, the width's floor: the frame alone), 900 x 600 (34: the name alone,
+    // 8..18), 1024 x 640 (63: the well and the name) and 1280 x 640 (125: all three). All are under the ~657 points
+    // of height CI's macOS runner delivered for a 1000-point request (I231's record); its width is unmeasured, so a
+    // band the two wider windows miss is a WARN, never a failure.
+    // What a field holds at 1x, narrowest first.
+    enum class Band : std::uint8_t { Frame, Name, WellAndName, All };
+    const auto run = [](int width, int height, Band band, bool exact) {
+        engine::platform::Context ctx;
+        if (!ctx.valid()) {
+            AERO_SKIP_OR_FAIL("no platform context");
+        }
+        std::optional<engine::platform::Window> window =
+            ctx.createWindow({.title = "reference field parts i347", .width = width, .height = height});
+        REQUIRE(window.has_value());
+        std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+        if (!device) {
+            AERO_SKIP_OR_FAIL("no GPU device");
+        }
+        std::optional<engine::editor::EditorApp> app = e62App(*device, *window, ctx);
+        auto* const inspector = dynamic_cast<engine::editor::InspectorPanel*>(app->panels().find("Inspector"));
+        REQUIRE(inspector != nullptr);
+        const engine::Entity cube = e62EntityNamed(app->world(), "Cube");
+        REQUIRE(cube.valid());
+        app->selection().set(cube);
+        e63Front(*app, "Inspector", "Material");
+        const std::uint64_t before = inspector->drawRecord().framesRecorded;
+        e62Ticks(*app, 2);
+        const engine::editor::InspectorDrawRecord& r = inspector->drawRecord();
+        REQUIRE(r.framesRecorded > before);
+        if (!engine::editor::sceneIoAvailable()) {
+            MESSAGE("I347: reflect tools OFF -- no field row, so no reference row drew");
+            CHECK(r.referenceFields.empty());
+        } else {
+            // The default Cube's MeshRenderer: `mesh` and `material`, both NIL, so each row's lead is the empty well
+            // and its name "None" -- wider than one ellipsis, so the name draws exactly where one ellipsis fits.
+            REQUIRE(r.referenceFields.size() == 2U);
+            const float s = app->uiScale();
+            const float padX = e63StyleX(s, "FramePadding");
+            const float gapX = e63StyleX(s, "ItemInnerSpacing");
+            CAPTURE(s);
+            CAPTURE(inspector->lastContentWidth());
+            for (const engine::editor::ReferenceFieldRecord& f : r.referenceFields) {
+                const float frame = f.frameMaxX - f.frameMinX;
+                CAPTURE(frame);
+                CAPTURE(f.swatchEdge);
+                CAPTURE(f.hintWidth);
+                CAPTURE(f.ellipsisWidth);
+                CHECK_FALSE(f.swatchDrawn);    // nothing is bound, so no material colour
+                REQUIRE(f.swatchEdge > 0.0F);  // the Inspector's row leads with a swatch, never a thumbnail
+                CHECK(f.hintWidth > 0.0F);     // the Inspector wants the hint: a missing one is the layout's drop
+                CHECK(f.ellipsisWidth > 0.0F);
+                // WHAT THE FRAME HOLDS, the rule restated over the recorded widths (never called): the name, where one
+                // ellipsis fits between the paddings; the well, where it still fits beside the well and its spacing;
+                // the hint, where it still fits before the hint's spacing too.
+                const float nameNeeds = (2.0F * padX) + f.ellipsisWidth;
+                const float wellNeeds = nameNeeds + f.swatchEdge + gapX;
+                const float hintNeeds = wellNeeds + gapX + f.hintWidth;
+                CAPTURE(wellNeeds);
+                CAPTURE(hintNeeds);
+                CHECK(f.textDrawn == (frame >= nameNeeds));
+                CHECK(f.wellDrawn == (frame >= wellNeeds));
+                CHECK(f.hintDrawn == (frame >= hintNeeds));
+                // NO DRAWN PART LEAVES THE FRAME'S PADDING, AND NO TWO SHARE AN X SPAN: the name sits inside the
+                // frame's inner edges, one ItemInnerSpacing.x after the well and one before the hint.
+                if (f.textDrawn) {
+                    CHECK(f.textMinX >= f.frameMinX + padX - 0.01F);
+                    CHECK(f.textMaxX <= f.frameMaxX - padX + 0.01F);
+                }
+                if (f.wellDrawn) {
+                    CHECK(f.swatchMinX >= f.frameMinX + padX - 0.01F);
+                }
+                if (f.wellDrawn && f.textDrawn) {
+                    CHECK(f.textMinX - f.swatchMaxX >= gapX - 0.01F);
+                }
+                if (f.hintDrawn && f.textDrawn) {
+                    CHECK(f.hintMinX - f.textMaxX >= gapX - 0.01F);
+                }
+                if (f.hintDrawn) {
+                    CHECK((f.hintMinX >= f.swatchMaxX || !f.wellDrawn));
+                    // The layout placed the hint with hintWidth; its right edge is measured at the draw, in the face
+                    // drawRoleText was handed. A hint measured narrower than it draws runs into the right padding.
+                    CHECK(f.hintMaxX <= f.frameMaxX - padX + 0.01F);
+                    // The drawn hint's width equals the width the layout reserved, so a hint measured in any face other
+                    // than the one it draws in, wider or narrower, is red here: the padding arm above sees only a wider
+                    // draw.
+                    CHECK(std::abs((f.hintMaxX - f.hintMinX) - f.hintWidth) <= 0.01F);
+                }
+                if (s != 1.0F) {
+                    WARN(s == 1.0F);  // another scale lays the dock out at other widths: the bands below are 1x's
+                    continue;
+                }
+                const Band landed = frame < nameNeeds   ? Band::Frame
+                                    : frame < wellNeeds ? Band::Name
+                                    : frame < hintNeeds ? Band::WellAndName
+                                                        : Band::All;
+                if (exact) {
+                    REQUIRE((landed == band));
+                } else if (landed != band) {
+                    WARN((landed == band));  // a display that narrowed the window: the arms above still held
+                    continue;
+                }
+                // ANTI-VACUITY, per band: what the earlier rules drew over something at this very width.
+                switch (band) {
+                    case Band::Frame:
+                        // elideCaptionRight still answers the ellipsis, which would run into the right padding.
+                        CHECK(frame - (2.0F * padX) < f.ellipsisWidth);
+                        break;
+                    case Band::Name:
+                        // V3's width: a well kept wherever 2 x padding + its edge fits stays here and leaves the name
+                        // under one ellipsis -- one dot at the frame's edge -- and 88a2b8f's hint sat ON the well.
+                        CHECK(frame >= (2.0F * padX) + f.swatchEdge);
+                        CHECK(frame - (2.0F * padX) - f.swatchEdge - gapX < f.ellipsisWidth);
+                        CHECK(frame - padX - f.hintWidth < padX + f.swatchEdge);
+                        break;
+                    case Band::WellAndName:
+                        // 88a2b8f's unconditional hint started before the name's one ellipsis ended.
+                        CHECK(frame - padX - f.hintWidth < padX + f.swatchEdge + gapX + f.ellipsisWidth);
+                        break;
+                    case Band::All:
+                        break;
+                }
+            }
+        }
+        app->requestQuit();
+        CHECK(app->tick() == false);
+        app.reset();
+    };
+    SUBCASE("640 x 400: the field at its floor draws its frame alone, no lone ellipsis") {
+        run(640, 400, Band::Frame, true);
+    }
+    SUBCASE("900 x 600: the hint and the well dropped, one whole ellipsis inside the frame") {
+        run(E62_WINDOW_WIDTH, E62_WINDOW_HEIGHT, Band::Name, true);
+    }
+    SUBCASE("1024 x 640: no hint, the well beside the name") { run(1024, 640, Band::WellAndName, false); }
+    SUBCASE("1280 x 640: the hint kept beside the well and the name") { run(1280, 640, Band::All, false); }
+}
+
+TEST_CASE("editor: Add Component is centred, one card header tall, and dashed (task E.6.3, I322)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "inspector add component i322", .width = 1280, .height = 800});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = e62App(*device, *window, ctx);
+    auto* const inspector = dynamic_cast<engine::editor::InspectorPanel*>(app->panels().find("Inspector"));
+    REQUIRE(inspector != nullptr);
+    // const: every case on this fixture only READS the World (e62EntityNamed, World::has), and
+    // misc-const-correctness flags a reference that is never mutated (the "programmatic camera navigation" and
+    // "driving the Selection" AC-19 cases bind it const too). I321, which writes through world.get<MeshRenderer>,
+    // writes out its own non-const fixture.
+    const engine::World& world = app->world();
+    const engine::Entity cube = e62EntityNamed(world, "Cube");
+    REQUIRE(cube.valid());
+    app->selection().set(cube);
+    e63Front(*app, "Inspector", "Material");
+    const std::uint64_t before = inspector->drawRecord().framesRecorded;
+    e62Ticks(*app, 2);
+    const engine::editor::InspectorDrawRecord& r = inspector->drawRecord();
+    REQUIRE(r.framesRecorded > before);
+    const float s = app->uiScale();
+    const float contentMin = r.cards.cards.front().outerMin.x;  // the content region's left edge (the card span)
+    const float contentMax = r.cards.cards.front().outerMax.x;
+    const float centre = (r.addComponentMin.x + r.addComponentMax.x) * 0.5F;
+    CHECK(std::abs(centre - ((contentMin + contentMax) * 0.5F)) <= 0.5F);
+    CHECK(r.addComponentMax.y - r.addComponentMin.y == doctest::Approx(32.0F * s).epsilon(1e-5));
+    CHECK(r.addComponentDashed);
+    // THE DASHES, as the draw list RECEIVED them (the code-review round's finding 11): four runs of whole dash + gap
+    // steps from the theme -- top and bottom along the width, left and right along the height, spelled in dashRun's
+    // own order so a quantised scale rounds alike -- each dash one AddRectFilled at alpha 255 with no rounding, which
+    // is PrimReserve(6, 4): four vertices (imgui_draw.cpp:1530-1538). A deleted outline reads 0 and a run collapsed
+    // into one solid stroke reads 16.
+    const engine::editor::ThemePanels& panels = engine::editor::EDITOR_THEME.panels;
+    REQUIRE(panels.addComponentDash.a == 255U);  // an alpha-0 colour adds no vertex (imgui_draw.cpp:1532)
+    const float dash = panels.dashLength * s;
+    const float dashStep = dash + (panels.dashGap * s);
+    REQUIRE(dashStep > 0.0F);
+    const auto runs = [dashStep](float length) { return static_cast<int>(std::ceil(length / dashStep)); };
+    const int widthRuns = runs(r.addComponentMax.x - r.addComponentMin.x);
+    const int heightRuns = runs(r.addComponentMax.y - r.addComponentMin.y);
+    REQUIRE(widthRuns > 1);  // ANTI-VACUITY: more than one dash along each edge, so a solid stroke differs
+    REQUIRE(heightRuns > 1);
+    CHECK(r.addComponentDashVertices == 4 * ((2 * widthRuns) + (2 * heightRuns)));
+    // THE GAPS STAY OPEN (D5): the top run's first dash and the gap after it, off the vertices the list received. A
+    // dash stretched over its own gap draws the count above exactly and is a solid stroke; here its dash reads one
+    // gap too wide and its gap 0. The vertices are absolute positions under 2048 points in this 1280-point window,
+    // where a float's spacing is 2^-13, so a difference of two carries at most 2^-13 of rounding: the tolerance is
+    // about eight times that, and 2500 times under the 2.5-point miss at scale 1.
+    constexpr float DASH_TOLERANCE = 1.0e-3F;
+    CAPTURE(r.addComponentFirstDashWidth);
+    CAPTURE(r.addComponentFirstDashGap);
+    CHECK(std::abs(r.addComponentFirstDashWidth - dash) <= DASH_TOLERANCE);
+    CHECK(std::abs(r.addComponentFirstDashGap - (panels.dashGap * s)) <= DASH_TOLERANCE);
+    // SOURCE: an InvisibleButton -- no ghost or plain Button, whose RenderFrame(..., true, ...) would stroke a solid
+    // border through the dash gaps (imgui_widgets.cpp:812).
+    const std::vector<std::string> code = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/inspector_panel.cpp");
+    const std::size_t buttonAt = soleLineContaining(code, "InvisibleButton(\"##addComponentButton\"");
+    CHECK(code[buttonAt].find("ghostButton(") == std::string::npos);
+    CHECK(countLinesContaining(code, "ADD_COMPONENT_LABEL") >= 2U);  // measured and drawn, never a Button label
+    CHECK(countLinesContaining(code, "Button(\"+ Add Component\")") == 0U);
+    CHECK(countLinesContaining(code, "GhostStyle") == 0U);
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: card geometry -- one span, the framed overhang, paddings and gaps (task E.6.3, I336)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "inspector card geometry i336", .width = 1280, .height = 800});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = e62App(*device, *window, ctx);
+    auto* const inspector = dynamic_cast<engine::editor::InspectorPanel*>(app->panels().find("Inspector"));
+    REQUIRE(inspector != nullptr);
+    // const: every case on this fixture only READS the World (e62EntityNamed, World::has), and
+    // misc-const-correctness flags a reference that is never mutated (the "programmatic camera navigation" and
+    // "driving the Selection" AC-19 cases bind it const too). I321, which writes through world.get<MeshRenderer>,
+    // writes out its own non-const fixture.
+    const engine::World& world = app->world();
+    const engine::Entity cube = e62EntityNamed(world, "Cube");
+    REQUIRE(cube.valid());
+    app->selection().set(cube);
+    e63Front(*app, "Inspector", "Material");
+    const float s = app->uiScale();
+    const float overhang = std::trunc(e63StyleX(s, "WindowPadding") * 0.5F);  // imgui_widgets.cpp:6906-6911
+    REQUIRE(overhang > 0.0F);  // ANTI-VACUITY: a panel window pads, so the overhang is real
+    // THE PLACED GEOMETRY, run on both reads below. Every arm reads ImGui's answer or what a draw call was HANDED,
+    // against an independent literal. The strip, the outline and the chevron / icon / title x's are ONE recorded span
+    // through ONE pure layout (PC10 owns cardHeaderLayout's arithmetic), so re-deriving them here would compare the
+    // record with itself.
+    const auto checkPlaced = [&](std::string_view read, const engine::editor::CardRecord& cardRecord) {
+        CAPTURE(read);
+        const std::vector<engine::editor::CardEntryRecord>& placed = cardRecord.cards;
+        for (std::size_t i = 0; i < placed.size(); ++i) {
+            CAPTURE(i);
+            const engine::editor::CardEntryRecord& card = placed[i];
+            CHECK(std::abs(card.headerItemMin.x - (card.stripMinX - overhang)) <= 0.5F);  // read off ImGui's item
+            CHECK(std::abs(card.headerItemMax.x - (card.stripMaxX + overhang)) <= 0.5F);
+            CHECK(card.headerRuleDrawn == card.open);  // the rule's vertices reached the list iff the card is open
+            if (card.open) {
+                // The values handed to SetCursorScreenPos and to the fill and outline, against D4's literal. They
+                // cannot see a draw that ignores them -- the table arms below read the item ImGui PLACED.
+                CHECK(std::abs(card.topPadding - (10.0F * s)) <= 1.0F);
+                CHECK(std::abs(card.bottomPadding - (10.0F * s)) <= 1.0F);
+            }
+            if (i + 1U < placed.size()) {
+                CHECK(std::abs(card.gapAfter - (12.0F * s)) <= 1.0F);  // the Dummy's net-height arithmetic
+            }
+        }
+        if (engine::editor::sceneIoAvailable()) {
+            // The paddings as ImGui PLACED the body: the last card's ##fields table (its OuterRect, read after
+            // EndTable) starts 10 dp under the strip and ends 10 dp above the card's bottom.
+            REQUIRE(cardRecord.lastBodyTableMaxY > cardRecord.lastBodyTableMinY);  // ANTI-VACUITY: a table drew
+            REQUIRE(placed.back().open);
+            CHECK(std::abs((cardRecord.lastBodyTableMinY - placed.back().stripBottomY) - (10.0F * s)) <= 1.0F);
+            CHECK(std::abs((placed.back().outerMax.y - cardRecord.lastBodyTableMaxY) - (10.0F * s)) <= 1.0F);
+        } else {
+            CHECK(cardRecord.lastBodyTableMaxY == 0.0F);  // reflect tools OFF: no table drew
+        }
+    };
+    // (1) BOTH cards open, read off a COPY taken before the seam closes one: the gap after the Transform card is then
+    // measured from an OPEN body ending in its ##fields table (its muted line with reflect tools OFF) -- the
+    // Inspector's one gap that follows a body, not a strip, and one the closed read below cannot reach (its first
+    // card is the closed one).
+    const std::uint64_t openBefore = inspector->drawRecord().framesRecorded;
+    e62Ticks(*app, 2);
+    REQUIRE(inspector->drawRecord().framesRecorded > openBefore);
+    const engine::editor::CardRecord bothOpen = inspector->drawRecord().cards;  // a copy, kept past the ticks
+    REQUIRE(bothOpen.cards.size() == 2U);
+    REQUIRE(bothOpen.cards.front().open);  // ANTI-VACUITY: the first gap follows an OPEN card...
+    REQUIRE(bothOpen.cards.back().open);   // ...and the placed-body arms read the last card's table
+    checkPlaced("both open", bothOpen);
+    // (2) One card CLOSED through the header toggle's seam, so the chevron arms read both chevrons (the code-review
+    // round's finding 9). The Transform card: the last card, the MeshRenderer's, keeps its ##fields table for the body
+    // arms.
+    inspector->requestCardOpen("engine::Transform", false);
+    const std::uint64_t before = inspector->drawRecord().framesRecorded;
+    e62Ticks(*app, 2);
+    const engine::editor::InspectorDrawRecord& r = inspector->drawRecord();
+    REQUIRE(r.framesRecorded > before);
+    const std::vector<engine::editor::CardEntryRecord>& cards = r.cards.cards;
+    REQUIRE(cards.size() == 2U);
+    const engine::editor::CardEntryRecord& closedCard = cards.front();
+    const engine::editor::CardEntryRecord& openCard = cards.back();
+    REQUIRE_FALSE(closedCard.open);  // ANTI-VACUITY: the seam closed the Transform card...
+    REQUIRE(openCard.open);          // ...and one record of each state is drawn
+    checkPlaced("one closed", r.cards);
+    // ONE chevron face size for both states, from the OPEN chevron's ink: the closed chevron is the same stroke
+    // rotated, never re-normalised to its own ink (measured at b6fb1c8, body 16: 12.4444 closed against 7.46667 open).
+    // Both cards hand chevronFaceSize the same inputs, so the two sizes are equal bit for bit.
+    CHECK(closedCard.chevronSize == openCard.chevronSize);
+    // The open chevron is the mock's: 3.5 dp of ink, starting 10 dp in from the strip. The closed one's ink is
+    // chevron-right's 332 of chevron-down's 582 font units (lucide.ttf's glyf outlines) at that size, 3.5 x 332 / 582
+    // = 2.0 dp, centred in the same 3.5-dp column. Each width is within the slack of a partly covered raster column,
+    // and both draw a little wide: RenderText draws the bake at IM_ROUND(7.47) = 7 scaled by 7.47 / 7 (the quad arms
+    // below hold the record to that). It also draws from a whole-point pen (IM_TRUNC, imgui_draw.cpp:5791), so the
+    // painter rounds its pen and a centre can miss by half a point: the closed bound. The open start's 0.75 covers
+    // that half point plus half of what the open ink overhangs its column. Measured at scale 1 on a 1x display: both
+    // inks 0.083 left of the column's centre, 3.73 and 2.67 wide, the open one starting 0.20 left of chevronX; on a 2x
+    // display (the font baked at density 2): 3.89 and 2.33 wide, the closed centre 0.028 off, the open start 0.22
+    // left. A glyph placed by its BOX at chevronX reads +0.917 and +0.80 on the 1x display (both red). An ink
+    // LEFT-ALIGNED at chevronX moves the unrounded pen by the centring term alone: on the 1x display +0.12 (open) and
+    // -0.42 (closed), both rounding to the SAME whole point -- the same pixels, which no reading can tell apart; on
+    // the 2x display the closed pen lands a whole point off (centre 1.03, red) while the open one (+0.19) still
+    // rounds the same. So these arms are the integration check, and whether they see the centring depends on the
+    // display: PC11 witnesses it as arithmetic, and the source arm below pins the pen as cardChevronPenX's answer.
+    CHECK(std::abs(openCard.chevronInkWidth - (3.5F * s)) <= 1.0F);
+    CHECK(std::abs(openCard.chevronInkMinX - (openCard.stripMinX + (10.0F * s))) <= 0.75F);
+    CHECK(std::abs(closedCard.chevronInkWidth - (2.0F * s)) <= 1.0F);
+    const float closedInkCentre = closedCard.chevronInkMinX + (closedCard.chevronInkWidth * 0.5F);
+    CHECK(std::abs(closedInkCentre - (closedCard.stripMinX + (10.0F * s) + (1.75F * s))) <= 0.5F);
+    for (std::size_t i = 0; i < cards.size(); ++i) {
+        CAPTURE(i);
+        const engine::editor::CardEntryRecord& card = cards[i];
+        // The chevron's INK, read off the atlas as RenderText draws it (plan section 0.4 item 13): narrower than the
+        // glyph's box (a box reading makes the two equal). Its width and place, per state, above.
+        CHECK(card.chevronInkWidth > 0.0F);  // ANTI-VACUITY: the atlas held the glyph's pixels
+        CHECK(card.chevronInkWidth < card.chevronBoxWidth);
+        // ...and the record IS the drawing: the box it places the ink in is the quad the list RECEIVED, off AddText's
+        // four vertices. A fractional pen (RenderText draws from IM_TRUNC(pos.x), imgui_draw.cpp:5791) moves the quad
+        // off the record by its fraction; a bake read unscaled (the quad is scaled by size / IM_ROUND(size), :5802)
+        // narrows the record's box by 1 - 7 / 7.47 at body 16. The slack is float rounding only.
+        REQUIRE(card.chevronQuadMaxX > card.chevronQuadMinX);  // ANTI-VACUITY: the glyph's quad reached the list
+        CHECK(std::abs(card.chevronBoxMinX - card.chevronQuadMinX) <= 1e-3F);
+        CHECK(std::abs((card.chevronBoxMinX + card.chevronBoxWidth) - card.chevronQuadMaxX) <= 1e-3F);
+    }
+    if (!engine::editor::sceneIoAvailable()) {
+        MESSAGE("I336: reflect tools OFF -- no table drew, so the placed-body arms have no item to read");
+    }
+    // SOURCE: the header and the overflow each bracketed by their FrameBorderSize push/pop; the header's Text clear;
+    // the release-rule right-click; no IsItemClicked(Right).
+    const std::vector<std::string> chrome = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/panel_chrome_ui.cpp");
+    const std::size_t nodeAt = soleLineContaining(chrome, "TreeNodeEx(strId, CARD_HEADER_FLAGS");
+    CHECK(chrome[nodeAt - 1U].find("ImGuiStyleVar_FrameBorderSize, 0.0F") != std::string::npos);
+    CHECK(chrome[nodeAt + 1U].find("PopStyleVar(2)") != std::string::npos);
+    const std::size_t moreAt = soleLineContaining(chrome, "\"##more\"");
+    CHECK(chrome[moreAt - 1U].find("ImGuiStyleVar_FrameBorderSize, 0.0F") != std::string::npos);
+    CHECK(chrome[moreAt + 1U].find("PopStyleVar()") != std::string::npos);
+    CHECK(countLinesContaining(chrome, "PushStyleColor(ImGuiCol_Text, clearOver(ChromeRole::TextFaint))") == 1U);
+    const std::size_t rightAt = soleLineContaining(chrome, "IsMouseReleased(ImGuiMouseButton_Right)");
+    CHECK(chrome[rightAt + 1U].find("ImGuiHoveredFlags_AllowWhenBlockedByPopup") != std::string::npos);
+    CHECK(countLinesContaining(chrome, "IsItemClicked(ImGuiMouseButton_Right)") == 0U);
+    // The chevron's pen IS cardChevronPenX's answer (PC11 owns the centring, which no pixel arm above sees on
+    // every display): assigned once, from the call, handed to the chevron's AddText as is, and no centring term
+    // restated in the ImGui TU.
+    const std::string_view pen = "cardChevronPenX(layout.chevronX, geometry.chevronWidth, ink.left, ink.width);";
+    const std::size_t penAt = soleLineContaining(chrome, "const float penX = ");
+    CHECK(chrome[penAt].find(pen) != std::string::npos);
+    CHECK(countLinesContaining(chrome, "penX = ") == 1U);
+    const std::size_t chevronTextAt = soleLineContaining(chrome, "AddText(body, chevronSize, ");
+    CHECK(chrome[chevronTextAt].find("ImVec2(penX, ") != std::string::npos);
+    CHECK(chevronTextAt > penAt);
+    CHECK(countLinesContaining(chrome, "chevronWidth - ink.width") == 0U);
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+// ---- task E.6.3, step 5: the Assets header modes, the crumb row, the tree, the tiles and the footer ---------------
+
+TEST_CASE("editor: the Assets header draws the layout's x's, never overlapping, monotone in width (task E.6.3, I323)") {
+    // D1 as source text (the code-review round's finding 3), first so it runs on a lane with no GPU: the header's
+    // three field widths are NAMED font multiples in the pure model (asset_browser_chrome.hpp; AH16 pins the values).
+    // The ImGui TU defines no font multiple, reads each named one on exactly one line -- the width it sets -- and the
+    // old file-local names survive only INSIDE the new ones.
+    {
+        const std::vector<std::string> code = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/asset_browser_panel.cpp");
+        REQUIRE(code.size() > 100U);  // ANTI-VACUITY: the file was really read
+        std::size_t defined = 0;
+        for (const std::string& line : code) {
+            const bool constant = line.find("constexpr") != std::string::npos;
+            if (constant && line.find("FONT_MULTIPLE") != std::string::npos) {
+                ++defined;
+            }
+        }
+        CHECK(defined == 0U);
+        CHECK(countLinesContaining(code, "SEARCH_FONT_MULTIPLE") == 1U);
+        CHECK(countLinesContaining(code, "SEARCH_MIN_FONT_MULTIPLE") == 1U);
+        CHECK(countLinesContaining(code, "KIND_FILTER_FONT_MULTIPLE") == 0U);
+        const std::array<std::pair<std::string_view, std::string_view>, 3> reads{{
+            {"ASSET_HEADER_SEARCH_FONT_MULTIPLE", "widths.search = "},
+            {"ASSET_HEADER_SEARCH_MIN_FONT_MULTIPLE", "widths.searchMin = "},
+            {"ASSET_HEADER_KIND_FONT_MULTIPLE", "widths.kind = "},
+        }};
+        for (const auto& [name, width] : reads) {
+            CAPTURE(name);
+            const std::size_t at = soleLineContaining(code, name);
+            CHECK(code[at].find(width) != std::string::npos);
+        }
+    }
+    // Three windows, each a fresh app at the default layout with Assets in front of the Console. The record is compared
+    // with the layout's own answer for the record's own inputs, so nothing here depends on the runner's geometry.
+    // std::int32_t: WindowConfig::width's own type (window.hpp:30) -- a std::uint32_t narrowed inside the braced
+    // config is ill-formed on every lane.
+    const auto measure = [](std::int32_t width, engine::editor::AssetChromeRecord& out) {
+        engine::platform::Context ctx;
+        if (!ctx.valid()) {
+            AERO_SKIP_OR_FAIL("no platform context");
+        }
+        std::optional<engine::platform::Window> window =
+            ctx.createWindow({.title = "assets header i323", .width = width, .height = 600});
+        REQUIRE(window.has_value());
+        std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+        if (!device) {
+            AERO_SKIP_OR_FAIL("no GPU device");
+        }
+        std::optional<engine::editor::EditorApp> app = e62App(*device, *window, ctx);
+        auto* const browser = dynamic_cast<engine::editor::AssetBrowserPanel*>(app->panels().find("Assets"));
+        REQUIRE(browser != nullptr);
+        e63Front(*app, "Assets", "Console");
+        const std::uint64_t before = browser->chromeRecord().framesRecorded;
+        REQUIRE(app->tick());
+        REQUIRE(browser->chromeRecord().framesRecorded > before);  // a frame really recorded
+        out = browser->chromeRecord();
+        app->requestQuit();
+        CHECK(app->tick() == false);
+        app.reset();
+    };
+    using engine::editor::AssetHeaderControl;
+    std::array<engine::editor::AssetChromeRecord, 3> records{};
+    constexpr std::array<std::int32_t, 3> WIDTHS{1600, 900, 520};
+    for (std::size_t i = 0; i < WIDTHS.size(); ++i) {
+        measure(WIDTHS[i], records[i]);
+    }
+    if (records[0].framesRecorded == 0U) {
+        return;  // no GPU on a lane that does not require one: measure() already said so
+    }
+    const float bodyDp = engine::editor::EDITOR_THEME.type.bodySize;  // the face the header draws in, unpushed
+    for (std::size_t i = 0; i < records.size(); ++i) {
+        CAPTURE(WIDTHS[i]);
+        const engine::editor::AssetChromeRecord& r = records[i];
+        const engine::editor::AssetHeaderLayout& l = r.headerLayout;
+        const engine::editor::AssetHeaderWidths& w = r.headerWidths;
+        // (a) THE IDENTITY: the panel drew what the layout answers for the inputs the panel recorded.
+        CHECK((l == engine::editor::assetHeaderLayout(r.headerRowMinX, r.headerRowWidth, w, r.headerUiScale)));
+        CHECK(r.headerRuleDrawn);
+        // ...and three of those inputs are the pure model's NAMED multiples (D1) of the body face the header drew at:
+        // faceSizePoints rounds as GetFontSize() does (imgui.cpp:9760), so each product is the panel's own, exactly.
+        const float body = engine::editor::faceSizePoints(bodyDp, r.headerUiScale);
+        CHECK(w.search == body * engine::editor::ASSET_HEADER_SEARCH_FONT_MULTIPLE);
+        CHECK(w.searchMin == body * engine::editor::ASSET_HEADER_SEARCH_MIN_FONT_MULTIPLE);
+        CHECK(w.kind == body * engine::editor::ASSET_HEADER_KIND_FONT_MULTIPLE);
+        // (b) every inline control's DRAWN rect at the layout's x, as wide as the panel measured -- sums both sides.
+        struct Expect {
+            AssetHeaderControl control;
+            bool inlined;
+            float x;
+            float width;
+        };
+        const std::array<Expect, 7> expects{{
+            {AssetHeaderControl::NewMaterial, true, l.newMaterialX, w.newMaterial},
+            {AssetHeaderControl::Search, true, l.searchX, l.searchWidth},
+            {AssetHeaderControl::Kind, l.kindInline, l.kindX, w.kind},
+            {AssetHeaderControl::ViewToggle, true, l.viewToggleX, w.viewToggle},
+            {AssetHeaderControl::Refresh, l.refreshInline, l.refreshX, w.refresh},
+            {AssetHeaderControl::AutoRefresh, l.autoRefreshInline, l.autoRefreshX, w.autoRefresh},
+            {AssetHeaderControl::Overflow, true, l.overflowX, w.overflow},
+        }};
+        std::vector<std::pair<float, float>> drawn;
+        std::size_t foldedCount = 0;
+        for (const Expect& e : expects) {
+            CAPTURE(static_cast<int>(e.control));
+            const engine::editor::AssetDrawnRect& rect = r.headerRects[static_cast<std::size_t>(e.control)];
+            CHECK(rect.drawn == e.inlined);
+            const bool folded =
+                std::find(r.overflowDrawn.begin(), r.overflowDrawn.end(), e.control) != r.overflowDrawn.end();
+            CHECK(folded == !e.inlined);  // (c) every folded control is in the overflow, and only those
+            foldedCount += e.inlined ? 0U : 1U;
+            if (rect.drawn) {
+                CHECK(std::abs(rect.min.x - e.x) <= 0.5F);
+                CHECK(std::abs(rect.max.x - (rect.min.x + e.width)) <= 0.5F);
+                drawn.emplace_back(rect.min.x, rect.max.x);
+            }
+        }
+        // ...and each ONCE, this frame's: membership alone stays green on a list a missing per-frame clear let grow
+        // (the code-review round's finding 13; AH17 pins the clear itself). Full folds nothing, so 0 == 0 there.
+        CHECK(r.overflowDrawn.size() == foldedCount);
+        std::sort(drawn.begin(), drawn.end());
+        for (std::size_t k = 1; k < drawn.size(); ++k) {
+            CHECK(drawn[k - 1].second <= drawn[k].first + 0.5F);  // (c) no two drawn inline rects overlap
+        }
+        // (d) at or above the floor, the row never clips.
+        if (r.headerRowWidth >= engine::editor::assetHeaderMinimalFloor(w, r.headerUiScale)) {
+            REQUIRE_FALSE(drawn.empty());
+            CHECK(drawn.back().second <= r.headerRowMinX + r.headerRowWidth + 0.5F);
+        }
+    }
+    // (e) a narrower window never yields a wider mode (Full < Compact < Minimal); three DISTINCT modes is geometry.
+    CHECK(static_cast<int>(records[2].headerMode) >= static_cast<int>(records[1].headerMode));
+    CHECK(static_cast<int>(records[1].headerMode) >= static_cast<int>(records[0].headerMode));
+    WARN((records[0].headerMode == engine::editor::AssetHeaderMode::Full));
+    WARN((records[2].headerMode == engine::editor::AssetHeaderMode::Minimal));
+}
+
+TEST_CASE("editor: the Assets crumbs, the recursive items text, the tree and the grouped pane (task E.6.3, I324)") {
+    // D1 as source text (finding 3's residual), first so it runs on a lane with no GPU: the tree pane's first-run width
+    // and the List size column are NAMED font multiples in the pure model (asset_browser_chrome.hpp; AH16 pins the
+    // values, I323 refuses any constexpr font multiple in this TU). The old file-local names survive only INSIDE the
+    // new ones, and each named one is read only as a font multiple, into the width its child or column is given.
+    {
+        const std::vector<std::string> code = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/asset_browser_panel.cpp");
+        REQUIRE(code.size() > 100U);  // ANTI-VACUITY: the file was really read
+        CHECK(countLinesContaining(code, "TREE_PANE_FONT_MULTIPLE") == 1U);
+        CHECK(countLinesContaining(code, "SIZE_COLUMN_FONT_MULTIPLE") == 2U);
+        // The tree pane: one read, into the width the ##dirs child is sized by -- the chain pinned end to end, since a
+        // `treeSize` left behind as dead code beside an inline ImVec2 warns on no lane (ImVec2's constructor is
+        // user-provided, so -Wunused-variable stays silent).
+        const std::size_t treeAt = soleLineContaining(code, "ASSET_TREE_PANE_FONT_MULTIPLE");
+        CHECK(code[treeAt].find("const float treeWidth = ImGui::GetFontSize() * ") != std::string::npos);
+        CHECK(countLinesContaining(code, "treeSize(treeWidth, ") == 1U);
+        CHECK(countLinesContaining(code, "BeginChild(\"##dirs\", treeSize, ") == 1U);
+        // The size column: one read per table that has one -- the search hits and the List view -- each into the
+        // width that table's Size column is set up with.
+        std::size_t sizeReads = 0;
+        for (const std::string& line : code) {
+            if (line.find("ASSET_SIZE_COLUMN_FONT_MULTIPLE") != std::string::npos) {
+                ++sizeReads;
+                CHECK(line.find("const float sizeColumnWidth = ImGui::GetFontSize() * ") != std::string::npos);
+            }
+        }
+        CHECK(sizeReads == 2U);
+        CHECK(countLinesContaining(code, "\"Size\", ImGuiTableColumnFlags_WidthFixed, sizeColumnWidth)") == 2U);
+        // Each crumb's drop target binds to ITS crumb (finding 14's second half): BeginDragDropTarget binds to
+        // g.LastItemData, the item submitted last (imgui.cpp, ImGui::BeginDragDropTarget), so both attach calls sit
+        // between the crumb's InvisibleButton and the hover read of that same item. A call moved above the button
+        // binds to the item before it and still counts 3 in crumbDropTargets below; no tier here can drop, so the GPU
+        // arm compares the bound ids instead, which also sees any item submitted between a crumb and its call --
+        // because the crumb's side is the id its button was GIVEN, its label hashed on the same ID stack
+        // (imgui_widgets.cpp:854), pinned here. Read with GetItemID() instead, both sides are g.LastItemData.ID, and
+        // an id'd item slipped in before the record line matches itself, green.
+        const std::size_t rowAt = soleLineContaining(code, "void AssetBrowserPanel::drawCrumbRow(");
+        const std::size_t rowEnd = functionBodyEnd(code, rowAt);
+        REQUIRE(rowEnd < code.size());  // the body was delimited, not run off the end
+        const std::size_t crumbAt = soleLineContaining(code, "InvisibleButton(\"##crumb\"");
+        constexpr std::string_view HOVER_READ = "const bool hovered = ImGui::IsItemHovered();";
+        const std::size_t hoverAt = firstLineContaining(code, HOVER_READ, crumbAt);
+        CHECK(rowAt < crumbAt);
+        REQUIRE(hoverAt < rowEnd);
+        CHECK(countInRange(code, "attachFolderDropTarget(", rowAt, rowEnd) == 2U);
+        CHECK(countInRange(code, "attachFolderDropTarget(", crumbAt + 1U, hoverAt) == 2U);
+        constexpr std::string_view GIVEN_ID = "chrome.crumbItemIds.push_back(ImGui::GetID(\"##crumb\"));";
+        CHECK(countLinesContaining(code, "crumbItemIds.push_back(") == 1U);
+        CHECK(countInRange(code, GIVEN_ID, crumbAt, hoverAt) == 1U);  // between the button and its hover read
+    }
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "assets crumbs i324", .width = 1280, .height = 800});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app =
+        e63AssetsApp(*device, *window, ctx,
+                     {"top.txt", "models/e.txt", "models/props/a.txt", "models/props/b.txt", "models/props/sub/c.txt",
+                      "models/props/sub/d.txt"},
+                     0.4F);
+    auto* const browser = dynamic_cast<engine::editor::AssetBrowserPanel*>(app->panels().find("Assets"));
+    REQUIRE(browser != nullptr);
+    REQUIRE(browser->database() != nullptr);
+    const auto records = [&browser]() { return browser->database()->records(); };
+    const auto settleOn = [&app](std::size_t entries) {
+        for (int i = 0; i < E44_MAX_SETTLE_TICKS && app->assetBrowserVisibleEntryCount() != entries; ++i) {
+            REQUIRE(app->tick());
+        }
+        REQUIRE(app->assetBrowserVisibleEntryCount() == entries);
+    };
+
+    // Navigate through the NEW seam -- it records exactly the ActionKind::Navigate a crumb or a tree row records.
+    app->requestAssetBrowserNavigate("models/props");
+    settleOn(3U);  // a.txt, b.txt and the sub folder
+    REQUIRE(app->tick());
+    const std::size_t recursive = engine::editor::countRecordsUnder(records(), "models/props");
+    REQUIRE(recursive == 4U);
+    REQUIRE(recursive != app->assetBrowserVisibleEntryCount());  // ANTI-VACUITY: N is not the listing's size (S66)
+    std::string expected;
+    engine::editor::assetItemsText(recursive, expected);
+    const engine::editor::AssetChromeRecord& r = browser->chromeRecord();
+    // The crumb row draws only where the layout shows it (asset_view.hpp's THE FOLD): with no Issues -- this fixture
+    // has none -- from a recorded avail of footer 30 + chrome 37 + one frame 24 = 91 at 1x. A quarter of whatever
+    // window a runner delivers is a guess about its display, so this case sizes the Bottom dock itself: 0.4, through
+    // e63AssetsApp's bottomDockFraction (I345 witnesses that ImGui obeys it). Measured here at 0.4, the recorded avail
+    // is ceil(0.4 x (H - 2)) less 71 -- the first frame's whole viewport less the 2-point docking separator, then the
+    // tab bar, padding and header row -- exact at every height read (H = 405, 640, 656, 712 and 800 record 91, 185,
+    // 191, 213 and 249). This 800-point window records 249, 158 over (129 under the default quarter), and the row
+    // folds only in a window delivered under 405 points. A runner that does stop here stops loudly, rather than at a
+    // crumb count of 0, and the INFO prints its recorded avail.
+    {
+        INFO("recorded avail " << app->assetBrowserLayoutMetrics().availHeight);
+        REQUIRE(r.crumbRowShown);
+    }
+    CHECK(r.crumbsDrawn == 3U);  // assets / models / props
+    CHECK(r.crumbDropTargets == 3U);
+    // ...each bound to ITS crumb, as ImGui saw it (the source arm above is the GPU-free half): the id
+    // BeginDragDropTarget reads, against the id the crumb's button was given. An item submitted between the two -- a
+    // Dummy (id 0) or a second button (its own id) alike -- rebinds the target, moves neither count, and reads here as
+    // a mismatch.
+    CHECK(r.folderDropTargetItemIds.size() == r.folderDropTargetsAttached);
+    REQUIRE(r.crumbItemIds.size() == 3U);
+    REQUIRE(r.crumbDropTargetItemIds.size() == r.crumbItemIds.size());
+    for (std::size_t i = 0; i < r.crumbItemIds.size(); ++i) {
+        CAPTURE(i);
+        CHECK(r.crumbItemIds[i] != 0U);  // ANTI-VACUITY: a real id, so the match below is never 0 == 0
+        CHECK(r.crumbDropTargetItemIds[i] == r.crumbItemIds[i]);
+    }
+    CHECK(r.itemsText == expected);
+    // A query changes nothing about N (D8).
+    app->requestAssetBrowserSearch("a");
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+    REQUIRE(app->assetBrowserSearchHitCount() > 0U);  // the query really committed
+    CHECK(browser->chromeRecord().itemsText == expected);
+    app->requestAssetBrowserSearch("");
+    REQUIRE(app->tick());
+
+    // The pane, side by side, in Grid AND List: the group beside the tree, the crumb row on top, the group as tall.
+    const float spacingX = e63StyleX(app->uiScale(), "ItemSpacing");
+    for (const engine::editor::AssetViewMode mode :
+         {engine::editor::AssetViewMode::Grid, engine::editor::AssetViewMode::List}) {
+        CAPTURE(static_cast<int>(mode));
+        app->requestAssetBrowserViewMode(mode);
+        REQUIRE(app->tick());
+        REQUIRE(app->tick());
+        CHECK(app->assetBrowserListViewActive() == (mode == engine::editor::AssetViewMode::List));
+        const engine::editor::AssetChromeRecord& pane = browser->chromeRecord();
+        CHECK(std::abs(pane.contentsChildMin.x - (pane.treeChildMax.x + spacingX)) <= 0.5F);
+        CHECK(pane.contentsChildMin.y >= pane.treeChildMin.y + pane.crumbRowHeight);
+        CHECK(std::abs(pane.contentsGroupMaxY - pane.treeChildMax.y) <= 0.5F);
+        CHECK(pane.crumbsDrawn == 3U);  // the row is in the group in both modes
+    }
+
+    // The tree, drawn the Hierarchy way: root, models (opened by the navigation) and props at least.
+    const engine::editor::AssetChromeRecord& tree = browser->chromeRecord();
+    CHECK(tree.treeRowsDrawn >= 3U);
+    CHECK(tree.treeCurrentLabelColor == e63Packed(engine::editor::EDITOR_THEME.palette.accent));
+    CHECK(tree.treeArrowTextColor == e63Packed(engine::editor::EDITOR_THEME.palette.textFaint));
+    CHECK(tree.treeSelectionRounding > 0.0F);
+
+    // The root: N changes to the whole project's count.
+    app->requestAssetBrowserNavigate("");
+    settleOn(2U);  // top.txt and models
+    REQUIRE(app->tick());
+    std::string atRoot;
+    engine::editor::assetItemsText(records().size(), atRoot);
+    CHECK(browser->chromeRecord().itemsText == atRoot);
+    CHECK(atRoot != expected);
+    CHECK(browser->chromeRecord().crumbsDrawn == 1U);
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: Assets tiles -- counts once a generation, hatched labels, rings, the tab (task E.6.3, I325)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "assets tiles i325", .width = 1280, .height = 800});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = e63AssetsApp(
+        *device, *window, ctx, {"note.txt", "blob.bin", "f1/a.txt", "f2/b.txt", "f2/c.txt", "f3/sub/d.txt"},
+        engine::editor::DEFAULT_BOTTOM_DOCK_FRACTION);
+    // I233's runner rule: Small tiles, and the side panels hidden so the Bottom node takes the whole width -- five
+    // tiles in one row need 5 x (72 + 8) - 8 = 392 of contents width at body 16.
+    e63HideSidePanels(*app);
+    app->requestAssetBrowserTileSize(engine::editor::TileSize::Small);
+    for (int i = 0; i < 3; ++i) {
+        REQUIRE(app->tick());
+    }
+    auto* const browser = dynamic_cast<engine::editor::AssetBrowserPanel*>(app->panels().find("Assets"));
+    REQUIRE(browser != nullptr);
+    REQUIRE(browser->database() != nullptr);
+    REQUIRE(app->assetBrowserVisibleEntryCount() == 5U);  // f1, f2, f3, blob.bin, note.txt
+    const engine::editor::AssetChromeRecord& r = browser->chromeRecord();
+    CHECK(r.foldersCounted == 3U);
+    REQUIRE(r.folderTileCounts.size() == 3U);
+    for (const engine::editor::AssetFolderTileCount& folder : r.folderTileCounts) {
+        CAPTURE(folder.relative);
+        CHECK(folder.count == engine::editor::countRecordsUnder(browser->database()->records(), folder.relative));
+    }
+    // Idle ticks recompute nothing; one explicit rescan recomputes exactly once (S23's witness, every lane).
+    REQUIRE(app->assetWatchTriggerCount() == 0U);
+    const std::uint64_t idle = r.folderCountRecomputations;
+    REQUIRE(idle >= 1U);
+    for (int i = 0; i < 10; ++i) {
+        REQUIRE(app->tick());
+    }
+    CHECK(browser->chromeRecord().folderCountRecomputations == idle);
+    CHECK(app->assetWatchTriggerCount() == 0U);
+    const std::uint64_t generation = browser->database()->generation();
+    app->requestAssetRescan();
+    REQUIRE(app->tick());
+    CHECK(browser->database()->generation() == generation + 1U);
+    CHECK(browser->chromeRecord().folderCountRecomputations == idle + 1U);
+    // The hatched wells: textSecondary labels, never a kind colour (the kinds carry no contrast floor, D8).
+    CHECK(r.hatchedWells >= 2U);  // note.txt (Text) and blob.bin (Unknown)
+    CHECK(r.lastHatchLabelColor == e63Packed(engine::editor::EDITOR_THEME.palette.textSecondary));
+    CHECK(r.lastHatchLabelColor != e63Packed(engine::editor::EDITOR_THEME.assetKind.text));
+    CHECK(r.lastHatchLabelColor != e63Packed(engine::editor::EDITOR_THEME.assetKind.unknown));
+    // The rings: resting `hover` (an exact match, D3); selected `accentBorder`.
+    CHECK(r.lastRestingRingColor == e63Packed(engine::editor::EDITOR_THEME.palette.hover));
+    app->requestAssetBrowserSelectEntry("note.txt");
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+    CHECK(browser->chromeRecord().tilesRinged >= 5U);
+    CHECK(browser->chromeRecord().lastSelectedRingColor ==
+          e63Packed(engine::editor::EDITOR_THEME.palette.accentBorder));
+    // The folder's tab in its OWN colour -- the old tab sat inside the body in the body's colour (S50).
+    CHECK(r.lastFolderTabColor == e63Packed(engine::editor::EDITOR_THEME.assetKind.folderTab));
+    CHECK(r.lastFolderTabColor != e63Packed(engine::editor::EDITOR_THEME.assetKind.folder));
+
+    // SOURCE: in BOTH tile hosts the clear scope opens on the line before Selectable("##tile" and closes after it.
+    for (const char* host : {"/asset_browser_panel.cpp", "/asset_picker.cpp"}) {
+        CAPTURE(host);
+        const std::vector<std::string> code = editorSourceCodeLines(std::string(AERO_EDITOR_SRC_DIR) + host);
+        const std::size_t at = soleLineContaining(code, "Selectable(\"##tile\"");
+        REQUIRE(at > 0U);
+        REQUIRE(at + 1U < code.size());
+        CHECK(code[at - 1U].find("const ClearHeaderStyle ") != std::string::npos);
+        CHECK(code[at + 1U].find_first_not_of(" }") == std::string::npos);  // the scope's closing brace, alone
+        CHECK(code[at + 1U].find('}') != std::string::npos);
+    }
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: Assets tiles -- a hatched well's stripes stay inside its rounded outline (task E.6.3, I346)") {
+    // The code-review round, round 6 (the macOS manual pass, rows 11 and 12): hatchedWell clipped its stripes with a
+    // SQUARE scissor, so every stripe crossing a corner painted the square corner outside the rounded fill -- in the
+    // grid at the top-left, in the picker at all four. Each stripe is clipped to the fill's own rounded outline as
+    // geometry now (clipConvexPolygon, PC13), and this case reads every vertex the well appended to the list -- what
+    // ImGui RECEIVED, off its VtxBuffer at the draw -- against that outline, computed HERE from the rect and the
+    // rounding the fill was given: the exact rounded rect, which holds ImGui's tessellation of it (every PathRect
+    // vertex lies on a corner circle, every segment inside it).
+    //
+    // THE FRINGE. An anti-aliased fill (the theme's antiAliasedFill) appends two vertices a corner, the inner one in
+    // the fill's colour and the outer one at alpha 0, each AA_SIZE / 2 / sin(corner / 2) along the corner's miter,
+    // `corner` the piece's interior angle there (imgui_draw.cpp:1123-1134) -- 1.3066 at a stripe's 45-degree corner,
+    // MORE than AA_SIZE -- which is AA_SIZE / 2 off each edge's line: the miter's projection on either edge's normal.
+    // (IM_FIXNORMAL2F, imgui_draw.cpp:819, shortens it only at a corner sharper than 11.5 degrees, and
+    // hatchPieceTakesFringe refuses the fringe to a piece with any corner sharper than 45 degrees.) AA_SIZE is the
+    // list's _FringeScale (imgui_draw.cpp:1092), reset every frame to InitialFringeScale, which is 1.0
+    // (imgui_draw.cpp:483, imgui.cpp:5707): ONE POINT, whatever the UI scale. So every vertex stays within AA_SIZE of
+    // the outline -- the worst measured here is 0.5412, AA_SIZE / 2 / sin 67.5 at a 135-degree corner -- and every
+    // vertex that carries colour stays inside it. At 88a2b8f the stripe quads ran a whole tile height past the well,
+    // cut only by the scissor (87.3 points out, measured).
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "assets hatch i346", .width = 1280, .height = 800});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app =
+        e63AssetsApp(*device, *window, ctx, {"note.txt", "blob.bin"}, engine::editor::DEFAULT_BOTTOM_DOCK_FRACTION);
+    // I325's shape: Small tiles, the side panels hidden. A Small well is 4 font sizes, 64 points at body 16, and the
+    // stripes sit at x + y = 20k .. 20k + 10 from its top-left corner: all four corner arcs lie inside a stripe.
+    e63HideSidePanels(*app);
+    app->requestAssetBrowserTileSize(engine::editor::TileSize::Small);
+    for (int i = 0; i < 3; ++i) {
+        REQUIRE(app->tick());
+    }
+    auto* const browser = dynamic_cast<engine::editor::AssetBrowserPanel*>(app->panels().find("Assets"));
+    REQUIRE(browser != nullptr);
+    const engine::editor::AssetChromeRecord& r = browser->chromeRecord();
+    REQUIRE(r.hatchedWells >= 2U);  // note.txt and blob.bin, this frame: the last one's vertices are recorded
+    const std::vector<engine::editor::DrawnVertex>& vertices = r.lastHatchedWellVertices;
+    const std::size_t stripesBegin = r.lastHatchedWellStripesBegin;
+    REQUIRE(stripesBegin > 0U);               // ANTI-VACUITY: the fill's vertices came first...
+    REQUIRE(vertices.size() > stripesBegin);  // ...and stripes followed
+    const engine::Vec2 wellMin = r.lastHatchedWellMin;
+    const engine::Vec2 wellMax = r.lastHatchedWellMax;
+    const float width = wellMax.x - wellMin.x;
+    const float height = wellMax.y - wellMin.y;
+    // PathRect's own clamp (imgui_draw.cpp:1452-1458): a rounding never past half a side less one.
+    const float radius = std::min({r.lastHatchedWellRounding, (width * 0.5F) - 1.0F, (height * 0.5F) - 1.0F});
+    INFO("well " << wellMin.x << "," << wellMin.y << " .. " << wellMax.x << "," << wellMax.y << ", rounding "
+                 << r.lastHatchedWellRounding);
+    INFO(vertices.size() << " vertices, the stripes' from " << stripesBegin);
+    REQUIRE(radius >= 0.5F);  // ROUNDED: under 0.5 PathRect draws the square corners (imgui_draw.cpp:1460)
+    // How far `p` lies outside the rounded rect: its distance from the rect inset by the radius, less the radius.
+    const auto outside = [&](engine::Vec2 p) {
+        const float nearX = std::clamp(p.x, wellMin.x + radius, wellMax.x - radius);
+        const float nearY = std::clamp(p.y, wellMin.y + radius, wellMax.y - radius);
+        return std::hypot(p.x - nearX, p.y - nearY) - radius;
+    };
+    constexpr float AA_SIZE = 1.0F;
+    constexpr float FLOAT_EPSILON = 1.0e-3F;    // float rounding at screen coordinates in the thousands
+    constexpr std::uint32_t ALPHA_SHIFT = 24U;  // IM_COL32_A_SHIFT, in both of ImGui's packings (imgui.h)
+    std::size_t pastFringe = 0;                 // a vertex further out than AA_SIZE -- a NaN counts
+    std::size_t opaqueOutside = 0;              // a vertex that carries colour, outside the outline at all
+    float worst = 0.0F;
+    float worstOpaque = 0.0F;
+    for (const engine::editor::DrawnVertex& vertex : vertices) {
+        const float out = outside(vertex.pos);
+        const bool fringe = (vertex.color >> ALPHA_SHIFT) == 0U;
+        if (!(out <= AA_SIZE)) {
+            ++pastFringe;
+        }
+        if (!fringe && !(out <= FLOAT_EPSILON)) {
+            ++opaqueOutside;
+        }
+        worst = std::max(worst, out);
+        worstOpaque = fringe ? worstOpaque : std::max(worstOpaque, out);
+    }
+    INFO("furthest out: " << worst << " (a vertex with colour: " << worstOpaque << ")");
+    CHECK(pastFringe == 0U);
+    CHECK(opaqueOutside == 0U);
+    // ANTI-VACUITY. The range is the well's: the fill's vertices carry `tile`, the stripes' `hatchStripe`.
+    const std::uint32_t tile = e63Packed(engine::editor::EDITOR_THEME.palette.tile);
+    const std::uint32_t stripe = e63Packed(engine::editor::EDITOR_THEME.panels.hatchStripe);
+    CHECK(vertices.front().color == tile);
+    CHECK(vertices[stripesBegin].color == stripe);
+    // ...and a corner is EXERCISED: a stripe vertex within one stripe width of a corner arc, and -- so a stripe that
+    // stops short of the corner reads as a failure, not a pass -- a vertex with colour within AA_SIZE of one, in that
+    // arc's quadrant. Counted per corner, TL, TR, BR, BL: one each, measured at 1x on a 64-point well.
+    const float stripeWidth = engine::editor::EDITOR_THEME.panels.hatchStripeWidth * app->uiScale();
+    const std::array<engine::Vec2, 4> centres{{{wellMin.x + radius, wellMin.y + radius},
+                                               {wellMax.x - radius, wellMin.y + radius},
+                                               {wellMax.x - radius, wellMax.y - radius},
+                                               {wellMin.x + radius, wellMax.y - radius}}};
+    const std::array<engine::Vec2, 4> quadrant{{{-1.0F, -1.0F}, {1.0F, -1.0F}, {1.0F, 1.0F}, {-1.0F, 1.0F}}};
+    std::size_t nearArc = 0;
+    std::array<std::size_t, 4> reached{};
+    for (std::size_t i = stripesBegin; i < vertices.size(); ++i) {
+        const engine::Vec2 p = vertices[i].pos;
+        for (std::size_t c = 0; c < centres.size(); ++c) {
+            const float dx = p.x - centres[c].x;
+            const float dy = p.y - centres[c].y;
+            if (dx * quadrant[c].x < 0.0F || dy * quadrant[c].y < 0.0F) {
+                continue;  // not in this arc's quadrant
+            }
+            const float fromArc = std::abs(std::hypot(dx, dy) - radius);
+            nearArc += fromArc <= stripeWidth ? 1U : 0U;
+            const bool opaque = (vertices[i].color >> ALPHA_SHIFT) != 0U;
+            reached[c] += (opaque && fromArc <= AA_SIZE) ? 1U : 0U;
+        }
+    }
+    INFO("stripe vertices reaching the arcs: TL " << reached[0] << ", TR " << reached[1] << ", BR " << reached[2]
+                                                  << ", BL " << reached[3]);
+    CHECK(nearArc >= 1U);
+    CHECK(std::count_if(reached.begin(), reached.end(), [](std::size_t n) { return n > 0U; }) >= 1);
+
+    // THE FRINGE IS DRAWN. AddConvexPolyFilled's anti-aliased arm appends a piece's n points as n pairs, the inner
+    // vertex in the fill's colour and the outer one at alpha 0 (imgui_draw.cpp:1133-1134); its plain arm appends n
+    // vertices, every one in the colour (:1152). No piece of a Small well is refused its fringe (hatchPieceTakesFringe,
+    // PC13 -- measured at 1x; a model of ImGui's tessellation over UI scales 0.5 to 4 refuses one piece, at 0.55 on a
+    // Large well), so EXACTLY half the stripes' vertices carry alpha 0. The refusal inverted would draw every ordinary
+    // stripe without its fringe -- jagged, with every vertex on the piece, so no arm above can see it -- and break it.
+    std::size_t stripeFringe = 0;
+    for (std::size_t i = stripesBegin; i < vertices.size(); ++i) {
+        stripeFringe += (vertices[i].color >> ALPHA_SHIFT) == 0U ? 1U : 0U;
+    }
+    const std::size_t stripeVertices = vertices.size() - stripesBegin;
+    INFO(stripeFringe << " of the " << stripeVertices << " stripe vertices at alpha 0");
+    CHECK(stripeFringe > 0U);
+    CHECK(stripeFringe * 2U == stripeVertices);
+
+    // THE OUTLINE'S PATH IS CLEARED. hatchedWell reads PathRect's points off the list's path and clears it before the
+    // first band. Left there, the first piece's PathLineTo calls append to the outline's points and PathFillConvex
+    // fans them all (imgui.h:3502; AddConvexPolyFilled's fill indices, imgui_draw.cpp:1100-1104), so every well
+    // paints SOLID stripe colour -- with every vertex still within AA_SIZE of the outline, every coloured one inside
+    // it, and half the stripes' still at alpha 0, which no arm above tells apart (measured with the clear removed:
+    // every arm above stays green). So this arm reads the TRIANGLES the well appended: a point in the gap after the
+    // band at well-local x + y = period .. period + stripe -- x + y = period + (period + stripe) / 2, nearest the
+    // well's centre -- lies in no triangle whose three vertices all carry the stripe's colour, while the middle of that
+    // band, x + y = period + stripe / 2, lies in at least one (ANTI-VACUITY: the arm sees a stripe). Measured at 1x: 22
+    // stripe triangles, none holding the gap and one the band's middle; with the clear removed, one holds the gap --
+    // the fan over the outline.
+    const std::vector<std::uint32_t>& indices = r.lastHatchedWellIndices;
+    INFO(indices.size() << " indices");
+    REQUIRE_FALSE(indices.empty());  // none would mean ImGui moved the list's vertex offset inside the well
+    REQUIRE(indices.size() % 3U == 0U);
+    REQUIRE((stripe >> ALPHA_SHIFT) != 0U);  // the stripe's colour is drawn at all (a zero alpha draws nothing)
+    const float period = engine::editor::EDITOR_THEME.panels.hatchPeriod * app->uiScale();
+    // The point of the well-local line x + y = sum nearest the well's centre.
+    const auto nearCentre = [&](float sum) {
+        const float halfSkew = (width - height) * 0.5F;
+        return engine::Vec2{wellMin.x + ((sum + halfSkew) * 0.5F), wellMin.y + ((sum - halfSkew) * 0.5F)};
+    };
+    const engine::Vec2 gap = nearCentre(period + ((period + stripeWidth) * 0.5F));
+    const engine::Vec2 inBand = nearCentre(period + (stripeWidth * 0.5F));
+    INFO("gap " << gap.x << "," << gap.y << ", in the band " << inBand.x << "," << inBand.y);
+    REQUIRE(outside(gap) < -AA_SIZE);  // both well inside the outline, past every fringe
+    REQUIRE(outside(inBand) < -AA_SIZE);
+    // TRUE when `p` lies in the triangle a b c or on its edge; a triangle with no area holds nothing.
+    const auto holds = [](engine::Vec2 a, engine::Vec2 b, engine::Vec2 c, engine::Vec2 p) {
+        const auto cross = [](engine::Vec2 o, engine::Vec2 u, engine::Vec2 v) {
+            return ((u.x - o.x) * (v.y - o.y)) - ((u.y - o.y) * (v.x - o.x));
+        };
+        if (!(std::abs(cross(a, b, c)) > 0.0F)) {
+            return false;
+        }
+        const float ab = cross(a, b, p);
+        const float bc = cross(b, c, p);
+        const float ca = cross(c, a, p);
+        const bool clockwise = ab >= 0.0F && bc >= 0.0F && ca >= 0.0F;
+        const bool counter = ab <= 0.0F && bc <= 0.0F && ca <= 0.0F;
+        return clockwise || counter;
+    };
+    std::size_t outOfRange = 0;
+    std::size_t stripeTriangles = 0;
+    std::size_t holdingGap = 0;
+    std::size_t holdingBand = 0;
+    for (std::size_t t = 0; t < indices.size(); t += 3U) {
+        const std::array<std::uint32_t, 3> corner{indices[t], indices[t + 1U], indices[t + 2U]};
+        if (std::any_of(corner.begin(), corner.end(), [&](std::uint32_t i) { return i >= vertices.size(); })) {
+            ++outOfRange;
+            continue;
+        }
+        const bool striped =
+            std::all_of(corner.begin(), corner.end(), [&](std::uint32_t i) { return vertices[i].color == stripe; });
+        if (!striped) {
+            continue;
+        }
+        ++stripeTriangles;
+        const engine::Vec2 a = vertices[corner[0]].pos;
+        const engine::Vec2 b = vertices[corner[1]].pos;
+        const engine::Vec2 c = vertices[corner[2]].pos;
+        holdingGap += holds(a, b, c, gap) ? 1U : 0U;
+        holdingBand += holds(a, b, c, inBand) ? 1U : 0U;
+    }
+    INFO(stripeTriangles << " stripe triangles; " << holdingGap << " hold the gap, " << holdingBand
+                         << " the band's middle");
+    CHECK(outOfRange == 0U);
+    CHECK(stripeTriangles > 0U);
+    CHECK(holdingBand >= 1U);
+    CHECK(holdingGap == 0U);
+
+    // SOURCE: the refusal arm and its restore, which no lane reaches (at the geometry above no piece is refused, so a
+    // dropped restore moves no vertex). The list's flags saved, the anti-aliased fill cleared ONLY under
+    // !hatchPieceTakesFringe(piece), and the saved flags written back on the line after the piece's fill, inside the
+    // band loop -- so a refused sliver never takes the next band's fringe, or the rest of the window's, with it.
+    const std::vector<std::string> chrome = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/panel_chrome_ui.cpp");
+    const auto loneBrace = [](const std::string& line) {
+        return line.find('}') != std::string::npos && line.find_first_not_of(" }") == std::string::npos;
+    };
+    const std::size_t loopAt = soleLineContaining(chrome, "for (int k = 0; k < bands; ++k)");
+    const std::size_t saveAt = soleLineContaining(chrome, "const ImDrawListFlags flags = list->Flags;");
+    const std::size_t clearAt = soleLineContaining(chrome, "ImDrawListFlags_AntiAliasedFill");
+    const std::size_t fillAt = soleLineContaining(chrome, "PathFillConvex(color)");
+    const std::size_t restoreAt = soleLineContaining(chrome, "list->Flags = flags;");
+    REQUIRE(restoreAt + 2U < chrome.size());
+    CHECK(loopAt < saveAt);
+    CHECK(saveAt + 2U == clearAt);
+    CHECK(chrome[clearAt - 1U].find("if (!hatchPieceTakesFringe(piece)) {") != std::string::npos);
+    CHECK(chrome[clearAt].find("list->Flags &= ~ImDrawListFlags_AntiAliasedFill;") != std::string::npos);
+    CHECK(loneBrace(chrome[clearAt + 1U]));  // the refusal's own scope closes on the next line
+    CHECK(fillAt > clearAt);
+    CHECK(restoreAt == fillAt + 1U);
+    CHECK(loneBrace(chrome[restoreAt + 1U]));  // the band loop closes here, and the well's range ends after it
+    CHECK(chrome[restoreAt + 2U].find("drawn.vertexEnd = list->VtxBuffer.Size;") != std::string::npos);
+    CHECK(countLinesContaining(chrome, "list->Flags") == 3U);  // the save, the clear, the restore: no other write
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: the Assets footer -- the path elided from the left, the right zone whole (task E.6.3, I326)") {
+    // A 1100 x 600 window, measured at uiScale 1: the side panels are hidden below, so the footer row is 1084 points
+    // wide (1074 on a frame whose panel scrolls), and a Mono-small cell advances 6.4615 points at small 14 (ImGui
+    // sizes Plex Mono by its 1300-unit ascent-to-descent height). The right zone, "thumbnails 0/256" and
+    // "Auto-refresh off", is 32 cells and one 16-point gap (222.8 points), so the left zone keeps 130 cells. The
+    // selection line is 160 cells -- the 128-character path, then its unknown size (an em dash), the elided GUID (13
+    // cells) and "new", each after a five-cell separator -- so it elides by 30 cells, while its shortest whole-segment
+    // form, the ellipsis, '/' and "model.txt" with those three (43 cells), fits in any window at least ~533 wide (~543
+    // on a frame whose panel scrolls). The WINDOW forces the elision, not the depth: at 1600 wide the left zone keeps
+    // 208 cells and the same line fits whole. Since the macOS pass's V2 fix the footer drops WHOLE segments
+    // (elideFooterSelection), so at this width the deep line reads the ellipsis, '/', and the folders from f02 on (128
+    // cells). The case asserts the whole segments and the state, never which folder leads: that moves with the font,
+    // the theme's gap and the state's label ("up to date" would need 135 cells and lead with f03). `wideName` is V2's
+    // own shape at this width: a 107-character name in one folder, whose name and details (139 cells) do not fit
+    // beside the ellipsis -- where the composed line lost its ellipsis and then its import state.
+    const std::string deep =
+        "f00_folder_level/f01_folder_level/f02_folder_level/f03_folder_level/f04_folder_level/"
+        "f05_folder_level/f06_folder_level/model.txt";
+    const std::string wideName =
+        "f00_folder_level/an_asset_name_wider_than_the_footer_left_zone_once_its_size_its_identity_and_its_import_"
+        "state_follow_it.txt";
+    // WINDOWS' PATH LIMITS, asserted on every lane so a deeper fixture fails here and not on the Windows lane alone.
+    // MS STL's <filesystem> calls CreateDirectoryW / CreateFileW without a "\\?\" prefix and no target ships a
+    // longPathAware manifest, so a folder must stay under 248 characters and a file under MAX_PATH (260, its NUL
+    // included). The root allowance covers the worst Windows root this fixture lands under, through `assets\`:
+    // C:\Users\runneradmin\AppData\Local\Temp\ (40; RUNNER~1, 37) + aero_imgui_layer_project_NNN\ (29, a three-digit
+    // counter) + MyGame\assets\ (14) = 83, taken as 90. The longest file the fixture makes is the sidecar's atomic
+    // temp, `model.txt.meta.aero-tmp` (writeTextFileAtomic, the scan's sidecar write).
+    constexpr std::size_t WINDOWS_ROOT_ALLOWANCE = 90;
+    const std::size_t deepestFolder = WINDOWS_ROOT_ALLOWANCE + deep.rfind('/');
+    const std::size_t sidecar = WINDOWS_ROOT_ALLOWANCE + deep.size() + engine::editor::ASSET_META_SUFFIX.size();
+    const std::size_t sidecarTemp = sidecar + engine::editor::ATOMIC_TEMP_SUFFIX.size();
+    CHECK(deepestFolder < 248U);
+    CHECK(sidecar < 260U);
+    REQUIRE(sidecarTemp < 260U);
+    const std::size_t wideSidecarTemp = WINDOWS_ROOT_ALLOWANCE + wideName.size() +
+                                        engine::editor::ASSET_META_SUFFIX.size() +
+                                        engine::editor::ATOMIC_TEMP_SUFFIX.size();
+    REQUIRE(wideSidecarTemp < 260U);  // the wide name's folder is deep's first, already checked above
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "assets footer i326", .width = 1100, .height = 600});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    const std::initializer_list<std::string_view> files{"top.txt", deep, wideName};
+    std::optional<engine::editor::EditorApp> app =
+        e63AssetsApp(*device, *window, ctx, files, engine::editor::DEFAULT_BOTTOM_DOCK_FRACTION);
+    e63HideSidePanels(*app);
+    auto* const browser = dynamic_cast<engine::editor::AssetBrowserPanel*>(app->panels().find("Assets"));
+    REQUIRE(browser != nullptr);
+    REQUIRE(browser->database() != nullptr);
+    // The import state the footer shows last, read off the selection's own record: the label its details end with.
+    const auto stateOf = [&browser](const std::string& path) {
+        const engine::editor::AssetRecord* const rec = browser->database()->findByPath(path);
+        REQUIRE(rec != nullptr);
+        REQUIRE((rec->state != engine::editor::AssetMetaState::Invalid));
+        REQUIRE_FALSE(rec->metaWriteFailed);
+        return "  -  " + std::string(engine::editor::importChangeLabel(rec->change));
+    };
+    // A selection IN the open folder's listing (the root, where the browser opens): its size is the listing's own,
+    // formatted -- the panel's in-listing arm. The deep and wide selections below sit outside it and read the em
+    // dash. The name, the size, the GUID's head and the state are a few dozen cells, far inside the 130 the left
+    // zone keeps, so the whole line is drawn (arm (1)) at any width a runner gives this window.
+    app->requestAssetBrowserSelectEntry("top.txt");
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+    {
+        const std::string& top = browser->chromeRecord().footerLeftText;
+        INFO("drawn: " << top);
+        std::error_code sizeError;
+        const std::uintmax_t topSize = std::filesystem::file_size(browser->root() + "/top.txt", sizeError);
+        REQUIRE_FALSE(sizeError);
+        const std::string topLead = "top.txt  -  " + engine::editor::formatFileSize(topSize) + "  -  ";
+        CHECK(top.starts_with(topLead));  // the name, then the listing's size
+        const engine::editor::AssetRecord* const topRec = browser->database()->findByPath("top.txt");
+        REQUIRE(topRec != nullptr);
+        const std::string topGuidHead = engine::formatGuid(topRec->guid).substr(0, 8);
+        CHECK(top.find(topGuidHead) != std::string::npos);  // the identity
+        CHECK(top.ends_with(stateOf("top.txt")));
+    }
+    app->requestAssetBrowserSelectEntry(deep);  // a database record, so the footer resolves it from the root listing
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+    const engine::editor::AssetChromeRecord& r = browser->chromeRecord();
+    REQUIRE_FALSE(r.footerLeftText.empty());
+    CHECK(r.footerLeftText.starts_with(AERO_GLYPH_ELLIPSIS));
+    CHECK(r.footerLeftText.find("model.txt") != std::string::npos);  // the name survives; the folders went
+    // The macOS pass's V2: what drawFooter DREW, at this fixture's real width. WHOLE segments follow the ellipsis (the
+    // composed line split "f01_folder_level" mid-word, "...el/f02_folder_level/"), and every detail the panel filled
+    // reaches the drawn line: the size right after the name (an em dash -- the selection is not in the open folder's
+    // listing, so its size is unknown), the GUID's head (read off the selection's own record, as the wide arm reads
+    // its own), and the import state last. A leading folder means the folders-only arm drew it, which keeps every
+    // detail, so these hold at any width a runner gives the window. Whole segments without the geometry: the
+    // ellipsis, then '/' and a "fNN_folder_level/" folder, and everything from that '/' to the name is a TAIL of the
+    // path -- the cut fell on a '/', whichever folder leads.
+    {
+        INFO("drawn: " << r.footerLeftText);
+        const std::string_view ellipsis = AERO_GLYPH_ELLIPSIS;
+        const std::string_view folder = "_folder_level/";
+        CHECK(r.footerLeftText.starts_with(AERO_GLYPH_ELLIPSIS "/f0"));
+        REQUIRE(r.footerLeftText.size() >= ellipsis.size() + 1U + 3U + folder.size());
+        const std::string_view lead = std::string_view(r.footerLeftText).substr(ellipsis.size() + 1U);
+        CHECK(lead[0] == 'f');
+        CHECK(std::isdigit(static_cast<unsigned char>(lead[1])) != 0);
+        CHECK(std::isdigit(static_cast<unsigned char>(lead[2])) != 0);
+        CHECK(lead.substr(3U, folder.size()) == folder);
+        const std::size_t leafAt = r.footerLeftText.find("/model.txt  -  ");
+        REQUIRE(leafAt != std::string::npos);
+        const std::size_t pathEnd = leafAt + std::string_view("/model.txt").size();
+        CHECK(deep.ends_with(r.footerLeftText.substr(ellipsis.size(), pathEnd - ellipsis.size())));
+        const std::string_view unknownSize = "/model.txt  -  " AERO_GLYPH_EM_DASH "  -  ";  // the name, the size
+        CHECK(r.footerLeftText.find(unknownSize) != std::string::npos);
+        const engine::editor::AssetRecord* const deepRec = browser->database()->findByPath(deep);
+        REQUIRE(deepRec != nullptr);
+        const std::string deepGuidHead = engine::formatGuid(deepRec->guid).substr(0, 8);
+        CHECK(r.footerLeftText.find(deepGuidHead) != std::string::npos);  // the identity
+        CHECK(r.footerLeftText.ends_with(stateOf(deep)));
+    }
+    REQUIRE(r.footerRightTexts.size() >= 2U);  // thumbnails and the watcher word, at least
+    CHECK(std::find(r.footerRightTexts.begin(), r.footerRightTexts.end(), "Auto-refresh off") !=
+          r.footerRightTexts.end());  // the watcher is OFF in this fixture, handed whole
+    // Every segment ONCE, this frame's: the right zone's texts are distinct by construction, so a duplicate is a
+    // list a missing per-frame clear let grow -- which the size floor and the find above would read as green (the
+    // code-review round's finding 13; AH17 pins the clear itself).
+    const auto distinct = [](std::vector<std::string> texts) {
+        std::sort(texts.begin(), texts.end());
+        return std::adjacent_find(texts.begin(), texts.end()) == texts.end();
+    };
+    CHECK(distinct(r.footerRightTexts));
+    // V2's own shape: the name and its details do not fit beside the ellipsis, so the composed line drew the name's
+    // front with NO leading ellipsis and cut the identity and the import state. Now the folder goes, then the identity
+    // (the GUID), then the size, before the name is cut -- and only down to its extension while the state is drawn.
+    // "/" + the name + every detail is 141 cells, more than this 1100 window's left zone (130 cells, above) holds at
+    // a UI scale of 1 or more, so the GUID is gone at ANY width a runner gives it; which of the three shapes below is
+    // drawn is the zone's own -- 123 cells keep the size, 117 the whole name -- and a narrower display (CI's macOS
+    // runner) can move it, so the case pins the three, never one. Measured here: the first, "/" + the name + "  -  "
+    // + the em dash + "  -  new".
+    app->requestAssetBrowserSelectEntry(wideName);
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+    const std::string& wide = browser->chromeRecord().footerLeftText;
+    REQUIRE_FALSE(wide.empty());
+    {
+        INFO("drawn: " << wide);
+        CHECK(wide.starts_with(AERO_GLYPH_ELLIPSIS));
+        CHECK(wide.ends_with(stateOf(wideName)));
+        CHECK(wide.find("_follow_it.txt  -  ") != std::string::npos);  // the extension kept, a detail after it
+        CHECK(wide.find("f00_folder_level") == std::string::npos);     // ANTI-VACUITY: elided, the folder gone
+        const engine::editor::AssetRecord* const wideRec = browser->database()->findByPath(wideName);
+        REQUIRE(wideRec != nullptr);
+        const std::string guidHead = engine::formatGuid(wideRec->guid).substr(0, 8);
+        CHECK(wide.find(guidHead) == std::string::npos);  // the identity shed before the name is cut
+        // Exactly one of the shapes arms (3)-(5) allow: the name whole after "/" with the size and the state; the name
+        // whole with the state; or the ellipsis, a tail of the name ending in its extension, and the state.
+        const std::string leaf = wideName.substr(wideName.rfind('/') + 1U);
+        const std::string state = stateOf(wideName);
+        const std::string withSize = AERO_GLYPH_ELLIPSIS "/" + leaf + "  -  " AERO_GLYPH_EM_DASH + state;
+        const std::string withState = AERO_GLYPH_ELLIPSIS "/" + leaf + state;
+        const std::string_view ellipsis = AERO_GLYPH_ELLIPSIS;
+        const bool framed = wide.size() >= ellipsis.size() + state.size();
+        const std::string_view nameTail =
+            framed ? std::string_view(wide).substr(ellipsis.size(), wide.size() - ellipsis.size() - state.size())
+                   : std::string_view();
+        const bool cutName = framed && std::string_view(leaf).ends_with(nameTail) && nameTail.ends_with(".txt");
+        const bool oneShape = wide == withSize || wide == withState || cutName;
+        CHECK(oneShape);
+    }
+    // A scan issue: an orphaned sidecar, then a rescan.
+    const engine::Guid orphan = engine::GuidGenerator{0xE63A326ULL}.next();
+    const std::string orphanMeta = engine::editor::writeMetaText(orphan);
+    REQUIRE(engine::editor::writeTextFileAtomic(browser->root() + "/ghost.png.meta", orphanMeta).empty());
+    app->requestAssetRescan();
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+    const std::vector<std::string>& right = browser->chromeRecord().footerRightTexts;
+    CHECK(std::find(right.begin(), right.end(), "1 issue") != right.end());
+    CHECK(distinct(right));
+    // AN INVALID SIDECAR, after the orphan arm so its exact count above is untouched: a sidecar that does not parse
+    // gives its asset a record with no identity (planAssetMetas' Invalid arm), which the scan never rewrites. The
+    // footer names it where the GUID would be and draws no import state, so the line ends with it.
+    REQUIRE(engine::editor::writeTextFileAtomic(browser->root() + "/bad.txt", "x").empty());
+    REQUIRE(engine::editor::writeTextFileAtomic(browser->root() + "/bad.txt.meta", "not json").empty());
+    app->requestAssetRescan();
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+    const engine::editor::AssetRecord* const badRec = browser->database()->findByPath("bad.txt");
+    REQUIRE(badRec != nullptr);
+    REQUIRE((badRec->state == engine::editor::AssetMetaState::Invalid));  // ANTI-VACUITY: the scan read it invalid
+    app->requestAssetBrowserSelectEntry("bad.txt");
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+    {
+        const std::string& bad = browser->chromeRecord().footerLeftText;
+        INFO("drawn: " << bad);
+        CHECK(bad.ends_with("  -  invalid .meta"));
+    }
+    // NO SIDECAR: a file the open listing shows and the database never scanned. The watcher is OFF here and nothing
+    // below requests a rescan; Show hidden, toggled on and back off, re-lists the folder from disk without one
+    // (ToggleHidden's arm clears the listings and requests no rescan). Drawn at all only because the listing holds
+    // it: a selection in neither the listing nor the database draws nothing.
+    REQUIRE(engine::editor::writeTextFileAtomic(browser->root() + "/nometa.txt", "x").empty());
+    app->requestAssetBrowserToggleHidden();
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+    app->requestAssetBrowserToggleHidden();  // back to the default
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+    REQUIRE(browser->database()->findByPath("nometa.txt") == nullptr);  // ANTI-VACUITY: never scanned
+    app->requestAssetBrowserSelectEntry("nometa.txt");
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+    {
+        const std::string& noMeta = browser->chromeRecord().footerLeftText;
+        INFO("drawn: " << noMeta);
+        REQUIRE_FALSE(noMeta.empty());
+        CHECK(noMeta.ends_with("  -  no .meta"));
+    }
+    // FT12's re-pinned line, from this side: the word reaches the footer's field whole.
+    const std::vector<std::string> code = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/asset_browser_panel.cpp");
+    CHECK(countLinesContaining(code, "footerText.watcher = assetFooterWatchText(") == 1U);
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+// ---- task E.6.3, step 7: the Viewport's view chip, stats card, hint chips and corner widget ----------------------
+
+TEST_CASE("editor: the viewport HUD -- placed off the recorded image, stats from fresh reads (task E.6.3, I327)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "viewport hud i327", .width = 1280, .height = 800});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = e62App(*device, *window, ctx);
+    auto* const viewport = dynamic_cast<engine::editor::ViewportPanel*>(app->panels().find("Viewport"));
+    REQUIRE(viewport != nullptr);
+    if (e63HudUnavailable(*app, *viewport)) {
+        return;
+    }
+    const std::uint64_t before = viewport->hudRecord().framesRecorded;
+    e62Ticks(*app, 3);  // rendered at least twice, so the latch the HUD draws holds a real frame
+    const engine::editor::ViewportHudRecord& r = viewport->hudRecord();
+    REQUIRE(r.framesRecorded > before);
+    const float s = app->uiScale();
+    const float inset = 14.0F * s;  // hudInset, restated
+    // THE IMAGE: the recorded item rect IS the size the Image was handed (I306's identity shape).
+    CHECK(std::abs((r.imageMax.x - r.imageMin.x) - r.imageAvail.x) <= 0.5F);
+    CHECK(std::abs((r.imageMax.y - r.imageMin.y) - r.imageAvail.y) <= 0.5F);
+    // Every shown rect's outer edges on the recorded image's corner, hudInset in.
+    REQUIRE(r.layout.chip.shown);
+    CHECK(std::abs(r.layout.chip.min.x - (r.imageMin.x + inset)) <= 0.5F);
+    CHECK(std::abs(r.layout.chip.min.y - (r.imageMin.y + inset)) <= 0.5F);
+    for (const engine::editor::HudRect& hint : r.layout.hints) {
+        if (hint.shown) {
+            CHECK(std::abs(hint.max.y - (r.imageMax.y - inset)) <= 0.5F);
+        }
+    }
+    CHECK(std::abs(r.layout.hints[0].min.x - (r.imageMin.x + inset)) <= 0.5F);
+    // THE CHIP: the live projection, in Plex Sans at the small size.
+    CHECK(r.chipLabel == "Perspective 60" AERO_GLYPH_DEGREE);
+    CHECK(r.chipFontName == "IBM Plex Sans");  // BodySmall: never Mono, which carries no icons
+    CHECK(std::abs(r.chipFontSize - std::floor((14.0F * s) + 0.5F)) <= 0.5F);  // smallSize, rounded as ImGui does
+
+    // THE PER-PASS COUNTS against INDEPENDENT reads, on two consecutive frames that must agree -- a lifetime total
+    // would grow and fail the second. Two Cubes BEHIND the camera (the default scene draws one, entity_ops.cpp:242-273)
+    // make lastFrameDrawn (1) != lastFrameCulled (2) -- ONE behind would read 1 == 1.
+    const engine::editor::EditorCamera* const camera = app->viewportCamera();
+    REQUIRE(camera != nullptr);
+    for (const float back : {5.0F, 7.0F}) {
+        const engine::Entity behind = app->world().create();
+        engine::Transform behindTransform{};
+        behindTransform.position = camera->position() - (camera->forward() * back);
+        REQUIRE(app->world().add<engine::Transform>(behind, behindTransform) != nullptr);
+        REQUIRE(app->world().add<engine::MeshRenderer>(behind, engine::MeshRenderer{}) != nullptr);
+    }
+    e62Ticks(*app, 3);
+    const engine::render::ForwardRenderer* const forward = viewport->sceneForwardRenderer();
+    REQUIRE(forward->lastFrameDrawn() >= 1U);  // ANTI-VACUITY: the default Cube drew
+    REQUIRE(forward->lastFrameCulled() >= 2U);
+    REQUIRE(forward->lastFrameDrawn() != forward->lastFrameCulled());
+    for (int frame = 0; frame < 2; ++frame) {
+        CAPTURE(frame);
+        const std::size_t resolveBefore = viewport->postProcess()->resolveCount();
+        const std::size_t compositeBefore = viewport->selectionOutlinePass()->compositeCount();
+        REQUIRE(app->tick());
+        const engine::editor::ViewportDrawCounts& c = r.drawCounts;
+        CHECK(c.forward == forward->lastFrameDrawn());
+        CHECK(c.shadow == forward->lastFrameShadowDrawn());
+        CHECK(c.selectionMask == forward->lastFrameSelectionMaskDrawn());
+        CHECK(c.debug == viewport->debugDraw()->lastFrameDrawCalls());
+        CHECK(c.resolve == 1U);
+        CHECK(viewport->postProcess()->resolveCount() == resolveBefore + 1U);  // one resolve per tick
+        CHECK(c.sky == 1U);        // the default Environment draws the sky once per frame (F21; no panel accessor)
+        CHECK(c.composite == 0U);  // an empty selection composites nothing...
+        CHECK(viewport->selectionOutlinePass()->compositeCount() == compositeBefore);  // ...and moves nothing
+    }
+    // THE ROWS, when the card is laid out (a WARN otherwise: a runner's window decides).
+    WARN(r.layout.stats.shown);
+    if (r.layout.stats.shown) {
+        REQUIRE(r.statsRows.size() == engine::editor::VIEWPORT_STATS_ROW_COUNT);
+        CHECK(r.statsRows[3].label == "Entities");
+        CHECK(r.statsRows[3].value == std::to_string(app->world().entityCount()));
+        CHECK(r.statsRows[2].label == "Triangles");
+        CHECK(r.statsRows[2].value == std::to_string(forward->lastFrameTriangles()));  // the previous frame's
+        CHECK(r.statsRows[4].value == AERO_GLYPH_EM_DASH);
+        std::string drawCalls;
+        engine::editor::abbreviateCount(engine::editor::viewportDrawCalls(r.drawCounts), drawCalls);
+        CHECK(r.statsRows[1].value == drawCalls);                                       // the formatting arm
+        CHECK(engine::editor::viewportDrawCalls(r.drawCounts) > r.drawCounts.forward);  // anti-vacuity: a SUM
+        // THE FRAME ROW is the ONE readout's ms half -- the status bar's own text, the same tick.
+        const auto start = std::chrono::steady_clock::now();
+        int frames = 0;
+        while (frames < 600 && std::chrono::steady_clock::now() - start < std::chrono::milliseconds(700)) {
+            REQUIRE(app->tick());
+            ++frames;
+        }
+        REQUIRE(app->tick());
+        const std::string& status = app->shellChromeRecord().statusFrame;
+        const std::string_view dot = AERO_GLYPH_MIDDLE_DOT " ";
+        REQUIRE(status.find(dot) != std::string::npos);
+        CHECK(r.statsRows[0].value == status.substr(status.find(dot) + dot.size()));
+        CHECK(r.statsRows[0].value != "-- ms");
+    }
+    // THE TOGGLE: the card goes, and its old centre is claimed by nothing.
+    const engine::editor::HudRect oldStats = r.layout.stats;
+    viewport->requestStatsVisible(false);
+    e62Ticks(*app, 2);
+    CHECK_FALSE(viewport->statsVisible());
+    CHECK_FALSE(r.layout.stats.shown);
+    const engine::Vec2 oldCentre{(oldStats.min.x + oldStats.max.x) * 0.5F, (oldStats.min.y + oldStats.max.y) * 0.5F};
+    CHECK_FALSE(engine::editor::hudOwnsPoint(r.layout, oldCentre));
+
+    // SOURCE: the readout is borrowed, never owned; the HUD draws between the selection overlay and the widget.
+    const std::vector<std::string> code = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/viewport_panel.cpp");
+    const std::vector<std::string> header = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/viewport_panel.hpp");
+    CHECK(countLinesContaining(header, "FrameTimeReadout") == countLinesContaining(header, "const FrameTimeReadout*"));
+    CHECK(countLinesContaining(code, "FrameTimeReadout ") == countLinesContaining(code, "const FrameTimeReadout "));
+    const std::size_t hudAt = soleLineContaining(code, "drawHud(context, hudImageMin, hudImageMax, drawExtent);");
+    CHECK(soleLineContaining(code, "drawSelectionOverlay(context,") < hudAt);
+    CHECK(hudAt < soleLineContaining(code, "drawViewAxisGizmo();"));
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: every drawn HUD rect claims its presses, and nothing else does (task E.6.3, I328)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "viewport hud i328", .width = 1280, .height = 800});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = e62App(*device, *window, ctx);
+    auto* const viewport = dynamic_cast<engine::editor::ViewportPanel*>(app->panels().find("Viewport"));
+    REQUIRE(viewport != nullptr);
+    if (e63HudUnavailable(*app, *viewport)) {
+        return;
+    }
+    e62Ticks(*app, 3);
+    const engine::editor::ViewportHudRecord& r = viewport->hudRecord();
+    REQUIRE(r.framesRecorded > 0U);
+    // NO WIDGET arm (a zero image rect), so only the row and the HUD can answer -- the claims under test.
+    std::size_t shown = 0;
+    for (const engine::editor::HudRect* rect :
+         {&r.layout.chip, &r.layout.stats, &r.layout.hints[0], &r.layout.hints[1], &r.layout.flyChip}) {
+        if (!rect->shown) {
+            continue;
+        }
+        ++shown;
+        const engine::Vec2 centre{(rect->min.x + rect->max.x) * 0.5F, (rect->min.y + rect->max.y) * 0.5F};
+        CHECK(viewport->overlayOwnsPress(centre, engine::Vec2{}, engine::Vec2{}));
+    }
+    REQUIRE(shown >= 2U);  // ANTI-VACUITY: the chip and at least one more rect really drew
+    const engine::Vec2 middle{(r.imageMin.x + r.imageMax.x) * 0.5F, (r.imageMin.y + r.imageMax.y) * 0.5F};
+    REQUIRE_FALSE(engine::editor::hudOwnsPoint(r.layout, middle));
+    CHECK_FALSE(viewport->overlayOwnsPress(middle, engine::Vec2{}, engine::Vec2{}));  // the ordinary pick survives
+
+    // SOURCE: the free function on exactly two code lines (the pick's claim and ImGuizmo's), no member wrapper, the
+    // view-axis count unmoved (I118), and the Enable line byte-identical to the branch point's.
+    const std::vector<std::string> code = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/viewport_panel.cpp");
+    CHECK(countLinesContaining(code, "hudOwnsPoint(") == 2U);
+    CHECK(countLinesContaining(code, "ViewportPanel::hudOwnsPoint") == 0U);
+    CHECK(countLinesContaining(code, "viewAxisOwnsPoint") == 3U);
+    const std::size_t enableAt = soleLineContaining(code, "ImGuizmo::Enable(gesture.gesture");
+    CHECK(code[enableAt].find("ImGuizmo::Enable(gesture.gesture == CameraGesture::None && !widgetOwnsCursor && "
+                              "!viewOptionsOpenValue);") != std::string::npos);
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: the view-axis widget sits 23 in from the bottom-right, inside its circle (task E.6.3, I329)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "viewport axis i329", .width = 1280, .height = 800});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = e62App(*device, *window, ctx);
+    auto* const viewport = dynamic_cast<engine::editor::ViewportPanel*>(app->panels().find("Viewport"));
+    REQUIRE(viewport != nullptr);
+    if (e63HudUnavailable(*app, *viewport)) {
+        return;
+    }
+    e62Ticks(*app, 3);
+    const engine::editor::ViewportHudRecord& r = viewport->hudRecord();
+    REQUIRE(r.framesRecorded > 0U);
+    REQUIRE(r.viewAxisCircleRadius > 0.0F);  // ANTI-VACUITY: the widget drew this frame
+    const float s = app->uiScale();
+    // Against the RECORDED image -- never rebuilt from the widget's own rect.
+    CHECK(std::abs(r.viewAxisCornerMax.x - (r.imageMax.x - (23.0F * s))) <= 0.5F);
+    CHECK(std::abs(r.viewAxisCornerMax.y - (r.imageMax.y - (23.0F * s))) <= 0.5F);
+    CHECK(std::abs(r.viewAxisCircleRadius - (43.0F * s)) <= 1e-3F);  // half-extent 38 + gap 5
+    // The circle's outer edge 18 in from the image's corner, on both axes -- the mock's inset.
+    CHECK(std::abs((r.imageMax.x - (r.viewAxisCircleCenter.x + r.viewAxisCircleRadius)) - (18.0F * s)) <= 0.5F);
+    CHECK(std::abs((r.imageMax.y - (r.viewAxisCircleCenter.y + r.viewAxisCircleRadius)) - (18.0F * s)) <= 0.5F);
+    // ...and no HUD rect under the CIRCLE it drew (the code-review round): the circle reaches viewAxisCircleGap past
+    // the half-extent rect at the middle of each SIDE (43 against 38 at scale 1; the rect's corners, 38 x sqrt(2) =
+    // 53.7 out, lie outside it) and draws last, so the recorded centre +- radius is the box a shown rect must clear.
+    const engine::Vec2 circleMin{r.viewAxisCircleCenter.x - r.viewAxisCircleRadius,
+                                 r.viewAxisCircleCenter.y - r.viewAxisCircleRadius};
+    const engine::Vec2 circleMax{r.viewAxisCircleCenter.x + r.viewAxisCircleRadius,
+                                 r.viewAxisCircleCenter.y + r.viewAxisCircleRadius};
+    for (const engine::editor::HudRect* rect :
+         {&r.layout.chip, &r.layout.stats, &r.layout.hints[0], &r.layout.hints[1]}) {
+        if (rect->shown) {
+            const bool besideX = rect->max.x <= circleMin.x || circleMax.x <= rect->min.x;
+            const bool besideY = rect->max.y <= circleMin.y || circleMax.y <= rect->min.y;
+            const bool apart = besideX || besideY;
+            CHECK(apart);
+        }
+    }
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: the View popover as source text -- the chip, the headings, Stats, the clamp (task E.6.3, I330)") {
+    const std::vector<std::string> code = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/viewport_panel.cpp");
+    REQUIRE(code.size() > 100U);  // ANTI-VACUITY: the file was really read
+    CHECK(countLinesContaining(code, "chipButton(") == 1U);
+    CHECK(countLinesContaining(code, "SmallButton(\"View\")") == 0U);
+    CHECK(countLinesContaining(code, "roleText(ChromeRole::TextMuted") == 2U);  // Display and Overlays (D11)
+    CHECK(countLinesContaining(code, "TextDisabled") == 0U);
+    CHECK(countLinesContaining(code, "Checkbox(\"Stats\"") == 1U);
+    // The popover's position comes from E.3.3's TESTED clamp, named -- never a hand-placed corner.
+    const std::size_t anchorAt = soleLineContaining(code, "assetPickerAnchor(");
+    const std::size_t positionAt = soleLineContaining(code, "ImGui::SetNextWindowPos(ImVec2(anchor.pos.x");
+    CHECK(anchorAt < positionAt);
+    // The widths through the moved constants; the old names survive only INSIDE the new ones.
+    CHECK(countLinesContaining(code, "VIEW_OPTIONS_COMBO_FONT_MULTIPLE") == 1U);
+    CHECK(countLinesContaining(code, "VIEW_OPTIONS_SLIDER_FONT_MULTIPLE") == 1U);
+    CHECK(countLinesContaining(code, "OPTIONS_COMBO_FONT_MULTIPLE") == 1U);
+    CHECK(countLinesContaining(code, "OPTIONS_SLIDER_FONT_MULTIPLE") == 1U);
+    // The chip draws in BodySmall: its body in panel_chrome_ui.cpp names no Mono face (Mono carries no icons, D9).
+    const std::vector<std::string> chrome = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/panel_chrome_ui.cpp");
+    const std::size_t begin = soleLineContaining(chrome, "ChipDraw chipButton(");
+    std::size_t end = begin;
+    while (end < chrome.size() && chrome[end] != "}") {
+        ++end;
+    }
+    REQUIRE(end < chrome.size());
+    REQUIRE(end - begin >= 5U);  // a real body
+    for (std::size_t i = begin; i < end; ++i) {
+        CAPTURE(chrome[i]);
+        CHECK(chrome[i].find("editorFonts().mono") == std::string::npos);
+        CHECK(chrome[i].find("PanelFace::Mono") == std::string::npos);  // MonoSmall included
+    }
+}
+
+TEST_CASE("editor: a re-opened View popover is clamped from its first shown frame (task E.6.3, I342)") {
+    // The code-review round's finding 17. BeginPopup is AlwaysAutoResize (imgui.cpp:13201), and an opening's first
+    // frame is Appearing (:7864): ImGui hides it and resets its size and content to zero (:8098-8107), so the size read
+    // there is an auto-fit of NO content. Latched, it overwrote the previous opening's real size, and the first SHOWN
+    // frame was placed under the chip unclamped -- past a short image's bottom -- before jumping into place a frame
+    // later. This TU never sees imgui.h, so the image is cut by the OS window's height: the Viewport is the dockspace's
+    // central node, which takes every point the window gains or loses (imgui.cpp:20321-20331).
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "view popover i342", .width = 900, .height = 600});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = e62App(*device, *window, ctx);
+    auto* const viewport = dynamic_cast<engine::editor::ViewportPanel*>(app->panels().find("Viewport"));
+    REQUIRE(viewport != nullptr);
+    if (e63HudUnavailable(*app, *viewport)) {
+        return;
+    }
+    const engine::editor::ViewportHudRecord& r = viewport->hudRecord();
+    REQUIRE(r.layout.chip.shown);
+
+    // THE FIRST OPENING measures the popover. Its appearing frame is hidden, so it records no rect.
+    viewport->requestViewOptionsOpen(true);
+    REQUIRE(app->tick());
+    REQUIRE(viewport->viewOptionsOpen());
+    CHECK(r.viewOptionsMax == engine::Vec2{});
+    e62Ticks(*app, 2);
+    const float popoverHeight = r.viewOptionsMax.y - r.viewOptionsMin.y;
+    REQUIRE(popoverHeight > 0.0F);  // shown, and recorded
+    // The chip's bottom, below the image's top: the room the clamp can give back by placing over the chip.
+    const float chipDrop = r.layout.chip.max.y - r.imageMin.y;
+    REQUIRE(chipDrop > 0.0F);
+    viewport->requestViewOptionsOpen(false);
+    e62Ticks(*app, 2);
+    REQUIRE_FALSE(viewport->viewOptionsOpen());
+    CHECK(r.viewOptionsMax == engine::Vec2{});  // closed: nothing recorded
+
+    // THE CUT: the image as tall as the popover plus half the chip's drop -- room for the popover inside the image, and
+    // none for it under the chip.
+    const engine::platform::WindowSize full = window->size();
+    const float imageHeight = r.imageMax.y - r.imageMin.y;
+    const float wanted = popoverHeight + (chipDrop * 0.5F);
+    // The image takes the whole change, the central node's rule above.
+    const float cutPoints = static_cast<float>(full.height) + wanted - imageHeight;
+    const auto cutHeight = static_cast<std::int32_t>(std::lround(cutPoints));
+    window->setSize(full.width, cutHeight);
+    e62Ticks(*app, 3);
+    const float cutImage = r.imageMax.y - r.imageMin.y;
+    const bool popoverFits = popoverHeight <= cutImage;
+    const bool belowOverflows = r.layout.chip.max.y + popoverHeight > r.imageMax.y;
+    if (!(popoverFits && belowOverflows && r.layout.chip.shown)) {
+        MESSAGE("I342: the window took height " << window->size().height << " (asked " << cutHeight << "), image "
+                                                << cutImage << " for a popover " << popoverHeight << " tall");
+        WARN(popoverFits);  // geometry: the image is not in the band the claim needs -- skip the rest
+        WARN(belowOverflows);
+        app->requestQuit();
+        CHECK(app->tick() == false);
+        app.reset();
+        return;
+    }
+
+    // THE RE-OPEN: hidden first, then shown INSIDE the image on its first shown frame, placed with the previous
+    // opening's size.
+    viewport->requestViewOptionsOpen(true);
+    REQUIRE(app->tick());
+    REQUIRE(viewport->viewOptionsOpen());
+    CHECK(r.viewOptionsMax == engine::Vec2{});  // the appearing frame: hidden, nothing recorded
+    REQUIRE(app->tick());
+    const engine::Vec2 shownMin = r.viewOptionsMin;
+    const engine::Vec2 shownMax = r.viewOptionsMax;
+    CAPTURE(shownMin.y);
+    CAPTURE(shownMax.y);
+    CAPTURE(r.imageMax.y);
+    // ANTI-VACUITY: the popover is taller than the room under the chip, so the unclamped anchor would overflow.
+    REQUIRE(shownMax.y - shownMin.y > r.imageMax.y - r.layout.chip.max.y);
+    // ImGui truncates a window's position (imgui.cpp:9128), so a min edge may sit up to a point outside.
+    CHECK(shownMin.x > r.imageMin.x - 1.0F);
+    CHECK(shownMin.y > r.imageMin.y - 1.0F);
+    CHECK(shownMax.x <= r.imageMax.x);
+    CHECK(shownMax.y <= r.imageMax.y);
+    // ...and the next frame places it where the first did: no jump.
+    REQUIRE(app->tick());
+    CHECK(r.viewOptionsMin.x == shownMin.x);
+    CHECK(r.viewOptionsMin.y == shownMin.y);
+    CHECK(r.viewOptionsMax.x == shownMax.x);
+    CHECK(r.viewOptionsMax.y == shownMax.y);
+
+    viewport->requestViewOptionsOpen(false);
+    e62Ticks(*app, 2);
+    REQUIRE_FALSE(viewport->viewOptionsOpen());
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: the triangle stat end to end -- N cubes in view, M behind, N x 12 (task E.6.3, I335)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "triangle stat i335", .width = 1280, .height = 800});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = e62App(*device, *window, ctx);
+    auto* const viewport = dynamic_cast<engine::editor::ViewportPanel*>(app->panels().find("Viewport"));
+    REQUIRE(viewport != nullptr);
+    if (e63HudUnavailable(*app, *viewport)) {
+        return;
+    }
+    const engine::editor::EditorCamera* const camera = app->viewportCamera();
+    REQUIRE(camera != nullptr);
+    // The default scene's Cube counts IN N: two more beside it in view (the default pose frames a unit cube from 8
+    // units at 60 degrees), and M behind the eye. A primitive cube is 36 indices -- 12 triangles, restated.
+    constexpr std::size_t N = 3;
+    constexpr std::size_t M = 2;
+    const auto addCube = [&app](engine::Vec3 position) {
+        const engine::Entity cube = app->world().create();
+        engine::Transform transform{};
+        transform.position = position;
+        REQUIRE(app->world().add<engine::Transform>(cube, transform) != nullptr);
+        REQUIRE(app->world().add<engine::MeshRenderer>(cube, engine::MeshRenderer{}) != nullptr);
+    };
+    addCube(engine::Vec3{1.5F, 0.0F, 0.0F});
+    addCube(engine::Vec3{-1.5F, 0.0F, 0.0F});
+    for (std::size_t i = 0; i < M; ++i) {
+        addCube(camera->position() - (camera->forward() * (4.0F + (2.0F * static_cast<float>(i)))));
+    }
+    e62Ticks(*app, 3);
+    const engine::render::ForwardRenderer* const forward = viewport->sceneForwardRenderer();
+    CHECK(forward->lastFrameDrawn() == N);   // the cull agrees: N drawn...
+    CHECK(forward->lastFrameCulled() == M);  // ...M culled (S30's witness, with CD12)
+    CHECK(forward->lastFrameTriangles() == N * 12U);
+    const engine::editor::ViewportHudRecord& r = viewport->hudRecord();
+    WARN(r.layout.stats.shown);
+    if (r.layout.stats.shown) {
+        REQUIRE(r.statsRows.size() == engine::editor::VIEWPORT_STATS_ROW_COUNT);
+        CHECK(r.statsRows[2].value == std::to_string(N * 12U));  // the frame after the render
+    }
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+// ---- task E.6.3, step 8: the Material, Import Details and Project Settings cards --------------------------------
+
+TEST_CASE("editor: Material cards -- eight, panel-owned bits, Apply primary, both modes (task E.6.3, I331)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "material cards i331", .width = 1280, .height = 1000});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    const std::string assetsRoot = created.root + "/assets";
+    REQUIRE(engine::editor::writeTextFileAtomic(assetsRoot + "/full.aeromat", FULL_AEROMAT_TEXT).empty());
+    REQUIRE(writeBinaryFixture(assetsRoot + "/wood.png", TINY_PNG_RED.data(), TINY_PNG_RED.size()).empty());
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = created.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    app->panels().setVisible("Console", false);
+    app->panels().setVisible("Inspector", false);  // so Material wins the Right dock tab (I170's fixture)
+    REQUIRE(app->tick());
+    app->requestAssetBrowserSelectEntry("full.aeromat");
+    e62Ticks(*app, 4);
+    REQUIRE(app->materialTargetPath() == "full.aeromat");
+    auto* const material = dynamic_cast<engine::editor::MaterialPanel*>(app->panels().find("Material"));
+    REQUIRE(material != nullptr);
+    const engine::editor::CardRecord& r = material->cardRecord();
+    const std::uint64_t before = r.framesRecorded;
+    REQUIRE(app->tick());
+    REQUIRE(r.framesRecorded > before);
+
+    // (a) eight cards, every body open (the bits ship true), Apply through the primary helper.
+    CHECK(r.cardsDrawn == 8U);
+    CHECK(r.bodiesSubmitted == 8U);
+    CHECK(r.primaryButtonsDrawn == 1U);
+    app->requestMaterialSectionOpen(2, false);  // through the PANEL's bit -- I175's seam
+    e62Ticks(*app, 2);
+    CHECK(r.cardsDrawn == 8U);
+    CHECK(r.bodiesSubmitted == 7U);
+    REQUIRE(r.cards.size() == 8U);
+    CHECK_FALSE(r.cards[2].open);
+    CHECK_FALSE(r.cards[2].headerRuleDrawn);  // a CLOSED card draws no rule (I336's closed-card arm)
+
+    // (b) I318's Material half: one right edge for every card (a leaked narrowing moves every LATER card -- S5), the
+    // last ##rows table on the narrowed edge, and the slot row's Clear ending on it.
+    const engine::editor::CardEntryRecord& first = r.cards.front();
+    REQUIRE(first.open);
+    for (const engine::editor::CardEntryRecord& card : r.cards) {
+        CHECK(std::abs(card.outerMin.x - first.outerMin.x) <= 0.5F);
+        CHECK(std::abs(card.outerMax.x - first.outerMax.x) <= 0.5F);
+        if (card.open) {
+            CHECK(std::abs(card.bodyMax.x - first.bodyMax.x) <= 0.5F);
+            CHECK(card.bodyMax.x < card.outerMax.x);  // ANTI-VACUITY: the body IS narrowed
+        }
+    }
+    REQUIRE(r.lastBodyTableMaxX > 0.0F);
+    CHECK(std::abs(r.lastBodyTableMaxX - first.bodyMax.x) <= 1.0F);  // ImTrunc(CalcItemSize) at a fractional scale
+    REQUIRE(r.lastSlotClearMaxX > 0.0F);
+    CHECK(std::abs(r.lastSlotClearMaxX - first.bodyMax.x) <= 0.5F);  // assetReferenceFieldWidth leaves Clear's width
+
+    // (c) I336's Material half: the header item is the span plus this host's overhang -- IM_TRUNC(WindowPadding.x x
+    // 0.5) in the panel window, 0 inside the FixedRegions ##body child (D4). The strip and the outline are ONE recorded
+    // span and the title x ONE pure layout (PC10's), so neither is re-derived here: that would compare the record
+    // with itself. The placed-body table arms are the Inspector half's, where ##fields is a body's ONLY item -- here a
+    // slot section's ##rows follows its slot row and precedes its sampler disclosure, so the frame's LAST table need
+    // not bound its body. The host is the one the panel RECORDED beside its BeginChild (the code-review round's finding
+    // 12), so each host's overhang is asserted from the host, never inferred from the overhang itself: a ##body child
+    // that gained window padding overhangs by the panel window's amount and would satisfy either reading.
+    const float s = app->uiScale();
+    const float windowOverhang = std::trunc(e63StyleX(s, "WindowPadding") * 0.5F);
+    REQUIRE(windowOverhang > 0.5F);  // ANTI-VACUITY: the hosts' overhangs differ, so the per-host check can fail
+    const bool childHostA = r.bodyInChild;
+    const float overhangA = first.stripMinX - first.headerItemMin.x;
+    CHECK(std::abs(overhangA - (childHostA ? 0.0F : windowOverhang)) <= 0.5F);
+    REQUIRE_FALSE(r.cards[2].open);  // ANTI-VACUITY: one CLOSED record; `first` is REQUIREd open in (b)
+    for (std::size_t i = 0; i < r.cards.size(); ++i) {
+        CAPTURE(i);
+        const engine::editor::CardEntryRecord& card = r.cards[i];
+        CHECK(std::abs((card.stripMinX - card.headerItemMin.x) - overhangA) <= 0.5F);
+        CHECK(std::abs((card.headerItemMax.x - card.stripMaxX) - overhangA) <= 0.5F);
+        CHECK(card.headerRuleDrawn == card.open);  // the rule's vertices reached the list iff the card is open
+        // The chevron's INK at its drawn size, both glyphs, as the Inspector half checks them (the code-review round's
+        // finding 9): ONE face size, from the open chevron's ink, so card 2's chevron-right (ink 334..666 of a 0..666
+        // box) is the open stroke rotated -- 3.5 x 332 / 582 = 2.0 dp wide, centred in the 3.5-dp column to I336's
+        // half point.
+        CHECK(card.chevronInkWidth < card.chevronBoxWidth);
+        // The record IS the drawing (I336's arm), wherever the glyph reached the list: a card below the panel's clip
+        // rect draws no glyph -- RenderText returns before its first vertex (imgui_draw.cpp:5793-5794) -- and records
+        // no quad (measured: cards 4 to 7 here).
+        if (card.chevronQuadMaxX > card.chevronQuadMinX) {
+            CHECK(std::abs(card.chevronBoxMinX - card.chevronQuadMinX) <= 1e-3F);
+            CHECK(std::abs((card.chevronBoxMinX + card.chevronBoxWidth) - card.chevronQuadMaxX) <= 1e-3F);
+        }
+        CHECK(card.chevronSize == first.chevronSize);
+        if (card.open) {
+            CHECK(std::abs(card.chevronInkWidth - (3.5F * s)) <= 1.0F);
+            // The values handed to SetCursorScreenPos and to the fill and outline, against D4's literal: they catch
+            // a mutated formula, never a draw that ignores them.
+            CHECK(std::abs(card.topPadding - (10.0F * s)) <= 1.0F);
+            CHECK(std::abs(card.bottomPadding - (10.0F * s)) <= 1.0F);
+        } else {
+            CHECK(std::abs(card.chevronInkWidth - (2.0F * s)) <= 1.0F);
+            const float inkCentre = card.chevronInkMinX + (card.chevronInkWidth * 0.5F);
+            CHECK(std::abs(inkCentre - (card.stripMinX + (10.0F * s) + (1.75F * s))) <= 0.5F);
+        }
+        if (i + 1U < r.cards.size()) {
+            CHECK(std::abs(card.gapAfter - (12.0F * s)) <= 1.0F);
+        }
+    }
+    // ANTI-VACUITY: the first card's glyph, at the top of the cards, reached the list. Whether the closed card's did
+    // depends on the window the display allows (measured: its header at y 752..784 of a 1000-tall window), so it is
+    // a WARN; I336 holds both states against their quads at the top of the Inspector.
+    REQUIRE(first.chevronQuadMaxX > first.chevronQuadMinX);
+    WARN(r.cards[2].chevronQuadMaxX > r.cards[2].chevronQuadMinX);
+
+    // (d) THE MODE FLIP at ONE dock width: only the height changes, so the reset layout gives the Right node the same
+    // width, and the Material panel crosses its FixedRegions / Scrolling boundary (D4). The boundary depends on the
+    // window height alone (the Right dock spans the work area; the faces and the UI scale are the same on every lane),
+    // and at UI scale 1 it sits between heights 381 and 400 (measured: the ##body child at 1000, 420 and 400, the panel
+    // window at 380 and every height down to 200). A display only ever delivers a SMALLER window than requested, so a
+    // 300-tall window is the panel-window host everywhere, and the cross-host arm runs wherever the 1000 request was a
+    // ##body child (it WARNs otherwise). The bit survives the flip. The resize asks for the width the display
+    // DELIVERED, never the 1280 the window asked for: on CI's macOS runner (a 1024-wide display) the old 1280 x 300
+    // resize moved the first card by 194 points at its left edge and 256 at its right -- the Right node following a
+    // 256-point wider window (0.76 x 256 at the left) -- so the cross-host arm also requires the two delivered widths
+    // to agree.
+    const engine::Vec2 outerMinA = first.outerMin;
+    const engine::Vec2 outerMaxA = first.outerMax;
+    const float bodyInsetA = first.outerMax.x - first.bodyMax.x;
+    const engine::platform::WindowSize deliveredA = window->size();
+    window->setSize(deliveredA.width, 300);
+    e62Ticks(*app, 3);
+    app->requestLayoutReset();
+    e62Ticks(*app, 6);
+    const std::uint64_t flippedFrames = r.framesRecorded;
+    REQUIRE(app->tick());
+    REQUIRE(r.framesRecorded > flippedFrames);  // the reads below are a POST-flip frame, never a stale one
+    CHECK_FALSE(app->materialSectionOpen(2));
+    CHECK(r.bodiesSubmitted == 7U);
+    REQUIRE_FALSE(r.cards.empty());
+    CHECK_FALSE(r.bodyInChild);  // the Scrolling mode: the cards are the panel window's own items
+    const engine::editor::CardEntryRecord& flipped = r.cards.front();
+    const float overhangB = flipped.stripMinX - flipped.headerItemMin.x;
+    const engine::platform::WindowSize deliveredB = window->size();
+    MESSAGE("I331 overhangs: " << overhangA << " at " << deliveredA.width << "x" << deliveredA.height
+                               << " (in ##body: " << childHostA << "), " << overhangB << " at " << deliveredB.width
+                               << "x" << deliveredB.height);
+    CHECK(std::abs(overhangB - windowOverhang) <= 0.5F);  // the panel-window host's overhang
+    WARN(childHostA);  // this display started in the Scrolling mode too: geometry, so the cross-host arm cannot run
+    WARN(deliveredB.width == deliveredA.width);  // the display refused the width it gave before: geometry again
+    if (childHostA && deliveredB.width == deliveredA.width) {
+        // The two hosts really differed: the card's x span is the SAME (the child sits inside the panel's padding),
+        // less a scrollbar on the right when one shows; the body's inset from the outer edge is the same.
+        CHECK(std::abs(flipped.outerMin.x - outerMinA.x) <= 0.5F);
+        CHECK(std::abs(flipped.outerMax.x - outerMaxA.x) <= e63StyleX(s, "ScrollbarSize") + 0.5F);
+        CHECK(std::abs((flipped.outerMax.x - flipped.bodyMax.x) - bodyInsetA) <= 0.5F);
+    }
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: a card's body is clipped to its padded width (task E.6.3, I348)") {
+    // V4: a line that does not wrap ignores the body's narrowed WorkRect / ContentRegionRect, and ImGui clipped it only
+    // to the window's ClipRect -- through the card's right padding and over its outline. The Material host, where the
+    // validation pass saw a slot's colour-space note run to the ##body child's edge. MEASURED at 640 x 650, UI scale 1
+    // (this machine's built-in Retina panel): the panel in its FixedRegions mode (I331's boundary is 381..400 tall),
+    // every card's span 495..622 and its body 507..610; with section 0 closed, the Base Color card's note draws at x
+    // 507..675 -- 65 points past the body's edge and 53 past the outline -- and y 495..511, 46 points above the
+    // ##body child's bottom (557). The note's width is the font's advance sum at body 16, the same on every display.
+    // THE HEIGHT (a) NEEDS, measured with a fresh 640-wide window per height (650..560 by tens, then 559..550 by ones):
+    // the note draws at every one down to 553 and at none of 552, 551, 550. ItemAdd lets it through while its TOP is
+    // above the child's bottom, and the preview takes MATERIAL_PREVIEW_FRACTION (0.38) of the panel's height, so the
+    // note rises as the window shortens (y 476..492 at 600). 650 is under the ~657 points of height CI's macOS runner
+    // delivered for a 1000-point request (I231's record, as I347 restates), so every lane on record delivers it. A
+    // display that delivers less makes the note's presence geometry: a WARN, never a REQUIRE (#111's rule), and (b)
+    // still holds the push through the bodies that drew -- at least one did at every height that sweep measured.
+    constexpr std::int32_t ASKED_HEIGHT = 650;
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "card body clip i348", .width = 640, .height = ASKED_HEIGHT});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/full.aeromat", FULL_AEROMAT_TEXT).empty());
+    std::optional<engine::editor::EditorApp> app =
+        engine::editor::EditorApp::create(*device, *window, ctx,
+                                          {.persistLayout = false,
+                                           .unfocusedFrameCapHz = 0.0F,
+                                           .projectPath = created.root,
+                                           .restoreLastProject = false,
+                                           .recentProjectsPath = uniqueRecentsFile()});
+    REQUIRE(app.has_value());
+    app->panels().setVisible("Console", false);
+    app->panels().setVisible("Inspector", false);  // so Material wins the Right dock tab (I331's fixture)
+    REQUIRE(app->tick());
+    app->requestAssetBrowserSelectEntry("full.aeromat");
+    e62Ticks(*app, 4);
+    REQUIRE(app->materialTargetPath() == "full.aeromat");
+    auto* const material = dynamic_cast<engine::editor::MaterialPanel*>(app->panels().find("Material"));
+    REQUIRE(material != nullptr);
+    app->requestMaterialSectionOpen(0, false);  // through the PANEL's bit (I175's seam): Base Color's note moves up
+    e62Ticks(*app, 2);
+    const engine::editor::CardRecord& r = material->cardRecord();
+    const std::uint64_t before = r.framesRecorded;
+    REQUIRE(app->tick());
+    REQUIRE(r.framesRecorded > before);  // the reads below are this frame's
+    REQUIRE(r.cards.size() == 8U);
+    REQUIRE_FALSE(r.cards.front().open);  // ANTI-VACUITY: one CLOSED card for the closed arm below
+
+    // (a) ANTI-VACUITY: a slot's colour-space note DREW (ItemAdd let it through) inside an open card's body, and its
+    // UNCLIPPED extent -- TextEx's position + CalcTextSize -- runs past the body's padded edge and over the outline:
+    // V4's picture, so the clip has work to do here. Whether it drew is the delivered height's (the header): a REQUIRE
+    // at the height asked for, a WARN below it, and the arm runs wherever the note drew.
+    const engine::platform::WindowSize delivered = window->size();
+    MESSAGE("I348: delivered " << delivered.width << " x " << delivered.height << ", asked 640 x " << ASKED_HEIGHT);
+    const bool noteDrew = r.slotNoteCard >= 0;
+    if (delivered.height >= ASKED_HEIGHT) {
+        REQUIRE(noteDrew);
+    } else {
+        WARN(noteDrew);  // geometry: a shorter window (the note draws down to a delivered 553)
+    }
+    if (noteDrew) {
+        const auto noteCard = static_cast<std::size_t>(r.slotNoteCard);
+        REQUIRE(noteCard < r.cards.size());
+        const engine::editor::CardEntryRecord& noted = r.cards[noteCard];
+        MESSAGE("I348: note " << r.slotNoteMinX << ".." << r.slotNoteMaxX << " in card " << noteCard << ", body "
+                              << noted.bodyMin.x << ".." << noted.bodyMax.x << ", outline to " << noted.outerMax.x
+                              << ", body clip " << noted.bodyClipMinX << ".." << noted.bodyClipMaxX);
+        REQUIRE(noted.open);
+        REQUIRE(noted.bodyDrawCommands > 0U);
+        CHECK(r.slotNoteMinX >= noted.bodyMin.x - 0.5F);  // it starts inside the body...
+        CHECK(r.slotNoteMaxX > noted.bodyMax.x + 0.5F);   // ...runs past its padded edge...
+        CHECK(r.slotNoteMaxX > noted.outerMax.x);         // ...and past the outline
+        // The body's commands carry its clip WHOLE: their outermost clip edges -- the least and greatest ClipRect x
+        // over every command the body drew -- sit ON the body's, never inside them, and the note, a TextEx on the
+        // body's channel, drew into one of those commands.
+        CHECK(std::abs(noted.bodyClipMinX - noted.bodyMin.x) <= 0.5F);
+        CHECK(std::abs(noted.bodyClipMaxX - noted.bodyMax.x) <= 0.5F);
+    }
+
+    // (b) EVERY card: the commands its body drew, as the list RECEIVED them, carry the body's clip -- never the
+    // window's, 495..622 with no push (the red) -- and the fill and the outline, drawn after the pop, keep the
+    // window's: its ClipRect.Max.x is ImFloor'd (imgui.cpp:8469) and sits on or past the span's edge. A body under
+    // the child's bottom draws no command; the closed card submits no body at all.
+    std::uint32_t bodiesThatDrew = 0;
+    for (std::size_t i = 0; i < r.cards.size(); ++i) {
+        CAPTURE(i);
+        const engine::editor::CardEntryRecord& card = r.cards[i];
+        CHECK(card.outlineClipMaxX >= card.outerMax.x - 1.0F);
+        if (!card.open) {
+            CHECK(card.bodyDrawCommands == 0U);
+            continue;
+        }
+        CHECK(card.fillClipMaxX >= card.outerMax.x - 1.0F);
+        if (card.bodyDrawCommands > 0U) {
+            ++bodiesThatDrew;
+            CHECK(card.bodyClipMaxX <= card.bodyMax.x + 0.5F);
+            CHECK(card.bodyClipMinX >= card.bodyMin.x - 0.5F);
+        }
+    }
+    REQUIRE(bodiesThatDrew > 0U);  // ANTI-VACUITY: (b) read a body's commands, whatever height (a) was given
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: Import Details and Project Settings draw as cards; the row fill is narrowed (task E.6.3, I332)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "import and settings cards i332", .width = 1280, .height = 900});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    const std::string location = uniqueProjectLocation();
+    const engine::editor::ProjectCreateOutcome created = engine::editor::createProject(location, "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+
+    SUBCASE("a cached .blend: the Blender card and the six import cards") {
+        // I78's staging, copied in full (the suite's "scaffolding is copied" rule): its project, its OPAQUE_BLEND_TEXT,
+        // the sidecar read and the provenance pair under Library/.../blender-export.
+        const std::string blendPath = created.root + "/assets/statue.blend";
+        REQUIRE(engine::editor::writeTextFileAtomic(blendPath, OPAQUE_BLEND_TEXT).empty());
+
+        std::optional<engine::editor::EditorApp> app =
+            engine::editor::EditorApp::create(*device, *window, ctx,
+                                              {.persistLayout = false,
+                                               .unfocusedFrameCapHz = 0.0F,
+                                               .projectPath = created.root,
+                                               .restoreLastProject = false,
+                                               .recentProjectsPath = uniqueRecentsFile(),
+                                               .toolPrefsPath = uniqueToolPrefsFile()});
+        REQUIRE(app.has_value());
+        app->panels().setVisible("Console", false);
+        REQUIRE(app->tick());  // the initial scan MINTS the sidecar, which is where the GUID comes from
+        REQUIRE(app->tick());
+        app->requestPanelFocus("Import Details");
+
+        // Stage the cache hit from OUTSIDE the app, exactly as a previous session would have left it: the
+        // GUID comes from the sidecar the scan just wrote, and the source hash from the same primitive the
+        // scan itself uses.
+        const engine::editor::FileReadResult metaText = engine::editor::readTextFile(blendPath + ".meta");
+        REQUIRE(metaText.text.has_value());
+        const engine::editor::MetaParseResult meta = engine::editor::parseMeta(*metaText.text);
+        REQUIRE(meta.guid.has_value());
+        const engine::editor::FileHashResult sourceHash = engine::editor::hashFileContents(blendPath);
+        REQUIRE(sourceHash.hash.has_value());
+
+        const std::string exportDir = created.root + '/' + std::string(engine::editor::ASSET_CACHE_DIR_NAME) + '/' +
+                                      std::string(engine::editor::BLENDER_EXPORT_DIR_NAME);
+        std::error_code ec;
+        std::filesystem::create_directories(std::filesystem::path(exportDir), ec);
+        REQUIRE_FALSE(ec);
+        engine::editor::ExportProvenance record;
+        record.guid = *meta.guid;
+        record.sourcePath = "assets/statue.blend";
+        record.blenderPath = "/nonexistent/blender";
+        record.blenderVersion = "4.2.1";
+        record.scriptVersion = engine::editor::BLENDER_SCRIPT_VERSION;
+        // The fingerprint RE-DERIVED from the two public primitives rather than by calling the production
+        // helper, so a change to what goes into it reddens this case instead of moving with it.
+        const std::string defaultSettingsMeta =
+            engine::editor::writeMetaText(engine::Guid{}, engine::editor::ImportSettings{});
+        record.settingsFingerprint =
+            engine::formatContentHash(engine::hashBytes(std::as_bytes(std::span<const char>(defaultSettingsMeta))));
+        record.sourceHash = *sourceHash.hash;
+        const std::string guidText = engine::formatGuid(*meta.guid);
+        REQUIRE(engine::editor::writeTextFileAtomic(exportDir + '/' + guidText + ".glb", blenderTestGlb()).empty());
+        REQUIRE(engine::editor::writeTextFileAtomic(exportDir + '/' + guidText + ".json",
+                                                    engine::editor::writeExportProvenanceText(record))
+                    .empty());
+        app->requestAssetBrowserSelectEntry("statue.blend");
+        e62Ticks(*app, 2);
+        REQUIRE(app->modelImportState() == static_cast<int>(engine::editor::SessionState::Imported));
+        e63Front(*app, "Import Details", "Inspector");
+        auto* const details = dynamic_cast<engine::editor::ImportDetailsPanel*>(app->panels().find("Import Details"));
+        REQUIRE(details != nullptr);
+        const engine::editor::CardRecord& r = details->cardRecord();
+        REQUIRE(r.framesRecorded > 0U);
+        CHECK(r.cardsDrawn == 7U);
+        CHECK(r.primaryButtonsDrawn == 1U);  // Import Settings is open, so Apply drew
+        app->requestQuit();
+        CHECK(app->tick() == false);
+        app.reset();
+    }
+    SUBCASE("a .gltf with a node chain: six cards, and a row's fill starts on the NARROWED body edge") {
+        REQUIRE(engine::editor::writeTextFileAtomic(created.root + "/assets/chain.gltf", HIERARCHY_GLTF_TEXT).empty());
+        std::optional<engine::editor::EditorApp> app =
+            engine::editor::EditorApp::create(*device, *window, ctx,
+                                              {.persistLayout = false,
+                                               .unfocusedFrameCapHz = 0.0F,
+                                               .projectPath = created.root,
+                                               .restoreLastProject = false,
+                                               .recentProjectsPath = uniqueRecentsFile()});
+        REQUIRE(app.has_value());
+        app->panels().setVisible("Console", false);
+        REQUIRE(app->tick());
+        app->requestAssetBrowserSelectEntry("chain.gltf");
+        e62Ticks(*app, 3);
+        REQUIRE(app->modelImportState() == static_cast<int>(engine::editor::SessionState::Imported));
+        e63Front(*app, "Import Details", "Inspector");
+        auto* const details = dynamic_cast<engine::editor::ImportDetailsPanel*>(app->panels().find("Import Details"));
+        REQUIRE(details != nullptr);
+        const engine::editor::CardRecord& r = details->cardRecord();
+        CHECK(r.cardsDrawn == 6U);
+        REQUIRE(r.cards.size() == 6U);
+        const engine::editor::CardEntryRecord& hierarchy = r.cards[2];  // Overview, Import Settings, Hierarchy, ...
+        REQUIRE(hierarchy.open);
+        REQUIRE(r.lastSpanFullWidthMinX > 0.0F);  // the Root row drew (C29: a depth-0 row; no tier opens a node)
+        CHECK(std::abs(r.lastSpanFullWidthMinX - hierarchy.bodyMin.x) <= 0.5F);  // the narrowed WorkRect.Min.x...
+        CHECK(r.lastSpanFullWidthMinX > hierarchy.outerMin.x + 0.5F);            // ...never the card's outer edge
+        app->requestQuit();
+        CHECK(app->tick() == false);
+        app.reset();
+    }
+    SUBCASE("Project Settings: two read-only cards, each over its table") {
+        std::optional<engine::editor::EditorApp> app =
+            engine::editor::EditorApp::create(*device, *window, ctx,
+                                              {.persistLayout = false,
+                                               .unfocusedFrameCapHz = 0.0F,
+                                               .projectPath = created.root,
+                                               .restoreLastProject = false,
+                                               .recentProjectsPath = uniqueRecentsFile()});
+        REQUIRE(app.has_value());
+        e62Ticks(*app, 3);
+        e63Front(*app, engine::editor::PROJECT_SETTINGS_PANEL_ID, "Inspector");
+        auto* const settings = dynamic_cast<engine::editor::ProjectSettingsPanel*>(
+            app->panels().find(engine::editor::PROJECT_SETTINGS_PANEL_ID));
+        REQUIRE(settings != nullptr);
+        const engine::editor::CardRecord& r = settings->cardRecord();
+        CHECK(r.cardsDrawn == 2U);
+        REQUIRE(r.cards.size() == 2U);
+        CHECK_FALSE(r.cards[0].overflowDrawn);  // the painter drew no overflow (its own answer)
+        // READ-ONLY, as source: nothing in this panel bumps primaryButtonsDrawn, so a count of it could never go red.
+        const std::vector<std::string> settingsCode =
+            editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/project_settings_panel.cpp");
+        CHECK(countLinesContaining(settingsCode, "Button(") == 0U);    // no button of any kind
+        CHECK(countLinesContaining(settingsCode, ".overflow") == 0U);  // no card asks for an overflow
+        CHECK(std::abs(r.lastBodyTableMaxX - r.cards[1].bodyMax.x) <= 1.0F);
+        app->requestQuit();
+        CHECK(app->tick() == false);
+        app.reset();
+    }
+
+    // SOURCE (every subcase runs it): Re-import is still ONE ImGui::Button line, inside a GhostStyle scope; the
+    // Blender advisory reads `warning`; the searched list's height is the named constant; Apply is the primary helper.
+    const std::vector<std::string> code = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/import_details_panel.cpp");
+    const std::size_t reimportAt = soleLineContaining(code, R"(ImGui::Button("Re-import"))");
+    CHECK(code[reimportAt - 1U].find("const GhostStyle ghost;") != std::string::npos);
+    const std::size_t advisoryAt =
+        soleLineContaining(code, "blender.state() == BlenderState::Ready && !blender.message().empty()");
+    CHECK(code[nextCodeLine(code, advisoryAt + 1U)].find("EDITOR_THEME.palette.warning") != std::string::npos);
+    CHECK(countLinesContaining(code, "IMPORT_DETAILS_SEARCHED_VISIBLE_ROWS") == 1U);
+    CHECK(countLinesContaining(code, "* 6.0F") == 0U);
+    CHECK(countLinesContaining(code, "primaryButton(\"Apply\"") == 1U);
+    CHECK(countLinesContaining(code, "TextDisabled") == 0U);
+}
+
+// ---- task E.6.3, step 9: the TextDisabled ban, and every panel at its narrowest ---------------------------------
+
+TEST_CASE("editor: no panel spells TextDisabled, and transparency has ONE spelling (task E.6.3, I333)") {
+    const auto codeOf = [](std::string_view leaf) {
+        std::string path = AERO_EDITOR_SRC_DIR;
+        path += "/";
+        path += leaf;
+        const std::vector<std::string> code = editorSourceCodeLines(path);
+        REQUIRE(code.size() > 20U);  // ANTI-VACUITY: the file was really read
+        return code;
+    };
+    // I287's list, less project_ui.cpp (the stated exception, D11).
+    constexpr std::array<std::string_view, 13> PANEL_TUS{
+        "asset_browser_panel.cpp", "asset_picker.cpp",           "asset_tile.cpp",
+        "console_panel.cpp",       "hierarchy_panel.cpp",        "import_details_panel.cpp",
+        "inspector_panel.cpp",     "material_panel.cpp",         "panel_chrome_model.cpp",
+        "panel_chrome_ui.cpp",     "project_settings_panel.cpp", "shell_chrome_ui.cpp",
+        "viewport_panel.cpp"};
+    const std::regex defaultVec4(R"(ImVec4[\(\{]\s*[\)\}])");
+    for (const std::string_view tu : PANEL_TUS) {
+        CAPTURE(tu);
+        const std::vector<std::string> code = codeOf(tu);
+        CHECK(countLinesContaining(code, "ImGui::TextDisabled(") == 0U);
+        CHECK(countLinesContaining(code, "ImGuiCol_TextDisabled") == 0U);
+        CHECK(countLinesContaining(code, "IM_COL32_BLACK_TRANS") == 0U);
+        CHECK(countLinesContaining(code, "withAlpha(") == 0U);
+        for (const std::string& line : code) {
+            CHECK_FALSE(std::regex_search(line, defaultVec4));  // ImVec4() / ImVec4{}: a transparent fill by accident
+        }
+    }
+    // The stated scope, counted EXACTLY so a regression either way reddens.
+    CHECK(countLinesContaining(codeOf("project_ui.cpp"), "ImGui::TextDisabled(") == 4U);
+    CHECK(countLinesContaining(codeOf("shell_ui.cpp"), "ImGui::TextDisabled(") == 2U);
+    // The text helpers take no format string: the header declares no variadic function.
+    const std::vector<std::string> header = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/panel_chrome_ui.hpp");
+    REQUIRE(header.size() > 20U);
+    CHECK(countLinesContaining(header, "...") == 0U);
+    // ONE transparent spelling: chromeRoleColor's alpha overload, once, inside clearOver -- every clear push's.
+    const std::vector<std::string> chrome = codeOf("panel_chrome_ui.cpp");
+    CHECK(countLinesContaining(chrome, "chromeRoleColor(") == 3U);  // roleVec4, roleU32, clearOver
+    CHECK(countLinesContaining(chrome, "chromeRoleColor(surface, 0U)") == 1U);
+    CHECK(countLinesContaining(chrome, "clearOver(") == 15U);  // its definition + GhostStyle 1, ClearHeaderStyle 3,
+                                                               // ClearFrameStyle 3, the card header 4, the overflow 3
+    CHECK(countLinesContaining(codeOf("inspector_panel.cpp"), "chromeRoleColor(") == 0U);  // its drag: ClearFrameStyle
+}
+
+TEST_CASE("editor: every panel draws at 320 x 180 -- the HUD dropped, the Assets header Minimal (task E.6.3, I334)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "every panel i334", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = e62App(*device, *window, ctx);
+    const float s = app->uiScale();
+    auto* const hierarchy = dynamic_cast<engine::editor::HierarchyPanel*>(app->panels().find("Hierarchy"));
+    auto* const console = dynamic_cast<engine::editor::ConsolePanel*>(app->panels().find("Console"));
+    auto* const assets = dynamic_cast<engine::editor::AssetBrowserPanel*>(app->panels().find("Assets"));
+    auto* const inspector = dynamic_cast<engine::editor::InspectorPanel*>(app->panels().find("Inspector"));
+    auto* const material = dynamic_cast<engine::editor::MaterialPanel*>(app->panels().find("Material"));
+    auto* const details = dynamic_cast<engine::editor::ImportDetailsPanel*>(app->panels().find("Import Details"));
+    auto* const settings = dynamic_cast<engine::editor::ProjectSettingsPanel*>(
+        app->panels().find(engine::editor::PROJECT_SETTINGS_PANEL_ID));
+    auto* const viewport = dynamic_cast<engine::editor::ViewportPanel*>(app->panels().find("Viewport"));
+    REQUIRE(hierarchy != nullptr);
+    REQUIRE(console != nullptr);
+    REQUIRE(assets != nullptr);
+    REQUIRE(inspector != nullptr);
+    REQUIRE(material != nullptr);
+    REQUIRE(details != nullptr);
+    REQUIRE(settings != nullptr);
+    REQUIRE(viewport != nullptr);
+
+    // Each panel in front in turn, with no assert, and its record moved (D16) -- every draw the case makes is the
+    // panel's narrowest real frame.
+    const auto movedInFront = [&app](const char* id, const char* sibling, const auto& framesOf) {
+        if (sibling != nullptr) {
+            e63Front(*app, id, sibling);
+        }
+        const std::uint64_t before = framesOf();
+        REQUIRE(app->tick());
+        return framesOf() > before;
+    };
+    CHECK(movedInFront("Hierarchy", nullptr, [&] { return hierarchy->drawRecord().framesRecorded; }));
+    CHECK(movedInFront("Console", "Assets", [&] { return console->drawRecord().framesRecorded; }));
+    CHECK(movedInFront("Assets", "Console", [&] { return assets->chromeRecord().framesRecorded; }));
+    CHECK(movedInFront("Inspector", "Material", [&] { return inspector->drawRecord().framesRecorded; }));
+    CHECK(movedInFront("Material", "Inspector", [&] { return material->cardRecord().framesRecorded; }));
+    CHECK(movedInFront("Import Details", "Inspector", [&] { return details->cardRecord().framesRecorded; }));
+    CHECK(movedInFront(engine::editor::PROJECT_SETTINGS_PANEL_ID, "Inspector",
+                       [&] { return settings->cardRecord().framesRecorded; }));
+
+    // The Hierarchy's search floored at one frame height (hierarchyHeaderLayout's floor).
+    const engine::editor::HierarchyDrawRecord& h = hierarchy->drawRecord();
+    const float frame = std::floor((16.0F * s) + 0.5F) + (2.0F * e63StyleY(s, "FramePadding"));
+    CHECK(h.searchFieldMax.x - h.searchFieldMin.x >= frame - 0.5F);
+
+    // The Assets header in Minimal, BELOW its floor: the order kept, only the right end crossing (D8).
+    e63Front(*app, "Assets", "Console");
+    REQUIRE(app->tick());
+    const engine::editor::AssetChromeRecord& a = assets->chromeRecord();
+    CHECK((a.headerMode == engine::editor::AssetHeaderMode::Minimal));
+    const float floor = engine::editor::assetHeaderMinimalFloor(a.headerWidths, a.headerUiScale);
+    WARN(a.headerRowWidth < floor);  // a 320-point window leaves the Bottom node far narrower than the floor
+    if (a.headerRowWidth < floor) {
+        float previousMax = -std::numeric_limits<float>::infinity();
+        for (const engine::editor::AssetHeaderControl control :
+             {engine::editor::AssetHeaderControl::NewMaterial, engine::editor::AssetHeaderControl::Search,
+              engine::editor::AssetHeaderControl::ViewToggle, engine::editor::AssetHeaderControl::Overflow}) {
+            const engine::editor::AssetDrawnRect& rect = a.headerRects[static_cast<std::size_t>(control)];
+            REQUIRE(rect.drawn);
+            CHECK(rect.min.x >= previousMax - 0.5F);  // the order kept
+            previousMax = rect.max.x;
+        }
+        CHECK(previousMax > a.headerRowMinX + a.headerRowWidth);  // the right end crossed, clipped by the window
+    }
+
+    // The HUD in its fully-dropped mode -- when the viewport has an image at all at this size.
+    const std::uint64_t hudBefore = viewport->hudRecord().framesRecorded;
+    REQUIRE(app->tick());
+    const engine::editor::ViewportHudRecord& hud = viewport->hudRecord();
+    if (viewport->sceneForwardRenderer() == nullptr) {
+        CHECK(hud.framesRecorded == hudBefore);  // shader tools OFF: Unavailable, no HUD (§7.8)
+    } else if (hud.framesRecorded > hudBefore) {
+        CHECK_FALSE(hud.layout.stats.shown);
+        CHECK_FALSE(hud.layout.hints[0].shown);
+        CHECK_FALSE(hud.layout.hints[1].shown);
+        const float imageW = hud.imageMax.x - hud.imageMin.x;
+        const float imageH = hud.imageMax.y - hud.imageMin.y;
+        MESSAGE("I334 viewport image: " << imageW << " x " << imageH << ", chip shown " << hud.layout.chip.shown);
+    } else {
+        WARN(hud.framesRecorded > hudBefore);  // the viewport's content region was empty at 320 x 180: geometry
+    }
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+// ---- task E.6.3, the code-review round: a panel request lives ONE tick ------------------------------------------
+
+TEST_CASE("editor: a panel request its gate refuses, or its panel never draws, is dropped (task E.6.3, I338)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "one-tick requests i338", .width = 1280, .height = 800});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app =
+        e63AssetsApp(*device, *window, ctx, {"top.txt", "other.txt", "card.txt", "models/e.txt"}, 0.4F);
+    auto* const browser = dynamic_cast<engine::editor::AssetBrowserPanel*>(app->panels().find("Assets"));
+    auto* const viewport = dynamic_cast<engine::editor::ViewportPanel*>(app->panels().find("Viewport"));
+    auto* const hierarchy = dynamic_cast<engine::editor::HierarchyPanel*>(app->panels().find("Hierarchy"));
+    REQUIRE(browser != nullptr);
+    REQUIRE(viewport != nullptr);
+    REQUIRE(hierarchy != nullptr);
+    const engine::editor::AssetChromeRecord& assets = browser->chromeRecord();
+    const engine::editor::ViewportHudRecord& hud = viewport->hudRecord();
+    const engine::editor::HierarchyDrawRecord& tree = hierarchy->drawRecord();
+    // The reduced arm, by a RUNTIME predicate: with shader tools OFF the Viewport is Unavailable and returns before its
+    // stats drain, so neither Viewport arm has a gate to test there.
+    const bool hudAvailable = viewport->sceneForwardRenderer() != nullptr;
+    // The asset Delete modal, raised through its request hook: once its body has drawn, every drain at the top of a
+    // later frame reads it off GetTopMostPopupModal(). requestAssetBrowserDeleteConfirm closes it (deleting `path`).
+    const auto raiseDeleteModal = [&app](std::string path) {
+        app->requestAssetBrowserDelete(std::move(path));
+        for (int i = 0; i < 4 && app->assetBrowserDeleteModalDrawnCount() == 0U; ++i) {
+            REQUIRE(app->tick());
+        }
+        REQUIRE(app->assetBrowserDeleteModalDrawnCount() > 0U);
+    };
+    // Ticks until a record's frame count moves past `idle` (a re-shown or re-fronted panel draws again), then once
+    // more, so a request applied on that first drawn frame has a whole frame to show in the record.
+    const auto tickUntilDrawn = [&app](const std::uint64_t& frames, std::uint64_t idle) {
+        for (int i = 0; i < 4 && frames == idle; ++i) {
+            REQUIRE(app->tick());
+        }
+        REQUIRE(frames > idle);
+        REQUIRE(app->tick());
+    };
+    // The row draws (THE FOLD, asset_view.hpp), and every crumb count below reads it. No Issues here, so it shows from
+    // a recorded avail of 91 at 1x. The Bottom dock is sized at 0.4 (I324 says why; I345 is the seam's witness): this
+    // 800-point window records 249, measured (129 under the default quarter), and by I324's measured relation,
+    // ceil(0.4 x (H - 2)) less 71, the row folds only in a window delivered under 405 points. The INFO prints the
+    // recorded avail. The central node keeps the rest, 0.6 of the height less the three bars -- a 360-point image here,
+    // measured -- so (b)'s HUD and cut-image arms still run.
+    {
+        INFO("recorded avail " << app->assetBrowserLayoutMetrics().availHeight);
+        REQUIRE(assets.crumbRowShown);
+    }
+    REQUIRE(assets.crumbsDrawn == 1U);  // at the root: "assets" alone
+
+    // (a) The Assets navigation, refused by the modal, is dropped: closing the modal replays nothing.
+    raiseDeleteModal("top.txt");
+    app->requestAssetBrowserNavigate("models");
+    REQUIRE(app->tick());
+    REQUIRE(app->assetBrowserDeleteModalDrawnCount() > 0U);  // ANTI-VACUITY: the modal was up over that drain
+    CHECK(assets.crumbsDrawn == 1U);
+    app->requestAssetBrowserDeleteConfirm();
+    // The body is no longer submitted, so the next NewFrame focuses away from the inactive modal and FocusWindow
+    // closes it (imgui.cpp:5950-5951, :13740): a held request would land on that frame and draw on the one after.
+    REQUIRE(app->tick());
+    // An effect, never the seam's own state (requestDeleteConfirm empties pendingDelete before any tick runs): the
+    // counter resets at the top of every onDraw and counts only inside BeginPopupModal, so 0 says the panel drew this
+    // frame and submitted no body. That the modal then LEFT OpenPopupStack is the control's proof, below, not this.
+    REQUIRE(app->assetBrowserDeleteModalDrawnCount() == 0U);
+    e62Ticks(*app, 2);  // measured at b6fb1c8: crumbs 1 on the first of these, 2 on the second
+    CHECK(assets.crumbsDrawn == 1U);
+    // Control: with no modal up the same request lands -- which also proves the modal left ImGui's popup stack.
+    app->requestAssetBrowserNavigate("models");
+    e62Ticks(*app, 2);
+    CHECK(assets.crumbsDrawn == 2U);
+    app->requestAssetBrowserNavigate("");
+    e62Ticks(*app, 2);
+    REQUIRE(assets.crumbsDrawn == 1U);
+
+    // (b) The Viewport's stats toggle, refused by the same modal, is dropped.
+    if (hudAvailable) {
+        REQUIRE(viewport->statsVisible());
+        REQUIRE(hud.layout.chip.shown);  // ANTI-VACUITY: the gate's control term is open, so only the modal refuses
+        raiseDeleteModal("other.txt");
+        viewport->requestStatsVisible(false);
+        REQUIRE(app->tick());
+        REQUIRE(app->assetBrowserDeleteModalDrawnCount() > 0U);  // ANTI-VACUITY: the modal was up over that drain
+        CHECK(viewport->statsVisible());
+        app->requestAssetBrowserDeleteConfirm();
+        REQUIRE(app->tick());                                     // no body this frame; the next NewFrame closes it
+        REQUIRE(app->assetBrowserDeleteModalDrawnCount() == 0U);  // the effect (a) reads, for the same reason
+        e62Ticks(*app, 2);
+        REQUIRE(hud.layout.chip.shown);   // the whole gate open again: a held request would have landed
+        CHECK(viewport->statsVisible());  // ...and nothing did
+        // Control: the same request with no modal up lands -- the proof the modal left ImGui's popup stack.
+        viewport->requestStatsVisible(false);
+        e62Ticks(*app, 2);
+        CHECK_FALSE(viewport->statsVisible());
+        viewport->requestStatsVisible(true);
+        e62Ticks(*app, 2);
+        REQUIRE(viewport->statsVisible());
+        // The same toggle refused by its CONTROL term, no modal up: the image cut shorter than the chip and its two
+        // insets, so the chip -- the popover's only door -- is not laid out and the Stats checkbox is out of reach.
+        // The drain reads the layout latched by the previous frame, which the record holds after every tick. The
+        // image takes the whole height change: the Viewport is the dockspace's central node (I342's rule).
+        const engine::platform::WindowSize full = window->size();
+        const float chipHeight = hud.layout.chip.max.y - hud.layout.chip.min.y;
+        const float imageHeight = hud.imageMax.y - hud.imageMin.y;
+        const float cutImage = chipHeight + (engine::editor::EDITOR_THEME.panels.hudInset * app->uiScale());
+        const float cutPoints = static_cast<float>(full.height) - imageHeight + cutImage;
+        const auto cutHeight = static_cast<std::int32_t>(std::lround(cutPoints));
+        window->setSize(full.width, cutHeight);
+        e62Ticks(*app, 3);
+        if (window->size().height == cutHeight) {
+            REQUIRE_FALSE(hud.layout.chip.shown);  // ANTI-VACUITY: the drain's control term is shut
+            const std::uint64_t cutFrames = hud.framesRecorded;
+            viewport->requestStatsVisible(false);
+            REQUIRE(app->tick());
+            REQUIRE(hud.framesRecorded > cutFrames);  // the HUD drew, so the drain ran and only its control refused
+            REQUIRE_FALSE(hud.layout.chip.shown);
+            CHECK(viewport->statsVisible());
+            window->setSize(full.width, full.height);
+            for (int i = 0; i < 8 && !hud.layout.chip.shown; ++i) {
+                REQUIRE(app->tick());
+            }
+            REQUIRE(hud.layout.chip.shown);  // the predicate ended the loop, never the bound
+            REQUIRE(app->tick());            // a whole frame with the gate open: a held request would land here
+            CHECK(viewport->statsVisible());
+            viewport->requestStatsVisible(false);  // control: the chip laid out again, the same request lands
+            e62Ticks(*app, 2);
+            CHECK_FALSE(viewport->statsVisible());
+            viewport->requestStatsVisible(true);
+            e62Ticks(*app, 2);
+            REQUIRE(viewport->statsVisible());
+        } else {
+            MESSAGE("I338: the window took height " << window->size().height << ", not " << cutHeight);
+            WARN(window->size().height == cutHeight);  // geometry: a platform minimum refused the cut
+            window->setSize(full.width, full.height);
+            e62Ticks(*app, 3);
+        }
+    } else {
+        MESSAGE("shader tools OFF: the viewport is Unavailable and never reaches its stats drain -- (b) skipped");
+    }
+
+    // (c) A request issued while its panel does not draw at all is dropped by EditorApp after the shell draw (E.5.2's
+    // expireNamedSelection shape), so the panel drawing again later replays nothing.
+    // The Hierarchy, closed -- it is alone in its node.
+    app->panels().setVisible("Hierarchy", false);
+    REQUIRE(app->tick());
+    REQUIRE_FALSE(tree.flatMode);
+    const std::uint64_t treeIdle = tree.framesRecorded;
+    hierarchy->requestSearchQuery("cube");
+    REQUIRE(app->tick());
+    REQUIRE(tree.framesRecorded == treeIdle);  // ANTI-VACUITY: no onDraw ran over that tick
+    app->panels().setVisible("Hierarchy", true);
+    tickUntilDrawn(tree.framesRecorded, treeIdle);
+    CHECK_FALSE(tree.flatMode);             // a held query would have landed on the first drawn frame
+    hierarchy->requestSearchQuery("cube");  // control: the same request, the panel drawing
+    e62Ticks(*app, 2);
+    CHECK(tree.flatMode);
+    hierarchy->requestSearchQuery("");
+    e62Ticks(*app, 2);
+    REQUIRE_FALSE(tree.flatMode);
+    // The Assets panel, behind the Console's tab in the Bottom node.
+    app->panels().setVisible("Console", true);
+    e62Ticks(*app, 3);  // the Console's first appearance docks it into the Bottom node
+    e63Front(*app, "Console", "Assets");
+    const std::uint64_t assetsIdle = assets.framesRecorded;
+    app->requestAssetBrowserNavigate("models");
+    REQUIRE(app->tick());
+    REQUIRE(assets.framesRecorded == assetsIdle);  // ANTI-VACUITY: Begin answered false, so no onDraw ran
+    app->requestPanelFocus("Assets");
+    tickUntilDrawn(assets.framesRecorded, assetsIdle);
+    CHECK(assets.crumbsDrawn == 1U);
+    app->requestAssetBrowserNavigate("models");  // control
+    e62Ticks(*app, 2);
+    CHECK(assets.crumbsDrawn == 2U);
+    // The Console's log scroll, behind the Assets tab. A held request would scroll the log child on the first frame
+    // the Console draws again -- only if the child can scroll, so a row wider than it is drawn first, with the Console
+    // in front (I341's three ticks: appended, drawn, then in ContentSize), and the request is half the reach.
+    auto* const console = dynamic_cast<engine::editor::ConsolePanel*>(app->panels().find("Console"));
+    REQUIRE(console != nullptr);
+    const engine::editor::ConsoleDrawRecord& logged = console->drawRecord();
+    AERO_LOG_WARN("e63wide: {}", std::string(400U, 'x'));
+    app->requestPanelFocus("Console");
+    e62Ticks(*app, 3);
+    // The Console draws three more frames in front -- e63Front's two ticks and its idle tick, measured -- then Assets
+    // takes the node.
+    e63Front(*app, "Assets", "Console");
+    // ANTI-VACUITY: the Console's LAST drawn frame could scroll -- the reach a held request is bounded to -- yet had
+    // not scrolled.
+    REQUIRE(logged.logScrollMaxX > 0.0F);
+    REQUIRE(logged.logScrollX == 0.0F);
+    const float halfReach = logged.logScrollMaxX * 0.5F;
+    const std::uint64_t consoleIdle = logged.framesRecorded;
+    console->requestLogScrollX(halfReach);
+    REQUIRE(app->tick());
+    REQUIRE(logged.framesRecorded == consoleIdle);  // ANTI-VACUITY: Begin answered false, so no onDraw ran
+    app->requestPanelFocus("Console");
+    tickUntilDrawn(logged.framesRecorded, consoleIdle);
+    CHECK(logged.logScrollX == 0.0F);       // a held request would have scrolled the first drawn frame
+    console->requestLogScrollX(halfReach);  // control: the same request, the panel drawing
+    e62Ticks(*app, 2);
+    CHECK(logged.logScrollX > 0.0F);
+    app->requestPanelFocus("Assets");  // the Assets panel fronts the Bottom node again, as the arms below expect
+    e62Ticks(*app, 2);
+    // The Viewport, closed -- it is alone in its node.
+    if (hudAvailable) {
+        REQUIRE(viewport->statsVisible());
+        app->panels().setVisible("Viewport", false);
+        REQUIRE(app->tick());
+        const std::uint64_t hudIdle = hud.framesRecorded;
+        viewport->requestStatsVisible(false);
+        REQUIRE(app->tick());
+        REQUIRE(hud.framesRecorded == hudIdle);  // ANTI-VACUITY: no onDraw reached the HUD over that tick
+        app->panels().setVisible("Viewport", true);
+        tickUntilDrawn(hud.framesRecorded, hudIdle);
+        REQUIRE(hud.layout.chip.shown);  // ANTI-VACUITY: the drain's control term is open again
+        CHECK(viewport->statsVisible());
+        viewport->requestStatsVisible(false);  // control
+        e62Ticks(*app, 2);
+        CHECK_FALSE(viewport->statsVisible());
+    }
+    // The Inspector's card header toggle (fix 7's seam): refused by the modal with the panel in front, then issued
+    // while it sits behind the Material tab in the Right node. A held request would close the Transform card on the
+    // first frame the gate opens.
+    auto* const inspector = dynamic_cast<engine::editor::InspectorPanel*>(app->panels().find("Inspector"));
+    REQUIRE(inspector != nullptr);
+    const engine::editor::InspectorDrawRecord& inspected = inspector->drawRecord();
+    const engine::Entity cube = e62EntityNamed(app->world(), "Cube");
+    REQUIRE(cube.valid());
+    app->selection().set(cube);
+    e63Front(*app, "Inspector", "Material");
+    const std::uint32_t cardsOpen = inspected.cardsOpen;
+    REQUIRE(cardsOpen >= 2U);  // ANTI-VACUITY: the Transform card and at least one more, every one open
+    REQUIRE(inspected.cards.cardsDrawn == cardsOpen);
+    // First (a)'s shape, the Inspector in front: the toggle, refused by the modal, is dropped -- a click on the header
+    // cannot reach it under a modal either. The Assets panel still fronts the Bottom node, so it can raise its modal.
+    raiseDeleteModal("card.txt");
+    const std::uint64_t underModal = inspected.framesRecorded;
+    inspector->requestCardOpen("engine::Transform", false);
+    REQUIRE(app->tick());
+    REQUIRE(app->assetBrowserDeleteModalDrawnCount() > 0U);  // ANTI-VACUITY: the modal was up over that drain...
+    REQUIRE(inspected.framesRecorded > underModal);          // ...and the Inspector drew, so only the gate refused
+    REQUIRE(inspected.cards.cardsDrawn == cardsOpen);
+    CHECK(inspected.cardsOpen == cardsOpen);
+    app->requestAssetBrowserDeleteConfirm();
+    REQUIRE(app->tick());                                     // no body this frame; the next NewFrame closes it
+    REQUIRE(app->assetBrowserDeleteModalDrawnCount() == 0U);  // the effect (a) reads, for the same reason
+    e62Ticks(*app, 2);
+    CHECK(inspected.cardsOpen == cardsOpen);  // nothing held: the control after the hidden-panel arm below lands
+    // Then the hidden panel: the Inspector behind the Material tab.
+    e63Front(*app, "Material", "Inspector");
+    const std::uint64_t inspectorIdle = inspected.framesRecorded;
+    inspector->requestCardOpen("engine::Transform", false);
+    REQUIRE(app->tick());
+    REQUIRE(inspected.framesRecorded == inspectorIdle);  // ANTI-VACUITY: Begin answered false, so no onDraw ran
+    app->requestPanelFocus("Inspector");
+    tickUntilDrawn(inspected.framesRecorded, inspectorIdle);
+    CHECK(inspected.cardsOpen == cardsOpen);
+    // Control for both arms: the same request, the panel drawing and no modal up, lands -- which also proves the
+    // modal left ImGui's popup stack.
+    inspector->requestCardOpen("engine::Transform", false);
+    e62Ticks(*app, 2);
+    CHECK(inspected.cardsOpen == cardsOpen - 1U);
+    // The Hierarchy's search-field focus (finding 20's seam), closed again. A held request would call
+    // SetKeyboardFocusHere on the first drawn frame and the field would be active on the next -- the frame
+    // tickUntilDrawn's extra tick records.
+    app->panels().setVisible("Hierarchy", false);
+    REQUIRE(app->tick());
+    const std::uint64_t focusIdle = tree.framesRecorded;
+    hierarchy->requestSearchFieldFocus();
+    REQUIRE(app->tick());
+    REQUIRE(tree.framesRecorded == focusIdle);  // ANTI-VACUITY: no onDraw ran over that tick
+    app->panels().setVisible("Hierarchy", true);
+    tickUntilDrawn(tree.framesRecorded, focusIdle);
+    CHECK_FALSE(tree.searchActive);
+    hierarchy->requestSearchFieldFocus();  // control: the same request, the panel drawing
+    for (int i = 0; i < 4 && !tree.searchActive; ++i) {
+        REQUIRE(app->tick());
+    }
+    CHECK(tree.searchActive);
+    // The Hierarchy's rename request (I344's seam), closed again. A held request would begin the rename on the first
+    // drawn frame, whose gate is open: the reappearing window re-initialises its NavId, which releases the
+    // search field's hold (I339 (f)), so that frame's recorded verdict is asserted before anything else is read.
+    app->panels().setVisible("Hierarchy", false);
+    REQUIRE(app->tick());
+    const std::uint64_t renameIdle = tree.framesRecorded;
+    hierarchy->requestBeginRename(cube);
+    REQUIRE(app->tick());
+    REQUIRE(tree.framesRecorded == renameIdle);  // ANTI-VACUITY: no onDraw ran over that tick
+    app->panels().setVisible("Hierarchy", true);
+    for (int i = 0; i < 4 && tree.framesRecorded == renameIdle; ++i) {
+        REQUIRE(app->tick());
+    }
+    REQUIRE(tree.framesRecorded > renameIdle);
+    REQUIRE(tree.shortcutsLive);                       // ANTI-VACUITY: the first drawn frame's drain gate was open
+    CHECK_FALSE(hierarchy->renamingEntity().valid());  // a held request would have begun the rename on that frame
+    hierarchy->requestBeginRename(cube);               // control: the same request, the panel drawing
+    for (int i = 0; i < 4 && !tree.renameActive; ++i) {
+        REQUIRE(app->tick());
+    }
+    CHECK(tree.renameActive);
+    CHECK(hierarchy->renamingEntity() == cube);
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: the Hierarchy's shortcuts stay gated while its search field keeps the keyboard (task E.6.3, I339)") {
+    // The code-review round's finding 20. Nothing here can press Backspace, so the witness is the gate's own recorded
+    // verdict, frame by frame, across the states the field's keyboard can be in. The field owns the keys while it is
+    // active, or while it keeps the NavId its OWN activation gave it: Enter and Escape leave it exactly there, and so
+    // does coming back to the panel by its tab or a focus command, which restores that NavId (d). A NavId ImGui hands
+    // the field by itself -- NavInit, on a reappearing window or a tab click that restores nothing -- owns nothing
+    // (a, f): the gate shut on it would leave Delete dead with nothing on screen to say why.
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "hierarchy search keys i339", .width = 900, .height = 600});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = e62App(*device, *window, ctx);
+    auto* const hierarchy = dynamic_cast<engine::editor::HierarchyPanel*>(app->panels().find("Hierarchy"));
+    REQUIRE(hierarchy != nullptr);
+    const engine::editor::HierarchyDrawRecord& r = hierarchy->drawRecord();
+    REQUIRE(r.shortcutsLive);  // ANTI-VACUITY: a fresh editor's gate is open, so every false below is the field's
+    REQUIRE_FALSE(r.searchActive);
+
+    // (a) NavInit's NavId, on a field never activated. A docked window shown again runs FocusWindow and NavInitWindow
+    //     (imgui.cpp:8616-8619) -- a tab or title-bar click that restores no NavId does the same (:19750-19752) --
+    //     and NavInit picks the root window's first item: the field, since the rows live in the ##tree child.
+    app->panels().setVisible("Hierarchy", false);
+    REQUIRE(app->tick());
+    app->panels().setVisible("Hierarchy", true);
+    e62Ticks(*app, 2);
+    REQUIRE(app->keyboardFocusPanelId() == "Hierarchy");
+    REQUIRE(r.searchFocused);  // ANTI-VACUITY: the field holds NavId -- what a focus-only gate shuts on
+    REQUIRE_FALSE(r.searchActive);
+    CHECK(r.shortcutsLive);
+
+    // (b) Active -- what a click does: the seam's SetKeyboardFocusHere, then InputTextEx's nav activation one frame
+    //     later, which shares a click's SetActiveID, SetFocusID and FocusWindow (imgui_widgets.cpp:4913-4915).
+    hierarchy->requestSearchFieldFocus();
+    for (int i = 0; i < 4 && !r.searchActive; ++i) {
+        REQUIRE(app->tick());
+    }
+    REQUIRE(r.searchActive);
+    REQUIRE(app->keyboardFocusPanelId() == "Hierarchy");
+    CHECK_FALSE(r.shortcutsLive);
+
+    // (c) The keyboard in another panel: FocusWindow ends the field's activation (imgui.cpp:13754-13756) and NavId
+    //     becomes the Inspector's, so the field owns nothing. (The Hierarchy's Shortcut() calls would not route here
+    //     either; the verdict is the gate's alone.)
+    app->requestPanelFocus("Inspector");
+    e62Ticks(*app, 2);
+    REQUIRE(app->keyboardFocusPanelId() == "Inspector");
+    REQUIRE_FALSE(r.searchActive);
+    CHECK(r.shortcutsLive);
+
+    // (d) Back in the Hierarchy: FocusWindow restores the window's last NavId (imgui.cpp:13733) -- the field's, written
+    //     by (b)'s activation -- with nothing active. The keyboard is in this panel, so Backspace would route here, and
+    //     an IsItemActive()-only gate would let it delete the selection. DECIDED: the hold survives the round trip.
+    app->requestPanelFocus("Hierarchy");
+    e62Ticks(*app, 2);
+    REQUIRE(app->keyboardFocusPanelId() == "Hierarchy");
+    REQUIRE(r.searchFocused);
+    REQUIRE_FALSE(r.searchActive);
+    CHECK_FALSE(r.shortcutsLive);
+
+    // (e) Away again opens it, so (d)'s false is the field's NavId and not a gate stuck shut.
+    app->requestPanelFocus("Inspector");
+    e62Ticks(*app, 2);
+    REQUIRE(app->keyboardFocusPanelId() == "Inspector");
+    CHECK(r.shortcutsLive);
+
+    // (f) Shown again after (b)'s search: a RE-INITIALISED NavId is not a restored one. NavInitWindow sets NavId to 0
+    //     on the reappearing frame (imgui.cpp:14409) with the keyboard in this panel, which ends the field's hold, and
+    //     the NavId NavInit hands the field back on the next frame owns nothing -- (a)'s state. (d) is the restore.
+    app->panels().setVisible("Hierarchy", false);
+    REQUIRE(app->tick());
+    app->panels().setVisible("Hierarchy", true);
+    e62Ticks(*app, 2);
+    REQUIRE(app->keyboardFocusPanelId() == "Hierarchy");
+    REQUIRE(r.searchFocused);
+    REQUIRE_FALSE(r.searchActive);
+    CHECK(r.shortcutsLive);
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: a skipped Hierarchy tree child keeps a pending reveal (task E.6.3, I340)") {
+    // The code-review round's finding 6. BeginChild clips the ##tree child with the panel's ClipRect
+    // (imgui.cpp:8434-8440), and a child clipped away entirely -- a dock cut down to its header row -- is SKIPPED
+    // (:8733-8738, :8764-8768): TreeNodeBehavior returns at its first statement (imgui_widgets.cpp:6879-6880), before
+    // TreeNodeUpdateNextOpen, so a reveal walked there was consumed and never applied, and the parent stayed collapsed
+    // once the dock was tall again. This TU never sees imgui.h, so the dock is cut by the OS window's height: the
+    // Hierarchy's Left node spans the dockspace between the toolbar and the status bar.
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "hierarchy skipped tree i340", .width = 900, .height = 600});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = e62App(*device, *window, ctx);
+    auto* const hierarchy = dynamic_cast<engine::editor::HierarchyPanel*>(app->panels().find("Hierarchy"));
+    REQUIRE(hierarchy != nullptr);
+    engine::World& world = app->world();
+    const engine::Entity group = engine::editor::createEntity(world, {}, "Group");
+    const engine::Entity child = engine::editor::createEntity(world, group, "Child");
+    e62Ticks(*app, 2);
+    const engine::editor::HierarchyDrawRecord& r = hierarchy->drawRecord();
+    REQUIRE(world.entityCount() == 6U);
+    REQUIRE(r.rowsDrawn == 5U);                      // the four default roots and Group
+    REQUIRE_FALSE(e63RoleOf(r, child).has_value());  // ANTI-VACUITY: Child is hidden under a collapsed Group
+    REQUIRE(r.treeChildMin.y < r.panelClipMaxY);     // the control: at full height the child is visible
+    REQUIRE(r.searchFieldMax.y < r.treeChildMin.y);  // the field sits above the child
+
+    // THE CUT: the panel's clip bottom lands mid-field, so the panel draws (its header row is cut) and the child does
+    // not. The panel's clip bottom follows the window's height one for one; what lies below it is the status bar.
+    const engine::platform::WindowSize full = window->size();
+    const float belowClip = static_cast<float>(full.height) - r.panelClipMaxY;
+    const float fieldMidY = (r.searchFieldMin.y + r.searchFieldMax.y) * 0.5F;
+    const auto cutHeight = static_cast<std::int32_t>(std::lround(fieldMidY + belowClip));
+    window->setSize(full.width, cutHeight);
+    e62Ticks(*app, 3);
+    if (window->size().height != cutHeight) {
+        MESSAGE("I340: the window took height " << window->size().height << ", not " << cutHeight);
+        WARN(window->size().height == cutHeight);  // geometry: a platform minimum refused the cut -- skip the rest
+        app->requestQuit();
+        CHECK(app->tick() == false);
+        app.reset();
+        return;
+    }
+    const std::uint64_t cutFrames = r.framesRecorded;
+    REQUIRE(app->tick());
+    REQUIRE(r.framesRecorded > cutFrames);         // the PANEL drew: its onDraw ran this frame
+    REQUIRE(r.treeChildMin.y >= r.panelClipMaxY);  // ANTI-VACUITY: the child's top at or below the clip -- skipped
+    CHECK(r.rowsDrawn == 0U);                      // a skipped child submits no row
+
+    // The badge stays current over a skipped child: the match count runs whether or not the tree draws.
+    hierarchy->requestSearchQuery("child");
+    e62Ticks(*app, 2);  // the badge counts the previous frame's matches (D6)
+    CHECK(r.badgeText == "1 / 6");
+    hierarchy->requestSearchQuery("");
+    e62Ticks(*app, 2);
+    CHECK(r.badgeText == "6");
+
+    // THE REVEAL, due while the child is skipped, waits for the first frame it is visible.
+    hierarchy->revealEntity(child);
+    e62Ticks(*app, 2);
+    REQUIRE(r.treeChildMin.y >= r.panelClipMaxY);  // still skipped on the frames the reveal was due
+    window->setSize(full.width, full.height);
+    for (int i = 0; i < 8 && r.treeChildMin.y >= r.panelClipMaxY; ++i) {
+        REQUIRE(app->tick());
+    }
+    REQUIRE(r.treeChildMin.y < r.panelClipMaxY);  // visible again: the predicate ended the loop, never the bound
+    REQUIRE(app->tick());
+    CHECK(e63RoleOf(r, child).has_value());  // Group opened: the reveal landed
+    CHECK(r.rowsDrawn == 6U);
+
+    // A QUERY TYPED WHILE THE REVEAL WAITS defers it again: only the tree walk takes it. A flat row is Leaf, and
+    // TreeNodeUpdateNextOpen returns before it reads SetNextItemOpen (imgui_widgets.cpp:6808-6809), so the flat list
+    // drawing the ancestor's row opened nothing and, before this, used the reveal up.
+    const engine::Entity folder = engine::editor::createEntity(world, {}, "Folder");
+    const engine::Entity item = engine::editor::createEntity(world, folder, "Item");
+    e62Ticks(*app, 2);
+    REQUIRE(e63RoleOf(r, folder).has_value());
+    REQUIRE_FALSE(e63RoleOf(r, item).has_value());  // ANTI-VACUITY: Item is hidden under a collapsed Folder
+    window->setSize(full.width, cutHeight);
+    for (int i = 0; i < 8 && r.treeChildMin.y < r.panelClipMaxY; ++i) {
+        REQUIRE(app->tick());
+    }
+    REQUIRE(r.treeChildMin.y >= r.panelClipMaxY);  // ANTI-VACUITY: skipped again
+    hierarchy->revealEntity(item);
+    hierarchy->requestSearchQuery("folder");  // the field typed into over the skipped child
+    e62Ticks(*app, 2);
+    REQUIRE(r.treeChildMin.y >= r.panelClipMaxY);  // the reveal and the query both arrived while skipped
+    window->setSize(full.width, full.height);
+    for (int i = 0; i < 8 && r.treeChildMin.y >= r.panelClipMaxY; ++i) {
+        REQUIRE(app->tick());
+    }
+    REQUIRE(r.treeChildMin.y < r.panelClipMaxY);
+    REQUIRE(app->tick());
+    REQUIRE(r.flatMode);                        // ANTI-VACUITY: the flat list walked a VISIBLE child
+    REQUIRE(e63RoleOf(r, folder).has_value());  // and drew the ancestor's row -- as a Leaf
+    REQUIRE_FALSE(e63RoleOf(r, item).has_value());
+    hierarchy->requestSearchQuery("");
+    e62Ticks(*app, 2);
+    REQUIRE_FALSE(r.flatMode);
+    CHECK(e63RoleOf(r, item).has_value());  // Folder opened: the reveal waited out the query
+    CHECK(r.rowsDrawn == 8U);               // the four default roots, Group, Child, Folder and Item
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: a rename whose field stops drawing ends as the field would (task E.6.3, I344)") {
+    // Task E.6.3's code-review round, round 2. The inline rename's ##rename field is a row's, so it lives in the ##tree
+    // child, and a child SKIPPED under an active field -- a dock cut down to its header row (I340's way; at main the
+    // rows lived in the panel window, where ItemAdd's KeepAliveID kept the field alive, imgui.cpp:11987) -- or a panel
+    // that does not draw at all (closed, or behind another tab: the stuck state main already had) submits no field.
+    // NewFrame then drops its ActiveId (imgui.cpp:5795-5799) and the deactivation it records lapses (:5818-5819)
+    // before the field draws again, so IsItemDeactivated never fired and `renaming` stayed set: the search field
+    // disabled, and Delete, Backspace, Ctrl+D and F2 dead until the field was clicked and left. DECIDED: a rename whose
+    // field was not drawn on the previous frame ENDS on the next drawn one, as the field's own deactivation would --
+    // committed when the buffer differs from the name the rename began with (an edit), cancelled otherwise -- and is
+    // never re-armed, which would steal the keyboard back from wherever it went meanwhile. Only typing makes the
+    // buffer differ from that name, and nothing here can type, so every arm below is the cancel and the commit half
+    // is pinned as source text; a manual pass is its behavioural witness. (d) is the cancel a decision read against
+    // the World's CURRENT name got wrong: the entity renamed elsewhere while the field is gone. (e) is the other side:
+    // a renamed row scrolled out of view still draws its field, so the rename stays.
+    //
+    // THE SOURCE ARM -- the stale-field check and the two arms share ONE commit and ONE cancel path. It is a plain
+    // block, never a SUBCASE: doctest discovers a sibling SUBCASE only by reaching it, so a SUBCASE that returns early
+    // -- as a source-only one must, ahead of the GPU set-up -- hides every later sibling and they never run (measured:
+    // one traversal, the source assertions alone). It runs once per GPU SUBCASE below.
+    {
+        const std::vector<std::string> code = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/hierarchy_panel.cpp");
+        REQUIRE(code.size() > 200U);
+        CHECK(countLinesContaining(code, "void HierarchyPanel::commitRename(") == 1U);
+        CHECK(countLinesContaining(code, "void HierarchyPanel::cancelRename(") == 1U);
+        CHECK(countLinesContaining(code, "make_unique<RenameEntityCommand>") == 1U);  // the commit helper's push
+        // The arms: each case label's first statement is its helper.
+        const std::size_t beginCaseAt = soleLineContaining(code, "case ActionKind::BeginRename:");
+        const std::size_t commitCaseAt = soleLineContaining(code, "case ActionKind::CommitRename:");
+        const std::size_t cancelCaseAt = soleLineContaining(code, "case ActionKind::CancelRename:");
+        CHECK(code[nextCodeLine(code, commitCaseAt + 1U)].find("commitRename(context, pending.target);") !=
+              std::string::npos);
+        CHECK(code[nextCodeLine(code, cancelCaseAt + 1U)].find("cancelRename();") != std::string::npos);
+        // The check: in onDraw, after the E24 drop and BEFORE the search field's predicate and the shortcut verdict
+        // read `renaming`, deciding on the buffer against the name the rename began with, through the same two helpers.
+        const std::size_t onDrawAt = soleLineContaining(code, "void HierarchyPanel::onDraw(");
+        const std::size_t e24At = soleLineContaining(code, "!world.alive(renaming)");
+        const std::size_t staleAt = soleLineContaining(code, "renameFieldFrame != ImGui::GetFrameCount() - 1");
+        const std::size_t enabledAt = soleLineContaining(code, "searchEnabled = !renaming.valid();");
+        CHECK(onDrawAt < e24At);
+        CHECK(e24At < staleAt);
+        CHECK(staleAt < enabledAt);
+        CHECK(code[staleAt].find("if (renaming.valid() && ") != std::string::npos);
+        const std::size_t decideAt = soleLineContaining(code, "renameBuffer != renameOriginal");
+        CHECK(nextCodeLine(code, staleAt + 1U) == decideAt);
+        CHECK(code[decideAt].find("if (renameBuffer != renameOriginal) {") != std::string::npos);
+        // ...against the name the rename began with, which the BeginRename arm alone writes, beside the buffer: a
+        // second writer (a refresh from the World's name) would bring back the commit (d) refuses.
+        CHECK(countLinesContaining(code, "renameOriginal = ") == 1U);
+        const std::size_t originalAt = soleLineContaining(code, "renameOriginal = renameBuffer;");
+        CHECK(beginCaseAt < originalAt);
+        CHECK(originalAt < commitCaseAt);
+        const std::size_t commitAt = nextCodeLine(code, decideAt + 1U);
+        CHECK(code[commitAt].find("commitRename(context, renaming);") != std::string::npos);
+        const std::size_t elseAt = nextCodeLine(code, commitAt + 1U);
+        CHECK(code[elseAt].find("} else {") != std::string::npos);
+        CHECK(code[nextCodeLine(code, elseAt + 1U)].find("cancelRename();") != std::string::npos);
+        CHECK(countLinesContaining(code, "commitRename(context, ") == 2U);  // the arm and the check, nothing else
+        CHECK(countLinesContaining(code, "cancelRename();") == 2U);
+        // The frame is written where the field is submitted -- the statement after its call -- and by the BeginRename
+        // arm, and nowhere else: a third writer could keep a field that no longer draws looking fresh.
+        CHECK(countLinesContaining(code, "renameFieldFrame = ImGui::GetFrameCount();") == 2U);
+        const std::size_t fieldAt = soleLineContaining(code, "\"##rename\"");
+        CHECK(code[nextCodeLine(code, fieldAt + 1U)].find("renameFieldFrame = ImGui::GetFrameCount();") !=
+              std::string::npos);
+        std::size_t armWrites = 0;
+        for (std::size_t i = beginCaseAt; i < commitCaseAt; ++i) {
+            armWrites += code[i].find("renameFieldFrame = ImGui::GetFrameCount();") != std::string::npos ? 1U : 0U;
+        }
+        CHECK(armWrites == 1U);
+    }
+
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "hierarchy stale rename i344", .width = 900, .height = 600});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = e62App(*device, *window, ctx);
+    auto* const hierarchy = dynamic_cast<engine::editor::HierarchyPanel*>(app->panels().find("Hierarchy"));
+    REQUIRE(hierarchy != nullptr);
+    const engine::editor::HierarchyDrawRecord& r = hierarchy->drawRecord();
+    const engine::World& world = app->world();
+    const engine::Entity cube = e62EntityNamed(world, "Cube");
+    REQUIRE(cube.valid());
+    REQUIRE(r.shortcutsLive);  // ANTI-VACUITY: a fresh editor's gate is open, so the rename is what shuts it below
+    // Begin the rename as F2 would: the keyboard in the Hierarchy, then the seam. The field activates through
+    // SetKeyboardFocusHere one frame after it is first drawn.
+    app->requestPanelFocus("Hierarchy");
+    e62Ticks(*app, 2);
+    REQUIRE(app->keyboardFocusPanelId() == "Hierarchy");
+    const std::size_t commandsBefore = app->commands().count();
+    hierarchy->requestBeginRename(cube);
+    for (int i = 0; i < 4 && !r.renameActive; ++i) {
+        REQUIRE(app->tick());
+    }
+    REQUIRE(r.renameActive);
+    REQUIRE(r.renameFieldDrawn);
+    REQUIRE(hierarchy->renamingEntity() == cube);
+    REQUIRE_FALSE(r.shortcutsLive);
+    // The witness for "the search field is enabled" is a query landing: during the rename the field is disabled, and
+    // the same request is dropped -- so a query that lands below says the rename no longer holds the field.
+    hierarchy->requestSearchQuery("cube");
+    REQUIRE(app->tick());
+    REQUIRE_FALSE(r.flatMode);
+    REQUIRE(r.renameActive);
+    // What "ended" means, read after each interruption: no rename, no field, the name and the history untouched (an
+    // unedited field cancels), the gate live and the search field taking a query again.
+    const auto checkEnded = [&]() {
+        CHECK_FALSE(hierarchy->renamingEntity().valid());
+        CHECK_FALSE(r.renameFieldDrawn);
+        CHECK(world.name(cube) == "Cube");
+        CHECK(app->commands().count() == commandsBefore);
+        CHECK(r.shortcutsLive);
+        hierarchy->requestSearchQuery("cube");
+        e62Ticks(*app, 2);
+        CHECK(r.flatMode);
+    };
+
+    SUBCASE("(a) the ##tree child skipped under the active field, then visible again") {
+        // THE CUT, I340's: the panel's clip bottom lands mid search field, so the panel draws and the child does not.
+        REQUIRE(r.treeChildMin.y < r.panelClipMaxY);  // the control: at full height the child is visible
+        const engine::platform::WindowSize full = window->size();
+        const float belowClip = static_cast<float>(full.height) - r.panelClipMaxY;
+        const float fieldMidY = (r.searchFieldMin.y + r.searchFieldMax.y) * 0.5F;
+        const auto cutHeight = static_cast<std::int32_t>(std::lround(fieldMidY + belowClip));
+        window->setSize(full.width, cutHeight);
+        e62Ticks(*app, 3);
+        // No early return on a refused cut: a SUBCASE that returns hides its later siblings from doctest (above).
+        const bool cutTaken = window->size().height == cutHeight;
+        if (!cutTaken) {
+            MESSAGE("I344: the window took height " << window->size().height << ", not " << cutHeight);
+            WARN(cutTaken);  // geometry: a platform minimum refused the cut -- (a) is skipped
+        } else {
+            const std::uint64_t cutFrames = r.framesRecorded;
+            REQUIRE(app->tick());
+            REQUIRE(r.framesRecorded > cutFrames);         // the PANEL drew: its onDraw ran this frame
+            REQUIRE(r.treeChildMin.y >= r.panelClipMaxY);  // ANTI-VACUITY: the child's top at or below the clip
+            REQUIRE_FALSE(r.renameFieldDrawn);             // ...so the field was not submitted
+            e62Ticks(*app, 2);
+            window->setSize(full.width, full.height);
+            for (int i = 0; i < 8 && r.treeChildMin.y >= r.panelClipMaxY; ++i) {
+                REQUIRE(app->tick());
+            }
+            REQUIRE(r.treeChildMin.y < r.panelClipMaxY);  // visible again: the predicate ended the loop
+            e62Ticks(*app, 2);
+            checkEnded();
+        }
+    }
+    SUBCASE("(b) the Hierarchy closed under the active field, then shown again") {
+        app->panels().setVisible("Hierarchy", false);
+        REQUIRE(app->tick());
+        const std::uint64_t idle = r.framesRecorded;
+        e62Ticks(*app, 2);
+        REQUIRE(r.framesRecorded == idle);  // ANTI-VACUITY: no onDraw ran, so the field was not submitted
+        app->panels().setVisible("Hierarchy", true);
+        e62Ticks(*app, 2);
+        REQUIRE(r.framesRecorded > idle);  // the panel drew again
+        checkEnded();
+    }
+    SUBCASE("(c) control: an uninterrupted rename stays active") {
+        // The field drawn on every frame keeps the check quiet: one frame late or early in its arithmetic would end
+        // the rename here.
+        for (int i = 0; i < 4; ++i) {
+            REQUIRE(app->tick());
+            CHECK(r.renameFieldDrawn);
+            CHECK(r.renameActive);
+            CHECK(hierarchy->renamingEntity() == cube);
+            CHECK_FALSE(r.shortcutsLive);
+        }
+    }
+    SUBCASE("(d) the entity renamed elsewhere while the field is gone: an undo's name stands") {
+        // The cancel a decision read against the World's CURRENT name got wrong: Edit > Undo (requestUndo, its own
+        // substitute) of an earlier rename, run while the Hierarchy is closed under an unedited field. The buffer --
+        // still the name the rename began with -- then differs from the World's name, so such a decision COMMITTED
+        // it: the undone rename re-applied and the redo branch dropped, where the field's own deactivation of an
+        // unedited field cancels. The preamble's rename ends first, the (b) way, so the history can take a rename of
+        // the Cube to undo before a second rename begins on its new name.
+        app->panels().setVisible("Hierarchy", false);
+        e62Ticks(*app, 2);
+        app->panels().setVisible("Hierarchy", true);
+        e62Ticks(*app, 2);
+        REQUIRE_FALSE(hierarchy->renamingEntity().valid());
+        engine::editor::CommandContext cmd{app->world(), app->selection(), app->roots()};
+        auto earlier = std::make_unique<engine::editor::RenameEntityCommand>(cube, "Cube", "Crate");
+        REQUIRE(app->commands().push(cmd, std::move(earlier)));
+        REQUIRE(app->tick());
+        REQUIRE(world.name(cube) == "Crate");
+        const std::size_t history = app->commands().count();
+        app->requestPanelFocus("Hierarchy");
+        e62Ticks(*app, 2);
+        REQUIRE(app->keyboardFocusPanelId() == "Hierarchy");
+        hierarchy->requestBeginRename(cube);
+        for (int i = 0; i < 4 && !r.renameActive; ++i) {
+            REQUIRE(app->tick());
+        }
+        REQUIRE(r.renameActive);
+        REQUIRE(hierarchy->renamingEntity() == cube);
+        app->panels().setVisible("Hierarchy", false);
+        REQUIRE(app->tick());
+        const std::uint64_t idle = r.framesRecorded;
+        app->requestUndo();
+        REQUIRE(app->tick());
+        REQUIRE(r.framesRecorded == idle);    // ANTI-VACUITY: the undo ran while no field was drawn
+        REQUIRE(world.name(cube) == "Cube");  // ...and it took: the buffer, "Crate", now differs from the World
+        REQUIRE(app->commands().canRedo());
+        app->panels().setVisible("Hierarchy", true);
+        e62Ticks(*app, 2);
+        REQUIRE(r.framesRecorded > idle);  // the panel drew again, so the check ran
+        CHECK_FALSE(hierarchy->renamingEntity().valid());
+        CHECK_FALSE(r.renameFieldDrawn);
+        CHECK(world.name(cube) == "Cube");  // the undo's name stands
+        CHECK(app->commands().count() == history);
+        CHECK(app->commands().canRedo());  // the redo branch is kept...
+        CHECK(r.shortcutsLive);
+        app->requestRedo();
+        REQUIRE(app->tick());
+        CHECK(world.name(cube) == "Crate");  // ...and it is the earlier rename
+    }
+    SUBCASE("(e) the renamed row scrolled out of the ##tree child keeps its rename") {
+        // Task E.6.3's code-review round, round 3. A row merely scrolled out of the child is still walked, so its field
+        // is still submitted, and ItemAdd keeps an active item alive past its clip test (imgui.cpp:11987,
+        // :12025-12029): a wheel scroll during a rename keeps it. That holds only while every row is walked -- the tree
+        // has no clipper -- so a clipper that skipped the rows outside the child's clip would submit no field once the
+        // row left the view, and the check would end the rename with no click. Sixty roots below the default four make
+        // the child scroll; a reveal of the last scrolls its row into view (SetScrollHereY, applied as the child begins
+        // a frame later), which takes the Cube's row -- one of the four at the top -- out of it.
+        engine::World& scene = app->world();
+        engine::Entity last{};
+        for (int i = 0; i < 60; ++i) {
+            last = engine::editor::createEntity(scene, {}, "Row " + std::to_string(i));
+        }
+        e62Ticks(*app, 2);
+        REQUIRE(r.renameActive);        // the creates left the rename alone
+        REQUIRE(r.renameFieldVisible);  // ANTI-VACUITY: the renamed row is in view before the reveal
+        const float topScroll = r.treeScrollY;
+        hierarchy->revealEntity(last);
+        e62Ticks(*app, 3);
+        REQUIRE(r.treeScrollY > topScroll);  // ANTI-VACUITY: the reveal scrolled the child
+        CHECK(r.renameFieldDrawn);
+        CHECK_FALSE(r.renameFieldVisible);  // the renamed row out of view, and its field submitted all the same
+        CHECK(r.renameActive);
+        CHECK(hierarchy->renamingEntity() == cube);
+        CHECK_FALSE(r.shortcutsLive);
+        // ...and back: the row returns to view under the same rename.
+        const float bottomScroll = r.treeScrollY;
+        hierarchy->revealEntity(cube);
+        e62Ticks(*app, 3);
+        REQUIRE(r.treeScrollY < bottomScroll);  // ANTI-VACUITY: scrolled back up
+        CHECK(r.renameFieldVisible);
+        CHECK(r.renameActive);
+        CHECK(hierarchy->renamingEntity() == cube);
+        CHECK(world.name(cube) == "Cube");
+        CHECK(app->commands().count() == commandsBefore);
+    }
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: the Bottom dock takes its configured share of the delivered window (task E.6.3, I345)") {
+    // The code-review round, round 4: I324 and I338 size the Bottom dock through EditorAppConfig's bottomDockFraction
+    // (0.4), so their crumb-row REQUIREs read a pane of a known share of the window rather than a quarter of whatever
+    // height a runner delivers. This is the seam's EFFECT -- the avail ImGui laid out, never the config read back.
+    // A default layout splits the work area of the frame it is built in, H points tall: the Bottom node takes
+    // ceil(f x (H - 2)), the 2-point docking separator off first (imgui.cpp:20188-20193), and keeps that height beside
+    // the central node afterwards (:20321). The first build runs while the work area is still the whole main viewport
+    // -- a bar's inset lands at the NEXT NewFrame (imgui_widgets.cpp:9271-9275, imgui.cpp:16987-16997) -- and a View >
+    // Reset Layout splits the work area under the menu bar, the toolbar and the status bar. Measured here, the recorded
+    // avail is that node less 71 at 1x, for both fractions and both builds (an 800-point window: 249 and 129 first,
+    // 211 and 105 after a reset; a 656-point one: 191 and 93 first). So the midpoint of the two predictions,
+    // 0.325 x (H - 2) - 71, its lengths scaled with the UI, is a ratio of the delivered geometry: the 0.4 layout clears
+    // it and the default does not, each by about 0.075 x (H - 2) -- 60 points at 800, 53 after its reset, 49 at 656 --
+    // so the comparison holds at whatever height a runner delivers, with a margin that shrinks with the window.
+    // A third app asks for 0.96, a share DockBuilderSplitNode builds (it only saturates the ratio, imgui.cpp:20972)
+    // and resolveBottomDockFraction refuses, and lays out exactly the shipping dock, first and after a reset: the value
+    // create() stores, and every layout reads, is the RESOLVED one.
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "bottom dock i345", .width = 1280, .height = 800});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    constexpr float TALL = 0.4F;
+    // Refused, yet ImGui accepts it and builds the split, though not as asked: DockNodeTreeUpdatePosSize keeps a
+    // WindowMinSize.y central node (imgui.cpp:20292, :20327-20330), so at 1x in an 800-point window the raw share lays
+    // out 672 of the 704 points the separator leaves under the bars, avail 601, in both builds. Never NaN or 0 here:
+    // unresolved, either reaches the split's own arithmetic (imgui.cpp:20192-20193 -- a NaN ratio meets ImTrunc's int
+    // cast, a 0 builds a zero-height node), and what that does is ImGui's failure mode rather than this case's CHECK.
+    constexpr float REFUSED = 0.96F;
+    constexpr float MIDPOINT_FRACTION = 0.5F * (TALL + engine::editor::DEFAULT_BOTTOM_DOCK_FRACTION);
+    struct DockReading {
+        float uiScale = 0.0F;
+        // The main viewport's height after the settle -- the first build's H while the delivered window keeps its size
+        // from its first frame. The REQUIREs in readFraction hold it from the settle on; the frames before are unread.
+        float firstSplit = 0.0F;
+        float firstAvail = 0.0F;
+        float resetSplit = 0.0F;  // the reset's H: the work area under the menu bar, the toolbar and the status bar
+        float resetAvail = 0.0F;
+    };
+    // One app per fraction on the SAME window, each read after e63AssetsApp's settle, then again after a reset.
+    const auto readFraction = [&device, &window, &ctx](float fraction) {
+        std::optional<engine::editor::EditorApp> app = e63AssetsApp(*device, *window, ctx, {"top.txt"}, fraction);
+        const engine::editor::ShellChromeRecord& shell = app->shellChromeRecord();
+        REQUIRE(shell.framesRecorded > 0U);  // ANTI-VACUITY: the viewport geometry below was recorded
+        DockReading reading;
+        reading.uiScale = app->uiScale();
+        reading.firstSplit = shell.viewportSize.y;
+        reading.firstAvail = app->assetBrowserLayoutMetrics().availHeight;
+        // The viewport is SDL_GetWindowSize as of the last NewFrame (imgui_impl_sdl3.cpp:972-990 and :1002,
+        // imgui.cpp:16937), so the window reports the recorded height before the reset and after it: a resize
+        // mid-case fails here, loudly, rather than judging an avail against another window's midpoint.
+        REQUIRE(static_cast<float>(window->size().height) == reading.firstSplit);
+        app->requestLayoutReset();
+        e62Ticks(*app, 3);
+        REQUIRE(shell.viewportSize.y == reading.firstSplit);
+        REQUIRE(static_cast<float>(window->size().height) == reading.firstSplit);
+        reading.resetSplit = shell.workSize.y;
+        reading.resetAvail = app->assetBrowserLayoutMetrics().availHeight;
+        app->requestQuit();
+        CHECK(app->tick() == false);
+        app.reset();
+        return reading;
+    };
+    const DockReading tall = readFraction(TALL);
+    const DockReading shipped = readFraction(engine::editor::DEFAULT_BOTTOM_DOCK_FRACTION);
+    const DockReading refused = readFraction(REFUSED);
+    REQUIRE(tall.firstSplit > 0.0F);
+    REQUIRE(shipped.firstSplit == tall.firstSplit);  // one delivered window under both layouts
+    REQUIRE(shipped.resetSplit == tall.resetSplit);
+    REQUIRE(refused.firstSplit == tall.firstSplit);  // ...and under the refused one
+    REQUIRE(refused.resetSplit == tall.resetSplit);
+    REQUIRE(shipped.uiScale == tall.uiScale);  // ...at one UI scale, the s in every avail's 71 x s
+    REQUIRE(refused.uiScale == tall.uiScale);
+    const float s = tall.uiScale;
+    const auto midpoint = [s](float split) { return (MIDPOINT_FRACTION * (split - (2.0F * s))) - (71.0F * s); };
+    INFO("window " << window->size().height << ", viewport " << tall.firstSplit << ", work " << tall.resetSplit
+                   << ", scale " << s << "; first build: 0.4 -> " << tall.firstAvail << ", default -> "
+                   << shipped.firstAvail << " against " << midpoint(tall.firstSplit) << "; reset: 0.4 -> "
+                   << tall.resetAvail << ", default -> " << shipped.resetAvail << " against "
+                   << midpoint(tall.resetSplit));
+    CHECK(tall.firstAvail > midpoint(tall.firstSplit));
+    CHECK(tall.resetAvail > midpoint(tall.resetSplit));  // View > Reset Layout rebuilds with the same value
+    // ANTI-VACUITY: the same comparison FAILS for the shipping layout at the same window, in both builds.
+    CHECK_FALSE(shipped.firstAvail > midpoint(shipped.firstSplit));
+    CHECK_FALSE(shipped.resetAvail > midpoint(shipped.resetSplit));
+    // The refused 0.96 builds the shipping dock, exactly: both apps lay out one layout on one window.
+    CHECK(refused.firstAvail == shipped.firstAvail);
+    CHECK(refused.resetAvail == shipped.resetAvail);
 }

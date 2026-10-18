@@ -2,21 +2,20 @@
 // <filesystem>, performs no I/O, logs nothing and mutates nothing: every value arrives through
 // PanelContext::project, which is CONST (D1/INV-S4).
 //
-// FOUR ImGui rules this file lives or dies by:
+// THREE ImGui rules this file lives or dies by:
 //   * BeginTable/EndTable are ASYMMETRIC -- EndTable() ONLY when BeginTable() returned true
 //     (imgui.h:913). An unbalanced call is an IM_ASSERT ABORT in the Debug build.
 //   * PushID/PopID are 1:1, and there is NO continue, break or return between the pair below. Two
 //     tables sharing one literal id inside one window would MERGE.
-//   * A dynamic string is NEVER a format argument -- every draw goes through the three helpers, and
-//     each of them passes the value as a "%s" argument. `100% Cotton` is a legal project name.
-//   * SeparatorText takes a plain LABEL, not a format string (no IM_FMTARGS) -- the MenuItem
-//     exception. Do not "fix" it; there is no such overload.
+//   * A dynamic string is NEVER a format argument -- every draw goes through the three helpers: drawLabel and
+//     drawValue pass the value as a "%s" argument, and drawEmptyState goes through mutedTextWrapped, which draws it
+//     unformatted. `100% Cotton` is a legal project name.
 #include "project_settings_panel.hpp"
 
 #include <aero/editor/panel_context.hpp>
 #include <aero/editor/project_settings.hpp>
 
-#include "editor_theme_imgui.hpp"  // task E.6.1: toImVec4
+#include "panel_chrome_ui.hpp"  // task E.6.3: cards, roles
 
 #include <algorithm>
 #include <cstddef>
@@ -41,18 +40,12 @@ constexpr const char* NO_PROJECT_TEXT = "No project is open. Use File > New Proj
 void drawValue(const std::string& text) { ImGui::TextWrapped("%s", text.c_str()); }
 
 void drawLabel(const std::string& text) {
-    ImGui::PushStyleColor(ImGuiCol_Text, toImVec4(EDITOR_THEME.palette.textMuted));  // task E.6.1 (D16)
+    ImGui::PushStyleColor(ImGuiCol_Text, roleVec4(ChromeRole::TextLabel));  // task E.6.3 (D10): labels textLabel
     ImGui::TextWrapped("%s", text.c_str());
     ImGui::PopStyleColor();
 }
 
-// There is no TextDisabledWrapped, so the wrap position is pushed by hand: 0.0f means "wrap at
-// WorkRect.Max.x", which outside a table is the window's content edge.
-void drawEmptyState() {
-    ImGui::PushTextWrapPos(0.0F);
-    ImGui::TextDisabled("%s", NO_PROJECT_TEXT);
-    ImGui::PopTextWrapPos();
-}
+void drawEmptyState() { mutedTextWrapped(NO_PROJECT_TEXT); }  // task E.6.3 (D11): wraps at the content edge
 
 // ONE pass over every row of every group, so BOTH tables get the SAME column-0 width and the two
 // groups align as if they were one table (D10). Computed from the LIVE font rather than a hardcoded
@@ -83,9 +76,11 @@ void drawEmptyState() {
 }  // namespace
 
 ProjectSettingsPanel::ProjectSettingsPanel(std::string buildEngineVersion)
-    : buildVersion(std::move(buildEngineVersion)) {}
+    : buildVersion(std::move(buildEngineVersion)), cardPainter(std::make_unique<CardPainter>()) {}
+ProjectSettingsPanel::~ProjectSettingsPanel() = default;
 
 void ProjectSettingsPanel::onDraw(PanelContext& context) {
+    beginCardRecordFrame(cardRecordValue);  // task E.6.3 (D14)
     // Phase 1: ONE pure call. Rebuilt every frame from scratch -- there is no cache to invalidate (E2).
     const std::vector<ProjectSettingsGroup> groups = projectSettingsGroups(context.project, buildVersion);
 
@@ -97,19 +92,25 @@ void ProjectSettingsPanel::onDraw(PanelContext& context) {
     const float labelWidth = widestLabel(groups);
     for (std::size_t g = 0; g < groups.size(); ++g) {
         const ProjectSettingsGroup& group = groups[g];
-        ImGui::SeparatorText(group.title.c_str());  // OUTSIDE the table (F2/D10)
         ImGui::PushID(static_cast<int>(g));
-        if (ImGui::BeginTable("##rows", 2, TABLE_FLAGS)) {  // F9: End ONLY if true
-            ImGui::TableSetupColumn("##label", ImGuiTableColumnFlags_WidthFixed, labelWidth);
-            ImGui::TableSetupColumn("##value", ImGuiTableColumnFlags_WidthStretch);
-            for (const ProjectSettingsRow& row : group.rows) {
-                ImGui::TableNextRow();
-                ImGui::TableNextColumn();
-                drawLabel(row.label);
-                ImGui::TableNextColumn();
-                drawValue(row.value);  // wraps at the CELL edge (F3)
+        {
+            // task E.6.3 (D10): each group a read-only CARD -- no overflow, no buttons; ImGui-owned open state.
+            const PanelCard card(*cardPainter, "##group",
+                                 CardSpec{.title = group.title, .icon = projectSettingsGroupIcon(g)}, nullptr,
+                                 &cardRecordValue);
+            if (card.header().open && ImGui::BeginTable("##rows", 2, TABLE_FLAGS)) {  // F9: End ONLY if true
+                ImGui::TableSetupColumn("##label", ImGuiTableColumnFlags_WidthFixed, labelWidth);
+                ImGui::TableSetupColumn("##value", ImGuiTableColumnFlags_WidthStretch);
+                for (const ProjectSettingsRow& row : group.rows) {
+                    ImGui::TableNextRow();
+                    ImGui::TableNextColumn();
+                    drawLabel(row.label);
+                    ImGui::TableNextColumn();
+                    drawValue(row.value);  // wraps at the CELL edge (F3)
+                }
+                ImGui::EndTable();
+                cardRecordValue.lastBodyTableMaxX = ImGui::GetItemRectMax().x;
             }
-            ImGui::EndTable();
         }
         ImGui::PopID();
     }

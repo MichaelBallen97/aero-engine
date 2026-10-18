@@ -196,7 +196,10 @@ private:
 constexpr Srgb8 STYLE_POISON_COLOR{255U, 0U, 255U, 255U};
 
 // Everything the builder must overwrite, set to something it would never produce: a builder that started
-// from GetStyle() would carry these through (seed S10).
+// from GetStyle() would carry these through (seed S10). Each value must differ from ImGui's CONSTRUCTOR default,
+// not from the theme: I280's purity arm compares a build over this poison with one built in a fresh context, whose
+// GetStyle() holds the constructor's values -- so DockingNodeHasCloseButton stays `false` here even once the theme
+// states false too (task E.6.3, D3): `true` would blind the arm to a skipped write.
 void poisonStyle(ImGuiStyle& style) {
     for (ImVec4& color : style.Colors) {
         color = toImVec4(STYLE_POISON_COLOR);
@@ -241,8 +244,8 @@ EditorStyleColors editorStyleColors(const ThemePalette& palette) {
         {ImGuiCol_Border, p.border},
         {ImGuiCol_BorderShadow, withAlpha(p.canvas, 0)},  // no shadow under a border
         {ImGuiCol_FrameBg, p.inset},
-        {ImGuiCol_FrameBgHovered, p.raised},
-        {ImGuiCol_FrameBgActive, p.raisedHeader},
+        {ImGuiCol_FrameBgHovered, p.hover},  // task E.6.3 (D3): `raised` vanished on a raised card
+        {ImGuiCol_FrameBgActive, p.active},  // task E.6.3 (D3): inset -> hover -> active, the button ladder
         {ImGuiCol_TitleBg, p.chrome},
         {ImGuiCol_TitleBgActive, p.chrome},
         {ImGuiCol_TitleBgCollapsed, p.chrome},

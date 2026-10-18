@@ -17,19 +17,15 @@
 // dock node with Assets, so it is behind another tab a great deal of the time (AC-6).
 #include <aero/core/log.hpp>  // LogLevel
 #include <aero/editor/console_model.hpp>
-#include <aero/editor/editor_theme.hpp>  // Srgb8
+#include <aero/editor/console_view.hpp>  // task E.6.3: ConsoleDrawRecord, ConsoleFooterSegment
 #include <aero/editor/panel.hpp>
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
 namespace engine::editor {
-
-// task E.6.1: the colour a record's level is drawn in -- a role of EDITOR_THEME, returned as the theme's own
-// Srgb8 so the mapping stays ImGui-free and tier-0 testable (I287). Trace and Debug are textMuted, Info is
-// text, and Warn, Error and Critical are their own roles.
-[[nodiscard]] Srgb8 logLevelColor(LogLevel level) noexcept;
 
 class ConsolePanel final : public Panel {
 public:
@@ -53,32 +49,49 @@ public:
 
     [[nodiscard]] const LogHistory& history() const noexcept { return logHistory; }
 
-    // task E.6.1: what ImGui had CURRENT when this panel drew -- the face of the last message and of the last
-    // level label (copies of GetFont()->GetDebugName(), taken at the draw), and how many message rows this
-    // frame submitted. Consequences the widget produced, never a request's round trip (the
-    // namedSelectorsDrawn() shape); empty / 0 until a row draws.
-    [[nodiscard]] const std::string& lastMessageFontName() const noexcept { return lastMessageFontNameValue; }
-    [[nodiscard]] const std::string& lastLevelFontName() const noexcept { return lastLevelFontNameValue; }
-    [[nodiscard]] std::uint32_t messageRowsSubmitted() const noexcept { return messageRowsSubmittedValue; }
+    // task E.6.1 / E.6.3: what ImGui DREW this frame (D14), read back from the record -- consequences the widget
+    // produced, never a request's round trip; empty / 0 until a row draws. The tag is Mono small now, so
+    // lastLevelFontName() reads Mono; the SCOPED-PUSH witness is lastAfterMessageFontName(), taken inside the row
+    // right after the message's PopFont -- any read outside the row is blind, the child's End() pops a leaked font.
+    [[nodiscard]] const std::string& lastMessageFontName() const noexcept {
+        return drawRecordValue.lastMessageFontName;
+    }
+    [[nodiscard]] const std::string& lastLevelFontName() const noexcept { return drawRecordValue.lastLevelFontName; }
+    [[nodiscard]] float lastLevelFontSize() const noexcept { return drawRecordValue.lastLevelFontSize; }
+    [[nodiscard]] const std::string& lastAfterMessageFontName() const noexcept {
+        return drawRecordValue.lastAfterMessageFontName;
+    }
+    [[nodiscard]] std::uint32_t messageRowsSubmitted() const noexcept { return drawRecordValue.messageRowsSubmitted; }
+    [[nodiscard]] const ConsoleDrawRecord& drawRecord() const noexcept { return drawRecordValue; }
+
+    // task E.6.3: the horizontal scroll a drag of the log child's scrollbar sets -- nothing in tests/ can drag one.
+    // A request lives ONE tick: the next onDraw applies it before the child's Begin, bounded to the scrollbar's reach
+    // as last drawn, only while no modal is up (the scrollbar has no disabled state, so that is its whole gate), and
+    // drops it otherwise; EditorApp calls expireLogScrollX() after drawShellUi, so a tick the panel did not draw
+    // (another tab in front, or closed) drops it too (I338).
+    void requestLogScrollX(float scrollX) noexcept { pendingLogScrollX = scrollX; }
+    void expireLogScrollX() noexcept { pendingLogScrollX.reset(); }
 
 private:
     enum class ActionKind : std::uint8_t { None = 0, Clear, Copy };  // performance-enum-size (F33)
 
-    void drawHeader();                      // phase 1
-    void drawLogChild(float footerHeight);  // phase 2
-    void drawFooter();                      // phase 3
-    void applyPending();                    // the ONE mutating step
+    void drawHeader();                       // phase 1
+    void drawLogChild(float footerReserve);  // phase 2
+    void drawFooter(float band);             // phase 3
+    void applyPending();                     // the ONE mutating step
 
     LogSinkScope sinkScope;  // owns the installation; detaches in ~ConsolePanel (D15/E13)
     LogHistory logHistory;
     std::vector<LogEntry> pumpScratch;  // reused across frames; EMPTY between them (INV-10)
     LogFilter editedFilter;             // the widgets' mirror; diffed against logHistory.filter()
-    std::string lineScratch;            // per-frame scratch, NOT model state (the 2.2.1 idiom)
     ActionKind pending = ActionKind::None;
     bool autoScroll = true;
-    std::string lastMessageFontNameValue;         // task E.6.1 -- member/accessor collision rule
-    std::string lastLevelFontNameValue;           // likewise
-    std::uint32_t messageRowsSubmittedValue = 0;  // likewise; reset at the top of drawLogChild
+    ConsoleDrawRecord drawRecordValue;                // task E.6.3 -- drawRecord()'s value, named apart from it
+    std::vector<ConsoleFooterSegment> footerScratch;  // task E.6.3 -- per-frame scratch, capacity kept
+    std::string stampScratch;                         // task E.6.3 -- formatConsoleStamp's out string
+    std::string levelPreviewScratch;                  // task E.6.3 -- the combo's "Name <chevron>" preview
+    std::optional<float> pendingLogScrollX;           // task E.6.3 -- requestLogScrollX's, drained under noModal
+    float latchedLogScrollMaxX = 0.0F;                // task E.6.3 -- the log child's ScrollMax.x as last drawn
 };
 
 }  // namespace engine::editor

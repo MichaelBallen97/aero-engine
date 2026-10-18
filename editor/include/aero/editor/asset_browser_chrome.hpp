@@ -1,0 +1,323 @@
+#pragma once
+// Aero Engine -- the Assets panel's chrome as VALUES (task E.6.3, spec D8). PUBLIC and PURE: no ImGui, no GPU, no
+// <filesystem>, no logging, so tier 0 walks every width, scale and count (AH1-AH20) that asset_browser_panel.cpp only
+// measures and draws. The record at the bottom is what the panel DREW, for the GPU tier.
+#include <aero/core/math.hpp>                  // Vec2
+#include <aero/editor/asset_meta.hpp>          // AssetRecord
+#include <aero/editor/asset_view.hpp>          // CaptionLineFits
+#include <aero/editor/panel_chrome_model.hpp>  // ChromeRole
+
+#include <array>
+#include <cstddef>
+#include <cstdint>
+#include <functional>  // std::less<>: the count map's transparent comparator
+#include <map>
+#include <optional>
+#include <span>
+#include <string>
+#include <string_view>
+#include <vector>
+
+namespace engine::editor {
+
+// Moved from asset_browser_panel.cpp:52-53 (D1): first-run widths in FONT units, so a DPI change moves them with the
+// font. The tree pane's child is ResizeX, so the user's own width persists in the ini. AH16 pins the values, I324 where
+// the panel reads them.
+inline constexpr float ASSET_TREE_PANE_FONT_MULTIPLE = 14.0F;
+inline constexpr float ASSET_SIZE_COLUMN_FONT_MULTIPLE = 6.0F;
+
+// ---- the header row (D8) ----------------------------------------------------------------------------------------
+// Moved from asset_browser_panel.cpp (D1, the code-review round): the header's three field widths in FONT units, so a
+// DPI change moves them with the font. The panel sets AssetHeaderWidths' search, searchMin and kind to GetFontSize()
+// times each; AH16 pins the values and I323 ties the widths the panel recorded to them.
+inline constexpr float ASSET_HEADER_SEARCH_FONT_MULTIPLE = 12.0F;     // the search field's preferred width
+inline constexpr float ASSET_HEADER_SEARCH_MIN_FONT_MULTIPLE = 6.0F;  // the narrowest Minimal shrinks it to
+inline constexpr float ASSET_HEADER_KIND_FONT_MULTIPLE = 8.0F;        // the kind combo
+
+// Declared widest first, so "a narrower row never yields a wider mode" reads as an ordering (I323(e)).
+enum class AssetHeaderMode : std::uint8_t { Full, Compact, Minimal };
+
+// The controls' widths in POINTS, MEASURED by the panel at the live font (a frame's padding included).
+struct AssetHeaderWidths {
+    float newMaterial = 0.0F;
+    float search = 0.0F;      // the search field's preferred width: ASSET_HEADER_SEARCH_FONT_MULTIPLE em
+    float searchMin = 0.0F;   // the narrowest Minimal may shrink it to: ASSET_HEADER_SEARCH_MIN_FONT_MULTIPLE em
+    float kind = 0.0F;        // ASSET_HEADER_KIND_FONT_MULTIPLE em
+    float viewToggle = 0.0F;  // Grid | List, both segments
+    float refresh = 0.0F;
+    float autoRefresh = 0.0F;
+    float overflow = 0.0F;
+    friend constexpr bool operator==(const AssetHeaderWidths&, const AssetHeaderWidths&) = default;
+};
+
+// ABSOLUTE x's, rowMinX included. A folded control's x is the overflow's: finite, and never drawn.
+struct AssetHeaderLayout {
+    AssetHeaderMode mode = AssetHeaderMode::Minimal;
+    float newMaterialX = 0.0F;
+    float searchX = 0.0F;
+    float searchWidth = 0.0F;
+    float kindX = 0.0F;
+    float viewToggleX = 0.0F;
+    float refreshX = 0.0F;
+    float autoRefreshX = 0.0F;
+    float overflowX = 0.0F;
+    bool kindInline = false;
+    bool refreshInline = false;
+    bool autoRefreshInline = false;
+    friend constexpr bool operator==(const AssetHeaderLayout&, const AssetHeaderLayout&) = default;
+};
+
+// New Material at rowMinX; the cluster -- search, kind, Grid | List, Refresh, Auto-refresh, the overflow -- right-
+// aligned, itemSpacing.x x uiScale apart. Full holds every control inline; Compact folds Refresh and Auto-refresh into
+// the overflow; Minimal folds the kind filter too and lets the search shrink to searchMin. At or above
+// assetHeaderMinimalFloor every inline rect lies inside [rowMinX, rowMinX + rowWidth]; below it the controls are laid
+// out left-anchored at their own widths, so the order is kept, every x stays finite and only the right end crosses.
+// A non-finite or negative width counts as 0 and a bad scale as 1, so a NaN row is Minimal with finite x's (AH3).
+[[nodiscard]] AssetHeaderLayout assetHeaderLayout(float rowMinX, float rowWidth, const AssetHeaderWidths& widths,
+                                                  float uiScale) noexcept;
+// D8's floor: New Material + searchMin + Grid | List + the overflow + three gaps -- the narrowest row Minimal lays
+// out whole. The tests and D8's "never clips" claim share this one definition.
+[[nodiscard]] float assetHeaderMinimalFloor(const AssetHeaderWidths& widths, float uiScale) noexcept;
+
+// ---- the grouped contents pane (D8) -----------------------------------------------------------------------------
+struct AssetContentsPaneLayout {
+    float crumbRowHeight = 0.0F;  // frameHeight + 2 x panelHeaderPaddingY x uiScale: 30 at 1x; 0 when folded
+    float contentsHeight = 4.0F;  // the ##contents child, >= 4: ImGui draws no child shorter (and 0 is "fill")
+    friend constexpr bool operator==(const AssetContentsPaneLayout&, const AssetContentsPaneLayout&) = default;
+};
+// `crumbRowShown` is assetBrowserLayout's answer for the same pane, and NON-DEFAULTED: a default would let a future
+// site draw the other mode silently. Shown, crumbRowHeight + dividerHeight + itemSpacingY + contentsHeight ==
+// paneHeight for every pane of at least that chrome + 4 -- which is every pane assetBrowserLayout shows the row in,
+// since the panel records assetContentsPaneChromeHeight as its paneChromeHeight. Folded (task E.6.3's code-review
+// round, round 2), crumbRowHeight is 0 and contentsHeight is max(paneHeight, 4): the child IS the pane. Either way
+// the group is exactly the tree pane's height (AV66's identity and AH18; drawn, I324 at a tall pane, I231 in both
+// modes).
+[[nodiscard]] AssetContentsPaneLayout assetContentsPaneLayout(float paneHeight, float frameHeight, float dividerHeight,
+                                                              float itemSpacingY, float uiScale,
+                                                              bool crumbRowShown) noexcept;
+// task E.6.3 (the code-review round): the pane's FIXED chrome above the child -- crumbRowHeight + dividerHeight +
+// itemSpacingY, from assetContentsPaneLayout's own inputs (37 at 1x). The panel records it before the budget is sized,
+// so the crumb row is reserved rather than carved out of a pane too short to hold it.
+[[nodiscard]] float assetContentsPaneChromeHeight(float frameHeight, float dividerHeight, float itemSpacingY,
+                                                  float uiScale) noexcept;
+
+// ---- the crumb row (D8) -----------------------------------------------------------------------------------------
+struct AssetCrumb {
+    std::string label;     // the segment verbatim -- a "##" is drawn, never parsed (the crumb is an InvisibleButton)
+    std::string relative;  // the segment-wise prefix; "" for the root
+};
+// Root first ({rootLabel, ""}), then one crumb per non-empty segment of `currentDir`. Clears `out`.
+void assetBreadcrumbCrumbs(std::string_view rootLabel, std::string_view currentDir, std::vector<AssetCrumb>& out);
+// "N items " AERO_GLYPH_MIDDLE_DOT " drag into the viewport to place"; "1 item ..." for one; N grouped as
+// groupThousands groups it. The caller passes the RECURSIVE count under the current folder (D8). Overwrites `out`.
+void assetItemsText(std::size_t items, std::string& out);
+
+struct AssetCrumbRowLayout {
+    float firstCrumbX = 0.0F;    // rowMinX + framePadding.x x uiScale
+    float crumbGap = 0.0F;       // crumb -> separator and separator -> crumb: itemInnerSpacing.x x uiScale
+    float labelOffsetY = 0.0F;   // the crumbs' frame top below the row's: panelHeaderPaddingY x uiScale
+    float crumbsEndX = 0.0F;     // the last crumb's right edge
+    float itemsX = 0.0F;         // right-aligned at the row's max less the inset; never left of crumbsEndX + a gap
+    float itemsClipMaxX = 0.0F;  // the row's max: a too-long items text clips here, never over a crumb
+    friend constexpr bool operator==(const AssetCrumbRowLayout&, const AssetCrumbRowLayout&) = default;
+};
+// `inkWidth` is every crumb label and separator measured; `gapCount` the crumbGaps between them (2 x (n - 1)).
+[[nodiscard]] AssetCrumbRowLayout assetCrumbRowLayout(float rowMinX, float rowWidth, float inkWidth,
+                                                      std::size_t gapCount, float itemsWidth, float uiScale) noexcept;
+
+// ---- the tree row (D8) ------------------------------------------------------------------------------------------
+struct AssetTreeRowLayout {
+    float labelMaxX = 0.0F;  // the label elides before this
+    float countX = 0.0F;     // the count's left edge, right-aligned at rowMaxX - rowMetaInsetX x uiScale
+    bool countShown = false;
+    friend constexpr bool operator==(const AssetTreeRowLayout&, const AssetTreeRowLayout&) = default;
+};
+// The Hierarchy's rule (hierarchyRowLayout): the count is dropped before the label would shrink below one body em.
+[[nodiscard]] AssetTreeRowLayout assetTreeRowLayout(float labelX, float rowMaxX, float countWidth,
+                                                    float uiScale) noexcept;
+
+// ---- the folder glyph and the recursive counts (D3, D8) -----------------------------------------------------------
+// The mock's folder: a 22 x 6 tab over a 53 x 38 body in an 85 x 84 well, as fractions of the well.
+inline constexpr float FOLDER_TAB_WIDTH_FRACTION = 22.0F / 85.0F;
+inline constexpr float FOLDER_TAB_HEIGHT_FRACTION = 6.0F / 84.0F;
+inline constexpr float FOLDER_BODY_WIDTH_FRACTION = 53.0F / 85.0F;
+inline constexpr float FOLDER_BODY_HEIGHT_FRACTION = 38.0F / 84.0F;
+struct FolderGlyph {
+    Vec2 tabMin{};
+    Vec2 tabMax{};
+    Vec2 bodyMin{};
+    Vec2 bodyMax{};
+};
+// The body centred in x, the tab on its left edge directly above it, the pair centred in y. A degenerate, inverted
+// or non-finite well yields every corner at wellMin (or the origin when that is non-finite) -- never an inverted rect.
+[[nodiscard]] FolderGlyph folderGlyphRects(Vec2 wellMin, Vec2 wellMax) noexcept;
+
+// One per panel. A count equals countRecordsUnder's for the same records (the segment-wise rule); the answer is
+// computed for EVERY folder in one pass when the generation moves, so a draw walk asks a map, never the record list.
+class FolderCountCache {
+public:
+    [[nodiscard]] std::size_t countUnder(std::span<const AssetRecord> records, std::uint64_t generation,
+                                         std::string_view folderRelative);
+    [[nodiscard]] std::uint64_t recomputations() const noexcept { return recomputationCount; }
+
+private:
+    std::optional<std::uint64_t> cachedGeneration;
+    std::size_t total = 0;  // the root's count: every record
+    std::map<std::string, std::size_t, std::less<>> counts;
+    std::uint64_t recomputationCount = 0;
+};
+
+// ---- the footer (D8) --------------------------------------------------------------------------------------------
+// The most Mono cells assetFooterLayout reserves for a selection before it keeps "thumbnails R/B" or the watcher word.
+// A shorter selection reserves up to that -- its own cells, its path's and its details' together. In a zone of exactly
+// this many cells a file's details are shed before its name is cut past the extension (elideFooterSelection), so the
+// sixteen hold the ellipsis and the name's last fifteen characters -- or, beside an import state short enough to keep
+// with the extension, a shorter tail that keeps it ("...th.gltf  -  new"). A folder has no details: its last fifteen.
+inline constexpr std::size_t ASSET_FOOTER_SELECTION_MIN_CELLS = 16;
+// What follows a file's path in the footer, one part each, "" where there is none -- a folder has no part at all. The
+// footer composes the present ones in this order, each after "  -  ". Three fields since the code-review round of task
+// E.6.3's V2 fix, because elideFooterSelection sheds them one at a time (the identity first, then the size) before it
+// cuts the name; one composed string could not say which part is which.
+struct AssetFooterDetails {
+    std::string size;      // formatFileSize's answer, or the em dash when unknown
+    std::string identity;  // the elided GUID, "no .meta" or "invalid .meta"; "" without a database
+    std::string state;     // importChangeLabel's answer; "" without a valid, written record
+};
+struct AssetFooterText {
+    std::string selection;  // the selected path alone, assets-root-relative, '/'-separated; "" selects nothing
+    // Its own field since task E.6.3's macOS pass (V2), so `selection` holds a path and nothing else. Composed into the
+    // path and handed to elidePathLeft, the details were its "last segment": a narrow row dropped the folders with no
+    // ellipsis, then cut the import state.
+    AssetFooterDetails selectionDetails;
+    std::string notice;   // the listing's "N skipped" / truncation sentence (AC-8: never silent); "" omits it
+    std::string matches;  // "" unless a query is committed
+    std::size_t issues = 0;
+    std::size_t thumbnailsReady = 0;
+    std::size_t thumbnailsBudget = 0;  // MAX_THUMBNAILS_RESIDENT; 0 omits the segment
+    std::string watcher;               // assetFooterWatchText's word, verbatim; "" omits it
+};
+struct AssetFooterSegment {
+    std::string text;
+    ChromeRole role = ChromeRole::TextFaint;
+    float x = 0.0F;
+};
+struct AssetFooterLayout {
+    std::string left;  // the selection elided from the LEFT (elideFooterSelection); "" when no room is left
+    float leftX = 0.0F;
+    std::vector<AssetFooterSegment> right;  // each segment whole, never cut; see below for which ones are kept
+};
+// Mono small is monospaced, so a width is code points x `monoSmallAdvance`. Right zone, in order: the listing's
+// notice (warning), the matches (textFaint), "N issues" (warning, omitted at 0), "thumbnails R/B" (textFaint), the
+// watcher word (textFaint). While the zone is wider than the row -- with a selection, wider than the row less one gap
+// and the selection's cells, up to ASSET_FOOTER_SELECTION_MIN_CELLS, for it -- it sheds "thumbnails R/B" first, then
+// the watcher word (the status bar shows the same watch state); NEVER the notice, the matches or the issues. What is
+// left is right-aligned at the row's max when it fits, else anchored AT rowMinX (never left of it), so the notice
+// stays on screen and the window clips the overflow at the row's right end. The left zone takes what the right one
+// leaves, through elideFooterSelection. Beside a kept thumbnails or watcher segment that is at least the selection's
+// cells -- its path's and its details' -- up to ASSET_FOOTER_SELECTION_MIN_CELLS, so a shorter selection is drawn
+// whole (short of it only by float rounding, at a row width exactly on the threshold); the three segments never shed
+// can leave it less -- or nothing, in a row less than one gap plus one Mono cell wider than they are (AH19 records
+// that band).
+[[nodiscard]] AssetFooterLayout assetFooterLayout(float rowMinX, float rowWidth, const AssetFooterText& text,
+                                                  float monoSmallAdvance, float uiScale);
+// The footer's left zone, decided PURELY over the host's measurer (TRUE == the text fits the zone), so it takes no
+// uiScale: `fits` measures in the host's units. `path` is AssetFooterText::selection, `details` its selectionDetails.
+// THE DROP ORDER -- the first shape that fits is drawn, each at the longest it can be:
+//   (1) nothing: the path and every detail, whole;
+//   (2) the folders, WHOLE segments from the outermost: the ellipsis, '/', the longest tail of segments that fits with
+//       every detail beside it -- the leaf always among them;
+//   (3) the identity: the leaf after "...", '/' (the bare leaf when the path has no folder), the size, the state;
+//   (4) the size: the leaf so, and the state;
+//   (5) the name's front, cut on a UTF-8 boundary down to its extension -- the leaf from its last '.' after its first
+//       character; a name with none keeps all of itself: the ellipsis, that tail of the name, and the state;
+//   (6) the import state: the name alone -- the leaf as in (3), else the ellipsis and its longest tail;
+//   (7) "" when not even the ellipsis fits -- an ellipsis that does not fit is never drawn.
+// A part that is absent is skipped, never drawn empty. What an arm drops never returns at a narrower width, except the
+// name's front, which (6) gives back once the state is gone. An empty path is "". The leaf is what follows the path's
+// last '/' (all of it when nothing does); relative asset paths are '/'-separated (validateRelativeAssetPath).
+[[nodiscard]] std::string elideFooterSelection(std::string_view path, const AssetFooterDetails& details,
+                                               const CaptionLineFits& fits);
+
+// ---- what the panel DREW (D14, §6.5) ----------------------------------------------------------------------------
+enum class AssetHeaderControl : std::uint8_t { NewMaterial, Search, Kind, ViewToggle, Refresh, AutoRefresh, Overflow };
+inline constexpr std::size_t ASSET_HEADER_CONTROL_COUNT = 7;
+struct AssetDrawnRect {
+    bool drawn = false;
+    Vec2 min{};
+    Vec2 max{};
+};
+struct AssetFolderTileCount {
+    std::string relative;
+    std::size_t count = 0;
+};
+struct AssetChromeRecord {
+    std::uint64_t framesRecorded = 0;
+    AssetHeaderMode headerMode = AssetHeaderMode::Full;
+    AssetHeaderLayout headerLayout{};  // what assetHeaderLayout answered, as the panel used it
+    float headerRowMinX = 0.0F;
+    float headerRowWidth = 0.0F;
+    AssetHeaderWidths headerWidths{};  // what the panel measured and passed
+    float headerUiScale = 1.0F;
+    std::array<AssetDrawnRect, ASSET_HEADER_CONTROL_COUNT> headerRects{};  // indexed by AssetHeaderControl, as DRAWN
+    std::vector<AssetHeaderControl> overflowDrawn;                         // the controls folded into the overflow
+    bool headerRuleDrawn = false;  // the rule's AddRectFilled added vertices to the list
+    std::uint32_t crumbsDrawn = 0;
+    // attachFolderDropTarget's calls this frame, every site, counted inside the callee; crumbDropTargets is the crumb
+    // loop's share of it, never a bump beside the call (the code-review round's finding 14).
+    std::uint32_t folderDropTargetsAttached = 0;
+    std::uint32_t crumbDropTargets = 0;  // folder drop targets attached in the crumb row this frame
+    std::string itemsText;               // the string handed to the items text's draw call
+    // The item each attachFolderDropTarget call bound to -- GetItemID() at the callee's entry, the g.LastItemData.ID
+    // BeginDragDropTarget binds to (imgui.cpp, ImGui::BeginDragDropTarget) -- every site, in call order; the crumb
+    // row's share of it; and the id each crumb button was GIVEN, GetID() of its label on the button's own ID stack
+    // (the hash InvisibleButton takes), never the last item's. I324 matches the last two crumb by crumb: an item
+    // submitted between a crumb and its call, whatever its id, rebinds the target, moves no count and reads there as
+    // a mismatch.
+    std::vector<std::uint32_t> folderDropTargetItemIds;
+    std::vector<std::uint32_t> crumbDropTargetItemIds;
+    std::vector<std::uint32_t> crumbItemIds;
+    // The mode the contents pane drew in: true with the crumb row, false FOLDED (assetBrowserLayout's crumbRowShown,
+    // as the panel used it) -- then crumbsDrawn, crumbDropTargets and crumbRowHeight are 0, and itemsText and the two
+    // crumb id lists are empty.
+    bool crumbRowShown = false;
+    float crumbRowHeight = 0.0F;
+    Vec2 treeChildMin{};
+    Vec2 treeChildMax{};
+    Vec2 contentsChildMin{};
+    Vec2 contentsChildMax{};
+    float contentsGroupMaxY = 0.0F;
+    std::uint32_t treeRowsDrawn = 0;
+    std::uint32_t treeCurrentLabelColor = 0;  // the packed colour the current row's label draw received
+    std::uint32_t treeArrowTextColor = 0;     // the Text colour pushed around every node
+    float treeSelectionRounding = 0.0F;       // the rounding handed to the current row's fill
+    std::uint32_t tilesRinged = 0;
+    std::uint32_t lastRestingRingColor = 0;   // an unselected, unhovered tile's ring
+    std::uint32_t lastSelectedRingColor = 0;  // the selected tile's ring
+    std::uint32_t foldersCounted = 0;
+    std::vector<AssetFolderTileCount> folderTileCounts;  // this frame, one per folder tile drawn
+    std::uint32_t hatchedWells = 0;
+    std::uint32_t lastHatchLabelColor = 0;
+    // The LAST hatched well drawn, as hatchedWell handed it to the list (I346): the rect and rounding its fill was
+    // given, and every vertex it appended, read off the list's VtxBuffer at the draw -- the fill's first, the stripes'
+    // from lastHatchedWellStripesBegin -- and every index it appended to the IdxBuffer, as a position in that vertex
+    // list, three per triangle (none when ImGui moved the list's vertex offset inside the well, which a position
+    // cannot express). Only the two lists and the stripes index are cleared each frame, so a frame with no hatched
+    // well leaves no vertex and no triangle; the rect and rounding keep the last well drawn, overwritten by the draw
+    // as lastHatchLabelColor is (beginAssetChromeRecordFrame's rule for the colours and rects).
+    Vec2 lastHatchedWellMin{};
+    Vec2 lastHatchedWellMax{};
+    float lastHatchedWellRounding = 0.0F;
+    std::vector<DrawnVertex> lastHatchedWellVertices;
+    std::size_t lastHatchedWellStripesBegin = 0;
+    std::vector<std::uint32_t> lastHatchedWellIndices;
+    std::uint32_t lastFolderTabColor = 0;
+    std::string footerLeftText;
+    std::vector<std::string> footerRightTexts;
+    std::uint64_t folderCountRecomputations = 0;  // the cache's, copied every frame
+};
+// Opens one recorded frame: + 1 frame, the counts zeroed, the header rects hidden, the per-frame lists and texts
+// cleared (capacity kept); AH17 pins each. The other colours, rects and layouts are overwritten by the draw that
+// produces them.
+void beginAssetChromeRecordFrame(AssetChromeRecord& record) noexcept;
+
+}  // namespace engine::editor

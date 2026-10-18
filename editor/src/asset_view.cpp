@@ -314,24 +314,40 @@ AssetBrowserLayout assetBrowserLayout(const AssetBrowserLayoutMetrics& metrics) 
     const float avail = usableMetric(metrics.availHeight);
     const float frame = usableMetric(metrics.frameHeight);
     const float spacing = usableMetric(metrics.itemSpacingY);
+    // ImGui draws neither pane's child shorter than 4 points (IMGUI_WINDOW_HARD_MIN_SIZE: neither has ResizeY), so no
+    // pane is shorter; asset_browser_panel.cpp static_asserts the macro and the rounding term beside it.
+    constexpr float CHILD_MIN_HEIGHT = 4.0F;  // asset_browser_chrome.cpp's CONTENTS_MIN_HEIGHT, for its reason
+    // task E.6.3 (the code-review round, rounds 2 and 3): the contents pane draws its crumb row, rule and spacing above
+    // its child INSIDE paneHeight, so this is the shortest pane the row shows in: that chrome and one frame height of
+    // contents below it, never under ImGui's child -- a height, not a whole entry (in List view the frozen column
+    // headers and the top of the first entry; the header's THE FOLD). Elsewhere the row folds. The body yields to keep
+    // it in both modes, so the mode moves no height in this budget.
+    const float rowFloor = usableMetric(metrics.paneChromeHeight) + std::max(frame, CHILD_MIN_HEIGHT);
+    const float bodyFloor = std::max(usableMetric(metrics.textLineHeight), 1.0F);
     AssetBrowserLayout layout;
     // The footer's reservation is today's GetFrameHeightWithSpacing(): the spacing after the region above
     // it plus a frame-height line, which the footer's one text line fits inside.
     layout.footerHeight = spacing + frame;
+    // The Issues region the list takes OPEN at its one-row floor, whatever its state. The mode reads it, so opening or
+    // closing the list never shows or folds the row, and closing it never shrinks the ##contents child.
+    float issuesAtFloor = 0.0F;
     if (metrics.issuesShown) {
         layout.issuesHeight = frame + spacing;  // the CollapsingHeader is one frame tall
+        // Summed as the open arm sums it below, so at the body's floor the two agree exactly.
+        issuesAtFloor = layout.issuesHeight + (bodyFloor + spacing);
         if (metrics.issuesOpen) {
-            const float bodyFloor = std::max(usableMetric(metrics.textLineHeight), 1.0F);
             // Whole points, so every height here stays exact for whole-point metrics.
             const float cap = std::max(std::floor(ASSET_ISSUES_BODY_MAX_FRACTION * avail), bodyFloor);
             const float wanted = std::min(std::max(usableMetric(metrics.issuesContentHeight), bodyFloor), cap);
-            const float paneMin = ASSET_PANES_MIN_FONT * usableMetric(metrics.fontSize);
+            const float paneMin = std::max(ASSET_PANES_MIN_FONT * usableMetric(metrics.fontSize), rowFloor);
             const float room = avail - layout.footerHeight - layout.issuesHeight - spacing - paneMin;
             layout.issuesBodyHeight = std::max(std::min(wanted, room), bodyFloor);
             layout.issuesHeight += layout.issuesBodyHeight + spacing;
         }
     }
-    layout.paneHeight = std::max(avail - layout.footerHeight - layout.issuesHeight, 1.0F);
+    const float remainder = avail - layout.footerHeight - layout.issuesHeight;
+    layout.crumbRowShown = avail - layout.footerHeight - issuesAtFloor >= rowFloor;
+    layout.paneHeight = std::max(remainder, CHILD_MIN_HEIGHT);  // == remainder >= rowFloor whenever the row shows
     return layout;
 }
 

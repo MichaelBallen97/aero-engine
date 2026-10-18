@@ -177,6 +177,13 @@ struct EditorAppConfig {
     // ONCE in create(). An owning string, like every sibling path field. Tests pass a scratch parent so the root
     // reads ~/<project> without depending on the machine.
     std::string homeDirectory;
+    // task E.6.3 (the code-review round, round 4; the recentProjectsPath / layoutIniPath / toolPrefsPath /
+    // editorPrefsPath / homeDirectory test-seam precedent, a SIXTH instance): the default layout's Bottom split,
+    // resolved ONCE in create() through resolveBottomDockFraction -- a value it refuses builds the shipping layout.
+    // The shipping editor never sets it. A test that needs an Assets pane of a known proportion of the window sets
+    // it, because a runner's delivered window height is not the requested one, and a pane threshold over a fixed
+    // quarter of it is a guess about the runner's display. View > Reset Layout rebuilds with the same value.
+    float bottomDockFraction = DEFAULT_BOTTOM_DOCK_FRACTION;
 };
 
 // Sleep applied when the window is not presentable (minimized) — inherited verbatim from 2.1.1.
@@ -189,6 +196,13 @@ inline constexpr std::uint32_t MINIMIZED_SLEEP_MS = 4;
 //   otherwise                          -> max(0, round(1000 / capHz) - frameElapsedMs)
 [[nodiscard]] std::uint32_t framePaceSleepMs(bool presented, bool focused, float unfocusedCapHz,
                                              float frameElapsedMs) noexcept;
+
+// task E.6.3 (the code-review round, round 4): PURE and total, exposed for tier-0 testing (PC12).
+//   `requested` finite and within [0.05, 0.95]  -> `requested`, bit for bit
+//   anything else (NaN, an infinity, out of range) -> DEFAULT_BOTTOM_DOCK_FRACTION (panel.hpp, beside DockSlot)
+// The finiteness test comes FIRST (a NaN fails both range comparisons, so the range test alone would pass it), and a
+// refused value falls back to the shipping layout rather than clamping, so a typo can never build a degenerate dock.
+[[nodiscard]] float resolveBottomDockFraction(float requested) noexcept;
 
 class EditorApp {
 public:
@@ -495,6 +509,11 @@ public:
     // EXACTLY what a real single click on an Assets row/tile records (ActionKind::SelectEntry) -- ""
     // selects nothing, exactly like Navigate clearing it.
     void requestAssetBrowserSelectEntry(std::string_view relativePath);
+    // task E.6.3 (D8): the crumb / tree-row seam, the requestAssetBrowserSelectEntry shape -- it queues EXACTLY the
+    // ActionKind::Navigate a crumb or a tree row records, drained by the panel's onDraw in the next tick under the
+    // click's own gate, and dropped when that gate refuses it or the panel does not draw (one tick, I338). A no-op
+    // when no Asset Browser panel is registered.
+    void requestAssetBrowserNavigate(std::string_view relativeDir);
 
     // task E.4.4: the `Show hidden` checkbox's seam -- the requestAssetBrowserCreateMaterial() forward
     // verbatim. It queues the SAME ActionKind::ToggleHidden the checkbox queues, drained by the next
@@ -1056,6 +1075,9 @@ private:
     FrameTimeReadout frameReadout;  // D14: fed once per tick, on the statement after frameClock.tick()
     std::string backendLabel;       // D15: backendDisplayName(device.backendName()), read ONCE in create()
     std::string homeDirectory;      // D16: resolved ONCE in create(); "" disables the "~"
+    // task E.6.3 (round 4): resolveBottomDockFraction(config.bottomDockFraction), resolved ONCE in create() and
+    // carried into every tick's ShellUiState, so a default layout and every View > Reset Layout split alike.
+    float bottomDockFraction = DEFAULT_BOTTOM_DOCK_FRACTION;
     std::optional<TransformTool> pendingToolbarTool;  // D21: the five seams' pending values, cleared every tick
     std::optional<GizmoSpace> pendingToolbarSpace;
     bool pendingToolbarSnapToggle = false;

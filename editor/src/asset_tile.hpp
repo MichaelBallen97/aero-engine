@@ -4,6 +4,8 @@
 // the browser paint ONE tile rather than two that drift by a pixel of padding a year later.
 #include <aero/editor/asset_view.hpp>  // AssetKind
 
+#include "panel_chrome_ui.hpp"  // task E.6.3: HatchedWellDrawn
+
 #include <cstddef>  // task E.4.5 -- elideForCaption's maxLines
 #include <imgui.h>
 #include <optional>  // task E.4.5 -- AssetTileFace::tint
@@ -32,8 +34,16 @@ struct AssetTileFace {
     // the call; a material card's name does (material_card.hpp's materialCardSubtitle).
     std::string_view subtitle;
     // The icon-rect fill when the caller has a better answer than iconColorFor(kind) -- today, one caller: a
-    // material's own base colour. DISENGAGED == iconColorFor(kind): every other tile in the editor, unchanged.
+    // material's own base colour. DISENGAGED == no swatch: a file with no thumbnail draws a hatched well (task E.6.3).
     std::optional<IconColor> tint;
+    // task E.6.3 (D8), APPENDED LAST in declaration order (the rule above). `folderCount` is the folder's RECURSIVE
+    // record count (FolderCountCache), drawn at the well's bottom-right; 0 draws none. The three states come off the
+    // host's own Selectable -- its `selected` argument, IsItemHovered, IsItemActive -- because ImGui paints no tile
+    // fill (every host clears the Header slots around that one call), so the face draws every state itself.
+    std::size_t folderCount = 0;
+    bool hovered = false;
+    bool selected = false;
+    bool held = false;
 };
 
 // Moved VERBATIM from asset_browser_panel.cpp's anonymous namespace: the LONGEST byte prefix whose
@@ -47,8 +57,28 @@ struct AssetTileFace {
 [[nodiscard]] std::string elideForCaption(const std::string& name, float wrapWidth,
                                           std::size_t maxLines = TILE_CAPTION_LINES);
 
-// drawTile's face, drawn at `itemMin`: the thumbnail image or the kind-coloured icon rect with its
-// folder tab or centred label, then the elided caption.
+// What the face handed to its draw calls, for the host's record (task E.6.3, D14). Colours are ImGui-packed.
+struct AssetTileDrawn {
+    bool ringed = false;         // a ring was drawn: every face does
+    bool hatched = false;        // a file with no preview and no tint
+    bool folderCounted = false;  // a folder count was drawn
+    ImU32 ringColor = 0;         // hover at rest, active hovered or held, accentBorder selected
+    ImU32 hatchLabelColor = 0;   // textSecondary, never a kind colour
+    ImU32 folderTabColor = 0;    // folderTab, never folder's
+    // A hatched well's rect and rounding, as its fill was given them, and the VtxBuffer range hatchedWell appended
+    // to the face's draw list (I346); zero for every other face.
+    ImVec2 wellMin{};
+    ImVec2 wellMax{};
+    float wellRounding = 0.0F;
+    HatchedWellDrawn hatch{};
+};
+
+// drawTile's face, drawn at `itemMin`: the WELL (the icon rect). A folder's well is filled `tile`, `raisedHeader`
+// hovered or held, `selection` selected, under the two-tone folder and its count. The other three contents cover the
+// well and carry NO state fill: a ready thumbnail's image, a material's own colour, or a hatched well (`hatchStripe`
+// over `tile`) with the kind dot and the extension label -- on those three, hover and selection read through the
+// ring and the caption alone. Then the ring (hover / active / accentBorder, tileRingHeight() thick); then the
+// caption, `textBright` when selected.
 //
 // IT SUBMITS NO ImGui ITEM -- it draws into `drawList` and nothing else, so it never disturbs the
 // caller's last-item data. That is load-bearing for both hosts: the browser's Selectable and the
@@ -56,7 +86,7 @@ struct AssetTileFace {
 // and a caller's drop target still attaches to the item it means to.
 //
 // `scratch` is the caller's own per-frame string, reused rather than allocated (the labelScratch
-// idiom) -- it is clobbered.
-void drawAssetTileFace(ImDrawList* drawList, ImVec2 itemMin, const AssetTileFace& face, std::string& scratch);
+// idiom) -- it is clobbered. NOT [[nodiscard]]: the reference row draws an icon and records nothing.
+AssetTileDrawn drawAssetTileFace(ImDrawList* drawList, ImVec2 itemMin, const AssetTileFace& face, std::string& scratch);
 
 }  // namespace engine::editor

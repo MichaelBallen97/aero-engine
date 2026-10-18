@@ -268,9 +268,11 @@ TEST_CASE("status bar: the Assets footer adopted the classification and owns no 
     CHECK(linesWith(code, "const WatchState footerState = classifyWatchState(true, watch);") == 1U);
     CHECK(linesWith(code, "footerState") == 2U);  // declared, then handed to assetFooterWatchText -- nothing else
     // ...and handed WHOLE: no condition between the classification and the words.
+    // task E.6.3 (D8): the word is handed WHOLE into the footer's own field -- assetFooterLayout places it.
     const std::string_view footerCall =
-        "labelScratch += assetFooterWatchText(footerState, watch.deferredSweeps, watch.unreadableDirs);";
+        "footerText.watcher = assetFooterWatchText(footerState, watch.deferredSweeps, watch.unreadableDirs);";
     CHECK(linesWith(code, footerCall) == 1U);
+    CHECK(linesWith(code, "labelScratch += assetFooterWatchText(") == 0U);  // the old concatenation cannot come back
     // ...on the line right after the classification, so no condition can sit between them on a line of its own.
     std::size_t classifyAt = code.size();
     std::size_t callAt = code.size();

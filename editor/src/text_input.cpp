@@ -37,4 +37,13 @@ bool inputTextString(const char* label, std::string& str, ImGuiInputTextFlags fl
     return ImGui::InputText(label, str.data(), str.capacity() + 1, flags, inputTextResizeCallback, &cbUserData);
 }
 
+bool inputTextString(const char* label, const char* hint, std::string& str, ImGuiInputTextFlags flags) {
+    IM_ASSERT((flags & ImGuiInputTextFlags_CallbackResize) == 0);
+    flags |= ImGuiInputTextFlags_CallbackResize;
+
+    InputTextResizeUserData cbUserData{.str = &str};
+    return ImGui::InputTextWithHint(label, hint, str.data(), str.capacity() + 1, flags, inputTextResizeCallback,
+                                    &cbUserData);
+}
+
 }  // namespace engine::editor

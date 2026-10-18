@@ -281,6 +281,7 @@ ForwardRenderer::ForwardRenderer(ForwardRenderer&& other) noexcept
       // now, so the member list has no half-handled tail.
       lastDrawn(other.lastDrawn),
       lastCulled(other.lastCulled),
+      lastTriangles(other.lastTriangles),  // task E.6.3 -- beside 3.6.1's four
       materialBinds(other.materialBinds),
       warnedDegenerateFrustum(other.warnedDegenerateFrustum),
       lastViewFrustum(other.lastViewFrustum),  // task E.1.4 -- the mask's mirror of draw()'s cull
@@ -338,6 +339,7 @@ ForwardRenderer& ForwardRenderer::operator=(ForwardRenderer&& other) noexcept {
         warnedStrayPalette = other.warnedStrayPalette;
         lastDrawn = other.lastDrawn;  // task 3.6.2 — 3.6.1's four, see the move constructor
         lastCulled = other.lastCulled;
+        lastTriangles = other.lastTriangles;
         materialBinds = other.materialBinds;
         warnedDegenerateFrustum = other.warnedDegenerateFrustum;
         lastViewFrustum = other.lastViewFrustum;  // task E.1.4 -- the mask's mirror of draw()'s cull
@@ -397,6 +399,7 @@ void ForwardRenderer::reset() noexcept {
     warnedStrayPalette = false;
     lastDrawn = 0;  // task 3.6.2 — 3.6.1's four, see the move constructor
     lastCulled = 0;
+    lastTriangles = 0;
     materialBinds = 0;
     warnedDegenerateFrustum = false;
     lastViewFrustum = {};  // task E.1.4 -- see the move constructor
@@ -1144,6 +1147,8 @@ std::size_t ForwardRenderer::lastFrameDrawn() const noexcept { return lastDrawn;
 
 std::size_t ForwardRenderer::lastFrameCulled() const noexcept { return lastCulled; }
 
+std::size_t ForwardRenderer::lastFrameTriangles() const noexcept { return lastTriangles; }
+
 std::size_t ForwardRenderer::materialBindCount() const noexcept { return materialBinds; }
 
 bool ForwardRenderer::hasWarnedDegenerateFrustum() const noexcept { return warnedDegenerateFrustum; }
@@ -1250,6 +1255,7 @@ void ForwardRenderer::draw(Frame& frame, const RenderView& view) {
     // nothing, and must read 0/0 rather than the previous frame's numbers.
     lastDrawn = 0;
     lastCulled = 0;
+    lastTriangles = 0;  // task E.6.3 -- with its two siblings, before the no-camera early return
     // task E.1.4 -- reset with them, and reset to OFF: renderSelectionMask reads this pair to mirror
     // the cull below, and a view that returns early (no camera) must leave the mask culling NOTHING
     // rather than culling against the previous frame's frustum.
@@ -1410,6 +1416,7 @@ void ForwardRenderer::draw(Frame& frame, const RenderView& view) {
             device->bindIndexBuffer(pass, mesh.ibuf, rhi::IndexType::Uint16);
             device->drawIndexed(pass, mesh.indexCount);
             ++lastDrawn;
+            lastTriangles += mesh.indexCount / 3U;  // task E.6.3: triangle-list only (D15)
             continue;
         }
 
@@ -1492,6 +1499,7 @@ void ForwardRenderer::draw(Frame& frame, const RenderView& view) {
         device->bindIndexBuffer(pass, resolvedDraw.entry->indexBuffer, resolvedDraw.entry->indexType);
         device->drawIndexed(pass, resolvedDraw.submesh->indexCount, 1, resolvedDraw.submesh->firstIndex, 0, 0);
         ++lastDrawn;
+        lastTriangles += resolvedDraw.submesh->indexCount / 3U;  // task E.6.3
     }
 
     // task 3.6.1 -- the first two production Tracy plots in the tree. The NAMES are the contract:

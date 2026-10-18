@@ -8,6 +8,7 @@
 #include <aero/editor/breadcrumb.hpp>
 #include <aero/editor/command_stack.hpp>
 #include <aero/editor/editor_theme.hpp>
+#include <aero/editor/panel_chrome_model.hpp>
 #include <aero/editor/project.hpp>
 #include <aero/editor/scene_session.hpp>
 #include <aero/editor/shell_chrome_record.hpp>
@@ -18,6 +19,7 @@
 #include "editor_fonts.hpp"        // editorFonts(): Body, Strong, Mono
 #include "editor_theme_imgui.hpp"  // toImVec4
 #include "editor_theme_ui.hpp"     // currentUiScale
+#include "panel_chrome_ui.hpp"     // task E.6.3: segmentButton, segmentGroupBackground, ruleHeight
 
 #include <algorithm>
 #include <cfloat>  // FLT_MAX -- ImFont::CalcTextSizeA's "no limit" width
@@ -40,16 +42,15 @@ constexpr ImGuiWindowFlags BAR_FLAGS = ImGuiWindowFlags_NoSavedSettings | ImGuiW
                                        ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoFocusOnAppearing |
                                        ImGuiWindowFlags_NoNavFocus | ImGuiWindowFlags_NoNavInputs;
 
-// EVERY palette role this TU reads, each read ONCE, here -- D19's map, and the exact set I287 pins.
+// EVERY palette role this TU reads, each read ONCE, here -- D19's map, and the exact set I287 pins (task E.6.3:
+// the segmented group's own roles moved to panel_chrome_ui.cpp with segmentButton).
 struct ChromeColors {
     ImVec4 chrome;
     ImVec4 raised;
     ImVec4 border;
     ImVec4 active;
-    ImVec4 textBright;
     ImVec4 hover;
     ImVec4 accent;
-    ImVec4 onAccent;
     ImVec4 textSecondary;
     ImVec4 textMuted;
     ImVec4 textLabel;
@@ -64,10 +65,8 @@ struct ChromeColors {
                         .raised = toImVec4(EDITOR_THEME.palette.raised),
                         .border = toImVec4(EDITOR_THEME.palette.border),
                         .active = toImVec4(EDITOR_THEME.palette.active),
-                        .textBright = toImVec4(EDITOR_THEME.palette.textBright),
                         .hover = toImVec4(EDITOR_THEME.palette.hover),
                         .accent = toImVec4(EDITOR_THEME.palette.accent),
-                        .onAccent = toImVec4(EDITOR_THEME.palette.onAccent),
                         .textSecondary = toImVec4(EDITOR_THEME.palette.textSecondary),
                         .textMuted = toImVec4(EDITOR_THEME.palette.textMuted),
                         .textLabel = toImVec4(EDITOR_THEME.palette.textLabel),
@@ -103,46 +102,6 @@ void recordItem(ToolbarButtonRecord& record, bool drawnActive) {
     record.max = toVec2(ImGui::GetItemRectMax());
     record.drawnActive = drawnActive;
     record.enabled = (ImGui::GetItemFlags() & ImGuiItemFlags_Disabled) == 0;
-}
-
-// D19 (a)-(d) and D1: one button INSIDE a `raised` group. No border of its own -- the theme's frameBorderSize
-// would draw a ring inside the group's outline, so FrameBorderSize 0 is pushed around THIS Button alone. Clicking
-// it leaves the keyboard where it was: ImGuiItemFlags_NoFocus makes ButtonBehavior skip both FocusWindow arms
-// (imgui_widgets.cpp:553-554), so the Hierarchy's Delete / Cmd+D / F2 keep working after a tool click. ACTIVE
-// pushes all three button slots and the text slot together: onAccent on `hover` is 1.34:1 and on `active` 1.49:1,
-// so a Button-only push would lose the pair on hover and press (TH13). Inactive keeps Button = raised.
-[[nodiscard]] bool groupButton(const char* label, bool active, const ImVec4& activeFill, const ImVec4& activeText,
-                               const ImVec4& idleText, ToolbarButtonRecord& record) {
-    if (active) {
-        ImGui::PushStyleColor(ImGuiCol_Button, activeFill);
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, activeFill);
-        ImGui::PushStyleColor(ImGuiCol_ButtonActive, activeFill);
-        ImGui::PushStyleColor(ImGuiCol_Text, activeText);
-    } else {
-        ImGui::PushStyleColor(ImGuiCol_Text, idleText);
-    }
-    ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 0.0F);
-    ImGui::PushItemFlag(ImGuiItemFlags_NoFocus, true);
-    const bool pressed = ImGui::Button(label);
-    ImGui::PopItemFlag();
-    ImGui::PopStyleVar();
-    ImGui::PopStyleColor(active ? 4 : 1);
-    recordItem(record, active);
-    return pressed;
-}
-
-// A group's `raised` body and its 1-dp `border`, drawn BEHIND its buttons (submission order is draw order).
-void groupBackground(ImDrawList* list, float x, float y, float width, float height, const ChromeColors& c) {
-    const float rounding = ImGui::GetStyle().FrameRounding;
-    list->AddRectFilled(ImVec2(x, y), ImVec2(x + width, y + height), packed(c.raised), rounding);
-    list->AddRect(ImVec2(x, y), ImVec2(x + width, y + height), packed(c.border), rounding, 0,
-                  ImGui::GetStyle().FrameBorderSize);
-}
-
-// A rule `ruleThickness` x the UI scale thick, floored at one device pixel.
-[[nodiscard]] float ruleThickness(float uiScale) {
-    const float pixel = 1.0F / std::max(ImGui::GetIO().DisplayFramebufferScale.y, 1.0F);
-    return std::max(EDITOR_THEME.shell.ruleThickness * uiScale, pixel);
 }
 
 // Opens a side bar with the chrome's own window style (1:1 pushes, popped right after Begin, which has read them).
@@ -242,7 +201,7 @@ void drawToolbar(ShellUiState& state, const CommandStack& commands, bool fileEna
 
         // ---- the tools (D6: always live; Q W E R) -----------------------------------------------------------
         float groupX = pos.x + layout.toolsX;
-        groupBackground(list, groupX, groupTop, w.tools, groupHeight, c);
+        segmentGroupBackground(list, ImVec2(groupX, groupTop), ImVec2(groupX + w.tools, groupTop + groupHeight));
         ImGui::SetCursorScreenPos(ImVec2(groupX + pad, buttonY));
         const std::optional<TransformTool> toolRequest = state.toolbarToolRequest;
         const bool toolsEnabled = haveTools;  // D21: the tools' predicate -- live whenever there is a state
@@ -255,7 +214,8 @@ void drawToolbar(ShellUiState& state, const CommandStack& commands, bool fileEna
             const char* const label = full ? row.iconLabel.data() : row.icon.data();
             const bool active = tools.mode.tool == row.tool;
             ImGui::PushID(static_cast<int>(i));
-            const bool pressed = groupButton(label, active, c.accent, c.onAccent, c.textSecondary, rec.tools[i]);
+            const bool pressed = segmentButton(label, active, ChromeRole::Accent, ChromeRole::OnAccent,
+                                               ChromeRole::TextSecondary, rec.tools[i]);
             ImGui::PopID();
             itemTooltip(row.tooltip);
             const bool requested = toolRequest == row.tool;
@@ -267,7 +227,7 @@ void drawToolbar(ShellUiState& state, const CommandStack& commands, bool fileEna
 
         // ---- the space (D6: segmented; Scale shows Local, disabled) ------------------------------------------
         groupX = pos.x + layout.spaceX;
-        groupBackground(list, groupX, groupTop, w.space, groupHeight, c);
+        segmentGroupBackground(list, ImVec2(groupX, groupTop), ImVec2(groupX + w.space, groupTop + groupHeight));
         ImGui::SetCursorScreenPos(ImVec2(groupX + pad, buttonY));
         // The space Manipulate receives, by the SAME rule (effectiveSpace): the segment can never show a space the
         // gizmo does not use. Select draws no gizmo, so it shows the stored space.
@@ -285,8 +245,8 @@ void drawToolbar(ShellUiState& state, const CommandStack& commands, bool fileEna
                 ImGui::SameLine(0.0F, 0.0F);
             }
             const std::string_view label = k == 0U ? LOCAL_SEGMENT_LABEL : WORLD_SEGMENT_LABEL;
-            const bool pressed =
-                groupButton(label.data(), shown == segment, c.active, c.textBright, c.textSecondary, rec.space[k]);
+            const bool pressed = segmentButton(label.data(), shown == segment, ChromeRole::Active,
+                                               ChromeRole::TextBright, ChromeRole::TextSecondary, rec.space[k]);
             itemTooltip(scaleForcesLocal ? SCALE_IS_LOCAL_TOOLTIP
                                          : (k == 0U ? LOCAL_SEGMENT_TOOLTIP : WORLD_SEGMENT_TOOLTIP));
             const bool requested = spaceRequest == segment;
@@ -299,12 +259,13 @@ void drawToolbar(ShellUiState& state, const CommandStack& commands, bool fileEna
         // ---- snap (D7): the toggle in its group, then the active tool's step field ---------------------------
         groupX = pos.x + layout.snapX;
         const float toggleWidth = full ? metrics.snapToggleFull : metrics.snapToggleCompact;
-        groupBackground(list, groupX, groupTop, (2.0F * pad) + toggleWidth, groupHeight, c);
+        segmentGroupBackground(list, ImVec2(groupX, groupTop),
+                               ImVec2(groupX + (2.0F * pad) + toggleWidth, groupTop + groupHeight));
         ImGui::SetCursorScreenPos(ImVec2(groupX + pad, buttonY));
         ImGui::BeginDisabled(!haveTools);  // D21: the toggle's predicate -- live whenever there is a state
         const char* const toggleLabel = full ? SNAP_TOGGLE_LABEL.data() : SNAP_TOGGLE_ICON.data();
-        const bool togglePressed =
-            groupButton(toggleLabel, tools.snap.enabled, c.active, c.textBright, c.textMuted, rec.snapToggle);
+        const bool togglePressed = segmentButton(toggleLabel, tools.snap.enabled, ChromeRole::Active,
+                                                 ChromeRole::TextBright, ChromeRole::TextMuted, rec.snapToggle);
         ImGui::EndDisabled();
         itemTooltip(snapToggleTooltip(currentHostOs()));
         const bool toggleClicked = togglePressed || (state.toolbarSnapToggleRequest && haveTools && noModal);
@@ -425,7 +386,7 @@ void drawToolbar(ShellUiState& state, const CommandStack& commands, bool fileEna
         }
 
         // ---- the bottom rule, drawn INSIDE the bar on its last row (D19) ----------------------------------------
-        const float rule = ruleThickness(s);
+        const float rule = ruleHeight();
         list->AddRectFilled(ImVec2(pos.x, pos.y + size.y - rule), ImVec2(pos.x + size.x, pos.y + size.y),
                             packed(c.divider));
     }
@@ -448,7 +409,7 @@ void drawStatusBar(ShellUiState& state) {
         rec.statusMax = Vec2{pos.x + size.x, pos.y + size.y};
         rec.statusNavFocusable = ImGui::IsWindowNavFocusable(ImGui::GetCurrentWindow());
         ImDrawList* const list = ImGui::GetWindowDrawList();
-        const float rule = ruleThickness(s);
+        const float rule = ruleHeight();
         list->AddRectFilled(pos, ImVec2(pos.x + size.x, pos.y + rule), packed(c.divider));  // the top rule
         if (state.statusText != nullptr) {
             const StatusBarText& text = *state.statusText;

@@ -5,16 +5,22 @@
 // assertions throughout: the quantiser DIVIDES, so every expected value below is exact arithmetic, and a
 // length times 2 is exact in float.
 #include <aero/core/math.hpp>
+#include <aero/editor/asset_browser_chrome.hpp>  // task E.6.3 (US11)
 #include <aero/editor/breadcrumb.hpp>
+#include <aero/editor/console_view.hpp>  // task E.6.3 (US9, US11)
 #include <aero/editor/editor_camera.hpp>
 #include <aero/editor/editor_theme.hpp>
 #include <aero/editor/gizmo_style.hpp>
-#include <aero/editor/picking.hpp>  // projectToViewport, ProjectionMode
+#include <aero/editor/hierarchy_view.hpp>
+#include <aero/editor/inspector_model.hpp>
+#include <aero/editor/panel_chrome_model.hpp>  // task E.6.3 (US9, US11)
+#include <aero/editor/picking.hpp>             // projectToViewport, ProjectionMode
 #include <aero/editor/selection_overlay.hpp>
 #include <aero/editor/status_bar.hpp>
 #include <aero/editor/text_file.hpp>  // readTextFile (US9's source-text claim)
 #include <aero/editor/toolbar_model.hpp>
 #include <aero/editor/view_axis_gizmo.hpp>
+#include <aero/editor/viewport_hud.hpp>  // task E.6.3 (US9, US11)
 #include <aero/scene/scene.hpp>
 
 #include <doctest/doctest.h>
@@ -232,12 +238,12 @@ TEST_CASE("ui scale: the view-axis widget follows the UI, hit test included (tas
     CHECK(one.uiScale == 1.0F);
     CHECK(two.uiScale == 2.0F);
 
-    // The centre, from the image's top-right corner: margin + half-extent, doubled.
-    const Vec2 corner{origin.x + size.x, origin.y};
-    CHECK(one.centerPoints.x - corner.x == -48.0F);
-    CHECK(one.centerPoints.y - corner.y == 48.0F);
-    CHECK(two.centerPoints.x - corner.x == -96.0F);
-    CHECK(two.centerPoints.y - corner.y == 96.0F);
+    // The centre, from the image's BOTTOM-right corner (task E.6.3, D9): margin 23 + half-extent 38, doubled.
+    const Vec2 corner{origin.x + size.x, origin.y + size.y};
+    CHECK(one.centerPoints.x - corner.x == -61.0F);
+    CHECK(one.centerPoints.y - corner.y == -61.0F);
+    CHECK(two.centerPoints.x - corner.x == -122.0F);
+    CHECK(two.centerPoints.y - corner.y == -122.0F);
     for (std::size_t i = 0; i < ed::VIEW_AXIS_COUNT; ++i) {
         CAPTURE(i);
         CHECK(two.balls[i].offsetPoints.x == 2.0F * one.balls[i].offsetPoints.x);
@@ -283,7 +289,7 @@ TEST_CASE("ui scale: the view-axis widget follows the UI, hit test included (tas
 TEST_CASE(
     "ui scale: every scaled pure function scales by exactly the factor, and none defaults it "
     "(task E.6.1, US9)") {
-    // viewAxisRect: the box and its inset from the image's top-right corner both double.
+    // viewAxisRect: the box and its inset from the image's bottom-right corner both double (task E.6.3).
     const Vec2 origin{0.0F, 0.0F};
     const Vec2 size{800.0F, 600.0F};
     Vec2 min1{};
@@ -295,7 +301,7 @@ TEST_CASE(
     CHECK(max2.x - min2.x == 2.0F * (max1.x - min1.x));
     CHECK(max2.y - min2.y == 2.0F * (max1.y - min1.y));
     CHECK((origin.x + size.x) - max2.x == 2.0F * ((origin.x + size.x) - max1.x));
-    CHECK(min2.y - origin.y == 2.0F * (min1.y - origin.y));
+    CHECK((origin.y + size.y) - max2.y == 2.0F * ((origin.y + size.y) - max1.y));
     CHECK(max1.x - min1.x == 76.0F);  // ANTI-VACUITY: a real box at 1
 
     // buildSelectionOverlay: one point-marker entity; every diamond vertex sits twice as far from the
@@ -363,11 +369,22 @@ TEST_CASE(
     REQUIRE_FALSE(ec);
     CHECK(read > 60U);  // ANTI-VACUITY: the walk really read the public headers
     const std::map<std::string, std::string> expected{
-        {"breadcrumb.hpp", "P"},  // task E.6.2: breadcrumbLayout
-        {"gizmo_style.hpp", "PP"},      {"selection_overlay.hpp", "P"},
-        {"status_bar.hpp", "P"},      // task E.6.2: statusBarLayout
-        {"toolbar_model.hpp", "PP"},  // task E.6.2: shellBarHeight, toolbarLayout
+        // task E.6.3: header, floor, pane, crumb row, tree row, footer -- and, since the code-review round, the pane's
+        // chrome (assetContentsPaneChromeHeight), the height the Assets budget reserves.
+        {"asset_browser_chrome.hpp", "PPPPPPP"},
+        {"breadcrumb.hpp", "P"},     // task E.6.2: breadcrumbLayout
+        {"console_view.hpp", "PP"},  // task E.6.3: consoleRowLayout, consoleSegmentGap
+        {"gizmo_style.hpp", "PP"},
+        {"hierarchy_view.hpp", "PP"},    // task E.6.3: hierarchyRowLayout, hierarchyHeaderLayout
+        {"inspector_model.hpp", "PPP"},  // task E.6.3: inspectorAxisLayout, inspectorHeaderLayout, addComponentLayout
+        {"selection_overlay.hpp", "P"},
+        {"panel_chrome_model.hpp", "PPPPPP"},  // task E.6.3: card, header, chip, hairline, face size, chevron
+        {"status_bar.hpp", "P"},               // task E.6.2: statusBarLayout
+        {"toolbar_model.hpp", "PP"},           // task E.6.2: shellBarHeight, toolbarLayout
         {"view_axis_gizmo.hpp", "MPP"},
+        // task E.6.3: viewportHudLayout, viewAxisCircleRadius -- and, since the code-review round, viewAxisCircleRect,
+        // the circle's box the HUD's keep test and the press claim share.
+        {"viewport_hud.hpp", "PPP"},
     };
     CHECK(found.size() == expected.size());
     for (const auto& [file, kinds] : expected) {
@@ -414,5 +431,57 @@ TEST_CASE("ui scale: each E.6.2 layout treats a bad scale as 1 (task E.6.2, US10
         const ed::StatusBarLayout statusBad = ed::statusBarLayout(600.0F, status, width, bad);
         CHECK((statusBad == ed::statusBarLayout(600.0F, status, width, 1.0F)));
         CHECK(ed::shellBarHeight(44.0F, bad) == 44.0F);
+    }
+}
+
+TEST_CASE("ui scale: each E.6.3 layout treats a bad scale as 1 (task E.6.3, US11)") {
+    // One arm per E.6.3 model, each landing with its model: a NaN, an infinity, zero or a negative scale lays out
+    // exactly as 1 -- US10's rule, the pure half of every panel's HiDPI claim.
+    for (const float bad : {NAN_F, INF_F, -INF_F, 0.0F, -2.0F}) {
+        CAPTURE(bad);
+        CHECK((ed::cardGeometry(bad) == ed::cardGeometry(1.0F)));
+        CHECK((ed::cardHeaderLayout(0.0F, 300.0F, 11.0F, 24.0F, bad) ==
+               ed::cardHeaderLayout(0.0F, 300.0F, 11.0F, 24.0F, 1.0F)));
+        CHECK(ed::chipHeight(bad) == ed::chipHeight(1.0F));
+        CHECK(ed::hairline(1.0F, bad, 2.0F) == ed::hairline(1.0F, 1.0F, 2.0F));
+        CHECK(ed::faceSizePoints(14.0F, bad) == ed::faceSizePoints(14.0F, 1.0F));
+        CHECK(ed::chevronFaceSize(16.0F, 7.0F, bad) == ed::chevronFaceSize(16.0F, 7.0F, 1.0F));
+        const ed::ConsoleRowLayout rowBad = ed::consoleRowLayout(0.0F, 6.462F, 12.0F, 10.5F, bad);
+        CHECK((rowBad == ed::consoleRowLayout(0.0F, 6.462F, 12.0F, 10.5F, 1.0F)));
+        CHECK(ed::consoleSegmentGap(bad) == ed::consoleSegmentGap(1.0F));
+        const ed::HierarchyRowLayout rowLayoutBad = ed::hierarchyRowLayout(100.0F, 400.0F, 50.0F, 20.0F, true, bad);
+        CHECK((rowLayoutBad == ed::hierarchyRowLayout(100.0F, 400.0F, 50.0F, 20.0F, true, 1.0F)));
+        const ed::HierarchyHeaderLayout headerBad = ed::hierarchyHeaderLayout(10.0F, 300.0F, 40.0F, bad);
+        CHECK((headerBad == ed::hierarchyHeaderLayout(10.0F, 300.0F, 40.0F, 1.0F)));
+        CHECK((ed::inspectorAxisLayout(153.0F, 7.0F, 6.0F, bad) == ed::inspectorAxisLayout(153.0F, 7.0F, 6.0F, 1.0F)));
+        const ed::InspectorHeaderLayout inspectorBad = ed::inspectorHeaderLayout(0.0F, 300.0F, 10.0F, 40.0F, bad);
+        CHECK((inspectorBad == ed::inspectorHeaderLayout(0.0F, 300.0F, 10.0F, 40.0F, 1.0F)));
+        CHECK((ed::addComponentLayout(0.0F, 300.0F, 92.0F, bad) == ed::addComponentLayout(0.0F, 300.0F, 92.0F, 1.0F)));
+        const ed::AssetHeaderWidths headerWidths{110.0F, 192.0F, 96.0F, 128.0F, 90.0F, 70.0F, 120.0F, 24.0F};
+        const ed::AssetHeaderLayout assetHeaderBad = ed::assetHeaderLayout(0.0F, 700.0F, headerWidths, bad);
+        CHECK((assetHeaderBad == ed::assetHeaderLayout(0.0F, 700.0F, headerWidths, 1.0F)));
+        CHECK(ed::assetHeaderMinimalFloor(headerWidths, bad) == ed::assetHeaderMinimalFloor(headerWidths, 1.0F));
+        // The row shown (true): the arm that reads the scale -- a folded pane reads none of it (AH18).
+        const auto paneBad = ed::assetContentsPaneLayout(300.0F, 24.0F, 1.0F, 6.0F, bad, true);
+        CHECK((paneBad == ed::assetContentsPaneLayout(300.0F, 24.0F, 1.0F, 6.0F, 1.0F, true)));
+        const float chromeBad = ed::assetContentsPaneChromeHeight(24.0F, 1.0F, 6.0F, bad);
+        CHECK(chromeBad == ed::assetContentsPaneChromeHeight(24.0F, 1.0F, 6.0F, 1.0F));
+        const ed::AssetCrumbRowLayout crumbBad = ed::assetCrumbRowLayout(0.0F, 500.0F, 150.0F, 4U, 120.0F, bad);
+        CHECK((crumbBad == ed::assetCrumbRowLayout(0.0F, 500.0F, 150.0F, 4U, 120.0F, 1.0F)));
+        const ed::AssetTreeRowLayout treeBad = ed::assetTreeRowLayout(20.0F, 220.0F, 30.0F, bad);
+        CHECK((treeBad == ed::assetTreeRowLayout(20.0F, 220.0F, 30.0F, 1.0F)));
+        ed::AssetFooterText footerText;
+        footerText.thumbnailsBudget = 256U;
+        footerText.watcher = "watching";
+        const ed::AssetFooterLayout badFooter = ed::assetFooterLayout(0.0F, 400.0F, footerText, 8.0F, bad);
+        const ed::AssetFooterLayout oneFooter = ed::assetFooterLayout(0.0F, 400.0F, footerText, 8.0F, 1.0F);
+        REQUIRE(badFooter.right.size() == 2U);
+        CHECK(badFooter.right[0].x == oneFooter.right[0].x);  // the segment gap is the one scaled length
+        ed::ViewportHudInputs hud;
+        hud.chipSize = Vec2{140.0F, 24.0F};
+        hud.statsRows = 6;
+        const ed::ViewportHudLayout hudBad = ed::viewportHudLayout(Vec2{0.0F, 0.0F}, Vec2{800.0F, 600.0F}, hud, bad);
+        CHECK((hudBad == ed::viewportHudLayout(Vec2{0.0F, 0.0F}, Vec2{800.0F, 600.0F}, hud, 1.0F)));
+        CHECK(ed::viewAxisCircleRadius(bad) == ed::viewAxisCircleRadius(1.0F));
     }
 }

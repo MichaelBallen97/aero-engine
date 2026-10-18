@@ -4,11 +4,20 @@
 // .cpp is where every ImGui call lives.
 //
 // FRAME SHAPE (D12) -- onDraw is exactly five phases, in this order:
-//   1. reconcile  prune the selection, reconcile the root order, drop dead rename/anchor handles
-//   2. shortcuts  Delete / Backspace / Ctrl-Cmd+D / F2, focus-routed, RECORDED only
+//   1. reconcile  prune the selection, reconcile the root order, drop dead rename/anchor handles, and END a rename
+//                 whose ##rename field was not drawn on the previous frame, through the two rename helpers phase 5's
+//                 arms call (task E.6.3's code-review round, round 2 -- see onDraw)
+//   1b. header    task E.6.3: the search field (whether it owns the keys is read HERE) and the count badge
+//   2. shortcuts  Delete / Backspace / Ctrl-Cmd+D / F2, focus-routed, gated by hierarchyShortcutsLive, RECORDED only
 //   3. walk       the tree, strictly READ-ONLY -- no World and no Selection mutation (I1)
+//                 (inside the always-present ##tree child; the flat match list while a query is set)
 //   4. void       the "click empty space to clear / drop here to unparent" target
-//   5. apply      one switch over `pending` -- the ONLY place anything mutates
+//                 (the walk and the void target run only while BeginChild says the child is visible; the match list
+//                 -- and the badge's count -- is built ahead of that gate)
+//   5. apply      one switch over `pending` -- where the panel's World and Selection gestures apply (Create Child
+//                 included), except Create Empty, the typed creates (`pendingCreate`) and the asset drop
+//                 (`pendingAssetDrop`): one-shots EditorApp::tick drains and applies, never here. Phase 1's ended
+//                 rename is the panel's one other push, and it lands before the walk
 // Phases 1 and 5 bracket the ImGui work so that mutating mid-walk (which would invalidate
 // eachChild's cursor -- world.hpp:157-163 -- and unbalance TreeNodeEx/TreePop) is impossible by
 // construction. EVERY walk here is an explicit stack, never a recursive function: misc-no-recursion
@@ -16,6 +25,7 @@
 #include <aero/editor/asset_drag.hpp>   // task 3.1.5 -- AssetDragPayload, HierarchyAssetDrop
 #include <aero/editor/create_menu.hpp>  // task E.5.2 -- CreateKind, by value below; PUBLIC and PURE
 #include <aero/editor/entity_ops.hpp>
+#include <aero/editor/hierarchy_view.hpp>  // task E.6.3 -- HierarchyDrawRecord; PUBLIC and PURE
 #include <aero/editor/panel.hpp>
 #include <aero/editor/tree_walk.hpp>
 #include <aero/scene/entity.hpp>
@@ -63,12 +73,38 @@ public:
     // downstream (requestAssetDrop's shape).
     void requestCreate(CreateKind kind) noexcept { pendingCreate = kind; }
     // Called by EditorApp's create drain with the entity it just created: the Shift-range anchor moves to it
-    // (what applyPending's old CreateEmpty arm did), and the next drawTree opens its ancestors and scrolls
-    // its row into view when it is not visible.
+    // (what applyPending's old CreateEmpty arm did), and the next tree walk (drawTree with no query, while the
+    // ##tree child is visible) opens its ancestors and scrolls its row into view when it is not visible.
     void revealEntity(Entity entity) noexcept {
         rangeAnchor = entity;
         revealTarget = entity;
+        searchText.clear();  // task E.6.3 (D6): a revealed row must be VISIBLE, so a create leaves the flat list
     }
+
+    // ---- task E.6.3: the search field's seam and the draw record (D14) ----------------------------------------
+    // The SEAM writes the query the field would hold. It lives ONE tick: the next draw applies it only while the field
+    // is enabled (no rename in progress) and no modal is up -- the field's own predicate (I337) -- and drops it
+    // otherwise; EditorApp calls expireSearchQuery() after drawShellUi, so a tick the panel did not draw drops it too
+    // (I338).
+    void requestSearchQuery(std::string query) { pendingSearchQuery = std::move(query); }
+    void expireSearchQuery() noexcept { pendingSearchQuery.reset(); }
+    // The SEAM for a click on the field (the code-review round's finding 20), since nothing in tests/ can click: the
+    // next draw calls SetKeyboardFocusHere on the field -- the rename field's idiom -- and InputTextEx activates it one
+    // frame later through its nav-activation path (input_requested_by_nav, imgui_widgets.cpp:4823), which shares a
+    // click's init_make_active block -- SetActiveID, SetFocusID, FocusWindow, :4913-4915 -- and may additionally
+    // select all (:4899-4900). It obeys the field exactly as requestSearchQuery does -- enabled, no modal, ONE tick
+    // (I337, I338).
+    void requestSearchFieldFocus() noexcept { pendingSearchFocus = true; }
+    void expireSearchFieldFocus() noexcept { pendingSearchFocus = false; }
+    // The SEAM for the Rename entry (task E.6.3's code-review round, round 2), since nothing in tests/ can press F2,
+    // open a row's menu or double-click: the next draw writes the BeginRename those write, for `entity`. It obeys F2's
+    // gate -- the shortcut verdict, so no rename in progress and the search field not owning the keys -- and no modal,
+    // and lives ONE tick (I337, I338). The rename itself then runs exactly as F2's does (I344).
+    void requestBeginRename(Entity entity) noexcept { pendingBeginRename = entity; }
+    void expireBeginRename() noexcept { pendingBeginRename.reset(); }
+    // The entity being renamed; Entity{} while no rename is in progress.
+    [[nodiscard]] Entity renamingEntity() const noexcept { return renaming; }
+    [[nodiscard]] const HierarchyDrawRecord& drawRecord() const noexcept { return drawRecordValue; }
 
 private:
     // performance-enum-size: the explicit underlying type is mandatory, like every engine enum.
@@ -95,8 +131,14 @@ private:
 
     void drawTree(PanelContext& context);
     [[nodiscard]] bool drawRow(PanelContext& context, Entity entity);
+    void drawRowChrome(const World& world, Entity entity, bool selected, bool renaming, float rowCursorX);
     void drawVoidTarget(PanelContext& context);
     void applyPending(PanelContext& context);
+    // The ONE commit path and the ONE cancel path of a rename: applyPending's CommitRename / CancelRename arms call
+    // them, and so does onDraw's stale-field check (I344). Both clear `renaming` and the focus request.
+    void commitRename(PanelContext& context, Entity target);
+    void cancelRename() noexcept;
+    void drawHeaderRow();
 
     // Task 2.4.2, D10: the root order (RootOrder) moved to EditorApp (accessor context.roots) so a
     // structural command can restore a deleted root to the row it occupied. This panel still
@@ -107,6 +149,10 @@ private:
     std::vector<Entity> moveScratch;  // the drag-drop moved set, when it is a single unselected row
     std::string labelScratch;
     std::string renameBuffer;
+    // The name the rename began with, set beside renameBuffer by the BeginRename arm, its only writer: onDraw's
+    // stale-field check commits a buffer that differs from it -- an edit -- and never compares with the World's
+    // current name, which something else can change while the field is gone (I344).
+    std::string renameOriginal;
     Entity renaming{};
     Entity rangeAnchor{};
     // The bugfix (multi-select drag, task 2.2.1): a plain click's REPLACE on an ALREADY-selected row is
@@ -118,19 +164,39 @@ private:
     // Review round 2, Gap 2: the just-created/duplicated entity a collapsed ancestor must open to
     // reveal. `revealTarget` is set by applyPending (Create Child, Duplicate) or by revealEntity
     // (EditorApp's create drain) and consumed (turned into `revealPath`, the
-    // ancestor chain, then cleared) by the VERY NEXT drawTree -- one frame after creation, since the
+    // ancestor chain, then cleared) by the first TREE walk -- at the earliest one frame after creation, since the
     // entity does not exist yet during the frame that creates it (drawTree runs before applyPending,
-    // D12's phase order).
+    // D12's phase order). drawTree runs only while the ##tree child is visible, and only its TREE walk takes
+    // the reveal (a flat row is Leaf and drops SetNextItemOpen), so a reveal due while the child is skipped, or
+    // while a query is set, waits for the first tree walk (the code-review round's finding 6, I340).
     Entity revealTarget{};
     std::vector<Entity> revealPath;
     // task E.5.2: the row to scroll into view on THIS walk -- copied from revealTarget at the top of drawTree
-    // and cleared when that row is drawn, or unconditionally at the end of drawTree, so a target whose row is
-    // never drawn cannot scroll on a later frame.
+    // when the tree (never the flat list) is walked, and cleared when that row is drawn, or unconditionally at
+    // the end of drawTree, so a target whose row is never drawn cannot scroll on a later frame.
     Entity scrollTarget{};
     bool renameFocusPending = false;
+    // The ImGui frame the ##rename field was last submitted -- written beside its inputTextString call, and by the
+    // BeginRename arm with the frame it runs in, so the field's first frame reads "the previous one" (onDraw's check).
+    int renameFieldFrame = 0;
+    std::optional<Entity> pendingBeginRename;  // requestBeginRename's one-shot, drained in onDraw
     PendingAction pending{};
     std::optional<HierarchyAssetDrop> pendingAssetDrop;  // task 3.1.5 -- drained by tick(), never here
     std::optional<CreateKind> pendingCreate;             // task E.5.2 -- drained by tick(), never here
+    // task E.6.3 (D6): the search and the header row.
+    std::string searchText;                         // the field's buffer; non-empty = the flat match list
+    std::optional<std::string> pendingSearchQuery;  // requestSearchQuery's one-shot, drained in onDraw
+    bool searchEnabled = true;                      // !renaming, set in onDraw before the header draws
+    bool searchHeldKeys = false;                    // the field's own activation holds its NavId (the latch)
+    bool searchOwnsKeys = false;                    // IsItemActive() || (held && IsItemFocused()), in drawHeaderRow
+    bool pendingSearchFocus = false;                // requestSearchFieldFocus's one-shot, drained in onDraw
+    bool searchFocusThisFrame = false;              // the drain's verdict: drawHeaderRow's SetKeyboardFocusHere
+    bool flatRow = false;                           // drawRow is drawing a flat-list row (Leaf | NoTreePushOnOpen)
+    std::vector<Entity> matches;                    // this frame's flat list, in pre-order
+    std::optional<std::size_t> lastMatchCount;      // the badge counts the PREVIOUS frame's matches (it draws first)
+    std::string badgeScratch;
+    std::string metaScratch;
+    HierarchyDrawRecord drawRecordValue;  // drawRecord()'s value, named apart from it
 };
 
 }  // namespace engine::editor
