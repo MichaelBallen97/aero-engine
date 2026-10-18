@@ -27752,13 +27752,18 @@ TEST_CASE("editor: Material cards -- eight, panel-owned bits, Apply primary, bot
     // width, and the Material panel crosses its FixedRegions / Scrolling boundary (D4). The boundary depends on the
     // window height alone (the Right dock spans the work area; the faces and the UI scale are the same on every lane),
     // and at UI scale 1 it sits between heights 381 and 400 (measured: the ##body child at 1000, 420 and 400, the panel
-    // window at 380 and every height down to 200). A display only ever delivers a SHORTER window than requested, so
-    // 1280 x 300 is the panel-window host everywhere, and the cross-host arm runs wherever the 1000 request was the
-    // ##body child (it WARNs otherwise). The bit survives the flip.
+    // window at 380 and every height down to 200). A display only ever delivers a SMALLER window than requested, so a
+    // 300-tall window is the panel-window host everywhere, and the cross-host arm runs wherever the 1000 request was a
+    // ##body child (it WARNs otherwise). The bit survives the flip. The resize asks for the width the display
+    // DELIVERED, never the 1280 the window asked for: on CI's macOS runner (a 1024-wide display) the old 1280 x 300
+    // resize moved the first card by 194 points at its left edge and 256 at its right -- the Right node following a
+    // 256-point wider window (0.76 x 256 at the left) -- so the cross-host arm also requires the two delivered widths
+    // to agree.
     const engine::Vec2 outerMinA = first.outerMin;
     const engine::Vec2 outerMaxA = first.outerMax;
     const float bodyInsetA = first.outerMax.x - first.bodyMax.x;
-    window->setSize(1280, 300);
+    const engine::platform::WindowSize deliveredA = window->size();
+    window->setSize(deliveredA.width, 300);
     e62Ticks(*app, 3);
     app->requestLayoutReset();
     e62Ticks(*app, 6);
@@ -27771,11 +27776,14 @@ TEST_CASE("editor: Material cards -- eight, panel-owned bits, Apply primary, bot
     CHECK_FALSE(r.bodyInChild);  // the Scrolling mode: the cards are the panel window's own items
     const engine::editor::CardEntryRecord& flipped = r.cards.front();
     const float overhangB = flipped.stripMinX - flipped.headerItemMin.x;
-    MESSAGE("I331 overhangs: " << overhangA << " at 1280x1000 (in ##body: " << childHostA << "), " << overhangB
-                               << " at 1280x300");
+    const engine::platform::WindowSize deliveredB = window->size();
+    MESSAGE("I331 overhangs: " << overhangA << " at " << deliveredA.width << "x" << deliveredA.height
+                               << " (in ##body: " << childHostA << "), " << overhangB << " at " << deliveredB.width
+                               << "x" << deliveredB.height);
     CHECK(std::abs(overhangB - windowOverhang) <= 0.5F);  // the panel-window host's overhang
     WARN(childHostA);  // this display started in the Scrolling mode too: geometry, so the cross-host arm cannot run
-    if (childHostA) {
+    WARN(deliveredB.width == deliveredA.width);  // the display refused the width it gave before: geometry again
+    if (childHostA && deliveredB.width == deliveredA.width) {
         // The two hosts really differed: the card's x span is the SAME (the child sits inside the panel's padding),
         // less a scrollbar on the right when one shows; the body's inset from the outer edge is the same.
         CHECK(std::abs(flipped.outerMin.x - outerMinA.x) <= 0.5F);
