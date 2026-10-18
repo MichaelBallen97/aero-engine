@@ -42,6 +42,7 @@
 #include <aero/editor/panel_registry.hpp>
 #include <aero/editor/picking.hpp>            // task 2.3.2
 #include <aero/editor/project.hpp>            // task 2.6.1
+#include <aero/editor/project_files.hpp>      // task E.6.3 (I326): formatFileSize, the footer's in-listing size
 #include <aero/editor/project_settings.hpp>   // task E.6.1 (I233): PROJECT_SETTINGS_PANEL_ID
 #include <aero/editor/project_state.hpp>      // task E.4.1 (I176-I184): ProjectState + the two file operations
 #include <aero/editor/scene_bounds.hpp>       // task 2.3.1
@@ -20705,8 +20706,8 @@ TEST_CASE("editor: an asset field's overflowing value sentence is elided with an
     CHECK(hintArm + 3U == hintAt);
     CHECK(block[hintArm + 1U].find("constexpr PanelFace HINT_FACE = PanelFace::BodySmall;") != std::string::npos);
     CHECK(block[hintAt].find("drawRoleText(drawList, HINT_FACE, ") != std::string::npos);
-    // I347's hint-in-the-padding arm sees the hint's FACE only while the record measures the DRAWN hint: written as
-    // hintX + hintWidth, it could not see a hint measured in one face and drawn in another.
+    // The record measures the DRAWN hint, so I347 sees a face mismatch in either direction -- a wider draw through its
+    // padding arm, any mismatch through its width arm; written as hintX + hintWidth, it could see none.
     CHECK(countLinesContaining(block, "drawn.hintMaxX = hintX + faceTextWidth(HINT_FACE, PICK_HINT);") == 1U);
 }
 
@@ -26070,6 +26071,10 @@ TEST_CASE("editor: a reference field drops its hint, then its well, before they 
                     // The layout placed the hint with hintWidth; its right edge is measured at the draw, in the face
                     // drawRoleText was handed. A hint measured narrower than it draws runs into the right padding.
                     CHECK(f.hintMaxX <= f.frameMaxX - padX + 0.01F);
+                    // The drawn hint's width equals the width the layout reserved, so a hint measured in any face other
+                    // than the one it draws in, wider or narrower, is red here: the padding arm above sees only a wider
+                    // draw.
+                    CHECK(std::abs((f.hintMaxX - f.hintMinX) - f.hintWidth) <= 0.01F);
                 }
                 if (s != 1.0F) {
                     WARN(s == 1.0F);  // another scale lays the dock out at other widths: the bands below are 1x's
@@ -27035,6 +27040,27 @@ TEST_CASE("editor: the Assets footer -- the path elided from the left, the right
         REQUIRE_FALSE(rec->metaWriteFailed);
         return "  -  " + std::string(engine::editor::importChangeLabel(rec->change));
     };
+    // A selection IN the open folder's listing (the root, where the browser opens): its size is the listing's own,
+    // formatted -- the panel's in-listing arm. The deep and wide selections below sit outside it and read the em
+    // dash. The name, the size, the GUID's head and the state are a few dozen cells, far inside the 130 the left
+    // zone keeps, so the whole line is drawn (arm (1)) at any width a runner gives this window.
+    app->requestAssetBrowserSelectEntry("top.txt");
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+    {
+        const std::string& top = browser->chromeRecord().footerLeftText;
+        INFO("drawn: " << top);
+        std::error_code sizeError;
+        const std::uintmax_t topSize = std::filesystem::file_size(browser->root() + "/top.txt", sizeError);
+        REQUIRE_FALSE(sizeError);
+        const std::string topLead = "top.txt  -  " + engine::editor::formatFileSize(topSize) + "  -  ";
+        CHECK(top.starts_with(topLead));  // the name, then the listing's size
+        const engine::editor::AssetRecord* const topRec = browser->database()->findByPath("top.txt");
+        REQUIRE(topRec != nullptr);
+        const std::string topGuidHead = engine::formatGuid(topRec->guid).substr(0, 8);
+        CHECK(top.find(topGuidHead) != std::string::npos);  // the identity
+        CHECK(top.ends_with(stateOf("top.txt")));
+    }
     app->requestAssetBrowserSelectEntry(deep);  // a database record, so the footer resolves it from the root listing
     REQUIRE(app->tick());
     REQUIRE(app->tick());
@@ -27132,6 +27158,46 @@ TEST_CASE("editor: the Assets footer -- the path elided from the left, the right
     const std::vector<std::string>& right = browser->chromeRecord().footerRightTexts;
     CHECK(std::find(right.begin(), right.end(), "1 issue") != right.end());
     CHECK(distinct(right));
+    // AN INVALID SIDECAR, after the orphan arm so its exact count above is untouched: a sidecar that does not parse
+    // gives its asset a record with no identity (planAssetMetas' Invalid arm), which the scan never rewrites. The
+    // footer names it where the GUID would be and draws no import state, so the line ends with it.
+    REQUIRE(engine::editor::writeTextFileAtomic(browser->root() + "/bad.txt", "x").empty());
+    REQUIRE(engine::editor::writeTextFileAtomic(browser->root() + "/bad.txt.meta", "not json").empty());
+    app->requestAssetRescan();
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+    const engine::editor::AssetRecord* const badRec = browser->database()->findByPath("bad.txt");
+    REQUIRE(badRec != nullptr);
+    REQUIRE((badRec->state == engine::editor::AssetMetaState::Invalid));  // ANTI-VACUITY: the scan read it invalid
+    app->requestAssetBrowserSelectEntry("bad.txt");
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+    {
+        const std::string& bad = browser->chromeRecord().footerLeftText;
+        INFO("drawn: " << bad);
+        CHECK(bad.ends_with("  -  invalid .meta"));
+    }
+    // NO SIDECAR: a file the open listing shows and the database never scanned. The watcher is OFF here and nothing
+    // below requests a rescan; Show hidden, toggled on and back off, re-lists the folder from disk without one
+    // (ToggleHidden's arm clears the listings and requests no rescan). Drawn at all only because the listing holds
+    // it: a selection in neither the listing nor the database draws nothing.
+    REQUIRE(engine::editor::writeTextFileAtomic(browser->root() + "/nometa.txt", "x").empty());
+    app->requestAssetBrowserToggleHidden();
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+    app->requestAssetBrowserToggleHidden();  // back to the default
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+    REQUIRE(browser->database()->findByPath("nometa.txt") == nullptr);  // ANTI-VACUITY: never scanned
+    app->requestAssetBrowserSelectEntry("nometa.txt");
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+    {
+        const std::string& noMeta = browser->chromeRecord().footerLeftText;
+        INFO("drawn: " << noMeta);
+        REQUIRE_FALSE(noMeta.empty());
+        CHECK(noMeta.ends_with("  -  no .meta"));
+    }
     // FT12's re-pinned line, from this side: the word reaches the footer's field whole.
     const std::vector<std::string> code = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/asset_browser_panel.cpp");
     CHECK(countLinesContaining(code, "footerText.watcher = assetFooterWatchText(") == 1U);
