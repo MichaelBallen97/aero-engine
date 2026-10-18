@@ -27043,9 +27043,13 @@ TEST_CASE("editor: the Assets footer -- the path elided from the left, the right
     CHECK(r.footerLeftText.starts_with(AERO_GLYPH_ELLIPSIS));
     CHECK(r.footerLeftText.find("model.txt") != std::string::npos);  // the name survives; the folders went
     // The macOS pass's V2: what drawFooter DREW, at this fixture's real width. WHOLE segments follow the ellipsis (the
-    // composed line split "f01_folder_level" mid-word, "...el/f02_folder_level/"), and the details end it whole, the
-    // import state last. Whole segments without the geometry: the ellipsis, then '/' and a "fNN_folder_level/" folder,
-    // and everything from that '/' to the name is a TAIL of the path -- the cut fell on a '/', whichever folder leads.
+    // composed line split "f01_folder_level" mid-word, "...el/f02_folder_level/"), and every detail the panel filled
+    // reaches the drawn line: the size right after the name (an em dash -- the selection is not in the open folder's
+    // listing, so its size is unknown), the GUID's head (read off the selection's own record, as the wide arm reads
+    // its own), and the import state last. A leading folder means the folders-only arm drew it, which keeps every
+    // detail, so these hold at any width a runner gives the window. Whole segments without the geometry: the
+    // ellipsis, then '/' and a "fNN_folder_level/" folder, and everything from that '/' to the name is a TAIL of the
+    // path -- the cut fell on a '/', whichever folder leads.
     {
         INFO("drawn: " << r.footerLeftText);
         const std::string_view ellipsis = AERO_GLYPH_ELLIPSIS;
@@ -27061,6 +27065,12 @@ TEST_CASE("editor: the Assets footer -- the path elided from the left, the right
         REQUIRE(leafAt != std::string::npos);
         const std::size_t pathEnd = leafAt + std::string_view("/model.txt").size();
         CHECK(deep.ends_with(r.footerLeftText.substr(ellipsis.size(), pathEnd - ellipsis.size())));
+        const std::string_view unknownSize = "/model.txt  -  " AERO_GLYPH_EM_DASH "  -  ";  // the name, the size
+        CHECK(r.footerLeftText.find(unknownSize) != std::string::npos);
+        const engine::editor::AssetRecord* const deepRec = browser->database()->findByPath(deep);
+        REQUIRE(deepRec != nullptr);
+        const std::string deepGuidHead = engine::formatGuid(deepRec->guid).substr(0, 8);
+        CHECK(r.footerLeftText.find(deepGuidHead) != std::string::npos);  // the identity
         CHECK(r.footerLeftText.ends_with(stateOf(deep)));
     }
     REQUIRE(r.footerRightTexts.size() >= 2U);  // thumbnails and the watcher word, at least
