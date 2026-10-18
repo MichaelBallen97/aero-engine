@@ -381,7 +381,7 @@ AssetFooterLayout assetFooterLayout(float rowMinX, float rowWidth, const AssetFo
     }
     const float leftMaxX = out.right.empty() ? maxX : out.right.front().x - gap;
     const float budget = leftMaxX - minX;
-    // A budget below the ellipsis (one Mono cell) draws nothing: elideFooterSelection's own (4), gated here as well.
+    // A budget below the ellipsis (one Mono cell) draws nothing: elideFooterSelection's own (7), gated here as well.
     if (!text.selection.empty() && advance > 0.0F && budget >= advance) {
         const auto fits = [&widthOf, budget](std::string_view t) { return widthOf(t) <= budget; };
         out.left = elideFooterSelection(text.selection, text.selectionDetails, fits);

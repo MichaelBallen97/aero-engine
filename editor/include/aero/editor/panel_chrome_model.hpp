@@ -212,7 +212,8 @@ struct ReferenceFieldRecord {
     float textMinX = 0.0F;  // the name: AddText's x, and that x + CalcTextSize of the bytes AddText was handed
     float textMaxX = 0.0F;
     // The hint: drawRoleText's x, and that x + the width of PICK_HINT measured AT THE DRAW in the face drawRoleText
-    // was handed -- never `hintWidth`, the layout's input, so a hint measured one way and drawn another shows here.
+    // was handed -- never `hintWidth`, the layout's input, so a hint measured in another face than it is drawn in
+    // shows here.
     float hintMinX = 0.0F;
     float hintMaxX = 0.0F;
     float swatchEdge = 0.0F;     // handed to referenceFieldParts, drawn or not (0: a thumbnail row's)
@@ -255,7 +256,7 @@ struct CardEntryRecord {
     // The body's clip as the list RECEIVED it (V4): end() reads, before it pops that clip, the content channel's
     // commands from the one the push left current to the last, keeping those that drew (ElemCount > 0): how many, and
     // the least and greatest ClipRect x among them. Their values, never their indices -- the splitter's Merge appends
-    // the content channel after the background one and renumbers it (imgui_draw.cpp:2185-2229). A closed card: 0.
+    // the content channel after the background one and renumbers it (imgui_draw.cpp:2185-2240). A closed card: 0.
     std::uint32_t bodyDrawCommands = 0;
     float bodyClipMinX = 0.0F;
     float bodyClipMaxX = 0.0F;

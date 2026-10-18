@@ -20705,8 +20705,8 @@ TEST_CASE("editor: an asset field's overflowing value sentence is elided with an
     CHECK(hintArm + 3U == hintAt);
     CHECK(block[hintArm + 1U].find("constexpr PanelFace HINT_FACE = PanelFace::BodySmall;") != std::string::npos);
     CHECK(block[hintAt].find("drawRoleText(drawList, HINT_FACE, ") != std::string::npos);
-    // I347's hint-in-the-padding arm has an independent side only while the record measures the DRAWN hint: written
-    // as hintX + hintWidth, it would restate the placement and could not fail.
+    // I347's hint-in-the-padding arm sees the hint's FACE only while the record measures the DRAWN hint: written as
+    // hintX + hintWidth, it could not see a hint measured in one face and drawn in another.
     CHECK(countLinesContaining(block, "drawn.hintMaxX = hintX + faceTextWidth(HINT_FACE, PICK_HINT);") == 1U);
 }
 
@@ -26743,12 +26743,16 @@ TEST_CASE("editor: Assets tiles -- a hatched well's stripes stay inside its roun
     // vertex lies on a corner circle, every segment inside it).
     //
     // THE FRINGE. An anti-aliased fill (the theme's antiAliasedFill) appends two vertices a corner, the inner one in
-    // the fill's colour and the outer one at alpha 0, each AA_SIZE / 2 along the corner's miter (imgui_draw.cpp:
-    // 1121-1134). AA_SIZE is the list's _FringeScale (imgui_draw.cpp:1092), reset every frame to InitialFringeScale,
-    // which is 1.0 (imgui_draw.cpp:483, imgui.cpp:5707): ONE POINT, whatever the UI scale. So every vertex stays
-    // within AA_SIZE of the outline -- the worst measured here is 0.5412, AA_SIZE / 2 / sin 67.5 at a 135-degree
-    // corner -- and every vertex that carries colour stays inside it. At 88a2b8f the stripe quads ran a whole tile
-    // height past the well, cut only by the scissor (87.3 points out, measured).
+    // the fill's colour and the outer one at alpha 0, each AA_SIZE / 2 / sin(corner / 2) along the corner's miter,
+    // `corner` the piece's interior angle there (imgui_draw.cpp:1123-1134) -- 1.3066 at a stripe's 45-degree corner,
+    // MORE than AA_SIZE -- which is AA_SIZE / 2 off each edge's line: the miter's projection on either edge's normal.
+    // (IM_FIXNORMAL2F, imgui_draw.cpp:819, shortens it only at a corner sharper than 11.5 degrees, and
+    // hatchPieceTakesFringe refuses the fringe to a piece with any corner sharper than 45 degrees.) AA_SIZE is the
+    // list's _FringeScale (imgui_draw.cpp:1092), reset every frame to InitialFringeScale, which is 1.0
+    // (imgui_draw.cpp:483, imgui.cpp:5707): ONE POINT, whatever the UI scale. So every vertex stays within AA_SIZE of
+    // the outline -- the worst measured here is 0.5412, AA_SIZE / 2 / sin 67.5 at a 135-degree corner -- and every
+    // vertex that carries colour stays inside it. At 88a2b8f the stripe quads ran a whole tile height past the well,
+    // cut only by the scissor (87.3 points out, measured).
     engine::platform::Context ctx;
     if (!ctx.valid()) {
         AERO_SKIP_OR_FAIL("no platform context");
@@ -27788,7 +27792,9 @@ TEST_CASE("editor: a card's body is clipped to its padded width (task E.6.3, I34
         CHECK(r.slotNoteMinX >= noted.bodyMin.x - 0.5F);  // it starts inside the body...
         CHECK(r.slotNoteMaxX > noted.bodyMax.x + 0.5F);   // ...runs past its padded edge...
         CHECK(r.slotNoteMaxX > noted.outerMax.x);         // ...and past the outline
-        // The note's command carries the body's clip WHOLE: its edges sit ON the body's, never inside them.
+        // The body's commands carry its clip WHOLE: their outermost clip edges -- the least and greatest ClipRect x
+        // over every command the body drew -- sit ON the body's, never inside them, and the note, a TextEx on the
+        // body's channel, drew into one of those commands.
         CHECK(std::abs(noted.bodyClipMinX - noted.bodyMin.x) <= 0.5F);
         CHECK(std::abs(noted.bodyClipMaxX - noted.bodyMax.x) <= 0.5F);
     }
