@@ -10,11 +10,13 @@ Two platform matrices, never to be conflated: the **editor** runs on macOS/Windo
 
 ## Current state — read this first
 
-**Phase E (Editor Experience) is the open front**, executing between Phase 3 and Phase 4. **Twenty-two of
+**Phase E (Editor Experience) is the open front**, executing between Phase 3 and Phase 4. **Twenty-three of
 its 24 tasks are merged: Epics E.1–E.5 are all CLOSED IN CODE; in Epic E.6, E.6.1 (IBM Plex fonts, Lucide
-icons, one `EDITOR_THEME`, one UI scale) is macOS-validated 11 / 11 executable rows and E.6.2 (the toolbar, the
-breadcrumb and the status bar) 18 / 18. E.6.3–E.6.4 are what is left — two tasks, planning only.** Phase 3 remains OPEN behind it: all seven of its epics are
-closed in code, and what is left is its deliverable gate and the validation debt.
+icons, one `EDITOR_THEME`, one UI scale) is macOS-validated 11 / 11 executable rows, E.6.2 (the toolbar, the
+breadcrumb and the status bar) 18 / 18 and E.6.3 (the panel chrome pass: all eight panels restyled against the
+theme) 21 / 21. E.6.4 (the Welcome window and the New Project dialog) is what is left — one task, planning
+only.** Phase 3 remains OPEN behind it: all seven of its epics are closed in code, and what is left is its
+deliverable gate and the validation debt.
 
 **Phase E is lettered, not fractioned.** `3.5` and `3.5.1`/`3.5.2` are already Phase 3's skeletal-animation
 epic and its tasks, and numbering is append-only, so a "Phase 3.5" would collide with referenced numbers.
@@ -25,20 +27,23 @@ In Notion its `Phase #` is `3.5` — a sort key, not an identifier.
 (E.2.2). Nothing since E.2.2 has added one, so the five-generation-site rule and the component-count sweep
 have not fired since — **they still apply in full to the next built-in, whenever one arrives.**
 
-**Next free ids, measured by a whole-`tests/` token sweep on E.6.2's merged tree: `I309` at the ImGui tier**,
-`AA68`, `AD77`, `AM29`, `AV66`, `BD8`, `BR31`, `BV10`, `CC15`, `CR13`, `DD31`, `DG26`, `DR28`, `EC5`, `EP19`, `FT16`,
-`G29`, `GL8`, `GR34`, `HK6`, `IO24`, `IR23`, `IX19`, `MB27`, `PX6`, `RF8`, `RT31`, `SQ15`, `SS64`, `TB13`, `TH14`, `TS11`,
-`US11`, `X32`. Taken tier-0 prefixes
+**Next free ids, measured by a whole-`tests/` token sweep on E.6.3's tree: `I349` at the ImGui tier**,
+`AA68`, `AD77`, `AH21`, `AM29`, `AV68`, `BD8`, `BR31`, `BV10`, `CC15`, `CD15`, `CR13`, `CS11`, `DD31`, `DG26`, `DR28`,
+`EC5`, `EK11`, `EP19`, `FT16`, `G29`, `GL8`, `GR34`, `HK6`, `HY9`, `IO24`, `IR23`, `IX19`, `MB27`, `PC15`, `PX6`, `RF8`,
+`RT31`, `SQ15`, `SS64`, `TB13`, `TH17`, `TS11`, `US12`, `VO15`, `X32`. Taken tier-0 prefixes
 include `MR` (E.3.4, `MR1`–`MR21`), `PJ` (E.4.1, `PJ1`–`PJ57`), `CN` (E.4.2, `CN1`–`CN25`), `IX` / `BV` (E.4.4,
 `IX1`–`IX18`, `BV1`–`BV9`), `MB` / `CC` (E.4.5, `MB1`–`MB26`, `CC1`–`CC14`), `CR` / `EC` (E.5.2, `CR1`–`CR9`,
-`EC1`–`EC4`) and `TH` / `US` / `GL` (E.6.1, `TH1`–`TH11`, `US1`–`US9`, `GL1`–`GL7`); `MC` is mesh cook's
-(`MC1`–`MC58`), which is why the card cache took `CC`. The other ceilings: `SS` 63, `IO` 23, `RT` 30, `TS` 10,
+`EC1`–`EC4`), `TH` / `US` / `GL` (E.6.1, `TH1`–`TH11`, `US1`–`US9`, `GL1`–`GL7`) and `PC` / `CS` / `EK` / `HY` /
+`AH` / `VO` (E.6.3); `MC` is mesh cook's (`MC1`–`MC58`), which is why the card cache took `CC`, and `CD` is render
+culling's (`CD1`–`CD14`). The other ceilings: `SS` 63, `IO` 23, `RT` 30, `TS` 10,
 `IR` 22. E.4.1 took `I176`–`I185`, E.4.2 `I186`–`I192`, E.4.3 `I210`–`I226`, E.4.4 `I227`–`I229`, its fix (#111)
 `I230`–`I231` plus `AV55`–`AV59`, E.4.5 `I232`–`I243` plus `AV60`–`AV65`, `TS5`–`TS10` and `IR9`–`IR12`, its
 follow-ups `I244`, E.5.1 `I245` plus `BR23`–`BR30`, `SQ13`–`SQ14` and `PX5`, and E.5.2 `I246`–`I255` plus
 `IR13`–`IR22`, `X25`–`X31`, `GR27`–`GR33`, `DD29`–`DD30`, `DG21`–`DG25` and `RF4`–`RF7`. E.6.2 took `I290`–`I308`
 plus the new tier-0 prefixes `HK` (`HK1`–`HK5`), `TB` (`TB1`–`TB12`), `BD` (`BD1`–`BD7`) and `FT` (`FT1`–`FT15`), and
-`G20`–`G28`, `EP14`–`EP18`, `TH12`–`TH13`, `US10`. The E.3.2 keyboard fix
+`G20`–`G28`, `EP14`–`EP18`, `TH12`–`TH13`, `US10`. E.6.3 took `I309`–`I348` plus the new tier-0 prefixes `PC`
+(`PC1`–`PC14`), `CS` (`CS1`–`CS10`), `EK` (`EK1`–`EK10`), `HY` (`HY1`–`HY8`), `AH` (`AH1`–`AH20`) and `VO`
+(`VO1`–`VO14`), and `TH14`–`TH16`, `US11`, `AV66`–`AV67` and `CD12`–`CD14`. The E.3.2 keyboard fix
 (#116) took `I256`–`I258` plus `RT28`–`RT30`, the Save As suffix fix (#117) `I270` plus `SS55`–`SS63` and
 `IO22`–`IO23`, the dialog keyboard fix (#118) `I275`–`I276`, and E.6.1 `I277`–`I289` plus `CR10`–`CR12`.
 **E.6.1 DELETED `I230`** with the ProggyClean remap table it pinned — the id is retired, never reused.
@@ -73,7 +78,7 @@ it is one line plus a cost measurement), `<root>/Library/` as a save destination
 or created, anywhere. Those four are the unowned handoffs, not a gap in the predicate.
 
 > **Per-task history — what each task shipped, what it deliberately left out, every trap and every dead end —
-> lives in `docs/10-engineering-log.md`**, which carries a `### <task>` entry for every task through E.6.1,
+> lives in `docs/10-engineering-log.md`**, which carries a `### <task>` entry for every task through E.6.3,
 > each with its own `#### The sentences that govern new work` subsection. **Grep it before re-deriving
 > anything.**
 >
@@ -113,8 +118,9 @@ validation pass exists for any task in any phase.** N-E = not executable, N-R = 
 | E.5.2 Create menu + named selector | #115 | `ab3fd72` | **17 / 17** executable rows, row 18 N-E (1× displays), nothing failed |
 | 2.5.1 fix — Save As always writes `.scene.json` | #117 | `35bb8db` | **15 / 15** — the first run failed rows 5–7 (the panel appends its hidden `.json` to whatever is typed) |
 | 2.5.1 fix — the keyboard after a native dialog | #118 | `df28447` | **15 / 15** executable rows, row 15 N-E (a held hardware key) |
-| E.6.2 Main toolbar, breadcrumb and status bar | #120 | `761cc49` | **18 / 18** executable rows; row 19 N-E (1× displays), 20–21 Windows/Linux. **The pass measured one behaviour better than the plan's reading of ImGui** (a toolbar click during a rename acts at once) and the branch-point A/B reproduced the merge-chain defect the task fixed first |
+| E.6.2 Main toolbar, breadcrumb and status bar | #120 | `761cc49` | **18 / 18** executable rows; row 19 N-E (1× displays), 20–21 Windows/Linux |
 | E.6.1 Font, icon set and theme system | #119 | `2b1971e` | **11 / 11** executable rows; rows 2, 9, 10, 18 N-E (1× displays), 14–16 are Windows/Linux. **The pass found two defects no tier could see**, both fixed in the PR: the menu bar's Create ▸ Empty had no icon, and the Inspector's X/Y/Z values clipped where the branch point showed them whole |
+| E.6.3 Panel chrome pass | #121 | `7fe02d1` | **21 / 21** executable rows (its 2× rows ran, on the built-in Retina panel); 21–22 Windows/Linux. **The first pass found four product defects no tier could see**, all fixed in the PR; 66 sabotage seeds, 66 / 66 red on the re-run (the first run's one partial, `S24`, closed by the code-review round), and the 25 on files the later fixes changed 25 / 25 again at the final head |
 
 **E.3.2 landed before E.3.1** — legal, disjointly id-reserved; the reservation is discharged and the
 numbering is contiguous.
@@ -128,7 +134,7 @@ numbering is contiguous.
 | **Phase 2** — Editor | **COMPLETE, gate met 2026-08-02.** All six epics closed and macOS-validated; Windows/Linux rows pending for every task (`editor/VALIDATION.md`). Gate artifact: `samples/phase-2-editor-scene/` — data, deliberately not `add_subdirectory`'d. |
 | **Phase 3** — Asset Pipeline & 3D Content | **OPEN.** All seven epics (3.1–3.7) **CLOSED in code**. What is left is the gate below and the validation debt. |
 | **Phase 3 gate** | Drop a rigged glTF/FBX in → PBR materials + shadows + a playing animation + **an audible sound**. The audible half exists in code as of 3.7.2 and **has never been heard on any platform.** |
-| **Phase E** — Editor Experience | **OPEN.** Epics E.1–E.5 **CLOSED in code** — 22 of 24, see the index above. **E.6 is the open front: E.6.1 and E.6.2 merged, two tasks left, planning only.** ONE validation page is unrun (E.1.5) and is the whole of this OS's remaining Phase E risk. |
+| **Phase E** — Editor Experience | **OPEN.** Epics E.1–E.5 **CLOSED in code** — 23 of 24, see the index above. **E.6 is the open front: E.6.1, E.6.2 and E.6.3 merged, one task left (E.6.4), planning only.** ONE validation page is unrun (E.1.5) and is the whole of this OS's remaining Phase E risk. |
 | **Phase E gate** | Open a project and land in the scene you were last editing, on a lit grid floor under a sky; create a Cube from the menu, drop a material on it and see it shade; aim a spot light with a visible gizmo; rename, move and delete assets without leaving the editor. Gate artifact: `samples/phase-E-editor/`. |
 
 ### Engine layers, in dependency order
@@ -158,10 +164,13 @@ numbering is contiguous.
   three PURE and all three tier-0 reachable in all three build configurations, and `create_menu` (E.5.2 —
   ImGui-free: the create table, the anchor and the seeds), and E.6.1's `editor_theme` (PURE, constexpr) plus the
   macro-only `editor_glyphs.hpp` / `editor_icons.hpp`; its font bytes are four generated TUs, never tracked.
+  E.6.3 added six PURE, ImGui-free pairs — `panel_chrome_model`, `entity_presentation`, `hierarchy_view`,
+  `console_view`, `asset_browser_chrome`, `viewport_hud` — and the src-private `panel_chrome_ui`, the panels' one
+  shared ImGui TU.
   **DO NOT record a "pair count" here — it is not reproducible**: E.2.4 measured the tree six ways looking
   for the figure this line used to carry and none of the six was it. The two figures anyone can re-run are
-  `git ls-files`: **`editor/src/*.cpp` = 102** and **`editor/include/aero/editor/*.hpp` = 74** at E.6.2
-  (`2b1971e`).
+  `git ls-files`: **`editor/src/*.cpp` = 109** and **`editor/include/aero/editor/*.hpp` = 80** at E.6.3
+  (`a20275e`).
   `/tools` links `aero::assets` and `aero::editor_core` through `aero_cooker`, which is legal because
   `tools/` is enumerated by neither half of the golden rule.
 
@@ -331,7 +340,10 @@ worse — green and wrong.
 `scene_serialize_test.cpp` — **every one found by a red test, none by a grep.** E.5.2 added three more the
 next built-in must update: `RF7`'s hand-written ten-name `BUILTINS` array
 (`tests/reflect-gen/meta_test.cpp:534-537`) and `IR21`'s two `== 10` pins
-(`tests/editor/inspector_test.cpp:2536`, `:2545`).
+(`tests/editor/inspector_test.cpp:2536`, `:2545`). **E.6.3 added two sites no literal reaches**:
+`componentIconTable()` and `entityKindFor` (`entity_presentation.cpp`) — a built-in left out of either draws the
+fallback `shapes` icon or an `Empty` kind dot with every test green; `EK5`'s two `== 10U` pins move only when a
+row is added.
 
 **AND THE GREP ALSO OVER-MATCHES.** E.2.1's sweep came to **21** built-in literals (not the 18 planned) and
 **19** default-scene pins, against **five look-alikes that had to stay unchanged**: `scene_test.cpp:224`
@@ -398,7 +410,13 @@ popup is never clamped); `:3918` (a label truncates at its first `##`); `imgui_w
 cursor" hack while `SeparatorEx`'s header comment still describes it); `ImGuizmo.cpp:1229-1230`;
 `imgui.cpp:19611-19613` and `:19740-19751` (tab reselect / tab focus), `imgui_widgets.cpp:10002-10005` and
 `:10384-10389` (the queued tab's consumption, and the `const char*` `TabBarQueueFocus` overload's dock-node assert),
-and `imgui.cpp:5949-5950` (`NewFrame` hands the keyboard back from a closed popup).
+and `imgui.cpp:5949-5950` (`NewFrame` hands the keyboard back from a closed popup). E.6.3's, the Hierarchy search
+gate's premises: `imgui.cpp:4863-4866` (`ClearActiveID` is `SetActiveID(0, NULL)` and leaves `NavId` on the field),
+`imgui_widgets.cpp:5180` (Enter sets `clear_active_id`), `:5212` (Escape sets it too, reverting the edit) and
+`:5452-5453` (`InputTextEx` releases the active id at its end) — so a field closed by either key still holds the
+keyboard's focus, which is why the gate reads `IsItemFocused`, never `IsItemActive` alone. The card painter's and
+the card clip's citations are in `.claude/rules/editor.md`'s panel-chrome section, the crumb-row fold's in its
+fixed-regions section.
 
 **★ ImGui's `StateStorage` IS PER WINDOW, SO A BODY THAT IS SOMETIMES A CHILD IS TWO SETS OF WIDGET STATE
 (E.3.4).** A child is a distinct window, so the same `CollapsingHeader` is a different entry inside a body
@@ -429,7 +447,9 @@ that one write.
 `ImDrawList` alone is protected only by accident. Widen the `ImGuizmo::Enable` term — never an early return
 (it would hide the handles), never `!IsOver()` in the widget's guard (it reads `gContext` before this frame's
 `Manipulate`) — guarded by `!IsUsing()` so an in-flight drag survives. **Any future viewport chrome drawn with
-`ImDrawList` alone inherits this and must claim its own presses.**
+`ImDrawList` alone inherits this and must claim its own presses** — E.6.3's HUD does, through `hudOwnsPoint`
+beside `viewAxisOwnsPoint`, and chrome drawn around a claimed shape grows the ONE claimed extent with it (the
+view-axis circle, `viewAxisCircleRect`, `VO14`, `I116`).
 
 **A ROUTE NEVER RE-OPENS A PANEL THE USER CLOSED, AND EVERY DROP IS TESTED BEFORE EVERY HOLD (E.3.2).**
 `targetAvailable` is *registered AND visible*, and a hidden target is a **Drop**, not a Hold — closing a panel
@@ -597,16 +617,18 @@ there, the font not) and on default Wayland (style doubled too), the desktop sca
 below scale 1 would zero a border, `TabMinWidthBase` or `MouseCursorScale` (`I280`'s universal). `applyEditorStyle`
 is the one writer; the scale is re-resolved **before every `NewFrame`**, rebuilding only on a change (`I282`). **A dp length reaches ImGui units ×
 `uiScale` exactly ONCE, at the viewport's boundary**: a pure function consuming a dp constant takes a
-**non-defaulted** `float uiScale` (`US9` pins the five), and a laid-out widget carries its scale. **A width that
-holds text is a font multiple, never a literal.** **Still binding from the 2.0 measurement**: a panel with fixed
-chrome needs a MODE, a floor, and a threshold that keeps the derived height **continuous** across the boundary —
-**and must RESERVE that chrome before sizing its flexible region** (`assetBrowserLayout`, #111).
+**non-defaulted** `float uiScale` (`US9`'s set claim reads every public editor header), and a laid-out widget
+carries its scale. **A width that holds text is a font multiple, never a literal.** **Still binding from the 2.0
+measurement**: a panel with fixed chrome needs a MODE, a floor, and a threshold that keeps the derived height
+**continuous** across the boundary — **and must RESERVE that chrome before sizing its flexible region**
+(`assetBrowserLayout`, #111).
 
 **A TUNING CONSTANT WRITTEN IN FONT UNITS IS CALIBRATED TO ONE FACE (E.6.1's validation pass).** E.3.1's label
 floor, `5 × fontSize`, was tuned on ProggyClean at 13; in Plex at 16 it bound at 80 px and clipped the
 Inspector's `0.000` in a 258-px dock where the branch point showed it whole — with every test green, because a
-plan that re-measures what FAILS cannot see a constant nothing asserts. Fixed as `4 ×` plus a one-point
-letter gap (`AXIS_LETTER_GAP_DP`) through the pure `inspectorAxisBoxWidth` (`TH11`, `I289`). **A font change re-measures every
+plan that re-measures what FAILS cannot see a constant nothing asserts. Fixed then as `4 ×` plus a one-point
+letter gap; since E.6.3 the letter sits inside its box through the pure `inspectorAxisLayout` and the thresholds
+are per entity (`TH11`, `I289`). **A font change re-measures every
 font-unit constant that binds (label floors, tile multiples, layout thresholds) against the previous build at
 the same dock size** — a branch-point A/B is the only witness.
 
@@ -627,8 +649,11 @@ about where a glyph SITS measures its ink, not its box (`I278`). Full rules: `.c
 public header; all 63 ImGui colour slots are mapped (a slot ImGui adds is a `static_assert`). **A new colour is a
 theme token, never a file-local constant** (`I287` pins every panel's role reads). Category A (chrome, UI roles)
 follows the mock; **Category B** (the viewport's colours, the axis trio, identity colours, clears) moved in
-**byte-identical** (0 / 0 differing viewport pixels) and changes only as a stated decision — E.6.3's.
-`TextDisabled` is for disabled widgets; de-emphasis is `textMuted`.
+**byte-identical** (0 / 0 differing viewport pixels) and changes only as a stated decision — E.6.3 adopted the
+mock's grey folders (`folder` + a new `folderTab`), retired `ThemeViewport::overlayText` with its last reader and
+declined the mock's axis hues. E.6.3's `ThemePanels` holds every panel dp metric and the four panel colours no
+palette token matches; `ThemePalette` stays 28 tokens. `TextDisabled` is for disabled widgets; de-emphasis is
+`textMuted` (in a panel TU, `mutedText`; `I287` / `I333` ban the other spelling).
 
 **A NON-DEFAULTED PARAMETER ON A WIDELY-CALLED EDITOR FUNCTION IS A 57-LINE EDIT, AND IT IS STILL THE RIGHT
 CALL.** `buildSelectionOverlay` has **38 call sites, 37 in `selection_overlay_test.cpp`**; `projectToViewport`
@@ -1021,15 +1046,15 @@ is a configure-time property. **Rebuild before you believe any doctest number, a
 presets so a disagreement is visible.** A recorded total goes stale the same way: `origin/main`'s own shell
 total was one stale at E.1.4's gate. **Read the binary, never the block.**
 
-**After E.6.2 (#120)**, measured on `27bad9d` (the merged head) on both presets, rebuilt and agreeing, with both
-reduced configurations configured fresh at `27bad9d`:
+**After E.6.3 (#121)**, measured on `a20275e` (the merged head `c1f4bc9` changed one test case after it) on both
+presets, rebuilt and agreeing, with both reduced configurations configured fresh at `a20275e`:
 
 | Measurement | Value |
 |---|---|
-| `ctest -N` | **183** in both presets (178 + the five `labels_*`); **170** shader-tools-OFF (exactly the 13 `shaderc.*` removed), **93** reflect-tools-OFF (86 `reflect-gen.*` + four doctest binaries removed), nothing added in either; `cooker.*` **70 / 70 / 70** |
-| doctest, seven binaries | **1428 / 2300 / 314 / 40 / 73 / 14 / 28** |
-| guards | math **567**, platform **92**, rhi **163**, scene **92**, golden-rule **165**, project-no-delete **A=7 B=102** (2 permitted), audio **11-3-57**, probes **6-59** |
-| `git ls-files` | `editor/src/*.cpp` **102**, `editor/include/aero/editor/*.hpp` **74** |
+| `ctest -N` | **183** in both presets; **170** shader-tools-OFF (exactly the 13 `shaderc.*` removed), **93** reflect-tools-OFF (86 `reflect-gen.*` + four doctest binaries removed), nothing added in either; `cooker.*` **70 / 70 / 70** |
+| doctest, seven binaries | **1431 / 2382 / 354 / 40 / 73 / 14 / 28** |
+| guards | math **587**, platform **92**, rhi **163**, scene **92**, golden-rule **165**, project-no-delete **A=7 B=109** (2 permitted), audio **11-3-57**, probes **6-59** |
+| `git ls-files` | `editor/src/*.cpp` **109**, `editor/include/aero/editor/*.hpp` **80** |
 
 The seven doctest binaries, in order: `aero_tests`, `aero_editor_shell_test`, `aero_editor_imgui_test`,
 `aero_scene_serialize_test`, `aero_editor_inspector_test`, `aero_reflect_meta_test`, `aero_reflect_json_test`.
@@ -1071,9 +1096,10 @@ that peaked at 7.6 GB here. **Each run must name which binaries it built and ran
 **`I136` IS NO LONGER DISPLAY-DEPENDENT (E.6.1, AC-14).** It failed `REQUIRE(drawExtent.width > 4U)` with value
 **4** on a 2x display from E.3.4 to E.4.4's branch point, because the style was doubled on Retina; with one UI
 scale (1 on a Retina Mac) the whole GPU tier, `I136` included, passed with the built-in Retina panel attached
-at E.6.1's step 5, and on 1× externals at every later gate. **The local GPU tier gates at 295 of 295 whatever
-is attached** — still name the display configuration in a gate record, because a 2× run is the only local
-witness that the UI scale stays 1 on Retina.
+at E.6.1's step 5, and on 1× externals at every later gate. **The local GPU tier gates whole whatever is
+attached** (E.6.3's full gate at `88a2b8f` ran on the built-in Retina panel alone: 351 of 351 imgui cases) —
+still name the display configuration in a gate record, because a 2× run is the only local witness that the UI
+scale stays 1 on Retina.
 
 **COUNTS DIVERGE BY OS, so never assume one.** Windows skips **FOUR** e2e cases —
 `golden-rule.include_scan_e2e`, **`project-no-delete.no_delete_e2e`**, `audio-boundary.guard_e2e` and
@@ -1102,13 +1128,14 @@ mono 48 kHz 0.5 s, **exactly 48 064 B each**, cut at a whole number of cycles so
 `docs/10`; this is the ledger of what is still owed.
 
 **ONE PAGE HAS NOT BEEN RUN ON ANY PLATFORM: E.1.5's.** It is the whole of Phase E's validation risk on this OS
-— every other task in E.1–E.5, and E.6.1 and E.6.2, is macOS-validated (see the index above). **E.6.1's page is RUN, 11 / 11
+— every other task in E.1–E.5, and E.6.1–E.6.3, is macOS-validated (see the index above). **E.6.1's page is RUN, 11 / 11
 executable rows** (2026-10-07); its row 8 (a branch-point A/B) and row 6 each found a defect no tier could see,
 both fixed in the PR. **Its 2× rows (2, 9, 10, 18) need a Retina panel attached**, and rows 9 and 10 decide two
 unowned handoffs below. **E.6.2's page is RUN, 18 / 18 executable rows** (2026-10-08, 1× displays; its 2× row 19
-needs a Retina panel): bars 44 / 26 with fills exact to the token, the snap matrix all four ways, one prefs write per
-committed edit, and a branch-point A/B that reproduced the merge-chain defect the task fixed first (one undo reverted
-4.3 → 4.2 there, 4.3 → 0.5 here). **E.3.2's page WAS run on 2026-09-12**
+needs a Retina panel). **E.6.3's page is RUN, 21 / 21 executable rows** (2026-10-14/15, on the built-in Retina
+panel, so its 2× rows ran); its first pass, on `88a2b8f`, found four product defects every tier, the code-review
+round and the 66-seed matrix had missed, each fixed in the PR (`7e13aaa`, `5f6d475`, `e55a7e8`, `004a4f8`); four
+cells inside passing rows are N-E (`docs/10`). **E.3.2's page WAS run on 2026-09-12**
 (9 PASS / 1 PARTIAL / 2 NOT EXECUTABLE, against `b172198`) and was carried here as unrun until 2026-10-01; its record
 is now in `docs/10`. **The three fixes' pages are RUN on macOS** — #116 10 / 10, #117 15 / 15, #118 15 / 15
 executable — and each pass found the next defect: #116's row 8 a closed popup still holding the keyboard, #117's
@@ -1242,8 +1269,9 @@ display's ICC profile, and **there is no `renderFrame` Tracy zone in this tree**
 
 ### Next
 
-**E.6 is the open front: two tasks, planning only** — E.6.3–E.6.4, each building on E.6.1's theme, fonts and
-icons and E.6.2's shell chrome. See `docs/tasks/phase-E.md`, and `docs/tasks/phase-3.md` for what Phase 3 still owes.
+**E.6 is the open front: one task, planning only** — E.6.4, the Welcome window and the New Project dialog, on
+E.6.1's theme, fonts and icons and E.6.3's panel chrome. See `docs/tasks/phase-E.md`, and `docs/tasks/phase-3.md` for
+what Phase 3 still owes.
 
 **Ownership of the open work.** **E.4.3 IS MERGED, and it did NOT use `directoryWithin` /
 `normalizeForContainment` — deliberately, and the reason generalises.** Those answer *"is this ABSOLUTE
@@ -1263,17 +1291,21 @@ theme or DPI change moves the Inspector's reference row and the material slot's 
 are MERGED** (`834bcb3`, `ab3fd72`), closing Epic E.5; what each left out is in `docs/10`. The default scene
 is deliberately unchanged by every Phase E task so far, and its seventeen `entityCount() == 4` pins are
 byte-identical. **E.6.1 is MERGED** (`2b1971e`) and discharged what E.1.5, E.3.4, E.4.5 and E.5.2 handed it,
-except E.4.5's 128²-at-2× judgement, which is its validation row 9. **E.6.2 is MERGED** (`761cc49`): the
-toolbar and the status bar are viewport side bars drawn from `shell_chrome_ui.cpp`, the breadcrumb sits in the menu
-bar, `T R S` and `Local/World` left the viewport (which keeps `View`, per-view), and every Ctrl chord's hint is
-`chordHint`'s — its rules are in `.claude/rules/editor.md`'s shell-chrome section, its history in `docs/10`. **E.6.3**
-splits E.2.4's popover into the mock's header dropdowns; the grouping is already the mock's, so it restyles
-rather than regroups — and it owns the per-panel restyles, the component → icon mapping, the first consumers of
-the `small` type size, the Category-B decisions (the mock's axis hues and grey folders against today's identity
-colours), the View popover's two `TextDisabled` headings (2.26:1, measured), and the Inspector's axis row — the
-mock draws the letter inside its box, and today a value with two or more integer digits needs 3–6 more points of
-content than at the branch point (E.6.1's validation page). **E.6.4** finds `dialog`,
-`accentBorder`, `success` and `onAccent` in the palette. **8.2** inherits IBL/HDRI and the after-opaque sky
+except E.4.5's 128²-at-2× judgement, which is its validation row 9. **E.6.2 is MERGED** (`761cc49`) — its rules
+are in `.claude/rules/editor.md`'s shell-chrome section, its history in `docs/10`. **E.6.3 is MERGED**
+(`7fe02d1`) and discharged what it was handed, the 38-point menu bar E.6.2 handed on aside (declined, now an
+unowned handoff): **all eight panels** restyled through one card painter, one role map and six pure models (the
+rules file's panel-chrome section); **the component → icon mapping**,
+`componentIconTable()` (ten rows, fallback `shapes`), beside the kind classifier `entityKindFor`; **the `small`
+size**, first consumed by E.6.2's status bar, now sets the panels' secondary text; **Category B**: grey folders
+ADOPTED (+ `folderTab`), the axis hues DECLINED, `overlayText` retired; **the View popover's headings** in
+`textMuted`, the popover RESTYLED, not regrouped, behind a chip that names the projection; **the Inspector's axis
+row** with the letter inside its `inset` box, at a stated price — the per-entity thresholds ROSE to 266 / 279 / 316
+(Cube / Main Camera / Directional Light; E.6.1's 225 / 231 / 270 the before), so the default right split widened
+0.25 → **0.30**: the launch default shows the Cube and the Camera whole and clips the Light, as at E.6.1's baseline,
+and a 1442-wide Reset Layout shows all three (row 7). An existing `imgui.ini` keeps its old split until Reset Layout.
+**E.6.4** inherits `project_ui.cpp`'s four `TextDisabled` calls, a one-line widening of `I287`'s / `I333`'s ban to
+that file, and the `dialog` token's first consumer. **8.2** inherits IBL/HDRI and the after-opaque sky
 variant (`SB9`/`SB16` are in place to catch a wrong ordering), plus physical light units, IES profiles and area
 lights.
 
@@ -1293,7 +1325,7 @@ button's disabled predicate), each with its pinned-source citation, are in `.cla
 `"Delete orphaned .meta?"` from a real row and confirmed it by click and by **Enter**. Until then, Enter had
 only been argued from identical code.
 
-**FORTY-FOUR UNOWNED HANDOFFS — one per bullet below; re-count the bullets, never the headline.** It read
+**SIXTY-TWO UNOWNED HANDOFFS — one per bullet below; re-count the bullets, never the headline.** It read
 "NINE" over a list that already held thirteen, because two "smaller" items, the exposure clause and
 `FillMode::Line` were never counted. Handoffs recorded in their own paragraphs elsewhere in this block (fact
 4's four permitted cases, the inspector-row gap, the closed `File` section) are not repeated here.
@@ -1302,7 +1334,11 @@ only been argued from identical code.
   the gating needs a THIRD condition (`!io.WantTextInput`, because the browser's header carries an `InputText`
   search box), nothing in `tests/` can press a key, and there is no key-binding registry. E.6.2, the nearest
   candidate, built no registry (its D23), so nothing in the roadmap claims it.
-  E.5.2's Create entries have no shortcut either.
+  E.5.2's Create entries have no shortcut either. **E.6.3 found that condition too weak**
+  (`imgui_widgets.cpp:5656-5660`): `WantTextInput` is set only while a field is ACTIVE, and Enter or Escape leaves
+  the field holding `NavId` — the opening through which a Backspace after Enter deleted the Hierarchy's selection
+  (the code-review round's finding 20). The gate that holds is the Hierarchy's latch (`.claude/rules/editor.md`, "A
+  SELECTION SHORTCUT BESIDE A TEXT FIELD…", `I339`).
 - **Richer undo labels** (`Move Cube` rather than `Transform`, the mock's wording) — E.6.2 shows the existing labels
   verbatim by decision; a label is the command layer's, and nothing owns renaming them.
 - **Spot and point shadows** — the shadow pass is directional-only (3.6.2); Phase E's non-goals name
@@ -1314,8 +1350,8 @@ only been argued from identical code.
 - **A preview carrying the scene's POINT and SPOT lights** — excluded at E.2.4: a lamp lights a sphere at the
   origin by where it happens to sit, which predicts nothing about the material.
 - **A FOV control** — `EditorCamera::setFovYRadians` exists and the mock implies one.
-- **PERSISTING the four viewport toggles and the tonemap params per user** — 3.6.3's, E.1.2's and E.2.3's
-  handoff unchanged; E.2.4 moved the controls, not the state.
+- **PERSISTING the viewport toggles and the tonemap params per user** — 3.6.3's, E.1.2's and E.2.3's
+  handoff unchanged; E.2.4 moved the controls, not the state, and E.6.3's Stats toggle joined them as session state.
 - **Exposure as a scene or camera property.**
 - **A `meshIndex`-aware model pick** — needs a reflectable "sub-asset" annotation or a component-aware row;
   likely first customer 4.7 or E.5.x.
@@ -1323,7 +1359,8 @@ only been argued from identical code.
   (`DR10`, `AR5`, `MP1`) the day a script component wants a `.json`.
 - **A "reveal in browser" verb** from the picker or the row (E.3.3) — E.3.2's file-open handoff from the other
   side, needing the same new `ActionKind`.
-- **`FillMode::Line` / wireframe-of-meshes** (fact 3 above).
+- **`FillMode::Line` / wireframe-of-meshes** (fact 3 above), and with it a viewport shading mode (the mock's
+  `Shaded`, declined by E.6.3's D13: no shading mode exists to name).
 - **A case-only rename done OUTSIDE the editor (measured at E.4.4)** — on a case-insensitive volume the scan
   re-attaches `Wood.png` to the old GUID from `wood.png.meta`, the write of `Wood.png.meta` collides with that
   sidecar, and the record stays `Invalid` with a nil GUID on every scan. Pre-existing 3.1.2 / E.4.3 behaviour;
@@ -1372,6 +1409,42 @@ only been argued from identical code.
   texts live under `editor/third_party/fonts/` only.
 - **A theme decision for `ImGuiItemFlags_MixedValue`**, the day a multi-selection edit draws one (E.6.1 D13).
 - **ImGuizmo's hit tolerances above a 100 % UI scale** (E.6.1 R7) — library literals, deliberately unscaled.
+- **The mock's axis hues, across all four consumers at once** (E.6.3 D3, declined) — the gizmo, the grid's world
+  axes, the view-axis widget and the Inspector letters share ONE identity colour; moving it re-opens E.1.2 / E.1.3 /
+  E.1.5 / E.3.1's validation rows and moves `TH2`, `AX1`–`AX3` and `I143(c)`.
+- **A stacked axis row (label above, under a width threshold) or values at `smallSize`** (E.6.3 D5) — the two ways
+  to win back the risen axis thresholds; the Directional Light still clips at the 1280 launch default.
+- **The axis row's last digit draws over its unit's 1-point outline in a narrow band** (E.6.3's row 7, UI scale 1,
+  this task's own layout) — for `0.000` from the content width where the digit's stroke enters the border (266 / 279
+  / 316, Cube / Main Camera / Directional Light) down to where its ink is first cut, 4 points lower (262 / 275 / 312);
+  for `123.456` from 310 to 307. Between the two the digit hides the outline, because the frameless drag's value
+  region runs to the unit's outer edge (`inspectorAxisLayout`: `valueWidth = unitWidth - valueX`), where
+  `RenderTextClipped` clips — the clip every framed ImGui drag uses (`imgui_widgets.cpp:2805`,
+  `RenderTextClipped(frame_bb.Min, frame_bb.Max, …)`), so a stock `DragFloat` draws over its own border the same way.
+  Ending the value region inside the border closes it, and moves every threshold above.
+- **No `Clear` on the Inspector's reference rows in a 640-wide window** (E.6.3's row 17, present at the branch point)
+  — E.3.3's `assetReferenceFieldWidth` floors the field at one frame height and `Clear` lands past the panel's clip.
+  Nothing overlaps.
+- **The Material slot row's thumbnail overlaps its `Clear` at 640 wide** (E.6.3's row 17, present at the branch
+  point) — E.3.4's slot row draws the 64-point well at `thumbnailEdge` whatever its ≈ 50-point frame; at 900 and
+  above the well fits.
+- **Widgets in a dock's tab row** — the mock's header dropdowns; the pinned ImGui has `DockNodeBeginAmendTabBar`
+  (`imgui_internal.h:3734-3735`), the route E.6.3 named and did not take (E.2.4 stopped at a popover).
+- **Tab icons** (E.6.3 D12) — a label change publishes a new `window->Name` to `keyboardFocusPanelId`, so it needs
+  `###` labels and `I159(h)`'s respelling.
+- **The Console tab's unread dot** (E.6.3 D7) — needs a "seen" notion, and it changes what the tab's X means.
+- **GPU time in the stats card** (E.6.3 D9) — SDL_GPU 3.4.12 has no timestamp queries, so the card shows `—`.
+- **An entity enabled flag** (the mock's `off` meta, E.6.3 D6) — engine, schema and bridge.
+- **The Hierarchy's footer Create Empty / Create Child buttons** (E.6.3 D6) — the Create menu and both context menus
+  already create.
+- **Component Copy / Paste / Reset** (E.6.3 D13) — the card's overflow menu holds Remove Component alone.
+- **Renaming from the Inspector** (E.6.3 D5) — the entity header's name is read-only.
+- **The mock's 38-point menu bar** (E.6.3 D13, declined after E.6.2 handed it on) — it re-arms E.6.2's D22 fixtures.
+- **The mock's default layout**, the bottom dock spanning the full width (E.6.3 D13).
+- **The viewport's `Cube · Transform` chip** (E.6.3 D13) — the mock gives it no stated meaning.
+- **The shell's two modals beyond the theme** (E.6.3 D13).
+- **A rounded nav cursor on the asset tiles** (E.6.3 D8) — `RenderNavCursor` draws a square over the `Selectable`'s
+  widened box.
 
 **E.1.1's THICK-LINE HANDOFF IS FIRED, NOT CLEARED AND NOT DEFERRED.** E.2.3's macOS pass measured it: icons
 scale exactly 2x and hold 22 points, but **387 of 441 sampled runs across the gizmo are ONE DEVICE PIXEL** —

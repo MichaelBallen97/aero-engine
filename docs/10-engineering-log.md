@@ -19133,3 +19133,394 @@ the Hierarchy; the snap matrix (on/off × Cmd) all four ways; `editor_prefs.json
 and written once 0.14 s after release; the dragged layout and the snap state survive a relaunch; elision order at 300 /
 270 / 240 / 210 points; the branch-point A/B for the strip and for the merge-chain defect. Row 19 (2×) is not
 executable on 1× displays; rows 20–21 are Windows and Linux.
+
+### E.6.3 — Panel chrome pass — every panel against one theme, and four defects only the manual pass could see
+
+The eight docked panels stop drawing ImGui's own furniture and draw the mocks' chrome against `EDITOR_THEME`. Every
+decision a panel makes is a pure function tier 0 can reach; one shared ImGui TU paints; every record reads back what
+ImGui drew or what the draw list received.
+
+**The shared chrome.** One src-private ImGui TU, `panel_chrome_ui.{hpp,cpp}`, holds every painter the panels share:
+- **The card** — a host owns one `CardPainter` (its `ImDrawListSplitter` persistent, so a table's own splitter stacks
+  inside a card body) and each card is a scoped `PanelCard` whose destructor ends it. The header item is a framed
+  `TreeNodeEx` under cleared `Header*` and `Text` slots and `FrameBorderSize 0`; the painter draws its own strip,
+  chevron (`AERO_ICON_CHEVRON_DOWN` / `_RIGHT`, the open chevron's ink 3.5 dp), icon, Strong title, optional `…`
+  overflow and the 1-dp header/body rule, every x from ONE pure `cardHeaderLayout` and from the x span recorded at
+  `begin`. The vertical layout is net of `ItemSpacing.y`; the body is narrowed on both edges (`WorkRect.Min.x`,
+  `WorkRect.Max.x`, `ContentRegionRect.Max.x`, all restored at `end`) and, since the validation pass, clipped to that
+  width. A host answers a header's hover or right-click only through `CardHeaderResult`.
+- The chip, the ghost and primary (accent-filled, `onAccent` text) buttons, the segmented group HOISTED from
+  `shell_chrome_ui.cpp` so the toolbar and the Assets Grid | List are one implementation, the role-coloured text, fill
+  and outline helpers, the kind dot, the count badge, the hatched well, the dashed rule, the two scoped clear-fill
+  styles (`ClearHeaderStyle`, `ClearFrameStyle`) and `ScopedFace`, the one new face switch.
+- `text_input.{hpp,cpp}` gains a hint overload (ImGui's own placeholder slot, `ImGuiCol_TextDisabled`, whose bytes are
+  the mock's placeholder).
+
+Six NEW pure public pairs, each ImGui-free and entt-free with its own tier-0 file: `panel_chrome_model` (the role map,
+card and chip geometry, `hairline`, the section-icon tables, the card record — `PC1`–`PC14`), `entity_presentation`
+(the entity kind, component icons, identifier splitting, the `e#` text — `EK1`–`EK10`), `hierarchy_view`
+(`HY1`–`HY8`), `console_view` (`CS1`–`CS10`), `asset_browser_chrome` (`AH1`–`AH20`) and `viewport_hud` (`VO1`–`VO14`).
+Every pure layout that consumes a dp constant takes a non-defaulted `float uiScale` (`US9`, `US11`).
+
+**The theme.** `ThemePanels` (Category A, its own `sizeof` assert, `TH14`–`TH16`) holds every new dp metric — card
+padding 12 × 10, gap 12, HUD inset 14, a stats card 209 wide; the card header's 32, the chip's 24 and the stats card's
+129 at six rows derive from its members — and the four colours no palette token matches: `consoleWarnRowTint`
+(35,35,35), `consoleErrorRowTint` (38,33,37), `hatchStripe` (37,41,46) and `addComponentDash` (53,80,94), each sampled
+on the mock. `ThemePalette` stays 28 tokens; near-colours map to the nearest token by squared sRGB distance, recorded in
+the spec. A new type token `titleSize = 20` sets the Inspector's entity name. Globally, `FrameBgHovered` → `hover` and
+`FrameBgActive` → `active` (the frame ladder `inset` → `hover` → `active` stays monotonic; the old `raisedHeader` held
+state would read darker than its own hover and nearly vanish on a `raised` card, 1.06:1); the selected tab's X shows on
+hover only (`tabCloseButtonMinWidthSelected` 0) and no dock node draws an X. `chromeRoleColor` maps 26 roles, reading
+each palette role once; its alpha overload, spelled `clearOver(surface)` in the chrome TU, is the one transparent fill.
+
+**The Hierarchy.** An unfilled header row over a `divider` rule: a `Search entities` field and a count badge (`12`, or
+`3 / 12` while a query filters). The tree moves into an always-present borderless `##tree` child, so ~90 rows scroll
+under a fixed header. A query shows a FLAT pre-order list of matches (case-insensitive ASCII,
+`containsAsciiCaseInsensitive`) without touching the tree's expansion; select, Shift-range, drag, drop, context menu
+and rename work on a flat row.
+Rows carry a 6-dp kind dot (`entityKindFor`: Camera > Light > Mesh > Audio > Environment > Empty; light `warning`, mesh
+`info`, camera `textSecondary`, audio `success`, environment and empty `textFaint`, the selected row `accent`) and the
+direct child count right-aligned in Mono small. **Del, Backspace, Cmd+D and F2 are gated while the search field keeps
+the keyboard** — one `hierarchyShortcutsLive(renaming, searchOwnsKeys)` call (`HY7`). The selection fill stays ImGui's
+own square `selection` fill, the Hierarchy alone (D6).
+
+**The Inspector.** An entity header (a 15-dp kind swatch, the name in Strong at `titleSize`, `e#<index>` right-aligned
+with the generation in its tooltip); each component a card with its icon (`componentIconTable()`, ten rows, fallback
+`shapes`) and a `…` menu holding Remove Component, which a right-click on the header opens too; field labels split
+into words (`humanizeIdentifier`, filled IN PLACE so `KP3`'s capacity rule holds), the reflected name on hover; the
+axis letter (small) INSIDE one `inset` unit with a frameless `DragScalar` after it, whose hover and held states are an
+outline on the whole unit (`hover`, `accentBorder`), never a fill on the value; a reference field with a swatch, the
+name and a faint `pick` hint, `Clear` kept as a ghost button; a dashed, centred Add Component on `panel`.
+
+**The Console.** An unfilled header row (`Clear`, `Copy`, a title-case level combo with a chevron, a `Filter` field,
+`Auto-scroll`); rows as columns from `consoleRowLayout` — the stamp `mm:ss.mmm` (11 small Mono advances, the width of
+`9:59:59.999`, so the column never moves when a session passes an hour: +9 dp against the mock, stated), the upper-case
+level tag in its role, the channel split off a leading `name: ` prefix for DISPLAY only (Copy and the filter read the
+whole message), the message in `text`; tinted Warn / Error / Critical rows under the `Selectable`; a 26-dp Mono-small
+footer counting messages, warnings, errors, the engine floor and dropped records, segments separated by space, never
+`·`.
+
+**The Assets panel.** A header row with width modes (Full / Compact / Minimal, `assetHeaderLayout`, folded controls in a
+`…` menu, never clipping at or above its Minimal floor); a breadcrumb row in the contents pane whose crumbs are
+`InvisibleButton`s that keep their folder drop targets, and whose item count is the folder's RECURSIVE record count
+(`FolderCountCache`, keyed on the database generation); the tree drawn the Hierarchy way with a rounded `selection`
+fill and recursive counts; grey two-tone folders, tile rings (`hover` at rest, `active` hovered, `accentBorder`
+selected), hatched wells for files with no preview (a `textSecondary` extension label after a kind-coloured dot) and
+ImGui's own tile fill cleared in BOTH tile hosts; a two-zone Mono-small footer (the selection left, elided from the
+left; the notice, matches, issues, thumbnails and watcher right). The grid's `..` bar goes — the crumbs navigate up.
+
+**The Viewport.** A pure `viewportHudLayout` places a view chip (`Perspective 60°` / `Orthographic` plus a chevron,
+opening the SAME popover, restyled not regrouped and kept inside the image by E.3.3's `assetPickerAnchor`), a stats
+card (Frame from the ONE `FrameTimeReadout`, Draw calls summed from the existing per-pass counters, Triangles, Entities,
+GPU `—`, the extent; a fixed 209-dp width so it never moves as values change), hint chips bottom-left
+(`RMB + WASD to fly`, `F to frame`, the fly speed while flying) and the view-axis widget bottom-right inside a `divider` circle. The
+HUD claims its presses in screen space through `hudOwnsPoint` on the layout latched at the last draw, beside
+`viewAxisOwnsPoint`, in both the pick and ImGuizmo's `Enable` term. Drop order in a small image: the stats card, then
+the hints, then the chip.
+
+**Material, Import Details, Project Settings.** Sections become cards with icons from pure tables (eight, seven and
+two); Apply is the primary button in Material and Import Details; the older-Blender line moves to `warning`; Import
+Details' `SpanFullWidth` rows keep their fill inside the card's padding through the left-edge narrowing.
+
+**The sweep.** All 33 `ImGui::TextDisabled(` calls used as de-emphasis in eight panel TUs moved to the string-only
+`mutedText` / `mutedTextWrapped`; `ImGui::TextDisabled(` and `ImGuiCol_TextDisabled` are banned in every panel TU
+(`I287`, `I333`); `project_ui.cpp`'s four are E.6.4's.
+
+**The one engine change.** `ForwardRenderer::lastFrameTriangles()` — additive, reset beside `lastDrawn`, incremented at
+the two main-pass draw sites by `indexCount / 3`, copied by both moves, zeroed by `reset()` (`CD12`–`CD14`).
+
+**The built-in component count stays TEN. No shader, scene-format, `docs/09`, prefs-schema or default-scene byte
+changed; no rhi change, no new target, no vcpkg change.** Panel ids are unchanged (`I25` untouched).
+
+**Forty-seven commits** on
+`feat/E.6.3-panel-chrome-pass`, branch point `2b6577c` (E.6.2's docs commit):
+- **The plan's ten:** `2d50565` the theme, the role map and the shared chrome; `ed68cec` the Console; `18ac1bd` the
+  Hierarchy; `8f3fd5b` the Inspector and the 0.30 split; `b5cb370` the Assets panel; `542081f` the triangle counter;
+  `ca73d25` the viewport HUD; `035622d` the three secondary panels' cards; `3594db6` the `TextDisabled` ban and the tab
+  chrome; `b6fb1c8` the rules and the tab-row route.
+- **The code-review round's first fifteen:** `1e935e9`, `2e3361e`, `9dda798`, `ee93ff3`, `749023a`, `eba91f9`,
+  `8adb1ab`, `b55df0c`, `ff62264`, `e261e98`, `0c62340`, `8ad16e6`, `53ab60a`, `2f33010`, `2db223a`.
+- **Its re-review rounds two to five:** `51066c6`, `b54ac18`, `5e50483`, `21da1ab`, `854a601`, `a3754c6` (round 2);
+  `d74ec17`, `2fc79b0`, `7a69026` (round 3); `d999b95`, `6d3819b` (round 4); `bfaa798`, `88a2b8f` (round 5).
+- **From the manual validation pass:** `7e13aaa`, `5f6d475`, `e55a7e8`, `004a4f8`, then their re-reviews' `9ff733b`,
+  `5b8a5e6`, `187f854` and `a20275e`. The fix planned as Fix 33 was withdrawn (below).
+- **From CI:** `c1f4bc9` — `I331`'s mode flip resized its window to a hard-coded 1280 x 300, and on the macOS runner (a
+  1024-wide display, so creation delivered 1024) it compared two dock widths, 194 and 256 points apart. It now resizes
+  to the delivered width and gates the cross-width arm on equal delivered widths (reproduced with a 1024-wide window).
+
+Merged as **`7fe02d1`** (PR #121, a true merge commit) on 2026-10-19. CI: the PR's run `39136373938` on `c1f4bc9`, the
+merged head, 6 / 6 green (its first run, `39130536709` on `a20275e`, failed `I331` on macOS alone — the `c1f4bc9` fix
+above); `main`'s push run on `7fe02d1`, `39143875674`, was 6 / 6 green on its first attempt.
+
+**Measured at `a20275e`** by the final gate (both presets rebuilt and agreeing; `c1f4bc9` then changed one test case, and
+the whole imgui binary read 354 / 354 in both presets on it):
+- **Doctest totals:** 1428 / 2300 / 314 / 40 / 73 / 14 / 28 → **1431 / 2382 / 354 / 40 / 73 / 14 / 28**. Tests 1428 → 1431 is `CD12`–`CD14`; the
+  shell's additions are `PC1`–`PC14`, `CS1`–`CS10`, `EK1`–`EK10`, `HY1`–`HY8`, `AH1`–`AH20`, `VO1`–`VO14`,
+  `TH14`–`TH16`, `US11`, `AV66`–`AV67`; the imgui binary's are `I309`–`I348`. The inspector binary does not move
+  (`KP3` gained its arms in place), and neither does the serialize binary: no component crept in.
+- **`ctest -N`:** 183 in both presets, **170** shader-tools-OFF and **93** reflect-tools-OFF, both reduced ones configured
+  fresh, entry SETS equal to the branch point's in all four configurations, `cooker.*` 70 in all three; whole ctest
+  183 / 183 in both presets, 170 / 170 and 93 / 93.
+- **Guards:** math **587**, platform **92**, rhi **163**, scene **92**, golden-rule **165**, project-no-delete **A=7 B=109** (2 permitted), audio **11-3-57**, probes **6-59**. Math 567 → 587 and project-no-delete B 102 → 109 are the
+  20 new tracked C-family files, seven of them `editor/src/*.cpp`; the other six are byte-identical.
+- **`git ls-files`:** `editor/src/*.cpp` **109**, `editor/include/aero/editor/*.hpp` **80**. Nine `editor/src` TUs include `<imgui_internal.h>` (the branch
+  point's four, plus `panel_chrome_ui.cpp`, `console_panel.cpp`, `hierarchy_panel.cpp`, `inspector_panel.cpp` and
+  `asset_browser_panel.cpp`).
+- **Lint:** clang-format and clang-tidy (macosx15.4, `--warnings-as-errors='*'`) exit 0 over every changed `.cpp`
+  (40 TUs); the voice scan 0.
+- **Display:** the final gate ran on two 1× externals; the gate before it, at `88a2b8f`, ran with the built-in Retina
+  panel the only display attached — the whole GPU tier green at 2× (UI scale 1).
+
+#### ★ The spec's own premise was false, and the default right split widened
+
+Rev 1 claimed the axis row would read `0.000` whole "in the default layout of the 1442-wide window". Two measured facts
+broke it: the window is created at 1280 × 720 (`main.cpp:23`) and `buildDefaultLayout` runs at THAT size, so the
+default right dock is 256 (content 240) whatever size the window has later; and the label column is measured over the
+whole selected entity, so the threshold is per entity. With the letter inside its box and the card's 12-dp padding,
+`I289` measured the thresholds at **266.658 / 278.658 / 317.658** points of content (Cube / Main Camera / Directional
+Light; columns 77 / 90 / 127), against E.6.1's ≈ 225 / 231 / 270. No padding or in-box metric that keeps Body-16
+values reaches content 240, so **the right split went 0.25 → 0.30**, the mock's proportion: at the 1280 launch the
+right dock is 307 (content 291) — the Cube and the Camera whole, the Light clipped, exactly as at E.6.1's baseline —
+and after a 1442-wide Reset Layout 345 (content 329), all three whole. E.6.1's handoff is discharged by decision, at
+that stated price; an existing `imgui.ini` keeps its own split until View ▸ Reset Layout.
+
+#### ★ The spec, the plan review, the code-review round and the sabotage matrix
+
+- **The spec's rev 2** folded in its own review round: 86 of 88 findings confirmed across six lenses (facts, ImGui
+  mechanics, pins, tests, scope, fidelity), two refuted.
+- **The plan review** left 80 corrections (§0.6, numbered 0–79), each folded in where it lands; none added or removed a
+  `TEST_CASE`. The plan also corrected the spec in 30 places (§0.5, `C1`–`C30`), chiefly: `VIEW_AXIS_MARGIN_POINTS` is
+  23, not 13 (C26 — the circle reaches five past the rect the margin is measured to, so 13 would put its edge 8 in, not
+  18); `I332`'s nested-row arm is unreachable (C29 — no tier opens a node) and became a depth-0 row; a card host holds
+  `std::unique_ptr<CardPainter>` so every panel header stays ImGui-free (C19); `DragScalar` strokes a border, so
+  `ClearFrameStyle`'s `FrameBorderSize 0` is what makes the drag frameless (C3).
+- **The code-review round's first pass** confirmed 34 findings and refuted 7. As verified: 1 blocking, 3 major, 30
+  minor (findings 1, 10 and 11 were reported major and confirmed minor):
+  - **Blocking:** `I326`'s deep fixture was longer than Windows `MAX_PATH` (213 characters, cut to 128 with an
+    always-on arithmetic guard, `749023a`).
+  - **Major:** Backspace or Delete right after Enter or Escape in the Hierarchy's search deleted the selection
+    (`2e3361e`); the Assets crumb row was fixed chrome the budget never reserved, so a short pane pushed the Issues
+    region and the footer off the panel — the #111 class, at the default 1280 launch (two findings, `ee93ff3`).
+  - **Minor:** two request seams, the Assets navigation and the stats toggle, deferred a refused request instead of
+    dropping it (two findings, `1e935e9`); `I314`'s alignment arm could run on no lane after the 0.30 split
+    (`2f33010`); `I322`'s dashed claim read a flag set beside the call (`53ab60a`); a skipped `##tree` child lost a
+    pending reveal; the view-axis circle reached past its claimed rect; the closed chevron's face was 12.44 points
+    against the open one's 7.47; the Console tint stopped short under horizontal scroll (664 against the row's 3408);
+    the popover's first visible frame after a re-open was unclamped; the footer's right zone could push its notice off
+    the left edge; humanised labels hid the reflected name; the header's font multiples sat in the ImGui TU; three more
+    test findings (`I331`'s cross-host arm never crossed at scale 1, record vectors' per-frame clears had no witness,
+    `I324`'s drop-target count was tautological); and twelve comment, citation and rules findings.
+- **Every fix commit was re-reviewed**, and each re-review's remaining findings became the next round: 23 minor
+  (`M1`–`M23`, Fixes 16–21), then 1 major and 11 minor (`N1`–`N12`, Fixes 22–24), 1 major and 3 minor (`P1`–`P4`, Fixes
+  25–26), 3 minor (`Q1`–`Q3`, Fixes 27–28). Round 6 was the manual pass's four defects (Fixes 29–32); their re-reviews
+  left 1 major and 8 minor (`W1`–`W9`), then 2 (`X1`–`X2`) and 2 (`Y1`–`Y2`). `W9` was deferred, not fixed:
+  `Clear` missing at 640 × 400 is E.3.3's `assetReferenceFieldWidth`, unchanged by this task. The last round, Fix 37
+  (`a20275e`), is test-only: `I347` holds the drawn `pick` hint's width to the width the layout reserved, so a hint
+  measured in any face other than the one it draws in, wider or narrower, is red (the padding arm sees only a wider draw), and `I326` reads three footer lines
+  off the drawn text — a file in the open listing with its formatted size, GUID head and state, an invalid sidecar's
+  `invalid .meta`, and an unscanned file's `no .meta`, the last reached through E.4.4's Show-hidden toggle, which
+  relists from disk and requests no scan, so no new seam. Its re-review approved it; its one finding, a comment that miscounted the faces, was
+  folded in before the final gate.
+- **Fix 33 was withdrawn, measured.** Its plan was written from `W1` / `W2`, which the amend into `5f6d475` had already
+  fixed — its red-first target existed at `02f260d` and not at the head — and its own drop order would have re-created
+  `W2` at the 16-cell minimum. A fix plan written from a re-review list is stale against any amend that landed after
+  that re-review.
+- **The sabotage matrix**, the plan's 66 seeds one at a time: at `b6fb1c8`, 65 red and **S24 PARTIAL** — `I324`'s
+  `crumbDropTargets == 3` stayed green against a crumb row with one drop target, because the counter was bumped beside
+  the attach call (the same defect as finding 14). `53ab60a` counts inside `attachFolderDropTarget`, and `854a601`
+  records each target's item id. **Re-run at `88a2b8f`: 66 / 66 red.** Four seeds were not applied exactly as planned:
+  S8 and S26 as the same mistake in code a fix had reshaped, S37 and S41 as the equivalent edits the first run used
+  (no empty-tree branch to seed; the include the planned edit needs to compile). Every later fix commit shows its new
+  checks red against its own defect first, and since Fixes 29–37 changed about 700 lines in 14 of the files the seeds
+  target, **the 25 seeds on those files were re-run at the final head `a20275e`: 25 / 25 red**, each with the same
+  witnesses as at `88a2b8f` (S26 and S61 as the equivalent edit to the reshaped code).
+
+#### Where the implementation departed from the plan
+
+- **`I314`'s right-alignment arm could run on no lane after the 0.30 split** (step 4): the narrower Bottom node left
+  the Console's header cluster (506) wider than its row (485), so only the WARN branch ran — the code-review round's
+  finding 10. `2f33010` hides the side panels before the settle ticks, so the placement checks run.
+- **`I326`'s fixture first could not reach the elision it asserts** (step 5) and was lengthened, then was longer than
+  Windows `MAX_PATH` (the blocking finding) and was cut to seven levels in a 1100-wide window.
+- **`I141`'s strip row measured 113 × 24**, not the plan's ~140 × 24 (step 7); its comment states the measurement.
+- **`I331`'s cross-host arm never flipped at 1280 × 420 on a 1× display** (step 8): the Material panel's FixedRegions /
+  Scrolling boundary at scale 1 sits between window heights 381 and 400, so `2f33010` reads the second host at
+  1280 × 300 and records the host mode in the card record.
+- **Every forced clang-format break in the 117–120-column band was split** — a hoisted local, or a trailing comment
+  moved above its statement — step by step: the shape Homebrew's and Ubuntu's clang-format 18 wrap differently.
+
+#### Traps found, each measured
+
+- **A `SetCursorScreenPos` that extends the window with no item after it is an `IM_ASSERT` at `End()`**
+  (`imgui.cpp:8839-8840`, `:11533-11543`). The plan's HUD set the cursor to a DROPPED chip's min, which lies past the
+  window's content in a dock's first unsettled frame; `I107` aborted. The call now runs only for a shown chip.
+- **A destructor that calls something that can allocate fails clang-tidy** (`bugprone-exception-escape`, caught by the
+  local run): `~PanelCard` reaches a `push_back`. The tree's precedent is `try { … } catch (...) { std::terminate(); }`.
+- **`ClearActiveID` leaves `NavId` on the field** (`imgui.cpp:4863-4866`): Enter and Escape set `clear_active_id`
+  (`imgui_widgets.cpp:5180`, `:5212`) and `InputTextEx` releases the id at its end (`:5452-5453`), so a field closed
+  by either key still holds the keyboard's focus — a gate on `IsItemActive()` or `io.WantTextInput` reopens on the
+  very next Backspace. **And `IsItemFocused()` alone over-closes**: a tab click with no `NavId` to restore, or a docked
+  window reappearing, runs `NavInitWindow`, which hands the root window's first item — the search field — `NavId` with
+  no click (`imgui.cpp:19750-19752`, `:8616-8619`, `:14402-14409`). The gate is a latch set by the field's own
+  activation and released while the keyboard is in the panel on another item.
+- **A tree walked inside a skipped child loses its one-shots**: a child clipped away entirely (a dock cut to its
+  header row) makes `TreeNodeBehavior` return before `TreeNodeUpdateNextOpen` (`imgui_widgets.cpp:6879-6880`), so a
+  `SetNextItemOpen` one-shot — the Hierarchy's reveal — was lost for good. The walk now runs only while `BeginChild`
+  returned true.
+- **A rename field that stops being submitted never deactivates**: `NewFrame` drops its `ActiveId`
+  (`imgui.cpp:5795-5799`) and the deactivation lapses two frames on, so `renaming` stayed set with the search field
+  disabled. The panel records the frame the field was last drawn and ends a stale rename as the field would (`I344`).
+- **ImGui never draws a child shorter than 4 points** (`IMGUI_WINDOW_HARD_MIN_SIZE`, `CalcWindowMinSize`,
+  `imgui.cpp:7007-7029`), so a child asked for 1 drew 4 and the contents group grew 3 points past its pane.
+- **A square scissor cannot clip to a rounded fill.** The hatched well's stripes under `PushClipRect(min, max)` painted
+  the corners outside the rounding. They are now clipped as geometry: Sutherland–Hodgman (`clipConvexPolygon`, pure,
+  `PC13`) against the outline ImGui itself tessellates (`PathRect`, read, then `PathClear`).
+- **Text and buttons that do not wrap ignore `WorkRect` and `ContentRegionRect`** — ImGui clips them only to the
+  window's `ClipRect` — so the card body needs its own `ImGui::PushClipRect`, popped before any channel switch because
+  `SetCurrentChannel` carries the list's clip into the channel it makes current (`imgui_draw.cpp:2270-2277`).
+- **The default layout's first build splits the WHOLE viewport**, less the 2-point docking separator
+  (`imgui.cpp:20188-20193`): at 1× the Assets panel's recorded avail is exactly `ceil(f × (H − 2)) − 71` for a
+  Bottom fraction `f` and a window `H` points tall. CI's macOS runner delivers a shorter window than it is asked for,
+  so a pane threshold over it is a guess: `EditorAppConfig::bottomDockFraction` (the sixth config-field test seam,
+  resolved finiteness-first by `resolveBottomDockFraction`) sizes the crumb-row cases' dock (`PC12`, `I345`).
+- **Lucide's two chevrons are one stroke rotated**: sizing each by its ink WIDTH drew the closed one 1.67× the open
+  one, stroke and all. One face size from the open chevron's ink; the drawn glyph is measured only to centre it.
+- **A glyph read at a fractional size must be read as `RenderText` draws it**: off the bake at `IM_ROUND(size)`
+  (`imgui_draw.cpp:5415`), scaled by size over that bake's `Size`, from a pen `RenderText` truncates (`:5791`) — read
+  raw, the chevron's record sat 0.2 right of the quad it drew and 6.25 % narrow at body 16.
+- **ImGui sizes Plex Mono by its 1300-unit ascent-to-descent height**: the Mono-small advance is 6.4615 points at
+  size 14, which every Mono column and footer cell count is built on.
+- **Two `-tc` flags on one doctest command keep only the last**: a sabotage run passed two and read `test cases: 1`.
+  One comma-separated filter selects both.
+
+#### What was deliberately left out (spec D13), and which task holds each
+
+**Not built:** the 38-point menu bar (it re-arms E.6.2's D22 fixtures); the mock's full-width bottom dock; the axis
+hues; tab icons and widgets in the tab row; the Hierarchy's `sel` / `off` metas, its `Scene: main` root row and its
+footer buttons; the viewport's `Cube · Transform` chip and `Shaded`; the Console tab's unread dot; component Copy /
+Paste / Reset; GPU time; persisting the Stats toggle; renaming from the Inspector; a rounded nav cursor on the asset
+tiles; anything past the theme in the shell's two modals.
+
+**Who holds each piece:**
+- **E.6.4:** `project_ui.cpp`'s four `TextDisabled` calls and a one-line widening of the ban to that file; the `dialog`
+  token's first consumer.
+- **Unowned** (each a bullet in `CLAUDE.md`'s list): the mock's axis hues across all four consumers at once; a stacked
+  axis row or `smallSize` values, the two ways to win back the thresholds; widgets in a dock's tab row, whose route is
+  `DockNodeBeginAmendTabBar` (`imgui_internal.h:3734-3735`, named in `phase-E.md`); tab icons; the Console's unread
+  dot; GPU time (SDL_GPU 3.4.12 has no timestamp queries); an entity enabled flag; the Hierarchy's footer buttons;
+  component Copy / Paste / Reset; renaming from the Inspector; the 38-point menu bar; the mock's default layout; the
+  `Cube · Transform` chip; the shell's two modals; a rounded tile nav cursor. A shading mode joins the wireframe
+  handoff, and the Stats toggle joins the viewport toggles' persistence handoff.
+- **Three found by the validation pass**, two of them present at the branch point: the Inspector's reference rows
+  have no room for `Clear` in a 640-wide window (E.3.3's `assetReferenceFieldWidth` floors the field at one frame
+  height and `Clear` lands past the panel's clip; nothing overlaps); the Material slot row's 64-point thumbnail
+  overlaps its `Clear` at 640 wide (E.3.4 draws the well at `thumbnailEdge` whatever the ≈ 50-point frame). The third
+  is this task's own layout: in a band 4 points wide per entity (3 for `123.456`) the axis row's last digit draws over
+  its unit's 1-point outline (row 7, below).
+
+#### The sentences that govern new work
+
+- **One card painter, `panel_chrome_ui.cpp`:** a framed `TreeNodeEx` under cleared slots and `FrameBorderSize 0`; its
+  own chevron from `cardHeaderLayout`; every fill from the x span recorded at `begin`, never `GetItemRectMin/Max`; the
+  vertical layout net of `ItemSpacing.y`; the body narrowed on both edges and clipped to that width; no `BeginChild` or
+  `BeginGroup` per card (`I318`, `I331`, `I336`, `I348`).
+- **Every chrome colour is a theme token.** A palette colour is a `ChromeRole` through `chromeRoleColor`, read once per
+  role; a transparent fill is `clearOver(surface)`; never `ImVec4()`, `IM_COL32_BLACK_TRANS` or a hoisted `withAlpha`
+  in a panel TU (`I287`, `I333`).
+- **De-emphasis is `mutedText`**, string-only and therefore format-safe; `TextDisabled` is for disabled widgets and is
+  banned in every panel TU.
+- **Every new face switch is `ScopedFace`;** a draw-list text takes `panelFaceFont` + `panelFacePoints` (the FINAL
+  size); `I286`'s `PushFont` set is `{console_panel.cpp, panel_chrome_ui.cpp, shell_chrome_ui.cpp}`.
+- **A record reads what ImGui drew or the list received** — vertices, item rects, clip rects, the face a text was drawn
+  in — never the predicate the panel computed. A record that defaults to the answer proves nothing by reading it.
+- **A request held on a panel lives one tick:** reset on the first statement after its drain's closing brace, and
+  expired from `EditorApp::tick` after the shell draw, so a request made while the panel does not draw is dropped too.
+  A new panel seam adds an `I337` arm and an `I338`-shaped hidden-panel arm.
+- **A selection shortcut beside a text field is gated on the field's keyboard**, never on `IsItemActive()` or
+  `io.WantTextInput` alone (`I312`, `I339`).
+- **A tree walked inside a child walks only while `BeginChild` returned true**, and `EndChild` stays unconditional.
+- **A fixed row drawn inside a flexible region is chrome the budget reads**, and below its height it FOLDS, decided the
+  same way whatever the Issues list's state, so the pane stays continuous and closing the list never shrinks the
+  asset list (`AV66`, `AV67`, `I231`).
+- **Chrome drawn around a claimed shape grows the ONE claimed extent** (`viewAxisCircleRect`, read by the HUD's keep
+  test, the pick and ImGuizmo's `Enable` term — `VO14`, `I116`).
+- **`componentIconTable()` and `entityKindFor` are two more sites the next built-in sweeps**, beside `RF7` and `IR21`;
+  a built-in left out of either draws the fallback icon or an `Empty` dot with every test green.
+- **The axis thresholds are per entity and stated before any layout change** — 266 / 279 / 316, the 0.30 split — and a
+  label-column, letter-inset or split change re-measures all three (`I289`).
+- **A case that needs a pane of a known proportion sets `bottomDockFraction`**; it never trusts the runner's delivered
+  window height.
+
+#### Validation and sabotage status — macOS 21 / 21 (2026-10-14/15), Windows and Linux unrun
+
+Run as a signed `.app` (the release editor of the tip) on `~/e63val/pass/MyGame` — a deep `.gltf`, a `.blend`, a
+`.txt`, a `.bin`, a long-named material and one orphaned `.meta` — on the built-in Liquid Retina XDR panel (3024 × 1964,
+2×, UI scale 1), the only display attached, so rows 19 and 20 ran; every capture PID-bound, colours sampled post-ICC
+(±3 per channel, most exact). "Normal" was content 1442 × 918, a stated variant: 932 does not fit under that panel's
+menu bar. **Rows 1–20 and 23 PASS; rows 21–22 are Windows and Linux.**
+
+**The first pass, on `88a2b8f`, found four product defects that no tier, no code-review pass and no seed had seen**,
+each fixed with its own test in the PR; rows 1, 6, 8, 11, 12, 16, 17 and 20 were re-run on `004a4f8`, after which the
+product code changed only to record what the hatched well drew (Fix 37 changes one test file):
+- **V1 — a hatched tile's stripes painted past its rounded corners** (row 11; the picker's tiles at all four corners,
+  V1b, row 12). Fixed by `7e13aaa`, `PC13`, `I346`: every corner of all 13 hatched wells now reads the background more
+  than 1 px beyond the curve.
+- **V2 — the Assets footer dropped a deep path's folders with no leading `…` and cut its import state** (row 12):
+  the footer handed one composed `path  -  size  -  guid  -  state` string to `elidePathLeft`, whose "last segment"
+  then held every detail. Fixed by `5f6d475` (`AH20`, `I326`): the folders go first, then the identity, then the size,
+  then the name's front down to its extension, the state last — at the 805-point dock the line reads
+  `…/a-rather-long-file-name-for-the-footer-path.gltf  -  1.2 KB  -  up to date`.
+- **V3 — a narrow reference field drew its `pick` hint on its swatch** (row 17, a ≈ 33-point field at 900 × 600).
+  Fixed by `e55a7e8` (`referenceFieldParts`, `PC14`, `I347`): the field drops the hint, then the swatch, before they
+  overlap.
+- **V4 — a card's long unwrapped lines and button rows drew through its padding and over its outline** (row 17, the
+  Import Details and Material cards). Fixed by `004a4f8` (`I348`): the body is clipped to its padded width.
+
+**What the pass measured:**
+- **Row 1:** card header 32, gap 12, chip 24, Console header 30 and footer band 26, the HUD 14 in from the image, the
+  stats card 209 × 129; every sampled role at its bytes; the open card's `border` rule one point above `raised`, none on
+  a closed card.
+- **Row 4:** with the search field active, Cmd+D, F2, Delete and Backspace did nothing to the selection; the gate held
+  after Enter, after Escape and after a trip through the Inspector, and opened once a row was clicked.
+- **Row 7:** at the launch default (content 291) the Cube and the Camera whole, the Light clipped; after Reset Layout
+  (content 329) all three whole; the last digit's stroke enters the unit's 1-point border at content **266 / 279 / 316**
+  (it touches it from 268 / 281 / 318) and loses ink 4 points lower (262 / 275 / 312); `123.456` enters it at 310 and
+  loses ink at 307. **Between those widths the digit draws over the unit's 1-point outline**, hiding it, because the
+  frameless drag's value region runs to the unit's outer edge
+  (`inspectorAxisLayout`'s `valueWidth = unitWidth - valueX`) and `RenderTextClipped` clips there, as it does for
+  every framed ImGui drag (`imgui_widgets.cpp:2805`, the clip is `frame_bb`, border included) — an unowned handoff:
+  ending the value region inside the border closes it and moves every threshold above. At normal size the Light's Rotation `-50.000` clips, outside the `0.000` claim.
+- **Row 10:** the crumb row folds at the launch default in both Issues states (contents 27 points open, 49 closed),
+  with no scrollbar; across the threshold the `##contents` child steps 24 → 60 at one dock height, both ways, twice;
+  both crumb drops landed on disk with their `.meta`.
+- **Row 13:** clicks on the stats card, both hints and the chip's edge keep the selection; a gizmo drag survives
+  crossing the card; one point outside the card deselects; a click inside the view-axis circle but outside its old
+  square keeps the selection.
+- **Row 14:** two Create ▸ Cube took draw calls / triangles / entities from 8 / 24 / 5 to 14 / 48 / 7, Triangles one
+  recorded frame after Entities; Frame equal to the status bar's ms in 8 captures; the card's left edge fixed.
+- **Row 18, the branch-point A/B:** at one matched layout (the tip's splitter moved 51 points to the branch point's
+  0.25), grid off, the viewport image differed in exactly five clusters — the chip and the old View button, the stats
+  card and the old axis widget, the circle, the two hints — and **0 pixels elsewhere**, in three poses.
+- **Row 19, 2×:** every rule exactly 2 px on a whole point, kind dots round 12-px discs, the HUD and cards exactly 2 px
+  per point.
+- **Row 23:** a rename typed and then cut off by a window shrunk until the tree pane had no height committed `Box`, and
+  one Cmd+Z restored `Cube`; untyped, the name and the history were unchanged.
+
+**NOT EXECUTABLE cells inside passing rows:** an `rhi:` and an unprefixed Console record (none reaches the Console after
+startup; `CS2` / `CS10` pin both at tier 0), the older-Blender warning (only Blender 5.2.0 is installed, above the 3.3
+floor), and the picker's folder face (a kind-filtered picker lists no folder).
+
+**The page's own text, corrected by the pass:** a table-bodied card reads 13 from its rule to its first row (the
+painter's 10 plus the table's 3-point cell padding); dock top to the header's rule is the tab bar + 38 (the window's
+8-point top padding included); Cmd+D on a clicked match clears the query itself; a material that fails to parse BINDS
+and logs one WARN, so the row's ERROR came from a refused save; a cut rename ends only where the tree pane has no
+height.
+
+**Not regressions** (present at the branch point, or by decision): the dock window-menu triangle; ImGui's arrow on the
+Inspector's enum combos and the Assets kind combo; the 24-point tab row and 2-point splitters; the Material tab in front
+after Reset Layout; the Issues header's ImGui arrow.
+
+**Build & dependency impact:** no vcpkg or `/vcpkg` change, no `find_package`, no new target and no link-line change.
+`editor/CMakeLists.txt` gains seven `aero_editor_core` sources and `tests/CMakeLists.txt` six shell-test sources;
+`engine/render` gains 14 lines (`forward_renderer.{hpp,cpp}`). `.claude/rules/editor.md` gains the "Panel chrome"
+section and the fold in "A panel with fixed regions"; `docs/tasks/phase-E.md` names the tab-row route.

@@ -876,6 +876,45 @@ Subtasks:
 - **Panel ids stay frozen** — they are the `imgui.ini` settings keys, and the existing pin covers them
 - Every panel re-checked at HiDPI and at a small window size
 
+_Outcome:_ **sized L in the roadmap, confirmed L before implementation (D0) and landed L. Merged as PR #121
+(`7fe02d1`, a true merge commit), forty-seven commits — the plan's ten, then thirty-six fix commits (Fixes 1–37, Fix
+33 withdrawn), four of them for the product defects the manual validation pass found, and one CI fix (`c1f4bc9`). CI:
+the PR's run `39136373938`, 6 / 6 green on the merged head. 66 sabotage seeds, 66 red on the re-run at `88a2b8f` (the first run's one partial, S24, closed by the code-review round), and the
+25 on files the later fixes changed red again at `a20275e`; the
+validation page is RUN on macOS, 21 / 21 executable rows (2026-10-14/15, on the built-in Retina panel, so its 2× rows
+ran), with rows 21–22 owed by Windows and Linux.**
+All five subtasks are discharged. The eight panels — Hierarchy, Inspector, Console, Assets, Viewport, Material,
+Import Details and Project Settings — are restyled through ONE shared ImGui TU (`panel_chrome_ui`: the card painter,
+the chips, the ghost and primary buttons, the hatched well, the dashed rule) over six pure, tier-0-tested models
+(`panel_chrome_model`, `entity_presentation`, `hierarchy_view`, `console_view`, `asset_browser_chrome`,
+`viewport_hud`); every colour a panel draws is a theme token, a palette colour reached through one role map, and a
+new `ThemePanels` holds every panel dp metric and the four panel colours no palette token matches (`ThemePalette`
+stays at 28). The Hierarchy gains a search field whose shortcut gate holds while it keeps the keyboard, a count
+badge, kind dots and child counts; the Inspector draws component cards with icons and a `…` menu, humanised labels,
+the axis letter inside its box and a swatch-and-hint reference field; the Console draws stamp, tag, channel and
+message columns, tinted warning and error rows and a counted footer; the Assets panel gets header width modes, a
+breadcrumb row whose crumbs take drops and whose item count is recursive, grey two-tone folders, tile rings, hatched
+wells and a two-zone footer. **The `View` popover is restyled, not regrouped**, behind a chip that names the
+projection; moving its groups into a dock's tab row stays a handoff, its route named. **The stats overlay** carries
+frame time, draw calls, triangles (the task's one engine change, an additive
+`ForwardRenderer::lastFrameTriangles()`), entities, the image extent and GPU time as `—` (SDL_GPU 3.4.12 has no
+timestamp queries); the hint chips sit bottom-left and the view-axis widget bottom-right inside its circle. **Panel
+ids are unchanged** (`I25` untouched). **Every panel is re-checked small and at HiDPI**: `I334` draws all eight at
+320 × 180 without an assert, and validation rows 17, 19 and 20 ran them on the built-in Retina panel (2×, UI scale
+1), rows 17 and 20 at 900 × 600 and 640 × 400. Two stated layout decisions: the Inspector's axis thresholds rose to
+266 / 279 / 316 points of content (Cube / Main Camera / Directional Light, against E.6.1's 225 / 231 / 270), so the
+default right split widened 0.25 → 0.30, the mock's proportion; and a short Assets pane folds its crumb row rather
+than scrolling. Category B: grey folders adopted, the mock's axis hues declined, `overlayText` retired. **The
+validation pass found four product defects no tier could see**, all fixed in the PR: a hatched well's stripes painted
+past its rounded corners, the Assets footer dropped a deep path's folders with no `…` and cut its import state, a
+narrow reference field drew its `pick` hint on its swatch, and a card's long unwrapped lines drew over its outline.
+**E.6.4 inherits** `project_ui.cpp`'s four `TextDisabled` calls, with a one-line widening of the `TextDisabled` ban
+to that file, and the `dialog` token's first consumer. The unowned handoffs — the axis hues, a stacked axis row,
+tab-row widgets and tab icons, GPU time, an entity enabled flag, component Copy / Paste / Reset, the 38-point menu
+bar, the mock's default layout, a rounded tile nav cursor, the axis row's last digit drawn over its unit's outline in
+a narrow band of widths, and the two pre-existing 640-wide departures the pass recorded — are listed in `CLAUDE.md`'s
+state block.
+
 ### E.6.4 Welcome + New Project restyle · P2 · M · depends: 2.6.1, E.6.1
 **Goal:** first contact with the editor should look like the rest of it.
 **Deliverable:** the Welcome window and New Project dialog restyled — card layout, live path
