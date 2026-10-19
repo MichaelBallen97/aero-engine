@@ -431,6 +431,8 @@ TEST_CASE("project ui: a record frame resets what a frame draws and keeps the co
     welcome.newProject.enabled = true;
     welcome.header.title = "x";
     welcome.header.version = "y";
+    welcome.scrollMaxX = 3.0F;
+    welcome.scrollbarY = true;
     ed::beginWelcomeRecordFrame(welcome);
     CHECK(welcome.framesDrawn == 7U);
     CHECK_FALSE(welcome.drawnThisFrame);
@@ -439,6 +441,8 @@ TEST_CASE("project ui: a record frame resets what a frame draws and keeps the co
     CHECK_FALSE(welcome.newProject.enabled);
     CHECK(welcome.header.title.empty());
     CHECK(welcome.header.version.empty());
+    CHECK(welcome.scrollMaxX == 0.0F);
+    CHECK_FALSE(welcome.scrollbarY);
 
     ed::NewProjectRecord modal;
     modal.framesDrawn = 3U;
@@ -448,6 +452,8 @@ TEST_CASE("project ui: a record frame resets what a frame draws and keeps the co
     modal.create.enabled = true;
     modal.language[1].drawnActive = true;
     modal.header.close.enabled = true;
+    modal.scrollMaxX = 10.0F;
+    modal.scrollbarY = true;
     ed::beginNewProjectRecordFrame(modal);
     CHECK(modal.framesDrawn == 3U);
     CHECK_FALSE(modal.popupOpenAtEntry);
@@ -456,6 +462,8 @@ TEST_CASE("project ui: a record frame resets what a frame draws and keeps the co
     CHECK_FALSE(modal.create.enabled);
     CHECK_FALSE(modal.language[1].drawnActive);
     CHECK_FALSE(modal.header.close.enabled);  // a frame that draws no close box reads "not drawn"
+    CHECK(modal.scrollMaxX == 0.0F);
+    CHECK_FALSE(modal.scrollbarY);
 }
 
 TEST_CASE("project ui: the Welcome fold counts a wrapped blurb, and the empty well folds too (task E.6.4, WL6)") {

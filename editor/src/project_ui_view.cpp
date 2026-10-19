@@ -341,6 +341,8 @@ void beginWelcomeRecordFrame(WelcomeRecord& record) noexcept {
     record.windowSize = Vec2{};
     record.workPos = Vec2{};
     record.workSize = Vec2{};
+    record.scrollMaxX = 0.0F;
+    record.scrollbarY = false;
     record.layout = WelcomeLayout{};
     record.header.title.clear();
     record.header.version.clear();
@@ -360,6 +362,8 @@ void beginNewProjectRecordFrame(NewProjectRecord& record) noexcept {
     record.windowSize = Vec2{};
     record.workPos = Vec2{};
     record.workSize = Vec2{};
+    record.scrollMaxX = 0.0F;
+    record.scrollbarY = false;
     record.layout = NewProjectDialogLayout{};
     record.header.title.clear();
     record.header.version.clear();

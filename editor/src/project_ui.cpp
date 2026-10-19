@@ -47,7 +47,7 @@ constexpr const char* NEW_PROJECT_MODAL_ID = "New Project###aero_new_project";
 // task E.6.4 (D21): BeginPopupModal adds Popup | Modal | NoCollapse | NoDocking and strips nothing (imgui.cpp:13232).
 // NoSavedSettings because the modal used to reopen at its saved corner ([Window][aero_new_project] in the ini);
 // NoMove because it is re-centred every frame. No NoScrollbar: under a 523-point work area the dialog is clamped and
-// scrolls whole (D34).
+// scrolls whole (D34) -- vertically only (drawNewProjectModal pins x).
 constexpr ImGuiWindowFlags NEW_PROJECT_FLAGS = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoMove |
                                                ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_AlwaysAutoResize;
 
@@ -165,7 +165,10 @@ bool drawDialogHeader(float width, float windowRounding, float controlRounding, 
     ImDrawList* const list = ImGui::GetWindowDrawList();
     const ImVec2 origin = ImGui::GetCursorScreenPos();
     const DialogHeaderLayout header = dialogHeaderLayout(width, closeButton, uiScale);
-    ImGui::Dummy(ImVec2(width, header.height));  // reserves the band
+    // Reserves the band's HEIGHT only. A full-width item makes the content as wide as the window, and a clamped window
+    // (D34) draws a vertical scrollbar that narrows its inner rect, so ScrollMax.x would be ScrollbarSize
+    // (imgui.cpp:8478) -- which a horizontal wheel scrolls whatever the window's flags (:11053).
+    ImGui::Dummy(ImVec2(0.0F, header.height));
     const float border = ImGui::GetStyle().WindowBorderSize;
     list->AddRectFilled(ImVec2(origin.x + border, origin.y + border),
                         ImVec2(origin.x + width - border, origin.y + header.height), roleU32(ChromeRole::Panel),
@@ -301,6 +304,8 @@ void drawWelcomeBody(FileMenuContext& fileMenu, const WelcomeLayout& layout, flo
         record->windowSize = toVec2(ImGui::GetWindowSize());
         record->workPos = toVec2(ImGui::GetMainViewport()->WorkPos);
         record->workSize = toVec2(ImGui::GetMainViewport()->WorkSize);
+        record->scrollMaxX = ImGui::GetScrollMaxX();
+        record->scrollbarY = ImGui::GetCurrentWindow()->ScrollbarY;
         record->layout = layout;
     }
     drawDialogHeader(layout.width, layout.windowRounding, layout.controlRounding, WELCOME_TITLE,
@@ -429,8 +434,8 @@ FooterPresses drawFooter(ImDrawList* list, const NewProjectDialogLayout& layout,
                          bool createEnabled, NewProjectRecord* record) {
     // The band is the 1-dp rule, the 64-dp strip and the outer border's row (D5): the rule paints its first row and the
     // fill stops one border short of the bottom, so the outline the window drew is never painted over.
-    const ImVec2 top = ImGui::GetCursorScreenPos();  // the window's left edge: the body is unindented
-    ImGui::Dummy(ImVec2(layout.width, layout.footerHeight));
+    const ImVec2 top = ImGui::GetCursorScreenPos();   // the window's left edge: the body is unindented
+    ImGui::Dummy(ImVec2(0.0F, layout.footerHeight));  // the band's height only, as the header's (drawDialogHeader)
     const float border = ImGui::GetStyle().WindowBorderSize;
     const ImVec2 fillMin(top.x + border, top.y);
     const ImVec2 fillMax(top.x + layout.width - border, top.y + layout.footerHeight - border);
@@ -522,6 +527,8 @@ void drawNewProjectBody(FileMenuContext& fileMenu, NewProjectForm& form, const N
             record->windowSize = toVec2(ImGui::GetWindowSize());
             record->workPos = toVec2(ImGui::GetMainViewport()->WorkPos);
             record->workSize = toVec2(ImGui::GetMainViewport()->WorkSize);
+            record->scrollMaxX = ImGui::GetScrollMaxX();
+            record->scrollbarY = ImGui::GetCurrentWindow()->ScrollbarY;
             record->layout = layout;
         }
         dismiss = drawDialogHeader(layout.width, layout.windowRounding, layout.controlRounding, NEW_PROJECT_TITLE,
@@ -663,6 +670,10 @@ void drawWelcomeWindow(FileMenuContext& fileMenu) {
     // auto-fit. GetWorkCenter() (a METHOD in this pinned ImGui) == WorkPos + WorkSize * 0.5.
     ImGui::SetNextWindowPos(viewport->GetWorkCenter(), ImGuiCond_Always, ImVec2(0.5F, 0.5F));
     ImGui::SetNextWindowSize(ImVec2(layout.width, 0.0F), ImGuiCond_Always);
+    // Never scrolled sideways: Begin takes this target over a wheel's (imgui.cpp:8003-8009), and -1 leaves y alone.
+    // At the minWidth floor the button row is wider than the content, so a clamped window keeps a few points of
+    // ScrollMax.x the bands' height-only Dummies cannot remove.
+    ImGui::SetNextWindowScroll(ImVec2(0.0F, -1.0F));
     bool open = false;
     {
         const DialogFrameStyle frame(ImGuiCol_WindowBg, layout.windowRounding);
@@ -696,6 +707,7 @@ void drawNewProjectModal(FileMenuContext& fileMenu) {
     // D21: the Welcome window's rule; a popup that is not open consumes these (imgui.cpp:13215-13221).
     ImGui::SetNextWindowPos(viewport->GetWorkCenter(), ImGuiCond_Always, ImVec2(0.5F, 0.5F));
     ImGui::SetNextWindowSize(ImVec2(layout.width, 0.0F), ImGuiCond_Always);
+    ImGui::SetNextWindowScroll(ImVec2(0.0F, -1.0F));  // the Welcome window's rule: never scrolled sideways
     bool open = false;
     {
         const DialogFrameStyle frame(ImGuiCol_PopupBg, layout.windowRounding);

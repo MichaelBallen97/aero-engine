@@ -274,6 +274,8 @@ struct WelcomeRecord {
     Vec2 windowSize{};
     Vec2 workPos{};  // GetMainViewport()'s work area
     Vec2 workSize{};
+    float scrollMaxX = 0.0F;    // GetScrollMaxX(): how far ImGui would let the window scroll sideways
+    bool scrollbarY = false;    // it drew its vertical scrollbar, narrowing the inner rect (clamped, D34)
     WelcomeLayout layout{};     // the layout's answer, as used
     DialogHeaderRecord header;  // what the header strip drew (no close box on the Welcome)
     bool emptyStateDrawn = false;
@@ -291,6 +293,8 @@ struct NewProjectRecord {
     Vec2 windowSize{};
     Vec2 workPos{};
     Vec2 workSize{};
+    float scrollMaxX = 0.0F;  // as the Welcome's
+    bool scrollbarY = false;
     NewProjectDialogLayout layout{};
     DialogHeaderRecord header;                                    // title, version and the close box, as drawn
     NewProjectTargetState state = NewProjectTargetState::NoName;  // the classification the draw used

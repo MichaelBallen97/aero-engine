@@ -29591,6 +29591,10 @@ TEST_CASE("editor: both first-contact windows draw in a 320 x 180 window (task E
         CHECK(m.drawnThisFrame);
     }
     CHECK(std::fabs(m.windowSize.x - m.layout.width) < 1.0F);
+    // Clamped at 180 rows, the dialog's items still all end inside the inner rect its scrollbar narrowed. The Welcome's
+    // do not at the floor: its button row is wider than the content (a ScrollMax.x of 3 measured at scale 1), which
+    // only the x pin holds still (I358(f)).
+    CHECK(m.scrollMaxX == 0.0F);
     if (atFloor) {
         CHECK(m.windowSize.x < d.newProjectWidth * s);                         // the dialog really narrowed...
         CHECK(std::fabs(m.windowSize.x - std::floor(d.minWidth * s)) < 1.0F);  // ...to the floor, as drawn
@@ -29689,6 +29693,9 @@ TEST_CASE("editor: project_ui.cpp reads no disk, binds its keys, draws every str
         CHECK(positions == 2U);
         CHECK(countOccurrences(joined, "ImGuiCond_Appearing") == 0U);
         CHECK(countOccurrences(joined, "ImGuiCond_FirstUseEver") == 0U);
+        // And never scrolled sideways: x pinned at 0 before each Begin, y left alone. No tier can turn a wheel, and
+        // I359 measures the reach only above the floor, where it is already 0.
+        CHECK(countLinesContaining(code, "ImGui::SetNextWindowScroll(ImVec2(0.0F, -1.0F));") == 2U);
     }
     SUBCASE("(g) the request lines 2.6.1 wrote, byte for byte (D8, D9, D14)") {
         CHECK(countLinesContaining(code, "fileMenu.flow.requested = FileAction::NewProject;") == 1U);
@@ -29701,4 +29708,43 @@ TEST_CASE("editor: project_ui.cpp reads no disk, binds its keys, draws every str
         const std::size_t gate = soleLineContaining(code, "fileMenu.newProjectInputApplied");
         CHECK(gate < soleLineContaining(code, "inputTextString(\"##name\""));
     }
+}
+
+TEST_CASE("editor: a clamped first-contact window has nothing to scroll sideways (task E.6.4, I359)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    // 300 rows leave a work area of about 200 points, under both windows' natural heights (the Welcome's 318 with no
+    // recents, folding to 276; the dialog's 517), so ImGui clamps each and draws its vertical scrollbar, which narrows
+    // the inner rect (D34). 900 wide keeps both above the minWidth floor.
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "clamped i359", .width = E64_WINDOW_WIDTH, .height = 300});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = e64App(*device, *window, ctx, uniqueRecentsFile());
+    REQUIRE(app->tick());
+    const engine::editor::WelcomeRecord& w = app->projectUiRecord().welcome;
+    REQUIRE(w.drawnThisFrame);
+    MESSAGE("I359 Welcome: work " << w.workSize.y << ", scrollbar " << w.scrollbarY << ", reach " << w.scrollMaxX);
+    // ImGui's OWN reach, read off the window. A band as wide as the window made it ScrollbarSize once the scrollbar
+    // narrowed the inner rect, and a horizontal swipe slid every field and button sideways inside the frame. It holds
+    // unclamped too; the clamp is what makes it sensitive, so a runner that will not deliver 300 rows WARNs (#111).
+    CHECK(w.scrollMaxX == 0.0F);
+    WARN(w.scrollbarY);
+    e64OpenNewProject(*app);
+    const engine::editor::NewProjectRecord& m = app->projectUiRecord().newProject;
+    REQUIRE(app->tick());
+    REQUIRE(m.drawnThisFrame);
+    MESSAGE("I359 dialog: work " << m.workSize.y << ", scrollbar " << m.scrollbarY << ", reach " << m.scrollMaxX);
+    CHECK(m.scrollMaxX == 0.0F);
+    WARN(m.scrollbarY);
+    app->requestNewProjectAnswer(engine::editor::NewProjectAnswer::Dismiss);
+    REQUIRE(app->tick());
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
 }
