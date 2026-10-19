@@ -29666,8 +29666,11 @@ TEST_CASE("editor: project_ui.cpp reads no disk, binds its keys, draws every str
             "NewProjectAnswer::Create) && createEnabled) || commit;";
         CHECK(countLinesContaining(code, ENTER_COMMITS) == 1U);
         // And Enter is read nowhere else: its declaration and that line. A second line committing on Enter outside
-        // `&& createEnabled` creates from a refused state with the needle above still matching once.
+        // `&& createEnabled` creates from a refused state with the needle above still matching once. ImGui's other
+        // Enter reader names neither key nor the variable: a field flagged EnterReturnsTrue returns true on Enter
+        // (imgui_widgets.cpp:5180, :5705-5706), which is how asset_picker.cpp commits on Enter.
         CHECK(countLinesContaining(code, "enterPressed") == 2U);
+        CHECK(countLinesContaining(code, "EnterReturnsTrue") == 0U);
         // The binding itself, whole: `&&` for its `||` leaves every key name on the line and Enter alone dead (#109).
         constexpr std::string_view ENTER_BINDS =
             "ImGui::IsKeyPressed(ImGuiKey_Enter, false) || "
