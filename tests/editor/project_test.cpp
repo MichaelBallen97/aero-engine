@@ -1641,14 +1641,60 @@ TEST_CASE(
         return false;  // the trigger itself is gone -- also a failure
     };
 
-    // Create -- occurrence 0 of its own trigger.
+    const auto linesWith = [&](std::string_view needle) {
+        std::size_t n = 0;
+        for (const std::string_view line : lines) {
+            if (line.find(needle) != std::string_view::npos) {
+                ++n;
+            }
+        }
+        return n;
+    };
+    const auto firstLineWith = [&](std::string_view needle) {
+        for (std::size_t i = 0; i < lines.size(); ++i) {
+            if (lines[i].find(needle) != std::string_view::npos) {
+                return i;
+            }
+        }
+        return lines.size();
+    };
+    // ARM-LOCAL: the next non-blank line after the Nth trigger IS the close. The 16-line window above reaches across
+    // `} else if (commit) {` -- the commit arm's close sits three lines below the dismiss arm's trigger -- so an arm
+    // that lost its own close would borrow its neighbour's and stay green (seed S30).
+    const auto closesOnNextLine = [&](std::string_view trigger, std::size_t occurrenceIndex) {
+        std::size_t seen = 0;
+        for (std::size_t i = 0; i < lines.size(); ++i) {
+            if (lines[i].find(trigger) == std::string_view::npos) {
+                continue;
+            }
+            if (seen != occurrenceIndex) {
+                ++seen;
+                continue;
+            }
+            for (std::size_t j = i + 1U; j < lines.size(); ++j) {
+                if (lines[j].find_first_not_of(" \t\r") != std::string_view::npos) {
+                    return lines[j].find("ImGui::CloseCurrentPopup();") != std::string_view::npos;
+                }
+            }
+            return false;  // the trigger is the file's last line
+        }
+        return false;  // the trigger itself is gone -- also a failure
+    };
+    // task E.6.4 (D20): ONE resolution at the end of the dialog's body -- `if (dismiss) {...} else if (commit) {...}`
+    // -- shared by Escape, Cancel, the close box and the GPU seam, plus the programmatic-close safety net in
+    // drawNewProjectModal's `else` arm. So the Create trigger occurs ONCE and the Cancel trigger TWICE: the dismiss
+    // arm (0) and the safety net (1), which has NO popup open to close and so must not reach a close.
+    CHECK(linesWith("form.createRequested = true;") == 1U);
+    CHECK(linesWith("form.cancelRequested = true;") == 2U);
     CHECK(closesWithinWindow("form.createRequested = true;", 0));
-    // `form.cancelRequested = true;` appears THREE times: the Cancel button (0), the hand-bound Esc
-    // handler (1), and the programmatic-close safety net in the `else` branch (2) -- which has NO
-    // popup open to close and is deliberately NOT asserted here (asserting it would be wrong, not
-    // merely untested).
     CHECK(closesWithinWindow("form.cancelRequested = true;", 0));
-    CHECK(closesWithinWindow("form.cancelRequested = true;", 1));
+    CHECK(closesOnNextLine("form.createRequested = true;", 0));  // each arm closes for itself
+    CHECK(closesOnNextLine("form.cancelRequested = true;", 0));
+    CHECK_FALSE(closesWithinWindow("form.cancelRequested = true;", 1));
+    // Dismiss WINS over a same-frame commit: the dismiss arm is the `if`, the commit arm its `else if`.
+    REQUIRE(linesWith("if (dismiss) {") == 1U);
+    REQUIRE(linesWith("} else if (commit) {") == 1U);
+    CHECK(firstLineWith("if (dismiss) {") < firstLineWith("} else if (commit) {"));
 }
 
 // ---- P84/P85 (Phase 2 audit): the root a project OPENS at is absolute --------------------------

@@ -1263,10 +1263,27 @@ bool EditorApp::tick() {
     // carry (D17), built fresh each frame exactly like panelContext above.
     // task 2.6.1: the SAME named-local requirement as the drain above -- FileDialogHost::projectRoot
     // is a string_view and project.scenesRoot() returns by value.
+    // task E.6.4 (D27): the GPU tier's typing-and-Browse equivalent, applied BEFORE the draw and only while the form is
+    // open -- exactly the two fields the Name widget and a ProjectLocation dialog result write. Dropped otherwise.
+    // `newProjectInputApplied` tells THIS tick's dialog to reload its live Name widget from them (an active InputText
+    // owns its text); a local, so it dies with the tick.
+    bool newProjectInputApplied = false;
+    if (pendingNewProjectInput.has_value() && projectFlow.form.open) {
+        projectFlow.form.name = std::move(pendingNewProjectInput->name);
+        projectFlow.form.location = std::move(pendingNewProjectInput->location);
+        newProjectInputApplied = true;
+    }
+    pendingNewProjectInput.reset();  // a moved-from optional is still ENGAGED (E.4.3's one-shot rule)
     const std::string scenesRootForMenu = project.scenesRoot();
-    FileMenuContext fileMenu{session, fileFlow,
+    FileMenuContext fileMenu{session,
+                             fileFlow,
                              FileDialogHost{dialogChannel.get(), nativeWindowHandle(window), scenesRootForMenu},
-                             projectContext};
+                             projectContext,
+                             homeDirectory,
+                             &projectUiRecordValue,
+                             pendingNewProjectAnswer,
+                             newProjectInputApplied};
+    pendingNewProjectAnswer = NewProjectAnswer::None;  // task E.6.4 (D27): a request dies with the tick that carried it
     drawShellUi(registry, panelContext, ui, fileMenu);  // menu bar -> dockspace -> panels
     applyDefaultLayout = ui.applyDefaultLayout;         // drawShellUi clears it once consumed, and re-sets
                                                         // it for View > Reset Layout
@@ -2352,6 +2369,11 @@ void EditorApp::requestOpenProject(std::string_view path) {
     projectFlow.requestedPath = path;
 }
 void EditorApp::requestClearRecentProjects() noexcept { projectFlow.clearRecentsRequested = true; }
+
+// task E.6.4 (D27): the same next-tick shape; tick() applies it before the draw, only while the form is open.
+void EditorApp::requestNewProjectInput(std::string name, std::string location) {
+    pendingNewProjectInput = NewProjectInput{std::move(name), std::move(location)};
+}
 
 // task E.4.2: the requestUndo()/requestLayoutReset()/requestAssetBrowserViewMode shape -- each records
 // EXACTLY what the modal's own button records, and is applied on the NEXT tick's step-0 drain. Never

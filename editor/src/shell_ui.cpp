@@ -365,8 +365,8 @@ void drawSceneContainmentModal(FileMenuContext& fileMenu) {
         // an entry for a popup that simply stops being submitted: GetTopMostPopupModal
         // (imgui.cpp:12894-12902) tests only the Modal flag -- not Active, not WasActive -- and
         // UpdateHoveredWindowAndCaptureFlags (:5621-5623) then sets g.HoveredWindow = NULL for ever
-        // after, which makes every menu, panel, button and dock tab unclickable. project_ui.cpp:107-117
-        // records the identical failure for the New Project modal.
+        // after, which makes every menu, panel, button and dock tab unclickable. project_ui.cpp's
+        // drawNewProjectBody records the identical failure for the New Project modal, above its one resolution.
         //
         // Entering the popup is the only way to close it -- CloseCurrentPopup closes the popup at the
         // CURRENT BeginPopupStack level, so it has to be called from inside one. The body is empty by
@@ -445,7 +445,8 @@ void drawSceneContainmentModal(FileMenuContext& fileMenu) {
         // BLOCKING-1 on EVERY path: ImGui owns g.OpenPopupStack and never GCs an entry for a popup that
         // simply stops being submitted, so an answer without CloseCurrentPopup sets g.HoveredWindow =
         // NULL FOREVER AFTER and every menu, panel and dock tab becomes unclickable
-        // (project_ui.cpp:108-117). S16, and validation row 11 is its only witness.
+        // (project_ui.cpp's drawNewProjectBody, above its one resolution). S16, and validation row 11 is its
+        // only witness.
         if (dismiss) {
             offer.dismissRequested = true;
             ImGui::CloseCurrentPopup();

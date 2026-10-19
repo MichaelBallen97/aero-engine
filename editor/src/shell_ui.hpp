@@ -8,6 +8,7 @@
 #include <aero/editor/create_menu.hpp>     // task E.5.2: CreateKind, BY VALUE below -- PUBLIC and PURE
 #include <aero/editor/gizmo.hpp>           // task E.6.2: TransformTool, GizmoSpace, TransformToolState -- PURE
 #include <aero/editor/panel_registry.hpp>
+#include <aero/editor/project_ui_view.hpp>      // task E.6.4: ProjectUiRecord, NewProjectAnswer -- PURE
 #include <aero/editor/scene_session.hpp>        // task 2.5.1: FileMenuContext names FileFlow/FileDialogHost
 #include <aero/editor/shell_chrome_record.hpp>  // task E.6.2: the OUT target -- PURE
 #include <aero/editor/status_bar.hpp>           // task E.6.2: StatusBarText, by pointer below -- PURE
@@ -111,6 +112,15 @@ struct FileMenuContext {
     // task 2.6.1: a REFERENCE, not a value -- ProjectContext already holds references, and copying
     // it per frame would be a second object with the same referents.
     ProjectContext& project;
+    // task E.6.4 (D25, D27): the user's home for the two windows' "~" (EditorApp::homeDirectory -- "" disables it),
+    // what they DREW (null records nothing), the GPU tier's answer for the New Project dialog, which the dialog
+    // resolves through its own controls' predicates, and whether THIS tick applied the GPU tier's typed input -- the
+    // one tick the dialog reloads its live Name widget from form.name. Set at the ONE construction site,
+    // EditorApp::tick(), and never carried past it.
+    std::string_view homeDirectory;
+    ProjectUiRecord* projectUiRecord = nullptr;
+    NewProjectAnswer newProjectAnswer = NewProjectAnswer::None;
+    bool newProjectInputApplied = false;
 };
 
 // Draws the menu bar, the full-viewport dockspace, and every visible panel (Begin/End around
