@@ -32,6 +32,10 @@ inline constexpr std::size_t MAX_PROJECT_NAME_BYTES = 64;
 enum class ProjectLanguage : std::uint8_t { Ts = 0, Cpp };
 [[nodiscard]] std::string_view languageKey(ProjectLanguage language) noexcept;  // "ts" / "cpp"
 [[nodiscard]] std::optional<ProjectLanguage> languageFromKey(std::string_view key) noexcept;
+// task E.6.4 (D13): the ONE language New Project writes. createProject's manifest and the New Project dialog's
+// selected card both read it, so the dialog cannot show a language other than the one Create writes. Task 4.6.1
+// turns it into a choice.
+inline constexpr ProjectLanguage NEW_PROJECT_LANGUAGE = ProjectLanguage::Ts;
 
 // The parsed document. VALUES only -- no path to the file, no handles, nothing live.
 struct ProjectManifest {
@@ -186,7 +190,29 @@ struct ProjectCreateOutcome {
 
 [[nodiscard]] bool directoryExists(std::string_view utf8);
 [[nodiscard]] bool directoryIsEmpty(std::string_view utf8);  // false when it is not a directory
-[[nodiscard]] std::string defaultRecentProjectsPath();       // D8/F16: pref -> base -> CWD
+// ---- task E.6.4 (D12/D13): the New Project dialog's live answer, read the way createProject reads ----------------
+// What a New Project target IS on disk: createProject's step 3, as a value.
+enum class NewProjectTargetKind : std::uint8_t { Absent = 0, EmptyDirectory, NonEmptyDirectory, File };
+// probeNewProjectTarget's answer for ONE (location, name) pair, which it keeps as the cache key. `touched` is false
+// when the lexical gate refused (a bad name, an empty location): nothing was read and every other field is default.
+struct NewProjectTargetFacts {
+    std::string location;
+    std::string name;
+    bool touched = false;
+    bool locationIsDirectory = false;
+    NewProjectTargetKind target = NewProjectTargetKind::Absent;
+    std::string targetPath;  // newProjectTargetPath(location, name): the root createProject reports, byte for byte
+};
+// The root createProject makes for (location, name) -- absolute, lexically normalized, platform separators -- through
+// the SAME file-local rule createProject runs. Reads only the current directory (for a relative location), as
+// createProject does. Never throws.
+[[nodiscard]] std::string newProjectTargetPath(std::string_view locationUtf8, std::string_view nameUtf8);
+// createProject's checks as READS, in its order: the name and an empty location lexically (touching nothing when
+// either refuses), then whether the location is a directory, then the target's kind -- through the same two file-local
+// helpers createProject runs. Writes, renames, copies and deletes NOTHING; never throws; never logs. ADVISORY:
+// createProject re-checks every refusal itself.
+[[nodiscard]] NewProjectTargetFacts probeNewProjectTarget(std::string_view locationUtf8, std::string_view nameUtf8);
+[[nodiscard]] std::string defaultRecentProjectsPath();  // D8/F16: pref -> base -> CWD
 // task 3.2.4 (D13). The SIBLING of defaultRecentProjectsPath above, and here for the same reason:
 // this TU owns the pref-path -> base-path -> CWD chain and its free/do-not-free asymmetry, and is the
 // one file permitted a single WARN on the CWD fallback. The Blender TUs must stay log-free (INV-B10),

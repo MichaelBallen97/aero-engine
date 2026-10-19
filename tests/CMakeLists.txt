@@ -515,7 +515,8 @@ add_executable(aero_editor_shell_test editor/shell_test.cpp editor/hierarchy_tes
                editor/entity_presentation_test.cpp     # task E.6.3 — entity presentation (EK)
                editor/hierarchy_view_test.cpp          # task E.6.3 — the Hierarchy model (HY)
                editor/asset_browser_chrome_test.cpp    # task E.6.3 — the Assets model (AH)
-               editor/viewport_hud_test.cpp)           # task E.6.3 — the Viewport HUD model (VO)
+               editor/viewport_hud_test.cpp            # task E.6.3 — the Viewport HUD model (VO)
+               editor/project_ui_view_test.cpp)        # task E.6.4 — the Welcome and New Project model (WL, NP)
 target_link_libraries(aero_editor_shell_test PRIVATE
     doctest::doctest aero::editor_core aero::scene aero::scene_internal aero::core Threads::Threads)
 add_test(NAME aero_editor_shell_test COMMAND aero_editor_shell_test)
@@ -528,12 +529,12 @@ add_test(NAME aero_editor_shell_test COMMAND aero_editor_shell_test)
 # dumpActual, so nothing here writes anywhere and `ctest -j` has no collision surface at all.
 target_compile_definitions(aero_editor_shell_test PRIVATE
     AERO_PROJECT_FIXTURES_DIR="${CMAKE_SOURCE_DIR}/tests/fixtures/projects"
-    # code review (BLOCKING-1): project_ui.cpp's ImGui::CloseCurrentPopup() bookkeeping cannot be
-    # driven from any test tier -- it needs a live ImGui context and a synthesized widget click, which
-    # this codebase has never had (the AC-27/FileDialogHost precedent). project_test.cpp's PU1 case
-    # reads the file's OWN SOURCE TEXT as a mechanical proof instead -- the same textual-grep principle
-    # the five CI architecture guards already use, just run as a doctest case rather than a lint-job
-    # script. A path, not a flag: a missing file is a REQUIRE failure, never a silent skip.
+    # code review (BLOCKING-1): project_ui.cpp's ImGui::CloseCurrentPopup() is driven on the GPU tier
+    # since task E.6.4 (I354/I355, through requestNewProjectAnswer); no tier can synthesize a widget
+    # click or read g.HoveredWindow. project_test.cpp's PU1 case reads the file's OWN SOURCE TEXT for
+    # the arm-local placement, which no runtime tier can see -- the same textual-grep principle the CI
+    # architecture guards use, just run as a doctest case rather than a lint-job script. A path, not a
+    # flag: a missing file is a REQUIRE failure, never a silent skip.
     AERO_EDITOR_SRC_DIR="${CMAKE_SOURCE_DIR}/editor/src"
     # task 3.1.1: the two committed asset-meta fixtures reach the UNGATED asset_meta_test.cpp. Same
     # rule as AERO_PROJECT_FIXTURES_DIR above (2.5.2's D8, third application): not optional, not

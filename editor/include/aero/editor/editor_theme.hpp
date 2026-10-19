@@ -346,6 +346,60 @@ struct ThemePanels {
     Srgb8 addComponentDash{53U, 80U, 94U, 255U};     // the dashed outline
 };
 
+// task E.6.4 (D24): the Welcome window and the New Project dialog, in dp, Category A. Every value is mock 1e's
+// measurement (2004 x 1384 at 2x, sRGB; 1 dp = 2 px), a derivation, or a stated choice -- each comment says which.
+// The Welcome window has no mock (U1): its own values are choices in the dialog's vocabulary. Every rule and outline
+// is shell.ruleThickness through hairline(); every type size is ThemeTypeScale's.
+struct ThemeDialogs {
+    float newProjectWidth = 667.0F;   // measured: mock 1e's right column (U2) -- 615 of content + 2 x paddingX
+    float welcomeWidth = 560.0F;      // chosen (U1): a 508-dp card holds a 56-character small-mono path
+    float screenMargin = 24.0F;       // chosen: the least gap kept to each side of the work area as a window narrows
+    float minWidth = 280.0F;          // chosen: the floor below which the windows stop narrowing
+    float paddingX = 26.0F;           // measured: the body's and the footer's inset, both edges
+    float headerHeight = 54.0F;       // measured: the outer border, the 52-dp strip and its rule (1 + 52 + 1)
+    float footerHeight = 66.0F;       // measured: the rule, the 64-dp strip and the outer border (1 + 64 + 1)
+    float windowRounding = 9.0F;      // measured: the outer corner (a modal takes WindowRounding, imgui.cpp:8312)
+    float controlRounding = 7.0F;     // measured: fields, buttons, cards, the info box
+    float markSide = 16.0F;           // measured: the accent diamond, a square of this side turned 45 degrees
+    float markBox = 24.0F;            // measured: the diamond's ink box (its diagonal is 22.6)
+    float markCenterX = 34.0F;        // measured 33.75: the diamond's centre from the outer left edge
+    float markTitleGap = 9.0F;        // measured: the box's right edge -> the title's pen (54.85 measured, 55 here)
+    float closeHitSize = 24.0F;       // chosen: the close box, centred on the mock's 7-dp ink
+    float closeCenterInset = 29.0F;   // measured 29.25: the x's centre from the outer right edge
+    float versionGap = 11.0F;         // measured 10.75: the version's right edge -> the close box
+    float fieldHeight = 38.0F;        // measured (the mock's focused 39 is its own artefact)
+    float fieldPaddingX = 12.0F;      // measured 12.75, to whole dp: a field's text inset
+    float buttonHeight = 36.0F;       // measured: Cancel; Create project takes it too (D15)
+    float buttonPaddingX = 18.0F;     // derived: Cancel's 80 dp around "Cancel" in Body 16
+    float browseGap = 9.0F;           // measured: Location -> Browse...
+    float bodyTop = 18.0F;            // measured 17.4: the header rule -> the first label's line box
+    float labelGap = 6.0F;            // measured 6.6: a label's line box -> its control
+    float fieldGap = 13.0F;           // measured 13.4: a field -> the next label's line box
+    float lineGap = 9.0F;             // measured: the Location row -> the validation line's line box
+    float dividerGap = 14.0F;         // measured: the validation line -> the divider -> SETTINGS
+    float headingGap = 10.0F;         // chosen: SETTINGS -> the Scripting language label (scene units are not built)
+    float cardHeight = 54.0F;         // measured: a language card; a recent-project card takes it too
+    float cardGap = 9.0F;             // measured: card to card, side by side
+    float radioInset = 13.0F;         // measured: the radio's box from the card's top-left
+    float radioDiameter = 15.0F;      // measured
+    float radioDot = 8.0F;            // measured
+    float cardTextInset = 38.0F;      // measured: 13 + 15 + 10, the title's and the subtitle's pen
+    float cardTitleTop = 10.0F;       // measured 10.5: the card's top -> the title's line box
+    float cardLineGap = 2.0F;         // measured 1.5: the title's line box -> the subtitle's
+    float hintGap = 6.0F;             // measured: the cards -> the hint's line box
+    float infoGap = 18.0F;            // measured: the info box -> the footer rule; chosen equal above it
+    float infoHeight = 40.0F;         // measured
+    float infoDotInset = 13.0F;       // measured 12.9
+    float infoDotDiameter = 5.0F;     // measured 4.8
+    float infoTextInset = 28.0F;      // derived: 13 + 5 + 10
+    float footerButtonGap = 12.0F;    // measured: Cancel -> Create project
+    float welcomeSectionGap = 18.0F;  // chosen (U1): between the Welcome's rows, = infoGap
+    float recentCardGap = 8.0F;       // chosen (U1): card to card, stacked
+    float recentIconInset = 14.0F;    // chosen (U1): the folder icon's pen, and the card's right inset
+    float recentTextInset = 40.0F;    // chosen (U1): the title's and the path's pen
+    float emptyStateHeight = 96.0F;   // chosen (U1): the outlined well, its icon and its two lines (it folds, D34)
+};
+
 struct EditorTheme {
     ThemePalette palette;
     ThemeTypeScale type;
@@ -357,8 +411,9 @@ struct EditorTheme {
     ThemeSwatchLabel swatchLabel;
     ThemeViewport viewport;
     ThemeClears clear;
-    ThemeShell shell;    // task E.6.2
-    ThemePanels panels;  // task E.6.3
+    ThemeShell shell;      // task E.6.2
+    ThemePanels panels;    // task E.6.3
+    ThemeDialogs dialogs;  // task E.6.4 -- never `dialog`: that is a palette token (D24)
 };
 
 inline constexpr EditorTheme EDITOR_THEME{};  // THE one value

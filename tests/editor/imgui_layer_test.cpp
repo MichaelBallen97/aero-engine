@@ -45,6 +45,7 @@
 #include <aero/editor/project_files.hpp>      // task E.6.3 (I326): formatFileSize, the footer's in-listing size
 #include <aero/editor/project_settings.hpp>   // task E.6.1 (I233): PROJECT_SETTINGS_PANEL_ID
 #include <aero/editor/project_state.hpp>      // task E.4.1 (I176-I184): ProjectState + the two file operations
+#include <aero/editor/project_ui_view.hpp>    // task E.6.4 (I349-I358): the two windows' records and layouts
 #include <aero/editor/scene_bounds.hpp>       // task 2.3.1
 #include <aero/editor/scene_containment.hpp>  // task E.4.2 (I187): normalizeForContainment
 #include <aero/editor/scene_session.hpp>
@@ -243,9 +244,12 @@ constexpr std::string_view CORRUPT_PNG_BYTES = "this is not a png file, just asc
 // field defaults to TRUE -- the shipping behaviour -- so without the opt-out every case here would
 // open whatever project the developer last used, swapping the World and seeding four entities. It
 // would PASS on a CI runner (which has no recents file) and FAIL on a developer machine, which is
-// the worst possible shape for a bug. The ONE case that must exercise the restore path (I23)
-// enables it AND points `recentProjectsPath` at a TempDir file, so no test ever READS the real
-// pref directory. §V7's grep asserts this count matches the total number of app-creation call sites.
+// the worst possible shape for a bug. The TWO sites that must exercise the restore path -- I23, and
+// task E.6.4's e64AppRestoring (I350, I351, I357, I360) -- enable it, and each points
+// `recentProjectsPath` at a TempDir-style file, so no test ever READS the real pref directory.
+// Every other EditorAppConfig literal in this file opts out (2.6.1's AC-40, measured once by
+// that plan's §V7 count; no tier re-runs it). The literals number one fewer than the
+// `EditorApp::create(` calls: E.6.2's snap-relaunch case (I302) feeds one config to two creates.
 //
 // BLOCKING-2 (code review): `restoreLastProject == false` ONLY suppresses the READ. It does NOT
 // suppress the WRITE -- `recentsPath` is resolved from `config.recentProjectsPath` unconditionally at
@@ -2601,9 +2605,10 @@ TEST_CASE("editor: restoreLastProject opens the first recents entry at create() 
     const std::string recentsFile = uniqueRecentsFile();
     REQUIRE(engine::editor::writeTextFileAtomic(recentsFile, engine::editor::writeRecentProjectsText(recents)).empty());
 
-    // The ONE case in this file that ENABLES restoreLastProject -- and it ALSO points
-    // recentProjectsPath at a TempDir-style file, so even with restore ON, the real pref path
-    // (~/Library/Application Support/AeroEngine/AeroEditor/ on macOS) is never touched (D15).
+    // One of the TWO sites in this file that ENABLE restoreLastProject -- the other is task E.6.4's e64AppRestoring
+    // (I350, I351, I357, I360) -- and, like it, this one ALSO points recentProjectsPath at a TempDir-style file, so
+    // even with restore ON, the real pref path (~/Library/Application Support/AeroEngine/AeroEditor/ on macOS) is never
+    // touched (D15).
     std::optional<engine::editor::EditorApp> app =
         engine::editor::EditorApp::create(*device, *window, ctx,
                                           {.persistLayout = false,
@@ -3100,7 +3105,8 @@ TEST_CASE(
 // precedent). There is therefore no way to drive the panel's flag to `true` through a real frame here
 // and observe the drain from the outside -- the exact reason `requestAssetRescan()` (EditorApp's OWN
 // flag) had to be invented for I29 above. What CAN be proven mechanically, the same way PU1
-// (project_test.cpp) proves ImGui::CloseCurrentPopup() bookkeeping no live test can drive: that
+// (project_test.cpp) pins the New Project modal's arm-local CloseCurrentPopup placement, which no
+// runtime tier can see: that
 // `takeRescanRequest()` is called and its result stored BEFORE it is combined with
 // `assetRescanRequested`, never as the right operand of an `||` whose left operand is
 // `assetRescanRequested` -- which is precisely the shape that let `||`'s short-circuit skip the call
@@ -22726,7 +22732,7 @@ TEST_CASE("editor: the panels read their roles from the theme (task E.6.1, I287)
         {"asset_picker.cpp", 0U},     // task E.6.3: every palette colour a ChromeRole
         {"material_panel.cpp", 10U},
         {"import_details_panel.cpp", 6U},
-        {"project_ui.cpp", 2U},
+        {"project_ui.cpp", 1U},              // task E.6.4: palette.dialog, read once (dialogFill)
         {"asset_tile.cpp", 0U},              // task E.6.3: the captions read roles
         {"asset_browser_panel.cpp", 0U},     // task E.6.3: mutedText
         {"project_settings_panel.cpp", 0U},  // task E.6.3: labels through the role map
@@ -22746,8 +22752,8 @@ TEST_CASE("editor: the panels read their roles from the theme (task E.6.1, I287)
         {"material_panel.cpp", "textMuted", 1U},  // the status line's Disabled arm (D16)
         {"material_panel.cpp", "warning", 6U},
         {"import_details_panel.cpp", "error", 5U},
-        {"import_details_panel.cpp", "warning", 1U},  // task E.6.3: the Blender advisory (C13)
-        {"project_ui.cpp", "error", 2U},
+        {"import_details_panel.cpp", "warning", 1U},      // task E.6.3: the Blender advisory (C13)
+        {"project_ui.cpp", "dialog", 1U},                 // task E.6.4: the token's first consumer
         {"shell_chrome_ui.cpp", "accent", 1U},            // task E.6.2: chromeColors(), each role read once
         {"shell_chrome_ui.cpp", "active", 1U},            // task E.6.2: chromeColors(), each role read once
         {"shell_chrome_ui.cpp", "border", 1U},            // task E.6.2: chromeColors(), each role read once
@@ -22812,12 +22818,8 @@ TEST_CASE("editor: the panels read their roles from the theme (task E.6.1, I287)
         CHECK(listed == panel.totalReads);                       // the rows add up to the file's stated total
         CHECK(countPaletteReads(code, "") == panel.totalReads);  // ... and no role it has no row for
         // task E.6.3 (D11): de-emphasis is mutedText (a string-only helper); a disabled widget greys through
-        // BeginDisabled. project_ui.cpp -- the Welcome window and the New Project dialog, E.6.4's surfaces -- is the
-        // stated exception, so E.6.4 inherits a one-line widening. (ImGuiCol_TextDisabled is banned above, in every
-        // listed file and project_ui.cpp too, since E.6.1.)
-        if (file != "project_ui.cpp") {
-            CHECK(countLinesContaining(code, "ImGui::TextDisabled(") == 0U);
-        }
+        // BeginDisabled. task E.6.4 removed the last exception, project_ui.cpp: the ban holds in every listed file.
+        CHECK(countLinesContaining(code, "ImGui::TextDisabled(") == 0U);
     }
     CHECK(rowsRead == ROLE_READS.size());  // no row names a file outside PANELS, so none is skipped
     // The Console's levels reach the draw through logLevelTagRole: one call, in the row loop (task E.6.3).
@@ -28076,13 +28078,13 @@ TEST_CASE("editor: no panel spells TextDisabled, and transparency has ONE spelli
         REQUIRE(code.size() > 20U);  // ANTI-VACUITY: the file was really read
         return code;
     };
-    // I287's list, less project_ui.cpp (the stated exception, D11).
-    constexpr std::array<std::string_view, 13> PANEL_TUS{
+    // I287's list, whole: task E.6.4 removed project_ui.cpp's exception (D11), so the five bans below hold there too.
+    constexpr std::array<std::string_view, 14> PANEL_TUS{
         "asset_browser_panel.cpp", "asset_picker.cpp",           "asset_tile.cpp",
         "console_panel.cpp",       "hierarchy_panel.cpp",        "import_details_panel.cpp",
         "inspector_panel.cpp",     "material_panel.cpp",         "panel_chrome_model.cpp",
-        "panel_chrome_ui.cpp",     "project_settings_panel.cpp", "shell_chrome_ui.cpp",
-        "viewport_panel.cpp"};
+        "panel_chrome_ui.cpp",     "project_settings_panel.cpp", "project_ui.cpp",
+        "shell_chrome_ui.cpp",     "viewport_panel.cpp"};
     const std::regex defaultVec4(R"(ImVec4[\(\{]\s*[\)\}])");
     for (const std::string_view tu : PANEL_TUS) {
         CAPTURE(tu);
@@ -28096,7 +28098,6 @@ TEST_CASE("editor: no panel spells TextDisabled, and transparency has ONE spelli
         }
     }
     // The stated scope, counted EXACTLY so a regression either way reddens.
-    CHECK(countLinesContaining(codeOf("project_ui.cpp"), "ImGui::TextDisabled(") == 4U);
     CHECK(countLinesContaining(codeOf("shell_ui.cpp"), "ImGui::TextDisabled(") == 2U);
     // The text helpers take no format string: the header declares no variadic function.
     const std::vector<std::string> header = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/panel_chrome_ui.hpp");
@@ -29083,4 +29084,785 @@ TEST_CASE("editor: the Bottom dock takes its configured share of the delivered w
     // The refused 0.96 builds the shipping dock, exactly: both apps lay out one layout on one window.
     CHECK(refused.firstAvail == shipped.firstAvail);
     CHECK(refused.resetAvail == shipped.resetAvail);
+}
+
+// ==================================================================================================
+// task E.6.4 -- the Welcome window and the New Project dialog (I349-I358)
+// ==================================================================================================
+
+namespace {
+
+// 900 x 720: 720 is the launch default's height, whose 626-point work area holds the New Project dialog's natural 517
+// (D34). A runner that delivers less clamps the dialog; I352 WARNs and skips its vertical arms (#111).
+constexpr int E64_WINDOW_WIDTH = 900;
+constexpr int E64_WINDOW_HEIGHT = 720;
+constexpr std::size_t E64_RECENT_COUNT = 12U;  // I351's long list: more than WELCOME_MAX_VISIBLE_CARDS
+// Every Welcome row but the blurb and the list (or the well), at scale 1, summed INDEPENDENTLY of welcomeLayout: the
+// header 54 + bodyTop 18 + the headline 16 + 18 + the buttons 36 + 18 + the heading 14 + labelGap 6 + paddingX 26.
+constexpr float E64_WELCOME_ROWS_BUT_BLURB = 206.0F;
+
+// A scratch home for every E.6.4 app, so a "~" never depends on the machine (EditorAppConfig::homeDirectory).
+[[nodiscard]] std::string e64Home() {
+    const std::filesystem::path dir = std::filesystem::temp_directory_path() / "aero_e64_home";
+    std::error_code ec;
+    std::filesystem::create_directories(dir, ec);
+    const std::u8string bytes = dir.u8string();
+    return {reinterpret_cast<const char*>(bytes.data()), bytes.size()};
+}
+
+void e64Settle(std::optional<engine::editor::EditorApp>& app) {
+    REQUIRE(app.has_value());
+    for (int i = 0; i < 3; ++i) {
+        REQUIRE(app->tick());
+    }
+}
+
+// No project, the recents file NOT read. Every E.6.4 app points recentProjectsPath at a scratch file (2.6.1's
+// BLOCKING-2): I354 reaches adoptProject. The restoreLastProject LITERAL is spelled here and in e64AppRestoring, once
+// each, so the convention editor_app.hpp states (every EditorAppConfig literal under tests/ is greppable) holds.
+[[nodiscard]] std::optional<engine::editor::EditorApp> e64App(engine::rhi::Device& device,
+                                                              engine::platform::Window& window,
+                                                              engine::platform::Context& ctx,
+                                                              const std::string& recentsFile) {
+    std::optional<engine::editor::EditorApp> app = engine::editor::EditorApp::create(device, window, ctx,
+                                                                                     {.persistLayout = false,
+                                                                                      .unfocusedFrameCapHz = 0.0F,
+                                                                                      .restoreLastProject = false,
+                                                                                      .recentProjectsPath = recentsFile,
+                                                                                      .homeDirectory = e64Home()});
+    e64Settle(app);
+    return app;
+}
+
+// No project, the recents file READ (I23's shape) -- and a path holding no project.json opens nothing, so the list
+// stays loaded and the Welcome window shows it. I350, I351, I357 and I360.
+[[nodiscard]] std::optional<engine::editor::EditorApp> e64AppRestoring(engine::rhi::Device& device,
+                                                                       engine::platform::Window& window,
+                                                                       engine::platform::Context& ctx,
+                                                                       const std::string& recentsFile) {
+    std::optional<engine::editor::EditorApp> app = engine::editor::EditorApp::create(device, window, ctx,
+                                                                                     {.persistLayout = false,
+                                                                                      .unfocusedFrameCapHz = 0.0F,
+                                                                                      .restoreLastProject = true,
+                                                                                      .recentProjectsPath = recentsFile,
+                                                                                      .homeDirectory = e64Home()});
+    e64Settle(app);
+    return app;
+}
+
+void e64WriteRecents(const std::string& file, const std::vector<std::string>& paths) {
+    engine::editor::RecentProjects recents;
+    recents.paths = paths;
+    REQUIRE(engine::editor::writeTextFileAtomic(file, engine::editor::writeRecentProjectsText(recents)).empty());
+}
+
+// The blurb height the draw measured, replayed, so a case can recompute the Welcome layout from what was recorded.
+[[nodiscard]] engine::editor::WrappedTextHeight e64RecordedBlurb(const engine::editor::WelcomeRecord& w) {
+    const float height = w.layout.blurbHeight;
+    return [height](float /*wrapWidth*/) { return height; };
+}
+
+// Ticks until `done()` holds, at most `limit` times; the caller REQUIREs the predicate, never the bound, ended it.
+template <typename Done>
+[[nodiscard]] int e64TickUntil(engine::editor::EditorApp& app, int limit, Done done) {
+    int ticks = 0;
+    while (ticks < limit && !done()) {
+        REQUIRE(app.tick());
+        ++ticks;
+    }
+    return ticks;
+}
+
+// The window's centre within one point of the work area's (ImGui truncates a window's position).
+[[nodiscard]] bool e64Centred(engine::Vec2 pos, engine::Vec2 size, engine::Vec2 workPos, engine::Vec2 workSize) {
+    const float dx = (pos.x + (size.x * 0.5F)) - (workPos.x + (workSize.x * 0.5F));
+    const float dy = (pos.y + (size.y * 0.5F)) - (workPos.y + (workSize.y * 0.5F));
+    return std::fabs(dx) <= 1.0F && std::fabs(dy) <= 1.0F;
+}
+
+// requestNewProject, then ticks until the modal's body has drawn on a frame whose popup was already open -- past
+// ImGui's hidden measuring frame -- and one more, so the pivot has been applied and D14's focus request has
+// activated the Name field.
+void e64OpenNewProject(engine::editor::EditorApp& app) {
+    app.requestNewProject();
+    const engine::editor::NewProjectRecord& modal = app.projectUiRecord().newProject;
+    REQUIRE(e64TickUntil(app, 8, [&] { return modal.drawnThisFrame && modal.popupOpenAtEntry; }) < 8);
+    REQUIRE(app.tick());
+    REQUIRE(modal.drawnThisFrame);
+}
+
+}  // namespace
+
+TEST_CASE("editor: the Welcome window draws its frame, its two actions and its empty state (task E.6.4, I349)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "welcome i349", .width = E64_WINDOW_WIDTH, .height = E64_WINDOW_HEIGHT});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = e64App(*device, *window, ctx, uniqueRecentsFile());
+    const engine::editor::WelcomeRecord& w = app->projectUiRecord().welcome;
+    const std::uint64_t before = w.framesDrawn;
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+    CHECK(w.framesDrawn == before + 2U);  // once per tick while no project is open
+    REQUIRE(w.drawnThisFrame);
+    CHECK(e64Centred(w.windowPos, w.windowSize, w.workPos, w.workSize));
+    const float width = engine::editor::welcomeLayout(0U, w.workSize, e64RecordedBlurb(w), w.uiScaleAtDraw).width;
+    CHECK(std::fabs(w.windowSize.x - width) < 1.0F);  // ImGui's window against the rule, from the recorded inputs
+    // ImGui's auto-fit height against the rows the fold counted (D34): a row the draw adds, or a face it changes,
+    // moves the window off this sum while the pure model stays green. Exact at scale 1 only, so WARN-gated.
+    const bool unitScale = w.uiScaleAtDraw == 1.0F;
+    WARN(unitScale);
+    if (unitScale) {
+        const float rows = E64_WELCOME_ROWS_BUT_BLURB + w.layout.blurbHeight + w.layout.emptyStateHeight;
+        CHECK(std::fabs(w.windowSize.y - rows) < 1.0F);
+    }
+    CHECK(w.emptyStateDrawn);
+    CHECK(w.cards.empty());
+    CHECK(w.header.title == "Aero Editor");
+    CHECK_FALSE(w.header.version.empty());  // written only inside the branch that draws it
+    CHECK(w.newProject.enabled);            // ImGui's own Disabled flag, read off the drawn item
+    CHECK(w.openProject.enabled);
+    CHECK(w.newProject.max.x <= w.openProject.min.x);  // side by side, New Project first
+    CHECK_FALSE(app->projectIsOpen());
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: recent projects draw as cards, the folder name over the abbreviated path (task E.6.4, I350)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "welcome i350", .width = E64_WINDOW_WIDTH, .height = E64_WINDOW_HEIGHT});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    const std::string home = e64Home();
+    const std::vector<std::string> paths{home + "/dev/MyGame", "/nowhere/a##b/Game##2", home + "/dev/Trailing/"};
+    const std::string recentsFile = uniqueRecentsFile();
+    e64WriteRecents(recentsFile, paths);
+    std::optional<engine::editor::EditorApp> app = e64AppRestoring(*device, *window, ctx, recentsFile);
+    REQUIRE_FALSE(app->projectIsOpen());  // no entry holds a project.json: nothing opened
+    REQUIRE(app->recentProjectCount() == 3U);
+    REQUIRE(app->tick());
+    const engine::editor::WelcomeRecord& w = app->projectUiRecord().welcome;
+    REQUIRE(w.drawnThisFrame);
+    CHECK_FALSE(w.emptyStateDrawn);
+    REQUIRE(w.cards.size() == 3U);
+    for (std::size_t i = 0; i < paths.size(); ++i) {
+        CAPTURE(i);
+        const engine::editor::RecentCardText expected = engine::editor::recentCardText(paths[i], home);
+        CHECK(w.cards[i].title == expected.title);
+        CHECK(w.cards[i].path == expected.path);  // 508 dp of card: none of the three needs eliding
+        CHECK(w.cards[i].min.x >= w.windowPos.x);
+        CHECK(w.cards[i].max.x <= w.windowPos.x + w.windowSize.x);
+        if (i > 0U) {
+            CHECK(w.cards[i].min.y > w.cards[i - 1U].max.y);  // list order, stacked
+        }
+    }
+    // INDEPENDENT literals beside the model's own answer (WL1 pins the model; these pin what reached the draw).
+    CHECK(w.cards[0].title == "MyGame");
+    CHECK(w.cards[0].path == "~/dev/MyGame");           // the scratch home, abbreviated
+    CHECK(w.cards[1].path == "/nowhere/a##b/Game##2");  // G6: a "##" reaches the draw whole
+    CHECK(w.cards[1].title == "Game##2");
+    CHECK(w.cards[2].title == "Trailing");
+    CHECK(w.cards[2].path == "~/dev/Trailing/");
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: a long recents list scrolls inside a window that stays in the work area (task E.6.4, I351)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "welcome i351", .width = E64_WINDOW_WIDTH, .height = E64_WINDOW_HEIGHT});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    const std::string home = e64Home();
+    std::vector<std::string> paths;
+    paths.reserve(E64_RECENT_COUNT);  // performance-inefficient-vector-operation, an error under CI's clang-tidy
+    for (std::size_t i = 0; i < E64_RECENT_COUNT; ++i) {
+        paths.push_back(home + "/dev/Game" + std::to_string(i));
+    }
+    const std::string recentsFile = uniqueRecentsFile();
+    e64WriteRecents(recentsFile, paths);
+    std::optional<engine::editor::EditorApp> app = e64AppRestoring(*device, *window, ctx, recentsFile);
+    REQUIRE(app->recentProjectCount() == E64_RECENT_COUNT);
+    REQUIRE(app->tick());
+    const engine::editor::WelcomeRecord& w = app->projectUiRecord().welcome;
+    REQUIRE(w.drawnThisFrame);
+    CHECK(w.layout.visibleCards < E64_RECENT_COUNT);  // the fixture's premise: more recents than any fold shows
+    CHECK(w.layout.listScrolls);
+    CHECK(std::fabs(w.listHeight - w.layout.listHeight) < 1.0F);  // the child as ImGui laid it out, read off ImGui
+    CHECK(w.cards.size() == E64_RECENT_COUNT);                    // every card submitted; the child clips them
+    // ImGui's auto-fit height against the rows the fold counted, the list at the height ImGui gave its child (I349's
+    // sum). At this pose the CAP limits the list, so the margins below are wide; I360 samples the fold itself.
+    const bool unitScale = w.uiScaleAtDraw == 1.0F;
+    WARN(unitScale);
+    if (unitScale) {
+        const float rows = E64_WELCOME_ROWS_BUT_BLURB + w.layout.blurbHeight + w.listHeight;
+        CHECK(std::fabs(w.windowSize.y - rows) < 1.0F);
+    }
+    // The fold's promise against what ImGui DREW (D6, D34): the window never runs past the work area, and while the
+    // fold is above its one-card floor it keeps screenMargin clear at both ends. A runner short enough to force the
+    // floor makes the margin arm vacuous, which WARNs rather than fails (#111).
+    const float bottom = w.windowPos.y + w.windowSize.y;
+    CHECK(bottom <= w.workPos.y + w.workSize.y + 1.0F);
+    const float margin = engine::editor::EDITOR_THEME.dialogs.screenMargin * w.uiScaleAtDraw;
+    const bool aboveFloor = w.layout.visibleCards > 1U;
+    WARN(aboveFloor);
+    if (aboveFloor) {
+        CHECK(w.windowPos.y >= w.workPos.y + margin - 1.0F);
+        CHECK(bottom <= w.workPos.y + w.workSize.y - margin + 1.0F);
+    }
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: New Project opens centred, Create and the language control disabled (task E.6.4, I352)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "new project i352", .width = E64_WINDOW_WIDTH, .height = E64_WINDOW_HEIGHT});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = e64App(*device, *window, ctx, uniqueRecentsFile());
+    e64OpenNewProject(*app);
+    const engine::editor::NewProjectRecord& m = app->projectUiRecord().newProject;
+    CHECK(e64Centred(m.windowPos, m.windowSize, m.workPos, m.workSize));
+    CHECK(std::fabs(m.windowSize.x - engine::editor::newProjectDialogLayout(m.workSize.x, m.uiScaleAtDraw).width) <
+          1.0F);
+    CHECK(m.header.title == "New project");
+    CHECK_FALSE(m.header.version.empty());
+    CHECK(m.header.version == app->projectUiRecord().welcome.header.version);  // one engine version, both headers
+    // The close box was DRAWN (seed S45): recordItem reads ImGui's own Disabled flag, which an undrawn box -- the
+    // default record -- leaves false, and a drawn box sits inside the header band.
+    CHECK(m.header.close.enabled);
+    CHECK(m.header.close.max.x > m.header.close.min.x);
+    CHECK(m.header.close.min.y >= m.windowPos.y);
+    CHECK(m.header.close.max.y <= m.windowPos.y + m.layout.headerHeight);
+    CHECK(m.header.close.max.x <= m.windowPos.x + m.windowSize.x);
+    CHECK((m.state == engine::editor::NewProjectTargetState::NoName));
+    CHECK(m.line.tail.text == engine::editor::NEW_PROJECT_HINT_NO_NAME);
+    CHECK_FALSE(m.create.enabled);  // ImGui's own Disabled flag on the drawn button
+    CHECK(m.cancel.enabled);        // ANTI-VACUITY: the record reads an enabled button as enabled
+    CHECK(m.browse.enabled);
+    CHECK_FALSE(m.language[0].enabled);  // seed S20: the one BeginDisabled() pair
+    CHECK_FALSE(m.language[1].enabled);
+    CHECK_FALSE(m.language[0].drawnActive);
+    CHECK(m.language[1].drawnActive);  // TypeScript: what Create writes
+    CHECK(m.location.empty());         // no project open: no pre-fill (scene_session.cpp:610-612)
+    CHECK(m.cancel.max.x <= m.create.min.x);
+    CHECK(m.create.max.x <= m.windowPos.x + m.windowSize.x);
+    // D34: unclamped, the whole dialog -- its footer with it -- lies inside the window. A clamped window's height is
+    // exactly WorkSize - 2 x DisplaySafeAreaPadding (imgui.cpp:7093-7099), so `unclamped` cannot be satisfied by one.
+    const float safe = engine::editor::EDITOR_THEME.metrics.displaySafeAreaPadding.y * m.uiScaleAtDraw;
+    const bool unclamped = m.windowSize.y + (2.0F * safe) < m.workSize.y - 0.5F;
+    WARN(unclamped);  // a runner shorter than 517 + 6 points of work height clamps the dialog (#111)
+    if (unclamped) {
+        CHECK(m.cancel.max.y <= m.windowPos.y + m.windowSize.y);
+        CHECK(m.create.max.y <= m.windowPos.y + m.windowSize.y);
+    }
+    app->requestNewProjectAnswer(engine::editor::NewProjectAnswer::Dismiss);
+    REQUIRE(app->tick());
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: the validation line follows the real probe, and Create follows the line (task E.6.4, I353)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "new project i353", .width = E64_WINDOW_WIDTH, .height = E64_WINDOW_HEIGHT});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    using State = engine::editor::NewProjectTargetState;
+    std::optional<engine::editor::EditorApp> app = e64App(*device, *window, ctx, uniqueRecentsFile());
+    e64OpenNewProject(*app);
+    const engine::editor::NewProjectRecord& m = app->projectUiRecord().newProject;
+    // D14 armed the Name field when the dialog appeared, so the seam lands on an ACTIVE field -- the path where an
+    // InputText writes its own buffer back over form.name unless the dialog reloads it (D27, seed S46).
+    REQUIRE(m.nameField.drawnActive);
+    const std::string dir = uniqueProjectLocation();  // a fresh, EMPTY scratch directory
+    app->requestNewProjectInput("Kart", dir);
+    REQUIRE(e64TickUntil(*app, 4, [&] { return m.state == State::CreatesFolder; }) < 4);  // so never NoName
+    CHECK(m.nameField.drawnActive);  // the reload replaced the widget's text without deactivating it
+    CHECK(m.create.enabled);
+    CHECK(m.line.lead.text == engine::editor::NEW_PROJECT_LEAD_CREATES);
+    CHECK((m.line.path.role == engine::editor::ChromeRole::Success));
+    const std::string shown =
+        engine::editor::abbreviateHome(engine::editor::newProjectTargetPath(dir, "Kart"), e64Home());
+    if (m.line.path.text != shown) {  // elided on a narrow runner: the folder name still ends it
+        REQUIRE(m.line.path.text.size() >= 4U);
+        CHECK(m.line.path.text.compare(m.line.path.text.size() - 4U, 4U, "Kart") == 0);
+    }
+    // The Location box drew the folder, not the placeholder, and fitPathLeft keeps its last segment whole.
+    const std::u8string leafBytes = std::filesystem::path(dir).filename().u8string();
+    const std::string leaf(reinterpret_cast<const char*>(leafBytes.data()), leafBytes.size());
+    REQUIRE_FALSE(leaf.empty());
+    REQUIRE(m.location.size() >= leaf.size());
+    CHECK(m.location.compare(m.location.size() - leaf.size(), leaf.size(), leaf) == 0);
+    // The footer summary of today's fields, as drawn (right-elided on a narrow runner: the name still opens it).
+    const std::string summary = engine::editor::newProjectFooterSummary("Kart");
+    if (m.summary != summary) {
+        CHECK(m.summary.rfind("Kart", 0) == 0U);
+    }
+
+    // A file appears inside the target, as a file manager would put it there: within the refresh the line refuses.
+    const std::filesystem::path target = std::filesystem::path(dir) / "Kart";
+    std::error_code ec;
+    std::filesystem::create_directory(target, ec);
+    REQUIRE_FALSE(ec);
+    REQUIRE(engine::editor::writeTextFileAtomic(dir + "/Kart/keep.txt", "x").empty());
+    constexpr int REFRESH_BOUND = static_cast<int>(engine::editor::NEW_PROJECT_PROBE_REFRESH_TICKS) + 4;
+    REQUIRE(e64TickUntil(*app, REFRESH_BOUND, [&] { return m.state == State::TargetNotEmpty; }) < REFRESH_BOUND);
+    CHECK_FALSE(m.create.enabled);
+    CHECK((m.line.tail.role == engine::editor::ChromeRole::Error));
+
+    // Emptied again: an existing EMPTY folder is adopted (E7/AC-13), and Create comes back.
+    std::filesystem::remove(target / "keep.txt", ec);
+    REQUIRE_FALSE(ec);
+    REQUIRE(e64TickUntil(*app, REFRESH_BOUND, [&] { return m.state == State::AdoptsEmptyFolder; }) < REFRESH_BOUND);
+    CHECK(m.create.enabled);
+    app->requestNewProjectAnswer(engine::editor::NewProjectAnswer::Dismiss);
+    REQUIRE(app->tick());
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: Create through the seam makes the previewed project and closes the popup (task E.6.4, I354)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "new project i354", .width = E64_WINDOW_WIDTH, .height = E64_WINDOW_HEIGHT});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = e64App(*device, *window, ctx, uniqueRecentsFile());
+    e64OpenNewProject(*app);
+    const engine::editor::ProjectUiRecord& record = app->projectUiRecord();
+    REQUIRE(record.newProject.nameField.drawnActive);  // the seam lands on the live field (D27)
+    const std::string dir = uniqueProjectLocation();
+    app->requestNewProjectInput("Kart", dir);
+    REQUIRE(e64TickUntil(*app, 4, [&] {
+                return record.newProject.state == engine::editor::NewProjectTargetState::CreatesFolder;
+            }) < 4);
+    const std::string previewed = engine::editor::newProjectTargetPath(dir, "Kart");
+    app->requestNewProjectAnswer(engine::editor::NewProjectAnswer::Create);
+    REQUIRE(app->tick());  // resolved in the body, created in the same tick's applyFileRequests
+    REQUIRE(app->projectIsOpen());
+    CHECK(app->projectRoot() == previewed);  // the path the line named IS the root Create made
+    CHECK(app->recentProjectCount() == 1U);
+    CHECK(std::filesystem::exists(std::filesystem::path(previewed) / "project.json"));
+    REQUIRE(app->tick());
+    CHECK_FALSE(record.newProject.popupOpenAtEntry);  // the popup really closed: nothing left in ImGui's stack
+    CHECK_FALSE(record.newProject.drawnThisFrame);
+    CHECK_FALSE(record.welcome.drawnThisFrame);  // a project is open: no Welcome window
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: a refused Create answer is dropped, and Dismiss closes the dialog for good (task E.6.4, I355)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "new project i355", .width = E64_WINDOW_WIDTH, .height = E64_WINDOW_HEIGHT});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = e64App(*device, *window, ctx, uniqueRecentsFile());
+    e64OpenNewProject(*app);
+    const engine::editor::NewProjectRecord& m = app->projectUiRecord().newProject;
+    REQUIRE((m.state == engine::editor::NewProjectTargetState::NoName));  // Create is disabled
+    app->requestNewProjectAnswer(engine::editor::NewProjectAnswer::Create);
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+    CHECK(m.popupOpenAtEntry);  // the request was DROPPED with its tick: the dialog is still up
+    CHECK(m.drawnThisFrame);
+    CHECK_FALSE(app->projectIsOpen());
+    app->requestNewProjectAnswer(engine::editor::NewProjectAnswer::Dismiss);
+    REQUIRE(app->tick());
+    REQUIRE(app->tick());
+    CHECK_FALSE(m.popupOpenAtEntry);  // closed in ImGui, not merely no longer submitted
+    CHECK_FALSE(m.drawnThisFrame);
+    CHECK_FALSE(app->projectIsOpen());
+    e64OpenNewProject(*app);  // not wedged: the flow opens it again
+    app->requestNewProjectAnswer(engine::editor::NewProjectAnswer::Dismiss);
+    REQUIRE(app->tick());
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: neither first-contact window writes itself into the layout ini (task E.6.4, I356)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "ini i356", .width = E64_WINDOW_WIDTH, .height = E64_WINDOW_HEIGHT});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    const std::filesystem::path iniFile = std::filesystem::temp_directory_path() / "aero_e64_i356.ini";
+    std::error_code ec;
+    std::filesystem::remove(iniFile, ec);
+    const std::u8string iniBytes = iniFile.u8string();
+    const std::string iniPath(reinterpret_cast<const char*>(iniBytes.data()), iniBytes.size());
+    {
+        // persistLayout TRUE is the point, so every machine-wide path it would touch is pointed somewhere scratch.
+        std::optional<engine::editor::EditorApp> app =
+            engine::editor::EditorApp::create(*device, *window, ctx,
+                                              {.persistLayout = true,
+                                               .unfocusedFrameCapHz = 0.0F,
+                                               .restoreLastProject = false,
+                                               .recentProjectsPath = uniqueRecentsFile(),
+                                               .layoutIniPath = iniPath,
+                                               .editorPrefsPath = uniqueEditorPrefsFile(),
+                                               .homeDirectory = e64Home()});
+        REQUIRE(app.has_value());
+        e64OpenNewProject(*app);
+        CHECK(app->projectUiRecord().newProject.framesDrawn > 0U);  // both windows really drew
+        CHECK(app->projectUiRecord().welcome.framesDrawn > 0U);
+        app->requestQuit();
+        CHECK(app->tick() == false);
+    }  // ~EditorApp -> ~ImGuiLayer -> DestroyContext -> SaveIniSettingsToDisk
+    std::ifstream in(iniFile, std::ios::binary);
+    REQUIRE(in.good());
+    const std::string saved((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    CHECK(saved.find("[Window][Inspector]") != std::string::npos);  // ANTI-VACUITY: the ini was written
+    CHECK(saved.find("[Window][aero_new_project]") == std::string::npos);
+    CHECK(saved.find("[Window][aero_welcome]") == std::string::npos);
+}
+
+TEST_CASE("editor: both first-contact windows draw in a 320 x 180 window (task E.6.4, I357)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "small i357", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    const std::string home = e64Home();
+    const std::string recentsFile = uniqueRecentsFile();
+    e64WriteRecents(recentsFile, {home + "/a/One", home + "/a/Two", home + "/a/Three"});
+    std::optional<engine::editor::EditorApp> app = e64AppRestoring(*device, *window, ctx, recentsFile);
+    REQUIRE(app->tick());
+    const engine::editor::WelcomeRecord& w = app->projectUiRecord().welcome;
+    REQUIRE(w.drawnThisFrame);
+    CHECK(w.layout.visibleCards >= 1U);
+    // ImGui's OWN widths: the window ImGui drew against the width the draw asked for, and against the floor as a value
+    // derived from the theme -- never the layout recomputed from the record, which is the record agreeing with itself.
+    const engine::editor::ThemeDialogs& d = engine::editor::EDITOR_THEME.dialogs;
+    const float s = w.uiScaleAtDraw;
+    CHECK(std::fabs(w.windowSize.x - w.layout.width) < 1.0F);
+    const bool atFloor = w.workSize.x <= (d.minWidth + (2.0F * d.screenMargin)) * s;
+    WARN(atFloor);  // a runner that will not deliver a 320-wide window leaves the floor arms vacuous (#111)
+    if (atFloor) {
+        CHECK(std::fabs(w.windowSize.x - std::floor(d.minWidth * s)) < 1.0F);
+    }
+    e64OpenNewProject(*app);
+    const engine::editor::NewProjectRecord& m = app->projectUiRecord().newProject;
+    for (int i = 0; i < 3; ++i) {
+        REQUIRE(app->tick());
+        CHECK(app->presentedLastFrame());
+        CHECK(m.drawnThisFrame);
+    }
+    CHECK(std::fabs(m.windowSize.x - m.layout.width) < 1.0F);
+    // Clamped at 180 rows, the dialog's items still all end inside the inner rect its scrollbar narrowed. The Welcome's
+    // do not at the floor: its button row is wider than the content (a ScrollMax.x of 3 measured at scale 1), which
+    // only the x pin holds still (I358(f)).
+    CHECK(m.scrollMaxX == 0.0F);
+    if (atFloor) {
+        CHECK(m.windowSize.x < d.newProjectWidth * s);                         // the dialog really narrowed...
+        CHECK(std::fabs(m.windowSize.x - std::floor(d.minWidth * s)) < 1.0F);  // ...to the floor, as drawn
+    }
+    app->requestNewProjectAnswer(engine::editor::NewProjectAnswer::Dismiss);
+    REQUIRE(app->tick());
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: project_ui.cpp reads no disk, binds its keys, draws every string format-safe (task E.6.4, I358)") {
+    // UNGATED source text: no device, so every lane runs it, the shader-tools-OFF one included.
+    const std::vector<std::string> code = editorSourceCodeLines(AERO_EDITOR_SRC_DIR "/project_ui.cpp");
+    REQUIRE(code.size() > 100U);
+    std::string joined;
+    for (const std::string& line : code) {
+        joined += line;
+        joined += '\n';
+    }
+    SUBCASE("(a) the draw reads no disk and changes no state itself (AC-2, AC-46, D9, D12)") {
+        // Every disk reader the tree offers an editor TU, and every state writer the flow owns. A denylist over names
+        // cannot converge on its own (task 3.7.3's lesson), so the include of text_file.hpp -- the readers' home -- is
+        // banned too, and the form.probe arm is the anti-vacuity line: the draw reads the answer step 0e keeps.
+        const std::array<std::string, 17> banned{
+            "<filesystem>",          "std::filesystem",     "probeNewProjectTarget(",
+            "newProjectTargetPath(", "directoryExists(",    "directoryIsEmpty(",
+            "fileExists(",           "readTextFile(",       "isExecutableFile(",
+            "loadProjectFrom(",      "readRecentProjects(", "writeRecentProjects(",
+            "text_file.hpp",         "createProject(",      "promoteRecent(",
+            "adoptProject(",         "session.set("};
+        for (const std::string& needle : banned) {
+            CAPTURE(needle);
+            CHECK(countLinesContaining(code, needle) == 0U);
+        }
+        CHECK(countLinesContaining(code, "form.probe") >= 1U);
+    }
+    SUBCASE("(b) Enter, KeypadEnter and Escape bound by hand under Create's predicate; dismiss first (D20)") {
+        CHECK(countLinesContaining(code, "ImGuiKey_Enter") == 1U);
+        CHECK(countLinesContaining(code, "ImGuiKey_KeypadEnter") == 1U);
+        CHECK(countLinesContaining(code, "ImGuiKey_Escape") == 1U);
+        // The WHOLE predicate, not one token: a re-bracketing that leaves Enter outside `&& createEnabled` keeps both
+        // names on the line and lets Enter create from a refused state, which no tier can press.
+        constexpr std::string_view ENTER_COMMITS =
+            "commit = ((enterPressed || fileMenu.newProjectAnswer == "
+            "NewProjectAnswer::Create) && createEnabled) || commit;";
+        CHECK(countLinesContaining(code, ENTER_COMMITS) == 1U);
+        // And Enter is read nowhere else: its declaration and that line. A second line committing on Enter outside
+        // `&& createEnabled` creates from a refused state with the needle above still matching once. ImGui's other
+        // Enter reader names neither key nor the variable: a field flagged EnterReturnsTrue returns true on Enter
+        // (imgui_widgets.cpp:5180, :5705-5706), which is how asset_picker.cpp commits on Enter.
+        CHECK(countLinesContaining(code, "enterPressed") == 2U);
+        CHECK(countLinesContaining(code, "EnterReturnsTrue") == 0U);
+        // The binding itself, whole: `&&` for its `||` leaves every key name on the line and Enter alone dead (#109).
+        constexpr std::string_view ENTER_BINDS =
+            "ImGui::IsKeyPressed(ImGuiKey_Enter, false) || "
+            "ImGui::IsKeyPressed(ImGuiKey_KeypadEnter, false);";
+        CHECK(countLinesContaining(code, ENTER_BINDS) == 1U);
+        CHECK(soleLineContaining(code, "if (dismiss) {") < soleLineContaining(code, "} else if (commit) {"));
+    }
+    SUBCASE("(c) the language control: one disabled pair, the one tooltip, the selection Create writes (D18)") {
+        CHECK(countLinesContaining(code, "ImGui::BeginDisabled();") == 1U);  // seed S20
+        CHECK(countLinesContaining(code, "ImGui::EndDisabled();") == 1U);
+        CHECK(countLinesContaining(code, "itemTooltip(LANGUAGE_CONTROL_TOOLTIP)") == 1U);
+        CHECK(countLinesContaining(code, "languageCardSelected(") == 1U);
+        CHECK(countLinesContaining(code, "SetItemTooltip(") == 0U);
+    }
+    SUBCASE("(d) no user string is ever a label (D9)") {
+        CHECK(countLinesContaining(code, "Selectable(") == 0U);
+        constexpr std::string_view CALL = "InvisibleButton(";
+        constexpr std::string_view LITERAL_ID = "\"##";
+        std::size_t buttons = 0;
+        for (const std::string& line : code) {
+            const std::size_t at = line.find(CALL);
+            if (at == std::string::npos) {
+                continue;
+            }
+            ++buttons;
+            CAPTURE(line);
+            CHECK(line.compare(at + CALL.size(), LITERAL_ID.size(), LITERAL_ID) == 0);
+        }
+        CHECK(buttons == 4U);  // the close box, a recent card, the Location box, a language card
+    }
+    SUBCASE("(e) every string drawn format-safe (D31)") {
+        const std::array<std::string, 6> formatted{"ImGui::Text(",      "ImGui::TextColored(", "ImGui::TextWrapped(",
+                                                   "ImGui::LabelText(", "ImGui::BulletText(",  "ImGui::TextDisabled("};
+        for (const std::string& call : formatted) {
+            CAPTURE(call);
+            CHECK(countLinesContaining(code, call) == 0U);
+        }
+        constexpr std::string_view SAFE_TOOLTIP = "SetTooltip(\"%s\",";
+        std::size_t tooltips = 0;
+        for (const std::string& line : code) {
+            if (line.find("SetTooltip(") != std::string::npos) {
+                ++tooltips;
+                CHECK(line.find(SAFE_TOOLTIP) != std::string::npos);
+            }
+        }
+        CHECK(tooltips == 1U);  // the one inside itemTooltip
+    }
+    SUBCASE("(f) both windows never saved, never moved, centred every frame; only the Welcome skips focus (D7, D21)") {
+        CHECK(countOccurrences(joined, "ImGuiWindowFlags_NoSavedSettings") == 2U);
+        CHECK(countOccurrences(joined, "ImGuiWindowFlags_NoMove") == 2U);
+        CHECK(countOccurrences(joined, "ImGuiWindowFlags_NoFocusOnAppearing") == 1U);
+        std::size_t positions = 0;
+        for (const std::string& line : code) {
+            if (line.find("SetNextWindowPos(") != std::string::npos) {
+                ++positions;
+                CHECK(line.find("ImGuiCond_Always") != std::string::npos);
+            }
+        }
+        CHECK(positions == 2U);
+        CHECK(countOccurrences(joined, "ImGuiCond_Appearing") == 0U);
+        CHECK(countOccurrences(joined, "ImGuiCond_FirstUseEver") == 0U);
+        // And never scrolled sideways: x pinned at 0 in each window's own block, above its Begin, y left alone. A pin
+        // anywhere else feeds the next Begin -- a child, a tooltip, next frame's first window -- and leaves this one
+        // unpinned. Comments are stripped, so the two pins are one text, found by index. A line-number order alone
+        // cannot see a pin moved into drawWelcomeBody, which is defined above drawWelcomeWindow, so nothing between a
+        // pin and its Begin may close a block, begin a window or return. No tier can turn a wheel, and I359 measures
+        // the reach only above the floor, where it is already 0.
+        constexpr std::string_view X_PIN = "ImGui::SetNextWindowScroll(ImVec2(0.0F, -1.0F));";
+        std::vector<std::size_t> pins;
+        for (std::size_t i = 0; i < code.size(); ++i) {
+            if (code[i].find(X_PIN) != std::string::npos) {
+                pins.push_back(i);
+            }
+        }
+        REQUIRE(pins.size() == 2U);
+        const auto pinsItsBegin = [&code](std::size_t pin, std::size_t begin) {
+            if (pin >= begin) {
+                return false;
+            }
+            for (std::size_t i = pin + 1U; i < begin; ++i) {
+                if (code[i].find('}') != std::string::npos || code[i].find("Begin") != std::string::npos ||
+                    code[i].find("return") != std::string::npos) {
+                    return false;
+                }
+            }
+            return true;
+        };
+        CHECK(pinsItsBegin(pins[0], soleLineContaining(code, "ImGui::Begin(WELCOME_WINDOW_ID")));
+        CHECK(pinsItsBegin(pins[1], soleLineContaining(code, "ImGui::BeginPopupModal(NEW_PROJECT_MODAL_ID")));
+    }
+    SUBCASE("(g) the request lines 2.6.1 wrote, byte for byte (D8, D9, D14)") {
+        CHECK(countLinesContaining(code, "fileMenu.flow.requested = FileAction::NewProject;") == 1U);
+        CHECK(countLinesContaining(code, "fileMenu.flow.requested = FileAction::OpenProject;") == 2U);
+        CHECK(countLinesContaining(code, "fileMenu.project.flow.requestedPath = path;") == 1U);
+        CHECK(countLinesContaining(code, "form.browseRequested = true;") == 1U);
+    }
+    SUBCASE("(h) the input seam reloads the live Name field, once, on its own tick, before the field (D27)") {
+        CHECK(countLinesContaining(code, "ReloadUserBufAndMoveToEnd()") == 1U);  // seed S46
+        const std::size_t gate = soleLineContaining(code, "fileMenu.newProjectInputApplied");
+        CHECK(gate < soleLineContaining(code, "inputTextString(\"##name\""));
+    }
+}
+
+TEST_CASE("editor: a clamped first-contact window has nothing to scroll sideways (task E.6.4, I359)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    // 300 rows leave a work area of about 200 points, under both windows' natural heights (the Welcome's 318 with no
+    // recents, folding to 276; the dialog's 517), so ImGui clamps each and draws its vertical scrollbar, which narrows
+    // the inner rect (D34). 900 wide keeps both above the minWidth floor.
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "clamped i359", .width = E64_WINDOW_WIDTH, .height = 300});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    std::optional<engine::editor::EditorApp> app = e64App(*device, *window, ctx, uniqueRecentsFile());
+    REQUIRE(app->tick());
+    const engine::editor::WelcomeRecord& w = app->projectUiRecord().welcome;
+    REQUIRE(w.drawnThisFrame);
+    MESSAGE("I359 Welcome: work " << w.workSize.y << ", scrollbar " << w.scrollbarY << ", reach " << w.scrollMaxX);
+    // ImGui's OWN reach, read off the window. A band as wide as the window made it ScrollbarSize once the scrollbar
+    // narrowed the inner rect, and a horizontal swipe slid every field and button sideways inside the frame. It holds
+    // unclamped too; the clamp is what makes it sensitive, so a runner that will not deliver 300 rows WARNs (#111).
+    CHECK(w.scrollMaxX == 0.0F);
+    WARN(w.scrollbarY);
+    e64OpenNewProject(*app);
+    const engine::editor::NewProjectRecord& m = app->projectUiRecord().newProject;
+    REQUIRE(app->tick());
+    REQUIRE(m.drawnThisFrame);
+    MESSAGE("I359 dialog: work " << m.workSize.y << ", scrollbar " << m.scrollbarY << ", reach " << m.scrollMaxX);
+    CHECK(m.scrollMaxX == 0.0F);
+    WARN(m.scrollbarY);
+    app->requestNewProjectAnswer(engine::editor::NewProjectAnswer::Dismiss);
+    REQUIRE(app->tick());
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: where the fold limits the recents, the Welcome shows every card that fits (task E.6.4, I360)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    // 560 rows leave a work area of about 466 points: 466 - 48 - 222 = 196 of room folds the list to 3 cards (178),
+    // under the cap of 5 and above the floor of 1, with 18 points of slack -- the pose where the FOLD decides.
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "welcome i360", .width = E64_WINDOW_WIDTH, .height = 560});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    const std::string home = e64Home();
+    std::vector<std::string> paths;
+    paths.reserve(E64_RECENT_COUNT);  // performance-inefficient-vector-operation, an error under CI's clang-tidy
+    for (std::size_t i = 0; i < E64_RECENT_COUNT; ++i) {
+        paths.push_back(home + "/dev/Game" + std::to_string(i));
+    }
+    const std::string recentsFile = uniqueRecentsFile();
+    e64WriteRecents(recentsFile, paths);
+    std::optional<engine::editor::EditorApp> app = e64AppRestoring(*device, *window, ctx, recentsFile);
+    REQUIRE(app->recentProjectCount() == E64_RECENT_COUNT);
+    REQUIRE(app->tick());
+    const engine::editor::WelcomeRecord& w = app->projectUiRecord().welcome;
+    REQUIRE(w.drawnThisFrame);
+    MESSAGE("I360: work " << w.workSize.y << ", cards " << w.layout.visibleCards << ", window " << w.windowSize.y);
+    CHECK(w.layout.listScrolls);
+    CHECK(std::fabs(w.listHeight - w.layout.listHeight) < 1.0F);
+    const bool unitScale = w.uiScaleAtDraw == 1.0F;
+    WARN(unitScale);
+    if (unitScale) {  // I349's sum: what ImGui drew is what the fold counted
+        const float rows = E64_WELCOME_ROWS_BUT_BLURB + w.layout.blurbHeight + w.listHeight;
+        CHECK(std::fabs(w.windowSize.y - rows) < 1.0F);
+    }
+    // The fold's promise against what ImGui DREW (D6, D34), where the fold -- neither the cap nor the one-card floor --
+    // limits the list. A runner that delivers another height may land on either, which WARNs rather than fails (#111).
+    const std::size_t cards = w.layout.visibleCards;
+    const bool folded = 1U < cards && cards < engine::editor::WELCOME_MAX_VISIBLE_CARDS;
+    WARN(folded);
+    if (folded) {
+        const float margin = engine::editor::EDITOR_THEME.dialogs.screenMargin * w.uiScaleAtDraw;
+        const float bottom = w.windowPos.y + w.windowSize.y;
+        CHECK(w.windowPos.y >= w.workPos.y + margin - 1.0F);
+        CHECK(bottom <= w.workPos.y + w.workSize.y - margin + 1.0F);
+        // ...and took every card that fits: one more card's pitch would have run into a margin.
+        CHECK(w.workSize.y - (2.0F * margin) - w.windowSize.y < w.layout.cardHeight + w.layout.cardGap);
+    }
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
 }

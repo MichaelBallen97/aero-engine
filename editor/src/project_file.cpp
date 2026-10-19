@@ -79,6 +79,28 @@ void stepToParent(std::filesystem::path& p) {
     }
 }
 
+// task E.6.4 (D13): createProject's target and its step-3 checks, MOVED here verbatim so the New Project probe runs
+// the same two functions. `absolutePath` preserves the final component, so SHOULD-FIX 8's rule -- the root is this
+// path verbatim, never re-derived through projectRootFromPath -- holds for a project literally named "project.json".
+std::filesystem::path newProjectTarget(std::string_view locationUtf8, std::string_view nameUtf8) {
+    return absolutePath((pathFromUtf8(locationUtf8) / pathFromUtf8(nameUtf8)).lexically_normal());
+}
+
+// `exists` with its error_code ignored is the original's: an unreadable parent reads Absent, and createProject's
+// create_directories then reports the OS reason. A non-directory is a File; an EMPTY directory is adopted (E7/AC-13).
+NewProjectTargetKind classifyTarget(const std::filesystem::path& target) {
+    std::error_code existsEc;
+    if (!std::filesystem::exists(target, existsEc)) {
+        return NewProjectTargetKind::Absent;
+    }
+    std::error_code dirEc;
+    if (!std::filesystem::is_directory(target, dirEc)) {
+        return NewProjectTargetKind::File;
+    }
+    return directoryIsEmpty(utf8FromPath(target)) ? NewProjectTargetKind::EmptyDirectory
+                                                  : NewProjectTargetKind::NonEmptyDirectory;
+}
+
 constexpr std::string_view RECENTS_FILE_NAME = "recent_projects.json";
 // task 3.2.4 (§A-10). TU-LOCAL, exactly like RECENTS_FILE_NAME above, and deliberately NOT in
 // blender_tool.hpp: nothing else needs the name, and putting it there would force this TU to include a
@@ -198,23 +220,20 @@ ProjectCreateOutcome createProject(std::string_view locationUtf8, std::string_vi
     // typed, not only Browse'd). `absolutePath` preserves the final component, so SHOULD-FIX 8's rule
     // -- out.root is `target` verbatim, never re-derived through projectRootFromPath's manifest-name
     // strip -- is untouched, including for a project literally named "project.json".
-    const std::filesystem::path target =
-        absolutePath((pathFromUtf8(locationUtf8) / pathFromUtf8(nameUtf8)).lexically_normal());
-    std::error_code existsEc;
-    const bool exists = std::filesystem::exists(target, existsEc);
-    if (exists) {
-        std::error_code dirEc;
-        const bool isDir = std::filesystem::is_directory(target, dirEc);
-        if (!isDir) {
+    // task E.6.4 (D13): both through the two file-local helpers above, which probeNewProjectTarget runs too.
+    const std::filesystem::path target = newProjectTarget(locationUtf8, nameUtf8);
+    switch (classifyTarget(target)) {
+        case NewProjectTargetKind::File:
             out.problem = CreateProblem::TargetIsFile;
             out.message = "a file already exists at that location";
             return out;
-        }
-        if (!directoryIsEmpty(utf8FromPath(target))) {
+        case NewProjectTargetKind::NonEmptyDirectory:
             out.problem = CreateProblem::TargetNotEmpty;
             out.message = "the target directory is not empty";
             return out;
-        }
+        case NewProjectTargetKind::Absent:
+        case NewProjectTargetKind::EmptyDirectory:
+            break;
     }
 
     // 4. Scaffold. §A7: create_directory on an ALREADY-EXISTING directory returns `false` with NO
@@ -250,7 +269,7 @@ ProjectCreateOutcome createProject(std::string_view locationUtf8, std::string_vi
     ProjectManifest manifest;
     manifest.name = std::string(nameUtf8);
     manifest.engineVersion = std::string(engineVersionUtf8);
-    manifest.language = ProjectLanguage::Ts;
+    manifest.language = NEW_PROJECT_LANGUAGE;  // task E.6.4 (D13)
     manifest.assetsPath = "assets";
     manifest.scenesPath = "scenes";
     const std::string manifestPath = utf8FromPath(target / std::string(PROJECT_FILE_NAME));
@@ -266,6 +285,29 @@ ProjectCreateOutcome createProject(std::string_view locationUtf8, std::string_vi
                                       // projectRootFromPath's manifest-name strip
     out.manifest = manifest;
     return out;
+}
+
+std::string newProjectTargetPath(std::string_view locationUtf8, std::string_view nameUtf8) {
+    return utf8FromPath(newProjectTarget(locationUtf8, nameUtf8));
+}
+
+NewProjectTargetFacts probeNewProjectTarget(std::string_view locationUtf8, std::string_view nameUtf8) {
+    NewProjectTargetFacts facts;
+    facts.location = std::string(locationUtf8);
+    facts.name = std::string(nameUtf8);
+    // createProject's steps 1 and 2a, in its order: a refused name is never joined onto a path.
+    if (validateProjectName(nameUtf8) != NameProblem::Ok || locationUtf8.empty()) {
+        return facts;
+    }
+    facts.touched = true;
+    facts.locationIsDirectory = directoryExists(locationUtf8);  // step 2b
+    if (!facts.locationIsDirectory) {
+        return facts;
+    }
+    const std::filesystem::path target = newProjectTarget(locationUtf8, nameUtf8);  // step 3
+    facts.targetPath = utf8FromPath(target);
+    facts.target = classifyTarget(target);
+    return facts;
 }
 
 // D8: pref path FIRST, base path second, CWD last -- the OPPOSITE of imgui_layer.cpp:34-47's order

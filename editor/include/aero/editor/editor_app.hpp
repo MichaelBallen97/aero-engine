@@ -35,6 +35,7 @@
 #include <aero/editor/gizmo.hpp>           // task E.6.2 -- a VALUE member (transformTools); PURE and ImGui-free
 #include <aero/editor/imgui_layer.hpp>
 #include <aero/editor/material_session.hpp>      // task 3.4.2 -- a VALUE member (materialSession) needs
+#include <aero/editor/project_ui_view.hpp>       // task E.6.4 -- a VALUE member (projectUiRecordValue); PURE
 #include <aero/editor/shell_chrome_record.hpp>   // task E.6.2 -- a VALUE member (chromeRecord); PURE
 #include <aero/editor/status_bar.hpp>            // task E.6.2 -- a VALUE member (frameReadout); PURE
                                                  // the definition, the asset_database.hpp precedent.
@@ -138,8 +139,9 @@ struct EditorAppConfig {
     // holds that line.
     bool restoreLastProject = true;
     // Task 2.6.1 (D15, the second defence): where the recents list lives. EMPTY =>
-    // defaultRecentProjectsPath(). The one case that MUST exercise the restore path points this at a
-    // TempDir file, so even with restore ENABLED no test ever touches the real pref directory.
+    // defaultRecentProjectsPath(). The two test sites that enable the restore path (I23, and task
+    // E.6.4's e64AppRestoring) point this at a TempDir file, so even with restore ENABLED no test ever
+    // touches the real pref directory.
     std::string recentProjectsPath;
     // Where imgui.ini lives. EMPTY => ImGuiLayer's own exe/pref-relative derivation, which is what
     // ships. This exists for the SAME reason recentProjectsPath above does, and it is the second
@@ -436,7 +438,7 @@ public:
     // these cannot reach from outside the draw walk. drawSceneContainmentModal closes the popup for
     // them -- it enters a still-open popup whose offer has been drained and closes it there. Without
     // that arm these two hooks would leave an entry in g.OpenPopupStack for ever (the code-review
-    // round; shell_ui.cpp's own comment, and project_ui.cpp:107-117 for the precedent). ----
+    // round; shell_ui.cpp's own comment, and project_ui.cpp's drawNewProjectBody for the precedent). ----
     void requestSceneContainmentAccept() noexcept;   // "Open '<name>'"
     void requestSceneContainmentDismiss() noexcept;  // Cancel / OK / Esc
 
@@ -796,6 +798,16 @@ public:
     void requestToolbarUndo() noexcept { pendingToolbarUndo = true; }
     // What the chrome DREW last frame (shell_chrome_record.hpp) -- the GPU tier's window onto the three strips.
     [[nodiscard]] const ShellChromeRecord& shellChromeRecord() const noexcept { return chromeRecord; }
+    // ---- task E.6.4 (D27) ------------------------------------------------------------------------------------------
+    // What the Welcome window and the New Project dialog DREW last frame (project_ui_view.hpp), read from ImGui.
+    [[nodiscard]] const ProjectUiRecord& projectUiRecord() const noexcept { return projectUiRecordValue; }
+    // The New Project dialog's click-equivalents, the requestToolbarTool shape: applied on the NEXT tick, and DROPPED,
+    // never deferred, when refused. Input writes the two fields the Name widget and a ProjectLocation result write --
+    // only while the form is open -- and on that tick the dialog reloads its ACTIVE Name widget from them (an active
+    // InputText owns its text). An answer is resolved INSIDE the dialog by its own controls' predicates (Create only
+    // while the dialog would let Create be clicked), so it closes the popup the way a click does. No tier can click.
+    void requestNewProjectInput(std::string name, std::string location);
+    void requestNewProjectAnswer(NewProjectAnswer answer) noexcept { pendingNewProjectAnswer = answer; }
 
 private:
     // task 3.2.4: the two file-scope-shaped helpers §D-12 names, as members because both touch
@@ -1083,7 +1095,10 @@ private:
     bool pendingToolbarSnapToggle = false;
     std::optional<float> pendingToolbarSnapStep;
     bool pendingToolbarUndo = false;
-    ShellChromeRecord chromeRecord;  // shellChromeRecord()'s value, named apart from it
+    ShellChromeRecord chromeRecord;                         // shellChromeRecord()'s value, named apart from it
+    ProjectUiRecord projectUiRecordValue;                   // task E.6.4: projectUiRecord()'s value
+    std::optional<NewProjectInput> pendingNewProjectInput;  // task E.6.4 (D27): applied before a draw
+    NewProjectAnswer pendingNewProjectAnswer = NewProjectAnswer::None;  // copied into FileMenuContext, then cleared
     // DISTINCT NAMES from their accessors, the databasePtr/database() rule -- matching
     // ContextRouter::latches/latchCount() and sceneAssetDirectives/sceneAssetDirectiveCount() above.
     std::size_t focusRouteApplies = 0;

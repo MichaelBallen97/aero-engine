@@ -425,8 +425,10 @@ a **human mouse/keyboard pass** recorded per OS in `editor/VALIDATION.md`.
   identical "record a pending action, apply it after the walk" rule the Panels section above states
   for the World/Selection, applied to project state. A control that calls `createProject`/
   `ProjectSession::set()`/`promoteRecent` directly from inside `project_ui.cpp`'s draw functions is an
-  architecture bug (AC-46) with **no automated test able to catch it** — confirmed directly: sabotage
-  seed S20 seeded exactly this violation and the whole 94-entry suite stayed green.
+  architecture bug (AC-46). Since E.6.4 the direct spellings are refused by source text: `I358(a)` bans
+  `createProject(`, `promoteRecent(`, `adoptProject(` and `session.set(` over `project_ui.cpp`'s code lines. At
+  2.6.1 no tier saw it (sabotage seed S20 left the whole 94-entry suite green), and a write reached through an
+  alias is still invisible to that pin.
 - **A `createProject` failure NEVER deletes anything it already created, on ANY failure path, EVER
   (D7/INV-P4)** — the target directory, `assets/`, `scenes/`, whatever exists at the moment of
   failure, all stay exactly as they are. An editor that recursively deletes a user-chosen directory
@@ -2318,8 +2320,8 @@ state.
   `IM_COL32_BLACK_TRANS` (`I287`'s k = 3, by substring) or `withAlpha(` in a panel TU; `I333` refuses all four. A
   document's own colours -- a material's swatch, a thumbnail -- are content, not chrome.
 - **De-emphasis is `mutedText` / `mutedTextWrapped`** -- string-only, so format-safe by construction;
-  `ImGui::TextDisabled` and `ImGuiCol_TextDisabled` are banned in every panel TU (`project_ui.cpp` is E.6.4's and
-  excepted). A disabled widget greys through `BeginDisabled`.
+  `ImGui::TextDisabled` and `ImGuiCol_TextDisabled` are banned in every panel TU (`project_ui.cpp` too, since
+  E.6.4). A disabled widget greys through `BeginDisabled`.
 - **Every NEW face switch is `ScopedFace`** (`panel_chrome_ui.cpp` spells its `PushFont`). The one deliberate panel
   exception is the Console's message push, `PushFont(mono, 0.0F)` in `console_panel.cpp`: it keeps the CURRENT size,
   so the row the `Selectable` sized and the clipper's step stay exact, and `I283` pins it as that file's one push,
@@ -2433,3 +2435,43 @@ state.
   independent); the default right split is 0.30. A label-column, letter-inset or split change re-measures all three.
 - **`componentIconTable()` and `entityKindFor` are two more sites the next built-in sweeps**, beside `RF7` and `IR21`:
   `EK5` pins the ten rows and `EK1` / `EK2` the kinds.
+
+## First-contact windows (task E.6.4)
+
+- **The Welcome window and the New Project dialog draw ONE frame** (`project_ui.cpp`'s `DialogFrameStyle`,
+  `DialogBodyStyle`, `drawDialogHeader`): no title bar, `NoMove` + `ImGuiCond_Always` centring on the work area,
+  `NoSavedSettings`, the palette's `dialog` token read ONCE in `dialogFill()` (`I287`'s row), the `active` outline,
+  `ThemeDialogs` for every dp. A third first-contact window takes the same frame. The four frame pushes are popped on
+  the statement after `Begin` / `BeginPopupModal` -- a modal reads them inside `Begin`, and a tooltip must keep the
+  theme's popup look. A full-width band reserves its HEIGHT only (`Dummy(ImVec2(0, h))`): an item as wide as the
+  window makes the content that wide, and once a short work area clamps the window its vertical scrollbar turns the
+  difference into a `ScrollMax.x` a horizontal wheel scrolls with no `HorizontalScrollbar` flag (`imgui.cpp:8478`,
+  `:11053`; `I359`). No flag closes that reach and keeps D34: the wheel's only gates, `NoScrollWithMouse` /
+  `NoMouseInputs` (`:11051`), also stop its vertical scroll, and `NoScrollbar` removes the reach only by removing the
+  scrollbar D34 draws (`:8401`). Both windows also pin their x scroll at 0 in their own block, directly above `Begin`
+  -- a pin anywhere else feeds the next `Begin` -- for the Welcome's floor-width button row (`I358(f)`).
+- **The dialog reads the disk ONLY through `NewProjectForm::probe`**, which `applyFileRequests`' step 0e keeps --
+  re-taken when the inputs move, after a Create, and every `NEW_PROJECT_PROBE_REFRESH_TICKS`. `probeNewProjectTarget`
+  and `createProject` share `newProjectTarget` / `classifyTarget`, so the preview and Create cannot disagree; the probe
+  is advisory and `createProject` keeps every refusal. A filesystem call in `project_ui.cpp` is a defect, and so is
+  a direct `createProject` / `promoteRecent` / `adoptProject` / `session.set` (`I358(a)`).
+- **Create, Enter and the GPU seam share `newProjectCreateEnabled`**; the dialog resolves ONCE --
+  `if (dismiss) {…} else if (commit) {…}` -- and every closing path calls `CloseCurrentPopup` on the line after its
+  one-shot (`PU1`, arm-local). A new way to answer the dialog joins that resolution; it never sets a form one-shot
+  from outside it.
+- **A seam that types into a field must reload the field when it is active**: an active `InputText` owns its text and
+  writes it back over the bound string every frame (`requestNewProjectInput` → `ReloadUserBufAndMoveToEnd` on its one
+  tick, `I353`/`I354`, `I358(h)`). A case driving such a seam proves the field was active first.
+- **Heights are stated, not assumed**: the Welcome window folds its list, its empty well and its wrapped blurb to the
+  work area (`welcomeLayout`); the New Project dialog's natural height is 517 dp, and under ≈ 523 points of work
+  height it is clamped and scrolls whole (D34) -- a row added to it moves that number.
+- **A user string is never an ImGui label** in either window: a card is `InvisibleButton("##…")` with its text on the
+  draw list (`I358(d)`), because a label hides everything after a `##`.
+- **The scripting-language control stays disabled until 4.6.1**: its selected card is `NEW_PROJECT_LANGUAGE`, the
+  constant `createProject` writes. Enabling it means a language parameter on `createProject` and a form field -- 4.6.1's
+  design, not a toggle of the `BeginDisabled()` pair.
+- **The validation line is ONE row in every state** and the dialog's height never changes after it appears; a state
+  that needs a second row breaks the stillness `ImGuiCond_Always` centring relies on.
+- **A click-equivalent seam on a modal resolves INSIDE the modal's body**, by the click's own predicate, so it closes
+  the popup the way a click does (`requestNewProjectAnswer`); a seam that sets a modal's one-shot from outside needs
+  I192's drained arm instead.

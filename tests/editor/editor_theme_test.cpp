@@ -782,3 +782,91 @@ TEST_CASE("theme: every text the panels draw on a ThemePanels ground meets its f
         CHECK(ratio >= row.floor);
     }
 }
+
+TEST_CASE("theme: the first-contact windows' metrics, as measured (task E.6.4, TH17)") {
+    // 47 floats: 47 x 4 = 188, alignment 4 on every target. A member added or removed moves the size, and this case
+    // restates every value beside it.
+    static_assert(sizeof(ed::ThemeDialogs) == 188U);
+    static_assert(alignof(ed::ThemeDialogs) == 4U);
+    const ed::ThemeDialogs& d = ed::EDITOR_THEME.dialogs;
+    CHECK(d.newProjectWidth == 667.0F);
+    CHECK(d.welcomeWidth == 560.0F);
+    CHECK(d.screenMargin == 24.0F);
+    CHECK(d.minWidth == 280.0F);
+    CHECK(d.paddingX == 26.0F);
+    CHECK(d.headerHeight == 54.0F);
+    CHECK(d.footerHeight == 66.0F);
+    CHECK(d.windowRounding == 9.0F);
+    CHECK(d.controlRounding == 7.0F);
+    CHECK(d.markSide == 16.0F);
+    CHECK(d.markBox == 24.0F);
+    CHECK(d.markCenterX == 34.0F);
+    CHECK(d.markTitleGap == 9.0F);
+    CHECK(d.closeHitSize == 24.0F);
+    CHECK(d.closeCenterInset == 29.0F);
+    CHECK(d.versionGap == 11.0F);
+    CHECK(d.fieldHeight == 38.0F);
+    CHECK(d.fieldPaddingX == 12.0F);
+    CHECK(d.buttonHeight == 36.0F);
+    CHECK(d.buttonPaddingX == 18.0F);
+    CHECK(d.browseGap == 9.0F);
+    CHECK(d.bodyTop == 18.0F);
+    CHECK(d.labelGap == 6.0F);
+    CHECK(d.fieldGap == 13.0F);
+    CHECK(d.lineGap == 9.0F);
+    CHECK(d.dividerGap == 14.0F);
+    CHECK(d.headingGap == 10.0F);
+    CHECK(d.cardHeight == 54.0F);
+    CHECK(d.cardGap == 9.0F);
+    CHECK(d.radioInset == 13.0F);
+    CHECK(d.radioDiameter == 15.0F);
+    CHECK(d.radioDot == 8.0F);
+    CHECK(d.cardTextInset == 38.0F);
+    CHECK(d.cardTitleTop == 10.0F);
+    CHECK(d.cardLineGap == 2.0F);
+    CHECK(d.hintGap == 6.0F);
+    CHECK(d.infoGap == 18.0F);
+    CHECK(d.infoHeight == 40.0F);
+    CHECK(d.infoDotInset == 13.0F);
+    CHECK(d.infoDotDiameter == 5.0F);
+    CHECK(d.infoTextInset == 28.0F);
+    CHECK(d.footerButtonGap == 12.0F);
+    CHECK(d.welcomeSectionGap == 18.0F);
+    CHECK(d.recentCardGap == 8.0F);
+    CHECK(d.recentIconInset == 14.0F);
+    CHECK(d.recentTextInset == 40.0F);
+    CHECK(d.emptyStateHeight == 96.0F);
+    // The derivations the comments claim, as exact dp arithmetic.
+    CHECK(d.newProjectWidth - (2.0F * d.paddingX) == 615.0F);                    // mock 1e's content box
+    const float titleLine = d.cardTitleTop + ed::EDITOR_THEME.type.bodySize;     // the card's title line box
+    const float subtitleLine = d.cardLineGap + ed::EDITOR_THEME.type.smallSize;  // the subtitle's, under it
+    CHECK(titleLine + subtitleLine + 12.0F == d.cardHeight);                     // 12 below the subtitle
+    CHECK(d.radioInset + d.radioDiameter + 10.0F == d.cardTextInset);
+    CHECK(d.infoDotInset + d.infoDotDiameter + 10.0F == d.infoTextInset);
+}
+
+TEST_CASE("theme: every text the first-contact windows draw meets its floor on its ground (task E.6.4, TH18)") {
+    // WCAG 2 from the bytes, TH7's helper, TH13's shape. The values beside each row are this helper's own output for
+    // the bytes. dialog is the token's first consumer (D23), so these are its first floors. textFaint (the version,
+    // the line's notes, the placeholder) carries NO floor, by TH7/TH13's stated decision; the disabled language cards
+    // fade by design and are not floored. textMuted is floored at 3.0 to stop a regression, without claiming AA.
+    const ed::ThemePalette& p = ed::EDITOR_THEME.palette;
+    const std::vector<FloorRow> rows{
+        {"textBright on dialog (the headline)", p.textBright, p.dialog, 4.5},                // 15.56
+        {"text on dialog (the field labels)", p.text, p.dialog, 7.0},                        // 13.49
+        {"textBright on inset (the typed name)", p.textBright, p.inset, 4.5},                // 15.18
+        {"textSecondary on inset (the Location path)", p.textSecondary, p.inset, 4.5},       // 8.44
+        {"success on dialog (the path Create makes)", p.success, p.dialog, 4.5},             // 8.64
+        {"error on dialog (a refusal)", p.error, p.dialog, 4.5},                             // 5.53
+        {"textLabel on dialog (Scripting language)", p.textLabel, p.dialog, 4.5},            // 6.04
+        {"textMuted on dialog (the blurb, creates, SETTINGS)", p.textMuted, p.dialog, 3.0},  // 4.19
+        {"textLabel on tile (the info prose)", p.textLabel, p.tile, 4.5},                    // 5.45
+    };
+    REQUIRE(rows.size() == 9U);
+    for (const FloorRow& row : rows) {
+        CAPTURE(row.name);
+        const double ratio = contrastRatio(row.foreground, row.background);
+        CAPTURE(ratio);
+        CHECK(ratio >= row.floor);
+    }
+}

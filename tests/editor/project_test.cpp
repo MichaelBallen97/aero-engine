@@ -14,6 +14,7 @@
 #include <aero/editor/entity_commands.hpp>
 #include <aero/editor/entity_ops.hpp>
 #include <aero/editor/project.hpp>
+#include <aero/editor/project_ui_view.hpp>  // task E.6.4 (P95): NEW_PROJECT_INFO_SPANS
 #include <aero/editor/scene_session.hpp>
 #include <aero/editor/selection.hpp>
 #include <aero/editor/text_file.hpp>
@@ -1585,13 +1586,14 @@ TEST_CASE("project: openProjectPath WARNs once per unknown key and still opens (
 
 // ---- PU1: BLOCKING-1, the code-review round ---------------------------------------------------------
 //
-// ImGui::CloseCurrentPopup()'s bookkeeping is pure UI/ImGui-internal state (g.OpenPopupStack,
-// g.HoveredWindow) that no test tier in this codebase can drive: it needs a live ImGui context AND a
-// synthesized widget click, and aero_editor_imgui_test is "ImGui-free at source" by design (the
-// AC-27/FileDialogHost precedent -- see .claude/rules/editor.md). This case is the next best thing: a
-// MECHANICAL, textual proof over project_ui.cpp's OWN SOURCE TEXT, the same grep principle the five CI
-// architecture guards already use, run here as a doctest case because what is being checked is one
-// file's own text, not a repo-wide invariant that needs `git ls-files`.
+// No test tier in this codebase can read g.HoveredWindow or synthesize a widget click or key. Since task
+// E.6.4 the GPU tier does drive the New Project modal's own close -- requestNewProjectAnswer is a
+// click-equivalent seam resolved inside the body -- and observes g.OpenPopupStack through
+// NewProjectRecord::popupOpenAtEntry (I354, I355). This case stays the arm-local source pin, the only
+// witness that each arm closes the popup for itself on the line after its one-shot: a MECHANICAL, textual
+// proof over project_ui.cpp's OWN SOURCE TEXT, the same grep principle the CI architecture guards use, run
+// here as a doctest case because what is being checked is one file's own text, not a repo-wide invariant
+// that needs `git ls-files`.
 
 TEST_CASE(
     "project_ui: the New Project modal closes the ImGui popup on every path that closes the form "
@@ -1640,14 +1642,60 @@ TEST_CASE(
         return false;  // the trigger itself is gone -- also a failure
     };
 
-    // Create -- occurrence 0 of its own trigger.
+    const auto linesWith = [&](std::string_view needle) {
+        std::size_t n = 0;
+        for (const std::string_view line : lines) {
+            if (line.find(needle) != std::string_view::npos) {
+                ++n;
+            }
+        }
+        return n;
+    };
+    const auto firstLineWith = [&](std::string_view needle) {
+        for (std::size_t i = 0; i < lines.size(); ++i) {
+            if (lines[i].find(needle) != std::string_view::npos) {
+                return i;
+            }
+        }
+        return lines.size();
+    };
+    // ARM-LOCAL: the next non-blank line after the Nth trigger IS the close. The 16-line window above reaches across
+    // `} else if (commit) {` -- the commit arm's close sits three lines below the dismiss arm's trigger -- so an arm
+    // that lost its own close would borrow its neighbour's and stay green (seed S30).
+    const auto closesOnNextLine = [&](std::string_view trigger, std::size_t occurrenceIndex) {
+        std::size_t seen = 0;
+        for (std::size_t i = 0; i < lines.size(); ++i) {
+            if (lines[i].find(trigger) == std::string_view::npos) {
+                continue;
+            }
+            if (seen != occurrenceIndex) {
+                ++seen;
+                continue;
+            }
+            for (std::size_t j = i + 1U; j < lines.size(); ++j) {
+                if (lines[j].find_first_not_of(" \t\r") != std::string_view::npos) {
+                    return lines[j].find("ImGui::CloseCurrentPopup();") != std::string_view::npos;
+                }
+            }
+            return false;  // the trigger is the file's last line
+        }
+        return false;  // the trigger itself is gone -- also a failure
+    };
+    // task E.6.4 (D20): ONE resolution at the end of the dialog's body -- `if (dismiss) {...} else if (commit) {...}`
+    // -- shared by Escape, Cancel, the close box and the GPU seam, plus the programmatic-close safety net in
+    // drawNewProjectModal's `else` arm. So the Create trigger occurs ONCE and the Cancel trigger TWICE: the dismiss
+    // arm (0) and the safety net (1), which has NO popup open to close and so must not reach a close.
+    CHECK(linesWith("form.createRequested = true;") == 1U);
+    CHECK(linesWith("form.cancelRequested = true;") == 2U);
     CHECK(closesWithinWindow("form.createRequested = true;", 0));
-    // `form.cancelRequested = true;` appears THREE times: the Cancel button (0), the hand-bound Esc
-    // handler (1), and the programmatic-close safety net in the `else` branch (2) -- which has NO
-    // popup open to close and is deliberately NOT asserted here (asserting it would be wrong, not
-    // merely untested).
     CHECK(closesWithinWindow("form.cancelRequested = true;", 0));
-    CHECK(closesWithinWindow("form.cancelRequested = true;", 1));
+    CHECK(closesOnNextLine("form.createRequested = true;", 0));  // each arm closes for itself
+    CHECK(closesOnNextLine("form.cancelRequested = true;", 0));
+    CHECK_FALSE(closesWithinWindow("form.cancelRequested = true;", 1));
+    // Dismiss WINS over a same-frame commit: the dismiss arm is the `if`, the commit arm its `else if`.
+    REQUIRE(linesWith("if (dismiss) {") == 1U);
+    REQUIRE(linesWith("} else if (commit) {") == 1U);
+    CHECK(firstLineWith("if (dismiss) {") < firstLineWith("} else if (commit) {"));
 }
 
 // ---- P84/P85 (Phase 2 audit): the root a project OPENS at is absolute --------------------------
@@ -1850,4 +1898,335 @@ TEST_CASE("project: the sceneIoAvailable gate sits BELOW the read and ABOVE the 
     CHECK(countAtLevel(records, engine::LogLevel::Info) == (io ? 2U : 1U));
     CHECK(session.path().empty() == !io);
     CHECK(f.world.entityCount() == (io ? 0U : 4U));
+}
+
+// ==================================================================================================
+// task E.6.4 -- the New Project dialog's probe, and its ONE target-path rule (P86-P94)
+// ==================================================================================================
+
+using engine::editor::NEW_PROJECT_LANGUAGE;
+using engine::editor::NewProjectTargetFacts;
+using engine::editor::NewProjectTargetKind;
+using engine::editor::newProjectTargetPath;
+using engine::editor::probeNewProjectTarget;
+
+TEST_CASE("project: the New Project preview names the root createProject makes (task E.6.4, P86)") {
+    SUBCASE("a fresh target") {
+        const TempDir dir;
+        const std::string preview = newProjectTargetPath(dir.utf8(), "Kart");
+        const ProjectCreateOutcome made = createProject(dir.utf8(), "Kart", "0.1.0");
+        REQUIRE(made.problem == CreateProblem::Ok);
+        CHECK_FALSE(preview.empty());
+        CHECK(preview == made.root);
+    }
+    SUBCASE("a project literally named project.json (SHOULD-FIX 8)") {
+        const TempDir dir;
+        const std::string preview = newProjectTargetPath(dir.utf8(), "project.json");
+        const ProjectCreateOutcome made = createProject(dir.utf8(), "project.json", "0.1.0");
+        REQUIRE(made.problem == CreateProblem::Ok);
+        CHECK(preview == made.root);
+    }
+    SUBCASE("a RELATIVE location (P85's shape)") {
+        const TempDir dir;
+        const ScopedCwd cwd{std::filesystem::path(dir.utf8())};
+        std::error_code ec;
+        std::filesystem::create_directory("here", ec);
+        REQUIRE_FALSE(ec);
+        const std::string preview = newProjectTargetPath("here", "Kart");
+        const ProjectCreateOutcome made = createProject("here", "Kart", "0.1.0");
+        REQUIRE(made.problem == CreateProblem::Ok);
+        CHECK(std::filesystem::path(preview).is_absolute());
+        CHECK(preview == made.root);
+    }
+}
+
+TEST_CASE("project: the probe refuses lexically before it touches anything (task E.6.4, P87)") {
+    const TempDir dir;
+    const std::array<std::string, 3> badNames{"a/b", "CON", ""};
+    for (const std::string& bad : badNames) {
+        CAPTURE(bad);
+        const NewProjectTargetFacts facts = probeNewProjectTarget(dir.utf8(), bad);
+        CHECK_FALSE(facts.touched);
+        CHECK_FALSE(facts.locationIsDirectory);
+        CHECK(facts.targetPath.empty());
+        CHECK(facts.location == dir.utf8());  // the key, verbatim
+        CHECK(facts.name == bad);
+    }
+    const NewProjectTargetFacts noLocation = probeNewProjectTarget("", "Kart");
+    CHECK_FALSE(noLocation.touched);
+    CHECK(noLocation.name == "Kart");
+    // ANTI-VACUITY: a valid pair IS probed.
+    const NewProjectTargetFacts valid = probeNewProjectTarget(dir.utf8(), "Kart");
+    CHECK(valid.touched);
+    CHECK(valid.locationIsDirectory);
+    CHECK_FALSE(valid.targetPath.empty());
+}
+
+TEST_CASE("project: the probe and createProject agree on every on-disk shape (task E.6.4, P88)") {
+    enum class Shape : std::uint8_t {
+        LocationMissing,
+        LocationIsFile,
+        Absent,
+        EmptyDirectory,
+        NonEmptyDirectory,
+        FileAtTarget
+    };
+    struct Row {
+        const char* label;
+        Shape shape;
+        bool locationIsDirectory;
+        NewProjectTargetKind target;  // read only when locationIsDirectory
+        CreateProblem problem;
+    };
+    constexpr std::array<Row, 6> ROWS{{
+        {"location missing", Shape::LocationMissing, false, NewProjectTargetKind::Absent,
+         CreateProblem::LocationMissing},
+        {"location is a file", Shape::LocationIsFile, false, NewProjectTargetKind::Absent,
+         CreateProblem::LocationMissing},
+        {"target absent", Shape::Absent, true, NewProjectTargetKind::Absent, CreateProblem::Ok},
+        {"target empty", Shape::EmptyDirectory, true, NewProjectTargetKind::EmptyDirectory, CreateProblem::Ok},
+        {"target not empty", Shape::NonEmptyDirectory, true, NewProjectTargetKind::NonEmptyDirectory,
+         CreateProblem::TargetNotEmpty},
+        {"target is a file", Shape::FileAtTarget, true, NewProjectTargetKind::File, CreateProblem::TargetIsFile},
+    }};
+    for (const Row& row : ROWS) {
+        CAPTURE(row.label);
+        const TempDir dir;  // a fresh shape per row: an Ok row scaffolds
+        std::string location = dir.utf8();
+        std::error_code ec;
+        switch (row.shape) {
+            case Shape::LocationMissing:
+                location = dir.join("missing");
+                break;
+            case Shape::LocationIsFile:
+                REQUIRE(writeTextFileAtomic(dir.join("plain.txt"), "x").empty());
+                location = dir.join("plain.txt");
+                break;
+            case Shape::Absent:
+                break;
+            case Shape::EmptyDirectory:
+                std::filesystem::create_directory(std::filesystem::path(dir.utf8()) / "Kart", ec);
+                REQUIRE_FALSE(ec);
+                break;
+            case Shape::NonEmptyDirectory:
+                std::filesystem::create_directory(std::filesystem::path(dir.utf8()) / "Kart", ec);
+                REQUIRE_FALSE(ec);
+                REQUIRE(writeTextFileAtomic(dir.join("Kart/keep.txt"), "x").empty());
+                break;
+            case Shape::FileAtTarget:
+                REQUIRE(writeTextFileAtomic(dir.join("Kart"), "x").empty());
+                break;
+        }
+        const NewProjectTargetFacts facts = probeNewProjectTarget(location, "Kart");
+        CHECK(facts.touched);
+        CHECK(facts.locationIsDirectory == row.locationIsDirectory);
+        if (row.locationIsDirectory) {
+            CHECK((facts.target == row.target));
+        }
+        const ProjectCreateOutcome made = createProject(location, "Kart", "0.1.0");
+        CHECK((made.problem == row.problem));
+        if (made.problem == CreateProblem::Ok) {
+            CHECK(made.root == facts.targetPath);  // the probe named the root Create made
+        }
+    }
+}
+
+TEST_CASE("project: the probe writes nothing, and a hidden entry makes a folder not empty (task E.6.4, P89)") {
+    const TempDir dir;
+    const auto entryCount = [&dir]() {
+        std::size_t n = 0;
+        std::error_code ec;
+        std::filesystem::directory_iterator it(std::filesystem::path(dir.utf8()), ec);
+        while (!ec && it != std::filesystem::directory_iterator()) {
+            ++n;
+            it.increment(ec);
+        }
+        return n;
+    };
+    REQUIRE(entryCount() == 0U);
+    CHECK((probeNewProjectTarget(dir.utf8(), "Kart").target == NewProjectTargetKind::Absent));
+    CHECK(entryCount() == 0U);  // the absent target is still absent: the probe created nothing
+    CHECK_FALSE(directoryExists(dir.join("Kart")));
+    std::error_code ec;
+    std::filesystem::create_directory(std::filesystem::path(dir.utf8()) / "Kart", ec);
+    REQUIRE_FALSE(ec);
+    REQUIRE(writeTextFileAtomic(dir.join("Kart/.hidden"), "x").empty());  // the .DS_Store rule (G16)
+    CHECK((probeNewProjectTarget(dir.utf8(), "Kart").target == NewProjectTargetKind::NonEmptyDirectory));
+}
+
+TEST_CASE("project: New Project writes the one language the dialog shows (task E.6.4, P90)") {
+    CHECK((NEW_PROJECT_LANGUAGE == ProjectLanguage::Ts));
+    const TempDir dir;
+    const ProjectCreateOutcome made = createProject(dir.utf8(), "Kart", "0.1.0");
+    REQUIRE(made.problem == CreateProblem::Ok);
+    const ProjectLoadOutcome opened = loadProjectFrom(made.root);
+    REQUIRE(opened.ok);
+    CHECK((opened.manifest.language == NEW_PROJECT_LANGUAGE));
+}
+
+using engine::editor::NEW_PROJECT_PROBE_REFRESH_TICKS;
+
+TEST_CASE("project: applyFileRequests probes the open form's inputs and never a closed form's (task E.6.4, P91)") {
+    const TempDir dir;
+    FlowFixture f;
+    SceneSession session;
+    f.project.flow.form.name = "Kart";
+    f.project.flow.form.location = dir.utf8();
+    applyFileRequests(f.ctx, f.commands, session, f.flow, f.host, f.project);  // the form is CLOSED
+    CHECK_FALSE(f.project.flow.form.probe.touched);
+    CHECK(f.project.flow.form.probe.location.empty());
+
+    f.project.flow.form.open = true;
+    applyFileRequests(f.ctx, f.commands, session, f.flow, f.host, f.project);
+    const NewProjectTargetFacts& probe = f.project.flow.form.probe;
+    CHECK(probe.touched);
+    CHECK(probe.location == dir.utf8());
+    CHECK(probe.name == "Kart");
+    CHECK(probe.targetPath == newProjectTargetPath(dir.utf8(), "Kart"));
+    CHECK((probe.target == NewProjectTargetKind::Absent));
+    CHECK(f.project.flow.form.probeAge == 0U);
+}
+
+TEST_CASE("project: the form's probe is cached by its inputs and refreshed on the clock (task E.6.4, P92)") {
+    const TempDir dir;
+    FlowFixture f;
+    SceneSession session;
+    auto& form = f.project.flow.form;
+    form.open = true;
+    form.name = "Kart";
+    form.location = dir.utf8();
+    applyFileRequests(f.ctx, f.commands, session, f.flow, f.host, f.project);
+    REQUIRE((form.probe.target == NewProjectTargetKind::Absent));
+
+    // Fill the target behind the probe's back, as a file manager would.
+    std::error_code ec;
+    std::filesystem::create_directory(std::filesystem::path(dir.utf8()) / "Kart", ec);
+    REQUIRE_FALSE(ec);
+    REQUIRE(writeTextFileAtomic(dir.join("Kart/keep.txt"), "x").empty());
+    for (std::uint32_t i = 0; i < NEW_PROJECT_PROBE_REFRESH_TICKS; ++i) {
+        CAPTURE(i);
+        applyFileRequests(f.ctx, f.commands, session, f.flow, f.host, f.project);
+        CHECK((form.probe.target == NewProjectTargetKind::Absent));  // cached: not re-read on every call
+    }
+    CHECK(form.probeAge == NEW_PROJECT_PROBE_REFRESH_TICKS);
+    applyFileRequests(f.ctx, f.commands, session, f.flow, f.host, f.project);  // the refresh
+    CHECK((form.probe.target == NewProjectTargetKind::NonEmptyDirectory));
+    CHECK(form.probeAge == 0U);
+
+    form.name = "Kart2";  // an edit is seen by the very next call
+    applyFileRequests(f.ctx, f.commands, session, f.flow, f.host, f.project);
+    CHECK(form.probe.name == "Kart2");
+    CHECK((form.probe.target == NewProjectTargetKind::Absent));
+}
+
+TEST_CASE("project: a failed Create keeps its message and re-probes; the next edit clears it (task E.6.4, P93)") {
+    // E11's recipe: an EMPTY, adoptable target made read-only -- the probe adopts it, and createProject then fails at
+    // create_directory(target / "assets").
+    const TempDir dir;
+    std::error_code ec;
+    const std::filesystem::path target = std::filesystem::path(dir.utf8()) / "Kart";
+    std::filesystem::create_directory(target, ec);
+    REQUIRE_FALSE(ec);
+    std::filesystem::permissions(target, std::filesystem::perms::owner_read | std::filesystem::perms::owner_exec,
+                                 std::filesystem::perm_options::replace, ec);
+    REQUIRE_FALSE(ec);
+
+    FlowFixture f;
+    SceneSession session;
+    auto& form = f.project.flow.form;
+    form.open = true;
+    form.name = "Kart";
+    form.location = dir.utf8();
+    applyFileRequests(f.ctx, f.commands, session, f.flow, f.host, f.project);
+    const bool adopted = form.probe.target == NewProjectTargetKind::EmptyDirectory;
+    form.probeAge = 7U;  // mid-cycle, so the forced re-probe shows as a reset
+    form.createRequested = true;
+    applyFileRequests(f.ctx, f.commands, session, f.flow, f.host, f.project);
+
+    std::error_code restoreEc;  // BEFORE any assertion, or ~TempDir cannot clean up (E11)
+    std::filesystem::permissions(target, std::filesystem::perms::owner_all, std::filesystem::perm_options::replace,
+                                 restoreEc);
+    REQUIRE(adopted);
+    if (f.projectSession.isOpen()) {
+        WARN("the read-only-target seed did not block a write on this account; skipping (E11's shape)");
+        return;
+    }
+    CHECK(form.open);
+    CHECK_FALSE(form.error.empty());  // the message stays: a Create ran in this call
+    CHECK(form.probeAge == 0U);       // ...and the probe was re-taken in the same call
+    CHECK(form.probe.touched);
+
+    form.name = "Kart2";
+    applyFileRequests(f.ctx, f.commands, session, f.flow, f.host, f.project);
+    CHECK(form.error.empty());  // an edit drops a message about the old inputs
+    CHECK(form.probe.name == "Kart2");
+}
+
+TEST_CASE("project: Cancel and a successful Create reset the probe with the form (task E.6.4, P94)") {
+    const TempDir dir;
+    FlowFixture f;
+    SceneSession session;
+    auto& form = f.project.flow.form;
+    form.open = true;
+    form.name = "Kart";
+    form.location = dir.utf8();
+    applyFileRequests(f.ctx, f.commands, session, f.flow, f.host, f.project);
+    REQUIRE(form.probe.touched);
+    form.cancelRequested = true;
+    applyFileRequests(f.ctx, f.commands, session, f.flow, f.host, f.project);
+    CHECK_FALSE(form.open);
+    CHECK_FALSE(form.probe.touched);
+    CHECK(form.probe.location.empty());
+    CHECK(form.probeAge == 0U);
+
+    form.open = true;
+    form.name = "Kart";
+    form.location = dir.utf8();
+    applyFileRequests(f.ctx, f.commands, session, f.flow, f.host, f.project);
+    REQUIRE(form.probe.touched);
+    form.createRequested = true;
+    applyFileRequests(f.ctx, f.commands, session, f.flow, f.host, f.project);
+    REQUIRE(f.projectSession.isOpen());
+    CHECK_FALSE(form.open);
+    CHECK_FALSE(form.probe.touched);
+}
+
+TEST_CASE("project: New Project creates exactly what the dialog's info box names (task E.6.4, P95)") {
+    // The info box's code spans ARE the claim (D16). createProject names its folders with literals, not with the
+    // constants NP9 reads, so only an observed effect ties the writer to the copy: a first scene or a scripts/ module
+    // added to the writer turns this red while NP9 stays green (seed S49).
+    std::vector<std::string> expected;
+    for (const engine::editor::InfoSpan& span : engine::editor::NEW_PROJECT_INFO_SPANS) {
+        if (span.code) {
+            std::string name(span.text);
+            if (!name.empty() && name.back() == '/') {
+                name.pop_back();  // "assets/" names the folder "assets"
+            }
+            expected.push_back(name);
+        }
+    }
+    std::sort(expected.begin(), expected.end());
+    REQUIRE(expected.size() == 3U);  // ANTI-VACUITY: the spans really name three things
+
+    const TempDir dir;
+    const ProjectCreateOutcome made = createProject(dir.utf8(), "Kart", "0.1.0");
+    REQUIRE(made.problem == CreateProblem::Ok);
+    std::vector<std::string> found;
+    std::error_code ec;
+    std::filesystem::directory_iterator it(std::filesystem::path(made.root), ec);
+    REQUIRE_FALSE(ec);
+    while (!ec && it != std::filesystem::directory_iterator()) {
+        const std::u8string leaf = it->path().filename().u8string();
+        found.emplace_back(reinterpret_cast<const char*>(leaf.data()), leaf.size());
+        it.increment(ec);
+    }
+    REQUIRE_FALSE(ec);
+    std::sort(found.begin(), found.end());
+    REQUIRE(found.size() == expected.size());
+    for (std::size_t i = 0; i < found.size(); ++i) {
+        CAPTURE(i);
+        CHECK(found[i] == expected[i]);  // assets, project.json, scenes -- and nothing else
+    }
+    CHECK(directoryExists(made.root + "/assets"));
+    CHECK(directoryExists(made.root + "/scenes"));
 }
