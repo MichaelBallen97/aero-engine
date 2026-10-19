@@ -2015,3 +2015,130 @@ TEST_CASE("project: New Project writes the one language the dialog shows (task E
     REQUIRE(opened.ok);
     CHECK((opened.manifest.language == NEW_PROJECT_LANGUAGE));
 }
+
+using engine::editor::NEW_PROJECT_PROBE_REFRESH_TICKS;
+
+TEST_CASE("project: applyFileRequests probes the open form's inputs and never a closed form's (task E.6.4, P91)") {
+    const TempDir dir;
+    FlowFixture f;
+    SceneSession session;
+    f.project.flow.form.name = "Kart";
+    f.project.flow.form.location = dir.utf8();
+    applyFileRequests(f.ctx, f.commands, session, f.flow, f.host, f.project);  // the form is CLOSED
+    CHECK_FALSE(f.project.flow.form.probe.touched);
+    CHECK(f.project.flow.form.probe.location.empty());
+
+    f.project.flow.form.open = true;
+    applyFileRequests(f.ctx, f.commands, session, f.flow, f.host, f.project);
+    const NewProjectTargetFacts& probe = f.project.flow.form.probe;
+    CHECK(probe.touched);
+    CHECK(probe.location == dir.utf8());
+    CHECK(probe.name == "Kart");
+    CHECK(probe.targetPath == newProjectTargetPath(dir.utf8(), "Kart"));
+    CHECK((probe.target == NewProjectTargetKind::Absent));
+    CHECK(f.project.flow.form.probeAge == 0U);
+}
+
+TEST_CASE("project: the form's probe is cached by its inputs and refreshed on the clock (task E.6.4, P92)") {
+    const TempDir dir;
+    FlowFixture f;
+    SceneSession session;
+    auto& form = f.project.flow.form;
+    form.open = true;
+    form.name = "Kart";
+    form.location = dir.utf8();
+    applyFileRequests(f.ctx, f.commands, session, f.flow, f.host, f.project);
+    REQUIRE((form.probe.target == NewProjectTargetKind::Absent));
+
+    // Fill the target behind the probe's back, as a file manager would.
+    std::error_code ec;
+    std::filesystem::create_directory(std::filesystem::path(dir.utf8()) / "Kart", ec);
+    REQUIRE_FALSE(ec);
+    REQUIRE(writeTextFileAtomic(dir.join("Kart/keep.txt"), "x").empty());
+    for (std::uint32_t i = 0; i < NEW_PROJECT_PROBE_REFRESH_TICKS; ++i) {
+        CAPTURE(i);
+        applyFileRequests(f.ctx, f.commands, session, f.flow, f.host, f.project);
+        CHECK((form.probe.target == NewProjectTargetKind::Absent));  // cached: not re-read on every call
+    }
+    CHECK(form.probeAge == NEW_PROJECT_PROBE_REFRESH_TICKS);
+    applyFileRequests(f.ctx, f.commands, session, f.flow, f.host, f.project);  // the refresh
+    CHECK((form.probe.target == NewProjectTargetKind::NonEmptyDirectory));
+    CHECK(form.probeAge == 0U);
+
+    form.name = "Kart2";  // an edit is seen by the very next call
+    applyFileRequests(f.ctx, f.commands, session, f.flow, f.host, f.project);
+    CHECK(form.probe.name == "Kart2");
+    CHECK((form.probe.target == NewProjectTargetKind::Absent));
+}
+
+TEST_CASE("project: a failed Create keeps its message and re-probes; the next edit clears it (task E.6.4, P93)") {
+    // E11's recipe: an EMPTY, adoptable target made read-only -- the probe adopts it, and createProject then fails at
+    // create_directory(target / "assets").
+    const TempDir dir;
+    std::error_code ec;
+    const std::filesystem::path target = std::filesystem::path(dir.utf8()) / "Kart";
+    std::filesystem::create_directory(target, ec);
+    REQUIRE_FALSE(ec);
+    std::filesystem::permissions(target, std::filesystem::perms::owner_read | std::filesystem::perms::owner_exec,
+                                 std::filesystem::perm_options::replace, ec);
+    REQUIRE_FALSE(ec);
+
+    FlowFixture f;
+    SceneSession session;
+    auto& form = f.project.flow.form;
+    form.open = true;
+    form.name = "Kart";
+    form.location = dir.utf8();
+    applyFileRequests(f.ctx, f.commands, session, f.flow, f.host, f.project);
+    const bool adopted = form.probe.target == NewProjectTargetKind::EmptyDirectory;
+    form.probeAge = 7U;  // mid-cycle, so the forced re-probe shows as a reset
+    form.createRequested = true;
+    applyFileRequests(f.ctx, f.commands, session, f.flow, f.host, f.project);
+
+    std::error_code restoreEc;  // BEFORE any assertion, or ~TempDir cannot clean up (E11)
+    std::filesystem::permissions(target, std::filesystem::perms::owner_all, std::filesystem::perm_options::replace,
+                                 restoreEc);
+    REQUIRE(adopted);
+    if (f.projectSession.isOpen()) {
+        WARN("the read-only-target seed did not block a write on this account; skipping (E11's shape)");
+        return;
+    }
+    CHECK(form.open);
+    CHECK_FALSE(form.error.empty());  // the message stays: a Create ran in this call
+    CHECK(form.probeAge == 0U);       // ...and the probe was re-taken in the same call
+    CHECK(form.probe.touched);
+
+    form.name = "Kart2";
+    applyFileRequests(f.ctx, f.commands, session, f.flow, f.host, f.project);
+    CHECK(form.error.empty());  // an edit drops a message about the old inputs
+    CHECK(form.probe.name == "Kart2");
+}
+
+TEST_CASE("project: Cancel and a successful Create reset the probe with the form (task E.6.4, P94)") {
+    const TempDir dir;
+    FlowFixture f;
+    SceneSession session;
+    auto& form = f.project.flow.form;
+    form.open = true;
+    form.name = "Kart";
+    form.location = dir.utf8();
+    applyFileRequests(f.ctx, f.commands, session, f.flow, f.host, f.project);
+    REQUIRE(form.probe.touched);
+    form.cancelRequested = true;
+    applyFileRequests(f.ctx, f.commands, session, f.flow, f.host, f.project);
+    CHECK_FALSE(form.open);
+    CHECK_FALSE(form.probe.touched);
+    CHECK(form.probe.location.empty());
+    CHECK(form.probeAge == 0U);
+
+    form.open = true;
+    form.name = "Kart";
+    form.location = dir.utf8();
+    applyFileRequests(f.ctx, f.commands, session, f.flow, f.host, f.project);
+    REQUIRE(form.probe.touched);
+    form.createRequested = true;
+    applyFileRequests(f.ctx, f.commands, session, f.flow, f.host, f.project);
+    REQUIRE(f.projectSession.isOpen());
+    CHECK_FALSE(form.open);
+    CHECK_FALSE(form.probe.touched);
+}

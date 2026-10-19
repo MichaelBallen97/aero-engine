@@ -272,6 +272,10 @@ struct SceneFileContext {
 inline constexpr SceneFileContext NO_PROJECT_SCENE_CONTEXT{};
 
 // ---- the New Project form and the project flow's own state (task 2.6.1, §3.6) -------------------
+// task E.6.4 (D12): how many applyFileRequests calls an unchanged New Project probe is trusted for -- about 0.5 s
+// focused at 60 Hz, about 1.5 s under the 20-Hz unfocused cap -- before step 0e re-takes it, so a folder filled or
+// emptied outside the editor is seen with no edit.
+inline constexpr std::uint32_t NEW_PROJECT_PROBE_REFRESH_TICKS = 30;
 struct NewProjectForm {
     // STATE -- owned by the flow, edited by the modal's own widgets.
     bool open = false;     // the modal is up -> shell_ui's `fileEnabled` MUST include !open (F10)
@@ -285,6 +289,11 @@ struct NewProjectForm {
     bool createRequested = false;
     bool cancelRequested = false;
     bool browseRequested = false;  // -> the ProjectLocation folder dialog
+    // task E.6.4 (D12) -- STATE written ONLY by applyFileRequests' step 0e, outside the draw walk. The modal reads it
+    // and never writes it. `probe` is probeNewProjectTarget's last answer, keyed by the (location, name) it answered;
+    // `probeAge` counts the step-0e calls since it was taken. Both reset with the form (`form = {}`).
+    NewProjectTargetFacts probe;
+    std::uint32_t probeAge = 0;
 };
 struct ProjectFlow {
     NewProjectForm form;

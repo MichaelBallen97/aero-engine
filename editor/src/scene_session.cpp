@@ -635,6 +635,27 @@ void performAction(FileAction action, CommandContext& context, CommandStack& com
 
 }  // namespace
 
+namespace {
+
+// task E.6.4 (D11/D12): step 0e's body. Inputs that moved since the last answer make the answer -- and a failed
+// Create's message -- describe a pair the form no longer holds, so the message is dropped; unless a Create ran in
+// THIS call, when the message is about exactly these inputs (the AC-12 case). A Create that ran forces a re-probe:
+// it failed (success already reset the form), and the disk may have changed under it.
+void refreshNewProjectProbe(NewProjectForm& form, bool createRan) {
+    const bool inputsMoved = form.probe.location != form.location || form.probe.name != form.name;
+    if (inputsMoved && !createRan) {
+        form.error.clear();
+    }
+    if (inputsMoved || createRan || form.probeAge >= NEW_PROJECT_PROBE_REFRESH_TICKS) {
+        form.probe = probeNewProjectTarget(form.location, form.name);
+        form.probeAge = 0;
+        return;
+    }
+    ++form.probeAge;
+}
+
+}  // namespace
+
 void applyFileRequests(CommandContext& context, CommandStack& commands, SceneSession& session, FileFlow& flow,
                        const FileDialogHost& host, ProjectContext& project) {
     // 0. The New Project form's own four requests -- BEFORE the modal-answer block below. Ordering
@@ -690,8 +711,10 @@ void applyFileRequests(CommandContext& context, CommandStack& commands, SceneSes
             launchOpenProjectFolderDialog(host.channel->shared_from_this(), host.parentWindow, startDir);
         }
     }
+    bool createRan = false;  // task E.6.4: step 0e re-probes after a Create (D12)
     if (project.flow.form.createRequested) {
         project.flow.form.createRequested = false;
+        createRan = true;
         const bool ok = createAndOpenProject(context, commands, session, project, project.flow.form.location,
                                              project.flow.form.name);
         if (ok) {
@@ -702,6 +725,12 @@ void applyFileRequests(CommandContext& context, CommandStack& commands, SceneSes
             // live name/location validation cannot see in advance (a race, a write failure, ...).
             project.flow.form.error = "could not create the project -- see the Console for details";
         }
+    }
+    // 0e. task E.6.4 (D12): the New Project dialog's live answer, re-taken HERE -- outside the draw walk, after the
+    //     create arm -- when the inputs moved, when a Create ran, or once it is NEW_PROJECT_PROBE_REFRESH_TICKS calls
+    //     old. The modal only reads it (project_ui.cpp names no filesystem function; I358(a)).
+    if (project.flow.form.open) {
+        refreshNewProjectProbe(project.flow.form, createRan);
     }
     if (project.flow.clearRecentsRequested) {
         project.flow.clearRecentsRequested = false;
