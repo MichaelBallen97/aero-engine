@@ -29093,6 +29093,9 @@ namespace {
 constexpr int E64_WINDOW_WIDTH = 900;
 constexpr int E64_WINDOW_HEIGHT = 720;
 constexpr std::size_t E64_RECENT_COUNT = 12U;  // I351's long list: more than WELCOME_MAX_VISIBLE_CARDS
+// Every Welcome row but the blurb and the list (or the well), at scale 1, summed INDEPENDENTLY of welcomeLayout: the
+// header 54 + bodyTop 18 + the headline 16 + 18 + the buttons 36 + 18 + the heading 14 + labelGap 6 + paddingX 26.
+constexpr float E64_WELCOME_ROWS_BUT_BLURB = 206.0F;
 
 // A scratch home for every E.6.4 app, so a "~" never depends on the machine (EditorAppConfig::homeDirectory).
 [[nodiscard]] std::string e64Home() {
@@ -29208,6 +29211,14 @@ TEST_CASE("editor: the Welcome window draws its frame, its two actions and its e
     CHECK(e64Centred(w.windowPos, w.windowSize, w.workPos, w.workSize));
     const float width = engine::editor::welcomeLayout(0U, w.workSize, e64RecordedBlurb(w), w.uiScaleAtDraw).width;
     CHECK(std::fabs(w.windowSize.x - width) < 1.0F);  // ImGui's window against the rule, from the recorded inputs
+    // ImGui's auto-fit height against the rows the fold counted (D34): a row the draw adds, or a face it changes,
+    // moves the window off this sum while the pure model stays green. Exact at scale 1 only, so WARN-gated.
+    const bool unitScale = w.uiScaleAtDraw == 1.0F;
+    WARN(unitScale);
+    if (unitScale) {
+        const float rows = E64_WELCOME_ROWS_BUT_BLURB + w.layout.blurbHeight + w.layout.emptyStateHeight;
+        CHECK(std::fabs(w.windowSize.y - rows) < 1.0F);
+    }
     CHECK(w.emptyStateDrawn);
     CHECK(w.cards.empty());
     CHECK(w.header.title == "Aero Editor");
@@ -29293,10 +29304,18 @@ TEST_CASE("editor: a long recents list scrolls inside a window that stays in the
     REQUIRE(app->tick());
     const engine::editor::WelcomeRecord& w = app->projectUiRecord().welcome;
     REQUIRE(w.drawnThisFrame);
-    CHECK(w.layout.visibleCards < E64_RECENT_COUNT);  // ANTI-VACUITY: the list really scrolls
+    CHECK(w.layout.visibleCards < E64_RECENT_COUNT);  // the fixture's premise: more recents than any fold shows
     CHECK(w.layout.listScrolls);
     CHECK(std::fabs(w.listHeight - w.layout.listHeight) < 1.0F);  // the child as ImGui laid it out, read off ImGui
     CHECK(w.cards.size() == E64_RECENT_COUNT);                    // every card submitted; the child clips them
+    // ImGui's auto-fit height against the rows the fold counted, the list at the height ImGui gave its child (I349's
+    // sum). At this pose the CAP limits the list, so the margins below are wide; I360 samples the fold itself.
+    const bool unitScale = w.uiScaleAtDraw == 1.0F;
+    WARN(unitScale);
+    if (unitScale) {
+        const float rows = E64_WELCOME_ROWS_BUT_BLURB + w.layout.blurbHeight + w.listHeight;
+        CHECK(std::fabs(w.windowSize.y - rows) < 1.0F);
+    }
     // The fold's promise against what ImGui DREW (D6, D34): the window never runs past the work area, and while the
     // fold is above its one-card floor it keeps screenMargin clear at both ends. A runner short enough to force the
     // floor makes the margin arm vacuous, which WARNs rather than fails (#111).
@@ -29636,7 +29655,12 @@ TEST_CASE("editor: project_ui.cpp reads no disk, binds its keys, draws every str
         CHECK(countLinesContaining(code, "ImGuiKey_Enter") == 1U);
         CHECK(countLinesContaining(code, "ImGuiKey_KeypadEnter") == 1U);
         CHECK(countLinesContaining(code, "ImGuiKey_Escape") == 1U);
-        CHECK(code[soleLineContaining(code, "(enterPressed")].find("createEnabled") != std::string::npos);
+        // The WHOLE predicate, not one token: a re-bracketing that leaves Enter outside `&& createEnabled` keeps both
+        // names on the line and lets Enter create from a refused state, which no tier can press.
+        constexpr std::string_view ENTER_COMMITS =
+            "commit = ((enterPressed || fileMenu.newProjectAnswer == "
+            "NewProjectAnswer::Create) && createEnabled) || commit;";
+        CHECK(countLinesContaining(code, ENTER_COMMITS) == 1U);
         CHECK(soleLineContaining(code, "if (dismiss) {") < soleLineContaining(code, "} else if (commit) {"));
     }
     SUBCASE("(c) the language control: one disabled pair, the one tooltip, the selection Create writes (D18)") {
@@ -29744,6 +29768,60 @@ TEST_CASE("editor: a clamped first-contact window has nothing to scroll sideways
     WARN(m.scrollbarY);
     app->requestNewProjectAnswer(engine::editor::NewProjectAnswer::Dismiss);
     REQUIRE(app->tick());
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: where the fold limits the recents, the Welcome shows every card that fits (task E.6.4, I360)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    // 560 rows leave a work area of about 466 points: 466 - 48 - 222 = 196 of room folds the list to 3 cards (178),
+    // under the cap of 5 and above the floor of 1, with 18 points of slack -- the pose where the FOLD decides.
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "welcome i360", .width = E64_WINDOW_WIDTH, .height = 560});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    const std::string home = e64Home();
+    std::vector<std::string> paths;
+    paths.reserve(E64_RECENT_COUNT);  // performance-inefficient-vector-operation, an error under CI's clang-tidy
+    for (std::size_t i = 0; i < E64_RECENT_COUNT; ++i) {
+        paths.push_back(home + "/dev/Game" + std::to_string(i));
+    }
+    const std::string recentsFile = uniqueRecentsFile();
+    e64WriteRecents(recentsFile, paths);
+    std::optional<engine::editor::EditorApp> app = e64AppRestoring(*device, *window, ctx, recentsFile);
+    REQUIRE(app->recentProjectCount() == E64_RECENT_COUNT);
+    REQUIRE(app->tick());
+    const engine::editor::WelcomeRecord& w = app->projectUiRecord().welcome;
+    REQUIRE(w.drawnThisFrame);
+    MESSAGE("I360: work " << w.workSize.y << ", cards " << w.layout.visibleCards << ", window " << w.windowSize.y);
+    CHECK(w.layout.listScrolls);
+    CHECK(std::fabs(w.listHeight - w.layout.listHeight) < 1.0F);
+    const bool unitScale = w.uiScaleAtDraw == 1.0F;
+    WARN(unitScale);
+    if (unitScale) {  // I349's sum: what ImGui drew is what the fold counted
+        const float rows = E64_WELCOME_ROWS_BUT_BLURB + w.layout.blurbHeight + w.listHeight;
+        CHECK(std::fabs(w.windowSize.y - rows) < 1.0F);
+    }
+    // The fold's promise against what ImGui DREW (D6, D34), where the fold -- neither the cap nor the one-card floor --
+    // limits the list. A runner that delivers another height may land on either, which WARNs rather than fails (#111).
+    const std::size_t cards = w.layout.visibleCards;
+    const bool folded = 1U < cards && cards < engine::editor::WELCOME_MAX_VISIBLE_CARDS;
+    WARN(folded);
+    if (folded) {
+        const float margin = engine::editor::EDITOR_THEME.dialogs.screenMargin * w.uiScaleAtDraw;
+        const float bottom = w.windowPos.y + w.windowSize.y;
+        CHECK(w.windowPos.y >= w.workPos.y + margin - 1.0F);
+        CHECK(bottom <= w.workPos.y + w.workSize.y - margin + 1.0F);
+        // ...and took every card that fits: one more card's pitch would have run into a margin.
+        CHECK(w.workSize.y - (2.0F * margin) - w.windowSize.y < w.layout.cardHeight + w.layout.cardGap);
+    }
     app->requestQuit();
     CHECK(app->tick() == false);
     app.reset();

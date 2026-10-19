@@ -211,8 +211,20 @@ TEST_CASE("project ui: the line fits path first, then the tail, then the lead (t
     CHECK(nothing.path.text.empty());
     CHECK(nothing.tail.text.empty());
 
-    // A cut never lands inside a UTF-8 sequence -- at any budget.
-    ed::NewProjectLine accented = line;
+    // Step 2 keeps PART of a real tail: every path-bearing tail opens with a middle dot (2 bytes), which a byte cut
+    // would split and an all-or-nothing tail would drop. The path's budget is 16 - 8 - 14 < 3; the tail's is 8, so the
+    // longest code-point prefix of at most 5 bytes stays, then the ellipsis.
+    ed::NewProjectLine real = line;
+    real.tail = {std::string(ed::NEW_PROJECT_TAIL_NEW_FOLDER), Role::TextFaint};  // 14 bytes, the dot at 1-2
+    const ed::NewProjectLine tailCut = ed::fitNewProjectLine(real, 16.0F, byteWidth);
+    CHECK(tailCut.path.text.empty());
+    CHECK(tailCut.lead.text == "creates ");
+    CHECK(tailCut.tail.text == " " AERO_GLYPH_MIDDLE_DOT " n" AERO_GLYPH_ELLIPSIS);
+
+    // A cut never lands inside a UTF-8 sequence -- at any budget, in any of the three spans: the lead, the path and
+    // the tail each carry a multi-byte character a byte cut could split.
+    ed::NewProjectLine accented = real;
+    accented.lead.text = "cr\xC3\xA8me ";                     // "crème ": 7 bytes, the accent at 2-3
     accented.path.text = "/a/Caf\xC3\xA9 \xC3\xA9t\xC3\xA9";  // "/a/Café été": the leaf itself must be cut
     for (int units = 0; units < 40; ++units) {                // an INTEGER counter (E.1.2's float-loop lesson)
         const auto budget = static_cast<float>(units);        // auto: a bare cast (modernize-use-auto)
