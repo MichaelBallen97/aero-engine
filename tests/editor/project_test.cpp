@@ -1851,3 +1851,167 @@ TEST_CASE("project: the sceneIoAvailable gate sits BELOW the read and ABOVE the 
     CHECK(session.path().empty() == !io);
     CHECK(f.world.entityCount() == (io ? 0U : 4U));
 }
+
+// ==================================================================================================
+// task E.6.4 -- the New Project dialog's probe, and its ONE target-path rule (P86-P94)
+// ==================================================================================================
+
+using engine::editor::NEW_PROJECT_LANGUAGE;
+using engine::editor::NewProjectTargetFacts;
+using engine::editor::NewProjectTargetKind;
+using engine::editor::newProjectTargetPath;
+using engine::editor::probeNewProjectTarget;
+
+TEST_CASE("project: the New Project preview names the root createProject makes (task E.6.4, P86)") {
+    SUBCASE("a fresh target") {
+        const TempDir dir;
+        const std::string preview = newProjectTargetPath(dir.utf8(), "Kart");
+        const ProjectCreateOutcome made = createProject(dir.utf8(), "Kart", "0.1.0");
+        REQUIRE(made.problem == CreateProblem::Ok);
+        CHECK_FALSE(preview.empty());
+        CHECK(preview == made.root);
+    }
+    SUBCASE("a project literally named project.json (SHOULD-FIX 8)") {
+        const TempDir dir;
+        const std::string preview = newProjectTargetPath(dir.utf8(), "project.json");
+        const ProjectCreateOutcome made = createProject(dir.utf8(), "project.json", "0.1.0");
+        REQUIRE(made.problem == CreateProblem::Ok);
+        CHECK(preview == made.root);
+    }
+    SUBCASE("a RELATIVE location (P85's shape)") {
+        const TempDir dir;
+        const ScopedCwd cwd{std::filesystem::path(dir.utf8())};
+        std::error_code ec;
+        std::filesystem::create_directory("here", ec);
+        REQUIRE_FALSE(ec);
+        const std::string preview = newProjectTargetPath("here", "Kart");
+        const ProjectCreateOutcome made = createProject("here", "Kart", "0.1.0");
+        REQUIRE(made.problem == CreateProblem::Ok);
+        CHECK(std::filesystem::path(preview).is_absolute());
+        CHECK(preview == made.root);
+    }
+}
+
+TEST_CASE("project: the probe refuses lexically before it touches anything (task E.6.4, P87)") {
+    const TempDir dir;
+    const std::array<std::string, 3> badNames{"a/b", "CON", ""};
+    for (const std::string& bad : badNames) {
+        CAPTURE(bad);
+        const NewProjectTargetFacts facts = probeNewProjectTarget(dir.utf8(), bad);
+        CHECK_FALSE(facts.touched);
+        CHECK_FALSE(facts.locationIsDirectory);
+        CHECK(facts.targetPath.empty());
+        CHECK(facts.location == dir.utf8());  // the key, verbatim
+        CHECK(facts.name == bad);
+    }
+    const NewProjectTargetFacts noLocation = probeNewProjectTarget("", "Kart");
+    CHECK_FALSE(noLocation.touched);
+    CHECK(noLocation.name == "Kart");
+    // ANTI-VACUITY: a valid pair IS probed.
+    const NewProjectTargetFacts valid = probeNewProjectTarget(dir.utf8(), "Kart");
+    CHECK(valid.touched);
+    CHECK(valid.locationIsDirectory);
+    CHECK_FALSE(valid.targetPath.empty());
+}
+
+TEST_CASE("project: the probe and createProject agree on every on-disk shape (task E.6.4, P88)") {
+    enum class Shape : std::uint8_t {
+        LocationMissing,
+        LocationIsFile,
+        Absent,
+        EmptyDirectory,
+        NonEmptyDirectory,
+        FileAtTarget
+    };
+    struct Row {
+        const char* label;
+        Shape shape;
+        bool locationIsDirectory;
+        NewProjectTargetKind target;  // read only when locationIsDirectory
+        CreateProblem problem;
+    };
+    constexpr std::array<Row, 6> ROWS{{
+        {"location missing", Shape::LocationMissing, false, NewProjectTargetKind::Absent,
+         CreateProblem::LocationMissing},
+        {"location is a file", Shape::LocationIsFile, false, NewProjectTargetKind::Absent,
+         CreateProblem::LocationMissing},
+        {"target absent", Shape::Absent, true, NewProjectTargetKind::Absent, CreateProblem::Ok},
+        {"target empty", Shape::EmptyDirectory, true, NewProjectTargetKind::EmptyDirectory, CreateProblem::Ok},
+        {"target not empty", Shape::NonEmptyDirectory, true, NewProjectTargetKind::NonEmptyDirectory,
+         CreateProblem::TargetNotEmpty},
+        {"target is a file", Shape::FileAtTarget, true, NewProjectTargetKind::File, CreateProblem::TargetIsFile},
+    }};
+    for (const Row& row : ROWS) {
+        CAPTURE(row.label);
+        const TempDir dir;  // a fresh shape per row: an Ok row scaffolds
+        std::string location = dir.utf8();
+        std::error_code ec;
+        switch (row.shape) {
+            case Shape::LocationMissing:
+                location = dir.join("missing");
+                break;
+            case Shape::LocationIsFile:
+                REQUIRE(writeTextFileAtomic(dir.join("plain.txt"), "x").empty());
+                location = dir.join("plain.txt");
+                break;
+            case Shape::Absent:
+                break;
+            case Shape::EmptyDirectory:
+                std::filesystem::create_directory(std::filesystem::path(dir.utf8()) / "Kart", ec);
+                REQUIRE_FALSE(ec);
+                break;
+            case Shape::NonEmptyDirectory:
+                std::filesystem::create_directory(std::filesystem::path(dir.utf8()) / "Kart", ec);
+                REQUIRE_FALSE(ec);
+                REQUIRE(writeTextFileAtomic(dir.join("Kart/keep.txt"), "x").empty());
+                break;
+            case Shape::FileAtTarget:
+                REQUIRE(writeTextFileAtomic(dir.join("Kart"), "x").empty());
+                break;
+        }
+        const NewProjectTargetFacts facts = probeNewProjectTarget(location, "Kart");
+        CHECK(facts.touched);
+        CHECK(facts.locationIsDirectory == row.locationIsDirectory);
+        if (row.locationIsDirectory) {
+            CHECK((facts.target == row.target));
+        }
+        const ProjectCreateOutcome made = createProject(location, "Kart", "0.1.0");
+        CHECK((made.problem == row.problem));
+        if (made.problem == CreateProblem::Ok) {
+            CHECK(made.root == facts.targetPath);  // the probe named the root Create made
+        }
+    }
+}
+
+TEST_CASE("project: the probe writes nothing, and a hidden entry makes a folder not empty (task E.6.4, P89)") {
+    const TempDir dir;
+    const auto entryCount = [&dir]() {
+        std::size_t n = 0;
+        std::error_code ec;
+        std::filesystem::directory_iterator it(std::filesystem::path(dir.utf8()), ec);
+        while (!ec && it != std::filesystem::directory_iterator()) {
+            ++n;
+            it.increment(ec);
+        }
+        return n;
+    };
+    REQUIRE(entryCount() == 0U);
+    CHECK((probeNewProjectTarget(dir.utf8(), "Kart").target == NewProjectTargetKind::Absent));
+    CHECK(entryCount() == 0U);  // the absent target is still absent: the probe created nothing
+    CHECK_FALSE(directoryExists(dir.join("Kart")));
+    std::error_code ec;
+    std::filesystem::create_directory(std::filesystem::path(dir.utf8()) / "Kart", ec);
+    REQUIRE_FALSE(ec);
+    REQUIRE(writeTextFileAtomic(dir.join("Kart/.hidden"), "x").empty());  // the .DS_Store rule (G16)
+    CHECK((probeNewProjectTarget(dir.utf8(), "Kart").target == NewProjectTargetKind::NonEmptyDirectory));
+}
+
+TEST_CASE("project: New Project writes the one language the dialog shows (task E.6.4, P90)") {
+    CHECK((NEW_PROJECT_LANGUAGE == ProjectLanguage::Ts));
+    const TempDir dir;
+    const ProjectCreateOutcome made = createProject(dir.utf8(), "Kart", "0.1.0");
+    REQUIRE(made.problem == CreateProblem::Ok);
+    const ProjectLoadOutcome opened = loadProjectFrom(made.root);
+    REQUIRE(opened.ok);
+    CHECK((opened.manifest.language == NEW_PROJECT_LANGUAGE));
+}
