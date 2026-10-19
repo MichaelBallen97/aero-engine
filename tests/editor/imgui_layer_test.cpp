@@ -247,8 +247,9 @@ constexpr std::string_view CORRUPT_PNG_BYTES = "this is not a png file, just asc
 // the worst possible shape for a bug. The TWO sites that must exercise the restore path -- I23, and
 // task E.6.4's e64AppRestoring (I350, I351, I357, I360) -- enable it, and each points
 // `recentProjectsPath` at a TempDir-style file, so no test ever READS the real pref directory.
-// §V7's grep asserts the opt-outs and these two literals together match the total number of
-// app-creation call sites.
+// Every other EditorAppConfig literal in this file opts out (2.6.1's AC-40, measured once by
+// that plan's §V7 count; no tier re-runs it). The literals number one fewer than the
+// `EditorApp::create(` calls: E.6.2's snap-relaunch case (I302) feeds one config to two creates.
 //
 // BLOCKING-2 (code review): `restoreLastProject == false` ONLY suppresses the READ. It does NOT
 // suppress the WRITE -- `recentsPath` is resolved from `config.recentProjectsPath` unconditionally at
@@ -3104,7 +3105,8 @@ TEST_CASE(
 // precedent). There is therefore no way to drive the panel's flag to `true` through a real frame here
 // and observe the drain from the outside -- the exact reason `requestAssetRescan()` (EditorApp's OWN
 // flag) had to be invented for I29 above. What CAN be proven mechanically, the same way PU1
-// (project_test.cpp) proves ImGui::CloseCurrentPopup() bookkeeping no live test can drive: that
+// (project_test.cpp) pins the New Project modal's arm-local CloseCurrentPopup placement, which no
+// runtime tier can see: that
 // `takeRescanRequest()` is called and its result stored BEFORE it is combined with
 // `assetRescanRequested`, never as the right operand of an `||` whose left operand is
 // `assetRescanRequested` -- which is precisely the shape that let `||`'s short-circuit skip the call

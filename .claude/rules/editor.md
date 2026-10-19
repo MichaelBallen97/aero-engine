@@ -2445,8 +2445,11 @@ state.
   the statement after `Begin` / `BeginPopupModal` -- a modal reads them inside `Begin`, and a tooltip must keep the
   theme's popup look. A full-width band reserves its HEIGHT only (`Dummy(ImVec2(0, h))`): an item as wide as the
   window makes the content that wide, and once a short work area clamps the window its vertical scrollbar turns the
-  difference into a `ScrollMax.x` a horizontal wheel scrolls whatever the flags (`imgui.cpp:8478`, `:11053`; `I359`).
-  Both windows also pin their x scroll at 0 before `Begin`, for the Welcome's floor-width button row (`I358(f)`).
+  difference into a `ScrollMax.x` a horizontal wheel scrolls with no `HorizontalScrollbar` flag and through
+  `NoScrollbar` (`imgui.cpp:8478`, `:11053`; only `NoScrollWithMouse` / `NoMouseInputs` gate it, `:11051`, and either
+  would also stop the vertical scroll D34 needs; `I359`). Both windows also pin their x scroll at 0 in their own block,
+  directly above `Begin` -- a pin anywhere else feeds the next `Begin` -- for the Welcome's floor-width button row
+  (`I358(f)`).
 - **The dialog reads the disk ONLY through `NewProjectForm::probe`**, which `applyFileRequests`' step 0e keeps --
   re-taken when the inputs move, after a Create, and every `NEW_PROJECT_PROBE_REFRESH_TICKS`. `probeNewProjectTarget`
   and `createProject` share `newProjectTarget` / `classifyTarget`, so the preview and Create cannot disagree; the probe
