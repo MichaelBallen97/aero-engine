@@ -425,8 +425,10 @@ a **human mouse/keyboard pass** recorded per OS in `editor/VALIDATION.md`.
   identical "record a pending action, apply it after the walk" rule the Panels section above states
   for the World/Selection, applied to project state. A control that calls `createProject`/
   `ProjectSession::set()`/`promoteRecent` directly from inside `project_ui.cpp`'s draw functions is an
-  architecture bug (AC-46) with **no automated test able to catch it** — confirmed directly: sabotage
-  seed S20 seeded exactly this violation and the whole 94-entry suite stayed green.
+  architecture bug (AC-46). Since E.6.4 the direct spellings are refused by source text: `I358(a)` bans
+  `createProject(`, `promoteRecent(`, `adoptProject(` and `session.set(` over `project_ui.cpp`'s code lines. At
+  2.6.1 no tier saw it (sabotage seed S20 left the whole 94-entry suite green), and a write reached through an
+  alias is still invisible to that pin.
 - **A `createProject` failure NEVER deletes anything it already created, on ANY failure path, EVER
   (D7/INV-P4)** — the target directory, `assets/`, `scenes/`, whatever exists at the moment of
   failure, all stay exactly as they are. An editor that recursively deletes a user-chosen directory
@@ -2441,11 +2443,15 @@ state.
   `NoSavedSettings`, the palette's `dialog` token read ONCE in `dialogFill()` (`I287`'s row), the `active` outline,
   `ThemeDialogs` for every dp. A third first-contact window takes the same frame. The four frame pushes are popped on
   the statement after `Begin` / `BeginPopupModal` -- a modal reads them inside `Begin`, and a tooltip must keep the
-  theme's popup look.
+  theme's popup look. A full-width band reserves its HEIGHT only (`Dummy(ImVec2(0, h))`): an item as wide as the
+  window makes the content that wide, and once a short work area clamps the window its vertical scrollbar turns the
+  difference into a `ScrollMax.x` a horizontal wheel scrolls whatever the flags (`imgui.cpp:8478`, `:11053`; `I359`).
+  Both windows also pin their x scroll at 0 before `Begin`, for the Welcome's floor-width button row (`I358(f)`).
 - **The dialog reads the disk ONLY through `NewProjectForm::probe`**, which `applyFileRequests`' step 0e keeps --
   re-taken when the inputs move, after a Create, and every `NEW_PROJECT_PROBE_REFRESH_TICKS`. `probeNewProjectTarget`
   and `createProject` share `newProjectTarget` / `classifyTarget`, so the preview and Create cannot disagree; the probe
-  is advisory and `createProject` keeps every refusal. A filesystem call in `project_ui.cpp` is a defect (`I358(a)`).
+  is advisory and `createProject` keeps every refusal. A filesystem call in `project_ui.cpp` is a defect, and so is
+  a direct `createProject` / `promoteRecent` / `adoptProject` / `session.set` (`I358(a)`).
 - **Create, Enter and the GPU seam share `newProjectCreateEnabled`**; the dialog resolves ONCE --
   `if (dismiss) {…} else if (commit) {…}` -- and every closing path calls `CloseCurrentPopup` on the line after its
   one-shot (`PU1`, arm-local). A new way to answer the dialog joins that resolution; it never sets a form one-shot

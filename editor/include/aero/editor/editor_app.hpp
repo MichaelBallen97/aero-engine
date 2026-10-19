@@ -139,8 +139,9 @@ struct EditorAppConfig {
     // holds that line.
     bool restoreLastProject = true;
     // Task 2.6.1 (D15, the second defence): where the recents list lives. EMPTY =>
-    // defaultRecentProjectsPath(). The one case that MUST exercise the restore path points this at a
-    // TempDir file, so even with restore ENABLED no test ever touches the real pref directory.
+    // defaultRecentProjectsPath(). The two test sites that enable the restore path (I23, and task
+    // E.6.4's e64AppRestoring) point this at a TempDir file, so even with restore ENABLED no test ever
+    // touches the real pref directory.
     std::string recentProjectsPath;
     // Where imgui.ini lives. EMPTY => ImGuiLayer's own exe/pref-relative derivation, which is what
     // ships. This exists for the SAME reason recentProjectsPath above does, and it is the second

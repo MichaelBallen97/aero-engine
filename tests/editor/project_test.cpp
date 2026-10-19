@@ -1586,13 +1586,14 @@ TEST_CASE("project: openProjectPath WARNs once per unknown key and still opens (
 
 // ---- PU1: BLOCKING-1, the code-review round ---------------------------------------------------------
 //
-// ImGui::CloseCurrentPopup()'s bookkeeping is pure UI/ImGui-internal state (g.OpenPopupStack,
-// g.HoveredWindow) that no test tier in this codebase can drive: it needs a live ImGui context AND a
-// synthesized widget click, and aero_editor_imgui_test is "ImGui-free at source" by design (the
-// AC-27/FileDialogHost precedent -- see .claude/rules/editor.md). This case is the next best thing: a
-// MECHANICAL, textual proof over project_ui.cpp's OWN SOURCE TEXT, the same grep principle the five CI
-// architecture guards already use, run here as a doctest case because what is being checked is one
-// file's own text, not a repo-wide invariant that needs `git ls-files`.
+// No test tier in this codebase can read g.HoveredWindow or synthesize a widget click or key. Since task
+// E.6.4 the GPU tier does drive the New Project modal's own close -- requestNewProjectAnswer is a
+// click-equivalent seam resolved inside the body -- and observes g.OpenPopupStack through
+// NewProjectRecord::popupOpenAtEntry (I354, I355). This case stays the arm-local source pin, the only
+// witness that each arm closes the popup for itself on the line after its one-shot: a MECHANICAL, textual
+// proof over project_ui.cpp's OWN SOURCE TEXT, the same grep principle the CI architecture guards use, run
+// here as a doctest case because what is being checked is one file's own text, not a repo-wide invariant
+// that needs `git ls-files`.
 
 TEST_CASE(
     "project_ui: the New Project modal closes the ImGui popup on every path that closes the form "

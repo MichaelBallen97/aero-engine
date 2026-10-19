@@ -244,9 +244,11 @@ constexpr std::string_view CORRUPT_PNG_BYTES = "this is not a png file, just asc
 // field defaults to TRUE -- the shipping behaviour -- so without the opt-out every case here would
 // open whatever project the developer last used, swapping the World and seeding four entities. It
 // would PASS on a CI runner (which has no recents file) and FAIL on a developer machine, which is
-// the worst possible shape for a bug. The ONE case that must exercise the restore path (I23)
-// enables it AND points `recentProjectsPath` at a TempDir file, so no test ever READS the real
-// pref directory. §V7's grep asserts this count matches the total number of app-creation call sites.
+// the worst possible shape for a bug. The TWO sites that must exercise the restore path -- I23, and
+// task E.6.4's e64AppRestoring (I350, I351, I357, I360) -- enable it, and each points
+// `recentProjectsPath` at a TempDir-style file, so no test ever READS the real pref directory.
+// §V7's grep asserts the opt-outs and these two literals together match the total number of
+// app-creation call sites.
 //
 // BLOCKING-2 (code review): `restoreLastProject == false` ONLY suppresses the READ. It does NOT
 // suppress the WRITE -- `recentsPath` is resolved from `config.recentProjectsPath` unconditionally at
@@ -2603,8 +2605,8 @@ TEST_CASE("editor: restoreLastProject opens the first recents entry at create() 
     REQUIRE(engine::editor::writeTextFileAtomic(recentsFile, engine::editor::writeRecentProjectsText(recents)).empty());
 
     // One of the TWO sites in this file that ENABLE restoreLastProject -- the other is task E.6.4's e64AppRestoring
-    // (I350, I351, I357) -- and, like it, this one ALSO points recentProjectsPath at a TempDir-style file, so even
-    // with restore ON, the real pref path (~/Library/Application Support/AeroEngine/AeroEditor/ on macOS) is never
+    // (I350, I351, I357, I360) -- and, like it, this one ALSO points recentProjectsPath at a TempDir-style file, so
+    // even with restore ON, the real pref path (~/Library/Application Support/AeroEngine/AeroEditor/ on macOS) is never
     // touched (D15).
     std::optional<engine::editor::EditorApp> app =
         engine::editor::EditorApp::create(*device, *window, ctx,
@@ -29131,7 +29133,7 @@ void e64Settle(std::optional<engine::editor::EditorApp>& app) {
 }
 
 // No project, the recents file READ (I23's shape) -- and a path holding no project.json opens nothing, so the list
-// stays loaded and the Welcome window shows it. I350, I351 and I357.
+// stays loaded and the Welcome window shows it. I350, I351, I357 and I360.
 [[nodiscard]] std::optional<engine::editor::EditorApp> e64AppRestoring(engine::rhi::Device& device,
                                                                        engine::platform::Window& window,
                                                                        engine::platform::Context& ctx,
