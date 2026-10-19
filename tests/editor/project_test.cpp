@@ -14,6 +14,7 @@
 #include <aero/editor/entity_commands.hpp>
 #include <aero/editor/entity_ops.hpp>
 #include <aero/editor/project.hpp>
+#include <aero/editor/project_ui_view.hpp>  // task E.6.4 (P95): NEW_PROJECT_INFO_SPANS
 #include <aero/editor/scene_session.hpp>
 #include <aero/editor/selection.hpp>
 #include <aero/editor/text_file.hpp>
@@ -2141,4 +2142,44 @@ TEST_CASE("project: Cancel and a successful Create reset the probe with the form
     REQUIRE(f.projectSession.isOpen());
     CHECK_FALSE(form.open);
     CHECK_FALSE(form.probe.touched);
+}
+
+TEST_CASE("project: New Project creates exactly what the dialog's info box names (task E.6.4, P95)") {
+    // The info box's code spans ARE the claim (D16). createProject names its folders with literals, not with the
+    // constants NP9 reads, so only an observed effect ties the writer to the copy: a first scene or a scripts/ module
+    // added to the writer turns this red while NP9 stays green (seed S49).
+    std::vector<std::string> expected;
+    for (const engine::editor::InfoSpan& span : engine::editor::NEW_PROJECT_INFO_SPANS) {
+        if (span.code) {
+            std::string name(span.text);
+            if (!name.empty() && name.back() == '/') {
+                name.pop_back();  // "assets/" names the folder "assets"
+            }
+            expected.push_back(name);
+        }
+    }
+    std::sort(expected.begin(), expected.end());
+    REQUIRE(expected.size() == 3U);  // ANTI-VACUITY: the spans really name three things
+
+    const TempDir dir;
+    const ProjectCreateOutcome made = createProject(dir.utf8(), "Kart", "0.1.0");
+    REQUIRE(made.problem == CreateProblem::Ok);
+    std::vector<std::string> found;
+    std::error_code ec;
+    std::filesystem::directory_iterator it(std::filesystem::path(made.root), ec);
+    REQUIRE_FALSE(ec);
+    while (!ec && it != std::filesystem::directory_iterator()) {
+        const std::u8string leaf = it->path().filename().u8string();
+        found.emplace_back(reinterpret_cast<const char*>(leaf.data()), leaf.size());
+        it.increment(ec);
+    }
+    REQUIRE_FALSE(ec);
+    std::sort(found.begin(), found.end());
+    REQUIRE(found.size() == expected.size());
+    for (std::size_t i = 0; i < found.size(); ++i) {
+        CAPTURE(i);
+        CHECK(found[i] == expected[i]);  // assets, project.json, scenes -- and nothing else
+    }
+    CHECK(directoryExists(made.root + "/assets"));
+    CHECK(directoryExists(made.root + "/scenes"));
 }

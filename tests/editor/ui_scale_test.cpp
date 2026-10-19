@@ -15,6 +15,7 @@
 #include <aero/editor/inspector_model.hpp>
 #include <aero/editor/panel_chrome_model.hpp>  // task E.6.3 (US9, US11)
 #include <aero/editor/picking.hpp>             // projectToViewport, ProjectionMode
+#include <aero/editor/project_ui_view.hpp>     // task E.6.4 (US9, US12)
 #include <aero/editor/selection_overlay.hpp>
 #include <aero/editor/status_bar.hpp>
 #include <aero/editor/text_file.hpp>  // readTextFile (US9's source-text claim)
@@ -385,6 +386,8 @@ TEST_CASE(
         // task E.6.3: viewportHudLayout, viewAxisCircleRadius -- and, since the code-review round, viewAxisCircleRect,
         // the circle's box the HUD's keep test and the press claim share.
         {"viewport_hud.hpp", "PPP"},
+        // task E.6.4: aeroMarkPoints, dialogHeaderLayout, newProjectDialogLayout, welcomeLayout.
+        {"project_ui_view.hpp", "PPPP"},
     };
     CHECK(found.size() == expected.size());
     for (const auto& [file, kinds] : expected) {
@@ -483,5 +486,18 @@ TEST_CASE("ui scale: each E.6.3 layout treats a bad scale as 1 (task E.6.3, US11
         const ed::ViewportHudLayout hudBad = ed::viewportHudLayout(Vec2{0.0F, 0.0F}, Vec2{800.0F, 600.0F}, hud, bad);
         CHECK((hudBad == ed::viewportHudLayout(Vec2{0.0F, 0.0F}, Vec2{800.0F, 600.0F}, hud, 1.0F)));
         CHECK(ed::viewAxisCircleRadius(bad) == ed::viewAxisCircleRadius(1.0F));
+    }
+}
+
+TEST_CASE("ui scale: each E.6.4 layout treats a bad scale as 1 (task E.6.4, US12)") {
+    const engine::Vec2 work{1280.0F, 800.0F};
+    const engine::Vec2 center{40.0F, 27.0F};
+    const ed::WrappedTextHeight oneLine = [](float /*wrapWidth*/) { return 16.0F; };  // a Body line at scale 1
+    for (const float bad : {NAN_F, INF_F, -INF_F, 0.0F, -2.0F}) {
+        CAPTURE(bad);
+        CHECK((ed::dialogHeaderLayout(667.0F, true, bad) == ed::dialogHeaderLayout(667.0F, true, 1.0F)));
+        CHECK((ed::newProjectDialogLayout(work.x, bad) == ed::newProjectDialogLayout(work.x, 1.0F)));
+        CHECK((ed::welcomeLayout(3U, work, oneLine, bad) == ed::welcomeLayout(3U, work, oneLine, 1.0F)));
+        CHECK((ed::aeroMarkPoints(center, bad) == ed::aeroMarkPoints(center, 1.0F)));
     }
 }
