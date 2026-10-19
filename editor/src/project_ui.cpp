@@ -168,7 +168,8 @@ bool drawDialogHeader(float width, float windowRounding, float controlRounding, 
     // Reserves the band's HEIGHT only. A full-width item makes the content as wide as the window, and a clamped window
     // (D34) draws a vertical scrollbar that narrows its inner rect, so ScrollMax.x would be ScrollbarSize
     // (imgui.cpp:8478) -- which a horizontal wheel scrolls with no HorizontalScrollbar flag (:11053); only
-    // NoScrollWithMouse / NoMouseInputs gate it (:11051), and either would also stop D34's vertical scroll.
+    // NoScrollWithMouse / NoMouseInputs gate it (:11051), and either would also stop D34's vertical scroll;
+    // NoScrollbar would remove the reach only with D34's scrollbar (:8401).
     ImGui::Dummy(ImVec2(0.0F, header.height));
     const float border = ImGui::GetStyle().WindowBorderSize;
     list->AddRectFilled(ImVec2(origin.x + border, origin.y + border),
