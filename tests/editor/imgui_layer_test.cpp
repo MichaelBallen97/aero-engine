@@ -29663,6 +29663,14 @@ TEST_CASE("editor: project_ui.cpp reads no disk, binds its keys, draws every str
             "commit = ((enterPressed || fileMenu.newProjectAnswer == "
             "NewProjectAnswer::Create) && createEnabled) || commit;";
         CHECK(countLinesContaining(code, ENTER_COMMITS) == 1U);
+        // And Enter is read nowhere else: its declaration and that line. A second line committing on Enter outside
+        // `&& createEnabled` creates from a refused state with the needle above still matching once.
+        CHECK(countLinesContaining(code, "enterPressed") == 2U);
+        // The binding itself, whole: `&&` for its `||` leaves every key name on the line and Enter alone dead (#109).
+        constexpr std::string_view ENTER_BINDS =
+            "ImGui::IsKeyPressed(ImGuiKey_Enter, false) || "
+            "ImGui::IsKeyPressed(ImGuiKey_KeypadEnter, false);";
+        CHECK(countLinesContaining(code, ENTER_BINDS) == 1U);
         CHECK(soleLineContaining(code, "if (dismiss) {") < soleLineContaining(code, "} else if (commit) {"));
     }
     SUBCASE("(c) the language control: one disabled pair, the one tooltip, the selection Create writes (D18)") {
@@ -29719,9 +29727,34 @@ TEST_CASE("editor: project_ui.cpp reads no disk, binds its keys, draws every str
         CHECK(positions == 2U);
         CHECK(countOccurrences(joined, "ImGuiCond_Appearing") == 0U);
         CHECK(countOccurrences(joined, "ImGuiCond_FirstUseEver") == 0U);
-        // And never scrolled sideways: x pinned at 0 before each Begin, y left alone. No tier can turn a wheel, and
-        // I359 measures the reach only above the floor, where it is already 0.
-        CHECK(countLinesContaining(code, "ImGui::SetNextWindowScroll(ImVec2(0.0F, -1.0F));") == 2U);
+        // And never scrolled sideways: x pinned at 0 in each window's own block, above its Begin, y left alone. A pin
+        // anywhere else feeds the next Begin -- a child, a tooltip, next frame's first window -- and leaves this one
+        // unpinned. Comments are stripped, so the two pins are one text, found by index. A line-number order alone
+        // cannot see a pin moved into drawWelcomeBody, which is defined above drawWelcomeWindow, so nothing between a
+        // pin and its Begin may close a block, begin a window or return. No tier can turn a wheel, and I359 measures
+        // the reach only above the floor, where it is already 0.
+        constexpr std::string_view X_PIN = "ImGui::SetNextWindowScroll(ImVec2(0.0F, -1.0F));";
+        std::vector<std::size_t> pins;
+        for (std::size_t i = 0; i < code.size(); ++i) {
+            if (code[i].find(X_PIN) != std::string::npos) {
+                pins.push_back(i);
+            }
+        }
+        REQUIRE(pins.size() == 2U);
+        const auto pinsItsBegin = [&code](std::size_t pin, std::size_t begin) {
+            if (pin >= begin) {
+                return false;
+            }
+            for (std::size_t i = pin + 1U; i < begin; ++i) {
+                if (code[i].find('}') != std::string::npos || code[i].find("Begin") != std::string::npos ||
+                    code[i].find("return") != std::string::npos) {
+                    return false;
+                }
+            }
+            return true;
+        };
+        CHECK(pinsItsBegin(pins[0], soleLineContaining(code, "ImGui::Begin(WELCOME_WINDOW_ID")));
+        CHECK(pinsItsBegin(pins[1], soleLineContaining(code, "ImGui::BeginPopupModal(NEW_PROJECT_MODAL_ID")));
     }
     SUBCASE("(g) the request lines 2.6.1 wrote, byte for byte (D8, D9, D14)") {
         CHECK(countLinesContaining(code, "fileMenu.flow.requested = FileAction::NewProject;") == 1U);
