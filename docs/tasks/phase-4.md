@@ -149,7 +149,7 @@ Subtasks:
 
 ### 4.6.1 Language field + editor gating · P0 · S · depends: 2.6.1, 4.4.1, 4.5.2
 **Goal:** wire the fork into the project system.
-**Deliverable:** `language: "ts" | "cpp"` set at creation (immutable after); script panels/import active only for TS projects, template generation for C++.
+**Deliverable:** `language: "ts" | "cpp"` set at creation (immutable after); script panels/import active only for TS projects, template generation for C++. Task E.6.4 ships the New Project dialog's language control disabled, TypeScript shown selected, with the tooltip "Not implemented yet -- task 4.6.1"; this task enables it and gives createProject the choice (NEW_PROJECT_LANGUAGE today).
 Subtasks:
 - Creation-dialog language choice → `project.json`
 - Feature gating by language across editor UI
