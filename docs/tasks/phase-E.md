@@ -805,6 +805,13 @@ clause holds.**
 
 **Goal:** the editor should look like the mocks — one type scale, one palette, real icons, a toolbar and a status bar. Today its one font is ImGui's built-in ProggyClean at 13, added explicitly since E.4.4's validation fix with 26 Windows-1252 punctuation marks remapped onto it; anything past ASCII, Latin-1 and the Windows-1252 punctuation draws `?` (`.claude/rules/editor.md`, "The UI font"), which is why every literal in the tree is ASCII-only. It has no icon set, and its entire theme is `StyleColorsDark()` plus a DPI size scale.
 **Definition of Done:** every panel is restyled against one shared theme; no colour, radius or spacing is a bare ImGui default or an anonymous file-local constant.
+**CLOSED IN CODE with E.6.4** (PR #122, `52a5b68`) — four of four merged. All eight panels draw against E.6.1's one
+`EDITOR_THEME` through E.6.3's card painter and role map, the shell's toolbar, breadcrumb and status bar through
+E.6.2, and the Welcome window and the New Project dialog through E.6.4's `ThemeDialogs`; every ImGui colour slot is
+mapped from the theme (E.6.1's `static_assert`), and every `IM_COL32` in `editor/src` converts a theme value — none
+spells a literal (measured on the merged tree). The four pages are RUN on macOS: E.6.1 11 / 11, E.6.2 18 / 18, E.6.3
+21 / 21 and E.6.4 23 / 23 executable rows. E.6.4 took `I349`–`I360` and the tier-0 prefixes `NP` and `WL`, so **the
+next free ImGui-tier id is `I361`**.
 
 ### E.6.1 Font, icon set and theme system · P0 · L · depends: 2.1.1
 _(Sized L: it is the editor's first font load, its first icon set and the first central owner of
@@ -924,6 +931,25 @@ Subtasks:
 - New Project dialog: layout, live "creates <path>" validation, footer summary
 - The scripting-language control ships `enabled = false` with a tooltip naming **4.6.1**, which owns it
 - Project templates, scene units and git-init are explicitly **out of scope** and recorded as such
+
+_Outcome:_ **sized M in the roadmap and landed M. Merged as PR #122 (`52a5b68`, a true merge commit), thirteen
+commits — the plan's six, then seven from three code-review rounds. CI: the PR's run `39298314303`, 6 / 6 green on the merged
+head. 57 sabotage seeds at `72da4e3`, no hole; the validation page is RUN on macOS, 23 / 23 executable rows
+(2026-10-20, on 1× externals): row 21 (2×) and row 25 (a held hardware key) are not executable here, and rows 26–27
+are owed by Windows and Linux.**
+All four subtasks are discharged. Both windows draw ONE frame — a header strip with the accent mark, the title and
+the engine version; the palette's `dialog` token, read once; 9-dp corners and the `active` outline; centred on the
+work area every frame, never saved, never moved — sized by a new `ThemeDialogs` and decided by a new pure pair,
+`project_ui_view`. The Welcome window shows recent projects as cards (a `##` in a path no longer cuts its label), one
+scrolling list that folds to the work area, a designed empty state and its two unchanged actions. The New Project
+dialog is one column with a read-only Location and a live `creates <path>` line read from a probe `applyFileRequests`
+keeps outside the draw walk, sharing `createProject`'s own target-path rule; **the scripting-language control ships
+disabled, TypeScript selected, with the tooltip `Not implemented yet -- task 4.6.1`**, and 4.6.1's deliverable records
+it; the info box says exactly what `createProject` writes; a footer summary. **Templates, scene units and git-init are
+out of scope** — no owning task — and C++ project templates are 4.5.2's and 4.6.1's. Five behaviours changed, each
+for a stated reason: Enter and KeypadEnter commit under Create's own predicate, Create is greyed in the three refused
+states, a failed Create's message clears on an edit, a close box, and neither window can be dragged. E.6.4 took
+`I349`–`I360`, `P86`–`P95`, `TH17`–`TH18`, `US12` and the tier-0 prefixes `NP` (`NP1`–`NP13`) and `WL` (`WL1`–`WL6`).
 
 ---
 

@@ -19524,3 +19524,158 @@ after Reset Layout; the Issues header's ImGui arrow.
 `editor/CMakeLists.txt` gains seven `aero_editor_core` sources and `tests/CMakeLists.txt` six shell-test sources;
 `engine/render` gains 14 lines (`forward_renderer.{hpp,cpp}`). `.claude/rules/editor.md` gains the "Panel chrome"
 section and the fold in "A panel with fixed regions"; `docs/tasks/phase-E.md` names the tab-row route.
+
+### E.6.4 — Welcome + New Project restyle — the first two windows in the editor's visual system, and Phase E's last task
+
+The Welcome window and the New Project dialog stop drawing ImGui's default furniture and draw the E.6.1–E.6.3 visual
+system, carrying **today's fields only**. Merged as PR #122 (`52a5b68`, a true merge commit): thirteen commits — the
+plan's six, then seven from three code-review rounds — on `c82a08c`. CI: the PR's run `39298314303`, 6 / 6 green on the merged
+head. With it **all 24 Phase E tasks are merged and Epics E.1–E.6 are CLOSED IN CODE**.
+
+**One frame for both windows** (`project_ui.cpp`, plan D5): no title bar, `NoMove`, `NoSavedSettings`,
+`AlwaysAutoResize`, centred on the main viewport's work area with `ImGuiCond_Always` every frame; a header strip with
+the accent diamond, the title in the title face and the engine version in small mono; a body on the palette's
+`dialog` token — its first and only direct reader, through one `dialogFill()` (`I287`'s row); 9-dp corners and the
+`active` outline. The strips are draw-list work inset one border on their outer sides, so the outline the window drew
+inside `Begin` is never painted over (rows 1 and 7 sample it all round). Every dp is in a new `ThemeDialogs`
+(`EDITOR_THEME.dialogs`, 47 floats, `TH17`), appended so no existing member moves; `TH18` floors the nine text and
+ground pairs the two windows draw.
+
+**The pure model** — the new public pair `project_ui_view.{hpp,cpp}`, ImGui-free and filesystem-free (`NP1`–`NP13`,
+`WL1`–`WL6`): the nine states of the validation line (NoName, BadName, NoLocation, Checking, LocationMissing,
+TargetIsFile, TargetNotEmpty, CreatesFolder, AdoptsEmptyFolder) and ONE predicate, `newProjectCreateEnabled`, that the
+Create button, Enter and the GPU seam share; the line's words and roles and its fit (the path left-elided first, then
+the tail, then the lead, every cut on a code-point boundary); the footer summary; the language cards and the 4.6.1
+tooltip; the info box's copy; the header strip and the mark; both layouts, every one taking a non-defaulted
+`uiScale` (`US9`'s new row) and laying a bad scale out as 1 (`US12`); and the `ProjectUiRecord` both windows fill
+from what ImGui drew.
+
+**The disk, read only through a probe.** `createProject`'s target path and its step-3 checks moved verbatim into two
+file-local helpers in `project_file.cpp`; `newProjectTargetPath` and `probeNewProjectTarget` read through the same
+two, so the preview and Create cannot disagree (`P86`, and `P88`'s six-shape agreement table). The probe refuses a bad
+name or an empty location before touching the disk, in `createProject`'s own order, and writes nothing (`P87`).
+`NewProjectForm::probe` is kept by `applyFileRequests`' new step 0e, after the create arm, outside the draw walk: re-
+taken while the form is open when the inputs moved, when a Create ran in that call, or every
+`NEW_PROJECT_PROBE_REFRESH_TICKS` (30) calls, so a folder emptied or deleted outside the editor shows within about
+0.5 s focused and 1.5 s in the background (rows 15 and 16 measured 1.6 s and 1.45–2.9 s with another app frontmost)
+(`P91`–`P94`). The probe is advisory: `createProject` keeps every refusal, and a failed Create re-probes in the same
+call. `P95` lists a created project and finds exactly the three names the info box states.
+
+**The Welcome window**: recent projects as cards (`InvisibleButton` with a LITERAL `##recent` id, so a `##` in a path
+no longer cuts its label), the folder name in bold over the home-abbreviated, left-elided path in small mono, the full
+path on hover; one scrolling list capped at five cards that folds to the work area, its blurb counted at the height
+it wraps to; a designed empty state (an outlined well); the two actions with their 2.6.1 request lines byte for byte.
+
+**The New Project dialog**: one column (mock 1e's right column; the Template column dropped — U2); the name field
+with an accent caret and outline while active, armed on appearing; a read-only Location with `Browse...` its only
+writer (U3); the live line; the scripting-language cards inside one `BeginDisabled` pair, TypeScript selected because
+`NEW_PROJECT_LANGUAGE` is what Create writes, with the tooltip `Not implemented yet -- task 4.6.1` (D18 — and
+`docs/tasks/phase-4.md`'s 4.6.1 deliverable now says so); an info box with true copy; a footer summary. Under about 523
+points of work height the dialog is clamped and scrolls whole, vertically only.
+
+**Five behaviours changed in a task Notion calls "deliberately visual-only"** (D35, each with its reason in the plan):
+Enter and KeypadEnter commit under Create's own predicate (Q6, answered from the standing modal-default-button
+invariant); Create is greyed in the three refused states where it used to fail into an error; a failed Create's
+message clears when the inputs it described change; a close box beside Cancel and Escape; neither window can be
+dragged and both re-centre on a resize, and the dialog no longer reopens at a stale saved corner (row 8 measured the
+branch point doing exactly that from a `Pos=40,40` chunk).
+
+**Two click-equivalent seams for the GPU tier** — `EditorApp::requestNewProjectInput` and `requestNewProjectAnswer`,
+each one tick — resolve INSIDE the modal's body through the same `if (dismiss) … else if (commit) …` the buttons and
+keys use, so `I354` / `I355` observe the popup's real close (`popupOpenAtEntry`) for the first time in this tree.
+`I349`–`I360` cover the two windows on the GPU tier; `I358` pins the source rules (no disk read, the key bindings,
+the language control, literal ids, the faces and tooltips, the frame flags and the x-scroll pins, 2.6.1's request
+lines, the seam's reload).
+
+#### Where the implementation departed from the plan
+
+- **The code-review rounds added two GPU cases and a frame rule the plan did not have.** Round 1's verified finding:
+  the header and footer bands reserved their rows with a `Dummy` as wide as the window, so a clamped window's vertical
+  scrollbar turned the difference into a `ScrollMax.x` that a horizontal wheel scrolls (`imgui.cpp:8478`, `:11053`) —
+  a trackpad swipe slid every control sideways and squared the bands' corners. The bands now reserve their HEIGHT only
+  and both windows pin their x scroll in their own block, directly above `Begin` (`eb35644`; `I359`, `I358(f)`). The
+  same round found `I351` could not fail (the five-card cap, not the fold, limited its pose) — `I360` samples a
+  fold-limited pose and `I349`/`I351` now assert the drawn height against an independent row sum (`2a5653c`).
+- **Three test holes the rounds closed** (`2a5653c`, `4a43b1b`, `3efcaa4`): `NP6`'s tail was ASCII and narrower than
+  the ellipsis, so its step-2 elision never ran; `I358(b)` pinned one token where a re-bracketing let Enter commit from
+  a refused state, then the whole predicate but not a second Enter reader, then not ImGui's OTHER Enter reader
+  (`ImGuiInputTextFlags_EnterReturnsTrue`, `imgui_widgets.cpp:5180`, `:5705-5706` — pinned at zero).
+- **The plan's validation row 17 said a created project holds three entries "and nothing else"**; it holds a
+  `Library/` too, which the asset database writes on every OPEN (Beta, made from Terminal and only opened, holds the
+  identical one). `createProject`'s three are `P95`'s; the row passed as a stated variant.
+
+#### Traps found, each measured
+
+- **An active `InputText` owns its text**: a seam that wrote `form.name` while the Name field was active was
+  overwritten by the widget's own buffer the same frame, so the GPU cases read `NoName` for ever. The seam now reloads
+  the live field on its one tick (`GetInputTextState(GetID("##name"))->ReloadUserBufAndMoveToEnd()`, `I358(h)`); seed
+  `S46` proves it load-bearing.
+- **PU1's 16-line window let one arm borrow another arm's close**: a dismiss arm that lost its `CloseCurrentPopup`
+  still found the commit arm's within the window. PU1 is now arm-local (`closesOnNextLine`), and `I355` sees the popup
+  stay open (`S30`).
+- **An active `InputText` does NOT block hover or a first click on an earlier item** — two round-1 findings claimed it
+  did (the × and the language tooltips), and both were refuted by reading `imgui_widgets.cpp:5002-5004`
+  (`ActiveIdAllowOverlap = !io.MouseDown[0]`) and by a headless harness; rows 10 and 19 measured it on hardware.
+- **The build wrapper's `""` placeholder swallows a target**: `aero-build-wait.sh <preset> "" --target X` prints
+  `Unknown argument` and builds the whole preset; pass `--target` without the placeholder.
+- **macOS-pass method traps**: `Cmd+A` reaches ImGui only with a real flags-changed Cmd (`moddown`/`modup`), never as
+  a key event's flag; BSD `seq 1 0` counts DOWN, so a "repeat N times" loop ran twice at N = 0 and appended spaces to
+  every typed name until the loop became zsh's `repeat`; clicking `Browse...` takes the caret, so a name typed after it
+  goes nowhere; `NSOpenPanel`'s Go-to-Folder field takes System Events keystrokes but not CGEvent unicode typing; and a
+  synthetic Return — autorepeat-flagged or not — never reached the panel's default button.
+
+#### What was deliberately left out (D4, D32), and which task holds each
+
+Scene/content templates, scene units and git-init have no owning task; C++ project-template generation is 4.5.2's and
+4.6.1's (`docs/tasks/phase-4.md:136-152`); enabling the language control is 4.6.1's, with a language parameter on
+`createProject`. A typable Location was declined (U3). The rest — a missing-folder marker on a card, removing one
+recent, the manifest name and a last-opened time on a card, a "close project" command, Enter on the Unsaved Changes
+modal, a pinned header and footer for a clamped dialog, a minimum OS window size, heading letter-spacing, a modal drop
+shadow, a watcher-driven probe, a trailing separator on the `creates` path — are in `CLAUDE.md`'s unowned list.
+
+#### The sentences that govern new work
+
+- **One frame for a first-contact window**: no title bar, `NoMove`, `NoSavedSettings`, centred with `ImGuiCond_Always`;
+  the `dialog` token read once in `dialogFill()`; the strips inset one border; a full-width band reserves its HEIGHT
+  only, and the window pins its x scroll in its own block directly above `Begin` (`I359`, `I358(f)`).
+- **The dialog reads the disk only through `NewProjectForm::probe`**, kept outside the draw walk; the probe and
+  `createProject` share one target-path rule; the probe is advisory and `createProject` keeps every refusal
+  (`I358(a)`, `P86`, `P88`).
+- **One resolution for every answer** — keys, buttons, the × and the GPU seam — dismiss wins, and every closing path
+  calls `CloseCurrentPopup` on the line after its one-shot (`PU1`, `I358(b)`).
+- **No user string is an ImGui label**; a card's id is a literal `##` (`I358(d)`), every user string drawn
+  format-safe.
+- **The language control is 4.6.1's** — disabled, TypeScript selected because Create writes it.
+- **One row for the validation line, and the stated heights** — the Welcome folds before it overflows, the dialog
+  states its natural height and scrolls whole below it (D34).
+- **A modal's click-equivalent seam resolves INSIDE the modal's body**, through the buttons' own resolution, never by
+  setting a form one-shot from outside (I192's rule, now with a behavioural witness: `I354`, `I355`).
+- **A seam that types into an `InputText` reloads it when it is active** (`ReloadUserBufAndMoveToEnd` on the seam's
+  one tick), or the widget writes its own buffer back over the bound string.
+
+#### Validation and sabotage status — macOS 23 / 23 executable rows (2026-10-20), Windows and Linux unrun
+
+Run as a signed `.app` (the tip's `macos-release` editor) on projects under `~/e64val/projects`, on two 1× externals
+(MSI MP341CQ 3440×1440 main, QG241Y 1080×1920), UI scale 1; the branch point's own release binary in its own bundle for
+row 8's A/B. **Rows 1–20, 22–24 PASS** (17 and 23 each with a stated variant); **row 21 is NOT EXECUTABLE** (no built-in
+Retina panel attached) and **row 25 is NOT EXECUTABLE** (no held hardware key: a synthetic autorepeat stand-in never
+reached the picker, and in both attempts no project was created and the dialog stayed open). The pass found no
+product defect. **57 sabotage seeds** (the plan's 50 and seven for the review rounds' fixes), one at a time at
+`72da4e3`: **no hole** — every seed with an automated witness went red; S39, S43, S44 and S50 are witnessed by rows 19,
+7, 4 and 1; S41 is equivalent by construction. Three expected witnesses were not the ones that caught the seed: S16 is
+seen by `WL2` alone (at `I351`'s pose the fold and the cap both give five), S25 by the AC-12 case rather than `P93`,
+S34 by `I358(f)` rather than the `I256` family.
+
+Measured at `72da4e3`, both presets rebuilt and agreeing: `ctest -N` **183** (170 shader-tools-OFF, 93
+reflect-tools-OFF, cooker 70 / 70 / 70, the entry set equal to the branch point's); doctest **1431 / 2414 / 366 / 40 /
+73 / 14 / 28** (only the shell and ImGui binaries moved, +32 and +12); guards math **590**, project-no-delete **A=7
+B=110**, the other six unchanged; `git ls-files` `editor/src/*.cpp` **110**, `editor/include/aero/editor/*.hpp` **81**.
+`.restoreLastProject = true` now appears twice in `imgui_layer_test.cpp` (`I23` and `e64AppRestoring`): the file
+spells `EditorApp::create(` 243 times against 241 `.restoreLastProject = false` (the branch point: 239, 239 and one
+`true`), so 2.6.1's count-equality grep reads creates = falses + 2.
+
+**Build & dependency impact:** no vcpkg or `/vcpkg` change, no `find_package`, no new target and no link-line change.
+`editor/CMakeLists.txt` gains one `aero_editor_core` source (`project_ui_view.cpp`) and `tests/CMakeLists.txt` one
+shell-test source (`project_ui_view_test.cpp`), its PU1 comment rewritten for the GPU tier's new reach. `engine/`,
+`runtime/` and `tools/` are untouched. `.claude/rules/editor.md` gains the "First-contact windows" section;
+`docs/tasks/phase-4.md`'s 4.6.1 deliverable names the disabled control it inherits.
