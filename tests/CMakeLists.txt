@@ -41,6 +41,7 @@ add_executable(aero_tests
     audio_mixer_test.cpp      # task 3.7.2 — the realtime mixer: pool, cursor, ramps, clamp (MX1-MX22)
     audio_system_test.cpp     # task 3.7.2 — AudioSystem: rings, slots, back-pressure, stats (SY1-SY20)
     scene_audio_test.cpp      # task 3.7.2 — the World -> audio bridge: view, reconcile, latches (SA1-SA18)
+    script_vm_test.cpp        # task 4.1.1 — the quickjs-ng VM: lifecycle, limits, the trapping matrix
     platform_test.cpp
     platform_event_test.cpp
     input_test.cpp        # task 0.3.2 — black-box InputState (no SDL)
@@ -117,7 +118,11 @@ add_executable(aero_tests
 # task 3.3.1: aero::assets joins this line for cooked_mesh_test.cpp and mesh_cook_test.cpp. aero::rhi
 # is ALREADY here, which is what makes CM47's CookedVertexFormat <-> rhi::VertexFormat correspondence
 # assertable in this target at all -- assets deliberately does not link rhi, and never will.
-target_link_libraries(aero_tests PRIVATE doctest::doctest aero::profiling aero::assets aero::audio aero::core aero::platform aero::reflect aero::render aero::rhi aero::rhi_internal aero::scene aero::scene_audio aero::scene_internal aero::scene_render SDL3::SDL3 ${CMAKE_DL_LIBS})
+# task 4.1.1: aero::script joins for script_vm_test.cpp, and aero::script_internal (one include directory, no
+# library, no vcpkg root) for its white-box allocator cases VM36-VM38 -- the same reason aero::rhi_internal is
+# here. The compile-time guard for the quickjs boundary is aero_script_boundary_probe, which links aero::script
+# ALONE and is untouched by this line; the backend itself stays LINK_ONLY behind aero::script.
+target_link_libraries(aero_tests PRIVATE doctest::doctest aero::profiling aero::assets aero::audio aero::core aero::platform aero::reflect aero::render aero::rhi aero::rhi_internal aero::scene aero::scene_audio aero::scene_internal aero::scene_render aero::script aero::script_internal SDL3::SDL3 ${CMAKE_DL_LIBS})
 
 # task 3.3.1, added by the sabotage round: cooked_mesh_test.cpp's CM50 asserts a STRUCTURAL property of
 # the parser -- that nothing is reserved before the four header counts have been checked against their
@@ -126,6 +131,11 @@ target_link_libraries(aero_tests PRIVATE doctest::doctest aero::profiling aero::
 # comment-stripped source-text gate, the AERO_EDITOR_SRC_DIR / I73 / MS41 / AI34 shape one layer down.
 # UNGATED on purpose: both reduced configurations build this TU and must run this case too.
 target_compile_definitions(aero_tests PRIVATE AERO_ASSETS_SRC_DIR="${CMAKE_SOURCE_DIR}/engine/assets/src")
+
+# task 4.1.1: script_vm_test.cpp's VM35 reads the script layer's sources as comment-stripped text to pin that
+# four backend setters are never called (the AERO_ASSETS_SRC_DIR / CM50 shape above). UNGATED, like the
+# definition above -- both reduced configurations build this TU and must run the case too.
+target_compile_definitions(aero_tests PRIVATE AERO_SCRIPT_SRC_DIR="${CMAKE_SOURCE_DIR}/engine/script/src")
 
 # task 3.7.1: audio_cook_test.cpp's AK17/AK18 read tests/fixtures/audio/tone.s16le.pcm -- ffmpeg's OWN
 # decode of tone.wav, raw interleaved s16 LE with no container, committed so no lane ever needs ffmpeg.
@@ -725,6 +735,20 @@ add_library(aero_audio_boundary_probe OBJECT audio_boundary_probe.cpp)
 target_link_libraries(aero_audio_boundary_probe PRIVATE aero::audio)
 
 # ---------------------------------------------------------------------------------------------
+# The script quickjs-boundary COMPILE-TIME guard (task 4.1.1; project rule #3; R12's named next case).
+#
+# Same mechanism as the math/jobs/platform/rhi/scene probes, for quickjs-ng: aero::script links qjs PRIVATE
+# (and its only PUBLIC dep, aero::core, propagates no vcpkg header), so a target linking ONLY aero::script
+# never sees vcpkg's shared per-triplet include/ root and cannot resolve <quickjs.h>. The textual guard
+# .github/scripts/check-script-boundary.sh reaches every public header and every engine/runtime source.
+#
+# DO NOT ADD ANY OTHER LINK LIBRARY -- not doctest, not aero::profiling (Tracy, a vcpkg package, in Release),
+# not qjs. Any of them restores the shared root and silently reduces this guard to a no-op while CI stays
+# green. ENFORCED by .github/scripts/check-boundary-probes.sh, which derives this probe from the line below.
+add_library(aero_script_boundary_probe OBJECT script_boundary_probe.cpp)
+target_link_libraries(aero_script_boundary_probe PRIVATE aero::script)
+
+# ---------------------------------------------------------------------------------------------
 # The shaderc end-to-end CTest suite (task 0.4.3; spec D9/§3.6) -- a net-new harness (no prior
 # cmake -P / external-binary add_test precedent in this repo). Each case runs the REAL aero_shaderc
 # binary through tests/shaderc/run_case.cmake, which is what actually asserts exit codes -- several
@@ -1230,3 +1254,24 @@ add_test(NAME boundary-probes.compile_line_e2e COMMAND ${CMAKE_COMMAND}
     -DDRIVER=${CMAKE_CURRENT_SOURCE_DIR}/boundary-probes/probe_compile_line.cmake
     -DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/compile-line-scratch
     -P ${CMAKE_CURRENT_SOURCE_DIR}/boundary-probes/compile_line_e2e.cmake)
+
+# ---------------------------------------------------------------------------------------------
+# Ninth architecture guard: script-boundary (task 4.1.1; R12's named next case). A hermetic proof that
+# .github/scripts/check-script-boundary.sh actually goes RED. Like audio-boundary's, this guard is green
+# on the tree it ships into BY CONSTRUCTION -- no first-party file named a quickjs token before this
+# task -- so "it passes" is evidence of nothing until a seeded violation has been watched to redden it,
+# and a proof living only in a gitignored plan would die at merge. Same NOT WIN32 gate and reason as its
+# siblings (D16 of 2.1.2): the script runs only in the ubuntu lint job, and this case's value -- the
+# regexes, the comment stripping and the allowlist under BSD userland -- comes from the macOS lane.
+# Ungated by the tools flags; distinct scratch root, so ctest -j stays safe.
+if(NOT WIN32 AND AERO_BASH_EXECUTABLE AND GIT_EXECUTABLE)
+    add_test(NAME script-boundary.guard_e2e COMMAND ${CMAKE_COMMAND}
+        -DSCRIPT=${CMAKE_SOURCE_DIR}/.github/scripts/check-script-boundary.sh
+        -DBASH=${AERO_BASH_EXECUTABLE}
+        -DGIT=${GIT_EXECUTABLE}
+        -DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/script-boundary-scratch
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/script-boundary/guard_e2e.cmake)
+else()
+    message(STATUS "script-boundary: guard_e2e SKIPPED (Windows, or bash/git not found) -- the "
+                   "guard itself still runs in CI's lint job on Linux")
+endif()

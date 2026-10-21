@@ -19,6 +19,7 @@
         },
         "imguizmo",
         "miniaudio",
+        "quickjs-ng",
         {
             "name": "sdl3",
             "features": [

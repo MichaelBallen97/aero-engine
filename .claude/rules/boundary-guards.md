@@ -12,12 +12,12 @@ paths:
 Project rule #3: **no third-party type crosses the engine's public API.** Not `glm::vec3`,
 not an SDL handle, not a miniaudio type, not `entt::`. Everything lives behind engine types.
 
-Five backends are linked `PRIVATE` and confined to one allowlisted TU each: **GLM** →
+Eight backends are linked `PRIVATE` and confined to one allowlisted TU each: **GLM** →
 `engine/core/src/math/glm_backend.cpp` · **spdlog/fmt** → `engine/core/src/log.cpp` ·
 **enkiTS** → `engine/core/src/jobs.cpp` · **SDL3** → `engine/platform/src/platform.cpp` ·
 **SDL_GPU** → `engine/rhi/src/sdl_gpu_backend.cpp` · **miniaudio** →
 `engine/platform/src/audio_device.cpp` (+ the one `.c` implementation TU) · **EnTT** →
-`engine/scene/src/`.
+`engine/scene/src/` · **quickjs-ng** → `engine/script/src/`.
 
 ## Every guard ships in two halves — and you need both
 
@@ -38,6 +38,12 @@ Release. That script also carries a second prong the others do not: it guards th
 **CMakeLists** of `engine/assets`, `engine/audio` and `engine/scene_audio` — no dependency
 hook, no non-`aero::` link token, no include dir outside the subsystem — because their
 linking no vcpkg package is the precondition every other claim on this page rests on.
+
+The script layer's pair is `.github/scripts/check-script-boundary.sh` +
+`tests/script_boundary_probe.cpp` (task 4.1.1). Unlike the audio pair, `aero_script` links a
+vcpkg package (`qjs`), so its own compile line carries the shared root in every configuration,
+and the probe — which links `aero::script` alone — is the compile-time boundary, not the
+target.
 
 **Rule 2's "exactly one" is enforced, and the enforcement is an ALLOWLIST.**
 `.github/scripts/check-boundary-probes.sh` (task 3.7.3, taking the handoff 0.2.3 opened and

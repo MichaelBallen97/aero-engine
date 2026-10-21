@@ -83,6 +83,12 @@ A CI test that fails if any `#include` under `/engine` or `/runtime` points to `
                zero-dependency primitives that scene, render, script, runtime and /tools all
                need; tasks 3.1.1 D1 and 3.1.2 D1)
   /script      quickjs-ng, bindings, hot reload
+               (opened at 4.1.1: engine::script::Vm -- one runtime + one context per VM, a capped
+               first-party heap allocator, a per-call time budget, every failure trapped into the engine
+               log. It links aero::core PUBLIC and quickjs-ng PRIVATE, and exposes nothing to scripts yet.
+               Enforcement is in two halves: .github/scripts/check-script-boundary.sh (no quickjs token in
+               any public engine header, none in engine/ or runtime/ outside engine/script/src) and
+               tests/script_boundary_probe.cpp, which links aero::script alone)
   /reflect     entt::meta runtime (the GENERATOR lives in /tools)
 
 /runtime       game loop, .pak loading, per-platform entry points        [5 platforms]
