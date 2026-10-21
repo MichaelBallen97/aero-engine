@@ -24,10 +24,12 @@
 # next backend version outgrows. The inverted rule: EVERY token matching JS[A-Z_][A-Za-z0-9_]*, bounded on
 # the left, is a violation UNLESS it starts with JSON. The exception set is measured, not guessed:
 #     git grep -hoE '(^|[^a-zA-Z0-9_])JS[A-Za-z0-9_]*' -- engine runtime
-# returns only JSON and a bare JS in a comment, and the rule needs a third character. The same measurement
-# covers the other two spellings the backend's header uses (quickjs.h: js_malloc, js_free, js_realloc, the
-# js_*_rt family; QUICKJS_NG_*, QJS_*): js_[a-z0-9_]+, QJS_ and QUICKJS, each bounded on the left by a
-# non-identifier character, so objs_count, my_js_value and json_reader never match.
+# returns only JSON and a bare JS in a comment, and the rule needs a third character. The other spellings
+# the backend's header uses (quickjs.h: js_malloc, js_free, js_realloc, the js_*_rt family; QUICKJS_NG_*,
+# QJS_*) are js_[a-z0-9_]+, QJS_ and QUICKJS, each bounded on the left by a non-identifier character, so
+# objs_count, my_js_value and json_reader never match. Their own measurement:
+#     git grep -nE '(^|[^A-Za-z0-9_])(js_[a-z0-9_]|QJS_|QUICKJS)' -- engine runtime
+# returns nothing at all today.
 #
 # THE COMPILE-TIME HALF is tests/script_boundary_probe.cpp, which links aero::script alone. It cannot see a
 # forward declaration (`struct JSContext;` compiles anywhere with no include at all) and this script can;
@@ -150,15 +152,15 @@ fi
 # If the layer's directory is renamed, or the regex rots, the guard refuses to pass rather than guarding
 # nothing. No file name is hard-coded.
 if [ "$canary_files" -eq 0 ]; then
-  echo "::error::script-boundary guard found no file under ${PRIVATE_SIDE_PREFIX} (outside include/) that" >&2
+  echo "::error::script-boundary guard found no file under ${PRIVATE_SIDE_PREFIX}, the one private directory, that" >&2
   echo "::error::includes a quickjs header -- was the layer renamed, or has INCLUDE_RE rotted? The guard" >&2
-  echo "::error::cannot self-verify, so it is refusing to pass. Fix the prefixes or INCLUDE_RE in $0." >&2
+  echo "::error::cannot self-verify, so it is refusing to pass. Fix PRIVATE_SIDE_PREFIX or INCLUDE_RE in $0." >&2
   exit 2
 fi
 
 # --- Self-test 3: the machinery, on synthetic input. --------------------------------------------------
 for line in 'JSValue v;' 'struct JSContext;' 'JS_FreeValue(ctx, v);' 'JSCFunction* f;' 'JS_EVAL_TYPE_GLOBAL' \
-  'void* p = js_malloc(ctx, 4);' 'int v = QJS_VERSION_MAJOR;'; do
+  'void* p = js_malloc(ctx, 4);' 'int v = QJS_VERSION_MAJOR;' '#ifdef QUICKJS_NG'; do
   if [ -z "$(printf '1:%s\n' "$line" | scan_tokens)" ]; then
     echo "::error::scan_tokens in $0 no longer reports a quickjs token in '${line}' -- it is vacuous." >&2
     exit 2
