@@ -1215,6 +1215,21 @@ TEST_CASE("script: a loop that catches everything at the heap limit is still int
     expectCleanShutdown(vm);
 }
 
+TEST_CASE("script: work refused after the budget ran out is not reported as rejections (VM47)") {
+    LogCapture log;
+    Vm vm = makeVm(withBudget(std::chrono::milliseconds{100}));
+    log.clear();
+    // Calling an async function has no stack check of its own: once the budget is gone its first resumption is
+    // refused and the function returns a rejected promise. That rejection is the budget's doing, not the script's.
+    const std::string_view source = "new Promise(() => { while (true) {} }); (async () => {})();";
+    const EvalResult result = vm.evaluateScript(source, "async.js");
+    CHECK(result.status == EvalStatus::Interrupted);
+    const std::string message = onlyErrorMessage(log);
+    CHECK(firstLine(message) == "script: async.js: interrupted after exceeding the 100 ms time budget");
+    CHECK(vm.stats().unhandledRejections == 0U);
+    expectCleanShutdown(vm);
+}
+
 // ---- VM32: shutdown ---------------------------------------------------------------------------------------
 
 TEST_CASE("script: shutdown() reports zero leaks after a session through every arm, and is idempotent (VM32)") {

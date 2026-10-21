@@ -164,10 +164,12 @@ int Vm::Impl::interruptHandler(JSRuntime* runtime, void* opaque) noexcept {
         self.interruptFired = true;
         // The backend turns the interrupt into an ordinary promise rejection on several C paths (the Promise
         // executor, Promise.try, a thenable job, ...), after which the script would run on. With the stack limit
-        // exhausted, every bytecode frame and every native call refuses to start (quickjs.c:17640, :17370,
-        // :17494), so no new JavaScript runs once the budget is gone: the frames already running reach their next
-        // poll and are interrupted again. ~CallScope restores the limit. 1, never 0: a size of 0 DISABLES the
-        // check (quickjs.c:2763-2764).
+        // exhausted, every bytecode frame and every native function or bound call refuses to start (quickjs.c:17640,
+        // :17370, :17494). A few class calls skip the check (the promise resolving functions, C function data with
+        // enough arguments, the async and generator call handlers); they do bounded work, and none of them can start
+        // bytecode without passing a check. So no new JavaScript runs once the budget is gone: the frames already
+        // running reach their next poll and are interrupted again. ~CallScope restores the limit. 1, never 0: a
+        // size of 0 DISABLES the check (quickjs.c:2763-2764).
         JS_SetMaxStackSize(runtime, 1);
     }
     // The next requests after this return are the interrupt error's own (an InternalError and its backtrace), and
@@ -191,7 +193,7 @@ void Vm::Impl::rejectionTracker(JSContext* context, JSValueConst promise, JSValu
     try {
         if (!isHandled) {
             self.pendingRejections.push_back(
-                PendingRejection{JS_DupValue(context, promise), JS_DupValue(context, reason)});
+                PendingRejection{JS_DupValue(context, promise), JS_DupValue(context, reason), self.interruptFired});
             return;
         }
         for (auto entry = self.pendingRejections.begin(); entry != self.pendingRejections.end(); ++entry) {
@@ -304,8 +306,9 @@ void Vm::Impl::drainJobs(EvalResult& result) {
 void Vm::Impl::reportUnhandledRejections() {
     const std::vector<PendingRejection> batch = std::exchange(pendingRejections, {});
     for (const PendingRejection& entry : batch) {
-        // The interrupt itself, rejected into a promise by the backend: the call reports it as Interrupted.
-        if (!JS_IsUncatchableError(entry.reason)) {
+        // The interrupt itself, rejected into a promise by the backend, and whatever was refused once the budget
+        // ran out (an async function's first resumption, for one): the call reports those as Interrupted.
+        if (!entry.afterInterrupt && !JS_IsUncatchableError(entry.reason)) {
             const bool isErrorObject = JS_IsError(entry.reason);
             const ScriptError reason = describe(entry.reason, isErrorObject);
             logUnhandledRejection(reason, isErrorObject);

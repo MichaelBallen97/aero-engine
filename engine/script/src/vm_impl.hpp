@@ -78,6 +78,7 @@ inline constexpr std::string_view DRAIN_STOP_MESSAGE = "the time budget ran out 
 struct PendingRejection {
     JSValue promise;
     JSValue reason;
+    bool afterInterrupt;  // recorded after the call's budget ran out: the budget's doing, never reported
 };
 
 struct Vm::Impl {
