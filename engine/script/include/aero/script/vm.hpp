@@ -47,6 +47,8 @@ inline constexpr std::chrono::milliseconds MIN_CALL_TIME_BUDGET{1};
 inline constexpr std::chrono::milliseconds MAX_CALL_TIME_BUDGET{60'000};
 
 struct VmConfig {
+    // Each time the budget interrupts a script, the interrupt's own error (and its backtrace) may take up to 16 KiB
+    // past this limit, so a call can end with VmStats::heapBytesInUse above heapLimitBytes. Nothing else may.
     std::size_t heapLimitBytes = DEFAULT_HEAP_LIMIT_BYTES;    // >= MIN_HEAP_LIMIT_BYTES
     std::size_t stackLimitBytes = DEFAULT_STACK_LIMIT_BYTES;  // [MIN_STACK_LIMIT_BYTES, MAX_STACK_LIMIT_BYTES]
     std::chrono::milliseconds callTimeBudget = DEFAULT_CALL_TIME_BUDGET;  // [MIN_, MAX_CALL_TIME_BUDGET]
@@ -92,7 +94,9 @@ struct EvalResult {
 
 struct VmStats {
     std::size_t heapLimitBytes = 0;
-    std::size_t heapBytesInUse = 0;  // live blocks, each with its 16-byte header
+    // Live blocks, each with its 16-byte header. It can exceed heapLimitBytes by up to 16 KiB for each time the
+    // budget interrupted a script (see VmConfig::heapLimitBytes).
+    std::size_t heapBytesInUse = 0;
     std::size_t heapBytesPeak = 0;
     std::size_t liveAllocations = 0;
     std::uint64_t refusedAllocations = 0;     // requests the heap limit refused, over the VM's life

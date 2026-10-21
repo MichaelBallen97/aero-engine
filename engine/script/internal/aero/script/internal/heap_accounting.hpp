@@ -44,7 +44,8 @@ public:
     // reallocate, refused or not) the ceiling is max(limit, inUse-at-the-opening + bytes) instead of the limit. It
     // exists for one caller: the time budget's interrupt handler, which opens it each time it returns 1, because
     // the next requests are the interrupt error's own and they must not be refused by a heap the script has just
-    // filled. closeGraceWindow() ends it early; a window also ends when its decisions are spent.
+    // filled. The ceiling is measured from the usage at the opening, so windows opened one after another stack.
+    // closeGraceWindow() ends it early; a window also ends when its decisions are spent.
     void openGraceWindow(std::size_t allocations, std::size_t bytes) noexcept;
     void closeGraceWindow() noexcept;
 

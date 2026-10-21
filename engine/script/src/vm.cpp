@@ -178,9 +178,10 @@ VmTeardownReport Vm::Impl::shutdown() noexcept {
 // ---- one call -------------------------------------------------------------------------------------------
 
 // The interrupt's grace window (HeapAccounting::openGraceWindow): the number of allocation decisions and the bytes
-// past the heap limit that a firing of the budget's interrupt may use.
+// past the heap limit that a firing of the budget's interrupt may use. 16 KiB covers an InternalError and a default
+// 10-frame backtrace with margin.
 constexpr std::size_t INTERRUPT_GRACE_ALLOCATIONS = 64;
-constexpr std::size_t INTERRUPT_GRACE_BYTES = std::size_t{64} * 1024U;
+constexpr std::size_t INTERRUPT_GRACE_BYTES = std::size_t{16} * 1024U;
 
 // The whole of the time budget's mechanism: a clock read, a comparison, a counter reset and, once, the stack-limit
 // line below. No allocation, no lock, no log. The backend consults it on the first poll of a context and then every
@@ -204,9 +205,10 @@ int Vm::Impl::interruptHandler(JSRuntime* runtime, void* opaque) noexcept {
     }
     // The next requests after this return are the interrupt error's own (an InternalError and its backtrace), and
     // at the heap limit they would be refused: the backend then throws a plain `null`, which cannot be marked
-    // uncatchable, so a script that catches everything would never end. The window gives them room. The script
-    // cannot spend more than one window's bytes before the handler fires again, and the number of fires in a call
-    // is bounded, so the overshoot is bounded too. ~CallScope closes it.
+    // uncatchable, so a script that catches everything would never end. The window gives them room. It is measured
+    // from the current usage, so windows stack: the overshoot past the heap limit is up to INTERRUPT_GRACE_BYTES per
+    // fire, and a call fires at most once plus once per converting C frame on the stack at the first fire (the
+    // stack-trace hooks that could swallow more are removed at create). ~CallScope closes it.
     self.heap.openGraceWindow(INTERRUPT_GRACE_ALLOCATIONS, INTERRUPT_GRACE_BYTES);
     return 1;
 }
