@@ -1218,23 +1218,29 @@ TEST_CASE("script: an interrupt does not cost the lazily built builtins (VM45)")
     CHECK(log.countAtLeast(LogLevel::Warn) == 0U);  // the teardown found nothing still referenced
 }
 
-TEST_CASE("script: a loop that catches everything at the heap limit is still interrupted (VM44)") {
+TEST_CASE("script: nested catch-alls at the heap limit are still interrupted (VM44)") {
     LogCapture log;
-    VmConfig config = withBudget(std::chrono::milliseconds{100});
-    config.heapLimitBytes = 4 * MIB;
+    // The smallest heap fills long before the deadline on every lane.
+    VmConfig config = withBudget(std::chrono::milliseconds{1000});
+    config.heapLimitBytes = engine::script::MIN_HEAP_LIMIT_BYTES;
     Vm vm = makeVm(config);
     log.clear();
-    // At the limit even the interrupt's own error object cannot be allocated, so the backend would throw a plain
-    // `null` -- which cannot be marked uncatchable, and which this catch-all swallows for ever. The allocator's
-    // grace window, opened each time the interrupt fires, is what lets the real error be built.
+    // Every poll sits inside a try, so the interrupt is raised inside a catch-all at every depth. At the heap limit
+    // the interrupt's own error object cannot be allocated, and the backend then throws a plain `null` -- which
+    // cannot be marked uncatchable, and which the outer catch takes every time. Only the allocator's grace window,
+    // opened each time the interrupt fires, lets the real error and its backtrace be built, and that error leaves
+    // every try. (An interrupt thrown at a loop's back-edge outside any try would end the call even as `null`.)
     const std::string_view source =
-        "(() => { let head = null; for (;;) { try { head = { next: head }; } catch (e) {} } })()";
+        "(() => { let head = null; for (;;) { try { for (;;) { try { head = { next: head }; } catch (e) {} } } "
+        "catch (e) {} } })()";
     const EvalResult result = vm.evaluateScript(source, "full.js");
     CHECK(result.status == EvalStatus::Interrupted);
+    // The canonical InternalError and its backtrace were built at a full heap; a `null` has no stack at all.
+    CHECK(result.error.stack.find("full.js:1:") != std::string::npos);
     const std::string message = onlyErrorMessage(log);
-    CHECK(firstLine(message) == "script: full.js: interrupted after exceeding the 100 ms time budget");
+    CHECK(firstLine(message) == "script: full.js: interrupted after exceeding the 1000 ms time budget");
     const VmStats stats = vm.stats();
-    CHECK(stats.heapBytesPeak <= stats.heapLimitBytes + 64 * KIB);  // the overshoot is bounded
+    CHECK(stats.heapBytesPeak <= stats.heapLimitBytes + 16 * KIB);  // the overshoot is bounded
     const EvalResult after = vm.evaluateScript("1 + 1", "full.js");
     CHECK(after.status == EvalStatus::Ok);
     CHECK(after.completion == "2");
