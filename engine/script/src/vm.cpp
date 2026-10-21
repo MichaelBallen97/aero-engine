@@ -1,4 +1,4 @@
-// Aero Engine -- engine::script::Vm (task 4.1.1): create, teardown, and the thread check.
+// Aero Engine -- engine::script::Vm (task 4.1.1): create, teardown, the thread check and the entry point.
 
 #include <aero/core/log.hpp>
 #include <aero/script/vm.hpp>
@@ -6,8 +6,10 @@
 #include "vm_impl.hpp"
 
 #include <cassert>
+#include <chrono>
 #include <cstddef>
 #include <memory>
+#include <string>
 #include <string_view>
 #include <thread>
 #include <utility>
@@ -105,6 +107,46 @@ VmTeardownReport Vm::Impl::shutdown() noexcept {
     return report;
 }
 
+// ---- one call -------------------------------------------------------------------------------------------
+
+Vm::Impl::CallScope::CallScope(Impl& host, const std::string& fileName) : impl(host) {
+    host.deadline = std::chrono::steady_clock::now() + host.config.callTimeBudget;
+    // The backend captured its stack top once, where the runtime was created. A VM created deep inside one
+    // call and entered later from a shallow one would otherwise get the difference ADDED to its limit.
+    JS_UpdateStackTop(host.rt);
+    host.refusalsAtCallStart = host.heap.refusals();
+    host.callFileName = fileName;
+    host.inCall = true;
+}
+
+Vm::Impl::CallScope::~CallScope() {
+    impl.deadline = std::chrono::steady_clock::time_point::min();
+    impl.inCall = false;
+}
+
+EvalResult Vm::Impl::evaluate(std::string_view source, std::string_view fileName) {
+    assert(!inCall);                     // no host function exists, so nothing can re-enter the VM
+    const std::string text{source};      // the backend reads text[text.size()] (quickjs.h:1012)
+    const std::string name{fileName};    // and the file name is a C string
+    const CallScope scope{*this, name};  // deadline, stack top, refusal mark, inCall
+    EvalResult result;
+    HeldValue compiled{ctx, JS_Eval(ctx, text.c_str(), text.size(), name.c_str(),
+                                    JS_EVAL_TYPE_GLOBAL | JS_EVAL_FLAG_STRICT | JS_EVAL_FLAG_COMPILE_ONLY)};
+    if (compiled.isException()) {
+        result = trap(Phase::Compile);
+    } else {
+        // JS_EvalFunction CONSUMES its argument: the one release() in the layer.
+        const HeldValue completion{ctx, JS_EvalFunction(ctx, compiled.release())};
+        if (completion.isException()) {
+            result = trap(Phase::Run);
+        } else {
+            result.status = EvalStatus::Ok;
+            result.completion = stringify(completion.get());  // a failed rendering never changes the status
+        }
+    }
+    return result;  // ~CallScope: deadline = time_point::min(); inCall = false
+}
+
 // ---- Vm -------------------------------------------------------------------------------------------------
 
 VmCreateResult Vm::create(const VmConfig& config) {
@@ -141,6 +183,18 @@ Vm::~Vm() = default;
 Vm::Vm(std::unique_ptr<Impl> owned) noexcept : impl(std::move(owned)) {}
 
 bool Vm::valid() const noexcept { return impl != nullptr; }
+
+EvalResult Vm::evaluateScript(std::string_view source, std::string_view fileName) {
+    if (impl == nullptr) {
+        AERO_LOG_ERROR("script: evaluateScript on an invalid Vm (a failed create or a moved-from Vm)");
+        return EvalResult{EvalStatus::InvalidVm, {}, {}};
+    }
+    if (!impl->onVmThread()) {
+        AERO_LOG_ERROR("script: evaluateScript called from a thread that is not the VM's; refused");
+        return EvalResult{EvalStatus::WrongThread, {}, {}};
+    }
+    return impl->evaluate(source, fileName);
+}
 
 void Vm::collectGarbage() noexcept {
     if (impl == nullptr) {

@@ -41,6 +41,8 @@ std::ostream& operator<<(std::ostream& out, VmCreateStatus status) { return out 
 namespace {
 
 using engine::LogLevel;
+using engine::script::EvalResult;
+using engine::script::EvalStatus;
 using engine::script::Vm;
 using engine::script::VmConfig;
 using engine::script::VmCreateResult;
@@ -124,6 +126,22 @@ void expectOnlyError(const LogCapture& log, std::string_view message) {
     REQUIRE(records.size() == 1U);
     CHECK(records[0].level == LogLevel::Error);
     CHECK(records[0].message == message);
+}
+
+// The one ERROR's text (exactly one record at WARN or above, and it is an ERROR).
+[[nodiscard]] std::string onlyErrorMessage(const LogCapture& log) {
+    const std::vector<CapturedRecord> records = log.atLeast(LogLevel::Warn);
+    REQUIRE(records.size() == 1U);
+    CHECK(records[0].level == LogLevel::Error);
+    return records[0].message;
+}
+
+[[nodiscard]] std::string_view firstLine(std::string_view text) { return text.substr(0, text.find('\n')); }
+
+// For a case bounded by memory or stack depth: it must never be cut short by the clock.
+[[nodiscard]] VmConfig patient(VmConfig config = {}) {
+    config.callTimeBudget = engine::script::MAX_CALL_TIME_BUDGET;
+    return config;
 }
 
 constexpr std::size_t KIB = 1024;
@@ -282,6 +300,10 @@ TEST_CASE("script: a moved-from VM is invalid and refuses every call; the moved-
         CHECK(stats.unhandledRejections == 0U);
         CHECK(stats.rejectionsHandledLate == 0U);
         log.clear();
+        const EvalResult evaluated = moved.evaluateScript("1", "x.js");
+        CHECK(evaluated.status == EvalStatus::InvalidVm);
+        expectOnlyError(log, "script: evaluateScript on an invalid Vm (a failed create or a moved-from Vm)");
+        log.clear();
         const VmTeardownReport report = moved.shutdown();
         CHECK(report.leakedAllocations == 0U);
         CHECK(report.leakedBytes == 0U);
@@ -299,7 +321,358 @@ TEST_CASE("script: a moved-from VM is invalid and refuses every call; the moved-
     // NOLINTNEXTLINE(bugprone-use-after-move,clang-analyzer-cplusplus.Move) -- that IS the subject
     expectMovedFrom(b);
     CHECK(log.countAtLeast(LogLevel::Warn) == 0U);
+
+    // Every allocation of this call goes through the allocator whose address the runtime captured before
+    // both moves; ASan would report a dangling one.
+    log.clear();
+    const EvalResult moved = c.evaluateScript("1 + 1", "moved.js");
+    CHECK(moved.status == EvalStatus::Ok);
+    CHECK(moved.completion == "2");
+    CHECK(log.countAtLeast(LogLevel::Warn) == 0U);
     expectCleanShutdown(c);
+
+    // The VM a failed create returns is invalid too.
+    VmConfig tiny;
+    tiny.heapLimitBytes = 1;
+    VmCreateResult failed = Vm::create(tiny);
+    CHECK(failed.status == VmCreateStatus::OutOfMemory);
+    log.clear();
+    const EvalResult refused = failed.vm.evaluateScript("1", "failed.js");
+    CHECK(refused.status == EvalStatus::InvalidVm);
+    expectOnlyError(log, "script: evaluateScript on an invalid Vm (a failed create or a moved-from Vm)");
+}
+
+// ---- VM7-VM18: evaluateScript and every synchronous arm of the trapping matrix ------------------------------
+
+TEST_CASE("script: evaluateScript returns the completion value as text (VM7)") {
+    const LogCapture log;
+    Vm vm = makeVm();
+    const auto run = [&vm](std::string_view source) { return vm.evaluateScript(source, "v7.js"); };
+
+    const EvalResult sum = run("1 + 1");
+    CHECK(sum.status == EvalStatus::Ok);
+    CHECK(sum.completion == "2");
+    CHECK(sum.error.name.empty());
+    CHECK(sum.error.message.empty());
+    CHECK(sum.error.stack.empty());
+
+    CHECK(run("\"a\" + \"b\"").completion == "ab");
+    CHECK(run("({})").completion == "[object Object]");
+    CHECK(run("undefined").completion == "undefined");
+
+    // Rendering the completion never changes the status.
+    const EvalResult symbol = run("Symbol(\"s\")");
+    CHECK(symbol.status == EvalStatus::Ok);
+    CHECK(symbol.completion == "<unprintable value>");
+
+    // The terminator arm: the view's next byte is ';', not '\0', so a wrapper that handed the view to the
+    // backend unterminated would let it read on into `throw 1;` and return Exception.
+    const std::string_view whole{"1 + 1; throw 1;"};
+    const EvalResult view = vm.evaluateScript(whole.substr(0, 5), "view.js");
+    CHECK(view.status == EvalStatus::Ok);
+    CHECK(view.completion == "2");
+
+    CHECK(log.countAtLeast(LogLevel::Warn) == 0U);
+    expectCleanShutdown(vm);
+}
+
+TEST_CASE("script: state persists across calls, and the code runs strict (VM8)") {
+    const LogCapture log;
+    Vm vm = makeVm();
+    CHECK(vm.evaluateScript("globalThis.counter = 41;", "s8.js").status == EvalStatus::Ok);
+    const EvalResult next = vm.evaluateScript("++counter", "s8.js");
+    CHECK(next.status == EvalStatus::Ok);
+    CHECK(next.completion == "42");
+
+    // Sloppy code would have created a global: the witness for the strict flag.
+    const EvalResult strict = vm.evaluateScript("undeclaredName = 1;", "s8.js");
+    CHECK(strict.status == EvalStatus::Exception);
+    CHECK(strict.error.name == "ReferenceError");
+    CHECK(log.countAtLeast(LogLevel::Warn) == 1U);
+    expectCleanShutdown(vm);
+}
+
+TEST_CASE("script: nothing engine- or OS-shaped is visible, and no script can block the thread (VM9)") {
+    const LogCapture log;
+    Vm vm = makeVm();
+    const std::string_view globalsProbe =
+        "[typeof print, typeof console, typeof std, typeof os, typeof require, typeof scriptEngine].join()";
+    const EvalResult absent = vm.evaluateScript(globalsProbe, "v9.js");
+    CHECK(absent.status == EvalStatus::Ok);
+    CHECK(absent.completion == "undefined,undefined,undefined,undefined,undefined,undefined");
+
+    // The control: the language's own globals are there.
+    const EvalResult present =
+        vm.evaluateScript("[typeof Promise, typeof queueMicrotask, typeof JSON].join()", "v9.js");
+    CHECK(present.completion == "function,function,object");
+
+    // A timeout of 0 means that even a regression that enabled blocking returns at once ("returned" or
+    // "timed-out") instead of hanging the case.
+    const EvalResult blocking = vm.evaluateScript(
+        "typeof Atomics === \"undefined\" ? \"absent\" : (() => { try { Atomics.wait(new Int32Array("
+        "new SharedArrayBuffer(4)), 0, 0, 0); return \"returned\"; } catch (e) { return e.name + \": \" + "
+        "e.message; } })()",
+        "v9.js");
+    CHECK(blocking.status == EvalStatus::Ok);
+    const bool cannotBlock =
+        blocking.completion == "TypeError: cannot block in this thread" || blocking.completion == "absent";
+    CHECK(cannotBlock);
+    CHECK(log.countAtLeast(LogLevel::Warn) == 0U);
+    expectCleanShutdown(vm);
+}
+
+TEST_CASE("script: an uncaught Error is Exception with its name, message and stack, logged once (VM10)") {
+    LogCapture log;
+    Vm vm = makeVm();
+    // The file name is a prefix of a longer view, so a wrapper that handed it to the backend unterminated
+    // would print `err.jsTRAILING` in both the stack and the record.
+    const std::string_view fileName = std::string_view{"err.jsTRAILING"}.substr(0, 6);
+    log.clear();
+    const std::string_view source = "function f() { throw new TypeError(\"bad thing\"); } f();";
+    const EvalResult result = vm.evaluateScript(source, fileName);
+    CHECK(result.status == EvalStatus::Exception);
+    CHECK(result.error.name == "TypeError");
+    CHECK(result.error.message == "bad thing");
+    CHECK(firstLine(result.error.stack).starts_with("    at f (err.js:1:"));
+    CHECK_FALSE(result.error.stack.empty());
+    CHECK(result.error.stack.back() != '\n');
+    CHECK(result.completion.empty());
+    // The log and the result agree byte for byte.
+    expectOnlyError(log, "script: err.js: uncaught TypeError: bad thing\n" + result.error.stack);
+    expectCleanShutdown(vm);
+}
+
+TEST_CASE("script: a thrown non-Error value is Exception with String(value), or a placeholder (VM11)") {
+    struct Row {
+        std::string_view script;
+        std::string_view message;
+    };
+    const std::array<Row, 7> rows{{
+        {"throw 42;", "42"},
+        {"throw \"boom\";", "boom"},
+        {"throw null;", "null"},  // Exception, NOT OutOfMemory: no allocation was refused
+        {"throw undefined;", "undefined"},
+        {"throw { a: 1 };", "[object Object]"},
+        {"throw Symbol(\"s\");", "<unprintable value>"},
+        {"throw { toString() { throw new Error(\"nested\"); } };", "<unprintable value>"},
+    }};
+    LogCapture log;
+    Vm vm = makeVm();
+    for (const Row& row : rows) {
+        INFO("script: " << row.script);
+        log.clear();
+        const EvalResult result = vm.evaluateScript(row.script, "v.js");
+        CHECK(result.status == EvalStatus::Exception);
+        CHECK(result.error.name.empty());
+        CHECK(result.error.stack.empty());
+        CHECK(result.error.message == row.message);
+        expectOnlyError(log, "script: v.js: uncaught exception: " + std::string{row.message});
+    }
+
+    // Nothing the conversions threw survived into the next call.
+    log.clear();
+    const EvalResult next = vm.evaluateScript("1 + 1", "v.js");
+    CHECK(next.status == EvalStatus::Ok);
+    CHECK(next.completion == "2");
+    CHECK(log.countAtLeast(LogLevel::Warn) == 0U);
+    expectCleanShutdown(vm);
+}
+
+TEST_CASE("script: a syntax error is CompileError, runs nothing, and names file, line and column (VM12)") {
+    LogCapture log;
+    Vm vm = makeVm();
+    log.clear();
+    const EvalResult result = vm.evaluateScript("globalThis.ran = true; let x = ;", "bad.js");
+    CHECK(result.status == EvalStatus::CompileError);
+    CHECK(result.error.name == "SyntaxError");
+    CHECK_FALSE(result.error.message.empty());
+    CHECK(firstLine(result.error.stack).starts_with("    at bad.js:1:"));
+    const std::string expected = "script: bad.js: compile error: SyntaxError: " + result.error.message;
+    expectOnlyError(log, expected + "\n" + result.error.stack);
+
+    // The first statement never ran.
+    const EvalResult ran = vm.evaluateScript("typeof ran", "bad.js");
+    CHECK(ran.status == EvalStatus::Ok);
+    CHECK(ran.completion == "undefined");
+    expectCleanShutdown(vm);
+}
+
+TEST_CASE("script: a SyntaxError thrown at run time by eval() is Exception, not CompileError (VM13)") {
+    LogCapture log;
+    Vm vm = makeVm();
+    log.clear();
+    const EvalResult result = vm.evaluateScript("eval(\"let y = ;\");", "ev.js");
+    CHECK(result.status == EvalStatus::Exception);
+    CHECK(result.error.name == "SyntaxError");
+    const std::string message = onlyErrorMessage(log);
+    CHECK(firstLine(message).starts_with("script: ev.js: uncaught SyntaxError: "));
+    expectCleanShutdown(vm);
+}
+
+TEST_CASE("script: an uncaught out-of-memory is OutOfMemory, logged with the limit, and the VM recovers (VM14)") {
+    LogCapture log;
+    // The DEFAULT 64 MiB heap: this is the one case that exercises the shipped limit.
+    Vm vm = makeVm(patient());
+    log.clear();
+    const EvalResult big =
+        vm.evaluateScript("(() => { const s = \"x\".repeat(128 * 1024 * 1024); return s.length; })()", "oom.js");
+    CHECK(big.status == EvalStatus::OutOfMemory);
+    CHECK(big.error.name == "InternalError");
+    CHECK(big.error.message == "out of memory");
+    CHECK(vm.stats().refusedAllocations > 0U);
+    const std::string message = onlyErrorMessage(log);
+    CHECK(firstLine(message).starts_with("script: oom.js: out of memory (heap limit 67108864 bytes, "));
+    CHECK(firstLine(message).ends_with(" bytes in use)"));
+    const EvalResult after = vm.evaluateScript("1 + 1", "oom.js");
+    CHECK(after.status == EvalStatus::Ok);
+    CHECK(after.completion == "2");
+
+    // The array arm fills the heap for real; its refusal is a REALLOCATE inside the backend, the path whose
+    // keep-the-block contract VM37 pins in isolation.
+    log.clear();
+    const EvalResult grow = vm.evaluateScript("(() => { const a = []; for (;;) { a.push(1.5); } })()", "grow.js");
+    CHECK(grow.status == EvalStatus::OutOfMemory);
+    CHECK(grow.error.message == "out of memory");
+    const EvalResult again = vm.evaluateScript("1 + 1", "grow.js");
+    CHECK(again.status == EvalStatus::Ok);
+    CHECK(again.completion == "2");
+    expectCleanShutdown(vm);
+}
+
+TEST_CASE("script: an out-of-memory the script catches is Ok and logs nothing (VM15)") {
+    const LogCapture log;
+    VmConfig config;
+    config.heapLimitBytes = 8 * MIB;
+    Vm vm = makeVm(patient(config));
+    const EvalResult caught = vm.evaluateScript(
+        R"js((() => { try { "x".repeat(64 * 1024 * 1024); return "no"; } catch (e) { return e.message; } })())js",
+        "caught.js");
+    CHECK(caught.status == EvalStatus::Ok);
+    CHECK(caught.completion == "out of memory");
+    CHECK(vm.stats().refusedAllocations > 0U);
+    CHECK(log.countAtLeast(LogLevel::Warn) == 0U);  // a refusal alone is not an OutOfMemory
+
+    // The refusal belongs to an earlier call, and the witness is per call.
+    const EvalResult thrown = vm.evaluateScript("throw null;", "caught.js");
+    CHECK(thrown.status == EvalStatus::Exception);
+    expectCleanShutdown(vm);
+}
+
+TEST_CASE("script: small-object exhaustion is OutOfMemory whatever value the backend threw (VM16)") {
+    LogCapture log;
+    VmConfig config;
+    config.heapLimitBytes = 4 * MIB;
+    {
+        Vm vm = makeVm(patient(config));
+        log.clear();
+        const EvalResult list =
+            vm.evaluateScript("(() => { let head = null; for (;;) { head = { next: head }; } })()", "list.js");
+        CHECK(list.status == EvalStatus::OutOfMemory);
+        const std::string message = onlyErrorMessage(log);
+        CHECK(firstLine(message).starts_with("script: list.js: out of memory (heap limit 4194304 bytes, "));
+        // Which of the backend's two failure values this build produced: an InternalError, or `null` when not
+        // even the error object fits.
+        MESSAGE("thrown value: " << list.error.name << "/" << list.error.message);
+        // The list was function-local: unreachable after the unwind.
+        const EvalResult after = vm.evaluateScript("1 + 1", "list.js");
+        CHECK(after.status == EvalStatus::Ok);
+        CHECK(after.completion == "2");
+        expectCleanShutdown(vm);
+    }
+
+    // The collector arm. Every node references itself, so reference counting frees NOTHING after the
+    // unwind and the heap stays full; the follow-up can compile only because the trap ran the collector
+    // after classifying the failure (an allocation for bytecode never triggers the automatic one).
+    Vm vm = makeVm(patient(config));
+    log.clear();
+    const EvalResult cycles = vm.evaluateScript(
+        "(() => { let head = null; for (;;) { const a = { next: head }; a.self = a; head = a; } })()", "cycles.js");
+    CHECK(cycles.status == EvalStatus::OutOfMemory);
+    const EvalResult after = vm.evaluateScript("1 + 1", "cycles.js");
+    CHECK(after.status == EvalStatus::Ok);
+    CHECK(after.completion == "2");
+    expectCleanShutdown(vm);
+}
+
+TEST_CASE("script: a stack overflow is a catchable RangeError, trapped as Exception (VM17)") {
+    LogCapture log;
+    Vm vm = makeVm(patient());
+    log.clear();
+    const EvalResult deep = vm.evaluateScript("function r(n) { return r(n + 1) + 1; } r(0);", "deep.js");
+    CHECK(deep.status == EvalStatus::Exception);
+    CHECK(deep.error.name == "RangeError");
+    CHECK(deep.error.message == "Maximum call stack size exceeded");
+    const std::string message = onlyErrorMessage(log);
+    CHECK(firstLine(message) == "script: deep.js: uncaught RangeError: Maximum call stack size exceeded");
+
+    // Catchable, unlike the interrupt.
+    const EvalResult caught = vm.evaluateScript(
+        "(() => { function q() { return q() + 1; } try { q(); return \"no\"; } catch (e) { return e.name; } })()",
+        "deep.js");
+    CHECK(caught.status == EvalStatus::Ok);
+    CHECK(caught.completion == "RangeError");
+    const EvalResult after = vm.evaluateScript("1 + 1", "deep.js");
+    CHECK(after.status == EvalStatus::Ok);
+    CHECK(after.completion == "2");
+    expectCleanShutdown(vm);
+}
+
+namespace {
+
+// Creates a VM `frames` levels below the caller, each level holding a 4 KiB volatile-touched local array and
+// recursing through a volatile function pointer, so no optimiser can inline, merge or drop the frames.
+Vm createUnderPaddedFrames(const VmConfig& config, int frames);
+using PaddedFrameFn = Vm (*)(const VmConfig&, int);
+volatile PaddedFrameFn paddedFrame = &createUnderPaddedFrames;
+
+Vm createUnderPaddedFrames(const VmConfig& config, int frames) {
+    std::array<volatile unsigned char, 4096> padding;
+    padding[0] = 1;
+    padding[padding.size() - 1] = 2;
+    if (frames <= 0) {
+        return makeVm(config);
+    }
+    const PaddedFrameFn next = paddedFrame;
+    Vm vm = next(config, frames - 1);
+    padding[1] = padding[0];  // the frame is live across the call
+    return vm;
+}
+
+// How deep a script can recurse before the backend's own stack check fires, measured from the call.
+[[nodiscard]] std::size_t depthOf(Vm& vm) {
+    const EvalResult result = vm.evaluateScript(
+        "(() => { let d = 0; function r() { ++d; r(); } try { r(); } catch (e) {} return d; })()", "depth.js");
+    REQUIRE(result.status == EvalStatus::Ok);
+    return static_cast<std::size_t>(std::stoull(result.completion));
+}
+
+}  // namespace
+
+TEST_CASE("script: the stack limit is applied, and measured from the call rather than from creation (VM18)") {
+    const LogCapture log;
+    VmConfig shortConfig;
+    shortConfig.stackLimitBytes = engine::script::MIN_STACK_LIMIT_BYTES;
+    VmConfig longConfig;
+    longConfig.stackLimitBytes = 512 * KIB;
+    Vm shortStack = makeVm(patient(shortConfig));
+    Vm longStack = makeVm(patient(longConfig));
+    Vm deepCreated = createUnderPaddedFrames(patient(shortConfig), 32);
+
+    const std::size_t shortDepth = depthOf(shortStack);
+    const std::size_t longDepth = depthOf(longStack);
+    const std::size_t deepDepth = depthOf(deepCreated);
+    MESSAGE("depths: 64 KiB=" << shortDepth << " 512 KiB=" << longDepth << " (64 KiB, created deep)=" << deepDepth);
+    CHECK(shortDepth > 0U);
+    // The configured limit is applied: without it both would use the backend's own 1 MiB.
+    CHECK(shortDepth < longDepth);
+    // Both are entered from the same frame, so both measure the same 64 KiB below the same entry. Without
+    // the stack top being re-captured at entry, `deep`'s limit would sit 128 KiB-plus lower and it would
+    // recurse roughly three times as far.
+    CHECK(deepDepth == shortDepth);
+
+    expectCleanShutdown(shortStack);
+    expectCleanShutdown(longStack);
+    expectCleanShutdown(deepCreated);
 }
 
 // ---- VM24: the thread check -------------------------------------------------------------------------------
@@ -312,6 +685,66 @@ TEST_CASE("script: a call from another thread is refused without touching the ba
     std::thread{[&vm] { vm.collectGarbage(); }}.join();
     expectOnlyError(log, "script: collectGarbage called from a thread that is not the VM's; refused");
     CHECK(vm.stats().liveAllocations == before);
+
+    log.clear();
+    EvalResult foreign;
+    std::thread{[&vm, &foreign] { foreign = vm.evaluateScript("1 + 1", "t.js"); }}.join();
+    CHECK(foreign.status == EvalStatus::WrongThread);
+    expectOnlyError(log, "script: evaluateScript called from a thread that is not the VM's; refused");
+    CHECK(vm.stats().liveAllocations == before);
+
+    // The VM keeps working on its own thread.
+    log.clear();
+    const EvalResult own = vm.evaluateScript("1 + 1", "t.js");
+    CHECK(own.status == EvalStatus::Ok);
+    CHECK(own.completion == "2");
+    CHECK(log.countAtLeast(LogLevel::Warn) == 0U);
+    expectCleanShutdown(vm);
+}
+
+// ---- VM33-VM34: stats() and the cycle collector -------------------------------------------------------------
+
+TEST_CASE("script: stats() follows the heap up and down and keeps the peak (VM33)") {
+    const LogCapture log;
+    Vm vm = makeVm();
+    const VmStats before = vm.stats();
+    const std::string_view grow = "globalThis.big = new Array(200000).fill(0.5); big.length";
+    const EvalResult built = vm.evaluateScript(grow, "stats.js");
+    CHECK(built.status == EvalStatus::Ok);
+    CHECK(built.completion == "200000");
+    const VmStats grown = vm.stats();
+    CHECK(vm.evaluateScript("globalThis.big = undefined;", "stats.js").status == EvalStatus::Ok);
+    const VmStats shrunk = vm.stats();
+
+    // 200 000 values of at least 8 bytes each.
+    CHECK(grown.heapBytesInUse > before.heapBytesInUse + 1 * MIB);
+    // Reference counting freed the array at once, no collector involved.
+    CHECK(shrunk.heapBytesInUse < grown.heapBytesInUse);
+    CHECK(grown.heapBytesPeak >= grown.heapBytesInUse);
+    CHECK(shrunk.heapBytesPeak >= grown.heapBytesPeak);  // the third call compiles before it frees
+    CHECK(shrunk.liveAllocations < grown.liveAllocations);
+    CHECK(before.heapLimitBytes == 64 * MIB);
+    CHECK(grown.heapLimitBytes == 64 * MIB);
+    CHECK(shrunk.heapLimitBytes == 64 * MIB);
+    CHECK(log.countAtLeast(LogLevel::Warn) == 0U);
+    expectCleanShutdown(vm);
+}
+
+TEST_CASE("script: collectGarbage() frees an unreachable cycle that reference counting cannot (VM34)") {
+    const LogCapture log;
+    Vm vm = makeVm();
+    const char* const probe = "w.deref() !== undefined";
+    CHECK(vm.evaluateScript(
+                "globalThis.w = new WeakRef((() => { const a = {}; const b = { a }; a.b = b; return a; })()); "
+                "w.deref() !== undefined",
+                "gc.js")
+              .completion == "true");
+    // The cycle survives reference counting, and this tiny heap is far below the automatic collector's
+    // threshold.
+    CHECK(vm.evaluateScript(probe, "gc.js").completion == "true");
+    vm.collectGarbage();
+    CHECK(vm.evaluateScript("w.deref() === undefined", "gc.js").completion == "true");
+    CHECK(log.countAtLeast(LogLevel::Warn) == 0U);
     expectCleanShutdown(vm);
 }
 

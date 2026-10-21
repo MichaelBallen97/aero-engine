@@ -35,6 +35,7 @@ target_include_directories(aero_script_internal INTERFACE ${CMAKE_CURRENT_SOURCE
 
 add_library(aero_script STATIC
     src/vm.cpp
+    src/vm_errors.cpp
     src/heap_accounting.cpp
 )
 add_library(aero::script ALIAS aero_script)

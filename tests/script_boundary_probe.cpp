@@ -51,3 +51,11 @@ static_assert(script::VmStats{}.heapBytesInUse == 0U);
 static_assert(script::VmTeardownReport{}.leakedAllocations == 0U);
 static_assert(noexcept(script::scriptBackendVersion()));
 static_assert(std::is_same_v<decltype(script::scriptBackendVersion()), std::string_view>);
+
+// ---- the entry point ----
+static_assert(static_cast<std::uint8_t>(script::EvalStatus::Ok) == 0U);
+static_assert(noexcept(script::evalStatusLabel(script::EvalStatus::Ok)));
+static_assert(
+    std::is_same_v<decltype(std::declval<script::Vm&>().evaluateScript(std::string_view{}, std::string_view{})),
+                   script::EvalResult>);
+static_assert(std::is_default_constructible_v<script::EvalResult>);

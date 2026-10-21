@@ -6,10 +6,70 @@
 #include <aero/script/internal/heap_accounting.hpp>
 #include <aero/script/vm.hpp>
 
+#include <chrono>
+#include <cstddef>
+#include <cstdint>
 #include <quickjs.h>
+#include <string>
+#include <string_view>
 #include <thread>
 
 namespace engine::script {
+
+// A backend value the wrapper holds a reference to. EVERY value the wrapper receives goes into one the
+// moment it is received, so a leak needs a release() -- which exists for exactly one reason: a backend
+// function that CONSUMES its argument (JS_EvalFunction, quickjs.h:1239; the value rules at :186-204).
+class HeldValue {
+public:
+    HeldValue(JSContext* context, JSValue held) noexcept : context(context), value(held) {}
+    HeldValue(const HeldValue&) = delete;
+    HeldValue& operator=(const HeldValue&) = delete;
+    HeldValue(HeldValue&&) = delete;
+    HeldValue& operator=(HeldValue&&) = delete;
+    ~HeldValue() { JS_FreeValue(context, value); }
+
+    [[nodiscard]] JSValueConst get() const noexcept { return value; }
+    [[nodiscard]] bool isException() const noexcept { return JS_IsException(value); }
+    [[nodiscard]] JSValue release() noexcept {
+        const JSValue out = value;
+        value = JS_UNDEFINED;
+        return out;
+    }
+
+private:
+    JSContext* context;
+    JSValue value;
+};
+
+// A C string converted from a value (JS_ToCStringLen); freed with JS_FreeCString. ok() is false when the
+// conversion threw -- the exception is then PENDING and the caller must discard it.
+class HeldCString {
+public:
+    HeldCString(JSContext* context, JSValueConst value) noexcept
+        : context(context), text(JS_ToCStringLen(context, &length, value)) {}
+    HeldCString(const HeldCString&) = delete;
+    HeldCString& operator=(const HeldCString&) = delete;
+    HeldCString(HeldCString&&) = delete;
+    HeldCString& operator=(HeldCString&&) = delete;
+    ~HeldCString() {
+        if (text != nullptr) {
+            JS_FreeCString(context, text);
+        }
+    }
+
+    [[nodiscard]] bool ok() const noexcept { return text != nullptr; }
+    [[nodiscard]] std::string_view view() const noexcept {
+        return text == nullptr ? std::string_view{} : std::string_view{text, length};
+    }
+
+private:
+    JSContext* context;
+    std::size_t length = 0;  // declared before `text`: the conversion writes it while `text` initialises
+    const char* text;
+};
+
+enum class Phase : std::uint8_t { Compile, Run };
+inline constexpr std::string_view UNPRINTABLE_VALUE = "<unprintable value>";
 
 struct Vm::Impl {
     explicit Impl(const VmConfig& vmConfig) noexcept;
@@ -23,6 +83,31 @@ struct Vm::Impl {
     [[nodiscard]] VmTeardownReport shutdown() noexcept;
     [[nodiscard]] bool onVmThread() const noexcept { return std::this_thread::get_id() == vmThread; }
 
+    // ---- one call (vm.cpp) -------------------------------------------------------------------------------
+    // The whole of a call's setup and teardown: the deadline, the C stack top, the refusal mark and the file
+    // name every record of the call carries. Outside a call the deadline is already in the past, so if script
+    // code ever ran outside one it would be interrupted at its first poll.
+    struct CallScope {
+        CallScope(Impl& host, const std::string& fileName);
+        CallScope(const CallScope&) = delete;
+        CallScope& operator=(const CallScope&) = delete;
+        CallScope(CallScope&&) = delete;
+        CallScope& operator=(CallScope&&) = delete;
+        ~CallScope();  // deadline = time_point::min(); inCall = false
+        Impl& impl;
+    };
+    [[nodiscard]] EvalResult evaluate(std::string_view source, std::string_view fileName);
+
+    // ---- errors (vm_errors.cpp) --------------------------------------------------------------------------
+    [[nodiscard]] EvalResult trap(Phase phase);
+    [[nodiscard]] EvalStatus classify(JSValueConst exception, Phase phase);
+    [[nodiscard]] bool isOutOfMemoryError(JSValueConst exception);
+    [[nodiscard]] ScriptError describe(JSValueConst value, bool isErrorObject);
+    [[nodiscard]] std::string stringify(JSValueConst value);
+    [[nodiscard]] std::string readStringProperty(JSValueConst object, const char* key, bool undefinedIsEmpty);
+    void clearPendingException() noexcept;
+    void logFailure(EvalStatus status, const ScriptError& error, bool isErrorObject) const;
+
     // ---- state: `heap` FIRST, so it is destroyed LAST ------------------------------------------------------
     internal::HeapAccounting heap;
     VmConfig config;
@@ -30,6 +115,10 @@ struct Vm::Impl {
     JSContext* ctx = nullptr;
     std::thread::id vmThread;
     bool finished = false;
+    std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::time_point::min();
+    bool inCall = false;
+    std::uint64_t refusalsAtCallStart = 0;
+    std::string callFileName;
 };
 
 }  // namespace engine::script
