@@ -19679,3 +19679,175 @@ spells `EditorApp::create(` 243 times against 241 `.restoreLastProject = false` 
 shell-test source (`project_ui_view_test.cpp`), its PU1 comment rewritten for the GPU tier's new reach. `engine/`,
 `runtime/` and `tools/` are untouched. `.claude/rules/editor.md` gains the "First-contact windows" section;
 `docs/tasks/phase-4.md`'s 4.6.1 deliverable names the disabled control it inherits.
+
+---
+
+## Phase 4 — Scripting
+
+### 4.1.1 — VM lifecycle — OPENS Phase 4: `engine/script` on quickjs-ng 0.15.1, one VM with three limits
+
+`engine/script` stops being an empty placeholder: `engine::script::Vm` owns one quickjs-ng 0.15.1 runtime and one
+context, created together, used on one thread and torn down together, and nothing is script-visible yet. Merged as
+PR #123 (`efdd0b9`, a true merge commit): thirty-three commits on `53ed575` — the plan's six, twenty-three from four
+code-review rounds, three test commits that closed the sabotage matrix's findings, and one that records what is not
+fixed. CI: the PR's run `39662267886`, 6 / 6 green on the merged head. Two decisions preceded the plan: a per-call
+**time budget** is in scope, and the default heap is **64 MiB**.
+
+**The VM** (`engine/script/include/aero/script/vm.hpp`, `src/vm.cpp`, `src/vm_errors.cpp`): `Vm::create(VmConfig)`
+validates a 64 MiB heap (minimum 1 MiB), a 512 KiB stack (64 KiB to 8 MiB) and a 1000 ms per-call budget (1 ms to
+60 s), and refuses a bad field with its own status and one ERROR. `evaluateScript(source, fileName)` compiles strict
+global code first and runs it second, drains the job queue and reports unhandled rejections at the end of the call,
+and returns `Ok`, `CompileError`, `Exception`, `OutOfMemory`, `Interrupted`, `InvalidVm` or `WrongThread` with what was
+thrown. Every failure is ONE ERROR in a fixed shape (`vm.hpp` lists them); a rejection handled later in the same call is
+silent, one handled in a later call is one INFO. `shutdown()` reports what did not come back.
+
+**The heap is a first-party allocator** (`aero::script_internal`'s `HeapAccounting`, backend-free, tested white-box by
+VM36–VM38 and VM46), installed through `JS_NewRuntime2`: every block carries a 16-byte header holding its requested
+size, so the limit is the same arithmetic on every platform (never `malloc_usable_size`), "nothing leaked" is an exact
+count in Release too, and the count of refusals is the witness that tells an out-of-memory from a script's own
+`throw null`. `JS_SetMemoryLimit` is never called (VM35 bans it with three other setters). **The minimum is 1 MiB**
+because quickjs-ng's `JS_NewContextRaw` failure path is not safe to take (M2); an empty VM takes 126 253 bytes in
+Debug and 116 109 in Release, in 1197 allocations, which includes the three builtins built at create.
+
+**The time budget** is the interrupt handler, consulted on a context's first poll and then every 10 000 polls: a clock
+read and a comparison, no allocation, no lock, no log. When it fires it also calls `JS_SetMaxStackSize(rt, 1)` —
+**1, never 0**, because 0 disables the check — so no new bytecode frame or native call can start, and `~CallScope`
+gives the limit back. That one line is the answer to the round-1 finding that quickjs-ng converts the uncatchable
+interrupt into an ordinary promise rejection on several C paths (the Promise executor, `Promise.try`, a thenable job):
+`for (;;) { try { new Promise(() => { for (;;) {} }).catch(() => {}); } catch (e) {} }` used to run for ever (VM41). A
+call that fired ends `Interrupted` whatever the backend did with the error, decided by the call's own flag and never
+by an object's uncatchable flag (N5), and the exhausted budget is logged once per call, before the rejections the call
+reports (M1 step 6, N4, O4). Rejections recorded after the fire are the budget's doing and are skipped; their promises
+are kept, at most 256 (P1), so a later handler is not mistaken for a late handling.
+
+**What the budget needed beyond the stack line, each found by a review round:**
+- **A grace window at a full heap (N2, O3).** `JS_ThrowInterrupted` must allocate its `InternalError`; at the limit it
+  was refused, and the backend then throws a plain `null`, which cannot be marked uncatchable — a catch-all allocation
+  loop never ended. Each fire opens a window of 64 admission decisions and 16 KiB past the limit (they stack), and the
+  call's end closes it. VM44 measures the overshoot at about 350 bytes; VM60 proves the window ends with its call.
+- **The three lazy builtins built at create (N1, O9).** `Array.fromAsync`, `Iterator.zip` and `Iterator.zipKeyed` are
+  built from bytecode on their first read; a first read under the exhausted stack limit failed, leaked the objects
+  holding the realm (a Debug abort in `JS_FreeRuntime`) and left the property undefined for good. Create reads all
+  three under the backend's DEFAULT stack limit and applies the configured one only afterwards.
+- **No backtrace runs script code (O1).** Building an error's stack ran `Error.prepareStackTrace` and
+  `Error.stackTraceLimit`'s `valueOf`, and restored the pending exception afterwards with a throw that dropped an
+  interrupt raised inside either — an exception storm with a spinning hook never ended. Both V8 extensions are deleted
+  at create (VM9, VM50, VM51).
+
+**The boundary.** `.github/scripts/check-script-boundary.sh`, the **ninth** architecture guard, confines quickjs to
+`engine/script/src/` and keeps its `JS…`, `js_…`, `QJS_…` and `QUICKJS…` names out of everything else under `engine/`
+and `runtime/` — a script rather than a grep, because quickjs has no namespace and this layer cites its identifiers in
+prose (one exception, `JSON`). `script-boundary.guard_e2e` proves it red in 12 stages; `tests/script_boundary_probe.cpp`
+links `aero::script` alone, R12's seventh probe, covered by `check-boundary-probes.sh` and
+`boundary-probes.probe_compile_line` with no edit to either, because both derive their probe sets. quickjs-ng is
+linked PRIVATE, without its `libc` feature.
+
+#### ★ Four code-review rounds, twenty-three fixes
+
+- **Round 1 (§M, nine findings):** the converted interrupt above (M1); the 1 MiB minimum (M2); a string conversion
+  that leaves an exception pending has failed (M3); only a string message makes an Error an out-of-memory (M4); the
+  guard missed lowercase `js_` and `QJS_` names and exempted `engine/script/internal` (M5).
+- **Round 2 (§N, eleven findings, two blocking):** the lazy builtins (N1) and the grace window (N2); a rejection
+  recorded after the fire is the interrupt's (N3); the budget is logged after an earlier failure too (N4); only this
+  call's own interrupt makes it `Interrupted` (N5); an unreadable message is not an out-of-memory (N6); a stale
+  pending exception no longer spoils a conversion (N7); a stack quickjs could not build reads as empty (N9); and the
+guard's text says exactly what it enforces (N8, N10).
+- **Round 3 (§O):** the backtrace hooks (O1); the grace is 16 KiB per fire and `vm.hpp`'s contract says so (O3); a
+  budget that runs out while rejections are reported is still recorded (O4); one rule, the entry's own flag, decides
+  which rejections the report skips (O5); three test fixes and a wording one (O2, O6–O8); and the `using` path recorded
+rather than fixed (O10, now R21).
+- **Round 4 (§P, one should-fix):** the list of skipped promises is capped (P1).
+
+#### ★ The sabotage matrix — 98 rows, nine findings, every one closed
+
+Three batches (S1–S31, S32–S62, S63–S91; 91 planned seeds, S17 split in two, six extras that apply a seed's careless
+edit to an arm a later fix added), on both presets: **83 caught, 5 no witness by construction** (S13, S14, S23, S35,
+S85), **1 skipped** (S90, a Windows Debug frame-size property) and **9 findings**. Each finding gained a case, and its
+seed was re-applied and turned that case red on both presets: S6 (a growing `reallocate` forgot the peak) → VM37;
+S8 (no overflow guard in `allocateZeroed`; VM38's old operands wrapped to a huge value the limit refused anyway) →
+VM38; S26 (no collection after an out-of-memory; VM16's follow-up fit in the 1.2 KB left) → VM16; S27 (no
+`JS_UpdateStackTop`; VM18 told it apart by one frame in Release, where the optimiser sliced the padding array) →
+VM18; S38b (the drain guard's `!interruptFired`) → VM56; S78 and S88 (the uncatchable-flag tests M1 and N5 removed) →
+VM57; S66b (the first `noteInterrupt`) → VM58; S77b (`CallScope`'s per-call record reset) → VM59; S74b (the window's
+close) → VM60. **The general lesson again: a fix's own parallel arm is a seed of its own** — six of the nine findings
+were extras written against an arm a later fix added (S38b, S66b, S77b, S74b) or planned seeds whose arm a later round
+had narrowed until no case reached it (S78, S88).
+
+#### ★ R21 — two backend paths recorded, not fixed, and one of them is a hang
+
+`docs/08-risks.md` R21. (1) **A loop around a `using` block can outlast its budget for good.** When a dispose method
+fails while another exception is pending, the interpreter wraps both into a catchable `SuppressedError`
+(`quickjs.c:18897-18911`), and the interrupt can be raised at that call's entry poll, before the exhausted stack limit
+refuses it. With a 10 000-poll cadence, a loop whose poll count divides 10 000 meets the handler at the same point
+every time: measured under a 100 ms budget on both presets, `for (;;) { try { using r = res; throw 1; } catch (e) {}
+}` ran until a 20 s cap at two of four poll offsets and ended in about 100 ms at the other two. (2) **An interrupt that
+rejects a promise a handler already waits for stays uncatchable**, because the backend calls the tracker only for a
+promise with no handler (`:54371-54376`); in a later call the handler receives an error no catch takes, and a reaction
+that passes it on is abandoned (`:54315-54317`), so its chain stops. VM57 pins (2) as it stands. **No wrapper-level
+fix exists**: the poll counter is private, and spending an extra poll from inside the handler only moves the stuck
+phase to other loop lengths (9 999 is a multiple of 3). Closing both needs a vcpkg overlay port of quickjs-ng whose
+conversion sites let an uncatchable error propagate, as `promise_reaction_job` already does — the project's first
+patched dependency, so it is left as a decision of its own. Nothing calls a script before 4.2.1.
+
+#### Traps found, each measured
+
+- **A leaked backend reference aborts the Debug lanes** inside `JS_FreeRuntime` (`list_empty(&rt->gc_obj_list)`), so
+  a leak is a crash there and a teardown-report failure in Release. Every value the wrapper receives goes into a
+  `HeldValue` at once; `release()` exists only for `JS_EvalFunction`, which consumes its argument.
+- **GCC's ASan on Linux enables `detect_stack_use_after_return`**, which moves frames under 64 KiB onto a fake stack,
+  so VM18's "created deep" padding uses 80 KiB volatile frames, every byte written so the optimiser cannot slice them.
+  CI's Linux Debug lane passed it on the first run (`39662267886`), so the padding holds under GCC's fake stacks.
+- **Debug recursion is shallow**: at 512 KiB a script recurses 56 calls in Debug against 544 in Release (the
+  backend's Debug variant is unoptimised). 4.4.1 decides, with real scripts, between a larger default plus
+  `/STACK` on Windows and an optimised backend Debug variant (plan R4).
+- **A short script never reaches a consultation of the interrupt handler** (batch 2's S32 note), so a timing case
+  must spin long enough to meet one, and no case asserts an upper bound on a duration.
+- **The first fire's latency is 0–2 ms past the budget** on this machine (row 3).
+
+#### What was deliberately left out, and which task holds each
+
+Every script-visible surface — the engine global, bindings, host functions — is 4.2.1's and 4.4.x's; per-frame calls
+and their failure policy (rate limiting, "disable after N failures") are 4.4.1's; the Debug recursion depth is 4.4.1's;
+module loading is 4.1.2's; `quickjs-libc`, dump flags, blocking, a GC knob and a Tracy zone are excluded by decision
+(plan D12, §C.11). A VM on a
+small-stack thread is the caller's contract (`stackLimitBytes` + 256 KiB free). R21's patched backend is unowned.
+
+#### The sentences that govern new work
+
+- **quickjs lives in `engine/script/src/` and nowhere else** — no `JS…`, `js_…`, `QJS_…` or `QUICKJS…` name in any other
+  part of `engine/` or `runtime/` (the ninth guard), and `aero::script`'s public headers name no backend type.
+- **`JS_SetMemoryLimit`, `JS_SetCanBlock`, `JS_SetDumpFlags` and `JS_SetGCThreshold` are never called** (VM35): the
+  allocator owns the limit.
+- **Every backend value goes into a `HeldValue` the moment it is received**; a leak aborts the Debug lanes.
+- **The interrupt handler allocates nothing, locks nothing and logs nothing**, and the stack line uses 1, never 0.
+- **A call's status is decided by the call's own state, never by a value's flags**: an uncatchable object from an
+  earlier call is an ordinary `Exception` of this one (VM49, VM57).
+- **No backtrace may run script code**, and no lazy builtin may be read for the first time under the budget: both are
+  settled at create, before the configured stack limit applies.
+- **A port bump re-reads the cited quickjs.c lines before changing VM5's literal** (the interrupt cadence, the
+  uncatchable flag, the tracker's calls, the teardown assert, the allocator contract), and R21's two paths are the first
+  thing to re-measure.
+
+#### Validation and sabotage status — macOS 10 / 10 (2026-10-22), Windows and Linux unrun
+
+Run in a terminal (the task ships no editor UI) against `360daf6` on an Apple M1 Pro, macOS 26.6.2, both presets
+configured and built from empty build directories: **10 / 10 PASS**. The port is 0.15.1 without `quickjs-libc.h`; an
+empty VM is 126 253 B in Debug and 116 109 B in Release (1197 allocations); the interrupt fires 0–2 ms past the
+budget; the depths are 5 / 56 / 5 (Debug) and 67 / 544 / 67 (Release) at 64 KiB / 512 KiB / created deep; the shipped
+64 MiB heap really filled, +58 720 256 B resident (exactly 56 MiB), and the process survived; small-object exhaustion
+throws `null` on both presets; the console records read as specified; `leaks -atExit` reports 0 leaks over the 60
+script cases; the script cases take 10.32 s (Debug) and 9.23 s (Release). The first pass, at `81348af`, also read 10 /
+10.
+
+Measured at `360daf6`, on fresh build trees agreeing across presets: `ctest -N` **184** (171 shader-tools-OFF, 94
+reflect-tools-OFF, cooker 70 / 70 / 70; the only addition `script-boundary.guard_e2e`); doctest **1491 / 2414 / 366 /
+40 / 73 / 14 / 28** (only `aero_tests` moved, +60); guards math **599**, platform **94**, rhi **170**, scene **94**,
+golden-rule **172**, project-no-delete **A=7 B=110**, audio **11-3-59**, probes **7-61**, script **168-94-4**;
+`git ls-files` `editor/src/*.cpp` **110**, `editor/include/aero/editor/*.hpp` **81** (unchanged).
+
+**Build & dependency impact:** `vcpkg.json` gains `quickjs-ng` (no feature; 0.15.1 at the pinned baseline, no
+baseline change). `engine/CMakeLists.txt` adds `script`; new targets `aero_script` (`aero::script`, PUBLIC `aero::core`,
+PRIVATE `qjs`), the INTERFACE `aero::script_internal`, and `aero_script_boundary_probe`. `tests/CMakeLists.txt` adds
+`script_vm_test.cpp` to `aero_tests`, the probe and `script-boundary.guard_e2e`; `ci.yml`'s lint job runs the ninth
+guard. Docs: `docs/03` (the layer), `docs/04` (nine guards), `docs/08` (R12's seventh probe; R21),
+`.claude/rules/boundary-guards.md`, and `CLAUDE.md`'s two guard enumerations. `editor/` and `tools/` are untouched.
