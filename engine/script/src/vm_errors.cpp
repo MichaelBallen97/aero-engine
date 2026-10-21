@@ -79,7 +79,9 @@ ScriptError Vm::Impl::describe(JSValueConst value, bool isErrorObject) {
 
 std::string Vm::Impl::stringify(JSValueConst value) {
     const HeldCString text{ctx, value};
-    if (!text.ok()) {
+    // A conversion that leaves an exception pending has failed even when it produced text: the backend falls
+    // back to an Error's `message` when its toString throws, and reports success with the exception still set.
+    if (!text.ok() || JS_HasException(ctx)) {
         clearPendingException();
         return std::string{UNPRINTABLE_VALUE};
     }

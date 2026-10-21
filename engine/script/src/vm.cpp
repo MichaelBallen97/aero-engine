@@ -212,7 +212,8 @@ EvalResult Vm::Impl::evaluate(std::string_view source, std::string_view fileName
     }
     noteInterrupt(result);  // BEFORE the report: a converted interrupt is the call's, not a rejection's
     reportUnhandledRejections();
-    return result;  // ~CallScope: deadline = time_point::min(); inCall = false
+    clearPendingException();  // no exception outlives a call
+    return result;            // ~CallScope: deadline = time_point::min(); inCall = false
 }
 
 // The budget ran out, but the backend converted the interrupt into a rejection (or swallowed it) and the call

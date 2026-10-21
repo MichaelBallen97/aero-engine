@@ -372,6 +372,15 @@ TEST_CASE("script: evaluateScript returns the completion value as text (VM7)") {
     CHECK(symbol.status == EvalStatus::Ok);
     CHECK(symbol.completion == "<unprintable value>");
 
+    // An Error whose toString throws: the backend's conversion falls back to the `message` property and reports
+    // success with the exception still pending. That is a failed conversion all the same, and nothing may
+    // outlive the call: the pre-free object check at teardown would find the pending exception's objects.
+    const std::string_view brokenToString =
+        R"js((() => { const e = new Error("m"); e.toString = () => { throw new Error("t"); }; return e; })())js";
+    const EvalResult throwing = run(brokenToString);
+    CHECK(throwing.status == EvalStatus::Ok);
+    CHECK(throwing.completion == "<unprintable value>");
+
     // The terminator arm: the view's next byte is ';', not '\0', so a wrapper that handed the view to the
     // backend unterminated would let it read on into `throw 1;` and return Exception.
     const std::string_view whole{"1 + 1; throw 1;"};
@@ -381,6 +390,7 @@ TEST_CASE("script: evaluateScript returns the completion value as text (VM7)") {
 
     CHECK(log.countAtLeast(LogLevel::Warn) == 0U);
     expectCleanShutdown(vm);
+    CHECK(log.countAtLeast(LogLevel::Warn) == 0U);  // ... and the teardown found nothing still referenced
 }
 
 TEST_CASE("script: state persists across calls, and the code runs strict (VM8)") {
