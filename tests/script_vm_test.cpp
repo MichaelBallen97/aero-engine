@@ -1420,6 +1420,30 @@ TEST_CASE("script: an interrupt object kept from an earlier call is an ordinary 
     expectCleanShutdown(vm);
 }
 
+TEST_CASE("script: the promises kept for skipped rejections stay bounded across many interrupted calls (VM55)") {
+    const LogCapture log;
+    // 1 ms budget, default heap: each call spins a Promise executor until the budget runs out, and the promise the
+    // backend rejects with the interrupt is one the report skips and keeps. Nothing but the cap bounds that list.
+    Vm vm = makeVm(withBudget(engine::script::MIN_CALL_TIME_BUDGET));
+    const auto interruptedCalls = [&vm](int count) {
+        for (int i = 0; i < count; ++i) {
+            const EvalResult result = vm.evaluateScript("new Promise(() => { for (;;) {} }); 1", "keep.js");
+            REQUIRE(result.status == EvalStatus::Interrupted);
+        }
+    };
+    interruptedCalls(300);
+    vm.collectGarbage();
+    const std::size_t before = vm.stats().heapBytesInUse;
+    interruptedCalls(300);
+    vm.collectGarbage();
+    const std::size_t after = vm.stats().heapBytesInUse;
+    MESSAGE("heap after 300 interrupted calls: " << before << " bytes; after 300 more: " << after << " bytes");
+    // With the cap the list stays at 256 and each eviction frees a promise and its reason. Without it, 300 more
+    // entries of about 1 KB each would add roughly 300 KiB.
+    CHECK(after < before + 64 * KIB);
+    expectCleanShutdown(vm);
+}
+
 // ---- VM32: shutdown ---------------------------------------------------------------------------------------
 
 TEST_CASE("script: shutdown() reports zero leaks after a session through every arm, and is idempotent (VM32)") {

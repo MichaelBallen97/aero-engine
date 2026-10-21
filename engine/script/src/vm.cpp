@@ -353,6 +353,14 @@ void Vm::Impl::drainJobs(EvalResult& result) {
     }
 }
 
+// How many promises the VM keeps for rejections the report skipped. Each pins its reason through the promise's
+// result, about 1 KB with the backtrace, and an anonymous promise (one nobody holds) can never be matched by a later
+// handler, so an unbounded list would grow by one per interrupted call for ever. Past the cap the OLDEST is freed
+// first. The cost: if a script handles an evicted promise later, the tracker takes that for a late handling of
+// something reported, and logs one INFO record and counts it. That is harmless and bounded, and preferred to a slow
+// leak in a long-lived VM.
+inline constexpr std::size_t MAX_SKIPPED_REJECTIONS = 256;
+
 // The list is swapped out BEFORE anything is described: describe may run script code (a getter) that rejects
 // another promise, and the tracker would then append to the vector being iterated. Anything rejected while
 // reporting is reported at the end of the next call.
@@ -366,6 +374,10 @@ void Vm::Impl::reportUnhandledRejections() {
         // error from here on, and the promise is kept so that a later handler is recognised as handling something
         // never reported.
         if (entry.afterInterrupt) {
+            if (skippedRejections.size() >= MAX_SKIPPED_REJECTIONS) {
+                JS_FreeValue(ctx, skippedRejections.front());
+                skippedRejections.erase(skippedRejections.begin());
+            }
             skippedRejections.push_back(entry.promise);
             JS_ClearUncatchableError(ctx, entry.reason);
             JS_FreeValue(ctx, entry.reason);
