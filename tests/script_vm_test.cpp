@@ -1421,7 +1421,7 @@ TEST_CASE("script: a rejection skipped after the budget ran out is not \"handled
     expectCleanShutdown(vm);
 }
 
-TEST_CASE("script: an interrupt object kept from an earlier call is an ordinary error later (VM54)") {
+TEST_CASE("script: an interrupt that rejects a promise with no handler is an ordinary error later (VM54)") {
     LogCapture log;
     Vm vm = makeVm(withBudget(std::chrono::milliseconds{100}));
     // The converted interrupt becomes a rejected promise's reason, and the script keeps the promise.
@@ -1495,6 +1495,123 @@ TEST_CASE("script: a converted interrupt beside a queued job ends the call with 
     // The follow-up's own status and records are not asserted.
     const EvalResult probe = vm.evaluateScript("typeof ran56", "q.js");
     CHECK(probe.completion == "undefined");
+    expectCleanShutdown(vm);
+}
+
+TEST_CASE("script: an interrupt that rejects a promise a handler awaits stays uncatchable in later calls (VM57)") {
+    LogCapture log;
+    // A one-second budget, as VM43's: the interrupt must happen INSIDE the drain's thenable job, and a call whose start
+    // took longer than a short budget would meet the drain's own pre-job stop instead.
+    Vm vm = makeVm(withBudget(std::chrono::milliseconds{1000}));
+    // The thenable job takes the interrupt as an ordinary exception and rejects p57 with it. p57 already has a handler,
+    // so the backend never calls the rejection tracker (quickjs.c:54371-54376): the rejection is never listed, so the
+    // report never skips it and never clears the object's uncatchable flag. The drain's cut-off leaves the handler's
+    // reaction queued.
+    const std::string_view spin =
+        "globalThis.p57 = Promise.resolve({ then() { for (;;) {} } }); p57.catch((e) => { globalThis.k57 = e; }); 1";
+    REQUIRE(vm.evaluateScript(spin, "then57.js").status == EvalStatus::Interrupted);
+    // The reaction was still queued when the next call's script ran, and that call's drain ran it.
+    const EvalResult queued = vm.evaluateScript("typeof globalThis.k57", "k.js");
+    CHECK(queued.status == EvalStatus::Ok);
+    CHECK(queued.completion == "undefined");
+    const EvalResult taken = vm.evaluateScript("String(k57)", "k.js");
+    CHECK(taken.status == EvalStatus::Ok);
+    CHECK(taken.completion == "InternalError: interrupted");
+
+    // Thrown again in a later call, the object still leaves every try: a backend limit this layer cannot reach. That
+    // call's own budget never ran out, so it is an Exception, not Interrupted: the call's flag decides, never the
+    // object's.
+    log.clear();
+    const std::string_view thrown = R"js((() => { try { throw k57; } catch (e) { return "caught"; } })())js";
+    const EvalResult escaped = vm.evaluateScript(thrown, "k.js");
+    CHECK(escaped.status == EvalStatus::Exception);
+    CHECK(escaped.completion.empty());
+    const std::string escapedMessage = onlyErrorMessage(log);
+    CHECK(firstLine(escapedMessage) == "script: k.js: uncaught InternalError: interrupted");
+
+    // A genuine rejection with it as the reason is reported like any other: only what was recorded after a call's
+    // own budget ran out is skipped, whatever the reason's flag says.
+    log.clear();
+    const EvalResult again = vm.evaluateScript("Promise.reject(k57); 1", "again.js");
+    CHECK(again.status == EvalStatus::Ok);
+    const std::string againMessage = onlyErrorMessage(log);
+    const std::string_view reported = "script: again.js: unhandled promise rejection: InternalError: interrupted";
+    CHECK(firstLine(againMessage) == reported);
+    CHECK(vm.stats().unhandledRejections == 1U);
+
+    // A reaction that passes the rejection on rethrows the object, and the backend then abandons the job
+    // (quickjs.c:54315-54317): the call is an Exception, and the chain stops there -- the catch below never runs.
+    log.clear();
+    const std::string_view chain = "p57.then(() => {}).catch(() => { globalThis.g57 = true; }); 1";
+    const EvalResult stopped = vm.evaluateScript(chain, "chain.js");
+    CHECK(stopped.status == EvalStatus::Exception);
+    CHECK(stopped.completion == "1");
+    const std::string stoppedMessage = onlyErrorMessage(log);
+    CHECK(firstLine(stoppedMessage) == "script: chain.js: uncaught InternalError: interrupted");
+    const EvalResult neverCaught = vm.evaluateScript("typeof g57", "chain.js");
+    CHECK(neverCaught.completion == "undefined");
+    expectCleanShutdown(vm);
+}
+
+TEST_CASE("script: a call's exhausted budget is recorded before the rejections it reports (VM58)") {
+    LogCapture log;
+    Vm vm = makeVm(withBudget(std::chrono::milliseconds{100}));
+    log.clear();
+    // A rejection listed before the budget runs out, then a Promise executor whose interrupt the backend converts. The
+    // call records its exhausted budget first and then reports the earlier rejection; the converted interrupt's own
+    // rejection is skipped.
+    const std::string_view source = R"js(Promise.reject(new Error("a")); new Promise(() => { for (;;) {} }); 1)js";
+    const EvalResult result = vm.evaluateScript(source, "o.js");
+    CHECK(result.status == EvalStatus::Interrupted);
+    CHECK(result.completion == "1");
+    const std::vector<CapturedRecord> records = log.atLeast(LogLevel::Warn);
+    REQUIRE(records.size() == 2U);
+    CHECK(records[0].level == LogLevel::Error);
+    CHECK(records[1].level == LogLevel::Error);
+    CHECK(records[0].message == "script: o.js: interrupted after exceeding the 100 ms time budget");
+    CHECK(firstLine(records[1].message) == "script: o.js: unhandled promise rejection: Error: a");
+    CHECK(vm.stats().unhandledRejections == 1U);
+    expectCleanShutdown(vm);
+}
+
+TEST_CASE("script: a converted interrupt is recorded even after an earlier call recorded one (VM59)") {
+    LogCapture log;
+    Vm vm = makeVm(withBudget(std::chrono::milliseconds{100}));
+    REQUIRE(vm.evaluateScript("while (true) {}", "a.js").status == EvalStatus::Interrupted);
+    // The Promise constructor converts this call's interrupt, so only the end-of-call record can log it, and the flag
+    // that keeps that record to one per call starts afresh with every call.
+    log.clear();
+    const EvalResult result = vm.evaluateScript("new Promise(() => { for (;;) {} }); 1", "b.js");
+    CHECK(result.status == EvalStatus::Interrupted);
+    expectOnlyError(log, "script: b.js: interrupted after exceeding the 100 ms time budget");
+    expectCleanShutdown(vm);
+}
+
+TEST_CASE("script: the grace window closes with its call, so the next call gets no room past the limit (VM60)") {
+    LogCapture log;
+    // The smallest heap, and a one-second budget: the fill below ends long before the deadline on every lane (VM44).
+    VmConfig config = withBudget(std::chrono::milliseconds{1000});
+    config.heapLimitBytes = engine::script::MIN_HEAP_LIMIT_BYTES;
+    Vm vm = makeVm(config);
+    // Call 1 fills the heap with a list it keeps, catches the out-of-memory, and then spins until its budget runs out.
+    // The interrupt's own error is built in the grace window, past the full heap.
+    const std::string_view fill =
+        "globalThis.head = null; try { for (;;) { head = { next: head }; } } catch (e) {} for (;;) {}";
+    REQUIRE(vm.evaluateScript(fill, "fill.js").status == EvalStatus::Interrupted);
+    const VmStats before = vm.stats();
+    REQUIRE(before.heapBytesPeak > before.heapLimitBytes);  // the window was opened and used
+
+    // Call 2 needs about 8 KB to compile its one string literal, and the heap is still full, so it is refused. Its own
+    // budget never runs out, so nothing may admit any of its allocations past the limit. A window left open by call 1
+    // would admit the first of them, up to 16 KiB past the limit, and raise the peak.
+    log.clear();
+    const std::string literal = "\"" + std::string(8000, 'x') + "\"";
+    const EvalResult refused = vm.evaluateScript(literal, "big.js");
+    CHECK(refused.status == EvalStatus::OutOfMemory);
+    const VmStats after = vm.stats();
+    MESSAGE("limit " << before.heapLimitBytes << " bytes; peak after the interrupt " << before.heapBytesPeak
+                     << ", after the refused call " << after.heapBytesPeak);
+    CHECK(after.heapBytesPeak == before.heapBytesPeak);
     expectCleanShutdown(vm);
 }
 
