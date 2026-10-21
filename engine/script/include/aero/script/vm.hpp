@@ -140,9 +140,9 @@ public:
     //                  "... time budget with promise jobs still queued"        (the drain was cut short)
     //   a rejection    "unhandled promise rejection: <name>: <message>"         + "\n<stack>"  (status unchanged)
     // and, at INFO, "a promise rejection reported as unhandled was handled later". A "\n<stack>" tail is
-    // present only when the stack text is non-empty. A rejection whose reason is not an Error object is described
-    // through its own toString; when the call's budget ran out first, that call is refused and the reason reads
-    // "<unprintable value>".
+    // present only when the stack text is non-empty. A rejection whose reason is an object other than an Error is
+    // described through its own toString; when the call's budget ran out first, that call is refused and the reason
+    // reads "<unprintable value>".
     [[nodiscard]] EvalResult evaluateScript(std::string_view source, std::string_view fileName);
 
     // Runs the cycle collector now. Reference counting frees everything else immediately.
