@@ -119,7 +119,7 @@ struct Vm::Impl {
     [[nodiscard]] bool isOutOfMemoryError(JSValueConst exception);
     [[nodiscard]] ScriptError describe(JSValueConst value, bool isErrorObject);
     [[nodiscard]] std::string stringify(JSValueConst value);
-    [[nodiscard]] std::string readStringProperty(JSValueConst object, const char* key, bool undefinedIsEmpty);
+    [[nodiscard]] std::string readStringProperty(JSValueConst object, const char* key, bool nullishIsEmpty);
     void clearPendingException() noexcept;
     void logFailure(EvalStatus status, const ScriptError& error, bool isErrorObject);
     void logDrainStop();

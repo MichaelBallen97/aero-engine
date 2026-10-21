@@ -1289,6 +1289,22 @@ TEST_CASE("script: an interrupt left over from an earlier call does not make a l
     expectCleanShutdown(vm);
 }
 
+TEST_CASE(
+    "script: after the budget runs out, a refused prepareStackTrace leaves the stack empty, not \"null\" (VM50)") {
+    LogCapture log;
+    Vm vm = makeVm(withBudget(std::chrono::milliseconds{100}));
+    log.clear();
+    // A script's Error.prepareStackTrace is a call, and once the budget is gone every call is refused: the error
+    // built for the refused String(1) then has no stack at all (its stack property is null, not a string).
+    const std::string_view source =
+        R"js(Error.prepareStackTrace = () => "custom"; new Promise(() => { while (true) {} }); String(1);)js";
+    const EvalResult result = vm.evaluateScript(source, "prep.js");
+    CHECK(result.status == EvalStatus::Interrupted);
+    CHECK(result.error.stack.empty());
+    expectOnlyError(log, "script: prep.js: interrupted after exceeding the 100 ms time budget");
+    expectCleanShutdown(vm);
+}
+
 // ---- VM32: shutdown ---------------------------------------------------------------------------------------
 
 TEST_CASE("script: shutdown() reports zero leaks after a session through every arm, and is idempotent (VM32)") {

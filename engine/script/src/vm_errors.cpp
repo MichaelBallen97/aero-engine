@@ -78,7 +78,7 @@ ScriptError Vm::Impl::describe(JSValueConst value, bool isErrorObject) {
     if (!isErrorObject) {
         return ScriptError{{}, stringify(value), {}};
     }
-    std::string stack = readStringProperty(value, "stack", /*undefinedIsEmpty=*/true);
+    std::string stack = readStringProperty(value, "stack", /*nullishIsEmpty=*/true);
     if (!stack.empty() && stack.back() == '\n') {
         stack.pop_back();  // the backend ends every frame line with '\n'
     }
@@ -101,13 +101,15 @@ std::string Vm::Impl::stringify(JSValueConst value) {
     return std::string{text.view()};
 }
 
-std::string Vm::Impl::readStringProperty(JSValueConst object, const char* key, bool undefinedIsEmpty) {
+std::string Vm::Impl::readStringProperty(JSValueConst object, const char* key, bool nullishIsEmpty) {
     const HeldValue property{ctx, JS_GetPropertyStr(ctx, object, key)};
     if (property.isException()) {
         clearPendingException();
         return std::string{UNPRINTABLE_VALUE};
     }
-    if (undefinedIsEmpty && JS_IsUndefined(property.get())) {
+    // null counts as absent as well: once the budget has run out a script's Error.prepareStackTrace is refused, and
+    // the backend then builds every error with a null stack. That is no stack, not the text "null".
+    if (nullishIsEmpty && (JS_IsUndefined(property.get()) || JS_IsNull(property.get()))) {
         return {};
     }
     return stringify(property.get());
