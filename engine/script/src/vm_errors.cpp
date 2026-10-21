@@ -19,6 +19,12 @@ EvalResult Vm::Impl::trap(Phase phase) {
     const EvalStatus status = classify(exception.get(), phase);  // BEFORE describe: describe may allocate
     const bool isErrorObject = JS_IsError(exception.get());
     ScriptError error = describe(exception.get(), isErrorObject);
+    if (status == EvalStatus::Interrupted) {
+        // Whichever exception carried it -- the interrupt itself, or the RangeError a refused call raised after
+        // the budget ran out -- the canonical interrupt is what the caller reads. The stack stays the described one.
+        error.name = "InternalError";
+        error.message = "interrupted";
+    }
     logFailure(status, error, isErrorObject);
     if (status == EvalStatus::OutOfMemory) {
         JS_RunGC(rt);  // the failed work is unreachable now; cycles among it need the collector
@@ -27,8 +33,10 @@ EvalResult Vm::Impl::trap(Phase phase) {
 }
 
 EvalStatus Vm::Impl::classify(JSValueConst exception, Phase phase) {
-    if (JS_IsUncatchableError(exception)) {
-        return EvalStatus::Interrupted;  // the backend's interrupt is the only thing that sets the flag
+    // The backend's interrupt is the only thing that sets the uncatchable flag. Once the budget has fired, whatever
+    // exception ends the call is the budget's: the interrupt, or the RangeError a refused call raised.
+    if (JS_IsUncatchableError(exception) || interruptFired) {
+        return EvalStatus::Interrupted;
     }
     // Both witnesses are needed. The refusal alone would mislabel a script that caught an out-of-memory error
     // and later threw something unrelated; the value alone cannot tell the backend's `null` (thrown when not

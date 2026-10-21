@@ -1067,6 +1067,88 @@ TEST_CASE("script: a drain cut off by the budget leaves its job queued, determin
     expectCleanShutdown(vm);
 }
 
+// ---- VM40-VM43: an exhausted budget stops every script, through the backend's promise paths too -------------
+
+TEST_CASE("script: an interrupt quickjs turns into a rejection still ends the call Interrupted (VM40)") {
+    LogCapture log;
+    Vm vm = makeVm(withBudget(std::chrono::milliseconds{100}));
+    log.clear();
+    // The backend's Promise constructor takes the interrupt as an ordinary exception and rejects the promise
+    // with it, after which the script would run on. The statement after it must NOT run: once the budget is
+    // gone no new JavaScript call starts.
+    const std::string_view source = "new Promise(() => { while (true) {} }); globalThis.after40 = String(42);";
+    const EvalResult result = vm.evaluateScript(source, "exec.js");
+    CHECK(result.status == EvalStatus::Interrupted);
+    CHECK(result.error.name == "InternalError");
+    CHECK(result.error.message == "interrupted");
+    CHECK(result.completion.empty());  // `String(42)` was refused, so the script did not complete
+    const std::string message = onlyErrorMessage(log);
+    CHECK(firstLine(message) == "script: exec.js: interrupted after exceeding the 100 ms time budget");
+    CHECK(vm.stats().unhandledRejections == 0U);
+
+    // The stack-limit witness: the `String` call never started.
+    const EvalResult probe = vm.evaluateScript("typeof after40", "exec.js");
+    CHECK(probe.status == EvalStatus::Ok);
+    CHECK(probe.completion == "undefined");
+    // The next call has its limit back.
+    const EvalResult mapped = vm.evaluateScript("[1, 2].map((x) => x * 2).join()", "exec.js");
+    CHECK(mapped.status == EvalStatus::Ok);
+    CHECK(mapped.completion == "2,4");
+    expectCleanShutdown(vm);
+}
+
+TEST_CASE("script: a loop that swallows interrupts through promise executors still ends (VM41)") {
+    LogCapture log;
+    Vm vm = makeVm(withBudget(std::chrono::milliseconds{100}));
+    log.clear();
+    // Each consultation of the interrupt handler lands in an executor's inner loop, the constructor turns it
+    // into a rejection, `.catch` handles it, and the outer loop goes on.
+    const std::string_view source =
+        "for (;;) { try { new Promise(() => { for (;;) {} }).catch(() => {}); } catch (e) {} }";
+    const EvalResult result = vm.evaluateScript(source, "swallow.js");
+    CHECK(result.status == EvalStatus::Interrupted);
+    const std::string message = onlyErrorMessage(log);
+    CHECK(firstLine(message) == "script: swallow.js: interrupted after exceeding the 100 ms time budget");
+    const EvalResult after = vm.evaluateScript("1 + 1", "swallow.js");
+    CHECK(after.status == EvalStatus::Ok);
+    CHECK(after.completion == "2");
+    expectCleanShutdown(vm);
+}
+
+TEST_CASE("script: an interrupt inside Promise.try ends the call Interrupted (VM42)") {
+    LogCapture log;
+    Vm vm = makeVm(withBudget(std::chrono::milliseconds{100}));
+    log.clear();
+    const EvalResult result =
+        vm.evaluateScript("Promise.try(() => { for (;;) {} }); globalThis.after42 = String(1);", "try.js");
+    CHECK(result.status == EvalStatus::Interrupted);
+    const std::string message = onlyErrorMessage(log);
+    CHECK(firstLine(message) == "script: try.js: interrupted after exceeding the 100 ms time budget");
+    const EvalResult probe = vm.evaluateScript("typeof after42", "try.js");
+    CHECK(probe.status == EvalStatus::Ok);
+    CHECK(probe.completion == "undefined");
+    expectCleanShutdown(vm);
+}
+
+TEST_CASE("script: an interrupt inside a thenable job run by the drain ends the call Interrupted (VM43)") {
+    LogCapture log;
+    Vm vm = makeVm(withBudget(std::chrono::milliseconds{100}));
+    log.clear();
+    // The thenable job takes the interrupt as an ordinary exception and rejects the promise with it; the call
+    // is Interrupted all the same, and the converted interrupt is not reported as an unhandled rejection.
+    const EvalResult result = vm.evaluateScript("Promise.resolve({ then() { for (;;) {} } }); \"ok\"", "then.js");
+    CHECK(result.status == EvalStatus::Interrupted);
+    CHECK(result.completion == "ok");
+    CHECK(result.error.message == "interrupted");
+    CHECK(result.error.stack.empty());
+    expectOnlyError(log, "script: then.js: interrupted after exceeding the 100 ms time budget");
+    CHECK(vm.stats().unhandledRejections == 0U);
+    const EvalResult after = vm.evaluateScript("1 + 1", "then.js");
+    CHECK(after.status == EvalStatus::Ok);
+    CHECK(after.completion == "2");
+    expectCleanShutdown(vm);
+}
+
 // ---- VM32: shutdown ---------------------------------------------------------------------------------------
 
 TEST_CASE("script: shutdown() reports zero leaks after a session through every arm, and is idempotent (VM32)") {

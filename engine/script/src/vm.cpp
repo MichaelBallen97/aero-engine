@@ -116,12 +116,25 @@ VmTeardownReport Vm::Impl::shutdown() noexcept {
 
 // ---- one call -------------------------------------------------------------------------------------------
 
-// The whole of the time budget's mechanism: one clock read and one comparison, no allocation, no lock, no log.
-// The backend consults it on the first poll of a context and then every 10 000 polls (backward jumps and
-// calls), and its regex engine on a counter of its own.
-int Vm::Impl::interruptHandler(JSRuntime* /*runtime*/, void* opaque) noexcept {
-    const Impl& self = *static_cast<const Impl*>(opaque);
-    return std::chrono::steady_clock::now() >= self.deadline ? 1 : 0;
+// The whole of the time budget's mechanism: a clock read, a comparison and, once, the stack-limit line below. No
+// allocation, no lock, no log. The backend consults it on the first poll of a context and then every 10 000
+// polls (backward jumps and calls), and its regex engine on a counter of its own.
+int Vm::Impl::interruptHandler(JSRuntime* runtime, void* opaque) noexcept {
+    Impl& self = *static_cast<Impl*>(opaque);
+    if (std::chrono::steady_clock::now() < self.deadline) {
+        return 0;
+    }
+    if (!self.interruptFired) {
+        self.interruptFired = true;
+        // The backend turns the interrupt into an ordinary promise rejection on several C paths (the Promise
+        // executor, Promise.try, a thenable job, ...), after which the script would run on. With the stack limit
+        // exhausted, every bytecode frame and every native call refuses to start (quickjs.c:17640, :17370,
+        // :17494), so no new JavaScript runs once the budget is gone: the frames already running reach their next
+        // poll and are interrupted again. ~CallScope restores the limit. 1, never 0: a size of 0 DISABLES the
+        // check (quickjs.c:2763-2764).
+        JS_SetMaxStackSize(runtime, 1);
+    }
+    return 1;
 }
 
 // A rejection with no handler yet is only LISTED: `Promise.reject(x).catch(f)` written in one script rejects
@@ -161,10 +174,12 @@ Vm::Impl::CallScope::CallScope(Impl& host, const std::string& fileName) : impl(h
     JS_UpdateStackTop(host.rt);
     host.refusalsAtCallStart = host.heap.refusals();
     host.callFileName = fileName;
+    host.interruptFired = false;
     host.inCall = true;
 }
 
 Vm::Impl::CallScope::~CallScope() {
+    JS_SetMaxStackSize(impl.rt, impl.config.stackLimitBytes);  // the handler took it away if the budget ran out
     impl.deadline = std::chrono::steady_clock::time_point::min();
     impl.inCall = false;
 }
@@ -189,11 +204,23 @@ EvalResult Vm::Impl::evaluate(std::string_view source, std::string_view fileName
             result.completion = stringify(completion.get());  // a failed rendering never changes the status
         }
     }
-    if (result.status != EvalStatus::Interrupted) {
+    if (result.status != EvalStatus::Interrupted && !interruptFired) {
         drainJobs(result);  // the microtask checkpoint, under the SAME deadline
     }
+    noteInterrupt(result);  // BEFORE the report: a converted interrupt is the call's, not a rejection's
     reportUnhandledRejections();
     return result;  // ~CallScope: deadline = time_point::min(); inCall = false
+}
+
+// The budget ran out, but the backend converted the interrupt into a rejection (or swallowed it) and the call
+// came back looking fine: it is Interrupted all the same. The converted interrupt has no stack of its own.
+void Vm::Impl::noteInterrupt(EvalResult& result) {
+    if (!interruptFired || result.status != EvalStatus::Ok) {
+        return;
+    }
+    const ScriptError error{"InternalError", "interrupted", {}};
+    logFailure(EvalStatus::Interrupted, error, /*isErrorObject=*/true);
+    adopt(result, EvalResult{EvalStatus::Interrupted, error, {}});
 }
 
 // The first failure of a call decides its status (the script before its jobs), and the completion value is
@@ -233,10 +260,13 @@ void Vm::Impl::drainJobs(EvalResult& result) {
 void Vm::Impl::reportUnhandledRejections() {
     const std::vector<PendingRejection> batch = std::exchange(pendingRejections, {});
     for (const PendingRejection& entry : batch) {
-        const bool isErrorObject = JS_IsError(entry.reason);
-        const ScriptError reason = describe(entry.reason, isErrorObject);
-        logUnhandledRejection(reason, isErrorObject);
-        ++unhandledRejections;
+        // The interrupt itself, rejected into a promise by the backend: the call reports it as Interrupted.
+        if (!JS_IsUncatchableError(entry.reason)) {
+            const bool isErrorObject = JS_IsError(entry.reason);
+            const ScriptError reason = describe(entry.reason, isErrorObject);
+            logUnhandledRejection(reason, isErrorObject);
+            ++unhandledRejections;
+        }
         JS_FreeValue(ctx, entry.promise);
         JS_FreeValue(ctx, entry.reason);
     }

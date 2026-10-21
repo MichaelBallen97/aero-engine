@@ -33,8 +33,10 @@ inline constexpr std::size_t MIN_STACK_LIMIT_BYTES = std::size_t{64} * 1024U;
 inline constexpr std::size_t MAX_STACK_LIMIT_BYTES = std::size_t{8} * 1024U * 1024U;
 
 // The wall-clock budget of ONE call: compile + run + the job drain + error reporting. A call that is still
-// executing JavaScript when it runs out is interrupted with an error the script cannot catch. There is no
-// "unlimited": the engine must never hang on a script.
+// executing JavaScript when it runs out is interrupted with an error the script cannot catch, and ends
+// Interrupted even when the backend converts that error (a Promise executor, Promise.try and a thenable job all
+// do); no new JavaScript call starts in it after that. There is no "unlimited": the engine must never hang on
+// a script.
 inline constexpr std::chrono::milliseconds DEFAULT_CALL_TIME_BUDGET{1000};
 inline constexpr std::chrono::milliseconds MIN_CALL_TIME_BUDGET{1};
 inline constexpr std::chrono::milliseconds MAX_CALL_TIME_BUDGET{60'000};
@@ -61,7 +63,7 @@ enum class EvalStatus : std::uint8_t {
     CompileError,  // the source did not compile; nothing ran
     Exception,     // a value was thrown and not caught -- an Error, any other value, or a stack overflow
     OutOfMemory,   // the heap limit refused an allocation and the failure was not caught
-    Interrupted,   // the call's time budget ran out; the script could not catch it
+    Interrupted,   // the call's time budget ran out; the script could not catch it, nor start new calls
     InvalidVm,     // a failed create's Vm, or a moved-from one
     WrongThread,   // called from a thread that is not the VM's; nothing was touched
 };

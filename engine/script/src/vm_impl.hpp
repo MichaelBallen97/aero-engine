@@ -94,7 +94,8 @@ struct Vm::Impl {
 
     // ---- one call (vm.cpp) -------------------------------------------------------------------------------
     // The whole of a call's setup and teardown: the deadline, the C stack top, the refusal mark and the file
-    // name every record of the call carries. Outside a call the deadline is already in the past, so if script
+    // name every record of the call carries; the destructor also gives back the stack limit the interrupt
+    // handler takes away when the budget runs out. Outside a call the deadline is already in the past, so if script
     // code ever ran outside one it would be interrupted at its first poll.
     struct CallScope {
         CallScope(Impl& host, const std::string& fileName);
@@ -107,6 +108,7 @@ struct Vm::Impl {
     };
     [[nodiscard]] EvalResult evaluate(std::string_view source, std::string_view fileName);
     void drainJobs(EvalResult& result);
+    void noteInterrupt(EvalResult& result);
     void reportUnhandledRejections();
     static void adopt(EvalResult& result, const EvalResult& failure);
 
@@ -136,6 +138,7 @@ struct Vm::Impl {
     bool finished = false;
     std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::time_point::min();
     bool inCall = false;
+    bool interruptFired = false;  // the budget ran out in the current call; see interruptHandler
     std::uint64_t refusalsAtCallStart = 0;
     std::string callFileName;
     std::vector<PendingRejection> pendingRejections;
