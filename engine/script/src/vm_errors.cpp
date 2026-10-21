@@ -87,6 +87,10 @@ ScriptError Vm::Impl::describe(JSValueConst value, bool isErrorObject) {
 }
 
 std::string Vm::Impl::stringify(JSValueConst value) {
+    // Nothing is legitimately pending here: trap has already taken the call's own exception. Some builtins (parseFloat,
+    // parseInt, JSON.parse, normalize) convert an Error to a string and return success with its toString's exception
+    // still set, so a stale one is cleared first and cannot be blamed on this conversion.
+    clearPendingException();
     const HeldCString text{ctx, value};
     // A conversion that leaves an exception pending has failed even when it produced text: the backend falls
     // back to an Error's `message` when its toString throws, and reports success with the exception still set.

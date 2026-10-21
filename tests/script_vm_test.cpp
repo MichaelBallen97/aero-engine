@@ -382,6 +382,16 @@ TEST_CASE("script: evaluateScript returns the completion value as text (VM7)") {
     CHECK(throwing.status == EvalStatus::Ok);
     CHECK(throwing.completion == "<unprintable value>");
 
+    // The same broken toString, but the conversion happens INSIDE the script: parseFloat converts the Error and
+    // returns, with the exception still pending. The completion is an ordinary 42, and that stale exception is
+    // not its failure.
+    const std::string_view staleException =
+        R"js((() => { const e = new Error("m"); e.toString = () => { throw new Error("t"); }; )js"
+        R"js(parseFloat(e); return 42; })())js";
+    const EvalResult stale = run(staleException);
+    CHECK(stale.status == EvalStatus::Ok);
+    CHECK(stale.completion == "42");
+
     // The terminator arm: the view's next byte is ';', not '\0', so a wrapper that handed the view to the
     // backend unterminated would let it read on into `throw 1;` and return Exception.
     const std::string_view whole{"1 + 1; throw 1;"};
