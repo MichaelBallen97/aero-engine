@@ -129,6 +129,26 @@ void Vm::Impl::logFailure(EvalStatus status, const ScriptError& error, bool isEr
     AERO_LOG_ERROR("{}", text);
 }
 
+void Vm::Impl::logDrainStop() const {
+    AERO_LOG_ERROR("script: {}: interrupted after exceeding the {} ms time budget with promise jobs still queued",
+                   callFileName, config.callTimeBudget.count());
+}
+
+void Vm::Impl::logUnhandledRejection(const ScriptError& reason, bool isErrorObject) const {
+    std::string text;
+    if (isErrorObject) {
+        const std::string head = std::format("script: {}: unhandled promise rejection:", callFileName);
+        text = std::format("{} {}: {}", head, reason.name, reason.message);
+        if (!reason.stack.empty()) {
+            text += '\n';
+            text += reason.stack;
+        }
+    } else {
+        text = std::format("script: {}: unhandled promise rejection: {}", callFileName, reason.message);
+    }
+    AERO_LOG_ERROR("{}", text);
+}
+
 std::string_view evalStatusLabel(EvalStatus status) noexcept {
     switch (status) {
         case EvalStatus::Ok:

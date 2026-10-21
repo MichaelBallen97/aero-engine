@@ -13,6 +13,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <vector>
 
 namespace engine::script {
 
@@ -70,6 +71,14 @@ private:
 
 enum class Phase : std::uint8_t { Compile, Run };
 inline constexpr std::string_view UNPRINTABLE_VALUE = "<unprintable value>";
+inline constexpr std::string_view DRAIN_STOP_MESSAGE = "the time budget ran out with promise jobs still queued";
+
+// A promise that rejected with no handler attached yet, and its reason: two held references, freed explicitly
+// wherever an entry is consumed (the report, the erase, shutdown).
+struct PendingRejection {
+    JSValue promise;
+    JSValue reason;
+};
 
 struct Vm::Impl {
     explicit Impl(const VmConfig& vmConfig) noexcept;
@@ -97,6 +106,9 @@ struct Vm::Impl {
         Impl& impl;
     };
     [[nodiscard]] EvalResult evaluate(std::string_view source, std::string_view fileName);
+    void drainJobs(EvalResult& result);
+    void reportUnhandledRejections();
+    static void adopt(EvalResult& result, const EvalResult& failure);
 
     // ---- errors (vm_errors.cpp) --------------------------------------------------------------------------
     [[nodiscard]] EvalResult trap(Phase phase);
@@ -107,9 +119,13 @@ struct Vm::Impl {
     [[nodiscard]] std::string readStringProperty(JSValueConst object, const char* key, bool undefinedIsEmpty);
     void clearPendingException() noexcept;
     void logFailure(EvalStatus status, const ScriptError& error, bool isErrorObject) const;
+    void logDrainStop() const;
+    void logUnhandledRejection(const ScriptError& reason, bool isErrorObject) const;
 
     // ---- the backend's callbacks (vm.cpp); unread parameters unnamed in the definitions ---------------------
     static int interruptHandler(JSRuntime* runtime, void* opaque) noexcept;
+    static void rejectionTracker(JSContext* context, JSValueConst promise, JSValueConst reason, bool isHandled,
+                                 void* opaque) noexcept;
 
     // ---- state: `heap` FIRST, so it is destroyed LAST ------------------------------------------------------
     internal::HeapAccounting heap;
@@ -122,6 +138,9 @@ struct Vm::Impl {
     bool inCall = false;
     std::uint64_t refusalsAtCallStart = 0;
     std::string callFileName;
+    std::vector<PendingRejection> pendingRejections;
+    std::uint64_t unhandledRejections = 0;
+    std::uint64_t rejectionsHandledLate = 0;
 };
 
 }  // namespace engine::script

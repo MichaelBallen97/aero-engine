@@ -850,28 +850,284 @@ TEST_CASE("script: collectGarbage() frees an unreachable cycle that reference co
     expectCleanShutdown(vm);
 }
 
+// ---- VM22, VM25-VM31, VM39: promise jobs and unhandled rejections --------------------------------------------
+
+TEST_CASE("script: an endless job chain is stopped at the budget, and the VM still tears down clean (VM22)") {
+    LogCapture log;
+    {
+        Vm vm = makeVm(withBudget(std::chrono::milliseconds{100}));
+        log.clear();
+        // Two chains: jobs alternate between them, so while one chain's job runs the other's next job is
+        // already queued, and an interrupted job can break only its own chain.
+        const EvalResult result =
+            vm.evaluateScript("function f() { Promise.resolve().then(f); } f(); f();", "chain.js");
+        CHECK(result.status == EvalStatus::Interrupted);
+        CHECK(result.completion == "undefined");  // the script itself completed
+        // Which of the two shapes follows is deliberately not asserted, because it is not deterministic: usually
+        // the drain's pre-job check stops the chain between two jobs ("... with promise jobs still queued"), but
+        // when the deadline expires inside a job and the handler's consultation lands in that job first, the
+        // handler interrupts the job instead (the plain interrupt record, with its stack).
+        const std::string message = onlyErrorMessage(log);
+        const std::string_view shape = "script: chain.js: interrupted after exceeding the 100 ms time budget";
+        CHECK(firstLine(message).starts_with(shape));
+        MESSAGE("chain stopped by: " << result.error.message);
+
+        // A surviving chain is drained under the next call's budget: the documented behaviour.
+        const EvalResult next = vm.evaluateScript("1 + 1", "next.js");
+        CHECK(next.status == EvalStatus::Interrupted);
+        CHECK(next.completion == "2");
+
+        // Teardown with a chain still queued: the backend's own assert is a witness here, and so is the zero
+        // report. The pre-free object check must stay quiet while jobs are queued.
+        log.clear();
+        expectCleanShutdown(vm);
+        CHECK(log.countAtLeast(LogLevel::Warn) == 0U);
+    }
+
+    // Part 2: the deadline passes inside a job, where only the handler can act, so this part is deterministic.
+    Vm vm = makeVm(withBudget(std::chrono::milliseconds{100}));
+    log.clear();
+    const EvalResult result = vm.evaluateScript(
+        "Promise.resolve().then(() => { while (true) {} }); Promise.resolve().then(() => {});", "job.js");
+    CHECK(result.status == EvalStatus::Interrupted);
+    // Exactly one record: the drain returns at once instead of logging "jobs still queued" for the job behind.
+    const std::string message = onlyErrorMessage(log);
+    CHECK(firstLine(message) == "script: job.js: interrupted after exceeding the 100 ms time budget");
+    expectCleanShutdown(vm);
+}
+
+TEST_CASE("script: an unhandled rejection is reported once, at ERROR, after the drain (VM25)") {
+    LogCapture log;
+    {
+        Vm vm = makeVm();
+        log.clear();
+        const EvalResult error = vm.evaluateScript("Promise.reject(new Error(\"nope\"));", "rej.js");
+        CHECK(error.status == EvalStatus::Ok);
+        const std::string message = onlyErrorMessage(log);
+        CHECK(firstLine(message) == "script: rej.js: unhandled promise rejection: Error: nope");
+        const std::string_view rest = std::string_view{message}.substr(message.find('\n') + 1);
+        CHECK(firstLine(rest).starts_with("    at <eval> (rej.js:1:"));
+        CHECK(vm.stats().unhandledRejections == 1U);
+
+        // A non-Error reason.
+        log.clear();
+        CHECK(vm.evaluateScript("Promise.reject(5);", "rej5.js").status == EvalStatus::Ok);
+        expectOnlyError(log, "script: rej5.js: unhandled promise rejection: 5");
+        CHECK(vm.stats().unhandledRejections == 2U);
+        expectCleanShutdown(vm);
+    }
+
+    // Part 3: describing can reject. The getter's own rejection, recorded while the list is being reported, is
+    // reported at the end of the NEXT call -- the swap's witness (iterating the live vector would reallocate
+    // under the loop: an ASan report in Debug).
+    const std::string_view getter =
+        "(() => { const e = new Error(\"x\"); Object.defineProperty(e, \"message\", "
+        "{ get() { Promise.reject(2); return \"m\"; } }); Promise.reject(e); })();";
+    {
+        Vm vm = makeVm();
+        log.clear();
+        CHECK(vm.evaluateScript(getter, "getter.js").status == EvalStatus::Ok);
+        const std::string message = onlyErrorMessage(log);
+        CHECK(firstLine(message) == "script: getter.js: unhandled promise rejection: Error: m");
+        log.clear();
+        CHECK(vm.evaluateScript("1 + 1", "next.js").status == EvalStatus::Ok);
+        expectOnlyError(log, "script: next.js: unhandled promise rejection: 2");
+        expectCleanShutdown(vm);
+    }
+
+    // Part 4: the same script, then NO further call: teardown must free the one rejection still listed.
+    Vm vm = makeVm();
+    CHECK(vm.evaluateScript(getter, "getter.js").status == EvalStatus::Ok);
+    expectCleanShutdown(vm);
+}
+
+TEST_CASE("script: a rejection handled in the same script logs nothing (VM26)") {
+    const LogCapture log;
+    Vm vm = makeVm();
+    const EvalResult result = vm.evaluateScript("Promise.reject(new Error(\"x\")).catch(() => {});", "same.js");
+    CHECK(result.status == EvalStatus::Ok);
+    CHECK(log.countAtLeast(LogLevel::Info) == 0U);
+    CHECK(vm.stats().unhandledRejections == 0U);
+    expectCleanShutdown(vm);
+}
+
+TEST_CASE("script: a rejection handled by a later job of the same call logs nothing (VM27)") {
+    const LogCapture log;
+    Vm vm = makeVm();
+    // The report waits for the whole drain, not for the script's last line.
+    const EvalResult result = vm.evaluateScript(
+        "(() => { const p = Promise.reject(1); Promise.resolve().then(() => p.catch(() => {})); })();", "later.js");
+    CHECK(result.status == EvalStatus::Ok);
+    CHECK(log.countAtLeast(LogLevel::Info) == 0U);
+    CHECK(vm.stats().unhandledRejections == 0U);
+    expectCleanShutdown(vm);
+}
+
+TEST_CASE("script: a rejection handled in a later call logs one INFO (VM28)") {
+    LogCapture log;
+    Vm vm = makeVm();
+    log.clear();
+    CHECK(vm.evaluateScript("globalThis.p28 = Promise.reject(new Error(\"late\"));", "late1.js").status ==
+          EvalStatus::Ok);
+    const std::string message = onlyErrorMessage(log);
+    CHECK(firstLine(message) == "script: late1.js: unhandled promise rejection: Error: late");
+
+    log.clear();
+    CHECK(vm.evaluateScript("p28.catch(() => {});", "late2.js").status == EvalStatus::Ok);
+    const std::vector<CapturedRecord> records = log.atLeast(LogLevel::Info);
+    REQUIRE(records.size() == 1U);
+    CHECK(records[0].level == LogLevel::Info);
+    CHECK(records[0].message == "script: late2.js: a promise rejection reported as unhandled was handled later");
+    CHECK(vm.stats().rejectionsHandledLate == 1U);
+    CHECK(vm.stats().unhandledRejections == 1U);
+    expectCleanShutdown(vm);
+}
+
+TEST_CASE("script: an async function that throws is an unhandled rejection (VM29)") {
+    LogCapture log;
+    Vm vm = makeVm();
+    log.clear();
+    const EvalResult result =
+        vm.evaluateScript("async function f29() { throw new TypeError(\"async\"); } f29();", "async.js");
+    CHECK(result.status == EvalStatus::Ok);
+    const std::string message = onlyErrorMessage(log);
+    CHECK(firstLine(message) == "script: async.js: unhandled promise rejection: TypeError: async");
+    expectCleanShutdown(vm);
+}
+
+TEST_CASE("script: a job that throws is trapped; the first failure of a call decides its status (VM30)") {
+    LogCapture log;
+    Vm vm = makeVm();
+    // Part 1: the drain continues past the failure.
+    log.clear();
+    const EvalResult microtask = vm.evaluateScript(
+        "globalThis.after30 = []; queueMicrotask(() => { throw new Error(\"tick\"); }); "
+        "queueMicrotask(() => { after30.push(\"ran\"); }); \"done\"",
+        "mt.js");
+    CHECK(microtask.status == EvalStatus::Exception);
+    CHECK(microtask.completion == "done");
+    CHECK(microtask.error.message == "tick");
+    const std::string message = onlyErrorMessage(log);
+    CHECK(firstLine(message) == "script: mt.js: uncaught Error: tick");
+    CHECK(vm.evaluateScript("after30.join()", "mt.js").completion == "ran");
+
+    // Part 2: the script's failure came first, so it decides the status; the job's is still logged.
+    log.clear();
+    const EvalResult both = vm.evaluateScript(
+        R"js(queueMicrotask(() => { throw new Error("job"); }); throw new Error("script");)js", "both.js");
+    CHECK(both.status == EvalStatus::Exception);
+    CHECK(both.error.message == "script");
+    const std::vector<CapturedRecord> records = log.atLeast(LogLevel::Warn);
+    REQUIRE(records.size() == 2U);
+    CHECK(records[0].level == LogLevel::Error);
+    CHECK(records[1].level == LogLevel::Error);
+    CHECK(firstLine(records[0].message) == "script: both.js: uncaught Error: script");
+    CHECK(firstLine(records[1].message) == "script: both.js: uncaught Error: job");
+    expectCleanShutdown(vm);
+}
+
+TEST_CASE("script: queued jobs run before the call returns (VM31)") {
+    const LogCapture log;
+    Vm vm = makeVm();
+    const EvalResult first = vm.evaluateScript(
+        R"js(globalThis.order = []; Promise.resolve().then(() => order.push("job")); order.push("sync");)js",
+        "order.js");
+    CHECK(first.status == EvalStatus::Ok);
+    // Evaluated before the second call's own drain: "sync" alone would mean the first call returned with its
+    // job still queued.
+    CHECK(vm.evaluateScript("order.join()", "order.js").completion == "sync,job");
+    expectCleanShutdown(vm);
+}
+
+TEST_CASE("script: a drain cut off by the budget leaves its job queued, deterministically (VM39)") {
+    LogCapture log;
+    Vm vm = makeVm(withBudget(engine::script::MIN_CALL_TIME_BUDGET));
+    // A warm-up whose result is not asserted: a fresh context's poll counter starts at zero, so its first poll
+    // may consult the handler; this call spends that consultation, and the next ~10 000 polls consult nothing.
+    static_cast<void>(vm.evaluateScript("0", "warm.js"));
+    log.clear();
+    // The script makes about five polls, far from the next consultation, so the handler cannot fire. The native
+    // typed-array join never re-enters bytecode and formats a million elements, so the 1 ms deadline has always
+    // passed when the drain begins: only the pre-job check can produce this outcome.
+    const std::string_view source =
+        "Promise.resolve().then(() => { globalThis.ran39 = true; }); new Int32Array(1000000).join().length";
+    const EvalResult stop = vm.evaluateScript(source, "stop.js");
+    CHECK(stop.status == EvalStatus::Interrupted);
+    CHECK(stop.completion == "1999999");
+    CHECK(stop.error.name.empty());
+    CHECK(stop.error.stack.empty());
+    CHECK(stop.error.message == "the time budget ran out with promise jobs still queued");
+    const std::string_view record = "script: stop.js: interrupted after exceeding the 1 ms time budget";
+    expectOnlyError(log, std::string{record} + " with promise jobs still queued");
+
+    // A call evaluates its script before its own drain, so this proves the job never ran in the cut-off call.
+    // The follow-up's own status and records are not asserted: its 1 ms drain may or may not finish.
+    const EvalResult probe = vm.evaluateScript("typeof ran39", "stop.js");
+    CHECK(probe.completion == "undefined");
+    expectCleanShutdown(vm);
+}
+
 // ---- VM32: shutdown ---------------------------------------------------------------------------------------
 
 TEST_CASE("script: shutdown() reports zero leaks after a session through every arm, and is idempotent (VM32)") {
     LogCapture log;
-    Vm vm = makeVm();
-    const VmTeardownReport first = vm.shutdown();
-    CHECK(first.leakedAllocations == 0U);
-    CHECK(first.leakedBytes == 0U);
-    CHECK_FALSE(vm.valid());
+    {
+        Vm vm = makeVm();
+        const VmTeardownReport first = vm.shutdown();
+        CHECK(first.leakedAllocations == 0U);
+        CHECK(first.leakedBytes == 0U);
+        CHECK_FALSE(vm.valid());
+
+        log.clear();
+        const VmTeardownReport second = vm.shutdown();
+        CHECK(second.leakedAllocations == 0U);
+        CHECK(second.leakedBytes == 0U);
+        CHECK(log.countAtLeast(LogLevel::Trace) == 0U);
+
+        {
+            Vm shutDown = makeVm();
+            static_cast<void>(shutDown.shutdown());
+            log.clear();
+        }  // the destructor of a VM that already shut down is a no-op
+        CHECK(log.countAtLeast(LogLevel::Trace) == 0U);
+    }
+
+    // A session through every arm that can leave something behind, on one VM...
+    VmConfig config;
+    config.heapLimitBytes = 8 * MIB;
+    Vm vm = makeVm(patient(config));
+    const auto status = [&vm](std::string_view source) { return vm.evaluateScript(source, "s32.js").status; };
+    CHECK(status("1 + 1") == EvalStatus::Ok);
+    CHECK(status("let =") == EvalStatus::CompileError);
+    CHECK(status("throw new Error(\"e\")") == EvalStatus::Exception);
+    CHECK(status("throw 7") == EvalStatus::Exception);
+    CHECK(status("(() => { \"x\".repeat(64 * 1024 * 1024); })()") == EvalStatus::OutOfMemory);
+    CHECK(status("(() => { function r() { return r() + 1; } r(); })()") == EvalStatus::Exception);
+    log.clear();
+    CHECK(status("globalThis.p32 = Promise.reject(new Error(\"u\"));") == EvalStatus::Ok);
+    CHECK(log.countExactly(LogLevel::Error) == 1U);
+    log.clear();
+    CHECK(status("p32.catch(() => {});") == EvalStatus::Ok);
+    CHECK(log.countExactly(LogLevel::Info) == 1U);
+    CHECK(status("queueMicrotask(() => { throw 1; })") == EvalStatus::Exception);
+
+    // ...and the two interrupting arms, on a second VM with a short budget.
+    Vm quick = makeVm(withBudget(std::chrono::milliseconds{100}));
+    const auto quickStatus = [&quick](std::string_view source) {
+        return quick.evaluateScript(source, "q32.js").status;
+    };
+    CHECK(quickStatus("while (true) {}") == EvalStatus::Interrupted);
+    // Two endless chains, whichever record shape stops them: one is still queued at teardown.
+    CHECK(quickStatus("function f() { Promise.resolve().then(f); } f(); f();") == EvalStatus::Interrupted);
 
     log.clear();
-    const VmTeardownReport second = vm.shutdown();
-    CHECK(second.leakedAllocations == 0U);
-    CHECK(second.leakedBytes == 0U);
-    CHECK(log.countAtLeast(LogLevel::Trace) == 0U);
-
-    {
-        Vm shutDown = makeVm();
-        static_cast<void>(shutDown.shutdown());
-        log.clear();
-    }  // the destructor of a VM that already shut down is a no-op
-    CHECK(log.countAtLeast(LogLevel::Trace) == 0U);
+    const VmTeardownReport sessionReport = vm.shutdown();
+    CHECK(sessionReport.leakedAllocations == 0U);
+    CHECK(sessionReport.leakedBytes == 0U);
+    const VmTeardownReport quickReport = quick.shutdown();  // with a job chain still queued
+    CHECK(quickReport.leakedAllocations == 0U);
+    CHECK(quickReport.leakedBytes == 0U);
+    CHECK(log.countAtLeast(LogLevel::Warn) == 0U);
 }
 
 // ---- VM35: the four setters the design rules out -------------------------------------------------------

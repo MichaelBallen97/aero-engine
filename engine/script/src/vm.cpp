@@ -13,6 +13,7 @@
 #include <string_view>
 #include <thread>
 #include <utility>
+#include <vector>
 
 namespace engine::script {
 namespace {
@@ -76,6 +77,12 @@ VmTeardownReport Vm::Impl::shutdown() noexcept {
         return {};
     }
     finished = true;
+    // A promise rejected while the last call's report ran is still listed, so this is required, not defensive.
+    for (const PendingRejection& entry : pendingRejections) {
+        JS_FreeValue(ctx, entry.promise);
+        JS_FreeValue(ctx, entry.reason);
+    }
+    pendingRejections.clear();
     if (ctx != nullptr) {
         JS_FreeContext(ctx);  // a reference drop: functions still referenced by queued jobs hold their realm alive
         ctx = nullptr;
@@ -117,6 +124,36 @@ int Vm::Impl::interruptHandler(JSRuntime* /*runtime*/, void* opaque) noexcept {
     return std::chrono::steady_clock::now() >= self.deadline ? 1 : 0;
 }
 
+// A rejection with no handler yet is only LISTED: `Promise.reject(x).catch(f)` written in one script rejects
+// before f is attached, so reporting at this moment would be a false alarm. The list is reported at the end of
+// the call, after the job drain. A handler arriving for a listed promise removes it silently; one arriving for
+// a promise that is no longer listed means the end-of-call report already named it.
+void Vm::Impl::rejectionTracker(JSContext* context, JSValueConst promise, JSValueConst reason, bool isHandled,
+                                void* opaque) noexcept {
+    Impl& self = *static_cast<Impl*>(opaque);
+    // The tracker allocates (the list, the log record). A failure there is the engine's standing answer to C++
+    // heap exhaustion -- terminate -- spelled out, because nothing may unwind through the backend's C frames.
+    try {
+        if (!isHandled) {
+            self.pendingRejections.push_back(
+                PendingRejection{JS_DupValue(context, promise), JS_DupValue(context, reason)});
+            return;
+        }
+        for (auto entry = self.pendingRejections.begin(); entry != self.pendingRejections.end(); ++entry) {
+            if (JS_IsStrictEqual(context, entry->promise, promise)) {  // identity for objects: runs no script code
+                JS_FreeValue(context, entry->promise);
+                JS_FreeValue(context, entry->reason);
+                self.pendingRejections.erase(entry);
+                return;
+            }
+        }
+        ++self.rejectionsHandledLate;
+        AERO_LOG_INFO("script: {}: a promise rejection reported as unhandled was handled later", self.callFileName);
+    } catch (...) {
+        std::terminate();
+    }
+}
+
 Vm::Impl::CallScope::CallScope(Impl& host, const std::string& fileName) : impl(host) {
     host.deadline = std::chrono::steady_clock::now() + host.config.callTimeBudget;
     // The backend captured its stack top once, where the runtime was created. A VM created deep inside one
@@ -152,7 +189,57 @@ EvalResult Vm::Impl::evaluate(std::string_view source, std::string_view fileName
             result.completion = stringify(completion.get());  // a failed rendering never changes the status
         }
     }
+    if (result.status != EvalStatus::Interrupted) {
+        drainJobs(result);  // the microtask checkpoint, under the SAME deadline
+    }
+    reportUnhandledRejections();
     return result;  // ~CallScope: deadline = time_point::min(); inCall = false
+}
+
+// The first failure of a call decides its status (the script before its jobs), and the completion value is
+// never cleared: a script that completed and whose microtask then threw is an Exception that still has it.
+void Vm::Impl::adopt(EvalResult& result, const EvalResult& failure) {
+    if (result.status == EvalStatus::Ok) {
+        result.status = failure.status;
+        result.error = failure.error;
+    }
+}
+
+// The pre-job deadline check stops an endless job chain cleanly between two jobs. It races with the interrupt
+// handler for the moment the deadline passes (every job polls the handler at each call entry), so a chain may
+// instead be stopped inside a job; both end the call Interrupted.
+void Vm::Impl::drainJobs(EvalResult& result) {
+    while (JS_IsJobPending(rt)) {
+        if (std::chrono::steady_clock::now() >= deadline) {
+            logDrainStop();
+            adopt(result,
+                  EvalResult{EvalStatus::Interrupted, ScriptError{{}, std::string{DRAIN_STOP_MESSAGE}, {}}, {}});
+            return;  // the jobs stay queued for the next call
+        }
+        JSContext* jobContext = nullptr;
+        if (JS_ExecutePendingJob(rt, &jobContext) < 0) {
+            const EvalResult failure = trap(Phase::Run);  // a throw from queueMicrotask or a finalization callback
+            adopt(result, failure);
+            if (failure.status == EvalStatus::Interrupted) {
+                return;
+            }
+        }
+    }
+}
+
+// The list is swapped out BEFORE anything is described: describe may run script code (a getter) that rejects
+// another promise, and the tracker would then append to the vector being iterated. Anything rejected while
+// reporting is reported at the end of the next call.
+void Vm::Impl::reportUnhandledRejections() {
+    const std::vector<PendingRejection> batch = std::exchange(pendingRejections, {});
+    for (const PendingRejection& entry : batch) {
+        const bool isErrorObject = JS_IsError(entry.reason);
+        const ScriptError reason = describe(entry.reason, isErrorObject);
+        logUnhandledRejection(reason, isErrorObject);
+        ++unhandledRejections;
+        JS_FreeValue(ctx, entry.promise);
+        JS_FreeValue(ctx, entry.reason);
+    }
 }
 
 // ---- Vm -------------------------------------------------------------------------------------------------
@@ -178,6 +265,7 @@ VmCreateResult Vm::create(const VmConfig& config) {
     // Installed only now, so creation never depends on the deadline, whatever the backend does while it builds
     // the intrinsics.
     JS_SetInterruptHandler(impl->rt, &Impl::interruptHandler, impl.get());
+    JS_SetHostPromiseRejectionTracker(impl->rt, &Impl::rejectionTracker, impl.get());
     AERO_LOG_DEBUG(
         "script: VM created: quickjs-ng {}, heap limit {} bytes, stack limit {} bytes, call budget {} ms, "
         "{} bytes in use",
@@ -231,7 +319,9 @@ VmStats Vm::stats() const noexcept {
     out.heapBytesPeak = heap.peakBytes();
     out.liveAllocations = heap.liveBlocks();
     out.refusedAllocations = heap.refusals();
-    return out;  // the two rejection counters read 0 until promise jobs are drained and reported
+    out.unhandledRejections = impl->unhandledRejections;
+    out.rejectionsHandledLate = impl->rejectionsHandledLate;
+    return out;
 }
 
 VmTeardownReport Vm::shutdown() noexcept {
