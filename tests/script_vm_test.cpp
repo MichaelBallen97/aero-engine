@@ -35,6 +35,7 @@
 namespace engine::script {
 // doctest streams a failing operand through an unqualified operator<< found by ADL, so a printer for an
 // engine type must live in that type's own namespace (the render_light_falloff_test.cpp precedent).
+std::ostream& operator<<(std::ostream& out, EvalStatus status) { return out << evalStatusLabel(status); }
 std::ostream& operator<<(std::ostream& out, VmCreateStatus status) { return out << vmCreateStatusLabel(status); }
 }  // namespace engine::script
 
@@ -860,15 +861,14 @@ TEST_CASE("script: stats() follows the heap up and down and keeps the peak (VM33
 TEST_CASE("script: collectGarbage() frees an unreachable cycle that reference counting cannot (VM34)") {
     const LogCapture log;
     Vm vm = makeVm();
-    const char* const probe = "w.deref() !== undefined";
-    CHECK(vm.evaluateScript(
-                "globalThis.w = new WeakRef((() => { const a = {}; const b = { a }; a.b = b; return a; })()); "
-                "w.deref() !== undefined",
-                "gc.js")
-              .completion == "true");
-    // The cycle survives reference counting, and this tiny heap is far below the automatic collector's
-    // threshold.
-    CHECK(vm.evaluateScript(probe, "gc.js").completion == "true");
+    // Call 1 builds a two-object cycle held by a global and watched by a WeakRef. Call 2 drops the last strong
+    // reference and creates nothing afterwards, so no automatic collection can run between that drop and the
+    // observation: the cycle must still be alive, because reference counting cannot free it.
+    const std::string_view build =
+        "globalThis.keep = (() => { const a = {}; const b = { a }; a.b = b; return a; })(); "
+        "globalThis.w = new WeakRef(keep); w.deref() !== undefined";
+    CHECK(vm.evaluateScript(build, "gc.js").completion == "true");
+    CHECK(vm.evaluateScript("keep = undefined; w.deref() !== undefined", "gc.js").completion == "true");
     vm.collectGarbage();
     CHECK(vm.evaluateScript("w.deref() === undefined", "gc.js").completion == "true");
     CHECK(log.countAtLeast(LogLevel::Warn) == 0U);
