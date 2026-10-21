@@ -13,3 +13,4 @@ add_subdirectory(scene)      # task 1.3.1 — the EnTT-backed world
 add_subdirectory(scene_render)  # task 1.4.1 — the World -> render bridge
 add_subdirectory(scene_audio)   # task 3.7.2 — the World -> audio bridge; depends on scene + audio
 add_subdirectory(scene_serialize)  # task 1.4.2 — the World <-> SceneDocument bridge
+add_subdirectory(script)           # task 4.1.1 — the quickjs-ng VM; depends on core only today (docs/03: the top layer)
