@@ -2,14 +2,15 @@
 # Aero Engine -- the script quickjs-boundary architecture guard (task 4.1.1; docs/04's guard table, the
 # ninth of the named architecture guards; risk R12's named next case).
 #
-# THE INVARIANT (project rule #3): quickjs-ng is reachable from exactly one side of the tree --
-# engine/script's PRIVATE side, i.e. every path under engine/script/ that is NOT under
-# engine/script/include/. No quickjs include or identifier may appear in any public engine header (the
-# layer's own public headers included), nor anywhere else under engine/ or runtime/.
+# THE INVARIANT (project rule #3): quickjs-ng is reachable from exactly one directory of the tree --
+# engine/script/src/, the layer's PRIVATE side. No quickjs include or identifier may appear in any public
+# engine header (the layer's own public headers included), in engine/script/internal/ (the backend-free
+# allocator seam), or anywhere else under engine/ or runtime/.
 #
 # TWO ARMS, over the tracked C-family files under engine/ and runtime/ minus the private side:
 #   1. an #include of a quickjs header (quickjs.h, quickjs-libc.h), on the raw text;
-#   2. a quickjs identifier, applied AFTER stripping `//` comments.
+#   2. a quickjs identifier, applied AFTER stripping `//` comments: JS_ names and JS<Upper> types, the lowercase
+#      js_ allocator and helper functions (js_malloc, js_free, ...), and the QJS_ / QUICKJS build macros.
 #
 # WHY A SCRIPT, NOT A ONE-LINE `git grep` (the check-platform-boundary.sh precedent). quickjs has no
 # namespace: its functions and macros are JS_-prefixed and its types JS<Upper>... -- indistinguishable, AS
@@ -23,7 +24,10 @@
 # next backend version outgrows. The inverted rule: EVERY token matching JS[A-Z_][A-Za-z0-9_]*, bounded on
 # the left, is a violation UNLESS it starts with JSON. The exception set is measured, not guessed:
 #     git grep -hoE '(^|[^a-zA-Z0-9_])JS[A-Za-z0-9_]*' -- engine runtime
-# returns only JSON and a bare JS in a comment, and the rule needs a third character.
+# returns only JSON and a bare JS in a comment, and the rule needs a third character. The same measurement
+# covers the other two spellings the backend's header uses (quickjs.h: js_malloc, js_free, js_realloc, the
+# js_*_rt family; QUICKJS_NG_*, QJS_*): js_[a-z0-9_]+, QJS_ and QUICKJS, each bounded on the left by a
+# non-identifier character, so objs_count, my_js_value and json_reader never match.
 #
 # THE COMPILE-TIME HALF is tests/script_boundary_probe.cpp, which links aero::script alone. It cannot see a
 # forward declaration (`struct JSContext;` compiles anywhere with no include at all) and this script can;
@@ -44,10 +48,10 @@ set -euo pipefail
 # deliberately out of scope: tests/ links the backend-free allocator seam and reads script sources as text.
 readonly SCAN_ROOTS=('engine' 'runtime')
 
-# The private side: engine/script/ minus its public include/ tree. Everything else is scanned, which is why
-# engine/script's own public headers are held to the same rule as every other public header.
-readonly PRIVATE_SIDE_PREFIX='engine/script/'
-readonly PUBLIC_SUBTREE_PREFIX='engine/script/include/'
+# The private side: engine/script/src/ and nothing else. Everything else is scanned -- the layer's own public
+# headers (engine/script/include/) and its backend-free allocator seam (engine/script/internal/) are held to
+# the same rule as every other directory.
+readonly PRIVATE_SIDE_PREFIX='engine/script/src/'
 
 # A real #include of a quickjs header (quickjs.h, quickjs-libc.h). Anchored: a real directive is the first
 # token on its line, and no first-party comment writes an actual `#include <quickjs.h>` line.
@@ -65,7 +69,6 @@ c_family() {
 # Is this file on engine/script's private side?
 is_private_side() {
   case "$1" in
-    "${PUBLIC_SUBTREE_PREFIX}"*) return 1 ;;
     "${PRIVATE_SIDE_PREFIX}"*) return 0 ;;
     *) return 1 ;;
   esac
@@ -78,7 +81,7 @@ is_private_side() {
 scan_tokens() {
   awk '{
     n = $0; sub(/:.*/, "", n); rest = " " substr($0, length(n) + 2)
-    while (match(rest, /[^A-Za-z0-9_]JS[A-Z_][A-Za-z0-9_]*/)) {
+    while (match(rest, /[^A-Za-z0-9_](JS[A-Z_][A-Za-z0-9_]*|js_[a-z0-9_]+|QJS_[A-Za-z0-9_]*|QUICKJS[A-Za-z0-9_]*)/)) {
       tok = substr(rest, RSTART + 1, RLENGTH - 1)
       if (tok !~ /^JSON/) print n ":" tok
       rest = substr(rest, RSTART + RLENGTH)
@@ -154,13 +157,15 @@ if [ "$canary_files" -eq 0 ]; then
 fi
 
 # --- Self-test 3: the machinery, on synthetic input. --------------------------------------------------
-for line in 'JSValue v;' 'struct JSContext;' 'JS_FreeValue(ctx, v);' 'JSCFunction* f;' 'JS_EVAL_TYPE_GLOBAL'; do
+for line in 'JSValue v;' 'struct JSContext;' 'JS_FreeValue(ctx, v);' 'JSCFunction* f;' 'JS_EVAL_TYPE_GLOBAL' \
+  'void* p = js_malloc(ctx, 4);' 'int v = QJS_VERSION_MAJOR;'; do
   if [ -z "$(printf '1:%s\n' "$line" | scan_tokens)" ]; then
     echo "::error::scan_tokens in $0 no longer reports a quickjs token in '${line}' -- it is vacuous." >&2
     exit 2
   fi
 done
-for line in 'const char* k = "JSON";' 'JsonValue v;' 'auto j = parseJSON(t);'; do
+for line in 'const char* k = "JSON";' 'JsonValue v;' 'auto j = parseJSON(t);' 'int objs_count = 0;' \
+  'my_js_value = 1;' 'json_reader r;'; do
   if [ -n "$(printf '1:%s\n' "$line" | scan_tokens)" ]; then
     echo "::error::scan_tokens in $0 reports a token in '${line}' -- it over-matches; fix the regex." >&2
     exit 2
@@ -220,7 +225,7 @@ if [ -n "$violations" ]; then
   echo "quickjs leaked outside engine/script's private side -- task 4.1.1 / docs/04 boundary rule:" >&2
   echo "$violations" >&2
   echo "" >&2
-  echo "quickjs-ng is touched only by engine/script/src/ (and any engine/script/ path outside include/)." >&2
+  echo "quickjs-ng is touched only by engine/script/src/." >&2
   echo "Expose an engine type through aero/script/*.hpp instead." >&2
   if [ -n "${GITHUB_ACTIONS:-}" ]; then
     while IFS= read -r v; do

@@ -85,11 +85,13 @@ endfunction()
 # --- The clean tree ---------------------------------------------------------------------------------------
 # A close mirror of the real layout: a core public header citing a backend function in `//` prose (the
 # comment-strip canary and the false-positive surface), a core source holding the one first-party JS-prefixed
-# word that is not a backend name (JSON), the script layer's own public header, its private side holding the
-# include the canary needs, and one runtime source (the real runtime/ is empty today, and nothing had ever
+# word that is not a backend name (JSON), an assets source (a second subsystem the narrowed scan of stage 9
+# misses, so that its needle names a SPECIFIC subsystem), the script layer's own public header, its private side
+# holding the include the canary needs, and one runtime source (the real runtime/ is empty today, and nothing had ever
 # proven the scan WALKS it rather than merely naming it).
 set(_SB_CORE_HPP "#pragma once\n// cites JS_NewRuntime2 in prose\n")
 set(_SB_CORE_CPP "const char* kind = \"JSON\";\n")
+set(_SB_ASSETS_CPP "int assetsClean = 0;\n")
 set(_SB_VM_HPP "#pragma once\nnamespace engine::script { class Vm; }\n")
 set(_SB_IMPL_HPP "#include <quickjs.h>\nJSValue held;\n")
 set(_SB_RUNTIME_CPP "int main() { return 0; }\n")
@@ -98,6 +100,7 @@ file(REMOVE_RECURSE "${WORK_DIR}")
 file(MAKE_DIRECTORY "${WORK_DIR}/src")
 _sb_write("engine/core/include/aero/core/clean.hpp" "${_SB_CORE_HPP}")
 _sb_write("engine/core/src/clean.cpp" "${_SB_CORE_CPP}")
+_sb_write("engine/assets/src/clean.cpp" "${_SB_ASSETS_CPP}")
 _sb_write("engine/script/include/aero/script/vm.hpp" "${_SB_VM_HPP}")
 _sb_write("engine/script/src/vm_impl.hpp" "${_SB_IMPL_HPP}")
 _sb_write("runtime/entry/clean.cpp" "${_SB_RUNTIME_CPP}")
@@ -128,7 +131,8 @@ _sb_seed("engine/script/include/aero/script/vm.hpp" "${_SB_VM_HPP}")
 _sb_seed("engine/scene/src/leak.cpp" "void f(JSRuntime* rt) { JS_RunGC(rt); }\n")
 _sb_run("stage 4 (backend names in another layer's source)" 1 "${BASH}" "${SCRIPT}")
 _sb_expect_substr("stage 4" "${_sb_out}" "engine/scene/src/leak.cpp:1" TRUE)
-_sb_expect_substr("stage 4" "${_sb_out}" "outside engine/script's private side" TRUE)
+# The per-line label, not the bare phrase: the banner above the list holds the phrase on any violation.
+_sb_expect_substr("stage 4" "${_sb_out}" "'JS_RunGC' outside engine/script's private side" TRUE)
 _sb_expect_substr("stage 4" "${_sb_out}" "'JSRuntime'" TRUE)
 _sb_expect_substr("stage 4" "${_sb_out}" "'JS_RunGC'" TRUE)
 _sb_unseed("engine/scene/src/leak.cpp")
@@ -177,6 +181,41 @@ endif()
 file(WRITE "${WORK_DIR}/narrowed-check.sh" "${_sb_mutated}")
 _sb_run("stage 9 (narrowed SCAN_ROOTS)" 2 "${BASH}" "${WORK_DIR}/narrowed-check.sh")
 _sb_expect_substr("stage 9" "${_sb_out}" "scan set does not cover every engine subsystem" TRUE)
-_sb_expect_substr("stage 9" "${_sb_out}" "script" TRUE)
+# The first subsystem the narrowed scan misses, by name: the bare word "script" is in the guard's own banner.
+_sb_expect_substr("stage 9" "${_sb_out}" "blind spot: assets" TRUE)
+
+# --- Stage 10: the layer's backend-free allocator seam is not the private side -> exit 1, that file and line.
+# engine/script/internal/ is scanned like every other path, which is what makes "the allocator header is
+# backend-free" an enforced fact rather than a comment. -------------------------------------------------------
+_sb_seed("engine/script/internal/aero/script/internal/leak.hpp" "#include <quickjs.h>\n")
+_sb_run("stage 10 (include in the allocator seam)" 1 "${BASH}" "${SCRIPT}")
+_sb_expect_substr("stage 10" "${_sb_out}" "engine/script/internal/aero/script/internal/leak.hpp:1" TRUE)
+_sb_expect_substr("stage 10" "${_sb_out}" "quickjs header included outside engine/script's private side" TRUE)
+_sb_unseed("engine/script/internal/aero/script/internal/leak.hpp")
+
+# --- Stage 11: the backend's lowercase allocator names -> exit 1. A JS-prefixed rule alone never sees them. ---
+_sb_seed("engine/core/src/leak.cpp" "void* p = js_malloc(nullptr, 4);\n")
+_sb_run("stage 11 (a lowercase js_ name)" 1 "${BASH}" "${SCRIPT}")
+_sb_expect_substr("stage 11" "${_sb_out}" "engine/core/src/leak.cpp:1" TRUE)
+_sb_expect_substr("stage 11" "${_sb_out}" "'js_malloc'" TRUE)
+_sb_unseed("engine/core/src/leak.cpp")
+
+# --- Stage 12: the private side widened back to all of engine/script/ -> exit 2 from the coverage self-test,
+# because `script` then has no scanned file at all. The mutated copy is written into WORK_DIR, and the
+# replacement is asserted to have landed before it runs. ----------------------------------------------------
+set(_sb_prefix "PRIVATE_SIDE_PREFIX='engine/script/src/'")
+set(_sb_wide "PRIVATE_SIDE_PREFIX='engine/script/'")
+string(FIND "${_sb_text}" "${_sb_prefix}" _sb_prefix_idx)
+if(_sb_prefix_idx EQUAL -1)
+    message(FATAL_ERROR "script-boundary guard_e2e: stage 12: the script no longer declares ${_sb_prefix} -- update this stage.")
+endif()
+string(REPLACE "${_sb_prefix}" "${_sb_wide}" _sb_widened "${_sb_text}")
+string(FIND "${_sb_widened}" "${_sb_wide}" _sb_wide_idx)
+if(_sb_wide_idx EQUAL -1)
+    message(FATAL_ERROR "script-boundary guard_e2e: stage 12: the mutation did not land.")
+endif()
+file(WRITE "${WORK_DIR}/widened-check.sh" "${_sb_widened}")
+_sb_run("stage 12 (private side widened)" 2 "${BASH}" "${WORK_DIR}/widened-check.sh")
+_sb_expect_substr("stage 12" "${_sb_out}" "blind spot: script" TRUE)
 
 message(STATUS "script-boundary.guard_e2e: OK")
