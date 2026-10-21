@@ -434,6 +434,13 @@ TEST_CASE("script: nothing engine- or OS-shaped is visible, and no script can bl
         vm.evaluateScript("[typeof Promise, typeof queueMicrotask, typeof JSON].join()", "v9.js");
     CHECK(present.completion == "function,function,object");
 
+    // The two stack-trace hooks are gone: a backtrace would run them as script code, and an interrupt raised
+    // inside either is thrown away by the backend.
+    const std::string_view hookProbe =
+        R"js([Object.getOwnPropertyDescriptor(Error, "prepareStackTrace"), )js"
+        R"js(Object.getOwnPropertyDescriptor(Error, "stackTraceLimit")].every((d) => d === undefined))js";
+    CHECK(vm.evaluateScript(hookProbe, "v9.js").completion == "true");
+
     // A timeout of 0 means that even a regression that enabled blocking returns at once ("returned" or
     // "timed-out") instead of hanging the case.
     const EvalResult blocking = vm.evaluateScript(
@@ -1289,19 +1296,47 @@ TEST_CASE("script: an interrupt left over from an earlier call does not make a l
     expectCleanShutdown(vm);
 }
 
-TEST_CASE(
-    "script: after the budget runs out, a refused prepareStackTrace leaves the stack empty, not \"null\" (VM50)") {
+TEST_CASE("script: a stack that is not text reads as empty, and stack-trace hooks are inert (VM50)") {
+    LogCapture log;
+    Vm vm = makeVm();
+    log.clear();
+    // An Error whose stack is null (the backend builds such errors in some failure paths): no stack, not the text
+    // "null".
+    const EvalResult nul =
+        vm.evaluateScript(R"js((() => { const e = new Error("x"); e.stack = null; throw e; })())js", "nul.js");
+    CHECK(nul.status == EvalStatus::Exception);
+    CHECK(nul.error.stack.empty());
+    expectOnlyError(log, "script: nul.js: uncaught Error: x");
+
+    // Error.prepareStackTrace and Error.stackTraceLimit are V8 extensions the VM removes: assigning them makes plain
+    // properties that nothing reads, so a stack is always the backend's own text. (The backend's stackTraceLimit
+    // setter overwrote its value without freeing the old one, which a Debug build reports as a leak at teardown:
+    // the double assignment below is that witness.)
+    const std::string_view hooked =
+        R"js(Error.prepareStackTrace = () => "custom"; Error.stackTraceLimit = {}; Error.stackTraceLimit = 1; )js"
+        R"js((() => { try { throw new Error("y"); } )js"
+        R"js(catch (e) { return e.stack === "custom" ? "hooked" : "plain"; } })())js";
+    const EvalResult plain = vm.evaluateScript(hooked, "hook.js");
+    CHECK(plain.status == EvalStatus::Ok);
+    CHECK(plain.completion == "plain");
+    expectCleanShutdown(vm);
+}
+
+TEST_CASE("script: an exception storm whose stack-trace hooks spin is still interrupted (VM51)") {
     LogCapture log;
     Vm vm = makeVm(withBudget(std::chrono::milliseconds{100}));
     log.clear();
-    // A script's Error.prepareStackTrace is a call, and once the budget is gone every call is refused: the error
-    // built for the refused String(1) then has no stack at all (its stack property is null, not a string).
-    const std::string_view source =
-        R"js(Error.prepareStackTrace = () => "custom"; new Promise(() => { while (true) {} }); String(1);)js";
-    const EvalResult result = vm.evaluateScript(source, "prep.js");
+    // Every exception a script raises makes the backend build a backtrace, and a backtrace used to run the script's
+    // Error.prepareStackTrace and Error.stackTraceLimit hooks and then throw away whatever exception was pending --
+    // an interrupt raised inside a spinning hook included. Both hooks are removed when the VM is created, so
+    // assigning them is inert and the storm below reaches the interrupt at its loop's back-edge.
+    const std::string_view source = R"js(Error.prepareStackTrace = () => { for (;;) {} }; )js"
+                                    R"js(Error.stackTraceLimit = { valueOf() { for (;;) {} } }; )js"
+                                    R"js(for (;;) { try { null.x; } catch (e) {} })js";
+    const EvalResult result = vm.evaluateScript(source, "hook.js");
     CHECK(result.status == EvalStatus::Interrupted);
-    CHECK(result.error.stack.empty());
-    expectOnlyError(log, "script: prep.js: interrupted after exceeding the 100 ms time budget");
+    const std::string message = onlyErrorMessage(log);
+    CHECK(firstLine(message) == "script: hook.js: interrupted after exceeding the 100 ms time budget");
     expectCleanShutdown(vm);
 }
 

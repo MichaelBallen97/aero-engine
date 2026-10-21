@@ -5,6 +5,7 @@
 
 #include "vm_impl.hpp"
 
+#include <array>
 #include <cassert>
 #include <chrono>
 #include <cstddef>
@@ -90,6 +91,35 @@ constexpr JSMallocFunctions HEAP_FUNCTIONS{&heapCalloc, &heapMalloc, &heapFree, 
     }
     const HeldValue zipKeyed{context, JS_GetPropertyStr(context, iterator.get(), "zipKeyed")};
     return !zipKeyed.isException();
+}
+
+// quickjs builds a backtrace for every error it creates, and doing so it runs two hooks a script can set: the
+// Error.prepareStackTrace function and the Error.stackTraceLimit value (converted with valueOf). It saves the
+// pending exception first and restores it afterwards with a throw that frees whatever is pending, so an interrupt
+// raised inside either hook is thrown away: an exception storm with a spinning hook would never end, whatever the
+// budget. The stackTraceLimit setter also overwrites its value without freeing the old one, which a Debug backend
+// reports as a leak at teardown. Neither is a standard feature (both are V8 extensions), so both accessors are
+// deleted: the internal values stay at "no hook" and a limit of 10 for the VM's life, assigning either name
+// afterwards makes a plain property with no effect, and a backtrace never runs script code. False means a
+// delete failed: the caller reports it.
+[[nodiscard]] bool removeStackTraceHooks(JSContext* context) {
+    const HeldValue global{context, JS_GetGlobalObject(context)};
+    const HeldValue error{context, JS_GetPropertyStr(context, global.get(), "Error")};
+    if (error.isException()) {
+        return false;
+    }
+    for (const char* const name : std::array<const char*, 2>{"prepareStackTrace", "stackTraceLimit"}) {
+        const JSAtom atom = JS_NewAtom(context, name);
+        if (atom == JS_ATOM_NULL) {
+            return false;
+        }
+        const int deleted = JS_DeleteProperty(context, error.get(), atom, 0);
+        JS_FreeAtom(context, atom);
+        if (deleted != 1) {
+            return false;
+        }
+    }
+    return true;
 }
 
 }  // namespace
@@ -341,7 +371,6 @@ VmCreateResult Vm::create(const VmConfig& config) {
                        config.heapLimitBytes);
         return VmCreateResult{VmCreateStatus::OutOfMemory, Vm{}};  // ~Impl: shutdown() checks the heap is empty
     }
-    JS_SetMaxStackSize(impl->rt, config.stackLimitBytes);
     impl->ctx = JS_NewContext(impl->rt);
     if (impl->ctx == nullptr) {
         AERO_LOG_ERROR("script: Vm::create failed: out of memory creating the context (heap limit {} bytes)",
@@ -355,6 +384,15 @@ VmCreateResult Vm::create(const VmConfig& config) {
         AERO_LOG_ERROR("script: Vm::create: a lazy builtin could not be built");
         assert(false && "a lazy builtin could not be built at create");
     }
+    if (!removeStackTraceHooks(impl->ctx)) {
+        impl->clearPendingException();
+        AERO_LOG_ERROR("script: Vm::create: the stack-trace hooks could not be removed");
+        assert(false && "the stack-trace hooks could not be removed at create");
+    }
+    // The configured limit takes effect only now: the context and the builds above run under the backend's own
+    // default, so a VM created with the minimum limit does not build its builtins (bytecode reading, nested calls)
+    // inside 64 KiB of a backend that spends several KiB per call when unoptimised.
+    JS_SetMaxStackSize(impl->rt, config.stackLimitBytes);
     // Installed only now, so creation never depends on the deadline, whatever the backend does while it builds
     // the intrinsics.
     JS_SetInterruptHandler(impl->rt, &Impl::interruptHandler, impl.get());
