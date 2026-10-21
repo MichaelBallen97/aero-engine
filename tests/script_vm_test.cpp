@@ -675,6 +675,108 @@ TEST_CASE("script: the stack limit is applied, and measured from the call rather
     expectCleanShutdown(deepCreated);
 }
 
+// ---- VM19-VM23: the per-call time budget ------------------------------------------------------------------
+
+namespace {
+
+[[nodiscard]] VmConfig withBudget(std::chrono::milliseconds budget) {
+    VmConfig config;
+    config.callTimeBudget = budget;
+    return config;
+}
+
+}  // namespace
+
+TEST_CASE("script: a runaway loop is Interrupted no earlier than its budget, logged, and the VM recovers (VM19)") {
+    LogCapture log;
+    {
+        // The DEFAULT 1000 ms budget, the one the engine ships.
+        Vm vm = makeVm();
+        log.clear();
+        const auto start = std::chrono::steady_clock::now();
+        const std::string_view spin = "globalThis.n = 0; while (true) { ++globalThis.n; }";
+        const EvalResult result = vm.evaluateScript(spin, "spin.js");
+        const auto elapsed = std::chrono::steady_clock::now() - start;
+        CHECK(result.status == EvalStatus::Interrupted);
+        CHECK(result.error.name == "InternalError");
+        CHECK(result.error.message == "interrupted");
+        CHECK(result.error.stack.find("spin.js:1:") != std::string::npos);  // the loop's own frame
+        // A LOWER bound, which no slow runner can break: the handler fires only once the deadline has passed,
+        // and this clock started before the call's.
+        CHECK(elapsed >= engine::script::DEFAULT_CALL_TIME_BUDGET);
+        const std::string expected = "script: spin.js: interrupted after exceeding the 1000 ms time budget\n";
+        expectOnlyError(log, expected + result.error.stack);
+        MESSAGE("interrupt latency past the budget: " << std::chrono::duration_cast<std::chrono::milliseconds>(
+                                                             elapsed - engine::script::DEFAULT_CALL_TIME_BUDGET)
+                                                             .count()
+                                                      << " ms");
+
+        // Anti-vacuity: the loop really ran, so the interrupt is the budget's and not, say, a compile failure.
+        const EvalResult ran = vm.evaluateScript("n > 0", "spin.js");
+        CHECK(ran.status == EvalStatus::Ok);
+        CHECK(ran.completion == "true");
+        const EvalResult after = vm.evaluateScript("1 + 1", "spin.js");
+        CHECK(after.status == EvalStatus::Ok);
+        CHECK(after.completion == "2");
+        expectCleanShutdown(vm);
+    }
+
+    // Queued work behind an interrupt: the drain is skipped for an interrupted script, so there is exactly one
+    // record; the next call drains the leftover job silently.
+    Vm vm = makeVm(withBudget(std::chrono::milliseconds{100}));
+    log.clear();
+    const EvalResult queued = vm.evaluateScript("Promise.resolve().then(() => {}); while (true) {}", "queued.js");
+    CHECK(queued.status == EvalStatus::Interrupted);
+    const std::string message = onlyErrorMessage(log);
+    CHECK(firstLine(message) == "script: queued.js: interrupted after exceeding the 100 ms time budget");
+    log.clear();
+    const EvalResult next = vm.evaluateScript("1 + 1", "queued.js");
+    CHECK(next.status == EvalStatus::Ok);
+    CHECK(next.completion == "2");
+    CHECK(log.countAtLeast(LogLevel::Info) == 0U);
+    expectCleanShutdown(vm);
+}
+
+TEST_CASE("script: the interrupt cannot be caught -- neither catch nor finally runs (VM20)") {
+    const LogCapture log;
+    Vm vm = makeVm(withBudget(std::chrono::milliseconds{100}));
+    const EvalResult result = vm.evaluateScript(
+        "try { while (true) {} } catch (e) { globalThis.caught = true; } finally { globalThis.fin = true; }",
+        "uncatchable.js");
+    CHECK(result.status == EvalStatus::Interrupted);
+    const EvalResult probe = vm.evaluateScript("[typeof caught, typeof fin].join()", "uncatchable.js");
+    CHECK(probe.status == EvalStatus::Ok);
+    CHECK(probe.completion == "undefined,undefined");
+    expectCleanShutdown(vm);
+}
+
+TEST_CASE("script: catastrophic regex backtracking is Interrupted too (VM21)") {
+    LogCapture log;
+    Vm vm = makeVm(withBudget(std::chrono::milliseconds{100}));
+    log.clear();
+    // About 2^40 backtracking steps would otherwise run for hours: the regex engine polls the same handler.
+    const EvalResult result = vm.evaluateScript(R"js(/(a+)+$/.test("a".repeat(40) + "!"))js", "re.js");
+    CHECK(result.status == EvalStatus::Interrupted);
+    CHECK(result.error.message == "interrupted");
+    const std::string message = onlyErrorMessage(log);
+    CHECK(firstLine(message) == "script: re.js: interrupted after exceeding the 100 ms time budget");
+    expectCleanShutdown(vm);
+}
+
+TEST_CASE("script: every call gets a fresh deadline (VM23)") {
+    const LogCapture log;
+    Vm vm = makeVm(withBudget(std::chrono::milliseconds{200}));
+    CHECK(vm.evaluateScript("while (true) {}", "fresh.js").status == EvalStatus::Interrupted);
+    // The backend consults the handler only every 10 000 polls, so a short follow-up (`1 + 1`) would pass even
+    // with a stale, already-expired deadline. Each iteration here passes two polls, so this loop forces about
+    // six consultations, the first of which a stale deadline fails.
+    const EvalResult next =
+        vm.evaluateScript("(() => { let i = 0; while (i < 30000) { ++i; } return i; })()", "fresh.js");
+    CHECK(next.status == EvalStatus::Ok);
+    CHECK(next.completion == "30000");
+    expectCleanShutdown(vm);
+}
+
 // ---- VM24: the thread check -------------------------------------------------------------------------------
 
 TEST_CASE("script: a call from another thread is refused without touching the backend (VM24)") {

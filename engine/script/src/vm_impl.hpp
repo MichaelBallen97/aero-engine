@@ -108,6 +108,9 @@ struct Vm::Impl {
     void clearPendingException() noexcept;
     void logFailure(EvalStatus status, const ScriptError& error, bool isErrorObject) const;
 
+    // ---- the backend's callbacks (vm.cpp); unread parameters unnamed in the definitions ---------------------
+    static int interruptHandler(JSRuntime* runtime, void* opaque) noexcept;
+
     // ---- state: `heap` FIRST, so it is destroyed LAST ------------------------------------------------------
     internal::HeapAccounting heap;
     VmConfig config;

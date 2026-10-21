@@ -109,6 +109,14 @@ VmTeardownReport Vm::Impl::shutdown() noexcept {
 
 // ---- one call -------------------------------------------------------------------------------------------
 
+// The whole of the time budget's mechanism: one clock read and one comparison, no allocation, no lock, no log.
+// The backend consults it on the first poll of a context and then every 10 000 polls (backward jumps and
+// calls), and its regex engine on a counter of its own.
+int Vm::Impl::interruptHandler(JSRuntime* /*runtime*/, void* opaque) noexcept {
+    const Impl& self = *static_cast<const Impl*>(opaque);
+    return std::chrono::steady_clock::now() >= self.deadline ? 1 : 0;
+}
+
 Vm::Impl::CallScope::CallScope(Impl& host, const std::string& fileName) : impl(host) {
     host.deadline = std::chrono::steady_clock::now() + host.config.callTimeBudget;
     // The backend captured its stack top once, where the runtime was created. A VM created deep inside one
@@ -167,6 +175,9 @@ VmCreateResult Vm::create(const VmConfig& config) {
                        config.heapLimitBytes);
         return VmCreateResult{VmCreateStatus::OutOfMemory, Vm{}};  // ~Impl: shutdown() frees the runtime
     }
+    // Installed only now, so creation never depends on the deadline, whatever the backend does while it builds
+    // the intrinsics.
+    JS_SetInterruptHandler(impl->rt, &Impl::interruptHandler, impl.get());
     AERO_LOG_DEBUG(
         "script: VM created: quickjs-ng {}, heap limit {} bytes, stack limit {} bytes, call budget {} ms, "
         "{} bytes in use",

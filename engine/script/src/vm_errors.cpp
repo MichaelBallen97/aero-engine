@@ -112,7 +112,10 @@ void Vm::Impl::logFailure(EvalStatus status, const ScriptError& error, bool isEr
             text = std::format("script: {}: out of memory (heap limit {} bytes, {} bytes in use)", callFileName,
                                config.heapLimitBytes, heap.bytesInUse());
             break;
-        case EvalStatus::Interrupted:  // reachable once the interrupt handler is installed
+        case EvalStatus::Interrupted:
+            text = std::format("script: {}: interrupted after exceeding the {} ms time budget", callFileName,
+                               config.callTimeBudget.count());
+            break;
         case EvalStatus::Ok:
         case EvalStatus::InvalidVm:
         case EvalStatus::WrongThread:
