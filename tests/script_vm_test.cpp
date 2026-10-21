@@ -572,6 +572,14 @@ TEST_CASE("script: an out-of-memory the script catches is Ok and logs nothing (V
     // The refusal belongs to an earlier call, and the witness is per call.
     const EvalResult thrown = vm.evaluateScript("throw null;", "caught.js");
     CHECK(thrown.status == EvalStatus::Exception);
+
+    // A refusal in THIS call and an Error as the thrown value are still not enough: its message must be a
+    // string, as every message the backend's own out-of-memory error carries is.
+    const std::string_view symbolMessage =
+        R"js((() => { try { "x".repeat(64 * 1024 * 1024); } catch (e) {} )js"
+        R"js(const err = new Error("x"); err.message = Symbol("s"); throw err; })())js";
+    const EvalResult scripted = vm.evaluateScript(symbolMessage, "caught.js");
+    CHECK(scripted.status == EvalStatus::Exception);
     expectCleanShutdown(vm);
 }
 

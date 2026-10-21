@@ -56,10 +56,15 @@ bool Vm::Impl::isOutOfMemoryError(JSValueConst exception) {
         clearPendingException();
         return true;  // unreadable while a refusal is already witnessed: count it as the OOM it most likely is
     }
+    // The backend's own out-of-memory error always carries a string message, and an ASCII string converts without
+    // allocating, so a message that is not a string was written by a script.
+    if (!JS_IsString(message.get())) {
+        return false;
+    }
     const HeldCString text{ctx, message.get()};
     if (!text.ok()) {
         clearPendingException();
-        return true;  // the same, for a conversion that needed memory the full heap no longer has
+        return true;  // a string that needed memory the full heap no longer has, under a witnessed refusal
     }
     // "out of memory" and "out of memory in regexp execution" both start so.
     return text.view().starts_with("out of memory");
