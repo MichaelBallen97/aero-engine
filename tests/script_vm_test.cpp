@@ -1230,6 +1230,26 @@ TEST_CASE("script: work refused after the budget ran out is not reported as reje
     expectCleanShutdown(vm);
 }
 
+TEST_CASE("script: a budget that runs out after an earlier failure is still logged (VM48)") {
+    LogCapture log;
+    Vm vm = makeVm(withBudget(std::chrono::milliseconds{100}));
+    log.clear();
+    // The script fails first, so the call is an Exception; the thenable job the drain then runs exhausts the
+    // budget, and the backend converts that interrupt. The call's status is the first failure's, but the
+    // exhausted budget is still a record of its own.
+    const std::string_view source = R"js(Promise.resolve({ then() { for (;;) {} } }); throw new Error("boom");)js";
+    const EvalResult result = vm.evaluateScript(source, "boom.js");
+    CHECK(result.status == EvalStatus::Exception);
+    CHECK(result.error.message == "boom");
+    const std::vector<CapturedRecord> records = log.atLeast(LogLevel::Warn);
+    REQUIRE(records.size() == 2U);
+    CHECK(records[0].level == LogLevel::Error);
+    CHECK(records[1].level == LogLevel::Error);
+    CHECK(firstLine(records[0].message) == "script: boom.js: uncaught Error: boom");
+    CHECK(firstLine(records[1].message) == "script: boom.js: interrupted after exceeding the 100 ms time budget");
+    expectCleanShutdown(vm);
+}
+
 // ---- VM32: shutdown ---------------------------------------------------------------------------------------
 
 TEST_CASE("script: shutdown() reports zero leaks after a session through every arm, and is idempotent (VM32)") {

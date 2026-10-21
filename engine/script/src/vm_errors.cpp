@@ -110,7 +110,7 @@ void Vm::Impl::clearPendingException() noexcept {
     JS_FreeValue(ctx, JS_GetException(ctx));
 }
 
-void Vm::Impl::logFailure(EvalStatus status, const ScriptError& error, bool isErrorObject) const {
+void Vm::Impl::logFailure(EvalStatus status, const ScriptError& error, bool isErrorObject) {
     std::string text;
     switch (status) {
         case EvalStatus::CompileError:
@@ -128,6 +128,7 @@ void Vm::Impl::logFailure(EvalStatus status, const ScriptError& error, bool isEr
                                config.heapLimitBytes, heap.bytesInUse());
             break;
         case EvalStatus::Interrupted:
+            interruptRecorded = true;
             text = std::format("script: {}: interrupted after exceeding the {} ms time budget", callFileName,
                                config.callTimeBudget.count());
             break;
@@ -144,7 +145,8 @@ void Vm::Impl::logFailure(EvalStatus status, const ScriptError& error, bool isEr
     AERO_LOG_ERROR("{}", text);
 }
 
-void Vm::Impl::logDrainStop() const {
+void Vm::Impl::logDrainStop() {
+    interruptRecorded = true;
     AERO_LOG_ERROR("script: {}: interrupted after exceeding the {} ms time budget with promise jobs still queued",
                    callFileName, config.callTimeBudget.count());
 }

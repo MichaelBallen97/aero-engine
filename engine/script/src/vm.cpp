@@ -219,6 +219,7 @@ Vm::Impl::CallScope::CallScope(Impl& host, const std::string& fileName) : impl(h
     host.refusalsAtCallStart = host.heap.refusals();
     host.callFileName = fileName;
     host.interruptFired = false;
+    host.interruptRecorded = false;
     host.inCall = true;
 }
 
@@ -258,14 +259,18 @@ EvalResult Vm::Impl::evaluate(std::string_view source, std::string_view fileName
     return result;            // ~CallScope: deadline = time_point::min(); inCall = false
 }
 
-// The budget ran out, but the backend converted the interrupt into a rejection (or swallowed it) and the call
-// came back looking fine: it is Interrupted all the same. The converted interrupt has no stack of its own.
+// The budget ran out, but the backend converted the interrupt into a rejection (or swallowed it), so no failure of
+// the call carried it. The exhausted budget is a record of its own whatever else went wrong first -- the converted
+// interrupt has no stack -- and a call that came back looking fine is Interrupted all the same. The first failure
+// still decides the status: adopt only changes an Ok result.
 void Vm::Impl::noteInterrupt(EvalResult& result) {
-    if (!interruptFired || result.status != EvalStatus::Ok) {
+    if (!interruptFired) {
         return;
     }
     const ScriptError error{"InternalError", "interrupted", {}};
-    logFailure(EvalStatus::Interrupted, error, /*isErrorObject=*/true);
+    if (!interruptRecorded) {
+        logFailure(EvalStatus::Interrupted, error, /*isErrorObject=*/true);
+    }
     adopt(result, EvalResult{EvalStatus::Interrupted, error, {}});
 }
 

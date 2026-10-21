@@ -121,8 +121,8 @@ struct Vm::Impl {
     [[nodiscard]] std::string stringify(JSValueConst value);
     [[nodiscard]] std::string readStringProperty(JSValueConst object, const char* key, bool undefinedIsEmpty);
     void clearPendingException() noexcept;
-    void logFailure(EvalStatus status, const ScriptError& error, bool isErrorObject) const;
-    void logDrainStop() const;
+    void logFailure(EvalStatus status, const ScriptError& error, bool isErrorObject);
+    void logDrainStop();
     void logUnhandledRejection(const ScriptError& reason, bool isErrorObject) const;
 
     // ---- the backend's callbacks (vm.cpp); unread parameters unnamed in the definitions ---------------------
@@ -139,7 +139,8 @@ struct Vm::Impl {
     bool finished = false;
     std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::time_point::min();
     bool inCall = false;
-    bool interruptFired = false;  // the budget ran out in the current call; see interruptHandler
+    bool interruptFired = false;     // the budget ran out in the current call; see interruptHandler
+    bool interruptRecorded = false;  // an "interrupted" record has been logged for the current call
     std::uint64_t refusalsAtCallStart = 0;
     std::string callFileName;
     std::vector<PendingRejection> pendingRejections;
