@@ -176,6 +176,18 @@ jobs:
         # via aero::profiling -> Tracy). Proven red-on-violation by audio-boundary.guard_e2e.
         run: bash .github/scripts/check-audio-boundary.sh
 
+      - name: Boundary — no quickjs types in public engine headers, quickjs confined to engine/script
+        shell: bash
+        # Task 4.1.1 (project rule #3; risk R12's named next case). quickjs-ng is the seventh PRIVATE
+        # flat-root backend: aero_script links it PRIVATE, and vcpkg's shared include root still resolves
+        # <quickjs.h> for any target linking any vcpkg package. Two arms: (1) no quickjs include or
+        # identifier (JS_*, JS<Type>) in any public engine header; (2) none anywhere under engine/ or
+        # runtime/ outside engine/script's private side (its src/). A SCRIPT, not a grep: quickjs has no
+        # namespace and the script layer cites its identifiers in // prose, so comments are stripped first.
+        # The compile-time half is tests/script_boundary_probe.cpp, which links aero::script alone.
+        # Proven red-on-violation by script-boundary.guard_e2e.
+        run: bash .github/scripts/check-script-boundary.sh
+
       - name: Golden rule — /engine and /runtime must never reference /editor
         shell: bash
         # Task 2.1.2 (project rule #1, docs/00 / docs/03; docs/04 guard table). Like the platform,

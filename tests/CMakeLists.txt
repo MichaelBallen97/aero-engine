@@ -1254,3 +1254,24 @@ add_test(NAME boundary-probes.compile_line_e2e COMMAND ${CMAKE_COMMAND}
     -DDRIVER=${CMAKE_CURRENT_SOURCE_DIR}/boundary-probes/probe_compile_line.cmake
     -DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/compile-line-scratch
     -P ${CMAKE_CURRENT_SOURCE_DIR}/boundary-probes/compile_line_e2e.cmake)
+
+# ---------------------------------------------------------------------------------------------
+# Ninth architecture guard: script-boundary (task 4.1.1; R12's named next case). A hermetic proof that
+# .github/scripts/check-script-boundary.sh actually goes RED. Like audio-boundary's, this guard is green
+# on the tree it ships into BY CONSTRUCTION -- no first-party file named a quickjs token before this
+# task -- so "it passes" is evidence of nothing until a seeded violation has been watched to redden it,
+# and a proof living only in a gitignored plan would die at merge. Same NOT WIN32 gate and reason as its
+# siblings (D16 of 2.1.2): the script runs only in the ubuntu lint job, and this case's value -- the
+# regexes, the comment stripping and the allowlist under BSD userland -- comes from the macOS lane.
+# Ungated by the tools flags; distinct scratch root, so ctest -j stays safe.
+if(NOT WIN32 AND AERO_BASH_EXECUTABLE AND GIT_EXECUTABLE)
+    add_test(NAME script-boundary.guard_e2e COMMAND ${CMAKE_COMMAND}
+        -DSCRIPT=${CMAKE_SOURCE_DIR}/.github/scripts/check-script-boundary.sh
+        -DBASH=${AERO_BASH_EXECUTABLE}
+        -DGIT=${GIT_EXECUTABLE}
+        -DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/script-boundary-scratch
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/script-boundary/guard_e2e.cmake)
+else()
+    message(STATUS "script-boundary: guard_e2e SKIPPED (Windows, or bash/git not found) -- the "
+                   "guard itself still runs in CI's lint job on Linux")
+endif()
