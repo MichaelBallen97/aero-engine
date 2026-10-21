@@ -147,9 +147,14 @@ VmTeardownReport Vm::Impl::shutdown() noexcept {
 
 // ---- one call -------------------------------------------------------------------------------------------
 
-// The whole of the time budget's mechanism: a clock read, a comparison and, once, the stack-limit line below. No
-// allocation, no lock, no log. The backend consults it on the first poll of a context and then every 10 000
-// polls (backward jumps and calls), and its regex engine on a counter of its own.
+// The interrupt's grace window (HeapAccounting::openGraceWindow): the number of allocation decisions and the bytes
+// past the heap limit that a firing of the budget's interrupt may use.
+constexpr std::size_t INTERRUPT_GRACE_ALLOCATIONS = 64;
+constexpr std::size_t INTERRUPT_GRACE_BYTES = std::size_t{64} * 1024U;
+
+// The whole of the time budget's mechanism: a clock read, a comparison, a counter reset and, once, the stack-limit
+// line below. No allocation, no lock, no log. The backend consults it on the first poll of a context and then every
+// 10 000 polls (backward jumps and calls), and its regex engine on a counter of its own.
 int Vm::Impl::interruptHandler(JSRuntime* runtime, void* opaque) noexcept {
     Impl& self = *static_cast<Impl*>(opaque);
     if (std::chrono::steady_clock::now() < self.deadline) {
@@ -165,6 +170,12 @@ int Vm::Impl::interruptHandler(JSRuntime* runtime, void* opaque) noexcept {
         // check (quickjs.c:2763-2764).
         JS_SetMaxStackSize(runtime, 1);
     }
+    // The next requests after this return are the interrupt error's own (an InternalError and its backtrace), and
+    // at the heap limit they would be refused: the backend then throws a plain `null`, which cannot be marked
+    // uncatchable, so a script that catches everything would never end. The window gives them room. The script
+    // cannot spend more than one window's bytes before the handler fires again, and the number of fires in a call
+    // is bounded, so the overshoot is bounded too. ~CallScope closes it.
+    self.heap.openGraceWindow(INTERRUPT_GRACE_ALLOCATIONS, INTERRUPT_GRACE_BYTES);
     return 1;
 }
 
@@ -211,6 +222,7 @@ Vm::Impl::CallScope::CallScope(Impl& host, const std::string& fileName) : impl(h
 
 Vm::Impl::CallScope::~CallScope() {
     JS_SetMaxStackSize(impl.rt, impl.config.stackLimitBytes);  // the handler took it away if the budget ran out
+    impl.heap.closeGraceWindow();
     impl.deadline = std::chrono::steady_clock::time_point::min();
     impl.inCall = false;
 }

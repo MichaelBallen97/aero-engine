@@ -1192,6 +1192,29 @@ TEST_CASE("script: an interrupt does not cost the lazily built builtins (VM45)")
     CHECK(log.countAtLeast(LogLevel::Warn) == 0U);  // the teardown found nothing still referenced
 }
 
+TEST_CASE("script: a loop that catches everything at the heap limit is still interrupted (VM44)") {
+    LogCapture log;
+    VmConfig config = withBudget(std::chrono::milliseconds{100});
+    config.heapLimitBytes = 4 * MIB;
+    Vm vm = makeVm(config);
+    log.clear();
+    // At the limit even the interrupt's own error object cannot be allocated, so the backend would throw a plain
+    // `null` -- which cannot be marked uncatchable, and which this catch-all swallows for ever. The allocator's
+    // grace window, opened each time the interrupt fires, is what lets the real error be built.
+    const std::string_view source =
+        "(() => { let head = null; for (;;) { try { head = { next: head }; } catch (e) {} } })()";
+    const EvalResult result = vm.evaluateScript(source, "full.js");
+    CHECK(result.status == EvalStatus::Interrupted);
+    const std::string message = onlyErrorMessage(log);
+    CHECK(firstLine(message) == "script: full.js: interrupted after exceeding the 100 ms time budget");
+    const VmStats stats = vm.stats();
+    CHECK(stats.heapBytesPeak <= stats.heapLimitBytes + 64 * KIB);  // the overshoot is bounded
+    const EvalResult after = vm.evaluateScript("1 + 1", "full.js");
+    CHECK(after.status == EvalStatus::Ok);
+    CHECK(after.completion == "2");
+    expectCleanShutdown(vm);
+}
+
 // ---- VM32: shutdown ---------------------------------------------------------------------------------------
 
 TEST_CASE("script: shutdown() reports zero leaks after a session through every arm, and is idempotent (VM32)") {
@@ -1400,6 +1423,65 @@ TEST_CASE("script: allocateZeroed zero-fills and refuses an overflowing count * 
     CHECK(heap.bytesInUse() == 272U);
 
     heap.release(zeroed);
+    CHECK(heap.bytesInUse() == 0U);
+    CHECK(heap.liveBlocks() == 0U);
+}
+
+TEST_CASE("script: the allocator's grace window admits past the limit, and only what it was given (VM46)") {
+    using engine::script::internal::HEAP_HEADER_BYTES;
+    using engine::script::internal::HeapAccounting;
+    HeapAccounting heap{1024};
+
+    // 1. Fill it to the limit; one more request is refused.
+    void* full = heap.allocate(1024 - HEAP_HEADER_BYTES);
+    REQUIRE(full != nullptr);
+    void* refused = heap.allocate(16);
+    CHECK(refused == nullptr);
+    CHECK(heap.refusals() == 1U);
+
+    // 2. A window of two decisions and 128 bytes: two admissions past the limit, then the limit again.
+    heap.openGraceWindow(2, 128);
+    void* first = heap.allocate(32);
+    REQUIRE(first != nullptr);
+    CHECK(heap.bytesInUse() == 1072U);
+    void* second = heap.allocate(32);
+    REQUIRE(second != nullptr);
+    CHECK(heap.bytesInUse() == 1120U);
+    CHECK(heap.bytesInUse() > heap.limitBytes());
+    void* third = heap.allocate(32);
+    CHECK(third == nullptr);  // the window's two decisions are spent
+    CHECK(heap.refusals() == 2U);
+    CHECK(heap.bytesInUse() == 1120U);
+
+    // 3. A window admits only what it was given: 32 bytes plus the 16-byte header exceed 40 bytes of grace.
+    heap.openGraceWindow(4, 40);
+    void* tooBig = heap.allocate(32);
+    CHECK(tooBig == nullptr);
+    CHECK(heap.refusals() == 3U);
+    heap.closeGraceWindow();
+
+    // 4. A growing reallocate is admitted inside a window; the same growth after closeGraceWindow() is refused,
+    // and the block stays intact and charged.
+    heap.openGraceWindow(8, 256);
+    void* block = heap.allocate(32);
+    REQUIRE(block != nullptr);
+    CHECK(heap.bytesInUse() == 1168U);
+    void* grown = heap.reallocate(block, 96);
+    REQUIRE(grown != nullptr);
+    CHECK(HeapAccounting::requestedSize(grown) == 96U);
+    CHECK(heap.bytesInUse() == 1232U);
+    heap.closeGraceWindow();
+    void* denied = heap.reallocate(grown, 160);
+    CHECK(denied == nullptr);
+    CHECK(heap.refusals() == 4U);
+    CHECK(HeapAccounting::requestedSize(grown) == 96U);
+    CHECK(heap.bytesInUse() == 1232U);
+
+    // 5. Everything comes back.
+    heap.release(full);
+    heap.release(first);
+    heap.release(second);
+    heap.release(grown);
     CHECK(heap.bytesInUse() == 0U);
     CHECK(heap.liveBlocks() == 0U);
 }

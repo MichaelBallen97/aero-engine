@@ -23,13 +23,33 @@ namespace {
 
 HeapAccounting::HeapAccounting(std::size_t limitBytes) noexcept : limit(limitBytes) {}
 
+void HeapAccounting::openGraceWindow(std::size_t allocations, std::size_t bytes) noexcept {
+    graceAllocations = allocations;
+    graceCeiling = bytes > std::numeric_limits<std::size_t>::max() - inUse ? std::numeric_limits<std::size_t>::max()
+                                                                           : inUse + bytes;
+}
+
+void HeapAccounting::closeGraceWindow() noexcept {
+    graceAllocations = 0;
+    graceCeiling = 0;
+}
+
+std::size_t HeapAccounting::admissionRoom() noexcept {
+    std::size_t ceiling = limit;
+    if (graceAllocations != 0) {
+        ceiling = std::max(limit, graceCeiling);
+        --graceAllocations;
+    }
+    return ceiling > inUse ? ceiling - inUse : 0;  // inUse may be past the limit: only a window admitted that
+}
+
 void* HeapAccounting::allocate(std::size_t size) noexcept {
-    const std::size_t room = limit - inUse;  // never wraps: inUse <= limit is the class invariant
+    const std::size_t room = admissionRoom();
     if (size > room || room - size < HEAP_HEADER_BYTES) {
         ++refused;
         return nullptr;
     }
-    void* base = std::malloc(size + HEAP_HEADER_BYTES);  // cannot wrap: size + header <= limit
+    void* base = std::malloc(size + HEAP_HEADER_BYTES);  // cannot wrap: size + header <= the ceiling
     if (base == nullptr) {
         return nullptr;  // the system failed, not the limit: not counted as a refusal
     }
@@ -46,7 +66,7 @@ void* HeapAccounting::allocateZeroed(std::size_t count, std::size_t size) noexce
         return nullptr;
     }
     const std::size_t total = count * size;
-    const std::size_t room = limit - inUse;
+    const std::size_t room = admissionRoom();
     if (total > room || room - total < HEAP_HEADER_BYTES) {
         ++refused;
         return nullptr;
@@ -72,7 +92,7 @@ void* HeapAccounting::reallocate(void* block, std::size_t size) noexcept {
         return nullptr;
     }
     const std::size_t old = readHeader(block);
-    if (size > old && size - old > limit - inUse) {
+    if (size > old && size - old > admissionRoom()) {
         ++refused;
         return nullptr;  // C realloc semantics: `block` stays valid and charged (VM37)
     }
