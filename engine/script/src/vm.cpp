@@ -144,6 +144,10 @@ VmTeardownReport Vm::Impl::shutdown() noexcept {
         JS_FreeValue(ctx, entry.reason);
     }
     pendingRejections.clear();
+    for (const JSValue promise : skippedRejections) {
+        JS_FreeValue(ctx, promise);
+    }
+    skippedRejections.clear();
     if (ctx != nullptr) {
         JS_FreeContext(ctx);  // a reference drop: functions still referenced by queued jobs hold their realm alive
         ctx = nullptr;
@@ -236,9 +240,13 @@ void Vm::Impl::rejectionTracker(JSContext* context, JSValueConst promise, JSValu
                 return;
             }
         }
-        // The interrupt object itself was never reported (the report skips it), so there is nothing to be late about.
-        if (JS_IsUncatchableError(reason)) {
-            return;
+        // A promise the report skipped (the budget's doing) was never reported either: handling it is silent too.
+        for (auto skipped = self.skippedRejections.begin(); skipped != self.skippedRejections.end(); ++skipped) {
+            if (JS_IsStrictEqual(context, *skipped, promise)) {
+                JS_FreeValue(context, *skipped);
+                self.skippedRejections.erase(skipped);
+                return;
+            }
         }
         ++self.rejectionsHandledLate;
         AERO_LOG_INFO("script: {}: a promise rejection reported as unhandled was handled later", self.callFileName);
@@ -351,14 +359,22 @@ void Vm::Impl::drainJobs(EvalResult& result) {
 void Vm::Impl::reportUnhandledRejections() {
     const std::vector<PendingRejection> batch = std::exchange(pendingRejections, {});
     for (const PendingRejection& entry : batch) {
-        // The interrupt itself, rejected into a promise by the backend, and whatever was refused once the budget
-        // ran out (an async function's first resumption, for one): the call reports those as Interrupted.
-        if (!entry.afterInterrupt && !JS_IsUncatchableError(entry.reason)) {
-            const bool isErrorObject = JS_IsError(entry.reason);
-            const ScriptError reason = describe(entry.reason, isErrorObject);
-            logUnhandledRejection(reason, isErrorObject);
-            ++unhandledRejections;
+        // What was recorded after the budget ran out -- the interrupt converted into a rejection, an async function's
+        // refused first resumption -- is the budget's doing, and the call reports the budget as Interrupted. One
+        // rule decides it, the entry's own flag; the reason's uncatchable flag is a property of an object that can
+        // outlive its call, not of this call. A skipped reason that is the interrupt object is made an ordinary
+        // error from here on, and the promise is kept so that a later handler is recognised as handling something
+        // never reported.
+        if (entry.afterInterrupt) {
+            skippedRejections.push_back(entry.promise);
+            JS_ClearUncatchableError(ctx, entry.reason);
+            JS_FreeValue(ctx, entry.reason);
+            continue;
         }
+        const bool isErrorObject = JS_IsError(entry.reason);
+        const ScriptError reason = describe(entry.reason, isErrorObject);
+        logUnhandledRejection(reason, isErrorObject);
+        ++unhandledRejections;
         JS_FreeValue(ctx, entry.promise);
         JS_FreeValue(ctx, entry.reason);
     }

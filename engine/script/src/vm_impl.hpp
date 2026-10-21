@@ -144,6 +144,9 @@ struct Vm::Impl {
     std::uint64_t refusalsAtCallStart = 0;
     std::string callFileName;
     std::vector<PendingRejection> pendingRejections;
+    // Promises whose rejection the end-of-call report skipped because the budget caused it. The reference is kept
+    // so a handler attached in a later call is recognised as handling something never reported.
+    std::vector<JSValue> skippedRejections;
     std::uint64_t unhandledRejections = 0;
     std::uint64_t rejectionsHandledLate = 0;
 };

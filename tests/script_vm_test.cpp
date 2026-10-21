@@ -1289,16 +1289,20 @@ TEST_CASE("script: an interrupt left over from an earlier call does not make a l
     const EvalResult first = vm.evaluateScript("globalThis.p49 = new Promise(() => { for (;;) {} });", "left.js");
     CHECK(first.status == EvalStatus::Interrupted);
 
-    // A later call's reaction job rethrows that uncatchable object. It is not THIS call's budget that ran out.
+    // A later call's reaction job passes that object on. It is not THIS call's budget that ran out, so the call is
+    // not Interrupted: the skipped rejection has made the object an ordinary error, the job's derived promise is
+    // rejected with it, and nothing handles that promise -- a plain unhandled rejection, reported as one.
     log.clear();
     const EvalResult second = vm.evaluateScript("p49.then(() => {}); 1", "left.js");
-    CHECK(second.status == EvalStatus::Exception);
+    CHECK(second.status == EvalStatus::Ok);
     const std::vector<CapturedRecord> records = log.atLeast(LogLevel::Info);
     REQUIRE(records.size() == 1U);
     CHECK(records[0].level == LogLevel::Error);
-    CHECK(firstLine(records[0].message) == "script: left.js: uncaught InternalError: interrupted");
-    // Nor was that promise ever reported as unhandled, so its handler is not "handled later".
+    const std::string_view expected = "script: left.js: unhandled promise rejection: InternalError: interrupted";
+    CHECK(firstLine(records[0].message) == expected);
+    // The promise the handler was attached to was never reported, so its handler is not "handled later".
     CHECK(vm.stats().rejectionsHandledLate == 0U);
+    CHECK(vm.stats().unhandledRejections == 1U);
     expectCleanShutdown(vm);
 }
 
@@ -1360,6 +1364,51 @@ TEST_CASE("script: a budget that runs out while a rejection is described is reco
     CHECK(records[1].level == LogLevel::Error);
     CHECK(records[0].message == "script: r.js: unhandled promise rejection: <unprintable value>");
     CHECK(records[1].message == "script: r.js: interrupted after exceeding the 100 ms time budget");
+    expectCleanShutdown(vm);
+}
+
+TEST_CASE("script: a rejection skipped after the budget ran out is not \"handled later\" when handled (VM53)") {
+    LogCapture log;
+    Vm vm = makeVm(withBudget(std::chrono::milliseconds{100}));
+    // The async function's refused first resumption becomes a rejected promise the report skips, because it is the
+    // budget's doing. The script keeps that promise.
+    const std::string_view source = "new Promise(() => { while (true) {} }); globalThis.q53 = (async () => {})();";
+    CHECK(vm.evaluateScript(source, "skip.js").status == EvalStatus::Interrupted);
+
+    // Handling it in a later call is not a late handling of anything that was ever reported.
+    log.clear();
+    const EvalResult later = vm.evaluateScript("q53.catch(() => {}); 1", "skip.js");
+    CHECK(later.status == EvalStatus::Ok);
+    CHECK(log.countAtLeast(LogLevel::Info) == 0U);
+    CHECK(vm.stats().rejectionsHandledLate == 0U);
+    CHECK(vm.stats().unhandledRejections == 0U);
+    expectCleanShutdown(vm);
+}
+
+TEST_CASE("script: an interrupt object kept from an earlier call is an ordinary error later (VM54)") {
+    LogCapture log;
+    Vm vm = makeVm(withBudget(std::chrono::milliseconds{100}));
+    // The converted interrupt becomes a rejected promise's reason, and the script keeps the promise.
+    const std::string_view spin = "globalThis.p54 = new Promise(() => { for (;;) {} });";
+    CHECK(vm.evaluateScript(spin, "keep.js").status == EvalStatus::Interrupted);
+
+    // A later call takes the reason out of it...
+    const std::string_view take = "p54.catch((e) => { globalThis.left54 = e; }); 1";
+    CHECK(vm.evaluateScript(take, "keep.js").status == EvalStatus::Ok);
+
+    // ...and it is an ordinary error now: a catch takes it, where the uncatchable flag would have ended the call.
+    const std::string_view thrown = R"js((() => { try { throw left54; } catch (e) { return "caught"; } })())js";
+    const EvalResult caught = vm.evaluateScript(thrown, "keep.js");
+    CHECK(caught.status == EvalStatus::Ok);
+    CHECK(caught.completion == "caught");
+
+    // A genuine rejection with that object as its reason is reported like any other.
+    log.clear();
+    const EvalResult again = vm.evaluateScript("Promise.reject(left54); 1", "again.js");
+    CHECK(again.status == EvalStatus::Ok);
+    const std::string message = onlyErrorMessage(log);
+    CHECK(firstLine(message) == "script: again.js: unhandled promise rejection: InternalError: interrupted");
+    CHECK(vm.stats().unhandledRejections == 1U);
     expectCleanShutdown(vm);
 }
 
