@@ -291,6 +291,10 @@ EvalResult Vm::Impl::evaluate(std::string_view source, std::string_view fileName
     }
     noteInterrupt(result);  // BEFORE the report: a converted interrupt is the call's, not a rejection's
     reportUnhandledRejections();
+    // The report can run script code under the call's budget (a rejection reason's toString, an Error's getters),
+    // and the budget can run out there, after the first look. The second look is idempotent: it records nothing
+    // twice and changes only an Ok result.
+    noteInterrupt(result);
     clearPendingException();  // no exception outlives a call
     return result;            // ~CallScope: deadline = time_point::min(); inCall = false
 }

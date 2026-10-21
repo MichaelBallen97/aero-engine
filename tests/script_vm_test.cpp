@@ -1346,6 +1346,23 @@ TEST_CASE("script: an exception storm whose stack-trace hooks spin is still inte
     expectCleanShutdown(vm);
 }
 
+TEST_CASE("script: a budget that runs out while a rejection is described is recorded (VM52)") {
+    LogCapture log;
+    Vm vm = makeVm(withBudget(std::chrono::milliseconds{100}));
+    log.clear();
+    // The script and its drain finish at once; the report then describes the rejection's reason through its own
+    // toString, which spins until the budget runs out. That is a record of its own, written after the report.
+    const EvalResult result = vm.evaluateScript("Promise.reject({ toString() { for (;;) {} } });", "r.js");
+    CHECK(result.status == EvalStatus::Interrupted);
+    const std::vector<CapturedRecord> records = log.atLeast(LogLevel::Warn);
+    REQUIRE(records.size() == 2U);
+    CHECK(records[0].level == LogLevel::Error);
+    CHECK(records[1].level == LogLevel::Error);
+    CHECK(records[0].message == "script: r.js: unhandled promise rejection: <unprintable value>");
+    CHECK(records[1].message == "script: r.js: interrupted after exceeding the 100 ms time budget");
+    expectCleanShutdown(vm);
+}
+
 // ---- VM32: shutdown ---------------------------------------------------------------------------------------
 
 TEST_CASE("script: shutdown() reports zero leaks after a session through every arm, and is idempotent (VM32)") {
