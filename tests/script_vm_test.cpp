@@ -633,13 +633,16 @@ TEST_CASE("script: small-object exhaustion is OutOfMemory whatever value the bac
     }
 
     // The collector arm. Every node references itself, so reference counting frees NOTHING after the
-    // unwind and the heap stays full; the follow-up can compile only because the trap ran the collector
-    // after classifying the failure (an allocation for bytecode never triggers the automatic one).
+    // unwind; only the collector the trap runs after classifying the failure empties the heap. A follow-up
+    // as small as `1 + 1` fits in the slack the failed allocation leaves (about 1 KB on this build), so it
+    // cannot tell the two apart: the heap figure right after the call can.
     Vm vm = makeVm(patient(config));
     log.clear();
     const EvalResult cycles = vm.evaluateScript(
         "(() => { let head = null; for (;;) { const a = { next: head }; a.self = a; head = a; } })()", "cycles.js");
     CHECK(cycles.status == EvalStatus::OutOfMemory);
+    // trap collected the unreachable cycles; a heap still full here would leave every later call only that slack
+    CHECK(vm.stats().heapBytesInUse < vm.stats().heapLimitBytes / 2U);
     const EvalResult after = vm.evaluateScript("1 + 1", "cycles.js");
     CHECK(after.status == EvalStatus::Ok);
     CHECK(after.completion == "2");
@@ -671,22 +674,41 @@ TEST_CASE("script: a stack overflow is a catchable RangeError, trapped as Except
 
 namespace {
 
-// Creates a VM `frames` levels below the caller, each level holding a 4 KiB volatile-touched local array and
-// recursing through a volatile function pointer, so no optimiser can inline, merge or drop the frames.
-Vm createUnderPaddedFrames(const VmConfig& config, int frames);
-using PaddedFrameFn = Vm (*)(const VmConfig&, int);
+// Each padded frame's array is past 64 KiB on purpose. ASan's use-after-return instrumentation moves a smaller
+// frame's locals onto its heap-allocated fake stack (on by default with Linux's libasan), where they would deepen
+// nothing; both compilers leave a larger frame on the real stack (GCC 13 asan.cc: asan_frame_size <= 65536; LLVM 18
+// AddressSanitizer.cpp: LocalStackSize <= kMaxStackMallocSize, 1 << 16).
+constexpr std::size_t PADDING_FRAME_BYTES = 80 * KIB;
+
+// Where the outermost and the deepest padding arrays sit, so the case measures how deep the VM was created instead
+// of assuming it.
+struct PaddingSpan {
+    std::uintptr_t outermost = 0;
+    std::uintptr_t deepest = 0;
+};
+
+// Creates a VM `frames` levels below the first padded frame. Every level writes EVERY byte of its volatile array --
+// an optimiser drops the bytes a frame never touches, and did: with three of 4096 written, a Release frame came to
+// 32 bytes -- and recurses through a volatile function pointer, so no level can be inlined, merged, shrunk or dropped.
+Vm createUnderPaddedFrames(const VmConfig& config, int frames, PaddingSpan& span);
+using PaddedFrameFn = Vm (*)(const VmConfig&, int, PaddingSpan&);
 volatile PaddedFrameFn paddedFrame = &createUnderPaddedFrames;
 
-Vm createUnderPaddedFrames(const VmConfig& config, int frames) {
-    std::array<volatile unsigned char, 4096> padding;
-    padding[0] = 1;
-    padding[padding.size() - 1] = 2;
+Vm createUnderPaddedFrames(const VmConfig& config, int frames, PaddingSpan& span) {
+    std::array<volatile unsigned char, PADDING_FRAME_BYTES> padding;
+    for (volatile unsigned char& byte : padding) {
+        byte = 1;
+    }
+    const auto address = reinterpret_cast<std::uintptr_t>(padding.data());
+    if (span.outermost == 0) {
+        span.outermost = address;
+    }
     if (frames <= 0) {
-        return makeVm(config);
+        span.deepest = address;
     }
     const PaddedFrameFn next = paddedFrame;
-    Vm vm = next(config, frames - 1);
-    padding[1] = padding[0];  // the frame is live across the call
+    Vm vm = frames <= 0 ? makeVm(config) : next(config, frames - 1, span);
+    padding[1] = padding[0];  // the frame is live across the call, and the deepest one's across the create
     return vm;
 }
 
@@ -708,18 +730,24 @@ TEST_CASE("script: the stack limit is applied, and measured from the call rather
     longConfig.stackLimitBytes = 512 * KIB;
     Vm shortStack = makeVm(patient(shortConfig));
     Vm longStack = makeVm(patient(longConfig));
-    Vm deepCreated = createUnderPaddedFrames(patient(shortConfig), 32);
+    PaddingSpan span;
+    Vm deepCreated = createUnderPaddedFrames(patient(shortConfig), 2, span);
+    // "Created deep" is measured, not assumed: the deepest padding sits at least 128 KiB below the outermost, which
+    // is itself below this frame (the stack grows down on every supported target).
+    REQUIRE(span.outermost > span.deepest);
+    REQUIRE(span.outermost - span.deepest >= 128 * KIB);
 
     const std::size_t shortDepth = depthOf(shortStack);
     const std::size_t longDepth = depthOf(longStack);
     const std::size_t deepDepth = depthOf(deepCreated);
-    MESSAGE("depths: 64 KiB=" << shortDepth << " 512 KiB=" << longDepth << " (64 KiB, created deep)=" << deepDepth);
+    MESSAGE("depths: 64 KiB=" << shortDepth << " 512 KiB=" << longDepth << " (64 KiB, created deep)=" << deepDepth
+                              << "; padding span " << (span.outermost - span.deepest) / KIB << " KiB");
     CHECK(shortDepth > 0U);
     // The configured limit is applied: without it both would use the backend's own 1 MiB.
     CHECK(shortDepth < longDepth);
     // Both are entered from the same frame, so both measure the same 64 KiB below the same entry. Without
-    // the stack top being re-captured at entry, `deep`'s limit would sit 128 KiB-plus lower and it would
-    // recurse roughly three times as far.
+    // the stack top being re-captured at entry, `deep`'s limit would sit at least 128 KiB lower (the span above)
+    // and it would recurse at least three times as far.
     CHECK(deepDepth == shortDepth);
 
     expectCleanShutdown(shortStack);
@@ -1621,6 +1649,7 @@ TEST_CASE("script: a refused growth leaves the block intact and charged; an admi
     void* grown = heap.reallocate(block, 150);
     REQUIRE(grown != nullptr);
     CHECK(heap.bytesInUse() == 166U);
+    CHECK(heap.peakBytes() == 166U);  // the peak a growth reaches, read before any later allocation can recompute it
     CHECK(HeapAccounting::requestedSize(grown) == 150U);
     CHECK(intact(grown));
 
@@ -1649,6 +1678,13 @@ TEST_CASE("script: allocateZeroed zero-fills and refuses an overflowing count * 
     void* overflowing = heap.allocateZeroed(std::numeric_limits<std::size_t>::max() / 2U, 4);
     CHECK(overflowing == nullptr);
     CHECK(heap.refusals() == 1U);
+    CHECK(heap.bytesInUse() == 272U);
+
+    // The product above wraps to 2^64 - 4, which the limit refuses anyway. This one wraps to a SMALL number,
+    // (2^63 + 1) * 2 = 2^64 + 2 -> 2, which the limit would admit: only the overflow check can refuse it.
+    void* wrapsSmall = heap.allocateZeroed((std::numeric_limits<std::size_t>::max() / 2U) + 2U, 2U);
+    CHECK(wrapsSmall == nullptr);
+    CHECK(heap.refusals() == 2U);
     CHECK(heap.bytesInUse() == 272U);
 
     heap.release(zeroed);
