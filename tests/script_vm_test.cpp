@@ -1472,6 +1472,32 @@ TEST_CASE("script: the promises kept for skipped rejections stay bounded across 
     expectCleanShutdown(vm);
 }
 
+TEST_CASE("script: a converted interrupt beside a queued job ends the call with the interrupt's own record (VM56)") {
+    LogCapture log;
+    Vm vm = makeVm(withBudget(std::chrono::milliseconds{100}));
+    log.clear();
+    // The Promise executor's interrupt is converted into a rejection, and the script then completes with a job still
+    // queued. A call whose budget has run out skips its drain, so its record and its error are the interrupt's own. A
+    // drain run regardless would stop at its pre-job check, which always fires once the handler has, and would end
+    // the call in the drain's cut-off shape instead ("... with promise jobs still queued", a different message and no
+    // name).
+    const std::string_view source =
+        "Promise.resolve().then(() => { globalThis.ran56 = true; }); new Promise(() => { for (;;) {} }); 1";
+    const EvalResult result = vm.evaluateScript(source, "q.js");
+    CHECK(result.status == EvalStatus::Interrupted);
+    CHECK(result.completion == "1");
+    CHECK(result.error.name == "InternalError");
+    CHECK(result.error.message == "interrupted");
+    CHECK(result.error.stack.empty());
+    expectOnlyError(log, "script: q.js: interrupted after exceeding the 100 ms time budget");
+
+    // A call evaluates its script before its own drain, so this proves the job never ran in the interrupted call.
+    // The follow-up's own status and records are not asserted.
+    const EvalResult probe = vm.evaluateScript("typeof ran56", "q.js");
+    CHECK(probe.completion == "undefined");
+    expectCleanShutdown(vm);
+}
+
 // ---- VM32: shutdown ---------------------------------------------------------------------------------------
 
 TEST_CASE("script: shutdown() reports zero leaks after a session through every arm, and is idempotent (VM32)") {
