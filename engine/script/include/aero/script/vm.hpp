@@ -23,6 +23,10 @@ namespace engine::script {
 // The JavaScript heap: every byte the backend allocates, header included, is charged against it. There
 // is deliberately no "unlimited": 0 is refused rather than read as the backend's own "no limit".
 inline constexpr std::size_t DEFAULT_HEAP_LIMIT_BYTES = std::size_t{64} * 1024U * 1024U;  // 64 MiB
+// The smallest heap a VM may be given. An empty VM needs about 110 KB (100 828 B Release, 110 188 B Debug), so no
+// create runs out of heap at or above this; below it the backend's context-creation failure path is not safe to
+// take, so such a limit is refused up front instead of being tried.
+inline constexpr std::size_t MIN_HEAP_LIMIT_BYTES = std::size_t{1024} * 1024U;  // 1 MiB
 
 // The C stack a call may use below its entry point. 512 KiB fits inside the SMALLEST main-thread stack of
 // the five platforms (1 MiB on Windows and iOS) with room left for the frames above the entry and for the
@@ -42,7 +46,7 @@ inline constexpr std::chrono::milliseconds MIN_CALL_TIME_BUDGET{1};
 inline constexpr std::chrono::milliseconds MAX_CALL_TIME_BUDGET{60'000};
 
 struct VmConfig {
-    std::size_t heapLimitBytes = DEFAULT_HEAP_LIMIT_BYTES;    // > 0
+    std::size_t heapLimitBytes = DEFAULT_HEAP_LIMIT_BYTES;    // >= MIN_HEAP_LIMIT_BYTES
     std::size_t stackLimitBytes = DEFAULT_STACK_LIMIT_BYTES;  // [MIN_STACK_LIMIT_BYTES, MAX_STACK_LIMIT_BYTES]
     std::chrono::milliseconds callTimeBudget = DEFAULT_CALL_TIME_BUDGET;  // [MIN_, MAX_CALL_TIME_BUDGET]
 };
@@ -50,10 +54,10 @@ struct VmConfig {
 // ---- statuses ------------------------------------------------------------------------------------------
 enum class VmCreateStatus : std::uint8_t {
     Ok = 0,
-    InvalidHeapLimit,   // heapLimitBytes == 0
+    InvalidHeapLimit,   // heapLimitBytes < MIN_HEAP_LIMIT_BYTES
     InvalidStackLimit,  // outside [MIN_STACK_LIMIT_BYTES, MAX_STACK_LIMIT_BYTES]
     InvalidTimeBudget,  // outside [MIN_CALL_TIME_BUDGET, MAX_CALL_TIME_BUDGET]
-    OutOfMemory,        // the heap limit is below what an empty VM needs (or the system allocator failed)
+    OutOfMemory,        // the system allocator failed (the heap limit alone can no longer starve an empty VM)
 };
 // Never named toString: doctest's DOCTEST_STRINGIFY finds an unqualified toString by ADL (CLAUDE.md).
 [[nodiscard]] std::string_view vmCreateStatusLabel(VmCreateStatus status) noexcept;

@@ -161,6 +161,7 @@ TEST_CASE("script: VmConfig's defaults are 64 MiB, 512 KiB and 1000 ms, inside t
     CHECK(script::DEFAULT_STACK_LIMIT_BYTES <= script::MAX_STACK_LIMIT_BYTES);
     CHECK(script::MIN_CALL_TIME_BUDGET <= script::DEFAULT_CALL_TIME_BUDGET);
     CHECK(script::DEFAULT_CALL_TIME_BUDGET <= script::MAX_CALL_TIME_BUDGET);
+    CHECK(script::MIN_HEAP_LIMIT_BYTES == 1 * MIB);
     CHECK(script::MIN_STACK_LIMIT_BYTES == 64 * KIB);
     CHECK(script::MAX_STACK_LIMIT_BYTES == 8 * MIB);
     CHECK(script::MIN_CALL_TIME_BUDGET.count() == 1);
@@ -176,6 +177,7 @@ TEST_CASE("script: create() with the defaults gives a valid VM and logs nothing 
     CHECK(stats.heapLimitBytes == 64 * MIB);
     CHECK(stats.heapBytesInUse > 0U);
     CHECK(stats.heapBytesInUse < 64 * MIB);
+    CHECK(stats.heapBytesInUse < engine::script::MIN_HEAP_LIMIT_BYTES);  // the minimum really holds an empty VM
     CHECK(stats.liveAllocations > 0U);
     CHECK(stats.heapBytesPeak >= stats.heapBytesInUse);
     CHECK(stats.refusedAllocations == 0U);
@@ -207,7 +209,8 @@ TEST_CASE("script: each invalid VmConfig field is refused with its own status an
     VmConfig noHeapNoStack = withStack(0);
     noHeapNoStack.heapLimitBytes = 0;
 
-    constexpr std::string_view HEAP_MESSAGE = "script: Vm::create refused: heapLimitBytes must be greater than 0";
+    constexpr std::string_view HEAP_MESSAGE =
+        "script: Vm::create refused: heapLimitBytes 0 is below the minimum 1048576";
     const std::array<Row, 8> rows{{
         {noHeap, VmCreateStatus::InvalidHeapLimit, HEAP_MESSAGE},
         {withStack(0), VmCreateStatus::InvalidStackLimit,
@@ -248,31 +251,35 @@ TEST_CASE("script: each invalid VmConfig field is refused with its own status an
     CHECK(log.countAtLeast(LogLevel::Warn) == 0U);
 }
 
-TEST_CASE("script: a heap limit below an empty VM's footprint fails create() with OutOfMemory, cleanly (VM4)") {
+TEST_CASE("script: a heap limit below 1 MiB is refused; 1 MiB itself creates a working VM (VM4)") {
     LogCapture log;
     VmConfig config;
-    config.heapLimitBytes = 1;
+    config.heapLimitBytes = engine::script::MIN_HEAP_LIMIT_BYTES - 1;
     {
         const VmCreateResult result = Vm::create(config);
-        CHECK(result.status == VmCreateStatus::OutOfMemory);
+        CHECK(result.status == VmCreateStatus::InvalidHeapLimit);
         CHECK_FALSE(result.vm.valid());
-        // The runtime's own allocation is the first request. One ERROR is the leak witness too: a block
-        // surviving the failed create would add the teardown ERROR.
-        expectOnlyError(log, "script: Vm::create failed: out of memory creating the runtime (heap limit 1 bytes)");
+        expectOnlyError(log, "script: Vm::create refused: heapLimitBytes 1048575 is below the minimum 1048576");
     }
+    for (const std::size_t limit : std::array<std::size_t, 2>{1, 64 * KIB}) {
+        log.clear();
+        config.heapLimitBytes = limit;
+        const VmCreateResult result = Vm::create(config);
+        CHECK(result.status == VmCreateStatus::InvalidHeapLimit);
+        CHECK_FALSE(result.vm.valid());
+        expectOnlyError(log, "script: Vm::create refused: heapLimitBytes " + std::to_string(limit) +
+                                 " is below the minimum 1048576");
+    }
+
+    // The minimum itself is accepted, and the VM it gives is a working one.
     log.clear();
-    config.heapLimitBytes = 64 * KIB;
-    {
-        const VmCreateResult result = Vm::create(config);
-        CHECK(result.status == VmCreateStatus::OutOfMemory);
-        CHECK_FALSE(result.vm.valid());
-        // Which step fails at 64 KiB is a backend size, not asserted.
-        const std::vector<CapturedRecord> records = log.atLeast(LogLevel::Warn);
-        REQUIRE(records.size() == 1U);
-        CHECK(records[0].level == LogLevel::Error);
-        CHECK(records[0].message.starts_with("script: Vm::create failed: out of memory creating the "));
-        CHECK(records[0].message.ends_with("(heap limit 65536 bytes)"));
-    }
+    config.heapLimitBytes = engine::script::MIN_HEAP_LIMIT_BYTES;
+    Vm vm = makeVm(config);
+    const EvalResult sum = vm.evaluateScript("1 + 1", "min.js");
+    CHECK(sum.status == EvalStatus::Ok);
+    CHECK(sum.completion == "2");
+    expectCleanShutdown(vm);
+    CHECK(log.countAtLeast(LogLevel::Warn) == 0U);
 }
 
 TEST_CASE("script: the backend is quickjs-ng 0.15.1 -- a port bump must re-verify its assumptions (VM5)") {
@@ -335,7 +342,7 @@ TEST_CASE("script: a moved-from VM is invalid and refuses every call; the moved-
     VmConfig tiny;
     tiny.heapLimitBytes = 1;
     VmCreateResult failed = Vm::create(tiny);
-    CHECK(failed.status == VmCreateStatus::OutOfMemory);
+    CHECK(failed.status == VmCreateStatus::InvalidHeapLimit);
     log.clear();
     const EvalResult refused = failed.vm.evaluateScript("1", "failed.js");
     CHECK(refused.status == EvalStatus::InvalidVm);

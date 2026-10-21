@@ -44,8 +44,11 @@ constexpr JSMallocFunctions HEAP_FUNCTIONS{&heapCalloc, &heapMalloc, &heapFree, 
 
 // The first failing field decides (heap, then stack, then budget) and is named in the one ERROR record.
 [[nodiscard]] VmCreateStatus validate(const VmConfig& config) {
-    if (config.heapLimitBytes == 0) {
-        AERO_LOG_ERROR("script: Vm::create refused: heapLimitBytes must be greater than 0");
+    if (config.heapLimitBytes < MIN_HEAP_LIMIT_BYTES) {
+        AERO_LOG_ERROR(
+            "script: Vm::create refused: heapLimitBytes {} "
+            "is below the minimum {}",
+            config.heapLimitBytes, MIN_HEAP_LIMIT_BYTES);
         return VmCreateStatus::InvalidHeapLimit;
     }
     if (config.stackLimitBytes < MIN_STACK_LIMIT_BYTES || config.stackLimitBytes > MAX_STACK_LIMIT_BYTES) {

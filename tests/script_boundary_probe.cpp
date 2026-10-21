@@ -29,6 +29,7 @@ namespace script = engine::script;
 // ---- limits and defaults ----
 static_assert(script::DEFAULT_HEAP_LIMIT_BYTES == std::size_t{64} * 1024U * 1024U);
 static_assert(script::DEFAULT_STACK_LIMIT_BYTES == std::size_t{512} * 1024U);
+static_assert(script::MIN_HEAP_LIMIT_BYTES <= script::DEFAULT_HEAP_LIMIT_BYTES);
 static_assert(script::MIN_STACK_LIMIT_BYTES <= script::DEFAULT_STACK_LIMIT_BYTES);
 static_assert(script::DEFAULT_STACK_LIMIT_BYTES <= script::MAX_STACK_LIMIT_BYTES);
 static_assert(script::DEFAULT_CALL_TIME_BUDGET == std::chrono::milliseconds{1000});
