@@ -64,6 +64,34 @@ constexpr JSMallocFunctions HEAP_FUNCTIONS{&heapCalloc, &heapMalloc, &heapFree, 
     return VmCreateStatus::Ok;
 }
 
+// quickjs builds Array.fromAsync, Iterator.zip and Iterator.zipKeyed from bytecode on their FIRST read
+// (JS_AUTOINIT_ID_BYTECODE). A first read that fails -- the stack limit exhausted once the budget has run out, an
+// out-of-memory, a stack overflow -- leaks the objects it was reading with (they hold the realm, so teardown finds
+// the context still referenced and an assert-enabled backend aborts), and leaves the property undefined for good.
+// Reading all three here, before any budget or stack limit can exist, makes every later read an ordinary lookup.
+// Each value is held, so nothing outlives the call. False means a read threw: the caller reports it.
+[[nodiscard]] bool materializeLazyBuiltins(JSContext* context) {
+    const HeldValue global{context, JS_GetGlobalObject(context)};
+    const HeldValue array{context, JS_GetPropertyStr(context, global.get(), "Array")};
+    if (array.isException()) {
+        return false;
+    }
+    const HeldValue fromAsync{context, JS_GetPropertyStr(context, array.get(), "fromAsync")};
+    if (fromAsync.isException()) {
+        return false;
+    }
+    const HeldValue iterator{context, JS_GetPropertyStr(context, global.get(), "Iterator")};
+    if (iterator.isException()) {
+        return false;
+    }
+    const HeldValue zip{context, JS_GetPropertyStr(context, iterator.get(), "zip")};
+    if (zip.isException()) {
+        return false;
+    }
+    const HeldValue zipKeyed{context, JS_GetPropertyStr(context, iterator.get(), "zipKeyed")};
+    return !zipKeyed.isException();
+}
+
 }  // namespace
 
 // ---- Impl -----------------------------------------------------------------------------------------------
@@ -295,6 +323,13 @@ VmCreateResult Vm::create(const VmConfig& config) {
         AERO_LOG_ERROR("script: Vm::create failed: out of memory creating the context (heap limit {} bytes)",
                        config.heapLimitBytes);
         return VmCreateResult{VmCreateStatus::OutOfMemory, Vm{}};  // ~Impl: shutdown() frees the runtime
+    }
+    if (!materializeLazyBuiltins(impl->ctx)) {
+        // Not reachable at or above the minimum heap limit; if it ever happens the VM is still usable, and its
+        // three builtins read as undefined.
+        impl->clearPendingException();
+        AERO_LOG_ERROR("script: Vm::create: a lazy builtin could not be built");
+        assert(false && "a lazy builtin could not be built at create");
     }
     // Installed only now, so creation never depends on the deadline, whatever the backend does while it builds
     // the intrinsics.

@@ -1174,6 +1174,24 @@ TEST_CASE("script: an interrupt inside a thenable job run by the drain ends the 
     expectCleanShutdown(vm);
 }
 
+TEST_CASE("script: an interrupt does not cost the lazily built builtins (VM45)") {
+    LogCapture log;
+    Vm vm = makeVm(withBudget(std::chrono::milliseconds{100}));
+    log.clear();
+    // Array.fromAsync is built from bytecode on its first read. A first read after the budget ran out used to
+    // fail, leave the property undefined for good, and leak the objects holding the realm.
+    const std::string_view spin = "new Promise(() => { for (;;) {} }); Array.fromAsync;";
+    const EvalResult interrupted = vm.evaluateScript(spin, "lazy.js");
+    CHECK(interrupted.status == EvalStatus::Interrupted);
+    const std::string_view types = "[typeof Array.fromAsync, typeof Iterator.zip, typeof Iterator.zipKeyed].join()";
+    const EvalResult probe = vm.evaluateScript(types, "lazy.js");
+    CHECK(probe.status == EvalStatus::Ok);
+    CHECK(probe.completion == "function,function,function");
+    log.clear();
+    expectCleanShutdown(vm);
+    CHECK(log.countAtLeast(LogLevel::Warn) == 0U);  // the teardown found nothing still referenced
+}
+
 // ---- VM32: shutdown ---------------------------------------------------------------------------------------
 
 TEST_CASE("script: shutdown() reports zero leaks after a session through every arm, and is idempotent (VM32)") {

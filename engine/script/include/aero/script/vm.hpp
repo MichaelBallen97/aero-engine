@@ -23,9 +23,10 @@ namespace engine::script {
 // The JavaScript heap: every byte the backend allocates, header included, is charged against it. There
 // is deliberately no "unlimited": 0 is refused rather than read as the backend's own "no limit".
 inline constexpr std::size_t DEFAULT_HEAP_LIMIT_BYTES = std::size_t{64} * 1024U * 1024U;  // 64 MiB
-// The smallest heap a VM may be given. An empty VM needs about 110 KB (100 828 B Release, 110 188 B Debug), so no
-// create runs out of heap at or above this; below it the backend's context-creation failure path is not safe to
-// take, so such a limit is refused up front instead of being tried.
+// The smallest heap a VM may be given. An empty VM needs about 127 KB (117 011 B Release, 127 251 B Debug; that
+// includes the three builtins the backend builds lazily on a first read, which create reads once so that no later
+// read can fail), so no create runs out of heap at or above this; below it the backend's context-creation
+// failure path is not safe to take, so such a limit is refused up front instead of being tried.
 inline constexpr std::size_t MIN_HEAP_LIMIT_BYTES = std::size_t{1024} * 1024U;  // 1 MiB
 
 // The C stack a call may use below its entry point. 512 KiB fits inside the SMALLEST main-thread stack of
