@@ -33,9 +33,11 @@ EvalResult Vm::Impl::trap(Phase phase) {
 }
 
 EvalStatus Vm::Impl::classify(JSValueConst exception, Phase phase) {
-    // The backend's interrupt is the only thing that sets the uncatchable flag. Once the budget has fired, whatever
-    // exception ends the call is the budget's: the interrupt, or the RangeError a refused call raised.
-    if (JS_IsUncatchableError(exception) || interruptFired) {
+    // Once THIS call's budget has fired, whatever exception ends the call is the budget's: the interrupt, or the
+    // RangeError a refused call raised. The handler is the only route to the backend's interrupt and sets the flag
+    // first, so the flag alone decides: an uncatchable interrupt object left over from an earlier call (a promise's
+    // rejection reason, rethrown by a later reaction job) is an ordinary exception of this one.
+    if (interruptFired) {
         return EvalStatus::Interrupted;
     }
     // Both witnesses are needed. The refusal alone would mislabel a script that caught an out-of-memory error

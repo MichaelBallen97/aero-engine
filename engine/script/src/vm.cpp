@@ -204,6 +204,10 @@ void Vm::Impl::rejectionTracker(JSContext* context, JSValueConst promise, JSValu
                 return;
             }
         }
+        // The interrupt object itself was never reported (the report skips it), so there is nothing to be late about.
+        if (JS_IsUncatchableError(reason)) {
+            return;
+        }
         ++self.rejectionsHandledLate;
         AERO_LOG_INFO("script: {}: a promise rejection reported as unhandled was handled later", self.callFileName);
     } catch (...) {

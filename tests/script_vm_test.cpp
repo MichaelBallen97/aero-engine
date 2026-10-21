@@ -1250,6 +1250,26 @@ TEST_CASE("script: a budget that runs out after an earlier failure is still logg
     expectCleanShutdown(vm);
 }
 
+TEST_CASE("script: an interrupt left over from an earlier call does not make a later call Interrupted (VM49)") {
+    LogCapture log;
+    Vm vm = makeVm(withBudget(std::chrono::milliseconds{100}));
+    // The converted interrupt outlives its call as a promise's rejection reason.
+    const EvalResult first = vm.evaluateScript("globalThis.p49 = new Promise(() => { for (;;) {} });", "left.js");
+    CHECK(first.status == EvalStatus::Interrupted);
+
+    // A later call's reaction job rethrows that uncatchable object. It is not THIS call's budget that ran out.
+    log.clear();
+    const EvalResult second = vm.evaluateScript("p49.then(() => {}); 1", "left.js");
+    CHECK(second.status == EvalStatus::Exception);
+    const std::vector<CapturedRecord> records = log.atLeast(LogLevel::Info);
+    REQUIRE(records.size() == 1U);
+    CHECK(records[0].level == LogLevel::Error);
+    CHECK(firstLine(records[0].message) == "script: left.js: uncaught InternalError: interrupted");
+    // Nor was that promise ever reported as unhandled, so its handler is not "handled later".
+    CHECK(vm.stats().rejectionsHandledLate == 0U);
+    expectCleanShutdown(vm);
+}
+
 // ---- VM32: shutdown ---------------------------------------------------------------------------------------
 
 TEST_CASE("script: shutdown() reports zero leaks after a session through every arm, and is idempotent (VM32)") {
