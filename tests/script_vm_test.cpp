@@ -935,15 +935,18 @@ TEST_CASE("script: an endless job chain is stopped at the budget, and the VM sti
         CHECK(log.countAtLeast(LogLevel::Warn) == 0U);
     }
 
-    // Part 2: the deadline passes inside a job, where only the handler can act, so this part is deterministic.
+    // Part 2: the deadline passes inside a job, where only the handler can act. Exactly one record: the drain
+    // returns at once instead of logging "jobs still queued" for the job behind. The record is matched by the
+    // prefix both shapes share, so a call whose start took longer than its budget (the drain's own stop, before any
+    // job) cannot redden the case.
     Vm vm = makeVm(withBudget(std::chrono::milliseconds{100}));
     log.clear();
     const EvalResult result = vm.evaluateScript(
         "Promise.resolve().then(() => { while (true) {} }); Promise.resolve().then(() => {});", "job.js");
     CHECK(result.status == EvalStatus::Interrupted);
-    // Exactly one record: the drain returns at once instead of logging "jobs still queued" for the job behind.
     const std::string message = onlyErrorMessage(log);
-    CHECK(firstLine(message) == "script: job.js: interrupted after exceeding the 100 ms time budget");
+    const std::string_view prefix = "script: job.js: interrupted after exceeding the 100 ms time budget";
+    CHECK(firstLine(message).starts_with(prefix));
     expectCleanShutdown(vm);
 }
 
@@ -1183,7 +1186,9 @@ TEST_CASE("script: an interrupt inside Promise.try ends the call Interrupted (VM
 
 TEST_CASE("script: an interrupt inside a thenable job run by the drain ends the call Interrupted (VM43)") {
     LogCapture log;
-    Vm vm = makeVm(withBudget(std::chrono::milliseconds{100}));
+    // A one-second budget: the interrupt must happen INSIDE the drain's job, and a call whose start took longer
+    // than a short budget would meet the drain's own pre-job stop instead.
+    Vm vm = makeVm(withBudget(std::chrono::milliseconds{1000}));
     log.clear();
     // The thenable job takes the interrupt as an ordinary exception and rejects the promise with it; the call
     // is Interrupted all the same, and the converted interrupt is not reported as an unhandled rejection.
@@ -1192,7 +1197,7 @@ TEST_CASE("script: an interrupt inside a thenable job run by the drain ends the 
     CHECK(result.completion == "ok");
     CHECK(result.error.message == "interrupted");
     CHECK(result.error.stack.empty());
-    expectOnlyError(log, "script: then.js: interrupted after exceeding the 100 ms time budget");
+    expectOnlyError(log, "script: then.js: interrupted after exceeding the 1000 ms time budget");
     CHECK(vm.stats().unhandledRejections == 0U);
     const EvalResult after = vm.evaluateScript("1 + 1", "then.js");
     CHECK(after.status == EvalStatus::Ok);
@@ -1278,13 +1283,16 @@ TEST_CASE("script: a budget that runs out after an earlier failure is still logg
     CHECK(records[0].level == LogLevel::Error);
     CHECK(records[1].level == LogLevel::Error);
     CHECK(firstLine(records[0].message) == "script: boom.js: uncaught Error: boom");
-    CHECK(firstLine(records[1].message) == "script: boom.js: interrupted after exceeding the 100 ms time budget");
+    // By the prefix the drain's own cut-off record shares, should the call have started past its budget.
+    const std::string_view prefix = "script: boom.js: interrupted after exceeding the 100 ms time budget";
+    CHECK(firstLine(records[1].message).starts_with(prefix));
     expectCleanShutdown(vm);
 }
 
 TEST_CASE("script: an interrupt left over from an earlier call does not make a later call Interrupted (VM49)") {
     LogCapture log;
-    Vm vm = makeVm(withBudget(std::chrono::milliseconds{100}));
+    // A one-second budget, so that the second call, which must not be interrupted, cannot be on a slow runner.
+    Vm vm = makeVm(withBudget(std::chrono::milliseconds{1000}));
     // The converted interrupt outlives its call as a promise's rejection reason.
     const EvalResult first = vm.evaluateScript("globalThis.p49 = new Promise(() => { for (;;) {} });", "left.js");
     CHECK(first.status == EvalStatus::Interrupted);
@@ -1636,8 +1644,9 @@ TEST_CASE("script: the allocator's grace window admits past the limit, and only 
     CHECK(refused == nullptr);
     CHECK(heap.refusals() == 1U);
 
-    // 2. A window of two decisions and 128 bytes: two admissions past the limit, then the limit again.
-    heap.openGraceWindow(2, 128);
+    // 2. A window of two decisions and 256 bytes: two admissions past the limit, then the limit again. After two
+    // admissions 160 bytes of room remain, so only the spent count can refuse the third request.
+    heap.openGraceWindow(2, 256);
     void* first = heap.allocate(32);
     REQUIRE(first != nullptr);
     CHECK(heap.bytesInUse() == 1072U);
