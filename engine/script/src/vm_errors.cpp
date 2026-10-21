@@ -55,8 +55,10 @@ bool Vm::Impl::isOutOfMemoryError(JSValueConst exception) {
     }
     const HeldValue message{ctx, JS_GetPropertyStr(ctx, exception, "message")};
     if (message.isException()) {
+        // The backend's own out-of-memory error carries `message` as an own data property, read through an atom that
+        // already exists, so reading it never allocates: a read that fails belongs to an Error a script made.
         clearPendingException();
-        return true;  // unreadable while a refusal is already witnessed: count it as the OOM it most likely is
+        return false;
     }
     // The backend's own out-of-memory error always carries a string message, and an ASCII string converts without
     // allocating, so a message that is not a string was written by a script.

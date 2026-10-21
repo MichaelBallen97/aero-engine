@@ -581,6 +581,15 @@ TEST_CASE("script: an out-of-memory the script catches is Ok and logs nothing (V
         R"js(const err = new Error("x"); err.message = Symbol("s"); throw err; })())js";
     const EvalResult scripted = vm.evaluateScript(symbolMessage, "caught.js");
     CHECK(scripted.status == EvalStatus::Exception);
+
+    // And a message that cannot even be read -- quickjs's own out-of-memory error carries it as a plain own data
+    // property, so a getter that throws can only be a script's.
+    const std::string_view throwingMessage =
+        R"js((() => { try { "x".repeat(64 * 1024 * 1024); } catch (e) {} )js"
+        R"js(const err = new Error("x"); )js"
+        R"js(Object.defineProperty(err, "message", { get() { throw 1; } }); throw err; })())js";
+    const EvalResult unreadable = vm.evaluateScript(throwingMessage, "caught.js");
+    CHECK(unreadable.status == EvalStatus::Exception);
     expectCleanShutdown(vm);
 }
 
