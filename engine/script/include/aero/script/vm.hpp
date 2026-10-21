@@ -42,6 +42,11 @@ inline constexpr std::size_t MAX_STACK_LIMIT_BYTES = std::size_t{8} * 1024U * 10
 // Interrupted even when the backend converts that error (a Promise executor, Promise.try and a thenable job all
 // do); no new JavaScript call starts in it after that. There is no "unlimited": the engine must never hang on
 // a script.
+//
+// Two backend limits remain, recorded as R21 in docs/08-risks.md. A loop that throws inside a `using` block and
+// catches the result on every iteration can run past its budget without end: the backend wraps an interrupt raised
+// at the dispose call into a catchable SuppressedError. And an interrupt that rejects a promise a handler was
+// already attached to reaches that handler, in a later call, as an error no catch can take.
 inline constexpr std::chrono::milliseconds DEFAULT_CALL_TIME_BUDGET{1000};
 inline constexpr std::chrono::milliseconds MIN_CALL_TIME_BUDGET{1};
 inline constexpr std::chrono::milliseconds MAX_CALL_TIME_BUDGET{60'000};
