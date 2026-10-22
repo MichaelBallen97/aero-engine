@@ -218,7 +218,8 @@ public:
     // Inside a module, a specifier is "res://...", "./..." or "../..." (relative to the importing module); anything
     // else is refused -- a bare name, a '/'-rooted path, another scheme or a drive path, "", a '?' or a '#'. Paths are
     // compared byte for byte (case-sensitive). No import attribute is supported. import() follows the same rules; from
-    // global code only an absolute res:// specifier resolves.
+    // global code only an absolute res:// specifier resolves. A specifier ends at its first U+0000: the backend hands
+    // specifiers over as C strings, so 'res://a.js\u0000x' names res://a.js.
     //
     // Every failure is logged once, at ERROR, as "script: <path>: " followed by evaluateScript's shapes, plus:
     //   LoadError      "load error: <name>: <message>"                 (no stack: nothing ran)

@@ -2456,6 +2456,30 @@ TEST_CASE("script: a module whose size answers but whose read fails is a LoadErr
     expectCleanShutdown(fx.vm);
 }
 
+TEST_CASE("script: a specifier ends at its first U+0000, statically and through import() (ML66)") {
+    // This pins the BACKEND's behaviour, as a tripwire: quickjs-ng hands a specifier to the normalizer as a C string
+    // (JS_AtomToCString statically, JS_ToCString for import()), so the grammar never sees what follows the U+0000. A
+    // port that passes the whole string turns this red; the grammar's own NUL refusal then answers, and vm.hpp's
+    // contract sentence changes with it. The C++ spells the JavaScript escape "\\u0000": six characters, never a NUL.
+    const LogCapture log;
+    ModuleFixture fx;
+    fx.files->set("a.js", "export const v = 1;");
+    fx.files->set("s.js", "import { v } from 'res://a.js\\u0000junk'; globalThis.s = 'static ' + v;");
+    CHECK(label(fx.vm.evaluateModule("res://s.js")) == "Ok");
+    CHECK(completion(fx.vm, "s") == "static 1");
+    const std::optional<ModuleRecord> s = recordOf(fx.vm, "res://s.js");
+    REQUIRE(s.has_value());
+    CHECK(s->imports == std::vector<std::string>{"res://a.js"});
+
+    const std::string dynamic =
+        "globalThis.r = 'none'; import('res://a.js\\u0000junk').then((ns) => { r = 'loaded ' + "
+        "ns.v; }, (e) => { r = 'refused ' + e.message; }); 0";
+    CHECK(completion(fx.vm, dynamic) == "0");
+    CHECK(completion(fx.vm, "r") == "loaded 1");
+    CHECK(log.countAtLeast(LogLevel::Info) == 0U);
+    expectCleanShutdown(fx.vm);
+}
+
 // ---- ML31-ML34, ML38, ML47: import() --------------------------------------------------------------------------
 
 TEST_CASE("script: import() from a module resolves against that module and records a dynamic edge (ML31)") {
