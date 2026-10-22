@@ -140,8 +140,12 @@ char* Vm::Impl::serveDynamicImport(const char* base, const char* specifier) {
         throwLoadError("TypeError", internal::refusedSpecifierMessage(specifier, importerText, target.refusal));
         return nullptr;  // the import() rejects; a dynamic refusal is the script's to catch, never the call's status
     }
-    if (importer.has_value()) {
-        moduleTable.addImport(*importer, target.key, internal::ImportKind::Dynamic);  // global code has no record
+    // The edge is the calling generation's: an older instance's import() -- a function it exported, still referenced
+    // -- never grows the current record, whose next invalidation would otherwise reload a module it never imported.
+    // Global code has no record at all.
+    if (const std::optional<internal::ModuleName> caller = internal::decodeModuleName(base);
+        caller.has_value() && caller->generation == moduleTable.generation(caller->key)) {
+        moduleTable.addImport(caller->key, target.key, internal::ImportKind::Dynamic);
     }
     if (modules == nullptr) {
         throwLoadError("TypeError", internal::noModuleSourceMessage(target.key, importerText));

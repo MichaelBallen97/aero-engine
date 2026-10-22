@@ -2329,6 +2329,49 @@ TEST_CASE(
     expectCleanShutdown(fx.vm);  // a zero count: the abandoned body leaves no reaction holding the module
 }
 
+// ---- ML63: an old generation's import() -------------------------------------------------------------------------
+
+TEST_CASE("script: an import() from an old generation loads but records no edge on the current one (ML63)") {
+    const LogCapture log;
+    ModuleFixture fx;
+    // Generation 1 hands a function to the script, which keeps it across a reload (no "??=": a trigraph in C++).
+    fx.files->set("a.js",
+                  "export function later() { return import('./x.js'); } "
+                  "if (!globalThis.firstLater) { globalThis.firstLater = later; }");
+    fx.files->set("x.js", "export const x = 1;");
+    CHECK(label(fx.vm.evaluateModule("res://a.js")) == "Ok");
+    CHECK(fx.vm.invalidateModule("res://a.js") == std::vector<std::string>{"res://a.js"});
+    fx.files->set("a.js", "export function later2() { return import('./x.js'); } globalThis.secondLater = later2;");
+    CHECK(label(fx.vm.evaluateModule("res://a.js")) == "Ok");
+    std::optional<ModuleRecord> a = recordOf(fx.vm, "res://a.js");
+    REQUIRE(a.has_value());
+    CHECK(a->generation == 2U);
+    CHECK(a->imports.empty());
+
+    // The old generation's import() loads, and grows nothing on the current record.
+    const std::string callOld = "globalThis.r1 = 'none'; firstLater().then((ns) => { r1 = 'old ' + ns.x; }); 0";
+    CHECK(completion(fx.vm, callOld) == "0");
+    CHECK(completion(fx.vm, "r1") == "old 1");
+    a = recordOf(fx.vm, "res://a.js");
+    REQUIRE(a.has_value());
+    CHECK(a->generation == 2U);
+    CHECK(a->imports.empty());
+    CHECK(fx.vm.invalidateModule("res://x.js") == std::vector<std::string>{"res://x.js"});
+    CHECK(stateOf(fx.vm, "res://a.js") == "Evaluated");
+    CHECK(recordOf(fx.vm, "res://a.js")->generation == 2U);
+
+    // Anti-vacuity: the current generation's own import() does record its edge.
+    const std::string callNew = "globalThis.r2 = 'none'; secondLater().then((ns) => { r2 = 'new ' + ns.x; }); 0";
+    CHECK(completion(fx.vm, callNew) == "0");
+    CHECK(completion(fx.vm, "r2") == "new 1");
+    a = recordOf(fx.vm, "res://a.js");
+    REQUIRE(a.has_value());
+    CHECK(a->imports == std::vector<std::string>{"res://x.js"});
+    CHECK(fx.vm.invalidateModule("res://x.js") == std::vector<std::string>{"res://a.js", "res://x.js"});
+    CHECK(log.countAtLeast(LogLevel::Warn) == 0U);
+    expectCleanShutdown(fx.vm);
+}
+
 // ---- ML31-ML34, ML38, ML47: import() --------------------------------------------------------------------------
 
 TEST_CASE("script: import() from a module resolves against that module and records a dynamic edge (ML31)") {
