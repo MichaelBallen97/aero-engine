@@ -1,4 +1,5 @@
-// Aero Engine -- engine::script::Vm (task 4.1.1): create, teardown, the thread check and the entry point.
+// Aero Engine -- engine::script::Vm (task 4.1.1): create, teardown, the thread check and the entry point. The module
+// loader (task 4.1.2) is installed here at create; its callbacks live in vm_modules.cpp.
 
 #include <aero/core/log.hpp>
 #include <aero/script/vm.hpp>
@@ -187,16 +188,11 @@ VmTeardownReport Vm::Impl::shutdown() noexcept {
 constexpr std::size_t INTERRUPT_GRACE_ALLOCATIONS = 64;
 constexpr std::size_t INTERRUPT_GRACE_BYTES = std::size_t{16} * 1024U;
 
-// The whole of the time budget's mechanism: a clock read, a comparison, a counter reset and, once, the stack-limit
-// line below. No allocation, no lock, no log. The backend consults it on the first poll of a context and then every
-// 10 000 polls (backward jumps and calls), and its regex engine on a counter of its own.
-int Vm::Impl::interruptHandler(JSRuntime* runtime, void* opaque) noexcept {
-    Impl& self = *static_cast<Impl*>(opaque);
-    if (std::chrono::steady_clock::now() < self.deadline) {
-        return 0;
-    }
-    if (!self.interruptFired) {
-        self.interruptFired = true;
+// The one way the budget fires: the interrupt handler calls it when the deadline has passed, and so does the module
+// loader before a read or a compile, which never poll the handler. No allocation, no lock, no log.
+void Vm::Impl::fireInterrupt() noexcept {
+    if (!interruptFired) {
+        interruptFired = true;
         // The backend turns the interrupt into an ordinary promise rejection on several C paths (the Promise
         // executor, Promise.try, a thenable job, ...), after which the script would run on. With the stack limit
         // exhausted, every bytecode frame and every native function or bound call refuses to start (quickjs.c:17640,
@@ -205,7 +201,7 @@ int Vm::Impl::interruptHandler(JSRuntime* runtime, void* opaque) noexcept {
         // bytecode without passing a check. So no new JavaScript runs once the budget is gone: the frames already
         // running reach their next poll and are interrupted again. ~CallScope restores the limit. 1, never 0: a
         // size of 0 DISABLES the check (quickjs.c:2763-2764).
-        JS_SetMaxStackSize(runtime, 1);
+        JS_SetMaxStackSize(rt, 1);
     }
     // The next requests after this return are the interrupt error's own (an InternalError and its backtrace), and
     // at the heap limit they would be refused: the backend then throws a plain `null`, which cannot be marked
@@ -213,7 +209,18 @@ int Vm::Impl::interruptHandler(JSRuntime* runtime, void* opaque) noexcept {
     // from the current usage, so windows stack: the overshoot past the heap limit is up to INTERRUPT_GRACE_BYTES per
     // fire, and a call fires at most once plus once per converting C frame on the stack at the first fire (the
     // stack-trace hooks that could swallow more are removed at create). ~CallScope closes it.
-    self.heap.openGraceWindow(INTERRUPT_GRACE_ALLOCATIONS, INTERRUPT_GRACE_BYTES);
+    heap.openGraceWindow(INTERRUPT_GRACE_ALLOCATIONS, INTERRUPT_GRACE_BYTES);
+}
+
+// The whole of the time budget's mechanism: a clock read, a comparison, a counter reset and, once, the stack-limit
+// line in fireInterrupt. No allocation, no lock, no log. The backend consults it on the first poll of a context and
+// then every 10 000 polls (backward jumps and calls), and its regex engine on a counter of its own.
+int Vm::Impl::interruptHandler(JSRuntime* /*runtime*/, void* opaque) noexcept {
+    Impl& self = *static_cast<Impl*>(opaque);
+    if (std::chrono::steady_clock::now() < self.deadline) {
+        return 0;
+    }
+    self.fireInterrupt();
     return 1;
 }
 
@@ -228,8 +235,9 @@ void Vm::Impl::rejectionTracker(JSContext* context, JSValueConst promise, JSValu
     // heap exhaustion -- terminate -- spelled out, because nothing may unwind through the backend's C frames.
     try {
         if (!isHandled) {
-            self.pendingRejections.push_back(
-                PendingRejection{JS_DupValue(context, promise), JS_DupValue(context, reason), self.interruptFired});
+            self.pendingRejections.push_back(PendingRejection{JS_DupValue(context, promise),
+                                                              JS_DupValue(context, reason), self.interruptFired,
+                                                              ++self.rejectionSequence});
             return;
         }
         for (auto entry = self.pendingRejections.begin(); entry != self.pendingRejections.end(); ++entry) {
@@ -240,7 +248,8 @@ void Vm::Impl::rejectionTracker(JSContext* context, JSValueConst promise, JSValu
                 return;
             }
         }
-        // A promise the report skipped (the budget's doing) was never reported either: handling it is silent too.
+        // A promise the report skipped -- the budget's doing, or a module's own failure the call returned as its
+        // status -- was never reported either: handling it is silent too.
         for (auto skipped = self.skippedRejections.begin(); skipped != self.skippedRejections.end(); ++skipped) {
             if (JS_IsStrictEqual(context, *skipped, promise)) {
                 JS_FreeValue(context, *skipped);
@@ -262,6 +271,7 @@ Vm::Impl::CallScope::CallScope(Impl& host, const std::string& fileName) : impl(h
     JS_UpdateStackTop(host.rt);
     host.refusalsAtCallStart = host.heap.refusals();
     host.callFileName = fileName;
+    host.callLoadFailure.reset();
     host.interruptFired = false;
     host.interruptRecorded = false;
     host.inCall = true;
@@ -361,6 +371,23 @@ void Vm::Impl::drainJobs(EvalResult& result) {
 // leak in a long-lived VM.
 inline constexpr std::size_t MAX_SKIPPED_REJECTIONS = 256;
 
+void Vm::Impl::keepSkipped(JSValue promise) {
+    if (skippedRejections.size() >= MAX_SKIPPED_REJECTIONS) {
+        JS_FreeValue(ctx, skippedRejections.front());
+        skippedRejections.erase(skippedRejections.begin());
+    }
+    skippedRejections.push_back(promise);
+}
+
+bool Vm::Impl::isSkipped(JSValueConst promise) const {
+    for (const JSValue skipped : skippedRejections) {
+        if (JS_IsStrictEqual(ctx, skipped, promise)) {  // identity for objects: runs no script code
+            return true;
+        }
+    }
+    return false;
+}
+
 // The list is swapped out BEFORE anything is described: describe may run script code (a getter) that rejects
 // another promise, and the tracker would then append to the vector being iterated. Anything rejected while
 // reporting is reported at the end of the next call.
@@ -374,11 +401,7 @@ void Vm::Impl::reportUnhandledRejections() {
         // error from here on, and the promise is kept so that a later handler is recognised as handling something
         // never reported.
         if (entry.afterInterrupt) {
-            if (skippedRejections.size() >= MAX_SKIPPED_REJECTIONS) {
-                JS_FreeValue(ctx, skippedRejections.front());
-                skippedRejections.erase(skippedRejections.begin());
-            }
-            skippedRejections.push_back(entry.promise);
+            keepSkipped(entry.promise);
             JS_ClearUncatchableError(ctx, entry.reason);
             JS_FreeValue(ctx, entry.reason);
             continue;
@@ -394,7 +417,13 @@ void Vm::Impl::reportUnhandledRejections() {
 
 // ---- Vm -------------------------------------------------------------------------------------------------
 
-VmCreateResult Vm::create(const VmConfig& config) {
+VmCreateResult Vm::create(const VmConfig& config) { return createWith(config, nullptr); }
+
+VmCreateResult Vm::create(const VmConfig& config, const VirtualFileSystem& modules) {
+    return createWith(config, &modules);
+}
+
+VmCreateResult Vm::createWith(const VmConfig& config, const VirtualFileSystem* modules) {
     if (const VmCreateStatus refusal = validate(config); refusal != VmCreateStatus::Ok) {
         return VmCreateResult{refusal, Vm{}};  // validate() logged the field and its value
     }
@@ -411,6 +440,7 @@ VmCreateResult Vm::create(const VmConfig& config) {
                        config.heapLimitBytes);
         return VmCreateResult{VmCreateStatus::OutOfMemory, Vm{}};  // ~Impl: shutdown() frees the runtime
     }
+    impl->modules = modules;
     if (!materializeLazyBuiltins(impl->ctx)) {
         // Not reachable at or above the minimum heap limit; if it ever happens the VM is still usable, and its
         // three builtins read as undefined.
@@ -431,6 +461,10 @@ VmCreateResult Vm::create(const VmConfig& config) {
     // the intrinsics.
     JS_SetInterruptHandler(impl->rt, &Impl::interruptHandler, impl.get());
     JS_SetHostPromiseRejectionTracker(impl->rt, &Impl::rejectionTracker, impl.get());
+    // Installed on every VM, with or without a module source: a VM without one refuses each request in the engine's
+    // words instead of the backend's.
+    JS_SetModuleLoaderFunc2(impl->rt, &Impl::normalizeModuleName, &Impl::loadModule, &Impl::checkImportAttributes,
+                            impl.get());
     AERO_LOG_DEBUG(
         "script: VM created: quickjs-ng {}, heap limit {} bytes, stack limit {} bytes, call budget {} ms, "
         "{} bytes in use",
@@ -486,6 +520,7 @@ VmStats Vm::stats() const noexcept {
     out.refusedAllocations = heap.refusals();
     out.unhandledRejections = impl->unhandledRejections;
     out.rejectionsHandledLate = impl->rejectionsHandledLate;
+    out.moduleInstances = impl->moduleInstances;
     return out;
 }
 

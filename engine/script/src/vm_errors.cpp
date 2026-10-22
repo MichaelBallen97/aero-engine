@@ -15,10 +15,17 @@
 namespace engine::script {
 
 EvalResult Vm::Impl::trap(Phase phase) {
-    const HeldValue exception{ctx, JS_GetException(ctx)};        // takes the reference, clears the slot
-    const EvalStatus status = classify(exception.get(), phase);  // BEFORE describe: describe may allocate
-    const bool isErrorObject = JS_IsError(exception.get());
-    ScriptError error = describe(exception.get(), isErrorObject);
+    const HeldValue exception{ctx, JS_GetException(ctx)};  // takes the reference, clears the slot
+    return trapValue(exception.get(), phase);
+}
+
+// trap's body, for a value that is not the pending exception: a module promise's rejection reason (vm_modules.cpp).
+EvalResult Vm::Impl::trapValue(JSValueConst value, Phase phase) {
+    const EvalStatus status = classify(value, phase);  // BEFORE describe: describe may allocate
+    const bool isErrorObject = JS_IsError(value);
+    // A load error's text is the engine's own, exact and never cut at the backend's 256-byte message buffer.
+    const bool engineText = status == EvalStatus::LoadError && callLoadFailure.has_value();
+    ScriptError error = engineText ? *callLoadFailure : describe(value, isErrorObject);
     if (status == EvalStatus::Interrupted) {
         // Whichever exception carried it -- the interrupt itself, or the RangeError a refused call raised after
         // the budget ran out -- the canonical interrupt is what the caller reads. The stack stays the described one.
@@ -45,6 +52,11 @@ EvalStatus Vm::Impl::classify(JSValueConst exception, Phase phase) {
     // even the error object fits) from a script's own `throw null`.
     if (heap.refusals() > refusalsAtCallStart && (JS_IsNull(exception) || isOutOfMemoryError(exception))) {
         return EvalStatus::OutOfMemory;
+    }
+    // A load refusal of THIS call's own attempt -- never a dynamic import's, which is the script's to catch -- is why
+    // the graph did not compile, whatever error the backend wrapped it in.
+    if (phase == Phase::Compile && callLoadFailure.has_value()) {
+        return EvalStatus::LoadError;
     }
     return phase == Phase::Compile ? EvalStatus::CompileError : EvalStatus::Exception;
 }
@@ -126,6 +138,9 @@ void Vm::Impl::logFailure(EvalStatus status, const ScriptError& error, bool isEr
         case EvalStatus::CompileError:
             text = std::format("script: {}: compile error: {}: {}", callFileName, error.name, error.message);
             break;
+        case EvalStatus::LoadError:  // a load error has no stack: nothing ran
+            text = std::format("script: {}: load error: {}: {}", callFileName, error.name, error.message);
+            break;
         case EvalStatus::Exception:
             if (isErrorObject) {
                 text = std::format("script: {}: uncaught {}: {}", callFileName, error.name, error.message);
@@ -192,6 +207,8 @@ std::string_view evalStatusLabel(EvalStatus status) noexcept {
             return "InvalidVm";
         case EvalStatus::WrongThread:
             return "WrongThread";
+        case EvalStatus::LoadError:
+            return "LoadError";
     }
     return "Unknown";
 }

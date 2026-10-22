@@ -15,6 +15,7 @@
 // KEEP THIS TARGET DEPENDENCY-FREE: .github/scripts/check-boundary-probes.sh refuses any link but exactly one
 // aero:: library, PRIVATE, and boundary-probes.probe_compile_line reads this TU's compile line.
 
+#include <aero/core/vfs.hpp>       // task 4.1.2: create() borrows one; it includes only the standard library
 #include <aero/script/script.hpp>  // the umbrella
 
 #include <chrono>
@@ -23,6 +24,7 @@
 #include <string_view>
 #include <type_traits>
 #include <utility>
+#include <vector>
 
 namespace script = engine::script;
 
@@ -60,3 +62,23 @@ static_assert(
     std::is_same_v<decltype(std::declval<script::Vm&>().evaluateScript(std::string_view{}, std::string_view{})),
                    script::EvalResult>);
 static_assert(std::is_default_constructible_v<script::EvalResult>);
+
+// ---- modules (task 4.1.2) ----
+static_assert(static_cast<std::uint8_t>(script::EvalStatus::LoadError) == 7U);  // appended: earlier values unchanged
+static_assert(script::IMPORT_STACK_BYTES_PER_LEVEL == std::size_t{8} * 1024U);
+static_assert(static_cast<std::uint8_t>(script::ModuleState::Unloaded) == 0U);
+static_assert(noexcept(script::moduleStateLabel(script::ModuleState::Loaded)));
+// ModuleRecord's default generation is pinned at tier 0 (ML6), never here: a constant expression that constructs and
+// destroys its std::string and std::vector members leans on constexpr containers, MSVC's Debug iterator machinery
+// included, for nothing a doctest case does not already assert.
+static_assert(script::VmStats{}.moduleInstances == 0U);
+static_assert(
+    std::is_same_v<decltype(std::declval<script::Vm&>().evaluateModule(std::string_view{})), script::EvalResult>);
+static_assert(
+    std::is_same_v<decltype(std::declval<const script::Vm&>().moduleRecords()), std::vector<script::ModuleRecord>>);
+// The VFS is borrowed: an lvalue binds, a temporary does not (the rvalue overload is deleted). A file-local concept,
+// because a requires-expression only substitutes when it is dependent (CLAUDE.md, HE17's shape).
+template <typename Vfs>
+concept CreatesFrom = requires(Vfs&& vfs) { script::Vm::create(script::VmConfig{}, std::forward<Vfs>(vfs)); };
+static_assert(CreatesFrom<const engine::VirtualFileSystem&>);  // the positive control
+static_assert(!CreatesFrom<engine::VirtualFileSystem>);

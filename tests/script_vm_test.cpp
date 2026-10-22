@@ -286,7 +286,8 @@ TEST_CASE("script: a heap limit below 1 MiB is refused; 1 MiB itself creates a w
 TEST_CASE("script: the backend is quickjs-ng 0.15.1 -- a port bump must re-verify its assumptions (VM5)") {
     // A failure here means the pinned port moved. Re-read every backend behaviour this layer relies on (the
     // interrupt cadence, the uncatchable interrupt error, the rejection tracker's two calls, the teardown
-    // assert and the allocator contract) against the new source before changing the literal.
+    // assert and the allocator contract, the module loader's callbacks, the resolution a module compile performs,
+    // and R22's two shapes) against the new source before changing the literal.
     CHECK(engine::script::scriptBackendVersion() == std::string_view{"0.15.1"});
 }
 

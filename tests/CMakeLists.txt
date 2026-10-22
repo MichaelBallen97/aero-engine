@@ -139,6 +139,12 @@ target_compile_definitions(aero_tests PRIVATE AERO_ASSETS_SRC_DIR="${CMAKE_SOURC
 # definition above -- both reduced configurations build this TU and must run the case too.
 target_compile_definitions(aero_tests PRIVATE AERO_SCRIPT_SRC_DIR="${CMAKE_SOURCE_DIR}/engine/script/src")
 
+# task 4.1.2: script_module_test.cpp's ML13/ML14/ML43 mount tests/fixtures/scripts at the res:// root through a
+# DirectoryBackend -- Epic 4.1's Definition of Done read off real files. A PATH, NOT A FLAG (the
+# AERO_AUDIO_FIXTURES_DIR rule below): a missing fixture is a REQUIRE failure, never a silent skip. UNGATED: both
+# reduced configurations build this TU and must run these cases too.
+target_compile_definitions(aero_tests PRIVATE AERO_SCRIPT_FIXTURES_DIR="${CMAKE_SOURCE_DIR}/tests/fixtures/scripts")
+
 # task 3.7.1: audio_cook_test.cpp's AK17/AK18 read tests/fixtures/audio/tone.s16le.pcm -- ffmpeg's OWN
 # decode of tone.wav, raw interleaved s16 LE with no container, committed so no lane ever needs ffmpeg.
 # It is the cook half of the external anchor (docs/09 section 14): the artifact's sample region must be

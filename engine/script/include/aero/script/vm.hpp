@@ -2,7 +2,8 @@
 // Aero Engine -- the JavaScript VM (task 4.1.1; ADR-007). One Vm = one quickjs-ng runtime + one context,
 // created together, used on ONE thread, torn down together. Nothing is script-visible: a VM offers the
 // ECMAScript language and the backend's core globals only -- no engine global, no binding, no host
-// function (those arrive with 4.2.1 and 4.4.x).
+// function (those arrive with 4.2.1 and 4.4.x). Since task 4.1.2 a VM given a VirtualFileSystem also loads ES
+// modules through it (evaluateModule, and import() from any code).
 //
 // The backend is an implementation detail of engine/script/src/ and never crosses this header (project
 // rule #3). .github/scripts/check-script-boundary.sh and tests/script_boundary_probe.cpp enforce that.
@@ -17,6 +18,10 @@
 #include <string>
 #include <string_view>
 #include <vector>
+
+namespace engine {
+class VirtualFileSystem;  // forward-declared: create() borrows one; src/vm_modules.cpp includes <aero/core/vfs.hpp>
+}  // namespace engine
 
 namespace engine::script {
 
@@ -80,12 +85,15 @@ enum class VmCreateStatus : std::uint8_t {
 
 enum class EvalStatus : std::uint8_t {
     Ok = 0,
-    CompileError,  // the source did not compile; nothing ran
+    CompileError,  // a source did not compile, or a module graph did not link (a missing or ambiguous export);
+                   // nothing ran
     Exception,     // a value was thrown and not caught -- an Error, any other value, or a stack overflow
     OutOfMemory,   // the heap limit refused an allocation and the failure was not caught
     Interrupted,   // the call's time budget ran out; the script could not catch it, nor start new calls
     InvalidVm,     // a failed create's Vm, or a moved-from one
     WrongThread,   // called from a thread that is not the VM's; nothing was touched
+    LoadError,     // a module of the graph could not be obtained -- a refused specifier or import attribute, not found
+                   // or unreadable through the VFS, no module source, over the size or depth limit; nothing ran
 };
 [[nodiscard]] std::string_view evalStatusLabel(EvalStatus status) noexcept;
 
@@ -100,7 +108,7 @@ struct ScriptError {
 
 struct EvalResult {
     EvalStatus status = EvalStatus::InvalidVm;  // the FIRST failure of the call (the script before its jobs)
-    ScriptError error;       // filled iff status is CompileError, Exception, OutOfMemory or Interrupted
+    ScriptError error;       // filled iff status is CompileError, Exception, OutOfMemory, Interrupted or LoadError
     std::string completion;  // String(completion value) iff the script ran to completion -- DIAGNOSTIC text,
                              // not a value bridge; "<unprintable value>" when the conversion throws
 };
@@ -137,6 +145,10 @@ struct VmStats {
     std::uint64_t refusedAllocations = 0;     // requests the heap limit refused, over the VM's life
     std::uint64_t unhandledRejections = 0;    // reported at the end of a call
     std::uint64_t rejectionsHandledLate = 0;  // reported, then handled in a later call
+    // Module instances compiled over the VM's life. None is freed before teardown -- the backend has no way to drop a
+    // module -- so every reload of a module adds one (about 1.5 KB for a small module, plus about three times its
+    // source; measured at 4.1.2). Recreating the VM is the full reset.
+    std::uint64_t moduleInstances = 0;
 };
 
 // What teardown found. A leak-free VM reports zeros. NOTE: in a build whose backend has assertions on
@@ -151,7 +163,12 @@ struct VmCreateResult;
 
 class Vm {
 public:
+    // No module source: evaluateModule and every import are refused with a LoadError / a rejection that says so.
     [[nodiscard]] static VmCreateResult create(const VmConfig& config = {});
+    // `modules` is BORROWED and must outlive the Vm. Every module is read through it and through nothing else. It may
+    // be mounted or cleared between calls on the VM's thread, never while a call is in flight.
+    [[nodiscard]] static VmCreateResult create(const VmConfig& config, const VirtualFileSystem& modules);
+    static VmCreateResult create(const VmConfig& config, const VirtualFileSystem&& modules) = delete;  // no temporary
 
     Vm() noexcept;  // an INVALID Vm: what a failed create returns and what a move leaves behind
     Vm(Vm&& other) noexcept;
@@ -180,6 +197,28 @@ public:
     // reads "<unprintable value>".
     [[nodiscard]] EvalResult evaluateScript(std::string_view source, std::string_view fileName);
 
+    // Loads the module at `virtualPath` -- an ABSOLUTE res:// path, refused otherwise -- and its static import graph
+    // through the VFS, links it, evaluates it, drains the job queue and reports unhandled promise rejections, all under
+    // ONE call's time budget. A module evaluates once: calling this again for a module that already ran re-runs
+    // nothing and returns its recorded outcome (Ok, or its error, logged again). `completion` stays empty: a module
+    // has no completion value. Nothing about the module's exports crosses this API.
+    //
+    // Inside a module, a specifier is "res://...", "./..." or "../..." (relative to the importing module); anything
+    // else is refused -- a bare name, a '/'-rooted path, another scheme or a drive path, "", a '?' or a '#'. Paths are
+    // compared byte for byte (case-sensitive). No import attribute is supported. import() follows the same rules; from
+    // global code only an absolute res:// specifier resolves.
+    //
+    // Every failure is logged once, at ERROR, as "script: <path>: " followed by evaluateScript's shapes, plus:
+    //   LoadError      "load error: <name>: <message>"                 (no stack: nothing ran)
+    //   CompileError   also a link error: "compile error: SyntaxError: Could not find export 'x' in module '...'"
+    // and, at WARN, "module evaluation is still pending at the end of the call (a top-level await has not settled)".
+    // A module's own failure is never also reported as an unhandled rejection.
+    [[nodiscard]] EvalResult evaluateModule(std::string_view virtualPath);
+
+    // The module cache: every path the VM has started to compile, sorted by path. The VM's thread only: from another
+    // thread it is refused with one ERROR and returns nothing.
+    [[nodiscard]] std::vector<ModuleRecord> moduleRecords() const;
+
     // Runs the cycle collector now. Reference counting frees everything else immediately.
     void collectGarbage() noexcept;
 
@@ -193,6 +232,7 @@ public:
 private:
     struct Impl;  // holds the backend's runtime + context; defined in src/vm_impl.hpp
     explicit Vm(std::unique_ptr<Impl> owned) noexcept;
+    [[nodiscard]] static VmCreateResult createWith(const VmConfig& config, const VirtualFileSystem* modules);
     std::unique_ptr<Impl> impl;  // heap-pinned: the backend's callbacks hold Impl*, never Vm*
 };
 

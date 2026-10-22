@@ -4,11 +4,13 @@
 // .github/scripts/check-script-boundary.sh permits. Nothing outside engine/script may include it.
 
 #include <aero/script/internal/heap_accounting.hpp>
+#include <aero/script/internal/module_graph.hpp>
 #include <aero/script/vm.hpp>
 
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <quickjs.h>
 #include <string>
 #include <string_view>
@@ -19,7 +21,8 @@ namespace engine::script {
 
 // A backend value the wrapper holds a reference to. EVERY value the wrapper receives goes into one the
 // moment it is received, so a leak needs a release() -- which exists for exactly one reason: a backend
-// function that CONSUMES its argument (JS_EvalFunction, quickjs.h:1239; the value rules at :186-204).
+// function that CONSUMES its argument -- JS_EvalFunction (quickjs.h:1239), JS_Throw (quickjs.h:817) and
+// JS_DefinePropertyValueStr (the value rules at :186-204).
 class HeldValue {
 public:
     HeldValue(JSContext* context, JSValue held) noexcept : context(context), value(held) {}
@@ -78,7 +81,22 @@ inline constexpr std::string_view DRAIN_STOP_MESSAGE = "the time budget ran out 
 struct PendingRejection {
     JSValue promise;
     JSValue reason;
-    bool afterInterrupt;  // recorded after the call's budget ran out: the budget's doing, never reported
+    bool afterInterrupt;     // recorded after the call's budget ran out: the budget's doing, never reported
+    std::uint64_t sequence;  // the tracker's stamp: a module's evaluation window is a range of these (vm_modules.cpp)
+};
+
+// Which way a module evaluation the engine ran was asked for: evaluateModule (Static) or an import() (Dynamic).
+enum class ImportPath : std::uint8_t { Static, Dynamic };
+
+// One attempt to load (and then link and evaluate) a module graph. Attempts never nest: an import() only queues a job.
+struct LoadAttempt {
+    explicit LoadAttempt(bool decides) noexcept : decidesStatus(decides) {}
+    bool decidesStatus;                  // evaluateModule's own attempt: its first refusal is the call's LoadError
+    bool loading = true;                 // false once the graph compiled: it is linking or evaluating
+    std::size_t depth = 0;               // compiles in progress, one inside another
+    std::string importer;                // the importing module's key for the next loader call ("" for an entry)
+    std::vector<std::string> compiling;  // the keys being compiled, innermost last (the attribute checker's module)
+    std::vector<std::string> created;    // keys compiled successfully, in order: what a failure retires
 };
 
 struct Vm::Impl {
@@ -125,10 +143,49 @@ struct Vm::Impl {
     void logDrainStop();
     void logUnhandledRejection(const ScriptError& reason, bool isErrorObject) const;
 
+    [[nodiscard]] EvalResult trapValue(JSValueConst value, Phase phase);
+
     // ---- the backend's callbacks (vm.cpp); unread parameters unnamed in the definitions ---------------------
     static int interruptHandler(JSRuntime* runtime, void* opaque) noexcept;
     static void rejectionTracker(JSContext* context, JSValueConst promise, JSValueConst reason, bool isHandled,
                                  void* opaque) noexcept;
+    void fireInterrupt() noexcept;
+    void keepSkipped(JSValue promise);  // takes the reference; evicts the oldest past MAX_SKIPPED_REJECTIONS
+    [[nodiscard]] bool isSkipped(JSValueConst promise) const;
+
+    // ---- modules (vm_modules.cpp) --------------------------------------------------------------------------
+    // Installs an attempt for its scope and removes it on every exit path. Nested, like CallScope: Impl is private
+    // to Vm, so only its own members can name it.
+    struct AttemptScope {
+        AttemptScope(Impl& vm, LoadAttempt& loadAttempt) noexcept;  // asserts no attempt is installed
+        AttemptScope(const AttemptScope&) = delete;
+        AttemptScope& operator=(const AttemptScope&) = delete;
+        AttemptScope(AttemptScope&&) = delete;
+        AttemptScope& operator=(AttemptScope&&) = delete;
+        ~AttemptScope();  // vm.attempt = nullptr
+        Impl& host;
+    };
+    [[nodiscard]] EvalResult evaluateModuleCall(std::string_view virtualPath);
+    void evaluateEntry(std::string_view key, EvalResult& result);
+    [[nodiscard]] HeldValue startModule(LoadAttempt& loadAttempt, std::string_view key, std::uint64_t& windowBegin);
+    [[nodiscard]] JSModuleDef* compileModule(std::string_view key, std::string_view importer);
+    // The outcome of one module evaluation the engine ran: the record, the attribution of its rejections (C.7), the
+    // flag clearing (D10). A rejected static entry also returns the call's failure, already logged; Dynamic logs
+    // nothing.
+    [[nodiscard]] std::optional<EvalResult> settleModule(std::string_view key, JSValueConst promise,
+                                                         std::uint64_t windowBegin, std::uint64_t windowEnd,
+                                                         ImportPath path);
+    void forgetModuleFailure(JSValueConst promise, JSValueConst reason, std::uint64_t windowBegin,
+                             std::uint64_t windowEnd, ImportPath path);
+    void refuse(std::string_view name, const std::string& message);  // records (an attempt that decides) + throws
+    void throwLoadError(std::string_view name, const std::string& message);
+    [[nodiscard]] HeldValue moduleValue(JSModuleDef* module) const;
+    [[nodiscard]] char* duplicateName(const std::string& name) const;  // js_malloc copy; nullptr: out of memory, thrown
+    static char* normalizeModuleName(JSContext* context, const char* base, const char* specifier,
+                                     void* opaque) noexcept;
+    static JSModuleDef* loadModule(JSContext* context, const char* name, void* opaque,
+                                   JSValueConst attributes) noexcept;
+    static int checkImportAttributes(JSContext* context, void* opaque, JSValueConst attributes) noexcept;
 
     // ---- state: `heap` FIRST, so it is destroyed LAST ------------------------------------------------------
     internal::HeapAccounting heap;
@@ -149,6 +206,14 @@ struct Vm::Impl {
     std::vector<JSValue> skippedRejections;
     std::uint64_t unhandledRejections = 0;
     std::uint64_t rejectionsHandledLate = 0;
+    // The modules (task 4.1.2). moduleTable holds strings and opaque addresses, never a backend value, so it may
+    // outlive the runtime.
+    const VirtualFileSystem* modules = nullptr;  // borrowed; null = no module source
+    internal::ModuleTable moduleTable;
+    LoadAttempt* attempt = nullptr;              // the attempt being served, or null between attempts
+    std::optional<ScriptError> callLoadFailure;  // the call's own attempt's first refusal; reset by CallScope
+    std::uint64_t rejectionSequence = 0;         // stamps PendingRejection::sequence
+    std::uint64_t moduleInstances = 0;
 };
 
 }  // namespace engine::script
