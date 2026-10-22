@@ -1775,3 +1775,185 @@ TEST_CASE("script: a job an earlier call left queued is its own Exception record
     CHECK(log.countAtLeast(LogLevel::Warn) == 0U);
     expectCleanShutdown(fx.vm);
 }
+
+// ---- ML31-ML34, ML38, ML47: import() --------------------------------------------------------------------------
+
+TEST_CASE("script: import() from a module resolves against that module and records a dynamic edge (ML31)") {
+    const LogCapture log;
+    ModuleFixture fx;
+    fx.files->set("sub/host.js", R"(globalThis.r = "pending";
+import("./lazy.js").then((ns) => { r = "lazy " + ns.v; }, (e) => { r = "failed " + e.message; });)");
+    fx.files->set("sub/lazy.js", "export const v = 8;");
+    fx.files->set("lazy.js", "export const v = 7;");  // the decoy: "lazy 7" would mean the base was not the importer
+
+    CHECK(label(fx.vm.evaluateModule("res://sub/host.js")) == "Ok");
+    CHECK(log.countAtLeast(LogLevel::Warn) == 0U);
+    CHECK(completion(fx.vm, "r") == "lazy 8");  // the drain of the same call served the import
+    const std::optional<ModuleRecord> host = recordOf(fx.vm, "res://sub/host.js");
+    REQUIRE(host.has_value());
+    CHECK(host->imports == std::vector<std::string>{"res://sub/lazy.js"});  // a DYNAMIC edge: nothing static
+    CHECK(stateOf(fx.vm, "res://sub/lazy.js") == "Evaluated");
+    CHECK(fx.files->reads("sub/lazy.js") == 1U);
+    CHECK(fx.files->reads("lazy.js") == 0U);
+
+    // A second module importing it dynamically re-reads nothing.
+    fx.files->set("second.js", R"(import("res://sub/lazy.js").then((ns) => { globalThis.second = ns.v; });)");
+    CHECK(label(fx.vm.evaluateModule("res://second.js")) == "Ok");
+    CHECK(completion(fx.vm, "second") == "8");
+    CHECK(fx.files->reads("sub/lazy.js") == 1U);
+    CHECK(log.countAtLeast(LogLevel::Warn) == 0U);
+    expectCleanShutdown(fx.vm);
+}
+
+namespace {
+
+// Runs `importCall` from global code named `fileName`, storing either outcome in `g`, and returns `g`.
+[[nodiscard]] std::string importOutcome(Vm& vm, std::string_view importCall, std::string_view fileName) {
+    const std::string source = "globalThis.g = 'pending'; " + std::string{importCall} +
+                               ".then((ns) => { g = 'abs ' + ns.v; }, (e) => { g = e.name + ': ' + e.message; }); 0";
+    const EvalResult result = vm.evaluateScript(source, fileName);
+    REQUIRE(label(result) == "Ok");
+    return completion(vm, "g");
+}
+
+}  // namespace
+
+TEST_CASE("script: import() from global code takes an absolute res:// path, and refuses a relative one (ML32)") {
+    using engine::script::internal::refusedSpecifierMessage;
+    using engine::script::internal::SpecifierRefusal;
+    const LogCapture log;
+    ModuleFixture fx;
+    fx.files->set("abs.js", "export const v = 3;");
+    fx.files->set("scripts/abs2.js", "export const v = 4;");
+
+    // Anti-vacuity: the absolute import succeeds in the same VM as the refusals.
+    CHECK(importOutcome(fx.vm, "import('res://abs.js')", "boot.js") == "abs 3");
+    CHECK(importOutcome(fx.vm, "import('./abs.js')", "boot.js") ==
+          "TypeError: cannot resolve './abs.js' imported by 'boot.js': a relative specifier needs a module under "
+          "res:// to resolve against");
+    // A script evaluated under a res:// name imports relatively.
+    CHECK(importOutcome(fx.vm, "import('./abs2.js')", "res://scripts/boot.js") == "abs 4");
+
+    // The engine's text is never cut at the backend's 256-byte message buffer...
+    const std::string longSpecifier = "./" + std::string(295, 'a') + ".js";
+    REQUIRE(longSpecifier.size() == 300U);
+    const std::string longMessage =
+        refusedSpecifierMessage(longSpecifier, "boot.js", SpecifierRefusal::NoModuleImporter);
+    CHECK(importOutcome(fx.vm, "import('" + longSpecifier + "')", "boot.js") == "TypeError: " + longMessage);
+    CHECK(longMessage.size() > 255U);
+    // ...and is never read as a format.
+    CHECK(importOutcome(fx.vm, "import('./100%s.js')", "boot.js").find("'./100%s.js'") != std::string::npos);
+    CHECK(log.countAtLeast(LogLevel::Warn) == 0U);  // every rejection was handled
+    expectCleanShutdown(fx.vm);
+
+    // A VM with no module source.
+    VmCreateResult created = Vm::create(VmConfig{});
+    REQUIRE(created.vm.valid());
+    Vm sourceless = std::move(created.vm);
+    CHECK(importOutcome(sourceless, "import('res://abs.js')", "boot.js") ==
+          "TypeError: cannot load 'res://abs.js' imported by 'boot.js': the VM has no module source (it was created "
+          "without a VirtualFileSystem)");
+    CHECK(log.countAtLeast(LogLevel::Warn) == 0U);
+    expectCleanShutdown(sourceless);
+}
+
+TEST_CASE("script: a failed import() the script catches logs nothing (ML33)") {
+    const LogCapture log;
+    ModuleFixture fx;
+    // (a) a module that throws: its internal rejection is attributed inside the engine's window, and the module
+    // promise is left listed for the backend's own handler.
+    fx.files->set("t.js", "throw new Error(\"boom\");");
+    const std::string catchThrow =
+        "globalThis.ca = 'none'; import('res://t.js').catch((e) => { ca = 'caught ' + e.message; }); 0";
+    CHECK(label(fx.vm.evaluateScript(catchThrow, "boot.js")) == "Ok");
+    CHECK(completion(fx.vm, "ca") == "caught boom");
+
+    // (b) a refused specifier.
+    const std::string catchRefusal =
+        "globalThis.cb = 'none'; import('lodash').catch((e) => { cb = 'caught ' + e.name; }); 0";
+    CHECK(label(fx.vm.evaluateScript(catchRefusal, "boot.js")) == "Ok");
+    CHECK(completion(fx.vm, "cb") == "caught TypeError");
+
+    // (c) the dynamic twin of ML24: a link that failed after binding an import, imported twice.
+    fx.files->set("j.js", "export const ok = 1;");
+    fx.files->set("half.js", R"(import { ok } from "./j.js"; import { nope } from "./j.js"; export const h = ok;)");
+    const std::string twice =
+        "globalThis.c1 = 'none'; globalThis.c2 = 'none';"
+        "import('res://half.js').catch((e) => { c1 = e.message; });"
+        "import('res://half.js').catch((e) => { c2 = e.message; }); 0";
+    CHECK(label(fx.vm.evaluateScript(twice, "boot.js")) == "Ok");
+    CHECK(completion(fx.vm, "c1") == "Could not find export 'nope' in module 'res://j.js'");
+    CHECK(completion(fx.vm, "c2") == "Could not find export 'nope' in module 'res://j.js?gen=2'");
+
+    CHECK(log.countAtLeast(LogLevel::Info) == 0U);  // nothing at all: no ERROR, no WARN, no late-handling INFO
+    CHECK(fx.vm.stats().unhandledRejections == 0U);
+    CHECK(fx.vm.stats().rejectionsHandledLate == 0U);
+    // The backend never linked half.js twice: a re-link would abort the Debug teardown or leak a block.
+    expectCleanShutdown(fx.vm);
+}
+
+TEST_CASE("script: an uncaught failed import() is exactly one unhandled-rejection record (ML34)") {
+    LogCapture log;
+    ModuleFixture fx;
+    CHECK(label(fx.vm.evaluateScript("import('res://missing.js'); 0", "boot.js")) == "Ok");
+    // Anti-vacuity: exactly one, not zero -- the report still fires for a genuinely unhandled import.
+    expectOnlyError(log,
+                    "script: boot.js: unhandled promise rejection: TypeError: cannot load 'res://missing.js' "
+                    "imported by 'boot.js': not found or unreadable through the VFS");
+    CHECK(fx.vm.stats().unhandledRejections == 1U);
+
+    log.clear();
+    fx.files->set("t2.js", "throw new Error(\"boom2\");");
+    CHECK(label(fx.vm.evaluateScript("import('res://t2.js'); 0", "boot.js")) == "Ok");
+    // One, not two: the module body's internal rejection is attributed inside the engine's window.
+    CHECK(onlyErrorMessage(log).starts_with("script: boot.js: unhandled promise rejection: Error: boom2"));
+    CHECK(fx.vm.stats().unhandledRejections == 2U);
+    expectCleanShutdown(fx.vm);
+}
+
+TEST_CASE("script: an interrupted module's recorded error is an ordinary error to every later import (ML38)") {
+    LogCapture log;
+    ModuleFixture fx{VmConfig{.callTimeBudget = std::chrono::milliseconds{50}}};
+    fx.files->set("loop.js", "for (;;) {}");
+    fx.files->set("user.js", "import \"./loop.js\";");
+
+    // Anti-vacuity: the error began uncatchable.
+    CHECK(label(fx.vm.evaluateModule("res://loop.js")) == "Interrupted");
+
+    log.clear();
+    const EvalResult caught = fx.vm.evaluateScript(
+        "globalThis.c = 'not reached'; import('res://loop.js').then(() => { c = 'resolved'; }, (e) => { c = 'caught "
+        "' + e.name + ': ' + e.message; }); 0",
+        "boot.js");
+    CHECK(label(caught) == "Ok");
+    CHECK(completion(fx.vm, "c") == "caught InternalError: interrupted");
+    CHECK(log.countAtLeast(LogLevel::Info) == 0U);  // nothing at any level
+    // Call 1 kept the module promise with the skipped ones, so the backend's handler in call 2 is silent.
+    CHECK(fx.vm.stats().rejectionsHandledLate == 0U);
+
+    const EvalResult later = fx.vm.evaluateModule("res://user.js");
+    CHECK(label(later) == "Exception");  // not Interrupted: this call's budget never fired
+    CHECK(later.error.message == "interrupted");
+    expectCleanShutdown(fx.vm);
+}
+
+TEST_CASE("script: a dynamic import attribute is a TypeError rejection; an empty set is no attribute (ML47)") {
+    const LogCapture log;
+    ModuleFixture fx;
+    fx.files->set("j.js", "export default 5;");
+    const auto outcome = [&fx](std::string_view options) {
+        const std::string source = "globalThis.o = 'pending'; import('res://j.js', " + std::string{options} +
+                                   ").then((ns) => { o = 'default ' + ns.default; }, (e) => { o = e.name + ': ' + "
+                                   "e.message; }); 0";
+        const EvalResult result = fx.vm.evaluateScript(source, "boot.js");
+        REQUIRE(label(result) == "Ok");
+        return completion(fx.vm, "o");
+    };
+    CHECK(outcome("{ with: { type: 'json' } }") ==
+          "TypeError: import attribute 'type' is not supported (this engine supports none)");
+    // Anti-vacuity: the checker is called for an empty `with` too, and must accept it.
+    CHECK(outcome("{ with: {} }") == "default 5");
+    CHECK(outcome("{}") == "default 5");
+    CHECK(log.countAtLeast(LogLevel::Warn) == 0U);
+    expectCleanShutdown(fx.vm);
+}

@@ -169,6 +169,7 @@ struct Vm::Impl {
     void evaluateEntry(std::string_view key, EvalResult& result);
     [[nodiscard]] HeldValue startModule(LoadAttempt& loadAttempt, std::string_view key, std::uint64_t& windowBegin);
     [[nodiscard]] JSModuleDef* compileModule(std::string_view key, std::string_view importer);
+    [[nodiscard]] char* serveDynamicImport(const char* base, const char* specifier);
     // The outcome of one module evaluation the engine ran: the record, the attribution of its rejections (C.7), the
     // flag clearing (D10). A rejected static entry also returns the call's failure, already logged; Dynamic logs
     // nothing.

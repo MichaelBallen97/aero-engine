@@ -115,6 +115,41 @@ HeldValue Vm::Impl::startModule(LoadAttempt& loadAttempt, std::string_view key, 
     return HeldValue{ctx, JS_EvalFunction(ctx, moduleValue(module).release())};  // consumes the minted reference
 }
 
+// ---- import() -------------------------------------------------------------------------------------------------
+
+// A normalizer call that arrives while no engine load is running IS a dynamic import(). It is served like an entry:
+// resolved by the same grammar, loaded, linked and evaluated by the engine itself, and only then handed to the backend
+// by name -- so a link failure is seen here (the backend never links a module twice), the module body's internal
+// rejection is attributed inside the engine's window, and the edge is recorded. A dynamic failure never changes the
+// call's status: it rejects the import(), which the script may catch.
+char* Vm::Impl::serveDynamicImport(const char* base, const char* specifier) {
+    const internal::SpecifierResolution target = internal::resolveModuleSpecifier(specifier, base);
+    const std::optional<std::string> importer = internal::importerKey(base);
+    const std::string importerText = importer.has_value() ? *importer : std::string{base};
+    if (target.refusal != internal::SpecifierRefusal::None) {
+        throwLoadError("TypeError", internal::refusedSpecifierMessage(specifier, importerText, target.refusal));
+        return nullptr;  // the import() rejects; a dynamic refusal is the script's to catch, never the call's status
+    }
+    if (importer.has_value()) {
+        moduleTable.addImport(*importer, target.key, internal::ImportKind::Dynamic);  // global code has no record
+    }
+    if (modules == nullptr) {
+        throwLoadError("TypeError", internal::noModuleSourceMessage(target.key, importerText));
+        return nullptr;
+    }
+    LoadAttempt dynamicAttempt{/*decides=*/false};
+    dynamicAttempt.importer = importerText;
+    std::uint64_t opened = rejectionSequence;  // the evaluation window is (opened, closed]
+    const HeldValue promise = startModule(dynamicAttempt, target.key, opened);
+    const std::uint64_t closed = rejectionSequence;
+    if (promise.isException()) {
+        moduleTable.retire(dynamicAttempt.created);
+        return nullptr;  // the failure stays pending: the backend rejects the import() with it, and never sees the name
+    }
+    static_cast<void>(settleModule(target.key, promise.get(), opened, closed, ImportPath::Dynamic));
+    return duplicateName(internal::encodeModuleName(target.key, moduleTable.generation(target.key)));
+}
+
 // ---- the one place a source becomes a module ------------------------------------------------------------------
 
 JSModuleDef* Vm::Impl::compileModule(std::string_view key, std::string_view importer) {
@@ -295,8 +330,7 @@ char* Vm::Impl::normalizeModuleName(JSContext* /*context*/, const char* base, co
         Impl& self = *static_cast<Impl*>(opaque);
         if (self.attempt == nullptr) {
             // No engine load is running: a dynamic import(), arriving from a job.
-            self.throwLoadError("TypeError", "import() is not supported by this VM yet");
-            return nullptr;
+            return self.serveDynamicImport(base, specifier);
         }
         if (!self.attempt->loading) {
             // Unreachable: no module request is made while a graph links or evaluates.
