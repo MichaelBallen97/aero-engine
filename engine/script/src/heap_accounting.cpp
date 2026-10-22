@@ -169,6 +169,9 @@ void HeapAccounting::release(void* block) noexcept {
     if (block == nullptr) {
         return;
     }
+    if (block == probeBlock) {
+        probeFired = true;
+    }
     void* base = static_cast<std::byte*>(block) - HEAP_HEADER_BYTES;
     if (holding && (headerWord(base) & HELD_BIT) != 0) {
         ++repeated;  // already held: its memory is still ours, and returnHeld() frees it exactly once
@@ -220,6 +223,18 @@ std::size_t HeapAccounting::requestedSize(const void* block) noexcept {
     }
     const std::uint64_t word = headerWord(static_cast<const std::byte*>(block) - HEAP_HEADER_BYTES);
     return (word & HELD_BIT) != 0 ? 0 : static_cast<std::size_t>(word);  // a held block reads as nothing
+}
+
+void HeapAccounting::armReleaseProbe(const void* block) noexcept {
+    probeBlock = block;
+    probeFired = false;
+}
+
+bool HeapAccounting::takeReleaseProbe() noexcept {
+    const bool fired = probeFired;
+    probeBlock = nullptr;
+    probeFired = false;
+    return fired;
 }
 
 std::size_t HeapAccounting::limitBytes() const noexcept { return limit; }

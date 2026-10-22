@@ -2780,6 +2780,56 @@ TEST_CASE(
     }
 }
 
+TEST_CASE(
+    "script: a failing module costs the skipped list nothing, so a promise a script still holds stays recognised "
+    "however many modules fail after it (ML73)") {
+    LogCapture log;
+    ModuleFixture fx;
+    // p2 and q2 are script-held promises kept by ML58's rule, from a synchronous body and from its top-level-await
+    // twin.
+    fx.files->set("h2.js", "const e = new Error('x2'); globalThis.p2 = Promise.reject(e); throw e;");
+    fx.files->set("t2.js", "const e = new Error('t2'); globalThis.q2 = Promise.reject(e); await null; throw e;");
+    constexpr int FAILING = 300;
+    for (int n = 0; n < FAILING; ++n) {
+        const std::string index = std::to_string(n);
+        fx.files->set("f" + index + ".js", "throw new Error('f" + index + "');");
+        fx.files->set("g" + index + ".js", "await null; throw new Error('g" + index + "');");
+    }
+
+    std::size_t failed = 0;
+    failed += label(fx.vm.evaluateModule("res://h2.js")) == "Exception" ? 1U : 0U;
+    failed += label(fx.vm.evaluateModule("res://t2.js")) == "Exception" ? 1U : 0U;
+    for (int n = 0; n < FAILING; ++n) {
+        const std::string index = std::to_string(n);
+        failed += label(fx.vm.evaluateModule("res://f" + index + ".js")) == "Exception" ? 1U : 0U;
+        failed += label(fx.vm.evaluateModule("res://g" + index + ".js")) == "Exception" ? 1U : 0U;
+    }
+    CHECK(failed == 602U);
+
+    // The arithmetic: the skipped list has 256 slots. 600 failing modules overrun them at one slot per module of either
+    // kind, and the 300 synchronous ones overrun what p2 and q2 leave at one slot each -- so each way of keeping more
+    // than is needed evicts something this call handles, and its handler would log "handled later".
+    log.clear();
+    CHECK(completion(fx.vm,
+                     "p2.catch(() => {}); q2.catch(() => {}); import('res://f0.js').catch(() => {}); "
+                     "import('res://g0.js').catch(() => {}); 0") == "0");
+    CHECK(log.countAtLeast(LogLevel::Info) == 0U);
+    CHECK(fx.vm.stats().rejectionsHandledLate == 0U);
+
+    // Anti-vacuity: a late handler is observable.
+    log.clear();
+    CHECK(completion(fx.vm, "globalThis.z = Promise.reject(new Error('z')); 0") == "0");
+    CHECK(firstLine(onlyErrorMessage(log)) == "script: probe.js: unhandled promise rejection: Error: z");
+    log.clear();
+    CHECK(completion(fx.vm, "z.catch(() => {}); 0") == "0");
+    const std::vector<CapturedRecord> records = log.atLeast(LogLevel::Info);
+    REQUIRE(records.size() == 1U);
+    CHECK(records[0].level == LogLevel::Info);
+    CHECK(records[0].message == "script: probe.js: a promise rejection reported as unhandled was handled later");
+    CHECK(fx.vm.stats().rejectionsHandledLate == 1U);
+    expectCleanShutdown(fx.vm);
+}
+
 // ---- ML31-ML34, ML38, ML47: import() --------------------------------------------------------------------------
 
 TEST_CASE("script: import() from a module resolves against that module and records a dynamic edge (ML31)") {

@@ -2045,3 +2045,29 @@ TEST_CASE("script: the allocator counts a refused growth apart from a refused ze
     CHECK(heap.bytesInUse() == 0U);
     CHECK(heap.liveBlocks() == 0U);
 }
+
+TEST_CASE("script: the allocator's release probe answers for its own block, once (VM64)") {
+    using engine::script::internal::HeapAccounting;
+    HeapAccounting heap{4096};
+    void* const p = heap.allocate(24);
+    void* const q = heap.allocate(24);
+    REQUIRE(p != nullptr);
+    REQUIRE(q != nullptr);
+
+    CHECK_FALSE(heap.takeReleaseProbe());  // nothing armed
+    heap.armReleaseProbe(p);
+    heap.release(q);
+    CHECK_FALSE(heap.takeReleaseProbe());  // another block's release
+    heap.armReleaseProbe(p);
+    heap.release(p);
+    CHECK(heap.takeReleaseProbe());
+    CHECK_FALSE(heap.takeReleaseProbe());  // the take disarmed it
+
+    // Unarmed, a release answers nothing -- wherever the new block lands: under ASan's quarantine it is not p's
+    // address, and elsewhere it may be.
+    void* const r = heap.allocate(24);
+    REQUIRE(r != nullptr);
+    heap.release(r);
+    CHECK_FALSE(heap.takeReleaseProbe());
+    CHECK(heap.liveBlocks() == 0U);
+}

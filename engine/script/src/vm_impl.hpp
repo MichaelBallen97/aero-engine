@@ -170,7 +170,9 @@ struct Vm::Impl {
                                  void* opaque) noexcept;
     void fireInterrupt() noexcept;
     void keepSkipped(JSValue promise);  // takes the reference; evicts the oldest past MAX_SKIPPED_REJECTIONS
-    [[nodiscard]] bool isSkipped(JSValueConst promise) const;
+    [[nodiscard]] bool isSkipped(JSValueConst promise) const;  // either list below
+    void keepModulePromise(JSValue promise);  // takes the reference; one per module promise, never evicted
+    void keepIfReferenced(JSValue promise);   // takes the reference; keeps it only if something else still holds it
 
     // ---- modules (vm_modules.cpp) --------------------------------------------------------------------------
     // Installs an attempt for its scope and removes it on every exit path. Nested, like CallScope: Impl is private
@@ -228,6 +230,9 @@ struct Vm::Impl {
     // Promises whose rejection the end-of-call report skipped because the budget caused it. The reference is kept
     // so a handler attached in a later call is recognised as handling something never reported.
     std::vector<JSValue> skippedRejections;
+    // The module promises of failed module evaluations: each is held by its module until teardown anyway, so keeping
+    // them costs no memory and needs no cap -- there is at most one per module instance. Never in skippedRejections.
+    std::vector<JSValue> failedModulePromises;
     std::uint64_t unhandledRejections = 0;
     std::uint64_t rejectionsHandledLate = 0;
     // The modules (task 4.1.2). moduleTable holds strings and opaque addresses, never a backend value, so it may

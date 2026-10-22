@@ -290,7 +290,8 @@ std::optional<EvalResult> Vm::Impl::settleModule(std::string_view key, JSValueCo
 // the module promise. The body's is rejected while the module promise is still pending (inside JS_EvalFunction, or in
 // a drain once a top-level await the module imports has settled), so the tracker tagged it with this watch; the
 // module promise is matched by identity. Same value, not strict equality: a module that throws NaN is one failure too.
-// Both go to the skipped list rather than being freed, so a handler attached later is silent, never "handled late".
+// The module promise goes to its own list -- its module holds it until teardown anyway -- and any other erased promise
+// is kept only while something else holds it, so a handler attached later is silent, never "handled late".
 void Vm::Impl::forgetModuleFailure(JSValueConst promise, JSValueConst reason, std::uint64_t watch, ImportPath path,
                                    bool carried) {
     bool kept = false;
@@ -301,14 +302,19 @@ void Vm::Impl::forgetModuleFailure(JSValueConst promise, JSValueConst reason, st
         if (isModulePromise || (tagged && JS_IsSameValue(ctx, entry->reason, reason))) {
             kept = kept || isModulePromise;
             JS_FreeValue(ctx, entry->reason);
-            keepSkipped(entry->promise);  // takes the listed reference
+            if (isModulePromise) {
+                // takes the listed reference; a later import's handler is silent
+                keepModulePromise(entry->promise);
+            } else {
+                keepIfReferenced(entry->promise);  // the body's own promise goes; a script's is kept
+            }
             entry = pendingRejections.erase(entry);
         } else {
             ++entry;
         }
     }
     if (path == ImportPath::Static && !carried && !kept && !isSkipped(promise)) {
-        keepSkipped(JS_DupValue(ctx, promise));  // a cached failure re-observed, not kept yet
+        keepModulePromise(JS_DupValue(ctx, promise));  // a cached failure re-observed, not kept yet
     }
 }
 

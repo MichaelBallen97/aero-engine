@@ -72,6 +72,12 @@ public:
     void holdReleases() noexcept;
     [[nodiscard]] HeldReturn returnHeld() noexcept;
 
+    // A one-shot release probe: armReleaseProbe(block), then whatever may free it, then takeReleaseProbe() answers
+    // whether that block was released in between (and disarms). It tells a value nothing else referred to -- freed
+    // when its last reference went -- from one something still holds.
+    void armReleaseProbe(const void* block) noexcept;
+    [[nodiscard]] bool takeReleaseProbe() noexcept;
+
     [[nodiscard]] std::size_t limitBytes() const noexcept;
     // Sum of (size + HEAP_HEADER_BYTES) over live blocks. It may exceed limitBytes(), by bytes a grace window admitted.
     [[nodiscard]] std::size_t bytesInUse() const noexcept;
@@ -100,6 +106,8 @@ private:
     void* heldHead = nullptr;  // the held blocks, linked through their own headers
     std::size_t heldCount = 0;
     std::size_t repeated = 0;
+    const void* probeBlock = nullptr;
+    bool probeFired = false;
 };
 
 }  // namespace engine::script::internal

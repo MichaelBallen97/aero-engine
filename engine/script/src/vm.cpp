@@ -154,6 +154,10 @@ VmTeardownReport Vm::Impl::shutdown() noexcept {
         JS_FreeValue(ctx, promise);
     }
     skippedRejections.clear();
+    for (const JSValue promise : failedModulePromises) {
+        JS_FreeValue(ctx, promise);
+    }
+    failedModulePromises.clear();
     // R23: from here until JS_FreeRuntime returns, a block the backend releases stays ours (HeapAccounting's hold).
     heap.holdReleases();
     if (ctx != nullptr) {
@@ -267,11 +271,13 @@ void Vm::Impl::rejectionTracker(JSContext* context, JSValueConst promise, JSValu
         }
         // A promise the report skipped -- the budget's doing, or a module's own failure the call returned as its
         // status -- was never reported either: handling it is silent too.
-        for (auto skipped = self.skippedRejections.begin(); skipped != self.skippedRejections.end(); ++skipped) {
-            if (JS_IsStrictEqual(context, *skipped, promise)) {
-                JS_FreeValue(context, *skipped);
-                self.skippedRejections.erase(skipped);
-                return;
+        for (std::vector<JSValue>* kept : {&self.skippedRejections, &self.failedModulePromises}) {
+            for (auto skipped = kept->begin(); skipped != kept->end(); ++skipped) {
+                if (JS_IsStrictEqual(context, *skipped, promise)) {
+                    JS_FreeValue(context, *skipped);
+                    kept->erase(skipped);
+                    return;
+                }
             }
         }
         ++self.rejectionsHandledLate;
@@ -400,12 +406,44 @@ void Vm::Impl::keepSkipped(JSValue promise) {
 }
 
 bool Vm::Impl::isSkipped(JSValueConst promise) const {
-    for (const JSValue skipped : skippedRejections) {
-        if (JS_IsStrictEqual(ctx, skipped, promise)) {  // identity for objects: runs no script code
-            return true;
+    for (const std::vector<JSValue>* kept : {&skippedRejections, &failedModulePromises}) {
+        for (const JSValue skipped : *kept) {
+            if (JS_IsStrictEqual(ctx, skipped, promise)) {  // identity for objects: runs no script code
+                return true;
+            }
         }
     }
     return false;
+}
+
+void Vm::Impl::keepModulePromise(JSValue promise) {
+    for (const JSValue kept : failedModulePromises) {
+        if (JS_IsStrictEqual(ctx, kept, promise)) {
+            JS_FreeValue(ctx, promise);  // already kept: this reference is one too many
+            return;
+        }
+    }
+    failedModulePromises.push_back(promise);
+    assert(failedModulePromises.size() <= moduleInstances);  // one module promise per instance, at most
+}
+
+// A rejected promise nothing but this list refers to can never be handled, so keeping it is waste -- and every
+// failing synchronous module leaves one, its body's own promise, which the backend drops at once
+// (quickjs.c:31407-31409). Drop the list's reference with the allocator watching the object's block: if the block went,
+// that reference was the last; if not, something else holds the promise, and the VM takes a new reference to keep it.
+// Two facts of the pinned port make the answer exact, re-read at every version bump: an object is one js_malloc block
+// at the value's own address (quickjs.c:5748-5749), and outside the collector its last reference frees it at once
+// (:6799-6807, :6765-6775, :6715-6730, :6697). Only end-of-call bookkeeping calls this, never the collector. A backend
+// that freed objects otherwise would leave the probe silent and a freed promise kept: the Debug lanes' ASan stops the
+// first case with a failing synchronous module.
+void Vm::Impl::keepIfReferenced(JSValue promise) {
+    assert(JS_IsObject(promise));  // a listed rejection's promise: one block, at the value's own address
+    heap.armReleaseProbe(JS_VALUE_GET_PTR(promise));
+    JS_FreeValue(ctx, promise);
+    if (!heap.takeReleaseProbe()) {
+        // still alive, so the value still names it: a new reference is safe
+        keepSkipped(JS_DupValue(ctx, promise));
+    }
 }
 
 // The list is swapped out BEFORE anything is described: describe may run script code (a getter) that rejects
