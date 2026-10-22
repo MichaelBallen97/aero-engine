@@ -3,6 +3,8 @@
 #include <aero/script/internal/heap_accounting.hpp>
 
 #include <algorithm>
+#include <array>
+#include <bit>
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
@@ -17,6 +19,50 @@ namespace {
     std::size_t size = 0;
     std::memcpy(&size, static_cast<const std::byte*>(block) - HEAP_HEADER_BYTES, sizeof size);
     return size;
+}
+
+// A held block's header (16 bytes, ours alone: the backend never writes before the payload) is rewritten as
+//   word 0: HELD_BIT | (bytes captured, 0-7) << 56 | the payload's first bytes at release, packed low byte first
+//   word 1: the next held block's base, a whole pointer
+// A live block's word 0 is its size, always below 2^56, so HELD_BIT tells a held block from a live one, and a second
+// release of the same block is recognised by its header. No bit of any pointer is borrowed: Android's allocator tags
+// the top byte of the pointers it returns. The hold needs no memory of its own.
+constexpr std::uint64_t HELD_BIT = std::uint64_t{1} << 63U;
+constexpr unsigned CAPTURED_SHIFT = 56U;
+constexpr std::uint64_t CAPTURED_FIELD = std::uint64_t{0x7FU} << CAPTURED_SHIFT;
+constexpr std::uint64_t PREFIX_MASK = (std::uint64_t{1} << CAPTURED_SHIFT) - 1U;
+static_assert(HELD_SNAPSHOT_BYTES * 8U <= CAPTURED_SHIFT);
+static_assert(HEAP_HEADER_BYTES >= sizeof(std::uint64_t) + sizeof(void*));
+
+[[nodiscard]] std::uint64_t headerWord(const void* base) noexcept {
+    std::uint64_t word = 0;
+    std::memcpy(&word, base, sizeof word);
+    return word;
+}
+
+void setHeaderWord(void* base, std::uint64_t word) noexcept { std::memcpy(base, &word, sizeof word); }
+
+// Word 1 travels as bytes (std::bit_cast), so no pointer-to-pointer conversion is ever made.
+using PointerBytes = std::array<std::byte, sizeof(void*)>;
+
+[[nodiscard]] void* nextHeld(const void* base) noexcept {
+    PointerBytes bytes{};
+    std::memcpy(bytes.data(), static_cast<const std::byte*>(base) + sizeof(std::uint64_t), bytes.size());
+    return std::bit_cast<void*>(bytes);
+}
+
+void setNextHeld(void* base, void* next) noexcept {
+    const auto bytes = std::bit_cast<PointerBytes>(next);
+    std::memcpy(static_cast<std::byte*>(base) + sizeof(std::uint64_t), bytes.data(), bytes.size());
+}
+
+[[nodiscard]] std::uint64_t packedPrefix(const void* base, std::size_t captured) noexcept {
+    const auto* payload = static_cast<const unsigned char*>(base) + HEAP_HEADER_BYTES;
+    std::uint64_t packed = 0;
+    for (std::size_t i = 0; i < captured; ++i) {
+        packed |= std::uint64_t{payload[i]} << (8U * i);
+    }
+    return packed;
 }
 
 }  // namespace
@@ -111,10 +157,49 @@ void HeapAccounting::release(void* block) noexcept {
     if (block == nullptr) {
         return;
     }
+    void* base = static_cast<std::byte*>(block) - HEAP_HEADER_BYTES;
+    if (holding && (headerWord(base) & HELD_BIT) != 0) {
+        ++repeated;  // already held: its memory is still ours, and returnHeld() frees it exactly once
+        return;
+    }
     const std::size_t size = readHeader(block);
     inUse -= size + HEAP_HEADER_BYTES;
     --blocks;
-    std::free(static_cast<std::byte*>(block) - HEAP_HEADER_BYTES);
+    if (holding) {
+        assert(size <= PREFIX_MASK);  // a live block's size is far below 2^56
+        const std::size_t captured = std::min(size, HELD_SNAPSHOT_BYTES);
+        setHeaderWord(base, HELD_BIT | (std::uint64_t{captured} << CAPTURED_SHIFT) | packedPrefix(base, captured));
+        setNextHeld(base, heldHead);
+        heldHead = base;
+        ++heldCount;
+        return;
+    }
+    std::free(base);
+}
+
+void HeapAccounting::holdReleases() noexcept {
+    holding = true;
+    repeated = 0;
+}
+
+HeldReturn HeapAccounting::returnHeld() noexcept {
+    HeldReturn report{heldCount, 0, repeated};
+    void* base = heldHead;
+    while (base != nullptr) {
+        const std::uint64_t word = headerWord(base);
+        void* const next = nextHeld(base);
+        const auto captured = static_cast<std::size_t>((word & CAPTURED_FIELD) >> CAPTURED_SHIFT);
+        if (packedPrefix(base, captured) != (word & PREFIX_MASK)) {
+            ++report.writtenAfterRelease;
+        }
+        std::free(base);
+        base = next;
+    }
+    heldHead = nullptr;
+    heldCount = 0;
+    holding = false;
+    repeated = 0;
+    return report;
 }
 
 std::size_t HeapAccounting::requestedSize(const void* block) noexcept {

@@ -566,6 +566,10 @@ void expectCleanShutdown(Vm& vm) {
     const VmTeardownReport report = vm.shutdown();
     CHECK(report.leakedAllocations == 0U);
     CHECK(report.leakedBytes == 0U);
+    // R23: the teardown wrote nothing into memory the backend had already released. A case that turns this red has
+    // found a new shape of that backend defect -- record it on R23's row, and never relax the check.
+    CHECK(report.writtenAfterRelease == 0U);
+    CHECK(report.repeatedReleases == 0U);
     CHECK_FALSE(vm.valid());
 }
 
@@ -1774,6 +1778,65 @@ TEST_CASE("script: a job an earlier call left queued is its own Exception record
     CHECK(label(fx.vm.evaluateScript("0", "after.js")) == "Ok");
     CHECK(log.countAtLeast(LogLevel::Warn) == 0U);
     expectCleanShutdown(fx.vm);
+}
+
+// ---- ML52: the teardown hold, through the VFS -----------------------------------------------------------------
+
+namespace {
+
+// Tears the fixture's VM down and checks the report: no leak, nothing released twice, and the late writes counted
+// (`expectWrites`) or not. The teardown itself must log nothing at WARN or above.
+std::size_t shutdownCountingWrites(LogCapture& log, ModuleFixture& fx, bool expectWrites) {
+    log.clear();
+    const VmTeardownReport report = fx.vm.shutdown();
+    CHECK(report.leakedAllocations == 0U);
+    CHECK(report.leakedBytes == 0U);
+    CHECK(report.repeatedReleases == 0U);
+    if (expectWrites) {
+        CHECK(report.writtenAfterRelease >= 1U);
+    } else {
+        CHECK(report.writtenAfterRelease == 0U);
+    }
+    CHECK(log.countAtLeast(LogLevel::Warn) == 0U);
+    return report.writtenAfterRelease;
+}
+
+}  // namespace
+
+TEST_CASE(
+    "script: a top-level await still pending at teardown is held, and its writes after release are counted "
+    "(ML52)") {
+    LogCapture log;
+    const std::string held = "globalThis.release = null; await new Promise((r) => { globalThis.release = r; });";
+    {
+        // (a) a resolver a global keeps, evaluated as an entry.
+        ModuleFixture fx;
+        fx.files->set("held.js", held);
+        CHECK(label(fx.vm.evaluateModule("res://held.js")) == "Ok");  // with its pending WARN, as ML29(b)
+        MESSAGE("held (static): writtenAfterRelease " << shutdownCountingWrites(log, fx, true));
+    }
+    {
+        // (b) the same module, reached through import().
+        ModuleFixture fx;
+        fx.files->set("held.js", held);
+        CHECK(label(fx.vm.evaluateScript("import('res://held.js'); 0", "boot.js")) == "Ok");
+        MESSAGE("held (import): writtenAfterRelease " << shutdownCountingWrites(log, fx, true));
+    }
+    {
+        // (c) nothing can ever resolve it, yet the import's reaction functions hold it.
+        ModuleFixture fx;
+        fx.files->set("never.js", "await new Promise(() => {});");
+        CHECK(label(fx.vm.evaluateScript("import('res://never.js'); 0", "boot.js")) == "Ok");
+        MESSAGE("never (import): writtenAfterRelease " << shutdownCountingWrites(log, fx, true));
+    }
+    {
+        // (d) anti-vacuity, both directions: the same never-settling await evaluated statically is not the shape -- its
+        // pending evaluation is collected before the module is freed -- so the count can tell the two apart.
+        ModuleFixture fx;
+        fx.files->set("never.js", "await new Promise(() => {});");
+        CHECK(label(fx.vm.evaluateModule("res://never.js")) == "Ok");  // with its pending WARN
+        CHECK(shutdownCountingWrites(log, fx, false) == 0U);
+    }
 }
 
 // ---- ML31-ML34, ML38, ML47: import() --------------------------------------------------------------------------

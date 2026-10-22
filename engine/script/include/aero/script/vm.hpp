@@ -154,9 +154,18 @@ struct VmStats {
 // What teardown found. A leak-free VM reports zeros. NOTE: in a build whose backend has assertions on
 // (every *-debug preset), a leaked object or function aborts inside the backend's teardown before this
 // report exists; a leaked string is still reported here.
+//
+// The last two count a backend defect the VM contains (R23 in docs/08-risks.md): when a module's top-level await is
+// still pending at teardown and something still refers to that evaluation -- a resolver a global or a module binding
+// keeps, an importer awaiting it, an import() of it -- the backend frees the module first and writes into it
+// afterwards. The VM keeps every block the backend releases during teardown until the backend is done, so those writes
+// land in memory the VM still owns: writtenAfterRelease counts the blocks written after their release (0 unless such
+// an await was pending), repeatedReleases the blocks released twice (none measured).
 struct VmTeardownReport {
     std::size_t leakedAllocations = 0;
     std::size_t leakedBytes = 0;
+    std::size_t writtenAfterRelease = 0;
+    std::size_t repeatedReleases = 0;
 };
 
 struct VmCreateResult;

@@ -17,6 +17,7 @@
 
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cstddef>
@@ -117,6 +118,10 @@ void expectCleanShutdown(Vm& vm) {
     const VmTeardownReport report = vm.shutdown();
     CHECK(report.leakedAllocations == 0U);
     CHECK(report.leakedBytes == 0U);
+    // R23: the teardown wrote nothing into memory the backend had already released. A case that turns this red has
+    // found a new shape of that backend defect -- record it on R23's row, and never relax the check.
+    CHECK(report.writtenAfterRelease == 0U);
+    CHECK(report.repeatedReleases == 0U);
     CHECK_FALSE(vm.valid());
 }
 
@@ -1894,4 +1899,58 @@ TEST_CASE("script: the allocator's grace window admits past the limit, and only 
     heap.release(grown);
     CHECK(heap.bytesInUse() == 0U);
     CHECK(heap.liveBlocks() == 0U);
+}
+
+TEST_CASE(
+    "script: the allocator's teardown hold keeps released blocks, sees a write after release, and frees each block "
+    "once (VM61)") {
+    using engine::script::internal::HeapAccounting;
+    using engine::script::internal::HeldReturn;
+    HeapAccounting heap{4096};
+    auto* a = static_cast<unsigned char*>(heap.allocate(32));
+    auto* b = static_cast<unsigned char*>(heap.allocate(4));
+    auto* c = static_cast<unsigned char*>(heap.allocate(64));
+    REQUIRE(a != nullptr);
+    REQUIRE(b != nullptr);
+    REQUIRE(c != nullptr);
+    std::fill(a, a + 32, static_cast<unsigned char>(0x11));
+    std::fill(b, b + 4, static_cast<unsigned char>(0x22));
+    std::fill(c, c + 64, static_cast<unsigned char>(0x33));
+    CHECK(heap.bytesInUse() == 148U);
+
+    heap.holdReleases();
+    heap.release(a);
+    heap.release(b);
+    heap.release(c);
+    CHECK(heap.bytesInUse() == 0U);  // accounted as returned...
+    CHECK(heap.liveBlocks() == 0U);
+    // ...but still the heap's memory: this case writes into the released blocks ON PURPOSE, which the hold is what
+    // makes legal -- exactly what the backend does to a freed module at teardown (R23).
+    a[0] = 0x10;      // inside the seven recorded bytes: seen
+    b[3] = 0x23;      // the last byte of a 4-byte block, recorded: seen
+    c[8] = 0x00;      // past the seven recorded bytes: not seen
+    heap.release(c);  // a second release of a held block: absorbed, never freed twice
+    const HeldReturn held = heap.returnHeld();
+    CHECK(held.blocks == 3U);
+    CHECK(held.writtenAfterRelease == 2U);
+    CHECK(held.repeatedReleases == 1U);
+    CHECK(heap.bytesInUse() == 0U);
+    CHECK(heap.liveBlocks() == 0U);
+
+    // The hold ended: a release frees at once, and a second report has nothing.
+    void* const d = heap.allocate(8);
+    REQUIRE(d != nullptr);
+    heap.release(d);
+    CHECK(heap.liveBlocks() == 0U);
+    CHECK(heap.returnHeld().blocks == 0U);
+
+    // Anti-vacuity for the written count: a clean hold reports one block and nothing written.
+    void* const e = heap.allocate(100);
+    REQUIRE(e != nullptr);
+    heap.holdReleases();
+    heap.release(e);
+    const HeldReturn clean = heap.returnHeld();
+    CHECK(clean.blocks == 1U);
+    CHECK(clean.writtenAfterRelease == 0U);
+    CHECK(clean.repeatedReleases == 0U);
 }

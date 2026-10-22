@@ -149,6 +149,8 @@ VmTeardownReport Vm::Impl::shutdown() noexcept {
         JS_FreeValue(ctx, promise);
     }
     skippedRejections.clear();
+    // R23: from here until JS_FreeRuntime returns, a block the backend releases stays ours (HeapAccounting's hold).
+    heap.holdReleases();
     if (ctx != nullptr) {
         JS_FreeContext(ctx);  // a reference drop: functions still referenced by queued jobs hold their realm alive
         ctx = nullptr;
@@ -171,8 +173,10 @@ VmTeardownReport Vm::Impl::shutdown() noexcept {
         JS_FreeRuntime(rt);  // frees queued jobs, collects, asserts (Debug), then frees the runtime itself
         rt = nullptr;
     }
+    const internal::HeldReturn held = heap.returnHeld();
     // The runtime's last act was returning its own block, so on a leak-free run both counts are zero.
-    const VmTeardownReport report{heap.liveBlocks(), heap.bytesInUse()};
+    const VmTeardownReport report{heap.liveBlocks(), heap.bytesInUse(), held.writtenAfterRelease,
+                                  held.repeatedReleases};
     if (report.leakedAllocations != 0) {
         AERO_LOG_ERROR("script: VM teardown: {} allocations ({} bytes) were never returned to the heap",
                        report.leakedAllocations, report.leakedBytes);

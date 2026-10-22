@@ -53,6 +53,8 @@ static_assert(std::is_nothrow_default_constructible_v<script::Vm>);
 static_assert(std::is_default_constructible_v<script::VmCreateResult>);
 static_assert(script::VmStats{}.heapBytesInUse == 0U);
 static_assert(script::VmTeardownReport{}.leakedAllocations == 0U);
+static_assert(script::VmTeardownReport{}.writtenAfterRelease == 0U);
+static_assert(script::VmTeardownReport{}.repeatedReleases == 0U);
 static_assert(noexcept(script::scriptBackendVersion()));
 static_assert(std::is_same_v<decltype(script::scriptBackendVersion()), std::string_view>);
 
