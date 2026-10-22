@@ -47,10 +47,13 @@ EvalStatus Vm::Impl::classify(JSValueConst exception, Phase phase) {
     if (interruptFired) {
         return EvalStatus::Interrupted;
     }
-    // Both witnesses are needed. The refusal alone would mislabel a script that caught an out-of-memory error
-    // and later threw something unrelated; the value alone cannot tell the backend's `null` (thrown when not
-    // even the error object fits) from a script's own `throw null`.
-    if (heap.refusals() > refusalsAtCallStart && (JS_IsNull(exception) || isOutOfMemoryError(exception))) {
+    // Both witnesses are needed while code runs: the refusal alone would mislabel a script that caught an out-of-memory
+    // error and later threw something unrelated; the value alone cannot tell the backend's `null` (thrown when not even
+    // the error object fits) from a script's own `throw null`. A compile runs no script code, so there the refusal
+    // alone decides: the parser keeps parsing after its bytecode buffer failed to grow, and the next assignment's
+    // SyntaxError replaces the out-of-memory error (quickjs.c:23357-23362, :25615-25623, :7594-7600).
+    if (heap.refusals() > refusalsAtCallStart &&
+        (phase == Phase::Compile || JS_IsNull(exception) || isOutOfMemoryError(exception))) {
         return EvalStatus::OutOfMemory;
     }
     // A load refusal of THIS call's own attempt -- never a dynamic import's, which is the script's to catch -- is why

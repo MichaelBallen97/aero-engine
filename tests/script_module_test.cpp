@@ -2372,6 +2372,58 @@ TEST_CASE("script: an import() from an old generation loads but records no edge 
     expectCleanShutdown(fx.vm);
 }
 
+// ---- ML64: a compile the heap limit starves ----------------------------------------------------------------------
+
+namespace {
+
+// e13's shape, "globalThis.x<n> = <n>;" with <n> the source's size so far, grown while it stays 40 bytes under
+// `bytes`: 524 259 bytes for 512 KiB. Under a 1 MiB heap its compile runs out of heap -- which the backend's Release
+// variant reports as a SyntaxError ("invalid assignment left-hand side") and its Debug variant as `null`.
+[[nodiscard]] std::string heavySource(std::size_t bytes) {
+    std::string source;
+    while (source.size() + 40 < bytes) {
+        source += "globalThis.x" + std::to_string(source.size()) + " = " + std::to_string(source.size()) + ";\n";
+    }
+    return source;
+}
+
+}  // namespace
+
+TEST_CASE(
+    "script: a dependency that runs out of heap while compiling is OutOfMemory, retires what the attempt "
+    "created, and the VM recovers (ML64)") {
+    // This tells the old classification from the new one on the Release lanes only: there the parser reports the
+    // refused allocation as a SyntaxError, while on the Debug lanes the same size throws the backend's `null`, which
+    // the old rule already classified OutOfMemory.
+    const LogCapture log;
+    ModuleFixture fx{patient(VmConfig{.heapLimitBytes = MIB})};
+    fx.files->set("ok.js", "export const ok = 1;");
+    fx.files->set("heavy.js", heavySource(512 * KIB));  // under the 1 MiB source cap: the loader reads it
+    fx.files->set("a.js", R"(import "./ok.js"; import "./heavy.js";)");
+
+    const EvalResult result = fx.vm.evaluateModule("res://a.js");
+    CHECK(label(result) == "OutOfMemory");
+    const std::string starvedPrefix = "script: res://a.js: out of memory (heap limit 1048576 bytes, ";
+    CHECK(firstLine(onlyErrorMessage(log)).starts_with(starvedPrefix));
+    CHECK(fx.vm.stats().refusedAllocations > 0U);
+    const std::optional<ModuleRecord> ok = recordOf(fx.vm, "res://ok.js");
+    REQUIRE(ok.has_value());
+    CHECK(ok->generation == 2U);  // retired with the attempt that created it (D7)
+    CHECK(moduleStateLabel(ok->state) == "Unloaded");
+    for (const std::string_view path : std::array<std::string_view, 2>{"res://heavy.js", "res://a.js"}) {
+        INFO("path: " << std::string{path});
+        const std::optional<ModuleRecord> record = recordOf(fx.vm, path);
+        REQUIRE(record.has_value());
+        CHECK(record->generation == 1U);
+        CHECK(moduleStateLabel(record->state) == "Unloaded");
+    }
+    CHECK(fx.files->reads("heavy.js") == 1U);
+    CHECK(fx.vm.stats().moduleInstances == 1U);
+    MESSAGE("starved compile: " << result.error.name << ": " << result.error.message);
+    CHECK(completion(fx.vm, "1 + 1") == "2");
+    expectCleanShutdown(fx.vm);
+}
+
 // ---- ML31-ML34, ML38, ML47: import() --------------------------------------------------------------------------
 
 TEST_CASE("script: import() from a module resolves against that module and records a dynamic edge (ML31)") {

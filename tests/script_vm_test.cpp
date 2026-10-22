@@ -1954,3 +1954,38 @@ TEST_CASE(
     CHECK(clean.writtenAfterRelease == 0U);
     CHECK(clean.repeatedReleases == 0U);
 }
+
+namespace {
+
+// e13's shape (script_module_test.cpp's ML64 has the same two lines): 524 259 bytes for 512 KiB.
+[[nodiscard]] std::string heavySource(std::size_t bytes) {
+    std::string source;
+    while (source.size() + 40 < bytes) {
+        source += "globalThis.x" + std::to_string(source.size()) + " = " + std::to_string(source.size()) + ";\n";
+    }
+    return source;
+}
+
+}  // namespace
+
+TEST_CASE(
+    "script: a script the heap limit starves while it compiles is OutOfMemory, whatever error the parser "
+    "reported (VM62)") {
+    // Like ML64, this tells the two rules apart on the Release lanes: the Debug variant throws `null` at this size.
+    LogCapture log;
+    VmConfig config;
+    config.heapLimitBytes = engine::script::MIN_HEAP_LIMIT_BYTES;
+    Vm vm = makeVm(patient(config));
+    const EvalResult starved = vm.evaluateScript(heavySource(512 * KIB), "heavy.js");
+    CHECK(starved.status == EvalStatus::OutOfMemory);
+    const std::string starvedPrefix = "script: heavy.js: out of memory (heap limit 1048576 bytes, ";
+    CHECK(firstLine(onlyErrorMessage(log)).starts_with(starvedPrefix));
+
+    // Anti-vacuity, the refusal is per call: a real syntax error, with no refusal in its call, stays a CompileError.
+    log.clear();
+    CHECK(vm.evaluateScript("let =", "syntax.js").status == EvalStatus::CompileError);
+    const EvalResult sum = vm.evaluateScript("1 + 1", "after.js");
+    CHECK(sum.status == EvalStatus::Ok);
+    CHECK(sum.completion == "2");
+    expectCleanShutdown(vm);
+}

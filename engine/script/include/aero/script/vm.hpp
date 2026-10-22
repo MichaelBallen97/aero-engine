@@ -88,7 +88,8 @@ enum class EvalStatus : std::uint8_t {
     CompileError,  // a source did not compile, or a module graph did not link (a missing or ambiguous export);
                    // nothing ran
     Exception,     // a value was thrown and not caught -- an Error, any other value, or a stack overflow
-    OutOfMemory,   // the heap limit refused an allocation and the failure was not caught
+    OutOfMemory,   // the heap limit refused an allocation and the failure was not caught -- a compile included,
+                   // whatever error the parser reported
     Interrupted,   // the call's time budget ran out; the script could not catch it, nor start new calls
     InvalidVm,     // a failed create's Vm, or a moved-from one
     WrongThread,   // called from a thread that is not the VM's; nothing was touched
