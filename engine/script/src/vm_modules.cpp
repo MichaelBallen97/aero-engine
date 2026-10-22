@@ -88,7 +88,8 @@ void Vm::Impl::evaluateEntry(std::string_view key, EvalResult& result) {
     if (!settledAtOnce) {
         if (const std::optional<EvalResult> failure = settle()) {
             adopt(result, *failure);
-        } else if (JS_PromiseState(ctx, promise.get()) == JS_PROMISE_PENDING) {
+        } else if (JS_PromiseState(ctx, promise.get()) == JS_PROMISE_PENDING && !interruptFired) {
+            // A call its budget ended is Interrupted, and its record says so: what it left pending is the budget's.
             AERO_LOG_WARN(
                 "script: {}: module evaluation is still pending at the end of the call (a top-level await has not "
                 "settled)",

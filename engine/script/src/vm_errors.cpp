@@ -153,6 +153,9 @@ void Vm::Impl::logFailure(EvalStatus status, const ScriptError& error, bool isEr
                                config.heapLimitBytes, heap.bytesInUse());
             break;
         case EvalStatus::Interrupted:
+            if (interruptRecorded) {
+                return;  // one interrupt record per call, whichever failure carries it next
+            }
             interruptRecorded = true;
             text = std::format("script: {}: interrupted after exceeding the {} ms time budget", callFileName,
                                config.callTimeBudget.count());

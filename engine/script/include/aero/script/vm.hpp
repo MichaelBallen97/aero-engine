@@ -222,12 +222,19 @@ public:
     // Every failure is logged once, at ERROR, as "script: <path>: " followed by evaluateScript's shapes, plus:
     //   LoadError      "load error: <name>: <message>"                 (no stack: nothing ran)
     //   CompileError   also a link error: "compile error: SyntaxError: Could not find export 'x' in module '...'"
-    // and, at WARN, "module evaluation is still pending at the end of the call (a top-level await has not settled)".
-    // A module's own failure is reported once. During this call it is the call's status and its one record. A top-level
-    // await that rejects in a LATER call is reported by that call, as one "unhandled promise rejection" record. A
-    // failed import() rejects its promise and logs nothing itself: the script may catch it. A rejection a module body
-    // makes with the very value the module then fails with, while its evaluation is pending, counts as that one
-    // failure.
+    // and, at WARN, "module evaluation is still pending at the end of the call (a top-level await has not settled)"
+    // -- never in a call its budget ended.
+    //
+    // A call its budget ended records the interrupt once, whatever else failed after it. A module that had already
+    // failed is recorded Failed and its own error is reported by its next evaluation; a top-level await the budget
+    // interrupted never settles, so its module stays Evaluating -- every later evaluateModule of it is Ok with the
+    // pending WARN -- until invalidateModule gives it a new generation.
+    //
+    // A module's own failure is reported once. During this call it is the call's status and its one record. A
+    // top-level await that rejects in a LATER call is reported by that call, as one "unhandled promise rejection"
+    // record. A failed import() rejects its promise and logs nothing itself: the script may catch it. A rejection a
+    // module body makes with the very value the module then fails with, while its evaluation is pending, counts as that
+    // one failure.
     [[nodiscard]] EvalResult evaluateModule(std::string_view virtualPath);
 
     // The module cache: every path the VM has started to compile, sorted by path. The VM's thread only: from another

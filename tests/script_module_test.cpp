@@ -2271,6 +2271,64 @@ TEST_CASE("script: a module waiting on its top-level await is watched once, howe
     expectCleanShutdown(fx.vm);  // static evaluations only: an import() of it is ML52(c)'s R23 shape
 }
 
+// ---- ML61, ML62: a call its budget ended -------------------------------------------------------------------------
+
+TEST_CASE(
+    "script: a budget that runs out after a module's own failure is one interrupt record, and the module's "
+    "error comes with its next evaluation (ML61)") {
+    LogCapture log;
+    ModuleFixture fx{VmConfig{.callTimeBudget = std::chrono::milliseconds{100}}};
+    // The body throws in the first drain job; a chain it queued then loops until the budget fires, in the same drain.
+    fx.files->set("late.js",
+                  "await null; Promise.resolve().then(() => Promise.resolve()).then(() => { for (;;) {} }); "
+                  "throw new RangeError('late');");
+    const EvalResult result = fx.vm.evaluateModule("res://late.js");
+    CHECK(label(result) == "Interrupted");
+    CHECK(result.error.name == "InternalError");
+    CHECK(result.error.message == "interrupted");
+    const std::string interrupted = "script: res://late.js: interrupted after exceeding the 100 ms time budget";
+    CHECK(firstLine(onlyErrorMessage(log)) == interrupted);
+    CHECK(stateOf(fx.vm, "res://late.js") == "Failed");
+    CHECK(fx.vm.stats().unhandledRejections == 0U);
+
+    log.clear();
+    CHECK(completion(fx.vm, "1 + 1") == "2");
+    CHECK(log.countAtLeast(LogLevel::Info) == 0U);
+    const EvalResult next = fx.vm.evaluateModule("res://late.js");
+    CHECK(label(next) == "Exception");
+    CHECK(next.error.name == "RangeError");
+    CHECK(next.error.message == "late");
+    CHECK(onlyErrorMessage(log).starts_with("script: res://late.js: uncaught RangeError: late"));
+    expectCleanShutdown(fx.vm);
+}
+
+TEST_CASE(
+    "script: a top-level await the budget interrupts is one interrupt record with no pending warning, and it "
+    "stays pending (ML62)") {
+    LogCapture log;
+    ModuleFixture fx{VmConfig{.callTimeBudget = std::chrono::milliseconds{100}}};
+    fx.files->set("l.js", "await null; for (;;) {}");
+    CHECK(label(fx.vm.evaluateModule("res://l.js")) == "Interrupted");
+    const std::string interrupted = "script: res://l.js: interrupted after exceeding the 100 ms time budget";
+    CHECK(firstLine(onlyErrorMessage(log)) == interrupted);
+    CHECK(stateOf(fx.vm, "res://l.js") == "Evaluating");
+
+    log.clear();
+    CHECK(completion(fx.vm, "1 + 1") == "2");
+    CHECK(log.countAtLeast(LogLevel::Info) == 0U);
+    CHECK(stateOf(fx.vm, "res://l.js") == "Evaluating");
+    // The interrupted await never settles: a later evaluation is Ok with the pending WARN, truthfully.
+    CHECK(label(fx.vm.evaluateModule("res://l.js")) == "Ok");
+    const std::vector<CapturedRecord> records = log.atLeast(LogLevel::Warn);
+    REQUIRE(records.size() == 1U);
+    CHECK(records[0].level == LogLevel::Warn);
+    CHECK(records[0].message ==
+          "script: res://l.js: module evaluation is still pending at the end of the call (a "
+          "top-level await has not settled)");
+    CHECK(stateOf(fx.vm, "res://l.js") == "Evaluating");
+    expectCleanShutdown(fx.vm);  // a zero count: the abandoned body leaves no reaction holding the module
+}
+
 // ---- ML31-ML34, ML38, ML47: import() --------------------------------------------------------------------------
 
 TEST_CASE("script: import() from a module resolves against that module and records a dynamic edge (ML31)") {
