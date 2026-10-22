@@ -53,10 +53,12 @@ struct ModuleName {
     std::string key;
     std::uint32_t generation = 1;
 };
-// generation 1 is the key itself; n >= 2 is key + "?gen=" + n.
+// The name a module has inside the VM: the key's ASCII spelling -- every byte >= 0x80 and every '%' written as '%'
+// and two uppercase hex digits, every other byte itself -- and, for generation n >= 2, "?gen=" + n.
 [[nodiscard]] std::string encodeModuleName(std::string_view key, std::uint32_t generation);
-// nullopt unless `name` is a canonical key (addressable, not the root, no '?' or '#') optionally followed by
-// "?gen=" and a decimal in [2, 4294967295] without a leading zero.
+// nullopt unless `name` is exactly what encodeModuleName writes for a canonical key (addressable, not the root, no '?'
+// or '#') -- the escapes canonical, uppercase, and only where the encoder puts them -- optionally followed by "?gen="
+// and a decimal in [2, 4294967295] without a leading zero.
 [[nodiscard]] std::optional<ModuleName> decodeModuleName(std::string_view name);
 
 // ---- the limits -----------------------------------------------------------------------------------------------
@@ -83,6 +85,8 @@ struct ModuleName {
 // "cannot load '<key>'[ imported by '<importer>']: the VM has no module source (it was created without a
 // VirtualFileSystem)"
 [[nodiscard]] std::string noModuleSourceMessage(std::string_view key, std::string_view importer);
+// "cannot load '<key>'[ imported by '<importer>']: its current instance is already loaded under another name"
+[[nodiscard]] std::string alreadyLoadedMessage(std::string_view key, std::string_view importer);
 // "import attribute '<attribute>'[ in '<module>'] is not supported (this engine supports none)"
 [[nodiscard]] std::string unsupportedAttributeMessage(std::string_view attribute, std::string_view module);
 

@@ -10,6 +10,7 @@
 
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cstddef>
@@ -230,6 +231,71 @@ TEST_CASE("script: a generation name encodes, decodes, and can never be written 
     const std::optional<ModuleName> first = decodeModuleName("res://a.js");
     REQUIRE(first.has_value());
     CHECK(first->generation == 1U);
+}
+
+TEST_CASE(
+    "script: a module name is pure ASCII, decodes only in its canonical spelling, and round-trips every byte "
+    "(ML53)") {
+    using namespace engine::script::internal;
+    const auto pureAscii = [](std::string_view text) {
+        return std::ranges::all_of(text, [](char c) { return static_cast<unsigned char>(c) < 0x80U; });
+    };
+    // The atom collision's two keys: u-umlaut's UTF-8 bytes, and those bytes misread as Latin-1 and re-encoded as
+    // UTF-8. Hex escapes are split where a hex digit follows.
+    const std::string umlaut = encodeModuleName("res://\xC3\xBC.js", 1);
+    const std::string latin = encodeModuleName("res://\xC3\x83\xC2\xBC.js", 1);
+    CHECK(umlaut == "res://%C3%BC.js");
+    CHECK(latin == "res://%C3%83%C2%BC.js");
+    CHECK(pureAscii(umlaut));
+    CHECK(pureAscii(latin));
+    CHECK(umlaut != latin);
+    CHECK(encodeModuleName("res://a%b.js", 2) == "res://a%25b.js?gen=2");
+    CHECK(encodeModuleName("res://\xFF/a.js", 1) == "res://%FF/a.js");
+    CHECK(encodeModuleName("res://a.js", 2) == "res://a.js?gen=2");  // an ASCII key is unchanged
+
+    // Every byte value a key can carry above ASCII, at two generations.
+    std::size_t roundTrips = 0;
+    for (unsigned value = 0x80U; value <= 0xFFU; ++value) {
+        const std::string key = std::string{"res://x"} + static_cast<char>(value) + ".js";
+        for (const std::uint32_t generation : std::array<std::uint32_t, 2>{1, 7}) {
+            INFO("byte " << value << ", generation " << generation);
+            const std::string name = encodeModuleName(key, generation);
+            CHECK(pureAscii(name));
+            const std::optional<ModuleName> decoded = decodeModuleName(name);
+            REQUIRE(decoded.has_value());
+            CHECK(decoded->key == key);
+            CHECK(decoded->generation == generation);
+            ++roundTrips;
+        }
+    }
+    CHECK(roundTrips == 256U);
+    const std::optional<ModuleName> percent = decodeModuleName(encodeModuleName("res://a%b.js", 3));
+    REQUIRE(percent.has_value());
+    CHECK(percent->key == "res://a%b.js");
+    CHECK(percent->generation == 3U);
+
+    const std::array<std::string_view, 8> refused{
+        "res://%c3%bc.js", "res://%41.js",      "res://a%2.js",           "res://a%",
+        "res://%ZZ.js",    "res://\xC3\xBC.js", "res://%C3%BC.js?gen=01", "res://%25.js%"};
+    for (const std::string_view name : refused) {
+        INFO("name: " << std::string{name});
+        CHECK_FALSE(decodeModuleName(name).has_value());
+    }
+    // Anti-vacuity: an escaped '%' decodes.
+    const std::optional<ModuleName> escaped = decodeModuleName("res://%25.js");
+    REQUIRE(escaped.has_value());
+    CHECK(escaped->key == "res://%.js");
+
+    CHECK(importerKey("res://%C3%BC/m.js?gen=3") == std::optional<std::string>{"res://\xC3\xBC/m.js"});
+    // Script names are read leniently.
+    CHECK(importerKey("res://\xC3\xBC/boot.js") == std::optional<std::string>{"res://\xC3\xBC/boot.js"});
+    CHECK(importerKey("res://a%41.js") == std::optional<std::string>{"res://a%41.js"});
+
+    CHECK(alreadyLoadedMessage("res://a.js", "res://b.js") ==
+          "cannot load 'res://a.js' imported by 'res://b.js': its current instance is already loaded under another "
+          "name");
+    CHECK(alreadyLoadedMessage("res://a.js", "") ==
+          "cannot load 'res://a.js': its current instance is already loaded under another name");
 }
 
 TEST_CASE("script: the record table creates, marks and lists records, and refuses nothing silently (ML6)") {
@@ -1836,6 +1902,105 @@ TEST_CASE(
         fx.files->set("never.js", "await new Promise(() => {});");
         CHECK(label(fx.vm.evaluateModule("res://never.js")) == "Ok");  // with its pending WARN
         CHECK(shutdownCountingWrites(log, fx, false) == 0U);
+    }
+}
+
+TEST_CASE(
+    "script: paths whose bytes would collide as backend atoms load as distinct modules, and a key that is not "
+    "UTF-8 loads (ML54)") {
+    LogCapture log;
+    {
+        // (a) u-umlaut's path and its Latin-1 misreading: one atom in the backend unless the names are ASCII.
+        ModuleFixture fx;
+        fx.files->set("\xC3\x83\xC2\xBC.js", "export const v = 'latin';");
+        fx.files->set("\xC3\xBC.js", "export const v = 'umlaut';");
+        fx.files->set("a.js",
+                      "import { v as one } from './\xC3\x83\xC2\xBC.js'; import { v as two } from "
+                      "'./\xC3\xBC.js'; globalThis.got = one + '/' + two;");
+        CHECK(label(fx.vm.evaluateModule("res://a.js")) == "Ok");
+        CHECK(completion(fx.vm, "got") == "latin/umlaut");
+        CHECK(fx.files->reads("\xC3\x83\xC2\xBC.js") == 1U);
+        CHECK(fx.files->reads("\xC3\xBC.js") == 1U);
+        CHECK(fx.vm.stats().moduleInstances == 3U);
+        CHECK(recordOf(fx.vm, "res://\xC3\x83\xC2\xBC.js").has_value());
+        CHECK(recordOf(fx.vm, "res://\xC3\xBC.js").has_value());
+        CHECK(log.countAtLeast(LogLevel::Warn) == 0U);
+        expectCleanShutdown(fx.vm);
+    }
+    {
+        // (b) a script's property key spelling the key's UTF-8 bytes in Latin-1 cannot pre-empt the module's name.
+        ModuleFixture fx;
+        fx.files->set("\xC3\xBC.js", "globalThis.count = (globalThis.count ?? 0) + 1; export const v = 1;");
+        fx.files->set("a.js", "import './\xC3\xBC.js';");
+        fx.files->set("b.js", "import './\xC3\xBC.js';");
+        CHECK(label(fx.vm.evaluateModule("res://a.js")) == "Ok");
+        CHECK(completion(fx.vm, "globalThis['res://\\u00c3\\u00bc.js'] = 1; 0") == "0");
+        CHECK(label(fx.vm.evaluateModule("res://b.js")) == "Ok");
+        CHECK(completion(fx.vm, "count") == "1");
+        CHECK(fx.files->reads("\xC3\xBC.js") == 1U);
+        CHECK(fx.vm.stats().moduleInstances == 3U);
+        CHECK(log.countAtLeast(LogLevel::Warn) == 0U);
+        expectCleanShutdown(fx.vm);
+    }
+    {
+        // (c) R22's retired survivor stays unreachable behind a colliding name.
+        ModuleFixture fx;
+        fx.files->set("e.js", "import './\xC3\x83\xC2\xBC.js'; import './missing.js'; export const e = 1;");
+        fx.files->set("\xC3\x83\xC2\xBC.js", "import { e } from './e.js'; export const x = 2;");
+        fx.files->set("f.js", "import { x } from './\xC3\xBC.js'; globalThis.got = x;");  // no such file
+        CHECK(label(fx.vm.evaluateModule("res://e.js")) == "LoadError");
+        const std::optional<ModuleRecord> survivor = recordOf(fx.vm, "res://\xC3\x83\xC2\xBC.js");
+        REQUIRE(survivor.has_value());
+        CHECK(survivor->generation == 2U);
+        log.clear();
+        CHECK(label(fx.vm.evaluateModule("res://f.js")) == "LoadError");
+        expectOnlyError(log,
+                        "script: res://f.js: load error: TypeError: cannot load 'res://\xC3\xBC.js' imported by "
+                        "'res://f.js': not found or unreadable through the VFS");
+        expectCleanShutdown(fx.vm);
+    }
+    {
+        // (d) a key that is not UTF-8 loads, and imports relatively, statically and through import().
+        ModuleFixture fx;
+        fx.files->set("\xFF/a.js",
+                      "import './b.js'; globalThis.viaDynamic = 'pending'; "
+                      "import('./c.js').then((ns) => { viaDynamic = ns.c; });");
+        fx.files->set("\xFF/b.js", "globalThis.b = 1;");
+        fx.files->set("\xFF/c.js", "export const c = 'dynamic';");
+        log.clear();
+        CHECK(label(fx.vm.evaluateModule("res://\xFF/a.js")) == "Ok");
+        CHECK(log.countAtLeast(LogLevel::Warn) == 0U);
+        CHECK(completion(fx.vm, "viaDynamic") == "dynamic");
+        const std::optional<ModuleRecord> a = recordOf(fx.vm, "res://\xFF/a.js");
+        REQUIRE(a.has_value());
+        CHECK(a->imports == std::vector<std::string>{"res://\xFF/b.js", "res://\xFF/c.js"});
+        for (const std::string_view path :
+             std::array<std::string_view, 3>{"res://\xFF/a.js", "res://\xFF/b.js", "res://\xFF/c.js"}) {
+            CHECK(stateOf(fx.vm, path) == "Evaluated");
+        }
+        expectCleanShutdown(fx.vm);
+    }
+    {
+        // (e) what a frame and a record read: the frame shows the name inside the VM, the log keeps the path.
+        ModuleFixture fx;
+        fx.files->set("\xC3\xBC/e.js", "export function fail() { throw new Error('frame'); }");
+        fx.files->set("r.js", "import { fail } from './\xC3\xBC/e.js'; fail();");
+        log.clear();
+        const EvalResult thrown = fx.vm.evaluateModule("res://r.js");
+        CHECK(label(thrown) == "Exception");
+        CHECK(firstLine(thrown.error.stack) == "    at fail (res://%C3%BC/e.js:1:35)");
+        CHECK(onlyErrorMessage(log).starts_with("script: res://r.js: uncaught Error: frame"));
+
+        fx.files->set("\xC3\xBC/t.js", "throw new Error('top');");
+        log.clear();
+        const EvalResult top = fx.vm.evaluateModule("res://\xC3\xBC/t.js");
+        CHECK(label(top) == "Exception");
+        CHECK(onlyErrorMessage(log).starts_with("script: res://\xC3\xBC/t.js: uncaught Error: top"));
+        CHECK(firstLine(top.error.stack) == "    at <anonymous> (res://%C3%BC/t.js:1:10)");
+        CHECK(fx.vm.invalidateModule("res://\xC3\xBC/t.js") == std::vector<std::string>{"res://\xC3\xBC/t.js"});
+        const EvalResult reloaded = fx.vm.evaluateModule("res://\xC3\xBC/t.js");
+        CHECK(firstLine(reloaded.error.stack) == "    at <anonymous> (res://%C3%BC/t.js?gen=2:1:10)");
+        expectCleanShutdown(fx.vm);
     }
 }
 

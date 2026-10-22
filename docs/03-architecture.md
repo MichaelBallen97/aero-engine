@@ -89,13 +89,14 @@ A CI test that fails if any `#include` under `/engine` or `/runtime` points to `
                Enforcement is in two halves: .github/scripts/check-script-boundary.sh (no quickjs token in
                any public engine header, none in engine/ or runtime/ outside engine/script/src) and
                tests/script_boundary_probe.cpp, which links aero::script alone)
-               (4.1.2 added ES modules: a VM created with a VirtualFileSystem loads every module through it
-               and through nothing else -- evaluateModule("res://...") and import() alike -- with res://,
-               ./ and ../ specifiers only, one canonical key per file (the VFS's own normalizeVirtualPath), a
-               module evaluated once, and a cache whose records and invalidateModule reload hook 4.3.3
-               consumes. A reload is a new instance named <path>?gen=N; the backend frees no module before
-               teardown, so recreating the VM is the full reset. A failed load or link retires every module
-               it created -- R22 in docs/08)
+               (4.1.2 added ES modules: a VM created with a VirtualFileSystem loads every module through
+               it and through nothing else -- evaluateModule("res://...") and import() alike -- with
+               res://, ./ and ../ specifiers only, one canonical key per file (the VFS's own
+               normalizeVirtualPath), a module evaluated once, and a cache whose records and
+               invalidateModule reload hook 4.3.3 consumes. A reload is a new instance named <path>?gen=N
+               (a path's non-ASCII bytes and '%' percent-encoded inside the VM); the backend frees no
+               module before teardown, so recreating the VM is the full reset. A failed load or link
+               retires every module it created -- R22 in docs/08)
   /reflect     entt::meta runtime (the GENERATOR lives in /tools)
 
 /runtime       game loop, .pak loading, per-platform entry points        [5 platforms]

@@ -125,9 +125,10 @@ enum class ModuleState : std::uint8_t {
 };
 [[nodiscard]] std::string_view moduleStateLabel(ModuleState state) noexcept;
 
-// One entry of the module cache. The generation is part of the module's name inside the VM: generation 1 is the path
-// itself, a later one is the path + "?gen=<n>", which is what a stack frame of a reloaded module shows
-// ("res://scripts/a.js?gen=2:3:5"). No specifier can name it: '?' is refused in every specifier and entry path.
+// One entry of the module cache. Inside the VM a module is named by its path's ASCII spelling -- every byte >= 0x80
+// and every '%' written as '%' and two uppercase hex digits -- followed, from generation 2, by "?gen=<n>": that is
+// what a stack frame shows ("res://scripts/a.js?gen=2:3:5", "res://%C3%BC/b.js:1:10"). The log records and the cache
+// keep the canonical path. No specifier can name a later generation: '?' is refused in every specifier and entry path.
 struct ModuleRecord {
     std::string path;              // the canonical "res://..." path
     std::uint32_t generation = 1;  // one more per invalidation and per retirement after a failed load or link

@@ -375,6 +375,12 @@ JSModuleDef* Vm::Impl::loadModule(JSContext* /*context*/, const char* name, void
             self.throwLoadError("TypeError", "a module was requested outside a module load");
             return nullptr;
         }
+        // Defence in depth: the backend asks for a name only when its list holds no module of that name, so a current
+        // instance the table already has means the name did not find it -- refuse rather than compile a key twice.
+        if (self.moduleTable.instance(decoded->key) != nullptr) {
+            self.refuse("TypeError", internal::alreadyLoadedMessage(decoded->key, self.attempt->importer));
+            return nullptr;
+        }
         // A copy: a nested import's normalizer rewrites attempt->importer while this compile runs.
         const std::string importer = self.attempt->importer;
         return self.compileModule(decoded->key, importer);

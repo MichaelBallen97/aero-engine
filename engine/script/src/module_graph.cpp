@@ -53,6 +53,57 @@ namespace {
     return importer.empty() ? std::string{} : std::format(" imported by '{}'", importer);
 }
 
+// A backend name is pure ASCII: the backend interns a name as an atom by comparing its raw bytes with the existing
+// 8-bit atoms before decoding it as UTF-8 (quickjs.c:3358-3368), and replaces invalid UTF-8 with U+FFFD
+// (quickjs.c:4380-4407) -- so two non-ASCII keys could share one atom, and a key that is not UTF-8 could not be read
+// back. Every byte >= 0x80, and every '%', is written as '%' and two UPPERCASE hex digits; any other byte is itself.
+constexpr std::string_view UPPER_HEX = "0123456789ABCDEF";
+
+[[nodiscard]] std::string percentEncodeKey(std::string_view key) {
+    std::string out;
+    out.reserve(key.size());
+    for (const char c : key) {
+        const auto byte = static_cast<unsigned char>(c);
+        if (byte >= 0x80U || c == '%') {
+            out.push_back('%');
+            out.push_back(UPPER_HEX[byte >> 4U]);
+            out.push_back(UPPER_HEX[byte & 0x0FU]);
+        } else {
+            out.push_back(c);
+        }
+    }
+    return out;
+}
+
+[[nodiscard]] int upperHexValue(char c) {
+    const std::size_t at = UPPER_HEX.find(c);
+    return at == std::string_view::npos ? -1 : static_cast<int>(at);
+}
+
+// The inverse: nullopt for a '%' not followed by two uppercase hex digits. The caller checks the spelling is canonical
+// (re-encoding gives the same text), so "%41" for 'A', lowercase digits or a raw non-ASCII byte is never a second name.
+[[nodiscard]] std::optional<std::string> percentDecodeKey(std::string_view text) {
+    std::string out;
+    out.reserve(text.size());
+    for (std::size_t i = 0; i < text.size(); ++i) {
+        if (text[i] != '%') {
+            out.push_back(text[i]);
+            continue;
+        }
+        if (text.size() - i < 3) {  // a '%' needs two digits after it
+            return std::nullopt;
+        }
+        const int high = upperHexValue(text[i + 1]);
+        const int low = upperHexValue(text[i + 2]);
+        if (high < 0 || low < 0) {
+            return std::nullopt;
+        }
+        out.push_back(static_cast<char>((high << 4) | low));
+        i += 2;
+    }
+    return out;
+}
+
 // "res://" + the normal form of `path`, when `path` is addressable and names something below the root.
 [[nodiscard]] std::optional<std::string> canonicalKey(std::string_view path) {
     const std::optional<std::string> normal = normalizeVirtualPath(path);
@@ -119,16 +170,23 @@ std::optional<std::string> importerKey(std::string_view importer) {
 
 std::string encodeModuleName(std::string_view key, std::uint32_t generation) {
     assert(generation >= 1U);
-    if (generation <= 1U) {
-        return std::string{key};
+    std::string name = percentEncodeKey(key);
+    if (generation > 1U) {
+        name += std::format("{}{}", GENERATION_MARK, generation);
     }
-    return std::format("{}{}{}", key, GENERATION_MARK, generation);
+    return name;
 }
 
 std::optional<ModuleName> decodeModuleName(std::string_view name) {
     const std::size_t mark = name.find(GENERATION_MARK);
-    const std::string_view key = name.substr(0, mark);
-    // The key part must be canonical: addressable, below the root, no '?' or '#', and already in its normal form.
+    const std::string_view encoded = name.substr(0, mark);
+    // The name part is the key's ASCII spelling, exactly as encodeModuleName writes it; the key itself must be
+    // canonical: addressable, below the root, no '?' or '#', and already in its normal form.
+    const std::optional<std::string> decoded = percentDecodeKey(encoded);
+    if (!decoded.has_value() || percentEncodeKey(*decoded) != encoded) {
+        return std::nullopt;
+    }
+    const std::string& key = *decoded;
     if (!key.starts_with(MODULE_SCHEME) || hasReservedCharacter(key)) {
         return std::nullopt;
     }
@@ -137,7 +195,7 @@ std::optional<ModuleName> decodeModuleName(std::string_view name) {
         return std::nullopt;
     }
     if (mark == std::string_view::npos) {
-        return ModuleName{std::string{key}, 1};
+        return ModuleName{key, 1};
     }
     // One spelling per generation: decimal digits only, the whole tail, no leading zero, in [2, 4294967295].
     const std::string_view digits = name.substr(mark + GENERATION_MARK.size());
@@ -151,7 +209,7 @@ std::optional<ModuleName> decodeModuleName(std::string_view name) {
         value > std::numeric_limits<std::uint32_t>::max()) {
         return std::nullopt;
     }
-    return ModuleName{std::string{key}, static_cast<std::uint32_t>(value)};
+    return ModuleName{key, static_cast<std::uint32_t>(value)};
 }
 
 // ---- the limits -----------------------------------------------------------------------------------------------
@@ -215,6 +273,11 @@ std::string tooDeepMessage(std::string_view key, std::string_view importer, std:
 std::string noModuleSourceMessage(std::string_view key, std::string_view importer) {
     return std::format("cannot load '{}'{}: the VM has no module source (it was created without a VirtualFileSystem)",
                        key, importedBy(importer));
+}
+
+std::string alreadyLoadedMessage(std::string_view key, std::string_view importer) {
+    return std::format("cannot load '{}'{}: its current instance is already loaded under another name", key,
+                       importedBy(importer));
 }
 
 std::string unsupportedAttributeMessage(std::string_view attribute, std::string_view module) {
