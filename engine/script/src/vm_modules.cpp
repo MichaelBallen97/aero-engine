@@ -339,15 +339,20 @@ void Vm::Impl::observeModuleWatches() {
 
 // A watch whose outcome is not taken when its call ends -- its top-level await still pending, or settled after the
 // call's last look -- is carried: a later call attributes the body's rejections and updates the record the same way.
-// At most one watch per module promise (a module evaluated again while it waits adds none), so the list is bounded by
-// the module instances. Compacted in place: a destructor's path allocates nothing.
+// At most one watch per module instance (an instance evaluated again while it waits adds none; the members of a cycle
+// share one promise and keep one watch each), so the list is bounded by the module instances. Compacted in place: a
+// destructor's path allocates nothing.
 void Vm::Impl::endCallWatches() noexcept {
     std::size_t kept = 0;
     for (std::size_t i = 0; i < moduleWatches.size(); ++i) {
         ModuleWatch& watch = moduleWatches[i];
         bool carry = !watch.settled && !JS_IsUndefined(watch.promise);
+        // One watch per module INSTANCE: every member of a cycle evaluates to the cycle root's promise
+        // (quickjs.c:31548-31553), and each member's record must follow it.
         for (std::size_t k = 0; carry && k < kept; ++k) {
-            carry = !JS_IsStrictEqual(ctx, moduleWatches[k].promise, watch.promise);
+            const ModuleWatch& other = moduleWatches[k];
+            carry = !(JS_IsStrictEqual(ctx, other.promise, watch.promise) && other.key == watch.key &&
+                      other.generation == watch.generation);
         }
         if (!carry) {
             JS_FreeValue(ctx, watch.promise);
@@ -360,7 +365,7 @@ void Vm::Impl::endCallWatches() noexcept {
         ++kept;
     }
     moduleWatches.erase(moduleWatches.begin() + static_cast<std::ptrdiff_t>(kept), moduleWatches.end());
-    // Each module promise belongs to one instance, so the carried list can never outgrow the instances.
+    // Each watch is a distinct instance's, so the carried list can never outgrow the instances.
     assert(moduleWatches.size() <= moduleInstances);
 }
 

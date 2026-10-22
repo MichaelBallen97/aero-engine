@@ -2702,6 +2702,84 @@ TEST_CASE(
     expectCleanShutdown(fx.vm);
 }
 
+TEST_CASE(
+    "script: every member of a module cycle follows its top-level await's outcome, in either evaluation "
+    "order (ML72)") {
+    // a.js and b.js are one cycle, and every member's evaluation returns the cycle root's promise
+    // (quickjs.c:31548-31553): one promise, two records to update.
+    const auto seed = [](MemoryBackend& files) {
+        files.set("a.js",
+                  "import { b } from './b.js'; export const a = 1; "
+                  "await new Promise((ok, no) => { globalThis.okA = ok; globalThis.rejectA = no; });");
+        files.set("b.js", "import { a } from './a.js'; export const b = 2;");
+    };
+    const std::string catchB =
+        "globalThis.r = 'none'; import('res://b.js').then(() => { r = 'ok'; }, "
+        "(e) => { r = 'caught ' + e.message; }); 0";
+    // The entry's one record: the pending WARN.
+    const auto entryIsPending = [](Vm& vm, LogCapture& log) {
+        CHECK(label(vm.evaluateModule("res://a.js")) == "Ok");
+        const std::vector<CapturedRecord> records = log.atLeast(LogLevel::Warn);
+        REQUIRE(records.size() == 1U);
+        CHECK(records[0].level == LogLevel::Warn);
+        CHECK(records[0].message ==
+              "script: res://a.js: module evaluation is still pending at the end of the call "
+              "(a top-level await has not settled)");
+        log.clear();
+    };
+    const auto bothAre = [](const Vm& vm, std::string_view state) {
+        CHECK(stateOf(vm, "res://a.js") == state);
+        CHECK(stateOf(vm, "res://b.js") == state);
+    };
+    // The rejection: the import()'s handler takes it, and both members' records read Failed.
+    const auto rejectCycle = [&bothAre](Vm& vm, const LogCapture& log) {
+        CHECK(completion(vm, "rejectA(new Error('cycle')); 0") == "0");
+        CHECK(completion(vm, "r") == "caught cycle");
+        bothAre(vm, "Failed");
+        CHECK(log.countAtLeast(LogLevel::Info) == 0U);
+        CHECK(vm.stats().unhandledRejections == 0U);
+    };
+
+    {
+        INFO("(a) the entry first");
+        LogCapture log;
+        ModuleFixture fx;
+        seed(*fx.files);
+        entryIsPending(fx.vm, log);
+        CHECK(completion(fx.vm, catchB) == "0");
+        bothAre(fx.vm, "Evaluating");
+        rejectCycle(fx.vm, log);
+        expectCleanShutdown(fx.vm);
+    }
+    {
+        INFO("(b) the import() first");
+        LogCapture log;
+        ModuleFixture fx;
+        seed(*fx.files);
+        CHECK(completion(fx.vm, catchB) == "0");
+        CHECK(stateOf(fx.vm, "res://b.js") == "Evaluating");
+        CHECK(stateOf(fx.vm, "res://a.js") == "Loaded");
+        entryIsPending(fx.vm, log);
+        bothAre(fx.vm, "Evaluating");
+        rejectCycle(fx.vm, log);
+        expectCleanShutdown(fx.vm);
+    }
+    {
+        // The control, the anti-vacuity for the outcome; the two failing arms are the anti-vacuity for the order.
+        INFO("(c) the entry first, resolved");
+        LogCapture log;
+        ModuleFixture fx;
+        seed(*fx.files);
+        entryIsPending(fx.vm, log);
+        CHECK(completion(fx.vm, catchB) == "0");
+        bothAre(fx.vm, "Evaluating");
+        CHECK(completion(fx.vm, "okA(); 0") == "0");
+        CHECK(completion(fx.vm, "r") == "ok");
+        bothAre(fx.vm, "Evaluated");
+        expectCleanShutdown(fx.vm);
+    }
+}
+
 // ---- ML31-ML34, ML38, ML47: import() --------------------------------------------------------------------------
 
 TEST_CASE("script: import() from a module resolves against that module and records a dynamic edge (ML31)") {
