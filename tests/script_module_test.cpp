@@ -692,6 +692,9 @@ public:
 
     [[nodiscard]] std::optional<engine::ByteBuffer> readFile(std::string_view relPath) const override {
         ++readCounts[std::string{relPath}];
+        if (failingReads.contains(relPath)) {
+            return std::nullopt;  // ML65: the size answered, the read does not
+        }
         if (readDelay.count() > 0) {
             std::this_thread::sleep_for(readDelay);
         }
@@ -719,6 +722,7 @@ public:
 
     std::chrono::milliseconds readDelay{0};
     std::map<std::string, std::uint64_t, std::less<>> sizeOverrides;
+    std::set<std::string, std::less<>> failingReads;  // ML65: their size answers, their read does not
 
 private:
     using Counts = std::map<std::string, std::size_t, std::less<>>;
@@ -2424,6 +2428,34 @@ TEST_CASE(
     expectCleanShutdown(fx.vm);
 }
 
+TEST_CASE("script: a module whose size answers but whose read fails is a LoadError after exactly one read (ML65)") {
+    LogCapture log;
+    ModuleFixture fx;
+    fx.files->set("a.js", R"(import "./b.js"; globalThis.ran = true;)");
+    fx.files->set("b.js", "export const b = 1;");
+    fx.files->failingReads = {"b.js"};
+
+    CHECK(label(fx.vm.evaluateModule("res://a.js")) == "LoadError");
+    expectOnlyError(log,
+                    "script: res://a.js: load error: TypeError: cannot load 'res://b.js' imported by "
+                    "'res://a.js': not found or unreadable through the VFS");
+    // The size answered, so the arm that refused is the read's (step 6).
+    CHECK(fx.files->sizeQueries("b.js") == 1U);
+    CHECK(fx.files->reads("b.js") == 1U);
+    CHECK(fx.vm.stats().moduleInstances == 0U);
+    CHECK_FALSE(recordOf(fx.vm, "res://b.js").has_value());
+    CHECK(completion(fx.vm, "typeof ran") == "undefined");
+
+    // Anti-vacuity: the same files load once the read answers.
+    fx.files->failingReads.clear();
+    log.clear();
+    CHECK(label(fx.vm.evaluateModule("res://a.js")) == "Ok");
+    CHECK(log.countAtLeast(LogLevel::Warn) == 0U);
+    CHECK(completion(fx.vm, "ran") == "true");
+    CHECK(fx.files->reads("b.js") == 2U);
+    expectCleanShutdown(fx.vm);
+}
+
 // ---- ML31-ML34, ML38, ML47: import() --------------------------------------------------------------------------
 
 TEST_CASE("script: import() from a module resolves against that module and records a dynamic edge (ML31)") {
@@ -2623,14 +2655,12 @@ TEST_CASE("script: invalidateModule reloads exactly a module and its importers (
     const LogCapture log;
     ModuleFixture fx;
     fx.files->set("util.js", countRun("util") + "export const value = 1;");
-    fx.files->set("ui.js", R"(import { value } from "./util.js";)"
-                           "\n" +
-                               countRun("ui"));
+    // ui.js re-exports util.js, and main.js imports through it: main.js is two levels above util.js.
+    fx.files->set("ui.js", std::string{R"(export { value } from "./util.js";)"} + "\n" + countRun("ui"));
     fx.files->set("logic.js", R"(import { value } from "./util.js";)"
                               "\n" +
                                   countRun("logic"));
-    fx.files->set("main.js", R"(import "./ui.js"; import "./logic.js"; import { value } from "./util.js";)"
-                             "\n" +
+    fx.files->set("main.js", std::string{R"(import { value } from "./ui.js"; import "./logic.js";)"} + "\n" +
                                  countRun("main") + "globalThis.utilValue = value;");
     fx.files->set("other.js", countRun("other"));
     const std::array<std::string_view, 4> reloaded{"logic.js", "main.js", "ui.js", "util.js"};
@@ -2642,6 +2672,13 @@ TEST_CASE("script: invalidateModule reloads exactly a module and its importers (
     for (const std::string_view file : reloaded) {
         CHECK(fx.files->reads(file) == 1U);
     }
+    // Anti-vacuity: main.js has no direct edge to util.js -- the invalidation must climb through ui.js to reach it.
+    const std::optional<ModuleRecord> mainBefore = recordOf(fx.vm, "res://main.js");
+    REQUIRE(mainBefore.has_value());
+    CHECK(mainBefore->imports == std::vector<std::string>{"res://logic.js", "res://ui.js"});
+    const std::optional<ModuleRecord> uiBefore = recordOf(fx.vm, "res://ui.js");
+    REQUIRE(uiBefore.has_value());
+    CHECK(uiBefore->imports == std::vector<std::string>{"res://util.js"});
 
     fx.files->set("util.js", countRun("util") + "export const value = 2;");
     const std::vector<std::string> changed = fx.vm.invalidateModule("res://util.js");
