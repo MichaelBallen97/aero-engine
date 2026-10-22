@@ -2617,6 +2617,35 @@ TEST_CASE(
     REQUIRE(masked > 0U);
 }
 
+TEST_CASE(
+    "script: a top-level await the drain's own deadline check stops is one record with no pending warning "
+    "(ML70)") {
+    // ML62's twin, through the other route a budget ends a call by: the drain's own deadline check, which stops between
+    // two jobs and records the interrupt without firing it. The join runs past the deadline in native code, which never
+    // polls the interrupt handler -- VM39's recipe for a script.
+    LogCapture log;
+    ModuleFixture fx{VmConfig{.callTimeBudget = engine::script::MIN_CALL_TIME_BUDGET}};
+    fx.files->set("warm.js", "export const w = 1;");
+    fx.files->set("l2.js", "await null; new Int32Array(1000000).join(); await null; globalThis.done2 = 1;");
+    // A warm-up whose result is not asserted (VM39's reason: a fresh context's first poll may consult the handler).
+    static_cast<void>(fx.vm.evaluateModule("res://warm.js"));
+    log.clear();
+
+    const EvalResult stop = fx.vm.evaluateModule("res://l2.js");
+    REQUIRE(label(stop) == "Interrupted");
+    // The drain's own check stopped this call, not the handler, whose error reads "interrupted": the route this case
+    // is about, which the REQUIRE refuses to pass on the other.
+    REQUIRE(stop.error.message == "the time budget ran out with promise jobs still queued");
+    CHECK(stop.error.name.empty());
+    CHECK(stop.error.stack.empty());
+    expectOnlyError(log,
+                    "script: res://l2.js: interrupted after exceeding the 1 ms time budget with promise jobs still "
+                    "queued");
+    // Anti-vacuity: the module IS still pending, so the warning's own condition held, and only the gate kept it out.
+    CHECK(stateOf(fx.vm, "res://l2.js") == "Evaluating");
+    expectCleanShutdown(fx.vm);
+}
+
 // ---- ML31-ML34, ML38, ML47: import() --------------------------------------------------------------------------
 
 TEST_CASE("script: import() from a module resolves against that module and records a dynamic edge (ML31)") {

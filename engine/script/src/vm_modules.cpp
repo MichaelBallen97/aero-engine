@@ -88,8 +88,11 @@ void Vm::Impl::evaluateEntry(std::string_view key, EvalResult& result) {
     if (!settledAtOnce) {
         if (const std::optional<EvalResult> failure = settle()) {
             adopt(result, *failure);
-        } else if (JS_PromiseState(ctx, promise.get()) == JS_PROMISE_PENDING && !interruptFired) {
+        } else if (const bool budgetEnded = interruptFired || interruptRecorded;
+                   JS_PromiseState(ctx, promise.get()) == JS_PROMISE_PENDING && !budgetEnded) {
             // A call its budget ended is Interrupted, and its record says so: what it left pending is the budget's.
+            // Both ways count: the interrupt handler (interruptFired) and the drain's own deadline check, which stops
+            // between two jobs and records the interrupt without firing it (interruptRecorded).
             AERO_LOG_WARN(
                 "script: {}: module evaluation is still pending at the end of the call (a top-level await has not "
                 "settled)",
