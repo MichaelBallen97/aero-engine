@@ -453,4 +453,23 @@ std::vector<ModuleRecord> Vm::moduleRecords() const {
     return impl->moduleTable.records();
 }
 
+// The reload hook. It changes the table only -- no read, no compile, no backend call: the next load of each changed
+// path reads the VFS again under its next generation name. Nothing is logged on success.
+std::vector<std::string> Vm::invalidateModule(std::string_view virtualPath) {
+    if (impl == nullptr) {
+        AERO_LOG_ERROR("script: invalidateModule on an invalid Vm (a failed create or a moved-from Vm)");
+        return {};
+    }
+    if (!impl->onVmThread()) {
+        AERO_LOG_ERROR("script: invalidateModule called from a thread that is not the VM's; refused");
+        return {};
+    }
+    const internal::SpecifierResolution path = internal::resolveModuleSpecifier(virtualPath, {});
+    if (path.refusal != internal::SpecifierRefusal::None) {
+        AERO_LOG_ERROR("script: invalidateModule: '{}' is not an absolute res:// module path", virtualPath);
+        return {};
+    }
+    return impl->moduleTable.invalidate(path.key);
+}
+
 }  // namespace engine::script

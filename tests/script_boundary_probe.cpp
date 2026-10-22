@@ -21,6 +21,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <string>
 #include <string_view>
 #include <type_traits>
 #include <utility>
@@ -76,6 +77,8 @@ static_assert(
     std::is_same_v<decltype(std::declval<script::Vm&>().evaluateModule(std::string_view{})), script::EvalResult>);
 static_assert(
     std::is_same_v<decltype(std::declval<const script::Vm&>().moduleRecords()), std::vector<script::ModuleRecord>>);
+static_assert(std::is_same_v<decltype(std::declval<script::Vm&>().invalidateModule(std::string_view{})),
+                             std::vector<std::string>>);
 // The VFS is borrowed: an lvalue binds, a temporary does not (the rvalue overload is deleted). A file-local concept,
 // because a requires-expression only substitutes when it is dependent (CLAUDE.md, HE17's shape).
 template <typename Vfs>

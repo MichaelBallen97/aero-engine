@@ -1957,3 +1957,181 @@ TEST_CASE("script: a dynamic import attribute is a TypeError rejection; an empty
     CHECK(log.countAtLeast(LogLevel::Warn) == 0U);
     expectCleanShutdown(fx.vm);
 }
+
+// ---- ML20, ML21, ML44, ML49: the reload hook ------------------------------------------------------------------
+
+namespace {
+
+// A statement that counts one evaluation of `name` in globalThis.runs.
+[[nodiscard]] std::string countRun(std::string_view name) {
+    const std::string slot = "globalThis.runs." + std::string{name};
+    // Never JavaScript's "?" "?=" in a C++ literal: those three characters are a trigraph (-Wtrigraphs).
+    return "globalThis.runs = globalThis.runs ?? {}; " + slot + " = (" + slot + " ?? 0) + 1;\n";
+}
+
+}  // namespace
+
+TEST_CASE("script: invalidateModule reloads exactly a module and its importers (ML20)") {
+    const LogCapture log;
+    ModuleFixture fx;
+    fx.files->set("util.js", countRun("util") + "export const value = 1;");
+    fx.files->set("ui.js", R"(import { value } from "./util.js";)"
+                           "\n" +
+                               countRun("ui"));
+    fx.files->set("logic.js", R"(import { value } from "./util.js";)"
+                              "\n" +
+                                  countRun("logic"));
+    fx.files->set("main.js", R"(import "./ui.js"; import "./logic.js"; import { value } from "./util.js";)"
+                             "\n" +
+                                 countRun("main") + "globalThis.utilValue = value;");
+    fx.files->set("other.js", countRun("other"));
+    const std::array<std::string_view, 4> reloaded{"logic.js", "main.js", "ui.js", "util.js"};
+
+    CHECK(label(fx.vm.evaluateModule("res://main.js")) == "Ok");
+    CHECK(label(fx.vm.evaluateModule("res://other.js")) == "Ok");
+    // Anti-vacuity: before the invalidation, a second call re-reads nothing -- the re-reads below are its doing.
+    CHECK(label(fx.vm.evaluateModule("res://main.js")) == "Ok");
+    for (const std::string_view file : reloaded) {
+        CHECK(fx.files->reads(file) == 1U);
+    }
+
+    fx.files->set("util.js", countRun("util") + "export const value = 2;");
+    const std::vector<std::string> changed = fx.vm.invalidateModule("res://util.js");
+    CHECK(changed == std::vector<std::string>{"res://logic.js", "res://main.js", "res://ui.js", "res://util.js"});
+    for (const std::string& path : changed) {
+        INFO("path: " << path);
+        const std::optional<ModuleRecord> record = recordOf(fx.vm, path);
+        REQUIRE(record.has_value());
+        CHECK(record->generation == 2U);
+        CHECK(moduleStateLabel(record->state) == "Unloaded");
+    }
+    const std::optional<ModuleRecord> other = recordOf(fx.vm, "res://other.js");
+    REQUIRE(other.has_value());
+    CHECK(other->generation == 1U);
+    CHECK(moduleStateLabel(other->state) == "Evaluated");
+
+    CHECK(label(fx.vm.evaluateModule("res://main.js")) == "Ok");
+    for (const std::string_view file : reloaded) {
+        INFO("file: " << std::string{file});
+        CHECK(fx.files->reads(file) == 2U);
+        const std::string stem{file.substr(0, file.size() - 3)};
+        CHECK(completion(fx.vm, "runs." + stem) == "2");
+    }
+    CHECK(fx.files->reads("other.js") == 1U);
+    CHECK(completion(fx.vm, "runs.other") == "1");
+    CHECK(completion(fx.vm, "utilValue") == "2");
+    CHECK(fx.vm.stats().moduleInstances == 9U);
+
+    // The reloaded instances recorded their imports under their keys, never their generation names.
+    CHECK(fx.vm.invalidateModule("res://util.js") == changed);
+    CHECK(fx.vm.stats().moduleInstances == 9U);
+    const std::optional<ModuleRecord> main = recordOf(fx.vm, "res://main.js");
+    REQUIRE(main.has_value());
+    CHECK(main->generation == 3U);
+    CHECK(log.countAtLeast(LogLevel::Warn) == 0U);
+    expectCleanShutdown(fx.vm);
+}
+
+TEST_CASE("script: a reloaded module's frames read <path>?gen=2, and the log keeps the canonical name (ML21)") {
+    LogCapture log;
+    ModuleFixture fx;
+    fx.files->set("e.js", R"(export function fail() { throw new Error("gen"); })");
+    fx.files->set("r.js", R"(import { fail } from "./e.js"; fail();)");
+
+    const EvalResult first = fx.vm.evaluateModule("res://r.js");
+    CHECK(label(first) == "Exception");
+    CHECK(first.error.stack.find("(res://e.js:1:") != std::string::npos);
+    CHECK(first.error.stack.find("(res://r.js:1:") != std::string::npos);
+    // Anti-vacuity: the mark is the reload's -- generation 1 carries none.
+    CHECK(first.error.stack.find("?gen=") == std::string::npos);
+
+    CHECK(fx.vm.invalidateModule("res://e.js") == std::vector<std::string>{"res://e.js", "res://r.js"});
+    log.clear();
+    const EvalResult second = fx.vm.evaluateModule("res://r.js");
+    CHECK(label(second) == "Exception");
+    CHECK(firstLine(second.error.stack).starts_with("    at fail (res://e.js?gen=2:1:"));
+    const std::string_view rest = std::string_view{second.error.stack}.substr(firstLine(second.error.stack).size());
+    CHECK(firstLine(rest.substr(rest.empty() ? 0 : 1)).find("(res://r.js?gen=2:1:") != std::string_view::npos);
+    CHECK(onlyErrorMessage(log).starts_with("script: res://r.js: uncaught Error: gen"));
+    expectCleanShutdown(fx.vm);
+}
+
+TEST_CASE("script: invalidateModule changes nothing for an unknown, unaddressable or foreign request (ML44)") {
+    LogCapture log;
+    ModuleFixture fx;
+    fx.files->set("k.js", "export const k = 1;");
+    REQUIRE(label(fx.vm.evaluateModule("res://k.js")) == "Ok");
+    const auto snapshot = [&fx] {
+        std::vector<std::string> out;
+        for (const ModuleRecord& record : fx.vm.moduleRecords()) {
+            out.push_back(record.path + "#" + std::to_string(record.generation) + "#" +
+                          std::string{moduleStateLabel(record.state)});
+        }
+        return out;
+    };
+    const std::vector<std::string> before = snapshot();
+
+    log.clear();
+    CHECK(fx.vm.invalidateModule("res://never.js").empty());
+    CHECK(log.countAtLeast(LogLevel::Info) == 0U);
+    CHECK(snapshot() == before);
+
+    CHECK(fx.vm.invalidateModule("a.js").empty());
+    expectOnlyError(log, "script: invalidateModule: 'a.js' is not an absolute res:// module path");
+    CHECK(snapshot() == before);
+
+    log.clear();
+    CHECK(fx.vm.invalidateModule("res://x.js?gen=2").empty());
+    expectOnlyError(log, "script: invalidateModule: 'res://x.js?gen=2' is not an absolute res:// module path");
+    CHECK(snapshot() == before);
+
+    log.clear();
+    std::vector<std::string> fromThread{"unset"};
+    bool ran = false;
+    std::thread worker{[&] {
+        fromThread = fx.vm.invalidateModule("res://k.js");
+        ran = true;
+    }};
+    worker.join();
+    REQUIRE(ran);
+    CHECK(fromThread.empty());
+    expectOnlyError(log, "script: invalidateModule called from a thread that is not the VM's; refused");
+    CHECK(snapshot() == before);
+
+    // A non-canonical spelling of a known path is that path. Anti-vacuity: a valid invalidation changes something.
+    log.clear();
+    CHECK(fx.vm.invalidateModule("res://./dir/../k.js") == std::vector<std::string>{"res://k.js"});
+    CHECK(log.countAtLeast(LogLevel::Info) == 0U);
+    CHECK(snapshot() != before);
+
+    Vm vm = std::move(fx.vm);  // fx.vm is now a moved-from Vm
+    log.clear();
+    CHECK(fx.vm.invalidateModule("res://k.js").empty());
+    expectOnlyError(log, "script: invalidateModule on an invalid Vm (a failed create or a moved-from Vm)");
+    expectCleanShutdown(vm);
+}
+
+TEST_CASE("script: a reload adds its instances and a heap cost that only a new VM reclaims (ML49)") {
+    const LogCapture log;
+    ModuleFixture fx{patient()};
+    fx.files->set("a.js", R"(import { f } from "./b.js"; globalThis.calls = (globalThis.calls ?? 0) + f();)");
+    fx.files->set("b.js", "export function f() { return 1; } export const table = [1, 2, 3, 4, 5, 6, 7, 8];");
+
+    REQUIRE(label(fx.vm.evaluateModule("res://a.js")) == "Ok");
+    fx.vm.collectGarbage();
+    const std::size_t baseline = fx.vm.stats().heapBytesInUse;
+    constexpr int ROUNDS = 50;
+    for (int round = 0; round < ROUNDS; ++round) {
+        CHECK(fx.vm.invalidateModule("res://b.js") == std::vector<std::string>{"res://a.js", "res://b.js"});
+        CHECK(label(fx.vm.evaluateModule("res://a.js")) == "Ok");
+    }
+    fx.vm.collectGarbage();
+    const std::size_t after = fx.vm.stats().heapBytesInUse;
+    // Anti-vacuity: every round really re-ran both modules.
+    CHECK(completion(fx.vm, "calls") == "51");
+    CHECK(fx.vm.stats().moduleInstances == 2U + 2U * ROUNDS);
+    REQUIRE(after > baseline);
+    MESSAGE("reload growth: " << (after - baseline) / ROUNDS << " bytes per generation");
+    CHECK(log.countAtLeast(LogLevel::Warn) == 0U);
+    expectCleanShutdown(fx.vm);  // the retained instances are freed by teardown, all of them
+}

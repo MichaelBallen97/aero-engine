@@ -219,6 +219,12 @@ public:
     // thread it is refused with one ERROR and returns nothing.
     [[nodiscard]] std::vector<ModuleRecord> moduleRecords() const;
 
+    // The reload hook. Gives `virtualPath` and every module that imported it, directly or transitively, statically or
+    // dynamically, a new generation: the next load of each reads the VFS again and builds a NEW instance (the old one
+    // keeps running wherever it is still referenced). Returns the paths it changed, sorted; an unknown path changes
+    // nothing. An unaddressable path, or a call from another thread, is refused with one ERROR and changes nothing.
+    std::vector<std::string> invalidateModule(std::string_view virtualPath);
+
     // Runs the cycle collector now. Reference counting frees everything else immediately.
     void collectGarbage() noexcept;
 
