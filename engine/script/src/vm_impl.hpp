@@ -112,6 +112,8 @@ struct LoadAttempt {
     std::string importer;                // the importing module's key for the next loader call ("" for an entry)
     std::vector<std::string> compiling;  // the keys being compiled, innermost last (the attribute checker's module)
     std::vector<std::string> created;    // keys compiled successfully, in order: what a failure retires
+    bool refused = false;                // an engine refusal (refuse()) ended it -- never caused by memory
+    std::uint64_t growthRefusalsAtStart = 0;  // HeapAccounting::growthRefusals() when it began
 };
 
 struct Vm::Impl {
@@ -200,6 +202,7 @@ struct Vm::Impl {
     void refuse(std::string_view name, const std::string& message);  // records (an attempt that decides) + throws
     void throwLoadError(std::string_view name, const std::string& message);
     [[nodiscard]] HeldValue moduleValue(JSModuleDef* module) const;
+    void replaceWithOutOfMemory();  // the pending error becomes the backend's own out-of-memory error, it as cause
     [[nodiscard]] char* duplicateName(const std::string& name) const;  // js_malloc copy; nullptr: out of memory, thrown
     static char* normalizeModuleName(JSContext* context, const char* base, const char* specifier,
                                      void* opaque) noexcept;

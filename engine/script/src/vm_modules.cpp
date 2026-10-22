@@ -156,10 +156,18 @@ char* Vm::Impl::serveDynamicImport(const char* base, const char* specifier) {
     }
     LoadAttempt dynamicAttempt{/*decides=*/false};
     dynamicAttempt.importer = importerText;
+    dynamicAttempt.growthRefusalsAtStart = heap.growthRefusals();
     std::uint64_t watch = 0;
     const HeldValue promise = startModule(dynamicAttempt, target.key, ImportPath::Dynamic, watch);
     if (promise.isException()) {
         moduleTable.retire(dynamicAttempt.created);
+        // classify's rule for the static path: a PARSE the heap limit starved is the heap's failure, whatever error the
+        // parser was left to report, and an engine refusal is never memory's. The import() carries the same verdict.
+        const bool parseStarved = dynamicAttempt.loading && !dynamicAttempt.refused && !interruptFired &&
+                                  heap.growthRefusals() > dynamicAttempt.growthRefusalsAtStart;
+        if (parseStarved) {
+            replaceWithOutOfMemory();
+        }
         return nullptr;  // the failure stays pending: the backend rejects the import() with it, and never sees the name
     }
     static_cast<void>(settleModule(target.key, promise.get(), watch, ImportPath::Dynamic));
@@ -360,6 +368,7 @@ void Vm::Impl::endCallWatches() noexcept {
 
 void Vm::Impl::refuse(std::string_view name, const std::string& message) {
     assert(attempt != nullptr);
+    attempt->refused = true;
     // The FIRST refusal of the call's own attempt decides its LoadError; a dynamic attempt's is the script's to catch.
     if (attempt->decidesStatus && !callLoadFailure.has_value()) {
         callLoadFailure = ScriptError{std::string{name}, message, {}};
@@ -384,6 +393,25 @@ void Vm::Impl::throwLoadError(std::string_view name, const std::string& message)
         return;
     }
     static_cast<void>(JS_Throw(ctx, error.release()));  // consumes the error
+}
+
+// The pending error -- the parser's, left behind by a compile the heap limit starved -- becomes the backend's own
+// out-of-memory error, with the parser's error as its `cause` when that fits (a failed definition costs only the
+// cause). An error that already is the backend's out-of-memory error stays.
+void Vm::Impl::replaceWithOutOfMemory() {
+    HeldValue cause{ctx, JS_GetException(ctx)};
+    if (isOutOfMemoryError(cause.get())) {
+        static_cast<void>(JS_Throw(ctx, cause.release()));
+        return;
+    }
+    static_cast<void>(JS_ThrowOutOfMemory(ctx));
+    HeldValue error{ctx, JS_GetException(ctx)};
+    if (JS_IsObject(error.get()) && JS_IsError(cause.get())) {
+        // consumes the cause; a failure leaves an out-of-memory error pending, which the throw below replaces
+        static_cast<void>(JS_DefinePropertyValueStr(ctx, error.get(), "cause", cause.release(),
+                                                    JS_PROP_WRITABLE | JS_PROP_CONFIGURABLE));
+    }
+    static_cast<void>(JS_Throw(ctx, error.release()));
 }
 
 // A module's long-lived handle is its address; a value is minted only to be consumed (JS_EvalFunction). The backend's

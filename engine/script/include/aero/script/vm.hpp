@@ -239,7 +239,9 @@ public:
     //
     // A module's own failure is reported once. During this call it is the call's status and its one record. A
     // top-level await that rejects in a LATER call is reported by that call, as one "unhandled promise rejection"
-    // record. A failed import() rejects its promise and logs nothing itself: the script may catch it. A rejection a
+    // record. A failed import() rejects its promise and logs nothing itself: the script may catch it. An import() whose
+    // graph the heap limit starved while it compiled rejects with the backend's out-of-memory error
+    // (InternalError: out of memory), the parser's own error as its `cause` when the parser reported one. A rejection a
     // module body makes with the very value the module then fails with, while its evaluation is pending, counts as that
     // one failure.
     [[nodiscard]] EvalResult evaluateModule(std::string_view virtualPath);

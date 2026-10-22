@@ -2646,6 +2646,62 @@ TEST_CASE(
     expectCleanShutdown(fx.vm);
 }
 
+TEST_CASE(
+    "script: an import() whose graph runs out of heap while compiling rejects with the out-of-memory error on "
+    "both variants (ML71)") {
+    // ML64's dynamic twin. The parser is left to report null on the Debug lanes and a SyntaxError for this valid module
+    // on the Release ones; the rejection is the backend's own out-of-memory error on both.
+    LogCapture log;
+    ModuleFixture fx{patient(VmConfig{.heapLimitBytes = MIB})};
+    fx.files->set("ok.js", "export const ok = 1;");
+    fx.files->set("heavy.js", heavySource(512 * KIB));
+    fx.files->set("a.js", R"(import "./ok.js"; import "./heavy.js";)");
+    fx.files->set("small.js", "export const small = 1;");
+
+    CHECK(completion(fx.vm,
+                     "globalThis.r = 'none'; import('res://a.js').then(() => { r = 'loaded'; }, (e) => { r = "
+                     "String(e) + ' | cause=' + (e && e.cause ? e.cause.name + ': ' + e.cause.message : 'none') + "
+                     "' | isError=' + (e instanceof Error); }); 0") == "0");
+    const std::string r = completion(fx.vm, "r");
+    INFO("r: " << r);
+    const std::string head = "InternalError: out of memory | cause=";
+    const std::string tail = " | isError=true";
+    CHECK(r.starts_with(head));
+    CHECK(r.ends_with(tail));
+    if (r.size() >= head.size() + tail.size()) {
+        const std::string cause = r.substr(head.size(), r.size() - head.size() - tail.size());
+        CHECK((cause == "none" || cause.starts_with("SyntaxError: ")));
+        MESSAGE("the cause: " << cause);
+    }
+    CHECK(log.countAtLeast(LogLevel::Info) == 0U);  // a caught import logs nothing
+    CHECK(fx.vm.stats().refusedAllocations > 0U);
+    const std::optional<ModuleRecord> ok = recordOf(fx.vm, "res://ok.js");
+    REQUIRE(ok.has_value());
+    CHECK(ok->generation == 2U);
+    CHECK(moduleStateLabel(ok->state) == "Unloaded");
+    for (const std::string_view path : std::array<std::string_view, 2>{"res://heavy.js", "res://a.js"}) {
+        INFO("path: " << std::string{path});
+        const std::optional<ModuleRecord> record = recordOf(fx.vm, path);
+        REQUIRE(record.has_value());
+        CHECK(record->generation == 1U);
+        CHECK(moduleStateLabel(record->state) == "Unloaded");
+    }
+
+    // Uncaught, the same rejection is the one unhandled-rejection record.
+    log.clear();
+    CHECK(completion(fx.vm, "import('res://a.js'); 0") == "0");
+    CHECK(firstLine(onlyErrorMessage(log)) ==
+          "script: probe.js: unhandled promise rejection: InternalError: out of memory");
+
+    // Anti-vacuity: the import machinery works under this very heap, so the rejection above is the starved compile's.
+    static_cast<void>(completion(fx.vm,
+                                 "globalThis.s = 'none'; import('res://small.js').then((ns) => { s = 'loaded ' + "
+                                 "ns.small; }, (e) => { s = String(e); }); 0"));
+    CHECK(completion(fx.vm, "s") == "loaded 1");
+    CHECK(completion(fx.vm, "1 + 1") == "2");
+    expectCleanShutdown(fx.vm);
+}
+
 // ---- ML31-ML34, ML38, ML47: import() --------------------------------------------------------------------------
 
 TEST_CASE("script: import() from a module resolves against that module and records a dynamic edge (ML31)") {
