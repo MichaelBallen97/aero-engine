@@ -16,6 +16,7 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace engine::script {
 
@@ -50,6 +51,13 @@ inline constexpr std::size_t MAX_STACK_LIMIT_BYTES = std::size_t{8} * 1024U * 10
 inline constexpr std::chrono::milliseconds DEFAULT_CALL_TIME_BUDGET{1000};
 inline constexpr std::chrono::milliseconds MIN_CALL_TIME_BUDGET{1};
 inline constexpr std::chrono::milliseconds MAX_CALL_TIME_BUDGET{60'000};
+
+// How deep one import chain may be loaded: a chain of modules, each importing the next and none loaded before, may
+// be maxImportDepth = stackLimitBytes / IMPORT_STACK_BYTES_PER_LEVEL modules long (64 at the default limit, 8 at the
+// minimum, 1024 at the maximum); the next one is a LoadError. Each level costs the backend's compile frames and this
+// layer's (about 1.6 KB per level in the backend's Debug variant and 1.1 KB in its Release one, measured at 4.1.2), so
+// 8 KiB keeps a refused chain far from the backend's own stack check.
+inline constexpr std::size_t IMPORT_STACK_BYTES_PER_LEVEL = std::size_t{8} * 1024U;
 
 struct VmConfig {
     // Each time the budget interrupts a script, the interrupt's own error (and its backtrace) may take up to 16 KiB
@@ -95,6 +103,28 @@ struct EvalResult {
     ScriptError error;       // filled iff status is CompileError, Exception, OutOfMemory or Interrupted
     std::string completion;  // String(completion value) iff the script ran to completion -- DIAGNOSTIC text,
                              // not a value bridge; "<unprintable value>" when the conversion throws
+};
+
+// The state of a module path's CURRENT generation, as the VM last observed it. The backend reports an evaluation's
+// outcome only for the module evaluated as an entry, so a dependency of an entry that failed or is still pending stays
+// Loaded until an entry that imports it completes.
+enum class ModuleState : std::uint8_t {
+    Unloaded = 0,  // no instance of the current generation: never compiled, invalidated, or retired by a failed load
+    Loaded,        // compiled; not known to have been evaluated
+    Evaluating,    // evaluated as an entry whose top-level await had not settled when the VM last looked
+    Evaluated,     // it, and every module it imports statically, completed
+    Failed,        // evaluated as an entry and threw; every later import rethrows its recorded error until invalidated
+};
+[[nodiscard]] std::string_view moduleStateLabel(ModuleState state) noexcept;
+
+// One entry of the module cache. The generation is part of the module's name inside the VM: generation 1 is the path
+// itself, a later one is the path + "?gen=<n>", which is what a stack frame of a reloaded module shows
+// ("res://scripts/a.js?gen=2:3:5"). No specifier can name it: '?' is refused in every specifier and entry path.
+struct ModuleRecord {
+    std::string path;              // the canonical "res://..." path
+    std::uint32_t generation = 1;  // one more per invalidation and per retirement after a failed load or link
+    ModuleState state = ModuleState::Unloaded;
+    std::vector<std::string> imports;  // paths this generation imported, statically or dynamically; sorted, unique
 };
 
 struct VmStats {
