@@ -1966,6 +1966,17 @@ namespace {
     return source;
 }
 
+// How an out-of-memory record's first line ends (script_module_test.cpp's copy): at "bytes in use)" for the backend's
+// own out-of-memory error, otherwise followed by the error the backend reported, in Error.prototype.toString's shape.
+[[nodiscard]] std::string outOfMemoryTail(const engine::script::ScriptError& error) {
+    if (error.name.empty() ||
+        (error.name == "InternalError" && (error.message.empty() || error.message.starts_with("out of memory")))) {
+        return "bytes in use)";
+    }
+    return error.message.empty() ? "bytes in use): " + error.name
+                                 : "bytes in use): " + error.name + ": " + error.message;
+}
+
 }  // namespace
 
 TEST_CASE(
@@ -1980,6 +1991,7 @@ TEST_CASE(
     CHECK(starved.status == EvalStatus::OutOfMemory);
     const std::string starvedPrefix = "script: heavy.js: out of memory (heap limit 1048576 bytes, ";
     CHECK(firstLine(onlyErrorMessage(log)).starts_with(starvedPrefix));
+    CHECK(firstLine(onlyErrorMessage(log)).ends_with(outOfMemoryTail(starved.error)));
 
     // Anti-vacuity, the refusal is per call: a real syntax error, with no refusal in its call, stays a CompileError.
     log.clear();
@@ -1988,4 +2000,39 @@ TEST_CASE(
     CHECK(sum.status == EvalStatus::Ok);
     CHECK(sum.completion == "2");
     expectCleanShutdown(vm);
+}
+
+TEST_CASE("script: the allocator counts a refused growth apart from a refused zeroed allocation (VM63)") {
+    using engine::script::internal::HeapAccounting;
+    HeapAccounting heap{4096};
+    void* const a = heap.allocate(64);
+    void* const z = heap.allocateZeroed(4, 8);
+    REQUIRE(a != nullptr);
+    REQUIRE(z != nullptr);
+    CHECK(heap.refusals() == 0U);
+    CHECK(heap.growthRefusals() == 0U);
+
+    CHECK(heap.allocate(8192) == nullptr);  // a growth: both counters move
+    CHECK(heap.refusals() == 1U);
+    CHECK(heap.growthRefusals() == 1U);
+    CHECK(heap.allocateZeroed(1, 8192) == nullptr);  // the atom hash's growth to 2048 slots, as the backend asks
+    CHECK(heap.refusals() == 2U);
+    CHECK(heap.growthRefusals() == 1U);
+    CHECK(heap.allocateZeroed(2048, 4) == nullptr);  // zeroed: only the refusals move
+    CHECK(heap.refusals() == 3U);
+    CHECK(heap.growthRefusals() == 1U);
+    CHECK(heap.reallocate(a, 8192) == nullptr);  // a reallocation that grows is a growth; `a` stays valid
+    CHECK(heap.refusals() == 4U);
+    CHECK(heap.growthRefusals() == 2U);
+
+    void* const s = heap.reallocate(a, 16);
+    REQUIRE(s != nullptr);
+    void* const g = heap.reallocate(s, 32);
+    REQUIRE(g != nullptr);
+    CHECK(heap.refusals() == 4U);
+    CHECK(heap.growthRefusals() == 2U);
+    heap.release(g);
+    heap.release(z);
+    CHECK(heap.bytesInUse() == 0U);
+    CHECK(heap.liveBlocks() == 0U);
 }

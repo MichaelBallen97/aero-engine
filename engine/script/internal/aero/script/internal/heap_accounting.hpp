@@ -74,6 +74,10 @@ public:
     [[nodiscard]] std::size_t peakBytes() const noexcept;
     [[nodiscard]] std::size_t liveBlocks() const noexcept;
     [[nodiscard]] std::uint64_t refusals() const noexcept;  // requests the LIMIT refused (not system failures)
+    // The refusals of allocate and of a growing reallocate -- every one but allocateZeroed's. The backend's two
+    // allocations whose refusal it tolerates are zeroed ones (its atom and shape hash growth), and a buffer that grows
+    // never is (vm_errors.cpp's classify reads the difference).
+    [[nodiscard]] std::uint64_t growthRefusals() const noexcept;
 
 private:
     // The room the next admission decision has, and the decision itself: inside a grace window it spends one of the
@@ -85,6 +89,7 @@ private:
     std::size_t peak = 0;
     std::size_t blocks = 0;
     std::uint64_t refused = 0;
+    std::uint64_t refusedGrowths = 0;
     std::size_t graceAllocations = 0;  // admission decisions the open window has left
     std::size_t graceCeiling = 0;      // inUse at the opening + the window's bytes (saturating)
     bool holding = false;

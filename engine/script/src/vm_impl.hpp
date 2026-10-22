@@ -150,11 +150,13 @@ struct Vm::Impl {
     [[nodiscard]] EvalResult trap(Phase phase);
     [[nodiscard]] EvalStatus classify(JSValueConst exception, Phase phase);
     [[nodiscard]] bool isOutOfMemoryError(JSValueConst exception);
+    [[nodiscard]] bool isMessagelessInternalError(JSValueConst value);
     [[nodiscard]] ScriptError describe(JSValueConst value, bool isErrorObject);
     [[nodiscard]] std::string stringify(JSValueConst value);
     [[nodiscard]] std::string readStringProperty(JSValueConst object, const char* key, bool nullishIsEmpty);
     void clearPendingException() noexcept;
-    void logFailure(EvalStatus status, const ScriptError& error, bool isErrorObject);
+    // namesCause: an OutOfMemory record also names the error the backend reported (a compile the heap limit starved).
+    void logFailure(EvalStatus status, const ScriptError& error, bool isErrorObject, bool namesCause);
     void logDrainStop();
     void logUnhandledRejection(const ScriptError& reason, bool isErrorObject) const;
 
@@ -217,6 +219,7 @@ struct Vm::Impl {
     bool interruptFired = false;     // the budget ran out in the current call; see interruptHandler
     bool interruptRecorded = false;  // an "interrupted" record has been logged for the current call
     std::uint64_t refusalsAtCallStart = 0;
+    std::uint64_t growthRefusalsAtCallStart = 0;
     std::string callFileName;
     std::vector<PendingRejection> pendingRejections;
     // Promises whose rejection the end-of-call report skipped because the budget caused it. The reference is kept

@@ -287,6 +287,7 @@ Vm::Impl::CallScope::CallScope(Impl& host, const std::string& fileName) : impl(h
     // call and entered later from a shallow one would otherwise get the difference ADDED to its limit.
     JS_UpdateStackTop(host.rt);
     host.refusalsAtCallStart = host.heap.refusals();
+    host.growthRefusalsAtCallStart = host.heap.growthRefusals();
     host.callFileName = fileName;
     host.callLoadFailure.reset();
     host.interruptFired = false;
@@ -346,7 +347,7 @@ void Vm::Impl::noteInterrupt(EvalResult& result) {
     }
     const ScriptError error{"InternalError", "interrupted", {}};
     if (!interruptRecorded) {
-        logFailure(EvalStatus::Interrupted, error, /*isErrorObject=*/true);
+        logFailure(EvalStatus::Interrupted, error, /*isErrorObject=*/true, /*namesCause=*/false);
     }
     adopt(result, EvalResult{EvalStatus::Interrupted, error, {}});
 }

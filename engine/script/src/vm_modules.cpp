@@ -50,7 +50,7 @@ EvalResult Vm::Impl::evaluateModuleCall(std::string_view virtualPath) {
                                   {}};
         callLoadFailure = refusal;
         result = EvalResult{EvalStatus::LoadError, refusal, {}};
-        logFailure(EvalStatus::LoadError, result.error, /*isErrorObject=*/true);
+        logFailure(EvalStatus::LoadError, result.error, /*isErrorObject=*/true, /*namesCause=*/false);
         drainJobs(result);  // jobs an earlier call queued still run, as after evaluateScript's CompileError
     } else {
         evaluateEntry(entry.key, result);

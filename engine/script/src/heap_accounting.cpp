@@ -93,6 +93,7 @@ void* HeapAccounting::allocate(std::size_t size) noexcept {
     const std::size_t room = admissionRoom();
     if (size > room || room - size < HEAP_HEADER_BYTES) {
         ++refused;
+        ++refusedGrowths;
         return nullptr;
     }
     void* base = std::malloc(size + HEAP_HEADER_BYTES);  // cannot wrap: size + header <= the ceiling
@@ -140,6 +141,7 @@ void* HeapAccounting::reallocate(void* block, std::size_t size) noexcept {
     const std::size_t old = readHeader(block);
     if (size > old && size - old > admissionRoom()) {
         ++refused;
+        ++refusedGrowths;
         return nullptr;  // C realloc semantics: `block` stays valid and charged (VM37)
     }
     void* base = static_cast<std::byte*>(block) - HEAP_HEADER_BYTES;
@@ -215,5 +217,7 @@ std::size_t HeapAccounting::peakBytes() const noexcept { return peak; }
 std::size_t HeapAccounting::liveBlocks() const noexcept { return blocks; }
 
 std::uint64_t HeapAccounting::refusals() const noexcept { return refused; }
+
+std::uint64_t HeapAccounting::growthRefusals() const noexcept { return refusedGrowths; }
 
 }  // namespace engine::script::internal

@@ -88,13 +88,15 @@ enum class EvalStatus : std::uint8_t {
     CompileError,  // a source did not compile, or a module graph did not link (a missing or ambiguous export);
                    // nothing ran
     Exception,     // a value was thrown and not caught -- an Error, any other value, or a stack overflow
-    OutOfMemory,   // the heap limit refused an allocation and the failure was not caught -- a compile included,
-                   // whatever error the parser reported
+    OutOfMemory,   // the heap limit refused an allocation and the failure was not caught. In a compile, a refused
+                   // growth decides it whatever error the parser then reported; a refusal the backend tolerates (its
+                   // atom and shape tables keeping their size) leaves the compile its own CompileError or LoadError
     Interrupted,   // the call's time budget ran out; the script could not catch it, nor start new calls
     InvalidVm,     // a failed create's Vm, or a moved-from one
     WrongThread,   // called from a thread that is not the VM's; nothing was touched
     LoadError,     // a module of the graph could not be obtained -- a refused specifier or import attribute, not found
-                   // or unreadable through the VFS, no module source, over the size or depth limit; nothing ran
+                   // or unreadable through the VFS, no module source, over the size or depth limit; nothing ran;
+                   // decided before any out-of-memory rule: no load refusal is caused by memory
 };
 [[nodiscard]] std::string_view evalStatusLabel(EvalStatus status) noexcept;
 
@@ -200,6 +202,8 @@ public:
     //   Exception      "uncaught <name>: <message>"                             + "\n<stack>"  (an Error)
     //                  "uncaught exception: <String(value)>"                                   (anything else)
     //   OutOfMemory    "out of memory (heap limit <L> bytes, <U> bytes in use)" + "\n<stack>"
+    //                  ... + ": <name>: <message>" before the stack when the error the backend reported is not its
+    //                  own out-of-memory error (a compile the heap starved: the parser's SyntaxError)
     //   Interrupted    "interrupted after exceeding the <B> ms time budget"     + "\n<stack>"
     //                  "... time budget with promise jobs still queued"        (the drain was cut short)
     //   a rejection    "unhandled promise rejection: <name>: <message>"         + "\n<stack>"  (status unchanged)
@@ -219,7 +223,7 @@ public:
     // else is refused -- a bare name, a '/'-rooted path, another scheme or a drive path, "", a '?' or a '#'. Paths are
     // compared byte for byte (case-sensitive). No import attribute is supported. import() follows the same rules; from
     // global code only an absolute res:// specifier resolves. A specifier ends at its first U+0000: the backend hands
-    // specifiers over as C strings, so 'res://a.js\u0000x' names res://a.js.
+    // specifiers over as C strings, so res://a.js followed by a U+0000 and anything else names res://a.js.
     //
     // Every failure is logged once, at ERROR, as "script: <path>: " followed by evaluateScript's shapes, plus:
     //   LoadError      "load error: <name>: <message>"                 (no stack: nothing ran)

@@ -2391,6 +2391,53 @@ namespace {
     return source;
 }
 
+// How an out-of-memory record's first line ends: at "bytes in use)" when the error is the backend's own out-of-memory
+// error -- null, or an InternalError whose message says so or is empty, the message itself not allocated -- and
+// otherwise followed by the error the backend reported, in Error.prototype.toString's shape.
+[[nodiscard]] std::string outOfMemoryTail(const engine::script::ScriptError& error) {
+    if (error.name.empty() ||
+        (error.name == "InternalError" && (error.message.empty() || error.message.starts_with("out of memory")))) {
+        return "bytes in use)";
+    }
+    return error.message.empty() ? "bytes in use): " + error.name
+                                 : "bytes in use): " + error.name + ": " + error.message;
+}
+
+// One run of a heap sweep, ML67-ML69. A fresh VM over the files `seed` writes, with a 1 MiB heap; `prelude` (when not
+// empty) runs first; then an ArrayBuffer fills the heap until `room` bytes are left, measured by the VM's own count,
+// so the room is exact whatever the platform's block sizes; then `call`. The scripts are the ones the sweeps were
+// measured with -- keep them byte for byte, since ML68's window depends on how many names they create.
+struct HeapRun {
+    std::string status;
+    engine::script::ScriptError error;
+    bool refused = false;  // the heap refused something during `call`
+    std::string record;    // the first line of the call's one record at WARN or above ("" when none)
+};
+
+[[nodiscard]] HeapRun runWithRoom(LogCapture& log, const std::function<void(MemoryBackend&)>& seed,
+                                  std::string_view prelude, std::size_t room,
+                                  const std::function<EvalResult(Vm&)>& call) {
+    ModuleFixture fx{patient(VmConfig{.heapLimitBytes = MIB})};
+    seed(*fx.files);
+    if (!prelude.empty()) {
+        REQUIRE(label(fx.vm.evaluateScript(prelude, "fill.js")) == "Ok");
+    }
+    REQUIRE(label(fx.vm.evaluateScript("globalThis.buf = null; 0", "fill.js")) == "Ok");
+    const std::size_t inUse = fx.vm.stats().heapBytesInUse;
+    REQUIRE(inUse + room < MIB);
+    const std::string fill = "buf = new ArrayBuffer(" + std::to_string(MIB - inUse - room) + "); 0";
+    REQUIRE(label(fx.vm.evaluateScript(fill, "fill.js")) == "Ok");
+    const std::uint64_t refusedBefore = fx.vm.stats().refusedAllocations;
+    log.clear();
+    const EvalResult result = call(fx.vm);
+    HeapRun run{label(result), result.error, fx.vm.stats().refusedAllocations > refusedBefore, {}};
+    if (const std::vector<CapturedRecord> records = log.atLeast(LogLevel::Warn); !records.empty()) {
+        run.record = std::string{firstLine(records.front().message)};
+    }
+    expectCleanShutdown(fx.vm);
+    return run;
+}
+
 }  // namespace
 
 TEST_CASE(
@@ -2398,7 +2445,8 @@ TEST_CASE(
     "created, and the VM recovers (ML64)") {
     // This tells the old classification from the new one on the Release lanes only: there the parser reports the
     // refused allocation as a SyntaxError, while on the Debug lanes the same size throws the backend's `null`, which
-    // the old rule already classified OutOfMemory.
+    // the old rule already classified OutOfMemory. The record's tail, too, is told apart on the Release lanes alone;
+    // ML69 is the twin that tells both apart on both variants.
     const LogCapture log;
     ModuleFixture fx{patient(VmConfig{.heapLimitBytes = MIB})};
     fx.files->set("ok.js", "export const ok = 1;");
@@ -2409,6 +2457,7 @@ TEST_CASE(
     CHECK(label(result) == "OutOfMemory");
     const std::string starvedPrefix = "script: res://a.js: out of memory (heap limit 1048576 bytes, ";
     CHECK(firstLine(onlyErrorMessage(log)).starts_with(starvedPrefix));
+    CHECK(firstLine(onlyErrorMessage(log)).ends_with(outOfMemoryTail(result.error)));
     CHECK(fx.vm.stats().refusedAllocations > 0U);
     const std::optional<ModuleRecord> ok = recordOf(fx.vm, "res://ok.js");
     REQUIRE(ok.has_value());
@@ -2460,7 +2509,8 @@ TEST_CASE("script: a specifier ends at its first U+0000, statically and through 
     // This pins the BACKEND's behaviour, as a tripwire: quickjs-ng hands a specifier to the normalizer as a C string
     // (JS_AtomToCString statically, JS_ToCString for import()), so the grammar never sees what follows the U+0000. A
     // port that passes the whole string turns this red; the grammar's own NUL refusal then answers, and vm.hpp's
-    // contract sentence changes with it. The C++ spells the JavaScript escape "\\u0000": six characters, never a NUL.
+    // contract sentence changes with it. The C++ doubles the escape's backslash, so the script text carries the
+    // six-character escape, never a NUL.
     const LogCapture log;
     ModuleFixture fx;
     fx.files->set("a.js", "export const v = 1;");
@@ -2478,6 +2528,93 @@ TEST_CASE("script: a specifier ends at its first U+0000, statically and through 
     CHECK(completion(fx.vm, "r") == "loaded 1");
     CHECK(log.countAtLeast(LogLevel::Info) == 0U);
     expectCleanShutdown(fx.vm);
+}
+
+// ---- ML67-ML69: a refusal the backend tolerates, and a compile the heap starves -------------------------------------
+
+TEST_CASE("script: a load refusal is a LoadError even when the heap refused an allocation in the same call (ML67)") {
+    LogCapture log;
+    const std::string missing = "res://" + std::string(8000, 'm') + ".js";
+    const auto seed = [](MemoryBackend& files) {
+        files.set("a.js", "import './ok.js'; import './" + std::string(8000, 'm') + ".js';");
+        files.set("ok.js", "export const v = 1;");
+    };
+    const auto call = [](Vm& vm) { return vm.evaluateModule("res://a.js"); };
+    // The least room at which the load is a LoadError: below it, the long specifier's own text runs out of heap.
+    std::size_t first = 0;
+    for (std::size_t room = 16 * KIB; room <= 48 * KIB && first == 0; room += 512) {
+        if (runWithRoom(log, seed, {}, room, call).status == "LoadError") {
+            first = room;
+        }
+    }
+    REQUIRE(first != 0U);
+    // The band of load refusals beside a heap refusal is about 330 bytes wide on both variants, just below `first`, and
+    // a 32-byte step cannot straddle it.
+    const std::string loadText = engine::script::internal::notFoundMessage(missing, "res://a.js");
+    std::size_t besideRefusal = 0;
+    for (std::size_t room = first - 512; room < first + 512; room += 32) {
+        INFO("room " << room);
+        const HeapRun run = runWithRoom(log, seed, {}, room, call);
+        if (run.status == "LoadError") {
+            CHECK(run.error.name == "TypeError");
+            CHECK(run.error.message == loadText);
+            CHECK(run.record == "script: res://a.js: load error: TypeError: " + loadText);
+            besideRefusal += run.refused ? 1U : 0U;
+        } else {
+            REQUIRE(run.status == "OutOfMemory");
+            CHECK(run.record.ends_with(outOfMemoryTail(run.error)));
+        }
+    }
+    MESSAGE("first LoadError at " << first << " bytes of room; " << besideRefusal << " beside a heap refusal");
+    REQUIRE(besideRefusal > 0U);
+}
+
+TEST_CASE("script: a genuine syntax error beside a refusal the backend tolerates is a CompileError (ML68)") {
+    // Why the window sits here: the prelude leaves 634 + `names` atoms, and with 6 KiB left the graph's own names carry
+    // the count across 2048, where the atom hash's 8 KiB growth is refused and tolerated (the old table is kept). A
+    // port that changes the fresh VM's 633 atoms moves the window -- VM5 turns red at the same bump -- and then this
+    // case fails on its REQUIRE below until the window is re-derived.
+    LogCapture log;
+    const auto seed = [](MemoryBackend& files) {
+        files.set("a.js", "import './ok.js'; import './bad.js';");
+        files.set("ok.js", "export const v = 1;");
+        files.set("bad.js", "export const ;");
+    };
+    const auto call = [](Vm& vm) { return vm.evaluateModule("res://a.js"); };
+    std::size_t besideRefusal = 0;
+    for (int names = 1400; names <= 1420; ++names) {
+        INFO("names " << names);
+        const std::string prelude =
+            "for (let i = 0; i < " + std::to_string(names) + "; i++) globalThis['q' + i] = 0; 0";
+        const HeapRun run = runWithRoom(log, seed, prelude, 6 * KIB, call);
+        CHECK(run.status == "CompileError");
+        CHECK(run.error.name == "SyntaxError");
+        CHECK(run.error.message == "variable name expected");
+        CHECK(run.record == "script: res://a.js: compile error: SyntaxError: variable name expected");
+        besideRefusal += run.refused ? 1U : 0U;
+    }
+    INFO("no run met the atom hash's refused growth: the window moved; re-derive it from the fresh VM's atoms");
+    REQUIRE(besideRefusal > 0U);
+}
+
+TEST_CASE(
+    "script: a compile the heap starves is OutOfMemory on both variants, and its record names the error the "
+    "parser was left to report (ML69)") {
+    LogCapture log;
+    const std::string source = heavySource(32 * KIB);  // 32 734 bytes
+    const auto seed = [&source](MemoryBackend& files) { files.set("m.js", source); };
+    const auto call = [](Vm& vm) { return vm.evaluateModule("res://m.js"); };
+    std::size_t masked = 0;
+    for (std::size_t room = 8 * KIB; room <= 64 * KIB; room += 2 * KIB) {
+        INFO("room " << room);
+        const HeapRun run = runWithRoom(log, seed, {}, room, call);
+        CHECK(run.status == "OutOfMemory");
+        CHECK(run.record.starts_with("script: res://m.js: out of memory (heap limit 1048576 bytes, "));
+        CHECK(run.record.ends_with(outOfMemoryTail(run.error)));
+        masked += run.error.name == "SyntaxError" ? 1U : 0U;
+    }
+    MESSAGE(masked << " of 29 runs masked as a SyntaxError");
+    REQUIRE(masked > 0U);
 }
 
 // ---- ML31-ML34, ML38, ML47: import() --------------------------------------------------------------------------
