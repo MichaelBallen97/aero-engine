@@ -36,7 +36,7 @@ inline constexpr std::size_t HELD_SNAPSHOT_BYTES = 7;  // payload bytes recorded
 struct HeldReturn {
     std::size_t blocks = 0;               // releases the hold accepted
     std::size_t writtenAfterRelease = 0;  // held blocks whose recorded bytes changed after their release
-    std::size_t repeatedReleases = 0;     // releases of a block already held: absorbed, never freed twice
+    std::size_t repeatedReleases = 0;     // a held block handed back again -- released or reallocated: absorbed
 };
 
 class HeapAccounting {
@@ -54,7 +54,9 @@ public:
     // nullptr from reallocate: `block` is untouched and still charged, as with C realloc.
     [[nodiscard]] void* reallocate(void* block, std::size_t size) noexcept;
     void release(void* block) noexcept;  // nullptr: no-op; during a hold, kept and recorded (above)
-    [[nodiscard]] static std::size_t requestedSize(const void* block) noexcept;  // nullptr: 0
+    // nullptr, or a held block: 0. The backend asks this BEFORE it releases a block (quickjs.c:1666-1669, and
+    // :1686-1689 for a reallocation to 0), so a held block must answer 0 for a second release to reach release().
+    [[nodiscard]] static std::size_t requestedSize(const void* block) noexcept;
 
     // A grace window: for the next `allocations` admission decisions (an allocate, an allocateZeroed or a GROWING
     // reallocate, refused or not) the ceiling is max(limit, inUse-at-the-opening + bytes) instead of the limit. It

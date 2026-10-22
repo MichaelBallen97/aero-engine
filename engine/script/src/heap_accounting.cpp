@@ -144,6 +144,10 @@ void* HeapAccounting::reallocate(void* block, std::size_t size) noexcept {
         release(block);
         return nullptr;
     }
+    if (holding && (headerWord(static_cast<std::byte*>(block) - HEAP_HEADER_BYTES) & HELD_BIT) != 0) {
+        ++repeated;  // a held block reallocated: refused, as a failed C realloc, and the block stays held
+        return nullptr;
+    }
     const std::size_t old = readHeader(block);
     if (size > old && size - old > admissionRoom()) {
         ++refused;
@@ -211,7 +215,11 @@ HeldReturn HeapAccounting::returnHeld() noexcept {
 }
 
 std::size_t HeapAccounting::requestedSize(const void* block) noexcept {
-    return block == nullptr ? 0 : readHeader(block);
+    if (block == nullptr) {
+        return 0;
+    }
+    const std::uint64_t word = headerWord(static_cast<const std::byte*>(block) - HEAP_HEADER_BYTES);
+    return (word & HELD_BIT) != 0 ? 0 : static_cast<std::size_t>(word);  // a held block reads as nothing
 }
 
 std::size_t HeapAccounting::limitBytes() const noexcept { return limit; }

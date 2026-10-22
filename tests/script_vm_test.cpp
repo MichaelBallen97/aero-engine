@@ -1917,6 +1917,7 @@ TEST_CASE(
     std::fill(b, b + 4, static_cast<unsigned char>(0x22));
     std::fill(c, c + 64, static_cast<unsigned char>(0x33));
     CHECK(heap.bytesInUse() == 148U);
+    CHECK(HeapAccounting::requestedSize(a) == 32U);  // a live block answers its size
 
     heap.holdReleases();
     heap.release(a);
@@ -1924,16 +1925,24 @@ TEST_CASE(
     heap.release(c);
     CHECK(heap.bytesInUse() == 0U);  // accounted as returned...
     CHECK(heap.liveBlocks() == 0U);
+    // The backend asks a block's size BEFORE it releases it (js_free_rt), so a held block answers 0: that is what lets
+    // a second release reach release() instead of the backend's own underflow check.
+    CHECK(HeapAccounting::requestedSize(a) == 0U);
+    CHECK(HeapAccounting::requestedSize(b) == 0U);
+    CHECK(HeapAccounting::requestedSize(c) == 0U);
     // ...but still the heap's memory: this case writes into the released blocks ON PURPOSE, which the hold is what
     // makes legal -- exactly what the backend does to a freed module at teardown (R23).
     a[0] = 0x10;      // inside the seven recorded bytes: seen
     b[3] = 0x23;      // the last byte of a 4-byte block, recorded: seen
     c[8] = 0x00;      // past the seven recorded bytes: not seen
     heap.release(c);  // a second release of a held block: absorbed, never freed twice
+    // A held block reallocated is refused, as a failed C realloc, and stays held.
+    CHECK(heap.reallocate(a, 128) == nullptr);
+    CHECK(HeapAccounting::requestedSize(a) == 0U);
     const HeldReturn held = heap.returnHeld();
     CHECK(held.blocks == 3U);
     CHECK(held.writtenAfterRelease == 2U);
-    CHECK(held.repeatedReleases == 1U);
+    CHECK(held.repeatedReleases == 2U);  // the release and the reallocation
     CHECK(heap.bytesInUse() == 0U);
     CHECK(heap.liveBlocks() == 0U);
 

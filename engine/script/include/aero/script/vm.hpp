@@ -165,7 +165,8 @@ struct VmStats {
 // keeps, an importer awaiting it, an import() of it -- the backend frees the module first and writes into it
 // afterwards. The VM keeps every block the backend releases during teardown until the backend is done, so those writes
 // land in memory the VM still owns: writtenAfterRelease counts the blocks written after their release (0 unless such
-// an await was pending), repeatedReleases the blocks released twice (none measured).
+// an await was pending), repeatedReleases the blocks the backend handed back again -- released or reallocated a
+// second time -- each absorbed and still freed exactly once (none measured).
 struct VmTeardownReport {
     std::size_t leakedAllocations = 0;
     std::size_t leakedBytes = 0;
