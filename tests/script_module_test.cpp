@@ -1222,7 +1222,7 @@ TEST_CASE("script: a module that throws is one Exception and never also an unhan
     CHECK(label(fx.vm.evaluateModule("res://p.js")) == "Exception");
     expectOnlyError(log, "script: res://p.js: uncaught exception: 42");
 
-    // (d) anti-vacuity: the window drops the module's own failure and keeps the script's own rejection.
+    // (d) anti-vacuity: the watch drops the module's own failure and keeps the script's own rejection.
     fx.files->set("own.js", R"(Promise.reject(new Error("own")); throw new Error("mine");)");
     log.clear();
     const EvalResult own = fx.vm.evaluateModule("res://own.js");
@@ -2004,6 +2004,273 @@ TEST_CASE(
     }
 }
 
+// ---- ML55-ML60: a module's failure is reported once, whenever it happens ----------------------------------------
+
+namespace {
+
+// Evaluates `source` as global code named boot.js and returns how many records at INFO or above the call logged.
+[[nodiscard]] std::size_t scriptRecords(LogCapture& log, Vm& vm, const std::string& source) {
+    log.clear();
+    const EvalResult result = vm.evaluateScript(source, "boot.js");
+    CHECK(label(result) == "Ok");
+    return log.countAtLeast(LogLevel::Info);
+}
+
+}  // namespace
+
+TEST_CASE(
+    "script: a synchronous module evaluated after a top-level await it imports fails once, as the call's status "
+    "(ML55)") {
+    LogCapture log;
+    {
+        ModuleFixture fx;
+        // (a) the control: no await anywhere.
+        fx.files->set("u.js", "export const u = 1;");
+        fx.files->set("e2.js", "import { u } from './u.js'; throw new Error('control ' + u);");
+        CHECK(label(fx.vm.evaluateModule("res://e2.js")) == "Exception");
+        CHECK(onlyErrorMessage(log).starts_with("script: res://e2.js: uncaught Error: control 1"));
+
+        // (b) the body runs in the drain, after t.js's await settled -- outside JS_EvalFunction.
+        fx.files->set("t.js", "await null; export const t = 1;");
+        fx.files->set("e.js", "import { t } from './t.js'; throw new Error('boom ' + t);");
+        log.clear();
+        const EvalResult late = fx.vm.evaluateModule("res://e.js");
+        CHECK(label(late) == "Exception");
+        CHECK(late.error.message == "boom 1");
+        CHECK(onlyErrorMessage(log).starts_with("script: res://e.js: uncaught Error: boom 1"));
+        CHECK(fx.vm.stats().unhandledRejections == 0U);
+        CHECK(stateOf(fx.vm, "res://e.js") == "Failed");
+        CHECK(stateOf(fx.vm, "res://t.js") == "Loaded");  // D14's stated limit
+        expectCleanShutdown(fx.vm);
+    }
+    {
+        // (c) one level down, in a fresh VM so that t.js has not run yet.
+        ModuleFixture fx;
+        fx.files->set("t.js", "await null; export const t = 1;");
+        fx.files->set("d.js", "import { t } from './t.js'; throw new Error('dep ' + t);");
+        fx.files->set("r.js", "import './d.js'; globalThis.rRan = true;");
+        log.clear();
+        const EvalResult dependency = fx.vm.evaluateModule("res://r.js");
+        CHECK(label(dependency) == "Exception");
+        CHECK(dependency.error.message == "dep 1");
+        CHECK(firstLine(dependency.error.stack).find("(res://d.js:1:53)") != std::string_view::npos);
+        CHECK(onlyErrorMessage(log).starts_with("script: res://r.js: uncaught Error: dep 1"));
+        CHECK(fx.vm.stats().unhandledRejections == 0U);
+        CHECK(completion(fx.vm, "typeof rRan") == "undefined");
+        expectCleanShutdown(fx.vm);
+    }
+}
+
+TEST_CASE(
+    "script: a failed import() is silent when caught and one record when not, whenever its module fails "
+    "(ML56)") {
+    LogCapture log;
+    ModuleFixture fx;
+    // A module that throws at once.
+    fx.files->set("s.js", "throw new Error('sync');");
+    CHECK(scriptRecords(log, fx.vm,
+                        "globalThis.r1 = 'none'; import('res://s.js').catch((e) => { r1 = e.message; }); 0") == 0U);
+    CHECK(completion(fx.vm, "r1") == "sync");
+    CHECK(scriptRecords(log, fx.vm, "import('res://s.js'); 0") == 1U);  // the cached failure, uncaught
+    CHECK(onlyErrorMessage(log).starts_with("script: boot.js: unhandled promise rejection: Error: sync"));
+
+    // A top-level await that rejects.
+    fx.files->set("t.js", "await null; throw new Error('tla');");
+    CHECK(scriptRecords(log, fx.vm,
+                        "globalThis.r2 = 'none'; import('res://t.js').catch((e) => { r2 = e.message; }); 0") == 0U);
+    CHECK(completion(fx.vm, "r2") == "tla");
+    fx.files->set("t2.js", "await null; throw new Error('tla2');");
+    CHECK(scriptRecords(log, fx.vm, "import('res://t2.js'); 0") == 1U);
+    CHECK(onlyErrorMessage(log).starts_with("script: boot.js: unhandled promise rejection: Error: tla2"));
+
+    // A synchronous module evaluated in the drain, after the await it imports settled.
+    fx.files->set("w.js", "await null; export const w = 1;");
+    fx.files->set("c.js", "import { w } from './w.js'; throw new Error('after ' + w);");
+    CHECK(scriptRecords(log, fx.vm,
+                        "globalThis.r3 = 'none'; import('res://c.js').catch((e) => { r3 = e.message; }); 0") == 0U);
+    CHECK(completion(fx.vm, "r3") == "after 1");
+    fx.files->set("w2.js", "await null; export const w = 2;");
+    fx.files->set("c2.js", "import { w } from './w2.js'; throw new Error('after2 ' + w);");
+    CHECK(scriptRecords(log, fx.vm, "import('res://c2.js'); 0") == 1U);
+    CHECK(onlyErrorMessage(log).starts_with("script: boot.js: unhandled promise rejection: Error: after2 2"));
+
+    // The same from a module evaluated as an entry, so evaluateModule's own tail is the one observing.
+    fx.files->set("w3.js", "await null; export const w = 3;");
+    fx.files->set("c3.js", "import { w } from './w3.js'; throw new Error('after3 ' + w);");
+    fx.files->set("dyn.js",
+                  "globalThis.r4 = 'none'; "
+                  "import('./c3.js').catch((e) => { r4 = 'caught ' + e.message; });");
+    log.clear();
+    CHECK(label(fx.vm.evaluateModule("res://dyn.js")) == "Ok");
+    CHECK(log.countAtLeast(LogLevel::Info) == 0U);
+    CHECK(completion(fx.vm, "r4") == "caught after3 3");
+    fx.files->set("w4.js", "await null; export const w = 4;");
+    fx.files->set("c4.js", "import { w } from './w4.js'; throw new Error('after4 ' + w);");
+    fx.files->set("dyn2.js", "import('./c4.js');");
+    log.clear();
+    CHECK(label(fx.vm.evaluateModule("res://dyn2.js")) == "Ok");
+    CHECK(onlyErrorMessage(log).starts_with("script: res://dyn2.js: unhandled promise rejection: Error: after4 4"));
+
+    CHECK(fx.vm.stats().unhandledRejections == 4U);
+    CHECK(fx.vm.stats().rejectionsHandledLate == 0U);
+    const std::array<std::string_view, 7> failed{"res://s.js",  "res://t.js",  "res://t2.js", "res://c.js",
+                                                 "res://c2.js", "res://c3.js", "res://c4.js"};
+    for (const std::string_view path : failed) {
+        INFO("path: " << std::string{path});
+        CHECK(stateOf(fx.vm, path) == "Failed");  // each observed at the end of its call
+    }
+    for (const std::string_view path :
+         std::array<std::string_view, 4>{"res://w.js", "res://w2.js", "res://w3.js", "res://w4.js"}) {
+        INFO("path: " << std::string{path});
+        CHECK(stateOf(fx.vm, path) == "Loaded");
+    }
+    expectCleanShutdown(fx.vm);
+}
+
+TEST_CASE("script: a module that throws NaN is one failure, statically and through import() (ML57)") {
+    LogCapture log;
+    ModuleFixture fx;
+    // The control: a primitive strictly equal to itself.
+    fx.files->set("f.js", "throw 42;");
+    CHECK(label(fx.vm.evaluateModule("res://f.js")) == "Exception");
+    expectOnlyError(log, "script: res://f.js: uncaught exception: 42");
+
+    fx.files->set("n.js", "throw NaN;");
+    log.clear();
+    CHECK(label(fx.vm.evaluateModule("res://n.js")) == "Exception");
+    expectOnlyError(log, "script: res://n.js: uncaught exception: NaN");
+    CHECK(fx.vm.stats().unhandledRejections == 0U);
+
+    fx.files->set("n2.js", "throw NaN;");
+    CHECK(scriptRecords(log, fx.vm,
+                        "globalThis.cn = 'none'; import('res://n2.js').catch((e) => { cn = 'caught ' + e; }); 0") ==
+          0U);
+    CHECK(completion(fx.vm, "cn") == "caught NaN");
+    expectCleanShutdown(fx.vm);
+}
+
+TEST_CASE("script: a promise a module body rejected with the value it throws is silent when handled later (ML58)") {
+    LogCapture log;
+    ModuleFixture fx;
+    // The control: a body that rejects and handles in a job, and throws nothing.
+    fx.files->set("h0.js",
+                  "const p = Promise.reject(new Error('y')); "
+                  "queueMicrotask(() => { p.catch(() => {}); });");
+    CHECK(label(fx.vm.evaluateModule("res://h0.js")) == "Ok");
+    CHECK(log.countAtLeast(LogLevel::Info) == 0U);
+
+    fx.files->set("h.js",
+                  "const e = new Error('x'); const p = Promise.reject(e); "
+                  "queueMicrotask(() => { p.catch(() => {}); }); throw e;");
+    log.clear();
+    CHECK(label(fx.vm.evaluateModule("res://h.js")) == "Exception");
+    const std::vector<CapturedRecord> records = log.atLeast(LogLevel::Info);
+    REQUIRE(records.size() == 1U);
+    CHECK(records[0].message.starts_with("script: res://h.js: uncaught Error: x"));
+    CHECK(fx.vm.stats().rejectionsHandledLate == 0U);
+
+    // Across calls.
+    fx.files->set("h2.js", "const e = new Error('x2'); globalThis.p2 = Promise.reject(e); throw e;");
+    log.clear();
+    CHECK(label(fx.vm.evaluateModule("res://h2.js")) == "Exception");
+    CHECK(scriptRecords(log, fx.vm, "p2.catch(() => {}); 0") == 0U);
+    CHECK(fx.vm.stats().rejectionsHandledLate == 0U);
+    expectCleanShutdown(fx.vm);
+}
+
+TEST_CASE(
+    "script: a top-level await that rejects in a later call is that call's one record, and the record follows "
+    "(ML59)") {
+    LogCapture log;
+    const std::string wait = "await new Promise((_, r) => { globalThis.rejectLater = r; });";
+    const std::string later = "await new Promise((r) => { globalThis.go = r; }); export const t = 1;";
+    const std::string sync = "import { t } from './t.js'; throw new Error('boom ' + t);";
+    {
+        // (a) rejected by a later evaluateScript.
+        ModuleFixture fx;
+        fx.files->set("wait.js", wait);
+        CHECK(label(fx.vm.evaluateModule("res://wait.js")) == "Ok");  // with its one WARN
+        CHECK(stateOf(fx.vm, "res://wait.js") == "Evaluating");
+        CHECK(scriptRecords(log, fx.vm, "rejectLater(new Error('later')); 0") == 1U);
+        CHECK(onlyErrorMessage(log).starts_with("script: boot.js: unhandled promise rejection: Error: later"));
+        CHECK(fx.vm.stats().unhandledRejections == 1U);
+        CHECK(stateOf(fx.vm, "res://wait.js") == "Failed");  // from the end of that call
+        log.clear();
+        const EvalResult again = fx.vm.evaluateModule("res://wait.js");
+        CHECK(label(again) == "Exception");
+        CHECK(again.error.message == "later");
+        CHECK(onlyErrorMessage(log).starts_with("script: res://wait.js: uncaught Error: later"));
+        CHECK(fx.vm.stats().unhandledRejections == 1U);
+        expectCleanShutdown(fx.vm);
+    }
+    {
+        // (b) a synchronous importer whose await is settled by a later call.
+        ModuleFixture fx;
+        fx.files->set("t.js", later);
+        fx.files->set("e.js", sync);
+        CHECK(label(fx.vm.evaluateModule("res://e.js")) == "Ok");  // with its one WARN
+        CHECK(scriptRecords(log, fx.vm, "go(); 0") == 1U);
+        CHECK(onlyErrorMessage(log).starts_with("script: boot.js: unhandled promise rejection: Error: boom 1"));
+        CHECK(stateOf(fx.vm, "res://e.js") == "Failed");
+        expectCleanShutdown(fx.vm);
+    }
+    {
+        // (c) the dynamic twins.
+        ModuleFixture fx;
+        fx.files->set("wait.js", wait);
+        fx.files->set("t.js", later);
+        fx.files->set("e.js", sync);
+        CHECK(scriptRecords(log, fx.vm,
+                            "globalThis.d1 = 'none'; import('res://wait.js').catch((e) => { d1 = 'caught ' + "
+                            "e.message; }); 0") == 0U);
+        CHECK(scriptRecords(log, fx.vm, "import('res://e.js'); 0") == 0U);  // uncaught, but nothing has failed yet
+        CHECK(scriptRecords(log, fx.vm, "rejectLater(new Error('later')); 0") == 0U);
+        CHECK(completion(fx.vm, "d1") == "caught later");
+        CHECK(scriptRecords(log, fx.vm, "go(); 0") == 1U);
+        CHECK(onlyErrorMessage(log).starts_with("script: boot.js: unhandled promise rejection: Error: boom 1"));
+        CHECK(stateOf(fx.vm, "res://wait.js") == "Failed");
+        CHECK(stateOf(fx.vm, "res://e.js") == "Failed");
+        expectCleanShutdown(fx.vm);
+    }
+    {
+        // (d) reloaded before the old instance rejects: the record keeps the new generation's state.
+        ModuleFixture fx;
+        fx.files->set("wait.js", wait);
+        CHECK(label(fx.vm.evaluateModule("res://wait.js")) == "Ok");  // with its one WARN
+        CHECK(fx.vm.invalidateModule("res://wait.js") == std::vector<std::string>{"res://wait.js"});
+        fx.files->set("wait.js", "export const fresh = 1;");
+        CHECK(label(fx.vm.evaluateModule("res://wait.js")) == "Ok");
+        const std::optional<ModuleRecord> fresh = recordOf(fx.vm, "res://wait.js");
+        REQUIRE(fresh.has_value());
+        CHECK(fresh->generation == 2U);
+        CHECK(moduleStateLabel(fresh->state) == "Evaluated");
+        CHECK(scriptRecords(log, fx.vm, "rejectLater(new Error('old generation')); 0") == 1U);
+        const std::string expected = "script: boot.js: unhandled promise rejection: Error: old generation";
+        CHECK(onlyErrorMessage(log).starts_with(expected));
+        CHECK(stateOf(fx.vm, "res://wait.js") == "Evaluated");
+        expectCleanShutdown(fx.vm);
+    }
+}
+
+TEST_CASE("script: a module waiting on its top-level await is watched once, however often it is evaluated (ML60)") {
+    // The witness of "one watch per module promise" is the bound's assert in endCallWatches, which only the Debug
+    // lanes compile: a Release lane cannot see a second watch, and this case cannot assert one from outside.
+    LogCapture log;
+    ModuleFixture fx;
+    fx.files->set("never.js", "await new Promise(() => {});");
+    for (int call = 1; call <= 3; ++call) {
+        INFO("call " << call);
+        log.clear();
+        CHECK(label(fx.vm.evaluateModule("res://never.js")) == "Ok");
+        const std::vector<CapturedRecord> records = log.atLeast(LogLevel::Warn);
+        REQUIRE(records.size() == 1U);
+        CHECK(records[0].level == LogLevel::Warn);
+    }
+    CHECK(completion(fx.vm, "1 + 1") == "2");
+    CHECK(stateOf(fx.vm, "res://never.js") == "Evaluating");
+    expectCleanShutdown(fx.vm);  // static evaluations only: an import() of it is ML52(c)'s R23 shape
+}
+
 // ---- ML31-ML34, ML38, ML47: import() --------------------------------------------------------------------------
 
 TEST_CASE("script: import() from a module resolves against that module and records a dynamic edge (ML31)") {
@@ -2088,8 +2355,8 @@ TEST_CASE("script: import() from global code takes an absolute res:// path, and 
 TEST_CASE("script: a failed import() the script catches logs nothing (ML33)") {
     const LogCapture log;
     ModuleFixture fx;
-    // (a) a module that throws: its internal rejection is attributed inside the engine's window, and the module
-    // promise is left listed for the backend's own handler.
+    // (a) a module that throws: its body's rejection is attributed by its watch, and the module promise is kept with
+    // the skipped ones until the backend's own handler takes it.
     fx.files->set("t.js", "throw new Error(\"boom\");");
     const std::string catchThrow =
         "globalThis.ca = 'none'; import('res://t.js').catch((e) => { ca = 'caught ' + e.message; }); 0";
@@ -2133,7 +2400,7 @@ TEST_CASE("script: an uncaught failed import() is exactly one unhandled-rejectio
     log.clear();
     fx.files->set("t2.js", "throw new Error(\"boom2\");");
     CHECK(label(fx.vm.evaluateScript("import('res://t2.js'); 0", "boot.js")) == "Ok");
-    // One, not two: the module body's internal rejection is attributed inside the engine's window.
+    // One, not two: the module body's internal rejection is attributed by its watch.
     CHECK(onlyErrorMessage(log).starts_with("script: boot.js: unhandled promise rejection: Error: boom2"));
     CHECK(fx.vm.stats().unhandledRejections == 2U);
     expectCleanShutdown(fx.vm);

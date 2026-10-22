@@ -115,7 +115,8 @@ struct EvalResult {
 
 // The state of a module path's CURRENT generation, as the VM last observed it. The backend reports an evaluation's
 // outcome only for the module evaluated as an entry, so a dependency of an entry that failed or is still pending stays
-// Loaded until an entry that imports it completes.
+// Loaded until an entry that imports it completes. The VM looks at the end of every call, so an entry whose top-level
+// await settles in a later call reads Evaluated or Failed from the end of that call.
 enum class ModuleState : std::uint8_t {
     Unloaded = 0,  // no instance of the current generation: never compiled, invalidated, or retired by a failed load
     Loaded,        // compiled; not known to have been evaluated
@@ -222,7 +223,11 @@ public:
     //   LoadError      "load error: <name>: <message>"                 (no stack: nothing ran)
     //   CompileError   also a link error: "compile error: SyntaxError: Could not find export 'x' in module '...'"
     // and, at WARN, "module evaluation is still pending at the end of the call (a top-level await has not settled)".
-    // A module's own failure is never also reported as an unhandled rejection.
+    // A module's own failure is reported once. During this call it is the call's status and its one record. A top-level
+    // await that rejects in a LATER call is reported by that call, as one "unhandled promise rejection" record. A
+    // failed import() rejects its promise and logs nothing itself: the script may catch it. A rejection a module body
+    // makes with the very value the module then fails with, while its evaluation is pending, counts as that one
+    // failure.
     [[nodiscard]] EvalResult evaluateModule(std::string_view virtualPath);
 
     // The module cache: every path the VM has started to compile, sorted by path. The VM's thread only: from another

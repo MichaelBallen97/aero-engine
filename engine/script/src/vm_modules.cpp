@@ -10,6 +10,7 @@
 
 #include "vm_impl.hpp"
 
+#include <algorithm>
 #include <cassert>
 #include <chrono>
 #include <cstdint>
@@ -54,7 +55,8 @@ EvalResult Vm::Impl::evaluateModuleCall(std::string_view virtualPath) {
     } else {
         evaluateEntry(entry.key, result);
     }
-    noteInterrupt(result);  // the 4.1.1 tail, unchanged
+    observeModuleWatches();  // an import() the drain served: BEFORE the report
+    noteInterrupt(result);   // the 4.1.1 tail
     reportUnhandledRejections();
     noteInterrupt(result);
     clearPendingException();
@@ -63,9 +65,8 @@ EvalResult Vm::Impl::evaluateModuleCall(std::string_view virtualPath) {
 
 void Vm::Impl::evaluateEntry(std::string_view key, EvalResult& result) {
     LoadAttempt entryAttempt{/*decides=*/true};
-    std::uint64_t opened = rejectionSequence;  // the evaluation window is (opened, closed]
-    const HeldValue promise = startModule(entryAttempt, key, opened);
-    const std::uint64_t closed = rejectionSequence;
+    std::uint64_t watch = 0;
+    const HeldValue promise = startModule(entryAttempt, key, ImportPath::Static, watch);
     if (promise.isException()) {
         result = trap(Phase::Compile);  // LoadError, CompileError (a link error included), OutOfMemory, Interrupted
         moduleTable.retire(entryAttempt.created);
@@ -74,7 +75,7 @@ void Vm::Impl::evaluateEntry(std::string_view key, EvalResult& result) {
         }
         return;
     }
-    const auto settle = [&] { return settleModule(key, promise.get(), opened, closed, ImportPath::Static); };
+    const auto settle = [&] { return settleModule(key, promise.get(), watch, ImportPath::Static); };
     const bool settledAtOnce = JS_PromiseState(ctx, promise.get()) != JS_PROMISE_PENDING;
     if (settledAtOnce) {  // no top-level await: the module's outcome is the call's first failure, before its jobs
         if (const std::optional<EvalResult> failure = settle()) {
@@ -97,30 +98,38 @@ void Vm::Impl::evaluateEntry(std::string_view key, EvalResult& result) {
 }
 
 // Steps 4-5 of the entry (and of the dynamic path): inside the attempt's scope, find or compile the graph, then link
-// it and start its evaluation. The result is the module promise, or JS_EXCEPTION with the failure pending (a load
-// refusal, a compile or link error, an out-of-memory, the budget) -- the caller traps it while it is still pending and
-// retires what the attempt created. windowBegin is the rejection stamp before JS_EvalFunction; the caller reads the
-// end.
-HeldValue Vm::Impl::startModule(LoadAttempt& loadAttempt, std::string_view key, std::uint64_t& windowBegin) {
-    const AttemptScope scope{*this, loadAttempt};
+// it and start its evaluation under a new watch. The result is the module promise, or JS_EXCEPTION with the failure
+// pending (a load refusal, a compile or link error, an out-of-memory, the budget): the caller traps it while it is
+// still pending and retires what the attempt created. `watch` receives the new watch's id.
+HeldValue Vm::Impl::startModule(LoadAttempt& load, std::string_view key, ImportPath path, std::uint64_t& watch) {
+    const AttemptScope scope{*this, load};
     auto* module = static_cast<JSModuleDef*>(moduleTable.instance(key));
     if (module == nullptr) {
-        module = compileModule(key, loadAttempt.importer);
+        module = compileModule(key, load.importer);
         if (module == nullptr) {
             return HeldValue{ctx, JS_EXCEPTION};
         }
     }
-    loadAttempt.loading = false;
-    windowBegin = rejectionSequence;
-    return HeldValue{ctx, JS_EvalFunction(ctx, moduleValue(module).release())};  // consumes the minted reference
+    load.loading = false;
+    // Watched from here: until the module promise settles, every rejection the tracker records may be the body's own.
+    watch = ++nextWatchId;
+    moduleWatches.push_back(ModuleWatch{watch, std::string{key}, moduleTable.generation(key), path, JS_UNDEFINED});
+    HeldValue promise{ctx, JS_EvalFunction(ctx, moduleValue(module).release())};  // consumes the minted reference
+    ModuleWatch* const watched = findWatch(watch);  // nothing inside JS_EvalFunction opens a watch
+    if (promise.isException()) {
+        watched->settled = true;  // a link error, or no memory for the promise: nothing ran
+    } else {
+        watched->promise = JS_DupValue(ctx, promise.get());
+    }
+    return HeldValue{ctx, promise.release()};
 }
 
 // ---- import() -------------------------------------------------------------------------------------------------
 
 // A normalizer call that arrives while no engine load is running IS a dynamic import(). It is served like an entry:
 // resolved by the same grammar, loaded, linked and evaluated by the engine itself, and only then handed to the backend
-// by name -- so a link failure is seen here (the backend never links a module twice), the module body's internal
-// rejection is attributed inside the engine's window, and the edge is recorded. A dynamic failure never changes the
+// by name -- so a link failure is seen here (the backend never links a module twice), the module body's rejections
+// are attributed by the evaluation's watch, and the edge is recorded. A dynamic failure never changes the
 // call's status: it rejects the import(), which the script may catch.
 char* Vm::Impl::serveDynamicImport(const char* base, const char* specifier) {
     const internal::SpecifierResolution target = internal::resolveModuleSpecifier(specifier, base);
@@ -139,14 +148,13 @@ char* Vm::Impl::serveDynamicImport(const char* base, const char* specifier) {
     }
     LoadAttempt dynamicAttempt{/*decides=*/false};
     dynamicAttempt.importer = importerText;
-    std::uint64_t opened = rejectionSequence;  // the evaluation window is (opened, closed]
-    const HeldValue promise = startModule(dynamicAttempt, target.key, opened);
-    const std::uint64_t closed = rejectionSequence;
+    std::uint64_t watch = 0;
+    const HeldValue promise = startModule(dynamicAttempt, target.key, ImportPath::Dynamic, watch);
     if (promise.isException()) {
         moduleTable.retire(dynamicAttempt.created);
         return nullptr;  // the failure stays pending: the backend rejects the import() with it, and never sees the name
     }
-    static_cast<void>(settleModule(target.key, promise.get(), opened, closed, ImportPath::Dynamic));
+    static_cast<void>(settleModule(target.key, promise.get(), watch, ImportPath::Dynamic));
     return duplicateName(internal::encodeModuleName(target.key, moduleTable.generation(target.key)));
 }
 
@@ -221,25 +229,39 @@ JSModuleDef* Vm::Impl::compileModule(std::string_view key, std::string_view impo
 
 // ---- a module's outcome ---------------------------------------------------------------------------------------
 
-std::optional<EvalResult> Vm::Impl::settleModule(std::string_view key, JSValueConst promise, std::uint64_t windowBegin,
-                                                 std::uint64_t windowEnd, ImportPath path) {
-    switch (JS_PromiseState(ctx, promise)) {
+std::optional<EvalResult> Vm::Impl::settleModule(std::string_view key, JSValueConst promise, std::uint64_t watch,
+                                                 ImportPath path) {
+    const JSPromiseStateEnum state = JS_PromiseState(ctx, promise);
+    ModuleWatch* const watched = findWatch(watch);
+    const bool carried = watched != nullptr && watched->carried;
+    // A carried watch's module may have been reloaded since: the record then belongs to the new generation.
+    const bool current = !carried || moduleTable.generation(key) == watched->generation;
+    if (state != JS_PROMISE_PENDING && watched != nullptr) {
+        watched->settled = true;
+    }
+    switch (state) {
         case JS_PROMISE_FULFILLED:
-            moduleTable.markEvaluatedGraph(key);
+            if (current) {
+                moduleTable.markEvaluatedGraph(key);
+            }
             return std::nullopt;
         case JS_PROMISE_REJECTED: {
-            moduleTable.markFailed(key);
+            if (current) {
+                moduleTable.markFailed(key);
+            }
             const HeldValue reason{ctx, JS_PromiseResult(ctx, promise)};
             std::optional<EvalResult> failure;
-            if (path == ImportPath::Static) {
+            if (path == ImportPath::Static && !carried) {
                 failure = trapValue(reason.get(), Phase::Run);  // classified, described, logged once
             }
-            forgetModuleFailure(promise, reason.get(), windowBegin, windowEnd, path);
+            forgetModuleFailure(promise, reason.get(), watch, path, carried);
             JS_ClearUncatchableError(ctx, reason.get());  // D10: every later import rethrows this very object
             return failure;
         }
         case JS_PROMISE_PENDING:
-            moduleTable.markEvaluating(key);
+            if (current) {
+                moduleTable.markEvaluating(key);
+            }
             return std::nullopt;
         case JS_PROMISE_NOT_A_PROMISE:
             break;
@@ -249,30 +271,81 @@ std::optional<EvalResult> Vm::Impl::settleModule(std::string_view key, JSValueCo
 }
 
 // A module body that throws rejects TWO promises with one reason -- the backend's internal promise for the body and
-// the module promise -- and both reach the tracker unhandled. The rejections recorded inside the engine's evaluation
-// window with the module's reason are that one failure; the stamps are pre-incremented, so "inside" is (begin, end].
-void Vm::Impl::forgetModuleFailure(JSValueConst promise, JSValueConst reason, std::uint64_t windowBegin,
-                                   std::uint64_t windowEnd, ImportPath path) {
+// the module promise. The body's is rejected while the module promise is still pending (inside JS_EvalFunction, or in
+// a drain once a top-level await the module imports has settled), so the tracker tagged it with this watch; the
+// module promise is matched by identity. Same value, not strict equality: a module that throws NaN is one failure too.
+// Both go to the skipped list rather than being freed, so a handler attached later is silent, never "handled late".
+void Vm::Impl::forgetModuleFailure(JSValueConst promise, JSValueConst reason, std::uint64_t watch, ImportPath path,
+                                   bool carried) {
     bool kept = false;
     for (auto entry = pendingRejections.begin(); entry != pendingRejections.end();) {
-        const bool isModulePromise = JS_IsStrictEqual(ctx, entry->promise, promise);
-        const bool inWindow = entry->sequence > windowBegin && entry->sequence <= windowEnd;
-        if (isModulePromise && path == ImportPath::Static) {
+        // A carried watch's module promise is no call's status: it stays listed, and is this call's one record.
+        const bool isModulePromise = !carried && JS_IsStrictEqual(ctx, entry->promise, promise);
+        const bool tagged = std::find(entry->watches.begin(), entry->watches.end(), watch) != entry->watches.end();
+        if (isModulePromise || (tagged && JS_IsSameValue(ctx, entry->reason, reason))) {
+            kept = kept || isModulePromise;
             JS_FreeValue(ctx, entry->reason);
-            keepSkipped(entry->promise);  // takes the listed reference: a later import's handler is silent
-            kept = true;
-            entry = pendingRejections.erase(entry);
-        } else if (!isModulePromise && inWindow && JS_IsStrictEqual(ctx, entry->reason, reason)) {
-            JS_FreeValue(ctx, entry->promise);  // the backend's internal promise for the module body
-            JS_FreeValue(ctx, entry->reason);
+            keepSkipped(entry->promise);  // takes the listed reference
             entry = pendingRejections.erase(entry);
         } else {
-            ++entry;  // a Dynamic module promise stays listed: the backend attaches its own handler right after
+            ++entry;
         }
     }
-    if (path == ImportPath::Static && !kept && !isSkipped(promise)) {
+    if (path == ImportPath::Static && !carried && !kept && !isSkipped(promise)) {
         keepSkipped(JS_DupValue(ctx, promise));  // a cached failure re-observed, not kept yet
     }
+}
+
+ModuleWatch* Vm::Impl::findWatch(std::uint64_t id) noexcept {
+    for (ModuleWatch& watch : moduleWatches) {
+        if (watch.id == id) {
+            return &watch;
+        }
+    }
+    return nullptr;
+}
+
+// The current call's entry watch is settled by evaluateEntry, which owns the call's status; every other watch -- an
+// import()'s, and a carried one whose top-level await settled in this call -- is settled here once its promise has, so
+// a body rejected in a drain is attributed before the report, whichever path evaluated it and whichever call it is.
+void Vm::Impl::observeModuleWatches() {
+    // settleModule never adds or removes a watch, so the references stay valid through the loop.
+    for (const ModuleWatch& watch : moduleWatches) {
+        const bool owned = watch.path == ImportPath::Static && !watch.carried;
+        if (watch.settled || owned || JS_IsUndefined(watch.promise) ||
+            JS_PromiseState(ctx, watch.promise) == JS_PROMISE_PENDING) {
+            continue;
+        }
+        const std::string key = watch.key;
+        static_cast<void>(settleModule(key, watch.promise, watch.id, watch.path));
+    }
+}
+
+// A watch whose outcome is not taken when its call ends -- its top-level await still pending, or settled after the
+// call's last look -- is carried: a later call attributes the body's rejections and updates the record the same way.
+// At most one watch per module promise (a module evaluated again while it waits adds none), so the list is bounded by
+// the module instances. Compacted in place: a destructor's path allocates nothing.
+void Vm::Impl::endCallWatches() noexcept {
+    std::size_t kept = 0;
+    for (std::size_t i = 0; i < moduleWatches.size(); ++i) {
+        ModuleWatch& watch = moduleWatches[i];
+        bool carry = !watch.settled && !JS_IsUndefined(watch.promise);
+        for (std::size_t k = 0; carry && k < kept; ++k) {
+            carry = !JS_IsStrictEqual(ctx, moduleWatches[k].promise, watch.promise);
+        }
+        if (!carry) {
+            JS_FreeValue(ctx, watch.promise);
+            continue;
+        }
+        watch.carried = true;
+        if (kept != i) {
+            moduleWatches[kept] = std::move(watch);
+        }
+        ++kept;
+    }
+    moduleWatches.erase(moduleWatches.begin() + static_cast<std::ptrdiff_t>(kept), moduleWatches.end());
+    // Each module promise belongs to one instance, so the carried list can never outgrow the instances.
+    assert(moduleWatches.size() <= moduleInstances);
 }
 
 // ---- refusals -------------------------------------------------------------------------------------------------

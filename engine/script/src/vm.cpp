@@ -139,6 +139,11 @@ VmTeardownReport Vm::Impl::shutdown() noexcept {
         return {};
     }
     finished = true;
+    for (const ModuleWatch& watch : moduleWatches) {
+        assert(watch.carried);  // shutdown never runs inside a call: only carried watches are left
+        JS_FreeValue(ctx, watch.promise);
+    }
+    moduleWatches.clear();
     // A promise rejected while the last call's report ran is still listed, so this is required, not defensive.
     for (const PendingRejection& entry : pendingRejections) {
         JS_FreeValue(ctx, entry.promise);
@@ -239,9 +244,17 @@ void Vm::Impl::rejectionTracker(JSContext* context, JSValueConst promise, JSValu
     // heap exhaustion -- terminate -- spelled out, because nothing may unwind through the backend's C frames.
     try {
         if (!isHandled) {
-            self.pendingRejections.push_back(PendingRejection{JS_DupValue(context, promise),
-                                                              JS_DupValue(context, reason), self.interruptFired,
-                                                              ++self.rejectionSequence});
+            PendingRejection entry{
+                JS_DupValue(context, promise), JS_DupValue(context, reason), self.interruptFired, {}};
+            for (const ModuleWatch& watch : self.moduleWatches) {
+                // Not returned yet, or still pending: this rejection may be the module body's own (vm_modules.cpp).
+                const bool open =
+                    JS_IsUndefined(watch.promise) || JS_PromiseState(context, watch.promise) == JS_PROMISE_PENDING;
+                if (!watch.settled && open) {
+                    entry.watches.push_back(watch.id);
+                }
+            }
+            self.pendingRejections.push_back(std::move(entry));
             return;
         }
         for (auto entry = self.pendingRejections.begin(); entry != self.pendingRejections.end(); ++entry) {
@@ -282,6 +295,7 @@ Vm::Impl::CallScope::CallScope(Impl& host, const std::string& fileName) : impl(h
 }
 
 Vm::Impl::CallScope::~CallScope() {
+    impl.endCallWatches();
     JS_SetMaxStackSize(impl.rt, impl.config.stackLimitBytes);  // the handler took it away if the budget ran out
     impl.heap.closeGraceWindow();
     impl.deadline = std::chrono::steady_clock::time_point::min();
@@ -311,7 +325,8 @@ EvalResult Vm::Impl::evaluate(std::string_view source, std::string_view fileName
     if (result.status != EvalStatus::Interrupted && !interruptFired) {
         drainJobs(result);  // the microtask checkpoint, under the SAME deadline
     }
-    noteInterrupt(result);  // BEFORE the report: a converted interrupt is the call's, not a rejection's
+    observeModuleWatches();  // the drain may have served an import(): BEFORE the report
+    noteInterrupt(result);   // BEFORE the report: a converted interrupt is the call's, not a rejection's
     reportUnhandledRejections();
     // The report can run script code under the call's budget (a rejection reason's toString, an Error's getters),
     // and the budget can run out there, after the first look. The second look is idempotent: it records nothing

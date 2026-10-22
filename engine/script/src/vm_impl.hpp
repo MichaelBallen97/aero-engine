@@ -81,12 +81,27 @@ inline constexpr std::string_view DRAIN_STOP_MESSAGE = "the time budget ran out 
 struct PendingRejection {
     JSValue promise;
     JSValue reason;
-    bool afterInterrupt;     // recorded after the call's budget ran out: the budget's doing, never reported
-    std::uint64_t sequence;  // the tracker's stamp: a module's evaluation window is a range of these (vm_modules.cpp)
+    bool afterInterrupt;  // recorded after the call's budget ran out: the budget's doing, never reported
+    // The module watches still pending when it was recorded: it may be one of their bodies' own (vm_modules.cpp).
+    std::vector<std::uint64_t> watches;
 };
 
 // Which way a module evaluation the engine ran was asked for: evaluateModule (Static) or an import() (Dynamic).
 enum class ImportPath : std::uint8_t { Static, Dynamic };
+
+// A module evaluation the engine started, watched until its module promise settles. A rejection the tracker records
+// while the module promise is still pending -- inside JS_EvalFunction, or in a drain once a top-level await the module
+// imports has settled -- is tagged with the watch, and is the module's own if the module promise then rejects with the
+// same value. A watch whose outcome is not taken when its call ends is CARRIED into the later calls (endCallWatches).
+struct ModuleWatch {
+    std::uint64_t id;
+    std::string key;
+    std::uint32_t generation;  // the instance's: a carried watch updates the record only while it is still current
+    ImportPath path;
+    JSValue promise;       // the module promise, held; JS_UNDEFINED until JS_EvalFunction returns it
+    bool settled = false;  // settleModule has taken its outcome
+    bool carried = false;  // its call has ended: its outcome is no call's status
+};
 
 // One attempt to load (and then link and evaluate) a module graph. Attempts never nest: an import() only queues a job.
 struct LoadAttempt {
@@ -167,17 +182,19 @@ struct Vm::Impl {
     };
     [[nodiscard]] EvalResult evaluateModuleCall(std::string_view virtualPath);
     void evaluateEntry(std::string_view key, EvalResult& result);
-    [[nodiscard]] HeldValue startModule(LoadAttempt& loadAttempt, std::string_view key, std::uint64_t& windowBegin);
+    [[nodiscard]] HeldValue startModule(LoadAttempt& load, std::string_view key, ImportPath path, std::uint64_t& watch);
     [[nodiscard]] JSModuleDef* compileModule(std::string_view key, std::string_view importer);
     [[nodiscard]] char* serveDynamicImport(const char* base, const char* specifier);
-    // The outcome of one module evaluation the engine ran: the record, the attribution of its rejections (C.7), the
-    // flag clearing (D10). A rejected static entry also returns the call's failure, already logged; Dynamic logs
-    // nothing.
+    // The outcome of one watched module evaluation: the record (unless a carried watch's path was reloaded since), the
+    // attribution of the body's rejections (§C.7 as amended), the flag clearing (D10). A rejected static entry of the
+    // current call also returns the call's failure, already logged; a dynamic or a carried watch logs nothing.
     [[nodiscard]] std::optional<EvalResult> settleModule(std::string_view key, JSValueConst promise,
-                                                         std::uint64_t windowBegin, std::uint64_t windowEnd,
-                                                         ImportPath path);
-    void forgetModuleFailure(JSValueConst promise, JSValueConst reason, std::uint64_t windowBegin,
-                             std::uint64_t windowEnd, ImportPath path);
+                                                         std::uint64_t watch, ImportPath path);
+    void forgetModuleFailure(JSValueConst promise, JSValueConst reason, std::uint64_t watch, ImportPath path,
+                             bool carried);
+    [[nodiscard]] ModuleWatch* findWatch(std::uint64_t id) noexcept;
+    void observeModuleWatches();     // settles every watch evaluateEntry does not own whose promise has settled
+    void endCallWatches() noexcept;  // ~CallScope: frees the settled watches, carries the others
     void refuse(std::string_view name, const std::string& message);  // records (an attempt that decides) + throws
     void throwLoadError(std::string_view name, const std::string& message);
     [[nodiscard]] HeldValue moduleValue(JSModuleDef* module) const;
@@ -213,7 +230,8 @@ struct Vm::Impl {
     internal::ModuleTable moduleTable;
     LoadAttempt* attempt = nullptr;              // the attempt being served, or null between attempts
     std::optional<ScriptError> callLoadFailure;  // the call's own attempt's first refusal; reset by CallScope
-    std::uint64_t rejectionSequence = 0;         // stamps PendingRejection::sequence
+    std::vector<ModuleWatch> moduleWatches;      // the current call's, then the carried ones (vm_modules.cpp)
+    std::uint64_t nextWatchId = 0;               // never reused, so a stale tag matches no later watch
     std::uint64_t moduleInstances = 0;
 };
 
