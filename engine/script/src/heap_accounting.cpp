@@ -15,18 +15,24 @@
 namespace engine::script::internal {
 namespace {
 
+// Word 0 of a live block's header is its size as a full 64-bit word, whatever the width of size_t.
 [[nodiscard]] std::size_t readHeader(const void* block) noexcept {
-    std::size_t size = 0;
-    std::memcpy(&size, static_cast<const std::byte*>(block) - HEAP_HEADER_BYTES, sizeof size);
-    return size;
+    std::uint64_t word = 0;
+    std::memcpy(&word, static_cast<const std::byte*>(block) - HEAP_HEADER_BYTES, sizeof word);
+    return static_cast<std::size_t>(word);
+}
+
+void writeHeader(void* base, std::size_t size) noexcept {
+    const std::uint64_t word = size;
+    std::memcpy(base, &word, sizeof word);
 }
 
 // A held block's header (16 bytes, ours alone: the backend never writes before the payload) is rewritten as
 //   word 0: HELD_BIT | (bytes captured, 0-7) << 56 | the payload's first bytes at release, packed low byte first
 //   word 1: the next held block's base, a whole pointer
-// A live block's word 0 is its size, always below 2^56, so HELD_BIT tells a held block from a live one, and a second
-// release of the same block is recognised by its header. No bit of any pointer is borrowed: Android's allocator tags
-// the top byte of the pointers it returns. The hold needs no memory of its own.
+// A live block's word 0 is its size, a full 64-bit word (writeHeader), always below 2^56, so HELD_BIT tells a held
+// block from a live one, and a second release of the same block is recognised by its header. No bit of any pointer is
+// borrowed: Android's allocator tags the top byte of the pointers it returns. The hold needs no memory of its own.
 constexpr std::uint64_t HELD_BIT = std::uint64_t{1} << 63U;
 constexpr unsigned CAPTURED_SHIFT = 56U;
 constexpr std::uint64_t CAPTURED_FIELD = std::uint64_t{0x7FU} << CAPTURED_SHIFT;
@@ -100,7 +106,7 @@ void* HeapAccounting::allocate(std::size_t size) noexcept {
     if (base == nullptr) {
         return nullptr;  // the system failed, not the limit: not counted as a refusal
     }
-    std::memcpy(base, &size, sizeof size);
+    writeHeader(base, size);
     inUse += size + HEAP_HEADER_BYTES;
     peak = std::max(peak, inUse);
     ++blocks;
@@ -122,7 +128,7 @@ void* HeapAccounting::allocateZeroed(std::size_t count, std::size_t size) noexce
     if (base == nullptr) {
         return nullptr;
     }
-    std::memcpy(base, &total, sizeof total);  // the header sits over the zeroed prefix
+    writeHeader(base, total);  // the header sits over the zeroed prefix
     inUse += total + HEAP_HEADER_BYTES;
     peak = std::max(peak, inUse);
     ++blocks;
@@ -149,7 +155,7 @@ void* HeapAccounting::reallocate(void* block, std::size_t size) noexcept {
     if (moved == nullptr) {
         return nullptr;  // ditto, for a system failure
     }
-    std::memcpy(moved, &size, sizeof size);
+    writeHeader(moved, size);
     inUse = inUse - old + size;
     peak = std::max(peak, inUse);
     return static_cast<std::byte*>(moved) + HEAP_HEADER_BYTES;
@@ -168,7 +174,7 @@ void HeapAccounting::release(void* block) noexcept {
     inUse -= size + HEAP_HEADER_BYTES;
     --blocks;
     if (holding) {
-        assert(size <= PREFIX_MASK);  // a live block's size is far below 2^56
+        assert(std::uint64_t{size} <= PREFIX_MASK);  // a live block's size is far below 2^56
         const std::size_t captured = std::min(size, HELD_SNAPSHOT_BYTES);
         setHeaderWord(base, HELD_BIT | (std::uint64_t{captured} << CAPTURED_SHIFT) | packedPrefix(base, captured));
         setNextHeld(base, heldHead);

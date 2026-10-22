@@ -21,7 +21,9 @@ namespace engine::script::internal {
 // context argument.
 inline constexpr std::size_t HEAP_HEADER_BYTES = 16;
 static_assert(HEAP_HEADER_BYTES >= alignof(std::max_align_t));
-static_assert(HEAP_HEADER_BYTES >= sizeof(std::size_t));
+static_assert(HEAP_HEADER_BYTES >= sizeof(std::uint64_t));
+// The size is kept as a full 64-bit word on every target, so a 32-bit size_t never leaves stale bytes in it.
+static_assert(sizeof(std::size_t) <= sizeof(std::uint64_t));
 
 // The teardown hold (task 4.1.2, R23 in docs/08-risks.md). quickjs-ng frees every module of a context when the context
 // is freed (quickjs.c:2714), while objects that outlive it -- the reaction functions of a top-level await still pending
