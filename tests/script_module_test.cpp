@@ -2926,6 +2926,46 @@ TEST_CASE(
     }
 }
 
+// ---- ML75: an out-of-memory error left without its message ---------------------------------------------------------
+
+TEST_CASE(
+    "script: an out-of-memory error left without its message is OutOfMemory in a run, and its record names no "
+    "cause (ML75)") {
+    // The backend builds an error and then its message (JS_MakeError2, quickjs.c:7975-7997); when the message cannot be
+    // allocated either, the error is an InternalError with none. One job fills the heap and queues two more: the first
+    // takes `m` bytes, the second is a native String.prototype.repeat asking for 256 MiB. Sweeping `m` moves the
+    // refusal of the error's allocation across its message's.
+    LogCapture log;
+    const std::string warm =
+        "try { 'x'.repeat(268435455); } catch (e) { globalThis.warm = String(e); } globalThis.buf = null; "
+        "globalThis.buf2 = null; globalThis.rep = String.prototype.repeat.bind('x', 268435455); "
+        "globalThis.g = (n, m) => { buf = null; buf = new ArrayBuffer(n); "
+        "queueMicrotask(() => { buf2 = new ArrayBuffer(m); }); queueMicrotask(rep); }; 0";
+    std::size_t runs = 0;
+    std::size_t messageless = 0;
+    for (std::size_t m = 380; m <= 470; ++m) {
+        INFO("m " << m);
+        ModuleFixture fx{patient(VmConfig{.heapLimitBytes = MIB})};
+        REQUIRE(label(fx.vm.evaluateScript(warm, "warm.js")) == "Ok");
+        fx.vm.collectGarbage();
+        const std::size_t n = MIB - fx.vm.stats().heapBytesInUse - 1500;
+        log.clear();
+        const EvalResult result =
+            fx.vm.evaluateScript("g(" + std::to_string(n) + ", " + std::to_string(m) + "); 0", "rep.js");
+        CHECK(label(result) == "OutOfMemory");
+        const std::vector<CapturedRecord> records = log.atLeast(LogLevel::Warn);
+        REQUIRE_FALSE(records.empty());
+        CHECK(firstLine(records.front().message).ends_with(outOfMemoryTail(result.error)));
+        CHECK(firstLine(records.front().message).ends_with("bytes in use)"));
+        messageless += result.error.name == "InternalError" && result.error.message.empty() ? 1U : 0U;
+        ++runs;
+        expectCleanShutdown(fx.vm);
+    }
+    CHECK(runs == 91U);
+    MESSAGE(messageless << " of " << runs << " runs ended in a message-less InternalError");
+    REQUIRE(messageless > 0U);
+}
+
 // ---- ML76: a compile whose atom table cannot grow ------------------------------------------------------------------
 
 namespace {
@@ -2969,6 +3009,35 @@ TEST_CASE(
     CHECK(runs == 129U);
     MESSAGE(empty << " of " << runs << " runs had no error value");
     REQUIRE(empty > 0U);
+
+    // (b) the same rooms through import(), in ONE script that is compiled before the fill: a compile after it would
+    // itself be R24-shaped. The rejection is the backend's own out-of-memory error, the message-less one included, and
+    // never the cause of a fresh one.
+    std::size_t dynamicRuns = 0;
+    std::size_t dynamicMessageless = 0;
+    for (std::size_t room = 6 * KIB; room <= 14 * KIB; room += 64) {
+        INFO("room " << room);
+        ModuleFixture fx{patient(VmConfig{.heapLimitBytes = MIB})};
+        fx.files->set("names.js", source);
+        REQUIRE(label(fx.vm.evaluateScript("globalThis.buf = null; globalThis.r = 'none'; 0", "fill.js")) == "Ok");
+        const std::size_t inUse = fx.vm.stats().heapBytesInUse;
+        REQUIRE(inUse + room < MIB);
+        const std::string script =
+            "buf = new ArrayBuffer(" + std::to_string(MIB - inUse - room) +
+            "); import('res://names.js').then(() => { buf = null; r = 'loaded'; }, (e) => { buf = null; "
+            "r = String(e) + ' | cause=' + (e && e.cause ? e.cause.name + ': ' + e.cause.message : 'none'); }); 0";
+        REQUIRE(label(fx.vm.evaluateScript(script, "probe.js")) == "Ok");
+        const std::string r = completion(fx.vm, "r");
+        INFO("r: " << r);
+        CHECK(r.ends_with(" | cause=none"));
+        CHECK((r.starts_with("InternalError | ") || r.starts_with("InternalError: out of memory | ")));
+        dynamicMessageless += r.starts_with("InternalError | ") ? 1U : 0U;
+        ++dynamicRuns;
+        expectCleanShutdown(fx.vm);
+    }
+    CHECK(dynamicRuns == 129U);
+    MESSAGE(dynamicMessageless << " of " << dynamicRuns << " rejections were the message-less error");
+    REQUIRE(dynamicMessageless > 0U);
 }
 
 // ---- ML31-ML34, ML38, ML47: import() --------------------------------------------------------------------------

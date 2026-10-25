@@ -433,7 +433,9 @@ void Vm::Impl::throwLoadError(std::string_view name, const std::string& message)
 // cause). An error that already is the backend's out-of-memory error stays.
 void Vm::Impl::replaceWithOutOfMemory() {
     HeldValue cause{ctx, JS_GetException(ctx)};
-    if (isOutOfMemoryError(cause.get())) {
+    // The backend's own out-of-memory error -- the one left without its message included -- stays as it is, never the
+    // cause of a fresh one.
+    if (isOutOfMemoryError(cause.get()) || isMessagelessInternalError(cause.get())) {
         static_cast<void>(JS_Throw(ctx, cause.release()));
         return;
     }

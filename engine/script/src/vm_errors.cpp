@@ -35,10 +35,10 @@ EvalResult Vm::Impl::trapValue(JSValueConst value, Phase phase) {
     }
     const bool isErrorObject = JS_IsError(value);
     // An out-of-memory the backend reported as another error -- the parser's, after its buffer failed to grow -- also
-    // names that error, so the record says what the backend said. Not for the backend's own out-of-memory error, nor,
-    // in a compile, for that error once even its message could not be allocated (an InternalError with no message).
+    // names that error, so the record says what the backend said. Not for the backend's own out-of-memory error, nor
+    // for that error once even its message could not be allocated (a message-less InternalError), in either phase.
     const bool namesCause = status == EvalStatus::OutOfMemory && isErrorObject && !isOutOfMemoryError(value) &&
-                            !(phase == Phase::Compile && isMessagelessInternalError(value));
+                            !isMessagelessInternalError(value);
     // A load error's text is the engine's own, exact and never cut at the backend's 256-byte message buffer.
     const bool engineText = status == EvalStatus::LoadError && callLoadFailure.has_value();
     ScriptError error = engineText ? *callLoadFailure : describe(value, isErrorObject);
@@ -72,7 +72,10 @@ EvalStatus Vm::Impl::classify(JSValueConst exception, Phase phase) {
     // Both witnesses are needed while code runs: the refusal alone would mislabel a script that caught an out-of-memory
     // error and later threw something unrelated; the value alone cannot tell the backend's `null` (thrown when not even
     // the error object fits) from a script's own `throw null`.
-    if (heap.refusals() > refusalsAtCallStart && (JS_IsNull(exception) || isOutOfMemoryError(exception))) {
+    if (heap.refusals() > refusalsAtCallStart &&
+        (JS_IsNull(exception) || isOutOfMemoryError(exception) || isMessagelessInternalError(exception))) {
+        // A message-less InternalError under a refusal is the backend's own out-of-memory error, its message allocation
+        // refused as well (JS_MakeError2, quickjs.c:7975-7997): the run phase classifies it too.
         return EvalStatus::OutOfMemory;
     }
     // A compile runs no script code, and the parser keeps parsing after its bytecode buffer failed to grow: the next
