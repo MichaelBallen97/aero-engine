@@ -22,17 +22,6 @@ EvalResult Vm::Impl::trap(Phase phase) {
 // trap's body, for a value that is not the pending exception: a module promise's rejection reason (vm_modules.cpp).
 EvalResult Vm::Impl::trapValue(JSValueConst value, Phase phase) {
     const EvalStatus status = classify(value, phase);  // BEFORE describe: describe may allocate
-    // The backend's "no exception" sentinel: a refused atom-array growth makes __JS_NewAtom return JS_ATOM_NULL without
-    // throwing (quickjs.c:3136-3150), the tokenizer fails, and trap takes JS_UNINITIALIZED. It is no value -- an empty
-    // error with no stack -- and the refusal already made the status OutOfMemory.
-    if (JS_IsUninitialized(value)) {
-        const ScriptError empty;
-        logFailure(status, empty, /*isErrorObject=*/false, /*namesCause=*/false);
-        if (status == EvalStatus::OutOfMemory) {
-            JS_RunGC(rt);
-        }
-        return EvalResult{status, empty, {}};
-    }
     const bool isErrorObject = JS_IsError(value);
     // An out-of-memory the backend reported as another error -- the parser's, after its buffer failed to grow -- also
     // names that error, so the record says what the backend said. Not for the backend's own out-of-memory error, nor
@@ -41,7 +30,17 @@ EvalResult Vm::Impl::trapValue(JSValueConst value, Phase phase) {
                             !isMessagelessInternalError(value);
     // A load error's text is the engine's own, exact and never cut at the backend's 256-byte message buffer.
     const bool engineText = status == EvalStatus::LoadError && callLoadFailure.has_value();
-    ScriptError error = engineText ? *callLoadFailure : describe(value, isErrorObject);
+    // The backend's "no exception" sentinel: a refused atom-array growth makes __JS_NewAtom return JS_ATOM_NULL
+    // without throwing (quickjs.c:3136-3150), and the tokenizer in a compile, or a computed key's store in a run,
+    // fails with nothing pending, so trap takes JS_UNINITIALIZED. It is no value -- an empty error with no stack,
+    // described as nothing -- and the refusal made the status OutOfMemory (in a compile the refused growth, in a
+    // run the value arm of classify). An interrupt or a load refusal still names itself, as for every other value.
+    ScriptError error;
+    if (engineText) {
+        error = *callLoadFailure;
+    } else if (!JS_IsUninitialized(value)) {
+        error = describe(value, isErrorObject);
+    }
     if (status == EvalStatus::Interrupted) {
         // Whichever exception carried it -- the interrupt itself, or the RangeError a refused call raised after
         // the budget ran out -- the canonical interrupt is what the caller reads. The stack stays the described one.
@@ -73,9 +72,12 @@ EvalStatus Vm::Impl::classify(JSValueConst exception, Phase phase) {
     // error and later threw something unrelated; the value alone cannot tell the backend's `null` (thrown when not even
     // the error object fits) from a script's own `throw null`.
     if (heap.refusals() > refusalsAtCallStart &&
-        (JS_IsNull(exception) || isOutOfMemoryError(exception) || isMessagelessInternalError(exception))) {
+        (JS_IsNull(exception) || JS_IsUninitialized(exception) || isOutOfMemoryError(exception) ||
+         isMessagelessInternalError(exception))) {
         // A message-less InternalError under a refusal is the backend's own out-of-memory error, its message allocation
-        // refused as well (JS_MakeError2, quickjs.c:7975-7997): the run phase classifies it too.
+        // refused as well (JS_MakeError2, quickjs.c:7975-7997): the run phase classifies it too. So does the "no
+        // exception" sentinel, which no script can produce: a computed key that interns a new atom under a full
+        // heap fails its store with nothing pending (JS_NewAtomStr, quickjs.c:3343-3354).
         return EvalStatus::OutOfMemory;
     }
     // A compile runs no script code, and the parser keeps parsing after its bytecode buffer failed to grow: the next

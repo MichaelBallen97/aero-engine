@@ -3092,6 +3092,50 @@ TEST_CASE(
     REQUIRE(dynamicMessageless > 0U);
 }
 
+// ---- ML79: a run that interns a key under a full heap ---------------------------------------------------------
+
+TEST_CASE("script: a run that interns a key under a full heap reports the heap, never an empty exception (ML79)") {
+    // ML76's twin for a RUN. A computed key interns a new atom (JS_ValueToAtomInternal -> JS_NewAtomStr,
+    // quickjs.c:3343-3354, "should generate an exception"); when the atom array cannot grow, __JS_NewAtom returns
+    // JS_ATOM_NULL without throwing (quickjs.c:3149-3150, :3243-3244), the store fails, and the trap takes the
+    // "no exception" sentinel. The sentinel is no value, so only the refusal can say what happened: the status is
+    // OutOfMemory with an empty error, and a status of Exception there is the defect.
+    //
+    // The script is compiled with the heap nearly full and then loops, each pass interning a key; its trailing
+    // assignments are never reached, and keep the compile clear of R24 (assignmentPad). The room runs from 6 to
+    // 50 KiB in 64-byte steps (705 runs), and the array's growths (711 -> 1066 -> 1599 entries) fall inside it.
+    // Measured: on the Release build 136 runs end in the sentinel, at rooms 7680-10112 and 36864-43008; on the
+    // Debug build 130, at 8768-11392, 43776-45120 and 45824-49984. Every other run ends in the out-of-memory error
+    // of another allocation (the string, the property table), so which runs reach the sentinel depends on the
+    // platform's block sizes.
+    LogCapture log;
+    const std::string loop = "let o = {}; for (let i = 0; i < 200000; ++i) o['k' + i] = i;" + assignmentPad("o");
+    const auto seed = [](MemoryBackend&) {};
+    const auto call = [&loop](Vm& vm) { return vm.evaluateScript(loop, "keys.js"); };
+    std::size_t runs = 0;
+    std::size_t exhausted = 0;
+    std::size_t empty = 0;
+    for (std::size_t room = 6 * KIB; room <= 50 * KIB; room += 64) {
+        INFO("room " << room);
+        const HeapRun run = runWithRoom(log, seed, {}, room, call);
+        const bool noValue = run.error.name.empty() && run.error.message.empty() && run.error.stack.empty();
+        INFO("status " << run.status << ", record " << run.record);
+        CHECK((run.status == "Ok" || run.status == "OutOfMemory"));
+        if (run.status == "OutOfMemory") {
+            CHECK(run.record.starts_with("script: keys.js: out of memory (heap limit 1048576 bytes, "));
+            CHECK(run.record.ends_with(outOfMemoryTail(run.error)));
+            ++exhausted;
+        }
+        empty += noValue ? 1U : 0U;
+        ++runs;
+    }
+    CHECK(runs == 705U);
+    REQUIRE(exhausted > 0U);  // anti-vacuity: the loop does exhaust the heap
+    MESSAGE(empty << " of " << runs << " runs ended with no error value (the sentinel)");
+    // Layout-dependent, so a warning and not a requirement; zero means the sweep no longer reaches the sentinel.
+    WARN(empty > 0U);
+}
+
 // ---- ML31-ML34, ML38, ML47: import() --------------------------------------------------------------------------
 
 TEST_CASE("script: import() from a module resolves against that module and records a dynamic edge (ML31)") {
