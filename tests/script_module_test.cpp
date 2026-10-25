@@ -2661,13 +2661,21 @@ TEST_CASE(
     // two jobs and records the interrupt without firing it. The join runs past the deadline in native code, which never
     // polls the interrupt handler -- VM39's recipe for a script. The budget is 50 ms, not the 1 ms minimum: loading a
     // module takes about 0.1 ms, so the loader's own deadline checks cannot pass first on a slow runner and end the
-    // call through the loader route. The join runs between the two awaits and must outlast the budget on the fastest
-    // lane: four million elements take about 160 ms in the Release build (a million take 41-49 ms, under the budget)
-    // and about 1.6 s under the sanitizers.
+    // call through the loader route. The work between the two awaits must outlast the budget on the fastest
+    // lane: ten joins of a million-element array, each freed before the next so the heap stays flat. One join
+    // takes 40-48 ms in the Release build, under the budget, and ten take 400-440 ms, about eight times it; the
+    // sanitizer build takes about 0.4 s for one and 4 s for ten. A single large join would leave a smaller margin
+    // on a lane whose small-block path is cheaper. Ten native calls are far below the backend's poll consult, so
+    // the interrupt handler still does not run inside them, and the drain's own deadline check is what stops.
     LogCapture log;
     ModuleFixture fx{VmConfig{.callTimeBudget = std::chrono::milliseconds{50}}};
     fx.files->set("warm.js", "export const w = 1;");
-    fx.files->set("l2.js", "await null; new Int32Array(4000000).join(); await null; globalThis.done2 = 1;");
+    std::string joins = "await null; const t = new Int32Array(1000000);";
+    for (int join = 0; join < 10; ++join) {
+        joins += " t.join();";
+    }
+    joins += " await null; globalThis.done2 = 1;";
+    fx.files->set("l2.js", joins);
     // A warm-up whose result is not asserted (VM39's reason: a fresh context's first poll may consult the handler).
     static_cast<void>(fx.vm.evaluateModule("res://warm.js"));
     log.clear();
@@ -3018,6 +3026,66 @@ TEST_CASE(
     REQUIRE(messageless > 0U);
 }
 
+// ---- ML78: a script's own message-less InternalError ---------------------------------------------------------
+
+TEST_CASE(
+    "script: a script's own message-less InternalError after a refused allocation reads as the heap's -- the "
+    "accepted corner (ML78)") {
+    // A PINNED corner, not a desired behaviour. classify's value arm cannot tell the backend's message-less
+    // InternalError (its message allocation refused as well, JS_MakeError2, quickjs.c:7975-7997) from one a script
+    // throws itself: after any refusal in the same call -- one the script caught included -- the script's own
+    // `throw new InternalError()` is reported as the heap's. Today's result is OutOfMemory, and the control shows
+    // the same throw with no refusal before it is an ordinary Exception. The refusal is String.prototype.repeat
+    // asking for 1e9 bytes, which is under the string length cap, so the heap and not a RangeError refuses it; the
+    // first arm checks that.
+    {
+        INFO("premise: the heap refuses the repeat, and the caught value is the backend's out-of-memory error");
+        const LogCapture log;
+        ModuleFixture fx;
+        const std::string script =
+            "try { 'x'.repeat(1e9); } catch (e) { globalThis.caught = e.name + ': ' + e.message; } 0";
+        REQUIRE(label(fx.vm.evaluateScript(script, "premise.js")) == "Ok");
+        CHECK(fx.vm.stats().refusedAllocations > 0U);
+        CHECK(completion(fx.vm, "caught") == "InternalError: out of memory");
+        CHECK(log.countAtLeast(LogLevel::Warn) == 0U);
+        expectCleanShutdown(fx.vm);
+    }
+    std::string mainLabel;
+    std::string controlLabel;
+    {
+        INFO("main: the refusal is caught, then the script throws its own message-less InternalError");
+        const LogCapture log;
+        ModuleFixture fx;
+        const std::string script = "try { 'x'.repeat(1e9); } catch (e) {} throw new InternalError();";
+        const EvalResult result = fx.vm.evaluateScript(script, "corner.js");
+        mainLabel = label(result);
+        CHECK(mainLabel == "OutOfMemory");
+        CHECK(result.error.name == "InternalError");
+        CHECK(result.error.message.empty());
+        const std::string record{firstLine(onlyErrorMessage(log))};
+        CHECK(record.starts_with("script: corner.js: out of memory (heap limit "));
+        CHECK(record.ends_with("bytes in use)"));
+        CHECK(fx.vm.stats().refusedAllocations > 0U);
+        expectCleanShutdown(fx.vm);
+    }
+    {
+        INFO("control: the same throw with no refusal before it");
+        const LogCapture log;
+        ModuleFixture fx;
+        const EvalResult result = fx.vm.evaluateScript("throw new InternalError();", "corner.js");
+        controlLabel = label(result);
+        CHECK(controlLabel == "Exception");
+        CHECK(result.error.name == "InternalError");
+        CHECK(result.error.message.empty());
+        CHECK(firstLine(onlyErrorMessage(log)) == "script: corner.js: uncaught InternalError: ");
+        CHECK(fx.vm.stats().refusedAllocations == 0U);
+        expectCleanShutdown(fx.vm);
+    }
+    // Anti-vacuity: the arms throw the same error and differ only by the refusal before it.
+    MESSAGE("main: " << mainLabel << "; control: " << controlLabel);
+    CHECK(mainLabel != controlLabel);
+}
+
 // ---- ML76: a compile whose atom table cannot grow ------------------------------------------------------------------
 
 namespace {
@@ -3055,7 +3123,13 @@ TEST_CASE(
         CHECK(run.status == "OutOfMemory");
         CHECK(run.error.message != "[uninitialized]");
         CHECK(run.record.ends_with(outOfMemoryTail(run.error)));
-        empty += run.error.name.empty() && run.error.message.empty() && run.error.stack.empty() ? 1U : 0U;
+        const bool noValue = run.error.name.empty() && run.error.message.empty() && run.error.stack.empty();
+        if (noValue) {
+            // The sentinel's record ends at the literal. Any other run may, on another lane's heap, lose a bytecode
+            // growth instead and name the parser's error after it, which outOfMemoryTail already reads.
+            CHECK(run.record.ends_with("bytes in use)"));
+        }
+        empty += noValue ? 1U : 0U;
         ++runs;
     }
     CHECK(runs == 129U);
