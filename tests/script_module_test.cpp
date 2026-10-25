@@ -221,9 +221,10 @@ TEST_CASE("script: a generation name encodes, decodes, and can never be written 
         }
     }
 
-    for (const std::string_view name : std::array<std::string_view, 11>{
-             "res://a.js?gen=1", "res://a.js?gen=01", "res://a.js?gen=", "res://a.js?gen=x", "res://a.js?gen=2x",
-             "res://a.js?gen=4294967296", "res://a.js?v=2", "a.js", "res://dir/../a.js", "res://", "res://a.js#b"}) {
+    for (const std::string_view name : std::array<std::string_view, 12>{
+             "a.js", "res://", "res://dir/../a.js", "res://a.js#b", "res://a.js?v=2", "res://a.js?gen=1",
+             "res://a.js?gen=01", "res://a.js?gen=02", "res://a.js?gen=", "res://a.js?gen=x", "res://a.js?gen=2x",
+             "res://a.js?gen=4294967296"}) {
         INFO("name: " << std::string{name});
         CHECK_FALSE(decodeModuleName(name).has_value());
     }
@@ -274,9 +275,9 @@ TEST_CASE(
     CHECK(percent->key == "res://a%b.js");
     CHECK(percent->generation == 3U);
 
-    const std::array<std::string_view, 8> refused{
-        "res://%c3%bc.js", "res://%41.js",      "res://a%2.js",           "res://a%",
-        "res://%ZZ.js",    "res://\xC3\xBC.js", "res://%C3%BC.js?gen=01", "res://%25.js%"};
+    const std::array<std::string_view, 9> refused{
+        "res://%c3%bc.js",   "res://%41.js",           "res://a%2.js",           "res://a%",     "res://%ZZ.js",
+        "res://\xC3\xBC.js", "res://%C3%BC.js?gen=01", "res://%C3%BC.js?gen=02", "res://%25.js%"};
     for (const std::string_view name : refused) {
         INFO("name: " << std::string{name});
         CHECK_FALSE(decodeModuleName(name).has_value());
@@ -407,6 +408,26 @@ TEST_CASE("script: invalidation reaches every transitive importer, static or dyn
 
     CHECK(table.invalidate("res://main.js") == std::vector<std::string>{"res://main.js"});
     CHECK(table.generation("res://main.js") == 3U);
+}
+
+TEST_CASE("script: invalidation reaches an importer two levels up whatever the keys' order (ML77)") {
+    using namespace engine::script::internal;
+    // Each importer sorts BEFORE what it imports, so one sweep over the records in key order meets a.js before b.js has
+    // joined the closure: only a fixpoint reaches it.
+    std::array<int, 3> tokens{};
+    ModuleTable table;
+    loadInto(table, "res://a.js", &tokens[0]);
+    loadInto(table, "res://b.js", &tokens[1]);
+    loadInto(table, "res://c.js", &tokens[2]);
+    table.addImport("res://a.js", "res://b.js", ImportKind::Static);
+    table.addImport("res://b.js", "res://c.js", ImportKind::Static);
+
+    CHECK(table.invalidate("res://c.js") == std::vector<std::string>{"res://a.js", "res://b.js", "res://c.js"});
+    for (const std::string_view key : std::array<std::string_view, 3>{"res://a.js", "res://b.js", "res://c.js"}) {
+        INFO("key: " << std::string{key});
+        CHECK(table.generation(key) == 2U);
+        CHECK(table.instance(key) == nullptr);
+    }
 }
 
 TEST_CASE("script: retire bumps exactly the attempt's modules (ML8)") {
