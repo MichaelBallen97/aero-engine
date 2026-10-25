@@ -3214,6 +3214,7 @@ TEST_CASE("script: a run that interns a key under a full heap reports the heap, 
         if (run.status == "OutOfMemory") {
             CHECK(run.record.starts_with("script: keys.js: out of memory (heap limit 1048576 bytes, "));
             CHECK(run.record.ends_with(outOfMemoryTail(run.error)));
+            CHECK(run.error.message != "[uninitialized]");  // the sentinel is described as nothing, in a run too
             ++exhausted;
         }
         empty += noValue ? 1U : 0U;
