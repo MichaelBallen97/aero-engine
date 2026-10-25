@@ -2714,8 +2714,8 @@ TEST_CASE(
 TEST_CASE(
     "script: an import() whose graph runs out of heap while compiling rejects with the out-of-memory error on "
     "both variants (ML71)") {
-    // ML64's dynamic twin. The parser is left to report null on the Debug lanes and a SyntaxError for this valid module
-    // on the Release ones; the rejection is the backend's own out-of-memory error on both.
+    // ML64's dynamic twin. The parser is left to report null or a SyntaxError for this valid module, by where the heap
+    // refuses; the rejection is the backend's own out-of-memory error either way, with the SyntaxError as its cause.
     LogCapture log;
     ModuleFixture fx{patient(VmConfig{.heapLimitBytes = MIB})};
     fx.files->set("ok.js", "export const ok = 1;");
@@ -2738,6 +2738,8 @@ TEST_CASE(
     if (r.size() >= head.size() + tail.size()) {
         cause = r.substr(head.size(), r.size() - head.size() - tail.size());
     }
+    // The parser's null, which attaches no cause, or its own error (the sweep in (c) below).
+    CHECK((cause == "none" || cause.starts_with("SyntaxError: ")));
     CHECK(log.countAtLeast(LogLevel::Info) == 0U);  // a caught import logs nothing
     CHECK(fx.vm.stats().refusedAllocations > 0U);
     const std::optional<ModuleRecord> ok = recordOf(fx.vm, "res://ok.js");
@@ -2752,21 +2754,44 @@ TEST_CASE(
         CHECK(moduleStateLabel(record->state) == "Unloaded");
     }
 
-    // (c) The expected cause is what the same graph's evaluateModule reports in a second VM: an empty name is the
-    // backend's `null`, which attaches no cause, and anything else is the parser's own error, in toString's shape. (Its
-    // record joins the log, which the next statement clears.)
+    // (c) The cause, swept. Which error the starved parser is left to report depends on where the heap refuses, and so
+    // on the platform's block sizes: for the graph above, the Windows Release lane left null where the macOS one left
+    // a SyntaxError, so no second VM can predict this one's. Each run's cause is therefore one of the two the parser
+    // can leave -- none, for its null, or its own SyntaxError -- and at least one run attaches the SyntaxError, as
+    // ML69's sweep of the same source masks one on both variants. The probe script is compiled before the fill, since
+    // a compile after it would itself be R24-shaped (ML76's reason).
     {
-        ModuleFixture reference{patient(VmConfig{.heapLimitBytes = MIB})};
-        reference.files->set("ok.js", "export const ok = 1;");
-        reference.files->set("heavy.js", heavySource(512 * KIB));
-        reference.files->set("a.js", R"(import "./ok.js"; import "./heavy.js";)");
-        const EvalResult starved = reference.vm.evaluateModule("res://a.js");
-        REQUIRE(label(starved) == "OutOfMemory");
-        const std::string expected =
-            starved.error.name.empty() ? "none" : starved.error.name + ": " + starved.error.message;
-        MESSAGE("the cause: " << cause << "; the reference's: " << expected);
-        CHECK(cause == expected);
-        expectCleanShutdown(reference.vm);
+        const std::string mid = heavySource(32 * KIB);
+        std::size_t runs = 0;
+        std::size_t attached = 0;
+        for (std::size_t room = 8 * KIB; room <= 64 * KIB; room += 2 * KIB) {
+            INFO("room " << room);
+            ModuleFixture sweep{patient(VmConfig{.heapLimitBytes = MIB})};
+            sweep.files->set("m.js", mid);
+            REQUIRE(label(sweep.vm.evaluateScript("globalThis.buf = null; globalThis.c = 'none'; 0", "fill.js")) ==
+                    "Ok");
+            const std::size_t inUse = sweep.vm.stats().heapBytesInUse;
+            REQUIRE(inUse + room < MIB);
+            const std::string script =
+                "buf = new ArrayBuffer(" + std::to_string(MIB - inUse - room) +
+                "); import('res://m.js').then(() => { buf = null; c = 'loaded'; }, (e) => { buf = null; "
+                "c = String(e) + ' | cause=' + (e && e.cause ? e.cause.name + ': ' + e.cause.message : 'none'); }); 0";
+            REQUIRE(label(sweep.vm.evaluateScript(script, "probe.js")) == "Ok");
+            const std::string c = completion(sweep.vm, "c");
+            INFO("c: " << c);
+            const std::string marker = " | cause=";
+            CHECK((c.starts_with("InternalError: out of memory" + marker) || c.starts_with("InternalError" + marker)));
+            const std::size_t at = c.find(marker);
+            REQUIRE(at != std::string::npos);
+            const std::string runCause = c.substr(at + marker.size());
+            CHECK((runCause == "none" || runCause.starts_with("SyntaxError: ")));
+            attached += runCause.starts_with("SyntaxError: ") ? 1U : 0U;
+            ++runs;
+            expectCleanShutdown(sweep.vm);
+        }
+        CHECK(runs == 29U);
+        MESSAGE(attached << " of " << runs << " rejections carried the parser's SyntaxError as their cause");
+        REQUIRE(attached > 0U);
     }
 
     // Uncaught, the same rejection is the one unhandled-rejection record.
