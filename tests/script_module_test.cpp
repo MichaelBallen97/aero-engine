@@ -2672,6 +2672,7 @@ TEST_CASE(
     fx.files->set("heavy.js", heavySource(512 * KIB));
     fx.files->set("a.js", R"(import "./ok.js"; import "./heavy.js";)");
     fx.files->set("small.js", "export const small = 1;");
+    fx.files->set("broken.js", "export const ;");
 
     CHECK(completion(fx.vm,
                      "globalThis.r = 'none'; import('res://a.js').then(() => { r = 'loaded'; }, (e) => { r = "
@@ -2683,10 +2684,9 @@ TEST_CASE(
     const std::string tail = " | isError=true";
     CHECK(r.starts_with(head));
     CHECK(r.ends_with(tail));
+    std::string cause = "<unparsed>";
     if (r.size() >= head.size() + tail.size()) {
-        const std::string cause = r.substr(head.size(), r.size() - head.size() - tail.size());
-        CHECK((cause == "none" || cause.starts_with("SyntaxError: ")));
-        MESSAGE("the cause: " << cause);
+        cause = r.substr(head.size(), r.size() - head.size() - tail.size());
     }
     CHECK(log.countAtLeast(LogLevel::Info) == 0U);  // a caught import logs nothing
     CHECK(fx.vm.stats().refusedAllocations > 0U);
@@ -2702,6 +2702,23 @@ TEST_CASE(
         CHECK(moduleStateLabel(record->state) == "Unloaded");
     }
 
+    // (c) The expected cause is what the same graph's evaluateModule reports in a second VM: an empty name is the
+    // backend's `null`, which attaches no cause, and anything else is the parser's own error, in toString's shape. (Its
+    // record joins the log, which the next statement clears.)
+    {
+        ModuleFixture reference{patient(VmConfig{.heapLimitBytes = MIB})};
+        reference.files->set("ok.js", "export const ok = 1;");
+        reference.files->set("heavy.js", heavySource(512 * KIB));
+        reference.files->set("a.js", R"(import "./ok.js"; import "./heavy.js";)");
+        const EvalResult starved = reference.vm.evaluateModule("res://a.js");
+        REQUIRE(label(starved) == "OutOfMemory");
+        const std::string expected =
+            starved.error.name.empty() ? "none" : starved.error.name + ": " + starved.error.message;
+        MESSAGE("the cause: " << cause << "; the reference's: " << expected);
+        CHECK(cause == expected);
+        expectCleanShutdown(reference.vm);
+    }
+
     // Uncaught, the same rejection is the one unhandled-rejection record.
     log.clear();
     CHECK(completion(fx.vm, "import('res://a.js'); 0") == "0");
@@ -2713,6 +2730,15 @@ TEST_CASE(
                                  "globalThis.s = 'none'; import('res://small.js').then((ns) => { s = 'loaded ' + "
                                  "ns.small; }, (e) => { s = String(e); }); 0"));
     CHECK(completion(fx.vm, "s") == "loaded 1");
+
+    // (d) A genuinely broken module imported after the starved ones, in the same VM: its compile was not starved, so it
+    // rejects with its own SyntaxError and no cause. A growth baseline left at zero would count the earlier attempts'
+    // refusals as this one's, and the rejection would be the out-of-memory error with that SyntaxError as its cause.
+    static_cast<void>(completion(fx.vm,
+                                 "globalThis.t = 'none'; import('res://broken.js').then(() => { t = 'loaded'; }, "
+                                 "(e) => { t = String(e) + ' | cause=' + "
+                                 "(e && e.cause ? e.cause.name + ': ' + e.cause.message : 'none'); }); 0"));
+    CHECK(completion(fx.vm, "t") == "SyntaxError: variable name expected | cause=none");
     CHECK(completion(fx.vm, "1 + 1") == "2");
     expectCleanShutdown(fx.vm);
 }
