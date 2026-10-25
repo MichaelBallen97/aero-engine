@@ -2353,6 +2353,22 @@ TEST_CASE(
           "top-level await has not settled)");
     CHECK(stateOf(fx.vm, "res://l.js") == "Evaluating");
     expectCleanShutdown(fx.vm);  // a zero count: the abandoned body leaves no reaction holding the module
+
+    // The interrupt also ends a call through no failing job: a promise executor's, or a thenable's `then`, is turned
+    // into a rejection without testing for the uncatchable error (quickjs.c:54649-54655, :54417-54424), so nothing
+    // has recorded the interrupt yet when the pending arm runs, and only the call's own budget flag keeps it silent.
+    for (const std::string_view body : {std::string_view{"await new Promise(() => { for (;;) {} });"},
+                                        std::string_view{"Promise.resolve({ then() { for (;;) {} } }); "
+                                                         "await new Promise(() => {});"}}) {
+        INFO(body);
+        log.clear();
+        ModuleFixture quiet{VmConfig{.callTimeBudget = std::chrono::milliseconds{100}}};
+        quiet.files->set("p.js", std::string{body});
+        CHECK(label(quiet.vm.evaluateModule("res://p.js")) == "Interrupted");
+        CHECK(firstLine(onlyErrorMessage(log)) ==
+              "script: res://p.js: interrupted after exceeding the 100 ms time budget");
+        CHECK(stateOf(quiet.vm, "res://p.js") == "Evaluating");
+    }
 }
 
 // ---- ML63: an old generation's import() -------------------------------------------------------------------------
