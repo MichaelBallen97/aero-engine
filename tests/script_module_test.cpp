@@ -1451,7 +1451,8 @@ TEST_CASE("script: a deadline that passes while loading ends the call Interrupte
         expectCleanShutdown(unhurried);
     }
 
-    // The check AFTER a read: the slow read is made, but the compile never begins.
+    // The check AFTER a read: the slow read is made (or, on a slow runner, the check before it), but the compile never
+    // begins.
     fx.files->readDelay = std::chrono::milliseconds{20};
     fx.files->set("solo.js", "globalThis.solo = 1;");
     log.clear();
@@ -2637,11 +2638,15 @@ TEST_CASE(
     "(ML70)") {
     // ML62's twin, through the other route a budget ends a call by: the drain's own deadline check, which stops between
     // two jobs and records the interrupt without firing it. The join runs past the deadline in native code, which never
-    // polls the interrupt handler -- VM39's recipe for a script.
+    // polls the interrupt handler -- VM39's recipe for a script. The budget is 50 ms, not the 1 ms minimum: loading a
+    // module takes about 0.1 ms, so the loader's own deadline checks cannot pass first on a slow runner and end the
+    // call through the loader route. The join runs between the two awaits and must outlast the budget on the fastest
+    // lane: four million elements take about 160 ms in the Release build (a million take 41-49 ms, under the budget)
+    // and about 1.6 s under the sanitizers.
     LogCapture log;
-    ModuleFixture fx{VmConfig{.callTimeBudget = engine::script::MIN_CALL_TIME_BUDGET}};
+    ModuleFixture fx{VmConfig{.callTimeBudget = std::chrono::milliseconds{50}}};
     fx.files->set("warm.js", "export const w = 1;");
-    fx.files->set("l2.js", "await null; new Int32Array(1000000).join(); await null; globalThis.done2 = 1;");
+    fx.files->set("l2.js", "await null; new Int32Array(4000000).join(); await null; globalThis.done2 = 1;");
     // A warm-up whose result is not asserted (VM39's reason: a fresh context's first poll may consult the handler).
     static_cast<void>(fx.vm.evaluateModule("res://warm.js"));
     log.clear();
@@ -2654,8 +2659,8 @@ TEST_CASE(
     CHECK(stop.error.name.empty());
     CHECK(stop.error.stack.empty());
     expectOnlyError(log,
-                    "script: res://l2.js: interrupted after exceeding the 1 ms time budget with promise jobs still "
-                    "queued");
+                    "script: res://l2.js: interrupted after exceeding the 50 ms time budget with promise jobs "
+                    "still queued");
     // Anti-vacuity: the module IS still pending, so the warning's own condition held, and only the gate kept it out.
     CHECK(stateOf(fx.vm, "res://l2.js") == "Evaluating");
     expectCleanShutdown(fx.vm);
