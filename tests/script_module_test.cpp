@@ -3365,6 +3365,16 @@ TEST_CASE("script: an interrupted module's recorded error is an ordinary error t
     // Call 1 kept the module promise with the skipped ones, so the backend's handler in call 2 is silent.
     CHECK(fx.vm.stats().rejectionsHandledLate == 0U);
 
+    // A handler is called with the reason and never throws it, so it cannot tell whether the flag was cleared; an
+    // `await` rethrows it, and an uncatchable error skips every catch (quickjs.c:20328) and ends the job (:20900).
+    const EvalResult awaited = fx.vm.evaluateScript(
+        "globalThis.a = 'not reached'; (async () => { try { await import('res://loop.js'); } catch (e) { a = 'caught "
+        "' + e.name + ': ' + e.message; } })(); 0",
+        "await.js");
+    CHECK(label(awaited) == "Ok");
+    CHECK(completion(fx.vm, "a") == "caught InternalError: interrupted");
+    CHECK(log.countAtLeast(LogLevel::Info) == 0U);
+
     const EvalResult later = fx.vm.evaluateModule("res://user.js");
     CHECK(label(later) == "Exception");  // not Interrupted: this call's budget never fired
     CHECK(later.error.message == "interrupted");
