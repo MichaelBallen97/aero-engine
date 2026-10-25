@@ -19851,3 +19851,216 @@ PRIVATE `qjs`), the INTERFACE `aero::script_internal`, and `aero_script_boundary
 `script_vm_test.cpp` to `aero_tests`, the probe and `script-boundary.guard_e2e`; `ci.yml`'s lint job runs the ninth
 guard. Docs: `docs/03` (the layer), `docs/04` (nine guards), `docs/08` (R12's seventh probe; R21),
 `.claude/rules/boundary-guards.md`, and `CLAUDE.md`'s two guard enumerations. `editor/` and `tools/` are untouched.
+
+### 4.1.2 — Module loading via VFS — CLOSES Epic 4.1: ES modules read through the VFS, a readable cache and one reload hook
+
+A VM created with a `VirtualFileSystem` loads ES modules through it and through nothing else, which closes Epic 4.1's
+Definition of Done: a JS module loads from the VFS and runs inside the engine, and its errors reach the engine log.
+Merged as PR #124 (`ccf776c`, a true merge commit): thirty-four commits on `e5441f8`. They are the plan's six,
+twenty-four from four code-review rounds, three test commits that closed the sabotage matrix's last findings, and one
+that CI's Windows Release lane asked for. CI: the PR's run `40224979247`, 6 / 6 green on the merged head. Nothing new is
+script-visible.
+
+**The API** (`engine/script/include/aero/script/vm.hpp`, `src/vm_modules.cpp`, the pure half in
+`internal/…/module_graph.hpp` + `src/module_graph.cpp`):
+- `Vm::create(config, const VirtualFileSystem&)` BORROWS the VFS, and an rvalue overload is deleted so a temporary
+  cannot be passed. A VM created without one refuses every module with a `LoadError` that says so.
+- `evaluateModule("res://…")` takes an absolute path, loads the static graph, links it, evaluates it, drains the job
+  queue and reports rejections, all under ONE call's budget. A module evaluates once; a second call returns its
+  recorded outcome.
+- `import()` from a module or from global code goes through the same loader, attempts and retire rule.
+- `moduleRecords()` lists every path the VM started to compile, with its generation, its state (`Unloaded`, `Loaded`,
+  `Evaluating`, `Evaluated`, `Failed`) and its sorted imports.
+- `invalidateModule(path)` is the reload hook 4.3.3 consumes. It gives the path and every module that imported it,
+  directly or transitively, statically or dynamically, a new generation, so their next load reads the VFS again.
+- A new `EvalStatus::LoadError` covers a refused specifier or attribute, a missing or unreadable file, no module
+  source, and the size or depth limit.
+- `VmStats::moduleInstances` counts instances; `VmTeardownReport` gains `writtenAfterRelease` and `repeatedReleases`
+  (R23 below).
+- `engine/core`'s `normalizeVirtualPath` is public (`8189adb`), so a module's key is built on the rule every VFS read
+  uses.
+
+**The grammar is strict on purpose.** A specifier is `res://…`, `./…` or `../…` (relative to the importer); a bare
+name, a `/`-rooted path, another scheme, a drive path, `""`, a `?` and a `#` are refused, paths compare byte for byte,
+and no import attribute is supported. From global code only an absolute specifier resolves. A specifier ends at its
+first U+0000, because the backend hands specifiers over as C strings (ML66 pins it and `vm.hpp` says so). The limits:
+a source larger than the heap limit is refused before a byte is read, and an import chain may be
+`stackLimitBytes / IMPORT_STACK_BYTES_PER_LEVEL` (8 KiB) modules deep — 64 at the default, 8 at the minimum — so a
+refused chain stays far from the backend's own stack check, which `js_resolve_module` does not have.
+
+**A reload is a new instance, never a replacement.** quickjs-ng has no way to drop a module, so generation N ≥ 2 of a
+path is compiled under the backend name `<path>?gen=N`, and the old instance keeps running wherever it is still
+referenced. Inside the VM a name is pure ASCII: every byte ≥ 0x80 and every `%` is percent-encoded. Round 1 proved two
+distinct non-ASCII paths could share one backend atom (`JS_NewAtomLen`'s raw Latin-1 lookup). The log and the cache
+keep the canonical path. No specifier can name a generation, because `?` is refused everywhere. A reload costs
+3068 B per generation in Debug and 3036 in Release, measured with a small module, and recreating the VM is the full
+reset.
+
+#### ★ R22 — a failed attempt retires every module it created
+
+`docs/08-risks.md` R22, measured in standalone programs against the installed port before the plan was written.
+(1) A compile that fails while resolving its imports frees that module and nothing it loaded. A dependency that
+imported it back (a cycle) keeps its address under its own name, so a later import links through freed memory: a
+SIGSEGV in Debug, silent mis-linking in Release. (2) A link that fails after binding one import resets the module
+without undoing the binding, so linking it again leaks one block, which is an abort in `JS_FreeRuntime` in Debug.
+**The mitigation is a rule, not a patch.** Every module a failed load or link attempt created is retired under a new
+generation name, so the backend never finds it again. A dynamic `import()` is linked by the engine before the backend
+sees the name, so no module is linked twice. ML22–ML24 and ML33 reproduce both shapes through the VFS on every lane.
+4.3.2 re-measures both on its bytecode path, where the reader resolves imports while reading.
+
+#### ★ R23 — the teardown hold
+
+The first code-review round proved a USE-AFTER-FREE at teardown. `JS_FreeContext` frees every module
+unconditionally, and when a top-level await is still pending and something still refers to that evaluation, the
+collector later releases reaction functions that decrement a count inside the freed module. It is bellard/quickjs
+#280, fixed there in 2025 by letting a module outlive its context; quickjs-ng 0.15.1 and 0.17.0 still free the modules.
+**Contained engine-side:** from `JS_FreeContext` until `JS_FreeRuntime` returns, `Vm::shutdown` makes the allocator
+hold every block the backend releases, so the late writes land in memory the VM still owns. They are counted in
+`writtenAfterRelease`. A block handed back a second time is absorbed and counted in `repeatedReleases`. Three details
+came from later rounds. The allocator answers the backend's size query with 0 for a held block, because `js_free_rt`
+asks before every release (`quickjs.c:1666-1669`). The header's size word is a full 64 bits on every target, or a
+32-bit target would misread stale bytes as the held bit. And the hold threads through block headers, never through
+pointer bits, because Android tags pointers. It costs about 4 ms on a full 64 MiB heap and no memory. ML52 reproduces
+five shapes and VM61 pins the hold. Every other case asserts both counts are zero. Row 11 of the page re-ran the four
+hold cases with freed memory poisoned (`ASAN_OPTIONS=max_free_fill_size=1048576:free_fill_byte=219`) and saw no report.
+
+#### ★ R24 — a compile past a bytecode buffer that failed to grow, recorded and unpatched
+
+Round 3 proved it. The bytecode buffer records a refused growth and drops later writes, and the only reader of that
+record is the lvalue check of an assignment (`get_prev_opcode`, `quickjs.c:23358`). A compile whose lost growth no
+assignment follows therefore succeeds, and `resolve_variables` decodes the truncated buffer: a SIGBUS or SEGV, or a
+`heap-buffer-overflow` under an instrumented backend. It is reachable from `evaluateScript` (4.1.1's path too),
+`evaluateModule`, `import()` and a script's own `eval()` / `new Function()`, with the heap within a few hundred bytes
+to about 2 KB of its limit. **No wrapper can close it**, because `eval()` is script code. The fix is one backend check
+(refuse to create the function while `dbuf_error` holds), which would make quickjs-ng the project's first patched
+dependency. That decision stays open together with R21 and R23. **Every test that sweeps compiles near the limit is
+kept off it by construction**: its sources end in `assignmentPad`, sixteen trailing assignments, so a lost growth
+always meets an lvalue check. The plan's AC-35 tool counts lvalue checks after a source's last growth: 0 for the
+control and at least 4 for every padded source.
+
+#### ★ Four code-review rounds, and what each found
+
+- **Round 1 (§M, eight commits):** the teardown use-after-free (R23, above); the atom collision; attribution of a
+  synchronous module run in the drain after a top-level-await dependency (fixed with per-call module watches that
+  tag the promise tracker's entries); a double "interrupted" record for an entry's top-level await; `throw NaN`
+  reported twice (`StrictEqual`); a freed entry read as "handled late"; a stale instance's `import()` edge; a compile
+  the heap starved classified by the parser's `SyntaxError` instead of the refusal (N1); ML20's lost two-level
+  importer; and a read that fails after its size answered.
+- **Round 2 (§N, seven commits):** a refusal the backend tolerates (its atom and shape tables keeping their size)
+  decides no compile, and a load refusal is a `LoadError` before any out-of-memory rule; no pending WARN in a call the
+  drain's own deadline check stopped; the 64-bit size word; a held block handed back again; a starved `import()`
+  rejects with the out-of-memory error, the parser's error as its `cause`; every member of a cycle follows the cycle's
+  outcome in either evaluation order; and the skipped list keeps only promises something still holds, with module
+  promises on a list of their own.
+- **Round 3 (§O, seven commits):** R24 (above); a parent's carried promise claimed by its child's same-value arm and
+  so reported ZERO times; the backend's message-less `InternalError` (from `JS_MakeError2` under a full heap) read as
+  a script's `Exception`; the `JS_UNINITIALIZED` "no exception" sentinel, which a refused atom growth in
+  `__JS_NewAtom` leaves, reaching `EvalResult::error` as `"[uninitialized]"`; and a 1 ms-budget case that a slow
+  runner could end through the loader's own deadline check (ML70 now runs at 50 ms, and every budget under ~20 ms was
+  audited).
+- **Round 4 (§P, two commits, five non-blocking findings):** the sentinel is the heap's in a run too; ML70's drain
+  outlasts its budget tenfold (ten joins of a million-element array, 399–442 ms in Release); ML76's literal is read
+  only on sentinel runs; and the accepted corner ML78 is pinned (a script's own message-less `InternalError` after a
+  refused allocation reads as the heap's).
+
+**The classification that came out of it** (`vm_errors.cpp`'s `classify`), in this order:
+1. the call's own interrupt flag → `Interrupted`;
+2. a load failure → `LoadError`;
+3. a refusal in this call plus a value that witnesses the heap (`null`, the sentinel, the backend's out-of-memory
+   error, or a message-less `InternalError`) → `OutOfMemory`;
+4. in a compile, a refused growth → `OutOfMemory`, whatever the parser then reported;
+5. otherwise `CompileError` or `Exception`.
+
+#### ★ The sabotage matrix — 154 rows, five findings, every one closed
+
+Three batches over §H, §M.11, §N.11, §O.11 and §P4, plus re-runs at the moved head of every earlier row in a file a
+later round changed, all on both presets. Fourteen rows have no witness by construction, two are one-lane (S95 Debug,
+S137 Release), and two are retired (S47, S71). **Five findings**, each closed by a case whose seed was re-applied red
+on both presets:
+- S10 and S19x → ML5's leading-zero row and ML77 (a generation of two or more after a leading zero; an invalidation
+  two levels deep);
+- S48 → ML38's awaited arm (only a cleared flag reaches the catch of an awaited interrupted module);
+- S98 → ML62's executor and thenable arms (a top-level await ended where no job fails);
+- S132x → ML79's described-sentinel check (an extra seed, written against an arm round 4 added).
+
+**4.1.1's lesson held again: a fix's own parallel arm is a seed of its own.** S132x is that shape, and so are S19x
+and the §O/§P re-runs. CI's first run added a sixth seed, S140 (the `cause` attachment disabled), against ML71's new
+sweep. It was red on both presets.
+
+#### Traps found, each measured
+
+- **A heap sweep may assert only what the layout cannot move (CI, Windows Release).** ML71 predicted a starved
+  `import()`'s parser error from a second VM's `evaluateModule` of the same graph. The parser left a SyntaxError on
+  macOS and Linux and `null` on MSVC Release, because where the heap refuses depends on what ran first and on the
+  platform's block sizes. The arm is now a 29-room sweep of a 32 KiB module: every cause is `none` or the parser's
+  `SyntaxError`, and at least one is the `SyntaxError` (7 of 29 Debug, 10 of 29 Release here). ML79's sentinel count
+  is a `WARN` for the same reason.
+- **The 4.1.x tests compile under a full heap, so they meet R24 unless padded.** ML67 and ML68's tiny modules and
+  every swept source end in `assignmentPad`. A new near-limit compile sweep inherits the pad.
+- **The backend has three "no value" outcomes, not one**: `null`, the `JS_UNINITIALIZED` sentinel (no exception at
+  all) and a message-less `InternalError`. Each needs the refusal count to be read as the heap's, and a script can
+  throw the last one itself (ML78, the accepted corner).
+- **A native call never polls the interrupt handler**, so ML70's work between two awaits is ten joins, which outlast
+  a 50 ms budget eightfold on the fastest lane. One join ran in 40–48 ms in Release, under the budget, which is why
+  the plan's single join failed.
+- **A literal record tail is lane-dependent** wherever a run may lose a different allocation on another heap; ML76(a)
+  reads `bytes in use)` only on sentinel runs and reads every other record through `outOfMemoryTail`.
+- **Two parallel sabotage batches and a limit hit leave two live seeds.** The interrupted run's seeds were found by
+  `git status` and `git diff` in each sabotage worktree and reverted before anything resumed.
+
+#### What was deliberately left out, and which task holds each
+
+TypeScript sources and esbuild are 4.3.1's. Bytecode modules and their cache are 4.3.2's, which re-measures R22. The
+watcher that calls `invalidateModule` is 4.3.3's (`moduleRecords()` is its read side). Source-mapped stacks are
+4.3.4's. Every script-visible surface stays 4.2.1's and 4.4.x's. `.pak` mounting is 5.1.1's: the loader reads
+through whatever the VFS has mounted. Import attributes, bare-name resolution and any
+probing are excluded by decision. R21, R23 and R24's patched backend is unowned,
+and the three upstream reports are owed.
+
+#### The sentences that govern new work
+
+- **Every module is read through the VM's borrowed `VirtualFileSystem` and through nothing else** (ML40), keyed by
+  `normalizeVirtualPath`, the VFS's own rule. A second normalizer is a second key for one file.
+- **The specifier grammar is an allowlist**: `res://`, `./`, `../`. A new form is a decision; `?` stays refused,
+  because it is what keeps a generation unnameable.
+- **A failed load or link attempt retires every module it created** (R22). A new path into the backend's module
+  machinery, such as 4.3.2's bytecode reader, inherits the rule or re-measures both shapes.
+- **A reload is a new generation; nothing is freed before teardown**, and the full reset is a new VM.
+- **A `LoadError` is decided before any out-of-memory rule**, and `classify`'s order above is the contract. A new
+  value witness for the heap joins step 3, never a new branch elsewhere.
+- **Every VM case ends with a zero-leak shutdown and zero `writtenAfterRelease` / `repeatedReleases`**, except the
+  cases that reproduce R23 on purpose (ML52, VM61).
+- **A compile near the heap limit in a test ends in `assignmentPad`** (R24), and **a heap sweep asserts only
+  layout-independent properties** — never a value predicted from another VM's run.
+- **A port bump re-measures R21, R22, R23 and R24 first.** ML52's counts going to zero would tell that the
+  upstream fix for R23 has landed.
+
+#### Validation and sabotage status — macOS 11 / 11 (2026-10-26), Windows and Linux unrun
+
+Run in a terminal (the task ships no editor UI) against `3c0a017` on an Apple M1 Pro, macOS 26.6.2, both presets:
+**11 / 11 PASS**.
+- The committed fixtures are LF and the BOM is real.
+- Row 2's console record reads `script: res://dod/throws.js: uncaught Error: fixture failure 2`, with both frames.
+- A non-ASCII directory and a directory symlink load.
+- The 521-module graph takes 42 / 42 / 43 ms in Debug and 3 / 3 / 3 ms in Release.
+- A reload generation costs 3068 B in Debug and 3036 in Release.
+- The import-depth cap bites before the backend's stack check.
+- `leaks -atExit` reports 0 leaks over the 143 script cases, which take 17.85 s in Debug and 10.56 s in Release.
+- The four hold cases pass under poisoned frees with no ASan report.
+
+CI's one later commit, `ef99d93`, is test-only. At it, the whole `aero_tests` passed on both presets (1578 / 1578), and
+the script cases took 18.60 s and 10.70 s.
+
+Measured at `ef99d93`:
+- `aero_tests` **1578** (+87: ML1–ML79, VN1–VN4, VM61–VM64), and the other six doctest binaries are unchanged at
+  **2414 / 366 / 40 / 73 / 14 / 28**.
+- `ctest -N` **184 / 171 / 94**, with entry sets identical to `e5441f8`'s and `cooker.*` 70 in all three.
+- The guards read math **603**, platform **94**, rhi **173**, scene **94**, golden-rule **175**, project-no-delete
+  **A=7 B=110**, audio **11-3-59**, probes **7-61** and script **169-94-6**. Math, rhi, golden-rule and script moved
+  with the new `engine/script` files.
+
+**Build & dependency impact:** no new vcpkg port and no new target. `aero_script` gains `module_graph.cpp` and
+`vm_modules.cpp` and links nothing new, and `aero::core`'s public header gains one declaration. `tests/CMakeLists.txt`
+adds `script_module_test.cpp` to `aero_tests`, and `tests/fixtures/scripts/` (with its README) holds the Definition
+of Done's files. Docs: `docs/03` (the module paragraph) and `docs/08` (R22, R23, R24). `editor/` and `tools/` are
+untouched.

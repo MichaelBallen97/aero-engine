@@ -10,10 +10,14 @@ Two platform matrices, never to be conflated: the **editor** runs on macOS/Windo
 
 ## Current state — read this first
 
-**Phase 4 (Scripting) has opened, and its first task is merged**: 4.1.1 (VM lifecycle), PR #123 `efdd0b9`,
-macOS-validated 10 / 10. `engine/script` holds `engine::script::Vm` on quickjs-ng 0.15.1, nothing is script-visible
-yet, and Epic 4.1 continues with 4.1.2 (module loading via the VFS). **Two backend paths are recorded rather than
-fixed (`docs/08-risks.md` R21), and one of them can hang the engine thread** — see the scripting invariants below.
+**Phase 4 (Scripting) is open, and Epic 4.1 is CLOSED**: 4.1.1 (VM lifecycle, PR #123 `efdd0b9`, macOS 10 / 10)
+and 4.1.2 (module loading via the VFS, PR #124 `ccf776c`, macOS 11 / 11). `engine/script` holds `engine::script::Vm`
+on quickjs-ng 0.15.1, which loads ES modules through a borrowed `VirtualFileSystem` and nothing else, keeps a readable
+module cache with one reload hook for 4.3.3, and exposes nothing to scripts yet; Epic 4.2 (4.2.1, binding emission)
+is next. **Four backend defects are recorded rather than patched** — R21 (two interrupt paths, one a hang), R22 and
+R23 (mitigated engine-side) and R24 (a compile past a failed buffer growth, unreachable by any wrapper) in
+`docs/08-risks.md` — and the patched backend that would close R21, R23 and R24 is a decision still open; see the
+scripting invariants below.
 **Phase E stays open behind it**: all 24 of its tasks are merged and Epics E.1–E.6 are CLOSED IN CODE (E.6.4, PR #122
 `52a5b68`, the last), and what is left is its gate (the `samples/phase-E-editor/` artifact, which does not exist yet)
 and ONE unrun validation page, E.1.5's. Phase 3 remains OPEN behind both: all seven of its epics are closed in code,
@@ -31,8 +35,9 @@ have not fired since — **they still apply in full to the next built-in, whenev
 **Next free ids, measured by a whole-`tests/` token sweep on E.6.4's tree: `I361` at the ImGui tier**,
 `AA68`, `AD77`, `AH21`, `AM29`, `AV68`, `BD8`, `BR31`, `BV10`, `CC15`, `CD15`, `CR13`, `CS11`, `DD31`, `DG26`, `DR28`,
 `EC5`, `EK11`, `EP19`, `FT16`, `G29`, `GL8`, `GR34`, `HK6`, `HY9`, `IO24`, `IR23`, `IX19`, `MB27`, `NP14`, `P96`,
-`PC15`, `PX6`, `RF8`, `RT31`, `SQ15`, `SS64`, `TB13`, `TH19`, `TS11`, `US13`, `VM61`, `VO15`, `WL7`, `X32` (4.1.1 added
-`VM` alone, so every other id is still the E.6.4 sweep's). Taken tier-0 prefixes
+`PC15`, `PX6`, `RF8`, `RT31`, `SQ15`, `SS64`, `TB13`, `TH19`, `TS11`, `US13`, `VM65`, `VO15`, `WL7`, `X32`, plus 4.1.2's
+`ML80` and `VN5` (4.1.1 added `VM` and 4.1.2 `ML`, `VN` and `VM61`–`VM64`, so every other id is still the E.6.4
+sweep's). Taken tier-0 prefixes
 include `MR` (E.3.4, `MR1`–`MR21`), `PJ` (E.4.1, `PJ1`–`PJ57`), `CN` (E.4.2, `CN1`–`CN25`), `IX` / `BV` (E.4.4,
 `IX1`–`IX18`, `BV1`–`BV9`), `MB` / `CC` (E.4.5, `MB1`–`MB26`, `CC1`–`CC14`), `CR` / `EC` (E.5.2, `CR1`–`CR9`,
 `EC1`–`EC4`), `TH` / `US` / `GL` (E.6.1, `TH1`–`TH11`, `US1`–`US9`, `GL1`–`GL7`), `PC` / `CS` / `EK` / `HY` /
@@ -47,7 +52,8 @@ plus the new tier-0 prefixes `HK` (`HK1`–`HK5`), `TB` (`TB1`–`TB12`), `BD` (
 (`PC1`–`PC14`), `CS` (`CS1`–`CS10`), `EK` (`EK1`–`EK10`), `HY` (`HY1`–`HY8`), `AH` (`AH1`–`AH20`) and `VO`
 (`VO1`–`VO14`), and `TH14`–`TH16`, `US11`, `AV66`–`AV67` and `CD12`–`CD14`. E.6.4 took `I349`–`I360` plus the
 new tier-0 prefixes `NP` and `WL`, and `P86`–`P95`, `TH17`–`TH18` and `US12`. 4.1.1 took the new tier-0 prefix `VM`
-(`VM1`–`VM60`, `tests/script_vm_test.cpp`). The E.3.2 keyboard fix
+(`VM1`–`VM60`, `tests/script_vm_test.cpp`); 4.1.2 took the new tier-0 prefixes `ML` (`ML1`–`ML79`,
+`tests/script_module_test.cpp`) and `VN` (`VN1`–`VN4`, `tests/vfs_test.cpp`) plus `VM61`–`VM64`. The E.3.2 keyboard fix
 (#116) took `I256`–`I258` plus `RT28`–`RT30`, the Save As suffix fix (#117) `I270` plus `SS55`–`SS63` and
 `IO22`–`IO23`, the dialog keyboard fix (#118) `I275`–`I276`, and E.6.1 `I277`–`I289` plus `CR10`–`CR12`.
 **E.6.1 DELETED `I230`** with the ProggyClean remap table it pinned — the id is retired, never reused.
@@ -127,6 +133,7 @@ validation pass exists for any task in any phase.** N-E = not executable, N-R = 
 | E.6.3 Panel chrome pass | #121 | `7fe02d1` | **21 / 21** executable rows (its 2× rows ran, on the built-in Retina panel); 21–22 Windows/Linux. **The first pass found four product defects no tier could see**, all fixed in the PR; 66 sabotage seeds, 66 / 66 red on the re-run (the first run's one partial, `S24`, closed by the code-review round), and the 25 on files the later fixes changed 25 / 25 again at the final head |
 | E.6.4 Welcome + New Project restyle | #122 | `52a5b68` | **23 / 23** executable rows, nothing failed; row 21 N-E (1× displays), row 25 N-E (a held hardware key), 26–27 Windows/Linux. 57 sabotage seeds at `72da4e3`, no hole |
 | 4.1.1 VM lifecycle | #123 | `efdd0b9` | **10 / 10**, nothing failed (terminal rows; no editor UI). A 98-seed sabotage matrix whose nine findings each gained a case; two backend paths recorded as R21 |
+| 4.1.2 Module loading via VFS | #124 | `ccf776c` | **11 / 11**, nothing failed (terminal rows). Four code-review rounds; a 154-row sabotage matrix whose five findings each gained a case; R22 and R23 mitigated engine-side, R24 recorded; Windows CI found one layout-dependent test arm (ML71) |
 
 **E.3.2 landed before E.3.1** — legal, disjointly id-reserved; the reservation is discharged and the
 numbering is contiguous.
@@ -142,7 +149,7 @@ numbering is contiguous.
 | **Phase 3 gate** | Drop a rigged glTF/FBX in → PBR materials + shadows + a playing animation + **an audible sound**. The audible half exists in code as of 3.7.2 and **has never been heard on any platform.** |
 | **Phase E** — Editor Experience | **OPEN.** Epics E.1–E.6 **CLOSED in code** — 24 of 24 merged, see the index above (E.6.4, `52a5b68`, the last). What is left is the gate below — its artifact `samples/phase-E-editor/` does not exist yet — and ONE unrun validation page (E.1.5), the whole of this OS's remaining Phase E risk. |
 | **Phase E gate** | Open a project and land in the scene you were last editing, on a lit grid floor under a sky; create a Cube from the menu, drop a material on it and see it shade; aim a spot light with a visible gizmo; rename, move and delete assets without leaving the editor. Gate artifact: `samples/phase-E-editor/`. |
-| **Phase 4** — Scripting | **OPEN.** 4.1.1 merged (#123); Epic 4.1 continues with 4.1.2. |
+| **Phase 4** — Scripting | **OPEN.** Epic 4.1 **CLOSED** — 4.1.1 (#123) and 4.1.2 (#124) merged; Epic 4.2 (4.2.1) is next. |
 | **Phase 4 gate** | Press Play in the editor: hot-reloaded TS or native C++ drives entities; press Stop: the scene restores exactly. Gate artifact: `samples/phase-4-scripting/` (the two-language demo). |
 
 ### Engine layers, in dependency order
@@ -160,7 +167,10 @@ numbering is contiguous.
   four pairs: `clip`, `spatial`, `mixer`, `system`, plus the `audio.hpp` umbrella. It links
   `aero::core` + `aero::assets` PUBLIC, `aero::profiling` PRIVATE, and **NO VCPKG PACKAGE, EVER**.
 * **`engine/script`** (opened 4.1.1) holds the JavaScript VM and nothing script-visible: `engine::script::Vm` on
-  quickjs-ng 0.15.1, and its backend-free allocator behind the INTERFACE `aero::script_internal`. It links `aero::core`
+  quickjs-ng 0.15.1, and its backend-free allocator behind the INTERFACE `aero::script_internal`. Since 4.1.2 it loads
+  ES modules through a borrowed `VirtualFileSystem` (`evaluateModule`, `import()`, `moduleRecords()`,
+  `invalidateModule()`), with the loader's pure half in `module_graph.{hpp,cpp}`, and `engine/core`'s
+  `normalizeVirtualPath` is public so a module's key is the VFS's own. It links `aero::core`
   PUBLIC and quickjs-ng's `qjs` PRIVATE, without the `libc` feature. **quickjs lives in `engine/script/src/` alone**:
   the ninth guard, `check-script-boundary.sh`, refuses a `JS…`, `js_…`, `QJS_…` or `QUICKJS…` name anywhere else under
   `engine/` or `runtime/`, and `tests/script_boundary_probe.cpp` is R12's seventh probe.
@@ -739,6 +749,41 @@ wraps an interrupt into a catchable `SuppressedError`, so a catch-all loop aroun
 already waits for reaches that handler as an error no catch takes. Nothing calls a script before 4.2.1; the first task
 that exposes a script surface inherits both. The fix is a patched backend — the project's first, an unowned handoff.
 
+**EVERY MODULE IS READ THROUGH THE VM'S BORROWED VFS AND NOTHING ELSE, KEYED BY `normalizeVirtualPath` (4.1.2).** ML40
+pins the one read path. A second normalizer would be a second key for one file. The specifier grammar is an ALLOWLIST
+— `res://`, `./`, `../` — and `?` stays refused everywhere, because it is what keeps a generation unnameable.
+
+**A FAILED LOAD OR LINK ATTEMPT RETIRES EVERY MODULE IT CREATED (4.1.2, R22).** quickjs-ng frees a module that fails
+while resolving and leaves a cycle partner pointing at it, and re-linking a half-linked module leaks a binding. So a
+failed attempt's modules move to a new generation name (`<path>?gen=N`, the name pure ASCII, with bytes ≥ 0x80 and `%`
+percent-encoded), and the backend never sees them again. A new path into the backend's module machinery (4.3.2's
+bytecode reader) inherits the rule or re-measures both shapes. A reload is a new instance; nothing is freed before
+teardown, and the full reset is a new VM.
+
+**THE TEARDOWN HOLD CONTAINS R23, AND EVERY CASE BUT TWO ASSERTS ITS COUNTS ARE ZERO (4.1.2).** From `JS_FreeContext`
+until `JS_FreeRuntime` returns, the allocator holds every block the backend releases, because a top-level await still
+pending at teardown makes the backend write into modules it already freed (bellard/quickjs #280). Three properties
+keep it whole:
+- a held block's size query answers 0, because `js_free_rt` asks before every release;
+- the size word is a full 64 bits on every target;
+- the hold threads through block headers, never pointer bits (Android tags pointers).
+`writtenAfterRelease` and `repeatedReleases` are non-zero only in ML52 and VM61.
+
+**`classify`'S ORDER IS THE CONTRACT (4.1.2):**
+1. the call's own interrupt → `Interrupted`;
+2. a load failure → `LoadError`;
+3. a refusal plus a heap witness (`null`, the `JS_UNINITIALIZED` sentinel, the out-of-memory error, a message-less
+   `InternalError`) → `OutOfMemory`;
+4. in a compile, a refused growth → `OutOfMemory`;
+5. otherwise `CompileError` / `Exception`.
+A new heap witness joins step 3, never a new branch elsewhere.
+
+**R24: A COMPILE WHOSE LOST BYTECODE GROWTH NO ASSIGNMENT FOLLOWS OVER-READS ITS BUFFER (4.1.2), AND NO WRAPPER CAN
+CLOSE IT**, because `eval()` reaches it. Every test that compiles near the heap limit ends its source in
+`assignmentPad`, so a lost growth meets an lvalue check. **And a heap sweep asserts only what the layout cannot move**:
+ML71 predicted a starved `import()`'s parser error from a second VM and was red on Windows Release alone, because
+where the heap refuses depends on block sizes and on what ran first.
+
 #### Rendering and the GPU
 
 **A RENDER TARGET'S DEPTH IS ONLY READABLE IF IT WAS STORED, AND NOTHING CAN DETECT THAT IT WAS NOT.**
@@ -1103,15 +1148,14 @@ is a configure-time property. **Rebuild before you believe any doctest number, a
 presets so a disagreement is visible.** A recorded total goes stale the same way: `origin/main`'s own shell
 total was one stale at E.1.4's gate. **Read the binary, never the block.**
 
-**After 4.1.1 (#123)**, measured on `360daf6` (the merge `efdd0b9`'s tree is byte-identical to it) on both
-presets, each configured and built from an empty build directory and agreeing, with both reduced configurations
-configured fresh at `360daf6`; the guards re-run on the merged tree:
+**After 4.1.2 (#124)**, measured on both presets: `ctest -N` and the guards on `ef99d93` (the merge's second parent),
+the doctest totals and both reduced configurations on `3c0a017`. `ef99d93` changes one case's body and no total.
 
 | Measurement | Value |
 |---|---|
-| `ctest -N` | **184** in both presets; **171** shader-tools-OFF (exactly the 13 `shaderc.*` removed), **94** reflect-tools-OFF (86 `reflect-gen.*` + four doctest binaries removed), nothing added in either; `cooker.*` **70 / 70 / 70** |
-| doctest, seven binaries | **1491 / 2414 / 366 / 40 / 73 / 14 / 28** |
-| guards | math **599**, platform **94**, rhi **170**, scene **94**, golden-rule **172**, project-no-delete **A=7 B=110** (2 permitted), audio **11-3-59**, probes **7-61**, script **168-94-4** |
+| `ctest -N` | **184** in both presets; **171** shader-tools-OFF (exactly the 13 `shaderc.*` removed), **94** reflect-tools-OFF (86 `reflect-gen.*` + four doctest binaries removed), nothing added in either; `cooker.*` **70 / 70 / 70**; entry sets identical to 4.1.1's |
+| doctest, seven binaries | **1578 / 2414 / 366 / 40 / 73 / 14 / 28** (only `aero_tests` moved, +87) |
+| guards | math **603**, platform **94**, rhi **173**, scene **94**, golden-rule **175**, project-no-delete **A=7 B=110** (2 permitted), audio **11-3-59**, probes **7-61**, script **169-94-6** |
 | `git ls-files` | `editor/src/*.cpp` **110**, `editor/include/aero/editor/*.hpp` **81** |
 
 The seven doctest binaries, in order: `aero_tests`, `aero_editor_shell_test`, `aero_editor_imgui_test`,
@@ -1122,7 +1166,8 @@ binaries generate from a fixture aggregator, not the built-in list. **A third gu
 no target is a stop-and-find-out** — math and project-no-delete prong B move with new tracked C-family files
 (prong B only for `editor/src/*.cpp`); platform, rhi, scene, golden-rule and script count engine and runtime files, so
 they move only with new ones; audio's and probes' last figures count CMake files. 4.1.1, which added a target, moved
-every guard's figures but project-no-delete's and opened script's.
+every guard's figures but project-no-delete's and opened script's; 4.1.2, which added files to `engine/script` and
+none elsewhere in `engine/`, moved math, rhi, golden-rule and script.
 
 **A TASK THAT ADDS A BUILT-IN MOVES `ctest -N` TOO** (a per-header reflect-gen case) **and three of the seven
 doctest totals.** A task that adds none may still move `ctest -N`: E.3.3's four additions are `reflect-gen.*`
@@ -1189,7 +1234,13 @@ mono 48 kHz 0.5 s, **exactly 48 064 B each**, cut at a whole number of cycles so
 
 **4.1.1's page is RUN, 10 / 10** (2026-10-22, against `360daf6`; terminal rows, no editor UI): the 64 MiB heap filled
 for real and the process survived, `leaks -atExit` found nothing outside the JavaScript heap, and Debug recurses 56
-calls at 512 KiB against Release's 544 (4.4.1 decides). Its Windows and Linux rows are owed like every other task's.
+calls at 512 KiB against Release's 544 (4.4.1 decides). **4.1.2's page is RUN, 11 / 11** (2026-10-26, against
+`3c0a017`, terminal rows; the one later commit is test-only):
+- a 521-module graph loads in 42 ms (Debug) and 3 ms (Release);
+- a reload generation costs about 3 KB;
+- `leaks -atExit` is clean over the 143 script cases;
+- the teardown hold's four cases pass under poisoned frees with no ASan report.
+Both pages' Windows and Linux rows are owed like every other task's.
 
 **ONE PAGE HAS NOT BEEN RUN ON ANY PLATFORM: E.1.5's.** It is the whole of Phase E's validation risk on this OS
 — every other task in E.1–E.6 is macOS-validated (see the index above). **E.6.4's page is RUN, 23 / 23 executable
@@ -1337,8 +1388,10 @@ display's ICC profile, and **there is no `renderFrame` Tracy zone in this tree**
 
 ### Next
 
-**Phase 4 is open: 4.1.1 is merged, and Epic 4.1 continues with 4.1.2 (module loading via the VFS,
-`docs/tasks/phase-4.md`).** Phase E still owes its gate and E.1.5's unrun page — the gate's artifact,
+**Phase 4 is open and Epic 4.1 is closed (4.1.1, 4.1.2); Epic 4.2 is next — 4.2.1, quickjs binding emission, the
+first task that calls a script and so inherits R21 (`docs/tasks/phase-4.md`).** 4.3.1 (esbuild on import) is also
+unblocked; 4.3.3 consumes 4.1.2's `moduleRecords()` / `invalidateModule()`, and 4.3.2 re-measures R22 on its bytecode
+path. Phase E still owes its gate and E.1.5's unrun page — the gate's artifact,
 `samples/phase-E-editor/`, does not exist yet; see `docs/tasks/phase-E.md` for the gate, and `docs/tasks/phase-3.md`
 for what Phase 3 still owes.
 
@@ -1542,7 +1595,10 @@ only been argued from identical code.
 - **A patched quickjs-ng for R21's two paths** (4.1.1) — a vcpkg overlay port whose conversion sites let an
   uncatchable error propagate (the `using` dispose wrap, and a promise rejected with the interrupt), as
   `promise_reaction_job` already does. It would be the project's first patched dependency, and the defect is worth
-  reporting upstream either way. VM57 pins R21's second path and goes red when the patch lands.
+  reporting upstream either way. VM57 pins R21's second path and goes red when the patch lands. **4.1.2 adds two
+  defects the same port would close**: R24 (refuse to create a function while `dbuf_error` holds, one check before
+  `resolve_variables`) and R23 (let a module outlive its context, bellard/quickjs #280's fix), whose hold could then
+  go. Three upstream reports are owed: R21, R23 (citing #280), R24.
 
 **E.1.1's THICK-LINE HANDOFF IS FIRED, NOT CLEARED AND NOT DEFERRED.** E.2.3's macOS pass measured it: icons
 scale exactly 2x and hold 22 points, but **387 of 441 sampled runs across the gizmo are ONE DEVICE PIXEL** —
