@@ -170,7 +170,8 @@ struct Vm::Impl {
                                  void* opaque) noexcept;
     void fireInterrupt() noexcept;
     void keepSkipped(JSValue promise);  // takes the reference; evicts the oldest past MAX_SKIPPED_REJECTIONS
-    [[nodiscard]] bool isSkipped(JSValueConst promise) const;  // either list below
+    [[nodiscard]] bool isSkipped(JSValueConst promise) const;             // either list below
+    [[nodiscard]] bool isModuleWatchPromise(JSValueConst promise) const;  // some live watch's module promise
     void keepModulePromise(JSValue promise);  // takes the reference; one per module promise, never evicted
     void keepIfReferenced(JSValue promise);   // takes the reference; keeps it only if something else still holds it
 

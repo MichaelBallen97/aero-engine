@@ -286,6 +286,18 @@ std::optional<EvalResult> Vm::Impl::settleModule(std::string_view key, JSValueCo
     return std::nullopt;
 }
 
+// A promise some module watch is responsible for: its own watch's settle reports it. A parent module's promise is
+// rejected before the child's own (quickjs.c:31297-31309) and carries the child's reason, so without this the child's
+// same-value arm claims it and the failure is reported zero times.
+bool Vm::Impl::isModuleWatchPromise(JSValueConst promise) const {
+    for (const ModuleWatch& w : moduleWatches) {
+        if (!JS_IsUndefined(w.promise) && JS_IsStrictEqual(ctx, w.promise, promise)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 // A module body that throws rejects TWO promises with one reason -- the backend's internal promise for the body and
 // the module promise. The body's is rejected while the module promise is still pending (inside JS_EvalFunction, or in
 // a drain once a top-level await the module imports has settled), so the tracker tagged it with this watch; the
@@ -296,10 +308,15 @@ void Vm::Impl::forgetModuleFailure(JSValueConst promise, JSValueConst reason, st
                                    bool carried) {
     bool kept = false;
     for (auto entry = pendingRejections.begin(); entry != pendingRejections.end();) {
+        const bool ownModulePromise = JS_IsStrictEqual(ctx, entry->promise, promise);
         // A carried watch's module promise is no call's status: it stays listed, and is this call's one record.
-        const bool isModulePromise = !carried && JS_IsStrictEqual(ctx, entry->promise, promise);
+        const bool isModulePromise = !carried && ownModulePromise;
         const bool tagged = std::find(entry->watches.begin(), entry->watches.end(), watch) != entry->watches.end();
-        if (isModulePromise || (tagged && JS_IsSameValue(ctx, entry->reason, reason))) {
+        // The same-value arm is for a module body's OWN internal promise, which is no watch's module promise; a module
+        // promise, this watch's or another's, is settled by its own watch.
+        const bool bodyPromise =
+            tagged && JS_IsSameValue(ctx, entry->reason, reason) && !isModuleWatchPromise(entry->promise);
+        if (isModulePromise || bodyPromise) {
             kept = kept || isModulePromise;
             JS_FreeValue(ctx, entry->reason);
             if (isModulePromise) {
@@ -309,6 +326,11 @@ void Vm::Impl::forgetModuleFailure(JSValueConst promise, JSValueConst reason, st
                 keepIfReferenced(entry->promise);  // the body's own promise goes; a script's is kept
             }
             entry = pendingRejections.erase(entry);
+        } else if (carried && ownModulePromise) {
+            // A carried module promise rejected in a later call stays listed: it is that call's one unhandled record.
+            // It is kept as well, so a later import()'s handler is recognised, never "handled later".
+            keepModulePromise(JS_DupValue(ctx, entry->promise));
+            ++entry;
         } else {
             ++entry;
         }

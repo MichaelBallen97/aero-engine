@@ -2845,6 +2845,87 @@ TEST_CASE(
     expectCleanShutdown(fx.vm);
 }
 
+TEST_CASE(
+    "script: a module's failure is reported once even when its child, rejected first, carries the same reason "
+    "(ML74)") {
+    // b.js awaits a promise a global keeps and a.js imports it. quickjs-ng rejects a module's parents before its own
+    // promise, with the same reason (quickjs.c:31297-31309), so a.js's rejection is listed while b.js's watch is
+    // open -- and the child's settle must not claim it.
+    const auto seed = [](MemoryBackend& files) {
+        files.set("b.js", "export const b = 1; await new Promise((ok, no) => { globalThis.rejectB = no; });");
+        files.set("a.js", "import { b } from './b.js'; export const a = b;");
+    };
+    const std::string catchB =
+        "globalThis.rb = 'none'; import('res://b.js').then(() => { rb = 'ok'; }, "
+        "(e) => { rb = 'caught ' + e.message; }); 0";
+    // The entry's one record: the pending WARN.
+    const auto entryIsPending = [](Vm& vm, LogCapture& log) {
+        CHECK(label(vm.evaluateModule("res://a.js")) == "Ok");
+        const std::vector<CapturedRecord> records = log.atLeast(LogLevel::Warn);
+        REQUIRE(records.size() == 1U);
+        CHECK(records[0].level == LogLevel::Warn);
+        CHECK(records[0].message ==
+              "script: res://a.js: module evaluation is still pending at the end of the call "
+              "(a top-level await has not settled)");
+    };
+    // The rejection: exactly one record at WARN or above, the unhandled rejection of a.js's own promise.
+    const auto rejectB = [](Vm& vm, LogCapture& log) {
+        log.clear();
+        CHECK(completion(vm, "rejectB(new Error('boom')); 0") == "0");
+        CHECK(firstLine(onlyErrorMessage(log)) == "script: probe.js: unhandled promise rejection: Error: boom");
+        CHECK(vm.stats().unhandledRejections == 1U);
+    };
+
+    {
+        INFO("(a) the shape: b.js is awaited by an import() that catches, a.js is the entry");
+        LogCapture log;
+        ModuleFixture fx;
+        seed(*fx.files);
+        CHECK(completion(fx.vm, catchB) == "0");
+        entryIsPending(fx.vm, log);
+        rejectB(fx.vm, log);
+        CHECK(completion(fx.vm, "rb") == "caught boom");
+        CHECK(stateOf(fx.vm, "res://a.js") == "Failed");
+        CHECK(stateOf(fx.vm, "res://b.js") == "Failed");
+        expectCleanShutdown(fx.vm);
+    }
+    {
+        INFO("(b) the control: no import() of b.js, so a.js's watch is the only one");
+        LogCapture log;
+        ModuleFixture fx;
+        seed(*fx.files);
+        entryIsPending(fx.vm, log);
+        rejectB(fx.vm, log);
+        CHECK(stateOf(fx.vm, "res://a.js") == "Failed");
+        expectCleanShutdown(fx.vm);
+    }
+    {
+        INFO("(c) the eviction: a later handler on a.js's promise finds it kept, never \"handled later\"");
+        LogCapture log;
+        ModuleFixture fx;
+        seed(*fx.files);
+        CHECK(completion(fx.vm, catchB) == "0");
+        entryIsPending(fx.vm, log);
+        rejectB(fx.vm, log);
+        // Three hundred failing modules overrun the skipped list, which a promise the module list holds must not need.
+        constexpr int FAILING = 300;
+        std::size_t failed = 0;
+        for (int n = 0; n < FAILING; ++n) {
+            const std::string index = std::to_string(n);
+            std::string body = "const e = new Error('k" + index + "'); ";
+            body += "globalThis.keep" + index + " = Promise.reject(e); throw e;";
+            fx.files->set("k" + index + ".js", body);
+            failed += label(fx.vm.evaluateModule("res://k" + index + ".js")) == "Exception" ? 1U : 0U;
+        }
+        REQUIRE(failed == 300U);
+        log.clear();
+        CHECK(completion(fx.vm, "import('res://a.js').catch(() => {}); 0") == "0");
+        CHECK(log.countAtLeast(LogLevel::Info) == 0U);
+        CHECK(fx.vm.stats().rejectionsHandledLate == 0U);
+        expectCleanShutdown(fx.vm);
+    }
+}
+
 // ---- ML31-ML34, ML38, ML47: import() --------------------------------------------------------------------------
 
 TEST_CASE("script: import() from a module resolves against that module and records a dynamic edge (ML31)") {
