@@ -2391,6 +2391,17 @@ namespace {
     return source;
 }
 
+// Trailing assignments to a name the source already declares: a refused bytecode growth anywhere before them meets
+// an assignment's lvalue check, the backend's one check of the buffer, and the compile returns (R24 in docs/08).
+// Sixteen leaves three statements after the buffer's last growth in every padded source here (measured).
+[[nodiscard]] std::string assignmentPad(std::string_view name) {
+    std::string pad;
+    for (int i = 1; i <= 16; ++i) {
+        pad += " " + std::string{name} + " = " + std::to_string(i) + ";";
+    }
+    return pad;
+}
+
 // How an out-of-memory record's first line ends: at "bytes in use)" when the error is the backend's own out-of-memory
 // error -- null, or an InternalError whose message says so or is empty, the message itself not allocated -- and
 // otherwise followed by the error the backend reported, in Error.prototype.toString's shape.
@@ -2533,11 +2544,14 @@ TEST_CASE("script: a specifier ends at its first U+0000, statically and through 
 // ---- ML67-ML69: a refusal the backend tolerates, and a compile the heap starves -------------------------------------
 
 TEST_CASE("script: a load refusal is a LoadError even when the heap refused an allocation in the same call (ML67)") {
+    // Every module this sweep compiles near the limit ends in assignments, so a refused bytecode growth is always
+    // caught by one (R24, docs/08).
     LogCapture log;
     const std::string missing = "res://" + std::string(8000, 'm') + ".js";
     const auto seed = [](MemoryBackend& files) {
-        files.set("a.js", "import './ok.js'; import './" + std::string(8000, 'm') + ".js';");
-        files.set("ok.js", "export const v = 1;");
+        const std::string imports = "import './ok.js'; import './" + std::string(8000, 'm') + ".js';";
+        files.set("a.js", imports + " let p = 0;" + assignmentPad("p"));
+        files.set("ok.js", "export let v = 1;" + assignmentPad("v"));
     };
     const auto call = [](Vm& vm) { return vm.evaluateModule("res://a.js"); };
     // The least room at which the load is a LoadError: below it, the long specifier's own text runs out of heap.
@@ -2573,11 +2587,12 @@ TEST_CASE("script: a genuine syntax error beside a refusal the backend tolerates
     // Why the window sits here: the prelude leaves 634 + `names` atoms, and with 6 KiB left the graph's own names carry
     // the count across 2048, where the atom hash's 8 KiB growth is refused and tolerated (the old table is kept). A
     // port that changes the fresh VM's 633 atoms moves the window -- VM5 turns red at the same bump -- and then this
-    // case fails on its REQUIRE below until the window is re-derived.
+    // case fails on its REQUIRE below until the window is re-derived. Every module this sweep compiles near the limit
+    // ends in assignments, so a refused bytecode growth is always caught by one (R24, docs/08).
     LogCapture log;
     const auto seed = [](MemoryBackend& files) {
-        files.set("a.js", "import './ok.js'; import './bad.js';");
-        files.set("ok.js", "export const v = 1;");
+        files.set("a.js", "import './ok.js'; import './bad.js'; let p = 0;" + assignmentPad("p"));
+        files.set("ok.js", "export let v = 1;" + assignmentPad("v"));
         files.set("bad.js", "export const ;");
     };
     const auto call = [](Vm& vm) { return vm.evaluateModule("res://a.js"); };

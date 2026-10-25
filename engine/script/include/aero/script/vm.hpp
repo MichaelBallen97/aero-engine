@@ -91,6 +91,8 @@ enum class EvalStatus : std::uint8_t {
     OutOfMemory,   // the heap limit refused an allocation and the failure was not caught. In a compile, a refused
                    // growth decides it whatever error the parser then reported; a refusal the backend tolerates (its
                    // atom and shape tables keeping their size) leaves the compile its own CompileError or LoadError
+                   // -- a compile whose lost growth no assignment follows does not return at all: R24 in
+                   // docs/08-risks.md.
     Interrupted,   // the call's time budget ran out; the script could not catch it, nor start new calls
     InvalidVm,     // a failed create's Vm, or a moved-from one
     WrongThread,   // called from a thread that is not the VM's; nothing was touched
