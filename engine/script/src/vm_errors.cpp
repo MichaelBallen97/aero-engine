@@ -15,17 +15,39 @@
 namespace engine::script {
 
 EvalResult Vm::Impl::trap(Phase phase) {
-    const HeldValue exception{ctx, JS_GetException(ctx)};        // takes the reference, clears the slot
-    const EvalStatus status = classify(exception.get(), phase);  // BEFORE describe: describe may allocate
-    const bool isErrorObject = JS_IsError(exception.get());
-    ScriptError error = describe(exception.get(), isErrorObject);
+    const HeldValue exception{ctx, JS_GetException(ctx)};  // takes the reference, clears the slot
+    return trapValue(exception.get(), phase);
+}
+
+// trap's body, for a value that is not the pending exception: a module promise's rejection reason (vm_modules.cpp).
+EvalResult Vm::Impl::trapValue(JSValueConst value, Phase phase) {
+    const EvalStatus status = classify(value, phase);  // BEFORE describe: describe may allocate
+    const bool isErrorObject = JS_IsError(value);
+    // An out-of-memory the backend reported as another error -- the parser's, after its buffer failed to grow -- also
+    // names that error, so the record says what the backend said. Not for the backend's own out-of-memory error, nor
+    // for that error once even its message could not be allocated (a message-less InternalError), in either phase.
+    const bool namesCause = status == EvalStatus::OutOfMemory && isErrorObject && !isOutOfMemoryError(value) &&
+                            !isMessagelessInternalError(value);
+    // A load error's text is the engine's own, exact and never cut at the backend's 256-byte message buffer.
+    const bool engineText = status == EvalStatus::LoadError && callLoadFailure.has_value();
+    // The backend's "no exception" sentinel: a refused atom-array growth makes __JS_NewAtom return JS_ATOM_NULL
+    // without throwing (quickjs.c:3136-3150), and the tokenizer in a compile, or a computed key's store in a run,
+    // fails with nothing pending, so trap takes JS_UNINITIALIZED. It is no value -- an empty error with no stack,
+    // described as nothing -- and the refusal made the status OutOfMemory (in a compile the refused growth, in a
+    // run the value arm of classify). An interrupt or a load refusal still names itself, as for every other value.
+    ScriptError error;
+    if (engineText) {
+        error = *callLoadFailure;
+    } else if (!JS_IsUninitialized(value)) {
+        error = describe(value, isErrorObject);
+    }
     if (status == EvalStatus::Interrupted) {
         // Whichever exception carried it -- the interrupt itself, or the RangeError a refused call raised after
         // the budget ran out -- the canonical interrupt is what the caller reads. The stack stays the described one.
         error.name = "InternalError";
         error.message = "interrupted";
     }
-    logFailure(status, error, isErrorObject);
+    logFailure(status, error, isErrorObject, namesCause);
     if (status == EvalStatus::OutOfMemory) {
         JS_RunGC(rt);  // the failed work is unreachable now; cycles among it need the collector
     }
@@ -40,13 +62,43 @@ EvalStatus Vm::Impl::classify(JSValueConst exception, Phase phase) {
     if (interruptFired) {
         return EvalStatus::Interrupted;
     }
-    // Both witnesses are needed. The refusal alone would mislabel a script that caught an out-of-memory error
-    // and later threw something unrelated; the value alone cannot tell the backend's `null` (thrown when not
-    // even the error object fits) from a script's own `throw null`.
-    if (heap.refusals() > refusalsAtCallStart && (JS_IsNull(exception) || isOutOfMemoryError(exception))) {
+    // A load refusal of THIS call's own attempt -- never a dynamic import's, which is the script's to catch -- is why
+    // the graph did not compile, whatever error the backend wrapped it in. No engine refusal is ever caused by memory,
+    // and it ends the attempt, so it is the call's first failure even when the backend refused an allocation as well.
+    if (phase == Phase::Compile && callLoadFailure.has_value()) {
+        return EvalStatus::LoadError;
+    }
+    // Both witnesses are needed while code runs: the refusal alone would mislabel a script that caught an out-of-memory
+    // error and later threw something unrelated; the value alone cannot tell the backend's `null` (thrown when not even
+    // the error object fits) from a script's own `throw null`.
+    if (heap.refusals() > refusalsAtCallStart &&
+        (JS_IsNull(exception) || JS_IsUninitialized(exception) || isOutOfMemoryError(exception) ||
+         isMessagelessInternalError(exception))) {
+        // A message-less InternalError under a refusal is the backend's own out-of-memory error, its message allocation
+        // refused as well (JS_MakeError2, quickjs.c:7975-7997): the run phase classifies it too. So does the "no
+        // exception" sentinel, which no script can produce: a computed key that interns a new atom under a full
+        // heap fails its store with nothing pending (JS_NewAtomStr, quickjs.c:3343-3354).
+        return EvalStatus::OutOfMemory;
+    }
+    // A compile runs no script code, and the parser keeps parsing after its bytecode buffer failed to grow: the next
+    // assignment's SyntaxError replaces the out-of-memory error (quickjs.c:23357-23362, :25615-25623, :7594-7600). So
+    // in a compile a refused GROWTH decides by itself. A refused zeroed allocation does not: the backend tolerates
+    // exactly two refusals, both zeroed -- its atom and shape hash growth (quickjs.c:2972 and :5265, ignored at
+    // :3236-3237 and :5341-5342) -- and the compile then fails, or not, for its own reason.
+    if (phase == Phase::Compile && heap.growthRefusals() > growthRefusalsAtCallStart) {
         return EvalStatus::OutOfMemory;
     }
     return phase == Phase::Compile ? EvalStatus::CompileError : EvalStatus::Exception;
+}
+
+// The backend builds an error object first and its message after (JS_MakeError2, quickjs.c:7975-7997); when the
+// message cannot be allocated either, the error keeps none, and reads as Error.prototype's empty message.
+bool Vm::Impl::isMessagelessInternalError(JSValueConst value) {
+    if (!JS_IsError(value)) {
+        return false;
+    }
+    return readStringProperty(value, "name", false) == "InternalError" &&
+           readStringProperty(value, "message", false).empty();
 }
 
 bool Vm::Impl::isOutOfMemoryError(JSValueConst exception) {
@@ -120,11 +172,14 @@ void Vm::Impl::clearPendingException() noexcept {
     JS_FreeValue(ctx, JS_GetException(ctx));
 }
 
-void Vm::Impl::logFailure(EvalStatus status, const ScriptError& error, bool isErrorObject) {
+void Vm::Impl::logFailure(EvalStatus status, const ScriptError& error, bool isErrorObject, bool namesCause) {
     std::string text;
     switch (status) {
         case EvalStatus::CompileError:
             text = std::format("script: {}: compile error: {}: {}", callFileName, error.name, error.message);
+            break;
+        case EvalStatus::LoadError:  // a load error has no stack: nothing ran
+            text = std::format("script: {}: load error: {}: {}", callFileName, error.name, error.message);
             break;
         case EvalStatus::Exception:
             if (isErrorObject) {
@@ -136,8 +191,15 @@ void Vm::Impl::logFailure(EvalStatus status, const ScriptError& error, bool isEr
         case EvalStatus::OutOfMemory:
             text = std::format("script: {}: out of memory (heap limit {} bytes, {} bytes in use)", callFileName,
                                config.heapLimitBytes, heap.bytesInUse());
+            if (namesCause) {  // Error.prototype.toString's shape: the name alone when the message is empty
+                text += error.message.empty() ? std::format(": {}", error.name)
+                                              : std::format(": {}: {}", error.name, error.message);
+            }
             break;
         case EvalStatus::Interrupted:
+            if (interruptRecorded) {
+                return;  // one interrupt record per call, whichever failure carries it next
+            }
             interruptRecorded = true;
             text = std::format("script: {}: interrupted after exceeding the {} ms time budget", callFileName,
                                config.callTimeBudget.count());
@@ -192,6 +254,8 @@ std::string_view evalStatusLabel(EvalStatus status) noexcept {
             return "InvalidVm";
         case EvalStatus::WrongThread:
             return "WrongThread";
+        case EvalStatus::LoadError:
+            return "LoadError";
     }
     return "Unknown";
 }

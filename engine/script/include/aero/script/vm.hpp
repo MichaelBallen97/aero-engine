@@ -2,7 +2,8 @@
 // Aero Engine -- the JavaScript VM (task 4.1.1; ADR-007). One Vm = one quickjs-ng runtime + one context,
 // created together, used on ONE thread, torn down together. Nothing is script-visible: a VM offers the
 // ECMAScript language and the backend's core globals only -- no engine global, no binding, no host
-// function (those arrive with 4.2.1 and 4.4.x).
+// function (those arrive with 4.2.1 and 4.4.x). Since task 4.1.2 a VM given a VirtualFileSystem also loads ES
+// modules through it (evaluateModule, and import() from any code).
 //
 // The backend is an implementation detail of engine/script/src/ and never crosses this header (project
 // rule #3). .github/scripts/check-script-boundary.sh and tests/script_boundary_probe.cpp enforce that.
@@ -16,6 +17,11 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#include <vector>
+
+namespace engine {
+class VirtualFileSystem;  // forward-declared: create() borrows one; src/vm_modules.cpp includes <aero/core/vfs.hpp>
+}  // namespace engine
 
 namespace engine::script {
 
@@ -51,6 +57,13 @@ inline constexpr std::chrono::milliseconds DEFAULT_CALL_TIME_BUDGET{1000};
 inline constexpr std::chrono::milliseconds MIN_CALL_TIME_BUDGET{1};
 inline constexpr std::chrono::milliseconds MAX_CALL_TIME_BUDGET{60'000};
 
+// How deep one import chain may be loaded: a chain of modules, each importing the next and none loaded before, may
+// be maxImportDepth = stackLimitBytes / IMPORT_STACK_BYTES_PER_LEVEL modules long (64 at the default limit, 8 at the
+// minimum, 1024 at the maximum); the next one is a LoadError. Each level costs the backend's compile frames and this
+// layer's (about 1.6 KB per level in the backend's Debug variant and 1.1 KB in its Release one, measured at 4.1.2), so
+// 8 KiB keeps a refused chain far from the backend's own stack check.
+inline constexpr std::size_t IMPORT_STACK_BYTES_PER_LEVEL = std::size_t{8} * 1024U;
+
 struct VmConfig {
     // Each time the budget interrupts a script, the interrupt's own error (and its backtrace) may take up to 16 KiB
     // past this limit, so a call can end with VmStats::heapBytesInUse above heapLimitBytes. Nothing else may.
@@ -72,12 +85,20 @@ enum class VmCreateStatus : std::uint8_t {
 
 enum class EvalStatus : std::uint8_t {
     Ok = 0,
-    CompileError,  // the source did not compile; nothing ran
+    CompileError,  // a source did not compile, or a module graph did not link (a missing or ambiguous export);
+                   // nothing ran
     Exception,     // a value was thrown and not caught -- an Error, any other value, or a stack overflow
-    OutOfMemory,   // the heap limit refused an allocation and the failure was not caught
+    OutOfMemory,   // the heap limit refused an allocation and the failure was not caught. In a compile, a refused
+                   // growth decides it whatever error the parser then reported; a refusal the backend tolerates (its
+                   // atom and shape tables keeping their size) leaves the compile its own CompileError or LoadError
+                   // -- a compile whose lost growth no assignment follows does not return at all: R24 in
+                   // docs/08-risks.md.
     Interrupted,   // the call's time budget ran out; the script could not catch it, nor start new calls
     InvalidVm,     // a failed create's Vm, or a moved-from one
     WrongThread,   // called from a thread that is not the VM's; nothing was touched
+    LoadError,     // a module of the graph could not be obtained -- a refused specifier or import attribute, not found
+                   // or unreadable through the VFS, no module source, over the size or depth limit; nothing ran;
+                   // decided before any out-of-memory rule: no load refusal is caused by memory
 };
 [[nodiscard]] std::string_view evalStatusLabel(EvalStatus status) noexcept;
 
@@ -92,9 +113,33 @@ struct ScriptError {
 
 struct EvalResult {
     EvalStatus status = EvalStatus::InvalidVm;  // the FIRST failure of the call (the script before its jobs)
-    ScriptError error;       // filled iff status is CompileError, Exception, OutOfMemory or Interrupted
+    ScriptError error;       // filled iff status is CompileError, Exception, OutOfMemory, Interrupted or LoadError
     std::string completion;  // String(completion value) iff the script ran to completion -- DIAGNOSTIC text,
                              // not a value bridge; "<unprintable value>" when the conversion throws
+};
+
+// The state of a module path's CURRENT generation, as the VM last observed it. The backend reports an evaluation's
+// outcome only for the module evaluated as an entry, so a dependency of an entry that failed or is still pending stays
+// Loaded until an entry that imports it completes. The VM looks at the end of every call, so an entry whose top-level
+// await settles in a later call reads Evaluated or Failed from the end of that call.
+enum class ModuleState : std::uint8_t {
+    Unloaded = 0,  // no instance of the current generation: never compiled, invalidated, or retired by a failed load
+    Loaded,        // compiled; not known to have been evaluated
+    Evaluating,    // evaluated as an entry whose top-level await had not settled when the VM last looked
+    Evaluated,     // it, and every module it imports statically, completed
+    Failed,        // evaluated as an entry and threw; every later import rethrows its recorded error until invalidated
+};
+[[nodiscard]] std::string_view moduleStateLabel(ModuleState state) noexcept;
+
+// One entry of the module cache. Inside the VM a module is named by its path's ASCII spelling -- every byte >= 0x80
+// and every '%' written as '%' and two uppercase hex digits -- followed, from generation 2, by "?gen=<n>": that is
+// what a stack frame shows ("res://scripts/a.js?gen=2:3:5", "res://%C3%BC/b.js:1:10"). The log records and the cache
+// keep the canonical path. No specifier can name a later generation: '?' is refused in every specifier and entry path.
+struct ModuleRecord {
+    std::string path;              // the canonical "res://..." path
+    std::uint32_t generation = 1;  // one more per invalidation and per retirement after a failed load or link
+    ModuleState state = ModuleState::Unloaded;
+    std::vector<std::string> imports;  // paths this generation imported, statically or dynamically; sorted, unique
 };
 
 struct VmStats {
@@ -107,21 +152,40 @@ struct VmStats {
     std::uint64_t refusedAllocations = 0;     // requests the heap limit refused, over the VM's life
     std::uint64_t unhandledRejections = 0;    // reported at the end of a call
     std::uint64_t rejectionsHandledLate = 0;  // reported, then handled in a later call
+    // Module instances compiled over the VM's life. None is freed before teardown -- the backend has no way to drop a
+    // module -- so every reload of a module adds one (about 1.5 KB for a small module, plus about three times its
+    // source; measured at 4.1.2). Recreating the VM is the full reset.
+    std::uint64_t moduleInstances = 0;
 };
 
 // What teardown found. A leak-free VM reports zeros. NOTE: in a build whose backend has assertions on
 // (every *-debug preset), a leaked object or function aborts inside the backend's teardown before this
 // report exists; a leaked string is still reported here.
+//
+// The last two count a backend defect the VM contains (R23 in docs/08-risks.md): when a module's top-level await is
+// still pending at teardown and something still refers to that evaluation -- a resolver a global or a module binding
+// keeps, an importer awaiting it, an import() of it -- the backend frees the module first and writes into it
+// afterwards. The VM keeps every block the backend releases during teardown until the backend is done, so those writes
+// land in memory the VM still owns: writtenAfterRelease counts the blocks written after their release (0 unless such
+// an await was pending), repeatedReleases the blocks the backend handed back again -- released or reallocated a
+// second time -- each absorbed and still freed exactly once (none measured).
 struct VmTeardownReport {
     std::size_t leakedAllocations = 0;
     std::size_t leakedBytes = 0;
+    std::size_t writtenAfterRelease = 0;
+    std::size_t repeatedReleases = 0;
 };
 
 struct VmCreateResult;
 
 class Vm {
 public:
+    // No module source: evaluateModule and every import are refused with a LoadError / a rejection that says so.
     [[nodiscard]] static VmCreateResult create(const VmConfig& config = {});
+    // `modules` is BORROWED and must outlive the Vm. Every module is read through it and through nothing else. It may
+    // be mounted or cleared between calls on the VM's thread, never while a call is in flight.
+    [[nodiscard]] static VmCreateResult create(const VmConfig& config, const VirtualFileSystem& modules);
+    static VmCreateResult create(const VmConfig& config, const VirtualFileSystem&& modules) = delete;  // no temporary
 
     Vm() noexcept;  // an INVALID Vm: what a failed create returns and what a move leaves behind
     Vm(Vm&& other) noexcept;
@@ -141,6 +205,8 @@ public:
     //   Exception      "uncaught <name>: <message>"                             + "\n<stack>"  (an Error)
     //                  "uncaught exception: <String(value)>"                                   (anything else)
     //   OutOfMemory    "out of memory (heap limit <L> bytes, <U> bytes in use)" + "\n<stack>"
+    //                  ... + ": <name>: <message>" before the stack when the error the backend reported is not its
+    //                  own out-of-memory error (a compile the heap starved: the parser's SyntaxError)
     //   Interrupted    "interrupted after exceeding the <B> ms time budget"     + "\n<stack>"
     //                  "... time budget with promise jobs still queued"        (the drain was cut short)
     //   a rejection    "unhandled promise rejection: <name>: <message>"         + "\n<stack>"  (status unchanged)
@@ -149,6 +215,48 @@ public:
     // described through its own toString; when the call's budget ran out first, that call is refused and the reason
     // reads "<unprintable value>".
     [[nodiscard]] EvalResult evaluateScript(std::string_view source, std::string_view fileName);
+
+    // Loads the module at `virtualPath` -- an ABSOLUTE res:// path, refused otherwise -- and its static import graph
+    // through the VFS, links it, evaluates it, drains the job queue and reports unhandled promise rejections, all under
+    // ONE call's time budget. A module evaluates once: calling this again for a module that already ran re-runs
+    // nothing and returns its recorded outcome (Ok, or its error, logged again). `completion` stays empty: a module
+    // has no completion value. Nothing about the module's exports crosses this API.
+    //
+    // Inside a module, a specifier is "res://...", "./..." or "../..." (relative to the importing module); anything
+    // else is refused -- a bare name, a '/'-rooted path, another scheme or a drive path, "", a '?' or a '#'. Paths are
+    // compared byte for byte (case-sensitive). No import attribute is supported. import() follows the same rules; from
+    // global code only an absolute res:// specifier resolves. A specifier ends at its first U+0000: the backend hands
+    // specifiers over as C strings, so res://a.js followed by a U+0000 and anything else names res://a.js.
+    //
+    // Every failure is logged once, at ERROR, as "script: <path>: " followed by evaluateScript's shapes, plus:
+    //   LoadError      "load error: <name>: <message>"                 (no stack: nothing ran)
+    //   CompileError   also a link error: "compile error: SyntaxError: Could not find export 'x' in module '...'"
+    // and, at WARN, "module evaluation is still pending at the end of the call (a top-level await has not settled)"
+    // -- never in a call its budget ended.
+    //
+    // A call its budget ended records the interrupt once, whatever else failed after it. A module that had already
+    // failed is recorded Failed and its own error is reported by its next evaluation; a top-level await the budget
+    // interrupted never settles, so its module stays Evaluating -- every later evaluateModule of it is Ok with the
+    // pending WARN -- until invalidateModule gives it a new generation.
+    //
+    // A module's own failure is reported once. During this call it is the call's status and its one record. A
+    // top-level await that rejects in a LATER call is reported by that call, as one "unhandled promise rejection"
+    // record. A failed import() rejects its promise and logs nothing itself: the script may catch it. An import() whose
+    // graph the heap limit starved while it compiled rejects with the backend's out-of-memory error
+    // (InternalError: out of memory), the parser's own error as its `cause` when the parser reported one. A rejection a
+    // module body makes with the very value the module then fails with, while its evaluation is pending, counts as that
+    // one failure.
+    [[nodiscard]] EvalResult evaluateModule(std::string_view virtualPath);
+
+    // The module cache: every path the VM has started to compile, sorted by path. The VM's thread only: from another
+    // thread it is refused with one ERROR and returns nothing.
+    [[nodiscard]] std::vector<ModuleRecord> moduleRecords() const;
+
+    // The reload hook. Gives `virtualPath` and every module that imported it, directly or transitively, statically or
+    // dynamically, a new generation: the next load of each reads the VFS again and builds a NEW instance (the old one
+    // keeps running wherever it is still referenced). Returns the paths it changed, sorted; an unknown path changes
+    // nothing. An unaddressable path, or a call from another thread, is refused with one ERROR and changes nothing.
+    std::vector<std::string> invalidateModule(std::string_view virtualPath);
 
     // Runs the cycle collector now. Reference counting frees everything else immediately.
     void collectGarbage() noexcept;
@@ -163,6 +271,7 @@ public:
 private:
     struct Impl;  // holds the backend's runtime + context; defined in src/vm_impl.hpp
     explicit Vm(std::unique_ptr<Impl> owned) noexcept;
+    [[nodiscard]] static VmCreateResult createWith(const VmConfig& config, const VirtualFileSystem* modules);
     std::unique_ptr<Impl> impl;  // heap-pinned: the backend's callbacks hold Impl*, never Vm*
 };
 

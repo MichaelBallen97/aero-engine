@@ -17,6 +17,7 @@
 
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cstddef>
@@ -117,6 +118,10 @@ void expectCleanShutdown(Vm& vm) {
     const VmTeardownReport report = vm.shutdown();
     CHECK(report.leakedAllocations == 0U);
     CHECK(report.leakedBytes == 0U);
+    // R23: the teardown wrote nothing into memory the backend had already released. A case that turns this red has
+    // found a new shape of that backend defect -- record it on R23's row, and never relax the check.
+    CHECK(report.writtenAfterRelease == 0U);
+    CHECK(report.repeatedReleases == 0U);
     CHECK_FALSE(vm.valid());
 }
 
@@ -286,7 +291,8 @@ TEST_CASE("script: a heap limit below 1 MiB is refused; 1 MiB itself creates a w
 TEST_CASE("script: the backend is quickjs-ng 0.15.1 -- a port bump must re-verify its assumptions (VM5)") {
     // A failure here means the pinned port moved. Re-read every backend behaviour this layer relies on (the
     // interrupt cadence, the uncatchable interrupt error, the rejection tracker's two calls, the teardown
-    // assert and the allocator contract) against the new source before changing the literal.
+    // assert and the allocator contract, the module loader's callbacks, the resolution a module compile performs,
+    // and R22's two shapes) against the new source before changing the literal.
     CHECK(engine::script::scriptBackendVersion() == std::string_view{"0.15.1"});
 }
 
@@ -1892,5 +1898,176 @@ TEST_CASE("script: the allocator's grace window admits past the limit, and only 
     heap.release(second);
     heap.release(grown);
     CHECK(heap.bytesInUse() == 0U);
+    CHECK(heap.liveBlocks() == 0U);
+}
+
+TEST_CASE(
+    "script: the allocator's teardown hold keeps released blocks, sees a write after release, and frees each block "
+    "once (VM61)") {
+    using engine::script::internal::HeapAccounting;
+    using engine::script::internal::HeldReturn;
+    HeapAccounting heap{4096};
+    auto* a = static_cast<unsigned char*>(heap.allocate(32));
+    auto* b = static_cast<unsigned char*>(heap.allocate(4));
+    auto* c = static_cast<unsigned char*>(heap.allocate(64));
+    REQUIRE(a != nullptr);
+    REQUIRE(b != nullptr);
+    REQUIRE(c != nullptr);
+    std::fill(a, a + 32, static_cast<unsigned char>(0x11));
+    std::fill(b, b + 4, static_cast<unsigned char>(0x22));
+    std::fill(c, c + 64, static_cast<unsigned char>(0x33));
+    CHECK(heap.bytesInUse() == 148U);
+    CHECK(HeapAccounting::requestedSize(a) == 32U);  // a live block answers its size
+
+    heap.holdReleases();
+    heap.release(a);
+    heap.release(b);
+    heap.release(c);
+    CHECK(heap.bytesInUse() == 0U);  // accounted as returned...
+    CHECK(heap.liveBlocks() == 0U);
+    // The backend asks a block's size BEFORE it releases it (js_free_rt), so a held block answers 0: that is what lets
+    // a second release reach release() instead of the backend's own underflow check.
+    CHECK(HeapAccounting::requestedSize(a) == 0U);
+    CHECK(HeapAccounting::requestedSize(b) == 0U);
+    CHECK(HeapAccounting::requestedSize(c) == 0U);
+    // ...but still the heap's memory: this case writes into the released blocks ON PURPOSE, which the hold is what
+    // makes legal -- exactly what the backend does to a freed module at teardown (R23).
+    a[0] = 0x10;      // inside the seven recorded bytes: seen
+    b[3] = 0x23;      // the last byte of a 4-byte block, recorded: seen
+    c[8] = 0x00;      // past the seven recorded bytes: not seen
+    heap.release(c);  // a second release of a held block: absorbed, never freed twice
+    // A held block reallocated is refused, as a failed C realloc, and stays held.
+    CHECK(heap.reallocate(a, 128) == nullptr);
+    CHECK(HeapAccounting::requestedSize(a) == 0U);
+    const HeldReturn held = heap.returnHeld();
+    CHECK(held.blocks == 3U);
+    CHECK(held.writtenAfterRelease == 2U);
+    CHECK(held.repeatedReleases == 2U);  // the release and the reallocation
+    CHECK(heap.bytesInUse() == 0U);
+    CHECK(heap.liveBlocks() == 0U);
+
+    // The hold ended: a release frees at once, and a second report has nothing.
+    void* const d = heap.allocate(8);
+    REQUIRE(d != nullptr);
+    heap.release(d);
+    CHECK(heap.liveBlocks() == 0U);
+    CHECK(heap.returnHeld().blocks == 0U);
+
+    // Anti-vacuity for the written count: a clean hold reports one block and nothing written.
+    void* const e = heap.allocate(100);
+    REQUIRE(e != nullptr);
+    heap.holdReleases();
+    heap.release(e);
+    const HeldReturn clean = heap.returnHeld();
+    CHECK(clean.blocks == 1U);
+    CHECK(clean.writtenAfterRelease == 0U);
+    CHECK(clean.repeatedReleases == 0U);
+}
+
+namespace {
+
+// e13's shape (script_module_test.cpp's ML64 has the same two lines): 524 259 bytes for 512 KiB.
+[[nodiscard]] std::string heavySource(std::size_t bytes) {
+    std::string source;
+    while (source.size() + 40 < bytes) {
+        source += "globalThis.x" + std::to_string(source.size()) + " = " + std::to_string(source.size()) + ";\n";
+    }
+    return source;
+}
+
+// How an out-of-memory record's first line ends (script_module_test.cpp's copy): at "bytes in use)" for the backend's
+// own out-of-memory error, otherwise followed by the error the backend reported, in Error.prototype.toString's shape.
+[[nodiscard]] std::string outOfMemoryTail(const engine::script::ScriptError& error) {
+    if (error.name.empty() ||
+        (error.name == "InternalError" && (error.message.empty() || error.message.starts_with("out of memory")))) {
+        return "bytes in use)";
+    }
+    return error.message.empty() ? "bytes in use): " + error.name
+                                 : "bytes in use): " + error.name + ": " + error.message;
+}
+
+}  // namespace
+
+TEST_CASE(
+    "script: a script the heap limit starves while it compiles is OutOfMemory, whatever error the parser "
+    "reported (VM62)") {
+    // Like ML64, this tells the two rules apart on the Release lanes: the Debug variant throws `null` at this size.
+    LogCapture log;
+    VmConfig config;
+    config.heapLimitBytes = engine::script::MIN_HEAP_LIMIT_BYTES;
+    Vm vm = makeVm(patient(config));
+    const EvalResult starved = vm.evaluateScript(heavySource(512 * KIB), "heavy.js");
+    CHECK(starved.status == EvalStatus::OutOfMemory);
+    const std::string starvedPrefix = "script: heavy.js: out of memory (heap limit 1048576 bytes, ";
+    CHECK(firstLine(onlyErrorMessage(log)).starts_with(starvedPrefix));
+    CHECK(firstLine(onlyErrorMessage(log)).ends_with(outOfMemoryTail(starved.error)));
+
+    // Anti-vacuity, the refusal is per call: a real syntax error, with no refusal in its call, stays a CompileError.
+    log.clear();
+    CHECK(vm.evaluateScript("let =", "syntax.js").status == EvalStatus::CompileError);
+    const EvalResult sum = vm.evaluateScript("1 + 1", "after.js");
+    CHECK(sum.status == EvalStatus::Ok);
+    CHECK(sum.completion == "2");
+    expectCleanShutdown(vm);
+}
+
+TEST_CASE("script: the allocator counts a refused growth apart from a refused zeroed allocation (VM63)") {
+    using engine::script::internal::HeapAccounting;
+    HeapAccounting heap{4096};
+    void* const a = heap.allocate(64);
+    void* const z = heap.allocateZeroed(4, 8);
+    REQUIRE(a != nullptr);
+    REQUIRE(z != nullptr);
+    CHECK(heap.refusals() == 0U);
+    CHECK(heap.growthRefusals() == 0U);
+
+    CHECK(heap.allocate(8192) == nullptr);  // a growth: both counters move
+    CHECK(heap.refusals() == 1U);
+    CHECK(heap.growthRefusals() == 1U);
+    CHECK(heap.allocateZeroed(1, 8192) == nullptr);  // the atom hash's growth to 2048 slots, as the backend asks
+    CHECK(heap.refusals() == 2U);
+    CHECK(heap.growthRefusals() == 1U);
+    CHECK(heap.allocateZeroed(2048, 4) == nullptr);  // zeroed: only the refusals move
+    CHECK(heap.refusals() == 3U);
+    CHECK(heap.growthRefusals() == 1U);
+    CHECK(heap.reallocate(a, 8192) == nullptr);  // a reallocation that grows is a growth; `a` stays valid
+    CHECK(heap.refusals() == 4U);
+    CHECK(heap.growthRefusals() == 2U);
+
+    void* const s = heap.reallocate(a, 16);
+    REQUIRE(s != nullptr);
+    void* const g = heap.reallocate(s, 32);
+    REQUIRE(g != nullptr);
+    CHECK(heap.refusals() == 4U);
+    CHECK(heap.growthRefusals() == 2U);
+    heap.release(g);
+    heap.release(z);
+    CHECK(heap.bytesInUse() == 0U);
+    CHECK(heap.liveBlocks() == 0U);
+}
+
+TEST_CASE("script: the allocator's release probe answers for its own block, once (VM64)") {
+    using engine::script::internal::HeapAccounting;
+    HeapAccounting heap{4096};
+    void* const p = heap.allocate(24);
+    void* const q = heap.allocate(24);
+    REQUIRE(p != nullptr);
+    REQUIRE(q != nullptr);
+
+    CHECK_FALSE(heap.takeReleaseProbe());  // nothing armed
+    heap.armReleaseProbe(p);
+    heap.release(q);
+    CHECK_FALSE(heap.takeReleaseProbe());  // another block's release
+    heap.armReleaseProbe(p);
+    heap.release(p);
+    CHECK(heap.takeReleaseProbe());
+    CHECK_FALSE(heap.takeReleaseProbe());  // the take disarmed it
+
+    // Unarmed, a release answers nothing -- wherever the new block lands: under ASan's quarantine it is not p's
+    // address, and elsewhere it may be.
+    void* const r = heap.allocate(24);
+    REQUIRE(r != nullptr);
+    heap.release(r);
+    CHECK_FALSE(heap.takeReleaseProbe());
     CHECK(heap.liveBlocks() == 0U);
 }

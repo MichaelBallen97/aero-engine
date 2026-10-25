@@ -1,5 +1,7 @@
 # engine/script/ -- the JavaScript VM layer (task 4.1.1; ADR-007: TypeScript on quickjs-ng). It owns the
-# quickjs-ng runtime and context behind engine::script::Vm and exposes NOTHING to scripts yet.
+# quickjs-ng runtime and context behind engine::script::Vm and exposes NOTHING to scripts yet. Since task 4.1.2 it
+# also loads ES modules, reading them only through engine::VirtualFileSystem (aero::core), so the dependency set is
+# unchanged.
 #
 # Its only engine dependency today is aero::core (the log; the clock rule). docs/03 draws script at the
 # top of the engine stack because 4.2.1 (generated bindings) and 4.4.x (ScriptComponent, the entity API)
@@ -26,9 +28,10 @@ endif()
 
 # The INTERNAL allocator seam (the aero::rhi_internal precedent, engine/rhi/CMakeLists.txt:39-47): a
 # header-only INTERFACE target exposing engine/script/internal/ -- the backend-free HeapAccounting the
-# JavaScript heap runs on -- to aero_script itself and to aero_tests, which tests its contract directly.
-# It carries ONE include directory and nothing else: no library, no vcpkg root, no quickjs. NEVER link it
-# into a boundary probe (check-boundary-probes.sh refuses any *_internal there).
+# JavaScript heap runs on and the module loader's pure half (module_graph.hpp) -- to aero_script itself and to
+# aero_tests, which tests its contract directly. It carries ONE include directory and nothing else: no library,
+# no vcpkg root, no quickjs. NEVER link it into a boundary probe (check-boundary-probes.sh refuses any *_internal
+# there).
 add_library(aero_script_internal INTERFACE)
 add_library(aero::script_internal ALIAS aero_script_internal)
 target_include_directories(aero_script_internal INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/internal)
@@ -36,7 +39,9 @@ target_include_directories(aero_script_internal INTERFACE ${CMAKE_CURRENT_SOURCE
 add_library(aero_script STATIC
     src/vm.cpp
     src/vm_errors.cpp
+    src/vm_modules.cpp
     src/heap_accounting.cpp
+    src/module_graph.cpp
 )
 add_library(aero::script ALIAS aero_script)
 

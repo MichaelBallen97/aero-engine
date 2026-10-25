@@ -42,6 +42,7 @@ add_executable(aero_tests
     audio_system_test.cpp     # task 3.7.2 — AudioSystem: rings, slots, back-pressure, stats (SY1-SY20)
     scene_audio_test.cpp      # task 3.7.2 — the World -> audio bridge: view, reconcile, latches (SA1-SA18)
     script_vm_test.cpp        # task 4.1.1 — the quickjs-ng VM: lifecycle, limits, the trapping matrix
+    script_module_test.cpp    # task 4.1.2 — ES modules through the VFS: the grammar, the cache, the statuses (ML1-ML51)
     platform_test.cpp
     platform_event_test.cpp
     input_test.cpp        # task 0.3.2 — black-box InputState (no SDL)
@@ -119,9 +120,10 @@ add_executable(aero_tests
 # is ALREADY here, which is what makes CM47's CookedVertexFormat <-> rhi::VertexFormat correspondence
 # assertable in this target at all -- assets deliberately does not link rhi, and never will.
 # task 4.1.1: aero::script joins for script_vm_test.cpp, and aero::script_internal (one include directory, no
-# library, no vcpkg root) for its white-box allocator cases VM36-VM38 -- the same reason aero::rhi_internal is
-# here. The compile-time guard for the quickjs boundary is aero_script_boundary_probe, which links aero::script
-# ALONE and is untouched by this line; the backend itself stays LINK_ONLY behind aero::script.
+# library, no vcpkg root) for its white-box allocator cases VM36-VM38 and script_module_test.cpp's tier-0 cases
+# ML1-ML12 (module_graph.hpp) -- the same reason aero::rhi_internal is here. The compile-time guard for the
+# quickjs boundary is aero_script_boundary_probe, which links aero::script ALONE and is untouched by this line;
+# the backend itself stays LINK_ONLY behind aero::script.
 target_link_libraries(aero_tests PRIVATE doctest::doctest aero::profiling aero::assets aero::audio aero::core aero::platform aero::reflect aero::render aero::rhi aero::rhi_internal aero::scene aero::scene_audio aero::scene_internal aero::scene_render aero::script aero::script_internal SDL3::SDL3 ${CMAKE_DL_LIBS})
 
 # task 3.3.1, added by the sabotage round: cooked_mesh_test.cpp's CM50 asserts a STRUCTURAL property of
@@ -136,6 +138,12 @@ target_compile_definitions(aero_tests PRIVATE AERO_ASSETS_SRC_DIR="${CMAKE_SOURC
 # four backend setters are never called (the AERO_ASSETS_SRC_DIR / CM50 shape above). UNGATED, like the
 # definition above -- both reduced configurations build this TU and must run the case too.
 target_compile_definitions(aero_tests PRIVATE AERO_SCRIPT_SRC_DIR="${CMAKE_SOURCE_DIR}/engine/script/src")
+
+# task 4.1.2: script_module_test.cpp's ML13/ML14/ML43 mount tests/fixtures/scripts at the res:// root through a
+# DirectoryBackend -- Epic 4.1's Definition of Done read off real files. A PATH, NOT A FLAG (the
+# AERO_AUDIO_FIXTURES_DIR rule below): a missing fixture is a REQUIRE failure, never a silent skip. UNGATED: both
+# reduced configurations build this TU and must run these cases too.
+target_compile_definitions(aero_tests PRIVATE AERO_SCRIPT_FIXTURES_DIR="${CMAKE_SOURCE_DIR}/tests/fixtures/scripts")
 
 # task 3.7.1: audio_cook_test.cpp's AK17/AK18 read tests/fixtures/audio/tone.s16le.pcm -- ffmpeg's OWN
 # decode of tone.wav, raw interleaved s16 LE with no container, committed so no lane ever needs ffmpeg.

@@ -21,7 +21,23 @@ namespace engine::script::internal {
 // context argument.
 inline constexpr std::size_t HEAP_HEADER_BYTES = 16;
 static_assert(HEAP_HEADER_BYTES >= alignof(std::max_align_t));
-static_assert(HEAP_HEADER_BYTES >= sizeof(std::size_t));
+static_assert(HEAP_HEADER_BYTES >= sizeof(std::uint64_t));
+// The size is kept as a full 64-bit word on every target, so a 32-bit size_t never leaves stale bytes in it.
+static_assert(sizeof(std::size_t) <= sizeof(std::uint64_t));
+
+// The teardown hold (task 4.1.2, R23 in docs/08-risks.md). quickjs-ng frees every module of a context when the context
+// is freed (quickjs.c:2714), while objects that outlive it -- the reaction functions of a top-level await still pending
+// -- hold module values, so the collector's later release of those objects writes into a freed module (quickjs.c:6803,
+// reached from :6208). From holdReleases() until returnHeld(), release() accounts a block as returned but KEEPS its
+// memory, with its first payload bytes recorded in its own header: such a write lands in memory the VM still owns, and
+// is counted. returnHeld() frees every held block exactly once and reports.
+inline constexpr std::size_t HELD_SNAPSHOT_BYTES = 7;  // payload bytes recorded per held block, in its own header
+
+struct HeldReturn {
+    std::size_t blocks = 0;               // releases the hold accepted
+    std::size_t writtenAfterRelease = 0;  // held blocks whose recorded bytes changed after their release
+    std::size_t repeatedReleases = 0;     // a held block handed back again -- released or reallocated: absorbed
+};
 
 class HeapAccounting {
 public:
@@ -37,8 +53,10 @@ public:
     [[nodiscard]] void* allocateZeroed(std::size_t count, std::size_t size) noexcept;
     // nullptr from reallocate: `block` is untouched and still charged, as with C realloc.
     [[nodiscard]] void* reallocate(void* block, std::size_t size) noexcept;
-    void release(void* block) noexcept;                                          // nullptr: no-op
-    [[nodiscard]] static std::size_t requestedSize(const void* block) noexcept;  // nullptr: 0
+    void release(void* block) noexcept;  // nullptr: no-op; during a hold, kept and recorded (above)
+    // nullptr, or a held block: 0. The backend asks this BEFORE it releases a block (quickjs.c:1666-1669, and
+    // :1686-1689 for a reallocation to 0), so a held block must answer 0 for a second release to reach release().
+    [[nodiscard]] static std::size_t requestedSize(const void* block) noexcept;
 
     // A grace window: for the next `allocations` admission decisions (an allocate, an allocateZeroed or a GROWING
     // reallocate, refused or not) the ceiling is max(limit, inUse-at-the-opening + bytes) instead of the limit. It
@@ -49,12 +67,27 @@ public:
     void openGraceWindow(std::size_t allocations, std::size_t bytes) noexcept;
     void closeGraceWindow() noexcept;
 
+    // The hold (above). holdReleases() starts it; returnHeld() frees every held block, reports, and ends it. Outside a
+    // hold, release() frees at once. Nothing but Vm::Impl::shutdown starts one.
+    void holdReleases() noexcept;
+    [[nodiscard]] HeldReturn returnHeld() noexcept;
+
+    // A one-shot release probe: armReleaseProbe(block), then whatever may free it, then takeReleaseProbe() answers
+    // whether that block was released in between (and disarms). It tells a value nothing else referred to -- freed
+    // when its last reference went -- from one something still holds.
+    void armReleaseProbe(const void* block) noexcept;
+    [[nodiscard]] bool takeReleaseProbe() noexcept;
+
     [[nodiscard]] std::size_t limitBytes() const noexcept;
     // Sum of (size + HEAP_HEADER_BYTES) over live blocks. It may exceed limitBytes(), by bytes a grace window admitted.
     [[nodiscard]] std::size_t bytesInUse() const noexcept;
     [[nodiscard]] std::size_t peakBytes() const noexcept;
     [[nodiscard]] std::size_t liveBlocks() const noexcept;
     [[nodiscard]] std::uint64_t refusals() const noexcept;  // requests the LIMIT refused (not system failures)
+    // The refusals of allocate and of a growing reallocate -- every one but allocateZeroed's. The backend's two
+    // allocations whose refusal it tolerates are zeroed ones (its atom and shape hash growth), and a buffer that grows
+    // never is (vm_errors.cpp's classify reads the difference).
+    [[nodiscard]] std::uint64_t growthRefusals() const noexcept;
 
 private:
     // The room the next admission decision has, and the decision itself: inside a grace window it spends one of the
@@ -66,8 +99,15 @@ private:
     std::size_t peak = 0;
     std::size_t blocks = 0;
     std::uint64_t refused = 0;
+    std::uint64_t refusedGrowths = 0;
     std::size_t graceAllocations = 0;  // admission decisions the open window has left
     std::size_t graceCeiling = 0;      // inUse at the opening + the window's bytes (saturating)
+    bool holding = false;
+    void* heldHead = nullptr;  // the held blocks, linked through their own headers
+    std::size_t heldCount = 0;
+    std::size_t repeated = 0;
+    const void* probeBlock = nullptr;
+    bool probeFired = false;
 };
 
 }  // namespace engine::script::internal

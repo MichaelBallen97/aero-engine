@@ -32,6 +32,12 @@ namespace engine {
 // text" at the type level; readText() is the string-typed convenience on top.
 using ByteBuffer = std::vector<std::byte>;
 
+// The VFS's one path rule, public since task 4.1.2 so that the script layer's module keys are built on the same rule
+// every read uses: "res://a/./b/../c" becomes "a/c". nullopt when the path is not addressable -- it does not start
+// with "res://"; it has a backslash, a NUL or a ':' after the scheme; a ".." would climb above the root. The result
+// has no scheme, no leading or trailing '/', and no "."/".." segments; "" is the root itself.
+[[nodiscard]] std::optional<std::string> normalizeVirtualPath(std::string_view path);
+
 // The backend seam. One VFS mount is one FileSystemBackend; the VFS routes reads to it. Today the
 // only implementation is DirectoryBackend (loose files); task 5.1.1 adds a PakBackend (archive
 // slices) that plugs in here with no change to callers. The single virtual call per file op is

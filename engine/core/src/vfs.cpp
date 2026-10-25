@@ -17,6 +17,8 @@ namespace {
 
 constexpr std::string_view SCHEME = "res://";
 
+}  // namespace
+
 // Turn "res://a/./b/../c" into "a/c". Returns nullopt when the path is not addressable:
 //   * it does not start with "res://"
 //   * it contains a backslash, a NUL, or a ':' (a virtual path is always '/'-separated, NUL-free,
@@ -72,6 +74,8 @@ std::optional<std::string> normalizeVirtualPath(std::string_view path) {
     }
     return out;
 }
+
+namespace {
 
 // "Is `path` at or below `prefix`?" — and if so, the remainder relative to it. prefix "" (the root)
 // matches everything. Routes a normalized virtual path to the mount that provides it.

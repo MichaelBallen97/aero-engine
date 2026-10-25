@@ -6,10 +6,13 @@
 
 #include <doctest/doctest.h>
 
+#include <array>
 #include <cstddef>
 #include <filesystem>
 #include <fstream>
 #include <memory>
+#include <optional>
+#include <ostream>  // a CHECK on a std::string / std::optional operand needs the complete std::ostream on MSVC
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -263,4 +266,106 @@ TEST_CASE("VFS: a non-ASCII (UTF-8) filename round-trips") {
     const std::optional<std::string> text = vfs.readText("res://caf\xC3\xA9.txt");
     REQUIRE(text.has_value());
     CHECK(*text == "espresso");
+}
+
+// ---- VN1-VN4: normalizeVirtualPath, public since task 4.1.2 -----------------------------------------------
+// The script layer keys every module by "res://" + normalizeVirtualPath(path), so these four cases pin the
+// contract that key is built on: what is accepted and its normal form, what is refused, that a read through any
+// accepted spelling reads the file its normal form names, and that the normal form is a fixed point.
+
+namespace {
+
+using namespace std::string_view_literals;
+
+struct NormalFormRow {
+    std::string_view input;
+    std::string_view expected;
+};
+
+// Non-ASCII bytes are hex escapes: a test literal stays 7-bit (MSVC reads source through the code page).
+constexpr std::array<NormalFormRow, 10> ACCEPTED_FORMS{{
+    {"res://", ""},
+    {"res://a", "a"},
+    {"res://a/./b/../c", "a/c"},
+    {"res://a//b/", "a/b"},
+    {"res://./a", "a"},
+    {"res://a/..", ""},
+    {"res://dir/\xC3\xBC/\xC3\xB1.js", "dir/\xC3\xBC/\xC3\xB1.js"},
+    {"res://a?gen=2", "a?gen=2"},  // the normalizer allows '?' and '#'; the MODULE grammar refuses both
+    {"res://a#b", "a#b"},
+    {"res://a b/c", "a b/c"},
+}};
+
+constexpr std::array<std::string_view, 12> REFUSED_FORMS{
+    ""sv,           "res:/a"sv,     "RES://a"sv,   "file://a"sv, "res//a"sv,        R"(res://a\b)"sv,
+    "res://a\0b"sv, "res://C:/x"sv, "res://a:b"sv, "res://.."sv, "res://a/../.."sv, "res://../a"sv,
+};
+
+}  // namespace
+
+TEST_CASE("VFS: normalizeVirtualPath accepts these forms and returns their normal form (VN1)") {
+    for (const NormalFormRow& row : ACCEPTED_FORMS) {
+        INFO("input: " << std::string{row.input});
+        CHECK(engine::normalizeVirtualPath(row.input) == std::optional<std::string>{std::string{row.expected}});
+    }
+    // Anti-vacuity: normalisation ran -- the dot-segment row's output is not its input's tail.
+    const std::optional<std::string> dotted = engine::normalizeVirtualPath("res://a/./b/../c");
+    REQUIRE(dotted.has_value());
+    CHECK(*dotted != "a/./b/../c");
+}
+
+TEST_CASE("VFS: normalizeVirtualPath refuses what is not addressable (VN2)") {
+    for (const std::string_view input : REFUSED_FORMS) {
+        INFO("input: " << std::string{input});
+        CHECK_FALSE(engine::normalizeVirtualPath(input).has_value());
+    }
+    // The control row: the same loop's check is not refusing everything.
+    CHECK(engine::normalizeVirtualPath("res://ok").has_value());
+}
+
+TEST_CASE("VFS: a read through any accepted spelling reads the file its normal form names (VN3)") {
+    const TempDir dir;
+    // Three of VN1's normal forms name a written file: "a/c", "a b/c" and the non-ASCII one.
+    dir.write("a/c", "ac");
+    dir.write("a b/c", "x");
+    dir.write("dir/\xC3\xBC/\xC3\xB1.js", "u");
+    engine::VirtualFileSystem vfs;
+    vfs.mount(backendFor(dir));
+
+    std::size_t readContent = 0;
+    for (const NormalFormRow& row : ACCEPTED_FORMS) {
+        INFO("input: " << std::string{row.input});
+        const std::optional<std::string> normal = engine::normalizeVirtualPath(row.input);
+        REQUIRE(normal.has_value());
+        const std::optional<std::string> throughSpelling = vfs.readText(row.input);
+        const std::optional<std::string> throughNormalForm = vfs.readText("res://" + *normal);
+        CHECK(throughSpelling == throughNormalForm);
+        if (throughSpelling.has_value()) {
+            CHECK(throughNormalForm.has_value());
+            ++readContent;
+        }
+    }
+    for (const std::string_view input : REFUSED_FORMS) {
+        INFO("input: " << std::string{input});
+        CHECK_FALSE(vfs.readText(input).has_value());
+    }
+    // Anti-vacuity: the three written files were really read ("ac", "x", "u"), each through its own row.
+    CHECK(readContent == 3U);
+    CHECK(vfs.readText("res://a/./b/../c") == std::optional<std::string>{"ac"});
+    CHECK(vfs.readText("res://a b/c") == std::optional<std::string>{"x"});
+    CHECK(vfs.readText("res://dir/\xC3\xBC/\xC3\xB1.js") == std::optional<std::string>{"u"});
+}
+
+TEST_CASE("VFS: the normal form is a fixed point, so a module key round-trips (VN4)") {
+    for (const NormalFormRow& row : ACCEPTED_FORMS) {
+        INFO("input: " << std::string{row.input});
+        const std::optional<std::string> normal = engine::normalizeVirtualPath(row.input);
+        REQUIRE(normal.has_value());
+        CHECK(engine::normalizeVirtualPath("res://" + *normal) == normal);
+    }
+    // Anti-vacuity: the root survives the round trip as itself.
+    const std::optional<std::string> root = engine::normalizeVirtualPath("res://a/..");
+    REQUIRE(root.has_value());
+    CHECK(root->empty());
+    CHECK(engine::normalizeVirtualPath("res://" + *root) == std::optional<std::string>{std::string{}});
 }
