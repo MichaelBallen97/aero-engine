@@ -2926,6 +2926,51 @@ TEST_CASE(
     }
 }
 
+// ---- ML76: a compile whose atom table cannot grow ------------------------------------------------------------------
+
+namespace {
+
+// A module declaring 120 names the fresh VM has not seen, which crosses the atom array's 711 slots, then assigning to
+// the first sixteen times: an assignment follows its last bytecode growth, so the compile returns (R24 in docs/08).
+[[nodiscard]] std::string freshNamesSource() {
+    std::string source = "let zq0";
+    for (int i = 1; i < 120; ++i) {
+        source += ", zq";
+        source += std::to_string(i);
+    }
+    source += ";";
+    return source + assignmentPad("zq0");
+}
+
+}  // namespace
+
+TEST_CASE(
+    "script: a compile whose atom table cannot grow is OutOfMemory with no error value, and an import() of it "
+    "rejects with the out-of-memory error (ML76)") {
+    // A refused atom-array growth makes the backend fail the tokenizer without throwing (quickjs.c:3136-3150), so the
+    // trap takes its "no exception" sentinel: the status is OutOfMemory, and the value is no value.
+    LogCapture log;
+    const std::string source = freshNamesSource();
+    const auto seed = [&source](MemoryBackend& files) { files.set("names.js", source); };
+    const auto call = [](Vm& vm) { return vm.evaluateModule("res://names.js"); };
+
+    // (a) evaluateModule, from 6 to 14 KiB of room in 64-byte steps: 129 runs across the array's growth.
+    std::size_t empty = 0;
+    std::size_t runs = 0;
+    for (std::size_t room = 6 * KIB; room <= 14 * KIB; room += 64) {
+        INFO("room " << room);
+        const HeapRun run = runWithRoom(log, seed, {}, room, call);
+        CHECK(run.status == "OutOfMemory");
+        CHECK(run.error.message != "[uninitialized]");
+        CHECK(run.record.ends_with(outOfMemoryTail(run.error)));
+        empty += run.error.name.empty() && run.error.message.empty() && run.error.stack.empty() ? 1U : 0U;
+        ++runs;
+    }
+    CHECK(runs == 129U);
+    MESSAGE(empty << " of " << runs << " runs had no error value");
+    REQUIRE(empty > 0U);
+}
+
 // ---- ML31-ML34, ML38, ML47: import() --------------------------------------------------------------------------
 
 TEST_CASE("script: import() from a module resolves against that module and records a dynamic edge (ML31)") {

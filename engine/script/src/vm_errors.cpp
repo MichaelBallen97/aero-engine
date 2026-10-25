@@ -22,6 +22,17 @@ EvalResult Vm::Impl::trap(Phase phase) {
 // trap's body, for a value that is not the pending exception: a module promise's rejection reason (vm_modules.cpp).
 EvalResult Vm::Impl::trapValue(JSValueConst value, Phase phase) {
     const EvalStatus status = classify(value, phase);  // BEFORE describe: describe may allocate
+    // The backend's "no exception" sentinel: a refused atom-array growth makes __JS_NewAtom return JS_ATOM_NULL without
+    // throwing (quickjs.c:3136-3150), the tokenizer fails, and trap takes JS_UNINITIALIZED. It is no value -- an empty
+    // error with no stack -- and the refusal already made the status OutOfMemory.
+    if (JS_IsUninitialized(value)) {
+        const ScriptError empty;
+        logFailure(status, empty, /*isErrorObject=*/false, /*namesCause=*/false);
+        if (status == EvalStatus::OutOfMemory) {
+            JS_RunGC(rt);
+        }
+        return EvalResult{status, empty, {}};
+    }
     const bool isErrorObject = JS_IsError(value);
     // An out-of-memory the backend reported as another error -- the parser's, after its buffer failed to grow -- also
     // names that error, so the record says what the backend said. Not for the backend's own out-of-memory error, nor,
