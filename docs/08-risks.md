@@ -54,6 +54,165 @@ Decisions deliberately deferred until there is data or the relevant phase arrive
 
 ---
 
+## Unowned handoffs
+
+Work a task found, measured or declined that no task in `docs/tasks/` owns yet. The list moved here from
+`CLAUDE.md`'s state block on 2026-10-26, where a pointer to this section remains.
+
+**SEVENTY-SEVEN UNOWNED HANDOFFS — one per bullet below; re-count the bullets, never the headline.** It read
+"NINE" over a list that already held thirteen, because two "smaller" items, the exposure clause and
+`FillMode::Line` were never counted. Handoffs recorded in their own paragraphs in `CLAUDE.md`'s state block (fact
+4's four permitted cases, the inspector-row gap, the closed `File` section, E.1.1's fired thick-line handoff) are
+not repeated here.
+
+- **Asset-browser keyboard shortcuts (F2, Del)** — E.4.3 dropped both bindings AND their accelerator text:
+  the gating needs a THIRD condition (`!io.WantTextInput`, because the browser's header carries an `InputText`
+  search box), nothing in `tests/` can press a key, and there is no key-binding registry. E.6.2, the nearest
+  candidate, built no registry (its D23), so nothing in the roadmap claims it.
+  E.5.2's Create entries have no shortcut either. **E.6.3 found that condition too weak**
+  (`imgui_widgets.cpp:5656-5660`): `WantTextInput` is set only while a field is ACTIVE, and Enter or Escape leaves
+  the field holding `NavId` — the opening through which a Backspace after Enter deleted the Hierarchy's selection
+  (the code-review round's finding 20). The gate that holds is the Hierarchy's latch (`.claude/rules/editor.md`, "A
+  SELECTION SHORTCUT BESIDE A TEXT FIELD…", `I339`).
+- **Richer undo labels** (`Move Cube` rather than `Transform`, the mock's wording) — E.6.2 shows the existing labels
+  verbatim by decision; a label is the command layer's, and nothing owns renaming them.
+- **Spot and point shadows** — the shadow pass is directional-only (3.6.2); Phase E's non-goals name
+  cascaded/soft shadows as 8.2.1's, and nothing owns omni or spot shadow maps.
+- **A camera FRUSTUM gizmo** — E.2.3 draws the camera an icon and no gizmo; a natural fit for 4.7.
+- **A MIP CHAIN for E.2.3's icon atlas** — a 2.91x minification mitigated by a 4-texel minimum feature
+  size; `Device::uploadTexture` already takes a mip level, so it is a downsampler and three lines.
+- **Muting the point/spot lights the bridge TRUNCATES** — safe the day `RenderView` can report which survived.
+- **A preview carrying the scene's POINT and SPOT lights** — excluded at E.2.4: a lamp lights a sphere at the
+  origin by where it happens to sit, which predicts nothing about the material.
+- **A FOV control** — `EditorCamera::setFovYRadians` exists and the mock implies one.
+- **PERSISTING the viewport toggles and the tonemap params per user** — 3.6.3's, E.1.2's and E.2.3's
+  handoff unchanged; E.2.4 moved the controls, not the state, and E.6.3's Stats toggle joined them as session state.
+- **Exposure as a scene or camera property.**
+- **A `meshIndex`-aware model pick** — needs a reflectable "sub-asset" annotation or a component-aware row;
+  likely first customer 4.7 or E.5.x.
+- **`AERO_ASSET(text)` and a `Text` reference** (E.3.3) — ONE edit to `assetKindIsDraggable` and three tests
+  (`DR10`, `AR5`, `MP1`) the day a script component wants a `.json`.
+- **A "reveal in browser" verb** from the picker or the row (E.3.3) — E.3.2's file-open handoff from the other
+  side, needing the same new `ActionKind`.
+- **`FillMode::Line` / wireframe-of-meshes** (fact 3 above), and with it a viewport shading mode (the mock's
+  `Shaded`, declined by E.6.3's D13: no shading mode exists to name).
+- **A case-only rename done OUTSIDE the editor (measured at E.4.4)** — on a case-insensitive volume the scan
+  re-attaches `Wood.png` to the old GUID from `wood.png.meta`, the write of `Wood.png.meta` collides with that
+  sidecar, and the record stays `Invalid` with a nil GUID on every scan. Pre-existing 3.1.2 / E.4.3 behaviour;
+  only `deleteOrphanMeta`'s existence test keeps that last copy of the GUID from being deleted.
+- **A project-level ignore file** (`.aeroignore` or a `project.json` key) — a format, a parse, an error
+  catalog and a watcher interaction (E.4.4).
+- **A directory roster** — `__MACOSX`, `node_modules`, Blender's `backup/`; `isDirectory` is the first term of
+  both the browser predicate and the scan's bucket loop, so it is a traversal decision (E.4.4).
+- **vim / emacs swap and auto-save files** — dot-prefixed, so already hidden on macOS and Linux (E.4.4).
+- **A bulk "delete all orphaned sidecars" action or a distinct Issues category** for sidecars of now-ignored
+  files — E.4.4's row 2 judged 40 of them usable, and tedious to delete one click at a time.
+- **A thumbnail key that covers its DEPENDENCIES** (E.4.5) — a texture edit does not refresh a material's
+  picture (R4); Reimport All refreshes only a tile NOT drawn in the frame its clear runs.
+- **A quiet `parseMaterial` mode** (E.4.5) — a hand-edited file's unknown-key WARNs pass through once per card
+  read and once per render; a `reflect` change.
+- **A third thumbnail producer** (mesh, scene, audio waveform) — a third `ThumbnailSource` enumerator, a store
+  and one `releaseKey` line (E.4.5).
+- **A persisted thumbnail store under `Library/`** (E.4.5).
+- **An Apply that refreshes the browser without the watcher** — declined at E.4.5: an Apply reaches the
+  browser through the watcher, as every asset kind's edit does.
+- **The Delete log line's trash path** (found on E.5.1's macOS pass) — it prints `Library/Trash/1` while the
+  directory on disk is `0001`: E.4.3's sequence number printed unpadded. Cosmetic; one format specifier.
+- **A typed create as a CHILD of the right-clicked row** (E.5.2) — needs a local-transform rule.
+- **Placement by a surface raycast** (E.5.2).
+- **Click-to-place in the viewport** (E.5.2).
+- **Uniquified names** (`Cube (1)`) (E.5.2).
+- **`AERO_LABELS` with spaces** (E.5.2).
+- **Create ▸ Audio and ▸ Environment** (E.5.2 D8).
+- **A Tested debug-line producer off the ground plane** (E.5.2).
+- **A sheet macOS puts ON a still-open panel leaves the panel itself un-key** (#118's rows 6 and 12) — its
+  "replace?" alert closed with Escape, its Go-to-Folder sheet closed with Return: the panel then ignores keys until
+  clicked. No result exists while the panel is open, so the editor cannot act; SDL exposes no panel handle.
+- **A held Return past the auto-repeat delay may answer a modal raised after a keyboard-closed panel** (#118 row
+  15, unverified) — SDL never saw the press, so the repeat arrives as a fresh one. Hardware-only to measure.
+  E.6.4's New Project dialog is a second surface (Browse's picker closing onto the open dialog); its row 25 is N-E
+  too — a synthetic autorepeat stand-in never reached the picker, and no project was created in either attempt.
+- **Report the keyboard-close case upstream** (libsdl-org/SDL) — #12684's fix reactivates the app but cannot recreate
+  a key window that never existed; the editor's gate retires itself if SDL hands the focus back.
+- **reflect-gen's `parseRangeToken` hex-`F` quirk** — `AERO_RANGE(0, 0x2F)` reads as 2; latent.
+- **`THUMBNAIL_EDGE_TEXELS` 128 → 256** (with the resident budget halved) **if** E.6.1's row 9 judges 128² too
+  soft at 2× — a judgement no 1× display can make.
+- **`PREVIEW_MAX_EXTENT` 512 → 768 if E.6.1's row 10 does** the same for the Material preview.
+- **FreeType hinting at 1×** (E.6.1 D5), on a named legibility complaint — stb_truetype rasterises today.
+- **A light theme, a user theme file, a per-user UI-scale preference** (E.6.1) — `editor_prefs` is their home;
+  `EDITOR_THEME` is one constexpr value today.
+- **A CJK / emoji fallback face merged after Plex** (E.6.1) — user text in those scripts draws `U+FFFD`.
+- **Licence notices shipped beside a PACKAGED editor binary** (E.6.1 D24) — Plex's OFL and Lucide's ISC/MIT
+  texts live under `editor/third_party/fonts/` only.
+- **A theme decision for `ImGuiItemFlags_MixedValue`**, the day a multi-selection edit draws one (E.6.1 D13).
+- **ImGuizmo's hit tolerances above a 100 % UI scale** (E.6.1 R7) — library literals, deliberately unscaled.
+- **The mock's axis hues, across all four consumers at once** (E.6.3 D3, declined) — the gizmo, the grid's world
+  axes, the view-axis widget and the Inspector letters share ONE identity colour; moving it re-opens E.1.2 / E.1.3 /
+  E.1.5 / E.3.1's validation rows and moves `TH2`, `AX1`–`AX3` and `I143(c)`.
+- **A stacked axis row (label above, under a width threshold) or values at `smallSize`** (E.6.3 D5) — the two ways
+  to win back the risen axis thresholds; the Directional Light still clips at the 1280 launch default.
+- **The axis row's last digit draws over its unit's 1-point outline in a narrow band** (E.6.3's row 7, UI scale 1,
+  this task's own layout) — for `0.000` from the content width where the digit's stroke enters the border (266 / 279
+  / 316, Cube / Main Camera / Directional Light) down to where its ink is first cut, 4 points lower (262 / 275 / 312);
+  for `123.456` from 310 to 307. Between the two the digit hides the outline, because the frameless drag's value
+  region runs to the unit's outer edge (`inspectorAxisLayout`: `valueWidth = unitWidth - valueX`), where
+  `RenderTextClipped` clips — the clip every framed ImGui drag uses (`imgui_widgets.cpp:2805`,
+  `RenderTextClipped(frame_bb.Min, frame_bb.Max, …)`), so a stock `DragFloat` draws over its own border the same way.
+  Ending the value region inside the border closes it, and moves every threshold above.
+- **No `Clear` on the Inspector's reference rows in a 640-wide window** (E.6.3's row 17, present at the branch point)
+  — E.3.3's `assetReferenceFieldWidth` floors the field at one frame height and `Clear` lands past the panel's clip.
+  Nothing overlaps.
+- **The Material slot row's thumbnail overlaps its `Clear` at 640 wide** (E.6.3's row 17, present at the branch
+  point) — E.3.4's slot row draws the 64-point well at `thumbnailEdge` whatever its ≈ 50-point frame; at 900 and
+  above the well fits.
+- **Widgets in a dock's tab row** — the mock's header dropdowns; the pinned ImGui has `DockNodeBeginAmendTabBar`
+  (`imgui_internal.h:3734-3735`), the route E.6.3 named and did not take (E.2.4 stopped at a popover).
+- **Tab icons** (E.6.3 D12) — a label change publishes a new `window->Name` to `keyboardFocusPanelId`, so it needs
+  `###` labels and `I159(h)`'s respelling.
+- **The Console tab's unread dot** (E.6.3 D7) — needs a "seen" notion, and it changes what the tab's X means.
+- **GPU time in the stats card** (E.6.3 D9) — SDL_GPU 3.4.12 has no timestamp queries, so the card shows `—`.
+- **An entity enabled flag** (the mock's `off` meta, E.6.3 D6) — engine, schema and bridge.
+- **The Hierarchy's footer Create Empty / Create Child buttons** (E.6.3 D6) — the Create menu and both context menus
+  already create.
+- **Component Copy / Paste / Reset** (E.6.3 D13) — the card's overflow menu holds Remove Component alone.
+- **Renaming from the Inspector** (E.6.3 D5) — the entity header's name is read-only.
+- **The mock's 38-point menu bar** (E.6.3 D13, declined after E.6.2 handed it on) — it re-arms E.6.2's D22 fixtures.
+- **The mock's default layout**, the bottom dock spanning the full width (E.6.3 D13).
+- **The viewport's `Cube · Transform` chip** (E.6.3 D13) — the mock gives it no stated meaning.
+- **The shell's two modals beyond the theme** (E.6.3 D13).
+- **A rounded nav cursor on the asset tiles** (E.6.3 D8) — `RenderNavCursor` draws a square over the `Selectable`'s
+  widened box.
+- **A missing-folder marker on a recent card** (E.6.4 D9) — an existence check per entry, taken outside the draw walk
+  and refreshed like the New Project probe.
+- **Removing one recent project from the list** (E.6.4) — a card's overflow or context menu; Open Recent ▸ Clear is
+  the only edit today.
+- **The manifest name and a last-opened time on a recent card** (E.6.4) — reading each `project.json`, and a timestamp
+  the recents file does not store.
+- **A typable Location** in the New Project dialog (E.6.4 U3, declined) — `Browse...` is its only writer.
+- **Scene/content templates of mock 1e's kind** (`Empty 3D`, `Third-person starter`, …, seeding `assets/` and a first
+  scene) (E.6.4 D4). C++ project-template generation is NOT unowned: it is 4.5.2's and 4.6.1's.
+- **Scene units and git-init at project creation** (E.6.4 D4) — new project-system scope.
+- **A "close project" command** that returns to the Welcome window (E.6.4) — `ProjectSession::close()` has no caller.
+- **Enter on the Unsaved Changes modal** (E.6.4) — `shell_ui.cpp:309` comments `SetItemDefaultFocus(); // Enter ==
+  Save`, which binds nothing; the containment modal's binding (`shell_ui.cpp:440-443`, `I270`) is the one to copy.
+- **A pinned header and footer for the New Project dialog** (E.6.4 D34) — under ≈ 523 points of work height the
+  whole dialog scrolls; pinning them is a body `BeginChild`, with the focus arming read in the modal and passed in.
+- **A minimum OS window size for the editor** (E.6.4 D34) — nothing stops a window narrower than the 280-point
+  dialogs.
+- **The mock's heading letter-spacing** (E.6.4 D28) — a glyph-by-glyph draw.
+- **A drop shadow for modals** (E.6.4 D22) — ImGui 1.92.8 draws none.
+- **A watcher-driven New Project probe** (E.6.4 D12) instead of the 30-tick refresh.
+- **A trailing separator on the `creates` path** (E.6.4 D32).
+- **A patched quickjs-ng for R21's two paths** (4.1.1) — a vcpkg overlay port whose conversion sites let an
+  uncatchable error propagate (the `using` dispose wrap, and a promise rejected with the interrupt), as
+  `promise_reaction_job` already does. It would be the project's first patched dependency, and the defect is worth
+  reporting upstream either way. VM57 pins R21's second path and goes red when the patch lands. **4.1.2 adds two
+  defects the same port would close**: R24 (refuse to create a function while `dbuf_error` holds, one check before
+  `resolve_variables`) and R23 (let a module outlive its context, bellard/quickjs #280's fix), whose hold could then
+  go. Three upstream reports are owed: R21, R23 (citing #280), R24.
+
+---
+
 ## Resolved decisions (for the record)
 
 - **Project name** → **Aero Engine** (July 2026)

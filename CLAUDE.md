@@ -37,25 +37,9 @@ have not fired since — **they still apply in full to the next built-in, whenev
 `EC5`, `EK11`, `EP19`, `FT16`, `G29`, `GL8`, `GR34`, `HK6`, `HY9`, `IO24`, `IR23`, `IX19`, `MB27`, `NP14`, `P96`,
 `PC15`, `PX6`, `RF8`, `RT31`, `SQ15`, `SS64`, `TB13`, `TH19`, `TS11`, `US13`, `VM65`, `VO15`, `WL7`, `X32`, plus 4.1.2's
 `ML80` and `VN5` (4.1.1 added `VM` and 4.1.2 `ML`, `VN` and `VM61`–`VM64`, so every other id is still the E.6.4
-sweep's). Taken tier-0 prefixes
-include `MR` (E.3.4, `MR1`–`MR21`), `PJ` (E.4.1, `PJ1`–`PJ57`), `CN` (E.4.2, `CN1`–`CN25`), `IX` / `BV` (E.4.4,
-`IX1`–`IX18`, `BV1`–`BV9`), `MB` / `CC` (E.4.5, `MB1`–`MB26`, `CC1`–`CC14`), `CR` / `EC` (E.5.2, `CR1`–`CR9`,
-`EC1`–`EC4`), `TH` / `US` / `GL` (E.6.1, `TH1`–`TH11`, `US1`–`US9`, `GL1`–`GL7`), `PC` / `CS` / `EK` / `HY` /
-`AH` / `VO` (E.6.3) and `NP` / `WL` (E.6.4, `NP1`–`NP13`, `WL1`–`WL6`); `MC` is mesh cook's (`MC1`–`MC58`), which is why the card cache took `CC`, and `CD` is render
-culling's (`CD1`–`CD14`). The other ceilings: `SS` 63, `IO` 23, `RT` 30, `TS` 10,
-`IR` 22. E.4.1 took `I176`–`I185`, E.4.2 `I186`–`I192`, E.4.3 `I210`–`I226`, E.4.4 `I227`–`I229`, its fix (#111)
-`I230`–`I231` plus `AV55`–`AV59`, E.4.5 `I232`–`I243` plus `AV60`–`AV65`, `TS5`–`TS10` and `IR9`–`IR12`, its
-follow-ups `I244`, E.5.1 `I245` plus `BR23`–`BR30`, `SQ13`–`SQ14` and `PX5`, and E.5.2 `I246`–`I255` plus
-`IR13`–`IR22`, `X25`–`X31`, `GR27`–`GR33`, `DD29`–`DD30`, `DG21`–`DG25` and `RF4`–`RF7`. E.6.2 took `I290`–`I308`
-plus the new tier-0 prefixes `HK` (`HK1`–`HK5`), `TB` (`TB1`–`TB12`), `BD` (`BD1`–`BD7`) and `FT` (`FT1`–`FT15`), and
-`G20`–`G28`, `EP14`–`EP18`, `TH12`–`TH13`, `US10`. E.6.3 took `I309`–`I348` plus the new tier-0 prefixes `PC`
-(`PC1`–`PC14`), `CS` (`CS1`–`CS10`), `EK` (`EK1`–`EK10`), `HY` (`HY1`–`HY8`), `AH` (`AH1`–`AH20`) and `VO`
-(`VO1`–`VO14`), and `TH14`–`TH16`, `US11`, `AV66`–`AV67` and `CD12`–`CD14`. E.6.4 took `I349`–`I360` plus the
-new tier-0 prefixes `NP` and `WL`, and `P86`–`P95`, `TH17`–`TH18` and `US12`. 4.1.1 took the new tier-0 prefix `VM`
-(`VM1`–`VM60`, `tests/script_vm_test.cpp`); 4.1.2 took the new tier-0 prefixes `ML` (`ML1`–`ML79`,
-`tests/script_module_test.cpp`) and `VN` (`VN1`–`VN4`, `tests/vfs_test.cpp`) plus `VM61`–`VM64`. The E.3.2 keyboard fix
-(#116) took `I256`–`I258` plus `RT28`–`RT30`, the Save As suffix fix (#117) `I270` plus `SS55`–`SS63` and
-`IO22`–`IO23`, the dialog keyboard fix (#118) `I275`–`I276`, and E.6.1 `I277`–`I289` plus `CR10`–`CR12`.
+sweep's). The list does not name every taken prefix: `MR` (E.3.4), `PJ` (E.4.1), `CN` (E.4.2) and `MC` (mesh
+cook, which is why the card cache took `CC`) are taken too, so a NEW prefix is checked against a fresh sweep,
+never against this list. Which ids each task took is recorded in its `docs/10` entry.
 **E.6.1 DELETED `I230`** with the ProggyClean remap table it pinned — the id is retired, never reused.
 **`I193`–`I209`, `I259`–`I269` and `I271`–`I274` are FREE and were never claimed by anything that merged** (the
 last two were reserved by the fix plans and left unused) — a
@@ -1232,60 +1216,21 @@ mono 48 kHz 0.5 s, **exactly 48 064 B each**, cut at a whole number of cycles so
 **Validation pages are gitignored, so they enter no commit.** Per-page measurements and method notes are in
 `docs/10`; this is the ledger of what is still owed.
 
-**4.1.1's page is RUN, 10 / 10** (2026-10-22, against `360daf6`; terminal rows, no editor UI): the 64 MiB heap filled
-for real and the process survived, `leaks -atExit` found nothing outside the JavaScript heap, and Debug recurses 56
-calls at 512 KiB against Release's 544 (4.4.1 decides). **4.1.2's page is RUN, 11 / 11** (2026-10-26, against
-`3c0a017`, terminal rows; the one later commit is test-only):
-- a 521-module graph loads in 42 ms (Debug) and 3 ms (Release);
-- a reload generation costs about 3 KB;
-- `leaks -atExit` is clean over the 143 script cases;
-- the teardown hold's four cases pass under poisoned frees with no ASan report.
-Both pages' Windows and Linux rows are owed like every other task's.
-
 **ONE PAGE HAS NOT BEEN RUN ON ANY PLATFORM: E.1.5's.** It is the whole of Phase E's validation risk on this OS
-— every other task in E.1–E.6 is macOS-validated (see the index above). **E.6.4's page is RUN, 23 / 23 executable
-rows, nothing failed** (2026-10-20, two 1× externals; its 2× row 21 needs a Retina panel and its row 25 a HELD
-hardware key — a synthetic autorepeat stand-in never reached the picker); the pass found no product defect and
-measured on hardware what the code-review round had argued: hover and a first click reach earlier items while the
-Name field is active (rows 10 and 19). **E.6.1's page is RUN, 11 / 11
-executable rows** (2026-10-07); its row 8 (a branch-point A/B) and row 6 each found a defect no tier could see,
-both fixed in the PR. **Its 2× rows (2, 9, 10, 18) need a Retina panel attached**, and rows 9 and 10 decide two
-unowned handoffs below. **E.6.2's page is RUN, 18 / 18 executable rows** (2026-10-08, 1× displays; its 2× row 19
-needs a Retina panel). **E.6.3's page is RUN, 21 / 21 executable rows** (2026-10-14/15, on the built-in Retina
-panel, so its 2× rows ran); its first pass, on `88a2b8f`, found four product defects every tier, the code-review
-round and the 66-seed matrix had missed, each fixed in the PR (`7e13aaa`, `5f6d475`, `e55a7e8`, `004a4f8`); four
-cells inside passing rows are N-E (`docs/10`). **E.3.2's page WAS run on 2026-09-12**
-(9 PASS / 1 PARTIAL / 2 NOT EXECUTABLE, against `b172198`) and was carried here as unrun until 2026-10-01; its record
-is now in `docs/10`. **The three fixes' pages are RUN on macOS** — #116 10 / 10, #117 15 / 15, #118 15 / 15
-executable — and each pass found the next defect: #116's row 8 a closed popup still holding the keyboard, #117's
-rows 5–7 the panel's appended `.json`, and #117's row 12 the keyboard-closed sheet #118 fixed.
-**E.5.2's page is RUN, 17 / 17 executable rows, nothing failed** (2026-09-30, row 18 HiDPI not executable on 1×
-displays): the eight creates raising the Inspector, one undo entry per create and per pick, the anchor 9.4 m out
-at the view centre, `7 (out of range)` repaired by a pick, the modal leaving the Create menu inert (0 pixels
-changed), and the Hierarchy scrolling to a created row at the bottom of ~90. Against `e131993` built in its own
-worktree, the viewport rect differs by **0 pixels with the grid off** and by **73 with it on**, all on the 1 px
-contour where the default Cube crosses `y = 0` (a 2-px pan control: 2 586), and `e131993` draws the axis lines
-**dashed** over a Plane at every pose where HEAD draws them solid. **Three method facts from that pass:** this
-machine's `editor_prefs.json` had Focus Follows Selection OFF, which row 1 needs ON (set through View, restored
-after); a project under `/private/tmp` makes E.4.1 record `""` because macOS's panels return `/tmp/…`, so
-validate from a home-directory project; and a click that closes the Edit menu at its first item's position IS
-Edit ▸ Undo — close a menu by re-clicking its header.
-**E.5.1's page is RUN, 13 / 13, nothing failed** (2026-09-29): the headline Cube red in the first capture after
-the drop, Undo restoring the default bytes exactly, a two-sided Plane drawn AND outlined from below while a
-single-sided one is neither, a refused material drawing the exact default with one Console line — and its row 5
-closed E.2.1's row 4 normal-map arm. Its page also records four corrections to its own text (row 2's Console
-lines need a Debug build; row 8's viewport follows through the ledger's Apply nudge, not the watcher).
-**E.4.5's page is RUN, 11 / 11 executable rows** (row 11, HiDPI, is not executable on 1× displays); **row 6's
-first run failed one check** — a long value in an asset field was clipped with no `…` — fixed by #113 (`I244`).
-**E.4.4's page is RUN, 8 / 8, and its first run is the newest proof that a pass finds what every tier
-misses**: it failed row 2 on two real defects no lane could see — a font drawing `?` and a list below its
-panel — and the re-run on #111 closed seeds `S15` (row 4) and `S8` (row 5) on real hardware and ran
-`AD76`'s manual twin (row 3: the Delete succeeded with the ignored backup present).
-**E.4.1 is fully validated: 12 / 12 macOS, nothing failed**, and its sabotage matrix is
-run too — 26 seeds / 29 runs, **no seed green with nothing else catching it** (`docs/10`). An earlier
-matrix attempt was abandoned mid-seed and **left a live seed in the working tree** (the deleted
-`sceneIoAvailable()` gate), caught by `git status` before anything was committed. **Always `git status`
-after an interrupted sabotage run**; an aborted seed looks exactly like a clean tree until it is read.
+— every other task in E.1–E.6 is macOS-validated, as are 4.1.1 and 4.1.2 (see the index above; each run page's
+record and measurements are in its task's `docs/10` entry, among them 4.1.1's Debug recursion depth of 56 calls at
+512 KiB against Release's 544, which 4.4.1 decides). **Rows still owed on pages that otherwise passed include** the
+2× rows of pages run on 1× displays — E.6.1's 2, 9, 10 and 18 (rows 9 and 10 decide two unowned handoffs), E.6.2's
+19, E.6.4's 21, E.5.2's 18 and E.4.5's 11 — which need a Retina panel attached, and E.6.4's row 25 (a synthetic
+autorepeat stand-in never reached the picker) and #118's row 15, which need a HELD hardware key. The index carries
+every page's partial and N-E counts.
+
+**Three method facts from E.5.2's pass:** this machine's `editor_prefs.json` had Focus Follows Selection OFF, which
+row 1 needs ON (set through View, restored after); a project under `/private/tmp` makes E.4.1 record `""` because
+macOS's panels return `/tmp/…`, so validate from a home-directory project; and a click that closes the Edit menu at
+its first item's position IS Edit ▸ Undo — close a menu by re-clicking its header. **And always `git status` after
+an interrupted sabotage run** (E.4.1's matrix once left a live seed in the working tree, caught before anything was
+committed): an aborted seed looks exactly like a clean tree until it is read.
 
 **A PROJECT UNDER A SYMLINKED PATH SILENTLY LOSES ITS RECORDED POSITION (E.4.1's macOS pass).** `/tmp`
 is a symlink to `private/tmp`, and the editor's native panels return the resolved form while `argv[1]`
@@ -1301,22 +1246,12 @@ the open was **PERMITTED**. The two paths share **no leading segment**, so no le
 accepted it — D4 step 4 is the only thing that did. **Delete the rescue and an ordinary open under `/tmp`
 is refused outright.** Validate on a NON-symlinked root unless symlinks are the thing under test.
 
-**E.4.2'S SIXTEEN-ROW PAGE IS RUN ON macOS — 14 of 16, with 2 NOT EXECUTABLE and 1 PARTIAL**
-(`editor/validation/E.4.2-scene-project-containment.md`). Seven seed-only rows are now **closed**: row 3
-(`S15`'s live `%`-format half — its buffer-overrun half is **inert by construction** and produced no ASan
-report), row 4 (`S12`'s consequence: the `OK`-only modal, and undo/redo proving the unsaved work survived),
-rows 5 and 6 (the symlink and case routes), row 10 (`S10`, closed on **click** evidence — the File menu is
-unclickable and un-highlightable while the modal is up) and row 11 (`S16`, closed for **both** buttons).
-
-**THREE RECORDS REMAIN OWED AND EACH HAS A MEASURED REASON.** Row 9's **Escape** third, row 15
+**E.4.2'S PAGE (14 of 16) OWES THREE RECORDS, EACH WITH A MEASURED REASON.** Row 9's **Escape** third, row 15
 (request-hook popup close; `I192` pins only the ordering as source text and **no tier here can read
-`g.HoveredWindow`**) and row 16 (the already-open-project guard; cover stays `CN25`). ★ **THE CAUSE OF ALL
-THREE IS ONE MEASURED FACT: NO SYNTHETIC KEYBOARD INPUT REACHES THIS EDITOR** — not CGEvent chords, not
-`System Events keystroke`, not the native dialog's Go-to-Folder field — because `aero_editor` is a bare
-Unix executable and never becomes a key window. **That is a fact about the bare executable, not the
-editor**: E.4.3's and E.4.4's passes ran it as a signed `.app` and typed into its modals, so row 9's Escape
-third is executable now. Synthetic **mouse** events work fully, including navigating
-the native file dialog by its column view. Row 16 additionally cannot be staged at all: `NSOpenPanel`
+`g.HoveredWindow`**) and row 16 (the already-open-project guard; cover stays `CN25`). The pass drove the bare
+executable, which no synthetic keyboard input reaches (see the method traps below); a signed `.app` takes keys, so
+row 9's Escape third is executable now. Synthetic **mouse** events work fully, including navigating the native file
+dialog by its column view. Row 16 additionally cannot be staged at all: `NSOpenPanel`
 watches the filesystem and **clears the selection and disables `Open`** the moment the scene's parent
 directory is deleted. Its two **Windows** rows are the two cross-platform risks recorded rather than fixed: `path("C:/").parent_path()` possibly yielding `"C:"` and giving the walk one extra
 drive-relative probe, and a scene directly at a POSIX filesystem root being a **false refusal** — both
@@ -1366,7 +1301,7 @@ e2e cases are `NOT WIN32` and the lint job is ubuntu-only, so nothing about the 
 exercised under an MSYS userland. Coverage of the *invariant* is unaffected.
 
 **NO WINDOWS OR LINUX VALIDATION PASS EXISTS FOR ANY TASK IN ANY PHASE** — Phase 0's gate, Phase 1's render
-rows, all thirteen Phase 2 tasks, and every Phase 3 and Phase E task.
+rows, all thirteen Phase 2 tasks, and every Phase 3, Phase E and Phase 4 task.
 
 **METHOD TRAPS FOR DRIVING THE EDITOR, ALL MEASURED.** A pending TCC prompt stalls the editor to ~0.2% CPU
 with a window that **NEVER RENDERS** (a black capture); the prompts **CASCADE**, one per bundle identity, and
@@ -1395,43 +1330,20 @@ path. Phase E still owes its gate and E.1.5's unrun page — the gate's artifact
 `samples/phase-E-editor/`, does not exist yet; see `docs/tasks/phase-E.md` for the gate, and `docs/tasks/phase-3.md`
 for what Phase 3 still owes.
 
-**Ownership of the open work.** **E.4.3 IS MERGED, and it did NOT use `directoryWithin` /
-`normalizeForContainment` — deliberately, and the reason generalises.** Those answer *"is this ABSOLUTE
-path inside that ABSOLUTE root"*, which is the question a native file dialog's answer raises. Every path
-E.4.3 handles is **assets-root-relative by construction** — the browser produced it — so the containment
-question it actually has is *"is this relative path safe"*, and that is `validateRelativeAssetPath`: no
-`..` SEGMENT, no leading `/`, no drive prefix, no backslash. **A future task must pick by the SHAPE OF ITS
-INPUT, not by habit**: an absolute path from a dialog takes E.4.2's pair, a relative path from the browser
-takes E.4.3's. **And E.4.3 added no reserved-destination policy for `<root>/Library/`** — it writes the
-trash INTO it — because `Library/` is excluded from the scan, so the browser cannot show it and no move
-INTO it is reachable through the UI. `IO19` and E.4.2's validation row 14 still record today's permissive
-behaviour as the "before", and that handoff is **still open**. **E.4.5 is MERGED** (`caf8a74`): a material
-tile shows a sphere rendered and framed by the thumbnail's own rig, a base-colour swatch until then, and the
-document's name on four surfaces — what it left out, and its handoffs, are in `docs/10`. **And
-`assetReferenceFieldWidth` is ONE formula with TWO hosts**, so a
-theme or DPI change moves the Inspector's reference row and the material slot's together. **E.5.1 and E.5.2
-are MERGED** (`834bcb3`, `ab3fd72`), closing Epic E.5; what each left out is in `docs/10`. The default scene
-is deliberately unchanged by every Phase E task so far, and its seventeen `entityCount() == 4` pins are
-byte-identical. **E.6.1 is MERGED** (`2b1971e`) and discharged what E.1.5, E.3.4, E.4.5 and E.5.2 handed it,
-except E.4.5's 128²-at-2× judgement, which is its validation row 9. **E.6.2 is MERGED** (`761cc49`) — its rules
-are in `.claude/rules/editor.md`'s shell-chrome section, its history in `docs/10`. **E.6.3 is MERGED**
-(`7fe02d1`) and discharged what it was handed, the 38-point menu bar E.6.2 handed on aside (declined, now an
-unowned handoff): **all eight panels** restyled through one card painter, one role map and six pure models (the
-rules file's panel-chrome section); **the component → icon mapping**,
-`componentIconTable()` (ten rows, fallback `shapes`), beside the kind classifier `entityKindFor`; **the `small`
-size**, first consumed by E.6.2's status bar, now sets the panels' secondary text; **Category B**: grey folders
-ADOPTED (+ `folderTab`), the axis hues DECLINED, `overlayText` retired; **the View popover's headings** in
-`textMuted`, the popover RESTYLED, not regrouped, behind a chip that names the projection; **the Inspector's axis
-row** with the letter inside its `inset` box, at a stated price — the per-entity thresholds ROSE to 266 / 279 / 316
-(Cube / Main Camera / Directional Light; E.6.1's 225 / 231 / 270 the before), so the default right split widened
-0.25 → **0.30**: the launch default shows the Cube and the Camera whole and clips the Light, as at E.6.1's baseline,
-and a 1442-wide Reset Layout shows all three (row 7). An existing `imgui.ini` keeps its old split until Reset Layout.
-**E.6.4 is MERGED** (`52a5b68`) and discharged what E.6.3 handed it: `project_ui.cpp`'s four `TextDisabled` calls
-are gone and `I287`'s ban holds there too, and the `dialog` token has its first and only direct reader,
-`dialogFill()`; the language control ships disabled for **4.6.1**, whose deliverable now says so. Its rules are in
-`.claude/rules/editor.md`'s first-contact section, its history in `docs/10`. **8.2** inherits IBL/HDRI and the after-opaque sky
-variant (`SB9`/`SB16` are in place to catch a wrong ordering), plus physical light units, IES profiles and area
-lights.
+**Ownership of the open work.** **A containment check is picked by the SHAPE OF ITS INPUT, not by habit (E.4.3):**
+an absolute path from a native dialog raises *"is this ABSOLUTE path inside that ABSOLUTE root"* and takes E.4.2's
+`directoryWithin` / `normalizeForContainment`; a path the browser produced is assets-root-relative by construction,
+so its question is *"is this relative path safe"*, and that is `validateRelativeAssetPath`: no `..` SEGMENT, no
+leading `/`, no drive prefix, no backslash. **No reserved-destination policy exists for `<root>/Library/`** — E.4.3
+writes the trash INTO it, and `Library/` is excluded from the scan, so the browser cannot show it and no move INTO it
+is reachable through the UI; `IO19` and E.4.2's validation row 14 record today's permissive behaviour as the
+"before", and that handoff is **still open**. **`assetReferenceFieldWidth` is ONE formula with TWO hosts**, so a
+theme or DPI change moves the Inspector's reference row and the material slot's together. The default scene is
+deliberately unchanged by every Phase E task, and its seventeen `entityCount() == 4` pins are byte-identical. The
+New Project dialog's language control ships disabled for **4.6.1**, whose deliverable says so. **8.2** inherits
+IBL/HDRI and the after-opaque sky variant (`SB9`/`SB16` are in place to catch a wrong ordering), plus physical
+light units, IES profiles and area lights. What each Phase E task shipped, discharged and left out is in its
+`docs/10` entry; the editor rules each one added are in `.claude/rules/editor.md`.
 
 **ONE INSPECTOR-ROW GAP IS OPEN** — E.2.2's **unit-aware row** (`SpotLight`'s cone angles are raw radians
 clamped to `[0, 1.5708]`), a reflect-gen surface first. E.2.1's **enum-aware row is CLOSED by E.5.2's
@@ -1445,160 +1357,10 @@ inherits this — never write "Enter commits" without binding it.** The three th
 right (`KeypadEnter` is a distinct key; `IsKeyPressed` passes `ImGuiKeyOwner_Any`; a commit key shares the
 button's disabled predicate), each with its pinned-source citation, are in `.claude/rules/editor.md`.
 
-**THE ORPHAN MODAL HAS A UI WITNESS NOW (#111).** `Issues` no longer clips, and E.4.4's rows 2 and 3 opened
-`"Delete orphaned .meta?"` from a real row and confirmed it by click and by **Enter**. Until then, Enter had
-only been argued from identical code.
-
-**SEVENTY-SEVEN UNOWNED HANDOFFS — one per bullet below; re-count the bullets, never the headline.** It read
-"NINE" over a list that already held thirteen, because two "smaller" items, the exposure clause and
-`FillMode::Line` were never counted. Handoffs recorded in their own paragraphs elsewhere in this block (fact
-4's four permitted cases, the inspector-row gap, the closed `File` section) are not repeated here.
-
-- **Asset-browser keyboard shortcuts (F2, Del)** — E.4.3 dropped both bindings AND their accelerator text:
-  the gating needs a THIRD condition (`!io.WantTextInput`, because the browser's header carries an `InputText`
-  search box), nothing in `tests/` can press a key, and there is no key-binding registry. E.6.2, the nearest
-  candidate, built no registry (its D23), so nothing in the roadmap claims it.
-  E.5.2's Create entries have no shortcut either. **E.6.3 found that condition too weak**
-  (`imgui_widgets.cpp:5656-5660`): `WantTextInput` is set only while a field is ACTIVE, and Enter or Escape leaves
-  the field holding `NavId` — the opening through which a Backspace after Enter deleted the Hierarchy's selection
-  (the code-review round's finding 20). The gate that holds is the Hierarchy's latch (`.claude/rules/editor.md`, "A
-  SELECTION SHORTCUT BESIDE A TEXT FIELD…", `I339`).
-- **Richer undo labels** (`Move Cube` rather than `Transform`, the mock's wording) — E.6.2 shows the existing labels
-  verbatim by decision; a label is the command layer's, and nothing owns renaming them.
-- **Spot and point shadows** — the shadow pass is directional-only (3.6.2); Phase E's non-goals name
-  cascaded/soft shadows as 8.2.1's, and nothing owns omni or spot shadow maps.
-- **A camera FRUSTUM gizmo** — E.2.3 draws the camera an icon and no gizmo; a natural fit for 4.7.
-- **A MIP CHAIN for E.2.3's icon atlas** — a 2.91x minification mitigated by a 4-texel minimum feature
-  size; `Device::uploadTexture` already takes a mip level, so it is a downsampler and three lines.
-- **Muting the point/spot lights the bridge TRUNCATES** — safe the day `RenderView` can report which survived.
-- **A preview carrying the scene's POINT and SPOT lights** — excluded at E.2.4: a lamp lights a sphere at the
-  origin by where it happens to sit, which predicts nothing about the material.
-- **A FOV control** — `EditorCamera::setFovYRadians` exists and the mock implies one.
-- **PERSISTING the viewport toggles and the tonemap params per user** — 3.6.3's, E.1.2's and E.2.3's
-  handoff unchanged; E.2.4 moved the controls, not the state, and E.6.3's Stats toggle joined them as session state.
-- **Exposure as a scene or camera property.**
-- **A `meshIndex`-aware model pick** — needs a reflectable "sub-asset" annotation or a component-aware row;
-  likely first customer 4.7 or E.5.x.
-- **`AERO_ASSET(text)` and a `Text` reference** (E.3.3) — ONE edit to `assetKindIsDraggable` and three tests
-  (`DR10`, `AR5`, `MP1`) the day a script component wants a `.json`.
-- **A "reveal in browser" verb** from the picker or the row (E.3.3) — E.3.2's file-open handoff from the other
-  side, needing the same new `ActionKind`.
-- **`FillMode::Line` / wireframe-of-meshes** (fact 3 above), and with it a viewport shading mode (the mock's
-  `Shaded`, declined by E.6.3's D13: no shading mode exists to name).
-- **A case-only rename done OUTSIDE the editor (measured at E.4.4)** — on a case-insensitive volume the scan
-  re-attaches `Wood.png` to the old GUID from `wood.png.meta`, the write of `Wood.png.meta` collides with that
-  sidecar, and the record stays `Invalid` with a nil GUID on every scan. Pre-existing 3.1.2 / E.4.3 behaviour;
-  only `deleteOrphanMeta`'s existence test keeps that last copy of the GUID from being deleted.
-- **A project-level ignore file** (`.aeroignore` or a `project.json` key) — a format, a parse, an error
-  catalog and a watcher interaction (E.4.4).
-- **A directory roster** — `__MACOSX`, `node_modules`, Blender's `backup/`; `isDirectory` is the first term of
-  both the browser predicate and the scan's bucket loop, so it is a traversal decision (E.4.4).
-- **vim / emacs swap and auto-save files** — dot-prefixed, so already hidden on macOS and Linux (E.4.4).
-- **A bulk "delete all orphaned sidecars" action or a distinct Issues category** for sidecars of now-ignored
-  files — E.4.4's row 2 judged 40 of them usable, and tedious to delete one click at a time.
-- **A thumbnail key that covers its DEPENDENCIES** (E.4.5) — a texture edit does not refresh a material's
-  picture (R4); Reimport All refreshes only a tile NOT drawn in the frame its clear runs.
-- **A quiet `parseMaterial` mode** (E.4.5) — a hand-edited file's unknown-key WARNs pass through once per card
-  read and once per render; a `reflect` change.
-- **A third thumbnail producer** (mesh, scene, audio waveform) — a third `ThumbnailSource` enumerator, a store
-  and one `releaseKey` line (E.4.5).
-- **A persisted thumbnail store under `Library/`** (E.4.5).
-- **An Apply that refreshes the browser without the watcher** — declined at E.4.5: an Apply reaches the
-  browser through the watcher, as every asset kind's edit does.
-- **The Delete log line's trash path** (found on E.5.1's macOS pass) — it prints `Library/Trash/1` while the
-  directory on disk is `0001`: E.4.3's sequence number printed unpadded. Cosmetic; one format specifier.
-- **A typed create as a CHILD of the right-clicked row** (E.5.2) — needs a local-transform rule.
-- **Placement by a surface raycast** (E.5.2).
-- **Click-to-place in the viewport** (E.5.2).
-- **Uniquified names** (`Cube (1)`) (E.5.2).
-- **`AERO_LABELS` with spaces** (E.5.2).
-- **Create ▸ Audio and ▸ Environment** (E.5.2 D8).
-- **A Tested debug-line producer off the ground plane** (E.5.2).
-- **A sheet macOS puts ON a still-open panel leaves the panel itself un-key** (#118's rows 6 and 12) — its
-  "replace?" alert closed with Escape, its Go-to-Folder sheet closed with Return: the panel then ignores keys until
-  clicked. No result exists while the panel is open, so the editor cannot act; SDL exposes no panel handle.
-- **A held Return past the auto-repeat delay may answer a modal raised after a keyboard-closed panel** (#118 row
-  15, unverified) — SDL never saw the press, so the repeat arrives as a fresh one. Hardware-only to measure.
-  E.6.4's New Project dialog is a second surface (Browse's picker closing onto the open dialog); its row 25 is N-E
-  too — a synthetic autorepeat stand-in never reached the picker, and no project was created in either attempt.
-- **Report the keyboard-close case upstream** (libsdl-org/SDL) — #12684's fix reactivates the app but cannot recreate
-  a key window that never existed; the editor's gate retires itself if SDL hands the focus back.
-- **reflect-gen's `parseRangeToken` hex-`F` quirk** — `AERO_RANGE(0, 0x2F)` reads as 2; latent.
-- **`THUMBNAIL_EDGE_TEXELS` 128 → 256** (with the resident budget halved) **if** E.6.1's row 9 judges 128² too
-  soft at 2× — a judgement no 1× display can make.
-- **`PREVIEW_MAX_EXTENT` 512 → 768 if E.6.1's row 10 does** the same for the Material preview.
-- **FreeType hinting at 1×** (E.6.1 D5), on a named legibility complaint — stb_truetype rasterises today.
-- **A light theme, a user theme file, a per-user UI-scale preference** (E.6.1) — `editor_prefs` is their home;
-  `EDITOR_THEME` is one constexpr value today.
-- **A CJK / emoji fallback face merged after Plex** (E.6.1) — user text in those scripts draws `U+FFFD`.
-- **Licence notices shipped beside a PACKAGED editor binary** (E.6.1 D24) — Plex's OFL and Lucide's ISC/MIT
-  texts live under `editor/third_party/fonts/` only.
-- **A theme decision for `ImGuiItemFlags_MixedValue`**, the day a multi-selection edit draws one (E.6.1 D13).
-- **ImGuizmo's hit tolerances above a 100 % UI scale** (E.6.1 R7) — library literals, deliberately unscaled.
-- **The mock's axis hues, across all four consumers at once** (E.6.3 D3, declined) — the gizmo, the grid's world
-  axes, the view-axis widget and the Inspector letters share ONE identity colour; moving it re-opens E.1.2 / E.1.3 /
-  E.1.5 / E.3.1's validation rows and moves `TH2`, `AX1`–`AX3` and `I143(c)`.
-- **A stacked axis row (label above, under a width threshold) or values at `smallSize`** (E.6.3 D5) — the two ways
-  to win back the risen axis thresholds; the Directional Light still clips at the 1280 launch default.
-- **The axis row's last digit draws over its unit's 1-point outline in a narrow band** (E.6.3's row 7, UI scale 1,
-  this task's own layout) — for `0.000` from the content width where the digit's stroke enters the border (266 / 279
-  / 316, Cube / Main Camera / Directional Light) down to where its ink is first cut, 4 points lower (262 / 275 / 312);
-  for `123.456` from 310 to 307. Between the two the digit hides the outline, because the frameless drag's value
-  region runs to the unit's outer edge (`inspectorAxisLayout`: `valueWidth = unitWidth - valueX`), where
-  `RenderTextClipped` clips — the clip every framed ImGui drag uses (`imgui_widgets.cpp:2805`,
-  `RenderTextClipped(frame_bb.Min, frame_bb.Max, …)`), so a stock `DragFloat` draws over its own border the same way.
-  Ending the value region inside the border closes it, and moves every threshold above.
-- **No `Clear` on the Inspector's reference rows in a 640-wide window** (E.6.3's row 17, present at the branch point)
-  — E.3.3's `assetReferenceFieldWidth` floors the field at one frame height and `Clear` lands past the panel's clip.
-  Nothing overlaps.
-- **The Material slot row's thumbnail overlaps its `Clear` at 640 wide** (E.6.3's row 17, present at the branch
-  point) — E.3.4's slot row draws the 64-point well at `thumbnailEdge` whatever its ≈ 50-point frame; at 900 and
-  above the well fits.
-- **Widgets in a dock's tab row** — the mock's header dropdowns; the pinned ImGui has `DockNodeBeginAmendTabBar`
-  (`imgui_internal.h:3734-3735`), the route E.6.3 named and did not take (E.2.4 stopped at a popover).
-- **Tab icons** (E.6.3 D12) — a label change publishes a new `window->Name` to `keyboardFocusPanelId`, so it needs
-  `###` labels and `I159(h)`'s respelling.
-- **The Console tab's unread dot** (E.6.3 D7) — needs a "seen" notion, and it changes what the tab's X means.
-- **GPU time in the stats card** (E.6.3 D9) — SDL_GPU 3.4.12 has no timestamp queries, so the card shows `—`.
-- **An entity enabled flag** (the mock's `off` meta, E.6.3 D6) — engine, schema and bridge.
-- **The Hierarchy's footer Create Empty / Create Child buttons** (E.6.3 D6) — the Create menu and both context menus
-  already create.
-- **Component Copy / Paste / Reset** (E.6.3 D13) — the card's overflow menu holds Remove Component alone.
-- **Renaming from the Inspector** (E.6.3 D5) — the entity header's name is read-only.
-- **The mock's 38-point menu bar** (E.6.3 D13, declined after E.6.2 handed it on) — it re-arms E.6.2's D22 fixtures.
-- **The mock's default layout**, the bottom dock spanning the full width (E.6.3 D13).
-- **The viewport's `Cube · Transform` chip** (E.6.3 D13) — the mock gives it no stated meaning.
-- **The shell's two modals beyond the theme** (E.6.3 D13).
-- **A rounded nav cursor on the asset tiles** (E.6.3 D8) — `RenderNavCursor` draws a square over the `Selectable`'s
-  widened box.
-- **A missing-folder marker on a recent card** (E.6.4 D9) — an existence check per entry, taken outside the draw walk
-  and refreshed like the New Project probe.
-- **Removing one recent project from the list** (E.6.4) — a card's overflow or context menu; Open Recent ▸ Clear is
-  the only edit today.
-- **The manifest name and a last-opened time on a recent card** (E.6.4) — reading each `project.json`, and a timestamp
-  the recents file does not store.
-- **A typable Location** in the New Project dialog (E.6.4 U3, declined) — `Browse...` is its only writer.
-- **Scene/content templates of mock 1e's kind** (`Empty 3D`, `Third-person starter`, …, seeding `assets/` and a first
-  scene) (E.6.4 D4). C++ project-template generation is NOT unowned: it is 4.5.2's and 4.6.1's.
-- **Scene units and git-init at project creation** (E.6.4 D4) — new project-system scope.
-- **A "close project" command** that returns to the Welcome window (E.6.4) — `ProjectSession::close()` has no caller.
-- **Enter on the Unsaved Changes modal** (E.6.4) — `shell_ui.cpp:309` comments `SetItemDefaultFocus(); // Enter ==
-  Save`, which binds nothing; the containment modal's binding (`shell_ui.cpp:440-443`, `I270`) is the one to copy.
-- **A pinned header and footer for the New Project dialog** (E.6.4 D34) — under ≈ 523 points of work height the
-  whole dialog scrolls; pinning them is a body `BeginChild`, with the focus arming read in the modal and passed in.
-- **A minimum OS window size for the editor** (E.6.4 D34) — nothing stops a window narrower than the 280-point
-  dialogs.
-- **The mock's heading letter-spacing** (E.6.4 D28) — a glyph-by-glyph draw.
-- **A drop shadow for modals** (E.6.4 D22) — ImGui 1.92.8 draws none.
-- **A watcher-driven New Project probe** (E.6.4 D12) instead of the 30-tick refresh.
-- **A trailing separator on the `creates` path** (E.6.4 D32).
-- **A patched quickjs-ng for R21's two paths** (4.1.1) — a vcpkg overlay port whose conversion sites let an
-  uncatchable error propagate (the `using` dispose wrap, and a promise rejected with the interrupt), as
-  `promise_reaction_job` already does. It would be the project's first patched dependency, and the defect is worth
-  reporting upstream either way. VM57 pins R21's second path and goes red when the patch lands. **4.1.2 adds two
-  defects the same port would close**: R24 (refuse to create a function while `dbuf_error` holds, one check before
-  `resolve_variables`) and R23 (let a module outlive its context, bellard/quickjs #280's fix), whose hold could then
-  go. Three upstream reports are owed: R21, R23 (citing #280), R24.
+**THE UNOWNED HANDOFFS ARE LISTED IN `docs/08-risks.md`'s "Unowned handoffs" section**, one bullet each, with the
+count in its headline. A new one is added there, never here. Fact 4's four permitted cases, the inspector-row gap,
+the closed `File` section and E.1.1's fired thick-line handoff stay in their own paragraphs in this block and are
+not repeated there.
 
 **E.1.1's THICK-LINE HANDOFF IS FIRED, NOT CLEARED AND NOT DEFERRED.** E.2.3's macOS pass measured it: icons
 scale exactly 2x and hold 22 points, but **387 of 441 sampled runs across the gizmo are ONE DEVICE PIXEL** —
@@ -1616,9 +1378,9 @@ the validation debt above. **The audible half has never been heard on any platfo
 
 **Maintenance:** rewrite this whole section as the position moves. **Per-task history is appended to
 `docs/10-engineering-log.md`, never here** — that is what grew this file to 207 k characters once and 121 k a
-second time. A new task adds a row to the index, edits the phase table, and adds a rule to the standing
-invariants **only if that rule can still be broken by future work**; everything else about it belongs in
-`docs/10`.
+second time. A new task adds a row to the index, edits the phase table, records any new unowned handoff in
+`docs/08-risks.md`, and adds a rule to the standing invariants **only if that rule can still be broken by future
+work**; everything else about it belongs in `docs/10`.
 
 ## Build, test & lint
 
@@ -1707,7 +1469,7 @@ Some decisions are deliberately deferred (`docs/08-risks.md`): forward+ vs defer
 | `docs/06-scope-and-non-goals.md` | What v1.0 is and is not |
 | `docs/07-tasks.md` | Task index: legend, numbering conventions, per-phase links |
 | `docs/tasks/phase-{0..8}.md`, `docs/tasks/phase-E.md` | Full breakdown per phase: epics → tasks → subtasks, each task with goal + deliverable. **Phase E** (Editor Experience) executes between 3 and 4 and is lettered because `3.5` is already taken — see `docs/07`'s numbering conventions |
-| `docs/08-risks.md` | Risk register, open + resolved decisions |
+| `docs/08-risks.md` | Risk register, open + resolved decisions, unowned handoffs |
 | `docs/09-file-formats.md` | Scene schema v1 (entity/components/version), canonical form, versioning & evolution policy |
 | `docs/10-engineering-log.md` | **Per-task build history** — what each task shipped and deliberately did not, traps found, dead ends never to retry, and per-task build/dependency impact. Not normative; not auto-loaded. Read the relevant entry before touching a subsystem. |
 | `docs/future-roadmap.md` | v2 / v3–v4 deferred features |
