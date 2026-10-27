@@ -8,6 +8,7 @@
 #include <aero/core/guid.hpp>
 #include <aero/core/log.hpp>
 #include <aero/core/math.hpp>
+#include <aero/core/vfs.hpp>
 #include <aero/scene/component.hpp>
 #include <aero/script/internal/component_binding.hpp>
 #include <aero/script/script.hpp>
@@ -336,6 +337,29 @@ TEST_CASE("script: Object.keys(engine) is the table's script names, then Vec3, Q
     expected += "Vec3,Quat,Entity";
     Vm vm = makeBuiltinVm();
     CHECK(evalOk(vm, "Object.keys(engine).join()") == expected);
+    CHECK(log.countAtLeast(engine::LogLevel::Warn) == 0U);
+    expectCleanShutdown(vm);
+}
+
+TEST_CASE("script: a VM created over a module source binds the built-in components, as one without does (BN51)") {
+    // Vm::create(config, modules) is the shape the runtime uses once scripts load from the VFS; the table it binds is
+    // chosen in that overload and not in BN8's, so BN8 cannot see it pass the wrong one.
+    const LogCapture log;
+    const engine::VirtualFileSystem modules;
+    engine::script::VmCreateResult created = Vm::create(patient(), modules);
+    REQUIRE(created.status == engine::script::VmCreateStatus::Ok);
+    Vm vm = std::move(created.vm);
+    REQUIRE(vm.valid());
+
+    std::string expected;
+    for (const ComponentBinding& binding : engine::script::internal::builtinComponentBindings().components()) {
+        expected += std::string{binding.scriptName} + ",";
+    }
+    expected += "Vec3,Quat,Entity";
+    CHECK(evalOk(vm, "Object.keys(engine).join()") == expected);
+    // The table's size is not what is pinned: the ten built-ins are bound, named as a script reads them.
+    CHECK(evalOk(vm, "[typeof engine.Transform, typeof engine.MeshRenderer, Object.keys(engine).length > 3].join()") ==
+          "function,function,true");
     CHECK(log.countAtLeast(engine::LogLevel::Warn) == 0U);
     expectCleanShutdown(vm);
 }
