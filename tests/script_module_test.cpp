@@ -2622,13 +2622,16 @@ TEST_CASE("script: a load refusal is a LoadError even when the heap refused an a
 }
 
 TEST_CASE("script: a genuine syntax error beside a refusal the backend tolerates is a CompileError (ML68)") {
-    // Why the window sits here: the prelude leaves the fresh VM's atoms + `names` more, and with 6 KiB left the graph's
-    // own names carry the count across 2048, where the atom hash's 8 KiB growth is refused and tolerated (the old table
-    // is kept). The fresh VM's atoms are the backend's 633 and the `engine` namespace's (task 4.2.1), and the namespace
-    // depends on the build: measured on macos-debug (773 atoms with the ten built-ins bound, 652 with an empty table,
-    // reflect tools OFF), the refusal met `names` 1268-1272 bound and 1389-1393 empty. So the sweep spans both, 141
-    // values. A port or a binding change that moves the fresh VM's atoms moves the window -- VM5 turns red at the same
-    // bump -- and then this case fails on its REQUIRE below until the window is re-derived. Every module this sweep
+    // The prelude leaves the fresh VM's atoms + `names` more, and with 6 KiB left the graph's own names carry the count
+    // across 2048, where the atom hash's 8 KiB growth is refused and tolerated (the old table is kept). That happens
+    // only for the few values of `names` that put the crossing inside the call, and where they sit depends on the fresh
+    // VM's atoms: the backend's plus the `engine` namespace's, which the build decides. So the window is derived, as
+    // ML67's is. A descending scan from 2047 (at 2048 the prelude alone crosses) stops at the first call the heap
+    // refused that still ended in no out-of-memory error; it descends because nothing above that band is a tolerated
+    // refusal, while below it a single value can be (244 here). Other refused calls end in OutOfMemory (`names`
+    // 287-291, 820-824 and 1619-1623 here), so the scan passes over them. Every run of the 21-wide sweep around the hit
+    // is then held to the exact CompileError. Measured on macos-debug and macos-release alike, with the ten built-ins
+    // bound: the band is `names` 1268-1272, five values, so a 4-step scan cannot pass over it. Every module this sweep
     // compiles near the limit ends in assignments, so a refused bytecode growth is always caught by one (R24, docs/08).
     LogCapture log;
     const auto seed = [](MemoryBackend& files) {
@@ -2637,19 +2640,32 @@ TEST_CASE("script: a genuine syntax error beside a refusal the backend tolerates
         files.set("bad.js", "export const ;");
     };
     const auto call = [](Vm& vm) { return vm.evaluateModule("res://a.js"); };
+    const auto preludeOf = [](int names) {
+        return "for (let i = 0; i < " + std::to_string(names) + "; i++) globalThis['q' + i] = 0; 0";
+    };
+    int hit = -1;
+    for (int names = 2047; names >= 0 && hit < 0; names -= 4) {
+        const HeapRun run = runWithRoom(log, seed, preludeOf(names), 6 * KIB, call);
+        if (run.refused && run.status != "OutOfMemory") {
+            hit = names;
+        }
+    }
+    {
+        INFO("no call below 2048 names survived a refused allocation: either such a refusal now ends in OutOfMemory, "
+             "or the crossing no longer meets one");
+        REQUIRE(hit >= 0);
+    }
     std::size_t besideRefusal = 0;
-    for (int names = 1260; names <= 1400; ++names) {
+    for (int names = hit - 10; names <= hit + 10; ++names) {
         INFO("names " << names);
-        const std::string prelude =
-            "for (let i = 0; i < " + std::to_string(names) + "; i++) globalThis['q' + i] = 0; 0";
-        const HeapRun run = runWithRoom(log, seed, prelude, 6 * KIB, call);
+        const HeapRun run = runWithRoom(log, seed, preludeOf(names), 6 * KIB, call);
         CHECK(run.status == "CompileError");
         CHECK(run.error.name == "SyntaxError");
         CHECK(run.error.message == "variable name expected");
         CHECK(run.record == "script: res://a.js: compile error: SyntaxError: variable name expected");
         besideRefusal += run.refused ? 1U : 0U;
     }
-    INFO("no run met the atom hash's refused growth: the window moved; re-derive it from the fresh VM's atoms");
+    MESSAGE("a refusal the backend tolerated at " << hit << " names; " << besideRefusal << " beside one in the sweep");
     REQUIRE(besideRefusal > 0U);
 }
 
