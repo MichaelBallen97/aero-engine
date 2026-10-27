@@ -47,3 +47,18 @@ add_library(aero::script ALIAS aero_script)
 
 target_include_directories(aero_script PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(aero_script PUBLIC aero::core aero::scene PRIVATE qjs aero::script_internal)
+
+# task 4.2.1: the built-in component binding table, generated from the same header list the serializer and the
+# inspector use. The generated code is quickjs-free (it calls the descriptor templates only); the parse-side -I's
+# are the set aero_scene_serialize uses. With the tools OFF the table is empty (component_bindings.cpp).
+if(AERO_REFLECT_TOOLS)
+    aero_reflect_generate_script(aero_script
+        HEADERS ${AERO_BUILTIN_COMPONENT_HEADERS}
+        INCLUDE_DIRS "${CMAKE_SOURCE_DIR}/engine/core/include"
+                     "${CMAKE_SOURCE_DIR}/engine/scene/include"
+                     "${CMAKE_SOURCE_DIR}/engine/reflect/include")
+    target_compile_definitions(aero_script PRIVATE AERO_SCRIPT_COMPONENT_BINDINGS=1)
+else()
+    message(STATUS "aero_script: no component bindings (AERO_REFLECT_TOOLS=OFF) -- "
+                   "engine holds Vec3, Quat and Entity only")
+endif()

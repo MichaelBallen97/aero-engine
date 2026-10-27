@@ -87,6 +87,12 @@ add_executable(aero_tests
     scene_render_selection_test.cpp # task E.1.4 — buildSelectionMaskSet: arms, bucketing, cap, purity
 )
 
+# task 4.2.1 -- the generated built-in table (BN6, BN37-BN49). Tools ON only: with them OFF aero_script binds no
+# component, which is the shape the configure's STATUS line announces.
+if(AERO_REFLECT_TOOLS)
+    target_sources(aero_tests PRIVATE script_component_test.cpp)
+endif()
+
 # AC-9(i) (task 0.2.2): aero::core is linked; glm::glm deliberately IS NOT — that is intentional
 # style, not a compile-time guarantee. Do not "fix" it by adding glm::glm here. (glm's ARCHIVE
 # still reaches the link line via $<LINK_ONLY:> from aero_core's PRIVATE link — that is correct
