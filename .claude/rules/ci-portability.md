@@ -5,6 +5,14 @@ paths:
   - "tests/**/*.hpp"
   - "tests/**/*.cmake"
   - "tests/lsan.supp"
+  - "engine/**/*.cpp"
+  - "engine/**/*.hpp"
+  - "editor/**/*.cpp"
+  - "editor/**/*.hpp"
+  - "tools/**/*.cpp"
+  - "samples/**/*.cpp"
+  - "samples/**/*.hpp"
+  - "runtime/**"
 ---
 
 # CI portability — the failure classes macOS cannot see
@@ -137,3 +145,30 @@ unproven on lavapipe and WARP. `AERO_REQUIRE_GPU=1` turns a missing GPU from a l
 into a hard failure; rehearse CI with it set.
 
 Full history: `docs/10-engineering-log.md`.
+
+## More cross-lane traps
+
+**clang-tidy NEEDS THE PINNED SDK.** With `SDKROOT=$(xcrun --sdk macosx --show-sdk-path)` it exits 1 with tens
+of thousands of errors inside system libc++ headers (`__builtin_clzg` and friends) — **a red verdict on a
+clean tree**, because the generic SDK resolves to a newer libc++ than LLVM 18 can parse. Use `macosx15.4`.
+**Read the EXIT CODE, never a tail**; `SDKROOT=… git diff | xargs clang-tidy` binds `SDKROOT` to `git diff`.
+
+**AN UNHANDLED ENUMERATOR FAILS CI'S LINUX clang-tidy STEP, THROUGH `clang-diagnostic-switch`, AND ONLY
+THERE.** `.clang-tidy` enables that one compiler diagnostic (E.4.5's follow-up), and the step lints every
+tracked `*.cpp` with `--warnings-as-errors='*'`, so a `switch` with no `default:` that misses an enumerator is
+a red lint step **when the switch is in a tracked `*.cpp` or in a header under `engine/`, `runtime/`,
+`editor/`, `tools/` or `tests/`** — `HeaderFilterRegex` suppresses it in any other header, so a `samples/`
+header's switch (`phase-0-cube/fps_gate.hpp:31`, measured) is not covered. The compile lanes still only warn
+(clang's default-on `-Wswitch`) or stay silent (GCC without `-Wall`; MSVC's C4062 is off by default), and no
+lane builds with `-Werror`. So the 51 older lines that call a missing case an "error" or a "failure" are now
+true of the lint lane, not of any compile lane. A `default:` arm silences the diagnostic, so a switch that
+must stay exhaustive keeps having none.
+
+**A NESTED STRUCT'S DEFAULT MEMBER INITIALIZER IS PARSED ONLY ONCE ITS ENCLOSING CLASS IS COMPLETE (E.5.2,
+`4831f92`)**, so libstdc++ refuses a no-argument `optional<Nested>::emplace()` inside that class — seen only by
+CI's Linux clang-tidy step; libc++ (the local tidy), GCC and MSVC accept it. Build such a value whole and
+assign it.
+
+**NEVER DEDUCE `auto*` FROM A STANDARD-LIBRARY ITERATOR (E.6.1, `5309a22`).** MSVC's `std::array` iterator is a
+class, so `const auto* x = arr.begin()` (or `std::find_if(…)` over an array) is C3535 **on Windows alone** —
+libc++ and libstdc++ hand back a raw pointer and accept it. Write `const auto`.

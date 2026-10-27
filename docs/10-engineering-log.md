@@ -24,6 +24,48 @@
 
 What each task shipped, decided, and proved.
 
+## Merged-task index
+
+Full detail for every row is in `docs/10`. Validation verdicts are macOS-only — **no Windows or Linux
+validation pass exists for any task in any phase.** N-E = not executable, N-R = not run.
+
+| Task | PR | Merge | macOS validation |
+|---|---|---|---|
+| 3.7.1 Audio clip assets | #88 | `4892e65` | 11 / 11 |
+| 3.7.2 Playback API + components | #89 | `b398d17` | 47 of 53 records — **the 6 open ones each need ears or the editor** |
+| 3.7.3 Audio-boundary CI guard | #91 | `0530cff` | **no page, deliberately** — the 2.1.2/2.5.2 precedent for pure guard infrastructure |
+| E.1.1 Debug line renderer | #92 | `15bf58b` | 8 PASS / 2 partial |
+| E.1.2 Grid floor + world axes | #93 | `d91eab1` | 8 PASS / 2 partial / 1 N-E |
+| E.1.3 View-axis gizmo | #94, fix #95 | `6fb323c`, `0ab204d` | 11 PASS / 1 partial / 2 N-E / 1 N-R — **the pass found the ortho gizmo-suppression defect** |
+| E.1.4 Silhouette selection outline | #96 | `3aadffb` | 10 PASS / 1 N-E |
+| E.1.5 Transform-gizmo restyle | #97 | `cdc81ce` | **UNRUN on every platform** |
+| E.2.1 `Environment` + sky pass | #98 | `28deab0` | 11 PASS / 2 open — row 4's normal-map arm closed by E.5.1's pass |
+| E.2.2 Point falloff + `SpotLight` | #99 | `bf363e4` | 12 / 12 |
+| E.2.3 Light gizmos + viewport icons | #100 | `00e4c7b` | 12 / 12 |
+| E.2.4 Material-preview parity | #101 | `ae817dc` | 12 / 12 |
+| E.3.1 Axis-labelled vector fields | #102 | `a8d963d` | 13 PASS / 1 partial |
+| E.3.2 Selection-follows-focus router | #103, fix #116 | `b172198`, `c311626` | 9 PASS / 1 partial / 2 N-E (2026-09-12, recorded late); the fix **10 / 10** |
+| E.3.3 Asset-reference picker | #104 | `fc77c4b` | 10 PASS / 3 partial / 1 N-E / 1 N-R, nothing failed |
+| E.3.4 Material inspector redesign | #105 | `170ad9b` | 12 PASS / 1 partial / 1 N-E, nothing failed |
+| E.4.1 Reopen the last scene | #106 | `068c45c` | **12 / 12**, nothing failed — and 26 sabotage seeds / 29 runs with **no coverage hole** |
+| E.4.2 Scene/project containment | #107 | `f88079d` | **14 of 16 rows** — 12 outright, 2 as stated variants, 1 partial, **2 NOT EXECUTABLE**. 29 sabotage seeds found **three real coverage holes**; the code-review round found eight findings, one blocking; Windows CI found a ninth after all three passed |
+| E.4.3 Asset file operations | #108 | `3dff5ef` | **59 / 59, nothing open** (53/57 on the first run; the 2 failures were one defect, fixed by #109 `d228a99`, and the fix round added 2 records). All six seed-critical rows pass, so S9, S11, S14, S18, S21, S22 and S28 all have witnesses |
+| E.4.4 Browser ignore rules | #110, fix #111 | `28e9529`, `f215cbb` | **8 / 8**, nothing open — **the first run failed row 2 on two real defects no lane could see**: the UI font drew `?` for every `…` and `—`, and the open Issues list fell below the panel, both fixed by #111. 29 sabotage seeds, no hole (#111 ran 24 more and its CI fix 5, all caught); the code-review round found one blocking defect — an orphan beside an ignored file could never be deleted |
+| E.4.5 Material names & thumbnails | #112, fix #113 | `caf8a74`, `fd4eb40` | **11 / 11** executable rows, row 11 N-E (1× displays); row 6's first run failed one check, fixed by #113 |
+| E.5.1 Primitive material binding fix | #114 | `834bcb3` | **13 / 13**, nothing failed — 17 sabotage seeds, no hole; its row 5 closes E.2.1 row 4's normal-map arm |
+| E.5.2 Create menu + named selector | #115 | `ab3fd72` | **17 / 17** executable rows, row 18 N-E (1× displays), nothing failed |
+| 2.5.1 fix — Save As always writes `.scene.json` | #117 | `35bb8db` | **15 / 15** — the first run failed rows 5–7 (the panel appends its hidden `.json` to whatever is typed) |
+| 2.5.1 fix — the keyboard after a native dialog | #118 | `df28447` | **15 / 15** executable rows, row 15 N-E (a held hardware key) |
+| E.6.2 Main toolbar, breadcrumb and status bar | #120 | `761cc49` | **18 / 18** executable rows; row 19 N-E (1× displays), 20–21 Windows/Linux |
+| E.6.1 Font, icon set and theme system | #119 | `2b1971e` | **11 / 11** executable rows; rows 2, 9, 10, 18 N-E (1× displays), 14–16 are Windows/Linux. **The pass found two defects no tier could see**, both fixed in the PR: the menu bar's Create ▸ Empty had no icon, and the Inspector's X/Y/Z values clipped where the branch point showed them whole |
+| E.6.3 Panel chrome pass | #121 | `7fe02d1` | **21 / 21** executable rows (its 2× rows ran, on the built-in Retina panel); 21–22 Windows/Linux. **The first pass found four product defects no tier could see**, all fixed in the PR; 66 sabotage seeds, 66 / 66 red on the re-run (the first run's one partial, `S24`, closed by the code-review round), and the 25 on files the later fixes changed 25 / 25 again at the final head |
+| E.6.4 Welcome + New Project restyle | #122 | `52a5b68` | **23 / 23** executable rows, nothing failed; row 21 N-E (1× displays), row 25 N-E (a held hardware key), 26–27 Windows/Linux. 57 sabotage seeds at `72da4e3`, no hole |
+| 4.1.1 VM lifecycle | #123 | `efdd0b9` | **10 / 10**, nothing failed (terminal rows; no editor UI). A 98-seed sabotage matrix whose nine findings each gained a case; two backend paths recorded as R21 |
+| 4.1.2 Module loading via VFS | #124 | `ccf776c` | **11 / 11**, nothing failed (terminal rows). Four code-review rounds; a 154-row sabotage matrix whose five findings each gained a case; R22 and R23 mitigated engine-side, R24 recorded; Windows CI found one layout-dependent test arm (ML71) |
+
+**E.3.2 landed before E.3.1** — legal, disjointly id-reserved; the reservation is discharged and the
+numbering is contiguous.
+
 ## Status snapshot (as extracted)
 
 **Planning is complete; Phase 0 (Foundations & First Triangle) is in progress — the build skeleton plus a sanitized doctest test harness plus dev-builds-only Tracy profiling plus mechanically enforced format/lint configs exist; epic 0.2 (`core`) is CLOSED (0.2.1 handles, 0.2.2 math, 0.2.4 logging, 0.2.5 jobs, 0.2.6 time & VFS); epic 0.3 (`platform`) is CLOSED (0.3.1 window/events, 0.3.2 input, 0.3.3 audio device stub); epic 0.4 (`rhi`) is CLOSED (0.4.1 RHI surface, 0.4.2 SDL_GPU backend, 0.4.3 `tools/shaderc`, 0.4.4 shader loading, 0.4.5 RHI-boundary CI guard); epic 0.5 (`render`) is under way, with 0.5.1 (clear pass), 0.5.2 (textured cube), and 0.5.3 (frame loop & 60 fps validation) landed — the Phase 0 exit gate is reached in code and macOS-validated (PASS), held OPEN pending Windows/Linux on-hardware sign-off; Phase 1 (Reflection, ECS & Serialization) has now OPENED alongside Phase 0's remaining sign-off, with epic 1.1 (`reflect-gen`) now CLOSED — task 1.1.1 (libclang harness), 1.1.2 (annotation detection), 1.1.3 (entt::meta codegen), and 1.1.4 (build-step wiring) all landed — and epic 1.2 (Serialization) now OPENED with task 1.2.1 (JSON writer, generated) and task 1.2.2 (JSON reader, generated) landed, CLOSING Epic 1.2's Definition of Done, with task 1.2.3 (scene serialization format v1) landed on top of that closed DoD.** This is a git repository with a CMake + pinned-vcpkg build, six host-gated presets, a 3-OS GitHub Actions CI matrix, and the canonical folder layout. `aero::core` (STATIC, from `engine/core/CMakeLists.txt`) is the **first compiled engine target** — `aero_tests` is no longer the only one. Epic 0.1 tasks landed so far: 0.1.1 (repo + CMake skeleton), 0.1.2 (vcpkg manifest), 0.1.3 (CI matrix), 0.1.4 (sanitizers + doctest harness), 0.1.5 (Tracy integration), 0.1.6 (format & lint configs). Epic 0.2 (`core`):

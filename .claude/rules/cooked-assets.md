@@ -503,3 +503,21 @@ gap**: skeletons and inverse bind matrices live in `docs/09` section 12's siblin
 
 Full history: `docs/10-engineering-log.md`, tasks 3.3.1, 3.3.2, 3.5.1, 3.5.2 and 3.1.5's entries
 under Phase 3.
+
+## The `engine/assets` subsystem
+
+* **`engine/assets`** (opened 3.3.1) holds the cooked-asset formats and nothing else — eleven pairs:
+  `cooked_mesh`, `mesh_cook`, `cooked_texture`, `texture_cook`, `bc_block`, `cooked_skeleton`,
+  `skeleton_cook`, `cooked_animation`, `animation_cook`, `cooked_audio`, `audio_cook`. It links
+  `aero::core` + `aero::profiling` and **no vcpkg package at all**.
+
+
+## The determinism manifest
+
+**THE DETERMINISM MANIFEST IS FROZEN** at **20 hash lines across FIVE arms / 40 cross-lane comparisons**. A red
+manifest case is `docs/09` §9.11's `cookerVersion` sentence firing; the five constants to bump are
+`COOKED_{MESH,TEXTURE,SKELETON,ANIMATION,AUDIO}_COOKER_VERSION`, and the regeneration ritual lives in the
+manifest's own header. **Never edit a hash to green a red run.** **mp3 and ogg are deliberately NOT in it and
+never may be** (`docs/09` §14.7): their decoders run floating-point transforms whose paths differ by SIMD
+availability and FMA contraction policy. `cooker.audio_lossy_digests` prints both digests on every lane and
+asserts **no digest value**.

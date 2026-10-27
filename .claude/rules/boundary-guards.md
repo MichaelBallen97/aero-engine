@@ -174,3 +174,16 @@ Seed a real violation, confirm the guard goes red, revert. Two hard-won rules:
    green suite this way.
 
 Full history of every guard and probe: `docs/10-engineering-log.md`.
+
+## The audio subsystems
+
+* **`engine/audio`** (opened 3.7.1) holds the runtime clip and, since 3.7.2, the playback surface —
+  four pairs: `clip`, `spatial`, `mixer`, `system`, plus the `audio.hpp` umbrella. It links
+  `aero::core` + `aero::assets` PUBLIC, `aero::profiling` PRIVATE, and **NO VCPKG PACKAGE, EVER**.
+
+* **`engine/scene_audio`** (opened 3.7.2) is the **World → audio bridge** and **the only code in the
+  tree that sees both `engine::scene` and `engine::audio`**, sitting above both — which is what keeps
+  `audio` scene-free and `scene` audio-free. `PUBLIC aero::scene aero::audio` /
+  `PRIVATE aero::profiling`, and **never `aero::scene_internal`** (which carries `EnTT::EnTT`
+  INTERFACE by design). Folding its walk into `engine/audio` would put **EnTT on the link line of every
+  binary that links audio**, including the Phase 5 runtime.

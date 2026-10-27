@@ -213,6 +213,106 @@ not repeated here.
 
 ---
 
+## Validation debt
+
+What each task's validation still owes, and why a page is not optional. Validation pages are gitignored, so this section and CLAUDE.md's "Current state" are the tracked record.
+
+**Validation pages are gitignored, so they enter no commit.** Per-page measurements and method notes are in
+`docs/10`; this is the ledger of what is still owed.
+
+**ONE PAGE HAS NOT BEEN RUN ON ANY PLATFORM: E.1.5's.** It is the whole of Phase E's validation risk on this OS
+— every other task in E.1–E.6 is macOS-validated, as are 4.1.1 and 4.1.2 (see the index above; each run page's
+record and measurements are in its task's `docs/10` entry, among them 4.1.1's Debug recursion depth of 56 calls at
+512 KiB against Release's 544, which 4.4.1 decides). **Rows still owed on pages that otherwise passed include** the
+2× rows of pages run on 1× displays — E.6.1's 2, 9, 10 and 18 (rows 9 and 10 decide two unowned handoffs), E.6.2's
+19, E.6.4's 21, E.5.2's 18 and E.4.5's 11 — which need a Retina panel attached, and E.6.4's row 25 (a synthetic
+autorepeat stand-in never reached the picker) and #118's row 15, which need a HELD hardware key. The index carries
+every page's partial and N-E counts.
+
+**Three method facts from E.5.2's pass:** this machine's `editor_prefs.json` had Focus Follows Selection OFF, which
+row 1 needs ON (set through View, restored after); a project under `/private/tmp` makes E.4.1 record `""` because
+macOS's panels return `/tmp/…`, so validate from a home-directory project; and a click that closes the Edit menu at
+its first item's position IS Edit ▸ Undo — close a menu by re-clicking its header. **And always `git status` after
+an interrupted sabotage run** (E.4.1's matrix once left a live seed in the working tree, caught before anything was
+committed): an aborted seed looks exactly like a clean tree until it is read.
+
+**E.4.2'S PAGE (14 of 16) OWES THREE RECORDS, EACH WITH A MEASURED REASON.** Row 9's **Escape** third, row 15
+(request-hook popup close; `I192` pins only the ordering as source text and **no tier here can read
+`g.HoveredWindow`**) and row 16 (the already-open-project guard; cover stays `CN25`). The pass drove the bare
+executable, which no synthetic keyboard input reaches (see the method traps below); a signed `.app` takes keys, so
+row 9's Escape third is executable now. Synthetic **mouse** events work fully, including navigating the native file
+dialog by its column view. Row 16 additionally cannot be staged at all: `NSOpenPanel`
+watches the filesystem and **clears the selection and disables `Open`** the moment the scene's parent
+directory is deleted. Its two **Windows** rows are the two cross-platform risks recorded rather than fixed: `path("C:/").parent_path()` possibly yielding `"C:"` and giving the walk one extra
+drive-relative probe, and a scene directly at a POSIX filesystem root being a **false refusal** — both
+bounded, both in the safe direction.
+
+**WHY A VALIDATION PAGE IS NOT OPTIONAL: for many tasks it is the ONLY cover a declared sabotage seed has
+anywhere.** The recurring pattern is that no tier in this tree can type, click, press a key, open an ImGui
+popup, read ImGuizmo's global state, judge a colour at a glance, or observe a frame-to-frame layout fact — so
+a rect, a colour, a gesture, a wrap or a HiDPI legibility claim has no automated witness. E.3.4's pass alone
+closed **eighteen of nineteen** uncovered seeds across ten rows; E.2.4's closed all six of its own; E.2.3's
+rows 3 and 4 were the only cover its two seeds had. **E.3.2's seed rows are closed where synthetic input reaches**
+(row 5, `S24`'s half-typed name, passed — and #116's row 9 re-ran it under the tab-only raise); what stays
+uncovered is row 6 (`S24`'s drop half — no synthetic release commits a reparent), row 8 (the gizmo-drag hold — no
+command can be issued while the button is held) and row 7's popup-closing half (unreachable by construction behind
+the `popupOpen` Hold).
+
+**ONE SEED REMAINS UNCOVERED ON AN OTHERWISE-COMPLETE PAGE AND CANNOT BE COVERED**: E.2.4's `S19`, the
+`SkyPass::create` failure arm, is unreachable at runtime in any build whose shaders cooked, so the source-text
+pin in `I140(b)` is its only witness — as that page itself states.
+
+**STILL-OPEN RECORDS ON PAGES THAT OTHERWISE PASSED.** E.2.1 has two — its row 4 normal-mapped arm was
+closed by E.5.1's pass (the bump reads in the ambient-only shade, the witness its seed 8 lacked): row 7's `Save
+Scene` produced **no write and no log line** under synthetic input while New Scene, Reset Layout and Undo all
+worked from the same path — **possibly a real defect, explicitly unresolved** — and rows 10/12 lacked a
+material asset and a Tracy connection. E.1.3 has
+two: row 6's translate/scale-in-ortho arm (blocked by the defect PR #95 fixed, re-runnable now) and row 13's
+cost A/B, which needs a second build at the branch point. **Its row 7 PASSED on 2026-09-30** through E.5.2's
+row 12: a created Plane receives the directional shadow in ortho, recorded on both pages.
+
+**OUTSTANDING macOS PASSES: 3.5.1's twelve rows, 3.5.2's twelve rows, and 3.7.2's twelve rows.** Each is the
+only cover its task's declared seeds have anywhere. **3.4.2's `S26` cannot be covered from macOS at all** —
+SDL queues a texture-container free on Metal and performs it immediately on Vulkan and D3D12, so it is
+observable only on a Windows or Linux pass.
+
+**3.7.2's SHAPE IS WORTH STATING RATHER THAN A FORMULA.** CI genuinely compiles and runs every
+`SP`/`MX`/`SY`/`SA`/`DV` case on all three lanes, so the spatializer, the mixer, the system and the bridge
+**are** cross-lane covered — and **no lane produces a sound**, because CI opens the null backend only.
+**LSan runs on the Linux Debug lane alone**, which makes that page's Linux row matter more than most: a green
+teardown case on macOS proves the teardown is *clean*, not that a leak is *absent*, and unlike 3.7.1 (whose
+leak lived in third-party code) everything 3.7.2 allocates is first-party. Its `A23` and `A36` remain
+**uncovered by anything at all** — no lane runs TSan and the null-render buffer belongs to miniaudio.
+
+**3.7.3 ADDS NO PAGE AND THAT IS DELIBERATE** — the 2.1.2 / 2.5.2 precedent: pure test/guard infrastructure
+needs no ears, eyes, hardware or OS-specific behaviour a row could measure. Its standing evidence is the
+hermetic e2e pair, which runs on the macOS and Linux lanes on every push. **Its residual is Windows**: both
+e2e cases are `NOT WIN32` and the lint job is ubuntu-only, so nothing about the guards' *behaviour* is
+exercised under an MSYS userland. Coverage of the *invariant* is unaffected.
+
+**NO WINDOWS OR LINUX VALIDATION PASS EXISTS FOR ANY TASK IN ANY PHASE** — Phase 0's gate, Phase 1's render
+rows, all thirteen Phase 2 tasks, and every Phase 3, Phase E and Phase 4 task.
+
+**METHOD TRAPS FOR DRIVING THE EDITOR, ALL MEASURED.** A pending TCC prompt stalls the editor to ~0.2% CPU
+with a window that **NEVER RENDERS** (a black capture); the prompts **CASCADE**, one per bundle identity, and
+both kinds accept a synthetic click on the affirmative button derived from the dialog's own **fresh** bounds
+(~`x + 0.727w`, `y + 0.844h`). A stale editor survives `pkill -f` and must be `pkill -9`ed; a stalled bundle
+identity stays stalled until a fresh `CFBundleIdentifier` clears it. Synthetic mouse MOVES do provoke ImGui
+tooltips. **Synthetic KEYBOARD input reaches ImGui only when the editor runs as a signed `.app`** (a bare
+executable never becomes a key window). It goes to the FRONTMOST app, so confirm that before every key; and
+Enter deactivates a single-line `InputText`. **Synthetic drag-and-drop still does not work** (it undocks
+panels). **Click window-relative, re-reading the origin every time** — the window can move mid-row.
+**Bind every capture to its launched PID** — two live `aero_editor` processes once made a window lookup
+capture the STALE one and produced three false "0 differing" comparisons, including one that provably
+contained an outline. **Let an anti-vacuity control be what catches that.** **While a native sheet is open, the
+first `layer=0 onscreen=1` window of the PID is the SHEET**, so window-relative clicks land elsewhere — click a
+panel in absolute coordinates. And before #118, a key sent right after a native panel closed from the keyboard was
+dropped by the editor itself, not by the input method. Note `screencapture` carries the
+display's ICC profile, and **there is no `renderFrame` Tracy zone in this tree** — the frame-level zones are
+`renderScene` and `render`.
+
+---
+
 ## Resolved decisions (for the record)
 
 - **Project name** → **Aero Engine** (July 2026)
