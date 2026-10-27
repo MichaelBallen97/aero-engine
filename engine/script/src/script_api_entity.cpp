@@ -202,6 +202,10 @@ JSValue fieldGet(JSContext* ctx, JSValueConst thisValue, int magic) noexcept {
     if (storage == nullptr) {
         return JS_EXCEPTION;
     }
+    if (isVectorKind(field.kind)) {
+        // A view of the field, not a copy of it: nothing is read until an axis is.
+        return newVectorView(ctx, api, field.kind, *ref, component, fieldMagicField(magic));
+    }
     return loadFieldValue(ctx, field.kind, field.address(storage));
 }
 

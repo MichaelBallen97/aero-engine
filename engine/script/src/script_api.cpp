@@ -218,9 +218,7 @@ bool installScriptApi(JSContext* ctx, JSRuntime* rt, ScriptApi& api) {
         spec.setter = &fieldSet;
         for (std::size_t f = 0; f < components[i].fields.size(); ++f) {
             const internal::FieldBinding& field = components[i].fields[f];
-            if (fieldIsScriptBound(field.kind)) {  // a Vec3 or Quat field is skipped here until the view runtime
-                spec.accessors.push_back(AccessorSpec{std::string{field.name}, fieldMagic(i, f), false});
-            }
+            spec.accessors.push_back(AccessorSpec{std::string{field.name}, fieldMagic(i, f), false});
         }
         if (!installClass(ctx, rt, ns.get(), spec, &api.componentConstructors)) {
             return false;

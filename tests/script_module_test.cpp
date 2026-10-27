@@ -2625,8 +2625,8 @@ TEST_CASE("script: a genuine syntax error beside a refusal the backend tolerates
     // Why the window sits here: the prelude leaves the fresh VM's atoms + `names` more, and with 6 KiB left the graph's
     // own names carry the count across 2048, where the atom hash's 8 KiB growth is refused and tolerated (the old table
     // is kept). The fresh VM's atoms are the backend's 633 and the `engine` namespace's (task 4.2.1), and the namespace
-    // depends on the build: measured on macos-debug (746 atoms with the ten built-ins bound, 652 with an empty table,
-    // reflect tools OFF), the refusal met `names` 1295-1299 bound and 1391-1395 empty. So the sweep spans both, 111
+    // depends on the build: measured on macos-debug (773 atoms with the ten built-ins bound, 652 with an empty table,
+    // reflect tools OFF), the refusal met `names` 1268-1272 bound and 1389-1393 empty. So the sweep spans both, 141
     // values. A port or a binding change that moves the fresh VM's atoms moves the window -- VM5 turns red at the same
     // bump -- and then this case fails on its REQUIRE below until the window is re-derived. Every module this sweep
     // compiles near the limit ends in assignments, so a refused bytecode growth is always caught by one (R24, docs/08).
@@ -2638,7 +2638,7 @@ TEST_CASE("script: a genuine syntax error beside a refusal the backend tolerates
     };
     const auto call = [](Vm& vm) { return vm.evaluateModule("res://a.js"); };
     std::size_t besideRefusal = 0;
-    for (int names = 1290; names <= 1400; ++names) {
+    for (int names = 1260; names <= 1400; ++names) {
         INFO("names " << names);
         const std::string prelude =
             "for (let i = 0; i < " + std::to_string(names) + "; i++) globalThis['q' + i] = 0; 0";
@@ -3134,11 +3134,11 @@ TEST_CASE(
 
 namespace {
 
-// A module declaring 120 names the fresh VM has not seen, which crosses the atom array's 711 slots, then assigning to
+// A module declaring 160 names the fresh VM has not seen, which crosses the atom array's 1066 slots, then assigning to
 // the first sixteen times: an assignment follows its last bytecode growth, so the compile returns (R24 in docs/08).
 [[nodiscard]] std::string freshNamesSource() {
     std::string source = "let zq0";
-    for (int i = 1; i < 120; ++i) {
+    for (int i = 1; i < 160; ++i) {
         source += ", zq";
         source += std::to_string(i);
     }
@@ -3147,12 +3147,12 @@ namespace {
 }
 
 // The atom array grows 711 -> 1066 -> 1599 entries, and the fresh VM's atoms are the backend's 633 plus the `engine`
-// namespace's (task 4.2.1), which depends on the build: measured on macos-debug, 746 with the ten built-ins bound (the
-// array is already at 1066) and 652 with an empty table (reflect tools OFF, still at 711). This prelude interns 308
-// more, which leaves the bound VM under 1066 (about 1056) and the empty one at about 962, so the 120 fresh names below
-// cross 1066 on BOTH builds. A binding that adds or removes more than a dozen atoms moves this window; the case then
-// fails on its REQUIRE until the count is re-derived.
-constexpr std::string_view ATOM_PRELUDE = "for (let i = 0; i < 308; i++) globalThis['q' + i] = 0; 0";
+// namespace's (task 4.2.1), which depends on the build: measured on macos-debug, 773 with the ten built-ins bound (the
+// array is already at 1066) and 652 with an empty table (reflect tools OFF, still at 711). This prelude interns 272
+// more (and about two of its own), which leaves the bound VM under 1066 (about 1047) and the empty one at about 926, so
+// the 160 fresh names below cross 1066 on BOTH builds. A binding that adds or removes more than a dozen atoms moves
+// this window; the case then fails on its REQUIRE until the count is re-derived.
+constexpr std::string_view ATOM_PRELUDE = "for (let i = 0; i < 272; i++) globalThis['q' + i] = 0; 0";
 
 }  // namespace
 

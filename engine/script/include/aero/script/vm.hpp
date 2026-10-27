@@ -38,7 +38,7 @@ struct VmAccess;              // the test seam that creates a VM over another ta
 // The JavaScript heap: every byte the backend allocates, header included, is charged against it. There
 // is deliberately no "unlimited": 0 is refused rather than read as the backend's own "no limit".
 inline constexpr std::size_t DEFAULT_HEAP_LIMIT_BYTES = std::size_t{64} * 1024U * 1024U;  // 64 MiB
-// The smallest heap a VM may be given. An empty VM needs about 160 KB (147 561 B Release, 159 513 B Debug, with the
+// The smallest heap a VM may be given. An empty VM needs about 165 KB (152 585 B Release, 164 969 B Debug, with the
 // ten built-in components bound; 134 667 B Debug with none -- the `engine` namespace is built in every VM). That
 // includes the three builtins the backend builds lazily on a first read, which create reads once so that no later
 // read can fail, so no create runs out of heap at or above this; below it the backend's context-creation

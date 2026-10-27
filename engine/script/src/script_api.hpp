@@ -178,15 +178,25 @@ struct FieldValue {
     std::array<float, 4> vector{};  // Vec3 and Quat
 };
 
-// True for the kinds whose accessors the install attaches.
-[[nodiscard]] bool fieldIsScriptBound(internal::FieldKind kind) noexcept;
+// A Vec3 or Quat field reads as a view, never as a value; the vector's dimension is 3 or 4.
+[[nodiscard]] constexpr bool isVectorKind(internal::FieldKind kind) noexcept {
+    return kind == internal::FieldKind::Vec3 || kind == internal::FieldKind::Quat;
+}
+[[nodiscard]] constexpr int vectorDimensionOf(internal::FieldKind kind) noexcept {
+    return kind == internal::FieldKind::Vec3 ? 3 : 4;
+}
 // Checks `value` against the field's kind and reads it, converting nothing a script could observe. False: a TypeError
 // or RangeError is pending, and nothing has been read from or written to the World.
 [[nodiscard]] bool readFieldValue(JSContext* ctx, const ScriptApi& api, internal::FieldKind kind, const Site& site,
                                   JSValueConst value, FieldValue& out);
 void storeFieldValue(internal::FieldKind kind, void* member, const FieldValue& value);
-// The member as a script value. JS_EXCEPTION with an exception pending when the heap limit refused it.
+// The member as a script value (not for a vector kind). JS_EXCEPTION with an exception pending when the heap limit
+// refused it.
 [[nodiscard]] JSValue loadFieldValue(JSContext* ctx, internal::FieldKind kind, const void* member) noexcept;
+// A Vec3 or Quat field as a new view of (ref, component, field); nothing is read yet. JS_EXCEPTION, with an exception
+// pending, when the heap limit refused it.
+[[nodiscard]] JSValue newVectorView(JSContext* ctx, const ScriptApi& api, internal::FieldKind kind,
+                                    const EntityRef& ref, std::size_t component, std::size_t field) noexcept;
 
 // ---- the vector class (script_api_values.cpp) -------------------------------------------------------------------
 // A constructor and `set` / `copy` carry the dimension (3 or 4) as their magic; an axis accessor carries

@@ -3,13 +3,16 @@
 // valueOf, a getter or a Proxy never runs), 5 (an object is made with JS_NewObjectClass, never by setting
 // properties) and 9 (receiver, then values, then the write).
 //
-// A VectorCell is a detached vector's storage. Every function below handles that case; the place where a vector that
-// names a component field would be resolved is marked by assert(!cell.view).
+// A VectorCell is either a detached vector's own storage, or a view that names one Vec3 or Quat field of one entity's
+// component. A view holds no pointer: every axis read or write, `set` and `copy` resolves the entity again, so a view
+// of a destroyed entity or a removed component throws and writes nothing. The order is the same everywhere: receiver,
+// every value, the source of a copy (read out whole), then the target, then the write.
 //
 // The second half is the value contract of a component field: one script value in (checked by tag, converting nothing
 // a script could observe), one member out, and the other way round, each an exhaustive switch over FieldKind.
 
 #include <aero/core/guid.hpp>
+#include <aero/core/math.hpp>
 
 #include "script_api.hpp"
 #include "vm_impl.hpp"
@@ -72,6 +75,73 @@ enum class NumberRead : std::uint8_t { Ok, NotANumber, Failed };
     return throwTypeError(ctx, where + ": expected a number, got " + describeValue(ctx, value, scriptApiOf(ctx)));
 }
 
+[[nodiscard]] std::array<float, 4> loadVector(int dimension, const void* address) noexcept {
+    if (dimension == 3) {
+        const auto& v = *static_cast<const Vec3*>(address);
+        return {v.x, v.y, v.z, 0.0F};
+    }
+    const auto& q = *static_cast<const Quat*>(address);
+    return {q.x, q.y, q.z, q.w};
+}
+
+void storeVector(int dimension, void* address, const std::array<float, 4>& values) noexcept {
+    if (dimension == 3) {
+        *static_cast<Vec3*>(address) = Vec3{values[0], values[1], values[2]};
+        return;
+    }
+    *static_cast<Quat*>(address) = Quat{values[0], values[1], values[2], values[3]};
+}
+
+// Where a view names its field: "engine.<C>.<f>", plus the axis for an axis access (a view into static storage).
+[[nodiscard]] Site viewSite(const ScriptApi& api, const VectorCell& cell, std::string_view axis) noexcept {
+    const internal::ComponentBinding& bound = api.table->components()[cell.component];
+    return Site{bound.scriptName, bound.fields[cell.field].name, axis};
+}
+
+[[nodiscard]] std::string_view axisLetter(int axis) noexcept {
+    return std::string_view{&AXIS_LETTERS[static_cast<std::size_t>(axis)], 1};
+}
+
+// The field a view names, resolved in the World right now. nullptr: a TypeError is pending. The address is valid until
+// the host function returns or the World changes, and is never kept.
+[[nodiscard]] void* resolveView(JSContext* ctx, const ScriptApi& api, const VectorCell& cell, std::string_view axis) {
+    void* const storage = resolveStorage(ctx, api, cell.ref, cell.component, viewSite(api, cell, axis));
+    if (storage == nullptr) {
+        return nullptr;
+    }
+    return api.table->components()[cell.component].fields[cell.field].address(storage);
+}
+
+// All of a vector's values: a detached one's own, a view's as the World holds them now. False: a TypeError is pending.
+[[nodiscard]] bool readVector(JSContext* ctx, const ScriptApi& api, const VectorCell& cell, int dimension,
+                              std::array<float, 4>& out) {
+    if (!cell.view) {
+        out = cell.values;
+        return true;
+    }
+    const void* const address = resolveView(ctx, api, cell, {});
+    if (address == nullptr) {
+        return false;
+    }
+    out = loadVector(dimension, address);
+    return true;
+}
+
+// Writes all of a vector's values into the cell: its own storage, or the field a view names.
+[[nodiscard]] bool writeVector(JSContext* ctx, const ScriptApi& api, VectorCell& cell, int dimension,
+                               const std::array<float, 4>& values, std::string_view axis) {
+    if (!cell.view) {
+        cell.values = values;
+        return true;
+    }
+    void* const address = resolveView(ctx, api, cell, axis);
+    if (address == nullptr) {
+        return false;
+    }
+    storeVector(dimension, address, values);
+    return true;
+}
+
 }  // namespace
 
 JSValue vectorConstructor(JSContext* ctx, JSValueConst /*newTarget*/, int /*argc*/, JSValueConst* argv,
@@ -105,8 +175,17 @@ JSValue vectorGetAxis(JSContext* ctx, JSValueConst thisValue, int magic) noexcep
     if (cell == nullptr) {
         return foreignReceiver(ctx, dimension, axisWhere(dimension, axis));
     }
-    assert(!cell->view);  // a vector that names a component field resolves its entity here
-    return JS_NewFloat64(ctx, static_cast<double>(cell->values[static_cast<std::size_t>(axis)]));
+    std::array<float, 4> values{};
+    if (!cell->view) {
+        values = cell->values;
+    } else {
+        const void* const address = resolveView(ctx, scriptApiOf(ctx), *cell, axisLetter(axis));
+        if (address == nullptr) {
+            return JS_EXCEPTION;
+        }
+        values = loadVector(dimension, address);
+    }
+    return JS_NewFloat64(ctx, static_cast<double>(values[static_cast<std::size_t>(axis)]));
 }
 
 JSValue vectorSetAxis(JSContext* ctx, JSValueConst thisValue, JSValueConst value, int magic) noexcept {
@@ -121,12 +200,25 @@ JSValue vectorSetAxis(JSContext* ctx, JSValueConst thisValue, JSValueConst value
         case NumberRead::Ok:
             break;
         case NumberRead::NotANumber:
-            return notANumber(ctx, value, axisWhere(dimension, axis));
+            // A view names its field ("engine.<C>.<f>.<axis>"), a detached vector its class ("engine.Vec3.<axis>").
+            return notANumber(ctx, value,
+                              cell->view ? describeSite(viewSite(scriptApiOf(ctx), *cell, axisLetter(axis)))
+                                         : axisWhere(dimension, axis));
         case NumberRead::Failed:
             return JS_EXCEPTION;
     }
-    assert(!cell->view);
-    cell->values[static_cast<std::size_t>(axis)] = narrowed;
+    if (!cell->view) {
+        cell->values[static_cast<std::size_t>(axis)] = narrowed;
+        return JS_UNDEFINED;
+    }
+    // The other axes are read back from the World and written unchanged: nothing sits between the read and the write.
+    void* const address = resolveView(ctx, scriptApiOf(ctx), *cell, axisLetter(axis));
+    if (address == nullptr) {
+        return JS_EXCEPTION;
+    }
+    std::array<float, 4> values = loadVector(dimension, address);
+    values[static_cast<std::size_t>(axis)] = narrowed;
+    storeVector(dimension, address, values);
     return JS_UNDEFINED;
 }
 
@@ -147,8 +239,9 @@ JSValue vectorSet(JSContext* ctx, JSValueConst thisValue, int /*argc*/, JSValueC
                 return JS_EXCEPTION;
         }
     }
-    assert(!cell->view);
-    cell->values = values;
+    if (!writeVector(ctx, scriptApiOf(ctx), *cell, dimension, values, {})) {
+        return JS_EXCEPTION;
+    }
     return JS_DupValue(ctx, thisValue);
 }
 
@@ -164,8 +257,12 @@ JSValue vectorCopy(JSContext* ctx, JSValueConst thisValue, int /*argc*/, JSValue
         return throwTypeError(ctx, className(dimension) + ".copy: expected an " + className(dimension) + ", got " +
                                        describeValue(ctx, argv[0], scriptApiOf(ctx)));
     }
-    assert(!cell->view && !other->view);
-    cell->values = other->values;  // read whole, then written
+    // The source is read out whole before the target is resolved, so `a.copy(a)` reads before it writes.
+    std::array<float, 4> values{};
+    if (!readVector(ctx, scriptApiOf(ctx), *other, dimension, values) ||
+        !writeVector(ctx, scriptApiOf(ctx), *cell, dimension, values, {})) {
+        return JS_EXCEPTION;
+    }
     return JS_DupValue(ctx, thisValue);
 }
 
@@ -198,21 +295,6 @@ namespace {
 constexpr double MAX_UINT32 = 4294967295.0;
 
 }  // namespace
-
-bool fieldIsScriptBound(internal::FieldKind kind) noexcept {
-    switch (kind) {
-        case internal::FieldKind::Float:
-        case internal::FieldKind::Bool:
-        case internal::FieldKind::UInt32:
-        case internal::FieldKind::Guid:
-        case internal::FieldKind::String:
-            return true;
-        case internal::FieldKind::Vec3:
-        case internal::FieldKind::Quat:
-            return false;  // the vector fields arrive with the view runtime
-    }
-    return false;
-}
 
 bool readFieldValue(JSContext* ctx, const ScriptApi& api, internal::FieldKind kind, const Site& site,
                     JSValueConst value, FieldValue& out) {
@@ -280,10 +362,17 @@ bool readFieldValue(JSContext* ctx, const ScriptApi& api, internal::FieldKind ki
             return true;
         }
         case internal::FieldKind::Vec3:
-        case internal::FieldKind::Quat:
-            assert(false && "a vector field has no accessor yet");
-            return wrongType(ctx, api, site, value,
-                             kind == internal::FieldKind::Vec3 ? "an engine.Vec3" : "an engine.Quat");
+        case internal::FieldKind::Quat: {
+            // An instance of the field's class, found by its opaque: no property of a plain object is read. A view
+            // source is resolved and copied out here, before the caller resolves the target.
+            const int dimension = vectorDimensionOf(kind);
+            const JSClassID classId = vectorClass(api, dimension);
+            const auto* const cell = static_cast<const VectorCell*>(JS_GetOpaque(value, classId));
+            if (cell == nullptr) {
+                return wrongType(ctx, api, site, value, dimension == 3 ? "an engine.Vec3" : "an engine.Quat");
+            }
+            return readVector(ctx, api, *cell, dimension, out.vector);
+        }
     }
     return false;
 }
@@ -307,7 +396,7 @@ void storeFieldValue(internal::FieldKind kind, void* member, const FieldValue& v
             return;
         case internal::FieldKind::Vec3:
         case internal::FieldKind::Quat:
-            assert(false && "a vector field has no accessor yet");
+            storeVector(vectorDimensionOf(kind), member, value.vector);
             return;
     }
 }
@@ -330,10 +419,20 @@ JSValue loadFieldValue(JSContext* ctx, internal::FieldKind kind, const void* mem
         }
         case internal::FieldKind::Vec3:
         case internal::FieldKind::Quat:
-            assert(false && "a vector field has no accessor yet");
+            assert(false && "a vector field is read as a view (newVectorView), never as a value");
             return JS_UNDEFINED;
     }
     return JS_UNDEFINED;
+}
+
+JSValue newVectorView(JSContext* ctx, const ScriptApi& api, internal::FieldKind kind, const EntityRef& ref,
+                      std::size_t component, std::size_t field) noexcept {
+    VectorCell cell;
+    cell.ref = ref;
+    cell.component = static_cast<std::uint16_t>(component);
+    cell.field = static_cast<std::uint16_t>(field);
+    cell.view = true;
+    return newOpaqueObject(ctx, vectorClass(api, vectorDimensionOf(kind)), cell);
 }
 
 }  // namespace engine::script

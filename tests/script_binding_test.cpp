@@ -18,6 +18,7 @@
 
 #include <array>
 #include <cctype>
+#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -1198,4 +1199,217 @@ TEST_CASE("script: no hand-written script source names a built-in component (BN3
     // Anti-vacuity: the scan reached the runtime, and the same scan finds a real identifier.
     CHECK(sawApiSource);
     CHECK(sawApiHeader);
+}
+
+// ---- BN31-BN36: Vec3 and Quat views of a component's vector fields -----------------------------------------------
+
+TEST_CASE("script: a Vec3 field read is a live view, and a write through it lands in the World (BN31)") {
+    const LogCapture log;
+    ProbeScene scene;
+    completion(scene.vm, "globalThis.c = e.get(engine.ScriptProbe); globalThis.p = c.v; p.x += 0.5; 0");
+    CHECK(scene.probe().v == engine::Vec3{1.5F, 2.0F, 3.0F});
+    CHECK(completion(scene.vm, "[c.v === c.v, p instanceof engine.Vec3, p.x, p.y, p.z].join()") ==
+          "false,true,1.5,2,3");
+
+    // The view names the field, not a value read once: the World's own change and another field's write show through.
+    scene.probe().v.y = 9.0F;
+    CHECK(completion(scene.vm, "p.y") == "9");
+    completion(scene.vm, "c.f = 4; c.s = 'other'; 0");
+    CHECK(completion(scene.vm, "[p.x, p.y, p.z].join()") == "1.5,9,3");
+
+    // add replaces the component with the defaults; the same view reads them.
+    completion(scene.vm, "e.add(engine.ScriptProbe); 0");
+    CHECK(completion(scene.vm, "[p.x, p.y, p.z].join()") == "1,2,3");
+    CHECK(scene.probe() == ScriptProbe{});
+    CHECK(log.countAtLeast(LogLevel::Warn) == 0U);
+    expectCleanShutdown(scene.vm);
+}
+
+TEST_CASE("script: a Vec3 field takes an engine.Vec3 and nothing else, and reads no property of the value (BN32)") {
+    const LogCapture log;
+    ProbeScene scene;
+    const Entity second = scene.world.create();
+    ScriptProbe seeded;
+    seeded.v = engine::Vec3{10.0F, 11.0F, 12.0F};
+    REQUIRE(scene.world.add<ScriptProbe>(second, seeded) != nullptr);
+    REQUIRE(label(scene.vm.defineEntityGlobal("o", second)) == "Ok");
+    completion(scene.vm, "globalThis.c = e.get(engine.ScriptProbe); globalThis.oc = o.get(engine.ScriptProbe); 0");
+
+    completion(scene.vm, "c.v = new engine.Vec3(4, 5, 6); 0");
+    CHECK(scene.probe().v == engine::Vec3{4.0F, 5.0F, 6.0F});
+    scene.probe().v = engine::Vec3{7.0F, 8.0F, 9.0F};
+    completion(scene.vm, "c.v = c.v; 0");
+    CHECK(scene.probe().v == engine::Vec3{7.0F, 8.0F, 9.0F});
+    completion(scene.vm, "c.v = oc.v; 0");
+    CHECK(scene.probe().v == engine::Vec3{10.0F, 11.0F, 12.0F});
+    CHECK(scene.world.get<ScriptProbe>(second)->v == engine::Vec3{10.0F, 11.0F, 12.0F});
+
+    struct Row {
+        std::string_view value;
+        std::string_view actual;
+    };
+    const std::array<Row, 5> rows{{
+        {"new engine.Quat()", "an engine.Quat"},
+        {"({x: 1, y: 2, z: 3})", "an object"},
+        {"[1, 2, 3]", "an object"},
+        {"3", "a number"},
+        {"null", "null"},
+    }};
+    for (const Row& row : rows) {
+        INFO("value: " << row.value);
+        CHECK(completion(scene.vm, iife("return t(() => { c.v = " + std::string{row.value} + "; });")) ==
+              "TypeError: engine.ScriptProbe.v: expected an engine.Vec3, got " + std::string{row.actual});
+    }
+    // Nothing a script wrote runs: a getter on the offered object is never read.
+    CHECK(completion(scene.vm,
+                     iife("globalThis.hooks = 0; const r = t(() => { c.v = { get x() { hooks++; return 1; }, y: 2, z: "
+                          "3 }; }); return r + '|' + hooks;")) ==
+          "TypeError: engine.ScriptProbe.v: expected an engine.Vec3, got an object|0");
+    CHECK(scene.probe().v == engine::Vec3{10.0F, 11.0F, 12.0F});
+    CHECK(log.countAtLeast(LogLevel::Warn) == 0U);
+    expectCleanShutdown(scene.vm);
+}
+
+TEST_CASE("script: a Quat field's view reads and writes four axes and stores what was written (BN33)") {
+    const LogCapture log;
+    ProbeScene scene;
+    completion(scene.vm, "globalThis.c = e.get(engine.ScriptProbe); globalThis.q = c.q; 0");
+    CHECK(completion(scene.vm, "[q.x, q.y, q.z, q.w, q instanceof engine.Quat, c.q === c.q].join()") ==
+          "0,0,0,1,true,false");
+    completion(scene.vm, "q.x = 1; q.y = 2; q.z = 3; q.w = 2; 0");
+    CHECK(scene.probe().q == engine::Quat{1.0F, 2.0F, 3.0F, 2.0F});  // never normalised
+    completion(scene.vm, "c.q = new engine.Quat(2, 0, 0, 0); 0");
+    CHECK(scene.probe().q == engine::Quat{2.0F, 0.0F, 0.0F, 0.0F});
+    CHECK(completion(scene.vm, "[q.x, q.w].join()") == "2,0");
+    CHECK(completion(scene.vm, iife("return t(() => { c.q = new engine.Vec3(); });")) ==
+          "TypeError: engine.ScriptProbe.q: expected an engine.Quat, got an engine.Vec3");
+    CHECK(completion(scene.vm, iife("return t(() => { q.w = 'x'; });")) ==
+          "TypeError: engine.ScriptProbe.q.w: expected a number, got a string");
+    CHECK(scene.probe().q == engine::Quat{2.0F, 0.0F, 0.0F, 0.0F});
+    CHECK(log.countAtLeast(LogLevel::Warn) == 0U);
+    expectCleanShutdown(scene.vm);
+}
+
+TEST_CASE("script: a view held across destroy, remove and unbind throws on every use and writes nothing (BN34)") {
+    const LogCapture log;
+    ProbeScene scene;
+    completion(scene.vm, R"js(
+        globalThis.c = e.get(engine.ScriptProbe);
+        globalThis.p = c.v;
+        globalThis.qv = c.q;
+        globalThis.d = new engine.Vec3();
+        d.copy(p);
+        0
+    )js");
+    const std::string probeScript = iife(R"js(
+        return [t(() => p.x), t(() => { p.x = 1; }), t(() => p.set(1, 2, 3)), t(() => p.copy(d)),
+                t(() => d.copy(p)), t(() => qv.w), t(() => { qv.w = 5; }), [d.x, d.y, d.z].join()].join('|');
+    )js");
+    const auto expectedFor = [](std::string_view reason) {
+        const std::string tail = std::string{": "} + std::string{reason};
+        return "TypeError: engine.ScriptProbe.v.x" + tail + "|TypeError: engine.ScriptProbe.v.x" + tail +
+               "|TypeError: engine.ScriptProbe.v" + tail + "|TypeError: engine.ScriptProbe.v" + tail +
+               "|TypeError: engine.ScriptProbe.v" + tail + "|TypeError: engine.ScriptProbe.q.w" + tail +
+               "|TypeError: engine.ScriptProbe.q.w" + tail + "|1,2,3";
+    };
+
+    // Remove: the entity lives, the component is gone, and nothing re-adds it.
+    CHECK(completion(scene.vm, "e.remove(engine.ScriptProbe)") == "true");
+    CHECK(completion(scene.vm, probeScript) == expectedFor("the entity has no engine.ScriptProbe"));
+    CHECK(scene.world.get<ScriptProbe>(scene.entity) == nullptr);
+    REQUIRE(scene.world.add<ScriptProbe>(scene.entity) != nullptr);
+
+    // Unbind, then a binding that is not the one the view was made under.
+    scene.vm.unbindWorld();
+    CHECK(completion(scene.vm, probeScript) == expectedFor("no World is bound"));
+    REQUIRE(label(scene.vm.bindWorld(scene.world)) == "Ok");
+    CHECK(completion(scene.vm, probeScript) == expectedFor("the entity belongs to an earlier World binding"));
+    CHECK(scene.probe() == ScriptProbe{});
+
+    // Destroy: the recycled index takes a newer generation, and the stale view never reaches it.
+    REQUIRE(label(scene.vm.defineEntityGlobal("e", scene.entity)) == "Ok");
+    completion(scene.vm, "globalThis.c = e.get(engine.ScriptProbe); globalThis.p = c.v; globalThis.qv = c.q; 0");
+    CHECK(scene.world.destroy(scene.entity));
+    const Entity fresh = scene.world.create();
+    CHECK(fresh.index == scene.entity.index);
+    ScriptProbe seeded;
+    seeded.v = engine::Vec3{20.0F, 21.0F, 22.0F};
+    seeded.q = engine::Quat{0.5F, 0.5F, 0.5F, 0.5F};
+    REQUIRE(scene.world.add<ScriptProbe>(fresh, seeded) != nullptr);
+    CHECK(completion(scene.vm, probeScript) == expectedFor("the entity is not alive"));
+    const ScriptProbe* const kept = scene.world.get<ScriptProbe>(fresh);
+    REQUIRE(kept != nullptr);
+    CHECK(*kept == seeded);
+    CHECK(log.countAtLeast(LogLevel::Warn) == 0U);
+    expectCleanShutdown(scene.vm);
+}
+
+TEST_CASE("script: a view's set and copy write through, and a refused set writes nothing (BN35)") {
+    const LogCapture log;
+    ProbeScene scene;
+    const Entity second = scene.world.create();
+    ScriptProbe seeded;
+    seeded.v = engine::Vec3{10.0F, 11.0F, 12.0F};
+    REQUIRE(scene.world.add<ScriptProbe>(second, seeded) != nullptr);
+    REQUIRE(label(scene.vm.defineEntityGlobal("o", second)) == "Ok");
+    completion(scene.vm, "globalThis.c = e.get(engine.ScriptProbe); globalThis.oc = o.get(engine.ScriptProbe); 0");
+
+    CHECK(completion(scene.vm, "(() => { const p = c.v; return p.set(4, 5, 6) === p; })()") == "true");
+    CHECK(scene.probe().v == engine::Vec3{4.0F, 5.0F, 6.0F});
+    CHECK(completion(scene.vm, "(() => { const q = c.q; return q.set(1, 2, 3, 4) === q; })()") == "true");
+    CHECK(scene.probe().q == engine::Quat{1.0F, 2.0F, 3.0F, 4.0F});
+
+    CHECK(completion(scene.vm, "c.v.copy(c.v).x") == "4");
+    CHECK(scene.probe().v == engine::Vec3{4.0F, 5.0F, 6.0F});
+    completion(scene.vm, "c.v.copy(oc.v); 0");
+    CHECK(scene.probe().v == engine::Vec3{10.0F, 11.0F, 12.0F});
+    CHECK(scene.world.get<ScriptProbe>(second)->v == engine::Vec3{10.0F, 11.0F, 12.0F});
+    completion(scene.vm, "c.v.copy(new engine.Vec3(1, 1, 1)); new engine.Vec3(7, 8, 9).copy(c.v); 0");
+    CHECK(scene.probe().v == engine::Vec3{1.0F, 1.0F, 1.0F});
+    completion(scene.vm, "globalThis.d = new engine.Vec3(7, 8, 9); d.copy(oc.v); 0");
+    CHECK(completion(scene.vm, "[d.x, d.y, d.z].join()") == "10,11,12");
+
+    // A refused set or copy writes none of the axes.
+    const std::string refused = completion(scene.vm, iife(R"js(
+        return [t(() => c.v.set(1, 2)), t(() => c.v.set(1, 2, 'z')), t(() => c.q.set(1, 2, 3)),
+                t(() => c.v.copy(c.q)), t(() => c.q.copy(c.v)), t(() => c.v.copy({ x: 1, y: 2, z: 3 }))].join('|');
+    )js"));
+    CHECK(refused ==
+          "TypeError: engine.Vec3.set: z: expected a number, got undefined|"
+          "TypeError: engine.Vec3.set: z: expected a number, got a string|"
+          "TypeError: engine.Quat.set: w: expected a number, got undefined|"
+          "TypeError: engine.Vec3.copy: expected an engine.Vec3, got an engine.Quat|"
+          "TypeError: engine.Quat.copy: expected an engine.Quat, got an engine.Vec3|"
+          "TypeError: engine.Vec3.copy: expected an engine.Vec3, got an object");
+    CHECK(scene.probe().v == engine::Vec3{1.0F, 1.0F, 1.0F});
+    CHECK(scene.probe().q == engine::Quat{1.0F, 2.0F, 3.0F, 4.0F});
+    CHECK(log.countAtLeast(LogLevel::Warn) == 0U);
+    expectCleanShutdown(scene.vm);
+}
+
+TEST_CASE("script: a call past its budget is refused at every binding call, a view's included (BN36)") {
+    const LogCapture log;
+    const auto table = probeTable();
+    World world = script_test::makeProbeWorld();
+    const Entity entity = script_test::makeProbeEntity(world);
+    VmConfig config;
+    config.callTimeBudget = std::chrono::milliseconds{50};
+    Vm vm = makeProbeVm(table, config);
+    REQUIRE(label(vm.bindWorld(world)) == "Ok");
+    REQUIRE(label(vm.defineEntityGlobal("e", entity)) == "Ok");
+
+    // The executor turns the first interrupt into a rejection, so the loop runs on past the fire: from then on every
+    // binding call must be refused before its body runs, and the catch only increments and assigns.
+    const EvalResult spun = vm.evaluateScript(
+        "globalThis.refused = 0; globalThis.lastMessage = ''; const c = e.get(engine.ScriptProbe); "
+        "new Promise(() => { for (;;) {} }); "
+        "for (;;) { try { c.v.x = c.v.x + 1; } catch (err) { refused++; lastMessage = err.message; } }",
+        "bn36.js");
+    CHECK(spun.status == EvalStatus::Interrupted);
+    CHECK(completion(vm, "[refused > 0, lastMessage].join()") == "true,Maximum call stack size exceeded");
+    const float x = world.get<ScriptProbe>(entity)->v.x;
+    CHECK(std::isfinite(x));
+    CHECK(x >= 1.0F);
+    CHECK(completion(vm, "1 + 1") == "2");
+    expectCleanShutdown(vm);
 }
