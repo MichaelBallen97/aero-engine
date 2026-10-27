@@ -1,15 +1,18 @@
 #pragma once
 // Aero Engine -- the JavaScript VM (task 4.1.1; ADR-007). One Vm = one quickjs-ng runtime + one context,
-// created together, used on ONE thread, torn down together. Nothing is script-visible: a VM offers the
-// ECMAScript language and the backend's core globals only -- no engine global, no binding, no host
-// function (those arrive with 4.2.1 and 4.4.x). Since task 4.1.2 a VM given a VirtualFileSystem also loads ES
-// modules through it (evaluateModule, and import() from any code).
+// created together, used on ONE thread, torn down together. A VM offers the ECMAScript language, the backend's
+// core globals and, since task 4.2.1, one frozen global of the engine's own: `engine`, holding a class per bound
+// component plus Vec3, Quat and Entity. Nothing else is script-visible -- no file, process or timer access. Since
+// task 4.1.2 a VM given a VirtualFileSystem also loads ES modules through it (evaluateModule, and import() from
+// any code).
 //
 // The backend is an implementation detail of engine/script/src/ and never crosses this header (project
 // rule #3). .github/scripts/check-script-boundary.sh and tests/script_boundary_probe.cpp enforce that.
 //
 // Errors never cross this API as exceptions: every outcome is a status, and every failure is also logged
 // ONCE, at ERROR, in the fixed shape listed above evaluateScript below.
+
+#include <aero/scene/entity.hpp>  // engine::Entity -- the reason aero::scene is PUBLIC
 
 #include <chrono>
 #include <cstddef>
@@ -21,17 +24,24 @@
 
 namespace engine {
 class VirtualFileSystem;  // forward-declared: create() borrows one; src/vm_modules.cpp includes <aero/core/vfs.hpp>
+class World;              // bindWorld borrows one; src/script_api_entity.cpp includes <aero/scene/world.hpp>
 }  // namespace engine
 
 namespace engine::script {
+
+namespace internal {
+class ComponentBindingTable;  // <aero/script/internal/component_binding.hpp>
+struct VmAccess;              // the test seam that creates a VM over another table
+}  // namespace internal
 
 // ---- limits --------------------------------------------------------------------------------------------
 // The JavaScript heap: every byte the backend allocates, header included, is charged against it. There
 // is deliberately no "unlimited": 0 is refused rather than read as the backend's own "no limit".
 inline constexpr std::size_t DEFAULT_HEAP_LIMIT_BYTES = std::size_t{64} * 1024U * 1024U;  // 64 MiB
-// The smallest heap a VM may be given. An empty VM needs about 126 KB (116 109 B Release, 126 253 B Debug; that
+// The smallest heap a VM may be given. An empty VM needs about 165 KB (152 585 B Release, 164 969 B Debug, with the
+// ten built-in components bound; 134 667 B Debug with none -- the `engine` namespace is built in every VM). That
 // includes the three builtins the backend builds lazily on a first read, which create reads once so that no later
-// read can fail), so no create runs out of heap at or above this; below it the backend's context-creation
+// read can fail, so no create runs out of heap at or above this; below it the backend's context-creation
 // failure path is not safe to take, so such a limit is refused up front instead of being tried.
 inline constexpr std::size_t MIN_HEAP_LIMIT_BYTES = std::size_t{1024} * 1024U;  // 1 MiB
 
@@ -101,6 +111,19 @@ enum class EvalStatus : std::uint8_t {
                    // decided before any out-of-memory rule: no load refusal is caused by memory
 };
 [[nodiscard]] std::string_view evalStatusLabel(EvalStatus status) noexcept;
+
+// The outcome of bindWorld and defineEntityGlobal. Every refusal is also logged once, at ERROR, and changes nothing.
+enum class BindStatus : std::uint8_t {
+    Ok = 0,
+    InvalidVm,              // a failed create's Vm, or a moved-from one
+    WrongThread,            // called from a thread that is not the VM's; nothing changed
+    UnregisteredComponent,  // bindWorld: the World does not register every component the VM binds
+    NoWorld,                // defineEntityGlobal: no World is bound
+    DeadEntity,             // defineEntityGlobal: the entity is not alive in the bound World
+    InvalidName,            // defineEntityGlobal: not an identifier, "engine", or a global the script made undefinable
+    OutOfMemory,            // defineEntityGlobal: the heap limit refused the entity object
+};
+[[nodiscard]] std::string_view bindStatusLabel(BindStatus status) noexcept;
 
 // What was thrown. For an Error object: its name, message and stack text (the backend's frames, one per
 // line, no trailing newline; may be empty). For any other value: name and stack are empty and message
@@ -264,6 +287,27 @@ public:
     // The VM's thread only (a debug assert says so).
     [[nodiscard]] VmStats stats() const noexcept;
 
+    // ---- the World a script's entities live in (task 4.2.1) -----------------------------------------------------
+    // The World is BORROWED and must outlive the binding: until unbindWorld, the next bindWorld or shutdown. No call
+    // may run while the caller iterates that World. EVERY call starts a new binding, the same World included: an
+    // entity object a script made under an earlier binding throws on every access, because an Entity means
+    // something only to the World that minted it (entity.hpp). Refused with UnregisteredComponent and one ERROR,
+    // the previous binding kept, when the World does not register every component this VM binds (a moved-from
+    // World registers none). Success logs nothing. Never from inside a call.
+    BindStatus bindWorld(World& world);
+    BindStatus bindWorld(World&& world) = delete;  // no temporary
+
+    // Every later access through an entity object throws "no World is bound". Idempotent; an invalid VM or another
+    // thread is one ERROR and no change.
+    void unbindWorld() noexcept;
+
+    // Defines globalThis[name] as an engine.Entity for `entity`: writable, configurable and enumerable, through a
+    // define that runs no script setter; the same name again replaces it. Refusals, each one ERROR and no change, in
+    // this order: InvalidVm, WrongThread, InvalidName (the grammar [A-Za-z_$][A-Za-z0-9_$]*, or "engine"), NoWorld,
+    // DeadEntity, then OutOfMemory (the object) or InvalidName (the define returned false: a non-configurable global
+    // of that name, or a non-extensible global object).
+    BindStatus defineEntityGlobal(std::string_view name, Entity entity);
+
     // Frees the context and the runtime and reports what did not come back. Idempotent; leaves the Vm
     // invalid. May run on any thread provided no call is in flight.
     [[nodiscard]] VmTeardownReport shutdown() noexcept;
@@ -271,7 +315,10 @@ public:
 private:
     struct Impl;  // holds the backend's runtime + context; defined in src/vm_impl.hpp
     explicit Vm(std::unique_ptr<Impl> owned) noexcept;
-    [[nodiscard]] static VmCreateResult createWith(const VmConfig& config, const VirtualFileSystem* modules);
+    friend struct internal::VmAccess;
+    // `components` is what the `engine` namespace binds: BORROWED, and it outlives the Vm.
+    [[nodiscard]] static VmCreateResult createWith(const VmConfig& config, const VirtualFileSystem* modules,
+                                                   const internal::ComponentBindingTable& components);
     std::unique_ptr<Impl> impl;  // heap-pinned: the backend's callbacks hold Impl*, never Vm*
 };
 

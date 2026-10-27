@@ -2622,11 +2622,17 @@ TEST_CASE("script: a load refusal is a LoadError even when the heap refused an a
 }
 
 TEST_CASE("script: a genuine syntax error beside a refusal the backend tolerates is a CompileError (ML68)") {
-    // Why the window sits here: the prelude leaves 634 + `names` atoms, and with 6 KiB left the graph's own names carry
-    // the count across 2048, where the atom hash's 8 KiB growth is refused and tolerated (the old table is kept). A
-    // port that changes the fresh VM's 633 atoms moves the window -- VM5 turns red at the same bump -- and then this
-    // case fails on its REQUIRE below until the window is re-derived. Every module this sweep compiles near the limit
-    // ends in assignments, so a refused bytecode growth is always caught by one (R24, docs/08).
+    // The prelude leaves the fresh VM's atoms + `names` more, and with 6 KiB left the graph's own names carry the count
+    // across 2048, where the atom hash's 8 KiB growth is refused and tolerated (the old table is kept). That happens
+    // only for the few values of `names` that put the crossing inside the call, and where they sit depends on the fresh
+    // VM's atoms: the backend's plus the `engine` namespace's, which the build decides. So the window is derived, as
+    // ML67's is. A descending scan from 2047 (at 2048 the prelude alone crosses) stops at the first call the heap
+    // refused that still ended in no out-of-memory error; it descends because nothing above that band is a tolerated
+    // refusal, while below it a single value can be (244 here). Other refused calls end in OutOfMemory (`names`
+    // 287-291, 820-824 and 1619-1623 here), so the scan passes over them. Every run of the 21-wide sweep around the hit
+    // is then held to the exact CompileError. Measured on macos-debug and macos-release alike, with the ten built-ins
+    // bound: the band is `names` 1268-1272, five values, so a 4-step scan cannot pass over it. Every module this sweep
+    // compiles near the limit ends in assignments, so a refused bytecode growth is always caught by one (R24, docs/08).
     LogCapture log;
     const auto seed = [](MemoryBackend& files) {
         files.set("a.js", "import './ok.js'; import './bad.js'; let p = 0;" + assignmentPad("p"));
@@ -2634,19 +2640,33 @@ TEST_CASE("script: a genuine syntax error beside a refusal the backend tolerates
         files.set("bad.js", "export const ;");
     };
     const auto call = [](Vm& vm) { return vm.evaluateModule("res://a.js"); };
+    const auto preludeOf = [](int names) {
+        return "for (let i = 0; i < " + std::to_string(names) + "; i++) globalThis['q' + i] = 0; 0";
+    };
+    int hit = -1;
+    for (int names = 2047; names >= 0 && hit < 0; names -= 4) {
+        const HeapRun run = runWithRoom(log, seed, preludeOf(names), 6 * KIB, call);
+        if (run.refused && run.status != "OutOfMemory") {
+            hit = names;
+        }
+    }
+    {
+        INFO(
+            "no call below 2048 names survived a refused allocation: "
+            "either such a refusal now ends in OutOfMemory, or the crossing no longer meets one");
+        REQUIRE(hit >= 0);
+    }
     std::size_t besideRefusal = 0;
-    for (int names = 1400; names <= 1420; ++names) {
+    for (int names = hit - 10; names <= hit + 10; ++names) {
         INFO("names " << names);
-        const std::string prelude =
-            "for (let i = 0; i < " + std::to_string(names) + "; i++) globalThis['q' + i] = 0; 0";
-        const HeapRun run = runWithRoom(log, seed, prelude, 6 * KIB, call);
+        const HeapRun run = runWithRoom(log, seed, preludeOf(names), 6 * KIB, call);
         CHECK(run.status == "CompileError");
         CHECK(run.error.name == "SyntaxError");
         CHECK(run.error.message == "variable name expected");
         CHECK(run.record == "script: res://a.js: compile error: SyntaxError: variable name expected");
         besideRefusal += run.refused ? 1U : 0U;
     }
-    INFO("no run met the atom hash's refused growth: the window moved; re-derive it from the fresh VM's atoms");
+    MESSAGE("a refusal the backend tolerated at " << hit << " names; " << besideRefusal << " beside one in the sweep");
     REQUIRE(besideRefusal > 0U);
 }
 
@@ -3131,17 +3151,25 @@ TEST_CASE(
 
 namespace {
 
-// A module declaring 120 names the fresh VM has not seen, which crosses the atom array's 711 slots, then assigning to
+// A module declaring 160 names the fresh VM has not seen, which crosses the atom array's 1066 slots, then assigning to
 // the first sixteen times: an assignment follows its last bytecode growth, so the compile returns (R24 in docs/08).
 [[nodiscard]] std::string freshNamesSource() {
     std::string source = "let zq0";
-    for (int i = 1; i < 120; ++i) {
+    for (int i = 1; i < 160; ++i) {
         source += ", zq";
         source += std::to_string(i);
     }
     source += ";";
     return source + assignmentPad("zq0");
 }
+
+// The atom array grows 711 -> 1066 -> 1599 entries, and the fresh VM's atoms are the backend's 633 plus the `engine`
+// namespace's (task 4.2.1), which depends on the build: measured on macos-debug, 773 with the ten built-ins bound (the
+// array is already at 1066) and 652 with an empty table (reflect tools OFF, still at 711). This prelude interns 272
+// more (and about two of its own), which leaves the bound VM under 1066 (about 1047) and the empty one at about 926, so
+// the 160 fresh names below cross 1066 on BOTH builds. A binding that adds or removes more than a dozen atoms moves
+// this window; the case then fails on its REQUIRE until the count is re-derived.
+constexpr std::string_view ATOM_PRELUDE = "for (let i = 0; i < 272; i++) globalThis['q' + i] = 0; 0";
 
 }  // namespace
 
@@ -3160,7 +3188,7 @@ TEST_CASE(
     std::size_t runs = 0;
     for (std::size_t room = 6 * KIB; room <= 14 * KIB; room += 64) {
         INFO("room " << room);
-        const HeapRun run = runWithRoom(log, seed, {}, room, call);
+        const HeapRun run = runWithRoom(log, seed, ATOM_PRELUDE, room, call);
         CHECK(run.status == "OutOfMemory");
         CHECK(run.error.message != "[uninitialized]");
         CHECK(run.record.ends_with(outOfMemoryTail(run.error)));
@@ -3186,6 +3214,7 @@ TEST_CASE(
         INFO("room " << room);
         ModuleFixture fx{patient(VmConfig{.heapLimitBytes = MIB})};
         fx.files->set("names.js", source);
+        REQUIRE(label(fx.vm.evaluateScript(ATOM_PRELUDE, "fill.js")) == "Ok");
         REQUIRE(label(fx.vm.evaluateScript("globalThis.buf = null; globalThis.r = 'none'; 0", "fill.js")) == "Ok");
         const std::size_t inUse = fx.vm.stats().heapBytesInUse;
         REQUIRE(inUse + room < MIB);
@@ -3218,11 +3247,10 @@ TEST_CASE("script: a run that interns a key under a full heap reports the heap, 
     //
     // The script is compiled with the heap nearly full and then loops, each pass interning a key; its trailing
     // assignments are never reached, and keep the compile clear of R24 (assignmentPad). The room runs from 6 to
-    // 50 KiB in 64-byte steps (705 runs), and the array's growths (711 -> 1066 -> 1599 entries) fall inside it.
-    // Measured: on the Release build 136 runs end in the sentinel, at rooms 7680-10112 and 36864-43008; on the
-    // Debug build 130, at 8768-11392, 43776-45120 and 45824-49984. Every other run ends in the out-of-memory error
-    // of another allocation (the string, the property table), so which runs reach the sentinel depends on the
-    // platform's block sizes.
+    // 50 KiB in 64-byte steps (705 runs). Measured with the ten built-ins bound: on the Release build 97 runs end in
+    // the sentinel, at rooms 23936-30080; on the Debug build 88, at 28608-29952 and 30656-34816. Every other run ends
+    // in the out-of-memory error of another allocation (the string, the property table), so which runs reach the
+    // sentinel depends on the platform's block sizes.
     LogCapture log;
     const std::string loop = "let o = {}; for (let i = 0; i < 200000; ++i) o['k' + i] = i;" + assignmentPad("o");
     const auto seed = [](MemoryBackend&) {};

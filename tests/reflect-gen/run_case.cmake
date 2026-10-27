@@ -116,6 +116,10 @@ if(CASE STREQUAL "help")
     if(out STREQUAL "")
         message(FATAL_ERROR "case 'help': expected usage text on stdout, got nothing")
     endif()
+    # Task 4.2.1 (AC-2): the usage lists the script mode, in the synopsis and as an option line of its own. The
+    # bare flag would not do: the text names it four times, so it survives the loss of either line.
+    aero_expect_stdout_contains("${out}" "[--emit-script]")
+    aero_expect_stdout_contains("${out}" "  --emit-script  ")
 
 elseif(CASE STREQUAL "version")
     aero_run_tool(ARGS --version OUT_RESULT result OUT_STDOUT out)
@@ -1504,6 +1508,181 @@ elseif(CASE STREQUAL "labels_mismatch")
     aero_expect_stderr_contains("${err}"
         "Labelled.unranged: engine::labels needs AERO_RANGE(0, 1) on the same field -- ignored")
     aero_expect_stdout_contains("${out}" "field shortList : std::uint32_t [primitive] [range 0:3]\n")
+
+elseif(CASE STREQUAL "script_basic")
+    # Task 4.2.1 (AC-1): --emit-script over the all-supported happy path. The fields are bound in declaration
+    # order, the static member and the method are not fields, the sibling non-component is not bound.
+    aero_run_tool(ARGS --emit-script "${FIXTURES_DIR}/component_basic.hpp" -- ${CLANG_ARGS} -I "${ENGINE_INCLUDE}"
+        OUT_RESULT result OUT_STDOUT out OUT_STDERR err)
+    aero_expect_exit_or_dump("${result}" 0 "${err}")
+    aero_expect_stdout_contains("${out}" "#include <aero/script/internal/component_binding.hpp>")
+    aero_expect_stdout_contains("${out}" "#include \"component_basic.hpp\"")
+    aero_expect_stdout_contains("${out}"
+        "void aero_script_bind_component_basic(engine::script::internal::ComponentBindingTable& table) {")
+    aero_expect_stdout_contains("${out}" "bindComponent<Transform>(")
+    aero_expect_stdout_contains("${out}" "\"Transform\",")
+    set(_previous -1)
+    foreach(_member position rotation mass hitPoints active)
+        aero_expect_stdout_contains("${out}" "bindField<&Transform::${_member}>(\"${_member}\")")
+        string(FIND "${out}" "bindField<&Transform::${_member}>" _at)
+        if(NOT _at GREATER _previous)
+            message(FATAL_ERROR "case 'script_basic': '${_member}' is out of declaration order, got:\n${out}")
+        endif()
+        set(_previous ${_at})
+    endforeach()
+    foreach(_absent "SCHEMA_VERSION" "lengthSquared" "NotAComponent")
+        string(FIND "${out}" "${_absent}" _idx)
+        if(NOT _idx EQUAL -1)
+            message(FATAL_ERROR "case 'script_basic': '${_absent}' must not appear, got:\n${out}")
+        endif()
+    endforeach()
+
+elseif(CASE STREQUAL "script_output_file")
+    aero_run_tool(ARGS --emit-script "${FIXTURES_DIR}/component_basic.hpp" -o "${WORK_DIR}/out.cpp"
+        -- ${CLANG_ARGS} -I "${ENGINE_INCLUDE}" OUT_RESULT result OUT_STDOUT out OUT_STDERR err)
+    aero_expect_exit_or_dump("${result}" 0 "${err}")
+    if(NOT out STREQUAL "")
+        message(FATAL_ERROR "case 'script_output_file': stdout must be empty with -o, got:\n${out}")
+    endif()
+    aero_expect_file_contains("${WORK_DIR}/out.cpp" "bindField<&Transform::position>(\"position\")")
+
+elseif(CASE STREQUAL "script_unsupported")
+    aero_run_tool(ARGS --emit-script "${FIXTURES_DIR}/component_unsupported.hpp" -- ${CLANG_ARGS}
+        -I "${ENGINE_INCLUDE}" OUT_RESULT result OUT_STDOUT out OUT_STDERR err)
+    aero_expect_exit_or_dump("${result}" 0 "${err}")
+    aero_expect_stdout_contains("${out}" "bindField<&Transform::position>(\"position\")")
+    aero_expect_stdout_contains("${out}" "bindField<&Transform::mass>(\"mass\")")
+    aero_expect_stdout_contains("${out}" "// skipped: velocity")
+    aero_expect_stderr_contains("${err}" "velocity")
+    aero_expect_stderr_contains("${err}" "reflectable subset")
+    string(FIND "${out}" "Transform::velocity" _idx)
+    if(NOT _idx EQUAL -1)
+        message(FATAL_ERROR "case 'script_unsupported': Transform::velocity must not be bound, got:\n${out}")
+    endif()
+
+elseif(CASE STREQUAL "script_multi")
+    aero_run_tool(ARGS --emit-script "${FIXTURES_DIR}/component_multi.hpp" -- ${CLANG_ARGS} -I "${ENGINE_INCLUDE}"
+        OUT_RESULT result OUT_STDOUT out OUT_STDERR err)
+    aero_expect_exit_or_dump("${result}" 0 "${err}")
+    aero_expect_stdout_contains("${out}" "bindComponent<Player>(")
+    aero_expect_stdout_contains("${out}" "\"Player\",")
+    aero_expect_stdout_contains("${out}" "bindComponent<engine::demo::Light>(")
+    aero_expect_stdout_contains("${out}" "\"Light\",")
+    string(FIND "${out}" "\"engine::demo::Light\"" _idx)
+    if(NOT _idx EQUAL -1)
+        message(FATAL_ERROR "case 'script_multi': the qualified name must not be the script name, got:\n${out}")
+    endif()
+
+elseif(CASE STREQUAL "script_nested")
+    # --emit-json skips a component nested in a class; the script table names it by its fully-qualified type.
+    aero_run_tool(ARGS --emit-script "${FIXTURES_DIR}/component_nested.hpp" -- -std=c++20
+        OUT_RESULT result OUT_STDOUT out OUT_STDERR err)
+    aero_expect_exit_or_dump("${result}" 0 "${err}")
+    aero_expect_stdout_contains("${out}" "bindComponent<engine::NestedOuter::NestedInner>(")
+    aero_expect_stdout_contains("${out}" "\"NestedInner\",")
+    aero_expect_stdout_contains("${out}" "bindComponent<engine::NestedSibling>(")
+    string(FIND "${out}" "skipped component" _idx)
+    if(NOT _idx EQUAL -1)
+        message(FATAL_ERROR "case 'script_nested': no component may be skipped whole, got:\n${out}")
+    endif()
+
+elseif(CASE STREQUAL "script_tag")
+    aero_run_tool(ARGS --emit-script "${FIXTURES_DIR}/component_tag.hpp" -- -std=c++20
+        OUT_RESULT result OUT_STDOUT out OUT_STDERR err)
+    aero_expect_exit_or_dump("${result}" 0 "${err}")
+    aero_expect_stdout_contains("${out}" "bindComponent<Tag>(")
+    aero_expect_stdout_contains("${out}" "\"Tag\"));")
+    string(FIND "${out}" "bindField" _idx)
+    if(NOT _idx EQUAL -1)
+        message(FATAL_ERROR "case 'script_tag': a zero-field tag must bind no field, got:\n${out}")
+    endif()
+
+elseif(CASE STREQUAL "script_none")
+    aero_run_tool(ARGS --emit-script "${FIXTURES_DIR}/plain_component.hpp" -- -std=c++20
+        OUT_RESULT result OUT_STDOUT out OUT_STDERR err)
+    aero_expect_exit_or_dump("${result}" 0 "${err}")
+    aero_expect_stdout_contains("${out}" "// no engine::component annotations detected")
+    aero_expect_stdout_contains("${out}"
+        "void aero_script_bind_plain_component(engine::script::internal::ComponentBindingTable& table) {")
+    string(FIND "${out}" "bindComponent" _idx)
+    if(NOT _idx EQUAL -1)
+        message(FATAL_ERROR "case 'script_none': must bind no component, got:\n${out}")
+    endif()
+
+elseif(CASE STREQUAL "script_determinism")
+    aero_run_tool(ARGS --emit-script "${FIXTURES_DIR}/component_codegen.hpp" -- ${CLANG_ARGS} -I "${ENGINE_INCLUDE}"
+        OUT_RESULT r1 OUT_STDOUT o1)
+    aero_expect_exit("${r1}" 0)
+    aero_run_tool(ARGS --emit-script "${FIXTURES_DIR}/component_codegen.hpp" -- ${CLANG_ARGS} -I "${ENGINE_INCLUDE}"
+        OUT_RESULT r2 OUT_STDOUT o2)
+    aero_expect_exit("${r2}" 0)
+    if(NOT o1 STREQUAL o2)
+        message(FATAL_ERROR "case 'script_determinism': two --emit-script runs differ")
+    endif()
+
+elseif(CASE STREQUAL "script_depfile")
+    aero_run_tool(ARGS --emit-script "${FIXTURES_DIR}/component_tag.hpp" -o "${WORK_DIR}/o.cpp"
+        --depfile "${WORK_DIR}/o.d" -- -std=c++20 OUT_RESULT result OUT_STDERR err)
+    aero_expect_exit_or_dump("${result}" 0 "${err}")
+    aero_expect_file_contains("${WORK_DIR}/o.d" "o.cpp")
+    aero_expect_file_contains("${WORK_DIR}/o.d" "component_tag.hpp")
+
+elseif(CASE STREQUAL "script_depfile_requires_output")
+    aero_run_tool(ARGS --emit-script "${FIXTURES_DIR}/component_tag.hpp" --depfile "${WORK_DIR}/o.d"
+        -- -std=c++20 OUT_RESULT result OUT_STDERR err)
+    aero_expect_exit("${result}" 1)
+    aero_expect_stderr_contains("${err}"
+        "--depfile requires -o and one of --emit-meta, --emit-json or --emit-script")
+    if(EXISTS "${WORK_DIR}/o.d")
+        message(FATAL_ERROR "case 'script_depfile_requires_output': --depfile without -o must not write a depfile")
+    endif()
+
+elseif(CASE STREQUAL "script_bad_syntax")
+    file(WRITE "${WORK_DIR}/bad.hpp" "struct { ) Broken")
+    aero_run_tool(ARGS --emit-script "${WORK_DIR}/bad.hpp" -o "${WORK_DIR}/out.cpp" -- -x c++ -std=c++20
+        OUT_RESULT result)
+    aero_expect_exit("${result}" 2)
+    if(EXISTS "${WORK_DIR}/out.cpp")
+        message(FATAL_ERROR "case 'script_bad_syntax': parse failure must write no -o file")
+    endif()
+
+elseif(CASE STREQUAL "script_missing_input")
+    aero_run_tool(ARGS --emit-script "${WORK_DIR}/nope.hpp" -- -std=c++20 OUT_RESULT result)
+    aero_expect_exit("${result}" 3)
+
+elseif(CASE STREQUAL "script_mutually_exclusive")
+    # All three pairs: exclusivity compares the number of emit modes, not just the first pair.
+    set(_exclusive "--emit-meta, --emit-json and --emit-script are mutually exclusive")
+    aero_run_tool(ARGS --emit-script --emit-meta "${FIXTURES_DIR}/component_tag.hpp" -- -std=c++20
+        OUT_RESULT r1 OUT_STDERR e1)
+    aero_expect_exit("${r1}" 1)
+    aero_expect_stderr_contains("${e1}" "${_exclusive}")
+    aero_run_tool(ARGS --emit-script --emit-json "${FIXTURES_DIR}/component_tag.hpp" -- -std=c++20
+        OUT_RESULT r2 OUT_STDERR e2)
+    aero_expect_exit("${r2}" 1)
+    aero_expect_stderr_contains("${e2}" "${_exclusive}")
+    aero_run_tool(ARGS --emit-meta --emit-json "${FIXTURES_DIR}/component_tag.hpp" -- -std=c++20
+        OUT_RESULT r3 OUT_STDERR e3)
+    aero_expect_exit("${r3}" 1)
+    aero_expect_stderr_contains("${e3}" "${_exclusive}")
+
+elseif(CASE STREQUAL "script_engine_light")
+    # The REAL tool over the REAL engine header: two components in one header, and no inspector metadata
+    # (FieldUiMeta, the AERO_ annotations) anywhere in the script surface.
+    aero_run_tool(ARGS --emit-script "${LIGHT_HPP}" -- ${CLANG_ARGS}
+        -I "${ENGINE_INCLUDE}" -I "${SCENE_INCLUDE}" -I "${REFLECT_INCLUDE}"
+        OUT_RESULT result OUT_STDOUT out OUT_STDERR err)
+    aero_expect_exit_or_dump("${result}" 0 "${err}")
+    aero_expect_stdout_contains("${out}" "bindComponent<engine::DirectionalLight>(")
+    aero_expect_stdout_contains("${out}" "bindComponent<engine::PointLight>(")
+    aero_expect_stdout_contains("${out}"
+        "bindField<&engine::DirectionalLight::castsShadows>(\"castsShadows\")")
+    foreach(_absent "FieldUiMeta" "AERO_")
+        string(FIND "${out}" "${_absent}" _idx)
+        if(NOT _idx EQUAL -1)
+            message(FATAL_ERROR "case 'script_engine_light': '${_absent}' must not appear, got:\n${out}")
+        endif()
+    endforeach()
 
 else()
     message(FATAL_ERROR "run_case.cmake: unknown CASE '${CASE}'")

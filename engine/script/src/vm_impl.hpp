@@ -7,6 +7,8 @@
 #include <aero/script/internal/module_graph.hpp>
 #include <aero/script/vm.hpp>
 
+#include "script_api.hpp"
+
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -21,8 +23,9 @@ namespace engine::script {
 
 // A backend value the wrapper holds a reference to. EVERY value the wrapper receives goes into one the
 // moment it is received, so a leak needs a release() -- which exists for exactly one reason: a backend
-// function that CONSUMES its argument -- JS_EvalFunction (quickjs.h:1239), JS_Throw (quickjs.h:817) and
-// JS_DefinePropertyValueStr (the value rules at :186-204).
+// function that CONSUMES its argument -- JS_EvalFunction (quickjs.h:1239), JS_Throw (quickjs.h:817),
+// JS_DefinePropertyValueStr (the value rules at :186-204), JS_DefinePropertyGetSet (both accessors) and
+// JS_SetClassProto (the prototype).
 class HeldValue {
 public:
     HeldValue(JSContext* context, JSValue held) noexcept : context(context), value(held) {}
@@ -215,6 +218,7 @@ struct Vm::Impl {
 
     // ---- state: `heap` FIRST, so it is destroyed LAST ------------------------------------------------------
     internal::HeapAccounting heap;
+    ScriptApi scriptApi;  // the `engine` namespace's state (script_api.hpp); the context opaque points at it
     VmConfig config;
     JSRuntime* rt = nullptr;
     JSContext* ctx = nullptr;

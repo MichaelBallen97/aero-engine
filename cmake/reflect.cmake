@@ -298,3 +298,127 @@ function(aero_reflect_generate_json TARGET)
     list(REMOVE_DUPLICATES _aero_header_dirs)
     target_include_directories(${TARGET} PRIVATE ${_aero_header_dirs})
 endfunction()
+
+# aero_reflect_generate_script(<target>
+#     HEADERS <hdr>...            # component headers to parse (explicit list, D3)
+#     [INCLUDE_DIRS <dir>...]     # extra parse -I's (e.g. aero::core's PUBLIC dir — not target-derivable, D9)
+#     [DEFINES <NAME[=VAL]>...]   # extra parse -D's
+#     [AGGREGATOR <name>])        # override the default aggregator fn name
+# Third sibling (task 4.2.1): emits per-header <stem>.script.gen.cpp via --emit-script, wired incrementally
+# (DEPFILE). Each file defines aero_script_bind_<stem>(ComponentBindingTable&); the aggregator
+# <target>.script-aggregator.gen.cpp defines `aero_script_bind_all_<target id>` (or AGGREGATOR) calling them in
+# HEADERS order. The generated code names no quickjs symbol. Distinct AERO_REFLECT_SCRIPT_WIRED property, so a
+# target may use all three generators. Reuses AERO_LLVM_ROOT/AERO_REFLECT_CLANG_ARGS.
+#
+# A header's directory reaches ITS generated TU only (set_source_files_properties), never the target: putting
+# engine/scene/include/aero/scene on every TU's path would let a quoted include resolve there.
+function(aero_reflect_generate_script TARGET)
+    if(NOT AERO_REFLECT_TOOLS)
+        message(STATUS "aero_reflect_generate_script(${TARGET}): skipped (AERO_REFLECT_TOOLS=OFF)")
+        return()
+    endif()
+
+    set(options)
+    set(oneValueArgs AGGREGATOR)
+    set(multiValueArgs HEADERS INCLUDE_DIRS DEFINES)
+    cmake_parse_arguments(ARG "${options}" "${oneValueArgs}" "${multiValueArgs}" ${ARGN})
+
+    if(NOT TARGET ${TARGET})
+        message(FATAL_ERROR "aero_reflect_generate_script(${TARGET}): no such target — call AFTER "
+                            "add_executable/add_library(${TARGET} ...) in the SAME CMakeLists.txt")
+    endif()
+    if(NOT ARG_HEADERS)
+        message(FATAL_ERROR "aero_reflect_generate_script(${TARGET}): HEADERS must list >=1 component header")
+    endif()
+    get_target_property(_aero_script_wired ${TARGET} AERO_REFLECT_SCRIPT_WIRED)
+    if(_aero_script_wired)
+        message(FATAL_ERROR "aero_reflect_generate_script(${TARGET}): called twice — pass the full HEADERS list once")
+    endif()
+    set_target_properties(${TARGET} PROPERTIES AERO_REFLECT_SCRIPT_WIRED TRUE)
+
+    if(DEFINED AERO_REFLECT_GEN_EXECUTABLE)
+        set(_aero_tool "${AERO_REFLECT_GEN_EXECUTABLE}")
+        set(_aero_tool_dep "")
+    elseif(TARGET aero_reflect_gen)
+        set(_aero_tool "$<TARGET_FILE:aero_reflect_gen>")
+        set(_aero_tool_dep aero_reflect_gen)
+    else()
+        message(FATAL_ERROR "aero_reflect_generate_script(${TARGET}): set AERO_REFLECT_GEN_EXECUTABLE or "
+                            "define aero_reflect_gen before calling")
+    endif()
+
+    set(_aero_gen_dir "${CMAKE_CURRENT_BINARY_DIR}/reflect-generated/${TARGET}")   # shared per-target dir (D5)
+
+    if(ARG_AGGREGATOR)
+        set(_aero_aggname "${ARG_AGGREGATOR}")
+    else()
+        string(MAKE_C_IDENTIFIER "${TARGET}" _aero_target_id)
+        set(_aero_aggname "aero_script_bind_all_${_aero_target_id}")
+    endif()
+
+    set(_aero_extra_args)
+    foreach(_dir IN LISTS ARG_INCLUDE_DIRS)
+        list(APPEND _aero_extra_args -I "${_dir}")
+    endforeach()
+    foreach(_def IN LISTS ARG_DEFINES)
+        list(APPEND _aero_extra_args -D "${_def}")
+    endforeach()
+
+    set(_aero_gen_sources)
+    set(_aero_fwd_decls)
+    set(_aero_calls)
+    set(_aero_seen_ids)
+    foreach(_hdr IN LISTS ARG_HEADERS)
+        get_filename_component(_hdr_abs "${_hdr}" ABSOLUTE)
+        get_filename_component(_hdr_name "${_hdr_abs}" NAME)
+        get_filename_component(_hdr_dir "${_hdr_abs}" DIRECTORY)
+        string(REGEX REPLACE "\\.[^.]*$" "" _stem "${_hdr_name}")     # strip LAST ext only (F5)
+        string(MAKE_C_IDENTIFIER "${_stem}" _id)
+        if(_id IN_LIST _aero_seen_ids)
+            message(FATAL_ERROR "aero_reflect_generate_script(${TARGET}): two HEADERS share stem/id '${_id}'")
+        endif()
+        list(APPEND _aero_seen_ids "${_id}")
+
+        set(_out "${_aero_gen_dir}/${_stem}.script.gen.cpp")
+        set(_dep "${_out}.d")
+
+        add_custom_command(
+            OUTPUT  "${_out}"
+            COMMAND "${CMAKE_COMMAND}" -E make_directory "${_aero_gen_dir}"
+            COMMAND "${_aero_tool}" --emit-script "${_hdr_abs}" -o "${_out}" --depfile "${_dep}"
+                    -- ${AERO_REFLECT_CLANG_ARGS}
+                       ${_aero_extra_args}
+                       -I "${_hdr_dir}"
+                       "$<$<BOOL:$<TARGET_PROPERTY:${TARGET},INCLUDE_DIRECTORIES>>:-I$<JOIN:$<TARGET_PROPERTY:${TARGET},INCLUDE_DIRECTORIES>,;-I>>"
+                       "$<$<BOOL:$<TARGET_PROPERTY:${TARGET},COMPILE_DEFINITIONS>>:-D$<JOIN:$<TARGET_PROPERTY:${TARGET},COMPILE_DEFINITIONS>,;-D>>"
+            DEPFILE "${_dep}"
+            DEPENDS ${_aero_tool_dep} "${_hdr_abs}"
+            COMMENT "reflect-gen: ${_stem}.script.gen.cpp (${TARGET})"
+            COMMAND_EXPAND_LISTS VERBATIM)
+
+        # The header's directory reaches this generated TU alone (its `#include "<basename>"`).
+        set_source_files_properties("${_out}" PROPERTIES INCLUDE_DIRECTORIES "${_hdr_dir}")
+
+        list(APPEND _aero_gen_sources "${_out}")
+        string(APPEND _aero_fwd_decls
+               "void aero_script_bind_${_id}(engine::script::internal::ComponentBindingTable& table);\n")
+        string(APPEND _aero_calls "    aero_script_bind_${_id}(table);\n")
+    endforeach()
+
+    # The aggregator includes the descriptor header rather than forward-declaring the class: a class-key
+    # mismatch is MSVC's C4099.
+    set(_aero_agg_file "${_aero_gen_dir}/${TARGET}.script-aggregator.gen.cpp")
+    set(_aero_agg_content
+"// GENERATED by aero_reflect_generate_script(${TARGET}) — DO NOT EDIT.
+// Binds every HEADERS-listed component in HEADERS-list order.
+#include <aero/script/internal/component_binding.hpp>
+
+${_aero_fwd_decls}
+void ${_aero_aggname}(engine::script::internal::ComponentBindingTable& table) {
+${_aero_calls}}
+")
+    file(MAKE_DIRECTORY "${_aero_gen_dir}")
+    file(CONFIGURE OUTPUT "${_aero_agg_file}" CONTENT "${_aero_agg_content}" @ONLY)   # write-if-different
+
+    target_sources(${TARGET} PRIVATE ${_aero_gen_sources} "${_aero_agg_file}")
+endfunction()

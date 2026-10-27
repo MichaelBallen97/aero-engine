@@ -53,10 +53,12 @@ include(cmake/golden_rule.cmake)
 # docs/04 testing strategy: doctest suites run through ctest (test presets).
 enable_testing()
 
-# task 3.5.2 (D7): the built-in component headers, named ONCE. Four sites generate reflection
+# task 3.5.2 (D7): the built-in component headers, named ONCE. Five sites generate reflection
 # artifacts from this list -- engine/scene_serialize (the shipping JSON serializers), editor
-# (the inspector's entt::meta) and the two reflect-gen test targets -- and before this variable they
-# spelled it four times. Three of those four are silently optional: a component added to the editor's
+# (the inspector's entt::meta), the two reflect-gen test targets and, since task 4.2.1, engine/script
+# (the script binding table) -- and before this variable they spelled it four times. The script site is
+# not silently optional: tests/script_component_test.cpp's BN6 reddens on a built-in it does not bind.
+# Three of the first four are silently optional: a component added to the editor's
 # list and not the serializer's is registered, inspectable, editable and NOT SAVED, with every test
 # green. In registerBuiltinComponents order (engine/scene/src/transform.cpp), which is also the order
 # every generated aggregator calls its per-header register function in.

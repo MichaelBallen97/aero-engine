@@ -43,6 +43,7 @@ add_executable(aero_tests
     scene_audio_test.cpp      # task 3.7.2 — the World -> audio bridge: view, reconcile, latches (SA1-SA18)
     script_vm_test.cpp        # task 4.1.1 — the quickjs-ng VM: lifecycle, limits, the trapping matrix
     script_module_test.cpp    # task 4.1.2 — ES modules through the VFS: the grammar, the cache, the statuses (ML1-ML51)
+    script_binding_test.cpp   # task 4.2.1 — the binding runtime over a fixture table (BN1–BN5, BN7–BN36)
     platform_test.cpp
     platform_event_test.cpp
     input_test.cpp        # task 0.3.2 — black-box InputState (no SDL)
@@ -85,6 +86,12 @@ add_executable(aero_tests
     render_selection_outline_test.cpp # task E.1.4 — tier-0 params/packers/levels/shader pin + GPU-gated mask & outline
     scene_render_selection_test.cpp # task E.1.4 — buildSelectionMaskSet: arms, bucketing, cap, purity
 )
+
+# task 4.2.1 -- the generated built-in table (BN6, BN37-BN49). Tools ON only: with them OFF aero_script binds no
+# component, which is the shape the configure's STATUS line announces.
+if(AERO_REFLECT_TOOLS)
+    target_sources(aero_tests PRIVATE script_component_test.cpp)
+endif()
 
 # AC-9(i) (task 0.2.2): aero::core is linked; glm::glm deliberately IS NOT — that is intentional
 # style, not a compile-time guarantee. Do not "fix" it by adding glm::glm here. (glm's ARCHIVE
@@ -838,7 +845,11 @@ if(AERO_REFLECT_TOOLS)
         # task E.3.3: the AERO_ASSET annotation
         asset_components asset_meta asset_misapplied asset_malformed
         # task E.5.2: the AERO_LABELS annotation
-        labels_components labels_meta labels_misapplied labels_malformed labels_mismatch)
+        labels_components labels_meta labels_misapplied labels_malformed labels_mismatch
+        # task 4.2.1: --emit-script
+        script_basic script_output_file script_unsupported script_multi script_nested script_tag
+        script_none script_determinism script_depfile script_depfile_requires_output
+        script_bad_syntax script_missing_input script_mutually_exclusive script_engine_light)
     foreach(_aero_reflect_case IN LISTS _aero_reflect_cases)
         add_test(NAME reflect-gen.${_aero_reflect_case}
             COMMAND "${CMAKE_COMMAND}"

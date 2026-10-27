@@ -1,11 +1,10 @@
 # engine/script/ -- the JavaScript VM layer (task 4.1.1; ADR-007: TypeScript on quickjs-ng). It owns the
-# quickjs-ng runtime and context behind engine::script::Vm and exposes NOTHING to scripts yet. Since task 4.1.2 it
-# also loads ES modules, reading them only through engine::VirtualFileSystem (aero::core), so the dependency set is
-# unchanged.
+# quickjs-ng runtime and context behind engine::script::Vm. Since task 4.1.2 it also loads ES modules, reading them
+# only through engine::VirtualFileSystem (aero::core). Since task 4.2.1 it sits above aero::scene: the component
+# binding descriptors (internal/aero/script/internal/component_binding.hpp) are what it will expose to scripts, and
+# they name engine::scene's ComponentTypeId. aero::reflect arrives through aero_scene's own PUBLIC link.
 #
-# Its only engine dependency today is aero::core (the log; the clock rule). docs/03 draws script at the
-# top of the engine stack because 4.2.1 (generated bindings) and 4.4.x (ScriptComponent, the entity API)
-# will add aero::reflect and aero::scene here -- which is why it is added LAST in engine/CMakeLists.txt.
+# docs/03 draws script at the top of the engine stack, which is why it is added LAST in engine/CMakeLists.txt.
 #
 # BOUNDARY RULE (R12, docs/08-risks.md): qjs is PRIVATE. CMake propagates a PRIVATE link of a STATIC
 # library as $<LINK_ONLY:qjs> -- the archive reaches every executable, its include root reaches no
@@ -42,8 +41,27 @@ add_library(aero_script STATIC
     src/vm_modules.cpp
     src/heap_accounting.cpp
     src/module_graph.cpp
+    src/component_bindings.cpp
+    src/script_api.cpp
+    src/script_api_values.cpp
+    src/script_api_entity.cpp
 )
 add_library(aero::script ALIAS aero_script)
 
 target_include_directories(aero_script PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
-target_link_libraries(aero_script PUBLIC aero::core PRIVATE qjs aero::script_internal)
+target_link_libraries(aero_script PUBLIC aero::core aero::scene PRIVATE qjs aero::script_internal)
+
+# task 4.2.1: the built-in component binding table, generated from the same header list the serializer and the
+# inspector use. The generated code is quickjs-free (it calls the descriptor templates only); the parse-side -I's
+# are the set aero_scene_serialize uses. With the tools OFF the table is empty (component_bindings.cpp).
+if(AERO_REFLECT_TOOLS)
+    aero_reflect_generate_script(aero_script
+        HEADERS ${AERO_BUILTIN_COMPONENT_HEADERS}
+        INCLUDE_DIRS "${CMAKE_SOURCE_DIR}/engine/core/include"
+                     "${CMAKE_SOURCE_DIR}/engine/scene/include"
+                     "${CMAKE_SOURCE_DIR}/engine/reflect/include")
+    target_compile_definitions(aero_script PRIVATE AERO_SCRIPT_COMPONENT_BINDINGS=1)
+else()
+    message(STATUS "aero_script: no component bindings (AERO_REFLECT_TOOLS=OFF) -- "
+                   "engine holds Vec3, Quat and Entity only")
+endif()

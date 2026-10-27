@@ -2,6 +2,7 @@
 // loader (task 4.1.2) is installed here at create; its callbacks live in vm_modules.cpp.
 
 #include <aero/core/log.hpp>
+#include <aero/script/internal/component_binding.hpp>
 #include <aero/script/vm.hpp>
 
 #include "vm_impl.hpp"
@@ -150,6 +151,9 @@ VmTeardownReport Vm::Impl::shutdown() noexcept {
         JS_FreeValue(ctx, entry.reason);
     }
     pendingRejections.clear();
+    if (ctx != nullptr) {
+        releaseScriptApi(ctx, scriptApi);  // the held component constructors, before the context goes
+    }
     for (const JSValue promise : skippedRejections) {
         JS_FreeValue(ctx, promise);
     }
@@ -310,7 +314,7 @@ Vm::Impl::CallScope::~CallScope() {
 }
 
 EvalResult Vm::Impl::evaluate(std::string_view source, std::string_view fileName) {
-    assert(!inCall);                     // no host function exists, so nothing can re-enter the VM
+    assert(!inCall);                     // a host function never calls back into the VM (script_api.hpp)
     const std::string text{source};      // the backend reads text[text.size()] (quickjs.h:1012)
     const std::string name{fileName};    // and the file name is a C string
     const CallScope scope{*this, name};  // deadline, stack top, refusal mark, inCall
@@ -475,13 +479,20 @@ void Vm::Impl::reportUnhandledRejections() {
 
 // ---- Vm -------------------------------------------------------------------------------------------------
 
-VmCreateResult Vm::create(const VmConfig& config) { return createWith(config, nullptr); }
-
-VmCreateResult Vm::create(const VmConfig& config, const VirtualFileSystem& modules) {
-    return createWith(config, &modules);
+VmCreateResult Vm::create(const VmConfig& config) {
+    return createWith(config, nullptr, internal::builtinComponentBindings());
 }
 
-VmCreateResult Vm::createWith(const VmConfig& config, const VirtualFileSystem* modules) {
+VmCreateResult Vm::create(const VmConfig& config, const VirtualFileSystem& modules) {
+    return createWith(config, &modules, internal::builtinComponentBindings());
+}
+
+VmCreateResult internal::VmAccess::create(const VmConfig& config, const ComponentBindingTable& components) {
+    return Vm::createWith(config, nullptr, components);
+}
+
+VmCreateResult Vm::createWith(const VmConfig& config, const VirtualFileSystem* modules,
+                              const internal::ComponentBindingTable& components) {
     if (const VmCreateStatus refusal = validate(config); refusal != VmCreateStatus::Ok) {
         return VmCreateResult{refusal, Vm{}};  // validate() logged the field and its value
     }
@@ -510,6 +521,17 @@ VmCreateResult Vm::createWith(const VmConfig& config, const VirtualFileSystem* m
         impl->clearPendingException();
         AERO_LOG_ERROR("script: Vm::create: the stack-trace hooks could not be removed");
         assert(false && "the stack-trace hooks could not be removed at create");
+    }
+    // The `engine` namespace is built here, under the backend's default stack limit and no deadline, before any script
+    // exists: no script setter, getter or Proxy can be in the way, and no property of it is ever read for the first
+    // time under a budget. Only the heap limit can fail it, and the minimum limit keeps that far away.
+    impl->scriptApi.table = &components;
+    JS_SetContextOpaque(impl->ctx, &impl->scriptApi);
+    if (!installScriptApi(impl->ctx, impl->rt, impl->scriptApi)) {
+        impl->clearPendingException();
+        AERO_LOG_ERROR("script: Vm::create failed: out of memory installing the engine namespace (heap limit {} bytes)",
+                       config.heapLimitBytes);
+        return VmCreateResult{VmCreateStatus::OutOfMemory, Vm{}};  // ~Impl: shutdown() frees what was held
     }
     // The configured limit takes effect only now: the context and the builds above run under the backend's own
     // default, so a VM created with the minimum limit does not build its builtins (bytecode reading, nested calls)
