@@ -25,6 +25,7 @@
 #include <cctype>
 #include <cerrno>
 #include <cmath>
+#include <cstddef>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -56,8 +57,8 @@ void printUsage(std::ostream& out) {
     out << "aero_reflect_gen " << TOOL_VERSION << " -- libclang parse+walk harness (task 1.1.1)\n"
         << "\n"
         << "Usage:\n"
-        << "  aero_reflect_gen [--all] [--main-file-only] [--components] [--emit-meta] [--emit-json] [-o <file>] "
-        << "[--depfile <file>] <input> [-- <clang args>...]\n"
+        << "  aero_reflect_gen [--all] [--main-file-only] [--components] [--emit-meta] [--emit-json] [--emit-script] "
+        << "[-o <file>] [--depfile <file>] <input> [-- <clang args>...]\n"
         << "  aero_reflect_gen --version\n"
         << "  aero_reflect_gen --help\n"
         << "\n"
@@ -69,9 +70,11 @@ void printUsage(std::ostream& out) {
         << "  --emit-meta          Emit entt::meta registration C++ for detected components, instead of the AST walk.\n"
         << "  --emit-json          Emit JSON serializers (aeroWriteJson + aeroReadJson per component) to stdout or "
         << "-o. Mutually exclusive with --emit-meta.\n"
-        << "  -o <file>            Write --emit-meta/--emit-json output to <file> (default: stdout).\n"
-        << "  --depfile <file>     With -o and one of --emit-meta/--emit-json: write a Makefile-format depfile of "
-        << "the parse's #include closure.\n"
+        << "  --emit-script        Emit script binding tables (aero_script_bind_<stem>) to stdout or -o. "
+        << "Mutually exclusive with --emit-meta and --emit-json.\n"
+        << "  -o <file>            Write --emit-meta/--emit-json/--emit-script output to <file> (default: stdout).\n"
+        << "  --depfile <file>     With -o and one of --emit-meta/--emit-json/--emit-script: write a "
+        << "Makefile-format depfile of the parse's #include closure.\n"
         << "  --version            Print the tool version and clang_getClangVersion(); exit 0.\n"
         << "  --help               Print this usage; exit 0.\n"
         << "\n"
@@ -99,8 +102,9 @@ struct Args {
     bool wantAll = false;
     bool wantMainFileOnly = false;
     bool wantComponents = false;
-    bool wantEmitMeta = false;  // task 1.1.3: emit entt::meta registration instead of walking
-    bool wantEmitJson = false;  // task 1.2.1: emit JSON serializers (mutually exclusive with --emit-meta, D8)
+    bool wantEmitMeta = false;    // task 1.1.3: emit entt::meta registration instead of walking
+    bool wantEmitJson = false;    // task 1.2.1: emit JSON serializers (mutually exclusive with --emit-meta, D8)
+    bool wantEmitScript = false;  // task 4.2.1: emit script binding tables (exclusive with the other emit modes)
     bool wantHelp = false;
     bool wantVersion = false;
     std::optional<std::string> outputPath;   // task 1.1.3: -o <file>; nullopt => stdout
@@ -149,6 +153,8 @@ std::optional<Args> parseArgs(int argc, char** argv) {
             args.wantEmitMeta = true;
         } else if (token == "--emit-json") {  // NEW (task 1.2.1)
             args.wantEmitJson = true;
+        } else if (token == "--emit-script") {  // NEW (task 4.2.1)
+            args.wantEmitScript = true;
         } else if (token == "-o") {
             if (i + 1 >= argc) {  // bounds check: missing operand => usage error
                 std::cerr << "aero_reflect_gen: error: '-o' requires a file path\n";
@@ -182,17 +188,21 @@ std::optional<Args> parseArgs(int argc, char** argv) {
         return std::nullopt;
     }
 
-    // D8: --emit-json and --emit-meta each emit a DIFFERENT artifact to one -o; requesting both is meaningless.
-    if (args.wantEmitMeta && args.wantEmitJson) {
-        std::cerr << "aero_reflect_gen: error: --emit-json and --emit-meta are mutually exclusive\n";
+    // D8 (widened by task 4.2.1): each emit mode writes a DIFFERENT artifact to one -o, so any two together are
+    // meaningless. The count, not the first pair, is what is compared.
+    const int emitModes = static_cast<int>(args.wantEmitMeta) + static_cast<int>(args.wantEmitJson) +
+                          static_cast<int>(args.wantEmitScript);
+    if (emitModes > 1) {
+        std::cerr << "aero_reflect_gen: error: --emit-meta, --emit-json and --emit-script are mutually exclusive\n";
         return std::nullopt;  // usage error (exit 1)
     }
 
     // D6: a depfile's make-rule target IS the -o path, so --depfile is meaningful ONLY with -o AND
-    // exactly one emit mode (mutual-exclusion above already rejects both). Fail fast (exit 1) BEFORE
+    // exactly one emit mode (mutual-exclusion above already rejects several). Fail fast (exit 1) BEFORE
     // any filesystem work rather than write a rule for a phantom target. (E6 / depfile_requires_* cases.)
-    if (args.depfilePath && (!args.outputPath || !(args.wantEmitMeta || args.wantEmitJson))) {
-        std::cerr << "aero_reflect_gen: error: --depfile requires -o and --emit-meta or --emit-json\n";
+    if (args.depfilePath && (!args.outputPath || emitModes != 1)) {
+        std::cerr << "aero_reflect_gen: error: --depfile requires -o and one of --emit-meta, --emit-json or "
+                     "--emit-script\n";
         return std::nullopt;
     }
 
@@ -1123,6 +1133,60 @@ void emitJson(const std::vector<Component>& components, const std::string& input
     }
 }
 
+// ---- task 4.2.1: --emit-script (per-header script binding tables, quickjs-free) -------------------------
+// Emits one function, aero_script_bind_<stem>, that adds a bindComponent<T>(...) entry to the caller's
+// ComponentBindingTable per detected component. The output names no backend: the descriptors it builds live in
+// aero_script's quickjs-free component_binding.hpp, and every backend call stays in hand-written code. The
+// script-visible class name is the segment after the qualified name's last "::". Nested components are emitted
+// (the template argument is the fully-qualified name, as --emit-meta writes it). No annotation reaches the
+// output: inspector metadata is not enforced on script writes. Unsupported fields become a `// skipped:` line
+// plus the same stderr warning the sibling emitters write. No addresses, timestamps or absolute paths.
+void emitScript(const std::vector<Component>& components, const std::string& inputPath, std::ostream& out) {
+    const std::string basename = fs::path(inputPath).filename().string();
+    const std::string stem = fs::path(inputPath).stem().string();
+    const std::string bindFn = "aero_script_bind_" + sanitizeIdentifier(stem);
+    const std::string internalNs = "engine::script::internal::";
+
+    out << "// GENERATED by aero_reflect_gen --emit-script — DO NOT EDIT.\n"
+        << "// source: " << basename << "\n"
+        << "#include <aero/script/internal/component_binding.hpp>\n"
+        << "\n"
+        << "#include \"" << basename << "\"\n"
+        << "\n"
+        << "void " << bindFn << "(" << internalNs << "ComponentBindingTable& table) {\n";
+
+    if (components.empty()) {
+        out << "    // no engine::component annotations detected\n";
+    }
+
+    for (const Component& component : components) {
+        const std::string& qn = component.qualifiedName;
+        const std::string scriptName = splitQualifiedName(qn).second;
+        std::vector<const Field*> bound;
+        for (const Field& field : component.fields) {
+            if (field.category != FieldCategory::Unsupported) {
+                bound.push_back(&field);
+            }
+        }
+        out << "    table.add(" << internalNs << "bindComponent<" << qn << ">(\n"
+            << "        \"" << scriptName << "\"";
+        for (const Field* boundField : bound) {
+            const std::string& fieldName = boundField->name;
+            out << ",\n        " << internalNs << "bindField<&" << qn << "::" << fieldName << ">(\"" << fieldName
+                << "\")";
+        }
+        out << "));\n";
+        for (const Field& field : component.fields) {
+            if (field.category == FieldCategory::Unsupported) {
+                out << "    // skipped: " << field.name << " (" << field.typeName << " — unsupported)\n";
+                std::cerr << "aero_reflect_gen: warning: " << qn << '.' << field.name << " : " << field.typeName
+                          << " is not in the reflectable subset (primitives + Vec3/Quat/Guid/std::string)\n";
+            }
+        }
+    }
+    out << "}\n";
+}
+
 // ---- task 1.1.4: --depfile (Makefile-format include-closure depfile, D7) -------------------------
 
 // CXInclusionVisitor (clang-c/Index.h): invoked once per file in the TU's #include closure. Appends
@@ -1181,6 +1245,44 @@ bool writeDepfile(CXTranslationUnit tu, const std::string& inputPath, const std:
     return static_cast<bool>(out);
 }
 
+// The one emit sequence all three emit modes share (task 4.2.1 folded the two copies and the new third into it):
+// the clean-parse gate, detection, then `-o` open / write / flush (IoError on failure), the depfile only after `-o`
+// fully succeeded, stdout otherwise. A parse failure runs no detection and opens no `-o`, so it leaves no output
+// file and no depfile; the caller's verdict step turns it into exit 2. Returns the failure to return at once, or
+// nullopt.
+using Emitter = void (*)(const std::vector<Component>&, const std::string&, std::ostream&);
+
+std::optional<ExitCode> emitArtifact(const Args& args, CXTranslationUnit tu, int maxSeverity, Emitter emit) {
+    if (maxSeverity >= static_cast<int>(CXDiagnostic_Error)) {
+        return std::nullopt;
+    }
+    std::vector<Component> components;
+    DetectState detect{.allFiles = args.wantAll, .components = &components};
+    clang_visitChildren(clang_getTranslationUnitCursor(tu), detectVisitor, &detect);
+    if (!args.outputPath.has_value()) {
+        emit(components, args.input, std::cout);
+        return std::nullopt;
+    }
+    std::ofstream out(*args.outputPath, std::ios::trunc);  // TEXT mode, like the depfile -- truncate + write
+    if (!out) {
+        std::cerr << "aero_reflect_gen: error: cannot open output file '" << *args.outputPath << "'\n";
+        return ExitCode::IoError;
+    }
+    emit(components, args.input, out);
+    out.flush();
+    if (!out) {
+        std::cerr << "aero_reflect_gen: error: failed writing output file '" << *args.outputPath << "'\n";
+        return ExitCode::IoError;
+    }
+    // The depfile's target IS the -o path, so it is written only after -o fully succeeded. parseArgs rejected
+    // --depfile without -o and one emit mode, and the gate above ensured a clean parse.
+    if (args.depfilePath.has_value() && !writeDepfile(tu, args.input, *args.outputPath, *args.depfilePath)) {
+        std::cerr << "aero_reflect_gen: error: failed writing depfile '" << *args.depfilePath << "'\n";
+        return ExitCode::IoError;
+    }
+    return std::nullopt;
+}
+
 }  // namespace
 
 ExitCode runMain(int argc, char** argv) {
@@ -1236,66 +1338,20 @@ ExitCode runMain(int argc, char** argv) {
         clang_disposeDiagnostic(diagnostic);
     }
 
-    // --- step 6: emit (--emit-json/--emit-meta) / detect (--components) / walk -- stdout|-o for emit, stdout else --
-    if (args.wantEmitJson) {                                       // NEW leading branch (task 1.2.1)
-        if (maxSeverity < static_cast<int>(CXDiagnostic_Error)) {  // same clean-parse gate
-            std::vector<Component> components;
-            DetectState detect{.allFiles = args.wantAll, .components = &components};
-            clang_visitChildren(clang_getTranslationUnitCursor(tu), detectVisitor, &detect);
-            if (args.outputPath.has_value()) {
-                std::ofstream out(*args.outputPath, std::ios::trunc);
-                if (!out) {
-                    std::cerr << "aero_reflect_gen: error: cannot open output file '" << *args.outputPath << "'\n";
-                    return ExitCode::IoError;
-                }
-                emitJson(components, args.input, out);
-                out.flush();
-                if (!out) {
-                    std::cerr << "aero_reflect_gen: error: failed writing output file '" << *args.outputPath << "'\n";
-                    return ExitCode::IoError;
-                }
-                if (args.depfilePath.has_value()) {  // reuses writeDepfile verbatim (F1)
-                    if (!writeDepfile(tu, args.input, *args.outputPath, *args.depfilePath)) {
-                        std::cerr << "aero_reflect_gen: error: failed writing depfile '" << *args.depfilePath << "'\n";
-                        return ExitCode::IoError;
-                    }
-                }
-            } else {
-                emitJson(components, args.input, std::cout);
-            }
-        }
-    } else if (args.wantEmitMeta) {  // was `if` — body UNCHANGED
-        // Generate ONLY for a clean parse: on error/fatal diagnostics fall through to the exit-2 verdict
-        // (step 7) WITHOUT running detection or opening -o, so a parse failure leaves NO output file (AC-8).
-        if (maxSeverity < static_cast<int>(CXDiagnostic_Error)) {
-            std::vector<Component> components;
-            DetectState detect{.allFiles = args.wantAll, .components = &components};
-            clang_visitChildren(clang_getTranslationUnitCursor(tu), detectVisitor, &detect);
-            if (args.outputPath.has_value()) {
-                std::ofstream out(*args.outputPath, std::ios::trunc);  // TEXT mode (see note) — truncate + write
-                if (!out) {
-                    std::cerr << "aero_reflect_gen: error: cannot open output file '" << *args.outputPath << "'\n";
-                    return ExitCode::IoError;  // E-output-io: exit 3
-                }
-                emitMeta(components, args.input, out);
-                out.flush();
-                if (!out) {
-                    std::cerr << "aero_reflect_gen: error: failed writing output file '" << *args.outputPath << "'\n";
-                    return ExitCode::IoError;
-                }
-                // NEW (D6/D7/D8): the depfile's target IS the -o path, so it is written here, only
-                // after -o fully succeeded. parseArgs rejected --depfile without --emit-meta+-o (D6);
-                // the enclosing `maxSeverity < Error` gate ensured a clean parse (D8) => no stale
-                // depfile can appear on a parse failure. `tu` (line 528) is still in scope.
-                if (args.depfilePath.has_value()) {
-                    if (!writeDepfile(tu, args.input, *args.outputPath, *args.depfilePath)) {
-                        std::cerr << "aero_reflect_gen: error: failed writing depfile '" << *args.depfilePath << "'\n";
-                        return ExitCode::IoError;
-                    }
-                }
-            } else {
-                emitMeta(components, args.input, std::cout);
-            }
+    // --- step 6: emit (--emit-script/--emit-json/--emit-meta) / detect (--components) / walk -- stdout|-o for emit ---
+    Emitter emitter = nullptr;
+    if (args.wantEmitScript) {  // the leading branch since task 4.2.1
+        emitter = emitScript;
+    } else if (args.wantEmitJson) {
+        emitter = emitJson;
+    } else if (args.wantEmitMeta) {
+        emitter = emitMeta;
+    }
+    if (emitter != nullptr) {
+        // Generate ONLY for a clean parse: on error/fatal diagnostics fall through to the exit-2 verdict (step 7)
+        // WITHOUT running detection or opening -o, so a parse failure leaves NO output file (AC-8).
+        if (const std::optional<ExitCode> failure = emitArtifact(args, tu, maxSeverity, emitter)) {
+            return *failure;
         }
     } else if (args.wantComponents) {
         std::vector<Component> components;

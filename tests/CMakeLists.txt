@@ -838,7 +838,11 @@ if(AERO_REFLECT_TOOLS)
         # task E.3.3: the AERO_ASSET annotation
         asset_components asset_meta asset_misapplied asset_malformed
         # task E.5.2: the AERO_LABELS annotation
-        labels_components labels_meta labels_misapplied labels_malformed labels_mismatch)
+        labels_components labels_meta labels_misapplied labels_malformed labels_mismatch
+        # task 4.2.1: --emit-script
+        script_basic script_output_file script_unsupported script_multi script_nested script_tag
+        script_none script_determinism script_depfile script_depfile_requires_output
+        script_bad_syntax script_missing_input script_mutually_exclusive script_engine_light)
     foreach(_aero_reflect_case IN LISTS _aero_reflect_cases)
         add_test(NAME reflect-gen.${_aero_reflect_case}
             COMMAND "${CMAKE_COMMAND}"
