@@ -16,6 +16,7 @@
 
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <array>
 #include <cctype>
 #include <chrono>
@@ -549,6 +550,47 @@ TEST_CASE("script: a heap that runs out while vectors are made is OutOfMemory, a
     CHECK(evalOk(vm, "new engine.Vec3(1, 2, 3).x") == "1");
     CHECK(evalOk(vm, "new engine.Quat().w") == "1");
     expectCleanShutdown(vm);
+}
+
+TEST_CASE("script: a heap that refuses the vector's own block is OutOfMemory, and the VM shuts down clean (BN50)") {
+    // BN14 ends in whichever allocation its one limit happens to refuse. A vector's opaque is the first block it
+    // allocates, and the heap refuses a block when the bytes in use plus its size and header pass the limit, so a
+    // run ends in the opaque's refusal for the limits in the opaque-sized band above the last whole vector (the
+    // measured band is 56 bytes: the 40-byte cell and its 16-byte header), and the band recurs at every vector. A
+    // sweep of consecutive limits wider than two vectors crosses it twice. The array is sized before the loop, so
+    // nothing but a vector's blocks is allocated inside it, and it stays reachable, so the bytes left in use are the
+    // whole vectors alone.
+    //
+    // The sweep must reach the band. The script's own blocks (its bytecode) are held when the loop fails and freed
+    // after, so the peak above the bytes left in use (the excess) is at least their size, and is exactly that when
+    // the room left after them is too small for anything else to be allocated: the first block of the next vector,
+    // the opaque, was then the one refused, and the opaque itself was never allocated (an object refused instead
+    // would have left the opaque in the peak). The limits that leave so little room recur at every vector, so the
+    // least excess of the sweep is the script's blocks and at least two limits reach it.
+    const LogCapture log;
+    const auto table = probeTable();
+    const std::string_view fill =
+        "globalThis.keep = new Array(16384).fill(0); for (let n = 0;; ++n) { keep[n] = new engine.Vec3(); }";
+    constexpr std::size_t SWEEP = 512;
+    std::vector<std::size_t> excess;
+    for (std::size_t limit = MIB; limit < MIB + SWEEP; ++limit) {
+        INFO("limit " << limit);
+        VmConfig config;
+        config.heapLimitBytes = limit;
+        Vm vm = makeProbeVm(table, patient(config));
+        const EvalResult filled = vm.evaluateScript(fill, "bn50.js");
+        REQUIRE(filled.status == EvalStatus::OutOfMemory);
+        const engine::script::VmStats stats = vm.stats();
+        CHECK(stats.refusedAllocations > 0U);
+        REQUIRE(stats.heapBytesPeak >= stats.heapBytesInUse);
+        excess.push_back(stats.heapBytesPeak - stats.heapBytesInUse);
+        expectCleanShutdown(vm);
+    }
+    const std::size_t scriptBlocks = *std::min_element(excess.begin(), excess.end());
+    const auto tooLittle = static_cast<std::size_t>(std::count(excess.begin(), excess.end(), scriptBlocks));
+    MESSAGE("the script's blocks are " << scriptBlocks << " bytes; " << tooLittle << " of " << SWEEP
+                                       << " limits left too little room after them");
+    CHECK(tooLittle >= 2U);
 }
 
 // ---- BN15-BN30: the World binding, engine.Entity, component objects and the scalar, Guid and string fields
