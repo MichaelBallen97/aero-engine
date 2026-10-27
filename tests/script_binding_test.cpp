@@ -1186,19 +1186,27 @@ TEST_CASE("script: no hand-written script source names a built-in component (BN3
     }
     bool sawApiSource = false;
     bool sawApiHeader = false;
+    bool sawPublicHeader = false;    // include/
+    bool sawInternalHeader = false;  // internal/
     for (const fs::path& file : files) {
         const std::string text = strippedSource(file);
         INFO("file: " << file.filename().string());
         sawApiSource = sawApiSource || file.filename() == "script_api.cpp";
         sawApiHeader = sawApiHeader || (file.filename() == "script_api.hpp" && holdsIdentifier(text, "ScriptApi"));
+        sawPublicHeader = sawPublicHeader || (file.filename() == "vm.hpp" && holdsIdentifier(text, "bindWorld"));
+        sawInternalHeader = sawInternalHeader || (file.filename() == "component_binding.hpp" &&
+                                                  holdsIdentifier(text, "ComponentBindingTable"));
         for (const std::string& name : names) {
             INFO("component: " << name);
             CHECK_FALSE(holdsIdentifier(text, name));
         }
     }
-    // Anti-vacuity: the scan reached the runtime, and the same scan finds a real identifier.
+    // Anti-vacuity: the scan reached all three roots (src, include, internal), and the same scan finds a real
+    // identifier in each.
     CHECK(sawApiSource);
     CHECK(sawApiHeader);
+    CHECK(sawPublicHeader);
+    CHECK(sawInternalHeader);
 }
 
 // ---- BN31-BN36: Vec3 and Quat views of a component's vector fields -----------------------------------------------
