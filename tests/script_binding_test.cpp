@@ -357,9 +357,14 @@ TEST_CASE("script: a VM created over a module source binds the built-in componen
     }
     expected += "Vec3,Quat,Entity";
     CHECK(evalOk(vm, "Object.keys(engine).join()") == expected);
-    // The table's size is not what is pinned: the ten built-ins are bound, named as a script reads them.
-    CHECK(evalOk(vm, "[typeof engine.Transform, typeof engine.MeshRenderer, Object.keys(engine).length > 3].join()") ==
-          "function,function,true");
+    // The table's size is not what is pinned: the ten built-ins are bound, named as a script reads them. With
+    // AERO_REFLECT_TOOLS=OFF the table is empty and the namespace holds Vec3, Quat and Entity only, which the
+    // comparison above has already pinned.
+    if (!engine::script::internal::builtinComponentBindings().components().empty()) {
+        CHECK(evalOk(vm,
+                     "[typeof engine.Transform, typeof engine.MeshRenderer, Object.keys(engine).length > 3].join()") ==
+              "function,function,true");
+    }
     CHECK(log.countAtLeast(engine::LogLevel::Warn) == 0U);
     expectCleanShutdown(vm);
 }
