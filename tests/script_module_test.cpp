@@ -3246,11 +3246,10 @@ TEST_CASE("script: a run that interns a key under a full heap reports the heap, 
     //
     // The script is compiled with the heap nearly full and then loops, each pass interning a key; its trailing
     // assignments are never reached, and keep the compile clear of R24 (assignmentPad). The room runs from 6 to
-    // 50 KiB in 64-byte steps (705 runs), and the array's growths (711 -> 1066 -> 1599 entries) fall inside it.
-    // Measured: on the Release build 136 runs end in the sentinel, at rooms 7680-10112 and 36864-43008; on the
-    // Debug build 130, at 8768-11392, 43776-45120 and 45824-49984. Every other run ends in the out-of-memory error
-    // of another allocation (the string, the property table), so which runs reach the sentinel depends on the
-    // platform's block sizes.
+    // 50 KiB in 64-byte steps (705 runs). Measured with the ten built-ins bound: on the Release build 97 runs end in
+    // the sentinel, at rooms 23936-30080; on the Debug build 88, at 28608-29952 and 30656-34816. Every other run ends
+    // in the out-of-memory error of another allocation (the string, the property table), so which runs reach the
+    // sentinel depends on the platform's block sizes.
     LogCapture log;
     const std::string loop = "let o = {}; for (let i = 0; i < 200000; ++i) o['k' + i] = i;" + assignmentPad("o");
     const auto seed = [](MemoryBackend&) {};
