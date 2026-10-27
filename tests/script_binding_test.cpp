@@ -1,14 +1,16 @@
 // Aero Engine -- the binding runtime over a fixture table (task 4.2.1; BN1-BN5, and from the later steps BN7-BN36).
 //
-// Step 2 of the task covers the quickjs-free descriptor contract: how a C++ type maps to a script kind, how the two
-// templates build a descriptor exactly as the generated code does, and what ComponentBindingTable::add refuses. The
-// fixture component lives in script_binding_support.hpp.
+// BN1-BN5 cover the quickjs-free descriptor contract: how a C++ type maps to a script kind, how the two templates
+// build a descriptor exactly as the generated code does, and what ComponentBindingTable::add refuses. BN7-BN14 drive
+// the frozen `engine` namespace every VM holds: the class set, the detached Vec3 and Quat, the install and the
+// teardown. The fixture component lives in script_binding_support.hpp.
 
 #include <aero/core/guid.hpp>
 #include <aero/core/log.hpp>
 #include <aero/core/math.hpp>
 #include <aero/scene/component.hpp>
 #include <aero/script/internal/component_binding.hpp>
+#include <aero/script/script.hpp>
 
 #include "script_binding_support.hpp"
 
@@ -35,6 +37,10 @@ namespace {
 using engine::ComponentTypeId;
 using engine::componentTypeId;
 using engine::LogLevel;
+using engine::script::EvalResult;
+using engine::script::EvalStatus;
+using engine::script::Vm;
+using engine::script::VmConfig;
 using engine::script::internal::bindComponent;
 using engine::script::internal::bindField;
 using engine::script::internal::ComponentBinding;
@@ -44,9 +50,16 @@ using engine::script::internal::FieldKind;
 using engine::script::internal::fieldKindOf;
 using engine::script::internal::MAX_BOUND_COMPONENTS;
 using engine::script::internal::MAX_BOUND_FIELDS;
+using script_test::expectCleanShutdown;
 using script_test::LogCapture;
+using script_test::makeBuiltinVm;
+using script_test::makeProbeVm;
+using script_test::patient;
+using script_test::probeTable;
 using script_test::ScriptProbe;
 using script_test::ScriptTag;
+
+constexpr std::size_t MIB = std::size_t{1024} * 1024U;
 
 constexpr std::string_view REFUSED_PREFIX = "script: component binding '";
 
@@ -241,4 +254,293 @@ TEST_CASE("script: the binding table caps components at 127 and fields at 255 (B
     CHECK_FALSE(wide.add(ComponentBinding{"Wider", fabricated(storage, 1), manyFields(MAX_BOUND_FIELDS + 1U)}));
     expectRefusal(log, "Wider", "255");
     CHECK(wide.components().size() == 1U);
+}
+
+// No operator<< for EvalStatus here: script_vm_test.cpp already defines the printer in this binary, and a second
+// definition is a duplicate symbol at link time.
+
+namespace {
+
+// Runs `source`, requires it to complete, and returns String(completion value).
+[[nodiscard]] std::string evalOk(Vm& vm, std::string_view source) {
+    const EvalResult result = vm.evaluateScript(source, "bn.js");
+    INFO("script: " << source);
+    INFO("error: " << result.error.name << ": " << result.error.message);
+    CHECK(result.status == EvalStatus::Ok);
+    return result.completion;
+}
+
+// The shared script prologue of the throw checks: `t(f)` is "Name: message" of what f threw.
+constexpr std::string_view THROWS =
+    "const t = (f) => { try { f(); return 'no throw'; } catch (e) { return e.name + ': ' + e.message; } };";
+
+// `body` runs as a function body (so every case may declare what it likes), with `t` in scope.
+[[nodiscard]] std::string iife(std::string_view body) {
+    return "(() => { " + std::string{THROWS} + " " + std::string{body} + " })()";
+}
+
+struct ScriptRow {
+    std::string_view script;
+    std::string_view expected;
+};
+
+}  // namespace
+
+TEST_CASE("script: engine, its classes and their prototypes are frozen, and engine cannot be replaced (BN7)") {
+    const LogCapture log;
+    const auto table = probeTable();
+    Vm vm = makeProbeVm(table);
+    const std::string completion = evalOk(vm, iife(R"js(
+        const out = [];
+        const everything = [engine];
+        for (const name of Object.keys(engine)) { everything.push(engine[name], engine[name].prototype); }
+        out.push(everything.every((o) => Object.isFrozen(o)));
+        const d = Object.getOwnPropertyDescriptor(globalThis, 'engine');
+        out.push(d.writable, d.configurable, d.enumerable);
+        out.push(t(() => { engine = 1; }).split(':')[0]);
+        out.push(t(() => { delete globalThis.engine; }).split(':')[0]);
+        out.push(t(() => { engine.Vec3 = 1; }).split(':')[0]);
+        out.push(t(() => { Object.defineProperty(engine.Vec3.prototype, 'x', { value: 1 }); }).split(':')[0]);
+        out.push(t(() => { engine.ScriptProbe.prototype.extra = 1; }).split(':')[0]);
+        out.push(typeof engine.Vec3, Object.keys(engine).length, new engine.Vec3(1, 2, 3).x);
+        return out.join();
+    )js"));
+    CHECK(completion == "true,false,false,false,TypeError,TypeError,TypeError,TypeError,TypeError,function,5,1");
+    CHECK(log.countAtLeast(engine::LogLevel::Warn) == 0U);
+    expectCleanShutdown(vm);
+}
+
+TEST_CASE("script: Object.keys(engine) is the table's script names, then Vec3, Quat and Entity (BN8)") {
+    const LogCapture log;
+    {
+        const auto table = probeTable();
+        Vm vm = makeProbeVm(table);
+        CHECK(evalOk(vm, "Object.keys(engine).join()") == "ScriptProbe,ScriptTag,Vec3,Quat,Entity");
+        // Nothing leaked onto the global object beside the namespace.
+        CHECK(evalOk(vm, "[typeof Vec3, typeof Quat, typeof Entity, typeof ScriptProbe, typeof ScriptTag].join()") ==
+              "undefined,undefined,undefined,undefined,undefined");
+        expectCleanShutdown(vm);
+    }
+    std::string expected;
+    for (const engine::script::internal::ComponentBinding& binding :
+         engine::script::internal::builtinComponentBindings().components()) {
+        expected += std::string{binding.scriptName} + ",";
+    }
+    expected += "Vec3,Quat,Entity";
+    Vm vm = makeBuiltinVm();
+    CHECK(evalOk(vm, "Object.keys(engine).join()") == expected);
+    CHECK(log.countAtLeast(engine::LogLevel::Warn) == 0U);
+    expectCleanShutdown(vm);
+}
+
+TEST_CASE("script: a component class and Entity cannot be constructed, and Vec3 needs new (BN9)") {
+    const LogCapture log;
+    const auto table = probeTable();
+    Vm vm = makeProbeVm(table);
+    const std::string probe = "TypeError: engine.ScriptProbe cannot be constructed; use entity.add(engine.ScriptProbe)";
+    const std::string tag = "TypeError: engine.ScriptTag cannot be constructed; use entity.add(engine.ScriptTag)";
+    const std::string entity = "TypeError: engine.Entity cannot be constructed by a script";
+    const std::string needsNew = "TypeError: must be called with new";
+    const std::string completion = evalOk(vm, iife(R"js(
+        return [t(() => new engine.ScriptProbe()), t(() => engine.ScriptProbe()), t(() => new engine.ScriptTag()),
+                t(() => new engine.Entity()), t(() => engine.Entity()), t(() => engine.Vec3(1, 2, 3)),
+                t(() => engine.Quat(1, 2, 3, 4))].join('|');
+    )js"));
+    CHECK(completion ==
+          probe + "|" + probe + "|" + tag + "|" + entity + "|" + entity + "|" + needsNew + "|" + needsNew);
+    CHECK(log.countAtLeast(engine::LogLevel::Warn) == 0U);
+    expectCleanShutdown(vm);
+}
+
+TEST_CASE("script: a constructed Vec3 or Quat reads back what it was given, narrowed to a float (BN10)") {
+    const LogCapture log;
+    const auto table = probeTable();
+    Vm vm = makeProbeVm(table);
+    const std::array<ScriptRow, 17> rows{{
+        {"const v = new engine.Vec3(); return [v.x, v.y, v.z].join();", "0,0,0"},
+        {"const q = new engine.Quat(); return [q.x, q.y, q.z, q.w].join();", "0,0,0,1"},
+        {"const v = new engine.Vec3(1.5, -2.25, 1024); return [v.x, v.y, v.z].join();", "1.5,-2.25,1024"},
+        {"const q = new engine.Quat(0.5, 0.25, -8, 2); return [q.x, q.y, q.z, q.w].join();", "0.5,0.25,-8,2"},
+        {"const q = new engine.Quat(1, 2, 3); return [q.x, q.y, q.z, q.w].join();", "1,2,3,1"},
+        {"const v = new engine.Vec3(undefined, 5); return [v.x, v.y, v.z].join();", "0,5,0"},
+        {"return new engine.Vec3(0.1, 0, 0).x;", "0.10000000149011612"},
+        {"const v = new engine.Vec3(1e300, -1e300, 0); return [v.x, v.y, v.z].join();", "Infinity,-Infinity,0"},
+        {"return [Object.is(new engine.Vec3(NaN).x, NaN), Object.is(new engine.Vec3(-0).x, -0), "
+         "Object.is(new engine.Vec3(0).x, -0)].join();",
+         "true,true,false"},
+        {"return t(() => new engine.Vec3(1, '2'));", "TypeError: new engine.Vec3: y: expected a number, got a string"},
+        {"return t(() => new engine.Vec3(1, 2, null));", "TypeError: new engine.Vec3: z: expected a number, got null"},
+        {"return t(() => new engine.Quat(1, 2, 3, 'w'));",
+         "TypeError: new engine.Quat: w: expected a number, got a string"},
+        // The axis accessors narrow the same way and refuse the same values.
+        {"const v = new engine.Vec3(); v.x = 0.1; v.y = 1e300; v.z = -0; "
+         "return [v.x, v.y, Object.is(v.z, -0)].join();",
+         "0.10000000149011612,Infinity,true"},
+        {"const q = new engine.Quat(); q.w = 2; q.x = NaN; return [q.w, Number.isNaN(q.x)].join();", "2,true"},
+        {"const v = new engine.Vec3(1, 2, 3); const m = t(() => { v.z = '1'; }); "
+         "return m + ' ' + [v.x, v.y, v.z].join();",
+         "TypeError: engine.Vec3.z: expected a number, got a string 1,2,3"},
+        {"const q = new engine.Quat(1, 2, 3, 4); return t(() => { q.w = undefined; }) + ' ' + q.w;",
+         "TypeError: engine.Quat.w: expected a number, got undefined 4"},
+        {"const v = new engine.Vec3(); return t(() => { v.x = true; });",
+         "TypeError: engine.Vec3.x: expected a number, got a boolean"},
+    }};
+    for (const ScriptRow& row : rows) {
+        INFO("script: " << row.script);
+        CHECK(evalOk(vm, iife(row.script)) == row.expected);
+    }
+    CHECK(log.countAtLeast(engine::LogLevel::Warn) == 0U);
+    expectCleanShutdown(vm);
+}
+
+TEST_CASE("script: set and copy write whole vectors or nothing, and refuse a foreign receiver or argument (BN11)") {
+    const LogCapture log;
+    const auto table = probeTable();
+    Vm vm = makeProbeVm(table);
+    const std::array<ScriptRow, 14> rows{{
+        {"const v = new engine.Vec3(); const r = v.set(1, 2, 3); return [r === v, v.x, v.y, v.z].join();",
+         "true,1,2,3"},
+        {"const q = new engine.Quat(); const r = q.set(1, 2, 3, 4); return [r === q, q.x, q.y, q.z, q.w].join();",
+         "true,1,2,3,4"},
+        // A refused set writes none of its axes, whichever argument was the bad one.
+        {"const v = new engine.Vec3(7, 8, 9); const m = t(() => v.set(1, 2)); return m + ' ' + [v.x, v.y, v.z].join();",
+         "TypeError: engine.Vec3.set: z: expected a number, got undefined 7,8,9"},
+        {"const v = new engine.Vec3(7, 8, 9); const m = t(() => v.set(1, 2, 'z')); "
+         "return m + ' ' + [v.x, v.y, v.z].join();",
+         "TypeError: engine.Vec3.set: z: expected a number, got a string 7,8,9"},
+        {"const q = new engine.Quat(1, 2, 3, 4); const m = t(() => q.set(5, 6, 7)); "
+         "return m + ' ' + [q.x, q.y, q.z, q.w].join();",
+         "TypeError: engine.Quat.set: w: expected a number, got undefined 1,2,3,4"},
+        {"const a = new engine.Vec3(); const b = new engine.Vec3(4, 5, 6); const r = a.copy(b); "
+         "return [r === a, a.x, a.y, a.z].join();",
+         "true,4,5,6"},
+        {"const a = new engine.Quat(); const b = new engine.Quat(1, 2, 3, 4); a.copy(b); "
+         "return [a.x, a.y, a.z, a.w].join();",
+         "1,2,3,4"},
+        {"const v = new engine.Vec3(1, 2, 3); const m = t(() => v.copy(new engine.Quat())); "
+         "return m + ' ' + [v.x, v.y, v.z].join();",
+         "TypeError: engine.Vec3.copy: expected an engine.Vec3, got an engine.Quat 1,2,3"},
+        {"const q = new engine.Quat(1, 2, 3, 4); return t(() => q.copy(new engine.Vec3()));",
+         "TypeError: engine.Quat.copy: expected an engine.Quat, got an engine.Vec3"},
+        {"const v = new engine.Vec3(1, 2, 3); return [t(() => v.copy({ x: 7, y: 8, z: 9 })), t(() => v.copy([7, 8, "
+         "9])), "
+         "t(() => v.copy()), [v.x, v.y, v.z].join()].join('|');",
+         "TypeError: engine.Vec3.copy: expected an engine.Vec3, got an object|"
+         "TypeError: engine.Vec3.copy: expected an engine.Vec3, got an object|"
+         "TypeError: engine.Vec3.copy: expected an engine.Vec3, got undefined|1,2,3"},
+        {"const v = new engine.Vec3(); const q = new engine.Quat(); "
+         "return [v instanceof engine.Vec3, v instanceof engine.Quat, q instanceof engine.Quat, "
+         "q instanceof engine.Vec3].join();",
+         "true,false,true,false"},
+        // A getter or method lifted off the prototype names the class it wants.
+        {"return [t(() => engine.Vec3.prototype.x), t(() => engine.Quat.prototype.w)].join('|');",
+         "TypeError: engine.Vec3.x: the receiver is not an engine.Vec3|"
+         "TypeError: engine.Quat.w: the receiver is not an engine.Quat"},
+        {"const get = Object.getOwnPropertyDescriptor(engine.Vec3.prototype, 'x').get; "
+         "return [t(() => get.call(new engine.Quat())), t(() => engine.Vec3.prototype.set.call({}, 1, 2, 3)), "
+         "t(() => engine.Quat.prototype.copy.call(new engine.Vec3(), new engine.Quat()))].join('|');",
+         "TypeError: engine.Vec3.x: the receiver is not an engine.Vec3|"
+         "TypeError: engine.Vec3.set: the receiver is not an engine.Vec3|"
+         "TypeError: engine.Quat.copy: the receiver is not an engine.Quat"},
+        {"return Object.keys(Object.getOwnPropertyDescriptors(engine.Vec3.prototype)).join();",
+         "x,y,z,set,copy,constructor"},
+    }};
+    for (const ScriptRow& row : rows) {
+        INFO("script: " << row.script);
+        CHECK(evalOk(vm, iife(row.script)) == row.expected);
+    }
+    CHECK(log.countAtLeast(engine::LogLevel::Warn) == 0U);
+    expectCleanShutdown(vm);
+}
+
+TEST_CASE("script: no script code runs inside a Vec3 or Quat binding (BN12)") {
+    const LogCapture log;
+    const auto table = probeTable();
+    Vm vm = makeProbeVm(table);
+    // Every hostile value is refused by tag or class, and not one of its hooks runs: not a conversion, not a property
+    // read, not a Proxy trap (the handler is itself a Proxy that counts the lookups).
+    const std::string refusals = evalOk(vm, iife(R"js(
+        let hooks = 0;
+        const hostile = [
+            { valueOf() { hooks++; return 1; } },
+            { toString() { hooks++; return '1'; } },
+            { [Symbol.toPrimitive]() { hooks++; return 1; } },
+            { get x() { hooks++; return 1; }, y: 2, z: 3, w: 4 },
+            new Proxy({ x: 1, y: 2, z: 3 }, new Proxy({}, { get(target, trap) { hooks++; return undefined; } })),
+        ];
+        let attempts = 0;
+        let refused = 0;
+        const attempt = (f) => { attempts++; try { f(); } catch (e) { if (e instanceof TypeError) { refused++; } } };
+        for (const h of hostile) {
+            attempt(() => new engine.Vec3(h));
+            attempt(() => new engine.Vec3(1, 2, h));
+            attempt(() => new engine.Quat(h));
+            attempt(() => { new engine.Vec3().x = h; });
+            attempt(() => { new engine.Quat().w = h; });
+            attempt(() => new engine.Vec3().set(h, 1, 2));
+            attempt(() => new engine.Vec3().set(1, 2, h));
+            attempt(() => new engine.Vec3().copy(h));
+            attempt(() => new engine.Quat().copy(h));
+        }
+        return [attempts, refused, hooks].join();
+    )js"));
+    CHECK(refusals == "45,45,0");
+
+    // Building and reading a vector sets no property: a setter a script put on Object.prototype never runs.
+    const std::string polluted = evalOk(vm, iife(R"js(
+        let hooks = 0;
+        for (const name of ['x', 'constructor', 'prototype']) {
+            Object.defineProperty(Object.prototype, name, { set(v) { hooks++; }, get() { return undefined; },
+                                                             configurable: true });
+        }
+        const v = new engine.Vec3(1, 2, 3);
+        const q = new engine.Quat();
+        v.set(4, 5, 6);
+        q.copy(new engine.Quat(0, 0, 0, 1));
+        return [v.x, v.y, v.z, q.w, hooks].join();
+    )js"));
+    CHECK(polluted == "4,5,6,1,0");
+    CHECK(log.countAtLeast(engine::LogLevel::Warn) == 0U);
+    expectCleanShutdown(vm);
+}
+
+TEST_CASE("script: fifty VMs holding vectors in globals, arrays and cycles all tear down clean (BN13)") {
+    const LogCapture log;
+    const auto table = probeTable();
+    for (int round = 0; round < 50; ++round) {
+        Vm vm = makeProbeVm(table);
+        const std::string held = evalOk(vm, R"js(
+            globalThis.single = new engine.Vec3(1, 2, 3);
+            globalThis.many = Array.from({ length: 1000 }, () => new engine.Quat());
+            globalThis.cycle = {};
+            globalThis.cycle.self = globalThis.cycle;
+            globalThis.cycle.v = new engine.Vec3();
+            globalThis.cls = engine.ScriptProbe;
+            [many.length, single.y, cycle.self.v.z, cls === engine.ScriptProbe].join();
+        )js");
+        CHECK(held == "1000,2,0,true");
+        expectCleanShutdown(vm);
+    }
+    for (int round = 0; round < 5; ++round) {
+        Vm vm = makeBuiltinVm();
+        CHECK(evalOk(vm, "globalThis.keep = [new engine.Vec3(), new engine.Quat()]; keep.length") == "2");
+        expectCleanShutdown(vm);
+    }
+    CHECK(log.countAtLeast(engine::LogLevel::Warn) == 0U);
+}
+
+TEST_CASE("script: a heap that runs out while vectors are made is OutOfMemory, and the VM works on (BN14)") {
+    const LogCapture log;
+    const auto table = probeTable();
+    VmConfig config;
+    config.heapLimitBytes = 4 * MIB;
+    Vm vm = makeProbeVm(table, patient(config));
+    const EvalResult filled =
+        vm.evaluateScript("(() => { const a = []; for (;;) { a.push(new engine.Vec3()); } })()", "bn14.js");
+    CHECK(filled.status == EvalStatus::OutOfMemory);
+    // The array was function-local, so the heap is empty again and the failed allocation left no object whose opaque
+    // is null: a read of a fresh vector, and of a new one, completes.
+    CHECK(evalOk(vm, "new engine.Vec3(1, 2, 3).x") == "1");
+    CHECK(evalOk(vm, "new engine.Quat().w") == "1");
+    expectCleanShutdown(vm);
 }

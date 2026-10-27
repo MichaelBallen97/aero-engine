@@ -42,6 +42,8 @@ add_library(aero_script STATIC
     src/heap_accounting.cpp
     src/module_graph.cpp
     src/component_bindings.cpp
+    src/script_api.cpp
+    src/script_api_values.cpp
 )
 add_library(aero::script ALIAS aero_script)
 

@@ -75,6 +75,23 @@ private:
     return config;
 }
 
+// A VM whose `engine` namespace binds `table` instead of the built-ins (VmAccess: the runtime's test seam).
+[[nodiscard]] inline engine::script::Vm makeProbeVm(const engine::script::internal::ComponentBindingTable& table,
+                                                    const engine::script::VmConfig& config = patient()) {
+    engine::script::VmCreateResult created = engine::script::internal::VmAccess::create(config, table);
+    REQUIRE(created.status == engine::script::VmCreateStatus::Ok);
+    REQUIRE(created.vm.valid());
+    return std::move(created.vm);
+}
+
+// A VM over the built-in table (Vm::create), the shape a game gets.
+[[nodiscard]] inline engine::script::Vm makeBuiltinVm(const engine::script::VmConfig& config = patient()) {
+    engine::script::VmCreateResult created = engine::script::Vm::create(config);
+    REQUIRE(created.status == engine::script::VmCreateStatus::Ok);
+    REQUIRE(created.vm.valid());
+    return std::move(created.vm);
+}
+
 // The tail of EVERY VM case: a leak check and the teardown-write check (R23).
 inline void expectCleanShutdown(engine::script::Vm& vm) {
     const engine::script::VmTeardownReport report = vm.shutdown();

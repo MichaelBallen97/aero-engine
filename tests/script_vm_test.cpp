@@ -426,7 +426,9 @@ TEST_CASE("script: state persists across calls, and the code runs strict (VM8)")
     expectCleanShutdown(vm);
 }
 
-TEST_CASE("script: nothing engine- or OS-shaped is visible, and no script can block the thread (VM9)") {
+TEST_CASE(
+    "script: no OS-shaped or host global is visible beside the engine namespace, and no script can block the thread "
+    "(VM9)") {
     const LogCapture log;
     Vm vm = makeVm();
     const std::string_view globalsProbe =
@@ -437,8 +439,8 @@ TEST_CASE("script: nothing engine- or OS-shaped is visible, and no script can bl
 
     // The control: the language's own globals are there.
     const EvalResult present =
-        vm.evaluateScript("[typeof Promise, typeof queueMicrotask, typeof JSON].join()", "v9.js");
-    CHECK(present.completion == "function,function,object");
+        vm.evaluateScript("[typeof Promise, typeof queueMicrotask, typeof JSON, typeof engine].join()", "v9.js");
+    CHECK(present.completion == "function,function,object,object");
 
     // The two stack-trace hooks are gone: a backtrace would run them as script code, and an interrupt raised
     // inside either is thrown away by the backend.
@@ -1727,6 +1729,64 @@ TEST_CASE("script: the script layer never calls the four backend setters its des
         sawVmCpp = sawVmCpp || file.filename() == "vm.cpp";
         sawRuntimeCreation = sawRuntimeCreation || text.find("JS_NewRuntime2(") != std::string::npos;
     }
+    // Anti-vacuity: the scan reached vm.cpp, and the same stripped scan DOES find a real backend call.
+    CHECK(sawVmCpp);
+    CHECK(sawRuntimeCreation);
+}
+
+// ---- VM65: the native shapes the API may use ---------------------------------------------------------------
+
+TEST_CASE(
+    "script: the script layer builds only budget-refused natives and takes its class ids from the runtime (VM65)") {
+    namespace fs = std::filesystem;
+    const auto strippedSource = [](const fs::path& path) {
+        std::ifstream file{path};
+        std::string out;
+        std::string line;
+        while (std::getline(file, line)) {
+            const std::size_t comment = line.find("//");
+            if (comment != std::string::npos) {
+                line.erase(comment);
+            }
+            out += line;
+            out += '\n';
+        }
+        return out;
+    };
+
+    std::vector<fs::path> files;
+    for (const fs::directory_entry& entry : fs::directory_iterator{AERO_SCRIPT_SRC_DIR}) {
+        if (entry.path().extension() == ".cpp" || entry.path().extension() == ".hpp") {
+            files.push_back(entry.path());
+        }
+    }
+    REQUIRE_FALSE(files.empty());
+
+    // Why each is banned. A function made by JS_NewCFunctionData or JS_NewCClosure, and an exotic class's hooks, still
+    // run after the budget fired (the spike measured 4999 / 4999 / 9999 entries); JS_NewCFunction2 natives are refused
+    // before their body runs. JS_SetPropertyFunctionList makes a property that is built on its first read, under
+    // whatever budget that read has, and any JS_SetProperty* runs a setter a script put on Object.prototype. A
+    // `static JSClassID` is one write shared by every VM on every thread.
+    const std::array<std::string_view, 6> banned{"JS_NewCFunctionData",  "JS_NewCClosure", "JS_SetPropertyFunctionList",
+                                                 "JSClassExoticMethods", "JS_SetProperty", "static JSClassID"};
+    std::size_t nativeMakers = 0;
+    std::size_t classIdUsers = 0;
+    bool sawVmCpp = false;
+    bool sawRuntimeCreation = false;
+    for (const fs::path& file : files) {
+        const std::string text = strippedSource(file);
+        INFO("file: " << file.filename().string());
+        for (const std::string_view token : banned) {
+            INFO("token: " << token);
+            CHECK(text.find(token) == std::string::npos);
+        }
+        nativeMakers += text.find("JS_NewCFunction2(") != std::string::npos ? 1U : 0U;
+        classIdUsers += text.find("JS_NewClassID(") != std::string::npos ? 1U : 0U;
+        sawVmCpp = sawVmCpp || file.filename() == "vm.cpp";
+        sawRuntimeCreation = sawRuntimeCreation || text.find("JS_NewRuntime2(") != std::string::npos;
+    }
+    CHECK(nativeMakers == 1U);  // newNative is the one place a native function is made
+    CHECK(classIdUsers >= 1U);
     // Anti-vacuity: the scan reached vm.cpp, and the same stripped scan DOES find a real backend call.
     CHECK(sawVmCpp);
     CHECK(sawRuntimeCreation);

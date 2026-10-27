@@ -37,7 +37,7 @@ Vm::Impl::AttemptScope::~AttemptScope() { host.attempt = nullptr; }
 // ---- the entry point ------------------------------------------------------------------------------------------
 
 EvalResult Vm::Impl::evaluateModuleCall(std::string_view virtualPath) {
-    assert(!inCall);  // no host function exists, so nothing can re-enter the VM
+    assert(!inCall);  // a host function never calls back into the VM (script_api.hpp)
     const internal::SpecifierResolution entry = internal::resolveModuleSpecifier(virtualPath, {});
     const bool resolved = entry.refusal == internal::SpecifierRefusal::None;
     const CallScope scope{*this, resolved ? entry.key : std::string{virtualPath}};

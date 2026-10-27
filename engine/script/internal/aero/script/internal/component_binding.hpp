@@ -12,6 +12,7 @@
 #include <aero/core/guid.hpp>
 #include <aero/core/math.hpp>
 #include <aero/scene/component.hpp>
+#include <aero/script/vm.hpp>
 
 #include <concepts>
 #include <cstddef>
@@ -129,5 +130,12 @@ template <typename C, typename... Fields>
 
 // The generated ten built-ins, or an empty table when reflect-gen is not built.
 [[nodiscard]] const ComponentBindingTable& builtinComponentBindings();
+
+struct VmAccess {
+    // A VM whose namespace binds `components` instead of the built-ins: the runtime's test seam (a fixture component
+    // exercises every FieldKind without reflect-gen). BORROWED: `components` outlives the Vm.
+    [[nodiscard]] static VmCreateResult create(const VmConfig& config, const ComponentBindingTable& components);
+    static VmCreateResult create(const VmConfig& config, const ComponentBindingTable&& components) = delete;
+};
 
 }  // namespace engine::script::internal

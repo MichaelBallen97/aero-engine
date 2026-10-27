@@ -2622,11 +2622,14 @@ TEST_CASE("script: a load refusal is a LoadError even when the heap refused an a
 }
 
 TEST_CASE("script: a genuine syntax error beside a refusal the backend tolerates is a CompileError (ML68)") {
-    // Why the window sits here: the prelude leaves 634 + `names` atoms, and with 6 KiB left the graph's own names carry
-    // the count across 2048, where the atom hash's 8 KiB growth is refused and tolerated (the old table is kept). A
-    // port that changes the fresh VM's 633 atoms moves the window -- VM5 turns red at the same bump -- and then this
-    // case fails on its REQUIRE below until the window is re-derived. Every module this sweep compiles near the limit
-    // ends in assignments, so a refused bytecode growth is always caught by one (R24, docs/08).
+    // Why the window sits here: the prelude leaves the fresh VM's atoms + `names` more, and with 6 KiB left the graph's
+    // own names carry the count across 2048, where the atom hash's 8 KiB growth is refused and tolerated (the old table
+    // is kept). The fresh VM's atoms are the backend's 633 and the `engine` namespace's (task 4.2.1), and the namespace
+    // depends on the build: measured on macos-debug, the refusal met `names` 1381-1385 with the ten built-ins bound
+    // and 1391-1395 with an empty table (reflect tools OFF). So the sweep spans both, 21 values as it always did. A
+    // port or a binding change that moves the fresh VM's atoms moves the window -- VM5 turns red at the same bump --
+    // and then this case fails on its REQUIRE below until the window is re-derived. Every module this sweep compiles
+    // near the limit ends in assignments, so a refused bytecode growth is always caught by one (R24, docs/08).
     LogCapture log;
     const auto seed = [](MemoryBackend& files) {
         files.set("a.js", "import './ok.js'; import './bad.js'; let p = 0;" + assignmentPad("p"));
@@ -2635,7 +2638,7 @@ TEST_CASE("script: a genuine syntax error beside a refusal the backend tolerates
     };
     const auto call = [](Vm& vm) { return vm.evaluateModule("res://a.js"); };
     std::size_t besideRefusal = 0;
-    for (int names = 1400; names <= 1420; ++names) {
+    for (int names = 1380; names <= 1400; ++names) {
         INFO("names " << names);
         const std::string prelude =
             "for (let i = 0; i < " + std::to_string(names) + "; i++) globalThis['q' + i] = 0; 0";
