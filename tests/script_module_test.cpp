@@ -2651,8 +2651,9 @@ TEST_CASE("script: a genuine syntax error beside a refusal the backend tolerates
         }
     }
     {
-        INFO("no call below 2048 names survived a refused allocation: either such a refusal now ends in OutOfMemory, "
-             "or the crossing no longer meets one");
+        INFO(
+            "no call below 2048 names survived a refused allocation: "
+            "either such a refusal now ends in OutOfMemory, or the crossing no longer meets one");
         REQUIRE(hit >= 0);
     }
     std::size_t besideRefusal = 0;
