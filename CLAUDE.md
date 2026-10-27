@@ -13,8 +13,8 @@ Two platform matrices, never to be conflated: the **editor** runs on macOS/Windo
 **Phase 4 (Scripting) is open.** Epic 4.1 is closed: 4.1.1 (VM lifecycle, PR #123 `efdd0b9`) and 4.1.2 (module
 loading via the VFS, PR #124 `ccf776c`), both macOS-validated. **4.2.1 (quickjs binding emission) is next**: the first
 task that calls a script, so it inherits R21. Patching quickjs-ng (R21, R23, R24) is an open decision
-(`docs/08-risks.md`, `docs/future-roadmap.md`), settled before 4.2.1's plan. Phase 4 has no story map yet: the
-`## Stories` section of `docs/tasks/phase-4.md` comes before its next task.
+(`docs/08-risks.md`, `docs/future-roadmap.md`), settled before 4.2.1's plan. Phase 4's story map is the
+`## Stories` section of `docs/tasks/phase-4.md`; 4.2.1 opens Story 1.
 
 **Three phase gates are still open**, each owing its deliverable rather than code:
 - **Phase 0**: macOS-PASS, held open for the Windows/Linux 60 fps sign-off (`samples/phase-0-cube/VALIDATION.md`).
