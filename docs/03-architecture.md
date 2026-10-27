@@ -85,7 +85,8 @@ A CI test that fails if any `#include` under `/engine` or `/runtime` points to `
   /script      quickjs-ng, bindings, hot reload
                (opened at 4.1.1: engine::script::Vm -- one runtime + one context per VM, a capped
                first-party heap allocator, a per-call time budget, every failure trapped into the engine
-               log. It links aero::core PUBLIC and quickjs-ng PRIVATE, and exposes nothing to scripts yet.
+               log. It links aero::core and aero::scene PUBLIC and quickjs-ng PRIVATE; 4.2.1 added the one
+               frozen global, `engine` (see the 4.2.1 note below).
                Enforcement is in two halves: .github/scripts/check-script-boundary.sh (no quickjs token in
                any public engine header, none in engine/ or runtime/ outside engine/script/src) and
                tests/script_boundary_probe.cpp, which links aero::script alone)
@@ -97,6 +98,11 @@ A CI test that fails if any `#include` under `/engine` or `/runtime` points to `
                (a path's non-ASCII bytes and '%' percent-encoded inside the VM); the backend frees no
                module before teardown, so recreating the VM is the full reset. A failed load or link
                retires every module it created -- R22 in docs/08)
+               (4.2.1 added the script API: the frozen `engine` namespace -- Entity, the component
+               classes, Vec3 and Quat views -- bound to one World per VM. The binding tables are the third
+               reflection consumer: tools/reflect-gen --emit-script writes quickjs-free descriptor tables for
+               the built-in components, compiled into aero_script, and a hand-written runtime under
+               engine/script/src interprets them, so quickjs never leaves that target)
   /reflect     entt::meta runtime (the GENERATOR lives in /tools)
 
 /runtime       game loop, .pak loading, per-platform entry points        [5 platforms]
