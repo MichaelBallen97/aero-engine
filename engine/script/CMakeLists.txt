@@ -44,6 +44,7 @@ add_library(aero_script STATIC
     src/component_bindings.cpp
     src/script_api.cpp
     src/script_api_values.cpp
+    src/script_api_entity.cpp
 )
 add_library(aero::script ALIAS aero_script)
 

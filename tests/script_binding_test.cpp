@@ -17,13 +17,18 @@
 #include <doctest/doctest.h>
 
 #include <array>
+#include <cctype>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
+#include <fstream>
 #include <memory>
 #include <ostream>  // a CHECK on std::string_view needs the complete std::ostream on MSVC (ci-portability.md)
 #include <set>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -543,4 +548,654 @@ TEST_CASE("script: a heap that runs out while vectors are made is OutOfMemory, a
     CHECK(evalOk(vm, "new engine.Vec3(1, 2, 3).x") == "1");
     CHECK(evalOk(vm, "new engine.Quat().w") == "1");
     expectCleanShutdown(vm);
+}
+
+// ---- BN15-BN30: the World binding, engine.Entity, component objects and the scalar, Guid and string fields
+// -----------
+
+namespace {
+
+using engine::Entity;
+using engine::World;
+using engine::script::BindStatus;
+using engine::script::bindStatusLabel;
+using script_test::completion;
+using script_test::ProbeScene;
+using script_test::registerProbe;
+
+[[nodiscard]] std::string_view label(BindStatus status) { return bindStatusLabel(status); }
+
+// Exactly `count` records at ERROR or above, each starting with "script: ".
+void expectErrors(const LogCapture& log, std::size_t count) {
+    const std::vector<script_test::CapturedRecord> records = log.atLeast(LogLevel::Warn);
+    CHECK(records.size() == count);
+    for (const script_test::CapturedRecord& record : records) {
+        CHECK(record.level == LogLevel::Error);
+        CHECK(record.message.starts_with("script: "));
+    }
+}
+
+}  // namespace
+
+TEST_CASE("script: bindWorld refuses a World that lacks a bound component, and every refusal is one ERROR (BN15)") {
+    LogCapture log;
+    const auto table = probeTable();
+    Vm vm = makeProbeVm(table);
+    World world;
+    registerProbe(world);
+    const Entity entity = world.create();
+
+    Vm invalid;
+    CHECK(label(invalid.bindWorld(world)) == "InvalidVm");
+    expectErrors(log, 1U);
+    log.clear();
+
+    BindStatus foreign = BindStatus::Ok;
+    std::thread{[&] { foreign = vm.bindWorld(world); }}.join();
+    CHECK(label(foreign) == "WrongThread");
+    expectErrors(log, 1U);
+    log.clear();
+
+    // A good binding first, so the refusals below have a binding to leave alone.
+    CHECK(label(vm.bindWorld(world)) == "Ok");
+    CHECK(label(vm.defineEntityGlobal("e", entity)) == "Ok");
+    CHECK(log.countAtLeast(LogLevel::Warn) == 0U);
+
+    World bare;  // a constructed World holds the ten built-ins, not the fixture components
+    CHECK(label(vm.bindWorld(bare)) == "UnregisteredComponent");
+    expectErrors(log, 1U);
+    CHECK(log.atLeast(LogLevel::Warn).front().message.find("engine.ScriptProbe") != std::string::npos);
+    log.clear();
+
+    World source;
+    registerProbe(source);
+    const World taken{std::move(source)};
+    CHECK(label(vm.bindWorld(source)) == "UnregisteredComponent");  // NOLINT(bugprone-use-after-move) -- deliberate
+    expectErrors(log, 1U);
+    log.clear();
+    CHECK(completion(vm, "e.alive") == "true");  // the earlier binding still serves
+
+    // unbindWorld: an invalid Vm and another thread are one ERROR each, twice in a row is silent.
+    invalid.unbindWorld();
+    expectErrors(log, 1U);
+    log.clear();
+    std::thread{[&] { vm.unbindWorld(); }}.join();
+    expectErrors(log, 1U);
+    log.clear();
+    CHECK(completion(vm, "e.alive") == "true");
+    vm.unbindWorld();
+    vm.unbindWorld();
+    CHECK(log.countAtLeast(LogLevel::Warn) == 0U);
+    CHECK(completion(vm, "e.alive") == "false");
+
+    std::set<std::string_view> labels;
+    for (std::uint8_t status = 0; status <= static_cast<std::uint8_t>(BindStatus::OutOfMemory); ++status) {
+        labels.insert(label(static_cast<BindStatus>(status)));
+    }
+    CHECK(labels.size() == 8U);
+    CHECK(labels.count("Unknown") == 0U);
+    expectCleanShutdown(vm);
+}
+
+TEST_CASE("script: defineEntityGlobal refuses in order, one ERROR each, and defines without running a setter (BN16)") {
+    LogCapture log;
+    ProbeScene scene;
+    const Entity second = scene.world.create();
+
+    Vm invalid;
+    CHECK(label(invalid.defineEntityGlobal("x", scene.entity)) == "InvalidVm");
+    expectErrors(log, 1U);
+    log.clear();
+    BindStatus foreign = BindStatus::Ok;
+    std::thread{[&] { foreign = scene.vm.defineEntityGlobal("x", scene.entity); }}.join();
+    CHECK(label(foreign) == "WrongThread");
+    expectErrors(log, 1U);
+    log.clear();
+
+    const std::string_view embeddedNul{"x\0y", 3};
+    for (const std::string_view name : {std::string_view{""}, std::string_view{"1a"}, std::string_view{"a b"},
+                                        std::string_view{"engine"}, embeddedNul}) {
+        INFO("name size: " << name.size());
+        CHECK(label(scene.vm.defineEntityGlobal(name, scene.entity)) == "InvalidName");
+        expectErrors(log, 1U);
+        log.clear();
+    }
+    CHECK(completion(scene.vm, "typeof x + typeof a + typeof engine") == "undefinedundefinedobject");
+
+    // A script-made global that cannot be redefined.
+    completion(scene.vm, "Object.defineProperty(globalThis, 'fixed', { value: 1 }); 0");
+    CHECK(label(scene.vm.defineEntityGlobal("fixed", scene.entity)) == "InvalidName");
+    expectErrors(log, 1U);
+    log.clear();
+    CHECK(completion(scene.vm, "fixed") == "1");
+
+    // Success: a writable, configurable, enumerable data property holding an engine.Entity.
+    CHECK(completion(scene.vm,
+                     "const d = Object.getOwnPropertyDescriptor(globalThis, 'e');"
+                     "[e instanceof engine.Entity, e.alive, d.writable, d.configurable, d.enumerable].join()") ==
+          "true,true,true,true,true");
+    // The same name again replaces it, and a setter a script installed for a new name never runs.
+    completion(scene.vm,
+               "globalThis.old = e; globalThis.ran = 0;"
+               "Object.defineProperty(globalThis, 'watched', { configurable: true,"
+               "  get() { return 1; }, set(v) { globalThis.ran += 1; } }); 0");
+    CHECK(label(scene.vm.defineEntityGlobal("e", second)) == "Ok");
+    CHECK(label(scene.vm.defineEntityGlobal("watched", second)) == "Ok");
+    CHECK(completion(scene.vm, "[e !== old, e.alive, ran, watched instanceof engine.Entity].join()") ==
+          "true,true,0,true");
+    CHECK(log.countAtLeast(LogLevel::Warn) == 0U);
+
+    // The remaining refusals, in order: no World, then a dead entity, then a global object that cannot grow.
+    scene.vm.unbindWorld();
+    CHECK(label(scene.vm.defineEntityGlobal("x", second)) == "NoWorld");
+    expectErrors(log, 1U);
+    log.clear();
+    CHECK(label(scene.vm.bindWorld(scene.world)) == "Ok");
+    CHECK(scene.world.destroy(second));
+    CHECK(label(scene.vm.defineEntityGlobal("x", second)) == "DeadEntity");
+    expectErrors(log, 1U);
+    log.clear();
+    completion(scene.vm, "Object.preventExtensions(globalThis); 0");
+    CHECK(label(scene.vm.defineEntityGlobal("fresh", scene.entity)) == "InvalidName");
+    expectErrors(log, 1U);
+    log.clear();
+    CHECK(completion(scene.vm, "typeof fresh") == "undefined");
+    expectCleanShutdown(scene.vm);
+}
+
+TEST_CASE("script: has, get, add and remove follow World::add's replace and never return undefined (BN17)") {
+    const LogCapture log;
+    ProbeScene scene;
+    const std::string removed = completion(scene.vm, iife(R"js(
+        return [e.remove(engine.ScriptProbe), e.has(engine.ScriptProbe), e.get(engine.ScriptProbe)].map(String).join();
+    )js"));
+    CHECK(removed == "true,false,null");
+    CHECK(scene.world.get<ScriptProbe>(scene.entity) == nullptr);
+
+    const std::string added = completion(scene.vm, iife(R"js(
+        const c = e.add(engine.ScriptProbe);
+        return [c instanceof engine.ScriptProbe, e.has(engine.ScriptProbe)].join();
+    )js"));
+    CHECK(added == "true,true");
+    CHECK(scene.probe() == ScriptProbe{});
+
+    // The World's own semantics: adding to an entity that holds one replaces it with the defaults (A13).
+    scene.probe().f = 9.0F;
+    scene.probe().s = "changed";
+    completion(scene.vm, "e.add(engine.ScriptProbe); 0");
+    CHECK(scene.probe() == ScriptProbe{});
+
+    scene.probe().f = 4.0F;
+    const std::string twice = completion(scene.vm, iife(R"js(
+        const a = e.get(engine.ScriptProbe);
+        const b = e.get(engine.ScriptProbe);
+        return [a === b, a.f === b.f, a.f, a instanceof engine.ScriptProbe].join();
+    )js"));
+    CHECK(twice == "false,true,4,true");
+
+    const std::string gone = completion(scene.vm, iife(R"js(
+        return [e.remove(engine.ScriptProbe), e.remove(engine.ScriptProbe), e.get(engine.ScriptProbe)]
+            .map(String).join();
+    )js"));
+    CHECK(gone == "true,false,null");
+    CHECK(log.countAtLeast(LogLevel::Warn) == 0U);
+    expectCleanShutdown(scene.vm);
+}
+
+TEST_CASE("script: an entity method identifies a component class by identity, never by its properties (BN18)") {
+    const LogCapture log;
+    ProbeScene scene;
+    const std::string mismatches = completion(scene.vm, iife(R"js(
+        const bad = [
+            [undefined, 'undefined'], [{}, 'an object'], [engine.Vec3, 'a function'], [engine.Entity, 'a function'],
+            [e.get(engine.ScriptProbe), 'an engine.ScriptProbe'], [function ScriptProbe() {}, 'a function'],
+            [new Proxy(engine.ScriptProbe, {}), 'a function'], [null, 'null'], [1, 'a number'], ['x', 'a string'],
+            [true, 'a boolean'], [Symbol('s'), 'a symbol'], [1n, 'a bigint'], [new engine.Vec3(), 'an engine.Vec3'],
+        ];
+        const out = [];
+        for (const m of ['has', 'get', 'add', 'remove']) {
+            for (const [value, actual] of bad) {
+                const want = 'TypeError: engine.Entity.' + m + ': expected an engine component class, got ' + actual;
+                const got = t(() => e[m](value));
+                if (got !== want) { out.push(m + ' -> ' + got); }
+            }
+            const none = t(() => e[m]());
+            if (!none.endsWith('got undefined')) { out.push(m + ' with no argument -> ' + none); }
+        }
+        return out.join('|');
+    )js"));
+    CHECK(mismatches.empty());
+    CHECK(scene.probe() == ScriptProbe{});  // none of them added, replaced or removed anything
+    expectCleanShutdown(scene.vm);
+}
+
+TEST_CASE("script: a Float field reads exactly, writes narrowed to a float, and refuses a non-number (BN19)") {
+    const LogCapture log;
+    ProbeScene scene;
+    CHECK(completion(scene.vm, "globalThis.c = e.get(engine.ScriptProbe); c.f") == "0.5");
+
+    completion(scene.vm, "c.f = 2.25; 0");
+    CHECK(scene.probe().f == 2.25F);
+    CHECK(completion(scene.vm, "c.f") == "2.25");
+    completion(scene.vm, "c.f = -0; 0");
+    CHECK(scene.probe().f == 0.0F);
+    CHECK(std::signbit(scene.probe().f));
+    CHECK(completion(scene.vm, "Object.is(c.f, -0)") == "true");
+    completion(scene.vm, "c.f = NaN; 0");
+    CHECK(std::isnan(scene.probe().f));
+    completion(scene.vm, "c.f = Infinity; 0");
+    CHECK(std::isinf(scene.probe().f));
+    CHECK(scene.probe().f > 0.0F);
+    completion(scene.vm, "c.f = -1e300; 0");
+    CHECK(std::isinf(scene.probe().f));
+    CHECK(scene.probe().f < 0.0F);
+    completion(scene.vm, "c.f = 1e300; 0");
+    CHECK(std::isinf(scene.probe().f));
+    CHECK(scene.probe().f > 0.0F);
+    completion(scene.vm, "c.f = 0.1; 0");
+    CHECK(scene.probe().f == static_cast<float>(0.1));
+    CHECK(completion(scene.vm, "c.f") == "0.10000000149011612");
+
+    completion(scene.vm, "c.f = 3.5; 0");
+    const std::array<ScriptRow, 5> wrong{{{"'1'", "a string"},
+                                          {"true", "a boolean"},
+                                          {"null", "null"},
+                                          {"undefined", "undefined"},
+                                          {"({})", "an object"}}};
+    for (const ScriptRow& row : wrong) {
+        INFO("value: " << row.script);
+        CHECK(completion(scene.vm, iife("return t(() => { c.f = " + std::string{row.script} + "; });")) ==
+              "TypeError: engine.ScriptProbe.f: expected a number, got " + std::string{row.expected});
+        CHECK(scene.probe().f == 3.5F);
+    }
+    CHECK(log.countAtLeast(LogLevel::Warn) == 0U);
+    expectCleanShutdown(scene.vm);
+}
+
+TEST_CASE("script: a Bool field takes a boolean and nothing truthy (BN20)") {
+    const LogCapture log;
+    ProbeScene scene;
+    completion(scene.vm, "globalThis.c = e.get(engine.ScriptProbe); c.b = false; 0");
+    CHECK_FALSE(scene.probe().b);
+    CHECK(completion(scene.vm, "c.b") == "false");
+    completion(scene.vm, "c.b = true; 0");
+    CHECK(scene.probe().b);
+    CHECK(completion(scene.vm, "c.b") == "true");
+
+    scene.probe().b = false;
+    const std::array<ScriptRow, 5> wrong{
+        {{"0", "a number"}, {"1", "a number"}, {"'true'", "a string"}, {"null", "null"}, {"undefined", "undefined"}}};
+    for (const ScriptRow& row : wrong) {
+        INFO("value: " << row.script);
+        CHECK(completion(scene.vm, iife("return t(() => { c.b = " + std::string{row.script} + "; });")) ==
+              "TypeError: engine.ScriptProbe.b: expected a boolean, got " + std::string{row.expected});
+        CHECK_FALSE(scene.probe().b);
+    }
+    expectCleanShutdown(scene.vm);
+}
+
+TEST_CASE("script: a UInt32 field takes an integral number in range, never a wrapped one (BN21)") {
+    const LogCapture log;
+    ProbeScene scene;
+    CHECK(completion(scene.vm, "globalThis.c = e.get(engine.ScriptProbe); c.u") == "7");
+    completion(scene.vm, "c.u = 4294967295; 0");
+    CHECK(scene.probe().u == 4294967295U);
+    CHECK(completion(scene.vm, "c.u") == "4294967295");
+    completion(scene.vm, "c.u = 0; 0");
+    CHECK(scene.probe().u == 0U);
+    scene.probe().u = 9;
+    completion(scene.vm, "c.u = -0; 0");
+    CHECK(scene.probe().u == 0U);
+
+    scene.probe().u = 11;
+    const std::array<ScriptRow, 5> range{
+        {{"1.5", "1.5"}, {"-1", "-1"}, {"4294967296", "4294967296"}, {"NaN", "NaN"}, {"Infinity", "Infinity"}}};
+    for (const ScriptRow& row : range) {
+        INFO("value: " << row.script);
+        CHECK(completion(scene.vm, iife("return t(() => { c.u = " + std::string{row.script} + "; });")) ==
+              "RangeError: engine.ScriptProbe.u: expected an integer in [0, 4294967295], got " +
+                  std::string{row.expected});
+        CHECK(scene.probe().u == 11U);
+    }
+    CHECK(completion(scene.vm, iife("return t(() => { c.u = -Infinity; });")) ==
+          "RangeError: engine.ScriptProbe.u: expected an integer in [0, 4294967295], got -Infinity");
+    const std::array<ScriptRow, 3> wrong{{{"'1'", "a string"}, {"1n", "a bigint"}, {"true", "a boolean"}}};
+    for (const ScriptRow& row : wrong) {
+        INFO("value: " << row.script);
+        CHECK(completion(scene.vm, iife("return t(() => { c.u = " + std::string{row.script} + "; });")) ==
+              "TypeError: engine.ScriptProbe.u: expected a number, got " + std::string{row.expected});
+        CHECK(scene.probe().u == 11U);
+    }
+    expectCleanShutdown(scene.vm);
+}
+
+TEST_CASE("script: a Guid field reads 32 lowercase digits and writes only 32 hex digits (BN22)") {
+    const LogCapture log;
+    ProbeScene scene;
+    CHECK(completion(scene.vm, "globalThis.c = e.get(engine.ScriptProbe); c.g") == std::string(32, '0'));
+    const engine::Guid known{0x0123456789ABCDEFULL, 0xFEDCBA9876543210ULL};
+    scene.probe().g = known;
+    CHECK(completion(scene.vm, "c.g") == "0123456789abcdeffedcba9876543210");
+
+    scene.probe().g = engine::Guid{};
+    completion(scene.vm, "c.g = '0123456789ABCDEFFEDCBA9876543210'; 0");  // upper case is accepted
+    CHECK(scene.probe().g == known);
+    scene.probe().g = engine::Guid{};
+    completion(scene.vm, "c.g = '0123456789abcdeffedcba9876543210'; 0");
+    CHECK(scene.probe().g == known);
+
+    const std::string refused = "RangeError: engine.ScriptProbe.g: expected 32 hex digits";
+    const std::array<std::string_view, 4> bad{
+        "'01234567-89ab-cdef-fedc-ba9876543210'", "'0123456789abcdeffedcba987654321'",
+        "'0123456789abcdeffedcba98765432100'", "'zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz'"};
+    for (const std::string_view value : bad) {
+        INFO("value: " << value);
+        CHECK(completion(scene.vm, iife("return t(() => { c.g = " + std::string{value} + "; });")) == refused);
+        CHECK(scene.probe().g == known);
+    }
+    CHECK(completion(scene.vm, iife("return t(() => { c.g = 5; });")) ==
+          "TypeError: engine.ScriptProbe.g: expected a string, got a number");
+    CHECK(scene.probe().g == known);
+    expectCleanShutdown(scene.vm);
+}
+
+TEST_CASE("script: a String field round-trips UTF-8 and an embedded U+0000, and takes only a string (BN23)") {
+    const LogCapture log;
+    ProbeScene scene;
+    CHECK(completion(scene.vm, "globalThis.c = e.get(engine.ScriptProbe); c.s") == "probe");
+    completion(scene.vm, "c.s = ''; 0");
+    CHECK(scene.probe().s.empty());
+    CHECK(completion(scene.vm, "c.s.length") == "0");
+    completion(scene.vm, "c.s = 'plain ascii'; 0");
+    CHECK(scene.probe().s == "plain ascii");
+    completion(scene.vm, R"js(c.s = '\u00e9\u6f22\u5b57'; 0)js");  // e-acute and two CJK characters
+    CHECK(scene.probe().s == "\xC3\xA9\xE6\xBC\xA2\xE5\xAD\x97");
+    CHECK(completion(scene.vm, "c.s.length + ':' + c.s.charCodeAt(0).toString(16)") == "3:e9");
+    completion(scene.vm, R"js(c.s = 'a\u0000b'; 0)js");
+    CHECK(scene.probe().s == std::string("a\0b", 3));
+    CHECK(completion(scene.vm, "c.s.length + ':' + c.s.charCodeAt(1)") == "3:0");
+
+    scene.probe().s = "kept";
+    const std::array<ScriptRow, 3> wrong{
+        {{"5", "a number"}, {"new String('x')", "an object"}, {"Symbol('s')", "a symbol"}}};
+    for (const ScriptRow& row : wrong) {
+        INFO("value: " << row.script);
+        CHECK(completion(scene.vm, iife("return t(() => { c.s = " + std::string{row.script} + "; });")) ==
+              "TypeError: engine.ScriptProbe.s: expected a string, got " + std::string{row.expected});
+        CHECK(scene.probe().s == "kept");
+    }
+    expectCleanShutdown(scene.vm);
+}
+
+TEST_CASE("script: after the entity is destroyed every access throws and nothing reaches the recycled slot (BN24)") {
+    const LogCapture log;
+    ProbeScene scene;
+    completion(scene.vm, "globalThis.c = e.get(engine.ScriptProbe); 0");
+    CHECK(scene.world.destroy(scene.entity));
+
+    const std::string after = completion(scene.vm, iife(R"js(
+        const out = [];
+        out.push(t(() => c.f), t(() => { c.f = 1; }), t(() => c.s), t(() => { c.g = '0'.repeat(32); }));
+        for (const m of ['has', 'get', 'add', 'remove']) { out.push(t(() => e[m](engine.ScriptProbe))); }
+        out.push(e.alive);
+        return out.join('|');
+    )js"));
+    CHECK(after ==
+          "TypeError: engine.ScriptProbe.f: the entity is not alive|TypeError: engine.ScriptProbe.f: the entity is "
+          "not alive|TypeError: engine.ScriptProbe.s: the entity is not alive|TypeError: engine.ScriptProbe.g: the "
+          "entity is not alive|TypeError: engine.Entity.has: the entity is not alive|TypeError: engine.Entity.get: "
+          "the entity is not alive|TypeError: engine.Entity.add: the entity is not alive|TypeError: "
+          "engine.Entity.remove: the entity is not alive|false");
+
+    // The next entity takes the recycled index with a newer generation; the stale object must not reach it.
+    const Entity fresh = scene.world.create();
+    CHECK(fresh.index == scene.entity.index);
+    CHECK(fresh != scene.entity);
+    ScriptProbe seeded;
+    seeded.f = 9.0F;
+    seeded.s = "fresh";
+    REQUIRE(scene.world.add<ScriptProbe>(fresh, seeded) != nullptr);
+    CHECK(completion(scene.vm, iife("return t(() => { c.f = 1; }) + '|' + t(() => c.f);")) ==
+          "TypeError: engine.ScriptProbe.f: the entity is not alive|TypeError: engine.ScriptProbe.f: the entity is "
+          "not alive");
+    CHECK(completion(scene.vm, "e.alive") == "false");
+    // The value is checked before the World is read, so a wrong value on a dead entity names the value.
+    CHECK(completion(scene.vm, iife("return t(() => { c.f = 'x'; });")) ==
+          "TypeError: engine.ScriptProbe.f: expected a number, got a string");
+    const ScriptProbe* const kept = scene.world.get<ScriptProbe>(fresh);
+    REQUIRE(kept != nullptr);
+    CHECK(*kept == seeded);
+    expectCleanShutdown(scene.vm);
+}
+
+TEST_CASE("script: a component object names the entity and the type, not one stored instance (BN25)") {
+    const LogCapture log;
+    ProbeScene scene;
+    completion(scene.vm, "globalThis.c = e.get(engine.ScriptProbe); 0");
+    scene.probe().f = 9.0F;
+    CHECK(completion(scene.vm, "c.f") == "9");
+    CHECK(completion(scene.vm, "e.remove(engine.ScriptProbe)") == "true");
+
+    const std::string removed = completion(scene.vm, iife("return [t(() => c.f), t(() => { c.f = 1; })].join('|');"));
+    CHECK(removed ==
+          "TypeError: engine.ScriptProbe.f: the entity has no engine.ScriptProbe|TypeError: "
+          "engine.ScriptProbe.f: the entity has no engine.ScriptProbe");
+    CHECK(scene.world.get<ScriptProbe>(scene.entity) == nullptr);
+
+    completion(scene.vm, "e.add(engine.ScriptProbe); 0");
+    CHECK(completion(scene.vm, "c.f") == "0.5");  // the same object, the new defaults
+    CHECK(completion(scene.vm, "c.s") == "probe");
+    expectCleanShutdown(scene.vm);
+}
+
+TEST_CASE("script: an entity object made under an earlier World binding never reaches a later one (BN26)") {
+    const LogCapture log;
+    ProbeScene scene;
+    World other = script_test::makeProbeWorld();
+    const Entity twin = script_test::makeProbeEntity(other);
+    REQUIRE(twin == scene.entity);  // the same index and generation, in another World
+    other.get<ScriptProbe>(twin)->f = 7.0F;
+
+    completion(scene.vm, "globalThis.c = e.get(engine.ScriptProbe); 0");
+    scene.vm.unbindWorld();
+    const std::string unbound = completion(scene.vm, iife(R"js(
+        return [t(() => c.f), t(() => { c.f = 1; }), t(() => e.has(engine.ScriptProbe)), e.alive].join('|');
+    )js"));
+    CHECK(unbound ==
+          "TypeError: engine.ScriptProbe.f: no World is bound|TypeError: engine.ScriptProbe.f: no World is "
+          "bound|TypeError: engine.Entity.has: no World is bound|false");
+
+    CHECK(label(scene.vm.bindWorld(other)) == "Ok");
+    const std::string later = completion(scene.vm, iife(R"js(
+        return [t(() => c.f), t(() => { c.f = 1; }), t(() => e.has(engine.ScriptProbe)), e.alive].join('|');
+    )js"));
+    CHECK(later ==
+          "TypeError: engine.ScriptProbe.f: the entity belongs to an earlier World binding|TypeError: "
+          "engine.ScriptProbe.f: the entity belongs to an earlier World binding|TypeError: "
+          "engine.Entity.has: the entity belongs to an earlier World binding|false");
+    CHECK(other.get<ScriptProbe>(twin)->f == 7.0F);  // the write went nowhere
+
+    // Binding the same World again starts a new binding too.
+    CHECK(label(scene.vm.bindWorld(scene.world)) == "Ok");
+    CHECK(completion(scene.vm, iife("return t(() => c.f);")) ==
+          "TypeError: engine.ScriptProbe.f: the entity belongs to an earlier World binding");
+    CHECK(label(scene.vm.defineEntityGlobal("e", scene.entity)) == "Ok");
+    CHECK(completion(scene.vm, "e.alive") == "true");
+    expectCleanShutdown(scene.vm);
+}
+
+TEST_CASE("script: an accessor or method lifted onto a foreign receiver is refused (BN27)") {
+    const LogCapture log;
+    ProbeScene scene;
+    completion(scene.vm, "globalThis.c = e.get(engine.ScriptProbe); 0");
+    const std::string refused = completion(scene.vm, iife(R"js(
+        const field = Object.getOwnPropertyDescriptor(engine.ScriptProbe.prototype, 'f');
+        const alive = Object.getOwnPropertyDescriptor(engine.Entity.prototype, 'alive');
+        const out = [];
+        for (const receiver of [{}, engine.ScriptProbe.prototype, e, new engine.Vec3(), 5, undefined]) {
+            out.push(t(() => field.get.call(receiver)), t(() => field.set.call(receiver, 1)));
+        }
+        out.push(t(() => alive.get.call(c)));
+        out.push(t(() => alive.get.call({})));
+        out.push(t(() => engine.Entity.prototype.has.call(c, engine.ScriptProbe)));
+        out.push(t(() => engine.Entity.prototype.get.call({}, engine.ScriptProbe)));
+        return out.join('|');
+    )js"));
+    const std::string field = "TypeError: engine.ScriptProbe.f: the receiver is not an engine.ScriptProbe";
+    std::string expected;
+    for (int i = 0; i < 12; ++i) {
+        expected += field + "|";
+    }
+    expected +=
+        "TypeError: engine.Entity.alive: the receiver is not an engine.Entity|"
+        "TypeError: engine.Entity.alive: the receiver is not an engine.Entity|"
+        "TypeError: engine.Entity.has: the receiver is not an engine.Entity|"
+        "TypeError: engine.Entity.get: the receiver is not an engine.Entity";
+    CHECK(refused == expected);
+    CHECK(scene.probe() == ScriptProbe{});
+    expectCleanShutdown(scene.vm);
+}
+
+TEST_CASE("script: a tag component is added, found and removed by presence alone (BN28)") {
+    const LogCapture log;
+    ProbeScene scene;
+    const std::string tag = completion(scene.vm, iife(R"js(
+        const out = [e.has(engine.ScriptTag)];
+        const added = e.add(engine.ScriptTag);
+        out.push(added instanceof engine.ScriptTag, e.has(engine.ScriptTag));
+        out.push(e.get(engine.ScriptTag) instanceof engine.ScriptTag);
+        out.push(e.remove(engine.ScriptTag), e.remove(engine.ScriptTag), e.get(engine.ScriptTag));
+        return out.map(String).join();
+    )js"));
+    CHECK(tag == "false,true,true,true,true,false,null");
+    CHECK_FALSE(scene.world.has<ScriptTag>(scene.entity));
+    CHECK(completion(scene.vm, "Object.getOwnPropertyNames(engine.ScriptTag.prototype).join()") == "constructor");
+    expectCleanShutdown(scene.vm);
+}
+
+TEST_CASE("script: an uncaught field error ends the call Exception with the native frame in the stack (BN29)") {
+    LogCapture log;
+    ProbeScene scene;
+    completion(scene.vm, "globalThis.c = e.get(engine.ScriptProbe); 0");
+
+    const auto lines = [](const std::string& text) {
+        std::vector<std::string> out;
+        std::size_t begin = 0;
+        for (std::size_t end = text.find('\n'); end != std::string::npos; end = text.find('\n', begin)) {
+            out.push_back(text.substr(begin, end - begin));
+            begin = end + 1;
+        }
+        out.push_back(text.substr(begin));
+        return out;
+    };
+    struct Row {
+        std::string_view source;
+        std::string_view message;
+        std::string_view firstFrame;
+    };
+    const std::array<Row, 3> rows{{
+        {"c.f = 'x';", "engine.ScriptProbe.f: expected a number, got a string", "    at set f (native)"},
+        {"c.b = 1;", "engine.ScriptProbe.b: expected a boolean, got a number", "    at set b (native)"},
+        {"e.get(5);", "engine.Entity.get: expected an engine component class, got a number", "    at get (native)"},
+    }};
+    for (const Row& row : rows) {
+        INFO("source: " << row.source);
+        log.clear();
+        const EvalResult result = scene.vm.evaluateScript(row.source, "res://bn29.js");
+        CHECK(result.status == EvalStatus::Exception);
+        CHECK(result.error.name == "TypeError");
+        CHECK(result.error.message == row.message);
+        const std::vector<std::string> frames = lines(result.error.stack);
+        REQUIRE(frames.size() >= 2U);
+        CHECK(frames[0] == row.firstFrame);
+        CHECK(frames[1].find("res://bn29.js:") != std::string::npos);
+        const std::vector<script_test::CapturedRecord> records = log.atLeast(LogLevel::Warn);
+        REQUIRE(records.size() == 1U);
+        CHECK(records[0].level == LogLevel::Error);
+        CHECK(records[0].message ==
+              "script: res://bn29.js: uncaught TypeError: " + std::string{row.message} + "\n" + result.error.stack);
+    }
+
+    // A getter's frame is named for the property, and a caught error is an ordinary TypeError.
+    log.clear();
+    scene.probe().f = 1.0F;
+    const EvalResult getter = scene.vm.evaluateScript(
+        "const p = Object.getOwnPropertyDescriptor("
+        "engine.ScriptProbe.prototype, 'f'); p.get.call({});",
+        "res://bn29.js");
+    CHECK(getter.status == EvalStatus::Exception);
+    CHECK(getter.error.message == "engine.ScriptProbe.f: the receiver is not an engine.ScriptProbe");
+    CHECK(getter.error.stack.starts_with("    at get f (native)"));
+    log.clear();
+    CHECK(
+        completion(scene.vm, "try { c.f = {}; 'no throw'; } catch (err) { (err instanceof TypeError) + err.name; }") ==
+        "trueTypeError");
+    CHECK(log.countAtLeast(LogLevel::Warn) == 0U);
+    expectCleanShutdown(scene.vm);
+}
+
+TEST_CASE("script: no hand-written script source names a built-in component (BN30)") {
+    namespace fs = std::filesystem;
+    const auto strippedSource = [](const fs::path& path) {
+        std::ifstream file{path};
+        std::string out;
+        std::string line;
+        while (std::getline(file, line)) {
+            const std::size_t comment = line.find("//");
+            if (comment != std::string::npos) {
+                line.erase(comment);
+            }
+            out += line;
+            out += '\n';
+        }
+        return out;
+    };
+    const auto isIdentifierChar = [](char c) { return std::isalnum(static_cast<unsigned char>(c)) != 0 || c == '_'; };
+    const auto holdsIdentifier = [&](const std::string& text, std::string_view name) {
+        for (std::size_t at = text.find(name); at != std::string::npos; at = text.find(name, at + 1)) {
+            const bool leftOpen = at == 0 || !isIdentifierChar(text[at - 1]);
+            const std::size_t after = at + name.size();
+            const bool rightOpen = after >= text.size() || !isIdentifierChar(text[after]);
+            if (leftOpen && rightOpen) {
+                return true;
+            }
+        }
+        return false;
+    };
+
+    // The names a fresh World registers, `engine::` stripped.
+    const World world;
+    std::vector<std::string> names;
+    for (std::size_t i = 0; i < world.componentTypeCount(); ++i) {
+        std::string name{world.componentTypeName(world.componentTypeAt(i))};
+        if (name.starts_with("engine::")) {
+            name.erase(0, std::string_view{"engine::"}.size());
+        }
+        names.push_back(name);
+    }
+    REQUIRE_FALSE(names.empty());
+
+    // A DERIVED set: every .cpp and .hpp under the script layer, never an enumeration.
+    std::vector<fs::path> files;
+    for (const fs::directory_entry& entry :
+         fs::recursive_directory_iterator{fs::path{AERO_SCRIPT_SRC_DIR}.parent_path()}) {
+        if (entry.is_regular_file() && (entry.path().extension() == ".cpp" || entry.path().extension() == ".hpp")) {
+            files.push_back(entry.path());
+        }
+    }
+    bool sawApiSource = false;
+    bool sawApiHeader = false;
+    for (const fs::path& file : files) {
+        const std::string text = strippedSource(file);
+        INFO("file: " << file.filename().string());
+        sawApiSource = sawApiSource || file.filename() == "script_api.cpp";
+        sawApiHeader = sawApiHeader || (file.filename() == "script_api.hpp" && holdsIdentifier(text, "ScriptApi"));
+        for (const std::string& name : names) {
+            INFO("component: " << name);
+            CHECK_FALSE(holdsIdentifier(text, name));
+        }
+    }
+    // Anti-vacuity: the scan reached the runtime, and the same scan finds a real identifier.
+    CHECK(sawApiSource);
+    CHECK(sawApiHeader);
 }

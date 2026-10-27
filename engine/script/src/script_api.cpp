@@ -90,6 +90,7 @@ JSValue entityConstructor(JSContext* ctx, JSValueConst /*newTarget*/, int /*argc
 struct AccessorSpec {
     std::string property;
     int magic = 0;
+    bool readOnly = false;  // no setter: a strict-mode assignment throws the backend's own TypeError
 };
 
 struct MethodSpec {
@@ -132,7 +133,8 @@ struct ClassSpec {
     }
     for (const AccessorSpec& accessor : spec.accessors) {
         HeldValue getter{ctx, newGetter(ctx, accessor.property, spec.getter, accessor.magic)};
-        HeldValue setter{ctx, newSetter(ctx, accessor.property, spec.setter, accessor.magic)};
+        HeldValue setter{
+            ctx, accessor.readOnly ? JS_UNDEFINED : newSetter(ctx, accessor.property, spec.setter, accessor.magic)};
         if (getter.isException() || setter.isException()) {
             return false;
         }
@@ -204,7 +206,7 @@ bool installScriptApi(JSContext* ctx, JSRuntime* rt, ScriptApi& api) {
     api.componentClasses.assign(components.size(), JS_INVALID_CLASS_ID);
     api.componentConstructors.reserve(components.size());
 
-    // One class per bound component, in the table's order; its accessors arrive with the field runtime.
+    // One class per bound component, in the table's order, with one accessor per field the value contract binds.
     for (std::size_t i = 0; i < components.size(); ++i) {
         ClassSpec spec;
         spec.name = std::string{components[i].scriptName};
@@ -212,6 +214,14 @@ bool installScriptApi(JSContext* ctx, JSRuntime* rt, ScriptApi& api) {
         spec.constructor = &componentConstructor;
         spec.throwing = true;
         spec.constructorMagic = static_cast<int>(i);
+        spec.getter = &fieldGet;
+        spec.setter = &fieldSet;
+        for (std::size_t f = 0; f < components[i].fields.size(); ++f) {
+            const internal::FieldBinding& field = components[i].fields[f];
+            if (fieldIsScriptBound(field.kind)) {  // a Vec3 or Quat field is skipped here until the view runtime
+                spec.accessors.push_back(AccessorSpec{std::string{field.name}, fieldMagic(i, f), false});
+            }
+        }
         if (!installClass(ctx, rt, ns.get(), spec, &api.componentConstructors)) {
             return false;
         }
@@ -225,6 +235,12 @@ bool installScriptApi(JSContext* ctx, JSRuntime* rt, ScriptApi& api) {
     entity.classId = &api.entityClass;
     entity.constructor = &entityConstructor;
     entity.throwing = true;
+    entity.getter = &entityAlive;
+    entity.accessors.push_back(AccessorSpec{"alive", 0, true});
+    for (std::size_t method = 0; method < ENTITY_METHODS.size(); ++method) {
+        entity.methods.push_back(
+            MethodSpec{std::string{ENTITY_METHODS[method]}, &entityMethod, 1, static_cast<int>(method)});
+    }
     if (!installClass(ctx, rt, ns.get(), entity, nullptr)) {
         return false;
     }

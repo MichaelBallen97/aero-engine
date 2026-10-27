@@ -29,6 +29,7 @@
 //  9. Every value check precedes every World read, and nothing mutates the World between a read and its use. A setter
 //     runs receiver, then value, then target, then write.
 
+#include <aero/core/guid.hpp>
 #include <aero/scene/entity.hpp>
 #include <aero/script/internal/component_binding.hpp>
 
@@ -83,6 +84,9 @@ struct ScriptApi {
 void releaseScriptApi(JSContext* ctx, ScriptApi& api) noexcept;
 // The API a host function belongs to: the context opaque, set at create.
 [[nodiscard]] ScriptApi& scriptApiOf(JSContext* ctx) noexcept;
+// A new engine.Entity object for `entity`, stamped with the current binding. JS_EXCEPTION, with an exception pending,
+// when the heap limit refused it.
+[[nodiscard]] JSValue newEntityObject(JSContext* ctx, const ScriptApi& api, Entity entity);
 
 // ---- shared by the API's files --------------------------------------------------------------------------------
 
@@ -123,6 +127,66 @@ JSValue throwRangeError(JSContext* ctx, const std::string& text) noexcept;
 [[nodiscard]] constexpr int vectorMagic(int dimension, int axis) noexcept { return dimension * 8 + axis; }
 [[nodiscard]] constexpr int vectorDimension(int magic) noexcept { return magic / 8; }
 [[nodiscard]] constexpr int vectorAxis(int magic) noexcept { return magic % 8; }
+
+// Where an error is raised, spelled "engine.<type>.<member>" or "engine.<type>.<member>.<axis>". Three views into
+// static storage (the table's names, literals), so a host function that does not fail builds no text.
+struct Site {
+    std::string_view type;    // "Entity", a component's script name
+    std::string_view member;  // a method, a property or a field
+    std::string_view axis;    // a vector view's axis, else empty
+};
+[[nodiscard]] std::string describeSite(const Site& site);
+
+// ---- the road to storage (script_api_entity.cpp) --------------------------------------------------------------
+// The one way a host function reaches the World. False / nullptr leaves a TypeError pending, naming `site`:
+// "no World is bound", "the entity belongs to an earlier World binding", "the entity is not alive" and, for the
+// storage, "the entity has no engine.<C>". The pointer is valid until the host function returns or the World changes:
+// it is never kept.
+[[nodiscard]] bool resolveEntity(JSContext* ctx, const ScriptApi& api, const EntityRef& ref, const Site& site);
+[[nodiscard]] void* resolveStorage(JSContext* ctx, const ScriptApi& api, const EntityRef& ref, std::size_t component,
+                                   const Site& site);
+
+// The host functions the class install attaches (magic: see the comment on each).
+JSValue entityMethod(JSContext* ctx, JSValueConst thisValue, int argc, JSValueConst* argv, int method) noexcept;
+JSValue entityAlive(JSContext* ctx, JSValueConst thisValue, int magic) noexcept;
+// A component field's accessor pair; magic = component << 8 | field.
+JSValue fieldGet(JSContext* ctx, JSValueConst thisValue, int magic) noexcept;
+JSValue fieldSet(JSContext* ctx, JSValueConst thisValue, JSValueConst value, int magic) noexcept;
+
+// The methods of engine.Entity, in magic order.
+inline constexpr std::array<std::string_view, 4> ENTITY_METHODS{"has", "get", "add", "remove"};
+
+[[nodiscard]] constexpr int fieldMagic(std::size_t component, std::size_t field) noexcept {
+    return static_cast<int>((component << 8U) | field);
+}
+[[nodiscard]] constexpr std::size_t fieldMagicComponent(int magic) noexcept {
+    return static_cast<std::size_t>(magic) >> 8U;
+}
+[[nodiscard]] constexpr std::size_t fieldMagicField(int magic) noexcept {
+    return static_cast<std::size_t>(magic) & 0xFFU;
+}
+
+// ---- a component field's value (script_api_values.cpp) ----------------------------------------------------------
+// One value of any field kind, between the script and a member. Each of the three functions is one exhaustive switch
+// over FieldKind.
+struct FieldValue {
+    float real = 0.0F;              // Float
+    bool flag = false;              // Bool
+    std::uint32_t whole = 0;        // UInt32
+    Guid guid{};                    // Guid
+    std::string text;               // String
+    std::array<float, 4> vector{};  // Vec3 and Quat
+};
+
+// True for the kinds whose accessors the install attaches.
+[[nodiscard]] bool fieldIsScriptBound(internal::FieldKind kind) noexcept;
+// Checks `value` against the field's kind and reads it, converting nothing a script could observe. False: a TypeError
+// or RangeError is pending, and nothing has been read from or written to the World.
+[[nodiscard]] bool readFieldValue(JSContext* ctx, const ScriptApi& api, internal::FieldKind kind, const Site& site,
+                                  JSValueConst value, FieldValue& out);
+void storeFieldValue(internal::FieldKind kind, void* member, const FieldValue& value);
+// The member as a script value. JS_EXCEPTION with an exception pending when the heap limit refused it.
+[[nodiscard]] JSValue loadFieldValue(JSContext* ctx, internal::FieldKind kind, const void* member) noexcept;
 
 // ---- the vector class (script_api_values.cpp) -------------------------------------------------------------------
 // A constructor and `set` / `copy` carry the dimension (3 or 4) as their magic; an axis accessor carries

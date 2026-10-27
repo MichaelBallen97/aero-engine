@@ -21,6 +21,7 @@
 #include <cstdint>
 #include <mutex>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -135,5 +136,59 @@ inline void registerProbe(engine::World& world) {
     engine::scene::internal::registerComponent<ScriptProbe>(world, "test::ScriptProbe");
     engine::scene::internal::registerComponent<ScriptTag>(world, "test::ScriptTag");
 }
+
+// Runs `source`, requires the call to complete, and returns String(completion value).
+// Not [[nodiscard]]: a case often runs a script for its effect on the World.
+inline std::string completion(engine::script::Vm& vm, std::string_view source) {
+    const engine::script::EvalResult result = vm.evaluateScript(source, "bn.js");
+    INFO("script: " << source);
+    INFO("error: " << result.error.name << ": " << result.error.message);
+    REQUIRE(result.status == engine::script::EvalStatus::Ok);
+    return result.completion;
+}
+
+[[nodiscard]] inline engine::World makeProbeWorld() {
+    engine::World world;
+    registerProbe(world);
+    return world;
+}
+
+// A live entity holding a default ScriptProbe.
+[[nodiscard]] inline engine::Entity makeProbeEntity(engine::World& world) {
+    const engine::Entity entity = world.create();
+    REQUIRE(world.add<ScriptProbe>(entity) != nullptr);
+    return entity;
+}
+
+// The usual shape of a binding case: a probe table, a World that registers the fixture components, one entity with a
+// default ScriptProbe, and a VM bound to the World with that entity defined as the global `e`. Members are destroyed
+// in reverse, so the VM goes before the World it borrows and the table it borrows.
+struct ProbeScene {
+    engine::script::internal::ComponentBindingTable table = probeTable();
+    engine::World world = makeProbeWorld();
+    engine::Entity entity = makeProbeEntity(world);
+    engine::script::Vm vm = makeBoundVm(table, world, entity);
+
+    ProbeScene() = default;
+    ProbeScene(const ProbeScene&) = delete;
+    ProbeScene& operator=(const ProbeScene&) = delete;
+    ProbeScene(ProbeScene&&) = delete;
+    ProbeScene& operator=(ProbeScene&&) = delete;
+    ~ProbeScene() = default;
+
+    [[nodiscard]] ScriptProbe& probe() {
+        auto* const held = world.get<ScriptProbe>(entity);
+        REQUIRE(held != nullptr);
+        return *held;
+    }
+
+    static engine::script::Vm makeBoundVm(const engine::script::internal::ComponentBindingTable& bindings,
+                                          engine::World& boundWorld, engine::Entity boundEntity) {
+        engine::script::Vm bound = makeProbeVm(bindings);
+        REQUIRE(bound.bindWorld(boundWorld) == engine::script::BindStatus::Ok);
+        REQUIRE(bound.defineEntityGlobal("e", boundEntity) == engine::script::BindStatus::Ok);
+        return bound;
+    }
+};
 
 }  // namespace script_test

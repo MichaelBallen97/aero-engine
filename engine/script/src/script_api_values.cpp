@@ -5,14 +5,23 @@
 //
 // A VectorCell is a detached vector's storage. Every function below handles that case; the place where a vector that
 // names a component field would be resolved is marked by assert(!cell.view).
+//
+// The second half is the value contract of a component field: one script value in (checked by tag, converting nothing
+// a script could observe), one member out, and the other way round, each an exhaustive switch over FieldKind.
+
+#include <aero/core/guid.hpp>
 
 #include "script_api.hpp"
+#include "vm_impl.hpp"
 
 #include <array>
 #include <cassert>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <format>
 #include <limits>
+#include <optional>
 #include <string>
 #include <string_view>
 
@@ -158,6 +167,173 @@ JSValue vectorCopy(JSContext* ctx, JSValueConst thisValue, int /*argc*/, JSValue
     assert(!cell->view && !other->view);
     cell->values = other->values;  // read whole, then written
     return JS_DupValue(ctx, thisValue);
+}
+
+}  // namespace engine::script
+
+// ---- a component field's value ----------------------------------------------------------------------------------
+
+namespace engine::script {
+namespace {
+
+// "<site>: expected <expected>, got <actual>". False, so a caller returns it.
+[[nodiscard]] bool wrongType(JSContext* ctx, const ScriptApi& api, const Site& site, JSValueConst value,
+                             std::string_view expected) {
+    static_cast<void>(throwTypeError(
+        ctx, describeSite(site) + ": expected " + std::string{expected} + ", got " + describeValue(ctx, value, api)));
+    return false;
+}
+
+// std::format's spelling, except that NaN and the infinities read as a script writes them.
+[[nodiscard]] std::string numberText(double number) {
+    if (std::isnan(number)) {
+        return "NaN";
+    }
+    if (std::isinf(number)) {
+        return number < 0.0 ? "-Infinity" : "Infinity";
+    }
+    return std::format("{}", number);
+}
+
+constexpr double MAX_UINT32 = 4294967295.0;
+
+}  // namespace
+
+bool fieldIsScriptBound(internal::FieldKind kind) noexcept {
+    switch (kind) {
+        case internal::FieldKind::Float:
+        case internal::FieldKind::Bool:
+        case internal::FieldKind::UInt32:
+        case internal::FieldKind::Guid:
+        case internal::FieldKind::String:
+            return true;
+        case internal::FieldKind::Vec3:
+        case internal::FieldKind::Quat:
+            return false;  // the vector fields arrive with the view runtime
+    }
+    return false;
+}
+
+bool readFieldValue(JSContext* ctx, const ScriptApi& api, internal::FieldKind kind, const Site& site,
+                    JSValueConst value, FieldValue& out) {
+    switch (kind) {
+        case internal::FieldKind::Float: {
+            // Narrowed as a Float32Array stores it: NaN, the infinities and -0 survive, an overflow is infinite.
+            if (!JS_IsNumber(value)) {
+                return wrongType(ctx, api, site, value, "a number");
+            }
+            double wide = 0.0;
+            if (JS_ToFloat64(ctx, &wide, value) < 0) {
+                return false;
+            }
+            out.real = static_cast<float>(wide);
+            return true;
+        }
+        case internal::FieldKind::Bool:
+            if (!JS_IsBool(value)) {
+                return wrongType(ctx, api, site, value, "a boolean");
+            }
+            out.flag = JS_ToBool(ctx, value) != 0;
+            return true;
+        case internal::FieldKind::UInt32: {
+            if (!JS_IsNumber(value)) {
+                return wrongType(ctx, api, site, value, "a number");
+            }
+            double wide = 0.0;
+            if (JS_ToFloat64(ctx, &wide, value) < 0) {
+                return false;
+            }
+            // Checked before the conversion, so it is always in range (and -0 stores 0).
+            if (!std::isfinite(wide) || wide != std::floor(wide) || wide < 0.0 || wide > MAX_UINT32) {
+                static_cast<void>(throwRangeError(
+                    ctx, describeSite(site) + ": expected an integer in [0, 4294967295], got " + numberText(wide)));
+                return false;
+            }
+            out.whole = static_cast<std::uint32_t>(wide);
+            return true;
+        }
+        case internal::FieldKind::Guid: {
+            if (!JS_IsString(value)) {
+                return wrongType(ctx, api, site, value, "a string");
+            }
+            const HeldCString text{ctx, value};
+            if (!text.ok()) {
+                return false;
+            }
+            const std::optional<Guid> parsed = parseGuid(text.view());
+            if (!parsed.has_value()) {
+                static_cast<void>(throwRangeError(ctx, describeSite(site) + ": expected 32 hex digits"));
+                return false;
+            }
+            out.guid = *parsed;
+            return true;
+        }
+        case internal::FieldKind::String: {
+            if (!JS_IsString(value)) {
+                return wrongType(ctx, api, site, value, "a string");
+            }
+            const HeldCString text{ctx, value};
+            if (!text.ok()) {
+                return false;
+            }
+            out.text.assign(text.view());  // an embedded U+0000 is kept: the length comes from the backend
+            return true;
+        }
+        case internal::FieldKind::Vec3:
+        case internal::FieldKind::Quat:
+            assert(false && "a vector field has no accessor yet");
+            return wrongType(ctx, api, site, value,
+                             kind == internal::FieldKind::Vec3 ? "an engine.Vec3" : "an engine.Quat");
+    }
+    return false;
+}
+
+void storeFieldValue(internal::FieldKind kind, void* member, const FieldValue& value) {
+    switch (kind) {
+        case internal::FieldKind::Float:
+            *static_cast<float*>(member) = value.real;
+            return;
+        case internal::FieldKind::Bool:
+            *static_cast<bool*>(member) = value.flag;
+            return;
+        case internal::FieldKind::UInt32:
+            *static_cast<std::uint32_t*>(member) = value.whole;
+            return;
+        case internal::FieldKind::Guid:
+            *static_cast<Guid*>(member) = value.guid;
+            return;
+        case internal::FieldKind::String:
+            static_cast<std::string*>(member)->assign(value.text);
+            return;
+        case internal::FieldKind::Vec3:
+        case internal::FieldKind::Quat:
+            assert(false && "a vector field has no accessor yet");
+            return;
+    }
+}
+
+JSValue loadFieldValue(JSContext* ctx, internal::FieldKind kind, const void* member) noexcept {
+    switch (kind) {
+        case internal::FieldKind::Float:
+            return JS_NewFloat64(ctx, static_cast<double>(*static_cast<const float*>(member)));
+        case internal::FieldKind::Bool:
+            return JS_NewBool(ctx, *static_cast<const bool*>(member));
+        case internal::FieldKind::UInt32:
+            return JS_NewUint32(ctx, *static_cast<const std::uint32_t*>(member));
+        case internal::FieldKind::Guid: {
+            const std::string text = formatGuid(*static_cast<const Guid*>(member));
+            return JS_NewStringLen(ctx, text.data(), text.size());
+        }
+        case internal::FieldKind::String: {
+            const auto& text = *static_cast<const std::string*>(member);
+            return JS_NewStringLen(ctx, text.data(), text.size());
+        }
+        case internal::FieldKind::Vec3:
+        case internal::FieldKind::Quat:
+            assert(false && "a vector field has no accessor yet");
+            return JS_UNDEFINED;
+    }
+    return JS_UNDEFINED;
 }
 
 }  // namespace engine::script
