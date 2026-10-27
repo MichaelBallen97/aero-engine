@@ -116,6 +116,10 @@ if(CASE STREQUAL "help")
     if(out STREQUAL "")
         message(FATAL_ERROR "case 'help': expected usage text on stdout, got nothing")
     endif()
+    # Task 4.2.1 (AC-2): the usage lists the script mode, in the synopsis and as an option line of its own. The
+    # bare flag would not do: the text names it four times, so it survives the loss of either line.
+    aero_expect_stdout_contains("${out}" "[--emit-script]")
+    aero_expect_stdout_contains("${out}" "  --emit-script  ")
 
 elseif(CASE STREQUAL "version")
     aero_run_tool(ARGS --version OUT_RESULT result OUT_STDOUT out)
@@ -1625,8 +1629,10 @@ elseif(CASE STREQUAL "script_depfile")
 
 elseif(CASE STREQUAL "script_depfile_requires_output")
     aero_run_tool(ARGS --emit-script "${FIXTURES_DIR}/component_tag.hpp" --depfile "${WORK_DIR}/o.d"
-        -- -std=c++20 OUT_RESULT result)
+        -- -std=c++20 OUT_RESULT result OUT_STDERR err)
     aero_expect_exit("${result}" 1)
+    aero_expect_stderr_contains("${err}"
+        "--depfile requires -o and one of --emit-meta, --emit-json or --emit-script")
     if(EXISTS "${WORK_DIR}/o.d")
         message(FATAL_ERROR "case 'script_depfile_requires_output': --depfile without -o must not write a depfile")
     endif()
@@ -1646,15 +1652,19 @@ elseif(CASE STREQUAL "script_missing_input")
 
 elseif(CASE STREQUAL "script_mutually_exclusive")
     # All three pairs: exclusivity compares the number of emit modes, not just the first pair.
+    set(_exclusive "--emit-meta, --emit-json and --emit-script are mutually exclusive")
     aero_run_tool(ARGS --emit-script --emit-meta "${FIXTURES_DIR}/component_tag.hpp" -- -std=c++20
-        OUT_RESULT r1)
+        OUT_RESULT r1 OUT_STDERR e1)
     aero_expect_exit("${r1}" 1)
+    aero_expect_stderr_contains("${e1}" "${_exclusive}")
     aero_run_tool(ARGS --emit-script --emit-json "${FIXTURES_DIR}/component_tag.hpp" -- -std=c++20
-        OUT_RESULT r2)
+        OUT_RESULT r2 OUT_STDERR e2)
     aero_expect_exit("${r2}" 1)
+    aero_expect_stderr_contains("${e2}" "${_exclusive}")
     aero_run_tool(ARGS --emit-meta --emit-json "${FIXTURES_DIR}/component_tag.hpp" -- -std=c++20
-        OUT_RESULT r3)
+        OUT_RESULT r3 OUT_STDERR e3)
     aero_expect_exit("${r3}" 1)
+    aero_expect_stderr_contains("${e3}" "${_exclusive}")
 
 elseif(CASE STREQUAL "script_engine_light")
     # The REAL tool over the REAL engine header: two components in one header, and no inspector metadata
