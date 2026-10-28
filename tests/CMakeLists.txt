@@ -94,9 +94,20 @@ add_executable(aero_tests
 # file. UNGATED: both reduced configurations build this TU, and with the tools OFF the file is the prelude alone.
 get_target_property(_aero_script_declarations_file aero_script_declarations AERO_DECLARATIONS_FILE)
 add_dependencies(aero_tests aero_script_declarations)
+# DT1's order oracle: the header file names, comma-separated, in AERO_BUILTIN_COMPONENT_HEADERS order -- the order the
+# file's `// source:` lines must follow. Empty with the tools OFF, where the file holds no generated block.
+set(_aero_script_declaration_sources "")
+if(AERO_REFLECT_TOOLS)
+    foreach(_aero_hdr IN LISTS AERO_BUILTIN_COMPONENT_HEADERS)
+        get_filename_component(_aero_hdr_name "${_aero_hdr}" NAME)
+        list(APPEND _aero_script_declaration_sources "${_aero_hdr_name}")
+    endforeach()
+    list(JOIN _aero_script_declaration_sources "," _aero_script_declaration_sources)
+endif()
 target_compile_definitions(aero_tests PRIVATE
     AERO_SCRIPT_DECLARATIONS_FILE="${_aero_script_declarations_file}"
-    AERO_SCRIPT_PRELUDE_FILE="${CMAKE_SOURCE_DIR}/engine/script/types/prelude.d.ts")
+    AERO_SCRIPT_PRELUDE_FILE="${CMAKE_SOURCE_DIR}/engine/script/types/prelude.d.ts"
+    AERO_SCRIPT_DECLARATION_SOURCES="${_aero_script_declaration_sources}")
 
 # task 4.2.1 -- the generated built-in table (BN6, BN37-BN49). Tools ON only: with them OFF aero_script binds no
 # component, which is the shape the configure's STATUS line announces.
