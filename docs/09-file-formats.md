@@ -577,6 +577,53 @@ so a project can never acquire a committed `editor-state.json`, even on the firs
 No golden fixtures; this format has no byte-stability requirement any caller depends on beyond the
 canonical form above.
 
+### 4.11 The project's script typing files (task 4.2.2)
+
+A TypeScript project (`language` `ts`, §4.2) carries two files that let the project's editor type-check a script
+against the engine's API. The editor writes both when it adopts a project, whether through Open Project or through
+Create Project. A C++ project gets neither. Both writes sit beside `adoptProject`, never inside it, and each failed
+file costs one `WARN` and nothing else: the project is open either way.
+
+| File | Kind | Written | Committed |
+|---|---|---|---|
+| `<projectRoot>/tsconfig.json` | the project | only when nothing is at the path | yes, by whoever owns the project |
+| `<projectRoot>/Library/types/aero-engine.d.ts` | derived | when its bytes differ from the build's copy | never |
+
+**`tsconfig.json` is the project's own.** The editor creates it once, from `editor/templates/tsconfig.json.in`, and
+never reads, merges or rewrites it afterwards. A file already at the path wins, and so does a directory wearing the
+name. The template is strict JSON, one placeholder replaced by the JSON string `"<paths.assets>/**/*.ts"` (a trailing
+`/` removed from the manifest's `paths.assets` first). What each setting is for:
+
+| Setting | Value | Why |
+|---|---|---|
+| `target` | `ES2023` | The quickjs-ng the VM embeds compiles the regexp `v` flag and matches it wrongly (R25), and the TypeScript compiler refuses that flag below `ES2024` (TS1501). Raising it waits for a fixed backend. `tsc` does not emit here, and esbuild ignores the setting for syntax lowering, so R21's `using` constraint stays on the esbuild command line (4.3.1) |
+| `lib` | `["ESNext"]` | Types `using` and `DisposableStack`, which the VM has. TypeScript 5.9.3 has no `es2025` lib |
+| `types` | `[]` | No ambient package, so no Node or DOM global leaks into a script |
+| `module`, `moduleResolution` | `ESNext`, `bundler` | The VM loads ES modules; extension-less relative imports are the bundler's resolution |
+| `strict` | `true` | The shipped declarations are written for it (`T \| null` results) |
+| `noEmit` | `true` | The compiler only checks; esbuild produces the JavaScript |
+| `verbatimModuleSyntax` | `true` | Makes the compiler refuse a type-only import esbuild would keep as a runtime import (TS1484) and a type re-export it would emit (TS1205) |
+| `files` | `["Library/types/aero-engine.d.ts"]` | Reaches the declarations although `exclude` drops `Library/` |
+| `include` | `["<paths.assets>/**/*.ts"]` | The scripts |
+| `exclude` | `["Library"]` | `paths.assets` may be `"."` (§4.4 accepts it), and then the include glob would reach `Library/Trash/` (§6.10), whose files are not scripts |
+
+**`Library/types/aero-engine.d.ts` is derived.** It is the build's declarations: the hand-written prelude (`Vec3`,
+`Quat` and `Entity` as the script runtime installs them) followed by one block per built-in component header, emitted
+by `reflect-gen --emit-dts`. The editor embeds the text at build time and writes it through the atomic writer, after
+creating `Library/` and, only when absent, its `.gitignore` (§4.10's rule). A file whose bytes already equal the
+embedded text is not touched. `Library/` is `.gitignore`d, so a fresh clone has no declarations until the editor opens
+the project once; a compiler run before that reports `engine` as an unknown namespace. Each editor build embeds its own
+copy, and opening the project replaces a copy that differs.
+
+**Known gaps** (the declarations describe what the VM installs, and the VM installs less than the library types):
+
+- `Intl` is typed by `lib` `ESNext` but absent from the VM.
+- `queueMicrotask`, `performance`, `atob` and `btoa` exist in the VM but carry no declaration, so the compiler refuses
+  them (TS2304) although they run.
+
+No golden fixtures: the declarations' text is pinned by the drift cases that compare it with a live VM and by the
+`typescript.*` ctest cases that compile it, not by a stored copy.
+
 ## 5. Asset meta format v1
 
 > Enforced in code by `editor/src/asset_meta.cpp` (the pure parse/write/lifecycle half) and

@@ -88,6 +88,7 @@ The project is **MIT**. Every linked dependency must be permissive-compatible.
 | DirectXShaderCompiler | LLVM Release License (UIUC/NCSA-style, permissive) | 🔧 Build-time only (`shaderc`) |
 | SPIRV-Cross / SPIRV-Tools / SPIRV-Headers | Apache-2.0 | 🔧 Build-time only (`shaderc`) |
 | esbuild / swc | MIT / Apache-2.0 | 🔧 Build-time only |
+| TypeScript (`typescript` 5.9.3, the compiler VS Code bundles) | Apache-2.0 | 🔧 Test-only tool (`tests/typescript/`, task 4.2.2) — never linked, never shipped |
 | Blender | GPL | 🔧 **Invoked as an external process only** — not linked, does not contaminate |
 
 > Font data under the OFL is bundled **unmodified** (`editor/third_party/fonts/`); the Reserved Font Name forbids a
