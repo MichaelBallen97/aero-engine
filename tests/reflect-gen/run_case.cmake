@@ -1933,7 +1933,9 @@ elseif(CASE STREQUAL "dts_engine_light")
     aero_expect_exit_or_dump("${result}" 0 "${err}")
     aero_expect_stdout_contains("${out}"
         "    interface ComponentMap {\n        DirectionalLight: DirectionalLight;\n        PointLight: PointLight;\n    }\n")
-    aero_expect_stdout_contains("${out}"
+    # ONE needle per class: aero_expect_stdout_contains takes a single needle, so the whole block -- doc line, class
+    # line, constructor, brand, every field with its doc line, closing brace -- must appear contiguously.
+    string(CONCAT _directionalBlock
         "    /** C++ component engine::DirectionalLight. A script cannot construct one: use entity.add(engine.DirectionalLight). */\n"
         "    class DirectionalLight {\n        private constructor();\n        private readonly __brand: \"DirectionalLight\";\n"
         "        /** Linear RGB colour. */\n        color: Vec3;\n"
@@ -1943,13 +1945,15 @@ elseif(CASE STREQUAL "dts_engine_light")
         "        /** Range 0.0 to 0.5. */\n        shadowNormalBias: number;\n"
         "        /** Range 1.0 to 1000.0. */\n        shadowDistance: number;\n"
         "    }\n")
-    aero_expect_stdout_contains("${out}"
+    aero_expect_stdout_contains("${out}" "${_directionalBlock}")
+    string(CONCAT _pointBlock
         "    /** C++ component engine::PointLight. A script cannot construct one: use entity.add(engine.PointLight). */\n"
         "    class PointLight {\n        private constructor();\n        private readonly __brand: \"PointLight\";\n"
         "        /** Linear RGB colour. */\n        color: Vec3;\n"
         "        intensity: number;\n"
         "        range: number;\n"
         "    }\n")
+    aero_expect_stdout_contains("${out}" "${_pointBlock}")
     aero_expect_stdout_lacks("${out}" "FieldUiMeta" "AERO_")
     aero_expect_dts_text("${out}")
 

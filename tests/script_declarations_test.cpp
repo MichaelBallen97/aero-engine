@@ -459,8 +459,8 @@ TEST_CASE("declarations: the build's file is 7-bit text, the prelude first, then
     CHECK(built.find('@') == std::string::npos);
 
     const Declarations parsed = parseDeclarations(built);
-    CHECK(parsed.error.empty());
     INFO("error: " << parsed.error);
+    CHECK(parsed.error.empty());
 
     REQUIRE(startsWith(built, prelude));
     const std::string_view after = std::string_view{built}.substr(prelude.size());
