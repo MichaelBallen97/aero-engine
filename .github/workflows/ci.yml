@@ -330,6 +330,13 @@ jobs:
         shell: bash
         run: rm -f /usr/bin/link
 
+      - name: Install the pinned TypeScript (task 4.2.2)
+        shell: bash
+        working-directory: tests/typescript
+        # package.json pins the exact compiler VS Code bundles; the typescript.* ctest cases run it. Node 22 is
+        # preinstalled on all three runner images. Nothing installs at configure.
+        run: npm ci --no-audit --no-fund
+
       - name: Cache vcpkg binary archives
         uses: actions/cache@v4
         with:
@@ -366,6 +373,7 @@ jobs:
         shell: bash
         env:
           AERO_REQUIRE_GPU: ${{ matrix.require_gpu }}   # a missing GPU is a FAILURE, not a skip (spec D7)
+          AERO_REQUIRE_TSC: 1   # a missing TypeScript compiler is a FAILURE, not a skip, as a missing GPU is (task 4.2.2)
           # Evidence-gated LSan suppressions (spec D16, exercised by PR #16's first GPU run): SDL's
           # x11 video-init and Vulkan-probe internals leak per init cycle; tests/lsan.supp names the
           # four observed third-party frames. Linux-only — the one lane where LSan runs; empty
@@ -383,6 +391,7 @@ jobs:
         shell: bash
         env:
           AERO_REQUIRE_GPU: ${{ matrix.require_gpu }}   # a missing GPU is a FAILURE, not a skip (spec D7)
+          AERO_REQUIRE_TSC: 1   # a missing TypeScript compiler is a FAILURE, not a skip, as a missing GPU is (task 4.2.2)
         run: ${{ matrix.ctest_launcher }} ctest --preset ${{ matrix.preset }}-release
 
       - name: Print the mp3/ogg cook digests (task 3.7.1, D12)

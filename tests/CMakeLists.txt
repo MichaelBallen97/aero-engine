@@ -1314,3 +1314,36 @@ else()
     message(STATUS "script-boundary: guard_e2e SKIPPED (Windows, or bash/git not found) -- the "
                    "guard itself still runs in CI's lint job on Linux")
 endif()
+
+# ---------------------------------------------------------------------------------------------
+# task 4.2.2: the type-check suite. tests/typescript/run_tsc.cmake assembles a script project (the build's
+# aero-engine.d.ts, the editor's tsconfig template, a fixture folder) and runs the PINNED TypeScript over it
+# (tests/typescript/package.json, installed by `npm ci` inside that folder; nothing installs at configure). A missing
+# Node or compiler is a loud skip, and a failure when AERO_REQUIRE_TSC=1, as AERO_REQUIRE_GPU makes a missing GPU
+# one. A compiler whose version differs from the pin always fails. Each case has its own work directory, so
+# `ctest -j` stays safe.
+function(aero_add_typescript_case CASE)
+    add_test(NAME typescript.${CASE} COMMAND ${CMAKE_COMMAND}
+        -DCASE=${CASE}
+        -DSOURCE_DIR=${CMAKE_SOURCE_DIR}
+        -DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/typescript/${CASE}
+        -DDECLARATIONS=${_aero_script_declarations_file}
+        -DPRELUDE=${CMAKE_SOURCE_DIR}/engine/script/types/prelude.d.ts
+        -DJOIN=${CMAKE_SOURCE_DIR}/cmake/reflect_declarations_join.cmake
+        -DTEMPLATE=${CMAKE_SOURCE_DIR}/editor/templates/tsconfig.json.in
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/typescript/run_tsc.cmake)
+    # SKIP_REGULAR_EXPRESSION, not SKIP_RETURN_CODE: signalling 77 out of `cmake -P` needs cmake_language(EXIT), which
+    # is CMake 3.29, above the 3.28 floor (the same reason boundary-probes.probe_compile_line gives).
+    if(NOT CASE STREQUAL "driver_e2e")
+        set_tests_properties(typescript.${CASE} PROPERTIES SKIP_REGULAR_EXPRESSION "typescript: SKIPPED")
+    endif()
+endfunction()
+
+# These two name no built-in component, so they run in the reflect-tools-OFF tree too; driver_e2e needs no Node at all.
+aero_add_typescript_case(prelude_only)
+aero_add_typescript_case(driver_e2e)
+# These two name the ten built-ins, which the tools-OFF artifact does not declare.
+if(AERO_REFLECT_TOOLS)
+    aero_add_typescript_case(clean)
+    aero_add_typescript_case(broken)
+endif()

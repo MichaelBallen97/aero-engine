@@ -1,0 +1,8 @@
+{
+    "name": "aero-engine-typescript-check",
+    "private": true,
+    "description": "Test-only: the TypeScript compiler the typescript.* ctest cases run (task 4.2.2). Never linked, never shipped.",
+    "devDependencies": {
+        "typescript": "5.9.3"
+    }
+}
