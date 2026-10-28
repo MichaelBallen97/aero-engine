@@ -311,10 +311,10 @@ The diagram that justifies ADR-004. One annotation feeds four systems:
 Write the component **once**. It appears in the inspector, saves to disk, is scriptable from TypeScript, and VSCode autocompletes it.
 
 **Consumer #4 is live (task 4.2.2).** `reflect-gen --emit-dts` emits, per component header, one `declare namespace
-engine` block: a class per component whose fields are typed from the categories the binding tables use (with the
-header's doc comments and `AERO_RANGE` bounds carried over), and one entry per class in the `ComponentMap` that types
-`Entity.get/has/add/remove`. Both script modes share one rule for which fields and which class name a script sees, so
-the declarations and the binding table cannot disagree. The hand-written half, `engine/script/types/prelude.d.ts`,
+engine` block: a class per component whose fields are typed from the categories the binding tables use (the field
+annotations -- range, labels, colour, asset kind -- carried over as one-line doc comments), and one entry per class in
+the `ComponentMap` that types `Entity.get/has/add/remove`. Both script modes share one rule for which fields and which
+class name a script sees, so the declarations and the binding table cannot disagree. The hand-written half, `engine/script/types/prelude.d.ts`,
 sits beside the hand-written runtime and declares what the runtime installs outside reflection (`Vec3`, `Quat`,
 `Entity`); the drift cases compare it with a live VM. The build joins the prelude and every generated block into
 `aero-engine.d.ts` (target `aero_script_declarations`), and the editor writes that file to `Library/types/` and a

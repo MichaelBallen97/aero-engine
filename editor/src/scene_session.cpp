@@ -549,12 +549,12 @@ bool openProjectPath(CommandContext& context, CommandStack& commands, SceneSessi
                                                                                         // every check passed
     AERO_LOG_INFO("editor: opened project '{}' at '{}' -- assets '{}', scenes '{}'", project.session.name(),
                   project.session.root(), project.session.assetsRoot(), project.session.scenesRoot());
+    adoptScriptTypes(project.session);  // task 4.2.2: before the scene restore; a failed write only WARNs
     // task E.4.1: AFTER the adopt (F1 -- the state file's path is derived from project.session.root(),
     // which only set() makes correct; calling it before would read the OUTGOING project's state) and
     // AFTER the INFO (plan 4.4), so the Console reads "opened project" and THEN the scene's own lines.
     // With the INFO last, a restore whose candidate fails to open reads "could not open scene X"
     // followed by "opened project Y", which a reader parses as the PROJECT having failed.
-    adoptScriptTypes(project.session);  // task 4.2.2: before the scene restore; a failed write only WARNs
     restoreLastScene(context, commands, session, project.session);
     return true;
 }
