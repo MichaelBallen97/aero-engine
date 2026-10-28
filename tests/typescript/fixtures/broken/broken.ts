@@ -21,5 +21,8 @@ setTimeout(() => {}, 1); // expect TS2304
 const pattern = /\p{L}/v; // expect TS1501
 t.position = { x: 1, y: 2, z: 3, set() { return this; }, copy() { return this; } }; // expect TS2741
 class Hack extends engine.Transform {} // expect TS2675
+declare const audio: engine.AudioSource;
+const listener: engine.AudioListener = audio; // expect TS2322
+const mustExist: engine.Transform = e.get(engine.Transform); // expect TS2322
 const helper: Helper | undefined = undefined;
-export { pattern, helper, Hack };
+export { pattern, helper, Hack, listener, mustExist };
