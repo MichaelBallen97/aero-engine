@@ -492,6 +492,11 @@ TEST_CASE("declarations: the build's file is 7-bit text, the prelude first, then
     CHECK(parsed.error.empty());
 
     REQUIRE(startsWith(built, prelude));
+    // The join's last LF is dropped before file(CONFIGURE) appends its own, so the file ends in exactly one LF: a
+    // second one is a blank line at the end of the artifact.
+    CHECK(built.back() == '\n');
+    REQUIRE(built.size() >= 2U);
+    CHECK(built[built.size() - 2U] != '\n');
     const std::string_view after = std::string_view{built}.substr(prelude.size());
     if (engine::script::internal::builtinComponentBindings().components().empty()) {
         CHECK(after.empty());
