@@ -51,17 +51,31 @@ add_library(aero::script ALIAS aero_script)
 target_include_directories(aero_script PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(aero_script PUBLIC aero::core aero::scene PRIVATE qjs aero::script_internal)
 
+# The parse-side -I's both generators use: the set aero_scene_serialize uses.
+set(_aero_script_parse_dirs "${CMAKE_SOURCE_DIR}/engine/core/include" "${CMAKE_SOURCE_DIR}/engine/scene/include"
+                            "${CMAKE_SOURCE_DIR}/engine/reflect/include")
+
 # task 4.2.1: the built-in component binding table, generated from the same header list the serializer and the
-# inspector use. The generated code is quickjs-free (it calls the descriptor templates only); the parse-side -I's
-# are the set aero_scene_serialize uses. With the tools OFF the table is empty (component_bindings.cpp).
+# inspector use. The generated code is quickjs-free (it calls the descriptor templates only). With the tools OFF the
+# table is empty (component_bindings.cpp).
 if(AERO_REFLECT_TOOLS)
     aero_reflect_generate_script(aero_script
         HEADERS ${AERO_BUILTIN_COMPONENT_HEADERS}
-        INCLUDE_DIRS "${CMAKE_SOURCE_DIR}/engine/core/include"
-                     "${CMAKE_SOURCE_DIR}/engine/scene/include"
-                     "${CMAKE_SOURCE_DIR}/engine/reflect/include")
+        INCLUDE_DIRS ${_aero_script_parse_dirs})
     target_compile_definitions(aero_script PRIVATE AERO_SCRIPT_COMPONENT_BINDINGS=1)
 else()
     message(STATUS "aero_script: no component bindings (AERO_REFLECT_TOOLS=OFF) -- "
                    "engine holds Vec3, Quat and Entity only")
 endif()
+
+# task 4.2.2: aero_script_declarations owns <build>/engine/script/types/aero-engine.d.ts -- the TypeScript view of the
+# frozen `engine` namespace: types/prelude.d.ts (Vec3, Quat, Entity, written by hand) followed by one reflect-gen
+# --emit-dts block per built-in component header. aero_script does NOT depend on it, so the runtime ships none of its
+# text; the editor and the tests read the file through the target's AERO_DECLARATIONS_FILE property. Called OUTSIDE
+# the tools gate: with the tools OFF the artifact is the prelude alone.
+aero_reflect_generate_declarations(aero_script_declarations
+    PARSE_TARGET aero_script
+    HEADERS ${AERO_BUILTIN_COMPONENT_HEADERS}
+    INCLUDE_DIRS ${_aero_script_parse_dirs}
+    PRELUDE "${CMAKE_CURRENT_SOURCE_DIR}/types/prelude.d.ts"
+    OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/types/aero-engine.d.ts")

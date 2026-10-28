@@ -44,6 +44,7 @@ add_executable(aero_tests
     script_vm_test.cpp        # task 4.1.1 — the quickjs-ng VM: lifecycle, limits, the trapping matrix
     script_module_test.cpp    # task 4.1.2 — ES modules through the VFS: the grammar, the cache, the statuses (ML1-ML51)
     script_binding_test.cpp   # task 4.2.1 — the binding runtime over a fixture table (BN1–BN5, BN7–BN36)
+    script_declarations_test.cpp # task 4.2.2 -- the declarations against a live VM (DT1-DT7)
     platform_test.cpp
     platform_event_test.cpp
     input_test.cpp        # task 0.3.2 — black-box InputState (no SDL)
@@ -86,6 +87,16 @@ add_executable(aero_tests
     render_selection_outline_test.cpp # task E.1.4 — tier-0 params/packers/levels/shader pin + GPU-gated mask & outline
     scene_render_selection_test.cpp # task E.1.4 — buildSelectionMaskSet: arms, bucketing, cap, purity
 )
+
+# task 4.2.2: script_declarations_test.cpp reads the build's aero-engine.d.ts (the prelude joined with one generated
+# block per built-in header) and the hand-written prelude, and compares both with a live VM's `engine` namespace. The
+# artifact's path is read off the target, so nothing restates it; the dependency makes `aero_tests` alone rebuild the
+# file. UNGATED: both reduced configurations build this TU, and with the tools OFF the file is the prelude alone.
+get_target_property(_aero_script_declarations_file aero_script_declarations AERO_DECLARATIONS_FILE)
+add_dependencies(aero_tests aero_script_declarations)
+target_compile_definitions(aero_tests PRIVATE
+    AERO_SCRIPT_DECLARATIONS_FILE="${_aero_script_declarations_file}"
+    AERO_SCRIPT_PRELUDE_FILE="${CMAKE_SOURCE_DIR}/engine/script/types/prelude.d.ts")
 
 # task 4.2.1 -- the generated built-in table (BN6, BN37-BN49). Tools ON only: with them OFF aero_script binds no
 # component, which is the shape the configure's STATUS line announces.

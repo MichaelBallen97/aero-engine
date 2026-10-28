@@ -422,3 +422,120 @@ ${_aero_calls}}
 
     target_sources(${TARGET} PRIVATE ${_aero_gen_sources} "${_aero_agg_file}")
 endfunction()
+
+# aero_reflect_generate_declarations(<name>
+#     PARSE_TARGET <target>        # its INCLUDE_DIRECTORIES / COMPILE_DEFINITIONS reach the parse, as the script mode's do
+#     HEADERS <hdr>...             # the component headers, in join order
+#     PRELUDE <file>               # the hand-written head of the artifact
+#     OUTPUT <abs file>            # the joined artifact
+#     [INCLUDE_DIRS <dir>...]      # extra parse -I's
+#     [DEFINES <NAME[=VAL]>...])   # extra parse -D's
+# Fourth sibling (task 4.2.2): one --emit-dts fragment per header (DEPFILE, the script mode's command), then
+# cmake/reflect_declarations_join.cmake joins PRELUDE and the fragments, in that order, into OUTPUT. The result is
+# the target <name> (ALL), whose AERO_DECLARATIONS_FILE property holds OUTPUT, so a consumer reads the path with
+# get_target_property and nothing restates it. NOT gated on AERO_REFLECT_TOOLS the way its siblings are: with the
+# tools OFF no fragment is registered and the artifact is the prelude alone, so the file exists in both
+# configurations. Nothing links the target: the runtime that mirrors the declarations never depends on them.
+function(aero_reflect_generate_declarations NAME)
+    set(options)
+    set(oneValueArgs PARSE_TARGET PRELUDE OUTPUT)
+    set(multiValueArgs HEADERS INCLUDE_DIRS DEFINES)
+    cmake_parse_arguments(ARG "${options}" "${oneValueArgs}" "${multiValueArgs}" ${ARGN})
+
+    if(TARGET ${NAME})
+        message(FATAL_ERROR "aero_reflect_generate_declarations(${NAME}): '${NAME}' is already a target")
+    endif()
+    if(NOT ARG_PARSE_TARGET OR NOT TARGET ${ARG_PARSE_TARGET})
+        message(FATAL_ERROR "aero_reflect_generate_declarations(${NAME}): PARSE_TARGET must name an existing target "
+                            "-- call AFTER add_library(<target> ...)")
+    endif()
+    if(NOT ARG_HEADERS)
+        message(FATAL_ERROR "aero_reflect_generate_declarations(${NAME}): HEADERS must list >=1 component header")
+    endif()
+    if(NOT ARG_PRELUDE OR NOT EXISTS "${ARG_PRELUDE}")
+        message(FATAL_ERROR "aero_reflect_generate_declarations(${NAME}): PRELUDE '${ARG_PRELUDE}' does not exist")
+    endif()
+    if(NOT ARG_OUTPUT OR NOT IS_ABSOLUTE "${ARG_OUTPUT}")
+        message(FATAL_ERROR "aero_reflect_generate_declarations(${NAME}): OUTPUT must be an absolute path")
+    endif()
+
+    set(_aero_gen_dir "${CMAKE_CURRENT_BINARY_DIR}/reflect-generated/${NAME}")
+    set(_aero_parts "${ARG_PRELUDE}")
+    set(_aero_fragments)
+
+    if(AERO_REFLECT_TOOLS)
+        if(DEFINED AERO_REFLECT_GEN_EXECUTABLE)
+            set(_aero_tool "${AERO_REFLECT_GEN_EXECUTABLE}")
+            set(_aero_tool_dep "")
+        elseif(TARGET aero_reflect_gen)
+            set(_aero_tool "$<TARGET_FILE:aero_reflect_gen>")
+            set(_aero_tool_dep aero_reflect_gen)
+        else()
+            message(FATAL_ERROR "aero_reflect_generate_declarations(${NAME}): set AERO_REFLECT_GEN_EXECUTABLE or "
+                                "define aero_reflect_gen before calling")
+        endif()
+
+        set(_aero_extra_args)
+        foreach(_dir IN LISTS ARG_INCLUDE_DIRS)
+            list(APPEND _aero_extra_args -I "${_dir}")
+        endforeach()
+        foreach(_def IN LISTS ARG_DEFINES)
+            list(APPEND _aero_extra_args -D "${_def}")
+        endforeach()
+    else()
+        message(STATUS "aero_reflect_generate_declarations(${NAME}): no fragments (AERO_REFLECT_TOOLS=OFF) -- "
+                       "the declarations are the prelude alone")
+    endif()
+
+    set(_aero_seen_ids)
+    foreach(_hdr IN LISTS ARG_HEADERS)
+        get_filename_component(_hdr_abs "${_hdr}" ABSOLUTE)
+        get_filename_component(_hdr_name "${_hdr_abs}" NAME)
+        get_filename_component(_hdr_dir "${_hdr_abs}" DIRECTORY)
+        string(REGEX REPLACE "\\.[^.]*$" "" _stem "${_hdr_name}")     # strip LAST ext only
+        string(MAKE_C_IDENTIFIER "${_stem}" _id)
+        if(_id IN_LIST _aero_seen_ids)
+            message(FATAL_ERROR "aero_reflect_generate_declarations(${NAME}): two HEADERS share stem/id '${_id}'")
+        endif()
+        list(APPEND _aero_seen_ids "${_id}")
+
+        if(AERO_REFLECT_TOOLS)
+            set(_out "${_aero_gen_dir}/${_stem}.d.ts")
+            set(_dep "${_out}.d")
+            add_custom_command(
+                OUTPUT  "${_out}"
+                COMMAND "${CMAKE_COMMAND}" -E make_directory "${_aero_gen_dir}"
+                COMMAND "${_aero_tool}" --emit-dts "${_hdr_abs}" -o "${_out}" --depfile "${_dep}"
+                        -- ${AERO_REFLECT_CLANG_ARGS}
+                           ${_aero_extra_args}
+                           -I "${_hdr_dir}"
+                           "$<$<BOOL:$<TARGET_PROPERTY:${ARG_PARSE_TARGET},INCLUDE_DIRECTORIES>>:-I$<JOIN:$<TARGET_PROPERTY:${ARG_PARSE_TARGET},INCLUDE_DIRECTORIES>,;-I>>"
+                           "$<$<BOOL:$<TARGET_PROPERTY:${ARG_PARSE_TARGET},COMPILE_DEFINITIONS>>:-D$<JOIN:$<TARGET_PROPERTY:${ARG_PARSE_TARGET},COMPILE_DEFINITIONS>,;-D>>"
+                DEPFILE "${_dep}"
+                DEPENDS ${_aero_tool_dep} "${_hdr_abs}"
+                COMMENT "reflect-gen: ${_stem}.d.ts (${NAME})"
+                COMMAND_EXPAND_LISTS VERBATIM)
+            list(APPEND _aero_parts "${_out}")
+            list(APPEND _aero_fragments "${_out}")
+        endif()
+    endforeach()
+
+    # The parts manifest: one absolute path per line, the prelude first. file(CONFIGURE) writes only when the text
+    # changed, so a header added to the list re-runs the join and nothing else does.
+    list(JOIN _aero_parts "\n" AERO_DECLARATION_PARTS)
+    file(MAKE_DIRECTORY "${_aero_gen_dir}")
+    set(_aero_manifest "${_aero_gen_dir}/${NAME}.parts")
+    file(CONFIGURE OUTPUT "${_aero_manifest}" CONTENT "@AERO_DECLARATION_PARTS@" @ONLY NEWLINE_STYLE LF)
+
+    set(_aero_join_script "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/reflect_declarations_join.cmake")
+    get_filename_component(_aero_out_dir "${ARG_OUTPUT}" DIRECTORY)
+    add_custom_command(
+        OUTPUT  "${ARG_OUTPUT}"
+        COMMAND "${CMAKE_COMMAND}" -E make_directory "${_aero_out_dir}"
+        COMMAND "${CMAKE_COMMAND}" "-DPARTS=${_aero_manifest}" "-DOUTPUT=${ARG_OUTPUT}" -P "${_aero_join_script}"
+        DEPENDS "${_aero_manifest}" "${ARG_PRELUDE}" ${_aero_fragments} "${_aero_join_script}"
+        COMMENT "joining ${NAME}"
+        VERBATIM)
+    add_custom_target(${NAME} ALL DEPENDS "${ARG_OUTPUT}")
+    set_target_properties(${NAME} PROPERTIES AERO_DECLARATIONS_FILE "${ARG_OUTPUT}")
+endfunction()
