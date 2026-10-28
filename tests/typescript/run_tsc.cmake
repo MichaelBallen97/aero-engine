@@ -82,10 +82,16 @@ if(CASE STREQUAL "driver_e2e")
     endif()
     # (3) A compiler whose version differs from the pin: a failure naming both versions, whatever the variable says.
     # NODE is any existing program: the version check runs before anything is executed.
+    file(REMOVE_RECURSE "${WORK_DIR}/child")
     aero_ts_stage(MISMATCH "--unset=AERO_REQUIRE_TSC" "${_fake_root}" "${CMAKE_COMMAND}")
     if(MISMATCH_RV EQUAL 0 OR NOT MISMATCH_OUT MATCHES "1\\.2\\.3" OR NOT MISMATCH_OUT MATCHES "4\\.5\\.6"
        OR MISMATCH_OUT MATCHES "typescript: SKIPPED")
         message(FATAL_ERROR "typescript: driver_e2e (3): expected a failure naming 1.2.3 and 4.5.6, got ${MISMATCH_RV}:\n${MISMATCH_OUT}")
+    endif()
+    # The refusal itself must have stopped the child: a mismatch that only warned would go on to assemble the project
+    # (it creates ${WORK_DIR}/child) and fail later, still naming both versions.
+    if(EXISTS "${WORK_DIR}/child")
+        message(FATAL_ERROR "typescript: driver_e2e (3): the version mismatch did not stop the run, it went on to assemble the project:\n${MISMATCH_OUT}")
     endif()
     message(STATUS "typescript: driver_e2e OK -- skip, require and version-mismatch paths")
     return()
