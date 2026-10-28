@@ -1,0 +1,15 @@
+{
+    "compilerOptions": {
+        "target": "ES2023",
+        "lib": ["ESNext"],
+        "types": [],
+        "module": "ESNext",
+        "moduleResolution": "bundler",
+        "strict": true,
+        "noEmit": true,
+        "verbatimModuleSyntax": true
+    },
+    "files": ["Library/types/aero-engine.d.ts"],
+    "include": [@AERO_SCRIPT_INCLUDE@],
+    "exclude": ["Library"]
+}

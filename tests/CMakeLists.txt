@@ -552,7 +552,8 @@ add_executable(aero_editor_shell_test editor/shell_test.cpp editor/hierarchy_tes
                editor/hierarchy_view_test.cpp          # task E.6.3 — the Hierarchy model (HY)
                editor/asset_browser_chrome_test.cpp    # task E.6.3 — the Assets model (AH)
                editor/viewport_hud_test.cpp            # task E.6.3 — the Viewport HUD model (VO)
-               editor/project_ui_view_test.cpp)        # task E.6.4 — the Welcome and New Project model (WL, NP)
+               editor/project_ui_view_test.cpp         # task E.6.4 — the Welcome and New Project model (WL, NP)
+               editor/script_types_test.cpp)           # task 4.2.2 — the declarations and tsconfig writer (DT8+)
 target_link_libraries(aero_editor_shell_test PRIVATE
     doctest::doctest aero::editor_core aero::scene aero::scene_internal aero::core Threads::Threads)
 add_test(NAME aero_editor_shell_test COMMAND aero_editor_shell_test)
@@ -595,7 +596,11 @@ target_compile_definitions(aero_editor_shell_test PRIVATE
     # file is a REQUIRE failure, never a silent skip.
     AERO_EDITOR_INCLUDE_DIR="${CMAKE_SOURCE_DIR}/editor/include"
     # task E.6.1: GL4 pins the icon roster against lucide/codepoints.json. A path, not a flag.
-    AERO_EDITOR_FONTS_DIR="${CMAKE_SOURCE_DIR}/editor/third_party/fonts")
+    AERO_EDITOR_FONTS_DIR="${CMAKE_SOURCE_DIR}/editor/third_party/fonts"
+    # task 4.2.2: DT10 compares the editor's two embedded texts with the files they were built from. Paths, not
+    # flags: the declarations are the build's own output (the target property, so nothing restates it).
+    AERO_SCRIPT_DECLARATIONS_FILE="${_aero_script_declarations_file}"
+    AERO_TSCONFIG_TEMPLATE_FILE="${CMAKE_SOURCE_DIR}/editor/templates/tsconfig.json.in")
 
 # task 3.2.4 (F13): a real subprocess the process layer can spawn on every CI lane, with NO Blender
 # installed. `cmake -E true|false|sleep|echo|cat|touch|copy_directory` covers start, non-blocking poll,

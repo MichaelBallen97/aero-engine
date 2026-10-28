@@ -20,6 +20,18 @@
 # file: MSVC builds this tree without /utf-8, so it decodes a source file through the system code page, and a
 # non-ASCII checkout path spelled in an #include (C:/Users/<a name with an umlaut>/...) fails there with
 # C1083. On the command line the directory travels exactly as every source path of the build does.
+#
+# task 4.2.2 adds the text sibling:
+#
+#     aero_embed_text_files(<target> HEADER <abs path> NAMESPACE <ns> FILES <accessor>=<abs path>...
+#                           [DEPENDS <target>...])
+#
+# Same shape -- one command and one generated TU per file, the header included by name -- with three differences.
+# There is NO configure-time input check, because an input may be a BUILD OUTPUT (the joined aero-engine.d.ts is
+# absent at configure); embed_run.cmake, run with -DMODE=text, checks at build time that every byte is LF or
+# printable ASCII (it refuses a CR, so a CRLF artifact is a loud build failure, never a different embedded text).
+# The accessor returns std::string_view. And each DEPENDS target becomes add_dependencies(<target> ...), so the
+# producing target is built first whichever generator orders the file edge. The font function's output is unchanged.
 
 function(aero_embed_binary_files target)
     cmake_parse_arguments(PARSE_ARGV 1 arg "" "HEADER;NAMESPACE" "FILES")
@@ -75,4 +87,59 @@ function(aero_embed_binary_files target)
         # The header's directory for THIS source only, so <target>'s own include path is unchanged.
         set_source_files_properties("${output}" PROPERTIES INCLUDE_DIRECTORIES "${headerDir}")
     endforeach()
+endfunction()
+
+function(aero_embed_text_files target)
+    cmake_parse_arguments(PARSE_ARGV 1 arg "" "HEADER;NAMESPACE" "FILES;DEPENDS")
+    if(NOT TARGET "${target}")
+        message(FATAL_ERROR "embed: '${target}' is not a target")
+    endif()
+    if(arg_UNPARSED_ARGUMENTS)
+        message(FATAL_ERROR "embed: unexpected arguments '${arg_UNPARSED_ARGUMENTS}'")
+    endif()
+    if(NOT arg_HEADER OR NOT IS_ABSOLUTE "${arg_HEADER}")
+        message(FATAL_ERROR "embed: HEADER must be an absolute path (got '${arg_HEADER}')")
+    endif()
+    if(NOT EXISTS "${arg_HEADER}")
+        message(FATAL_ERROR "embed: HEADER '${arg_HEADER}' does not exist")
+    endif()
+    get_filename_component(headerDir "${arg_HEADER}" DIRECTORY)
+    if(NOT arg_NAMESPACE)
+        message(FATAL_ERROR "embed: NAMESPACE is required")
+    endif()
+    if(NOT arg_FILES)
+        message(FATAL_ERROR "embed: FILES is empty")
+    endif()
+    foreach(dependency IN LISTS arg_DEPENDS)
+        if(NOT TARGET "${dependency}")
+            message(FATAL_ERROR "embed: DEPENDS '${dependency}' is not a target")
+        endif()
+    endforeach()
+
+    foreach(entry IN LISTS arg_FILES)
+        if(NOT entry MATCHES "^([a-z][A-Za-z0-9]*)=(.+)$")
+            message(FATAL_ERROR "embed: '${entry}' is not <accessor>=<path> with a camelCase accessor")
+        endif()
+        set(accessor "${CMAKE_MATCH_1}")
+        set(input "${CMAKE_MATCH_2}")
+        if(NOT IS_ABSOLUTE "${input}")
+            message(FATAL_ERROR "embed: input '${input}' is not an absolute path")
+        endif()
+
+        set(output "${CMAKE_CURRENT_BINARY_DIR}/generated/embed_${accessor}.cpp")
+        add_custom_command(
+            OUTPUT "${output}"
+            COMMAND "${CMAKE_COMMAND}" "-DINPUT=${input}" "-DOUTPUT=${output}" "-DACCESSOR=${accessor}"
+                    "-DHEADER=${arg_HEADER}" "-DNAMESPACE=${arg_NAMESPACE}" -DMODE=text
+                    -P "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/embed_run.cmake"
+            DEPENDS "${input}" "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/embed_run.cmake"
+                    "${CMAKE_CURRENT_FUNCTION_LIST_FILE}"
+            COMMENT "embed: ${accessor}"
+            VERBATIM)
+        target_sources(${target} PRIVATE "${output}")
+        set_source_files_properties("${output}" PROPERTIES INCLUDE_DIRECTORIES "${headerDir}")
+    endforeach()
+    if(arg_DEPENDS)
+        add_dependencies(${target} ${arg_DEPENDS})
+    endif()
 endfunction()

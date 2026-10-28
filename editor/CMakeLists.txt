@@ -161,6 +161,8 @@ add_library(aero_editor_core STATIC
     src/scene_asset_loader.cpp   # task 3.1.5 -- the only new GPU TU: executes ONE ledger directive
     src/editor_prefs.cpp         # task E.3.2 -- the machine-local editor preference file; PURE, no SDL
     src/context_router.cpp       # task E.3.2 -- the pure routing decision and the one-slot latch
+    src/script_types.cpp         # task 4.2.2 -- the project's script declarations and tsconfig: the embedded texts and
+                                 # the one writer; never logs
     src/project_state.cpp        # task E.4.1 -- <projectRoot>/Library/editor-state.json; PURE, no <filesystem>
     src/scene_containment.cpp    # task E.4.2 -- the containment predicate; ALL <filesystem> for this
                                  # pair, never logs, never writes (D1-D4)
@@ -198,6 +200,16 @@ aero_embed_binary_files(aero_editor_core
         ibmPlexSansSemiBold=${CMAKE_CURRENT_SOURCE_DIR}/third_party/fonts/ibm-plex/IBMPlexSans-SemiBold.ttf
         ibmPlexMonoRegular=${CMAKE_CURRENT_SOURCE_DIR}/third_party/fonts/ibm-plex/IBMPlexMono-Regular.ttf
         lucideIcons=${CMAKE_CURRENT_SOURCE_DIR}/third_party/fonts/lucide/lucide.ttf)
+# task 4.2.2: the two texts a TypeScript project is given, embedded the same way but as 7-bit text -- the build's
+# aero-engine.d.ts (a build output, so aero_script_declarations is built first) and the tsconfig template.
+get_target_property(_aero_script_declarations_file aero_script_declarations AERO_DECLARATIONS_FILE)
+aero_embed_text_files(aero_editor_core
+    HEADER "${CMAKE_CURRENT_SOURCE_DIR}/src/script_types_data.hpp"
+    NAMESPACE engine::editor::embedded
+    FILES
+        scriptDeclarations=${_aero_script_declarations_file}
+        tsconfigTemplate=${CMAKE_CURRENT_SOURCE_DIR}/templates/tsconfig.json.in
+    DEPENDS aero_script_declarations)
 target_include_directories(aero_editor_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 # SYSTEM so nothing lints or warns on a vendored header we neither own nor may patch. PRIVATE for the
 # same reason imgui is. NOTE (A13): this does NOT confine stb_image.h to one TU -- FindStb resolves to
