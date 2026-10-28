@@ -849,7 +849,11 @@ if(AERO_REFLECT_TOOLS)
         # task 4.2.1: --emit-script
         script_basic script_output_file script_unsupported script_multi script_nested script_tag
         script_none script_determinism script_depfile script_depfile_requires_output
-        script_bad_syntax script_missing_input script_mutually_exclusive script_engine_light)
+        script_bad_syntax script_missing_input script_mutually_exclusive script_engine_light
+        # task 4.2.2: --emit-dts
+        dts_basic dts_output_file dts_unsupported dts_multi dts_nested dts_tag dts_none dts_determinism
+        dts_depfile dts_depfile_requires_output dts_bad_syntax dts_missing_input dts_mutually_exclusive
+        dts_annotations dts_labels dts_asset dts_string dts_matches_script dts_engine_light)
     foreach(_aero_reflect_case IN LISTS _aero_reflect_cases)
         add_test(NAME reflect-gen.${_aero_reflect_case}
             COMMAND "${CMAKE_COMMAND}"
