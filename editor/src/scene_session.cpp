@@ -10,6 +10,7 @@
                                               // scene_session.hpp -> project.hpp.
 #include <aero/editor/scene_containment.hpp>  // task E.4.2: the containment verdict and its one sentence
 #include <aero/editor/scene_session.hpp>
+#include <aero/editor/script_types.hpp>  // task 4.2.2: the declarations and tsconfig.json writer
 #include <aero/editor/selection.hpp>
 #include <aero/scene/world.hpp>
 
@@ -486,6 +487,22 @@ void restoreLastScene(CommandContext& ctx, CommandStack& commands, SceneSession&
     }
 }
 
+// task 4.2.2: once per adoption -- openProjectPath and createAndOpenProject call it after adoptProject and its INFO,
+// and nothing else does, so it never runs per frame. A success is silent; each failed file is one WARN. Like
+// restoreLastScene it takes a `const ProjectSession&`, so it cannot change the project, and a failure never aborts
+// the adoption: the project is open either way.
+void adoptScriptTypes(const ProjectSession& projectSession) {
+    const std::string root(projectSession.root());  // a NAMED LOCAL: root() is a view into the live session
+    const ScriptTypesReport report = writeScriptTypes(root, projectSession.manifest());
+    if (report.declarations == ScriptTypesWrite::Failed) {
+        AERO_LOG_WARN("editor: could not write the script declarations '{}' -- {}", report.declarationsPath,
+                      report.declarationsError);
+    }
+    if (report.tsconfig == ScriptTypesWrite::Failed) {
+        AERO_LOG_WARN("editor: could not write '{}' -- {}", report.tsconfigPath, report.tsconfigError);
+    }
+}
+
 }  // namespace
 
 bool openProjectPath(CommandContext& context, CommandStack& commands, SceneSession& session, ProjectContext& project,
@@ -537,6 +554,7 @@ bool openProjectPath(CommandContext& context, CommandStack& commands, SceneSessi
     // AFTER the INFO (plan 4.4), so the Console reads "opened project" and THEN the scene's own lines.
     // With the INFO last, a restore whose candidate fails to open reads "could not open scene X"
     // followed by "opened project Y", which a reader parses as the PROJECT having failed.
+    adoptScriptTypes(project.session);  // task 4.2.2: before the scene restore; a failed write only WARNs
     restoreLastScene(context, commands, session, project.session);
     return true;
 }
@@ -551,6 +569,7 @@ bool createAndOpenProject(CommandContext& context, CommandStack& commands, Scene
     // NEVER re-reads the file it just wrote (A24) -- that would be a second INFO; AC-15 says one.
     adoptProject(context, commands, session, project, outcome.manifest, outcome.root);
     AERO_LOG_INFO("editor: created project '{}' at '{}'", outcome.manifest.name, outcome.root);
+    adoptScriptTypes(project.session);  // task 4.2.2: the new project's own declarations and tsconfig.json
     return true;
 }
 

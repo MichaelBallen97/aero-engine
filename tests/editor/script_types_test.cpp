@@ -1,15 +1,22 @@
-// Aero Engine -- the project's script declarations and tsconfig.json (task 4.2.2, DT8-DT16). Tier 0:
+// Aero Engine -- the project's script declarations and tsconfig.json (task 4.2.2, DT8-DT21). Tier 0:
 // aero_editor_shell_test, no ImGui, no GPU, no window, and UNGATED -- every case here must be PRESENT and PASSING
 // in all three configurations. Do NOT define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN; shell_test.cpp supplies main().
 //
 // Paths are compared after a '\\' -> '/' normalisation and by suffix, never with == across layers.
+#include <aero/core/log.hpp>
 #include <aero/editor/asset_cache.hpp>  // ASSET_CACHE_DIR_NAME / LIBRARY_GITIGNORE_TEXT -- the shipped constants
 #include <aero/editor/asset_meta.hpp>   // ATOMIC_TEMP_SUFFIX -- writeTextFileAtomic's own temp name
-#include <aero/editor/project.hpp>      // ProjectManifest / ProjectLanguage
+#include <aero/editor/command_stack.hpp>
+#include <aero/editor/console_model.hpp>  // LogSinkScope / LogEntry -- the capture the project cases use
+#include <aero/editor/entity_ops.hpp>     // RootOrder
+#include <aero/editor/project.hpp>        // ProjectManifest / ProjectLanguage
+#include <aero/editor/scene_session.hpp>  // openProjectPath / createAndOpenProject / ProjectContext
 #include <aero/editor/script_types.hpp>
+#include <aero/editor/selection.hpp>
 #include <aero/editor/text_file.hpp>
 #include <aero/reflect/json_reader.hpp>
 #include <aero/reflect/json_value.hpp>
+#include <aero/scene/world.hpp>
 
 #include <doctest/doctest.h>
 
@@ -322,4 +329,230 @@ TEST_CASE("script_types: an existing Library/.gitignore survives the write (DT16
     CHECK(readBytes(ignorePath) == std::optional<std::string>(sentinel));
     CHECK(readBytes(dir.join(declarationsRelative())) ==
           std::optional<std::string>(std::string(ed::scriptDeclarationsText())));
+}
+
+// ---- DT17-DT21: both adoption paths write the two files -----------------------------------------------------
+
+namespace {
+
+// Count by LEVEL, never records.size(): the Debug-only records are compiled out under NDEBUG.
+[[nodiscard]] std::size_t countAtLevel(const std::vector<ed::LogEntry>& records, engine::LogLevel level) {
+    return static_cast<std::size_t>(std::count_if(records.begin(), records.end(),
+                                                  [level](const ed::LogEntry& entry) { return entry.level == level; }));
+}
+
+struct LogFixture {
+    LogFixture() { engine::initLogging(engine::LogConfig{.level = engine::LogLevel::Trace, .console = false}); }
+    ~LogFixture() { engine::shutdownLogging(); }
+    LogFixture(const LogFixture&) = delete;
+    LogFixture& operator=(const LogFixture&) = delete;
+    LogFixture(LogFixture&&) = delete;
+    LogFixture& operator=(LogFixture&&) = delete;
+};
+
+// project_test.cpp's FlowFixture shape, without the dirty-scene helper.
+struct FlowFixture {
+    engine::World world;
+    ed::Selection selection;
+    ed::RootOrder roots;
+    ed::CommandStack commands;
+    ed::CommandContext ctx{world, selection, roots};
+    ed::ProjectSession projectSession;
+    ed::ProjectFlow projectFlow;
+    ed::RecentProjects recents;
+    ed::ProjectContext project{projectSession, projectFlow, recents, ""};
+};
+
+// The source gate's helpers (the asset_actions_test.cpp shape): line comments are dropped so a comment that names a
+// call is not a call.
+[[nodiscard]] std::string stripLineComments(const std::string& body) {
+    std::string out;
+    out.reserve(body.size());
+    std::size_t i = 0;
+    while (i < body.size()) {
+        if (body[i] == '/' && i + 1 < body.size() && body[i + 1] == '/') {
+            while (i < body.size() && body[i] != '\n') {
+                ++i;
+            }
+            continue;
+        }
+        out.push_back(body[i]);
+        ++i;
+    }
+    return out;
+}
+
+// The text from the first occurrence of `signature` to the first "\n}\n" after it: every function this gate reads
+// closes at column 0.
+[[nodiscard]] std::string functionBody(const std::string& body, std::string_view signature) {
+    const std::size_t begin = body.find(signature);
+    if (begin == std::string::npos) {
+        return {};
+    }
+    const std::size_t end = body.find("\n}\n", begin);
+    return body.substr(begin, end == std::string::npos ? std::string::npos : end + 3 - begin);
+}
+
+[[nodiscard]] std::string readSource(const std::filesystem::path& path) {
+    return stripLineComments(slurp(path.string().c_str()));
+}
+
+[[nodiscard]] ed::ProjectManifest cppManifestOf(const ed::ProjectManifest& base) {
+    ed::ProjectManifest manifest = base;
+    manifest.language = ed::ProjectLanguage::Cpp;
+    return manifest;
+}
+
+}  // namespace
+
+TEST_CASE("script_types: createAndOpenProject writes the declarations and the tsconfig, silently (DT17)") {
+    const LogFixture fixture;
+    const ed::LogSinkScope scope;
+    std::vector<ed::LogEntry> records;
+    const TempDir dir("DT17");
+    FlowFixture f;
+    ed::SceneSession session;
+    scope.sink()->take(records);
+    records.clear();
+
+    REQUIRE(ed::createAndOpenProject(f.ctx, f.commands, session, f.project, dir.utf8(), "demo"));
+    REQUIRE(f.projectSession.isOpen());
+    const std::string root(f.projectSession.root());
+
+    CHECK(readBytes(root + "/" + declarationsRelative()) ==
+          std::optional<std::string>(std::string(ed::scriptDeclarationsText())));
+    CHECK(readBytes(root + "/" + std::string(ed::TSCONFIG_FILE_NAME)) ==
+          std::optional<std::string>(ed::renderTsconfig("assets")));
+
+    scope.sink()->take(records);
+    CHECK(countAtLevel(records, engine::LogLevel::Info) == 1);
+    CHECK(countAtLevel(records, engine::LogLevel::Warn) == 0);
+    CHECK(countAtLevel(records, engine::LogLevel::Error) == 0);
+}
+
+TEST_CASE("script_types: openProjectPath adds both files to an older project and keeps the tsconfig (DT18)") {
+    const LogFixture fixture;
+    const ed::LogSinkScope scope;
+    std::vector<ed::LogEntry> records;
+    const TempDir dir("DT18");
+    const ed::ProjectCreateOutcome created = ed::createProject(dir.utf8(), "demo", "0.1.0");
+    REQUIRE(created.problem == ed::CreateProblem::Ok);
+    const std::string root = created.root;
+    CHECK_FALSE(ed::fileExists(root + "/" + std::string(ed::ASSET_CACHE_DIR_NAME)));
+    CHECK_FALSE(ed::fileExists(root + "/" + std::string(ed::TSCONFIG_FILE_NAME)));
+
+    FlowFixture f;
+    ed::SceneSession session;
+    scope.sink()->take(records);
+    records.clear();
+    REQUIRE(ed::openProjectPath(f.ctx, f.commands, session, f.project, root));
+    scope.sink()->take(records);
+    CHECK(countAtLevel(records, engine::LogLevel::Info) == 1);
+    CHECK(countAtLevel(records, engine::LogLevel::Warn) == 0);
+    CHECK(readBytes(root + "/" + declarationsRelative()) ==
+          std::optional<std::string>(std::string(ed::scriptDeclarationsText())));
+    CHECK(readBytes(root + "/" + std::string(ed::TSCONFIG_FILE_NAME)) ==
+          std::optional<std::string>(ed::renderTsconfig("assets")));
+
+    // A second open: the project's own tsconfig is never rewritten, a stale declarations file is replaced.
+    const std::string sentinel = "{ \"mine\": true }\n";
+    writeBytes(root + "/" + std::string(ed::TSCONFIG_FILE_NAME), sentinel);
+    writeBytes(root + "/" + declarationsRelative(), "declare const stale: 1;\n");
+    FlowFixture g;
+    ed::SceneSession second;
+    REQUIRE(ed::openProjectPath(g.ctx, g.commands, second, g.project, root));
+    CHECK(readBytes(root + "/" + std::string(ed::TSCONFIG_FILE_NAME)) == std::optional<std::string>(sentinel));
+    CHECK(readBytes(root + "/" + declarationsRelative()) ==
+          std::optional<std::string>(std::string(ed::scriptDeclarationsText())));
+}
+
+TEST_CASE("script_types: a C++ project is opened without either file (DT19)") {
+    const LogFixture fixture;
+    const ed::LogSinkScope scope;
+    std::vector<ed::LogEntry> records;
+    const TempDir dir("DT19");
+    const ed::ProjectCreateOutcome created = ed::createProject(dir.utf8(), "demo", "0.1.0");
+    REQUIRE(created.problem == ed::CreateProblem::Ok);
+    const std::string root = created.root;
+    const std::string manifestPath = root + "/" + std::string(ed::PROJECT_FILE_NAME);
+    REQUIRE(ed::writeTextFileAtomic(manifestPath, ed::writeProjectText(cppManifestOf(created.manifest))).empty());
+
+    FlowFixture f;
+    ed::SceneSession session;
+    scope.sink()->take(records);
+    records.clear();
+    REQUIRE(ed::openProjectPath(f.ctx, f.commands, session, f.project, root));
+    CHECK(f.projectSession.manifest().language == ed::ProjectLanguage::Cpp);
+    CHECK_FALSE(ed::fileExists(root + "/" + std::string(ed::ASSET_CACHE_DIR_NAME)));
+    CHECK_FALSE(ed::fileExists(root + "/" + std::string(ed::TSCONFIG_FILE_NAME)));
+    scope.sink()->take(records);
+    CHECK(countAtLevel(records, engine::LogLevel::Warn) == 0);
+}
+
+TEST_CASE("script_types: a failed write is one WARN that names the file, and the project still opens (DT20)") {
+    const LogFixture fixture;
+    const ed::LogSinkScope scope;
+    std::vector<ed::LogEntry> records;
+    const TempDir dir("DT20");
+    const ed::ProjectCreateOutcome created = ed::createProject(dir.utf8(), "demo", "0.1.0");
+    REQUIRE(created.problem == ed::CreateProblem::Ok);
+    const std::string root = created.root;
+    writeBytes(root + "/" + std::string(ed::ASSET_CACHE_DIR_NAME), "a file where the cache directory belongs");
+
+    FlowFixture f;
+    ed::SceneSession session;
+    scope.sink()->take(records);
+    records.clear();
+    REQUIRE(ed::openProjectPath(f.ctx, f.commands, session, f.project, root));
+    CHECK(f.projectSession.isOpen());
+
+    scope.sink()->take(records);
+    REQUIRE(countAtLevel(records, engine::LogLevel::Warn) == 1);
+    for (const ed::LogEntry& entry : records) {
+        if (entry.level == engine::LogLevel::Warn) {
+            CHECK(entry.message.find(ed::SCRIPT_DECLARATIONS_FILE_NAME) != std::string::npos);
+        }
+    }
+    CHECK(countAtLevel(records, engine::LogLevel::Error) == 0);
+    CHECK(readBytes(root + "/" + std::string(ed::TSCONFIG_FILE_NAME)) ==
+          std::optional<std::string>(ed::renderTsconfig("assets")));
+}
+
+TEST_CASE("script_types: the writer has two callers, both reached once per adoption (DT21)") {
+    const std::filesystem::path src{AERO_EDITOR_SRC_DIR};
+    std::size_t scanned = 0;
+    std::vector<std::string> files;
+    std::error_code ec;
+    for (const std::filesystem::directory_entry& entry : std::filesystem::directory_iterator(src, ec)) {
+        const std::string name = entry.path().filename().string();
+        if (name.ends_with(".cpp") || name.ends_with(".hpp")) {
+            const std::string body = readSource(entry.path());
+            ++scanned;
+            if (occurrences(body, "writeScriptTypes(") != 0U) {
+                files.push_back(name);
+            }
+        }
+    }
+    REQUIRE(scanned > 50U);  // ANTI-VACUITY: the tree was really read
+    std::sort(files.begin(), files.end());
+    CHECK(files == std::vector<std::string>{"scene_session.cpp", "script_types.cpp"});
+
+    const std::string session = readSource(src / "scene_session.cpp");
+    REQUIRE(session.size() > 3000U);
+    CHECK(occurrences(session, "writeScriptTypes(") == 1U);
+    CHECK(occurrences(session, "adoptScriptTypes(") == 3U);
+
+    const std::string adopter = functionBody(session, "void adoptScriptTypes(");
+    REQUIRE_FALSE(adopter.empty());
+    CHECK(occurrences(adopter, "writeScriptTypes(") == 1U);
+    const std::string opener = functionBody(session, "bool openProjectPath(");
+    REQUIRE_FALSE(opener.empty());
+    CHECK(occurrences(opener, "adoptScriptTypes(") == 1U);
+    const std::string creator = functionBody(session, "bool createAndOpenProject(");
+    REQUIRE_FALSE(creator.empty());
+    CHECK(occurrences(creator, "adoptScriptTypes(") == 1U);
+    const std::string adopted = functionBody(session, "void adoptProject(");
+    REQUIRE_FALSE(adopted.empty());
+    CHECK(occurrences(adopted, "adoptScriptTypes(") == 0U);
+    CHECK(occurrences(adopted, "writeScriptTypes(") == 0U);
 }
