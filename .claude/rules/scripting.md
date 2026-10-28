@@ -44,8 +44,9 @@ consumes its argument.
 **R21: quickjs-ng ABSORBS THE INTERRUPT ON TWO PATHS THE WRAPPER CANNOT REACH (4.1.1).** A `using` block's dispose call
 wraps an interrupt into a catchable `SuppressedError`, so a catch-all loop around one can run past its budget for good
 (measured: two of four poll offsets hung under a 100 ms budget); and an interrupt that rejects a promise a handler
-already waits for reaches that handler as an error no catch takes. Nothing calls a script before 4.2.1; the first task
-that exposes a script surface inherits both. The fix is a patched backend — the project's first, an unowned handoff.
+already waits for reaches that handler as an error no catch takes. 4.2.1 exposes the first script surface (the `engine` namespace) and calls no script of its own, so the first task that
+calls one (4.3.1's TypeScript scripts, 4.4.1's lifecycle) inherits both; its measured fact is that esbuild lowers
+`using` (`es2022`, or `--supported:using=false`), which 4.3.1 pins with a test. The fix is a patched backend — the project's first, an unowned handoff.
 
 **EVERY MODULE IS READ THROUGH THE VM'S BORROWED VFS AND NOTHING ELSE, KEYED BY `normalizeVirtualPath` (4.1.2).** ML40
 pins the one read path. A second normalizer would be a second key for one file. The specifier grammar is an ALLOWLIST
@@ -83,11 +84,32 @@ ML71 predicted a starved `import()`'s parser error from a second VM and was red 
 where the heap refuses depends on block sizes and on what ran first.
 
 
+**THE BINDING RUNTIME IS ONE HAND-WRITTEN FILE SET, FED BY QUICKJS-FREE GENERATED TABLES (4.2.1).** `reflect-gen
+--emit-script` writes descriptor tables only (`internal/…/component_binding.hpp`); every quickjs call is made by
+`engine/script/src/script_api*.cpp`. Generated code is outside lint, so it never holds a backend call, and a new field
+kind is a new descriptor, not a new emitter branch. `aero_script` links `aero::scene` PUBLIC (its header names
+`Entity`); the quickjs token ban and the public-header scan still hold. With `AERO_REFLECT_TOOLS=OFF` the table is
+empty and the namespace holds `Vec3`, `Quat` and `Entity`: a test that names a built-in class checks the table first.
+
+**COMPONENT OBJECTS ARE LIVE AND RE-RESOLVE THEIR ENTITY ON EVERY ACCESS (4.2.1).** No C++ pointer is cached across a
+call. `Vec3` / `Quat` fields are live views (`t.position.x += dt` writes through); every field read makes a new view,
+so `t.position === t.position` is false; a field accepts an instance only (`TypeError` otherwise, nothing changed);
+and a standalone `new engine.Vec3()` is detached. `has`, `get` and `remove` on a stale entity throw (`entity.alive` is
+the probe), `add` on a present component resets it to the defaults like `World::add`, and a wrong value on a dead
+entity throws the value's error first. Every `bindWorld` invalidates script-held entities, which 4.4.1 and 4.7.2 must
+account for.
+
+**THE `engine` NAMESPACE IS COUNTED AGAINST THE BUDGET (4.2.1).** An empty VM costs 164,969 B in Debug and 152,585 B
+in Release with the namespace bound (was 139,916 / 129,340 at step 4), and a fresh VM binds 773 atoms (652 empty). ML68
+derives its window from a scan, so it follows the atom count; ML76's `ATOM_PRELUDE` (272 names) is typed in and was
+re-measured at three steps, so a task that adds script-visible names re-measures it. BN50 sweeps 512 heap limits for the one that
+refuses the vector's opaque block (87 of 512 in Debug, 58 in Release on macOS), asserts only that at least two exist,
+and is a layout-dependent arm: Windows and Linux CI are its witnesses.
+
 ## What Phase 4's next tasks inherit
 
-**Phase 4 is open and Epic 4.1 is closed (4.1.1, 4.1.2); Epic 4.2 is next — 4.2.1, quickjs binding emission, the
-first task that calls a script and so inherits R21 (`docs/tasks/phase-4.md`).** 4.3.1 (esbuild on import) is also
-unblocked; 4.3.3 consumes 4.1.2's `moduleRecords()` / `invalidateModule()`, and 4.3.2 re-measures R22 on its bytecode
+**Phase 4 is open; Epic 4.1 is closed (4.1.1, 4.1.2) and 4.2.1, quickjs binding emission, is merged (`docs/tasks/phase-4.md`).**
+4.2.2 (`.d.ts` emission) reads the same descriptor tables; 4.3.1 (esbuild on import) is unblocked and inherits R21; 4.3.3 consumes 4.1.2's `moduleRecords()` / `invalidateModule()`, and 4.3.2 re-measures R22 on its bytecode
 path. Phase E still owes its gate and E.1.5's unrun page — the gate's artifact,
 `samples/phase-E-editor/`, does not exist yet; see `docs/tasks/phase-E.md` for the gate, and `docs/tasks/phase-3.md`
 for what Phase 3 still owes.

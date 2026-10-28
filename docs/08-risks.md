@@ -59,7 +59,7 @@ Decisions deliberately deferred until there is data or the relevant phase arrive
 Work a task found, measured or declined that no task in `docs/tasks/` owns yet. The list moved here from
 `CLAUDE.md`'s state block on 2026-10-26, where a pointer to this section remains.
 
-**SEVENTY-SEVEN UNOWNED HANDOFFS — one per bullet below; re-count the bullets, never the headline.** It read
+**EIGHTY UNOWNED HANDOFFS — one per bullet below; re-count the bullets, never the headline.** It read
 "NINE" over a list that already held thirteen, because two "smaller" items, the exposure clause and
 `FillMode::Line` were never counted. Handoffs recorded in their own paragraphs in `CLAUDE.md`'s state block (fact
 4's four permitted cases, the inspector-row gap, the closed `File` section, E.1.1's fired thick-line handoff) are
@@ -210,6 +210,14 @@ not repeated here.
   defects the same port would close**: R24 (refuse to create a function while `dbuf_error` holds, one check before
   `resolve_variables`) and R23 (let a module outlive its context, bellard/quickjs #280's fix), whose hold could then
   go. Three upstream reports are owed: R21, R23 (citing #280), R24.
+- **Every `Vm::bindWorld` invalidates the entities a script holds** (4.2.1) — an entity object stays valid only until
+  the next bind, because a script-held handle is checked against the bound World. 4.4.1 (the lifecycle) and 4.7.2
+  (Play and Stop restoring the scene) must re-hand entities after a bind, and say so in their plans.
+- **`AERO_RANGE` is not enforced on script writes** (4.2.1) — `MeshRenderer.primitive = 3` is stored as written. No
+  task owns a range check on the script side; the inspector enforces the range, a script does not.
+- **A `getOrAdd` for script components** (4.2.1) — `entity.add(C)` on an entity that already holds `C` resets it to the
+  defaults, as `World::add` does; a script author who expects "add if absent" needs a separate call. 4.4.2's
+  spawn/destroy API is where it would be added if a sample needs it.
 
 ---
 
@@ -221,7 +229,7 @@ What each task's validation still owes, and why a page is not optional. Validati
 `docs/10`; this is the ledger of what is still owed.
 
 **ONE PAGE HAS NOT BEEN RUN ON ANY PLATFORM: E.1.5's.** It is the whole of Phase E's validation risk on this OS
-— every other task in E.1–E.6 is macOS-validated, as are 4.1.1 and 4.1.2 (see the index above; each run page's
+— every other task in E.1–E.6 is macOS-validated, as are 4.1.1, 4.1.2 and 4.2.1 (see the index above; each run page's
 record and measurements are in its task's `docs/10` entry, among them 4.1.1's Debug recursion depth of 56 calls at
 512 KiB against Release's 544, which 4.4.1 decides). **Rows still owed on pages that otherwise passed include** the
 2× rows of pages run on 1× displays — E.6.1's 2, 9, 10 and 18 (rows 9 and 10 decide two unowned handoffs), E.6.2's

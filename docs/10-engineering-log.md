@@ -62,6 +62,7 @@ validation pass exists for any task in any phase.** N-E = not executable, N-R = 
 | E.6.4 Welcome + New Project restyle | #122 | `52a5b68` | **23 / 23** executable rows, nothing failed; row 21 N-E (1× displays), row 25 N-E (a held hardware key), 26–27 Windows/Linux. 57 sabotage seeds at `72da4e3`, no hole |
 | 4.1.1 VM lifecycle | #123 | `efdd0b9` | **10 / 10**, nothing failed (terminal rows; no editor UI). A 98-seed sabotage matrix whose nine findings each gained a case; two backend paths recorded as R21 |
 | 4.1.2 Module loading via VFS | #124 | `ccf776c` | **11 / 11**, nothing failed (terminal rows). Four code-review rounds; a 154-row sabotage matrix whose five findings each gained a case; R22 and R23 mitigated engine-side, R24 recorded; Windows CI found one layout-dependent test arm (ML71) |
+| 4.2.1 quickjs binding emission | #125 | `fab6db8` | **2 / 2**, nothing failed (terminal rows; no editor UI). Two code-review rounds (5 findings, all closed); a 94-row sabotage matrix and 14 ctest seeds whose one hole (S92) gained BN50; CI green on the first run |
 
 **E.3.2 landed before E.3.1** — legal, disjointly id-reserved; the reservation is discharged and the
 numbering is contiguous.
@@ -20106,3 +20107,95 @@ Measured at `ef99d93`:
 adds `script_module_test.cpp` to `aero_tests`, and `tests/fixtures/scripts/` (with its README) holds the Definition
 of Done's files. Docs: `docs/03` (the module paragraph) and `docs/08` (R22, R23, R24). `editor/` and `tools/` are
 untouched.
+
+
+### 4.2.1 — quickjs binding emission — `reflect-gen --emit-script` and the frozen `engine` namespace: the ten built-in components readable and writable from a script
+
+Every VM now exposes the ten built-in components as `engine.Transform`, `engine.MeshRenderer` and the rest, beside
+`engine.Vec3`, `engine.Quat` and `engine.Entity`, and a script reads and writes the components of an entity C++ hands
+it. Merged as PR #125 (`fab6db8`, a true merge commit): sixteen commits on `0b27bc4` — the plan's eight steps, a
+code-review fix round (five commits), two sabotage-hole tests, and one test fix from the final gate. CI: run
+`40595785894` on the merged head `478ae39`, 6 / 6 green. Story 1 of Phase 4 continues with 4.3.1.
+
+**What shipped.**
+- `reflect-gen --emit-script` is the generator's third output: quickjs-free descriptor tables over the same header
+  list the serializer and the inspector use (`aero_reflect_generate_script` in `cmake/reflect.cmake`, 14
+  `reflect-gen.script_*` ctest cases for the output, the CLI rules and the failure exits).
+- `aero_script` links `aero::scene` PUBLIC (and `aero::reflect` through it). One hand-written runtime in
+  `engine/script/src/script_api*.cpp` makes every backend call; quickjs never leaves the target.
+- `Vm::bindWorld(World&)` / `unbindWorld()` / `defineEntityGlobal(name, entity)` and `BindStatus`. An entity is
+  handed to the script as a global; `has`, `get`, `set`, `add` and `remove` work on it.
+- Component objects are live and re-resolve their entity on every access; `Vec3` and `Quat` fields are live views that
+  write through; a field accepts an instance only.
+- With `AERO_REFLECT_TOOLS=OFF` the table is empty and `engine` holds `Vec3`, `Quat` and `Entity` only.
+- No quickjs-ng patch. R21's row in `docs/08` gains the measured fact that esbuild lowers `using`.
+
+**Code-review rounds.** Round 1 (on `0b27bc4..5a8a697`): four findings, none blocking, all tests — the usage text and
+error texts of `--emit-script` were unasserted (should-fix), ML68's comment was false at its new window, ML79's figures
+were stale, and BN30's anti-vacuity reached `src/` only. Round 2 (on `5a8a697..3284722`): one minor — ML68's
+scan-failure message and a comment assume a refusal band at least four wide — recorded here, not fixed.
+
+**The sabotage matrix.** 94 doctest seeds on both presets at `3284722` and again at `129bcf0`: 93 red, one compile-red
+(S1). One hole, S92 (BN14 never makes the vector's opaque block the refused allocation), closed by BN50, which sweeps
+512 heap limits; a second gap found on reading the seeds, the `Vm::create` module overload binding the built-ins,
+closed by BN51 (S94). The 14 ctest seeds C1–C14 are all red.
+
+**Traps found, each measured.**
+- A clang-tidy `modernize-loop-convert` finding in Step 1's `main.cpp` was hidden by that step's `--no-tidy`.
+- Two fix-round commits (`8e62500`, `1ec0c5f`) fail clang-format at their own sha; `a63114f` fixes both.
+- The plan's script-guard first figure was a slip (171 where the guard reads 170 at Step 2): the first figure
+  excludes the private side (170 + 7 = 177 tracked at Step 2).
+- ML68's window had to be re-derived at three steps as atoms were added (111 values at one point, 141 at the next).
+  The fix made it a scan down from 2047 in steps of 4 for the first non-OOM refusal, with the refusals at 244
+  (`CompileError`) and 287-91 / 820-24 / 1619-23 (OOM) pinned.
+- An empty VM now costs 164,969 B Debug / 152,585 B Release, and a fresh VM binds 773 atoms (652 empty). G6's trigger,
+  an empty VM over 512 KiB, did not fire.
+- BN49 (unasserted) prints the median call over 1000 entities, one `position.x` read and write each: 0.246 ms Release
+  and 6.04 ms Debug against the spike's 0.22-0.25 and about 2.4 ms. The Debug figure is stable (1.5 % between runs).
+- `warn-sweep.sh` exits 1 on the 13 `aero_reflect_gen` fixture diagnostics while the compiler warnings are 0; the sweep
+  does not filter tool output.
+- **The final gate caught a test written after the last review round.** BN51 asserted `engine.Transform` in a
+  reflect-tools-OFF build, where the table is empty, and was red there alone (`aero_tests` 1615 / 1616 in that
+  configuration). `478ae39` makes that check conditional on a non-empty table.
+
+**Where the implementation departed from the plan.**
+- G9: the generated tables hold descriptors only and one runtime makes the calls, so there is no per-category emitter
+  branch.
+- Step 5 added an `ATOM_PRELUDE` of names to ML76 and widened ML68's sweep; `readFieldValue` / `storeFieldValue` are
+  not `noexcept` (clang-tidy's exception-escape on `string::assign`); `resolveEntity` returns `bool`.
+- Axis magic is `dimension * 8 + axis`, which refuses a `Quat` getter on a `Vec3`.
+
+**What was deliberately left out, and which task holds each.**
+- `spawn`, `destroy`, `find`, query and the transform helpers: 4.4.2.
+- The math helpers on `Vec3` and `Quat` (`add`, `normalize`, …): 4.4.2.
+- `.d.ts` for the namespace: 4.2.2, reading the same descriptor tables.
+- The lifecycle (`onInit`, `onUpdate`, `onDestroy`) and attaching a script to an entity: 4.4.1.
+- `AERO_RANGE` enforcement on script writes: not scheduled (`MeshRenderer.primitive = 3` is stored).
+- A patched quickjs-ng for R21, R23 and R24: still the unowned handoff in `docs/08`.
+
+**The sentences that govern new work** are in `.claude/rules/scripting.md`: the binding runtime is one hand-written file
+set fed by quickjs-free tables; component objects re-resolve their entity on every access; the `engine` namespace is
+counted against the budget; and every `bindWorld` invalidates script-held entities (4.4.1 and 4.7.2 account for it).
+
+**Validation and sabotage status — macOS 2 / 2 (2026-10-28), Windows and Linux unrun.** Run in a terminal against
+`129bcf0` on both presets (the later `478ae39` changes one test): `leaks --atExit` over the 195 script cases reports 0
+leaks for 0 total leaked bytes, and BN49's figures are those above. Row 1's text said 193 cases; the run selects 195
+because BN50 and BN51 landed after the plan. Windows has no `leaks` (its row 1 is not executable there) and Linux's
+row 1 is LSan's own Debug run. CI watch items, all layout-dependent: ML68's band width, ML76 (b)'s precondition (3 of
+129 Debug, 2 of 129 Release on macOS), BN50's heap sweep, Linux clang-tidy `bugprone-exception-escape` on the
+`noexcept` host functions, and MSVC `consteval` / NTTP handling in the descriptor tables. The first CI run was green on
+all of them.
+
+Measured at `478ae39` on fresh build directories:
+- `aero_tests` **1630** (+52: BN1–BN51, VM65), and the other six doctest binaries are unchanged at **2414 / 366 / 40 /
+  73 / 14 / 28**; reflect-tools-OFF `aero_tests` is 1616 and shader-tools-OFF 1490.
+- `ctest -N` **198 / 185 / 94**, with `cooker.*` 70 in all three; the 14 added entries are `reflect-gen.script_*`.
+- The guards read math **612**, platform **94**, rhi **179**, scene **94**, golden-rule **181**, project-no-delete
+  **A=7 B=110**, audio **11-3-59**, probes **7-61** and script **170-94-11**.
+
+**Case ids claimed:** BN1–BN51 and VM65 (next free: BN52, VM66).
+
+**Build & dependency impact:** no new vcpkg port and no new target. `aero_script` gains `component_bindings.cpp`,
+`script_api.cpp`, `script_api_values.cpp` and `script_api_entity.cpp` and now links `aero::scene`; `tests/CMakeLists.txt`
+adds `script_binding_test.cpp` and `script_component_test.cpp` to `aero_tests`, and `tests/reflect-gen/run_case.cmake`
+gains the `script_*` cases. Docs: `docs/03` (the script layer's lines) and `docs/08` (R21's row). `editor/` is untouched.

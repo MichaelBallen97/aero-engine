@@ -123,6 +123,10 @@ Subtasks:
 Subtasks:
 - Emit component accessors from `entt::meta` data
 - Emit registration; wire into the generated-sources build step
+**Outcome:** `reflect-gen --emit-script` generates quickjs-free binding tables for the ten built-in components,
+`aero_script` (now above `aero::scene`) compiles them, and every VM exposes them as the frozen `engine` namespace
+with `Vec3`, `Quat` and `Entity`; `Vm::bindWorld` and `defineEntityGlobal` hand a script an entity whose components it
+reads and writes. Spawn, destroy, find and the lifecycle stay with 4.4.x.
 
 ### 4.2.2 `.d.ts` emission · P0 · M · depends: 4.2.1
 **Goal:** the free tooling payoff: typed autocomplete without writing types.

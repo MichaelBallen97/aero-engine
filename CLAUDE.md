@@ -11,10 +11,11 @@ Two platform matrices, never to be conflated: the **editor** runs on macOS/Windo
 ## Current state — read this first
 
 **Phase 4 (Scripting) is open.** Epic 4.1 is closed: 4.1.1 (VM lifecycle, PR #123 `efdd0b9`) and 4.1.2 (module
-loading via the VFS, PR #124 `ccf776c`), both macOS-validated. **4.2.1 (quickjs binding emission) is next**: the first
-task that calls a script, so it inherits R21. Patching quickjs-ng (R21, R23, R24) is an open decision
-(`docs/08-risks.md`, `docs/future-roadmap.md`), settled before 4.2.1's plan. Phase 4's story map is the
-`## Stories` section of `docs/tasks/phase-4.md`; 4.2.1 opens Story 1.
+loading via the VFS, PR #124 `ccf776c`), both macOS-validated. **4.2.1 (quickjs binding emission, PR #125 `fab6db8`)
+is merged and macOS-validated**: `reflect-gen --emit-script` generates the built-in components' binding table, and
+every VM exposes it as the frozen `engine` namespace. No quickjs-ng patch shipped (R21, R23, R24 stay open decisions
+in `docs/08-risks.md` and `docs/future-roadmap.md`). Story 1 of `docs/tasks/phase-4.md`'s `## Stories` continues with
+**4.3.1 (the TypeScript toolchain)**, which inherits the R21 constraint that esbuild must lower `using`.
 
 **Three phase gates are still open**, each owing its deliverable rather than code:
 - **Phase 0**: macOS-PASS, held open for the Windows/Linux 60 fps sign-off (`samples/phase-0-cube/VALIDATION.md`).
@@ -65,26 +66,26 @@ In Notion its `Phase #` is `3.5` — a sort key, not an identifier.
 | **Phase 3 gate** | Drop a rigged glTF/FBX in → PBR materials + shadows + a playing animation + **an audible sound**. The audible half exists in code as of 3.7.2 and **has never been heard on any platform.** |
 | **Phase E** — Editor Experience | **OPEN.** Epics E.1–E.6 **CLOSED in code** — 24 of 24 merged, see the merged-task index in `docs/10` (E.6.4, `52a5b68`, the last). What is left is the gate below — its artifact `samples/phase-E-editor/` does not exist yet — and ONE unrun validation page (E.1.5), the whole of this OS's remaining Phase E risk. |
 | **Phase E gate** | Open a project and land in the scene you were last editing, on a lit grid floor under a sky; create a Cube from the menu, drop a material on it and see it shade; aim a spot light with a visible gizmo; rename, move and delete assets without leaving the editor. Gate artifact: `samples/phase-E-editor/`. |
-| **Phase 4** — Scripting | **OPEN.** Epic 4.1 **CLOSED** — 4.1.1 (#123) and 4.1.2 (#124) merged; Epic 4.2 (4.2.1) is next. |
+| **Phase 4** — Scripting | **OPEN.** Epic 4.1 **CLOSED** — 4.1.1 (#123) and 4.1.2 (#124) merged; Epic 4.2: 4.2.1 (#125) merged, 4.2.2 (`.d.ts` emission) open. Story 1 continues with 4.3.1. |
 | **Phase 4 gate** | Press Play in the editor: hot-reloaded TS or native C++ drives entities; press Stop: the scene restores exactly. Gate artifact: `samples/phase-4-scripting/` (the two-language demo). |
 
 ### Engine layers, in dependency order
 
 `core` → `assets` → `audio` → `platform` → `rhi` → `render` → `reflect` → `scene` → `scene_render` →
-**`scene_audio`** → `scene_serialize`, and **`script`** (on `core` alone), plus `/editor` (`aero_editor_core` +
+**`scene_audio`** → `scene_serialize`, and **`script`** (on `core` and, since 4.2.1, `scene`), plus `/editor` (`aero_editor_core` +
 `aero_editor`) and
 `/tools` (`reflect-gen`, `shaderc`, `cooker`). **`/runtime` is still empty** — it arrives in Phase 5.
 
 ### Test inventory — measured, never remembered
 
-**After 4.1.2 (#124)**, measured on both presets: `ctest -N` and the guards on `ef99d93` (the merge's second parent),
-the doctest totals and both reduced configurations on `3c0a017`. `ef99d93` changes one case's body and no total.
+**After 4.2.1 (#125)**, measured on both presets and on fresh build directories at `478ae39` (the merge's second
+parent; `main` had not moved, so the merge tree is the same).
 
 | Measurement | Value |
 |---|---|
-| `ctest -N` | **184** in both presets; **171** shader-tools-OFF (exactly the 13 `shaderc.*` removed), **94** reflect-tools-OFF (86 `reflect-gen.*` + four doctest binaries removed), nothing added in either; `cooker.*` **70 / 70 / 70**; entry sets identical to 4.1.1's |
-| doctest, seven binaries | **1578 / 2414 / 366 / 40 / 73 / 14 / 28** (only `aero_tests` moved, +87) |
-| guards | math **603**, platform **94**, rhi **173**, scene **94**, golden-rule **175**, project-no-delete **A=7 B=110** (2 permitted), audio **11-3-59**, probes **7-61**, script **169-94-6** |
+| `ctest -N` | **198** in both presets; **185** shader-tools-OFF (exactly the 13 `shaderc.*` removed), **94** reflect-tools-OFF (100 `reflect-gen.*` + four doctest binaries removed), nothing added in either; `cooker.*` **70 / 70 / 70**; the 14 new entries are `reflect-gen.script_*` |
+| doctest, seven binaries | **1630 / 2414 / 366 / 40 / 73 / 14 / 28** (only `aero_tests` moved, +52); reflect-tools-OFF `aero_tests` **1616**, shader-tools-OFF **1490** |
+| guards | math **612**, platform **94**, rhi **179**, scene **94**, golden-rule **181**, project-no-delete **A=7 B=110** (2 permitted), audio **11-3-59**, probes **7-61**, script **170-94-11** |
 | `git ls-files` | `editor/src/*.cpp` **110**, `editor/include/aero/editor/*.hpp` **81** |
 
 The seven doctest binaries, in order: `aero_tests`, `aero_editor_shell_test`, `aero_editor_imgui_test`,
@@ -96,7 +97,8 @@ no target is a stop-and-find-out** — math and project-no-delete prong B move w
 (prong B only for `editor/src/*.cpp`); platform, rhi, scene, golden-rule and script count engine and runtime files, so
 they move only with new ones; audio's and probes' last figures count CMake files. 4.1.1, which added a target, moved
 every guard's figures but project-no-delete's and opened script's; 4.1.2, which added files to `engine/script` and
-none elsewhere in `engine/`, moved math, rhi, golden-rule and script.
+none elsewhere in `engine/`, moved math, rhi, golden-rule and script; 4.2.1, which added files to `engine/script`
+and `tests/` and no target, moved the same four.
 
 How to measure and compare these figures: `.claude/rules/tests.md`.
 
