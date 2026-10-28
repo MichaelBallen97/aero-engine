@@ -196,6 +196,14 @@ TEST_CASE("script_types: the include glob is escaped, and a trailing slash or a 
     REQUIRE(slashedParsed.value.has_value());
     CHECK(stringArray(slashedParsed.value->find("include")) == std::vector<std::string>{"game/assets/**/*.ts"});
 
+    // Every trailing slash goes, not only the first: the manifest reader accepts "assets//".
+    for (const std::string& repeated : {std::string("game/assets//"), std::string("game/assets///")}) {
+        const engine::JsonParseResult repeatedParsed = engine::parseJson(ed::renderTsconfig(repeated));
+        REQUIRE(repeatedParsed.ok());
+        REQUIRE(repeatedParsed.value.has_value());
+        CHECK(stringArray(repeatedParsed.value->find("include")) == std::vector<std::string>{"game/assets/**/*.ts"});
+    }
+
     const std::string dot = ".";
     const std::string dotText = ed::renderTsconfig(dot);
     const engine::JsonParseResult dotParsed = engine::parseJson(dotText);
@@ -460,10 +468,18 @@ TEST_CASE("script_types: openProjectPath adds both files to an older project and
     writeBytes(root + "/" + declarationsRelative(), "declare const stale: 1;\n");
     FlowFixture g;
     ed::SceneSession second;
+    records.clear();
+    scope.sink()->take(records);  // drains what the setup logged
+    records.clear();
     REQUIRE(ed::openProjectPath(g.ctx, g.commands, second, g.project, root));
     CHECK(readBytes(root + "/" + std::string(ed::TSCONFIG_FILE_NAME)) == std::optional<std::string>(sentinel));
     CHECK(readBytes(root + "/" + declarationsRelative()) ==
           std::optional<std::string>(std::string(ed::scriptDeclarationsText())));
+    // A kept tsconfig is a success (Unchanged), not a failure: the reopen stays as silent as the first open.
+    scope.sink()->take(records);
+    CHECK(countAtLevel(records, engine::LogLevel::Info) == 1);
+    CHECK(countAtLevel(records, engine::LogLevel::Warn) == 0);
+    CHECK(countAtLevel(records, engine::LogLevel::Error) == 0);
 }
 
 TEST_CASE("script_types: a C++ project is opened without either file (DT19)") {
