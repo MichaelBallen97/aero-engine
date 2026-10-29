@@ -80,15 +80,15 @@ private:
     [[nodiscard]] std::optional<ContentHash> hashOfInput(const AssetDatabase& database,
                                                          std::string_view projectRelative) const;
     [[nodiscard]] bool recordIsFresh(const ScriptJob& job, const ScriptFreshnessContext& context) const;
-    void note(ScriptLogLevel level, std::string text);
+    void note(ScriptLogLevel level, const std::string& text);
     void setOutcome(Guid guid, ScriptOutcome outcome);
     void endPass();
     void enqueue(ScriptJob job);
 
-    void start(const AssetDatabase& database, ScriptJob job);
+    void start(const AssetDatabase& database, const ScriptJob& job);
     void finish(const AssetDatabase& database, int exitCode);
     void requeue(const AssetDatabase& database, ScriptJob job);
-    void failTool(std::string reason);
+    void failTool(const std::string& reason);
     void failScript(const AssetDatabase& database, const ScriptJob& job, int exitCode, const std::string& logPath,
                     const EsbuildLogParse& log);
     void failPublish(const ScriptJob& job, const std::string& reason);

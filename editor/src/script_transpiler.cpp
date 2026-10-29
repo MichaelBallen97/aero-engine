@@ -107,7 +107,7 @@ std::string ScriptTranspiler::artifactDirectory() const {
     return joinPath(joinPath(view.projectRoot, ASSET_CACHE_DIR_NAME), SCRIPT_ARTIFACT_DIR_NAME);
 }
 
-void ScriptTranspiler::note(ScriptLogLevel level, std::string text) {
+void ScriptTranspiler::note(ScriptLogLevel level, const std::string& text) {
     pending.push_back(ScriptLogLine{level, "scripts: " + text});
 }
 
@@ -288,13 +288,13 @@ void ScriptTranspiler::service(const AssetDatabase& database, float deltaSeconds
     }
 
     while (!running.has_value() && !queue.empty()) {
-        ScriptJob job = std::move(queue.front());
+        const ScriptJob job = queue.front();
         queue.erase(queue.begin());
         const AssetRecord* const record = database.findByGuid(job.guid);
         if (record == nullptr || record->relativePath != job.assetsRelative) {
             continue;  // gone or moved since it was queued: a later scan sees the new spelling
         }
-        start(database, std::move(job));
+        start(database, job);
         break;  // at most one start per call
     }
 
@@ -303,7 +303,7 @@ void ScriptTranspiler::service(const AssetDatabase& database, float deltaSeconds
     }
 }
 
-void ScriptTranspiler::failTool(std::string reason) {
+void ScriptTranspiler::failTool(const std::string& reason) {
     if (running.has_value()) {
         setOutcome(running->guid, ScriptOutcome::Failed);
         running.reset();
@@ -315,11 +315,11 @@ void ScriptTranspiler::failTool(std::string reason) {
     process = ToolProcess{};
     timedOut = false;
     elapsed = 0.0F;
-    note(ScriptLogLevel::Error, std::move(reason));
+    note(ScriptLogLevel::Error, reason);
     endPass();
 }
 
-void ScriptTranspiler::start(const AssetDatabase& database, ScriptJob job) {
+void ScriptTranspiler::start(const AssetDatabase& database, const ScriptJob& job) {
     running = job;  // failTool() counts it among the failed
     const bool requireExecBit = currentHostOs() != HostOs::Windows;
     if (binaryPath.empty() || !isExecutableFile(binaryPath, requireExecBit)) {
@@ -360,6 +360,9 @@ void ScriptTranspiler::requeue(const AssetDatabase& database, ScriptJob job) {
 }
 
 void ScriptTranspiler::finish(const AssetDatabase& database, int exitCode) {
+    if (!running.has_value()) {
+        return;
+    }
     const ScriptJob job = *running;
     if (timedOut) {
         failTool(

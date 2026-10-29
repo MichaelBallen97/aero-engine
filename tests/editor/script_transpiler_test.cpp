@@ -32,6 +32,7 @@
 #include <doctest/doctest.h>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -252,7 +253,7 @@ TEST_CASE("script_transpiler: one script is published as js, map and record and 
 
     // The map's single source resolves, against the directory the map is published in, to the script itself.
     const std::string map = f.artifactBytes(guid, ".js.map");
-    const std::string key = "\"sources\": [\"";
+    const std::string key = R"("sources": [")";
     const std::size_t at = map.find(key);
     REQUIRE(at != std::string::npos);
     const std::size_t from = at + key.size();
@@ -777,8 +778,9 @@ TEST_CASE("script_transpiler: the sources keep to the process and logging rules 
     }
 
     // (b) SDL's process-lifecycle symbols appear in tool_process.cpp ONLY, in the raw text of every file.
-    const std::string symbols[] = {std::string("SDL_") + "CreateProcess", std::string("SDL_") + "WaitProcess",
-                                   std::string("SDL_") + "KillProcess", std::string("SDL_") + "DestroyProcess"};
+    const std::array<std::string, 4> symbols = {
+        std::string("SDL_") + "CreateProcess", std::string("SDL_") + "WaitProcess", std::string("SDL_") + "KillProcess",
+        std::string("SDL_") + "DestroyProcess"};
     std::size_t scanned = 0;
     for (const std::string& root : {srcDir, includeDir}) {
         std::error_code ec;
@@ -816,9 +818,9 @@ TEST_CASE("script_transpiler: the sources keep to the process and logging rules 
     CHECK(calls == 1U);
 
     // (d) no thread, lock, atomic, future or condition variable in either new TU.
-    const std::string banned[] = {std::string("<") + "thread>", std::string("<") + "mutex>",
-                                  std::string("<") + "atomic>", std::string("<") + "future>",
-                                  std::string("<") + "condition_variable>"};
+    const std::array<std::string, 5> banned = {std::string("<") + "thread>", std::string("<") + "mutex>",
+                                               std::string("<") + "atomic>", std::string("<") + "future>",
+                                               std::string("<") + "condition_variable>"};
     for (const std::string_view file : {"esbuild_tool.cpp", "script_transpiler.cpp"}) {
         const std::string text = sourceText(srcDir, file);
         for (const std::string& header : banned) {

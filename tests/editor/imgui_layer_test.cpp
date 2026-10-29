@@ -30019,7 +30019,10 @@ struct ScriptArtifacts {
             ++out.js;
         } else if (endsWith(".json")) {
             ++out.records;
-            const engine::editor::FileReadResult read = engine::editor::readTextFile(dir + "/" + name);
+            std::string recordPath = dir;
+            recordPath += '/';
+            recordPath += name;
+            const engine::editor::FileReadResult read = engine::editor::readTextFile(recordPath);
             REQUIRE(read.text.has_value());
             const std::optional<engine::editor::ScriptRecord> record = engine::editor::parseScriptRecord(*read.text);
             REQUIRE(record.has_value());
