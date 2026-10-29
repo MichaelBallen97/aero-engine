@@ -16,6 +16,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <initializer_list>
 #include <limits>
 #include <optional>
 #include <span>
@@ -236,13 +237,18 @@ std::optional<EsbuildMetafile> parseEsbuildMetafile(std::string_view text) {
 
 namespace {
 
-// esbuild's two header marks (U+2718 and U+25B2) as UTF-8 bytes. Spelled as byte values rather than as string
-// literals: the editor keeps every literal 7-bit (editor.md).
+// esbuild's header marks as UTF-8 bytes: U+2718 and U+25B2. Spelled as byte values rather than as string literals:
+// the editor keeps every literal 7-bit (editor.md).
+//
+// An error has two marks. esbuild's MsgKind.Icon (internal/logger/logger.go) prints the ASCII "X" when it runs on
+// Windows with no WT_SESSION in its environment (Windows Terminal sets it), and U+2718 otherwise, so the mark follows
+// the environment and not only the OS. Both are read on every host. The warning mark is U+25B2 in both branches.
 constexpr std::array<char, 3> ERROR_MARK_BYTES{static_cast<char>(0xE2), static_cast<char>(0x9C),
                                                static_cast<char>(0x98)};
 constexpr std::array<char, 3> WARNING_MARK_BYTES{static_cast<char>(0xE2), static_cast<char>(0x96),
                                                  static_cast<char>(0xB2)};
 constexpr std::string_view ERROR_MARK{ERROR_MARK_BYTES.data(), ERROR_MARK_BYTES.size()};
+constexpr std::string_view ERROR_MARK_ASCII = "X";
 constexpr std::string_view WARNING_MARK{WARNING_MARK_BYTES.data(), WARNING_MARK_BYTES.size()};
 constexpr std::string_view ERROR_TAG = " [ERROR] ";
 constexpr std::string_view WARNING_TAG = " [WARNING] ";
@@ -282,9 +288,18 @@ struct HeaderMatch {
     std::string_view text;
 };
 
+[[nodiscard]] std::optional<HeaderMatch> matchErrorHeader(std::string_view line, std::string_view mark) noexcept {
+    if (startsWith(line, mark) && startsWith(dropFront(line, mark.size()), ERROR_TAG)) {
+        return HeaderMatch{ScriptDiagnosticSeverity::Error, dropFront(line, mark.size() + ERROR_TAG.size())};
+    }
+    return std::nullopt;
+}
+
 [[nodiscard]] std::optional<HeaderMatch> matchHeader(std::string_view line) noexcept {
-    if (startsWith(line, ERROR_MARK) && startsWith(dropFront(line, ERROR_MARK.size()), ERROR_TAG)) {
-        return HeaderMatch{ScriptDiagnosticSeverity::Error, dropFront(line, ERROR_MARK.size() + ERROR_TAG.size())};
+    for (const std::string_view mark : {ERROR_MARK, ERROR_MARK_ASCII}) {
+        if (const std::optional<HeaderMatch> error = matchErrorHeader(line, mark)) {
+            return error;
+        }
     }
     if (startsWith(line, WARNING_MARK) && startsWith(dropFront(line, WARNING_MARK.size()), WARNING_TAG)) {
         return HeaderMatch{ScriptDiagnosticSeverity::Warning,

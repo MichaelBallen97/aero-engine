@@ -26,6 +26,7 @@
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <initializer_list>
 #include <ios>
 #include <iterator>
 #include <optional>
@@ -151,6 +152,8 @@ constexpr std::string_view TICK = "\xE2\x95\xB5";      // the excerpt underline 
 [[nodiscard]] std::string errorHeader(std::string_view text) {
     return std::string(CROSS) + " [ERROR] " + std::string(text) + "\n";
 }
+// esbuild's Windows Command Prompt output (logger.go's MsgKind.Icon); the pinned darwin binary cannot print it.
+[[nodiscard]] std::string windowsErrorHeader(std::string_view text) { return "X [ERROR] " + std::string(text) + "\n"; }
 [[nodiscard]] std::string warningHeader(std::string_view text) {
     return std::string(TRIANGLE) + " [WARNING] " + std::string(text) + "\n";
 }
@@ -845,4 +848,34 @@ TEST_CASE("esbuild_tool: a drive-letter path is outside the assets root even whe
     CHECK(ed::classifyScriptInput("C:/a.ts", "") == V::OutsideAssetsRoot);
     CHECK(ed::classifyScriptInput("C:a.ts", "") == V::OutsideAssetsRoot);
     CHECK(ed::classifyScriptInput("a/b.ts", "") == V::Accepted);
+}
+
+TEST_CASE("esbuild_tool: the Windows error mark X reads as the same error header (EB30)") {
+    const std::string syntaxText = "Unexpected \";\"";
+    const std::string syntaxTail = syntaxLog().substr(errorHeader(syntaxText).size());
+    const std::string bareText = "Could not resolve \"lodash\"";
+    const std::string bareTail = bareLog().substr(errorHeader(bareText).size());
+
+    // Each Windows form must read exactly as its macOS form; a vector compare keeps every sub-check running.
+    const ed::EsbuildLogParse syntax = ed::parseEsbuildLog(windowsErrorHeader(syntaxText) + syntaxTail);
+    CHECK(syntax.total == 1);
+    CHECK(syntax.diagnostics == ed::parseEsbuildLog(syntaxLog()).diagnostics);
+
+    const ed::EsbuildLogParse both = ed::parseEsbuildLog(windowsErrorHeader(syntaxText) + syntaxTail + warnLog());
+    const ed::EsbuildLogParse bothExpected = ed::parseEsbuildLog(syntaxLog() + warnLog());
+    CHECK(both.total == 2);
+    CHECK(both.diagnostics.size() == 2);
+    CHECK(both.diagnostics == bothExpected.diagnostics);
+
+    const ed::EsbuildLogParse bare = ed::parseEsbuildLog(windowsErrorHeader(bareText) + bareTail);
+    CHECK(bare.total == 1);
+    CHECK(bare.diagnostics == ed::parseEsbuildLog(bareLog()).diagnostics);
+
+    // Nothing looser is a header.
+    const std::string location = "\n    assets/broken/x.ts:1:2:\n";
+    for (const char* header : {"x [ERROR] boom", "XX [ERROR] boom", "X[ERROR] boom", "X [WARNING] boom"}) {
+        const ed::EsbuildLogParse parse = ed::parseEsbuildLog(std::string(header) + location);
+        CHECK(parse.total == 0);
+        CHECK(parse.diagnostics.empty());
+    }
 }
