@@ -14,7 +14,7 @@
 // DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN here. Every case must be PRESENT and PASSING in all three build
 // configurations (AC-43).
 //
-// blender_process.hpp is SRC-PRIVATE and is reached by an explicit relative path rather than by
+// tool_process.hpp is SRC-PRIVATE and is reached by an explicit relative path rather than by
 // putting editor/src on this target's include path. That is deliberate and narrower: a target-wide
 // include directory would let ANY test TU pull in ANY src-private header -- thumbnail_store.hpp
 // (stb_image), import_details_panel.hpp (ImGui), gltf_import.hpp (fastgltf) -- and the editor's
@@ -28,7 +28,7 @@
 #include <aero/editor/model_import_session.hpp>  // task 3.2.4: the .blend arm, end to end
 #include <aero/editor/text_file.hpp>
 
-#include "../../editor/src/blender_process.hpp"
+#include "../../editor/src/tool_process.hpp"
 
 #include <doctest/doctest.h>
 
@@ -58,7 +58,6 @@ using engine::editor::BLENDER_TIMEOUT_SECONDS;
 using engine::editor::BlenderEnv;
 using engine::editor::blenderExportScriptText;
 using engine::editor::BlenderFailure;
-using engine::editor::BlenderProcess;
 using engine::editor::BlenderService;
 using engine::editor::BlenderState;
 using engine::editor::HostOs;
@@ -68,6 +67,7 @@ using engine::editor::ProcessState;
 using engine::editor::readBlenderEnv;
 using engine::editor::readTextFile;
 using engine::editor::ToolPrefs;
+using engine::editor::ToolProcess;
 using engine::editor::writeToolPrefsText;
 
 namespace {
@@ -170,7 +170,7 @@ struct PollOutcome {
     int iterations = 0;
 };
 
-[[nodiscard]] PollOutcome pollUntilExit(BlenderProcess& process) {
+[[nodiscard]] PollOutcome pollUntilExit(ToolProcess& process) {
     PollOutcome outcome;
     for (outcome.iterations = 1; outcome.iterations <= MAX_POLL_ITERATIONS; ++outcome.iterations) {
         outcome.state = process.poll(outcome.exitCode);
@@ -490,7 +490,7 @@ void stageCacheHit(const BlendProject& project, std::string_view glbJson = MINIM
 
 TEST_CASE("blender_service: a successful run reports Running then Exited(0) (BS1, AC-15)") {
     const TempDir tmp;
-    BlenderProcess process;
+    ToolProcess process;
     CHECK_FALSE(process.running());
 
     const std::vector<std::string> args = cmakeArgs({"true"});
@@ -509,7 +509,7 @@ TEST_CASE("blender_service: a successful run reports Running then Exited(0) (BS1
 
 TEST_CASE("blender_service: a failing run reports Exited(1), not a spawn failure (BS2, AC-16)") {
     const TempDir tmp;
-    BlenderProcess process;
+    ToolProcess process;
     const std::vector<std::string> args = cmakeArgs({"false"});
     REQUIRE(process.start(args, tmp.utf8(), tmp.join("run.log")).empty());
 
@@ -525,7 +525,7 @@ TEST_CASE("blender_service: a failing run reports Exited(1), not a spawn failure
 TEST_CASE("blender_service: a long-running child can be killed, and the handle destroys cleanly (BS3, AC-17)") {
     const TempDir tmp;
     {
-        BlenderProcess process;
+        ToolProcess process;
         const std::vector<std::string> args = cmakeArgs({"sleep", "30"});
         REQUIRE(process.start(args, tmp.utf8(), tmp.join("run.log")).empty());
         CHECK(process.running());
@@ -545,7 +545,7 @@ TEST_CASE("blender_service: a long-running child can be killed, and the handle d
 
 TEST_CASE("blender_service: a nonexistent binary is a spawn failure with a non-empty reason (BS4, AC-21)") {
     const TempDir tmp;
-    BlenderProcess process;
+    ToolProcess process;
     const std::vector<std::string> args = {tmp.join("no-such-tool-anywhere"), "--version"};
 
     const std::string failure = process.start(args, tmp.utf8(), tmp.join("run.log"));
@@ -569,7 +569,7 @@ TEST_CASE("blender_service: stdout AND stderr both land in the redirect file, in
     const std::string missing = tmp.join("absent-on-purpose.txt");
     writeBytes(existing, "AERO_STDOUT_MARKER\n");
 
-    BlenderProcess process;
+    ToolProcess process;
     const std::string logPath = tmp.join("both.log");
     const std::vector<std::string> args = cmakeArgs({"cat", existing, missing});
     REQUIRE(process.start(args, tmp.utf8(), logPath).empty());
@@ -592,7 +592,7 @@ TEST_CASE("blender_service: the child's working directory is the one we set (BS6
     // INV-A1 violation four tasks have kept out of the assets tree.
     const TempDir working;
     const TempDir elsewhere;
-    BlenderProcess process;
+    ToolProcess process;
     const std::vector<std::string> args = cmakeArgs({"touch", "cwdprobe.txt"});
     REQUIRE(process.start(args, working.utf8(), working.join("run.log")).empty());
     REQUIRE(pollUntilExit(process).state == ProcessState::Exited);
@@ -614,7 +614,7 @@ TEST_CASE("blender_service: the redirect stream is closed before start() returns
     writeBytes(second, "SECOND_RUN_MARKER\n");
 
     {
-        BlenderProcess process;
+        ToolProcess process;
         const std::vector<std::string> args = cmakeArgs({"cat", first});
         REQUIRE(process.start(args, tmp.utf8(), logPath).empty());
         REQUIRE(pollUntilExit(process).state == ProcessState::Exited);
@@ -622,7 +622,7 @@ TEST_CASE("blender_service: the redirect stream is closed before start() returns
     CHECK(readAll(logPath).find("FIRST_RUN_MARKER") != std::string::npos);
 
     {
-        BlenderProcess process;
+        ToolProcess process;
         const std::vector<std::string> args = cmakeArgs({"cat", second});
         REQUIRE(process.start(args, tmp.utf8(), logPath).empty());  // "wb" TRUNCATES the same path
         REQUIRE(pollUntilExit(process).state == ProcessState::Exited);
@@ -636,7 +636,7 @@ TEST_CASE("blender_service: destroying a STILL-RUNNING process leaves nothing be
     const TempDir tmp;
     const std::string logPath = tmp.join("orphan.log");
     {
-        BlenderProcess process;
+        ToolProcess process;
         const std::vector<std::string> args = cmakeArgs({"sleep", "30"});
         REQUIRE(process.start(args, tmp.utf8(), logPath).empty());
         CHECK(process.running());
@@ -657,15 +657,15 @@ TEST_CASE("blender_service: a live process can be move-constructed and move-assi
     const TempDir tmp;
     const std::vector<std::string> args = cmakeArgs({"sleep", "30"});
 
-    BlenderProcess source;
+    ToolProcess source;
     REQUIRE(source.start(args, tmp.utf8(), tmp.join("a.log")).empty());
     REQUIRE(source.running());
 
-    BlenderProcess moved(std::move(source));
+    ToolProcess moved(std::move(source));
     CHECK(moved.running());
     CHECK_FALSE(source.running());  // NOLINT(bugprone-use-after-move) -- the moved-from state IS the assertion
 
-    BlenderProcess target;
+    ToolProcess target;
     REQUIRE(target.start(cmakeArgs({"sleep", "30"}), tmp.utf8(), tmp.join("b.log")).empty());
     REQUIRE(target.running());
     target = std::move(moved);  // target's OWN child must be killed and destroyed, never leaked
@@ -678,7 +678,7 @@ TEST_CASE("blender_service: a live process can be move-constructed and move-assi
 
 TEST_CASE("blender_service: running() is false before start() and after Exited (BS10)") {
     const TempDir tmp;
-    BlenderProcess process;
+    ToolProcess process;
     CHECK_FALSE(process.running());  // before start()
 
     int exitCode = 0;

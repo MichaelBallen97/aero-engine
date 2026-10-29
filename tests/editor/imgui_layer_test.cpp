@@ -67,7 +67,7 @@
 #include <aero/scene/scene.hpp>
 #include <aero/scene/world.hpp>
 // task 3.1.5 (SL1-SL10): the scene-asset loader is SRC-PRIVATE, so it is reached the way
-// blender_service_test.cpp reaches blender_process.hpp -- by relative path into editor/src. It names
+// blender_service_test.cpp reaches tool_process.hpp -- by relative path into editor/src. It names
 // scene_render::MeshBinding, which is why aero::scene_render is on this target's link line.
 #include "../../editor/src/asset_browser_panel.hpp"     // task E.6.3 (I323-I326): the Assets chrome record
 #include "../../editor/src/console_panel.hpp"           // task E.6.1 (I281): the Console's own log model

@@ -137,7 +137,7 @@ add_library(aero_editor_core STATIC
     src/fbx_import.cpp           # task 3.2.2 -- the ONLY ufbx TU; NO file operation at all
     src/obj_import.cpp           # task 3.2.3 -- the ONLY tinyobjloader TU; NO file operation at all
     src/blender_tool.cpp         # task 3.2.4 -- PURE: no disk, no SDL, no <filesystem>, no logging
-    src/blender_process.cpp      # task 3.2.4 -- the ONLY SDL_Process TU in the tree
+    src/tool_process.cpp         # task 3.2.4/4.3.1 -- the ONLY SDL_Process TU in the tree
     src/blender_service.cpp      # task 3.2.4 -- the state machine; SDL_getenv only, never SDL_Process
     src/assimp_import.cpp        # task 3.2.5 -- the ONLY assimp TU; NO file operation at all
     src/mesh_cook_source.cpp     # task 3.3.1 -- the ONLY ImportedModel -> assets:: adapter; PURE

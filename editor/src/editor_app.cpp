@@ -2581,7 +2581,7 @@ void EditorApp::requestBlenderCancel() noexcept { requestedBlenderCancel = true;
 void EditorApp::requestBlenderRedetect() noexcept { requestedBlenderRedetect = true; }
 void EditorApp::requestBlenderLocate(std::string_view absolutePathUtf8) { requestedBlenderLocate = absolutePathUtf8; }
 
-// THE ONLY PLACE THIS TASK LOGS (INV-B10, a ninth application). blender_tool.cpp, blender_process.cpp
+// THE ONLY PLACE THIS TASK LOGS (INV-B10, a ninth application). blender_tool.cpp, tool_process.cpp
 // and blender_service.cpp are all log-free by construction; every status they hold is RETURNED or
 // exposed as an accessor, and the three lines this task adds all originate here.
 void EditorApp::resolveBlender() {

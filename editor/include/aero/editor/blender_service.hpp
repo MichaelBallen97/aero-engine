@@ -1,6 +1,6 @@
 #pragma once
 // Aero Engine — the impure driver of the Blender CLI integration (task 3.2.4). PUBLIC, and it names
-// NO SDL TYPE AT ALL: the SDL_Process lives behind blender_process.hpp, which is src-private, and
+// NO SDL TYPE AT ALL: the SDL_Process lives behind tool_process.hpp, which is src-private, and
 // reaches this header only as an INCOMPLETE type through a named-deleter unique_ptr.
 //
 // ONE state machine. AT MOST ONE live child process (INV-B5). Polled once per tick.
@@ -26,7 +26,7 @@
 
 namespace engine::editor {
 
-class BlenderProcess;  // src-private (editor/src/blender_process.hpp) -- INCOMPLETE here, on purpose
+class ToolProcess;  // src-private (editor/src/tool_process.hpp) -- INCOMPLETE here, on purpose
 
 enum class BlenderState : std::uint8_t {
     Unknown = 0,   // not yet resolved this session
@@ -67,13 +67,13 @@ enum class BlenderFailure : std::uint8_t {
 // BlenderService is a value member of ModelImportSession, whose header already carries
 // `static_assert(std::is_nothrow_move_assignable_v<ModelImportSession>)`. That assertion INSTANTIATES
 // this class's move assignment IN THAT HEADER, which instantiates unique_ptr's, which CALLS THE
-// DELETER -- and the deleter needs BlenderProcess complete, which it is not there. A plain
-// std::unique_ptr<BlenderProcess> therefore fails to compile inside a file that never mentions
-// Blender. A NAMED deleter DECLARED here and DEFINED in blender_service.cpp (where BlenderProcess is
+// DELETER -- and the deleter needs ToolProcess complete, which it is not there. A plain
+// std::unique_ptr<ToolProcess> therefore fails to compile inside a file that never mentions
+// Blender. A NAMED deleter DECLARED here and DEFINED in blender_service.cpp (where ToolProcess is
 // complete), plus an out-of-line destructor and out-of-line moves, is what fixes it. A
 // defaulted-in-header special member reintroduces exactly the same problem.
-struct BlenderProcessDeleter {
-    void operator()(BlenderProcess* process) const noexcept;
+struct ToolProcessDeleter {
+    void operator()(ToolProcess* process) const noexcept;
 };
 
 class BlenderService {
@@ -155,7 +155,7 @@ private:
     void loadLogTail();
     void clearProcess() noexcept;
 
-    std::unique_ptr<BlenderProcess, BlenderProcessDeleter> process;  // INCOMPLETE type here
+    std::unique_ptr<ToolProcess, ToolProcessDeleter> process;  // INCOMPLETE type here
     // INV-B13: sorted std::vectors and plain strings only -- no std::unordered_map, no std::set. This
     // type is reachable from EditorApp's defaulted noexcept move, and MSVC's node-based containers are
     // not nothrow-move-CONSTRUCTIBLE (3.1.2's R9, measured in CI as C2607).
