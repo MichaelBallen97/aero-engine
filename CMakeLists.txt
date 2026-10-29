@@ -44,6 +44,7 @@ option(AERO_REFLECT_TOOLS "Discover system libclang and build tools/reflect-gen"
 include(cmake/reflect.cmake)   # task 1.1.4: aero_reflect_generate() + AERO_LLVM_ROOT discovery + the
                                # per-OS AERO_REFLECT_CLANG_ARGS, at ROOT scope so any add_subdirectory
                                # call site (engine/ for 1.3.2) sees them on a fresh configure (D2).
+include(cmake/esbuild.cmake)   # task 4.3.1: the pinned esbuild, fetched and verified at configure; ungated.
 
 # task 2.1.2: aero_assert_golden_rule() -- project rule #1 (docs/00, docs/03) enforced at the LINK and
 # INCLUDE-DIRECTORY level, called at the very end of this file (below). No option() gate, unlike every

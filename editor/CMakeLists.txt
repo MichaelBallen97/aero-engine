@@ -296,6 +296,8 @@ target_link_libraries(aero_editor_core
 # consecutive task: engine/core/include/aero/core/version.hpp would be a defensible change, but the
 # runtime is the task that should decide that header's shape (Phase 5), not this one.
 target_compile_definitions(aero_editor_core PRIVATE AERO_ENGINE_VERSION="${PROJECT_VERSION}")
+# task 4.3.1: the pinned esbuild version (cmake/esbuild.cmake), informational in the transpile record.
+target_compile_definitions(aero_editor_core PRIVATE AERO_ESBUILD_VERSION="${AERO_ESBUILD_VERSION}")
 
 if(AERO_REFLECT_TOOLS)
     # Task 2.2.2 (D16/§3.12): the four built-in component headers, compiled INTO the editor as
@@ -331,3 +333,8 @@ endif()
 
 add_executable(aero_editor src/main.cpp)
 target_link_libraries(aero_editor PRIVATE aero::editor_core aero::core)
+# task 4.3.1: the pinned esbuild travels beside the editor (the editor resolves it there); editor only, never the runtime.
+add_custom_command(TARGET aero_editor POST_BUILD
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${AERO_ESBUILD_EXECUTABLE}"
+            "$<TARGET_FILE_DIR:aero_editor>/${AERO_ESBUILD_EXE_NAME}"
+    VERBATIM)
