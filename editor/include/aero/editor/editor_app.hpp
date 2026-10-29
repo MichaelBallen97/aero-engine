@@ -107,6 +107,8 @@ class ThumbnailService;    // task E.3.3: src-private (editor/src/thumbnail_serv
                            // unique_ptr for exactly the SceneAssetLoader reason -- it owns a
                            // ThumbnailStore, whose header is src-private and GPU-touching, and
                            // editor_app.hpp is a PUBLIC header that exposes engine + std types only.
+class ScriptTranspiler;    // task 4.3.1: src-private (editor/src/script_transpiler.hpp), held through a
+                           // unique_ptr, the thumbnails posture.
 class SceneAssetLoader;    // task 3.1.5: src-private (editor/src/scene_asset_loader.hpp). Held through
                            // a unique_ptr, which is legal with an INCOMPLETE type here because
                            // ~EditorApp is defined OUT OF LINE in editor_app.cpp, where the definition
@@ -186,6 +188,11 @@ struct EditorAppConfig {
     // it, because a runner's delivered window height is not the requested one, and a pane threshold over a fixed
     // quarter of it is a guess about the runner's display. View > Reset Layout rebuilds with the same value.
     float bottomDockFraction = DEFAULT_BOTTOM_DOCK_FRACTION;
+    // task 4.3.1 (the toolPrefsPath / recentProjectsPath test-seam precedent): the esbuild binary. EMPTY => resolved
+    // when the first script is due, from AERO_ESBUILD_PATH and then `esbuild` beside the executable. ANY test whose
+    // project holds a .ts script under its assets root MUST set it, or it runs whatever the machine's environment
+    // names. Appended last so every existing designated initializer stays in declaration order.
+    std::string esbuildPath;
 };
 
 // Sleep applied when the window is not presentable (minimized) — inherited verbatim from 2.1.1.
@@ -396,6 +403,12 @@ public:
     [[nodiscard]] std::uint64_t assetWatchSweepCount() const noexcept;    // monotonic; the tick-until signal
     [[nodiscard]] std::uint64_t assetWatchTriggerCount() const noexcept;  // rescans the watcher caused
     [[nodiscard]] std::size_t assetWatchEntryCount() const noexcept;      // last completed sweep's count
+
+    // ---- task 4.3.1: the script transpiler. The assetWatchTriggerCount() shape -- the transpiler is a PRIVATE
+    // member, so without these the scan -> esbuild -> Library/Scripts loop has no black-box signature for the GPU
+    // tier. ----
+    [[nodiscard]] bool scriptTranspilerIdle() const noexcept;  // no queue, no child, no open pass; true if moved-from
+    [[nodiscard]] std::size_t scriptTranspileRunCount() const noexcept;  // esbuild starts attempted; 0 if moved-from
 
     void requestQuit() noexcept;
     void requestLayoutReset() noexcept;  // same effect as View > Reset Layout, applied next frame
@@ -895,6 +908,8 @@ private:
     // Releases every handle the ledger still holds, through the viewport's own renderer, and clears
     // the binding table. Called on a project swap and at shutdown, BOTH while the panels are alive.
     void releaseSceneAssets();
+    // task 4.3.1: THE ONLY PLACE THIS TASK LOGS. Moves the transpiler's pending lines out and writes each at its level.
+    void drainScriptLog();
 
     // task E.4.1 (D4/D5/D13): the end-of-tick reconcile. Compares
     // (project.root(), projectRelativeScenePath(root, session.path())) against the baseline pair below.
@@ -1046,6 +1061,10 @@ private:
     // does -- which is what lets each consumer be handed it ONCE, in create(), rather than reconciled
     // every tick. Null on a moved-from app, exactly as sceneAssetLoader is.
     std::unique_ptr<ThumbnailService> thumbnails;
+    // task 4.3.1: the TypeScript transpiler (esbuild, one child at a time). The thumbnails posture: a unique_ptr to an
+    // incomplete src-private type, legal because ~EditorApp and both moves are out of line. Created in create();
+    // null on a moved-from app, so every use is null-checked.
+    std::unique_ptr<ScriptTranspiler> scriptTranspiler;
     // task E.3.3: the picker's whole session state, one object, because ImGui allows one popup at a
     // time. The sceneAssetLoader posture again -- a unique_ptr to an incomplete src-private type, so
     // the address is stable across this app's own move and each host is handed it ONCE in create().

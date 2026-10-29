@@ -57,6 +57,7 @@
 #include "project_settings_panel.hpp"
 #include "scene_asset_loader.hpp"  // task 3.1.5 -- the loader's definition, so the unique_ptr member
                                    // below can be created and destroyed in this TU
+#include "script_transpiler.hpp"   // task 4.3.1 -- ScriptTranspiler's definition, for the same reason
 #include "shell_ui.hpp"
 #include "thumbnail_service.hpp"  // task E.3.3 (D5): the SHARED thumbnail ledger/store/budget, held
                                   // through a unique_ptr on a public header -- this TU is where the
@@ -365,6 +366,9 @@ std::optional<EditorApp> EditorApp::create(rhi::Device& device, platform::Window
     // task E.3.3 (D5): created BEFORE the panel block below, because every consumer is handed the
     // pointer immediately after its own emplace -- once, never reconciled (the viewportPanel posture).
     app.thumbnails = std::make_unique<ThumbnailService>(&device);
+    // task 4.3.1: the esbuild path is resolved lazily by the transpiler itself (the first scan that finds a script).
+    app.scriptTranspiler =
+        std::make_unique<ScriptTranspiler>(ScriptTranspilerConfig{.esbuildPath = config.esbuildPath});
     // task E.3.3: ONE picker state for the whole editor, because ImGui allows one popup at a time.
     app.assetPicker = std::make_unique<AssetPickerState>();
     // ...and the SAME device is what the service pass destroys retired TEXTURES through. The code-review
@@ -840,6 +844,10 @@ bool EditorApp::tick() {
             // task 3.1.5 (§0.26): the SAME swap point, and it runs while the viewport panel is alive --
             // the renderer that minted a MeshHandle is the only thing that can release it.
             releaseSceneAssets();
+            // task 4.3.1: the SAME swap point -- kills the old project's esbuild child and drops its queue.
+            if (scriptTranspiler != nullptr) {
+                scriptTranspiler->resetForProjectSwap();
+            }
         }
         if (assetsRootChanged || refresh || reimport) {
             // task 3.1.2: rescan now takes the project root and the assets root as two SEPARATE
@@ -850,6 +858,14 @@ bool EditorApp::tick() {
             // the panel's own reconciled pointer, below.
             lastAssetReport = assetDatabase.rescan(projectRootForScan, std::move(wanted), assetGuids);
             logAssetScan(assetDatabase.root(), lastAssetReport);  // INV-A3: the ONLY logging site
+            // task 4.3.1: "after each completed scan" -- project open, the watcher's rescan, Refresh, Reimport All and
+            // requestAssetRescan() all arrive here. It evaluates the scripts' records and queues the stale ones; it
+            // spawns nothing (service() below is the only spawn site).
+            if (scriptTranspiler != nullptr) {
+                scriptTranspiler->noteScan(
+                    assetDatabase,
+                    ScriptProjectView{projectRootForScan, project.manifest().assetsPath, project.manifest().language});
+            }
             if (watchFired) {
                 // task 3.1.4 (AC-37): the watcher's ONE line, and the ONLY place anything about the
                 // watcher is ever logged. COUNTS, not paths -- a 500-file batch must not print 500
@@ -866,6 +882,12 @@ bool EditorApp::tick() {
                 // baseline so the watcher does not report those same changes again (Q7/AC-27).
                 assetWatcher.noteExternalScan();
             }
+        }
+        // task 4.3.1: every tick, after the scan branch, so a scan's first spawn happens in the scan's own tick. At
+        // most one finish and one start per call; the wait is a non-blocking poll.
+        if (scriptTranspiler != nullptr) {
+            scriptTranspiler->service(assetDatabase, frameClock.deltaSeconds());
+            drainScriptLog();
         }
         if (assetBrowserPanel != nullptr) {
             if (assetBrowserPanel->root() != assetDatabase.root()) {
@@ -1666,6 +1688,35 @@ bool EditorApp::assetWatchEnabled() const noexcept { return assetWatcher.enabled
 std::uint64_t EditorApp::assetWatchSweepCount() const noexcept { return assetWatcher.status().sweepsCompleted; }
 std::uint64_t EditorApp::assetWatchTriggerCount() const noexcept { return assetWatcher.status().triggers; }
 std::size_t EditorApp::assetWatchEntryCount() const noexcept { return assetWatcher.status().entriesSeen; }
+
+// task 4.3.1: the assetWatchTriggerCount() shape. A moved-from app has no transpiler: idle, and nothing ran.
+bool EditorApp::scriptTranspilerIdle() const noexcept {
+    return scriptTranspiler == nullptr || scriptTranspiler->idle();
+}
+std::size_t EditorApp::scriptTranspileRunCount() const noexcept {
+    return scriptTranspiler != nullptr ? scriptTranspiler->runCount() : std::size_t{0};
+}
+
+// task 4.3.1: THE ONLY PLACE THIS TASK LOGS. ScriptTranspiler produces its lines as values and logs nothing itself.
+void EditorApp::drainScriptLog() {
+    if (scriptTranspiler == nullptr) {
+        return;
+    }
+    for (const ScriptLogLine& line : scriptTranspiler->takeLog()) {
+        // No default: a future level is a -Wswitch error on the Linux lane, not a silent drop.
+        switch (line.level) {
+            case ScriptLogLevel::Info:
+                AERO_LOG_INFO("{}", line.text);
+                break;
+            case ScriptLogLevel::Warn:
+                AERO_LOG_WARN("{}", line.text);
+                break;
+            case ScriptLogLevel::Error:
+                AERO_LOG_ERROR("{}", line.text);
+                break;
+        }
+    }
+}
 
 // task 3.2.1 (AC-45/AC-46/AC-47): the assetWatchEnabled()/assetWatchSweepCount() shape verbatim --
 // ModelImportSession is reachable from no test target otherwise, so without these the whole
