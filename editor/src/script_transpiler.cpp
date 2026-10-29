@@ -95,6 +95,7 @@ void ScriptTranspiler::resetForProjectSwap() noexcept {
     passOpen = false;
     outcomes.clear();
     freshAtLatest.clear();
+    failedAtLatest.clear();
     view = ScriptProjectView{};
     assetsPrefix.clear();
 }
@@ -171,21 +172,38 @@ ScriptFreshnessContext ScriptTranspiler::freshnessContext(const AssetDatabase& d
     };
 }
 
-bool ScriptTranspiler::recordIsFresh(const ScriptJob& job, const ScriptFreshnessContext& context) const {
+std::optional<ScriptRecord> ScriptTranspiler::freshRecord(const ScriptJob& job,
+                                                          const ScriptFreshnessContext& context) const {
     const std::string recordPath = joinPath(artifactDirectory(), formatGuid(job.guid) + ".json");
     const FileReadResult read = readTextFile(recordPath);
     if (!read.text.has_value()) {
-        return false;
+        return std::nullopt;
     }
-    const std::optional<ScriptRecord> record = parseScriptRecord(*read.text);
+    std::optional<ScriptRecord> record = parseScriptRecord(*read.text);
     if (!record.has_value() || !scriptRecordFresh(*record, job.projectRelative, context)) {
-        return false;
+        return std::nullopt;
     }
     if (record->status == ScriptRecordStatus::Failed) {
-        return true;
+        return record;
     }
     const std::string stem = joinPath(artifactDirectory(), formatGuid(job.guid));
-    return fileExists(stem + ".js") && fileExists(stem + ".js.map");
+    if (!fileExists(stem + ".js") || !fileExists(stem + ".js.map")) {
+        return std::nullopt;
+    }
+    return record;
+}
+
+void ScriptTranspiler::show(const std::string& script, const std::vector<ScriptDiagnostic>& lines) {
+    for (const ScriptDiagnostic& line : lines) {
+        note(levelOf(line.severity), formatScriptDiagnostic(line, script));
+    }
+}
+
+bool ScriptTranspiler::hasOutcome(Guid guid) const noexcept {
+    const auto at =
+        std::lower_bound(outcomes.begin(), outcomes.end(), guid,
+                         [](const std::pair<Guid, ScriptOutcome>& entry, Guid key) { return entry.first < key; });
+    return at != outcomes.end() && at->first == guid;
 }
 
 void ScriptTranspiler::setOutcome(Guid guid, ScriptOutcome outcome) {
@@ -218,18 +236,22 @@ void ScriptTranspiler::endPass() {
     for (const std::pair<Guid, ScriptOutcome>& entry : outcomes) {
         (entry.second == ScriptOutcome::Transpiled ? transpiled : failed) += 1U;
     }
+    // A failure that is still current is a failure at every pass: its stored lines go out again, after the lines of
+    // any run and before the summary, once however many scans the pass spanned.
+    for (const FreshFailure& entry : failedAtLatest) {
+        if (!hasOutcome(entry.guid)) {
+            show(entry.script, entry.diagnostics);
+            ++failed;
+        }
+    }
     std::size_t upToDate = 0;
     for (const Guid guid : freshAtLatest) {
-        const bool hasOutcome =
-            std::any_of(outcomes.begin(), outcomes.end(),
-                        [guid](const std::pair<Guid, ScriptOutcome>& entry) { return entry.first == guid; });
-        if (!hasOutcome) {
-            ++upToDate;
-        }
+        upToDate += hasOutcome(guid) ? 0U : 1U;
     }
     note(ScriptLogLevel::Info, std::format("{} transpiled, {} failed, {} up to date", transpiled, failed, upToDate));
     outcomes.clear();
     freshAtLatest.clear();
+    failedAtLatest.clear();
     passOpen = false;
 }
 
@@ -250,17 +272,21 @@ void ScriptTranspiler::noteScan(const AssetDatabase& database, const ScriptProje
     const ScriptFreshnessContext context = freshnessContext(database);
 
     freshAtLatest.clear();
+    failedAtLatest.clear();
     for (const ScriptJob& job : scripts) {
         if (running.has_value() && running->guid == job.guid) {
             continue;  // finish() decides whether a scan that completed mid-run means another run
         }
-        if (recordIsFresh(job, context)) {
+        std::optional<ScriptRecord> fresh = freshRecord(job, context);
+        if (!fresh.has_value()) {
+            enqueue(job);
+        } else if (fresh->status == ScriptRecordStatus::Failed) {
+            failedAtLatest.push_back(FreshFailure{job.guid, job.projectRelative, std::move(fresh->diagnostics)});
+        } else {
             const auto at = std::lower_bound(freshAtLatest.begin(), freshAtLatest.end(), job.guid);
             if (at == freshAtLatest.end() || !(*at == job.guid)) {
                 freshAtLatest.insert(at, job.guid);
             }
-        } else {
-            enqueue(job);
         }
     }
     if (queue.empty() && !running.has_value()) {
@@ -411,9 +437,7 @@ void ScriptTranspiler::finish(const AssetDatabase& database, int exitCode) {
 }
 
 void ScriptTranspiler::logDiagnostics(const ScriptJob& job, const EsbuildLogParse& log, const std::string& logPath) {
-    for (const ScriptDiagnostic& diagnostic : log.diagnostics) {
-        note(levelOf(diagnostic.severity), formatScriptDiagnostic(diagnostic, job.projectRelative));
-    }
+    show(job.projectRelative, log.diagnostics);
     if (log.total > log.diagnostics.size()) {
         note(ScriptLogLevel::Error, std::format("{}: error: {} more diagnostics are in '{}'", job.projectRelative,
                                                 log.total - log.diagnostics.size(), logPath));
@@ -455,6 +479,12 @@ void ScriptTranspiler::failScript(const AssetDatabase& database, const ScriptJob
                              job.projectRelative, exitCode, log.firstLine, logPath));
         }
     }
+    if (log.total == 0 || log.total > log.diagnostics.size()) {
+        // The record would be a promise that nothing it depends on has changed, and a failure that names none of its
+        // files, or only some, cannot keep it. The script stays stale and runs again at the next scan.
+        setOutcome(job.guid, ScriptOutcome::Failed);
+        return;
+    }
 
     std::vector<std::string> paths{job.projectRelative};
     for (const ScriptDiagnostic& diagnostic : log.diagnostics) {
@@ -488,10 +518,11 @@ void ScriptTranspiler::failRefused(const AssetDatabase& database, const ScriptJo
                                    const std::vector<RefusedInput>& refused, const EsbuildMetafile& metafile) {
     ScriptRecord record = baseRecord(job, ScriptRecordStatus::Failed);
     for (const RefusedInput& input : refused) {
-        const std::string text = refusalText(input.path, input.verdict);
-        note(ScriptLogLevel::Error, job.projectRelative + ": error: " + text);
-        record.diagnostics.push_back(ScriptDiagnostic{ScriptDiagnosticSeverity::Error, input.path, 0U, 0U, text});
+        // Location-less, as docs/09 15.2 says: the line a re-shown refusal prints is the one printed here.
+        record.diagnostics.push_back(ScriptDiagnostic{ScriptDiagnosticSeverity::Error, std::string(), 0U, 0U,
+                                                      refusalText(input.path, input.verdict)});
     }
+    show(job.projectRelative, record.diagnostics);
     for (const std::string& input : metafile.inputs) {
         if (classifyScriptInput(input, assetsPrefix) == ScriptInputVerdict::Accepted) {
             record.inputs.push_back(ScriptRecordInput{input, hashOfInput(database, input)});

@@ -572,6 +572,9 @@ std::optional<ScriptRecord> parseScriptRecord(std::string_view text) {
         }
         record.diagnostics.push_back(std::move(*diagnostic));
     }
+    if (record.status == ScriptRecordStatus::Failed && record.diagnostics.empty()) {
+        return std::nullopt;  // a failure with no line to show is a miss: the script runs again
+    }
     return record;
 }
 

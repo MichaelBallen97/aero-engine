@@ -1,7 +1,7 @@
 // tests/editor/esbuild_tool_test.cpp -- task 4.3.1: the pinned esbuild and its pure rules. Tier-0, UNGATED, no
 // GPU, no window, no ImGui context.
 //
-// EB1 holds the binary the configure fetched: the pinned version, and it runs. EB2-EB25 are the pure half
+// EB1 holds the binary the configure fetched: the pinned version, and it runs. EB2-EB26 are the pure half
 // (esbuild_tool.hpp): the script predicate, the command line, input classification, the metafile and log parsers,
 // the record format and its freshness rule.
 //
@@ -807,4 +807,17 @@ TEST_CASE("esbuild_tool: the source-set fingerprint tracks paths only (EB25)") {
     CHECK(ed::scriptSourceSetFingerprint(removed) != fingerprint);
     CHECK(ed::scriptSourceSetFingerprint(renamed) != fingerprint);
     CHECK(ed::scriptSourceSetFingerprint(makeRecords({})) != fingerprint);
+}
+
+TEST_CASE("esbuild_tool: a failed record that holds no diagnostic is a miss (EB26)") {
+    const std::string inputs = R"([{"path": "s.ts", "hash": null}])";
+    CHECK_FALSE(ed::parseScriptRecord(recordJson("1", "\"failed\"", inputs, "[]")).has_value());
+
+    const std::string one = R"([{"severity": "error", "file": "", "line": 0, "column": 0, "text": "t"}])";
+    const std::optional<ed::ScriptRecord> failed = ed::parseScriptRecord(recordJson("1", "\"failed\"", inputs, one));
+    REQUIRE(failed.has_value());
+    CHECK(failed->diagnostics.size() == 1U);
+
+    // An ok record keeps its empty array: it has nothing to show.
+    CHECK(ed::parseScriptRecord(recordJson("1", "\"ok\"", inputs, "[]")).has_value());
 }

@@ -14,7 +14,8 @@
 // ST20-ST22 (task 4.3.1, step 5) evaluate the editor's own output in the engine's VM: this binary links aero::script
 // for that (tests sit outside the boundary rule; aero_editor_core itself does not link it).
 //
-// ST23-ST27, after the VM cases, drive ScriptTranspiler the way ST1-ST19 do.
+// ST23-ST27, after the VM cases, drive ScriptTranspiler the way ST1-ST19 do, and so do ST28-ST36 (the
+// code-review round's fixes).
 //
 // TypeScript sources are the plan-time fixtures of task 4.3.1. A rewritten file always changes SIZE: the asset scan's
 // (size, mtime) fast path would otherwise reuse the old hash for a same-size rewrite within one timestamp tick.
@@ -1125,4 +1126,214 @@ TEST_CASE("script_transpiler: a script deleted or renamed away from .ts during i
     CHECK_FALSE(existsAt(f.root, f.artifactPath(notes, ".json")));
     CHECK(rendered(transpiler.takeLog()) ==
           std::vector<std::string>{"INFO scripts: 0 transpiled, 0 failed, 0 up to date"});
+}
+
+// ST28-ST36 (task 4.3.1, code-review round 1): a failure that is still current is shown at every pass, the failures
+// that are recorded at all, an esbuild log past the cap, a package under node_modules inside the assets root, and
+// the wrong-case import.
+
+namespace {
+
+// <root>/Library/ScriptStaging/<guid>.log, composed the way the driver composes it (never separator-normalised).
+[[nodiscard]] std::string stagingLogPath(const ScriptFixture& fixture, Guid guid) {
+    return fixture.root + "/Library/ScriptStaging/" + engine::formatGuid(guid) + ".log";
+}
+
+// `lines` followed by the pass's summary line.
+[[nodiscard]] std::vector<std::string> withSummary(std::vector<std::string> lines, std::string_view counts) {
+    lines.push_back("INFO scripts: " + std::string(counts));
+    return lines;
+}
+
+// A POSIX shell script the driver accepts as an esbuild binary: written at root/name with the executable bit.
+[[nodiscard]] std::string executableScript(const ScriptFixture& fixture, std::string_view name, std::string_view body) {
+    fixture.write(name, body);
+    const std::string path = fixture.root + "/" + std::string(name);
+    std::error_code ec;
+    std::filesystem::permissions(
+        pathOf(path),
+        std::filesystem::perms::owner_all | std::filesystem::perms::group_read | std::filesystem::perms::group_exec,
+        std::filesystem::perm_options::replace, ec);
+    REQUIRE_FALSE(ec);
+    return path;
+}
+
+}  // namespace
+
+TEST_CASE("script_transpiler: a script whose failure is current is counted failed and shown at every pass (ST28)") {
+    ScriptFixture f;
+    f.write("assets/scripts/a.ts",
+            "export const o = { k: 1, k: 2 };\nimport { z } from \"./nope.js\";\nexport const y = z;\n");
+    f.write("assets/scripts/b.ts", "export const b = 2;\n");
+    f.scan();
+    const Guid a = f.guidOf("scripts/a.ts");
+    const std::vector<std::string> shown = {
+        "WARN scripts: assets/scripts/a.ts:1:26: warning: Duplicate key \"k\" in object literal [duplicate-object-key]",
+        "ERROR scripts: assets/scripts/a.ts:2:19: error: Could not resolve \"./nope.js\"",
+    };
+
+    ed::ScriptTranspiler first(configWith(AERO_TEST_ESBUILD));
+    runPass(first, f);
+    CHECK(first.runCount() == 2U);
+    CHECK(rendered(first.takeLog()) == withSummary(shown, "1 transpiled, 1 failed, 0 up to date"));
+    const std::string record = f.artifactBytes(a, ".json");
+    REQUIRE_FALSE(record.empty());
+
+    // A later scan: nothing runs, and the failure is counted and shown again, at its stored levels.
+    f.scan();
+    runPass(first, f);
+    CHECK(first.runCount() == 2U);
+    CHECK(rendered(first.takeLog()) == withSummary(shown, "0 transpiled, 1 failed, 1 up to date"));
+    CHECK(f.artifactBytes(a, ".json") == record);
+
+    // A reopen behaves the same.
+    f.scan();
+    ed::ScriptTranspiler second(configWith(AERO_TEST_ESBUILD));
+    second.noteScan(f.db, f.view());
+    CHECK(second.idle());
+    CHECK(second.runCount() == 0U);
+    CHECK(rendered(second.takeLog()) == withSummary(shown, "0 transpiled, 1 failed, 1 up to date"));
+
+    // Fixing the script runs it, and the failure is gone.
+    f.write("assets/scripts/a.ts", "export const y = 22;\n");
+    f.scan();
+    runPass(second, f);
+    CHECK(second.runCount() == 1U);
+    CHECK(rendered(second.takeLog()) == std::vector<std::string>{"INFO scripts: 1 transpiled, 0 failed, 1 up to date"});
+    const std::optional<ed::ScriptRecord> fixed = f.recordOf(a);
+    REQUIRE(fixed.has_value());
+    CHECK(fixed->status == ed::ScriptRecordStatus::Ok);
+}
+
+TEST_CASE("script_transpiler: a refused input is stored without a location and shown as it was printed (ST29)") {
+    ScriptFixture f;
+    f.write("outside.ts", "export const o = 1;\n");
+    f.write("assets/scripts/out.ts", "import { o } from \"../../outside\";\nexport const q = o;\n");
+    f.write("node_modules/lodash/index.js", "export const c = 1;\n");
+    f.write("node_modules/lodash/package.json", "{\"name\":\"lodash\",\"version\":\"1.0.0\",\"main\":\"index.js\"}\n");
+    f.write("assets/scripts/pkg.ts", "import { c } from \"lodash\";\nexport const k = c;\n");
+    f.scan();
+
+    const std::vector<std::string> expected =
+        withSummary({"ERROR scripts: assets/scripts/out.ts: error: 'outside.ts' is outside the assets root",
+                     "ERROR scripts: assets/scripts/pkg.ts: error: 'node_modules/lodash/index.js' comes from a package "
+                     "(node_modules); bare imports are not supported"},
+                    "0 transpiled, 2 failed, 0 up to date");
+
+    ed::ScriptTranspiler transpiler(configWith(AERO_TEST_ESBUILD));
+    runPass(transpiler, f);
+    CHECK(transpiler.runCount() == 2U);
+    CHECK(rendered(transpiler.takeLog()) == expected);
+
+    const std::optional<ed::ScriptRecord> out = f.recordOf(f.guidOf("scripts/out.ts"));
+    REQUIRE(out.has_value());
+    const std::vector<ed::ScriptDiagnostic> stored = {
+        {ed::ScriptDiagnosticSeverity::Error, "", 0U, 0U, "'outside.ts' is outside the assets root"}};
+    CHECK(out->diagnostics == stored);
+
+    f.scan();
+    runPass(transpiler, f);
+    CHECK(transpiler.runCount() == 2U);
+    CHECK(rendered(transpiler.takeLog()) == expected);
+}
+
+TEST_CASE("script_transpiler: a pass that spans two scans prints a current failure once (ST30)") {
+    ScriptFixture f;
+    f.write("assets/scripts/a.ts", "export const x = ;\n");
+    f.write("assets/scripts/b.ts", "export const y = 2;\n");
+    f.scan();
+
+    ed::ScriptTranspiler transpiler(configWith(AERO_TEST_ESBUILD));
+    runPass(transpiler, f);
+    static_cast<void>(transpiler.takeLog());
+    REQUIRE(transpiler.runCount() == 2U);
+
+    f.write("assets/scripts/b.ts", "export const y = 22;\n");
+    f.scan();
+    transpiler.noteScan(f.db, f.view());
+    transpiler.service(f.db, WAIT_DT);  // spawns b
+    REQUIRE_FALSE(transpiler.idle());
+
+    f.scan();  // completes while b runs: the pass now spans two scans
+    transpiler.noteScan(f.db, f.view());
+    pumpUntilIdle(transpiler, f.db);
+
+    CHECK(transpiler.runCount() == 4U);
+    CHECK(rendered(transpiler.takeLog()) ==
+          std::vector<std::string>{"ERROR scripts: assets/scripts/a.ts:1:18: error: Unexpected \";\"",
+                                   "INFO scripts: 1 transpiled, 1 failed, 0 up to date"});
+}
+
+TEST_CASE("script_transpiler: a failure that cannot name every file it depends on writes no record (ST31)") {
+    ScriptFixture f;
+    std::string many;
+    for (int i = 0; i < 70; ++i) {
+        many += "import \"./missing" + std::to_string(i) + ".js\";\n";
+    }
+    f.write("assets/scripts/many.ts", many);
+    f.scan();
+    const Guid guid = f.guidOf("scripts/many.ts");
+    const std::string log = stagingLogPath(f, guid);
+
+    ed::ScriptTranspiler transpiler(configWith(AERO_TEST_ESBUILD));
+    runPass(transpiler, f);
+    const std::vector<std::string> first = rendered(transpiler.takeLog());
+    REQUIRE(first.size() == 66U);
+    CHECK(first[0] == "ERROR scripts: assets/scripts/many.ts:1:8: error: Could not resolve \"./missing0.js\"");
+    CHECK(first[63] == "ERROR scripts: assets/scripts/many.ts:64:8: error: Could not resolve \"./missing63.js\"");
+    CHECK(first[64] == "ERROR scripts: assets/scripts/many.ts: error: 6 more diagnostics are in '" + log + "'");
+    CHECK(first[65] == "INFO scripts: 0 transpiled, 1 failed, 0 up to date");
+    CHECK_FALSE(existsAt(f.root, f.artifactPath(guid, ".json")));
+
+    f.scan();
+    runPass(transpiler, f);
+    CHECK(transpiler.runCount() == 2U);
+    CHECK(rendered(transpiler.takeLog()) == first);
+}
+
+TEST_CASE("script_transpiler: a failure whose log names nothing writes no record and runs again (ST32)") {
+    if (ed::currentHostOs() == ed::HostOs::Windows) {
+        MESSAGE("skipped on Windows: the fakes are POSIX shell scripts");
+        return;
+    }
+    ScriptFixture f;
+    f.write("assets/scripts/a.ts", "export const x = 1;\n");
+    f.scan();
+    const Guid guid = f.guidOf("scripts/a.ts");
+    const std::string log = stagingLogPath(f, guid);
+
+    {
+        const std::string fake = executableScript(f, "silent-esbuild", "#!/bin/sh\nexit 3\n");
+        const std::vector<std::string> expected = withSummary(
+            {"ERROR scripts: assets/scripts/a.ts: error: esbuild exited with code 3 and wrote nothing to '" + log +
+             "'"},
+            "0 transpiled, 1 failed, 0 up to date");
+        ed::ScriptTranspiler transpiler(configWith(fake));
+        runPass(transpiler, f);
+        CHECK(rendered(transpiler.takeLog()) == expected);
+        CHECK_FALSE(existsAt(f.root, f.artifactPath(guid, ".json")));
+
+        f.scan();
+        runPass(transpiler, f);
+        CHECK(transpiler.runCount() == 2U);
+        CHECK(rendered(transpiler.takeLog()) == expected);
+        CHECK_FALSE(existsAt(f.root, f.artifactPath(guid, ".json")));
+    }
+    {
+        const std::string fake = executableScript(f, "prose-esbuild", "#!/bin/sh\necho 'not an esbuild log'\nexit 1\n");
+        const std::vector<std::string> expected = withSummary(
+            {"ERROR scripts: assets/scripts/a.ts: error: esbuild exited with code 1; its log could not be read: "
+             "'not an esbuild log' (log: '" +
+             log + "')"},
+            "0 transpiled, 1 failed, 0 up to date");
+        ed::ScriptTranspiler transpiler(configWith(fake));
+        runPass(transpiler, f);
+        CHECK(rendered(transpiler.takeLog()) == expected);
+        CHECK_FALSE(existsAt(f.root, f.artifactPath(guid, ".json")));
+
+        f.scan();
+        runPass(transpiler, f);
+        CHECK(transpiler.runCount() == 2U);
+        CHECK(rendered(transpiler.takeLog()) == expected);
+    }
 }

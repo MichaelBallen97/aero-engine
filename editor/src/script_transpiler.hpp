@@ -68,6 +68,12 @@ private:
         std::string projectRelative;
     };
     enum class ScriptOutcome : std::uint8_t { Transpiled = 0, Failed };
+    // A fresh failed record found by the latest evaluation: shown again, and counted, when the pass ends.
+    struct FreshFailure {
+        Guid guid;
+        std::string script;  // the job's project-relative path
+        std::vector<ScriptDiagnostic> diagnostics;
+    };
     struct RefusedInput {
         std::string path;
         ScriptInputVerdict verdict = ScriptInputVerdict::Accepted;
@@ -79,8 +85,13 @@ private:
     [[nodiscard]] ScriptFreshnessContext freshnessContext(const AssetDatabase& database) const;
     [[nodiscard]] std::optional<ContentHash> hashOfInput(const AssetDatabase& database,
                                                          std::string_view projectRelative) const;
-    [[nodiscard]] bool recordIsFresh(const ScriptJob& job, const ScriptFreshnessContext& context) const;
+    // The job's record when it is current (for an ok one, both artifacts exist too), nullopt when the script is stale.
+    [[nodiscard]] std::optional<ScriptRecord> freshRecord(const ScriptJob& job,
+                                                          const ScriptFreshnessContext& context) const;
     void note(ScriptLogLevel level, const std::string& text);
+    // One note per diagnostic, at its level: the live paths and the replay of a stored failure share this.
+    void show(const std::string& script, const std::vector<ScriptDiagnostic>& lines);
+    [[nodiscard]] bool hasOutcome(Guid guid) const noexcept;
     void setOutcome(Guid guid, ScriptOutcome outcome);
     void endPass();
     void enqueue(ScriptJob job);
@@ -121,7 +132,8 @@ private:
 
     bool passOpen = false;
     std::vector<std::pair<Guid, ScriptOutcome>> outcomes;  // sorted by Guid, last outcome wins
-    std::vector<Guid> freshAtLatest;                       // sorted
+    std::vector<Guid> freshAtLatest;                       // the latest evaluation's fresh ok records, sorted
+    std::vector<FreshFailure> failedAtLatest;              // its fresh failed records, in evaluation order
 
     std::vector<ScriptLogLine> pending;
     std::size_t runs = 0;
