@@ -101,12 +101,12 @@ private:
     void requeue(const AssetDatabase& database, ScriptJob job);
     void failTool(const std::string& reason);
     void failScript(const AssetDatabase& database, const ScriptJob& job, int exitCode, const std::string& logPath,
-                    const EsbuildLogParse& log);
+                    const EsbuildLogParse& log, bool logTooLarge);
     void failPublish(const ScriptJob& job, const std::string& reason);
     void failRefused(const AssetDatabase& database, const ScriptJob& job, const std::vector<RefusedInput>& refused,
                      const EsbuildMetafile& metafile);
     void publish(const AssetDatabase& database, const ScriptJob& job, const EsbuildMetafile& metafile,
-                 const EsbuildLogParse& log, const std::string& logPath);
+                 const EsbuildLogParse& log, const std::string& logPath, bool logTooLarge);
     void logDiagnostics(const ScriptJob& job, const EsbuildLogParse& log, const std::string& logPath);
     [[nodiscard]] ScriptRecord baseRecord(const ScriptJob& job, ScriptRecordStatus status) const;
     // "" on success, else the reason. Creates Library/Scripts/ first.

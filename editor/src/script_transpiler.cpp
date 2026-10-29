@@ -405,9 +405,12 @@ void ScriptTranspiler::finish(const AssetDatabase& database, int exitCode) {
     const std::string stem = joinPath(stagingDirectory(), formatGuid(job.guid));
     const std::string logPath = stem + ".log";
     const FileBytesResult logRead = readFileBytes(logPath, MAX_SCRIPT_LOG_BYTES);
-    const EsbuildLogParse log = parseEsbuildLog(logRead.bytes.has_value() ? *logRead.bytes : std::string());
+    // A log the cap refused is not an empty log: it is never parsed, and its own lines say so. Any other read failure
+    // (the log deleted from outside) reads as empty.
+    const bool logTooLarge = logRead.refusedByCap;
+    const EsbuildLogParse log = parseEsbuildLog(logRead.bytes.has_value() ? std::string_view(*logRead.bytes) : "");
     if (exitCode != 0) {
-        failScript(database, job, exitCode, logPath, log);
+        failScript(database, job, exitCode, logPath, log, logTooLarge);
         return;
     }
 
@@ -433,7 +436,7 @@ void ScriptTranspiler::finish(const AssetDatabase& database, int exitCode) {
         failRefused(database, job, refused, *metafile);
         return;
     }
-    publish(database, job, *metafile, log, logPath);
+    publish(database, job, *metafile, log, logPath, logTooLarge);
 }
 
 void ScriptTranspiler::logDiagnostics(const ScriptJob& job, const EsbuildLogParse& log, const std::string& logPath) {
@@ -467,7 +470,15 @@ std::string ScriptTranspiler::writeRecord(Guid guid, const ScriptRecord& record)
 }
 
 void ScriptTranspiler::failScript(const AssetDatabase& database, const ScriptJob& job, int exitCode,
-                                  const std::string& logPath, const EsbuildLogParse& log) {
+                                  const std::string& logPath, const EsbuildLogParse& log, bool logTooLarge) {
+    if (logTooLarge) {
+        note(ScriptLogLevel::Error,
+             std::format(
+                 "{}: error: esbuild exited with code {} and its log '{}' is larger than {} KiB, so it was not read",
+                 job.projectRelative, exitCode, logPath, MAX_SCRIPT_LOG_BYTES / 1024));
+        setOutcome(job.guid, ScriptOutcome::Failed);
+        return;
+    }
     logDiagnostics(job, log, logPath);
     if (log.total == 0) {
         if (log.firstLine.empty()) {
@@ -536,7 +547,7 @@ void ScriptTranspiler::failRefused(const AssetDatabase& database, const ScriptJo
 }
 
 void ScriptTranspiler::publish(const AssetDatabase& database, const ScriptJob& job, const EsbuildMetafile& metafile,
-                               const EsbuildLogParse& log, const std::string& logPath) {
+                               const EsbuildLogParse& log, const std::string& logPath, bool logTooLarge) {
     const std::string staged = joinPath(stagingDirectory(), formatGuid(job.guid));
     const FileBytesResult map = readFileBytes(staged + ".js.map", MAX_SCRIPT_OUTPUT_BYTES);
     if (!map.bytes.has_value()) {
@@ -574,10 +585,16 @@ void ScriptTranspiler::publish(const AssetDatabase& database, const ScriptJob& j
         return;
     }
 
-    logDiagnostics(job, log, logPath);
-    if (log.total == 0 && !log.firstLine.empty()) {
-        note(ScriptLogLevel::Error, std::format("{}: error: esbuild's log could not be read: '{}' (log: '{}')",
-                                                job.projectRelative, log.firstLine, logPath));
+    if (logTooLarge) {
+        note(ScriptLogLevel::Warn,
+             std::format("{}: warning: esbuild's log '{}' is larger than {} KiB, so its warnings were not read",
+                         job.projectRelative, logPath, MAX_SCRIPT_LOG_BYTES / 1024));
+    } else {
+        logDiagnostics(job, log, logPath);
+        if (log.total == 0 && !log.firstLine.empty()) {
+            note(ScriptLogLevel::Error, std::format("{}: error: esbuild's log could not be read: '{}' (log: '{}')",
+                                                    job.projectRelative, log.firstLine, logPath));
+        }
     }
     setOutcome(job.guid, ScriptOutcome::Transpiled);
 }

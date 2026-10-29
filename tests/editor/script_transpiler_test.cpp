@@ -1337,3 +1337,62 @@ TEST_CASE("script_transpiler: a failure whose log names nothing writes no record
         CHECK(rendered(transpiler.takeLog()) == expected);
     }
 }
+
+namespace {
+
+// `count` lines `export const o<i> = { k: 1, k: 2 };`, each one esbuild warning (M2: about 360 KB of log for 1000).
+[[nodiscard]] std::string noisyLines(int count) {
+    std::string lines;
+    for (int i = 0; i < count; ++i) {
+        lines += "export const o" + std::to_string(i) + " = { k: 1, k: 2 };\n";
+    }
+    return lines;
+}
+
+}  // namespace
+
+TEST_CASE("script_transpiler: a clean run whose log is over the cap says its warnings were not read (ST33)") {
+    ScriptFixture f;
+    f.write("assets/scripts/noisy.ts", noisyLines(1000));
+    f.scan();
+    const Guid guid = f.guidOf("scripts/noisy.ts");
+    const std::string log = stagingLogPath(f, guid);
+
+    ed::ScriptTranspiler transpiler(configWith(AERO_TEST_ESBUILD));
+    runPass(transpiler, f);
+
+    REQUIRE(readAll(log).size() > ed::MAX_SCRIPT_LOG_BYTES);  // no lane passes for the wrong reason
+    CHECK(rendered(transpiler.takeLog()) ==
+          withSummary({"WARN scripts: assets/scripts/noisy.ts: warning: esbuild's log '" + log +
+                       "' is larger than 256 KiB, so its warnings were not read"},
+                      "1 transpiled, 0 failed, 0 up to date"));
+    const std::optional<ed::ScriptRecord> record = f.recordOf(guid);
+    REQUIRE(record.has_value());
+    CHECK(record->status == ed::ScriptRecordStatus::Ok);
+    CHECK(existsAt(f.root, f.artifactPath(guid, ".js")));
+}
+
+TEST_CASE("script_transpiler: a failing run whose log is over the cap is reported and writes no record (ST34)") {
+    ScriptFixture f;
+    f.write("assets/scripts/noisyfail.ts",
+            "import { z } from \"./no-such-file.js\";\n" + noisyLines(1000) + "export const y = z;\n");
+    f.scan();
+    const Guid guid = f.guidOf("scripts/noisyfail.ts");
+    const std::string log = stagingLogPath(f, guid);
+    const std::vector<std::string> expected =
+        withSummary({"ERROR scripts: assets/scripts/noisyfail.ts: error: esbuild exited with code 1 and its log '" +
+                     log + "' is larger than 256 KiB, so it was not read"},
+                    "0 transpiled, 1 failed, 0 up to date");
+
+    ed::ScriptTranspiler transpiler(configWith(AERO_TEST_ESBUILD));
+    runPass(transpiler, f);
+    REQUIRE(readAll(log).size() > ed::MAX_SCRIPT_LOG_BYTES);
+    CHECK(rendered(transpiler.takeLog()) == expected);
+    CHECK_FALSE(existsAt(f.root, f.artifactPath(guid, ".json")));
+    CHECK_FALSE(existsAt(f.root, f.artifactPath(guid, ".js")));
+
+    f.scan();
+    runPass(transpiler, f);
+    CHECK(transpiler.runCount() == 2U);
+    CHECK(rendered(transpiler.takeLog()) == expected);
+}
