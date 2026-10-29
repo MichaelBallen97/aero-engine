@@ -33,3 +33,6 @@ docs/specs/
 
 editor/VALIDATION.md
 editor/validation/
+
+# ---- Test-only tools (task 4.2.2) ----
+tests/typescript/node_modules/

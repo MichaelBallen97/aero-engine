@@ -44,6 +44,7 @@ add_executable(aero_tests
     script_vm_test.cpp        # task 4.1.1 — the quickjs-ng VM: lifecycle, limits, the trapping matrix
     script_module_test.cpp    # task 4.1.2 — ES modules through the VFS: the grammar, the cache, the statuses (ML1-ML51)
     script_binding_test.cpp   # task 4.2.1 — the binding runtime over a fixture table (BN1–BN5, BN7–BN36)
+    script_declarations_test.cpp # task 4.2.2 -- the declarations against a live VM (DT1-DT7)
     platform_test.cpp
     platform_event_test.cpp
     input_test.cpp        # task 0.3.2 — black-box InputState (no SDL)
@@ -86,6 +87,27 @@ add_executable(aero_tests
     render_selection_outline_test.cpp # task E.1.4 — tier-0 params/packers/levels/shader pin + GPU-gated mask & outline
     scene_render_selection_test.cpp # task E.1.4 — buildSelectionMaskSet: arms, bucketing, cap, purity
 )
+
+# task 4.2.2: script_declarations_test.cpp reads the build's aero-engine.d.ts (the prelude joined with one generated
+# block per built-in header) and the hand-written prelude, and compares both with a live VM's `engine` namespace. The
+# artifact's path is read off the target, so nothing restates it; the dependency makes `aero_tests` alone rebuild the
+# file. UNGATED: both reduced configurations build this TU, and with the tools OFF the file is the prelude alone.
+get_target_property(_aero_script_declarations_file aero_script_declarations AERO_DECLARATIONS_FILE)
+add_dependencies(aero_tests aero_script_declarations)
+# DT1's order oracle: the header file names, comma-separated, in AERO_BUILTIN_COMPONENT_HEADERS order -- the order the
+# file's `// source:` lines must follow. Empty with the tools OFF, where the file holds no generated block.
+set(_aero_script_declaration_sources "")
+if(AERO_REFLECT_TOOLS)
+    foreach(_aero_hdr IN LISTS AERO_BUILTIN_COMPONENT_HEADERS)
+        get_filename_component(_aero_hdr_name "${_aero_hdr}" NAME)
+        list(APPEND _aero_script_declaration_sources "${_aero_hdr_name}")
+    endforeach()
+    list(JOIN _aero_script_declaration_sources "," _aero_script_declaration_sources)
+endif()
+target_compile_definitions(aero_tests PRIVATE
+    AERO_SCRIPT_DECLARATIONS_FILE="${_aero_script_declarations_file}"
+    AERO_SCRIPT_PRELUDE_FILE="${CMAKE_SOURCE_DIR}/engine/script/types/prelude.d.ts"
+    AERO_SCRIPT_DECLARATION_SOURCES="${_aero_script_declaration_sources}")
 
 # task 4.2.1 -- the generated built-in table (BN6, BN37-BN49). Tools ON only: with them OFF aero_script binds no
 # component, which is the shape the configure's STATUS line announces.
@@ -541,7 +563,8 @@ add_executable(aero_editor_shell_test editor/shell_test.cpp editor/hierarchy_tes
                editor/hierarchy_view_test.cpp          # task E.6.3 — the Hierarchy model (HY)
                editor/asset_browser_chrome_test.cpp    # task E.6.3 — the Assets model (AH)
                editor/viewport_hud_test.cpp            # task E.6.3 — the Viewport HUD model (VO)
-               editor/project_ui_view_test.cpp)        # task E.6.4 — the Welcome and New Project model (WL, NP)
+               editor/project_ui_view_test.cpp         # task E.6.4 — the Welcome and New Project model (WL, NP)
+               editor/script_types_test.cpp)           # task 4.2.2 — the declarations and tsconfig writer (DT8+)
 target_link_libraries(aero_editor_shell_test PRIVATE
     doctest::doctest aero::editor_core aero::scene aero::scene_internal aero::core Threads::Threads)
 add_test(NAME aero_editor_shell_test COMMAND aero_editor_shell_test)
@@ -584,7 +607,11 @@ target_compile_definitions(aero_editor_shell_test PRIVATE
     # file is a REQUIRE failure, never a silent skip.
     AERO_EDITOR_INCLUDE_DIR="${CMAKE_SOURCE_DIR}/editor/include"
     # task E.6.1: GL4 pins the icon roster against lucide/codepoints.json. A path, not a flag.
-    AERO_EDITOR_FONTS_DIR="${CMAKE_SOURCE_DIR}/editor/third_party/fonts")
+    AERO_EDITOR_FONTS_DIR="${CMAKE_SOURCE_DIR}/editor/third_party/fonts"
+    # task 4.2.2: DT10 compares the editor's two embedded texts with the files they were built from. Paths, not
+    # flags: the declarations are the build's own output (the target property, so nothing restates it).
+    AERO_SCRIPT_DECLARATIONS_FILE="${_aero_script_declarations_file}"
+    AERO_TSCONFIG_TEMPLATE_FILE="${CMAKE_SOURCE_DIR}/editor/templates/tsconfig.json.in")
 
 # task 3.2.4 (F13): a real subprocess the process layer can spawn on every CI lane, with NO Blender
 # installed. `cmake -E true|false|sleep|echo|cat|touch|copy_directory` covers start, non-blocking poll,
@@ -849,7 +876,11 @@ if(AERO_REFLECT_TOOLS)
         # task 4.2.1: --emit-script
         script_basic script_output_file script_unsupported script_multi script_nested script_tag
         script_none script_determinism script_depfile script_depfile_requires_output
-        script_bad_syntax script_missing_input script_mutually_exclusive script_engine_light)
+        script_bad_syntax script_missing_input script_mutually_exclusive script_engine_light
+        # task 4.2.2: --emit-dts
+        dts_basic dts_output_file dts_unsupported dts_multi dts_nested dts_tag dts_none dts_determinism
+        dts_depfile dts_depfile_requires_output dts_bad_syntax dts_missing_input dts_mutually_exclusive
+        dts_annotations dts_labels dts_asset dts_string dts_matches_script dts_engine_light)
     foreach(_aero_reflect_case IN LISTS _aero_reflect_cases)
         add_test(NAME reflect-gen.${_aero_reflect_case}
             COMMAND "${CMAKE_COMMAND}"
@@ -1293,4 +1324,37 @@ if(NOT WIN32 AND AERO_BASH_EXECUTABLE AND GIT_EXECUTABLE)
 else()
     message(STATUS "script-boundary: guard_e2e SKIPPED (Windows, or bash/git not found) -- the "
                    "guard itself still runs in CI's lint job on Linux")
+endif()
+
+# ---------------------------------------------------------------------------------------------
+# task 4.2.2: the type-check suite. tests/typescript/run_tsc.cmake assembles a script project (the build's
+# aero-engine.d.ts, the editor's tsconfig template, a fixture folder) and runs the PINNED TypeScript over it
+# (tests/typescript/package.json, installed by `npm ci` inside that folder; nothing installs at configure). A missing
+# Node or compiler is a loud skip, and a failure when AERO_REQUIRE_TSC=1, as AERO_REQUIRE_GPU makes a missing GPU
+# one. A compiler whose version differs from the pin always fails. Each case has its own work directory, so
+# `ctest -j` stays safe.
+function(aero_add_typescript_case CASE)
+    add_test(NAME typescript.${CASE} COMMAND ${CMAKE_COMMAND}
+        -DCASE=${CASE}
+        -DSOURCE_DIR=${CMAKE_SOURCE_DIR}
+        -DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/typescript/${CASE}
+        -DDECLARATIONS=${_aero_script_declarations_file}
+        -DPRELUDE=${CMAKE_SOURCE_DIR}/engine/script/types/prelude.d.ts
+        -DJOIN=${CMAKE_SOURCE_DIR}/cmake/reflect_declarations_join.cmake
+        -DTEMPLATE=${CMAKE_SOURCE_DIR}/editor/templates/tsconfig.json.in
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/typescript/run_tsc.cmake)
+    # SKIP_REGULAR_EXPRESSION, not SKIP_RETURN_CODE: signalling 77 out of `cmake -P` needs cmake_language(EXIT), which
+    # is CMake 3.29, above the 3.28 floor (the same reason boundary-probes.probe_compile_line gives).
+    if(NOT CASE STREQUAL "driver_e2e")
+        set_tests_properties(typescript.${CASE} PROPERTIES SKIP_REGULAR_EXPRESSION "typescript: SKIPPED")
+    endif()
+endfunction()
+
+# These two name no built-in component, so they run in the reflect-tools-OFF tree too; driver_e2e needs no Node at all.
+aero_add_typescript_case(prelude_only)
+aero_add_typescript_case(driver_e2e)
+# These two name the ten built-ins, which the tools-OFF artifact does not declare.
+if(AERO_REFLECT_TOOLS)
+    aero_add_typescript_case(clean)
+    aero_add_typescript_case(broken)
 endif()

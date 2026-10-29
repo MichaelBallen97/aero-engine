@@ -58,7 +58,7 @@ void printUsage(std::ostream& out) {
         << "\n"
         << "Usage:\n"
         << "  aero_reflect_gen [--all] [--main-file-only] [--components] [--emit-meta] [--emit-json] [--emit-script] "
-        << "[-o <file>] [--depfile <file>] <input> [-- <clang args>...]\n"
+        << "[--emit-dts] [-o <file>] [--depfile <file>] <input> [-- <clang args>...]\n"
         << "  aero_reflect_gen --version\n"
         << "  aero_reflect_gen --help\n"
         << "\n"
@@ -69,11 +69,14 @@ void printUsage(std::ostream& out) {
         << "  --components         List detected engine::component structs/classes and fields, not the raw AST walk.\n"
         << "  --emit-meta          Emit entt::meta registration C++ for detected components, instead of the AST walk.\n"
         << "  --emit-json          Emit JSON serializers (aeroWriteJson + aeroReadJson per component) to stdout or "
-        << "-o. Mutually exclusive with --emit-meta.\n"
+        << "-o. Mutually exclusive with the other emit modes.\n"
         << "  --emit-script        Emit script binding tables (aero_script_bind_<stem>) to stdout or -o. "
-        << "Mutually exclusive with --emit-meta and --emit-json.\n"
-        << "  -o <file>            Write --emit-meta/--emit-json/--emit-script output to <file> (default: stdout).\n"
-        << "  --depfile <file>     With -o and one of --emit-meta/--emit-json/--emit-script: write a "
+        << "Mutually exclusive with the other emit modes.\n"
+        << "  --emit-dts           Emit TypeScript declarations (one declare namespace engine block) to stdout or -o. "
+        << "Mutually exclusive with the other emit modes.\n"
+        << "  -o <file>            Write --emit-meta/--emit-json/--emit-script/--emit-dts output to <file> "
+        << "(default: stdout).\n"
+        << "  --depfile <file>     With -o and one of --emit-meta/--emit-json/--emit-script/--emit-dts: write a "
         << "Makefile-format depfile of the parse's #include closure.\n"
         << "  --version            Print the tool version and clang_getClangVersion(); exit 0.\n"
         << "  --help               Print this usage; exit 0.\n"
@@ -105,6 +108,7 @@ struct Args {
     bool wantEmitMeta = false;    // task 1.1.3: emit entt::meta registration instead of walking
     bool wantEmitJson = false;    // task 1.2.1: emit JSON serializers (mutually exclusive with --emit-meta, D8)
     bool wantEmitScript = false;  // task 4.2.1: emit script binding tables (exclusive with the other emit modes)
+    bool wantEmitDts = false;     // task 4.2.2: emit TypeScript declarations (exclusive with the other emit modes)
     bool wantHelp = false;
     bool wantVersion = false;
     std::optional<std::string> outputPath;   // task 1.1.3: -o <file>; nullopt => stdout
@@ -155,6 +159,8 @@ std::optional<Args> parseArgs(int argc, char** argv) {
             args.wantEmitJson = true;
         } else if (token == "--emit-script") {  // NEW (task 4.2.1)
             args.wantEmitScript = true;
+        } else if (token == "--emit-dts") {  // NEW (task 4.2.2)
+            args.wantEmitDts = true;
         } else if (token == "-o") {
             if (i + 1 >= argc) {  // bounds check: missing operand => usage error
                 std::cerr << "aero_reflect_gen: error: '-o' requires a file path\n";
@@ -188,12 +194,13 @@ std::optional<Args> parseArgs(int argc, char** argv) {
         return std::nullopt;
     }
 
-    // D8 (widened by task 4.2.1): each emit mode writes a DIFFERENT artifact to one -o, so any two together are
-    // meaningless. The count, not the first pair, is what is compared.
+    // D8 (widened by tasks 4.2.1 and 4.2.2): each emit mode writes a DIFFERENT artifact to one -o, so any two together
+    // are meaningless. The count, not the first pair, is what is compared.
     const int emitModes = static_cast<int>(args.wantEmitMeta) + static_cast<int>(args.wantEmitJson) +
-                          static_cast<int>(args.wantEmitScript);
+                          static_cast<int>(args.wantEmitScript) + static_cast<int>(args.wantEmitDts);
     if (emitModes > 1) {
-        std::cerr << "aero_reflect_gen: error: --emit-meta, --emit-json and --emit-script are mutually exclusive\n";
+        std::cerr << "aero_reflect_gen: error: --emit-meta, --emit-json, --emit-script and --emit-dts are mutually "
+                     "exclusive\n";
         return std::nullopt;  // usage error (exit 1)
     }
 
@@ -201,8 +208,8 @@ std::optional<Args> parseArgs(int argc, char** argv) {
     // exactly one emit mode (mutual-exclusion above already rejects several). Fail fast (exit 1) BEFORE
     // any filesystem work rather than write a rule for a phantom target. (E6 / depfile_requires_* cases.)
     if (args.depfilePath && (!args.outputPath || emitModes != 1)) {
-        std::cerr << "aero_reflect_gen: error: --depfile requires -o and one of --emit-meta, --emit-json or "
-                     "--emit-script\n";
+        std::cerr << "aero_reflect_gen: error: --depfile requires -o and one of --emit-meta, --emit-json, "
+                     "--emit-script or --emit-dts\n";
         return std::nullopt;
     }
 
@@ -1133,6 +1140,24 @@ void emitJson(const std::vector<Component>& components, const std::string& input
     }
 }
 
+// ---- task 4.2.1/4.2.2: the script modes (--emit-script, --emit-dts) ---------------------------------------------
+// The two script modes describe the same surface, so what they share is written once and both call it: which fields
+// a script sees, what the script-visible class is called, and the warning for a field it cannot see.
+
+// The one rule --emit-script and --emit-dts share: the fields a script sees. Every other field is skipped.
+[[nodiscard]] bool isScriptBound(const Field& field) noexcept { return field.category != FieldCategory::Unsupported; }
+
+// The script-visible class name: the qualified name's last segment (4.2.1's rule).
+[[nodiscard]] std::string scriptNameOf(const Component& component) {
+    return splitQualifiedName(component.qualifiedName).second;
+}
+
+// The sibling emitters' stderr line for a skipped field, spelled once for the two script modes.
+void warnNotReflectable(const std::string& qualifiedName, const Field& field) {
+    std::cerr << "aero_reflect_gen: warning: " << qualifiedName << '.' << field.name << " : " << field.typeName
+              << " is not in the reflectable subset (primitives + Vec3/Quat/Guid/std::string)\n";
+}
+
 // ---- task 4.2.1: --emit-script (per-header script binding tables, quickjs-free) -------------------------
 // Emits one function, aero_script_bind_<stem>, that adds a bindComponent<T>(...) entry to the caller's
 // ComponentBindingTable per detected component. The output names no backend: the descriptors it builds live in
@@ -1161,10 +1186,10 @@ void emitScript(const std::vector<Component>& components, const std::string& inp
 
     for (const Component& component : components) {
         const std::string& qn = component.qualifiedName;
-        const std::string scriptName = splitQualifiedName(qn).second;
+        const std::string scriptName = scriptNameOf(component);
         std::vector<const Field*> bound;
         for (const Field& field : component.fields) {
-            if (field.category != FieldCategory::Unsupported) {
+            if (isScriptBound(field)) {
                 bound.push_back(&field);
             }
         }
@@ -1177,12 +1202,124 @@ void emitScript(const std::vector<Component>& components, const std::string& inp
         }
         out << "));\n";
         for (const Field& field : component.fields) {
-            if (field.category == FieldCategory::Unsupported) {
+            if (!isScriptBound(field)) {
                 out << "    // skipped: " << field.name << " (" << field.typeName << " — unsupported)\n";
-                std::cerr << "aero_reflect_gen: warning: " << qn << '.' << field.name << " : " << field.typeName
-                          << " is not in the reflectable subset (primitives + Vec3/Quat/Guid/std::string)\n";
+                warnNotReflectable(qn, field);
             }
         }
+    }
+    out << "}\n";
+}
+
+// ---- task 4.2.2: --emit-dts (per-header TypeScript declarations) ------------------------------------------------
+// Emits one `declare namespace engine { ... }` block per header: a ComponentMap entry and one class per detected
+// component, in source order, the class named by scriptNameOf and holding one member per script-bound field. The
+// hand-written prelude (engine/script/types/prelude.d.ts) declares everything else, and the build joins the two. The
+// file is a contract (see the prelude's header): every line this function writes is one the declaration reader of
+// the drift tests understands, so a doc comment is one line, no JSDoc tag is written, and every byte is 7-bit ASCII.
+// Unsupported fields become a `// skipped:` line plus the stderr warning --emit-script writes. No addresses,
+// timestamps, versions or absolute paths.
+
+// The TypeScript type of a script-bound field. The caller skips an unsupported field, so that arm is unreachable.
+[[nodiscard]] const char* dtsTypeOf(const Field& field) noexcept {
+    switch (field.category) {
+        case FieldCategory::Primitive:
+            return field.isBool ? "boolean" : "number";
+        case FieldCategory::Vec3:
+            return "Vec3";
+        case FieldCategory::Quat:
+            return "Quat";
+        case FieldCategory::String:
+        case FieldCategory::Guid:
+            return "string";
+        case FieldCategory::Unsupported:
+            return "";
+    }
+    return "";  // -Wreturn-type: every enumerator returned above
+}
+
+// One field's single-line doc comment text, the pieces of the annotations the generator KEPT in one fixed order:
+// the range, the labels (numbered from 0), the colour marker, and for a Guid its asset kind. Empty means no
+// annotation, hence no doc line. The range text is the stored token verbatim, never re-formatted.
+[[nodiscard]] std::string dtsDocOf(const Field& field) {
+    std::vector<std::string> pieces;
+    if (field.hasRange) {
+        pieces.push_back("Range " + field.rangeMin + " to " + field.rangeMax + ".");
+    }
+    if (!field.labels.empty()) {
+        std::string text = "Labels: ";
+        std::string::size_type begin = 0;
+        int index = 0;
+        while (begin <= field.labels.size()) {
+            std::string::size_type end = field.labels.find('|', begin);
+            if (end == std::string::npos) {
+                end = field.labels.size();
+            }
+            if (index > 0) {
+                text += ", ";
+            }
+            text += std::to_string(index) + " = " + field.labels.substr(begin, end - begin);
+            ++index;
+            begin = end + 1;
+        }
+        pieces.push_back(text + ".");
+    }
+    if (field.color) {
+        pieces.emplace_back("Linear RGB colour.");
+    }
+    if (field.category == FieldCategory::Guid) {
+        pieces.push_back(field.assetKind.empty() ? "GUID string." : "GUID string; asset kind " + field.assetKind + ".");
+    }
+    std::string doc;
+    for (const std::string& piece : pieces) {
+        if (!doc.empty()) {
+            doc += ' ';
+        }
+        doc += piece;
+    }
+    return doc;
+}
+
+void emitDts(const std::vector<Component>& components, const std::string& inputPath, std::ostream& out) {
+    const std::string basename = fs::path(inputPath).filename().string();
+
+    out << "// GENERATED by aero_reflect_gen --emit-dts -- DO NOT EDIT.\n"
+        << "// source: " << basename << "\n";
+
+    if (components.empty()) {
+        out << "// no engine::component annotations detected\n";
+        return;
+    }
+
+    out << "declare namespace engine {\n"
+        << "    interface ComponentMap {\n";
+    for (const Component& component : components) {
+        const std::string scriptName = scriptNameOf(component);
+        out << "        " << scriptName << ": " << scriptName << ";\n";
+    }
+    out << "    }\n";
+
+    for (const Component& component : components) {
+        const std::string& qn = component.qualifiedName;
+        const std::string scriptName = scriptNameOf(component);
+        out << "    /** C++ component " << qn << ". A script cannot construct one: use entity.add(engine." << scriptName
+            << "). */\n"
+            << "    class " << scriptName << " {\n"
+            << "        private constructor();\n"
+            << "        private readonly __brand: \"" << scriptName << "\";\n";
+        for (const Field& field : component.fields) {
+            if (!isScriptBound(field)) {
+                out << "        // skipped: " << field.name << " (" << field.typeName << ", unsupported)\n";
+                warnNotReflectable(qn, field);
+                continue;
+            }
+            const std::string doc = dtsDocOf(field);
+            if (!doc.empty()) {
+                out << "        /** " << doc << " */\n";
+            }
+            out << "        " << field.name << ": " << dtsTypeOf(field) << ";\n";
+        }
+        out << "    }\n";
     }
     out << "}\n";
 }
@@ -1245,7 +1382,7 @@ bool writeDepfile(CXTranslationUnit tu, const std::string& inputPath, const std:
     return static_cast<bool>(out);
 }
 
-// The one emit sequence all three emit modes share (task 4.2.1 folded the two copies and the new third into it):
+// The one emit sequence all four emit modes share (task 4.2.1 folded the two copies and the new third into it):
 // the clean-parse gate, detection, then `-o` open / write / flush (IoError on failure), the depfile only after `-o`
 // fully succeeded, stdout otherwise. A parse failure runs no detection and opens no `-o`, so it leaves no output
 // file and no depfile; the caller's verdict step turns it into exit 2. Returns the failure to return at once, or
@@ -1338,9 +1475,11 @@ ExitCode runMain(int argc, char** argv) {
         clang_disposeDiagnostic(diagnostic);
     }
 
-    // --- step 6: emit (--emit-script/--emit-json/--emit-meta) / detect (--components) / walk -- stdout|-o for emit ---
+    // --- step 6: emit (--emit-dts/-script/-json/-meta) / detect (--components) / walk -- stdout|-o for emit ---
     Emitter emitter = nullptr;
-    if (args.wantEmitScript) {  // the leading branch since task 4.2.1
+    if (args.wantEmitDts) {  // the leading branch since task 4.2.2 (the four emit modes are mutually exclusive)
+        emitter = emitDts;
+    } else if (args.wantEmitScript) {
         emitter = emitScript;
     } else if (args.wantEmitJson) {
         emitter = emitJson;

@@ -103,6 +103,11 @@ A CI test that fails if any `#include` under `/engine` or `/runtime` points to `
                reflection consumer: tools/reflect-gen --emit-script writes quickjs-free descriptor tables for
                the built-in components, compiled into aero_script, and a hand-written runtime under
                engine/script/src interprets them, so quickjs never leaves that target)
+               (4.2.2 made the fourth consumer live: `reflect-gen --emit-dts` writes one TypeScript block per
+               built-in component header, the hand-written prelude engine/script/types/prelude.d.ts sits beside
+               the hand-written runtime (Vec3, Quat and Entity are not reflected), and cmake/reflect.cmake joins
+               the two into the build's aero-engine.d.ts. The editor embeds that file and writes it into a
+               TypeScript project -- see docs/09 section 4.11)
   /reflect     entt::meta runtime (the GENERATOR lives in /tools)
 
 /runtime       game loop, .pak loading, per-platform entry points        [5 platforms]
@@ -304,5 +309,16 @@ The diagram that justifies ADR-004. One annotation feeds four systems:
 ```
 
 Write the component **once**. It appears in the inspector, saves to disk, is scriptable from TypeScript, and VSCode autocompletes it.
+
+**Consumer #4 is live (task 4.2.2).** `reflect-gen --emit-dts` emits, per component header, one `declare namespace
+engine` block: a class per component whose fields are typed from the categories the binding tables use (the field
+annotations -- range, labels, colour, asset kind -- carried over as one-line doc comments), and one entry per class in
+the `ComponentMap` that types `Entity.get/has/add/remove`. Both script modes share one rule for which fields and which
+class name a script sees, so the declarations and the binding table cannot disagree. The hand-written half, `engine/script/types/prelude.d.ts`,
+sits beside the hand-written runtime and declares what the runtime installs outside reflection (`Vec3`, `Quat`,
+`Entity`); the drift cases compare it with a live VM. The build joins the prelude and every generated block into
+`aero-engine.d.ts` (target `aero_script_declarations`), and the editor writes that file to `Library/types/` and a
+`tsconfig.json` to the root when it adopts a TypeScript project (`docs/09` section 4.11). A compiler pinned at 5.9.3,
+the one VS Code bundles, checks the result in the `typescript.*` ctest cases.
 
 If this is designed wrong, half the engine has to be rewritten. That is why it is in Phase 1.

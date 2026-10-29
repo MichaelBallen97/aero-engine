@@ -13,9 +13,9 @@ paths:
 only** (`<clang-c/Index.h>` — never a C++ Clang/LLVM header) and emits generated code.
 One TU: `tools/reflect-gen/src/main.cpp`. Every mode so far has been additive to it.
 
-CLI dispatch precedence: `--emit-json` > `--emit-meta` > `--components` > raw AST walk.
-`--emit-json` and `--emit-meta` are mutually exclusive (one `-o` holds one artifact).
-`--depfile` requires `-o` **and** one of the two emit modes.
+CLI dispatch precedence: `--emit-dts` > `--emit-script` > `--emit-json` > `--emit-meta` > `--components` > raw AST walk.
+`--emit-meta`, `--emit-json`, `--emit-script` and `--emit-dts` are mutually exclusive (one `-o` holds one artifact).
+`--depfile` requires `-o` **and** one of the four emit modes.
 
 ## The annotation
 
@@ -71,8 +71,8 @@ exactly **one** spelling on all three hosts. Do not add a second one pre-emptive
 `writeJson(writer, value.member)` / `readField(json, ..., value.member)` lines whatever
 the category is — C++ overload resolution routes them, so extending the subset is one
 `classifyField` arm, one `categoryTag` arm, and one `serialize.{hpp,cpp}` overload pair.
-The three "not in the reflectable subset" warning strings must be updated **together**;
-`git grep -c 'Vec3/Quat/Guid/std::string' -- tools/reflect-gen/src/main.cpp` reads **3**.
+The four "not in the reflectable subset" warning strings must be updated **together**;
+`git grep -c 'Vec3/Quat/Guid/std::string' -- tools/reflect-gen/src/main.cpp` reads **4**.
 
 Unsupported fields are lenient, not fatal: collected, tagged `[unsupported]`, warned on
 stderr, exit stays 0.
