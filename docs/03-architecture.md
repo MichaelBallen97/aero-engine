@@ -242,6 +242,9 @@ canonical ImportedModel (IN MEMORY) + .meta (GUID, import settings)
    ← created by the editor's AssetDatabase (task 3.1.1); format in docs/09 §5
    ← the importers produce canonical SEMANTICS, not a canonical FILE: nothing writes a glTF
      to disk. The one on-disk intermediate is the .blend path's GLB under Library/ (task 3.2.4)
+   ← scripts take a separate line: a .ts under the assets root → esbuild (editor, after each scan,
+     TypeScript projects only) → Library/Scripts/<guid>.js + <guid>.js.map + a record (docs/09 §15,
+     task 4.3.1); 4.3.2 compiles the bytecode at cook time
         │
         │  COOKER  (per platform)
         ▼

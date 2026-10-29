@@ -32,7 +32,7 @@
 | **Fonts** | msdf-atlas-gen | FreeType direct, stb_truetype | Crisp text at any scale |
 | **Scripting VM** | **quickjs-ng** | Bellard's QuickJS, Luau, C#, custom language | ADR-007. Better-maintained fork, CMake build, Windows support |
 | **Scripting language** | **TypeScript** on quickjs-ng, *or* native **C++** (per project) | Combined languages | ADR-007 / ADR-008 |
-| **TS → JS** | esbuild or swc | tsc | Speed in the import pipeline |
+| **TS → JS** | **esbuild 0.28.2** (pinned, MIT), run as a child process; swc is the fallback | tsc | Speed in the import pipeline |
 | **Editor UI** | **Dear ImGui** (docking) + ImGuizmo | Qt, custom retained UI; imnodes (deferred to the v2 graph editors — see [future roadmap](./future-roadmap.md)) | Trivial integration, minimal dependency |
 | **Profiling** | **Tracy** | Optick, Remotery | From day 1, not later |
 | **Jobs / threading** | enkiTS | Custom, TBB | |
