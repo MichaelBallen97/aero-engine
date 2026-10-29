@@ -747,6 +747,11 @@ Split out of `editor.md` so that no editor rules file is cut at the 150 000-char
   unchanged project starts none. The hash is computed once per session, at first need, and an unknown identity compares
   nothing.
 - **esbuild's log columns are 0-based and its lines 1-based.** The Console line and the record store 1-based columns.
+- **esbuild's error mark is `X` on Windows outside Windows Terminal.** In 0.28.2 `MsgKind.Icon` prints `X` on Windows
+  when `WT_SESSION` is unset and U+2718 otherwise, so the mark follows the environment, not only the OS. The parser
+  accepts both before `[ERROR] ` on every host; the warning mark U+25B2 is the same everywhere; nothing looser is a
+  header (`x [ERROR] `, `XX [ERROR] `, `X[ERROR] ` and `X [WARNING] ` are not). `EB30` pins it. The pinned darwin binary
+  cannot print the `X` form, so only a Windows run shows it live.
 - **Every new test sets the esbuild path** (`ScriptTranspilerConfig::esbuildPath` or `EditorAppConfig::esbuildPath`,
   taken from `AERO_TEST_ESBUILD`), the `toolPrefsPath` rule again: resolution is lazy, so a project without a script
   never reads `AERO_ESBUILD_PATH` or the editor's own directory, and a test that reaches it would run the local machine's
