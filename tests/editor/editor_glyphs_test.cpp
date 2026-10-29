@@ -674,7 +674,7 @@ TEST_CASE("glyphs: only shortcut_hint.cpp names a modifier in a literal (task E.
     CHECK(files.size() > 180U);
 }
 
-TEST_CASE("glyphs: four editor sources branch on the host (task E.6.2, HK5)") {
+TEST_CASE("glyphs: five editor sources branch on the host (task E.6.2, HK5)") {
     // A menu hint that passed a literal HostOs (seed S34) would add its file here; a call site passes
     // currentHostOs(), which never spells `HostOs::`.
     std::vector<std::string> branching;
@@ -689,8 +689,8 @@ TEST_CASE("glyphs: four editor sources branch on the host (task E.6.2, HK5)") {
             }
         }
     }
-    // task 4.3.1 added esbuild_tool.cpp (the executable's suffix): it takes the answer from currentHostOs(), it is
-    // never handed a literal.
-    CHECK(branching ==
-          std::vector<std::string>{"blender_service.cpp", "blender_tool.cpp", "esbuild_tool.cpp", "shortcut_hint.cpp"});
+    // task 4.3.1 added esbuild_tool.cpp (the executable's suffix) and script_transpiler.cpp (whether the exec bit
+    // is required): both take the answer from currentHostOs(), neither is handed a literal.
+    CHECK(branching == std::vector<std::string>{"blender_service.cpp", "blender_tool.cpp", "esbuild_tool.cpp",
+                                                "script_transpiler.cpp", "shortcut_hint.cpp"});
 }

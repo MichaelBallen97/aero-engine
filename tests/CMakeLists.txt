@@ -569,7 +569,8 @@ add_executable(aero_editor_shell_test editor/shell_test.cpp editor/hierarchy_tes
                editor/viewport_hud_test.cpp            # task E.6.3 — the Viewport HUD model (VO)
                editor/project_ui_view_test.cpp         # task E.6.4 — the Welcome and New Project model (WL, NP)
                editor/script_types_test.cpp            # task 4.2.2 — the declarations and tsconfig writer (DT8+)
-               editor/esbuild_tool_test.cpp)           # task 4.3.1 — the pinned esbuild and its pure rules (EB)
+               editor/esbuild_tool_test.cpp            # task 4.3.1 — the pinned esbuild and its pure rules (EB)
+               editor/script_transpiler_test.cpp)      # task 4.3.1 — the transpile driver over a real esbuild (ST)
 target_link_libraries(aero_editor_shell_test PRIVATE
     doctest::doctest aero::editor_core aero::scene aero::scene_internal aero::core Threads::Threads)
 add_test(NAME aero_editor_shell_test COMMAND aero_editor_shell_test)

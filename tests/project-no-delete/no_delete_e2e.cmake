@@ -67,6 +67,8 @@ _nd_seed("editor/src/asset_cache.cpp"    "${_nd_clean_body}")
 # the tree it is scanning, so the scratch tree has to carry every entry of FORBIDDEN_FILES -- adding
 # one to the script without adding it here turns stage 1 into an exit 2.
 _nd_seed("editor/src/project_state.cpp"  "${_nd_clean_body}")
+# task 4.3.1: the EIGHTH Check-A file, for the same reason.
+_nd_seed("editor/src/script_transpiler.cpp" "${_nd_clean_body}")
 # task 3.1.3 (D13): Check B's own PERMITTED_DELETERS entries, plus a THIRD, ordinary file that must
 # stay clean throughout -- the hole Check B exists to close.
 _nd_seed("editor/src/text_file.cpp"          "${_nd_clean_body}")
