@@ -728,7 +728,21 @@ Split out of `editor.md` so that no editor rules file is cut at the 150 000-char
   staging directory say nothing about the script, so it stays stale and the next completed scan retries it. Such a
   failure logs one error per pass, kills the child, fails the running and queued jobs, and ends the pass.
 - **An error run writes no metafile**, so a failed record's inputs are the script plus every diagnostic location under
-  the assets root, and its `sourceSet` fingerprint makes creating a missing file retry it.
+  the assets root, and its `sourceSet` fingerprint makes creating a missing file retry it. **A failing run is recorded
+  only when its log was read whole and held 1 to 64 diagnostics**: only then does the record name every file the
+  failure points at. A log that is empty, unparseable, longer than 64 diagnostics or over 256 KiB writes no record, and
+  the next scan runs the script again (ST31, ST32, ST34).
+- **A fresh `failed` record is a failure at every pass.** `noteScan` files fresh records as ok (`freshAtLatest`,
+  counted under K) or failed (`failedAtLatest`); `endPass` prints each fresh failure's stored diagnostics through
+  `show` and counts it under M -- after every run's lines, before the summary, skipping a script that has an outcome
+  in the pass. Printing at evaluation instead repeats the lines for every scan a pass spans (ST30). A stored
+  diagnostic is exactly a printed line: a refusal is location-less, so its re-shown line is the live one (ST29), and a
+  `failed` record with no diagnostic is a parse miss (EB26).
+- **`readFileBytes`' cap is its own outcome.** Branch on `refusedByCap` before parsing: a refused read parsed as
+  empty turns an oversized log into "wrote nothing" (ST34) or drops every warning of a clean run (ST33).
+- **A script of the scan is one predicate, `scriptJobOf`**: a `.ts` (not `.d.ts`) with a valid GUID and a usable hash
+  whose own project-relative path classifies `Accepted`. `collectScripts` and `requeue` both use it, so a package under
+  `node_modules` inside the assets root is never run as a script, at a scan or after a mid-run move (ST35).
 - **The binary is identified by content hash, not by `--version`**, because a version probe is a process and an
   unchanged project starts none. The hash is computed once per session, at first need, and an unknown identity compares
   nothing.

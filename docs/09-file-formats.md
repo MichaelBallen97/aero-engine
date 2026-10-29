@@ -3255,11 +3255,12 @@ Nine root keys, in this exact order on save.
 | `flags` | string | yes | the fingerprint of the fixed command-line flags, written the same way |
 | `inputs` | array | yes | objects `{ "path", "hash" }`, sorted by `path`, unique; `path` is project-relative and `/`-separated, `hash` is a content-hash string or `null` (the scan had no usable hash for it, so it is never fresh) |
 | `sourceSet` | string | yes | a `failed` record: the fingerprint of every asset path in the scan, written the same way; an `ok` record: `""` |
-| `diagnostics` | array | yes | objects `{ "severity", "file", "line", "column", "text" }`; empty on an `ok` record. `severity` is `"error"` or `"warning"`; `line` and `column` are 1-based, and 0 with an empty `file` when the message had no location; **informational** |
+| `diagnostics` | array | yes | objects `{ "severity", "file", "line", "column", "text" }`, exactly the lines the failure printed; empty on an `ok` record and never empty on a `failed` one. `severity` is `"error"` or `"warning"`; `line` and `column` are 1-based, and 0 with an empty `file` when the message has no location (a refused input's has none); never compared, but printed again at every pass (§15.3) |
 
 Unknown extra keys are ignored. A diagnostic with an unknown `severity`, or a `line` or `column` that is not a
 non-negative integer fitting 32 bits, is a miss; so is an input without a string `path`, or one whose `hash` is neither
-`null` nor a hash string. Diagnostics are capped at 64 per run.
+`null` nor a hash string. A `failed` record with an empty `diagnostics` is a miss too. At most 64 diagnostics are
+stored, and a failing run is recorded only when its log was read whole and held 1 to 64 of them (§15.4).
 
 An `ok` record's `inputs` are the files esbuild's metafile lists. esbuild writes no metafile on an error run, so a
 `failed` record's `inputs` are the script plus every diagnostic location under the assets root, and its `sourceSet`
@@ -3275,7 +3276,7 @@ A record is fresh when all of these hold, and stale otherwise:
 | `esbuildBinary` | only when the current binary's hash is known |
 | `inputs` | always: non-empty, containing the script's own path; every `hash` present and equal to the scan's current hash for that path |
 | `sourceSet` | on a `failed` record only |
-| `status` | read, never compared: a fresh `failed` record keeps its script failed without running esbuild |
+| `status` | read, never compared: a fresh `failed` record keeps its script failed without running esbuild; the script counts among the pass's failed, and its `diagnostics` are printed again, as the failure printed them, before the pass's summary |
 | `script`, `esbuildVersion`, `diagnostics` | **never** |
 
 For an `ok` record the driver also requires `<guid>.js` and `<guid>.js.map` to exist, so a deleted artifact is
@@ -3291,18 +3292,27 @@ missing binary.
 hashing them from disk then would record a save made during the run as the new hash while the JavaScript holds the old
 bytes, and nothing would ever run it again. A scan that completes during a run makes that script run again.
 
+**An import spelled in another case than its file is never fresh on a case-insensitive file system.** esbuild 0.28.2
+resolves `./Util` to `util.ts` on APFS with a `different-path-case` warning, and its metafile lists the import's
+spelling, `Util.ts`, which the asset scan does not hold. The record stores that input with a `null` hash, so the script
+is transpiled again, and warns again, at every scan until the import's case matches the file's (docs/08 R29). Measured
+on macOS; unmeasured on Windows.
+
 ### 15.4 Canonicalization
 
 Written by `writeTextFileAtomic` only. Pretty, 2-space indent, key order as in §15.2, exactly one trailing `\n`, so a
 re-write of unchanged data is byte-identical. A tool failure (a missing binary, a spawn failure, a run past the 30 s
 limit, a staging directory that cannot be prepared) says nothing about the script and writes no record: the script stays
-stale and the next scan retries it.
+stale and the next scan retries it. Neither does a failing run that cannot name every file it depends on: one whose log
+is empty, holds no diagnostic, holds more than 64, or is larger than 256 KiB and so is not read. It runs again at the
+next scan and prints the same lines again.
 
 ### 15.5 Which inputs are accepted
 
 An input is a project-relative path. It is refused, and the script fails with no publish, when it is outside the assets
 root, has a `node_modules` segment (a bare import resolved from a package), or is under `Library/`. The same project at
-two absolute locations produces byte-identical `.js` and `.js.map`.
+two absolute locations produces byte-identical `.js` and `.js.map`. A `.ts` file whose own project-relative path has a
+`node_modules` segment is not a script: it is never transpiled, recorded or counted, and no line names it.
 
 ### 15.6 Machine-local, derived, disposable, never committed
 
