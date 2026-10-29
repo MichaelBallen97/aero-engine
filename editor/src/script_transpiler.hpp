@@ -81,6 +81,9 @@ private:
 
     void resolveBinary();
     void learnIdentity();
+    // The one "script of the scan" predicate: a .ts with a GUID and a usable hash whose own project-relative path
+    // classifies Accepted (so nothing under node_modules or Library/). Engaged for the scripts and for nothing else.
+    [[nodiscard]] std::optional<ScriptJob> scriptJobOf(const AssetRecord& record) const;
     [[nodiscard]] std::vector<ScriptJob> collectScripts(const AssetDatabase& database) const;
     [[nodiscard]] ScriptFreshnessContext freshnessContext(const AssetDatabase& database) const;
     [[nodiscard]] std::optional<ContentHash> hashOfInput(const AssetDatabase& database,
@@ -98,7 +101,7 @@ private:
 
     void start(const AssetDatabase& database, const ScriptJob& job);
     void finish(const AssetDatabase& database, int exitCode);
-    void requeue(const AssetDatabase& database, ScriptJob job);
+    void requeue(const AssetDatabase& database, Guid guid);
     void failTool(const std::string& reason);
     void failScript(const AssetDatabase& database, const ScriptJob& job, int exitCode, const std::string& logPath,
                     const EsbuildLogParse& log, bool logTooLarge);

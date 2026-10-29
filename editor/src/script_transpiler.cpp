@@ -138,14 +138,23 @@ void ScriptTranspiler::learnIdentity() {
     }
 }
 
+std::optional<ScriptTranspiler::ScriptJob> ScriptTranspiler::scriptJobOf(const AssetRecord& record) const {
+    if (!isScriptAssetName(record.relativePath) || !record.guid.valid() || !assetContentHashUsable(record)) {
+        return std::nullopt;
+    }
+    std::string projectRelative = projectRelativeOf(assetsPrefix, record.relativePath);
+    if (classifyScriptInput(projectRelative, assetsPrefix) != ScriptInputVerdict::Accepted) {
+        return std::nullopt;  // a package file the asset scan holds: it is an input, never a script
+    }
+    return ScriptJob{record.guid, record.relativePath, std::move(projectRelative)};
+}
+
 std::vector<ScriptTranspiler::ScriptJob> ScriptTranspiler::collectScripts(const AssetDatabase& database) const {
     std::vector<ScriptJob> scripts;
     for (const AssetRecord& record : database.records()) {
-        if (!isScriptAssetName(record.relativePath) || !record.guid.valid() || !assetContentHashUsable(record)) {
-            continue;
+        if (std::optional<ScriptJob> job = scriptJobOf(record); job.has_value()) {
+            scripts.push_back(std::move(*job));
         }
-        scripts.push_back(
-            ScriptJob{record.guid, record.relativePath, projectRelativeOf(assetsPrefix, record.relativePath)});
     }
     return scripts;
 }
@@ -375,14 +384,14 @@ void ScriptTranspiler::start(const AssetDatabase& database, const ScriptJob& job
     timedOut = false;
 }
 
-void ScriptTranspiler::requeue(const AssetDatabase& database, ScriptJob job) {
-    const AssetRecord* const record = database.findByGuid(job.guid);
-    if (record == nullptr || !isScriptAssetName(record->relativePath)) {
+void ScriptTranspiler::requeue(const AssetDatabase& database, Guid guid) {
+    const AssetRecord* const record = database.findByGuid(guid);
+    if (record == nullptr) {
         return;
     }
-    job.assetsRelative = record->relativePath;
-    job.projectRelative = projectRelativeOf(assetsPrefix, record->relativePath);
-    queue.insert(queue.begin(), std::move(job));
+    if (std::optional<ScriptJob> job = scriptJobOf(*record); job.has_value()) {
+        queue.insert(queue.begin(), std::move(*job));  // the current spelling; the next full scan picks up the rest
+    }
 }
 
 void ScriptTranspiler::finish(const AssetDatabase& database, int exitCode) {
@@ -398,7 +407,7 @@ void ScriptTranspiler::finish(const AssetDatabase& database, int exitCode) {
     }
     running.reset();
     if (database.generation() != startGeneration) {
-        requeue(database, job);  // a scan completed mid-run: its hashes may be newer than what esbuild read
+        requeue(database, job.guid);  // a scan completed mid-run: its hashes may be newer than what esbuild read
         return;
     }
 

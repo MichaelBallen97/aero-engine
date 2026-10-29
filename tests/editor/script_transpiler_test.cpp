@@ -1396,3 +1396,77 @@ TEST_CASE("script_transpiler: a failing run whose log is over the cap is reporte
     CHECK(transpiler.runCount() == 2U);
     CHECK(rendered(transpiler.takeLog()) == expected);
 }
+
+TEST_CASE("script_transpiler: a .ts under node_modules in the assets root is never a script (ST35)") {
+    const std::vector<std::string> onlySummary = {"INFO scripts: 1 transpiled, 0 failed, 0 up to date"};
+
+    SUBCASE("under assets/") {
+        ScriptFixture f;
+        f.write("assets/scripts/a.ts", "export const a = 1;\n");
+        f.write("assets/node_modules/pkg/index.ts", "export const p = 1;\n");
+        f.write("assets/node_modules/pkg/lib/deep.ts", "export const d = 2;\n");
+        f.scan();
+        // Only the new rule can refuse them: both have a GUID and a usable hash.
+        for (const std::string_view path : {"node_modules/pkg/index.ts", "node_modules/pkg/lib/deep.ts"}) {
+            const ed::AssetRecord* const record = f.db.findByPath(path);
+            REQUIRE(record != nullptr);
+            REQUIRE(record->guid.valid());
+            REQUIRE(ed::assetContentHashUsable(*record));
+        }
+
+        ed::ScriptTranspiler transpiler(configWith(AERO_TEST_ESBUILD));
+        runPass(transpiler, f);
+        CHECK(transpiler.runCount() == 1U);
+        CHECK(rendered(transpiler.takeLog()) == onlySummary);
+        CHECK_FALSE(existsAt(f.root, f.artifactPath(f.guidOf("node_modules/pkg/index.ts"), ".json")));
+        CHECK_FALSE(existsAt(f.root, f.artifactPath(f.guidOf("node_modules/pkg/lib/deep.ts"), ".json")));
+    }
+
+    SUBCASE("a project whose assets root is the project root") {
+        ScriptFixture f;
+        f.write("scripts/a.ts", "export const a = 1;\n");
+        f.write("node_modules/pkg/index.ts", "export const p = 1;\n");
+        static_cast<void>(f.db.rescan(f.root, f.root, f.generator));
+        const ed::AssetRecord* const package = f.db.findByPath("node_modules/pkg/index.ts");
+        REQUIRE(package != nullptr);
+        REQUIRE(package->guid.valid());
+        REQUIRE(ed::assetContentHashUsable(*package));
+
+        ed::ScriptTranspiler transpiler(configWith(AERO_TEST_ESBUILD));
+        transpiler.noteScan(f.db, ed::ScriptProjectView{f.root, ".", ed::ProjectLanguage::Ts});
+        pumpUntilIdle(transpiler, f.db);
+        CHECK(transpiler.runCount() == 1U);
+        CHECK(rendered(transpiler.takeLog()) == onlySummary);
+        const std::optional<ed::ScriptRecord> record = f.recordOf(f.guidOf("scripts/a.ts"));
+        REQUIRE(record.has_value());
+        CHECK(record->script == "scripts/a.ts");
+        CHECK_FALSE(existsAt(f.root, f.artifactPath(package->guid, ".json")));
+    }
+
+    SUBCASE("a script moved into node_modules while it runs") {
+        ScriptFixture f;
+        f.write("assets/scripts/c.ts", "export const c = 1;\n");
+        f.scan();
+        const Guid c = f.guidOf("scripts/c.ts");
+
+        ed::ScriptTranspiler transpiler(configWith(AERO_TEST_ESBUILD));
+        transpiler.noteScan(f.db, f.view());
+        transpiler.service(f.db, WAIT_DT);  // spawns
+        REQUIRE_FALSE(transpiler.idle());
+
+        std::error_code ec;
+        std::filesystem::create_directories(pathOf(f.root) / "assets/node_modules/pkg", ec);
+        REQUIRE_FALSE(ec);
+        moveAt(f.root, "assets/scripts/c.ts", "assets/node_modules/pkg/c.ts");
+        moveAt(f.root, "assets/scripts/c.ts.meta", "assets/node_modules/pkg/c.ts.meta");
+        f.scan();
+        REQUIRE(f.guidOf("node_modules/pkg/c.ts") == c);
+        transpiler.noteScan(f.db, f.view());
+        pumpUntilIdle(transpiler, f.db);
+
+        CHECK(transpiler.runCount() == 1U);
+        CHECK_FALSE(existsAt(f.root, f.artifactPath(c, ".json")));
+        CHECK(rendered(transpiler.takeLog()) ==
+              std::vector<std::string>{"INFO scripts: 0 transpiled, 0 failed, 0 up to date"});
+    }
+}
