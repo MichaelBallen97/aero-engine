@@ -14,8 +14,8 @@
 // ST20-ST22 (task 4.3.1, step 5) evaluate the editor's own output in the engine's VM: this binary links aero::script
 // for that (tests sit outside the boundary rule; aero_editor_core itself does not link it).
 //
-// ST23-ST27, after the VM cases, drive ScriptTranspiler the way ST1-ST19 do, and so do ST28-ST36 (the
-// code-review round's fixes).
+// ST23-ST27, after the VM cases, drive ScriptTranspiler the way ST1-ST19 do, and so do ST28-ST37 (the
+// code-review rounds' fixes).
 //
 // TypeScript sources are the plan-time fixtures of task 4.3.1. A rewritten file always changes SIZE: the asset scan's
 // (size, mtime) fast path would otherwise reuse the old hash for a same-size rewrite within one timestamp tick.
@@ -1521,4 +1521,75 @@ TEST_CASE("script_transpiler: a wrong-case import warns and is transpiled again 
     CHECK(transpiler.runCount() == 4U);
     CHECK(rendered(transpiler.takeLog()) ==
           std::vector<std::string>{"INFO scripts: 0 transpiled, 0 failed, 2 up to date"});
+}
+
+// ST37 (task 4.3.1, code-review round 2): a script that has its outcome in a pass is counted by that outcome alone,
+// even when a scan later in the same pass finds its new record fresh.
+
+namespace {
+
+// Services until `runs` esbuild runs have started, under the wall-clock cap.
+void serviceUntilRuns(ed::ScriptTranspiler& transpiler, const ed::AssetDatabase& db, std::size_t runs) {
+    const auto deadline = std::chrono::steady_clock::now() + WAIT_CAP;
+    while (transpiler.runCount() < runs && std::chrono::steady_clock::now() < deadline) {
+        transpiler.service(db, WAIT_DT);
+        if (transpiler.runCount() < runs) {
+            std::this_thread::sleep_for(std::chrono::milliseconds{1});
+        }
+    }
+    REQUIRE(transpiler.runCount() == runs);
+}
+
+}  // namespace
+
+TEST_CASE("script_transpiler: a scan later in a pass does not count a script with an outcome twice (ST37)") {
+    {
+        // a.ts fails and writes its record; the scan that completes while b.ts runs finds that record fresh.
+        ScriptFixture f;
+        f.write("assets/scripts/a.ts", "export const x = ;\n");
+        f.write("assets/scripts/b.ts", "export const y = 2;\n");
+        f.scan();
+        const Guid a = f.guidOf("scripts/a.ts");
+
+        ed::ScriptTranspiler transpiler(configWith(AERO_TEST_ESBUILD));
+        transpiler.noteScan(f.db, f.view());
+        serviceUntilRuns(transpiler, f.db, 2U);  // a.ts has finished; b.ts runs
+        REQUIRE_FALSE(transpiler.idle());
+        const std::optional<ed::ScriptRecord> failed = f.recordOf(a);
+        REQUIRE(failed.has_value());
+        REQUIRE(failed->status == ed::ScriptRecordStatus::Failed);
+
+        f.scan();
+        transpiler.noteScan(f.db, f.view());
+        pumpUntilIdle(transpiler, f.db);
+
+        CHECK(transpiler.runCount() == 3U);  // b.ts again (a scan completed during its run), a.ts not
+        CHECK(rendered(transpiler.takeLog()) ==
+              std::vector<std::string>{"ERROR scripts: assets/scripts/a.ts:1:18: error: Unexpected \";\"",
+                                       "INFO scripts: 1 transpiled, 1 failed, 0 up to date"});
+    }
+    {
+        // The same with a.ts clean: its fresh ok record is not also up to date.
+        ScriptFixture f;
+        f.write("assets/scripts/a.ts", "export const x = 1;\n");
+        f.write("assets/scripts/b.ts", "export const y = 2;\n");
+        f.scan();
+        const Guid a = f.guidOf("scripts/a.ts");
+
+        ed::ScriptTranspiler transpiler(configWith(AERO_TEST_ESBUILD));
+        transpiler.noteScan(f.db, f.view());
+        serviceUntilRuns(transpiler, f.db, 2U);
+        REQUIRE_FALSE(transpiler.idle());
+        const std::optional<ed::ScriptRecord> published = f.recordOf(a);
+        REQUIRE(published.has_value());
+        REQUIRE(published->status == ed::ScriptRecordStatus::Ok);
+
+        f.scan();
+        transpiler.noteScan(f.db, f.view());
+        pumpUntilIdle(transpiler, f.db);
+
+        CHECK(transpiler.runCount() == 3U);
+        CHECK(rendered(transpiler.takeLog()) ==
+              std::vector<std::string>{"INFO scripts: 2 transpiled, 0 failed, 0 up to date"});
+    }
 }

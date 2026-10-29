@@ -10,7 +10,7 @@ Each rule here was earned by a defect, a green-and-wrong test or a measurement t
 ## Case ids
 
 **Next free ids, measured by a whole-`tests/` token sweep on E.6.4's tree: `I361` at the ImGui tier** (4.3.1 took
-`I361`–`I366`, so the next is **`I367`**; 4.3.1's new prefixes are `EB` (next `EB27`) and `ST` (next `ST37`)),
+`I361`–`I366`, so the next is **`I367`**; 4.3.1's new prefixes are `EB` (next `EB27`) and `ST` (next `ST38`)),
 `AA68`, `AD77`, `AH21`, `AM29`, `AV68`, `BD8`, `BR31`, `BV10`, `CC15`, `CD15`, `CR13`, `CS11`, `DD31`, `DG26`, `DR28`,
 `EC5`, `EK11`, `EP19`, `FT16`, `G29`, `GL8`, `GR34`, `HK6`, `HY9`, `IO24`, `IR23`, `IX19`, `MB27`, `NP14`, `P96`,
 `PC15`, `PX6`, `RF8`, `RT31`, `SQ15`, `SS64`, `TB13`, `TH19`, `TS11`, `US13`, `VM65`, `VO15`, `WL7`, `X32`, plus 4.1.2's
