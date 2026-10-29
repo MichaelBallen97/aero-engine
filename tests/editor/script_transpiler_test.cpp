@@ -11,18 +11,23 @@
 // DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN here. script_transpiler.hpp is SRC-PRIVATE and is reached by an explicit relative
 // path (the blender_service_test.cpp precedent).
 //
+// ST20-ST22 (task 4.3.1, step 5) evaluate the editor's own output in the engine's VM: this binary links aero::script
+// for that (tests sit outside the boundary rule; aero_editor_core itself does not link it).
+//
 // TypeScript sources are the plan-time fixtures of task 4.3.1. A rewritten file always changes SIZE: the asset scan's
 // (size, mtime) fast path would otherwise reuse the old hash for a same-size rewrite within one timestamp tick.
 #include "../../editor/src/script_transpiler.hpp"
 
 #include <aero/core/content_hash.hpp>
 #include <aero/core/guid.hpp>
+#include <aero/core/vfs.hpp>
 #include <aero/editor/asset_database.hpp>
 #include <aero/editor/asset_meta.hpp>
 #include <aero/editor/blender_tool.hpp>
 #include <aero/editor/esbuild_tool.hpp>
 #include <aero/editor/project.hpp>
 #include <aero/editor/text_file.hpp>
+#include <aero/script/vm.hpp>
 
 #include <doctest/doctest.h>
 
@@ -34,8 +39,10 @@
 #include <fstream>
 #include <ios>
 #include <iterator>
+#include <memory>
 #include <optional>
 #include <ostream>
+#include <regex>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -818,5 +825,121 @@ TEST_CASE("script_transpiler: the sources keep to the process and logging rules 
             INFO(file, " names ", header);
             CHECK(text.find(header) == std::string::npos);
         }
+    }
+}
+
+namespace {
+
+namespace sc = engine::script;
+
+// The probe: String(globalThis.<name>) read back through the same VM.
+[[nodiscard]] std::string probe(sc::Vm& vm, std::string_view name) {
+    const std::string source = "String(globalThis." + std::string(name) + ")";
+    const sc::EvalResult result = vm.evaluateScript(source, "probe.js");
+    REQUIRE(result.status == sc::EvalStatus::Ok);
+    return result.completion;
+}
+
+// Library/Scripts mounted at the res:// root, so a published script is "res://<guid>.js".
+struct ScriptVm {
+    engine::VirtualFileSystem files;
+    sc::Vm vm;
+
+    ScriptVm(const std::string& root, const sc::VmConfig& config) {
+        files.mount(std::make_unique<engine::DirectoryBackend>(root + "/Library/Scripts"));
+        sc::VmCreateResult created = sc::Vm::create(config, files);
+        REQUIRE(created.status == sc::VmCreateStatus::Ok);
+        vm = std::move(created.vm);
+    }
+    ScriptVm(const ScriptVm&) = delete;
+    ScriptVm& operator=(const ScriptVm&) = delete;
+    ScriptVm(ScriptVm&&) = delete;
+    ScriptVm& operator=(ScriptVm&&) = delete;
+    ~ScriptVm() = default;
+};
+
+[[nodiscard]] std::string modulePath(Guid guid) { return "res://" + engine::formatGuid(guid) + ".js"; }
+
+// True when `js` still holds a `using` or `await using` declaration (R21: the VM's unlowered loop can outlast its
+// budget for good, so this runs before anything evaluates).
+[[nodiscard]] bool hasUsingDeclaration(const std::string& js) {
+    static const std::regex pattern(R"((^|[^A-Za-z0-9_$])(await\s+)?using\s+[A-Za-z_$])");
+    return std::regex_search(js, pattern);
+}
+
+}  // namespace
+
+TEST_CASE("script_transpiler: a transpiled script evaluates in the engine's VM (ST20)") {
+    ScriptFixture f;
+    f.write("assets/scripts/hello.ts",
+            "const n: number = 6 * 7;\n(globalThis as any).__r = \"hello \" + n;\nexport {};\n");
+    f.scan();
+    ed::ScriptTranspiler transpiler(configWith(AERO_TEST_ESBUILD));
+    runPass(transpiler, f);
+
+    const Guid guid = f.guidOf("scripts/hello.ts");
+    ScriptVm host(f.root, sc::VmConfig{});
+    const sc::EvalResult result = host.vm.evaluateModule(modulePath(guid));
+    CHECK(result.status == sc::EvalStatus::Ok);
+    CHECK(probe(host.vm, "__r") == "hello 42");
+}
+
+TEST_CASE("script_transpiler: a bundled script with imports evaluates unmodified (ST21)") {
+    ScriptFixture f;
+    f.write("assets/scripts/util.ts", UTIL_TS);
+    f.write("assets/shared/math.ts", MATH_TS);
+    f.write("assets/scripts/player.ts", std::string(PLAYER_TS) + "(globalThis as any).__r = \"player \" + result;\n");
+    f.scan();
+    ed::ScriptTranspiler transpiler(configWith(AERO_TEST_ESBUILD));
+    runPass(transpiler, f);
+
+    const Guid guid = f.guidOf("scripts/player.ts");
+    ScriptVm host(f.root, sc::VmConfig{});
+    const sc::EvalResult result = host.vm.evaluateModule(modulePath(guid));
+    CHECK(result.status == sc::EvalStatus::Ok);
+    CHECK(probe(host.vm, "__r") == "player 23");
+}
+
+TEST_CASE("script_transpiler: the using lowering reaches the VM (ST22)") {
+    ScriptFixture f;
+    f.write("assets/scripts/r21.ts",
+            "const res = { [Symbol.dispose]() { throw new Error(\"dispose\"); } };\n"
+            "for (;;) {\n"
+            "    try {\n"
+            "        using r = res;\n"
+            "        throw 1;\n"
+            "    } catch (e) {}\n"
+            "}\n");
+    f.write("assets/scripts/awaitusing.ts",
+            "const res = {\n"
+            "    async [Symbol.asyncDispose]() {\n"
+            "        (globalThis as any).__d = \"disposed\";\n"
+            "    },\n"
+            "};\n"
+            "{\n"
+            "    await using r = res;\n"
+            "}\n"
+            "export {};\n");
+    f.scan();
+    ed::ScriptTranspiler transpiler(configWith(AERO_TEST_ESBUILD));
+    runPass(transpiler, f);
+
+    const Guid r21 = f.guidOf("scripts/r21.ts");
+    const Guid awaiting = f.guidOf("scripts/awaitusing.ts");
+    const std::string r21Js = f.artifactBytes(r21, ".js");
+    const std::string awaitingJs = f.artifactBytes(awaiting, ".js");
+    REQUIRE_FALSE(r21Js.empty());
+    REQUIRE_FALSE(awaitingJs.empty());
+    REQUIRE_FALSE(hasUsingDeclaration(r21Js));
+    REQUIRE_FALSE(hasUsingDeclaration(awaitingJs));
+
+    {
+        ScriptVm host(f.root, sc::VmConfig{.callTimeBudget = std::chrono::milliseconds{100}});
+        CHECK(host.vm.evaluateModule(modulePath(r21)).status == sc::EvalStatus::Interrupted);
+    }
+    {
+        ScriptVm host(f.root, sc::VmConfig{});
+        CHECK(host.vm.evaluateModule(modulePath(awaiting)).status == sc::EvalStatus::Ok);
+        CHECK(probe(host.vm, "__d") == "disposed");
     }
 }
