@@ -63,6 +63,7 @@ validation pass exists for any task in any phase.** N-E = not executable, N-R = 
 | 4.1.1 VM lifecycle | #123 | `efdd0b9` | **10 / 10**, nothing failed (terminal rows; no editor UI). A 98-seed sabotage matrix whose nine findings each gained a case; two backend paths recorded as R21 |
 | 4.1.2 Module loading via VFS | #124 | `ccf776c` | **11 / 11**, nothing failed (terminal rows). Four code-review rounds; a 154-row sabotage matrix whose five findings each gained a case; R22 and R23 mitigated engine-side, R24 recorded; Windows CI found one layout-dependent test arm (ML71) |
 | 4.2.1 quickjs binding emission | #125 | `fab6db8` | **2 / 2**, nothing failed (terminal rows; no editor UI). Two code-review rounds (5 findings, all closed); a 94-row sabotage matrix and 14 ctest seeds whose one hole (S92) gained BN50; CI green on the first run |
+| 4.2.2 `.d.ts` emission | #126 | `1c10fad` | **4 / 4**, nothing failed (VS Code driven on macOS: the editor's three files, the thirteen-class completion, member completion and hovers, the three diagnostics). Two code-review rounds (6 findings, all closed); a 120-row sabotage matrix whose six holes were closed and re-run red; CI green on the first run |
 
 **E.3.2 landed before E.3.1** — legal, disjointly id-reserved; the reservation is discharged and the
 numbering is contiguous.
@@ -20199,3 +20200,115 @@ Measured at `478ae39` on fresh build directories:
 `script_api.cpp`, `script_api_values.cpp` and `script_api_entity.cpp` and now links `aero::scene`; `tests/CMakeLists.txt`
 adds `script_binding_test.cpp` and `script_component_test.cpp` to `aero_tests`, and `tests/reflect-gen/run_case.cmake`
 gains the `script_*` cases. Docs: `docs/03` (the script layer's lines) and `docs/08` (R21's row). `editor/` is untouched.
+
+### 4.2.2 — `.d.ts` emission — `reflect-gen --emit-dts` and the declarations a TypeScript project opens with: every component and the engine API typed in VS Code
+
+A TypeScript project now opens with typed completion and diagnostics over the ten built-in components, `Vec3`, `Quat`
+and `Entity`, with nothing written by hand. Merged as PR #126 (`1c10fad`, a true merge commit): thirteen commits on
+`2d82d84` — the plan's six steps, a code-review fix round (three commits), and four sabotage-hole tests. CI: run
+`40793440991` on the merged head `0d9b71f`, 6 / 6 green. Story 3 of Phase 4 continues with 4.4.2, 4.4.3, 4.4.4 and
+4.3.2.
+
+**What shipped.**
+- `reflect-gen --emit-dts` is the generator's fourth output: one declaration block per component header from the same
+  parse as `--emit-script`, with range, label, colour and asset annotations carried into field JSDoc (19
+  `reflect-gen.dts_*` ctest cases).
+- A checked-in prelude, `engine/script/types/prelude.d.ts`, declares `Vec3`, `Quat`, `Entity` and `Component`. The
+  build joins the prelude and the generated blocks into one `aero-engine.d.ts`; `cmake/embed.cmake` gained a text mode
+  (7-bit, LF, refuses CR) and the editor embeds the file and the tsconfig template (`editor/src/script_types.cpp`).
+  Nothing ships in the runtime.
+- Shape: each component class has a private constructor, a private `__brand` member and is passed as
+  `{ readonly prototype: T }`. That is the only shape that flagged every error the story names (TS2551, TS2322,
+  TS2673, TS2345, TS2540); with no brand an `AudioSource` passes as an `AudioListener`.
+- On every adoption of a TypeScript project (`openProjectPath` and `createAndOpenProject`) the editor writes
+  `Library/.gitignore`, then `Library/types/aero-engine.d.ts` (rewritten when its bytes differ), then `tsconfig.json`
+  only when absent. A failed write logs one warning and the project opens. `createProject` and C++ projects are
+  unchanged.
+- The tsconfig template: `target` ES2023, `lib` `["ESNext"]`, `types` `[]`, strict, `noEmit`, `moduleResolution`
+  bundler, `verbatimModuleSyntax`, `files` for the declarations and `exclude` `["Library"]`. One file feeds the editor
+  and the type-check suite.
+- `tests/typescript/` pins TypeScript 5.9.3 (the version VS Code bundles) with a lockfile; four `typescript.*` ctest
+  cases run `tsc --noEmit` over the generated declarations, the template, a clean fixture (0 errors) and a broken one
+  (the expected code on each of 21 tagged lines). `AERO_REQUIRE_TSC=1` turns a skip into a failure and every CI lane
+  sets it. `DT1`–`DT7` compare a live VM's `engine` surface with the names the declarations declare, in both reflect
+  configurations.
+- `docs/08` gains R25 (the regexp `v` flag compiles and matches wrongly in quickjs-ng 0.15.1).
+
+**Code-review rounds.** Round 1 (on `2d82d84..9d0df5b`): six findings, one blocking, one should-fix, four minor — all
+confirmed against the cited lines. `dts_engine_light` passed multi-string needles to a one-needle helper (blocking);
+there was no witness for the declaration order (should-fix); `docs/03` claimed header doc comments were carried;
+`adoptScriptTypes` sat under the E.4.1 comment; the `--emit-script` usage line was incomplete; DT1 logged after its
+CHECK. Round 2 (on `9d0df5b..9797e15`): approve, no findings.
+
+**The sabotage matrix.** 120 rows at `0d9b71f`: 63 doctest seeds and 57 ctest seeds (`reflect-gen.dts_*` and
+`typescript.*`). 114 red, 6 compile-red, 0 holes. Six holes were found at `9797e15` and each closed and re-run red:
+S4 (the single trailing LF) by `80612e4`, S39 (repeated trailing slashes) and S58 (a kept tsconfig stays silent on
+reopen) by `5de7086`, C36 (brands dropped) and C51 (`strict` dropped) by `d6be625`, and C57 (a version mismatch warns
+only) by `0d9b71f`. No case id was added.
+
+**Traps found, each measured.**
+- With no `tsconfig.json`, VS Code's inferred project holds the open file only and `engine` is TS2304; any root
+  `tsconfig.json`, even `{}`, resolves a `.d.ts` under `Library/`. `{}` would also pull in `Library/Trash` scripts, hence
+  `files` and `exclude`.
+- `file(CONFIGURE … NEWLINE_STYLE LF)` appends an LF after content that already ends in one, so the join strips the
+  final LF first.
+- The plan's `console` is TS2584 and `setTimeout` TS2304; `queueMicrotask`, `performance`, `atob` and `btoa` exist in
+  the VM and are flagged by the declarations, and `Intl` completes although the VM has none.
+- The plan's "21 tagged lines" was 19 at Step 5 (its verbatim fixture) and became 21 with the hole cases; TS2748 needs
+  a `const enum` and none exists, so it is not covered.
+- TypeScript 7.0.2 (npm latest) ships no tsserver, which is why the pin is 5.9.3.
+- `tests/CMakeLists.txt` registers `typescript.clean` and `typescript.broken` only when reflect tools are on, so the
+  reflect-tools-OFF entry set drops them; `reduced.sh`'s rule listed only the `reflect-gen.*` entries and the four
+  doctest binaries and failed on the first fresh run, and now lists the two as well.
+- VS Code's suggestion list accepts its best match when `;` is typed: `t.positon;` became `t.position;` until the
+  list was dismissed. A key typed straight after a Cmd+Shift shortcut was lost until the modifiers were released.
+- docs/10's 4.2.1 entry lists `Entity.set`; the runtime has `has`, `get`, `add` and `remove`.
+
+**Where the implementation departed from the plan.**
+- No `ComponentMap` special branch in the join; DT2's refusal samples are built from shared pieces.
+- Step 3 reuses Step 2's `_aero_script_declarations_file` variable; Step 5's clean fixture includes `./**/*.ts` so a
+  dropped `exclude` reddens, and `tsc -p .` runs from the work directory because a symlinked `/tmp` broke the regex.
+- The plan's depfile three-mode gate belongs to `dts_depfile`, and its abstract-new check to `typescript.clean`.
+- R25 is rated Low / Med; the plan gave no rating.
+
+**What was deliberately left out, and which task holds each.**
+- A cloned project shows `Cannot find name 'engine'` until the editor has opened it once, because `Library/` is never
+  committed: not scheduled.
+- Declarations for the 4.4.x host functions (`spawn`, `destroy`, `find`, input): each of 4.4.2–4.4.4 adds its own to the
+  prelude.
+- esbuild's `using` lowering (R21): 4.3.1, as a command-line flag; the tsconfig `target` does not lower it.
+- A patched quickjs-ng for R21, R23, R24 and R25: still the unowned handoff in `docs/08`; an upstream report is owed
+  for R25.
+- `AERO_RANGE` enforcement stays a hover hint only.
+
+**The sentences that govern new work.** The declarations are generated from the same parse as the bindings, so a
+component added to the built-in list appears in both; the prelude is the only hand-written part and a doctest holds it
+to the live VM. The tsconfig is written once and then belongs to the project; `Library/types/aero-engine.d.ts` is
+rewritten on every adoption. The type-check cases need node and the pinned install; `AERO_REQUIRE_TSC=1` makes a skip
+a failure. `.claude/rules/reflect-gen.md` and `.claude/rules/tests.md` hold the rules.
+
+**Validation and sabotage status — macOS 4 / 4 (2026-10-29), Windows and Linux unrun.** VS Code 1.113 with its bundled
+TypeScript 5.9.3, driven with synthetic input against `0d9b71f`: the editor's New Project wrote `tsconfig.json`,
+`Library/.gitignore` and a 9118-byte `Library/types/aero-engine.d.ts` identical to the build's copy; `engine.` listed the
+thirteen classes with no `__brand` and no `ComponentMap`; `t.` listed position, rotation and scale; the
+`backgroundMode` hover read `Range 0 to 1. Labels: 0 = Sky, 1 = Solid.` and a `get` hovered as `engine.Transform | null`;
+the Problems panel held exactly TS2551, TS2673 and TS2584. CI watch items, unverifiable on macOS: the comma-joined
+`AERO_SCRIPT_DECLARATION_SOURCES` define on MSVC and GCC, `NEWLINE_STYLE LF` and the embedded text on Windows, and
+`npm ci` and `tsc` on the Windows and Linux runners. The first CI run was green on all of them.
+
+Measured at `0d9b71f` on fresh build directories:
+- `aero_tests` **1637** (+7: DT1–DT7), `aero_editor_shell_test` **2428** (+14: DT8–DT21), and the other five doctest
+  binaries unchanged at **366 / 40 / 73 / 14 / 28**; reflect-tools-OFF `aero_tests` is 1623 and shell 2386,
+  shader-tools-OFF `aero_tests` 1497.
+- `ctest -N` **221 / 208 / 96**, with `cooker.*` 70 in all three; the 23 added entries are 19 `reflect-gen.dts_*` and 4
+  `typescript.*`, two of which survive reflect-tools-OFF.
+- The guards read math **617**, platform **94**, rhi **179**, scene **94**, golden-rule **181**, project-no-delete
+  **A=7 B=111**, audio **11-3-61**, probes **7-63** and script **170-94-11**.
+
+**Case ids claimed:** DT1–DT21 (next free: DT22; BN52, VM66 unchanged).
+
+**Build & dependency impact:** no vcpkg port and no new target. A node dependency enters the test tier only
+(`tests/typescript/package.json`, TypeScript 5.9.3, `npm ci` once per CI job). `aero_script` gains
+the `aero_script_declarations` target and `types/prelude.d.ts`; `cmake/reflect.cmake` and
+`cmake/reflect_declarations_join.cmake` build the joined file; the editor gains `script_types.cpp` and
+`templates/tsconfig.json.in`; `cmake/embed.cmake` gains a text mode. Docs: `docs/01`, `03`, `04`, `08` (R25), `09`.

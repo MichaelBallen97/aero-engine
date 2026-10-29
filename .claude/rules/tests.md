@@ -262,7 +262,9 @@ drivers and its one new TU is a probe with no `TEST_CASE`.
 **COMPARE ENTRY *SETS*, NOT TOTALS**, measured by comparing entry NAMES with the ctest numbering stripped — a
 raw `diff` of `ctest -N` output is dominated by the renumbering and shows every later entry as changed.
 shader-tools-OFF removes exactly the **13 `shaderc.*`** entries; reflect-tools-OFF removes the
-`reflect-gen.*` entries **plus four doctest binaries**; **nothing is added in either**; and all **70
+`reflect-gen.*` entries **plus four doctest binaries and, since 4.2.2, `typescript.clean` and `typescript.broken`** (the
+type-check cases that read the generated declarations; `typescript.prelude_only` and `typescript.driver_e2e` stay);
+**nothing is added in either**; and all **70
 `cooker.*` entries are present in all three**, which is the property that check is actually about. **Both
 reduced numbers and the reflect-gen breakdown have each gone stale more than once** — the `159` recorded for
 shader-tools-OFF was wrong by arithmetic alone (it is always `total - 13`), and the breakdown moved three
@@ -296,3 +298,8 @@ proof comes from the macOS lane) — plus fourteen whole `BS` cases, one arm of 
 figure was "three" here for four tasks.** **Those 3.2.4 skips are not a random sample**: together they are the only coverage anywhere of both
 Blender timeouts, cancellation, the `Converted` state, `ok: false`, both `ArtifactUnusable` arms and the
 refused-by-cap log.
+
+**THE `typescript.*` CASES NEED NODE AND A PINNED TYPESCRIPT (4.2.2).** `tests/typescript/` holds a `package.json` and
+lockfile for TypeScript 5.9.3, installed by `npm ci` inside that folder and never at configure. Without node or the
+install the cases skip loudly; `AERO_REQUIRE_TSC=1` makes the skip a failure, and all three CI lanes set it. Run
+ctest with it set locally, as with `AERO_REQUIRE_GPU=1`.

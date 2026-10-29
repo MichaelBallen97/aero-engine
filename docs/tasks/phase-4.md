@@ -133,6 +133,11 @@ reads and writes. Spawn, destroy, find and the lifecycle stay with 4.4.x.
 **Deliverable:** generated `.d.ts` for the engine API and all reflected components.
 Subtasks:
 - Emit `.d.ts` (engine API + components); ship into the project template
+**Outcome:** `reflect-gen --emit-dts` emits one declaration block per component header, and the build joins them with a
+checked-in prelude for `Vec3`, `Quat` and `Entity` into one `aero-engine.d.ts`, which the editor embeds. Adopting a
+TypeScript project writes `Library/types/aero-engine.d.ts` and, only when absent, a `tsconfig.json`, so VS Code offers
+every component and the engine API with their types and flags a wrong field name or type. A pinned TypeScript 5.9.3
+type-checks the output in ctest. The runtime ships none of it.
 
 ---
 
