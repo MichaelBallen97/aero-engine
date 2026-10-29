@@ -14,6 +14,8 @@
 // ST20-ST22 (task 4.3.1, step 5) evaluate the editor's own output in the engine's VM: this binary links aero::script
 // for that (tests sit outside the boundary rule; aero_editor_core itself does not link it).
 //
+// ST23-ST27, after the VM cases, drive ScriptTranspiler the way ST1-ST19 do.
+//
 // TypeScript sources are the plan-time fixtures of task 4.3.1. A rewritten file always changes SIZE: the asset scan's
 // (size, mtime) fast path would otherwise reuse the old hash for a same-size rewrite within one timestamp tick.
 #include "../../editor/src/script_transpiler.hpp"
@@ -944,4 +946,183 @@ TEST_CASE("script_transpiler: the using lowering reaches the VM (ST22)") {
         CHECK(host.vm.evaluateModule(modulePath(awaiting)).status == sc::EvalStatus::Ok);
         CHECK(probe(host.vm, "__d") == "disposed");
     }
+}
+
+namespace {
+
+// Moves one file inside the project, the way a rename in a file manager does.
+void moveAt(const std::string& root, std::string_view from, std::string_view to) {
+    std::error_code ec;
+    std::filesystem::rename(pathOf(root) / pathOf(from), pathOf(root) / pathOf(to), ec);
+    REQUIRE_FALSE(ec);
+}
+
+void removeAt(const std::string& root, std::string_view relative) {
+    std::error_code ec;
+    REQUIRE(std::filesystem::remove(pathOf(root) / pathOf(relative), ec));
+}
+
+}  // namespace
+
+// ST23-ST27 (task 4.3.1, code-review round 1): the record filter of a scan's scripts, and a script that leaves or
+// moves between being queued and being run.
+
+TEST_CASE("script_transpiler: a script the scan left unhashed is neither run nor counted (ST23)") {
+    ScriptFixture f;
+    f.write("assets/scripts/a.ts", "export const a = 1;\n");
+    f.write("assets/scripts/b.ts", "export const b = 2;\n");
+    // A one-byte budget hashes the first file in path order and leaves every later one NotHashed.
+    static_cast<void>(f.db.rescan(f.root, f.root + "/assets", f.generator, 1U));
+    const ed::AssetRecord* const hashed = f.db.findByPath("scripts/a.ts");
+    const ed::AssetRecord* const unhashed = f.db.findByPath("scripts/b.ts");
+    REQUIRE(hashed != nullptr);
+    REQUIRE(unhashed != nullptr);
+    REQUIRE(ed::assetContentHashUsable(*hashed));
+    REQUIRE(unhashed->guid.valid());  // the hash arm alone must refuse it
+    REQUIRE_FALSE(ed::assetContentHashUsable(*unhashed));
+
+    ed::ScriptTranspiler transpiler(configWith(AERO_TEST_ESBUILD));
+    runPass(transpiler, f);
+
+    const Guid a = f.guidOf("scripts/a.ts");
+    const Guid b = f.guidOf("scripts/b.ts");
+    CHECK(transpiler.runCount() == 1U);
+    CHECK(f.recordOf(a).has_value());
+    CHECK_FALSE(existsAt(f.root, f.artifactPath(b, ".json")));
+    CHECK(rendered(transpiler.takeLog()) ==
+          std::vector<std::string>{"INFO scripts: 1 transpiled, 0 failed, 0 up to date"});
+
+    // Deferred, not lost: the next scan with the full budget hashes it, and only then does it run.
+    f.scan();
+    runPass(transpiler, f);
+    CHECK(transpiler.runCount() == 2U);
+    const std::optional<ed::ScriptRecord> record = f.recordOf(b);
+    REQUIRE(record.has_value());
+    CHECK(record->status == ed::ScriptRecordStatus::Ok);
+    CHECK(rendered(transpiler.takeLog()) ==
+          std::vector<std::string>{"INFO scripts: 1 transpiled, 0 failed, 1 up to date"});
+}
+
+TEST_CASE("script_transpiler: a script whose sidecar cannot be parsed is neither run nor counted (ST24)") {
+    ScriptFixture f;
+    f.write("assets/scripts/broken.ts", "export const x = 1;\n");
+    f.write("assets/scripts/broken.ts.meta", "not a sidecar\n");
+    f.scan();
+    const ed::AssetRecord* const record = f.db.findByPath("scripts/broken.ts");
+    REQUIRE(record != nullptr);
+    REQUIRE(record->state == ed::AssetMetaState::Invalid);
+    REQUIRE_FALSE(record->guid.valid());
+    REQUIRE(ed::assetContentHashUsable(*record));  // the GUID arm alone must refuse it
+
+    ed::ScriptTranspiler transpiler(configWith(AERO_TEST_ESBUILD));
+    transpiler.noteScan(f.db, f.view());
+    CHECK(transpiler.idle());  // nothing queued, so no pass was opened
+    pumpUntilIdle(transpiler, f.db);
+
+    CHECK(transpiler.runCount() == 0U);
+    CHECK(transpiler.takeLog().empty());
+    CHECK_FALSE(existsAt(f.root, "Library/Scripts"));
+}
+
+TEST_CASE("script_transpiler: a queued script deleted before it starts is dropped (ST25)") {
+    ScriptFixture f;
+    f.write("assets/scripts/a.ts", "export const a = 1;\n");
+    f.write("assets/scripts/b.ts", "export const b = 2;\n");
+    f.scan();
+    const Guid a = f.guidOf("scripts/a.ts");
+    const Guid b = f.guidOf("scripts/b.ts");
+
+    ed::ScriptTranspiler transpiler(configWith(AERO_TEST_ESBUILD));
+    transpiler.noteScan(f.db, f.view());
+    transpiler.service(f.db, WAIT_DT);  // starts a.ts; b.ts waits in the queue
+    REQUIRE(transpiler.runCount() == 1U);
+    REQUIRE_FALSE(transpiler.idle());
+
+    removeAt(f.root, "assets/scripts/b.ts");
+    removeAt(f.root, "assets/scripts/b.ts.meta");
+    f.scan();
+    REQUIRE(f.db.findByGuid(b) == nullptr);
+    transpiler.noteScan(f.db, f.view());
+    pumpUntilIdle(transpiler, f.db);
+
+    CHECK(transpiler.runCount() == 2U);  // a.ts twice (a scan completed during its run), b.ts never
+    const std::optional<ed::ScriptRecord> record = f.recordOf(a);
+    REQUIRE(record.has_value());
+    CHECK(record->status == ed::ScriptRecordStatus::Ok);
+    CHECK_FALSE(existsAt(f.root, f.artifactPath(b, ".json")));
+    CHECK(rendered(transpiler.takeLog()) ==
+          std::vector<std::string>{"INFO scripts: 1 transpiled, 0 failed, 0 up to date"});
+}
+
+TEST_CASE("script_transpiler: a script renamed during its run runs again under its new path (ST26)") {
+    ScriptFixture f;
+    f.write("assets/scripts/player.ts", "export const hp: number = 100;\n");
+    f.scan();
+    const Guid guid = f.guidOf("scripts/player.ts");
+
+    ed::ScriptTranspiler transpiler(configWith(AERO_TEST_ESBUILD));
+    transpiler.noteScan(f.db, f.view());
+    transpiler.service(f.db, WAIT_DT);  // spawns
+    REQUIRE_FALSE(transpiler.idle());
+
+    moveAt(f.root, "assets/scripts/player.ts", "assets/scripts/hero.ts");
+    moveAt(f.root, "assets/scripts/player.ts.meta", "assets/scripts/hero.ts.meta");
+    f.scan();
+    REQUIRE(f.guidOf("scripts/hero.ts") == guid);
+    transpiler.noteScan(f.db, f.view());
+    pumpUntilIdle(transpiler, f.db);
+
+    CHECK(transpiler.runCount() == 2U);
+    const std::optional<ed::ScriptRecord> record = f.recordOf(guid);
+    REQUIRE(record.has_value());
+    CHECK(record->status == ed::ScriptRecordStatus::Ok);
+    CHECK(record->script == "assets/scripts/hero.ts");
+    const std::vector<ed::ScriptRecordInput> inputs = {{"assets/scripts/hero.ts", f.hashOf("scripts/hero.ts")}};
+    CHECK(record->inputs == inputs);
+    CHECK(rendered(transpiler.takeLog()) ==
+          std::vector<std::string>{"INFO scripts: 1 transpiled, 0 failed, 0 up to date"});
+}
+
+TEST_CASE("script_transpiler: a script deleted or renamed away from .ts during its run is not run again (ST27)") {
+    ScriptFixture f;
+    f.write("assets/scripts/gone.ts", "export const g = 1;\n");
+    f.scan();
+    const Guid gone = f.guidOf("scripts/gone.ts");
+
+    ed::ScriptTranspiler transpiler(configWith(AERO_TEST_ESBUILD));
+    transpiler.noteScan(f.db, f.view());
+    transpiler.service(f.db, WAIT_DT);  // spawns
+    REQUIRE_FALSE(transpiler.idle());
+
+    removeAt(f.root, "assets/scripts/gone.ts");
+    removeAt(f.root, "assets/scripts/gone.ts.meta");
+    f.scan();
+    transpiler.noteScan(f.db, f.view());
+    pumpUntilIdle(transpiler, f.db);
+
+    CHECK(transpiler.runCount() == 1U);
+    CHECK_FALSE(existsAt(f.root, f.artifactPath(gone, ".json")));
+    CHECK(rendered(transpiler.takeLog()) ==
+          std::vector<std::string>{"INFO scripts: 0 transpiled, 0 failed, 0 up to date"});
+
+    // A .txt keeps the GUID and would bundle cleanly as text: only the script-name test stops it.
+    f.write("assets/scripts/notes.ts", "export const n = 1;\n");
+    f.scan();
+    const Guid notes = f.guidOf("scripts/notes.ts");
+    transpiler.noteScan(f.db, f.view());
+    transpiler.service(f.db, WAIT_DT);  // spawns
+    REQUIRE(transpiler.runCount() == 2U);
+    REQUIRE_FALSE(transpiler.idle());
+
+    moveAt(f.root, "assets/scripts/notes.ts", "assets/scripts/notes.txt");
+    moveAt(f.root, "assets/scripts/notes.ts.meta", "assets/scripts/notes.txt.meta");
+    f.scan();
+    REQUIRE(f.guidOf("scripts/notes.txt") == notes);
+    transpiler.noteScan(f.db, f.view());
+    pumpUntilIdle(transpiler, f.db);
+
+    CHECK(transpiler.runCount() == 2U);
+    CHECK_FALSE(existsAt(f.root, f.artifactPath(notes, ".json")));
+    CHECK(rendered(transpiler.takeLog()) ==
+          std::vector<std::string>{"INFO scripts: 0 transpiled, 0 failed, 0 up to date"});
 }
