@@ -1593,3 +1593,158 @@ TEST_CASE("script_transpiler: a scan later in a pass does not count a script wit
               std::vector<std::string>{"INFO scripts: 2 transpiled, 0 failed, 0 up to date"});
     }
 }
+
+// ST38-ST42 (task 4.3.1, sabotage holes): the publish order, a script gone from a later scan of its pass, the text of a
+// Library/ refusal, the child's fate at a project swap, and an input the scan left unhashed.
+
+TEST_CASE("script_transpiler: a publish that cannot write the js leaves the old record in place (ST38)") {
+    ScriptFixture f;
+    f.write("assets/scripts/player.ts", "export const hp: number = 100;\n");
+    f.scan();
+
+    ed::ScriptTranspiler transpiler(configWith(AERO_TEST_ESBUILD));
+    runPass(transpiler, f);
+    static_cast<void>(transpiler.takeLog());
+
+    const Guid guid = f.guidOf("scripts/player.ts");
+    const std::string oldRecord = f.artifactBytes(guid, ".json");
+    REQUIRE_FALSE(oldRecord.empty());
+
+    // A directory where the js goes: the write that follows the map's cannot land.
+    removeAt(f.root, f.artifactPath(guid, ".js"));
+    std::error_code ec;
+    std::filesystem::create_directories(pathOf(f.root) / pathOf(f.artifactPath(guid, ".js")), ec);
+    REQUIRE_FALSE(ec);
+
+    f.write("assets/scripts/player.ts", "export const hp: number = 1000;\n");
+    f.scan();
+    runPass(transpiler, f);
+
+    const std::vector<std::string> log = rendered(transpiler.takeLog());
+    REQUIRE(log.size() == 2U);
+    CHECK(log[0].starts_with("ERROR scripts: assets/scripts/player.ts: error: could not write '"));
+    CHECK(log[1] == "INFO scripts: 0 transpiled, 1 failed, 0 up to date");
+    CHECK(f.artifactBytes(guid, ".json") == oldRecord);
+
+    // The record is what makes the trio fresh, so the next scan runs the script again rather than calling it current.
+    runPass(transpiler, f);
+    CHECK(transpiler.runCount() == 3U);
+    CHECK(rendered(transpiler.takeLog()).back() == "INFO scripts: 0 transpiled, 1 failed, 0 up to date");
+}
+
+TEST_CASE("script_transpiler: a script fresh at one scan of a pass and gone at the next is not up to date (ST39)") {
+    ScriptFixture f;
+    f.write("assets/scripts/a.ts", "export const a = 1;\n");
+    f.write("assets/scripts/b.ts", "export const b = 2;\n");
+    f.scan();
+
+    ed::ScriptTranspiler transpiler(configWith(AERO_TEST_ESBUILD));
+    runPass(transpiler, f);
+    REQUIRE(transpiler.runCount() == 2U);
+    static_cast<void>(transpiler.takeLog());
+
+    // a.ts is fresh and b.ts is stale at the first scan of this pass; b.ts starts.
+    f.write("assets/scripts/b.ts", "export const b = 20;\n");
+    f.scan();
+    transpiler.noteScan(f.db, f.view());
+    transpiler.service(f.db, WAIT_DT);
+    REQUIRE(transpiler.runCount() == 3U);
+    REQUIRE_FALSE(transpiler.idle());
+
+    // The second scan of the same pass no longer holds a.ts.
+    removeAt(f.root, "assets/scripts/a.ts");
+    removeAt(f.root, "assets/scripts/a.ts.meta");
+    f.scan();
+    REQUIRE(f.db.findByPath("scripts/a.ts") == nullptr);
+    transpiler.noteScan(f.db, f.view());
+    pumpUntilIdle(transpiler, f.db);
+
+    CHECK(transpiler.runCount() == 4U);  // b.ts again: a scan completed during its run
+    CHECK(rendered(transpiler.takeLog()) ==
+          std::vector<std::string>{"INFO scripts: 1 transpiled, 0 failed, 0 up to date"});
+}
+
+TEST_CASE("script_transpiler: an input inside Library/ is refused as such (ST40)") {
+    ScriptFixture f;
+    f.write("Library/helper.ts", "export const h = 1;\n");
+    f.write("assets/scripts/lib.ts", "import { h } from \"../../Library/helper\";\nexport const q = h;\n");
+    f.scan();
+
+    ed::ScriptTranspiler transpiler(configWith(AERO_TEST_ESBUILD));
+    runPass(transpiler, f);
+
+    CHECK(
+        rendered(transpiler.takeLog()) ==
+        std::vector<std::string>{"ERROR scripts: assets/scripts/lib.ts: error: 'Library/helper.ts' is inside Library/",
+                                 "INFO scripts: 0 transpiled, 1 failed, 0 up to date"});
+    const Guid lib = f.guidOf("scripts/lib.ts");
+    CHECK_FALSE(existsAt(f.root, f.artifactPath(lib, ".js")));
+}
+
+TEST_CASE("script_transpiler: a project swap stops the child that is running (ST41)") {
+    if (ed::currentHostOs() == ed::HostOs::Windows) {
+        MESSAGE("skipped on Windows: no scripted fake can hold a process open there");
+        return;
+    }
+    ScriptFixture f;
+    f.write("assets/scripts/player.ts", "export const hp: number = 100;\n");
+    f.scan();
+
+    // A child that appends a line to <script>.beat every 50 ms for as long as it lives.
+    const std::string beating =
+        executableScript(f, "beating-esbuild", "#!/bin/sh\nwhile :; do echo x >> \"$0.beat\"; sleep 0.05; done\n");
+    const std::filesystem::path beat = pathOf(beating + ".beat");
+    const auto beatSize = [&beat]() {
+        std::error_code ec;
+        const std::uintmax_t size = std::filesystem::file_size(beat, ec);
+        return ec ? std::uintmax_t{0} : size;
+    };
+
+    ed::ScriptTranspiler transpiler(configWith(beating));
+    transpiler.noteScan(f.db, f.view());
+    transpiler.service(f.db, WAIT_DT);  // spawns
+    REQUIRE(transpiler.runCount() == 1U);
+    REQUIRE_FALSE(transpiler.idle());
+    const auto deadline = std::chrono::steady_clock::now() + WAIT_CAP;
+    while (beatSize() == 0U && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds{5});
+    }
+    REQUIRE(beatSize() > 0U);  // the child is alive and beating
+
+    transpiler.resetForProjectSwap();
+    CHECK(transpiler.idle());
+
+    // Let a signal in flight land, then the file must stop growing.
+    std::this_thread::sleep_for(std::chrono::milliseconds{250});
+    const std::uintmax_t settled = beatSize();
+    std::this_thread::sleep_for(std::chrono::milliseconds{400});
+    CHECK(beatSize() == settled);
+}
+
+TEST_CASE("script_transpiler: an input the scan left unhashed is recorded without a hash (ST42)") {
+    ScriptFixture f;
+    f.write("assets/scripts/a.ts", "import { b } from \"./b\";\nexport const a = b;\n");
+    f.write("assets/scripts/b.ts", "export const b = 2;\n");
+    // A one-byte budget hashes a.ts and leaves b.ts NotHashed (ST23).
+    static_cast<void>(f.db.rescan(f.root, f.root + "/assets", f.generator, 1U));
+    const ed::AssetRecord* const unhashed = f.db.findByPath("scripts/b.ts");
+    REQUIRE(unhashed != nullptr);
+    REQUIRE_FALSE(ed::assetContentHashUsable(*unhashed));
+
+    ed::ScriptTranspiler transpiler(configWith(AERO_TEST_ESBUILD));
+    runPass(transpiler, f);
+
+    const std::optional<ed::ScriptRecord> record = f.recordOf(f.guidOf("scripts/a.ts"));
+    REQUIRE(record.has_value());
+    REQUIRE(record->status == ed::ScriptRecordStatus::Ok);
+    REQUIRE(record->inputs.size() == 2U);
+    for (const ed::ScriptRecordInput& input : record->inputs) {
+        if (input.path == "assets/scripts/a.ts") {
+            REQUIRE(input.hash.has_value());
+            CHECK(*input.hash == f.hashOf("scripts/a.ts"));
+        } else {
+            CHECK(input.path == "assets/scripts/b.ts");
+            CHECK_FALSE(input.hash.has_value());
+        }
+    }
+}

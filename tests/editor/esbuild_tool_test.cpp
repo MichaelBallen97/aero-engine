@@ -821,3 +821,28 @@ TEST_CASE("esbuild_tool: a failed record that holds no diagnostic is a miss (EB2
     // An ok record keeps its empty array: it has nothing to show.
     CHECK(ed::parseScriptRecord(recordJson("1", "\"ok\"", inputs, "[]")).has_value());
 }
+
+TEST_CASE("esbuild_tool: a path that only starts with the assets prefix is outside it (EB27)") {
+    using V = ed::ScriptInputVerdict;
+    // The character after the prefix is a letter and the one after that is not a separator, so only the separator
+    // check refuses these.
+    CHECK(ed::classifyScriptInput("assetsx1/a.ts", "assets") == V::OutsideAssetsRoot);
+    CHECK(ed::classifyScriptInput("assets22/a.ts", "assets") == V::OutsideAssetsRoot);
+    CHECK(ed::classifyScriptInput("assets-old/a.ts", "assets") == V::OutsideAssetsRoot);
+    CHECK(ed::classifyScriptInput("assets/a.ts", "assets") == V::Accepted);
+}
+
+TEST_CASE("esbuild_tool: an absolute path is outside the assets root even when the prefix is empty (EB28)") {
+    using V = ed::ScriptInputVerdict;
+    // With no prefix nothing else refuses them: the prefix check never runs.
+    CHECK(ed::classifyScriptInput("/abs/a.ts", "") == V::OutsideAssetsRoot);
+    CHECK(ed::classifyScriptInput("\\abs\\a.ts", "") == V::OutsideAssetsRoot);
+    CHECK(ed::classifyScriptInput("abs/a.ts", "") == V::Accepted);
+}
+
+TEST_CASE("esbuild_tool: a drive-letter path is outside the assets root even when the prefix is empty (EB29)") {
+    using V = ed::ScriptInputVerdict;
+    CHECK(ed::classifyScriptInput("C:/a.ts", "") == V::OutsideAssetsRoot);
+    CHECK(ed::classifyScriptInput("C:a.ts", "") == V::OutsideAssetsRoot);
+    CHECK(ed::classifyScriptInput("a/b.ts", "") == V::Accepted);
+}
