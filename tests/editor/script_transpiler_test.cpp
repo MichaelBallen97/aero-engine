@@ -1470,3 +1470,55 @@ TEST_CASE("script_transpiler: a .ts under node_modules in the assets root is nev
               std::vector<std::string>{"INFO scripts: 0 transpiled, 0 failed, 0 up to date"});
     }
 }
+
+TEST_CASE("script_transpiler: a wrong-case import warns and is transpiled again at every scan (ST36)") {
+    if (ed::currentHostOs() != ed::HostOs::MacOs) {
+        MESSAGE("skipped: only measured on macOS (a case-insensitive APFS volume)");
+        return;
+    }
+    ScriptFixture f;
+    f.write("probe-case.tmp", "x");
+    if (!existsAt(f.root, "PROBE-CASE.TMP")) {
+        MESSAGE("skipped: the temp volume is case-sensitive");
+        return;
+    }
+    f.write("assets/scripts/util.ts", "export const u = 1;\n");
+    f.write("assets/scripts/main.ts", "import { u } from \"./Util\";\nexport const x = u + 1;\n");
+    f.scan();
+    const Guid main = f.guidOf("scripts/main.ts");
+    const std::vector<std::string> warned = {
+        "WARN scripts: assets/scripts/main.ts:1:19: warning: Use \"assets/scripts/util.ts\" instead of "
+        "\"assets/scripts/Util.ts\" to avoid issues with case-sensitive file systems [different-path-case]"};
+
+    ed::ScriptTranspiler transpiler(configWith(AERO_TEST_ESBUILD));
+    runPass(transpiler, f);
+    CHECK(transpiler.runCount() == 2U);
+    CHECK(rendered(transpiler.takeLog()) == withSummary(warned, "2 transpiled, 0 failed, 0 up to date"));
+    // esbuild lists the import's spelling, which the scan does not hold, so the input has no hash.
+    const std::optional<ed::ScriptRecord> record = f.recordOf(main);
+    REQUIRE(record.has_value());
+    CHECK(record->status == ed::ScriptRecordStatus::Ok);
+    const std::vector<ed::ScriptRecordInput> inputs = {{"assets/scripts/Util.ts", std::nullopt},
+                                                       {"assets/scripts/main.ts", f.hashOf("scripts/main.ts")}};
+    CHECK(record->inputs == inputs);
+
+    // The record is never fresh: the script runs, and warns, again at the next scan.
+    f.scan();
+    runPass(transpiler, f);
+    CHECK(transpiler.runCount() == 3U);
+    CHECK(rendered(transpiler.takeLog()) == withSummary(warned, "1 transpiled, 0 failed, 1 up to date"));
+
+    // Spelling the import as the file is spelled ends it.
+    f.write("assets/scripts/main.ts", "import { u } from \"./util\";\nexport const x = u + 10;\n");
+    f.scan();
+    runPass(transpiler, f);
+    CHECK(transpiler.runCount() == 4U);
+    CHECK(rendered(transpiler.takeLog()) ==
+          std::vector<std::string>{"INFO scripts: 1 transpiled, 0 failed, 1 up to date"});
+
+    f.scan();
+    runPass(transpiler, f);
+    CHECK(transpiler.runCount() == 4U);
+    CHECK(rendered(transpiler.takeLog()) ==
+          std::vector<std::string>{"INFO scripts: 0 transpiled, 0 failed, 2 up to date"});
+}
