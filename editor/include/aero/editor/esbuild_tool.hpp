@@ -1,7 +1,7 @@
 #pragma once
 // Aero Engine -- the PURE half of the esbuild integration (task 4.3.1). PUBLIC, and the blender_tool.hpp shape:
-// free of ImGui, SDL, entt, <filesystem> and <fstream>. NOTHING HERE LOGS, NOTHING HERE TOUCHES THE DISK, and
-// NOTHING HERE READS THE ENVIRONMENT -- every rule below is a function of strings, which is what lets all three
+// free of ImGui, SDL, entt and every filesystem or stream header. NOTHING HERE LOGS, NOTHING HERE TOUCHES THE DISK,
+// and NOTHING HERE READS THE ENVIRONMENT -- every rule below is a function of strings, which is what lets all three
 // desktop hosts' behaviour be asserted from one test process.
 //
 // esbuild is an external PROCESS, never a library: no header, no archive, no vcpkg entry. This file only decides
