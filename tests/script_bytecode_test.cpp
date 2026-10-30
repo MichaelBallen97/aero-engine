@@ -1,6 +1,11 @@
-// tests/script_bytecode_test.cpp -- task 4.3.2: the bytecode cook (BY8-BY17). A TU of aero_tests, which supplies
+// tests/script_bytecode_test.cpp -- task 4.3.2: the bytecode cook (BY8-BY17) and the loader's container branch
+// (BY18-BY29). A TU of aero_tests, which supplies
 // main() from test_main.cpp. The cook runs the real backend: the committed fixtures are esbuild 0.28.2's own bundles
 // of the three .ts files beside them (tests/fixtures/scripts/README.md says how they were made).
+#include <aero/assets/cooked_mesh.hpp>
+#include <aero/assets/cooked_script.hpp>
+#include <aero/core/content_hash.hpp>
+#include <aero/core/vfs.hpp>
 #include <aero/script/internal/bytecode_cook.hpp>
 #include <aero/script/internal/bytecode_format.hpp>
 #include <aero/script/internal/module_graph.hpp>
@@ -11,15 +16,21 @@
 #include <doctest/doctest.h>
 
 #include <array>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <iterator>
+#include <map>
+#include <memory>
+#include <optional>
 #include <set>
 #include <span>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <utility>
 // <ostream> is load-bearing on MSVC: doctest stringifies the std::string_view operands of the CHECKs below through
 // operator<<(std::ostream&, std::string_view), which needs <ostream> to complete std::basic_ostream.
@@ -31,15 +42,24 @@ namespace {
 using engine::LogLevel;
 using engine::script::COOK_HEAP_LIMIT_BYTES;
 using engine::script::cookScriptBytecode;
+using engine::script::EvalResult;
+using engine::script::evalStatusLabel;
 using engine::script::MAX_COOK_SOURCE_BYTES;
+using engine::script::MIN_HEAP_LIMIT_BYTES;
+using engine::script::ModuleRecord;
 using engine::script::scriptBackendRelease;
 using engine::script::scriptBytecodeVersion;
 using engine::script::ScriptCookResult;
 using engine::script::scriptCookStatusLabel;
+using engine::script::Vm;
+using engine::script::VmConfig;
 using engine::script::internal::bytecodeChecksum;
+using engine::script::internal::bytecodeReadHeadroom;
 using engine::script::internal::COOK_MODULE_NAME;
 using engine::script::internal::COOK_PROBE_NAME;
+using engine::script::internal::cookedScriptRefusedMessage;
 using engine::script::internal::cookImportMessage;
+using script_test::expectCleanShutdown;
 using script_test::LogCapture;
 
 constexpr std::string_view SOURCE_NAME = "scripts/mover.ts";
@@ -308,4 +328,465 @@ TEST_CASE("script: the layer has one module read and one module write, each in i
     // Anti-vacuity: the scan visited the layer and the same stripped scan still finds the one module compile.
     CHECK(files >= 8U);
     CHECK(moduleCompiles == 1U);
+}
+
+// ---- BY18-BY29: the loader's container branch ------------------------------------------------------------------
+
+namespace {
+
+using std::chrono_literals::operator""ms;
+
+constexpr std::size_t HEADER_BYTES = engine::assets::COOKED_SCRIPT_HEADER_BYTES;
+
+// A module source in memory, with per-path read counts and an optional delay on every read.
+class MemoryBackend final : public engine::FileSystemBackend {
+public:
+    void set(std::string relPath, std::string text) { files[std::move(relPath)] = std::move(text); }
+
+    [[nodiscard]] bool exists(std::string_view relPath) const override { return files.contains(relPath); }
+
+    [[nodiscard]] std::optional<std::uint64_t> fileSize(std::string_view relPath) const override {
+        const auto found = files.find(relPath);
+        if (found == files.end()) {
+            return std::nullopt;
+        }
+        return static_cast<std::uint64_t>(found->second.size());
+    }
+
+    [[nodiscard]] std::optional<engine::ByteBuffer> readFile(std::string_view relPath) const override {
+        ++readCounts[std::string{relPath}];
+        if (readDelay.count() > 0) {
+            std::this_thread::sleep_for(readDelay);
+        }
+        const auto found = files.find(relPath);
+        if (found == files.end()) {
+            return std::nullopt;
+        }
+        engine::ByteBuffer bytes;
+        bytes.reserve(found->second.size());
+        for (const char c : found->second) {
+            bytes.push_back(static_cast<std::byte>(c));
+        }
+        return bytes;
+    }
+
+    [[nodiscard]] std::size_t reads(std::string_view relPath) const {
+        const auto found = readCounts.find(relPath);
+        return found == readCounts.end() ? 0U : found->second;
+    }
+
+    std::chrono::milliseconds readDelay{0};
+
+private:
+    std::map<std::string, std::string, std::less<>> files;
+    mutable std::map<std::string, std::size_t, std::less<>> readCounts;
+};
+
+// A VM over a VFS whose root is one MemoryBackend. Non-movable: the Vm borrows the VFS's address.
+class Fixture {
+public:
+    explicit Fixture(const VmConfig& config = {}) {
+        auto backend = std::make_unique<MemoryBackend>();
+        files = backend.get();
+        vfs.mount(std::move(backend));
+        engine::script::VmCreateResult created = Vm::create(config, vfs);
+        REQUIRE(created.vm.valid());
+        vm = std::move(created.vm);
+    }
+    Fixture(const Fixture&) = delete;
+    Fixture& operator=(const Fixture&) = delete;
+    Fixture(Fixture&&) = delete;
+    Fixture& operator=(Fixture&&) = delete;
+    ~Fixture() = default;
+
+    engine::VirtualFileSystem vfs;
+    MemoryBackend* files = nullptr;
+    Vm vm;
+};
+
+[[nodiscard]] std::vector<std::byte> toBytes(std::string_view text) {
+    const auto* first = reinterpret_cast<const std::byte*>(text.data());
+    return std::vector<std::byte>(first, first + text.size());
+}
+
+[[nodiscard]] std::string toText(const std::vector<std::byte>& bytes) {
+    return std::string{reinterpret_cast<const char*>(bytes.data()), bytes.size()};
+}
+
+// The cooked container of `js`, cooked under `path`: the cook, then writeCookedScript, both required Ok.
+[[nodiscard]] std::string containerOf(std::string_view js, std::string_view path = "res://x.js",
+                                      engine::Guid guid = engine::Guid{}) {
+    const ScriptCookResult cooked = cookScriptBytecode(js, path);
+    REQUIRE(label(cooked) == "Ok");
+    const engine::assets::CookedScriptWriteResult written =
+        engine::assets::writeCookedScript(engine::assets::CookedScriptInput{
+            guid, cooked.backendRelease, cooked.bytecodeVersion, cooked.stripFlags, cooked.payload});
+    REQUIRE(written.status == engine::assets::CookedScriptStatus::Ok);
+    return toText(written.bytes);
+}
+
+// Recomputes the payload hash a mutated container carries (offsets 56 and 64).
+[[nodiscard]] std::vector<std::byte> rehash(std::vector<std::byte> container) {
+    REQUIRE(container.size() > HEADER_BYTES);
+    const std::span<const std::byte> payload = std::span<const std::byte>{container}.subspan(HEADER_BYTES);
+    const engine::ContentHash hash = engine::hashBytes(payload);
+    engine::assets::putU64(container, engine::assets::detail::H_PAYLOAD_HASH_HI, hash.hi);
+    engine::assets::putU64(container, engine::assets::detail::H_PAYLOAD_HASH_LO, hash.lo);
+    return container;
+}
+
+[[nodiscard]] std::string evalLabel(const EvalResult& result) { return std::string{evalStatusLabel(result.status)}; }
+
+[[nodiscard]] std::string completion(Vm& vm, std::string_view source) {
+    const EvalResult result = vm.evaluateScript(source, "probe.js");
+    REQUIRE(evalLabel(result) == "Ok");
+    return result.completion;
+}
+
+[[nodiscard]] std::optional<ModuleRecord> recordOf(const Vm& vm, std::string_view path) {
+    for (ModuleRecord& record : vm.moduleRecords()) {
+        if (record.path == path) {
+            return std::move(record);
+        }
+    }
+    return std::nullopt;
+}
+
+[[nodiscard]] std::string stateOf(const Vm& vm, std::string_view path) {
+    const std::optional<ModuleRecord> record = recordOf(vm, path);
+    return record.has_value() ? std::string{moduleStateLabel(record->state)} : std::string{"<absent>"};
+}
+
+// A container whose payload is about 200 KB: one exported constant and one never-called function.
+[[nodiscard]] std::string bigContainer(std::string_view path) {
+    std::string source = "export const x = 1;\nexport function never(a, b) {\n  let total = 0;\n";
+    for (std::size_t i = 0; source.size() < std::size_t{200} * 1024U; ++i) {
+        source += "  for (let k = 0; k < a; k++) { total += k * b + " + std::to_string(i) + "; }\n";
+    }
+    source += "  return total;\n}\n";
+    return containerOf(source, path);
+}
+
+}  // namespace
+
+TEST_CASE("script: a cooked module loads with the name it is read under, and runs as its JavaScript would (BY18)") {
+    const LogCapture log;
+    Fixture fx;
+    const std::string js =
+        "globalThis.frame = new Error().stack; globalThis.metaType = typeof import.meta; export const x = 1;";
+    fx.files->set("a/b.js", containerOf(js, "res://a/b.js"));
+    const std::uint64_t before = fx.vm.stats().moduleInstances;
+    const EvalResult result = fx.vm.evaluateModule("res://a/b.js");
+    CHECK(evalLabel(result) == "Ok");
+    CHECK(completion(fx.vm, "frame.includes('res://a/b.js:1:')") == "true");
+    CHECK(completion(fx.vm, "frame.includes('res://?')") == "false");
+    CHECK(completion(fx.vm, "metaType") == "object");
+    const std::optional<ModuleRecord> record = recordOf(fx.vm, "res://a/b.js");
+    REQUIRE(record.has_value());
+    CHECK(record->generation == 1U);
+    CHECK(moduleStateLabel(record->state) == "Evaluated");
+    CHECK(fx.vm.stats().moduleInstances == before + 1U);
+    CHECK(log.countAtLeast(LogLevel::Warn) == 0U);
+    expectCleanShutdown(fx.vm);
+}
+
+TEST_CASE("script: the magic decides what a file is, never its name (BY19)") {
+    Fixture fx;
+    fx.files->set("m/x.txt", containerOf("globalThis.fromBytecode = 1;"));
+    fx.files->set("m/y.aeroscript", "globalThis.fromText = 2;");
+    CHECK(evalLabel(fx.vm.evaluateModule("res://m/x.txt")) == "Ok");
+    CHECK(evalLabel(fx.vm.evaluateModule("res://m/y.aeroscript")) == "Ok");
+    CHECK(completion(fx.vm, "fromBytecode + fromText") == "3");
+
+    const std::string magic{engine::assets::COOKED_SCRIPT_MAGIC};
+    REQUIRE(magic.size() == 8U);
+    fx.files->set("m/seven.js", magic.substr(0, 7));
+    CHECK(evalLabel(fx.vm.evaluateModule("res://m/seven.js")) == "CompileError");
+    fx.files->set("m/short.js", magic + std::string(20, 'a'));
+    const EvalResult shortResult = fx.vm.evaluateModule("res://m/short.js");
+    CHECK(evalLabel(shortResult) == "LoadError");
+    CHECK(shortResult.error.message.find("shorter than the 80-byte header") != std::string::npos);
+    expectCleanShutdown(fx.vm);
+}
+
+TEST_CASE("script: every cause that makes a container unusable is a LoadError before the backend reads it (BY20)") {
+    constexpr std::string_view PATH = "res://t/m.js";
+    const std::string container = containerOf("globalThis.v = 12; export const lit = 12;", PATH);
+    const std::vector<std::byte> good = toBytes(container);
+    namespace detail = engine::assets::detail;
+    namespace head = engine::script::internal;
+    REQUIRE(good.size() > HEADER_BYTES + 24U);
+
+    struct Mutation {
+        std::string_view what;
+        std::vector<std::byte> bytes;
+        std::string reason;  // "" -> the parser's own message for these bytes
+    };
+    const auto withWord = [&](std::size_t offset, std::uint32_t value) {
+        std::vector<std::byte> bytes = good;
+        engine::assets::putU32(bytes, offset, value);
+        return bytes;
+    };
+    const auto withPayload = [&](auto edit) {
+        std::vector<std::byte> bytes = good;
+        edit(bytes);
+        return rehash(std::move(bytes));
+    };
+    std::vector<Mutation> mutations;
+    mutations.push_back({"format version 2", withWord(detail::H_FORMAT_VERSION, 2U), ""});
+    mutations.push_back({"reserved flags", withWord(detail::H_RESERVED_FLAGS, 1U), ""});
+    mutations.push_back({"reserved word", withWord(detail::H_RESERVED, 1U), ""});
+    mutations.push_back({"strip flags 2", withWord(detail::H_STRIP_FLAGS, 2U), ""});
+    {
+        std::vector<std::byte> appended = good;
+        appended.push_back(std::byte{0});
+        mutations.push_back({"a byte appended", std::move(appended), ""});
+    }
+    {
+        std::vector<std::byte> flipped = good;
+        flipped[HEADER_BYTES + 12] ^= std::byte{0x40};
+        mutations.push_back({"a payload byte flipped", std::move(flipped), ""});
+    }
+    mutations.push_back({"another release", withWord(detail::H_BACKEND_RELEASE, 0x00000F02U),
+                         "it was cooked for quickjs-ng 0.15.2, and this engine runs 0.15.1"});
+    mutations.push_back({"header version 27", withWord(detail::H_BYTECODE_VERSION, 27U),
+                         "its header declares bytecode version 27, and this engine reads version 26"});
+    mutations.push_back({"payload version byte 27",
+                         withPayload([](std::vector<std::byte>& b) { b[HEADER_BYTES] = std::byte{27}; }),
+                         std::string{head::bytecodeHeadStatusText(head::BytecodeHeadStatus::WrongVersion)}});
+    mutations.push_back({"checksum bypass", withPayload([](std::vector<std::byte>& b) {
+                             for (std::size_t k = 1; k <= 4; ++k) {
+                                 b[HEADER_BYTES + k] = std::byte{0xFF};
+                             }
+                         }),
+                         std::string{head::bytecodeHeadStatusText(head::BytecodeHeadStatus::ChecksumBypass)}});
+    mutations.push_back({"a mid-payload byte flipped, re-hashed",
+                         withPayload([](std::vector<std::byte>& b) { b[HEADER_BYTES + 30] ^= std::byte{0x01}; }),
+                         std::string{head::bytecodeHeadStatusText(head::BytecodeHeadStatus::ChecksumMismatch)}});
+    {
+        const engine::assets::CookedScriptParseResult parsed = engine::assets::parseCookedScript(good);
+        REQUIRE(parsed.status == engine::assets::CookedScriptStatus::Ok);
+        const head::RenamedBytecode renamed =
+            head::renameBytecodeModule(parsed.script.payload, COOK_MODULE_NAME, "res://elsewhere.js");
+        REQUIRE(renamed.status == head::BytecodeHeadStatus::Ok);
+        const engine::assets::CookedScriptWriteResult wrapped =
+            engine::assets::writeCookedScript(engine::assets::CookedScriptInput{
+                engine::Guid{}, scriptBackendRelease(), scriptBytecodeVersion(), 1U, renamed.bytes});
+        REQUIRE(wrapped.status == engine::assets::CookedScriptStatus::Ok);
+        mutations.push_back({"renamed to another module", wrapped.bytes,
+                             std::string{head::bytecodeHeadStatusText(head::BytecodeHeadStatus::NameNotPlaceholder)}});
+    }
+    REQUIRE(mutations.size() == 12U);
+
+    for (const Mutation& mutation : mutations) {
+        INFO("mutation: " << std::string{mutation.what});
+        const LogCapture log;
+        Fixture fx;
+        std::string reason = mutation.reason;
+        if (reason.empty()) {
+            const engine::assets::CookedScriptParseResult parsed = engine::assets::parseCookedScript(mutation.bytes);
+            REQUIRE(parsed.status != engine::assets::CookedScriptStatus::Ok);
+            reason = parsed.message;
+        }
+        REQUIRE_FALSE(reason.empty());
+        fx.files->set("t/m.js", toText(mutation.bytes));
+        const EvalResult result = fx.vm.evaluateModule(PATH);
+        CHECK(evalLabel(result) == "LoadError");
+        CHECK(result.error.message == cookedScriptRefusedMessage(PATH, "", reason));
+        const std::vector<script_test::CapturedRecord> records = log.atLeast(LogLevel::Warn);
+        REQUIRE(records.size() == 1U);
+        CHECK(records[0].level == LogLevel::Error);
+        CHECK_FALSE(recordOf(fx.vm, PATH).has_value());
+        CHECK(fx.vm.stats().moduleInstances == 0U);
+        CHECK(fx.vm.stats().refusedAllocations == 0U);
+        expectCleanShutdown(fx.vm);
+    }
+    // Anti-vacuity: the unmutated container loads in the same shape of fixture.
+    Fixture fx;
+    fx.files->set("t/m.js", container);
+    CHECK(evalLabel(fx.vm.evaluateModule(PATH)) == "Ok");
+    CHECK(completion(fx.vm, "v") == "12");
+    expectCleanShutdown(fx.vm);
+}
+
+TEST_CASE("script: a damaged container is refused with the importer named (BY21)") {
+    Fixture fx;
+    std::vector<std::byte> damaged = toBytes(containerOf("export const x = 1;", "res://t/dep.js"));
+    damaged[HEADER_BYTES + 12] ^= std::byte{0x40};  // the payload no longer hashes to the header's value
+    fx.files->set("t/dep.js", toText(damaged));
+    fx.files->set("t/main.js", "import \"./dep.js\";\n");
+    const EvalResult result = fx.vm.evaluateModule("res://t/main.js");
+    CHECK(evalLabel(result) == "LoadError");
+    CHECK(result.error.message.find("imported by 'res://t/main.js'") != std::string::npos);
+    CHECK(result.error.message.find("its cooked bytecode is refused") != std::string::npos);
+    expectCleanShutdown(fx.vm);
+}
+
+TEST_CASE("script: a read the heap has no room for is OutOfMemory before the backend sees a byte (BY22)") {
+    const std::string container = bigContainer("res://h/big.js");
+    const engine::assets::CookedScriptParseResult parsed = engine::assets::parseCookedScript(toBytes(container));
+    REQUIRE(parsed.status == engine::assets::CookedScriptStatus::Ok);
+    const std::size_t payloadBytes = parsed.script.payload.size();
+    INFO("payload bytes: " << payloadBytes);
+    REQUIRE(payloadBytes >= std::size_t{100} * 1024U);
+    REQUIRE(payloadBytes <= std::size_t{300} * 1024U);
+    REQUIRE(bytecodeReadHeadroom(payloadBytes) > MIN_HEAP_LIMIT_BYTES);
+    {
+        LogCapture log;
+        VmConfig config;
+        config.heapLimitBytes = MIN_HEAP_LIMIT_BYTES;
+        Fixture fx{script_test::patient(config)};
+        fx.files->set("h/big.js", container);
+        const EvalResult result = fx.vm.evaluateModule("res://h/big.js");
+        CHECK(evalLabel(result) == "OutOfMemory");
+        CHECK(result.error.name == "InternalError");
+        CHECK(result.error.message == "out of memory");
+        CHECK(fx.vm.stats().refusedAllocations == 1U);
+        CHECK(fx.vm.stats().moduleInstances == 0U);
+        const std::vector<script_test::CapturedRecord> records = log.atLeast(LogLevel::Warn);
+        REQUIRE(records.size() == 1U);
+        CHECK(records[0].message.starts_with("script: res://h/big.js: out of memory (heap limit 1048576 bytes, "));
+        expectCleanShutdown(fx.vm);
+    }
+    // Anti-vacuity: the same container loads where the room exists.
+    Fixture roomy{script_test::patient()};
+    roomy.files->set("h/big.js", container);
+    CHECK(evalLabel(roomy.vm.evaluateModule("res://h/big.js")) == "Ok");
+    expectCleanShutdown(roomy.vm);
+}
+
+TEST_CASE("script: a container's own refusal is decided before the memory rule (BY23)") {
+    std::vector<std::byte> damaged = toBytes(bigContainer("res://h/big.js"));
+    damaged[HEADER_BYTES + 12] ^= std::byte{0x40};
+    VmConfig config;
+    config.heapLimitBytes = MIN_HEAP_LIMIT_BYTES;
+    Fixture fx{script_test::patient(config)};
+    fx.files->set("h/big.js", toText(damaged));
+    const EvalResult result = fx.vm.evaluateModule("res://h/big.js");
+    CHECK(evalLabel(result) == "LoadError");
+    CHECK(fx.vm.stats().refusedAllocations == 0U);
+    expectCleanShutdown(fx.vm);
+}
+
+TEST_CASE("script: the read headroom covers the measured peak of a real read (BY24)") {
+    struct Subject {
+        std::string_view name;
+        std::string container;
+    };
+    const std::array<Subject, 3> subjects{{
+        {"a one-line module", containerOf("export const x = 1;\n", "res://p/m.js")},
+        {"a ~200 KB module", bigContainer("res://p/m.js")},
+        // The worst shape measured: many small functions, each its own piece of bytecode.
+        {"a ~200 KB module of small functions", containerOf(generatedSource(GENERATED_BYTES), "res://p/m.js")},
+    }};
+    for (const Subject& subject : subjects) {
+        INFO("subject: " << std::string{subject.name});
+        const engine::assets::CookedScriptParseResult parsed =
+            engine::assets::parseCookedScript(toBytes(subject.container));
+        REQUIRE(parsed.status == engine::assets::CookedScriptStatus::Ok);
+        const std::size_t payloadBytes = parsed.script.payload.size();
+        Fixture fx{script_test::patient()};
+        fx.files->set("p/m.js", subject.container);
+        const engine::script::VmStats before = fx.vm.stats();
+        CHECK(evalLabel(fx.vm.evaluateModule("res://p/m.js")) == "Ok");
+        const engine::script::VmStats after = fx.vm.stats();
+        REQUIRE(after.heapBytesPeak >= before.heapBytesInUse);
+        const std::size_t peakGrowth = after.heapBytesPeak - before.heapBytesInUse;
+        CHECK(peakGrowth <= bytecodeReadHeadroom(payloadBytes));
+        CHECK(after.heapBytesPeak > before.heapBytesPeak);  // anti-vacuity: the load did allocate
+        MESSAGE(std::string{subject.name} << ": payload " << payloadBytes << " bytes, peak growth " << peakGrowth
+                                          << " bytes, ratio "
+                                          << (static_cast<double>(peakGrowth) / static_cast<double>(payloadBytes)));
+        expectCleanShutdown(fx.vm);
+    }
+}
+
+TEST_CASE("script: a reloaded bytecode module is read again under its next generation's name (BY25)") {
+    Fixture fx;
+    const std::string js =
+        "globalThis.stacks = globalThis.stacks ?? []; globalThis.metas = globalThis.metas ?? [];\n"
+        "globalThis.fns = globalThis.fns ?? []; globalThis.stacks.push(new Error().stack);\n"
+        "globalThis.metas.push(import.meta); export const f = () => 41 + 1; globalThis.fns.push(f);";
+    fx.files->set("g/m.js", containerOf(js, "res://g/m.js"));
+    CHECK(evalLabel(fx.vm.evaluateModule("res://g/m.js")) == "Ok");
+    CHECK(fx.files->reads("g/m.js") == 1U);
+    CHECK_FALSE(fx.vm.invalidateModule("res://g/m.js").empty());
+    CHECK(evalLabel(fx.vm.evaluateModule("res://g/m.js")) == "Ok");
+    CHECK(fx.files->reads("g/m.js") == 2U);
+    CHECK(completion(fx.vm, "stacks.length") == "2");
+    CHECK(completion(fx.vm, "stacks[0].includes('res://g/m.js:') && !stacks[0].includes('?gen=')") == "true");
+    CHECK(completion(fx.vm, "stacks[1].includes('res://g/m.js?gen=2:')") == "true");
+    CHECK(completion(fx.vm, "metas[0] !== metas[1]") == "true");
+    CHECK(completion(fx.vm, "fns[0]()") == "42");
+    expectCleanShutdown(fx.vm);
+}
+
+TEST_CASE("script: a failed load retires the bytecode modules it read (BY26)") {
+    Fixture fx;
+    fx.files->set("g/dep.js", containerOf("globalThis.depStack = new Error().stack;", "res://g/dep.js"));
+    fx.files->set("g/entry.js", "import \"./dep.js\";\nimport \"./missing.js\";\n");
+    const EvalResult failed = fx.vm.evaluateModule("res://g/entry.js");
+    CHECK(evalLabel(failed) == "LoadError");
+    const std::optional<ModuleRecord> dep = recordOf(fx.vm, "res://g/dep.js");
+    REQUIRE(dep.has_value());
+    CHECK(dep->generation == 2U);
+    CHECK(moduleStateLabel(dep->state) == "Unloaded");
+    CHECK(fx.files->reads("g/dep.js") == 1U);
+
+    fx.files->set("g/missing.js", "export {};");
+    fx.files->set("g/second.js", "import \"./dep.js\";\n");
+    CHECK(evalLabel(fx.vm.evaluateModule("res://g/second.js")) == "Ok");
+    CHECK(fx.files->reads("g/dep.js") == 2U);
+    CHECK(completion(fx.vm, "depStack.includes('res://g/dep.js?gen=2:')") == "true");
+    expectCleanShutdown(fx.vm);
+}
+
+TEST_CASE("script: import() reaches a container, and a container's import() resolves against its own path (BY27)") {
+    Fixture fx;
+    fx.files->set("c/dep.js", containerOf("export const x = 5;", "res://c/dep.js"));
+    fx.files->set("c/entry.js", "import(\"./dep.js\").then((m) => { globalThis.fromDep = m.x; });\n");
+    CHECK(evalLabel(fx.vm.evaluateModule("res://c/entry.js")) == "Ok");
+    CHECK(completion(fx.vm, "fromDep") == "5");
+
+    fx.files->set("c/sib.js", "export const s = 9;");
+    const std::string js = "const m = await import(\"./sib.js\"); globalThis.sib = m.s;";
+    fx.files->set("c/main.js", containerOf(js, "res://c/main.js"));
+    CHECK(evalLabel(fx.vm.evaluateModule("res://c/main.js")) == "Ok");
+    CHECK(completion(fx.vm, "sib") == "9");
+    expectCleanShutdown(fx.vm);
+}
+
+TEST_CASE("script: the call's budget covers a container's load (BY28)") {
+    const std::string container = containerOf("globalThis.ran = 1;", "res://d/m.js");
+    {
+        VmConfig config;
+        config.callTimeBudget = 20ms;
+        Fixture fx{config};
+        fx.files->set("d/m.js", container);
+        fx.files->readDelay = 100ms;
+        const EvalResult result = fx.vm.evaluateModule("res://d/m.js");
+        CHECK(evalLabel(result) == "Interrupted");
+        CHECK(fx.vm.stats().moduleInstances == 0U);
+        expectCleanShutdown(fx.vm);
+    }
+    Fixture fx;
+    fx.files->set("d/m.js", container);
+    CHECK(evalLabel(fx.vm.evaluateModule("res://d/m.js")) == "Ok");
+    CHECK(completion(fx.vm, "ran") == "1");
+    expectCleanShutdown(fx.vm);
+}
+
+TEST_CASE("script: the source size cap applies to a container before it is read (BY29)") {
+    VmConfig config;
+    config.heapLimitBytes = MIN_HEAP_LIMIT_BYTES;
+    Fixture fx{config};
+    std::string big{engine::assets::COOKED_SCRIPT_MAGIC};
+    big.resize(MIN_HEAP_LIMIT_BYTES + 1U, 'a');
+    fx.files->set("big/m.js", big);
+    const EvalResult result = fx.vm.evaluateModule("res://big/m.js");
+    CHECK(evalLabel(result) == "LoadError");
+    CHECK(result.error.message == engine::script::internal::tooLargeMessage(
+                                      "res://big/m.js", "", MIN_HEAP_LIMIT_BYTES + 1U, MIN_HEAP_LIMIT_BYTES));
+    CHECK(fx.files->reads("big/m.js") == 0U);
+    expectCleanShutdown(fx.vm);
 }

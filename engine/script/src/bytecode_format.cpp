@@ -3,13 +3,17 @@
 // pinned by tests/script_bytecode_format_test.cpp.
 
 #include <aero/assets/cooked_mesh.hpp>  // getU32 / putU32: the one little-endian pair (its static_assert is the proof)
+#include <aero/assets/cooked_script.hpp>
 #include <aero/script/internal/bytecode_format.hpp>
 
 #include <cstddef>
 #include <cstdint>
+#include <format>
 #include <limits>
 #include <span>
+#include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace engine::script::internal {
@@ -181,6 +185,37 @@ std::size_t bytecodeReadHeadroom(std::size_t payloadBytes) noexcept {
         return MAX;
     }
     return BYTECODE_READ_FIXED_BYTES + BYTECODE_READ_BYTES_PER_PAYLOAD_BYTE * payloadBytes;
+}
+
+PreparedBytecode prepareCookedModule(std::span<const std::byte> container, std::string_view moduleName,
+                                     std::uint32_t backendRelease) {
+    PreparedBytecode out;
+    const assets::CookedScriptParseResult parsed = assets::parseCookedScript(container);
+    if (parsed.status != assets::CookedScriptStatus::Ok) {
+        out.refusal = parsed.message;
+        return out;
+    }
+    const assets::CookedScript& script = parsed.script;
+    if (script.backendRelease != backendRelease) {
+        const auto part = [](std::uint32_t release, unsigned shift) { return (release >> shift) & 0xFFU; };
+        out.refusal =
+            std::format("it was cooked for quickjs-ng {}.{}.{}, and this engine runs {}.{}.{}",
+                        part(script.backendRelease, 16), part(script.backendRelease, 8), part(script.backendRelease, 0),
+                        part(backendRelease, 16), part(backendRelease, 8), part(backendRelease, 0));
+        return out;
+    }
+    if (script.bytecodeVersion != SCRIPT_BYTECODE_VERSION) {
+        out.refusal = std::format("its header declares bytecode version {}, and this engine reads version {}",
+                                  script.bytecodeVersion, static_cast<unsigned>(SCRIPT_BYTECODE_VERSION));
+        return out;
+    }
+    RenamedBytecode renamed = renameBytecodeModule(script.payload, COOK_MODULE_NAME, moduleName);
+    if (renamed.status != BytecodeHeadStatus::Ok) {
+        out.refusal = std::string{bytecodeHeadStatusText(renamed.status)};
+        return out;
+    }
+    out.payload = std::move(renamed.bytes);
+    return out;
 }
 
 }  // namespace engine::script::internal

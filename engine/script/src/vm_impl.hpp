@@ -203,6 +203,9 @@ struct Vm::Impl {
     // The one place bytecode becomes a module (JS_ReadObject): the payload as the cook wrote it, a module name already
     // in it. The failure is pending on JS_EXCEPTION.
     [[nodiscard]] HeldValue readModuleBytes(std::span<const std::byte> payload);
+    // The name the backend holds a module under (JS_GetModuleName, the atom and its C string freed on every path);
+    // nullopt when the conversion failed, its out-of-memory error left pending.
+    [[nodiscard]] std::optional<std::string> moduleNameOf(JSModuleDef* module);
     [[nodiscard]] char* serveDynamicImport(const char* base, const char* specifier);
     // The outcome of one watched module evaluation: the record (unless a carried watch's path was reloaded since), the
     // attribution of the body's rejections (§C.7 as amended), the flag clearing (D10). A rejected static entry of the

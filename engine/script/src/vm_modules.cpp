@@ -3,8 +3,11 @@
 // the grammar, the names, the table, the texts -- are module_graph.hpp's; this file is the sequence of backend calls
 // around them.
 
+#include <aero/assets/cooked_script.hpp>
 #include <aero/core/log.hpp>
 #include <aero/core/vfs.hpp>
+#include <aero/script/bytecode.hpp>
+#include <aero/script/internal/bytecode_format.hpp>
 #include <aero/script/internal/module_graph.hpp>
 #include <aero/script/vm.hpp>
 
@@ -220,12 +223,60 @@ JSModuleDef* Vm::Impl::compileModule(std::string_view key, std::string_view impo
         refuse("TypeError", internal::tooLargeMessage(key, importer, text->size(), config.heapLimitBytes));
         return nullptr;
     }
+    // The name is the current generation's: a later generation is never found under an older one's name.
+    const std::string name = internal::encodeModuleName(key, moduleTable.generation(key));
+    const std::span<const std::byte> bytes{reinterpret_cast<const std::byte*>(text->data()), text->size()};
+    if (assets::hasCookedScriptMagic(bytes)) {
+        // 1. Every cause that makes the container unusable is a LoadError, decided before the deadline and before any
+        //    memory rule, and before the backend sees a byte.
+        const internal::PreparedBytecode prepared = internal::prepareCookedModule(bytes, name, scriptBackendRelease());
+        if (!prepared.refusal.empty()) {
+            refuse("TypeError", internal::cookedScriptRefusedMessage(key, importer, prepared.refusal));
+            return nullptr;
+        }
+        // 2. A read never polls the interrupt handler: the deadline is checked before it.
+        if (deadlinePassed()) {
+            return nullptr;
+        }
+        // 3. An out-of-memory inside the backend's module reader can crash it, so the read starts only with room for
+        //    its measured peak. The refusal is counted by the heap, so classify reads it as OutOfMemory.
+        if (!heap.admitsHeadroom(internal::bytecodeReadHeadroom(prepared.payload.size()))) {
+            static_cast<void>(JS_ThrowOutOfMemory(ctx));
+            return nullptr;
+        }
+        // 4. A read is a load: the module is listed under `name` at once and its imports load inside the call.
+        moduleTable.beginCompile(key);
+        ++attempt->depth;
+        attempt->compiling.emplace_back(key);
+        const HeldValue read = readModuleBytes(prepared.payload);
+        attempt->compiling.pop_back();
+        --attempt->depth;
+        if (read.isException()) {
+            return nullptr;  // the backend unlisted it; the failure is pending
+        }
+        auto* module = static_cast<JSModuleDef*>(JS_VALUE_GET_PTR(read.get()));
+        moduleTable.markLoaded(key, module);
+        attempt->created.emplace_back(key);  // BEFORE the check below: a failure from here retires it
+        ++moduleInstances;
+        // 5. The read named the module as requested. Defence in depth, unreachable: the rename wrote exactly `name`.
+        const std::optional<std::string> readName = moduleNameOf(module);
+        if (!readName.has_value()) {
+            return nullptr;  // out of memory, pending
+        }
+        if (*readName != name) {
+            assert(false && "the rename wrote the name the loader requested");
+            refuse("TypeError",
+                   internal::cookedScriptRefusedMessage(
+                       key, importer, std::format("the read named the module '{}', not '{}'", *readName, name)));
+            return nullptr;
+        }
+        return module;
+    }
     if (deadlinePassed()) {
         return nullptr;
     }
     // The compile resolves the module's imports, so its children are loaded inside it (loadModule), each one level
-    // deeper. Its name is the current generation's: a later generation is never found under an older one's name.
-    const std::string name = internal::encodeModuleName(key, moduleTable.generation(key));
+    // deeper.
     moduleTable.beginCompile(key);
     ++attempt->depth;
     attempt->compiling.emplace_back(key);
@@ -246,6 +297,18 @@ JSModuleDef* Vm::Impl::compileModule(std::string_view key, std::string_view impo
 HeldValue Vm::Impl::compileModuleText(const std::string& text, const std::string& name) {
     constexpr int MODULE_COMPILE = JS_EVAL_TYPE_MODULE | JS_EVAL_FLAG_COMPILE_ONLY;
     return HeldValue{ctx, JS_Eval(ctx, text.c_str(), text.size(), name.c_str(), MODULE_COMPILE)};
+}
+
+std::optional<std::string> Vm::Impl::moduleNameOf(JSModuleDef* module) {
+    const JSAtom atom = JS_GetModuleName(ctx, module);
+    const char* text = JS_AtomToCString(ctx, atom);
+    JS_FreeAtom(ctx, atom);
+    if (text == nullptr) {
+        return std::nullopt;
+    }
+    std::string name{text};
+    JS_FreeCString(ctx, text);
+    return name;
 }
 
 HeldValue Vm::Impl::readModuleBytes(std::span<const std::byte> payload) {

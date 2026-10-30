@@ -8,6 +8,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <span>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -61,5 +62,16 @@ struct RenamedBytecode {
 
 // BYTECODE_READ_FIXED_BYTES + BYTECODE_READ_BYTES_PER_PAYLOAD_BYTE * payloadBytes, saturating at SIZE_MAX.
 [[nodiscard]] std::size_t bytecodeReadHeadroom(std::size_t payloadBytes) noexcept;
+
+struct PreparedBytecode {
+    std::string refusal;  // "" iff usable; else the reason, a fragment after "its cooked bytecode is refused: "
+    std::vector<std::byte> payload;  // the payload renamed to the module's name iff usable
+};
+// Every check on a cooked script container that needs no backend, in this order, stopping at the first refusal: the
+// container's own parse (the parser's message, verbatim); the backend release it was cooked for against
+// `backendRelease`; the header's bytecode version; and the payload's head and rename to `moduleName`
+// (renameBytecodeModule, which re-verifies the version byte and the backend checksum). `container` is never modified.
+[[nodiscard]] PreparedBytecode prepareCookedModule(std::span<const std::byte> container, std::string_view moduleName,
+                                                   std::uint32_t backendRelease);
 
 }  // namespace engine::script::internal

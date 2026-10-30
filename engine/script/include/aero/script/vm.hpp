@@ -108,7 +108,8 @@ enum class EvalStatus : std::uint8_t {
     InvalidVm,     // a failed create's Vm, or a moved-from one
     WrongThread,   // called from a thread that is not the VM's; nothing was touched
     LoadError,     // a module of the graph could not be obtained -- a refused specifier or import attribute, not found
-                   // or unreadable through the VFS, no module source, over the size or depth limit; nothing ran;
+                   // or unreadable through the VFS, no module source, over the size or depth limit, a cooked container
+                   // refused; nothing ran;
                    // decided before any out-of-memory rule: no load refusal is caused by memory
 };
 [[nodiscard]] std::string_view evalStatusLabel(EvalStatus status) noexcept;
@@ -271,6 +272,11 @@ public:
     // (InternalError: out of memory), the parser's own error as its `cause` when the parser reported one. A rejection a
     // module body makes with the very value the module then fails with, while its evaluation is pending, counts as that
     // one failure.
+    //
+    // A module file that begins with the cooked script magic (docs/09 section 16) is bytecode `aero_cooker script`
+    // wrote; any other file is JavaScript. Both are read, limited and named the same way. A container this engine
+    // cannot use is a LoadError before the backend reads it; one the heap has no room to read safely is OutOfMemory
+    // (R31).
     [[nodiscard]] EvalResult evaluateModule(std::string_view virtualPath);
 
     // The module cache: every path the VM has started to compile, sorted by path. The VM's thread only: from another
