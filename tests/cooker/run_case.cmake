@@ -208,10 +208,10 @@ function(aero_read_manifest out_names out_hashes)
         list(APPEND hashes "${hash}")
     endforeach()
     list(LENGTH names count)
-    # A LITERAL 20, never a count derived from the file it is checking: a guard computed from its own
-    # subject cannot see a line deleted. All five cases assert it, so a deletion reddens them at once.
-    if(NOT count EQUAL 20)
-        message(FATAL_ERROR "case '${CASE}': the manifest holds ${count} entries, expected exactly 20")
+    # A LITERAL 22, never a count derived from the file it is checking: a guard computed from its own
+    # subject cannot see a line deleted. All six cases assert it, so a deletion reddens them at once.
+    if(NOT count EQUAL 22)
+        message(FATAL_ERROR "case '${CASE}': the manifest holds ${count} entries, expected exactly 22")
     endif()
     set(${out_names} "${names}" PARENT_SCOPE)
     set(${out_hashes} "${hashes}" PARENT_SCOPE)
@@ -1317,13 +1317,14 @@ elseif(CASE STREQUAL "no_skins_gltf")
 
 # --- task 3.3.3: the frozen cook-determinism manifest ---------------------------------------------
 #
-# FIVE cases, one shape (task 3.5.1 added the third, task 3.5.2 the fourth, task 3.7.1 the fifth).
+# SIX cases, one shape (task 3.5.1 added the third, task 3.5.2 the fourth, task 3.7.1 the fifth, task
+# 4.3.2 the sixth).
 # Each cooks its tuples ONCE through the real binary and requires the artifact's SHA-256 to equal the
 # line tests/cooker/determinism.sha256 records for that name. Because the cooker takes no gate flag,
-# all five register in all three build configurations, and because CI runs ctest in Debug and Release
-# on three lanes, the five arms run 5 x 3 x 2 = THIRTY times per push -- which is SIX complete checks
-# of all twenty lines, one per lane-and-configuration. All thirty green means every lane and both
-# configurations equal the manifest, therefore they equal each other.
+# all six register in all three build configurations, and because CI runs ctest in Debug and Release
+# on three lanes, the six arms run 6 x 3 x 2 = THIRTY-SIX times per push -- which is SIX complete checks
+# of all twenty-two lines, one per lane-and-configuration. All thirty-six green means every lane and
+# both configurations equal the manifest, therefore they equal each other.
 #
 # EVERY NUMBER IN THIS BLOCK IS RE-DERIVED WHEN AN ARM IS ADDED, NEVER INCREMENTED. Task 3.7.1's
 # code-review round found this whole header still reading "four" and "eighteen" and "TWELVE" while a
@@ -1331,17 +1332,17 @@ elseif(CASE STREQUAL "no_skins_gltf")
 # lanes x 2 configurations when task 3.3.3 wrote it), so incrementing it would have been wrong even
 # if somebody had noticed the word.
 #
-# A FIFTH ARM RATHER THAN A WIDER TUPLE TABLE, and that is structural: aero_manifest_tuple reads the
+# A SIXTH ARM RATHER THAN A WIDER TUPLE TABLE, and that is structural: aero_manifest_tuple reads the
 # arm-level SUBCOMMAND, and the KIND_PREFIX orphan check below ("every manifest line of THIS case's
 # kind was actually cooked") stays sound only while every line's prefix is claimed by exactly one arm.
 #
 # The artifacts land in ${WORK_DIR}/artifacts/ and the CI job uploads exactly that directory. The
 # perturbed re-cook lands in ${WORK_DIR}/perturbed/ so it cannot enter the upload set, which is
-# twenty files across the five cases and nothing else.
+# twenty-two files across the six cases and nothing else.
 
 elseif(CASE STREQUAL "golden_manifest" OR CASE STREQUAL "texture_golden_manifest"
        OR CASE STREQUAL "skeleton_golden_manifest" OR CASE STREQUAL "animation_golden_manifest"
-       OR CASE STREQUAL "audio_golden_manifest")
+       OR CASE STREQUAL "audio_golden_manifest" OR CASE STREQUAL "script_golden_manifest")
     set(ASSETS "${SOURCE_DIR}/tests/fixtures/assets")
     set(ARTIFACTS "${WORK_DIR}/artifacts")
     file(MAKE_DIRECTORY "${ARTIFACTS}")
@@ -1484,7 +1485,7 @@ elseif(CASE STREQUAL "golden_manifest" OR CASE STREQUAL "texture_golden_manifest
         # order our own writer wrote them and no single-lane check can see them swapped.
         aero_manifest_tuple(animation-skinned-cubic.aeroanim
             --input "${ASSETS}/skinned.gltf" --clip 2 --guid "${TEST_GUID}")
-    else()
+    elseif(CASE STREQUAL "audio_golden_manifest")
         set(SUBCOMMAND audio)
         set(KIND_PREFIX "audio-")
         set(TUPLE_COUNT 2)              # LITERAL, beside the two calls it counts
@@ -1508,6 +1509,21 @@ elseif(CASE STREQUAL "golden_manifest" OR CASE STREQUAL "texture_golden_manifest
             --input "${AUDIO_FIXTURES}/tone.wav" --guid "${TEST_GUID}")
         aero_manifest_tuple(audio-tone-flac.aerowave
             --input "${AUDIO_FIXTURES}/tone.flac" --guid "${TEST_GUID}")
+    else()
+        set(SUBCOMMAND script)
+        set(KIND_PREFIX "script-")
+        set(TUPLE_COUNT 2)              # LITERAL, beside the two calls it counts
+        # task 4.3.2 -- the .aeroscript container and quickjs-ng's own bytecode anchored cross-lane,
+        # cross-configuration and cross-time from the day they ship. TWO TUPLES AND EXACTLY TWO.
+        # script-hello is the minimal path (nil GUID, and the perturbed re-cook's input); script-features
+        # is the richest bundle the tree commits (floats, BigInt, regexps, Unicode, the default class)
+        # under a REAL --guid, the skeleton posture: the header's hi/lo emit order is then pinned across
+        # lanes too. Both lines pin the BACKEND's serialisation of a compiled module, so a vcpkg port
+        # bump that changes those bytes reddens them by design, with a COOKED_SCRIPT_COOKER_VERSION bump.
+        aero_manifest_tuple(script-hello.aeroscript
+            --input "${FIXTURES}/hello.js")
+        aero_manifest_tuple(script-features.aeroscript
+            --input "${SOURCE_DIR}/tests/fixtures/scripts/bytecode/features.js" --guid "${TEST_GUID}")
     endif()
 
     # --- the mismatch report ------------------------------------------------------------------------

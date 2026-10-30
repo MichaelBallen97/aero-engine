@@ -3410,7 +3410,11 @@ is a `formatVersion` bump, because the parser refuses non-zero.
 ### 16.7 Determinism (normative)
 
 The cook's bytes are a cross-lane contract: the same source, GUID and backend release give the same container on every
-platform and configuration.
+platform and configuration. Two lines of `tests/cooker/determinism.sha256` pin it: `script-hello.aeroscript` (nil GUID,
+the minimal module) and `script-features.aeroscript` (a real GUID, and the richest bundle the tree commits: floats,
+BigInt, regexps, Unicode and a default-exported class). Both checked by `cooker.script_golden_manifest` on every lane
+and configuration. They carry quickjs-ng's own bytecode, so a port bump that changes those bytes is a
+`COOKED_SCRIPT_COOKER_VERSION` bump with the manifest regenerated in the same commit.
 
 ### 16.8 What it does not carry
 

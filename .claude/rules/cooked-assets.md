@@ -36,15 +36,16 @@ green.** The CMakeLists' own comment says so; the grep is the second line of def
 - **No `std::map`, `std::unordered_map`, `std::set` or `std::unordered_set` in `engine/assets`.** There
   must be no iteration order for the output to depend on, and MSVC's node-based containers are not
   nothrow-movable (3.1.2's R9, measured in CI as `C2607`). Grouping is a sorted vector.
-- **`tests/cooker/determinism.sha256` is FROZEN at 20 hash lines across FIVE arms / 40 cross-lane
-  comparisons since task 3.7.1, and a red `cooker.golden_manifest` /
+- **`tests/cooker/determinism.sha256` is FROZEN at 22 hash lines across SIX arms / 44 cross-lane
+  comparisons since task 4.3.2, and a red `cooker.golden_manifest` /
   `cooker.texture_golden_manifest` / `cooker.skeleton_golden_manifest` /
-  `cooker.animation_golden_manifest` / `cooker.audio_golden_manifest` is `docs/09` section 9.11's
+  `cooker.animation_golden_manifest` / `cooker.audio_golden_manifest` /
+  `cooker.script_golden_manifest` is `docs/09` section 9.11's
   `cookerVersion` sentence firing** — the
   same input now cooks to different bytes. Regenerate **in the same commit** as the cook change and the
   matching `COOKED_MESH_COOKER_VERSION` / `COOKED_TEXTURE_COOKER_VERSION` /
   `COOKED_SKELETON_COOKER_VERSION` / `COOKED_ANIMATION_COOKER_VERSION` /
-  `COOKED_AUDIO_COOKER_VERSION` bump, with the PR saying why;
+  `COOKED_AUDIO_COOKER_VERSION` / `COOKED_SCRIPT_COOKER_VERSION` bump, with the PR saying why;
   the procedure is in the manifest's own header and the failing case prints every replacement line
   verbatim. **Never edit a hash to green a red run.** A vcpkg baseline bump that reds it is the tripwire
   WORKING, not flake — root-cause first, and never per-lane manifests. Lookup is by name and two names
@@ -514,9 +515,9 @@ under Phase 3.
 
 ## The determinism manifest
 
-**THE DETERMINISM MANIFEST IS FROZEN** at **20 hash lines across FIVE arms / 40 cross-lane comparisons**. A red
-manifest case is `docs/09` §9.11's `cookerVersion` sentence firing; the five constants to bump are
-`COOKED_{MESH,TEXTURE,SKELETON,ANIMATION,AUDIO}_COOKER_VERSION`, and the regeneration ritual lives in the
+**THE DETERMINISM MANIFEST IS FROZEN** at **22 hash lines across SIX arms / 44 cross-lane comparisons**. A red
+manifest case is `docs/09` §9.11's `cookerVersion` sentence firing; the six constants to bump are
+`COOKED_{MESH,TEXTURE,SKELETON,ANIMATION,AUDIO,SCRIPT}_COOKER_VERSION`, and the regeneration ritual lives in the
 manifest's own header. **Never edit a hash to green a red run.** **mp3 and ogg are deliberately NOT in it and
 never may be** (`docs/09` §14.7): their decoders run floating-point transforms whose paths differ by SIMD
 availability and FMA contraction policy. `cooker.audio_lossy_digests` prints both digests on every lane and

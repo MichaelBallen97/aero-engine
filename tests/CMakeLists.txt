@@ -1067,7 +1067,7 @@ set(_aero_cooker_cases
     # animation_golden_manifest below -- cook the whole 18-artifact matrix through the real binary and
     # compare against tests/cooker/determinism.sha256. Their WORK_DIRs are what ci.yml's `build` legs
     # upload and its `cook-determinism` job downloads -- if any of them is renamed, THREE places change
-    # together: this list, the upload step's four paths, and the job's directory expectations.
+    # together: this list, the upload step's paths, and the job's directory expectations.
     golden_manifest texture_golden_manifest
     # task 3.5.1 -- the skeleton subcommand. Ten more names, on the same terms: ungated, so ctest -N
     # moves in ALL THREE configurations again. MEASURED at the tip of this branch, never derived by
@@ -1172,6 +1172,15 @@ set(_aero_cooker_cases
     script_happy script_unknown_flag script_missing_input script_bad_extension script_unreadable_input
     script_compile_error script_import_refused script_output_dir_missing script_guid_written
     script_determinism
+    # task 4.3.2 -- the manifest's SIXTH arm, and the eleventh name this task adds. A separate arm
+    # rather than two more tuples on an existing one for the reason 3.5.1 recorded: aero_manifest_tuple
+    # reads the arm-level SUBCOMMAND, and the per-kind orphan check stays sound only while exactly one
+    # arm claims each name prefix. It cooks script-hello.aeroscript and script-features.aeroscript, so
+    # tests/cooker/determinism.sha256 goes 20 -> 22 lines and every literal pinning it moves at once --
+    # including ci.yml's four `-ne 20` sites, its `-ne 40`, its upload paths and the manifest header's
+    # own regeneration regex. Ungated like every name above it, so ctest -N moves by the SAME +1 in all
+    # three configurations, measured (never derived by addition).
+    script_golden_manifest
 )
 foreach(_aero_case IN LISTS _aero_cooker_cases)
     add_test(
