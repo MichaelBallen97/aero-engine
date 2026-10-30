@@ -149,6 +149,21 @@ engine pins it), the rename's parse of the atom table, the checksum mirror and t
 remainder-4 arm), the backend release in every container, BY24's ratios, and the manifest's two script lines
 (`COOKED_SCRIPT_COOKER_VERSION` bumps with them).
 
+**THE IMPORT PATH'S C STACK PER LEVEL IS A BUDGET, AND WINDOWS DEBUG SEES IT FIRST (4.3.2, CI run
+`41060944618`).** One nested static import is ten frames, seven of the backend's and `loadModule` →
+`compileModule` → `compileModuleText`, and the cap admits `stackLimitBytes / 8 KiB` levels, so a level must stay
+under 8 KiB on every lane or the backend's stack check refuses (`CompileError`) a chain the cap admits. ML35 is
+the witness on every lane, and MSVC Debug (ASan) comes closest: the bytecode branch inside `compileModule` failed
+ML35 there alone. At `-O0` and `/Od` every local of every scope keeps its own slot, and libc++'s `std::format` is
+always-inline with a 256-byte buffer, so a branch's locals are paid at every level whether it runs or not. The
+three frames therefore hold only what is live across the nested compile: the checks before it are in
+`readModuleSource`, the bytecode branch in `compileCookedModule`, the magic test in `isCookedScriptText`, each
+`AERO_SCRIPT_NOINLINE` (`__declspec(noinline)` on MSVC, which ignores `[[gnu::noinline]]`), and none of the three
+calls `std::format`. A change to them re-measures a level: a test VFS backend's `fileSize` runs once per level, so
+the difference of its frame address between consecutive levels is one level's cost (macOS at 4.3.2: 3904 B Debug,
+1040 B Release; `main` before it 5216 / 1024). macOS keeps eight levels of slack at 64 KiB, so no local seed can
+redden ML35: a regression here shows on Windows CI first. R33.
+
 ## What Phase 4's next tasks inherit
 
 **Phase 4 is open; Epic 4.1 is closed (4.1.1, 4.1.2) and 4.2.1, quickjs binding emission, is merged (`docs/tasks/phase-4.md`).**

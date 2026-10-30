@@ -181,3 +181,10 @@ libc++ and libstdc++ hand back a raw pointer and accept it. Write `const auto`.
 `bytecode_cook.cpp`).** It materialises the result through the move constructor, so a `?:` over a non-movable type
 (`HeldValue`) is C2280 on Windows alone while Clang and GCC compile it. Initialise the variable from the call in each
 branch instead, and share the tail through a helper that takes a `const` reference.
+
+**MSVC DEBUG IS THE TIGHTEST C-STACK LANE (4.3.2, CI run `41060944618`).** ML35's eight-module chain at the
+64 KiB minimum passed on every other lane, Linux Debug with ASan included, and failed on Windows Debug alone. `/Od`
+gives every local and temporary its own slot, ASan adds redzones, and without
+`/fsanitize-address-use-after-return` (not set in `cmake/sanitizers.cmake`) no fake stack takes locals off the C
+stack. A depth or recursion budget is measured against that lane's frames, and `scripting.md` holds the import
+path's.

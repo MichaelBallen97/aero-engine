@@ -327,6 +327,9 @@ on Windows. `ST32` skips there too, and `ST36` runs on macOS only: whether a wro
 Windows as on APFS is unmeasured. The copy beside the editor, `AERO_ESBUILD_PATH`, the watcher's rescan and the 30 s
 limit on a hung binary (the page's rows 1–7) have run on macOS alone.
 
+**4.3.2's per-level stack figures are macOS's alone (R33).** CI's six lanes run ML35, which shows that a level
+fits the 8 KiB budget, not by how much; no Windows or Linux machine has measured one level's frames.
+
 **METHOD TRAPS FOR DRIVING THE EDITOR, ALL MEASURED.** A pending TCC prompt stalls the editor to ~0.2% CPU
 with a window that **NEVER RENDERS** (a black capture); the prompts **CASCADE**, one per bundle identity, and
 both kinds accept a synthetic click on the affirmative button derived from the dialog's own **fresh** bounds
