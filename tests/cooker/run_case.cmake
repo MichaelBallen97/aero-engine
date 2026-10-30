@@ -407,6 +407,14 @@ elseif(CASE STREQUAL "no_subcommand")
     # caught all four times, and task 4.3.2 changed it a fifth time.
     aero_expect_contains("${err}" "expected: mesh, texture, skeleton, animation, audio or script" "stderr")
     aero_verify_no_files_in("${WORK_DIR}")
+    # The arguments above start with a flag, so the tool reads "--input" as an unknown subcommand and
+    # prints the OTHER literal. The message for a bare invocation (argc < 2) is a different line of
+    # main.cpp, reached only with no argument at all, and names the subcommands separately.
+    aero_run_tool(OUT_RESULT bare_result OUT_STDERR bare_err)
+    aero_expect_exit("${bare_result}" 1)
+    aero_expect_contains("${bare_err}" "no subcommand given" "stderr")
+    aero_expect_contains("${bare_err}" "(expected: mesh, texture, skeleton, animation, audio or script)" "stderr")
+    aero_verify_no_files_in("${WORK_DIR}")
 
 elseif(CASE STREQUAL "unknown_subcommand")
     # REWRITTEN AT TASK 3.3.2, and this is the whole reason it needed rewriting: it used to pass
@@ -1233,6 +1241,9 @@ elseif(CASE STREQUAL "script_import_refused")
     aero_expect_exit("${result}" 2)
     aero_expect_contains("${err}" "'./other.js'" "stderr")
     aero_expect_contains("${err}" "imports nothing" "stderr")
+    # The source name (the input path as given) fills the first quoted slot and the specifier the second.
+    set(import_message "cannot cook '${FIXTURES}/imports.js': it imports './other.js', and a cooked script imports nothing")
+    aero_expect_contains("${err}" "${import_message}" "stderr")
     aero_expect_no_files("${SCRIPTOUT}" "${SCRIPTOUT}.aero-tmp")
 
 elseif(CASE STREQUAL "script_output_dir_missing")

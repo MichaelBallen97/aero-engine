@@ -198,15 +198,27 @@ TEST_CASE("script: the same source gives the same bytes in any order, under any 
 }
 
 TEST_CASE("script: a static import is refused, naming the specifier; a dynamic import() cooks (BY11)") {
-    const std::array<std::pair<std::string_view, std::string_view>, 3> imports{{
-        {"import x from \"./a.js\";\nexport const y = x;\n", "./a.js"},
-        {"export { y } from \"res://b.js\";\n", "res://b.js"},
-        {"export * from \"./c.js\";\n", "./c.js"},
+    // The message is spelled out per row, literal: the source name fills the first quoted slot and the specifier the
+    // second, which a comparison against cookImportMessage itself cannot tell apart from the two swapped.
+    struct ImportRow {
+        std::string_view source;
+        std::string_view specifier;
+        std::string_view message;
+    };
+    const std::array<ImportRow, 3> imports{{
+        {"import x from \"./a.js\";\nexport const y = x;\n", "./a.js",
+         "cannot cook 'scripts/mover.ts': it imports './a.js', and a cooked script imports nothing (bundle it first)"},
+        {"export { y } from \"res://b.js\";\n", "res://b.js",
+         "cannot cook 'scripts/mover.ts': it imports 'res://b.js', and a cooked script imports nothing (bundle it "
+         "first)"},
+        {"export * from \"./c.js\";\n", "./c.js",
+         "cannot cook 'scripts/mover.ts': it imports './c.js', and a cooked script imports nothing (bundle it first)"},
     }};
-    for (const auto& [source, specifier] : imports) {
+    for (const auto& [source, specifier, message] : imports) {
         INFO("specifier: " << std::string{specifier});
         const ScriptCookResult cooked = cookScriptBytecode(source, SOURCE_NAME);
         CHECK(label(cooked) == "LoadError");
+        CHECK(cooked.error.message == message);
         CHECK(cooked.error.message == cookImportMessage(SOURCE_NAME, specifier));
         CHECK(cooked.payload.empty());
         CHECK_FALSE(hasPlaceholder(cooked.error));
@@ -796,6 +808,24 @@ TEST_CASE("script: the call's budget covers a container's load (BY28)") {
     fx.files->set("d/m.js", container);
     CHECK(evalLabel(fx.vm.evaluateModule("res://d/m.js")) == "Ok");
     CHECK(completion(fx.vm, "ran") == "1");
+    expectCleanShutdown(fx.vm);
+}
+
+TEST_CASE("script: a refused container is a LoadError even when the call's budget has also run out (BY38)") {
+    const std::string container = containerOf("globalThis.ran = 1;", "res://d/bad.js");
+    std::vector<std::byte> damaged = toBytes(container);
+    REQUIRE(damaged.size() > HEADER_BYTES + 12U);
+    damaged[HEADER_BYTES + 12] ^= std::byte{0x40};  // the payload no longer hashes to the header's value
+    VmConfig config;
+    config.callTimeBudget = 20ms;
+    Fixture fx{config};
+    fx.files->set("d/bad.js", toText(damaged));
+    fx.files->readDelay =
+        100ms;  // the read outlasts the budget, so the deadline has passed when the container is judged
+    const EvalResult result = fx.vm.evaluateModule("res://d/bad.js");
+    CHECK(evalLabel(result) == "LoadError");
+    CHECK(fx.vm.stats().moduleInstances == 0U);
+    CHECK(fx.files->reads("d/bad.js") == 1U);
     expectCleanShutdown(fx.vm);
 }
 
