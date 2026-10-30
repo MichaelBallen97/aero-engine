@@ -113,6 +113,25 @@ constexpr std::size_t GENERATED_BYTES = std::size_t{200} * 1024U;
     return out;
 }
 
+constexpr int TEMPLATE_SUBSTITUTIONS = 100;
+
+// About `bytes` of source: tagged templates of one hundred empty substitutions inside one never-called function. Each
+// template object is a constant the read rebuilds string by string, the densest read measured (about 34 times its
+// payload in Release, 40 in Debug); the link and the run add only a constant.
+[[nodiscard]] std::string templateSource(std::size_t bytes) {
+    std::string line = "t`";
+    for (int k = 0; k < TEMPLATE_SUBSTITUTIONS; ++k) {
+        line += "${0}";
+    }
+    line += "`;\n";
+    std::string out = "export function never(t) {\n";
+    while (out.size() < bytes) {
+        out += line;
+    }
+    out += "}\n";
+    return out;
+}
+
 }  // namespace
 
 TEST_CASE(
@@ -672,12 +691,15 @@ TEST_CASE("script: the read headroom covers the measured peak of a real read (BY
     struct Subject {
         std::string_view name;
         std::string container;
+        std::size_t minimumPerByte;
     };
-    const std::array<Subject, 3> subjects{{
-        {"a one-line module", containerOf("export const x = 1;\n", "res://p/m.js")},
-        {"a ~200 KB module", bigContainer("res://p/m.js")},
-        // The worst shape measured: many small functions, each its own piece of bytecode.
-        {"a ~200 KB module of small functions", containerOf(generatedSource(GENERATED_BYTES), "res://p/m.js")},
+    const std::array<Subject, 4> subjects{{
+        {"a one-line module", containerOf("export const x = 1;\n", "res://p/m.js"), 0},
+        {"a ~200 KB module", bigContainer("res://p/m.js"), 0},
+        // Exported small functions: the link and the run allocate a closure and two references for each, so this
+        // window is the loosest bound of the read (its read alone is about 3.5 times the payload).
+        {"a ~200 KB module of small functions", containerOf(generatedSource(GENERATED_BYTES), "res://p/m.js"), 0},
+        {"a ~200 KB module of tagged templates", containerOf(templateSource(GENERATED_BYTES), "res://p/m.js"), 24},
     }};
     for (const Subject& subject : subjects) {
         INFO("subject: " << std::string{subject.name});
@@ -693,6 +715,7 @@ TEST_CASE("script: the read headroom covers the measured peak of a real read (BY
         REQUIRE(after.heapBytesPeak >= before.heapBytesInUse);
         const std::size_t peakGrowth = after.heapBytesPeak - before.heapBytesInUse;
         CHECK(peakGrowth <= bytecodeReadHeadroom(payloadBytes));
+        CHECK(peakGrowth > subject.minimumPerByte * payloadBytes);
         CHECK(after.heapBytesPeak > before.heapBytesPeak);  // anti-vacuity: the load did allocate
         MESSAGE(std::string{subject.name} << ": payload " << payloadBytes << " bytes, peak growth " << peakGrowth
                                           << " bytes, ratio "

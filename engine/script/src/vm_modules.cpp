@@ -239,7 +239,8 @@ JSModuleDef* Vm::Impl::compileModule(std::string_view key, std::string_view impo
             return nullptr;
         }
         // 3. An out-of-memory inside the backend's module reader can crash it, so the read starts only with room for
-        //    its measured peak. The refusal is counted by the heap, so classify reads it as OutOfMemory.
+        //    the densest read measured (bytecodeReadHeadroom). The refusal is counted by the heap, so classify reads
+        //    it as OutOfMemory.
         if (!heap.admitsHeadroom(internal::bytecodeReadHeadroom(prepared.payload.size()))) {
             static_cast<void>(JS_ThrowOutOfMemory(ctx));
             return nullptr;

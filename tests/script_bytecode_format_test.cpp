@@ -308,18 +308,18 @@ TEST_CASE("script: a new name that is not printable ASCII is refused and the pay
           std::string_view{"its module name is not the cook's placeholder (it was not written by this engine's cook)"});
 }
 
-TEST_CASE("script: the read headroom is a fixed part plus six per payload byte, saturating (BY5)") {
+TEST_CASE("script: the read headroom is a fixed part plus forty-eight per payload byte, saturating (BY5)") {
     constexpr std::size_t MIB = std::size_t{1024} * 1024U;
     CHECK(bytecodeReadHeadroom(0) == 65536U);
-    CHECK(bytecodeReadHeadroom(1) == 65542U);
-    CHECK(bytecodeReadHeadroom(MIB) == 65536U + 6U * MIB);
+    CHECK(bytecodeReadHeadroom(1) == 65584U);
+    CHECK(bytecodeReadHeadroom(MIB) == 65536U + 48U * MIB);
     constexpr std::size_t MAX = std::numeric_limits<std::size_t>::max();
-    CHECK(bytecodeReadHeadroom(MAX / 6U) == MAX);
+    CHECK(bytecodeReadHeadroom(MAX / 48U) == MAX);
     CHECK(bytecodeReadHeadroom(MAX) == MAX);
     CHECK(bytecodeReadHeadroom(MAX - 1U) == MAX);
     // The largest payload that does not saturate.
-    const std::size_t edge = (MAX - BYTECODE_READ_FIXED_BYTES) / 6U;
-    CHECK(bytecodeReadHeadroom(edge) == BYTECODE_READ_FIXED_BYTES + 6U * edge);
+    const std::size_t edge = (MAX - BYTECODE_READ_FIXED_BYTES) / 48U;
+    CHECK(bytecodeReadHeadroom(edge) == BYTECODE_READ_FIXED_BYTES + 48U * edge);
     CHECK(bytecodeReadHeadroom(edge + 1U) == MAX);
 }
 

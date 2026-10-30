@@ -25,10 +25,13 @@ inline constexpr std::uint32_t BYTECODE_CHECKSUM_BYPASS = 0xFFFFFFFFU;
 // lengths differ, so the rename proof (cook under one, rename to the other) moves the length word.
 inline constexpr std::string_view COOK_MODULE_NAME = "res://?cooked";     // 13 bytes
 inline constexpr std::string_view COOK_PROBE_NAME = "res://?cook-probe";  // 17 bytes
-// The room a bytecode read is given before it starts: a fixed part for a small module's own cost and the run that
-// follows, plus a multiple of the payload (a measured peak of 2.3-2.6x an unstripped payload, 3.6-4.2x a stripped one).
+// The room a bytecode read is given before it starts: a fixed part for a small module's own cost (one step of the
+// runtime's atom array and of its atom hash), plus 48 per payload byte. The densest read measured is a module of
+// tagged templates, whose template objects the read rebuilds string by string: about 34 times its payload in Release
+// and 40 in Debug, where every string carries a 16-byte list link. Every other shape measured reads at 1.3 to about
+// 11 times (docs/08 R31; BY24 measures it on every lane).
 inline constexpr std::size_t BYTECODE_READ_FIXED_BYTES = std::size_t{64} * 1024U;
-inline constexpr std::size_t BYTECODE_READ_BYTES_PER_PAYLOAD_BYTE = 6;
+inline constexpr std::size_t BYTECODE_READ_BYTES_PER_PAYLOAD_BYTE = 48;
 
 // The backend's checksum over a payload's bytes after its five-byte head (bc_csum, quickjs.c:37806-37829), byte for
 // byte -- the GAP INCLUDED: its tail switch has no arm for a remainder of 4, so when the span's length is a multiple of
