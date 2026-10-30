@@ -64,7 +64,7 @@ Decisions deliberately deferred until there is data or the relevant phase arrive
 Work a task found, measured or declined that no task in `docs/tasks/` owns yet. The list moved here from
 `CLAUDE.md`'s state block on 2026-10-26, where a pointer to this section remains.
 
-**EIGHTY UNOWNED HANDOFFS — one per bullet below; re-count the bullets, never the headline.** It read
+**EIGHTY-ONE UNOWNED HANDOFFS — one per bullet below; re-count the bullets, never the headline.** It read
 "NINE" over a list that already held thirteen, because two "smaller" items, the exposure clause and
 `FillMode::Line` were never counted. Handoffs recorded in their own paragraphs in `CLAUDE.md`'s state block (fact
 4's four permitted cases, the inspector-row gap, the closed `File` section, E.1.1's fired thick-line handoff) are
@@ -225,6 +225,12 @@ not repeated here.
 - **A `getOrAdd` for script components** (4.2.1) — `entity.add(C)` on an entity that already holds `C` resets it to the
   defaults, as `World::add` does; a script author who expects "add if absent" needs a separate call. 4.4.2's
   spawn/destroy API is where it would be added if a sample needs it.
+- **Inside a macOS `.app`, the editor looks for esbuild in `Contents/Resources/`** (4.3.1's validation pass) — with no
+  `AERO_ESBUILD_PATH`, `ScriptTranspiler::resolveBinary` takes `SDL_GetBasePath()`, which for an app bundle is its
+  `Resources` directory, not the `Contents/MacOS/` that holds the executable; the build's copy beside `aero_editor` is
+  the same directory only outside a bundle (measured: `esbuild was not found at '…/Contents/Resources/esbuild'`). No
+  task packages the editor as an app; whichever does must put esbuild in `Contents/Resources/` or change the lookup,
+  and re-run 4.3.1's validation rows 1 and 6 from the bundle.
 
 ---
 
@@ -308,12 +314,14 @@ exercised under an MSYS userland. Coverage of the *invariant* is unaffected.
 **NO WINDOWS OR LINUX VALIDATION PASS EXISTS FOR ANY TASK IN ANY PHASE** — Phase 0's gate, Phase 1's render
 rows, all thirteen Phase 2 tasks, and every Phase 3, Phase E and Phase 4 task.
 
-**4.3.1 OWES A WINDOWS PAGE AND A LINUX PAGE.** Nothing of it has run off macOS. The Windows lane is the first and only
-proof that SDL's argument quoting carries the `--tsconfig-raw` element (it holds `"`) and a path with a space and `å`
-intact, and that esbuild's metafile keys and log locations are spelled with a slash or a backslash (both parsers
-normalise to a slash, so either passes). The `win32-x64` and `linux-x64` binaries were read out of their tarballs and never run
-locally. `ST11` skips on Windows. `ST32` skips there too, and `ST36` runs on macOS only: whether a wrong-case import warns
-and re-runs on Windows as on APFS is unmeasured.
+**4.3.1 OWES A WINDOWS PAGE AND A LINUX PAGE.** No manual pass has run off macOS. CI's Windows and Linux lanes ran the
+`esbuild_tool` and `script_transpiler` cases through the real `win32-x64` and `linux-x64` binaries, green in both
+configurations on PR #127's final run (`40982191901`): SDL's argument quoting carries the `--tsconfig-raw` element (it
+holds `"`) and a path with a space and `å` (`ST18`) intact, and both parsers read those lanes' metafile keys and log
+locations. The run before it found the one Windows difference so far, esbuild's `X` error mark (`EB30`). `ST11` skips
+on Windows. `ST32` skips there too, and `ST36` runs on macOS only: whether a wrong-case import warns and re-runs on
+Windows as on APFS is unmeasured. The copy beside the editor, `AERO_ESBUILD_PATH`, the watcher's rescan and the 30 s
+limit on a hung binary (the page's rows 1–7) have run on macOS alone.
 
 **METHOD TRAPS FOR DRIVING THE EDITOR, ALL MEASURED.** A pending TCC prompt stalls the editor to ~0.2% CPU
 with a window that **NEVER RENDERS** (a black capture); the prompts **CASCADE**, one per bundle identity, and

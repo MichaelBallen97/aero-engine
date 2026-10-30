@@ -64,6 +64,7 @@ validation pass exists for any task in any phase.** N-E = not executable, N-R = 
 | 4.1.2 Module loading via VFS | #124 | `ccf776c` | **11 / 11**, nothing failed (terminal rows). Four code-review rounds; a 154-row sabotage matrix whose five findings each gained a case; R22 and R23 mitigated engine-side, R24 recorded; Windows CI found one layout-dependent test arm (ML71) |
 | 4.2.1 quickjs binding emission | #125 | `fab6db8` | **2 / 2**, nothing failed (terminal rows; no editor UI). Two code-review rounds (5 findings, all closed); a 94-row sabotage matrix and 14 ctest seeds whose one hole (S92) gained BN50; CI green on the first run |
 | 4.2.2 `.d.ts` emission | #126 | `1c10fad` | **4 / 4**, nothing failed (VS Code driven on macOS: the editor's three files, the thirteen-class completion, member completion and hovers, the three diagnostics). Two code-review rounds (6 findings, all closed); a 120-row sabotage matrix whose six holes were closed and re-run red; CI green on the first run |
+| 4.3.1 esbuild integration on import | #127 | `d06a635` | **7 / 7**, nothing failed (the editor GUI driven on macOS: transpile on open and on save, an error line and Refresh, an up-to-date reopen, a quarantined esbuild stopped at 30 s, the copy beside the editor, a cold and an offline configure); row 3 re-run on the final head. Four code-review rounds (8 findings, all closed); a 125-row sabotage matrix whose eight holes were closed and re-run red; the first CI run was red on Windows alone (esbuild's `X` error mark), the second green |
 
 **E.3.2 landed before E.3.1** — legal, disjointly id-reserved; the reservation is discharged and the
 numbering is contiguous.
@@ -20312,3 +20313,134 @@ Measured at `0d9b71f` on fresh build directories:
 the `aero_script_declarations` target and `types/prelude.d.ts`; `cmake/reflect.cmake` and
 `cmake/reflect_declarations_join.cmake` build the joined file; the editor gains `script_types.cpp` and
 `templates/tsconfig.json.in`; `cmake/embed.cmake` gains a text mode. Docs: `docs/01`, `03`, `04`, `08` (R25), `09`.
+
+### 4.3.1 — esbuild integration on import — every `.ts` of a TypeScript project bundled to JavaScript and a source map after each scan, `using` lowered, errors on the Console
+
+A TypeScript project's scripts now become JavaScript and source maps the moment the editor scans them: on open, on
+save and on Refresh. Merged as PR #127 (`d06a635`, a true merge commit): nineteen commits on `7802b6a` — the plan's
+seven steps and a clang-tidy commit, a round-1 test commit and its six-commit fix list (plan §H), a round-2 test, the
+sabotage-hole tests, and a two-commit Windows fix (plan §I). CI: run `40870837109` at `0239c11` was red on Windows
+Debug alone (seven `script_transpiler` cases); run `40982191901` on the merged head `b30e0b8`, 6 / 6 green. Story 1 of
+Phase 4 continues with 4.4.1, 4.7.1, 4.7.2 and 4.7.4.
+
+**What shipped.**
+- `cmake/esbuild.cmake`: configure downloads the host's `@esbuild/<platform>` 0.28.2 tarball from the npm registry
+  (darwin-arm64, darwin-x64, win32-x64, linux-x64; any other host fails configure naming the table), checks it with
+  `EXPECTED_HASH SHA512=` against an in-repo table, and extracts the binary under a `file(LOCK)` into
+  `<cache root>/aero-engine/esbuild/0.28.2/<platform>/` — once per machine, offline after. A POST_BUILD step copies it
+  beside `aero_editor`; the tests run the cached copy through `AERO_TEST_ESBUILD`; CI caches the directory per OS with
+  no restore keys.
+- `esbuild_tool.{hpp,cpp}`, pure: the fifteen-element pinned command line (`--bundle --format=esm --platform=neutral
+  --target=es2023 --supported:using=false --preserve-symlinks --sourcemap=linked`, a `--tsconfig-raw` and the log
+  flags), its fingerprint, the path order (config, `AERO_ESBUILD_PATH`, the executable's directory), the log and
+  metafile parsers, the input classifier, and the provenance record of `docs/09` §15 with its freshness rule.
+- `script_transpiler.{hpp,cpp}`, src-private: after each scan, every script (`scriptJobOf`) whose record is not fresh
+  against the scan's hashes is queued in sorted order and run one esbuild at a time through `ToolProcess`, polled each
+  tick and never waited on. Output is staged under `Library/ScriptStaging/` and published map, then JS, then record,
+  through `writeTextFileAtomic`. A run past 30 s is killed, and a scan that completes during a run re-queues it.
+- `EditorApp` runs the transpiler after every scan of a TypeScript project only, takes `EditorAppConfig::esbuildPath`,
+  and logs through `drainScriptLog` alone: one Console line per diagnostic (file, line, column) and one
+  `scripts: N transpiled, M failed, K up to date` per pass. A failed script keeps its last good JavaScript and shows its
+  stored errors at every pass until it is fixed.
+- `BlenderProcess` is renamed `ToolProcess` and stays the one TU that spells SDL's process symbols.
+- `aero_editor_shell_test` links `aero::script` PRIVATE; `ST20`–`ST22` evaluate the output in the engine's VM,
+  including a lowered `using`.
+- `docs/08` gains R26–R30 and records the esbuild-vs-swc resolution (esbuild; swc the fallback).
+
+**Code-review rounds.** Round 1 (on `7802b6a..71d2691`): no blocking, five should-fix, two minor — all confirmed
+against the cited lines. A fresh failed record counted as up to date and was never shown again; a log over 256 KiB
+read as empty; a `.ts` under `node_modules` was queued and then refused per file; the nil-GUID / unhashed skip and the
+drop-on-pop requeue had no case; the deviation log missed HK5's count; a header comment spelled `<filesystem>`.
+Closed by `a3e38dd` (ST23–ST27) and the §H fix list (`78a8153`, `50002ae`, `5864d0a`, `48f3465`, `1bb91a4`,
+`436f2b2`). Round 2 (on `71d2691..436f2b2`): one should-fix, `hasOutcome` untested, closed by `c8630ef` (ST37).
+Round 3 (on `436f2b2..c8630ef`): approve. Round 4 (on `0239c11..b30e0b8`, the Windows fix): approve, after checking
+that nothing else the parser reads differs on Windows.
+
+**The sabotage matrix.** 123 rows at `c8630ef`: 109 red, 1 compile-red, 5 validation (S119–S123, witnessed by
+validation rows 5, 5, 1, 6 and 7) and 8 holes, closed by `0239c11` — EB27–EB29 for the input classifier's prefix and
+separator arms, ST38–ST42 for the publish order, a script gone mid-pass, the `Library/` refusal, the kill on a project
+swap and an unhashed input — and re-run red. The Windows fix added S124 and S125 (the `X` arm and its anchoring), and
+the 49 rows on `esbuild_tool.cpp` re-ran red at `b30e0b8`: 125 rows, 119 red, 1 compile-red, 5 validation, 0 holes. The
+runner cannot seed the project-no-delete guard and its e2e, `EXPECTED_HASH`, `drainScriptLog`'s warning arm, ST17 /
+ST18, or the driver's spawn, read and publish failure arms.
+
+**Traps found, each measured.**
+- **esbuild's error mark is `X` on Windows unless `WT_SESSION` is set** (`internal/logger/logger.go`, `MsgKind.Icon`
+  and `isProbablyWindowsCommandPrompt`, at `v0.28.2`); the warning mark `▲` is the same everywhere. The parser read only
+  `✘`, so the first Windows run dropped every error block: no failed record, a "log could not be read" line, re-runs.
+  Nothing else the parser reads depends on the OS (`style_default.go`: excerpt glyphs fixed, notes carry no icon).
+- A binary carrying `com.apple.quarantine` does not fail to start, it hangs (R30): the validation pass measured one
+  ERROR 30.06 s after the open, the editor at 60 fps, no process left, and a macOS "not opened" dialog per run.
+- Unbundled output keeps every specifier as written and the VM's loader has no extension probing, so `./util` does not
+  load; bundled output loads unchanged. Hence one bundle per script.
+- `using` survives at `esnext`, with no target and at `es2026`; `--target=es2023 --supported:using=false` lowers it,
+  and the tsconfig `target` never does. esbuild reads the nearest tsconfig per file; `--tsconfig-raw` stops the lookup.
+- A failed run writes no metafile; a multi-entry run with one bad file writes nothing; a kill left 0-byte outputs, and
+  a 0-byte file loads `Ok` in the VM. Hence staging and a record written last.
+- esbuild's columns are 0-based and its lines 1-based; diagnostics carry UTF-8 glyphs with `--color=false`, so the
+  marks are byte arrays under the editor's 7-bit literal rule (GL6).
+- A step gate that ran only its `-tc` list missed a GL6 and an HK5 failure in the same binary; the full binary caught
+  them at the next step.
+- `check-project-no-delete.sh`'s e2e refuses a listed file missing from its scratch tree: `no_delete_e2e` was red at
+  the first full gate after `script_transpiler.cpp` joined the forbidden list.
+- Inside a `.app`, `SDL_GetBasePath()` is `Contents/Resources/`, so a bundle with esbuild in `Contents/MacOS/` logs
+  `esbuild was not found at '…/Contents/Resources/esbuild'` (an unowned handoff in `docs/08`). Re-signing a bundle
+  changes its esbuild's content hash, so every record goes stale.
+- A tool failure counts the running and every queued script as failed under one ERROR line: row 5 read
+  `0 transpiled, 2 failed` with one line. That is the rule, not a defect.
+- The sabotage runner needs `AERO_REQUIRE_GPU=1` exported, or the ImGui rows skip green.
+
+**Where the implementation departed from the plan.**
+- Accepted at plan approval: the record keys on the binary's content hash, not on `--version` (G-1);
+  `--preserve-symlinks` joins the command line (G-2); a tool failure writes no record (G-3). At round 1: a failing run
+  is recorded only when its log was read whole and held 1 to 64 diagnostics (S-1, narrowing spec D4); a failed record
+  with no diagnostic is a parse miss (S-2); the `node_modules` skip is silent (S-3); a wrong-case import is a known
+  limit (S-4, R29).
+- The header marks are byte arrays; HK5's inventory gained `esbuild_tool.cpp` and `script_transpiler.cpp`;
+  `no_delete_e2e.cmake` gained the new file; `toolFailureLogged` was dropped (a tool failure ends the pass); a raw
+  column 0 stays a valid location and only line 0 drops it (EB18); the log fixtures were regenerated with 0.28.2.
+- Step 7 is two commits (docs, then seven clang-tidy findings). Plan §I, the Windows fix, came after the first CI run.
+
+**What was deliberately left out, and which task holds each.**
+- `AssetKind::Script`, the drag, the picker and the component field: 4.4.1. `.ts` files stay Text assets.
+- What Play does with a failed script: 4.4.1 and 4.7.x.
+- Bytecode: 4.3.2. Hot reload: 4.3.3, which must key on content or on the record, never on a rewrite (R29).
+  Source-mapped runtime errors: 4.3.4. The C++ project's UI gating: 4.6.1.
+- Deleting an orphan `Library/Scripts/<guid>.js`, and a problems view: not scheduled.
+- Packaging the editor as a `.app`: the unowned handoff above. The Windows and Linux pages: validation debt.
+
+**The sentences that govern new work.** The command line is pinned, and changing any element re-runs every script.
+The record is the only thing that makes the outputs fresh, and it lands last. A tool failure writes no record; a fresh
+failed record is a failure at every pass. Tests always set the esbuild path and run the cached binary. The transpiler
+never logs; `drainScriptLog` is the one site. Both error marks are headers on every host, and nothing looser is.
+`.claude/rules/editor-importers.md`'s esbuild section, `build-and-guards.md` and `tests.md` hold the rules.
+
+**Validation and sabotage status — macOS 7 / 7 (2026-10-29; row 3 re-run on `b30e0b8` 2026-10-30), Windows and Linux
+unrun.** `macos-release` at `0239c11` as a signed `.app`, the GUI driven with synthetic input: a TypeScript project
+created through New Project logged `scripts: 2 transpiled, 0 failed, 0 up to date` with a `.js`, a `.js.map` and a
+`.json` per script; a save of `util.ts` re-ran both 2.28 s later (the watcher's 2 s settle plus its 1 s cooldown); a
+broken `player.ts` printed `scripts: assets/scripts/player.ts:1:18: error: Unexpected ";"` once, left its JavaScript
+unchanged, printed it again on Refresh with `0 transpiled, 1 failed, 1 up to date`, and transpiled once fixed; the pinned
+TypeScript 5.9.3 reported `player.ts(1,18)`, the stand-in for VS Code's Problems panel, which was not driven; a reopen
+logged `0 transpiled, 0 failed, 2 up to date` with no esbuild process in 502 polls over 40 s; the quarantined copy
+above; `esbuild` beside the editor prints `0.28.2` with no quarantine attribute; a cold `AERO_ESBUILD_ROOT` configure
+downloaded once and a second fresh configure succeeded with the network blocked (`sandbox-exec`). No row was NOT
+EXECUTABLE. Row 3 re-ran on the fix build with the same lines and no "log could not be read". The CI watch items have
+now run: SDL's argument quoting and a path with a space and `å` (ST18) on Windows, both lanes' slash spellings, and both
+off-Mac binaries.
+
+Measured at `b30e0b8` on fresh build directories:
+- `aero_tests` **1637**, `aero_editor_shell_test` **2500** (+72: EB1–EB30, ST1–ST42), `aero_editor_imgui_test`
+  **372** (+6: I361–I366), and **40 / 73 / 14 / 28** unchanged; reflect-tools-OFF `aero_tests` 1623 and shell 2458;
+  shader-tools-OFF `aero_tests` 1497, shell 2500 and ImGui 353.
+- `ctest -N` **221 / 208 / 96**, with `cooker.*` 70 in all three; no entry added.
+- The guards read math **623**, platform **94**, rhi **179**, scene **94**, golden-rule **181**, project-no-delete
+  **A=8 B=113**, audio **11-3-62**, probes **7-64** and script **170-94-11**.
+
+**Case ids claimed:** EB1–EB30, ST1–ST42, I361–I366 (next free: EB31, ST43, I367).
+
+**Build & dependency impact:** no vcpkg port and no new target. A pinned native binary enters the build: esbuild
+0.28.2 (MIT, about 11 MB), fetched at the first configure, which needs the network once per machine; CI caches it per
+OS. `aero_editor_shell_test` links `aero::script`. The editor gains `esbuild_tool.{hpp,cpp}` and
+`script_transpiler.{hpp,cpp}`; `blender_process.{hpp,cpp}` became `tool_process.{hpp,cpp}`. Docs: `docs/01`, `03`,
+`04`, `08` (R26–R30, the esbuild-vs-swc resolution), `09` (§15).

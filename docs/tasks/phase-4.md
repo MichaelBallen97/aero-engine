@@ -152,6 +152,14 @@ type-checks the output in ctest. The runtime ships none of it.
 Subtasks:
 - esbuild binary detection/bundling; import-pipeline invocation
 - Emit JS + source map as derived assets; record the decision in docs/08
+**Outcome:** configure fetches a pinned esbuild 0.28.2 for the host from the npm registry, checks it against an
+in-repo SHA-512 table, caches it once per machine and copies it beside the editor; `AERO_ESBUILD_PATH` overrides it.
+After every scan of a TypeScript project, each `.ts` whose source, imports, flags or binary changed is bundled in the
+background, one esbuild process at a time, to a self-contained `Library/Scripts/<guid>.js` with a source map and a
+provenance record (`docs/09` §15). `using` is lowered for the VM (R21), and a hung esbuild is stopped after 30 s. Each
+diagnostic is a Console line naming the `.ts` file, line and column, and a failed script keeps its last good
+JavaScript and shows its errors at every pass until it is fixed. The esbuild-vs-swc decision is recorded in docs/08:
+esbuild, with swc the fallback. `.ts` files stay Text assets; the script asset kind is 4.4.1's.
 
 ### 4.3.2 Bytecode compile & cache · P1 · M · depends: 4.3.1
 **Goal:** ship bytecode, iterate on JS (docs/03 asset flow: scripts → bytecode in the `.pak`).
