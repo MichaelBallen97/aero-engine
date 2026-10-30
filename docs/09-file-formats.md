@@ -3357,8 +3357,9 @@ Little-endian, no padding site, the payload last. `COOKED_SCRIPT_HEADER_BYTES` a
 | 72 | 8 | `u64` | `reserved` | must be 0 |
 | 80 | n | bytes | `payload` | the backend's bytecode, opaque to `engine/assets` |
 
-There is no payload cap. The VM refuses a file larger than its heap limit before reading it, and the loader's
-headroom guard bounds the read; a format cap would bound nothing those do not.
+There is no payload cap. The VM refuses a file larger than its heap limit before reading it, and the loader reads a
+payload only with 64 KiB + 48 x its size free in the heap (`docs/08` R31): about 1.3 MiB in a fresh default VM. A
+format cap would bound nothing those do not.
 
 ### 16.2 The payload
 

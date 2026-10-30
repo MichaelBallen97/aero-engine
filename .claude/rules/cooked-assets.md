@@ -9,6 +9,8 @@ paths:
 
 `engine/assets` (task 3.3.1) holds the tree's **first binary format**: `cooked_mesh.{hpp,cpp}` is the
 `.aeromesh` container v1 and its hostile-input parser, `mesh_cook.{hpp,cpp}` is the producer.
+Since 4.3.2 it also holds `cooked_script.{hpp,cpp}`, the `.aeroscript` container (the fifth first-party format; its
+producer is `cookScriptBytecode` in `engine/script`, because the bytes come out of the JavaScript engine).
 `tools/cooker` is the CLI that drives them end to end. The **normative** specification is
 `docs/09-file-formats.md` section 9 — if a header and that document ever disagree, docs/09 wins and one
 of them is a bug.
@@ -117,8 +119,8 @@ green.** The CMakeLists' own comment says so; the grep is the second line of def
   means running Blender, which is the editor's job (task 3.2.4).
 - **Nothing is written unless the whole cook succeeded** — no partial artifact, no stale one, and not
   even the `.aero-tmp` the atomic write would have created.
-- **`aero_cooker` has FIVE subcommands since task 3.7.1** — `mesh`, `texture`, `skeleton`,
-  `animation` and `audio` — and both subcommand-error message literals name all five, together with
+- **`aero_cooker` has SIX subcommands since task 4.3.2** (five since 3.7.1) — `mesh`, `texture`, `skeleton`,
+  `animation`, `audio` and `script` — and both subcommand-error message literals name all six, together with
   the `run_case.cmake` arms that pin them. **The `unknown_subcommand` arm's token is `sound`, not
   `audio`, and it must stay that way**: that arm was rewritten at 3.3.2 precisely because its old
   token (`texture`) became a real subcommand and the case went on passing while asserting something
@@ -507,11 +509,35 @@ under Phase 3.
 
 ## The `engine/assets` subsystem
 
-* **`engine/assets`** (opened 3.3.1) holds the cooked-asset formats and nothing else — eleven pairs:
-  `cooked_mesh`, `mesh_cook`, `cooked_texture`, `texture_cook`, `bc_block`, `cooked_skeleton`,
-  `skeleton_cook`, `cooked_animation`, `animation_cook`, `cooked_audio`, `audio_cook`. It links
+* **`engine/assets`** (opened 3.3.1) holds the cooked-asset formats and nothing else — eleven pairs,
+  `cooked_mesh`, `mesh_cook`, `cooked_texture`, `texture_cook`, `bc_block`, `cooked_skeleton`, `skeleton_cook`,
+  `cooked_animation`, `animation_cook`, `cooked_audio`, `audio_cook`, plus (4.3.2) `cooked_script`, a container whose
+  cook lives in `engine/script`. It links
   `aero::core` + `aero::profiling` and **no vcpkg package at all**.
 
+
+## Scripts (task 4.3.2) — the fifth first-party container
+
+`.aeroscript` (`docs/09` section 16, normative) wraps quickjs-ng bytecode in an 80-byte header. `cooked_script.{hpp,cpp}`
+is the container and its hostile-input parser; the bytes of the payload come from `cookScriptBytecode` in
+`engine/script` (`aero_script` links `aero::assets` PRIVATE for the container), and `tools/cooker`'s `runScript`
+assembles them.
+
+- **The payload is a THIRD party's bytes, and the container never reads inside it.** The header names the backend
+  release and bytecode version; the parser stores them and the loader judges them. The magic is NUL-led
+  (`00 41 45 52 4F 53 43 52`), and every comparison covers all eight bytes, so a C-string compare cannot be used.
+- **There is no payload cap, and the guard is the effective bound.** The VM refuses a file larger than its heap limit,
+  and the loader reads a payload only with 64 KiB + 48 x the payload free (about 1.3 MiB in a fresh default VM, R31); a
+  format cap would bound nothing those do not.
+- **The strip flags know bit 0 only** (function source text stripped); any other bit is refused. The reserved fields
+  are refusal-on-non-zero, so occupying one is a `formatVersion` bump.
+- **The backend's checksum does not cover the last four bytes when the checksummed length is a multiple of four**
+  (`bc_csum`, remainder arm missing). The payload hash in the header is therefore the only detector for them, and the
+  load-time rename reproduces the gap exactly.
+- **The payload is pinned to one backend release.** A port bump changes `backendRelease`, so every older container
+  refuses to load, and `COOKED_SCRIPT_COOKER_VERSION` bumps with the manifest's two script lines regenerated.
+- **`aero_cooker script` takes `.js` only, writes nothing unless the whole cook succeeded, and prints nothing to
+  stdout.** A script that imports is refused (exit 2); the cook never logs.
 
 ## The determinism manifest
 

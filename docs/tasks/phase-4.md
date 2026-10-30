@@ -166,6 +166,16 @@ esbuild, with swc the fallback. `.ts` files stay Text assets; the script asset k
 **Deliverable:** quickjs bytecode at cook time; dev mode runs JS directly.
 Subtasks:
 - Bytecode emission in the cooker; loader accepts both forms
+**Outcome:** a cooked script is a `.aeroscript` (`docs/09` §16): an 80-byte header (the source GUID, the backend
+release, the bytecode version, a payload hash) and quickjs-ng bytecode of one ES module. `aero_cooker script` cooks a
+`.js` bundle into one, deterministically on every lane, and refuses a script that imports (the cook resolves nothing).
+The module loader accepts either form: a module file is bytecode iff it begins with the cooked script magic, whatever
+its path. Before the backend reads a payload the loader checks the header, the version bytes and the checksum, renames
+the module to the name its JavaScript would have had (so a reload and R22's retire rule behave as for JavaScript), and
+refuses a read the heap has no room for (R31). A script's bytecode and its JavaScript give the same results; the one
+difference is that `toString()` of a script function returns its native-code form. The cook-determinism manifest gained
+a sixth arm (22 lines). The title's "cache" is read as: the bytecode is the cache, and skipping unchanged scripts is
+5.1.2's; Play in the editor still runs the JavaScript, and nothing under `editor/` changed.
 
 ### 4.3.3 Script hot reload · P0 · M · depends: 4.3.1, 4.1.2
 **Goal:** the killer dev-loop feature.

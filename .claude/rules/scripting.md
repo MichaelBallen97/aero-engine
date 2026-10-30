@@ -20,6 +20,9 @@ Each rule here was earned by a defect, a green-and-wrong test or a measurement t
   PUBLIC and quickjs-ng's `qjs` PRIVATE, without the `libc` feature. **quickjs lives in `engine/script/src/` alone**:
   the ninth guard, `check-script-boundary.sh`, refuses a `JS…`, `js_…`, `QJS_…` or `QUICKJS…` name anywhere else under
   `engine/` or `runtime/`, and `tests/script_boundary_probe.cpp` is R12's seventh probe.
+  Since 4.3.2 it also links `aero::assets` PRIVATE (the `.aeroscript` container and its byte primitives, never a public
+  dependency) and holds the cook (`cookScriptBytecode`, `bytecode_cook.cpp`) and the loader's bytecode branch
+  (`vm_modules.cpp`, with the format's byte arithmetic in `bytecode_format.{hpp,cpp}`).
 
 
 ## Scripting
@@ -106,10 +109,41 @@ re-measured at three steps, so a task that adds script-visible names re-measures
 refuses the vector's opaque block (87 of 512 in Debug, 58 in Release on macOS), asserts only that at least two exist,
 and is a layout-dependent arm: Windows and Linux CI are its witnesses.
 
+**A MODULE FILE IS BYTECODE IFF IT BEGINS WITH THE COOKED SCRIPT MAGIC, AT ANY PATH (4.3.2).** The loader still reads
+through `readText` (ML40's one read call) and recognises a container in the string it gets back; there is no extension
+test, so a `.js` holding a container loads as bytecode and a `.aeroscript` holding text loads as JavaScript. A container
+cause (magic, version, reserved bytes, payload hash, another backend release or bytecode version, the checksum bypass
+value, a checksum mismatch, a name that is not the placeholder) is a `LoadError` decided before the guard and before
+the backend sees a byte.
+
+**EVERY BYTECODE READ IS CHECKED, RENAMED AND GUARDED BEFORE THE BACKEND SEES IT (4.3.2).** One `JS_ReadObject` and
+one `JS_WriteObject` call site exist in the script layer (BY17). The payload's atom #0 is renamed to the name the
+module's JavaScript would have had, so a reload (`<path>?gen=N`) and R22's retire rule are the JavaScript path's, and
+the after-read name is checked. The guard is a counted heap refusal (`HeapAccounting::admitsHeadroom`), so `classify`
+reads it as `OutOfMemory` through its existing witness and gains no branch. It demands 64 KiB + 48 x the payload; the
+multiple, 48, is set by the densest read measured (tagged templates, about 40x in Debug), and BY24's fourth subject is
+its witness. R31 (an out-of-memory inside `JS_ReadModule` crashes the reader) is why the guard exists.
+
+**THE COOK NEVER LOGS, IMPORTS NOTHING, AND PROVES ITS RENAME (4.3.2).** The cook compiles under a 1 GiB heap limit
+with a placeholder name, so the engine log stays silent (`aero_cooker`'s stdout is reserved for `--help` and
+`--version`). A static import is refused (a relative specifier cannot resolve under a placeholder that contains `?`).
+It fails when the placeholder occurs in the script's own text (S2), when the payload does not read back and re-write to
+the same bytes (S3), and when the backend writes another bytecode version or the bypass checksum. Under bytecode,
+`toString()` of a script function returns its native-code form (BY32) and nothing else differs.
+
+**A PORT BUMP RE-CHECKS THE BYTECODE HEAD (4.3.2).** `SCRIPT_BYTECODE_VERSION` (26, private to the backend, so the
+engine pins it), the rename's parse of the atom table, the checksum mirror and the gap it reproduces (`bc_csum` has no
+remainder-4 arm), the backend release in every container, BY24's ratios, and the manifest's two script lines
+(`COOKED_SCRIPT_COOKER_VERSION` bumps with them).
+
 ## What Phase 4's next tasks inherit
 
 **Phase 4 is open; Epic 4.1 is closed (4.1.1, 4.1.2) and 4.2.1, quickjs binding emission, is merged (`docs/tasks/phase-4.md`).**
-4.2.2 (`.d.ts` emission) reads the same descriptor tables; 4.3.1 (esbuild on import) is unblocked and inherits R21; 4.3.3 consumes 4.1.2's `moduleRecords()` / `invalidateModule()`, and 4.3.2 re-measures R22 on its bytecode
-path. Phase E still owes its gate and E.1.5's unrun page — the gate's artifact,
+4.2.2 (`.d.ts` emission) reads the same descriptor tables; 4.3.1 (esbuild on import) is unblocked and inherits R21; 4.3.3 consumes 4.1.2's `moduleRecords()` / `invalidateModule()` and reloads a container through `invalidateModule` like any
+module. Phase E still owes its gate and E.1.5's unrun page — the gate's artifact,
 `samples/phase-E-editor/`, does not exist yet; see `docs/tasks/phase-E.md` for the gate, and `docs/tasks/phase-3.md`
 for what Phase 3 still owes.
+
+**What 4.3.2 leaves for later tasks.** 4.4.1 and 4.7.x run the JavaScript, not the bytecode. 5.1.2 calls the cook
+once per script and skips unchanged ones through the 3.1.2 cache. 5.1.1's pak mount is the first reader of container bytes
+this build did not cook, so the loader's refusals are its only defence there.
