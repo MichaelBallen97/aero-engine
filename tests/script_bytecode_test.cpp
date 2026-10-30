@@ -365,8 +365,6 @@ TEST_CASE("script: the layer has one module read and one module write, each in i
 
 namespace {
 
-using std::chrono_literals::operator""ms;
-
 constexpr std::size_t HEADER_BYTES = engine::assets::COOKED_SCRIPT_HEADER_BYTES;
 
 // A module source in memory, with per-path read counts and an optional delay on every read.
@@ -795,10 +793,10 @@ TEST_CASE("script: the call's budget covers a container's load (BY28)") {
     const std::string container = containerOf("globalThis.ran = 1;", "res://d/m.js");
     {
         VmConfig config;
-        config.callTimeBudget = 20ms;
+        config.callTimeBudget = std::chrono::milliseconds{20};
         Fixture fx{config};
         fx.files->set("d/m.js", container);
-        fx.files->readDelay = 100ms;
+        fx.files->readDelay = std::chrono::milliseconds{100};
         const EvalResult result = fx.vm.evaluateModule("res://d/m.js");
         CHECK(evalLabel(result) == "Interrupted");
         CHECK(fx.vm.stats().moduleInstances == 0U);
@@ -817,11 +815,11 @@ TEST_CASE("script: a refused container is a LoadError even when the call's budge
     REQUIRE(damaged.size() > HEADER_BYTES + 12U);
     damaged[HEADER_BYTES + 12] ^= std::byte{0x40};  // the payload no longer hashes to the header's value
     VmConfig config;
-    config.callTimeBudget = 20ms;
+    config.callTimeBudget = std::chrono::milliseconds{20};
     Fixture fx{config};
     fx.files->set("d/bad.js", toText(damaged));
-    fx.files->readDelay =
-        100ms;  // the read outlasts the budget, so the deadline has passed when the container is judged
+    // The read outlasts the budget, so the deadline has passed when the container is judged.
+    fx.files->readDelay = std::chrono::milliseconds{100};
     const EvalResult result = fx.vm.evaluateModule("res://d/bad.js");
     CHECK(evalLabel(result) == "LoadError");
     CHECK(fx.vm.stats().moduleInstances == 0U);
