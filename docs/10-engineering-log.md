@@ -65,6 +65,7 @@ validation pass exists for any task in any phase.** N-E = not executable, N-R = 
 | 4.2.1 quickjs binding emission | #125 | `fab6db8` | **2 / 2**, nothing failed (terminal rows; no editor UI). Two code-review rounds (5 findings, all closed); a 94-row sabotage matrix and 14 ctest seeds whose one hole (S92) gained BN50; CI green on the first run |
 | 4.2.2 `.d.ts` emission | #126 | `1c10fad` | **4 / 4**, nothing failed (VS Code driven on macOS: the editor's three files, the thirteen-class completion, member completion and hovers, the three diagnostics). Two code-review rounds (6 findings, all closed); a 120-row sabotage matrix whose six holes were closed and re-run red; CI green on the first run |
 | 4.3.1 esbuild integration on import | #127 | `d06a635` | **7 / 7**, nothing failed (the editor GUI driven on macOS: transpile on open and on save, an error line and Refresh, an up-to-date reopen, a quarantined esbuild stopped at 30 s, the copy beside the editor, a cold and an offline configure); row 3 re-run on the final head. Four code-review rounds (8 findings, all closed); a 125-row sabotage matrix whose eight holes were closed and re-run red; the first CI run was red on Windows alone (esbuild's `X` error mark), the second green |
+| 4.3.2 Bytecode compile & cache | #129 | `c26b890` | **3 / 3**, nothing failed (the editor GUI driven on macOS to write a real project's two bundles, then the cook's exit, silence, header bytes and size; a 519 KB bundle cooked in 0.10 s; the bytecode cases under `leaks`, 0 leaks); rows 1–3 re-run on the final head with byte-identical artifacts. Six code-review rounds (14 findings: 10 closed, 4 wording minors recorded); a 77-row doctest and 12-row ctest sabotage matrix whose four holes were closed and re-run red; CI red twice on lane-only failures (an MSVC C2280 and a Linux clang-tidy finding, then ML35 on Windows Debug alone, R33), the third run green |
 
 **E.3.2 landed before E.3.1** — legal, disjointly id-reserved; the reservation is discharged and the
 numbering is contiguous.
@@ -20444,3 +20445,187 @@ Measured at `b30e0b8` on fresh build directories:
 OS. `aero_editor_shell_test` links `aero::script`. The editor gains `esbuild_tool.{hpp,cpp}` and
 `script_transpiler.{hpp,cpp}`; `blender_process.{hpp,cpp}` became `tool_process.{hpp,cpp}`. Docs: `docs/01`, `03`,
 `04`, `08` (R26–R30, the esbuild-vs-swc resolution), `09` (§15).
+
+### 4.3.2 — Bytecode compile & cache — each script cooks to a `.aeroscript` of quickjs-ng bytecode, which the module loader runs with the same results as its JavaScript
+
+A script's bundled JavaScript (`Library/Scripts/<guid>.js`, 4.3.1's output) now cooks to quickjs-ng bytecode in an
+engine container, and the module loader runs either form. Merged as PR #129 (`c26b890`, a true merge commit):
+twenty-four commits on `72d3503` — the plan's eight steps, the §H headroom fix and two clang-tidy commits, round 1's
+four commits, round 2's two, round 3's one, the sabotage-hole tests, a three-commit CI fix and the two-commit stack fix
+of plan §I. CI: run `41050054713` at `ccf651d` was red on Windows Debug (an MSVC C2280 in the cook) and in Linux's
+clang-tidy step; run `41060944618` at `8191af2` was red on Windows Debug alone (ML35: the backend's stack check fired
+before the import chain's depth cap); run `41086008009` at `d3bd684`, 6 / 6 green, the cross-lane cook-determinism job included (its first run on this branch); `main`'s push run `41099457436` on the merged
+head, 6 / 6 green. Story 3 of Phase 4 now has its `.d.ts` line (4.2.2) and its cook line; its demo waits on 4.4.2, 4.4.3
+and 4.4.4.
+
+**What shipped.**
+- `engine/assets`' `cooked_script.{hpp,cpp}`: the `.aeroscript` container v1 (`docs/09` §16) — an 80-byte header (the
+  NUL-led magic `00 41 45 52 4F 53 43 52`, the format and cooker versions, the source GUID as two little-endian
+  halves, the backend release, the bytecode version 26, the strip flags, two refusal-on-non-zero reserved fields, the
+  payload size and its content hash), then the payload. The parser is hostile-input and never reads inside the payload.
+- `engine/script`'s cook, `cookScriptBytecode` (`bytecode_cook.cpp`): one ES module compiled under a placeholder name
+  in a 1 GiB heap, checked before the compile (nothing pending), after it (no exception, none pending) and after the
+  write (a buffer, none pending), written with `JS_WRITE_OBJ_STRIP_SOURCE` (never `STRIP_DEBUG`), read back and written
+  again to the same bytes, and compiled twice to prove the load-time rename exact. A static import is refused, naming
+  the specifier; `import()` cooks. The cook never logs a failure; it returns it.
+- `bytecode_format.{hpp,cpp}`: the format head pinned to bytecode version 26, the checksum mirror (`bc_csum`, its
+  missing remainder-4 arm included), the atom-#0 rename, and the read headroom, 64 KiB + 48 × the payload, enforced as
+  a counted heap refusal (`HeapAccounting::admitsHeadroom`) so `classify` reads it as `OutOfMemory`.
+- The loader's bytecode branch in `Vm::Impl::compileModule` (`vm_modules.cpp`): a module file is bytecode iff it begins
+  with the magic, at any path and any extension. Every container cause is a `LoadError` decided before the guard and
+  before the backend sees a byte; the payload's module is renamed to `encodeModuleName(key, generation)`, the name its
+  JavaScript would have had, so a reload and R22's retire rule are the JavaScript path's. A payload whose value is not
+  a module is refused (BY35), and a started bytecode read retires its key whatever its outcome (BY36, BY37).
+- `aero_cooker script --input <file.js> --output <file> [--guid <guid>]`, the sixth subcommand: `.js` only, nothing on
+  stdout, nothing written unless the whole cook succeeded, exit 2 for a script that imports.
+- The cook-determinism manifest's sixth arm: `tests/cooker/determinism.sha256` 20 → 22 lines (`hello.js` and the
+  shared `features.js`), CI's cook-determinism job 44 cross-lane comparisons, and LF pinned for both fixture folders in
+  `.gitattributes` (a template literal keeps its line endings in the bytecode).
+- `docs/08` gains R31 (an out-of-memory inside `JS_ReadModule` crashes the reader), R32 (a module nested in a
+  payload under another name) and R33 (the import cap's per-level stack budget), widens R24 and re-measures R22
+  through the read path; `docs/09` gains §16.
+
+**Code-review rounds.** Round 1 (on `72d3503..63a11ad`): no blocking, three should-fix, two minor — the loader took
+the read's value for a module with no tag check, so a hand-made non-module payload was a type confusion; the cook's
+status map was an if-chain where the plan had an exhaustive switch; BY2 never sent a symbol-typed name atom; "never
+logs" was false at Debug; two stale names. Closed by `127d27c` (BY35, which crashed under ASan with the check
+removed), `2d680ba`, `1409cb5` and `5e912b5`. Round 2 (on `63a11ad..5e912b5`): one should-fix — a non-module root
+can carry a module the reader has already listed under the key's name, so the refusal must retire the key — closed by
+`60d4c4c` (BY36, R32, a `docs/09` §16.0 sentence), and two minor wording findings closed by `c9dcea1`. Round 3 (on
+`5e912b5..c9dcea1`): one should-fix — a read that fails after listing a module retired nothing — and one stale id
+range, both closed by `47779a5` (BY37; one retire right after `beginCompile` replaced the two after the read, and
+BY33's expected generation moved from 1 to 2). Round 4 (on `c9dcea1..47779a5`): two wording minors, recorded here and not
+fixed: `docs/08`'s R22 row and the scripting rules say a bytecode module behaves "exactly as a JavaScript one (BY33,
+BY34)", which BY33 contradicts (the bytecode entry retires at generation 2, ML23's JavaScript entry stays at 1); and
+`docs/09` §16.5 says a successful read retires the key, when a key is retired only when the load attempt fails
+(`vm_modules.cpp:74-76`, `166-167` at `ccf651d`). Round 5 (on `ccf651d..8191af2`, the CI fix): approve, after a sweep
+of the branch's 49 files for anything only MSVC, GCC or Linux's clang-tidy would reject; nothing. Round 6 (on
+`8191af2..d3bd684`, plan §I): behaviour unchanged, and two wording minors, recorded here and not fixed: `vm.hpp:74`,
+R33 and the scripting rule count three engine frames per level, which holds in Debug only (Release inlines
+`compileModuleText`, so its 1040 B spans two); and the CI-portability rule says ML35 passed on every other lane in run
+`41060944618`, where Windows Release did not run.
+
+**The sabotage matrix.** 76 doctest rows (S1–S76) and 12 ctest rows through `aero_cooker` (C1–C12) at `47779a5`:
+74 and 10 red, and four holes — S57 and C9 (the cook's import message with its arguments swapped: BY11 compared
+against the same function), S61 (the deadline check moved above the container checks) and C5 (the usage line dropping
+`script`: the case pinned neither the six names nor a bare invocation, which the old arm never reached). Closed by
+`ccf651d` — BY11 asserts the literal messages, BY38 refuses a flipped-byte container under a spent budget, and
+`cooker.no_subcommand` and `cooker.script_import_refused` pin their exact text — and re-run red: 76 / 76 and 12 / 12.
+Unseeded by design: the determinism cases, the read-back check, `UnsupportedOutput`, unreachable arms and code earlier
+tasks own. After the CI fix, the fifteen rows on the two changed files, the two former holes and S60 (whose BY28 the fix
+respelled) re-ran red at `8191af2`; S54's text was the removed conditional, so it was re-anchored to the read branch
+with the same mistake (a second `JS_ReadObject(` call site, caught by BY17). After plan §I, the fifteen `vm_modules.cpp`
+rows (fourteen re-anchored to the moved code, their mistakes unchanged) and the new S77 (S61's mistake in its new
+place, caught by BY38) re-ran red at `d3bd684`: 77 doctest rows and 12 ctest rows, every one red at its latest run.
+
+**Traps found, each measured.**
+- **A read is a load.** `JS_ReadObject` lists the module under the name stored in its bytes at once and resolves its
+  imports while it reads; no API renames a read module. Rewriting atom #0 and recomputing the checksum does, and frames
+  and `JS_GetModuleName` follow. The same bytecode read twice is two modules under one name, so R22's two shapes
+  reproduce through the read path and a generation suffix alone cannot retire anything: the name is in the bytes.
+- **An out-of-memory at one point inside `JS_ReadModule` crashes the reader** (each count is stored before its array is
+  allocated): R31, and the reason the headroom guard exists. Hence the guard refuses before the backend sees a byte.
+- **R24 is wider than recorded:** one refused allocation can hang the compiler (an endless loop in `resolve_scope_var`
+  with no interrupt poll), abort on an assert, or return a miscompiled module with the error pending, and
+  `JS_WriteObject` can return a truncated buffer with a valid checksum (it never checks `dbuf_error`). The cook's three
+  checks caught every bad output the spike produced.
+- **`bc_csum` skips the last four bytes when the checksummed length is a multiple of four**, so the header's payload hash
+  is their only detector; a checksum of `0xFFFFFFFF` is the backend's documented bypass and is refused.
+- **`STRIP_DEBUG` drops file names and line tables** (frames read `(<null>:0:1)` and `import.meta` throws), so only
+  source text is stripped: about 1.3× the JavaScript, against 2.4× unstripped and 1.15–1.2× with `STRIP_DEBUG`.
+- **The read's peak is shape-dependent.** BY24 measured a one-line 69-byte module at 36.5× (a fixed cost), one ~200 KB
+  function at 1.27× and ~200 KB of small functions at 5.46× in Debug, which fired G3 (above 5×). The addendum measured
+  about thirty shapes with the port's `qjs -T` trace; tagged templates peak highest, 33.7× in Release and 39.9× in
+  Debug, so the factor is 48 and the 64 KiB stands. A fresh 64 MiB VM therefore admits a payload of about 1.33 MiB
+  (about 1 MB of JavaScript); R31 records the cap and the prefix-sized guard that would lift it.
+- **The bytes are deterministic** across compiles, runtimes, processes, build types, heap limits and context history,
+  carry no runtime atom number, and are native-endian with no pointer-width field (every CI lane is little-endian).
+- **`cooked_script.hpp`'s `detail` constants collided with `cooked_audio.hpp`'s inside `aero_cooker`**, so the
+  container's namespace is `cooked_script_detail`; the other containers keep `detail`.
+- **The `typescript.*` ctest entries need `npm ci` in `tests/typescript`** of the checkout under test. Without it they
+  are a loud skip that exits 0, so a gate reads them as passed unless `AERO_REQUIRE_TSC=1` is set.
+- **MSVC does not elide a conditional whose operands are class prvalues.** `const HeldValue module = text != nullptr ?
+  compileModuleText(…) : readModuleBytes(…)` built with Clang and GCC and was C2280 on Windows Debug alone, because
+  `HeldValue`'s move constructor is deleted. Each branch now initialises its own `module` from its call, the form
+  `vm_modules.cpp` already compiled on MSVC. The Windows build stopped at that file, so the cooker and the three new
+  test TUs first met MSVC in the second run.
+- **Linux's clang-tidy reports a namespace-scope `using std::chrono_literals::operator""ms;` as unused**
+  (`misc-unused-using-decls`) although the literal is used; the macOS SDK's clang-tidy passed the same TU. The
+  durations are `std::chrono::milliseconds{N}`, the other test files' form.
+- **The import path's C stack per level is a budget, and Windows Debug sees it first.** The cap admits
+  `stackLimitBytes / 8 KiB` nested imports, so a level must stay under 8 KiB on every lane. The bytecode branch inside
+  `compileModule` grew a level on macOS from 5216 to 6624 B in Debug and from 1024 to 1632 B in Release (a probe reading
+  a test VFS's frame address once per level; `-fstack-usage` agreed to the byte): at `-O0` every local of the branch
+  kept its slot on the JavaScript path, and libc++'s `std::format` is always-inline with a 256-byte buffer. macOS still
+  loaded 9 levels at 64 KiB, so ML35 passed everywhere but on Windows Debug. Folding `compileModuleText` back saved
+  64 B and broke ML40 and BY17. Plan §I moved the checks before a compile and the bytecode branch out of the frame:
+  3904 B in Debug and 1040 B in Release. MSVC's own figure was never measured.
+- **Compiler Explorer's MSVC 19.44 reproduces the CI's C2280 exactly**, so it can settle an MSVC-only syntax question
+  before a push: it compiled §I's `[[nodiscard]] __declspec(noinline)` member declarations at `/W4 /WX`.
+
+**Where the implementation departed from the plan.**
+- G3 fired at step 4, and plan §H raised the headroom from 6× to 48× the payload (`881771f`); BY24 gained its third and
+  fourth subjects, and BY22 and BY24 build their big module from 200 KB of source (150 KB left under 1 MiB of headroom).
+- The JavaScript arm's second deadline check sits below the magic test, so a bad container is a `LoadError` before
+  the deadline is read; BY38 pins that order. `script_compile_error` asserts the label `CompileError`.
+- Accepted at plan approval: the manifest's second input is `tests/fixtures/scripts/bytecode/features.js`, shared with
+  the same-results case (G6). BY32 pins the measured class text `function Klass() {\n    [native code]\n}`.
+- BY35–BY38 and the retire-on-any-failed-read rule came from the code-review rounds and the sabotage holes.
+- The cook's `pass` initialises its module in two branches that share `finishPass`, not in one conditional (the CI
+  fix, `dddd0ce`).
+- Plan §I (`b73e7e1`, after run `41060944618`): the checks before a compile are in `readModuleSource`, the bytecode
+  branch in `compileCookedModule` and the magic test in `isCookedScriptText`, each `AERO_SCRIPT_NOINLINE`
+  (`__declspec(noinline)` on MSVC, `[[gnu::noinline]]` elsewhere), and `deadlinePassed` is one member instead of three
+  lambdas. Step O found `compileModuleText` inlined in Release; it carries no `noinline`, by design.
+
+**What was deliberately left out, and which task holds each.**
+- Play running the JavaScript: 4.4.1 and 4.7.x. Nothing under `editor/` changed.
+- Walking a project, cooking every script and skipping unchanged ones through the 3.1.2 cache: 5.1.2. Until then a
+  project cooks with one `aero_cooker script` call per script. The title's "cache" is read as: the bytecode is the cache.
+- The `.pak` and its mount, the first reader of container bytes this build did not cook: 5.1.1, which also owns R32.
+- A patched backend (R31's fix, R24, and the two byte-changing reports): the unowned patched-backend handoff in
+  `docs/08`. The prefix-sized guard: R31's way out, unscheduled until a real project meets the cap.
+- The Windows and Linux pages: validation debt.
+
+**The sentences that govern new work.** A module file is bytecode iff it begins with the cooked script magic, at any
+path. Every bytecode read is checked, renamed and guarded before the backend sees it, and a started bytecode read
+retires its key whatever its outcome; a failed JavaScript compile retires nothing. The cook logs no failure, imports
+nothing and proves its rename. A port bump re-checks the bytecode head, the rename's atom-table parse, the checksum
+mirror, BY24's ratios and the manifest's two script lines. The manifest is frozen at 22 lines across six arms. The
+import path's frames hold only what is live across the nested compile, and a change to them re-measures a level (R33).
+No `?:` over a non-movable class, and no namespace-scope chrono-literal using-declaration. The scripting, cooked-assets
+and CI-portability rule files hold the rules.
+
+**Validation and sabotage status — macOS 3 / 3 (2026-10-30; rows 1–3 re-run on `8191af2` and `d3bd684`
+2026-10-31), Windows and Linux unrun.** `macos-release` at `ccf651d`
+as a signed `.app`, the GUI driven with synthetic input on a 1× display: a TypeScript project created through New
+Project, with `player.ts` importing `./util`, logged `scripts: 2 transpiled, 0 failed, 0 up to date`; each
+`Library/Scripts/<guid>.js` cooked with its `.meta` GUID, exit 0 with nothing on stdout or stderr, every planned
+header byte in place, at 1.21× and 1.48× its `.js` (585 / 482 B and 415 / 280 B). The spike's `large.ts`, bundled with
+4.3.1's command line to 518,865 B, cooked in 0.103, 0.100 and 0.101 s to 685,779 B (1.32×), byte-identical three
+times. `leaks -atExit` over the 38 bytecode cases: 38 passed, 0 leaks, and the cooker cooking that bundle leaked
+nothing. No row was NOT EXECUTABLE. Synthetic typing never reached the file panel's Go-to-Folder sheet, so the pass
+chose the project folder with clicks. After the CI fix, the rows it can reach re-ran on `8191af2` (2026-10-31): both
+scripts' cooks (row 1's cook half; nothing in the transpile path changed) and the large bundle's (0.114, 0.103 and
+0.101 s) are byte-identical to the `ccf651d` artifacts, and `leaks` over the 38 cases read 0 leaks; after plan §I they re-ran on
+`d3bd684` with the same result (0.098, 0.099 and 0.097 s). Off macOS, CI is the only witness: run `41060944618`'s
+failing Windows Debug log printed BY24's ratios there (one-line 37.99, one ~200 KB function 1.267, small functions
+5.66, tagged templates about 39.9), under the 43× alarm and the 48× guard, and the final run's cook-determinism job
+matched the script arm's hashes across the three lanes.
+
+Measured at `d3bd684` on fresh build directories, after both CI fixes:
+- `aero_tests` **1689** (+52: CK1–CK14, BY1–BY38), and **2500 / 372 / 40 / 73 / 14 / 28** unchanged; reflect-tools-OFF
+  `aero_tests` 1675, shell 2458 and ImGui 372; shader-tools-OFF `aero_tests` 1549, shell 2500 and ImGui 353.
+- `ctest -N` **232 / 219 / 107**, with `cooker.*` 81 in all three; the eleven added are `cooker.script_*`.
+- The guards read math **633**, platform **96**, rhi **186**, scene **96**, golden-rule **188**, project-no-delete
+  **A=8 B=113**, audio **11-3-62**, probes **7-64** and script **175-96-13**.
+
+**Case ids claimed:** CK1–CK14, BY1–BY38 (next free: CK15, BY39); ctest `cooker.script_bad_extension`,
+`_compile_error`, `_determinism`, `_golden_manifest`, `_guid_written`, `_happy`, `_import_refused`, `_missing_input`,
+`_output_dir_missing`, `_unknown_flag` and `_unreadable_input`.
+
+**Build & dependency impact:** no vcpkg port and no new target. `aero_script` links `aero::assets` PRIVATE and
+`aero_cooker` links `aero::script` PRIVATE. `engine/assets` gains `cooked_script.{hpp,cpp}`; `engine/script` gains
+`bytecode.hpp`, the internal `bytecode_cook.hpp` and `bytecode_format.hpp`, and `bytecode_cook.cpp` and
+`bytecode_format.cpp`; `vm_impl.hpp` gains `AERO_SCRIPT_NOINLINE`. Docs: `docs/03`, `08` (R31, R32, R33; R22 and
+R24), `09` (§16), `docs/future-roadmap.md` and the phase file.

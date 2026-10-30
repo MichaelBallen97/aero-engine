@@ -168,7 +168,8 @@ Subtasks:
 - Bytecode emission in the cooker; loader accepts both forms
 **Outcome:** a cooked script is a `.aeroscript` (`docs/09` §16): an 80-byte header (the source GUID, the backend
 release, the bytecode version, a payload hash) and quickjs-ng bytecode of one ES module. `aero_cooker script` cooks a
-`.js` bundle into one, deterministically on every lane, and refuses a script that imports (the cook resolves nothing).
+`.js` bundle into one, deterministically on every lane, and refuses a script with a static import (the cook resolves
+nothing; an `import()` cooks).
 The module loader accepts either form: a module file is bytecode iff it begins with the cooked script magic, whatever
 its path. Before the backend reads a payload the loader checks the header, the version bytes and the checksum, renames
 the module to the name its JavaScript would have had (so a reload and R22's retire rule behave as for JavaScript), and

@@ -13,16 +13,20 @@ Two platform matrices, never to be conflated: the **editor** runs on macOS/Windo
 **Phase 4 (Scripting) is open.** Epics 4.1 and 4.2 are closed, every task macOS-validated: 4.1.1 (VM lifecycle, PR
 #123 `efdd0b9`), 4.1.2 (module loading via the VFS, PR #124 `ccf776c`), 4.2.1 (quickjs binding emission, PR #125
 `fab6db8`: the frozen `engine` namespace) and 4.2.2 (`.d.ts` emission, PR #126 `1c10fad`: `aero-engine.d.ts` and a
-`tsconfig.json` written into a TypeScript project, type-checked by a pinned TypeScript 5.9.3). Epic 4.3 is open:
-**4.3.1 (esbuild integration on import, PR #127 `d06a635`)** is merged and macOS-validated 7 / 7 (2026-10-29; row 3
-re-run on the final head 2026-10-30). Configure fetches a pinned esbuild 0.28.2, checks its SHA-512, caches it and
-copies it beside `aero_editor`. After every scan of a TypeScript project, each changed `.ts` is bundled in the
-background to `Library/Scripts/<guid>.js` + `.js.map` + a provenance record, with `using` lowered (R21). Each
-diagnostic is a Console line with file, line and column. The esbuild-vs-swc decision is closed: esbuild. No quickjs-ng
-patch shipped (R21, R23, R24, R25 stay open decisions in `docs/08-risks.md` and `docs/future-roadmap.md`). Story 1 of
+`tsconfig.json` written into a TypeScript project, type-checked by a pinned TypeScript 5.9.3). Epic 4.3 is open, its
+first two tasks merged and macOS-validated. **4.3.1 (esbuild integration on import, PR #127 `d06a635`, 7 / 7)**: after
+every scan of a TypeScript project, each changed `.ts` is bundled in the background by a pinned esbuild 0.28.2 to
+`Library/Scripts/<guid>.js` + `.js.map` + a provenance record, with `using` lowered (R21) and each diagnostic a Console
+line. **4.3.2 (bytecode compile & cache, PR #129 `c26b890`, 3 / 3 on 2026-10-30, rows re-run on the final head
+2026-10-31)**: `aero_cooker script` cooks one such bundle to a `.aeroscript` (an 80-byte header and quickjs-ng
+bytecode, `docs/09` §16), and the module loader runs bytecode and JavaScript with the same results; a module file is
+bytecode iff it begins with the cooked script magic. A read needs 64 KiB + 48 × the payload of free heap (R31), and the
+import path's C stack per level is a budget that Windows Debug sees first (R33). No quickjs-ng patch shipped (R21, R23,
+R24, R25, R31 stay open decisions in `docs/08-risks.md` and `docs/future-roadmap.md`). Story 1 of
 `docs/tasks/phase-4.md`'s `## Stories` has half of its first line: the JavaScript and source map exist; making the
 script attachable is **4.4.1 (ScriptComponent + lifecycle)**, the next task, which adds `AssetKind::Script`. Story 1's
-demo has not run. Story 3 (4.4.2, 4.4.3, 4.4.4, 4.2.2, 4.3.2) has its `.d.ts` line done; its demo has not run.
+demo has not run. Story 3 (4.4.2, 4.4.3, 4.4.4, 4.2.2, 4.3.2) has its `.d.ts` and cook lines done; its demo has not
+run.
 
 **Three phase gates are still open**, each owing its deliverable rather than code:
 - **Phase 0**: macOS-PASS, held open for the Windows/Linux 60 fps sign-off (`samples/phase-0-cube/VALIDATION.md`).
@@ -73,26 +77,26 @@ In Notion its `Phase #` is `3.5` — a sort key, not an identifier.
 | **Phase 3 gate** | Drop a rigged glTF/FBX in → PBR materials + shadows + a playing animation + **an audible sound**. The audible half exists in code as of 3.7.2 and **has never been heard on any platform.** |
 | **Phase E** — Editor Experience | **OPEN.** Epics E.1–E.6 **CLOSED in code** — 24 of 24 merged, see the merged-task index in `docs/10` (E.6.4, `52a5b68`, the last). What is left is the gate below — its artifact `samples/phase-E-editor/` does not exist yet — and ONE unrun validation page (E.1.5), the whole of this OS's remaining Phase E risk. |
 | **Phase E gate** | Open a project and land in the scene you were last editing, on a lit grid floor under a sky; create a Cube from the menu, drop a material on it and see it shade; aim a spot light with a visible gizmo; rename, move and delete assets without leaving the editor. Gate artifact: `samples/phase-E-editor/`. |
-| **Phase 4** — Scripting | **OPEN.** Epic 4.1 **CLOSED** — 4.1.1 (#123) and 4.1.2 (#124) merged; Epic 4.2 **CLOSED** — 4.2.1 (#125) and 4.2.2 (#126) merged; Epic 4.3 **OPEN** — 4.3.1 (#127) merged. Story 1 continues with 4.4.1. |
+| **Phase 4** — Scripting | **OPEN.** Epic 4.1 **CLOSED** — 4.1.1 (#123) and 4.1.2 (#124) merged; Epic 4.2 **CLOSED** — 4.2.1 (#125) and 4.2.2 (#126) merged; Epic 4.3 **OPEN** — 4.3.1 (#127) and 4.3.2 (#129) merged. Story 1 continues with 4.4.1. |
 | **Phase 4 gate** | Press Play in the editor: hot-reloaded TS or native C++ drives entities; press Stop: the scene restores exactly. Gate artifact: `samples/phase-4-scripting/` (the two-language demo). |
 
 ### Engine layers, in dependency order
 
 `core` → `assets` → `audio` → `platform` → `rhi` → `render` → `reflect` → `scene` → `scene_render` →
-**`scene_audio`** → `scene_serialize`, and **`script`** (on `core` and, since 4.2.1, `scene`), plus `/editor` (`aero_editor_core` +
+**`scene_audio`** → `scene_serialize`, and **`script`** (on `core`, since 4.2.1 `scene`, and since 4.3.2 `assets`, PRIVATE), plus `/editor` (`aero_editor_core` +
 `aero_editor`) and
 `/tools` (`reflect-gen`, `shaderc`, `cooker`). **`/runtime` is still empty** — it arrives in Phase 5.
 
 ### Test inventory — measured, never remembered
 
-**After 4.3.1 (#127)**, measured on both presets and on fresh build directories at `b30e0b8` (the merge's second
+**After 4.3.2 (#129)**, measured on both presets and on fresh build directories at `d3bd684` (the merge's second
 parent; `main` had not moved, so the merge tree is the same).
 
 | Measurement | Value |
 |---|---|
-| `ctest -N` | **221** in both presets; **208** shader-tools-OFF (exactly the 13 `shaderc.*` removed), **96** reflect-tools-OFF (119 `reflect-gen.*`, four doctest binaries and `typescript.clean` / `typescript.broken` removed), nothing added in either; `cooker.*` **70 / 70 / 70**; 4.3.1 added no entry |
-| doctest, seven binaries | **1637 / 2500 / 372 / 40 / 73 / 14 / 28** (the editor shell test +72, the ImGui test +6); reflect-tools-OFF `aero_tests` **1623**, shader-tools-OFF **1497** |
-| guards | math **623**, platform **94**, rhi **179**, scene **94**, golden-rule **181**, project-no-delete **A=8 B=113** (2 permitted), audio **11-3-62**, probes **7-64**, script **170-94-11** |
+| `ctest -N` | **232** in both presets; **219** shader-tools-OFF (exactly the 13 `shaderc.*` removed), **107** reflect-tools-OFF (119 `reflect-gen.*`, four doctest binaries and `typescript.clean` / `typescript.broken` removed), nothing added in either; `cooker.*` **81 / 81 / 81**; 4.3.2 added the eleven `cooker.script_*` entries |
+| doctest, seven binaries | **1689 / 2500 / 372 / 40 / 73 / 14 / 28** (`aero_tests` +52: CK1–CK14, BY1–BY38); reflect-tools-OFF `aero_tests` **1675**, shader-tools-OFF **1549** |
+| guards | math **633**, platform **96**, rhi **186**, scene **96**, golden-rule **188**, project-no-delete **A=8 B=113** (2 permitted), audio **11-3-62**, probes **7-64**, script **175-96-13** |
 | `git ls-files` | `editor/src/*.cpp` **113**, `editor/include/aero/editor/*.hpp` **83** |
 
 The seven doctest binaries, in order: `aero_tests`, `aero_editor_shell_test`, `aero_editor_imgui_test`,
@@ -108,7 +112,9 @@ none elsewhere in `engine/`, moved math, rhi, golden-rule and script; 4.2.1, whi
 and `tests/` and no target, moved the same four; 4.2.2, which added `editor/src/script_types.cpp`, its header and
 two test files, moved math and project-no-delete's B, and audio's and probes' last figures with its two new `.cmake` files;
 4.3.1, which added `esbuild_tool` and `script_transpiler` to the editor, two test files and `cmake/esbuild.cmake`, moved
-math, project-no-delete's A (its forbidden list gained `script_transpiler.cpp`) and B, and audio's and probes' last figures.
+math, project-no-delete's A (its forbidden list gained `script_transpiler.cpp`) and B, and audio's and probes' last figures;
+4.3.2, which added seven engine files (two public headers, two internal headers, three sources, two of them on
+`engine/script`'s private side), three test files and no target, moved math, platform, rhi, scene, golden-rule and script.
 
 How to measure and compare these figures: `.claude/rules/tests.md`.
 
