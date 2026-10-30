@@ -208,6 +208,13 @@ TEST_CASE("script: renaming refuses every malformed head for its own reason (BY2
     CHECK(renameBytecodeModule(view(head(expected, 20, 0)), expected, target).status == BytecodeHeadStatus::NoAtoms);
     CHECK(renameBytecodeModule(view(head(expected, 20, 1, 0)), expected, target).status ==
           BytecodeHeadStatus::NameNotAString);
+    // Types 2 (a global symbol) and 3 (a symbol) are atoms the backend reads, carrying the expected name as a narrow
+    // string: only the type byte can refuse them, so a check that refuses predefined atoms alone lets them through.
+    for (const unsigned symbolType : {2U, 3U}) {
+        CAPTURE(symbolType);
+        const std::vector<std::byte> symbol = head(expected, 20, 1, symbolType);
+        CHECK(renameBytecodeModule(view(symbol), expected, target).status == BytecodeHeadStatus::NameNotAString);
+    }
     {
         // A wide string (low bit of the length word set), sealed so only the format walk can refuse it.
         std::vector<std::byte> wide = good;
