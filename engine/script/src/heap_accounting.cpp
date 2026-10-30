@@ -95,6 +95,15 @@ std::size_t HeapAccounting::admissionRoom() noexcept {
     return ceiling > inUse ? ceiling - inUse : 0;  // inUse may be past the limit: only a window admitted that
 }
 
+bool HeapAccounting::admitsHeadroom(std::size_t bytes) noexcept {
+    const std::size_t room = inUse >= limit ? 0 : limit - inUse;  // the limit alone: no grace window is read or spent
+    if (bytes <= room) {
+        return true;
+    }
+    ++refused;  // counted as a heap refusal, never a growth one (a dynamic import's error must not read as a parse)
+    return false;
+}
+
 void* HeapAccounting::allocate(std::size_t size) noexcept {
     const std::size_t room = admissionRoom();
     if (size > room || room - size < HEAP_HEADER_BYTES) {
