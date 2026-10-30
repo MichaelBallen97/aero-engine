@@ -108,6 +108,10 @@ explicit `: std::uint8_t`), `bugprone-incorrect-roundings` (use `std::lround`, n
 Members are plain `camelBack` with **no trailing underscore**; on an accessor-name
 collision, pick a distinct name.
 
+**LINUX'S clang-tidy REPORTS A NAMESPACE-SCOPE `using std::chrono_literals::operator""ms;` AS UNUSED (4.3.2, CI run
+`41050054713`)** (`misc-unused-using-decls`) although the literal is used, and the macOS SDK's clang-tidy passes the
+same TU. Write `std::chrono::milliseconds{N}`, the form the other test files use.
+
 `clang-format-18` Homebrew and Ubuntu builds disagree on ~120-column chains. A local
 format PASS never proves CI green — keep statements comfortably under the limit.
 
@@ -172,3 +176,15 @@ assign it.
 **NEVER DEDUCE `auto*` FROM A STANDARD-LIBRARY ITERATOR (E.6.1, `5309a22`).** MSVC's `std::array` iterator is a
 class, so `const auto* x = arr.begin()` (or `std::find_if(…)` over an array) is C3535 **on Windows alone** —
 libc++ and libstdc++ hand back a raw pointer and accept it. Write `const auto`.
+
+**MSVC DOES NOT ELIDE A CONDITIONAL WHOSE OPERANDS ARE CLASS PRVALUES (4.3.2, CI run `41050054713`,
+`bytecode_cook.cpp`).** It materialises the result through the move constructor, so a `?:` over a non-movable type
+(`HeldValue`) is C2280 on Windows alone while Clang and GCC compile it. Initialise the variable from the call in each
+branch instead, and share the tail through a helper that takes a `const` reference.
+
+**MSVC DEBUG IS THE TIGHTEST C-STACK LANE (4.3.2, CI run `41060944618`).** ML35's eight-module chain at the
+64 KiB minimum passed on every other lane, Linux Debug with ASan included, and failed on Windows Debug alone. `/Od`
+gives every local and temporary its own slot, ASan adds redzones, and without
+`/fsanitize-address-use-after-return` (not set in `cmake/sanitizers.cmake`) no fake stack takes locals off the C
+stack. A depth or recursion budget is measured against that lane's frames, and `scripting.md` holds the import
+path's.

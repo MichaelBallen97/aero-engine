@@ -36,12 +36,15 @@ add_executable(aero_tests
     animation_cook_test.cpp   # task 3.5.2 — cookAnimation: canonical order, refusals, byte-exactness
     cooked_audio_test.cpp     # task 3.7.1 — the .aerowave container v1: layout, parse, hostile input
     audio_cook_test.cpp       # task 3.7.1 — cookAudio: refusals, byte-exactness, the ffmpeg anchor
+    cooked_script_test.cpp    # task 4.3.2 — the .aeroscript container v1: layout, parse, hostile input
     audio_clip_test.cpp       # task 3.7.1 — engine::audio::AudioClip + loadAudioClip through the VFS
     audio_spatial_test.cpp    # task 3.7.2 — the pure rolloff + constant-power pan (SP1-SP14)
     audio_mixer_test.cpp      # task 3.7.2 — the realtime mixer: pool, cursor, ramps, clamp (MX1-MX22)
     audio_system_test.cpp     # task 3.7.2 — AudioSystem: rings, slots, back-pressure, stats (SY1-SY20)
     scene_audio_test.cpp      # task 3.7.2 — the World -> audio bridge: view, reconcile, latches (SA1-SA18)
     script_vm_test.cpp        # task 4.1.1 — the quickjs-ng VM: lifecycle, limits, the trapping matrix
+    script_bytecode_format_test.cpp # task 4.3.2 — the bytecode head, the rename, the headroom rule (BY1-BY7)
+    script_bytecode_test.cpp  # task 4.3.2 — the bytecode cook and the loader's container branch (BY8-BY37)
     script_module_test.cpp    # task 4.1.2 — ES modules through the VFS: the grammar, the cache, the statuses (ML1-ML51)
     script_binding_test.cpp   # task 4.2.1 — the binding runtime over a fixture table (BN1–BN5, BN7–BN36)
     script_declarations_test.cpp # task 4.2.2 -- the declarations against a live VM (DT1-DT7)
@@ -1064,7 +1067,7 @@ set(_aero_cooker_cases
     # animation_golden_manifest below -- cook the whole 18-artifact matrix through the real binary and
     # compare against tests/cooker/determinism.sha256. Their WORK_DIRs are what ci.yml's `build` legs
     # upload and its `cook-determinism` job downloads -- if any of them is renamed, THREE places change
-    # together: this list, the upload step's four paths, and the job's directory expectations.
+    # together: this list, the upload step's paths, and the job's directory expectations.
     golden_manifest texture_golden_manifest
     # task 3.5.1 -- the skeleton subcommand. Ten more names, on the same terms: ungated, so ctest -N
     # moves in ALL THREE configurations again. MEASURED at the tip of this branch, never derived by
@@ -1162,6 +1165,22 @@ set(_aero_cooker_cases
     # SAME +2 -- a smaller move in either would mean this block had accidentally grown a gate, and
     # no test could report that.
     audio_golden_manifest audio_lossy_digests
+    # task 4.3.2 -- the script subcommand. Ten more names, on the same terms: ungated, so ctest -N moves
+    # in ALL THREE configurations by the same +10, measured (never derived by addition). A smaller move
+    # in either reduced configuration would mean this block had accidentally grown a gate, and no test
+    # could report that.
+    script_happy script_unknown_flag script_missing_input script_bad_extension script_unreadable_input
+    script_compile_error script_import_refused script_output_dir_missing script_guid_written
+    script_determinism
+    # task 4.3.2 -- the manifest's SIXTH arm, and the eleventh name this task adds. A separate arm
+    # rather than two more tuples on an existing one for the reason 3.5.1 recorded: aero_manifest_tuple
+    # reads the arm-level SUBCOMMAND, and the per-kind orphan check stays sound only while exactly one
+    # arm claims each name prefix. It cooks script-hello.aeroscript and script-features.aeroscript, so
+    # tests/cooker/determinism.sha256 goes 20 -> 22 lines and every literal pinning it moves at once --
+    # including ci.yml's four `-ne 20` sites, its `-ne 40`, its upload paths and the manifest header's
+    # own regeneration regex. Ungated like every name above it, so ctest -N moves by the SAME +1 in all
+    # three configurations, measured (never derived by addition).
+    script_golden_manifest
 )
 foreach(_aero_case IN LISTS _aero_cooker_cases)
     add_test(

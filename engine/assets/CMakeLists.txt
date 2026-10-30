@@ -34,6 +34,7 @@ add_library(aero_assets STATIC
     src/animation_cook.cpp   # task 3.5.2 -- cookAnimation: triage, canonical order, the one padding site
     src/cooked_audio.cpp     # task 3.7.1 -- the .aerowave container v1: the hostile-input parser
     src/audio_cook.cpp       # task 3.7.1 -- cookAudio: integer validation, derived frameCount, emit
+    src/cooked_script.cpp    # task 4.3.2 -- the .aeroscript container v1: writer and hostile-input parser
 )
 add_library(aero::assets ALIAS aero_assets)
 

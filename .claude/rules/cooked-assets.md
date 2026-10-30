@@ -9,6 +9,8 @@ paths:
 
 `engine/assets` (task 3.3.1) holds the tree's **first binary format**: `cooked_mesh.{hpp,cpp}` is the
 `.aeromesh` container v1 and its hostile-input parser, `mesh_cook.{hpp,cpp}` is the producer.
+Since 4.3.2 it also holds `cooked_script.{hpp,cpp}`, the `.aeroscript` container (the fifth first-party format; its
+producer is `cookScriptBytecode` in `engine/script`, because the bytes come out of the JavaScript engine).
 `tools/cooker` is the CLI that drives them end to end. The **normative** specification is
 `docs/09-file-formats.md` section 9 — if a header and that document ever disagree, docs/09 wins and one
 of them is a bug.
@@ -36,15 +38,16 @@ green.** The CMakeLists' own comment says so; the grep is the second line of def
 - **No `std::map`, `std::unordered_map`, `std::set` or `std::unordered_set` in `engine/assets`.** There
   must be no iteration order for the output to depend on, and MSVC's node-based containers are not
   nothrow-movable (3.1.2's R9, measured in CI as `C2607`). Grouping is a sorted vector.
-- **`tests/cooker/determinism.sha256` is FROZEN at 20 hash lines across FIVE arms / 40 cross-lane
-  comparisons since task 3.7.1, and a red `cooker.golden_manifest` /
+- **`tests/cooker/determinism.sha256` is FROZEN at 22 hash lines across SIX arms / 44 cross-lane
+  comparisons since task 4.3.2, and a red `cooker.golden_manifest` /
   `cooker.texture_golden_manifest` / `cooker.skeleton_golden_manifest` /
-  `cooker.animation_golden_manifest` / `cooker.audio_golden_manifest` is `docs/09` section 9.11's
+  `cooker.animation_golden_manifest` / `cooker.audio_golden_manifest` /
+  `cooker.script_golden_manifest` is `docs/09` section 9.11's
   `cookerVersion` sentence firing** — the
   same input now cooks to different bytes. Regenerate **in the same commit** as the cook change and the
   matching `COOKED_MESH_COOKER_VERSION` / `COOKED_TEXTURE_COOKER_VERSION` /
   `COOKED_SKELETON_COOKER_VERSION` / `COOKED_ANIMATION_COOKER_VERSION` /
-  `COOKED_AUDIO_COOKER_VERSION` bump, with the PR saying why;
+  `COOKED_AUDIO_COOKER_VERSION` / `COOKED_SCRIPT_COOKER_VERSION` bump, with the PR saying why;
   the procedure is in the manifest's own header and the failing case prints every replacement line
   verbatim. **Never edit a hash to green a red run.** A vcpkg baseline bump that reds it is the tripwire
   WORKING, not flake — root-cause first, and never per-lane manifests. Lookup is by name and two names
@@ -116,8 +119,8 @@ green.** The CMakeLists' own comment says so; the grep is the second line of def
   means running Blender, which is the editor's job (task 3.2.4).
 - **Nothing is written unless the whole cook succeeded** — no partial artifact, no stale one, and not
   even the `.aero-tmp` the atomic write would have created.
-- **`aero_cooker` has FIVE subcommands since task 3.7.1** — `mesh`, `texture`, `skeleton`,
-  `animation` and `audio` — and both subcommand-error message literals name all five, together with
+- **`aero_cooker` has SIX subcommands since task 4.3.2** (five since 3.7.1) — `mesh`, `texture`, `skeleton`,
+  `animation`, `audio` and `script` — and both subcommand-error message literals name all six, together with
   the `run_case.cmake` arms that pin them. **The `unknown_subcommand` arm's token is `sound`, not
   `audio`, and it must stay that way**: that arm was rewritten at 3.3.2 precisely because its old
   token (`texture`) became a real subcommand and the case went on passing while asserting something
@@ -506,17 +509,41 @@ under Phase 3.
 
 ## The `engine/assets` subsystem
 
-* **`engine/assets`** (opened 3.3.1) holds the cooked-asset formats and nothing else — eleven pairs:
-  `cooked_mesh`, `mesh_cook`, `cooked_texture`, `texture_cook`, `bc_block`, `cooked_skeleton`,
-  `skeleton_cook`, `cooked_animation`, `animation_cook`, `cooked_audio`, `audio_cook`. It links
+* **`engine/assets`** (opened 3.3.1) holds the cooked-asset formats and nothing else — eleven pairs,
+  `cooked_mesh`, `mesh_cook`, `cooked_texture`, `texture_cook`, `bc_block`, `cooked_skeleton`, `skeleton_cook`,
+  `cooked_animation`, `animation_cook`, `cooked_audio`, `audio_cook`, plus (4.3.2) `cooked_script`, a container whose
+  cook lives in `engine/script`. It links
   `aero::core` + `aero::profiling` and **no vcpkg package at all**.
 
 
+## Scripts (task 4.3.2) — the fifth first-party container
+
+`.aeroscript` (`docs/09` section 16, normative) wraps quickjs-ng bytecode in an 80-byte header. `cooked_script.{hpp,cpp}`
+is the container and its hostile-input parser; the bytes of the payload come from `cookScriptBytecode` in
+`engine/script` (`aero_script` links `aero::assets` PRIVATE for the container), and `tools/cooker`'s `runScript`
+assembles them.
+
+- **The payload is a THIRD party's bytes, and the container never reads inside it.** The header names the backend
+  release and bytecode version; the parser stores them and the loader judges them. The magic is NUL-led
+  (`00 41 45 52 4F 53 43 52`), and every comparison covers all eight bytes, so a C-string compare cannot be used.
+- **There is no payload cap, and the guard is the effective bound.** The VM refuses a file larger than its heap limit,
+  and the loader reads a payload only with 64 KiB + 48 x the payload free (about 1.3 MiB in a fresh default VM, R31); a
+  format cap would bound nothing those do not.
+- **The strip flags know bit 0 only** (function source text stripped); any other bit is refused. The reserved fields
+  are refusal-on-non-zero, so occupying one is a `formatVersion` bump.
+- **The backend's checksum does not cover the last four bytes when the checksummed length is a multiple of four**
+  (`bc_csum`, remainder arm missing). The payload hash in the header is therefore the only detector for them, and the
+  load-time rename reproduces the gap exactly.
+- **The payload is pinned to one backend release.** A port bump changes `backendRelease`, so every older container
+  refuses to load, and `COOKED_SCRIPT_COOKER_VERSION` bumps with the manifest's two script lines regenerated.
+- **`aero_cooker script` takes `.js` only, writes nothing unless the whole cook succeeded, and prints nothing to
+  stdout.** A script that imports is refused (exit 2); the cook never logs.
+
 ## The determinism manifest
 
-**THE DETERMINISM MANIFEST IS FROZEN** at **20 hash lines across FIVE arms / 40 cross-lane comparisons**. A red
-manifest case is `docs/09` §9.11's `cookerVersion` sentence firing; the five constants to bump are
-`COOKED_{MESH,TEXTURE,SKELETON,ANIMATION,AUDIO}_COOKER_VERSION`, and the regeneration ritual lives in the
+**THE DETERMINISM MANIFEST IS FROZEN** at **22 hash lines across SIX arms / 44 cross-lane comparisons**. A red
+manifest case is `docs/09` §9.11's `cookerVersion` sentence firing; the six constants to bump are
+`COOKED_{MESH,TEXTURE,SKELETON,ANIMATION,AUDIO,SCRIPT}_COOKER_VERSION`, and the regeneration ritual lives in the
 manifest's own header. **Never edit a hash to green a red run.** **mp3 and ogg are deliberately NOT in it and
 never may be** (`docs/09` §14.7): their decoders run floating-point transforms whose paths differ by SIMD
 availability and FMA contraction policy. `cooker.audio_lossy_digests` prints both digests on every lane and

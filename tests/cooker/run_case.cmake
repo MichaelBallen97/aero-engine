@@ -208,10 +208,10 @@ function(aero_read_manifest out_names out_hashes)
         list(APPEND hashes "${hash}")
     endforeach()
     list(LENGTH names count)
-    # A LITERAL 20, never a count derived from the file it is checking: a guard computed from its own
-    # subject cannot see a line deleted. All five cases assert it, so a deletion reddens them at once.
-    if(NOT count EQUAL 20)
-        message(FATAL_ERROR "case '${CASE}': the manifest holds ${count} entries, expected exactly 20")
+    # A LITERAL 22, never a count derived from the file it is checking: a guard computed from its own
+    # subject cannot see a line deleted. All six cases assert it, so a deletion reddens them at once.
+    if(NOT count EQUAL 22)
+        message(FATAL_ERROR "case '${CASE}': the manifest holds ${count} entries, expected exactly 22")
     endif()
     set(${out_names} "${names}" PARENT_SCOPE)
     set(${out_hashes} "${hashes}" PARENT_SCOPE)
@@ -362,6 +362,15 @@ set(AUDIOOUT "${WORK_DIR}/out.aerowave")
 set(AUDIO_MAGIC_HEX "4145524f57415645")   # "AEROWAVE"
 set(TONE_WAV_ARTIFACT_BYTES 16064)
 
+# task 4.3.2 -- the script subcommand. hello.js is a self-contained module, so it cooks with no imports.
+# The container is an 80-byte header and the backend's bytecode: the magic is a NUL then "AEROSCR"; the
+# header fields below are asserted at their offsets as little-endian hex (format version 1 at 8, backend
+# release 0x00000F01 at 32, bytecode version 26 at 36, strip flags 1 at 40) and the payload's first byte
+# is the bytecode version, 26 (0x1a), at 80.
+set(SCRIPTOUT "${WORK_DIR}/out.aeroscript")
+set(SCRIPT_MAGIC_HEX "004145524f534352")   # NUL, "AEROSCR"
+set(SCRIPT_FIXTURE "${FIXTURES}/hello.js")
+
 # --- the case table -------------------------------------------------------------------------------
 
 if(CASE STREQUAL "help")
@@ -375,6 +384,8 @@ if(CASE STREQUAL "help")
     aero_expect_contains("${out}" "aero_cooker skeleton --input" "the usage text")
     # task 3.5.2: the fourth subcommand's own usage line, on exactly the same terms.
     aero_expect_contains("${out}" "aero_cooker animation --input" "the usage text")
+    # task 4.3.2: the sixth subcommand's own usage line, on exactly the same terms.
+    aero_expect_contains("${out}" "aero_cooker script --input" "the usage text")
     # stdout is reserved for --help/--version; diagnostics go to stderr only, so this one is silent.
     if(NOT err STREQUAL "")
         message(FATAL_ERROR "case '${CASE}': --help wrote to stderr: ${err}")
@@ -393,8 +404,16 @@ elseif(CASE STREQUAL "no_subcommand")
     # "(expected: mesh or texture)", task 3.5.2 a third time from "(expected: mesh, texture or
     # skeleton)" and task 3.7.1 a fourth. Asserted, so the next subcommand added cannot leave the
     # message naming a subset of what the tool actually accepts -- which is exactly what this literal
-    # caught all four times.
-    aero_expect_contains("${err}" "expected: mesh, texture, skeleton, animation or audio" "stderr")
+    # caught all four times, and task 4.3.2 changed it a fifth time.
+    aero_expect_contains("${err}" "expected: mesh, texture, skeleton, animation, audio or script" "stderr")
+    aero_verify_no_files_in("${WORK_DIR}")
+    # The arguments above start with a flag, so the tool reads "--input" as an unknown subcommand and
+    # prints the OTHER literal. The message for a bare invocation (argc < 2) is a different line of
+    # main.cpp, reached only with no argument at all, and names the subcommands separately.
+    aero_run_tool(OUT_RESULT bare_result OUT_STDERR bare_err)
+    aero_expect_exit("${bare_result}" 1)
+    aero_expect_contains("${bare_err}" "no subcommand given" "stderr")
+    aero_expect_contains("${bare_err}" "(expected: mesh, texture, skeleton, animation, audio or script)" "stderr")
     aero_verify_no_files_in("${WORK_DIR}")
 
 elseif(CASE STREQUAL "unknown_subcommand")
@@ -412,7 +431,7 @@ elseif(CASE STREQUAL "unknown_subcommand")
     aero_run_tool(ARGS sound --input "${ANY_INPUT}" --output "${OUT}" OUT_RESULT result OUT_STDERR err)
     aero_expect_exit("${result}" 1)
     aero_expect_contains("${err}" "unknown subcommand 'sound'" "stderr")
-    aero_expect_contains("${err}" "expected: mesh, texture, skeleton, animation or audio" "stderr")
+    aero_expect_contains("${err}" "expected: mesh, texture, skeleton, animation, audio or script" "stderr")
     aero_verify_no_files_in("${WORK_DIR}")
 
 elseif(CASE STREQUAL "unknown_flag")
@@ -1149,6 +1168,118 @@ elseif(CASE STREQUAL "audio_determinism")
     aero_expect_exit("${result2}" 0)
     aero_expect_identical("${dir1}/out.aerowave" "${dir2}/out.aerowave")
 
+elseif(CASE STREQUAL "script_happy")
+    # The whole header in one case, end to end: a field at the wrong offset, or an engine log record on
+    # stdout (Debug's default level is Trace and a cook's VM would print), fails here.
+    aero_run_tool(ARGS script --input "${SCRIPT_FIXTURE}" --output "${SCRIPTOUT}"
+        OUT_RESULT result OUT_STDOUT out OUT_STDERR err)
+    aero_expect_exit("${result}" 0)
+    if(NOT out STREQUAL "")
+        message(FATAL_ERROR "case '${CASE}': the cook wrote to stdout: ${out}")
+    endif()
+    aero_expect_hex_at("${SCRIPTOUT}" 0 8 "${SCRIPT_MAGIC_HEX}")
+    aero_expect_hex_at("${SCRIPTOUT}" "${OFFSET_FORMAT_VERSION}" 4 "01000000")
+    aero_expect_hex_at("${SCRIPTOUT}" 32 4 "010f0000")   # backend release 0x00000F01
+    aero_expect_hex_at("${SCRIPTOUT}" 36 4 "1a000000")   # bytecode version 26
+    aero_expect_hex_at("${SCRIPTOUT}" 40 4 "01000000")   # strip flags: function source text stripped
+    aero_expect_hex_at("${SCRIPTOUT}" 80 1 "1a")         # the payload's first byte is the bytecode version
+    file(SIZE "${SCRIPTOUT}" scriptSize)
+    if(NOT scriptSize GREATER 80)
+        message(FATAL_ERROR "case '${CASE}': '${SCRIPTOUT}' is ${scriptSize} bytes, expected more than the header")
+    endif()
+
+elseif(CASE STREQUAL "script_unknown_flag")
+    # Flags that are REAL ELSEWHERE, as for audio: the script cook takes none of its own, so each must
+    # fall through to the arm that NAMES it.
+    foreach(badflag "--scale;2" "--skin;0" "--format;bc1" "--srgb")
+        list(GET badflag 0 flagname)
+        aero_run_tool(ARGS script --input "${SCRIPT_FIXTURE}" --output "${SCRIPTOUT}" ${badflag}
+            OUT_RESULT result OUT_STDERR err)
+        aero_expect_exit("${result}" 1)
+        aero_expect_contains("${err}" "${flagname}" "stderr")
+    endforeach()
+    aero_verify_no_files_in("${WORK_DIR}")
+
+elseif(CASE STREQUAL "script_missing_input")
+    aero_run_tool(ARGS script --output "${SCRIPTOUT}" OUT_RESULT result OUT_STDERR err)
+    aero_expect_exit("${result}" 1)
+    aero_expect_contains("${err}" "--input is required" "stderr")
+    aero_verify_no_files_in("${WORK_DIR}")
+
+elseif(CASE STREQUAL "script_bad_extension")
+    # The committed TypeScript source of a bundled fixture: the cook takes the JavaScript 4.3.1 bundles,
+    # never its .ts. The name decides before a byte is read.
+    aero_run_tool(ARGS script --input "${SOURCE_DIR}/tests/fixtures/scripts/bytecode/features.ts"
+        --output "${SCRIPTOUT}" OUT_RESULT result OUT_STDERR err)
+    aero_expect_exit("${result}" 2)
+    aero_expect_contains("${err}" ".js" "stderr")
+    aero_verify_no_files_in("${WORK_DIR}")
+
+elseif(CASE STREQUAL "script_unreadable_input")
+    # A name the cook claims whose file is absent: an I/O failure, never a cook error.
+    aero_run_tool(ARGS script --input "${WORK_DIR}/absent.js" --output "${SCRIPTOUT}"
+        OUT_RESULT result OUT_STDERR err)
+    aero_expect_exit("${result}" 3)
+    aero_expect_non_empty("${err}" "stderr")
+    aero_verify_no_files_in("${WORK_DIR}")
+
+elseif(CASE STREQUAL "script_compile_error")
+    # The backend's own diagnostic, naming the author's file and line. The CompileError label is the
+    # cook status; "SyntaxError" is the backend's error name; the position is the source name the cook
+    # was given, never the placeholder module name the cook compiles under.
+    aero_run_tool(ARGS script --input "${FIXTURES}/syntax-error.js" --output "${SCRIPTOUT}"
+        OUT_RESULT result OUT_STDERR err)
+    aero_expect_exit("${result}" 2)
+    aero_expect_contains("${err}" "CompileError" "stderr")
+    aero_expect_contains("${err}" "SyntaxError" "stderr")
+    aero_expect_contains("${err}" "syntax-error.js:3:" "stderr")
+    aero_expect_no_files("${SCRIPTOUT}" "${SCRIPTOUT}.aero-tmp")
+
+elseif(CASE STREQUAL "script_import_refused")
+    aero_run_tool(ARGS script --input "${FIXTURES}/imports.js" --output "${SCRIPTOUT}"
+        OUT_RESULT result OUT_STDERR err)
+    aero_expect_exit("${result}" 2)
+    aero_expect_contains("${err}" "'./other.js'" "stderr")
+    aero_expect_contains("${err}" "imports nothing" "stderr")
+    # The source name (the input path as given) fills the first quoted slot and the specifier the second.
+    set(import_message "cannot cook '${FIXTURES}/imports.js': it imports './other.js', and a cooked script imports nothing")
+    aero_expect_contains("${err}" "${import_message}" "stderr")
+    aero_expect_no_files("${SCRIPTOUT}" "${SCRIPTOUT}.aero-tmp")
+
+elseif(CASE STREQUAL "script_output_dir_missing")
+    aero_run_tool(ARGS script --input "${SCRIPT_FIXTURE}" --output "${WORK_DIR}/nope/out.aeroscript"
+        OUT_RESULT result OUT_STDERR err)
+    aero_expect_exit("${result}" 3)
+    aero_expect_non_empty("${err}" "stderr")
+    aero_expect_no_files("${WORK_DIR}/nope")
+    aero_verify_no_files_in("${WORK_DIR}")
+
+elseif(CASE STREQUAL "script_guid_written")
+    aero_run_tool(ARGS script --input "${SCRIPT_FIXTURE}" --output "${SCRIPTOUT}"
+        --guid 0123456789abcdeffedcba9876543210 OUT_RESULT result)
+    aero_expect_exit("${result}" 0)
+    aero_expect_hex_at("${SCRIPTOUT}" "${OFFSET_SOURCE_GUID}" 16 "efcdab89674523011032547698badcfe")
+
+elseif(CASE STREQUAL "script_determinism")
+    # Two processes into two directories, and a third cook of a copy of hello.js under ANOTHER NAME in
+    # another directory: the input's path and the process never reach the bytes.
+    set(dir1 "${WORK_DIR}/run1")
+    set(dir2 "${WORK_DIR}/run2")
+    set(dir3 "${WORK_DIR}/run3")
+    file(MAKE_DIRECTORY "${dir1}" "${dir2}" "${dir3}")
+    file(COPY_FILE "${SCRIPT_FIXTURE}" "${dir3}/renamed-copy.js")
+    aero_run_tool(ARGS script --input "${SCRIPT_FIXTURE}" --output "${dir1}/out.aeroscript"
+        --guid 0123456789abcdeffedcba9876543210 OUT_RESULT result1)
+    aero_expect_exit("${result1}" 0)
+    aero_run_tool(ARGS script --input "${SCRIPT_FIXTURE}" --output "${dir2}/out.aeroscript"
+        --guid 0123456789abcdeffedcba9876543210 OUT_RESULT result2)
+    aero_expect_exit("${result2}" 0)
+    aero_run_tool(ARGS script --input "${dir3}/renamed-copy.js" --output "${dir3}/out.aeroscript"
+        --guid 0123456789abcdeffedcba9876543210 OUT_RESULT result3)
+    aero_expect_exit("${result3}" 0)
+    aero_expect_identical("${dir1}/out.aeroscript" "${dir2}/out.aeroscript")
+    aero_expect_identical("${dir1}/out.aeroscript" "${dir3}/out.aeroscript")
+
 elseif(CASE STREQUAL "audio_all_four_formats")
     # THE ARM THAT WOULD CATCH A BACKEND WIRED TO THE WRONG FORMAT, at the process tier. Its strongest
     # single line is the last one: tone.wav and tone.flac decode through two DIFFERENT decoders in two
@@ -1197,13 +1328,14 @@ elseif(CASE STREQUAL "no_skins_gltf")
 
 # --- task 3.3.3: the frozen cook-determinism manifest ---------------------------------------------
 #
-# FIVE cases, one shape (task 3.5.1 added the third, task 3.5.2 the fourth, task 3.7.1 the fifth).
+# SIX cases, one shape (task 3.5.1 added the third, task 3.5.2 the fourth, task 3.7.1 the fifth, task
+# 4.3.2 the sixth).
 # Each cooks its tuples ONCE through the real binary and requires the artifact's SHA-256 to equal the
 # line tests/cooker/determinism.sha256 records for that name. Because the cooker takes no gate flag,
-# all five register in all three build configurations, and because CI runs ctest in Debug and Release
-# on three lanes, the five arms run 5 x 3 x 2 = THIRTY times per push -- which is SIX complete checks
-# of all twenty lines, one per lane-and-configuration. All thirty green means every lane and both
-# configurations equal the manifest, therefore they equal each other.
+# all six register in all three build configurations, and because CI runs ctest in Debug and Release
+# on three lanes, the six arms run 6 x 3 x 2 = THIRTY-SIX times per push -- which is SIX complete checks
+# of all twenty-two lines, one per lane-and-configuration. All thirty-six green means every lane and
+# both configurations equal the manifest, therefore they equal each other.
 #
 # EVERY NUMBER IN THIS BLOCK IS RE-DERIVED WHEN AN ARM IS ADDED, NEVER INCREMENTED. Task 3.7.1's
 # code-review round found this whole header still reading "four" and "eighteen" and "TWELVE" while a
@@ -1211,17 +1343,17 @@ elseif(CASE STREQUAL "no_skins_gltf")
 # lanes x 2 configurations when task 3.3.3 wrote it), so incrementing it would have been wrong even
 # if somebody had noticed the word.
 #
-# A FIFTH ARM RATHER THAN A WIDER TUPLE TABLE, and that is structural: aero_manifest_tuple reads the
+# A SIXTH ARM RATHER THAN A WIDER TUPLE TABLE, and that is structural: aero_manifest_tuple reads the
 # arm-level SUBCOMMAND, and the KIND_PREFIX orphan check below ("every manifest line of THIS case's
 # kind was actually cooked") stays sound only while every line's prefix is claimed by exactly one arm.
 #
 # The artifacts land in ${WORK_DIR}/artifacts/ and the CI job uploads exactly that directory. The
 # perturbed re-cook lands in ${WORK_DIR}/perturbed/ so it cannot enter the upload set, which is
-# twenty files across the five cases and nothing else.
+# twenty-two files across the six cases and nothing else.
 
 elseif(CASE STREQUAL "golden_manifest" OR CASE STREQUAL "texture_golden_manifest"
        OR CASE STREQUAL "skeleton_golden_manifest" OR CASE STREQUAL "animation_golden_manifest"
-       OR CASE STREQUAL "audio_golden_manifest")
+       OR CASE STREQUAL "audio_golden_manifest" OR CASE STREQUAL "script_golden_manifest")
     set(ASSETS "${SOURCE_DIR}/tests/fixtures/assets")
     set(ARTIFACTS "${WORK_DIR}/artifacts")
     file(MAKE_DIRECTORY "${ARTIFACTS}")
@@ -1364,7 +1496,7 @@ elseif(CASE STREQUAL "golden_manifest" OR CASE STREQUAL "texture_golden_manifest
         # order our own writer wrote them and no single-lane check can see them swapped.
         aero_manifest_tuple(animation-skinned-cubic.aeroanim
             --input "${ASSETS}/skinned.gltf" --clip 2 --guid "${TEST_GUID}")
-    else()
+    elseif(CASE STREQUAL "audio_golden_manifest")
         set(SUBCOMMAND audio)
         set(KIND_PREFIX "audio-")
         set(TUPLE_COUNT 2)              # LITERAL, beside the two calls it counts
@@ -1388,6 +1520,21 @@ elseif(CASE STREQUAL "golden_manifest" OR CASE STREQUAL "texture_golden_manifest
             --input "${AUDIO_FIXTURES}/tone.wav" --guid "${TEST_GUID}")
         aero_manifest_tuple(audio-tone-flac.aerowave
             --input "${AUDIO_FIXTURES}/tone.flac" --guid "${TEST_GUID}")
+    else()
+        set(SUBCOMMAND script)
+        set(KIND_PREFIX "script-")
+        set(TUPLE_COUNT 2)              # LITERAL, beside the two calls it counts
+        # task 4.3.2 -- the .aeroscript container and quickjs-ng's own bytecode anchored cross-lane,
+        # cross-configuration and cross-time from the day they ship. TWO TUPLES AND EXACTLY TWO.
+        # script-hello is the minimal path (nil GUID, and the perturbed re-cook's input); script-features
+        # is the richest bundle the tree commits (floats, BigInt, regexps, Unicode, the default class)
+        # under a REAL --guid, the skeleton posture: the header's hi/lo emit order is then pinned across
+        # lanes too. Both lines pin the BACKEND's serialisation of a compiled module, so a vcpkg port
+        # bump that changes those bytes reddens them by design, with a COOKED_SCRIPT_COOKER_VERSION bump.
+        aero_manifest_tuple(script-hello.aeroscript
+            --input "${FIXTURES}/hello.js")
+        aero_manifest_tuple(script-features.aeroscript
+            --input "${SOURCE_DIR}/tests/fixtures/scripts/bytecode/features.js" --guid "${TEST_GUID}")
     endif()
 
     # --- the mismatch report ------------------------------------------------------------------------

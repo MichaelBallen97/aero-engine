@@ -87,6 +87,11 @@ struct ModuleName {
 [[nodiscard]] std::string noModuleSourceMessage(std::string_view key, std::string_view importer);
 // "cannot load '<key>'[ imported by '<importer>']: its current instance is already loaded under another name"
 [[nodiscard]] std::string alreadyLoadedMessage(std::string_view key, std::string_view importer);
+// "cannot load '<key>'[ imported by '<importer>']: its cooked bytecode is refused: <reason>"
+[[nodiscard]] std::string cookedScriptRefusedMessage(std::string_view key, std::string_view importer,
+                                                     std::string_view reason);
+// "cannot cook '<sourceName>': it imports '<specifier>', and a cooked script imports nothing (bundle it first)"
+[[nodiscard]] std::string cookImportMessage(std::string_view sourceName, std::string_view specifier);
 // "import attribute '<attribute>'[ in '<module>'] is not supported (this engine supports none)"
 [[nodiscard]] std::string unsupportedAttributeMessage(std::string_view attribute, std::string_view module);
 

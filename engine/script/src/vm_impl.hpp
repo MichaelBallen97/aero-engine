@@ -14,10 +14,20 @@
 #include <cstdint>
 #include <optional>
 #include <quickjs.h>
+#include <span>
 #include <string>
 #include <string_view>
 #include <thread>
 #include <vector>
+
+// A function kept out of line by every compiler in every configuration, so its locals occupy a frame only while it
+// runs and never the frame of a caller that stays live across a nested import (R33 in docs/08-risks.md). MSVC does
+// not read [[gnu::noinline]].
+#if defined(_MSC_VER)
+    #define AERO_SCRIPT_NOINLINE __declspec(noinline)
+#else
+    #define AERO_SCRIPT_NOINLINE [[gnu::noinline]]
+#endif
 
 namespace engine::script {
 
@@ -114,8 +124,10 @@ struct LoadAttempt {
     std::size_t depth = 0;               // compiles in progress, one inside another
     std::string importer;                // the importing module's key for the next loader call ("" for an entry)
     std::vector<std::string> compiling;  // the keys being compiled, innermost last (the attribute checker's module)
-    std::vector<std::string> created;    // keys compiled successfully, in order: what a failure retires
+    std::vector<std::string> created;    // keys read or compiled, whose names a failed attempt retires
     bool refused = false;                // an engine refusal (refuse()) ended it -- never caused by memory
+    // The cook's: every static import is refused, because a cooked script imports nothing (bytecode_cook.cpp).
+    bool refusesImports = false;
     std::uint64_t growthRefusalsAtStart = 0;  // HeapAccounting::growthRefusals() when it began
 };
 
@@ -194,6 +206,28 @@ struct Vm::Impl {
     void evaluateEntry(std::string_view key, EvalResult& result);
     [[nodiscard]] HeldValue startModule(LoadAttempt& load, std::string_view key, ImportPath path, std::uint64_t& watch);
     [[nodiscard]] JSModuleDef* compileModule(std::string_view key, std::string_view importer);
+    // Every check before a module's compile, in order: a source, the depth cap, the deadline, the size, the size cap,
+    // the read, the size again. nullopt: refused, or the deadline fired; the failure is pending.
+    [[nodiscard]] AERO_SCRIPT_NOINLINE std::optional<std::string> readModuleSource(std::string_view key,
+                                                                                   std::string_view importer);
+    // Whether a module file is a cooked script: its first bytes are the container's magic, at any path.
+    [[nodiscard]] AERO_SCRIPT_NOINLINE static bool isCookedScriptText(const std::string& text) noexcept;
+    // The bytecode branch: a container judged, the deadline, the headroom guard, the read, the after-read checks.
+    [[nodiscard]] AERO_SCRIPT_NOINLINE JSModuleDef* compileCookedModule(std::string_view key, std::string_view importer,
+                                                                        const std::string& text);
+    // The budget covers loading. A source read, a compile and a bytecode read never poll the interrupt handler, so the
+    // loader checks the deadline before the source read and again before the compile or the bytecode read; a passed
+    // deadline fires through the handler's own routine and leaves the InternalError pending.
+    [[nodiscard]] bool deadlinePassed();
+    // The one module compile (JS_EVAL_TYPE_MODULE): `text` and `name` are C strings to the backend. Compile only, no
+    // module is evaluated; the failure is pending on JS_EXCEPTION.
+    [[nodiscard]] HeldValue compileModuleText(const std::string& text, const std::string& name);
+    // The one place bytecode becomes a module (JS_ReadObject): the payload as the cook wrote it, a module name already
+    // in it. The failure is pending on JS_EXCEPTION.
+    [[nodiscard]] HeldValue readModuleBytes(std::span<const std::byte> payload);
+    // The name the backend holds a module under (JS_GetModuleName, the atom and its C string freed on every path);
+    // nullopt when the conversion failed, its out-of-memory error left pending.
+    [[nodiscard]] std::optional<std::string> moduleNameOf(JSModuleDef* module);
     [[nodiscard]] char* serveDynamicImport(const char* base, const char* specifier);
     // The outcome of one watched module evaluation: the record (unless a carried watch's path was reloaded since), the
     // attribution of the body's rejections (§C.7 as amended), the flag clearing (D10). A rejected static entry of the
@@ -226,6 +260,7 @@ struct Vm::Impl {
     bool finished = false;
     std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::time_point::min();
     bool inCall = false;
+    bool quiet = false;              // the cook's VMs: no failure is logged (the result carries it; bytecode_cook.cpp)
     bool interruptFired = false;     // the budget ran out in the current call; see interruptHandler
     bool interruptRecorded = false;  // an "interrupted" record has been logged for the current call
     std::uint64_t refusalsAtCallStart = 0;

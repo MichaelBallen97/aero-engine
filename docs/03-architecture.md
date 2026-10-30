@@ -108,6 +108,9 @@ A CI test that fails if any `#include` under `/engine` or `/runtime` points to `
                the hand-written runtime (Vec3, Quat and Entity are not reflected), and cmake/reflect.cmake joins
                the two into the build's aero-engine.d.ts. The editor embeds that file and writes it into a
                TypeScript project -- see docs/09 section 4.11)
+               (4.3.2 added the cook of a bundle to bytecode (`cookScriptBytecode`), the loader's container
+               branch (a module file that begins with the cooked script magic is bytecode, renamed and
+               guarded before the backend reads it), and `aero::assets` linked PRIVATE for the container)
   /reflect     entt::meta runtime (the GENERATOR lives in /tools)
 
 /runtime       game loop, .pak loading, per-platform entry points        [5 platforms]
@@ -244,14 +247,15 @@ canonical ImportedModel (IN MEMORY) + .meta (GUID, import settings)
      to disk. The one on-disk intermediate is the .blend path's GLB under Library/ (task 3.2.4)
    ← scripts take a separate line: a .ts under the assets root → esbuild (editor, after each scan,
      TypeScript projects only) → Library/Scripts/<guid>.js + <guid>.js.map + a record (docs/09 §15,
-     task 4.3.1); 4.3.2 compiles the bytecode at cook time
+     task 4.3.1); `aero_cooker script` cooks each bundle into a `.aeroscript` (quickjs-ng bytecode,
+     docs/09 §16, task 4.3.2), and the loader reads either form
         │
         │  COOKER  (per platform)
         ▼
 Cooked binary
    · textures → ASTC/ETC2 (mobile), BCn (desktop)
    · meshes   → GPU-ready buffers   ← `.aeromesh` v1, docs/09 §9 (task 3.3.1)
-   · scripts  → quickjs-ng bytecode
+   · scripts  → quickjs-ng bytecode   ← `.aeroscript` v1, docs/09 §16 (task 4.3.2)
    · shaders  → DXIL / MSL / SPIR-V
         │
         │  PACKAGER

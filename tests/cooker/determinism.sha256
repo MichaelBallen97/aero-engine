@@ -1,9 +1,10 @@
 # tests/cooker/determinism.sha256 -- THE FROZEN COOK-DETERMINISM MANIFEST (task 3.3.3).
 #
-# SHA-256 of the artifact each of twenty fixed aero_cooker invocations produces. The invocations
+# SHA-256 of the artifact each of twenty-two fixed aero_cooker invocations produces. The invocations
 # live in tests/cooker/run_case.cmake's `golden_manifest` (6, mesh), `texture_golden_manifest`
 # (8, texture), `skeleton_golden_manifest` (1, skeleton), `animation_golden_manifest`
-# (3, animation) and `audio_golden_manifest` (2, audio) arms; those five ctest cases check every
+# (3, animation), `audio_golden_manifest` (2, audio) and `script_golden_manifest` (2, script) arms;
+# those six ctest cases check every
 # line of this file in every build configuration on every lane, and .github/workflows/ci.yml's
 # `cook-determinism` job checks the same lines a second time with coreutils sha256sum and
 # byte-compares the three lanes' copies.
@@ -12,17 +13,17 @@
 # verbatim, docs/09-file-formats.md section 9.11's definition of a cookerVersion bump. So a
 # regeneration travels IN THE SAME COMMIT as the cook change and the matching
 # COOKED_MESH_COOKER_VERSION / COOKED_TEXTURE_COOKER_VERSION / COOKED_SKELETON_COOKER_VERSION /
-# COOKED_ANIMATION_COOKER_VERSION / COOKED_AUDIO_COOKER_VERSION bump, with the pull request saying
-# why.
+# COOKED_ANIMATION_COOKER_VERSION / COOKED_AUDIO_COOKER_VERSION / COOKED_SCRIPT_COOKER_VERSION bump,
+# with the pull request saying why.
 # NEVER EDIT A HASH TO GREEN A RED RUN.
 #
 # To regenerate, when and only when the change is deliberate:
 #   1. cmake --build --preset <host>-release
 #   2. ctest --preset <host>-release \
-#        -R 'cooker\.(golden|texture_golden|skeleton_golden|animation_golden|audio_golden)_manifest'
+#        -R 'cooker\.(golden|texture_golden|skeleton_golden|animation_golden|audio_golden|script_golden)_manifest'
 #      THAT REGEX IS PART OF THE RITUAL: leaving an arm out of it SILENTLY SKIPS that arm's lines
 #      during a regeneration, which is exactly the trap task 3.5.1 recorded when the fourth arm
-#      landed. `ctest -N` with the same -R must list FIVE cases.
+#      landed. `ctest -N` with the same -R must list SIX cases.
 #   3. each failing case prints its new `<sha256>  <name>` lines verbatim, one per line; paste them
 #      in, re-run, and confirm green in BOTH the debug and the release preset.
 #
@@ -35,7 +36,7 @@
 # to the wrong decoder or a transposed sample would break it and no single-decoder arm could see it.
 # Lookup is by NAME; do not add a distinct-hash check.
 #
-# THE HALVES ARE NOT ANCHORED EQUALLY, AND THE ASYMMETRY IS REAL. There are three kinds of anchor
+# THE HALVES ARE NOT ANCHORED EQUALLY, AND THE ASYMMETRY IS REAL. There are four kinds of anchor
 # in this file and it is worth knowing which one a red line is carrying.
 #
 # (1) mesh-triangle's line is independently derivable: it equals the SHA-256 of
@@ -57,6 +58,12 @@
 # tool of ours can self-confirm; the 64-byte header and therefore these two frozen hashes are still
 # anchored only by having been generated once. Neither audio line is derivable the way
 # mesh-triangle's is.
+#
+# (4) The two script lines (task 4.3.2) have no external tie either, and they pin more than our own
+# container: the payload is quickjs-ng's OWN bytecode, so these lines pin the backend's serialisation of
+# a compiled module across three compilers. A vcpkg port bump that changes those bytes reddens them by
+# design, and the answer is a COOKED_SCRIPT_COOKER_VERSION bump with this file regenerated in the same
+# commit -- never a per-lane manifest.
 #
 # The skeleton and animation lines carry no external tie of any kind.
 
@@ -84,3 +91,6 @@ ff90de29178dfc3829aed414375a8cc37269177d490d21031fc08d39ebc8191a  animation-skin
 
 f6ba2b2b0585c8e2325fb003af8dd4439d9ef4350e2697806762cc9293dbb40d  audio-tone-wav.aerowave
 f6ba2b2b0585c8e2325fb003af8dd4439d9ef4350e2697806762cc9293dbb40d  audio-tone-flac.aerowave
+
+6edd63364600dbeb7ceff2622856ddb13b4988fdcc3c62dfc249d3a1636cd209  script-hello.aeroscript
+13c20a9e2a50096518387dfd24b320d9e789676596b46f56f1fb5b12ce84f061  script-features.aeroscript

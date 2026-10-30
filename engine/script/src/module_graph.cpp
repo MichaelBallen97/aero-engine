@@ -280,9 +280,18 @@ std::string alreadyLoadedMessage(std::string_view key, std::string_view importer
                        importedBy(importer));
 }
 
+std::string cookedScriptRefusedMessage(std::string_view key, std::string_view importer, std::string_view reason) {
+    return std::format("cannot load '{}'{}: its cooked bytecode is refused: {}", key, importedBy(importer), reason);
+}
+
 std::string unsupportedAttributeMessage(std::string_view attribute, std::string_view module) {
     const std::string where = module.empty() ? std::string{} : std::format(" in '{}'", module);
     return std::format("import attribute '{}'{} is not supported (this engine supports none)", attribute, where);
+}
+
+std::string cookImportMessage(std::string_view sourceName, std::string_view specifier) {
+    return std::format("cannot cook '{}': it imports '{}', and a cooked script imports nothing (bundle it first)",
+                       sourceName, specifier);
 }
 
 // ---- the record table -----------------------------------------------------------------------------------------

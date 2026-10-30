@@ -58,6 +58,12 @@ public:
     // :1686-1689 for a reallocation to 0), so a held block must answer 0 for a second release to reach release().
     [[nodiscard]] static std::size_t requestedSize(const void* block) noexcept;
 
+    // True when `bytes` fit in the room the limit leaves now (0 once inUse >= limit). Otherwise one refusal is counted
+    // -- refusals(), never growthRefusals() -- and false returned. Allocates nothing and spends no grace-window
+    // decision. The bytecode read's guard (task 4.3.2): a refusal made before anything is allocated still reaches
+    // classify as a heap refusal.
+    [[nodiscard]] bool admitsHeadroom(std::size_t bytes) noexcept;
+
     // A grace window: for the next `allocations` admission decisions (an allocate, an allocateZeroed or a GROWING
     // reallocate, refused or not) the ceiling is max(limit, inUse-at-the-opening + bytes) instead of the limit. It
     // exists for one caller: the time budget's interrupt handler, which opens it each time it returns 1, because

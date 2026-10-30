@@ -41,6 +41,8 @@ add_library(aero_script STATIC
     src/vm_modules.cpp
     src/heap_accounting.cpp
     src/module_graph.cpp
+    src/bytecode_format.cpp
+    src/bytecode_cook.cpp
     src/component_bindings.cpp
     src/script_api.cpp
     src/script_api_values.cpp
@@ -49,7 +51,8 @@ add_library(aero_script STATIC
 add_library(aero::script ALIAS aero_script)
 
 target_include_directories(aero_script PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
-target_link_libraries(aero_script PUBLIC aero::core aero::scene PRIVATE qjs aero::script_internal)
+# aero::assets is PRIVATE: the cooked-script container format and the byte primitives, never a public dependency.
+target_link_libraries(aero_script PUBLIC aero::core aero::scene PRIVATE qjs aero::script_internal aero::assets)
 
 # The parse-side -I's both generators use: the set aero_scene_serialize uses.
 set(_aero_script_parse_dirs "${CMAKE_SOURCE_DIR}/engine/core/include" "${CMAKE_SOURCE_DIR}/engine/scene/include"

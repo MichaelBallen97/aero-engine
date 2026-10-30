@@ -32,6 +32,7 @@ namespace engine::script {
 namespace internal {
 class ComponentBindingTable;  // <aero/script/internal/component_binding.hpp>
 struct VmAccess;              // the test seam that creates a VM over another table
+struct BytecodeCook;          // the cook (src/bytecode_cook.cpp): two VMs of its own, reached through the friend below
 }  // namespace internal
 
 // ---- limits --------------------------------------------------------------------------------------------
@@ -69,9 +70,11 @@ inline constexpr std::chrono::milliseconds MAX_CALL_TIME_BUDGET{60'000};
 
 // How deep one import chain may be loaded: a chain of modules, each importing the next and none loaded before, may
 // be maxImportDepth = stackLimitBytes / IMPORT_STACK_BYTES_PER_LEVEL modules long (64 at the default limit, 8 at the
-// minimum, 1024 at the maximum); the next one is a LoadError. Each level costs the backend's compile frames and this
-// layer's (about 1.6 KB per level in the backend's Debug variant and 1.1 KB in its Release one, measured at 4.1.2), so
-// 8 KiB keeps a refused chain far from the backend's own stack check.
+// minimum, 1024 at the maximum); the next one is a LoadError. The 8 KiB is a budget for the C stack one level takes:
+// the backend's seven compile frames and this layer's three. Measured on macOS arm64 at 4.3.2, a level takes 3904 B
+// in the Debug build (with ASan) and 1040 B in Release, about 1.1 KB and 0.75 KB of them the backend's. A level past
+// the budget lets the backend's own stack check refuse a chain the cap admits; MSVC's Debug build has come closest,
+// and its figure is not measured (R33 in docs/08-risks.md).
 inline constexpr std::size_t IMPORT_STACK_BYTES_PER_LEVEL = std::size_t{8} * 1024U;
 
 struct VmConfig {
@@ -107,7 +110,8 @@ enum class EvalStatus : std::uint8_t {
     InvalidVm,     // a failed create's Vm, or a moved-from one
     WrongThread,   // called from a thread that is not the VM's; nothing was touched
     LoadError,     // a module of the graph could not be obtained -- a refused specifier or import attribute, not found
-                   // or unreadable through the VFS, no module source, over the size or depth limit; nothing ran;
+                   // or unreadable through the VFS, no module source, over the size or depth limit, a cooked container
+                   // refused; nothing ran;
                    // decided before any out-of-memory rule: no load refusal is caused by memory
 };
 [[nodiscard]] std::string_view evalStatusLabel(EvalStatus status) noexcept;
@@ -172,7 +176,8 @@ struct VmStats {
     std::size_t heapBytesInUse = 0;
     std::size_t heapBytesPeak = 0;
     std::size_t liveAllocations = 0;
-    std::uint64_t refusedAllocations = 0;     // requests the heap limit refused, over the VM's life
+    // Requests the heap limit refused, over the VM's life. A bytecode read the headroom guard refused counts as one.
+    std::uint64_t refusedAllocations = 0;
     std::uint64_t unhandledRejections = 0;    // reported at the end of a call
     std::uint64_t rejectionsHandledLate = 0;  // reported, then handled in a later call
     // Module instances compiled over the VM's life. None is freed before teardown -- the backend has no way to drop a
@@ -269,6 +274,11 @@ public:
     // (InternalError: out of memory), the parser's own error as its `cause` when the parser reported one. A rejection a
     // module body makes with the very value the module then fails with, while its evaluation is pending, counts as that
     // one failure.
+    //
+    // A module file that begins with the cooked script magic (docs/09 section 16) is bytecode `aero_cooker script`
+    // wrote; any other file is JavaScript. Both are read, limited and named the same way. A container this engine
+    // cannot use is a LoadError before the backend reads it; one the heap has no room to read safely is OutOfMemory
+    // (R31).
     [[nodiscard]] EvalResult evaluateModule(std::string_view virtualPath);
 
     // The module cache: every path the VM has started to compile, sorted by path. The VM's thread only: from another
@@ -316,6 +326,7 @@ private:
     struct Impl;  // holds the backend's runtime + context; defined in src/vm_impl.hpp
     explicit Vm(std::unique_ptr<Impl> owned) noexcept;
     friend struct internal::VmAccess;
+    friend struct internal::BytecodeCook;
     // `components` is what the `engine` namespace binds: BORROWED, and it outlives the Vm.
     [[nodiscard]] static VmCreateResult createWith(const VmConfig& config, const VirtualFileSystem* modules,
                                                    const internal::ComponentBindingTable& components);

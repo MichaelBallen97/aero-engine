@@ -87,3 +87,13 @@ template <typename Vfs>
 concept CreatesFrom = requires(Vfs&& vfs) { script::Vm::create(script::VmConfig{}, std::forward<Vfs>(vfs)); };
 static_assert(CreatesFrom<const engine::VirtualFileSystem&>);  // the positive control
 static_assert(!CreatesFrom<engine::VirtualFileSystem>);
+
+// ---- the bytecode cook (task 4.3.2) ----
+static_assert(static_cast<std::uint8_t>(script::ScriptCookStatus::Ok) == 0U);
+static_assert(noexcept(script::scriptCookStatusLabel(script::ScriptCookStatus::Ok)));
+static_assert(noexcept(script::scriptBackendRelease()));
+static_assert(noexcept(script::scriptBytecodeVersion()));
+static_assert(std::is_same_v<decltype(script::cookScriptBytecode(std::string_view{}, std::string_view{})),
+                             script::ScriptCookResult>);
+static_assert(script::MAX_COOK_SOURCE_BYTES == std::size_t{16} * 1024U * 1024U);
+static_assert(script::COOK_HEAP_LIMIT_BYTES == std::size_t{1024} * 1024U * 1024U);

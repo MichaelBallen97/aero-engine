@@ -53,6 +53,13 @@ tests/cooker/determinism.sha256 text eol=lf
 # exactly like a cook bug. Verify with
 # `git check-attr text eol binary -- tests/cooker/fixtures/external.bin`.
 *.bin binary
+# task 4.3.2: the script arm of the manifest cooks tests/cooker/fixtures/hello.js and
+# tests/fixtures/scripts/bytecode/features.js, so their BYTES are part of a frozen contract. A bundle's
+# line ending reaches the compiled bytecode (a template literal keeps its newlines), and `* text=auto`
+# rides on a heuristic -- the same reason external.bin has its line above. Verify with
+# `git check-attr text eol -- tests/cooker/fixtures/hello.js`.
+tests/cooker/fixtures/*.js text eol=lf
+tests/fixtures/scripts/bytecode/*.js text eol=lf
 # task E.6.1: the editor's vendored font DATA is stored and checked out BYTE-FOR-BYTE, because its README pins
 # every file's SHA-256 against the named upstream. `-text` turns off the blanket `* text=auto eol=lf` above for
 # exactly these two directories: IBM Plex's LICENSE.txt ships CRLF line endings, and normalising them would
