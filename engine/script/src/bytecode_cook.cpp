@@ -157,6 +157,17 @@ struct BytecodeCook {
         return out;
     }
 
+    // The tail both branches of `pass` share: leaves the compile scope, checks the module, writes it.
+    [[nodiscard]] static Pass finishPass(Vm::Impl& impl, LoadAttempt& attempt, const HeldValue& module,
+                                         std::string_view sourceName) {
+        attempt.compiling.pop_back();
+        --attempt.depth;
+        if (module.isException() || JS_HasException(impl.ctx)) {
+            return trapped(impl, sourceName);
+        }
+        return writeValue(impl, module.get(), sourceName);
+    }
+
     // One compile (or read) and one write, inside the scopes of a call that decides its own load failure.
     [[nodiscard]] static Pass pass(Vm::Impl& impl, std::string_view sourceName, const CookOptions& options,
                                    const std::string* text, std::string_view name, std::span<const std::byte> payload) {
@@ -171,14 +182,13 @@ struct BytecodeCook {
         }
         ++attempt.depth;
         attempt.compiling.emplace_back(fileName);
-        const HeldValue module =
-            text != nullptr ? impl.compileModuleText(*text, std::string{name}) : impl.readModuleBytes(payload);
-        attempt.compiling.pop_back();
-        --attempt.depth;
-        if (module.isException() || JS_HasException(impl.ctx)) {
-            return trapped(impl, sourceName);
+        // No conditional here: MSVC needs the deleted move constructor for a `?:` of two class prvalues.
+        if (text != nullptr) {
+            const HeldValue module = impl.compileModuleText(*text, std::string{name});
+            return finishPass(impl, attempt, module, sourceName);
         }
-        return writeValue(impl, module.get(), sourceName);
+        const HeldValue module = impl.readModuleBytes(payload);
+        return finishPass(impl, attempt, module, sourceName);
     }
 
     [[nodiscard]] static VmCreateResult createVm(const VmConfig& config, const CookOptions& options) {
