@@ -245,28 +245,31 @@ JSModuleDef* Vm::Impl::compileModule(std::string_view key, std::string_view impo
             static_cast<void>(JS_ThrowOutOfMemory(ctx));
             return nullptr;
         }
-        // 4. A read is a load: the module is listed under `name` at once and its imports load inside the call.
+        // 4. A read is a load: the module is listed under `name` at once and its imports load inside the call. The
+        //    reader lists every module it meets as it meets it (quickjs.c:29652) and unlists only the one in progress
+        //    when it fails (quickjs.c:39214-39217), so a read that started has maybe left a module named by atom #0
+        //    listed under `name` whatever its outcome. The key is retired by a failed attempt from here on.
         moduleTable.beginCompile(key);
+        attempt->created.emplace_back(key);
         ++attempt->depth;
         attempt->compiling.emplace_back(key);
         const HeldValue read = readModuleBytes(prepared.payload);
         attempt->compiling.pop_back();
         --attempt->depth;
         if (read.isException()) {
-            return nullptr;  // the backend unlisted it; the failure is pending
+            // The backend unlisted the module in progress only; one read earlier in the payload (an array's element,
+            // a module in a constant pool) stays listed under `name`, and the retired key keeps it unreachable.
+            return nullptr;  // the failure is pending
         }
         // A well-formed payload can hold any value, and only a module may be taken for one. The value is freed by
-        // its HeldValue, but the reader lists every module it meets at any depth (quickjs.c:29652, 39569-39575), so
-        // a module nested in this root and named by atom #0 is already listed under `name`. The failed attempt
-        // retires the key as it retires a read module, and no import can name that orphan again.
+        // its HeldValue, but a module nested in this root and named by atom #0 is already listed under `name`, and
+        // the key is already retired by a failed attempt, so no import can name that orphan again.
         if (JS_VALUE_GET_TAG(read.get()) != JS_TAG_MODULE) {
-            attempt->created.emplace_back(key);
             refuse("TypeError", internal::cookedScriptRefusedMessage(key, importer, "its payload is not a module"));
             return nullptr;
         }
         auto* module = static_cast<JSModuleDef*>(JS_VALUE_GET_PTR(read.get()));
         moduleTable.markLoaded(key, module);
-        attempt->created.emplace_back(key);  // BEFORE the check below: a failure from here retires it
         ++moduleInstances;
         // 5. The read named the module as requested. Defence in depth, unreachable: the rename wrote exactly `name`.
         const std::optional<std::string> readName = moduleNameOf(module);

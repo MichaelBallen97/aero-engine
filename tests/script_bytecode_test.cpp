@@ -1,5 +1,5 @@
 // tests/script_bytecode_test.cpp -- task 4.3.2: the bytecode cook (BY8-BY17) and the loader's container branch
-// (BY18-BY29, BY35, BY36), and the same-results cases (BY30-BY34). A TU of aero_tests, which supplies
+// (BY18-BY29, BY35-BY37), and the same-results cases (BY30-BY34). A TU of aero_tests, which supplies
 // main() from test_main.cpp. The cook runs the real backend: the committed fixtures are esbuild 0.28.2's own bundles
 // of the three .ts files beside them (tests/fixtures/scripts/README.md says how they were made).
 #include <aero/assets/cooked_mesh.hpp>
@@ -898,6 +898,56 @@ TEST_CASE("script: a refused container's name is retired, so a module nested in 
     expectCleanShutdown(fx.vm);
 }
 
+TEST_CASE("script: a read that fails after listing a module retires the name, so the orphan is never linked (BY37)") {
+    constexpr std::string_view PATH = "res://t/half.js";
+    constexpr std::byte BC_TAG_ARRAY{9};
+    constexpr std::byte BC_TAG_MODULE{13};
+    constexpr std::byte INVALID_TAG{0xFF};
+    // BY36's container with the array's length 2: the module named by atom #0 is read and listed first, then the
+    // second element's tag is invalid, so the reader fails with that module still listed under the key's name.
+    const std::vector<std::byte> container = toBytes(containerOf("globalThis.ran = 1;", PATH));
+    const engine::assets::CookedScriptParseResult parsed = engine::assets::parseCookedScript(container);
+    REQUIRE(parsed.status == engine::assets::CookedScriptStatus::Ok);
+    const std::size_t moduleAt = atomTableEnd(parsed.script.payload);
+    REQUIRE(parsed.script.payload[moduleAt] == BC_TAG_MODULE);
+    std::vector<std::byte> payload(parsed.script.payload.begin(),
+                                   parsed.script.payload.begin() + static_cast<std::ptrdiff_t>(moduleAt));
+    payload.push_back(BC_TAG_ARRAY);
+    payload.push_back(std::byte{2});  // two elements
+    payload.insert(payload.end(), parsed.script.payload.begin() + static_cast<std::ptrdiff_t>(moduleAt),
+                   parsed.script.payload.end());
+    payload.push_back(INVALID_TAG);
+    const std::span<std::byte> view{payload};
+    engine::assets::putU32(view, 1, bytecodeChecksum(std::span<const std::byte>{view}.subspan(5)));
+    const engine::assets::CookedScriptInput input{engine::Guid{}, scriptBackendRelease(), scriptBytecodeVersion(), 1U,
+                                                  payload};
+    const engine::assets::CookedScriptWriteResult wrapped = engine::assets::writeCookedScript(input);
+    REQUIRE(wrapped.status == engine::assets::CookedScriptStatus::Ok);
+
+    const LogCapture log;
+    Fixture fx;
+    fx.files->set("t/half.js", toText(wrapped.bytes));
+    fx.files->set("t/importer.js", "import \"./half.js\";\nglobalThis.imported = 1;\n");
+    // The reader's failure arrives as a pending SyntaxError, which classify reports as a CompileError.
+    const EvalResult first = fx.vm.evaluateModule(PATH);
+    CHECK(evalLabel(first) == "CompileError");
+    CHECK(first.error.message.find("invalid tag") != std::string::npos);
+    const std::optional<ModuleRecord> record = recordOf(fx.vm, PATH);
+    REQUIRE(record.has_value());
+    CHECK(record->generation == 2U);
+    CHECK(stateOf(fx.vm, PATH) != "Loaded");
+
+    // The import names the next generation, so the orphan listed under the first one is unreachable: the container
+    // is read again, fails again, and its body never runs.
+    const EvalResult second = fx.vm.evaluateModule("res://t/importer.js");
+    CHECK(evalLabel(second) == "CompileError");
+    CHECK(second.error.message.find("invalid tag") != std::string::npos);
+    CHECK(completion(fx.vm, "typeof globalThis.ran") == "undefined");
+    CHECK(completion(fx.vm, "typeof globalThis.imported") == "undefined");
+    CHECK(fx.vm.stats().moduleInstances == 0U);
+    expectCleanShutdown(fx.vm);
+}
+
 // ---- BY30-BY34: the same results, the one exception, and R22's shapes through bytecode -------------------------
 
 namespace {
@@ -1081,7 +1131,9 @@ TEST_CASE("script: R22's dangling shape through bytecode is retired, as through 
     CHECK(moduleStateLabel(x->state) == "Unloaded");
     const std::optional<ModuleRecord> entry = recordOf(fx.vm, "res://r/entry.js");
     REQUIRE(entry.has_value());
-    CHECK(entry->generation == 1U);
+    // A bytecode read that started retires its key whatever its outcome (the reader lists a module before it can
+    // fail), so the entry whose read failed on its import moves too; the JavaScript path's failed compile does not.
+    CHECK(entry->generation == 2U);
 
     fx.files->set("r/missing.js", "export {};");
     log.clear();

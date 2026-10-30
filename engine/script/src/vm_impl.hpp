@@ -115,7 +115,7 @@ struct LoadAttempt {
     std::size_t depth = 0;               // compiles in progress, one inside another
     std::string importer;                // the importing module's key for the next loader call ("" for an entry)
     std::vector<std::string> compiling;  // the keys being compiled, innermost last (the attribute checker's module)
-    std::vector<std::string> created;    // keys compiled successfully, in order: what a failure retires
+    std::vector<std::string> created;    // keys read or compiled, whose names a failed attempt retires
     bool refused = false;                // an engine refusal (refuse()) ended it -- never caused by memory
     // The cook's: every static import is refused, because a cooked script imports nothing (bytecode_cook.cpp).
     bool refusesImports = false;

@@ -118,6 +118,14 @@ the backend sees a byte. One cause is decided after the read, because only the r
 is not a module (BY35) is a `LoadError`, and the key is retired like a read module's (BY36), because the reader lists
 every module it meets at any depth, a nested one named by atom #0 included.
 
+**A STARTED BYTECODE READ RETIRES ITS KEY WHATEVER ITS OUTCOME; A FAILED JAVASCRIPT COMPILE RETIRES NOTHING (4.3.2).**
+The reader lists a module before it can fail and unlists only the one in progress (quickjs.c:29652, 39214-39217), so a
+failed read can leave a module named by atom #0 listed under the key's current name, and the loader puts the key in
+`attempt->created` right after `beginCompile` (BY36 not a module, BY37 a read that fails after listing one). A failed
+compile retires nothing because the backend freed the module. The two differ only after a failed read, which a cooked
+script never takes: it imports nothing, and the 48x headroom covers its read (BY33 pins the entry of a seam cook whose
+import failed at generation 2).
+
 **EVERY BYTECODE READ IS CHECKED, RENAMED AND GUARDED BEFORE THE BACKEND SEES IT (4.3.2).** One `JS_ReadObject` and
 one `JS_WriteObject` call site exist in the script layer (BY17). The payload's atom #0 is renamed to the name the
 module's JavaScript would have had, so a reload (`<path>?gen=N`) and R22's retire rule are the JavaScript path's, and

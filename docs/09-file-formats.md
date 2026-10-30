@@ -3403,9 +3403,10 @@ payload and unknown strip bits, with the parser's messages, before sizing its bu
 The loader's own refusals (a release or bytecode version that is not the build's, the version byte, the bypass value, a
 checksum mismatch, a name that is not the placeholder) are each a load error raised before the backend reads a byte.
 One more is decided after the read, because only the read shows it: a payload that is well-formed but holds a value
-that is not a module (`its payload is not a module`). The reader lists every module it meets at any depth, so the
-refused attempt retires the key as it retires a module it read, and a module nested in that payload under the name of
-atom #0 can no longer be imported.
+that is not a module (`its payload is not a module`). The reader lists every module it meets at any depth, and
+unlists only the one in progress when it fails, so a read that started retires the key whatever its outcome (not a
+module, a failed read, or a module), and a module nested in that payload under the name of atom #0 can no longer be
+imported on either arm.
 
 ### 16.6 Versioning and evolution
 
