@@ -36,6 +36,7 @@ add_executable(aero_tests
     animation_cook_test.cpp   # task 3.5.2 — cookAnimation: canonical order, refusals, byte-exactness
     cooked_audio_test.cpp     # task 3.7.1 — the .aerowave container v1: layout, parse, hostile input
     audio_cook_test.cpp       # task 3.7.1 — cookAudio: refusals, byte-exactness, the ffmpeg anchor
+    cooked_script_test.cpp    # task 4.3.2 — the .aeroscript container v1: layout, parse, hostile input
     audio_clip_test.cpp       # task 3.7.1 — engine::audio::AudioClip + loadAudioClip through the VFS
     audio_spatial_test.cpp    # task 3.7.2 — the pure rolloff + constant-power pan (SP1-SP14)
     audio_mixer_test.cpp      # task 3.7.2 — the realtime mixer: pool, cursor, ramps, clamp (MX1-MX22)

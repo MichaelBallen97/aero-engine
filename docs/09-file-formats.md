@@ -3321,13 +3321,109 @@ artifacts are invisible to both walks and cannot start a rescan loop. A re-run o
 paths, so the directory holds one trio per script, forever, with **no deletion anywhere**: a script removed from the
 project leaves its trio behind.
 
-## 16. Reserved for future formats
+## 16. Cooked script container v1 (`.aeroscript`)
+
+> Enforced in code by `engine/assets` (`cooked_script.{hpp,cpp}` = the format, its parser and its writer, task
+> 4.3.2); `tests/cooked_script_test.cpp` is its machine-checkable form. Produced by `aero_cooker script`; read by
+> `engine/script`'s module loader.
+
+### 16.0 Scope
+
+One ES module's compiled bytecode behind an 80-byte header. It is the tree's fifth first-party binary format and the
+first whose payload belongs to a third party: `engine/assets` frames, hashes and returns the payload and never looks
+inside it. It is written by `aero_cooker script` and read by the module loader in `engine/script`. **It is trusted
+input:** the container detects accidents (a truncated copy, a flipped byte), not attacks, because the backend's bytecode
+reader is documented as unsafe on hostile input (`quickjs.h:1224-1226`).
+
+### 16.1 The header -- 80 bytes at offset 0
+
+Little-endian, no padding site, the payload last. `COOKED_SCRIPT_HEADER_BYTES` and `detail::H_*` in
+`cooked_script.hpp` are the only sizes and offsets in code; `sizeof` is never taken of an on-disk record.
+
+| Offset | Size | Type | Field | Rule |
+|---|---|---|---|---|
+| 0 | 8 | bytes | `magic` | `00 41 45 52 4F 53 43 52` (a NUL, then `AEROSCR`), compared over all eight |
+| 8 | 4 | `u32` | `formatVersion` | must be 1 |
+| 12 | 4 | `u32` | `cookerVersion` | informational; never gates a parse |
+| 16 | 8 | `u64` | `sourceGuid.hi` | the GUID, high half first (sections 9, 12-14) |
+| 24 | 8 | `u64` | `sourceGuid.lo` | nil is legal |
+| 32 | 4 | `u32` | `backendRelease` | stored, not judged by the container (the loader compares) |
+| 36 | 4 | `u32` | `bytecodeVersion` | stored, not judged by the container |
+| 40 | 4 | `u32` | `stripFlags` | only bits in `COOKED_SCRIPT_KNOWN_STRIP_FLAGS` (bit 0: function source text stripped) |
+| 44 | 4 | `u32` | `reservedFlags` | must be 0 |
+| 48 | 8 | `u64` | `payloadBytes` | at least 1, and exactly the buffer size minus 80 |
+| 56 | 8 | `u64` | `payloadHash.hi` | `hashBytes(payload)` (MurmurHash3 x64_128, seed 0), high half first |
+| 64 | 8 | `u64` | `payloadHash.lo` | |
+| 72 | 8 | `u64` | `reserved` | must be 0 |
+| 80 | n | bytes | `payload` | the backend's bytecode, opaque to `engine/assets` |
+
+There is no payload cap. The VM refuses a file larger than its heap limit before reading it, and the loader's
+headroom guard bounds the read; a format cap would bound nothing those do not.
+
+### 16.2 The payload
+
+quickjs-ng bytecode version 26, written with `BYTECODE | STRIP_SOURCE`. Its head: a `u8` version, a `u32` checksum of
+bytes 5 to the end, a LEB128 atom count, then per atom a type byte (0, then a `u32` predefined atom; 1 to 3, then a
+LEB128 `len << 1 | wide` and the characters). Atom #0 is the module name, always the cook's placeholder
+`res://?cooked`. The payload is native-endian, which every target is (little).
+
+### 16.3 The load-time rename
+
+Normative: the loader replaces atom #0 with the name it would give the module's JavaScript, re-writes the atom's length
+word minimally, and recomputes the backend checksum. It refuses anything whose atom #0 is not exactly the placeholder.
+
+### 16.4 The backend checksum's gap, and why the payload hash exists
+
+The backend's checksum routine sums whole 32-bit words while more than four bytes remain, then handles a remainder of
+three, two or one byte and has no arm for four. When the checksummed length is a multiple of four, the last word never
+enters the sum, so a change to the payload's last four bytes passes the backend's own check. The renamer reproduces the
+gap exactly (a rename of such a payload must still satisfy the backend), and the container's payload hash is the only
+accident detector for those four bytes: it is necessary, not redundant.
+
+### 16.5 Refusals
+
+The parser checks, in this order, and stops at the first failure:
+
+| Status | Condition | Message |
+|---|---|---|
+| `TooSmall` | the buffer is shorter than 80 bytes | `the buffer is {n} bytes, shorter than the 80-byte header` |
+| `BadMagic` | the first eight bytes are not the magic | `the buffer does not begin with the cooked script magic (a NUL, then AEROSCR)` |
+| `UnsupportedVersion` | `formatVersion` is not 1 | `cooked script format version {v} (this build reads version 1)` |
+| `ReservedNotZero` | `reservedFlags`, then `reserved`, is not zero | `the header's reserved flags field is not zero` / `the header's reserved field at offset 72 is not zero` |
+| `UnknownFlags` | `stripFlags` holds a bit outside bit 0 | `the header's strip flags 0x{v:x} hold a bit this build does not know (known: 0x1)` |
+| `EmptyPayload` | `payloadBytes` is zero | `the header declares an empty payload` |
+| `SizeMismatch` | `payloadBytes` is not the buffer size minus 80 (compared by subtraction, never `80 + payloadBytes`) | `the header declares a {p}-byte payload but {n} bytes follow the header` |
+| `HashMismatch` | the payload does not hash to the header's value | `the payload's hash does not match the header's (the file is damaged)` |
+
+The hash runs last, so a damaged or foreign header never costs a pass over its payload. The writer refuses an empty
+payload and unknown strip bits, with the parser's messages, before sizing its buffer; its output always parses.
+The loader's own refusals (a release or bytecode version that is not the build's, the version byte, the bypass value, a
+checksum mismatch, a name that is not the placeholder) are each a load error raised before the backend reads a byte.
+
+### 16.6 Versioning and evolution
+
+Section 9.11's rules apply by reference. `formatVersion` gates a parse and `cookerVersion` never does. A port bump
+that changes the bytes is a `COOKED_SCRIPT_COOKER_VERSION` bump with the determinism manifest regenerated, and a
+`bytecodeVersion` or `backendRelease` change makes every older container refuse to load. Occupying either reserved field
+is a `formatVersion` bump, because the parser refuses non-zero.
+
+### 16.7 Determinism (normative)
+
+The cook's bytes are a cross-lane contract: the same source, GUID and backend release give the same container on every
+platform and configuration.
+
+### 16.8 What it does not carry
+
+Function source text (stripped), a source map, `STRIP_DEBUG` output, and imports: a module's specifiers stay in its
+bytecode and resolve at load exactly as they would in its JavaScript.
+
+## 17. Reserved for future formats
 
 - **Cooked / `.pak` binary formats** — Phase 3+, owned by the cooker; own version field, docs/04:51
   applies unchanged. Section appends here. Still unowned: the `.pak` container itself and cooked
   scenes. The cooked **mesh** container is section 9, the cooked **texture** container is section 10,
-  the cooked **skeleton** container is section 12, the cooked **animation** container is section 13
-  and the cooked **audio** container is section 14.
+  the cooked **skeleton** container is section 12, the cooked **animation** container is section 13,
+  the cooked **audio** container is section 14 and the cooked **script** container is section 16.
 - **Cooked / binary materials** — the pak-rev cooker work, together with cooked scenes. Until then
   every consumer, editor and runtime alike, reads `.aeromat` through `engine/reflect`'s parser, and a
   binary material would be a second reader with no second producer. Task 3.4.1 recorded the decision;
