@@ -32,6 +32,7 @@ namespace engine::script {
 namespace internal {
 class ComponentBindingTable;  // <aero/script/internal/component_binding.hpp>
 struct VmAccess;              // the test seam that creates a VM over another table
+struct BytecodeCook;          // the cook (src/bytecode_cook.cpp): two VMs of its own, reached through the friend below
 }  // namespace internal
 
 // ---- limits --------------------------------------------------------------------------------------------
@@ -172,7 +173,8 @@ struct VmStats {
     std::size_t heapBytesInUse = 0;
     std::size_t heapBytesPeak = 0;
     std::size_t liveAllocations = 0;
-    std::uint64_t refusedAllocations = 0;     // requests the heap limit refused, over the VM's life
+    // Requests the heap limit refused, over the VM's life. A bytecode read the headroom guard refused counts as one.
+    std::uint64_t refusedAllocations = 0;
     std::uint64_t unhandledRejections = 0;    // reported at the end of a call
     std::uint64_t rejectionsHandledLate = 0;  // reported, then handled in a later call
     // Module instances compiled over the VM's life. None is freed before teardown -- the backend has no way to drop a
@@ -316,6 +318,7 @@ private:
     struct Impl;  // holds the backend's runtime + context; defined in src/vm_impl.hpp
     explicit Vm(std::unique_ptr<Impl> owned) noexcept;
     friend struct internal::VmAccess;
+    friend struct internal::BytecodeCook;
     // `components` is what the `engine` namespace binds: BORROWED, and it outlives the Vm.
     [[nodiscard]] static VmCreateResult createWith(const VmConfig& config, const VirtualFileSystem* modules,
                                                    const internal::ComponentBindingTable& components);

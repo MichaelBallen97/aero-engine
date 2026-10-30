@@ -42,6 +42,7 @@ add_library(aero_script STATIC
     src/heap_accounting.cpp
     src/module_graph.cpp
     src/bytecode_format.cpp
+    src/bytecode_cook.cpp
     src/component_bindings.cpp
     src/script_api.cpp
     src/script_api_values.cpp

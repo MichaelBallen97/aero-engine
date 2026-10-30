@@ -18,6 +18,7 @@
 #include <exception>
 #include <format>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -228,8 +229,7 @@ JSModuleDef* Vm::Impl::compileModule(std::string_view key, std::string_view impo
     moduleTable.beginCompile(key);
     ++attempt->depth;
     attempt->compiling.emplace_back(key);
-    constexpr int MODULE_COMPILE = JS_EVAL_TYPE_MODULE | JS_EVAL_FLAG_COMPILE_ONLY;
-    const HeldValue compiled{ctx, JS_Eval(ctx, text->c_str(), text->size(), name.c_str(), MODULE_COMPILE)};
+    const HeldValue compiled = compileModuleText(*text, name);
     attempt->compiling.pop_back();
     --attempt->depth;
     if (compiled.isException()) {
@@ -241,6 +241,16 @@ JSModuleDef* Vm::Impl::compileModule(std::string_view key, std::string_view impo
     attempt->created.emplace_back(key);
     ++moduleInstances;
     return module;
+}
+
+HeldValue Vm::Impl::compileModuleText(const std::string& text, const std::string& name) {
+    constexpr int MODULE_COMPILE = JS_EVAL_TYPE_MODULE | JS_EVAL_FLAG_COMPILE_ONLY;
+    return HeldValue{ctx, JS_Eval(ctx, text.c_str(), text.size(), name.c_str(), MODULE_COMPILE)};
+}
+
+HeldValue Vm::Impl::readModuleBytes(std::span<const std::byte> payload) {
+    return HeldValue{ctx, JS_ReadObject(ctx, reinterpret_cast<const std::uint8_t*>(payload.data()), payload.size(),
+                                        JS_READ_OBJ_BYTECODE)};
 }
 
 // ---- a module's outcome ---------------------------------------------------------------------------------------
@@ -482,6 +492,10 @@ char* Vm::Impl::normalizeModuleName(JSContext* /*context*/, const char* base, co
                                 std::format("cannot resolve '{}' imported by '{}': a module was requested while a "
                                             "module graph links or evaluates",
                                             specifier, base));
+            return nullptr;
+        }
+        if (self.attempt->refusesImports) {  // the cook: a cooked script imports nothing
+            self.refuse("TypeError", internal::cookImportMessage(self.callFileName, specifier));
             return nullptr;
         }
         // A static import, resolved while one of the engine's compiles runs.

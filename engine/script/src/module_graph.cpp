@@ -285,6 +285,11 @@ std::string unsupportedAttributeMessage(std::string_view attribute, std::string_
     return std::format("import attribute '{}'{} is not supported (this engine supports none)", attribute, where);
 }
 
+std::string cookImportMessage(std::string_view sourceName, std::string_view specifier) {
+    return std::format("cannot cook '{}': it imports '{}', and a cooked script imports nothing (bundle it first)",
+                       sourceName, specifier);
+}
+
 // ---- the record table -----------------------------------------------------------------------------------------
 
 std::uint32_t ModuleTable::generation(std::string_view key) const {

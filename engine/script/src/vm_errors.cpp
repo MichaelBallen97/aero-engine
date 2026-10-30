@@ -173,6 +173,9 @@ void Vm::Impl::clearPendingException() noexcept {
 }
 
 void Vm::Impl::logFailure(EvalStatus status, const ScriptError& error, bool isErrorObject, bool namesCause) {
+    if (quiet) {
+        return;  // a cook's VM: the cook's result carries every failure, and stdout is the cooker's contract
+    }
     std::string text;
     switch (status) {
         case EvalStatus::CompileError:

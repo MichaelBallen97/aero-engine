@@ -14,6 +14,7 @@
 #include <cstdint>
 #include <optional>
 #include <quickjs.h>
+#include <span>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -116,6 +117,8 @@ struct LoadAttempt {
     std::vector<std::string> compiling;  // the keys being compiled, innermost last (the attribute checker's module)
     std::vector<std::string> created;    // keys compiled successfully, in order: what a failure retires
     bool refused = false;                // an engine refusal (refuse()) ended it -- never caused by memory
+    // The cook's: every static import is refused, because a cooked script imports nothing (bytecode_cook.cpp).
+    bool refusesImports = false;
     std::uint64_t growthRefusalsAtStart = 0;  // HeapAccounting::growthRefusals() when it began
 };
 
@@ -194,6 +197,12 @@ struct Vm::Impl {
     void evaluateEntry(std::string_view key, EvalResult& result);
     [[nodiscard]] HeldValue startModule(LoadAttempt& load, std::string_view key, ImportPath path, std::uint64_t& watch);
     [[nodiscard]] JSModuleDef* compileModule(std::string_view key, std::string_view importer);
+    // The one module compile (JS_EVAL_TYPE_MODULE): `text` and `name` are C strings to the backend. Compile only, no
+    // module is evaluated; the failure is pending on JS_EXCEPTION.
+    [[nodiscard]] HeldValue compileModuleText(const std::string& text, const std::string& name);
+    // The one place bytecode becomes a module (JS_ReadObject): the payload as the cook wrote it, a module name already
+    // in it. The failure is pending on JS_EXCEPTION.
+    [[nodiscard]] HeldValue readModuleBytes(std::span<const std::byte> payload);
     [[nodiscard]] char* serveDynamicImport(const char* base, const char* specifier);
     // The outcome of one watched module evaluation: the record (unless a carried watch's path was reloaded since), the
     // attribution of the body's rejections (§C.7 as amended), the flag clearing (D10). A rejected static entry of the
@@ -226,6 +235,7 @@ struct Vm::Impl {
     bool finished = false;
     std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::time_point::min();
     bool inCall = false;
+    bool quiet = false;              // the cook's VMs: no failure is logged (the result carries it; bytecode_cook.cpp)
     bool interruptFired = false;     // the budget ran out in the current call; see interruptHandler
     bool interruptRecorded = false;  // an "interrupted" record has been logged for the current call
     std::uint64_t refusalsAtCallStart = 0;
