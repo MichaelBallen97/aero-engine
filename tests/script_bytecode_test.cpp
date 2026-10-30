@@ -1,5 +1,5 @@
 // tests/script_bytecode_test.cpp -- task 4.3.2: the bytecode cook (BY8-BY17) and the loader's container branch
-// (BY18-BY29), and the same-results cases (BY30-BY34). A TU of aero_tests, which supplies
+// (BY18-BY29), and the same-results cases (BY30-BY35). A TU of aero_tests, which supplies
 // main() from test_main.cpp. The cook runs the real backend: the committed fixtures are esbuild 0.28.2's own bundles
 // of the three .ts files beside them (tests/fixtures/scripts/README.md says how they were made).
 #include <aero/assets/cooked_mesh.hpp>
@@ -1041,4 +1041,43 @@ TEST_CASE("script: R22's half-linked shape through bytecode is never linked agai
     CHECK(second.error.message == "Could not find export 'nope' in module 'res://r/j.js?gen=2'");
     CHECK(fx.files->reads("r/half.js") == 2U);
     expectCleanShutdown(fx.vm);
+}
+
+TEST_CASE("script: a container whose payload is not a module is refused, never taken for one (BY35)") {
+    constexpr std::string_view PATH = "res://t/notmodule.js";
+    // A payload of the backend's own format: the version byte, the checksum word, one atom (the cook's placeholder, as
+    // a narrow string) and, where a module would be, an object with no properties. The head is valid, so only the
+    // value's kind is wrong.
+    std::vector<std::byte> payload{std::byte{engine::script::internal::SCRIPT_BYTECODE_VERSION}, std::byte{0},
+                                   std::byte{0}, std::byte{0}, std::byte{0}};
+    payload.push_back(std::byte{1});  // one atom
+    payload.push_back(std::byte{1});  // of the string type
+    payload.push_back(static_cast<std::byte>(COOK_MODULE_NAME.size() << 1U));
+    for (const char c : COOK_MODULE_NAME) {
+        payload.push_back(static_cast<std::byte>(c));
+    }
+    payload.push_back(std::byte{8});  // BC_TAG_OBJECT
+    payload.push_back(std::byte{0});  // no properties
+    const std::span<std::byte> view{payload};
+    engine::assets::putU32(view, 1, bytecodeChecksum(std::span<const std::byte>{view}.subspan(5)));
+    const engine::assets::CookedScriptInput input{engine::Guid{}, scriptBackendRelease(), scriptBytecodeVersion(), 1U,
+                                                  payload};
+    const engine::assets::CookedScriptWriteResult wrapped = engine::assets::writeCookedScript(input);
+    REQUIRE(wrapped.status == engine::assets::CookedScriptStatus::Ok);
+
+    const LogCapture log;
+    Fixture fx;
+    fx.files->set("t/notmodule.js", toText(wrapped.bytes));
+    const EvalResult result = fx.vm.evaluateModule(PATH);
+    CHECK(evalLabel(result) == "LoadError");
+    CHECK(result.error.message == cookedScriptRefusedMessage(PATH, "", "its payload is not a module"));
+    CHECK(result.error.message.find(PATH) != std::string::npos);
+    CHECK(stateOf(fx.vm, PATH) != "Loaded");
+    CHECK(fx.vm.stats().moduleInstances == 0U);
+    expectCleanShutdown(fx.vm);
+    // Anti-vacuity: the same fixture loads a real container.
+    Fixture good;
+    good.files->set("t/ok.js", containerOf("globalThis.v = 1;", "res://t/ok.js"));
+    CHECK(evalLabel(good.vm.evaluateModule("res://t/ok.js")) == "Ok");
+    expectCleanShutdown(good.vm);
 }

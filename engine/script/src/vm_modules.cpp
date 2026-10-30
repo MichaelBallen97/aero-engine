@@ -255,6 +255,12 @@ JSModuleDef* Vm::Impl::compileModule(std::string_view key, std::string_view impo
         if (read.isException()) {
             return nullptr;  // the backend unlisted it; the failure is pending
         }
+        // A well-formed payload can hold any value, and only a module may be taken for one: the backend listed
+        // nothing, so nothing is retired, and the value is freed by its HeldValue.
+        if (JS_VALUE_GET_TAG(read.get()) != JS_TAG_MODULE) {
+            refuse("TypeError", internal::cookedScriptRefusedMessage(key, importer, "its payload is not a module"));
+            return nullptr;
+        }
         auto* module = static_cast<JSModuleDef*>(JS_VALUE_GET_PTR(read.get()));
         moduleTable.markLoaded(key, module);
         attempt->created.emplace_back(key);  // BEFORE the check below: a failure from here retires it

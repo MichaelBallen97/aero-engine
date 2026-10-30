@@ -3400,6 +3400,8 @@ The hash runs last, so a damaged or foreign header never costs a pass over its p
 payload and unknown strip bits, with the parser's messages, before sizing its buffer; its output always parses.
 The loader's own refusals (a release or bytecode version that is not the build's, the version byte, the bypass value, a
 checksum mismatch, a name that is not the placeholder) are each a load error raised before the backend reads a byte.
+One more is decided after the read, because only the read shows it: a payload that is well-formed but holds a value
+that is not a module (`its payload is not a module`). Nothing was listed by the backend, so nothing is retired.
 
 ### 16.6 Versioning and evolution
 
