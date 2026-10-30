@@ -13,6 +13,12 @@ paths:
   - "tests/editor/assimp*"
   - "tests/editor/fbx*"
   - "tests/editor/obj*"
+  - "editor/src/tool_process*"
+  - "editor/src/esbuild*"
+  - "editor/src/script_transpiler*"
+  - "editor/include/aero/editor/esbuild*"
+  - "tests/editor/esbuild*"
+  - "tests/editor/script_transpiler*"
 ---
 
 # Editor: model importers
@@ -471,7 +477,8 @@ Split out of `editor.md` so that no editor rules file is cut at the 150 000-char
   identical `ImportResult` — so neither proof substitutes for the other.
 - **`SDL_WaitProcess` is only ever called with `block == false`, and no pipe is ever created.** SDL's
   own header documents the deadlock. `SDL_ReadProcess`/`SDL_GetProcessOutput`/`SDL_GetProcessInput`
-  appear nowhere in this tree and must not start. Sabotage-confirmed: a blocking wait does not fail the
+  appear nowhere in this tree and must not start. `tool_process.cpp`, the `ToolProcess` class (task 4.3.1 renamed it
+  from `BlenderProcess`), is the ONLY translation unit that spells SDL's process symbols, and Blender and esbuild share it. Sabotage-confirmed: a blocking wait does not fail the
   suite, it **hangs** it past every budget — the comment-stripped gate grep is the real cover.
 - **`BlenderService::poll()` has exactly ONE call site in the tree, inside
   `ModelImportSession::serviceBlend()`, and `EditorApp::tick()` gains no fourth post-draw call.** The
@@ -498,7 +505,7 @@ Split out of `editor.md` so that no editor rules file is cut at the 150 000-char
   On success the record overwrites the status; a half-finished run leaves a document
   `parseExportProvenance` rejects, which is exactly the "no valid cache entry" answer. A test asserting
   "no provenance was written" must assert what the document IS, not that the path is empty.
-- **`blender_tool.cpp`, `blender_process.cpp` and `blender_service.cpp` never log, and none of them is
+- **`blender_tool.cpp`, `tool_process.cpp` and `blender_service.cpp` never log, and none of them is
   in either of `check-project-no-delete.sh`'s lists** — being outside both is exactly what makes a
   future `std::filesystem::remove` there a hard CI failure (sabotage-confirmed: the guard fires before
   any test binary runs). All three are also `<thread>`/`<mutex>`/`<atomic>`/`<future>`/
@@ -698,3 +705,62 @@ Split out of `editor.md` so that no editor rules file is cut at the 150 000-char
 - **A reduced-configuration probe must be configured with `-G Ninja`.** `CMAKE_GENERATOR` enters the
   shadercross bootstrap's option hash, so a Makefiles configure reads the cached toolchain as COLD and pays
   a twenty-minute from-source DXC rebuild that has nothing to do with what the probe tests.
+
+## esbuild (task 4.3.1)
+
+- **The command line is pinned, and every flag earns its place.** `--bundle` (one module per script, with its
+  imports inlined), `--format=esm`, `--platform=neutral`, `--target=es2023 --supported:using=false` (R21: the
+  VM's `using` hang is reachable through un-lowered output, and the tsconfig `target` does not lower it),
+  `--preserve-symlinks` (a symlinked directory inside the assets root must resolve to the path the asset database walks),
+  `--sourcemap=linked`, a `--tsconfig-raw` that restates `verbatimModuleSyntax`, `useDefineForClassFields` and
+  `experimentalDecorators` (they change emit, and the project's own `tsconfig.json` is never read), and
+  `--log-level=warning --color=false --log-limit=0` (a clean run writes a 0-byte log). The arguments are relative, run
+  from the project root, so no absolute path leaks into the output. Changing any element changes
+  `esbuildFlagsFingerprint()` and so invalidates every record: that is the point.
+- **Publishing is map, then JS, then record, each through `writeTextFileAtomic`.** The staged files are read with
+  `readFileBytes` and written again; a direct rename is forbidden by `check-project-no-delete.sh`. The record is the
+  only thing that makes the trio fresh, so it lands last.
+- **Record hashes come from the scan, never from a re-read, and a scan completing during a run re-runs the script.**
+  The database's hashes predate the run; a file hashed from disk when the run ends could record a save made during the
+  run as the new state while the JavaScript holds the old bytes. `finish` compares `database.generation()` with the
+  value taken at the start and pushes the job back on the front of the queue when they differ.
+- **A tool failure writes no record.** A missing binary, a spawn failure, a run past the 30 s limit and an unpreparable
+  staging directory say nothing about the script, so it stays stale and the next completed scan retries it. Such a
+  failure logs one error per pass, kills the child, fails the running and queued jobs, and ends the pass.
+- **An error run writes no metafile**, so a failed record's inputs are the script plus every diagnostic location under
+  the assets root, and its `sourceSet` fingerprint makes creating a missing file retry it. **A failing run is recorded
+  only when its log was read whole and held 1 to 64 diagnostics**: only then does the record name every file the
+  failure points at. A log that is empty, unparseable, longer than 64 diagnostics or over 256 KiB writes no record, and
+  the next scan runs the script again (ST31, ST32, ST34).
+- **A fresh `failed` record is a failure at every pass.** `noteScan` files fresh records as ok (`freshAtLatest`,
+  counted under K) or failed (`failedAtLatest`); `endPass` prints each fresh failure's stored diagnostics through
+  `show` and counts it under M -- after every run's lines, before the summary, skipping a script that has an outcome
+  in the pass. Printing at evaluation instead repeats the lines for every scan a pass spans (ST30). A stored
+  diagnostic is exactly a printed line: a refusal is location-less, so its re-shown line is the live one (ST29), and a
+  `failed` record with no diagnostic is a parse miss (EB26).
+- **`readFileBytes`' cap is its own outcome.** Branch on `refusedByCap` before parsing: a refused read parsed as
+  empty turns an oversized log into "wrote nothing" (ST34) or drops every warning of a clean run (ST33).
+- **A script of the scan is one predicate, `scriptJobOf`**: a `.ts` (not `.d.ts`) with a valid GUID and a usable hash
+  whose own project-relative path classifies `Accepted`. `collectScripts` and `requeue` both use it, so a package under
+  `node_modules` inside the assets root is never run as a script, at a scan or after a mid-run move (ST35).
+- **The binary is identified by content hash, not by `--version`**, because a version probe is a process and an
+  unchanged project starts none. The hash is computed once per session, at first need, and an unknown identity compares
+  nothing.
+- **esbuild's log columns are 0-based and its lines 1-based.** The Console line and the record store 1-based columns.
+- **esbuild's error mark is `X` on Windows outside Windows Terminal.** In 0.28.2 `MsgKind.Icon` prints `X` on Windows
+  when `WT_SESSION` is unset and U+2718 otherwise, so the mark follows the environment, not only the OS. The parser
+  accepts both before `[ERROR] ` on every host; the warning mark U+25B2 is the same everywhere; nothing looser is a
+  header (`x [ERROR] `, `XX [ERROR] `, `X[ERROR] ` and `X [WARNING] ` are not). `EB30` pins it. The pinned darwin binary
+  cannot print the `X` form, so only a Windows run shows it live.
+- **Every new test sets the esbuild path** (`ScriptTranspilerConfig::esbuildPath` or `EditorAppConfig::esbuildPath`,
+  taken from `AERO_TEST_ESBUILD`), the `toolPrefsPath` rule again: resolution is lazy, so a project without a script
+  never reads `AERO_ESBUILD_PATH` or the editor's own directory, and a test that reaches it would run the local machine's
+  binary. Tests run the cached binary, never the copy beside `aero_editor`.
+- **The transpiler never logs.** `esbuild_tool.cpp`, `script_transpiler.cpp` and `tool_process.cpp` return values;
+  `EditorApp::drainScriptLog` is the one site, and its switch over `ScriptLogLevel` has no `default:`. Every line starts
+  `scripts: `.
+- **`ST22`'s textual check stays before any evaluation.** It reads the output for a `using` declaration first, so a
+  regression in the flags is reported as that and not as a hang in the VM. The VM is linked into `aero_editor_shell_test`
+  only (`aero::script`, PRIVATE); `aero_editor_core` and the editor link none.
+- **A UTF-8 log fixture is written as `\x` escapes split into separate literals**, and the header glyph bytes in
+  `esbuild_tool.cpp` are a `std::array<char, 3>` of byte values: every literal under `editor/` stays 7-bit.

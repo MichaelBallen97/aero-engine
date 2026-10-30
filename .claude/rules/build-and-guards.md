@@ -83,3 +83,23 @@ source-file `INCLUDE_DIRECTORIES` property scoped to the generated files; any fu
 **A NEW `cmake/*.cmake` MOVES TWO GUARD FIGURES ON A TASK THAT ADDS NO TARGET (E.6.1).** audio-boundary's and
 boundary-probes' last figure count every CMake file they sweep, `*.cmake` included, so `embed.cmake` + `embed_run.cmake` moved them
 55 → 57 and 57 → 59. That move is expected; a move in any other guard is still a stop-and-find-out.
+
+**THE ESBUILD FETCH IS A CONFIGURE-TIME STEP, UNGATED (4.3.1, `cmake/esbuild.cmake`).** The root `CMakeLists.txt`
+includes it on every configure, including both reduced configurations (`AERO_SHADER_TOOLS=OFF`,
+`AERO_REFLECT_TOOLS=OFF`), because the editor's tests need the binary there too. The file holds the host table (npm
+platform, member inside the tarball, SHA-512 of the tarball) for `darwin-arm64`, `darwin-x64`, `win32-x64` and
+`linux-x64`; any other host is a `FATAL_ERROR` naming the table. The hash table is the trust anchor: a mismatch is a
+hard configure error, and a version bump means new hashes read from the registry's `dist.integrity` and re-verified
+locally, never a relaxed check. Two presets configuring at once are safe because the work sits behind a `file(LOCK)` on
+the version's cache directory; extraction goes through a staging directory, so an interrupted extract never leaves a
+truncated binary at the final path; and `file(DOWNLOAD … EXPECTED_HASH)` skips the network when a matching tarball is
+already cached. The cache is `<cache root>/aero-engine/esbuild/<version>/<platform>/`, resolved by the same convention
+as `tools/shaderc/bootstrap.cmake` (which a reduced configuration does not include, hence the restatement; change the
+two together), and `AERO_ESBUILD_ROOT` overrides the root. `aero_editor` gets a POST_BUILD copy beside it; the test
+binaries run the cached binary through `AERO_TEST_ESBUILD`. CI caches the directory per OS under the key
+`esbuild-<os>-0.28.2`, with no `restore-keys`. A cold-cache run needs `registry.npmjs.org`: a registry outage fails
+configure, and the answer is to re-run it.
+
+**`editor/src/script_transpiler.cpp` IS IN `check-project-no-delete.sh`'s CHECK A (4.3.1)**, which moved from 7 files to
+8 and Check B from 111 to 113 `editor/src/*.cpp` files. It writes into `Library/Scripts/`, the reason `project_state.cpp`
+is listed. Check A's `::copy` also forbids `std::copy` and `std::ranges::copy` there.

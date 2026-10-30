@@ -262,6 +262,9 @@ endif()
 # see the definition site further down for the value, the TO_CMAKE_PATH normalisation and why the plan's
 # "shell target only" wording is deviated from.
 file(TO_CMAKE_PATH "${CMAKE_COMMAND}" AERO_IMGUI_TEST_CMAKE_COMMAND_VALUE)
+# task 4.3.1: the esbuild the configure fetched (cmake/esbuild.cmake); tests run THIS cached binary, never the copy
+# beside aero_editor. TO_CMAKE_PATH for the same Windows-literal reason. Shared with aero_editor_shell_test below.
+file(TO_CMAKE_PATH "${AERO_ESBUILD_EXECUTABLE}" AERO_TEST_ESBUILD_VALUE)
 # task E.2.1: the editor's PUBLIC header root, beside the src root this target has read since I30.
 # I127(b) sweeps BOTH -- "no file under editor/ names SkyPass" is a claim about the whole editor, and
 # a sweep over src alone would leave every public header a silent blind spot. A PATH, NOT A FLAG (the
@@ -270,7 +273,8 @@ file(TO_CMAKE_PATH "${CMAKE_COMMAND}" AERO_IMGUI_TEST_CMAKE_COMMAND_VALUE)
 target_compile_definitions(aero_editor_imgui_test PRIVATE
     AERO_EDITOR_SRC_DIR="${CMAKE_SOURCE_DIR}/editor/src"
     AERO_EDITOR_INCLUDE_DIR="${CMAKE_SOURCE_DIR}/editor/include"
-    AERO_TEST_CMAKE_COMMAND="${AERO_IMGUI_TEST_CMAKE_COMMAND_VALUE}")
+    AERO_TEST_CMAKE_COMMAND="${AERO_IMGUI_TEST_CMAKE_COMMAND_VALUE}"
+    AERO_TEST_ESBUILD="${AERO_TEST_ESBUILD_VALUE}")
 
 # task 3.4.2 (AC-32): the five preview cases (I88-I92) must assert a DIFFERENT contract in a build with
 # no cooked shaders. MaterialPreview latches Unavailable in its CONSTRUCTOR there, so the preview is
@@ -564,9 +568,14 @@ add_executable(aero_editor_shell_test editor/shell_test.cpp editor/hierarchy_tes
                editor/asset_browser_chrome_test.cpp    # task E.6.3 — the Assets model (AH)
                editor/viewport_hud_test.cpp            # task E.6.3 — the Viewport HUD model (VO)
                editor/project_ui_view_test.cpp         # task E.6.4 — the Welcome and New Project model (WL, NP)
-               editor/script_types_test.cpp)           # task 4.2.2 — the declarations and tsconfig writer (DT8+)
+               editor/script_types_test.cpp            # task 4.2.2 — the declarations and tsconfig writer (DT8+)
+               editor/esbuild_tool_test.cpp            # task 4.3.1 — the pinned esbuild and its pure rules (EB)
+               editor/script_transpiler_test.cpp)      # task 4.3.1 — the transpile driver over a real esbuild (ST)
+# task 4.3.1: aero::script joins so that script_transpiler_test.cpp's ST20-ST22 evaluate the editor's own transpiled
+# output in the engine's VM. Tests sit outside the boundary rule (the aero_tests precedent); aero_editor_core itself
+# does not link it, and the editor binary does not either.
 target_link_libraries(aero_editor_shell_test PRIVATE
-    doctest::doctest aero::editor_core aero::scene aero::scene_internal aero::core Threads::Threads)
+    doctest::doctest aero::editor_core aero::scene aero::scene_internal aero::core aero::script Threads::Threads)
 add_test(NAME aero_editor_shell_test COMMAND aero_editor_shell_test)
 
 # task 2.6.1: the three committed project fixtures reach the UNGATED project_test.cpp. Not optional
@@ -626,6 +635,10 @@ target_compile_definitions(aero_editor_shell_test PRIVATE
 file(TO_CMAKE_PATH "${CMAKE_COMMAND}" AERO_TEST_CMAKE_COMMAND_VALUE)
 target_compile_definitions(aero_editor_shell_test PRIVATE
     AERO_TEST_CMAKE_COMMAND="${AERO_TEST_CMAKE_COMMAND_VALUE}")
+# task 4.3.1: the cached esbuild the shell test runs (AERO_TEST_ESBUILD_VALUE is set beside the imgui target's).
+target_compile_definitions(aero_editor_shell_test PRIVATE
+    AERO_TEST_ESBUILD="${AERO_TEST_ESBUILD_VALUE}"
+    AERO_TEST_ESBUILD_VERSION="${AERO_ESBUILD_VERSION}")
 # DEVIATION from the plan's own §D-1 text ("aero_editor_shell_test only"), logged: task 3.2.4's step 8
 # needs the same stand-in tool on the GPU tier. I72 drives a REAL conversion to ConversionFailed and
 # I76 proves the tool-preferences write lands at the CONFIGURED path -- both need a program that

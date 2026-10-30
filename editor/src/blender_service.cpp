@@ -1,6 +1,6 @@
 // Aero Engine — blender_service.cpp: the Blender state machine (task 3.2.4). It reads the
-// environment and the tool preferences, stats candidate paths, and drives BlenderProcess -- but it
-// names SDL only for the environment lookup and NEVER for a process (that is blender_process.cpp's
+// environment and the tool preferences, stats candidate paths, and drives ToolProcess -- but it
+// names SDL only for the environment lookup and NEVER for a process (that is tool_process.cpp's
 // sole job).
 //
 // NOTHING HERE LOGS (INV-B10): editor_app.cpp emits this task's three log lines and nothing else
@@ -18,7 +18,7 @@
 #include <aero/editor/blender_tool.hpp>
 #include <aero/editor/text_file.hpp>
 
-#include "blender_process.hpp"
+#include "tool_process.hpp"
 
 #include <SDL3/SDL_stdinc.h>
 
@@ -97,8 +97,8 @@ constexpr std::string_view PROBE_LOG_FILE_NAME = "blender-version.log";
 
 }  // namespace
 
-void BlenderProcessDeleter::operator()(BlenderProcess* process) const noexcept {
-    // Defined HERE, where BlenderProcess is COMPLETE. Declaring it in the header and defining it here
+void ToolProcessDeleter::operator()(ToolProcess* process) const noexcept {
+    // Defined HERE, where ToolProcess is COMPLETE. Declaring it in the header and defining it here
     // is the whole of the PIMPL trap's fix -- see blender_service.hpp.
     delete process;  // NOLINT(cppcoreguidelines-owning-memory) -- the one sanctioned delete: it IS the deleter
 }
@@ -136,7 +136,7 @@ BlenderService::BlenderService(BlenderService&&) noexcept = default;
 BlenderService& BlenderService::operator=(BlenderService&&) noexcept = default;
 
 void BlenderService::clearProcess() noexcept {
-    process.reset();  // ~BlenderProcess kills if still running, THEN destroys (F1)
+    process.reset();  // ~ToolProcess kills if still running, THEN destroys (F1)
     killRequested = false;
     sinceKillRequest = 0.0F;
 }
@@ -287,7 +287,7 @@ void BlenderService::startProbe() {
         return;
     }
 
-    auto probe = std::unique_ptr<BlenderProcess, BlenderProcessDeleter>(new BlenderProcess());
+    auto probe = std::unique_ptr<ToolProcess, ToolProcessDeleter>(new ToolProcess());
     const std::vector<std::string> args = buildVersionArgs(binary);
     const std::string failureReason = probe->start(args, exportDir, logFile);
     ++probeRuns;  // counted whether it started or not: an ATTEMPT is what AC-22 forbids on a cache hit
@@ -332,7 +332,7 @@ void BlenderService::startExport() {
     statusFile = joinPath(exportDir, guidText + ".json");
     logFile = joinPath(exportDir, guidText + ".log");
 
-    auto run = std::unique_ptr<BlenderProcess, BlenderProcessDeleter>(new BlenderProcess());
+    auto run = std::unique_ptr<ToolProcess, ToolProcessDeleter>(new ToolProcess());
     const std::vector<std::string> args = buildExportArgs(binary, blendPath, scriptPath, artifact, statusFile);
     const std::string failureReason = run->start(args, exportDir, logFile);
     ++exportRuns;

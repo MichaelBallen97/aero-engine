@@ -249,6 +249,7 @@ jobs:
             preset: linux
             vcpkg_cache: ~/.cache/vcpkg/archives
             shadercross_cache: ~/.cache/aero-engine/shadercross  # task 0.4.3
+            esbuild_cache: ~/.cache/aero-engine/esbuild  # task 4.3.1
             ctest_launcher: xvfb-run -a  # D6: GPU device creation needs a REAL video driver (x11)
             require_gpu: 1               # task 0.4.2 (D7): a missing GPU device is a FAILURE, not a skip
           - name: macOS (AppleClang)
@@ -256,6 +257,7 @@ jobs:
             preset: macos
             vcpkg_cache: ~/.cache/vcpkg/archives
             shadercross_cache: ~/.cache/aero-engine/shadercross  # task 0.4.3
+            esbuild_cache: ~/.cache/aero-engine/esbuild  # task 4.3.1
             ctest_launcher: ""
             require_gpu: 1
           - name: Windows (MSVC)
@@ -263,6 +265,7 @@ jobs:
             preset: windows
             vcpkg_cache: ~/AppData/Local/vcpkg/archives
             shadercross_cache: ~/AppData/Local/aero-engine/shadercross  # task 0.4.3
+            esbuild_cache: ~/AppData/Local/aero-engine/esbuild  # task 4.3.1
             ctest_launcher: ""
             require_gpu: 1
     steps:
@@ -352,6 +355,13 @@ jobs:
           key: shadercross-${{ runner.os }}-1ca46e0ef7a9
           # No restore-keys: a SHA bump must rebuild the toolchain from scratch, never resurrect a
           # stale one under a partial key match.
+
+      - name: Cache the pinned esbuild (task 4.3.1)
+        uses: actions/cache@v4
+        with:
+          path: ${{ matrix.esbuild_cache }}
+          key: esbuild-${{ runner.os }}-0.28.2
+          # No restore-keys: a version bump downloads and verifies afresh, never resurrects another version.
 
       - name: Configure & build — Debug
         shell: bash                 # -eo pipefail: a failed configure aborts before build

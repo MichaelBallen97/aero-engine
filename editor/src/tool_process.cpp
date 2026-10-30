@@ -1,4 +1,4 @@
-// Aero Engine — blender_process.cpp: the tree's FIRST AND ONLY process spawn (task 3.2.4). Before
+// Aero Engine — tool_process.cpp: the tree's FIRST AND ONLY process spawn (task 3.2.4). Before
 // this file there was no process-creation call of any kind -- no SDL_CreateProcess, no shell
 // wrapper, no fork -- anywhere in engine/, editor/, tools/ or tests/, measured rather than assumed,
 // and this stays the only one.
@@ -19,7 +19,7 @@
 // an editor/src/*.cpp is structurally invisible to it; check-rhi-boundary.sh scans engine/ and
 // runtime/ and matches only SDL_*GPU tokens, and its own comment says editor/ is deliberately out of
 // scope. file_dialog.cpp's <SDL3/SDL_dialog.h> has been the precedent since task 2.5.1.
-#include "blender_process.hpp"
+#include "tool_process.hpp"
 
 #include <SDL3/SDL_error.h>
 #include <SDL3/SDL_iostream.h>
@@ -45,15 +45,15 @@ namespace {
 
 }  // namespace
 
-BlenderProcess::~BlenderProcess() { reset(); }
+ToolProcess::~ToolProcess() { reset(); }
 
-BlenderProcess::BlenderProcess(BlenderProcess&& other) noexcept
+ToolProcess::ToolProcess(ToolProcess&& other) noexcept
     : handle(other.handle), lastExitCode(other.lastExitCode), alive(other.alive) {
     other.handle = nullptr;
     other.alive = false;
 }
 
-BlenderProcess& BlenderProcess::operator=(BlenderProcess&& other) noexcept {
+ToolProcess& ToolProcess::operator=(ToolProcess&& other) noexcept {
     if (this != &other) {
         reset();  // whatever WE held is killed and destroyed first -- never leaked, never orphaned
         handle = other.handle;
@@ -65,7 +65,7 @@ BlenderProcess& BlenderProcess::operator=(BlenderProcess&& other) noexcept {
     return *this;
 }
 
-void BlenderProcess::reset() noexcept {
+void ToolProcess::reset() noexcept {
     if (handle == nullptr) {
         return;
     }
@@ -82,8 +82,8 @@ void BlenderProcess::reset() noexcept {
     alive = false;
 }
 
-std::string BlenderProcess::start(const std::vector<std::string>& args, std::string_view workingDirUtf8,
-                                  std::string_view logAbsolutePath) {
+std::string ToolProcess::start(const std::vector<std::string>& args, std::string_view workingDirUtf8,
+                               std::string_view logAbsolutePath) {
     reset();  // INV-B5: at most ONE live child per object, always
     if (args.empty()) {
         return "no command was supplied";
@@ -153,7 +153,7 @@ std::string BlenderProcess::start(const std::vector<std::string>& args, std::str
     return failure;
 }
 
-ProcessState BlenderProcess::poll(int& exitCodeOut) noexcept {
+ProcessState ToolProcess::poll(int& exitCodeOut) noexcept {
     if (handle == nullptr) {
         return ProcessState::SpawnFailed;
     }
@@ -174,12 +174,12 @@ ProcessState BlenderProcess::poll(int& exitCodeOut) noexcept {
     return ProcessState::Running;
 }
 
-void BlenderProcess::kill(bool force) noexcept {
+void ToolProcess::kill(bool force) noexcept {
     if (handle != nullptr && alive) {
         SDL_KillProcess(static_cast<SDL_Process*>(handle), force);
     }
 }
 
-bool BlenderProcess::running() const noexcept { return alive; }
+bool ToolProcess::running() const noexcept { return alive; }
 
 }  // namespace engine::editor

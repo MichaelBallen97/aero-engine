@@ -50,6 +50,7 @@ Automated tests that fail the build if an invariant is broken. Every guard has a
 - **Layout:** out-of-source builds only; generated files (reflection output, cooked assets) never committed.
 - **Reflection build step:** `tools/reflect-gen` runs **before** the main compile; its output is a generated source directory consumed by `/engine`.
 - **Shaders:** authored in HLSL under a `shaders/` tree; `tools/shaderc` compiles them offline to DXIL/MSL/SPIR-V during the build.
+- **esbuild (task 4.3.1):** the first configure also downloads the pinned esbuild 0.28.2 tarball from the npm registry, checks it against the SHA-512 table in `cmake/esbuild.cmake` and caches it at `<cache root>/aero-engine/esbuild/0.28.2/<platform>/` (network once; later configures are offline). `AERO_ESBUILD_ROOT` overrides the cache root. The build copies the binary beside `aero_editor`, and CI caches the directory per OS.
 - **Format stability:** scene/asset formats may break without migration until v1.0; every format carries a version field from day one (so post-1.0 migrations are possible without archaeology).
 
 ---

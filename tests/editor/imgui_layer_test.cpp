@@ -37,6 +37,7 @@
 #include <aero/editor/entity_commands.hpp>  // task 2.4.2
 #include <aero/editor/entity_ops.hpp>
 #include <aero/editor/entity_presentation.hpp>
+#include <aero/editor/esbuild_tool.hpp>  // task 4.3.1 (I361-I365): parseScriptRecord, ScriptRecordStatus
 #include <aero/editor/hierarchy_view.hpp>
 #include <aero/editor/model_import_session.hpp>  // task 3.2.1: SessionState, named directly (I52-I59)
 #include <aero/editor/panel_registry.hpp>
@@ -67,7 +68,7 @@
 #include <aero/scene/scene.hpp>
 #include <aero/scene/world.hpp>
 // task 3.1.5 (SL1-SL10): the scene-asset loader is SRC-PRIVATE, so it is reached the way
-// blender_service_test.cpp reaches blender_process.hpp -- by relative path into editor/src. It names
+// blender_service_test.cpp reaches tool_process.hpp -- by relative path into editor/src. It names
 // scene_render::MeshBinding, which is why aero::scene_render is on this target's link line.
 #include "../../editor/src/asset_browser_panel.hpp"     // task E.6.3 (I323-I326): the Assets chrome record
 #include "../../editor/src/console_panel.hpp"           // task E.6.1 (I281): the Console's own log model
@@ -104,6 +105,7 @@
 #include <initializer_list>  // task E.6.1 (I289): std::max over the three axis letters
 #include <limits>            // task 3.6.3 regression, I107: a NaN press must be owned by nothing
 #include <memory>            // task 2.4.1: std::make_unique<TransformCommand>
+#include <mutex>             // task 4.3.1 (I361-I365): the log capture's lock
 #include <numbers>           // task E.6.1 (I280): the angled-header angle, ImGui's own expression
 #include <optional>
 #include <ostream>  // MSVC alone needs the complete type to stringify a string_view inside a CHECK
@@ -29865,4 +29867,432 @@ TEST_CASE("editor: where the fold limits the recents, the Welcome shows every ca
     app->requestQuit();
     CHECK(app->tick() == false);
     app.reset();
+}
+
+// ---- task 4.3.1 (I361-I366): the script transpiler through EditorApp
+// -------------------------------------------------- GPU tier. Every case runs the editor's own tick() over a real
+// temporary TypeScript project with the pinned esbuild the configure fetched (AERO_TEST_ESBUILD), so the scan hook, the
+// per-tick service and the one logging site are exercised as shipped. The ST cases in script_transpiler_test.cpp cover
+// the driver itself without a window.
+namespace {
+
+constexpr std::string_view SCRIPT_LINE_PREFIX = "scripts: ";
+
+struct CapturedScriptLine {
+    engine::LogLevel level = engine::LogLevel::Info;
+    std::string text;
+};
+
+// Every record whose text starts "scripts: ", from any thread, copied under a lock. Installed AFTER the app is created:
+// the Console's own sink is installed by create(), and this one replaces it for the case's duration.
+class ScriptLogCapture {
+public:
+    ScriptLogCapture() {
+        engine::setLogCallback([this](const engine::LogRecord& record) {
+            if (!record.message.starts_with(SCRIPT_LINE_PREFIX)) {
+                return;
+            }
+            const std::lock_guard<std::mutex> lock{mutex};
+            lines.push_back(CapturedScriptLine{record.level, std::string{record.message}});
+        });
+    }
+    ScriptLogCapture(const ScriptLogCapture&) = delete;
+    ScriptLogCapture& operator=(const ScriptLogCapture&) = delete;
+    ScriptLogCapture(ScriptLogCapture&&) = delete;
+    ScriptLogCapture& operator=(ScriptLogCapture&&) = delete;
+    ~ScriptLogCapture() { engine::setLogCallback({}); }
+
+    [[nodiscard]] std::vector<CapturedScriptLine> all() const {
+        const std::lock_guard<std::mutex> lock{mutex};
+        return lines;
+    }
+    [[nodiscard]] std::vector<CapturedScriptLine> atLevel(engine::LogLevel level) const {
+        std::vector<CapturedScriptLine> out;
+        for (const CapturedScriptLine& line : all()) {
+            if (line.level == level) {
+                out.push_back(line);
+            }
+        }
+        return out;
+    }
+
+private:
+    mutable std::mutex mutex;
+    std::vector<CapturedScriptLine> lines;
+};
+
+[[nodiscard]] std::filesystem::path scriptFsPath(std::string_view utf8) {
+    const std::u8string bytes(reinterpret_cast<const char8_t*>(utf8.data()), utf8.size());
+    return std::filesystem::path(bytes);
+}
+
+// A file under the project root, its directory made first. A rewritten file always changes SIZE: the asset scan's
+// (size, mtime) fast path would otherwise reuse the old hash for a same-size rewrite within one timestamp tick.
+void writeScriptProjectFile(const std::string& root, std::string_view relative, std::string_view text) {
+    const std::string target = root + "/" + std::string(relative);
+    const std::size_t slash = target.rfind('/');
+    REQUIRE(engine::editor::ensureDirectory(target.substr(0, slash)).empty());
+    REQUIRE(engine::editor::writeTextFileAtomic(target, text).empty());
+}
+
+constexpr std::string_view SCRIPT_PLAYER_SOURCE =
+    "import { clamp } from \"./util\";\nexport const speed: number = clamp(12, 0, 10);\n";
+constexpr std::string_view SCRIPT_UTIL_SOURCE =
+    "export function clamp(v: number, lo: number, hi: number): number {\n  return Math.min(Math.max(v, lo), hi);\n}\n";
+constexpr std::string_view SCRIPT_UTIL_EDITED_SOURCE =
+    "export function clamp(v: number, lo: number, hi: number): number {\n  // edited\n"
+    "  return Math.min(Math.max(v, lo), hi);\n}\n";
+constexpr std::string_view SCRIPT_ENEMY_SOURCE = "export const hp: number = 3;\n";
+
+// A new TypeScript project holding scripts/player.ts (importing ./util) and scripts/util.ts, and optionally an
+// independent scripts/enemy.ts. Returns the project root.
+[[nodiscard]] std::string makeScriptProject(bool withEnemy) {
+    const engine::editor::ProjectCreateOutcome created =
+        engine::editor::createProject(uniqueProjectLocation(), "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    writeScriptProjectFile(created.root, "assets/scripts/player.ts", SCRIPT_PLAYER_SOURCE);
+    writeScriptProjectFile(created.root, "assets/scripts/util.ts", SCRIPT_UTIL_SOURCE);
+    if (withEnemy) {
+        writeScriptProjectFile(created.root, "assets/scripts/enemy.ts", SCRIPT_ENEMY_SOURCE);
+    }
+    return created.root;
+}
+
+[[nodiscard]] std::optional<engine::editor::EditorApp> openScriptApp(engine::rhi::Device& device,
+                                                                     engine::platform::Window& window,
+                                                                     engine::platform::Context& ctx,
+                                                                     const std::string& location,
+                                                                     const std::string& esbuildPath) {
+    return engine::editor::EditorApp::create(device, window, ctx,
+                                             {.persistLayout = false,
+                                              .unfocusedFrameCapHz = 0.0F,
+                                              .projectPath = location,
+                                              .restoreLastProject = false,
+                                              .recentProjectsPath = uniqueRecentsFile(),
+                                              .assetWatch = {.enabled = false},
+                                              .esbuildPath = esbuildPath});
+}
+
+// One tick, then more while the transpiler has work, under a wall-clock cap.
+void tickUntilScriptsIdle(engine::editor::EditorApp& app) {
+    REQUIRE(app.tick());
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{20};
+    while (!app.scriptTranspilerIdle() && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds{1});
+        REQUIRE(app.tick());
+    }
+    REQUIRE(app.scriptTranspilerIdle());
+}
+
+// What Library/Scripts/ holds: the file counts by kind, and each parsed record's bytes keyed by its script path.
+struct ScriptArtifacts {
+    std::size_t js = 0;
+    std::size_t maps = 0;
+    std::size_t records = 0;
+    std::size_t okRecords = 0;
+    std::vector<std::pair<std::string, std::string>> recordBytesByScript;
+
+    [[nodiscard]] std::string recordFor(std::string_view script) const {
+        for (const auto& [name, bytes] : recordBytesByScript) {
+            if (name == script) {
+                return bytes;
+            }
+        }
+        return {};
+    }
+};
+
+[[nodiscard]] ScriptArtifacts scriptArtifactsOf(const std::string& root) {
+    ScriptArtifacts out;
+    std::error_code ec;
+    const std::string dir = root + "/Library/Scripts";
+    for (const auto& entry : std::filesystem::directory_iterator(scriptFsPath(dir), ec)) {
+        const std::u8string u8 = entry.path().filename().u8string();
+        const std::string name(reinterpret_cast<const char*>(u8.data()), u8.size());
+        const auto endsWith = [&name](std::string_view suffix) {
+            return name.size() >= suffix.size() &&
+                   name.compare(name.size() - suffix.size(), suffix.size(), suffix) == 0;
+        };
+        if (endsWith(".js.map")) {
+            ++out.maps;
+        } else if (endsWith(".js")) {
+            ++out.js;
+        } else if (endsWith(".json")) {
+            ++out.records;
+            std::string recordPath = dir;
+            recordPath += '/';
+            recordPath += name;
+            const engine::editor::FileReadResult read = engine::editor::readTextFile(recordPath);
+            REQUIRE(read.text.has_value());
+            const std::optional<engine::editor::ScriptRecord> record = engine::editor::parseScriptRecord(*read.text);
+            REQUIRE(record.has_value());
+            if (record->status == engine::editor::ScriptRecordStatus::Ok) {
+                ++out.okRecords;
+            }
+            out.recordBytesByScript.emplace_back(record->script, *read.text);
+        }
+    }
+    return out;
+}
+
+[[nodiscard]] bool scriptsDirectoryExists(const std::string& root) {
+    std::error_code ec;
+    return std::filesystem::exists(scriptFsPath(root + "/Library/Scripts"), ec);
+}
+
+}  // namespace
+
+TEST_CASE(
+    "editor: a TypeScript project's scripts are transpiled after the first scan, one log record (task 4.3.1, I361)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "scripts i361", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    const std::string root = makeScriptProject(false);
+    std::optional<engine::editor::EditorApp> app = openScriptApp(*device, *window, ctx, root, AERO_TEST_ESBUILD);
+    REQUIRE(app.has_value());
+    {
+        const ScriptLogCapture capture;
+        tickUntilScriptsIdle(*app);
+
+        const ScriptArtifacts artifacts = scriptArtifactsOf(root);
+        CHECK(artifacts.js == 2U);
+        CHECK(artifacts.maps == 2U);
+        CHECK(artifacts.records == 2U);
+        CHECK(artifacts.okRecords == 2U);
+        CHECK(app->scriptTranspileRunCount() == 2U);
+
+        const std::vector<CapturedScriptLine> lines = capture.all();
+        REQUIRE(lines.size() == 1U);
+        CHECK(lines[0].level == engine::LogLevel::Info);
+        CHECK(lines[0].text == "scripts: 2 transpiled, 0 failed, 0 up to date");
+    }
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: reopening an up-to-date TypeScript project starts no esbuild (task 4.3.1, I362)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "scripts i362", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    const std::string root = makeScriptProject(false);
+    {
+        std::optional<engine::editor::EditorApp> first = openScriptApp(*device, *window, ctx, root, AERO_TEST_ESBUILD);
+        REQUIRE(first.has_value());
+        tickUntilScriptsIdle(*first);
+        REQUIRE(first->scriptTranspileRunCount() == 2U);
+        first->requestQuit();
+        CHECK(first->tick() == false);
+    }
+    std::optional<engine::editor::EditorApp> app = openScriptApp(*device, *window, ctx, root, AERO_TEST_ESBUILD);
+    REQUIRE(app.has_value());
+    {
+        const ScriptLogCapture capture;
+        tickUntilScriptsIdle(*app);
+        CHECK(app->scriptTranspileRunCount() == 0U);
+        const std::vector<CapturedScriptLine> lines = capture.all();
+        REQUIRE(lines.size() == 1U);
+        CHECK(lines[0].level == engine::LogLevel::Info);
+        CHECK(lines[0].text == "scripts: 0 transpiled, 0 failed, 2 up to date");
+    }
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: a C++ project's .ts files are never transpiled (task 4.3.1, I363)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "scripts i363", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    const engine::editor::ProjectCreateOutcome created =
+        engine::editor::createProject(uniqueProjectLocation(), "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    engine::editor::ProjectManifest manifest = created.manifest;
+    manifest.language = engine::editor::ProjectLanguage::Cpp;
+    REQUIRE(
+        engine::editor::writeTextFileAtomic(created.root + "/project.json", engine::editor::writeProjectText(manifest))
+            .empty());
+    writeScriptProjectFile(created.root, "assets/scripts/player.ts", SCRIPT_PLAYER_SOURCE);
+
+    std::optional<engine::editor::EditorApp> app =
+        openScriptApp(*device, *window, ctx, created.root, AERO_TEST_ESBUILD);
+    REQUIRE(app.has_value());
+    {
+        const ScriptLogCapture capture;
+        for (int i = 0; i < 10; ++i) {
+            REQUIRE(app->tick());
+        }
+        CHECK(app->scriptTranspileRunCount() == 0U);
+        CHECK_FALSE(scriptsDirectoryExists(created.root));
+
+        writeScriptProjectFile(created.root, "assets/scripts/player.ts", SCRIPT_UTIL_SOURCE);
+        app->requestAssetRescan();
+        for (int i = 0; i < 10; ++i) {
+            REQUIRE(app->tick());
+        }
+        CHECK(app->scriptTranspileRunCount() == 0U);
+        CHECK_FALSE(scriptsDirectoryExists(created.root));
+        CHECK(capture.all().empty());
+    }
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: an edit and a rescan re-transpile only the scripts the edit reaches (task 4.3.1, I364)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "scripts i364", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    const std::string root = makeScriptProject(true);
+    std::optional<engine::editor::EditorApp> app = openScriptApp(*device, *window, ctx, root, AERO_TEST_ESBUILD);
+    REQUIRE(app.has_value());
+    tickUntilScriptsIdle(*app);
+    REQUIRE(app->scriptTranspileRunCount() == 3U);
+    const std::string enemyBefore = scriptArtifactsOf(root).recordFor("assets/scripts/enemy.ts");
+    REQUIRE_FALSE(enemyBefore.empty());
+
+    writeScriptProjectFile(root, "assets/scripts/util.ts", SCRIPT_UTIL_EDITED_SOURCE);
+    app->requestAssetRescan();
+    tickUntilScriptsIdle(*app);
+    CHECK(app->scriptTranspileRunCount() == 5U);  // util itself and player, which imports it
+    CHECK(scriptArtifactsOf(root).recordFor("assets/scripts/enemy.ts") == enemyBefore);
+
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+TEST_CASE("editor: a missing esbuild is one Console error and never wedges the editor (task 4.3.1, I365)") {
+    engine::platform::Context ctx;
+    if (!ctx.valid()) {
+        AERO_SKIP_OR_FAIL("no platform context");
+    }
+    std::optional<engine::platform::Window> window =
+        ctx.createWindow({.title = "scripts i365", .width = 320, .height = 180});
+    REQUIRE(window.has_value());
+    std::optional<engine::rhi::Device> device = engine::rhi::Device::create();
+    if (!device) {
+        AERO_SKIP_OR_FAIL("no GPU device");
+    }
+    const engine::editor::ProjectCreateOutcome created =
+        engine::editor::createProject(uniqueProjectLocation(), "MyGame", "0.1.0");
+    REQUIRE(created.problem == engine::editor::CreateProblem::Ok);
+    writeScriptProjectFile(created.root, "assets/scripts/player.ts", SCRIPT_ENEMY_SOURCE);
+    const std::string missing = created.root + "/no_such_esbuild";
+
+    std::optional<engine::editor::EditorApp> app = openScriptApp(*device, *window, ctx, created.root, missing);
+    REQUIRE(app.has_value());
+    {
+        const ScriptLogCapture capture;
+        tickUntilScriptsIdle(*app);
+        for (int i = 0; i < 10; ++i) {
+            REQUIRE(app->tick());
+        }
+        const std::vector<CapturedScriptLine> errors = capture.atLevel(engine::LogLevel::Error);
+        REQUIRE(errors.size() == 1U);
+        CHECK(errors[0].text.find(missing) != std::string::npos);
+        CHECK_FALSE(scriptsDirectoryExists(created.root));
+    }
+    app->requestQuit();
+    CHECK(app->tick() == false);
+    app.reset();
+}
+
+namespace {
+
+// Drop everything from a `//` to the end of its line (the asset_drag_test.cpp preprocessing): prose that names an
+// identifier must not read as a use.
+[[nodiscard]] std::string stripEditorAppLineComments(std::string_view source) {
+    std::string out;
+    out.reserve(source.size());
+    std::size_t position = 0;
+    while (position < source.size()) {
+        const std::size_t lineEnd = std::min(source.find('\n', position), source.size());
+        const std::string_view line = source.substr(position, lineEnd - position);
+        out.append(line.substr(0, std::min(line.find("//"), line.size())));
+        out.push_back('\n');
+        position = lineEnd + 1;
+    }
+    return out;
+}
+
+}  // namespace
+
+TEST_CASE("editor_app: the transpiler hook sits in the scan branch and logs at one site (task 4.3.1, I366)") {
+    constexpr std::string_view SOURCE_PATH = AERO_EDITOR_SRC_DIR "/editor_app.cpp";
+    const engine::editor::FileReadResult read = engine::editor::readTextFile(SOURCE_PATH);
+    REQUIRE(read.text.has_value());
+    const std::string text = stripEditorAppLineComments(*read.text);
+    REQUIRE_FALSE(text.empty());
+
+    // The scan hook: one call, after the one rescan and the logAssetScan that follows it, before the watcher's
+    // noteExternalScan.
+    CHECK(countOccurrences(text, "scriptTranspiler->noteScan(") == 1U);
+    CHECK(countOccurrences(text, "assetDatabase.rescan(") == 1U);
+    const std::size_t rescanAt = text.find("assetDatabase.rescan(");
+    REQUIRE(rescanAt != std::string::npos);
+    const std::size_t logScanAt = text.find("logAssetScan(", rescanAt);
+    REQUIRE(logScanAt != std::string::npos);
+    const std::size_t noteAt = text.find("scriptTranspiler->noteScan(");
+    REQUIRE(noteAt != std::string::npos);
+    const std::size_t externalAt = text.find("noteExternalScan()", noteAt);
+    CHECK(rescanAt < logScanAt);
+    CHECK(logScanAt < noteAt);
+    CHECK(externalAt != std::string::npos);
+
+    // The swap reset: one call, directly after the release of the old project's scene assets (behind its null check).
+    constexpr std::string_view RESET_CALL = "scriptTranspiler->resetForProjectSwap();";
+    constexpr std::string_view RELEASE_CALL = "releaseSceneAssets();";
+    CHECK(countOccurrences(text, RESET_CALL) == 1U);
+    const std::size_t resetAt = text.find(RESET_CALL);
+    REQUIRE(resetAt != std::string::npos);
+    const std::size_t releaseAt = text.rfind(RELEASE_CALL, resetAt);
+    REQUIRE(releaseAt != std::string::npos);
+    std::string between = text.substr(releaseAt + RELEASE_CALL.size(), resetAt - releaseAt - RELEASE_CALL.size());
+    std::erase_if(between, [](char c) { return c == ' ' || c == '\t' || c == '\r' || c == '\n'; });
+    CHECK(between == "if(scriptTranspiler!=nullptr){");  // nothing but the null check sits between the two calls
+
+    // The one logging site: takeLog() once, inside drainScriptLog's body, and drainScriptLog called once.
+    CHECK(countOccurrences(text, "takeLog()") == 1U);
+    CHECK(countOccurrences(text, "drainScriptLog();") == 1U);
+    const std::size_t drainDefAt = text.find("void EditorApp::drainScriptLog()");
+    REQUIRE(drainDefAt != std::string::npos);
+    const std::size_t drainEndAt = text.find("\n}\n", drainDefAt);
+    REQUIRE(drainEndAt != std::string::npos);
+    const std::size_t takeAt = text.find("takeLog()");
+    REQUIRE(takeAt != std::string::npos);
+    CHECK(takeAt > drainDefAt);
+    CHECK(takeAt < drainEndAt);
 }

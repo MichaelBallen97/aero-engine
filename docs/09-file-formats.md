@@ -584,6 +584,8 @@ against the engine's API. The editor writes both when it adopts a project, wheth
 Create Project. A C++ project gets neither. Both writes sit beside `adoptProject`, never inside it, and each failed
 file costs one `WARN` and nothing else: the project is open either way.
 
+A TypeScript project's scripts are also transpiled into `Library/Scripts/` (§15), staged in `Library/ScriptStaging/`.
+
 | File | Kind | Written | Committed |
 |---|---|---|---|
 | `<projectRoot>/tsconfig.json` | the project | only when nothing is at the path | yes, by whoever owns the project |
@@ -3218,7 +3220,108 @@ available encoder refuses anything but stereo, which turns out to be the set's o
 decode can witness a channel-order defect at all, since with one channel frame-major and channel-major
 are the same byte order.
 
-## 15. Reserved for future formats
+## 15. Script transpile record v1
+
+> Enforced in code by `editor/src/esbuild_tool.cpp` (`parseScriptRecord` / `writeScriptRecordText` /
+> `scriptRecordFresh`, task 4.3.1); `tests/editor/esbuild_tool_test.cpp` is its machine-checkable form, and
+> `tests/editor/script_transpiler_test.cpp` exercises it end to end through `ScriptTranspiler`.
+
+### 15.1 Nature
+
+Derived, machine-local, disposable. A TypeScript project (§4.2) has one record per script, at
+`<projectRoot>/Library/Scripts/<guid>.json`, beside the two files the record vouches for: `<guid>.js` and
+`<guid>.js.map`. `<guid>` is the script's asset GUID (§5.2), so a moved or renamed script keeps its artifacts. Never
+committed, never merged, never compared across machines. **Its strictness policy follows §7's:** a wrong `version`, a
+missing key, a key of the wrong kind or unparseable text is a **miss** (the script is transpiled again) and never a
+repair. Losing it costs one esbuild run, not an identity. The script's `.meta` and the asset cache entry for a `.ts`
+(`importer` identity `("", 0)`, §6) are untouched.
+
+esbuild writes its output to `<projectRoot>/Library/ScriptStaging/<guid>.js`, `.js.map`, `.meta.json` and `.log`. Only
+a run that exits 0, whose metafile parses, whose inputs are all accepted (§15.5) and whose two outputs read back is
+published, in this order: the map, the JS, then the record. The record lands last, and it is the only thing that makes
+the trio fresh, so a publish interrupted at any point is transpiled again at the next scan.
+
+### 15.2 Envelope
+
+Nine root keys, in this exact order on save.
+
+| Key | Kind | Required | Rule |
+|---|---|---|---|
+| `version` | number, integral | yes | must equal `1`; validated first |
+| `status` | string | yes | `"ok"` or `"failed"` |
+| `script` | string | yes | project-relative path of the `.ts`; **informational** |
+| `esbuildVersion` | string | yes | the pinned version, `"0.28.2"`; **informational** |
+| `esbuildBinary` | string | yes | the content hash of the binary that ran, as `formatContentHash` writes it |
+| `flags` | string | yes | the fingerprint of the fixed command-line flags, written the same way |
+| `inputs` | array | yes | objects `{ "path", "hash" }`, sorted by `path`, unique; `path` is project-relative and `/`-separated, `hash` is a content-hash string or `null` (the scan had no usable hash for it, so it is never fresh) |
+| `sourceSet` | string | yes | a `failed` record: the fingerprint of every asset path in the scan, written the same way; an `ok` record: `""` |
+| `diagnostics` | array | yes | objects `{ "severity", "file", "line", "column", "text" }`, exactly the lines the failure printed; empty on an `ok` record and never empty on a `failed` one. `severity` is `"error"` or `"warning"`; `line` and `column` are 1-based, and 0 with an empty `file` when the message has no location (a refused input's has none); never compared, but printed again at every pass (§15.3) |
+
+Unknown extra keys are ignored. A diagnostic with an unknown `severity`, or a `line` or `column` that is not a
+non-negative integer fitting 32 bits, is a miss; so is an input without a string `path`, or one whose `hash` is neither
+`null` nor a hash string. A `failed` record with an empty `diagnostics` is a miss too. At most 64 diagnostics are
+stored, and a failing run is recorded only when its log was read whole and held 1 to 64 of them (§15.4).
+
+An `ok` record's `inputs` are the files esbuild's metafile lists. esbuild writes no metafile on an error run, so a
+`failed` record's `inputs` are the script plus every diagnostic location under the assets root, and its `sourceSet`
+makes creating a missing file retry it.
+
+### 15.3 Identity vs content: what is COMPARED
+
+A record is fresh when all of these hold, and stale otherwise:
+
+| Field | Compared |
+|---|---|
+| `flags` | always |
+| `esbuildBinary` | only when the current binary's hash is known |
+| `inputs` | always: non-empty, containing the script's own path; every `hash` present and equal to the scan's current hash for that path |
+| `sourceSet` | on a `failed` record only |
+| `status` | read, never compared: a fresh `failed` record keeps its script failed without running esbuild; the script counts among the pass's failed, and its `diagnostics` are printed again, as the failure printed them, before the pass's summary |
+| `script`, `esbuildVersion`, `diagnostics` | **never** |
+
+For an `ok` record the driver also requires `<guid>.js` and `<guid>.js.map` to exist, so a deleted artifact is
+transpiled again.
+
+**The binary is identified by content, not by `--version`.** Learning a version means running the binary, and an
+unchanged project must start no esbuild process. So the record stores the binary's content hash, computed once per
+session, and any change of binary invalidates every record. When the binary cannot be hashed (it is missing), nothing
+is compared on that field: a project whose scripts are all fresh opens silently, and the first stale script reports the
+missing binary.
+
+**Input hashes come from the asset scan, never from re-reading the file.** A run learns its inputs only when it ends;
+hashing them from disk then would record a save made during the run as the new hash while the JavaScript holds the old
+bytes, and nothing would ever run it again. A scan that completes during a run makes that script run again.
+
+**An import spelled in another case than its file is never fresh on a case-insensitive file system.** esbuild 0.28.2
+resolves `./Util` to `util.ts` on APFS with a `different-path-case` warning, and its metafile lists the import's
+spelling, `Util.ts`, which the asset scan does not hold. The record stores that input with a `null` hash, so the script
+is transpiled again, and warns again, at every scan until the import's case matches the file's (docs/08 R29). Measured
+on macOS; unmeasured on Windows.
+
+### 15.4 Canonicalization
+
+Written by `writeTextFileAtomic` only. Pretty, 2-space indent, key order as in §15.2, exactly one trailing `\n`, so a
+re-write of unchanged data is byte-identical. A tool failure (a missing binary, a spawn failure, a run past the 30 s
+limit, a staging directory that cannot be prepared) says nothing about the script and writes no record: the script stays
+stale and the next scan retries it. Neither does a failing run that cannot name every file it depends on: one whose log
+is empty, holds no diagnostic, holds more than 64, or is larger than 256 KiB and so is not read. It runs again at the
+next scan and prints the same lines again.
+
+### 15.5 Which inputs are accepted
+
+An input is a project-relative path. It is refused, and the script fails with no publish, when it is outside the assets
+root, has a `node_modules` segment (a bare import resolved from a package), or is under `Library/`. The same project at
+two absolute locations produces byte-identical `.js` and `.js.map`. A `.ts` file whose own project-relative path has a
+`node_modules` segment is not a script: it is never transpiled, recorded or counted, and no line names it.
+
+### 15.6 Machine-local, derived, disposable, never committed
+
+`Library/` is `.gitignore`d (§4.10) and excluded from the asset scan and the file watcher, so the records and
+artifacts are invisible to both walks and cannot start a rescan loop. A re-run overwrites the same
+paths, so the directory holds one trio per script, forever, with **no deletion anywhere**: a script removed from the
+project leaves its trio behind.
+
+## 16. Reserved for future formats
 
 - **Cooked / `.pak` binary formats** — Phase 3+, owned by the cooker; own version field, docs/04:51
   applies unchanged. Section appends here. Still unowned: the `.pak` container itself and cooked

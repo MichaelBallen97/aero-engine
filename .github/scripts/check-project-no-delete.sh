@@ -15,15 +15,17 @@
 # THE INVARIANT: none of `remove_all`, `std::filesystem::remove`, `std::filesystem::rename`, or a
 # bare `::copy` (covers `std::filesystem::copy` and an `fs::copy` alias alike) may appear as CODE in
 # editor/src/project.cpp, editor/src/project_file.cpp, editor/src/project_ui.cpp,
-# editor/src/asset_meta.cpp, editor/src/asset_database.cpp, editor/src/asset_cache.cpp or
-# editor/src/project_state.cpp -- the seven
+# editor/src/asset_meta.cpp, editor/src/asset_database.cpp, editor/src/asset_cache.cpp,
+# editor/src/project_state.cpp or editor/src/script_transpiler.cpp -- the eight
 # files that own every filesystem-writing line in the project flow (D7), the asset flow (task 3.1.1's
 # D7 "an invalid .meta is never overwritten" / D8 "an orphan is never deleted"), the import cache
-# (task 3.1.2's D18) and the per-project editor state (task E.4.1's D9).
-# Widened from three files to five by task 3.1.1, to SIX by task 3.1.2, and to SEVEN by task E.4.1 --
+# (task 3.1.2's D18), the per-project editor state (task E.4.1's D9) and the transpile driver's
+# Library/Scripts/ output (task 4.3.1).
+# Widened from three files to five by task 3.1.1, to SIX by task 3.1.2, to SEVEN by task E.4.1 --
 # whose editor-state.json writer creates Library/ and writes two files into it, for the identical
 # reason asset_cache.cpp is listed: a future "clean the Library folder" remove_all must not be
-# writable without a review. The 3.1.2 widening's own argument, unchanged: the
+# writable without a review. Task 4.3.1 made it EIGHT with script_transpiler.cpp, on the same argument.
+# The 3.1.2 widening's own argument, unchanged: the
 # same unreachable-by-test problem sabotage seed S11 documented for createProject's rollback branch
 # applies identically to these flows, so they get the same enforcement rather than a second, parallel
 # guard. Task 3.1.2's nuance, stated because it reads like a contradiction with the asset cache's own
@@ -56,8 +58,9 @@
 
 set -euo pipefail
 
-# The seven files D7/INV-P4 (project flow), task 3.1.1's D7/D8 (asset flow), task 3.1.2's D18
-# (import cache) and task E.4.1's D9 (the per-project editor state) govern. Order matches the
+# The eight files D7/INV-P4 (project flow), task 3.1.1's D7/D8 (asset flow), task 3.1.2's D18
+# (import cache), task E.4.1's D9 (the per-project editor state) and task 4.3.1 (the transpile driver's
+# Library/Scripts/ output) govern. Order matches the
 # "Files touched" table (project.hpp, asset_meta.hpp/
 # asset_database.hpp/asset_cache.hpp are PURE and <filesystem>-free by construction, so they are not
 # in this list at all; nothing to scan there).
@@ -69,6 +72,7 @@ readonly FORBIDDEN_FILES=(
   "editor/src/asset_database.cpp"   # task 3.1.1 (D7/D8)
   "editor/src/asset_cache.cpp"      # task 3.1.2 (D18)
   "editor/src/project_state.cpp"    # task E.4.1 (D9) -- writes into Library/, must never delete
+  "editor/src/script_transpiler.cpp"  # task 4.3.1 -- writes Library/Scripts/, must never delete
 )
 
 # remove_all | std::filesystem::remove | std::filesystem::rename | ::copy -- exactly the four tokens

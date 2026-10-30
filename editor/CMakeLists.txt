@@ -137,7 +137,9 @@ add_library(aero_editor_core STATIC
     src/fbx_import.cpp           # task 3.2.2 -- the ONLY ufbx TU; NO file operation at all
     src/obj_import.cpp           # task 3.2.3 -- the ONLY tinyobjloader TU; NO file operation at all
     src/blender_tool.cpp         # task 3.2.4 -- PURE: no disk, no SDL, no <filesystem>, no logging
-    src/blender_process.cpp      # task 3.2.4 -- the ONLY SDL_Process TU in the tree
+    src/tool_process.cpp         # task 3.2.4/4.3.1 -- the ONLY SDL_Process TU in the tree
+    src/esbuild_tool.cpp         # task 4.3.1 -- PURE: esbuild's command line, logs, metafile, record
+    src/script_transpiler.cpp    # task 4.3.1 -- after-scan esbuild driver; the ONLY esbuild spawn
     src/blender_service.cpp      # task 3.2.4 -- the state machine; SDL_getenv only, never SDL_Process
     src/assimp_import.cpp        # task 3.2.5 -- the ONLY assimp TU; NO file operation at all
     src/mesh_cook_source.cpp     # task 3.3.1 -- the ONLY ImportedModel -> assets:: adapter; PURE
@@ -296,6 +298,8 @@ target_link_libraries(aero_editor_core
 # consecutive task: engine/core/include/aero/core/version.hpp would be a defensible change, but the
 # runtime is the task that should decide that header's shape (Phase 5), not this one.
 target_compile_definitions(aero_editor_core PRIVATE AERO_ENGINE_VERSION="${PROJECT_VERSION}")
+# task 4.3.1: the pinned esbuild version (cmake/esbuild.cmake), informational in the transpile record.
+target_compile_definitions(aero_editor_core PRIVATE AERO_ESBUILD_VERSION="${AERO_ESBUILD_VERSION}")
 
 if(AERO_REFLECT_TOOLS)
     # Task 2.2.2 (D16/§3.12): the four built-in component headers, compiled INTO the editor as
@@ -331,3 +335,8 @@ endif()
 
 add_executable(aero_editor src/main.cpp)
 target_link_libraries(aero_editor PRIVATE aero::editor_core aero::core)
+# task 4.3.1: the pinned esbuild travels beside the editor (the editor resolves it there); editor only, never the runtime.
+add_custom_command(TARGET aero_editor POST_BUILD
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${AERO_ESBUILD_EXECUTABLE}"
+            "$<TARGET_FILE_DIR:aero_editor>/${AERO_ESBUILD_EXE_NAME}"
+    VERBATIM)

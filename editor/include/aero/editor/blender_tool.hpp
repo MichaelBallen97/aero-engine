@@ -103,7 +103,7 @@ enum class BlenderSupport : std::uint8_t { Supported = 0, Warned, Refused };
 // launcher of any kind appears anywhere in this task.
 //
 // NOTE TO THE AUTHOR OF THIS COMMENT: the process-API gate grep (see the Blender CLI section of
-// .claude/rules/editor.md) must name exactly ONE file, blender_process.cpp, and it does not strip
+// .claude/rules/editor-importers.md) must name exactly ONE file, tool_process.cpp, and it does not strip
 // comments -- the same rule that section states for the three platform macros. Spelling any of SDL's
 // three process-lifecycle symbols in prose ANYWHERE outside that TU breaks the gate while changing no
 // behaviour, which is the worst kind of break: it reads as an architecture violation and is not one.

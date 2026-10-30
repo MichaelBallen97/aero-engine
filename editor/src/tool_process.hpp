@@ -1,5 +1,6 @@
 #pragma once
-// Aero Engine — the ONLY SDL_Process translation unit in this tree (task 3.2.4). SRC-PRIVATE, the
+// Aero Engine — the ONLY SDL_Process translation unit in this tree (task 3.2.4; renamed tool-neutral at
+// task 4.3.1, which runs esbuild through it). SRC-PRIVATE, the
 // gltf_import.hpp / fbx_import.hpp / obj_import.hpp precedent a FOURTH time: a third-party API is
 // confined to one .hpp/.cpp pair, and nothing above it names its types.
 //
@@ -20,14 +21,14 @@ namespace engine::editor {
 
 enum class ProcessState : std::uint8_t { Running = 0, Exited, SpawnFailed };
 
-class BlenderProcess {
+class ToolProcess {
 public:
-    BlenderProcess() noexcept = default;
-    ~BlenderProcess();                                     // kills if still running, THEN destroys
-    BlenderProcess(BlenderProcess&&) noexcept;             // out-of-line
-    BlenderProcess& operator=(BlenderProcess&&) noexcept;  // out-of-line
-    BlenderProcess(const BlenderProcess&) = delete;
-    BlenderProcess& operator=(const BlenderProcess&) = delete;
+    ToolProcess() noexcept = default;
+    ~ToolProcess();                                  // kills if still running, THEN destroys
+    ToolProcess(ToolProcess&&) noexcept;             // out-of-line
+    ToolProcess& operator=(ToolProcess&&) noexcept;  // out-of-line
+    ToolProcess(const ToolProcess&) = delete;
+    ToolProcess& operator=(const ToolProcess&) = delete;
 
     // "" on success, the OS/SDL reason otherwise. AT MOST ONE live child per object: an existing one
     // is killed and destroyed first.
