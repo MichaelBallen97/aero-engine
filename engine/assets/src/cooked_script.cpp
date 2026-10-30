@@ -17,19 +17,19 @@
 namespace engine::assets {
 namespace {
 
-using detail::H_BACKEND_RELEASE;
-using detail::H_BYTECODE_VERSION;
-using detail::H_COOKER_VERSION;
-using detail::H_FORMAT_VERSION;
-using detail::H_GUID_HI;
-using detail::H_GUID_LO;
-using detail::H_MAGIC;
-using detail::H_PAYLOAD_BYTES;
-using detail::H_PAYLOAD_HASH_HI;
-using detail::H_PAYLOAD_HASH_LO;
-using detail::H_RESERVED;
-using detail::H_RESERVED_FLAGS;
-using detail::H_STRIP_FLAGS;
+using cooked_script_detail::H_BACKEND_RELEASE;
+using cooked_script_detail::H_BYTECODE_VERSION;
+using cooked_script_detail::H_COOKER_VERSION;
+using cooked_script_detail::H_FORMAT_VERSION;
+using cooked_script_detail::H_GUID_HI;
+using cooked_script_detail::H_GUID_LO;
+using cooked_script_detail::H_MAGIC;
+using cooked_script_detail::H_PAYLOAD_BYTES;
+using cooked_script_detail::H_PAYLOAD_HASH_HI;
+using cooked_script_detail::H_PAYLOAD_HASH_LO;
+using cooked_script_detail::H_RESERVED;
+using cooked_script_detail::H_RESERVED_FLAGS;
+using cooked_script_detail::H_STRIP_FLAGS;
 
 [[nodiscard]] CookedScriptParseResult refuse(CookedScriptStatus status, std::string message) {
     CookedScriptParseResult out;

@@ -31,8 +31,13 @@ not an image, so it shares none of the model prelude: it reads the file, decodes
 decoders for `.wav`/`.flac`/`.mp3`, stb_vorbis for `.ogg`) and cooks the samples through, sample for
 sample.
 
+**Task 4.3.2 added its sixth**: `aero_cooker script` turns one JavaScript module (the `.js` that 4.3.1's
+bundling writes under `Library/Scripts`) into one `.aeroscript` container — an 80-byte header and the
+script backend's bytecode with its function source text stripped. It links `aero::script` and reads no
+model, image or sound.
+
 This document is the permanent home of the frozen contracts these tasks promise (3.3.1, 3.3.2, 3.5.1,
-3.5.2 and 3.7.1). The normative specification of the containers themselves is
+3.5.2, 3.7.1 and 4.3.2). The normative specification of the containers themselves is
 `docs/09-file-formats.md`; this file specifies the *tool*.
 
 ## Why it links the editor
@@ -58,7 +63,7 @@ none of them, opens no window and creates no GPU device. If that ever bites, the
 importer translation units into their own ImGui-free target, a self-contained refactor that changes no
 consumer. It is not this task's change.
 
-## The seven frozen contracts
+## The eight frozen contracts
 
 ### 1. The mesh grammar
 
@@ -256,7 +261,7 @@ aero_cooker audio --input <file> --output <file.aerowave>
 ### 6. The artifact rule
 
 **Nothing is written unless the whole cook succeeded.** The output file is opened only after `cookMesh`,
-`cookTexture`, `cookSkeleton`, `cookAnimation` or `cookAudio` has returned with a complete byte vector, so a failing input leaves
+`cookTexture`, `cookSkeleton`, `cookAnimation`, `cookAudio` or `cookScriptBytecode` has returned with a complete byte vector, so a failing input leaves
 **zero** artifacts — never a partial one, never a stale one, and never the `.aero-tmp` file the atomic
 write would have created on its way to the final name.
 
@@ -295,6 +300,13 @@ importer's own float, never computed.
 | `.ktx2` `.dds` | Refused with exit `2`. Neither is stb-decodable, and re-cooking a cooked artifact is not a workflow. |
 | anything else | Refused with exit `2` and a message listing the seven claimed. Nothing is read. |
 
+`script`:
+
+| Extension | Result |
+|---|---|
+| `.js` | Accepted — one self-contained ES module that imports nothing. |
+| anything else | Refused with exit `2` and a message naming the `.js` rule. Nothing is read. A `.ts` is refused too: cook the JavaScript that 4.3.1 bundles. |
+
 `audio`:
 
 | Extension | Result |
@@ -312,6 +324,28 @@ with an I/O complaint instead of the message that helps.
 The texture read cap is **64 MiB**, matching the editor's own thumbnail source cap rather than the
 256 MiB model cap: it bounds the *compressed source file*, while the decoded pixel count is bounded
 separately and per-axis at 16384 texels.
+
+### 8. The script grammar
+
+```
+aero_cooker script --input <file.js> --output <file.aeroscript>
+                   [--guid <32 hex>]
+```
+
+- **There is no subcommand-specific flag.** `STRIP_SOURCE` (function source text stripped) is format
+  version 1's only form, so a flag naming it would have one legal value. `--input`, `--output` and
+  `--guid` are the whole grammar, and every other token is a usage error naming it.
+- **`--input` is a `.js` file**, tested against the file name before a byte is read: the cook takes the
+  JavaScript 4.3.1 bundles, never its `.ts`. The read cap is 16 MiB (`MAX_COOK_SOURCE_BYTES`).
+- **A script that imports is refused** (exit `2`, a message naming the specifier): a cooked script
+  imports nothing, because its read would resolve imports the pak may not hold. Bundle it first.
+- **A compile error is exit `2`** with the status label, the backend's error name, its message and its
+  stack on the following lines; the position names the input's path, never a placeholder.
+- **The engine log is off for this subcommand.** The cook never logs, and a VM's own debug records
+  would otherwise reach stdout, which `--help` and `--version` own.
+- **The payload is deterministic**: it does not depend on the input's path or file name, the process or
+  what any VM ran before, and `cooker.script_determinism` pins that with three artifacts.
+- `--guid` behaves exactly as it does for the other five subcommands.
 
 ## What the flags actually change in the artifact
 
@@ -373,8 +407,8 @@ Genuinely asymmetric, and measured rather than assumed — this is the part that
 
 ## Tests
 
-`tests/cooker/run_case.cmake` drives the real binary through 70 `cooker.*` ctest entries — 24 for
-`mesh`, 15 for `texture`, 10 for `skeleton`, 10 for `animation` and 11 for `audio` — argv in, exit
+`tests/cooker/run_case.cmake` drives the real binary through 80 `cooker.*` ctest entries — 24 for
+`mesh`, 15 for `texture`, 10 for `skeleton`, 10 for `animation`, 11 for `audio` and 10 for `script` — argv in, exit
 code plus files out. **Five** of them, `cooker.golden_manifest`, `cooker.texture_golden_manifest`,
 `cooker.skeleton_golden_manifest`, `cooker.animation_golden_manifest` and
 `cooker.audio_golden_manifest`, cook a fixed **twenty-artifact** matrix and compare every byte against

@@ -46,7 +46,9 @@ inline constexpr std::uint32_t COOKED_SCRIPT_KNOWN_STRIP_FLAGS = COOKED_SCRIPT_S
 
 // ---- the header's field offsets, named ONCE for the whole format --------------------------------
 // docs/09 section 16.1 is the normative table; these mirror it.
-namespace detail {
+// NOT `detail`: cooked_audio.hpp names the same constants (H_GUID_HI, H_RESERVED_FLAGS, ...) in
+// engine::assets::detail, and the cooker includes both headers in one translation unit.
+namespace cooked_script_detail {
 inline constexpr std::size_t H_MAGIC = 0;
 inline constexpr std::size_t H_FORMAT_VERSION = 8;
 inline constexpr std::size_t H_COOKER_VERSION = 12;
@@ -61,7 +63,7 @@ inline constexpr std::size_t H_PAYLOAD_HASH_HI = 56;
 inline constexpr std::size_t H_PAYLOAD_HASH_LO = 64;
 inline constexpr std::size_t H_RESERVED = 72;
 static_assert(H_RESERVED + 8 == COOKED_SCRIPT_HEADER_BYTES);
-}  // namespace detail
+}  // namespace cooked_script_detail
 
 // LIFETIME: `payload` ALIASES the buffer handed to parseCookedScript. It is never a copy; a CookedScript
 // outliving its buffer is a dangling read.

@@ -13,10 +13,12 @@
 // written in prose anywhere under this directory -- the 3.2.4 and 3.2.5 rule, a third application.
 #include <aero/assets/audio_cook.hpp>
 #include <aero/assets/cooked_audio.hpp>
+#include <aero/assets/cooked_script.hpp>
 #include <aero/assets/cooked_texture.hpp>
 #include <aero/assets/mesh_cook.hpp>
 #include <aero/assets/texture_cook.hpp>
 #include <aero/core/guid.hpp>
+#include <aero/core/log.hpp>
 #include <aero/editor/animation_cook_source.hpp>
 #include <aero/editor/audio_cook_source.hpp>
 #include <aero/editor/audio_decode.hpp>
@@ -26,6 +28,7 @@
 #include <aero/editor/skeleton_cook_source.hpp>
 #include <aero/editor/text_file.hpp>
 #include <aero/editor/texture_cook_source.hpp>
+#include <aero/script/bytecode.hpp>
 
 #include <array>
 #include <charconv>
@@ -71,15 +74,18 @@ enum class ExitCode : std::uint8_t { Success = 0, UsageError = 1, CookError = 2,
 //                         [--guid <32 hex>] [--clip <index>]
 //   aero_cooker audio --input <file> --output <file.aerowave>
 //                     [--guid <32 hex>]
+//   aero_cooker script --input <file.js> --output <file.aeroscript>
+//                      [--guid <32 hex>]
 //   aero_cooker --version
 //   aero_cooker --help
 //
-// SUBCOMMAND-SHAPED FROM DAY ONE, and tasks 3.3.2, 3.5.1, 3.5.2 and 3.7.1 each filled one in with no
+// SUBCOMMAND-SHAPED FROM DAY ONE, and tasks 3.3.2, 3.5.1, 3.5.2, 3.7.1 and 4.3.2 each filled one in with no
 // reshuffle of the mesh path: --input, --output and --guid stay in the shared prefix and the flag loop
 // splits only on the subcommand-specific arms. Any token that is none of `mesh`, `texture`,
-// `skeleton`, `animation` and `audio` is a usage error naming it. `audio` takes NO subcommand-specific
-// flag at all -- no --format (s16 IS formatVersion 1), no --rate and no --mono (the cook resamples and
-// remixes nothing), no --normalize.
+// `skeleton`, `animation`, `audio` and `script` is a usage error naming it. `audio` takes NO
+// subcommand-specific flag at all -- no --format (s16 IS formatVersion 1), no --rate and no --mono (the cook
+// resamples and remixes nothing), no --normalize. `script` takes none either: STRIP_SOURCE is format version
+// 1's only form.
 //
 // EVERY FLAG IS AT-MOST-ONCE. Unlike aero_shaderc --define, this grammar has no repeatable flag at
 // all, so the check is uniform: one `have<Flag>` bool each.
@@ -99,6 +105,8 @@ void printUsage(std::ostream& out) {
         << "                        [--guid <32 hex>] [--clip <index>]\n"
         << "  aero_cooker audio --input <file> --output <file.aerowave>\n"
         << "                    [--guid <32 hex>]\n"
+        << "  aero_cooker script --input <file.js> --output <file.aeroscript>\n"
+        << "                     [--guid <32 hex>]\n"
         << "  aero_cooker --version\n"
         << "  aero_cooker --help\n"
         << "\n"
@@ -108,6 +116,7 @@ void printUsage(std::ostream& out) {
         << "  skeleton               Cook one skin of one source model into one .aeroskel container.\n"
         << "  animation              Cook one clip of one source model into one .aeroanim container.\n"
         << "  audio                  Cook one source sound file into one .aerowave container.\n"
+        << "  script                 Cook one JavaScript module into one .aeroscript container.\n"
         << "\n"
         << "Required (all subcommands):\n"
         << "  --input <file>         The source asset.\n"
@@ -115,6 +124,7 @@ void printUsage(std::ostream& out) {
         << "                                         .gltf .glb .fbx .obj .mtl .dae .ply .stl\n"
         << "                         texture:        .png .jpg .jpeg .tga .bmp .gif .psd\n"
         << "                         audio:          .wav .flac .mp3 .ogg\n"
+        << "                         script:         .js\n"
         << "  --output <file>        The artifact path. The directory must already exist.\n"
         << "\n"
         << "Required (texture only):\n"
@@ -155,6 +165,11 @@ void printUsage(std::ostream& out) {
         << "                         upmix, no channel reorder, no normalize, no trim, no fade, no\n"
         << "                         loop points, no dither. s16 IS format version 1, so there is no\n"
         << "                         --format either; adding f32 later is a formatVersion bump.\n"
+        << "\n"
+        << "Optional (script only):\n"
+        << "  (nothing)              The script cook takes no flag: STRIP_SOURCE (function source text\n"
+        << "                         stripped) is format version 1's only form, and a script that\n"
+        << "                         imports is refused: bundle it first.\n"
         << "\n"
         << "Optional (texture only):\n"
         << "  --format <token>       bc1, bc3, bc4, bc5, rgba8 or auto. Default: auto, which answers\n"
@@ -238,7 +253,7 @@ void printVersion(std::ostream& out) { out << "aero_cooker " << TOOL_VERSION << 
     return value;
 }
 
-enum class Subcommand : std::uint8_t { Mesh, Texture, Skeleton, Animation, Audio };
+enum class Subcommand : std::uint8_t { Mesh, Texture, Skeleton, Animation, Audio, Script };
 
 // The six accepted --format tokens, in the order the usage text and every diagnostic list them. `auto`
 // is deliberately IN the table rather than a special case at the parse site: it is a legal value of
@@ -284,7 +299,7 @@ std::optional<Args> parseArgs(int argc, char** argv) {
 
     if (argc < 2) {
         std::cerr << "aero_cooker: error: no subcommand given (expected: mesh, texture, skeleton, "
-                     "animation or audio)\n";
+                     "animation, audio or script)\n";
         return std::nullopt;
     }
     const std::string_view subcommand = argv[1];
@@ -298,9 +313,11 @@ std::optional<Args> parseArgs(int argc, char** argv) {
         args.subcommand = Subcommand::Animation;
     } else if (subcommand == "audio") {
         args.subcommand = Subcommand::Audio;
+    } else if (subcommand == "script") {
+        args.subcommand = Subcommand::Script;
     } else {
         std::cerr << "aero_cooker: error: unknown subcommand '" << subcommand
-                  << "' (expected: mesh, texture, skeleton, animation or audio)\n";
+                  << "' (expected: mesh, texture, skeleton, animation, audio or script)\n";
         return std::nullopt;
     }
     // EXPLICIT PER-SUBCOMMAND PREDICATES, replacing task 3.3.2's single `isTexture` discriminator: with
@@ -315,7 +332,8 @@ std::optional<Args> parseArgs(int argc, char** argv) {
     // flag at all, so it needs no predicate: every flag it accepts (--input, --output, --guid) lives
     // in the shared prefix, and every other flag falls through to the unknown-flag arm below exactly
     // as it should. Declaring an unused one to keep the block "uniform" would be a local nothing
-    // reads, and the honest shape is this sentence. A future audio flag adds the predicate here.
+    // reads, and the honest shape is this sentence. A future audio flag adds the predicate here. The
+    // same holds for `script` (task 4.3.2): it takes no flag of its own, so it has no predicate either.
     // NOT extended to animation at task 3.5.2, and that is a FINDING rather than a preference: all
     // four importers apply ImportSettings::scale to root node translations, to mesh positions and to
     // inverse-bind translation columns, and to no animation channel anywhere -- so --scale here would
@@ -707,6 +725,77 @@ void reportWarnings(std::string_view origin, const std::vector<std::string>& war
     return imported;
 }
 
+// ---- the script subcommand (task 4.3.2) ---------------------------------------------------------
+//
+// PLACED DIRECTLY ABOVE runAudio, outside the region cooker.texture_nothing_written_on_failure pins,
+// for the reason runAudio's own note gives. Like the audio path it shares nothing with
+// importModelForCook, and its refusals are reachable end to end through the CLI, so its
+// nothing-written guarantees are behavioural (script_compile_error, script_import_refused).
+//
+// THE ENGINE LOG IS TURNED OFF for this subcommand. The cook never logs, but a VM's own debug records
+// would otherwise reach stdout, which --help and --version own (Debug's default level is Trace).
+//
+// STRIP_SOURCE is format version 1's only form, so there is no flag and no setting. A script that
+// imports is refused by the cook itself: its read would resolve imports the pak may not hold.
+ExitCode runScript(const Args& args) {
+    // ---- 1. the file NAME decides what happens, before a byte is read ------------------------
+    // 4.3.1 bundles a TypeScript project's scripts into .js; this subcommand cooks that output, never
+    // the .ts.
+    const std::string leaf = fs::path(args.inputPath).filename().string();
+    if (!(leaf.size() > 3 && endsWithFolded(leaf, ".js"))) {
+        std::cerr << "aero_cooker: error: no script cook claims '" << leaf
+                  << "' (expected .js: cook the JavaScript 4.3.1 bundles into Library/Scripts, not its .ts)\n";
+        return ExitCode::CookError;
+    }
+
+    // ---- 2. the source bytes ------------------------------------------------------------------
+    engine::editor::FileBytesResult source =
+        engine::editor::readFileBytes(args.inputPath, engine::script::MAX_COOK_SOURCE_BYTES);
+    if (!source.bytes.has_value()) {
+        if (source.refusedByCap) {
+            std::cerr << "aero_cooker: error: '" << args.inputPath << "' is " << source.size << " bytes, above the "
+                      << engine::script::MAX_COOK_SOURCE_BYTES << "-byte script read limit\n";
+        } else {
+            std::cerr << "aero_cooker: error: cannot read '" << args.inputPath << "': " << source.error << '\n';
+        }
+        return ExitCode::IoError;
+    }
+
+    // ---- 3. the engine log off, then the cook ----------------------------------------------------
+    engine::setLogLevel(engine::LogLevel::Off);
+    const engine::script::ScriptCookResult cooked = engine::script::cookScriptBytecode(*source.bytes, args.inputPath);
+    if (cooked.status != engine::script::ScriptCookStatus::Ok) {
+        std::cerr << "aero_cooker: error: " << engine::script::scriptCookStatusLabel(cooked.status) << ": ";
+        if (!cooked.error.name.empty()) {
+            std::cerr << cooked.error.name << ": ";
+        }
+        std::cerr << cooked.error.message << '\n';
+        if (!cooked.error.stack.empty()) {
+            std::cerr << cooked.error.stack << '\n';
+        }
+        return ExitCode::CookError;
+    }
+
+    // ---- 4. the container -----------------------------------------------------------------------
+    const engine::assets::CookedScriptWriteResult written = engine::assets::writeCookedScript(
+        {args.guid, cooked.backendRelease, cooked.bytecodeVersion, cooked.stripFlags, cooked.payload});
+    if (written.status != engine::assets::CookedScriptStatus::Ok) {
+        // Unreachable for a cook's own output (a non-empty payload and the one strip bit it carries); handled
+        // rather than assumed.
+        std::cerr << "aero_cooker: error: " << written.message << '\n';
+        return ExitCode::CookError;
+    }
+
+    // ---- 5. the write. ONLY NOW is the output path touched -----------------------------------
+    const std::string_view artifact(reinterpret_cast<const char*>(written.bytes.data()), written.bytes.size());
+    const std::string writeError = engine::editor::writeTextFileAtomic(args.outputPath, artifact);
+    if (!writeError.empty()) {
+        std::cerr << "aero_cooker: error: cannot write '" << args.outputPath << "': " << writeError << '\n';
+        return ExitCode::IoError;
+    }
+    return ExitCode::Success;
+}
+
 // ---- the audio subcommand (task 3.7.1) ----------------------------------------------------------
 //
 // PLACED ABOVE runAnimation, WHICH IS ITSELF ABOVE runSkeleton AND runTexture, and for the same reason
@@ -1029,6 +1118,9 @@ ExitCode runMain(int argc, char** argv) {
     }
     if (args.subcommand == Subcommand::Audio) {
         return runAudio(args);
+    }
+    if (args.subcommand == Subcommand::Script) {
+        return runScript(args);
     }
 
     // ---- 2-5. the name check, the capped read, Structure, the external budget, Full ----------

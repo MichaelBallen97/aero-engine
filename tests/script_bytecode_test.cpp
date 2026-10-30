@@ -449,8 +449,8 @@ public:
     REQUIRE(container.size() > HEADER_BYTES);
     const std::span<const std::byte> payload = std::span<const std::byte>{container}.subspan(HEADER_BYTES);
     const engine::ContentHash hash = engine::hashBytes(payload);
-    engine::assets::putU64(container, engine::assets::detail::H_PAYLOAD_HASH_HI, hash.hi);
-    engine::assets::putU64(container, engine::assets::detail::H_PAYLOAD_HASH_LO, hash.lo);
+    engine::assets::putU64(container, engine::assets::cooked_script_detail::H_PAYLOAD_HASH_HI, hash.hi);
+    engine::assets::putU64(container, engine::assets::cooked_script_detail::H_PAYLOAD_HASH_LO, hash.lo);
     return container;
 }
 
@@ -532,7 +532,7 @@ TEST_CASE("script: every cause that makes a container unusable is a LoadError be
     constexpr std::string_view PATH = "res://t/m.js";
     const std::string container = containerOf("globalThis.v = 12; export const lit = 12;", PATH);
     const std::vector<std::byte> good = toBytes(container);
-    namespace detail = engine::assets::detail;
+    namespace detail = engine::assets::cooked_script_detail;
     namespace head = engine::script::internal;
     REQUIRE(good.size() > HEADER_BYTES + 24U);
 

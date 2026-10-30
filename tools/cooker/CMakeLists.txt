@@ -19,7 +19,7 @@
 # The fix, if it ever bites, is splitting the importer TUs into their own ImGui-free target -- a
 # self-contained refactor that changes no consumer. It is not this task's change.
 #
-# ORDERING: both aero::assets and aero::editor_core are ALIAS targets defined in LATER
+# ORDERING: aero::assets, aero::editor_core and (task 4.3.2) aero::script are ALIAS targets defined in LATER
 # add_subdirectory() calls (the root CMakeLists.txt adds tools/ before engine/, runtime/ and editor/).
 # CMake resolves a `::` link item at GENERATE time, not at call time, so this configures clean. If a
 # future CMake ever changes that, the fix is one line -- move add_subdirectory(tools/cooker) to the
@@ -32,4 +32,4 @@
 # THREE configurations -- deliberate, and the first time in this epic that number has moved.
 add_executable(aero_cooker src/main.cpp)
 target_compile_features(aero_cooker PRIVATE cxx_std_20)
-target_link_libraries(aero_cooker PRIVATE aero::assets aero::editor_core)
+target_link_libraries(aero_cooker PRIVATE aero::assets aero::editor_core aero::script)

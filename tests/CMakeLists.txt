@@ -1165,6 +1165,13 @@ set(_aero_cooker_cases
     # SAME +2 -- a smaller move in either would mean this block had accidentally grown a gate, and
     # no test could report that.
     audio_golden_manifest audio_lossy_digests
+    # task 4.3.2 -- the script subcommand. Ten more names, on the same terms: ungated, so ctest -N moves
+    # in ALL THREE configurations by the same +10, measured (never derived by addition). A smaller move
+    # in either reduced configuration would mean this block had accidentally grown a gate, and no test
+    # could report that.
+    script_happy script_unknown_flag script_missing_input script_bad_extension script_unreadable_input
+    script_compile_error script_import_refused script_output_dir_missing script_guid_written
+    script_determinism
 )
 foreach(_aero_case IN LISTS _aero_cooker_cases)
     add_test(
