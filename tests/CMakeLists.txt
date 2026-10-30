@@ -44,7 +44,7 @@ add_executable(aero_tests
     scene_audio_test.cpp      # task 3.7.2 — the World -> audio bridge: view, reconcile, latches (SA1-SA18)
     script_vm_test.cpp        # task 4.1.1 — the quickjs-ng VM: lifecycle, limits, the trapping matrix
     script_bytecode_format_test.cpp # task 4.3.2 — the bytecode head, the rename, the headroom rule (BY1-BY7)
-    script_bytecode_test.cpp  # task 4.3.2 — the bytecode cook and the loader's container branch (BY8-BY29)
+    script_bytecode_test.cpp  # task 4.3.2 — the bytecode cook and the loader's container branch (BY8-BY35)
     script_module_test.cpp    # task 4.1.2 — ES modules through the VFS: the grammar, the cache, the statuses (ML1-ML51)
     script_binding_test.cpp   # task 4.2.1 — the binding runtime over a fixture table (BN1–BN5, BN7–BN36)
     script_declarations_test.cpp # task 4.2.2 -- the declarations against a live VM (DT1-DT7)

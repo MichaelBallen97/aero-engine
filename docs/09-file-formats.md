@@ -3337,7 +3337,7 @@ reader is documented as unsafe on hostile input (`quickjs.h:1224-1226`).
 
 ### 16.1 The header -- 80 bytes at offset 0
 
-Little-endian, no padding site, the payload last. `COOKED_SCRIPT_HEADER_BYTES` and `detail::H_*` in
+Little-endian, no padding site, the payload last. `COOKED_SCRIPT_HEADER_BYTES` and `cooked_script_detail::H_*` in
 `cooked_script.hpp` are the only sizes and offsets in code; `sizeof` is never taken of an on-disk record.
 
 | Offset | Size | Type | Field | Rule |

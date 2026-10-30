@@ -45,9 +45,10 @@ struct ScriptCookResult {
 };
 
 // One ES module source in, the backend's bytecode out. `sourceName` is what an error names (the cooker passes the
-// input's path). Never logs, never reads a file, never throws. Uses the calling thread's stack like a Vm call
-// (DEFAULT_STACK_LIMIT_BYTES + 256 KiB free). The payload does not depend on `sourceName`, the process, or what any
-// VM ran before.
+// input's path). Logs no failure (the result carries it), though each VM it makes still writes its Debug creation
+// record and a teardown leak is still reported; never reads a file, never throws. Uses the calling thread's stack
+// like a Vm call (DEFAULT_STACK_LIMIT_BYTES + 256 KiB free). The payload does not depend on `sourceName`, the process,
+// or what any VM ran before.
 [[nodiscard]] ScriptCookResult cookScriptBytecode(std::string_view source, std::string_view sourceName);
 
 // The backend's release, (major << 16) | (minor << 8) | patch: 0x00000F01 for quickjs-ng 0.15.1.
