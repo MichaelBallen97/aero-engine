@@ -651,7 +651,7 @@ TEST_CASE("script: a read the heap has no room for is OutOfMemory before the bac
     REQUIRE(payloadBytes <= std::size_t{300} * 1024U);
     REQUIRE(bytecodeReadHeadroom(payloadBytes) > MIN_HEAP_LIMIT_BYTES);
     {
-        LogCapture log;
+        const LogCapture log;
         VmConfig config;
         config.heapLimitBytes = MIN_HEAP_LIMIT_BYTES;
         Fixture fx{script_test::patient(config)};
@@ -978,7 +978,7 @@ TEST_CASE("script: stripped bytecode changes toString() and nothing else about a
 
 TEST_CASE("script: R22's dangling shape through bytecode is retired, as through source (BY33)") {
     LogCapture log;
-    const std::string entrySource = "import \"res://r/x.js\"; import \"res://r/missing.js\"; export const e = 1;";
+    const std::string entrySource = R"(import "res://r/x.js"; import "res://r/missing.js"; export const e = 1;)";
     const std::string xSource = "import { e } from \"res://r/entry.js\"; export const x = 2;";
     SeamVfs seam;
     seam.set("res://r/entry.js", entrySource);
@@ -1015,7 +1015,7 @@ TEST_CASE("script: R22's dangling shape through bytecode is retired, as through 
 TEST_CASE("script: R22's half-linked shape through bytecode is never linked again (BY34)") {
     SeamVfs seam;
     const std::string half =
-        "import { ok } from \"res://r/j.js\"; import { nope } from \"res://r/j.js\"; export const h = ok;";
+        R"(import { ok } from "res://r/j.js"; import { nope } from "res://r/j.js"; export const h = ok;)";
     seam.set("res://r/j.js", "export const ok = 1;");
 
     Fixture fx;
