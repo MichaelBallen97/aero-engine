@@ -3333,7 +3333,9 @@ One ES module's compiled bytecode behind an 80-byte header. It is the tree's fif
 first whose payload belongs to a third party: `engine/assets` frames, hashes and returns the payload and never looks
 inside it. It is written by `aero_cooker script` and read by the module loader in `engine/script`. **It is trusted
 input:** the container detects accidents (a truncated copy, a flipped byte), not attacks, because the backend's bytecode
-reader is documented as unsafe on hostile input (`quickjs.h:1224-1226`).
+reader is documented as unsafe on hostile input (`quickjs.h:1224-1226`). The loader's checks defend against damage and
+not against a hostile writer: a module nested in a payload under a name other than atom #0 is listed by the reader under
+that name, and a later import of the name links it without the loader (docs/08 R32).
 
 ### 16.1 The header -- 80 bytes at offset 0
 
@@ -3401,7 +3403,9 @@ payload and unknown strip bits, with the parser's messages, before sizing its bu
 The loader's own refusals (a release or bytecode version that is not the build's, the version byte, the bypass value, a
 checksum mismatch, a name that is not the placeholder) are each a load error raised before the backend reads a byte.
 One more is decided after the read, because only the read shows it: a payload that is well-formed but holds a value
-that is not a module (`its payload is not a module`). Nothing was listed by the backend, so nothing is retired.
+that is not a module (`its payload is not a module`). The reader lists every module it meets at any depth, so the
+refused attempt retires the key as it retires a module it read, and a module nested in that payload under the name of
+atom #0 can no longer be imported.
 
 ### 16.6 Versioning and evolution
 

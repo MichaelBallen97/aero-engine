@@ -814,6 +814,90 @@ TEST_CASE("script: the source size cap applies to a container before it is read 
     expectCleanShutdown(fx.vm);
 }
 
+namespace {
+
+// The offset of the first byte after a payload's atom table (JS_ReadObjectAtoms, quickjs.c:39649-39709): the version
+// byte, the checksum word, the atom count, then per atom a type byte and either a predefined atom's word (type 0) or a
+// string (a LEB128 of length << 1 | wide, then the characters).
+[[nodiscard]] std::size_t atomTableEnd(std::span<const std::byte> payload) {
+    std::size_t at = 5;
+    const auto leb = [&payload, &at]() {
+        std::uint32_t value = 0;
+        for (unsigned shift = 0; shift < 35U; shift += 7U) {
+            REQUIRE(at < payload.size());
+            const auto byte = static_cast<std::uint32_t>(payload[at++]);
+            value |= (byte & 0x7FU) << shift;
+            if ((byte & 0x80U) == 0U) {
+                return value;
+            }
+        }
+        FAIL("a LEB128 longer than five bytes");
+        return std::uint32_t{0};
+    };
+    const std::uint32_t count = leb();
+    for (std::uint32_t i = 0; i < count; ++i) {
+        REQUIRE(at < payload.size());
+        const auto type = static_cast<unsigned>(payload[at++]);
+        if (type == 0U) {
+            at += 4U;
+            continue;
+        }
+        const std::uint32_t word = leb();
+        at += static_cast<std::size_t>(word >> 1U) * ((word & 1U) != 0U ? 2U : 1U);
+    }
+    REQUIRE(at < payload.size());
+    return at;
+}
+
+}  // namespace
+
+TEST_CASE("script: a refused container's name is retired, so a module nested in its payload is never linked (BY36)") {
+    constexpr std::string_view PATH = "res://t/nested.js";
+    constexpr std::byte BC_TAG_ARRAY{9};
+    constexpr std::byte BC_TAG_MODULE{13};
+    // A cooked module whose body sets a global, with its bytes (from the atom table's end) put inside an array: the
+    // root is an array holding one module named by atom #0, which the rename rewrites to the key's current name.
+    const std::vector<std::byte> container = toBytes(containerOf("globalThis.ran = 1;", PATH));
+    const engine::assets::CookedScriptParseResult parsed = engine::assets::parseCookedScript(container);
+    REQUIRE(parsed.status == engine::assets::CookedScriptStatus::Ok);
+    const std::size_t moduleAt = atomTableEnd(parsed.script.payload);
+    REQUIRE(parsed.script.payload[moduleAt] == BC_TAG_MODULE);
+    std::vector<std::byte> payload(parsed.script.payload.begin(),
+                                   parsed.script.payload.begin() + static_cast<std::ptrdiff_t>(moduleAt));
+    payload.push_back(BC_TAG_ARRAY);
+    payload.push_back(std::byte{1});  // one element
+    payload.insert(payload.end(), parsed.script.payload.begin() + static_cast<std::ptrdiff_t>(moduleAt),
+                   parsed.script.payload.end());
+    const std::span<std::byte> view{payload};
+    engine::assets::putU32(view, 1, bytecodeChecksum(std::span<const std::byte>{view}.subspan(5)));
+    const engine::assets::CookedScriptInput input{engine::Guid{}, scriptBackendRelease(), scriptBytecodeVersion(), 1U,
+                                                  payload};
+    const engine::assets::CookedScriptWriteResult wrapped = engine::assets::writeCookedScript(input);
+    REQUIRE(wrapped.status == engine::assets::CookedScriptStatus::Ok);
+
+    const LogCapture log;
+    Fixture fx;
+    fx.files->set("t/nested.js", toText(wrapped.bytes));
+    fx.files->set("t/importer.js", "import \"./nested.js\";\nglobalThis.imported = 1;\n");
+    const EvalResult first = fx.vm.evaluateModule(PATH);
+    CHECK(evalLabel(first) == "LoadError");
+    CHECK(first.error.message == cookedScriptRefusedMessage(PATH, "", "its payload is not a module"));
+    const std::optional<ModuleRecord> record = recordOf(fx.vm, PATH);
+    REQUIRE(record.has_value());
+    CHECK(record->generation == 2U);
+    CHECK(stateOf(fx.vm, PATH) != "Loaded");
+
+    // The import names the next generation, so the orphan listed under the first one is unreachable: the container is
+    // refused again and its body never runs.
+    const EvalResult second = fx.vm.evaluateModule("res://t/importer.js");
+    CHECK(evalLabel(second) == "LoadError");
+    CHECK(second.error.message.find("its payload is not a module") != std::string::npos);
+    CHECK(completion(fx.vm, "typeof globalThis.ran") == "undefined");
+    CHECK(completion(fx.vm, "typeof globalThis.imported") == "undefined");
+    CHECK(fx.vm.stats().moduleInstances == 0U);
+    expectCleanShutdown(fx.vm);
+}
+
 // ---- BY30-BY34: the same results, the one exception, and R22's shapes through bytecode -------------------------
 
 namespace {

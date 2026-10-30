@@ -255,9 +255,12 @@ JSModuleDef* Vm::Impl::compileModule(std::string_view key, std::string_view impo
         if (read.isException()) {
             return nullptr;  // the backend unlisted it; the failure is pending
         }
-        // A well-formed payload can hold any value, and only a module may be taken for one: the backend listed
-        // nothing, so nothing is retired, and the value is freed by its HeldValue.
+        // A well-formed payload can hold any value, and only a module may be taken for one. The value is freed by
+        // its HeldValue, but the reader lists every module it meets at any depth (quickjs.c:29652, 39569-39575), so
+        // a module nested in this root and named by atom #0 is already listed under `name`. The failed attempt
+        // retires the key as it retires a read module, and no import can name that orphan again.
         if (JS_VALUE_GET_TAG(read.get()) != JS_TAG_MODULE) {
+            attempt->created.emplace_back(key);
             refuse("TypeError", internal::cookedScriptRefusedMessage(key, importer, "its payload is not a module"));
             return nullptr;
         }

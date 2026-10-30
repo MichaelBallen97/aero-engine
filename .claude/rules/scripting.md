@@ -115,7 +115,8 @@ test, so a `.js` holding a container loads as bytecode and a `.aeroscript` holdi
 cause (magic, version, reserved bytes, payload hash, another backend release or bytecode version, the checksum bypass
 value, a checksum mismatch, a name that is not the placeholder) is a `LoadError` decided before the guard and before
 the backend sees a byte. One cause is decided after the read, because only the read shows it: a payload whose value
-is not a module (BY35) is a `LoadError`, and nothing is retired because the backend listed nothing.
+is not a module (BY35) is a `LoadError`, and the key is retired like a read module's (BY36), because the reader lists
+every module it meets at any depth, a nested one named by atom #0 included.
 
 **EVERY BYTECODE READ IS CHECKED, RENAMED AND GUARDED BEFORE THE BACKEND SEES IT (4.3.2).** One `JS_ReadObject` and
 one `JS_WriteObject` call site exist in the script layer (BY17). The payload's atom #0 is renamed to the name the
