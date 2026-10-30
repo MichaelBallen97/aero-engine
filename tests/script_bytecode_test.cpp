@@ -1,5 +1,5 @@
 // tests/script_bytecode_test.cpp -- task 4.3.2: the bytecode cook (BY8-BY17) and the loader's container branch
-// (BY18-BY29). A TU of aero_tests, which supplies
+// (BY18-BY29), and the same-results cases (BY30-BY34). A TU of aero_tests, which supplies
 // main() from test_main.cpp. The cook runs the real backend: the committed fixtures are esbuild 0.28.2's own bundles
 // of the three .ts files beside them (tests/fixtures/scripts/README.md says how they were made).
 #include <aero/assets/cooked_mesh.hpp>
@@ -788,5 +788,234 @@ TEST_CASE("script: the source size cap applies to a container before it is read 
     CHECK(result.error.message == engine::script::internal::tooLargeMessage(
                                       "res://big/m.js", "", MIN_HEAP_LIMIT_BYTES + 1U, MIN_HEAP_LIMIT_BYTES));
     CHECK(fx.files->reads("big/m.js") == 0U);
+    expectCleanShutdown(fx.vm);
+}
+
+// ---- BY30-BY34: the same results, the one exception, and R22's shapes through bytecode -------------------------
+
+namespace {
+
+constexpr std::string_view VFS_SCHEME = "res://";
+
+[[nodiscard]] std::string relativeOf(std::string_view path) {
+    REQUIRE(path.starts_with(VFS_SCHEME));
+    return std::string{path.substr(VFS_SCHEME.size())};
+}
+
+// Everything one run of a module can show: its status, its error, and the results it left behind.
+struct Observation {
+    std::string status;
+    std::string errorName;
+    std::string errorMessage;
+    std::string errorStack;
+    std::string results;
+};
+
+// A fresh VM over a fresh MemoryBackend holding `bytes` at `path`; the module runs, the results are read, and the
+// VM is shut down cleanly.
+[[nodiscard]] Observation observe(std::string_view path, const std::string& bytes) {
+    Fixture fx;
+    fx.files->set(relativeOf(path), bytes);
+    const EvalResult result = fx.vm.evaluateModule(path);
+    Observation seen;
+    seen.status = evalLabel(result);
+    seen.errorName = result.error.name;
+    seen.errorMessage = result.error.message;
+    seen.errorStack = result.error.stack;
+    seen.results = completion(fx.vm, "String(globalThis.results)");
+    expectCleanShutdown(fx.vm);
+    return seen;
+}
+
+void checkSame(const Observation& js, const Observation& bytecode) {
+    INFO("status");
+    CHECK(js.status == bytecode.status);
+    INFO("error name");
+    CHECK(js.errorName == bytecode.errorName);
+    INFO("error message");
+    CHECK(js.errorMessage == bytecode.errorMessage);
+    INFO("error stack");
+    CHECK(js.errorStack == bytecode.errorStack);
+    INFO("results");
+    CHECK(js.results == bytecode.results);
+}
+
+[[nodiscard]] std::size_t countOf(std::string_view text, std::string_view token) {
+    std::size_t count = 0;
+    for (std::size_t at = text.find(token); at != std::string_view::npos; at = text.find(token, at + 1)) {
+        ++count;
+    }
+    return count;
+}
+
+// A VFS of JavaScript modules, where the seam's cook reads what its allowed imports name.
+class SeamVfs {
+public:
+    SeamVfs() {
+        auto backend = std::make_unique<MemoryBackend>();
+        files = backend.get();
+        vfs.mount(std::move(backend));
+    }
+    SeamVfs(const SeamVfs&) = delete;
+    SeamVfs& operator=(const SeamVfs&) = delete;
+    SeamVfs(SeamVfs&&) = delete;
+    SeamVfs& operator=(SeamVfs&&) = delete;
+    ~SeamVfs() = default;
+
+    void set(std::string_view path, std::string text) { files->set(relativeOf(path), std::move(text)); }
+
+    // The container of `source` cooked under `path`, its imports read from this VFS.
+    [[nodiscard]] std::string cook(std::string_view source, std::string_view path) const {
+        const ScriptCookResult cooked = engine::script::internal::cookScriptBytecodeWith(
+            source, path, engine::script::internal::CookOptions{false, &vfs});
+        REQUIRE(label(cooked) == "Ok");
+        const engine::assets::CookedScriptWriteResult written =
+            engine::assets::writeCookedScript(engine::assets::CookedScriptInput{
+                engine::Guid{}, cooked.backendRelease, cooked.bytecodeVersion, cooked.stripFlags, cooked.payload});
+        REQUIRE(written.status == engine::assets::CookedScriptStatus::Ok);
+        return toText(written.bytes);
+    }
+
+    engine::VirtualFileSystem vfs;
+    MemoryBackend* files = nullptr;
+};
+
+}  // namespace
+
+TEST_CASE("script: the language-feature bundle gives the same results from bytecode as from source (BY30)") {
+    constexpr std::string_view PATH = "res://bytecode/features.js";
+    const std::string js = readFixture("features.js");
+    const Observation fromJs = observe(PATH, js);
+    const Observation fromBytecode = observe(PATH, containerOf(js, PATH));
+    CHECK(fromJs.status == "Ok");
+    CHECK(fromBytecode.status == "Ok");
+    checkSame(fromJs, fromBytecode);
+    // Anti-vacuity: the debug information survived (a stripped cook shows <null>:0:1 and no import.meta).
+    CHECK(fromBytecode.results.find("\"meta\":[\"object\",0,true]") != std::string::npos);
+    const std::size_t caught = fromBytecode.results.find("res://bytecode/features.js:");
+    REQUIRE(caught != std::string::npos);
+    CHECK(fromBytecode.results.find_first_of("0123456789", caught + PATH.size() + 1U) == caught + PATH.size() + 1U);
+    CHECK(fromBytecode.results.find("<null>") == std::string::npos);
+}
+
+TEST_CASE("script: a throw reaches the caller with the same error and the same frames from bytecode (BY31)") {
+    constexpr std::string_view PATH = "res://bytecode/throws.js";
+    const std::string js = readFixture("throws.js");
+    const Observation fromJs = observe(PATH, js);
+    const Observation fromBytecode = observe(PATH, containerOf(js, PATH));
+    checkSame(fromJs, fromBytecode);
+    CHECK(fromBytecode.status == "Exception");
+    CHECK(fromBytecode.errorName == "TypeError");
+    CHECK(fromBytecode.errorMessage == "too big: 3");
+    // Anti-vacuity: five frames, each naming the module under its own path and no placeholder.
+    CHECK(countOf(fromBytecode.errorStack, "    at ") == 5U);
+    CHECK(countOf(fromBytecode.errorStack, "res://bytecode/throws.js:") == 5U);
+    CHECK(fromBytecode.errorStack.find("res://?") == std::string::npos);
+}
+
+TEST_CASE("script: stripped bytecode changes toString() and nothing else about a function (BY32)") {
+    constexpr std::string_view PATH = "res://bytecode/source-text.js";
+    const std::string js = readFixture("source-text.js");
+    const std::string container = containerOf(js, PATH);
+    // One field of one function's description, read from a fresh VM that ran `bytes` as the module.
+    const auto field = [&](const std::string& bytes, std::string_view key, std::string_view member) {
+        Fixture fx;
+        fx.files->set(relativeOf(PATH), bytes);
+        REQUIRE(evalLabel(fx.vm.evaluateModule(PATH)) == "Ok");
+        const std::string expression = "JSON.parse(globalThis.results)." + std::string{key} + "." + std::string{member};
+        std::string out = completion(fx.vm, expression);
+        expectCleanShutdown(fx.vm);
+        return out;
+    };
+    struct Expected {
+        std::string_view key;
+        std::string_view sourcePrefix;
+        std::string_view bytecodeText;
+    };
+    const std::array<Expected, 5> expected{{
+        {"plain", "function plain(", "function plain() {\n    [native code]\n}"},
+        {"klass", "class ", "function Klass() {\n    [native code]\n}"},
+        {"method", "method(x)", "function method() {\n    [native code]\n}"},
+        {"named", "(p) =>", "function named() {\n    [native code]\n}"},
+        {"anonymous", "(q) =>", "function () {\n    [native code]\n}"},
+    }};
+    for (const Expected& each : expected) {
+        INFO("function: " << std::string{each.key});
+        const std::string sourceText = field(js, each.key, "text");
+        CHECK(sourceText.starts_with(each.sourcePrefix));
+        CHECK(field(container, each.key, "text") == each.bytecodeText);
+        // The exception stops at toString(): name and length are the source's own.
+        CHECK(field(container, each.key, "name") == field(js, each.key, "name"));
+        CHECK(field(container, each.key, "length") == field(js, each.key, "length"));
+    }
+    // Anti-vacuity: the identity arms are not all empty.
+    CHECK(field(container, "plain", "name") == "plain");
+    CHECK(field(container, "plain", "length") == "2");
+}
+
+TEST_CASE("script: R22's dangling shape through bytecode is retired, as through source (BY33)") {
+    LogCapture log;
+    const std::string entrySource = "import \"res://r/x.js\"; import \"res://r/missing.js\"; export const e = 1;";
+    const std::string xSource = "import { e } from \"res://r/entry.js\"; export const x = 2;";
+    SeamVfs seam;
+    seam.set("res://r/entry.js", entrySource);
+    seam.set("res://r/x.js", xSource);
+    seam.set("res://r/missing.js", "export {};");
+
+    Fixture fx;
+    fx.files->set("r/entry.js", seam.cook(entrySource, "res://r/entry.js"));
+    fx.files->set("r/x.js", seam.cook(xSource, "res://r/x.js"));
+    fx.files->set("r/entry2.js", "import { x } from \"./x.js\"; globalThis.got = x;");
+
+    CHECK(evalLabel(fx.vm.evaluateModule("res://r/entry.js")) == "LoadError");
+    const std::optional<ModuleRecord> x = recordOf(fx.vm, "res://r/x.js");
+    REQUIRE(x.has_value());
+    CHECK(x->generation == 2U);
+    CHECK(moduleStateLabel(x->state) == "Unloaded");
+    const std::optional<ModuleRecord> entry = recordOf(fx.vm, "res://r/entry.js");
+    REQUIRE(entry.has_value());
+    CHECK(entry->generation == 1U);
+
+    fx.files->set("r/missing.js", "export {};");
+    log.clear();
+    CHECK(evalLabel(fx.vm.evaluateModule("res://r/entry2.js")) == "Ok");
+    CHECK(log.countAtLeast(LogLevel::Warn) == 0U);
+    CHECK(completion(fx.vm, "got") == "2");
+    CHECK(fx.files->reads("r/x.js") == 2U);
+    const std::optional<ModuleRecord> fresh = recordOf(fx.vm, "res://r/x.js");
+    REQUIRE(fresh.has_value());
+    CHECK(fresh->generation == 2U);
+    CHECK(moduleStateLabel(fresh->state) == "Evaluated");
+    expectCleanShutdown(fx.vm);
+}
+
+TEST_CASE("script: R22's half-linked shape through bytecode is never linked again (BY34)") {
+    SeamVfs seam;
+    const std::string half =
+        "import { ok } from \"res://r/j.js\"; import { nope } from \"res://r/j.js\"; export const h = ok;";
+    seam.set("res://r/j.js", "export const ok = 1;");
+
+    Fixture fx;
+    fx.files->set("r/j.js", "export const ok = 1;");
+    fx.files->set("r/half.js", seam.cook(half, "res://r/half.js"));
+    fx.files->set("r/top1.js", "import \"./half.js\";");
+    fx.files->set("r/top2.js", "import \"./half.js\";");
+
+    const EvalResult first = fx.vm.evaluateModule("res://r/top1.js");
+    CHECK(evalLabel(first) == "CompileError");
+    CHECK(first.error.message == "Could not find export 'nope' in module 'res://r/j.js'");
+    CHECK(first.error.stack.empty());
+    for (const std::string_view path :
+         std::array<std::string_view, 3>{"res://r/top1.js", "res://r/half.js", "res://r/j.js"}) {
+        INFO("path: " << std::string{path});
+        const std::optional<ModuleRecord> record = recordOf(fx.vm, path);
+        REQUIRE(record.has_value());
+        CHECK(record->generation == 2U);
+    }
+
+    const EvalResult second = fx.vm.evaluateModule("res://r/top2.js");
+    CHECK(evalLabel(second) == "CompileError");
+    CHECK(second.error.message == "Could not find export 'nope' in module 'res://r/j.js?gen=2'");
+    CHECK(fx.files->reads("r/half.js") == 2U);
     expectCleanShutdown(fx.vm);
 }
