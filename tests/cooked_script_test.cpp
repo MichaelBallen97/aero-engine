@@ -38,7 +38,6 @@ using engine::assets::CookedScriptParseResult;
 using engine::assets::CookedScriptStatus;
 using engine::assets::cookedScriptStatusLabel;
 using engine::assets::CookedScriptWriteResult;
-using engine::assets::getU32;
 using engine::assets::getU64;
 using engine::assets::hasCookedScriptMagic;
 using engine::assets::parseCookedScript;
@@ -334,7 +333,7 @@ TEST_CASE("script container: an empty payload is refused by parse and by write (
     CHECK(parsed.status == CookedScriptStatus::EmptyPayload);
     CHECK(parsed.message == "the header declares an empty payload");
 
-    CookedScriptInput input;
+    const CookedScriptInput input;
     const CookedScriptWriteResult written = writeCookedScript(input);
     CHECK(written.status == CookedScriptStatus::EmptyPayload);
     CHECK(written.bytes.empty());
