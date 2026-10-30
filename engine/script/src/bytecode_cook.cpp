@@ -112,11 +112,18 @@ struct BytecodeCook {
     // A pass runs no script code and polls no interrupt, so a trapped failure is a load refusal, a heap refusal or a
     // compile error: Exception, Interrupted, InvalidVm and WrongThread are unreachable and read as CompileError.
     [[nodiscard]] static ScriptCookStatus statusOf(EvalStatus status) {
-        if (status == EvalStatus::LoadError) {
-            return ScriptCookStatus::LoadError;
-        }
-        if (status == EvalStatus::OutOfMemory) {
-            return ScriptCookStatus::OutOfMemory;
+        switch (status) {
+            case EvalStatus::LoadError:
+                return ScriptCookStatus::LoadError;
+            case EvalStatus::OutOfMemory:
+                return ScriptCookStatus::OutOfMemory;
+            case EvalStatus::Ok:
+            case EvalStatus::CompileError:
+            case EvalStatus::Exception:
+            case EvalStatus::Interrupted:
+            case EvalStatus::InvalidVm:
+            case EvalStatus::WrongThread:
+                return ScriptCookStatus::CompileError;
         }
         return ScriptCookStatus::CompileError;
     }
