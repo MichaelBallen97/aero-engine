@@ -70,9 +70,11 @@ inline constexpr std::chrono::milliseconds MAX_CALL_TIME_BUDGET{60'000};
 
 // How deep one import chain may be loaded: a chain of modules, each importing the next and none loaded before, may
 // be maxImportDepth = stackLimitBytes / IMPORT_STACK_BYTES_PER_LEVEL modules long (64 at the default limit, 8 at the
-// minimum, 1024 at the maximum); the next one is a LoadError. Each level costs the backend's compile frames and this
-// layer's (about 1.6 KB per level in the backend's Debug variant and 1.1 KB in its Release one, measured at 4.1.2), so
-// 8 KiB keeps a refused chain far from the backend's own stack check.
+// minimum, 1024 at the maximum); the next one is a LoadError. The 8 KiB is a budget for the C stack one level takes:
+// the backend's seven compile frames and this layer's three. Measured on macOS arm64 at 4.3.2, a level takes 3904 B
+// in the Debug build (with ASan) and 1040 B in Release, about 1.1 KB and 0.75 KB of them the backend's. A level past
+// the budget lets the backend's own stack check refuse a chain the cap admits; MSVC's Debug build has come closest,
+// and its figure is not measured (R33 in docs/08-risks.md).
 inline constexpr std::size_t IMPORT_STACK_BYTES_PER_LEVEL = std::size_t{8} * 1024U;
 
 struct VmConfig {

@@ -180,114 +180,74 @@ char* Vm::Impl::serveDynamicImport(const char* base, const char* specifier) {
 
 // ---- the one place a source becomes a module ------------------------------------------------------------------
 
-JSModuleDef* Vm::Impl::compileModule(std::string_view key, std::string_view importer) {
-    assert(attempt != nullptr && attempt->loading);
+bool Vm::Impl::deadlinePassed() {
+    if (std::chrono::steady_clock::now() < deadline) {
+        return false;
+    }
+    fireInterrupt();
+    static_cast<void>(JS_ThrowInternalError(ctx, "%s", "interrupted"));
+    return true;
+}
+
+std::optional<std::string> Vm::Impl::readModuleSource(std::string_view key, std::string_view importer) {
     if (modules == nullptr) {
         refuse("TypeError", internal::noModuleSourceMessage(key, importer));
-        return nullptr;
+        return std::nullopt;
     }
     const std::size_t maxDepth = internal::maxImportDepth(config.stackLimitBytes);
     if (attempt->depth >= maxDepth) {
         refuse("TypeError", internal::tooDeepMessage(key, importer, maxDepth, config.stackLimitBytes));
-        return nullptr;
+        return std::nullopt;
     }
-    // The budget covers loading. A read and a compile never poll the interrupt handler, so the deadline is checked
-    // here, before the read and again before the compile, and fires through the handler's own routine.
-    const auto deadlinePassed = [this] {
-        if (std::chrono::steady_clock::now() < deadline) {
-            return false;
-        }
-        fireInterrupt();
-        static_cast<void>(JS_ThrowInternalError(ctx, "%s", "interrupted"));
-        return true;
-    };
+    // The budget covers loading. A source read and a compile never poll the interrupt handler, so the deadline is
+    // checked here, before the read, and again before the compile; a passed deadline fires through the handler's own
+    // routine.
     if (deadlinePassed()) {
-        return nullptr;
+        return std::nullopt;
     }
     // The size first, so a source larger than the heap limit is refused before a byte of it is read.
     const std::optional<std::uint64_t> size = modules->fileSize(key);
     if (!size.has_value()) {
         refuse("TypeError", internal::notFoundMessage(key, importer));
-        return nullptr;
+        return std::nullopt;
     }
     if (!internal::sourceWithinCap(*size, config.heapLimitBytes)) {
         refuse("TypeError", internal::tooLargeMessage(key, importer, *size, config.heapLimitBytes));
-        return nullptr;
+        return std::nullopt;
     }
-    const std::optional<std::string> text = modules->readText(key);
+    std::optional<std::string> text = modules->readText(key);
     if (!text.has_value()) {
         refuse("TypeError", internal::notFoundMessage(key, importer));
-        return nullptr;
+        return std::nullopt;
     }
     if (!internal::sourceWithinCap(text->size(), config.heapLimitBytes)) {  // the file grew after its size was asked
         refuse("TypeError", internal::tooLargeMessage(key, importer, text->size(), config.heapLimitBytes));
-        return nullptr;
+        return std::nullopt;
     }
-    // The name is the current generation's: a later generation is never found under an older one's name.
-    const std::string name = internal::encodeModuleName(key, moduleTable.generation(key));
-    const std::span<const std::byte> bytes{reinterpret_cast<const std::byte*>(text->data()), text->size()};
-    if (assets::hasCookedScriptMagic(bytes)) {
-        // 1. Every cause that makes the container unusable is a LoadError, decided before the deadline and before any
-        //    memory rule, and before the backend sees a byte.
-        const internal::PreparedBytecode prepared = internal::prepareCookedModule(bytes, name, scriptBackendRelease());
-        if (!prepared.refusal.empty()) {
-            refuse("TypeError", internal::cookedScriptRefusedMessage(key, importer, prepared.refusal));
-            return nullptr;
-        }
-        // 2. A read never polls the interrupt handler: the deadline is checked before it.
-        if (deadlinePassed()) {
-            return nullptr;
-        }
-        // 3. An out-of-memory inside the backend's module reader can crash it, so the read starts only with room for
-        //    the densest read measured (bytecodeReadHeadroom). The refusal is counted by the heap, so classify reads
-        //    it as OutOfMemory.
-        if (!heap.admitsHeadroom(internal::bytecodeReadHeadroom(prepared.payload.size()))) {
-            static_cast<void>(JS_ThrowOutOfMemory(ctx));
-            return nullptr;
-        }
-        // 4. A read is a load: the module is listed under `name` at once and its imports load inside the call. The
-        //    reader lists every module it meets as it meets it (quickjs.c:29652) and unlists only the one in progress
-        //    when it fails (quickjs.c:39214-39217), so a read that started has maybe left a module named by atom #0
-        //    listed under `name` whatever its outcome. The key is retired by a failed attempt from here on.
-        moduleTable.beginCompile(key);
-        attempt->created.emplace_back(key);
-        ++attempt->depth;
-        attempt->compiling.emplace_back(key);
-        const HeldValue read = readModuleBytes(prepared.payload);
-        attempt->compiling.pop_back();
-        --attempt->depth;
-        if (read.isException()) {
-            // The backend unlisted the module in progress only; one read earlier in the payload (an array's element,
-            // a module in a constant pool) stays listed under `name`, and the retired key keeps it unreachable.
-            return nullptr;  // the failure is pending
-        }
-        // A well-formed payload can hold any value, and only a module may be taken for one. The value is freed by
-        // its HeldValue, but a module nested in this root and named by atom #0 is already listed under `name`, and
-        // the key is already retired by a failed attempt, so no import can name that orphan again.
-        if (JS_VALUE_GET_TAG(read.get()) != JS_TAG_MODULE) {
-            refuse("TypeError", internal::cookedScriptRefusedMessage(key, importer, "its payload is not a module"));
-            return nullptr;
-        }
-        auto* module = static_cast<JSModuleDef*>(JS_VALUE_GET_PTR(read.get()));
-        moduleTable.markLoaded(key, module);
-        ++moduleInstances;
-        // 5. The read named the module as requested. Defence in depth, unreachable: the rename wrote exactly `name`.
-        const std::optional<std::string> readName = moduleNameOf(module);
-        if (!readName.has_value()) {
-            return nullptr;  // out of memory, pending
-        }
-        if (*readName != name) {
-            assert(false && "the rename wrote the name the loader requested");
-            refuse("TypeError",
-                   internal::cookedScriptRefusedMessage(
-                       key, importer, std::format("the read named the module '{}', not '{}'", *readName, name)));
-            return nullptr;
-        }
-        return module;
+    return text;
+}
+
+bool Vm::Impl::isCookedScriptText(const std::string& text) noexcept {
+    return assets::hasCookedScriptMagic(
+        std::span<const std::byte>{reinterpret_cast<const std::byte*>(text.data()), text.size()});
+}
+
+JSModuleDef* Vm::Impl::compileModule(std::string_view key, std::string_view importer) {
+    assert(attempt != nullptr && attempt->loading);
+    // This frame is live across the compile, which loads the module's imports inside it, one level deeper each: the
+    // checks before the compile and the bytecode branch run in frames of their own (R33 in docs/08-risks.md).
+    const std::optional<std::string> text = readModuleSource(key, importer);
+    if (!text.has_value()) {
+        return nullptr;  // refused, or the deadline fired; the failure is pending
+    }
+    if (isCookedScriptText(*text)) {
+        return compileCookedModule(key, importer, *text);
     }
     if (deadlinePassed()) {
         return nullptr;
     }
+    // The name is the current generation's: a later generation is never found under an older one's name.
+    const std::string name = internal::encodeModuleName(key, moduleTable.generation(key));
     // The compile resolves the module's imports, so its children are loaded inside it (loadModule), each one level
     // deeper.
     moduleTable.beginCompile(key);
@@ -304,6 +264,68 @@ JSModuleDef* Vm::Impl::compileModule(std::string_view key, std::string_view impo
     moduleTable.markLoaded(key, module);
     attempt->created.emplace_back(key);
     ++moduleInstances;
+    return module;
+}
+
+JSModuleDef* Vm::Impl::compileCookedModule(std::string_view key, std::string_view importer, const std::string& text) {
+    const std::string name = internal::encodeModuleName(key, moduleTable.generation(key));
+    const std::span<const std::byte> bytes{reinterpret_cast<const std::byte*>(text.data()), text.size()};
+    // 1. Every cause that makes the container unusable is a LoadError, decided before the deadline and before any
+    //    memory rule, and before the backend sees a byte.
+    const internal::PreparedBytecode prepared = internal::prepareCookedModule(bytes, name, scriptBackendRelease());
+    if (!prepared.refusal.empty()) {
+        refuse("TypeError", internal::cookedScriptRefusedMessage(key, importer, prepared.refusal));
+        return nullptr;
+    }
+    // 2. A read never polls the interrupt handler: the deadline is checked before it.
+    if (deadlinePassed()) {
+        return nullptr;
+    }
+    // 3. An out-of-memory inside the backend's module reader can crash it, so the read starts only with room for
+    //    the densest read measured (bytecodeReadHeadroom). The refusal is counted by the heap, so classify reads
+    //    it as OutOfMemory.
+    if (!heap.admitsHeadroom(internal::bytecodeReadHeadroom(prepared.payload.size()))) {
+        static_cast<void>(JS_ThrowOutOfMemory(ctx));
+        return nullptr;
+    }
+    // 4. A read is a load: the module is listed under `name` at once and its imports load inside the call. The
+    //    reader lists every module it meets as it meets it (quickjs.c:29652) and unlists only the one in progress
+    //    when it fails (quickjs.c:39214-39217), so a read that started has maybe left a module named by atom #0
+    //    listed under `name` whatever its outcome. The key is retired by a failed attempt from here on.
+    moduleTable.beginCompile(key);
+    attempt->created.emplace_back(key);
+    ++attempt->depth;
+    attempt->compiling.emplace_back(key);
+    const HeldValue read = readModuleBytes(prepared.payload);
+    attempt->compiling.pop_back();
+    --attempt->depth;
+    if (read.isException()) {
+        // The backend unlisted the module in progress only; one read earlier in the payload (an array's element,
+        // a module in a constant pool) stays listed under `name`, and the retired key keeps it unreachable.
+        return nullptr;  // the failure is pending
+    }
+    // A well-formed payload can hold any value, and only a module may be taken for one. The value is freed by
+    // its HeldValue, but a module nested in this root and named by atom #0 is already listed under `name`, and
+    // the key is already retired by a failed attempt, so no import can name that orphan again.
+    if (JS_VALUE_GET_TAG(read.get()) != JS_TAG_MODULE) {
+        refuse("TypeError", internal::cookedScriptRefusedMessage(key, importer, "its payload is not a module"));
+        return nullptr;
+    }
+    auto* module = static_cast<JSModuleDef*>(JS_VALUE_GET_PTR(read.get()));
+    moduleTable.markLoaded(key, module);
+    ++moduleInstances;
+    // 5. The read named the module as requested. Defence in depth, unreachable: the rename wrote exactly `name`.
+    const std::optional<std::string> readName = moduleNameOf(module);
+    if (!readName.has_value()) {
+        return nullptr;  // out of memory, pending
+    }
+    if (*readName != name) {
+        assert(false && "the rename wrote the name the loader requested");
+        refuse("TypeError",
+               internal::cookedScriptRefusedMessage(
+                   key, importer, std::format("the read named the module '{}', not '{}'", *readName, name)));
+        return nullptr;
+    }
     return module;
 }
 

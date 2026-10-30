@@ -20,6 +20,15 @@
 #include <thread>
 #include <vector>
 
+// A function kept out of line by every compiler in every configuration, so its locals occupy a frame only while it
+// runs and never the frame of a caller that stays live across a nested import (R33 in docs/08-risks.md). MSVC does
+// not read [[gnu::noinline]].
+#if defined(_MSC_VER)
+    #define AERO_SCRIPT_NOINLINE __declspec(noinline)
+#else
+    #define AERO_SCRIPT_NOINLINE [[gnu::noinline]]
+#endif
+
 namespace engine::script {
 
 // A backend value the wrapper holds a reference to. EVERY value the wrapper receives goes into one the
@@ -197,6 +206,19 @@ struct Vm::Impl {
     void evaluateEntry(std::string_view key, EvalResult& result);
     [[nodiscard]] HeldValue startModule(LoadAttempt& load, std::string_view key, ImportPath path, std::uint64_t& watch);
     [[nodiscard]] JSModuleDef* compileModule(std::string_view key, std::string_view importer);
+    // Every check before a module's compile, in order: a source, the depth cap, the deadline, the size, the size cap,
+    // the read, the size again. nullopt: refused, or the deadline fired; the failure is pending.
+    [[nodiscard]] AERO_SCRIPT_NOINLINE std::optional<std::string> readModuleSource(std::string_view key,
+                                                                                   std::string_view importer);
+    // Whether a module file is a cooked script: its first bytes are the container's magic, at any path.
+    [[nodiscard]] AERO_SCRIPT_NOINLINE static bool isCookedScriptText(const std::string& text) noexcept;
+    // The bytecode branch: a container judged, the deadline, the headroom guard, the read, the after-read checks.
+    [[nodiscard]] AERO_SCRIPT_NOINLINE JSModuleDef* compileCookedModule(std::string_view key, std::string_view importer,
+                                                                        const std::string& text);
+    // The budget covers loading. A source read, a compile and a bytecode read never poll the interrupt handler, so the
+    // loader checks the deadline before the source read and again before the compile or the bytecode read; a passed
+    // deadline fires through the handler's own routine and leaves the InternalError pending.
+    [[nodiscard]] bool deadlinePassed();
     // The one module compile (JS_EVAL_TYPE_MODULE): `text` and `name` are C strings to the backend. Compile only, no
     // module is evaluated; the failure is pending on JS_EXCEPTION.
     [[nodiscard]] HeldValue compileModuleText(const std::string& text, const std::string& name);
