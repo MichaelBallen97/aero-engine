@@ -1,5 +1,5 @@
 // tests/script_bytecode_test.cpp -- task 4.3.2: the bytecode cook (BY8-BY17) and the loader's container branch
-// (BY18-BY29), and the same-results cases (BY30-BY35). A TU of aero_tests, which supplies
+// (BY18-BY29, BY35, BY36), and the same-results cases (BY30-BY34). A TU of aero_tests, which supplies
 // main() from test_main.cpp. The cook runs the real backend: the committed fixtures are esbuild 0.28.2's own bundles
 // of the three .ts files beside them (tests/fixtures/scripts/README.md says how they were made).
 #include <aero/assets/cooked_mesh.hpp>

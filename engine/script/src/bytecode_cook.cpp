@@ -5,9 +5,10 @@
 //   3. the rename proof: pass 1's payload, renamed by the loader's own rule, must equal pass 2 byte for byte -- the
 //      script itself holds neither name, or a load would rename the script's own key;
 //   4. VM B, fresh, reads pass 1 back and writes it again: the two must be identical.
-// Nothing is logged: a cook's VMs are quiet and its result carries every failure. Every backend value is held the
-// moment it is received (HeldValue; the writer's buffer in WriteBuffer). This file holds the layer's one
-// JS_WriteObject; the one JS_ReadObject is vm_modules.cpp's.
+// A failure is reported in the result, never in the log: once its VMs exist they are quiet (a Debug creation record
+// and a teardown leak report still reach the log); a VM that cannot be created logs Vm::create's error and the result
+// is OutOfMemory. Every backend value is held the moment it is received (HeldValue; the writer's buffer in
+// WriteBuffer). This file holds the layer's one JS_WriteObject; the one JS_ReadObject is vm_modules.cpp's.
 
 #include <aero/assets/cooked_mesh.hpp>  // getU32
 #include <aero/assets/cooked_script.hpp>

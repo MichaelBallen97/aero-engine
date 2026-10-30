@@ -127,8 +127,9 @@ multiple, 48, is set by the densest read measured (tagged templates, about 40x i
 its witness. R31 (an out-of-memory inside `JS_ReadModule` crashes the reader) is why the guard exists.
 
 **THE COOK LOGS NO FAILURE, IMPORTS NOTHING, AND PROVES ITS RENAME (4.3.2).** The cook compiles under a 1 GiB heap
-limit with a placeholder name and reports a failure in its result, never in the log (BY16 pins Warn and above). Each of
-its VMs still writes its Debug creation record, and a teardown leak is still reported, so `aero_cooker` stays silent
+limit with a placeholder name and reports a failure in its result, never in the log once its VMs exist (BY16 pins
+Warn and above); a VM that cannot be created logs `Vm::create`'s error and the cook returns `OutOfMemory`. Each of its
+VMs still writes its Debug creation record, and a teardown leak is still reported, so `aero_cooker` stays silent
 because it sets `LogLevel::Off` (its stdout is reserved for `--help` and `--version`). A static import is refused (a
 relative specifier cannot resolve under a placeholder that contains `?`).
 It fails when the placeholder occurs in the script's own text (S2), when the payload does not read back and re-write to

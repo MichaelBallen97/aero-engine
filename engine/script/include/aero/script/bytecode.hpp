@@ -45,8 +45,9 @@ struct ScriptCookResult {
 };
 
 // One ES module source in, the backend's bytecode out. `sourceName` is what an error names (the cooker passes the
-// input's path). Logs no failure (the result carries it), though each VM it makes still writes its Debug creation
-// record and a teardown leak is still reported; never reads a file, never throws. Uses the calling thread's stack
+// input's path). Logs no failure that follows its VMs' creation (the result carries it), though each VM it makes
+// still writes its Debug creation record and a teardown leak is still reported; a VM that cannot be created logs
+// Vm::create's error and the result is OutOfMemory; never reads a file, never throws. Uses the calling thread's stack
 // like a Vm call (DEFAULT_STACK_LIMIT_BYTES + 256 KiB free). The payload does not depend on `sourceName`, the process,
 // or what any VM ran before.
 [[nodiscard]] ScriptCookResult cookScriptBytecode(std::string_view source, std::string_view sourceName);
