@@ -430,7 +430,7 @@ TEST_CASE("source map: a big map decodes once and a lookup does not walk it (SR9
             << std::chrono::duration_cast<std::chrono::microseconds>(t2 - t1).count() << " us");
 }
 
-// ---- SR10-SR18: the VM maps every stack it describes ------------------------------------------------------------
+// ---- SR10-SR21: the VM maps every stack it describes ------------------------------------------------------------
 
 namespace {
 
