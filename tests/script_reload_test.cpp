@@ -1121,6 +1121,62 @@ TEST_CASE("script: a field made non-enumerable is dropped and a frozen instance 
     script_test::expectCleanShutdown(fx.vm);
 }
 
+TEST_CASE("script: a field the new class makes an own accessor on its instance takes the accessor (HR38)") {
+    const script_test::LogCapture log;
+    Fixture fx;
+    fx.files->set("s/a.js", classSource("  speed = 3;\n  hello() {\n    return \"v1\";\n  }"));
+    REQUIRE(scriptStatusLabel(fx.vm.loadScript("res://s/a.js").status) == "Ok");
+    const ScriptInstance a = instanceOf(fx.vm, "res://s/a.js");
+    expose(fx.vm, a, "a");
+    static_cast<void>(script_test::completion(fx.vm, "globalThis.calls = 0; globalThis.stored = 0; a.speed = 8; 0"));
+
+    // The accessor is defined by the constructor, on the instance itself and not on the prototype.
+    fx.files->set("s/a.js", classSource("  constructor() {\n    Object.defineProperty(this, \"speed\", {\n"
+                                        "      get() {\n        globalThis.calls++;\n        return 42;\n      },\n"
+                                        "      set(value) {\n        globalThis.calls++;\n"
+                                        "        globalThis.stored = value;\n      },\n"
+                                        "      enumerable: true,\n      configurable: true\n    });\n  }\n"
+                                        "  hello() {\n    return \"v2\";\n  }"));
+    const ScriptLoadResult loaded = fx.vm.loadScript("res://s/a.js");
+    CHECK(scriptStatusLabel(loaded.status) == "Ok");
+    CHECK(countsOf(loaded) == "0 0 0 1");  // dropped, not kept: the running 8 is not written over the accessor
+    CHECK(script_test::completion(fx.vm, "[calls, stored].join()") == "0,0");  // neither half ran during the carry
+    expose(fx.vm, a, "a");
+    CHECK(script_test::completion(fx.vm, "String(a.speed)") == "42");  // the accessor, not the running 8
+    CHECK(script_test::completion(fx.vm, "[calls, stored].join()") == "1,0");
+    CHECK(script_test::completion(fx.vm, "a.speed = 5; [calls, stored].join()") == "2,5");  // still an accessor
+    CHECK(log.countAtLeast(LogLevel::Warn) == 0U);
+    script_test::expectCleanShutdown(fx.vm);
+}
+
+TEST_CASE(
+    "script: a boolean, a bigint and a symbol are not references, so a null or object default resets them (HR39)") {
+    const script_test::LogCapture log;
+    Fixture fx;
+    fx.files->set("s/a.js", classSource("  b1 = true;\n  n1 = 1n;\n  s1 = Symbol(\"a\");\n"
+                                        "  b2 = true;\n  n2 = 1n;\n  s2 = Symbol(\"b\");\n"
+                                        "  hello() {\n    return \"v1\";\n  }"));
+    REQUIRE(scriptStatusLabel(fx.vm.loadScript("res://s/a.js").status) == "Ok");
+    const ScriptInstance a = instanceOf(fx.vm, "res://s/a.js");
+    expose(fx.vm, a, "a");
+    static_cast<void>(script_test::completion(
+        fx.vm, "a.b1 = false; a.n1 = 7n; a.s1 = Symbol('x'); a.b2 = false; a.n2 = 9n; a.s2 = Symbol('y'); 0"));
+
+    // The first three fields are `null` in the new class (the relaxation carries reference kinds only); the last
+    // three are an object (an object default carries objects only).
+    fx.files->set("s/a.js", classSource("  b1 = null;\n  n1 = null;\n  s1 = null;\n"
+                                        "  b2 = { d: 1 };\n  n2 = { d: 2 };\n  s2 = { d: 3 };\n"
+                                        "  hello() {\n    return \"v2\";\n  }"));
+    const ScriptLoadResult loaded = fx.vm.loadScript("res://s/a.js");
+    CHECK(scriptStatusLabel(loaded.status) == "Ok");
+    CHECK(countsOf(loaded) == "0 6 0 0");
+    expose(fx.vm, a, "a");
+    CHECK(script_test::completion(fx.vm, "[a.b1 === null, a.n1 === null, a.s1 === null].join()") == "true,true,true");
+    CHECK(script_test::completion(fx.vm, "[a.b2.d, a.n2.d, a.s2.d].join()") == "1,2,3");
+    CHECK(log.countAtLeast(LogLevel::Warn) == 0U);
+    script_test::expectCleanShutdown(fx.vm);
+}
+
 // ---- HR27-HR32: refused bytes report once, the heap's own words, the budget, and scale -------------------------
 
 namespace {
@@ -1759,6 +1815,47 @@ TEST_CASE("script: a load compares the script's own bytes, never those of what i
     CHECK(recordOf(fx.vm, KEY).generation == 1U);
     expose(fx.vm, a, "a");
     CHECK(script_test::completion(fx.vm, "a.hello()") == "d1-v1");
+    CHECK(log.countAtLeast(LogLevel::Warn) == 0U);
+    script_test::expectCleanShutdown(fx.vm);
+}
+
+TEST_CASE("script: a script file over the size cap is refused by the loader and never read by the comparison (HR40)") {
+    script_test::LogCapture log;
+    Fixture fx{script_test::patient(VmConfig{.heapLimitBytes = MIB})};
+    constexpr std::string_view KEY = "res://s/a.js";
+    fx.files->set("s/a.js", versioned("v1"));
+    REQUIRE(scriptStatusLabel(fx.vm.loadScript(KEY).status) == "Ok");
+    const ScriptInstance a = instanceOf(fx.vm, KEY);
+    expose(fx.vm, a, "a");
+    const std::size_t readsBefore = fx.files->reads("s/a.js");
+
+    // A valid script, padded by one comment to exactly one byte over the cap: it would load, were it read.
+    std::string big = versioned("v-big") + "//";
+    big.append(MIB + 1 - big.size(), 'x');
+    REQUIRE(big.size() == MIB + 1);
+    fx.files->set("s/a.js", big);
+    // The comparison reads nothing past the cap, so no trigger finds its bytes remembered: each is the loader's.
+    for (int trigger = 1; trigger <= 2; ++trigger) {
+        INFO("trigger ", trigger);
+        log.clear();
+        const ScriptLoadResult refused = fx.vm.loadScript(KEY);
+        CHECK(scriptStatusLabel(refused.status) == "LoadError");
+        CHECK(theOneError(log) ==
+              "script: res://s/a.js: load error: TypeError: cannot load 'res://s/a.js': its 1048577 bytes are over "
+              "the 1048576-byte source limit (the VM's heap limit)");
+        CHECK(refused.instancesMoved == 0U);
+        CHECK(fx.files->reads("s/a.js") == readsBefore);
+    }
+    expose(fx.vm, a, "a");
+    CHECK(script_test::completion(fx.vm, "a.hello()") == "v1");
+
+    log.clear();
+    fx.files->set("s/a.js", versioned("v2"));
+    const ScriptLoadResult working = fx.vm.loadScript(KEY);
+    CHECK(scriptStatusLabel(working.status) == "Ok");
+    CHECK(working.instancesMoved == 1U);
+    expose(fx.vm, a, "a");
+    CHECK(script_test::completion(fx.vm, "a.hello()") == "v2");
     CHECK(log.countAtLeast(LogLevel::Warn) == 0U);
     script_test::expectCleanShutdown(fx.vm);
 }
