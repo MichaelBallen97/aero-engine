@@ -199,6 +199,13 @@ class MemoryBackend final : public engine::FileSystemBackend {
 public:
     void set(std::string relPath, std::string text) { files[std::move(relPath)] = std::move(text); }
 
+    // The file is gone: exists, fileSize and readFile all answer as for a path never written.
+    void remove(std::string_view relPath) {
+        if (const auto found = files.find(relPath); found != files.end()) {
+            files.erase(found);
+        }
+    }
+
     // After the next readFile of `relPath` returns, the file holds `text`.
     void replaceAfterNextRead(std::string relPath, std::string text) {
         replacements[std::move(relPath)] = std::move(text);
@@ -1465,6 +1472,225 @@ TEST_CASE("script: a load or a construction its time budget ended is Interrupted
     static_cast<void>(script_test::completion(fx.vm, "globalThis.slow = false; 0"));
     log.clear();
     CHECK(scriptStatusLabel(fx.vm.createInstance(KEY).status) == "Ok");
+    CHECK(log.countAtLeast(LogLevel::Warn) == 0U);
+    script_test::expectCleanShutdown(fx.vm);
+}
+
+// ---- HR34-HR37: a script's imports, and the link, load and constructor failure arms -----------------------------
+
+namespace {
+
+constexpr std::string_view DEP_V1 = "export const word = \"d1\";\n";
+
+// A class importing `name` from ./dep.js as `word`: hello() answers `<word>-<version>`, and `tag` starts at "x".
+[[nodiscard]] std::string importing(std::string_view version, std::string_view name = "word") {
+    return std::format("import {{ {} as word }} from \"./dep.js\";\n", name) +
+           classSource(std::format("  tag = \"x\";\n  hello() {{\n    return word + \"-{}\";\n  }}", version));
+}
+
+}  // namespace
+
+TEST_CASE("script: a link error is refused with one record and a reload into it changes nothing (HR34)") {
+    script_test::LogCapture log;
+    Fixture fx;
+    fx.files->set("s/dep.js", std::string{DEP_V1});
+    const std::string linkError = importing("v9", "nope");
+
+    // A first load: the loader's CompileError, its one record, and no class.
+    fx.files->set("s/l.js", linkError);
+    const ScriptLoadResult first = fx.vm.loadScript("res://s/l.js");
+    CHECK(scriptStatusLabel(first.status) == "CompileError");
+    CHECK(first.error.message == "Could not find export 'nope' in module 'res://s/dep.js'");
+    CHECK(theOneError(log) ==
+          "script: res://s/l.js: compile error: SyntaxError: Could not find export 'nope' in module 'res://s/dep.js'");
+    log.clear();
+    CHECK(scriptStatusLabel(fx.vm.createInstance("res://s/l.js").status) == "NotLoaded");
+
+    // A reload of a working importer into the same link error: every instance and the class stay.
+    constexpr std::string_view KEY = "res://s/a.js";
+    fx.files->set("s/a.js", importing("v1"));
+    REQUIRE(scriptStatusLabel(fx.vm.loadScript(KEY).status) == "Ok");
+    const ScriptInstance a = instanceOf(fx.vm, KEY);
+    const ScriptInstance b = instanceOf(fx.vm, KEY);
+    expose(fx.vm, a, "a");
+    expose(fx.vm, b, "b");
+    static_cast<void>(script_test::completion(fx.vm, R"(a.tag = "a"; b.tag = "b"; 0)"));
+    const auto readsAll = [&] { return script_test::completion(fx.vm, "[a.hello(), a.tag, b.hello(), b.tag].join()"); };
+    REQUIRE(readsAll() == "d1-v1,a,d1-v1,b");
+
+    fx.files->set("s/a.js", linkError);
+    log.clear();
+    const ScriptLoadResult reloaded = fx.vm.loadScript(KEY);
+    CHECK(reloaded.heapBytesInUse == fx.vm.stats().heapBytesInUse);
+    CHECK(scriptStatusLabel(reloaded.status) == "CompileError");
+    // dep.js runs in its second generation: the failed first load retired the instance it had created (R22).
+    CHECK(theOneError(log) ==
+          "script: res://s/a.js: compile error: SyntaxError: Could not find export 'nope' in module "
+          "'res://s/dep.js?gen=2'");
+    CHECK(reloaded.instancesMoved == 0U);
+    CHECK(readsAll() == "d1-v1,a,d1-v1,b");
+
+    log.clear();
+    const ScriptInstance c = instanceOf(fx.vm, KEY);  // from the last good class, v1's
+    expose(fx.vm, c, "c");
+    CHECK(script_test::completion(fx.vm, "c.hello()") == "d1-v1");
+    CHECK(log.countAtLeast(LogLevel::Warn) == 0U);
+
+    fx.files->set("s/a.js", importing("v2"));
+    const ScriptLoadResult working = fx.vm.loadScript(KEY);
+    CHECK(scriptStatusLabel(working.status) == "Ok");
+    CHECK(working.instancesMoved == 3U);
+    expose(fx.vm, a, "a");
+    expose(fx.vm, b, "b");
+    expose(fx.vm, c, "c");
+    CHECK(script_test::completion(fx.vm, "[a.hello(), a.tag, b.hello(), b.tag, c.hello()].join()") ==
+          "d1-v2,a,d1-v2,b,d1-v2");
+    CHECK(log.countAtLeast(LogLevel::Warn) == 0U);
+    script_test::expectCleanShutdown(fx.vm);
+}
+
+TEST_CASE("script: a reload of a deleted file is a LoadError that changes nothing, and a restored file loads (HR35)") {
+    script_test::LogCapture log;
+    Fixture fx;
+    constexpr std::string_view KEY = "res://s/a.js";
+    fx.files->set("s/a.js", versioned("v1"));
+    REQUIRE(scriptStatusLabel(fx.vm.loadScript(KEY).status) == "Ok");
+    const ScriptInstance a = instanceOf(fx.vm, KEY);
+    const ScriptInstance b = instanceOf(fx.vm, KEY);
+    expose(fx.vm, a, "a");
+    expose(fx.vm, b, "b");
+    static_cast<void>(script_test::completion(fx.vm, R"(a.tag = "a"; b.tag = "b"; 0)"));
+    const auto readsAll = [&] { return script_test::completion(fx.vm, "[a.hello(), a.tag, b.hello(), b.tag].join()"); };
+    REQUIRE(readsAll() == "v1,a,v1,b");
+
+    fx.files->remove("s/a.js");
+    // A failed peek compares equal to nothing, so each trigger is the loader's, with its own one record.
+    for (int trigger = 1; trigger <= 2; ++trigger) {
+        INFO("trigger ", trigger);
+        log.clear();
+        const ScriptLoadResult gone = fx.vm.loadScript(KEY);
+        CHECK(gone.heapBytesInUse == fx.vm.stats().heapBytesInUse);
+        CHECK(scriptStatusLabel(gone.status) == "LoadError");
+        CHECK(
+            theOneError(log) ==
+            "script: res://s/a.js: load error: TypeError: cannot load 'res://s/a.js': not found or unreadable through "
+            "the VFS");
+        CHECK(gone.instancesMoved == 0U);
+        CHECK(readsAll() == "v1,a,v1,b");
+    }
+
+    log.clear();
+    const ScriptInstance c = instanceOf(fx.vm, KEY);  // from the last good class, v1's
+    expose(fx.vm, c, "c");
+    CHECK(script_test::completion(fx.vm, "c.hello()") == "v1");
+    CHECK(log.countAtLeast(LogLevel::Warn) == 0U);
+
+    fx.files->set("s/a.js", versioned("v2"));
+    const ScriptLoadResult restored = fx.vm.loadScript(KEY);
+    CHECK(scriptStatusLabel(restored.status) == "Ok");
+    CHECK(restored.instancesMoved == 3U);
+    expose(fx.vm, a, "a");
+    expose(fx.vm, b, "b");
+    expose(fx.vm, c, "c");
+    CHECK(script_test::completion(fx.vm, "[a.hello(), a.tag, b.hello(), b.tag, c.hello()].join()") == "v2,a,v2,b,v2");
+    CHECK(log.countAtLeast(LogLevel::Warn) == 0U);
+    script_test::expectCleanShutdown(fx.vm);
+}
+
+TEST_CASE("script: a constructor that fills the heap or runs past the budget refuses one createInstance (HR36)") {
+    // Each constructor fails once: it disarms itself first, so the very next call is a working createInstance.
+    SUBCASE("OutOfMemory") {
+        script_test::LogCapture log;
+        Fixture fx{script_test::patient(VmConfig{.heapLimitBytes = 2 * MIB})};
+        constexpr std::string_view KEY = "res://s/c.js";
+        const std::string hogging =
+            std::string{HOG} + classSource(
+                                   "  constructor() {\n    if (globalThis.hogs) {\n      globalThis.hogs = false;\n"
+                                   "      hog();\n    }\n  }\n  hello() {\n    return \"v1\";\n  }");
+        fx.files->set("s/c.js", padded(hogging));
+        REQUIRE(scriptStatusLabel(fx.vm.loadScript(KEY).status) == "Ok");
+        const ScriptInstance a = instanceOf(fx.vm, KEY);
+        static_cast<void>(script_test::completion(fx.vm, "globalThis.hogs = true; 0"));
+        log.clear();
+        const ScriptInstanceResult full = fx.vm.createInstance(KEY);
+        CHECK(scriptStatusLabel(full.status) == "OutOfMemory");
+        CHECK_FALSE(full.instance.valid());
+        const std::string record = theOneError(log);
+        CHECK(firstLine(record).starts_with("script: res://s/c.js: out of memory (heap limit 2097152 bytes, "));
+        CHECK(record.find("the script and its instances are unchanged") == std::string::npos);  // a load's words
+
+        log.clear();
+        const ScriptInstance b = instanceOf(fx.vm, KEY);
+        CHECK(log.countAtLeast(LogLevel::Warn) == 0U);
+        expose(fx.vm, a, "a");
+        expose(fx.vm, b, "b");
+        CHECK(script_test::completion(fx.vm, "[a.hello(), b.hello(), globalThis.hogs].join()") == "v1,v1,false");
+        // The refused construction made nothing: a reload moves exactly the two instances made.
+        fx.files->set("s/c.js", padded(versioned("v2")));
+        const ScriptLoadResult moved = fx.vm.loadScript(KEY);
+        CHECK(scriptStatusLabel(moved.status) == "Ok");
+        CHECK(moved.instancesMoved == 2U);
+        script_test::expectCleanShutdown(fx.vm);
+    }
+    SUBCASE("Interrupted") {
+        script_test::LogCapture log;
+        Fixture fx{VmConfig{.callTimeBudget = std::chrono::milliseconds{100}}};
+        constexpr std::string_view KEY = "res://s/t.js";
+        fx.files->set("s/t.js",
+                      classSource("  doubled = [1, 2, 3].map((n) => n * 2).join(\"\");\n"
+                                  "  constructor() {\n    if (globalThis.spin) {\n      globalThis.spin = false;\n"
+                                  "      for (;;) {}\n    }\n  }\n  hello() {\n    return \"v1\";\n  }"));
+        REQUIRE(scriptStatusLabel(fx.vm.loadScript(KEY).status) == "Ok");
+        const ScriptInstance a = instanceOf(fx.vm, KEY);
+        static_cast<void>(script_test::completion(fx.vm, "globalThis.spin = true; 0"));
+        log.clear();
+        const ScriptInstanceResult stuck = fx.vm.createInstance(KEY);
+        CHECK(scriptStatusLabel(stuck.status) == "Interrupted");
+        CHECK_FALSE(stuck.instance.valid());
+        CHECK(firstLine(theOneError(log)) ==
+              "script: res://s/t.js: interrupted after exceeding the 100 ms time budget");
+
+        // The next call gets its own budget and its stack back: its constructor calls a native and a callback.
+        log.clear();
+        const ScriptInstance b = instanceOf(fx.vm, KEY);
+        CHECK(log.countAtLeast(LogLevel::Warn) == 0U);
+        expose(fx.vm, a, "a");
+        expose(fx.vm, b, "b");
+        CHECK(script_test::completion(fx.vm, "[a.hello(), b.hello(), b.doubled, globalThis.spin].join()") ==
+              "v1,v1,246,false");
+        fx.files->set("s/t.js", versioned("v2"));
+        const ScriptLoadResult moved = fx.vm.loadScript(KEY);
+        CHECK(scriptStatusLabel(moved.status) == "Ok");
+        CHECK(moved.instancesMoved == 2U);
+        script_test::expectCleanShutdown(fx.vm);
+    }
+}
+
+TEST_CASE("script: a load compares the script's own bytes, never those of what it imports (HR37)") {
+    const script_test::LogCapture log;
+    Fixture fx;
+    constexpr std::string_view KEY = "res://s/a.js";
+    const std::string entry = importing("v1");
+    fx.files->set("s/dep.js", std::string{DEP_V1});
+    fx.files->set("s/a.js", entry);
+    CHECK(scriptStatusLabel(fx.vm.loadScript(KEY).status) == "Ok");
+    const ScriptInstance a = instanceOf(fx.vm, KEY);
+    expose(fx.vm, a, "a");
+    REQUIRE(script_test::completion(fx.vm, "a.hello()") == "d1-v1");
+    const std::size_t depReads = fx.files->reads("s/dep.js");
+    CHECK(depReads == 1U);
+
+    // The same entry bytes: the generation recorded the entry's bytes, not its import's, read after them.
+    fx.files->set("s/a.js", entry);
+    CHECK(scriptStatusLabel(fx.vm.loadScript(KEY).status) == "Unchanged");
+
+    // Only the import changed: still Unchanged, and nothing ran or was read beyond the entry.
+    fx.files->set("s/dep.js", "export const word = \"d2\";\n");
+    CHECK(scriptStatusLabel(fx.vm.loadScript(KEY).status) == "Unchanged");
+    CHECK(fx.files->reads("s/dep.js") == depReads);
+    CHECK(recordOf(fx.vm, KEY).generation == 1U);
+    expose(fx.vm, a, "a");
+    CHECK(script_test::completion(fx.vm, "a.hello()") == "d1-v1");
     CHECK(log.countAtLeast(LogLevel::Warn) == 0U);
     script_test::expectCleanShutdown(fx.vm);
 }
