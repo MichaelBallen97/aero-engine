@@ -382,7 +382,10 @@ public:
     // reload re-creates: each new instance runs its constructor and field initializers, and its handle points at it.
     // Three consequences are documented: a native `#private` field restarts, a constructor runs again at every reload,
     // and an old object something else still holds keeps the old code and state. The comparison is of the script's own
-    // file: a script is one esbuild bundle (4.3.1), so a change to anything it imports changes its bytes.
+    // file: a script is one esbuild bundle (4.3.1), so a change to anything it imports changes its bytes. A
+    // hand-written module graph that calls invalidateModule on a dependency and then loadScript still gets Unchanged. A
+    // loadScript of a path evaluateModule already ran invalidates that module, so its body runs again in a new
+    // generation.
     //
     // A refused load remembers its bytes. The same bytes again, before the script loads again, are AlreadyRefused:
     // nothing is read beyond the comparison, nothing runs, nothing is logged and the result's error is empty, so a
