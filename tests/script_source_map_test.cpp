@@ -1,5 +1,5 @@
 // Aero Engine -- source maps (task 4.3.4): the pure core and the VM's mapped errors. SR1-SR9 test the backend-free
-// half (internal/source_map.hpp) through aero::script_internal, with no VM; SR10-SR18 drive the public API over a
+// half (internal/source_map.hpp) through aero::script_internal, with no VM; SR10-SR21 drive the public API over a
 // VirtualFileSystem. No timing is asserted anywhere: SR9 prints its two
 // durations for the manual validation row that reads them.
 
@@ -25,6 +25,7 @@
 #include <memory>
 #include <optional>
 #include <ostream>  // a CHECK on std::string_view needs the complete std::ostream on MSVC (ci-portability.md)
+#include <set>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -488,7 +489,17 @@ public:
 
     [[nodiscard]] bool exists(std::string_view relPath) const override { return files.contains(relPath); }
 
+    // fileSize answers `size` for relPath whatever the file holds: nullopt for a file that exists, or a size it
+    // outgrew before it is read.
+    void claimSize(std::string relPath, std::optional<std::uint64_t> size) { claimedSizes[std::move(relPath)] = size; }
+
+    // readFile refuses relPath although it exists; the refused read is still counted.
+    void refuseRead(std::string relPath) { refusedReads.insert(std::move(relPath)); }
+
     [[nodiscard]] std::optional<std::uint64_t> fileSize(std::string_view relPath) const override {
+        if (const auto claimed = claimedSizes.find(relPath); claimed != claimedSizes.end()) {
+            return claimed->second;
+        }
         const auto found = files.find(relPath);
         if (found == files.end()) {
             return std::nullopt;
@@ -499,7 +510,7 @@ public:
     [[nodiscard]] std::optional<engine::ByteBuffer> readFile(std::string_view relPath) const override {
         ++readCounts[std::string{relPath}];
         const auto found = files.find(relPath);
-        if (found == files.end()) {
+        if (found == files.end() || refusedReads.contains(relPath)) {
             return std::nullopt;
         }
         engine::ByteBuffer bytes;
@@ -517,6 +528,8 @@ public:
 
 private:
     std::map<std::string, std::string, std::less<>> files;
+    std::map<std::string, std::optional<std::uint64_t>, std::less<>> claimedSizes;
+    std::set<std::string, std::less<>> refusedReads;
     mutable std::map<std::string, std::size_t, std::less<>> readCounts;
 };
 
@@ -906,6 +919,152 @@ TEST_CASE("script: a cooked script read under a name a failed JavaScript read fi
     CHECK(theOneError(log) == std::string{C01_UNMAPPED_HEAD} + std::string{C01_UNMAPPED_STACK});
     CHECK(rig.files->reads(C01_MAP_FILE) == 1U);  // the cooked read reads no map
     expectCleanShutdown(rig.vm);
+}
+
+TEST_CASE("script: a JavaScript read after a failed compile under the same name clears the map it left (SR19)") {
+    // The broken bundle names an existing map and fails to compile: it is never created, so its key's generation does
+    // not move, and the next read compiles under the same name, over the slot the failed read filled.
+    const std::string broken = replaced(std::string{C01_JS}, "  hp = 3;", "  hp = = 3;");
+    const std::string full{C01_JS};
+    SUBCASE("the next text has no URL line") {
+        LogCapture log;
+        VmRig rig;
+        rig.files->set("Library/Scripts/c01.js", broken);
+        rig.files->set(std::string{C01_MAP_FILE}, std::string{C01_MAP});
+        REQUIRE(statusOf(rig.vm.loadScript(C01_PATH)) == "CompileError");
+        REQUIRE(rig.files->reads(C01_MAP_FILE) == 1U);
+        log.clear();
+
+        rig.files->set("Library/Scripts/c01.js", full.substr(0, full.find("//# sourceMappingURL")));
+        REQUIRE(statusOf(rig.vm.loadScript(C01_PATH)) == "Ok");
+        const ScriptInstanceResult made = rig.vm.createInstance(C01_PATH);
+        CHECK(statusOf(made) == "Exception");
+        CHECK(made.error.stack == C01_UNMAPPED_STACK);
+        CHECK(theOneError(log) == std::string{C01_UNMAPPED_HEAD} + std::string{C01_UNMAPPED_STACK});
+        CHECK(rig.files->reads(C01_MAP_FILE) == 1U);
+        expectCleanShutdown(rig.vm);
+    }
+    SUBCASE("the next text names a map that no longer exists") {
+        LogCapture log;
+        VmRig rig;
+        rig.files->set("Library/Scripts/c01.js", broken);
+        rig.files->set(std::string{C01_MAP_FILE}, std::string{C01_MAP});
+        REQUIRE(statusOf(rig.vm.loadScript(C01_PATH)) == "CompileError");
+        REQUIRE(rig.files->reads(C01_MAP_FILE) == 1U);
+        log.clear();
+
+        rig.files->remove(C01_MAP_FILE);
+        rig.files->set("Library/Scripts/c01.js", full);
+        REQUIRE(statusOf(rig.vm.loadScript(C01_PATH)) == "Ok");
+        const ScriptInstanceResult made = rig.vm.createInstance(C01_PATH);
+        CHECK(statusOf(made) == "Exception");
+        CHECK(made.error.stack == C01_UNMAPPED_STACK);
+        CHECK(theOneError(log) == std::string{C01_UNMAPPED_HEAD} + std::string{C01_UNMAPPED_STACK});
+        CHECK(rig.files->reads(C01_MAP_FILE) == 1U);
+        expectCleanShutdown(rig.vm);
+    }
+}
+
+TEST_CASE("script: a statically imported and an import()ed module each read their own map (SR20)") {
+    // Only the imported module names a map; the entry has none, so every mapped frame is the import's.
+    constexpr std::string_view LIB =
+        "// lib\nexport function boom() {\n  throw new Error(\"from lib\");\n}\n//# sourceMappingURL=lib.js.map\n";
+    SUBCASE("a static import") {
+        const LogCapture log;
+        VmRig rig;
+        rig.files->set("s/main.js", "import { boom } from \"./lib.js\";\nboom();\n");
+        rig.files->set("s/lib.js", std::string{LIB});
+        rig.files->set("s/lib.js.map", lineMap(5, 100, "lib.ts"));
+        const EvalResult result = rig.vm.evaluateModule("res://s/main.js");
+        CHECK(statusOf(result) == "Exception");
+        const std::string stack = "    at boom (res://s/lib.ts:103:1)\n    at <anonymous> (res://s/main.js:2:1)";
+        CHECK(result.error.stack == stack);
+        CHECK(theOneError(log) == "script: res://s/lib.ts:103:1: uncaught Error: from lib\n" + stack);
+        CHECK(rig.files->reads("s/lib.js.map") == 1U);
+        expectCleanShutdown(rig.vm);
+    }
+    SUBCASE("an import()") {
+        const LogCapture log;
+        VmRig rig;
+        rig.files->set("s/main.js", "import(\"./lib.js\").then((lib) => {\n  lib.boom();\n});\n");
+        rig.files->set("s/lib.js", std::string{LIB});
+        rig.files->set("s/lib.js.map", lineMap(5, 100, "lib.ts"));
+        const EvalResult result = rig.vm.evaluateModule("res://s/main.js");
+        CHECK(statusOf(result) == "Ok");
+        CHECK(theOneError(log) ==
+              "script: res://s/lib.ts:103:1: unhandled promise rejection: Error: from lib\n"
+              "    at boom (res://s/lib.ts:103:1)\n    at <anonymous> (res://s/main.js:2:7)");
+        CHECK(rig.files->reads("s/lib.js.map") == 1U);
+        expectCleanShutdown(rig.vm);
+    }
+}
+
+TEST_CASE("script: a map the VFS sizes or reads and then refuses is one WARN naming the refusal (SR21)") {
+    const std::string unreadable =
+        "script: res://Library/Scripts/c01.js.map: source map not used: it could not be read "
+        "through the VFS; stack frames name the JavaScript";
+    SUBCASE("its size is refused while it exists") {
+        const LogCapture log;
+        VmRig rig;
+        rig.files->set("Library/Scripts/c01.js", std::string{C01_JS});
+        rig.files->set(std::string{C01_MAP_FILE}, std::string{C01_MAP});
+        rig.files->claimSize(std::string{C01_MAP_FILE}, std::nullopt);
+        REQUIRE(statusOf(rig.vm.loadScript(C01_PATH)) == "Ok");
+        CHECK(log.countAtLeast(LogLevel::Warn) == 0U);
+        const ScriptInstanceResult made = rig.vm.createInstance(C01_PATH);
+        CHECK(statusOf(made) == "Exception");
+        CHECK(made.error.stack == C01_UNMAPPED_STACK);
+        const std::vector<script_test::CapturedRecord> loud = log.atLeast(LogLevel::Warn);
+        REQUIRE(loud.size() == 2U);
+        CHECK(loud[0].level == LogLevel::Warn);
+        CHECK(loud[0].message == unreadable);
+        CHECK(loud[1].level == LogLevel::Error);
+        CHECK(loud[1].message == std::string{C01_UNMAPPED_HEAD} + std::string{C01_UNMAPPED_STACK});
+        CHECK(rig.files->reads(C01_MAP_FILE) == 0U);  // refused on its size, never read
+        expectCleanShutdown(rig.vm);
+    }
+    SUBCASE("its read is refused") {
+        const LogCapture log;
+        VmRig rig;
+        rig.files->set("Library/Scripts/c01.js", std::string{C01_JS});
+        rig.files->set(std::string{C01_MAP_FILE}, std::string{C01_MAP});
+        rig.files->refuseRead(std::string{C01_MAP_FILE});
+        REQUIRE(statusOf(rig.vm.loadScript(C01_PATH)) == "Ok");
+        CHECK(log.countAtLeast(LogLevel::Warn) == 0U);
+        const ScriptInstanceResult made = rig.vm.createInstance(C01_PATH);
+        CHECK(statusOf(made) == "Exception");
+        CHECK(made.error.stack == C01_UNMAPPED_STACK);
+        const std::vector<script_test::CapturedRecord> loud = log.atLeast(LogLevel::Warn);
+        REQUIRE(loud.size() == 2U);
+        CHECK(loud[0].level == LogLevel::Warn);
+        CHECK(loud[0].message == unreadable);
+        CHECK(loud[1].level == LogLevel::Error);
+        CHECK(loud[1].message == std::string{C01_UNMAPPED_HEAD} + std::string{C01_UNMAPPED_STACK});
+        CHECK(rig.files->reads(C01_MAP_FILE) == 1U);  // sized, then its one read refused
+        expectCleanShutdown(rig.vm);
+    }
+    SUBCASE("it grew past the limit after its size was read") {
+        const LogCapture log;
+        VmRig rig{script_test::patient(VmConfig{.heapLimitBytes = engine::script::MIN_HEAP_LIMIT_BYTES})};
+        std::string padded{C01_MAP};  // still a valid map: only the size refuses it
+        padded.resize(1048577U, ' ');
+        rig.files->set("Library/Scripts/c01.js", std::string{C01_JS});
+        rig.files->set(std::string{C01_MAP_FILE}, padded);
+        rig.files->claimSize(std::string{C01_MAP_FILE}, static_cast<std::uint64_t>(C01_MAP.size()));
+        REQUIRE(statusOf(rig.vm.loadScript(C01_PATH)) == "Ok");
+        const ScriptInstanceResult made = rig.vm.createInstance(C01_PATH);
+        CHECK(statusOf(made) == "Exception");
+        CHECK(made.error.stack == C01_UNMAPPED_STACK);
+        const std::vector<script_test::CapturedRecord> loud = log.atLeast(LogLevel::Warn);
+        REQUIRE(loud.size() == 2U);
+        CHECK(loud[0].level == LogLevel::Warn);
+        CHECK(loud[0].message ==
+              "script: res://Library/Scripts/c01.js.map: source map not used: its 1048577 bytes are over the "
+              "1048576-byte limit (the VM's heap limit); stack frames name the JavaScript");
+        CHECK(loud[1].message == std::string{C01_UNMAPPED_HEAD} + std::string{C01_UNMAPPED_STACK});
+        CHECK(rig.files->reads(C01_MAP_FILE) == 1U);  // read whole, then refused on the bytes it held
+        expectCleanShutdown(rig.vm);
+    }
 }
 
 TEST_CASE("script: the map read sits at the read's tail, in a frame of its own (SR17)") {
