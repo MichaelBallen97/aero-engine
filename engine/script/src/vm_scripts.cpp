@@ -432,6 +432,11 @@ HeldValue Vm::Impl::constructInstance(JSValueConst scriptClass, EvalResult& eval
         adopt(evaluation, trap(Phase::Run));
         return HeldValue{ctx, JS_UNDEFINED};
     }
+    // A call its budget ended is Interrupted, and the interrupt's record is its one record: a value the constructor
+    // finished building before the budget ended is not judged, so no engine refusal joins the interrupt.
+    if (interruptFired || interruptRecorded) {
+        return HeldValue{ctx, JS_UNDEFINED};
+    }
     // A Proxy would run script code at every later key read, so no live instance is one.
     if (JS_IsProxy(made.get())) {
         refusal = ScriptRefusal{ScriptStatus::NotAClass, "not a script: its constructor returned a Proxy"};

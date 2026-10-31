@@ -1491,6 +1491,57 @@ TEST_CASE("script: a load or a construction its time budget ended is Interrupted
     CHECK(scriptStatusLabel(fx.vm.createInstance(KEY).status) == "Ok");
     CHECK(log.countAtLeast(LogLevel::Warn) == 0U);
     script_test::expectCleanShutdown(fx.vm);
+
+    // A constructor that builds its Proxy before the slow executor and returns it after: the executor's interrupt is
+    // a rejection and nothing after it polls, so the Proxy is a finished value of a call whose budget ended.
+    const std::string preBuilt = classSource(
+        "  tag = \"x\";\n  constructor() {\n    if (globalThis.slow) {\n      const p = new Proxy({}, {});\n"
+        "      new Promise(() => { for (;;) {} });\n      return p;\n    }\n  }\n  hello() {\n    return \"v2\";\n  }");
+    {
+        script_test::LogCapture preLog;
+        Fixture px{VmConfig{.callTimeBudget = std::chrono::milliseconds{100}}};
+        px.files->set("s/p.js", preBuilt);
+        REQUIRE(scriptStatusLabel(px.vm.loadScript(KEY).status) == "Ok");
+        static_cast<void>(script_test::completion(px.vm, "globalThis.slow = true; 0"));
+        preLog.clear();
+        const ScriptInstanceResult early = px.vm.createInstance(KEY);
+        CHECK(scriptStatusLabel(early.status) == "Interrupted");
+        CHECK_FALSE(early.instance.valid());
+        CHECK(firstLine(theOneError(preLog)) == interrupted);
+        static_cast<void>(script_test::completion(px.vm, "globalThis.slow = false; 0"));
+        preLog.clear();
+        CHECK(scriptStatusLabel(px.vm.createInstance(KEY).status) == "Ok");
+        CHECK(preLog.countAtLeast(LogLevel::Warn) == 0U);
+        script_test::expectCleanShutdown(px.vm);
+    }
+    {
+        script_test::LogCapture rebuildLog;
+        Fixture rx{VmConfig{.callTimeBudget = std::chrono::milliseconds{100}}};
+        rx.files->set("s/p.js", versioned("v1"));
+        REQUIRE(scriptStatusLabel(rx.vm.loadScript(KEY).status) == "Ok");
+        const ScriptInstance live = instanceOf(rx.vm, KEY);
+        static_cast<void>(script_test::completion(rx.vm, "globalThis.slow = true; 0"));
+        rebuildLog.clear();
+        rx.files->set("s/p.js", preBuilt);
+        const ScriptLoadResult reloaded = rx.vm.loadScript(KEY);
+        CHECK(scriptStatusLabel(reloaded.status) == "Interrupted");
+        CHECK(reloaded.instancesMoved == 0U);
+        CHECK(firstLine(theOneError(rebuildLog)) == interrupted);
+        static_cast<void>(script_test::completion(rx.vm, "globalThis.slow = false; 0"));
+        rebuildLog.clear();
+        expose(rx.vm, live, "a");
+        CHECK(script_test::completion(rx.vm, "a.hello() + a.tag") == "v1x");
+        rebuildLog.clear();
+        CHECK(scriptStatusLabel(rx.vm.createInstance(KEY).status) == "Ok");
+        CHECK(rebuildLog.countAtLeast(LogLevel::Warn) == 0U);
+        rx.files->set("s/p.js", versioned("v3"));
+        const ScriptLoadResult working = rx.vm.loadScript(KEY);
+        CHECK(scriptStatusLabel(working.status) == "Ok");
+        CHECK(working.instancesMoved == 2U);
+        expose(rx.vm, live, "a");
+        CHECK(script_test::completion(rx.vm, "a.hello()") == "v3");
+        script_test::expectCleanShutdown(rx.vm);
+    }
 }
 
 // ---- HR34-HR37: a script's imports, and the link, load and constructor failure arms -----------------------------
