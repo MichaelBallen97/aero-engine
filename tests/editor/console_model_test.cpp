@@ -20,6 +20,7 @@
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <ostream>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -695,4 +696,96 @@ TEST_CASE("console: an Off-level record is stored but gets no counter slot (plan
     // The mirror for the EVICTION decrement: unguarded, --counts[Off] on the evicted record underflows
     // the same neighbouring byte to 255 instead of promoting it to 1.
     CHECK(small.filter() == LogFilter{});
+}
+
+TEST_CASE("console: a record splits at its first line break into a row and a detail (task 4.3.4, CS11)") {
+    LogSink sink;
+    const LogLocation loc{"f.cpp", "fn", 7};
+    sink.push(LogLevel::Error, "script: x: uncaught Error: m\n    at f (a.ts:1:2)\n    at g (b.ts:3:4)", loc);
+    sink.push(LogLevel::Info, "one", loc);
+    sink.push(LogLevel::Info, "a\n", loc);
+    sink.push(LogLevel::Info, "a\r\nb", loc);
+    sink.push(LogLevel::Info, "\nb", loc);
+    sink.push(LogLevel::Info, std::string(5000, 'x') + "\n    at h (c.ts:5:6)", loc);
+    sink.push(LogLevel::Info, std::string("r\n    at\tq") + "\x7F" + "z", loc);
+
+    std::vector<LogEntry> out;
+    CHECK(sink.take(out) == 0);
+    REQUIRE(out.size() == 7);
+    CHECK(out[0].message == "script: x: uncaught Error: m");
+    CHECK(out[0].detail == "    at f (a.ts:1:2)\n    at g (b.ts:3:4)");
+    CHECK(out[1].message == "one");
+    CHECK(out[1].detail.empty());
+    CHECK(out[2].message == "a");
+    CHECK(out[2].detail.empty());
+    CHECK(out[3].message == "a ");
+    CHECK(out[3].detail == "b");
+    CHECK(out[4].message.empty());
+    CHECK(out[4].detail == "b");
+    CHECK(out[5].message == std::string(MAX_LOG_MESSAGE_BYTES, 'x') + std::string(TRUNCATION_MARKER));
+    CHECK(out[5].detail == "    at h (c.ts:5:6)");
+    CHECK(out[6].message == "r");
+    CHECK(out[6].detail == "    at q z");
+}
+
+TEST_CASE("console: sanitizeLogDetail keeps line breaks and caps on a UTF-8 boundary (task 4.3.4, CS12)") {
+    CHECK(sanitizeLogDetail("a\nb\tc\rd") == "a\nb c d");
+    CHECK(sanitizeLogDetail("") == "");
+    const std::string_view euro = "\xE2\x82\xAC";
+    CHECK(sanitizeLogDetail(euro) == euro);
+
+    std::string over(MAX_LOG_DETAIL_BYTES - 2U, 'x');  // bytes 0..8189
+    over += euro;                                      // bytes 8190..8192
+    over.append(9000U - over.size(), 'y');
+    REQUIRE(over.size() == 9000);
+    const std::string expectedCut = std::string(MAX_LOG_DETAIL_BYTES - 2U, 'x') + std::string(TRUNCATION_MARKER);
+    CHECK(sanitizeLogDetail(over) == expectedCut);
+
+    const std::string exact(MAX_LOG_DETAIL_BYTES, 'x');
+    CHECK(sanitizeLogDetail(exact) == exact);
+    const std::string plusOne(MAX_LOG_DETAIL_BYTES + 1U, 'x');
+    CHECK(sanitizeLogDetail(plusOne) == exact + std::string(TRUNCATION_MARKER));
+}
+
+TEST_CASE("console: the filter reads a record's detail but never its source file (task 4.3.4, CS13)") {
+    LogEntry entry = makeEntry(LogLevel::Error, "script: x: uncaught Error: m", "vm_errors.cpp", 224);
+    entry.detail = "    at f (res://assets/scripts/util.ts:3:37)";
+    CHECK(matchesFilter(entry, LogFilter{LogLevel::Trace, "UTIL.TS"}));
+    CHECK_FALSE(matchesFilter(entry, LogFilter{LogLevel::Critical, "UTIL.TS"}));
+    CHECK_FALSE(matchesFilter(entry, LogFilter{LogLevel::Trace, "vm_errors"}));
+    CHECK_FALSE(matchesFilter(entry, LogFilter{LogLevel::Trace, "224"}));
+    CHECK(matchesFilter(entry, LogFilter{LogLevel::Trace, "uncaught"}));
+    CHECK(matchesFilter(makeEntry(LogLevel::Info, "hello"), LogFilter{LogLevel::Trace, "HeLLo"}));
+    CHECK_FALSE(matchesFilter(makeEntry(LogLevel::Info, "hello"), LogFilter{LogLevel::Trace, "util"}));
+}
+
+TEST_CASE("console: Copy writes a record's detail on its own lines after the row (task 4.3.4, CS14)") {
+    LogHistory h;
+    LogEntry multi = makeEntry(LogLevel::Error, "boom", "b.cpp", 42);
+    multi.detail = "    at f (a.ts:1:2)\n    at g (b.ts:3:4)";
+    h.append(std::move(multi));
+    h.append(makeEntry(LogLevel::Info, "hello", "a.cpp", 10));
+
+    std::string expected;
+    expected += formatElapsed(h.visibleAt(0).elapsedMs) + "  ERROR     boom  (b.cpp:42)\n";
+    expected += "    at f (a.ts:1:2)\n    at g (b.ts:3:4)\n";
+    expected += formatElapsed(h.visibleAt(1).elapsedMs) + "  INFO      hello  (a.cpp:10)\n";
+    const std::string text = buildClipboardText(h);
+    CHECK(text == expected);
+    const auto lineBreaks = static_cast<std::size_t>(std::count(text.begin(), text.end(), '\n'));
+    CHECK(lineBreaks == h.visibleCount() + 2U);
+}
+
+TEST_CASE("console: the tooltip lists the detail above the C++ location (task 4.3.4, CS15)") {
+    LogEntry entry = makeEntry(LogLevel::Error, "m", "vm_errors.cpp", 224);
+    entry.detail = "    at f (a.ts:1:2)\n    at g (b.ts:3:4)";
+    CHECK(buildLogTooltip(entry) == "    at f (a.ts:1:2)\n    at g (b.ts:3:4)\nvm_errors.cpp:224");
+
+    CHECK(buildLogTooltip(makeEntry(LogLevel::Info, "m", "t.cpp", 7)) == "t.cpp:7");
+
+    LogEntry noFile = makeEntry(LogLevel::Info, "m", "", 0);
+    noFile.detail = "    at f (a.ts:1:2)";
+    CHECK(buildLogTooltip(noFile) == "    at f (a.ts:1:2)");
+
+    CHECK(buildLogTooltip(makeEntry(LogLevel::Info, "m", "", 0)).empty());
 }

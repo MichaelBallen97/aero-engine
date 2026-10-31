@@ -42,6 +42,10 @@ inline constexpr std::size_t DEFAULT_LOG_STAGING_CAPACITY = 4096;
 // marked with TRUNCATION_MARKER, which is appended AFTER the cap (the cap bounds the payload).
 inline constexpr std::size_t MAX_LOG_MESSAGE_BYTES = 4096;
 inline constexpr std::string_view TRUNCATION_MARKER = " ...[truncated]";
+// The lines of a record after its first (a script's stack frames, task 4.3.4) are stored together in
+// LogEntry::detail, capped in total here, cut on a UTF-8 boundary and marked like a message. The
+// backend's 64-frame ceiling at up to 120 bytes a frame fits.
+inline constexpr std::size_t MAX_LOG_DETAIL_BYTES = 8192;
 
 // One captured record. OWNS its strings: LogRecord::message dies with the callback (log.hpp:43-46),
 // and LogLocation::file's static-storage guarantee is the MACROS' contract, not logWrite's -- which
@@ -50,15 +54,18 @@ inline constexpr std::string_view TRUNCATION_MARKER = " ...[truncated]";
 struct LogEntry {
     std::uint64_t sequence = 0;   // assigned by LogHistory::append; unique and strictly increasing
     std::uint64_t elapsedMs = 0;  // since the owning LogSink was constructed (steady_clock, D7)
-    std::string message;          // sanitised to ONE line and length-capped at capture time (D8)
+    std::string message;          // the record's FIRST line, sanitised and length-capped at capture time (D8)
     std::string sourceFile;       // BASENAME only ("editor_app.cpp"); empty when unknown
     std::uint32_t line = 0;       // 0 when unknown
     LogLevel level = LogLevel::Info;
+    // The record's lines after its first, each sanitised, joined by '\n' and capped at MAX_LOG_DETAIL_BYTES;
+    // empty for a one-line record. Shown in the row's tooltip, searched by the filter, written by Copy.
+    std::string detail;
 };
 
 struct LogFilter {
     LogLevel minLevel = LogLevel::Trace;  // >= this passes (D10); LogLevel is ordered, log.hpp:25-33
-    std::string text;                     // ASCII-case-insensitive substring of MESSAGE only; "" passes all
+    std::string text;                     // ASCII-case-insensitive substring of message or detail; "" passes all
 };
 [[nodiscard]] bool operator==(const LogFilter& a, const LogFilter& b) noexcept;
 
@@ -85,6 +92,11 @@ inline constexpr std::size_t LOG_LEVEL_RECORD_COUNT = 6;
 // bytes; malformed input cuts at the raw cap) + TRUNCATION_MARKER.
 [[nodiscard]] std::string sanitizeLogMessage(std::string_view message);
 
+// The lines after a record's first: every byte < 0x20 or == 0x7F other than '\n' becomes ' ', '\n' stays (the
+// tooltip lists one frame a line), bytes >= 0x80 pass. Longer than MAX_LOG_DETAIL_BYTES -> cut at a UTF-8 boundary by
+// sanitizeLogMessage's rule + TRUNCATION_MARKER.
+[[nodiscard]] std::string sanitizeLogDetail(std::string_view rest);
+
 // The text after the last '/' or '\\'. Handles BOTH separators because __FILE__ is backslashed on
 // MSVC. nullptr / "" / a trailing separator all yield "". POINTS INTO `file` -- copy before it dies.
 [[nodiscard]] std::string_view logSourceBasename(const char* file) noexcept;
@@ -94,13 +106,18 @@ inline constexpr std::size_t LOG_LEVEL_RECORD_COUNT = 6;
 // bugprone-signed-char-misuse (F34). Bytes >= 0x80 compare raw, so non-ASCII matches byte-exactly.
 [[nodiscard]] bool containsAsciiCaseInsensitive(std::string_view haystack, std::string_view needle) noexcept;
 
-// entry.level >= filter.minLevel AND (filter.text empty OR it occurs in entry.message). The source
-// file and the level label are deliberately NOT searched (D12).
+// entry.level >= filter.minLevel AND (filter.text empty OR it occurs in entry.message or entry.detail).
+// The source file and the level label are deliberately NOT searched (D12).
 [[nodiscard]] bool matchesFilter(const LogEntry& entry, const LogFilter& filter) noexcept;
+
+// The row's tooltip: the detail, then '\n', then "<sourceFile>:<line>". The detail alone when sourceFile is
+// empty; the location alone when the detail is empty; "" when both are. No trailing '\n'.
+[[nodiscard]] std::string buildLogTooltip(const LogEntry& entry);
 
 class LogHistory;
 // "<elapsed>  <LEVEL   >  <message>  (<file>:<line>)\n" per VISIBLE row, in order; the source suffix
-// is omitted when sourceFile is empty. Empty view -> "". Bounded by the history's capacity (D20).
+// is omitted when sourceFile is empty; a row with a detail is followed by the detail and one more '\n'.
+// Empty view -> "". Bounded by the history's capacity (D20).
 [[nodiscard]] std::string buildClipboardText(const LogHistory& history);
 
 // ---- the thread-safe staging sink ----

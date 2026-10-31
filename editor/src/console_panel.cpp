@@ -235,8 +235,10 @@ void ConsolePanel::drawLogChild(float footerReserve) {
             if (rowTinted) {  // the box ItemAdd recorded for it (imgui.cpp:11979), clipped or not
                 drawRecordValue.lastTintedRowItemMaxX = ImGui::GetItemRectMax().x;
             }
-            if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal) && !entry.sourceFile.empty()) {
-                ImGui::SetTooltip("%s:%u", entry.sourceFile.c_str(), static_cast<unsigned>(entry.line));
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal) &&
+                (!entry.sourceFile.empty() || !entry.detail.empty())) {
+                const std::string tooltip = buildLogTooltip(entry);
+                ImGui::SetTooltip("%s", tooltip.c_str());
             }
             const float smallY = rowTop + layout.smallTextOffsetY;
             formatConsoleStamp(entry.elapsedMs, stampScratch);
