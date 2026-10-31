@@ -375,6 +375,13 @@ HeldValue Vm::Impl::takeScriptClass(std::string_view key, EvalResult& evaluation
     if (evaluation.status != EvalStatus::Ok) {
         return HeldValue{ctx, JS_UNDEFINED};
     }
+    // A call its budget ended is Interrupted, and the interrupt's record is its one record: an engine refusal of what
+    // the budget left unfinished would be a second one, and would win the status. The budget ended when the interrupt
+    // handler fired (a promise executor's or a thenable's `then` turns it into a rejection nobody recorded) or when
+    // the drain recorded it; endScriptCall's tail then makes the call Interrupted.
+    if (interruptFired || interruptRecorded) {
+        return HeldValue{ctx, JS_UNDEFINED};
+    }
     // EvalStatus::Ok also covers a pending top-level await, and a pending module may already expose a constructible
     // class, so the state is checked before the namespace is read.
     if (moduleTable.state(key) != ModuleState::Evaluated) {

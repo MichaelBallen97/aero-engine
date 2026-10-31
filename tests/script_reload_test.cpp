@@ -1397,3 +1397,74 @@ TEST_CASE("script: a reload of 10000 instances pairs each with its own running o
     CHECK(log.countAtLeast(LogLevel::Warn) == 0U);
     script_test::expectCleanShutdown(fx.vm);
 }
+
+TEST_CASE("script: a load or a construction its time budget ended is Interrupted with one record (HR33)") {
+    const std::string_view bodies[] = {
+        "var K = class {};\nawait new Promise(() => { for (;;) {} });\nexport { K as default };\n",
+        "var K = class {};\nPromise.resolve({ then() { for (;;) {} } }); await new Promise(() => {});\n"
+        "export { K as default };\n"};
+    const std::string interrupted = "script: res://s/p.js: interrupted after exceeding the 100 ms time budget";
+    for (const std::string_view body : bodies) {
+        INFO(body);
+        script_test::LogCapture log;
+        Fixture fx{VmConfig{.callTimeBudget = std::chrono::milliseconds{100}}};
+        constexpr std::string_view KEY = "res://s/p.js";
+        // A first load: Interrupted, one record, no class.
+        fx.files->set("s/p.js", std::string{body});
+        const ScriptLoadResult first = fx.vm.loadScript(KEY);
+        CHECK(scriptStatusLabel(first.status) == "Interrupted");
+        CHECK(firstLine(theOneError(log)) == interrupted);
+        log.clear();
+        CHECK(scriptStatusLabel(fx.vm.createInstance(KEY).status) == "NotLoaded");
+
+        // A reload of a loaded script with a live instance: nothing moves, the last good class stays.
+        script_test::LogCapture reloadLog;
+        Fixture rx{VmConfig{.callTimeBudget = std::chrono::milliseconds{100}}};
+        rx.files->set("s/p.js", versioned("v1"));
+        REQUIRE(scriptStatusLabel(rx.vm.loadScript(KEY).status) == "Ok");
+        const ScriptInstance live = instanceOf(rx.vm, KEY);
+        reloadLog.clear();
+        rx.files->set("s/p.js", std::string{body});
+        const ScriptLoadResult reloaded = rx.vm.loadScript(KEY);
+        CHECK(scriptStatusLabel(reloaded.status) == "Interrupted");
+        CHECK(firstLine(theOneError(reloadLog)) == interrupted);
+        // What the interrupted await left queued runs in the next call and reports there; one throwaway call takes it.
+        static_cast<void>(rx.vm.evaluateScript("0", "drain.js"));
+        reloadLog.clear();
+        expose(rx.vm, live, "a");
+        CHECK(script_test::completion(rx.vm, "a.hello() + a.tag") == "v1x");
+        reloadLog.clear();
+        const ScriptInstanceResult again = rx.vm.createInstance(KEY);
+        CHECK(scriptStatusLabel(again.status) == "Ok");
+        CHECK(reloadLog.countAtLeast(LogLevel::Warn) == 0U);
+        rx.files->set("s/p.js", versioned("v2"));
+        const ScriptLoadResult working = rx.vm.loadScript(KEY);
+        CHECK(scriptStatusLabel(working.status) == "Ok");
+        CHECK(working.instancesMoved == 2U);
+        expose(rx.vm, live, "a");
+        CHECK(script_test::completion(rx.vm, "a.hello()") == "v2");
+        script_test::expectCleanShutdown(rx.vm);
+        script_test::expectCleanShutdown(fx.vm);
+    }
+
+    // createInstance: a constructor whose promise executor runs past the budget and which then returns a Proxy.
+    script_test::LogCapture log;
+    Fixture fx{VmConfig{.callTimeBudget = std::chrono::milliseconds{100}}};
+    constexpr std::string_view KEY = "res://s/p.js";
+    fx.files->set(
+        "s/p.js",
+        classSource("  constructor() {\n    if (globalThis.slow) {\n"
+                    "      new Promise(() => { for (;;) {} });\n      return new Proxy({}, {});\n    }\n  }"));
+    REQUIRE(scriptStatusLabel(fx.vm.loadScript(KEY).status) == "Ok");
+    static_cast<void>(script_test::completion(fx.vm, "globalThis.slow = true; 0"));
+    log.clear();
+    const ScriptInstanceResult slow = fx.vm.createInstance(KEY);
+    CHECK(scriptStatusLabel(slow.status) == "Interrupted");
+    CHECK_FALSE(slow.instance.valid());
+    CHECK(firstLine(theOneError(log)) == interrupted);
+    static_cast<void>(script_test::completion(fx.vm, "globalThis.slow = false; 0"));
+    log.clear();
+    CHECK(scriptStatusLabel(fx.vm.createInstance(KEY).status) == "Ok");
+    CHECK(log.countAtLeast(LogLevel::Warn) == 0U);
+    script_test::expectCleanShutdown(fx.vm);
+}
