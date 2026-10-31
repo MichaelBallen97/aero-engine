@@ -408,10 +408,11 @@ public:
     // Success logs nothing, and neither do Unchanged and AlreadyRefused. Every other outcome logs exactly one ERROR,
     // plus whatever unrelated records the call's tail logs. The loader's and the trap's records are evaluateModule's
     // (a LoadError, a CompileError, an Exception, an Interrupted), source-mapped frames and site included. A load the
-    // heap refused (OutOfMemory) is the engine's own, and never carries the backend's error text: "script: <path>: out
+    // heap refused (OutOfMemory) is the engine's own, and never carries the backend's error text: "script: <site>: out
     // of memory (heap limit <L> bytes, <U> bytes in use): the script and its instances are unchanged, and only a new VM
-    // resets the heap". Every instance keeps its code and values, and only a new VM frees an old generation. The
-    // engine's other records, each after "script: <path>: ":
+    // resets the heap", <site> following the same rule as the loader's and the trap's records (the mapped first
+    // positioned frame in place of <path> when it maps). Every instance keeps its code and values, and only a new VM
+    // frees an old generation. The engine's other records, each after "script: <path>: ":
     //   StillEvaluating  "not a script: its top-level await had not settled when the load ended"
     //   NotAClass        "not a script: its default export is <what>, not a class"
     //                    "not a script: its constructor returned a Proxy"

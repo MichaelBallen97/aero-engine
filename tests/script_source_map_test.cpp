@@ -1,5 +1,5 @@
 // Aero Engine -- source maps (task 4.3.4): the pure core and the VM's mapped errors. SR1-SR9 test the backend-free
-// half (internal/source_map.hpp) through aero::script_internal, with no VM; SR10-SR17 drive the public API over a
+// half (internal/source_map.hpp) through aero::script_internal, with no VM; SR10-SR18 drive the public API over a
 // VirtualFileSystem. No timing is asserted anywhere: SR9 prints its two
 // durations for the manual validation row that reads them.
 
@@ -429,7 +429,7 @@ TEST_CASE("source map: a big map decodes once and a lookup does not walk it (SR9
             << std::chrono::duration_cast<std::chrono::microseconds>(t2 - t1).count() << " us");
 }
 
-// ---- SR10-SR17: the VM maps every stack it describes ------------------------------------------------------------
+// ---- SR10-SR18: the VM maps every stack it describes ------------------------------------------------------------
 
 namespace {
 
@@ -887,6 +887,27 @@ TEST_CASE("script: a cooked script reads no map and its frames name the bundle's
     expectCleanShutdown(rig.vm);
 }
 
+TEST_CASE("script: a cooked script read under a name a failed JavaScript read filled uses no map (SR18)") {
+    LogCapture log;
+    VmRig rig;
+    // The JavaScript names a map and fails to compile: it is never created, so its key's generation does not move and
+    // the cooked container read next compiles under the same name.
+    rig.files->set("Library/Scripts/c01.js", replaced(std::string{C01_JS}, "  hp = 3;", "  hp = = 3;"));
+    rig.files->set(std::string{C01_MAP_FILE}, std::string{C01_MAP});
+    CHECK(statusOf(rig.vm.loadScript(C01_PATH)) == "CompileError");
+    CHECK(rig.files->reads(C01_MAP_FILE) == 1U);
+    log.clear();
+
+    rig.files->set("Library/Scripts/c01.js", cookedContainerOf(C01_JS));
+    REQUIRE(statusOf(rig.vm.loadScript(C01_PATH)) == "Ok");
+    const ScriptInstanceResult made = rig.vm.createInstance(C01_PATH);
+    CHECK(statusOf(made) == "Exception");
+    CHECK(made.error.stack == C01_UNMAPPED_STACK);
+    CHECK(theOneError(log) == std::string{C01_UNMAPPED_HEAD} + std::string{C01_UNMAPPED_STACK});
+    CHECK(rig.files->reads(C01_MAP_FILE) == 1U);  // the cooked read reads no map
+    expectCleanShutdown(rig.vm);
+}
+
 TEST_CASE("script: the map read sits at the read's tail, in a frame of its own (SR17)") {
     namespace fs = std::filesystem;
     const auto strippedSource = [](const fs::path& path) {
@@ -929,25 +950,34 @@ TEST_CASE("script: the map read sits at the read's tail, in a frame of its own (
         REQUIRE(begin < end);
         return std::string_view{modules}.substr(begin, end - begin);
     };
-    // The read sits at readModuleSource's tail: after its last check, for a text that is not a cooked script, and
-    // before the text is returned.
+    // The read sits at readModuleSource's tail: after its last check and before the text is returned, for every text.
+    // The cooked judgement is keepSourceMap's, so a cooked read clears its name's slot and the reader holds none.
     const std::string_view reader = bodyBetween("std::optional<std::string> Vm::Impl::readModuleSource(",
                                                 "std::optional<std::string> Vm::Impl::peekModuleSource(");
     const std::size_t keep = reader.find("keepSourceMap(");
     const std::size_t lastCap = reader.rfind("sourceWithinCap(");
-    const std::size_t cooked = reader.find("isCookedScriptText(");
     const std::size_t returned = reader.rfind("return text;");
     REQUIRE(keep != std::string_view::npos);
     REQUIRE(lastCap != std::string_view::npos);
-    REQUIRE(cooked != std::string_view::npos);
     REQUIRE(returned != std::string_view::npos);
     CHECK(lastCap < keep);
-    CHECK(cooked < keep);
     CHECK(keep < returned);
+    CHECK(reader.find("isCookedScriptText(") == std::string_view::npos);
     // The call is a bare statement.
     const std::string call = lineAt(reader, keep);
     CHECK(call.find('=') == std::string::npos);
     CHECK(call.find("keepSourceMap(key, *text);") != std::string::npos);
+
+    // keepSourceMap judges a cooked text first: before any URL scan or VFS call.
+    const std::string_view keeper =
+        bodyBetween("void Vm::Impl::keepSourceMap(", "JSModuleDef* Vm::Impl::compileModule(");
+    const std::size_t judged = keeper.find("isCookedScriptText(");
+    REQUIRE(judged != std::string_view::npos);
+    for (const std::string_view later : {"sourceMappingUrl(", "fileSize(", "readText("}) {
+        const std::size_t at = keeper.find(later);
+        REQUIRE(at != std::string_view::npos);
+        CHECK(judged < at);
+    }
 
     // compileModule's frame is live across the nested compile at every import level (R33): it gains no call, and the
     // read happens before its deadline check.

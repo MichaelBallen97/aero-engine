@@ -228,12 +228,11 @@ std::optional<std::string> Vm::Impl::readModuleSource(std::string_view key, std:
     if (attempt->entryText != nullptr && attempt->depth == 0) {
         *attempt->entryText = *text;  // the entry's bytes as compiled; nested modules are read at depth >= 1
     }
-    // The map of a JavaScript module is read here, after the last check and before compileModule's deadline check, so
-    // the read is inside the budget that check enforces. Here and not in compileModule: a call there measured +32 B per
-    // import level in Debug (R33).
-    if (!isCookedScriptText(*text)) {
-        keepSourceMap(key, *text);
-    }
+    // Every read of a name sets that name's slot: a JavaScript text reads its map, a cooked read clears the slot and
+    // reads none. Here, after the last check and before compileModule's deadline check, so the read is inside the
+    // budget that check enforces. Here and not in compileModule: a call there measured +32 B per import level in Debug
+    // (R33).
+    keepSourceMap(key, *text);
     return text;
 }
 
@@ -260,6 +259,10 @@ bool Vm::Impl::isCookedScriptText(const std::string& text) noexcept {
 void Vm::Impl::keepSourceMap(std::string_view key, const std::string& text) {
     assert(modules != nullptr);  // readModuleSource refused a VM with no module source
     std::string name = internal::encodeModuleName(key, moduleTable.generation(key));  // == compileModule's `name`
+    if (isCookedScriptText(text)) {  // a cooked module has no map: forget what an earlier read of this name left
+        sourceMaps.forget(name);
+        return;
+    }
     const std::optional<std::string_view> url = internal::sourceMappingUrl(text);
     const std::optional<std::string> mapPath =
         url.has_value() ? internal::resolveSourceMapPath(key, *url) : std::optional<std::string>{};

@@ -285,10 +285,10 @@ struct Vm::Impl {
     [[nodiscard]] AERO_SCRIPT_NOINLINE std::optional<std::string> readModuleSource(std::string_view key,
                                                                                    std::string_view importer);
     // The map the module's last line names, read now or never (task 4.3.4): through the same VFS, kept under the name
-    // this generation is compiled under. A map that is missing changes nothing; one that exists and cannot be read is
-    // kept as unusable and warned about at the first error that needs it. Never a load failure. Its one caller is
-    // readModuleSource's tail, for a text that is not a cooked script: compileModule's frame, live across the nested
-    // compile at every import level, gains nothing (R33).
+    // this generation is compiled under. A cooked read clears the name's slot and reads no map. A map that is missing
+    // changes nothing; one that exists and cannot be read is kept as unusable and warned about at the first error that
+    // needs it. Never a load failure. Its one caller is readModuleSource's tail, for every text: compileModule's
+    // frame, live across the nested compile at every import level, gains nothing (R33).
     AERO_SCRIPT_NOINLINE void keepSourceMap(std::string_view key, const std::string& text);
     // Whether a module file is a cooked script: its first bytes are the container's magic, at any path.
     [[nodiscard]] AERO_SCRIPT_NOINLINE static bool isCookedScriptText(const std::string& text) noexcept;
