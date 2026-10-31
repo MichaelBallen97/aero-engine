@@ -136,6 +136,12 @@ struct VmAccess {
     // exercises every FieldKind without reflect-gen). BORROWED: `components` outlives the Vm.
     [[nodiscard]] static VmCreateResult create(const VmConfig& config, const ComponentBindingTable& components);
     static VmCreateResult create(const VmConfig& config, const ComponentBindingTable&& components) = delete;
+
+    // Defines globalThis[name] as the object `instance` holds NOW: a define (writable, enumerable, configurable), so no
+    // script setter runs. A reload replaces the held object, so a case defines the name again after one. False, nothing
+    // logged: the Vm is invalid, called from another thread, the handle names no live instance, or the define failed.
+    // Runs no script code and adds nothing to a fresh VM: the way a case observes an instance (task 4.3.3).
+    [[nodiscard]] static bool defineInstanceGlobal(Vm& vm, ScriptInstance instance, std::string_view name);
 };
 
 }  // namespace engine::script::internal

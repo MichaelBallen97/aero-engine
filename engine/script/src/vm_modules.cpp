@@ -67,8 +67,9 @@ EvalResult Vm::Impl::evaluateModuleCall(std::string_view virtualPath) {
     return result;
 }
 
-void Vm::Impl::evaluateEntry(std::string_view key, EvalResult& result) {
+void Vm::Impl::evaluateEntry(std::string_view key, EvalResult& result, std::optional<std::string>* entryText) {
     LoadAttempt entryAttempt{/*decides=*/true};
+    entryAttempt.entryText = entryText;
     std::uint64_t watch = 0;
     const HeldValue promise = startModule(entryAttempt, key, ImportPath::Static, watch);
     if (promise.isException()) {
@@ -93,7 +94,7 @@ void Vm::Impl::evaluateEntry(std::string_view key, EvalResult& result) {
         if (const std::optional<EvalResult> failure = settle()) {
             adopt(result, *failure);
         } else if (const bool budgetEnded = interruptFired || interruptRecorded;
-                   JS_PromiseState(ctx, promise.get()) == JS_PROMISE_PENDING && !budgetEnded) {
+                   JS_PromiseState(ctx, promise.get()) == JS_PROMISE_PENDING && !budgetEnded && !loadingScript) {
             // A call its budget ended is Interrupted, and its record says so: what it left pending is the budget's.
             // Both ways count: the interrupt handler (interruptFired) and the drain's own deadline check, which stops
             // between two jobs and records the interrupt without firing it (interruptRecorded).
@@ -222,6 +223,24 @@ std::optional<std::string> Vm::Impl::readModuleSource(std::string_view key, std:
     }
     if (!internal::sourceWithinCap(text->size(), config.heapLimitBytes)) {  // the file grew after its size was asked
         refuse("TypeError", internal::tooLargeMessage(key, importer, text->size(), config.heapLimitBytes));
+        return std::nullopt;
+    }
+    if (attempt->entryText != nullptr && attempt->depth == 0) {
+        *attempt->entryText = *text;  // the entry's bytes as compiled; nested modules are read at depth >= 1
+    }
+    return text;
+}
+
+std::optional<std::string> Vm::Impl::peekModuleSource(std::string_view key) const {
+    if (modules == nullptr) {
+        return std::nullopt;
+    }
+    const std::optional<std::uint64_t> size = modules->fileSize(key);
+    if (!size.has_value() || !internal::sourceWithinCap(*size, config.heapLimitBytes)) {
+        return std::nullopt;
+    }
+    std::optional<std::string> text = modules->readText(key);
+    if (!text.has_value() || !internal::sourceWithinCap(text->size(), config.heapLimitBytes)) {
         return std::nullopt;
     }
     return text;
