@@ -150,6 +150,10 @@ struct EvalResult {
 // ---- script classes and their instances (task 4.3.3) ---------------------------------------------------------
 // A script is an ES module whose default export is a class. The VM holds each loaded script's class and every instance
 // it makes; the caller holds ScriptInstance handles and never an object or a pointer.
+//
+// A ScriptInstance is only meaningful to the Vm that made it. Passing one to another Vm is a caller error. It is
+// mechanically safe -- the other Vm answers as if the handle were stale -- but semantically undefined, and a
+// same-index/same-generation coincidence would silently address that Vm's own instance. Do not do it.
 struct ScriptInstanceTag;  // incomplete: a tag only
 using ScriptInstance = Handle<ScriptInstanceTag>;
 
@@ -166,7 +170,7 @@ enum class ScriptStatus : std::uint8_t {
     StillEvaluating,  // loadScript: the module's top-level await had not settled when the call ended
     NotAClass,        // the default export is not a class, or a constructor returned a Proxy
     NotLoaded,        // createInstance: no class is loaded from that path
-    UnknownInstance,  // destroyInstance: the handle names no live instance (null, destroyed, another VM's)
+    UnknownInstance,  // destroyInstance: the handle names no live instance (null, destroyed or stale)
     AlreadyRefused,   // loadScript: the file holds the bytes of the script's last refused load since its last
                       // success; nothing ran, nothing is logged, the result's error is empty
 };
@@ -423,7 +427,7 @@ public:
     [[nodiscard]] ScriptInstanceResult createInstance(std::string_view virtualPath);
 
     // Frees an instance. UnknownInstance, with one ERROR ("script: destroyInstance refused: the handle names no live
-    // instance"), when the handle is null, already destroyed or another VM's. Runs no script code.
+    // instance"), when the handle is null, already destroyed or stale. Runs no script code.
     ScriptStatus destroyInstance(ScriptInstance instance);  // not [[nodiscard]]: the unbindWorld precedent
 
     // Frees the context and the runtime and reports what did not come back. Idempotent; leaves the Vm
