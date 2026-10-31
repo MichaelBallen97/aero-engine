@@ -194,7 +194,11 @@ void Vm::Impl::logFailure(EvalStatus status, const ScriptError& error, bool isEr
         case EvalStatus::OutOfMemory:
             text = std::format("script: {}: out of memory (heap limit {} bytes, {} bytes in use)", callFileName,
                                config.heapLimitBytes, heap.bytesInUse());
-            if (namesCause) {  // Error.prototype.toString's shape: the name alone when the message is empty
+            if (loadingScript) {
+                // A load commits nothing when the heap refuses: the engine's words, never the backend's error, which
+                // may be null or an InternalError with no message.
+                text += ": the script and its instances are unchanged, and only a new VM resets the heap";
+            } else if (namesCause) {  // Error.prototype.toString's shape: the name alone when the message is empty
                 text += error.message.empty() ? std::format(": {}", error.name)
                                               : std::format(": {}: {}", error.name, error.message);
             }

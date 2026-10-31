@@ -167,6 +167,8 @@ enum class ScriptStatus : std::uint8_t {
     NotAClass,        // the default export is not a class, or a constructor returned a Proxy
     NotLoaded,        // createInstance: no class is loaded from that path
     UnknownInstance,  // destroyInstance: the handle names no live instance (null, destroyed, another VM's)
+    AlreadyRefused,   // loadScript: the file holds the bytes of the script's last refused load since its last
+                      // success; nothing ran, nothing is logged, the result's error is empty
 };
 // Never named toString: doctest's DOCTEST_STRINGIFY finds an unqualified toString by ADL (CLAUDE.md).
 [[nodiscard]] std::string_view scriptStatusLabel(ScriptStatus status) noexcept;
@@ -378,9 +380,18 @@ public:
     // and an old object something else still holds keeps the old code and state. The comparison is of the script's own
     // file: a script is one esbuild bundle (4.3.1), so a change to anything it imports changes its bytes.
     //
-    // Success logs nothing, and so does Unchanged. Every other outcome logs exactly one ERROR, plus whatever unrelated
-    // records the call's tail logs. The loader's and the trap's records are evaluateModule's (a LoadError, a
-    // CompileError, an Exception, an Interrupted, an OutOfMemory). The engine's own, each after "script: <path>: ":
+    // A refused load remembers its bytes. The same bytes again, before the script loads again, are AlreadyRefused:
+    // nothing is read beyond the comparison, nothing runs, nothing is logged and the result's error is empty, so a
+    // trigger that fires again with a file still broken neither retries nor reports twice. Other bytes are attempted
+    // anew, and so are the bytes of a refused load after any success.
+    //
+    // Success logs nothing, and neither do Unchanged and AlreadyRefused. Every other outcome logs exactly one ERROR,
+    // plus whatever unrelated records the call's tail logs. The loader's and the trap's records are evaluateModule's
+    // (a LoadError, a CompileError, an Exception, an Interrupted). A load the heap refused (OutOfMemory) is the
+    // engine's own, and never carries the backend's error text: "script: <path>: out of memory (heap limit <L> bytes,
+    // <U> bytes in use): the script and its instances are unchanged, and only a new VM resets the heap". Every
+    // instance keeps its code and values, and only a new VM frees an old generation. The engine's other records, each
+    // after "script: <path>: ":
     //   StillEvaluating  "not a script: its top-level await had not settled when the load ended"
     //   NotAClass        "not a script: its default export is <what>, not a class"
     //                    "not a script: its constructor returned a Proxy"

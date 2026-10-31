@@ -13,6 +13,7 @@
 #include <doctest/doctest.h>
 
 #include <array>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <format>
@@ -1109,6 +1110,290 @@ TEST_CASE("script: a field made non-enumerable is dropped and a frozen instance 
     expose(fx.vm, a, "a");
     expose(fx.vm, b, "b");
     CHECK(script_test::completion(fx.vm, "[a.hidden, b.speed].join()") == "0,2");
+    CHECK(log.countAtLeast(LogLevel::Warn) == 0U);
+    script_test::expectCleanShutdown(fx.vm);
+}
+
+// ---- HR27-HR32: refused bytes report once, the heap's own words, the budget, and scale -------------------------
+
+namespace {
+
+constexpr std::size_t MIB = std::size_t{1024} * 1024U;
+
+// Trailing assignments to a name the source already declares: a refused bytecode growth anywhere before them meets
+// an assignment's lvalue check, the backend's one check of the buffer, and the compile returns (R24 in docs/08).
+// Sixteen leaves three statements after the buffer's last growth in every padded source here (measured).
+// Copied from script_module_test.cpp, where the measurement lives.
+[[nodiscard]] std::string assignmentPad(std::string_view name) {
+    std::string pad;
+    for (int i = 1; i <= 16; ++i) {
+        pad += " " + std::string{name} + " = " + std::to_string(i) + ";";
+    }
+    return pad;
+}
+
+// `source` followed by the pad: cases that compile after the heap has been full end every module in it (R24).
+[[nodiscard]] std::string padded(std::string_view source) {
+    return "let pad = 0;\n" + std::string{source} + "\n" + assignmentPad("pad") + "\n";
+}
+
+// The first line of a record: the stack, when there is one, follows after a newline.
+[[nodiscard]] std::string_view firstLine(std::string_view record) { return record.substr(0, record.find('\n')); }
+
+[[nodiscard]] bool errorIsEmpty(const engine::script::ScriptError& error) {
+    return error.name.empty() && error.message.empty() && error.stack.empty();
+}
+
+// A function that fills the heap with arrays until the allocator refuses, then throws the backend's out-of-memory
+// error. What it held is freed when the throw unwinds.
+constexpr std::string_view HOG =
+    "function hog() {\n  const held = [];\n  for (;;) {\n    held.push(new Array(1024).fill(0));\n  }\n}\n";
+
+}  // namespace
+
+TEST_CASE("script: a refused load is reported once, then remembered until the bytes change or a load succeeds (HR27)") {
+    script_test::LogCapture log;
+    Fixture fx;
+    constexpr std::string_view KEY = "res://s/a.js";
+    const std::string v1 = classSource(
+        "  constructor() {\n    globalThis.built = (globalThis.built ?? 0) + 1;\n  }\n"
+        "  hello() {\n    return \"v1\";\n  }");
+    const std::string v2 =
+        "var K = class {\n  hello() { return \"v2\"; }\n};\nthrow new Error(\"boom\");\n"
+        "export { K as default };\n";
+    const std::string v3 = "var = ;\n";
+    fx.files->set("s/a.js", v1);
+    REQUIRE(scriptStatusLabel(fx.vm.loadScript(KEY).status) == "Ok");
+    const ScriptInstance a = instanceOf(fx.vm, KEY);
+    const ScriptInstance b = instanceOf(fx.vm, KEY);
+    expose(fx.vm, a, "a");
+    expose(fx.vm, b, "b");
+    REQUIRE(script_test::completion(fx.vm, "String(built)") == "2");
+
+    fx.files->set("s/a.js", v2);
+    log.clear();
+    const ScriptLoadResult thrown = fx.vm.loadScript(KEY);
+    CHECK(scriptStatusLabel(thrown.status) == "Exception");
+    CHECK(theOneError(log).starts_with("script: res://s/a.js: uncaught Error: boom"));
+    const std::uint32_t generation = recordOf(fx.vm, KEY).generation;
+    const engine::script::VmStats before = fx.vm.stats();
+
+    // The same bytes again, as a watcher's next trigger delivers them: nothing runs, nothing is logged.
+    fx.files->set("s/a.js", v2);
+    log.clear();
+    const ScriptLoadResult again = fx.vm.loadScript(KEY);
+    CHECK(scriptStatusLabel(again.status) == "AlreadyRefused");
+    CHECK(log.countAtLeast(LogLevel::Warn) == 0U);
+    CHECK(errorIsEmpty(again.error));
+    CHECK(again.instancesMoved == 0U);
+    CHECK(recordOf(fx.vm, KEY).generation == generation);
+    const engine::script::VmStats after = fx.vm.stats();
+    CHECK(after.heapBytesInUse == before.heapBytesInUse);
+    CHECK(after.moduleInstances == before.moduleInstances);
+    CHECK(again.heapBytesInUse == after.heapBytesInUse);
+    CHECK(script_test::completion(fx.vm, "String(built)") == "2");
+
+    fx.files->set("s/a.js", v3);
+    log.clear();
+    const ScriptLoadResult compile = fx.vm.loadScript(KEY);
+    CHECK(scriptStatusLabel(compile.status) == "CompileError");
+    CHECK(theOneError(log).starts_with("script: res://s/a.js: compile error: SyntaxError:"));
+
+    fx.files->set("s/a.js", v1);
+    log.clear();
+    CHECK(scriptStatusLabel(fx.vm.loadScript(KEY).status) == "Unchanged");
+    CHECK(log.countAtLeast(LogLevel::Warn) == 0U);
+
+    fx.files->set("s/a.js", versioned("v4"));
+    CHECK(scriptStatusLabel(fx.vm.loadScript(KEY).status) == "Ok");
+
+    // A success forgets the refused bytes: v3 is attempted anew.
+    fx.files->set("s/a.js", v3);
+    log.clear();
+    const ScriptLoadResult anew = fx.vm.loadScript(KEY);
+    CHECK(scriptStatusLabel(anew.status) == "CompileError");
+    CHECK(theOneError(log).starts_with("script: res://s/a.js: compile error: SyntaxError:"));
+    expose(fx.vm, a, "a");
+    CHECK(script_test::completion(fx.vm, "a.hello()") == "v4");
+    script_test::expectCleanShutdown(fx.vm);
+}
+
+TEST_CASE("script: a path never loaded remembers its refused bytes too (HR28)") {
+    script_test::LogCapture log;
+    Fixture fx;
+    constexpr std::string_view KEY = "res://s/new.js";
+    fx.files->set("s/new.js", "var = ;\n");
+    const ScriptLoadResult first = fx.vm.loadScript(KEY);
+    CHECK(scriptStatusLabel(first.status) == "CompileError");
+    CHECK(theOneError(log).starts_with("script: res://s/new.js: compile error: SyntaxError:"));
+
+    log.clear();
+    const ScriptLoadResult second = fx.vm.loadScript(KEY);
+    CHECK(scriptStatusLabel(second.status) == "AlreadyRefused");
+    CHECK(errorIsEmpty(second.error));
+    CHECK(log.countAtLeast(LogLevel::Warn) == 0U);
+    CHECK(scriptStatusLabel(fx.vm.createInstance(KEY).status) == "NotLoaded");
+
+    log.clear();
+    fx.files->set("s/new.js", versioned("v1"));
+    CHECK(scriptStatusLabel(fx.vm.loadScript(KEY).status) == "Ok");
+    const ScriptInstance made = instanceOf(fx.vm, KEY);
+    expose(fx.vm, made, "made");
+    CHECK(script_test::completion(fx.vm, "made.hello()") == "v1");
+    CHECK(log.countAtLeast(LogLevel::Warn) == 0U);
+    script_test::expectCleanShutdown(fx.vm);
+}
+
+TEST_CASE("script: a load that fills the heap says so in the engine's words and commits nothing (HR29)") {
+    script_test::LogCapture log;
+    Fixture fx{script_test::patient(VmConfig{.heapLimitBytes = 2 * MIB})};
+    constexpr std::string_view KEY = "res://s/a.js";
+    fx.files->set("s/a.js", padded(versioned("v1")));
+    REQUIRE(scriptStatusLabel(fx.vm.loadScript(KEY).status) == "Ok");
+    const ScriptInstance a = instanceOf(fx.vm, KEY);
+    const ScriptInstance b = instanceOf(fx.vm, KEY);
+
+    fx.files->set("s/a.js", padded(std::string{HOG} + "hog();\n" + versioned("v2")));
+    log.clear();
+    const ScriptLoadResult full = fx.vm.loadScript(KEY);
+    CHECK(scriptStatusLabel(full.status) == "OutOfMemory");
+    const std::string record = theOneError(log);
+    const std::string_view head = firstLine(record);
+    CHECK(head.starts_with("script: res://s/a.js: out of memory (heap limit 2097152 bytes, "));
+    CHECK(
+        head.ends_with("bytes in use): the script and its instances are unchanged, and only a new VM resets the "
+                       "heap"));
+    CHECK(head.find("null") == std::string_view::npos);
+    CHECK(head.find("InternalError") == std::string_view::npos);
+    CHECK(full.heapLimitBytes == 2 * MIB);
+    CHECK(full.heapBytesInUse == fx.vm.stats().heapBytesInUse);
+    expose(fx.vm, a, "a");
+    expose(fx.vm, b, "b");
+    CHECK(script_test::completion(fx.vm, "[a.hello(), b.hello()].join()") == "v1,v1");
+
+    // The hog was a function's local: the collector freed it, so the next load has room.
+    fx.files->set("s/a.js", padded(versioned("v3")));
+    log.clear();
+    const ScriptLoadResult working = fx.vm.loadScript(KEY);
+    CHECK(scriptStatusLabel(working.status) == "Ok");
+    CHECK(working.instancesMoved == 2U);
+    CHECK(log.countAtLeast(LogLevel::Warn) == 0U);
+    expose(fx.vm, a, "a");
+    CHECK(script_test::completion(fx.vm, "a.hello()") == "v3");
+    script_test::expectCleanShutdown(fx.vm);
+}
+
+TEST_CASE("script: a constructor that fills the heap leaves the evaluated class uncommitted (HR30)") {
+    script_test::LogCapture log;
+    Fixture fx{script_test::patient(VmConfig{.heapLimitBytes = 2 * MIB})};
+    constexpr std::string_view KEY = "res://s/a.js";
+    fx.files->set("s/a.js", padded(versioned("v1")));
+    REQUIRE(scriptStatusLabel(fx.vm.loadScript(KEY).status) == "Ok");
+    const ScriptInstance a = instanceOf(fx.vm, KEY);
+    const ScriptInstance b = instanceOf(fx.vm, KEY);
+
+    const std::string hogging = std::string{HOG} + classSource(
+                                                       "  constructor() {\n    hog();\n  }\n"
+                                                       "  hello() {\n    return \"v2\";\n  }");
+    fx.files->set("s/a.js", padded(hogging));
+    log.clear();
+    const ScriptLoadResult full = fx.vm.loadScript(KEY);
+    CHECK(scriptStatusLabel(full.status) == "OutOfMemory");
+    const std::string record = theOneError(log);
+    const std::string_view head = firstLine(record);
+    CHECK(head.starts_with("script: res://s/a.js: out of memory (heap limit 2097152 bytes, "));
+    CHECK(
+        head.ends_with("bytes in use): the script and its instances are unchanged, and only a new VM resets the "
+                       "heap"));
+    const ModuleRecord module = recordOf(fx.vm, KEY);
+    CHECK(moduleStateLabel(module.state) == "Evaluated");
+    CHECK(module.generation > 1U);
+    expose(fx.vm, a, "a");
+    expose(fx.vm, b, "b");
+    CHECK(script_test::completion(fx.vm, "[a.hello(), b.hello()].join()") == "v1,v1");
+
+    // Made from the last good class: the hogging constructor of the evaluated v2 does not run.
+    log.clear();
+    const ScriptInstance c = instanceOf(fx.vm, KEY);
+    expose(fx.vm, c, "c");
+    CHECK(script_test::completion(fx.vm, "c.hello()") == "v1");
+    CHECK(log.countAtLeast(LogLevel::Warn) == 0U);
+
+    fx.files->set("s/a.js", padded(versioned("v3")));
+    const ScriptLoadResult working = fx.vm.loadScript(KEY);
+    CHECK(scriptStatusLabel(working.status) == "Ok");
+    CHECK(working.instancesMoved == 3U);
+    expose(fx.vm, a, "a");
+    expose(fx.vm, b, "b");
+    expose(fx.vm, c, "c");
+    CHECK(script_test::completion(fx.vm, "[a.hello(), b.hello(), c.hello()].join()") == "v3,v3,v3");
+    script_test::expectCleanShutdown(fx.vm);
+}
+
+TEST_CASE("script: a constructor that runs past the time budget interrupts the load and commits nothing (HR31)") {
+    script_test::LogCapture log;
+    Fixture fx{VmConfig{.callTimeBudget = std::chrono::milliseconds{100}}};
+    constexpr std::string_view KEY = "res://s/a.js";
+    fx.files->set("s/a.js", versioned("v1"));
+    REQUIRE(scriptStatusLabel(fx.vm.loadScript(KEY).status) == "Ok");
+    const ScriptInstance a = instanceOf(fx.vm, KEY);
+    const ScriptInstance b = instanceOf(fx.vm, KEY);
+    REQUIRE(script_test::completion(fx.vm, "globalThis.built = 0; String(built)") == "0");
+
+    fx.files->set("s/a.js", classSource("  constructor() {\n    globalThis.built += 1;\n    if (built === 2) {\n"
+                                        "      for (;;) {}\n    }\n  }\n  hello() {\n    return \"v2\";\n  }"));
+    log.clear();
+    const ScriptLoadResult stuck = fx.vm.loadScript(KEY);
+    CHECK(scriptStatusLabel(stuck.status) == "Interrupted");
+    CHECK(theOneError(log).starts_with("script: res://s/a.js: interrupted after exceeding the 100 ms time budget"));
+    expose(fx.vm, a, "a");
+    expose(fx.vm, b, "b");
+    CHECK(script_test::completion(fx.vm, "[a.hello(), b.hello(), built].join()") == "v1,v1,2");
+
+    fx.files->set("s/a.js", versioned("v3"));
+    log.clear();
+    const ScriptLoadResult working = fx.vm.loadScript(KEY);
+    CHECK(scriptStatusLabel(working.status) == "Ok");
+    CHECK(working.instancesMoved == 2U);
+    CHECK(log.countAtLeast(LogLevel::Warn) == 0U);
+    expose(fx.vm, a, "a");
+    expose(fx.vm, b, "b");
+    CHECK(script_test::completion(fx.vm, "[a.hello(), b.hello()].join()") == "v3,v3");
+    script_test::expectCleanShutdown(fx.vm);
+}
+
+TEST_CASE("script: a reload of 10000 instances pairs each with its own running object (HR32)") {
+    const script_test::LogCapture log;
+    Fixture fx;
+    constexpr std::string_view KEY = "res://s/a.js";
+    constexpr std::size_t COUNT = 10000;
+    fx.files->set("s/a.js", classSource("  index = globalThis.next++;\n  hello() {\n    return \"v1\";\n  }"));
+    REQUIRE(scriptStatusLabel(fx.vm.loadScript(KEY).status) == "Ok");
+    REQUIRE(script_test::completion(fx.vm, "globalThis.next = 0; String(next)") == "0");
+    std::vector<ScriptInstance> instances;
+    instances.reserve(COUNT);
+    for (std::size_t i = 0; i < COUNT; ++i) {
+        instances.push_back(instanceOf(fx.vm, KEY));
+    }
+
+    fx.files->set("s/a.js", classSource("  index = -1;\n  hello() {\n    return \"v2\";\n  }"));
+    const auto start = std::chrono::steady_clock::now();
+    const ScriptLoadResult loaded = fx.vm.loadScript(KEY);
+    const auto elapsed =
+        std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start);
+    MESSAGE("reload of 10000 instances: " << elapsed.count() << " ms");
+    CHECK(scriptStatusLabel(loaded.status) == "Ok");
+    CHECK(loaded.instancesMoved == COUNT);
+    CHECK(loaded.fieldsKept == COUNT);
+
+    std::vector<std::size_t> sampled{0, COUNT - 1};
+    for (std::size_t i = 997; i < COUNT; i += 997) {
+        sampled.push_back(i);
+    }
+    for (const std::size_t i : sampled) {
+        expose(fx.vm, instances[i], "s");
+        CHECK(script_test::completion(fx.vm, "s.index + ':' + s.hello()") == std::format("{}:v2", i));
+    }
     CHECK(log.countAtLeast(LogLevel::Warn) == 0U);
     script_test::expectCleanShutdown(fx.vm);
 }

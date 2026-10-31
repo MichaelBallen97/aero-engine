@@ -189,6 +189,7 @@ struct InstanceSlot {
 struct ScriptRecord {
     JSValue scriptClass = JS_UNDEFINED;      // HELD: the last good class; JS_UNDEFINED until a load succeeds
     std::optional<std::string> runningText;  // the bytes scriptClass's generation was compiled from
+    std::optional<std::string> refusedText;  // the bytes of the last refused load since the last success
     std::vector<ScriptInstance> instances;   // the live instances of this script, in creation order
 };
 

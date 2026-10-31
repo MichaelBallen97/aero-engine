@@ -303,6 +303,9 @@ ScriptLoadResult Vm::Impl::loadScriptCall(std::string_view virtualPath) {
         if (known->second.runningText == peeked) {
             return loadResultOf(ScriptStatus::Unchanged);
         }
+        if (known->second.refusedText == peeked) {
+            return loadResultOf(ScriptStatus::AlreadyRefused);  // the same refused bytes: no retry, no second record
+        }
     }
     ScriptRecord& record = scripts[key];  // map nodes never move: the reference survives every later step
 
@@ -346,6 +349,7 @@ ScriptLoadResult Vm::Impl::loadScriptCall(std::string_view virtualPath) {
         JS_FreeValue(ctx, record.scriptClass);
         record.scriptClass = newClass.release();
         record.runningText = std::move(compiled);
+        record.refusedText.reset();
         ScriptLoadResult done = loadResultOf(ScriptStatus::Ok);
         done.instancesMoved = record.instances.size();
         done.fieldsKept = counts.kept;
@@ -354,6 +358,9 @@ ScriptLoadResult Vm::Impl::loadScriptCall(std::string_view virtualPath) {
         done.fieldsDropped = counts.dropped;
         return done;
     }
+    // Refused: nothing is committed. The bytes are remembered -- the compiled text when the loader read one -- so the
+    // next trigger with the same bytes answers AlreadyRefused without a call.
+    record.refusedText = compiled.has_value() ? compiled : peeked;
     if (refusal.has_value()) {
         ScriptLoadResult refused = loadResultOf(refusal->status);
         refused.error = refusalError(*refusal);
@@ -594,6 +601,8 @@ std::string_view scriptStatusLabel(ScriptStatus status) noexcept {
             return "NotLoaded";
         case ScriptStatus::UnknownInstance:
             return "UnknownInstance";
+        case ScriptStatus::AlreadyRefused:
+            return "AlreadyRefused";
     }
     return "Unknown";
 }
