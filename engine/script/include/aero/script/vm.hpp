@@ -176,6 +176,10 @@ struct ScriptLoadResult {
     ScriptError error;               // filled iff LoadError, CompileError, Exception, OutOfMemory, Interrupted,
                                      // StillEvaluating or NotAClass
     std::size_t instancesMoved = 0;  // Ok: the live instances now on the new class
+    std::size_t fieldsKept = 0;      // Ok: summed over the moved instances, the fields that took the running value
+    std::size_t fieldsReset = 0;     // Ok: fields in both versions whose running value did not carry
+    std::size_t fieldsAdded = 0;     // Ok: fields only the new class has; they keep their defaults
+    std::size_t fieldsDropped = 0;   // Ok: fields only the running instance had, or that stopped being fields
     std::size_t heapBytesInUse = 0;  // VmStats::heapBytesInUse when the call returned; 0 for InvalidVm, WrongThread
     std::size_t heapLimitBytes = 0;  // the VM's limit; 0 for InvalidVm, WrongThread
 };
@@ -382,9 +386,22 @@ public:
     //                    "not a script: its constructor returned a Proxy"
     // and, without a path: "script: loadScript on an invalid Vm (a failed create or a moved-from Vm)" for InvalidVm,
     // and "script: loadScript called from a thread that is not the VM's; refused" for WrongThread.
-    // A class is a constructor whose own `prototype` is a non-writable data property: a plain, bound, arrow, async or
-    // generator function, an object, a primitive and a missing default are not, and finding out runs no script code.
-    // The VM's thread only, and never from inside another call.
+    //
+    // What a reload carries. A field is an own, enumerable, string-keyed DATA property; an accessor is not a field,
+    // whoever defined it, and neither is a non-enumerable property. After the new instance is constructed, each field
+    // of the running instance that the new instance also has takes the running value when the two KINDS agree
+    // (boolean, number, bigint, string, symbol, array, engine.Vec3, engine.Quat, engine.Entity, object); values and
+    // defaults are never compared, so a changed default does not reset a field. Two relaxations: a new default of
+    // `undefined` (a field declared without a value) takes any kind, and a new default of `null` takes null and every
+    // reference kind. A function never carries, on either side: the new instance keeps its own. A carried object is
+    // carried by reference and keeps the code it was made with. A field the running instance had and the new one
+    // lacks, or that the new class turned into an accessor, is dropped and the accessor takes over; one only the new
+    // instance has keeps its default. Fields are read as descriptors and written with a define, so no getter and no
+    // setter runs, and a frozen or otherwise unwritable new field keeps its default (counted as reset) rather than
+    // refusing the reload. fieldsKept, fieldsReset, fieldsAdded and fieldsDropped sum these over the moved instances; a
+    // refused load reports none. A class is a constructor whose own `prototype` is a non-writable data property: a
+    // plain, bound, arrow, async or generator function, an object, a primitive and a missing default are not, and
+    // finding out runs no script code. The VM's thread only, and never from inside another call.
     [[nodiscard]] ScriptLoadResult loadScript(std::string_view virtualPath);
 
     // Constructs one instance of the script's current class under one call's time budget. NotLoaded when no class is

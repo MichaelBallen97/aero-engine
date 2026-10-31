@@ -6,13 +6,15 @@
 //   1. the comparison, BEFORE any call: an unchanged file runs nothing, opens no call and costs one read;
 //   2. one call: the conditional invalidation, then the entry's evaluation, which captures the text it compiled;
 //   3. the state check before the namespace read, then the class check, which runs no script code;
-//   4. every live instance is constructed anew, in creation order, into a batch nothing else can see;
+//   4. every live instance is constructed anew, in creation order, and each field of the running instance whose kind
+//      did not change is carried into it, all into a batch nothing else can see;
 //   5. the call's job drain and tail;
 //   6. the commit, only now: a job that threw or a budget that fired in the report refuses the load as well.
 
 #include <aero/core/log.hpp>
 #include <aero/script/internal/component_binding.hpp>
 #include <aero/script/internal/module_graph.hpp>
+#include <aero/script/internal/script_carry.hpp>
 #include <aero/script/vm.hpp>
 
 #include "script_api.hpp"
@@ -69,6 +71,29 @@ private:
     JSContext* context;
 };
 
+// The own property names of one object, freed on every path; JS_GetOwnPropertyNames leaves a null table on failure.
+class HeldPropertyEnum {
+public:
+    explicit HeldPropertyEnum(JSContext* context) noexcept : context(context) {}
+    HeldPropertyEnum(const HeldPropertyEnum&) = delete;
+    HeldPropertyEnum& operator=(const HeldPropertyEnum&) = delete;
+    HeldPropertyEnum(HeldPropertyEnum&&) = delete;
+    HeldPropertyEnum& operator=(HeldPropertyEnum&&) = delete;
+    ~HeldPropertyEnum() { JS_FreePropertyEnum(context, table, length); }
+
+    // The enumerable string-keyed names of `object`. False: an exception is pending (a refused allocation).
+    [[nodiscard]] bool read(JSValueConst object) {
+        return JS_GetOwnPropertyNames(context, &table, &length, object, JS_GPN_STRING_MASK | JS_GPN_ENUM_ONLY) >= 0;
+    }
+    [[nodiscard]] std::uint32_t size() const noexcept { return length; }
+    [[nodiscard]] JSAtom atom(std::uint32_t index) const noexcept { return table[index].atom; }
+
+private:
+    JSContext* context;
+    JSPropertyEnum* table = nullptr;
+    std::uint32_t length = 0;
+};
+
 enum class ClassCheck : std::uint8_t {
     IsClass,
     NotAClass,
@@ -95,6 +120,125 @@ enum class ClassCheck : std::uint8_t {
         return ClassCheck::NotAClass;
     }
     return ClassCheck::IsClass;
+}
+
+// The carry's kind of a value, by tag and then by class id: never by `typeof`, under which an array, a Vec3, a Quat,
+// an Entity and an object all read "object". No script code runs here.
+[[nodiscard]] internal::ValueKind valueKindOf(JSContext* ctx, JSValueConst value, const ScriptApi& api) {
+    using internal::ValueKind;
+    if (JS_IsUndefined(value)) {
+        return ValueKind::Undefined;
+    }
+    if (JS_IsNull(value)) {
+        return ValueKind::Null;
+    }
+    if (JS_IsBool(value)) {
+        return ValueKind::Boolean;
+    }
+    if (JS_IsNumber(value)) {
+        return ValueKind::Number;
+    }
+    if (JS_IsBigInt(value)) {
+        return ValueKind::BigInt;
+    }
+    if (JS_IsString(value)) {
+        return ValueKind::String;
+    }
+    if (JS_IsSymbol(value)) {
+        return ValueKind::Symbol;
+    }
+    if (JS_IsFunction(ctx, value)) {
+        return ValueKind::Function;
+    }
+    if (JS_IsArray(value)) {
+        return ValueKind::Array;
+    }
+    const JSClassID id = JS_GetClassID(value);
+    if (id == api.vec3Class) {
+        return ValueKind::Vec3;
+    }
+    if (id == api.quatClass) {
+        return ValueKind::Quat;
+    }
+    if (id == api.entityClass) {
+        return ValueKind::Entity;
+    }
+    return ValueKind::Object;
+}
+
+// How many fields an object has: its own, enumerable, string-keyed data properties. False: an exception is pending.
+[[nodiscard]] bool countFields(JSContext* ctx, JSValueConst object, std::size_t& count) {
+    HeldPropertyEnum names{ctx};
+    if (!names.read(object)) {
+        return false;
+    }
+    count = 0;
+    for (std::uint32_t i = 0; i < names.size(); ++i) {
+        HeldDescriptor own{ctx};
+        const int has = JS_GetOwnProperty(ctx, &own.desc, object, names.atom(i));
+        if (has < 0) {
+            return false;
+        }
+        if (has > 0 && (own.desc.flags & JS_PROP_GETSET) == 0) {
+            ++count;
+        }
+    }
+    return true;
+}
+
+// One (running, fresh) pair. False: an exception is pending (only a refused allocation can cause one); the caller
+// traps it and the load is refused. Writes only to `fresh`, and reads `running` through descriptors only, so no getter
+// and no setter runs on either object.
+[[nodiscard]] bool carryFields(JSContext* ctx, const ScriptApi& api, JSValueConst running, JSValueConst fresh,
+                               FieldCounts& counts) {
+    HeldPropertyEnum names{ctx};
+    if (!names.read(running)) {
+        return false;
+    }
+    std::size_t matched = 0;
+    for (std::uint32_t i = 0; i < names.size(); ++i) {
+        const JSAtom atom = names.atom(i);
+        HeldDescriptor was{ctx};
+        const int hadIt = JS_GetOwnProperty(ctx, &was.desc, running, atom);
+        if (hadIt < 0) {
+            return false;
+        }
+        if (hadIt == 0 || (was.desc.flags & JS_PROP_GETSET) != 0) {
+            continue;  // not a field of the running instance
+        }
+        HeldDescriptor now{ctx};
+        const int hasIt = JS_GetOwnProperty(ctx, &now.desc, fresh, atom);
+        if (hasIt < 0) {
+            return false;
+        }
+        if (hasIt == 0 || (now.desc.flags & JS_PROP_GETSET) != 0 || (now.desc.flags & JS_PROP_ENUMERABLE) == 0) {
+            ++counts.dropped;  // removed, turned into an accessor, or no longer enumerable
+            continue;
+        }
+        ++matched;
+        if (!internal::carriesValue(valueKindOf(ctx, was.desc.value, api), valueKindOf(ctx, now.desc.value, api))) {
+            ++counts.reset;  // a kind change, or a function on either side
+            continue;
+        }
+        // A define with the value alone keeps the new property's attributes and runs no setter; it duplicates the
+        // value. Without JS_PROP_THROW an unwritable property answers 0 and stays as constructed.
+        const int defined =
+            JS_DefineProperty(ctx, fresh, atom, was.desc.value, JS_UNDEFINED, JS_UNDEFINED, JS_PROP_HAS_VALUE);
+        if (defined < 0) {
+            return false;
+        }
+        if (defined == 0) {
+            ++counts.reset;
+        } else {
+            ++counts.kept;
+        }
+    }
+    std::size_t total = 0;
+    if (!countFields(ctx, fresh, total)) {
+        return false;
+    }
+    counts.added += total - matched;  // the fresh instance's fields that matched no running field
+    return true;
 }
 
 [[nodiscard]] ScriptStatus scriptStatusOf(EvalStatus status) noexcept {
@@ -178,8 +322,9 @@ ScriptLoadResult Vm::Impl::loadScriptCall(std::string_view virtualPath) {
 
     // 4. Every live instance, in creation order. Nothing here touches a slot or the record.
     HeldBatch fresh{ctx};
+    FieldCounts counts;
     if (!JS_IsUndefined(newClass.get())) {
-        rebuildInstances(record, newClass.get(), evaluation, refusal, fresh);
+        rebuildInstances(record, newClass.get(), evaluation, refusal, fresh, counts);
     }
 
     // 5. The call's jobs and tail.
@@ -203,6 +348,10 @@ ScriptLoadResult Vm::Impl::loadScriptCall(std::string_view virtualPath) {
         record.runningText = std::move(compiled);
         ScriptLoadResult done = loadResultOf(ScriptStatus::Ok);
         done.instancesMoved = record.instances.size();
+        done.fieldsKept = counts.kept;
+        done.fieldsReset = counts.reset;
+        done.fieldsAdded = counts.added;
+        done.fieldsDropped = counts.dropped;
         return done;
     }
     if (refusal.has_value()) {
@@ -279,11 +428,17 @@ HeldValue Vm::Impl::constructInstance(JSValueConst scriptClass, EvalResult& eval
 }
 
 void Vm::Impl::rebuildInstances(const ScriptRecord& record, JSValueConst scriptClass, EvalResult& evaluation,
-                                std::optional<ScriptRefusal>& refusal, HeldBatch& fresh) {
-    for (std::size_t i = 0; i < record.instances.size(); ++i) {
+                                std::optional<ScriptRefusal>& refusal, HeldBatch& fresh, FieldCounts& counts) {
+    for (const ScriptInstance instance : record.instances) {
         HeldValue made = constructInstance(scriptClass, evaluation, refusal);
         if (!JS_IsObject(made.get())) {
             return;  // the failure or the refusal is recorded; the batch frees what it holds
+        }
+        const InstanceSlot* const slot = instanceSlots.get(instance);
+        assert(slot != nullptr);
+        if (slot != nullptr && !carryFields(ctx, scriptApi, slot->object, made.get(), counts)) {
+            adopt(evaluation, trap(Phase::Run));
+            return;
         }
         fresh.add(made.release());
     }

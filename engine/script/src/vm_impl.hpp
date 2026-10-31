@@ -123,6 +123,14 @@ struct ScriptRefusal {
     std::string text;
 };
 
+// What the carry did over the instances of one reload, summed (task 4.3.3, vm_scripts.cpp).
+struct FieldCounts {
+    std::size_t kept = 0;
+    std::size_t reset = 0;
+    std::size_t added = 0;
+    std::size_t dropped = 0;
+};
+
 enum class Phase : std::uint8_t { Compile, Run };
 inline constexpr std::string_view UNPRINTABLE_VALUE = "<unprintable value>";
 inline constexpr std::string_view DRAIN_STOP_MESSAGE = "the time budget ran out with promise jobs still queued";
@@ -318,10 +326,11 @@ struct Vm::Impl {
     // One construction of `scriptClass`: an exception is adopted into `evaluation`, a Proxy is refused.
     [[nodiscard]] HeldValue constructInstance(JSValueConst scriptClass, EvalResult& evaluation,
                                               std::optional<ScriptRefusal>& refusal);
-    // Every live instance of `record`, in creation order: constructs from `scriptClass` into `fresh`, and stops at the
-    // first failure or refusal. Touches neither a slot nor the record.
+    // Every live instance of `record`, in creation order: constructs from `scriptClass` into `fresh`, carries the
+    // running instance's fields into each (counting them), and stops at the first failure or refusal. Reads the slots'
+    // objects and changes neither a slot nor the record.
     void rebuildInstances(const ScriptRecord& record, JSValueConst scriptClass, EvalResult& evaluation,
-                          std::optional<ScriptRefusal>& refusal, HeldBatch& fresh);
+                          std::optional<ScriptRefusal>& refusal, HeldBatch& fresh, FieldCounts& counts);
     void endScriptCall(EvalResult& evaluation);  // the call's job drain and tail, in evaluateModuleCall's order
     void logRefusal(const ScriptRefusal& refusal) const;
 

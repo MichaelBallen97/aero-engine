@@ -2,6 +2,7 @@
 // aero::script_internal (the carry rule and a module's state accessor); the later cases drive the public API and
 // internal::VmAccess::defineInstanceGlobal. A TU of aero_tests, which supplies main() from test_main.cpp.
 #include <aero/core/vfs.hpp>
+#include <aero/scene/world.hpp>
 #include <aero/script/internal/component_binding.hpp>
 #include <aero/script/internal/module_graph.hpp>
 #include <aero/script/internal/script_carry.hpp>
@@ -808,4 +809,306 @@ TEST_CASE("script: a VM holding classes, instances and refused and old generatio
     CHECK(script_test::completion(fx.vm, "a1.hello() + oldA.hello()") == "A2A1");
     script_test::expectCleanShutdown(fx.vm);
     CHECK(scriptStatusLabel(fx.vm.loadScript("res://s/a.js").status) == "InvalidVm");
+}
+
+// ---- HR18-HR26: the carry --------------------------------------------------------------------------------------
+
+namespace {
+
+using engine::Entity;
+using engine::World;
+using engine::script::BindStatus;
+
+// "<kept> <reset> <added> <dropped>" of a load, for one CHECK per case.
+[[nodiscard]] std::string countsOf(const ScriptLoadResult& result) {
+    return std::format("{} {} {} {}", result.fieldsKept, result.fieldsReset, result.fieldsAdded, result.fieldsDropped);
+}
+
+// The World a case's entities live in, bound to its VM. Declared before the Fixture so it is destroyed after it.
+void bindWorld(Fixture& fx, World& world) { REQUIRE(fx.vm.bindWorld(world) == BindStatus::Ok); }
+
+void defineEntity(Fixture& fx, std::string_view name, Entity entity) {
+    REQUIRE(fx.vm.defineEntityGlobal(name, entity) == BindStatus::Ok);
+}
+
+}  // namespace
+
+TEST_CASE("script: a reload keeps each instance's own field values, drops removed fields and adds new ones (HR18)") {
+    const script_test::LogCapture log;
+    Fixture fx;
+    fx.files->set("s/a.js",
+                  classSource("  speed = 2;\n  label = \"x\";\n  old = 1;\n  hello() {\n    return \"v1\";\n  }"));
+    REQUIRE(scriptStatusLabel(fx.vm.loadScript("res://s/a.js").status) == "Ok");
+    const ScriptInstance a = instanceOf(fx.vm, "res://s/a.js");
+    const ScriptInstance b = instanceOf(fx.vm, "res://s/a.js");
+    expose(fx.vm, a, "a");
+    expose(fx.vm, b, "b");
+    static_cast<void>(script_test::completion(
+        fx.vm, "a.speed = 7; a.label = 'a'; a.old = 10; b.speed = 9; b.label = 'b'; b.old = 20; 0"));
+
+    fx.files->set("s/a.js", classSource("  speed = 2;\n  label = \"x\";\n  added = 5;\n  hello() {\n"
+                                        "    return \"v2:\" + this.speed + \":\" + this.label;\n  }"));
+    const ScriptLoadResult loaded = fx.vm.loadScript("res://s/a.js");
+    CHECK(scriptStatusLabel(loaded.status) == "Ok");
+    CHECK(loaded.instancesMoved == 2U);
+    CHECK(countsOf(loaded) == "4 0 2 2");
+    expose(fx.vm, a, "a");
+    expose(fx.vm, b, "b");
+    CHECK(script_test::completion(fx.vm, "[a.hello(), a.added, 'old' in a, b.hello(), b.added, 'old' in b].join()") ==
+          "v2:7:a,5,false,v2:9:b,5,false");
+    CHECK(log.countAtLeast(LogLevel::Warn) == 0U);
+    script_test::expectCleanShutdown(fx.vm);
+}
+
+TEST_CASE("script: a changed default does not reset a field, and an unmodified field is carried too (HR19)") {
+    const script_test::LogCapture log;
+    Fixture fx;
+    const auto source = [](int initial, std::string_view version) {
+        return classSource(std::format("  speed = {};\n  hello() {{\n    return \"{}\";\n  }}", initial, version));
+    };
+    fx.files->set("s/a.js", source(2, "v1"));
+    REQUIRE(scriptStatusLabel(fx.vm.loadScript("res://s/a.js").status) == "Ok");
+    const ScriptInstance a = instanceOf(fx.vm, "res://s/a.js");
+    const ScriptInstance b = instanceOf(fx.vm, "res://s/a.js");
+    expose(fx.vm, a, "a");
+    static_cast<void>(script_test::completion(fx.vm, "a.speed = 7; 0"));
+
+    fx.files->set("s/a.js", source(5, "v2"));
+    const ScriptLoadResult loaded = fx.vm.loadScript("res://s/a.js");
+    CHECK(scriptStatusLabel(loaded.status) == "Ok");
+    CHECK(countsOf(loaded) == "2 0 0 0");
+    const ScriptInstance fresh = instanceOf(fx.vm, "res://s/a.js");
+    expose(fx.vm, a, "a");
+    expose(fx.vm, b, "b");
+    expose(fx.vm, fresh, "c");
+    CHECK(script_test::completion(fx.vm, "[a.speed, b.speed, c.speed].join()") == "7,2,5");
+    CHECK(log.countAtLeast(LogLevel::Warn) == 0U);
+    script_test::expectCleanShutdown(fx.vm);
+}
+
+TEST_CASE("script: every value kind carries when its kind is unchanged (HR20)") {
+    const script_test::LogCapture log;
+    World world;
+    Fixture fx;
+    bindWorld(fx, world);
+    defineEntity(fx, "ent", world.create());
+    defineEntity(fx, "other", world.create());
+    const auto source = [](std::string_view version) {
+        return classSource(std::format(
+            "  flag = true;\n  num = 1;\n  big = 1n;\n  str = \"s\";\n  sym = Symbol(\"d\");\n  arr = [0];\n"
+            "  vec = new engine.Vec3(1, 2, 3);\n  quat = new engine.Quat(0, 0, 0, 1);\n  ent = globalThis.ent;\n"
+            "  obj = {{ k: 1 }};\n  nul = null;\n  hello() {{\n    return \"{}\";\n  }}",
+            version));
+    };
+    fx.files->set("s/a.js", source("v1"));
+    REQUIRE(scriptStatusLabel(fx.vm.loadScript("res://s/a.js").status) == "Ok");
+    const ScriptInstance a = instanceOf(fx.vm, "res://s/a.js");
+    expose(fx.vm, a, "a");
+    static_cast<void>(script_test::completion(
+        fx.vm,
+        "globalThis.ks = Symbol('kept'); globalThis.ka = [4, 5]; globalThis.kv = new engine.Vec3(7, 8, 9); "
+        "globalThis.kq = new engine.Quat(1, 0, 0, 0); globalThis.ko = { z: 2 }; globalThis.kn = { n: 3 }; "
+        "a.flag = false; a.num = 3.5; a.big = 7n; a.str = 'hi'; a.sym = ks; a.arr = ka; a.vec = kv; a.quat = kq; "
+        "a.ent = other; a.obj = ko; a.nul = kn; 0"));
+
+    fx.files->set("s/a.js", source("v2"));
+    const ScriptLoadResult loaded = fx.vm.loadScript("res://s/a.js");
+    CHECK(scriptStatusLabel(loaded.status) == "Ok");
+    CHECK(countsOf(loaded) == "11 0 0 0");
+    expose(fx.vm, a, "a");
+    CHECK(script_test::completion(fx.vm,
+                                  "[a.flag === false, a.num === 3.5, a.big === 7n, a.str === 'hi', a.sym === ks, "
+                                  "a.arr === ka, a.vec === kv, a.quat === kq, a.ent === other, a.obj === ko, "
+                                  "a.nul === kn].join()") == "true,true,true,true,true,true,true,true,true,true,true");
+    CHECK(log.countAtLeast(LogLevel::Warn) == 0U);
+    script_test::expectCleanShutdown(fx.vm);
+}
+
+TEST_CASE("script: a field whose default changes kind takes the new default, by kind and not by typeof (HR21)") {
+    const script_test::LogCapture log;
+    World world;
+    Fixture fx;
+    bindWorld(fx, world);
+    defineEntity(fx, "ent", world.create());
+    const auto source = [](std::string_view fields) {
+        return classSource(std::format("{}\n  hello() {{\n    return {};\n  }}", fields, fields.size()));
+    };
+    fx.files->set("s/a.js", source("  n = 1;\n  v = new engine.Vec3(1, 2, 3);\n  ar = [1];\n  ob = { k: 1 };\n"
+                                   "  en = globalThis.ent;\n  bo = true;\n  bi = 5n;\n  sy = Symbol(\"s\");\n"
+                                   "  st = \"s\";"));
+    REQUIRE(scriptStatusLabel(fx.vm.loadScript("res://s/a.js").status) == "Ok");
+    const ScriptInstance a = instanceOf(fx.vm, "res://s/a.js");
+    expose(fx.vm, a, "a");
+
+    fx.files->set("s/a.js",
+                  source("  n = \"text\";\n  v = new engine.Quat(0, 0, 0, 1);\n  ar = { k: 2 };\n  ob = [9];\n"
+                         "  en = { e: 1 };\n  bo = 4;\n  bi = 6;\n  sy = \"sym\";\n  st = null;"));
+    const ScriptLoadResult loaded = fx.vm.loadScript("res://s/a.js");
+    CHECK(scriptStatusLabel(loaded.status) == "Ok");
+    CHECK(countsOf(loaded) == "0 9 0 0");
+    expose(fx.vm, a, "a");
+    CHECK(script_test::completion(
+              fx.vm,
+              "[a.n, a.v instanceof engine.Quat, Array.isArray(a.ar), a.ar.k, Array.isArray(a.ob), a.ob[0], a.en.e, "
+              "a.bo, a.bi, a.sy, a.st].join()") == "text,true,false,2,true,9,1,4,6,sym,");
+    CHECK(log.countAtLeast(LogLevel::Warn) == 0U);
+    script_test::expectCleanShutdown(fx.vm);
+}
+
+TEST_CASE(
+    "script: a field declared without a value and a null default take what a null or missing default may (HR22)") {
+    const script_test::LogCapture log;
+    World world;
+    Fixture fx;
+    bindWorld(fx, world);
+    defineEntity(fx, "other", world.create());
+    fx.files->set("s/a.js", classSource("  f1 = 0;\n  f2 = null;\n  f3 = null;\n  f4 = 0;\n  f5 = \"\";\n  f6 = 0;\n"
+                                        "  hello() {\n    return \"v1\";\n  }"));
+    fx.files->set("s/b.js", classSource("  g1 = {};\n  g2 = [];\n  g3 = new engine.Vec3();\n  g4 = null;\n"
+                                        "  g5 = null;\n  g6 = 0;\n  g7 = \"\";\n  g8 = undefined;\n"
+                                        "  hello() {\n    return \"v1\";\n  }"));
+    REQUIRE(scriptStatusLabel(fx.vm.loadScript("res://s/a.js").status) == "Ok");
+    REQUIRE(scriptStatusLabel(fx.vm.loadScript("res://s/b.js").status) == "Ok");
+    const ScriptInstance a = instanceOf(fx.vm, "res://s/a.js");
+    const ScriptInstance b = instanceOf(fx.vm, "res://s/b.js");
+    expose(fx.vm, a, "a");
+    expose(fx.vm, b, "b");
+    static_cast<void>(script_test::completion(
+        fx.vm,
+        "globalThis.k1 = { q: 1 }; globalThis.k2 = [1]; globalThis.k3 = new engine.Vec3(1, 2, 3); "
+        "a.f1 = 4; a.f2 = k1; a.f3 = other; a.f4 = null; a.f5 = 's'; a.f6 = k2; "
+        "b.g1 = k1; b.g2 = k2; b.g3 = k3; b.g4 = other; b.g5 = null; b.g6 = 5; b.g7 = 's'; 0"));
+
+    fx.files->set("s/a.js",
+                  classSource("  f1;\n  f2;\n  f3;\n  f4;\n  f5;\n  f6;\n  hello() {\n    return \"v2\";\n  }"));
+    const ScriptLoadResult first = fx.vm.loadScript("res://s/a.js");
+    CHECK(scriptStatusLabel(first.status) == "Ok");
+    CHECK(countsOf(first) == "6 0 0 0");
+    fx.files->set("s/b.js",
+                  classSource("  g1 = null;\n  g2 = null;\n  g3 = null;\n  g4 = null;\n  g5 = null;\n"
+                              "  g6 = null;\n  g7 = null;\n  g8 = null;\n  hello() {\n    return \"v2\";\n  }"));
+    const ScriptLoadResult second = fx.vm.loadScript("res://s/b.js");
+    CHECK(scriptStatusLabel(second.status) == "Ok");
+    CHECK(countsOf(second) == "5 3 0 0");
+    expose(fx.vm, a, "a");
+    expose(fx.vm, b, "b");
+    CHECK(script_test::completion(fx.vm, "[a.f1, a.f2 === k1, a.f3 === other, a.f4, a.f5, a.f6 === k2].join()") ==
+          "4,true,true,,s,true");
+    CHECK(script_test::completion(fx.vm,
+                                  "[b.g1 === k1, b.g2 === k2, b.g3 === k3, b.g4 === other, b.g5 === null, "
+                                  "b.g6 === null, b.g7 === null, b.g8 === null].join()") ==
+          "true,true,true,true,true,true,true,true");
+    CHECK(log.countAtLeast(LogLevel::Warn) == 0U);
+    script_test::expectCleanShutdown(fx.vm);
+}
+
+TEST_CASE("script: a function never carries, so a closure over the old instance is replaced (HR23)") {
+    const script_test::LogCapture log;
+    Fixture fx;
+    fx.files->set("s/a.js",
+                  classSource("  speed = 3;\n  cb = () => \"v1:\" + this.speed;\n  g = () => 1;\n  num = 1;"));
+    REQUIRE(scriptStatusLabel(fx.vm.loadScript("res://s/a.js").status) == "Ok");
+    const ScriptInstance a = instanceOf(fx.vm, "res://s/a.js");
+    expose(fx.vm, a, "a");
+    static_cast<void>(script_test::completion(fx.vm, "globalThis.keptCb = a.cb; a.speed = 6; 0"));
+    CHECK(script_test::completion(fx.vm, "keptCb()") == "v1:6");
+
+    fx.files->set("s/a.js",
+                  classSource("  speed = 3;\n  cb = () => \"v2:\" + this.speed;\n  g;\n  num = () => \"fn\";"));
+    const ScriptLoadResult loaded = fx.vm.loadScript("res://s/a.js");
+    CHECK(scriptStatusLabel(loaded.status) == "Ok");
+    CHECK(countsOf(loaded) == "1 3 0 0");
+    expose(fx.vm, a, "a");
+    CHECK(script_test::completion(fx.vm, "[a.cb(), a.cb !== keptCb, String(a.g), typeof a.num, a.num()].join()") ==
+          "v2:6,true,undefined,function,fn");
+    CHECK(script_test::completion(fx.vm, "keptCb()") == "v1:6");  // the old closure still reads the old instance
+    CHECK(log.countAtLeast(LogLevel::Warn) == 0U);
+    script_test::expectCleanShutdown(fx.vm);
+}
+
+TEST_CASE("script: a carried object is carried by reference and keeps the code it was made with (HR24)") {
+    const script_test::LogCapture log;
+    Fixture fx;
+    const auto source = [](std::string_view helper) {
+        return std::format(
+            "var Helper = class {{\n  describe() {{\n    return \"{}\";\n  }}\n}};\n"
+            "var Mover = class {{\n  helper = new Helper();\n  list = [1, 2];\n}};\nexport {{\n  Mover as "
+            "default\n}};\n",
+            helper);
+    };
+    fx.files->set("s/a.js", source("helper-v1"));
+    REQUIRE(scriptStatusLabel(fx.vm.loadScript("res://s/a.js").status) == "Ok");
+    const ScriptInstance a = instanceOf(fx.vm, "res://s/a.js");
+    expose(fx.vm, a, "a");
+    static_cast<void>(
+        script_test::completion(fx.vm, "a.list.push(3); globalThis.kl = a.list; globalThis.kh = a.helper; 0"));
+
+    fx.files->set("s/a.js", source("helper-v2"));
+    const ScriptLoadResult loaded = fx.vm.loadScript("res://s/a.js");
+    CHECK(scriptStatusLabel(loaded.status) == "Ok");
+    CHECK(countsOf(loaded) == "2 0 0 0");
+    const ScriptInstance fresh = instanceOf(fx.vm, "res://s/a.js");
+    expose(fx.vm, a, "a");
+    expose(fx.vm, fresh, "c");
+    CHECK(script_test::completion(fx.vm,
+                                  "[a.list === kl, a.list.join('-'), a.helper === kh, a.helper.describe(), "
+                                  "c.helper.describe(), c.list.join('-')].join()") ==
+          "true,1-2-3,true,helper-v1,helper-v2,1-2");
+    CHECK(log.countAtLeast(LogLevel::Warn) == 0U);
+    script_test::expectCleanShutdown(fx.vm);
+}
+
+TEST_CASE("script: an accessor is not a field, and the carry runs neither a getter nor a setter (HR25)") {
+    const script_test::LogCapture log;
+    Fixture fx;
+    fx.files->set("s/a.js", classSource("  speed = 3;\n  constructor() {\n"
+                                        "    Object.defineProperty(this, \"peek\", {\n"
+                                        "      get() {\n        globalThis.calls++;\n        return 1;\n      },\n"
+                                        "      enumerable: true,\n      configurable: true\n    });\n  }"));
+    REQUIRE(scriptStatusLabel(fx.vm.loadScript("res://s/a.js").status) == "Ok");
+    const ScriptInstance a = instanceOf(fx.vm, "res://s/a.js");
+    expose(fx.vm, a, "a");
+    static_cast<void>(script_test::completion(fx.vm, "globalThis.calls = 0; a.speed = 8; 0"));
+
+    fx.files->set("s/a.js",
+                  classSource("  _s = 0;\n  get speed() {\n    globalThis.calls++;\n    return this._s;\n  }\n"
+                              "  set speed(value) {\n    globalThis.calls++;\n    this._s = value;\n  }"));
+    const ScriptLoadResult loaded = fx.vm.loadScript("res://s/a.js");
+    CHECK(scriptStatusLabel(loaded.status) == "Ok");
+    CHECK(countsOf(loaded) == "0 0 1 1");  // `speed` dropped; `peek` was never a field; `_s` is new
+    CHECK(script_test::completion(fx.vm, "String(calls)") == "0");
+    expose(fx.vm, a, "a");
+    CHECK(script_test::completion(fx.vm, "String(a.speed)") == "0");
+    CHECK(script_test::completion(fx.vm, "String(calls)") == "1");
+    CHECK(log.countAtLeast(LogLevel::Warn) == 0U);
+    script_test::expectCleanShutdown(fx.vm);
+}
+
+TEST_CASE("script: a field made non-enumerable is dropped and a frozen instance keeps its defaults (HR26)") {
+    const script_test::LogCapture log;
+    Fixture fx;
+    fx.files->set("s/a.js", classSource("  hidden = 1;"));
+    fx.files->set("s/b.js", classSource("  speed = 2;"));
+    REQUIRE(scriptStatusLabel(fx.vm.loadScript("res://s/a.js").status) == "Ok");
+    REQUIRE(scriptStatusLabel(fx.vm.loadScript("res://s/b.js").status) == "Ok");
+    const ScriptInstance a = instanceOf(fx.vm, "res://s/a.js");
+    const ScriptInstance b = instanceOf(fx.vm, "res://s/b.js");
+    expose(fx.vm, a, "a");
+    expose(fx.vm, b, "b");
+    static_cast<void>(script_test::completion(fx.vm, "a.hidden = 5; b.speed = 7; 0"));
+
+    fx.files->set("s/a.js", classSource("  hidden = 0;\n  constructor() {\n"
+                                        "    Object.defineProperty(this, \"hidden\", { enumerable: false });\n  }"));
+    const ScriptLoadResult hidden = fx.vm.loadScript("res://s/a.js");
+    CHECK(scriptStatusLabel(hidden.status) == "Ok");
+    CHECK(countsOf(hidden) == "0 0 0 1");
+    fx.files->set("s/b.js", classSource("  speed = 2;\n  constructor() {\n    Object.freeze(this);\n  }"));
+    const ScriptLoadResult frozen = fx.vm.loadScript("res://s/b.js");
+    CHECK(scriptStatusLabel(frozen.status) == "Ok");
+    CHECK(countsOf(frozen) == "0 1 0 0");
+    expose(fx.vm, a, "a");
+    expose(fx.vm, b, "b");
+    CHECK(script_test::completion(fx.vm, "[a.hidden, b.speed].join()") == "0,2");
+    CHECK(log.countAtLeast(LogLevel::Warn) == 0U);
+    script_test::expectCleanShutdown(fx.vm);
 }
