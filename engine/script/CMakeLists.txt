@@ -2,7 +2,8 @@
 # quickjs-ng runtime and context behind engine::script::Vm. Since task 4.1.2 it also loads ES modules, reading them
 # only through engine::VirtualFileSystem (aero::core). Since task 4.2.1 it sits above aero::scene: the component
 # binding descriptors (internal/aero/script/internal/component_binding.hpp) are what it will expose to scripts, and
-# they name engine::scene's ComponentTypeId. aero::reflect arrives through aero_scene's own PUBLIC link.
+# they name engine::scene's ComponentTypeId. aero::reflect arrives through aero_scene's own PUBLIC link, and since
+# task 4.3.4 the target also names it PRIVATE for the source-map reader.
 #
 # docs/03 draws script at the top of the engine stack, which is why it is added LAST in engine/CMakeLists.txt.
 #
@@ -42,6 +43,7 @@ add_library(aero_script STATIC
     src/vm_scripts.cpp
     src/heap_accounting.cpp
     src/module_graph.cpp
+    src/source_map.cpp
     src/bytecode_format.cpp
     src/bytecode_cook.cpp
     src/component_bindings.cpp
@@ -53,7 +55,9 @@ add_library(aero::script ALIAS aero_script)
 
 target_include_directories(aero_script PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 # aero::assets is PRIVATE: the cooked-script container format and the byte primitives, never a public dependency.
-target_link_libraries(aero_script PUBLIC aero::core aero::scene PRIVATE qjs aero::script_internal aero::assets)
+# aero::reflect is PRIVATE too: the source-map decoder calls engine::parseJson directly; it also arrives PUBLIC through
+# aero::scene.
+target_link_libraries(aero_script PUBLIC aero::core aero::scene PRIVATE qjs aero::script_internal aero::assets aero::reflect)
 
 # The parse-side -I's both generators use: the set aero_scene_serialize uses.
 set(_aero_script_parse_dirs "${CMAKE_SOURCE_DIR}/engine/core/include" "${CMAKE_SOURCE_DIR}/engine/scene/include"
