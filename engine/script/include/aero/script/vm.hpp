@@ -133,7 +133,10 @@ enum class BindStatus : std::uint8_t {
 
 // What was thrown. For an Error object: its name, message and stack text (the backend's frames, one per
 // line, no trailing newline; may be empty). For any other value: name and stack are empty and message
-// is String(value), or "<unprintable value>" when that conversion itself throws.
+// is String(value), or "<unprintable value>" when that conversion itself throws. A frame inside a module whose
+// JavaScript named a usable source map when it was loaded reads "    at <fn> (<source>:<line>:<col>)": <source> is a
+// canonical res:// path when the map's spelling resolves inside res://, else the map's own spelling; <line> is
+// 1-based and <col> is the map's 1-based UTF-16 column.
 struct ScriptError {
     std::string name;
     std::string message;
@@ -213,6 +216,7 @@ enum class ModuleState : std::uint8_t {
 // and every '%' written as '%' and two uppercase hex digits -- followed, from generation 2, by "?gen=<n>": that is
 // what a stack frame shows ("res://scripts/a.js?gen=2:3:5", "res://%C3%BC/b.js:1:10"). The log records and the cache
 // keep the canonical path. No specifier can name a later generation: '?' is refused in every specifier and entry path.
+// A frame shows the encoded name unless the frame was mapped through a source map (see evaluateModule).
 struct ModuleRecord {
     std::string path;              // the canonical "res://..." path
     std::uint32_t generation = 1;  // one more per invalidation and per retirement after a failed load or link
@@ -290,9 +294,12 @@ public:
     //                  "... time budget with promise jobs still queued"        (the drain was cut short)
     //   a rejection    "unhandled promise rejection: <name>: <message>"         + "\n<stack>"  (status unchanged)
     // and, at INFO, "a promise rejection reported as unhandled was handled later". A "\n<stack>" tail is
-    // present only when the stack text is non-empty. A rejection whose reason is an object other than an Error is
-    // described through its own toString; when the call's budget ran out first, that call is refused and the reason
-    // reads "<unprintable value>".
+    // present only when the stack text is non-empty. When the stack's first frame that has a position was mapped,
+    // the record names that frame's "<source>:<line>:<col>" in place of <fileName>. A source map that exists but
+    // cannot be used is one WARN per map path per VM, logged at the first error that needed it and before that
+    // error's record: "script: <map path>: source map not used: <reason>; stack frames name the JavaScript". A
+    // rejection whose reason is an object other than an Error is described through its own toString; when the call's
+    // budget ran out first, that call is refused and the reason reads "<unprintable value>".
     [[nodiscard]] EvalResult evaluateScript(std::string_view source, std::string_view fileName);
 
     // Loads the module at `virtualPath` -- an ABSOLUTE res:// path, refused otherwise -- and its static import graph
@@ -330,6 +337,12 @@ public:
     // wrote; any other file is JavaScript. Both are read, limited and named the same way. A container this engine
     // cannot use is a LoadError before the backend reads it; one the heap has no room to read safely is OutOfMemory
     // (R31).
+    //
+    // A JavaScript module whose last line is "//# sourceMappingURL=<url>", <url> relative or an absolute res:// path,
+    // has the map read through the same VFS at once and kept with that generation until teardown. Each generation
+    // maps its frames through its own map, whatever the files hold later. No URL, a URL the VM does not follow, or a
+    // missing map changes nothing; a cooked module has no map. The map is parsed at the first error with a frame in
+    // its generation. An error "logged again" (above) maps through the same kept maps; no file is read again.
     [[nodiscard]] EvalResult evaluateModule(std::string_view virtualPath);
 
     // The module cache: every path the VM has started to compile, sorted by path. The VM's thread only: from another
@@ -394,11 +407,11 @@ public:
     //
     // Success logs nothing, and neither do Unchanged and AlreadyRefused. Every other outcome logs exactly one ERROR,
     // plus whatever unrelated records the call's tail logs. The loader's and the trap's records are evaluateModule's
-    // (a LoadError, a CompileError, an Exception, an Interrupted). A load the heap refused (OutOfMemory) is the
-    // engine's own, and never carries the backend's error text: "script: <path>: out of memory (heap limit <L> bytes,
-    // <U> bytes in use): the script and its instances are unchanged, and only a new VM resets the heap". Every
-    // instance keeps its code and values, and only a new VM frees an old generation. The engine's other records, each
-    // after "script: <path>: ":
+    // (a LoadError, a CompileError, an Exception, an Interrupted), source-mapped frames and site included. A load the
+    // heap refused (OutOfMemory) is the engine's own, and never carries the backend's error text: "script: <path>: out
+    // of memory (heap limit <L> bytes, <U> bytes in use): the script and its instances are unchanged, and only a new VM
+    // resets the heap". Every instance keeps its code and values, and only a new VM frees an old generation. The
+    // engine's other records, each after "script: <path>: ":
     //   StillEvaluating  "not a script: its top-level await had not settled when the load ended"
     //   NotAClass        "not a script: its default export is <what>, not a class"
     //                    "not a script: its constructor returned a Proxy"

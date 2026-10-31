@@ -36,10 +36,13 @@ EvalResult Vm::Impl::trapValue(JSValueConst value, Phase phase) {
     // described as nothing -- and the refusal made the status OutOfMemory (in a compile the refused growth, in a
     // run the value arm of classify). An interrupt or a load refusal still names itself, as for every other value.
     ScriptError error;
+    std::string site = callFileName;
     if (engineText) {
         error = *callLoadFailure;
     } else if (!JS_IsUninitialized(value)) {
-        error = describe(value, isErrorObject);
+        DescribedError described = describe(value, isErrorObject);
+        error = std::move(described.error);
+        site = std::move(described.site);
     }
     if (status == EvalStatus::Interrupted) {
         // Whichever exception carried it -- the interrupt itself, or the RangeError a refused call raised after
@@ -47,7 +50,7 @@ EvalResult Vm::Impl::trapValue(JSValueConst value, Phase phase) {
         error.name = "InternalError";
         error.message = "interrupted";
     }
-    logFailure(status, error, isErrorObject, namesCause);
+    logFailure(status, error, isErrorObject, namesCause, site);
     if (status == EvalStatus::OutOfMemory) {
         JS_RunGC(rt);  // the failed work is unreachable now; cycles among it need the collector
     }
@@ -126,16 +129,27 @@ bool Vm::Impl::isOutOfMemoryError(JSValueConst exception) {
     return text.view().starts_with("out of memory");
 }
 
-ScriptError Vm::Impl::describe(JSValueConst value, bool isErrorObject) {
+// The three property reads stay in this order (each may run a script getter, so their order is observable), and the
+// mapping runs after all three, so a getter never sees a half-mapped error. A source map that cannot be used is
+// logged here, before the caller's ERROR record. The mapping is pure C++: it runs no script code.
+Vm::Impl::DescribedError Vm::Impl::describe(JSValueConst value, bool isErrorObject) {
     if (!isErrorObject) {
-        return ScriptError{{}, stringify(value), {}};
+        return DescribedError{ScriptError{{}, stringify(value), {}}, callFileName};
     }
     std::string stack = readStringProperty(value, "stack", /*nullishIsEmpty=*/true);
     if (!stack.empty() && stack.back() == '\n') {
         stack.pop_back();  // the backend ends every frame line with '\n'
     }
-    return ScriptError{readStringProperty(value, "name", false), readStringProperty(value, "message", false),
-                       std::move(stack)};
+    std::string name = readStringProperty(value, "name", false);
+    std::string message = readStringProperty(value, "message", false);
+    internal::MappedStack mapped = sourceMaps.mapStack(stack);
+    if (!quiet) {
+        for (const std::string& warning : mapped.warnings) {
+            AERO_LOG_WARN("{}", warning);
+        }
+    }
+    std::string site = mapped.site.has_value() ? std::move(*mapped.site) : callFileName;
+    return DescribedError{ScriptError{std::move(name), std::move(message), std::move(mapped.stack)}, std::move(site)};
 }
 
 std::string Vm::Impl::stringify(JSValueConst value) {
@@ -172,27 +186,28 @@ void Vm::Impl::clearPendingException() noexcept {
     JS_FreeValue(ctx, JS_GetException(ctx));
 }
 
-void Vm::Impl::logFailure(EvalStatus status, const ScriptError& error, bool isErrorObject, bool namesCause) {
+void Vm::Impl::logFailure(EvalStatus status, const ScriptError& error, bool isErrorObject, bool namesCause,
+                          std::string_view site) {
     if (quiet) {
         return;  // a cook's VM: the cook's result carries every failure, and stdout is the cooker's contract
     }
     std::string text;
     switch (status) {
         case EvalStatus::CompileError:
-            text = std::format("script: {}: compile error: {}: {}", callFileName, error.name, error.message);
+            text = std::format("script: {}: compile error: {}: {}", site, error.name, error.message);
             break;
         case EvalStatus::LoadError:  // a load error has no stack: nothing ran
-            text = std::format("script: {}: load error: {}: {}", callFileName, error.name, error.message);
+            text = std::format("script: {}: load error: {}: {}", site, error.name, error.message);
             break;
         case EvalStatus::Exception:
             if (isErrorObject) {
-                text = std::format("script: {}: uncaught {}: {}", callFileName, error.name, error.message);
+                text = std::format("script: {}: uncaught {}: {}", site, error.name, error.message);
             } else {
-                text = std::format("script: {}: uncaught exception: {}", callFileName, error.message);
+                text = std::format("script: {}: uncaught exception: {}", site, error.message);
             }
             break;
         case EvalStatus::OutOfMemory:
-            text = std::format("script: {}: out of memory (heap limit {} bytes, {} bytes in use)", callFileName,
+            text = std::format("script: {}: out of memory (heap limit {} bytes, {} bytes in use)", site,
                                config.heapLimitBytes, heap.bytesInUse());
             if (loadingScript) {
                 // A load commits nothing when the heap refuses: the engine's words, never the backend's error, which
@@ -208,7 +223,7 @@ void Vm::Impl::logFailure(EvalStatus status, const ScriptError& error, bool isEr
                 return;  // one interrupt record per call, whichever failure carries it next
             }
             interruptRecorded = true;
-            text = std::format("script: {}: interrupted after exceeding the {} ms time budget", callFileName,
+            text = std::format("script: {}: interrupted after exceeding the {} ms time budget", site,
                                config.callTimeBudget.count());
             break;
         case EvalStatus::Ok:
@@ -230,17 +245,17 @@ void Vm::Impl::logDrainStop() {
                    callFileName, config.callTimeBudget.count());
 }
 
-void Vm::Impl::logUnhandledRejection(const ScriptError& reason, bool isErrorObject) const {
+void Vm::Impl::logUnhandledRejection(const ScriptError& reason, bool isErrorObject, std::string_view site) const {
     std::string text;
     if (isErrorObject) {
-        const std::string head = std::format("script: {}: unhandled promise rejection:", callFileName);
+        const std::string head = std::format("script: {}: unhandled promise rejection:", site);
         text = std::format("{} {}: {}", head, reason.name, reason.message);
         if (!reason.stack.empty()) {
             text += '\n';
             text += reason.stack;
         }
     } else {
-        text = std::format("script: {}: unhandled promise rejection: {}", callFileName, reason.message);
+        text = std::format("script: {}: unhandled promise rejection: {}", site, reason.message);
     }
     AERO_LOG_ERROR("{}", text);
 }

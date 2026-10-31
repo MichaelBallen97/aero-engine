@@ -1,9 +1,16 @@
 // Aero Engine -- source maps (task 4.3.4): the pure core and the VM's mapped errors. SR1-SR9 test the backend-free
 // half (internal/source_map.hpp) through aero::script_internal, with no VM; SR10-SR17 drive the public API over a
-// VirtualFileSystem and are added with the VM's use of the core. No timing is asserted anywhere: SR9 prints its two
+// VirtualFileSystem. No timing is asserted anywhere: SR9 prints its two
 // durations for the manual validation row that reads them.
 
+#include <aero/assets/cooked_script.hpp>
+#include <aero/core/log.hpp>
+#include <aero/core/vfs.hpp>
+#include <aero/script/bytecode.hpp>
 #include <aero/script/internal/source_map.hpp>
+#include <aero/script/script.hpp>
+
+#include "script_binding_support.hpp"
 
 #include <doctest/doctest.h>
 
@@ -12,10 +19,15 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
+#include <fstream>
+#include <map>
+#include <memory>
 #include <optional>
 #include <ostream>  // a CHECK on std::string_view needs the complete std::ostream on MSVC (ci-portability.md)
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -415,4 +427,542 @@ TEST_CASE("source map: a big map decodes once and a lookup does not walk it (SR9
     MESSAGE("first mapStack (decode + lookup): "
             << std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count() << " us, second (lookup only): "
             << std::chrono::duration_cast<std::chrono::microseconds>(t2 - t1).count() << " us");
+}
+
+// ---- SR10-SR17: the VM maps every stack it describes ------------------------------------------------------------
+
+namespace {
+
+using engine::LogLevel;
+using engine::script::EvalResult;
+using engine::script::evalStatusLabel;
+using engine::script::ScriptInstanceResult;
+using engine::script::ScriptLoadResult;
+using engine::script::scriptStatusLabel;
+using engine::script::Vm;
+using engine::script::VmConfig;
+using script_test::expectCleanShutdown;
+using script_test::LogCapture;
+
+// esbuild 0.28.2's own bundle of the spike's c01.ts (util.ts then c01.ts), byte for byte: 16 lines, a throw on util.ts
+// line 2, the URL line last.
+constexpr std::string_view C01_JS = R"JS(// assets/scripts/util.ts
+function fail(reason) {
+  throw new Error("util failed: " + reason);
+}
+
+// assets/scripts/c01.ts
+var Player = class {
+  hp = 3;
+  constructor() {
+    fail("from ctor");
+  }
+};
+export {
+  Player as default
+};
+//# sourceMappingURL=c01.js.map
+)JS";
+
+constexpr std::string_view C01_PATH = "res://Library/Scripts/c01.js";
+constexpr std::string_view C01_MAP_FILE = "Library/Scripts/c01.js.map";
+constexpr std::string_view C01_MAPPED_STACK =
+    "    at fail (res://assets/scripts/util.ts:2:37)\n    at Player (res://assets/scripts/c01.ts:6:5)";
+constexpr std::string_view C01_UNMAPPED_STACK =
+    "    at fail (res://Library/Scripts/c01.js:3:37)\n    at Player (res://Library/Scripts/c01.js:10:5)";
+constexpr std::string_view C01_MAPPED_HEAD =
+    "script: res://assets/scripts/util.ts:2:37: uncaught Error: util failed: from ctor\n";
+constexpr std::string_view C01_UNMAPPED_HEAD =
+    "script: res://Library/Scripts/c01.js: uncaught Error: util failed: from ctor\n";
+
+// A module source in memory, with per-path read counts.
+class MapBackend final : public engine::FileSystemBackend {
+public:
+    void set(std::string relPath, std::string text) { files[std::move(relPath)] = std::move(text); }
+
+    void remove(std::string_view relPath) {
+        if (const auto found = files.find(relPath); found != files.end()) {
+            files.erase(found);
+        }
+    }
+
+    [[nodiscard]] bool exists(std::string_view relPath) const override { return files.contains(relPath); }
+
+    [[nodiscard]] std::optional<std::uint64_t> fileSize(std::string_view relPath) const override {
+        const auto found = files.find(relPath);
+        if (found == files.end()) {
+            return std::nullopt;
+        }
+        return static_cast<std::uint64_t>(found->second.size());
+    }
+
+    [[nodiscard]] std::optional<engine::ByteBuffer> readFile(std::string_view relPath) const override {
+        ++readCounts[std::string{relPath}];
+        const auto found = files.find(relPath);
+        if (found == files.end()) {
+            return std::nullopt;
+        }
+        engine::ByteBuffer bytes;
+        bytes.reserve(found->second.size());
+        for (const char c : found->second) {
+            bytes.push_back(static_cast<std::byte>(c));
+        }
+        return bytes;
+    }
+
+    [[nodiscard]] std::size_t reads(std::string_view relPath) const {
+        const auto found = readCounts.find(relPath);
+        return found == readCounts.end() ? 0U : found->second;
+    }
+
+private:
+    std::map<std::string, std::string, std::less<>> files;
+    mutable std::map<std::string, std::size_t, std::less<>> readCounts;
+};
+
+// A VM over a VFS whose root is one MapBackend. Non-movable: the Vm borrows the VFS's address.
+class VmRig {
+public:
+    explicit VmRig(const VmConfig& config = script_test::patient()) {
+        auto backend = std::make_unique<MapBackend>();
+        files = backend.get();
+        vfs.mount(std::move(backend));
+        engine::script::VmCreateResult created = Vm::create(config, vfs);
+        REQUIRE(created.vm.valid());
+        vm = std::move(created.vm);
+    }
+    VmRig(const VmRig&) = delete;
+    VmRig& operator=(const VmRig&) = delete;
+    VmRig(VmRig&&) = delete;
+    VmRig& operator=(VmRig&&) = delete;
+    ~VmRig() = default;
+
+    engine::VirtualFileSystem vfs;
+    MapBackend* files = nullptr;
+    Vm vm;
+};
+
+// `text` with its first `from` replaced by `to`; the case fails when `from` is absent.
+[[nodiscard]] std::string replaced(std::string text, std::string_view from, std::string_view to) {
+    const std::size_t at = text.find(from);
+    REQUIRE(at != std::string::npos);
+    text.replace(at, from.size(), to);
+    return text;
+}
+
+// A map whose generated line g (1-based, of `lines`) has one segment at column 0, on `source` line firstOriginal + g
+// (1-based), column 1.
+[[nodiscard]] std::string lineMap(std::size_t lines, std::int64_t firstOriginal, std::string_view source) {
+    std::string mappings = "AA" + vlq(firstOriginal) + "A";
+    for (std::size_t i = 1; i < lines; ++i) {
+        mappings += ";AACA";
+    }
+    return R"({"version":3,"sources":[")" + std::string{source} + R"("],"mappings":")" + mappings + R"("})";
+}
+
+// Every record at Warn or above, which a case expects to be exactly one ERROR; its text.
+[[nodiscard]] std::string theOneError(const LogCapture& log) {
+    const std::vector<script_test::CapturedRecord> loud = log.atLeast(LogLevel::Warn);
+    REQUIRE(loud.size() == 1U);
+    CHECK(loud[0].level == LogLevel::Error);
+    return loud[0].message;
+}
+
+[[nodiscard]] std::string statusOf(const ScriptInstanceResult& result) {
+    return std::string{scriptStatusLabel(result.status)};
+}
+
+[[nodiscard]] std::string statusOf(const ScriptLoadResult& result) {
+    return std::string{scriptStatusLabel(result.status)};
+}
+
+[[nodiscard]] std::string statusOf(const EvalResult& result) { return std::string{evalStatusLabel(result.status)}; }
+
+[[nodiscard]] std::string cookedContainerOf(std::string_view js) {
+    const engine::script::ScriptCookResult cooked = engine::script::cookScriptBytecode(js, "res://x.js");
+    REQUIRE(cooked.status == engine::script::ScriptCookStatus::Ok);
+    const engine::assets::CookedScriptWriteResult written =
+        engine::assets::writeCookedScript(engine::assets::CookedScriptInput{
+            engine::Guid{}, cooked.backendRelease, cooked.bytecodeVersion, cooked.stripFlags, cooked.payload});
+    REQUIRE(written.status == engine::assets::CookedScriptStatus::Ok);
+    return std::string{reinterpret_cast<const char*>(written.bytes.data()), written.bytes.size()};
+}
+
+}  // namespace
+
+TEST_CASE("script: a thrown error's stack and record name the .ts file, line and column (SR10)") {
+    const LogCapture log;
+    VmRig rig;
+    rig.files->set("Library/Scripts/c01.js", std::string{C01_JS});
+    rig.files->set(std::string{C01_MAP_FILE}, std::string{C01_MAP});
+    const ScriptLoadResult loaded = rig.vm.loadScript(C01_PATH);
+    REQUIRE(statusOf(loaded) == "Ok");
+    CHECK(log.countAtLeast(LogLevel::Warn) == 0U);
+
+    const ScriptInstanceResult made = rig.vm.createInstance(C01_PATH);
+    CHECK(statusOf(made) == "Exception");
+    CHECK(made.error.name == "Error");
+    CHECK(made.error.message == "util failed: from ctor");
+    CHECK(made.error.stack == C01_MAPPED_STACK);
+    CHECK(theOneError(log) == std::string{C01_MAPPED_HEAD} + std::string{C01_MAPPED_STACK});
+    expectCleanShutdown(rig.vm);
+}
+
+TEST_CASE("script: every stack shape is mapped, and the record's site follows its first positioned frame (SR11)") {
+    SUBCASE("a compile error's unparenthesised frame") {
+        const LogCapture log;
+        VmRig rig;
+        rig.files->set("Library/Scripts/c08.js",
+                       replaced(replaced(std::string{C01_JS}, "  hp = 3;", "  hp = = 3;"), "c01.js.map", "c08.js.map"));
+        rig.files->set("Library/Scripts/c08.js.map", std::string{C01_MAP});
+        const EvalResult result = rig.vm.evaluateModule("res://Library/Scripts/c08.js");
+        CHECK(statusOf(result) == "CompileError");
+        CHECK(result.error.stack == "    at res://assets/scripts/c01.ts:4:16");
+        CHECK(theOneError(log) ==
+              "script: res://assets/scripts/c01.ts:4:16: compile error: SyntaxError: unexpected token in expression: "
+              "'='\n    at res://assets/scripts/c01.ts:4:16");
+        expectCleanShutdown(rig.vm);
+    }
+    SUBCASE("a module body that throws") {
+        const LogCapture log;
+        VmRig rig;
+        rig.files->set("s/top.js",
+                       "// top\n// top\nthrow new Error(\"at top level\");\n//# sourceMappingURL=top.js.map\n");
+        rig.files->set("s/top.js.map", lineMap(3, 100, "top.ts"));
+        const EvalResult result = rig.vm.evaluateModule("res://s/top.js");
+        CHECK(statusOf(result) == "Exception");
+        CHECK(theOneError(log) ==
+              "script: res://s/top.ts:103:1: uncaught Error: at top level\n    at <anonymous> (res://s/top.ts:103:1)");
+        expectCleanShutdown(rig.vm);
+    }
+    SUBCASE("an unhandled rejection") {
+        const LogCapture log;
+        VmRig rig;
+        rig.files->set("s/rej.js",
+                       "// rej\nasync function later() {\n  await 0;\n  throw new Error(\"async rejected\");\n}\n"
+                       "export default class {\n  constructor() { later(); }\n}\n//# sourceMappingURL=rej.js.map\n");
+        rig.files->set("s/rej.js.map", lineMap(8, 100, "rej.ts"));
+        REQUIRE(statusOf(rig.vm.loadScript("res://s/rej.js")) == "Ok");
+        CHECK(statusOf(rig.vm.createInstance("res://s/rej.js")) == "Ok");
+        CHECK(theOneError(log) ==
+              "script: res://s/rej.ts:104:1: unhandled promise rejection: Error: async rejected\n"
+              "    at later (res://s/rej.ts:104:1)");
+        expectCleanShutdown(rig.vm);
+    }
+    SUBCASE("an interrupt") {
+        LogCapture log;
+        VmRig rig{VmConfig{.callTimeBudget = std::chrono::milliseconds{50}}};
+        rig.files->set("s/loop.js",
+                       "export default class {\n  constructor() {\n    for (;;) {}\n  }\n}\n"
+                       "//# sourceMappingURL=loop.js.map\n");
+        rig.files->set("s/loop.js.map", lineMap(5, 0, "loop.ts"));
+        REQUIRE(statusOf(rig.vm.loadScript("res://s/loop.js")) == "Ok");
+        log.clear();
+        const ScriptInstanceResult made = rig.vm.createInstance("res://s/loop.js");
+        CHECK(statusOf(made) == "Interrupted");
+        REQUIRE_FALSE(made.error.stack.empty());
+        std::size_t begin = 0;
+        std::string firstFrame;
+        while (begin <= made.error.stack.size()) {
+            std::size_t end = made.error.stack.find('\n', begin);
+            if (end == std::string::npos) {
+                end = made.error.stack.size();
+            }
+            const std::string line = made.error.stack.substr(begin, end - begin);
+            CHECK(line.find("res://s/loop.ts:") != std::string::npos);
+            if (firstFrame.empty()) {
+                const std::size_t open = line.find('(');
+                const std::size_t close = line.rfind(')');
+                REQUIRE(open != std::string::npos);
+                REQUIRE(close != std::string::npos);
+                firstFrame = line.substr(open + 1, close - open - 1);
+            }
+            begin = end + 1;
+        }
+        CHECK(theOneError(log) ==
+              "script: " + firstFrame + ": interrupted after exceeding the 50 ms time budget\n" + made.error.stack);
+        expectCleanShutdown(rig.vm);
+    }
+    SUBCASE("a record with no stack keeps the call's file") {
+        const LogCapture log;
+        VmRig rig;
+        rig.files->set("s/imp.js", "import \"./missing.js\";\n//# sourceMappingURL=imp.js.map\n");
+        rig.files->set("s/imp.js.map", lineMap(1, 0, "imp.ts"));
+        const EvalResult result = rig.vm.evaluateModule("res://s/imp.js");
+        CHECK(statusOf(result) == "LoadError");
+        CHECK(theOneError(log).starts_with("script: res://s/imp.js: load error: TypeError: "));
+        expectCleanShutdown(rig.vm);
+    }
+}
+
+TEST_CASE(
+    "script: a missing map, no URL line or a URL the VM does not follow changes nothing and warns nothing (SR12)") {
+    const std::string full{C01_JS};
+    const std::string withoutUrl = full.substr(0, full.find("//# sourceMappingURL"));
+    struct Arm {
+        std::string label;
+        std::string js;
+        bool mapOnDisk = false;
+    };
+    const std::vector<Arm> arms{
+        {"no map file", full, false},
+        {"no URL line", withoutUrl, true},
+        {"a data: URL", replaced(full, "c01.js.map", "data:application/json;base64,e30="), true},
+        {"an https URL", replaced(full, "c01.js.map", "https://example.com/c01.js.map"), true},
+    };
+    for (const Arm& arm : arms) {
+        INFO("arm: " << arm.label);
+        const LogCapture log;
+        VmRig rig;
+        rig.files->set("Library/Scripts/c01.js", arm.js);
+        if (arm.mapOnDisk) {
+            rig.files->set(std::string{C01_MAP_FILE}, std::string{C01_MAP});
+        }
+        REQUIRE(statusOf(rig.vm.loadScript(C01_PATH)) == "Ok");
+        const ScriptInstanceResult made = rig.vm.createInstance(C01_PATH);
+        CHECK(statusOf(made) == "Exception");
+        CHECK(made.error.stack == C01_UNMAPPED_STACK);
+        CHECK(theOneError(log) == std::string{C01_UNMAPPED_HEAD} + std::string{C01_UNMAPPED_STACK});
+        CHECK(rig.files->reads(C01_MAP_FILE) == 0U);
+        expectCleanShutdown(rig.vm);
+    }
+}
+
+TEST_CASE("script: a map that exists and cannot be used is one WARN, before the error it explains (SR13)") {
+    const std::string tail = "; stack frames name the JavaScript";
+    SUBCASE("not JSON") {
+        const LogCapture log;
+        VmRig rig;
+        rig.files->set("Library/Scripts/c01.js", std::string{C01_JS});
+        rig.files->set(std::string{C01_MAP_FILE}, "{not json");
+        REQUIRE(statusOf(rig.vm.loadScript(C01_PATH)) == "Ok");
+        CHECK(log.countAtLeast(LogLevel::Warn) == 0U);  // nothing is logged at load
+
+        CHECK(statusOf(rig.vm.createInstance(C01_PATH)) == "Exception");
+        const std::vector<script_test::CapturedRecord> first = log.atLeast(LogLevel::Warn);
+        REQUIRE(first.size() == 2U);
+        CHECK(first[0].level == LogLevel::Warn);
+        CHECK(first[0].message.starts_with(
+            "script: res://Library/Scripts/c01.js.map: source map not used: it is not JSON: "));
+        CHECK(first[0].message.ends_with(tail));
+        CHECK(first[1].level == LogLevel::Error);
+        CHECK(first[1].message == std::string{C01_UNMAPPED_HEAD} + std::string{C01_UNMAPPED_STACK});
+
+        CHECK(statusOf(rig.vm.createInstance(C01_PATH)) == "Exception");
+        const std::vector<script_test::CapturedRecord> second = log.atLeast(LogLevel::Warn);
+        REQUIRE(second.size() == 3U);
+        CHECK(second[2].level == LogLevel::Error);
+        expectCleanShutdown(rig.vm);
+    }
+    SUBCASE("over the heap limit") {
+        const LogCapture log;
+        VmRig rig{script_test::patient(VmConfig{.heapLimitBytes = engine::script::MIN_HEAP_LIMIT_BYTES})};
+        std::string padded{C01_MAP};
+        padded.resize(1048577U, ' ');
+        rig.files->set("Library/Scripts/c01.js", std::string{C01_JS});
+        rig.files->set(std::string{C01_MAP_FILE}, padded);
+        REQUIRE(statusOf(rig.vm.loadScript(C01_PATH)) == "Ok");
+        CHECK(statusOf(rig.vm.createInstance(C01_PATH)) == "Exception");
+        const std::vector<script_test::CapturedRecord> loud = log.atLeast(LogLevel::Warn);
+        REQUIRE(loud.size() == 2U);
+        CHECK(loud[0].message ==
+              "script: res://Library/Scripts/c01.js.map: source map not used: its 1048577 bytes are over the "
+              "1048576-byte limit (the VM's heap limit); stack frames name the JavaScript");
+        CHECK(rig.files->reads(C01_MAP_FILE) == 0U);  // refused on its size, never read
+        expectCleanShutdown(rig.vm);
+    }
+    SUBCASE("a version that is not 3") {
+        const LogCapture log;
+        VmRig rig;
+        rig.files->set("Library/Scripts/c01.js", std::string{C01_JS});
+        rig.files->set(std::string{C01_MAP_FILE}, replaced(std::string{C01_MAP}, "\"version\": 3", "\"version\": 2"));
+        REQUIRE(statusOf(rig.vm.loadScript(C01_PATH)) == "Ok");
+        CHECK(statusOf(rig.vm.createInstance(C01_PATH)) == "Exception");
+        const std::vector<script_test::CapturedRecord> loud = log.atLeast(LogLevel::Warn);
+        REQUIRE(loud.size() == 2U);
+        CHECK(loud[0].message ==
+              "script: res://Library/Scripts/c01.js.map: source map not used: its version is not 3" + tail);
+        expectCleanShutdown(rig.vm);
+    }
+}
+
+TEST_CASE("script: each generation maps through the map read with its own JavaScript (SR14)") {
+    const auto source = [](std::string_view message, std::string_view guard, std::string_view padding) {
+        std::string text = "// p\nexport default class P {\n  constructor() {\n";
+        text += padding;
+        text += "    ";
+        text += guard;
+        text += "throw new Error(\"";
+        text += message;
+        text += "\");\n  }\n}\n//# sourceMappingURL=p.js.map\n";
+        return text;
+    };
+    LogCapture log;
+    VmRig rig;
+    // v1: the throw is on generated line 4, and only when globalThis.boom is set.
+    rig.files->set("s/p.js", source("v1", "if (globalThis.boom) ", ""));
+    rig.files->set("s/p.js.map", lineMap(7, 100, "p.ts"));
+    REQUIRE(statusOf(rig.vm.loadScript("res://s/p.js")) == "Ok");
+    REQUIRE(statusOf(rig.vm.createInstance("res://s/p.js")) == "Ok");
+    CHECK(log.countAtLeast(LogLevel::Warn) == 0U);
+
+    // v2 always throws, on generated line 5: the rebuilt instance threw, so the reload is refused.
+    rig.files->set("s/p.js", source("v2", "", "    // pad\n"));
+    rig.files->set("s/p.js.map", lineMap(8, 200, "p.ts"));
+    const ScriptLoadResult refused = rig.vm.loadScript("res://s/p.js");
+    CHECK(statusOf(refused) == "Exception");
+    CHECK(theOneError(log) == "script: res://s/p.ts:205:1: uncaught Error: v2\n    at P (res://s/p.ts:205:1)");
+
+    // Generation 1's class is still the script's: its frames map through generation 1's map, not the one on disk.
+    log.clear();
+    REQUIRE(statusOf(rig.vm.evaluateScript("globalThis.boom = true", "set.js")) == "Ok");
+    CHECK(statusOf(rig.vm.createInstance("res://s/p.js")) == "Exception");
+    CHECK(theOneError(log) == "script: res://s/p.ts:104:1: uncaught Error: v1\n    at P (res://s/p.ts:104:1)");
+
+    // v3 loads, and its own map is the one it reads.
+    rig.files->set("s/p.js", source("v3", "if (globalThis.boom3) ", ""));
+    rig.files->set("s/p.js.map", lineMap(7, 300, "p.ts"));
+    log.clear();
+    REQUIRE(statusOf(rig.vm.evaluateScript("globalThis.boom = false", "unset.js")) == "Ok");
+    REQUIRE(statusOf(rig.vm.loadScript("res://s/p.js")) == "Ok");
+    REQUIRE(statusOf(rig.vm.evaluateScript("globalThis.boom3 = true", "set3.js")) == "Ok");
+    log.clear();
+    CHECK(statusOf(rig.vm.createInstance("res://s/p.js")) == "Exception");
+    CHECK(theOneError(log) == "script: res://s/p.ts:304:1: uncaught Error: v3\n    at P (res://s/p.ts:304:1)");
+    expectCleanShutdown(rig.vm);
+}
+
+TEST_CASE("script: the map is read with its JavaScript, once, and only by a compile (SR15)") {
+    const LogCapture log;
+    VmRig rig;
+    rig.files->set("Library/Scripts/c01.js", std::string{C01_JS});
+    rig.files->set(std::string{C01_MAP_FILE}, std::string{C01_MAP});
+    REQUIRE(statusOf(rig.vm.loadScript(C01_PATH)) == "Ok");
+    CHECK(rig.files->reads(C01_MAP_FILE) == 1U);
+
+    // The file is gone after the load: the kept map still answers.
+    rig.files->remove(C01_MAP_FILE);
+    const ScriptInstanceResult made = rig.vm.createInstance(C01_PATH);
+    CHECK(statusOf(made) == "Exception");
+    CHECK(made.error.stack == C01_MAPPED_STACK);
+    CHECK(theOneError(log) == std::string{C01_MAPPED_HEAD} + std::string{C01_MAPPED_STACK});
+
+    // The same bytes are Unchanged: the comparison reads no map.
+    CHECK(statusOf(rig.vm.loadScript(C01_PATH)) == "Unchanged");
+    CHECK(rig.files->reads(C01_MAP_FILE) == 1U);
+
+    // A broken bundle at the same path: a new generation reads its own map, and its frame is mapped through it.
+    rig.files->set(std::string{C01_MAP_FILE}, std::string{C01_MAP});
+    const std::string broken = replaced(std::string{C01_JS}, "  hp = 3;", "  hp = = 3;");
+    rig.files->set("Library/Scripts/c01.js", broken);
+    const ScriptLoadResult refused = rig.vm.loadScript(C01_PATH);
+    CHECK(statusOf(refused) == "CompileError");
+    CHECK(refused.error.stack == "    at res://assets/scripts/c01.ts:4:16");
+    CHECK(rig.files->reads(C01_MAP_FILE) == 2U);
+
+    // The same refused bytes again: nothing is compiled, so nothing is read.
+    CHECK(statusOf(rig.vm.loadScript(C01_PATH)) == "AlreadyRefused");
+    CHECK(rig.files->reads(C01_MAP_FILE) == 2U);
+    expectCleanShutdown(rig.vm);
+}
+
+TEST_CASE("script: a cooked script reads no map and its frames name the bundle's positions (SR16)") {
+    const LogCapture log;
+    VmRig rig;
+    rig.files->set("Library/Scripts/c01.aeroscript", cookedContainerOf(C01_JS));
+    rig.files->set(std::string{C01_MAP_FILE}, std::string{C01_MAP});
+    rig.files->set("Library/Scripts/c01.aeroscript.map", std::string{C01_MAP});
+    constexpr std::string_view COOKED = "res://Library/Scripts/c01.aeroscript";
+    REQUIRE(statusOf(rig.vm.loadScript(COOKED)) == "Ok");
+    const ScriptInstanceResult made = rig.vm.createInstance(COOKED);
+    CHECK(statusOf(made) == "Exception");
+    const std::string expectedStack =
+        "    at fail (res://Library/Scripts/c01.aeroscript:3:37)\n"
+        "    at Player (res://Library/Scripts/c01.aeroscript:10:5)";
+    CHECK(made.error.stack == expectedStack);
+    CHECK(theOneError(log) ==
+          "script: res://Library/Scripts/c01.aeroscript: uncaught Error: util failed: from ctor\n" + expectedStack);
+    CHECK(rig.files->reads(C01_MAP_FILE) == 0U);
+    CHECK(rig.files->reads("Library/Scripts/c01.aeroscript.map") == 0U);
+    expectCleanShutdown(rig.vm);
+}
+
+TEST_CASE("script: the map read sits at the read's tail, in a frame of its own (SR17)") {
+    namespace fs = std::filesystem;
+    const auto strippedSource = [](const fs::path& path) {
+        std::ifstream file{path};
+        REQUIRE(file.is_open());
+        std::string out;
+        std::string line;
+        while (std::getline(file, line)) {
+            const std::size_t comment = line.find("//");
+            if (comment != std::string::npos) {
+                line.erase(comment);
+            }
+            out += line;
+            out += '\n';
+        }
+        return out;
+    };
+    const auto occurrences = [](std::string_view text, std::string_view token) {
+        std::size_t count = 0;
+        for (std::size_t at = text.find(token); at != std::string_view::npos; at = text.find(token, at + 1)) {
+            ++count;
+        }
+        return count;
+    };
+    const auto lineAt = [](std::string_view text, std::size_t at) {
+        const std::size_t begin = text.rfind('\n', at) == std::string_view::npos ? 0 : text.rfind('\n', at) + 1;
+        const std::size_t end = text.find('\n', at);
+        return std::string{text.substr(begin, end - begin)};
+    };
+
+    const fs::path src{AERO_SCRIPT_SRC_DIR};
+    const std::string modules = strippedSource(src / "vm_modules.cpp");
+    CHECK(occurrences(modules, "keepSourceMap(") == 2U);  // the definition and one call
+
+    const auto bodyBetween = [&modules](std::string_view from, std::string_view to) {
+        const std::size_t begin = modules.find(from);
+        const std::size_t end = modules.find(to);
+        REQUIRE(begin != std::string::npos);
+        REQUIRE(end != std::string::npos);
+        REQUIRE(begin < end);
+        return std::string_view{modules}.substr(begin, end - begin);
+    };
+    // The read sits at readModuleSource's tail: after its last check, for a text that is not a cooked script, and
+    // before the text is returned.
+    const std::string_view reader = bodyBetween("std::optional<std::string> Vm::Impl::readModuleSource(",
+                                                "std::optional<std::string> Vm::Impl::peekModuleSource(");
+    const std::size_t keep = reader.find("keepSourceMap(");
+    const std::size_t lastCap = reader.rfind("sourceWithinCap(");
+    const std::size_t cooked = reader.find("isCookedScriptText(");
+    const std::size_t returned = reader.rfind("return text;");
+    REQUIRE(keep != std::string_view::npos);
+    REQUIRE(lastCap != std::string_view::npos);
+    REQUIRE(cooked != std::string_view::npos);
+    REQUIRE(returned != std::string_view::npos);
+    CHECK(lastCap < keep);
+    CHECK(cooked < keep);
+    CHECK(keep < returned);
+    // The call is a bare statement.
+    const std::string call = lineAt(reader, keep);
+    CHECK(call.find('=') == std::string::npos);
+    CHECK(call.find("keepSourceMap(key, *text);") != std::string::npos);
+
+    // compileModule's frame is live across the nested compile at every import level (R33): it gains no call, and the
+    // read happens before its deadline check.
+    const std::string_view compiler =
+        bodyBetween("JSModuleDef* Vm::Impl::compileModule(", "JSModuleDef* Vm::Impl::compileCookedModule(");
+    CHECK(compiler.find("keepSourceMap(") == std::string_view::npos);
+    const std::size_t reads = compiler.find("readModuleSource(");
+    const std::size_t deadline = compiler.find("deadlinePassed()");
+    REQUIRE(reads != std::string_view::npos);
+    REQUIRE(deadline != std::string_view::npos);
+    CHECK(reads < deadline);
+
+    const std::string impl = strippedSource(src / "vm_impl.hpp");
+    const std::size_t declared = impl.find("keepSourceMap(");
+    REQUIRE(declared != std::string::npos);
+    CHECK(occurrences(impl, "keepSourceMap(") == 1U);
+    CHECK(lineAt(impl, declared).find("AERO_SCRIPT_NOINLINE") != std::string::npos);
 }

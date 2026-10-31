@@ -54,7 +54,7 @@ EvalResult Vm::Impl::evaluateModuleCall(std::string_view virtualPath) {
                                   {}};
         callLoadFailure = refusal;
         result = EvalResult{EvalStatus::LoadError, refusal, {}};
-        logFailure(EvalStatus::LoadError, result.error, /*isErrorObject=*/true, /*namesCause=*/false);
+        logFailure(EvalStatus::LoadError, result.error, /*isErrorObject=*/true, /*namesCause=*/false, callFileName);
         drainJobs(result);  // jobs an earlier call queued still run, as after evaluateScript's CompileError
     } else {
         evaluateEntry(entry.key, result);
@@ -228,6 +228,12 @@ std::optional<std::string> Vm::Impl::readModuleSource(std::string_view key, std:
     if (attempt->entryText != nullptr && attempt->depth == 0) {
         *attempt->entryText = *text;  // the entry's bytes as compiled; nested modules are read at depth >= 1
     }
+    // The map of a JavaScript module is read here, after the last check and before compileModule's deadline check, so
+    // the read is inside the budget that check enforces. Here and not in compileModule: a call there measured +32 B per
+    // import level in Debug (R33).
+    if (!isCookedScriptText(*text)) {
+        keepSourceMap(key, *text);
+    }
     return text;
 }
 
@@ -249,6 +255,42 @@ std::optional<std::string> Vm::Impl::peekModuleSource(std::string_view key) cons
 bool Vm::Impl::isCookedScriptText(const std::string& text) noexcept {
     return assets::hasCookedScriptMagic(
         std::span<const std::byte>{reinterpret_cast<const std::byte*>(text.data()), text.size()});
+}
+
+void Vm::Impl::keepSourceMap(std::string_view key, const std::string& text) {
+    assert(modules != nullptr);  // readModuleSource refused a VM with no module source
+    std::string name = internal::encodeModuleName(key, moduleTable.generation(key));  // == compileModule's `name`
+    const std::optional<std::string_view> url = internal::sourceMappingUrl(text);
+    const std::optional<std::string> mapPath =
+        url.has_value() ? internal::resolveSourceMapPath(key, *url) : std::optional<std::string>{};
+    if (!mapPath.has_value()) {
+        sourceMaps.forget(name);  // silent: no URL, or one the VM does not follow
+        return;
+    }
+    const std::optional<std::uint64_t> size = modules->fileSize(*mapPath);
+    if (!size.has_value()) {
+        if (modules->exists(*mapPath)) {  // nullopt is "absent or unreadable" (vfs.hpp)
+            sourceMaps.keepUnusable(std::move(name), *mapPath, std::string{internal::MAP_UNREADABLE_REASON});
+        } else {
+            sourceMaps.forget(name);  // silent: the map does not exist
+        }
+        return;
+    }
+    if (!internal::sourceWithinCap(*size, config.heapLimitBytes)) {
+        sourceMaps.keepUnusable(std::move(name), *mapPath, internal::mapTooLargeReason(*size, config.heapLimitBytes));
+        return;
+    }
+    std::optional<std::string> bytes = modules->readText(*mapPath);
+    if (!bytes.has_value()) {
+        sourceMaps.keepUnusable(std::move(name), *mapPath, std::string{internal::MAP_UNREADABLE_REASON});
+        return;
+    }
+    if (!internal::sourceWithinCap(bytes->size(), config.heapLimitBytes)) {  // the file grew after its size was read
+        sourceMaps.keepUnusable(std::move(name), *mapPath,
+                                internal::mapTooLargeReason(bytes->size(), config.heapLimitBytes));
+        return;
+    }
+    sourceMaps.keepMap(std::move(name), *mapPath, std::move(*bytes));
 }
 
 JSModuleDef* Vm::Impl::compileModule(std::string_view key, std::string_view importer) {
