@@ -789,3 +789,29 @@ TEST_CASE("console: the tooltip lists the detail above the C++ location (task 4.
 
     CHECK(buildLogTooltip(makeEntry(LogLevel::Info, "m", "", 0)).empty());
 }
+
+TEST_CASE("console: a record's whole stack of 64 frames is kept in its detail, uncut (task 4.3.4, CS16)") {
+    // The cap holds the backend's ceiling of 64 frames at 120 bytes each (7 743 bytes with the line breaks).
+    // CS12 writes its sample in terms of the constant, so only a stack of this size tells the constant from a smaller
+    // one.
+    std::string frames;
+    for (int i = 0; i < 64; ++i) {
+        std::string frame = "    at frame" + std::to_string(i) + " (res://assets/scripts/";
+        const std::string tail = ".ts:" + std::to_string(i + 1) + ":7)";
+        frame.append(120U - frame.size() - tail.size(), 'p');
+        frame += tail;
+        REQUIRE(frame.size() == 120U);
+        frames += (i == 0 ? "" : "\n") + frame;
+    }
+    REQUIRE(frames.size() == 64U * 120U + 63U);
+
+    LogSink sink;
+    sink.push(LogLevel::Error, "script: res://assets/scripts/deep.ts:1:7: uncaught Error: deep\n" + frames,
+              LogLocation{"f.cpp", "fn", 7});
+    std::vector<LogEntry> out;
+    CHECK(sink.take(out) == 0);
+    REQUIRE(out.size() == 1);
+    CHECK(out[0].message == "script: res://assets/scripts/deep.ts:1:7: uncaught Error: deep");
+    CHECK(out[0].detail == frames);
+    CHECK(out[0].detail.find(TRUNCATION_MARKER) == std::string::npos);
+}

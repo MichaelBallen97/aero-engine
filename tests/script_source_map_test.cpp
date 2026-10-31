@@ -1,6 +1,6 @@
 // Aero Engine -- source maps (task 4.3.4): the pure core and the VM's mapped errors. SR1-SR9 test the backend-free
-// half (internal/source_map.hpp) through aero::script_internal, with no VM; SR10-SR21 drive the public API over a
-// VirtualFileSystem. No timing is asserted anywhere: SR9 prints its two
+// half (internal/source_map.hpp) through aero::script_internal, with no VM, as do SR22-SR29; SR10-SR21 and SR30 drive
+// the public API over a VirtualFileSystem. No timing is asserted anywhere: SR9 prints its two
 // durations for the manual validation row that reads them.
 
 #include <aero/assets/cooked_script.hpp>
@@ -428,6 +428,107 @@ TEST_CASE("source map: a big map decodes once and a lookup does not walk it (SR9
     MESSAGE("first mapStack (decode + lookup): "
             << std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count() << " us, second (lookup only): "
             << std::chrono::duration_cast<std::chrono::microseconds>(t2 - t1).count() << " us");
+}
+
+TEST_CASE("source map: a lower-case hex escape decodes as its upper-case twin, in a URL and in a source (SR22)") {
+    // Every escape in SR2 and SR5 is upper-case; a decoder that read 'a'..'f' as 0..5 would pass them all.
+    const std::string scripts = "res://Library/Scripts/c01.js";
+    CHECK(si::resolveSourceMapPath(scripts, "%c3%bc.js.map") ==
+          std::optional<std::string>{"res://Library/Scripts/\xC3\xBC.js.map"});
+    CHECK(si::resolveSourceMapPath(scripts, "res://lib/%e2%82%ac.map") ==
+          std::optional<std::string>{"res://lib/\xE2\x82\xAC.map"});
+    const std::string_view q = "res://Library/Scripts/q.js.map";
+    CHECK(si::sourceDisplayName(q, "", "../../assets/q%3fx%7e%c3%a9.ts") == "res://assets/q?x~\xC3\xA9.ts");
+}
+
+TEST_CASE("source map: a source that leaves res:// is shown as the map spells it, escapes and all (SR23)") {
+    const std::string_view scripts = "res://Library/Scripts/x.js.map";
+    // Three levels up from Library/Scripts is above the root: the engine has no path for it, and the escape stays.
+    CHECK(si::sourceDisplayName(scripts, "", "../../../a%20b.ts") == "../../../a%20b.ts");
+    CHECK(si::sourceDisplayName(scripts, "../../..", "a%20b.ts") == "../../../a%20b.ts");
+    // Anti-vacuity: one level less and it is a path of the engine's, decoded.
+    CHECK(si::sourceDisplayName(scripts, "", "../../a%20b.ts") == "res://a b.ts");
+}
+
+TEST_CASE("source map: an absolute res:// source or sourceRoot is decoded and normalised as itself (SR24)") {
+    const std::string_view scripts = "res://Library/Scripts/x.js.map";
+    CHECK(si::sourceDisplayName(scripts, "", "res://assets/a%20b/../c.ts") == "res://assets/c.ts");
+    CHECK(si::sourceDisplayName(scripts, "res://my%20lib", "d/../e.ts") == "res://my lib/e.ts");
+    // A relative one beside it joins under the map's directory.
+    CHECK(si::sourceDisplayName(scripts, "my%20lib", "e.ts") == "res://Library/Scripts/my lib/e.ts");
+}
+
+TEST_CASE("source map: a value's eighth digit is refused though its bits are zero (SR25)") {
+    // Seven digits carry 35 bits; an eighth is over the 31 the format keeps, whatever it holds.
+    CHECK(mappingsRefusal("gggggggA") == "its mappings do not decode: a value over 31 bits at byte 0");
+    CHECK(mappingsRefusal("ggggggggA") == "its mappings do not decode: a value over 31 bits at byte 0");
+    // Anti-vacuity: a seven-digit value that does fit is read.
+    const si::DecodedSourceMap fits = decodedOrDie("res://m.js.map", mapJson(R"(["a.ts"])", "ggggggB"));
+    REQUIRE(fits.segments.size() == 1);
+    CHECK(fits.segments[0].generatedColumn == (1U << 29));
+}
+
+TEST_CASE("source map: a position over 32 bits is no position, and a frame naming one is copied (SR26)") {
+    si::SourceMapStore store;
+    store.keepMap("res://s/a.js", "res://s/a.js.map",
+                  mapJson(R"(["a.ts"])", mappingsOf({{}, {{0, 0, 0, 0}, {4, 0, 4, 2}}})));
+    // 4294967298 is 2^32 + 2 and 4294967301 is 2^32 + 5: ten digits each, which wrapped would be line 2 and column 5.
+    for (const std::string_view line :
+         {"    at f (res://s/a.js:4294967298:5)", "    at f (res://s/a.js:2:4294967301)",
+          "    at res://s/a.js:4294967298:5", "    at f (res://s/a.js:4294967296:4294967296)"}) {
+        INFO("line: " << std::string{line});
+        const si::MappedStack out = store.mapStack(line);
+        CHECK(out.stack == line);
+        CHECK_FALSE(out.site.has_value());
+    }
+    // Anti-vacuity: the same frame with the wrapped values spelled small maps.
+    CHECK(store.mapStack("    at f (res://s/a.js:2:5)").stack == "    at f (res://s/a.ts:5:3)");
+}
+
+TEST_CASE("source map: the file of a frame starts at the last ' (res://', so a function name cannot hide it (SR27)") {
+    si::SourceMapStore store;
+    store.keepMap("res://s/a.js", "res://s/a.js.map",
+                  mapJson(R"(["a.ts"])", mappingsOf({{}, {{0, 0, 0, 0}, {4, 0, 4, 2}}})));
+    const si::MappedStack out = store.mapStack("    at evil (res://hand/x.js:3:3) (res://s/a.js:2:5)");
+    CHECK(out.stack == "    at evil (res://hand/x.js:3:3) (res://s/a.ts:5:3)");
+    CHECK(out.site == std::optional<std::string>{"res://s/a.ts:5:3"});
+}
+
+TEST_CASE(
+    "source map: a parenthesised frame on a file the engine has no map for is still the first positioned (SR28)") {
+    si::SourceMapStore store;
+    store.keepMap("res://s/a.js", "res://s/a.js.map",
+                  mapJson(R"(["a.ts"])", mappingsOf({{}, {{0, 0, 0, 0}, {4, 0, 4, 2}}})));
+    const si::MappedStack out = store.mapStack("    at h (<input>:2:5)\n    at f (res://s/a.js:2:5)");
+    CHECK(out.stack == "    at h (<input>:2:5)\n    at f (res://s/a.ts:5:3)");
+    CHECK_FALSE(out.site.has_value());
+    // Anti-vacuity: without the first frame, the second is the site.
+    CHECK(store.mapStack("    at f (res://s/a.js:2:5)").site == std::optional<std::string>{"res://s/a.ts:5:3"});
+}
+
+TEST_CASE("source map: a slot kept again replaces what it held, whichever state that was (SR29)") {
+    const std::string good = mapJson(R"(["a.ts"])", mappingsOf({{}, {{0, 0, 0, 0}, {4, 0, 4, 2}}}));
+    const std::string frame = "    at f (res://s/a.js:2:5)";
+    {
+        si::SourceMapStore store;
+        store.keepMap("res://s/a.js", "res://s/a.js.map", good);
+        store.keepUnusable("res://s/a.js", "res://s/b.js.map", "it has gone");
+        CHECK(store.slotState("res://s/a.js") == std::optional{si::SourceMapSlotState::Unusable});
+        const si::MappedStack out = store.mapStack(frame);
+        CHECK(out.stack == frame);
+        REQUIRE(out.warnings.size() == 1U);
+        CHECK(out.warnings[0] ==
+              "script: res://s/b.js.map: source map not used: it has gone; stack frames name the JavaScript");
+    }
+    {
+        si::SourceMapStore store;
+        store.keepUnusable("res://s/a.js", "res://s/b.js.map", "it has gone");
+        store.keepMap("res://s/a.js", "res://s/a.js.map", good);
+        CHECK(store.slotState("res://s/a.js") == std::optional{si::SourceMapSlotState::Read});
+        const si::MappedStack out = store.mapStack(frame);
+        CHECK(out.stack == "    at f (res://s/a.ts:5:3)");
+        CHECK(out.warnings.empty());
+    }
 }
 
 // ---- SR10-SR21: the VM maps every stack it describes ------------------------------------------------------------
@@ -1154,4 +1255,51 @@ TEST_CASE("script: the map read sits at the read's tail, in a frame of its own (
     REQUIRE(declared != std::string::npos);
     CHECK(occurrences(impl, "keepSourceMap(") == 1U);
     CHECK(lineAt(impl, declared).find("AERO_SCRIPT_NOINLINE") != std::string::npos);
+}
+
+TEST_CASE("script: an out-of-memory record whose error carries a mapped frame names the mapped site (SR30)") {
+    // A compile the heap starves ends OutOfMemory whatever error the parser was left to report; where it reports a
+    // SyntaxError, that error's frame is the record's site, mapped like any other. Where it reports null (Debug
+    // lanes, by where the heap refuses) there is no frame and the site stays the call's file, so the sweep takes
+    // the rooms that leave a SyntaxError and REQUIREs at least one. ML69's source and sweep.
+    constexpr std::size_t MIB = 1024U * 1024U;
+    constexpr std::size_t KIB = 1024U;
+    std::string source;
+    while (source.size() + 40 < 32U * KIB) {
+        source += "globalThis.x" + std::to_string(source.size()) + " = " + std::to_string(source.size()) + ";\n";
+    }
+    source += "//# sourceMappingURL=m.js.map\n";
+    const auto lineCount = static_cast<std::size_t>(std::count(source.begin(), source.end(), '\n'));
+    const std::string map = lineMap(lineCount, 100, "m.ts");
+
+    std::size_t masked = 0;
+    for (std::size_t room = 8U * KIB; room <= 64U * KIB; room += 2U * KIB) {
+        INFO("room " << room);
+        LogCapture log;
+        VmRig rig{script_test::patient(VmConfig{.heapLimitBytes = MIB})};
+        rig.files->set("m.js", source);
+        rig.files->set("m.js.map", map);
+        REQUIRE(statusOf(rig.vm.evaluateScript("globalThis.buf = null; 0", "fill.js")) == "Ok");
+        const std::size_t inUse = rig.vm.stats().heapBytesInUse;
+        REQUIRE(inUse + room < MIB);
+        const std::string fill = "buf = new ArrayBuffer(" + std::to_string(MIB - inUse - room) + "); 0";
+        REQUIRE(statusOf(rig.vm.evaluateScript(fill, "fill.js")) == "Ok");
+        log.clear();
+        const EvalResult result = rig.vm.evaluateModule("res://m.js");
+        CHECK(statusOf(result) == "OutOfMemory");
+        const std::vector<script_test::CapturedRecord> loud = log.atLeast(LogLevel::Warn);
+        REQUIRE_FALSE(loud.empty());
+        const std::string firstLine = loud.front().message.substr(0, loud.front().message.find('\n'));
+        if (result.error.name == "SyntaxError") {
+            ++masked;
+            CHECK(result.error.stack.starts_with("    at res://m.ts:"));
+            CHECK(firstLine.starts_with("script: res://m.ts:"));
+            CHECK(firstLine.find(": out of memory (heap limit 1048576 bytes, ") != std::string::npos);
+        } else {
+            CHECK(firstLine.starts_with("script: res://m.js: out of memory (heap limit 1048576 bytes, "));
+        }
+        expectCleanShutdown(rig.vm);
+    }
+    MESSAGE(masked << " of 29 runs reported a SyntaxError");
+    REQUIRE(masked > 0U);
 }
