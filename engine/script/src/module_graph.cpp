@@ -306,6 +306,11 @@ void* ModuleTable::instance(std::string_view key) const {
     return found == entries.end() ? nullptr : found->second.instance;
 }
 
+ModuleState ModuleTable::state(std::string_view key) const {
+    const auto found = entries.find(key);
+    return found == entries.end() ? ModuleState::Unloaded : found->second.record.state;
+}
+
 void ModuleTable::beginCompile(std::string_view key) {
     auto [entry, created] = entries.try_emplace(std::string{key});
     if (created) {
