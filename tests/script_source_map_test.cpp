@@ -1262,7 +1262,7 @@ TEST_CASE("script: an out-of-memory record whose error carries a mapped frame na
     // SyntaxError, that error's frame is the record's site, mapped like any other. Where it reports null (Debug
     // lanes, by where the heap refuses) there is no frame and the site stays the call's file, so the sweep takes
     // the rooms that leave a SyntaxError and REQUIREs at least one. ML69's source and sweep.
-    constexpr std::size_t MIB = 1024U * 1024U;
+    constexpr std::size_t MIB = std::size_t{1024} * 1024U;
     constexpr std::size_t KIB = 1024U;
     std::string source;
     while (source.size() + 40 < 32U * KIB) {
